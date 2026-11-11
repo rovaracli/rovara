@@ -3,7 +3,7 @@
 // with the first key or with a key asked for again an hour in; the Slack service shows the member the text, not "proxy unavailable".
 import { describe, expect, it, vi } from "vitest";
 import type { Context } from "@earendil-works/pi-ai";
-import { safeRefusalWords } from "../../packages/contracts/src/index.js";
+import { safeRefusalWords } from "@rovara-code/contracts";
 import { ModelNotAllowedError, createConfiguredModelRuntime, modelNotAllowedFromMarker } from "../../packages/model-runtime/src/index.js";
 import { modelAccessSource } from "../../packages/worker/src/model-access.js";
 import { failedTurn } from "../../packages/worker/src/session-events.js";

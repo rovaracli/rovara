@@ -1,4 +1,5 @@
-import { GitHubConnectorSchema, githubConnectorOf, type CredentialType, type OrgId, type ProjectDefinition, type RepositoryDefinition } from "@agentx/contracts";
+import { GitHubConnectorSchema, type CredentialType, type OrgId } from "@rovara-code/contracts";
+import { githubConnectorOf, type ProjectDefinition, type RepositoryDefinition } from "@agentx/cloud-contracts";
 import { githubConnector, type ConnectorDefinition, type ConnectorPolicy, type PresentationApproval, type connectMcp } from "@agentx/gateway";
 import type { CloudWatchAws } from "../connectors/native/cloudwatch.js";
 import type { GitHubActionsTokens } from "../connectors/native/github-actions.js";

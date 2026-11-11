@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState, type ReactElement } from "react";
 import { Link } from "react-router";
-import { AGENT_NAME_MAX, AgentIdSchema } from "@agentx/contracts/web";
+import { AGENT_NAME_MAX, AgentIdSchema } from "@agentx/cloud-contracts/web";
 import { useAppHost } from "../../host.js";
 import { createSessionApi } from "../../api/sessions.js";
 import type { SendResult } from "../../api/client.js";

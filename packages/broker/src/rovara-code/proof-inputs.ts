@@ -1,7 +1,8 @@
 // Playbook P1: what the Proof section needs from storage, read where the version 2 description is built or rewritten: the approved plan (when it is a structured one with claims), the rows of the task's
 // browser and API round for the current code, and the test proof (does a new test fail on the original code?). Informational: a fault in any of them only leaves that input out, so the description is
 // published without it; none of them can block a pull request or change a verdict.
-import type { E2EScenarioResults, WorkflowSnapshot } from "@agentx/contracts";
+import type { E2EScenarioResults } from "@rovara-code/contracts";
+import type { WorkflowSnapshot } from "@agentx/cloud-contracts";
 import type { OperationFacts } from "../developer/task-records.js";
 import type { TestProofActions } from "../developer/test-proof-lines.js";
 import type { LoadedDocument } from "../developer/plan-artifacts.js";

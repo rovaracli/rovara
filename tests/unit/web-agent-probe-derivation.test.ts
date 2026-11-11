@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { WEB_API_AGENT_PROBE_IDS, WEB_API_AGENT_PROBE_ROUTE, canonicalJson, evaluateWebApiProbeObservation, type WebApiProbeEvidence } from "../../packages/contracts/src/index.js";
+import { WEB_API_AGENT_PROBE_IDS, WEB_API_AGENT_PROBE_ROUTE, canonicalJson, evaluateWebApiProbeObservation, type WebApiProbeEvidence } from "@rovara-code/contracts";
 import { deriveWebApiProbeObservation, verifyWebApiProbeRecord, webApiAgentFacts } from "../../packages/verifier/src/web-api-probe-evidence.js";
 import { fixtureEvidence, webApiChallenge, WEB_API_FIXTURE_NOW } from "../support/web-api-qualification.js";
 

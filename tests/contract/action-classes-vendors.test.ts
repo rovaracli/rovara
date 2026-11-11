@@ -1,7 +1,7 @@
 // Pins the class AgentX gives every tool in the recorded vendor catalogs (spec 014 D1), from the
 // vendor's hints and each connector's declared item arguments, with no vendor name in gate code.
 import { describe, expect, it } from "vitest";
-import { ASANA_PROJECT_TOOL_ACCESS, schemaHasItemPath } from "../../packages/contracts/src/index.js";
+import { ASANA_PROJECT_TOOL_ACCESS, schemaHasItemPath } from "@rovara-code/contracts";
 import { asanaConnector, githubConnector, jiraConnector, linearConnector, type McpConnection } from "../../packages/gateway/src/index.js";
 import { baseClass, type ToolFacts } from "../../packages/orchestrator/src/action-policy.js";
 import { vendorToolsWithAnnotations, type VendorFixture } from "../support/vendor-fixtures.js";

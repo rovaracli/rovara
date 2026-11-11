@@ -23,20 +23,10 @@ import { randomBytes } from "node:crypto";
 import { cp, lstat, mkdir, mkdtemp, readFile, readdir, readlink, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import {
-  SAVED_ENV_IMAGE_MANIFEST_PATH,
-  SAVED_ENV_IMAGE_SEED_PATH,
-  SAVED_ENV_LABEL_KEY,
-  SAVED_ENV_LABEL_REVISION,
-  PrepareSavedEnvSchema,
-  SavedEnvImageManifestSchema,
-  SavedEnvRegistryAuthSchema,
-  type PrepareSavedEnv,
-  type SavedEnvImageManifest,
-  type SavedEnvRegistryAuth,
-  type SavedEnvUseStep,
-  type StoredProjectDefinition,
-} from "@agentx/contracts";
+import { SAVED_ENV_IMAGE_MANIFEST_PATH, SAVED_ENV_IMAGE_SEED_PATH, SAVED_ENV_LABEL_KEY, SAVED_ENV_LABEL_REVISION, SavedEnvImageManifestSchema, type SavedEnvImageManifest, type SavedEnvUseStep } from "@rovara-code/contracts";
+import { SavedEnvRegistryAuthSchema } from "@agentx/cloud-contracts";
+import { PrepareSavedEnvSchema, type PrepareSavedEnv, type SavedEnvRegistryAuth } from "@agentx/cloud-contracts";
+import { type StoredProjectDefinition } from "@agentx/cloud-contracts";
 import { assertCredentialFreeRemote, runGitWithCredential, type GitCredential } from "../git-auth.js";
 import { createDockerCli, type DockerCli } from "../swebench/containers.js";
 import { DEFAULT_LINK_POLICY, inspectLink, type LinkPolicy } from "./links.js";

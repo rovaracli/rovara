@@ -6,10 +6,7 @@
 // The admin token goes only in the authorization header: never in a line written or an error.
 import { randomUUID } from "node:crypto";
 import { createInterface } from "node:readline";
-import {
-  AdminChangeResponseWireSchema, AdminChangesResponseWireSchema, AgentXErrorCodeSchema, RecordedChangeResponseWireSchema, agentXError,
-  type AdminChangeAuditRecordWire, type AdminChangeInput, type AdminChangeViewWire, type ConfigChange, type ConfigChangeOutcomeRequest,
-} from "@agentx/contracts";
+import { AdminChangeResponseWireSchema, AdminChangesResponseWireSchema, AgentXErrorCodeSchema, RecordedChangeResponseWireSchema, agentXError, type AdminChangeAuditRecordWire, type AdminChangeInput, type AdminChangeViewWire, type ConfigChange, type ConfigChangeOutcomeRequest } from "@rovara-code/contracts";
 import { adminResponseBody, readJsonResponse, serverError } from "./http.js";
 
 /** Matches ADMIN_LIST_MAX, the most a change page holds. */

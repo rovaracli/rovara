@@ -1,15 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  CONFUSABLE_FOLD,
-  COMMAND_COMMENT_PATTERNS,
-  HTML_TAG_NAMES,
-  KNOWN_BOT_ACCOUNTS,
-  TRIGGER_LABEL_PATTERNS,
-  cleanText,
-  commentSignal,
-  normalizeForMatching,
-  stripMentions,
-} from "../../packages/contracts/src/index.js";
+import { CONFUSABLE_FOLD, COMMAND_COMMENT_PATTERNS, HTML_TAG_NAMES, KNOWN_BOT_ACCOUNTS, TRIGGER_LABEL_PATTERNS, cleanText, commentSignal, normalizeForMatching, stripMentions } from "@rovara-code/contracts";
 
 const opts = { allowMentions: false, labelPaths: [] as string[] };
 const signal = (args: unknown, more: Partial<Parameters<typeof commentSignal>[1]> = {}) => commentSignal(args, { ...opts, ...more });

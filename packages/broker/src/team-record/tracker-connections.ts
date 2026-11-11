@@ -1,6 +1,6 @@
 // The org's connected Linear and Jira connections as the tracker directory reads them (lane team-record-links). Built on the connection store the app already uses: a connection is offered only when it is
 // Linear or Jira and has a saved secret, in THIS org; its secret is read when a page is read and goes nowhere but the tool's own address (Linear's fixed GraphQL address, the Jira site the connection names).
-import type { OrgId } from "@agentx/contracts";
+import type { OrgId } from "@rovara-code/contracts";
 import { LINEAR_GRAPHQL, OrgConnectionStore, readConnection, readConnectionSecret, type OrgConnectionDeps, type OrgConnectionRecord } from "../connections/store.js";
 import { atlassianManagedAccountsReader, jiraPlaceNamesReader, jiraPlacesReader, jiraUsersReader, linearPlaceNamesReader, linearPlacesReader, linearUsersReader, type ConnectedTracker, type ConnectedTrackersPort, type ManagedAccounts } from "./tracker-directory.js";
 

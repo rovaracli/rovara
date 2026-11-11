@@ -6,10 +6,8 @@
 // the characters a git trailer and a description can carry without any markup, mention or second line.
 import { randomBytes } from "node:crypto";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  ATTRIBUTION_NAME_MAX, ATTRIBUTION_REF_LENGTH, ActingAttributionSchema, AttributionPersonSchema, erasedPersonKey, orgMemberKey, orgRemovedKey,
-  type ActingAttribution, type AttributionPerson, type OrgId,
-} from "@agentx/contracts";
+import { ATTRIBUTION_NAME_MAX, ATTRIBUTION_REF_LENGTH, ActingAttributionSchema, AttributionPersonSchema, type ActingAttribution, type AttributionPerson, type OrgId } from "@rovara-code/contracts";
+import { erasedPersonKey, orgMemberKey, orgRemovedKey } from "@agentx/cloud-contracts";
 import { readChosenName, readChosenNameState } from "../developer/chosen-name.js";
 import { safeDisplayName } from "../developer/person-name.js";
 import type { AttributionLinkStore } from "./links.js";

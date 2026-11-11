@@ -13,10 +13,8 @@
 // (`retryDesignReviewNotRun`, bounded) is the way to try again. What the model or a host wrote is never kept; only fixed codes are logged.
 import { randomUUID } from "node:crypto";
 import { PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  AgentXError, DESIGN_REVIEW_ROUNDS_MAX, DesignReviewBindingSchema, WorkflowTransitionError, agentXError, closeDesignReview, holdDesignReviewForCost, reholdDesignReviewForCost, startDesignReview, workflowIsDesignReviewing, workflowRequestId,
-  type DesignReviewBinding, type DesignReviewTier, type ModelIdentifier, type ModelSelection, type ReviewerRole, type WorkflowArtifact, type WorkflowSnapshot, type DESIGN_REVIEW_NOT_RUN_REASONS,
-} from "@agentx/contracts";
+import { AgentXError, DESIGN_REVIEW_ROUNDS_MAX, DesignReviewBindingSchema, WorkflowTransitionError, agentXError, workflowIsDesignReviewing, workflowRequestId, type DesignReviewBinding, type DesignReviewTier, type ModelIdentifier, type ModelSelection, type ReviewerRole, type WorkflowArtifact, type DESIGN_REVIEW_NOT_RUN_REASONS } from "@rovara-code/contracts";
+import { closeDesignReview, holdDesignReviewForCost, reholdDesignReviewForCost, startDesignReview, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { aiToolTurn, developerTaskIdentity, partyOfTask, taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
 import { loadWorkflowDocument } from "../developer/plan-artifacts.js";
 import { accessFence, systemTaskAccess } from "../aws/developer-tasks/access.js";

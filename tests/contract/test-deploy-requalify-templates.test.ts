@@ -4,7 +4,7 @@ import { Stack } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { beforeAll, describe, expect, it } from "vitest";
 import { buildAgentXApp } from "../../infra/lib/app.js";
-import { QUALIFIED_AMI_SETTING_NAME } from "../../packages/contracts/src/index.js";
+import { QUALIFIED_AMI_SETTING_NAME } from "@rovara-code/contracts";
 import {
   CONTROL_PLANE_LAMBDAS, assertCheckAllowsApply, assertOnlyExpectedChanges, liftResources, patchLiftedCode, plannedRequalifyGrants, type CfnTemplate, type ObservedChange,
 } from "../../scripts/test-deploy.js";

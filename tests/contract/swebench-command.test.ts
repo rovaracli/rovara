@@ -1,10 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  SwebenchChannelRequestSchema,
-  SwebenchRunResultSchema,
-  SwebenchRunnerConfigSchema,
-  parseSwebenchCommand,
-} from "@agentx/contracts";
+import { SwebenchChannelRequestSchema, SwebenchRunResultSchema, SwebenchRunnerConfigSchema, parseSwebenchCommand } from "@rovara-code/contracts";
 
 describe("the eval swebench command (spec 043 FR-001)", () => {
   it("reads a dataset, one instance and an optional model", () => {

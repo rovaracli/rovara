@@ -1,7 +1,8 @@
 // M42 controller: chain owner only, real HTTP and native atomic commit.
 import { randomUUID } from "node:crypto";
 import { expect, it } from "vitest";
-import { chainKey, ownerBudgetKey, agentRequestKey, developerOrgKey, orgMemberKey, orgMetaKey, OrgIdSchema } from "@agentx/contracts";
+import { chainKey, agentRequestKey, OrgIdSchema } from "@rovara-code/contracts";
+import { ownerBudgetKey, developerOrgKey, orgMemberKey, orgMetaKey } from "@agentx/cloud-contracts";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { MAYA, OMAR } from "../support/developer-task-broker.js";
 import { ADA, BEN, DEB, setup } from "../support/spend-world.js";

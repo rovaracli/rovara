@@ -1,6 +1,6 @@
 import {z} from "zod";
-import {AgentXError,StageIdSchema,StageModelRefusalCodeSchema,StageModelFixHrefSchema} from "@agentx/contracts";
-import type {StageId,StageModelRefusalCode} from "@agentx/contracts";
+import { AgentXError, StageIdSchema, StageModelRefusalCodeSchema, StageModelFixHrefSchema } from "@rovara-code/contracts";
+import type { StageId, StageModelRefusalCode } from "@rovara-code/contracts";
 /** Fixed structured resolver refusal, safe for the publish dialog and pointer routes. */
 export class ProcessModelRefusal extends Error {
  readonly statusCode=409;

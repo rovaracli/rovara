@@ -3,7 +3,7 @@
 // writes issues, comments and reviews. It never pushes, merges, changes workflows or touches secrets:
 // those happen only through Rovara Code's pull request flow. A call mints a token with exactly the
 // permissions of the tool plus `metadata: read`, and `checkAgentTokenPermissions` refuses anything wider.
-import { agentXError } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
 
 export type GitHubAgentLevel = "read" | "write";
 

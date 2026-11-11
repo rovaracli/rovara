@@ -15,7 +15,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, unlinkSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { blindSheet, buildMeasureReport, importMarks, readReplayRunRows, renderMeasureReport, type ArmLessonSet, type ArmLearningCost, type ArmUsefulMarks, type BlindKey, type ReplayRunRow } from "@agentx/contracts";
+import { blindSheet, buildMeasureReport, importMarks, readReplayRunRows, renderMeasureReport, type ArmLessonSet, type ArmLearningCost, type ArmUsefulMarks, type BlindKey, type ReplayRunRow } from "@rovara-code/contracts";
 import { fusedMatcher } from "../packages/broker/src/lessons/metric-source.js";
 import type { CorrectionRecord, CorrectionSource } from "../packages/broker/src/lessons/metric.js";
 import { ArmNotBuiltError, buildReplayPlan, copyWorstCaseUsd, buildSnapshots, runReplay, type ReplayExecutor, type ReplayGraderPort, type ReplayPlan, type RunSink, type SnapshotBuilder } from "../packages/broker/src/lessons/replay-harness.js";

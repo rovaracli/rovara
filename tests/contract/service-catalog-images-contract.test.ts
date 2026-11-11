@@ -1,33 +1,9 @@
 // Test services TS19: what the catalog's pins mean. Where an image lives, the pre-pull list, the Enterprise bundle's image list, and the one function that decides which digest may start (owner Q9, DC-TS-1).
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import * as contracts from "@agentx/contracts";
-import {
-  CATALOG_IMAGE_MESSAGES,
-  CATALOG_IMAGE_REFUSALS,
-  PREPULL_MAX_IMAGES,
-  PrepullListSchema,
-  SERVICE_CATALOG_REPOSITORIES,
-  bundleCatalogProblems,
-  checkBundleImages,
-  checkCatalogMirror,
-  checkMirrorServesDigest,
-  catalogBundleImageName,
-  catalogBundleImages,
-  catalogImageReference,
-  catalogPins,
-  catalogPrepullList,
-  catalogRepositories,
-  catalogRepositoryName,
-  resolveCatalogImage,
-  resolveCatalogImages,
-  type MirrorCheck,
-  type VerifiedCatalog,
-  type ResolveCatalogImageInput,
-  type ServedImage,
-  type SubstituteApprovalPort,
-  type SubstituteApprovalRecord,
-} from "@agentx/contracts";
+import { allContracts as contracts } from "../support/contracts-barrels.js";
+import { CATALOG_IMAGE_MESSAGES, CATALOG_IMAGE_REFUSALS, PREPULL_MAX_IMAGES, PrepullListSchema, SERVICE_CATALOG_REPOSITORIES, bundleCatalogProblems, catalogBundleImageName, catalogBundleImages, catalogImageReference, catalogPins, catalogPrepullList, catalogRepositories, catalogRepositoryName, type MirrorCheck, type VerifiedCatalog, type ResolveCatalogImageInput, type ServedImage, type SubstituteApprovalPort, type SubstituteApprovalRecord } from "@rovara-code/contracts";
+import { checkBundleImages, checkCatalogMirror, checkMirrorServesDigest, resolveCatalogImage, resolveCatalogImages } from "@agentx/cloud-contracts";
 import { digestOfId, pinnedCatalog, sha, shippedCatalog, unpinnedCatalog, verifiedCatalog } from "../support/catalog-pinning.js";
 
 const catalog = verifiedCatalog(pinnedCatalog());

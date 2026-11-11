@@ -2,7 +2,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { INPUT_PROOF_SENTENCES, SpecDraftSchema, SpecTargetSchema, WorkflowDesignReviewSchema, type ReviewerRole, type WorkflowDesignReview } from "../../packages/contracts/src/index.js";
+import { INPUT_PROOF_SENTENCES, SpecDraftSchema, SpecTargetSchema, WorkflowDesignReviewSchema, type ReviewerRole, type WorkflowDesignReview } from "@rovara-code/contracts";
 import { designApprovalProofLine } from "../../packages/broker/src/design-review/approve-handler.js";
 import { loadProofDesignContext } from "../../packages/broker/src/design-review/proof-context.js";
 import { designProofFacts, designProofLine, designReviewedLine, openBlockerWords, type DesignProofApproval, type ProofDesignContext } from "../../packages/broker/src/design-review/proof-line.js";

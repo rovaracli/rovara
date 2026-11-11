@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { E2ERuntimeCapabilityDescriptorSchema, WEB_API_AGENT_PROBE_IDS, WEB_API_AGENT_PROBE_ROUTE, WEB_API_NETWORK_POLICY_DIGEST, WEB_API_QUALIFICATION_APP_TREE_DIGEST, WEB_API_REQUIRED_PROBES,
-  WebApiProbeObservationSchema, canonicalJson, e2eRuntimeCapabilityDigest, evaluateWebApiProbeObservation, type WebApiProbeObservation } from "../../packages/contracts/src/index.js";
+import { E2ERuntimeCapabilityDescriptorSchema, WEB_API_AGENT_PROBE_IDS, WEB_API_AGENT_PROBE_ROUTE, WEB_API_NETWORK_POLICY_DIGEST, WEB_API_QUALIFICATION_APP_TREE_DIGEST, WEB_API_REQUIRED_PROBES, WebApiProbeObservationSchema, canonicalJson, e2eRuntimeCapabilityDigest, evaluateWebApiProbeObservation, type WebApiProbeObservation } from "@rovara-code/contracts";
 import { webApiRuntimeCapabilities } from "../../packages/broker/src/aws/e2e-feature-verifier-catalog.js";
 
 // Task 4.5: the three scripted-model qualification probes as the oracle judges them. The observations here are written by hand (the committed run evidence they are derived from

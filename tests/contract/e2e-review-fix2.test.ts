@@ -1,11 +1,8 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import {
-  E2EAppRecipeSchema, E2EAssertionSchema, E2EExecutionPlanSchema, E2EScenarioSchema, E2EStepSchema,
-  aggregateE2EVerification, projectE2EVerification,
-} from "../../packages/contracts/src/e2e-node.js";
-import { canonicalJson } from "../../packages/contracts/src/canonical-json.js";
-import { e2eCaseIdFromIdentity, e2eUpstreamTestIdFromIdentity } from "../../packages/contracts/src/e2e-case-identity.js";
+import { E2EAppRecipeSchema, E2EAssertionSchema, E2EExecutionPlanSchema, E2EScenarioSchema, E2EStepSchema, aggregateE2EVerification, projectE2EVerification } from "@rovara-code/contracts";
+import { canonicalJson } from "@rovara-code/contracts";
+import { e2eCaseIdFromIdentity, e2eUpstreamTestIdFromIdentity } from "../../packages/cloud-contracts/src/e2e-case-identity.js";
 
 const reidentifyCase = <T extends Record<string, unknown>>(item: T): T => ({ ...item, caseId: e2eCaseIdFromIdentity(item as never), upstreamTestId: e2eUpstreamTestIdFromIdentity(item as never) });
 

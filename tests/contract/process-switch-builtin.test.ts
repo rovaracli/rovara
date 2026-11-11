@@ -3,7 +3,8 @@
 import { fixtureActor } from "../support/money-authority.js";
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { ROVARA_CODE_AGENT_ID, agentXError, type AgentId, type OrgRole } from "../../packages/contracts/src/index.js";
+import { ROVARA_CODE_AGENT_ID, agentXError, type AgentId } from "@rovara-code/contracts";
+import { type OrgRole } from "@agentx/cloud-contracts";
 import { decideApproval, getAnyApproval } from "../../packages/broker/src/agents/approvals.js";
 import { publishDraft } from "../../packages/broker/src/agents/changes.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";

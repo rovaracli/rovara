@@ -3,7 +3,7 @@ import {createHash} from "node:crypto";
 import {classifyStageChoiceChange} from "./classify.js";
 // Shared broker facade for stage-model reads and project draft/publish validation. No provider calls or writes.
 import { z } from "zod";
-import { AgentXError, agentXError, ApprovalIdSchema, canonicalJson, ModelIdentifierSchema, canonicalModelName, editionFromEnvironment, forbiddenModelMatcher, modelNotEnabledSentence, StageIdSchema, StageModelChoiceSchema, StageModelsQuerySchema, StageModelsResponseSchema, STAGE_IDS, STAGE_EDIT_GROUPS, type ModelIdentifier, type ResolvedRecipe, type DefaultProcess, type StageId, type StageModelChoice, type StageModelsResponse } from "@agentx/contracts";
+import { AgentXError, agentXError, ApprovalIdSchema, canonicalJson, ModelIdentifierSchema, canonicalModelName, editionFromEnvironment, forbiddenModelMatcher, modelNotEnabledSentence, StageIdSchema, StageModelChoiceSchema, StageModelsQuerySchema, StageModelsResponseSchema, STAGE_IDS, STAGE_EDIT_GROUPS, type ModelIdentifier, type ResolvedRecipe, type DefaultProcess, type StageId, type StageModelChoice, type StageModelsResponse } from "@rovara-code/contracts";
 import { resolveStageModel, stageCandidateVerified, type StageModelInput, type StageModelResult } from "./resolver.js";
 export interface StageModelCaller { orgId: string; developerId: string }
 export interface StageModelSnapshot {
@@ -133,5 +133,5 @@ export async function getStageModels(deps:StageModelsReadDependencies,caller:Sta
  return parsed.data;
 }
 // Model-company mapping is shared with dispatch, not inferred by the UI.
-import { modelCompany } from "@agentx/contracts";
+import { modelCompany } from "@rovara-code/contracts";
 const companyOf=(provider:string,modelId:string)=>modelCompany({provider,modelId});

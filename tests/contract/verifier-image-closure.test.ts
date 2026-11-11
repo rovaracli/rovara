@@ -33,7 +33,7 @@ describe("production verifier package closure", () => {
 
   it("builds and ships verifier runtime output in the worker image", () => {
     expect(base).toContain("COPY packages/verifier packages/verifier");
-    expect(base).toMatch(/npx tsc -b packages\/contracts packages\/verifier packages\/worker --pretty false/);
+    expect(base).toMatch(/npx tsc -b packages\/cloud-contracts packages\/verifier packages\/worker --pretty false/);
     expect(base).toContain("COPY --from=build /opt/agentx/packages/verifier ./packages/verifier");
   });
 });

@@ -1,6 +1,7 @@
 // Rovara Code (Plan 6 Task 1): older CLI and MCP clients still parse a task with the version 1 schema (a fixed definition version, nine stages, six outcomes
 // and a strict pull request). A client that sends `x-agentx-task-view: 2` reads the full view; any other client is served this projection of it.
-import { TASK_VIEW_HEADER, TASK_VIEW_VERSION, type DeveloperTaskView } from "@agentx/contracts";
+import { TASK_VIEW_HEADER, TASK_VIEW_VERSION } from "@rovara-code/contracts";
+import { type DeveloperTaskView } from "@agentx/cloud-contracts";
 
 type Headers = Readonly<Record<string, string | undefined>>;
 

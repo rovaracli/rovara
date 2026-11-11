@@ -1,4 +1,4 @@
-import { TaskStatusReaderSchema, budgetRaisers, taskStatusFromSession } from "@agentx/contracts/web";
+import { TaskStatusReaderSchema, budgetRaisers, taskStatusFromSession } from "@agentx/cloud-contracts/web";
 import { mayApproveHere, runLimitRaise, type ReadDecision } from "../../api/decisions.js";
 import { isMaintainerSeat, type DecideSeat } from "../../api/decide-seat.js";
 import type { ReadSession } from "./SessionHeader.js";

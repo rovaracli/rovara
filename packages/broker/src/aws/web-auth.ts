@@ -1,4 +1,4 @@
-import { AgentXError, agentXError, CSRF_STALE_MESSAGE } from "@agentx/contracts";
+import { AgentXError, agentXError, CSRF_STALE_MESSAGE } from "@rovara-code/contracts";
 import { APP_CSRF_HEADER, appCsrfMatches } from "../developer/app-csrf.js";
 import { authenticateDeveloperSessionId, type DeveloperCaller, type DeveloperRouteDependencies } from "./developer-routes.js";
 import type { AdaptedHttpRequest } from "./lambda.js";

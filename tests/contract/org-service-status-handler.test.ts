@@ -1,5 +1,6 @@
 import { expect, it, vi } from "vitest";
-import { ADMIN_INDEX_RETENTION_DAYS, INDEX_EXPIRY_ATTRIBUTE, WEB_API_RUNTIME_PROFILE_ID, orgMetaKey, orgScoped } from "@agentx/contracts";
+import { ADMIN_INDEX_RETENTION_DAYS, INDEX_EXPIRY_ATTRIBUTE, WEB_API_RUNTIME_PROFILE_ID, orgScoped } from "@rovara-code/contracts";
+import { orgMetaKey } from "@agentx/cloud-contracts";
 import { createAdminBroker } from "../support/admin-broker.js";
 import { seedMembership } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";

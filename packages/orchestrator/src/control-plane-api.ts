@@ -1,15 +1,4 @@
-import {
-  AgentXErrorCodeSchema,
-  ConnectorCatalogSchema,
-  ConnectorResultSchema,
-  type ConnectorCallRequest,
-  OperationSchema,
-  agentXError,
-  lastAssistantResponse,
-  taskResultChecks,
-  type CheckReport,
-  type Operation,
-} from "@agentx/contracts";
+import { AgentXErrorCodeSchema, ConnectorCatalogSchema, ConnectorResultSchema, type ConnectorCallRequest, OperationSchema, agentXError, lastAssistantResponse, taskResultChecks, type CheckReport, type Operation } from "@rovara-code/contracts";
 import {
   pollOperation,
   type OperationPollingTransport,

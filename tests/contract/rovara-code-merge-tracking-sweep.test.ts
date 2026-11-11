@@ -13,7 +13,7 @@ import {
   type MergeRecoveryDependencies,
   type MergeRecoveryResult,
 } from "../../packages/broker/src/aws/workflow-merge-recovery.js";
-import { TRACKING_COALESCE_SECONDS, TRACKING_GATE_SECONDS, TRACKING_HEARTBEAT_MINUTES, TRACKING_MAX_ROWS } from "../../packages/contracts/src/rovara-code.js";
+import { TRACKING_COALESCE_SECONDS, TRACKING_GATE_SECONDS, TRACKING_HEARTBEAT_MINUTES, TRACKING_MAX_ROWS } from "@rovara-code/contracts";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 
 const TABLE = "state";

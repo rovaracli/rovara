@@ -6,13 +6,7 @@
 // Pure apart from hashing: the caller reads the raw file (bounded), lists the stored artifacts, stores `newArtifacts` and persists the pack. The wiring into the task view is one hot-file hunk (see the report).
 import { createHash } from "node:crypto";
 import { dependencyEvidenceOf, type PinnedDependency } from "./dependency-evidence.js";
-import {
-  ArtifactLinkSchema, ArtifactRefSchema, EVIDENCE_ARTIFACT_MAX_BYTES, EVIDENCE_ARTIFACT_RETENTION, EVIDENCE_CHECKS_MAX, EVIDENCE_NOT_TESTED_MAX, EVIDENCE_RAW_MAX_BYTES, EvidencePackSchema, EvidenceRawSchema, EvidenceViewSchema,
-  redactText,
-  TEST_ID_MAX,
-  isValidTestId,
-  type ArtifactLink, type ArtifactRef, type CheckEntry, type CheckKind, type EvidenceArtifactKind, type EvidenceEnvironment, type EvidenceNotTested, type EvidencePack, type EvidenceWithheldReason, type EvidenceRaw, type EvidenceView,
-} from "@agentx/contracts";
+import { ArtifactLinkSchema, ArtifactRefSchema, EVIDENCE_ARTIFACT_MAX_BYTES, EVIDENCE_ARTIFACT_RETENTION, EVIDENCE_CHECKS_MAX, EVIDENCE_NOT_TESTED_MAX, EVIDENCE_RAW_MAX_BYTES, EvidencePackSchema, EvidenceRawSchema, EvidenceViewSchema, redactText, TEST_ID_MAX, isValidTestId, type ArtifactLink, type ArtifactRef, type CheckEntry, type CheckKind, type EvidenceArtifactKind, type EvidenceEnvironment, type EvidenceNotTested, type EvidencePack, type EvidenceWithheldReason, type EvidenceRaw, type EvidenceView } from "@rovara-code/contracts";
 
 /** Why part of the raw evidence was dropped or ignored. Fixed codes only: never the worker's text. */
 export type EvidenceProblem =

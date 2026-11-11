@@ -107,3 +107,16 @@ it("offers no action without a capability and uses DELETE for Following", async 
 it("does not send an invalid project identifier from a tampered filter URL", async () => {
  const f = setup({ screen: true, path: "/app/live?project=..%2Foutside" });await screen.findByRole("heading", { name: "Fix duplicate refunds" });expect(f.request.mock.calls.filter(([request]) => request.path.startsWith("/v1/app/live")).every(([request]) => !request.path.includes("project="))).toBe(true);f.close();
 });
+
+it("with the new navigation on, the page and its announcement say Work; off they say Live", async () => {
+ for (const nav of [true, false]) {
+  const word = nav ? "Work" : "Live";
+  const h2 = fakeHost(async request => request.path.startsWith("/v1/app/live") ? { status: 200, body: { tiles: [liveFixture()] } } : request.path === "/v1/app/nav" ? { status: 200, body: navFixture() } : { status: 200, body: { notices: [], next: "settled" } });
+  if (nav) h2.storage.set("rovara.nav", "v2");
+  const query = createQueryClient(), router = createMemoryRouter([{ path: "/app/live", element: h(LiveScreen, {}) }], { initialEntries: ["/app/live"] });
+  const ui = renderUi(h(AppHostProvider, { host: h2.host, children: h(QueryClientProvider, { client: query, children: h(Announcer, { children: h(RouterProvider, { router }) }) }) }));
+  expect(await screen.findByRole("heading", { name: word, level: 1 })).toBeTruthy();expect(screen.queryByRole("heading", { name: nav ? "Live" : "Work", level: 1 })).toBeNull();
+  expect(screen.getByRole("tablist", { name: word + " filters" })).toBeTruthy();
+  ui.unmount();router.dispose();query.clear();
+ }
+});

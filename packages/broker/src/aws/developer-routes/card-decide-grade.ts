@@ -8,7 +8,8 @@
 //                decision and given back when the decision was refused.
 //   not changed  who may decide anything: the card's handler decides that, as before. The record's own rule only lets the person who pressed decide it.
 import { createHash } from "node:crypto";
-import { agentXError, decisionFocusPath, decisionTaskSessionOf, type AuditProof } from "@agentx/contracts";
+import { agentXError, decisionFocusPath, decisionTaskSessionOf } from "@rovara-code/contracts";
+import { type AuditProof } from "@agentx/cloud-contracts";
 import { approvalDecideKind } from "../../agents/approval-decide-kind.js";
 import { createPendingChange, getAnyApproval, registerApprovalSubjectHandler, registerApproverRule, type ApprovalDependencies } from "../../agents/approvals.js";
 import { DECIDE_SECONDS, DecideStore, decideProofOf } from "../../developer/decide-session.js";

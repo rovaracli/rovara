@@ -2,7 +2,7 @@
 // stacks use and the synthesis kit knows the code of every Lambda function an Enterprise install can have. A profile only has to be VALID and to switch on every optional resource the
 // settings can add: the templates it produces are not shipped (an install's templates are built at its own approval, from its own settings); only the code packages are.
 import { generateKeyPairSync } from "node:crypto";
-import { SYNTH_CONTEXT_KEYS } from "@agentx/contracts";
+import { SYNTH_CONTEXT_KEYS } from "@agentx/cloud-contracts";
 
 // Limits of what the profiles cover (SK-4 minors 3 and 5, written down so a reader does not assume more):
 //  - The code map is made with the release's placeholder environment. The task person proof function (infra/lib/task-person-proof.ts) is in every named environment, so it is in that map like any other

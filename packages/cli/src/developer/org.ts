@@ -2,7 +2,8 @@
 // one signed-in call to the control plane's /v1/app/org routes; the control plane decides who may do what, and this only names the
 // person (by email or ID), asks before leaving, and prints what happened.
 import { randomUUID } from "node:crypto";
-import { AppMeResponseSchema, OrgMemberLookupResponseReaderSchema, CommentTriggerOptOutSchema, DeveloperSignInMethodSchema, OrgRoleSchema, agentXError, type CommentTriggerOptOut, type OrgRole } from "@agentx/contracts";
+import { AppMeResponseSchema, OrgMemberLookupResponseReaderSchema, DeveloperSignInMethodSchema, OrgRoleSchema, type OrgRole } from "@agentx/cloud-contracts";
+import { CommentTriggerOptOutSchema, agentXError, type CommentTriggerOptOut } from "@rovara-code/contracts";
 import { z } from "zod";
 import { sanitizeServerText } from "../auth.js";
 import { neutralised, terminalSafe } from "./audit.js";

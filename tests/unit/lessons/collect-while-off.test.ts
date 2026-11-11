@@ -1,7 +1,7 @@
 // Owner decision 47 (LEARNING-COLLECT-WHILE-OFF): while the install's lessons switch (`ll`, LEARNED_LESSONS_ENABLED) is off, learning makes NO model call, whatever a project chose. Every path that would call a model behaves as Collect:
 // evidence is captured, nothing is reflected, loaded or auto-applied, nothing is spent. An unreadable switch is off. The stored project and company modes never change: turning the switch on gives each project its own mode back.
 // Two locks are tested apart: the CAP in `resolveLearning` (every pipeline path obeys it) and the ENTRY-POINT defence on the model itself (a path that skipped `resolveLearning` still cannot spend).
-import { learningModeKey } from "@agentx/contracts";
+import { learningModeKey } from "@rovara-code/contracts";
 import type { InvokeCommand, InvokeCommandOutput } from "@aws-sdk/client-lambda";
 import { afterEach, describe, expect, it } from "vitest";
 import { customerLearningModel } from "../../../packages/broker/src/aws/broker/learning-model.js";

@@ -11,12 +11,9 @@ import type { GitHubRepositoryApi } from "../../packages/cli/src/setup/project-f
 import { addProject, ec2Binding } from "../../packages/cli/src/setup/project-add.js";
 import { fakeControlPlane, FOUNDATION_OUTPUTS } from "../support/setup-fakes.js";
 import { scriptedPrompter } from "../support/init-fakes.js";
-import {
-  canonicalJson, canonicalPlanJson, createCandidateManifest, WorkerInvocationSchema, parsePlanDocument, readCanonicalPlan,
-  planDocumentMarkdown, portableOperationId, WorkflowSnapshotSchema, workflowSendBackOffered, sendBackProblems,
-  ProjectDefinitionSchema, workerInvokeToken, workerInvokeTokenPayload, workspaceSessionKey, type WorkerInvokeTokenClaims,
-  type DeveloperTaskView, type E2EPolicy, type E2ESourceSnapshot,
-} from "@agentx/contracts";
+import { canonicalJson, canonicalPlanJson, createCandidateManifest, parsePlanDocument, readCanonicalPlan, planDocumentMarkdown, portableOperationId, workerInvokeToken, workerInvokeTokenPayload, workspaceSessionKey, type WorkerInvokeTokenClaims, type E2EPolicy, type E2ESourceSnapshot } from "@rovara-code/contracts";
+import { ProjectDefinitionSchema } from "@agentx/cloud-contracts";
+import { WorkerInvocationSchema, WorkflowSnapshotSchema, workflowSendBackOffered, sendBackProblems, type DeveloperTaskView } from "@agentx/cloud-contracts";
 import { executeCli } from "../../packages/cli/src/main.js";
 import { developerTokenKey, saveDeveloperEnvironment } from "../../packages/cli/src/developer/config.js";
 import { realExec, type Exec } from "../../packages/cli/src/loop/exec.js";
@@ -62,13 +59,13 @@ import { admitProjectSetupRuntime, projectSetupBindingDigest, projectSetupRuntim
 import { readWorkflowE2ENotifierProjection } from "../../packages/broker/src/aws/workflow-e2e-notifier-projection.js";
 import { renderE2ENotifierSlackBlocks } from "../../packages/broker/src/e2e-presentation.js";
 import { selectE2EExecutionPlan } from "../../packages/broker/src/e2e/execution-plan.js";
-import { taskGraphDigest } from "../../packages/contracts/src/workflow-dependencies-node.js";
+import { taskGraphDigest } from "@rovara-code/contracts";
 import { persistOriginalEvidencePrimary, persistOriginalMapPrimary } from "../support/p0-evidence-capture.js";
 import { FAUX_MODEL, fauxModelRuntime } from "../support/faux-model.js";
 import { observeInstalledRuntimeManifestForHost } from "@agentx/verifier";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { TEST_ORG } from "../support/orgs.js";
-import { projectMemberKey, projectRevisionKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { projectMemberKey, projectRevisionKey } from "@rovara-code/contracts";
 
 let installedRuntimeManifestDigest: string;
 beforeAll(async () => {
@@ -243,7 +240,7 @@ describe("P0 normal project onboarding journey", () => {
     const githubProvider = new GitHubAppCredentialProvider({
       credentialRef: "github-app", appId: "123", getPrivateKey: async () => privateKey, fetchImplementation: githubTransport,
     });
-    const sourcePort = { capture: vi.fn(({ repositoryUrl, ref }: { repositoryUrl: string; ref: string }) => githubProvider.captureE2ESourceSnapshot(repositoryUrl, ref, { system: "private-install" })) };
+    const sourcePort = { capture: vi.fn(({ repositoryUrl, ref }: { repositoryUrl: string; ref: string }) => githubProvider.captureE2ESourceSnapshot(repositoryUrl, ref, { system: "install" })) };
     const objects = new Map<string, Buffer>();
     const s3 = { send: async (command: never) => {
       const typed = command as unknown as { constructor: { name: string }; input: { Key: string; Body?: string | Uint8Array; Range?: string } };

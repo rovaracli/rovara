@@ -3,8 +3,8 @@
 import { createElement as h } from "react";
 import { expect, it } from "vitest";
 import { screen } from "@testing-library/react";
-import { sanitizeSetupProposal } from "@agentx/contracts";
-import type { SetupAgentView } from "@agentx/contracts/web";
+import { sanitizeSetupProposal } from "@rovara-code/contracts";
+import type { SetupAgentView } from "@agentx/cloud-contracts/web";
 import { PartialProposal } from "../../packages/ui/src/screens/setup/PartialProposal.js";
 import { renderUi } from "./support/render.js";
 

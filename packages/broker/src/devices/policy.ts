@@ -3,25 +3,8 @@
 // document that is there but can't be read is never read as the default: it refuses with a retryable 503, so a broken rule can't open what it was set to close.
 import { createHash } from "node:crypto";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  AGENTX_NAME_PATTERN,
-  LOCAL_AGENTS_CONFLICT_MESSAGE,
-  LOCAL_AGENTS_NEED_PROJECT_MESSAGE,
-  LOCAL_TOOLS,
-  LocalAgentPolicySchema,
-  PutLocalAgentsBodySchema,
-  agentXError,
-  canonicalJson,
-  defaultLocalAgentPolicy,
-  localAgentsNotAllowedOnProjectMessage,
-  localToolNotAllowedMessage,
-  normalizeLocalAgentPolicy,
-  orgSettingsKey,
-  type AuditEventInput,
-  type LocalAgentPolicy,
-  type OrgId,
-  type StoredLocalAgentPolicy,
-} from "@agentx/contracts";
+import { AGENTX_NAME_PATTERN, LOCAL_TOOLS, agentXError, canonicalJson, localAgentsNotAllowedOnProjectMessage, localToolNotAllowedMessage, type OrgId } from "@rovara-code/contracts";
+import { LOCAL_AGENTS_CONFLICT_MESSAGE, LOCAL_AGENTS_NEED_PROJECT_MESSAGE, LocalAgentPolicySchema, PutLocalAgentsBodySchema, defaultLocalAgentPolicy, normalizeLocalAgentPolicy, orgSettingsKey, type AuditEventInput, type LocalAgentPolicy, type StoredLocalAgentPolicy } from "@agentx/cloud-contracts";
 import { commit, readRequest, type Item, type RequestMark, type TransactItem } from "../agents/table-writes.js";
 import { auditLocalAgentsPolicyChanged } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";

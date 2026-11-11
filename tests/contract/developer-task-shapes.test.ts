@@ -1,17 +1,9 @@
 import { describe, expect, it } from "vitest";
-import {
-  ChannelInfoRequestSchema,
-  DEVELOPER_API_VERSION,
-  DeveloperProjectSchema,
-  DeveloperTaskViewSchema,
-  StartDeveloperTaskRequestSchema,
-  cleanClientName,
-  diffStat,
-  taskTitle,
-} from "../../packages/contracts/src/index.js";
+import { ChannelInfoRequestSchema, DEVELOPER_API_VERSION, DeveloperProjectSchema, StartDeveloperTaskRequestSchema, cleanClientName, diffStat, taskTitle } from "@rovara-code/contracts";
+import { DeveloperTaskViewSchema } from "@agentx/cloud-contracts";
 // F1: imported from the package, not the src path, so this is the same module instance the
 // orchestrator's re-export resolves to (both resolve through @agentx/contracts's dist build).
-import { lastAssistantResponse } from "@agentx/contracts";
+import { lastAssistantResponse } from "@rovara-code/contracts";
 import { lastAssistantResponse as orchestratorCopy } from "../../packages/orchestrator/src/control-plane-api.js";
 
 const requestId = "33333333-3333-4333-8333-333333333333";

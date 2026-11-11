@@ -2,7 +2,7 @@
 // retirement, a project erase. A vector is derived from lesson text, so it must never outlive its lesson.
 import { describe, expect, it } from "vitest";
 import { lessonDeletionPort } from "../../../packages/broker/src/lessons/deletion.js";
-import { lessonKey } from "@agentx/contracts";
+import { lessonKey } from "@rovara-code/contracts";
 import { dynamoLessonVectors, lessonVectorKey } from "../../../packages/broker/src/lessons/dynamo-vectors.js";
 import { DynamoLessonStore } from "../../../packages/broker/src/lessons/dynamo-store.js";
 import { retireLesson } from "../../../packages/broker/src/lessons/curate.js";

@@ -2,7 +2,7 @@
 // (so a token is looked up in its own company only), the secret is 32 random bytes (base64url). Only the SHA-256 of the whole token is stored; the secret's 256 bits make a slow hash
 // unnecessary. The token is compared in constant time and never logged, stored or echoed.
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { OrgIdSchema, SCRIPT_TOKEN_PREFIX, ScriptTokenIdSchema, type OrgId } from "@agentx/contracts";
+import { OrgIdSchema, SCRIPT_TOKEN_PREFIX, ScriptTokenIdSchema, type OrgId } from "@rovara-code/contracts";
 
 const TOKEN = /^rvst_([0-9a-z]{20})_([0-9a-z]{20})_([A-Za-z0-9_-]{43})$/u;
 /** The longest Authorization header value looked at: anything longer is not a script token. */

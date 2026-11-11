@@ -6,7 +6,7 @@
 // A row that is missing, belongs to another workspace, project or task, is hidden (an erased person's rows are deleted and tombstoned; a comment deleted at its source is tombstoned), has no text
 // (retention A), or was written by anyone but a person who was a company member when they wrote it (a bot, an outsider) gives nothing. The caller reads the person's standing and erasure NOW:
 // what is written down here is only who the row names and the words. Internal reads: the audience of the lesson is the subject's and the span's, set by the caller.
-import type { RecordEvent } from "@agentx/contracts";
+import type { RecordEvent } from "@agentx/cloud-contracts";
 import { bySource, eventFromItem } from "../team-record/store.js";
 import type { TeamRecordTable } from "../team-record/types.js";
 import type { PullRequestSurface } from "../team-record/sources/capture-adapters.js";

@@ -6,7 +6,8 @@
 //             { action: "approve", changeId }                a different admin approves the waiting lengthening, signed in within the last 10 minutes (REAUTH_REQUIRED otherwise);
 //             { action: "cancel", changeId }                 withdraws the waiting request (its proposer, or any admin).
 // Answers are fixed words, numbers and ids. The rules and the transaction are `approval-place/window-setting.ts`.
-import { ApprovalWindowBodySchema, APPROVAL_WINDOW_PATH, RECENT_SIGN_IN_DEFAULT_SECONDS, RECENT_SIGN_IN_MAX_SECONDS, RECENT_SIGN_IN_MIN_SECONDS, agentXError, type ApprovalWindowBody, type ApprovalWindowState, type OrgId } from "@agentx/contracts";
+import { ApprovalWindowBodySchema, APPROVAL_WINDOW_PATH, RECENT_SIGN_IN_DEFAULT_SECONDS, RECENT_SIGN_IN_MAX_SECONDS, RECENT_SIGN_IN_MIN_SECONDS, type ApprovalWindowBody, type ApprovalWindowState } from "@agentx/cloud-contracts";
+import { agentXError, type OrgId } from "@rovara-code/contracts";
 import { secondPersonTier0Authority } from "../../lessons/tier0-authority.js";
 import { readCompanyAdminActorConditions } from "../../org/second-person-evidence.js";
 import { sameId } from "../../lessons/types.js";

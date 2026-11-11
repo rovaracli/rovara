@@ -3,7 +3,7 @@ import { expect, it, vi } from "vitest";
 import type { DeveloperRouteDependencies } from "../../packages/broker/src/aws/developer-routes.js";
 import { GitHubAppCredentialProvider } from "../../packages/broker/src/github-app.js";
 import { MAYA, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
-import { agentSessionKey } from "@agentx/contracts";
+import { agentSessionKey } from "@rovara-code/contracts";
 import { sessionWorld } from "../support/agent-session-world.js";
 import { TEST_ORG } from "../support/orgs.js";
 it("reads the pinned named repository through the browser broker and real GitHub provider", async () => {

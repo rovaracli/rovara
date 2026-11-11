@@ -5,7 +5,8 @@
 //   company sole-owner switch: the workspace pk, sk `LESSONSET#COMPANYSOLE` (`enabled`: whether the sole-owner exception may approve a loosening; absent means ON). It holds no person.
 // Every sort key starts with `LESSONSET`, which the project erase and the workspace erase already wipe.
 import { GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { LEARNED_CONTEXT_MAX_BYTES, LEARNED_CONTEXT_MAX_LESSONS, LEARNING_MODE_DEFAULT, learningModeKey, learningModeLockKey, teamRecordPk } from "@agentx/contracts";
+import { LEARNED_CONTEXT_MAX_BYTES, LEARNED_CONTEXT_MAX_LESSONS, learningModeKey, learningModeLockKey, teamRecordPk } from "@rovara-code/contracts";
+import { LEARNING_MODE_DEFAULT } from "@agentx/cloud-contracts";
 import type { TransactItem } from "../audit/outbox.js";
 import { errorName, type Item } from "../agents/table-writes.js";
 import type { TeamRecordTable } from "../team-record/types.js";

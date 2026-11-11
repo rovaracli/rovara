@@ -9,7 +9,7 @@
 //   get_latest_event  GET /organizations/{org}/issues/{issue_id}/events/latest/    scope event:read (event_id may be latest, oldest or recommended)
 //   list_releases     GET /projects/{org}/{project}/releases/                      scope project:read (or project:releases)
 //   check             GET /organizations/{org}/                                    scope org:read
-import { SentryConnectorSchema, type OrgConnection, type SentryConnectorConfig } from "@agentx/contracts";
+import { SentryConnectorSchema, type OrgConnection, type SentryConnectorConfig } from "@rovara-code/contracts";
 import { NativeCheckFailed, NativeToolRefusal, type NativeConnectorSpec, type NativeTool, type NativeToolContext } from "./runtime.js";
 import { VendorFetchError } from "./vendor-fetch.js";
 

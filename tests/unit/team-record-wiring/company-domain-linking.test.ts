@@ -4,7 +4,8 @@
 //  3. JIRA: only with a company-supplied, read-only Atlassian organization admin key, and only for an account that organization lists as managed; without a key nobody links. The key goes to api.atlassian.com
 //     only, is never kept in a stored item, a log line or a reader's answer, and a failure to read it is "cannot tell", never "not managed".
 import { describe, expect, it, vi } from "vitest";
-import { developerOrgKey, orgEmailKey, orgMetaKey, orgProjectCatalogKey, teamRecordPk, type OrgId } from "@agentx/contracts";
+import { developerOrgKey, orgEmailKey, orgMetaKey } from "@agentx/cloud-contracts";
+import { orgProjectCatalogKey, teamRecordPk, type OrgId } from "@rovara-code/contracts";
 import { OrgConnectionStore } from "../../../packages/broker/src/connections/store.js";
 import { OrgSecrets } from "../../../packages/broker/src/connections/org-secrets.js";
 import { companyDomainsPort } from "../../../packages/broker/src/org/company-domains/port.js";

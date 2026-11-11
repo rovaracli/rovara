@@ -10,7 +10,7 @@ import { environmentNaming } from "../../infra/lib/naming.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
 
 skipLambdaBundling();
-import type { OrgId } from "../../packages/contracts/src/index.js";
+import type { OrgId } from "@rovara-code/contracts";
 import { createEvidenceErase } from "../../packages/broker/src/rovara-code/evidence-erase.js";
 import { nightlyMapKey, nightlyMapsOfOrg, nightlyMapsOfProject } from "../../packages/broker/src/test-env/map-keys.js";
 

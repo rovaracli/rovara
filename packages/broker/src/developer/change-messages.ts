@@ -4,7 +4,7 @@
 // are a member of when there is one (R4, owner Q7 as extended), else the ID-only effect. The effect
 // is already redacted by the broker; it is redacted again and escaped for Slack here, since it can
 // quote a channel's name. Pure: no Slack call, no log.
-import { ADMIN_CHANGE_CANCEL_ACTION, ADMIN_CHANGE_CONFIRM_ACTION, redactText, type PendingChange } from "@agentx/contracts";
+import { ADMIN_CHANGE_CANCEL_ACTION, ADMIN_CHANGE_CONFIRM_ACTION, redactText, type PendingChange } from "@rovara-code/contracts";
 
 /** Slack's limit on a section block's text. */
 const SECTION_MAX = 3_000;

@@ -9,10 +9,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  GitCredentialSchema, LEGACY_WORKER_CREDENTIAL_KINDS, WORKER_CREDENTIAL_KINDS_FEATURE, WORKER_CREDENTIAL_KINDS_HEADER, WORKER_INVOCATION_FEATURES, credentialKindNeedsWorkerFeature,
-  credentialKindsOfWorkerFeatures, parseWorkerCredentialKindsHeader, workerGitCredentialUsable, type GitCredential, type WorkerInvocation,
-} from "@agentx/contracts";
+import { GitCredentialSchema, LEGACY_WORKER_CREDENTIAL_KINDS, WORKER_CREDENTIAL_KINDS_FEATURE, WORKER_CREDENTIAL_KINDS_HEADER, credentialKindNeedsWorkerFeature, credentialKindsOfWorkerFeatures, parseWorkerCredentialKindsHeader, workerGitCredentialUsable, type GitCredential } from "@rovara-code/contracts";
+import { WORKER_INVOCATION_FEATURES } from "@agentx/cloud-contracts";
+import { type WorkerInvocation } from "@agentx/cloud-contracts";
 import { exchangeRepositoryCredential } from "../../packages/broker/src/aws/broker/admin-and-helpers.js";
 import { CREDENTIAL_REFUSED_MESSAGES, portCredentialResolver, workerWireCredential } from "../../packages/broker/src/aws/broker/credential-exchange.js";
 import { RepositoryGrantService, credentialKindOf, nonLegacyCredentialKindsOfGrant } from "../../packages/broker/src/repository-access.js";
@@ -25,7 +24,7 @@ const NOW = Date.parse("2026-11-02T12:00:00.000Z");
 const iso = (offsetMs: number) => new Date(NOW + offsetMs).toISOString();
 const HTTPS = "https://git.example.invalid/acme/app.git";
 const REF = "host-ref";
-const SCOPE = { system: "private-install" } as const;
+const SCOPE = { system: "install" } as const;
 const WORKSPACE = "11111111-1111-4111-8111-111111111111";
 const OPERATION = "22222222-2222-4222-8222-222222222222";
 // A host key line in the right shape; the bytes are not any real server's key.

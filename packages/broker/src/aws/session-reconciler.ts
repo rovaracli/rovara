@@ -11,7 +11,7 @@ import { DescribeExecutionCommand, SFNClient, StartExecutionCommand } from "@aws
 import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import { SSMClient } from "@aws-sdk/client-ssm";
 import { DynamoDBDocumentClient, GetCommand } from "@aws-sdk/lib-dynamodb";
-import type { Ec2RuntimeBinding, WorkspaceSession, WorkspaceSessionState } from "@agentx/contracts";
+import type { Ec2RuntimeBinding, WorkspaceSession, WorkspaceSessionState } from "@rovara-code/contracts";
 import { installOrgIdFromEnvironment } from "../org/resolve.js";
 import { requiredEnvironment } from "./lambda.js";
 import { failActiveOperation } from "./outbox-failure.js";

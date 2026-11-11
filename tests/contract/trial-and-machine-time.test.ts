@@ -2,9 +2,8 @@
 // monthly allowance of EC2 machine time. Both are checked inside admitWork, before the proxy is asked and before any charge.
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it, vi } from "vitest";
-import {
-  agentXError, errorStatus, SESSION_MAX_LIFETIME_MS, machineTimeMonthKey, machineTimeOnceKey, openComputeKey, orgMetaKey, orgSettingsKey, singleOrgIdForEnv, trialGithubKey, workspaceSessionKey, type OrgId,
-} from "../../packages/contracts/src/index.js";
+import { agentXError, errorStatus, SESSION_MAX_LIFETIME_MS, singleOrgIdForEnv, workspaceSessionKey, type OrgId } from "@rovara-code/contracts";
+import { machineTimeMonthKey, machineTimeOnceKey, openComputeKey, orgMetaKey, orgSettingsKey, trialGithubKey } from "@agentx/cloud-contracts";
 import { createReaperHandler } from "../../packages/broker/src/aws/session-reaper.js";
 import { SessionManager, computeMeteringFromEnvironment, machineTimeRecorder, openComputeMarker, type ComputeStop } from "../../packages/broker/src/aws/sessions.js";
 import type { AdmissionDependencies } from "../../packages/broker/src/org/budget.js";

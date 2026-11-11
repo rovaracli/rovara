@@ -1,6 +1,6 @@
 // Design review stage, fix round M6 (DR-REVIEW-dr3-dr4.md): MCP items reach a packet only through the project's configured read-only sources.
 import { describe, expect, it } from "vitest";
-import type { ContextSource } from "@agentx/contracts";
+import type { ContextSource } from "@rovara-code/contracts";
 import { PACKET_CHAT_SYSTEMS, packetMcpCall, parseMcpItemRef } from "../../packages/broker/src/design-review/mcp-allowlist.js";
 
 const tool = (upstreamName: string, role: "read" | "search" | "status" = "read") => ({ upstreamName, role, schemaHash: "a".repeat(64) });

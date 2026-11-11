@@ -6,17 +6,7 @@
 //   - the proposal is always the safest tier (sandbox) with no pre-prod, no shared environment, no video or traces and no unrecorded-request answers: a person turns those on, on a card that says so;
 //   - services found in the code are listed as `pendingServices`, not put in the environment: a mocked service needs a recorded fixture set first (the Prove run's recorder makes it);
 //   - the environment must pass the contract's own schema, or the proposal is not produced (and the reason is a fixed word).
-import {
-  isDatabaseSeedCommand,
-  TestEnvironmentBodySchema,
-  TestEnvironmentProposalSchema,
-  parseCommandLine,
-  type ProjectCommand,
-  type SetupDraft,
-  type TestEnvValueSource,
-  type TestEnvironmentBody,
-  type TestEnvironmentProposal,
-} from "@agentx/contracts";
+import { isDatabaseSeedCommand, TestEnvironmentBodySchema, TestEnvironmentProposalSchema, parseCommandLine, type ProjectCommand, type SetupDraft, type TestEnvValueSource, type TestEnvironmentBody, type TestEnvironmentProposal } from "@rovara-code/contracts";
 import { coverageSpecsOf } from "../verification/cobertura-lcov-coverage.js";
 import type { Detection, DetectedSource, Located } from "./types.js";
 

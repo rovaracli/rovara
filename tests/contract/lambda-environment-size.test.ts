@@ -21,9 +21,9 @@ const CEILING_BYTES = 3800;
 const BROKER_HEADROOM_BYTES = 400;
 const DERIVE_DONT_ADD = [
   "Derive it, don't add an environment variable.",
-  "A name or ARN that follows the agentx-<env>-... naming is built at run time from AGENTX_ENV, AWS_REGION and the account: add it to DERIVED_BROKER_VARIABLES in packages/contracts/src/derived-names.ts",
+  "A name or ARN that follows the agentx-<env>-... naming is built at run time from AGENTX_ENV, AWS_REGION and the account: add it to DERIVED_BROKER_VARIABLES in packages/cloud-contracts/src/derived-names.ts",
   "(the module CDK names the resource with and broker-environment.ts reads), not to the function's environment.",
-  "A generated name or an id goes in AGENTX_NAMES (BROKER_NAMES), a constrained setting in AGENTX_SETTINGS (BROKER_SETTINGS), both in packages/contracts/src/broker-names.ts.",
+  "A generated name or an id goes in AGENTX_NAMES (BROKER_NAMES), a constrained setting in AGENTX_SETTINGS (BROKER_SETTINGS), both in packages/cloud-contracts/src/broker-names.ts.",
 ].join(" ");
 /** An environment name of the longest length the installer accepts (20 characters), and the usual one. */
 const LONGEST_ENVIRONMENT = "a1234567890123456789";

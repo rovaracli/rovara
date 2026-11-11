@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { OrgIdSchema, ReviewedSlackDecisionBodySchema, ProjectSlackDecisionReaderSchema, ReviewedSlackUnbindBodySchema, ReviewedSlackProposeBodySchema, ReviewedSlackApproveBodySchema, ProjectSlackProposalReaderSchema, ProjectSlackInventoryReaderSchema, ProjectSlackTargetReaderSchema, ProjectSlackReceiptReaderSchema, type ReviewedSlackUnbindBody } from "@agentx/contracts/web";
+import { OrgIdSchema, ReviewedSlackDecisionBodySchema, ProjectSlackDecisionReaderSchema, ReviewedSlackUnbindBodySchema, ReviewedSlackProposeBodySchema, ReviewedSlackApproveBodySchema, ProjectSlackProposalReaderSchema, ProjectSlackInventoryReaderSchema, ProjectSlackTargetReaderSchema, ProjectSlackReceiptReaderSchema, type ReviewedSlackUnbindBody } from "@agentx/cloud-contracts/web";
 import type { AppHost, ApiRequest, ApiResponse } from "../host.js";
 import { ApiError } from "./errors.js";
 const message = "Slack request could not be confirmed. Check its status before resending.";

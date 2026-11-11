@@ -13,10 +13,7 @@
 // secret, never an address other than the recipient's own. Logs carry fixed codes and counts only.
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { SendEmailCommand, type SESv2Client } from "@aws-sdk/client-sesv2";
-import {
-  INDEX_EXPIRY_ATTRIBUTE, NOTIFY_BATCH_MINUTES, NOTIFY_CHANNELS, NOTIFY_ITEMS_MAX, NOTIFY_SETTINGS_PATH, agentSessionKey, defaultNotifyChannel, effectiveNotify, hideEmailAddresses,
-  sessionTaskStatus, taskStatusText, type AgentSessionRecord, type NotifyChannel, type OrgId, type SessionSummary,
-} from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, NOTIFY_BATCH_MINUTES, NOTIFY_CHANNELS, NOTIFY_ITEMS_MAX, NOTIFY_SETTINGS_PATH, agentSessionKey, defaultNotifyChannel, effectiveNotify, hideEmailAddresses, sessionTaskStatus, taskStatusText, type AgentSessionRecord, type NotifyChannel, type OrgId, type SessionSummary } from "@rovara-code/contracts";
 import { plainHttpsOrigin, sessionPageUrl } from "../decisions/open-path.js";
 import { AgentSessionStore } from "../agent-sessions/store.js";
 import type { SessionChange } from "../agent-sessions/notice-sink.js";

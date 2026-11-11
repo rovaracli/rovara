@@ -1,9 +1,7 @@
 // Rovara Code (Plan 6 Task 16): a task's complete feedback review waiting for a decision, with its report and its comments stored as the broker stores them (every digest and key right), for tests.
 import { createHash, randomUUID } from "node:crypto";
-import {
-  WorkflowFeedbackBundleCommentsSchema, WorkflowFeedbackBundleSchema, WorkflowFeedbackReviewReportSchema, createCandidateManifest, createWorkflowSnapshot, requestWorkflowFeedbackReview,
-  type WorkflowSnapshot,
-} from "@agentx/contracts";
+import { WorkflowFeedbackBundleCommentsSchema, WorkflowFeedbackBundleSchema, WorkflowFeedbackReviewReportSchema, createCandidateManifest } from "@rovara-code/contracts";
+import { createWorkflowSnapshot, requestWorkflowFeedbackReview, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import type { DeveloperTaskRouteDependencies } from "../../packages/broker/src/aws/developer-tasks.js";
 import type { DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
 import { createDeveloperTaskBroker, MAYA } from "./developer-task-broker.js";

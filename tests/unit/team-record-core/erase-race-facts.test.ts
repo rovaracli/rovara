@@ -1,7 +1,7 @@
 // Review item 3: a fact's audience comes from an earlier read of the rows it was distilled from. An erase can finish between that read and the fact's write; for every interleaving
 // the stored fact must not name the erased person. (Nothing indexes a fact by the people on its list, so neither erase pass could find one.)
 import { describe, expect, it } from "vitest";
-import { recordFactKey } from "@agentx/contracts";
+import { recordFactKey } from "@agentx/cloud-contracts";
 import { createTransientDistiller } from "../../../packages/broker/src/team-record/transient-distiller.js";
 import { putFactClean } from "../../../packages/broker/src/team-record/fact-write.js";
 import { markAccessErased, observeRowAccess } from "../../../packages/broker/src/team-record/access.js";

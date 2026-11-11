@@ -8,7 +8,7 @@ import { ProviderUnavailableError, githubSignInProvider } from "../../packages/b
 const REPO = "https://github.com/ps06756/personal-website-test.git";
 const API = "https://api.github.com/repos/ps06756/personal-website-test";
 const OTHER_HOST = "https://elsewhere.example/stolen";
-const SCOPE = { system: "private-install" } as const;
+const SCOPE = { system: "install" } as const;
 const COMMIT = "e".repeat(40);
 const TOKEN = ["installation", "token", "for", "tests"].join("-");
 

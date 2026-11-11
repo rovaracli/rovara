@@ -1,9 +1,8 @@
 // Design review stage DR8: the project's design review setting in How we work (the playbook's `designReview`), the company's stricter-only lock on it, and the audit event on change.
 // The setting rides the existing playbook document and PUT (DR1 put the field on the schema and the body); this file pins what the broker does with it.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import {
-  DESIGN_REVIEW_DEFAULT_SETTING, ProjectPlaybookBodySchema, agentXError, editionPolicy, orgMetaKey, projectPlaybookKey, type DesignReviewSetting, type OrgRole,
-} from "../../packages/contracts/src/index.js";
+import { DESIGN_REVIEW_DEFAULT_SETTING, ProjectPlaybookBodySchema, agentXError, projectPlaybookKey, type DesignReviewSetting } from "@rovara-code/contracts";
+import { editionPolicy, orgMetaKey, type OrgRole } from "@agentx/cloud-contracts";
 import { getProjectPlaybook, putProjectPlaybook, type ProjectPlaybookDependencies } from "../../packages/broker/src/playbook/routes.js";
 import { readProjectPlaybook, readProjectPlaybookState, writeProjectPlaybook } from "../../packages/broker/src/playbook/project-playbook-store.js";
 import { DESIGN_REVIEW_LOCK_SK, readDesignReviewCompany, DESIGN_REVIEW_LOCK_GROUP_EDITION, applyLock, checkDesignReviewLockWrite, effectiveDesignReviewSetting, lockViolations, type DesignReviewLock } from "../../packages/broker/src/design-review/lock.js";

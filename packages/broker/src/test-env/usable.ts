@@ -8,7 +8,7 @@
 //     provisioned), so an environment that has any is NOT applied, and the task runs the project's own checks with the evidence saying so. A task is never told it used a mock or a pre-prod it did not.
 // The task pins the revision it started with: a later approval changes the NEXT task, never one that is running.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { INDEX_EXPIRY_ATTRIBUTE, mediaTierAllowed, projectPk, testEnvDigest, testEnvProdDenyViolations, type OrgId, type TestEnvironment } from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, mediaTierAllowed, projectPk, testEnvDigest, testEnvProdDenyViolations, type OrgId, type TestEnvironment } from "@rovara-code/contracts";
 import type { TransactItem } from "../audit/outbox.js";
 import { readApprovedTestEnvironment, type TestEnvDeps } from "../org/test-environment.js";
 import { dependenciesStartableNow } from "./dependency-plan.js";

@@ -3,7 +3,7 @@
 import { describe, expect, it } from "vitest";
 import { resolveAgentForAutonomousRun, resolveAgentForTask } from "../../packages/broker/src/agents/roster.js";
 import { validateChainForPublish } from "../../packages/broker/src/chains/validate.js";
-import { ChainDefinitionSchema } from "../../packages/contracts/src/chains.js";
+import { ChainDefinitionSchema } from "@rovara-code/contracts";
 import { DANA, ORG_A, setupTriggerWorld } from "../support/trigger-world.js";
 
 const NOT_THERE = { code: "NOT_FOUND", message: "no agent has that ID" };

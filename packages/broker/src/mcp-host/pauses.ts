@@ -2,7 +2,7 @@
 // `PAUSE#<server id>`), which the controller's role may already read, write and delete and which holds nothing the registry of approvals does. A pause names the approval it was made for (the
 // tools hash and the bundle hash); the controller ignores and removes a pause whose approval is no longer the registry's.
 import { DeleteCommand, GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
-import { McpServerIdSchema, orgScoped, type OrgId } from "@agentx/contracts";
+import { McpServerIdSchema, orgScoped, type OrgId } from "@rovara-code/contracts";
 import type { PauseStore } from "@agentx/gateway";
 
 type DocumentClient = { send(command: unknown): Promise<unknown> };

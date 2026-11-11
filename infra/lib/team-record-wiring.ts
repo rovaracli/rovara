@@ -18,10 +18,8 @@ import { ArnFormat, CfnParameter, Duration, Token, aws_cloudwatch as cloudwatch,
 import type { aws_dynamodb as dynamodb, aws_s3 as s3 } from "aws-cdk-lib";
 import type { aws_lambda as lambda } from "aws-cdk-lib";
 import { aws_lambda as lambdaValues } from "aws-cdk-lib";
-import {
-  LESSONS_REFLECT_MAX_RECEIVES, LESSONS_REFLECT_VISIBILITY_SECONDS, LESSONS_WORKER_RESERVED_CONCURRENCY, LESSONS_WORKER_TIMEOUT_SECONDS, TEAM_RECORD_OPS_MAX_RECEIVES,
-  embedderFunctionName, lessonsReflectDeadLetterName, lessonsReflectQueueName, teamRecordNamePrefix, teamRecordOpsDeadLetterName, teamRecordOpsQueueName, teamRecordTableName,
-} from "@agentx/contracts";
+import { LESSONS_REFLECT_MAX_RECEIVES, LESSONS_REFLECT_VISIBILITY_SECONDS, LESSONS_WORKER_TIMEOUT_SECONDS } from "@rovara-code/contracts";
+import { LESSONS_WORKER_RESERVED_CONCURRENCY, TEAM_RECORD_OPS_MAX_RECEIVES, embedderFunctionName, lessonsReflectDeadLetterName, lessonsReflectQueueName, teamRecordNamePrefix, teamRecordOpsDeadLetterName, teamRecordOpsQueueName, teamRecordTableName } from "@agentx/cloud-contracts";
 import { packagedFunction } from "./control-plane.js";
 import { BrokerNames, BrokerSettings } from "./broker-names.js";
 import { attachEmbedder } from "./embedder-function.js";

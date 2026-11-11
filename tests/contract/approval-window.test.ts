@@ -1,9 +1,9 @@
 // Approval place (U4, decision 83, A-08): the company's recent sign-in window for approvals outside Rovara. Any member reads it; an owner or admin changes it from a live browser session. Shortening applies at once; lengthening
 // needs a fresh sign-in and then a DIFFERENT admin (or the shared sole-owner exception). Each rule has a test that it does not widen anything: a token, a member, the proposer and a stale sign-in change nothing.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { orgMetaKey } from "../../packages/contracts/src/index.js";
-import { RECENT_SIGN_IN_DEFAULT_SECONDS, RECENT_SIGN_IN_MAX_SECONDS, RECENT_SIGN_IN_MIN_SECONDS } from "../../packages/contracts/src/approval-place.js";
-import { ApprovalWindowAnswerReaderSchema as ApprovalWindowAnswerSchema, ApprovalWindowStateReaderSchema as ApprovalWindowStateSchema } from "../../packages/contracts/src/app-approval-window.js";
+import { orgMetaKey } from "@agentx/cloud-contracts";
+import { RECENT_SIGN_IN_DEFAULT_SECONDS, RECENT_SIGN_IN_MAX_SECONDS, RECENT_SIGN_IN_MIN_SECONDS } from "@agentx/cloud-contracts";
+import { ApprovalWindowAnswerReaderSchema as ApprovalWindowAnswerSchema, ApprovalWindowStateReaderSchema as ApprovalWindowStateSchema } from "@agentx/cloud-contracts";
 import { APPROVAL_WINDOW_SETTING_SK, readApprovalWindow, setApprovalWindow, type ApprovalWindowDeps } from "../../packages/broker/src/approval-place/window-setting.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { MAYA, OMAR } from "../support/developer-task-broker.js";

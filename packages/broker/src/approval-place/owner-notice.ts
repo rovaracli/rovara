@@ -2,7 +2,7 @@
 // (`PROJECT_ADMIN`), the audit ledger records the place and the seat (`approval.place_decided`), and, when the owner has Slack linked, a direct message goes through the same pending-row mechanism the attention sweep uses
 // (`TASK_ATTENTION_DM`, posted once by the notifier). The words are fixed: the decider's display name (flattened, no markup) and the task's title are the only other text.
 import { PutCommand } from "@aws-sdk/lib-dynamodb";
-import { INDEX_EXPIRY_ATTRIBUTE, hideEmailAddresses } from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, hideEmailAddresses } from "@rovara-code/contracts";
 import { ATTENTION_DM_PK } from "../notifications/attention.js";
 import { DeveloperSignInStore } from "../developer/store.js";
 

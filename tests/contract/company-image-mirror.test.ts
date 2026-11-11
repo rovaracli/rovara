@@ -2,7 +2,8 @@
 // company's own registry list, the counters that clamp at zero, and what a plan and a worker login are given.
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { COMPANY_IMAGE_MIRROR_ATTEMPTS_MAX, CompanyImageMirrorJobSchema, companyImageMirrorTag, companyImageRepositoryName, isCompanyImageRepositoryName, isSavedEnvRepositoryName, type CompanyImageMirrorJob } from "@agentx/contracts";
+import { COMPANY_IMAGE_MIRROR_ATTEMPTS_MAX, CompanyImageMirrorJobSchema, companyImageMirrorTag, companyImageRepositoryName, isCompanyImageRepositoryName, type CompanyImageMirrorJob } from "@agentx/cloud-contracts";
+import { isSavedEnvRepositoryName } from "@rovara-code/contracts";
 import { copyApprovedImage, verifiedParts, MIRROR_PART_BYTES, type CopyPorts, type EcrWriter } from "../../packages/broker/src/test-env/company-image-mirror.js";
 import { claimMirror, deleteMirrorState, finishMirror, mirrorNeedsStart, readMirrorState } from "../../packages/broker/src/test-env/company-image-mirror-state.js";
 import { readCompanyImageMirrors } from "../../packages/broker/src/test-env/company-image-mirrors.js";

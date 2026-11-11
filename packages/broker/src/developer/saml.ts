@@ -16,13 +16,11 @@ import { SAML, ValidateInResponseTo, type CacheProvider } from "@node-saml/node-
 // RE-CHECK THIS IMPORT ON EVERY @node-saml/node-saml UPGRADE (the file, its export and its error handling can move; `saml-verify.test.ts` fails if the parser stops being used).
 import { parseDomFromString } from "@node-saml/node-saml/lib/xml.js";
 import { DeleteCommand, GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  SAML_CLOCK_SKEW_SECONDS, SAML_RESPONSE_MAX_BYTES, SamlIdpConfigSchema, samlIdpConfigKey, samlSeenKey, samlStashKey, agentXError, requireFeature,
-  type EditionPolicy, type OrgId, type SamlIdpConfig, type SamlIdpSettings, type SamlRefusal,
-} from "@agentx/contracts";
+import { SAML_CLOCK_SKEW_SECONDS, SAML_RESPONSE_MAX_BYTES, SamlIdpConfigSchema, samlIdpConfigKey, samlSeenKey, samlStashKey, requireFeature, type EditionPolicy, type SamlIdpConfig, type SamlIdpSettings, type SamlRefusal } from "@agentx/cloud-contracts";
+import { agentXError, type OrgId } from "@rovara-code/contracts";
 import { auditTransact, type AuditRuntime } from "../audit/outbox.js";
 import { flushAuditEvents } from "../audit/flush.js";
-import type { AuditEventInput } from "@agentx/contracts";
+import type { AuditEventInput } from "@agentx/cloud-contracts";
 
 // ---- the pieces of a deployment that make a SAML flow
 

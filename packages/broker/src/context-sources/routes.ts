@@ -8,21 +8,7 @@
 // and still has authority on the project; the tool is one an admin ticked for this stage; the stage's allowance is not used up; the tool is still the tool
 // that was ticked (its hash) and still only reads (the write gate); the arguments are small, on-host and carry neither code nor a credential; and the call
 // has a time limit. What comes back is cleaned, cut, framed as data and recorded as a citation. Nothing the model supplies decides any of it.
-import {
-  ContextToolCallRequestSchema,
-  SEARCH_TEAM_KNOWLEDGE_TOOL,
-  agentXError,
-  isContextSourceStage,
-  type Citation,
-  type CitationStanding,
-  type ContextSource,
-  type ContextSourceServer,
-  type ContextSourcesDocument,
-  type ContextToolCallResponse,
-  type ContextToolCatalog,
-  type ContextToolPresentation,
-  type OrgId,
-} from "@agentx/contracts";
+import { ContextToolCallRequestSchema, SEARCH_TEAM_KNOWLEDGE_TOOL, agentXError, isContextSourceStage, type Citation, type CitationStanding, type ContextSource, type ContextSourceServer, type ContextSourcesDocument, type ContextToolCallResponse, type ContextToolCatalog, type ContextToolPresentation, type OrgId } from "@rovara-code/contracts";
 import { effectiveTaskOwner, type DeveloperTaskRecord } from "../developer/task-records.js";
 import { ARGUMENT_REFUSAL_TEXT, checkArguments, contextWriteGate } from "./guards.js";
 import { UNAVAILABLE_TEXT, frameResult, inertSentence, presentTool, presentedToolName, resolvePresentedTool, resultDigest } from "./present.js";

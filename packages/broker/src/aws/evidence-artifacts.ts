@@ -10,10 +10,7 @@
 // task is checked by the caller's `authorize` on EVERY request.
 import { createHash } from "node:crypto";
 import { DeleteObjectCommand, GetObjectCommand, HeadObjectCommand, PutObjectCommand, type S3Client } from "@aws-sdk/client-s3";
-import {
-  EVIDENCE_ARTIFACT_CONTENT_TYPES, EVIDENCE_ARTIFACT_MAGIC, EVIDENCE_ARTIFACT_MAX_BYTES, EVIDENCE_ARTIFACT_RETENTION, E2E_ARTIFACT_RETENTION_TAG_KEY, parseApiSample, servableEvidenceArtifact,
-  type ArtifactLink, type ArtifactRef, type EvidenceArtifactKind, type EvidenceRetentionClass, type EvidenceView,
-} from "@agentx/contracts";
+import { EVIDENCE_ARTIFACT_CONTENT_TYPES, EVIDENCE_ARTIFACT_MAGIC, EVIDENCE_ARTIFACT_MAX_BYTES, EVIDENCE_ARTIFACT_RETENTION, E2E_ARTIFACT_RETENTION_TAG_KEY, parseApiSample, servableEvidenceArtifact, type ArtifactLink, type ArtifactRef, type EvidenceArtifactKind, type EvidenceRetentionClass, type EvidenceView } from "@rovara-code/contracts";
 
 export type EvidenceArtifactStore = Readonly<{ s3: Pick<S3Client, "send">; artifactBucketName: string }>;
 export type EvidenceOwner = Readonly<{ ownerKey: string; workspaceId: string; taskId: string }>;

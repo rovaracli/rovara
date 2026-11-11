@@ -1,5 +1,5 @@
 // PR corrections stay stored while capture is off; read surfaces cannot count suggestions that rely on them.
-import { LearningSuggestionSchema, isTerminalSuggestionStatus, type LearningCorrection, type LearningSuggestion } from "@agentx/contracts";
+import { LearningSuggestionSchema, isTerminalSuggestionStatus, type LearningCorrection, type LearningSuggestion } from "@rovara-code/contracts";
 import { readMembers } from "./settle.js";
 import { readLearningPartition, type LearningDeps, type LearningScope } from "./store.js";
 export function dependsOnPr(suggestion:Pick<LearningSuggestion,"correctionIds">,members:ReadonlyMap<string,LearningCorrection>):boolean {

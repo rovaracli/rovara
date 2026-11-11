@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { WEB_API_REQUIRED_PROBES, canonicalJson, evaluateWebApiProbeObservation, type WebApiProbeEvidence } from "../../packages/contracts/src/index.js";
+import { WEB_API_REQUIRED_PROBES, canonicalJson, evaluateWebApiProbeObservation, type WebApiProbeEvidence } from "@rovara-code/contracts";
 import { loadWebApiQualificationProbeAssets } from "../../packages/verifier/src/application-runtime-probes.js";
 import { webApiProbeDriver } from "../../packages/verifier/src/host/web-api-probe-plan.js";
 import { deriveWebApiProbeObservation, verifyWebApiProbeRecord } from "../../packages/verifier/src/web-api-probe-evidence.js";

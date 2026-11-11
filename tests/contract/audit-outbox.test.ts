@@ -4,15 +4,8 @@
 // what each function is allowed to do is pinned in audit-ledger-infrastructure.test.ts.
 import { TransactWriteCommand, type DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  AUDIT_FLUSH_DEADLINE_MS,
-  AUDIT_PENDING_SHARDS,
-  AUDIT_PENDING_TTL_DAYS,
-  AuditEventInputSchema,
-  auditOperatorId,
-  INDEX_EXPIRY_ATTRIBUTE,
-  type AuditEventInput,
-} from "@agentx/contracts";
+import { AUDIT_FLUSH_DEADLINE_MS, AUDIT_PENDING_SHARDS, AUDIT_PENDING_TTL_DAYS, AuditEventInputSchema, auditOperatorId, type AuditEventInput } from "@agentx/cloud-contracts";
+import { INDEX_EXPIRY_ATTRIBUTE } from "@rovara-code/contracts";
 import { AUDIT_DRAIN_PAGE_SIZE, drainAuditPending, runAuditDrain } from "../../packages/broker/src/audit/drain.js";
 import * as builders from "../../packages/broker/src/audit/events.js";
 import { auditOccurrence } from "../../packages/broker/src/audit/events.js";
@@ -864,6 +857,7 @@ describe("I4: the builders", () => {
     ["auditSetupRecipeChange", (occurrence) => builders.auditSetupRecipeChange({ ...base, occurrence, details, action: "setup_recipe.approved", facts: { recipeId: "rcp_" + "1".repeat(20), revision: 2, bodyDigest: "a".repeat(64), authority: "fresh_sign_in" } })],
     ["auditCompanyImageChange", (occurrence) => builders.auditCompanyImageChange({ ...base, occurrence, details, action: "company_image.approved", imageId: "img_" + "1".repeat(20), digest: "a".repeat(64), authority: "fresh_sign_in" })],
     // Company rules (G-04): the builder has no case on integ/0514, so this lane's run of the catalog test found it.
+    ["auditCompanyUiFlagsChanged", (occurrence) => builders.auditCompanyUiFlagsChanged({ ...base, occurrence, details, revision: 2, turnedOn: ["home"], turnedOff: [], previews: "same" })],
     ["auditCompanyRules", (occurrence) => builders.auditCompanyRules({ ...base, occurrence, details, action: "company_rules.proposed", facts: { proposalId: "prop_1", baseVersion: 1, ruleCount: 3, digest: "a".repeat(64), source: "rovara" } })],
     ["auditCompanyImageRegistriesChanged", (occurrence) => builders.auditCompanyImageRegistriesChanged({ ...base, occurrence, details, registryCount: 2, authority: "fresh_sign_in" })],
     ["auditSavedEnvChanged", (occurrence) => builders.auditSavedEnvChanged({ ...base, occurrence, details, projectName: "Secret Project", change: "build_recorded", cause: "no_image", digest: "sha256:" + "a".repeat(64) })],
@@ -878,6 +872,8 @@ describe("I4: the builders", () => {
     ["auditScriptTokenCreated", (occurrence) => builders.auditScriptTokenCreated({ ...base, occurrence, details, tokenId: "stk_" + "1".repeat(20), days: 30, projects: 2, permissions: "read" })],
     ["auditScriptTokenRevoked", (occurrence) => builders.auditScriptTokenRevoked({ ...base, occurrence, details, tokenId: "stk_" + "1".repeat(20), by: "creator" })],
     ["auditScriptTokenUsed", (occurrence) => builders.auditScriptTokenUsed({ ...base, occurrence, details, tokenId: "stk_" + "1".repeat(20), day: "2026-11-07", permission: "read" })],
+    // Agent publication (srv/agent-publish): the approval id, version and target kind only; the target project's name is never a fact
+    ["auditAgentPublication", (occurrence) => builders.auditAgentPublication({ ...base, occurrence, details, action: "agent_publication.requested", agentId: "agt_1", facts: { approvalId: "apr_1", targetKind: "project", version: 2 } })],
   ];
 
   it("covers every builder the module exports (a new builder needs a case here)", () => {

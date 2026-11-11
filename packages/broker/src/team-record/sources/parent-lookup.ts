@@ -1,7 +1,7 @@
 // TR-W1 `ParentLookupPort`: whether a ticket (the parent of a comment) is already recorded under a scope (Linear comments are kept only then). It reads the record's own rows by source
 // (an index read, no network call), so a webhook delivery pays no connected-app request and the answer is exactly what the record holds. A lookup that fails, an unknown parent and a
 // parent in another place all mean "no" (the port's callers fail closed: a Linear comment is skipped). Whether a parent is OPEN is not answered here, see below.
-import { OrgIdSchema } from "@agentx/contracts";
+import { OrgIdSchema } from "@rovara-code/contracts";
 import { bySource } from "../store.js";
 import type { TeamRecordTable } from "../types.js";
 import type { ParentLookupPort } from "./tickets.js";

@@ -1,6 +1,6 @@
 // Lessons in the repo (0.5.13): `agentx project lessons-repo` prints the fixed "starts when lessons are switched on" line under a switched-on repository whose lessons are off, for the status and for the answer to `on`.
 import { describe, expect, it, vi } from "vitest";
-import { LESSON_FILE_WAITING_TEXT } from "@agentx/contracts";
+import { LESSON_FILE_WAITING_TEXT } from "@rovara-code/contracts";
 
 const answers: { body: unknown } = { body: {} };
 vi.mock("../../packages/cli/src/developer/agents.js", async (importActual) => ({

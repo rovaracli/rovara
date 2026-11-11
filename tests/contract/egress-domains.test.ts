@@ -10,9 +10,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  EGRESS_DOMAINS_PK, EGRESS_SYNC_KEY, developerOrgKey, egressDomainsKey, orgMemberKey, orgProjectCatalogKey, projectMetaKey, projectRevisionKey, projectMemberKey, orgMetaKey, AgentXErrorCodeSchema, errorStatus, type EgressAuditItem, type EgressDomainsItem, type EgressOwner, type OrgId,
-} from "../../packages/contracts/src/index.js";
+import { EGRESS_DOMAINS_PK, EGRESS_SYNC_KEY, egressDomainsKey, orgProjectCatalogKey, projectMetaKey, projectRevisionKey, projectMemberKey, AgentXErrorCodeSchema, errorStatus, type EgressAuditItem, type EgressDomainsItem, type EgressOwner, type OrgId } from "@rovara-code/contracts";
+import { developerOrgKey, orgMemberKey, orgMetaKey } from "@agentx/cloud-contracts";
 import { tokenStoreKey } from "../../packages/cli/src/auth.js";
 import { executeCli } from "../../packages/cli/src/main.js";
 import { InMemoryTokenStore } from "../../packages/cli/src/token-store.js";

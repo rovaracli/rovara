@@ -1,14 +1,8 @@
 import { createHash } from "node:crypto";
-import {
-  canonicalJson, E2EFeaturePlanIntentSchema, E2EPortableApprovalBindingSchema, e2EPortableApprovalBindingDigest,
-  e2ePortableOperationDescriptorDigest, e2ePortableRegistrationKey, e2EDefaultSyntheticAccountDefinition,
-  E2EPolicySchema, E2EScenarioBundleSchema, e2ePolicyDigest, e2eScenarioBundleDigest, selectE2EExecutionPlan,
-  E2EApiMockFixtureSchema, type E2EPolicy, type E2EExecutionPlan, type E2EScenarioBundle,
-  verifyE2ESourceSnapshot, type E2EFeaturePlanIntent, type E2EPortableApprovalBinding, type E2ESourceSnapshot,
-} from "@agentx/contracts";
-import { inspectE2EPortableSource, inspectE2ERepository } from "@agentx/contracts";
+import { canonicalJson, E2EFeaturePlanIntentSchema, E2EPortableApprovalBindingSchema, e2EPortableApprovalBindingDigest, e2ePortableOperationDescriptorDigest, e2ePortableRegistrationKey, e2EDefaultSyntheticAccountDefinition, E2EPolicySchema, E2EScenarioBundleSchema, e2ePolicyDigest, e2eScenarioBundleDigest, selectE2EExecutionPlan, E2EApiMockFixtureSchema, type E2EPolicy, type E2EExecutionPlan, type E2EScenarioBundle, verifyE2ESourceSnapshot, type E2EFeaturePlanIntent, type E2EPortableApprovalBinding, type E2ESourceSnapshot } from "@rovara-code/contracts";
+import { inspectE2EPortableSource, inspectE2ERepository } from "@rovara-code/contracts";
 import { compileE2EScenarios } from "@agentx/verifier";
-import { E2ERunBindingSchema, E2ERoundSchema, type E2ERound } from "@agentx/contracts";
+import { E2ERunBindingSchema, E2ERoundSchema, type E2ERound } from "@rovara-code/contracts";
 import { admitE2EFeatureVerifier, E2E_FEATURE_PROCESS_RESPONSE_SCOPE, type E2EFeatureVerifierRecord } from "../aws/e2e-feature-verifier-catalog.js";
 
 export { deriveE2EApplicationFeatureExecutionSelection } from "./application-feature-plan-intent.js";

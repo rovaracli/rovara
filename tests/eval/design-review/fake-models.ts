@@ -1,6 +1,6 @@
 // Design review stage, DR13: the offline models of the design review eval. They answer from a frozen script, and they find the script's entry by reading the DESIGN HEADING out of the packet they are given, never
 // from the case id the runner knows: a runner that built the wrong packet, left the design out or cut it gets no script and so an empty answer, and the counts show it.
-import type { DesignReviewTier, RawDesignFinding, ReviewerRole } from "../../../packages/contracts/src/index.js";
+import type { DesignReviewTier, RawDesignFinding, ReviewerRole } from "@rovara-code/contracts";
 import { EVAL_COMMIT, type MergeModel, type ReviewerModel } from "./run.js";
 
 interface Scripted { severity: "blocker" | "major" | "nit"; section: "§1" | "§2" | "§3" | "§4" | "§5" | "§6" | "§7" | "§8"; text: string; code?: { repo: string; path: string } }

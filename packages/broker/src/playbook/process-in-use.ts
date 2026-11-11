@@ -1,7 +1,7 @@
 // "How we work" follow-up (F1 fix round 1, I2): a project's process layer can't be archived while it is the project's default process. Archiving is one maintainer's action, and an archived layer
 // stops the project's work; archiving the layer and then switching to the built-in would be a way round the second person the switch needs when the layer is stricter (process-switch.ts).
 // F2: a playbook document that exists but can't be read could be pointing at the layer, so it holds the archive too (a missing one does not).
-import { PROCESS_IN_USE_MESSAGE, agentXError, projectPlaybookKey } from "@agentx/contracts";
+import { PROCESS_IN_USE_MESSAGE, agentXError, projectPlaybookKey } from "@rovara-code/contracts";
 import type { AgentRecord } from "../agents/store.js";
 import type { TransactItem } from "../agents/table-writes.js";
 import { readProjectPlaybookState, type ProjectPlaybookReader } from "./project-playbook-store.js";

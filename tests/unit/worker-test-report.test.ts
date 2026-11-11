@@ -1,7 +1,7 @@
 // Proof and evidence P2: reading a check's own JUnit or vitest/jest JSON report into totals, names, new tests and skip counts. Fail closed: a file that is not a report, is empty, too big or holds no test is "not measured".
 import { describe, expect, it } from "vitest";
-import { isValidTestId } from "@agentx/contracts";
-import { EvidencePackSchema } from "../../packages/contracts/src/evidence.js";
+import { isValidTestId } from "@rovara-code/contracts";
+import { EvidencePackSchema } from "@rovara-code/contracts";
 import { evidenceTests, parseGoTestJson, parseJsonReport, parseJunit, parseTestReport, plainName, skipRise, skippedOutsideChanged, TEST_REPORT_MAX_BYTES, TEST_REPORT_MAX_TESTS } from "../../packages/worker/src/verification/test-report.js";
 
 // A pytest --junitxml file, as pytest 8 writes it.

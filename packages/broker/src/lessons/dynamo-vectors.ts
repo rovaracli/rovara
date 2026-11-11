@@ -9,7 +9,7 @@
 //     a purge (a person's erasure, a withdrawal that became a purge) and writes its backfill after it is refused, so no vector of erased text is left behind. A refused write is a no-op, not an error.
 //   - Reads are consistent BatchGets of the ids the caller names (never a scan of the partition); an unprocessed key is retried and then reported as a miss, never as a vector.
 import { BatchGetCommand, DeleteCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { lessonKey, type OrgId } from "@agentx/contracts";
+import { lessonKey, type OrgId } from "@rovara-code/contracts";
 import type { TeamRecordTable } from "../team-record/types.js";
 import type { LessonVectors, StoredLessonVector } from "./ports.js";
 

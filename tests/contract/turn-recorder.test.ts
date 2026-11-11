@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { TurnObservationSchema, UNRECORDABLE_ARGUMENTS, redactArguments } from "../../packages/contracts/src/turns.js";
+import { TurnObservationSchema, UNRECORDABLE_ARGUMENTS, redactArguments } from "@rovara-code/contracts";
 import { completedTaskResult } from "../../packages/orchestrator/src/control-plane-api.js";
 import { TurnRecorder } from "../../packages/orchestrator/src/turn-recorder.js";
 

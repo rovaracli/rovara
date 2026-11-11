@@ -3,7 +3,8 @@
 // agent's `monthlyBudgetUsd` counts in the counter: not a per-run cap, not a top-up, and not an archived agent. A scope whose base is $0 counts $0 there, but it is still
 // one of the owner's scopes (Plan 4 review I-2): this month's top-ups on it are spendable, so the effective total adds them. The cap itself is on the effective total, the counter plus this
 // month's top-ups (Task 33 fix round 1, I-1): a raise is held to the cap less the top-ups, at the counter's version (`ownerTotalItems`' `seen`).
-import { ownerBudgetKey, type AgentOwner, type OrgId } from "@agentx/contracts";
+import { ownerBudgetKey } from "@agentx/cloud-contracts";
+import { type AgentOwner, type OrgId } from "@rovara-code/contracts";
 import type { AgentRecord, BuiltinSettings } from "../agents/store.js";
 import { addToCounter, type TableInput, type TransactItem } from "../agents/table-writes.js";
 import { cleanUsd } from "./top-ups.js";

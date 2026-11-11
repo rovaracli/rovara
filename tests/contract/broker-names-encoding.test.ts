@@ -6,7 +6,7 @@ import { App, CfnParameter, Stack } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import * as lambda from "aws-cdk-lib/aws-lambda";
 import { describe, expect, it } from "vitest";
-import { BROKER_NAMES_VARIABLE, BROKER_SETTINGS_VARIABLE } from "@agentx/contracts";
+import { BROKER_NAMES_VARIABLE, BROKER_SETTINGS_VARIABLE } from "@agentx/cloud-contracts";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { BrokerNames, BrokerSettings } from "../../infra/lib/broker-names.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";

@@ -2,18 +2,8 @@
 // derive: the names CloudFormation generated come as one JSON variable of names under two-letter codes, the dead-letter queues as names,
 // and what an environment's name decides is derived. hydrateBrokerEnvironment puts each back under the variable the broker's code reads.
 import { describe, expect, it } from "vitest";
-import {
-  BROKER_NAMES,
-  BROKER_NAMES_VARIABLE,
-  connectorSecretsRoleName,
-  testAccountSecretsRoleName,
-  environmentAlarmPrefix,
-  environmentConnectorSecretPrefix,
-  environmentE2eFeatureRuntimeCatalogId,
-  environmentMetricsNamespace,
-  environmentProjectSetupRuntimeCatalogId,
-  environmentSettingsPrefix,
-} from "@agentx/contracts";
+import { BROKER_NAMES, BROKER_NAMES_VARIABLE, connectorSecretsRoleName, testAccountSecretsRoleName } from "@agentx/cloud-contracts";
+import { environmentAlarmPrefix, environmentConnectorSecretPrefix, environmentE2eFeatureRuntimeCatalogId, environmentMetricsNamespace, environmentProjectSetupRuntimeCatalogId, environmentSettingsPrefix } from "@rovara-code/contracts";
 import { environmentNaming } from "../../infra/lib/naming.js";
 import { awsPartitionOf, brokerNamesFromEnvironment, hydrateBrokerEnvironment, type MutableEnvironment } from "../../packages/broker/src/aws/broker-environment.js";
 

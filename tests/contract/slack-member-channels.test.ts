@@ -2,7 +2,7 @@
 // `users.conversations` for ONE Slack user and `types=private_channel`. With a bot token Slack returns only the private channels the bot and that user are both in. The broker reaches it through the
 // same Lambda invoke as `channel-list`. No new token, secret, environment variable or permission.
 import { describe, expect, it, vi } from "vitest";
-import { MemberChannelsRequestSchema } from "@agentx/contracts";
+import { MemberChannelsRequestSchema } from "@rovara-code/contracts";
 import { slackDirectory } from "../../packages/broker/src/developer/slack-directory.js";
 import { memberChannelsThroughLambda } from "../../packages/broker/src/aws/developer-routes/identity-lambda.js";
 import { BOT_TOKEN, T0, TEAM, identityHarness, routeFetch } from "../support/developer-fakes.js";

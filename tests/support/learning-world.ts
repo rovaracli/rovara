@@ -1,6 +1,6 @@
 // Test support for the v1.2 learning loop (B1): a table, a clock, a project scope and seeding helpers.
-import type { OrgId } from "../../packages/contracts/src/org.js";
-import { orgProjectCatalogKey, projectLearningKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import type { OrgId } from "@rovara-code/contracts";
+import { orgProjectCatalogKey, projectLearningKey } from "@rovara-code/contracts";
 import { FakeDynamoDb } from "./fake-dynamodb.js";
 import { TEST_ORG } from "./orgs.js";
 

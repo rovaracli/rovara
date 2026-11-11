@@ -3,7 +3,7 @@
 // digest the review no longer has reads "This review changed."; a second press changes nothing (`started: false`); the owner's press starts the review again and the proposal arrives.
 import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { ChannelMembersRequest, ChannelMembersResponse } from "@agentx/contracts";
+import type { ChannelMembersRequest, ChannelMembersResponse } from "@rovara-code/contracts";
 import { createWorkflowE2E, SLACK_MAYA, type WorkflowE2E } from "../../support/workflow-e2e.js";
 import { MAYA, type Developer } from "../../support/developer-task-broker.js";
 import { SLACK_CHANNEL } from "../../support/slack-broker.js";
@@ -14,7 +14,7 @@ import { PLAN, atPlanReview, editsOrFix } from "../../support/workflow-e2e-journ
 import { cardDecision } from "../../support/card-decision.js";
 import { taskPeopleDirectory } from "../../support/task-people-directory.js";
 import { developerIdForSlackUser } from "../../../packages/broker/src/aws/admin-actions.js";
-import { projectMemberKey } from "../../../packages/contracts/src/index.js";
+import { projectMemberKey } from "@rovara-code/contracts";
 import { FEEDBACK_REVIEW_RETRY_BUSY } from "../../../packages/broker/src/aws/developer-tasks.js";
 import { FEEDBACK_CHANGED, FEEDBACK_NOT_FOUND } from "../../../packages/broker/src/aws/developer-routes/plan-panel.js";
 

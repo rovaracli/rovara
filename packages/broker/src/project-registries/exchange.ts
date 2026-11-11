@@ -4,7 +4,7 @@
 //   - the registry is looked up in the project revision the workspace is pinned to, never taken from the request, so a worker cannot ask for a domain the project did not name;
 //   - the install switch, the edition, the org's binding of the CodeArtifact domain (another org's domain gets no token) and the project's approved websites are checked again here (they may have changed since the invocation was built);
 //   - the token is minted for that one registry, read-only by the broker's identity, and is not logged: the audit line names the registry and the expiry only.
-import { REGISTRY_PROBLEM_MESSAGES, RegistryCredentialRequestSchema, agentXError, registryProblems, type BoundRegistryDomain, type Edition, type ProjectRegistry, type RegistryCredential } from "@agentx/contracts";
+import { REGISTRY_PROBLEM_MESSAGES, RegistryCredentialRequestSchema, agentXError, registryProblems, type BoundRegistryDomain, type Edition, type ProjectRegistry, type RegistryCredential } from "@rovara-code/contracts";
 import { mintRegistryCredential, type RegistryTokenSource } from "./mint.js";
 
 export const REGISTRIES_OFF_MESSAGE = "Package registries are not switched on for this install.";

@@ -3,8 +3,8 @@
 //   * "Linked": a chat press is linked when the Slack user's verified Slack sign-in belongs to the very developer pressing (`developerOfSlackUser`). The stand-in identity of a Slack user who never signed in is not.
 //   * "Recent": the person's last INTERACTIVE sign-in by email code or company sign-in (OIDC, SAML). A Slack or GitHub sign-in is not a Rovara sign-in (owner answer Q3), and a refresh is not a sign-in.
 //   * The window is read only when a medium approval comes from outside the app (the one case that needs it); a window that cannot be read refuses the approval, it is never guessed.
-import { type ApprovalDeciderRole, type ApprovalDecisionKind, type ApprovalPlace, type ApprovalPlaceAnswer, type ApprovalPlaceRisk, type ApprovalPlaceVerdict, type DeveloperSignInMethod } from "@agentx/contracts";
-import { approvalPlaceDecision, isOutsideApprovalPlace } from "@agentx/contracts";
+import { type ApprovalDeciderRole, type ApprovalDecisionKind, type ApprovalPlace, type ApprovalPlaceAnswer, type ApprovalPlaceRisk, type ApprovalPlaceVerdict, type DeveloperSignInMethod } from "@agentx/cloud-contracts";
+import { approvalPlaceDecision, isOutsideApprovalPlace } from "@agentx/cloud-contracts";
 import { DeveloperSignInStore } from "../developer/store.js";
 import { SLACK_WORKFLOW_SESSION_ID } from "../developer/task-records.js";
 import { readApprovalWindow } from "./window-setting.js";

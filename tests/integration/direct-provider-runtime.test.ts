@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Type } from "typebox";
 import type { Context } from "@earendil-works/pi-ai";
-import { redactText } from "../../packages/contracts/src/redaction.js";
+import { redactText } from "@rovara-code/contracts";
 import { DEFAULT_BEDROCK_MODELS, providerKeyProblem, readProviderKey } from "../../packages/model-runtime/src/config.js";
 import { createConfiguredModelRuntime, createModelRuntimeWithFallback } from "../../packages/model-runtime/src/index.js";
 import { createModelClassifier } from "../../packages/orchestrator/src/action-classifier.js";

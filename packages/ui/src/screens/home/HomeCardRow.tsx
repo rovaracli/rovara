@@ -1,5 +1,5 @@
 import { Link } from "react-router";
-import { SessionIdSchema } from "@agentx/contracts/web";
+import { SessionIdSchema } from "@agentx/cloud-contracts/web";
 import { paths } from "../../paths.js";
 import type { HomeAction, ReadHomeCard } from "../../api/home.js";
 import { Button } from "../../design/Button.js";
@@ -13,11 +13,19 @@ import { useHomeCardActions } from "./use-home-card-actions.js";
 const RANK: Readonly<Record<HomeAction["kind"], number>> = { internal: 0, confirm: 1, external: 2, retry: 3, ticket_start: 4, dismiss: 5, ticket_dismiss: 5 };
 const isDismissal = (action: HomeAction): boolean => action.kind === "dismiss" || action.kind === "ticket_dismiss";
 
+/** A failure card is `failure:<session id>`; one that arrives without its `sessionId` takes it from there, so its Open and Retry can still be offered (and checked: a Retry is only valid for the card's own session). */
+export function withFailureSession(card: ReadHomeCard): ReadHomeCard {
+ if (card.kind !== "failure" || card.sessionId !== undefined || !card.cardId.startsWith("failure:")) return card;
+ const id = card.cardId.slice("failure:".length);
+ return SessionIdSchema.safeParse(id).success ? { ...card, sessionId: id } : card;
+}
+
 /**
  * One older Home card as a row of the new Home (exp/home): its plain state, title, one-line reason, how long since it changed and one primary action. The other actions the card offers stay,
  * quiet, so nothing it offered is lost. Only the new Home imports this (and so the plain-state words); today's HomeCard does not.
  */
-export function HomeCardRow({ card }: { card: ReadHomeCard }) {
+export function HomeCardRow({ card: read }: { card: ReadHomeCard }) {
+ const card = withFailureSession(read);
  const { actions, busy, error, run } = useHomeCardActions(card);
  const ordered = [...actions].sort((a, b) => RANK[a.kind] - RANK[b.kind]), leads = ordered[0] !== undefined && !isDismissal(ordered[0]);
  // A card with no page of its own to open (and no lead action) opens its session.

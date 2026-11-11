@@ -1,6 +1,6 @@
 // Company-approved extra test-service images, the parts under the routes: reading a reference, the registry lookup, the setup flow that proposes images, and an environment naming an image (approved only for an approved one).
 import { afterEach, describe, expect, it } from "vitest";
-import { EVIDENCE_DEPENDENCY_LABEL_WORDS } from "@agentx/contracts";
+import { EVIDENCE_DEPENDENCY_LABEL_WORDS } from "@agentx/cloud-contracts";
 import { dynamoCompanyImageStore } from "../../packages/broker/src/org/company-test-image-store.js";
 import { environmentUnusedReason } from "../../packages/broker/src/test-env/usable.js";
 import { dependencyEvidenceOf } from "../../packages/broker/src/rovara-code/dependency-evidence.js";

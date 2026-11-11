@@ -1,9 +1,4 @@
-import {
-  E2E_SYNTHETIC_ACCOUNT_RENEWAL_DAYS, E2EApplicationAccountDefinitionSchema, E2EApplicationAccountLatestSchema, E2EApplicationProjectContractSchema,
-  createE2ESyntheticAccountDefinition, deriveE2EApplicationRuntimeAccountRef, e2eApplicationAccountDefinitionDigest, e2eSyntheticAccountContractDigest,
-  projectPk, resolveE2ELatestAccountRef, validateE2EApplicationAccountBinding,
-  type E2EApplicationAccountDefinition, type E2EApplicationAccountLatest, type E2EApplicationProjectContract, type E2ERuntimeAccountRef, type OrgId,
-} from "@agentx/contracts";
+import { E2E_SYNTHETIC_ACCOUNT_RENEWAL_DAYS, E2EApplicationAccountDefinitionSchema, E2EApplicationAccountLatestSchema, E2EApplicationProjectContractSchema, createE2ESyntheticAccountDefinition, deriveE2EApplicationRuntimeAccountRef, e2eApplicationAccountDefinitionDigest, e2eSyntheticAccountContractDigest, projectPk, resolveE2ELatestAccountRef, validateE2EApplicationAccountBinding, type E2EApplicationAccountDefinition, type E2EApplicationAccountLatest, type E2EApplicationProjectContract, type E2ERuntimeAccountRef, type OrgId } from "@rovara-code/contracts";
 
 /**
  * The versioned registry of an application's test accounts (Task 3.1, owner decision D5), in the broker's one table under the project's partition in its org (`projectPk(orgId, project)`, so two orgs' same-named projects keep separate accounts):

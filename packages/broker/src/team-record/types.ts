@@ -1,7 +1,9 @@
 // The record core's own types and ports (tasks R2, R9, D1). The shapes of rows are the contracts in `contracts/src/team-record.ts`; this file holds what the
 // broker modules of the record lane share: the draft a source tap hands the pipeline, the table handle, the caller, and the ports other lanes provide.
 // Every port is a narrow interface so a lane that has not landed (vectors, the distiller, the identity link) is a stub, never a dependency.
-import type { AclSnapshot, Audience, OrgId, ProjectRole, RecordEventKind, RecordSystem, RetentionMode, TrustClass } from "@agentx/contracts";
+import type { OrgId, ProjectRole, TrustClass } from "@rovara-code/contracts";
+import type { AclSnapshot, Audience } from "@agentx/cloud-contracts";
+import type { RecordEventKind, RecordSystem, RetentionMode } from "@agentx/cloud-contracts";
 
 /** The State-table style handle: a document client and the table's name. The TeamRecord table is its own table (design 4.2). */
 export interface TeamRecordTable {

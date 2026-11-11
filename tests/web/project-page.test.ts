@@ -90,3 +90,14 @@ it("offers company-pinned website settings to an own-project maintainer without 
 it("holds website editing when an older overview has no company pin", async () => {
  const f = setup();await screen.findByRole("heading", { name: "payments" });expect(screen.queryByRole("button", { name: "Edit allowed websites" })).toBeNull();f.close();
 });
+
+it("with the new navigation on, the start confirmation says Open Work and links to Work; off it stays Open Live", async () => {
+ const send = async () => ({ status: 202, body: { task: taskFixture() } });
+ for (const nav of [true, false]) {
+  const f = setup(undefined, { send });if (nav) f.storage.set("rovara.nav", "v2");
+  fireEvent.click(await screen.findByRole("button", { name: "New session" }));fireEvent.click(screen.getByRole("button", { name: "Payments expert" }));fireEvent.change(await screen.findByRole("textbox", { name: "What should Payments expert do?" }), { target: { value: "Investigate refunds" } });fireEvent.click(screen.getByRole("button", { name: "Start session" }));
+  const link = await screen.findByRole("link", { name: nav ? "Open Work" : "Open Live" });
+  expect(link.getAttribute("href")).toBe(nav ? "/app/work" : "/app/live");expect(screen.queryByRole("link", { name: nav ? "Open Live" : "Open Work" })).toBeNull();
+  f.close();
+ }
+});

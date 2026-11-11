@@ -6,31 +6,8 @@ import { createHash } from "node:crypto";
 import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import type { z } from "zod";
 import { listMcpTools } from "@agentx/gateway";
-import {
-  type AuditEventInput,
-  ConnectionIdSchema,
-  ConnectionSecretSchemas,
-  INDEX_EXPIRY_ATTRIBUTE,
-  ObservabilityConnectionTypeSchema,
-  OrgConnectionSchema,
-  OrgIdSchema,
-  agentRequestKey,
-  agentXError,
-  canonicalJson,
-  cloudwatchExternalId,
-  cloudwatchRoleAccount,
-  connectionKey,
-  connectionSecretToken,
-  connectionTakesSecret,
-  connectionsKey,
-  readOnlyConnectionMessage,
-  type ConnectionSecret,
-  type ConnectionType,
-  type ObservabilityConnectionType,
-  type OrgConnection,
-  type OrgId,
-  type SecretConnectionType,
-} from "@agentx/contracts";
+import { type AuditEventInput } from "@agentx/cloud-contracts";
+import { ConnectionIdSchema, ConnectionSecretSchemas, INDEX_EXPIRY_ATTRIBUTE, ObservabilityConnectionTypeSchema, OrgConnectionSchema, OrgIdSchema, agentRequestKey, agentXError, canonicalJson, cloudwatchExternalId, cloudwatchRoleAccount, connectionKey, connectionSecretToken, connectionTakesSecret, connectionsKey, readOnlyConnectionMessage, type ConnectionSecret, type ConnectionType, type ObservabilityConnectionType, type OrgConnection, type OrgId, type SecretConnectionType } from "@rovara-code/contracts";
 import { auditConnectionJiraOrgAdminChanged, auditConnectionRemoved, auditConnectionSaved, auditOccurrence } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, tryAuditEvent, type AuditRuntime } from "../audit/outbox.js";

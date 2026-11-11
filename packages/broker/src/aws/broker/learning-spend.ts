@@ -8,7 +8,8 @@
 //   - Enterprise: learning has no cap of its own (Q8). `admit` is true; the company's existing budgets (the org's and the project's, in the same reservation) bind the call.
 //   - Fail closed: a counter that cannot be read is a refusal.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { OrgIdSchema, spendCounterKey } from "@agentx/contracts";
+import { OrgIdSchema } from "@rovara-code/contracts";
+import { spendCounterKey } from "@agentx/cloud-contracts";
 import { noteLearningFault } from "../../lessons/learning-deadline.js";
 import type { Edition } from "../../lessons/policy.js";
 import type { LearningSpend } from "../../lessons/ports.js";

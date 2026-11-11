@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { Citation } from "@agentx/contracts";
+import type { Citation } from "@rovara-code/contracts";
 import { RESULT_RETENTION_SECONDS, citationViews, decideQuote, dynamoResultStore, registerContextSourceCleanup, type QuoteDependencies } from "../../../packages/broker/src/context-sources/quotes.js";
 import { FakeDynamoDb } from "../../support/fake-dynamodb.js";
 import { NOW, ORG, source } from "./fixtures.js";

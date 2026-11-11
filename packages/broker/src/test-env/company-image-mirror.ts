@@ -9,7 +9,7 @@
 //   - The image is pushed with the manifest's own bytes and the approved digest, and read back from the registry by that digest before the copy is `ready`: the digest the worker pulls is the digest that was approved.
 // Nothing here returns text from a registry or from AWS: failures are one of `COMPANY_IMAGE_MIRROR_FAILURES`. The AWS calls are PORTS (`EcrWriter`); their adapter is in aws/company-image-mirror-handler.ts.
 import { createHash } from "node:crypto";
-import { companyImageMirrorTag, companyImageRegistryRule, type CompanyImageMirrorFailure } from "@agentx/contracts";
+import { companyImageMirrorTag, companyImageRegistryRule, type CompanyImageMirrorFailure } from "@agentx/cloud-contracts";
 import { configIsPlatform, manifestKindOf, readImageManifest, sha256Of } from "./company-image-manifest.js";
 import { RegistryClientError, type RegistryClient } from "./company-image-registry-client.js";
 

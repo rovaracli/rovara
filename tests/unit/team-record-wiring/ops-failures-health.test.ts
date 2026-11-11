@@ -2,7 +2,7 @@
 // health route (the same wiring `aws/broker.ts` passes: `teamRecordFailures: (orgId) => teamRecord.opsFailures(orgId)`), and the web admin page's route (`readOrgServiceStatus`).
 import { describe, expect, it } from "vitest";
 import { QueryCommand } from "@aws-sdk/lib-dynamodb";
-import { developerOrgKey, orgMemberKey, orgMetaKey, teamRecordOrgDirectoryKey } from "@agentx/contracts";
+import { developerOrgKey, orgMemberKey, orgMetaKey, teamRecordOrgDirectoryKey } from "@agentx/cloud-contracts";
 import { healthProbes } from "../../../packages/broker/src/aws/health-probes.js";
 import { readOrgServiceStatus } from "../../../packages/broker/src/org/service-status.js";
 import { createTeamRecordRuntime } from "../../../packages/broker/src/team-record/runtime.js";

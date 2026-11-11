@@ -1,11 +1,7 @@
 // Setup run contract (design setup-test-health 3.2-3.4, SH2): limits and how a company lock combines with them, the stop words, the journal entry, host asks, and the new value sources.
 import { describe, expect, it } from "vitest";
-import {
-  SETUP_AGENT_LIMITS_DEFAULT, SETUP_AGENT_LIMITS_MAX, SETUP_AGENT_LIMIT_NAMES, SETUP_AGENT_PURPOSE, SETUP_JOURNAL_MAX_ENTRIES, SETUP_PERSON_SOURCE, SETUP_RUN_END_WORDS, SETUP_RUN_LIMIT_STOPS,
-  SetupAgentLimitSettingSchema, SetupAgentLimitsSchema, SetupHostAskSchema, SetupReplacementSchema, setupReplacementText, SetupHostSchema, SetupJournalEntrySchema, SetupRunSummarySchema, SetupValueSourceSchema,
-  effectiveSetupAgentLimits, isSetupRunLimitStop, observedSource, recipeSource,
-} from "../../packages/contracts/src/setup-run.js";
-import { TestEnvironmentProposalSchema, TestEnvValueSourceSchema } from "../../packages/contracts/src/test-environment.js";
+import { SETUP_AGENT_LIMITS_DEFAULT, SETUP_AGENT_LIMITS_MAX, SETUP_AGENT_LIMIT_NAMES, SETUP_AGENT_PURPOSE, SETUP_JOURNAL_MAX_ENTRIES, SETUP_PERSON_SOURCE, SETUP_RUN_END_WORDS, SETUP_RUN_LIMIT_STOPS, SetupAgentLimitSettingSchema, SetupAgentLimitsSchema, SetupHostAskSchema, SetupReplacementSchema, setupReplacementText, SetupHostSchema, SetupJournalEntrySchema, SetupRunSummarySchema, SetupValueSourceSchema, effectiveSetupAgentLimits, isSetupRunLimitStop, observedSource, recipeSource } from "@rovara-code/contracts";
+import { TestEnvironmentProposalSchema, TestEnvValueSourceSchema } from "@rovara-code/contracts";
 
 const entry = (over: Record<string, unknown> = {}) => ({ n: 1, source: "agent", command: "uv sync --frozen", exitCode: 0, durationMs: 48_000, timedOut: false, flagged: false, blockedHosts: [], tail: "ok\n", startedAt: "2026-11-01T10:00:00.000Z", ...over });
 

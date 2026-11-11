@@ -1,7 +1,7 @@
 // The channels of the company's Slack workspace, for the Team record's pickers (source-row lane, task 10): the DeveloperIdentity function (the only holder of the bot token) answers `channel-list` with
 // Slack's `conversations.list`, and the broker reaches it through the same Lambda invoke it already uses for `channel-class`. No new token, secret, environment variable or permission.
 import { describe, expect, it, vi } from "vitest";
-import { ChannelListRequestSchema } from "@agentx/contracts";
+import { ChannelListRequestSchema } from "@rovara-code/contracts";
 import { slackDirectory } from "../../packages/broker/src/developer/slack-directory.js";
 import { channelListThroughLambda } from "../../packages/broker/src/aws/developer-routes/identity-lambda.js";
 import { BOT_TOKEN, T0, TEAM, identityHarness, routeFetch } from "../support/developer-fakes.js";

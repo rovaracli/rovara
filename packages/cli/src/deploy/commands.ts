@@ -20,7 +20,7 @@ import { SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import { SSMClient } from "@aws-sdk/client-ssm";
 import { STSClient } from "@aws-sdk/client-sts";
 import { z } from "zod";
-import { AgentXError, agentXError, environmentStackName, EnvironmentNameSchema, EditionSchema, STACK_PARTS, type Edition, type StackPart } from "@agentx/contracts";
+import { AgentXError, agentXError, environmentStackName, EnvironmentNameSchema, EditionSchema, STACK_PARTS, type Edition, type StackPart } from "@rovara-code/contracts";
 import type { CallerIdentity } from "../environments/adopt.js";
 import { cloudFormationStackReader, stsCallerIdentity } from "../environments/adopt.js";
 import { ssmParameterStore, type ParameterStore } from "../environments/parameter-store.js";
@@ -844,7 +844,7 @@ export async function prepareDeployment(input: {
       });
     } catch (error) {
       // The checkout is put back to the committed release flavor whatever fails after the build (the synth, the deployer): cleanup() is not returned yet.
-      await builtSource.restore().catch(() => input.stderr.write("the source checkout could not be put back to the release catalog flavor; run `npx tsx packages/contracts/tools/catalog-flavor.ts release` in it\n"));
+      await builtSource.restore().catch(() => input.stderr.write("the source checkout could not be put back to the release catalog flavor; run `npx tsx packages/cloud-contracts/tools/catalog-flavor.ts release` in it\n"));
       throw error;
     }
   } else {
@@ -880,7 +880,7 @@ export async function prepareDeployment(input: {
     async cleanup() {
       if (outputsDir !== undefined) await rm(outputsDir, { recursive: true, force: true });
       // The checkout goes back to the committed release flavor (the deploy has used the compiled output by now).
-      await builtSource?.restore().catch(() => input.stderr.write("the source checkout could not be put back to the release catalog flavor; run `npx tsx packages/contracts/tools/catalog-flavor.ts release` in it\n"));
+      await builtSource?.restore().catch(() => input.stderr.write("the source checkout could not be put back to the release catalog flavor; run `npx tsx packages/cloud-contracts/tools/catalog-flavor.ts release` in it\n"));
     },
   };
 }

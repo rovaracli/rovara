@@ -9,7 +9,7 @@
 //
 // A case that finds a real gap is written as the failing test it should be, marked `it.fails` with the reason, and listed in .superpowers/sdd/lessons-l7/report.md under "Gaps found".
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { OrgIdSchema } from "@agentx/contracts";
+import { OrgIdSchema } from "@rovara-code/contracts";
 import { learnedContextSection, renderLearnedBlock, validateLearnedContext } from "../../packages/worker/src/learned-context.js";
 import { approveLesson } from "../../packages/broker/src/lessons/approve.js";
 import { curateDraft } from "../../packages/broker/src/lessons/curate.js";

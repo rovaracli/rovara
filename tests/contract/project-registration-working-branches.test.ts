@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { expect, it, vi } from "vitest";
-import { developerOrgKey, githubInstallationKey, orgMemberKey, orgMetaKey, orgProjectCatalogKey, projectMemberKey, projectRevisionKey } from "@agentx/contracts";
+import { developerOrgKey, githubInstallationKey, orgMemberKey, orgMetaKey } from "@agentx/cloud-contracts";
+import { orgProjectCatalogKey, projectMemberKey, projectRevisionKey } from "@rovara-code/contracts";
 import type { DeveloperCaller } from "../../packages/broker/src/aws/developer-routes.js";
 import { commitReviewedProjectWorkingBranch } from "../../packages/broker/src/org/project-settings.js";
 import { createDeveloperTaskBroker } from "../support/developer-task-broker.js";

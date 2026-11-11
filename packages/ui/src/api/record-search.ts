@@ -1,7 +1,7 @@
 // UX-4b (owner decision 3): the team record search on the project page. It reads the record's own routes (`GET .../record/search` and `.../record/past-work`), so the server applies the same read
 // authority as everywhere else: a hit from a source the reader can't see is never sent. Those routes answer refusals with a flat `{code, message}` body, so this reads its own replies and keeps only the code.
 import { useQuery } from "@tanstack/react-query";
-import { PastWorkResponseSchema, ProjectOverviewProjectSchema, RecordSearchResponseSchema, type PastWorkResponse, type RecordSearchResponse } from "@agentx/contracts/web";
+import { PastWorkResponseSchema, ProjectOverviewProjectSchema, RecordSearchResponseSchema, type PastWorkResponse, type RecordSearchResponse } from "@agentx/cloud-contracts/web";
 import { useAppHost, type AppHost } from "../host.js";
 import { ApiError } from "./errors.js";
 import { codeOf } from "./record-sources.js";

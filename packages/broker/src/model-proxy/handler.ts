@@ -4,7 +4,7 @@
 // Manager and kept in memory. Nothing here logs a key, the master key, or request arguments.
 import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import { AssumeRoleCommand, STSClient } from "@aws-sdk/client-sts";
-import { AgentXError, MODEL_ENDPOINT_SECRET_PREFIX, agentXError, isModelEndpointSecretRef } from "@agentx/contracts";
+import { AgentXError, MODEL_ENDPOINT_SECRET_PREFIX, agentXError, isModelEndpointSecretRef } from "@rovara-code/contracts";
 import { bedrockClaudeModelIds, listPricesPerMillion, proxyGeographyForRegion } from "@agentx/model-runtime/catalog";
 import { LearningNotForwarded, type ModelAccess } from "./access.js";
 import { endpointRangesFromEnvironment, modelEndpointChecker, CUSTOM_MODEL_ENDPOINTS_ENV } from "../model-sources/endpoint-qualification.js";

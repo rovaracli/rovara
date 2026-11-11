@@ -6,10 +6,7 @@
 // A rule stuck in `pending` (a crash between the steps of an Accept) is resolved after 10 minutes: if a published version carries the note "Suggested rule <id>" it is `active`, if an approval
 // for the same request exists it is `awaiting_approval`, otherwise it was never published and goes back to `open` like a rule that was not applied.
 import { QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  LearningCorrectionSchema, LearningRuleSchema, canonicalJson, LearningSuggestionSchema, isTerminalSuggestionStatus, projectLearningKey,
-  type LearningCorrection, type LearningRule, type LearningSuggestion, type OrgId,
-} from "@agentx/contracts";
+import { LearningCorrectionSchema, LearningRuleSchema, canonicalJson, LearningSuggestionSchema, isTerminalSuggestionStatus, projectLearningKey, type LearningCorrection, type LearningRule, type LearningSuggestion, type OrgId } from "@rovara-code/contracts";
 import type { ApprovalDependencies } from "../agents/approvals.js";
 import { approvalIdFor, getAnyApproval } from "../agents/approvals-store.js";
 import type { LearningHomeSettler } from "./home-source.js";

@@ -52,9 +52,9 @@ for (const look of [{ name: "look-off", store: {} }, { name: "look-v2", store: {
    // Start and the agents row: side by side on a desktop, stacked on a phone.
    const cards = await page.evaluate(() => [".rv-hv2-start", ".rv-hv2-agents"].map(selector => { const box = document.querySelector(selector)!.getBoundingClientRect();return { top: box.top, left: box.left, right: box.right }; }));
    if (phone) { expect(cards[1]!.top).toBeGreaterThan(cards[0]!.top);expect(cards[1]!.left).toBe(cards[0]!.left);expect(cards[1]!.right).toBe(cards[0]!.right); } else { expect(cards[1]!.top).toBe(cards[0]!.top);expect(cards[1]!.left).toBeGreaterThan(cards[0]!.right - 1); }
-   // Needs you holds the decision card and both older cards; each has at most one primary action (the failure card in this fixture has no action of its own, as today). Continue and Finished recently stop at five.
+   // Needs you holds the decision card and both older cards; each has at most one primary action (the failure card in this fixture has no buttons of its own: its Open comes from its id). Continue and Finished recently stop at five.
    await expect(page.getByRole("list", { name: "What needs you" }).getByRole("listitem")).toHaveCount(3);
-   await expect(page.locator(".rv-hv2-row .rv-button-primary")).toHaveCount(2);expect(await page.getByRole("list", { name: "What needs you" }).locator(".rv-hv2-row").evaluateAll(rows => rows.map(row => row.querySelectorAll(".rv-button-primary").length))).toEqual([1, 1, 0]);
+   await expect(page.locator(".rv-hv2-row .rv-button-primary")).toHaveCount(3);expect(await page.getByRole("list", { name: "What needs you" }).locator(".rv-hv2-row").evaluateAll(rows => rows.map(row => row.querySelectorAll(".rv-button-primary").length))).toEqual([1, 1, 1]);
    await expect(page.getByRole("list", { name: "Work to continue" }).getByRole("listitem")).toHaveCount(5);await expect(page.getByRole("list", { name: "Recently finished work" }).getByRole("listitem")).toHaveCount(5);
    await expect(page.getByRole("list", { name: "Agents" }).getByRole("listitem")).toHaveCount(4);
    await expect(page.getByRole("link", { name: "See all in Work" })).toHaveCount(2);await expect(page.getByRole("link", { name: "See all in Work" }).first()).toHaveAttribute("href", "/app/live");

@@ -9,7 +9,8 @@
 // READS FAIL CLOSED: a stored item that does not read is enforced as the 1-hour minimum (never the default, which might be looser than what the company chose) and nothing can be changed until it is repaired by Rovara staff.
 import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { randomUUID } from "node:crypto";
-import { RECENT_SIGN_IN_DEFAULT_SECONDS, RECENT_SIGN_IN_MIN_SECONDS, RecentSignInSettingSchema, checkRecentSignInChange, orgMetaKey, type OrgId } from "@agentx/contracts";
+import { RECENT_SIGN_IN_DEFAULT_SECONDS, RECENT_SIGN_IN_MIN_SECONDS, RecentSignInSettingSchema, checkRecentSignInChange, orgMetaKey } from "@agentx/cloud-contracts";
+import { type OrgId } from "@rovara-code/contracts";
 import { auditCompanyApprovalWindowChanged, auditCompanyApprovalWindowProposed, auditOccurrence } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, tryAuditEvents, type AuditDeps, type TransactItem } from "../audit/outbox.js";

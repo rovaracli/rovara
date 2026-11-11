@@ -6,28 +6,9 @@
 // record's states, the sweep and the movers are approvals.ts's; this file is what is specific to a write.
 import { createHash } from "node:crypto";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  DEVELOPER_EVENT_TEXT_MAX,
-  MAX_PENDING_APPROVALS_PER_STEP,
-  OrgIdSchema,
-  AgentXError,
-  ApprovalIdSchema,
-  ConnectorCallRequestSchema,
-  agentXError,
-  canonicalJson,
-  capText,
-  describeAction,
-  projectAllows,
-  type ApprovalRules,
-  type ActionPolicy,
-  type AuditProof,
-  type Autonomy,
-  type ConnectorCallRequest,
-  type ConnectorResult,
-  type GrantedTool,
-  type OrgId,
-  type StoredProjectDefinition,
-} from "@agentx/contracts";
+import { DEVELOPER_EVENT_TEXT_MAX, OrgIdSchema, AgentXError, ApprovalIdSchema, ConnectorCallRequestSchema, agentXError, canonicalJson, capText, describeAction, projectAllows, type ApprovalRules, type ActionPolicy, type Autonomy, type ConnectorCallRequest, type ConnectorResult, type GrantedTool, type OrgId } from "@rovara-code/contracts";
+import { type StoredProjectDefinition } from "@agentx/cloud-contracts";
+import { MAX_PENDING_APPROVALS_PER_STEP, type AuditProof } from "@agentx/cloud-contracts";
 import type { AdaptedHttpRequest } from "../aws/lambda.js";
 import { readProjectMeta } from "../developer/project-roles.js";
 import { requireCreatorStillMember } from "../developer/creator-member.js";

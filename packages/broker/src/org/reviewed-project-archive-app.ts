@@ -1,5 +1,5 @@
 // Lane B reviewed archive integration: no task cancellation; effects happen only after the audited commit.
-import { AgentXError, agentXError, ReviewedProjectArchiveBodySchema, ReviewedProjectArchivePreviewSchema, ReviewedProjectArchiveOutcomeSchema, type ReviewedProjectArchiveOutcome } from "@agentx/contracts";
+import { AgentXError, agentXError, ReviewedProjectArchiveBodySchema, ReviewedProjectArchivePreviewSchema, ReviewedProjectArchiveOutcomeSchema, type ReviewedProjectArchiveOutcome } from "@rovara-code/contracts";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "../aws/developer-routes.js";
 import { logDeveloperEvent } from "../developer/log.js";
 import { commitReviewedProjectArchive, readProjectArchivePreview } from "./reviewed-project-archive.js";

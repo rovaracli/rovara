@@ -1,7 +1,7 @@
 // Meta repo lane D: the task owner's choices on a held spec. POST /v1/app/tasks/{id}/spec/{retry|continue|keep|replan}. The task's owner or a co-owner only (the same authority as publishing); the choice is applied to
 // the spec's state only when the state is where the choice expects (a late or repeated press is refused as out of date).
 import { z } from "zod";
-import { agentXError } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "../developer-routes.js";
 import { specOwnerChoice } from "../developer-tasks/spec-wiring.js";
 import { developerTaskRouteDependencies } from "./dependencies.js";

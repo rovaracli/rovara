@@ -1,7 +1,8 @@
 // Rovara Code (Plan 6 Task 19): whose approval on GitHub counts toward a merge (Finding 1), and who the requesters of a task are. Rovara's rules govern only its own Merge button: merging
 // on GitHub is governed by the repository's own branch protection. Pure except for the lookups of who is a member, which the callers pass in already read.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { isWriterOrgRole, orgMemberKey, type OrgId } from "@agentx/contracts";
+import { isWriterOrgRole, orgMemberKey } from "@agentx/cloud-contracts";
+import { type OrgId } from "@rovara-code/contracts";
 import { isTaskTakenOver, tryEffectiveTaskOwner, type TaskOwnerSource } from "../developer/task-records.js";
 import type { PullRequestReview } from "../github-pull-status.js";
 import { githubUserOfMember, memberForGithubUser, type GithubMemberDependencies } from "./github-members.js";

@@ -11,7 +11,7 @@
 // Only keys under the exact prefixes above are ever listed or deleted; an owner or workspace id that is not a plain id is refused, so no id can widen a prefix.
 import { DeleteObjectsCommand, ListObjectsV2Command, type S3Client } from "@aws-sdk/client-s3";
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
-import { OrgIdSchema, WORKSPACE_PROJECT_INDEX, orgProjectCatalogPk, workspaceProjectIndexValue, type OrgId } from "@agentx/contracts";
+import { OrgIdSchema, WORKSPACE_PROJECT_INDEX, orgProjectCatalogPk, workspaceProjectIndexValue, type OrgId } from "@rovara-code/contracts";
 import { taskKey } from "../developer/task-records.js";
 import { nightlyMapsOfOrg, nightlyMapsOfProject } from "../test-env/map-keys.js";
 import { deleteFixtureRowsOfOrg, fixtureObjectsOfOrg, scrubFixtureDevelopers } from "../test-env/fixture-erase.js";

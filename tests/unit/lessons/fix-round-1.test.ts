@@ -1,6 +1,6 @@
 // Fix round 1 (Opus review C1-C3, I1-I6, partial poisoning classes P4, P6, P9) and the owner's "Lesson limits" value ordering.
 import { describe, expect, it } from "vitest";
-import { isMeaningfulAnchor, locateCitation, CodeCitationSchema } from "../../../packages/contracts/src/index.js";
+import { isMeaningfulAnchor, locateCitation, CodeCitationSchema } from "@rovara-code/contracts";
 import { AuditUnavailable, activateLesson, approveLesson, listQueued, listWaiting, rejectLesson, retireByPerson, rollbackLessonSet, type ApproveDeps } from "../../../packages/broker/src/lessons/approve.js";
 import { applyLoadReport, recordFeedback, recordTaskOutcome, settleHelpful } from "../../../packages/broker/src/lessons/counters.js";
 import { buildWeeklyDigest } from "../../../packages/broker/src/lessons/digest.js";

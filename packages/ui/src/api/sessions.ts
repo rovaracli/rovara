@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
-import { SessionMakeAgentBodySchema, SessionMakeAgentResponseReaderSchema, TaskResponseReaderSchema, DeveloperTaskViewSchema, SessionIdSchema, SessionMessageIdSchema, SessionResponseReaderSchema, SessionMessageReaderSchema, SessionMessagePageReaderSchema, SessionEventPageReaderSchema, SessionFollowResponseReaderSchema, SessionPresenceResponseReaderSchema, SessionSharesResponseReaderSchema, SessionSharePutResponseReaderSchema, SessionShareDeleteResponseReaderSchema, type SessionAnchorInput, type AgentPrincipalSchema } from "@agentx/contracts/web";
+import { SessionMakeAgentBodySchema, SessionMakeAgentResponseReaderSchema, TaskResponseReaderSchema, DeveloperTaskViewSchema, SessionIdSchema, SessionMessageIdSchema, SessionResponseReaderSchema, SessionMessageReaderSchema, SessionMessagePageReaderSchema, SessionEventPageReaderSchema, SessionFollowResponseReaderSchema, SessionPresenceResponseReaderSchema, SessionSharesResponseReaderSchema, SessionSharePutResponseReaderSchema, SessionShareDeleteResponseReaderSchema, type SessionAnchorInput, type AgentPrincipalSchema } from "@agentx/cloud-contracts/web";
 import { useAppHost, type AppHost } from "../host.js";
 import { createApiClient } from "./client.js";
 import type { ReadSession } from "../screens/session/SessionHeader.js";

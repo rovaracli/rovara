@@ -5,7 +5,8 @@
 //     person who redirected;
 //   - the sweep that closes a redirect nobody finished.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { AgentXError, agentXError, liveInteractionFlagOn, LIVE_INTERACTION_FLAGS, orgMemberKey, workspaceSessionKey, type DeveloperSignInMethod, type RedirectRecord } from "@agentx/contracts";
+import { AgentXError, agentXError, liveInteractionFlagOn, LIVE_INTERACTION_FLAGS, workspaceSessionKey, type RedirectRecord } from "@rovara-code/contracts";
+import { orgMemberKey, type DeveloperSignInMethod } from "@agentx/cloud-contracts";
 import { continueRedirect, sweepStoppingRedirects, type RedirectContinueDependencies, type RedirectRestartHost } from "../../agent-sessions/redirect-continue.js";
 import { registerRedirectContinuation } from "../../agent-sessions/redirect-hook.js";
 import { redirectRestartingCheck } from "../../agent-sessions/redirect-state.js";

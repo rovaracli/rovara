@@ -4,7 +4,7 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
-import { builtinSettingsKey, projectMetaKey, projectRevisionKey, type OrgId } from "../../packages/contracts/src/index.js";
+import { builtinSettingsKey, projectMetaKey, projectRevisionKey, type OrgId } from "@rovara-code/contracts";
 import { MAYA, OMAR, createDeveloperTaskBroker, registerRevision, seedMembership } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
 

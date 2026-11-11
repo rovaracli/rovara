@@ -1,8 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  PARALLEL_PARTS_MAX, WorkItemProgressV1Schema, WorkflowDependencyInvocationSchema, parallelPartsFor, taskGraphDigest,
-  workflowDependencyAttemptTerminalProgress, type TaskGraphV1, type WorkItemProgressV1,
-} from "../../packages/contracts/src/index.js";
+import { PARALLEL_PARTS_MAX, WorkItemProgressV1Schema, WorkflowDependencyInvocationSchema, parallelPartsFor, taskGraphDigest, workflowDependencyAttemptTerminalProgress, type TaskGraphV1, type WorkItemProgressV1 } from "@rovara-code/contracts";
 
 const taskId = "8c330a74-b4c6-4f01-9356-5fe54fc55b19";
 const runId = "8c330a74-b4c6-4f01-9356-5fe54fc55b21";

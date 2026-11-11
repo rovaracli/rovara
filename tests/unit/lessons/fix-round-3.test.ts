@@ -1,7 +1,7 @@
 // Fix round 3 (Opus second re-check): N2 independence in people, C3 allow-list and glob reach, and the minors (hold on merge, review after resume,
 // baseline growth cap, attribution by author, requiredGroup kept). The reviewer's probes are used as tests.
 import { describe, expect, it } from "vitest";
-import { foldForMatching } from "../../../packages/contracts/src/index.js";
+import { foldForMatching } from "@rovara-code/contracts";
 import { approveLesson, type ApproveDeps } from "../../../packages/broker/src/lessons/approve.js";
 import { RISKY_SAMPLES, hasEncodedBlob, touchesRiskyPath } from "../../../packages/broker/src/lessons/guards.js";
 import { resolveLearning } from "../../../packages/broker/src/lessons/policy.js";

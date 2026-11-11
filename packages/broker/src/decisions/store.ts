@@ -1,7 +1,7 @@
 // What the card routes remember. Two things only: that a person opened a card's evidence (bound to the digest of what they saw, so the server can refuse a medium-risk approve that skipped it),
 // and the decision itself (one row per request id, which is also the history behind "approvals later reversed"). The interface is small so a test (or another table) can stand in.
 import { GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
-import { INDEX_EXPIRY_ATTRIBUTE, type DecisionKind, type DecisionRisk, type DecisionTabId } from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, type DecisionKind, type DecisionRisk, type DecisionTabId } from "@rovara-code/contracts";
 
 export interface DecisionWho { orgId: string; developerId: string }
 export interface EvidenceOpenedKey extends DecisionWho { cardId: string; tab?: DecisionTabId | undefined }

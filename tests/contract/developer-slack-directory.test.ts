@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CHANNEL_MEMBERS_MAX_CHANNELS } from "@agentx/contracts";
+import { CHANNEL_MEMBERS_MAX_CHANNELS } from "@rovara-code/contracts";
 import { slackDirectory } from "../../packages/broker/src/developer/slack-directory.js";
 import { createTaskPersonProofHandler } from "../../packages/broker/src/aws/task-person-proof-handler.js";
 import { BOT_TOKEN, T0, TEAM, fakeSlack, routeFetch } from "../support/developer-fakes.js";

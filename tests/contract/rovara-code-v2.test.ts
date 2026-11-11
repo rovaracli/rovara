@@ -2,11 +2,12 @@
 // overlay like any step's, and nothing here asks for a different AI company (owner, question 10). Version 1 stays exactly as it was.
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { ResolvedRecipeSchema, STEP_TOOLS } from "../../packages/contracts/src/agent-recipe.js";
-import { applyOverlay, codingProgram, formatRecipeProblem, recipeDigest, recipeProblems, recipeRunner, type RecipeOverlay, type ResolvedRecipe, type ResolvedStep } from "../../packages/contracts/src/agent-recipe-node.js";
-import { BUILTIN_AGENTS, builtinDefaultPin, builtinRecipe, currentBuiltinVersion } from "../../packages/contracts/src/agent-templates.js";
-import { WorkflowProgramSchema } from "../../packages/contracts/src/task-workflow.js";
-import { WorkflowSnapshotSchema, advanceStage, createWorkflowSnapshot, nextProgramStep, type WorkflowProgram } from "../../packages/contracts/src/task-workflow-node.js";
+import { ResolvedRecipeSchema, STEP_TOOLS } from "@rovara-code/contracts";
+import { applyOverlay, codingProgram, formatRecipeProblem, recipeDigest, recipeProblems, recipeRunner, type RecipeOverlay, type ResolvedRecipe, type ResolvedStep } from "@rovara-code/contracts";
+import { BUILTIN_AGENTS, builtinDefaultPin, builtinRecipe, currentBuiltinVersion } from "@rovara-code/contracts";
+import { WorkflowProgramSchema } from "@rovara-code/contracts";
+import { WorkflowSnapshotSchema, createWorkflowSnapshot } from "../../packages/cloud-contracts/src/task-workflow-node.js";
+import { advanceStage, nextProgramStep, type WorkflowProgram } from "@rovara-code/contracts";
 import { crossCompanyTargets, stepForOperation } from "../../packages/broker/src/agents/dispatch.js";
 import { lessSafeChanges } from "../../packages/broker/src/agents/less-safe.js";
 

@@ -1,7 +1,7 @@
 // The optional repository file: what the server reports (connected or not, status, last check, the difference, the pull request) and the three things an admin can do: connect, sync now, disconnect. Connecting needs a recent sign-in;
 // a refusal comes back in the server's words. Nothing here is guessed: a side that changed is only named when the answer says so.
 import { useState, type FormEvent } from "react";
-import { COMPANY_RULES_DEFAULT_FILE_PATH, COMPANY_RULES_SYNC_PROBLEM_TEXT, CompanyRulesBodySchema } from "@agentx/contracts/web";
+import { COMPANY_RULES_DEFAULT_FILE_PATH, COMPANY_RULES_SYNC_PROBLEM_TEXT, CompanyRulesBodySchema } from "@agentx/cloud-contracts/web";
 import { ApiError } from "../../../api/errors.js";
 import { useCompanyRulesApi, useCompanyRulesSync } from "../../../api/company-rules.js";
 import { Button } from "../../../design/Button.js";

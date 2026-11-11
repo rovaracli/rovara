@@ -2,7 +2,7 @@
 // N3b: the customer-owned deployer installs only the bytes an Enterprise approval pinned, and checks them again: against the approval record, the build's own manifest, the signed kit,
 // the install's recorded settings and the install's edition. Each test tampers with one link of that chain.
 import { afterEach, describe, expect, it } from "vitest";
-import { editionBackupParameter, BuiltManifestSchema, accessTemplatesAgree, approvedFileKey, bundleApprovalKey, editionRecordParameter, sha256OfBytes, synthSettingsParameter, templateWithoutCodeLocations, type ApprovalRecord } from "@agentx/contracts";
+import { editionBackupParameter, BuiltManifestSchema, accessTemplatesAgree, approvedFileKey, bundleApprovalKey, editionRecordParameter, sha256OfBytes, synthSettingsParameter, templateWithoutCodeLocations, type ApprovalRecord } from "@agentx/cloud-contracts";
 import type { BuiltBundle } from "../support/bundle-fixture.js";
 import { FAKE_ASSET } from "../support/synth-kit-fixture.js";
 import { EnterpriseWorld, SETTINGS_ENT } from "../support/enterprise-approval-world.js";
@@ -130,7 +130,7 @@ describe("the deployer installs a build made at approval", () => {
     const { ew, record, id } = await approved();
     const other = { ...SETTINGS_ENT(), env: "other" };
     await ew.setSettings(other);
-    const { synthSettingsSha256, redactedSynthSettings } = await import("@agentx/contracts");
+    const { synthSettingsSha256, redactedSynthSettings } = await import("@agentx/cloud-contracts");
     const rewritten = rewriteManifest(ew, id, record, (m) => { m.settingsSha256 = synthSettingsSha256(other); });
     writeRecord(ew, id, { ...rewritten, build: { ...rewritten.build!, settingsSha256: synthSettingsSha256(other), settings: redactedSynthSettings(other) } });
     expect(await ew.world.run({ bundleId: id })).toMatchObject({ status: "refused", reason: expect.stringMatching(/recorded build settings are not this install's/) });

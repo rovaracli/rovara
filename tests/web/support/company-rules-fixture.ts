@@ -1,5 +1,5 @@
 // Fixtures for Settings > Company rules: the owner-approved first 14 rules (7 Required, 7 Preferred) and builders for the state, the proposal, the history and the repository file, each checked against the contract's strict schemas.
-import { CompanyRulesStateSchema, CompanyRulesHistorySchema, CompanyRulesVersionViewSchema, CompanyRulesSyncSchema, CompanyRulesCurrentSchema, type CompanyRuleView, type CompanyRulesState, type CompanyRulesDiff } from "@agentx/contracts/web";
+import { CompanyRulesStateSchema, CompanyRulesHistorySchema, CompanyRulesVersionViewSchema, CompanyRulesSyncSchema, CompanyRulesCurrentSchema, type CompanyRuleView, type CompanyRulesState, type CompanyRulesDiff } from "@agentx/cloud-contracts/web";
 
 const rule = (priority: CompanyRuleView["priority"], text: string): CompanyRuleView => ({ priority, text });
 export const RULES_14: CompanyRuleView[] = [

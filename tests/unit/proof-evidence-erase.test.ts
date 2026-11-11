@@ -3,7 +3,7 @@
 import { DeleteObjectsCommand, GetObjectCommand, ListObjectsV2Command, PutObjectCommand, type S3Client } from "@aws-sdk/client-s3";
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it, vi } from "vitest";
-import { WORKSPACE_PROJECT_INDEX, orgProjectCatalogPk, workspaceProjectIndexValue, type OrgId } from "../../packages/contracts/src/index.js";
+import { WORKSPACE_PROJECT_INDEX, orgProjectCatalogPk, workspaceProjectIndexValue, type OrgId } from "@rovara-code/contracts";
 import { createEvidenceErase, evidencePrefixesOf, evidenceStoredIn, markEvidenceStored, resumeEvidenceErase } from "../../packages/broker/src/rovara-code/evidence-erase.js";
 import { evidencePackKey, keepEvidence } from "../../packages/broker/src/rovara-code/evidence-keep.js";
 import { clearArchivedProjectLearning } from "../../packages/broker/src/aws/developer-routes/project-archive-setup.js";

@@ -1,8 +1,8 @@
 import { Stack, type App } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { beforeAll, describe, expect, it } from "vitest";
-import { WORKER_SETTING_PARAMETERS } from "../../packages/contracts/src/session.js";
-import { DERIVED_BROKER_VARIABLES } from "../../packages/contracts/src/derived-names.js";
+import { WORKER_SETTING_PARAMETERS } from "@rovara-code/contracts";
+import { DERIVED_BROKER_VARIABLES } from "../../packages/cloud-contracts/src/derived-names.js";
 import { hydrateBrokerEnvironment } from "../../packages/broker/src/aws/broker-environment.js";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";

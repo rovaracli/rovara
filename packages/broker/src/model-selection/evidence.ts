@@ -1,7 +1,7 @@
 import {inactiveModelSourcesRevision,type ModelPolicyReader} from "./policy-store.js";
 // v1.1 source-level evidence only: no probes, secrets or new evidence State rows.
 import { createHash } from "node:crypto";
-import { agentXError, canonicalModelName, canonicalJson, modelCompany, sourceKindProblem, type ModelIdentifier, type OrgId } from "@agentx/contracts";
+import { agentXError, canonicalModelName, canonicalJson, modelCompany, sourceKindProblem, type ModelIdentifier, type OrgId } from "@rovara-code/contracts";
 import { bedrockClaudeModelIds, catalogModel } from "@agentx/model-runtime/catalog";
 import { effectiveSources, endpointUsable, type RoutingDependencies } from "../model-sources/routing.js";
 import type { ChatGptConnections } from "../chatgpt/connections.js";

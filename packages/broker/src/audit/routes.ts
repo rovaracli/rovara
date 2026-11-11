@@ -10,14 +10,9 @@
 //
 // Reads are recorded after they are served (`recordAuditRead`, best effort): the one documented exception to recording in the
 // action's own transaction, since a read has no write to join. The staff path (admin-routes.ts) records before it reads.
-import {
-  AUDIT_LIMITS_COPY,
-  AUDIT_ERROR_MESSAGES,
-  agentXError,
-  type AuditActor,
-  type OrgId,
-  type OrgRole,
-} from "@agentx/contracts";
+import { AUDIT_LIMITS_COPY, AUDIT_ERROR_MESSAGES, type OrgRole } from "@agentx/cloud-contracts";
+import { agentXError, type OrgId } from "@rovara-code/contracts";
+import { type AuditActor } from "@agentx/cloud-contracts";
 import { canReadAuditLog } from "../org/auditor.js";
 import { indexedQueryOf, readIndexedAudit } from "./indexed-reader.js";
 import { z } from "zod";

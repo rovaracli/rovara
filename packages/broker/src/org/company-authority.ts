@@ -1,5 +1,6 @@
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { OrgIdSchema, agentXError, developerOrgKey, orgMemberKey, orgMetaKey, type OrgId } from "@agentx/contracts";
+import { OrgIdSchema, agentXError, type OrgId } from "@rovara-code/contracts";
+import { developerOrgKey, orgMemberKey, orgMetaKey } from "@agentx/cloud-contracts";
 export interface CompanyAuthorityDependencies { documentClient: { send(command: unknown): Promise<unknown> }; tableName: string; signInTableName: string }
 export interface CompanyViewer { orgId: OrgId; developerId: string; browserSession?: true }
 const forbidden = () => agentXError("FORBIDDEN", "Live company owner or admin access is required.");

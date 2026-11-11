@@ -1,7 +1,7 @@
 // Track record (v1.2 slice 1): what the tracking pass does with the samples of a pull request: a person's first request for changes, a feedback round a person started, a pull
 // request closed without merging. The pass reads GitHub as it always did; the samples change after its own write, and a failing outcome write never fails the pass.
 import { describe, expect, it } from "vitest";
-import type { WorkflowSnapshot } from "../../packages/contracts/src/index.js";
+import type { WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { trackPullRequest } from "../../packages/broker/src/rovara-code/merge-tracking.js";
 import { outcomeRoundOf, recordPublicationOutcomes } from "../../packages/broker/src/rovara-code/outcome-hooks.js";
 import type { OutcomeDependencies } from "../../packages/broker/src/rovara-code/outcomes.js";

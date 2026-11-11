@@ -4,23 +4,8 @@
 // flushed after the commit. Comments, follows, messages, per-person and per-project shares and the removal of a share are not recorded.
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import {
-  AUDIT_ACTIONS,
-  AUDIT_FACT_KEYS,
-  AUDIT_TARGET_KINDS,
-  AuditEventInputSchema,
-  LOCAL_TOOLS,
-  agentSessionKey,
-  agentXError,
-  auditEventId,
-  liveSessionKey,
-  mySessionsKey,
-  orgSettingsKey,
-  type AuditEventInput,
-  type LocalAgentPolicy,
-  type OrgId,
-  type OrgRole,
-} from "@agentx/contracts";
+import { AUDIT_ACTIONS, AUDIT_FACT_KEYS, AUDIT_TARGET_KINDS, AuditEventInputSchema, auditEventId, orgSettingsKey, type AuditEventInput, type LocalAgentPolicy, type OrgRole } from "@agentx/cloud-contracts";
+import { LOCAL_TOOLS, agentSessionKey, agentXError, liveSessionKey, mySessionsKey, type OrgId } from "@rovara-code/contracts";
 import { checkChain, genesisHash, type AuditRecordV1 } from "@rovara/audit-verifier";
 import { appendOne, type AppenderDeps } from "../../packages/broker/src/audit/appender.js";
 import { AuditKeyring } from "../../packages/broker/src/audit/keyring.js";
@@ -38,7 +23,7 @@ import type { DecideKinds } from "../../packages/broker/src/developer/decide-kin
 import { DECIDE_COOKIE, DecideStore, csrfTokenFor, mintConfirmUrl, type DecideRequestContext } from "../../packages/broker/src/developer/decide-session.js";
 import { taskIndexKey, taskKey, type DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
 import { routeDeviceRequest, type DeviceRouteDependencies } from "../../packages/broker/src/devices/routes.js";
-import { NeedsConfirmationSchema } from "../../packages/contracts/src/index.js";
+import { NeedsConfirmationSchema } from "@rovara-code/contracts";
 import { AUDIT_CAPTURE_TABLE, capturingAuditDeps, hangingAuditDeps, type AuditCapture } from "../support/audit-capture.js";
 import { ARJUN, CELL, MAX, OLA, ORG_A, ORG_B, PRIYA, ZED, sessionWorld } from "../support/agent-session-world.js";
 import { MAYA, OMAR, createDeveloperTaskBroker, seedMembership } from "../support/developer-task-broker.js";

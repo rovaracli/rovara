@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { LESSON_EMBEDDER, TEAM_RECORD_EMBEDDER, VECTOR_DIMENSION_DEFAULT, teamRecordVectorIndexName } from "@agentx/contracts";
+import { LESSON_EMBEDDER, TEAM_RECORD_EMBEDDER, VECTOR_DIMENSION_DEFAULT, teamRecordVectorIndexName } from "@agentx/cloud-contracts";
 import { EmbedderError, createEmbedderClient, type EmbedderClient } from "../../../packages/broker/src/embedder/client.js";
 import { EmbedUnavailableError, createEmbedder } from "../../../packages/broker/src/team-record/embed.js";
 

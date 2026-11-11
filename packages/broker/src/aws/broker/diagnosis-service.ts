@@ -8,7 +8,7 @@
 //
 // The service names a diagnosis by its org and id; it can name only one the broker queued itself, and everything that decides what the turn may know or cost (the error, the project, the person)
 // comes from the broker's own record of the diagnosis. The switch is OFF by default: with it off nothing is built and every route answers NOT_FOUND.
-import { DiagnosisModelAccessRequestSchema, DiagnosisRefSchema, agentXError, canonicalModelName, type OperationRequester } from "@agentx/contracts";
+import { DiagnosisModelAccessRequestSchema, DiagnosisRefSchema, agentXError, canonicalModelName, type OperationRequester } from "@rovara-code/contracts";
 import type { SessionAccessDependencies } from "../../agent-sessions/access.js";
 import type { DeveloperRouteDependencies } from "../developer-routes/types.js";
 import { defaultBranchFileReader } from "../../diagnosis/default-branch-file.js";

@@ -1,6 +1,6 @@
 // Enterprise foundations I-1: what the edition allows of a sign-in session, checked wherever a session is used (the sign-in server and every broker request), so a session
 // that already existed when an install became Enterprise (Slack, cloud, or a company session from before the group mapping) is held to the same rules as a new one.
-import type { DeveloperSignInMethod, EditionPolicy } from "@agentx/contracts";
+import type { DeveloperSignInMethod, EditionPolicy } from "@agentx/cloud-contracts";
 
 /**
  * Whether the edition allows a sign-in method: where it has no public sign-in methods, only the company's own (`oidc`, and `saml`). SAML is the company's own sign-in and is

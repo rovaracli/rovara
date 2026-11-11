@@ -4,7 +4,7 @@
 // records every read of a name that is packed or derived before the unpacking starts.
 import { readFileSync } from "node:fs";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { BROKER_NAMES, BROKER_NAMES_VARIABLE, BROKER_SETTINGS, BROKER_SETTINGS_VARIABLE, DERIVED_BROKER_VARIABLES } from "@agentx/contracts";
+import { BROKER_NAMES, BROKER_NAMES_VARIABLE, BROKER_SETTINGS, BROKER_SETTINGS_VARIABLE, DERIVED_BROKER_VARIABLES } from "@agentx/cloud-contracts";
 import { requiredEnvironment } from "../../packages/broker/src/aws/lambda.js";
 import type * as BrokerEnvironment from "../../packages/broker/src/aws/broker-environment.js";
 import { brokerVariables } from "../support/broker-packed-variables.js";

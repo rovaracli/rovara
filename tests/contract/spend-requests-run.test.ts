@@ -13,11 +13,9 @@ import {
 import { runSpendSweep, settlementBudgets, SETTLEMENT_BUDGETS_MS } from "../../packages/broker/src/spend/settlement-job.js";
 import { supersedeKeys, finalizeKey } from "../../packages/broker/src/spend/ledger.js";
 import { DECIDE_COOKIE, DecideStore, csrfTokenFor } from "../../packages/broker/src/developer/decide-session.js";
-import {
-  defaultSpendPolicy, ownerBudgetKey, orgSettingsKey, DEFAULT_AGENT_GUARDRAILS, ROVARA_CODE_AGENT_ID, agentGuardrailsKey, OWNER_ANSWER_HOURS, SPEND_RESUME_INSTRUCTIONS, WORKFLOW_BLOCK_REASONS, TRIAL_LIMITS_R49,
-  modelKeyKey, openSpendRequestsKey, orgMemberKey, orgRemovedKey, spendCounterKey, spendRequestKey, suggestedTopUpUsd,
-} from "@agentx/contracts";
-import { projectMemberKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { defaultSpendPolicy, ownerBudgetKey, orgSettingsKey, OWNER_ANSWER_HOURS, SPEND_RESUME_INSTRUCTIONS, WORKFLOW_BLOCK_REASONS, TRIAL_LIMITS_R49, modelKeyKey, openSpendRequestsKey, orgMemberKey, orgRemovedKey, spendCounterKey, spendRequestKey, suggestedTopUpUsd } from "@agentx/cloud-contracts";
+import { DEFAULT_AGENT_GUARDRAILS, ROVARA_CODE_AGENT_ID, agentGuardrailsKey } from "@rovara-code/contracts";
+import { projectMemberKey } from "@rovara-code/contracts";
 import { MAYA, OMAR, seedMembership } from "../support/developer-task-broker.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { TEST_ORG } from "../support/orgs.js";

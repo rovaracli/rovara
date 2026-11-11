@@ -14,7 +14,7 @@
 //
 // The task ends like a setup run: `nightlyEndItems` sets `agentRunEnd`, which gives back its workspace slot and workspace, and the run never feeds the cost estimates (it has a purpose).
 import { createHash } from "node:crypto";
-import { NIGHTLY_RUN_ORIGIN, NIGHTLY_RUN_PURPOSE, ROVARA_CODE_AGENT_ID, agentXError, type NightlyRunPayload, type NightlyRunWire, type NightlySkipReason, type OrgId } from "@agentx/contracts";
+import { NIGHTLY_RUN_ORIGIN, NIGHTLY_RUN_PURPOSE, ROVARA_CODE_AGENT_ID, agentXError, type NightlyRunPayload, type NightlyRunWire, type NightlySkipReason, type OrgId } from "@rovara-code/contracts";
 import { taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
 import { readApprovedBy, readApprovedTestEnvironment, type TestEnvDeps } from "../org/test-environment.js";
 import { startAutomaticRun, type AutomaticRunDependencies } from "../automatic-runs/start.js";

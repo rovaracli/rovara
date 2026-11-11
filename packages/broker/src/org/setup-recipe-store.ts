@@ -6,7 +6,8 @@
 // A revoked or rejected recipe MOVES, in the same transaction, to SETUP_RECIPE_REVOKED#<id>, so live queries (the offers, the caps, the admin's list) never page through history. Every write is ONE TransactWriteItems: the row (conditional on the revision the caller read), the counters, the dedupe marker and the audit item. A cancelled
 // transaction answers false (the caller then says CHANGE_STALE). A write without an audit ledger is refused: recipes and locks are company authority, so there is no unaudited path.
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { INDEX_EXPIRY_ATTRIBUTE, OrgIdSchema, SetupRecipeBodySchema, agentXError, orgPk, setupRecipeDigest, type AuditEventInput, type OrgId } from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, OrgIdSchema, SetupRecipeBodySchema, agentXError, orgPk, setupRecipeDigest, type OrgId } from "@rovara-code/contracts";
+import { type AuditEventInput } from "@agentx/cloud-contracts";
 import { auditOccurrence, auditSetupRecipeChange, type SetupRecipeAuditAction } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, type AuditRuntime, type TransactItem } from "../audit/outbox.js";

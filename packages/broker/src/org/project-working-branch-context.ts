@@ -1,5 +1,5 @@
 // Fresh stored-project context for a future branch chooser. No provider calls or writes.
-import { AgentXError, AgentXNameSchema, ProjectWorkingBranchContextQuerySchema, ProjectWorkingBranchContextSchema, agentXError, canonicalJson } from "@agentx/contracts";
+import { AgentXError, AgentXNameSchema, ProjectWorkingBranchContextQuerySchema, ProjectWorkingBranchContextSchema, agentXError, canonicalJson } from "@rovara-code/contracts";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "../aws/developer-routes.js";
 import { parseGitHubRepository } from "../github-app.js";
 import { githubPinsOf } from "./project-working-branch-host.js";

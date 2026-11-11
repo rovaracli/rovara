@@ -5,7 +5,7 @@
 // the external id and the trust policy to put on that role.
 import { useState } from "react";
 import { z } from "zod";
-import { AWS_REGIONS, CLOUDWATCH_MAX_REGIONS, DATADOG_SITES } from "@agentx/contracts/web";
+import { AWS_REGIONS, CLOUDWATCH_MAX_REGIONS, DATADOG_SITES } from "@agentx/cloud-contracts/web";
 import { useAppHost } from "../../../host.js";
 import { createApiClient } from "../../../api/client.js";
 import { ApiError } from "../../../api/errors.js";

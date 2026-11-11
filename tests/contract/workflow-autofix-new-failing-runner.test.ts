@@ -1,9 +1,8 @@
 // Setup and test health (owner decision, M2), the runner: with the broker's port (vx on) a check that failed before AND has a new failing test is sent back to coding; without it (vx off) the same block is asked
 // about exactly as before. A port that fails or names no check leaves everything as it was; at the cap a person is asked.
 import { describe, expect, it, vi } from "vitest";
-import {
-  WORKFLOW_AGENTX_ACTOR_ID, WorkflowDecisionRecordSchema, WorkflowSnapshotSchema, createCandidateManifest, createWorkflowSnapshot, type WorkflowDecision, type WorkflowSnapshot,
-} from "@agentx/contracts";
+import { WORKFLOW_AGENTX_ACTOR_ID, WorkflowDecisionRecordSchema, createCandidateManifest, type WorkflowDecision } from "@rovara-code/contracts";
+import { WorkflowSnapshotSchema, createWorkflowSnapshot, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 
 const moves = vi.hoisted(() => ({ sendBack: vi.fn(async () => "STARTED" as const), retryChecks: vi.fn(async () => "STARTED" as const), retryReviews: vi.fn(async () => "STARTED" as const) }));
 vi.mock("../../packages/broker/src/aws/developer-tasks.js", () => ({ autoSendBackToCodingFromSystem: moves.sendBack, autoRetryChecksFromSystem: moves.retryChecks, autoRetryReviewsFromSystem: moves.retryReviews }));

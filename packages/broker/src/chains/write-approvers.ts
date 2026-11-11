@@ -7,7 +7,7 @@
 // Plan 3's agent-tools call asks the registered selectors for `approvers` just before `decideWrite` (`registerWriteApproverSelector`); `chainWriteApprovers` is Plan 4's.
 // Every other write keeps Plan 3's `write_approver`: a person-started run, a member-owned chain's event-started run (its owner is the member), a plain agent run.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { ChainRunIdSchema, projectAllows, type OrgId } from "@agentx/contracts";
+import { ChainRunIdSchema, projectAllows, type OrgId } from "@rovara-code/contracts";
 import { orgRoleOf } from "../agents/access.js";
 import { registerWriteApproverSelector, type WriteApproverRun, type WriteApproverTask } from "../agents/agent-tools-routes.js";
 import { registerApproverRule, type AnyApprovalRecord, type ApprovalCaller, type ApprovalDependencies, type ApproverSpec } from "../agents/approvals.js";

@@ -4,11 +4,12 @@
 // hook, a weekly schedule), a run R waiting at its gate, a Sentry connection N and a connector `sentry` on `web`. Org B has a project `web` of its own and nothing else.
 import { createHmac, randomUUID } from "node:crypto";
 import { expect, vi } from "vitest";
-import { agentGuardrailsKey, approvalKey, orgProjectCatalogKey, projectMemberKey, projectAgentKey, projectMetaKey, projectRevisionKey, DEFAULT_AGENT_GUARDRAILS, type OrgId, type OrgRole } from "@agentx/contracts";
+import { agentGuardrailsKey, approvalKey, orgProjectCatalogKey, projectMemberKey, projectAgentKey, projectMetaKey, projectRevisionKey, DEFAULT_AGENT_GUARDRAILS, type OrgId } from "@rovara-code/contracts";
+import { type OrgRole } from "@agentx/cloud-contracts";
 import { issueCapability } from "../../packages/broker/src/aws/cancellation.js";
 import { call as callHandler } from "./slack-broker.js";
 import { onTaskEnded } from "../../packages/broker/src/agents/task-end.js";
-import { recipeDigest, type RecipeOverlay } from "../../packages/contracts/src/agent-recipe-node.js";
+import { recipeDigest, type RecipeOverlay } from "@rovara-code/contracts";
 import { OrgSecrets } from "../../packages/broker/src/connections/org-secrets.js";
 import { createChainScheduler } from "../../packages/broker/src/triggers/schedules.js";
 import type { TriggerScheduler } from "../../packages/broker/src/triggers/ports.js";
@@ -17,7 +18,7 @@ import { AgentStore, resolveAgent } from "../../packages/broker/src/agents/store
 import { checkEndpointUrl } from "../../packages/broker/src/connections/endpoint-check.js";
 import { BUILT_IN_CONNECTOR_TYPES } from "../../packages/broker/src/aws/connector-types.js";
 import type { OrgResolver } from "../../packages/broker/src/org/resolve.js";
-import type { ChainDefinitionInput } from "../../packages/contracts/src/chains.js";
+import type { ChainDefinitionInput } from "@rovara-code/contracts";
 import { OMAR, createDeveloperTaskBroker, seedMembership, type Developer } from "./developer-task-broker.js";
 import { routeFetch } from "./developer-fakes.js";
 import { FAKE_CONNECTOR_ROLE_ARN, FakeOrgSecrets } from "./fake-org-secrets.js";

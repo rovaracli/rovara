@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import { CandidateManifestSchema, createCandidateManifest, verifyE2ESourceSnapshot, type E2ESourceSnapshot } from "@agentx/contracts";
+import { CandidateManifestSchema, createCandidateManifest, verifyE2ESourceSnapshot, type E2ESourceSnapshot } from "@rovara-code/contracts";
 import { StoredCandidateBuildSourceSchema, assessCandidateBuildSource } from "./candidate-build-source.js";
 
 /**

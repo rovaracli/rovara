@@ -8,7 +8,7 @@ import { ArchiveProject } from "./ArchiveProject.js";
 import { useAdminContext } from "../AdminLayout.js";
 import { projectRoleLabel, projectSetupLabel } from "./labels.js";
 import { Link, useParams, useSearchParams } from "react-router";
-import { AppProjectDetailSchema, ProjectMembersResponseSchema, type AppProjectDetail } from "@agentx/contracts/web";
+import { AppProjectDetailSchema, ProjectMembersResponseSchema, type AppProjectDetail } from "@agentx/cloud-contracts/web";
 import { DataTable } from "../../../design/DataTable.js";
 import { PageHeader } from "../../../design/PageHeader.js";
 import { VisibleText } from "../../../design/VisibleText.js";

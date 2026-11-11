@@ -1,7 +1,7 @@
 // LV-1 (SRL-4 review F1): a lesson learned from a task that was project-wide must stop reaching the project once that task is narrowed. Every lesson read goes through `readVisible`, which asks the
 // LIVE visibility of every task the lesson was learned from (`supportTasks`, task citations, the Rovara events it cites), in one batched read, and fails closed.
 import { describe, expect, it } from "vitest";
-import { OrgIdSchema } from "../../../packages/contracts/src/index.js";
+import { OrgIdSchema } from "@rovara-code/contracts";
 import { buildWeeklyDigest } from "../../../packages/broker/src/lessons/digest.js";
 import { learnedContextFromRefs, type DeliveryDeps } from "../../../packages/broker/src/lessons/deliver.js";
 import { learnedContextForOperation } from "../../../packages/broker/src/aws/broker/lessons-dispatch.js";

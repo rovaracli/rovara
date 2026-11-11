@@ -4,12 +4,7 @@
 // Also the replay check's fields and bar, which the quality suite fills.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import {
-  HowWeWorkStageSchema, SECOND_REVIEW_BAR, SECOND_REVIEW_MODES, SecondOpinionSchema, SecondReviewReplayRunSchema, configuredSecondReviewMode,
-  lockSecondReviewLoweringNeedsSecondPerson, projectSecondReviewLoweringNeedsSecondPerson, secondReviewModelKey, secondReviewShadowPassed,
-  stricterSecondReviewMode, summarizeSecondReviewReplay, workflowFindingFingerprint,
-  type ModelIdentifier, type SecondReviewReplayCase, type SecondReviewReplayRun, type SecondReviewVerdict, type WorkflowReviewReport,
-} from "@agentx/contracts";
+import { HowWeWorkStageSchema, SECOND_REVIEW_BAR, SECOND_REVIEW_MODES, SecondOpinionSchema, SecondReviewReplayRunSchema, configuredSecondReviewMode, lockSecondReviewLoweringNeedsSecondPerson, projectSecondReviewLoweringNeedsSecondPerson, secondReviewModelKey, secondReviewShadowPassed, stricterSecondReviewMode, summarizeSecondReviewReplay, workflowFindingFingerprint, type ModelIdentifier, type SecondReviewReplayCase, type SecondReviewReplayRun, type SecondReviewVerdict, type WorkflowReviewReport } from "@rovara-code/contracts";
 import {
   admitSecondReview, againstModels, estimateSecondReviewUsd, planSecondReview, secondOpinionOf, secondOpinionPrLines, secondOpinionShownOn,
   mergeWaitsForSecondReview, secondOpinionUnavailable, secondReviewAcknowledgement, secondReviewAlreadyRan, secondReviewBlocksWhenUnavailable,

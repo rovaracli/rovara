@@ -5,7 +5,7 @@
 import { access, rm } from "node:fs/promises";
 import type { CloudFormationClient } from "@aws-sdk/client-cloudformation";
 import type { IAMClient } from "@aws-sdk/client-iam";
-import { agentXError, environmentPullThroughPrefix, environmentStackName, type StackPart } from "@agentx/contracts";
+import { agentXError, environmentPullThroughPrefix, environmentStackName, type StackPart } from "@rovara-code/contracts";
 import { tokenStoreKey } from "../auth.js";
 import { forgetDeveloperSignIn } from "../developer/config.js";
 import { plainMessage } from "../output.js";

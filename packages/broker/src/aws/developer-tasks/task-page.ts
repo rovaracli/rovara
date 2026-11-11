@@ -1,46 +1,7 @@
 import { WORKFLOW_BREAKDOWN_REFUSALS } from "../../developer/workflow-actions.js";
 import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  workflowPullRequestUpdateDue,
-  agentXError,
-  redactText,
-  sharedTaskKey,
-  type Operation,
-  type DeveloperTaskView,
-  SessionIdSchema,
-  type WorkflowSnapshot,
-  type TaskComment,
-  type TaskSuggestion,
-  commentIdInAuthor,
-  plannerReplyCommentId,
-  commentRefInAuthor,
-  workflowSelectedChecks,
-  type WorkflowReviewFinding,
-  WORKFLOW_PLAN_MAX_BYTES,
-  WORKFLOW_BLOCK_REASONS,
-  isNoCodeChangedReason,
-  noChangeFindingsFrom,
-  noChangeHasThread,
-  NO_CHANGE_CHOICES_NO_THREAD,
-  NO_CHANGE_CHOICES_PAGE,
-  WORKFLOW_APPLICATION_SELECTION_CHANGED_PREFIX,
-  WORKFLOW_APPLICATION_ACCOUNTS_CHANGED_PREFIX,
-  WORKFLOW_APPLICATION_RUNTIME_UNUSABLE_PREFIX,
-  workflowApplicationRetryOffered,
-  workflowReviseOffered,
-  canonicalJson,
-  type PlanClaim,
-  type PlanDocument,
-  workflowKeepPullRequestsOffered,
-  type E2EScenarioResults,
-  blockingFindings,
-  workflowReviewRoles,
-  isRunLimitBlockReason,
-  isCiFixBlockReason,
-  isBranchConflictAskReason,
-  isBranchSyncGiveUpReason,
-  isBranchSyncBlockReason,
-} from "@agentx/contracts";
+import { workflowPullRequestUpdateDue, type DeveloperTaskView, type WorkflowSnapshot, WORKFLOW_BLOCK_REASONS, workflowReviseOffered, workflowKeepPullRequestsOffered } from "@agentx/cloud-contracts";
+import { agentXError, redactText, sharedTaskKey, type Operation, SessionIdSchema, type TaskComment, type TaskSuggestion, commentIdInAuthor, plannerReplyCommentId, commentRefInAuthor, workflowSelectedChecks, type WorkflowReviewFinding, WORKFLOW_PLAN_MAX_BYTES, isNoCodeChangedReason, noChangeFindingsFrom, noChangeHasThread, NO_CHANGE_CHOICES_NO_THREAD, NO_CHANGE_CHOICES_PAGE, WORKFLOW_APPLICATION_SELECTION_CHANGED_PREFIX, WORKFLOW_APPLICATION_ACCOUNTS_CHANGED_PREFIX, WORKFLOW_APPLICATION_RUNTIME_UNUSABLE_PREFIX, workflowApplicationRetryOffered, canonicalJson, type PlanClaim, type PlanDocument, type E2EScenarioResults, blockingFindings, workflowReviewRoles, isRunLimitBlockReason, isCiFixBlockReason, isBranchConflictAskReason, isBranchSyncGiveUpReason, isBranchSyncBlockReason } from "@rovara-code/contracts";
 import { isE2EPlanCorrectionBlockReason, ownerNameOfActor, taskKey, taskOwnerKey, tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../../developer/task-records.js";
 import { nameResolverOf, replacementNames, shownNameOf, type NameReplacements } from "../../developer/name-resolver.js";
 import { planEvidencePointerKey, type PlanEvidencePointer } from "../../developer/plan-evidence-jobs.js";
@@ -72,7 +33,7 @@ import {
   type PageActor,
 } from "../../developer/page-comments.js";
 import { readDecisionDetail } from "../../developer/owner-answers.js";
-import type { MergeView } from "@agentx/contracts";
+import type { MergeView } from "@rovara-code/contracts";
 import { readMergeTracking } from "../../rovara-code/merge-tracking.js";
 import type { DeveloperTaskRouteDependencies } from "./types.js";
 import { OWNER_LABEL, TASK_PAGE_DOCUMENTS, estimateDependencies, get, log, ownerLabel, removedReasonOf } from "./common.js";

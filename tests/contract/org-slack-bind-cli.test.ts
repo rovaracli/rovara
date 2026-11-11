@@ -120,7 +120,7 @@ describe("the slack command", () => {
 it("B34 actual CLI requests reach the broker: bind refused and direct unbind succeeds", async () => {
  const { createDeveloperTaskBroker, seedMembership, OMAR } = await import("../support/developer-task-broker.js");
  const { TEST_ORG } = await import("../support/orgs.js"), { SLACK_CHANNEL, SLACK_TEAM } = await import("../support/slack-broker.js");
- const { slackBindingKey } = await import("../../packages/contracts/src/index.js");
+ const { slackBindingKey } = await import("@rovara-code/contracts");
  const broker = await createDeveloperTaskBroker();seedMembership(broker.db, OMAR.developerId, { orgId: TEST_ORG, role: "owner" });
  // Session bridge signs the fixture developer identity; routing, validation,
  // authorization and mutations are the actual broker, not canned responses.

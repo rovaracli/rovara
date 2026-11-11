@@ -11,7 +11,7 @@
 import { spawn } from "node:child_process";
 import { accessSync, constants, existsSync } from "node:fs";
 import { dirname, delimiter, join } from "node:path";
-import { agentXError } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
 
 export interface SynthRunInput {
   /** Absolute path of the kit's entry module inside the verified private copy. */

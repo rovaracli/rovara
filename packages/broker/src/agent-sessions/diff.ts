@@ -1,7 +1,8 @@
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { requireSessionLevel } from "./access.js";
 import { taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
-import { DIFF_FILES_PAGE_MAX, DIFF_PATCH_MAX_BYTES, SessionDiffSchema, ChainRunViewSchema, CHAIN_MAX_STEP_RUNS, projectAllows, agentXError, redactText, type OrgId, type SessionDiff, type DeveloperTaskView } from "@agentx/contracts";
+import { DIFF_FILES_PAGE_MAX, DIFF_PATCH_MAX_BYTES, SessionDiffSchema, ChainRunViewSchema, CHAIN_MAX_STEP_RUNS, projectAllows, agentXError, redactText, type OrgId, type SessionDiff } from "@rovara-code/contracts";
+import { type DeveloperTaskView } from "@agentx/cloud-contracts";
 import { type SessionReadCaller, type SessionReadDependencies } from "./read.js";
 export interface SessionDiffDependencies extends SessionReadDependencies {
  diff?: {

@@ -7,7 +7,7 @@ import { SERVER_PAGE_ICON, serverPageCss } from "@agentx/design-tokens";
 // instead of `'none'` so its form can post, plus `X-Frame-Options: DENY`. The referrer policy is `same-origin`, NOT `no-referrer`: with
 // `no-referrer` a browser sends `Origin: null` on the form's post, which the strict Origin check refuses. Nothing is sent to another
 // origin either way.
-import {StageModelFixHrefSchema} from "@agentx/contracts";
+import { StageModelFixHrefSchema } from "@rovara-code/contracts";
 import type { ConfirmView } from "./decide-kinds.js";
 
 export interface PageResponse { statusCode: number; headers: Record<string, string>; body: string }
@@ -59,8 +59,12 @@ function callBlock(call: NonNullable<ConfirmView["call"]>): string {
 /** An open approval: what will happen, then Approve and Decline in a POST form carrying the CSRF token. */
 export function confirmPage(view: ConfirmView, input: { approvalId: string; csrf: string }): PageResponse {
   const facts = view.facts.length === 0 ? "" : `<dl>${view.facts.map((fact) => `<dt>${text(fact.label)}</dt><dd>${text(fact.value)}</dd>`).join("")}</dl>`;
+  // An optional reason, sent with the form but used only by Decline (the page runs no script, so it can't be hidden until Decline is pressed).
+  const reason = view.declineReason === undefined ? ""
+    : `<p><label for="reason">If you decline, tell the person who asked why (optional, at most ${String(view.declineReason.max)} characters). It is not used if you approve.</label></p>`
+      + `<p><textarea id="reason" name="reason" maxlength="${String(view.declineReason.max)}" rows="3" cols="60"></textarea></p>`;
   const form = `<form method="post" action="/v1/app/approve/${escape(input.approvalId)}">`
-    + `<input type="hidden" name="csrf" value="${escape(input.csrf)}">`
+    + `<input type="hidden" name="csrf" value="${escape(input.csrf)}">${reason}`
     + `<button type="submit" name="decision" value="approve" class="rv-primary">Approve</button><button type="submit" name="decision" value="decline" class="rv-secondary">Decline</button></form>`;
   return shell(200, view.title, `${paragraphs(view.paragraphs ?? [])}${facts}${view.call === undefined ? "" : callBlock(view.call)}${form}`);
 }

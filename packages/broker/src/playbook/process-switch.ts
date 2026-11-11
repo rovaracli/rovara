@@ -3,7 +3,7 @@
 // adopted, the switch waits for a second person on the confirmation page, like a less-safe publish of the layer: the same approvers, the same process self-confirm rules (a project of one
 // may confirm its own). "Stricter" is the layer-to-built-in reading of the rules a publish uses (`lessSafeChanges` and `processLessSafeChanges`). Pointing at the layer, and a switch that
 // loses nothing, apply at once.
-import { PLAYBOOK_STALE_MESSAGE, ROVARA_CODE_AGENT_ID, agentXError, type AgentId, type OrgId } from "@agentx/contracts";
+import { PLAYBOOK_STALE_MESSAGE, ROVARA_CODE_AGENT_ID, agentXError, type AgentId, type OrgId } from "@rovara-code/contracts";
 import { randomUUID } from "node:crypto";
 import { createPendingChange, type ApprovalDependencies } from "../agents/approvals.js";
 import { agentApprovers, resolveRecipe } from "../agents/changes.js";

@@ -1,10 +1,8 @@
 // 0.2.12 live test: an owner-approved PR feedback fix changed the sentence a task's own approved check looked for, so the
 // fix failed that check. Once the owner approves a fix, its check changes replace the matching checks of the plan.
 import { describe, expect, it } from "vitest";
-import {
-  WorkflowSnapshotSchema, WorkflowTransitionError, applyWorkflowFeedbackCheckChanges, createWorkflowSnapshot, workflowFeedbackCheckChanges,
-  describeWorkflowCheckChanges, feedbackReplacementCheckProblem, workflowCheckCommandText, workflowSelectedChecks, type WorkflowCheckPolicyInput,
-} from "../../packages/contracts/src/index.js";
+import { WorkflowSnapshotSchema, applyWorkflowFeedbackCheckChanges, createWorkflowSnapshot } from "@agentx/cloud-contracts";
+import { WorkflowTransitionError, workflowFeedbackCheckChanges, describeWorkflowCheckChanges, feedbackReplacementCheckProblem, workflowCheckCommandText, workflowSelectedChecks, type WorkflowCheckPolicyInput } from "@rovara-code/contracts";
 
 const taskId = "8b579b4b-eaa7-4bf2-87bc-6da86b97c9e6";
 const ownerId = "a".repeat(64);

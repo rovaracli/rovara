@@ -1,6 +1,6 @@
 import { RemovalPolicy, aws_logs as logs, aws_route53resolver as resolver } from "aws-cdk-lib";
 import { Construct } from "constructs";
-import { DEFAULT_AGENT_ALLOW_DOMAINS } from "@agentx/contracts";
+import { DEFAULT_AGENT_ALLOW_DOMAINS } from "@rovara-code/contracts";
 
 export { DEFAULT_AGENT_ALLOW_DOMAINS };
 

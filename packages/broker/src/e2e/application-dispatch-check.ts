@@ -1,4 +1,4 @@
-import { WORKFLOW_APPLICATION_ACCOUNTS_CHANGED_PREFIX, WORKFLOW_APPLICATION_PLAN_NOT_APPROVABLE_PREFIX, WORKFLOW_APPLICATION_ROUND_REFUSED_PREFIX, WORKFLOW_APPLICATION_RUNTIME_UNUSABLE_PREFIX, canonicalJson, type E2EApplicationSelectionRecord } from "@agentx/contracts";
+import { WORKFLOW_APPLICATION_ACCOUNTS_CHANGED_PREFIX, WORKFLOW_APPLICATION_PLAN_NOT_APPROVABLE_PREFIX, WORKFLOW_APPLICATION_ROUND_REFUSED_PREFIX, WORKFLOW_APPLICATION_RUNTIME_UNUSABLE_PREFIX, canonicalJson, type E2EApplicationSelectionRecord } from "@rovara-code/contracts";
 
 /**
  * A dispatch of an approved application round that must not happen, with the plain reason the owner sees. It is terminal for that dispatch: the

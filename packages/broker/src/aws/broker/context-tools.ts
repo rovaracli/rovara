@@ -2,7 +2,7 @@
 // The capability is checked like a callback's (signature, expiry, scope, fence); a refused one is 401. The operation must be the workspace's active one and
 // not finished or being cancelled, and its task must belong to the same org: any disagreement serves nothing. What a stage may use, and every check before
 // a source is asked, is `context-sources/routes.ts`.
-import { agentXError, type OrgId } from "@agentx/contracts";
+import { agentXError, type OrgId } from "@rovara-code/contracts";
 import { TERMINAL, requireOperation, type CallbackClaims } from "../cancellation.js";
 import { boundedSink, droppingSink, emptySearch, type TeamRecordSink } from "../../context-sources/team-record.js";
 import type { ContextSourcesRuntime } from "../../context-sources/runtime.js";

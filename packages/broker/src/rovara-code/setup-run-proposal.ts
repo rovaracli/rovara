@@ -4,7 +4,7 @@
 //   - no proposal's commands reach the settings before approval (TE-2: `applyProposalCommands` refuses every unapproved proposal, and the approval writes only what the proposal's own candidate check ran); `refuseSetupRunProposal` is no longer called by the wizard;
 //   - a person's own edit, or going back to Rovara's draft, replaces it (`clearEditedProposal` removes the marker too).
 import { GetCommand, PutCommand, DeleteCommand } from "@aws-sdk/lib-dynamodb";
-import { INDEX_EXPIRY_ATTRIBUTE, agentXError, projectPk, testEnvDigest, type OrgId, type TestEnvironmentBody } from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, agentXError, projectPk, testEnvDigest, type OrgId, type TestEnvironmentBody } from "@rovara-code/contracts";
 
 type Store = { documentClient: { send(command: unknown): Promise<unknown> }; tableName: string; now: () => number };
 const TTL_MS = 7 * 86_400_000;

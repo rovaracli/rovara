@@ -1,13 +1,13 @@
 // The routes the Working agreement panel reads, as one cell: the project's How we work view, the design review setting, the lessons and learning settings, the known failing policy, the company rules count and the
 // stage models. Each part can be changed, or left out (answered 404, the way an install without it answers).
-import { LearningViewAnswerSchema } from "@agentx/contracts/web";
+import { LearningViewAnswerSchema } from "@agentx/cloud-contracts/web";
 import type { ApiRequest, ApiResponse } from "../../../packages/ui/src/host.js";
 import { fakeHost } from "./fake-host.js";
 import { navFixture } from "./fixtures.js";
 import { howWeWorkView } from "./how-we-work-view.js";
 import { view as lessonsView } from "./lessons-fixture.js";
 import { effective, mid, stageEntry, stageModelsRaw, SONNET, OPUS } from "./stage-models-raw.js";
-import { StageModelsResponseSchema } from "@agentx/contracts/web";
+import { StageModelsResponseSchema } from "@agentx/cloud-contracts/web";
 
 export type Part = "view" | "playbook" | "models" | "lessons" | "learning" | "policy" | "rules";
 export interface AgreementWorld {

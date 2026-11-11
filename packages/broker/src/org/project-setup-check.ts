@@ -9,10 +9,8 @@
 //   the sweep fails a stalled check at); PREPARATION_FAILED -> failed, with the failing step read from the prepare's recorded error; anything else
 //   -> ready. A workspace the check closed reads as the status it had when it closed (`closedFrom`).
 import { QueryCommand, TransactWriteCommand, GetCommand, UpdateCommand, type TransactWriteCommandInput } from "@aws-sdk/lib-dynamodb";
-import {
-  INDEX_EXPIRY_ATTRIBUTE, agentXError, formatCommandLine, projectMetaKey, redactText,
-  type AppProjectSummary, type OrgId, type OrgKey, type PreparePins, type ProjectCommand,
-} from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, agentXError, formatCommandLine, projectMetaKey, redactText, type OrgId, type OrgKey, type PreparePins, type ProjectCommand } from "@rovara-code/contracts";
+import { type AppProjectSummary } from "@agentx/cloud-contracts";
 import { STUCK_SETUP_MS } from "../aws/stuck-setup.js";
 import { chargeConflict, chargeItems, limitReached } from "../developer/limits.js";
 import { CANDIDATE_CHECK_ENTITY, candidateCheckKey, candidateExpiry } from "./test-env-candidate.js";
@@ -37,7 +35,7 @@ export interface SetupCheckedDefinition {
   readiness: readonly ProjectCommand[];
 }
 
-/** How many characters of the failure reason the status keeps (after the stage and command). */
+/** How many characters the whole failing step keeps (stage, command and reason): the app's contract caps `failedStep` at 300. */
 export const FAILED_REASON_MAX = 300;
 const COMMAND_SHOWN_MAX = 120;
 export const STALLED_STEP = "setup: did not finish within 50 minutes";
@@ -58,6 +56,16 @@ export function setupCheckLimitMessage(full: "member" | "organization", limits: 
 }
 
 const first = (text: string, limit: number) => [...text].slice(0, limit).join("").trimEnd();
+/** At most `limit` UTF-16 units (what the contract's `max` counts), ending with "…" when the text was cut; a cut never splits a character. */
+export function shortened(text: string, limit: number): string {
+  if (text.length <= limit) return text;
+  let kept = "";
+  for (const character of text) {
+    if (kept.length + character.length > limit - 1) break;
+    kept += character;
+  }
+  return `${kept.trimEnd()}…`;
+}
 /** Text for a person's screen: redacted, on one line, with every control and format character (escapes, direction overrides) turned into a space. */
 const oneLine = (text: string) => redactText(text).replace(/[\p{Cc}\p{Cf}\s]+/gu, " ").trim();
 
@@ -68,16 +76,18 @@ async function getItem(deps: Send, tableName: string, key: OrgKey | { pk: string
 /**
  * The failing step as the app shows it: `"setup: npm ci - <reason>"` or `"test: npm test - <reason>"`. The stage and command come from the failure
  * the worker recorded (`setup step 0 (...)`, `readiness check 1 (...)`), looked up in the revision that was checked; a failure that names neither
- * (a clone, a devcontainer) is `"setup: <reason>"`. The reason is the first 300 characters of the recorded, redacted error, on one line.
+ * (a clone, a devcontainer) is `"setup: <reason>"`. The reason is the recorded, redacted error on one line. The whole step is at most `FAILED_REASON_MAX`
+ * characters: the command stays whole (up to 120), and the reason is cut to what is left, ending with "…".
  */
 export function failedStepOf(error: string, definition: Pick<SetupCheckedDefinition, "setup" | "readiness">): string {
   const named = /^(setup step|readiness check) (\d{1,4}) \(/u.exec(error);
-  const reason = first(oneLine(error), FAILED_REASON_MAX);
-  if (named === null) return reason === "" ? "setup" : `setup: ${reason}`;
+  const text = oneLine(error);
+  if (named === null) return text === "" ? "setup" : `setup: ${shortened(text, FAILED_REASON_MAX - "setup: ".length)}`;
   const stage = named[1] === "setup step" ? "setup" : "test";
   const run = (stage === "setup" ? definition.setup : definition.readiness)[Number(named[2])];
   const shown = run === undefined ? "" : first(oneLine(formatCommandLine(run)), COMMAND_SHOWN_MAX);
-  return `${stage}:${shown === "" ? "" : ` ${shown}`}${reason === "" ? "" : ` - ${reason}`}`;
+  const prefix = `${stage}:${shown === "" ? "" : ` ${shown}`}`;
+  return text === "" ? prefix : `${prefix} - ${shortened(text, FAILED_REASON_MAX - prefix.length - " - ".length)}`;
 }
 
 /** The error the check's prepare recorded, or undefined when it recorded none (or the workspace has no prepare). */

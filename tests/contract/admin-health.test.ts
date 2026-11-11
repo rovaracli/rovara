@@ -6,7 +6,7 @@ import { GitHubAppCredentialProvider } from "../../packages/broker/src/github-ap
 import { createAdminReadBroker } from "../support/admin-read-broker.js";
 import { SLACK_CHANNEL, SLACK_TEAM, ensureWorkspace } from "../support/slack-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
-import { orgFailureIndexKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { orgFailureIndexKey } from "@rovara-code/contracts";
 
 const TEST_PRIVATE_KEY = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ type: "pkcs8", format: "pem" }).toString();
 
@@ -213,31 +213,31 @@ describe("the GitHub App's webhook deliveries", () => {
 
     it("opens an installation: the ids it reaches, whether the list is certainly complete (not when it filled every page), and ONE token for the list and every lookup", async () => {
       const fetch = repositoriesFetch({ pages: [[5, 6, 7]], direct: { 5: 200, 6: 404 } });
-      const view = await provider(fetch).installationRepositoryView(9, { system: "private-install" });
+      const view = await provider(fetch).installationRepositoryView(9, { system: "install" });
       expect(view).toMatchObject({ ids: [5, 6, 7], complete: true });
       expect(await view.status(5)).toBe("exists");
       expect(await view.status(6)).toBe("missing");
       expect(fetch.mock.calls.filter(([url]) => String(url).endsWith("/access_tokens"))).toHaveLength(1);
       const full = Array.from({ length: 100 }, (_, index) => index + 1);
-      const filled = await provider(repositoriesFetch({ pages: Array.from({ length: 10 }, () => full) })).installationRepositoryView(9, { system: "private-install" });
+      const filled = await provider(repositoriesFetch({ pages: Array.from({ length: 10 }, () => full) })).installationRepositoryView(9, { system: "install" });
       expect(filled.complete).toBe(false);
     });
 
     it("answers a repository by id: 200 exists, 404 missing, and anything else (403, 429, 500, a redirect) throws, so it can never read as gone", async () => {
-      const status = async (code: number) => (await provider(repositoriesFetch({ direct: { 5: code } })).installationRepositoryView(9, { system: "private-install" })).status(5);
+      const status = async (code: number) => (await provider(repositoriesFetch({ direct: { 5: code } })).installationRepositoryView(9, { system: "install" })).status(5);
       expect(await status(200)).toBe("exists");
       expect(await status(404)).toBe("missing");
       for (const code of [301, 403, 429, 500]) await expect(status(code), String(code)).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
     });
 
     it("throws when the installation token cannot be minted (an uninstalled App is not a deletion)", async () => {
-      await expect(provider(repositoriesFetch({ tokenStatus: 404 })).installationRepositoryView(9, { system: "private-install" })).rejects.toBeDefined();
+      await expect(provider(repositoriesFetch({ tokenStatus: 404 })).installationRepositoryView(9, { system: "install" })).rejects.toBeDefined();
     });
 
     it("ends every call, the token mint, the list and a lookup, at the caller's deadline", async () => {
       const hang = vi.fn(async (_url: unknown, init?: RequestInit) => { await new Promise((resolve) => init?.signal?.addEventListener("abort", resolve)); throw new Error("aborted"); });
       const started = Date.now();
-      await expect(provider(hang as never).installationRepositoryView(9, { system: "private-install" }, AbortSignal.timeout(50))).rejects.toThrow();
+      await expect(provider(hang as never).installationRepositoryView(9, { system: "install" }, AbortSignal.timeout(50))).rejects.toThrow();
       expect(Date.now() - started).toBeLessThan(3_000);
     });
   });

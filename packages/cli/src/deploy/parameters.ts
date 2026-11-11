@@ -3,10 +3,11 @@
 // the exact CloudFormation Parameters map for one environment stack. The caller (phase 15d's `agentx
 // init`/`agentx upgrade`) reads secrets and calls CloudFormation; this file only computes values.
 import { customDomainParameters, type CustomDomain } from "../environments/custom-domain.js";
-import type { Edition } from "@agentx/contracts";
+import type { Edition } from "@rovara-code/contracts";
 import { EMBEDDER_IMAGE, embedderImageHome } from "../config/keys.js";
-import { BUNDLE_IMAGE_REPOSITORY_PREFIX, environmentPullThroughPrefix, CLOUD_PROJECT_FOUNDATION_PARAMETERS, CONTROL_PLANE_FOUNDATION_PARAMETERS, ImageDigest, MODEL_PROXY_FOUNDATION_PARAMETERS, KEYED_MODEL_PROVIDERS, KEYED_PROVIDER_IDS, environmentStackName } from "@agentx/contracts";
-import type { ReleaseManifest, StackPart } from "@agentx/contracts";
+import { BUNDLE_IMAGE_REPOSITORY_PREFIX } from "@agentx/cloud-contracts";
+import { environmentPullThroughPrefix, CLOUD_PROJECT_FOUNDATION_PARAMETERS, CONTROL_PLANE_FOUNDATION_PARAMETERS, ImageDigest, MODEL_PROXY_FOUNDATION_PARAMETERS, KEYED_MODEL_PROVIDERS, KEYED_PROVIDER_IDS, environmentStackName } from "@rovara-code/contracts";
+import type { ReleaseManifest, StackPart } from "@rovara-code/contracts";
 import { signInStackParameters, type StoredDeveloperSignIn } from "../signin/settings.js";
 
 import { bootStage2ImagesProblem, providerSecretArn, type AuditLockProfileAnswer, type CloudSignInAnswers, type ModelsAnswers } from "./answer-schemas.js";
@@ -105,7 +106,7 @@ export const OPERATOR_PARAMETERS: Readonly<Record<DeployPart, readonly string[]>
   // The AI navigation model the customer chose (agentx config set models.e2eAgent): a stack parameter and not a model role, so it is not in the settings the upgrade's answers read.
   // MODEL3: the fallback model the customer chose (agentx config set models.fallback), also a parameter of the Slack stack.
   runtime: ["E2eAgentModelId", "ModelFallback"],
-  "control-plane": ["BudgetMonthlyUsd", "BudgetScope", "SlackAppPostedMessages", "SlackThreadTurnsPerMinute", "SlackMemberWorkspaceLimit", "SlackOrganizationWorkspaceLimit", "McpConfirmElicitation", "TaskPeopleChangesEnabled", "TaskPeoplePublicInvitationsEnabled", "TaskPeoplePrivateInvitationsEnabled", "TaskPersonProofEnabled", "WorkflowDependenciesEnabled", "RovaraCodeV2Enabled", "PlanSelfCheckEnabled", "AutofixEnabled", "LiveSteerEnabled", "LiveRedirectEnabled", "LiveAskEnabled", "LiveFixEnabled", "ProofEvidenceEnabled", "DecisionCardsEnabled", "TestEnvironmentEnabled", "LearnedLessonsEnabled", "VerifyResultsEnabled", "SetupAgentEnabled", "TestServicesEnabled", "TestAccountsEnabled", "ProjectImagesEnabled", "SecondReviewEnabled", "SavedEnvEnabled", "ScriptTokensEnabled", "SlackExplicitMembers", "StandingInstructionsEnabled", "DesignReviewEnabled", "SetupRecipesEnabled", "NightlyHealthEnabled", "LearningSuggestionsDefault", "TeamRecordEnabled", "EmbedderImageUri", "AuditLockProfile", ...RETIRED_OPERATOR_PARAMETERS["control-plane"]],
+  "control-plane": ["BudgetMonthlyUsd", "BudgetScope", "SlackAppPostedMessages", "SlackThreadTurnsPerMinute", "SlackMemberWorkspaceLimit", "SlackOrganizationWorkspaceLimit", "McpConfirmElicitation", "TaskPeopleChangesEnabled", "TaskPeoplePublicInvitationsEnabled", "TaskPeoplePrivateInvitationsEnabled", "TaskPersonProofEnabled", "WorkflowDependenciesEnabled", "RovaraCodeV2Enabled", "PlanSelfCheckEnabled", "AutofixEnabled", "LiveSteerEnabled", "LiveRedirectEnabled", "LiveAskEnabled", "LiveFixEnabled", "ProofEvidenceEnabled", "DecisionCardsEnabled", "TestEnvironmentEnabled", "LearnedLessonsEnabled", "VerifyResultsEnabled", "SetupAgentEnabled", "TestServicesEnabled", "TestAccountsEnabled", "ProjectImagesEnabled", "SecondReviewEnabled", "SavedEnvEnabled", "ScriptTokensEnabled", "SlackExplicitMembers", "StandingInstructionsEnabled", "DesignReviewEnabled", "SetupRecipesEnabled", "NightlyHealthEnabled", "LearningSuggestionsDefault", "UiFlagsForceOff", "TeamRecordEnabled", "EmbedderImageUri", "AuditLockProfile", ...RETIRED_OPERATOR_PARAMETERS["control-plane"]],
   slack: ["SlowTurnMinutes", "ModelFallback"],
 };
 

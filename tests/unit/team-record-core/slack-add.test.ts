@@ -4,7 +4,8 @@
 // membership is read again at the press.
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { developerOrgKey, orgMemberKey, orgMetaKey, projectMemberKey, projectMetaKey, type OrgId } from "@agentx/contracts";
+import { developerOrgKey, orgMemberKey, orgMetaKey } from "@agentx/cloud-contracts";
+import { projectMemberKey, projectMetaKey, type OrgId } from "@rovara-code/contracts";
 import { recordWriteContextOf } from "../../../packages/broker/src/aws/developer-routes/team-record-source-write.js";
 import { handleRecordRoute } from "../../../packages/broker/src/team-record/routes.js";
 import { dynamoRateLimiter } from "../../../packages/broker/src/team-record/query.js";

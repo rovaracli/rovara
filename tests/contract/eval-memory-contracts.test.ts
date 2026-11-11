@@ -1,8 +1,6 @@
 // L7 / W1: the memory arm of an eval batch (contracts/src/eval-memory.ts). Contract only: the quality-suite batch that will carry it is not on this branch.
 import { describe, expect, it } from "vitest";
-import {
-  EvalBatchFileSchema, EvalMemoryDimensionSchema, MemoryInputSchema, compareMemoryArms, evalMemoryArmCount, evalMemoryArms, memoryInputForArm, type MemoryArmRow,
-} from "@agentx/contracts";
+import { EvalBatchFileSchema, EvalMemoryDimensionSchema, MemoryInputSchema, compareMemoryArms, evalMemoryArmCount, evalMemoryArms, memoryInputForArm, type MemoryArmRow } from "@rovara-code/contracts";
 
 const SNAPSHOT = `snp_${"0123456789abcdef0123"}`;
 const row = (task: string, arm: "on" | "off", resolved: boolean | undefined, repeat?: number): MemoryArmRow => ({ task, arm, resolved, ...(repeat === undefined ? {} : { repeat }) });

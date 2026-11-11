@@ -1,8 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  E2EDisplayScenarioSchema, E2E_APPLICATION_SEND_BACK_CODES, cutEvidenceReason, WorkflowSnapshotSchema, createCandidateManifest, createWorkflowSnapshot, sendBackInstructions, sendBackProblems,
-  workflowApplicationEvidenceCodes, workflowSendBackOffered, type WorkflowSnapshot,
-} from "@agentx/contracts";
+import { E2EDisplayScenarioSchema, E2E_APPLICATION_SEND_BACK_CODES, cutEvidenceReason, createCandidateManifest, workflowApplicationEvidenceCodes } from "@rovara-code/contracts";
+import { WorkflowSnapshotSchema, createWorkflowSnapshot, sendBackInstructions, sendBackProblems, workflowSendBackOffered, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import type { DockerApplicationUnavailableReason } from "@agentx/verifier";
 import { E2E_OWNER_SENTENCES } from "../../packages/broker/src/e2e/owner-sentences.js";
 import { buildScenarioRows, type DisplayGroupInput } from "../../packages/broker/src/e2e/application-display.js";

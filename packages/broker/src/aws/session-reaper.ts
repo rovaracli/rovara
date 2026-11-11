@@ -2,7 +2,7 @@ import { DescribeInstancesCommand, DescribeVolumesCommand, EC2Client, TerminateI
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { SFNClient, StartExecutionCommand } from "@aws-sdk/client-sfn";
 import { DynamoDBDocumentClient, GetCommand } from "@aws-sdk/lib-dynamodb";
-import { SESSION_MAX_LIFETIME_MS, type Ec2RuntimeBinding, type WorkspaceSession } from "@agentx/contracts";
+import { SESSION_MAX_LIFETIME_MS, type Ec2RuntimeBinding, type WorkspaceSession } from "@rovara-code/contracts";
 import { installOrgIdFromEnvironment } from "../org/resolve.js";
 import { requiredEnvironment } from "./lambda.js";
 import { SessionManager, computeMeteringFromEnvironment, workspaceBinding } from "./sessions.js";

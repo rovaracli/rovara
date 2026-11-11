@@ -5,7 +5,7 @@ import { mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { classifyCheck, type CheckEntry, type ProjectCommand } from "../../packages/contracts/src/index.js";
+import { classifyCheck, type CheckEntry, type ProjectCommand } from "@rovara-code/contracts";
 import type { CheckRunners } from "../../packages/worker/src/verification/checks.js";
 
 const IDENTITY = { GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" };

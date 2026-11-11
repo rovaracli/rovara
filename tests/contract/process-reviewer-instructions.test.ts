@@ -2,10 +2,10 @@
 // Rovara's built-in layers and instructions written on the stage itself. Ordinary agents are unchanged. And a process layer's draft cannot change the order of stages yet.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { BUILTIN_AGENTS } from "../../packages/contracts/src/agent-templates.js";
-import { DEFAULT_AGENT_GUARDRAILS } from "../../packages/contracts/src/agent-guardrails.js";
-import { applyOverlay, type RecipeLayer, type RecipeOverlay, type ResolvedRecipe } from "../../packages/contracts/src/agent-recipe-node.js";
-import { ROVARA_CODE_AGENT_ID, agentKey, type AgentId } from "../../packages/contracts/src/index.js";
+import { BUILTIN_AGENTS } from "@rovara-code/contracts";
+import { DEFAULT_AGENT_GUARDRAILS } from "@rovara-code/contracts";
+import { applyOverlay, type RecipeLayer, type RecipeOverlay, type ResolvedRecipe } from "@rovara-code/contracts";
+import { ROVARA_CODE_AGENT_ID, agentKey, type AgentId } from "@rovara-code/contracts";
 import { applyAgentStep, type DispatchMode } from "../../packages/broker/src/agents/dispatch.js";
 import { publishDraft, resolveRecipe } from "../../packages/broker/src/agents/changes.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
@@ -14,7 +14,7 @@ import { postProjectProcess } from "../../packages/broker/src/playbook/process-l
 import type { ProjectPlaybookDependencies } from "../../packages/broker/src/playbook/routes.js";
 import { MAX, ORG_A } from "../support/agent-session-world.js";
 import { mergeWorld as baseWorld, type MergeWorld } from "../support/rovara-code-merge-world.js";
-import { agentXError } from "../../packages/contracts/src/index.js";
+import { agentXError } from "@rovara-code/contracts";
 
 const PROJECT_RULE = "PROJECT-WIDE-RULE: always mention the ticket id.";
 const REVIEW_RULE = "REVIEW-STAGE-RULE: check the migration.";

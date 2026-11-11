@@ -6,7 +6,7 @@ import { developerTaskIdentity, taskOwnerKey } from "../../packages/broker/src/d
 import { MAYA, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
 import { markReady } from "../support/slack-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
-import { projectMemberKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { projectMemberKey } from "@rovara-code/contracts";
 
 const taskId = "44444444-4444-4444-8444-444444444444";
 const task = { taskId, developerId: MAYA.developerId, provider: "slack" as const, developerName: "Maya Chen", client: "Claude Code" };
@@ -156,7 +156,7 @@ describe("acceptPullRequest attribution and draft (FR-023, R14)", () => {
       repository: "demo", repositoryUrl: "https://github.com/example/demo.git", headBranch: record.publication.headBranch, baseBranch: "main",
       commit: "d".repeat(40), title: "Fix", body: record.publication.body,
     });
-    expect(reconcile).toHaveBeenCalledWith(expect.objectContaining({ title: "Fix", body: record.publication.body, draft: true }), { system: "private-install" });
+    expect(reconcile).toHaveBeenCalledWith(expect.objectContaining({ title: "Fix", body: record.publication.body, draft: true }), { system: "install" });
   });
 });
 

@@ -1,5 +1,5 @@
-import { ResolvedRecipeSchema } from "@agentx/contracts/web";
-import type { AgentDiffResponseReaderSchema } from "@agentx/contracts/web";
+import { ResolvedRecipeSchema } from "@agentx/cloud-contracts/web";
+import type { AgentDiffResponseReaderSchema } from "@agentx/cloud-contracts/web";
 export type ReadRecipeDiff = ReturnType<typeof AgentDiffResponseReaderSchema.parse>;
 export interface RecipeChange { label:string; before:unknown; after:unknown; notes:string[] }
 const labels:Record<string,string>={instructions:"Additional instructions",model:"Model",fallbackModel:"Fallback model",thinkingLevel:"Reasoning effort",timeoutMinutes:"Time limit (minutes)",tools:"Tools",autonomy:"Autonomy",approvals:"Approval rules",allowMentions:"Mentions",triggers:"Triggers",skills:"Skills",steps:"Recipe steps",sequence:"Step order",agentName:"Workflow",modelId:"Model",sourceId:"Source",provider:"Provider",alwaysAsk:"Always ask",maxRounds:"Maximum review rounds",backTo:"Return to",onFindings:"When review finds issues"};

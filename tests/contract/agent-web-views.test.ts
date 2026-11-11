@@ -4,7 +4,7 @@ import { createDeveloperTaskBroker, MAYA, OMAR } from "../support/developer-task
 import { FakeProjectMembers } from "../support/fake-project-members.js";
 import { fakeHost } from "../web/support/fake-host.js";
 import { createAgentApi } from "../../packages/ui/src/api/agents.js";
-import { AgentWriteResponseReaderSchema, AgentDirectoryResponseSchema, AgentProfileResponseSchema, AgentDraftResponseSchema, AgentVersionsResponseSchema, AgentSharesResponseSchema, AgentSpendResponseSchema } from "@agentx/contracts/web";
+import { AgentWriteResponseReaderSchema, AgentDirectoryResponseSchema, AgentProfileResponseSchema, AgentDraftResponseSchema, AgentVersionsResponseSchema, AgentSharesResponseSchema, AgentSpendResponseSchema } from "@agentx/cloud-contracts/web";
 it("reads actual existing broker agent projections and writes shares without audit fields", async () => {
  const h = await createDeveloperTaskBroker({ register: false, brokerExtra: { agents: { projectMembers: new FakeProjectMembers() } } });
  const created = await h.dev(MAYA, "POST", "/v1/app/agents", { requestId: randomUUID(), name: "Contract method", overlay: { instructions: "Read and summarise the request.", sequence: [{ id: "work", name: "Investigate", kind: "agent", workspace: "none" }] } });

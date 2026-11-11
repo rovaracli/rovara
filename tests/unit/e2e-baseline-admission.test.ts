@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
-import { E2EApplicationExecutionAdmissionSchema, E2EWorkflowAdmissionRefSchema, canonicalJson } from "@agentx/contracts";
+import { E2EApplicationExecutionAdmissionSchema, E2EWorkflowAdmissionRefSchema, canonicalJson } from "@rovara-code/contracts";
 import { decodeE2EApplicationExecutionAdmission, validateE2EApplicationExecutionAdmission } from "@agentx/verifier";
 import { buildApplicationExecutionAdmission, type ApplicationAdmissionInput } from "../../packages/broker/src/e2e/application-admission.js";
 import { ApplicationDispatchRefusal } from "../../packages/broker/src/e2e/application-dispatch-check.js";

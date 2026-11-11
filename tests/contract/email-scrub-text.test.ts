@@ -3,8 +3,9 @@
 // the pull request's title and description. Text with no address is returned byte for byte. Fake addresses are built at runtime.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { WorkflowSnapshotSchema, createCandidateManifest, createWorkflowSnapshot } from "../../packages/contracts/src/task-workflow-node.js";
-import { agentSessionKey, hideEmailAddresses, EMAIL_HIDDEN, mySessionsKey, sharedSessionsKey } from "../../packages/contracts/src/index.js";
+import { WorkflowSnapshotSchema, createWorkflowSnapshot } from "../../packages/cloud-contracts/src/task-workflow-node.js";
+import { createCandidateManifest } from "@rovara-code/contracts";
+import { agentSessionKey, hideEmailAddresses, EMAIL_HIDDEN, mySessionsKey, sharedSessionsKey } from "@rovara-code/contracts";
 import { workflowPullRequestBody, workflowPullRequestStatusLines } from "../../packages/broker/src/aws/developer-tasks.js";
 import { planWhyEntries } from "../../packages/broker/src/aws/developer-tasks.js";
 import { shownText } from "../../packages/broker/src/agents/approvals-store.js";

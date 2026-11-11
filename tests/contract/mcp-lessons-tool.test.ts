@@ -3,7 +3,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { describe, expect, it, vi } from "vitest";
-import { LOCAL_LESSONS_AMBIGUOUS_LINE, LOCAL_LESSONS_NOTES_LINE, LOCAL_LESSONS_NOT_FOUND_LINE, LOCAL_LESSONS_NO_PROJECT_LINE, LOCAL_LESSONS_TOOL_DESCRIPTION, LOCAL_LESSONS_UNAVAILABLE_LINE, type LocalLessonsRead } from "@agentx/contracts";
+import { LOCAL_LESSONS_AMBIGUOUS_LINE, LOCAL_LESSONS_NOTES_LINE, LOCAL_LESSONS_NOT_FOUND_LINE, LOCAL_LESSONS_NO_PROJECT_LINE, LOCAL_LESSONS_TOOL_DESCRIPTION, LOCAL_LESSONS_UNAVAILABLE_LINE, type LocalLessonsRead } from "@agentx/cloud-contracts";
 import { DEVELOPER_TOOLS, ToolError, createAgentXMcpServer, type ControlPlaneClient, type ToolContext } from "../../packages/mcp/src/index.js";
 
 const reply = (over: Partial<LocalLessonsRead> = {}): LocalLessonsRead => ({

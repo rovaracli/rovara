@@ -19,7 +19,7 @@
 // [verify] on the first Enterprise deploy: a KMS-encrypted ECR repository (the bundle repositories use ECR's default encryption today) may need the deploying role or Lambda to be allowed
 // kms:Decrypt on the key; the image pull by CreateFunction was not tested against a customer-managed key (needs a staging run with an image in such a repository).
 import { ArnFormat, CfnParameter, CfnRule, Duration, Fn, RemovalPolicy, type Stack, aws_ec2 as ec2, aws_iam as iam, aws_lambda as lambda, aws_logs as logs } from "aws-cdk-lib";
-import { embedderFunctionName } from "@agentx/contracts";
+import { embedderFunctionName } from "@agentx/cloud-contracts";
 import { ASSUMED_LAMBDA_MEMORY_LIMIT_MB } from "./account-limits.js";
 import { defaultProductionAvailabilityZoneIds } from "./production-foundation.js";
 

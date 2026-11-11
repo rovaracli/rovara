@@ -31,7 +31,7 @@ it("refuses an agentless project turn when the company Build lock is unavailable
 
 it("pins an available company Build lock on an agentless turn instead of the project selection",async()=>{
  const {bedrockClaudeModelIds}=await import("@agentx/model-runtime/catalog");
- const {projectSelectionKey}=await import("@agentx/contracts");
+ const { projectSelectionKey } = await import("@rovara-code/contracts");
  const {handler,db}=await createTurnHarness();await registerSlackProject(handler);
  const ids=bedrockClaudeModelIds("us"),model={provider:"amazon-bedrock",modelId:ids[0]!};
  db.set({...projectSelectionKey(TEST_ORG,"payments"),model:{provider:"amazon-bedrock",modelId:ids.at(-1)!}});
@@ -68,7 +68,7 @@ async function runtimeTurnFixture(locked=false,merged=false){
  const {bedrockClaudeModelIds}=await import("@agentx/model-runtime/catalog");
  const developer={issuer:"https://cell.example/v1/auth",env:"staging",signInTableName:"signin",methods:{slack:true,oidc:false,cloud:false},verifyAccessToken:async()=>({}),channelMembers:async()=>({ok:true as const,memberOf:[]})};
  const {handler,db,audit}=createAuditedSlackBroker({developer});const model={provider:"amazon-bedrock",modelId:bedrockClaudeModelIds("us")[0]!,label:"Primary"};await registerSlackProject(handler,{models:{default:model,approved:bedrockClaudeModelIds("us").map((modelId,index)=>({provider:"amazon-bedrock",modelId,label:`Model ${index}`}))}});
- const {projectSelectionKey}=await import("@agentx/contracts");
+ const { projectSelectionKey } = await import("@rovara-code/contracts");
  db.set({...projectSelectionKey(TEST_ORG,"payments"),model:{provider:"amazon-bedrock",modelId:bedrockClaudeModelIds("us")[0]!}});
  if(locked)db.set({pk:`ORG#${TEST_ORG}#SETTINGS`,sk:"MODEL_SELECTION_POLICY",entityType:"MODEL_SELECTION_POLICY",orgId:TEST_ORG,version:1,revision:1,rankingVersion:"g3-v1",stepOverrides:{build:{model:{provider:"amazon-bedrock",modelId:bedrockClaudeModelIds("us")[0]!},thinkingLevel:null,locked:true}}});
  const thread=`${SLACK_TEAM}/${SLACK_CHANNEL}/1695500000.000004`,user="U0123456789",rawActor=developerIdForSlackUser(user),actor=merged?"e".repeat(64):rawActor;
@@ -102,7 +102,7 @@ it("authorizes and audits an agentless missing-key fallback through its signed o
 
 for(const changed of ["membership","global-org","sign-in","workspace-fence","operation-org","signature"] as const)it(`refuses agentless fallback after ${changed} changes without model/history/audit writes`,async()=>{
  const f=await runtimeTurnFixture();
- const {orgMemberKey,developerOrgKey}=await import("@agentx/contracts");
+ const { orgMemberKey, developerOrgKey } = await import("@agentx/cloud-contracts");
  if(changed==="membership")f.db.delete(orgMemberKey(TEST_ORG,f.actor));
  if(changed==="global-org")f.db.set({...f.db.get(developerOrgKey(f.actor))!,orgId:"org_bbbbbbbbbbbbbbbbbbbb"});
  if(changed==="sign-in")f.db.set({...f.db.get(`DEVELOPER#${f.actor}`,"META")!,revoked:true});
@@ -118,7 +118,7 @@ for(const changed of ["membership","global-org","sign-in","workspace-fence","ope
 });
 for(const projectRole of ["maintainer","contributor","viewer","none"] as const)it(`uses the current ${projectRole} project grant for an agentless member fallback`,async()=>{
  const f=await runtimeTurnFixture();
- const {seedMembership}=await import("../support/developer-task-broker.js");const {projectMemberKey}=await import("@agentx/contracts");
+ const {seedMembership}=await import("../support/developer-task-broker.js");const { projectMemberKey } = await import("@rovara-code/contracts");
  seedMembership(f.db,f.actor,{orgId:TEST_ORG,role:"member"});
  if(projectRole!=="none")f.db.set({...projectMemberKey(TEST_ORG,f.actor,"payments"),role:projectRole==="viewer"?"viewer":"developer",projectRole});
  const response=await call(f.handler,{method:"POST",path:f.path,headers:{"x-agentx-callback-capability":f.invocation.callbackCapability},body:f.body});
@@ -126,7 +126,7 @@ for(const projectRole of ["maintainer","contributor","viewer","none"] as const)i
  expect(f.audit.flushed().filter(event=>event.action==="model.fallback_used")).toHaveLength(projectRole==="viewer"?0:1);
 });
 it("rolls back the agentless fallback model, history and audit when identity is withdrawn at commit",async()=>{
- const f=await runtimeTurnFixture(), beforeAudit=f.audit.pending();const {TransactWriteCommand}=await import("@aws-sdk/lib-dynamodb");const {orgMemberKey}=await import("@agentx/contracts");
+ const f=await runtimeTurnFixture(), beforeAudit=f.audit.pending();const {TransactWriteCommand}=await import("@aws-sdk/lib-dynamodb");const { orgMemberKey } = await import("@agentx/cloud-contracts");
  const send=f.db.send.bind(f.db);f.db.send=async command=>{if(command instanceof TransactWriteCommand)f.db.delete(orgMemberKey(TEST_ORG,f.actor));return send(command);};
  const response=await call(f.handler,{method:"POST",path:f.path,headers:{"x-agentx-callback-capability":f.invocation.callbackCapability},body:f.body});
  expect(response).toMatchObject({status:400,body:{error:{code:"CONFIG_INVALID"}}});
@@ -138,7 +138,7 @@ it("rolls back the agentless fallback model, history and audit when identity is 
 
 for(const changed of ["membership","sign-in","policy","sources"] as const)it(`fences ${changed} withdrawal atomically at agentless turn admission`,async()=>{
  const f=await createTurnHarness();await registerSlackProject(f.handler);
- const {TransactWriteCommand}=await import("@aws-sdk/lib-dynamodb");const {orgMemberKey,modelSourcesKey}=await import("@agentx/contracts");
+ const {TransactWriteCommand}=await import("@aws-sdk/lib-dynamodb");const { orgMemberKey } = await import("@agentx/cloud-contracts"), { modelSourcesKey } = await import("@rovara-code/contracts");
  const thread=`${SLACK_TEAM}/${SLACK_CHANNEL}/1695500000.000005`,user="U0123456789";
  const workspace=await ensureWorkspace(f.handler,thread,user),workspaceId=String(workspace.body.workspaceId);markReady(f.db,workspaceId);
  const conversation=await serviceCall(f.handler,thread,user,"POST",`/v1/service/workspaces/${workspaceId}/conversations`,{}),conversationId=(conversation.body.conversation as {id:string}).id;
@@ -210,14 +210,14 @@ it("uses the canonical merged identity at admission and runtime fallback",async(
 
 for(const variant of ["allowed","viewer","binding-race","tasks-disabled","channel-policy-disabled","viewer-race"] as const)it(`channel-only Slack thread sender: ${variant}`,async()=>{
  const viewer=variant==="viewer";
- const {developerIdForSlackUser}=await import("../../packages/broker/src/aws/admin-actions.js");const {seedMembership}=await import("../support/developer-task-broker.js");const {projectMemberKey}=await import("@agentx/contracts");
+ const {developerIdForSlackUser}=await import("../../packages/broker/src/aws/admin-actions.js");const {seedMembership}=await import("../support/developer-task-broker.js");const { projectMemberKey } = await import("@rovara-code/contracts");
  const user="U0123456789",actor=developerIdForSlackUser(user);
  let membershipCalls=0;const developer={issuer:"https://cell.example/v1/auth",env:"staging",slackTeamId:SLACK_TEAM,signInTableName:"signin",methods:{slack:true,oidc:false,cloud:false},verifyAccessToken:async()=>({}),channelMembers:async()=>{membershipCalls++;return {ok:true as const,memberOf:[SLACK_CHANNEL]};}};
  const h=createAuditedSlackBroker({developer});await registerSlackProject(h.handler,{developerTasks:{enabled:variant!=="tasks-disabled",channelMembersMayUse:variant!=="channel-policy-disabled"}});seedMembership(h.db,actor,{orgId:TEST_ORG,role:"member"});h.db.set({pk:`DEVELOPER#${actor}`,sk:"META",developerId:actor,provider:"slack",slackUserId:user,revoked:false});
  const thread=`${SLACK_TEAM}/${SLACK_CHANNEL}/1695500000.000009`,workspace=await ensureWorkspace(h.handler,thread,user),workspaceId=String(workspace.body.workspaceId);markReady(h.db,workspaceId);
   if(viewer)h.db.set({...projectMemberKey(TEST_ORG,actor,"payments"),role:"viewer",projectRole:"viewer",projectName:"payments",ownerKey:actor});
 const conversation=await serviceCall(h.handler,thread,user,"POST",`/v1/service/workspaces/${workspaceId}/conversations`,{}),conversationId=(conversation.body.conversation as {id:string}).id;
- if(variant.endsWith("race")) {const original=h.db.send.bind(h.db);h.db.send=async command=>{if(command.constructor.name==="TransactWriteCommand"&&JSON.stringify(command).includes("modelTurnPin")){h.db.send=original;if(variant==="binding-race"){const {slackBindingKey}=await import("@agentx/contracts");const key=slackBindingKey(TEST_ORG,SLACK_TEAM,SLACK_CHANNEL);h.db.set({...h.db.get(key)!,updatedAt:"2026-10-30T20:00:00Z"});}else if(variant==="viewer-race"){h.db.set({...projectMemberKey(TEST_ORG,actor,"payments"),role:"viewer",projectRole:"viewer",projectName:"payments",ownerKey:actor});}else{const {projectRevisionKey}=await import("@agentx/contracts");const key=projectRevisionKey(TEST_ORG,"payments",1),row=h.db.get(key)!;h.db.set({...row,definition:{...(row.definition as object),developerTasks:{enabled:true,channelMembersMayUse:false}}});}}return original(command);};}
+ if(variant.endsWith("race")) {const original=h.db.send.bind(h.db);h.db.send=async command=>{if(command.constructor.name==="TransactWriteCommand"&&JSON.stringify(command).includes("modelTurnPin")){h.db.send=original;if(variant==="binding-race"){const { slackBindingKey } = await import("@rovara-code/contracts");const key=slackBindingKey(TEST_ORG,SLACK_TEAM,SLACK_CHANNEL);h.db.set({...h.db.get(key)!,updatedAt:"2026-10-30T20:00:00Z"});}else if(variant==="viewer-race"){h.db.set({...projectMemberKey(TEST_ORG,actor,"payments"),role:"viewer",projectRole:"viewer",projectName:"payments",ownerKey:actor});}else{const { projectRevisionKey } = await import("@rovara-code/contracts");const key=projectRevisionKey(TEST_ORG,"payments",1),row=h.db.get(key)!;h.db.set({...row,definition:{...(row.definition as object),developerTasks:{enabled:true,channelMembersMayUse:false}}});}}return original(command);};}
  const result=await serviceCall(h.handler,thread,user,"POST",`/v1/service/workspaces/${workspaceId}/tasks`,{requestId:randomUUID(),conversationId,prompt:"Channel work"});
  if(variant.endsWith("race")){expect(result).toMatchObject({status:409,body:{error:{code:"WORKSPACE_BUSY"}}});expect(h.db.find(row=>row.entityType==="OPERATION"&&row.modelTurnPin!==undefined)).toHaveLength(0);}else expect(result.status,JSON.stringify(result.body)).toBe(viewer?403:202);
  expect(membershipCalls).toBe(0);
@@ -243,7 +243,7 @@ for(const locked of [false,true])it(`keeps a project-chosen ChatGPT model above 
  access.setMemberSpent(TEST_ORG,actor,0);
  await registerSlackProject(handler);
  const {AgentStore,resolveAgent}=await import("../../packages/broker/src/agents/store.js");
- const {recipeDigest,projectPlaybookKey}=await import("@agentx/contracts");
+ const { recipeDigest, projectPlaybookKey } = await import("@rovara-code/contracts");
  const store=new AgentStore({documentClient:db,tableName:"state",now:Date.now});
  const agent=await store.create({orgId:TEST_ORG,name:"Plan choice",owner:{kind:"project",project:"payments"},accountable:{developerId:actor},extends:"rovara-code",overlay:{steps:{build:{model:{provider:"openai",modelId:"gpt-6.1-sol"}}}},purpose:"process",createdBy:actor});
  const recipe=await resolveAgent(store,TEST_ORG,agent.agentId,"draft");

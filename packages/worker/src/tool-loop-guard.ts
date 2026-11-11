@@ -1,4 +1,4 @@
-import { agentXError, type AgentXError } from "@agentx/contracts";
+import { agentXError, type AgentXError } from "@rovara-code/contracts";
 
 /** The model is told it is looping after this many identical failing calls in a row (#127). */
 export const REPEAT_WARNING_AT = 3;

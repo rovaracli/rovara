@@ -17,12 +17,13 @@
 //           { action: "withdraw", model }                   an owner or admin withdraws the verdict (the evidence) for a model: it stops blocking at once. Admins can only withdraw; staff write evidence (aws/broker/second-review-evidence-routes.ts).
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import { SecondReviewContextSchema, SecondReviewModeSchema, SecondReviewModelListSchema, agentXError, configuredSecondReviewMode, narrowedSecondReviewModels, secondReviewModelKey, type AuditEventInput, type ModelIdentifier, type SecondReviewModelRef } from "@agentx/contracts";
+import { SecondReviewContextSchema, SecondReviewModeSchema, SecondReviewModelListSchema, agentXError, configuredSecondReviewMode, narrowedSecondReviewModels, secondReviewModelKey, type ModelIdentifier, type SecondReviewModelRef } from "@rovara-code/contracts";
+import { type AuditEventInput } from "@agentx/cloud-contracts";
 import { listPricesPerMillion } from "@agentx/model-runtime/catalog";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { flushAuditEvents } from "../../audit/flush.js";
 import { auditPending } from "../../audit/outbox.js";
-import { auditEventId } from "@agentx/contracts";
+import { auditEventId } from "@agentx/cloud-contracts";
 import { logDeveloperEvent } from "../../developer/log.js";
 import { readGuardrails } from "../../agents/guardrails.js";
 import { servableModels } from "../../model-sources/routing.js";

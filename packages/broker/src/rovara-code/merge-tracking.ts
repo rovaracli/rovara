@@ -7,26 +7,10 @@
 //
 // Merge tracking never presses merge: a person always does (owner decision 1). It marks a draft ready and asks for reviewers; fixes and syncs are other tasks' deciders.
 import { createHash } from "node:crypto";
+import { hostTypeOfAccountKind } from "../plugins/code-host/neutral-words.js";
 import { TransactWriteCommand, GetCommand, QueryCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  MergeTrackingItemSchema,
-  TRACKING_REQUESTS_BASE,
-  TRACKING_REQUESTS_PER_EXTRA_PR,
-  agentXError,
-  codeMilestoneKey,
-  mergeTrackingDecisionDigest,
-  mergeTrackingKey,
-  sessionEventId,
-  sessionLink,
-  type AgentXError,
-  type Autonomy,
-  type ChangeRequestStatus,
-  type CodeSettings,
-  type HostScope,
-  type MergeTrackingItem,
-  type OrgId,
-  type WorkflowSnapshot,
-} from "@agentx/contracts";
+import { MergeTrackingItemSchema, mergeTrackingDecisionDigest, type MergeTrackingItem, type WorkflowSnapshot } from "@agentx/cloud-contracts";
+import { TRACKING_REQUESTS_BASE, TRACKING_REQUESTS_PER_EXTRA_PR, agentXError, codeMilestoneKey, mergeTrackingKey, sessionEventId, sessionLink, type AgentXError, type Autonomy, type ChangeRequestStatus, type CodeSettings, type HostScope, type OrgId } from "@rovara-code/contracts";
 import { parseGitHubRepository } from "../github-app.js";
 import type { GithubMergeReadBudget, MergeRecoveryResult } from "../aws/workflow-merge-recovery.js";
 import { SWEEP_INTERVAL_MS } from "../aws/workflow-merge-recovery.js";
@@ -253,7 +237,7 @@ export async function readReviews(
 
 /** The branch against its base: conflicting (GitHub's own word), behind, up to date, or not yet known. */
 export function readBranch(status: ChangeRequestStatus): MergeTrackingItem["branch"] {
-  if (status.mergeable === false || status.mergeableState === "dirty") return "conflicted";
+  if (status.mergeable === false || status.mergeableState === "conflicted") return "conflicted";
   if (status.mergeableState === "behind") return "behind";
   if (status.mergeableState === "unknown" || status.behindBy === undefined) return "unknown";
   return status.behindBy > 0 ? "behind" : "up_to_date";
@@ -632,7 +616,7 @@ async function trackOne(
     const key = `${parsed.owner}/${parsed.name}:${login.toLowerCase()}`;
     let found = standings.get(key);
     if (found === undefined) {
-      found = on.codeHost.standing({ url: on.url }, { login }, scope, budget).then((read): RepositoryStanding => ({ permission: read.permission, userType: read.accountType }));
+      found = on.codeHost.standing({ url: on.url }, { login }, scope, budget).then((read): RepositoryStanding => ({ permission: read.permission, userType: hostTypeOfAccountKind(read.accountType) }));
       standings.set(key, found);
     }
     return found;

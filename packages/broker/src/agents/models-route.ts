@@ -1,4 +1,4 @@
-import { ModelListSchema, agentXError, canonicalModelName, editionFromEnvironment, forbiddenModelMatcher, modelCompany, modelNotEnabledSentence } from "@agentx/contracts";
+import { ModelListSchema, agentXError, canonicalModelName, editionFromEnvironment, forbiddenModelMatcher, modelCompany, modelNotEnabledSentence } from "@rovara-code/contracts";
 import { bedrockClaudeModelIds, catalogModel } from "@agentx/model-runtime/catalog";
 import { isBatchVariant } from "../model-sources/model-variants.js";
 import { servableModels, servingRoutes } from "../model-sources/routing.js";

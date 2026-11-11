@@ -1,8 +1,4 @@
-import {
-  agentXError,
-  type CodeBuildCheckResult,
-  type CodeBuildGateDefinition,
-} from "@agentx/contracts";
+import { agentXError, type CodeBuildCheckResult, type CodeBuildGateDefinition } from "@rovara-code/contracts";
 
 export interface CodeBuildRequest {
   action: "start" | "status";

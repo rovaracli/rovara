@@ -1,7 +1,7 @@
 // "How we work" (S1): a task that runs a project's process layer is a Rovara Code task: the layer extends Rovara Code and only adds the project's rules. The places that treat
 // "Rovara Code" and "another agent's run" differently (the hand-off to a Mac, the paused-task gate, the budget floor of a retry or a take-over) ask here, so a project with a
 // process layer keeps what Rovara Code has.
-import { ROVARA_CODE_AGENT_ID } from "@agentx/contracts";
+import { ROVARA_CODE_AGENT_ID } from "@rovara-code/contracts";
 
 /** The part of an agent reference these questions read; the task record's `agent` and a session's agent both fit (a session's has no `process` mark). */
 export interface AgentMark {

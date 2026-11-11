@@ -1,7 +1,7 @@
 // Rovara Code (Plan 6 Task 3): `POST /v1/app/projects/{project}/code`, the app's way to start work. The body says only what the person asked for; the source is always "app"
 // and nothing in it can name a payer, an assigner, a binding or an offer. The access decision is `startCodeIntent`'s (that is, `startTask`'s): this route finds the project
 // the person can see, so another org's project and one they have no role in answer the same 404 as a missing one.
-import { CodeIntentBodySchema, agentXError } from "@agentx/contracts";
+import { CodeIntentBodySchema, agentXError } from "@rovara-code/contracts";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 import { StatusReply } from "../aws/status-reply.js";
 import { designFirstWebStart } from "../design-review/design-first.js";

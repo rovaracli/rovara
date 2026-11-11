@@ -2,16 +2,7 @@
 // decides whether it is a question. A question gets a read-only answer from the chat agent (no tools, only what the
 // broker says about the task), and its note is then marked answered so the next step skips it. Anything else, and any
 // failure on the way, leaves the note as an instruction for the next step, and the sender is told so privately.
-import {
-  ASK_QUESTION_MAX_CHARS,
-  TASK_NOTE_SAVED_TEXT,
-  slackThreadSubject,
-  splitSlackMessage,
-  type SlackRequestMessage,
-  type SlackThread,
-  type SlackThreadNoteAnsweredRequest,
-  type TaskQuestionRoute,
-} from "@agentx/contracts";
+import { ASK_QUESTION_MAX_CHARS, TASK_NOTE_SAVED_TEXT, slackThreadSubject, splitSlackMessage, type SlackRequestMessage, type SlackThread, type SlackThreadNoteAnsweredRequest, type TaskQuestionRoute } from "@rovara-code/contracts";
 import { NO_TEXT_RESPONSE } from "@agentx/orchestrator/orchestrator";
 import type { RequestRoute, RequestRouter } from "@agentx/orchestrator/request-router";
 import { deterministicUuid, requestIdSequence } from "./ids.js";

@@ -1,6 +1,6 @@
 // Approval place (U4): the fixed sentences a refused approval says. One module for the server (decide.ts) and for Slack (`slack-refusals.ts`, which only repeats a sentence it recognises), so they cannot drift. Fixed words and our own
 // address only: never a person's text.
-import type { ApprovalPlaceReason } from "@agentx/contracts";
+import type { ApprovalPlaceReason } from "@agentx/cloud-contracts";
 
 const at = (link: string | undefined): string => (link === undefined ? "." : `: ${link}`);
 

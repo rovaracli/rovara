@@ -1,7 +1,7 @@
 // Proof and test environment E2 (Brazil): a Brazil package is detected from its Config file, and a build or test command is PROPOSED only when the team wrote it down (verbatim, in a code block or inline code of
 // its own docs, cited by file and line). Rovara never invents a Brazil command or a Brazil report path. The language tool's own detector keeps running inside a Brazil package.
 import { describe, expect, it } from "vitest";
-import { TestEnvironmentBodySchema } from "@agentx/contracts";
+import { TestEnvironmentBodySchema } from "@rovara-code/contracts";
 import { boundedReader, buildEnvironmentDraft, runDetectors } from "../../packages/worker/src/env-detect/index.js";
 
 type Files = Record<string, string>;

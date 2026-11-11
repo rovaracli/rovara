@@ -1,6 +1,6 @@
 import { createTaskWeb,type TaskDocumentView } from "../../../packages/broker/src/aws/task-web.js";
 import { createTaskWebApi } from "../../../packages/broker/src/aws/task-web-api.js";
-import { PlanDocumentSchema } from "@agentx/contracts";
+import { PlanDocumentSchema } from "@rovara-code/contracts";
 const plan=PlanDocumentSchema.parse({schemaVersion:1,title:"Retry failed payments",why:[{text:"Customers should not have to retry a failed payment themselves.",author:"Priya"}],claims:[{id:"1",text:"Retry payment timeouts."},{id:"2",text:"Never charge a customer twice."}],notChanging:["Refunds stay the same."],risks:["A slow gateway may delay a retry."],decisions:[{id:"d1",claimId:"1",question:"How many times should a payment be retried?",options:[{id:"three",label:"Three times",consequence:"Most timeouts clear by the third try."},{id:"five",label:"Five times",consequence:"Customers wait longer."}],recommended:"three"}]});
 import { FIXTURE_ORG,FIXTURE_DEVELOPER,FIXTURE_SESSION } from "../../web/support/fixtures.js";
 export const TASK_PAGE_FIXTURE_ID="11111111-1111-4111-8111-111111111111";

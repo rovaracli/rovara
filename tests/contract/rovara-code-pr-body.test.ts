@@ -3,9 +3,10 @@
 // model-written line is redacted and made inert (no mention, link or cross-reference), the whole body is bounded, and a version 1 task's description is exactly as before.
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { EMAIL_HIDDEN, RiskAssessmentSchema, sessionBindingKey, type VerificationReport } from "../../packages/contracts/src/index.js";
-import { workflowFindingFingerprint } from "../../packages/contracts/src/task-workflow.js";
-import { WorkflowSnapshotSchema, createCandidateManifest, createWorkflowSnapshot, type WorkflowSnapshot } from "../../packages/contracts/src/task-workflow-node.js";
+import { EMAIL_HIDDEN, RiskAssessmentSchema, sessionBindingKey, type VerificationReport } from "@rovara-code/contracts";
+import { workflowFindingFingerprint } from "@rovara-code/contracts";
+import { WorkflowSnapshotSchema, createWorkflowSnapshot, type WorkflowSnapshot } from "../../packages/cloud-contracts/src/task-workflow-node.js";
+import { createCandidateManifest } from "@rovara-code/contracts";
 import { RISK_SENSITIVE_PATH_PATTERNS, assessRisk, isSensitivePath, type RiskInput } from "../../packages/broker/src/rovara-code/risk.js";
 import { parseChangedFiles } from "../../packages/broker/src/rovara-code/changed-files.js";
 import { recomputeRisk, withLinearCloseLine } from "../../packages/broker/src/rovara-code/pull-request-body.js";

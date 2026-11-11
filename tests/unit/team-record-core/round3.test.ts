@@ -1,6 +1,6 @@
 // Fix round 3 (Opus recheck-2): N-4 nested places, N-3 equal version times, S-1, S-2, S-3.
 import { describe, expect, it } from "vitest";
-import { recordScopeHash } from "@agentx/contracts";
+import { recordScopeHash } from "@agentx/cloud-contracts";
 import { recordSearch } from "../../../packages/broker/src/team-record/query.js";
 import { runDeleteWorker } from "../../../packages/broker/src/team-record/delete-worker.js";
 import { createRecordSink } from "../../../packages/broker/src/team-record/sink.js";

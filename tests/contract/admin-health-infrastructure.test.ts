@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import { App, Stack } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { Alarm, AlarmRule, AlarmState, CompositeAlarm, Metric } from "aws-cdk-lib/aws-cloudwatch";
-import { HEALTH_ALARM_SUFFIXES } from "@agentx/contracts";
+import { HEALTH_ALARM_SUFFIXES } from "@agentx/cloud-contracts";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { describe, expect, it } from "vitest";
 import { ControlPlaneStack } from "../../infra/lib/control-plane.js";
@@ -128,11 +128,11 @@ describe("the health route's grants (A13)", () => {
   // Spec 025 phase 25e: pending admin changes and their audit records expire on it as well.
   it("names indexExpiresAt only where index, notice, channel-operation, admin-change and audit-pending items are written or read, so the TTL deletes nothing else", () => {
     const allowed = new Set([
-      "packages/contracts/src/admin.ts", "packages/broker/src/aws/activity-index.ts", "packages/broker/src/aws/admin-reads.ts", "infra/lib/control-plane.ts",
+      "packages/cloud-contracts/src/admin.ts", "packages/broker/src/aws/activity-index.ts", "packages/broker/src/aws/admin-reads.ts", "infra/lib/control-plane.ts",
       "packages/broker/src/aws/developer-task-notifier.ts", ...brokerSourceFiles(),
       // The workflow dispatch row's one definition, shared by the broker and the developer task routes.
       "packages/broker/src/aws/broker-shared.ts",
-      "packages/contracts/src/admin-changes.ts", "packages/broker/src/aws/admin-changes.ts",
+      "vendor/rovara-code/packages/contracts/src/admin-changes.ts", "packages/broker/src/aws/admin-changes.ts",
       // The plan evidence job row (spec 061) expires on it too.
       "packages/broker/src/developer/plan-evidence-jobs.ts",
       // Fixed-window rate rows (takeRateAt): each window's row expires on it, 30 days after the window opens.
@@ -278,7 +278,7 @@ describe("the health route's grants (A13)", () => {
       // Team record (Enterprise): its own table, with its own TTL on the same attribute name (infra/lib/team-record-table.ts); rows leave the hot table a grace period after `hotExpiresAt` so the archiver can copy them first.
       "packages/broker/src/team-record/item-head.ts", "packages/broker/src/team-record/retention.ts", "packages/broker/src/team-record/scope-work.ts",
       "packages/broker/src/team-record/query.ts", "packages/broker/src/team-record/ingest.ts", "packages/broker/src/team-record/store.ts",
-      "packages/contracts/src/team-record.ts", "infra/lib/team-record-table.ts",
+      "packages/cloud-contracts/src/team-record.ts", "infra/lib/team-record-table.ts",
       // 2026-11-02, team-record-links (S2): the prior-edit mark (`PRIOREDIT#<hash of the item>`, a hash and a time, no words) left when a change to an item was not stored expires after 400 days; only prior-edits.ts writes it.
       "packages/broker/src/team-record/prior-edits.ts",
       // 2026-11-02, team-record-links: the admin tracker-people request receipt (`TEAM_RECORD_TRACKER_REQUEST`, a digest of the change and its outcome, no names) expires after 90 days; runtime.ts writes it when it remembers a request.
@@ -291,7 +291,7 @@ describe("the health route's grants (A13)", () => {
       "packages/broker/src/rovara-code/outcome-hooks.ts",
       // v1.2 learning loop (B1): corrections, their source records, dismissed patterns and ended suggestions are kept 180 days, then deleted by the TTL (named environments) or by
       // the learning sweep (a table without one). The contract names the field on the items, retention.ts judges it, store.ts writes it, sweep.ts reads it to delete. Nothing else may.
-      "packages/contracts/src/project-learning.ts", "packages/broker/src/learning/retention.ts", "packages/broker/src/learning/store.ts", "packages/broker/src/learning/sweep.ts",
+      "vendor/rovara-code/packages/contracts/src/project-learning.ts", "packages/broker/src/learning/retention.ts", "packages/broker/src/learning/store.ts", "packages/broker/src/learning/sweep.ts",
       // B6: a dismissed pattern carries the same 180-day expiry when Dismiss writes it.
       "packages/broker/src/learning/decide.ts",
       // Intake own-write notes (a note that a write was ours, held one window plus an hour); asks (a question kept ASK_RETENTION_DAYS, its mention-index and expiry-index items, and the erase
@@ -331,6 +331,10 @@ describe("the health route's grants (A13)", () => {
       "packages/broker/src/org/slack-explicit-members.ts",
       // 2026-11-11, G-04 company rules: a DECIDED proposal (rejected, cancelled, expired, or the one that became a version) is kept 400 days for the history list and then removed by the TTL. The durable record is the version row (never given the attribute), and neither a waiting proposal, the head nor the file link carries it; only company-rules/store.ts writes it.
       "packages/broker/src/company-rules/store.ts",
+      // Work events (U3): one row per flow fact of a task, expiring 13 months after its month (WORK_EVENT_RETENTION_MONTHS). Not a durable record of the work itself.
+      "packages/broker/src/work-events/store.ts",
+      // Approval place (U4): the owner's "your plan was decided" Slack direct message row (2 days, the same TASK_ATTENTION_DM row the notifier posts); a working row, not a durable record, and only owner-notice.ts writes it.
+      "packages/broker/src/approval-place/owner-notice.ts",
     ]);
     const found = execFileSync("grep", ["-rl", "indexExpiresAt\\|INDEX_EXPIRY_ATTRIBUTE", "packages", "infra/lib", "--include=*.ts", "--exclude-dir=dist", "--exclude-dir=node_modules"], { encoding: "utf8" }).trim().split("\n").filter((file) => file !== "");
     expect(found.filter((file) => !allowed.has(file))).toEqual([]);
@@ -368,7 +372,7 @@ describe("the health route's grants (A13)", () => {
     const dispatchItem = shared.slice(shared.indexOf("export function workflowDispatchItem("));
     expect(dispatchItem).toContain('entityType: "WORKFLOW_DISPATCH"');
     expect(shared.split("\n").filter((line) => /indexExpiresAt|INDEX_EXPIRY_ATTRIBUTE/.test(line)).map((line) => line.trim())).toEqual([
-      'import { INDEX_EXPIRY_ATTRIBUTE, OPERATION_PROMPT_MAX_BYTES, PLAN_DOCUMENT_INFO_STRING, PLAN_PARTS_SENTENCE, type PlanDocumentKind } from "@agentx/contracts";',
+      'import { INDEX_EXPIRY_ATTRIBUTE, OPERATION_PROMPT_MAX_BYTES, PLAN_DOCUMENT_INFO_STRING, PLAN_PARTS_SENTENCE, type PlanDocumentKind } from "@rovara-code/contracts";',
       "indexExpiresAt: number;",
       // Plan 3, Task 22: the agent-step engine's dispatch row, written over the task's one row at each change; it expires a week after it was due.
       "[INDEX_EXPIRY_ATTRIBUTE]: Math.floor(Date.parse(input.dueAt) / 1000) + WORKFLOW_DISPATCH_RETENTION_SECONDS,",
@@ -382,7 +386,7 @@ describe("the health route's grants (A13)", () => {
     // Nothing else in the notifier names the attribute: no other item there can carry it.
     const named = notifier.split("\n").filter((line) => /indexExpiresAt|INDEX_EXPIRY_ATTRIBUTE/.test(line)).map((line) => line.trim());
     expect(named).toHaveLength(6);
-    expect(named[0]).toMatch(/^import \{ INDEX_EXPIRY_ATTRIBUTE, .*indexExpiresAt, .*\} from "@agentx\/contracts";$/);
+    expect(named[0]).toMatch(/^import \{ INDEX_EXPIRY_ATTRIBUTE, .*indexExpiresAt, .*\} from "@rovara-code\/contracts";$/);
     expect(named.slice(1)).toEqual([
       "const noticeExpiry = (deps: NotifierDependencies) => ({ [INDEX_EXPIRY_ATTRIBUTE]: indexExpiresAt(new Date(deps.now()).toISOString()) });",
       'ExpressionAttributeNames: { "#expires": INDEX_EXPIRY_ATTRIBUTE },',
@@ -396,7 +400,7 @@ describe("the health route's grants (A13)", () => {
   it("sets the TTL attribute on the baseline round's record alone, in its own module, and refreshes it with every write of that record (Task 3.7b, D4)", () => {
     const baseline = readFileSync("packages/broker/src/aws/workflow-e2e-baseline.ts", "utf8");
     const named = baseline.split("\n").filter((line) => /indexExpiresAt|INDEX_EXPIRY_ATTRIBUTE/.test(line)).map((line) => line.trim());
-    expect(named[0]).toMatch(/^import \{ .*INDEX_EXPIRY_ATTRIBUTE.*indexExpiresAt.* \} from "@agentx\/contracts";$|^import \{ .*indexExpiresAt.*INDEX_EXPIRY_ATTRIBUTE.* \} from "@agentx\/contracts";$/);
+    expect(named[0]).toMatch(/^import \{ .*INDEX_EXPIRY_ATTRIBUTE.*indexExpiresAt.* \} from "@rovara-code\/contracts";$|^import \{ .*indexExpiresAt.*INDEX_EXPIRY_ATTRIBUTE.* \} from "@rovara-code\/contracts";$/);
     expect(baseline).toContain('entityType: "WORKFLOW_E2E_BASELINE"');
     // Every write of the record carries a fresh expiry, and the module writes no other kind of item.
     const writes = baseline.split("\n").filter((line) => /new (Put|Update)Command|Update: \{/.test(line));

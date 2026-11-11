@@ -1,7 +1,7 @@
 // "How we work" (H2): which process a project runs. `projectProcessOf` is what the start of work asks. The project's process layer is a project-owned custom agent marked
 // `purpose: "process"`; the document points at it. A pointer that no longer holds (archived, deleted, moved, unpublished) is `PROCESS_UNAVAILABLE`: work for the project does not
 // quietly run on the built-in instead.
-import { PROCESS_UNAVAILABLE_MESSAGE, ROVARA_CODE_AGENT_ID, agentXError, type AgentId, type OrgId } from "@agentx/contracts";
+import { PROCESS_UNAVAILABLE_MESSAGE, ROVARA_CODE_AGENT_ID, agentXError, type AgentId, type OrgId } from "@rovara-code/contracts";
 import type { AgentRecord, AgentVersion } from "../agents/store.js";
 import { overlayHasSkills } from "./process-skills.js";
 import { readProjectPlaybook, type ProjectPlaybookReader } from "./project-playbook-store.js";

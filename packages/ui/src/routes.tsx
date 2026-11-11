@@ -1,6 +1,6 @@
 import { HomeScreen } from "./screens/home/HomeScreen.js";
 import { Navigate, useLocation, useParams, type RouteObject } from "react-router";
-import { type AppNav } from "@agentx/contracts/web";
+import { type AppNav } from "@agentx/cloud-contracts/web";
 import { AppShell } from "./shell/AppShell.js";
 import { NotFound } from "./shell/NotFound.js";
 import { Unavailable } from "./shell/Unavailable.js";

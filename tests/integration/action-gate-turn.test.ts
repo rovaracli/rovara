@@ -4,7 +4,7 @@ import { fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi
 import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { describe, expect, it, vi } from "vitest";
-import type { ActionPolicy, ConnectorCatalog } from "../../packages/contracts/src/index.js";
+import type { ActionPolicy, ConnectorCatalog } from "@rovara-code/contracts";
 import type { ActionClassifier } from "../../packages/orchestrator/src/action-classifier.js";
 import { ActionGate, actionGateExtension, argumentsHash, blockReason, createGateSession, GATE_FAILURE_REASON, type GateDecision, type GateSession } from "../../packages/orchestrator/src/action-gate.js";
 import { assertOrchestrationOnly, type OrchestrationApi } from "../../packages/orchestrator/src/orchestration-tools.js";

@@ -1,4 +1,4 @@
-import type { SessionDiffReaderSchema } from "@agentx/contracts/web";
+import type { SessionDiffReaderSchema } from "@agentx/cloud-contracts/web";
 import { VisibleText } from "../../design/VisibleText.js";
 import { isGithubUrl } from "../../text/links.js";
 

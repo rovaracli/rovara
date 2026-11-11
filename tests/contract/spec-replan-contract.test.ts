@@ -1,7 +1,9 @@
 // Wire lane D (MD-1): "Re-plan" on a changed spec sends the work back to planning. The pure workflow move; the owner's approval of the revised plan is what lets anything be built again.
 import { describe, expect, it } from "vitest";
-import { WorkflowSnapshotSchema, createWorkflowSnapshot, WorkflowTransitionError, type WorkflowSnapshot } from "../../packages/contracts/src/task-workflow-node.js";
-import { WORKFLOW_SPEC_REPLAN_DECISION_REASON, replanForChangedSpec, workflowSpecReplanOffered } from "../../packages/contracts/src/task-workflow-revise.js";
+import { WorkflowSnapshotSchema, createWorkflowSnapshot, type WorkflowSnapshot } from "../../packages/cloud-contracts/src/task-workflow-node.js";
+import { WorkflowTransitionError } from "@rovara-code/contracts";
+import { WORKFLOW_SPEC_REPLAN_DECISION_REASON } from "@rovara-code/contracts";
+import { replanForChangedSpec, workflowSpecReplanOffered } from "../../packages/cloud-contracts/src/task-workflow-revise.js";
 
 const taskId = "11111111-1111-4111-8111-111111111111";
 const owner = "a".repeat(64);

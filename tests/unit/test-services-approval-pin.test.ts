@@ -1,6 +1,6 @@
 // Test services, slice 1 (L1) and slice 2 (pre-pull of every pinned local entry): at approval, a `local` dependency whose catalog entry has no pinned digest gets the same fixed "not available yet" words as any backing slice 1 cannot start.
 import { describe, expect, it } from "vitest";
-import { TestEnvironmentBodySchema, projectMetaKey, projectRevisionKey, type OrgId } from "@agentx/contracts";
+import { TestEnvironmentBodySchema, projectMetaKey, projectRevisionKey, type OrgId } from "@rovara-code/contracts";
 import { TEST_SERVICES_MIN_CATALOG_REVISION, isPrepulledEntry, taskDependencyPlansOf } from "../../packages/broker/src/test-env/dependency-plan.js";
 import { proposeTestEnvironment, type TestEnvDeps } from "../../packages/broker/src/org/test-environment.js";
 import { capturingAuditDeps, AUDIT_CAPTURE_TABLE } from "../support/audit-capture.js";

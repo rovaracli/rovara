@@ -3,7 +3,8 @@
 // the content (`snp_` + a digest of the sorted references), so an id cannot be made to name other lessons. One item per snapshot in the project's partition under `SNAPSHOT#`, written only if absent.
 import { createHash } from "node:crypto";
 import { GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
-import { MemorySnapshotSchema, memorySnapshotKey, type MemorySnapshot, type OrgId } from "@agentx/contracts";
+import { MemorySnapshotSchema, type MemorySnapshot, type OrgId } from "@rovara-code/contracts";
+import { memorySnapshotKey } from "@agentx/cloud-contracts";
 import { LessonSchema } from "./types.js";
 import type { TeamRecordTable } from "../team-record/types.js";
 import type { LessonStore, ScopeKey } from "./store.js";

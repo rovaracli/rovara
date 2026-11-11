@@ -10,7 +10,8 @@
 // delivery), for a PERSON (the Lessons tab) and for the pull request's "Lessons used" list, with a lesson restricted only to a project repository (decisions 34 and 36).
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { agentSessionKey, orgMetaKey, projectMemberKey, projectRevisionKey } from "@agentx/contracts";
+import { agentSessionKey, projectMemberKey, projectRevisionKey } from "@rovara-code/contracts";
+import { orgMetaKey } from "@agentx/cloud-contracts";
 import { installLessons } from "../../packages/broker/src/aws/broker/lessons-wiring.js";
 import { learnedContextForOperation } from "../../packages/broker/src/aws/broker/lessons-dispatch.js";
 import { createLessonDelivery } from "../../packages/broker/src/lessons/delivery-wiring.js";

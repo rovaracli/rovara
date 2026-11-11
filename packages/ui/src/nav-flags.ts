@@ -9,3 +9,11 @@ export const NAV_STORAGE_KEY = "rovara.nav";
 export function isNewNavOn(host: NavStorageHost): boolean {
  try { return host.storage.get(NAV_STORAGE_KEY) === "v2"; } catch { return false; }
 }
+
+/**
+ * What this app calls the page that lists tasks, in its own sentences and links: "Work" with the new navigation on (`rovara.nav`; `/app/live` already redirects there), "Live" with it off (as today).
+ * Only in-screen copy and links use this; the route table and the sidebar already decide for themselves.
+ */
+export function workPlace(host: NavStorageHost): { name: "Work" | "Live"; path: string } {
+ return isNewNavOn(host) ? { name: "Work", path: "/app/work" } : { name: "Live", path: "/app/live" };
+}

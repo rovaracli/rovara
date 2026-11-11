@@ -1,6 +1,6 @@
 // Company setup recipes in the setup flow (SH30 + SR-3, switch `sp`), through the whole broker: the offered recipes are sent with the setup draft and RECORDED on its operation (id and revision).
 import { afterEach, describe, expect, it } from "vitest";
-import { setupLocksKey, type TestEnvDraft } from "@agentx/contracts";
+import { setupLocksKey, type TestEnvDraft } from "@rovara-code/contracts";
 import { dynamoSetupLocksStore } from "../../packages/broker/src/rovara-code/setup-locks-store.js";
 import { companyLocksReaderFor } from "../../packages/broker/src/org/setup-recipe-locks.js";
 import type { CompanySetupLocks } from "../../packages/broker/src/org/setup-recipes.js";

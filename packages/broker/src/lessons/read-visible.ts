@@ -2,7 +2,7 @@
 // panel, the approval queues, the prior-loaded list) takes its lessons through `readVisible`: the frozen snapshot AND the record core's access records, for the places each
 // lesson was learned from. A caller without the access port gets nothing and a log line. `tests/unit/lessons/read-paths.test.ts` fails if a file reads the lesson store without
 // importing this module or being listed there as an internal writer.
-import { OrgIdSchema } from "@agentx/contracts";
+import { OrgIdSchema } from "@rovara-code/contracts";
 import type { AccessCheckPort } from "../team-record/access-port.js";
 import { createLessonLiveReader, type LessonLiveReader } from "./live-visibility.js";
 import type { ScopeKey } from "./store.js";

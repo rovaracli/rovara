@@ -6,12 +6,14 @@ import {modelSelectionSlackWorld,SELECTION_MODELS} from "../support/model-select
 // The comparison ("what changed") is `playbook/project-settings-audit.ts`; the writers only hand it the revision before and after.
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
-import { AuditEventInputSchema, agentRequestKey, orgProjectCatalogKey, projectAgentKey, projectMetaKey, type AgentId, type AuditEventInput, type OrgId, type StoredProjectDefinition } from "@agentx/contracts";
+import { AuditEventInputSchema, type AuditEventInput } from "@agentx/cloud-contracts";
+import { agentRequestKey, orgProjectCatalogKey, projectAgentKey, projectMetaKey, type AgentId, type OrgId } from "@rovara-code/contracts";
+import { type StoredProjectDefinition } from "@agentx/cloud-contracts";
 import { projectDefinitionAuditEvents } from "../../packages/broker/src/playbook/project-settings-audit.js";
 import { addToRoster, removeFromRoster } from "../../packages/broker/src/agents/roster.js";
 import type { ApprovalDependencies } from "../../packages/broker/src/agents/approvals.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
-import { recipeDigest, type RecipeOverlay } from "../../packages/contracts/src/agent-recipe-node.js";
+import { recipeDigest, type RecipeOverlay } from "@rovara-code/contracts";
 import { resolveAgent } from "../../packages/broker/src/agents/store.js";
 import { DeveloperSignInStore } from "../../packages/broker/src/developer/store.js";
 import { capturingAuditDeps, type AuditCapture } from "../support/audit-capture.js";

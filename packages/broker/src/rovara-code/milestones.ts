@@ -4,16 +4,7 @@
 // the dispatch sweep (`deliverDueCodeMilestones`), at most `CODE_MILESTONE_ATTEMPTS_MAX` times. A handler can be told twice (the process can stop between the handler
 // returning and the record being written), so it must be safe to hear a milestone again.
 import { QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  CODE_MILESTONES_BEFORE_PR,
-  CodeMilestoneSchema,
-  INDEX_EXPIRY_ATTRIBUTE,
-  WORKFLOW_DISPATCH_DUE_INDEX,
-  codeMilestoneKey,
-  sessionEventId,
-  type CodeMilestone,
-  type CodeMilestoneKind,
-} from "@agentx/contracts";
+import { CODE_MILESTONES_BEFORE_PR, CodeMilestoneSchema, INDEX_EXPIRY_ATTRIBUTE, WORKFLOW_DISPATCH_DUE_INDEX, codeMilestoneKey, sessionEventId, type CodeMilestone, type CodeMilestoneKind } from "@rovara-code/contracts";
 import { NOT_EXISTS, errorName, type TableInput, type TransactItem } from "../agents/table-writes.js";
 import { sessionEventItem } from "../agent-sessions/store.js";
 

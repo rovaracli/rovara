@@ -1,6 +1,6 @@
 // P6: GitHub-shaped webhook deliveries for the tests, signed the way GitHub signs them (HMAC-SHA256 over the raw body, `x-hub-signature-256`). The secret is built at run time.
 import { createHmac, randomUUID } from "node:crypto";
-import type { RawDelivery } from "../../packages/contracts/src/index.js";
+import type { RawDelivery } from "@rovara-code/contracts";
 
 export const WEBHOOK_SECRET = ["webhook", "secret", "for", "tests", "only", "0123456789abcdef"].join("-");
 export const webhookSecretReader = (secret = WEBHOOK_SECRET) => async (): Promise<string> => secret;

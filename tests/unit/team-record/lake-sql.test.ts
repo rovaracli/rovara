@@ -1,4 +1,4 @@
-import { LAKE_TABLES } from "@agentx/contracts";
+import { LAKE_TABLES } from "@agentx/cloud-contracts";
 import { describe, expect, it } from "vitest";
 import {
   actorSourceHash, allLakeColumns, buildInsertIfAbsent, scopeHash, columnNames, deleteLiteral, parameterFor, sourceHash, sqlString, tableRef, timestampText,

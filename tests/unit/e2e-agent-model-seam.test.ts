@@ -6,7 +6,7 @@ import { tool } from "ai";
 import { createToolLoopExecutor } from "e2e/agent";
 import { z } from "zod";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { E2EModelChannelRequest } from "../../packages/contracts/src/e2e-model-channel.js";
+import type { E2EModelChannelRequest } from "@rovara-code/contracts";
 import { createE2ECredentialGuard } from "../../packages/worker/src/e2e-model-credential-guard.js";
 import { createE2EProviderInvoke } from "../../packages/model-runtime/src/e2e-provider-invoke.js";
 import { createE2EProviderInvokeForTesting } from "../../packages/model-runtime/src/e2e-provider-invoke-testing.js";
@@ -242,7 +242,7 @@ describe("Step 0: e2e 0.20.0's tool loop round-trips through the governed route 
     const { createE2EAgentModelAdapter } = await import("../../packages/verifier/src/executor/agent-model-adapter.js");
     const { createRovaraE2EAgentExecutor } = await import("../../packages/verifier/src/executor/agent-executor.js");
     const { createE2EAgentLedgerWriter } = await import("../../packages/verifier/src/executor/agent-ledger.js");
-    const { generateE2EAgentValueKey } = await import("../../packages/contracts/src/e2e-model-channel.js");
+    const { generateE2EAgentValueKey } = await import("@rovara-code/contracts");
     const client = createE2EModelChannelClient({ socketPath: join(dir, "m.sock"), runId: RUN_ID, sessionSync: noSessionValues });
     const position = { caseId: CASE_ID, stepIndex: 0 };
     const adapter = createE2EAgentModelAdapter({ client, routeId: "rovara-e2e-default", position: () => position });

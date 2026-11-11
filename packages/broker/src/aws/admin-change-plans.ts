@@ -2,12 +2,8 @@
 // Spec 025 FR-039, E6, E7: each admin change's plan, computed against current state. A plan
 // changes nothing: it says what will happen, hashes what it read, and says how to apply it through
 // the existing handler. Every value it shows passes through redaction first.
-import {
-  ADMIN_CHANGE_EFFECT_MAX, AgentXNameSchema, CredentialRegistrationSchema, SlackChannelIdSchema, WorkspaceInstanceSchema, agentXError, developerTaskPolicy,
-  SLACK_BINDING_SK_PREFIX, SLACK_LIMIT_MEMBER_SK_PREFIX, orgLimitKey, redactSecrets, redactText, slackBindingKey, slackBindingPk, slackLimitPk, slackOrganizationLimitKey, workspaceRecordFields,
-  type OrgId,
-  type AdminChangeInput, type AdminChangeKind, type ChannelByNameRequest, type ConfirmationMethod, type ChannelByNameResponse, type ProjectDefinition,
-} from "@agentx/contracts";
+import { ADMIN_CHANGE_EFFECT_MAX, AgentXNameSchema, CredentialRegistrationSchema, SlackChannelIdSchema, WorkspaceInstanceSchema, agentXError, developerTaskPolicy, SLACK_BINDING_SK_PREFIX, SLACK_LIMIT_MEMBER_SK_PREFIX, orgLimitKey, redactSecrets, redactText, slackBindingKey, slackBindingPk, slackLimitPk, slackOrganizationLimitKey, workspaceRecordFields, type OrgId, type AdminChangeInput, type AdminChangeKind, type ChannelByNameRequest, type ConfirmationMethod, type ChannelByNameResponse } from "@rovara-code/contracts";
+import { type ProjectDefinition } from "@agentx/cloud-contracts";
 import type { AuthenticatedIdentity } from "../auth.js";
 import { chatGptSettingsOf, readChatGptSettingsRecord, writeChatGptSettings } from "../chatgpt/settings.js";
 import { MAX_PER_ORGANIZATION, MAX_PER_PERSON, isWholeLimit, readWorkspaceLimits, workspaceLimitsKey } from "../developer/limits.js";

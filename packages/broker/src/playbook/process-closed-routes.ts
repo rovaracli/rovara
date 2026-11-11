@@ -1,7 +1,7 @@
 // "How we work" (H8): a project's process layer is edited only through How we work and runs only as the project's way of working. The general agent routes must not act on it either:
 // no share write (the project's people already have it through the project), no owner or accountable move by a person (it belongs to its project), and no other agent built on it.
 // Each check is one call from the store, where every route and confirmation lands. Ordinary agents are unchanged.
-import { agentXError } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
 
 export const PROCESS_SHARE_MESSAGE = "How we work is shared with the project's people already; it can't be shared separately.";
 export const PROCESS_OWNER_MESSAGE = "How we work belongs to its project.";

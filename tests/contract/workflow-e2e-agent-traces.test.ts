@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
-import { E2E_AGENT_TRACE_FILE_MAX_BYTES, canonicalJson, E2E_AGENT_TRACE_SUMMARY, e2eAgentValueKeyId, reviewCapturedE2EAgentTrace } from "@agentx/contracts";
+import { E2E_AGENT_TRACE_FILE_MAX_BYTES, canonicalJson, E2E_AGENT_TRACE_SUMMARY, e2eAgentValueKeyId, reviewCapturedE2EAgentTrace } from "@rovara-code/contracts";
 import { agentRunnable, runAgentCase, type AgentRun } from "../support/agent-executor-run.js";
 import { AGENT_GOAL } from "../support/orders-m14-agent.js";
 import { asLinuxRun, assembleAgentRun, brokerRoundFor, collectAssembled, firstCase } from "../support/agent-collection.js";

@@ -4,6 +4,8 @@
 // the way GitHub does (negation, character classes, an owner that is no @name or email, more rules than it reads) is unreadable as a whole: the rules after a line that was skipped could
 // otherwise take the place of the ones that were meant.
 
+import type { CodeOwner, CodeOwnersRead } from "@rovara-code/contracts";
+
 export interface CodeOwnerRule {
   pattern: string;
   owners: string[];
@@ -73,9 +75,28 @@ export function ownersOfPath(rules: readonly CodeOwnerRule[], path: string): str
   return [];
 }
 
+/** One owner as the code host port names it (convergence W0-3: the host reads its own owners file and the core asks who owns a path). `@name` is a person, `@org/team` a team, anything else is an email. */
+function ownerOf(owner: string): CodeOwner {
+  if (!owner.startsWith("@")) return { kind: "other", label: owner };
+  return owner.includes("/") ? { kind: "team", team: owner.slice(1) } : { kind: "person", login: owner.slice(1) };
+}
+
+/** An owner back in the one-string form this file's rules work in. */
+function ownerText(owner: CodeOwner): string {
+  return owner.kind === "person" ? `@${owner.login}` : owner.kind === "team" ? `@${owner.team}` : owner.label;
+}
+
+/** A CODEOWNERS file as the host port's neutral read: GitHub's adapter answers with this, reading the file as GitHub does (this file's rules). */
+export function codeOwnersReadOf(text: string): CodeOwnersRead {
+  const parsed = parseCodeOwners(text);
+  return { unsupported: parsed.unsupported, ownersOf: (path) => ownersOfPath(parsed.rules, path).map(ownerOf) };
+}
+
 export interface CodeOwnerInput {
-  /** The file as the base branch holds it; undefined when it has none. */
-  codeOwnersText: string | undefined;
+  /** The file as the base branch holds it; undefined when it has none. Ignored when `codeOwnersRead` is given. */
+  codeOwnersText?: string | undefined;
+  /** The host's own read of the file (`CodeHost.codeOwners`); wins over `codeOwnersText`. */
+  codeOwnersRead?: CodeOwnersRead | undefined;
   /** Every path the pull request changes (a renamed file under both names). */
   paths: readonly string[];
   /** The GitHub logins of the counted approvers. */
@@ -87,10 +108,9 @@ const NAMED = 3;
 
 /** Whether every changed path that has a code owner has an approval from one of its owners. */
 export async function codeOwnerVerdict(input: CodeOwnerInput): Promise<CodeOwnerVerdict> {
-  if (input.codeOwnersText === undefined) return { ok: true };
-  const parsed = parseCodeOwners(input.codeOwnersText);
-  if (parsed.unsupported) return { ok: false, unreadable: true };
-  const rules = parsed.rules;
+  const read = input.codeOwnersRead ?? (input.codeOwnersText === undefined ? undefined : codeOwnersReadOf(input.codeOwnersText));
+  if (read === undefined) return { ok: true };
+  if (read.unsupported) return { ok: false, unreadable: true };
   const approvers = [...new Set(input.approverLogins.map((login) => login.toLowerCase()))];
   const asked = new Map<string, Promise<"member" | "not_member" | "unknown">>();
   const inTeam = (owner: string, login: string) => {
@@ -105,7 +125,7 @@ export async function codeOwnerVerdict(input: CodeOwnerInput): Promise<CodeOwner
   // Paths with the same owners are asked about once.
   const ownerSets = new Map<string, string[]>();
   for (const path of input.paths) {
-    const owners = ownersOfPath(rules, path);
+    const owners = read.ownersOf(path).map(ownerText);
     if (owners.length > 0) ownerSets.set(owners.map((owner) => owner.toLowerCase()).sort().join(" "), owners);
   }
   const missing: string[] = [];

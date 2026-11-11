@@ -1,7 +1,7 @@
 // Test services, slice 3 (s3-fakes-store): the routes for a hand-written answer set (a fake), through the whole broker with live browser sessions. Behind `tx`; browser only; the org, the role, the sign-in time and
 // `schema_synth` all come from the session and the project's approved environment, never from the request; a set is scanned before it is stored; a decision is one decision on one digest.
 import { afterEach, describe, expect, it } from "vitest";
-import { FixtureSetSchema, fixtureEntry, fixtureSetDigest, projectPk, testEnvDigest, type FixtureSet, type TestEnvProdDeny, type TestEnvironmentBody } from "@agentx/contracts";
+import { FixtureSetSchema, fixtureEntry, fixtureSetDigest, projectPk, testEnvDigest, type FixtureSet, type TestEnvProdDeny, type TestEnvironmentBody } from "@rovara-code/contracts";
 import { createFixtureStore, createMemoryFixturePorts, type FixtureDenyFor } from "../../packages/broker/src/test-env/fixture-store.js";
 import { testServicesEnabled } from "../../packages/broker/src/test-env/test-services-switch.js";
 import { environmentSynthesisesFor } from "../../packages/broker/src/aws/developer-routes/fixtures.js";

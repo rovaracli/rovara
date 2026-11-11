@@ -1,4 +1,4 @@
-import type { E2EFeaturePlanIntent, PlanDocument } from "@agentx/contracts";
+import type { E2EFeaturePlanIntent, PlanDocument } from "@rovara-code/contracts";
 
 export type PortableFeatureIntent =
   | { ok: true; intent: E2EFeaturePlanIntent }

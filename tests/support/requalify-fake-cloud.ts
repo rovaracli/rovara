@@ -2,7 +2,7 @@
 // An in-memory account for the renewal's tests: EC2, SSM, IAM, S3, DynamoDB, SNS, CloudWatch and Step Functions as far as the renewal uses them, plus an
 // interpreter for the renewal's state machine definition so the real machine runs against the real step code. No AWS call is ever made.
 import { createHash, randomUUID } from "node:crypto";
-import { canonicalJson, e2eQualificationPrefix, REQUALIFY_PROFILE_ID, type Ec2RuntimeBinding } from "../../packages/contracts/src/index.js";
+import { canonicalJson, e2eQualificationPrefix, REQUALIFY_PROFILE_ID, type Ec2RuntimeBinding } from "@rovara-code/contracts";
 import { e2eModelCheckRunnerKey } from "../../packages/broker/src/e2e/model-route-registry.js";
 import { e2eRegisteredRuntimeKey } from "../../packages/broker/src/aws/e2e-runtime-readiness.js";
 import type { RequalifyStepsDependencies } from "../../packages/broker/src/aws/runtime-requalify-steps.js";

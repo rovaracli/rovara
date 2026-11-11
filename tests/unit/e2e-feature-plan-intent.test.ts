@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { createCandidateManifest, canonicalJson, portableOperationId, buildE2ESharedView, e2ePlanHasCompleteRequiredCriteria, parsePlanDocument, e2eScenarioBundleDigest, type E2EFeaturePlanIntent, type E2EPolicy, type E2ESourceSnapshot } from "@agentx/contracts";
+import { createCandidateManifest, canonicalJson, portableOperationId, buildE2ESharedView, e2ePlanHasCompleteRequiredCriteria, parsePlanDocument, e2eScenarioBundleDigest, type E2EFeaturePlanIntent, type E2EPolicy, type E2ESourceSnapshot } from "@rovara-code/contracts";
 import { deriveProjectSetupSourceSmoke } from "../../packages/broker/src/e2e/project-setup-source-smoke.js";
-import { selectE2EExecutionPlan } from "../../packages/contracts/src/e2e-execution-plan.js";
+import { selectE2EExecutionPlan } from "@rovara-code/contracts";
 import { buildE2EFeatureRound, deriveE2EFeatureExecutionAdmission, deriveE2EFeaturePortableApprovalBinding } from "../../packages/broker/src/e2e/feature-plan-intent.js";
 import { buildFeatureE2EPlanningContext, isExactFeatureE2ESourceSnapshot } from "../../packages/broker/src/e2e/feature-plan-planning-context.js";
 import { compileE2EScenarios } from "../../packages/verifier/src/scenarios.js";

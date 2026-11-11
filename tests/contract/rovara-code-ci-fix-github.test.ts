@@ -3,13 +3,13 @@
 // costs bounded memory.
 import { generateKeyPairSync } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { CI_LOG_BYTES_MAX, CI_LOG_TAIL_LINES } from "@agentx/contracts";
+import { CI_LOG_BYTES_MAX, CI_LOG_TAIL_LINES } from "@rovara-code/contracts";
 import { GitHubAppCredentialProvider, GithubMergeRateLimitError } from "../../packages/broker/src/github-app.js";
 import { LOG_DOWNLOAD_BYTES_MAX, isAllowedLogAddress, logTail, readLogEnd } from "../../packages/broker/src/github-job-log.js";
 
 const NOW = Date.parse("2026-10-25T12:00:00.000Z");
 const REPO = "https://github.com/acme/payments.git";
-const SCOPE = { system: "private-install" } as const;
+const SCOPE = { system: "install" } as const;
 const LOG_ADDRESS = "https://productionresultssa7.blob.core.windows.net/actions-results/abc?sig=xyz";
 
 interface Fixture {

@@ -1,7 +1,7 @@
 // NH-1 re-check F5/F6: the two questions asked of a test id. VALID (listable, comparable, markable): spaces inside are fine; control, hidden and look-alike characters, lone surrogates, a space at an end and more than 500
 // characters are not. RERUNNABLE: valid and not readable as an option or an argument file.
 import { describe, expect, it } from "vitest";
-import { TEST_ID_MAX, TestIdSchema, isRerunnableTestId, isValidTestId, testIdOf } from "../../packages/contracts/src/test-id.js";
+import { TEST_ID_MAX, TestIdSchema, isRerunnableTestId, isValidTestId, testIdOf } from "@rovara-code/contracts";
 
 describe("a valid test id", () => {
   it("allows spaces inside a name, brackets, parentheses, quotes, unicode letters and emoji", () => {

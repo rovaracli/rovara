@@ -1,6 +1,6 @@
 // SH25 review M2: only a developer task that uses the approved environment names its pin, so only its preparation (first or held) may be told a saved image.
 import { describe, expect, it } from "vitest";
-import { TestEnvironmentBodySchema, testEnvDigest, type ProjectCommand, type TestEnvironment } from "@agentx/contracts";
+import { TestEnvironmentBodySchema, testEnvDigest, type ProjectCommand, type TestEnvironment } from "@rovara-code/contracts";
 import { heldSavedEnvPin } from "../../packages/broker/src/aws/developer-tasks/continue.js";
 import { pinOfStoredPin, pinOfUsedEnvironment, startPreparationOptions } from "../../packages/broker/src/test-env/saved-env-pin.js";
 

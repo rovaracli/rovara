@@ -1,7 +1,8 @@
 // Lessons in production, lane 2 (WB-7): the code host can say what a path is at a commit (`pathKind`: file, dir, none), so a lesson that cites a directory, or a glob whose literal directory prefix is one,
 // can be verified. A host without it (or a reader without `kind`) leaves such paths unverified, which is what it did before.
 import { describe, expect, it } from "vitest";
-import { editionPolicy, projectRevisionKey } from "@agentx/contracts";
+import { editionPolicy } from "@agentx/cloud-contracts";
+import { projectRevisionKey } from "@rovara-code/contracts";
 import { codeFileReader } from "../../../packages/broker/src/aws/broker/lessons-wiring.js";
 import { createPluginRegistry } from "../../../packages/broker/src/plugins/registry.js";
 import { FakeDynamoDb } from "../../support/fake-dynamodb.js";
@@ -38,8 +39,8 @@ describe("the GitHub adapter's pathKind", () => {
     const calls: unknown[][] = [];
     const provider = { getPathKindAtCommit: async (...args: unknown[]) => { calls.push(args); return "dir" as const; } };
     const host = githubCodeHost(provider as never, { credentialRef: "ref" });
-    expect(await host.pathKind!({ url: "https://github.com/acme/api.git" }, "src", "a".repeat(40), { system: "private-install" }, { timeoutMs: 1_000 })).toBe("dir");
-    expect(calls).toEqual([["https://github.com/acme/api.git", "src", "a".repeat(40), { system: "private-install" }, { timeoutMs: 1_000 }]]);
+    expect(await host.pathKind!({ url: "https://github.com/acme/api.git" }, "src", "a".repeat(40), { system: "install" }, { timeoutMs: 1_000 })).toBe("dir");
+    expect(calls).toEqual([["https://github.com/acme/api.git", "src", "a".repeat(40), { system: "install" }, { timeoutMs: 1_000 }]]);
     expect(Object.keys(githubCodeHost({} as never, { credentialRef: "ref" }))).not.toContain("pathKind");
   });
 });
@@ -48,7 +49,7 @@ describe("the GitHub adapter's change request details (lessons in the repo: read
   it("carries whether Rovara's own account made it and the id of the repository it is against, and says nothing when the provider did not", async () => {
     const details = { number: 7, url: "https://github.com/acme/api/pull/7", state: "open" as const, headBranch: "rovara/lessons-0123456789ab", baseBranch: "main", headCommit: "a".repeat(40), title: "t", body: "b" };
     const host = (answer: object) => githubCodeHost({ getPullRequest: async () => ({ ...details, ...answer }) } as never, { credentialRef: "ref" });
-    const read = (h: ReturnType<typeof host>) => h.getChangeRequest({ repository: { url: "https://github.com/acme/api.git" }, id: "7", url: "" }, { system: "private-install" });
+    const read = (h: ReturnType<typeof host>) => h.getChangeRequest({ repository: { url: "https://github.com/acme/api.git" }, id: "7", url: "" }, { system: "install" });
     expect(await read(host({ authoredByApp: true, baseRepositoryId: "1001" }))).toMatchObject({ authoredByRovara: true, baseRepositoryId: "1001" });
     expect(await read(host({ authoredByApp: false }))).toMatchObject({ authoredByRovara: false });
     const silent = await read(host({}));

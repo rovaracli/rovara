@@ -2,7 +2,8 @@
 // task only if everyone who can see the task can see every source task. This file tests the audience sets and the subset rule, and pins that the Team record's own resolver (`task-visibility.ts`) is unchanged for the
 // same tasks: the record's audience was NOT widened (an unshared task's rows still go to its owner alone).
 import { describe, expect, it } from "vitest";
-import { orgMemberKey, projectRevisionKey, type OrgId } from "@agentx/contracts";
+import { orgMemberKey } from "@agentx/cloud-contracts";
+import { projectRevisionKey, type OrgId } from "@rovara-code/contracts";
 import { AgentSessionStore } from "../../../packages/broker/src/agent-sessions/store.js";
 import { resolveTaskVisibility } from "../../../packages/broker/src/lessons/task-visibility.js";
 import { audienceWithin, inAudience, lessonAudiencesOf, openToWholeProject, resolveLessonTaskAudience, tableLessonAudiencePort, withLessonAudiences, type LessonTaskAudience } from "../../../packages/broker/src/lessons/task-audience.js";

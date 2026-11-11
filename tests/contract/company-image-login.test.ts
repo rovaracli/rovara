@@ -1,7 +1,7 @@
 // Company-approved images: the worker's pull login (`company-image-login`). A run gets a login for ONE mirrored image of its own company, only while the image is still approved and copied, only for an image its pinned
 // plan named, and only a few times; everything else is refused with the same words.
 import { afterEach, describe, expect, it } from "vitest";
-import { COMPANY_IMAGE_LOGIN_MAX_PER_OPERATION, SavedEnvRegistryAuthSchema, companyImageRepositoryName } from "@agentx/contracts";
+import { COMPANY_IMAGE_LOGIN_MAX_PER_OPERATION, SavedEnvRegistryAuthSchema, companyImageRepositoryName } from "@agentx/cloud-contracts";
 import { COMPANY_IMAGE_LOGIN_REFUSED, handleCompanyImageLogin, type CompanyImageLoginDeps, type CompanyImageLoginOperation } from "../../packages/broker/src/aws/broker/company-image-login.js";
 import { operationKey } from "../../packages/broker/src/aws/cancellation.js";
 import { expectedRepositoryPolicy, type SavedEnvSessionPorts } from "../../packages/broker/src/test-env/saved-env-session.js";

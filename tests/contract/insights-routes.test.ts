@@ -1,11 +1,14 @@
 // Insights (srv/insights-reads): the routes through the real route dispatcher (`routeDeveloperRequest`), the same bench as the Auditor tests: the role gate, the browser-only rule for the grant (refused
 // BEFORE the token is even checked), reads open to a token by the same role rule, the switch, and the browser's route list. The reads themselves are in insights-reads.test.ts.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AgentXError, developerOrgKey, editionPolicy, orgMemberKey, orgMetaKey, type OrgRole } from "@agentx/contracts";
+import { developerOrgKey, editionPolicy, orgMemberKey, orgMetaKey, type OrgRole } from "@agentx/cloud-contracts";
+import { AgentXError } from "@rovara-code/contracts";
 import { routeDeveloperRequest, type DeveloperCaller, type DeveloperRouteDependencies } from "../../packages/broker/src/aws/developer-routes.js";
 import { webRouteAllowed } from "../../packages/broker/src/aws/web-auth.js";
 import { AUDITOR_ALLOWED_ROUTES, AUDITOR_REFUSED, requireAuditorRoute } from "../../packages/broker/src/org/auditor.js";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
+import { insightsDependenciesOf } from "../../packages/broker/src/aws/developer-routes/insights.js";
+import { insightsRowKeyOf } from "../../packages/broker/src/insights/row-id.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 
@@ -105,6 +108,18 @@ describe("through the route dispatcher", () => {
     for (const path of ["/v1/app/insights/stuck", "/v1/app/insights/spend", ACCESS]) expect(await f.call("GET", path), path).toMatchObject({ code: "NOT_FOUND" });
     expect(await f.call("POST", ACCESS, grant(other))).toMatchObject({ code: "NOT_FOUND" });
     expect(f.record(other)).not.toHaveProperty("insightsViewer");
+  });
+});
+
+describe("the key for opaque stuck-row ids", () => {
+  it("comes from the install secret the session cursor is sealed with, and is absent (the list unavailable) without one", () => {
+    const f = fixture("owner");
+    const caller: DeveloperCaller = { orgId: org, developerId: actor, orgRole: "owner", name: "Priya", amr: "oidc", sessionId: "fixture" };
+    const secret = "s".repeat(40);
+    expect(insightsDependenciesOf({ ...f.deps, agentSessions: { cursorKey: secret } as never }, caller).rowKey).toBe(insightsRowKeyOf(secret));
+    expect(insightsDependenciesOf({ ...f.deps, agentSessions: { cursorKey: secret } as never }, caller).rowKey).not.toBe(secret);
+    expect(insightsDependenciesOf(f.deps, caller).rowKey).toBeUndefined();
+    for (const agentSessions of [{} as never, { cursorKey: "" } as never]) expect(insightsDependenciesOf({ ...f.deps, agentSessions }, caller).rowKey).toBeUndefined();
   });
 });
 

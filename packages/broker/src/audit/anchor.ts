@@ -26,26 +26,7 @@
 import { createHash } from "node:crypto";
 import { GetObjectCommand, HeadObjectCommand, ListObjectVersionsCommand, PutObjectCommand, type PutObjectCommandInput, type S3ClientConfig } from "@aws-sdk/client-s3";
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand, type TransactWriteCommandInput } from "@aws-sdk/lib-dynamodb";
-import {
-  AUDIT_BACKSTOP_SEAL_AGE_MINUTES,
-  AUDIT_MAX_RECORDS_PER_ORG_EPOCH,
-  AUDIT_SEAL_INTERVAL_MINUTES,
-  auditCanonicalJson,
-  checkChain,
-  genesisHash,
-  merkleRoot,
-  recordHash,
-  recordLeafData,
-  sealHash,
-  sealLeafData,
-  statementHash,
-  timestampCoversRecord,
-  verifyTimeStampToken,
-  type AuditRecordV1,
-  type EpochStatementV1,
-  type LockedObjectV1,
-  type OrgSealV1,
-} from "@agentx/contracts";
+import { AUDIT_BACKSTOP_SEAL_AGE_MINUTES, AUDIT_MAX_RECORDS_PER_ORG_EPOCH, AUDIT_SEAL_INTERVAL_MINUTES, auditCanonicalJson, checkChain, genesisHash, merkleRoot, recordHash, recordLeafData, sealHash, sealLeafData, statementHash, timestampCoversRecord, verifyTimeStampToken, type AuditRecordV1, type EpochStatementV1, type LockedObjectV1, type OrgSealV1 } from "@agentx/cloud-contracts";
 import { processDueShreds } from "./erase.js";
 import { currentLockState, enforceObjectLock, runLockChecks, type LockCheckDeps } from "./lock-check.js";
 import { TsaError, checkGenTime, randomNonce, requestTimestamp, type TsaDeps, type TsaSettings, type TsaTarget } from "./tsa-client.js";

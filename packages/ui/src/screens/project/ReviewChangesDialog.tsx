@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import { Link } from "react-router";
-import { STAGE_IDS, type StageRefusal } from "@agentx/contracts/web";
+import { STAGE_IDS, type StageRefusal } from "@agentx/cloud-contracts/web";
 import { useQueryClient } from "@tanstack/react-query";
 import { useBuilderApi } from "../../api/builder.js";
 import { howWeWorkKey, useHowWeWork, useHowWeWorkApi } from "../../api/how-we-work.js";

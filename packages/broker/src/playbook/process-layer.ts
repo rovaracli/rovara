@@ -1,14 +1,6 @@
 // "How we work" (H3): a project's process layer. It is a project-owned custom agent marked `purpose: "process"` that extends Rovara Code and is edited through "How we work",
 // never chosen as an agent. `POST /v1/app/projects/{p}/playbook/process` makes sure the project has exactly one; the first version it publishes makes the playbook point at it.
-import {
-  AGENT_NAME_MAX,
-  ROVARA_CODE_AGENT_ID,
-  agentXError,
-  projectAllows,
-  type AgentId,
-  type OrgId,
-  type ProjectPlaybook,
-} from "@agentx/contracts";
+import { AGENT_NAME_MAX, ROVARA_CODE_AGENT_ID, agentXError, projectAllows, type AgentId, type OrgId, type ProjectPlaybook } from "@rovara-code/contracts";
 import type { AgentRecord, AgentStore } from "../agents/store.js";
 import { requireBaseEnabled } from "../agents/guardrails.js";
 import type { TransactItem } from "../audit/outbox.js";

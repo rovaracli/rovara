@@ -1,10 +1,7 @@
 // Live interaction F2: the chat service answers a light diagnosis with the read-only turn and writes the answer back to the broker. No Slack thread, member or channel is involved, nothing is posted in
 // Slack, the context text is never logged, and an older service discards the message.
 import { describe, expect, it, vi } from "vitest";
-import {
-  DIAGNOSIS_TURN_QUESTION, DiagnosisQueueMessageSchema, SlackRequestMessageSchema, diagnosisRouteAttributes, isDiagnosisRoute,
-  type DiagnosisAnsweredRequest, type DiagnosisQueueMessage, type DiagnosisTurnResult,
-} from "../../packages/contracts/src/index.js";
+import { DIAGNOSIS_TURN_QUESTION, DiagnosisQueueMessageSchema, SlackRequestMessageSchema, diagnosisRouteAttributes, isDiagnosisRoute, type DiagnosisAnsweredRequest, type DiagnosisQueueMessage, type DiagnosisTurnResult } from "@rovara-code/contracts";
 import { NO_TEXT_RESPONSE } from "../../packages/orchestrator/src/orchestrator.js";
 import { processGroup, type QueueClient } from "../../packages/slack-service/src/consumer.js";
 import { handleDiagnosis, type DiagnosisServiceApi } from "../../packages/slack-service/src/diagnosis-question.js";

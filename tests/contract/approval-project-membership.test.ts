@@ -1,7 +1,8 @@
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { orgMetaKey, orgMemberKey, projectMetaKey, projectMemberKey, type OrgId } from "../../packages/contracts/src/index.js";
+import { orgMetaKey, orgMemberKey } from "@agentx/cloud-contracts";
+import { projectMetaKey, projectMemberKey, type OrgId } from "@rovara-code/contracts";
 import { setProjectMember, removeProjectMember } from "../../packages/broker/src/org/project-members.js";
 import { grantProjectAccess, revokeProjectAccess } from "../../packages/broker/src/aws/admin-actions.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";

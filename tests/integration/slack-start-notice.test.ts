@@ -1,9 +1,7 @@
 // tests/integration/slack-start-notice.test.ts
 // Spec 014 FR-026: when the Slack service says it has started, next to the ingress's own acknowledgement.
 import { describe, expect, it, vi } from "vitest";
-import {
-  SLACK_QUEUED_BEHIND_ATTRIBUTE, queuedBehindAttributes, queuedBehindOf, type SlackRequestMessage, type SlackThreadWorkspaceResult,
-} from "../../packages/contracts/src/index.js";
+import { SLACK_QUEUED_BEHIND_ATTRIBUTE, queuedBehindAttributes, queuedBehindOf, type SlackRequestMessage, type SlackThreadWorkspaceResult } from "@rovara-code/contracts";
 import { processGroup, type QueueClient, type QueueMessage } from "../../packages/slack-service/src/consumer.js";
 import { processSlackRequest, type ProcessorDependencies } from "../../packages/slack-service/src/processor.js";
 

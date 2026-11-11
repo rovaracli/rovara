@@ -1,6 +1,7 @@
 import { createHmac } from "node:crypto";
 import { beforeAll, describe, expect, it, vi } from "vitest";
-import { createCandidateManifest, createWorkflowSnapshot, WorkflowSnapshotSchema, type WorkflowSnapshot, type WorkflowFeedbackBundle } from "../../packages/contracts/src/task-workflow-node.js";
+import { createCandidateManifest, type WorkflowFeedbackBundle } from "@rovara-code/contracts";
+import { createWorkflowSnapshot, WorkflowSnapshotSchema, type WorkflowSnapshot } from "../../packages/cloud-contracts/src/task-workflow-node.js";
 import { claimGithubWebhookDelivery, completeGithubWebhookDelivery, findLinkedGithubWorkflowPullRequest, listDueGithubWebhookDeliveries, processGithubWebhookDelivery, receiveGithubWebhook, reconcileTaskPullRequestFeedback, reserveGithubWebhookDelivery, verifyGithubWebhookSignature, verifyTaskPullRequestFeedbackCurrent } from "../../packages/broker/src/aws/github-webhooks.js";
 import type { ReconcileTaskPullRequestFeedbackInput } from "../../packages/broker/src/aws/github-webhooks.js";
 import type { GitHubPullRequestFeedback } from "../../packages/broker/src/github-app.js";
@@ -8,7 +9,7 @@ import type { FeedbackReviewMeasure } from "../../packages/broker/src/developer/
 import { call, createBroker, loadSlackBroker } from "../support/slack-broker.js";
 import { validatingDocumentClient } from "../support/validating-document-client.js";
 import { reorderMaps } from "../support/fake-dynamodb.js";
-import { projectPk } from "../../packages/contracts/src/org-scoped-keys.js";
+import { projectPk } from "@rovara-code/contracts";
 import { TEST_ENV, TEST_ORG } from "../support/orgs.js";
 
 function commandInput(command: unknown): { constructor: { name: string }; input: Record<string, unknown> } {
@@ -695,7 +696,7 @@ describe("the GitHub webhook route and a changed webhook secret", () => {
   });
 
   it("answers 503 not configured when the secret holds no webhook secret even after a refresh", async () => {
-    const { agentXError } = await import("../../packages/contracts/src/index.js");
+    const { agentXError } = await import("@rovara-code/contracts");
     const webhookSecret = vi.fn(async () => { throw agentXError("RUNTIME_UNAVAILABLE", "GitHub App secret does not contain a valid webhook secret"); });
     const response = await post(webhookSecret, signedHeaders(pullRequestBody, "any".padEnd(40, "a")));
     expect(response.status).toBe(503);

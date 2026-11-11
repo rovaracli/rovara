@@ -1,7 +1,7 @@
 // Meta repo lane F (F2): the notice a project's maintainers get when an intake source keeps failing. Fixed words and ids only: the source's system name (a checked short name), the project's
 // name and a number of minutes; never a tracker's message. One item per maintainer, in the maintainer's own partition of the org (`intakeNoticeKey`), like a trigger's notice.
 import { PutCommand } from "@aws-sdk/lib-dynamodb";
-import { INDEX_EXPIRY_ATTRIBUTE, intakeNoticeKey } from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, intakeNoticeKey } from "@rovara-code/contracts";
 import type { IntakeNotice } from "../triggers/poll-intake.js";
 import type { IntakeTable } from "./store.js";
 

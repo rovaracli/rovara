@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { E2EModelRouteDefinition } from "../../packages/contracts/src/e2e-model-channel.js";
+import type { E2EModelRouteDefinition } from "@rovara-code/contracts";
 import { MissingProviderSecret } from "../../packages/model-runtime/src/config.js";
 import { E2EPayloadRefusedError, createGovernedE2EModelRoute, createInMemoryE2EDayBudget, type E2EInvokeInput } from "../../packages/model-runtime/src/e2e-route.js";
 import * as modelRuntime from "../../packages/model-runtime/src/index.js";

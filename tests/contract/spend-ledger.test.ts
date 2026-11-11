@@ -6,11 +6,8 @@ import { Stack } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { marshall } from "@aws-sdk/util-dynamodb";
 import { describe, expect, it, vi } from "vitest";
-import {
-  FINALIZE_DELAY_MS, KEY_EXPIRY_GRACE_MS, FINALIZED_SETTLE_WINDOW_MS,
-  agentRunsKey, budgetAlertKey, builtinSettingsKey, ledgerKey, modelKeyKey, openModelKeysKey, orgSettingsKey, personalCounter, projectMemberKey, projectRevisionKey, spendCounterKey,
-  type BudgetScope,
-} from "@agentx/contracts";
+import { FINALIZE_DELAY_MS, KEY_EXPIRY_GRACE_MS, FINALIZED_SETTLE_WINDOW_MS, budgetAlertKey, ledgerKey, modelKeyKey, openModelKeysKey, orgSettingsKey, personalCounter, spendCounterKey, type BudgetScope } from "@agentx/cloud-contracts";
+import { agentRunsKey, builtinSettingsKey, projectMemberKey, projectRevisionKey } from "@rovara-code/contracts";
 import {
   ScopeFullError, blockOperationKeys, checkAlerts, finalizeKey, forgetKey, registerKey, reserve, settleKey, sweepSpend,
   type KeyInput, type LedgerDependencies, type ModelKeyRecord,
@@ -26,10 +23,10 @@ import { fakeModelAccess, type FakeModelAccess } from "../support/fake-model-acc
 import { MAYA as DEV_MAYA, OMAR as DEV_OMAR, createDeveloperTaskBroker, seedMembership } from "../support/developer-task-broker.js";
 import { SLACK_CHANNEL, SLACK_TEAM, call, createBroker, registerSlackProject, serviceCall } from "../support/slack-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
-import { singleOrgIdForEnv } from "../../packages/contracts/src/org-node.js";
+import { singleOrgIdForEnv } from "@rovara-code/contracts";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
-import { taskSpendKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { taskSpendKey } from "@rovara-code/contracts";
 
 skipLambdaBundling();
 

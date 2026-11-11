@@ -1,6 +1,6 @@
 // Owner decision 2026-10-27 (approval merges): the risk Rovara shows next to Merge. Every kind of change the owner named has its tier and a reason in words, whether or not the change is a fix.
 import { describe, expect, it } from "vitest";
-import { createCandidateManifest, type VerificationReport } from "@agentx/contracts";
+import { createCandidateManifest, type VerificationReport } from "@rovara-code/contracts";
 import { assessRisk, type RiskFile, type RiskInput } from "../../packages/broker/src/rovara-code/risk.js";
 
 const digest = createCandidateManifest([{ repositoryId: "payments", commitSha: "1".repeat(40), treeSha: "1".repeat(40), baseCommitSha: "e".repeat(40) }]).digest;

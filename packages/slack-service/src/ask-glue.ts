@@ -2,7 +2,7 @@
 //   - `accessRouteFor`: the model key of an Ask's turn is asked for on the Ask's own broker route (it names the Ask, so the broker checks the asker still "can use" the session), never on a Slack
 //     thread's; a turn that is not an Ask the glue is running has no route and throws (it is never given a thread's);
 //   - `runTurn`: runs the Ask's no-tools answer turn for the broker's context, remembering the Ask under the queue event's id while it runs and forgetting it afterwards, whatever happens.
-import { SlackRequestMessageSchema, type AskRef, type AskTurnResult, type SlackRequestMessage } from "@agentx/contracts";
+import { SlackRequestMessageSchema, type AskRef, type AskTurnResult, type SlackRequestMessage } from "@rovara-code/contracts";
 import type { TurnInput } from "./processor.js";
 import { deterministicUuid, requestIdSequence } from "./ids.js";
 

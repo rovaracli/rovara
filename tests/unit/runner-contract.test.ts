@@ -1,12 +1,7 @@
 // SH35: the team build runner contract (R3). Strict job kinds, no model credentials or edit permissions on a job, jobs made only of approved commands, bounded sizes, a signed grant, a lease that binds a result
 // to one job, and a result that is only evidence.
 import { describe, expect, it, vi } from "vitest";
-import {
-  RUNNER_GRANT_MAX_BYTES, RUNNER_GRANT_SIGNER, RUNNER_JOB_KINDS, RUNNER_JOB_MAX_TOTAL_SECONDS, RUNNER_LEASE_MAX_SECONDS, RUNNER_MAX_COMMANDS, RUNNER_MESSAGE_MAX_BYTES, RUNNER_OUTPUT_TAIL_BYTES, RUNNER_RESULT_MAX_BYTES, RUNNER_SCAN_MAX_KEYS,
-  RunnerGrantSchema, RunnerHeartbeatAckSchema, RunnerHeartbeatSchema, RunnerIdSchema, RunnerJobSchema, RunnerLeaseSchema, RunnerResultSchema, TestEnvironmentBodySchema,
-  checkRunnerHeartbeat, checkRunnerJobEnvironment, readRunnerBody, checkRunnerResult, findRunnerForbiddenField, forbiddenRunnerEnvName, runnerCommandDigest, runnerGrantSigningInput, runnerJobDigest, runnerLeaseRecord, testEnvDigest,
-  type RunnerCheckState, type RunnerJob,
-} from "../../packages/contracts/src/index.js";
+import { RUNNER_GRANT_MAX_BYTES, RUNNER_GRANT_SIGNER, RUNNER_JOB_KINDS, RUNNER_JOB_MAX_TOTAL_SECONDS, RUNNER_LEASE_MAX_SECONDS, RUNNER_MAX_COMMANDS, RUNNER_MESSAGE_MAX_BYTES, RUNNER_OUTPUT_TAIL_BYTES, RUNNER_RESULT_MAX_BYTES, RUNNER_SCAN_MAX_KEYS, RunnerGrantSchema, RunnerHeartbeatAckSchema, RunnerHeartbeatSchema, RunnerIdSchema, RunnerJobSchema, RunnerLeaseSchema, RunnerResultSchema, TestEnvironmentBodySchema, checkRunnerHeartbeat, checkRunnerJobEnvironment, readRunnerBody, checkRunnerResult, findRunnerForbiddenField, forbiddenRunnerEnvName, runnerCommandDigest, runnerGrantSigningInput, runnerJobDigest, runnerLeaseRecord, testEnvDigest, type RunnerCheckState, type RunnerJob } from "@rovara-code/contracts";
 
 const JOB_ID = "11111111-1111-4111-8111-111111111111";
 const LEASE_ID = "22222222-2222-4222-8222-222222222222";

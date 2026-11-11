@@ -1,14 +1,7 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { canonicalJson } from "../../packages/contracts/src/canonical-json.js";
-import {
-  E2EApplicationExternalConnectionRefSchema,
-  E2EApplicationHostPreparationBindingSchema,
-  E2EApplicationPreparedEnvironmentSchema,
-  E2EApplicationServiceContractSchema,
-  e2eApiSchemaComponentId,
-  e2eApplicationPreparedEnvironmentDigest,
-} from "../../packages/contracts/src/e2e-application-services.js";
+import { canonicalJson } from "@rovara-code/contracts";
+import { E2EApplicationExternalConnectionRefSchema, E2EApplicationHostPreparationBindingSchema, E2EApplicationPreparedEnvironmentSchema, E2EApplicationServiceContractSchema, e2eApiSchemaComponentId, e2eApplicationPreparedEnvironmentDigest } from "@rovara-code/contracts";
 
 const sha256Of = (text: string) => createHash("sha256").update(text).digest("hex");
 const sha = (value: unknown) => createHash("sha256").update(canonicalJson(value)).digest("hex");

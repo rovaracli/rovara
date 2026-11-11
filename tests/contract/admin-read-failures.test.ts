@@ -5,7 +5,7 @@ import { readFailures, timeWindow, type AdminReadDependencies } from "../../pack
 import { createAdminReadBroker } from "../support/admin-read-broker.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { TEST_ORG } from "../support/orgs.js";
-import { orgFailureIndexKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { orgFailureIndexKey } from "@rovara-code/contracts";
 
 const failure = (endedAt: string, n: number, extra: Record<string, unknown> = {}) => {
   const operationId = `1111111${n}-1111-4111-8111-111111111111`;

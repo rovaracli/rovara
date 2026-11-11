@@ -1,7 +1,7 @@
 // A small in-memory code host for the company rules file sync (G-04): one repository with a default branch, branches that are snapshots of one or two files, pull requests, and the same refusals the GitHub adapter makes (a
 // company-rules branch name, a company-rules path, a branch that exists, a file that is not as the caller read it). `push` is a person pushing to the default branch; `merge` and `close` are a person deciding a pull request.
 import { createHash } from "node:crypto";
-import { COMMIT_CONFLICT_MESSAGE, agentXError, type CodeHost, type ChangeRequestDetails } from "@agentx/contracts";
+import { COMMIT_CONFLICT_MESSAGE, agentXError, type CodeHost, type ChangeRequestDetails } from "@rovara-code/contracts";
 import { COMPANY_RULES_BRANCH_PATTERN, companyRulesPathProblem } from "../../packages/broker/src/company-rules/path.js";
 import type { CompanyRulesRepositories } from "../../packages/broker/src/company-rules/sync.js";
 

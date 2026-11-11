@@ -1,14 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it, vi } from "vitest";
-import {
-  Ec2RuntimeBindingSchema,
-  WorkerInvokeTokenClaimsSchema,
-  WorkspaceSessionSchema,
-  workspaceSessionKey,
-} from "../../packages/contracts/src/session.js";
-import { WorkspaceDeploymentModeSchema, WorkspaceInstanceSchema } from "../../packages/contracts/src/workspace.js";
+import { Ec2RuntimeBindingSchema, WorkerInvokeTokenClaimsSchema, WorkspaceSessionSchema, workspaceSessionKey } from "@rovara-code/contracts";
+import { WorkspaceDeploymentModeSchema, WorkspaceInstanceSchema } from "@rovara-code/contracts";
 // The broker's copy of the contracts (the built package), so its instanceof AgentXError holds.
-import { agentXError } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
 import { parseRuntimeBinding } from "../../packages/broker/src/aws/lambda.js";
 import { createDispatcherHandler } from "../../packages/broker/src/aws/dispatcher.js";
 import { createOutboxPublisherHandler } from "../../packages/broker/src/aws/outbox-publisher.js";

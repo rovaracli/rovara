@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { TurnDetailsSchema, type TurnDetails } from "../../packages/contracts/src/index.js";
+import { TurnDetailsSchema, type TurnDetails } from "@rovara-code/contracts";
 import {
   CUT_MARKER,
   DETAILS_TEXT_CEILING,

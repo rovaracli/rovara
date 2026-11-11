@@ -1,4 +1,4 @@
-import { EarlyRiskSignalSchema, earlyRiskSignalText } from "@agentx/contracts/web";
+import { EarlyRiskSignalSchema, earlyRiskSignalText } from "@agentx/cloud-contracts/web";
 import { VisibleText } from "../../design/VisibleText.js";
 import type { ReadTask } from "./workspace-types.js";
 

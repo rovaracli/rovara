@@ -1,7 +1,8 @@
 // Enterprise foundations I-5: `rovara sso bootstrap`, run once by the installer with their own AWS credentials (the install's deploy or operator role session) on a
 // new Enterprise install. It makes the named people owners and writes the first group mapping and emergency list, recorded in the audit ledger; the work is in
 // the broker's `bootstrapSso`, which refuses once a mapping or a list exists. This file reads what the install recorded and calls it.
-import { agentXError, editionPolicy } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
+import { editionPolicy } from "@agentx/cloud-contracts";
 import { bootstrapSso, type SsoBootstrapResult } from "@agentx/broker/developer/sso-bootstrap";
 import type { AuditRuntime } from "@agentx/broker/audit/outbox";
 import type { CallerIdentity } from "../environments/adopt.js";

@@ -7,7 +7,7 @@
 import { isSecretLeaf, orgMcpServerSecretName, type OrgSecrets } from "../connections/org-secrets.js";
 import { readConnection, readConnectionToken, type OrgConnectionDeps } from "../connections/store.js";
 import type { AgentCaller } from "../agents/access.js";
-import { agentXError, type Edition, type OrgId } from "@agentx/contracts";
+import { agentXError, type Edition, type OrgId } from "@rovara-code/contracts";
 import { dynamoCitationStore } from "./citations.js";
 import { dynamoControllerEventStore, drainControllerEvents, type DrainDependencies } from "./controller-events.js";
 import { dynamoMcpServerStore, probeLimiter, stdioAvailable, type McpServerDependencies, type McpServerSecrets } from "./mcp-servers.js";

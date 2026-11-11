@@ -7,7 +7,7 @@
 //   POST   /v1/app/org/mcp-servers/{id}/reapprove     approve the tools shown by `review` ({toolsHash}): one click; the pinned install is unchanged
 //   DELETE /v1/app/org/mcp-servers/{id}               remove a disabled or waiting entry
 import { z } from "zod";
-import { agentXError } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
 import type { AgentCaller } from "../agents/access.js";
 import type { AdaptedHttpRequest } from "../aws/lambda.js";
 import { StatusReply } from "../aws/status-reply.js";

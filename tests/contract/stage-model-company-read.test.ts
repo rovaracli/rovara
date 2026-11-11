@@ -1,7 +1,8 @@
 import {expect,it} from "vitest";
 import {getCompanyModelSelectionPolicy} from "../../packages/broker/src/model-selection/company-read.js";
 import {FakeDynamoDb} from "../support/fake-dynamodb.js";
-import {orgMemberKey,developerOrgKey,orgMetaKey,canonicalModelName,modelNotEnabledSentence} from "../../packages/contracts/src/index.js";
+import { orgMemberKey, developerOrgKey, orgMetaKey } from "@agentx/cloud-contracts";
+import { canonicalModelName, modelNotEnabledSentence } from "@rovara-code/contracts";
 const org="org_aaaaaaaaaaaaaaaaaaaa",person="a".repeat(64);
 function fixture(role="owner") {const db=new FakeDynamoDb();db.set({...orgMemberKey(org,person),orgId:org,developerId:person,role});db.set({...developerOrgKey(person),orgId:org,role});db.set({...orgMetaKey(org),orgId:org});return {db,deps:{documentClient:db,tableName:"state",now:()=>0,routing:{}},caller:{orgId:org,developerId:person,orgRole:"owner" as const,name:"A",amr:"cloud" as const,sessionId:"fixture"}};}
 for(const role of ["owner","admin","member","maintainer","viewer","unknown"]) it(`uses live ${role} authority for company candidates`,async()=>{

@@ -1,7 +1,7 @@
 // ARGUARD: the sessions reconciler (every 10 minutes, whether or not the renewal's schedule is on) reports the age of the last successful renewal, so RuntimeRequalifyStale still fires
 // after six days when the daily schedule has been switched off. It reports nothing before the schedule was ever enabled.
 import { describe, expect, it, vi } from "vitest";
-import { REQUALIFY_AGE_METRIC, REQUALIFY_PROFILE_ID, requalifyLastSuccessKey, requalifyScheduleEnabledKey } from "../../packages/contracts/src/index.js";
+import { REQUALIFY_AGE_METRIC, REQUALIFY_PROFILE_ID, requalifyLastSuccessKey, requalifyScheduleEnabledKey } from "@rovara-code/contracts";
 import { renewalAgeMetrics, readRenewalAgeDays } from "../../packages/broker/src/aws/reconciler-renewal-age.js";
 import { createReconcilerHandler, type ReconcilerDependencies } from "../../packages/broker/src/aws/session-reconciler.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";

@@ -49,14 +49,14 @@ import { GetFunctionConfigurationCommand, InvokeCommand, LambdaClient } from "@a
 import { build as bundle } from "esbuild";
 import { LAMBDA_BUNDLE_OPTIONS, checkLambdaBundles, lambdaLoadError } from "./lambda-load-check.js";
 import { CDK_CONSTRUCT_IDS, cdkAppArguments } from "../packages/cli/src/deploy/cdk-engine.js";
-import { environmentSettingsPrefix, environmentStackName } from "../packages/contracts/src/environments.js";
-import { E2E_AGENT_RECOMMENDED_MODELS, eligibleE2EAgentModel } from "../packages/contracts/src/e2e-agent-models.js";
-import { KEYED_MODEL_PROVIDERS, MODEL_PROVIDERS, isKeyedModelProvider, type ModelProvider } from "../packages/contracts/src/model-providers.js";
+import { environmentSettingsPrefix, environmentStackName } from "@rovara-code/contracts";
+import { E2E_AGENT_RECOMMENDED_MODELS, eligibleE2EAgentModel } from "@rovara-code/contracts";
+import { KEYED_MODEL_PROVIDERS, MODEL_PROVIDERS, isKeyedModelProvider, type ModelProvider } from "@rovara-code/contracts";
 import { deriveE2EAgentRoute, e2eAgentRouteDefinitionDigest } from "../packages/model-runtime/src/e2e-route-derive.js";
-import { BOOT_STAGE2_SHA256_PATTERN, WORKER_SETTING_PARAMETERS } from "../packages/contracts/src/session.js";
-import { WEB_API_RUNTIME_PROFILE_ID } from "../packages/contracts/src/e2e-web-api-qualification.js";
-import { e2eRuntimeRenewCommand, e2eRuntimeRequalifyNowCommand } from "../packages/contracts/src/e2e-runtime-expiry.js";
-import { REQUALIFY_PROFILE_ID, requalifyLockKey } from "../packages/contracts/src/index.js";
+import { BOOT_STAGE2_SHA256_PATTERN, WORKER_SETTING_PARAMETERS } from "@rovara-code/contracts";
+import { WEB_API_RUNTIME_PROFILE_ID } from "@rovara-code/contracts";
+import { e2eRuntimeRenewCommand, e2eRuntimeRequalifyNowCommand } from "@rovara-code/contracts";
+import { REQUALIFY_PROFILE_ID, requalifyLockKey } from "@rovara-code/contracts";
 import {
   Runner,
   assertDigestImage,
@@ -1291,7 +1291,7 @@ function recordOutput(context: ApplyContext, id: string, values: Record<string, 
 }
 
 /** The staging build path's flavor switch (test services slice 1): the only code that sets the staging flavor, and it runs in this file alone. */
-export const CATALOG_FLAVOR_TOOL = "packages/contracts/tools/catalog-flavor.ts";
+export const CATALOG_FLAVOR_TOOL = "packages/cloud-contracts/tools/catalog-flavor.ts";
 
 /**
  * Builds the contracts dist and the Lambdas with the STAGING catalog flavor: the switch first (it writes the flavor and the staging-only key list into the working tree), then `npm run build`. A build that skips the

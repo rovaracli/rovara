@@ -1,6 +1,6 @@
 // Enterprise foundations P5d/P5e: pieces the tests of the broker's task side and route side share. The code host of a repository is found from the project revision a task pinned, so a
 // test that reaches a pull request needs the project row; and the code host adapter maps whole pull requests, so a stand-in for GitHub's provider answers whole ones.
-import { projectRevisionKey } from "../../packages/contracts/src/index.js";
+import { projectRevisionKey } from "@rovara-code/contracts";
 import { TEST_ORG } from "./orgs.js";
 
 export interface TestRepository { name: string; url: string; role?: "code" | "meta"; host?: { kind: string; ref?: string; installationId?: number; repositoryId?: number } }

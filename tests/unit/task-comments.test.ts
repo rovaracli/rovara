@@ -1,9 +1,6 @@
 // Page comments: the text rules, the planner's answers block, and comparing answers and ID sets by content.
 import { describe, expect, it } from "vitest";
-import {
-  COMMENT_ANSWERS_INFO_STRING, COMMENT_TEXT_MAX_CHARS, PLANNER_ANSWER_REASON_MAX_CHARS, TaskCommentSchema, cleanCommentText,
-  pageCommentId, parseCommentAnswers, sameAnswers, sameIdSet,
-} from "@agentx/contracts";
+import { COMMENT_ANSWERS_INFO_STRING, COMMENT_TEXT_MAX_CHARS, PLANNER_ANSWER_REASON_MAX_CHARS, TaskCommentSchema, cleanCommentText, pageCommentId, parseCommentAnswers, sameAnswers, sameIdSet } from "@rovara-code/contracts";
 
 const answersBlock = (entries: unknown) => `Thinking.\n\n\`\`\`${COMMENT_ANSWERS_INFO_STRING}\n${JSON.stringify(entries)}\n\`\`\`\n\n\`\`\`agentx-plan\n{}\n\`\`\`\n`;
 

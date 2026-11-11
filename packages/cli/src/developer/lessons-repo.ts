@@ -1,7 +1,8 @@
 // `agentx project lessons-repo <project> [status|on|off|resume|pointer-add|pointer-decline|retire-confirm|retire-keep] [--repo <name>] [--held <digest>]` (lessons in the repo, lane R2; design LESSONS-REPO-FILE-DESIGN.md rev 2 section 9): in Rovara Code, which has no project page,
 // the status of a project's `.rovara/lessons.md` and its weekly pull request is read here, and a maintainer switches a repository on or off from here. It reads and sends through `/v1/app/projects/{p}/lessons/repo`; every line it
 // prints is a fixed sentence from the broker or the table below. Nothing here decides anything: the pull request is merged by a person on the code host.
-import { LessonsRepoFileStatusReaderSchema, agentXError, closesHeldText, lessonFileWaitingText, strayBranchesText, unreachableRepoText, type LessonsRepoFileRow } from "@agentx/contracts";
+import { LessonsRepoFileStatusReaderSchema, type LessonsRepoFileRow } from "@agentx/cloud-contracts";
+import { agentXError, closesHeldText, lessonFileWaitingText, strayBranchesText, unreachableRepoText } from "@rovara-code/contracts";
 import { appRequest, clean, result, seg, type AppResult } from "./agents.js";
 import type { DeveloperSessionDeps } from "./session.js";
 

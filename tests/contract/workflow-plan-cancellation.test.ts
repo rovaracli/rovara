@@ -3,7 +3,8 @@
 // workflow write in the cancel's transaction never fails the cancel.
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { WORKFLOW_BLOCK_REASONS, WorkflowFeedbackBundleSchema, WorkflowSnapshotSchema, collectWorkflowFeedbackBundles, createCandidateManifest, createWorkflowSnapshot, type WorkflowSnapshot } from "@agentx/contracts";
+import { WORKFLOW_BLOCK_REASONS, WorkflowSnapshotSchema, collectWorkflowFeedbackBundles, createWorkflowSnapshot, type WorkflowSnapshot } from "@agentx/cloud-contracts";
+import { WorkflowFeedbackBundleSchema, createCandidateManifest } from "@rovara-code/contracts";
 import { startTaskWorkflowFeedbackReviewFromWebhook } from "../../packages/broker/src/aws/developer-tasks.js";
 import { releaseFailedCancelWorkspace } from "../../packages/broker/src/aws/failed-cancel-release.js";
 import { sweepStuckCancels } from "../../packages/broker/src/aws/stuck-cancels.js";
@@ -445,7 +446,8 @@ const sweepStuck = (harness: Harness, workspaceId: string, at: Date = new Date()
 
 describe("PLANINC-2: every other workflow step", () => {
   for (const step of Object.values(STEPS)) {
-    const reasonFor = (started: StartedStep, ended: string) => started.reason === WORKFLOW_BLOCK_REASONS.feedbackReviewFailed ? started.reason : `${started.reason} ${ended}`;
+    // A feedback review that failed keeps its one fixed reason; one that was stopped (or never confirmed its stop) says "PR feedback review operation ended <status>", which the page reads as the same sentence.
+    const reasonFor = (started: StartedStep, ended: string) => started.reason !== WORKFLOW_BLOCK_REASONS.feedbackReviewFailed ? `${started.reason} ${ended}` : ended === "failed" ? started.reason : `PR feedback review operation ended ${ended}`;
 
     it(`blocks ${step.name} when it is stopped, queuing nothing`, async () => {
       const started = await step.start();

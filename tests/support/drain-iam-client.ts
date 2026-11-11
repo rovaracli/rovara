@@ -1,4 +1,4 @@
-import { REQUALIFY_DRAIN_ALLOWED_ATTRIBUTES } from "../../packages/contracts/src/index.js";
+import { REQUALIFY_DRAIN_ALLOWED_ATTRIBUTES } from "@rovara-code/contracts";
 import { requalifySetupWorkRow } from "../../packages/broker/src/e2e/requalify-hold.js";
 
 export const DRAIN_FIXTURE_NOW = Date.parse("2026-10-27T03:00:00.000Z");

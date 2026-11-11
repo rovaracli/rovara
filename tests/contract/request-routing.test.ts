@@ -1,20 +1,7 @@
 // Task 21: smart routing for plain @AgentX requests: the model's answer, the card, and the router on the classifier model.
 import { fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
-import {
-  REQUEST_ROUTER_SYSTEM_PROMPT,
-  WORKFLOW_PATH_ANSWER_ACTION,
-  WORKFLOW_PATH_FULL_ACTION,
-  WORKFLOW_PATH_QUICK_ACTION,
-  parseRequestRoute,
-  requestRouterPrompt,
-  routeAttributes,
-  routeChoiceLabel,
-  routeOf,
-  routedChoiceId,
-  suggestionCardMessage,
-  type RequestSuggestion,
-} from "../../packages/contracts/src/index.js";
+import { REQUEST_ROUTER_SYSTEM_PROMPT, WORKFLOW_PATH_ANSWER_ACTION, WORKFLOW_PATH_FULL_ACTION, WORKFLOW_PATH_QUICK_ACTION, parseRequestRoute, requestRouterPrompt, routeAttributes, routeChoiceLabel, routeOf, routedChoiceId, suggestionCardMessage, type RequestSuggestion } from "@rovara-code/contracts";
 import { createModelRequestRouter } from "../../packages/orchestrator/src/request-router.js";
 import { FAUX_MODEL, fauxModelRuntime } from "../support/faux-model.js";
 import { StrictSlackWeb, visibleSlackText } from "../support/strict-slack.js";

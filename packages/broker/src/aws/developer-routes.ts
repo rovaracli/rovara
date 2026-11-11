@@ -11,6 +11,7 @@ import { SPEC_CHOICE_ROUTE, SPEC_PAGE_CHOICES, routeSpecChoice } from "./develop
 import { getInstallInfo } from "./developer-routes/install.js";
 import { isSsoRoute, routeSsoRequest } from "./developer-routes/sso.js";
 import { isCompanyDomainsRoute, routeCompanyDomains } from "./developer-routes/company-domains.js";
+import { UI_FLAGS_BROWSER_MESSAGE, UI_FLAGS_PATH, routeUiFlags } from "./developer-routes/ui-flags.js";
 import { specOwnerChoice } from "./developer-tasks/spec-wiring.js";
 import { taskPagePathFor } from "./developer-tasks/task-page.js";
 import { decisionCardsEnabled } from "../proof/switch.js";
@@ -19,7 +20,7 @@ import "../org/task-stop-editing.js";
 import "../org/service-status.js";
 import "../model-selection/company-prepare.js";
 import "../model-selection/company-approval.js";
-import "@agentx/contracts";
+import "@agentx/cloud-contracts";
 import "../model-selection/policy-preview.js";
 import "../model-selection/company-read.js";
 import "../model-selection/read.js";
@@ -127,7 +128,7 @@ import "./task-e2e-artifact.js";
 import { readOrgServiceStatus } from "../org/service-status.js";
 import { CompanySameModelPolicyRefusal } from "../model-selection/company-prepare.js";
 import { updateCompanyModelPolicy } from "../model-selection/company-approval.js";
-import { ModelSelectionPolicyAppliedSchema, ModelSelectionPolicyPendingSchema, ReviewDefaultNoticeBodySchema } from "@agentx/contracts";
+import { ModelSelectionPolicyAppliedSchema, ModelSelectionPolicyPendingSchema, ReviewDefaultNoticeBodySchema } from "@rovara-code/contracts";
 import { previewCompanyModelPolicy } from "../model-selection/policy-preview.js";
 import { requireCompanyModelPolicyAuthority, getCompanyModelSelectionPolicy } from "../model-selection/company-read.js";
 import { getStageModels } from "../model-selection/read.js";
@@ -150,11 +151,11 @@ import { readReviewedProjectArchiveAppPreview } from "../org/reviewed-project-ar
 import { revokeOrganizationInvite } from "../org/invite-revocation.js";
 import { logDeveloperEvent } from "../developer/log.js";
 import { listOrganizationInvites } from "../org/invite-directory.js";
-import { OrgMemberRoleChangeBodySchema } from "@agentx/contracts";
+import { OrgMemberRoleChangeBodySchema } from "@agentx/cloud-contracts";
 import { listOrganizationMembers, lookupOrganizationMember } from "../org/directory.js";
 import { getMemberRemoval, previewMemberRemoval, startMemberRemovalRoute } from "../org/member-removal/routes.js";
 import { taskResponseForClient } from "../rovara-code/task-view-compat.js";
-import { AgentXNameSchema, RenameOrganizationBodySchema, agentXError, projectAllows } from "@agentx/contracts";
+import { AgentXNameSchema, RenameOrganizationBodySchema, agentXError, projectAllows } from "@rovara-code/contracts";
 import { requireReviewedModelSourceWebWrite } from "../model-sources/routes.js";
 import { restoreProjectReviewedWithEffects, archiveProjectReviewedWithEffects } from "../org/project-archive.js";
 import { effectiveProjectRole, requireNewWorkAllowed } from "../developer/project-roles.js";
@@ -347,6 +348,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (url.pathname === LEARNING_SETTINGS_PATH && authenticated?.caller.browserSession !== true) {
     throw agentXError("FORBIDDEN", "Use a live browser session for learning changes.");
   }
+  // Runtime UI flags (lane U5): browser-only for both methods, refused before any read.
+  if (url.pathname === UI_FLAGS_PATH && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", UI_FLAGS_BROWSER_MESSAGE);
   // The one-time review-default notice (reading it and dismissing it) is browser-only, like the other company settings.
   if (url.pathname === REVIEW_DEFAULT_NOTICE_PATH && authenticated?.caller.browserSession !== true) {
     throw agentXError("FORBIDDEN", "Use a live browser session for this notice.");
@@ -503,6 +506,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (isSsoRoute(url.pathname)) return routeSsoRequest(deps, caller, request, url.pathname);
   // Company domain verification: the owner's domains page (owner only; every edition).
   if (isCompanyDomainsRoute(url.pathname)) return routeCompanyDomains(deps, caller, request, url.pathname);
+  // Runtime UI flags (lane U5): the owner's and admin's company screens.
+  if (url.pathname === UI_FLAGS_PATH) return routeUiFlags(deps, caller, request, url.pathname);
   if (request.method === "GET" && url.pathname === "/v1/app/me") {
     const me = await getAppMe(deps, caller);
     return authenticated === undefined ? me : { ...me, csrf: authenticated.csrf };

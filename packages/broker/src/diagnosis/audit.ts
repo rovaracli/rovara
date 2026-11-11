@@ -1,7 +1,7 @@
 // Live interaction F2 to F4: the audit of diagnoses. Ids, fixed words and counts only (the builders in audit/events.ts take no text). A failure to audit never fails the diagnosis or the proposal: the
 // action is already done, and a failure leaves no event and logs only a name.
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import type { AuditEventInput } from "@agentx/contracts";
+import type { AuditEventInput } from "@agentx/cloud-contracts";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, tryAuditEvents, type AuditDeps } from "../audit/outbox.js";
 

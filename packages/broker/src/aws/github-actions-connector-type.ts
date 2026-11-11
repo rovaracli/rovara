@@ -3,7 +3,7 @@
 // native runtime) with exactly the permissions of the tool, for one repository, after the org's installation binding is checked. The engine's own credential
 // step only checks the connector can be served and gives the connection a placeholder it never sends anywhere; the tools never see it.
 import { randomUUID } from "node:crypto";
-import { GitHubActionsConnectorSchema } from "@agentx/contracts";
+import { GitHubActionsConnectorSchema } from "@rovara-code/contracts";
 import { CredentialUnavailable, type Binder, type ConnectorDefinition, type CredentialProvider, type connectMcp } from "@agentx/gateway";
 import { connectorLedgerKeys } from "./connector-ledger.js";
 import type { ConnectorType } from "./connector-types.js";

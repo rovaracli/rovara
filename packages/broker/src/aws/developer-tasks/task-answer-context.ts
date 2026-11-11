@@ -1,4 +1,4 @@
-import { SlackThreadSchema, redactText, type PlanClaim, type SlackThread } from "@agentx/contracts";
+import { SlackThreadSchema, redactText, type PlanClaim, type SlackThread } from "@rovara-code/contracts";
 import { taskKey, type DeveloperTaskRecord } from "../../developer/task-records.js";
 import { loadWorkflowDocument, shortenMarkdown } from "../../developer/plan-artifacts.js";
 import { inertReplyText } from "../../developer/prompt-text.js";

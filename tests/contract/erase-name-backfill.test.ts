@@ -5,7 +5,7 @@ import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import type { EraseDeveloperNameRequest, EraseDeveloperNameResponse } from "../../packages/contracts/src/index.js";
+import type { EraseDeveloperNameRequest, EraseDeveloperNameResponse } from "@rovara-code/contracts";
 import { FORMER_MEMBER_NAME, chosenNameKey, readChosenName, type ChosenNameClient } from "../../packages/broker/src/developer/chosen-name.js";
 import { placeholderDisplayName } from "../../packages/broker/src/developer/person-name.js";
 import { DeveloperSignInStore } from "../../packages/broker/src/developer/store.js";

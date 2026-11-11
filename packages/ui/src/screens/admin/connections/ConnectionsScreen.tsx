@@ -5,7 +5,7 @@
 import { z } from "zod";
 import { useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router";
-import { AppProjectsResponseSchema, GithubInstallationsResponseReaderSchema } from "@agentx/contracts/web";
+import { AppProjectsResponseSchema, GithubInstallationsResponseReaderSchema } from "@agentx/cloud-contracts/web";
 import { useAppHost } from "../../../host.js";
 import { ApiError } from "../../../api/errors.js";
 import { Button } from "../../../design/Button.js";

@@ -2,7 +2,8 @@
 // record is off (`dependencies.teamRecord` is undefined, the default), or the install has no developer sign-in table, nothing is built: no lesson is stored, loaded, sent, shown or decided.
 import { randomUUID } from "node:crypto";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { OrgIdSchema, cleanLessonText, codeRepositoriesOf, memberGithubKey, type AuditEventInput, type LessonsPauseCode, type OrgId } from "@agentx/contracts";
+import { OrgIdSchema, cleanLessonText, codeRepositoriesOf, memberGithubKey, type LessonsPauseCode, type OrgId } from "@rovara-code/contracts";
+import { type AuditEventInput } from "@agentx/cloud-contracts";
 import { followMerges } from "../../agents/access.js";
 import { dynamoAttributionReader } from "../../attribution/resolve.js";
 import { DeveloperSignInStore } from "../../developer/store.js";

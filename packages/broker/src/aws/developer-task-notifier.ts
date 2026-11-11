@@ -6,7 +6,7 @@
 import { taskStatusOf } from "../agent-sessions/task-status.js";
 import { decisionCardsEnabled } from "../proof/switch.js";
 import { decisionCardUrl, sessionPageUrl } from "../decisions/open-path.js";
-import { SessionIdSchema, taskStatusText } from "@agentx/contracts";
+import { SessionIdSchema, taskStatusText } from "@rovara-code/contracts";
 import { planRunLimitChange, planRunLimitChangeLive, waitsOnCodingPlan } from "../spend/run-limit-change.js";
 import { chatGptFallbackText } from "../chatgpt/fallback-notice.js";
 import { developerIdForSlackUser } from "./admin-actions.js";
@@ -16,7 +16,8 @@ import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-sec
 import { GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { ChangeMessageVisibilityCommand, SQSClient, SendMessageBatchCommand } from "@aws-sdk/client-sqs";
 import { DynamoDBDocumentClient, GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { INDEX_EXPIRY_ATTRIBUTE, NUDGE_WINDOW_MS, sameJsonContent, AdminChangePendingRecordSchema, planClaimCount, planSummaryLines, PullRequestResultSchema, SHARE_DELIVERY_WINDOW_MS, WorkflowFeedbackReviewReportSchema, adminChangeKey, describeWorkflowCheckChanges, redactText, workflowCheckCommandText, workflowFeedbackCheckChanges, indexExpiresAt, lastAssistantResponse, sharedTaskKey, WORKFLOW_BLOCK_REASONS, WORKFLOW_PUBLISH_CANDIDATE_CHANGED_MESSAGE, workflowPublicationRetryable, taskGraphDigest, type PendingChange, type PlanClaim, type PlanDocument, type WorkflowArtifact, type WorkflowCheck, type WorkflowCanvasLineage, type WorkflowSnapshot } from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, NUDGE_WINDOW_MS, sameJsonContent, AdminChangePendingRecordSchema, planClaimCount, planSummaryLines, PullRequestResultSchema, SHARE_DELIVERY_WINDOW_MS, WorkflowFeedbackReviewReportSchema, adminChangeKey, describeWorkflowCheckChanges, redactText, workflowCheckCommandText, workflowFeedbackCheckChanges, indexExpiresAt, lastAssistantResponse, sharedTaskKey, WORKFLOW_PUBLISH_CANDIDATE_CHANGED_MESSAGE, workflowPublicationRetryable, taskGraphDigest, type PendingChange, type PlanClaim, type PlanDocument, type WorkflowArtifact, type WorkflowCheck, type WorkflowCanvasLineage } from "@rovara-code/contracts";
+import { WORKFLOW_BLOCK_REASONS, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { adminChangeExpiredMessage, adminChangeMessage, adminChangeOutcomeMessage } from "../developer/change-messages.js";
 import { loadWorkflowDocument, type LoadedDocument } from "../developer/plan-artifacts.js";
 import { planDecidedOnCard } from "../decisions/plan-risk.js";
@@ -40,6 +41,7 @@ import { SlackPostError, chatPostEphemeral, chatPostMessage, chatUpdate, createT
 import { readWorkflowE2ENotifierProjection } from "./workflow-e2e-notifier-projection.js";
 import { renderE2ENotifierSlackBlocks, renderE2EUnavailableSlackBlock } from "../e2e-presentation.js";
 import { canTakeOverNow } from "../developer/take-over-eligible.js";
+import { writeWorkEventsOfStream, type WorkEventsRuntime } from "../work-events/stream.js";
 
 type Client = { send(command: unknown): Promise<unknown> };
 const errorName = (error: unknown) => (error instanceof Error ? error.name : "unknown");
@@ -72,6 +74,8 @@ export interface NotifierDependencies {
   peopleChangesEnabled?: boolean;
   /** Revalidates the current CHECKS admission and evidence before adding a read-only Slack projection. */
   workflowE2EBlocks?(task: DeveloperTaskRecord, operations: readonly unknown[]): Promise<unknown[] | undefined>;
+  /** Work events (U3): present only where they are written (named environments). The notifier then writes the workflow's flow facts from the stream's before and after images. */
+  workEvents?: WorkEventsRuntime | undefined;
 }
 
 /** The start message is still being posted: a reply waits for its thread (C9). */
@@ -1955,6 +1959,10 @@ export function createNotifierHandler(deps: NotifierDependencies) {
         if (update === undefined) continue;
         try { await deps.documentClient.send(new UpdateCommand(update as ConstructorParameters<typeof UpdateCommand>[0])); } catch (error) { if (!isConditional(error)) throw error; }
       }
+      // Work events (U3): the workflow's flow facts from the same images, written last and never failing the batch (a failed write is logged and the notices above are already queued).
+      if (deps.workEvents !== undefined) {
+        try { await writeWorkEventsOfStream({ documentClient: deps.documentClient, tableName: deps.tableName, workEvents: deps.workEvents, log: (entry) => { deps.log(entry); } }, records as StreamRecord[]); } catch (error) { deps.log({ event: "work_event.write_failed", reason: "unexpected", error: errorName(error) }); }
+      }
       return { batchItemFailures: [] };
     }
     const batchItemFailures: Array<{ itemIdentifier: string }> = [];
@@ -2200,6 +2208,7 @@ function createAwsNotifierHandler() {
   return createNotifierHandler({
     documentClient,
     tableName: requiredEnvironment("STATE_TABLE_NAME"),
+    ...(process.env.AGENTX_WORK_EVENTS === "on" ? { workEvents: {} } : {}),
     async enqueue(notices) {
       for (let start = 0; start < notices.length; start += 10) {
         const batch = notices.slice(start, start + 10);

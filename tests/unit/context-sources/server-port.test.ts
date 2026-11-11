@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { McpServerEntry } from "@agentx/contracts";
+import type { McpServerEntry } from "@rovara-code/contracts";
 import { dynamoMcpServerStore, summariseProbe } from "../../../packages/broker/src/context-sources/mcp-servers.js";
 import { gatewayProber, gatewayServerPort, hostProbeClient, sourceEnvironment, type ConnectionLookup } from "../../../packages/broker/src/context-sources/server-port.js";
 import { FakeDynamoDb } from "../../support/fake-dynamodb.js";

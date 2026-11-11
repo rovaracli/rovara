@@ -2,7 +2,7 @@
 // "Start"; the same ticket is one item however often it is handed over; the ticket's text is data (framed, redacted, inert) and never sits where the request is read.
 import { describe, expect, it } from "vitest";
 // The broker reads `@agentx/contracts` (its built output), so the errors a test throws must be that package's too, or `instanceof` would tell them apart.
-import { AgentXError, agentXError, intakeItemIdOf, type CodeIntentRequest, type OrgId } from "@agentx/contracts";
+import { AgentXError, agentXError, intakeItemIdOf, type CodeIntentRequest, type OrgId } from "@rovara-code/contracts";
 import { ingestIntake, ingestIntakeBatch, startWaitingIntake, type IntakeCandidate, type IntakePorts } from "../../packages/broker/src/intake/engine.js";
 import { listWaitingIntakeItems, readIntakeItem, INTAKE_MAX_WAITING_PER_PROJECT } from "../../packages/broker/src/intake/store.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
@@ -83,7 +83,7 @@ describe("a member's act starts the work", () => {
   });
 
   it("is a request the schema accepts", async () => {
-    const { CodeIntentRequestSchema } = await import("@agentx/contracts");
+    const { CodeIntentRequestSchema } = await import("@rovara-code/contracts");
     const w = world();
     await ingestIntake(w.ports, candidate());
     expect(CodeIntentRequestSchema.safeParse(w.started[0]!.request).success).toBe(true);

@@ -8,7 +8,7 @@ import { guardedRoots, hitKey, problemsOf, rowsOf, scanProgram, type Hit, type K
 
 const PACKAGES = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../packages");
 const BROKER = path.join(PACKAGES, "broker/src");
-const CONTRACTS = path.join(PACKAGES, "contracts/src");
+const CONTRACTS = path.join(PACKAGES, "cloud-contracts/src");
 const options = (): ts.CompilerOptions => ({
   target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.NodeNext, moduleResolution: ts.ModuleResolutionKind.NodeNext, strict: true, noEmit: true, skipLibCheck: true, types: [],
 });

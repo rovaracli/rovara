@@ -1,5 +1,5 @@
 // Lane B restore application boundary: no automatic task start, no invented restore hook.
-import { AgentXError, agentXError, ReviewedProjectRestoreBodySchema, ReviewedProjectRestorePreviewSchema, ReviewedProjectRestoreOutcomeSchema, type ReviewedProjectRestoreOutcome } from "@agentx/contracts";
+import { AgentXError, agentXError, ReviewedProjectRestoreBodySchema, ReviewedProjectRestorePreviewSchema, ReviewedProjectRestoreOutcomeSchema, type ReviewedProjectRestoreOutcome } from "@rovara-code/contracts";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "../aws/developer-routes.js";
 import { logDeveloperEvent } from "../developer/log.js";
 import { commitReviewedProjectRestore, readProjectRestorePreview } from "./reviewed-project-restore.js";

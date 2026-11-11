@@ -1,6 +1,6 @@
 // Spec 025 FR-031, FR-032, D5, D6: who shares where, in which mode, and what the thread says.
 import { describe, expect, it } from "vitest";
-import { AgentXError, DEFAULT_DEVELOPER_TASK_POLICY, type DeveloperTaskPolicy } from "@agentx/contracts";
+import { AgentXError, DEFAULT_DEVELOPER_TASK_POLICY, type DeveloperTaskPolicy } from "@rovara-code/contracts";
 import { decideShare, decideMode, channelLabel } from "../../packages/broker/src/developer/share.js";
 import { CUT_MARKER } from "../../packages/broker/src/aws/slack-details-view.js";
 import { CANCELLED_REPLY, CLOSED_REPLY, endedReply, modeReply, pullRequestReply, READY_REPLY, SETUP_OUTPUT_SHOWN_MAX, setupFailedReply, startMessage } from "../../packages/broker/src/developer/share-messages.js";

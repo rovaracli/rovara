@@ -9,7 +9,7 @@
 // its domains stay out of the union until the flip lands. If the process dies between the two, nobody is told to repeat the call; the scheduled egress
 // sync runs `reconcileProjectEgress`, which makes every project's items agree with its META again.
 import { GetCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { agentXError, orgProjectCatalogPk, projectMetaKey, type OrgId, type OrgKey } from "@agentx/contracts";
+import { agentXError, orgProjectCatalogPk, projectMetaKey, type OrgId, type OrgKey } from "@rovara-code/contracts";
 import { listEgressItems, setEgressOwnerActive, type EgressDomainsDependencies } from "./egress-domains.js";
 import { RECONCILE_READ_CONCURRENCY, settleBounded } from "./settle-bounded.js";
 import { readRequestRecord, requestRecordPut, requireSameRequest, type RequestTransactItem } from "./request-records.js";

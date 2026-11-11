@@ -1,9 +1,9 @@
 // Live interaction F4: "Apply this change". A diagnosis never changes a setting; when a maintainer presses the button the broker reads everything again (the stored proposal against the allow-list and the
 // deny-list, the person's role, `from` against the setting now, every citation against its source) and only then raises the change through the ORDINARY route, as that person, naming no more than the one setting.
 import { randomUUID } from "node:crypto";
-import { DIAGNOSIS_PREFILL_ALLOW as BROKER_ALLOW } from "@agentx/contracts"; // the package the broker itself imports
+import { DIAGNOSIS_PREFILL_ALLOW as BROKER_ALLOW } from "@rovara-code/contracts"; // the package the broker itself imports
 import { describe, expect, it } from "vitest";
-import { DEVCONTAINER_PATH_PATTERN, DIAGNOSIS_APPLY_BUTTON_LABEL, DIAGNOSIS_HELD_WORDS, DiagnosisProposalOutcomeSchema, DIAGNOSIS_DEVCONTAINER_PATH_PATTERN, DiagnosisProposalSchema, diagnosisKey, type CodeSettings, type DiagnosisProposal } from "../../packages/contracts/src/index.js";
+import { DEVCONTAINER_PATH_PATTERN, DIAGNOSIS_APPLY_BUTTON_LABEL, DIAGNOSIS_HELD_WORDS, DiagnosisProposalOutcomeSchema, DIAGNOSIS_DEVCONTAINER_PATH_PATTERN, DiagnosisProposalSchema, diagnosisKey, type CodeSettings, type DiagnosisProposal } from "@rovara-code/contracts";
 import { StatusReply } from "../../packages/broker/src/aws/status-reply.js";
 import { completeDiagnosis, startLightDiagnosis } from "../../packages/broker/src/diagnosis/light.js";
 import { proposeDiagnosisChange, type DiagnosisProposePorts } from "../../packages/broker/src/diagnosis/propose.js";

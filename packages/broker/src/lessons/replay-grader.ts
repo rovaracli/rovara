@@ -6,7 +6,7 @@
 // The model adapter is `scripts/lessons-replay-port.ts#cliGraderModel` (the company's own model through the install's operator route, ungated by the lessons switch because grading is not learning, and held to the
 // run's budget); the evidence reader is `cliEvidenceReader` (the copy's request, change and the past task's merged change, through the install's evidence route).
 import { createHash } from "node:crypto";
-import type { ReplayGrader } from "@agentx/contracts";
+import type { ReplayGrader } from "@rovara-code/contracts";
 import type { GradeRequest, GradeResult, ReplayGraderPort } from "./replay-harness.js";
 import type { ReplayCandidate } from "./replay-select.js";
 

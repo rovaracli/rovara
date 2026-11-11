@@ -8,7 +8,7 @@
 // A body is believed only for the hook's own Datadog organisation (`orgId`), read first from every kind of body. Rovara's Datadog connection is read-only, so no monitor is Rovara's
 // doing and there is no actor to guard against.
 import { z } from "zod";
-import type { HookRecord, TriggerEvent } from "@agentx/contracts";
+import type { HookRecord, TriggerEvent } from "@rovara-code/contracts";
 import { tokenEquals, type HookHeaders, type HookProvider, type Normalized } from "./types.js";
 import { headerOf, httpsLinkOnAnyDomain, isoOfInstant, titleOf, valuesOf } from "./shared.js";
 

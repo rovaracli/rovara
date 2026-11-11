@@ -8,7 +8,7 @@
 // must not hold back the handlers after this one (Plan 4's chains), so a failure here is logged and swallowed. What it could not do the stream and the sweep do.
 // The handlers are safe to hear twice (a retried pause, an end told again after a lost record): a second refresh finds the same summary and writes nothing.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { SessionIdSchema, type OrgId } from "@agentx/contracts";
+import { SessionIdSchema, type OrgId } from "@rovara-code/contracts";
 import { taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
 import { registerTaskEndHandler, registerTaskPauseHandler, type TaskEndDependencies, type TaskEndHandler, type TaskPauseHandler } from "../agents/task-end.js";
 import { refreshSessionSummary, type ChainSessionSource, type LocalSessionSource, type SummaryDependencies } from "./summary.js";

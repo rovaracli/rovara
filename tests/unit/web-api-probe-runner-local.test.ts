@@ -2,7 +2,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { WEB_API_REQUIRED_PROBES, WebApiRuntimeInstallProposalSchema, canonicalJson, evaluateWebApiProbeObservation, webApiRuntimeInstallProposalSha256 } from "../../packages/contracts/src/index.js";
+import { WEB_API_REQUIRED_PROBES, WebApiRuntimeInstallProposalSchema, canonicalJson, evaluateWebApiProbeObservation, webApiRuntimeInstallProposalSha256 } from "@rovara-code/contracts";
 import { registerRuntimeInstallation } from "../../packages/broker/src/aws/runtime-installation.js";
 import type { AuthenticatedIdentity } from "../../packages/broker/src/auth.js";
 import { main as qualificationCli } from "../../packages/verifier/src/install-qualification-cli.js";

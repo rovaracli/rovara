@@ -3,7 +3,7 @@
 // its transcript. Only a workflow task's approved build that changes nothing is a stop (rovara-code-answered.test.ts: noCodeChanged).
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
-import { WORKFLOW_NO_CODE_CHANGE_MESSAGE } from "@agentx/contracts";
+import { WORKFLOW_NO_CODE_CHANGE_MESSAGE } from "@rovara-code/contracts";
 import { MAYA, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
 import { loadSlackBroker } from "../support/slack-broker.js";
 

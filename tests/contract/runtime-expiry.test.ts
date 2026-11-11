@@ -1,9 +1,7 @@
 // Evaluation fix RUN-3: the browser and API runtime registration expires after seven days and when an image changes; an operator's script renews it by hand, and with AUTOREQUALIFY (AR-5) the product renews it by itself. agentx doctor and the TEST
 // deploy check warn ahead of time, naming the expiry time and the exact renew command; the control plane tells an administrator state and times (and nothing else of a row).
 import { describe, expect, it } from "vitest";
-import {
-  E2ERuntimeStatusSchema, E2E_RUNTIME_EXPIRY_ERROR_MS, E2E_RUNTIME_EXPIRY_WARNING_MS, E2E_RUNTIME_AUTO_RENEWAL_NOTE, E2E_RUNTIME_GENERIC_RENEW_COMMAND, e2eRuntimeExpiryNotice, e2eRuntimeRenewCommand, e2eRuntimeRequalifyNowCommand,
-} from "../../packages/contracts/src/index.js";
+import { E2ERuntimeStatusSchema, E2E_RUNTIME_EXPIRY_ERROR_MS, E2E_RUNTIME_EXPIRY_WARNING_MS, E2E_RUNTIME_AUTO_RENEWAL_NOTE, E2E_RUNTIME_GENERIC_RENEW_COMMAND, e2eRuntimeExpiryNotice, e2eRuntimeRenewCommand, e2eRuntimeRequalifyNowCommand } from "@rovara-code/contracts";
 import { readRuntimeStatus, runtimeChecks, type RuntimeStatusRead } from "../../packages/cli/src/doctor/runtime.js";
 import type { DoctorContext } from "../../packages/cli/src/doctor/checks.js";
 import { e2eRegisteredRuntimeKey } from "../../packages/broker/src/aws/e2e-runtime-readiness.js";

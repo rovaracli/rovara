@@ -2,9 +2,10 @@
 // the model by its canonical name; a source that cannot be proved usable is skipped, a record that cannot be read refuses (never falls back to Rovara's AI).
 // The broker side (the operation's route, the key's `models`, the live re-check, Slack turns) is tests/contract/model-routing-broker.test.ts.
 import { describe, expect, it } from "vitest";
-import { ModelSourceSchema, defaultModelSourceOrder, editionPolicy, egressDomainsKey, modelSourcesKey, sourceAlias, type Edition, type ModelIdentifier, type ModelSource, type OrgId } from "@agentx/contracts";
+import { ModelSourceSchema, defaultModelSourceOrder, egressDomainsKey, modelSourcesKey, sourceAlias, type Edition, type ModelIdentifier, type ModelSource, type OrgId } from "@rovara-code/contracts";
+import { editionPolicy } from "@agentx/cloud-contracts";
 import { endpointQualificationDigest } from "../../packages/broker/src/model-sources/endpoint-digest.js";
-import { singleOrgIdForEnv } from "../../packages/contracts/src/org-node.js";
+import { singleOrgIdForEnv } from "@rovara-code/contracts";
 import { ModelSourceStore } from "../../packages/broker/src/model-sources/store.js";
 import { chatGptServing, modelNotAllowedText, routeModel, routeOnWire, servableModels, servingRoutes, type RoutingDependencies } from "../../packages/broker/src/model-sources/routing.js";
 import { defaultWorkerModel, routeStep } from "../../packages/broker/src/agents/dispatch.js";

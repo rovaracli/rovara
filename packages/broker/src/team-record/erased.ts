@@ -2,7 +2,8 @@
 // refuses a draft whose actor has one, so a Slack backfill, the 15-minute pollers, a ticket backfill or an edit cannot bring the person's words back. An unreadable
 // marker THROWS (RUNTIME_UNAVAILABLE): the ingest queue redelivers a draft whose put threw, whereas a refusal is final and would lose a legitimate message for good.
 import { GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
-import { agentXError, erasedPersonKey, recordActorSourceHash, type OrgId } from "@agentx/contracts";
+import { agentXError, type OrgId } from "@rovara-code/contracts";
+import { erasedPersonKey, recordActorSourceHash } from "@agentx/cloud-contracts";
 import type { TeamRecordTable } from "./types.js";
 
 /**

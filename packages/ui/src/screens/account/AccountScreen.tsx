@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { NOTIFY_EMAIL_UNAVAILABLE, type NotifyChannel } from "@agentx/contracts/web";
+import { NOTIFY_EMAIL_UNAVAILABLE, type NotifyChannel } from "@agentx/cloud-contracts/web";
 import { useAppHost } from "../../host.js";
 import { notificationsKey, useNotificationPrefs } from "../../api/notifications.js";
 import { ApiError } from "../../api/errors.js";

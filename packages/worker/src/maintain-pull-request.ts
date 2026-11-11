@@ -1,16 +1,8 @@
 import { assertPushCarriesNoLessonsFile } from "./lessons-file-guard.js";
 import { readFile, realpath, stat } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
-import {
-  AgentXError,
-  CONFLICT_PATHS_MAX,
-  WORKFLOW_FIX_DROPS_BASE_CHANGES,
-  PullRequestLifecycleResultSchema,
-  WORKFLOW_PUBLISH_CANDIDATE_CHANGED_MESSAGE,
-  agentXError,
-  type WorkerInvocation,
-  type PullRequestLifecycleResult,
-} from "@agentx/contracts";
+import { AgentXError, CONFLICT_PATHS_MAX, WORKFLOW_FIX_DROPS_BASE_CHANGES, PullRequestLifecycleResultSchema, WORKFLOW_PUBLISH_CANDIDATE_CHANGED_MESSAGE, agentXError, type PullRequestLifecycleResult } from "@rovara-code/contracts";
+import { type WorkerInvocation } from "@agentx/cloud-contracts";
 import { AGENTX_GIT_EMAIL, AGENTX_GIT_NAME } from "./git.js";
 import { assertCredentialFreeRemote, type GitCredential } from "./git-auth.js";
 import { assertWorkspaceIsPlain, runIsolatedGit, withIsolatedRepository } from "./isolated-repository.js";

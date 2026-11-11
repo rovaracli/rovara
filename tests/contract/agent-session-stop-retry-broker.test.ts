@@ -2,9 +2,9 @@
 // `cancelled`, and a failed run is retried into a new session of the retrier's own, linked by `retryOf`, through the real run start.
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
-import { agentSessionKey, createCandidateManifest, openAgentSessionKey } from "../../packages/contracts/src/index.js";
+import { agentSessionKey, createCandidateManifest, openAgentSessionKey } from "@rovara-code/contracts";
 import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { BUDGET_EXHAUSTED_FAILURE_MESSAGE } from "../../packages/contracts/src/developer-tasks-node.js";
+import { BUDGET_EXHAUSTED_FAILURE_MESSAGE } from "@rovara-code/contracts";
 import { retryRunRequestId } from "../../packages/broker/src/agent-sessions/retry.js";
 import { MAYA, OMAR, createSingleAnswerPlanBroker, grantProject, seedMembership } from "../support/developer-task-broker.js";
 import { refreshSessionSummary } from "../../packages/broker/src/agent-sessions/summary.js";

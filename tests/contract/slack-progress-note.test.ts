@@ -2,7 +2,7 @@
 // Issue 219: a long Slack task says it started on the worker and then edits ONE message at a steady
 // interval with how long it has run, instead of staying silent for many minutes.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { SlackRequestMessage } from "../../packages/contracts/src/index.js";
+import type { SlackRequestMessage } from "@rovara-code/contracts";
 import { processSlackRequest, type ProcessorDependencies, type TurnInput } from "../../packages/slack-service/src/processor.js";
 import { PROGRESS_INTERVAL_MS, createProgressNote, progressSubject } from "../../packages/slack-service/src/progress-note.js";
 

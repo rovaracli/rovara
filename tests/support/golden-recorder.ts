@@ -16,10 +16,9 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getCurrentSystemPrompt, getCurrentTools, fauxAssistantMessage, type TranscriptContext } from "@earendil-works/pi-ai";
 import { expect, vi } from "vitest";
-import {
-  WORKER_INVOCATION_FEATURES, WorkerInvocationSchema, WorkflowFeedbackBundleSchema, WorkflowSnapshotSchema, collectWorkflowFeedbackBundles,
-  createCandidateManifest, createWorkflowSnapshot, type WorkerInvocation,
-} from "@agentx/contracts";
+import { WorkflowFeedbackBundleSchema, createCandidateManifest } from "@rovara-code/contracts";
+import { WORKER_INVOCATION_FEATURES } from "@agentx/cloud-contracts";
+import { WorkerInvocationSchema, WorkflowSnapshotSchema, collectWorkflowFeedbackBundles, createWorkflowSnapshot, type WorkerInvocation } from "@agentx/cloud-contracts";
 import { indexActivity } from "../../packages/broker/src/aws/activity-index.js";
 import type { Notice } from "../../packages/broker/src/developer/notifications.js";
 import { createNotifierHandler } from "../../packages/broker/src/aws/developer-task-notifier.js";
@@ -401,7 +400,7 @@ async function captureOperation(handles: BrokerHandles, workspaceId: string, ope
 /** What the developer-task scenarios add to the broker's inputs while `recordGolden` runs (Plan 3 Task 15 records them with `agents: {}`). */
 let recordingBrokerExtra: Record<string, unknown> = {};
 
-async function developerBroker(proxy: boolean, brokerExtra: Record<string, unknown> = {}) {
+export async function developerBroker(proxy: boolean, brokerExtra: Record<string, unknown> = {}) {
   const access = proxy ? fakeModelAccess() : undefined;
   const harness = await createSingleAnswerPlanBroker({ brokerExtra: { ...(access === undefined ? {} : { modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true }), ...recordingBrokerExtra, ...brokerExtra } });
   if (access !== undefined) {
@@ -429,17 +428,17 @@ async function developerBroker(proxy: boolean, brokerExtra: Record<string, unkno
   return { harness, handles, start, finishPrepare, operationWhere, access };
 }
 
-type DeveloperBroker = Awaited<ReturnType<typeof developerBroker>>;
+export type DeveloperBroker = Awaited<ReturnType<typeof developerBroker>>;
 
 /** Finishes the planning step with a structured plan document and returns the stored plan's digest (the owner's approval names it). */
-async function finishPlanning(broker: DeveloperBroker, taskId: string, workspaceId: string, operationId: string): Promise<{ digest: string; revision: number }> {
+export async function finishPlanning(broker: DeveloperBroker, taskId: string, workspaceId: string, operationId: string): Promise<{ digest: string; revision: number }> {
   await broker.harness.artifact(workspaceId, operationId, "plan.md", planAnswer(planDocument()));
   await broker.harness.finish(workspaceId, operationId, "SUCCEEDED", { result: { workflowMode: "PLAN" } });
   const waiting = (await broker.harness.dev(MAYA, "GET", `/v1/dev/tasks/${taskId}`)).body.task as { workflow: { revision: number; artifacts: Array<{ sha256: string }> } };
   return { digest: String(waiting.workflow.artifacts.at(-1)!.sha256), revision: waiting.workflow.revision };
 }
 
-const decide = (broker: DeveloperBroker, taskId: string, plan: { digest: string; revision: number }, decision: "APPROVE" | "REQUEST_CHANGES", reason: string) =>
+export const decide = (broker: DeveloperBroker, taskId: string, plan: { digest: string; revision: number }, decision: "APPROVE" | "REQUEST_CHANGES", reason: string) =>
   broker.harness.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, {
     requestId: randomUUID(), expectedRevision: plan.revision, decision, reason, artifactDigest: plan.digest, ...(decision === "APPROVE" ? runLimitAck(broker.harness.db, taskId) : {}),
   });

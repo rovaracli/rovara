@@ -2,16 +2,8 @@
 // developer routes is the controller's (that file is being split). It returns undefined for a path that is not a record route. The caller, with the project role
 // the existing access check found, is built by `buildRecordCaller`; a person with no project role is refused before anything is read. Replies are checked against
 // their strict schemas on the way out, and every failure is a fixed code: no text from an error, a row or a source reaches the reply.
-import {
-  PastWorkQuerySchema,
-  RecordFactsQuerySchema,
-  RecordProjectSchema,
-  RecordSearchQuerySchema,
-  agentXError,
-  AgentXError,
-  type OrgId,
-  type ProjectRole,
-} from "@agentx/contracts";
+import { PastWorkQuerySchema, RecordFactsQuerySchema, RecordSearchQuerySchema } from "@agentx/cloud-contracts";
+import { RecordProjectSchema, agentXError, AgentXError, type OrgId, type ProjectRole } from "@rovara-code/contracts";
 import { learningModeRead, learningModeWrite } from "./learning-mode-write.js";
 import { recordFacts, pastWork, recordSearch, recordStats, type RecordQueryDependencies } from "./query.js";
 import { sourceOptions } from "./source-options.js";

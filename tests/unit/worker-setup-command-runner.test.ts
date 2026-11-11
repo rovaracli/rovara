@@ -2,7 +2,7 @@
 // and does not use the agent's allowance, and the agent is told only the RESULT, as data inside a nonce tag.
 import { describe, expect, it } from "vitest";
 import type { BashOperations } from "@earendil-works/pi-coding-agent";
-import { SETUP_AGENT_LIMITS_DEFAULT, SetupJournalEntrySchema } from "../../packages/contracts/src/index.js";
+import { SETUP_AGENT_LIMITS_DEFAULT, SetupJournalEntrySchema } from "@rovara-code/contracts";
 import { SetupAgentGovernor } from "../../packages/worker/src/setup-agent-journal.js";
 import { frameCommandResult, createPersonCommandRunner } from "../../packages/worker/src/setup-command-runner.js";
 import { setupAgentShell, type TrackedFilesVerdict } from "../../packages/worker/src/setup-agent.js";

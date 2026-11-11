@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { recordFactKey, type RecordFact } from "@agentx/contracts";
+import { recordFactKey, type RecordFact } from "@agentx/cloud-contracts";
 import { eventFromItem, getRecordFact, pendingHidesOf, listScopeWork, putDerivationLinks, putRecordFact, queryRecordEvents, getSourceConfigByScope, putSourceConfig } from "../../../packages/broker/src/team-record/store.js";
 import { createRecordSink } from "../../../packages/broker/src/team-record/sink.js";
 import { wasDeletedAtSource } from "../../../packages/broker/src/team-record/scope-work.js";

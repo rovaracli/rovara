@@ -3,10 +3,8 @@
 // project's spend (a maintainer), so no one else learns what the project spends or merges; the agents are the roster's, as the reader may see them; and `running` is the Live wall's `team`
 // filter for this project, so each session in it passed the reader's own access check. Reads are bounded: one page of tiles, the roster capped, and four single-item reads.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  AgentXNameSchema, LIVE_PAGE_MAX, OrgRoleSchema, PROJECT_OVERVIEW_AGENTS_MAX, PROJECT_ROSTER_LIST_MAX, ProjectOverviewSchema, agentXError, orgMemberKey, projectAllows, projectMetaKey, projectMonthStatsKey, scopeKey, spendCounterKey,
-  type BudgetScope, type ProjectOverview, type ProjectRole,
-} from "@agentx/contracts";
+import { AgentXNameSchema, LIVE_PAGE_MAX, PROJECT_OVERVIEW_AGENTS_MAX, PROJECT_ROSTER_LIST_MAX, ProjectOverviewSchema, agentXError, projectAllows, projectMetaKey, projectMonthStatsKey, type ProjectOverview, type ProjectRole } from "@rovara-code/contracts";
+import { OrgRoleSchema, orgMemberKey, scopeKey, spendCounterKey, type BudgetScope } from "@agentx/cloud-contracts";
 import type { ApprovalDependencies } from "../agents/approvals.js";
 import type { AgentRouteDependencies } from "../agents/routes.js";
 import { listRoster } from "../agents/roster.js";
@@ -19,6 +17,18 @@ import { batchGetItems, liveSessions } from "./live.js";
 import type { SessionReadCaller, SessionReadDependencies } from "./read.js";
 
 type Item = Record<string, unknown>;
+
+/** The contract's cap on the failing step. A step stored before the writer kept to it is cut here, so one long error never takes the page down. */
+const FAILED_STEP_MAX = 300;
+const clampedStep = (text: string): string => {
+  if (text.length <= FAILED_STEP_MAX) return text;
+  let kept = "";
+  for (const character of text) {
+    if (kept.length + character.length > FAILED_STEP_MAX - 1) break;
+    kept += character;
+  }
+  return `${kept.trimEnd()}…`;
+};
 
 /** The project's card, as the project code knows it: the part of the page that is not about sessions, money or agents. */
 export interface ProjectPageParts {
@@ -137,7 +147,7 @@ export async function projectOverview(deps: ProjectOverviewDependencies, caller:
       repositories: page.repositories.map(({ fullName, defaultBranch }) => ({ fullName, defaultBranch })),
       setup: {
         status: page.setup.status, ...(page.setup.checkedRevision === undefined ? {} : { checkedRevision: page.setup.checkedRevision }),
-        ...(page.setup.checkedAt === undefined ? {} : { checkedAt: page.setup.checkedAt }), ...(page.setup.failedStep === undefined ? {} : { failedStep: page.setup.failedStep }),
+        ...(page.setup.checkedAt === undefined ? {} : { checkedAt: page.setup.checkedAt }), ...(page.setup.failedStep === undefined ? {} : { failedStep: clampedStep(page.setup.failedStep) }),
       },
       channels: page.channels,
     },
@@ -149,6 +159,11 @@ export async function projectOverview(deps: ProjectOverviewDependencies, caller:
     running: wall.tiles,
   };
   const checked = ProjectOverviewSchema.safeParse(answer);
-  if (!checked.success) throw agentXError("RUNTIME_UNAVAILABLE", "This project's page can't be shown right now.");
+  if (!checked.success) {
+    // Which fields failed, never what they held or what the project is called: the paths and the codes only.
+    const issues = checked.error.issues.map((issue) => ({ path: issue.path.join("."), code: issue.code }));
+    (deps.log ?? ((entry: Record<string, unknown>) => console.log(JSON.stringify({ component: "broker", ...entry }))))({ event: "project_overview.invalid", issues });
+    throw agentXError("RUNTIME_UNAVAILABLE", "This project's page can't be shown right now.");
+  }
   return checked.data;
 }

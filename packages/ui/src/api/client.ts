@@ -1,4 +1,4 @@
-import { PendingAdminApprovalReaderSchema, PendingConfirmationReaderSchema, type SoleOwnerConfirmationSchema } from "@agentx/contracts/web";
+import { PendingAdminApprovalReaderSchema, PendingConfirmationReaderSchema, type SoleOwnerConfirmationSchema } from "@agentx/cloud-contracts/web";
 import type { z } from "zod";
 import type { ApiMethod, ApiRequest, ApiResponse, AppHost } from "../host.js";
 import { RETRY_DELAYS_MS } from "../constants.js";

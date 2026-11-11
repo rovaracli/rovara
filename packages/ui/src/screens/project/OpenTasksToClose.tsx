@@ -1,8 +1,10 @@
 import { useState } from "react";
 import { Link } from "react-router";
 import { useQueryClient } from "@tanstack/react-query";
-import { SessionIdSchema } from "@agentx/contracts/web";
+import { SessionIdSchema } from "@agentx/cloud-contracts/web";
 import { mergeLiveTiles, useLive } from "../../api/live.js";
+import { useAppHost } from "../../host.js";
+import { workPlace } from "../../nav-flags.js";
 import { Button } from "../../design/Button.js";
 import { Skeleton } from "../../design/Skeleton.js";
 import { VisibleText } from "../../design/VisibleText.js";
@@ -17,11 +19,11 @@ function OpenTask({ id, title, project, onClosed }: { id: string; title: string;
  * task the person owns). Closing one refreshes the list and tells the start box, which clears its refusal so the work can be started again.
  */
 export function OpenTasksToClose({ onClosed }: { onClosed: () => void }) {
- const live = useLive("mine"), query = useQueryClient();
+ const live = useLive("mine"), query = useQueryClient(), place = workPlace(useAppHost());
  const tiles = live.data === undefined ? [] : mergeLiveTiles(live.data.pages).filter(tile => tile.actions.includes("close"));
  const closed = async () => { await query.invalidateQueries({ queryKey: ["live"] });onClosed(); };
  if (live.isPending) return <Skeleton label="Loading your open tasks" />;
- if (live.isError) return <p role="alert">Couldn't load your open tasks. Open Live to close one.</p>;
+ if (live.isError) return <p role="alert">Couldn't load your open tasks. Open {place.name} to close one.</p>;
  if (tiles.length === 0) return <p className="rv-muted">No task of yours can be closed from here. Ask an admin to free a place.</p>;
  return <ul aria-label="Your open tasks">{tiles.map(tile => <OpenTask key={tile.sessionId} id={SessionIdSchema.parse(tile.sessionId)} title={tile.title} project={tile.project} onClosed={closed} />)}</ul>;
 }

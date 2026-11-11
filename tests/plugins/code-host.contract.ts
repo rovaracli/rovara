@@ -2,12 +2,9 @@
 // fixtures, and against a live sandbox where one exists). A caller branches on capabilities, never on the adapter's name, so each check that depends on
 // a capability says so with `needs`.
 import { expect } from "vitest";
-import {
-  ChangeRequestDetailsSchema, ChangeRequestFeedbackSchema, ChangeRequestStatusSchema, CodeHostCapabilitiesSchema, CodeHostEventSchema, GitCredentialSchema, hostRateLimitRetryAt, MergeObservationSchema,
-  type ChangeRequestRef, type CodeHost, type HostScope, type RawDelivery, type ReadBudget, type RepositoryRef,
-} from "../../packages/contracts/src/index.js";
+import { ChangeRequestDetailsSchema, ChangeRequestFeedbackSchema, ChangeRequestStatusSchema, CodeHostCapabilitiesSchema, CodeHostEventSchema, GitCredentialSchema, hostRateLimitRetryAt, MergeObservationSchema, type ChangeRequestRef, type CodeHost, type HostScope, type RawDelivery, type ReadBudget, type RepositoryRef } from "@rovara-code/contracts";
 import type { FakeHostModel } from "../../packages/broker/src/plugins/fake/model.js";
-import { workerGitCredentialUsable } from "../../packages/contracts/src/index.js";
+import { workerGitCredentialUsable } from "@rovara-code/contracts";
 import { rejection, SHA40, type ContractCheck } from "./contract-kit.js";
 
 export interface CodeHostWorld {
@@ -78,7 +75,9 @@ export const codeHostChecks: readonly ContractCheck<CodeHostWorld>[] = [
       model.setAccount("priya", "write");
       model.setAccount("ci-bot", "read", "Bot");
       expect(await host.standing(repository, { login: "priya" }, scope)).toMatchObject({ permission: "write" });
-      expect((await host.standing(repository, { login: "ci-bot" }, scope)).accountType).toBe("Bot");
+      expect((await host.standing(repository, { login: "ci-bot" }, scope)).accountType).toBe("bot");
+      // The host's own account type word (`User`, `Bot`) is the port's three kinds on the way out (item C4): a person, a bot, anything else.
+      expect((await host.standing(repository, { login: "priya" }, scope)).accountType).toBe("person");
       expect(await host.standing(repository, { login: "nobody" }, scope)).toEqual({ permission: "none" });
     },
   },
@@ -154,7 +153,9 @@ export const codeHostChecks: readonly ContractCheck<CodeHostWorld>[] = [
     async run({ host, model, repository, scope }) {
       expect(await host.codeOwners!(repository, "main", scope)).toBeUndefined();
       model.commit("main", { ".github/CODEOWNERS": "* @max\n" });
-      expect(await host.codeOwners!(repository, "main", scope)).toBe("* @max\n");
+      const read = await host.codeOwners!(repository, "main", scope);
+      expect(read?.unsupported).toBe(false);
+      expect(read?.ownersOf("src/a.ts")).toEqual([{ kind: "person", login: "max" }]);
     },
   },
   {

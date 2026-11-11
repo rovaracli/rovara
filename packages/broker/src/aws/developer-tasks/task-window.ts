@@ -1,4 +1,4 @@
-import { AgentXError, agentXError, type WorkspaceInstance } from "@agentx/contracts";
+import { AgentXError, agentXError, type WorkspaceInstance } from "@rovara-code/contracts";
 import { taskSpendBaseline } from "../../org/budget.js";
 import { inertName, sharedSubject, taskKey, type DeveloperTaskRecord } from "../../developer/task-records.js";
 import type { TransactItems } from "../developer-task-actions.js";
@@ -8,7 +8,7 @@ import type { DeveloperTaskRouteDependencies } from "./types.js";
 import { CLOSED_TASK, CLOSING_TASK, NEVER_STARTED, iso, log } from "./common.js";
 import { Aliases } from "../../agents/table-writes.js";
 import { type CapturedTaskStop } from "../../org/task-stop-admission.js";
-import { type SpendingAdmissionReference } from "@agentx/contracts";
+import { type SpendingAdmissionReference } from "@rovara-code/contracts";
 import { taskMaxPerRunForAdmission } from "../../org/task-stop-window.js";
 import { usdToWholeMicrodollars } from "../../org/budget-amount.js";
 

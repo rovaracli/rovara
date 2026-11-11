@@ -3,7 +3,8 @@
 // Only the APPROVED design's text goes in, and only text that hashes to the digest a person approved. Reviewer findings, questions, paraphrases and manifests are never an input here, so they cannot be written to the meta repo.
 // PURE: no store, no network, no env var, no IAM. The write itself is the existing spec write-back (SPEC_WRITE result -> `acceptSpecWrite` -> `publishSpec`).
 import { createHash } from "node:crypto";
-import { specMarkdown, type WorkflowSnapshot } from "@agentx/contracts";
+import { specMarkdown } from "@rovara-code/contracts";
+import { type WorkflowSnapshot } from "@agentx/cloud-contracts";
 
 /** The approved design as the spec step gets it. */
 export interface ApprovedSpecDesign {

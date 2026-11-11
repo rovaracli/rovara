@@ -7,7 +7,7 @@ import { webRouteAllowed } from "../../packages/broker/src/aws/web-auth.js";
 import { taskPanelLocation } from "../../packages/broker/src/aws/task-web.js";
 import type { TaskDocumentView } from "../../packages/broker/src/aws/task-web.js";
 import { FEEDBACK_REVIEW_RETRY_BUSY, FEEDBACK_REVIEW_RETRY_CHANGED } from "../../packages/broker/src/aws/developer-tasks.js";
-import { agentXError } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
 import { createDeveloperTaskBroker, MAYA } from "../support/developer-task-broker.js";
 
 const TASK = "11111111-1111-4111-8111-111111111111", COMMENT = "22222222-2222-4222-8222-222222222222";

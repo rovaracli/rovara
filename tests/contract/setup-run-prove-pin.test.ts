@@ -2,7 +2,7 @@
 // refuses a checkout that is not at the pin (worker-clone-retry.test.ts); a proposal is proved only by a check made at those commits; main having moved asks for a re-run, never a silent mix.
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
-import { testEnvDigest, type TestEnvironmentBody } from "../../packages/contracts/src/index.js";
+import { testEnvDigest, type TestEnvironmentBody } from "@rovara-code/contracts";
 import { OMAR } from "../support/developer-task-broker.js";
 import { proposeTestEnvironment } from "../../packages/broker/src/org/test-environment.js";
 import { codeRepositoryNames } from "../../packages/broker/src/aws/developer-routes/test-environment-candidate.js";

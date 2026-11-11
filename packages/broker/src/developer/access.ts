@@ -1,6 +1,6 @@
 // Spec 025 FR-013: a developer may use a project granted to them, or, when the project allows it,
 // any project with a bound channel their linked Slack user is in. Slack failures fail closed.
-import { CHANNEL_MEMBERS_MAX_CHANNELS, type ChannelMembersRequest, type ChannelMembersResponse, type SlackChannelBinding } from "@agentx/contracts";
+import { CHANNEL_MEMBERS_MAX_CHANNELS, type ChannelMembersRequest, type ChannelMembersResponse, type SlackChannelBinding } from "@rovara-code/contracts";
 
 export interface DeveloperAccessInput {
   grants: readonly string[];

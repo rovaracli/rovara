@@ -3,7 +3,7 @@
 // card that carries a Reject (today's plan cards carry none, so this proves the page would still hide it), and the session read as someone who is not the task's owner.
 import { mkdirSync } from "node:fs";
 import type { APIRequestContext, BrowserContext, Page } from "@playwright/test";
-import { DecisionCardsViewSchema } from "@agentx/contracts/web";
+import { DecisionCardsViewSchema } from "@agentx/cloud-contracts/web";
 import { test, expect } from "./support/csp.js";
 import { mockRealtime } from "./support/realtime.js";
 import { checkA11y } from "./support/axe.js";

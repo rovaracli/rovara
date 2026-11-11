@@ -5,7 +5,8 @@
 import { randomUUID } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import { agentXError, auditEventId, type AuditEventInput } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
+import { auditEventId, type AuditEventInput } from "@agentx/cloud-contracts";
 import { flushAuditEvents } from "../../audit/flush.js";
 import { auditPending } from "../../audit/outbox.js";
 import { taskKey } from "../../developer/task-records.js";
@@ -19,7 +20,7 @@ import { iso, parse } from "./common.js";
 import { syncIndex } from "./task-index.js";
 import { taskView } from "./task-view.js";
 import type { DeveloperTaskRouteDependencies } from "./types.js";
-import type { DeveloperTaskView } from "@agentx/contracts";
+import type { DeveloperTaskView } from "@agentx/cloud-contracts";
 
 export const SECOND_REVIEW_ACK_BROWSER_MESSAGE = "Use a live browser session to acknowledge that the second review did not run.";
 const BodySchema = z.object({ candidateDigest: z.string().regex(/^[a-f0-9]{64}$/u) }).strict();

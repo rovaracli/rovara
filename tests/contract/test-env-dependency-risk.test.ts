@@ -1,6 +1,6 @@
 // Test services, slice 1 T3 (contracts): the dependency fields are part of the environment's less-safe changes and approval risk, and the summary counts them. With no dependencies every result is what it was.
 import { describe, expect, it } from "vitest";
-import { TEST_ENV_DEPENDENCY_LESS_SAFE_FIELDS, TEST_ENV_LESS_SAFE_FIELDS, TestEnvironmentBodySchema, testEnvApprovalRisk, testEnvLessSafeChanges, testEnvSummaryOf, TestEnvSummarySchema } from "../../packages/contracts/src/index.js";
+import { TEST_ENV_DEPENDENCY_LESS_SAFE_FIELDS, TEST_ENV_LESS_SAFE_FIELDS, TestEnvironmentBodySchema, testEnvApprovalRisk, testEnvLessSafeChanges, testEnvSummaryOf, TestEnvSummarySchema } from "@rovara-code/contracts";
 
 const cmd = (executable: string, args: string[] = []) => ({ cwd: "service", executable, args, timeoutSeconds: 600 });
 const sha = (letter: string) => letter.repeat(64);

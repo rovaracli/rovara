@@ -2,7 +2,8 @@
 // artifact store) is gathered here, so `round-start.ts` and `round-record.ts` read no store and call no host by themselves and the tests can give them fakes.
 import { randomUUID } from "node:crypto";
 import { listPricesPerMillion } from "@agentx/model-runtime/catalog";
-import { DESIGN_REVIEW_ARTIFACT, ModelSelectionSchema, PER_TASK_BUDGET_USD, metaRepositoryOf, type ModelSelection, type OrgId } from "@agentx/contracts";
+import { DESIGN_REVIEW_ARTIFACT, ModelSelectionSchema, metaRepositoryOf, type ModelSelection, type OrgId } from "@rovara-code/contracts";
+import { PER_TASK_BUDGET_USD } from "@agentx/cloud-contracts";
 import { queryAllItems } from "../aws/admin-reads.js";
 import type { OperationRecord } from "../aws/cancellation.js";
 import type { AwsBrokerDependencies } from "../aws/broker/definitions.js";

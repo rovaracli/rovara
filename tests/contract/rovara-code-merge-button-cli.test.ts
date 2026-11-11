@@ -9,8 +9,8 @@ import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { developerTokenKey, saveDeveloperEnvironment } from "../../packages/cli/src/developer/config.js";
 import { executeCli } from "../../packages/cli/src/main.js";
 import { InMemoryTokenStore } from "../../packages/cli/src/token-store.js";
-import { mergeTrackingKey } from "../../packages/contracts/src/org-scoped-keys.js";
-import { MERGE_NOT_READY_MESSAGES as M } from "../../packages/contracts/src/rovara-code.js";
+import { mergeTrackingKey } from "@rovara-code/contracts";
+import { MERGE_NOT_READY_MESSAGES as M } from "../../packages/cloud-contracts/src/rovara-code.js";
 import { CELL, DEV_ISSUER, HEAD_A, LOGIN, MAYA, mergeButtonBroker, type MergeButtonBroker } from "../support/merge-button-broker.js";
 import { loadSlackBroker } from "../support/slack-broker.js";
 

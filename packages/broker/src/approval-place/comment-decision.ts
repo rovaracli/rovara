@@ -5,7 +5,8 @@
 // names this plan's short digest, is unedited, says the right command for the answer, is from a human, and is used once. What THIS entry adds is the person: the comment's outside account must resolve (`resolvePerson`, an exact lookup of a
 // verified link, never a guess) to a live member of this company; the policy then asks for the role (owner, co-owner or maintainer), and, for a medium plan, a recent interactive Rovara sign-in inside the company's window.
 // A high-risk plan is never decided from a comment, and a rejection is not either (both are answered with the card's link).
-import { agentXError, type OrgId, type OrgRole } from "@agentx/contracts";
+import { type OrgRole } from "@agentx/cloud-contracts";
+import { agentXError, type OrgId } from "@rovara-code/contracts";
 import { decideTaskWorkflow } from "../aws/developer-tasks/decide.js";
 import type { DeveloperTaskRouteDependencies } from "../aws/developer-tasks/types.js";
 import type { DeveloperCaller } from "../aws/developer-routes.js";

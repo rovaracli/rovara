@@ -5,7 +5,7 @@
 // credentials cannot add it, init stops with the exact policy so a cloud team can add it.
 import { DeleteRolePolicyCommand, GetRolePolicyCommand, PutRolePolicyCommand, type IAMClient } from "@aws-sdk/client-iam";
 import { ListStacksCommand, StackStatus, type CloudFormationClient } from "@aws-sdk/client-cloudformation";
-import { agentXError } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
 
 export const CDK_PASS_ROLE_POLICY_NAME = "AgentXPassCloudFormationRole";
 /** The qualifier `cdk bootstrap` uses unless told otherwise. */

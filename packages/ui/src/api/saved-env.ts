@@ -2,7 +2,7 @@
 // from the browser session (`retry: "never"`). The route exists only while saved environments are on; where it does not, the read answers 404 and the panel shows nothing.
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ProjectOverviewProjectSchema, SavedEnvPanelReaderSchema, SavedEnvResetAnswerReaderSchema, SavedEnvResetBodySchema, SavedEnvSettingAnswerReaderSchema, SavedEnvSettingBodySchema } from "@agentx/contracts/web";
+import { ProjectOverviewProjectSchema, SavedEnvPanelReaderSchema, SavedEnvResetAnswerReaderSchema, SavedEnvResetBodySchema, SavedEnvSettingAnswerReaderSchema, SavedEnvSettingBodySchema } from "@agentx/cloud-contracts/web";
 import { useAppHost, type AppHost } from "../host.js";
 import { createApiClient } from "./client.js";
 

@@ -2,16 +2,7 @@
 // as they run, and when the agent tries to finish (Pi's agent_before_settle) it reruns the checks. On a regression it
 // gives the agent the failing checks and exactly one more turn; after that turn, or when there is no regression, it
 // reports AgentX's result.
-import {
-  AGENTX_PREAMBLE_VERSION,
-  agentxPreambleSha256,
-  lastAssistantResponse,
-  parseAgentClaim,
-  reportStatus,
-  type CheckEntry,
-  type CheckOutcome,
-  type CheckReport,
-} from "@agentx/contracts";
+import { AGENTX_PREAMBLE_VERSION, agentxPreambleSha256, lastAssistantResponse, parseAgentClaim, reportStatus, type CheckEntry, type CheckOutcome, type CheckReport } from "@rovara-code/contracts";
 import type { CustomMessageEntryDraft, InlineExtension } from "@earendil-works/pi-coding-agent";
 import { redactedTail } from "../collected-process.js";
 import { ownBefore, runChecks, type CheckPlan, type CheckRunners } from "./checks.js";

@@ -2,7 +2,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import vm from "node:vm";
 import { describe, expect, it } from "vitest";
-import { WorkflowSnapshotSchema, canonicalPlanJson, createCandidateManifest, createWorkflowSnapshot, workflowFindingFingerprint, type PlanDocument } from "@agentx/contracts";
+import { WorkflowSnapshotSchema, createWorkflowSnapshot } from "@agentx/cloud-contracts";
+import { canonicalPlanJson, createCandidateManifest, workflowFindingFingerprint, type PlanDocument } from "@rovara-code/contracts";
 import { designCardOnlyApplies, taskPageStage } from "../../packages/broker/src/aws/developer-tasks/task-page.js";
 import { claimAnchor } from "../../packages/broker/src/aws/plan-page/render-plan.js";
 import { createTaskWeb, type TaskDocumentEntry, type TaskDocumentKind, type TaskDocumentView } from "../../packages/broker/src/aws/task-web.js";

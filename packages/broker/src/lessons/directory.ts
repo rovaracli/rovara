@@ -1,7 +1,7 @@
 // Learning v2 wiring (LS-3): the approver directory the lessons library asks. Who may approve a project's lessons is the live company/project roster the second-person approvals already read
 // (`org/second-person-evidence.ts readApproverRoster`): owners, admins and the project's maintainers whose identity and grant are live. An unreadable or incomplete roster is an answer of
 // `complete: false`, which the library reads as "nobody may decide" (fail closed). A person's identity set for the ACL checks is their linked source accounts (a GitHub account, today).
-import { OrgIdSchema, type OrgId } from "@agentx/contracts";
+import { OrgIdSchema, type OrgId } from "@rovara-code/contracts";
 import { readApproverRoster, readApproverRosterFenced, type SecondPersonEvidenceDependencies } from "../org/second-person-evidence.js";
 import type { ApproverDirectory } from "./ports.js";
 import type { IdentitySet } from "./types.js";

@@ -3,7 +3,7 @@ import { expect, it, describe, vi } from "vitest";
 import { screen, fireEvent, waitFor, within, configure } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
-import { AppNavSchema, type AppNav } from "@agentx/contracts/web";
+import { AppNavSchema, type AppNav } from "@agentx/cloud-contracts/web";
 import { appRoutes } from "../../packages/ui/src/routes.js";
 import { AppHostProvider } from "../../packages/ui/src/host.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
@@ -144,18 +144,18 @@ describe("switch on", () => {
  });
  it("opens Work from the sidebar and keeps the Menu working", async () => {
   const f = shell("/app", { on: true });await screen.findByRole("heading", { name: "Home", level: 1 });
-  fireEvent.click(sidebar().getByRole("link", { name: "Work" }));await waitFor(() => expect(f.router.state.location.pathname).toBe("/app/work"));await screen.findByRole("heading", { name: "Live", level: 1 });
+  fireEvent.click(sidebar().getByRole("link", { name: "Work" }));await waitFor(() => expect(f.router.state.location.pathname).toBe("/app/work"));await screen.findByRole("heading", { name: "Work", level: 1 });
   const menu = screen.getByRole("button", { name: "Open workspace menu" });fireEvent.click(menu);const dialog = await screen.findByRole("dialog", { name: "Workspace" });
   expect(within(dialog).getAllByRole("link").slice(0, 5).map(link => link.textContent)).toEqual(["Home3", "Work", "Projects", "Agents", "Settings"]);
   fireEvent.click(within(dialog).getByRole("link", { name: "Projects" }));await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());await waitFor(() => expect(f.router.state.location.pathname).toBe("/app/projects"));f.close();
  });
  it("sends /app/live to /app/work, keeping the filters and the hash", async () => {
   for (const [from, to, search, hash] of [["/app/live", "/app/work", "", ""], ["/app/live?filter=needs_me&project=payments", "/app/work", "?filter=needs_me&project=payments", ""], ["/app/live?filter=team#top", "/app/work", "?filter=team", "#top"]] as const) {
-   const f = shell(from, { on: true });await waitFor(() => expect(f.router.state.location.pathname).toBe(to));expect(f.router.state.location.search).toBe(search);expect(f.router.state.location.hash).toBe(hash);await screen.findByRole("heading", { name: "Live", level: 1 });f.close();
+   const f = shell(from, { on: true });await waitFor(() => expect(f.router.state.location.pathname).toBe(to));expect(f.router.state.location.search).toBe(search);expect(f.router.state.location.hash).toBe(hash);await screen.findByRole("heading", { name: "Work", level: 1 });f.close();
   }
  });
- it("renders the existing Live screen at /app/work", async () => {
-  const f = shell("/app/work?filter=needs_me", { on: true });expect(await screen.findByRole("heading", { name: "Live", level: 1 })).toBeTruthy();expect(f.router.state.location.pathname).toBe("/app/work");expect(f.request.mock.calls.some(([request]) => request.path === "/v1/app/live?filter=needs_me")).toBe(true);f.close();
+ it("renders today's list at /app/work, titled Work", async () => {
+  const f = shell("/app/work?filter=needs_me", { on: true });expect(await screen.findByRole("heading", { name: "Work", level: 1 })).toBeTruthy();expect(f.router.state.location.pathname).toBe("/app/work");expect(f.request.mock.calls.some(([request]) => request.path === "/v1/app/live?filter=needs_me")).toBe(true);f.close();
  });
  it("keeps every old address working: /s/<id>, /app/sessions/<id>, /app/agents, project pages, chains and unknown pages", async () => {
   const s = shell("/s/ses_aaaaaaaaaaaaaaaaaaaa?x=1#plan", { on: true });await waitFor(() => expect(s.router.state.location.pathname).toBe("/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa"));expect(s.router.state.location.search).toBe("?x=1");expect(s.router.state.location.hash).toBe("#plan");s.close();

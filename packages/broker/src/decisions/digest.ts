@@ -2,7 +2,7 @@
 // create a fresh record and a card that changed after it was rendered must be loaded again. It covers the card, its tabs, the evidence detail AND the content version behind it (the document
 // version, the pull request head): a revised plan or a new push with the same title and counts is a different digest.
 import { createHash } from "node:crypto";
-import { canonicalJson, type DecisionCard, type DecisionDetailGroup, type DecisionTab } from "@agentx/contracts";
+import { canonicalJson, type DecisionCard, type DecisionDetailGroup, type DecisionTab } from "@rovara-code/contracts";
 
 export function cardDigest(card: DecisionCard, tabs: readonly DecisionTab[] | undefined, details: readonly DecisionDetailGroup[], contentVersions: readonly string[]): string {
   const seen = {

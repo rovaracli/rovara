@@ -3,7 +3,7 @@
 import { Stack } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
-import { SYNTH_CONTEXT_KEYS } from "@agentx/contracts";
+import { SYNTH_CONTEXT_KEYS } from "@agentx/cloud-contracts";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { MODEL_ENDPOINT_CONTEXT_KEYS, modelEndpointBrokerEnvironment, parseModelEndpointContext } from "../../infra/lib/model-endpoints.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";

@@ -1,4 +1,4 @@
-import type { SlackWorkspaceLimit } from "@agentx/contracts";
+import type { SlackWorkspaceLimit } from "@rovara-code/contracts";
 import type { WorkerAccess, WorkerRefusal } from "@agentx/orchestrator";
 import { deterministicUuid } from "./ids.js";
 import {

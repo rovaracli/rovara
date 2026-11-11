@@ -1,9 +1,10 @@
 // Enterprise foundations, task P3: GitHub's words to the neutral ones, and back. Pure functions: no I/O, and `github-app.ts` is not edited. Every untrusted
 // text from GitHub is cut to the port's bounds here, so a long comment never fails a read that was otherwise fine.
-import { agentXError, type Check, type ChangeRequestDetails, type ChangeRequestFeedback, type ChangeRequestFile, type ChangeRequestRef, type ChangeRequestStatus, type HostScope, type MergeResult } from "@agentx/contracts";
+import { agentXError, type Check, type ChangeRequestDetails, type ChangeRequestFeedback, type ChangeRequestFile, type ChangeRequestRef, type ChangeRequestStatus, type HostScope, type MergeResult } from "@rovara-code/contracts";
 import type {
   GitHubPullRequestChangedFile, GitHubPullRequestDetails, GitHubPullRequestFeedback, MergePullRequestResult, PullRequestCheck, PullRequestStatus,
 } from "../../../github-app.js";
+import { accountKindOfHostType, mergeableStateOfGithub } from "../neutral-words.js";
 
 const TEXT_MAX = 65_536;
 const cut = (value: string, max: number): string => (value.length <= max ? value : [...value].slice(0, max).join(""));
@@ -36,14 +37,14 @@ export function checkOf(check: PullRequestCheck): Check {
 
 export function statusOf(status: PullRequestStatus): ChangeRequestStatus {
   return {
-    id: String(status.number), state: status.state, draft: status.draft, headRevision: status.headSha, targetBranch: status.baseBranch, mergeableState: status.mergeableState,
+    id: String(status.number), state: status.state, draft: status.draft, headRevision: status.headSha, targetBranch: status.baseBranch, mergeableState: mergeableStateOfGithub(status.mergeableState),
     ...(status.mergeable === undefined ? {} : { mergeable: status.mergeable }), ...(status.behindBy === undefined ? {} : { behindBy: status.behindBy }),
     checks: status.checks.map(checkOf), ...(status.checksUnavailable === true ? { checksUnavailable: true as const } : {}),
     requiredChecks: status.requiredChecks.map((check) => ({ name: check.name, ...(check.appId === undefined ? {} : { source: String(check.appId) }) })),
     ...(status.reviewsIncomplete === true ? { reviewsIncomplete: true as const } : {}), targetHasRequiredChecks: status.baseHasRequiredChecks, headDefinesChecks: status.headHasWorkflowFiles,
     requestedReviewers: status.requestedReviewers, ...(status.requestedReviewerIds === undefined ? {} : { requestedReviewerIds: status.requestedReviewerIds }),
     reviews: status.reviews.map((review) => ({
-      reviewer: { login: review.login, hostUserId: review.githubUserId }, accountType: review.userType === "" ? "unknown" : review.userType, state: review.state, revision: review.commitId, submittedAt: review.submittedAt,
+      reviewer: { login: review.login, hostUserId: review.githubUserId }, accountType: accountKindOfHostType(review.userType) ?? "other", state: review.state, revision: review.commitId, submittedAt: review.submittedAt,
     })),
   };
 }

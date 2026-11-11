@@ -2,8 +2,9 @@
 // has no Approve there. "Not now" in a chat is a DISMISSAL: it goes to the dismiss route, which decides nothing, never to a performer's reject.
 /* eslint-disable @typescript-eslint/no-unsafe-assignment -- vitest's expect.* matchers are typed any */
 import { describe, expect, it, vi } from "vitest";
-import type { DecisionCard } from "@agentx/contracts";
-import { DecisionCardsViewSchema, DecisionDismissBodySchema, DecisionDismissedSchema } from "@agentx/contracts";
+import type { DecisionCard } from "@rovara-code/contracts";
+import { DecisionDismissBodySchema, DecisionDismissedSchema } from "@agentx/cloud-contracts";
+import { DecisionCardsViewSchema } from "@rovara-code/contracts";
 import { cardOfItem, decisionCardPath, projectDecisionCards, type DecisionItem, type ItemBase } from "../../packages/broker/src/decisions/project.js";
 import { DECISION_SLACK_APPROVE_ACTION, DECISION_SLACK_OPEN_ACTION, DECISION_SLACK_REJECT_ACTION, slackCardMessage } from "../../packages/broker/src/decisions/slack-card.js";
 import { DECISION_SLACK_TEXT, decisionSlackHandler, pressToRequest, refusalText } from "../../packages/broker/src/decisions/slack-actions.js";

@@ -3,7 +3,8 @@
 // an approval, whether the approval exists in the member's org, whether the member may decide it NOW (R68: evaluated live, never from
 // stored candidates), what the page shows, and what deciding does. 21a-wiring registers `apr_` (change, write and step approvals) and
 // Task 32 registers `spr_` (spend requests); until a kind is registered, its approvals are not found.
-import type { AuditProof, OrgId } from "@agentx/contracts";
+import type { AuditProof } from "@agentx/cloud-contracts";
+import type { OrgId } from "@rovara-code/contracts";
 
 /** The two prefixes an approval id can have: `apr_` (approvals) and `spr_` (spend requests). */
 export type DecideKindPrefix = "apr" | "spr";
@@ -22,6 +23,8 @@ export interface ConfirmView {
   /** What the agent said it was doing (`summary`) and any other plain paragraphs. */
   paragraphs?: string[];
   call?: { connector: string; tool: string; /** The connector scope the call is made in (and for GitHub the repository): part of the call, so two calls that differ only by it read differently. */ scope?: string; repository?: string; arguments: unknown };
+  /** Set when a decline may carry the decliner's words for the person who asked (agent publish requests): the page shows an optional text area of at most `max` characters, used only by Decline. */
+  declineReason?: { max: number };
 }
 
 export type DecideInspection =
@@ -48,7 +51,7 @@ export interface DecideKind {
    * Makes the decision as the member, through the same function the API route uses (`decideApproval`, `decideSpendRequest`, the opt-out checks).
    * `proof` is the session's (`requireDecideSession`): the kind sets it as `caller.decideProof`, so the decision's audit event carries it.
    */
-  decide(target: DecideTarget, decision: "approve" | "decline", proof: AuditProof): Promise<DecideOutcome>;
+  decide(target: DecideTarget, decision: "approve" | "decline", proof: AuditProof, extra?: { reason?: string }): Promise<DecideOutcome>;
   /** Called only when the confirmation page is rendered (GET) for this member after `inspect` said "open": a kind that needs the member to have read the page records it here. */
   opened?(target: DecideTarget): Promise<void>;
   /** Where the browser goes back to after the decide sign-in for this approval, when that is not the approval's own card (a high card's `card_decision`: its task page). */

@@ -7,8 +7,9 @@
 // Each rule has a test that it does not widen anything. The window edge is exact (just inside, just outside).
 import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { SLACK_OIDC_ISSUER, type OrgRole, type ProjectRole } from "../../packages/contracts/src/index.js";
-import { orgMetaKey } from "../../packages/contracts/src/index.js";
+import { type OrgRole } from "@agentx/cloud-contracts";
+import { SLACK_OIDC_ISSUER, type ProjectRole } from "@rovara-code/contracts";
+import { orgMetaKey } from "@agentx/cloud-contracts";
 import { APPROVAL_WINDOW_SETTING_SK } from "../../packages/broker/src/approval-place/window-setting.js";
 import { COMMENT_DECISION_SESSION_ID, decideTaskFromComment } from "../../packages/broker/src/approval-place/comment-decision.js";
 import { SLACK_DECISION_SESSION_ID, evaluateApprovalPlace } from "../../packages/broker/src/approval-place/evaluate.js";
@@ -23,7 +24,7 @@ import { TEST_ORG } from "../support/orgs.js";
 import { planAnswer, planDocument } from "../support/plan-documents.js";
 import { fakeModelAccess } from "../support/fake-model-access.js";
 import { planRunLimitChange } from "../../packages/broker/src/spend/run-limit-change.js";
-import { runCostKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { runCostKey } from "@rovara-code/contracts";
 import { RUN_LIMIT_OWNER_DECIDES_WORDS } from "../../packages/broker/src/approval-place/words.js";
 
 const PREPARED = { result: { preparedBase: [{ repositoryId: "demo", baseCommitSha: "e".repeat(40) }] } };

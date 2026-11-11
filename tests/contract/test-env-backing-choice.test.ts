@@ -2,8 +2,8 @@
 // and the rule that a lock can only be stricter. Every key-shaped value is built at runtime.
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { ServiceCatalogSchema, type ServiceCatalog } from "../../packages/contracts/src/service-catalog.js";
-import { testAccountApprovalDigest, testAccountExternalId, testAccountSecretRef, TestAccountSchema, type TestAccount } from "../../packages/contracts/src/test-account.js";
+import { ServiceCatalogSchema, type ServiceCatalog } from "@rovara-code/contracts";
+import { testAccountApprovalDigest, testAccountExternalId, testAccountSecretRef, TestAccountSchema, type TestAccount } from "@rovara-code/contracts";
 import {
   BACKING_ORDER, BACKING_PLACES, BACKING_REASONS, BACKING_REASON_WORDS, DEFAULT_ALLOWED_BACKINGS, SKIP_REASONS, SKIP_REASON_WORDS, chooseBacking, effectiveAllowedBackings,
   type AllowedBackings, type BackingChoiceInput, type FixtureFact,

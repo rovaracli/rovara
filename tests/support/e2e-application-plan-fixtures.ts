@@ -1,10 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import {
-  E2EApplicationPlanIntentSchema, E2ERegisteredRuntimeSchema, E2EPolicySchema, E2E_ANONYMOUS_ACCOUNT_PROFILE_ID, WEB_API_RUNTIME_PROFILE_ID, canonicalJson, createCandidateManifest,
-  deriveE2EApplicationRuntimeAccountRef, deriveE2ESyntheticRuntimeAccountRef, e2eAnonymousRuntimeAccountRef, inspectE2EApplicationRepository, withE2EAnonymousTargets, e2eApplicationMetadataSourceRefs, e2eRuntimeCapabilityDigest, inspectE2ERepository, proposeE2ESetup,
-  type E2EPolicy, type E2EScenario, type E2ESourceSnapshot,
-} from "@agentx/contracts";
+import { E2EApplicationPlanIntentSchema, E2ERegisteredRuntimeSchema, E2EPolicySchema, E2E_ANONYMOUS_ACCOUNT_PROFILE_ID, WEB_API_RUNTIME_PROFILE_ID, canonicalJson, createCandidateManifest, deriveE2EApplicationRuntimeAccountRef, deriveE2ESyntheticRuntimeAccountRef, e2eAnonymousRuntimeAccountRef, inspectE2EApplicationRepository, withE2EAnonymousTargets, e2eApplicationMetadataSourceRefs, e2eRuntimeCapabilityDigest, inspectE2ERepository, proposeE2ESetup, type E2EPolicy, type E2EScenario, type E2ESourceSnapshot } from "@rovara-code/contracts";
 import { webApiRuntimeCapabilities } from "../../packages/broker/src/aws/e2e-feature-verifier-catalog.js";
 import { ordersManifestWith, registryFor } from "./e2e-account-registry-fixtures.js";
 import type { E2EAccountRegistryEntry } from "../../packages/broker/src/e2e/application-account-registry.js";

@@ -10,16 +10,16 @@
 // Finalizing is two-phase. When an operation ends its keys are blocked at the proxy (`blockOperationKeys`) and given a `finalizeAfter`; the sweep settles
 // open keys and finalizes those past `finalizeAfter`, or ten minutes after they expired when nobody blocked them. Finalized keys keep settling for a day.
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  BUDGET_ALERT_LEVELS, FINALIZE_DELAY_MS, FINALIZED_SETTLE_WINDOW_MS, KEY_EXPIRY_GRACE_MS, OrgIdSchema,
-  agentRunsKey, agentXError, budgetAlertKey, ledgerKey, modelCounter, modelKeyKey, openModelKeysKey, originCounter, scopeKey, sourceCounter, taskSpendKey,
-  spendCounterKey, spendOriginKind, type BudgetScope, type OrgId,
-} from "@agentx/contracts";
+import { BUDGET_ALERT_LEVELS, FINALIZE_DELAY_MS, FINALIZED_SETTLE_WINDOW_MS, KEY_EXPIRY_GRACE_MS, budgetAlertKey, ledgerKey, modelCounter, modelKeyKey, openModelKeysKey, originCounter, scopeKey, sourceCounter, spendCounterKey, spendOriginKind, type BudgetScope } from "@agentx/cloud-contracts";
+import { OrgIdSchema, agentRunsKey, agentXError, taskSpendKey, type OrgId } from "@rovara-code/contracts";
 import type { MintTags, ModelAccess } from "../model-proxy/access.js";
 import { Aliases, NOT_EXISTS, errorName, failedIndexes, isTransactionConflict, withoutUndefined, type Item, type TransactItem } from "../agents/table-writes.js";
 import { effectiveLimits, type SpendSettingsDependencies } from "./settings.js";
 import { agentUsageCounter } from "./payer.js";
 import { cleanUsd } from "./top-ups.js";
+import { costSettledEvent } from "../work-events/cost.js";
+import { workEventPutItem } from "../work-events/store.js";
+import type { WorkEventsRuntime } from "../work-events/stream.js";
 
 export interface LedgerDependencies extends SpendSettingsDependencies {
   access: Pick<ModelAccess, "keySpend" | "blockKey">;
@@ -29,6 +29,8 @@ export interface LedgerDependencies extends SpendSettingsDependencies {
   pageSize?: number;
   /** Where a failure that must not stop the work is reported; by default one JSON line. */
   log?: (entry: Record<string, unknown>) => void;
+  /** Work events (U3): present only where they are written (named environments). Each settlement then adds one `cost_settled` event to its own transaction. */
+  workEvents?: WorkEventsRuntime | undefined;
 }
 
 /** A scope a key counts against, with the limit its reservation is held to (a scope without one is counted but never refuses a key). */
@@ -342,6 +344,16 @@ async function settleOnce(deps: LedgerDependencies, record: ModelKeyRecord): Pro
       add: { usd: deltaUsd },
     }),
   ];
+  // Work events (U3): the settlement's cost event goes last, in the same transaction (the one workflow-free event kept here: it is one small item, and the settlement is the one place that knows the amount
+  // counted once). A transaction holds at most 100 items; a full one simply gets no event. Built inside a try: nothing here may throw into the money path.
+  if (deps.workEvents !== undefined && items.length < 100) {
+    try {
+      const event = costSettledEvent({ orgId, project: record.tags.project, taskId: record.tags.taskId, keyId: record.keyId, sequence: seq, at: iso(at), deltaUsd, source: record.tags.source });
+      if (event !== undefined) items.push(workEventPutItem(deps.tableName, event));
+    } catch (error) {
+      log(deps, { event: "work_event.skipped", reason: "cost_event_failed", error: errorName(error) });
+    }
+  }
   for (let attempt = 0; ; attempt += 1) {
     try {
       await send(deps, items);

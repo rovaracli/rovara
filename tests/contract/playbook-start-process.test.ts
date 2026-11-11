@@ -9,8 +9,9 @@ import { AgentStore, resolveAgent } from "../../packages/broker/src/agents/store
 import { readRunRequest, runRequestFingerprint } from "../../packages/broker/src/agents/runs.js";
 import { startCodeIntent } from "../../packages/broker/src/rovara-code/intent.js";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
-import { ROVARA_CODE_AGENT_ID, projectPlaybookKey, recipeDigest, PROCESS_START_REFUSED_MESSAGE, type AgentId } from "../../packages/contracts/src/index.js";
-import { githubInstallationKey, orgGithubInstallationKey, orgProjectCatalogKey, projectMemberKey, projectMetaKey, projectRevisionKey, setupDraftKey } from "../../packages/contracts/src/index.js";
+import { ROVARA_CODE_AGENT_ID, projectPlaybookKey, recipeDigest, PROCESS_START_REFUSED_MESSAGE, type AgentId } from "@rovara-code/contracts";
+import { githubInstallationKey, orgGithubInstallationKey } from "@agentx/cloud-contracts";
+import { orgProjectCatalogKey, projectMemberKey, projectMetaKey, projectRevisionKey, setupDraftKey } from "@rovara-code/contracts";
 import { MAYA, OMAR, createDeveloperTaskBroker, seedMembership } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { SLACK_CHANNEL, SLACK_TEAM, loadSlackBroker } from "../support/slack-broker.js";

@@ -1,5 +1,5 @@
 // Which stages a How we work card or a company row covers. Lane C's metadata decides it (`STAGE_EDIT_GROUPS`, `STAGE_EDIT_RULES`); this file only reads it and adds the words of a row title.
-import { STAGE_EDIT_GROUPS, STAGE_EDIT_RULES, STAGE_REFERENCE, type StageId } from "@agentx/contracts/web";
+import { STAGE_EDIT_GROUPS, STAGE_EDIT_RULES, STAGE_REFERENCE, type StageId } from "@agentx/cloud-contracts/web";
 
 type Group = readonly [StageId, ...StageId[]];
 const groups: readonly Group[] = STAGE_EDIT_GROUPS;

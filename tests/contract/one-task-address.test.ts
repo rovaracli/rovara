@@ -1,8 +1,8 @@
 // UX2 slice 2 item 4: ONE task address, `/app/sessions/<id>`. The session link, every Slack line and DM the notifier builds, a document link and the Slack start message point there (the legacy page
 // only for a task from before sessions); a link is built only on a plain https origin; and Slack text that says "press Merge in Rovara" or "Retry the fix" carries the link.
 import { describe, expect, it } from "vitest";
-import { createWorkflowSnapshot, type WorkflowSnapshot } from "../../packages/contracts/src/task-workflow-node.js";
-import { ciFixAskMessage, sessionLink } from "../../packages/contracts/src/index.js";
+import { createWorkflowSnapshot, type WorkflowSnapshot } from "../../packages/cloud-contracts/src/task-workflow-node.js";
+import { ciFixAskMessage, sessionLink } from "@rovara-code/contracts";
 import { plainHttpsOrigin, sessionPageUrl } from "../../packages/broker/src/decisions/open-path.js";
 import { taskAppUrl } from "../../packages/broker/src/aws/developer-task-notifier.js";
 import { pageDocumentLink, workflowMessage } from "../../packages/broker/src/developer/workflow-messages.js";

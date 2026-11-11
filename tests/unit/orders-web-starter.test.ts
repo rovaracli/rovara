@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { canonicalJson } from "../../packages/contracts/src/canonical-json.js";
+import { canonicalJson } from "@rovara-code/contracts";
 
 const fixtures = join(import.meta.dirname, "../fixtures");
 const read = (directory: string, path: string): string => readFileSync(join(fixtures, directory, path), "utf8");

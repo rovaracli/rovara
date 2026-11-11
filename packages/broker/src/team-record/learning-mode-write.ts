@@ -9,10 +9,8 @@
 // `lesson.mode_changed` audit item. Refusals are fixed codes; nothing the client sent is echoed.
 import { createHash } from "node:crypto";
 import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  LEARNING_MODE_DEFAULT, LearningModeSchema, LearningModeWriteBodySchema, agentXError, auditEventId, canonicalJson, learningModeKey, learningModeLockKey,
-  type AuditEventInput, type LearningMode, type LearningModeView, type OrgId,
-} from "@agentx/contracts";
+import { LEARNING_MODE_DEFAULT, LearningModeSchema, LearningModeWriteBodySchema, auditEventId, type AuditEventInput, type LearningMode, type LearningModeView } from "@agentx/cloud-contracts";
+import { agentXError, canonicalJson, learningModeKey, learningModeLockKey, type OrgId } from "@rovara-code/contracts";
 import { errorName, isTransactionConflict } from "../agents/table-writes.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending } from "../audit/outbox.js";

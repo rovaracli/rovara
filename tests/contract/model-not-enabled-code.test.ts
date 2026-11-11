@@ -4,7 +4,7 @@
 import { describe, expect, it } from "vitest";
 import { GetCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import type { Context } from "@earendil-works/pi-ai";
-import { MODEL_NOT_ENABLED_CODE, modelFailureCodeOf, type DesignReviewWorkerResult } from "../../packages/contracts/src/index.js";
+import { MODEL_NOT_ENABLED_CODE, modelFailureCodeOf, type DesignReviewWorkerResult } from "@rovara-code/contracts";
 import { createConfiguredModelRuntime, modelNotEnabledBody } from "../../packages/model-runtime/src/index.js";
 import { describeModelCallNote, sanitizeModelCallEvent } from "../../packages/worker/src/model-call-monitor.js";
 import { assistantOutcome, failedTurn } from "../../packages/worker/src/session-events.js";
@@ -12,7 +12,7 @@ import { modelUnusableRound } from "../../packages/worker/src/design-review-sess
 import { learnModelNotEnabled, modelsNotEnabled } from "../../packages/broker/src/model-sources/learn-not-enabled.js";
 import { createUsableModels } from "../../packages/broker/src/model-sources/usable-models.js";
 import { servableModels } from "../../packages/broker/src/model-sources/routing.js";
-import type { OrgId } from "../../packages/contracts/src/org.js";
+import type { OrgId } from "@rovara-code/contracts";
 import { criticModelUnusable } from "../../packages/broker/src/rovara-code/critic.js";
 
 const PROXY_URL = "http://internal-proxy.example.test:4000";

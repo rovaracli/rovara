@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode, type TouchEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link, useLocation } from "react-router";
-import { DECISION_APPROVE_TAKES, DECISION_LABELS, DECISION_REJECT_REASONS, decisionTaskSessionOf, type DecisionRejectReason, type DecisionTabId } from "@agentx/contracts/web";
+import { DECISION_APPROVE_TAKES, DECISION_LABELS, DECISION_REJECT_REASONS, decisionTaskSessionOf, type DecisionRejectReason, type DecisionTabId } from "@agentx/cloud-contracts/web";
 import { useAppHost } from "../host.js";
 import { ApiError } from "../api/errors.js";
 import { HIGH_ON_CARD_KINDS, decisionOpenTarget, mayApproveHere, runLimitRaise, type DecisionResult, type PlanDecisionFields, type ReadDecision } from "../api/decisions.js";

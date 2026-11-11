@@ -1,13 +1,4 @@
-import {
-  TaskPeopleDisplayReadResponseSchema,
-  agentXError,
-  type TaskChannelPeopleRequest,
-  type TaskChannelPeopleResponse,
-  type TaskPeopleDisplayReadRequest,
-  type TaskPeopleDisplayReadResponse,
-  type TaskPersonProofRequest,
-  type TaskPersonProofResponse,
-} from "@agentx/contracts";
+import { TaskPeopleDisplayReadResponseSchema, agentXError, type TaskChannelPeopleRequest, type TaskChannelPeopleResponse, type TaskPeopleDisplayReadRequest, type TaskPeopleDisplayReadResponse, type TaskPersonProofRequest, type TaskPersonProofResponse } from "@rovara-code/contracts";
 import { developerIdForSlackUser } from "../aws/admin-actions.js";
 
 const MAX_MILLISECONDS = 20_000;

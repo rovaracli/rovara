@@ -7,10 +7,8 @@
 // endpoint through the injected `performer` (a plan decision, a merge press, a spend decision, ...), which checks the caller's live authority again and answers what really happened:
 // decided, needs the confirmation page (a fresh sign-in), or refused. Only a decided answer is recorded and reported as approved; a surface never says "Approved" for anything else.
 // Mounting is one call (routeDecisionCards).
-import {
-  DECISION_CARDS_MAX, DECISION_RUN_LIMIT_KINDS, DecisionApproveBodySchema, DecisionCardIdSchema, DecisionDismissBodySchema, DecisionOpenedBodySchema, DecisionRejectBodySchema, DecisionRequestChangesBodySchema, agentXError, approveReasonProblem, planChoicesProblem, type DecisionPlanAnswer,
-  type DecisionAnswered, type DecisionDismissed, type DecisionCard, type DecisionCardsView, type DecisionEvidenceOpenedAnswer, type DecisionNeedsConfirmation, type DecisionRefusalReason, type DecisionRejectReason, type DecisionTab, type DecisionTabId,
-} from "@agentx/contracts";
+import { DECISION_CARDS_MAX, DECISION_RUN_LIMIT_KINDS, DecisionApproveBodySchema, DecisionCardIdSchema, DecisionOpenedBodySchema, DecisionRejectBodySchema, DecisionRequestChangesBodySchema, agentXError, approveReasonProblem, planChoicesProblem, type DecisionPlanAnswer, type DecisionAnswered, type DecisionCard, type DecisionCardsView, type DecisionEvidenceOpenedAnswer, type DecisionNeedsConfirmation, type DecisionRefusalReason, type DecisionRejectReason, type DecisionTab, type DecisionTabId } from "@rovara-code/contracts";
+import { DecisionDismissBodySchema, type DecisionDismissed } from "@agentx/cloud-contracts";
 import { StatusReply } from "../aws/status-reply.js";
 import { decisionMadeMeasure, type DecisionMeasure } from "./measures.js";
 import { projectDecisionCards, type DecisionItem, type Projection, type Subject } from "./project.js";

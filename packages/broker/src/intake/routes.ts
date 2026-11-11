@@ -6,10 +6,7 @@
 //   GET  /v1/app/projects/{project}/intake/updates            the ticket updates settings and write access  (anyone who can view the project; slice 5)
 //   PUT  /v1/app/projects/{project}/intake/updates            replace the ticket updates settings           (a maintainer: edit_settings; slice 5)
 // Another org's project, and one the caller has no role in, answer the same 404 as a missing one (`projectFor`). The ticket's words are shown as text only; the page never builds a link from them.
-import {
-  IntakeDismissBodySchema, IntakeSourceErrorSchema, IntakeStartBodySchema, IntakeChannelRefSchema, TicketUpdatesPutBodySchema, agentXError, projectAllows,
-  type IntakeSourceView, type IntakeWaitingItem, type ProjectRole, type TicketUpdatesView,
-} from "@agentx/contracts";
+import { IntakeDismissBodySchema, IntakeSourceErrorSchema, IntakeStartBodySchema, IntakeChannelRefSchema, TicketUpdatesPutBodySchema, agentXError, projectAllows, type IntakeSourceView, type IntakeWaitingItem, type ProjectRole, type TicketUpdatesView } from "@rovara-code/contracts";
 import { z } from "zod";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 import { StatusReply } from "../aws/status-reply.js";

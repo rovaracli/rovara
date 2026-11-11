@@ -1,7 +1,7 @@
 // Decision measures (design 3.7, S2 15.4): decisions per person per day, median time to decide, approvals later reversed, cards answered by a rule. METRIC style, like
 // `feedback-review-measures.ts`: one structured line per event, fixed fields only, nothing a person or a repository wrote. A person is a short hash that cannot be read back to them.
 import { createHash } from "node:crypto";
-import type { DecisionKind, DecisionRisk } from "@agentx/contracts";
+import type { DecisionKind, DecisionRisk } from "@rovara-code/contracts";
 
 export type DecisionMeasureName = "decision_made" | "decision_reversed" | "decision_answered_by_rule";
 export interface DecisionMeasure {

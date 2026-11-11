@@ -1,7 +1,7 @@
 // Enterprise foundations P6: the GitHub webhook normaliser. Every GitHub event the broker follows becomes a neutral code host event; a delivery is verified (size, signature,
 // delivery id) before any of its body is read, and nothing comes back from one that does not verify.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { CodeHostEventSchema } from "../../packages/contracts/src/index.js";
+import { CodeHostEventSchema } from "@rovara-code/contracts";
 import { githubCodeHost } from "../../packages/broker/src/plugins/code-host/github/index.js";
 import { GITHUB_WEBHOOK_MAX_BYTES, githubCodeHostEvents, neutralEventsOfGithub } from "../../packages/broker/src/plugins/code-host/github/events.js";
 import { verifyGithubWebhookSignature } from "../../packages/broker/src/aws/github-webhooks.js";

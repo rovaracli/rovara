@@ -1,6 +1,7 @@
 // Live interaction F1: the ErrorRef a task view carries, so the app can offer "Fix with agent" for an error it shows. Fixed codes and ids only: the failure's message and the block reason's text
 // are never copied. A task that shows no error has no reference, and a view with no reference shows no button.
-import { taskFailureErrorRef, workflowBlockErrorRef, type DeveloperTaskView, type ErrorRef } from "@agentx/contracts";
+import { taskFailureErrorRef, type ErrorRef } from "@rovara-code/contracts";
+import { workflowBlockErrorRef, type DeveloperTaskView } from "@agentx/cloud-contracts";
 
 /**
  * The reference for the error a task view shows, or undefined:

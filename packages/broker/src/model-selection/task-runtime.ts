@@ -1,6 +1,6 @@
 import {approvedProjectModel} from "./stage-inputs.js";
 // Trusted runtime adapter: task intent is frozen, availability and task denials are read live.
-import {STAGE_EDIT_GROUPS,STAGE_REFERENCE,agentXError,type OrgId,type AgentId,type StageId,type ResolvedRecipe,type ModelIdentifier} from "@agentx/contracts";
+import { STAGE_EDIT_GROUPS, STAGE_REFERENCE, agentXError, type OrgId, type AgentId, type StageId, type ResolvedRecipe, type ModelIdentifier } from "@rovara-code/contracts";
 import {parseTaskModelPolicyPin} from "./task-pin.js";
 import {pinnedTaskModelApproval} from "./task-proof.js";
 import {resolveStageModel,type StageModelInput,type StageModelResult} from "./resolver.js";

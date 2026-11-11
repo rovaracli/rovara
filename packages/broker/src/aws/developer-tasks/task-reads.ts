@@ -1,17 +1,6 @@
 import { QueryCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  DEVELOPER_EVENTS_DEFAULT,
-  DEVELOPER_EVENTS_MAX,
-  DEVELOPER_TASK_LIST_DEFAULT,
-  DEVELOPER_TASK_LIST_MAX,
-  DeveloperTaskStatusSchema,
-  SessionIdSchema,
-  agentXError,
-  sessionLink,
-  type DeveloperTaskListItem,
-  type DeveloperTaskStatus,
-  type DeveloperTaskView,
-} from "@agentx/contracts";
+import { DEVELOPER_EVENTS_DEFAULT, DEVELOPER_EVENTS_MAX, DEVELOPER_TASK_LIST_DEFAULT, DEVELOPER_TASK_LIST_MAX, DeveloperTaskStatusSchema, SessionIdSchema, agentXError, sessionLink, type DeveloperTaskStatus } from "@rovara-code/contracts";
+import { type DeveloperTaskListItem, type DeveloperTaskView } from "@agentx/cloud-contracts";
 import { taskKey, tryEffectiveTaskOwner, type DeveloperTaskIndexRecord, type DeveloperTaskRecord } from "../../developer/task-records.js";
 import type { DeveloperCaller } from "../developer-routes.js";
 import { readTaskPlanDocument, type TaskPlanDocumentView } from "../task-plan-document.js";

@@ -2,7 +2,8 @@
 // section, and the test-proof lines are the ones its Tests section lists, from the same inputs (`loadProofContext`). Two differences, both for the page: the strings are plain words (the table escapes `&` and `<` and puts a joiner after `@` for GitHub; the page shows text
 // as text, so those are undone), and when the checks were recorded for code that is no longer the candidate, the table reads those earlier results instead of calling every requirement untested (the page labels
 // it "earlier", the way it labels the recorded checks).
-import { redactText, type ProofTableView, type WorkflowSnapshot } from "@agentx/contracts";
+import { redactText, type ProofTableView } from "@rovara-code/contracts";
+import { type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { buildProofTable, testProofLinesOf } from "./proof-table.js";
 import { earlierProofCheckResults, proofCheckResults, recordedCheckIdsOf, type ProofContext } from "./proof-section.js";
 

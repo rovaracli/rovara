@@ -1,7 +1,7 @@
 // Design review stage, DR7 slice B2 (design-review-stage.md 3.3): the fixed Rovara design template, used ONLY when design review is on for the task. The planner's DESIGN phase then writes eight sections as Markdown, with §6
 // (areas touched) and §8 (sources) as one strict fenced `rovara-design-meta` JSON block. This module holds the instructions the planner is given, and the strict reader the broker applies to what it wrote. A design that does not
 // read is the planner's answer being unreadable: it is asked once more with what was wrong, then the step blocks, exactly as a structured plan does. With design review OFF none of this is reached and the claims format is as before.
-import { DESIGN_META_INFO_STRING, DESIGN_REASONS, DESIGN_META_SOURCES_MAX, readDesignMeta, type DesignMeta } from "@agentx/contracts";
+import { DESIGN_META_INFO_STRING, DESIGN_REASONS, DESIGN_META_SOURCES_MAX, readDesignMeta, type DesignMeta } from "@rovara-code/contracts";
 import { designSectionNumbers } from "./own-findings.js";
 
 /** The section ids and titles, as the reviewers and the Proof table point at them. */

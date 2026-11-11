@@ -13,7 +13,7 @@
 //   - the text is bounded; the key goes only in the `authorization` header to Linear, no redirect is followed, a response is read to a cap, and no error carries the key, the request or the text.
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import { agentXError, type OrgId } from "@agentx/contracts";
+import { agentXError, type OrgId } from "@rovara-code/contracts";
 import { LINEAR_GRAPHQL, LINEAR_WORKSPACE_KEY, OrgConnectionStore, readConnection, readConnectionSecret, type OrgConnectionDeps, type OrgConnectionRecord } from "../connections/store.js";
 import { normalizeIssueKey } from "./linear-close.js";
 import { linearCommentIdFor } from "./linear-comment-id.js";

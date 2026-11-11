@@ -12,7 +12,7 @@ it("retains only a bounded exact recipe/project/policy approval proof",()=>{
 it("persists proof only on its bound process version and refuses cross-agent proof",async()=>{
  const {mergeWorld}=await import("../support/rovara-code-merge-world.js");
  const {ORG_A,MAX}=await import("../support/agent-session-world.js");
- const {ROVARA_CODE_AGENT_ID}=await import("../../packages/contracts/src/index.js");
+ const { ROVARA_CODE_AGENT_ID } = await import("@rovara-code/contracts");
  const w=mergeWorld();const agent=await w.store.create({orgId:ORG_A,name:"web process",owner:{kind:"project",project:"web"},accountable:{developerId:MAX},extends:ROVARA_CODE_AGENT_ID,overlay:{},purpose:"process",createdBy:MAX});
  const bound={...proof,orgId:ORG_A,agentId:agent.agentId};
  w.db.set({pk:`ORG#${ORG_A}#SETTINGS`,sk:"MODEL_SELECTION_POLICY",revision:bound.companyRevision});
@@ -27,7 +27,7 @@ it("persists proof only on its bound process version and refuses cross-agent pro
 });
 
 it("refuses a publish when validated company or source revisions moved, leaving no version",async()=>{
- const {mergeWorld}=await import("../support/rovara-code-merge-world.js");const {ORG_A,MAX}=await import("../support/agent-session-world.js");const {ROVARA_CODE_AGENT_ID,orgSettingsKey,modelSourcesKey}=await import("../../packages/contracts/src/index.js");
+ const {mergeWorld}=await import("../support/rovara-code-merge-world.js");const {ORG_A,MAX}=await import("../support/agent-session-world.js");const { ROVARA_CODE_AGENT_ID, modelSourcesKey } = await import("@rovara-code/contracts"), { orgSettingsKey } = await import("@agentx/cloud-contracts");
  for(const kind of ["company","sources"] as const){
   const w=mergeWorld();const agent=await w.store.create({orgId:ORG_A,name:"web process",owner:{kind:"project",project:"web"},accountable:{developerId:MAX},extends:ROVARA_CODE_AGENT_ID,overlay:{},purpose:"process",createdBy:MAX});
   w.db.set({...kind==="company"?orgSettingsKey(ORG_A,"MODEL_SELECTION_POLICY"):modelSourcesKey(ORG_A),revision:1});
@@ -39,7 +39,7 @@ it("refuses a publish when validated company or source revisions moved, leaving 
 });
 
 it("normalizes only the publication chain marker while retaining base pins and recipe content",async()=>{
- const {EMPTY_RECIPE}=await import("../../packages/contracts/src/index.js");
+ const { EMPTY_RECIPE } = await import("@rovara-code/contracts");
  const recipe={...structuredClone(EMPTY_RECIPE),chain:[{agentId:"rovara-code",name:"Rovara Code",version:1,builtin:true},{agentId:binding.agentId,name:"Process",version:"draft" as const,builtin:false,process:true as const}]};
  const numbered={...recipe,chain:recipe.chain.map(row=>row.agentId===binding.agentId?{...row,version:3}:row)};
  expect(processApprovalRecipeDigest(numbered,binding.agentId)).toBe(processApprovalRecipeDigest(recipe,binding.agentId));
@@ -48,7 +48,7 @@ it("normalizes only the publication chain marker while retaining base pins and r
 });
 
 it("refuses an oversized rollback transaction before changing the current version",async()=>{
- const {mergeWorld}=await import("../support/rovara-code-merge-world.js");const {ORG_A,MAX}=await import("../support/agent-session-world.js");const {ROVARA_CODE_AGENT_ID}=await import("../../packages/contracts/src/index.js");
+ const {mergeWorld}=await import("../support/rovara-code-merge-world.js");const {ORG_A,MAX}=await import("../support/agent-session-world.js");const { ROVARA_CODE_AGENT_ID } = await import("@rovara-code/contracts");
  const w=mergeWorld();const agent=await w.store.create({orgId:ORG_A,name:"web capacity",owner:{kind:"project",project:"web"},accountable:{developerId:MAX},extends:ROVARA_CODE_AGENT_ID,overlay:{},purpose:"process",createdBy:MAX});
  for(let n=0;n<2;n++) await w.store.publish({orgId:ORG_A,agentId:agent.agentId,expectedDraftRevision:agent.draftRevision,digest:binding.recipeDigest,by:MAX});
  const checks=Array.from({length:24},(_,n)=>({ConditionCheck:{TableName:"state",Key:{pk:`ORG#${ORG_A}#CAPACITY`,sk:String(n)},ConditionExpression:"attribute_not_exists(pk)"}}));
@@ -57,7 +57,7 @@ it("refuses an oversized rollback transaction before changing the current versio
 });
 
 it("counts the request mark at the rollback boundary:25 succeeds and26 refuses",async()=>{
- const {randomUUID}=await import("node:crypto");const {mergeWorld}=await import("../support/rovara-code-merge-world.js");const {ORG_A,MAX}=await import("../support/agent-session-world.js");const {ROVARA_CODE_AGENT_ID}=await import("../../packages/contracts/src/index.js");
+ const {randomUUID}=await import("node:crypto");const {mergeWorld}=await import("../support/rovara-code-merge-world.js");const {ORG_A,MAX}=await import("../support/agent-session-world.js");const { ROVARA_CODE_AGENT_ID } = await import("@rovara-code/contracts");
  for(const count of [20,21]){
  const w=mergeWorld();const agent=await w.store.create({orgId:ORG_A,name:"web boundary",owner:{kind:"project",project:"web"},accountable:{developerId:MAX},extends:ROVARA_CODE_AGENT_ID,overlay:{},purpose:"process",createdBy:MAX});
  for(let n=0;n<2;n++) await w.store.publish({orgId:ORG_A,agentId:agent.agentId,expectedDraftRevision:agent.draftRevision,digest:binding.recipeDigest,by:MAX});

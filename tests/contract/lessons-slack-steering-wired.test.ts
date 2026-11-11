@@ -2,7 +2,8 @@
 // lessons subject source (`learningDepsFor`). A reply's author counts only through a verified Rovara link, and only as a member of the task's project.
 import { afterEach, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
-import { SLACK_OIDC_ISSUER, erasedPersonKey, projectMemberKey } from "@agentx/contracts";
+import { SLACK_OIDC_ISSUER, projectMemberKey } from "@rovara-code/contracts";
+import { erasedPersonKey } from "@agentx/cloud-contracts";
 import { installLessons } from "../../packages/broker/src/aws/broker/lessons-wiring.js";
 import type { learningDepsFor } from "../../packages/broker/src/aws/broker/lessons-wiring.js";
 import { uninstallLearningTaskEnd } from "../../packages/broker/src/aws/broker/learning-wiring.js";

@@ -2,7 +2,7 @@
 // and operation, refuse to change them once written, refuse a damaged copy, and let them expire.
 import { randomBytes } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { INDEX_EXPIRY_ATTRIBUTE, PacketDeliverySchema, packetDigestOf, type OrgId } from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, PacketDeliverySchema, packetDigestOf, type OrgId } from "@rovara-code/contracts";
 import { buildReviewerPacket, type PacketReaders } from "../../packages/broker/src/design-review/packet.js";
 import { SLOT_PACKET_TTL_SECONDS, designReviewPartition, packetTextOf, putSlotPackets, readSlotPacket, removeSlotPackets } from "../../packages/broker/src/design-review/packet-store.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";

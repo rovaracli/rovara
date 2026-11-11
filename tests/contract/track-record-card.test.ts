@@ -1,11 +1,7 @@
 // Track record (v1.2 slice 1, UI part): the How we work cards. The words of each claim (plan check, code and security review, tests), the "not enough history" line, the cap, the limits line,
 // a read that fails (the field is left out: no record, never a zero), the risk claim that never reaches the shared card, and the mapping of a less-safe change to its stage.
 import { describe, expect, it } from "vitest";
-import {
-  stepOfLessSafeReason,
-  HowWeWorkViewReaderSchema, HowWeWorkViewSchema, OUTCOME_READ_CAP, ROVARA_CODE_AGENT_ID, agentXError, stageOfLessSafeReason, trackRecordLines,
-  type HowWeWorkTrackRecord, type HowWeWorkView, type OutcomeClaim, type OutcomeState,
-} from "../../packages/contracts/src/index.js";
+import { stepOfLessSafeReason, HowWeWorkViewReaderSchema, HowWeWorkViewSchema, OUTCOME_READ_CAP, ROVARA_CODE_AGENT_ID, agentXError, stageOfLessSafeReason, trackRecordLines, type HowWeWorkTrackRecord, type HowWeWorkView, type OutcomeClaim, type OutcomeState } from "@rovara-code/contracts";
 import { getProjectHowWeWork, type HowWeWorkDependencies } from "../../packages/broker/src/playbook/routes.js";
 import { recordOutcomeSample } from "../../packages/broker/src/rovara-code/outcomes.js";
 import { MAX, ORG_A } from "../support/agent-session-world.js";

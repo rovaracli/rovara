@@ -27,23 +27,8 @@
 //
 // Delete: a deleted project loses all its images and its repository. An ARCHIVED project keeps them (an unarchive should not need a rebuild) until the 30 day ceiling deletes them; it queues no rebuild.
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import {
-  SAVED_ENV_IMAGE_CEILING_DAYS,
-  savedEnvRepositoryName,
-  SAVED_ENV_KEEP_DEFAULT,
-  SAVED_ENV_KEEP_MAX,
-  SAVED_ENV_KEEP_MIN,
-  SAVED_ENV_LIGHT_AFTER_IDLE_DAYS_DEFAULT,
-  SAVED_ENV_MAX_AGE_DAYS,
-  SAVED_ENV_USE_STEPS,
-  savedEnvStepMarksStale,
-  PrepareSavedEnvSchema,
-  SavedEnvBuildResultSchema,
-  type PrepareSavedEnv,
-  type SavedEnvBuildResult,
-  type SavedEnvRegistryAuth,
-  type SavedEnvManifest,
-} from "@agentx/contracts";
+import { SAVED_ENV_IMAGE_CEILING_DAYS, savedEnvRepositoryName, SAVED_ENV_KEEP_DEFAULT, SAVED_ENV_KEEP_MAX, SAVED_ENV_KEEP_MIN, SAVED_ENV_LIGHT_AFTER_IDLE_DAYS_DEFAULT, SAVED_ENV_MAX_AGE_DAYS, SAVED_ENV_USE_STEPS, savedEnvStepMarksStale, SavedEnvBuildResultSchema, type SavedEnvBuildResult, type SavedEnvManifest } from "@rovara-code/contracts";
+import { PrepareSavedEnvSchema, type PrepareSavedEnv, type SavedEnvRegistryAuth } from "@agentx/cloud-contracts";
 import { mintManageSession, mintPullSession, mintPushSession, mintScanSession, verifyRepository, type SavedEnvSessionConfig, type SavedEnvSessionPorts, type SessionCredentials } from "./saved-env-session.js";
 
 const DAY_MS = 86_400_000;

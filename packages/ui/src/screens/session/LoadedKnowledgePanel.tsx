@@ -1,5 +1,5 @@
 import { Suspense, lazy, useState } from "react";
-import type { LoadedKnowledgeItem } from "@agentx/contracts/web";
+import type { LoadedKnowledgeItem } from "@agentx/cloud-contracts/web";
 import { Link } from "react-router";
 import { Button } from "../../design/Button.js";
 import { VisibleText } from "../../design/VisibleText.js";
