@@ -74,6 +74,8 @@ export class DeveloperTaskNotifier extends Construct {
       AGENTX_METRICS_NAMESPACE: props.naming.metricsNamespace,
       AGENTX_TASK_PEOPLE_CHANGES_ENABLED: props.taskPeopleChangesEnabled.valueAsString,
       DECISION_CARDS_ENABLED: props.decisionCardsEnabled.valueAsString,
+      // Work events (U3): the notifier writes the workflow's flow facts from the stream's before and after images. Named environments only (this stack exists only there; the State table has its TTL there).
+      AGENTX_WORK_EVENTS: "on",
     }, Duration.seconds(30));
     props.slackSecret.grantRead(this.function);
     this.function.addToRolePolicy(new iam.PolicyStatement({
@@ -113,6 +115,15 @@ export class DeveloperTaskNotifier extends Construct {
       actions: ["dynamodb:PutItem", "dynamodb:UpdateItem"],
       resources: [props.state.tableArn],
       conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["DEVTASK#*"] } },
+    }));
+    // Work events (U3): one Put per flow fact, into the company's own work-event partitions only (`ORG#<org>#WORK_EVENTS#<month>#<shard>`), never read, never an update or a delete. The row expires by the table's TTL.
+    this.function.addToRolePolicy(new iam.PolicyStatement({
+      actions: ["dynamodb:PutItem"],
+      resources: [props.state.tableArn],
+      conditions: {
+        "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["ORG#org_????????????????????#WORK_EVENTS#*"] },
+        Null: { "dynamodb:LeadingKeys": "false" },
+      },
     }));
     // A shared thread's record is only ever put, once, with the thread (C2).
     this.function.addToRolePolicy(new iam.PolicyStatement({

@@ -22,7 +22,7 @@ import { agentUsageCounter } from "./payer.js";
 import { cleanUsd } from "./top-ups.js";
 import { costSettledEvent } from "../work-events/cost.js";
 import { workEventPutItem } from "../work-events/store.js";
-import type { WorkEventsRuntime } from "../work-events/emit.js";
+import type { WorkEventsRuntime } from "../work-events/stream.js";
 
 export interface LedgerDependencies extends SpendSettingsDependencies {
   access: Pick<ModelAccess, "keySpend" | "blockKey">;
@@ -347,10 +347,15 @@ async function settleOnce(deps: LedgerDependencies, record: ModelKeyRecord): Pro
       add: { usd: deltaUsd },
     }),
   ];
-  // Work events (U3): the settlement's cost event goes last, in the same transaction (a transaction holds at most 100 items; a key's own are few, and a full one simply gets no event).
+  // Work events (U3): the settlement's cost event goes last, in the same transaction (the one workflow-free event kept here: it is one small item, and the settlement is the one place that knows the amount
+  // counted once). A transaction holds at most 100 items; a full one simply gets no event. Built inside a try: nothing here may throw into the money path.
   if (deps.workEvents !== undefined && items.length < 100) {
-    const event = costSettledEvent({ orgId, project: record.tags.project, taskId: record.tags.taskId, keyId: record.keyId, sequence: seq, at: iso(at), deltaUsd, source: record.tags.source });
-    if (event !== undefined) items.push(workEventPutItem(deps.tableName, event));
+    try {
+      const event = costSettledEvent({ orgId, project: record.tags.project, taskId: record.tags.taskId, keyId: record.keyId, sequence: seq, at: iso(at), deltaUsd, source: record.tags.source });
+      if (event !== undefined) items.push(workEventPutItem(deps.tableName, event));
+    } catch (error) {
+      log(deps, { event: "work_event.skipped", reason: "cost_event_failed", error: errorName(error) });
+    }
   }
   for (let attempt = 0; ; attempt += 1) {
     try {

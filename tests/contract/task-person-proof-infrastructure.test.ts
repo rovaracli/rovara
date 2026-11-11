@@ -392,18 +392,20 @@ describe("the named TEST proof-only installation gate", () => {
     // (the StandingInstructionsEnabled parameter itself is taken out of the remainder like the other switches). The named-templates snapshot shows exactly that parameter and that entry. Legacy did not move.
     // 2026-11-09, integ/0512 merge of I1+I2 onto fix/0512-small: the four named and foreign digests were retaken from the values the test reports, after ONE intended change the fix lane had not re-pinned:
     // the sign-in function's two ConditionCheckItem statements gain `Null: { dynamodb:LeadingKeys: false }`. Checked first: with only those two lines undone, all five tests pass on the lane's pins. Legacy did not move.
+    // 2026-11-11, U3 work events: the named and foreign digests were retaken from the values the test reports, after ONE intended change: the DeveloperTaskNotifier gains the variable AGENTX_WORK_EVENTS ("on") and ONE write grant,
+    // dynamodb:PutItem on ORG#org_*#WORK_EVENTS#* only (the work events it writes from the stream's images). The named-templates snapshot shows exactly that variable and that statement. Legacy did not move.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "17321a5ab87a658b6241accee3bb2553f616ed01ab59c13a5093096b4080b185",
-        withoutRoute: "057566e25b02835efed7c6a23432ce50bc7c4d7c5b0edae6269b6a71fee3560b",
+        withRoute: "1492e4e007f4b6e2dcee1471bcb602f195a1c9f8c2e9042471c79254d9033d87",
+        withoutRoute: "6ae6b726ce27408b57d61900cd4b81af53286b363fe7577dc39429e23986ac44",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "460c00d8e5a7a41b71eea352eede33b1d78b3474860ff8a25ef546e91c18a2d4",
-        withoutRoute: "96462c08b8753953a4ed0e4104f8639c4cb1610280033cea7bc435bafe959e8a",
+        withRoute: "f0b0a71c5cfd0e8d0104ec9d4e2f8961cb3c02147b40c55c05dd24f6553f8a73",
+        withoutRoute: "05f2510e39b9bc108042afcf3494b654295fe7efa74bfe4204b563af87bf4419",
       },
       {
         label: "legacy",

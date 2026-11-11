@@ -1,9 +1,10 @@
 // Work events (U3): which events each change of a task's workflow makes. Real snapshots from the workflow's own transitions; one test per emit point.
 import { describe, expect, it } from "vitest";
 import {
-  WorkEventSchema, blockWorkflow, createWorkflowSnapshot, decideWorkflow, submitWorkflowArtifact, workEventId,
+  BUDGET_EXHAUSTED_FAILURE_MESSAGE, WORKFLOW_BLOCK_REASONS, WorkEventSchema, blockWorkflow, createWorkflowSnapshot, decideWorkflow, submitWorkflowArtifact, workEventId,
   type WorkEvent, type WorkflowSnapshot,
 } from "@agentx/contracts";
+import { stoppedStepReason } from "../../packages/broker/src/aws/workflow-cancel-reconcile.js";
 import { waitingOf, workEventsOfTransition } from "../../packages/broker/src/work-events/transition.js";
 import { costSettledEvent } from "../../packages/broker/src/work-events/cost.js";
 
@@ -67,16 +68,54 @@ describe("a plan is ready, and then decided", () => {
   });
 });
 
-describe("a task fails", () => {
-  it("makes step_ended failed, task_failed and a wait for the owner, from a block", () => {
-    const blocked = blockWorkflow(approved(), "The checks failed: tests/a.test.ts: expected 1, got 2 (secret sk-test)", "2026-11-10T10:00:00.000Z");
-    const list = events(approved(), blocked);
+describe("a task is blocked: a failure and a stop are different facts", () => {
+  const blockedBy = (reason: string): WorkflowSnapshot => blockWorkflow(approved(), reason, "2026-11-10T10:00:00.000Z");
+
+  it("records a real failure as step_ended failed with its cause, task_failed with the same cause, and a wait for the owner", () => {
+    const list = events(approved(), blockedBy(WORKFLOW_BLOCK_REASONS.regressionFound));
     expect(kinds(list)).toEqual(["step_ended", "task_failed", "waiting_changed"]);
-    expect(list[0]).toMatchObject({ outcome: "failed" });
-    expect(list[1]).toMatchObject({ reason: "blocked_implement", actor: { kind: "system" } });
-    expect(list[2]).toMatchObject({ waitingOn: "person", personIds: [ownerId], reason: "blocked" });
-    // The block's own words are nowhere in an event.
-    expect(JSON.stringify(list)).not.toMatch(/checks failed|expected 1|sk-test|a\.test/u);
+    expect(list[0]).toMatchObject({ outcome: "failed", cause: "checks_failed" });
+    expect(list[1]).toMatchObject({ cause: "checks_failed", actor: { kind: "system" } });
+    expect(list[2]).toMatchObject({ waitingOn: "person", personIds: [ownerId], reason: "blocked_checks_failed" });
+  });
+
+  it("records an owner stop or a cancel as step_ended stopped (cancelled) and NO task_failed", () => {
+    const list = events(approved(), blockedBy(stoppedStepReason("IMPLEMENT", "CANCELLED")));
+    expect(kinds(list)).toEqual(["step_ended", "waiting_changed"]);
+    expect(list[0]).toMatchObject({ outcome: "stopped", cause: "cancelled" });
+    expect(list[1]).toMatchObject({ reason: "blocked_cancelled" });
+  });
+
+  it("records a budget exhaustion, a budget pause and a pause for the run limit as stops", () => {
+    for (const [reason, cause] of [[BUDGET_EXHAUSTED_FAILURE_MESSAGE, "budget_exhausted"], [WORKFLOW_BLOCK_REASONS.budgetPaused, "budget_paused"], ["This plan's run limit is $12.00, which needs your approval.", "budget_paused"]] as const) {
+      const list = events(approved(), blockedBy(reason));
+      expect(kinds(list), reason).toEqual(["step_ended", "waiting_changed"]);
+      expect(list[0]).toMatchObject({ outcome: "stopped", cause });
+    }
+  });
+
+  it("records a block it does not recognise as a failure with cause other, never with its words", () => {
+    const list = events(approved(), blockedBy("Something nobody wrote a constant for: secret sk-test and bob@example.com"));
+    expect(kinds(list)).toEqual(["step_ended", "task_failed", "waiting_changed"]);
+    expect(list[1]).toMatchObject({ cause: "other" });
+    expect(JSON.stringify(list)).not.toMatch(/nobody|sk-test|bob@example/u);
+  });
+});
+
+describe("a task ends", () => {
+  const ended = (outcome: NonNullable<WorkflowSnapshot["outcome"]>, stage: WorkflowSnapshot["stage"] = "CLOSED"): WorkflowSnapshot => ({ ...approved(), stage, state: "COMPLETE", outcome, revision: 9, updatedAt: "2026-11-10T12:00:00.000Z" });
+
+  it("makes task_closed with a closed outcome for every way a task ends, once, at the workflow's own time", () => {
+    for (const [outcome, word] of [["MERGED", "merged"], ["CLOSED", "closed_unmerged"], ["ANSWERED", "answered"], ["REJECTED", "plan_rejected"], ["PASSED", "passed"], ["SKIPPED", "skipped"], ["CHANGES_REQUESTED", "changes_requested"]] as const) {
+      const list = events(approved(), ended(outcome)).filter((event) => event.kind === "task_closed");
+      expect(list, outcome).toHaveLength(1);
+      expect(list[0], outcome).toMatchObject({ outcome: word, at: "2026-11-10T12:00:00.000Z", actor: { kind: "system" } });
+    }
+    expect(kinds(events(approved(), ended("REJECTED")))).toContain("waiting_changed");
+  });
+
+  it("makes no second task_closed for a change that keeps a task ended", () => {
+    expect(events(ended("MERGED"), { ...ended("MERGED"), revision: 10, updatedAt: "2026-11-10T13:00:00.000Z" })).toEqual([]);
   });
 });
 
@@ -93,12 +132,21 @@ describe("pull requests", () => {
     expect(list.find((event) => event.kind === "waiting_changed")).toMatchObject({ waitingOn: "person", reason: "merge" });
   });
 
+  it("gives a pull request closed, reopened and closed again two different events", () => {
+    const closedAt = (revision: number) => withPulls({ ...open, revision, updatedAt: `2026-11-10T1${String(revision - 9)}:00:00.000Z` }, [{ state: "CLOSED", number: 7 }]);
+    const first = events(open, closedAt(10)).find((event) => event.kind === "pr_closed")!;
+    const reopened = withPulls({ ...open, revision: 11, updatedAt: "2026-11-10T11:30:00.000Z" }, [{ state: "OPEN", number: 7 }]);
+    const second = events(reopened, closedAt(12)).find((event) => event.kind === "pr_closed")!;
+    expect(first.id).not.toBe(second.id);
+  });
+
   it("makes pr_merged once, and the wait ends", () => {
     const merged = withPulls({ ...open, state: "COMPLETE", stage: "MERGED", outcome: "MERGED", revision: 10, updatedAt: "2026-11-10T11:00:00.000Z" }, [{ state: "MERGED", number: 7 }]);
     const list = events(open, merged);
     expect(list.filter((event) => event.kind === "pr_merged")).toHaveLength(1);
     expect(list.find((event) => event.kind === "pr_merged")).toMatchObject({ repository: "acme/api", number: 7, at: "2026-11-10T11:00:00.000Z", actor: { kind: "system" } });
     expect(kinds(list)).not.toContain("pr_opened");
+    expect(list.find((event) => event.kind === "task_closed")).toMatchObject({ outcome: "merged" });
     expect(list.find((event) => event.kind === "waiting_changed")).toMatchObject({ waitingOn: "none" });
   });
 
@@ -117,6 +165,9 @@ describe("what is never an event", () => {
   it("derives the same ids for the same change, so a repeat writes the same rows", () => {
     expect(events(waiting(), approved()).map((event) => event.id)).toEqual(events(waiting(), approved()).map((event) => event.id));
     expect(events(planning(), waiting())[1]!.id).toBe(workEventId({ kind: "decision_asked", taskId, source: "r2" }));
+    // The first event is timed by the task's creation, whichever change the reader meets first.
+    expect(events(undefined, planning())[0]).toMatchObject({ kind: "task_started", at: T0 });
+    expect(events(undefined, { ...planning(), revision: 5, updatedAt: T2 })[0]).toMatchObject({ kind: "task_started", at: T0 });
   });
 
   it("holds no text a person or model wrote, whatever the snapshot carries", () => {

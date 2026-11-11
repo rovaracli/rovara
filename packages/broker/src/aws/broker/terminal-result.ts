@@ -5,7 +5,6 @@ import { continueRedirectAfterStop } from "../../agent-sessions/redirect-hook.js
 import { clearLiveDeliveredSince } from "../../agent-sessions/steer.js";
 import { posix as posixPath } from "node:path";
 import { PutCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { withWorkEvents } from "../../work-events/emit.js";
 import { TEST_ENV_DRAFT_NONE_KEY, TEST_ENV_DRAFT_RESULT_KEY, TEST_SERVICES_USAGE_RESULT_KEY, checksForSection, StandingFailuresSchema, nextStandingFailures, type StandingFailure, WORKFLOW_REGRESSED_CHECK_MAX, WORKFLOW_REGRESSED_CHECKS_MAX, WORKFLOW_NO_CODE_CHANGE_MESSAGE, noChangeFindingsFrom, BUDGET_EXHAUSTED_FAILURE_MESSAGE, taskResultChecks, type CheckEntry, type LatestChecks, PullRequestResultSchema, WorkspaceClosePreflightResultSchema, agentXError, type OperationStatus, type WorkspaceInstance, redactAndCap, redactText } from "@agentx/contracts";
 import { keepCandidateUsage } from "../../org/test-env-candidate.js";
 import { recordPrepareFailureEvent } from "../operation-events.js";
@@ -396,8 +395,7 @@ export async function recordTerminalResult(
     },
   } };
   if (operation.kind !== "cancel" || terminalStatus === "SUCCEEDED") transactItems.push(workspaceUpdate);
-  // Work events (U3): the events of any change of a task's workflow in these items commit with it (appended at the end, so no position moves).
-  const send = async (items: TransactItems) => dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: await withWorkEvents(dependencies, items) }));
+  const send = (items: TransactItems) => dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: items }));
   let taskPointer: DeveloperTaskPointerRecord | undefined;
   // Spec 061: the evidence jobs this result queued (a stored plan that cites code), started after it commits.
   let evidenceJobs: PlanEvidenceEvent[] = [];

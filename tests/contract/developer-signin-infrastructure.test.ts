@@ -444,6 +444,8 @@ describe("developer sign-in infrastructure (named environments)", () => {
       // A member's grants copied to the survivor.
       ["dynamodb:PutItem", [`${ORG}#MEMBER#*`]],
       // Plan 5, Task 20 (the notifier's): the session's binding to the thread (in its own partition, never the session's) and the thread's reverse item, put with the thread's record.
+      // U3 work events: the notifier writes the workflow's flow facts from the stream's images, into the company's own work-event partitions only (a Put, never a read, update or delete).
+      ["dynamodb:PutItem", [`${ORG}#WORK_EVENTS#*`]],
       ["dynamodb:PutItem", [`${ORG}#SESSION_BINDING#*`, `${ORG}#SESSION_SURFACE`]],
     ].sort((a, b) => String(a[0]).localeCompare(String(b[0]))));
     for (const statement of stateGrants) {
@@ -617,7 +619,7 @@ describe("the developer task notifier (spec 025 phase 25c, named environments)",
     expect(actionsOf(reads[0]!).sort()).toEqual(["dynamodb:GetItem", "dynamodb:Query"]);
     const keysOf = (statement: Statement) => leadingKeysOf(statement);
     const writes = dynamo.filter((statement) => allows(statement, "dynamodb:PutItem") || allows(statement, "dynamodb:UpdateItem"));
-    expect(writes).toHaveLength(5);
+    expect(writes).toHaveLength(6);
     // The task and its notice markers are put and updated; a shared thread record is only put;
     // an admin change (spec 025 E13) is only read and updated, never put; a ChatGPT fallback's notice
     // marker (#342) is only put; a session's binding to the thread (Plan 5 Task 20) is only put, in an org's own keys.
@@ -627,6 +629,8 @@ describe("the developer task notifier (spec 025 phase 25c, named environments)",
       { actions: ["dynamodb:GetItem", "dynamodb:UpdateItem"], keys: ["ADMIN_CHANGE#*"] },
       { actions: ["dynamodb:PutItem"], keys: ["CHATGPT_NOTICE#*"] },
       { actions: ["dynamodb:PutItem"], keys: ["ORG#org_????????????????????#SESSION_BINDING#*", "ORG#org_????????????????????#SESSION_SURFACE"] },
+      // U3 work events: put only, in the company's own work-event partitions.
+      { actions: ["dynamodb:PutItem"], keys: ["ORG#org_????????????????????#WORK_EVENTS#*"] },
     ]));
   });
 

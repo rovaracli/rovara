@@ -1,61 +1,80 @@
-// Work events (U3) through the real broker: a task started, its plan decided and its spend settled on the fake table with the real wiring. Each emit point writes its events in the change's own transaction.
+// Work events (U3) through the real broker and the real notifier handler: the broker moves a task, the table's stream carries the before and after images, and the notifier writes the events from them.
+// Nothing is added to the broker's own transactions.
 import { describe, expect, it } from "vitest";
 import { INDEX_EXPIRY_ATTRIBUTE, WorkEventSchema, workEventExpiresAt, type WorkEvent } from "@agentx/contracts";
+import { createNotifierHandler } from "../../packages/broker/src/aws/developer-task-notifier.js";
+import { recordStream } from "../support/developer-task-broker.js";
 import { decide, developerBroker, finishPlanning } from "../support/golden-recorder.js";
 import { TEST_ORG } from "../support/orgs.js";
 
 type Broker = Awaited<ReturnType<typeof developerBroker>>;
-const rowsOf = (broker: Broker) => broker.harness.db.find((item) => item.entityType === "WORK_EVENT");
-const eventsOf = (broker: Broker, taskId: string): WorkEvent[] => rowsOf(broker).filter((row) => row["taskId"] === taskId).sort((a, b) => String(a["sk"]).localeCompare(String(b["sk"])))
-  .map((row) => WorkEventSchema.parse(Object.fromEntries(Object.entries(row).filter(([name]) => !["pk", "sk", "entityType", INDEX_EXPIRY_ATTRIBUTE].includes(name)))));
+
+function notifier(broker: Broker, options: { workEvents: boolean }) {
+  const stream = recordStream(broker.harness.db);
+  const logs: Array<Record<string, unknown>> = [];
+  const handle = createNotifierHandler({
+    documentClient: broker.harness.db, tableName: "state", enqueue: async () => undefined, retryLater: async () => undefined, post: async () => ({ ts: "1695500000.000100" }),
+    now: () => Date.now(), log: (entry) => { logs.push(entry); }, deliveryFailed: () => undefined, ...(options.workEvents ? { workEvents: { pause: async () => undefined } } : {}),
+  });
+  const pump = async () => { await handle({ Records: stream.take().map((record) => ({ ...record, eventSource: "aws:dynamodb" })) }); };
+  const rows = () => broker.harness.db.find((item) => item["entityType"] === "WORK_EVENT");
+  const eventsOf = (taskId: string): WorkEvent[] => rows().filter((row) => row["taskId"] === taskId).sort((a, b) => String(a["at"]).localeCompare(String(b["at"])) || String(a["id"]).localeCompare(String(b["id"])))
+    .map((row) => WorkEventSchema.parse(Object.fromEntries(Object.entries(row).filter(([name]) => !["pk", "sk", "entityType", INDEX_EXPIRY_ATTRIBUTE].includes(name)))));
+  return { pump, rows, eventsOf, logs };
+}
 const kinds = (list: readonly WorkEvent[]) => list.map((event) => event.kind).sort();
 
-describe("work events through the broker", () => {
-  it("writes nothing when the install has them off (a legacy install)", async () => {
+describe("work events through the broker and the notifier", () => {
+  it("writes nothing when the install has them off", async () => {
     const broker = await developerBroker(true);
-    const { taskId, workspaceId } = await broker.start({ workflow: true, workflowPath: "QUICK" });
+    const n = notifier(broker, { workEvents: false });
+    const { workspaceId } = await broker.start({ workflow: true, workflowPath: "QUICK" });
     await broker.finishPrepare(workspaceId);
-    expect(rowsOf(broker)).toEqual([]);
-    expect(taskId).toBeDefined();
+    await n.pump();
+    expect(n.rows()).toEqual([]);
   });
 
-  it("writes a task's events as it starts, plans and is decided, one event for each fact", async () => {
-    const broker = await developerBroker(true, { workEvents: {} });
+  it("writes a task's events as it starts, plans and is decided, each fact once, with the broker's transactions untouched", async () => {
+    const broker = await developerBroker(true);
+    const n = notifier(broker, { workEvents: true });
     const { taskId, workspaceId } = await broker.start({ workflow: true, workflowPath: "QUICK" });
-    // The start's own transaction.
-    expect(kinds(eventsOf(broker, taskId))).toEqual(["step_started", "task_started", "waiting_changed"]);
-    expect(eventsOf(broker, taskId).find((event) => event.kind === "task_started")).toMatchObject({ orgId: TEST_ORG, project: "payments", path: "QUICK", actor: { kind: "person" } });
+    await n.pump();
+    expect(kinds(n.eventsOf(taskId))).toEqual(["step_started", "task_started", "waiting_changed"]);
+    expect(n.eventsOf(taskId).find((event) => event.kind === "task_started")).toMatchObject({ orgId: TEST_ORG, project: "payments", path: "QUICK", actor: { kind: "person", personId: expect.stringMatching(/^[a-f0-9]{64}$/u) as string } });
     await broker.finishPrepare(workspaceId);
     const planning = broker.operationWhere(workspaceId, (item) => item.workflowMode === "PLAN");
     const plan = await finishPlanning(broker, taskId, workspaceId, planning);
-    // The result of the planning step: the plan reached the owner's gate.
-    expect(kinds(eventsOf(broker, taskId))).toEqual(["decision_asked", "step_ended", "step_started", "task_started", "waiting_changed", "waiting_changed"]);
-    expect(eventsOf(broker, taskId).filter((event) => event.kind === "decision_asked")).toMatchObject([{ decisionId: `r${String(plan.revision)}`, decision: "plan", actor: { kind: "system" } }]);
-    const approval = await decide(broker, taskId, plan, "APPROVE", "Looks right.");
-    expect(approval.status).toBe(200);
-    const all = eventsOf(broker, taskId);
+    await n.pump();
+    expect(n.eventsOf(taskId).filter((event) => event.kind === "decision_asked")).toMatchObject([{ decisionId: `r${String(plan.revision)}`, decision: "plan", actor: { kind: "system" } }]);
+    expect((await decide(broker, taskId, plan, "APPROVE", "Looks right.")).status).toBe(200);
+    await n.pump();
+    const all = n.eventsOf(taskId);
     expect(all.filter((event) => event.kind === "decision_answered")).toMatchObject([{ decisionId: `r${String(plan.revision)}`, outcome: "approved", actor: { kind: "person" } }]);
     expect(all.filter((event) => event.kind === "plan_approved")).toHaveLength(1);
-    // The coding step starts with the decision's own transaction.
     expect(all.filter((event) => event.kind === "step_started").map((event) => (event as { step: string }).step)).toEqual(["plan", "implement"]);
-    // Every fact is one event: nothing is written twice, and every row expires 13 months after its month.
-    const ids = rowsOf(broker).map((row) => row["id"]);
+    // The broker wrote no event itself: every row came from the notifier, and the broker's own transactions hold none.
+    const ids = n.rows().map((row) => row["id"]);
     expect(new Set(ids).size).toBe(ids.length);
-    for (const row of rowsOf(broker)) expect(row[INDEX_EXPIRY_ATTRIBUTE]).toBe(workEventExpiresAt(String(row["at"])));
-    // The owner is a person id, never a name: no event holds the owner's name or the request text.
-    expect(JSON.stringify(rowsOf(broker))).not.toMatch(/Maya|Fix the retry bug|Looks right/u);
-    expect(all.find((event) => event.kind === "task_started")).toMatchObject({ actor: { kind: "person", personId: expect.stringMatching(/^[a-f0-9]{64}$/u) as string } });
+    for (const row of n.rows()) expect(row[INDEX_EXPIRY_ATTRIBUTE]).toBe(workEventExpiresAt(String(row["at"])));
+    for (const transaction of broker.harness.db.transactions()) expect(JSON.stringify(transaction)).not.toContain("WORK_EVENT");
+    expect(JSON.stringify(n.rows())).not.toMatch(/Maya|Fix the retry bug|Looks right/u);
   });
 
-  it("writes no events for a decision the broker refuses", async () => {
-    const broker = await developerBroker(true, { workEvents: {} });
-    const { taskId, workspaceId } = await broker.start({ workflow: true, workflowPath: "QUICK" });
+  it("writes the same rows when the stream delivers the same records again", async () => {
+    const broker = await developerBroker(true);
+    const recorded = recordStream(broker.harness.db);
+    const logs: unknown[] = [];
+    const handle = createNotifierHandler({
+      documentClient: broker.harness.db, tableName: "state", enqueue: async () => undefined, retryLater: async () => undefined, post: async () => ({ ts: "1695500000.000100" }),
+      now: () => Date.now(), log: (entry) => { logs.push(entry); }, deliveryFailed: () => undefined, workEvents: { pause: async () => undefined },
+    });
+    const { workspaceId } = await broker.start({ workflow: true, workflowPath: "QUICK" });
     await broker.finishPrepare(workspaceId);
-    const planning = broker.operationWhere(workspaceId, (item) => item.workflowMode === "PLAN");
-    const plan = await finishPlanning(broker, taskId, workspaceId, planning);
-    const before = rowsOf(broker).length;
-    const refused = await decide(broker, taskId, { ...plan, revision: plan.revision + 3 }, "APPROVE", "Stale.");
-    expect(refused.status).toBeGreaterThanOrEqual(400);
-    expect(rowsOf(broker)).toHaveLength(before);
+    const records = recorded.take().map((record) => ({ ...record, eventSource: "aws:dynamodb" }));
+    await handle({ Records: records });
+    const first = broker.harness.db.find((item) => item["entityType"] === "WORK_EVENT").map((row) => `${String(row["pk"])}|${String(row["sk"])}`).sort();
+    expect(first.length).toBeGreaterThan(0);
+    await handle({ Records: records });
+    expect(broker.harness.db.find((item) => item["entityType"] === "WORK_EVENT").map((row) => `${String(row["pk"])}|${String(row["sk"])}`).sort()).toEqual(first);
   });
 });

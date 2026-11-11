@@ -40,6 +40,7 @@ import { SlackPostError, chatPostEphemeral, chatPostMessage, chatUpdate, createT
 import { readWorkflowE2ENotifierProjection } from "./workflow-e2e-notifier-projection.js";
 import { renderE2ENotifierSlackBlocks, renderE2EUnavailableSlackBlock } from "../e2e-presentation.js";
 import { canTakeOverNow } from "../developer/take-over-eligible.js";
+import { writeWorkEventsOfStream, type WorkEventsRuntime } from "../work-events/stream.js";
 
 type Client = { send(command: unknown): Promise<unknown> };
 const errorName = (error: unknown) => (error instanceof Error ? error.name : "unknown");
@@ -72,6 +73,8 @@ export interface NotifierDependencies {
   peopleChangesEnabled?: boolean;
   /** Revalidates the current CHECKS admission and evidence before adding a read-only Slack projection. */
   workflowE2EBlocks?(task: DeveloperTaskRecord, operations: readonly unknown[]): Promise<unknown[] | undefined>;
+  /** Work events (U3): present only where they are written (named environments). The notifier then writes the workflow's flow facts from the stream's before and after images. */
+  workEvents?: WorkEventsRuntime | undefined;
 }
 
 /** The start message is still being posted: a reply waits for its thread (C9). */
@@ -1955,6 +1958,10 @@ export function createNotifierHandler(deps: NotifierDependencies) {
         if (update === undefined) continue;
         try { await deps.documentClient.send(new UpdateCommand(update as ConstructorParameters<typeof UpdateCommand>[0])); } catch (error) { if (!isConditional(error)) throw error; }
       }
+      // Work events (U3): the workflow's flow facts from the same images, written last and never failing the batch (a failed write is logged and the notices above are already queued).
+      if (deps.workEvents !== undefined) {
+        try { await writeWorkEventsOfStream({ documentClient: deps.documentClient, tableName: deps.tableName, workEvents: deps.workEvents, log: (entry) => { deps.log(entry); } }, records as StreamRecord[]); } catch (error) { deps.log({ event: "work_event.write_failed", reason: "unexpected", error: errorName(error) }); }
+      }
       return { batchItemFailures: [] };
     }
     const batchItemFailures: Array<{ itemIdentifier: string }> = [];
@@ -2200,6 +2207,7 @@ function createAwsNotifierHandler() {
   return createNotifierHandler({
     documentClient,
     tableName: requiredEnvironment("STATE_TABLE_NAME"),
+    ...(process.env.AGENTX_WORK_EVENTS === "on" ? { workEvents: {} } : {}),
     async enqueue(notices) {
       for (let start = 0; start < notices.length; start += 10) {
         const batch = notices.slice(start, start + 10);

@@ -3,7 +3,6 @@
 import { type prepareTurnModelFallback, type prepareTaskModelFallback, joinTaskModelFallback } from "../../model-selection/fallback-record.js";
 import { createHash, randomUUID } from "node:crypto";
 import { GetCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { withWorkEvents } from "../../work-events/emit.js";
 import { GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
 import { AgentXError, hostRateLimitRetryAt, WorkspaceClosePreflightResultSchema, agentXError, type CodeHost, type MergeObservation, type OperationStatus, type WorkspaceInstance, WorkflowFeedbackBundleSchema, type OrgId } from "@agentx/contracts";
 import type { AuthenticatedIdentity } from "../../auth.js";
@@ -462,7 +461,7 @@ export async function processGithubWorkflowEvent(
     }),
     // A fix push taken for failed but landed: recorded as its result would have, together or not at all.
     saveLandedPushes: async (taskId, expectedRevision, workflow, pushes, extraItems = []) => {
-      await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: await withWorkEvents(dependencies, [
+      await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: [
         { Update: {
           TableName: dependencies.tableName, Key: taskKey(taskId),
           UpdateExpression: "SET workflow = :workflow, updatedAt = :now",
@@ -486,7 +485,7 @@ export async function processGithubWorkflowEvent(
           } },
         ]),
         ...extraItems,
-      ]) }));
+      ] }));
       console.log(JSON.stringify({ component: "broker", event: "workflow.landed_fix_push_recorded", taskId, pullRequests: pushes.map((push) => push.number) }));
       // The fix is on the pull request as if its result had come: its description lists it too.
       for (const push of pushes) {
@@ -533,10 +532,8 @@ export async function processGithubWorkflowEvent(
       };
       // Pending audit items commit with the update or not at all; with none (no ledger, or nothing to record) it is the plain update.
       // A cancelled transaction is a lost race like a failed condition: the caller reads the task again.
-      // Work events (U3): a pull request seen merged or closed, and any other change of the workflow, commit with this update as events.
-      const items = await withWorkEvents(dependencies, [{ Update: update }, ...extraItems]);
-      if (items.length === 1) await dependencies.documentClient.send(new UpdateCommand(update));
-      else await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: items }));
+      if (extraItems.length === 0) await dependencies.documentClient.send(new UpdateCommand(update));
+      else await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: [{ Update: update }, ...extraItems] }));
     },
     measure: (entry) => console.log(JSON.stringify({ component: "broker", ...entry })),
     ...(dependencies.audit === undefined ? {} : {

@@ -7134,6 +7134,7 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
         "Environment": {
           "Variables": {
             "AGENTX_METRICS_NAMESPACE": "AgentX/staging",
+            "AGENTX_WORK_EVENTS": "on",
             "ARTIFACT_BUCKET_NAME": {
               "Ref": "Artifacts82DD59A1",
             },
@@ -7434,6 +7435,26 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                   "dynamodb:LeadingKeys": [
                     "DEVTASK#*",
                   ],
+                },
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "State1C20CC9A",
+                  "Arn",
+                ],
+              },
+            },
+            {
+              "Action": "dynamodb:PutItem",
+              "Condition": {
+                "ForAllValues:StringLike": {
+                  "dynamodb:LeadingKeys": [
+                    "ORG#org_????????????????????#WORK_EVENTS#*",
+                  ],
+                },
+                "Null": {
+                  "dynamodb:LeadingKeys": "false",
                 },
               },
               "Effect": "Allow",

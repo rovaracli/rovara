@@ -21,7 +21,7 @@ import type { AdminReadDependencies } from "../admin-reads.js";
 import type { AuditExportClientDeps } from "../../audit/export.js";
 import type { AuditEraseDeps } from "../../audit/erase.js";
 import type { AuditRuntime } from "../../audit/outbox.js";
-import type { WorkEventsRuntime } from "../../work-events/emit.js";
+import type { WorkEventsRuntime } from "../../work-events/stream.js";
 import type { GitHubAppCredentialProvider, GitHubTokenScope } from "../../github-app.js";
 import type { CatalogCache } from "@agentx/gateway";
 import type { GitHubMcpDependencies } from "../../github-mcp.js";
