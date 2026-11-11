@@ -304,6 +304,7 @@ export * from "./spec-target.js";
 export * from "./saved-env.js";
 export * from "./saved-env-key-files.js";
 export * from "./saved-env-image.js";
+export * from "./company-image-mirror.js";
 export * from "./saved-env-build.js";
 export * from "./app-saved-env.js";
 export * from "./app-company-rules.js";
