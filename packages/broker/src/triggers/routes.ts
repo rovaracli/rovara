@@ -310,7 +310,17 @@ async function activityOf(deps: Deps, caller: AgentCaller, target: TriggerTarget
 
 // ---- writing
 
-async function putTrigger(deps: Deps, caller: AgentCaller, target: TriggerTarget, rawId: string, body: unknown): Promise<StatusReply> {
+/**
+ * While the automations switch is off (automations-gate.ts) a PUT may only turn an existing trigger off: the same target, project, spec, hook and rate, with
+ * `enabled: false`. Anything else (a create, a turn-on, a change of what the trigger is) is the 404 of an unknown path, as every other write is while it is off.
+ */
+function requireTurnOffOnly(existing: TriggerRecord | undefined, target: TriggerTarget, input: z.infer<typeof PutBodySchema>, spec: TriggerSpec): void {
+  const turnOff = existing !== undefined && input.enabled === false && targetKeyOf(existing.target) === targetKeyOf(target) && existing.project === input.project
+    && canonicalJson(existing.spec) === canonicalJson(spec) && existing.hookId === input.hookId && (input.maxRunsPerHour === undefined || input.maxRunsPerHour === existing.maxRunsPerHour);
+  if (!turnOff) throw agentXError("NOT_FOUND", "route not found");
+}
+
+async function putTrigger(deps: Deps, caller: AgentCaller, target: TriggerTarget, rawId: string, body: unknown, safetyOnly = false): Promise<StatusReply> {
   const triggerId = TriggerIdSchema.safeParse(rawId);
   if (!triggerId.success) throw notFound();
   // The ids of the project's built-in switch are the switch's: a trigger put under one would be taken for a built-in's and moved or turned off by it.
@@ -332,6 +342,7 @@ async function putTrigger(deps: Deps, caller: AgentCaller, target: TriggerTarget
     await requireTarget(deps, caller, existing.target, "manage").catch(() => { throw notFound(); });
     await requireSettingsOn(deps, caller, existing.project).catch(() => { throw notFound(); });
   }
+  if (safetyOnly) requireTurnOffOnly(existing, target, input, parsed.data);
   return change(deps, caller, {
     triggerId: triggerId.data, target, project: input.project, spec: parsed.data, hookId: input.hookId, enabled: input.enabled, maxRunsPerHour: input.maxRunsPerHour,
   }, input.requestId, `trigger-put/${targetKeyOf(target)}`, existing, existing === undefined ? "created" : "changed");
@@ -356,8 +367,13 @@ async function deleteTrigger(deps: Deps, caller: AgentCaller, target: TriggerTar
 
 // ---- a chain's or an agent's triggers
 
-async function targetRoute(deps: Deps, caller: AgentCaller, request: AdaptedHttpRequest, target: TriggerTarget, rawTrigger: string | undefined, activity: string | undefined): Promise<unknown> {
+async function targetRoute(deps: Deps, caller: AgentCaller, request: AdaptedHttpRequest, target: TriggerTarget, rawTrigger: string | undefined, activity: string | undefined, safetyOnly = false): Promise<unknown> {
   const method = request.method;
+  // The automations switch is off: a trigger's turn-off (held to that in putTrigger) and its delete only.
+  if (safetyOnly) {
+    if (rawTrigger === undefined || activity !== undefined || (method !== "PUT" && method !== "DELETE")) throw agentXError("NOT_FOUND", "route not found");
+    return method === "PUT" ? putTrigger(deps, caller, target, rawTrigger, jsonBody(request), true) : deleteTrigger(deps, caller, target, rawTrigger, jsonBody(request));
+  }
   if (rawTrigger === undefined) {
     if (method === "GET") return listTriggers(deps, caller, target);
   } else if (activity !== undefined) {
@@ -371,12 +387,12 @@ async function targetRoute(deps: Deps, caller: AgentCaller, request: AdaptedHttp
 }
 
 /** `/v1/app/chains/{id}/triggers*`, or undefined for any other path. */
-export async function routeChainTriggers(deps: Deps, caller: AgentCaller, request: AdaptedHttpRequest, url: URL): Promise<unknown> {
+export async function routeChainTriggers(deps: Deps, caller: AgentCaller, request: AdaptedHttpRequest, url: URL, options: { safetyOnly?: boolean } = {}): Promise<unknown> {
   const matched = CHAIN_TRIGGERS_PATH.exec(url.pathname);
   if (matched === null) return undefined;
   const chainId = ChainIdSchema.safeParse(matched[1]);
   if (!chainId.success) throw agentXError("NOT_FOUND", "no chain has that ID");
-  return targetRoute(deps, caller, request, { kind: "chain", chainId: chainId.data }, matched[2], matched[3]);
+  return targetRoute(deps, caller, request, { kind: "chain", chainId: chainId.data }, matched[2], matched[3], options.safetyOnly === true);
 }
 
 /** `/v1/app/agents/{id}/triggers*`, or undefined for any other path. */

@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentXError } from "@rovara-code/contracts";
 import { developerOrgKey, orgMemberKey, orgMetaKey, type OrgRole } from "@agentx/cloud-contracts";
 import { routeDeveloperRequest, type DeveloperCaller, type DeveloperRouteDependencies } from "../../packages/broker/src/aws/developer-routes.js";
-import { AUTOMATIONS_WEB_FEATURE, automationsEnabled } from "../../packages/broker/src/chains/automations-gate.js";
+import { AUTOMATIONS_WEB_FEATURE, automationsAccess, automationsEnabled } from "../../packages/broker/src/chains/automations-gate.js";
 import { AUDITOR_REFUSED } from "../../packages/broker/src/org/auditor.js";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
@@ -65,6 +65,30 @@ describe("the automations switch", () => {
     vi.stubEnv("WEB_FEATURES", "admin,chains");
     const b = bench("admin");
     for (const [method, path, body] of PATHS) expect(await b.call(method, path, body), `${method} ${path}`).toEqual({ code: "NOT_FOUND", message: "NOT_FOUND: chains are not set up in this deployment" });
+  });
+
+  it("opens exactly the safety paths while off (a chain trigger's PUT and DELETE, a chain's archive) and nothing else", () => {
+    const off = { WEB_FEATURES: "admin" };
+    const chain = "/v1/app/chains/chn_00000000000000000001";
+    expect(automationsAccess("PUT", `${chain}/triggers/ctr_aaaaaaaaaaaaaaaaaaaa`, off)).toBe("safety_only");
+    expect(automationsAccess("DELETE", `${chain}/triggers/ctr_aaaaaaaaaaaaaaaaaaaa`, off)).toBe("safety_only");
+    expect(automationsAccess("POST", `${chain}/archive`, off)).toBe("safety_only");
+    for (const [method, path] of [
+      ["POST", `${chain}/unarchive`], ["POST", `${chain}/publish`], ["POST", `${chain}/rollback`], ["PUT", `${chain}/draft`], ["PUT", `${chain}/budget`], ["PUT", `${chain}/owner`],
+      ["PUT", `${chain}/shares`], ["POST", `${chain}/runs`], ["GET", `${chain}/triggers`], ["GET", `${chain}/triggers/ctr_aaaaaaaaaaaaaaaaaaaa/activity`], ["POST", `${chain}/triggers/ctr_aaaaaaaaaaaaaaaaaaaa`],
+      ["PUT", `${chain}/triggers`], ["GET", `${chain}/archive`], ["POST", "/v1/app/chains"], ["GET", "/v1/app/chains"], ["POST", "/v1/app/chain-runs/crn_aaaaaaaaaaaaaaaaaaaa/cancel"],
+      ["GET", "/v1/app/projects/web/automations"], ["POST", `${chain}/archive/x`], ["PUT", `${chain}/triggers/ctr_a/x`],
+    ] as const) expect(() => automationsAccess(method, path, off), `${method} ${path}`).toThrow("route not found");
+    expect(automationsAccess("GET", "/v1/app/chains", { WEB_FEATURES: "chains" })).toBe("on");
+  });
+
+  it("lets the safety paths through to the chain routes while off (here no chains are set up, so they say so)", async () => {
+    vi.stubEnv("WEB_FEATURES", "admin");
+    const b = bench("admin");
+    const chain = "/v1/app/chains/chn_00000000000000000001";
+    for (const [method, path] of [["PUT", `${chain}/triggers/ctr_aaaaaaaaaaaaaaaaaaaa`], ["DELETE", `${chain}/triggers/ctr_aaaaaaaaaaaaaaaaaaaa`], ["POST", `${chain}/archive`]] as const) {
+      expect(await b.call(method, path, { requestId: "22222222-2222-4222-8222-222222222222" }), `${method} ${path}`).toEqual({ code: "NOT_FOUND", message: "NOT_FOUND: chains are not set up in this deployment" });
+    }
   });
 
   it("refuses the Auditor on every automations path, on or off, before the switch", async () => {

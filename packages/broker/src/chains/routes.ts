@@ -555,7 +555,9 @@ const CHAIN_PATH = /^\/v1\/app\/chains(?:\/([^/]+)(?:\/([a-z-]+)(?:\/([0-9]{1,6}
 /**
  * `routeChainRequest(deps, caller, request, url)`: the chain routes. A path under Plan 4's prefixes that no task has built yet answers 404 `"that isn't available yet"`.
  */
-export async function routeChainRequest(deps: ChainRouteDependencies, caller: AgentCaller, request: AdaptedHttpRequest, url: URL): Promise<unknown> {
+export async function routeChainRequest(deps: ChainRouteDependencies, caller: AgentCaller, request: AdaptedHttpRequest, url: URL, options: { safetyOnly?: boolean } = {}): Promise<unknown> {
+  // srv/automations: with the switch off only what stops an automation is served (automations-gate.ts): a trigger's turn-off or delete, and archiving a chain.
+  if (options.safetyOnly === true) return routeSafetyOnly(deps, caller, request, url);
   const cancelling = CHAIN_RUN_CANCEL_PATH.exec(url.pathname);
   if (cancelling !== null) {
     if (request.method !== "POST") throw agentXError("NOT_FOUND", "route not found");
@@ -602,6 +604,17 @@ export async function routeChainRequest(deps: ChainRouteDependencies, caller: Ag
     if (sub === "budget" && method === "PUT") return putBudget(deps, caller, chainId, body());
   }
   throw agentXError("NOT_FOUND", "route not found");
+}
+
+/** The chain routes while the automations switch is off: a trigger's turn-off and delete (triggers/routes.ts holds them to that), and an archive. Nothing else. */
+async function routeSafetyOnly(deps: ChainRouteDependencies, caller: AgentCaller, request: AdaptedHttpRequest, url: URL): Promise<unknown> {
+  const triggers = await routeChainTriggers(deps, caller, request, url, { safetyOnly: true });
+  if (triggers !== undefined) return triggers;
+  const matched = CHAIN_PATH.exec(url.pathname);
+  const parsed = ChainIdSchema.safeParse(matched?.[1]);
+  if (matched === null || matched[2] !== "archive" || matched[3] !== undefined || request.method !== "POST") throw agentXError("NOT_FOUND", "route not found");
+  if (!parsed.success) throw notFound();
+  return setArchived(deps, caller, parsed.data, jsonBody(request), true);
 }
 
 // ---- what confirming does

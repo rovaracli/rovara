@@ -235,18 +235,22 @@ async function noteFired(work: Work, trigger: TriggerRecord, started: { runId?: 
   }
 }
 
-/** What went wrong at the start, as the outcome: a code, `busy`, or (for a fault that may pass) the error itself to throw. */
-export async function refusalOf(deps: TriggerDispatchDependencies, orgId: OrgId, trigger: TriggerRecord, error: unknown): Promise<{ reason: string } | { transient: unknown }> {
+/** Marks the refusal of a start whose trigger was turned off after it matched: a pause, recorded as `skipped`, not a failure. */
+const TURNED_OFF = Symbol("trigger turned off");
+
+/** What went wrong at the start, as the outcome: a code, `busy`, or (for a fault that may pass) the error itself to throw. A trigger turned off before the start is `skipped`. */
+export async function refusalOf(deps: TriggerDispatchDependencies, orgId: OrgId, trigger: TriggerRecord, error: unknown): Promise<{ reason: string; outcome: "failed" | "skipped" } | { transient: unknown }> {
   if (!(error instanceof AgentXError)) return { transient: error };
+  if ((error as unknown as Record<symbol, unknown>)[TURNED_OFF] === true) return { reason: "trigger_turned_off", outcome: "skipped" };
   // A service that is away (`RUNTIME_UNAVAILABLE` and its kind answer 503) may be back when the vendor sends the event again.
   if (error.statusCode >= 500) return { transient: error };
-  if (BUSY_CODES.has(error.code)) return { reason: "busy" };
+  if (BUSY_CODES.has(error.code)) return { reason: "busy", outcome: "failed" };
   if (error.code === "FORBIDDEN" && trigger.target.kind === "chain") {
     // The chain's concurrency refusal has no code of its own: it is the one that leaves the chain with its most runs open.
     const chain = await deps.chains.get(orgId, trigger.target.chainId);
-    if (chain !== undefined && chain.openRuns >= CHAIN_MAX_CONCURRENT_RUNS) return { reason: "busy" };
+    if (chain !== undefined && chain.openRuns >= CHAIN_MAX_CONCURRENT_RUNS) return { reason: "busy", outcome: "failed" };
   }
-  return { reason: error.code };
+  return { reason: error.code, outcome: "failed" };
 }
 
 /** What starts the work, apart from the trigger: an event's, or a schedule's slot. The same steps start either (the owner, the payer, the version, the run's identity). */
@@ -269,7 +273,7 @@ export async function startChainFor(deps: TriggerDispatchDependencies, orgId: Or
   if (deps.chainRuns?.admission === undefined) throw agentXError("CHAIN_BUDGET_REQUIRED", "This chain can't start a run on its own here: spend limits are not enforced in this deployment.");
   // A paused automation never starts: the trigger is read again, consistently, just before the start, so a turn-off that landed after the match wins.
   const current = await deps.triggers?.get(orgId, trigger.triggerId);
-  if (current?.enabled !== true) throw agentXError("CHAIN_UNAVAILABLE", "This trigger was turned off, so it starts nothing.");
+  if (current?.enabled !== true) throw Object.assign(agentXError("CHAIN_UNAVAILABLE", "This trigger was turned off, so it starts nothing."), { [TURNED_OFF]: true });
   const chain = await deps.chains.get(orgId, trigger.target.chainId);
   if (chain === undefined) throw agentXError("NOT_FOUND", "no chain has that ID");
   const developerId = await resolveSurvivor(deps, orgId, chain.owner.kind === "member" ? chain.owner.developerId : trigger.createdBy);
@@ -389,7 +393,7 @@ async function dispatchOne(work: Work, trigger: TriggerRecord): Promise<{ outcom
       work.log("trigger_dispatch.start_failed", { orgId, triggerId: trigger.triggerId, error: errorName(refusal.transient) });
       return { transient: refusal.transient };
     }
-    return { outcome: await settle(work, trigger, { outcome: "failed", reason: refusal.reason }) };
+    return { outcome: await settle(work, trigger, { outcome: refusal.outcome, reason: refusal.reason }) };
   }
   // The start happened: whatever goes wrong in writing it down, the run is noted on the trigger and its subject, and the fault is the event's to be sent again for.
   try {

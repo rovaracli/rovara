@@ -1,4 +1,4 @@
-// srv/automations: `GET /v1/app/projects/{p}/automations`, everything that runs on its own in one project, for everyone with a role on it (owner decision 16):
+// srv/automations: `GET /v1/app/projects/{p}/automations`, everything that runs on its own in one project, for everyone with a role on it (experience review decision 16 (final-experience-proposal.md, 2026-11-10)):
 // the chains the project owns or is shared (as the chain access rules show them to the caller) and every trigger set on the project, with its last result.
 // It reads only: who may change what stays with the chain and trigger routes. A project the caller has no role on, or another org's, is the same 404 as
 // one that does not exist. A trigger's target is named only when the caller can see it; its id is shown either way, as the trigger is the project's.

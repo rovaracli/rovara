@@ -2,7 +2,7 @@
 // (`packages/broker/src/chains/routes.ts`, `packages/broker/src/triggers/routes.ts`) and the project's automations list
 // (`packages/broker/src/chains/project-automations.ts`). The run list, a run's view, its events and a step's task are Rovara Code's
 // (`ChainRunListReaderSchema` and the others in `@rovara-code/contracts`), not repeated here. Each response has a browser-safe reader (`forwardReader`).
-// Who may do what is the broker's to decide (owner decisions 16 and 92); `access` and `canEdit` only say what the screen should offer.
+// Who may do what is the broker's to decide (experience review decision 16 (final-experience-proposal.md, 2026-11-10); owner decision 92); `access` and `canEdit` only say what the screen should offer.
 import { z } from "zod";
 import {
   AGENT_DESCRIPTION_MAX, AGENT_NAME_MAX, AgentAccessLevelSchema, AgentOwnerSchema, ChainIdSchema, TRIGGER_MAX_RUNS_PER_HOUR, TRIGGER_OUTCOMES, TriggerIdSchema, TriggerSpecSchema, TriggerTargetSchema, forwardReader,
@@ -54,7 +54,7 @@ export const AutomationDeletedResponseSchema = z.object({ deleted: z.literal(tru
 export const ProjectAutomationTriggerSchema = AutomationTriggerViewSchema.extend({ targetName: z.string().optional() }).strict();
 
 /**
- * `GET /v1/app/projects/{p}/automations`: everything that runs on its own in a project, for everyone with a role on it (owner decision 16). `canEdit` is
+ * `GET /v1/app/projects/{p}/automations`: everything that runs on its own in a project, for everyone with a role on it (experience review decision 16). `canEdit` is
  * true for its maintainers and org owners and admins; a company-shared chain is still changed only by an org owner or admin (decision 92, `access`).
  */
 export const ProjectAutomationsResponseSchema = z.object({

@@ -1,4 +1,4 @@
-// srv/automations: who may read and change automations (chains and their triggers), per owner decisions 16 and 92, and what keeps an automation from
+// srv/automations: who may read and change automations (chains and their triggers), per experience review decision 16 (final-experience-proposal.md, 2026-11-10) and owner decision 92, and what keeps an automation from
 // starting. Over the trigger world (real chain, trigger, approval and run stores; a recording stand-in for Plan 3's task start), the routes called
 // directly with each kind of caller. The switch that hides the routes, and the Auditor's refusal, are tested through the broker in automations-gate.test.ts.
 import "../support/automations-on.js";
@@ -51,12 +51,12 @@ async function world(options: { admission?: boolean } = {}) {
   for (const developerId of [OWNER, DANA, MAX, API_MAINTAINER, NO_ROLE, AUDITOR]) fixtureActor(v.db, ORG_A, developerId);
   seedMaintainerGrant(v.db, ORG_A, MAX, "web");
   seedMaintainerGrant(v.db, ORG_A, API_MAINTAINER, "api");
-  // A project's chain on web, published with a run limit and a monthly budget: what decision 16 is about.
+  // A project's chain on web, published with a run limit and a monthly budget: what experience review decision 16 is about.
   const chain = await v.publish(ONE_STEP, { owner: { kind: "project", project: "web" }, accountable: { developerId: MAX }, by: DANA, budgetUsd: 50 });
-  const call = async (who: AgentCaller, method: string, path: string, body?: Record<string, unknown>): Promise<Called> => {
+  const call = async (who: AgentCaller, method: string, path: string, body?: Record<string, unknown>, options: { safetyOnly?: boolean } = {}): Promise<Called> => {
     const request = { method, path, requestId: "r", headers: {}, ...(body === undefined ? {} : { body: JSON.stringify({ requestId: crypto.randomUUID(), ...body }) }) };
     try {
-      const result = await routeChainRequest(v.routeDeps, who, request, new URL(`${CELL}${path}`));
+      const result = await routeChainRequest(v.routeDeps, who, request, new URL(`${CELL}${path}`), options);
       return result instanceof StatusReply ? { status: result.statusCode, body: result.body as Record<string, unknown> } : { status: 200, body: (result ?? {}) as Record<string, unknown> };
     } catch (error) {
       if (error instanceof AgentXError) return { status: error.statusCode, body: { code: error.code, message: error.message } };
@@ -83,7 +83,7 @@ const HIDDEN: Who[] = ["otherMaintainer", "member", "auditor", "otherOrg"];
 const EDITORS: Who[] = ["owner", "admin", "maintainer"];
 const SEE_ONLY: Who[] = ["contributor", "viewer"];
 
-describe("decision 16: an automation is visible to everyone in its project", () => {
+describe("experience review decision 16: an automation is visible to everyone in its project", () => {
   it("lets every project role read the chain, its triggers and the project's automations list; a caller with no role there, the Auditor and another org get 404", async () => {
     const w = await world();
     await w.v.seed({ target: { kind: "chain", chainId: w.chain.chainId }, enabled: false });
@@ -151,7 +151,7 @@ describe("decision 16: an automation is visible to everyone in its project", () 
   });
 });
 
-describe("decision 16: an automation is changed by its project's maintainers, org owners and admins", () => {
+describe("experience review decision 16: an automation is changed by its project's maintainers, org owners and admins", () => {
   it("lets a maintainer, the org owner and an admin save the draft, set the budget, archive and unarchive; refuses a contributor and a viewer (403), and hides it from the rest (404)", async () => {
     const w = await world();
     for (const who of EDITORS) {
@@ -328,5 +328,107 @@ describe("what keeps an automation from starting", () => {
     expect(outcomes).toMatchObject([{ triggerId: trigger.triggerId, outcome: "failed", reason: "trigger_invalid" }]);
     expect(runs(w.v)).toEqual([]);
     expect(w.v.starts).toEqual([]);
+  });
+});
+
+describe("with the automations switch off, the people who may stop an automation still can (the safety paths)", () => {
+  let counter = 0;
+  const prEvent = (): TriggerEvent => {
+    counter += 1;
+    return {
+      source: "github", type: "pull_request.opened", eventKey: `gh:pr:7:${String(counter)}:opened`, occurredAt: "2026-10-22T08:59:00.000Z", project: "web",
+      subject: { kind: "pull_request", id: `7${String(counter)}`, title: "Fix it", url: `https://github.com/acme/web/pull/7${String(counter)}` },
+      fields: { authorAssociation: ["MEMBER"] }, actor: { kind: "external", id: "alice" },
+    };
+  };
+  const OFF = { safetyOnly: true } as const;
+  /** A running trigger on the world's chain, and the body that turns exactly it off. */
+  async function running() {
+    const w = await world();
+    const trigger = await w.v.seed({ target: { kind: "chain", chainId: w.chain.chainId }, spec: PR_OPENED, createdBy: MAX });
+    const offBody = { project: "web", spec: PR_OPENED, enabled: false };
+    const dispatch = () => dispatchTriggerEvent(w.v.routeDeps as unknown as TriggerDispatchDependencies, ORG_A, prEvent());
+    return { w, trigger, offBody, dispatch, triggerPath: w.path(`/triggers/${trigger.triggerId}`) };
+  }
+
+  for (const who of ["owner", "maintainer"] as const) {
+    it(`lets the ${who} turn a running trigger off, after which dispatch starts nothing; delete it; and archive its chain`, async () => {
+      const { w, trigger, offBody, dispatch, triggerPath } = await running();
+      expect((await dispatch()).map((entry) => entry.outcome)).toEqual(["started"]);
+      const off = await w.call(WHO[who], "PUT", triggerPath, offBody, OFF);
+      expect(off.status, JSON.stringify(off.body)).toBe(200);
+      expect(await w.v.triggers.get(ORG_A, trigger.triggerId)).toMatchObject({ enabled: false });
+      expect(await dispatch()).toEqual([]);
+      expect((await w.call(WHO[who], "DELETE", triggerPath, {}, OFF)).status).toBe(200);
+      expect(await w.v.triggers.get(ORG_A, trigger.triggerId)).toBeUndefined();
+      expect((await w.call(WHO[who], "POST", w.path("/archive"), {}, OFF)).status).toBe(200);
+      expect((await w.fresh()).status).toBe("archived");
+    });
+  }
+
+  it("refuses a viewer and a contributor all of it, and hides it from someone with no role", async () => {
+    const { w, trigger, offBody, triggerPath } = await running();
+    for (const who of ["viewer", "contributor", "member", "otherOrg"] as const) {
+      const expected = who === "viewer" || who === "contributor" ? 403 : 404;
+      expect((await w.call(WHO[who], "PUT", triggerPath, offBody, OFF)).status, who).toBe(expected);
+      expect((await w.call(WHO[who], "DELETE", triggerPath, {}, OFF)).status, who).toBe(expected);
+      expect((await w.call(WHO[who], "POST", w.path("/archive"), {}, OFF)).status, who).toBe(expected);
+    }
+    expect(await w.v.triggers.get(ORG_A, trigger.triggerId)).toMatchObject({ enabled: true });
+    expect((await w.fresh()).status).toBe("active");
+  });
+
+  it("keeps every other write the unknown path's 404 while off, for an admin too: a create, a turn-on, a change of what the trigger is, a publish, an unarchive, a draft", async () => {
+    const { w, trigger, offBody, triggerPath } = await running();
+    await w.v.triggers.update({ trigger, patch: { enabled: false } });
+    const notFound = { status: 404, body: { code: "NOT_FOUND", message: "NOT_FOUND: route not found" } };
+    const tries: Array<[string, string, Record<string, unknown>]> = [
+      ["PUT", w.path(`/triggers/${ID("n")}`), { project: "web", spec: PR_OPENED, enabled: false }],
+      ["PUT", triggerPath, { ...offBody, enabled: true }],
+      ["PUT", triggerPath, { project: "web", spec: PR_OPENED }],
+      ["PUT", triggerPath, { ...offBody, spec: { ...PR_OPENED, type: "pull_request.ready_for_review" } }],
+      ["PUT", triggerPath, { ...offBody, maxRunsPerHour: 59 }],
+      ["PUT", triggerPath, { ...offBody, project: "api" }],
+      ["POST", w.path("/publish"), { expectedDraftRevision: (await w.fresh()).draftRevision }],
+      ["POST", w.path("/unarchive"), {}],
+      ["PUT", w.path("/draft"), { expectedRevision: (await w.fresh()).draftRevision, definition: ONE_STEP }],
+      ["PUT", w.path("/budget"), { monthlyUsd: 10 }],
+      ["POST", w.path("/runs"), { project: "web" }],
+      ["GET", w.path(), {}],
+      ["GET", w.path("/triggers"), {}],
+      ["GET", triggerPath, {}],
+      ["POST", triggerPath, offBody],
+      ["GET", `${triggerPath}/activity`, {}],
+      ["POST", "/v1/app/chains", { name: "New" }],
+    ];
+    for (const who of ["admin", "owner"] as const) {
+      for (const [method, path, body] of tries) expect(await w.call(WHO[who], method, path, method === "GET" ? undefined : body, OFF), `${who} ${method} ${path} ${JSON.stringify(body)}`).toEqual(notFound);
+    }
+    expect(await w.v.triggers.get(ORG_A, ID("n"))).toBeUndefined();
+    expect(await w.v.triggers.get(ORG_A, trigger.triggerId)).toMatchObject({ enabled: false, spec: PR_OPENED, maxRunsPerHour: trigger.maxRunsPerHour });
+    // The same turn-on with the switch on is a real request (the positive control).
+    expect((await w.call(WHO.admin, "PUT", triggerPath, { ...offBody, enabled: true })).status).toBe(202);
+  });
+
+  it("records a trigger that was turned off before its start as skipped, not failed", async () => {
+    const { w, trigger } = await running();
+    const deps = w.v.routeDeps as unknown as TriggerDispatchDependencies;
+    // The match read it on; it is turned off before the start: the refusal is a pause.
+    let turnedOff = false;
+    const realGet = w.v.triggers.get.bind(w.v.triggers);
+    w.v.triggers.get = async (orgId, triggerId) => {
+      const found = await realGet(orgId, triggerId);
+      if (!turnedOff && found !== undefined && triggerId === trigger.triggerId) {
+        turnedOff = true;
+        await w.v.triggers.update({ trigger: found, patch: { enabled: false } });
+        return realGet(orgId, triggerId);
+      }
+      return found;
+    };
+    const outcomes = await dispatchTriggerEvent(deps, ORG_A, prEvent());
+    expect(turnedOff).toBe(true);
+    expect(outcomes).toMatchObject([{ triggerId: trigger.triggerId, outcome: "skipped", reason: "trigger_turned_off" }]);
+    expect((await w.v.triggers.listActivity(ORG_A, trigger.triggerId)).map((entry) => [entry.outcome, entry.reason])).toEqual([["skipped", "trigger_turned_off"]]);
+    expect(w.v.db.find((item) => item["entityType"] === "CHAIN_RUN")).toEqual([]);
   });
 });

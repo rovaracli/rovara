@@ -465,7 +465,7 @@ export async function handleChainSchedule(deps: TriggerDispatchDependencies, inp
       throw refusal.transient;
     }
     await releaseClaim(deps, orgId, triggerId, taken, { keepLate: true });
-    return settle(deps, orgId, triggerId, scheduledAt, { outcome: "failed", reason: refusal.reason });
+    return settle(deps, orgId, triggerId, scheduledAt, { outcome: refusal.outcome, reason: refusal.reason });
   }
   try {
     return await settle(deps, orgId, triggerId, scheduledAt, { outcome: "started", ...started });

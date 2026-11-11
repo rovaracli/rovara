@@ -2,7 +2,7 @@
 // themselves are `evaluateOwned`, `checkShares`, `saveSharesOf` and `requireOwnerAllowed` in agents/access.ts, one implementation for both; this
 // file reads a chain's record and its shares from the chain store and words the refusals for a chain.
 //
-// srv/automations: on top of the agent rules, owner decision 16 (`automationRules`), judged on every read with the live project role: a project's chain is
+// srv/automations: on top of the agent rules, experience review decision 16 (final-experience-proposal.md, 2026-11-10) (`automationRules`), judged on every read with the live project role: a project's chain is
 // visible (`view`) to everyone with a role on that project, viewers included; changing it (`edit`, `manage`) is for maintainers of THAT project
 // (`manage_agents`) and org owners and admins, so a share never lifts anyone else above `use`. Org owners and admins are untouched (they hold `manage` on every chain of their org). A member's own chain keeps the agent rules (it has no project).
 // Owner decision 92 (a company-shared chain) is not an access level: it is held where a change is decided (routes.ts `requireOwnerOrAdminToMoveSharedChain`,
@@ -48,7 +48,7 @@ async function evaluateChain(lookups: Lookups<ChainAccessDeps>, chain: ChainReco
 }
 
 /**
- * Owner decision 16 for a caller who is not an org owner or admin (see the top of this file), applied to what the agent rules gave (`access`): on a project's
+ * Experience review decision 16 for a caller who is not an org owner or admin (see the top of this file), applied to what the agent rules gave (`access`): on a project's
  * chain, any role on that project raises it to `view`, and anyone without `manage_agents` there is capped at `use` (a share never lets them change it).
  * The role is read live on every call (the request's `Lookups`), never cached across requests.
  */
@@ -64,7 +64,7 @@ async function automationRules(lookups: Lookups<ChainAccessDeps>, chain: ChainRe
 /**
  * The access `caller` holds on `chain`: an org owner or admin `manage`; its member owner `manage`; for a project's chain a `manage_agents` holder
  * `manage` and a contributor `use`; the shares that name the caller (a project's capped by their role there); otherwise `none`. An archived chain
- * is capped at `view` for everyone without `manage`. Then owner decision 16: any role on the owning project gives `view`, and only its maintainers (and
+ * is capped at `view` for everyone without `manage`. Then experience review decision 16: any role on the owning project gives `view`, and only its maintainers (and
  * org owners and admins) hold more than `use`.
  */
 export async function chainAccess(deps: ChainAccessDeps, caller: AgentCaller, chain: ChainRecord): Promise<AgentAccessLevel> {
