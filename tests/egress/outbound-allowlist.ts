@@ -6,7 +6,7 @@
 
 export type OutboundCategory =
   | "customer-integration" | "model-provider" | "agent-egress-default" | "aws-service-principal" | "aws-endpoint" | "audit-timestamp" | "rovara-operated"
-  | "deploy-supply-chain" | "benchmark-tooling" | "provenance-text" | "detector-comparison" | "host-refusal-list" | "doc-link" | "reserved-example";
+  | "deploy-supply-chain" | "company-image-registry" | "benchmark-tooling" | "provenance-text" | "detector-comparison" | "host-refusal-list" | "doc-link" | "reserved-example";
 
 export interface HostRule {
   hosts: readonly string[];
@@ -48,6 +48,10 @@ export const CATEGORY_TITLES: Readonly<Record<OutboundCategory, { title: string;
   "deploy-supply-chain": {
     title: "Fetched when the install is built or deployed",
     enterprise: "Reached by the release pipeline, the installer or the CLI at build or deploy time, not by a running install. The release bundle (task N2) carries every image the install runs, so a sealed install pulls nothing from these at run time.",
+  },
+  "company-image-registry": {
+    title: "Registries company-approved test images are copied from",
+    enterprise: "The broker's lookup of an image tag contacts these registries (and a company's own extra registries, added by a company admin and kept per company) only when an admin names or approves an image, and only the host the allowlist names for each registry, after the name has resolved to public addresses only. A worker never contacts them. An install whose control plane cannot reach the public internet cannot use images from these registries.",
   },
   "benchmark-tooling": {
     title: "Benchmark tooling",
@@ -102,13 +106,17 @@ export const HOST_RULES: readonly HostRule[] = [
     hosts: ["api.anthropic.com", "api.openai.com", "auth.openai.com", "chatgpt.com", "openrouter.ai"],
   },
   {
-    category: "agent-egress-default", why: "The default list of package, image and OS mirror hosts agent machines may resolve.", files: DEFAULT_ALLOW,
+    category: "agent-egress-default", why: "The default list of package, image and OS mirror hosts agent machines may resolve. (Docker Hub's registry host is also named by the company image reader, which folds it into docker.io, and by the tag lookup that asks it.)", files: [...DEFAULT_ALLOW, "packages/broker/src/test-env/company-images.ts", "packages/broker/src/test-env/company-image-resolver.ts"],
     hosts: [
       "crates.io", "*.crates.io", "mcr.microsoft.com", "*.data.mcr.microsoft.com", "ghcr.io", "*.ghcr.io", "*.githubusercontent.com", "rubygems.org", "*.rubygems.org",
       "archive.ubuntu.com", "ports.ubuntu.com", "security.ubuntu.com", "deb.debian.org", "security.debian.org", "dl-cdn.alpinelinux.org", "auth.docker.io", "registry-1.docker.io",
       "production.cloudflare.docker.com", "production.cloudfront.docker.com", "docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com",
       "files.pythonhosted.org", "pypi.org", "proxy.golang.org", "sum.golang.org", "registry.yarnpkg.com", "repo1.maven.org",
     ],
+  },
+  {
+    category: "company-image-registry", why: "Docker Hub, the default registry of a company-approved test image (`postgres:18` is `docker.io/library/postgres:18`), and the other spelling of it the reader folds into `docker.io` (the admin screen shows it as Docker Hub).", files: ["packages/broker/src/test-env/company-images.ts", "packages/ui/src/screens/admin/how-we-work/CompanyImagesScreen.tsx"],
+    hosts: ["docker.io", "index.docker.io"],
   },
   {
     category: "agent-egress-default", why: "Maven Central: in the default list, and the usual wrapper download host the environment detector compares a repository's wrapper properties with.", files: [...DEFAULT_ALLOW, "packages/worker/src/env-detect/java.ts"],

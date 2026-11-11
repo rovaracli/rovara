@@ -22,6 +22,7 @@ import type { ProjectRole } from "@rovara-code/contracts";
 import type { AgentId } from "@rovara-code/contracts";
 import type { OrgId } from "@rovara-code/contracts";
 import type { OrgResolver } from "../../packages/broker/src/org/resolve.js";
+import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { MAYA, OMAR, createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import { fakeModelAccess } from "../support/fake-model-access.js";
 import { TEST_ORG } from "../support/orgs.js";
@@ -737,6 +738,8 @@ describe("what a start reads, whom it is for and what it refuses until the step 
   it("stores the snapshot, the origin and the agent of a workflow a Slack thread starts", async () => {
     const t = await setup();
     const thread = { teamId: SLACK_TEAM, channelId: SLACK_CHANNEL, threadTs: "1695500000.000031" };
+    // A tenant-resolving install serves a Slack person only as an explicit, current member (0.5.14, switch `sm`).
+    seedMembership(t.db, developerIdForSlackUser(MAYA.slackUserId!), { orgId: TEST_ORG, role: "member" });
     const started = await t.handler({ source: "agentx.slack-ingress", action: "start-workflow", thread, userId: MAYA.slackUserId, instructions: "Add a greeting", workflowPath: "QUICK", requestId: randomUUID() });
     expect(started.statusCode, started.body).toBe(200);
     const taskId = String((JSON.parse(started.body) as { taskId: string }).taskId);

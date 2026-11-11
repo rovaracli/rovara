@@ -1,6 +1,7 @@
 export * from "./access-policies.js";
 export * from "./audit.js";
 export * from "./edition.js";
+export * from "./errors.js";
 export * from "./sso.js";
 export * from "./developer.js";
 export * from "./developer-tasks-node.js";

@@ -30,7 +30,7 @@ Enterprise: An Enterprise install calls the customer's own Bedrock through a VPC
 
 Enterprise: These names are in the default DNS firewall allow-list that agent machines use, which today is the same list on every install that runs the firewall. An Enterprise install should replace it with a list built from its own settings (registries, code host, build system); that is a follow-up (the list is not yet built from settings).
 
-- The default list of package, image and OS mirror hosts agent machines may resolve. (only in `vendor/rovara-code/packages/contracts/src/default-allow-domains.ts`)
+- The default list of package, image and OS mirror hosts agent machines may resolve. (Docker Hub's registry host is also named by the company image reader, which folds it into docker.io, and by the tag lookup that asks it.) (only in `vendor/rovara-code/packages/contracts/src/default-allow-domains.ts`, `packages/broker/src/test-env/company-images.ts`, `packages/broker/src/test-env/company-image-resolver.ts`)
   `*.crates.io`, `*.data.mcr.microsoft.com`, `*.ghcr.io`, `*.githubusercontent.com`, `*.rubygems.org`, `archive.ubuntu.com`, `auth.docker.io`, `crates.io`, `deb.debian.org`, `dl-cdn.alpinelinux.org`, `docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com`, `files.pythonhosted.org`, `ghcr.io`, `mcr.microsoft.com`, `ports.ubuntu.com`, `production.cloudflare.docker.com`, `production.cloudfront.docker.com`, `proxy.golang.org`, `pypi.org`, `registry-1.docker.io`, `registry.yarnpkg.com`, `repo1.maven.org`, `rubygems.org`, `security.debian.org`, `security.ubuntu.com`, `sum.golang.org`
 - Maven Central: in the default list, and the usual wrapper download host the environment detector compares a repository's wrapper properties with. (only in `vendor/rovara-code/packages/contracts/src/default-allow-domains.ts`, `packages/worker/src/env-detect/java.ts`)
   `repo.maven.apache.org`
@@ -81,6 +81,13 @@ Enterprise: Reached by the release pipeline, the installer or the CLI at build o
   `token.actions.githubusercontent.com`
 - The upstream registry of the image pull-through cache rule. (only in `infra/lib/access.ts`)
   `public.ecr.aws`
+
+## Registries company-approved test images are copied from
+
+Enterprise: The broker's lookup of an image tag contacts these registries (and a company's own extra registries, added by a company admin and kept per company) only when an admin names or approves an image, and only the host the allowlist names for each registry, after the name has resolved to public addresses only. A worker never contacts them. An install whose control plane cannot reach the public internet cannot use images from these registries.
+
+- Docker Hub, the default registry of a company-approved test image (`postgres:18` is `docker.io/library/postgres:18`), and the other spelling of it the reader folds into `docker.io` (the admin screen shows it as Docker Hub). (only in `packages/broker/src/test-env/company-images.ts`, `packages/ui/src/screens/admin/how-we-work/CompanyImagesScreen.tsx`)
+  `docker.io`, `index.docker.io`
 
 ## Benchmark tooling
 

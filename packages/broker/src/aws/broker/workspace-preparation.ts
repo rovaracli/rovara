@@ -317,7 +317,8 @@ export async function heldPreparationDispatch(
  */
 export async function slackRequesterRole(dependencies: AwsBrokerDependencies, identity: AuthenticatedIdentity): Promise<ProjectRole> {
   const slack = identity.slack;
-  if (slack === undefined) return "contributor";
+  // Not a Slack request: no Slack person to rank, so no role is made up for one.
+  if (slack === undefined) throw agentXError("FORBIDDEN", "this request does not come from a Slack person");
   return slackRequesterProjectRole(dependencies, requireOrgId(identity.orgId), slack.requester.userId, slack.binding.projectName);
 }
 
@@ -340,7 +341,10 @@ export async function slackRequesterProjectAccess(dependencies: AwsBrokerDepende
     grant = await getMembership(dependencies, orgId, id, projectName);
     if (grant !== undefined) break;
   }
-  return { role: effectiveProjectRole({ developerId, orgRole }, grant, true) ?? "contributor", standing };
+  // No default role: a person the rules give no project role to (the Auditor) is refused, never made a contributor.
+  const role = effectiveProjectRole({ developerId, orgRole }, grant, true);
+  if (role === undefined) throw agentXError("FORBIDDEN", "your company role has no access to this project in Slack");
+  return { role, standing };
 }
 
 /**

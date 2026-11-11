@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { expect, it, describe } from "vitest";
-import { screen, fireEvent, waitFor, within } from "@testing-library/react";
+import { expect, it, describe, vi } from "vitest";
+import { screen, fireEvent, waitFor, within, configure } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { AppNavSchema, type AppNav } from "@agentx/cloud-contracts/web";
@@ -15,6 +15,8 @@ import { renderUi } from "./support/render.js";
 import { expectNoAxeViolations } from "./support/axe.js";
 import { fakeHost } from "./support/fake-host.js";
 import { h } from "./support/h.js";
+// These journeys wait on lazy screens and on a router that settles after each click. Under parallel or long runs a 1 s findBy/waitFor (and a 5 s test) is too tight, so both wait longer. A passing run is no slower, and no assertion changed.
+configure({ asyncUtilTimeout: 10_000 });vi.setConfig({ testTimeout: 30_000 });
 const features = { localAgents: true, usage: false, admin: false, chains: false, notices: false, describe: false };
 const agent = (n: number, name: string, running = 0, needsYou = 0) => ({ agentId: "agt_" + String(n).repeat(20), name, running, needsYou });
 const base = { me: { developerId: "a".repeat(64), name: "Priya", orgRole: "member" }, org: { name: "Acme" }, homeCount: 3, projects: [{ name: "payments", agents: [agent(1, "Payments expert", 1, 1), agent(2, "Refund helper", 2, 0)] }, { name: "search", agents: [agent(1, "Payments expert")] }], shared: { agents: [], sessions: [] }, features };

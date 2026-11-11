@@ -1,5 +1,5 @@
 import { AgentOrigin } from "./AgentOrigin.js";
-import { useEffect, useRef, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
 import { Link, useLocation, useParams } from "react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { AgentShareInputSchema, LEVEL_WORDS, StepSettingsSchema, ROVARA_CODE_AGENT_ID } from "@agentx/cloud-contracts/web";
@@ -26,18 +26,21 @@ import { AgentStartDialog } from "./AgentStartDialog.js";
 import { agentAllows } from "./agent-access.js";
 import { DesktopBuilderNote, useIsPhone } from "./agent-phone.js";
 import { useAgentMembers, failureText } from "./agent-context.js";
+import { useAgentPublishOn } from "./publish-flags.js";
+import { FavouriteStar, ProfilePublishing } from "./publish-lazy.js";
 export function AgentProfileScreen({ id: supplied, contextual = false }: { id?: string; contextual?: boolean }) {
- const params = useParams(), id = supplied ?? params.id ?? "", read = useAgent(id), query = useQueryClient(), members = useAgentMembers(read.data !== undefined && !read.isError), [versionsOpen, setVersionsOpen] = useState(false), [workOpen, setWorkOpen] = useState(false), [spendOpen, setSpendOpen] = useState(false), phone = useIsPhone(), location = useLocation();
+ const params = useParams(), id = supplied ?? params.id ?? "", read = useAgent(id), query = useQueryClient(), members = useAgentMembers(read.data !== undefined && !read.isError), [versionsOpen, setVersionsOpen] = useState(false), [workOpen, setWorkOpen] = useState(false), [spendOpen, setSpendOpen] = useState(false), phone = useIsPhone(), location = useLocation(), publishOn = useAgentPublishOn();
  if (read.isPending) return <Skeleton label="Loading workflow" />;
  if (read.error instanceof ApiError && read.error.status === 404) return <NotFound />;
  if (read.isError || read.data === undefined) return <section><h1 tabIndex={-1}>Workflow unavailable</h1><p role="alert"><VisibleText text={failureText(read.error, "Couldn't load this workflow. Try again.")} /></p><Button onClick={() => { void read.refetch(); }}>Try again</Button></section>;
  const profile = read.data, agent = profile.agent, recipe = profile.current?.recipe, editable = !agent.builtin && agentAllows(agent, "edit"), names = new Map(members.isError ? [] : members.data?.members.map(member => [member.developerId, member.name]));
  const owner = agent.builtin ? "Your company" : agent.owner?.kind === "project" ? String(agent.owner.project) : agent.owner?.kind === "member" ? names.get(String(agent.owner.developerId)) ?? "Team member" : "Owner unavailable";
  return <section className="rv-agent-profile">{phone && !contextual && <Link className="rv-button rv-button-quiet rv-agent-back" to={paths.directory + location.search}>All agents</Link>}{!contextual ? <PageHeader title={agent.name} description={agent.description} focusOnMount /> : <p><VisibleText text={agent.description} /></p>}
- <div className="rv-actions">{agent.status === "active" && !agent.disabled && agentAllows(agent, "use") && agent.agentId !== ROVARA_CODE_AGENT_ID && <AgentStartDialog agent={agent} />}{editable && <><Link className="rv-button" to={paths.agentEdit(agent.agentId)}>Edit</Link><Link className="rv-button" to={paths.agentEdit(agent.agentId) + "?panel=test"}>Test</Link></>}<AgentShareDialog agent={agent} /></div>{editable && <DesktopBuilderNote />}
+ <div className="rv-actions">{agent.status === "active" && !agent.disabled && agentAllows(agent, "use") && agent.agentId !== ROVARA_CODE_AGENT_ID && <AgentStartDialog agent={agent} />}{editable && <><Link className="rv-button" to={paths.agentEdit(agent.agentId)}>Edit</Link><Link className="rv-button" to={paths.agentEdit(agent.agentId) + "?panel=test"}>Test</Link></>}<AgentShareDialog agent={agent} />{publishOn && <Suspense fallback={null}><FavouriteStar agentId={agent.agentId} name={agent.name} /></Suspense>}</div>{editable && <DesktopBuilderNote />}
  {/* PLAN6: Rovara Code's dedicated start stays with its excluded project-code flow. */}
  {agent.disabled && <p>Turned off in your company</p>}{agent.status === "archived" && <p>Archived</p>}
  <p className="rv-muted">Owned by <VisibleText text={owner} />{profile.current && <> · Version {profile.current.version}</>}</p>{agent.accountable && <p>Accountable: <VisibleText text={names.get(agent.accountable.developerId) ?? "Team member"} /></p>}
+ {publishOn && <Suspense fallback={null}><ProfilePublishing profile={profile} initialAsk={new URLSearchParams(location.search).get("publish") === "1"} initialTarget={new URLSearchParams(location.search).get("to") ?? undefined} /></Suspense>}
  <ProfileUpdate agent={agent} />
  <section aria-labelledby="rv-agent-purpose"><h2 id="rv-agent-purpose">What it does</h2>{profile.current?.problem && <p role="alert"><VisibleText text={profile.current.problem} /></p>}{recipe === undefined ? <p>No readable published method yet.</p> : <>
  {recipe.instructions.map((layer, index) => <section key={index} className="rv-agent-section"><h3>From <VisibleText text={layer.agentName} /></h3><p className="rv-agent-instructions"><VisibleText text={layer.text} /></p></section>)}

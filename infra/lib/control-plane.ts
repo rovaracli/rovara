@@ -1380,6 +1380,8 @@ export class ControlPlaneStack extends Stack {
       brokerSettings.add("setupRecipes", signInParameters.setupRecipesEnabled.valueAsString);
       // Saved environments (SH25): one switch, a packed setting. Off ("0") unless the operator sets the parameter to "1".
       brokerSettings.add("savedEnv", signInParameters.savedEnvEnabled.valueAsString);
+      // Slack explicit membership (0.5.14, switch `sm`): "1" by default, "warn" or "0" (today's behaviour). A packed setting.
+      brokerSettings.add("slackExplicitMembers", signInParameters.slackExplicitMembers.valueAsString);
       // Script tokens (UX5b): one switch, a packed setting. Off ("0") unless the operator sets the parameter to "1".
       brokerSettings.add("scriptTokens", signInParameters.scriptTokensEnabled.valueAsString);
       // Standing instructions (lane I1): one switch, a packed setting. Off ("0") unless the operator sets the parameter to "1".

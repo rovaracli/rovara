@@ -86,7 +86,7 @@ export function RemoveMemberDialog({ company, member, self, people, checking, st
     <section aria-labelledby={`${reasonId}-ends`}><p id={`${reasonId}-ends`}><strong>Ends now</strong></p><ul>{preview.ends.map(line => <li key={line}><VisibleText text={line} /></li>)}</ul></section>
     <section aria-labelledby={`${reasonId}-reassign`}><p id={`${reasonId}-reassign`}><strong>You'll need to reassign</strong></p>
      {duties.length === 0 ? <p>Nothing else was theirs to reassign.</p> : <ul>{duties.map(line => <li key={line}>{line}</li>)}</ul>}
-     <p><Link to="/app/admin/people/roles">Roles</Link> · <Link to="/app/admin/projects">Projects</Link> · <Link to="/app/admin/invites">Invites</Link></p></section>
+     <p className="rv-admin-dialog-links"><Link to="/app/admin/people/roles">Roles</Link> · <Link to="/app/admin/projects">Projects</Link> · <Link to="/app/admin/invites">Invites</Link></p></section>
     {preview.warnings.map(line => <p key={line} className="rv-muted"><VisibleText text={line} /></p>)}
    </>}
    {message && <p role="alert">{message}</p>}

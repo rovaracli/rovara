@@ -3,6 +3,7 @@
 // ingress and the interactivity handler.
 import { randomUUID } from "node:crypto";
 import { DeleteCommand, GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { SLACK_NOT_A_MEMBER_NOTICE } from "@agentx/cloud-contracts";
 import { REQUEST_ROUTE_KINDS, SlackMessageTimestampSchema, SlackThreadSchema, SlackUserIdSchema, routeChoiceLabel, suggestionCardMessage, suggestionCardText, workflowChoiceKey, workflowChoicePut, workflowChoiceQuestionUpdate, workflowRequestId, type RequestSuggestion, type SlackThread } from "@rovara-code/contracts";
 import { PROJECT_TASKS_DISABLED_TEXT, WORKFLOW_PATH_ANSWER_ACTION, WORKFLOW_PATH_FULL_ACTION, WORKFLOW_PATH_QUICK_ACTION } from "../developer/workflow-actions.js";
 import { answeredWorkflowCard } from "../developer/workflow-messages.js";
@@ -118,7 +119,7 @@ export function workflowChosenNotice(userId: string, path: WorkflowPath): string
 }
 
 /** What a person hears when their Slack account belongs to no member of the company: it is their account that is not recognised, not the channel (QA6-15). */
-export const SLACK_ACCOUNT_NOT_LINKED_NOTICE = "I can't match your Slack account to a Rovara member, so I can't start work for you. Link it once: sign in to Rovara, open your account menu, choose Link your Slack account, then mention me again.";
+export const SLACK_ACCOUNT_NOT_LINKED_NOTICE = SLACK_NOT_A_MEMBER_NOTICE;
 
 /** Why a task could not start, in plain words; anything unexpected carries `reference` (the Slack event ID) for an admin. */
 export function workflowStartFailureNotice(code: string, reference: string): string {

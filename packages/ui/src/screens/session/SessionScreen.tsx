@@ -5,6 +5,7 @@ import type { ReadAppNav, SessionAnchorRef } from "@agentx/cloud-contracts/web";
 import { createSessionApi, useSession, useSessionTimeline } from "../../api/sessions.js";
 import { ApiError } from "../../api/errors.js";
 import { useAppHost } from "../../host.js";
+import { isWorkingAgreementOn } from "../agreement/agreement-flags.js";
 import { PRESENCE_HEARTBEAT_SECONDS } from "../../constants.js";
 import { createRealtimeClient } from "../../realtime/client.js";
 import { createNoticeInvalidator } from "../../realtime/invalidate.js";
@@ -70,7 +71,7 @@ export function SessionScreen() {
  {selected && currentPart?.revision !== selected.revision && <p className="rv-muted">This discussion refers to an earlier version.</p>}
  {timeline.loading ? <Skeleton label="Loading conversation" /> : timeline.error ? <p role="alert"><VisibleText text={timeline.error instanceof ApiError ? timeline.error.message : "Couldn't load the conversation. Close and reopen to try again."} /></p> : <Conversation editDrafts={editDrafts[id]} onEditDraftChange={(messageId, draft) => setEditDrafts(old => { const next = { ...old[id] };if (draft === undefined) delete next[messageId];else next[messageId] = draft;return { ...old, [id]: next }; })} agent={agent} messages={timeline.messages} events={timeline.events} meId={nav?.me.developerId} onEdit={session.you.actions.includes("comment") ? edit : undefined} onDelete={remove} onReload={async messageId => (await timeline.reloadMessages()).find(message => message.messageId === messageId)} />}{timeline.hasMore && <Button busy={timeline.loadingMore} onClick={() => { void timeline.loadMore(); }}>Load more conversation</Button>}<Composer autoFocus={selected !== undefined} agent={agent} actions={selected === undefined ? session.you.actions : session.you.actions.filter(action => action !== "steer")} onSend={send} sending={sending} drafts={drafts[draftKey] ?? { comment: "", steer: "" }} onDraftChange={(kind, text) => setDrafts(old => ({ ...old, [draftKey]: { ...old[draftKey] ?? { comment: "", steer: "" }, [kind]: text } }))} /></>}</Dialog>;
  const designPanel = session.body.kind === "task" && typeof session.body.task === "object" && session.body.task !== null && "taskId" in session.body.task && typeof session.body.task.taskId === "string" ? <TaskDesignPanel session={session} taskId={session.body.task.taskId} /> : null;
- const workspace = <Workspace session={session} onComment={discuss} designRetryAbove={session.body.kind === "task"} />;
+ const workspace = <Workspace session={session} onComment={discuss} designRetryAbove={session.body.kind === "task"} agreement={isWorkingAgreementOn(host)} />;
  const banners = <><MoneyBanners session={session} />{connection === "reconnecting" && <p className="rv-muted">Reconnecting. Showing the last update.</p>}</>;
  // The phone order of the leading header (owner decision 40): the lead (its "can I approve?" line first), the decision, then the facts, then the work and its evidence collapsed. The DOM has this order, so a screen reader reads what the eye sees.
  if (phoneOrder) return <section ref={root} className="rv-session" data-lead="phone"><SessionHeader session={session} onAction={() => undefined} lead={<TaskLead session={session} />} detailsBelow />{banners}{designPanel}<SessionDetails session={session} onAction={() => undefined} controls={controls} />

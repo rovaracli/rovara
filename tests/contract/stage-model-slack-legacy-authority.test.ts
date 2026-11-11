@@ -45,10 +45,14 @@ it("checks the bound channel again for runtime fallback without browser auth",as
 });
 
 it("does not give a tenant-resolving install the single-org implicit enrollment path",async()=>{
+ // This is about the turn authority (a cloud install never enrolls a Slack person implicitly). The requester rule's own switch `sm` is off here so the thread's workspace is made as it was; slack-explicit-members.test.ts covers the switch.
+ const saved=process.env.SLACK_EXPLICIT_MEMBERS;process.env.SLACK_EXPLICIT_MEMBERS="0";
+ try{
  const h=createAuditedSlackBroker({extra:{cloud:true,orgResolver:async()=>TEST_ORG}});await registerSlackProject(h.handler);
  const workspace=await ensureWorkspace(h.handler,thread,user),workspaceId=String(workspace.body.workspaceId);markReady(h.db,workspaceId);
  const conversation=await serviceCall(h.handler,thread,user,"POST",`/v1/service/workspaces/${workspaceId}/conversations`,{}),conversationId=(conversation.body.conversation as {id:string}).id;
  const response=await serviceCall(h.handler,thread,user,"POST",`/v1/service/workspaces/${workspaceId}/tasks`,{requestId:randomUUID(),conversationId,prompt:"Fix"});expect(response).toMatchObject({status:403,body:{error:{code:"MODEL_NOT_ALLOWED"}}});
+ }finally{if(saved===undefined)delete process.env.SLACK_EXPLICIT_MEMBERS;else process.env.SLACK_EXPLICIT_MEMBERS=saved;}
 });
 for(const change of ["removed","banned","other-org","identity","binding","viewer"] as const)it(`fences an implicit Slack ${change} change between read and commit`,async()=>{
  const h=await fixture();const {DeveloperSignInStore}=await import("../../packages/broker/src/developer/store.js"),{TransactWriteCommand}=await import("@aws-sdk/lib-dynamodb");

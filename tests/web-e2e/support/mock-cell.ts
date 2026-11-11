@@ -31,6 +31,7 @@ import { FIXTURE_ORG, FIXTURE_DEVELOPER, FIXTURE_SESSION } from "../../web/suppo
 import { scenario } from "./scenarios.js";
 import { workAnswer } from "./work-mock.js";
 import { setSpendingVariant, spendingAnswer } from "./spending-mock.js";
+import { healthAnswer, resetHealth, setHealthVariant } from "./health-mock.js";
 import { howWeWorkMock, resetHowWeWork } from "./how-we-work-mock.js";
 import { lessonsMock, resetLessons, resetTaskLessons, setLessonsPaused, setRepoRetire, setDuplicateLesson, setPresetProposal, setSourceEditing, setTrialLessons, taskLessonsMock } from "./lessons-mock.js";
 import { intakeHomeCards, intakeMock, resetIntake, showTicketOnHome } from "./intake-mock.js";
@@ -38,6 +39,7 @@ import { resetTestEnvironment, testEnvironmentMock } from "./test-environment-mo
 import { learningMock, learningSettingsMock, lockLearning, resetLearning, overviewLearning, homeSuggestionCards } from "./learning-mock.js";
 import { companyPolicyMock, resetCompanyPolicy } from "./company-policy-mock.js";
 import { homeV2Mock } from "./home-mock.js";
+import { projectSetupMock } from "./project-setup-mock.js";
 import { mockCellOrigin, mockCellPort, SLOT_ENV } from "./port.js";
 const origin = mockCellOrigin(), directory = resolve(".test-build/web-e2e/tls-" + (process.env[SLOT_ENV] ?? "0")); // one directory per mock cell process: several start at once, and none may read a half-written key
 mkdirSync(directory, { recursive: true });
@@ -83,13 +85,14 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
  if (url.pathname === "/__mock/preset-proposal" && method === "POST") { setPresetProposal();json(200, { ok: true });return; }
  if (url.pathname === "/__mock/duplicate-lesson" && method === "POST") { setDuplicateLesson();json(200, { ok: true });return; }
  if (url.pathname === "/__mock/ticket-on-home" && method === "POST") { showTicketOnHome();json(200, { ok: true });return; }
- if (url.pathname === "/__mock/scenario" && method === "POST") { let body = "";for await (const chunk of request) { body += String(chunk);if (body.length > 4096) throw new Error("Mock body limit."); }const input = JSON.parse(body) as { name?: unknown };if (typeof input.name !== "string") throw new Error("Invalid mock scenario.");current = scenario(input.name);adminMemberName = "Maya";adminDirectory = createAdminDirectory();if (current.name === "admin") adminDirectory.seedLaneB();adminLoseCreateAck = false;adminFailAfterWrite = false;adminReadFailures = 0;resetHowWeWork();resetLearning();resetLessons();resetTaskLessons();resetIntake();resetCompanyPolicy();taskPage.reset();onboardingConnected=false;onboardingProject=undefined;onboardingDraft="none";resetTestEnvironment();revoked = false;expired = false;refusedSignIn = false;requests.length = 0;json(200, { ok: true });return; }
+ if (url.pathname === "/__mock/scenario" && method === "POST") { let body = "";for await (const chunk of request) { body += String(chunk);if (body.length > 4096) throw new Error("Mock body limit."); }const input = JSON.parse(body) as { name?: unknown };if (typeof input.name !== "string") throw new Error("Invalid mock scenario.");current = scenario(input.name);adminMemberName = "Maya";adminDirectory = createAdminDirectory();if (current.name === "admin") adminDirectory.seedLaneB();adminLoseCreateAck = false;adminFailAfterWrite = false;adminReadFailures = 0;resetHealth();resetHowWeWork();resetLearning();resetLessons();resetTaskLessons();resetIntake();resetCompanyPolicy();taskPage.reset();onboardingConnected=false;onboardingProject=undefined;onboardingDraft="none";resetTestEnvironment();revoked = false;expired = false;refusedSignIn = false;requests.length = 0;json(200, { ok: true });return; }
  if (url.pathname === "/__mock/learning-lock" && method === "POST") { lockLearning();json(200, { ok: true });return; }
  if (url.pathname === "/__mock/task-learning" && method === "POST") { taskPage.learn();json(200, { ok: true });return; }
  if (url.pathname === "/__mock/task-read-only" && method === "POST") { taskPage.readOnly();json(200, { ok: true });return; }
  if (url.pathname === "/__mock/live-state" && method === "POST" && current.live !== undefined) { let body = "";for await (const chunk of request) body += String(chunk);const input = JSON.parse(body) as { step: string; revision: number };current.live = current.live.map(tile => LiveTileSchema.parse({ ...tile, step: input.step, updatedAt: "2026-10-23T12:" + String(input.revision).padStart(2, "0") + ":00.000Z" }));current.changes = [{ type: "session.updated", sessionId: current.live[0]!.sessionId, revision: input.revision, at: "2026-10-23T12:00:00.000Z", sk: "live-" + input.revision }];json(200, { ok: true });return; }
  if (url.pathname === "/__mock/auth" && method === "POST") { let body = "";for await (const chunk of request) body += String(chunk);const state = JSON.parse(body) as { expired?: boolean; refused?: boolean };expired = state.expired === true;refusedSignIn = state.refused === true;json(200, { ok: true });return; }
  if (url.pathname === "/__mock/session-state" && method === "POST" && current.session !== undefined) { let body = "";for await (const chunk of request) body += String(chunk);const changes = JSON.parse(body) as Record<string, unknown>;current.session = SessionViewSchema.parse({ ...current.session, ...changes });json(200, { ok: true });return; }
+ if (url.pathname === "/__mock/health" && method === "POST" && current.name === "admin") { setHealthVariant(url.searchParams.get("variant"));json(200, { ok: true });return; }
  if (url.pathname === "/__mock/spending" && method === "POST" && current.name === "admin") { setSpendingVariant(url.searchParams.get("variant"));json(200, { ok: true });return; }
  if (url.pathname === "/__mock/admin-fail-after-write" && method === "POST" && current.name === "admin") { adminFailAfterWrite = true;json(200, { ok: true });return; }
  if (url.pathname === "/__mock/admin-damage-invite" && method === "POST" && current.name === "admin") { adminDirectory.damageInvite();json(200, { ok: true });return; }
@@ -111,6 +114,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
  if (url.pathname === "/__mock/requests") { json(200, requests);return; }
  if (await homeV2Mock({ url, method, json, scenario: current, record: () => undefined, body: async () => { let text = "";for await (const chunk of request) text += String(chunk);return JSON.parse(text) as unknown; } })) return;
  const evidence: { method: string; path: string; body?: unknown } = { method, path: url.pathname };requests.push(evidence);
+ if (current.name === "onboarding" && await projectSetupMock({ url, method, json, scenario: current, record: value => { evidence.body = value; }, body: async () => { let text = "";for await (const chunk of request) text += String(chunk);return text === "" ? {} : JSON.parse(text) as unknown; } }, { get: () => onboardingProject, set: value => { onboardingProject = value; } })) return;
  if(url.pathname.startsWith("/review/"+TASK_PAGE_FIXTURE_ID+"/task")){
  let body:string|undefined;if(method==="POST"){body="";for await(const chunk of request)body+=String(chunk);evidence.body=JSON.parse(body) as unknown;}
  const result=await taskPage.web({method,path:url.pathname,headers,requestId:"mock-task-page",...(body===undefined?{}:{body})},url);response.writeHead(result.statusCode,result.headers);response.end(result.body);return;
@@ -138,6 +142,8 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
  if (url.pathname.startsWith("/v1/web/") || url.pathname === "/v1/auth/browser/sign-out") {
  if (url.pathname.startsWith("/v1/web/") && !webRouteAllowed(method, url.pathname)) { json(404, { error: { code: "NOT_FOUND", message: "Not found." } });return; }
  const webCaller = await authenticateWebRequest(deps, { method, path: url.pathname, headers, requestId: "mock-request" });
+ // Health and readiness journey: fixed answers for its reads, only after a test chose a variant.
+ if (current.name === "admin" && method === "GET") { const health = healthAnswer(url);if (health !== undefined) { json(health.status, health.body);return; } }
  // B7/B11 exercise reviewed lifecycle routes against the persisted transaction/audit table.
  if (current.name === "admin" && ((method === "GET" && /^\/v1\/web\/projects\/[^/]+\/(?:archive|restore)-preview$/.test(url.pathname)) || (method === "POST" && /^\/v1\/web\/projects\/[^/]+\/reviewed-(?:archive|restore)$/.test(url.pathname)))) {
   let body: unknown;if (method === "POST") { let raw = "";for await (const chunk of request) { raw += String(chunk);if (raw.length > 4096) throw new Error("Mock body limit."); }body = JSON.parse(raw) as unknown;evidence.body = body; }

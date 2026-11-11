@@ -10,7 +10,8 @@ import { withEnvironmentLock } from "../environments/lock.js";
 import type { ParameterStore } from "../environments/parameter-store.js";
 import { readEnvironmentSettings, writeEnvironmentSettings, type EnvironmentSettings } from "../environments/settings.js";
 import { assertAuditLockNotLowered } from "../deploy/answer-schemas.js";
-import { updateStackParameters } from "../deploy/parameter-update.js";
+import type { ChangeSetChange } from "../deploy/deployer.js";
+import { updateStackParameters, type ParameterChange } from "../deploy/parameter-update.js";
 import { checkAlertWebhook, storeAlertWebhook, webhookDisplay } from "../init/answers.js";
 import type { InitSecrets } from "../init/context.js";
 import { readInstallAnswers, writeInstallAnswers } from "../init/install-state.js";
@@ -357,9 +358,13 @@ async function recordTeamRecordOptions(services: ConfigServices, env: string, va
   });
 }
 
-export async function runConfigSet(services: ConfigServices, env: string, input: { key: string; value?: string; valueSource?: SecretSource; yes: boolean }): Promise<{ changed: boolean }> {
+export async function runConfigSet(services: ConfigServices, env: string, input: { key: string; value?: string; valueSource?: SecretSource; yes: boolean; preview?: boolean }): Promise<{ changed: boolean; previewed?: boolean }> {
   const entry = configKey(input.key);
   const { target } = entry;
+  // --preview shows a stack update's change set and never applies it; the other kinds of setting have no change set to show.
+  if (input.preview === true && (target.kind === "control-plane-setting" || target.kind === "chatgpt-setting" || target.kind === "settings" || entry.teamRecord === true)) {
+    throw agentXError("CONFIG_INVALID", `--preview shows a stack update's change set, and ${entry.key} does not change a stack that way; nothing changed`);
+  }
   if (target.kind === "control-plane-setting") {
     if (input.value === undefined) throw agentXError("CONFIG_INVALID", `give the new value: agentx config set ${entry.key} <value>`);
     return setThroughChange(services, env, entry, { kind: "set_workspace_limits", [target.field]: Number(entry.parse(input.value)) },
@@ -399,6 +404,10 @@ export async function runConfigSet(services: ConfigServices, env: string, input:
       return { changed: false };
     }
     // The stack already runs this model, but an earlier set stopped before recording it.
+    if (input.preview === true) {
+      services.write(`${entry.key} is already ${value} on the stack; a real run would record it in the settings and install answers. Preview only; nothing was applied.`);
+      return { changed: false, previewed: true };
+    }
     const holder = (await services.identity.get()).arn;
     return withEnvironmentLock({ store: services.store, env, holder, command: `config set ${entry.key}`, now: services.now }, async () => {
       await recordModel(services, env, role, value);
@@ -408,7 +417,8 @@ export async function runConfigSet(services: ConfigServices, env: string, input:
   }
   // The audit ledger's lock only moves up: refused here, before anything is asked or recorded (updateStackParameters checks again).
   if (target.parameter === AUDIT_LOCK_PARAMETER) assertAuditLockNotLowered(await currentValue(services, env, settings, entry), value);
-  const session = await recordingSession(services, env, entry, STACK_SIGN_IN_MS, input.yes);
+  const preview = input.preview === true;
+  const session = preview ? undefined : await recordingSession(services, env, entry, STACK_SIGN_IN_MS, input.yes);
   if (role !== undefined) await checkModel(services, env, settings, role, value);
   if (entry.fallbackModel === true && value !== MODEL_FALLBACK_NONE) await checkFallbackModel(services, env, settings, entry.key, value);
   const roleArn = settings.access?.cloudFormationRoleArn;
@@ -420,19 +430,24 @@ export async function runConfigSet(services: ConfigServices, env: string, input:
     let unrecorded: Error | undefined;
     let confirmed = false;
     let changed = false;
+    let previewed = false;
     const done: string[] = [];
+    const show = (stackName: string, parameters: ParameterChange[], changes: ChangeSetChange[]): void => {
+      for (const change of parameters) services.write(`${entry.key}: ${change.name} ${change.from} -> ${change.to} on ${stackName}`);
+      if (parameters.some((change) => change.name === AUDIT_LOCK_PARAMETER && change.to === "production")) services.write(AUDIT_LOCK_PRODUCTION_MEANING);
+      for (const change of changes) services.write(`  ${change.action} ${change.logicalId} (${change.type})${change.replacement === "True" ? " [replacement]" : ""}`);
+    };
     for (const [index, where] of targets.entries()) {
       // A stack that already has the value (an earlier run finished the other one) is left alone.
       if (currents[index] === value) continue;
       const stackName = environmentStackName(env, where.part);
-      let result: { changed: boolean };
+      let result: { changed: boolean; previewed?: true };
       try {
         result = await updateStackParameters({
           cloudFormation: services.cloudFormation, stackName, roleArn, changes: { [where.parameter]: value }, label: "config",
+          ...(preview ? { preview: { show: ({ parameters, changes }: { parameters: ParameterChange[]; changes: ChangeSetChange[] }) => { show(stackName, parameters, changes); } } } : {}),
           confirm: async ({ parameters, changes }) => {
-            for (const change of parameters) services.write(`${entry.key}: ${change.name} ${change.from} -> ${change.to} on ${stackName}`);
-            if (parameters.some((change) => change.name === AUDIT_LOCK_PARAMETER && change.to === "production")) services.write(AUDIT_LOCK_PRODUCTION_MEANING);
-            for (const change of changes) services.write(`  ${change.action} ${change.logicalId} (${change.type})${change.replacement === "True" ? " [replacement]" : ""}`);
+            show(stackName, parameters, changes);
             // One yes covers every stack the key sets.
             const requestedAt = input.yes || confirmed ? undefined : iso(services.now());
             if (!(input.yes || confirmed || await services.prompter.confirm(`Apply this change to ${stackName}?`, { defaultValue: false }))) return false;
@@ -459,9 +474,11 @@ export async function runConfigSet(services: ConfigServices, env: string, input:
         if (done.length > 0) services.write(`Warning: ${entry.key} is now ${value} on ${done.join(" and ")}, but not on ${stackName}; run the same agentx config set again to finish it.`);
         throw error;
       }
+      if (result.previewed === true) { previewed = true; continue; }
       done.push(stackName);
       changed ||= result.changed;
     }
+    if (previewed) return { changed: false, previewed: true };
     // After a yes, updateStackParameters either changed the stack or threw.
     if (changed) await finishRecording(services, entry, recording, { outcome: "applied" });
     if (changed && target.parameter === AUDIT_LOCK_PARAMETER) await recordAuditLock(services, env, value);

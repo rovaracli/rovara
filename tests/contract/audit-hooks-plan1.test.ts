@@ -97,6 +97,8 @@ describe("a publication callback records pull_request.opened", () => {
     const reconcile = brokerInput.githubPullRequests.reconcilePullRequest as ReturnType<typeof vi.fn>;
     reconcile.mockResolvedValue({ number: 7, url: PR_URL, reconciled: false });
     await registerSlackProject(handler);
+    // A tenant-resolving install serves a Slack person only as an explicit, current member (0.5.14, switch `sm`).
+    if (extra.orgResolver !== undefined) seedMembership(db, developerIdForSlackUser(user), { orgId: TEST_ORG, role: "member" });
     // M47 requires an independent, durable system bootstrap event. Publication assertions below scope to their action.
     if (extra.orgResolver === undefined) expect(capture.recordedBy("spending.policy_seeded")).toEqual([expect.objectContaining({ orgId: singleOrgIdForEnv(TEST_ENV), target: { kind: "spend_policy", id: "task_stop" } })]);
     const workspace = await ensureWorkspace(handler, thread, user);

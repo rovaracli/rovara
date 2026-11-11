@@ -20,3 +20,23 @@
 :root .rv-app-shell.rv-nav-v2 .rv-shell-main{padding-bottom:calc(56px + 28px + env(safe-area-inset-bottom))}
 :root:has(.rv-tabbar) .rv-toast{bottom:calc(56px + 16px + env(safe-area-inset-bottom))}
 }
+/* Company switcher (switch in company-flags.ts). Every rule below needs an element only the switcher renders (a company button, menu or list, or the gate), so with the switch off none of it applies. */
+.rv-company-button{display:inline-flex;align-items:center;gap:6px;min-height:44px;max-width:100%;padding:0 10px;margin:0 -10px;border:0;border-radius:var(--rv-radius-sm);background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer}
+.rv-company-button:hover{background:var(--rv-bg-sunken)}
+.rv-company-chevron{flex:none;font-size:.75em;line-height:1}
+.rv-company-menu{min-width:min(280px,calc(100vw - 24px));max-width:calc(100vw - 24px)}
+.rv-company-item{align-items:center}
+.rv-company-text{display:flex;flex-direction:column;min-width:0;text-align:left}
+.rv-company-name{overflow-wrap:anywhere;font-weight:600}
+.rv-company-role{font-size:var(--rv-font-sm);color:var(--rv-text-muted)}
+.rv-company-check{flex:none;display:inline-block;min-width:1.25em;text-align:center;color:var(--rv-accent-text)}
+.rv-company-error{margin:var(--rv-space-2) var(--rv-space-3);font-size:var(--rv-font-sm);max-width:36ch}
+.rv-company-list{margin:0 0 var(--rv-space-5,24px)}
+.rv-company-list h2{font-size:var(--rv-font-sm);letter-spacing:.06em;text-transform:uppercase;color:var(--rv-text-muted);font-weight:600;margin:0 0 var(--rv-space-2,8px)}
+.rv-company-list ul{list-style:none;margin:0;padding:0;display:grid;gap:2px}
+.rv-company-row{display:flex;align-items:center;justify-content:space-between;gap:var(--rv-space-3,12px);width:100%;min-height:44px;padding:var(--rv-space-2,8px) var(--rv-space-3,12px);border:0;border-radius:var(--rv-radius-sm);background:transparent;color:var(--rv-text);font:inherit;text-align:left;cursor:pointer}
+.rv-company-row:hover{background:var(--rv-bg-sunken)}
+.rv-company-row[aria-current=true]{background:var(--rv-bg-sunken)}
+.rv-company-gate{max-width:560px;display:grid;gap:var(--rv-space-4,16px)}
+.rv-company-gate h1{margin:0}
+.rv-company-gate-actions{display:flex;flex-wrap:wrap;gap:var(--rv-space-3,12px)}
