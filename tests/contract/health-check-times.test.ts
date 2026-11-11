@@ -99,14 +99,14 @@ describe("reading the times", () => {
       github: { checked: true, checkedAt: new Date(NOW - 90_000).toISOString(), ageSeconds: 90, result: "failed" },
       modelSource: { checked: true, checkedAt: new Date(NOW - 3 * 3600_000).toISOString(), ageSeconds: 10_800, result: "unknown" },
       // The main model ran two minutes ago; the last fallback was 26 hours ago, outside the 24-hour window.
-      modelUse: { checked: true, windowHours: 24, usedMain: true, usedFallback: false, lastMainAt: minutesAgo(2), lastMainAgeSeconds: 120, lastFallbackAt: new Date(NOW - 26 * 3600_000).toISOString(), lastFallbackAgeSeconds: 93_600, lastFallbackReason: "DEFAULT_MODEL_UNAVAILABLE" },
+      modelUse: { checked: true, windowHours: 24, fallbackCount: 0, usedMain: true, usedFallback: false, lastMainAt: minutesAgo(2), lastMainAgeSeconds: 120, lastFallbackAt: new Date(NOW - 26 * 3600_000).toISOString(), lastFallbackAgeSeconds: 93_600, lastFallbackReason: "DEFAULT_MODEL_UNAVAILABLE" },
     });
   });
 
   it("says a fallback was used inside the window", async () => {
     const t = table();
     await recordModelUse({ ...t.writer, now: () => NOW - 3600_000 }, A, { kind: "fallback", reason: "CONFIGURED_FALLBACK" });
-    expect((await read(t, A, adminA)).modelUse).toEqual({ checked: true, windowHours: 24, usedMain: false, usedFallback: true, lastFallbackAt: new Date(NOW - 3600_000).toISOString(), lastFallbackAgeSeconds: 3600, lastFallbackReason: "CONFIGURED_FALLBACK" });
+    expect((await read(t, A, adminA)).modelUse).toEqual({ checked: true, windowHours: 24, fallbackCount: 1, usedMain: false, usedFallback: true, lastFallbackAt: new Date(NOW - 3600_000).toISOString(), lastFallbackAgeSeconds: 3600, lastFallbackReason: "CONFIGURED_FALLBACK" });
   });
 
   it("reads a damaged item as never checked, never as a time", async () => {
@@ -453,5 +453,129 @@ describe("the browser may make this one read and nothing else under org/health-o
     for (const path of ["org/health-observations/x", "org/health-observations/", "org/health-observations/slack"]) {
       expect(webRouteAllowed("GET", `/v1/web/${path}`), path).toBe(false);
     }
+  });
+});
+
+// ---- refreshing a stale Slack or GitHub observation when the page reads (and the fallback count)
+
+describe("the read checks stale Slack and GitHub observations again", () => {
+  const probes = (overrides: Record<string, unknown> = {}) => {
+    const calls = { slack: 0, github: 0 };
+    return { calls, probes: {
+      slackAuthCheck: async () => { calls.slack += 1; return { ok: true as const, teamId: "T1" }; }, slackTeamId: "T1",
+      githubInstallations: async () => { calls.github += 1; return 2; }, probeTimeoutMs: 100, writeTimeoutMs: 200, ...overrides,
+    } };
+  };
+  const readAt = (t: ReturnType<typeof table>, p: ReturnType<typeof probes>["probes"], now = NOW, org: OrgId = A, id = adminA) =>
+    readOrgHealthObservations({ ...t.deps, now: () => now, probes: p }, t.caller(org, id), { expectedOrgId: org });
+
+  it("runs each probe once when the observation was never made, stores the answer and returns it fresh", async () => {
+    const t = table(), p = probes();
+    const answer = await readAt(t, p.probes);
+    expect(p.calls).toEqual({ slack: 1, github: 1 });
+    expect(answer.slack).toEqual({ checked: true, checkedAt: new Date(NOW).toISOString(), ageSeconds: 0, result: "ok" });
+    expect(answer.github).toEqual({ checked: true, checkedAt: new Date(NOW).toISOString(), ageSeconds: 0, result: "ok" });
+    expect(t.db.get(orgSettingsKey(A, "HEALTH_SLACK_PROBE"))).toMatchObject({ orgId: A, checkedAt: new Date(NOW).toISOString(), result: "ok" });
+    expect(answer.modelSource).toEqual(NEVER);
+  });
+
+  it("runs the probe again when the stored observation is older than 15 minutes, and not when it is younger", async () => {
+    const t = table(), p = probes();
+    await recordHealthCheck({ ...t.writer, now: () => NOW - 14 * 60_000 }, A, "slack", "failed");
+    await recordHealthCheck({ ...t.writer, now: () => NOW - 16 * 60_000 }, A, "github", "failed");
+    const answer = await readAt(t, p.probes);
+    expect(p.calls).toEqual({ slack: 0, github: 1 });
+    expect(answer.slack).toMatchObject({ result: "failed", ageSeconds: 840 });
+    expect(answer.github).toMatchObject({ result: "ok", ageSeconds: 0 });
+    expect(t.db.get(orgSettingsKey(A, "HEALTH_GITHUB_CHECK"))).toMatchObject({ result: "ok" });
+  });
+
+  it("runs no probe when both are fresh, and none for a feature that is not set up", async () => {
+    const t = table(), p = probes();
+    await recordHealthCheck({ ...t.writer, now: () => NOW - 60_000 }, A, "slack", "ok");
+    await recordHealthCheck({ ...t.writer, now: () => NOW - 60_000 }, A, "github", "ok");
+    await readAt(t, p.probes);
+    expect(p.calls).toEqual({ slack: 0, github: 0 });
+    const bare = table();
+    expect((await readAt(bare, {})).slack).toEqual(NEVER);
+  });
+
+  it("runs one probe per company and feature for a burst of reads", async () => {
+    const t = table(), p = probes();
+    const answers = await Promise.all(Array.from({ length: 8 }, () => readAt(t, p.probes)));
+    expect(p.calls).toEqual({ slack: 1, github: 1 });
+    expect(answers.filter((answer) => answer.slack?.checked === true)).not.toHaveLength(0);
+    // The page load that follows, still in the period, finds the stored answer and runs nothing.
+    expect((await readAt(t, p.probes, NOW + 60_000)).slack).toMatchObject({ checked: true, ageSeconds: 60, result: "ok" });
+    expect(p.calls).toEqual({ slack: 1, github: 1 });
+  });
+
+  it("answers the old value when a probe is slow, and does not probe again inside the period", async () => {
+    const t = table(), p = probes({ slackAuthCheck: () => new Promise(() => undefined) });
+    await recordHealthCheck({ ...t.writer, now: () => NOW - 20 * 60_000 }, A, "slack", "failed");
+    const started = Date.now();
+    const answer = await readAt(t, p.probes);
+    expect(Date.now() - started).toBeLessThan(1500);
+    expect(answer.slack).toMatchObject({ checked: true, result: "failed", ageSeconds: 1200 });
+    expect(t.db.get(orgSettingsKey(A, "HEALTH_SLACK_PROBE"))).toMatchObject({ result: "failed", checkedAt: new Date(NOW - 20 * 60_000).toISOString() });
+    // A burst after the timeout, in the same period, kicks nothing else; after the period the probe is tried again.
+    let again = 0;
+    const second = { ...p.probes, slackAuthCheck: async () => { again += 1; return { ok: true as const, teamId: "T1" }; } };
+    await readAt(t, second, NOW + 5 * 60_000);
+    expect(again).toBe(0);
+    await readAt(t, second, NOW + 16 * 60_000);
+    expect(again).toBe(1);
+  });
+
+  it("records what a probe found: a wrong team or a refused token is failed, an unreachable Slack and a thrown probe are unknown, no installation is failed", async () => {
+    const results = async (overrides: Record<string, unknown>) => { const t = table(); const a = await readAt(t, probes(overrides).probes); return [a.slack, a.github].map((o) => (o as { result: string }).result); };
+    expect(await results({ slackAuthCheck: async () => ({ ok: true as const, teamId: "T2" }) })).toEqual(["failed", "ok"]);
+    expect(await results({ slackAuthCheck: async () => ({ ok: false as const, error: "token_revoked" }) })).toEqual(["failed", "ok"]);
+    expect(await results({ slackAuthCheck: async () => ({ ok: false as const, error: "slack_unavailable" }) })).toEqual(["unknown", "ok"]);
+    expect(await results({ slackAuthCheck: async () => { throw new Error("boom"); } })).toEqual(["unknown", "ok"]);
+    expect(await results({ githubInstallations: async () => 0 })).toEqual(["ok", "failed"]);
+  });
+
+  it("probes only for a live owner or admin, only the caller's company, and a refused read runs nothing", async () => {
+    const t = table(), p = probes();
+    await expect(readAt(t, p.probes, NOW, A, adminB)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(readOrgHealthObservations({ ...t.deps, probes: p.probes }, t.caller(A, adminA), { expectedOrgId: B })).rejects.toMatchObject({ code: "CHANGE_STALE" });
+    expect(p.calls).toEqual({ slack: 0, github: 0 });
+    await readAt(t, p.probes);
+    expect(t.db.find((item) => String(item.pk).includes(B) && String(item.sk).startsWith("HEALTH_"))).toEqual([]);
+    expect(t.db.get(orgSettingsKey(A, "HEALTH_SLACK_PROBE"))).toMatchObject({ orgId: A });
+  });
+});
+
+describe("the 24-hour fallback count", () => {
+  it("counts each fallback in the window and starts again at one after the window ends", async () => {
+    const t = table();
+    let now = NOW;
+    const w = { documentClient: t.db, tableName: "state", now: () => now };
+    const count = async () => ((await readOrgHealthObservations({ ...t.deps, now: () => now }, t.caller(A, adminA), { expectedOrgId: A })).modelUse as { fallbackCount?: number }).fallbackCount;
+    await recordModelUse(w, A, { kind: "fallback", reason: "MODEL_CALL_REFUSED" });
+    expect(await count()).toBe(1);
+    now += 3600_000; await recordModelUse(w, A, { kind: "fallback", reason: "MODEL_CALL_REFUSED" });
+    now += 3600_000; await recordModelUse(w, A, { kind: "fallback", reason: "CONFIGURED_FALLBACK" });
+    expect(await count()).toBe(3);
+    // 23 hours after the window opened, still the same window; a main-model run changes no count.
+    now = NOW + 23 * 3600_000; await recordModelUse(w, A, { kind: "main" });
+    expect(await count()).toBe(3);
+    // Past 24 hours the count reads zero until the next fallback, which opens a new window at one.
+    now = NOW + 25 * 3600_000;
+    expect(await count()).toBe(0);
+    await recordModelUse(w, A, { kind: "fallback", reason: "MODEL_CALL_REFUSED" });
+    expect(await count()).toBe(1);
+    now += 3600_000; await recordModelUse(w, A, { kind: "fallback", reason: "MODEL_CALL_REFUSED" });
+    expect(await count()).toBe(2);
+  });
+
+  it("keeps each company's count to itself, and reads a main-only company as zero", async () => {
+    const t = table();
+    await recordModelUse(t.writer, B, { kind: "fallback", reason: "MODEL_CALL_REFUSED" });
+    await recordModelUse(t.writer, A, { kind: "main" });
+    const a = await read(t, A, adminA), b = await read(t, B, adminB);
+    expect(a.modelUse).toMatchObject({ fallbackCount: 0, usedFallback: false });
+    expect(b.modelUse).toMatchObject({ fallbackCount: 1, usedFallback: true });
   });
 });
