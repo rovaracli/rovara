@@ -85,7 +85,7 @@ it("shows three repeated notices as one plain line with no model id visible, and
  const f = setup(withFallbacks([note, note, note]), "light", true);
  const region = await screen.findByRole("region", { name: "Model changes" });
  const line = region.querySelector(".rv-model-fallback-line")!;
- expect(line.textContent).toBe("Used a smaller model for plan check: Opus unavailable.");
+ expect(line.textContent).toBe("Used a different model for plan check: Opus unavailable.");
  expect(region.querySelectorAll("p")).toHaveLength(1);
  const details = region.querySelector("details")!;
  expect(details.open).toBe(false);

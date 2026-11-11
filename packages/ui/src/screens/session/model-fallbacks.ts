@@ -9,14 +9,12 @@ export const fallbackSentence = (note: ModelFallbackNote): string => "Used " + n
 
 /**
  * Experience lane (task page): the repeats of one fallback collapse into one plain line; the raw model ids and the repeats stay behind a "Details" disclosure.
- * A friendly model name is read only from the id's own family word (opus, sonnet, haiku, gpt); any other id is never guessed at ("the preferred model").
+ * No size or order is claimed (a newer Sonnet can be the stronger model): the line says "a different model". A friendly model name is read only from the id's own family word (opus, sonnet, haiku, gpt); any other id is never guessed at ("the preferred model").
  */
-const FAMILY_RANK: Readonly<Record<string, number>> = { opus: 3, sonnet: 2, haiku: 1 };
 const FAMILY_NAME: Readonly<Record<string, string>> = { opus: "Opus", sonnet: "Sonnet", haiku: "Haiku", gpt: "GPT" };
-export const modelFamily = (id: string | null): string | undefined => id === null ? undefined : /(opus|sonnet|haiku|gpt)/iu.exec(id)?.[1]?.toLowerCase();
+export const modelFamily = (id: string | null): string | undefined => id === null ? undefined : /(?:^|[^a-z])(opus|sonnet|haiku|gpt)(?![a-z])/iu.exec(id)?.[1]?.toLowerCase();
 export const friendlyModel = (id: string | null): string | undefined => { const family = modelFamily(id); return family === undefined ? undefined : FAMILY_NAME[family]; };
 const stageLower = (stage: StageId | "unknown"): string => stage === "unknown" ? "a step" : stageName(stage).toLowerCase();
-const rank = (id: string | null): number | undefined => { const family = modelFamily(id); return family === undefined ? undefined : FAMILY_RANK[family]; };
 
 export interface CollapsedFallbacks {
  /** The one plain line, with no model id. */
@@ -31,8 +29,6 @@ export function collapseFallbacks(notes: readonly ModelFallbackNote[]): Collapse
  for (const note of notes) { const key = [note.stage, note.used, note.wanted ?? ""].join("\u0000"), seen = distinct.get(key);if (seen === undefined) distinct.set(key, { note, count: 1 });else seen.count += 1; }
  const rows = [...distinct.values()], stages = [...new Set(rows.map(row => row.note.stage))].map(stageLower);
  const first = rows[0]!.note, wantedName = friendlyModel(first.wanted === first.used ? null : first.wanted);
- const smaller = rows.length === 1 && rank(first.used) !== undefined && rank(first.wanted) !== undefined && rank(first.used)! < rank(first.wanted)!;
- const what = rows.length === 1 ? (smaller ? "a smaller model" : "a different model") : "a different model";
  const why = rows.length === 1 ? (wantedName === undefined ? "the preferred model was unavailable" : wantedName + " unavailable") : "the preferred models were unavailable";
- return { line: "Used " + what + " for " + stages.join(" and ") + ": " + why, details: rows.map(row => ({ stage: row.note.stage, sentence: fallbackSentence(row.note), count: row.count })) };
+ return { line: "Used a different model for " + stages.join(" and ") + ": " + why, details: rows.map(row => ({ stage: row.note.stage, sentence: fallbackSentence(row.note), count: row.count })) };
 }

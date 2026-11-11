@@ -9,6 +9,8 @@ import { workspaceTask, type ReadTask } from "./workspace-types.js";
 export function goTo(targetId: string): void {
  const target = document.getElementById(targetId);
  if (target === null) return;
+ // A target inside a closed disclosure (the phone order keeps the work behind one) is opened first, or scrolling and focus would do nothing.
+ for (let parent = target.parentElement; parent !== null; parent = parent.parentElement) if (parent instanceof HTMLDetailsElement && !parent.open) parent.open = true;
  target.scrollIntoView?.({ block: "center" });target.setAttribute("tabindex", "-1");target.focus();
 }
 

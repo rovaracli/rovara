@@ -1,5 +1,5 @@
 import { TaskStatusReaderSchema, budgetRaisers, taskStatusFromSession } from "@agentx/contracts/web";
-import type { ReadDecision } from "../../api/decisions.js";
+import { mayApproveHere, type ReadDecision } from "../../api/decisions.js";
 import type { ReadSession } from "./SessionHeader.js";
 import type { ReadTask } from "./workspace-types.js";
 
@@ -58,7 +58,8 @@ export function plainState(status: LeadStatus, task: ReadTask | undefined): Plai
  if (open.some(item => item.ci === "failing")) return { label: "Checks failed", tone: "danger" };
  if (open.some(item => item.ci === "pending")) return { label: "Checking", tone: "info" };
  if (open.length > 0 && open.every(item => item.review !== "approved" && item.ci !== "failing")) return { label: "Ready for review", tone: "attention" };
- return base;
+ // The merge read says it is not ready and none of the specific reasons above is the one (a conflicted branch, no tracking yet): never the green "Ready to merge" (Merge says "Not ready to merge" here).
+ return { label: "Not ready to merge", tone: "attention" };
 }
 
 /** The pending decision cards for this task, in the order the server gave them. */
@@ -95,7 +96,7 @@ export function approveLine(cards: readonly ReadDecision[]): string | undefined 
  if (card === undefined) return undefined;
  const extra = cards.length > 1 ? " (" + String(cards.length) + " decisions)" : "";
  if (card.risk === "high") return "You can decide this on its card · " + riskWords("high") + ", needs a recent sign-in" + extra;
- if (card.actions.some(action => action.kind === "approve")) return "✓ You can approve · " + riskWords(card.risk) + extra;
+ if (mayApproveHere(card)) return "✓ You can approve · " + riskWords(card.risk) + extra;
  return "You can decide this on its card · " + riskWords(card.risk) + extra;
 }
 
@@ -109,9 +110,10 @@ export function taskLead({ session, task, status, cards }: LeadInput): Lead {
  if (AUTOMATIC.has(status.state)) who = "Rovara";
  else if (status.state === "paused_budget") who = session.cost.paused?.confirmUrl !== undefined ? "You" : upperFirst(budgetRaisers(session.cost.paused?.scope));
  else if (status.state === "merged" || (status.state === "closed" && status.retryable !== true)) who = undefined;
+ else if (BASE[status.state] === undefined) who = undefined;
  else if (card !== undefined) who = "You";
- else if (owner) who = "You";
- else if (status.state === "failed" && (mayAct.includes("retry") || mayAct.includes("close"))) who = "You";
+ // Without a card of mine only an action I am offered makes it me: retry or close on a stopped task. An owner is not assumed to be the one a waiting state needs.
+ else if ((status.state === "failed" || status.state === "finished_run" || status.retryable === true) && (mayAct.includes("retry") || mayAct.includes("close"))) who = "You";
  if (card !== undefined && (status.state === "needs_you" || status.state === "ready_to_merge" || status.state === "planning" || status.state === "reviewing_design")) {
   next = "Decide: " + card.title + (cards.length > 1 ? " (and " + String(cards.length - 1) + " more)" : "");
   why ??= sentence(card.recommended.why);
@@ -119,18 +121,19 @@ export function taskLead({ session, task, status, cards }: LeadInput): Lead {
   if (who === "Rovara") who = "You";
  } else if (status.state === "ready_to_merge" && task?.merge !== undefined) action = { label: "Go to Merge", targetId: MERGE_SECTION_ID };
  // Nobody named: say so plainly, only where someone has to act. The broker checks who may on every press.
- if (who === undefined && (status.state === "needs_you" || status.state === "ready_to_merge" || status.state === "failed")) who = "Someone with permission";
+ if (who === undefined && BASE[status.state] !== undefined && (status.state === "needs_you" || status.state === "ready_to_merge" || status.state === "failed")) who = "Someone with permission";
+ if (state.label === "Not ready to merge" && why === undefined && task?.merge?.message !== undefined && task.merge.message !== "") why = sentence(task.merge.message);
  if (state.label === "Changes requested" && why === undefined) why = "A reviewer asked for changes.";
  if (state.label === "Checks failed" && why === undefined) why = "Checks on the pull request failed.";
  if (next === "") next = state.label;
  return { state, next: sentence(next), who, why, action, approve: approveLine(cards) };
 }
 
-/** A raw worker word read as a plain state (the broker writes "Worker status: SUCCEEDED" into the task's events). Any other line is returned unchanged. */
-const WORKER_WORDS: Readonly<Record<string, string>> = { STARTING: "Starting", RUNNING: "Running", SUCCEEDED: "Finished", FAILED: "Failed", CANCELLED: "Cancelled", INTERRUPTED: "Interrupted", CLOSED: "Closed", PENDING: "Waiting to start", QUEUED: "Waiting to start" };
-export const WORKER_STATUS_UNKNOWN = "Status changed";
+/** A raw worker word read as a plain state (the broker writes "Worker status: SUCCEEDED" into the task's events). Any other line, and a word this build does not know, is returned unchanged. */
+const WORKER_WORDS: Readonly<Record<string, string>> = { STARTING: "Starting", RUNNING: "Running", SUCCEEDED: "Run finished", FAILED: "Failed", CANCELLED: "Cancelled", INTERRUPTED: "Interrupted", CLOSED: "Closed", PENDING: "Waiting to start", QUEUED: "Waiting to start" };
 export function plainEventText(text: string): string {
  const match = /^Worker status:\s*([A-Za-z_]+)\s*\.?$/u.exec(text.trim());
  if (match === null) return text;
- return WORKER_WORDS[match[1]!.toUpperCase()] ?? WORKER_STATUS_UNKNOWN;
+ // A word this build does not know keeps the original line: the raw word may be what a person needs (TIMED_OUT).
+ return WORKER_WORDS[match[1]!.toUpperCase()] ?? text;
 }

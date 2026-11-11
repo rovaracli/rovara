@@ -45,10 +45,10 @@ it("with a pending decision of mine: next step is to decide it, who is You, why 
  const lead = taskLead({ session, task: undefined, status: leadStatus(session), cards: cardsFor([decision()], TASK_ID) });
  expect(lead).toMatchObject({ state: { label: "Needs a decision" }, next: "Decide: Approve the plan", who: "You", why: "The plan is waiting for approval", action: { label: "Go to the decision", targetId: "decision-approve_plan-" + TASK_ID }, approve: "✓ You can approve · medium risk" });
 });
-it("without a card, an owner is the one the server's next step is written for; anyone else gets the others' words and nobody is named", () => {
+it("without a card, an owner gets the owner's words but is not assumed to be the one who must act; anyone else gets the others' words; nobody is named", () => {
  const display = { state: "needs_you", reason: "questions about the request need answers", next: "Answer them on the task page.", nextOthers: "The task owner answers them on the task page." };
  const owner = taskLead({ session: taskSession(display, {}, { owner: true }), task: undefined, status: leadStatus(taskSession(display)), cards: [] });
- expect(owner).toMatchObject({ next: "Answer them on the task page", who: "You", why: "Questions about the request need answers", action: undefined, approve: undefined });
+ expect(owner).toMatchObject({ next: "Answer them on the task page", who: "Someone with permission", why: "Questions about the request need answers", action: undefined, approve: undefined });
  const other = taskSession(display, {}, { owner: false, actions: ["watch"] });
  const lead = taskLead({ session: other, task: undefined, status: leadStatus(other), cards: [] });
  expect(lead).toMatchObject({ next: "The task owner answers them on the task page", who: "Someone with permission" });
@@ -65,7 +65,7 @@ it("a finished task names nobody and has no action; a ready merge points at the 
  const merged = taskSession({ state: "merged", next: "Nothing; this task is complete." });
  expect(taskLead({ session: merged, task: undefined, status: leadStatus(merged), cards: [] })).toMatchObject({ state: { label: "Merged" }, who: undefined, action: undefined, next: "Nothing; this task is complete" });
  const ready = taskSession({ state: "ready_to_merge", next: "Press Merge." }, {}, { owner: true });
- expect(taskLead({ session: ready, task: mergeTask({}, true), status: leadStatus(ready), cards: [] }).action).toEqual({ label: "Go to Merge", targetId: "task-merge" });
+ expect(taskLead({ session: ready, task: mergeTask({}, true), status: leadStatus(ready), cards: [] })).toMatchObject({ action: { label: "Go to Merge", targetId: "task-merge" }, who: "Someone with permission" });
 });
 it("the can-I-approve line: a medium card with an approve action, a high card on its card, a card without approve, several, and none", () => {
  expect(approveLine([decision({ risk: "medium" })])).toBe("✓ You can approve · medium risk");
@@ -80,11 +80,13 @@ it("ignores a card that is answered or belongs to another task", () => {
  expect(cardsFor(undefined, TASK_ID)).toEqual([]);
 });
 it("rewrites the raw worker word to a plain state and leaves every other line alone", () => {
- expect(plainEventText("Worker status: SUCCEEDED")).toBe("Finished");
+ expect(plainEventText("Worker status: SUCCEEDED")).toBe("Run finished");
  expect(plainEventText("Worker status: RUNNING")).toBe("Running");
  expect(plainEventText("Worker status: FAILED")).toBe("Failed");
  expect(plainEventText("Worker status: INTERRUPTED")).toBe("Interrupted");
- expect(plainEventText("Worker status: SOMETHING_NEW")).toBe("Status changed");
+ // A word this build does not know keeps the original line, so TIMED_OUT is never lost.
+ expect(plainEventText("Worker status: TIMED_OUT")).toBe("Worker status: TIMED_OUT");
+ expect(plainEventText("Worker status: SOMETHING_NEW")).toBe("Worker status: SOMETHING_NEW");
  expect(plainEventText("Started Read")).toBe("Started Read");
  expect(plainEventText("The Worker status: SUCCEEDED line")).toBe("The Worker status: SUCCEEDED line");
 });
@@ -101,9 +103,13 @@ const opus = "amazon-bedrock/us.anthropic.claude-opus-5-5", haiku = "amazon-bedr
 it("collapses three repeated plan-check fallbacks into one plain line with no model id, and keeps the repeat count in the details", () => {
  const note = { stage: "plan_check" as const, used: haiku, wanted: opus };
  const collapsed = collapseFallbacks([note, note, note])!;
- expect(collapsed.line).toBe("Used a smaller model for plan check: Opus unavailable");
+ expect(collapsed.line).toBe("Used a different model for plan check: Opus unavailable");
  expect(collapsed.line).not.toMatch(/amazon|bedrock|us\.anthropic|claude/u);
  expect(collapsed.details).toEqual([{ stage: "plan_check", sentence: `Used ${haiku} because ${opus} was unavailable.`, count: 3 }]);
+});
+it("never claims a size order: Sonnet 5.5 in place of Opus 4.1 is only a different model", () => {
+ expect(collapseFallbacks([{ stage: "build", used: "amazon-bedrock/us.anthropic.claude-sonnet-5-5", wanted: "amazon-bedrock/us.anthropic.claude-opus-4-1" }])!.line).toBe("Used a different model for build: Opus unavailable");
+ expect(collapseFallbacks([{ stage: "build", used: "m/xgptx", wanted: "m/xgptx-2" }])!.line).toBe("Used a different model for build: the preferred model was unavailable");
 });
 it("says a different model when the order is unknown or equal, and the preferred model when none is named", () => {
  expect(collapseFallbacks([{ stage: "build", used: "openai/gpt-5.5", wanted: sonnet }])!.line).toBe("Used a different model for build: Sonnet unavailable");
@@ -116,4 +122,22 @@ it("one line for several different fallbacks, naming their stages once, and noth
  expect(collapsed.line).toBe("Used a different model for plan and build: the preferred models were unavailable");
  expect(collapsed.details.map(row => row.count)).toEqual([2, 1]);
  expect(collapseFallbacks([])).toBeUndefined();
+});
+
+it("not ready to merge is never the green Ready to merge (a conflicted branch, or no tracking)", () => {
+ expect(plainState({ state: "ready_to_merge" }, mergeTask({ review: "approved", branch: "conflicted" }))).toEqual({ label: "Not ready to merge", tone: "attention" });
+ const noTracking = { merge: { ready: false, message: "A reviewer must approve first." }, mergeTracking: [] } as never;
+ expect(plainState({ state: "ready_to_merge" }, noTracking)).toEqual({ label: "Not ready to merge", tone: "attention" });
+ const session = taskSession({ state: "ready_to_merge", next: "Press Merge." }, {}, { owner: true });
+ expect(taskLead({ session, task: noTracking, status: leadStatus(session), cards: [] })).toMatchObject({ state: { label: "Not ready to merge" }, why: "A reviewer must approve first" });
+});
+it("who: an owner with no card is not assumed; a failed task I may retry or close is me; an unknown state names nobody", () => {
+ const stopped = taskSession({ state: "failed", reason: "the run stopped with an error", next: "Retry it, or close the task." }, {}, { owner: true, actions: ["watch", "retry", "close"] });
+ expect(taskLead({ session: stopped, task: undefined, status: leadStatus(stopped), cards: [] }).who).toBe("You");
+ const watcher = taskSession({ state: "failed", reason: "x", next: "Retry it." }, {}, { owner: false, actions: ["watch"] });
+ expect(taskLead({ session: watcher, task: undefined, status: leadStatus(watcher), cards: [] }).who).toBe("Someone with permission");
+ const second = taskSession({ state: "needs_you", reason: "second approval needed", next: "Ask a second person." }, {}, { owner: true });
+ expect(taskLead({ session: second, task: undefined, status: leadStatus(second), cards: [] }).who).toBe("Someone with permission");
+ const unknown = { ...taskSession({ state: "needs_you" }, {}, { owner: true }), display: { state: "something_new" } } as never;
+ expect(taskLead({ session: unknown, task: undefined, status: leadStatus(unknown), cards: [] })).toMatchObject({ state: { label: "Status unavailable" }, who: undefined });
 });
