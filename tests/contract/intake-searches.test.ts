@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { OrgId } from "@agentx/contracts";
 import { OrgConnectionStore } from "../../packages/broker/src/connections/store.js";
 import { OrgSecrets } from "../../packages/broker/src/connections/org-secrets.js";
-import { adfText, intakeSearchesOf, jiraActorConfirmer, jiraActorOf, jiraIntakeSearch, linearIntakeSearch } from "../../packages/broker/src/triggers/intake-searches.js";
+import { JIRA_CHANGELOG_PAGES_MAX, LINEAR_HISTORY_PAGES_MAX, adfText, intakeSearchesOf, jiraActOf, jiraActorConfirmer, jiraActorOf, jiraIntakeSearch, linearActOf, linearIntakeSearch } from "../../packages/broker/src/triggers/intake-searches.js";
 import { pollIntakeSource } from "../../packages/broker/src/triggers/poll-intake.js";
 import { listIntakeSources, replaceIntakeSources } from "../../packages/broker/src/intake/sources.js";
 import type { IntakePorts } from "../../packages/broker/src/intake/engine.js";
@@ -40,9 +40,9 @@ describe("the Jira search", () => {
       urls.push(url);
       return new Response(JSON.stringify({ issues: [
         { id: "10001", key: "PAY-12", fields: { summary: "Refunds fail", description: { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "Steps" }] }] }, reporter: { displayName: "Dana" } },
-          changelog: { histories: [{ created: "2026-11-07T09:00:00.000+0000", author: { accountId: "acct-eve", accountType: "atlassian" }, items: [{ field: "status", fromString: "a", toString: "b" }] }, { created: "2026-11-07T09:05:00.000+0000", author: { accountId: "acct-dana", accountType: "atlassian" }, items: [{ field: "labels", fromString: "bug", toString: "bug rovara" }] }] } },
-        { id: "10002", key: "PAY-13", fields: { summary: "No history" }, changelog: { histories: [] } },
-        { id: "10003", key: "PAY-14", fields: { summary: "By an app" }, changelog: { histories: [{ author: { accountId: "app-1", accountType: "app" }, items: [{ field: "labels", fromString: "", toString: "rovara" }] }] } },
+          changelog: { total: 2, startAt: 0, histories: [{ created: "2026-11-07T09:00:00.000+0000", author: { accountId: "acct-eve", accountType: "atlassian" }, items: [{ field: "status", fromString: "a", toString: "b" }] }, { created: "2026-11-07T09:05:00.000+0000", author: { accountId: "acct-dana", accountType: "atlassian" }, items: [{ field: "labels", fromString: "bug", toString: "bug rovara" }] }] } },
+        { id: "10002", key: "PAY-13", fields: { summary: "No history" }, changelog: { total: 0, startAt: 0, histories: [] } },
+        { id: "10003", key: "PAY-14", fields: { summary: "By an app" }, changelog: { total: 1, startAt: 0, histories: [{ created: "2026-11-07T09:01:00.000+0000", author: { accountId: "app-1", accountType: "app" }, items: [{ field: "labels", fromString: "", toString: "rovara" }] }] } },
         { id: "x", key: "not a key", fields: {} },
       ] }), { status: 200 });
     });
@@ -78,8 +78,8 @@ describe("the Linear search", () => {
       expect((init.headers as Record<string, string>)["authorization"]).toBe(TOKEN);
       return new Response(JSON.stringify({ data: { viewer: { id: "rovara-user" }, issues: { nodes: [
         { id: "u1", identifier: "ENG-7", title: "Crash", description: "boom", url: "https://linear.app/acme/issue/ENG-7/crash", creator: { displayName: "Lee" }, labels: { nodes: [{ id: "lab-1", name: "Rovara" }] },
-          history: { nodes: [{ actor: { id: "lin-dana" }, addedLabelIds: ["lab-1"] }, { actor: { id: "lin-eve" }, addedLabelIds: ["lab-1"] }] } },
-        { id: "u2", identifier: "ENG-8", title: "Own", url: "https://linear.app/acme/issue/ENG-8/own", labels: { nodes: [{ id: "lab-1", name: "rovara" }] }, history: { nodes: [{ actor: { id: "rovara-user" }, addedLabelIds: ["lab-1"] }] } },
+          history: { pageInfo: { hasNextPage: false }, nodes: [{ createdAt: "2026-11-07T09:10:00.000Z", actor: { id: "lin-dana" }, addedLabelIds: ["lab-1"] }, { createdAt: "2026-11-07T09:00:00.000Z", actor: { id: "lin-eve" }, addedLabelIds: ["lab-1"] }] } },
+        { id: "u2", identifier: "ENG-8", title: "Own", url: "https://linear.app/acme/issue/ENG-8/own", labels: { nodes: [{ id: "lab-1", name: "rovara" }] }, history: { pageInfo: { hasNextPage: false }, nodes: [{ createdAt: "2026-11-07T09:00:00.000Z", actor: { id: "rovara-user" }, addedLabelIds: ["lab-1"] }] } },
       ] } } }), { status: 200 });
     });
     const items = await linearIntakeSearch({ deps, fetch: fetch as never })({ orgId: ORG, project: "web", source: source({ channel: "tracker", system: "linear", when: { label: "rovara" } }), signal, limit: 50 });
@@ -119,7 +119,7 @@ describe("who made the act, from the tracker's own history", () => {
     const { deps } = await connections([{ id: "con_lin00000000000000001", type: "linear" }]);
     const fetch = vi.fn(async () => Response.json({ data: { viewer: { id: "rovara-user" }, issues: { nodes: [
       { id: "u1", identifier: "ENG-9", title: "T", url: "https://linear.app/acme/issue/ENG-9/t", labels: { nodes: [{ id: "lab-1", name: "rovara" }] },
-        history: { nodes: [{ createdAt: "2026-11-07T09:00:00.000Z", actor: { id: "lin-a" }, addedLabelIds: ["lab-1"] }, { createdAt: "2026-11-07T09:30:00.000Z", actor: { id: "lin-b" }, addedLabelIds: ["lab-1"] }] } },
+        history: { pageInfo: { hasNextPage: false }, nodes: [{ createdAt: "2026-11-07T09:00:00.000Z", actor: { id: "lin-a" }, addedLabelIds: ["lab-1"] }, { createdAt: "2026-11-07T09:30:00.000Z", actor: { id: "lin-b" }, addedLabelIds: ["lab-1"] }] } },
     ] } } }));
     const items = await linearIntakeSearch({ deps, fetch: fetch })({ orgId: ORG, project: "web", source: source({ channel: "tracker", system: "linear", when: { label: "rovara" } }), signal, limit: 50 });
     expect(items[0]!.actor).toEqual({ kind: "person", accountId: "lin-b" });
@@ -187,5 +187,170 @@ describe("Jira's word on a webhook's actor (review I1, I1-R)", () => {
     expect(await jiraActorConfirmer({ deps, fetch: vi.fn(async () => new Response("{}", { status: 500 })), now: () => NOW_MS })(candidate("acct-dana"))).toBe("unverified");
     expect(await jiraActorConfirmer({ deps: undefined })(candidate("acct-dana"))).toBe("unverified");
     expect(await confirm({ ...candidate("acct-dana"), act: undefined })).toBe("unverified");
+  });
+});
+
+describe("who made the act fails closed when the history is not the whole story (the label history window)", () => {
+  const LABEL = { kind: "label" as const, value: "rovara" };
+  const entry = (at: string | undefined, accountId: string, items: Array<{ from: string; to: string }>, accountType = "atlassian") => ({ id: accountId, ...(at === undefined ? {} : { created: at }), author: { accountId, accountType }, items: items.map((item) => ({ field: "labels", fromString: item.from, toString: item.to })) });
+  const add = (at: string | undefined, accountId: string) => entry(at, accountId, [{ from: "", to: "rovara" }]);
+  const remove = (at: string | undefined, accountId: string) => entry(at, accountId, [{ from: "rovara", to: "" }]);
+
+  describe("Jira, from a change log", () => {
+    it("credits nobody when the last change to the label is a removal, in whatever order the answer lists the changes", () => {
+      const log = [add("2026-11-07T09:00:00.000+0000", "acct-a"), remove("2026-11-07T09:10:00.000+0000", "acct-b")];
+      for (const order of [log, [...log].reverse()]) expect(jiraActOf(order, LABEL)).toEqual({});
+    });
+
+    it("credits nobody for a tie between an add and a removal, or when any touching change has a time that cannot be read", () => {
+      expect(jiraActOf([add("2026-11-07T09:00:00.000+0000", "acct-a"), remove("2026-11-07T09:00:00.000+0000", "acct-b")], LABEL)).toEqual({});
+      expect(jiraActOf([add("2026-11-07T09:00:00.000+0000", "acct-a"), add(undefined, "acct-b")], LABEL)).toEqual({});
+      expect(jiraActOf([add("2026-11-07T09:00:00.000+0000", "acct-a"), add("not a time", "acct-b")], LABEL)).toEqual({});
+    });
+
+    it("credits the last add when an earlier removal and add came before it, and names the change id; a change that does not touch the label is ignored", () => {
+      const log = [remove("2026-11-07T09:10:00.000+0000", "acct-a"), add("2026-11-07T09:20:00.000+0000", "acct-c"), add("2026-11-07T09:00:00.000+0000", "acct-a"), { created: "bad", author: { accountId: "x", accountType: "atlassian" }, items: [{ field: "status", fromString: "a", toString: "b" }] }];
+      expect(jiraActOf(log, LABEL)).toEqual({ actor: { kind: "person", accountId: "acct-c" }, changeId: "acct-c" });
+    });
+
+    it("a change that adds one label and takes another is read for the label asked, and an assignment away from Rovara after the add credits nobody for an assignment source", () => {
+      expect(jiraActOf([entry("2026-11-07T09:00:00.000+0000", "acct-a", [{ from: "rovara-old", to: "rovara" }])], LABEL)).toMatchObject({ actor: { accountId: "acct-a" } });
+      const assigned = (at: string, from: string, to: string) => ({ created: at, author: { accountId: "acct-a", accountType: "atlassian" }, items: [{ field: "assignee", from, to }] });
+      const assignment = { kind: "assignee" as const, value: "rovara-id" };
+      expect(jiraActOf([assigned("2026-11-07T09:00:00.000+0000", "", "rovara-id")], assignment).actor).toEqual({ kind: "person", accountId: "acct-a" });
+      expect(jiraActOf([assigned("2026-11-07T09:00:00.000+0000", "", "rovara-id"), assigned("2026-11-07T09:05:00.000+0000", "rovara-id", "someone")], assignment)).toEqual({});
+    });
+  });
+
+  describe("the Jira search, paging the change log", () => {
+    const issueOf = (changelog: Record<string, unknown>) => ({ id: "10001", key: "PAY-12", fields: { summary: "S" }, changelog });
+    async function run(embedded: Record<string, unknown>, pages: Array<Record<string, unknown> | number>) {
+      const { deps } = await connections([{ id: "con_jira0000000000000001", type: "jira" }]);
+      const urls: string[] = [];
+      let next = 0;
+      const fetch = vi.fn(async (url: string) => {
+        urls.push(url);
+        if (url.includes("/search/jql")) return Response.json({ issues: [issueOf(embedded)] });
+        const page = pages[next++];
+        return typeof page === "number" ? new Response("{}", { status: page }) : Response.json(page ?? { values: [], isLast: true });
+      });
+      const items = await jiraIntakeSearch({ deps, fetch: fetch as never })({ orgId: ORG, project: "web", source: source({ channel: "jira", when: { label: "rovara" }, poll: {} }), signal, limit: 50 });
+      return { actor: items[0]!.actor, urls: urls.filter((url) => url.includes("/changelog")) };
+    }
+    const old = add("2026-11-01T09:00:00.000+0000", "acct-old");
+
+    it("reads the later pages when the embedded log is only the first of many, and credits the real last add", async () => {
+      const result = await run({ total: 150, startAt: 0, histories: [old] }, [
+        { values: [old, remove("2026-11-02T09:00:00.000+0000", "acct-x")], isLast: false }, { values: [add("2026-11-07T09:00:00.000+0000", "acct-new")], isLast: true },
+      ]);
+      expect(result.actor).toEqual({ kind: "person", accountId: "acct-new" });
+      expect(result.urls).toEqual([
+        "https://acme.atlassian.net/rest/api/3/issue/PAY-12/changelog?startAt=0&maxResults=100", "https://acme.atlassian.net/rest/api/3/issue/PAY-12/changelog?startAt=2&maxResults=100",
+      ]);
+    });
+
+    it("credits nobody for an old add when a later page holds the removal (the window cut it short)", async () => {
+      const result = await run({ total: 150, startAt: 0, histories: [old] }, [{ values: [old, remove("2026-11-05T09:00:00.000+0000", "acct-x")], isLast: true }]);
+      expect(result.actor).toBeUndefined();
+    });
+
+    it("credits nobody when the embedded log has no total or says more than it holds, and the change log's own read then fails or comes back short", async () => {
+      expect((await run({ histories: [old] }, [500])).actor).toBeUndefined();
+      expect((await run({ total: 5, startAt: 0, histories: [old] }, [{ values: [] }])).actor).toBeUndefined();
+    });
+
+    it("credits nobody when the log is longer than the page cap, and reads at most that many pages", async () => {
+      const pages = Array.from({ length: 12 }, (_, n) => ({ values: [add(`2026-11-0${String((n % 9) + 1)}T09:00:00.000+0000`, `acct-${String(n)}`)], isLast: false }));
+      const result = await run({ total: 5000, startAt: 0, histories: [old] }, pages);
+      expect(result.actor).toBeUndefined();
+      expect(result.urls).toHaveLength(JIRA_CHANGELOG_PAGES_MAX);
+    });
+
+    it("uses the embedded log without another read when it says it is whole", async () => {
+      const result = await run({ total: 1, startAt: 0, histories: [old] }, []);
+      expect(result.actor).toEqual({ kind: "person", accountId: "acct-old" });
+      expect(result.urls).toEqual([]);
+    });
+
+    it("a refused key or a rate limit while paging is the search's own failure, not an uncredited ticket", async () => {
+      await expect(run({ total: 5, startAt: 0, histories: [old] }, [429])).rejects.toMatchObject({ code: "RATE_LIMITED" });
+      await expect(run({ total: 5, startAt: 0, histories: [old] }, [403])).rejects.toMatchObject({ code: "CONNECTION_REFUSED" });
+    });
+  });
+
+  describe("Linear, from an issue's history", () => {
+    const labelIds = new Set(["lab-1"]);
+    const added = (at: string | undefined, id: string, extra: Record<string, unknown> = {}) => ({ ...(at === undefined ? {} : { createdAt: at }), actor: { id }, addedLabelIds: ["lab-1"], ...extra });
+    const removed = (at: string | undefined, id: string) => ({ ...(at === undefined ? {} : { createdAt: at }), actor: { id }, removedLabelIds: ["lab-1"] });
+
+    it("credits the last add by its own time, in whatever order the entries come", () => {
+      const entries = [added("2026-11-07T09:30:00.000Z", "lin-b"), removed("2026-11-07T09:10:00.000Z", "lin-a"), added("2026-11-07T09:00:00.000Z", "lin-a")];
+      for (const order of [entries, [...entries].reverse()]) expect(linearActOf(order, false, { labelIds })).toEqual({ kind: "account", accountId: "lin-b" });
+    });
+
+    it("credits nobody for a later removal, a tie, an unreadable time, or a history not read to the end", () => {
+      expect(linearActOf([added("2026-11-07T09:00:00.000Z", "lin-a"), removed("2026-11-07T09:10:00.000Z", "lin-b")], false, { labelIds })).toBeUndefined();
+      expect(linearActOf([added("2026-11-07T09:00:00.000Z", "lin-a"), removed("2026-11-07T09:00:00.000Z", "lin-b")], false, { labelIds })).toBeUndefined();
+      expect(linearActOf([added("2026-11-07T09:00:00.000Z", "lin-a"), added("2026-11-07T09:00:00.000Z", "lin-b")], false, { labelIds })).toBeUndefined();
+      expect(linearActOf([added("2026-11-07T09:00:00.000Z", "lin-a"), added(undefined, "lin-b")], false, { labelIds })).toBeUndefined();
+      expect(linearActOf([added("2026-11-07T09:00:00.000Z", "lin-a")], true, { labelIds })).toBeUndefined();
+      expect(linearActOf([{ createdAt: "2026-11-07T09:00:00.000Z", actor: { id: "lin-a" }, addedLabelIds: ["other"] }], false, { labelIds })).toBeUndefined();
+    });
+
+    it("an assignment to Rovara's account counts as an add and an unassignment as a removal", () => {
+      const assigned = (at: string, id: string, to: string, from?: string) => ({ createdAt: at, actor: { id }, toAssigneeId: to, ...(from === undefined ? {} : { fromAssigneeId: from }) });
+      expect(linearActOf([assigned("2026-11-07T09:00:00.000Z", "lin-a", "rovara-user")], false, { labelIds: new Set(), assignedTo: "rovara-user" })).toEqual({ kind: "account", accountId: "lin-a" });
+      expect(linearActOf([assigned("2026-11-07T09:00:00.000Z", "lin-a", "rovara-user"), assigned("2026-11-07T09:05:00.000Z", "lin-b", "someone", "rovara-user")], false, { labelIds: new Set(), assignedTo: "rovara-user" })).toBeUndefined();
+    });
+
+    it("a bot entry is a bot", () => {
+      expect(linearActOf([{ createdAt: "2026-11-07T09:00:00.000Z", botActor: { id: "bot" }, addedLabelIds: ["lab-1"] }], false, { labelIds })).toEqual({ kind: "bot" });
+    });
+
+    async function run(first: Record<string, unknown>, pages: Array<Record<string, unknown> | number>) {
+      const { deps } = await connections([{ id: "con_lin00000000000000001", type: "linear" }]);
+      const bodies: Array<{ query: string; variables: Record<string, unknown> }> = [];
+      let next = 0;
+      const fetch = vi.fn(async (_url: string, init: RequestInit) => {
+        const body = JSON.parse(String(init.body)) as { query: string; variables: Record<string, unknown> };
+        bodies.push(body);
+        if (body.query.includes("viewer")) return Response.json({ data: { viewer: { id: "rovara-user" }, issues: { nodes: [{ id: "u1", identifier: "ENG-9", title: "T", url: "https://linear.app/acme/issue/ENG-9/t", labels: { nodes: [{ id: "lab-1", name: "rovara" }] }, history: first }] } } });
+        const page = pages[next++];
+        return typeof page === "number" ? new Response("{}", { status: page }) : Response.json(page === undefined ? { errors: [{ message: "x" }] } : { data: { issue: { history: page } } });
+      });
+      const items = await linearIntakeSearch({ deps, fetch: fetch as never })({ orgId: ORG, project: "web", source: source({ channel: "tracker", system: "linear", when: { label: "rovara" } }), signal, limit: 50 });
+      return { actor: items[0]!.actor, pageCalls: bodies.filter((body) => !body.query.includes("viewer")) };
+    }
+
+    it("pages the history with its cursor when the first 25 are not all of it, so an old add behind a newer removal credits nobody", async () => {
+      const result = await run(
+        { pageInfo: { hasNextPage: true, endCursor: "c1" }, nodes: [added("2026-11-01T09:00:00.000Z", "lin-old")] },
+        [{ pageInfo: { hasNextPage: false, endCursor: null }, nodes: [removed("2026-11-05T09:00:00.000Z", "lin-x")] }],
+      );
+      expect(result.actor).toBeUndefined();
+      expect(result.pageCalls.map((call) => call.variables)).toEqual([{ id: "u1", after: "c1" }]);
+    });
+
+    it("credits the last add found on a later page", async () => {
+      const result = await run(
+        { pageInfo: { hasNextPage: true, endCursor: "c1" }, nodes: [added("2026-11-01T09:00:00.000Z", "lin-old")] },
+        [{ pageInfo: { hasNextPage: true, endCursor: "c2" }, nodes: [removed("2026-11-02T09:00:00.000Z", "lin-x")] }, { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [added("2026-11-07T09:00:00.000Z", "lin-new")] }],
+      );
+      expect(result.actor).toEqual({ kind: "person", accountId: "lin-new" });
+      expect(result.pageCalls.map((call) => call.variables["after"])).toEqual(["c1", "c2"]);
+    });
+
+    it("credits nobody for a history without page info, a page read that fails, or more pages than the cap allows", async () => {
+      expect((await run({ nodes: [added("2026-11-01T09:00:00.000Z", "lin-old")] }, [])).actor).toBeUndefined();
+      expect((await run({ pageInfo: { hasNextPage: true, endCursor: "c1" }, nodes: [added("2026-11-01T09:00:00.000Z", "lin-old")] }, [])).actor).toBeUndefined();
+      const endless = Array.from({ length: 9 }, (_, n) => ({ pageInfo: { hasNextPage: true, endCursor: `c${String(n + 2)}` }, nodes: [] }));
+      const result = await run({ pageInfo: { hasNextPage: true, endCursor: "c1" }, nodes: [added("2026-11-01T09:00:00.000Z", "lin-old")] }, endless);
+      expect(result.actor).toBeUndefined();
+      expect(result.pageCalls).toHaveLength(LINEAR_HISTORY_PAGES_MAX);
+    });
+
+    it("a rate limit while paging is the search's own failure", async () => {
+      await expect(run({ pageInfo: { hasNextPage: true, endCursor: "c1" }, nodes: [] }, [429])).rejects.toMatchObject({ code: "RATE_LIMITED" });
+    });
   });
 });
