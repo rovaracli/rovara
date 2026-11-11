@@ -85,3 +85,45 @@ describe("agentx config set teamRecord.enabled 1", () => {
     await expect(runConfigSet(orphaned, ENV, { key: "teamRecord.enabled", value: "1", yes: true })).rejects.toThrow(/left over from an earlier try/);
   });
 });
+
+// The embedder's ECR repository (`rovara-bundle/<env>/embedder`): retained when the access stack no longer lists it (the record was withdrawn after a build, or it was made by hand), so the next
+// access stack update fails on "already exists". Found before anything is deployed; deletes nothing.
+describe("the embedder repository left over from an earlier try", () => {
+  const REPOSITORY = "rovara-bundle/staging/embedder";
+  const withRepository = (state: { exists: boolean; inAccessStack: boolean } | undefined | "throws"): TeamRecordProbe & { repositories: Array<[string, string]> } => {
+    const repositories: Array<[string, string]> = [];
+    return { repositories, tableState: async () => ({ exists: false }), embedderRepositoryState: async (repository, stack) => { repositories.push([repository, stack]); if (state === "throws") throw new Error("network"); return state; } };
+  };
+  it("refuses when the repository exists and the access stack does not hold it, naming it and the fix", async () => {
+    const probe = withRepository({ exists: true, inAccessStack: false });
+    const result = await teamRecordPreflight({ env: ENV, built: false, probe });
+    expect(probe.repositories).toEqual([[REPOSITORY, "agentx-staging-access"]]);
+    expect(result.refusals).toHaveLength(1);
+    expect(result.refusals[0]).toContain(`${REPOSITORY} exists but the access stack agentx-staging-access does not hold it`);
+    expect(result.refusals[0]).toMatch(/fail on "already exists".*aws ecr list-images --repository-name rovara-bundle\/staging\/embedder.*do not delete it: ask for help/s);
+  });
+  it("passes when the repository is absent, or the access stack holds it, and does not ask when the record is built", async () => {
+    for (const state of [{ exists: false, inAccessStack: false }, { exists: true, inAccessStack: true }]) expect(await teamRecordPreflight({ env: ENV, built: false, probe: withRepository(state) })).toEqual({ refusals: [], warnings: [] });
+    const built = withRepository({ exists: true, inAccessStack: false });
+    expect(await teamRecordPreflight({ env: ENV, built: true, probe: built })).toEqual({ refusals: [], warnings: [] });
+    expect(built.repositories).toEqual([]);
+  });
+  it("warns, and does not refuse, when the check cannot run", async () => {
+    for (const state of [undefined, "throws"] as const) {
+      const result = await teamRecordPreflight({ env: ENV, built: false, probe: withRepository(state) });
+      expect(result.refusals).toEqual([]);
+      expect(result.warnings.join("\n")).toContain(`aws ecr describe-repositories --repository-names ${REPOSITORY}`);
+    }
+  });
+  it("the real probe reads one repository and the access stack's resources: absent, present in the stack, present outside it, or unknown", async () => {
+    const ecr = (reply: () => unknown) => ({ send: async (command: { input: { repositoryNames: string[] } }) => { expect(command.input.repositoryNames).toEqual([REPOSITORY]); return reply(); } });
+    const cf = (ids: string[]) => ({ send: async (command: { input: { StackName: string } }) => { expect(command.input.StackName).toBe("agentx-staging-access"); return { StackResourceSummaries: ids.map((id) => ({ PhysicalResourceId: id })) }; } });
+    const probe = (e: ReturnType<typeof ecr>, c: ReturnType<typeof cf>) => dynamoTeamRecordProbe({ send: async () => ({}) } as never, { ecr: e as never, cloudFormation: c as never });
+    expect(await probe(ecr(() => { throw Object.assign(new Error("x"), { name: "RepositoryNotFoundException" }); }), cf([])).embedderRepositoryState!(REPOSITORY, "agentx-staging-access")).toEqual({ exists: false, inAccessStack: false });
+    expect(await probe(ecr(() => ({})), cf(["other", REPOSITORY])).embedderRepositoryState!(REPOSITORY, "agentx-staging-access")).toEqual({ exists: true, inAccessStack: true });
+    expect(await probe(ecr(() => ({})), cf(["other"])).embedderRepositoryState!(REPOSITORY, "agentx-staging-access")).toEqual({ exists: true, inAccessStack: false });
+    expect(await probe(ecr(() => { throw Object.assign(new Error("x"), { name: "AccessDeniedException" }); }), cf([])).embedderRepositoryState!(REPOSITORY, "agentx-staging-access")).toBeUndefined();
+    // without the clients there is no repository check at all
+    expect(Object.hasOwn(dynamoTeamRecordProbe({ send: async () => ({}) } as never), "embedderRepositoryState")).toBe(false);
+  });
+});

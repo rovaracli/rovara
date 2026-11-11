@@ -198,7 +198,7 @@ export function registerUpgradeCommand(program: Command, context: UpgradeCommand
         doctor: overrides.doctor ?? ((env) => runDoctor({ env, store, services: (settings) => realDoctorServices({ settings, store, fetch: context.fetch, home: context.home, configDir: globals.configDir, stderr: context.stderr }) })),
         write,
         now: overrides.now ?? Date.now,
-        teamRecordProbe: overrides.teamRecordProbe ?? dynamoTeamRecordProbe(new DynamoDBClient(aws)),
+        teamRecordProbe: overrides.teamRecordProbe ?? dynamoTeamRecordProbe(new DynamoDBClient(aws), { ecr: new ECRClient(aws), cloudFormation: new CloudFormationClient(aws) }),
         cliVersion: "cliVersion" in overrides ? overrides.cliVersion : RELEASE_VERSION,
       };
       const images = options.workerImage === undefined && options.slackImage === undefined && options.embedderImage === undefined && options.bootStage2Sha256 === undefined ? undefined : {
@@ -265,7 +265,7 @@ export function registerUpgradeCommand(program: Command, context: UpgradeCommand
           // The same check as `agentx upgrade`: a table left by a rolled-back Team record build would fail the customer's deployer on "already exists", so it is found before the build is made and approved.
           const beforeBuild = async () => enforceTeamRecordPreflight({
             env: globals.env, store, controlPlaneParameters: (await cloudFormationStackReader(new CloudFormationClient(aws)).describe(settings.stacks["control-plane"]))?.parameters,
-            probe: context.teamRecordProbe ?? dynamoTeamRecordProbe(new DynamoDBClient(aws)), write: (line) => { context.stderr.write(`${line}\n`); }, stoppedMessage: "approval stopped before anything was built or approved",
+            probe: context.teamRecordProbe ?? dynamoTeamRecordProbe(new DynamoDBClient(aws), { ecr: new ECRClient(aws), cloudFormation: new CloudFormationClient(aws) }), write: (line) => { context.stderr.write(`${line}\n`); }, stoppedMessage: "approval stopped before anything was built or approved",
           });
           record = await enterpriseApproval(context, { beforeBuild, bundle, install: settings, store, aws, caller: caller.arn, parameters, rollback: options.rollback, yes: options.yes, beforeApproval: loadImages, approvalStore: store_, ...(options.writeBuild === undefined ? {} : { writeBuildTo: options.writeBuild }) });
         } else {
