@@ -207,3 +207,14 @@ it("the sheet traps focus, Escape closes it and focus returns to the button, and
  expect(document.activeElement).toBe(button);
  f.close();
 });
+
+it("never puts a task id that is not a UUID into the copied prompt", () => {
+ const withId = (id: string) => { const s = base() as { body: { task: Record<string, unknown> } };s.body.task = { ...s.body.task, taskId: id };return s; };
+ for (const bad of ["not-a-task", "x; rm -rf /", "$(id)", "11111111-1111-4111-8111-11111111111", ""]) expect(continueOffer(withId(bad) as never), bad).toBeUndefined();
+ expect(continueOffer(withId(TASK) as never)?.taskId).toBe(TASK);
+});
+
+it("says the Codex and Cursor installs keep a backup only if there was a file", async () => {
+ const { TOOLS } = await import("../../packages/ui/src/screens/session/continue-in-tool.js");
+ for (const tool of TOOLS.filter(t => t.kind !== "claude-code")) expect(tool.where).toContain("keeps a backup if there was one");
+});

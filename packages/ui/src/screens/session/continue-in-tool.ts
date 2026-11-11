@@ -9,8 +9,8 @@ export type ToolKind = "claude-code" | "codex" | "cursor";
 export const CLI_PACKAGE = "@preplabsai/rovara-code";
 export const TOOLS: readonly { kind: ToolKind; label: string; where: string }[] = [
  { kind: "claude-code", label: "Claude Code", where: "Rovara runs claude mcp add for you, once, for your user." },
- { kind: "codex", label: "Codex", where: "Rovara adds an entry to ~/.codex/config.toml and keeps a backup of the old file." },
- { kind: "cursor", label: "Cursor", where: "Rovara adds an entry to ~/.cursor/mcp.json and keeps a backup of the old file." },
+ { kind: "codex", label: "Codex", where: "Rovara adds an entry to ~/.codex/config.toml and keeps a backup if there was one." },
+ { kind: "cursor", label: "Cursor", where: "Rovara adds an entry to ~/.cursor/mcp.json and keeps a backup if there was one." },
 ];
 export const installCommand = (tool: ToolKind): string => "npx " + CLI_PACKAGE + " mcp install --client " + tool;
 /** The tools the prompt tells the person's AI tool to call: both exist in Rovara's MCP server today. */
@@ -21,6 +21,8 @@ export const PUSH_EXPLAINER = "When you push to the task's branch, your commits 
 
 /** A branch name that is safe to put into a sentence and a prompt: plain git-ref characters only. Anything else is treated as unknown. */
 const BRANCH = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/u;
+/** A task id as Rovara writes it (a UUID). Anything else never goes into the copied prompt. */
+const TASK_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 
 export interface ContinueOffer { taskId: string; title: string; project: string | undefined; branch: string | undefined; pullRequests: readonly { repository: string; number: number; url: string }[] }
 
@@ -35,7 +37,7 @@ export function continueOffer(session: ReadSession): ContinueOffer | undefined {
  const state = sessionDisplay(session).state;
  if (state === "merged" || state === "closed") return undefined;
  const task = workspaceTask(session), taskId = task?.taskId ?? (typeof (session.body.task as { taskId?: unknown }).taskId === "string" ? (session.body.task as { taskId: string }).taskId : undefined);
- if (taskId === undefined) return undefined;
+ if (taskId === undefined || !TASK_ID.test(taskId)) return undefined;
  // The branch is known only where the task view says so: an agent-step run's chosen branch. The pull request summary names the repository and number, not the branch.
  const run = (task?.run as { branch?: unknown } | undefined)?.branch;
  const branch = typeof run === "string" && BRANCH.test(run) ? run : undefined;
