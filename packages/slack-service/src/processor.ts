@@ -540,18 +540,7 @@ export async function processSlackRequest(
       confirmation = check;
     }
     const workspaceRequestId = deterministicUuid(`${message.eventId}:workspace`);
-    let workspace: Awaited<ReturnType<typeof api.ensureWorkspace>>;
-    try {
-      workspace = await api.ensureWorkspace(workspaceRequestId);
-    } catch (error) {
-      // Slack explicit membership (0.5.14): a person Rovara cannot match to a member of the company is told so plainly, once, and the request ends: a retry cannot change who they are.
-      if (!(error instanceof Error) || !/\bSLACK_ACCOUNT_NOT_LINKED\b/u.test(error.message)) throw error;
-      draft.disposition = "workspace_unavailable";
-      log("request.refused", { eventId: message.eventId, reason: "slack_account_not_linked" });
-      await post(SLACK_NOT_A_MEMBER_NOTICE);
-      finished = true;
-      return;
-    }
+    let workspace = await api.ensureWorkspace(workspaceRequestId);
     // Spec 025 FR-054, C12: a continue thread's turn starts only once the task's workspace is idle.
     if (taskBusy(workspace) && workspace.sharedTask !== undefined) {
       const taskId = workspace.sharedTask.taskId;
@@ -877,6 +866,15 @@ export async function processSlackRequest(
         none: HANDOFF_FINAL_IDLE_TEXT, requested: HANDOFF_FINAL_TEXT, finished: HANDOFF_FINAL_FINISHED_TEXT, failed: HANDOFF_FINAL_CANCEL_FAILED_TEXT,
       }[cancelled ?? "none"]);
       if (remembered !== undefined || waitingOn !== undefined) await forgetActiveTurn();
+      finished = true;
+      return;
+    }
+    // Slack explicit membership (0.5.14): whichever service route first met it (the workspace, the model list or switch, a close, an eval or SWE-bench command), a person Rovara cannot match to an explicit
+    // member of the company is told so plainly, once, and the request ends: a redelivery cannot change who they are.
+    if (error instanceof Error && /\bSLACK_ACCOUNT_NOT_LINKED\b/u.test(error.message)) {
+      draft.disposition = "workspace_unavailable";
+      log("request.refused", { eventId: message.eventId, reason: "slack_account_not_linked" });
+      await post(SLACK_NOT_A_MEMBER_NOTICE);
       finished = true;
       return;
     }

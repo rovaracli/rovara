@@ -17,7 +17,7 @@ import { brokerFetch } from "../support/broker-fetch.js";
 import { OMAR, createDeveloperTaskBroker, recordStream, seedMembership } from "../support/developer-task-broker.js";
 import type { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { TEST_ORG } from "../support/orgs.js";
-import { SLACK_CHANNEL, SLACK_TEAM, ensureWorkspace } from "../support/slack-broker.js";
+import { SLACK_CHANNEL, SLACK_TEAM, ensureWorkspace, markReady, serviceCall } from "../support/slack-broker.js";
 
 const SWITCH = "SLACK_EXPLICIT_MEMBERS";
 const PRIYA_SLACK = "U0PRIYA001";
@@ -164,6 +164,71 @@ describe("with the switch on warn", () => {
   });
 });
 
+describe("stopping a task from Slack (the legacy teammate stop)", () => {
+  const stopEvent = (h: Awaited<ReturnType<typeof cloud>>, threadValue: string, userId: string) => {
+    const [teamId, channelId, threadTs] = threadValue.split("/");
+    return h.handler({ source: "agentx.slack-ingress", action: "stop-task", thread: { teamId, channelId, threadTs }, userId }).then((response) => ({ status: response.statusCode, body: JSON.parse(response.body) as Record<string, unknown> }));
+  };
+  /** A member's plain thread with a running task, on a cloud install. */
+  async function running() {
+    const h = await cloud();
+    seedMembership(h.db, PRIYA, { orgId: TEST_ORG, role: "member" });
+    const where = thread("1695500000.000501");
+    const workspaceId = String((await ensureWorkspace(h.handler, where, PRIYA_SLACK)).body.workspaceId);
+    markReady(h.db, workspaceId);
+    const conversation = await serviceCall(h.handler, where, PRIYA_SLACK, "POST", `/v1/service/workspaces/${workspaceId}/conversations`);
+    const task = await serviceCall(h.handler, where, PRIYA_SLACK, "POST", `/v1/service/workspaces/${workspaceId}/tasks`, { requestId: randomUUID(), conversationId: (conversation.body.conversation as { id: string }).id, prompt: "run the tests" });
+    expect(task.status).toBe(202);
+    return { h, where, workspaceId, operationId: (task.body.operation as { id: string }).id };
+  }
+  const state = (r: Awaited<ReturnType<typeof running>>) => r.h.db.get(`WORKSPACE#${r.workspaceId}`, `OPERATION#${r.operationId}`);
+
+  it("does not let a Slack person with no membership stop a member's task, and tells them so", async () => {
+    const r = await running();
+    const refused = await stopEvent(r.h, r.where, NEVER);
+    expect(refused).toMatchObject({ status: 200, body: { outcome: "NOT_A_MEMBER" } });
+    expect(state(r)).not.toMatchObject({ status: "CANCEL_REQUESTED" });
+  });
+
+  it("does not let a removed person stop it either, and still lets an explicit member", async () => {
+    const r = await running();
+    const mate = "U0MATE0001";
+    seedMembership(r.h.db, developerIdForSlackUser(mate), { orgId: TEST_ORG, role: "member" });
+    await remove(r.h, developerIdForSlackUser(mate), false);
+    expect(await stopEvent(r.h, r.where, mate)).toMatchObject({ status: 200, body: { outcome: "NOT_A_MEMBER" } });
+    expect(state(r)).not.toMatchObject({ status: "CANCEL_REQUESTED" });
+    const other = "U0MATE0002";
+    seedMembership(r.h.db, developerIdForSlackUser(other), { orgId: TEST_ORG, role: "member" });
+    expect(await stopEvent(r.h, r.where, other)).toMatchObject({ status: 200, body: { outcome: "CANCEL_REQUESTED" } });
+    expect(state(r)).toMatchObject({ status: "CANCEL_REQUESTED" });
+  });
+
+  it("is as it was with the switch off or on warn: anyone in the thread may stop", async () => {
+    for (const value of ["0", "warn"]) {
+      process.env[SWITCH] = value;
+      const r = await running();
+      expect(await stopEvent(r.h, r.where, NEVER), value).toMatchObject({ status: 200, body: { outcome: "CANCEL_REQUESTED" } });
+      expect(state(r)).toMatchObject({ status: "CANCEL_REQUESTED" });
+    }
+  });
+});
+
+describe("the warn-once marker", () => {
+  it("queues no second direct message after the first row has expired", async () => {
+    process.env[SWITCH] = "warn";
+    const h = await cloud();
+    await ensureWorkspace(h.handler, thread("1695500000.000502"), NEVER);
+    const first = h.db.find((item) => item.entityType === "TASK_ATTENTION_DM");
+    expect(first).toHaveLength(1);
+    // The row expires (the table's TTL removes it after two days); the marker, kept 90 days, is what keeps the person from being told again.
+    h.db.delete({ pk: String(first[0]!.pk), sk: String(first[0]!.sk) });
+    expect(h.db.find((item) => item.entityType === "TASK_ATTENTION_DM")).toHaveLength(0);
+    expect((await ensureWorkspace(h.handler, thread("1695500000.000503"), NEVER)).status).toBe(200);
+    expect(h.db.find((item) => item.entityType === "TASK_ATTENTION_DM")).toHaveLength(0);
+    expect(h.db.find((item) => item.entityType === "SLACK_MEMBER_WARNING")).toHaveLength(1);
+  });
+});
+
 describe("the Slack service's reply", () => {
   it("says plainly, once and without a retry, that the account is not matched to a member", async () => {
     const h = await cloud();
@@ -186,5 +251,37 @@ describe("the Slack service's reply", () => {
     expect(ran).toEqual([]);
     expect(SLACK_NOT_A_MEMBER_NOTICE).toMatch(/ask a Rovara admin to add you/i);
     expect(SLACK_NOT_A_MEMBER_NOTICE).toMatch(/Link your Slack account/);
+  });
+
+  it("answers the same notice, without a retry, when the first service route is the model list or a close (any route, one catch)", async () => {
+    const refusal = () => new Error("service request failed: SLACK_ACCOUNT_NOT_LINKED this Slack account is not a member of the company");
+    for (const text of ["models", "close"]) {
+      const posts: string[] = [];
+      const subject = thread("1695500000.000417");
+      const dependencies: ProcessorDependencies = {
+        api: () => ({
+          ensureWorkspace: async () => { throw refusal(); },
+          listProjectModels: async () => { throw refusal(); },
+          startClose: async () => { throw refusal(); },
+        }) as never,
+        threads: { load: async () => ({}), saveConversation: async () => undefined, saveSettingsRevision: async () => undefined, close: async () => undefined, finish: async () => undefined, claimSharedNotice: async () => true },
+        runTurn: async () => "ran",
+        post: async (_thread, reply) => { posts.push(reply); },
+      };
+      const message: SlackRequestMessage = { version: 1, eventId: "Ev0000000002", thread: parseSlackThreadSubject(subject), userId: NEVER, text, receivedAt: new Date().toISOString() };
+      await processSlackRequest(message, dependencies, { finalAttempt: false, queuedBehind: 0 });
+      expect(posts, text).toEqual([SLACK_NOT_A_MEMBER_NOTICE]);
+    }
+  });
+
+  it("still retries an error that is not that refusal", async () => {
+    const dependencies: ProcessorDependencies = {
+      api: () => ({ ensureWorkspace: async () => { throw new Error("thread workspace request failed: MODEL_PROXY_UNAVAILABLE"); } }) as never,
+      threads: { load: async () => ({}), saveConversation: async () => undefined, saveSettingsRevision: async () => undefined, close: async () => undefined, finish: async () => undefined, claimSharedNotice: async () => true },
+      runTurn: async () => "ran",
+      post: async () => undefined,
+    };
+    const message: SlackRequestMessage = { version: 1, eventId: "Ev0000000003", thread: parseSlackThreadSubject(thread("1695500000.000418")), userId: NEVER, text: "hello", receivedAt: new Date().toISOString() };
+    await expect(processSlackRequest(message, dependencies, { finalAttempt: false, queuedBehind: 0 })).rejects.toThrow(/MODEL_PROXY_UNAVAILABLE/);
   });
 });
