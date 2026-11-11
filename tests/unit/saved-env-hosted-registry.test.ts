@@ -48,7 +48,7 @@ describe("the worker refuses a loopback login", () => {
         [repository],
         async () => { cloned.push("fresh"); },
       );
-      await materialize(repository, "/nonexistent-destination", {} as never);
+      await materialize(repository, "/nonexistent-destination", {});
       expect(fallbacks, login.registry).toEqual(["login"]);
       expect(cloned, login.registry).toEqual(["fresh"]);
       expect(calls, login.registry).toEqual([]);

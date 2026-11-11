@@ -24,6 +24,8 @@ Code and Cloud both publish `@agentx/*`, and npm refuses two workspaces with one
 - Wave 0 lane W0-3 renamed Cloud's contracts to `@agentx/cloud-contracts` (the name `@agentx/contracts` now belongs to the vendored Code alone), and Cloud imports
   the shared names from `@rovara-code/contracts`. The browser entry `@agentx/cloud-contracts/web` re-exports the browser-safe ones; `vite.config.ts` tells the bundler Code's built
   contracts have no side effects (the way Cloud's own package says so), so Node-only modules are tree-shaken out.
+  The same is said for the Lambda bundles (`scripts/vendor/mark-code-contracts-pure.mjs`, run by their beforeBundling hook), the release signer and the mcp-runner.
+  All of it is a stopgap: Code's contracts `package.json` gets `"sideEffects": false` (Code branch `fix/code-contracts-side-effects`), and the day the pin has it the four workarounds are deleted.
 
 Code's third-party dependencies resolve to Cloud's installed packages (same lockfile family). `verify-rovara-code.ts` fails if any of them resolves to a version other
 than the one Code declares; the one existing difference (`playwright-core`) is the link in `THIRD_PARTY_LINKS`. It also fails if Code's source imports an `@agentx/<name>`

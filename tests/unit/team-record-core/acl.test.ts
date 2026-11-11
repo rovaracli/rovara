@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { MAINTAINERS_GROUP } from "@rovara-code/contracts";
-import { AclSnapshotSchema, AudienceSchema, type Audience } from "@agentx/cloud-contracts";
+import { AclSnapshotSchema, AudienceSchema, type AclSnapshot, type Audience } from "@agentx/cloud-contracts";
 import { LIVE_CHECK_CACHE_MS, createLiveCheckCache, ownList, satisfiesAcl, visibleWithoutLiveCheck, type Visible } from "../../../packages/broker/src/team-record/acl.js";
 import { viewerOfCaller } from "../../../packages/broker/src/team-record/access.js";
 import type { ReadAudience } from "../../../packages/broker/src/team-record/types.js";
@@ -128,17 +128,18 @@ describe("the source of a snapshot", () => {
   });
 
   it("finds no list for a source named like an inherited property: it denies and does not throw (acl.ts, access.ts)", () => {
-    const hostile = { source: "constructor", scope: "s", principals: ["123"], groups: [MAINTAINERS_GROUP, "g"], capturedAt: "2026-10-30T10:00:00.000Z", liveCheck: "none" } as never;
+    const hostile = { source: "constructor", scope: "s", principals: ["123"], groups: [MAINTAINERS_GROUP, "g"], capturedAt: "2026-10-30T10:00:00.000Z", liveCheck: "none" };
+    const withSource = (source: string) => ({ ...hostile, source }) as unknown as AclSnapshot;
     for (const source of ["constructor", "__proto__", "hasOwnProperty"]) {
       const someone = caller({ identities: { ids: { github: ["123"] }, groups: { github: ["g"] } } });
-      expect(() => satisfiesAcl(someone, { ...hostile, source })).not.toThrow();
-      expect(satisfiesAcl(someone, { ...hostile, source }), source).toBe(false);
+      expect(() => satisfiesAcl(someone, withSource(source))).not.toThrow();
+      expect(satisfiesAcl(someone, withSource(source)), source).toBe(false);
       const viewer = viewerOfCaller(someone);
       expect(viewer.ids(source), source).toEqual([]);
       expect(viewer.groups(source), source).toEqual([]);
     }
     // a maintainer still gets the maintainers group at any source, as before
-    expect(satisfiesAcl(caller({ projectRole: "maintainer" }), { ...hostile, source: "constructor" })).toBe(true);
+    expect(satisfiesAcl(caller({ projectRole: "maintainer" }), withSource("constructor"))).toBe(true);
     expect(ownList({ github: ["1"] }, "github")).toEqual(["1"]);
   });
 });

@@ -121,7 +121,7 @@ instead: give it a one-line header comment when you next edit it.
 - A task run: `packages/worker/src/run-task.ts#runTaskInvocation`, started from `packages/worker/src/main.ts`. Its
   HTTP server is `packages/worker/src/server.ts`.
 - The features this worker supports: `packages/worker/src/implemented-features.ts#WORKER_IMPLEMENTED_FEATURES`. The
-  protocol version and the features an invocation can require are in `packages/cloud-contracts/src/protocol.ts#AGENTX_PROTOCOL_VERSION`
+  protocol version and the features an invocation can require are in `vendor/rovara-code/packages/contracts/src/protocol.ts#AGENTX_PROTOCOL_VERSION`
   and `packages/cloud-contracts/src/protocol.ts#WORKER_INVOCATION_FEATURES`.
 - Lessons on the worker: `packages/worker/src/learned-context.ts#validateLearnedContext`.
 - There is no `executor/run.ts` in the worker. The one in `packages/verifier/src/executor/run.ts` is the E2E executor.

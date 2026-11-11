@@ -154,8 +154,11 @@ export function verifyRovaraCode(layout: Layout, options: { remote?: boolean } =
   if (manifestDigest(local.entries) !== pin.manifestSha256) problems.push("the copy's files do not hash to the manifest in PIN (a vendored file was edited, added or removed)");
 
   if (options.remote === true) {
-    const ancestry = ancestryProblem(sha, compareStatus(layout.repoUrl, sha));
-    if (ancestry !== undefined) problems.push(ancestry);
+    // Only where the repository is on GitHub (the public one is; a fixture repository on disk has no code/next to ask about).
+    if (/github\.com\//u.test(layout.repoUrl)) {
+      const ancestry = ancestryProblem(sha, compareStatus(layout.repoUrl, sha));
+      if (ancestry !== undefined) problems.push(ancestry);
+    }
     try {
       const fetched = fetchSha(layout.repoUrl, sha, { blobs: false });
       try {
