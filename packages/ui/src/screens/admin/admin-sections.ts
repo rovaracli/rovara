@@ -19,6 +19,7 @@ export const ADMIN_SECTIONS: readonly AdminSection[] = [
     { to: "/app/admin/billing", label: "Billing", area: "billing", blurb: "The trial allowance, auto-billing, the payment method and invoices.", action: "Open billing", needsBilling: true },
   ] },
   { id: "work", title: "How work runs", items: [
+    { to: "/app/admin/company-rules", label: "Company rules", area: "company-rules", blurb: "The standing instructions every agent follows: Required and Preferred rules, changed with a second admin's approval.", action: "Review company rules" },
     { to: "/app/admin/how-we-work", label: "How we work", area: "how-we-work", blurb: "Company defaults for steps and models, design review and learning, and the locks projects can't change.", action: "Review how we work" },
     { to: "/app/admin/projects", label: "Projects", area: "projects", blurb: "Each project's repositories, people, Slack links and working branches.", action: "Review projects" },
     { to: "/app/admin/agents", label: "Agents", area: "agents", blurb: "Agent versions and the company's agent guardrails.", action: "Review agents" },
