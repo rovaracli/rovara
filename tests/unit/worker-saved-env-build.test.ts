@@ -442,9 +442,9 @@ describe("what stops a build", () => {
   it("no push login, a login for another repository, or one about to expire: no push", async () => {
     const other = await world({ session: async () => ({ registry: REGISTRY, repository: OTHER_REPOSITORY, username: "AWS", password: PASSWORD, expiresAt: new Date(NOW + 900_000).toISOString() }) });
     expect(await proveAndBuildSavedImage(other.input, other.ports)).toEqual({ ok: false, reason: "no_push_session" });
-    // a registry on the worker's own machine (W0-3 review H1): the hosted schema refuses it, so nothing is pushed
+    // a registry on the worker's own machine (W0-3 review H1): Cloud's hosted schema refuses it, so nothing is pushed (the cast: the type is the hosted login's, the value is the one it must refuse)
     for (const [registry, username] of [["127.0.0.1:5000", "rovara-local"], ["localhost:5001", "rovara-local"]] as const) {
-      const loopback = await world({ session: async () => ({ registry, repository: REPOSITORY, username, password: PASSWORD, expiresAt: new Date(NOW + 900_000).toISOString() }) });
+      const loopback = await world({ session: async () => ({ registry, repository: REPOSITORY, username: username as unknown as "AWS", password: PASSWORD, expiresAt: new Date(NOW + 900_000).toISOString() }) });
       expect(await proveAndBuildSavedImage(loopback.input, loopback.ports)).toEqual({ ok: false, reason: "no_push_session" });
       expect(loopback.rec.calls.some((call) => call.includes("push"))).toBe(false);
     }
