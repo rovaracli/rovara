@@ -66,6 +66,11 @@ export interface SavedEnvImagesProps {
    * Default "none".
    */
   readonly registryScanning?: "basic" | "none";
+  /**
+   * The company image mirror's own role (infra/lib/company-image-mirror.ts): the repository policy lets it read, write and delete in the repositories its IAM policy reaches (`o?/c?`, mirror repositories only).
+   * The push and manage roles stay the broker's alone.
+   */
+  readonly mirrorRoleArn?: string;
 }
 
 export class SavedEnvImages extends Construct {
@@ -181,7 +186,7 @@ export class SavedEnvImages extends Construct {
 
     // ---- the creation template
     // The roles' real ARNs (the push, pull and manage roles carry the environment's path, wherever the aspect puts them), so the policy names exactly the roles created here.
-    const policy = savedEnvRepositoryPolicy({ pushRoleArn: this.pushRole.roleArn, pullRoleArn: this.pullRole.roleArn, manageRoleArn: this.manageRole.roleArn });
+    const policy = savedEnvRepositoryPolicy({ pushRoleArn: this.pushRole.roleArn, pullRoleArn: this.pullRole.roleArn, manageRoleArn: this.manageRole.roleArn, ...(props.mirrorRoleArn === undefined ? {} : { mirrorRoleArn: props.mirrorRoleArn }) });
     this.template = new ecr.CfnRepositoryCreationTemplate(this, "CreationTemplate", {
       prefix,
       appliedFor: ["CREATE_ON_PUSH"],

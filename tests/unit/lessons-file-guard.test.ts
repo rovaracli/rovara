@@ -2,8 +2,8 @@
 // code host's changed files: a rename counts under both names, a list cut short or unreadable fails closed.
 import { describe, expect, it } from "vitest";
 import type { ChangeRequestFilesPage } from "@agentx/contracts";
-import { leavesLessonsFileAlone, touchesLessonsFile } from "../../packages/broker/src/rovara-code/lessons-file-guard.js";
-import { LESSONS_FILE_REFUSAL, assertLessonsFileUntouched, isLessonsFilePath } from "../../packages/worker/src/lessons-file-guard.js";
+import { leavesLessonsFileAlone, touchesCompanyRulesFile, touchesLessonsFile } from "../../packages/broker/src/rovara-code/lessons-file-guard.js";
+import { COMPANY_RULES_FILE_REFUSAL, LESSONS_FILE_REFUSAL, assertLessonsFileUntouched, assertPushCarriesNoLessonsFile as pushGuard, isCompanyRulesFilePath, isLessonsFilePath } from "../../packages/worker/src/lessons-file-guard.js";
 
 const REF = { repository: { url: "https://github.com/acme/api" }, id: "7", url: "" };
 const SCOPE = { system: "private-install" } as never;
@@ -131,5 +131,42 @@ describe("review L3: deleting a branch", () => {
     expect(await deleteBranchOn(context(422, "Reference does not exist"), "rovara/lessons-0123456789ab")).toBe("gone");
     for (const [status, message] of [[404, "Not Found"], [422, "Something else"], [403, "Resource not accessible"]] as const) await expect(deleteBranchOn(context(status, message), "rovara/lessons-0123456789ab")).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
     await expect(deleteBranchOn(context(204), "main")).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+  });
+});
+
+// ---- G-04: the company rules file is guarded the same way
+describe("the company rules file", () => {
+  it.each([
+    [".rovara/company-rules.md", true], [".Rovara/Company-Rules.MD", true], ["./.rovara/company-rules.md", true], [".rovara\\company-rules.md", true], [".rovara/company-rules.md/x", true],
+    [".rovara/company-rules.md.bak", false], ["company-rules.md", false], ["docs/.rovara/company-rules.md", false], [".rovara/project.yaml", false], [".rovara/lessons.md", false],
+  ])("%s -> %s", (path, expected) => { expect(isCompanyRulesFilePath(path)).toBe(expected); expect(touchesCompanyRulesFile(path)).toBe(expected); });
+
+  it("the connected path counts too, in the broker's check", () => {
+    expect(touchesCompanyRulesFile("docs/our-rules.md", "docs/our-rules.md")).toBe(true);
+    expect(touchesCompanyRulesFile("Docs/Our-Rules.md", "docs/our-rules.md")).toBe(true);
+    expect(touchesCompanyRulesFile("docs/other.md", "docs/our-rules.md")).toBe(false);
+  });
+
+  it("the broker's check refuses a pull request that changes it (an add, a rename either way) with its own reason, and a clean one passes", async () => {
+    const REF2 = { repository: { url: "https://github.com/acme/api" }, id: "7", url: "" };
+    const files = (list: Array<{ path: string; previousPath?: string }>) => ({ changedFiles: async () => ({ files: list.map((item) => ({ ...item, status: "modified", additions: 1, deletions: 0 })) }) });
+    for (const list of [[{ path: ".rovara/company-rules.md" }], [{ path: "x.md", previousPath: ".rovara/company-rules.md" }]]) {
+      expect(await leavesLessonsFileAlone(files(list), REF2, SCOPE)).toEqual({ ok: false, reason: "touches_company_rules" });
+    }
+    expect(await leavesLessonsFileAlone(files([{ path: "docs/our-rules.md" }]), REF2, SCOPE, { companyRulesPath: "docs/our-rules.md" })).toEqual({ ok: false, reason: "touches_company_rules" });
+    expect(await leavesLessonsFileAlone(files([{ path: "docs/our-rules.md" }]), REF2, SCOPE)).toEqual({ ok: true });
+    // The lessons file still has its own reason, and is checked first.
+    expect(await leavesLessonsFileAlone(files([{ path: ".rovara/lessons.md" }, { path: ".rovara/company-rules.md" }]), REF2, SCOPE)).toEqual({ ok: false, reason: "touches" });
+  });
+
+  it("the worker refuses to push a change to it, with the fixed sentence, on a first push and on a push onto an existing pull request", async () => {
+    const out = (paths: string[]) => async () => `${paths.join("\0")}\0`;
+    await expect(assertLessonsFileUntouched(out(["src/a.ts", ".rovara/company-rules.md"]), "c".repeat(40), "b".repeat(40))).rejects.toThrow(COMPANY_RULES_FILE_REFUSAL);
+    await expect(assertLessonsFileUntouched(out(["src/a.ts"]), "c".repeat(40), "b".repeat(40))).resolves.toBeUndefined();
+    // On a pull request: a commit that differs from its one parent in the file is refused with the company sentence; the lessons sentence is kept for the lessons file.
+    const git = (diff: string) => async (args: string[]) => (args[0] === "rev-list" ? `${"c".repeat(40)} ${"b".repeat(40)}` : diff);
+    await expect(pushGuard(git(".rovara/company-rules.md\0"), "HEAD")).rejects.toThrow(COMPANY_RULES_FILE_REFUSAL);
+    await expect(pushGuard(git(".rovara/lessons.md\0"), "HEAD")).rejects.toThrow(LESSONS_FILE_REFUSAL);
+    await expect(pushGuard(git("src/a.ts\0"), "HEAD")).resolves.toBeUndefined();
   });
 });

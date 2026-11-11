@@ -20,11 +20,11 @@ import { companyPolicyRaw } from "./support/company-policy-raw.js";
 const PATH = "/v1/app/org/test-images";
 const features = { localAgents: false, admin: true, usage: false, chains: false, describe: false, notices: false };
 const image = (changes: Record<string, unknown> = {}) => ({
- imageId: "img_" + "1".repeat(20), revision: 1, status: "proposed", image: "postgres:18", registry: "docker.io", official: true, digest: "d".repeat(64), family: "postgres", version: "18", origin: "setup", project: "orders",
+ imageId: "img_" + "1".repeat(20), revision: 1, status: "proposed", image: "postgres:18", registry: "docker.io", official: true, copy: "none", digest: "d".repeat(64), family: "postgres", version: "18", origin: "setup", project: "orders",
  proposedBy: "Maya Chen", proposedByYou: false, proposedAt: "2026-11-11T09:00:00.000Z", updatedAt: "2026-11-11T09:00:00.000Z", ...changes,
 });
-type State = { images: Array<Record<string, unknown>>; catalogAvailable: boolean; kinds: string[] };
-const initial = (images: Array<Record<string, unknown>> = []): State => ({ images, catalogAvailable: true, kinds: ["mysql", "postgres", "redis"] });
+type State = { images: Array<Record<string, unknown>>; catalogAvailable: boolean; kinds: string[]; registries: { revision: number; hosts: string[] } };
+const initial = (images: Array<Record<string, unknown>> = []): State => ({ images, catalogAvailable: true, kinds: ["mysql", "postgres", "redis"], registries: { revision: 0, hosts: [] } });
 type Handler = (request: ApiRequest) => ApiResponse | undefined | Promise<ApiResponse | undefined>;
 const refuse = (status: number, code: string, message: string) => ({ status, body: { error: { code, message } } });
 
@@ -124,6 +124,30 @@ describe("the screen", () => {
   expect(f.posts().map(request => request.body)).toEqual([
    { action: "revoke", imageId: "img_" + "1".repeat(20), expectedRevision: 1 }, { action: "revoke", imageId: "img_" + "4".repeat(20), expectedRevision: 2 }, { action: "add", image: "postgres:17.5" },
   ]);
+ });
+ it("shows the company's own registries, adds one at the revision it saw, removes one, and says whether an approved image has been copied into the company's registry", async () => {
+  const state = { ...initial([image({ imageId: "img_" + "7".repeat(20), image: "mysql:9", status: "approved", revision: 2, copy: "copying" }), image({ imageId: "img_" + "8".repeat(20), image: "redis:7", family: "redis", status: "approved", revision: 2, copy: "ready" }), image({ imageId: "img_" + "9".repeat(20), image: "valkey:8", family: "redis", status: "approved", revision: 2, copy: "failed" })]), registries: { revision: 3, hosts: ["registry.example.com"] } };
+  const f = mount({ state, post: () => ({ status: 200, body: { status: "done", ...state } }) });
+  const section = within(await screen.findByRole("region", { name: "Registries images may come from" }));
+  expect(section.getByText("registry.example.com")).toBeTruthy();
+  expect(within(screen.getByRole("region", { name: "mysql:9" })).getByText(/Being copied into your registry/)).toBeTruthy();
+  expect(within(screen.getByRole("region", { name: "redis:7" })).getByText(/Copied into your registry and ready to run/)).toBeTruthy();
+  expect(within(screen.getByRole("region", { name: "valkey:8" })).getByText(/The copy into your registry failed/)).toBeTruthy();
+  fireEvent.change(section.getByLabelText("Registry host"), { target: { value: " registry.other.com " } });
+  fireEvent.click(section.getByRole("button", { name: "Add registry" }));
+  await screen.findByText("Added.");
+  fireEvent.click(section.getByRole("button", { name: "Remove" }));
+  await screen.findByText("Removed.");
+  expect(f.posts().map(request => request.body)).toEqual([{ action: "add_registry", host: "registry.other.com", expectedRevision: 3 }, { action: "remove_registry", host: "registry.example.com", expectedRevision: 3 }]);
+ });
+ it("shows the server's words when a registry is refused, and offers a new sign-in when the sign-in is old", async () => {
+  mount({ post: () => refuse(401, "REAUTH_REQUIRED", "Sign in again to confirm this company change.") });
+  const section = within(await screen.findByRole("region", { name: "Registries images may come from" }));
+  expect(section.getByText("No extra registry has been added.")).toBeTruthy();
+  fireEvent.change(section.getByLabelText("Registry host"), { target: { value: "registry.example.com" } });
+  fireEvent.click(section.getByRole("button", { name: "Add registry" }));
+  await screen.findByText("Sign in again to confirm this company change.");
+  expect(screen.getByRole("button", { name: "Sign in again" })).toBeTruthy();
  });
  it("flags an image that is not an official one, says what a revoke does not stop, and flags nothing on an official one", async () => {
   mount({ state: initial([image(), image({ imageId: "img_" + "5".repeat(20), image: "acme/postgres:16", registry: "ghcr.io", official: false }), image({ imageId: "img_" + "6".repeat(20), image: "mysql:9", status: "approved", revision: 2 })]) });

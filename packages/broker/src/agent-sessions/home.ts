@@ -42,14 +42,14 @@ export interface HomeDependencies extends SessionReadDependencies {
   pendingDecisions?: ((caller: HomeCaller) => Promise<readonly PendingDecisionRef[]>) | undefined;
 }
 /** A pending decision card as Home counts it: its id, its kind and the task it is about (when it is about one). */
-export interface PendingDecisionRef { cardId: string; kind: string; taskId?: string | undefined }
+export interface PendingDecisionRef { cardId: string; kind: string; taskId?: string | undefined; /** The project the card is about (the per-project count reads it). */ project?: string | undefined }
 export type HomeCaller = SessionReadCaller;
 
 /**
  * A card a source answers. `blocksRunningSession` ranks an approval or a budget request above the rest; `occurrence` says which happening of the card this is (a failure's end or summary revision;
  * default: `at`), so a dismissal hides that happening and not a new one. Home takes both off before answering.
  */
-export type HomeSourceCard = HomeCard & { blocksRunningSession?: true; occurrence?: string; /** The task a card about one of the caller's own sessions is about (UX2 slice 2: a decision card for it replaces a plan or merge card). */ taskId?: string };
+export type HomeSourceCard = HomeCard & { blocksRunningSession?: true; occurrence?: string; /** The project the card is about, when the source knows it: only for the per-project "needs you" count in the sidebar's navigation, never part of the answer. */ project?: string; /** The task a card about one of the caller's own sessions is about (UX2 slice 2: a decision card for it replaces a plan or merge card). */ taskId?: string };
 
 /** What one request already learned, shared by the sources so the caller's sessions are read once. */
 export interface HomeContext {
@@ -253,6 +253,9 @@ function approvalWords(record: AnyApprovalRecord, task: Item | undefined): { tit
   return { title: prompt, reason: fit(`${agent} is waiting for you to approve: `, prompt), taskId, ...(sessionId === undefined ? {} : { sessionId }) };
 }
 
+/** The project of a session the source read, as a card field (absent for a session with none). */
+const projectOf = (session: { project?: string | undefined } | undefined): { project?: string } => (session?.project === undefined ? {} : { project: session.project });
+
 const approvalSource: HomeCardSource = {
   kind: "approval",
   async list(deps, caller, context) {
@@ -283,6 +286,7 @@ const approvalSource: HomeCardSource = {
         cardId: `approval:${record.approvalId}`, kind: "approval", title: entry.title, reason: entry.reason, ...(viewable ? { sessionId: session.sessionId } : {}), at: record.createdAt,
         buttons: [confirmButton(deps, record.approvalId, "Open"), ...(viewable ? [openSession(deps, session.sessionId)] : [])],
         ...(session !== undefined && session.endedAt === undefined ? { blocksRunningSession: true as const } : {}),
+        ...projectOf(session),
       });
     }
     return cards;
@@ -322,6 +326,7 @@ const spendSource: HomeCardSource = {
         cardId: `spend_request:${record.spendRequestId}`, kind: "spend_request", title: "Budget request", reason: fit(`${label} needs $${String(Number(record.amountUsd.toFixed(2)))} more`, ""), ...(viewable ? { sessionId: session.sessionId } : {}),
         at: record.createdAt, buttons: [confirmButton(deps, record.spendRequestId, "Decide"), ...(viewable ? [openSession(deps, session.sessionId)] : [])],
         ...(session !== undefined && session.endedAt === undefined ? { blocksRunningSession: true as const } : {}),
+        ...projectOf(session),
       });
     }
     return cards;
@@ -342,6 +347,7 @@ const planSource: HomeCardSource = {
       return [{
         cardId: `plan:${session.sessionId}`, kind: "plan", title: session.title, reason: fit(`Your plan for ${quoted(session.title)} is ready to review`, ""), sessionId: session.sessionId, at: session.updatedAt,
         ...(session.subject.kind === "task" ? { taskId: session.subject.taskId } : {}),
+        ...projectOf(session),
         buttons: [openSession(deps, session.sessionId, "Review plan")],
       }];
     });
@@ -378,6 +384,7 @@ const pullRequestSource: HomeCardSource = {
       const waiting = await waitsForReview(deps, own, workflow);
       return [{
         ...(session.subject.kind === "task" ? { taskId: session.subject.taskId } : {}),
+        ...projectOf(session),
         cardId: `pull_request:${session.sessionId}`, kind: "pull_request", title: session.title, reason: fit(`Your pull request for ${quoted(session.title)} ${waiting ? "is waiting for review" : "is ready for review"}`, ""), sessionId: session.sessionId, at: session.updatedAt,
         buttons: [url === undefined ? openSession(deps, session.sessionId) : { label: "Open pull request", action: "open" as const, href: url, method: "GET" as const }],
       }];
@@ -422,7 +429,7 @@ const reviewerSource: HomeCardSource = {
       const digest = createHash("sha256").update(`${wait.taskId}\n${wait.repositoryId}\n${String(wait.number)}`, "utf8").digest("hex").slice(0, 24);
       cards.push({
         cardId: `pull_request:rv_${digest}`, kind: "pull_request", title: cut(shownText(label, 300), 300) || "Pull request", reason: fit(`${quoted(label)} has been waiting for your review for ${String(days)} ${days === 1 ? "day" : "days"}`, ""),
-        ...(viewable ? { sessionId: session.sessionId } : {}), at: wait.at,
+        ...(viewable ? { sessionId: session.sessionId } : {}), at: wait.at, ...projectOf(session),
         buttons: [...(address === undefined ? [] : [{ label: "Open pull request", action: "open" as const, href: address, method: "GET" as const }]), ...(viewable ? [openSession(deps, session.sessionId)] : [])],
       });
     }
@@ -456,7 +463,7 @@ const failureSource: HomeCardSource = {
       const cardId = `failure:${session.sessionId}`;
       const occurrence = session.endedAt !== undefined ? `ended:${session.endedAt}` : `rev:${String(session.summaryRevision)}`;
       return [{
-        cardId, kind: "failure", occurrence, title: session.title, reason: fit(`${quoted(session.title)} failed: `, said), sessionId: session.sessionId, at: session.endedAt ?? session.updatedAt,
+        ...projectOf(session), cardId, kind: "failure", occurrence, title: session.title, reason: fit(`${quoted(session.title)} failed: `, said), sessionId: session.sessionId, at: session.endedAt ?? session.updatedAt,
         buttons: [
           openSession(deps, session.sessionId),
           ...(mayRetry(own) ? [{ label: "Retry", action: "retry" as const, href: `${origin}/v1/app/sessions/${session.sessionId}/retry`, method: "POST" as const }] : []),
@@ -495,7 +502,7 @@ const blockedSource: HomeCardSource = {
       if (typeof workflow?.stage === "string" && typeof workflow.state === "string" && OWN_CARD_WAITS.has(`${workflow.stage}/${workflow.state}`)) return [];
       return [{
         cardId: `blocked:${session.sessionId}`, kind: "blocked", title: session.title, reason: needsYouReason(taskStatusText(display), display.next), sessionId: session.sessionId, at: session.updatedAt,
-        ...(session.subject.kind === "task" ? { taskId: session.subject.taskId } : {}),
+        ...(session.subject.kind === "task" ? { taskId: session.subject.taskId } : {}), ...projectOf(session),
         buttons: [openSession(deps, session.sessionId, "Open task")],
       }];
     });
@@ -518,7 +525,7 @@ const pausedSource: HomeCardSource = {
       const mayRaise = context.orgRole === "owner" || context.orgRole === "admin";
       return [{
         cardId: `paused:${session.sessionId}`, kind: "paused", title: session.title, reason: needsYouReason(text, budgetPauseNext(scopeKind, mayRaise, session.summary.pendingApprovals > 0)), sessionId: session.sessionId, at: session.updatedAt,
-        ...(session.subject.kind === "task" ? { taskId: session.subject.taskId } : {}),
+        ...(session.subject.kind === "task" ? { taskId: session.subject.taskId } : {}), ...projectOf(session),
         buttons: [openSession(deps, session.sessionId, "Open task")],
       }];
     });
@@ -563,7 +570,7 @@ async function collect(deps: HomeDependencies, caller: HomeCaller): Promise<Coll
     if (retired.has(source.kind)) continue;
     if (answered.length > HOME_SOURCE_CARDS_MAX) log({ event: "home.source_truncated", source: source.kind });
     for (const card of answered.slice(0, HOME_SOURCE_CARDS_MAX)) {
-      const { blocksRunningSession, occurrence, taskId, ...shown } = card;
+      const { blocksRunningSession, occurrence, taskId, project, ...shown } = card;
       const checked = HomeCardSchema.safeParse(shown);
       if (!checked.success || checked.data.kind !== source.kind || !checked.data.cardId.startsWith(`${source.kind}:`)) {
         log({ event: "home.card_invalid", source: source.kind, problem: checked.success ? "kind" : checked.error.issues[0]?.path.join(".") ?? "card" });
@@ -572,7 +579,7 @@ async function collect(deps: HomeDependencies, caller: HomeCaller): Promise<Coll
       if (seen.has(checked.data.cardId)) continue;
       seen.add(checked.data.cardId);
       const kept = occurrence !== undefined && OCCURRENCE_PATTERN.test(occurrence) ? occurrence : undefined;
-      cards.push({ ...checked.data, ...(blocksRunningSession === true ? { blocksRunningSession } : {}), ...(kept === undefined ? {} : { occurrence: kept }), ...(typeof taskId === "string" ? { taskId } : {}) });
+      cards.push({ ...checked.data, ...(blocksRunningSession === true ? { blocksRunningSession } : {}), ...(kept === undefined ? {} : { occurrence: kept }), ...(typeof taskId === "string" ? { taskId } : {}), ...(typeof project === "string" ? { project } : {}) });
     }
   }
   return { cards, dismissed: await dismissedBy(deps, caller) };
@@ -630,11 +637,28 @@ const ranked = (cards: readonly HomeSourceCard[]): HomeSourceCard[] => [...cards
  * in the org has none.
  */
 export async function homeCards(deps: HomeDependencies, caller: HomeCaller): Promise<HomeResponse> {
-  const [{ cards, dismissed }, decisions] = await Promise.all([collect(deps, caller), pendingDecisionsOf(deps, caller)]);
-  const shown = ranked(withoutRestating(withoutDecided(cards.filter((card) => !(isDismissible(card.kind) && dismissed.get(card.cardId) === occurrenceOf(card))), decisions ?? []), decisions ?? []));
-  const answer = shown.slice(0, HOME_CARDS_MAX).map(({ blocksRunningSession: _blocks, occurrence: _occurrence, taskId: _taskId, ...card }) => card); // eslint-disable-line @typescript-eslint/no-unused-vars -- the ranking hint, the occurrence and the task are not part of the answer
+  const { shown, decisions } = await shownCards(deps, caller);
+  const answer = shown.slice(0, HOME_CARDS_MAX).map(({ blocksRunningSession: _blocks, occurrence: _occurrence, taskId: _taskId, project: _project, ...card }) => card); // eslint-disable-line @typescript-eslint/no-unused-vars -- the ranking hint, the occurrence, the task and the project are not part of the answer
   // Without the decision cards wired (cards off, or an older wiring) the one count is Home's own: `needsYou` is left out and readers use `total`.
   return { cards: answer, total: shown.length, ...(deps.pendingDecisions === undefined ? {} : { needsYou: shown.length + (decisions?.length ?? 0) }) };
+}
+
+/** The caller's cards as Home shows them (every one, ranked), and their pending decision cards: the one set both the Home answer and the navigation's counts are made from. */
+async function shownCards(deps: HomeDependencies, caller: HomeCaller): Promise<{ shown: HomeSourceCard[]; decisions: readonly PendingDecisionRef[] | undefined }> {
+  const [{ cards, dismissed }, decisions] = await Promise.all([collect(deps, caller), pendingDecisionsOf(deps, caller)]);
+  const shown = ranked(withoutRestating(withoutDecided(cards.filter((card) => !(isDismissible(card.kind) && dismissed.get(card.cardId) === occurrenceOf(card))), decisions ?? []), decisions ?? []));
+  return { shown, decisions };
+}
+
+/**
+ * The navigation's counts: Home's `total` and `needsYou` exactly as `homeCards` gives them, and `byProject`: how many of those same cards (and pending decision cards) are about each project, for the caller only.
+ * A card whose source names no project (an organization-wide budget request, say) is in `needsYou` but in no project's count, so the projects' counts may add up to less than `needsYou`.
+ */
+export async function homeNeedsYou(deps: HomeDependencies, caller: HomeCaller): Promise<{ total: number; needsYou?: number; byProject: Record<string, number> }> {
+  const { shown, decisions } = await shownCards(deps, caller);
+  const byProject: Record<string, number> = Object.create(null) as Record<string, number>;
+  for (const entry of [...shown, ...(decisions ?? [])]) if (entry.project !== undefined) byProject[entry.project] = (byProject[entry.project] ?? 0) + 1;
+  return { total: shown.length, ...(deps.pendingDecisions === undefined ? {} : { needsYou: shown.length + (decisions?.length ?? 0) }), byProject };
 }
 
 /** The caller's pending decision cards, or undefined when there are none to read (cards off) or they could not be read (logged; Home's own cards still count). */

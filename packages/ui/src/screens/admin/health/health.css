@@ -1,0 +1,31 @@
+/* Health and readiness (switch rovara.health = v2). New file: nothing here is read while the switch is off. One column, wrapping text, 44px targets. */
+.rv-health{max-width:76ch}
+.rv-health-counts{margin:var(--rv-space-4) 0;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--rv-space-3)}
+.rv-health-counts>div{padding:var(--rv-space-3) var(--rv-space-4);border:1px solid var(--rv-border);border-radius:var(--rv-radius-md,8px);background:var(--rv-bg-raised)}
+.rv-health-counts dt{color:var(--rv-text-muted);font-size:var(--rv-font-sm)}
+.rv-health-counts dd{margin:0;font-size:var(--rv-font-xl);font-weight:600}
+.rv-health-list{list-style:none;padding:0;margin:var(--rv-space-4) 0;display:grid;gap:var(--rv-space-3)}
+.rv-health-row{display:grid;gap:var(--rv-space-2);padding:var(--rv-space-4);border:1px solid var(--rv-border);border-radius:var(--rv-radius-md,8px);background:var(--rv-bg-raised)}
+.rv-health-row p{margin:0;overflow-wrap:anywhere}
+.rv-health-head{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:var(--rv-space-2)}
+.rv-health-title{margin:0;font-size:var(--rv-font-md,1rem);overflow-wrap:anywhere}
+.rv-health-meta{display:flex;flex-wrap:wrap;gap:var(--rv-space-1) var(--rv-space-4);color:var(--rv-text-muted);font-size:var(--rv-font-sm)}
+.rv-health-fix{display:flex;flex-wrap:wrap;align-items:center;gap:var(--rv-space-1) var(--rv-space-3)}
+.rv-health-link{display:inline-flex;align-items:center;min-height:44px}
+.rv-health-details summary{display:flex;align-items:center;min-height:44px;cursor:pointer}
+.rv-health-details ul{margin:0;padding-left:var(--rv-space-5);display:grid;gap:var(--rv-space-1);overflow-wrap:anywhere}
+.rv-health-chip{display:inline-flex;align-items:center;gap:var(--rv-space-1);padding:2px var(--rv-space-3);border:1px solid var(--rv-border-strong);border-radius:999px;font-size:var(--rv-font-sm);font-weight:600;color:var(--rv-text);white-space:nowrap}
+.rv-health-chip svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.rv-health-chip-healthy{background:var(--rv-status-done-bg);border-color:var(--rv-status-done)}
+.rv-health-chip-healthy svg{color:var(--rv-status-done)}
+.rv-health-chip-action{background:var(--rv-status-needs-you-bg);border-color:var(--rv-status-needs-you)}
+.rv-health-chip-action svg{color:var(--rv-status-needs-you)}
+.rv-health-chip-unknown,.rv-health-chip-checking{background:var(--rv-bg-sunken)}
+.rv-health-needs-list{list-style:none;padding:0;margin:0;display:grid;gap:var(--rv-space-3)}
+.rv-health-needs-item{padding:var(--rv-space-3) var(--rv-space-4);border:1px solid var(--rv-border);border-radius:var(--rv-radius-md,8px);background:var(--rv-bg-raised)}
+.rv-health-needs-item h3{margin:0}.rv-health-needs-item p{margin:var(--rv-space-1) 0;overflow-wrap:anywhere}
+.rv-health-needs>p,.rv-health-glance>p{margin:0;overflow-wrap:anywhere}
+@media(max-width:767px){
+ .rv-health-counts{grid-template-columns:minmax(0,1fr)}
+ .rv-health-chip{white-space:normal}
+}

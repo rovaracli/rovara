@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { SettingsNote } from "../SettingsNote.js";
 import { Link, useParams } from "react-router";
 import type { OrgServiceStatus } from "@agentx/contracts/web";
@@ -6,6 +6,9 @@ import { useAppHost } from "../../../host.js";
 import { createServiceStatusApi } from "../../../api/service-status.js";
 import { PageHeader } from "../../../design/PageHeader.js";
 import { useAdminContext } from "../AdminLayout.js";
+import { isHealthV2On } from "./health-flags.js";
+// Switch rovara.health = "v2" (off by default): the readiness list replaces the list on this page. The runtime pages under it stay as they were.
+const HealthV2 = lazy(async () => ({ default: (await import("./HealthV2.js")).HealthV2 }));
 type Kind = "web" | "api";
 const name = (kind: Kind) => kind === "web" ? "browser runtime" : "API runtime";
 const reason: Record<OrgServiceStatus["checks"][number]["reason"], string> = {
@@ -39,7 +42,8 @@ export function ServiceStatusContent({ orgId, kind, enabled }: { orgId: string; 
  </section>;
 }
 export function ServiceStatusScreen() {
- const { orgId, checking } = useAdminContext(), { kind } = useParams();
+ const { orgId, checking } = useAdminContext(), { kind } = useParams(), host = useAppHost();
  if (kind !== undefined && kind !== "web" && kind !== "api") return <section><PageHeader focusOnMount title="Service status not found" /><Link to="/app/admin/health">Back to service status</Link></section>;
+ if (kind === undefined && isHealthV2On(host)) return <Suspense fallback={<section><PageHeader title="Health" /><p className="rv-muted">Loading health...</p></section>}><HealthV2 /></Suspense>;
  return <ServiceStatusContent key={orgId} orgId={orgId} {...(kind === undefined ? {} : { kind })} enabled={!checking} />;
 }

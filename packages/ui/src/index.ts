@@ -36,6 +36,8 @@ export * from "./constants.js";
 export * from "./api/client.js";
 export * from "./api/errors.js";
 export * from "./api/query.js";
+export { COMPANY_HEADER, pageCompany, withCompanyHeader, reloadIntoActiveCompany } from "./api/company-context.js";
+export { COMPANIES_STORAGE_KEY, isCompanySwitcherOn } from "./company-flags.js";
 
 export * from "./realtime/client.js";
 export * from "./realtime/invalidate.js";

@@ -1,5 +1,6 @@
 import { createHash, createSign } from "node:crypto";
 import { commitFilesOn, deleteBranchOn, type CommitFilesRequest } from "./github-commit-files.js";
+import { COMPANY_RULES_BRANCH_PATTERN } from "./company-rules/path.js";
 import { GitBranchNameSchema, HostRateLimitError, LESSON_FILE_BRANCH_PATTERN, OrgIdSchema, PULL_REQUEST_BODY_MAX_CHARS, agentXError, createCandidateManifest, githubNotConnectedMessage, isSafeE2ESourcePath, redactText, type AgentXError, type E2ESourceSnapshot, type OrgId } from "@agentx/contracts";
 import type { RepositoryAccess, RepositoryCredential } from "./repository-access.js";
 import type { GithubMergeReadBudget } from "./aws/workflow-merge-recovery.js";
@@ -1589,7 +1590,7 @@ export class GitHubAppCredentialProvider {
 
   /** Lessons in the repo: the pull request (any state) made from one of Rovara's own `rovara/lessons-` branches, or undefined. No other branch name is looked up. */
   async findLessonsPullRequest(repositoryUrl: string, branch: string, scope: GitHubTokenScope): Promise<{ number: number; url: string } | undefined> {
-    if (!LESSON_FILE_BRANCH_PATTERN.test(branch)) throw agentXError("CONFIG_INVALID", "branch name is invalid");
+    if (!LESSON_FILE_BRANCH_PATTERN.test(branch) && !COMPANY_RULES_BRANCH_PATTERN.test(branch)) throw agentXError("CONFIG_INVALID", "branch name is invalid");
     const repository = await this.installed(parseGitHubRepository(repositoryUrl), scope);
     const token = await this.createInstallationToken(repository, { pull_requests: "read" }, scope);
     const query = new URLSearchParams({ state: "all", head: `${repository.owner}:${branch}`, per_page: "1" });

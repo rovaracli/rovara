@@ -43,6 +43,11 @@ export function fixtureDigestsOfPlan(plan: { dependencies?: readonly TaskDepende
   return [...new Set((plan?.dependencies ?? []).flatMap((dependency) => (dependency.backing === "fake" && dependency.fake !== undefined ? [dependency.fake.fixtureSetRef] : [])))];
 }
 
+/** The distinct ids of the company images a PLAN names (what a run is allowed to ask the broker for a pull login of). */
+export function companyImageIdsOfPlan(plan: { dependencies?: readonly TaskDependencyPlan[] | undefined } | undefined): string[] {
+  return [...new Set((plan?.dependencies ?? []).flatMap((dependency) => (dependency.backing === "company" && dependency.company !== undefined ? [dependency.company.imageId] : [])))];
+}
+
 /**
  * The approved sets among those the environment names, by digest. Never throws. A set counts only if its row says `approved` and clean for this organisation and this project, and the row's own org, project and digest are what
  * was asked (the store checks that too; this is the plan's second look). An environment of project B that names project A's digest finds nothing (H1).

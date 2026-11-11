@@ -9,7 +9,7 @@ import { navigationReadCache } from "../../app-nav/read-cache.js";
 import { trialAvailable } from "../../org/trial-availability.js";
 import { APP_NAV_CACHE_MS, appNav, orgTrial, type AppNavDependencies } from "../../app-nav/nav.js";
 import { navigationLive } from "../../agent-sessions/live.js";
-import { homeCards } from "../../agent-sessions/home.js";
+import { homeNeedsYou } from "../../agent-sessions/home.js";
 import { listSessions } from "../../agent-sessions/read.js";
 import { listRoster } from "../../agents/roster.js";
 import { listVisibleAgents } from "../../agents/access.js";
@@ -99,7 +99,7 @@ export async function getAppNavigation(deps: DeveloperRouteDependencies, caller:
    projects: async () => (await members.projectsOf(caller.orgId, caller)).map(project => ({ name: project.project })),
    rosters: async (_who, names) => (await mapLimit(names, REVISION_READS_AT_ONCE, async project => (await listRoster(cachedAgents, caller, project)).filter(agent => !agent.disabled && agent.status === "active").map(agent => ({ project, agentId: agent.agentId, name: agent.name })))).flat(),
    live: async () => (await live()).map(tile => ({ sessionId: tile.sessionId, ...(tile.project === undefined ? {} : { project: tile.project }), ...(tile.agent === undefined ? {} : { agentId: tile.agent.agentId }), running: true, needsYou: tile.needsYou })),
-   home: async () => homeCards(reads, caller),
+   home: async () => homeNeedsYou(reads, caller),
    sharedAgents: async () => (await listVisibleAgents(cachedAgents, caller, "shared")).map(agent => ({ agentId: agent.agentId, name: agent.name })),
    sharedSessions: async () => (await listSessions(reads, caller, { shared: "me", status: "open", limit: 10 })).sessions.map(session => ({ sessionId: session.sessionId, title: session.title, ...(session.endedAt === undefined ? {} : { endedAt: session.endedAt }) })),
    org: async () => { const org = await orgs.getOrg(caller.orgId);if (org === undefined) throw agentXError("NOT_FOUND", "your organization was not found");return org; },
