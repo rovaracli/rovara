@@ -1,6 +1,6 @@
 import { copyFile, mkdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-for (const path of ["design/design.css", "look-v2.css", "shell/shell.css", "screens/home/home.css", "screens/live/live.css", "screens/project/project.css", "screens/session/session.css", "screens/builder/builder.css", "screens/agents/agents.css", "screens/onboarding/onboarding.css", "screens/admin/admin.css",
+for (const path of ["design/design.css", "look-v2.css", "shell/shell.css", "screens/home/home.css", "screens/live/live.css", "screens/project/project.css", "screens/session/session.css", "screens/builder/builder.css", "screens/agents/agents.css", "screens/onboarding/onboarding.css", "screens/onboarding/setup-v2/project-setup.css", "screens/admin/admin.css",
  // Lane B: allowed-websites editor, shared by admin and own-project surfaces.
  "screens/admin/projects/allowed-websites.css",
  "screens/admin/projects/project-slack.css",
