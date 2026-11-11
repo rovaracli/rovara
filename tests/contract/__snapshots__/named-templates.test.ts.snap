@@ -2937,6 +2937,26 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
         },
       ],
     },
+    "TaskPersonProofInstallTaskPersonProofE63432B2": {
+      "Fn::Or": [
+        {
+          "Fn::Equals": [
+            {
+              "Ref": "TaskPersonProofEnabled",
+            },
+            "true",
+          ],
+        },
+        {
+          "Fn::Equals": [
+            {
+              "Ref": "TaskPeopleChangesEnabled",
+            },
+            "true",
+          ],
+        },
+      ],
+    },
   },
   "Description": "AgentX authenticated control plane and durable dispatch foundation",
   "Outputs": {
@@ -3478,6 +3498,15 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
       ],
       "Default": "0",
       "Description": "1: the project's How we work reaches every step in the system prompt, in one block with the company's rules and the precedence wording (turn on only after the worker image that carries task.standingInstructions.v1 is deployed); 0: How we work stays in the user message (agentx config set standingInstructions.enabled 1)",
+      "Type": "String",
+    },
+    "TaskPersonProofEnabled": {
+      "AllowedValues": [
+        "true",
+        "false",
+      ],
+      "Default": "false",
+      "Description": "Install the dedicated task person proof workload on its own. It is installed anyway while TaskPeopleChangesEnabled is true; with both false nothing is created",
       "Type": "String",
     },
     "TestAccountsEnabled": {
@@ -8296,6 +8325,15 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
             "DELETER_ARN": {
               "Ref": "SessionsDeleterB48741EA",
             },
+            "DEVELOPER_SIGNIN_TABLE_NAME": {
+              "Fn::If": [
+                "TaskPersonProofInstallTaskPersonProofE63432B2",
+                {
+                  "Ref": "DeveloperSignInTable26CE739E",
+                },
+                "",
+              ],
+            },
             "DISPATCH_QUEUE_ARN": {
               "Fn::GetAtt": [
                 "DispatchQueue898EB017",
@@ -8318,8 +8356,26 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
             "SAVED_ENV_ENABLED": {
               "Ref": "SavedEnvEnabled",
             },
+            "SLACK_TEAM_ID": {
+              "Fn::If": [
+                "TaskPersonProofInstallTaskPersonProofE63432B2",
+                {
+                  "Ref": "SlackTeamId",
+                },
+                "",
+              ],
+            },
             "STATE_TABLE_NAME": {
               "Ref": "State1C20CC9A",
+            },
+            "TASK_PERSON_PROOF_FUNCTION_ARN": {
+              "Fn::If": [
+                "TaskPersonProofInstallTaskPersonProofE63432B2",
+                {
+                  "Ref": "TaskPersonProofFunctionCurrentVersion<code-hash>",
+                },
+                "",
+              ],
             },
           },
         },
@@ -16306,6 +16362,228 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
       },
       "Type": "AWS::DynamoDB::Table",
       "UpdateReplacePolicy": "Retain",
+    },
+    "TaskPersonProofDispatcherPolicyA9AE8601": {
+      "Condition": "TaskPersonProofInstallTaskPersonProofE63432B2",
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "dynamodb:GetItem",
+              ],
+              "Condition": {
+                "ForAllValues:StringEquals": {
+                  "dynamodb:Attributes": [
+                    "pk",
+                    "sk",
+                    "developerId",
+                    "provider",
+                    "issuer",
+                    "subject",
+                    "slackUserId",
+                    "revoked",
+                    "mergedInto",
+                    "displayName",
+                  ],
+                },
+                "ForAllValues:StringLike": {
+                  "dynamodb:LeadingKeys": [
+                    "DEVELOPER#*",
+                  ],
+                },
+                "Null": {
+                  "dynamodb:Attributes": "false",
+                  "dynamodb:LeadingKeys": "false",
+                },
+              },
+              "Effect": "Allow",
+              "Resource": [
+                {
+                  "Fn::GetAtt": [
+                    "DeveloperSignInTable26CE739E",
+                    "Arn",
+                  ],
+                },
+              ],
+            },
+            {
+              "Action": [
+                "dynamodb:GetItem",
+              ],
+              "Condition": {
+                "StringNotEqualsIfExists": {
+                  "dynamodb:Select": "SPECIFIC_ATTRIBUTES",
+                },
+              },
+              "Effect": "Deny",
+              "Resource": [
+                {
+                  "Fn::GetAtt": [
+                    "DeveloperSignInTable26CE739E",
+                    "Arn",
+                  ],
+                },
+              ],
+              "Sid": "DenyGetItemUnlessSpecificAttributes",
+            },
+            {
+              "Action": [
+                "lambda:InvokeFunction",
+              ],
+              "Effect": "Allow",
+              "Resource": [
+                {
+                  "Ref": "TaskPersonProofFunctionCurrentVersion<code-hash>",
+                },
+              ],
+            },
+          ],
+          "Version": "2012-10-17",
+        },
+        "PolicyName": "staging-task-person-proof-dispatcher",
+        "Roles": [
+          {
+            "Ref": "DispatcherServiceRole904BCD09",
+          },
+        ],
+      },
+      "Type": "AWS::IAM::Policy",
+    },
+    "TaskPersonProofFunction817A5A36": {
+      "Condition": "TaskPersonProofInstallTaskPersonProofE63432B2",
+      "DependsOn": [
+        "TaskPersonProofRole367E174C",
+      ],
+      "Properties": {
+        "Code": {
+          "S3Bucket": {
+            "Fn::Sub": "cdk-hnb659fds-assets-\${AWS::AccountId}-\${AWS::Region}",
+          },
+          "S3Key": "<asset-hash>.zip",
+        },
+        "Environment": {
+          "Variables": {
+            "AGENTX_ACCOUNT_ID": {
+              "Ref": "AWS::AccountId",
+            },
+            "AGENTX_ENV": "staging",
+            "SLACK_SECRET_ARN": {
+              "Ref": "SlackSecretEA96F13F",
+            },
+            "SLACK_TEAM_ID": {
+              "Ref": "SlackTeamId",
+            },
+          },
+        },
+        "Handler": "index.handler",
+        "MemorySize": 512,
+        "Role": {
+          "Fn::GetAtt": [
+            "TaskPersonProofRole367E174C",
+            "Arn",
+          ],
+        },
+        "Runtime": "nodejs22.x",
+        "Tags": [
+          {
+            "Key": "agentx:env",
+            "Value": "staging",
+          },
+        ],
+        "Timeout": 7,
+      },
+      "Type": "AWS::Lambda::Function",
+    },
+    "TaskPersonProofFunctionCurrentVersion<code-hash>": {
+      "Condition": "TaskPersonProofInstallTaskPersonProofE63432B2",
+      "Metadata": {
+        "aws:cdk:do-not-refactor": true,
+      },
+      "Properties": {
+        "FunctionName": {
+          "Ref": "TaskPersonProofFunction817A5A36",
+        },
+      },
+      "Type": "AWS::Lambda::Version",
+    },
+    "TaskPersonProofRole367E174C": {
+      "Condition": "TaskPersonProofInstallTaskPersonProofE63432B2",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": "sts:AssumeRole",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "lambda.amazonaws.com",
+              },
+            },
+          ],
+          "Version": "2012-10-17",
+        },
+        "Description": "Reads this environment's Slack secret for fresh task person proof",
+        "Path": "/agentx/staging/",
+        "PermissionsBoundary": {
+          "Fn::If": [
+            "HasPermissionsBoundary",
+            {
+              "Ref": "PermissionsBoundaryArn",
+            },
+            {
+              "Fn::Join": [
+                "",
+                [
+                  "arn:",
+                  {
+                    "Ref": "AWS::Partition",
+                  },
+                  ":iam::",
+                  {
+                    "Ref": "AWS::AccountId",
+                  },
+                  ":policy/agentx/staging/agentx-staging-boundary",
+                ],
+              ],
+            },
+          ],
+        },
+        "Tags": [
+          {
+            "Key": "agentx:env",
+            "Value": "staging",
+          },
+        ],
+      },
+      "Type": "AWS::IAM::Role",
+    },
+    "TaskPersonProofSecretReadPolicy562C4775": {
+      "Condition": "TaskPersonProofInstallTaskPersonProofE63432B2",
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "secretsmanager:GetSecretValue",
+              ],
+              "Effect": "Allow",
+              "Resource": [
+                {
+                  "Ref": "SlackSecretEA96F13F",
+                },
+              ],
+            },
+          ],
+          "Version": "2012-10-17",
+        },
+        "PolicyName": "staging-task-person-proof-secret-read",
+        "Roles": [
+          {
+            "Ref": "TaskPersonProofRole367E174C",
+          },
+        ],
+      },
+      "Type": "AWS::IAM::Policy",
     },
     "TestAccountSecretsRole": {
       "Properties": {

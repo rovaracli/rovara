@@ -132,6 +132,8 @@ describe("the event catalog", () => {
   "member.removal_completed",
   "member.left",
   "member.renamed",
+  "insights_access.granted",
+  "insights_access.revoked",
   "org.closed",
   "org.renamed",
   "org.invite_created",
@@ -277,6 +279,9 @@ describe("the event catalog", () => {
     "task.work_refused": { target: { kind: "task", id: "00000000-0000-4000-8000-000000000001" }, keys: ["path", "cause"], sample: { path: "ci_fix_round", cause: "no_project_access" } },
     "task.second_review_acknowledged": { target: { kind: "task", id: "00000000-0000-4000-8000-000000000001" }, keys: ["cause"], sample: { cause: "no-answer" } },
     "task.design_sole_owner_exception": { target: { kind: "task", id: "00000000-0000-4000-8000-000000000001" }, keys: ["tier", "openBlockers"], sample: { tier: "high", openBlockers: 0 } },
+    // Insights viewer grant (decision 32): the member is the target; no facts.
+    "insights_access.granted": { target: { kind: "member", id: "a".repeat(64) }, keys: [], sample: {} },
+    "insights_access.revoked": { target: { kind: "member", id: "a".repeat(64) }, keys: [], sample: {} },
     "project.second_review_narrowed": { target: { kind: "project", name: "web" }, keys: ["change", "count"], sample: { change: "choose", count: 1 } },
     "evidence.downloaded": { target: { kind: "task", id: "00000000-0000-4000-8000-000000000001" }, keys: ["artifactKind", "retentionClass"], sample: { artifactKind: "webm", retentionClass: "evidence-short" } },
     // v1.2 learning loop (B7, design 8): ids, counts, flags and fixed words; never a correction's or a rule's text.

@@ -185,6 +185,14 @@ export type ChannelMembersResponse =
   | { ok: false; error: "slack_unavailable" }
   | { ok: false; error: "invalid_request" };
 
+/**
+ * The attributes of a developer sign-in row (`DEVELOPER#<id>` / META) a task person check reads, by name. The person runtime asks for exactly these, and the dispatcher's
+ * IAM allows exactly these (infra/lib/task-person-proof.ts), so one list is both: a name in one and not the other would make every read refuse.
+ */
+export const TASK_PERSON_DEVELOPER_RECORD_PROJECTION = [
+  "pk", "sk", "developerId", "provider", "issuer", "subject", "slackUserId", "revoked", "mergedInto", "displayName",
+] as const;
+
 /** Internal, fresh identity and membership proof for a task person. It is never an HTTP route. */
 export const TaskPersonProofRequestSchema = z
   .object({

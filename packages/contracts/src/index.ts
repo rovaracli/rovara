@@ -149,6 +149,7 @@ export * from "./comment-triggers.js";
 export * from "./agent-run-node.js";
 export * from "./agent-templates.js";
 export * from "./app-projects.js";
+export * from "./app-insights.js";
 export * from "./public-suffix.js";
 export * from "./default-allow-domains.js";
 export * from "./egress.js";

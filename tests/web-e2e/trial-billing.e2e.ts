@@ -5,7 +5,7 @@ import { checkA11y } from "./support/axe.js";
 import { evidenceShot } from "./support/screenshot.js";
 import { FIXTURE_SESSION } from "../web/support/fixtures.js";
 import * as fx from "../web/support/trial-billing-fixture.js";
-// The trial allowance, the trial-end choices and Settings > Billing (switch `rovara.billing` = "v2"). Every answer is a fixture fed through page.route: the server is built later. Pictures go to
+// The trial allowance, the trial-end choices and Settings > Billing (switch `rovara.billing` = "v2"). Every answer is a fixture in the real server contract's shapes (packages/contracts/src/app-billing.ts), fed through page.route. Pictures go to
 // .test-build/web-e2e/trial-billing/ (ROVARA_BILLING_SHOTS changes the folder). Off, nothing of this exists.
 const shots = process.env.ROVARA_BILLING_SHOTS ?? ".test-build/web-e2e/trial-billing";
 interface Fixtures { trial?: unknown; billing?: unknown; invoices?: unknown; billingStatus?: number; post?: { status: number; body: unknown } }
@@ -22,7 +22,6 @@ async function enter(page: Page, context: BrowserContext, request: APIRequestCon
   return fixtures.billingStatus === 404 || fixtures.billing === undefined ? route.fulfill({ status: 404, json: { error: { code: "NOT_FOUND", message: "none" } } }) : route.fulfill({ json: fixtures.billing });
  });
  await page.route(/\/v1\/web\/org\/billing\/invoices/u, route => route.fulfill({ json: fixtures.invoices ?? fx.invoicePage(1, 2) }));
- await page.route("**/v1/web/org/members", route => route.fulfill({ json: fx.members() }));
  await mockRealtime(page);await page.setViewportSize({ width, height: 900 });
 }
 const noSidewaysScroll = (page: Page) => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth && document.body.scrollWidth <= innerWidth);
@@ -82,6 +81,18 @@ for (const look of [{ name: "look-off", store: {} }, { name: "look-v2", store: {
  });
 }
 
+test("personal limit used up, a member (1280): the server's notice, Ask an admin and the names it sends; no members read", async ({ page, context, request, baseURL }) => {
+ const trial = fx.trial({ you: fx.you({ member: { limitUsd: 29, spentUsd: 29, committedUsd: 29 }, hitLimit: true, notice: fx.PERSONAL_NOTICE }), admins: fx.admins() });
+ await enter(page, context, request, baseURL, 1280, { "rovara.billing": "v2" }, { trial });
+ await request.post("/__mock/admin-role");await page.goto("/app/trial");
+ const notice = page.getByRole("region", { name: "Your personal limit" });
+ await expect(notice).toContainText("Your personal limit is used up for this month.");await expect(notice).toContainText("Ask an admin.");await expect(notice).toContainText("Priya, Maya");
+ await expect(page.getByRole("main").getByRole("button")).toHaveCount(0);
+ expect(seen.filter(line => line.endsWith("/org/members"))).toEqual([]);
+ expect(await noSidewaysScroll(page)).toBe(true);
+ await evidenceShot(page, { path: `${shots}/personal-limit-member-1280.png`, fullPage: true });await checkA11y(page, { theme: "light" });await checkA11y(page, { theme: "dark" });
+});
+
 test("trial ended, a member (390, dark): the same facts, no buttons, Ask an admin with the admins' names", async ({ page, context, request, baseURL }) => {
  await enter(page, context, request, baseURL, 390, { "rovara.look": "v2", "rovara.billing": "v2" }, { trial: fx.ended(false) }, "dark");
  await request.post("/__mock/admin-role");await page.goto("/app/account");
@@ -91,6 +102,7 @@ test("trial ended, a member (390, dark): the same facts, no buttons, Ask an admi
  await expect(page.getByRole("heading", { name: "Stop" })).toBeVisible();await expect(page.getByRole("heading", { name: "Connect your own AI key" })).toBeVisible();
  await expect(page.getByRole("main").getByRole("button")).toHaveCount(0);
  await expect(page.locator(".rv-tb-ask")).toContainText("Priya, Maya");
+ expect(seen.filter(line => line.endsWith("/org/members"))).toEqual([]);
  expect(await noSidewaysScroll(page)).toBe(true);expect(await smallTargets(page)).toEqual([]);
  await evidenceShot(page, { path: `${shots}/ended-member-v2-dark-390.png`, fullPage: true });await checkA11y(page, { theme: "dark" });await checkA11y(page, { theme: "light" });
 });

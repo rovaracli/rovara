@@ -4,7 +4,7 @@
 // emails, join dates and sign-in methods are for owners and admins (owner decision, option A).
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { SLACK_OIDC_ISSUER, agentSessionKey, orgMetaKey, auditEventId, cleanSessionName, containsEmailAddress, emailSafeName, SetMyNameBodySchema, sessionEventId, withoutEmailAddresses } from "../../packages/contracts/src/index.js";
+import { SLACK_OIDC_ISSUER, agentSessionKey, orgMetaKey, orgMemberKey, auditEventId, cleanSessionName, containsEmailAddress, emailSafeName, SetMyNameBodySchema, sessionEventId, withoutEmailAddresses } from "../../packages/contracts/src/index.js";
 import { auditOccurrence } from "../../packages/broker/src/audit/events.js";
 import { placeholderDisplayName, readableDeveloper, safeDisplayName } from "../../packages/broker/src/developer/person-name.js";
 import { personNameForText } from "../../packages/broker/src/developer/requester-text.js";
@@ -443,8 +443,10 @@ describe("C1: a task's stored People rows from before 0.4.16 stay readable", () 
     db.set({ pk: `DEVTASK#${taskId}`, sk: "META", entityType: "DEVELOPER_TASK", taskId, project: "payments", developerId: owner, provider: "slack", slackUserId: "U0OWNER01" });
     db.set({ pk: `DEVTASK#${taskId}`, sk: `PERSON#${personId}`, schemaVersion: 1, personId, createdAt: "2026-10-01T00:00:00.000Z", developerId: bob, slackUserId, name: "bob@example.com", method: "slack", issuer: SLACK_OIDC_ISSUER, subject: slackUserId });
     db.set({ pk: `DEVTASK#${taskId}`, sk: `PERSON_SUBJECT#${bob}`, schemaVersion: 1, personId, developerId: bob, createdAt: "2026-10-01T00:00:00.000Z" });
+    // The person is a member of the company (owner decision 86), so the question is the Slack proof's, as before.
+    db.set({ ...orgMemberKey(TEST_ORG, bob), entityType: "ORG_MEMBER", orgId: TEST_ORG, developerId: bob, role: "member" });
     const deps = {
-      documentClient: db as never, tableName: "state", slackTeamId: "T0TEAM1", now: () => Date.now(), uuid: () => randomUUID(),
+      documentClient: db as never, tableName: "state", installOrgId: TEST_ORG, slackTeamId: "T0TEAM1", now: () => Date.now(), uuid: () => randomUUID(),
       taskPersonProof: async () => ({ ok: false as const, error: "ineligible" as const }),
       developerRecord: async () => undefined, projectChannelIds: async () => [], targetProjectAccess: async () => undefined,
     };
