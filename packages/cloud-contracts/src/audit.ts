@@ -240,6 +240,8 @@ export const AUDIT_ACTIONS = [
   "company.second_review_replay_recorded",
   "company.second_review_verdict_recorded",
   "company.second_review_verdict_withdrawn",
+  // Runtime UI flags (lane U5): an owner or admin turned screens on or off for the company, or changed whether a person may preview one on their own device.
+  "company.ui_flags_changed",
   // Team record and lessons (learning v2): one block. Ids, fixed words and counts only; a lesson's or a source's text never goes in.
   "record.source_added",
   "record.source_changed",
@@ -594,6 +596,8 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "project.second_review_narrowed": ["change", "count"],
   // `to` is `change_only` or `same_as_first`; `widens` is true when more of the company's connected context now reaches the second reviewer.
   "company.second_review_context_changed": ["to", "widens"],
+  // `turnedOn` and `turnedOff` are flag names (a closed list of plain words) joined by `+`, or `none`; `previews` is `on`, `off` or `same`; `revision` is the new revision of the company's flags.
+  "company.ui_flags_changed": ["revision", "turnedOn", "turnedOff", "previews"],
   // `cause` is one of the fixed words for why the second review did not run.
   "task.second_review_acknowledged": ["cause"],
   "task.design_sole_owner_exception": ["tier", "openBlockers"],

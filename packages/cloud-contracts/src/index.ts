@@ -106,6 +106,7 @@ export * from "./setup-proposal.js";
 export * from "./task-stop-enrollment.js";
 
 export * from "./task-stop-start-preview.js";
+export * from "./ui-flags.js";
 export { SIGNED_OUT_REASONS, isSignedOutReason, type SignedOutReason } from "./sign-in-reasons.js";
 
 // Names defined here that the old barrel reached through a re-export file the contracts now take from Rovara Code (convergence W0-3).

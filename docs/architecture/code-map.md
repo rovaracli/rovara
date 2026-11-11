@@ -455,4 +455,5 @@ No single test lists every broker read.
 | `tracker-people.ts` | Tracker people (lane team-record-links): `/v1/app/org/tracker-people`, the page where a company admin maps the Linear and Jira people the automatic linker could not match to a member of the company. |
 | `trial-billing.ts` | Trial and billing reads (srv/trial-reads, switch `bl` for billing): `GET /v1/app/trial`, `GET /v1/app/org/billing` and `.../invoices`, read-only; billing answers `available: false` and is not found while the switch is off. |
 | `types.ts` | (No header comment.) Exports `CLOSE_STOP_BUDGET_MS`, `DeveloperApiConfiguration`, `DeveloperRouteDependencies`. |
+| `ui-flags.ts` | Runtime per-company UI flags (lane U5, requirement P-52): the owner's and admin's "Company screens" routes. |
 <!-- /codemap:files -->

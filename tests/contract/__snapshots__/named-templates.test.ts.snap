@@ -3536,6 +3536,13 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
       "Description": "1: a project's dependencies (databases, caches, queues, AWS services, outside APIs) get a backing for test runs on a sealed per-run network (turn on only after the Linux checks TS-L1 to TS-L6 pass and the worker image that carries the service runner is deployed); 0: today's flow, services are refused as before (agentx config set testServices.enabled 1)",
       "Type": "String",
     },
+    "UiFlagsForceOff": {
+      "AllowedPattern": "^(none|all|[A-Za-z]+(-[A-Za-z]+)*)$",
+      "Default": "none",
+      "Description": "Screens to hold back for every company on this install, whatever a company chose in the app: none, all, or screen names joined by a hyphen (look-nav-home-work-spending-leadingHeader are the ones that exist today). A name the broker does not know turns every screen off (fail closed). Companies turn screens on in the app with no deploy; this is the operator's emergency lever (agentx config set ui.forceOff <value>)",
+      "MaxLength": 64,
+      "Type": "String",
+    },
     "VerifyResultsEnabled": {
       "AllowedValues": [
         "0",
@@ -4115,6 +4122,10 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                   ",tx=",
                   {
                     "Ref": "TestServicesEnabled",
+                  },
+                  ",uo=",
+                  {
+                    "Ref": "UiFlagsForceOff",
                   },
                   ",vx=",
                   {

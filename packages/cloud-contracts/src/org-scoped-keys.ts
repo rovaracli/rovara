@@ -2,7 +2,7 @@
 // grant on it, the workspace limits) or that list across tenants (the usage and failure indexes).
 // Each one is prefixed with `orgScoped(orgId, ...)`, and nothing else builds these keys.
 import { createHash } from "node:crypto";
-import { canonicalInstant, type DeviceId, type OrgId, OrgIdSchema, type OrgKey, orgScoped, type SessionId, teamRecordPk } from "@rovara-code/contracts";
+import { canonicalInstant, type DeviceId, type OrgId, OrgIdSchema, type OrgKey, orgPk, orgScoped, type SessionId, teamRecordPk } from "@rovara-code/contracts";
 import { scopeKey, type BudgetScope } from "./spend.js";
 
 export type OrgSettingName = "WORKSPACE_LIMITS" | "BUDGET" | "BUDGET_SYNCED" | "SPEND_POLICY" | "LOCAL_AGENTS" | "TASK_STOP_POLICY" | "MODEL_SELECTION_POLICY" | "REVIEW_DEFAULT_NOTICE";
@@ -408,4 +408,9 @@ export function teamRecordOrgDirectoryKey(orgId: OrgId): { pk: string; sk: strin
 export function taskStopReviewKey(orgId: OrgId, reviewId: string): OrgKey {
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u.test(reviewId)) throw new Error("Invalid review id.");
   return { pk: orgScoped(orgId, "TASK_STOP_REVIEW"), sk: reviewId };
+}
+
+/** The company's runtime UI flags (lane U5): `ORG#<org>` / `UI_FLAGS`. One row, a map of known flag names to on/off plus the preview permission, fenced by `revision`. Absent until the company first changes one: everything is off. */
+export function orgUiFlagsKey(orgId: OrgId): OrgKey {
+  return { pk: orgPk(orgId), sk: "UI_FLAGS" };
 }

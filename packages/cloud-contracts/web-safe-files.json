@@ -43,6 +43,7 @@
   "packages/cloud-contracts/src/team-record-sources.ts",
   "packages/cloud-contracts/src/team-record.ts",
   "packages/cloud-contracts/src/tracker-people-web.ts",
+  "packages/cloud-contracts/src/ui-flags.ts",
   "packages/cloud-contracts/src/web-init.ts",
   "packages/cloud-contracts/src/web.ts"
 ]
