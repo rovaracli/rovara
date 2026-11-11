@@ -14,11 +14,12 @@ import { isProjectSetupV2On, PROJECT_SETUP_STORAGE_KEY } from "../../packages/ui
 import { isInsightsOn, INSIGHTS_STORAGE_KEY } from "../../packages/ui/src/screens/insights/insights-flags.js";
 import { isAgentPublishOn, AGENT_PUBLISH_STORAGE_KEY } from "../../packages/ui/src/screens/agents/publish-flags.js";
 import { isBillingV2On, BILLING_STORAGE_KEY } from "../../packages/ui/src/billing-flags.js";
+import { isWorkingAgreementOn, AGREEMENT_STORAGE_KEY } from "../../packages/ui/src/screens/agreement/agreement-flags.js";
 import { isCompanySwitcherOn, COMPANIES_STORAGE_KEY } from "../../packages/ui/src/company-flags.js";
 import { taskPageFlags } from "../../packages/ui/src/screens/session/task-page-flags.js";
 
 // A fresh host per test: the server's answer is kept per host object.
-const hostWith = (value: string | undefined | "throws") => ({ storage: { get: (_key: string) => { if (value === "throws") throw new Error("blocked");return value; }, set: () => undefined } });
+const hostWith = (value: string | undefined) => ({ storage: { get: (key: string) => { if (value === "throws") throw new Error("blocked " + key);return value; }, set: () => undefined } });
 const answer = (host: object, states: Partial<Record<UiFlagName, string>>) => { applyNavUiFlags(host, { uiFlags: states }); };
 afterEach(() => { vi.restoreAllMocks(); });
 
@@ -34,7 +35,7 @@ describe("uiFlagOn", () => {
   expect(uiFlagOn(host, "home", "rovara.home")).toBe(true);expect(seen).toEqual(["rovara.home"]);
  });
  it("is on for the company when the server says on, whatever the device key says", () => {
-  for (const value of [undefined, "v2", "v1", "throws"] as const) { const host = hostWith(value);answer(host, { look: "on" });expect(uiFlagOn(host, "look", "rovara.look"), String(value)).toBe(true); }
+  for (const value of [undefined, "v2", "v1", "throws"]) { const host = hostWith(value);answer(host, { look: "on" });expect(uiFlagOn(host, "look", "rovara.look"), String(value)).toBe(true); }
  });
  it("is off when the server says off, even where the device key says v2 (no preview allowed, or the operator forced it off)", () => {
   const host = hostWith("v2");answer(host, { look: "off" });expect(uiFlagOn(host, "look", "rovara.look")).toBe(false);
@@ -85,17 +86,17 @@ describe("the store", () => {
 const SWITCHES: Array<[string, (host: { storage: { get(key: string): string | undefined; set(key: string, value: string): void } }) => boolean, UiFlagName | undefined, string]> = [
  ["isNewLookOn", isNewLookOn, "look", LOOK_STORAGE_KEY], ["isNewNavOn", isNewNavOn, "nav", NAV_STORAGE_KEY], ["isNewHomeOn", isNewHomeOn, "home", HOME_STORAGE_KEY], ["isWorkListOn", isWorkListOn, "work", WORK_STORAGE_KEY],
  ["isSpendingV2On", isSpendingV2On, "spending", SPENDING_STORAGE_KEY], ["isHealthV2On", isHealthV2On, "health", HEALTH_STORAGE_KEY], ["isProjectSetupV2On", isProjectSetupV2On, "setup", PROJECT_SETUP_STORAGE_KEY],
- ["isInsightsOn", isInsightsOn, "insights", INSIGHTS_STORAGE_KEY], ["isAgentPublishOn", isAgentPublishOn, "publish", AGENT_PUBLISH_STORAGE_KEY], ["isBillingV2On", isBillingV2On, "billing", BILLING_STORAGE_KEY],
+ ["isInsightsOn", isInsightsOn, "insights", INSIGHTS_STORAGE_KEY], ["isAgentPublishOn", isAgentPublishOn, "publish", AGENT_PUBLISH_STORAGE_KEY], ["isBillingV2On", isBillingV2On, "billing", BILLING_STORAGE_KEY], ["isWorkingAgreementOn", isWorkingAgreementOn, "agreement", AGREEMENT_STORAGE_KEY],
  // The company switcher has no name among the closed list of flags: it stays on its device key, whatever the answer says.
  ["isCompanySwitcherOn", isCompanySwitcherOn, undefined, COMPANIES_STORAGE_KEY],
 ];
 describe("each switch function", () => {
  it("keeps its device key", () => {
-  expect(SWITCHES.map(([, , , key]) => key)).toEqual(["rovara.look", "rovara.nav", "rovara.home", "rovara.work", "rovara.spending", "rovara.health", "rovara.setup", "rovara.insights", "rovara.publish", "rovara.billing", "rovara.companies"]);
+  expect(SWITCHES.map(([, , , key]) => key)).toEqual(["rovara.look", "rovara.nav", "rovara.home", "rovara.work", "rovara.spending", "rovara.health", "rovara.setup", "rovara.insights", "rovara.publish", "rovara.billing", "rovara.agreement", "rovara.companies"]);
  });
  for (const [fn, isOn, name, key] of SWITCHES) {
   describe(fn, () => {
-   const host = (value: string | undefined | "throws") => { const seen: string[] = [], base = hostWith(value);return { seen, storage: { get: (k: string) => { seen.push(k);return base.storage.get(k); }, set: base.storage.set } }; };
+   const host = (value: string | undefined) => { const seen: string[] = [], base = hostWith(value);return { seen, storage: { get: (k: string) => { seen.push(k);return base.storage.get(k); }, set: base.storage.set } }; };
    it("with no server value is exactly today's device switch: on only for v2, off for anything else and when storage is blocked", () => {
     const on = host("v2");expect(isOn(on)).toBe(true);expect(on.seen).toEqual([key]);
     for (const value of [undefined, "", "v1", "true", "V2"]) expect(isOn(host(value)), String(value)).toBe(false);

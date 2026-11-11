@@ -21,9 +21,9 @@ export const UI_FLAG_DEVICE_VALUE = "v2";
 type Answer = Readonly<Partial<Record<UiFlagName, UiFlagState>>>;
 export interface UiFlagsStore {
   /** The server's answer, or undefined while there is none. */
-  get(): Answer | undefined;
-  set(next: unknown): void;
-  subscribe(listener: () => void): () => void;
+  get: () => Answer | undefined;
+  set: (next: unknown) => void;
+  subscribe: (listener: () => void) => () => void;
 }
 
 /** What the answer says, as states this version knows: anything else (a value a newer server added) reads as off. No object means no answer. */
@@ -79,9 +79,7 @@ export function uiFlagOn(host: UiFlagsStorageHost, name: UiFlagName, localKey: s
   const server = uiFlagServerState(host, name);
   if (server === "on") return true;
   if (server === "off") return false;
-  let deviceOn = false;
-  try { deviceOn = host.storage.get(localKey) === UI_FLAG_DEVICE_VALUE; } catch { deviceOn = false; }
-  return deviceOn;
+  try { return host.storage.get(localKey) === UI_FLAG_DEVICE_VALUE; } catch { return false; }
 }
 
 /** The server's state for a flag, kept current in a component. Without a host (or an answer) it is undefined. */
@@ -106,7 +104,8 @@ export function applyNavUiFlags(host: object, nav: unknown): void {
  */
 export function syncUiFlags(cache: QueryCache, host: object): () => void {
   return cache.subscribe((event) => {
-    if (event.type !== "updated" || event.action.type !== "success" || event.query.queryKey[0] !== "nav") return;
+    const queryKey = event.query.queryKey as readonly unknown[];
+    if (event.type !== "updated" || event.action.type !== "success" || queryKey[0] !== "nav") return;
     applyNavUiFlags(host, event.query.state.data);
   });
 }
