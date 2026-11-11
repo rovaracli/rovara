@@ -201,6 +201,7 @@ import { SECOND_REVIEW_BROWSER_MESSAGE, SECOND_REVIEW_PATH, routeSecondReview } 
 import { routeTrackerPeople } from "./developer-routes/tracker-people.js";
 import { routeJiraOrgAdmin } from "./developer-routes/jira-org-admin.js";
 import { SETUP_RECIPES_BROWSER_MESSAGE, isSetupRecipesPath, routeSetupRecipes } from "./developer-routes/setup-recipes.js";
+import { routeTrialBilling } from "./developer-routes/trial-billing.js";
 import { COMPANY_TEST_IMAGES_BROWSER_MESSAGE, companyTestImagesEnabled, isCompanyTestImagesPath, routeCompanyTestImages } from "./developer-routes/company-test-images.js";
 import { setupRecipesEnabled } from "../rovara-code/setup-recipes-switch.js";
 import { SAVED_ENV_IMAGE_BROWSER_MESSAGE, isSavedEnvImagePath, routeSavedEnvImage } from "./developer-routes/saved-env-image.js";
@@ -599,6 +600,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (knownFailingPolicyReply !== undefined) return knownFailingPolicyReply;
   const setupRecipesReply = await routeSetupRecipes(deps, caller, request, url);
   if (setupRecipesReply !== undefined) return setupRecipesReply;
+  const trialBillingReply = await routeTrialBilling(deps, caller, request, url);
+  if (trialBillingReply !== undefined) return trialBillingReply;
   const companyTestImagesReply = await routeCompanyTestImages(deps, caller, request, url);
   if (companyTestImagesReply !== undefined) return companyTestImagesReply;
   const savedEnvImageReply = await routeSavedEnvImage(deps, caller, request, url);

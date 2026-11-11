@@ -8,6 +8,7 @@
   "packages/contracts/src/agent-web-views.ts",
   "packages/contracts/src/agent.ts",
   "packages/contracts/src/app-allowed-websites.ts",
+  "packages/contracts/src/app-billing.ts",
   "packages/contracts/src/app-design-review-company.ts",
   "packages/contracts/src/app-known-failing.ts",
   "packages/contracts/src/app-lessons-repo-file.ts",

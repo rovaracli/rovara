@@ -445,5 +445,6 @@ No single test lists every broker read.
 | `test-environment.ts` | Test environment (wire-testenv, setup wizard E4): the setup routes. |
 | `test-health.ts` | Setup and test health SH28: `/v1/app/projects/{name}/test-health`, behind the `nh` switch (and the test environment): with either off the path is not found, as any unknown path. |
 | `tracker-people.ts` | Tracker people (lane team-record-links): `/v1/app/org/tracker-people`, the page where a company admin maps the Linear and Jira people the automatic linker could not match to a member of the company. |
+| `trial-billing.ts` | Trial and billing reads (srv/trial-reads, switch `bl` for billing): `GET /v1/app/trial`, `GET /v1/app/org/billing` and `.../invoices`, read-only; billing answers `available: false` and is not found while the switch is off. |
 | `types.ts` | (No header comment.) Exports `CLOSE_STOP_BUDGET_MS`, `DeveloperApiConfiguration`, `DeveloperRouteDependencies`. |
 <!-- /codemap:files -->
