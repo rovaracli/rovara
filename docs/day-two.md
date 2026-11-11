@@ -184,7 +184,11 @@ that, every `agentx admin` command asks you to sign in again. An environment who
 stack is not managed by Rovara (one that brings its own OIDC provider) sets this on its own app
 client, as the access and ID token validity.
 
-`set` shows the change and asks first (`--yes` skips the question). With this computer's admin
+`set` shows the change and asks first (`--yes` skips the question). Only `--yes` answers for you: in a terminal it
+prompts, and with no terminal (a pipe or a script) it reads one line from stdin, where `y` or `yes` applies and anything
+else, an empty line or a closed stdin declines ("this change needs confirmation: run it in a terminal, or pass
+`--yes`"). `agentx config set <key> <value> --preview` prints the change set and stops without applying it (for the
+settings that change a stack). With this computer's admin
 sign-in (`agentx --env <env> login --admin`), every change `set` makes is recorded in the admin
 change history (`agentx --env <env> admin changes`) with the admin who made it, the `cli` client,
 the key, the value before and after, and when it was asked, applied or failed. It is recorded

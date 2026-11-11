@@ -17,7 +17,7 @@ import { cloudFormationStackReader, stsCallerIdentity } from "../environments/ad
 import type { ParameterStore } from "../environments/parameter-store.js";
 import { secretsManagerInitSecrets } from "../init/context.js";
 import { awsPrerequisiteChecks } from "../init/prerequisites.js";
-import { processPrompter, unattendedPrompter, type Prompter, type TextWriter } from "../init/prompts.js";
+import { processPrompter, stdinConfirmPrompter, unattendedPrompter, type Prompter, type TextWriter } from "../init/prompts.js";
 import { formatSuccess } from "../output.js";
 import { awsAlertsApi } from "../setup/alerts.js";
 import { secretSource } from "../signin/cli.js";
@@ -48,6 +48,7 @@ export function registerConfigCommands(program: Command, context: ConfigCommandC
     const overrides = context.overrides ?? {};
     const aws = region === undefined ? {} : { region };
     const store = overrides.store ?? context.parameterStore(region);
+    const stdin = context.stdin ?? process.stdin;
     const adminSession = overrides.adminSession ?? context.adminSession;
     return {
       store,
@@ -59,7 +60,8 @@ export function registerConfigCommands(program: Command, context: ConfigCommandC
       // are used; the account is not needed for them.
       checks: overrides.checks ?? ((environmentRegion) => awsPrerequisiteChecks({ region: environmentRegion, account: "000000000000", store, runner: realCommandRunner(context.stderr), fetch: context.fetch })),
       alerts: overrides.alerts ?? awsAlertsApi({ sns: new SNSClient(aws), cloudWatch: new CloudWatchClient(aws), budgets: new BudgetsClient({ region: "us-east-1" }) }),
-      prompter: overrides.prompter ?? change?.prompter ?? (yes || process.stdin.isTTY !== true ? unattendedPrompter() : processPrompter(context.stderr)),
+      // Only --yes answers a confirmation by itself. A terminal is asked; a pipe is read (stdinConfirmPrompter).
+      prompter: overrides.prompter ?? change?.prompter ?? (yes ? unattendedPrompter() : stdin.isTTY === true ? processPrompter(context.stderr) : stdinConfirmPrompter(stdin, context.stderr)),
       processEnv: overrides.processEnv ?? process.env,
       write: overrides.write ?? ((line) => { context.stderr.write(`${line}\n`); }),
       now: overrides.now ?? Date.now,
@@ -104,16 +106,17 @@ export function registerConfigCommands(program: Command, context: ConfigCommandC
     .option("--value-file <path>", "file holding the value (for a webhook alert address, which is a secret)")
     .option("--value-env <NAME>", "environment variable holding the value (for a webhook alert address)")
     .option("--yes", "apply without asking; the change is still printed", false)
+    .option("--preview", "print the change set and stop: nothing is applied, whatever else is passed (for a setting that changes a stack)", false)
     .option(...regionOption)
-    .action(async (key: string, value: string | undefined, options: { valueFile?: string; valueEnv?: string; yes: boolean; region?: string }, command: Command) => {
+    .action(async (key: string, value: string | undefined, options: { valueFile?: string; valueEnv?: string; yes: boolean; preview: boolean; region?: string }, command: Command) => {
       if (value !== undefined && (options.valueFile !== undefined || options.valueEnv !== undefined)) {
         throw agentXError("CONFIG_INVALID", "give the value once: on the command line, or with --value-file or --value-env");
       }
       const source = secretSource(options.valueFile, options.valueEnv);
       const change = limitsChange(key, options.yes);
       const result = await runConfigSet(services(options.region, options.yes, change), globals(command).env, {
-        key, yes: options.yes, ...(value === undefined ? {} : { value }), ...(source === undefined ? {} : { valueSource: source }),
+        key, yes: options.yes, ...(options.preview ? { preview: true } : {}), ...(value === undefined ? {} : { value }), ...(source === undefined ? {} : { valueSource: source }),
       });
-      context.stdout.write(globals(command).json ? formatSuccess(result, true) : result.changed ? `${key} changed.\n` : change === undefined ? "Nothing to change.\n" : "Nothing changed.\n");
+      context.stdout.write(globals(command).json ? formatSuccess(result, true) : result.previewed === true ? "Preview only; nothing was applied.\n" : result.changed ? `${key} changed.\n` : change === undefined ? "Nothing to change.\n" : "Nothing changed.\n");
     });
 }

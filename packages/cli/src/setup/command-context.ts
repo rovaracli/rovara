@@ -9,7 +9,7 @@ import type { ParameterStore } from "../environments/parameter-store.js";
 import { readEnvironmentSettings, type EnvironmentSettings } from "../environments/settings.js";
 import { realSetupServices } from "../init/commands.js";
 import { secretsManagerInitSecrets, type InitSecrets } from "../init/context.js";
-import { processPrompter, unattendedPrompter, type Prompter, type TextWriter } from "../init/prompts.js";
+import { processPrompter, stdinConfirmPrompter, type Prompter, type TextWriter } from "../init/prompts.js";
 import { formatSuccess } from "../output.js";
 import type { TokenStore } from "../token-store.js";
 import { openAdminSession } from "./admin-session.js";
@@ -36,13 +36,14 @@ export interface SetupCommandContext {
 }
 
 /** No terminal to ask on: a question with a default takes it, but a choice among several (which
- * repository, say) is never guessed; it needs its flag. */
-function noTerminalPrompter(): Prompter {
-  const unattended = unattendedPrompter();
+ * repository, say) is never guessed; it needs its flag. A confirmation is never answered yes on its
+ * own: it reads a line from stdin ("y" or "yes" applies) and otherwise declines (stdinConfirmPrompter). */
+export function noTerminalPrompter(input: NodeJS.ReadableStream, stderr: TextWriter): Prompter {
+  const piped = stdinConfirmPrompter(input, stderr);
   return {
-    ask: (question, options) => unattended.ask(question, options),
-    confirm: (question, options) => unattended.confirm(question, options),
-    secret: (question, options) => unattended.secret(question, options),
+    ask: (question, options) => piped.ask(question, options),
+    confirm: (question, options) => piped.confirm(question, options),
+    secret: (question, options) => piped.secret(question, options),
     async choose<T extends string>(question: string, choices: ReadonlyArray<{ value: T; label: string }>, options: { flag: string; defaultValue: T; unattendedRefusal?: string }): Promise<T> {
       if (choices.length === 1) return options.defaultValue;
       throw agentXError("CONFIG_INVALID", options.unattendedRefusal ?? `${question} needs an answer; with no terminal, pass ${options.flag}`);
@@ -81,7 +82,7 @@ export function realSetupContext(input: {
         modelCheck: projectModelChecker(settings, input),
         ...(globals.acceptUncheckedModel === undefined ? {} : { acceptUncheckedModel: globals.acceptUncheckedModel }),
       },
-      prompter: process.stdin.isTTY === true ? processPrompter(input.stderr) : noTerminalPrompter(),
+      prompter: process.stdin.isTTY === true ? processPrompter(input.stderr) : noTerminalPrompter(process.stdin, input.stderr),
       write: (line) => { input.stderr.write(`${line}\n`); },
       sleep: (ms) => new Promise((resolve) => { setTimeout(resolve, ms); }),
       now: Date.now,

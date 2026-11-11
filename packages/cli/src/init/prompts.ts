@@ -135,6 +135,11 @@ export function fieldCheck(check: (value: string) => unknown): (value: string) =
   };
 }
 
+/**
+ * The prompter of --yes ONLY: its confirm answers yes. A command that has no --yes, or that was run
+ * without it, must never be given this one (an `echo n |` once applied a stack change through it).
+ * Without --yes and without a terminal use `stdinConfirmPrompter`.
+ */
 export function unattendedPrompter(): Prompter {
   return {
     async ask(question, options) {
@@ -150,6 +155,61 @@ export function unattendedPrompter(): Prompter {
     },
     async secret(question, options) {
       throw agentXError("CONFIG_INVALID", `${question} needs an answer; with --yes, pass ${options.flag}-file <path> or ${options.flag}-env <NAME>`);
+    },
+  };
+}
+
+/** What a confirmation says when no one answered it (no terminal, no --yes, and nothing on stdin). */
+export const CONFIRMATION_NEEDED_MESSAGE = "this change needs confirmation: run it in a terminal, or pass --yes";
+
+/** A line source over a stream that is not a terminal: lines queue up, the end of input is `undefined`. */
+function lineSource(input: NodeJS.ReadableStream): { next(): Promise<string | undefined>; pause(): void } {
+  const rl = createInterface({ input, terminal: false, crlfDelay: Infinity });
+  const lines: string[] = [];
+  const waiting: Array<(line: string | undefined) => void> = [];
+  let ended = false;
+  rl.on("line", (line) => { const waiter = waiting.shift(); if (waiter === undefined) lines.push(line); else waiter(line); });
+  const end = () => { ended = true; for (const waiter of waiting.splice(0)) waiter(undefined); };
+  rl.once("close", end);
+  input.once("error", end);
+  return {
+    next() {
+      const queued = lines.shift();
+      if (queued !== undefined) return Promise.resolve(queued);
+      if (ended) return Promise.resolve(undefined);
+      rl.resume();
+      return new Promise((resolve) => { waiting.push(resolve); });
+    },
+    pause() { rl.pause(); },
+  };
+}
+
+/**
+ * The prompter of a command run WITHOUT --yes and WITHOUT a terminal (a pipe, a script, CI). A
+ * confirmation is never answered yes on its own: it reads one line from stdin, and only "y" or
+ * "yes" applies. Anything else, an empty line, or the end of input declines (the end of input
+ * also says why). Questions that need a typed answer behave as under --yes: a default, or a refusal
+ * naming the flag.
+ */
+export function stdinConfirmPrompter(input: NodeJS.ReadableStream, stderr: TextWriter): Prompter {
+  const unattended = unattendedPrompter();
+  let source: ReturnType<typeof lineSource> | undefined;
+  return {
+    ask: (question, options) => unattended.ask(question, options),
+    choose: (question, choices, options) => unattended.choose(question, choices, options),
+    secret: (question, options) => unattended.secret(question, options),
+    async confirm(question) {
+      stderr.write(`${question} [y/N] `);
+      source ??= lineSource(input);
+      const line = await source.next();
+      source.pause();
+      if (line === undefined) {
+        stderr.write(`\n${CONFIRMATION_NEEDED_MESSAGE}\n`);
+        return false;
+      }
+      const answer = line.trim().toLowerCase();
+      if (answer !== "y" && answer !== "yes") stderr.write("Not confirmed.\n");
+      return answer === "y" || answer === "yes";
     },
   };
 }
@@ -309,7 +369,9 @@ export function processPrompter(stderr: TextWriter): Prompter {
     async readLine(question) {
       const rl = createInterface({ input: process.stdin, output: process.stderr });
       try {
-        return await rl.question(question);
+        // The end of input is never an answer: without this race the question would wait forever on a closed pipe.
+        const ended = new Promise<never>((_resolve, reject) => { rl.once("close", () => { reject(agentXError("CONFIRMATION_UNAVAILABLE", `${CONFIRMATION_NEEDED_MESSAGE}; nothing changed`)); }); });
+        return await Promise.race([rl.question(question), ended]);
       } finally {
         rl.close();
       }
