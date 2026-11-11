@@ -475,6 +475,8 @@ export function developerTaskRouteDependencies(
       ?? (async (): Promise<never> => { throw agentXError("SLACK_UNAVAILABLE", "task person identity proof is unavailable"); });
     return {
       documentClient: deps.documentClient, tableName: deps.tableName, slackTeamId, installOrgId: caller.orgId, now: deps.now, uuid: randomUUID, taskPersonProof,
+      // The membership check's reads of the sign-in table (merges and identity links), as the Slack routes make them.
+      readSignIn: async (key) => (await deps.documentClient.send(new GetCommand({ TableName: deps.developer.signInTableName, Key: key, ConsistentRead: true })) as { Item?: Record<string, unknown> }).Item,
       developerRecord: async (targetDeveloperId) => {
         const response = await deps.documentClient.send(new GetCommand({ TableName: deps.developer.signInTableName, Key: { pk: `DEVELOPER#${targetDeveloperId}`, sk: META }, ConsistentRead: true })) as { Item?: DeveloperRecord };
         // The row is keyed by the person: a sign-in writes no `developerId` attribute (store.ts getDeveloper). A row naming someone else keeps its id, and is refused.

@@ -20,7 +20,7 @@ import { developerIdForSlackUser } from "../aws/admin-actions.js";
 import { ownerKeyForSubject } from "../aws/lambda.js";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 import { isRemovedFromOrg } from "../org/member-removal/guards.js";
-import { explicitMemberRole } from "../org/explicit-member.js";
+import { explicitMemberRole, signInReaderFromRecords, type SignInReader } from "../org/explicit-member.js";
 import { UNNAMED_MEMBER, type DeveloperTaskRecord } from "./task-records.js";
 import type { DeveloperRecord } from "./store.js";
 
@@ -56,6 +56,11 @@ export interface TaskPersonIdentityDependencies {
   taskPersonProof(request: TaskPersonProofRequest): Promise<TaskPersonProofResponse>;
   /** A strongly consistent, server-owned DeveloperRecord lookup from the sign-in table. */
   developerRecord(developerId: string): Promise<DeveloperRecord | undefined>;
+  /**
+   * One consistent read of the sign-in table, for the membership check's walk of merges and identity links (org/explicit-member.ts: the rule the Slack routes use). The broker gives its own
+   * (links included); the dispatcher gives none, and the walk then follows merges through `developerRecord` and finds no link.
+   */
+  readSignIn?: SignInReader;
   /** Current channels bound to the target project. */
   projectChannelIds(project: string): Promise<readonly string[]>;
   /** Existing project policy and grants, evaluated against only the supplied fresh membership. */
@@ -200,7 +205,7 @@ async function isLiveCompanyMember(deps: TaskPersonIdentityDependencies, task: D
   if (orgId === undefined) return unavailable();
   try {
     if (await isRemovedFromOrg(deps, orgId, developerId)) return false;
-    return await explicitMemberRole({ documentClient: deps.documentClient, tableName: deps.tableName, developerRecord: (id) => deps.developerRecord(id) }, orgId, developerId) !== undefined;
+    return await explicitMemberRole({ documentClient: deps.documentClient, tableName: deps.tableName, readSignIn: deps.readSignIn ?? signInReaderFromRecords((id) => deps.developerRecord(id)) }, orgId, developerId) !== undefined;
   } catch (error) {
     // A role that is not a writer's, or merges that cannot be followed to one person: not a member who may take part.
     if (error instanceof Error && (error as Error & { code?: string }).code === "FORBIDDEN") return false;

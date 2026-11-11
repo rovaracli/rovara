@@ -17,7 +17,7 @@ import {
 } from "../developer/task-person-identity.js";
 import type { ProjectAuthorityReader, ProjectAuthorityWitness } from "../developer/task-project-access.js";
 import { isRemovedFromOrg } from "../org/member-removal/guards.js";
-import { explicitMemberRole } from "../org/explicit-member.js";
+import { explicitMemberRole, signInReaderFromRecords } from "../org/explicit-member.js";
 import { orgOf } from "../org/resolve.js";
 import { readProjectAuthority } from "../developer/task-project-access.js";
 import type { DeveloperTaskRecord } from "../developer/task-records.js";
@@ -280,7 +280,7 @@ export function createTaskPersonRuntime(input: {
     if (await isRemovedFromOrg(orgReads, orgId, developerId)) return undefined;
     // And a taker must still be a member who may write (not an Auditor, with a grant left behind): the same rule as every task person check (org/explicit-member.ts).
     try {
-      if (await explicitMemberRole({ ...orgReads, developerRecord: developerRecordReader({ admission: input.admission, ports: input.ports, reachableIds }) }, orgId, developerId) === undefined) return undefined;
+      if (await explicitMemberRole({ ...orgReads, readSignIn: signInReaderFromRecords(developerRecordReader({ admission: input.admission, ports: input.ports, reachableIds })) }, orgId, developerId) === undefined) return undefined;
     } catch (error) {
       if (error instanceof Error && (error as Error & { code?: string }).code === "FORBIDDEN") return undefined;
       throw unavailable();
