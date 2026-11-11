@@ -43,7 +43,7 @@ const NEW_RULES: Record<string, Record<string, string> | null> = {
  // New navigation (switch `rovara.nav`): each selector needs an element only the new navigation renders (.rv-nav-v2 on the shell, .rv-tabbar, .rv-nav-icon, .rv-projects-*; the toast rule needs .rv-tabbar on the page), so none matches anything while it is off.
  ".rv-nav-v2 .rv-nav-label": null, ".rv-nav-icon": null, ".rv-nav-v2 .rv-sidebar-primary": null, ".rv-tabbar": null, ".rv-tabbar a": null, ".rv-tabbar a[aria-current=page]": null, ".rv-tabbar .rv-nav-label": null, ".rv-tabbar .rv-nav-count": null,
  ".rv-projects-list": null, ".rv-projects-list a": null, ".rv-projects-list a:hover": null, ".rv-projects-name": null, ".rv-projects-counts": null,
- ":root .rv-app-shell.rv-nav-v2 .rv-shell-main": null, ":root:has(.rv-tabbar) .rv-toast": null,
+ ":root .rv-app-shell.rv-nav-v2 .rv-shell-main": null, ":root:has(.rv-tabbar) .rv-toast": null, ":root:has(.rv-tabbar)": null,
  // The larger-screen page's back link (exp/polish): only rendered where a caller passes backTo (the builder pages, new navigation on), so it matches nothing otherwise.
  ".rv-large-screen-back a": null,
  // The new Home (exp/home, behind rovara.home): its rules match no element while the switch is off, so any content is fine.

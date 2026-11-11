@@ -19,6 +19,8 @@
 .rv-tabbar .rv-nav-count{position:absolute;top:4px;left:calc(50% + 6px);min-width:18px;height:18px;padding:0 5px;border-radius:9px;background:var(--rv-accent);color:var(--rv-on-accent);font-size:var(--rv-font-sm);line-height:18px;text-align:center}
 :root .rv-app-shell.rv-nav-v2 .rv-shell-main{padding-bottom:calc(56px + 28px + env(safe-area-inset-bottom))}
 :root:has(.rv-tabbar) .rv-toast{bottom:calc(56px + 16px + env(safe-area-inset-bottom))}
+/* A control that takes focus (or is scrolled to) stops above the tab bar, not under it. */
+:root:has(.rv-tabbar){scroll-padding-bottom:calc(56px + 16px + env(safe-area-inset-bottom))}
 }
 /* Company switcher (switch in company-flags.ts). Every rule below needs an element only the switcher renders (a company button, menu or list, or the gate), so with the switch off none of it applies. */
 .rv-company-button{display:inline-flex;align-items:center;gap:6px;min-height:44px;max-width:100%;padding:0 10px;margin:0 -10px;border:0;border-radius:var(--rv-radius-sm);background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer}
