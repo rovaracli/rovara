@@ -35,7 +35,7 @@ export const SAME_14: CompanyRulesDiff["entries"] = RULES_14.map(after => ({ kin
 export function proposalFor(over: Record<string, unknown> = {}) {
  const changed = RULES_14.map((entry, index) => index === 12 ? { text: "Prefer the cheapest model that can do the step well, and explain when a step needs more.", priority: entry.priority } : entry);
  return {
-  proposalId: PROPOSAL_ID, state: "pending", baseVersion: 1, stale: false, source: "rovara", rules: changed, ruleCount: 14, digest: DIGEST2, note: "Shorter wording for rule 13", proposedBy: ADA, proposedByYou: false,
+  proposalId: PROPOSAL_ID, state: "pending", baseVersion: 1, stale: false, source: "rovara", rules: changed, ruleCount: 14, digest: DIGEST2, note: "Shorter wording for rule 13", proposedBy: ADA, proposedByYou: false, adoptedBy: null,
   proposedAt: "2026-11-11T06:00:00.000Z", expiresAt: "2026-11-18T06:00:00.000Z",
   diff: diffOf(RULES_14.map((entry, index) => index === 12 ? { kind: "changed" as const, before: entry, after: changed[index]! } : { kind: "same" as const, after: entry })),
   approval: { canApprove: true, reason: null, freshSignInNeeded: true, soleOwner: null }, ...over,

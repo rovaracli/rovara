@@ -22,6 +22,8 @@ export function createCompanyRulesApi(host: AppHost) {
   sync: () => api.get(COMPANY_RULES_PATH + "/sync", CompanyRulesSyncReaderSchema),
   /** The whole list, written against the version the person loaded (0 when there is none). A repeat with the same `requestId` and body returns the stored outcome. */
   propose: (input: { requestId: string; baseVersion: number; rules: readonly CompanyRuleView[]; note?: string }) => send({ action: "propose", requestId: input.requestId, baseVersion: input.baseVersion, rules: input.rules.map(rule => ({ text: rule.text, priority: rule.priority })), ...(input.note === undefined || input.note === "" ? {} : { note: input.note }) }),
+  /** A repository proposal needs one admin to adopt it first (nothing changes); a different admin then approves. */
+  adopt: (proposalId: string, expectedDigest: string) => send({ action: "adopt", proposalId, expectedDigest }),
   approve: (proposalId: string, expectedDigest: string, soleOwnerAcknowledged?: true) => send({ action: "approve", proposalId, expectedDigest, ...(soleOwnerAcknowledged === true ? { soleOwnerAcknowledged } : {}) }),
   reject: (proposalId: string, expectedDigest: string) => send({ action: "reject", proposalId, expectedDigest }),
   cancel: (proposalId: string) => send({ action: "cancel", proposalId }),

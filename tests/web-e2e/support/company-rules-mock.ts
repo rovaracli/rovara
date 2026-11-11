@@ -2,14 +2,14 @@
 // the real routes, their audit and their limits are the broker's (and tested there). State lives for one test.
 import type { Page, Route } from "@playwright/test";
 import { CompanyRulesBodySchema, type CompanyRuleView } from "@agentx/contracts/web";
-import { ADA, currentFor, DIGEST, DIGEST2, OMAR, PROPOSAL_ID, RULES_14, currentVersion, diffOf, historyFor, memberState, proposalFor, stateFor, syncFor, syncSummary, versionViewFor } from "../../web/support/company-rules-fixture.js";
+import { ADA, REPO, currentFor, DIGEST, DIGEST2, OMAR, PROPOSAL_ID, RULES_14, currentVersion, diffOf, historyFor, memberState, proposalFor, stateFor, syncFor, syncSummary, versionViewFor } from "../../web/support/company-rules-fixture.js";
 
 export type Viewer = "omar" | "ada";
 export interface CompanyRulesMock {
  viewer: Viewer;
  version: number;
  rules: CompanyRuleView[];
- pending: { proposer: Viewer; rules: CompanyRuleView[]; note: string | null } | null;
+ pending: { proposer: Viewer; rules: CompanyRuleView[]; note: string | null; /** A proposal that came back from the repository file: nobody proposed it, and one admin adopts it before a different one approves. */ repo?: { adopter: Viewer | null } } | null;
  sync: boolean;
  requests: Array<{ method: string; action?: string; body?: unknown }>;
 }
@@ -17,10 +17,11 @@ const who = (viewer: Viewer) => (viewer === "omar" ? OMAR : ADA);
 const text = (value: unknown) => JSON.stringify(value);
 
 export function companyRulesState(mock: CompanyRulesMock) {
- const pending = mock.pending === null ? null : proposalFor({
-  rules: mock.pending.rules, ruleCount: mock.pending.rules.length, note: mock.pending.note, proposedBy: who(mock.pending.proposer), proposedByYou: mock.pending.proposer === mock.viewer, baseVersion: mock.version, digest: DIGEST2,
-  diff: diffOf(mock.pending.rules.map((after, index) => (mock.rules[index] === undefined ? { kind: "added" as const, after } : mock.rules[index].text === after.text && mock.rules[index].priority === after.priority ? { kind: "same" as const, after } : { kind: "changed" as const, before: mock.rules[index], after }))),
-  approval: mock.pending.proposer === mock.viewer ? { canApprove: false, reason: "you_proposed", freshSignInNeeded: true, soleOwner: { available: false, availableAt: "2026-11-13T06:00:00.000Z", reasonCode: "SOLE_OWNER_COOL_OFF" } } : { canApprove: true, reason: null, freshSignInNeeded: true, soleOwner: null },
+ const p = mock.pending, repo = p?.repo, mine = p !== null && (repo === undefined ? p.proposer === mock.viewer : repo.adopter === mock.viewer);
+ const pending = p === null ? null : proposalFor({
+  rules: p.rules, ruleCount: p.rules.length, note: p.note, proposedBy: repo === undefined ? who(p.proposer) : REPO, source: repo === undefined ? "rovara" : "repo", adoptedBy: repo?.adopter == null ? null : who(repo.adopter), proposedByYou: mine, baseVersion: mock.version, digest: DIGEST2,
+  diff: diffOf(p.rules.map((after, index) => (mock.rules[index] === undefined ? { kind: "added" as const, after } : mock.rules[index].text === after.text && mock.rules[index].priority === after.priority ? { kind: "same" as const, after } : { kind: "changed" as const, before: mock.rules[index], after }))),
+  approval: repo !== undefined && repo.adopter === null ? { canApprove: false, reason: "needs_adoption", freshSignInNeeded: true, soleOwner: null } : mine ? { canApprove: false, reason: "you_proposed", freshSignInNeeded: true, soleOwner: { available: false, availableAt: "2026-11-13T06:00:00.000Z", reasonCode: "SOLE_OWNER_COOL_OFF" } } : { canApprove: true, reason: null, freshSignInNeeded: true, soleOwner: null },
  });
  return stateFor({ viewer: { role: mock.viewer === "omar" ? "owner" : "admin", canPropose: true, canDecide: true }, current: currentVersion({ version: mock.version, rules: mock.rules, ruleCount: mock.rules.length, approvedBy: mock.version === 1 ? { id: null, name: "Rovara setup" } : OMAR }), pending, sync: mock.sync ? syncSummary() : null });
 }
@@ -54,10 +55,17 @@ export async function mockCompanyRules(page: Page, options: { off?: boolean; mem
    mock.pending = { proposer: mock.viewer, rules: body.rules, note: body.note ?? null };
    return json(202, { status: "needs_approval", state: companyRulesState(mock) });
   }
+  if (body.action === "adopt") {
+   if (mock.pending?.repo === undefined) return json(400, { error: { code: "CONFIG_INVALID", message: "Only a change that came from the repository file is adopted." } });
+   if (mock.pending.repo.adopter !== null && mock.pending.repo.adopter !== mock.viewer) return json(409, { error: { code: "CHANGE_STALE", message: "Another admin already adopted this change." } });
+   mock.pending.repo.adopter = mock.viewer;
+   return json(200, { status: "adopted", state: companyRulesState(mock) });
+  }
   if (body.action === "approve" || body.action === "reject" || body.action === "cancel") {
    if (mock.pending === null || body.proposalId !== PROPOSAL_ID) return json(409, { error: { code: "CHANGE_STALE", message: "That proposal is no longer waiting." } });
-   if (body.action === "cancel") { if (mock.pending.proposer !== mock.viewer) return json(403, { error: { code: "FORBIDDEN", message: "Only the person who proposed a change can cancel it." } });mock.pending = null;return json(200, { status: "cancelled", state: companyRulesState(mock) }); }
-   if (mock.pending.proposer === mock.viewer) return json(403, { error: { code: "FORBIDDEN", message: "You proposed this change, so a different owner or admin has to decide it." } });
+   if (body.action === "cancel") { if (mock.pending.repo !== undefined || mock.pending.proposer !== mock.viewer) return json(403, { error: { code: "FORBIDDEN", message: "Only the person who proposed a change can cancel it." } });mock.pending = null;return json(200, { status: "cancelled", state: companyRulesState(mock) }); }
+   if (body.action === "approve" && mock.pending.repo !== undefined && mock.pending.repo.adopter === null) return json(403, { error: { code: "FORBIDDEN", message: "An admin has to adopt this change from the repository file first." } });
+   if (mock.pending.repo !== undefined ? body.action === "approve" && mock.pending.repo.adopter === mock.viewer : mock.pending.proposer === mock.viewer) return json(403, { error: { code: "FORBIDDEN", message: "You proposed this change, so a different owner or admin has to decide it." } });
    if (body.expectedDigest !== DIGEST2) return json(409, { error: { code: "CHANGE_STALE", message: "The proposal changed." } });
    if (body.action === "approve") { mock.rules = mock.pending.rules;mock.version += 1; }
    mock.pending = null;

@@ -10,7 +10,7 @@ test.beforeEach(async ({ context, request, baseURL }) => {
  await request.post("/__mock/scenario", { data: { name: "admin" } });
  await context.addCookies([{ name: "__Host-agentx_review_session", value: FIXTURE_SESSION, url: baseURL!, secure: true, httpOnly: true, sameSite: "Strict" }]);
 });
-const open = async (page: Page) => { await page.goto("/app/admin/company-rules");await expect(page.getByRole("heading", { name: "Company rules", exact: true, level: 1 })).toBeVisible();await expect(page.getByRole("heading", { name: "Current rules" })).toBeVisible(); };
+const open = async (page: Page) => { await page.goto("/app/admin/company-rules");await expect(page.getByRole("heading", { name: "Company rules", exact: true, level: 1 })).toBeVisible();await expect(page.getByRole("heading", { name: "Current rules", exact: true })).toBeVisible(); };
 /** Nothing scrolls sideways, and every visible control sits inside the screen's width. */
 async function fitsThePhone(page: Page) {
  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
@@ -178,8 +178,38 @@ test("a member reads the rules in force on the read-only page, on a phone, with 
  await mockCompanyRules(page, { member: true });
  await page.goto("/app/settings/company-rules");
  await expect(page.getByRole("heading", { name: "Company rules", exact: true, level: 1 })).toBeVisible();
- await expect(page.getByRole("heading", { name: "Current rules" })).toBeVisible();
+ await expect(page.getByRole("heading", { name: "Current rules", exact: true })).toBeVisible();
  await expect(page.getByText(/This page only shows the rules/u)).toBeVisible();
  await expect(page.getByRole("button", { name: /Edit|Propose|Approve/u })).toHaveCount(0);
  await fitsThePhone(page);await checkA11y(page, { theme: "light" });await checkA11y(page, { theme: "dark" });await evidenceShot(page, { path: testInfo.outputPath("phone-member-current.png"), fullPage: true });
+});
+
+test("a change that came back from the repository file: one admin adopts it, a different admin approves it", async ({ page }, testInfo) => {
+ await page.setViewportSize({ width: 1280, height: 1000 });
+ const mock = await mockCompanyRules(page);
+ mock.sync = true;
+ mock.pending = { proposer: "ada", note: "Edit the scope rule", rules: mock.rules.map((rule, index) => (index === 3 ? { ...rule, text: "Keep every change inside the task's scope." } : rule)), repo: { adopter: null } };
+ mock.viewer = "ada";
+ await open(page);
+ const waiting = page.locator("section").filter({ has: page.getByRole("heading", { name: "Waiting for a decision" }) });
+ await expect(waiting.getByText("Proposed from the company repository file")).toBeVisible();
+ await expect(waiting.getByText(/An admin has to adopt this change first/u)).toBeVisible();
+ await expect(waiting.getByRole("button", { name: "Approve", exact: true })).toHaveCount(0);
+ await checkA11y(page, { theme: "light" });await evidenceShot(page, { path: testInfo.outputPath("repo-needs-adoption.png"), fullPage: true });
+ await waiting.getByRole("button", { name: "Adopt", exact: true }).click();
+ await expect(page.getByText("Adopted. A different admin has to approve it now.")).toBeVisible();
+ await expect(waiting.getByText("Adopted by you; waiting for a different admin to approve")).toBeVisible();
+ await expect(waiting.getByRole("button", { name: "Approve", exact: true })).toHaveCount(0);
+ await expect(waiting.getByRole("button", { name: "Cancel this proposal" })).toHaveCount(0);
+ await checkA11y(page, { theme: "dark" });await evidenceShot(page, { path: testInfo.outputPath("repo-adopted-by-you.png"), fullPage: true });
+ // The adopter cannot approve even if the page were stale: the server refuses in its own words.
+ mock.viewer = "omar";
+ await page.reload();
+ await expect(waiting.getByText("Adopted by Ada Admin; waiting for a different admin to approve")).toBeVisible();
+ await checkA11y(page, { theme: "light" });await evidenceShot(page, { path: testInfo.outputPath("repo-adopted-other.png"), fullPage: true });
+ await waiting.getByRole("button", { name: "Approve", exact: true }).click();
+ await expect(page.getByText(/Approved\. The new version applies/u)).toBeVisible();
+ await expect(page.getByRole("heading", { name: "Waiting for a decision" })).toHaveCount(0);
+ expect(mock.requests.filter(row => row.action === "adopt" || row.action === "approve").map(row => row.action)).toEqual(["adopt", "approve"]);
+ expect(mock.requests.find(row => row.action === "adopt")?.body).toMatchObject({ action: "adopt", expectedDigest: "d".repeat(64) });
 });

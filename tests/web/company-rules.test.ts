@@ -554,7 +554,10 @@ it("repository file that differs: shows the diff, says the file was edited when 
  const pending = screen.getByRole("heading", { name: "Waiting for a decision" }).closest("section")!;
  expect(pending.textContent).toContain("Company repository (pat-the-editor)");
  expect(pending.textContent).toContain("Commit message");
- expect(within(pending).getByText("A change from the repository file is waiting for an admin")).toBeTruthy();
+ expect(within(pending).getByText("Proposed from the company repository file")).toBeTruthy();
+ expect(within(pending).getByText(/An admin has to adopt this change first/u)).toBeTruthy();
+ expect(within(pending).getByRole("button", { name: "Adopt" })).toBeTruthy();
+ expect(within(pending).queryByRole("button", { name: "Approve" })).toBeNull();
  expect(within(pending).getByText(/Rejecting a change from the repository file makes Rovara send its own current version back/u)).toBeTruthy();
  f.close();
 });
@@ -703,4 +706,82 @@ it("the account page links to the read-only rules only while the switch is on", 
   else expect(screen.queryByRole("link", { name: "Read the company rules" })).toBeNull();
   view.unmount();router.dispose();query.clear();
  }
+});
+
+const repoProposal = (over: Record<string, unknown> = {}) => proposalFor({ source: "repo", proposedBy: REPO, note: "Edit the scope rule", approval: { canApprove: false, reason: "needs_adoption", freshSignInNeeded: true, soleOwner: null }, ...over });
+const adminState = (pending: unknown) => stateFor({ viewer: { role: "admin", canPropose: true, canDecide: true }, pending });
+
+it("a repository proposal nobody has adopted: Adopt and Reject, no Approve and no Cancel; Adopt sends the shown digest and then the adopter is told a different admin approves", async () => {
+ const adopted = adminState(repoProposal({ adoptedBy: ADA, proposedByYou: true, approval: { canApprove: false, reason: "you_proposed", freshSignInNeeded: true, soleOwner: null } }));
+ const f = mount({ role: "admin", state: adminState(repoProposal()), respond: async request => (request.method === "POST" ? { status: 200, body: { status: "adopted", state: adopted } } : undefined) });
+ await open();
+ const pending = (await screen.findByRole("heading", { name: "Waiting for a decision" })).closest("section")!;
+ expect(within(pending).getByText("Proposed from the company repository file")).toBeTruthy();
+ expect(within(pending).queryByRole("button", { name: "Approve" })).toBeNull();
+ expect(within(pending).queryByRole("button", { name: "Cancel this proposal" })).toBeNull();
+ expect(within(pending).getByRole("button", { name: "Reject" })).toBeTruthy();
+ expect(within(pending).getByText(/Adopting says an admin has looked at the file's edit/u)).toBeTruthy();
+ fireEvent.click(within(pending).getByRole("button", { name: "Adopt" }));
+ await waitFor(() => expect(posts(f)).toHaveLength(1));
+ expect(posts(f)[0]).toMatchObject({ path: PATH, retry: "never", body: { action: "adopt", proposalId: PROPOSAL_ID, expectedDigest: DIGEST2 } });
+ await screen.findByText("Adopted. A different admin has to approve it now.");
+ const after = screen.getByRole("heading", { name: "Waiting for a decision" }).closest("section")!;
+ expect(within(after).getByText("Adopted by you; waiting for a different admin to approve")).toBeTruthy();
+ expect(within(after).getByText(/You adopted this, so you can't approve it/u)).toBeTruthy();
+ expect(after.textContent).toContain("Adopted by");
+ expect(within(after).queryByRole("button", { name: "Adopt" })).toBeNull();
+ expect(within(after).queryByRole("button", { name: "Approve" })).toBeNull();
+ expect(within(after).queryByRole("button", { name: "Cancel this proposal" })).toBeNull();
+ // Any admin may reject a repository proposal, the adopter included.
+ expect(within(after).getByRole("button", { name: "Reject" })).toBeTruthy();
+ f.close();
+});
+
+it("a repository proposal adopted by another admin: Approve for a different admin, sending the digest", async () => {
+ const approved = stateFor({ current: currentVersion({ version: 2, approvedBy: OMAR, proposedBy: REPO, adoptedBy: ADA, source: "repo", approvalMode: "admin_review" }), pending: null });
+ const f = mount({ state: stateFor({ pending: repoProposal({ adoptedBy: ADA, approval: { canApprove: true, reason: null, freshSignInNeeded: true, soleOwner: null } }) }), respond: async request => (request.method === "POST" ? accepted(approved, "approved") : undefined) });
+ await open();
+ const pending = (await screen.findByRole("heading", { name: "Waiting for a decision" })).closest("section")!;
+ expect(within(pending).getByText("Adopted by Ada Admin; waiting for a different admin to approve")).toBeTruthy();
+ expect(pending.textContent).toContain("Adopted byAda Admin");
+ expect(within(pending).queryByRole("button", { name: "Adopt" })).toBeNull();
+ expect(asButton(within(pending).getByRole("button", { name: "Approve" })).disabled).toBe(false);
+ fireEvent.click(within(pending).getByRole("button", { name: "Approve" }));
+ await waitFor(() => expect(posts(f)).toHaveLength(1));
+ expect(posts(f)[0]!.body).toEqual({ action: "approve", proposalId: PROPOSAL_ID, expectedDigest: DIGEST2 });
+ await screen.findByText(/Approved\. The new version applies/u);
+ expect(screen.getByRole("heading", { name: "Current rules" }).closest("section")!.textContent).toContain("Adopted by Ada Admin.");
+ f.close();
+});
+
+it("when the server says needs_adoption the page shows that reason and keeps Approve off", async () => {
+ const f = mount({ role: "admin", state: adminState(repoProposal({ adoptedBy: ADA, approval: { canApprove: false, reason: "needs_adoption", freshSignInNeeded: true, soleOwner: null } })) });
+ await open();
+ const pending = (await screen.findByRole("heading", { name: "Waiting for a decision" })).closest("section")!;
+ expect(within(pending).getByRole("note").textContent).toContain("An admin has to adopt this change first");
+ expect(asButton(within(pending).getByRole("button", { name: "Approve" })).disabled).toBe(true);
+ f.close();
+});
+
+it("an adopt refusal is shown as the server wrote it, and a sign-in refusal offers 'Sign in again'", async () => {
+ for (const [status, code, message] of [[403, "REAUTH_REQUIRED", "Sign in again to adopt this change."], [409, "CHANGE_STALE", "Another admin already adopted this change."]] as const) {
+  const f = mount({ role: "admin", state: adminState(repoProposal()), respond: async request => (request.method === "POST" ? refusal(status, code, message) : undefined) });
+  fireEvent.click(await screen.findByRole("button", { name: "Adopt" }));
+  const alert = await screen.findByRole("alert");
+  expect(alert.textContent).toContain(message);
+  if (code === "REAUTH_REQUIRED") { fireEvent.click(within(alert).getByRole("button", { name: "Sign in again" }));expect(f.host.signIn).toHaveBeenCalledWith("/app/live"); }
+  f.close();
+ }
+});
+
+it("a Rovara proposal never shows Adopt, and a version made from the repository shows who adopted it, in the current rules and in the version view", async () => {
+ const view = versionViewFor(2), withAdopter = { ...view, version: { ...view.version, adoptedBy: ADA, source: "repo", approvalMode: "admin_review" } };
+ const f = mount({ role: "admin", state: adminState(proposalFor()), respond: async request => (request.path === PATH + "/versions/2" ? { status: 200, body: withAdopter } : undefined) });
+ await screen.findByRole("heading", { name: "Waiting for a decision" });
+ expect(screen.queryByRole("button", { name: "Adopt" })).toBeNull();
+ const history = (await screen.findByRole("heading", { name: "History" })).closest("section")!;
+ fireEvent.click(await within(history).findByRole("button", { name: "View version 2" }));
+ const region = await within(history).findByRole("region", { name: "Version 2" });
+ await within(region).findByText(/Adopted by Ada Admin\./u);
+ f.close();
 });

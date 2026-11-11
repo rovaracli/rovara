@@ -23,9 +23,9 @@ function VersionView({ version, onClose }: { version: number; onClose: () => voi
  </>;
  return <div className="rv-cr-version" role="region" aria-labelledby="cr-version-heading"><h3 id="cr-version-heading" ref={heading} tabIndex={-1}>Version {version}</h3>{body}<Button onClick={onClose}>{T.CLOSE_VERSION}</Button></div>;
 }
-function VersionLine({ version }: { version: { approvedAt: string; approvedBy?: { name: string } | undefined; proposedBy?: { name: string } | undefined; approvalMode?: string | undefined; source?: string | undefined } }) {
+function VersionLine({ version }: { version: { approvedAt: string; approvedBy?: { name: string } | undefined; proposedBy?: { name: string } | undefined; adoptedBy?: { name: string } | null | undefined; approvalMode?: string | undefined; source?: string | undefined } }) {
  const mode = version.approvalMode === undefined ? undefined : (APPROVAL_WORDS as Record<string, string>)[version.approvalMode];
- return <>{version.proposedBy !== undefined && <>Proposed by <VisibleText text={version.proposedBy.name} />. </>}{version.approvedBy !== undefined && <>Approved by <VisibleText text={version.approvedBy.name} /> on {formatDay(version.approvedAt)}. </>}{version.approvedBy === undefined && <>Approved on {formatDay(version.approvedAt)}. </>}{mode !== undefined && mode + " "}{version.source !== undefined && <>Source: {SOURCE_WORDS[version.source] ?? "Rovara"}.</>}</>;
+ return <>{version.proposedBy !== undefined && <>Proposed by <VisibleText text={version.proposedBy.name} />. </>}{version.approvedBy !== undefined && <>Approved by <VisibleText text={version.approvedBy.name} /> on {formatDay(version.approvedAt)}. </>}{version.approvedBy === undefined && <>Approved on {formatDay(version.approvedAt)}. </>}{version.adoptedBy != null && <>Adopted by <VisibleText text={version.adoptedBy.name} />. </>}{mode !== undefined && mode + " "}{version.source !== undefined && <>Source: {SOURCE_WORDS[version.source] ?? "Rovara"}.</>}</>;
 }
 
 export function HistorySection({ enabled }: { enabled: boolean }) {

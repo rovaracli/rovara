@@ -22,7 +22,7 @@ function CurrentRules({ state }: { state: State }) {
  return <section aria-labelledby="cr-current" className="rv-cr-card"><h2 id="cr-current">{T.CURRENT_HEADING}</h2>
   {current === null ? <p>{T.NONE_YET}</p> : <>
    <p><strong>Version {current.version}</strong>{current.approvedBy === undefined ? "" : <>, approved by <VisibleText text={current.approvedBy.name} /></>} on {formatDay(current.approvedAt)}.
-    {current.approvalMode !== undefined && <> {(APPROVAL_WORDS as Record<string, string>)[current.approvalMode] ?? ""}</>}</p>
+    {current.adoptedBy != null && <> Adopted by <VisibleText text={current.adoptedBy.name} />.</>}{current.approvalMode !== undefined && <> {(APPROVAL_WORDS as Record<string, string>)[current.approvalMode] ?? ""}</>}</p>
    {typeof current.note === "string" && current.note !== "" && <p><strong>{T.NOTE}:</strong> <VisibleText text={current.note} /></p>}
    {current.rules.length === 0 ? <p>{T.NONE_YET}</p> : <RulesList rules={toRules(current.rules)} label="Current rules" />}
   </>}
