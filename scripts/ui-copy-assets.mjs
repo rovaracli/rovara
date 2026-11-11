@@ -31,7 +31,9 @@ for (const path of ["design/design.css", "look-v2.css", "shell/shell.css", "scre
  // Learning v2 L3b: the Lessons and Sources tabs (their own lazy chunk).
  "screens/project/lessons/lessons.css",
  // OWNER DECISION 18: the task page's plan panel and PR feedback view (their own lazy chunks).
- "screens/session/plan-panel.css"]) {
+ "screens/session/plan-panel.css",
+ // Continue in your own tool: the task page's sheet (switch rovara.continue = v2; its own lazy chunk).
+ "screens/session/continue-in-tool.css"]) {
  const source = new URL(`../packages/ui/src/${path}`, import.meta.url);
  const destination = new URL(`../packages/ui/dist/${path}`, import.meta.url);
  await mkdir(fileURLToPath(new URL(".", destination)), { recursive: true });
