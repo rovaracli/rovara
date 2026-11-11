@@ -38,6 +38,10 @@ const ADDED_DECLARATIONS: Record<string, string> = {
  */
 const NEW_RULES: Record<string, Record<string, string> | null> = {
  ".rv-chip": null, ".rv-chip svg": null, ".rv-chip-company-lock": null, ".rv-chip-outside-change": null,
+ // New navigation (switch `rovara.nav`): each selector needs an element only the new navigation renders (.rv-nav-v2 on the shell, .rv-tabbar, .rv-nav-icon, .rv-projects-*; the toast rule needs .rv-tabbar on the page), so none matches anything while it is off.
+ ".rv-nav-v2 .rv-nav-label": null, ".rv-nav-icon": null, ".rv-nav-v2 .rv-sidebar-primary": null, ".rv-tabbar": null, ".rv-tabbar a": null, ".rv-tabbar a[aria-current=page]": null, ".rv-tabbar .rv-nav-label": null, ".rv-tabbar .rv-nav-count": null,
+ ".rv-projects-list": null, ".rv-projects-list a": null, ".rv-projects-list a:hover": null, ".rv-projects-name": null, ".rv-projects-counts": null,
+ ":root .rv-app-shell.rv-nav-v2 .rv-shell-main": null, ":root:has(.rv-tabbar) .rv-toast": null,
  ".rv-banner-info": { background: "var(--rv-bg-raised)", "border-left-color": "var(--rv-accent)" }, // the plain banner's own values
  ".rv-button-primary:hover": { background: "var(--rv-accent)", "border-color": "var(--rv-accent)" }, // the primary button's own values
 };
