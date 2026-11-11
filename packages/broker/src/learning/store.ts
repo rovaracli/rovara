@@ -10,12 +10,7 @@
 //
 // Counters on STATE move with `ADD` and do not change `revision`; `revision` moves when a suggestion opens, which is what grouping serializes on.
 import { GetCommand, QueryCommand, TransactWriteCommand, UpdateCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  INDEX_EXPIRY_ATTRIBUTE, LEARNING_DAILY_AUTOMATIC_MAX, LEARNING_DAILY_PR_MAX, LEARNING_LIVE_CORRECTIONS_MAX, LEARNING_OPEN_SUGGESTIONS_MAX, LEARNING_REMEMBER_MAX,
-  LEARNING_REMEMBER_WINDOW_SECONDS, LearningCorrectionSchema, LearningStateSchema, LearningSuggestionSchema, LEARNING_TERMINAL_STATUSES, agentXError, projectLearningKey,
-  type LearningCorrection, type LearningCorrectionSource, type LearningDismissKindSchema, type LearningSourceRef, type LearningStage, type LearningStanding, type LearningState,
-  type LearningSuggestion, type LearningTerminalStatus, type OrgId,
-} from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, LEARNING_DAILY_AUTOMATIC_MAX, LEARNING_DAILY_PR_MAX, LEARNING_LIVE_CORRECTIONS_MAX, LEARNING_OPEN_SUGGESTIONS_MAX, LEARNING_REMEMBER_MAX, LEARNING_REMEMBER_WINDOW_SECONDS, LearningCorrectionSchema, LearningStateSchema, LearningSuggestionSchema, LEARNING_TERMINAL_STATUSES, agentXError, projectLearningKey, type LearningCorrection, type LearningCorrectionSource, type LearningDismissKindSchema, type LearningSourceRef, type LearningStage, type LearningStanding, type LearningState, type LearningSuggestion, type LearningTerminalStatus, type OrgId } from "@rovara-code/contracts";
 import type { z } from "zod";
 import type { AuditRuntime } from "../audit/outbox.js";
 import { flushLearningEvents, learningEvents, suggestedEvent, withdrawnEvent, type WithdrawCause } from "./audit.js";

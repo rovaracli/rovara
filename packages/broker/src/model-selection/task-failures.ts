@@ -1,4 +1,4 @@
-import {ModelSelectionSchema,type ModelSelection} from "@agentx/contracts";
+import { ModelSelectionSchema, type ModelSelection } from "@rovara-code/contracts";
 import {criticModelUnusable} from "../rovara-code/critic.js";
 // Existing retry history rules, shared by dispatch and live fallback requests.
 export function reviewFailures(operations: ReadonlyArray<Record<string, unknown>>, latestBuild: Record<string, unknown> | undefined): { models: ModelSelection[]; sinceLatestBuild: number } {

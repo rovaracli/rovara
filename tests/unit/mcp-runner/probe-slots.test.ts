@@ -71,7 +71,7 @@ describe("probe slots", () => {
     const { dynamoMcpServerStore } = await import("../../../packages/broker/src/context-sources/mcp-servers.js");
     expect(await dynamoMcpServerStore({ documentClient: table, tableName: "state" }).list(ORG)).toEqual([]);
     const { GetCommand } = await import("@aws-sdk/lib-dynamodb");
-    const { orgScoped } = await import("@agentx/contracts");
+    const { orgScoped } = await import("@rovara-code/contracts");
     const found = await table.send(new GetCommand({ TableName: "state", Key: { pk: orgScoped(ORG, "MCPSLOT"), sk: "SLOT#0" } })) as { Item?: { leaseId?: string } };
     expect(found.Item?.leaseId).toMatch(/^[0-9a-f]{32}$/u);
     expect(((await table.send(new GetCommand({ TableName: "state", Key: { pk: orgScoped(ORG, "MCPSRV"), sk: "SLOT#0" } }))) as { Item?: unknown }).Item).toBeUndefined();

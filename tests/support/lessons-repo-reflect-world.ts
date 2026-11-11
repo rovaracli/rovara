@@ -4,8 +4,8 @@
 // Mutation checks (done by hand, see the lane's report): a forbidden input added to the repo-only prompt fails the prompt test; the once-key removed fails the redelivery test; the gate removed fails the switch-off test.
 import { randomUUID } from "node:crypto";
 import { expect } from "vitest";
-import type { ChangeRequestFeedback, CodeHost } from "@agentx/contracts";
-import { createWorkflowSnapshot } from "../../packages/contracts/src/task-workflow-node.js";
+import type { ChangeRequestFeedback, CodeHost } from "@rovara-code/contracts";
+import { createWorkflowSnapshot } from "../../packages/cloud-contracts/src/task-workflow-node.js";
 import { workflowPullRequestBody } from "../../packages/broker/src/aws/developer-tasks.js";
 import { rovaraPullRequestBody } from "../../packages/broker/src/rovara-code/pull-request-body.js";
 import { lessonSubjectSource } from "../../packages/broker/src/aws/broker/lesson-subject-source.js";

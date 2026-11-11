@@ -4,10 +4,10 @@
 // stages. Ordinary agents are unchanged.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { BUILTIN_AGENTS } from "../../packages/contracts/src/agent-templates.js";
-import { DEFAULT_AGENT_GUARDRAILS } from "../../packages/contracts/src/agent-guardrails.js";
-import { applyOverlay, type RecipeLayer, type ResolvedRecipe } from "../../packages/contracts/src/agent-recipe-node.js";
-import { ROVARA_CODE_AGENT_ID, agentKey, agentVersionSk, agentXError, recipeDigest, type AgentId, type RecipeOverlay } from "../../packages/contracts/src/index.js";
+import { BUILTIN_AGENTS } from "@rovara-code/contracts";
+import { DEFAULT_AGENT_GUARDRAILS } from "@rovara-code/contracts";
+import { applyOverlay, type RecipeLayer, type ResolvedRecipe } from "@rovara-code/contracts";
+import { ROVARA_CODE_AGENT_ID, agentKey, agentVersionSk, agentXError, recipeDigest, type AgentId, type RecipeOverlay } from "@rovara-code/contracts";
 import { getApproval, getApprovalSubjectHandler, type ApprovalRecord } from "../../packages/broker/src/agents/approvals.js";
 import { publishDraft, resolveRecipe, rollbackAgent } from "../../packages/broker/src/agents/changes.js";
 import { applyAgentStep, type DispatchMode } from "../../packages/broker/src/agents/dispatch.js";

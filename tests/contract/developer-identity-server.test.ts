@@ -7,7 +7,7 @@ import {
   remoteJwksCache,
   unconfiguredProvider,
 } from "../../packages/broker/src/aws/developer-identity.js";
-import { CHANNEL_MEMBERS_MAX_CHANNELS, TaskPeopleDisplayReadRequestSchema, TaskPeopleDisplayReadResponseSchema, TaskPersonProofRequestSchema, TaskPersonProofResponseSchema } from "@agentx/contracts";
+import { CHANNEL_MEMBERS_MAX_CHANNELS, TaskPeopleDisplayReadRequestSchema, TaskPeopleDisplayReadResponseSchema, TaskPersonProofRequestSchema, TaskPersonProofResponseSchema } from "@rovara-code/contracts";
 import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
 import { ProviderNotConfiguredError, slackSignInProvider } from "../../packages/broker/src/developer/providers.js";
 import type { HttpResult } from "../../packages/broker/src/developer/server.js";

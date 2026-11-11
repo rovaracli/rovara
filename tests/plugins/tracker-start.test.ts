@@ -1,13 +1,13 @@
 // Enterprise foundations P9: an item of any tracker that asks for work starts a task through the one intake rule. A delivery is verified by the tracker's adapter, the item is read fresh, and
 // the pair becomes the intake engine's candidate: the request that starts the task carries the source `tracker` and a binding that names the tracker. A member's act starts; anyone else waits.
 import { describe, expect, it, vi } from "vitest";
-import { CodeIntentRequestSchema, trackerOfCodeIntent, type CodeIntentRequest, type OrgId, type Tracker } from "@agentx/contracts";
+import { CodeIntentRequestSchema, trackerOfCodeIntent, type CodeIntentRequest, type OrgId, type Tracker } from "@rovara-code/contracts";
 import { type IntakePorts } from "../../packages/broker/src/intake/engine.js";
 import { readIntakeItem } from "../../packages/broker/src/intake/store.js";
 import { FAKE_TRACKER_KIND, FakeTracker, fakeTrackerDelivery } from "../../packages/broker/src/plugins/fake/tracker.js";
 import { linearTracker } from "../../packages/broker/src/plugins/tracker/linear/index.js";
 import { intakeCandidateOfTrackerEvent, startFromTrackerDelivery } from "../../packages/broker/src/plugins/tracker/start.js";
-import { intakeItemIdOf } from "@agentx/contracts";
+import { intakeItemIdOf } from "@rovara-code/contracts";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { SCOPE } from "./fake-worlds.js";
 import { HOOK, SECRET, linearBody, signedLinear } from "./linear-fixtures.js";

@@ -13,12 +13,13 @@ const TEST_FILE = /\.(?:test|spec)\.tsx?$/;
 /** Files that are data tables of names, not code that connects to them: the Public Suffix List is a list of domain endings, read from memory. */
 const DATA_FILES = new Set(["public-suffix-rules.ts"]);
 
-/** The roots whose code runs in an install: every package's source, and the infrastructure code that builds it. */
+/** The roots whose code runs in an install: every package's source, Rovara Code's contracts, and the infrastructure code that builds it. */
 export function sourceRoots(repoRoot: string): string[] {
   const packages = readdirSync(join(repoRoot, "packages")).map((name) => join(repoRoot, "packages", name, "src")).filter((path) => {
     try { return statSync(path).isDirectory(); } catch { return false; }
   });
-  return [...packages, join(repoRoot, "infra", "lib"), join(repoRoot, "infra", "bin")].filter((path) => {
+  // Rovara Code's contracts (the pinned copy) run in an install too: Cloud's own contracts import them (convergence W0-3).
+  return [...packages, join(repoRoot, "vendor", "rovara-code", "packages", "contracts", "src"), join(repoRoot, "infra", "lib"), join(repoRoot, "infra", "bin")].filter((path) => {
     try { return statSync(path).isDirectory(); } catch { return false; }
   });
 }

@@ -1,5 +1,5 @@
 // K1 lane D: which plan is approved. A spec is written only from a plan a person approved, and is judged against the same one.
-import type { WorkflowSnapshot } from "@agentx/contracts";
+import type { WorkflowSnapshot } from "@agentx/cloud-contracts";
 
 /** The digest of the task's latest plan, when a person's approval names it (the broker's own automatic decisions are never an approval). Undefined otherwise. */
 export function approvedPlanDigestOf(task: { workflow?: Pick<WorkflowSnapshot, "artifacts" | "decisions"> | undefined } | undefined): string | undefined {

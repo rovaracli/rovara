@@ -11,12 +11,13 @@ import { chainRunEvents, chainRunView, chainStepTask, listChainRuns } from "../.
 import { chainReadAccessFor, chainSessionReads, chainSessionSource } from "../../packages/broker/src/chains/session-seam.js";
 import { onStepTaskEnded, startChainRun } from "../../packages/broker/src/chains/runner.js";
 import { sweepChainRuns } from "../../packages/broker/src/chains/lifecycle.js";
-import { ChainRunViewSchema } from "../../packages/contracts/src/chain-session.js";
-import { ChainRunEventPageSchema, ChainRunListSchema, ChainRunViewReaderSchema, ChainStepTaskViewSchema } from "../../packages/contracts/src/chain-session.js";
-import type { ChainDefinitionInput } from "../../packages/contracts/src/chains.js";
-import { approvalKey, chainKey, chainRunKey, chainRunsByChainKey, chainRunsByProjectKey, runEventSk, stepSk } from "../../packages/contracts/src/org-scoped-keys.js";
+import { ChainRunViewSchema } from "@rovara-code/contracts";
+import { ChainRunEventPageSchema, ChainRunListSchema, ChainRunViewReaderSchema } from "@rovara-code/contracts";
+import { ChainStepTaskViewSchema } from "../../packages/cloud-contracts/src/chain-session.js";
+import type { ChainDefinitionInput } from "@rovara-code/contracts";
+import { approvalKey, chainKey, chainRunKey, chainRunsByChainKey, chainRunsByProjectKey, runEventSk, stepSk } from "@rovara-code/contracts";
 import { taskKey } from "../../packages/broker/src/developer/task-records.js";
-import { orgMemberKey } from "../../packages/contracts/src/org-node.js";
+import { orgMemberKey } from "../../packages/cloud-contracts/src/org-node.js";
 import { INVESTIGATE_THEN_FIX } from "../support/chain-examples.js";
 import { ARJUN, CARL, DANA, MAX, ORG_A, ORG_B, PRIYA, STRANGER, VIV, callerOf, disposeGateWorlds, setupGateWorld, type GateWorld } from "../support/chain-gate-world.js";
 

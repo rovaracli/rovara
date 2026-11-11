@@ -2,7 +2,8 @@
 // is on for Collect, Suggest and On; Off captures nothing and loads nothing. A mode that cannot be read is Off: the pipeline fails closed.
 // Where the mode is stored is the learning lane's settings writer; this file reads the two items the key builders name and accepts anything else through a port.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { LEARNING_MODE_DEFAULT, LearningModeSchema, learningModeKey, learningModeLockKey, type LearningMode, type OrgId } from "@agentx/contracts";
+import { LEARNING_MODE_DEFAULT, LearningModeSchema, type LearningMode } from "@agentx/cloud-contracts";
+import { learningModeKey, learningModeLockKey, type OrgId } from "@rovara-code/contracts";
 import type { TeamRecordTable } from "./types.js";
 
 export interface LearningModeReader {

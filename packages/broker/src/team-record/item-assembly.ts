@@ -1,7 +1,7 @@
 // Per-editor rows (owner, 2026-11-02): a ticket, pull request, review or comment is stored as one row per change, each under the person who made it (`sourceRef.order` marks such a row, and `sourceRef.id`
 // is still the item's). A reader that SHOWS an item puts its rows back together here, in order. Only rows the reader may see are put together (each row passes the permission filter on its own), and
 // a tombstoned row is never part of it, so an erased person's changes are simply missing from the item and the rest of it reads on.
-import { minTrust, type OrgId } from "@agentx/contracts";
+import { minTrust, type OrgId } from "@rovara-code/contracts";
 import { filterVisible, type FilterDependencies } from "./acl.js";
 import { bySource, eventFromItem, type StoredEvent } from "./store.js";
 import type { ReadAudience, TeamRecordTable } from "./types.js";

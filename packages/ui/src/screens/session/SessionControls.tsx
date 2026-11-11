@@ -1,6 +1,6 @@
 import { Suspense, lazy, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { SessionIdSchema } from "@agentx/contracts/web";
+import { SessionIdSchema } from "@agentx/cloud-contracts/web";
 import { useAppHost } from "../../host.js";
 import { createSessionActions } from "../../api/session-actions.js";
 import { createSessionApi, acceptSessionRead } from "../../api/sessions.js";

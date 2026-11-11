@@ -1,7 +1,7 @@
-import { slackTeamOrgKey } from "../../packages/contracts/src/org-node.js";
-import { slackBindingPk } from "../../packages/contracts/src/org-scoped-keys.js";
+import { slackTeamOrgKey } from "../../packages/cloud-contracts/src/org-node.js";
+import { slackBindingPk } from "@rovara-code/contracts";
 import { createHash, randomUUID } from "node:crypto";
-import type { WorkerInvocation } from "@agentx/contracts";
+import type { WorkerInvocation } from "@agentx/cloud-contracts";
 import { describe, expect, it, vi } from "vitest";
 import {
   adaptHttpApiEvent,
@@ -14,7 +14,7 @@ import type { Ec2Delivery } from "../../packages/broker/src/aws/ec2-delivery.js"
 import type { Ec2OutboxRecord } from "../../packages/broker/src/aws/lambda.js";
 import { RepositoryGrantService } from "../../packages/broker/src/repository-access.js";
 import { TEST_ENV, TEST_ORG } from "../support/orgs.js";
-import { projectMemberKey, projectPk } from "../../packages/contracts/src/org-scoped-keys.js";
+import { projectMemberKey, projectPk } from "@rovara-code/contracts";
 
 describe("AWS control-plane handlers", () => {
   it("reads browser cookies from the HTTP API's cookies field, where payload 2.0 puts them", () => {
@@ -632,7 +632,7 @@ describe("AWS control-plane handlers", () => {
       title: "Publish demo",
       // A thread publication carries its Slack attribution into the pull request.
       body: `Requested in Slack thread https://slack.com/archives/${channelId}/p1758240000000100 by U0123456789.`,
-    }, { system: "private-install" });
+    }, { system: "install" });
 
     const editRequestId = randomUUID();
     const editEvent = {
@@ -664,7 +664,7 @@ describe("AWS control-plane handlers", () => {
       "https://github.com/example/demo.git",
       3,
       { title: "Updated review title" },
-      { system: "private-install" },
+      { system: "install" },
     );
     const duplicateEdit = await handler(editEvent);
     expect(JSON.parse(duplicateEdit.body)).toMatchObject({ duplicate: true });

@@ -2,5 +2,5 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": { "rootDir": "src", "outDir": "dist" },
   "include": ["src/**/*.ts"],
-  "references": [{ "path": "../contracts" }, { "path": "../model-runtime" }, { "path": "../verifier" }]
+  "references": [{ "path": "../cloud-contracts" }, { "path": "../../vendor/rovara-code/packages/contracts" }, { "path": "../model-runtime" }, { "path": "../verifier" }]
 }

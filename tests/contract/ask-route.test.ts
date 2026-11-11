@@ -4,9 +4,7 @@
 import { randomUUID } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  ASK_RATE, ASK_TURN_RULES, AskStatusSchema, askRequestKey, askLockKey, sessionAskKey, sessionRateKey, askCountKey, type OrgId,
-} from "../../packages/contracts/src/index.js";
+import { ASK_RATE, ASK_TURN_RULES, AskStatusSchema, askRequestKey, askLockKey, sessionAskKey, sessionRateKey, askCountKey, type OrgId } from "@rovara-code/contracts";
 import {
   ASK_BUSY_TEXT, ASK_RATE_TEXT, RATE_RACE_ATTEMPTS, askIdFor, takeSlackAskRates, askStatusFor, completeAsk, prepareAskTurn, submitAsk, type AskDependencies,
 } from "../../packages/broker/src/agent-sessions/ask.js";

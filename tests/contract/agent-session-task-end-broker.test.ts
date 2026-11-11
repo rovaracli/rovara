@@ -4,8 +4,8 @@
 import { randomUUID } from "node:crypto";
 import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
-import { agentSessionKey, openAgentSessionKey } from "../../packages/contracts/src/index.js";
-import { BUDGET_EXHAUSTED_FAILURE_MESSAGE } from "../../packages/contracts/src/developer-tasks-node.js";
+import { agentSessionKey, openAgentSessionKey } from "@rovara-code/contracts";
+import { BUDGET_EXHAUSTED_FAILURE_MESSAGE } from "@rovara-code/contracts";
 import { unregisterAgentSessionTaskHandlers } from "../../packages/broker/src/agent-sessions/index.js";
 import { uninstallTicketUpdates } from "../../packages/broker/src/aws/broker/ticket-updates-wiring.js";
 import { hasTaskEndHandlers, hasTaskPauseHandlers, registerTaskEndHandler } from "../../packages/broker/src/agents/task-end.js";

@@ -1,7 +1,9 @@
 import { readProjectAllowedDomainsReview } from "../../packages/broker/src/org/project-allowed-domains.js";
 import { randomUUID } from "node:crypto";
 import { expect, it } from "vitest";
-import { ProjectDefinitionSchema, developerOrgKey, orgMemberKey, orgMetaKey, orgProjectCatalogKey, projectMetaKey, projectRevisionKey, type OrgId } from "../../packages/contracts/src/index.js";
+import { orgProjectCatalogKey, projectMetaKey, projectRevisionKey, type OrgId } from "@rovara-code/contracts";
+import { ProjectDefinitionSchema } from "@agentx/cloud-contracts";
+import { developerOrgKey, orgMemberKey, orgMetaKey } from "@agentx/cloud-contracts";
 import { projectAllowedDomainsHttp } from "../../packages/broker/src/org/project-allowed-domains-http.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
@@ -75,7 +77,7 @@ it("approval constructs the exact registration and proof on the server and rejec
 });
 it("owned request status hides a different actor's receipt exactly like absence", async () => {
  const f = await fixture();await f.propose();const requestId = randomUUID();
- const { projectPk } = await import("../../packages/contracts/src/index.js");f.db.set({ pk: projectPk(orgId, project), sk: `EGRESS_PROPOSAL#${requestId}`, entityType: "EGRESS_PROPOSAL", kind: "decision_receipt", orgId, project, by: "b".repeat(64) });
+ const { projectPk } = await import("@rovara-code/contracts");f.db.set({ pk: projectPk(orgId, project), sk: `EGRESS_PROPOSAL#${requestId}`, entityType: "EGRESS_PROPOSAL", kind: "decision_receipt", orgId, project, by: "b".repeat(64) });
  for (const id of [requestId, randomUUID()]) await expect(projectAllowedDomainsHttp(f.deps, f.caller, project, { operation: "request-status", expectedOrgId: orgId, requestId: id })).rejects.toMatchObject({ code: "NOT_FOUND" });
 });
 
@@ -108,7 +110,7 @@ it("browser proposal creation requires a fresh reviewed context digest", async (
 });
 
 it("owned status recognizes the existing direct-narrowing receipt without resending it", async () => {
- const f = await fixture(), requestId = randomUUID(), { projectPk } = await import("../../packages/contracts/src/index.js");
+ const f = await fixture(), requestId = randomUUID(), { projectPk } = await import("@rovara-code/contracts");
  f.db.set({ pk: projectPk(orgId, project), sk: `EGRESS_PROPOSAL#${requestId}`, entityType: "EGRESS_PROPOSAL", orgId, project, by, requestId, bodyHash: "a".repeat(64), state: "applied", mode: "direct_narrowing", baseRevision: 1, resultRevision: 2, createdAt: "2026-10-29T21:00:00.000Z" });
  const before = f.db.transactions().length, result = await projectAllowedDomainsHttp(f.deps, f.caller, project, { operation: "request-status", expectedOrgId: orgId, requestId });
  expect(result).toMatchObject({ kind: "receipt", status: "applied", receipt: { requestId, mode: "direct_narrowing", resultRevision: 2 } });expect(f.db.transactions()).toHaveLength(before);

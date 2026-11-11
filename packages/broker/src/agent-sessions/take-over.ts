@@ -7,31 +7,8 @@ import type { AskDependencies } from "./ask.js";
 import { DeleteCommand, GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
 import type { RedirectConfig } from "./redirect.js";
-import {
-  INDEX_EXPIRY_ATTRIBUTE,
-  OrgRoleSchema,
-  SESSION_ENDED_MESSAGE,
-  SESSION_RETENTION_DAYS,
-  SlackUserIdSchema,
-  agentSessionKey,
-  agentXError,
-  cleanSessionName,
-  liveSessionKey,
-  mySessionsKey,
-  orgMemberKey,
-  projectAllows,
-  principalKey,
-  sessionChannel,
-  sessionEventId,
-  sessionOnMacMessage,
-  sharedSessionsKey,
-  userChannel,
-  type AgentSessionRecord,
-  type NeedsConfirmation,
-  type OrgId,
-  type Payer,
-  hideEmailAddresses,
-} from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, SESSION_ENDED_MESSAGE, SESSION_RETENTION_DAYS, SlackUserIdSchema, agentSessionKey, agentXError, cleanSessionName, liveSessionKey, mySessionsKey, projectAllows, principalKey, sessionEventId, sessionOnMacMessage, sharedSessionsKey, type AgentSessionRecord, type NeedsConfirmation, type OrgId, type Payer, hideEmailAddresses } from "@rovara-code/contracts";
+import { OrgRoleSchema, orgMemberKey, sessionChannel, userChannel } from "@agentx/cloud-contracts";
 import {
   createPendingChange,
   registerApprovalSubjectHandler,

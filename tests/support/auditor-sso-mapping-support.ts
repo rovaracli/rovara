@@ -1,5 +1,6 @@
 // The dispatcher bench of auditor-role.test.ts with the session's sign-in time under the test's control (the fixture there has none).
-import { developerOrgKey, editionPolicy, orgMemberKey, orgMetaKey, AgentXError, type OrgRole } from "@agentx/contracts";
+import { developerOrgKey, editionPolicy, orgMemberKey, orgMetaKey, type OrgRole } from "@agentx/cloud-contracts";
+import { AgentXError } from "@rovara-code/contracts";
 import { routeDeveloperRequest, type DeveloperCaller, type DeveloperRouteDependencies } from "../../packages/broker/src/aws/developer-routes.js";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";

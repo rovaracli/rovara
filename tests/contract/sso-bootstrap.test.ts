@@ -1,6 +1,7 @@
 import { decodeJwt } from "jose";
 import { describe, expect, it } from "vitest";
-import { editionPolicy, singleOrgIdForEnv } from "@agentx/contracts";
+import { editionPolicy } from "@agentx/cloud-contracts";
+import { singleOrgIdForEnv } from "@rovara-code/contracts";
 import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
 import { bootstrapSso, SSO_BOOTSTRAP_EDITION_MESSAGE, SSO_BOOTSTRAP_EXISTS_MESSAGE, type SsoBootstrapInput } from "../../packages/broker/src/developer/sso-bootstrap.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { projectSetupTerminalAuthorityChecks } from "../../packages/broker/src/aws/project-setup-terminal-conditions.js";
 import { assertDynamoExpressionAttributes } from "../support/validating-document-client.js";
 import { TEST_ORG } from "../support/orgs.js";
-import { projectMemberKey, projectRevisionKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { projectMemberKey, projectRevisionKey } from "@rovara-code/contracts";
 
 describe("project setup terminal authority transaction checks", () => {
   it("binds terminal writes to the admitted creator and exact current qualified runtime row", () => {

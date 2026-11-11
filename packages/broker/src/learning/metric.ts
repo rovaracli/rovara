@@ -7,7 +7,7 @@
 // PR-comment corrections also add to `pr*` counters that are part of the totals. While PR capture is off the view subtracts them ("stops counting at once", owner decision Q2/Q3), and the
 // text is kept. B6 composes `metricUpdateItem` into its settle and dismiss transactions for `accepted` and `dismissed`.
 import { DeleteCommand, GetCommand, type TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { agentXError, projectLearningKey, type OrgId } from "@agentx/contracts";
+import { agentXError, projectLearningKey, type OrgId } from "@rovara-code/contracts";
 import { sameProject } from "./retention.js";
 import { getLearningItem, type LearningDeps, type LearningScope } from "./store.js";
 

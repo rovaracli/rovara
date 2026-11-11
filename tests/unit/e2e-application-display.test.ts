@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import type { E2EAssertion } from "@agentx/contracts";
+import type { E2EAssertion } from "@rovara-code/contracts";
 import {
   accountLabelOf, baselineOf, buildScenarioRows, deriveFailedAssertion, displayText, readCaptureScreenshots, scenarioTitle, summarizeScenarios,
   type BuildScenarioRowsInput, type DisplayGroupInput,

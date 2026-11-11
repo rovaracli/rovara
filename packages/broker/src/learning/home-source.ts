@@ -10,10 +10,7 @@ import { visibleOpenCount } from "./pr-visibility.js";
 // after the card is built; a read that has not answered in time is dropped and left to the next read. The settler (B6's `settle`) is plugged in with `setLearningHomeSettler`; without one Home
 // reads no approval at all. Home never reads versions: deciding that a published version carries the rule is the settler's, on the learning routes.
 import { createHash } from "node:crypto";
-import {
-  ApprovalIdSchema, LearningRuleSchema, LearningStateSchema, orgLearningSettingsKey, projectAllows, projectLearningKey, projectMetaKey,
-  type ApprovalId, type LearningState, type OrgId,
-} from "@agentx/contracts";
+import { ApprovalIdSchema, LearningRuleSchema, LearningStateSchema, orgLearningSettingsKey, projectAllows, projectLearningKey, projectMetaKey, type ApprovalId, type LearningState, type OrgId } from "@rovara-code/contracts";
 import { fit, quoted, registerHomeCardSource, HOME_SOURCE_TIMEOUT_MS, type HomeCardSource, type HomeDependencies, type HomeSourceCard } from "../agent-sessions/home.js";
 import { batchGetItems, keyText } from "../agent-sessions/live.js";
 import { getAnyApproval } from "../agents/approvals-store.js";
@@ -104,7 +101,7 @@ export const learningHomeSource: HomeCardSource = {
     const cards: HomeSourceCard[] = visible.filter(({ state }) => !switchedOff && state.openSuggestions > 0).map(({ project, state }) => {
       const n = state.openSuggestions;
       return {
-        cardId: `rule_suggestion:${hashOf(orgId, project)}`, kind: "rule_suggestion", title: `Suggested rules for ${quoted(project)}`,
+        project, cardId: `rule_suggestion:${hashOf(orgId, project)}`, kind: "rule_suggestion", title: `Suggested rules for ${quoted(project)}`,
         reason: fit(`${String(n)} suggested ${n === 1 ? "rule" : "rules"} to review in ${quoted(project)}`, ""), at: state.lastGroupedAt ?? state.projectCreatedAt,
         buttons: [{ label: "Review", action: "open" as const, href: `${origin}/app/projects/${encodeURIComponent(project)}?tab=how-we-work`, method: "GET" as const }],
       };

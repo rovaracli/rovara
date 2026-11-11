@@ -1,14 +1,7 @@
 // Spec 051 Task 5 (FR-008, D-2, D-7/P-2): a remaining regression opens a draft pull request with a checks section, the
 // workspace keeps its latest task report, and with nothing to report the pull request is exactly as before.
 import { randomUUID } from "node:crypto";
-import {
-  AGENTX_PREAMBLE_VERSION,
-  agentxPreambleSha256,
-  checksReplyPrefix,
-  checksSection,
-  type CheckEntry,
-  type CheckReport,
-} from "@agentx/contracts";
+import { AGENTX_PREAMBLE_VERSION, agentxPreambleSha256, checksReplyPrefix, checksSection, type CheckEntry, type CheckReport } from "@rovara-code/contracts";
 import { beforeAll, describe, expect, it, type vi } from "vitest";
 import { DRAFT_REFUSED_PULL_REQUEST_NOTE } from "../../packages/broker/src/github-app.js";
 import type { FakeDynamoDb } from "../support/fake-dynamodb.js";

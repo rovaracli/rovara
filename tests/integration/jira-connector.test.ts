@@ -3,8 +3,8 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, type MockIn
 import { connectMcp, JIRA_MCP_ENDPOINT } from "@agentx/gateway";
 import { githubConnectorType, type ConnectorType } from "../../packages/broker/src/aws/connector-types.js";
 import { jiraConnectorType } from "../../packages/broker/src/aws/jira-connector-type.js";
-import { ConnectorCatalogSchema } from "../../packages/contracts/src/connectors-node.js";
-import { SlackThreadWorkspaceResultSchema } from "../../packages/contracts/src/slack.js";
+import { ConnectorCatalogSchema } from "@rovara-code/contracts";
+import { SlackThreadWorkspaceResultSchema } from "@rovara-code/contracts";
 import { startFakeAtlassian, type FakeAtlassian } from "../support/fake-atlassian-mcp.js";
 import { call, createAuditedSlackBroker as createBroker, ensureWorkspace, loadSlackBroker, markReady, orchestratorPrincipal, type Handler } from "../support/slack-broker.js";
 

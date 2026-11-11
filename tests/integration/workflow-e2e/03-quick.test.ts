@@ -2,7 +2,8 @@
 // only). Here: a revised coding plan, optional checks chosen at approval, a coding run that fails, and one that
 // changes nothing.
 import { describe, expect, it } from "vitest";
-import { NO_CHANGE_CHOICES_LINE, WORKFLOW_BLOCK_REASONS } from "@agentx/contracts";
+import { NO_CHANGE_CHOICES_LINE } from "@rovara-code/contracts";
+import { WORKFLOW_BLOCK_REASONS } from "@agentx/cloud-contracts";
 import { planAnswer, planDocument } from "../../support/plan-documents.js";
 import { E2E_CHECK, createWorkflowE2E } from "../../support/workflow-e2e.js";
 import { EDITS, LINT, PLAN, SELECT_LINT, actionIds, atPlanReview, expectNoJargon, journeySuite, markInputs, modelInputs, runs, said } from "../../support/workflow-e2e-journeys.js";

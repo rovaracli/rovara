@@ -2,12 +2,8 @@ import { usdToWholeMicrodollars } from "./budget-amount.js";
 // Strict read projection. Do not call legacy ensureSynced/readBudgets here: a GET must
 // neither mutate the proxy nor turn corrupt persisted values into plausible defaults.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import {
- AgentXError, agentXError, AdminBudgetSettingsSchema, OrgIdSchema,
- DEFAULT_ORG_MONTHLY_BUDGET_USD, DEFAULT_MEMBER_MONTHLY_BUDGET_USD,
- orgSettingsKey, orgMemberKey, developerOrgKey, orgMetaKey,
- type AdminBudgetSettings,
-} from "@agentx/contracts";
+import { AgentXError, agentXError, OrgIdSchema } from "@rovara-code/contracts";
+import { AdminBudgetSettingsSchema, DEFAULT_ORG_MONTHLY_BUDGET_USD, DEFAULT_MEMBER_MONTHLY_BUDGET_USD, orgSettingsKey, orgMemberKey, developerOrgKey, orgMetaKey, type AdminBudgetSettings } from "@agentx/cloud-contracts";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "../aws/developer-routes.js";
 type Dependencies = Pick<DeveloperRouteDependencies, "documentClient" | "tableName" | "cloud" | "now">;
 type Key = { pk: string; sk: string };
@@ -43,13 +39,14 @@ export async function getAdminBudgetSettings(deps: Dependencies, caller: Develop
   await authority(deps, caller);
   const key = orgSettingsKey(caller.orgId, "BUDGET"), raw = await read(deps, key);
   let count = 0;
+  const perMember: Array<{ developerId: string; microdollars: number }> = [];
   if (raw !== undefined) {
    if (!bound(raw, key) || raw.entityType !== "ORG_BUDGET" || (Object.hasOwn(raw, "orgId") && raw.orgId !== caller.orgId) || !isRecord(raw.memberOverrides)) throw unavailable();
    const overrides = Object.entries(raw.memberOverrides);if (overrides.length > 500) throw unavailable();
-   for (const [developerId, amount] of overrides) { if (!/^[a-f0-9]{64}$/.test(developerId)) throw unavailable();microdollars(amount); }
+   for (const [developerId, amount] of overrides) { if (!/^[a-f0-9]{64}$/.test(developerId)) throw unavailable();perMember.push({ developerId, microdollars: microdollars(amount) }); }
    count = overrides.length;
   }
-  const result = AdminBudgetSettingsSchema.parse({ orgId: caller.orgId, checkedAt: new Date(deps.now?.() ?? Date.now()).toISOString(), coverage: "monthly_base_settings_only", orgMonthly: monthly(raw, "orgMonthlyUsd", deps.cloud, DEFAULT_ORG_MONTHLY_BUDGET_USD), memberDefaultMonthly: monthly(raw, "memberDefaultMonthlyUsd", deps.cloud, DEFAULT_MEMBER_MONTHLY_BUDGET_USD), memberOverrideCount: count, memberOverrideCoverage: "configured_only_membership_not_checked", topUps: "not_checked", usage: "not_checked", enforcement: "not_checked" });
+  const result = AdminBudgetSettingsSchema.parse({ orgId: caller.orgId, checkedAt: new Date(deps.now?.() ?? Date.now()).toISOString(), coverage: "monthly_base_settings_only", orgMonthly: monthly(raw, "orgMonthlyUsd", deps.cloud, DEFAULT_ORG_MONTHLY_BUDGET_USD), memberDefaultMonthly: monthly(raw, "memberDefaultMonthlyUsd", deps.cloud, DEFAULT_MEMBER_MONTHLY_BUDGET_USD), memberOverrideCount: count, ...(perMember.length === 0 ? {} : { memberOverrides: perMember.sort((left, right) => left.developerId.localeCompare(right.developerId)) }), memberOverrideCoverage: "configured_only_membership_not_checked", topUps: "not_checked", usage: "not_checked", enforcement: "not_checked" });
   // Refuse a role/pointer/open-org change observed after the setting read as well.
   await authority(deps, caller);
   return result;

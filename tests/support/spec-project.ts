@@ -1,6 +1,6 @@
 // A project with a meta repository in a fake table, for the tests that read a spec pull request or a file of the meta repository through `spec-wiring.ts`: the code host of that repository
 // is now found from the project the task pinned (task P5d), so a task and its project must be there.
-import { projectRevisionKey } from "../../packages/contracts/src/index.js";
+import { projectRevisionKey } from "@rovara-code/contracts";
 import { FakeDynamoDb } from "./fake-dynamodb.js";
 import { TEST_ORG } from "./orgs.js";
 

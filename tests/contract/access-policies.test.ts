@@ -3,7 +3,7 @@ import {
   BOUNDARY_INSTANCE_PROFILE_ACTIONS, BOUNDARY_NAMED_READS, BOUNDARY_SERVICES, CLOUDFRONT_BOUNDARY_ACTIONS, MANAGED_POLICY_ACTIONS, SERVICE_LINKED_ROLE_SERVICES, SERVICE_ROLE_SERVICES, defaultBoundaryArn, defaultBoundaryName, defaultBoundaryStatements, operatorRoleStatements, serviceRoleStatements, withoutSids, type PolicyScope,
 } from "../../infra/lib/access-policies.js";
 import { readFileSync } from "node:fs";
-import { brokerRoleName, modelAccessProbeRoleName, modelProxyTaskRoleName } from "@agentx/contracts";
+import { brokerRoleName, modelAccessProbeRoleName, modelProxyTaskRoleName } from "@agentx/cloud-contracts";
 
 const iamActions = JSON.parse(readFileSync(new URL("../fixtures/iam-actions-2026-11-03.json", import.meta.url), "utf8")) as { actions: string[] };
 /** An IAM action pattern as a case-insensitive RegExp: `*` is any run of characters and `?` one. */
@@ -50,7 +50,7 @@ describe("service role policy", () => {
       } else if (statement.Sid === "IamFixedNameRolesNotYetCreated") {
         // The fixed-name roles: IAM authorizes CloudFormation's lookup of each before it exists against its path-less ARN.
         // Reads and deletes only, never create or change (tests/contract/role-paths.test.ts proves what each action may do).
-        expect(resources).toEqual(["connector-secrets", "connector-secrets-test-accounts", "broker-role", "model-proxy-task", "model-access-probe", "chain-schedule", "img-push", "img-pull", "img-manage", "record-vectors-data"].map((name) => `arn:aws:iam::123456789012:role/agentx-staging-${name}`));
+        expect(resources).toEqual(["connector-secrets", "connector-secrets-test-accounts", "broker-role", "model-proxy-task", "model-access-probe", "chain-schedule", "img-push", "img-pull", "img-manage", "img-mirror", "record-vectors-data"].map((name) => `arn:aws:iam::123456789012:role/agentx-staging-${name}`));
         expect(statement.Action.every((a) => /^iam:(Get|List|Delete|Detach)/.test(a))).toBe(true);
       } else if (statement.Sid === "IamInstanceProfiles") {
         // The EC2 workers' instance profile, under the same path as the environment's roles.

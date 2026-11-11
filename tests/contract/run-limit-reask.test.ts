@@ -5,8 +5,10 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { escalateOwnerRequests } from "../../packages/broker/src/spend/requests.js";
-import { agentRequestKey, runCostKey, spendRequestKey, spendRequestSlotKey } from "../../packages/contracts/src/org-scoped-keys.js";
-import { SPEND_REQUEST_TTL_DAYS, planRunLimitSubject } from "../../packages/contracts/src/spend.js";
+import { agentRequestKey, runCostKey } from "@rovara-code/contracts";
+import { spendRequestKey, spendRequestSlotKey } from "../../packages/cloud-contracts/src/org-scoped-keys.js";
+import { SPEND_REQUEST_TTL_DAYS } from "../../packages/cloud-contracts/src/spend.js";
+import { planRunLimitSubject } from "@rovara-code/contracts";
 import { keyIdOf } from "../../packages/broker/src/org/budget.js";
 import { MAYA } from "../support/developer-task-broker.js";
 import { BEN, CARL, PREPARED, setup, type World } from "../support/spend-world.js";

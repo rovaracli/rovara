@@ -1,16 +1,6 @@
 import { randomUUID } from "node:crypto";
-import {
-  AgentXError,
-  DeveloperTaskActionRequestSchema,
-  agentXError,
-  type DeveloperTaskView,
-  type WorkflowSnapshot,
-  WorkflowSnapshotSchema,
-  blockWorkflow,
-  WORKFLOW_REDIRECT_PLAN_DECISION_REASON,
-  WORKFLOW_REVISE_PLAN_DECISION_REASON,
-  WORKFLOW_SPEC_REPLAN_DECISION_REASON,
-} from "@agentx/contracts";
+import { AgentXError, DeveloperTaskActionRequestSchema, agentXError, WORKFLOW_REDIRECT_PLAN_DECISION_REASON, WORKFLOW_REVISE_PLAN_DECISION_REASON, WORKFLOW_SPEC_REPLAN_DECISION_REASON } from "@rovara-code/contracts";
+import { type DeveloperTaskView, type WorkflowSnapshot, WorkflowSnapshotSchema, blockWorkflow } from "@agentx/cloud-contracts";
 import {
   aiToolTurn,
   developerTaskIdentity,

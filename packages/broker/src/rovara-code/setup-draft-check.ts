@@ -7,7 +7,9 @@
 // draft does not touch stays exactly as stored (env and timeout included), and the stored check's lists must be identical to these, field for field. The digest names those lists, so a check proves one list pair
 // and nothing else; a changed settings revision is another key (nothing found), so a check never carries over to settings it did not run against.
 import { createHash } from "node:crypto";
-import { AgentXError, SETUP_TIMEOUT, TEST_TIMEOUT, agentXError, canonicalJson, type AppProjectSummary, type OrgId, type ProjectCommand, type StoredProjectDefinition } from "@agentx/contracts";
+import { AgentXError, SETUP_TIMEOUT, TEST_TIMEOUT, agentXError, canonicalJson, type OrgId, type ProjectCommand } from "@rovara-code/contracts";
+import { type AppProjectSummary } from "@agentx/cloud-contracts";
+import { type StoredProjectDefinition } from "@agentx/cloud-contracts";
 import { resolveRepository, settingsCommands } from "../org/project-settings.js";
 import { SETUP_CHECK_MAX_AGE_MS } from "../test-env/prove-from-setup-check.js";
 import type { DeveloperCaller } from "../aws/developer-routes.js";

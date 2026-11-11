@@ -10,9 +10,9 @@ import type * as NodeCrypto from "node:crypto";
 import { readFileSync, readdirSync } from "node:fs";
 import { basename, join } from "node:path";
 import { beforeAll, describe, expect, it, vi } from "vitest";
-import { BUILTIN_AGENTS, builtinDefaultPin, builtinRecipe } from "../../packages/contracts/src/agent-templates.js";
-import { recipeDigest } from "../../packages/contracts/src/agent-recipe-node.js";
-import { STAGE_OPERATION_MAPPING, TaskModelPolicyBindingSchema } from "../../packages/contracts/src/index.js";
+import { BUILTIN_AGENTS, builtinDefaultPin, builtinRecipe } from "@rovara-code/contracts";
+import { recipeDigest } from "@rovara-code/contracts";
+import { STAGE_OPERATION_MAPPING, TaskModelPolicyBindingSchema } from "@rovara-code/contracts";
 import { GOLDEN_FIXTURE_DIRECTORY, GOLDEN_SCENARIOS, GOLDEN_THREAD_MODELS, expectGolden, recordGolden, updatingGolden, type GoldenScenario } from "../support/golden-recorder.js";
 import { loadSlackBroker } from "../support/slack-broker.js";
 

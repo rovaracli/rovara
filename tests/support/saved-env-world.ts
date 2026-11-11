@@ -1,5 +1,5 @@
 // A SavedEnvDeps for tests of the wiring (routes, triggers, panel): the memory store, a fake registry and fake sessions, with the registry's own rules.
-import { savedEnvRepositoryName, type SavedEnvManifest } from "../../packages/contracts/src/index.js";
+import { savedEnvRepositoryName, type SavedEnvManifest } from "@rovara-code/contracts";
 import type { RegistryImage, RegistryPort, SavedEnvDeps, SavedEnvImageRecord, SavedEnvState } from "../../packages/broker/src/test-env/saved-env.js";
 import { expectedRepositoryPolicy, type RepositoryDescription, type SavedEnvSessionConfig, type SavedEnvSessionPorts } from "../../packages/broker/src/test-env/saved-env-session.js";
 import { memorySavedEnvStore } from "./memory-saved-env-store.js";

@@ -1,10 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import type {
-  SlackRequestMessage,
-  SlackThreadWorkspaceResult,
-  SlackWorkspaceCloseStartResult,
-} from "../../packages/contracts/src/index.js";
+import type { SlackRequestMessage, SlackThreadWorkspaceResult, SlackWorkspaceCloseStartResult } from "@rovara-code/contracts";
 import { processGroup, runConsumer, type QueueClient, type QueueMessage } from "../../packages/slack-service/src/consumer.js";
 import { deterministicUuid, requestIdSequence } from "../../packages/slack-service/src/ids.js";
 import {

@@ -2,7 +2,8 @@
 // send-back access gate (`requireProjectSendBackRole`): a member with no project access, a viewer, an archived project and another company are refused; an allowed person still goes on.
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { WORKFLOW_BLOCK_REASONS, WorkflowSnapshotSchema, agentXError, resolveWorkflowReviewFindings, retryWorkflowFeedbackReview, ciFixAskMessage, createCandidateManifest, orgMemberKey, orgRemovedKey, projectMetaKey, type WorkflowSnapshot } from "@agentx/contracts";
+import { WORKFLOW_BLOCK_REASONS, WorkflowSnapshotSchema, resolveWorkflowReviewFindings, retryWorkflowFeedbackReview, orgMemberKey, orgRemovedKey, type WorkflowSnapshot } from "@agentx/cloud-contracts";
+import { agentXError, ciFixAskMessage, createCandidateManifest, projectMetaKey } from "@rovara-code/contracts";
 import { resolveTaskWorkflowFindings, retryTaskWorkflowFeedbackReview, startTaskWorkflowFeedbackReviewFromWebhook, startTaskWorkflowImplementationFromSystem, type DeveloperTaskRouteDependencies } from "../../packages/broker/src/aws/developer-tasks.js";
 import { continueAsTask, resumeTaskAfterSpendApproval } from "../../packages/broker/src/aws/developer-tasks/continue.js";
 import { startTaskWorkflowUnderstandFromSystem } from "../../packages/broker/src/aws/developer-tasks/workflow-starts.js";
@@ -10,7 +11,7 @@ import { retryTaskWorkflow } from "../../packages/broker/src/aws/developer-tasks
 import type { DeveloperCaller } from "../../packages/broker/src/aws/developer-routes.js";
 import { sendBackNoAccessMessage } from "../../packages/broker/src/developer/task-access.js";
 import { viewerCannotStartTasksMessage } from "../../packages/broker/src/developer/project-roles.js";
-import { openReviewFindings } from "../../packages/contracts/src/task-workflow-node.js";
+import { openReviewFindings } from "../../packages/cloud-contracts/src/task-workflow-node.js";
 import { MAYA, createDeveloperTaskBroker, createSingleAnswerPlanBroker } from "../support/developer-task-broker.js";
 import { seedReview } from "../support/rovara-code-feedback.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";

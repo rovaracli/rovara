@@ -4,7 +4,8 @@
 import { teamRecordRecordedOrUnknown, teamRecordRefusalHint } from "../deploy/team-record-switch.js";
 import { enforceTeamRecordPreflight, type TeamRecordProbe } from "../deploy/team-record-preflight.js";
 import { GetTemplateCommand } from "@aws-sdk/client-cloudformation";
-import { agentXError, environmentStackName, isRovaraOperatorArn } from "@agentx/contracts";
+import { agentXError, environmentStackName } from "@rovara-code/contracts";
+import { isRovaraOperatorArn } from "@agentx/cloud-contracts";
 import { CONFIG_KEYS } from "../config/keys.js";
 import { CLOUD_NEEDS_CDK_MESSAGE, bootStage2ImagesProblem } from "../deploy/answer-schemas.js";
 import { progressLine, type Ask, type PreparedDeployment } from "../deploy/commands.js";

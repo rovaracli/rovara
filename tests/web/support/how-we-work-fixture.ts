@@ -1,4 +1,4 @@
-import { LearningViewAnswerSchema } from "@agentx/contracts/web";
+import { LearningViewAnswerSchema } from "@agentx/cloud-contracts/web";
 import type { ApiRequest, ApiResponse } from "../../../packages/ui/src/host.js";
 import { agentProfile } from "./agent-fixture.js";
 import { meFixture } from "./fixtures.js";

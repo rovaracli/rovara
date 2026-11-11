@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { GetCommand, PutCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { TaskPeopleProposalSchema, TaskPersonInviteClaimRequestSchema, TaskPersonInviteOutcomeSchema, agentXError, type TaskPeopleChangeResult, type TaskPeopleProposal, type TaskPeopleRoleRequest, type TaskPeopleTakeOwnershipRequest, type TaskPersonInviteClaimRequest, type TaskPersonInviteOutcome } from "@agentx/contracts";
+import { TaskPeopleProposalSchema, TaskPersonInviteClaimRequestSchema, TaskPersonInviteOutcomeSchema, agentXError, type TaskPeopleChangeResult, type TaskPeopleProposal, type TaskPeopleRoleRequest, type TaskPeopleTakeOwnershipRequest, type TaskPersonInviteClaimRequest, type TaskPersonInviteOutcome } from "@rovara-code/contracts";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 import { changeTaskPeople, getTaskPeopleCapabilities, getTaskPeopleEffectAdmission, getTaskPeopleRequestOutcome, resolveTaskPeopleTarget, taskAccessFence, takeTaskOwnership, type TaskPeopleDependencies } from "./task-people.js";
 

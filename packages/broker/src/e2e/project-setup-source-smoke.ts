@@ -1,10 +1,5 @@
 import { createHash } from "node:crypto";
-import {
-  canonicalJson, E2EPortableApprovalBindingSchema, E2EScenarioSchema, e2EDefaultSyntheticAccountDefinition,
-  e2EPortableApprovalBindingDigest, e2ePortableOperationDescriptorDigest, e2ePortableRegistrationKey,
-  e2eSourceInterfaceAssertion, inspectE2EPortableSource, inspectE2ERepository,
-  type E2EPolicy, type E2EPortableApprovalBinding, type E2ERuntimeAvailability, type E2EScenario, type E2ESourceSnapshot, type E2ERepositoryInspection,
-} from "@agentx/contracts";
+import { canonicalJson, E2EPortableApprovalBindingSchema, E2EScenarioSchema, e2EDefaultSyntheticAccountDefinition, e2EPortableApprovalBindingDigest, e2ePortableOperationDescriptorDigest, e2ePortableRegistrationKey, e2eSourceInterfaceAssertion, inspectE2EPortableSource, inspectE2ERepository, type E2EPolicy, type E2EPortableApprovalBinding, type E2ERuntimeAvailability, type E2EScenario, type E2ESourceSnapshot, type E2ERepositoryInspection } from "@rovara-code/contracts";
 
 const sha256 = (value: string | Uint8Array) => createHash("sha256").update(value).digest("hex");
 

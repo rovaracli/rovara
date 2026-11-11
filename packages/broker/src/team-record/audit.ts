@@ -1,7 +1,8 @@
 // Audit events of the record core (R1's `record.*` and `lesson.withdrawn` actions). Ids, fixed words and counts only: never a row's text, a lesson's text or a
 // source's name. The caller binds `emit` to the audit outbox (`tryAuditEvent`); a failed emit never blocks a delete (the delete is the privacy duty).
 import { createHash } from "node:crypto";
-import { SOURCE_WIDENED_WORDS, auditEventId, type AuditActor, type AuditEventInput, type SourceWidenedWord } from "@agentx/contracts";
+import { SOURCE_WIDENED_WORDS, auditEventId, type AuditEventInput, type SourceWidenedWord } from "@agentx/cloud-contracts";
+import { type AuditActor } from "@agentx/cloud-contracts";
 
 export type RecordAuditSink = (event: AuditEventInput) => Promise<void>;
 

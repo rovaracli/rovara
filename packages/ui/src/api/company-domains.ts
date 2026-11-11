@@ -1,5 +1,5 @@
 // The Company domains calls (owner decision 2026-11-02). Every write is sent once from the browser session: a refusal is thrown as an `ApiError` for the screen to show and is never repeated here.
-import { CompanyDomainChangeAnswerReaderSchema, CompanyDomainRemovedAnswerReaderSchema, CompanyDomainsAnswerReaderSchema } from "@agentx/contracts/web";
+import { CompanyDomainChangeAnswerReaderSchema, CompanyDomainRemovedAnswerReaderSchema, CompanyDomainsAnswerReaderSchema } from "@agentx/cloud-contracts/web";
 import { createApiClient } from "./client.js";
 import type { AppHost } from "../host.js";
 

@@ -1,7 +1,8 @@
-import { TaskStopCeilingReadSchema, calculateTaskStop } from "@agentx/contracts/web";
+import { TaskStopCeilingReadSchema, calculateTaskStop } from "@agentx/cloud-contracts/web";
 import { expect, it } from "vitest";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { AgentXError, errorStatus, agentGuardrailsKey, orgMemberKey, orgMetaKey, developerOrgKey, DEFAULT_AGENT_GUARDRAILS } from "@agentx/contracts";
+import { AgentXError, errorStatus, agentGuardrailsKey, DEFAULT_AGENT_GUARDRAILS } from "@rovara-code/contracts";
+import { orgMemberKey, orgMetaKey, developerOrgKey } from "@agentx/cloud-contracts";
 import { routeDeveloperRequest, type DeveloperCaller, type DeveloperRouteDependencies } from "../../packages/broker/src/aws/developer-routes.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
     const A = "org_aaaaaaaaaaaaaaaaaaaa", B = "org_bbbbbbbbbbbbbbbbbbbb";

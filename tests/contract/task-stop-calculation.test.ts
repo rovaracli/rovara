@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import * as contracts from "../../packages/contracts/src/web.js";
+import * as contracts from "@agentx/cloud-contracts/web";
 
 function invoke(name: string, input: unknown): unknown {
   const candidate: unknown = Reflect.get(contracts, name);

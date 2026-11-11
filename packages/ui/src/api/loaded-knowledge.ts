@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { DeveloperTaskViewSchema, LoadedKnowledgeResponseReaderSchema, LoadedKnowledgeTextReaderSchema } from "@agentx/contracts/web";
+import { DeveloperTaskViewSchema, LoadedKnowledgeResponseReaderSchema, LoadedKnowledgeTextReaderSchema } from "@agentx/cloud-contracts/web";
 import { useAppHost } from "../host.js";
 import { createApiClient } from "./client.js";
 

@@ -4,8 +4,8 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import type { BudgetScope } from "@agentx/contracts";
-import { DecisionCardsViewSchema } from "@agentx/contracts";
+import type { BudgetScope } from "@agentx/cloud-contracts";
+import { DecisionCardsViewSchema } from "@rovara-code/contracts";
 import { pressMerge } from "../../packages/broker/src/rovara-code/merge.js";
 import { withCardDecideGrade } from "../../packages/broker/src/aws/developer-routes/card-decide-grade.js";
 import type { DeveloperRouteDependencies } from "../../packages/broker/src/aws/developer-routes/types.js";

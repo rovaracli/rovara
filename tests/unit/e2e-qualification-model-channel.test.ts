@@ -2,7 +2,7 @@ import { request } from "node:http";
 import { mkdtemp, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { WEB_API_AGENT_PROBE_GOAL, WEB_API_AGENT_PROBE_ROUTE } from "../../packages/contracts/src/index.js";
+import { WEB_API_AGENT_PROBE_GOAL, WEB_API_AGENT_PROBE_ROUTE } from "@rovara-code/contracts";
 import type { WebApiProbeModelChannelRequest } from "../../packages/verifier/src/host/web-api-probe-runner.js";
 import { createScriptedQualificationModelChannel } from "../../packages/worker/src/e2e-qualification-model-channel.js";
 import { installedScriptedModelChannelFactory } from "../../packages/verifier/src/install-qualification-cli.js";

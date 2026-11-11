@@ -1,6 +1,6 @@
 import { useRef,useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ProjectRoleSchema,projectAllows,SessionIdSchema } from "@agentx/contracts/web";
+import { ProjectRoleSchema, projectAllows, SessionIdSchema } from "@agentx/cloud-contracts/web";
 import type { ReadAgent } from "../../api/agents.js";
 import { useBuilderApi } from "../../api/builder.js";
 import type { SendResult } from "../../api/client.js";

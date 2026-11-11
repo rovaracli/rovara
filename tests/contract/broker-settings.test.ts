@@ -5,7 +5,7 @@
 import { Stack } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
-import { BROKER_NAMES, BROKER_NAMES_VARIABLE, BROKER_SETTINGS, BROKER_SETTINGS_VARIABLE, type BrokerSettingKey } from "@agentx/contracts";
+import { BROKER_NAMES, BROKER_NAMES_VARIABLE, BROKER_SETTINGS, BROKER_SETTINGS_VARIABLE, type BrokerSettingKey } from "@agentx/cloud-contracts";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { brokerSettingsFromEnvironment, hydrateBrokerEnvironment, type MutableEnvironment } from "../../packages/broker/src/aws/broker-environment.js";
 import { brokerNamesIn, brokerSettingsIn } from "../support/broker-names-template.js";
@@ -38,7 +38,7 @@ describe("hydrateBrokerEnvironment: the settings (AGENTX_SETTINGS)", () => {
     taskPeopleChanges: "true", taskPeoplePublicInvitations: "false", taskPeoplePrivateInvitations: "true", workflowDependencies: "false",
     slackTeamId: "T0123456789", signInSlack: "enabled", signInSlackSince: "1761000000", oidcSince: "0", mcpConfirmElicitation: "disabled", rovaraCodeV2: "false", planSelfCheck: "true", autofix: "false", liveSteer: "1", liveRedirect: "1", liveAsk: "0", liveFix: "0", proofEvidence: "0", decisionCards: "1", testEnvironment: "0", learnedLessons: "0", verifyResults: "0", secondReview: "0", setupRecipes: "0", nightlyHealth: "0", learningSuggestionsDefault: "off",
     teamRecord: "0", teamRecordActive: "1", teamRecordLake: "0", projectRegistries: "0", setupAgent: "0", savedEnv: "0", scriptTokens: "0", slackExplicitMembers: "1", standingInstructions: "0", testServices: "0", testAccounts: "0", projectImages: "0", designReview: "0",
-    githubAppCredentialRef: "github-agentx-sdlc", githubAppId: "1234567", developerGithubClientId: "Iv1.0123456789abcdef", webFeatures: "admin", customDomain: "staging.rovara.dev",
+    githubAppCredentialRef: "github-agentx-sdlc", githubAppId: "1234567", developerGithubClientId: "Iv1.0123456789abcdef", webFeatures: "admin", customDomain: "staging.rovara.dev", billing: "0",
   };
 
   it("puts every setting back under the variable the broker reads, to the text it was given", () => {

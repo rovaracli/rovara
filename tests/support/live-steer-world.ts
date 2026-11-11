@@ -1,6 +1,6 @@
 // Live steer test world: a task session (owner Priya, "can use" for Arjun) whose workspace is BUSY on a RUNNING Implement operation of an ec2 worker, with the broker's signing key.
 import { randomUUID } from "node:crypto";
-import { agentSessionKey, type AgentSessionRecord } from "../../packages/contracts/src/index.js";
+import { agentSessionKey, type AgentSessionRecord } from "@rovara-code/contracts";
 import { sendSessionMessage, type SessionMessageDependencies } from "../../packages/broker/src/agent-sessions/messages.js";
 import { taskKey, taskPointerKey } from "../../packages/broker/src/developer/task-records.js";
 import { ARJUN, ORG_A, sessionWorld } from "./agent-session-world.js";

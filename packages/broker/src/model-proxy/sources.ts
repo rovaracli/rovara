@@ -1,6 +1,6 @@
 // How a company source becomes LiteLLM models (Plan 3 Task 25). Pure: no network, no secret. The key itself never appears here;
 // a model carries only the name of the credential the proxy stored it under (docs/learnings/model-sources-spike.md, question 3).
-import { agentXError, sourceAlias, type ModelIdentifier, type ModelSource, type OrgId } from "@agentx/contracts";
+import { agentXError, sourceAlias, type ModelIdentifier, type ModelSource, type OrgId } from "@rovara-code/contracts";
 import { endpointQualified } from "../model-sources/endpoint-digest.js";
 
 /** List prices in USD per million tokens, as Pi's catalog records them. */

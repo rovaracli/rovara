@@ -7,9 +7,12 @@
 // Slice 1 starts real software from the catalog only (backing `local`, no substitute image). Slice 2 adds Rovara local AWS (backing `emulated`, entry `local-aws`) for exactly S3, SQS and DynamoDB. Slice 3 adds a fake (backing `fake`,
 // entry `fake-server`, which runs from the worker's own image) for an APPROVED, digest-pinned fixture set of this organisation, answering requests with no recording with an error (`fail`). Every other backing, and every
 // other AWS service, is "not available yet", at approval (`dependenciesStartableNow`) and again here.
-import { TEST_SERVICES_AWS_PLAN_SERVICES, emulatorServiceTier, loadSignedCatalog, type CatalogEntry, type CatalogTrustContext, type TaskDependencyPlan, type TestEnvDependency, type TestEnvironmentBody, type VerifiedCatalog, TaskDependencyPlanSchema, TASK_DEPENDENCY_PLAN_MAX, catalogEntryById, catalogIdName, catalogPrepullList } from "@agentx/contracts";
+import { TEST_SERVICES_AWS_PLAN_SERVICES, emulatorServiceTier, type CatalogEntry, type CatalogTrustContext, type TestEnvDependency, type TestEnvironmentBody, type VerifiedCatalog, TASK_DEPENDENCY_PLAN_MAX, catalogEntryById, catalogIdName, catalogPrepullList } from "@rovara-code/contracts";
+import { type TaskDependencyPlan, TaskDependencyPlanSchema } from "@agentx/cloud-contracts";
+import { loadSignedCatalog } from "@agentx/cloud-contracts";
 import { STATEFUL_KINDS, chooseBacking, effectiveAllowedBackings, type BackingPlace, type SkipReason } from "./backing-choice.js";
 import { COMPANY_IMAGE_REFUSAL_WORDS, serviceImageServed, type CompanyImage } from "./company-images.js";
+import type { CompanyImageMirrorRef } from "@agentx/cloud-contracts";
 import type { ApprovedFixture } from "./fixture-lookup.js";
 
 /**
@@ -18,7 +21,7 @@ import type { ApprovedFixture } from "./fixture-lookup.js";
  */
 export const TEST_SERVICES_MIN_CATALOG_REVISION = 3;
 
-export const DEPENDENCY_PLAN_REFUSALS = ["no_catalog", "catalog_too_old", "not_available_yet", "not_in_catalog", "not_in_edition", "retired", "not_pinned", "not_allowed", "too_many", "invalid", "fixture_not_approved", "seed_file_unbound", "image_not_approved", "image_changed"] as const;
+export const DEPENDENCY_PLAN_REFUSALS = ["no_catalog", "catalog_too_old", "not_available_yet", "not_in_catalog", "not_in_edition", "retired", "not_pinned", "not_allowed", "too_many", "invalid", "fixture_not_approved", "seed_file_unbound", "image_not_approved", "image_changed", "image_copying"] as const;
 export type DependencyPlanRefusal = (typeof DEPENDENCY_PLAN_REFUSALS)[number];
 /** What a person reads when a run cannot start its dependencies. Fixed words: no catalog id, digest or error text of any kind. */
 export const DEPENDENCY_PLAN_REFUSAL_WORDS: Record<DependencyPlanRefusal, string> = {
@@ -35,6 +38,7 @@ export const DEPENDENCY_PLAN_REFUSAL_WORDS: Record<DependencyPlanRefusal, string
   fixture_not_approved: "A fake this project asks for has no approved set of answers.",
   image_not_approved: COMPANY_IMAGE_REFUSAL_WORDS.not_approved,
   image_changed: COMPANY_IMAGE_REFUSAL_WORDS.digest_changed,
+  image_copying: "An image this project asks for is still being copied into your registry (or the copy failed and will be tried again). Try the task again in a few minutes.",
   seed_file_unbound: "The test data file of this project's test environment is not bound to its approval. Check it works and approve the test environment again.",
 };
 
@@ -180,24 +184,27 @@ function planFake(dependency: TestEnvDependency, backing: FakeBacking, catalog: 
  * registry and repository and the approved digest): it is never dressed as one of Rovara's catalog images, whose `catalogId` and `repository` here only name the run profile. The worker keeps its own rule (it starts only
  * what it can verify and has on the host) and no worker lists the feature yet, so the broker never dispatches such a plan; this function only decides what the BROKER will put in a plan.
  */
-function planCompanyImage(dependency: TestEnvDependency, backing: ProjectImageBacking, catalog: VerifiedCatalog, edition: "public" | "enterprise", approved: readonly CompanyImage[]): { ok: true; plan: unknown } | { ok: false; reason: DependencyPlanRefusal } {
+function planCompanyImage(dependency: TestEnvDependency, backing: ProjectImageBacking, catalog: VerifiedCatalog, edition: "public" | "enterprise", approved: readonly CompanyImage[], mirrors: ReadonlyMap<string, CompanyImageMirrorRef> | undefined): { ok: true; plan: unknown } | { ok: false; reason: DependencyPlanRefusal } {
   const served = serviceImageServed({ catalog, edition, approved, request: { imageId: backing.imageId } });
   if (!served.ok) return { ok: false, reason: served.reason === "not_approved" ? "image_not_approved" : served.reason === "digest_changed" ? "image_changed" : served.reason === "no_catalog" ? "no_catalog" : "not_available_yet" };
   if (served.source !== "company" || served.image.family !== dependency.family) return { ok: false, reason: "not_available_yet" };
   const entry = served.profile;
+  // The worker pulls the image from the install's own registry, never from the source: no finished copy of exactly this digest, no plan (a copy of any other digest is no copy of this one).
+  const mirror = mirrors?.get(served.image.imageId);
+  if (mirror === undefined || mirror.digest !== served.digest) return { ok: false, reason: "image_copying" };
   return { ok: true, plan: {
     id: dependency.id, name: dependency.name, kind: dependency.kind, family: dependency.family, backing: "company", catalogId: entry.id, repository: entry.image.repository, digest: served.digest,
-    company: { imageId: served.image.imageId, registry: served.image.registry, repository: served.image.repository, digest: served.digest },
+    company: { imageId: served.image.imageId, registry: served.image.registry, repository: served.image.repository, digest: served.digest, mirror },
     config: {}, aliases: dependency.connect.hostAliases.length > 0 ? dependency.connect.hostAliases : entry.connect.defaultAliases, connect: dependency.connect.env, seeds: dependency.seeds, reset: dependency.reset,
   } };
 }
 
 /** One dependency's plan, or the reason it cannot be pinned. */
-function planOne(dependency: TestEnvDependency, catalog: VerifiedCatalog, edition: "public" | "enterprise", projectId: string, prodDeny: TestEnvironmentBody["prodDeny"], fixtures: ReadonlyMap<string, ApprovedFixture>, companyImages: readonly CompanyImage[] | undefined): { ok: true; plan: unknown } | { ok: false; reason: DependencyPlanRefusal } {
+function planOne(dependency: TestEnvDependency, catalog: VerifiedCatalog, edition: "public" | "enterprise", projectId: string, prodDeny: TestEnvironmentBody["prodDeny"], fixtures: ReadonlyMap<string, ApprovedFixture>, companyImages: readonly CompanyImage[] | undefined, mirrors: ReadonlyMap<string, CompanyImageMirrorRef> | undefined): { ok: true; plan: unknown } | { ok: false; reason: DependencyPlanRefusal } {
   const backing = dependency.backing;
   // `companyImages` is given only with the switch `pj` on: without it a company image is "not available yet", exactly as before company images existed.
   if (!dependenciesStartableNow([dependency], { companyImages: companyImages !== undefined })) return { ok: false, reason: "not_available_yet" };
-  if (backing.kind === "project_image") return planCompanyImage(dependency, backing, catalog, edition, companyImages ?? []);
+  if (backing.kind === "project_image") return planCompanyImage(dependency, backing, catalog, edition, companyImages ?? [], mirrors);
   if (backing.kind === "fake") return planFake(dependency, backing, catalog, edition, projectId, prodDeny, fixtures);
   if (backing.kind === "emulated") return planEmulated(dependency, backing, catalog, edition, projectId, prodDeny);
   if (backing.kind !== "local") return { ok: false, reason: "not_available_yet" };
@@ -225,7 +232,7 @@ function planOne(dependency: TestEnvDependency, catalog: VerifiedCatalog, editio
 /**
  * The pinned plans of every dependency of an approved environment, or the first reason one cannot be started. `catalog` is what `serviceCatalogSourceOf` loaded (undefined: it could not be). Never throws.
  */
-export function taskDependencyPlansOf(input: { body: TestEnvironmentBody; /** Switch `pj`: the company's live images (`readCompanyImages`). Absent: none is approved, so every extra image is refused. */ companyImages?: readonly CompanyImage[]; catalog: VerifiedCatalog | undefined; edition: "public" | "enterprise"; projectId?: string; minCatalogRevision?: number; /** The approved fixture sets of the task's organisation, by digest (`approvedFixturesOf`). Absent: no set is approved, so every fake is refused. */ fixtures?: ReadonlyMap<string, ApprovedFixture>; /** Review I3: the plan is of an APPROVED environment, so every file seed carries the sha256 its approval bound (one with none is refused). Absent for a candidate check: the worker reports what it loaded. */ approvedSeedFiles?: SeedFileHashes }): DependencyPlanResult {
+export function taskDependencyPlansOf(input: { body: TestEnvironmentBody; /** Switch `pj`: the company's live images (`readCompanyImages`). Absent: none is approved, so every extra image is refused. */ companyImages?: readonly CompanyImage[]; /** The finished copies of those images in the install's registry, by image id (`readCompanyImageMirrors`). Absent: none is copied, so no company image gets a plan. */ companyMirrors?: ReadonlyMap<string, CompanyImageMirrorRef>; catalog: VerifiedCatalog | undefined; edition: "public" | "enterprise"; projectId?: string; minCatalogRevision?: number; /** The approved fixture sets of the task's organisation, by digest (`approvedFixturesOf`). Absent: no set is approved, so every fake is refused. */ fixtures?: ReadonlyMap<string, ApprovedFixture>; /** Review I3: the plan is of an APPROVED environment, so every file seed carries the sha256 its approval bound (one with none is refused). Absent for a candidate check: the worker reports what it loaded. */ approvedSeedFiles?: SeedFileHashes }): DependencyPlanResult {
   try {
     const dependencies = input.body.dependencies ?? [];
     if (dependencies.length > TASK_DEPENDENCY_PLAN_MAX) return { ok: false, reason: "too_many" };
@@ -237,7 +244,7 @@ export function taskDependencyPlansOf(input: { body: TestEnvironmentBody; /** Sw
     if (!input.catalog.pinned && imaged.length > 0) return { ok: false, reason: imaged.every((dependency) => dependency.backing.kind === "emulated") ? "not_available_yet" : "not_pinned" };
     const plans: TaskDependencyPlan[] = [];
     for (const dependency of dependencies) {
-      const one = planOne(dependency, input.catalog, input.edition, input.projectId ?? "", input.body.prodDeny, input.fixtures ?? new Map(), input.companyImages);
+      const one = planOne(dependency, input.catalog, input.edition, input.projectId ?? "", input.body.prodDeny, input.fixtures ?? new Map(), input.companyImages, input.companyMirrors);
       if (!one.ok) return one;
       const bound = boundSeeds((one.plan as { seeds: TaskDependencyPlan["seeds"] }).seeds, dependency.id, input.approvedSeedFiles);
       if (bound === undefined) return { ok: false, reason: "seed_file_unbound" };

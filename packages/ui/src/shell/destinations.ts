@@ -1,4 +1,4 @@
-import type { ReadAppNav } from "@agentx/contracts/web";
+import type { ReadAppNav } from "@agentx/cloud-contracts/web";
 import { paths } from "../paths.js";
 /**
  * The new navigation's destinations, in order: Home, Work, Projects, Agents, Settings. One pure function so the sidebar, the phone tab bar and the tests agree.

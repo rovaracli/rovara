@@ -21,7 +21,7 @@ import {
   type PlanEvidenceEvent, type PlanEvidenceJob,
 } from "../developer/plan-evidence-jobs.js";
 import { taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
-import { agentXError, type HostScope, type OrgId, type PlanDocument } from "@agentx/contracts";
+import { agentXError, type HostScope, type OrgId, type PlanDocument } from "@rovara-code/contracts";
 import { installOrgIdFromEnvironment, orgOf } from "../org/resolve.js";
 
 /** All cited code must be read inside this; the Lambda's own timeout (150 s) leaves room to attach and clean up. */
@@ -144,7 +144,7 @@ export async function runPlanEvidenceJob(deps: PlanEvidenceRunDependencies, even
     const orgId = orgOf(deps.orgId, task as unknown as Record<string, unknown>);
     const project = await requireProject(deps, orgId, task.project, task.startingRevision);
     // The task's org: on a cloud install the code is read only while that org's GitHub connection holds the installation.
-    const scope: HostScope = deps.cloud === true ? { orgId } : { system: "private-install" };
+    const scope: HostScope = deps.cloud === true ? { orgId } : { system: "install" };
     const deadline = deps.now() + RESOLVE_DEADLINE_MS;
     // Repositories (by URL) whose installation the org's GitHub connection no longer holds: no later read of them will succeed, so they
     // are not tried again. Other repositories, on installations still connected, are read as before.

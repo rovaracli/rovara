@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { E2E_ARTIFACT_RETENTION_TAG, indexExpiresAt, workflowSendBackOffered } from "@agentx/contracts";
+import { E2E_ARTIFACT_RETENTION_TAG, indexExpiresAt } from "@rovara-code/contracts";
+import { workflowSendBackOffered } from "@agentx/cloud-contracts";
 import { decodeE2EApplicationExecutionAdmission } from "@agentx/verifier";
 import { disposeRealCandidates } from "../support/e2e-application-candidate.js";
 import { prepareApplicationRound, startApplicationRound, type RoundCore } from "../support/e2e-application-round-harness.js";
@@ -9,7 +10,7 @@ import { randomUUID } from "node:crypto";
 import { MAYA } from "../support/developer-task-broker.js";
 import { call } from "../support/slack-broker.js";
 import { SECRET_ARN } from "../support/e2e-model-fixtures.js";
-import { E2E_MODEL_ROUTE_DEFAULT_BUDGETS } from "@agentx/contracts";
+import { E2E_MODEL_ROUTE_DEFAULT_BUDGETS } from "@rovara-code/contracts";
 import { e2eModelBudgetKey } from "../../packages/broker/src/e2e/model-route-registry.js";
 import { issueCapability } from "../../packages/broker/src/aws/cancellation.js";
 import { assumeDrivingTestsPassed } from "../support/fake-dynamodb.js";

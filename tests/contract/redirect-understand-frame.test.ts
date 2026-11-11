@@ -2,7 +2,7 @@
 // Understand gives it again. Understand is a version 2 (Rovara Code) step, so this goes through the Rovara Code broker and the real routes.
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { REDIRECT_PLANNING_INTRO } from "../../packages/contracts/src/index.js";
+import { REDIRECT_PLANNING_INTRO } from "@rovara-code/contracts";
 import { redirectKey } from "../../packages/broker/src/agent-sessions/redirect-state.js";
 import { MAYA, questionsBroker } from "../support/rovara-code-questions-broker.js";
 

@@ -3,8 +3,8 @@
 // coding step (Send back and Retry both keep the approved plan), so the words say so: retry without the change, or close and start a new task that asks for it. Nothing here may
 // promise a note or a send-back that cannot do it.
 import { describe, expect, it } from "vitest";
-import { WORKFLOW_BLOCK_REASONS } from "../../packages/contracts/src/task-workflow.js";
-import { WorkflowSnapshotSchema, createWorkflowSnapshot, workflowSendBackOffered } from "../../packages/contracts/src/task-workflow-node.js";
+import { WORKFLOW_BLOCK_REASONS } from "../../packages/cloud-contracts/src/task-workflow.js";
+import { WorkflowSnapshotSchema, createWorkflowSnapshot, workflowSendBackOffered } from "../../packages/cloud-contracts/src/task-workflow-node.js";
 import { workflowMessage } from "../../packages/broker/src/developer/workflow-messages.js";
 import { taskPageStage } from "../../packages/broker/src/aws/developer-tasks.js";
 

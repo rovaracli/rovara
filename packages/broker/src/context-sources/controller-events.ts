@@ -4,7 +4,7 @@
 //   - it keeps the last few for the "recent starts" line on the server card.
 // Draining is bounded (a page at a time, at most `max` events per call) and never throws: it runs when an admin looks at the list, and can also be called from a schedule.
 import { QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { McpControllerEventSchema, orgScoped, type McpControllerEvent, type McpTaskStopReason, type OrgId } from "@agentx/contracts";
+import { McpControllerEventSchema, orgScoped, type McpControllerEvent, type McpTaskStopReason, type OrgId } from "@rovara-code/contracts";
 import type { McpServerStore } from "./mcp-servers.js";
 
 type DocumentClient = { send(command: unknown): Promise<unknown> };

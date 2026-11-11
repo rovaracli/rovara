@@ -3,7 +3,7 @@
 // It adds no authority of its own: the endpoint re-checks the caller's live role, self-approval, second person and idempotency, and the card tier never overrides it (a merge passes the PULL
 // REQUEST's risk, never the card's raised tier). A kind with no handler is refused as `unsupported` and listed for wiring: its endpoint lives in a hot file (the workflow plan decision) and is
 // mounted by the controller.
-import { AgentXError, agentXError, type DecisionKind, type DecisionRefusalReason } from "@agentx/contracts";
+import { AgentXError, agentXError, type DecisionKind, type DecisionRefusalReason } from "@rovara-code/contracts";
 import type { MergePressReply } from "../rovara-code/merge.js";
 import type { DecisionCaller, DecisionPerformer, PerformInput, PerformOutcome } from "./routes.js";
 import type { DecisionItem } from "./project.js";

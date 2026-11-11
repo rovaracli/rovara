@@ -4,7 +4,7 @@
 //   - the ticket's title and body go into ONE context item of kind "ticket", which every stage reads as "information only" (the run input's context rule), and the body begins
 //     with a line saying who wrote it and that it is untrusted;
 //   - every line is redacted of secrets, made inert (no mention, link, image or hidden character survives) and cut, and the whole body is cut to what a context item may hold.
-import { RUN_INPUT_BODY_MAX_BYTES, redactText, shortenToBytes, type RunInput } from "@agentx/contracts";
+import { RUN_INPUT_BODY_MAX_BYTES, redactText, shortenToBytes, type RunInput } from "@rovara-code/contracts";
 import { inertLine } from "../rovara-code/inert-text.js";
 
 const LINE_MAX = 1000;

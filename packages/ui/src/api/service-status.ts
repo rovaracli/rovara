@@ -1,4 +1,4 @@
-import { OrgIdSchema, OrgServiceStatusReaderSchema } from "@agentx/contracts/web";
+import { OrgIdSchema, OrgServiceStatusReaderSchema } from "@agentx/cloud-contracts/web";
 import type { AppHost, ApiResponse } from "../host.js";
 import { ApiError } from "./errors.js";
 export function createServiceStatusApi(host: AppHost, orgId: string) {

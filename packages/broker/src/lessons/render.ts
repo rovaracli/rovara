@@ -7,7 +7,7 @@
 //   - a path or a scope path: a strict token that exists in the repository tree at the cited commit, and does not touch tests, CI, auth or secrets;
 //   - a repository: one of the project\'s repositories.
 // Anything that does not fit is not tier 0 and is held for a person. The rendered text is screened once more, as a last check.
-import { foldForMatching } from "@agentx/contracts";
+import { foldForMatching } from "@rovara-code/contracts";
 import { hasCommandOrUrl, hasEncodedBlob, hasEscalationWords, isPlainSlot, isPlainToken, parseDeclarative, requestsCapabilityChange, touchesRiskyPath, vocabularyOf } from "./guards.js";
 import type { Lesson, LessonCitation } from "./types.js";
 

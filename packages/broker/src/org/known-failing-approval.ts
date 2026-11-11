@@ -7,7 +7,7 @@
 //   - `confirmedKnownFailingApproval` reads the confirmed card back for the asker's second press: the second person and the fresh sign-in proof. `markKnownFailing` then reads both people's live authority again.
 // A card is bound to the record's version: a task that joins after it was made, or a mark made meanwhile, makes it stale, and a new card is asked for.
 import { createHash } from "node:crypto";
-import { agentXError, type OrgId } from "@agentx/contracts";
+import { agentXError, type OrgId } from "@rovara-code/contracts";
 import { approvalIdFor, createPendingChange, getApproval, registerApprovalSubjectHandler, registerApproverRule, type ApprovalCaller, type ApprovalDependencies, type ApprovalRecord } from "../agents/approvals.js";
 import "../agents/approval-viewed.js"; // registers the decision guard that makes a confirmation need the page opened first
 import { decideFromRecords, type LessSafeApproval } from "./test-environment.js";

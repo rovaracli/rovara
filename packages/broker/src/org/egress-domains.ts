@@ -8,33 +8,9 @@ import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dyn
 import { auditEgressDecided, auditOccurrence } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, type AuditRuntime } from "../audit/outbox.js";
-import {
-  EGRESS_ALL_ORGS_SK_PREFIX,
-  EGRESS_AUDIT_PK,
-  EGRESS_CONFLICT_MESSAGE,
-  EGRESS_DOMAINS_PK,
-  EGRESS_SYNC_KEY,
-  EGRESS_SYNC_PENDING_WARNING,
-  ALLOWED_DOMAIN_MESSAGE,
-  EgressDomainsItemSchema,
-  AgentXError,
-  agentXError,
-  egressDomainsKey,
-  egressNotPendingMessage,
-  egressOrgSkPrefix,
-  egressPendingWarning,
-  isAllowedDomain,
-  projectMetaKey,
-  egressRejectedWarning,
-  type AuditActor,
-  type AuditEventInput,
-  type EgressAuditAction,
-  type EgressDomainEntry,
-  type EgressDomainsItem,
-  type EgressOwner,
-  type OrgId,
-  type OrgKey,
-} from "@agentx/contracts";
+import { EGRESS_ALL_ORGS_SK_PREFIX, EGRESS_AUDIT_PK, EGRESS_CONFLICT_MESSAGE, EGRESS_DOMAINS_PK, EGRESS_SYNC_KEY, EGRESS_SYNC_PENDING_WARNING, ALLOWED_DOMAIN_MESSAGE, EgressDomainsItemSchema, AgentXError, agentXError, egressDomainsKey, egressNotPendingMessage, egressOrgSkPrefix, egressPendingWarning, isAllowedDomain, projectMetaKey, egressRejectedWarning, type EgressAuditAction, type EgressDomainEntry, type EgressDomainsItem, type EgressOwner, type OrgId, type OrgKey } from "@rovara-code/contracts";
+import { type AuditActor } from "@agentx/cloud-contracts";
+import { type AuditEventInput } from "@agentx/cloud-contracts";
 import { readRequestRecord, requestRecordPut, requireSameRequest, type RequestTransactItem } from "./request-records.js";
 
 export interface EgressDomainsDependencies {

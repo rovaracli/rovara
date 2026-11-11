@@ -4,8 +4,8 @@
 import { expect, it } from "vitest";
 import { render } from "@testing-library/react";
 import { createElement as h } from "react";
-import { WorkflowDesignReviewSchema, designFindingFingerprint } from "@agentx/contracts/web";
-import { readDesignReview } from "@agentx/contracts";
+import { WorkflowDesignReviewSchema, designFindingFingerprint } from "@agentx/cloud-contracts/web";
+import { readDesignReview } from "@rovara-code/contracts";
 import { DesignTabView } from "../../packages/ui/src/screens/session/DesignTab.js";
 import { designTabModel } from "../../packages/ui/src/screens/session/design-review-view.js";
 import { cleanApproveReason, openBlockersOnCard } from "../../packages/ui/src/design/design-review-card.js";

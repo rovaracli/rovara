@@ -1,7 +1,7 @@
 import { App, Stack, aws_iam as iam } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
-import { teamRecordVectorIndexName } from "@agentx/contracts";
+import { teamRecordVectorIndexName } from "@agentx/cloud-contracts";
 import { actionsOf, policiesOf, statementJson } from "../support/team-record-cdk.js";
 import { TeamRecordVectors } from "../../infra/lib/team-record-vectors.js";
 

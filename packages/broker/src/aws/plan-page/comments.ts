@@ -1,10 +1,7 @@
 // Spec 061 slice 2: comments as the task page shows them, in its HTML and in its JSON API. A stored comment becomes a
 // view with no IDs of people: the author's name, whether they are an owner, whether they are the reader, and the AgentX
 // chip only for an item AgentX wrote. Text is redacted again here; the page escapes it (HTML) or sets it as text (script).
-import {
-  ANSWER_STALE_MS, agentxAnswerCommentId, plannerReplyCommentId, redactText,
-  type CommentDocument, type CommentTarget, type TaskComment, type TaskCommentLearning, type WorkflowArtifact,
-} from "@agentx/contracts";
+import { ANSWER_STALE_MS, agentxAnswerCommentId, plannerReplyCommentId, redactText, type CommentDocument, type CommentTarget, type TaskComment, type TaskCommentLearning, type WorkflowArtifact } from "@rovara-code/contracts";
 import { escapeHtml } from "../web-session.js";
 import type { PlanAnchor } from "./render-plan.js";
 

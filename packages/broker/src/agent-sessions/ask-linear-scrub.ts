@@ -12,7 +12,7 @@
 // A comment that could not be rewritten when the tries ran out is NOT dropped quietly (B1): a lasting record is written (an `ASKLINEARKEPT` item an admin can read, and an `ask.linear_comment_kept` audit
 // event), with ids, a fixed reason word and the count only. A comment counts as gone only on Linear's real not-found answer (linear-write.ts); every other fault keeps the item and retries.
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { INDEX_EXPIRY_ATTRIBUTE, askLinearKeptKey, askLinearScrubPk, sessionAskKey, type OrgId } from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, askLinearKeptKey, askLinearScrubPk, sessionAskKey, type OrgId } from "@rovara-code/contracts";
 import { auditAskLinearCommentKept, auditOccurrence } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, tryAuditEvents, type AuditRuntime } from "../audit/outbox.js";

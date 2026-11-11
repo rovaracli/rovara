@@ -1,13 +1,10 @@
 // v1.2 learning loop, B1: the contracts (design §3.1, §3.2, §6.2), the keys (I9) and the guardrails reader-first rollout (§2.5).
 import { describe, expect, it } from "vitest";
 import { readGuardrailsWithRevision, writeGuardrails } from "../../packages/broker/src/agents/guardrails.js";
-import { AgentGuardrailsSchema, AgentGuardrailsWriteSchema, DEFAULT_AGENT_GUARDRAILS } from "../../packages/contracts/src/agent-guardrails.js";
-import type { OrgId } from "../../packages/contracts/src/org.js";
-import { agentGuardrailsKey, learningWalkKey, projectLearningKey, projectLearningPk, projectPlaybookKey } from "../../packages/contracts/src/org-scoped-keys.js";
-import {
-  LEARNING_RETENTION_DAYS, LearningAcceptAnswerReaderSchema, LearningAcceptBodySchema, LearningDismissBodySchema, LearningRememberBodySchema, LearningRuleRemoveAnswerReaderSchema,
-  LearningSettingsAnswerReaderSchema, LearningSuggestionSchema, LearningTaskPageBodySchema, LearningViewAnswerReaderSchema, LearningWalkKindSchema, LearningCorrectionSchema,
-} from "../../packages/contracts/src/project-learning.js";
+import { AgentGuardrailsSchema, AgentGuardrailsWriteSchema, DEFAULT_AGENT_GUARDRAILS } from "@rovara-code/contracts";
+import type { OrgId } from "@rovara-code/contracts";
+import { agentGuardrailsKey, learningWalkKey, projectLearningKey, projectLearningPk, projectPlaybookKey } from "@rovara-code/contracts";
+import { LEARNING_RETENTION_DAYS, LearningAcceptAnswerReaderSchema, LearningAcceptBodySchema, LearningDismissBodySchema, LearningRememberBodySchema, LearningRuleRemoveAnswerReaderSchema, LearningSettingsAnswerReaderSchema, LearningSuggestionSchema, LearningTaskPageBodySchema, LearningViewAnswerReaderSchema, LearningWalkKindSchema, LearningCorrectionSchema } from "@rovara-code/contracts";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { TEST_ORG } from "../support/orgs.js";
 

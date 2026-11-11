@@ -1,16 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  EvalBatchFileSchema,
-  EvalBatchRecordSchema,
-  EvalBatchSummarySchema,
-  EvalRunMeasureSchema,
-  SwebenchSettingsSchema,
-  parseEvalBatchCommand,
-  parseSwebenchCommand,
-  summarize,
-  wilsonInterval,
-  type EvalRunMeasure,
-} from "@agentx/contracts";
+import { EvalBatchFileSchema, EvalBatchRecordSchema, EvalBatchSummarySchema, EvalRunMeasureSchema, SwebenchSettingsSchema, parseEvalBatchCommand, parseSwebenchCommand, summarize, wilsonInterval, type EvalRunMeasure } from "@rovara-code/contracts";
 
 const settings = {
   stateMachineArn: "arn:aws:states:us-east-1:123456789012:stateMachine:eval",

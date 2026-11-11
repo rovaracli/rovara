@@ -9,7 +9,8 @@
 // Raw values (the ticket, the cookie, the state, the PKCE verifier) are never stored or logged: only their hashes.
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { DeleteCommand, GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { AgentXError, agentXError, TICKET_PATTERN, type AuditProof, type OrgId } from "@agentx/contracts";
+import { AgentXError, agentXError, TICKET_PATTERN, type OrgId } from "@rovara-code/contracts";
+import { type AuditProof } from "@agentx/cloud-contracts";
 import { mayDecide, type DecideKinds } from "./decide-kinds.js";
 import { sha256Hex } from "./tokens.js";
 

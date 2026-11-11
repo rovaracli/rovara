@@ -1,6 +1,6 @@
 // DG-1 S2: "is this file in the repository now?", for the dev container path a diagnosis proposes. It reads the head of the repository's default branch (as GitHub names it today) and then the file at that
 // commit, through the org's own installation. A leaf module: the caller hands in the three GitHub reads, so the wiring is one line and this file is tested without GitHub.
-import type { OrgId } from "@agentx/contracts";
+import type { OrgId } from "@rovara-code/contracts";
 
 /** What the reader needs of GitHub: the repository's default branch, that branch's head commit, and a file at a commit. */
 export interface DefaultBranchGitHub<Scope> {

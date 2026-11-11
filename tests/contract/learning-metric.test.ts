@@ -2,7 +2,7 @@
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it } from "vitest";
 import { ensureMetricCurrent, metricMonth, metricSk, metricUpdateItem, readMetric } from "../../packages/broker/src/learning/metric.js";
-import { projectLearningKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { projectLearningKey } from "@rovara-code/contracts";
 import { PROJECT_CREATED, makeWorld, seedItem } from "../support/learning-world.js";
 
 type TestWorld = ReturnType<typeof makeWorld>;

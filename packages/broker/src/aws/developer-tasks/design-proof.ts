@@ -2,7 +2,7 @@
 // (and checked against the approved digest by the loader); the approval is the record the design's approval wrote in the SAME transaction as the decision (`design-decision.ts`): the approver's label, the risk tier, the
 // open blockers and the cleaned one-line reason. No design review on the task, no approval record or a record that cannot be read gives no context, and the Proof section is exactly what it was.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import type { WorkflowSnapshot } from "@agentx/contracts";
+import type { WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { readLatestDesignText } from "../../design-review/route-facts.js";
 import { loadProofDesignContext, type ProofDesignPorts } from "../../design-review/proof-context.js";
 import type { ProofDesignContext } from "../../design-review/proof-line.js";

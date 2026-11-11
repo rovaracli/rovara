@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
-import { REMOTE_CODE_REASON, SETUP_AGENT_LIMITS_DEFAULT } from "../../packages/contracts/src/index.js";
+import { REMOTE_CODE_REASON, SETUP_AGENT_LIMITS_DEFAULT } from "@rovara-code/contracts";
 import {
   SETUP_AGENT_TOOLS, SETUP_COMMAND_DEFAULT_TIMEOUT_SECONDS, SETUP_COMMAND_MAX_TIMEOUT_SECONDS, SETUP_COMMAND_REFUSED_TEXT, assertSetupSandboxExecArgs, assertSetupSandboxRunArgs, checkTrackedFiles, commandTail, createSetupSandbox, defaultSetupGit,
   SETUP_OUTPUT_CUT_TEXT, credentialShapedVariables, finishSetupAgent, guardedSetupDocker, setupAgentSessionParts, setupAgentShell, type SetupAgentHooks, type SetupCommandRecord, type SetupGit, type TrackedFilesVerdict,

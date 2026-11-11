@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { agentXError, type SpendRequestRecord } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
+import { type SpendRequestRecord } from "@agentx/cloud-contracts";
 import type { TransactItem } from "../agents/table-writes.js";
 export type ApprovalSource = NonNullable<SpendRequestRecord["approvalSource"]>;
 export const approvalFields = ["status", "owner", "accountable", "monthlyBudgetUsd", "maxPerRunUsd", "updatedAt", "updatedBy", "pinnedVersion", "revision"] as const;

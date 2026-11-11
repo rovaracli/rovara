@@ -1,4 +1,4 @@
-import { agentXError } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
 import { can, resolveTaskAccess } from "../developer/task-access.js";
 import type { DeveloperCaller } from "./developer-routes.js";
 import type { DeveloperTaskRouteDependencies } from "./developer-tasks.js";

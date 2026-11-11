@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { CheckEntry, ProjectCommand } from "../../packages/contracts/src/index.js";
+import type { CheckEntry, ProjectCommand } from "@rovara-code/contracts";
 import { coverageSpecsOf } from "../../packages/worker/src/verification/cobertura-lcov-coverage.js";
 import { collectEvidenceRaw } from "../../packages/worker/src/verification/evidence-raw.js";
 

@@ -3,7 +3,8 @@
 // The guarantee is not "every role check remembers the new role". Hundreds of checks name `owner`, `admin` or `member`; almost all are positive lists, which
 // refuse an Auditor by construction, but one `role !== "member"` added later would not. So the route dispatcher asks `requireAuditorRoute` first, and the Auditor
 // reaches nothing but the short list below. Everything else is unreachable for it, whatever the code behind the route does with a role.
-import { agentXError, featureEnabled, isWriterOrgRole, requireFeature, type EditionPolicy, type WriterOrgRole } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
+import { featureEnabled, isWriterOrgRole, requireFeature, type EditionPolicy, type WriterOrgRole } from "@agentx/cloud-contracts";
 
 /** What an Auditor is told, and what the page and API say. Fixed text: it never echoes the path. */
 export const AUDITOR_REFUSED = "The Auditor role can read the audit log and nothing else.";

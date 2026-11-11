@@ -1,6 +1,6 @@
 // Decisions D4: Slack cards come from the same card view and follow its friction; a press goes through the same server routes as the web.
 import { describe, expect, it, vi } from "vitest";
-import type { DecisionCard } from "@agentx/contracts";
+import type { DecisionCard } from "@rovara-code/contracts";
 import { cardOfItem, projectDecisionCards, type DecisionItem, type ItemBase } from "../../packages/broker/src/decisions/project.js";
 import { slackCardMessage, DECISION_SLACK_APPROVE_ACTION, DECISION_SLACK_OPEN_ACTION, DECISION_SLACK_REJECT_ACTION } from "../../packages/broker/src/decisions/slack-card.js";
 import { DECISION_SLACK_TEXT, decisionSlackHandler, pressRequestId, pressToRequest, refusalText, resolveSlackDecisionCaller, type SlackPersonLookups } from "../../packages/broker/src/decisions/slack-actions.js";

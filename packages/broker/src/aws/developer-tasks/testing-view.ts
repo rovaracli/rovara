@@ -2,7 +2,8 @@
 // returns undefined without a read, and every caller leaves its text as it was. Everything it reads is a stored field: the workflow, the broker's evidence pack, the project's already-failing set (the nightly
 // baseline and a maintainer's marks, `alreadyFailingForResults`), the follow-up full run and the stored ask. The view is a classifier answer (SH5) plus rows (`rovara-code/testing-section.ts`); anything that is
 // not decided, or does not fit the contract, is `undefined`, and an undecided result is never guessed.
-import { AUTO_FIX_DEFAULT_CAP_USD, autoFixAskCard, wholeTaskSpendUsd, type AutoFixBudget, type EvidencePack, type TestingView, type WorkflowSnapshot } from "@agentx/contracts";
+import { AUTO_FIX_DEFAULT_CAP_USD, wholeTaskSpendUsd, type EvidencePack, type TestingView } from "@rovara-code/contracts";
+import { autoFixAskCard, type AutoFixBudget, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { AutoFixAskSchema } from "../../developer/autofix-messages.js";
 import type { DeveloperTaskRecord } from "../../developer/task-records.js";
 import { needsFullSuiteFollowup, readFollowup } from "../../rovara-code/full-suite-followup.js";

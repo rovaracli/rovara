@@ -2,7 +2,7 @@
 // at the revision that was asked about and the process layer it leaves is still at the version that was compared (a new revision or a new version means the person was shown something
 // else: ask again). The write is the ordinary one, so `playbook.default_process_changed` is recorded in the same transaction, by the person who confirmed it.
 // This file does not import the agent changes module (which registers it), so there is no import cycle.
-import { PLAYBOOK_STALE_MESSAGE, agentXError } from "@agentx/contracts";
+import { PLAYBOOK_STALE_MESSAGE, agentXError } from "@rovara-code/contracts";
 import { registerApprovalSubjectHandler } from "../agents/approvals.js";
 import { readProjectPlaybookState, writeProjectPlaybook } from "./project-playbook-store.js";
 

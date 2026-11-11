@@ -2,7 +2,7 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { StrictMode, createElement as h, useEffect, useState } from "react";
 import { screen, fireEvent, act, within } from "@testing-library/react";
-import { CLOSE_MESSAGES } from "@agentx/contracts/web";
+import { CLOSE_MESSAGES } from "@agentx/cloud-contracts/web";
 import { AppHostProvider, type ApiRequest, type ApiResponse } from "../../packages/ui/src/host.js";
 import { CloseTaskDialog } from "../../packages/ui/src/screens/session/CloseTaskDialog.js";
 import { renderUi } from "./support/render.js";

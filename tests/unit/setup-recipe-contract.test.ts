@@ -1,8 +1,6 @@
 // Setup and test health SH4: the setup recipe contract and its fingerprint (match and miss; no repository names inside).
 import { describe, expect, it } from "vitest";
-import {
-  SETUP_MARKER_FILES, SetupRecipeBodySchema, markerFilesOf, parseSetupRecipeSource, recipeFits, recipeNamesRepository, setupFingerprint, setupRecipeDigest, setupRecipeSource, type SetupRecipeBody,
-} from "@agentx/contracts";
+import { SETUP_MARKER_FILES, SetupRecipeBodySchema, markerFilesOf, parseSetupRecipeSource, recipeFits, recipeNamesRepository, setupFingerprint, setupRecipeDigest, setupRecipeSource, type SetupRecipeBody } from "@rovara-code/contracts";
 
 const cmd = (executable: string, args: string[] = [], cwd = "{repo}") => ({ cwd, executable, args, timeoutSeconds: 600 });
 const recipe = (): SetupRecipeBody => SetupRecipeBodySchema.parse({

@@ -3,7 +3,8 @@ import {modelApplyRefusalOf} from "../model-selection/process-refusal.js";
 // after the claim (applying a change, running a write, telling the subject's handler) is repeatable and found again by the sweep through the OPEN_APPROVALS
 // index. `approvals.ts` re-exports it.
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { ApprovalIdSchema, AgentXError, REMOVAL_FORBIDDEN_MESSAGE, agentXError, approvalKey, type ApprovalId, type AuditEventInput, type OrgId } from "@agentx/contracts";
+import { ApprovalIdSchema, AgentXError, agentXError, approvalKey, type ApprovalId, type OrgId } from "@rovara-code/contracts";
+import { REMOVAL_FORBIDDEN_MESSAGE, type AuditEventInput } from "@agentx/cloud-contracts";
 import { auditApprovalDecided, auditApprovalExpired, auditWriteExecuted } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, tryAuditEvents } from "../audit/outbox.js";

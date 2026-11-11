@@ -2,7 +2,9 @@
 // writers (the project definition registration, the Slack project model selection, the roster) only hand it the before and after and put the result in their own transaction.
 //
 // Facts are counts, revisions and flags (see `contracts/src/audit.ts`): never a model id, a label, a command or any text a person wrote.
-import { canonicalJson, type AuditActor, type AuditEventInput } from "@agentx/contracts";
+import { canonicalJson } from "@rovara-code/contracts";
+import { type AuditActor } from "@agentx/cloud-contracts";
+import { type AuditEventInput } from "@agentx/cloud-contracts";
 import { auditPending, tryAuditEvents, type AuditDeps, type TransactItem } from "../audit/outbox.js";
 import {
   auditOccurrence,

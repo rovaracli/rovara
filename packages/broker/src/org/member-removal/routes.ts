@@ -1,10 +1,8 @@
 // Member removal (v1.1), task 5: the route logic. Who may remove whom is unchanged (an owner removes anyone, an admin members only, nobody removes themselves); what is new is the
 // preview, the receipt per request id, the chosen successor and the status. The functions take what developer-routes owns (the person's emails, the legacy session end) as arguments.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  MemberRemovalBodySchema, MemberRemovalPreviewSchema, MemberRemovalStatusSchema, OrgRoleSchema, REMOVAL_CHANGE_STALE_MESSAGE, SUCCESSOR_INVALID_MESSAGE, agentXError, memberRemovalRecordKey,
-  type MemberRemovalRecord, type OrgRole,
-} from "@agentx/contracts";
+import { MemberRemovalBodySchema, MemberRemovalPreviewSchema, MemberRemovalStatusSchema, OrgRoleSchema, REMOVAL_CHANGE_STALE_MESSAGE, SUCCESSOR_INVALID_MESSAGE, memberRemovalRecordKey, type MemberRemovalRecord, type OrgRole } from "@agentx/cloud-contracts";
+import { agentXError } from "@rovara-code/contracts";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "../../aws/developer-routes.js";
 import { DeveloperSignInStore } from "../../developer/store.js";
 import { nameResolverOf, replacementNamesFrom, shownNameOf } from "../../developer/name-resolver.js";

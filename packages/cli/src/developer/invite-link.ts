@@ -1,7 +1,7 @@
 // Plan 2, Task 6: `agentx login --invite <link>`. An invite link comes in these shapes (UX1 adds a cell's own <origin>/join#invite=<token>): the rovara.dev link a cloud install hands out
 // (https://rovara.dev/join#invite=<token>), the link of a cell's own join page (<cell>/v1/auth/join?invite=<token>) and the bare
 // token. This file reads them, finds the cell, and asks that cell, before any browser opens, what the invite is for (ruling R19).
-import { INVITE_WRONG_EMAIL_MESSAGE, agentXError } from "@agentx/contracts";
+import { INVITE_WRONG_EMAIL_MESSAGE, agentXError } from "@rovara-code/contracts";
 import { createInterface } from "node:readline";
 import { z } from "zod";
 import { sanitizeServerText } from "../auth.js";

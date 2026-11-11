@@ -24,7 +24,7 @@ import { appCsrfTokenFor } from "../../developer/app-csrf.js";
 import { createHash } from "node:crypto";
 import { PutCommand } from "@aws-sdk/lib-dynamodb";
 import { PutObjectCommand } from "@aws-sdk/client-s3";
-import { AgentXError, E2ESetupProposalSchema, inspectE2ERepository, proposeE2ESetup, WEB_API_RUNTIME_PROFILE_ID, verifyE2ESourceSnapshot, verifyE2ESetupProposal, canonicalJson, agentXError, projectSetupApprovalKey, type OrgId, isAdminChangePressEvent, type AdminChangePressEvent, sameJsonContent, type E2ESourceSnapshot, E2E_AGENT_UNAVAILABLE_REASONS, E2E_MODEL_ROUTE_CHANGED_REAPPROVE } from "@agentx/contracts";
+import { AgentXError, E2ESetupProposalSchema, inspectE2ERepository, proposeE2ESetup, WEB_API_RUNTIME_PROFILE_ID, verifyE2ESourceSnapshot, verifyE2ESetupProposal, canonicalJson, agentXError, projectSetupApprovalKey, type OrgId, isAdminChangePressEvent, type AdminChangePressEvent, sameJsonContent, type E2ESourceSnapshot, E2E_AGENT_UNAVAILABLE_REASONS, E2E_MODEL_ROUTE_CHANGED_REAPPROVE } from "@rovara-code/contracts";
 import type { AuthenticatedIdentity } from "../../auth.js";
 import { routeAdminRead } from "../admin-reads.js";
 import { pressAdminChange, routeAdminChange } from "../admin-changes.js";
@@ -77,7 +77,7 @@ import { routeDeveloperRequest, type DeveloperCaller, type DeveloperRouteDepende
 import { releasePendingFinishedTasks } from "../developer-tasks.js";
 import { runDueWorkflowMergeRecovery, runDueWorkflowMergeTracking } from "../workflow-merge-recovery.js";
 import { mergeViewOf } from "../../rovara-code/merge.js";
-import type { MergeTrackingItem } from "@agentx/contracts";
+import type { MergeTrackingItem } from "@agentx/cloud-contracts";
 import { resolveHeadEventTask } from "../../rovara-code/tracking-events.js";
 import { adaptHttpApiEvent, identityFromJwtClaims, type HttpApiV2Event } from "../lambda.js";
 import { getSwebenchRunForThread, handleSwebenchCallback, isSwebenchCallbackPath, startSwebenchRun } from "../swebench.js";
@@ -119,7 +119,7 @@ import { isWorkflowDispatchRecoveryEvent, retryDueWorkflowDispatches, startDuePl
 import { connectSlackTeam, deleteSlackBinding, disconnectSlackTeam, getTeamSlackBinding, putSlackBinding, requireSlackRequesterMayWork, requireSlackServiceRole, slackServiceIdentity } from "./workspace-preparation.js";
 import { SLACK_APPROVAL_OUT_OF_DATE, SLACK_BUTTON_OUT_OF_DATE, answerSlackWorkflowEvent, replyNotSavedAnswer, routeWorkspaceRequest, unexpectedErrorAnswer } from "./workspace-routes.js";
 import { OUTCOME_SETTLE_PASS_MS, releaseDependenciesOf } from "./terminal-and-github-events.js";
-import { auditOperatorId } from "@agentx/contracts";
+import { auditOperatorId } from "@agentx/cloud-contracts";
 import { learningFirstTick } from "../../spend/settlement-job.js";
 import { learningWalkDeps, resumeOpenLearningWalks } from "../../learning/cleanup.js";
 import { requirePricedTaskStopAdmission } from "../../org/task-stop-unpriced.js";
@@ -182,6 +182,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           ...(dependencies.companyImageResolver === undefined ? {} : { companyImageResolver: dependencies.companyImageResolver }),
           // Company rules (G-04): how the file sync reaches a repository.
           ...companyRulesRouteDependencies(dependencies),
+          ...(dependencies.companyImageMirrorStart === undefined ? {} : { companyImageMirrorStart: dependencies.companyImageMirrorStart }),
           // Test services, slice 3: the fixture store for the hand-written answer set routes (only with `tx` on and the install's fixture key).
           ...fixtureStoreForRoutes(dependencies),
           sessionDiffFiles: dependencies.githubPullRequests.listPullRequestFiles === undefined ? undefined : (url, number, options, scope) => dependencies.githubPullRequests.listPullRequestFiles!(url, number, options, githubScope(dependencies, scope.orgId)),
@@ -803,7 +804,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       if (request.method === "POST" && url.pathname === "/v1/internal/context-tools/call") return json(await handleContextTools(dependencies, request, "call"), request.requestId);
       // Saved project images: the push login and result are callback actions only where the registry is installed; elsewhere those paths are not found, as any unknown path.
       const savedEnvOn = dependencies.savedEnvDeps !== undefined && savedEnvEnabled();
-      const callback = new RegExp(`^\\/v1\\/internal\\/workspaces\\/([0-9a-f-]+)\\/operations\\/([0-9a-f-]+)\\/(events|artifacts|result|candidate-export|candidate-build-source|baseline-source|e2e-admission|e2e-evidence|e2e-model-budget|feedback-bundles|feedback-approval|pull-request|pull-request-update|codebuild|chatgpt-token|chatgpt-status|model-fallback|setup-agent|nightly-result|fixture-set${savedEnvOn ? "|saved-env-push-login|saved-env-result" : ""})$`).exec(
+      const callback = new RegExp(`^\\/v1\\/internal\\/workspaces\\/([0-9a-f-]+)\\/operations\\/([0-9a-f-]+)\\/(events|artifacts|result|candidate-export|candidate-build-source|baseline-source|e2e-admission|e2e-evidence|e2e-model-budget|feedback-bundles|feedback-approval|pull-request|pull-request-update|codebuild|chatgpt-token|chatgpt-status|model-fallback|setup-agent|nightly-result|fixture-set|company-image-login${savedEnvOn ? "|saved-env-push-login|saved-env-result" : ""})$`).exec(
         url.pathname,
       );
       if (request.method === "POST" && callback?.[1] && callback[2] && callback[3]) {

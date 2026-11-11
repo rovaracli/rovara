@@ -1,6 +1,7 @@
 import { expect, it, vi } from "vitest";
 import { QueryCommand } from "@aws-sdk/lib-dynamodb";
-import { AppNavSchema, liveSessionKey, orgMetaKey } from "@agentx/contracts";
+import { AppNavSchema, orgMetaKey } from "@agentx/cloud-contracts";
+import { liveSessionKey } from "@rovara-code/contracts";
 import { MAYA, OMAR, seedMembership, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
 async function setup() {
@@ -15,6 +16,26 @@ it("serves the production navigation route with canonical Home total and visible
  const h = await setup(), home = await h.dev(MAYA, "GET", "/v1/app/home"), response = await h.dev(MAYA, "GET", "/v1/app/nav");
  expect(response.status).toBe(200);const body = { ...response.body };delete body.requestId;const nav = AppNavSchema.parse(body);
  expect(home.body.total).toBe(1);expect(nav.homeCount).toBe(home.body.total);expect(nav.projects.map(project => project.name)).toContain("payments");expect(nav.org.trial?.state).toBe("locked");expect(nav.features).toEqual({ localAgents: false, usage: false, admin: false, chains: false, notices: false, describe: false });
+ } finally { remove(); }
+});
+it("gives each project the caller's own needs-you count from Home's own cards, and no one else's", async () => {
+ const { registerHomeCardSource } = await import("../../packages/broker/src/agent-sessions/home.js");
+ const card = (id: string, project: string | undefined) => ({ cardId: `offer:${id}`, kind: "offer" as const, title: `Offer ${id}`, reason: "A teammate shared this.", at: "2026-10-23T12:00:00Z", buttons: [], ...(project === undefined ? {} : { project }) });
+ // Three of Maya's cards are about payments, one about a project she cannot see, one about no project; Omar has none of his own.
+ const remove = registerHomeCardSource({ kind: "offer", list: async (_deps, caller) => caller.developerId === MAYA.developerId ? [card("a", "payments"), card("b", "payments"), card("c", "payments"), card("d", "not-hers"), card("e", undefined)] : [] });
+ try {
+ const h = await setup();
+ const read = async (who: typeof MAYA) => { const response = await h.dev(who, "GET", "/v1/app/nav");expect(response.status).toBe(200);const body = { ...response.body };delete body.requestId;return AppNavSchema.parse(body); };
+ const maya = await read(MAYA), home = await h.dev(MAYA, "GET", "/v1/app/home");
+ expect(maya.homeCount).toBe(5);expect(home.body.total).toBe(5);
+ expect(maya.projects.find(project => project.name === "payments")?.needsYou).toBe(3);
+ // The project she cannot see is in her count but never named; the project counts add up to less than the whole.
+ expect(maya.projects.some(project => project.name === "not-hers")).toBe(false);
+ expect(maya.projects.reduce((sum, project) => sum + (project.needsYou ?? 0), 0)).toBe(3);
+ // The project is for counting only: Home's own answer never carries it.
+ expect((home.body.cards as Array<Record<string, unknown>>).every(entry => !("project" in entry))).toBe(true);
+ const omar = await read(OMAR);
+ expect(omar.homeCount).toBe(0);expect(omar.projects).toEqual([]);
  } finally { remove(); }
 });
 it("adds the authoritative trial state and default-name flag to me", async () => {
@@ -35,7 +56,7 @@ it("coalesces production source reads across separately authenticated requests",
 
 /** 40 projects Maya may see and 300 of her running sessions across them, one of which needs her. */
 async function bigNavWorld() {
- const { projectRevisionKey, orgProjectCatalogKey, agentSessionKey } = await import("@agentx/contracts");
+ const { projectRevisionKey, orgProjectCatalogKey, agentSessionKey } = await import("@rovara-code/contracts");
  const { grantProject } = await import("../support/developer-task-broker.js");
  const { sessionWorld } = await import("../support/agent-session-world.js");
  const { taskKey } = await import("../../packages/broker/src/developer/task-records.js");
@@ -84,7 +105,7 @@ async function decisionCardsNav(failApproverList = false) {
  const logged: string[] = [], log = vi.spyOn(console, "log").mockImplementation((line: unknown) => { logged.push(String(line)); });
  try {
  const { h } = await bigNavWorld(), original = h.db.send.bind(h.db), partitions: string[] = [];
- const approverPk = String((await import("@agentx/contracts")).approverIndexKey(TEST_ORG, MAYA.developerId, "apr_00000000000000000000").pk);
+ const approverPk = String((await import("@rovara-code/contracts")).approverIndexKey(TEST_ORG, MAYA.developerId, "apr_00000000000000000000").pk);
  h.db.send = async command => {
  const pk = command instanceof QueryCommand ? String(command.input.ExpressionAttributeValues?.[":pk"]) : undefined;
  if (pk !== undefined) partitions.push(pk);
@@ -127,7 +148,7 @@ it("keeps production navigation separate across organizations", async () => {
 it("rechecks role and server feature switches before reusing a production projection", async () => {
  vi.stubEnv("WEB_FEATURES", "usage,admin,chains,notices,describe");
  try {
- const { projectRevisionKey, orgProjectCatalogKey } = await import("@agentx/contracts");
+ const { projectRevisionKey, orgProjectCatalogKey } = await import("@rovara-code/contracts");
  const h = await setup(), revision = await h.actions.projectRevision(TEST_ORG, "payments", 1);if (revision === undefined) throw new Error("missing project fixture");
  h.db.set({ ...revision, ...projectRevisionKey(TEST_ORG, "admin-only", 1), definition: { ...revision.definition, name: "admin-only" } });h.db.set({ ...orgProjectCatalogKey(TEST_ORG, "admin-only"), entityType: "PROJECT_CATALOG", name: "admin-only", latestRevision: 1 });
  const read = async () => { const response = await h.dev(MAYA, "GET", "/v1/app/nav");expect(response.status).toBe(200);const body = { ...response.body };delete body.requestId;return AppNavSchema.parse(body); };

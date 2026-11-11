@@ -7,7 +7,7 @@ import {readTurnActorChecks,type TurnActorDependencies} from "./turn-authority.j
 // Signed operation authority for project coding turns without a developer-task recipe record.
 import {createHash} from "node:crypto";
 import {GetCommand,TransactWriteCommand} from "@aws-sdk/lib-dynamodb";
-import {TaskModelFallbackRequestSchema,TaskModelPolicyBindingSchema,TaskModelFallbackAuthorizationSchema,ModelSelectionSchema,canonicalModelName,canonicalJson,sharedTaskKey,agentXError,type OrgId} from "@agentx/contracts";
+import { TaskModelFallbackRequestSchema, TaskModelPolicyBindingSchema, TaskModelFallbackAuthorizationSchema, ModelSelectionSchema, canonicalModelName, canonicalJson, sharedTaskKey, agentXError, type OrgId } from "@rovara-code/contracts";
 import {operationKey,type CallbackClaims} from "../aws/cancellation.js";
 import {turnStagesForMode,parseTurnModelPin} from "./turn-policy.js";
 import {loadPinnedTaskStageContext} from "./task-live.js";

@@ -1,7 +1,7 @@
 // Lessons in the repo, lane R2, review round 4: the ERASURE SWEEP is independent of the publish state. It reads the default branch's file, the lesson store's tombstones, its own pull request rows and the code host, and nothing else.
 // The invariant at the bottom enumerates every way the publish state can fail and asserts the sweep still takes a gone block out in the same pass, for that repository and for another one in the same project.
 import { afterEach, describe, expect, it } from "vitest";
-import { closesHeldText, type CodeHost } from "@agentx/contracts";
+import { closesHeldText, type CodeHost } from "@rovara-code/contracts";
 import { dynamoRepoFileStore } from "../../../packages/broker/src/lessons/dynamo-repo-file.js";
 import { applyFileChanges, parseLessonsFile, renderLessonsFile } from "../../../packages/broker/src/lessons/repo-file-format.js";
 import { closeProjectRovaraPrs, closeOpenPullRequestFor, repoFileAction, repoFileStatus, repositoriesChanged } from "../../../packages/broker/src/lessons/repo-file-routes.js";

@@ -4,12 +4,12 @@ import { erasedNameIsChosenAgain } from "../../agent-sessions/ask-erased-aliases
 import { changeReviewedMemberRole } from "../../org/role-changes.js";
 import { type RemovalHelpers } from "../../org/member-removal/routes.js";
 import { requireAuditorEdition } from "../../org/auditor.js";
-import { OrgMemberRoleChangeBodySchema } from "@agentx/contracts";
+import { OrgMemberRoleChangeBodySchema } from "@agentx/cloud-contracts";
 import { navigationReadCache } from "../../app-nav/read-cache.js";
 import { trialAvailable } from "../../org/trial-availability.js";
 import { APP_NAV_CACHE_MS, appNav, orgTrial, type AppNavDependencies } from "../../app-nav/nav.js";
 import { navigationLive } from "../../agent-sessions/live.js";
-import { homeCards } from "../../agent-sessions/home.js";
+import { homeNeedsYou } from "../../agent-sessions/home.js";
 import { listSessions } from "../../agent-sessions/read.js";
 import { listRoster } from "../../agents/roster.js";
 import { listVisibleAgents } from "../../agents/access.js";
@@ -17,20 +17,8 @@ import { clearOrgHooks } from "../../triggers/hooks.js";
 import { deleteOrgTriggers } from "../../triggers/lifecycle.js";
 import { z } from "zod";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  CreateOrganizationInviteBodySchema,
-  agentXError,
-  LAST_OWNER_MESSAGE,
-  orgMemberKey,
-  type AppMeResponse,
-  SetMyNameBodySchema,
-  type SetMyNameResponse,
-  type StartIdentityLinkAppResponse,
-  UnlinkableSignInMethodSchema,
-  type LinkedIdentity,
-  type OrgId,
-  type OrgRole,
-} from "@agentx/contracts";
+import { CreateOrganizationInviteBodySchema, agentXError, LAST_OWNER_MESSAGE, SetMyNameBodySchema, type SetMyNameResponse, type StartIdentityLinkAppResponse, UnlinkableSignInMethodSchema, type OrgId } from "@rovara-code/contracts";
+import { orgMemberKey, type AppMeResponse, type LinkedIdentity, type OrgRole } from "@agentx/cloud-contracts";
 import { clearOrgEgress } from "../../org/egress-domains.js";
 import { releaseOrgModelSources } from "../../model-sources/release.js";
 import { archiveOrgProjects } from "../../org/project-archive.js";
@@ -38,7 +26,7 @@ import { cloudJoinBase, inviteUrl } from "../../org/invite-url.js";
 import { methodAllowedByEdition } from "../../developer/edition-methods.js";
 import { parseCreateProjectBody } from "../../org/cloud-projects.js";
 import { createProjectFromMetaRoute } from "../../org/create-from-meta.js";
-import { isCreateFromMetaBody } from "@agentx/contracts";
+import { isCreateFromMetaBody } from "@rovara-code/contracts";
 import { changeBudgets, ensureSynced, memberLimitOf, type BudgetDependencies, type OrgBudgetSettings } from "../../org/budget.js";
 import { DeveloperSignInStore } from "../../developer/store.js";
 import type { AdaptedHttpRequest } from "../lambda.js";
@@ -99,7 +87,7 @@ export async function getAppNavigation(deps: DeveloperRouteDependencies, caller:
    projects: async () => (await members.projectsOf(caller.orgId, caller)).map(project => ({ name: project.project })),
    rosters: async (_who, names) => (await mapLimit(names, REVISION_READS_AT_ONCE, async project => (await listRoster(cachedAgents, caller, project)).filter(agent => !agent.disabled && agent.status === "active").map(agent => ({ project, agentId: agent.agentId, name: agent.name })))).flat(),
    live: async () => (await live()).map(tile => ({ sessionId: tile.sessionId, ...(tile.project === undefined ? {} : { project: tile.project }), ...(tile.agent === undefined ? {} : { agentId: tile.agent.agentId }), running: true, needsYou: tile.needsYou })),
-   home: async () => homeCards(reads, caller),
+   home: async () => homeNeedsYou(reads, caller),
    sharedAgents: async () => (await listVisibleAgents(cachedAgents, caller, "shared")).map(agent => ({ agentId: agent.agentId, name: agent.name })),
    sharedSessions: async () => (await listSessions(reads, caller, { shared: "me", status: "open", limit: 10 })).sessions.map(session => ({ sessionId: session.sessionId, title: session.title, ...(session.endedAt === undefined ? {} : { endedAt: session.endedAt }) })),
    org: async () => { const org = await orgs.getOrg(caller.orgId);if (org === undefined) throw agentXError("NOT_FOUND", "your organization was not found");return org; },

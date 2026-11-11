@@ -8,7 +8,7 @@
 // none, so a link is kept only when it is on sentry.io or one of its subdomains.
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import type { HookRecord, TriggerEvent } from "@agentx/contracts";
+import type { HookRecord, TriggerEvent } from "@rovara-code/contracts";
 import { hmacHexEquals, type HookHeaders, type HookProvider, type Normalized } from "./types.js";
 import { headerOf, httpsLinkOnDomain, isoOfText, titleOf, valuesOf } from "./shared.js";
 

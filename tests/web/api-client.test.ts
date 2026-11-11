@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { HomeResponseReaderSchema } from "@agentx/contracts/web";
+import { HomeResponseReaderSchema } from "@agentx/cloud-contracts/web";
 import { createApiClient } from "../../packages/ui/src/api/client.js";
 import { ApiError } from "../../packages/ui/src/api/errors.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";

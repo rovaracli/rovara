@@ -2,7 +2,8 @@ import { taskApprovalPolicyDigest } from "../../packages/broker/src/spend/task-a
 import { checkedTaskStopSnapshot } from "../../packages/broker/src/org/task-stop-window.js";
 import { expect, it } from "vitest";
 import { TransactGetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { DEFAULT_AGENT_GUARDRAILS, agentGuardrailsKey, agentKey, developerOrgKey, orgMemberKey, orgMetaKey, orgProjectCatalogKey, orgSettingsKey, orgScoped, projectAiKey } from "@agentx/contracts";
+import { DEFAULT_AGENT_GUARDRAILS, agentGuardrailsKey, agentKey, orgProjectCatalogKey, orgScoped } from "@rovara-code/contracts";
+import { developerOrgKey, orgMemberKey, orgMetaKey, orgSettingsKey, projectAiKey } from "@agentx/cloud-contracts";
 import { captureTaskStopEvalAdmission } from "../../packages/broker/src/org/task-stop-admission.js";
 import * as company from "../../packages/broker/src/org/task-stop-company.js";
 

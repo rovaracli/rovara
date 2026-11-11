@@ -35,7 +35,7 @@ describe("fixSetupDependencies", () => {
 });
 
 // Opus re-check M2/M4: what the wiring records from the broker's pack and the USABLE nightly baseline.
-import { EvidencePackSchema, NightlyBaselineSchema, projectPk, projectRevisionKey } from "@agentx/contracts";
+import { EvidencePackSchema, NightlyBaselineSchema, projectPk, projectRevisionKey } from "@rovara-code/contracts";
 
 describe("the wiring and the nightly baseline", () => {
   // The wiring reads the real clock, so the baselines here are made relative to it.

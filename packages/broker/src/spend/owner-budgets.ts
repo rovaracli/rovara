@@ -5,7 +5,8 @@ import { pinOwnerFinancialChecks, type OwnerFinancialTerms } from "./owner-appro
 // it can't drift from the budgets it adds up. Each store registers a source that adds up its own budgets; the counter is built from every source
 // the first time it is needed and rebuilt from them after a member merge, so the two stores must share one `OwnerBudgets`.
 import { PutCommand, UpdateCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
-import { orgSettingsKey, ownerBudgetKey, type OrgId } from "@agentx/contracts";
+import { orgSettingsKey, ownerBudgetKey } from "@agentx/cloud-contracts";
+import { type OrgId } from "@rovara-code/contracts";
 import type { OwnedKind } from "../agents/owned-store.js";
 import { NOT_EXISTS, coded, errorName, type Aliases, type TableInput, type TransactItem } from "../agents/table-writes.js";
 import { budgetOwnerOf, ownerShare, ownerTotalItems, type BudgetSubject, type OwnerShare, type OwnerTotalSeen } from "./owner-total.js";

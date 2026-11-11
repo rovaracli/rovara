@@ -4,7 +4,7 @@
 // in for them here.
 import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { OrgId } from "@agentx/contracts";
+import type { OrgId } from "@rovara-code/contracts";
 import {
   APPROVAL_ID_PATTERN,
   DECIDE_COOKIE,
@@ -962,7 +962,7 @@ describe("the confirmation page", () => {
     const words = "The draft changed after this was asked. Publish again.";
     s.kind.decide = async () => { throw Object.assign(new Error(`AGENT_REVISION_CONFLICT: ${words}`), { code: "AGENT_REVISION_CONFLICT", statusCode: 409 }); };
     // An AgentXError is what a real kind throws; the page passes its words on.
-    const { AgentXError } = await import("@agentx/contracts");
+    const { AgentXError } = await import("@rovara-code/contracts");
     s.kind.decide = async () => { throw new AgentXError("AGENT_REVISION_CONFLICT", words, 409); };
     const cookie = await sessionFor(s, APR_A);
     const response = await page(s, { method: "POST", cookie, fields: { decision: "approve", csrf: csrfTokenFor(cookie) } });

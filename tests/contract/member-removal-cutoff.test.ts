@@ -2,7 +2,7 @@
 // sign-in is refused at once, and their GitHub link no longer counts.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { orgMemberKey } from "@agentx/contracts";
+import { orgMemberKey } from "@agentx/cloud-contracts";
 import { createPendingChange, decideApproval, getAnyApproval, registerApprovalSubjectHandler } from "../../packages/broker/src/agents/approvals.js";
 import { linkGithubMember, memberForGithubUser } from "../../packages/broker/src/rovara-code/github-members.js";
 import { HOUR, OWNER, SAM, T0, removalWorld } from "../support/member-removal-world.js";

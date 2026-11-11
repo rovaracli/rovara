@@ -1,51 +1,8 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { sha256Hex } from "@rovara/audit-verifier";
-import {
-  AUDIT_ACTIONS,
-  AUDIT_BACKSTOP_SEAL_AGE_MINUTES,
-  AUDIT_DETAILS_SHRED_AFTER_CLOSE_DAYS,
-  AUDIT_DETAIL_FIELDS_MAX,
-  AUDIT_DETAIL_FIELD_MAX_CHARS,
-  AUDIT_DETAIL_PARTS_MAX,
-  AUDIT_ERROR_MESSAGES,
-  AUDIT_EXPORT_MAX_RECORDS,
-  AUDIT_EXPORT_URL_SECONDS,
-  AUDIT_FACT_KEYS,
-  AUDIT_FACT_MAX_CHARS,
-  AUDIT_FILTER_SCAN_MAX,
-  AUDIT_FLUSH_DEADLINE_MS,
-  AUDIT_GOVERNANCE_RETENTION_DAYS,
-  AUDIT_INTAKE_MAX_RECEIVES,
-  AUDIT_LIMITS_COPY,
-  AUDIT_MAX_FACTS,
-  AUDIT_MAX_RECORDS_PER_ORG_EPOCH,
-  AUDIT_MAX_RELATED,
-  AUDIT_PENDING_FAIL_AFTER_DAYS,
-  AUDIT_PENDING_SHARDS,
-  AUDIT_PENDING_TTL_DAYS,
-  AUDIT_RETENTION_DAYS_DEFAULT,
-  AUDIT_RETENTION_DAYS_MIN_COMPLIANCE,
-  AUDIT_SDK_REQUEST_TIMEOUT_MS,
-  AUDIT_SEAL_INTERVAL_MINUTES,
-  AUDIT_TARGET_KINDS,
-  AUDIT_TRANSIENT_COPY_DAYS,
-  AUDIT_TSA_ENDPOINTS,
-  AUDIT_TSA_SPACING_MS,
-  AUDIT_TSA_TIMEOUT_MS,
-  AUDIT_VERSION_SWEEP_KEYS_PER_RUN,
-  AgentXErrorCodeSchema,
-  AuditActorSchema,
-  AuditDetailPartSchema,
-  AuditEventIdSchema,
-  AuditEventInputSchema,
-  AuditProofSchema,
-  AuditTargetSchema,
-  auditEventId,
-  auditOperatorId,
-  errorStatus,
-  type AuditAction,
-} from "../../packages/contracts/src/index.js";
+import { AUDIT_ACTIONS, AUDIT_BACKSTOP_SEAL_AGE_MINUTES, AUDIT_DETAILS_SHRED_AFTER_CLOSE_DAYS, AUDIT_DETAIL_FIELDS_MAX, AUDIT_DETAIL_FIELD_MAX_CHARS, AUDIT_DETAIL_PARTS_MAX, AUDIT_ERROR_MESSAGES, AUDIT_EXPORT_MAX_RECORDS, AUDIT_EXPORT_URL_SECONDS, AUDIT_FACT_KEYS, AUDIT_FACT_MAX_CHARS, AUDIT_FILTER_SCAN_MAX, AUDIT_FLUSH_DEADLINE_MS, AUDIT_GOVERNANCE_RETENTION_DAYS, AUDIT_INTAKE_MAX_RECEIVES, AUDIT_LIMITS_COPY, AUDIT_MAX_FACTS, AUDIT_MAX_RECORDS_PER_ORG_EPOCH, AUDIT_MAX_RELATED, AUDIT_PENDING_FAIL_AFTER_DAYS, AUDIT_PENDING_SHARDS, AUDIT_PENDING_TTL_DAYS, AUDIT_RETENTION_DAYS_DEFAULT, AUDIT_RETENTION_DAYS_MIN_COMPLIANCE, AUDIT_SDK_REQUEST_TIMEOUT_MS, AUDIT_SEAL_INTERVAL_MINUTES, AUDIT_TARGET_KINDS, AUDIT_TRANSIENT_COPY_DAYS, AUDIT_TSA_ENDPOINTS, AUDIT_TSA_SPACING_MS, AUDIT_TSA_TIMEOUT_MS, AUDIT_VERSION_SWEEP_KEYS_PER_RUN, AuditActorSchema, AuditDetailPartSchema, AuditEventIdSchema, AuditEventInputSchema, AuditProofSchema, AuditTargetSchema, auditEventId, auditOperatorId, type AuditAction } from "@agentx/cloud-contracts";
+import { AgentXErrorCodeSchema, errorStatus } from "@rovara-code/contracts";
 import { AUDIT_LIMITS_COPY as VERIFIER_LIMITS_COPY } from "../../packages/audit-verifier/src/index.js";
 
 const ORG = "org_0123456789abcdefghij";
@@ -132,6 +89,8 @@ describe("the event catalog", () => {
   "member.removal_completed",
   "member.left",
   "member.renamed",
+  "insights_access.granted",
+  "insights_access.revoked",
   "org.closed",
   "org.renamed",
   "org.invite_created",
@@ -212,7 +171,7 @@ describe("the event catalog", () => {
       // script tokens (UX5b)
       "script_token.created", "script_token.revoked", "script_token.used",
       // company-approved extra test-service images
-      "company_image.proposed", "company_image.approved", "company_image.revoked",
+      "company_image.proposed", "company_image.approved", "company_image.revoked", "company_image.registries_changed",
       // company rules (G-04)
       "company_rules.proposed", "company_rules.adopted", "company_rules.approved", "company_rules.rejected", "company_rules.cancelled", "company_rules.expired", "company_rules.repo_proposed", "company_rules.written_back", "company_rules.sync_connected", "company_rules.sync_disconnected",
       "agent_publication.requested", "agent_publication.approved", "agent_publication.declined", "agent_publication.withdrawn",
@@ -275,6 +234,9 @@ describe("the event catalog", () => {
     "task.work_refused": { target: { kind: "task", id: "00000000-0000-4000-8000-000000000001" }, keys: ["path", "cause"], sample: { path: "ci_fix_round", cause: "no_project_access" } },
     "task.second_review_acknowledged": { target: { kind: "task", id: "00000000-0000-4000-8000-000000000001" }, keys: ["cause"], sample: { cause: "no-answer" } },
     "task.design_sole_owner_exception": { target: { kind: "task", id: "00000000-0000-4000-8000-000000000001" }, keys: ["tier", "openBlockers"], sample: { tier: "high", openBlockers: 0 } },
+    // Insights viewer grant (decision 32): the member is the target; no facts.
+    "insights_access.granted": { target: { kind: "member", id: "a".repeat(64) }, keys: [], sample: {} },
+    "insights_access.revoked": { target: { kind: "member", id: "a".repeat(64) }, keys: [], sample: {} },
     "project.second_review_narrowed": { target: { kind: "project", name: "web" }, keys: ["change", "count"], sample: { change: "choose", count: 1 } },
     "evidence.downloaded": { target: { kind: "task", id: "00000000-0000-4000-8000-000000000001" }, keys: ["artifactKind", "retentionClass"], sample: { artifactKind: "webm", retentionClass: "evidence-short" } },
     // v1.2 learning loop (B7, design 8): ids, counts, flags and fixed words; never a correction's or a rule's text.

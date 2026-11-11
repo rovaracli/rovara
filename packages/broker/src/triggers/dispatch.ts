@@ -6,27 +6,7 @@
 // Nothing in a log line is text the sender wrote: only ids, an outcome and a code.
 import { createHash } from "node:crypto";
 import { GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  AgentXError,
-  CHAIN_MAX_CONCURRENT_RUNS,
-  INDEX_EXPIRY_ATTRIBUTE,
-  ORG_MAX_AUTONOMOUS_RUNS_PER_DAY,
-  TRIGGER_SUBJECT_GUARD_MINUTES,
-  TRIGGER_MAX_RUNS_PER_HOUR,
-  TriggerEventSchema,
-  agentXError,
-  isBuiltinAgentId,
-  orgAutonomousKey,
-  triggerRateKey,
-  triggerSubjectKey,
-  triggerSummary as eventSummary,
-  type AgentId,
-  type ChainRunStartedBy,
-  type EventSource,
-  type OrgId,
-  type TriggerEvent,
-  type TriggerOutcome,
-} from "@agentx/contracts";
+import { AgentXError, CHAIN_MAX_CONCURRENT_RUNS, INDEX_EXPIRY_ATTRIBUTE, ORG_MAX_AUTONOMOUS_RUNS_PER_DAY, TRIGGER_SUBJECT_GUARD_MINUTES, TRIGGER_MAX_RUNS_PER_HOUR, TriggerEventSchema, agentXError, isBuiltinAgentId, orgAutonomousKey, triggerRateKey, triggerSubjectKey, triggerSummary as eventSummary, type AgentId, type ChainRunStartedBy, type EventSource, type OrgId, type TriggerEvent, type TriggerOutcome } from "@rovara-code/contracts";
 import { readRunRequest } from "../agents/runs.js";
 import { resolveAgentForAutonomousRun } from "../agents/roster.js";
 import { resolveSurvivor } from "../agents/access.js";

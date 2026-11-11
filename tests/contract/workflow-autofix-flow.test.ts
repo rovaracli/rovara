@@ -2,9 +2,8 @@
 // one-off fault once, and otherwise asks with the details. It never approves, skips, rejects or publishes, and it never wins against the owner's own press.
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import {
-  WORKFLOW_AGENTX_ACTOR_ID, WORKFLOW_AUTO_REVIEW_FAILED_MESSAGE, WORKFLOW_BLOCK_REASONS, createCandidateManifest, workflowAutoActionRequestId, type WorkflowSnapshot,
-} from "@agentx/contracts";
+import { WORKFLOW_AGENTX_ACTOR_ID, WORKFLOW_AUTO_REVIEW_FAILED_MESSAGE, createCandidateManifest, workflowAutoActionRequestId } from "@rovara-code/contracts";
+import { WORKFLOW_BLOCK_REASONS, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { workflowMessage } from "../../packages/broker/src/developer/workflow-messages.js";
 import { createTaskWeb } from "../../packages/broker/src/aws/task-web.js";
 import { AutoFixAskSchema } from "../../packages/broker/src/developer/autofix-messages.js";

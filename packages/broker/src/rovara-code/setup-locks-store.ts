@@ -6,7 +6,7 @@
 //   - the audit event is built from the entry the decider made: who, when, the digests and whether it loosened; nothing else is stored.
 import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { createHash } from "node:crypto";
-import { SETUP_AGENT_LIMITS_DEFAULT, agentXError, canonicalJson, setupLocksKey, type OrgId } from "@agentx/contracts";
+import { SETUP_AGENT_LIMITS_DEFAULT, agentXError, canonicalJson, setupLocksKey, type OrgId } from "@rovara-code/contracts";
 import { auditSetupLocksChange, auditOccurrence } from "../audit/events.js";
 import { auditPending, type AuditRuntime, type TransactItem } from "../audit/outbox.js";
 import { flushAuditEvents } from "../audit/flush.js";

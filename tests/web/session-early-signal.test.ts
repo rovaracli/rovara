@@ -4,7 +4,7 @@
 import { expect, it } from "vitest";
 import { screen } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
-import { SessionViewReaderSchema } from "@agentx/contracts/web";
+import { SessionViewReaderSchema } from "@agentx/cloud-contracts/web";
 import { workspaceFixture as fixture } from "./support/workspace-fixture.js";
 import { Workspace } from "../../packages/ui/src/screens/session/Workspace.js";
 import { AppHostProvider } from "../../packages/ui/src/host.js";

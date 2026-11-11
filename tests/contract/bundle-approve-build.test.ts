@@ -5,7 +5,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { ApprovalRecordSchema, BuiltManifestSchema, sha256OfBytes, synthContext, synthSettingsSha256 } from "@agentx/contracts";
+import { ApprovalRecordSchema, BuiltManifestSchema, sha256OfBytes, synthContext, synthSettingsSha256 } from "@agentx/cloud-contracts";
 import { buildAtApproval } from "../../packages/cli/src/upgrade/bundle/build-at-approval.js";
 import { nodeSynthRunner, testRunner } from "../support/kit-runner.js";
 import { FAKE_ASSET, SECOND_ASSET } from "../support/synth-kit-fixture.js";
@@ -45,7 +45,7 @@ describe("building the install's templates at approval", () => {
     expect(control.Resources.Marker.Properties.Value).toContain("10.20.0.0/16");
     // The kit's hash is made from the SIGNED manifest's own entries for it: what a deployer holding only the signed manifest computes too.
     const { readFile } = await import("node:fs/promises");
-    const { BundleManifestSchema, synthKitSha256 } = await import("@agentx/contracts");
+    const { BundleManifestSchema, synthKitSha256 } = await import("@agentx/cloud-contracts");
     const signed = BundleManifestSchema.parse(JSON.parse(await readFile(join(world.bundle.dir, "bundle.json"), "utf8")));
     expect(built.manifest.kitSha256).toBe(synthKitSha256(signed.files));
     expect(built.manifest.kitSha256).toMatch(/^[a-f0-9]{64}$/);
@@ -218,7 +218,7 @@ describe("agentx bundle approve, Enterprise", () => {
   });
 
   it("reads the edition from the record, or from its backup while a deploy has the record out of the way, and refuses when the two disagree", async () => {
-    const { editionBackupParameter, editionRecordParameter } = await import("@agentx/contracts");
+    const { editionBackupParameter, editionRecordParameter } = await import("@agentx/cloud-contracts");
     const backupOnly = await EnterpriseWorld.create(made);
     await backupOnly.deployAsBuilt();
     await backupOnly.store.delete(editionRecordParameter("ent"));
@@ -317,7 +317,7 @@ describe("agentx bundle approve, Enterprise", () => {
 
 describe("the kit is part of the signed bundle", () => {
   it("names its entry as a .mjs file under synth-kit/, nothing else", async () => {
-    const { SynthKitManifestSchema } = await import("@agentx/contracts");
+    const { SynthKitManifestSchema } = await import("@agentx/cloud-contracts");
     const kit = { schemaVersion: 1, format: "rovara-synth-kit", nodeMajor: 22, releaseSha256: "a".repeat(64), gitCommit: "b".repeat(40), files: { "synth.mjs": "c".repeat(64) } };
     expect(SynthKitManifestSchema.safeParse({ ...kit, entry: "synth-kit/synth.mjs" }).success).toBe(true);
     for (const entry of ["synth-kit/synth.js", "other/synth.mjs", "synth.mjs", "synth-kit/../x.mjs"]) expect(SynthKitManifestSchema.safeParse({ ...kit, entry }).success, entry).toBe(false);
@@ -339,7 +339,7 @@ describe("the kit is part of the signed bundle", () => {
 
   it("is listed, hashed and signed with the other files, and a changed kit file is refused like any changed file", async () => {
     const { readFile, writeFile } = await import("node:fs/promises");
-    const { BundleManifestSchema } = await import("@agentx/contracts");
+    const { BundleManifestSchema } = await import("@agentx/cloud-contracts");
     const { verifyBundle } = await import("../../packages/cli/src/upgrade/bundle/verify.js");
     const world = await EnterpriseWorld.create(made);
     const manifest = BundleManifestSchema.parse(JSON.parse(await readFile(join(world.bundle.dir, "bundle.json"), "utf8")));
@@ -349,7 +349,7 @@ describe("the kit is part of the signed bundle", () => {
   });
 
   it("keeps the kit's kind and directory together, and requires its kit.json", async () => {
-    const { BundleManifestSchema } = await import("@agentx/contracts");
+    const { BundleManifestSchema } = await import("@agentx/cloud-contracts");
     const file = (name: string, kind: string) => ({ file: name, kind, sha256: "a".repeat(64), bytes: 1 });
     const base = { schemaVersion: 1, format: "rovara-release-bundle", version: "1.4.0", gitCommit: "b".repeat(40), images: [] };
     const release = file("release.json", "release-manifest");

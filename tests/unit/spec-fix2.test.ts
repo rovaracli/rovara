@@ -2,7 +2,7 @@
 import { randomUUID } from "node:crypto";
 import { micromark } from "micromark";
 import { describe, expect, it, vi } from "vitest";
-import { agentXError, SpecTargetSchema, specLine, specMarkdown, type SpecFile, type SpecTarget } from "@agentx/contracts";
+import { agentXError, SpecTargetSchema, specLine, specMarkdown, type SpecFile, type SpecTarget } from "@rovara-code/contracts";
 import { readSpecPullRequestOf } from "../../packages/broker/src/aws/broker/spec-wiring.js";
 import { fullStatus, specTask, withSpecProject } from "../support/spec-project.js";
 import { createSpecHooks, type SpecPublishOutcome, type SpecStore, type SpecWorld } from "../../packages/broker/src/spec/hooks.js";

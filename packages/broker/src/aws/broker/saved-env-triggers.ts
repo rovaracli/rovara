@@ -5,7 +5,7 @@
 //   - the periodic poll in the five-minute session sweep (`runSavedEnvPoll`);
 //   - the task-start check the registry already makes when a preparation is built (`savedEnvForPrepare`).
 // Everything is inert while the `sv` switch is off or the registry is not installed, and nothing here throws into its caller: a trigger that fails is logged by name and the next one tries again.
-import { NightlyFireSchema } from "@agentx/contracts";
+import { NightlyFireSchema } from "@rovara-code/contracts";
 import { abandonQueuedJob, checkRebuild, runPoll, sweepDeleted, type SavedEnvDeps } from "../../test-env/saved-env.js";
 import { savedEnvEnabled } from "../../test-env/saved-env-switch.js";
 import type { AwsBrokerDependencies } from "./definitions.js";

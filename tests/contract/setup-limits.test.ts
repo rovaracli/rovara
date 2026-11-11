@@ -2,9 +2,8 @@
 // and that a run starts with the smaller of the two. The decider for company locks is SH29's (tests/unit/broker-setup-recipes.test.ts); these tests are about what this adds: the stored rows, the audit, the project
 // rule "only stricter than the lock", and who may call it.
 import { describe, expect, it } from "vitest";
-import {
-  AgentXError, SETUP_AGENT_LIMITS_DEFAULT, SETUP_AGENT_LIMITS_MAX, effectiveSetupAgentLimits, orgMemberKey, orgMetaKey, setupLimitsKey, setupLocksKey, type OrgId, type ProjectRole,
-} from "@agentx/contracts";
+import { AgentXError, SETUP_AGENT_LIMITS_DEFAULT, SETUP_AGENT_LIMITS_MAX, effectiveSetupAgentLimits, setupLimitsKey, setupLocksKey, type OrgId, type ProjectRole } from "@rovara-code/contracts";
+import { orgMemberKey, orgMetaKey } from "@agentx/cloud-contracts";
 import { secondPersonMembershipCondition } from "../../packages/broker/src/org/second-person-approval.js";
 import { SETUP_LIMIT_MAXIMA, isLoosening, readCompanyLocks } from "../../packages/broker/src/org/setup-recipes.js";
 import {

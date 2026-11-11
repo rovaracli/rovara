@@ -1,7 +1,7 @@
 // Project setup, step "Environment check": one row per repository, read for a person. The broker's setup check is ONE check for the whole project (a single status and one failing step), so a row is derived:
 // a passing or running check covers every repository; a failed one is attributed to the repository whose command it names, using the commands the test environment proposal lists per repository, or a repository
 // name in the failing line. When the failing step names no repository the failure is shown for the whole check instead of guessing. A per-repository check is "needs broker" (see report.md).
-import type { ProjectSetupStatus } from "@agentx/contracts/web";
+import type { ProjectSetupStatus } from "@agentx/cloud-contracts/web";
 import { setupFailureOf, type SetupFailure } from "../steps/setup-failure.js";
 
 export type RepoState = "ready" | "checking" | "needs_action" | "not_checked" | "meta";

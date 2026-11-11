@@ -5,30 +5,9 @@
 import { randomUUID } from "node:crypto";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { afterEach, describe, expect, it } from "vitest";
-import {
-  DEVICE_COMMAND_KEEP_DAYS,
-  INDEX_EXPIRY_ATTRIBUTE,
-  LOCAL_TURNS_MAX,
-  LOCAL_UPDATE_TURNS_MAX,
-  RealtimeNoticeSchema,
-  agentSessionKey,
-  deviceCommandCounterKey,
-  deviceCommandKey,
-  deviceKey,
-  deviceSessionKey,
-  liveSessionKey,
-  openAgentSessionKey,
-  orgSettingsKey,
-  projectArchivedMessage,
-  projectMetaKey,
-  userChannel,
-  LiveResponseReaderSchema,
-  SessionResponseReaderSchema,
-  SessionViewSchema,
-  type LiveResponse,
-  type OrgId,
-  type OrgRole,
-} from "../../packages/contracts/src/index.js";
+import { DEVICE_COMMAND_KEEP_DAYS, RealtimeNoticeSchema, deviceCommandCounterKey, deviceCommandKey, deviceKey, deviceSessionKey, orgSettingsKey, userChannel, type OrgRole } from "@agentx/cloud-contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, LOCAL_TURNS_MAX, LOCAL_UPDATE_TURNS_MAX, agentSessionKey, liveSessionKey, openAgentSessionKey, projectArchivedMessage, projectMetaKey, LiveResponseReaderSchema, type LiveResponse, type OrgId } from "@rovara-code/contracts";
+import { SessionResponseReaderSchema, SessionViewSchema } from "@agentx/cloud-contracts";
 import { registerDevice } from "../../packages/broker/src/devices/store.js";
 import { endSessionsOfDevice, listDeviceCommands, recordLocalUpdate, registerLocalSession, type LocalSessionDependencies } from "../../packages/broker/src/devices/local-sessions.js";
 import { routeDeviceRequest } from "../../packages/broker/src/devices/routes.js";

@@ -1,8 +1,9 @@
 // Rovara Code (Plan 6 Task 6): a question that needs no code change ends the task Answered. The answer is a model's words: it was bounded, redacted and made plain text when it was
 // read (`checkIntentAssessment`) and again when it was kept (`answerWorkflowIntent`), it is shown as an answer and never run, and it reaches only people who can see the task (its
 // view, and the thread the task is shared to). The `answered` milestone, which other places hear (Plan 9 posts it), carries a fixed sentence and never the answer itself.
-import type { CodeMilestone, OrgId, WorkflowSnapshot } from "@agentx/contracts";
-import { ANSWERED_MILESTONE_TEXT } from "@agentx/contracts";
+import type { CodeMilestone, OrgId } from "@rovara-code/contracts";
+import type { WorkflowSnapshot } from "@agentx/cloud-contracts";
+import { ANSWERED_MILESTONE_TEXT } from "@rovara-code/contracts";
 import type { TransactItem } from "../agents/table-writes.js";
 import { codeMilestoneItems } from "./milestones.js";
 

@@ -8,7 +8,7 @@
 //   - the item has an https link without credentials (a ticket is bound by its link);
 //   - Jira and GitHub Issues are not started through this door: they have channels and sources of their own, and the intent schema refuses a `tracker` intent that names them;
 //   - the tracker must be able to start tasks (its capability), and the text of the item is outsider text that the engine frames, redacts and cuts.
-import { IntakeExternalRefSchema, agentXError, type OrgId, type RawDelivery, type Tracker, type TrackerEvent, type TrackerItem, type HostScope } from "@agentx/contracts";
+import { IntakeExternalRefSchema, agentXError, type OrgId, type RawDelivery, type Tracker, type TrackerEvent, type TrackerItem, type HostScope } from "@rovara-code/contracts";
 import { ingestIntake, type IntakeCandidate, type IntakeOutcome, type IntakePorts } from "../../intake/engine.js";
 
 /** The systems that have an intake channel of their own, and so never start through the neutral `tracker` channel. */

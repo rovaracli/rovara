@@ -18,7 +18,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { McpServerEntry, McpStdioProposal } from "@agentx/contracts";
+import type { McpServerEntry, McpStdioProposal } from "@rovara-code/contracts";
 import { createMcpController, type McpController } from "../../../packages/gateway/src/mcp-controller.js";
 import { directoryBundleStore } from "../../../packages/gateway/src/mcp-runner/bundle-store.js";
 import { dynamoMcpServerStore, summariseProbe } from "../../../packages/broker/src/context-sources/mcp-servers.js";

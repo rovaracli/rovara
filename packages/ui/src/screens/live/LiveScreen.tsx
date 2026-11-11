@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { AppNavReaderSchema, ProjectOverviewProjectSchema, LIVE_FILTERS, LiveFilterSchema } from "@agentx/contracts/web";
+import { AppNavReaderSchema, ProjectOverviewProjectSchema, LIVE_FILTERS, LiveFilterSchema } from "@agentx/cloud-contracts/web";
 import { useAppHost } from "../../host.js";
 import { createApiClient } from "../../api/client.js";
 import { ApiError } from "../../api/errors.js";

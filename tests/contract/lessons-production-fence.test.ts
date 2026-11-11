@@ -2,7 +2,8 @@
 // ConditionChecks (company membership generation, the approver's membership, sign-in identity and project grant, the project). Without them a person removed between the read and the write
 // could still complete an approval. Runs the real directory over a fake table, with the real DynamoDB lesson store.
 import { describe, expect, it } from "vitest";
-import { developerOrgKey, orgMemberKey, orgMetaKey, projectMemberKey, projectMetaKey, type OrgId } from "../../packages/contracts/src/index.js";
+import { developerOrgKey, orgMemberKey, orgMetaKey } from "@agentx/cloud-contracts";
+import { projectMemberKey, projectMetaKey, type OrgId } from "@rovara-code/contracts";
 import { approveLesson, type ApproveDeps } from "../../packages/broker/src/lessons/approve.js";
 import { createApproverDirectory } from "../../packages/broker/src/lessons/directory.js";
 import { DynamoLessonStore } from "../../packages/broker/src/lessons/dynamo-store.js";

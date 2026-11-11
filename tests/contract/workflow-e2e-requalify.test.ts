@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
-import { E2EApplicationSelectionRecordSchema, requalifyHoldKey as holdKeyOf, WORKFLOW_APPLICATION_RUNTIME_RENEWED_PREFIX, WORKFLOW_AGENTX_ACTOR_ID, workflowApplicationRetryOffered, workflowSendBackOffered, type WorkflowSnapshot } from "@agentx/contracts";
+import { E2EApplicationSelectionRecordSchema, requalifyHoldKey as holdKeyOf, WORKFLOW_APPLICATION_RUNTIME_RENEWED_PREFIX, WORKFLOW_AGENTX_ACTOR_ID, workflowApplicationRetryOffered } from "@rovara-code/contracts";
+import { workflowSendBackOffered, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { disposeRealCandidates } from "../support/e2e-application-candidate.js";
 import { apiRowKey, startApplicationRound, type RoundBrokerHarness, type RoundOptions } from "../support/e2e-application-round-harness.js";
 import { MAYA } from "../support/developer-task-broker.js";

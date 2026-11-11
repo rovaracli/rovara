@@ -12,7 +12,7 @@ import {
   type InlineExtension,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import { AgentXError, agentXError, type ConnectorCatalog, type InvocationModelRoute, type ThreadConnector, type UsageStats } from "@agentx/contracts";
+import { AgentXError, agentXError, type ConnectorCatalog, type InvocationModelRoute, type ThreadConnector, type UsageStats } from "@rovara-code/contracts";
 import {
   RETIRED_PULL_REQUEST_TOOLS,
   assertOrchestrationOnly,

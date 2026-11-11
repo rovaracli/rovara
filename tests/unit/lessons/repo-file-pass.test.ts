@@ -2,7 +2,7 @@
 // the mutation checks (eligibility filter removed, adoption allowed, ignored-PR rule removed, hand-edit hold removed) are recorded in the lane report.
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
-import { LESSON_FILE_BRANCH_PATTERN } from "@agentx/contracts";
+import { LESSON_FILE_BRANCH_PATTERN } from "@rovara-code/contracts";
 import { setLearnedLessonsGate } from "../../../packages/broker/src/lessons/policy.js";
 import { parseLessonsFile } from "../../../packages/broker/src/lessons/repo-file-format.js";
 import { DAY, FILE, OTHER_PLACE, passSetup, personApproved, repoLesson } from "./repo-file-helpers.js";

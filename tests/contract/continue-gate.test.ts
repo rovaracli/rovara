@@ -5,7 +5,7 @@
 import { randomUUID } from "node:crypto";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it } from "vitest";
-import { WORKFLOW_BLOCK_REASONS } from "@agentx/contracts";
+import { WORKFLOW_BLOCK_REASONS } from "@agentx/cloud-contracts";
 import { developerTaskIdentity } from "../../packages/broker/src/developer/task-records.js";
 import { pausedTaskGate } from "../../packages/broker/src/spend/requests.js";
 import { MAYA } from "../support/developer-task-broker.js";

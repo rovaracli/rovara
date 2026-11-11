@@ -1,12 +1,5 @@
 // Service mocks (E8): how a request is keyed and found in a recorded fixture set. Shared by the server and the recorder so both address a request the same way.
-import {
-  SERVICE_MOCK_BODY_MAX_BYTES,
-  ServiceMockFixtureSetSchema,
-  serviceMockFixtureSetDigest,
-  serviceMockRequestHash,
-  type ServiceMockEntry,
-  type ServiceMockFixtureSet,
-} from "@agentx/contracts";
+import { SERVICE_MOCK_BODY_MAX_BYTES, ServiceMockFixtureSetSchema, serviceMockFixtureSetDigest, serviceMockRequestHash, type ServiceMockEntry, type ServiceMockFixtureSet } from "@rovara-code/contracts";
 
 type Kind = ServiceMockFixtureSet["service"]["kind"];
 

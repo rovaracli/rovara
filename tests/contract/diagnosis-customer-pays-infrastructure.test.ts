@@ -4,7 +4,7 @@
 import { App } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it, vi } from "vitest";
-import { BROKER_SETTINGS, BROKER_SETTINGS_VARIABLE, HEALTH_ALARM_SUFFIXES } from "@agentx/contracts";
+import { BROKER_SETTINGS, BROKER_SETTINGS_VARIABLE, HEALTH_ALARM_SUFFIXES } from "@agentx/cloud-contracts";
 import { ControlPlaneStack } from "../../infra/lib/control-plane.js";
 import { environmentNaming } from "../../infra/lib/naming.js";
 import { hydrateBrokerEnvironment, type MutableEnvironment } from "../../packages/broker/src/aws/broker-environment.js";

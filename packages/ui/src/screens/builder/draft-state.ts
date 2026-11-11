@@ -1,5 +1,5 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
-import { AGENT_STEP_KINDS, CODING_STEP_KINDS, type RecipeOverlaySchema, type StepSpecSchema } from "@agentx/contracts/web";
+import { AGENT_STEP_KINDS, CODING_STEP_KINDS, type RecipeOverlaySchema, type StepSpecSchema } from "@agentx/cloud-contracts/web";
 import { ApiError } from "../../api/errors.js";
 export type Overlay = ReturnType<typeof RecipeOverlaySchema.parse>;
 export type Step = ReturnType<typeof StepSpecSchema.parse>;

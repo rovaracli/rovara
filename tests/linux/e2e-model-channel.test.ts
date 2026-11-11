@@ -4,7 +4,7 @@ import { realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { e2eModelRouteRevision } from "../../packages/contracts/src/e2e-model-channel.js";
+import { e2eModelRouteRevision } from "@rovara-code/contracts";
 import { createInMemoryE2EDayBudget } from "../../packages/model-runtime/src/e2e-route.js";
 import { scriptedE2ERouteDefinition } from "../../packages/model-runtime/src/e2e-route-derive.js";
 import { runIsolatedE2EApplication } from "../../packages/verifier/src/application-runtime.js";

@@ -1,6 +1,6 @@
 import { useId, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import type { ReadAppNav } from "@agentx/contracts/web";
+import type { ReadAppNav } from "@agentx/cloud-contracts/web";
 import { useProject } from "../../api/projects.js";
 import { VisibleText } from "../../design/VisibleText.js";
 import { StartWorkBox } from "../project/StartWorkBox.js";

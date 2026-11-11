@@ -5,7 +5,7 @@
 // rows are not rewritten. This is the reader-first step: the writer for a repository on another code host is this module's `linkedChangeRequestItem`; the GitHub writer is unchanged
 // (the old row carries a candidate digest that later steps update, so writing two copies of it is a later step, when the old row can be retired).
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import type { PluginKind } from "@agentx/contracts";
+import type { PluginKind } from "@rovara-code/contracts";
 import { githubWorkflowPullRequestKey, type GithubWorkflowPullRequestRecord } from "../developer/task-records.js";
 import { codeHostRepositoryKey } from "../plugins/events/repository-key.js";
 

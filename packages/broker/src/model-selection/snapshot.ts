@@ -2,7 +2,8 @@ import {ProcessModelRefusal} from "./process-refusal.js";
 import {approvedProjectModel,stageChoiceOf} from "./stage-inputs.js";
 // Current server-owned process/source snapshot for G3. Read-only; no agent/list or provider fanout.
 import { GetCommand,QueryCommand } from "@aws-sdk/lib-dynamodb";
-import { ModelSelectionPolicyResponseSchema,type ModelSelectionPolicyResponse,STAGE_IDS,STAGE_EDIT_RULES,STAGE_EDIT_GROUPS,ROVARA_CODE_AGENT_ID,builtinRecipe,builtinDefaultPin,recipeDigest,StoredProjectDefinitionSchema,ModelIdentifierSchema,agentXError,orgScoped,projectPk,PROJECT_REVISION_SK_PREFIX,projectSelectionKey,type AgentId,type OrgId,type RecipeOverlay,type ResolvedRecipe,type ModelIdentifier } from "@agentx/contracts";
+import { ModelSelectionPolicyResponseSchema, type ModelSelectionPolicyResponse, STAGE_IDS, STAGE_EDIT_RULES, STAGE_EDIT_GROUPS, ROVARA_CODE_AGENT_ID, builtinRecipe, builtinDefaultPin, recipeDigest, ModelIdentifierSchema, agentXError, orgScoped, projectPk, PROJECT_REVISION_SK_PREFIX, projectSelectionKey, type AgentId, type OrgId, type RecipeOverlay, type ResolvedRecipe, type ModelIdentifier } from "@rovara-code/contracts";
+import { StoredProjectDefinitionSchema } from "@agentx/cloud-contracts";
 import { bedrockClaudeModelIds } from "@agentx/model-runtime/catalog";
 import { resolveAgent,type AgentStore,type AgentRecord } from "../agents/store.js";
 import { readGuardrailsWithRevision } from "../agents/guardrails.js";

@@ -1,9 +1,7 @@
 // The setup run (SH15): read its state and journal, start it, stop it, type a command, and "Use this setup". Readers project the existing routes; the broker owns who may do what (a project maintainer only; a
 // command needs a fresh browser sign-in) and decides everything, so this client only asks. The gateway puts its own `requestId` in every answer and the contracts are strict, so it is set aside first.
 import { useMemo } from "react";
-import {
-  ProjectOverviewProjectSchema, SetupAgentCommandReplySchema, SetupAgentCommandRequestSchema, SetupAgentRequestBodySchema, SetupAgentViewSchema, SetupConfirmReplySchema, SetupConfirmRequestSchema, SetupJournalReplySchema,
-} from "@agentx/contracts/web";
+import { ProjectOverviewProjectSchema, SetupAgentCommandReplySchema, SetupAgentCommandRequestSchema, SetupAgentRequestBodySchema, SetupAgentViewSchema, SetupConfirmReplySchema, SetupConfirmRequestSchema, SetupJournalReplySchema } from "@agentx/cloud-contracts/web";
 import { useAppHost, type AppHost } from "../host.js";
 import { createApiClient } from "./client.js";
 

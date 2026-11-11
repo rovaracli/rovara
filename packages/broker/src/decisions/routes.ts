@@ -7,10 +7,7 @@
 // endpoint through the injected `performer` (a plan decision, a merge press, a spend decision, ...), which checks the caller's live authority again and answers what really happened:
 // decided, needs the confirmation page (a fresh sign-in), or refused. Only a decided answer is recorded and reported as approved; a surface never says "Approved" for anything else.
 // Mounting is one call (routeDecisionCards).
-import {
-  DECISION_CARDS_MAX, DECISION_RUN_LIMIT_KINDS, DecisionApproveBodySchema, DecisionCardIdSchema, DecisionOpenedBodySchema, DecisionRejectBodySchema, DecisionRequestChangesBodySchema, agentXError, approveReasonProblem, planChoicesProblem, type DecisionPlanAnswer,
-  type DecisionAnswered, type DecisionCard, type DecisionCardsView, type DecisionEvidenceOpenedAnswer, type DecisionNeedsConfirmation, type DecisionRefusalReason, type DecisionRejectReason, type DecisionTab, type DecisionTabId,
-} from "@agentx/contracts";
+import { DECISION_CARDS_MAX, DECISION_RUN_LIMIT_KINDS, DecisionApproveBodySchema, DecisionCardIdSchema, DecisionOpenedBodySchema, DecisionRejectBodySchema, DecisionRequestChangesBodySchema, agentXError, approveReasonProblem, planChoicesProblem, type DecisionPlanAnswer, type DecisionAnswered, type DecisionCard, type DecisionCardsView, type DecisionEvidenceOpenedAnswer, type DecisionNeedsConfirmation, type DecisionRefusalReason, type DecisionRejectReason, type DecisionTab, type DecisionTabId } from "@rovara-code/contracts";
 import { StatusReply } from "../aws/status-reply.js";
 import { decisionMadeMeasure, type DecisionMeasure } from "./measures.js";
 import { projectDecisionCards, type DecisionItem, type Projection, type Subject } from "./project.js";
@@ -110,9 +107,9 @@ async function project<C extends DecisionCaller>(deps: DecisionRouteDependencies
 }
 
 /** UX2 slice 2 item 2: the caller's pending cards as Home counts them (id, kind, task): the one "needs you" count and Home's de-duplication read them. Only what THIS caller may decide now. */
-export async function pendingDecisionRefs<C extends DecisionCaller>(deps: DecisionRouteDependencies<C>, caller: C): Promise<Array<{ cardId: string; kind: string; taskId?: string }>> {
+export async function pendingDecisionRefs<C extends DecisionCaller>(deps: DecisionRouteDependencies<C>, caller: C): Promise<Array<{ cardId: string; kind: string; taskId?: string; project?: string }>> {
   const projection = await project(deps, caller);
-  return projection.cards.filter((card) => card.status === "pending").map((card) => ({ cardId: card.id, kind: card.kind, ...(card.taskId === undefined ? {} : { taskId: card.taskId }) }));
+  return projection.cards.filter((card) => card.status === "pending").map((card) => ({ cardId: card.id, kind: card.kind, ...(card.taskId === undefined ? {} : { taskId: card.taskId }), ...(card.project === "" ? {} : { project: card.project }) }));
 }
 
 interface Pending { card: DecisionCard; subject: Subject; tabs: DecisionTab[] | undefined; digest: string; projection: Projection }

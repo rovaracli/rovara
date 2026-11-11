@@ -1,7 +1,8 @@
 import { readFile, realpath } from "node:fs/promises";
 import { restoreFixStart } from "./fix-start.js";
 import { isAbsolute, relative, resolve, sep } from "node:path";
-import { WORKFLOW_LIVE_STEER_REAPPROVAL_MESSAGE, WORKFLOW_SETUP_CHANGED_FILES_MESSAGE, AGENTX_PREAMBLE_VERSION, PLAN_DOCUMENT_INFO_STRING, TEST_PROOF_ARTIFACT, UNDERSTAND_ARTIFACT_NAME, WorkerInvocationSchema, WORKFLOW_NO_CODE_CHANGE_MESSAGE, WORKFLOW_PLAN_MAX_BYTES, WorkItemProgressV1Schema, WorkflowDependencyResultSchema, agentXError, agentxPreambleSha256, createCandidateManifest, parseAgentClaim, groundingScenarioIds, parsePlanDocument, asksForPlanParts, planAnswerMissingParts, redactText, reportStatus, taskGraphDigest, taskGraphOrder, validateTaskGraph, type CheckReport, type SpecDraft, type SpecReviewResult, type SetupProposal, type SetupRunSummary, type PlanDocumentKind, type CandidateRepository, type WorkItemProgressV1, type WorkflowDependencyResult, type WorkflowFeedbackReviewReport, type WorkflowReviewReport, type WorkerInvocation, type E2EModelDayBudgetRequest, type E2EWorkflowAdmissionRef, AgentXError, BUDGET_EXHAUSTED_FAILURE_MESSAGE } from "@agentx/contracts";
+import { WORKFLOW_LIVE_STEER_REAPPROVAL_MESSAGE, WORKFLOW_SETUP_CHANGED_FILES_MESSAGE, AGENTX_PREAMBLE_VERSION, PLAN_DOCUMENT_INFO_STRING, TEST_PROOF_ARTIFACT, UNDERSTAND_ARTIFACT_NAME, WORKFLOW_NO_CODE_CHANGE_MESSAGE, WORKFLOW_PLAN_MAX_BYTES, WorkItemProgressV1Schema, WorkflowDependencyResultSchema, agentXError, agentxPreambleSha256, createCandidateManifest, parseAgentClaim, groundingScenarioIds, parsePlanDocument, asksForPlanParts, planAnswerMissingParts, redactText, reportStatus, taskGraphDigest, taskGraphOrder, validateTaskGraph, type CheckReport, type SpecDraft, type SpecReviewResult, type SetupProposal, type SetupRunSummary, type PlanDocumentKind, type CandidateRepository, type WorkItemProgressV1, type WorkflowDependencyResult, type WorkflowFeedbackReviewReport, type WorkflowReviewReport, type E2EModelDayBudgetRequest, type E2EWorkflowAdmissionRef, AgentXError, BUDGET_EXHAUSTED_FAILURE_MESSAGE } from "@rovara-code/contracts";
+import { WorkerInvocationSchema, type WorkerInvocation } from "@agentx/cloud-contracts";
 import { readSetupProposalAnswer, setupProposalInstructions, setupProposalRetryPrompt } from "./setup-draft.js";
 import { testEnvDraftResult } from "./test-env-detect.js";
 import { applyTestEnvironmentPlan } from "./verification/test-env-plan.js";
@@ -42,7 +43,7 @@ import { ToolLoopGuard } from "./tool-loop-guard.js";
 import { assistantOutcome, eventType, failedTurn, type AssistantOutcome } from "./session-events.js";
 import { pinnedSkills, withStepTimeout, type AgentSkillFile } from "./agent-step.js";
 import { loadedKnowledgePayload } from "./knowledge/manifest.js";
-import { LEARNED_LOAD_REPORT_FIELD, type NightlyResultCallbackBody, type SecondReviewContext, type SecondReviewResult } from "@agentx/contracts";
+import { LEARNED_LOAD_REPORT_FIELD, type NightlyResultCallbackBody, type SecondReviewContext, type SecondReviewResult } from "@rovara-code/contracts";
 import { prepareLearnedContext, withLearnedBlock } from "./learned-run.js";
 import { placeEvalFiles } from "./eval-files.js";
 import { runAgentStep, type AgentStepResult, type RunAgentStepInput } from "./agent-run/run-agent-step.js";
@@ -86,11 +87,12 @@ import { createContextTools, type ContextBridgeCall } from "./context-sources/br
 import { contextSourcesNote } from "./context-sources/frame.js";
 import { stubContextEvent } from "./context-sources/events.js";
 import { createSourceTextGuard, guardArtifactSink, guardEventSink, type SourceTextGuard } from "./context-sources/text-guard.js";
-import { isContextSourceStage, type ContextToolCatalog } from "@agentx/contracts";
+import { isContextSourceStage, type ContextToolCatalog } from "@rovara-code/contracts";
 import { SANDBOX_TARGET, executionFor } from "./execution-target.js";
 import { localBashOperations, taskSandboxFor, taskShellSelection, type TaskSandbox, type TaskShellSelection } from "./task-sandbox.js";
 import { startTaskTestServices, withTestServices, type TestServicesConfig } from "./test-services-run.js";
 import type { FixtureSetCallback } from "./fixture-delivery.js";
+import type { CompanyImageLoginCallback } from "./company-image-pull.js";
 
 export interface TaskInvocationResult {
   /** The broker-issued conversation ID, which stays the same for every turn of one conversation. */
@@ -206,6 +208,8 @@ export interface TaskInvocationDependencies {
   testServices?: TestServicesConfig;
   /** Test services (slice 3): the run's `fixture-set` callback (callback-client.ts), for a plan with a fake. */
   fixtureSet?: FixtureSetCallback;
+  /** Company-approved images (switch `pj`): the run's `company-image-login` callback, for a plan with a company image. */
+  companyImageLogin?: CompanyImageLoginCallback;
 }
 
 export async function runTaskInvocation(
@@ -358,7 +362,7 @@ async function runTask(
   }
   // Test services (slice 1): a plan with dependencies starts them now, for the whole task. Nothing at all happens for a plan without them. Torn down by the sandbox's dispose, on every exit path.
   const testServices = await startTaskTestServices({ plan: step?.kind === "agent" ? undefined : invocation.payload.testEnvironment, mode, sandbox, devcontainer: devcontainer !== undefined, nightly: invocation.payload.nightlyRun !== undefined, operationId: invocation.operationId, rootPath: canonicalRoot,
-    repositoryPaths: manifest.repositories.map((repository) => resolve(canonicalRoot, repository.path)), config: dependencies.testServices, artifactSink: dependencies.artifactSink, cancellation: dependencies.cancellationController, fixtureSet: dependencies.fixtureSet })
+    repositoryPaths: manifest.repositories.map((repository) => resolve(canonicalRoot, repository.path)), config: dependencies.testServices, artifactSink: dependencies.artifactSink, cancellation: dependencies.cancellationController, fixtureSet: dependencies.fixtureSet, companyImageLogin: dependencies.companyImageLogin })
     .catch((error: unknown) => reportFeedbackReviewStartFailure(error));
   // R56: the agent's file tools run in the same container as its shell, never in the worker (sandbox-file-tools.ts), for every
   // Pi session of this task: the main ones, the feedback review and the critic and security reviews.

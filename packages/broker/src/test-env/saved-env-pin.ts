@@ -1,6 +1,6 @@
 // Saved environments (SH25, review M2): which preparations name the task's approved-environment pin, and so may be told a saved image. Only a developer task that USES the project's approved environment has a pin
 // (its start, and the dispatch of a start that was held); a setup draft, a thread workspace, a project registration and a task whose environment was not applied have none, and are sent nothing.
-import { testEnvDigest, type TestEnvironment } from "@agentx/contracts";
+import { testEnvDigest, type TestEnvironment } from "@rovara-code/contracts";
 import type { TestEnvPin } from "./usable.js";
 
 export interface SavedEnvPin { revision: number; digest: string }

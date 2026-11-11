@@ -1,6 +1,6 @@
 // Decisions D1: the pure card projector and the deterministic risk tiers. Every touchpoint row of the design becomes a card; tiers only go up; friction follows the tier; links are same-origin.
 import { describe, expect, it } from "vitest";
-import { DecisionCardSchema, DecisionTabsSchema, DECISION_KIND_FLOOR_RISK, DECISION_KINDS, type DecisionKind, type DecisionRisk } from "@agentx/contracts";
+import { DecisionCardSchema, DecisionTabsSchema, DECISION_KIND_FLOOR_RISK, DECISION_KINDS, type DecisionKind, type DecisionRisk } from "@rovara-code/contracts";
 import { projectDecisionCards, cardOfItem, decisionCardPath, type DecisionItem, type ItemBase } from "../../packages/broker/src/decisions/project.js";
 import { isInfraPath, riskTierOf } from "../../packages/broker/src/decisions/risk-tier.js";
 import { isSafeRelativePath } from "../../packages/broker/src/decisions/text.js";
@@ -349,7 +349,7 @@ describe("a spec on hold (wire lane D, MD-1)", () => {
   it("is made from the spec's state only while something is held for the owner", async () => {
     const { specChoiceItemOf } = await import("../../packages/broker/src/spec/decision-item.js");
     const { newSpecState } = await import("../../packages/broker/src/spec/state.js");
-    const { SpecTargetSchema } = await import("@agentx/contracts");
+    const { SpecTargetSchema } = await import("@rovara-code/contracts");
     const taskId = "11111111-1111-4111-8111-111111111111";
     const now = "2026-10-31T10:00:00.000Z";
     const base = newSpecState({ taskId, planDigest: "a".repeat(64), kind: "feature", target: SpecTargetSchema.parse({ format: "kiro" }), knowledgeCommit: "b".repeat(40), now });

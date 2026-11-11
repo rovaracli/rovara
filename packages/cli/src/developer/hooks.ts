@@ -3,7 +3,7 @@
 // Rovara makes is printed once, by the call that made it.
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { agentXError } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
 import { appRequest, clean, list, readJsonFile, result, seg, str, type AppResult } from "./agents.js";
 import type { DeveloperSessionDeps } from "./session.js";
 

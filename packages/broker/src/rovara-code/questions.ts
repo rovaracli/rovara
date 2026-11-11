@@ -7,11 +7,9 @@
 import { createHash } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import {
-  INTENT_NOT_WAITING_MESSAGE, INTENT_QUESTIONS_MAX, IntentAnswerRefusal, IntentAnswerSchema, UNDERSTAND_ROUNDS_MAX, agentXError, answerIntentQuestions, atLeast, hideEmailAddresses,
-  memberGrantsPk, MEMBER_GRANT_SK_PREFIX, sharedSessionsKey, SessionIdSchema, SessionLevelSchema,
-  type AgentPrincipal, type AgentSessionRecord, type SessionView, type WorkflowSnapshot,
-} from "@agentx/contracts";
+import { INTENT_NOT_WAITING_MESSAGE, INTENT_QUESTIONS_MAX, IntentAnswerRefusal, IntentAnswerSchema, UNDERSTAND_ROUNDS_MAX, agentXError, atLeast, hideEmailAddresses, memberGrantsPk, MEMBER_GRANT_SK_PREFIX, sharedSessionsKey, SessionIdSchema, SessionLevelSchema, type AgentPrincipal, type AgentSessionRecord } from "@rovara-code/contracts";
+import { type SessionView } from "@agentx/cloud-contracts";
+import { answerIntentQuestions, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { failedIndexes, type TransactItem } from "../agents/table-writes.js";
 import { requireSessionLevel, type SessionAccess } from "../agent-sessions/access.js";
 import { onlyTheEventCancelled } from "../agent-sessions/events.js";
@@ -181,7 +179,7 @@ const questionSource: HomeCardSource = {
       if (access === undefined || !atLeast(access.level, "use")) continue;
       const words = `Rovara has ${asked.length === 1 ? "1 question" : `${String(asked.length)} questions`} about ${quoted(session.title)}`.replace(/[<>]/gu, " ");
       cards.push({
-        cardId: `question:${session.sessionId}`, kind: "question", title: access.owner ? session.title : hideEmailAddresses(session.title), reason: fit(words, ""), sessionId: session.sessionId, at: session.updatedAt,
+        ...(session.project === undefined ? {} : { project: session.project }), cardId: `question:${session.sessionId}`, kind: "question", title: access.owner ? session.title : hideEmailAddresses(session.title), reason: fit(words, ""), sessionId: session.sessionId, at: session.updatedAt,
         buttons: [openSession(deps, session.sessionId, "Answer")],
       });
     }

@@ -16,10 +16,9 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getCurrentSystemPrompt, getCurrentTools, fauxAssistantMessage, type TranscriptContext } from "@earendil-works/pi-ai";
 import { expect, vi } from "vitest";
-import {
-  WORKER_INVOCATION_FEATURES, WorkerInvocationSchema, WorkflowFeedbackBundleSchema, WorkflowSnapshotSchema, collectWorkflowFeedbackBundles,
-  createCandidateManifest, createWorkflowSnapshot, type WorkerInvocation,
-} from "@agentx/contracts";
+import { WorkflowFeedbackBundleSchema, createCandidateManifest } from "@rovara-code/contracts";
+import { WORKER_INVOCATION_FEATURES } from "@agentx/cloud-contracts";
+import { WorkerInvocationSchema, WorkflowSnapshotSchema, collectWorkflowFeedbackBundles, createWorkflowSnapshot, type WorkerInvocation } from "@agentx/cloud-contracts";
 import { indexActivity } from "../../packages/broker/src/aws/activity-index.js";
 import type { Notice } from "../../packages/broker/src/developer/notifications.js";
 import { createNotifierHandler } from "../../packages/broker/src/aws/developer-task-notifier.js";

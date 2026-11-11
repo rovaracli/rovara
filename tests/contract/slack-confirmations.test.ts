@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { CONFIRMATION_TTL_MS, PendingConfirmationSchema, answeredConfirmationBlocks, confirmationBlocks, confirmationClickEventId, parseConfirmationClickEventId, parseConfirmationReply, type PendingConfirmation, type SlackRequestMessage } from "../../packages/contracts/src/index.js";
+import { CONFIRMATION_TTL_MS, PendingConfirmationSchema, answeredConfirmationBlocks, confirmationBlocks, confirmationClickEventId, parseConfirmationClickEventId, parseConfirmationReply, type PendingConfirmation, type SlackRequestMessage } from "@rovara-code/contracts";
 import { createGateSession } from "../../packages/orchestrator/src/action-gate.js";
 import { createDynamoConfirmationStore } from "../../packages/slack-service/src/confirmation-store.js";
 import {

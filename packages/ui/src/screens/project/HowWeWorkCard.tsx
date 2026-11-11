@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { HOW_WE_WORK_UNUSED_STAGE_NOTE } from "@agentx/contracts/web";
+import { HOW_WE_WORK_UNUSED_STAGE_NOTE } from "@agentx/cloud-contracts/web";
 import { Card } from "../../design/Card.js";
 import { VisibleText } from "../../design/VisibleText.js";
 import { cardTitle } from "../../api/stage-cards.js";

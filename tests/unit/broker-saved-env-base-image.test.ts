@@ -1,7 +1,7 @@
 // Saved project images (SV wiring): the base image digest of the key is the digest of the WORKER image (the sandbox image is the worker image), read from the worker settings with the reader the session steps launch
 // workers with. Only a reference pinned by digest has one; a tag, a failed read or a missing setting gives none, and so no key (fail closed).
 import { describe, expect, it, vi } from "vitest";
-import { MODEL_PROXY_URL_PARAMETER, BOOT_STAGE2_SHA256_PARAMETER, WORKER_SETTING_PARAMETERS } from "@agentx/contracts";
+import { MODEL_PROXY_URL_PARAMETER, BOOT_STAGE2_SHA256_PARAMETER, WORKER_SETTING_PARAMETERS } from "@rovara-code/contracts";
 import { baseImageDigestOfWorkerImage, savedEnvBaseImageDigestReader, SAVED_ENV_BASE_IMAGE_CACHE_MS } from "../../packages/broker/src/aws/broker/saved-env-real.js";
 
 const PREFIX = "/agentx/staging/";

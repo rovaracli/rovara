@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { screen, fireEvent, waitFor, within, act } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { QueryClientProvider, focusManager } from "@tanstack/react-query";
-import { AppNavSchema, AppMeResponseSchema, ModelSelectionPolicyAppliedSchema, ModelSelectionPolicyPendingSchema, ModelSelectionPolicyPutSchema, ModelSelectionPolicyResponseSchema, STAGE_MODEL_THINKING_LEVELS, StepSettingsSchema, StepThinkingLevelSchema } from "@agentx/contracts/web";
+import { AppNavSchema, AppMeResponseSchema, ModelSelectionPolicyAppliedSchema, ModelSelectionPolicyPendingSchema, ModelSelectionPolicyPutSchema, ModelSelectionPolicyResponseSchema, STAGE_MODEL_THINKING_LEVELS, StepSettingsSchema, StepThinkingLevelSchema } from "@agentx/cloud-contracts/web";
 import { appRoutes } from "../../packages/ui/src/routes.js";
 import { AppHostProvider, type ApiRequest, type ApiResponse } from "../../packages/ui/src/host.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";

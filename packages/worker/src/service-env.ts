@@ -18,7 +18,7 @@
 //     so nothing would count a call to it). Without an emulator (slice 1) there is no AWS block at all and the sealed name server counts the names that are looked up.
 import { lstat, mkdir, open, rm, chmod } from "node:fs/promises";
 import { join, isAbsolute } from "node:path";
-import { CONNECT_TEMPLATE_PLACEHOLDERS, EnvNameSchema, connectTemplateProblem, e2eSecretSpellings, redactText, reservedDependencyEnvName } from "@agentx/contracts";
+import { CONNECT_TEMPLATE_PLACEHOLDERS, EnvNameSchema, connectTemplateProblem, e2eSecretSpellings, redactText, reservedDependencyEnvName } from "@rovara-code/contracts";
 import { HELPER_CREDENTIAL_PATTERNS, type HelperFiles } from "./service-helpers.js";
 
 export const AWS_FAKE_ACCESS_KEY_ID = "ROVARATESTKEY";

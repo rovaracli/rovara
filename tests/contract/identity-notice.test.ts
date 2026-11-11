@@ -2,7 +2,7 @@
 // route is linked to it; a person can remove that route (agentx signin unlink), which ends its sessions and nothing else.
 import type { SendEmailCommand } from "@aws-sdk/client-sesv2";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { UnlinkIdentityRequest } from "@agentx/contracts";
+import type { UnlinkIdentityRequest } from "@rovara-code/contracts";
 import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
 import { IDENTITY_NOTICE_SUBJECT, NOTICE_SEND_TIMEOUT_MS, sendGithubConnectedNotice, sendIdentityLinkedNotice } from "../../packages/broker/src/developer/identity-notice.js";
 import { UNLINK_FIRST_IDENTITY, UNLINK_ONLY_IDENTITY, DeveloperSignInStore, type DeveloperMarks, developerIdentityKey, endedByUnlink, signInIdentityKey } from "../../packages/broker/src/developer/store.js";

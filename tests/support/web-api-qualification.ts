@@ -3,8 +3,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { mkdtemp, chmod, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative, sep } from "node:path";
-import { WEB_API_CHALLENGE_LIFETIME_MS, WEB_API_QUALIFICATION_APP_MANIFEST_PREFIX, WEB_API_REQUIRED_PROBES, WebApiProbeEvidenceSchema, canonicalJson, webApiProbeAssetManifestPath,
-  type RuntimeInstallChallenge, type WebApiProbeEvidence, type WebApiProbeObservation, type WebApiProbeRun } from "../../packages/contracts/src/index.js";
+import { WEB_API_CHALLENGE_LIFETIME_MS, WEB_API_QUALIFICATION_APP_MANIFEST_PREFIX, WEB_API_REQUIRED_PROBES, WebApiProbeEvidenceSchema, canonicalJson, webApiProbeAssetManifestPath, type RuntimeInstallChallenge, type WebApiProbeEvidence, type WebApiProbeObservation, type WebApiProbeRun } from "@rovara-code/contracts";
 import { deriveWebApiProbeObservation } from "../../packages/verifier/src/web-api-probe-evidence.js";
 import type { WebApiQualificationEnvironment } from "../../packages/verifier/src/install-qualification.js";
 

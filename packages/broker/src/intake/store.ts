@@ -8,7 +8,7 @@
 // `starting` carries a lease: a start that died half way is taken over once its lease ran out, and the start itself is idempotent (its request id is fixed per ticket and member).
 // The title is a person's words; it is kept only inert and cut, and read back as text.
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { INDEX_EXPIRY_ATTRIBUTE, INTAKE_MAX_WAITING_PER_PROJECT, intakeChangeKey, intakeEventKey, intakeItemKey, type IntakeStanding, type IntakeTrackerChannel, type IntakeWaitReason, type OrgId } from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, INTAKE_MAX_WAITING_PER_PROJECT, intakeChangeKey, intakeEventKey, intakeItemKey, type IntakeStanding, type IntakeTrackerChannel, type IntakeWaitReason, type OrgId } from "@rovara-code/contracts";
 
 export interface IntakeTable {
   documentClient: { send(command: unknown): Promise<unknown> };

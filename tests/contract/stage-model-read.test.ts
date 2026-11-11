@@ -1,8 +1,8 @@
-import { AgentXError, modelNotEnabledSentence } from "@agentx/contracts";
+import { AgentXError, modelNotEnabledSentence } from "@rovara-code/contracts";
 import { expect, it } from "vitest";
 import { validateStageChoices, getStageModels, validateProjectModelSelection, requireSafeProjectModelSelection } from "../../packages/broker/src/model-selection/read.js";
 import type { StageModelsReadDependencies, StageModelSnapshot } from "../../packages/broker/src/model-selection/read.js";
-import { STAGE_IDS } from "../../packages/contracts/src/stage-models.js";
+import { STAGE_IDS } from "@rovara-code/contracts";
 const model = { provider: "anthropic", modelId: "claude-sonnet-4" };
 const other = { provider: "anthropic", modelId: "claude-opus-4" };
 const caller = { orgId: "org_a", developerId: "dev_a" };

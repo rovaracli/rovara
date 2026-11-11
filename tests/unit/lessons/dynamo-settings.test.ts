@@ -1,5 +1,5 @@
 // Wiring lane B, LR-W3: the stored tier-0 setting (read only in production since lessons connect fix 1), the sole-owner switch and its proposals, and the settings reader over the TeamRecord table.
-import { learningModeKey, learningModeLockKey, teamRecordPk } from "@agentx/contracts";
+import { learningModeKey, learningModeLockKey, teamRecordPk } from "@rovara-code/contracts";
 import { describe, expect, it } from "vitest";
 import { dynamoLearningSettings, DynamoPresetStore, DynamoSoleOwnerSwitch, DynamoTier0Settings } from "../../../packages/broker/src/lessons/dynamo-settings.js";
 import { approversRequired, resolveLearning } from "../../../packages/broker/src/lessons/policy.js";

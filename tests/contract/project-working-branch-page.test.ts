@@ -1,9 +1,11 @@
 import { createHash, generateKeyPairSync } from "node:crypto";
 import { expect, it, vi } from "vitest";
-import { AgentXError, canonicalJson, githubInstallationKey, agentXError, StoredProjectDefinitionSchema, developerOrgKey, orgMemberKey, orgMetaKey, orgProjectCatalogKey, projectRevisionKey, projectMetaKey, projectMemberKey } from "@agentx/contracts";
+import { AgentXError, canonicalJson, agentXError, orgProjectCatalogKey, projectRevisionKey, projectMetaKey, projectMemberKey } from "@rovara-code/contracts";
+import { StoredProjectDefinitionSchema } from "@agentx/cloud-contracts";
+import { githubInstallationKey, developerOrgKey, orgMemberKey, orgMetaKey } from "@agentx/cloud-contracts";
 import type { DeveloperCaller } from "../../packages/broker/src/aws/developer-routes.js";
-import * as contracts from "@agentx/contracts";
-import * as browser from "../../packages/contracts/src/web.js";
+import { allContracts as contracts } from "../support/contracts-barrels.js";
+import * as browser from "@agentx/cloud-contracts/web";
 import { GitHubAppCredentialProvider } from "../../packages/broker/src/github-app.js";
 import { installationBindingCheck } from "../../packages/broker/src/org/github-connection.js";
 import { createWorkingBranchProvider, createWorkingBranchLister } from "../../packages/broker/src/org/project-working-branch-provider.js";

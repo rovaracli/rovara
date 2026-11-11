@@ -2,17 +2,15 @@
 // (Rovara's built-in process, the company's guardrails or the project) and whether it is locked. Anyone who can see the project reads it; nothing is written.
 import { fixtureActor } from "../support/money-authority.js";
 import { describe, expect, it } from "vitest";
-import {
-  DEFAULT_AGENT_GUARDRAILS, E2E_DEFAULT_LIMITS, HOW_WE_WORK_REVIEWER_NOTE, HowWeWorkViewReaderSchema, HowWeWorkViewSchema, ROVARA_CODE_AGENT_ID, agentGuardrailsKey, agentXError, projectRevisionKey,
-  type AgentId, type HowWeWorkView, type OrgRole, type RecipeOverlay,
-} from "../../packages/contracts/src/index.js";
+import { DEFAULT_AGENT_GUARDRAILS, E2E_DEFAULT_LIMITS, HOW_WE_WORK_REVIEWER_NOTE, HowWeWorkViewReaderSchema, HowWeWorkViewSchema, ROVARA_CODE_AGENT_ID, agentGuardrailsKey, agentXError, projectRevisionKey, type AgentId, type HowWeWorkView, type RecipeOverlay } from "@rovara-code/contracts";
+import { type OrgRole } from "@agentx/cloud-contracts";
 import { getProjectHowWeWork, HOW_WE_WORK_PATH, type HowWeWorkDependencies } from "../../packages/broker/src/playbook/routes.js";
 import { postProjectProcess } from "../../packages/broker/src/playbook/process-layer.js";
 import { writeProjectPlaybook } from "../../packages/broker/src/playbook/project-playbook-store.js";
 import { BO, MAX, MIA, ORG_A, ORG_B, ZED, OLA } from "../support/agent-session-world.js";
 import { mergeWorld, type MergeWorld } from "../support/rovara-code-merge-world.js";
 import { MAYA, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
-import { agentKey, projectMemberKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { agentKey, projectMemberKey } from "@rovara-code/contracts";
 import { TEST_ORG } from "../support/orgs.js";
 import { randomUUID } from "node:crypto";
 import { UpdateCommand } from "@aws-sdk/lib-dynamodb";

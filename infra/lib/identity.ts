@@ -1,7 +1,7 @@
 import { Aws, CfnCondition, CfnOutput, CfnParameter, Duration, Fn, RemovalPolicy, Stack, type StackProps } from "aws-cdk-lib";
 import * as cognito from "aws-cdk-lib/aws-cognito";
 import type { Construct } from "constructs";
-import { assertCognitoDomainSafe } from "@agentx/contracts";
+import { assertCognitoDomainSafe } from "@rovara-code/contracts";
 import type { AgentXNaming } from "./naming.js";
 
 export const ADMIN_GROUP = "agentx-admin";
@@ -23,7 +23,7 @@ export class IdentityStack extends Stack {
     super(scope, id, props);
     const env = props.naming.env;
     if (env === undefined) throw new Error("the identity stack exists only for named environments");
-    // Fails at synth, not deploy. The same check runs again in renderTemplate (packages/contracts),
+    // Fails at synth, not deploy. The same check runs again in renderTemplate (packages/cloud-contracts),
     // since published templates are synthesized once for the placeholder and never see the real
     // environment name here.
     assertCognitoDomainSafe(env);

@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ProjectOverviewProjectSchema, ProjectOverviewReaderSchema } from "@agentx/contracts/web";
+import { ProjectOverviewProjectSchema, ProjectOverviewReaderSchema } from "@agentx/cloud-contracts/web";
 import { useAppHost } from "../host.js";
 import { createApiClient } from "./client.js";
 export function useProject(name: string | undefined) {

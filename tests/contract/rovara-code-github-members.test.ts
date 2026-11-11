@@ -1,7 +1,7 @@
 // Rovara Code (Plan 6 Task 14): which member of an org a GitHub account is. One account to one member, both ways, in one transaction, per org; written when a member signs
 // in with GitHub, removed when they unlink it, and filled in for earlier sign-ins by the first tracking pass of the org.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { githubMemberKey, memberGithubKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { githubMemberKey, memberGithubKey } from "@rovara-code/contracts";
 import { backfillGithubMembers, githubUserOfMember, linkGithubMember, memberForGithubUser, unlinkGithubMember } from "../../packages/broker/src/rovara-code/github-members.js";
 import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
 import { DeveloperSignInStore } from "../../packages/broker/src/developer/store.js";

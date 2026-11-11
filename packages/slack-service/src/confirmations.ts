@@ -1,11 +1,4 @@
-import {
-  CONFIRMATION_TTL_MS,
-  parseConfirmationClickEventId,
-  parseConfirmationReply,
-  type ConfirmationReply,
-  type PendingConfirmation,
-  type SlackRequestMessage,
-} from "@agentx/contracts";
+import { CONFIRMATION_TTL_MS, parseConfirmationClickEventId, parseConfirmationReply, type ConfirmationReply, type PendingConfirmation, type SlackRequestMessage } from "@rovara-code/contracts";
 import { createGateSession, type GateApproval, type GateSession } from "@agentx/orchestrator/action-gate";
 import { deterministicUuid } from "./ids.js";
 import type { ServiceLog } from "./processor.js";

@@ -2,28 +2,8 @@ import { personNameForText } from "../../developer/requester-text.js";
 import { nameResolverOf, replacementNames, shownNameOf } from "../../developer/name-resolver.js";
 import { createHash } from "node:crypto";
 import { QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  AgentXError,
-  SlackMessageTimestampSchema,
-  SlackThreadSchema,
-  SlackUserIdSchema,
-  agentXError,
-  hideEmailAddresses,
-  redactText,
-  type WorkflowSnapshot,
-  type PlanDocument,
-  WORKFLOW_THREAD_NOTE_MAX_CHARS,
-  WORKFLOW_THREAD_NOTES_MAX,
-  AppNoteSchema,
-  WorkflowThreadNoteSchema,
-  SlackNoteSchema,
-  type AppNote,
-  type SlackNote,
-  type SlackThread,
-  type WorkflowThreadNote,
-  WORKFLOW_REGRESSION_INSTRUCTION,
-  type WorkflowSendBackProblem,
-} from "@agentx/contracts";
+import { AgentXError, SlackMessageTimestampSchema, SlackThreadSchema, SlackUserIdSchema, agentXError, hideEmailAddresses, redactText, type PlanDocument, WORKFLOW_THREAD_NOTE_MAX_CHARS, WORKFLOW_THREAD_NOTES_MAX, AppNoteSchema, WorkflowThreadNoteSchema, SlackNoteSchema, type AppNote, type SlackNote, type SlackThread, type WorkflowThreadNote, WORKFLOW_REGRESSION_INSTRUCTION, type WorkflowSendBackProblem } from "@rovara-code/contracts";
+import { type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import type { TransactItem } from "../../agents/table-writes.js";
 import {
   taskKey,
@@ -38,7 +18,8 @@ import type { TransactItems } from "../developer-task-actions.js";
 import { taskAccessFence } from "../../developer/task-people.js";
 import { inertReplyText } from "../../developer/prompt-text.js";
 import { onlyTheEventCancelled, sessionRefOfTask, slackReplyEventItem } from "../../agent-sessions/events.js";
-import { answerIntentQuestions, cleanSessionName, IntentAnswerRefusal } from "@agentx/contracts";
+import { answerIntentQuestions } from "@agentx/cloud-contracts";
+import { cleanSessionName, IntentAnswerRefusal } from "@rovara-code/contracts";
 import { answeredEventItem, answersFromReply, intentAnswerItems, openQuestions } from "../../rovara-code/question-answers.js";
 import type { DeveloperTaskRouteDependencies } from "./types.js";
 import { PLANNER_WHY_AUTHOR, WHY_NOTES_MAX, WHY_NOTE_MAX_CHARS, creatorGuard, cutText, get, iso, ownerLabel, putNew } from "./common.js";

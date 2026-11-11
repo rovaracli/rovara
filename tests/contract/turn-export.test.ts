@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { EMPTY_TURN_OBSERVATION, isSlackTurnRecord, type TurnRecord } from "../../packages/contracts/src/turns.js";
-import { aiToolTurnRecordKeys, type AiToolTurnRecord } from "../../packages/contracts/src/turns.js";
+import { EMPTY_TURN_OBSERVATION, isSlackTurnRecord, type TurnRecord } from "@rovara-code/contracts";
+import { aiToolTurnRecordKeys, type AiToolTurnRecord } from "@rovara-code/contracts";
 import { TURN_EXPORT_PAGE_BYTES, TurnRecordExport, dynamoTurnRecordSource, workspaceProjectReader, type TurnRecordSource, type TurnRecordStartKey } from "../../packages/broker/src/aws/turns.js";
 import { adminCall, createAdminBroker } from "../support/admin-broker.js";
 

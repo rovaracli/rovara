@@ -10,18 +10,18 @@ import { taskPageStage, taskPageStep, workflowEndOutcome, workflowTaskFinished }
 import { workflowMessage } from "../../packages/broker/src/developer/workflow-messages.js";
 import { CHANGE_ANYWAY_RULE, understandPrompt } from "../../packages/broker/src/rovara-code/understand.js";
 import { answeredMilestoneItems } from "../../packages/broker/src/rovara-code/answered.js";
-import { CodeIntentRequestSchema } from "../../packages/contracts/src/rovara-code-intent.js";
+import { CodeIntentRequestSchema } from "@rovara-code/contracts";
 import { FOLLOW_UP_UNAVAILABLE_MESSAGE, NOT_ANSWERED_MESSAGE, SESSION_ON_MAC_FOLLOW_UP_MESSAGE } from "../../packages/broker/src/rovara-code/change-anyway.js";
 import { registerCodeMilestoneHandler } from "../../packages/broker/src/rovara-code/milestones.js";
-import { agentSessionKey, builtinSettingsKey, projectMemberKey } from "../../packages/contracts/src/org-scoped-keys.js";
-import {
-  ANSWERED_MESSAGE_HEADER, ANSWERED_MILESTONE_TEXT, CHANGE_ANYWAY_NOTE, CLOSED_AS_ANSWERED_REASON, NoChangeNeededSchema, answerSourceLine, answeredMessage,
-  type CodeMilestone, type IntentAssessment,
-} from "../../packages/contracts/src/rovara-code.js";
-import { DeveloperTaskResponseSchema, NO_CHANGE_VALUE_HIDDEN, SessionResponseReaderSchema, UNDERSTAND_ARTIFACT_NAME } from "../../packages/contracts/src/index.js";
-import { WORKFLOW_BLOCK_REASONS } from "../../packages/contracts/src/task-workflow.js";
-import { WORKFLOW_NO_CODE_CHANGE_MESSAGE, WorkflowDecisionRequestSchema, WorkflowSnapshotSchema, answerWorkflowIntent, createWorkflowSnapshot, decideWorkflow, recordIntentAssessment, startWorkflowUnderstand, workflowAnswer } from "../../packages/contracts/src/task-workflow-node.js";
-import { canonicalPlanJson, parsePlanDocument, planDocumentMarkdown, readCanonicalPlan } from "../../packages/contracts/src/workflow-plan-document.js";
+import { agentSessionKey, builtinSettingsKey, projectMemberKey } from "@rovara-code/contracts";
+import { ANSWERED_MESSAGE_HEADER, ANSWERED_MILESTONE_TEXT, CHANGE_ANYWAY_NOTE, CLOSED_AS_ANSWERED_REASON, NoChangeNeededSchema, answerSourceLine, answeredMessage, type CodeMilestone, type IntentAssessment } from "@rovara-code/contracts";
+import { DeveloperTaskResponseSchema } from "@agentx/cloud-contracts";
+import { NO_CHANGE_VALUE_HIDDEN, UNDERSTAND_ARTIFACT_NAME } from "@rovara-code/contracts";
+import { SessionResponseReaderSchema } from "@agentx/cloud-contracts";
+import { WORKFLOW_BLOCK_REASONS } from "../../packages/cloud-contracts/src/task-workflow.js";
+import { WORKFLOW_NO_CODE_CHANGE_MESSAGE, WorkflowDecisionRequestSchema } from "@rovara-code/contracts";
+import { WorkflowSnapshotSchema, answerWorkflowIntent, createWorkflowSnapshot, decideWorkflow, recordIntentAssessment, startWorkflowUnderstand, workflowAnswer } from "../../packages/cloud-contracts/src/task-workflow-node.js";
+import { canonicalPlanJson, parsePlanDocument, planDocumentMarkdown, readCanonicalPlan } from "@rovara-code/contracts";
 import { MAYA, OMAR, createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import { fakeModelAccess } from "../support/fake-model-access.js";
 import { planAnswer, planDocument } from "../support/plan-documents.js";

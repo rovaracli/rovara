@@ -9,7 +9,8 @@
 // rested on; an unreadable setting counts as "always two people". Answers are fixed words, booleans and ids.
 import { PutCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import { agentXError, type AuditEventInput, type OrgId } from "@agentx/contracts";
+import { agentXError, type OrgId } from "@rovara-code/contracts";
+import { type AuditEventInput } from "@agentx/cloud-contracts";
 import { logDeveloperEvent } from "../../developer/log.js";
 import { flushAuditEvents } from "../../audit/flush.js";
 import { auditPending } from "../../audit/outbox.js";

@@ -2,7 +2,7 @@
 // The queue holds ids and fixed words for removals. A new version of an item (an edit) may carry text, so it is queued only where the text may be kept (runtime.ts `keepsText`): never a Slack
 // message in the Public edition. The queue is encrypted, keeps a message at most 4 days and has a dead-letter queue; the message size is capped.
 import { DeleteMessageCommand, ReceiveMessageCommand, SendMessageCommand } from "@aws-sdk/client-sqs";
-import { teamRecordOpsDeadLetterName, teamRecordOpsQueueName } from "@agentx/contracts";
+import { teamRecordOpsDeadLetterName, teamRecordOpsQueueName } from "@agentx/cloud-contracts";
 import type { RecordOp } from "./sources/queue.js";
 
 /** A Slack event that only removes or hides (a deleted message or channel, an uninstall): the ingress strips it to ids and sends it here without any Slack lookup. */

@@ -1,5 +1,5 @@
 import { QueryCommand } from "@aws-sdk/lib-dynamodb";
-import { inspectE2ERepository, readE2EApplicationProjectContract, type E2EApplicationAccountDefinition, type E2EApplicationProjectContract, type E2ERuntimeAccountRef, type E2ESourceSnapshot, type OrgId } from "@agentx/contracts";
+import { inspectE2ERepository, readE2EApplicationProjectContract, type E2EApplicationAccountDefinition, type E2EApplicationProjectContract, type E2ERuntimeAccountRef, type E2ESourceSnapshot, type OrgId } from "@rovara-code/contracts";
 import {
   E2EAccountRegistryError, accountDefinitionRow, accountLatestRow, e2eAccountDefinitionKey, e2eAccountLatestKey, e2eAccountRevisionPrefix, parseAccountDefinitionRow,
   parseAccountEntry, planSyntheticAccountWrites, type E2EAccountRegistryEntry, type E2EAccountRegistryWrite,

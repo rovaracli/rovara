@@ -1,4 +1,5 @@
-import { agentXError, type WorkerInvocation } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
+import { type WorkerInvocation } from "@agentx/cloud-contracts";
 import { CANCELLED_BEFORE_ARRIVAL, type JournalRecord, type JournalStatus, type OperationJournal } from "./journal.js";
 import type { WorkerCancellationController } from "./cancel.js";
 

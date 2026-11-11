@@ -1,7 +1,9 @@
 // The record sink: the object the source taps call (the ingest lane's `RecordSinkPort`, `SourceConfigPort` and `CaptureModePort`, implemented structurally so no
 // lane imports another's files). `put` is the pipeline in ingest.ts. `tombstone` hides at once, then leaves a queue item the delete worker finishes (D1).
 // `changePrincipals` and `replaceScopeAudience` keep a private scope's permission snapshot current. A workspace id that is not an org id is refused.
-import { OrgIdSchema, recordDeleteQueueKey, recordScopeHash, type OrgId, type RecordSystem, type Audience } from "@agentx/contracts";
+import { OrgIdSchema, type OrgId } from "@rovara-code/contracts";
+import { type Audience } from "@agentx/cloud-contracts";
+import { recordDeleteQueueKey, recordScopeHash, type RecordSystem } from "@agentx/cloud-contracts";
 import { accessIsSeeded, erasedAccessIds, applyAudienceEvent, applyMemberEvents, observeRowAccess } from "./access.js";
 import { tableLakeDeleteQueue, type LakeDeleteQueue } from "./lake-queue.js";
 import { ingestRecord, type IngestDependencies } from "./ingest.js";

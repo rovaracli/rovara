@@ -1,4 +1,4 @@
-import { SessionTileSchema } from "@agentx/contracts/web";
+import { SessionTileSchema } from "@agentx/cloud-contracts/web";
 import { sessionPerson, SESSION_FIXTURE_ID } from "./session-fixture.js";
 type FinishedTile = ReturnType<typeof SessionTileSchema.parse>;
 /** One ended session as `GET /v1/app/sessions?...&status=ended` lists it. */

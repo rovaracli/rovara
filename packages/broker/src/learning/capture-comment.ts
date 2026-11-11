@@ -10,10 +10,7 @@
 // B5's `forgetCorrection`, which also deletes a comment's source record so it can be remembered again. It is refused once the correction belongs to a rule that is accepted or being accepted.
 import { createHash } from "node:crypto";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  LearningCorrectionSchema, OrgIdSchema, TaskCommentSchema, agentXError,
-  type AgentXErrorCode, type LearningCorrection, type LearningStanding
-} from "@agentx/contracts";
+import { LearningCorrectionSchema, OrgIdSchema, TaskCommentSchema, agentXError, type AgentXErrorCode, type LearningCorrection, type LearningStanding } from "@rovara-code/contracts";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 import type { DeveloperTaskRouteDependencies } from "../aws/developer-tasks.js";
 import { commentKey, withoutKeys } from "../developer/page-comments.js";

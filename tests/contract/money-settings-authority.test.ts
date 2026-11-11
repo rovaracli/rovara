@@ -2,7 +2,7 @@
 import { randomUUID } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { expect, it } from "vitest";
-import { defaultSpendPolicy, orgMemberKey, developerOrgKey, orgMetaKey, orgSettingsKey, projectAiKey } from "@agentx/contracts";
+import { defaultSpendPolicy, orgMemberKey, developerOrgKey, orgMetaKey, orgSettingsKey, projectAiKey } from "@agentx/cloud-contracts";
 import { writeProjectAi, writeSpendPolicy } from "../../packages/broker/src/spend/settings.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { seedMembership } from "../support/developer-task-broker.js";

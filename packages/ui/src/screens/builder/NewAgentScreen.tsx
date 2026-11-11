@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import { Link } from "react-router";
-import { AGENT_NAME_MAX, AGENT_DESCRIPTION_MAX } from "@agentx/contracts/web";
+import { AGENT_NAME_MAX, AGENT_DESCRIPTION_MAX } from "@agentx/cloud-contracts/web";
 import { useAgents } from "../../api/agents.js";
 import { useBuilderApi } from "../../api/builder.js";
 import { useAppHost } from "../../host.js";

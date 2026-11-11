@@ -8,7 +8,8 @@
 // Every word a repository or a person wrote (a dependency's name) goes through `inertLine`, then has its markdown characters escaped (names are joined into one line, so two harmless names could make a link, a
 // strike-through or a code span together), and every finished line is checked again as a whole (`dependencyLineIsInert`); the digest and the date are checked against their shape and otherwise shown as unknown; every other word is fixed
 // here or in the contract. The label is the pack's (the broker computed it from the pinned plan), never the worker's.
-import { EVIDENCE_FALLBACK_REASON_WORDS, evidenceDependencyLabelWords, type EvidenceDependency, type EvidencePack } from "@agentx/contracts";
+import { EVIDENCE_FALLBACK_REASON_WORDS, type EvidenceDependency, type EvidencePack } from "@rovara-code/contracts";
+import { evidenceDependencyLabelWords } from "@agentx/cloud-contracts";
 import { AWS_PERMISSIONS_NOT_CHECKED, AWS_PERMISSIONS_NOT_CHECKED_SHORT } from "./dependency-evidence.js";
 import { inertLine } from "./inert-text.js";
 

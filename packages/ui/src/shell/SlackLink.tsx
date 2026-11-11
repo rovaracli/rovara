@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { AppMeResponseReaderSchema } from "@agentx/contracts/web";
+import { AppMeResponseReaderSchema } from "@agentx/cloud-contracts/web";
 import { useAppHost } from "../host.js";
 import { createApiClient } from "../api/client.js";
 import { ApiError } from "../api/errors.js";

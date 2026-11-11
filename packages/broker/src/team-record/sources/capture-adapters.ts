@@ -7,7 +7,7 @@
 //      it that host's human edits are not learned from, and the report says so.
 //   3. the merge commit of a merged pull request: from the tap's own event (`mergeCommitSha`), kept by the merge index. A plug-in that has the commit says it in its events.
 // A host registers an adapter with the `host` name its rows carry (`github`, or the plug-in's name) and says what it supports; the registry answers by host and by pull request address.
-import type { ChangeRequestRef, CodeHost, HostScope } from "@agentx/contracts";
+import type { ChangeRequestRef, CodeHost, HostScope } from "@rovara-code/contracts";
 import type { CodeHostDiffReader } from "./codehost.js";
 
 /** A pull request as the record names it: the host, the repository's full name as the tap lower-cased it, and the number. */

@@ -3,7 +3,8 @@
 // Proved on the production path: a GitHub delivery through the real record runtime's tap (the real actor resolver and project-role read), the captured-rows reader the lesson subject source uses, then `memberCorrectionOf`.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { developerOrgKey, githubInstallationKey, githubMemberKey, githubRepoProjectKey, orgMemberKey, projectMemberKey, projectRevisionKey } from "@agentx/contracts";
+import { developerOrgKey, githubInstallationKey, githubRepoProjectKey, orgMemberKey } from "@agentx/cloud-contracts";
+import { githubMemberKey, projectMemberKey, projectRevisionKey } from "@rovara-code/contracts";
 import { createTeamRecordRuntime } from "../../../packages/broker/src/team-record/runtime.js";
 import { SdkUnavailableError } from "../../../packages/broker/src/team-record/aws-adapters.js";
 import { tableCapturedRows } from "../../../packages/broker/src/lessons/captured-rows.js";

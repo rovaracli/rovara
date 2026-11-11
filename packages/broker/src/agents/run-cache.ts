@@ -3,7 +3,7 @@
 // every key, and the next run reads again, so a changed workflow or a renamed label is seen by the next run.
 import { createHash } from "node:crypto";
 import { GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
-import { INDEX_EXPIRY_ATTRIBUTE, runCacheKey, type OrgId } from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, runCacheKey, type OrgId } from "@rovara-code/contracts";
 
 /** A place to keep a JSON value for the length of one run, by kind and name. */
 export interface RunCache {

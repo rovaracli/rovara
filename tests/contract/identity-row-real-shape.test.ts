@@ -1,7 +1,7 @@
 // A real sign-in's DEVELOPER#<id>/META row has no `developerId` attribute: the id is the key (store.ts getDeveloper). Every check that reads the
 // raw row, or fences it at commit, must accept that row and still refuse one that names someone else (2026-11-01, after the admin health 403).
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { SLACK_OIDC_ISSUER } from "@agentx/contracts";
+import { SLACK_OIDC_ISSUER } from "@rovara-code/contracts";
 import { describe, expect, it, vi } from "vitest";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { oidcTaskPersonIdentityCheck } from "../../packages/broker/src/aws/broker/model-access.js";
@@ -10,7 +10,7 @@ import { createTaskAuthorityAdmission } from "../../packages/broker/src/aws/task
 import { createTaskPersonRuntime, type TaskPersonRuntimePorts } from "../../packages/broker/src/aws/task-person-runtime.js";
 import { projectAiCallerCheck } from "../../packages/broker/src/spend/project-ai-identity.js";
 import type { DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
-import { slackBindingPk, projectRevisionKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { slackBindingPk, projectRevisionKey } from "@rovara-code/contracts";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { realIdentityRow } from "../support/real-identity-row.js";
@@ -63,7 +63,8 @@ describe("a company sign-in (OIDC) task person", () => {
     const ports = {
       readTaskRecord: vi.fn(async ({ sortKey }: { sortKey: string }) => sortKey === "META" ? task as unknown as Record<string, unknown> : undefined),
       readDeveloperRecord: vi.fn(async () => developerRecord as never),
-      readOrgRecord: vi.fn(async () => undefined),
+      // Nobody was removed, and everybody is a member who may write (a member row): owner decision 86.
+      readOrgRecord: vi.fn(async ({ key }: { key: { pk: string; sk: string } }) => String(key.sk).startsWith("MEMBER#") ? { ...key, role: "member" } : undefined),
       projectAuthorityReader: {
         latestRevision: vi.fn(async (_project: string, _admission: unknown, signal: AbortSignal) => ({ revision: { ...projectRevisionKey(TEST_ORG, "payments-api", 7), revision: 7, definition: {} }, complete: !signal.aborted })),
         memberships: vi.fn(async (_id: string, _admission: unknown, signal: AbortSignal) => ({ items: [], complete: !signal.aborted })),

@@ -2,7 +2,7 @@
 // friction (evidence opened first for a medium card, no approve for a high one, the caller's own authority) applies to Slack exactly as to the web. A refusal is said to the person alone
 // (ephemeral), in fixed words; nothing from the refusal's own text is shown.
 import { createHash } from "node:crypto";
-import { DecisionCardIdSchema, DecisionDigestSchema } from "@agentx/contracts";
+import { DecisionCardIdSchema, DecisionDigestSchema } from "@rovara-code/contracts";
 import { DECISION_SLACK_ACTION_IDS, DECISION_SLACK_APPROVE_ACTION, DECISION_SLACK_OPEN_ACTION, DECISION_SLACK_REJECT_ACTION } from "./slack-card.js";
 import { decisionCardPath } from "./project.js";
 import type { StatusReply } from "../aws/status-reply.js";

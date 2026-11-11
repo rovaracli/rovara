@@ -1,7 +1,7 @@
 import {expect,it} from "vitest";
 import {randomUUID} from "node:crypto";
 import {publishDraft,rollbackAgent} from "../../packages/broker/src/agents/changes.js";
-import {projectRevisionKey,ROVARA_CODE_AGENT_ID} from "../../packages/contracts/src/index.js";
+import { projectRevisionKey, ROVARA_CODE_AGENT_ID } from "@rovara-code/contracts";
 import {bedrockClaudeModelIds} from "../../packages/model-runtime/src/catalog.js";
 import {mergeWorld} from "../support/rovara-code-merge-world.js";
 import {ORG_A,MAX,OLA} from "../support/agent-session-world.js";
@@ -58,7 +58,7 @@ it("refuses confirmation after policy revision or project identity changes",asyn
 });
 
 it("refuses rollback to an explicit model whose source is now unavailable",async()=>{
- const {resolveRecipe}=await import("../../packages/broker/src/agents/changes.js");const {recipeDigest}=await import("../../packages/contracts/src/index.js");
+ const {resolveRecipe}=await import("../../packages/broker/src/agents/changes.js");const { recipeDigest } = await import("@rovara-code/contracts");
  const w=fixture();const model={provider:"amazon-bedrock",modelId:bedrockClaudeModelIds("us")[0]!};
  let agent=await w.store.create({orgId:ORG_A,name:"web rollback",owner:{kind:"project",project:"web"},accountable:{developerId:MAX},extends:ROVARA_CODE_AGENT_ID,overlay:{steps:{plan:{model}}},purpose:"process",createdBy:MAX});
  await w.store.publish({orgId:ORG_A,agentId:agent.agentId,expectedDraftRevision:agent.draftRevision,digest:recipeDigest(await resolveRecipe(w.deps,ORG_A,agent.agentId,"draft")),by:MAX});
@@ -70,7 +70,7 @@ it("refuses rollback to an explicit model whose source is now unavailable",async
 });
 
 it("fences project, native operator-role and global revocations after validation",async()=>{
- const {TransactWriteCommand}=await import("@aws-sdk/lib-dynamodb");const {projectMemberKey}=await import("../../packages/contracts/src/index.js");
+ const {TransactWriteCommand}=await import("@aws-sdk/lib-dynamodb");const { projectMemberKey } = await import("@rovara-code/contracts");
  for(const kind of ["projectRole","nativeRole","global"] as const){
  const w=fixture();const agent=await w.store.create({orgId:ORG_A,name:"web race",owner:{kind:"project",project:"web"},accountable:{developerId:MAX},extends:ROVARA_CODE_AGENT_ID,overlay:{},purpose:"process",createdBy:MAX});
  const send=w.db.send.bind(w.db);let changed=false;
@@ -91,7 +91,7 @@ it("fences the confirming person's global revocation at the final version commit
 });
 it("shares native current-role and maintainer transaction fences for project model selection",async()=>{
  const {projectModelSelectionAuthorityChecks}=await import("../../packages/broker/src/model-selection/authority.js");
- const {TransactWriteCommand}=await import("@aws-sdk/lib-dynamodb");const {projectMemberKey}=await import("../../packages/contracts/src/index.js");
+ const {TransactWriteCommand}=await import("@aws-sdk/lib-dynamodb");const { projectMemberKey } = await import("@rovara-code/contracts");
  const w=fixture(),input={orgId:ORG_A,project:"web",registeredAt:"2026-10-01T00:00:00Z",signedInId:MAX,developerId:MAX};
  const checks=await projectModelSelectionAuthorityChecks(w.deps,input);
  await w.db.send(new TransactWriteCommand({TransactItems:checks}));
@@ -101,7 +101,7 @@ it("shares native current-role and maintainer transaction fences for project mod
 });
 for(const role of ["owner","admin","maintainer","contributor","viewer"] as const)it(`project model selection uses live ${role} authority`,async()=>{
  const {projectModelSelectionAuthorityChecks}=await import("../../packages/broker/src/model-selection/authority.js");
- const {TransactWriteCommand}=await import("@aws-sdk/lib-dynamodb");const {projectMemberKey,orgMemberKey,developerOrgKey}=await import("../../packages/contracts/src/index.js");
+ const {TransactWriteCommand}=await import("@aws-sdk/lib-dynamodb");const { projectMemberKey } = await import("@rovara-code/contracts"), { orgMemberKey, developerOrgKey } = await import("@agentx/cloud-contracts");
  const w=fixture(),orgRole=role==="owner"||role==="admin"?role:"member";
  for(const key of [orgMemberKey(ORG_A,MAX),developerOrgKey(MAX)])w.db.set({...w.db.get(key)!,role:orgRole});
  const key=projectMemberKey(ORG_A,MAX,"web");w.db.set({...w.db.get(key)!,role:role==="viewer"?"viewer":"developer",projectRole:role==="owner"||role==="admin"?"contributor":role});
@@ -140,7 +140,7 @@ it("serializes only the structured process refusal fields used by HTTP adapters"
 
 for(const changed of [false,true])it(`${changed?"refuses changed":"tolerates unchanged"} published choice beneath a newly locked company stage`,async()=>{
  const {resolveRecipe}=await import("../../packages/broker/src/agents/changes.js");
- const {recipeDigest,canonicalModelName}=await import("@agentx/contracts");
+ const { recipeDigest, canonicalModelName } = await import("@rovara-code/contracts");
  const w=fixture(),seen=new Set<string>(),models=bedrockClaudeModelIds("us").filter(modelId=>{const name=canonicalModelName({provider:"amazon-bedrock",modelId});if(seen.has(name))return false;seen.add(name);return true;});
  expect(models.length).toBeGreaterThanOrEqual(3);
  const model={provider:"amazon-bedrock",modelId:models[0]!},lock={provider:"amazon-bedrock",modelId:models[1]!};
@@ -172,20 +172,20 @@ it("returns a structured resolver refusal when an approved process cannot apply"
 });
 
 for(const changed of [false,true])it(`pointer wrapper ${changed?"refuses changed":"permits unchanged"} locked stage choice`,async()=>{
- const {resolveRecipe,assertProcessModelsResolvable}=await import("../../packages/broker/src/agents/changes.js");const {recipeDigest}=await import("@agentx/contracts");
+ const {resolveRecipe,assertProcessModelsResolvable}=await import("../../packages/broker/src/agents/changes.js");const { recipeDigest } = await import("@rovara-code/contracts");
  const w=fixture(),ids=bedrockClaudeModelIds("us"),model={provider:"amazon-bedrock",modelId:ids[0]!},lock={provider:"amazon-bedrock",modelId:ids.at(-1)!};
  let agent=await w.store.create({orgId:ORG_A,name:"web pointer lock",owner:{kind:"project",project:"web"},accountable:{developerId:MAX},extends:ROVARA_CODE_AGENT_ID,overlay:{steps:{build:{model}}},purpose:"process",createdBy:MAX});
  await w.store.publish({orgId:ORG_A,agentId:agent.agentId,expectedDraftRevision:agent.draftRevision,digest:recipeDigest(await resolveRecipe(w.deps,ORG_A,agent.agentId,"draft")),by:MAX});agent=(await w.store.get(ORG_A,agent.agentId))!;
  w.db.set({pk:`ORG#${ORG_A}#SETTINGS`,sk:"MODEL_SELECTION_POLICY",entityType:"MODEL_SELECTION_POLICY",orgId:ORG_A,version:1,revision:1,rankingVersion:"g3-v1",stepOverrides:{build:{model:lock,thinkingLevel:null,locked:true}}});
- const {projectPlaybookKey}=await import("@agentx/contracts");w.db.set({...projectPlaybookKey(ORG_A,"web"),revision:1,defaultProcess:{kind:"project_process",agentId:agent.agentId}});
- const overlay={steps:{build:{model:changed?lock:model}}};const {applyOverlay}=await import("../../packages/contracts/src/agent-recipe-node.js");
+ const { projectPlaybookKey } = await import("@rovara-code/contracts");w.db.set({...projectPlaybookKey(ORG_A,"web"),revision:1,defaultProcess:{kind:"project_process",agentId:agent.agentId}});
+ const overlay={steps:{build:{model:changed?lock:model}}};const { applyOverlay } = await import("@rovara-code/contracts");
  const recipe=applyOverlay(await resolveRecipe(w.deps,ORG_A,agent.agentId,1),overlay,{agentId:agent.agentId,name:agent.name,version:1,builtin:false,process:true});
  const action=assertProcessModelsResolvable(w.deps,{...w.caller(MAX),orgRole:"member"},agent,{overlay},recipe);
  if(changed)await expect(action).rejects.toMatchObject({code:"STAGE_LOCKED",stage:"build",fixHref:"/app/admin/how-we-work"});else expect((await action).modelContext.companyRevision).toBe(1);
 });
 
 it("compares a pointer target with the active process rather than its own published version",async()=>{
- const {resolveRecipe,assertProcessModelsResolvable}=await import("../../packages/broker/src/agents/changes.js");const {recipeDigest}=await import("@agentx/contracts");
+ const {resolveRecipe,assertProcessModelsResolvable}=await import("../../packages/broker/src/agents/changes.js");const { recipeDigest } = await import("@rovara-code/contracts");
  const w=fixture(),model={provider:"amazon-bedrock",modelId:bedrockClaudeModelIds("us")[0]!};
  let target=await w.store.create({orgId:ORG_A,name:"web pointer target",owner:{kind:"project",project:"web"},accountable:{developerId:MAX},extends:ROVARA_CODE_AGENT_ID,overlay:{steps:{build:{model}}},purpose:"process",createdBy:MAX});
  const recipe=await resolveRecipe(w.deps,ORG_A,target.agentId,"draft");await w.store.publish({orgId:ORG_A,agentId:target.agentId,expectedDraftRevision:target.draftRevision,digest:recipeDigest(recipe),by:MAX});target=(await w.store.get(ORG_A,target.agentId))!;

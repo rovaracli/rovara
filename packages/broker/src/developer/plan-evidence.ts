@@ -1,5 +1,5 @@
 // Spec 061: the code a plan cites, read from GitHub at the task's base commit, so the review page shows the real lines.
-import type { PlanClaim, PlanDocument, PlanEvidenceBundle, WorkflowReviewBase } from "@agentx/contracts";
+import type { PlanClaim, PlanDocument, PlanEvidenceBundle, WorkflowReviewBase } from "@rovara-code/contracts";
 
 const EXCERPTS_MAX = 40;
 const LINES_MAX = 80;

@@ -1,5 +1,5 @@
 import type { DockerApplicationUnavailableReason, E2EAgentUnknownCode } from "@agentx/verifier";
-import { E2E_APPLICATION_SEND_BACK_CODES, KEYED_MODEL_PROVIDERS, isKeyedModelProvider, type E2E_DISPLAY_ASSERTION_KINDS } from "@agentx/contracts";
+import { E2E_APPLICATION_SEND_BACK_CODES, KEYED_MODEL_PROVIDERS, isKeyedModelProvider, type E2E_DISPLAY_ASSERTION_KINDS } from "@rovara-code/contracts";
 
 /**
  * M1.4 Tasks 4.4b and 4.4c: every sentence the owner reads about AI navigation, in one place. Change the wording here and nowhere else. The display, the Slack summary and the task page

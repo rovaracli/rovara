@@ -1,7 +1,7 @@
 // UX2 slice 2 item 5: the person's own notification setting on their account page. `GET /v1/app/me/notifications` answers it with what it means now; `PUT` changes it (a channel, or the email's
 // unsubscribe). Only the caller's own row, in their own org's partition. Email is offered only where the install has its sign-in notice sender (the identity notices' SES sender) and the person has
 // an address; otherwise the setting says email isn't set up here and Slack is used.
-import { agentXError, defaultNotifyChannel, effectiveNotify, NotificationPrefsBodySchema, type NotificationPrefsView } from "@agentx/contracts";
+import { agentXError, defaultNotifyChannel, effectiveNotify, NotificationPrefsBodySchema, type NotificationPrefsView } from "@rovara-code/contracts";
 import { StatusReply } from "../aws/status-reply.js";
 import type { AdaptedHttpRequest } from "../aws/lambda.js";
 import { jsonBody } from "../aws/developer-routes/organization.js";

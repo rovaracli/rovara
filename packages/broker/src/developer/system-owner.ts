@@ -6,7 +6,8 @@
 //   personOwnerOf         the owner as a person, or TASK_ACCESS_DENIED for a system owner
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { readProjectMeta } from "./project-roles.js";
-import { SYSTEM_OWNER_SESSION_ID, agentXError, isSystemOwnerId, orgMetaKey, systemOwnerIdOf, systemOwnerName, type DeveloperSignInMethod, type OrgId } from "@agentx/contracts";
+import { SYSTEM_OWNER_SESSION_ID, agentXError, isSystemOwnerId, systemOwnerIdOf, systemOwnerName, type OrgId } from "@rovara-code/contracts";
+import { orgMetaKey, type DeveloperSignInMethod } from "@agentx/cloud-contracts";
 import type { DeveloperCaller } from "../aws/developer-routes/types.js";
 import { tryEffectiveTaskOwner, type TaskOwner, type TaskOwnerSource } from "./task-records.js";
 

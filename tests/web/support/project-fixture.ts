@@ -1,4 +1,4 @@
-import { ProjectOverviewSchema } from "@agentx/contracts/web";
+import { ProjectOverviewSchema } from "@agentx/cloud-contracts/web";
 import { liveFixture } from "./live-fixture.js";
 type Overview = ReturnType<typeof ProjectOverviewSchema.parse>;
 export function projectFixture(overrides: Partial<Overview> = {}): Overview {

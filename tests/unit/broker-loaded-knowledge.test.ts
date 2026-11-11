@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { LOADED_KNOWLEDGE_EVENT_FIELD, LoadedKnowledgeManifestSchema, loadedKnowledgeOfProgress, type LoadedKnowledgeManifest } from "@agentx/contracts";
+import { LOADED_KNOWLEDGE_EVENT_FIELD, LoadedKnowledgeManifestSchema, loadedKnowledgeOfProgress, type LoadedKnowledgeManifest } from "@rovara-code/contracts";
 
 const access = vi.hoisted(() => ({ allowed: new Set<string>() }));
 vi.mock("../../packages/broker/src/developer/task-access.js", () => ({

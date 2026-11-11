@@ -4,7 +4,7 @@ import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { BUNDLE_SIGNATURE_FILE, BundleSignatureSchema, sha256OfBytes, verifyBundleSignature } from "@agentx/contracts";
+import { BUNDLE_SIGNATURE_FILE, BundleSignatureSchema, sha256OfBytes, verifyBundleSignature } from "@agentx/cloud-contracts";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildBundle } from "../../scripts/release/bundle.js";
 import { signPreparedBundle } from "../../scripts/release/sign-bundle.js";

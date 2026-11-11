@@ -47,14 +47,16 @@ describe("the browser executor image", () => {
     const preInstall = buildStage.slice(0, install);
     expect(preInstall).toContain("COPY packages/verifier/package.json packages/verifier/package.json");
     expect(preInstall).toContain("COPY upstream/e2e-0.20.0.tgz upstream/e2e-0.20.0.tgz");
-    expect(buildStage).toMatch(/RUN npx tsc -b packages\/contracts packages\/verifier --pretty false/);
+    expect(buildStage).toMatch(/RUN npx tsc -b packages\/cloud-contracts packages\/verifier --pretty false/);
     expect(buildStage).toContain("RUN npm prune --omit=dev --workspaces");
   });
 
   it("ships the built contracts and verifier packages and the production node_modules under /opt/agentx", () => {
     expect(runtimeStage).toContain("WORKDIR /opt/agentx");
     expect(runtimeStage).toContain("COPY --from=build /opt/agentx/node_modules ./node_modules");
-    expect(runtimeStage).toContain("COPY --from=build /opt/agentx/packages/contracts ./packages/contracts");
+    expect(runtimeStage).toContain("COPY --from=build /opt/agentx/packages/cloud-contracts ./packages/cloud-contracts");
+    expect(runtimeStage).toContain("COPY --from=build /opt/agentx/vendor/rovara-code/packages/contracts ./vendor/rovara-code/packages/contracts");
+    expect(runtimeStage).toContain("COPY --from=build /opt/agentx/vendor/rovara-code-shims ./vendor/rovara-code-shims");
     expect(runtimeStage).toContain("COPY --from=build /opt/agentx/packages/verifier ./packages/verifier");
   });
 

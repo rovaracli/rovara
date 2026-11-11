@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { DIAGNOSIS_ANSWER_LABEL, type DiagnosisStatusReaderSchema } from "@agentx/contracts/web";
+import { DIAGNOSIS_ANSWER_LABEL, type DiagnosisStatusReaderSchema } from "@agentx/cloud-contracts/web";
 import { useAppHost } from "../../host.js";
 import { createDiagnosesApi } from "../../api/diagnoses.js";
 import { ApiError } from "../../api/errors.js";

@@ -1,6 +1,6 @@
 // N9 (INTG2): the broker's wiring of a project's registry credentials: the route's handler, and the registries a prepare invocation carries. The rules are in
 // ../../project-registries/ (exchange.ts, prepare.ts); this file only reads the stored records they ask for.
-import { agentXError, type PrepareRegistries } from "@agentx/contracts";
+import { agentXError, type PrepareRegistries } from "@rovara-code/contracts";
 import { requireOperation } from "../cancellation.js";
 import { requireWorkspace } from "./records.js";
 import { exchangeRegistryCredentialCore } from "../../project-registries/exchange.js";

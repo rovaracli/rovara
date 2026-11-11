@@ -2,7 +2,7 @@
 // The cards were unreachable from a browser (the path 404ed), so the app showed none and swallowed the error. The kinds that are wired press from a browser exactly as they do from a token.
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
-import { DecisionCardsViewSchema, testEnvDigest } from "../../packages/contracts/src/index.js";
+import { DecisionCardsViewSchema, testEnvDigest } from "@rovara-code/contracts";
 import { OMAR } from "../support/developer-task-broker.js";
 import { ENV, NAME, draftBody, setupWizardBench, withSwitch, type Bench } from "../support/setup-wizard-testenv.js";
 

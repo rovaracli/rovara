@@ -19,7 +19,7 @@
   },
   "types": "./dist/index.d.ts",
   "dependencies": {
-    "@agentx/contracts": "0.1.0",
+    "@rovara-code/contracts": "0.1.0",
     "@e2e-dev/web": "0.14.0",
     "ai": "7.0.127",
     "e2e": "file:../../upstream/e2e-0.20.0.tgz",

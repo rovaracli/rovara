@@ -1,7 +1,7 @@
 // Rovara Code (Plan 6 Task 20): until Plan 9 closes Linear issues itself, Linear's own GitHub integration closes an issue when a pull request whose title or body says "Fixes <KEY>"
 // merges. This says that line for a session bound to a Linear issue, and only that line: the key comes from the session's own Linear binding in the task's org, is checked to be an
 // issue key (never free text), and every other Linear-key-shaped token in text a model or a person wrote is broken (`breakLinearKeys`, `sealLinearKeys`), so the pull request names one issue.
-import type { OrgId, SessionBinding } from "@agentx/contracts";
+import type { OrgId, SessionBinding } from "@rovara-code/contracts";
 import { sessionBindingsOf, type SessionBindingReader } from "./session-bindings.js";
 
 /** A Linear issue key: the team's key (a letter, then letters or digits, ten at most) and the issue's number. */

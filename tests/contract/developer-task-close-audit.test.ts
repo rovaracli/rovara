@@ -1,7 +1,7 @@
 // Spec 025 E20 (25c's C22): a close's outcome gets its completed audit record.
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AiToolTurnRecordSchema, TURN_EXPORT_PARTITION } from "../../packages/contracts/src/index.js";
+import { AiToolTurnRecordSchema, TURN_EXPORT_PARTITION } from "@rovara-code/contracts";
 import { MAYA, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
 
 async function readyTask() {

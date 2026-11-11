@@ -6,7 +6,7 @@ import { liveWriterRole } from "../../org/live-role.js";
 import type { SlackWorkflowRevisePlanEvent } from "../../agent-sessions/live-steer-revise.js";
 import { createHash } from "node:crypto";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { AgentXError, RUN_INPUT_TEXT_MAX_BYTES, sharedTaskKey, SLACK_THREAD_OWNER_ISSUER, SlackMessageTimestampSchema, SlackRequesterSchema, SlackThreadSchema, agentXError, slackThreadSubject, type SlackThread, type OrgId, WORKFLOW_RESOLVE_FINDINGS_MAX, type E2EApplicationPlanIntent } from "@agentx/contracts";
+import { AgentXError, RUN_INPUT_TEXT_MAX_BYTES, sharedTaskKey, SLACK_THREAD_OWNER_ISSUER, SlackMessageTimestampSchema, SlackRequesterSchema, SlackThreadSchema, agentXError, slackThreadSubject, type SlackThread, type OrgId, WORKFLOW_RESOLVE_FINDINGS_MAX, type E2EApplicationPlanIntent } from "@rovara-code/contracts";
 import { projectE2EBaselineWanted, requestWorkflowE2EBaselineRound } from "../workflow-e2e-baseline.js";
 import { DeveloperSignInStore, type DeveloperRecord } from "../../developer/store.js";
 import { getItem } from "../cancellation.js";

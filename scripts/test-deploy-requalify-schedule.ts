@@ -1,6 +1,6 @@
 // ARGUARD: the weekly renewal must not be switchable off silently. What test-deploy knows about the renewal's daily schedule: its state in a template, whether it was ever enabled (a record the
 // `requalify-schedule` unit and the renewal's own daily check write), and the --check finding when it is off after it was on. Pure code; the readers live in test-deploy-requalify.ts.
-import { REQUALIFY_PROFILE_ID, requalifyScheduleEnabledKey } from "../packages/contracts/src/index.js";
+import { REQUALIFY_PROFILE_ID, requalifyScheduleEnabledKey } from "@rovara-code/contracts";
 import type { CheckTemplate, Finding } from "./test-deploy-check.js";
 
 /** The daily schedule's logical ID (CDK's id of `RuntimeRequalify/DailyCheck`). It is created DISABLED by `requalify-infra`; the `requalify-schedule` unit is the explicit first switch-on. */

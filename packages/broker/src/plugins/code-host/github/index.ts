@@ -7,13 +7,10 @@
 //  - `listBranches` is org-scoped and needs the installation binding (cloud installs); a system scope is refused.
 //  - `reply` posts Rovara's own fixed text only (200 characters, one line, no mention).
 //  - `events.normalise` (task P6, `events.ts`) exists only when the adapter is given the install's webhook secret; without one it verifies nothing and offers no normaliser.
-import {
-  agentXError, ChangeRequestInputSchema, ChangeRequestUpdateSchema, CommitFilesInputSchema, HostScopeSchema,
-  type BranchPage, type CommitFilesInput, type CommitFilesResult, type PathKind, type ChangeRequestDetails, type ChangeRequestFeedback, type ChangeRequestFilesPage, type ChangeRequestInput, type ChangeRequestReconciled, type ChangeRequestRef,
-  type ChangeRequestStatus, type ChangeRequestUpdate, type CodeHost, type CodeHostCapabilities, type GitAccess, type GitCredential, type HostAccount, type HostScope,
-  type HostStanding, type MergeMethod, type MergeObservation, type MergeResult, type ReadBudget, type RepositoryIdentity, type RepositoryRef,
-} from "@agentx/contracts";
+import { agentXError, type CodeOwnersRead, ChangeRequestInputSchema, ChangeRequestUpdateSchema, CommitFilesInputSchema, HostScopeSchema, type BranchPage, type CommitFilesInput, type CommitFilesResult, type PathKind, type ChangeRequestDetails, type ChangeRequestFeedback, type ChangeRequestFilesPage, type ChangeRequestInput, type ChangeRequestReconciled, type ChangeRequestRef, type ChangeRequestStatus, type ChangeRequestUpdate, type CodeHost, type CodeHostCapabilities, type GitAccess, type GitCredential, type HostAccount, type HostScope, type HostStanding, type MergeMethod, type MergeObservation, type MergeResult, type ReadBudget, type RepositoryIdentity, type RepositoryRef } from "@rovara-code/contracts";
 import { parseGitHubRepository, type GitHubAppCredentialProvider } from "../../../github-app.js";
+import { codeOwnersReadOf } from "../../../rovara-code/code-owners.js";
+import { accountKindOfHostType } from "../neutral-words.js";
 import { githubCodeHostEvents } from "./events.js";
 import { detailsOf, feedbackOf, fileOf, mergeResultOf, pullRequestNumber, refOf, replyTargetOf, statusOf } from "./mapping.js";
 
@@ -70,7 +67,7 @@ export function githubCodeHost(provider: GitHubCodeHostProvider, options: GitHub
 
     async standing(repository: RepositoryRef, person: HostAccount, scope: HostScope, budget?: ReadBudget): Promise<HostStanding> {
       const standing = await provider.getRepositoryStanding(repository.url, person.login, checkedScope(scope), budget);
-      return { permission: standing.permission, ...(standing.userType === undefined ? {} : { accountType: standing.userType }) };
+      return { permission: standing.permission, ...(accountKindOfHostType(standing.userType) === undefined ? {} : { accountType: accountKindOfHostType(standing.userType)! }) };
     },
 
     async issueGitCredential(repository: RepositoryRef, access: GitAccess, scope: HostScope): Promise<GitCredential> {
@@ -122,8 +119,9 @@ export function githubCodeHost(provider: GitHubCodeHostProvider, options: GitHub
       return { branches: listed.branches, page: listed.page, mayHaveMore: listed.mayHaveMore, omittedUnsupported: listed.omittedUnsupported };
     },
 
-    async codeOwners(repository: RepositoryRef, branch: string, scope: HostScope): Promise<string | undefined> {
-      return provider.readCodeOwners(repository.url, branch, checkedScope(scope));
+    async codeOwners(repository: RepositoryRef, branch: string, scope: HostScope): Promise<CodeOwnersRead | undefined> {
+      const text = await provider.readCodeOwners(repository.url, branch, checkedScope(scope));
+      return text === undefined ? undefined : codeOwnersReadOf(text);
     },
 
     ...(typeof provider.commitFilesToBranch !== "function" ? {} : {

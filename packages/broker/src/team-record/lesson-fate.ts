@@ -1,7 +1,7 @@
 // What becomes of a lesson when the record rows it came from are deleted (design 4.4.3): it is WITHDRAWN when every one of its sources is gone, unless a
 // valid code citation alone supports it; then it stays, with its record citations removed. A lesson with some sources left stays as it is.
 // The lesson store is the learning lane's; this file is the rule and the port it plugs into.
-import type { LessonCitation } from "@agentx/contracts";
+import type { LessonCitation } from "@rovara-code/contracts";
 
 /** The part of a lesson the rule reads. */
 export interface LessonForDeletion {

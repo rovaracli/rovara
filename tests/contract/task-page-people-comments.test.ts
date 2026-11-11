@@ -4,7 +4,7 @@
 //   GET /v1/app/tasks/{id}/comments, POST .../comments/{commentId}/remember|forget         the old page's own comment list and `rememberTaskComment` / `forgetTaskComment`, from a live browser only.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import type { TaskPeopleDisplayReadRequest } from "@agentx/contracts";
+import type { TaskPeopleDisplayReadRequest } from "@rovara-code/contracts";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { TASK_COMMENT_LEARNING_BROWSER_MESSAGE } from "../../packages/broker/src/aws/developer-routes/task-page-actions.js";
 import { commentKey } from "../../packages/broker/src/developer/page-comments.js";

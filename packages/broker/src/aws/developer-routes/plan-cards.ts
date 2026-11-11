@@ -7,7 +7,8 @@
 //   request changes   the workflow decision's REQUEST_CHANGES with the person's reason, for requirements, a coding plan and a design alike (a design's Approve stays the design review's).
 // The requirements and design pair card (project.ts `pairCards`) forms only when both documents wait at once; today's Full flow asks for them one after the other, so this source never yields both.
 import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
-import { DECISION_APPROVE_TAKES, DECISION_PLAN_COMMENTS_MAX, DECISION_PLAN_QUESTIONS_MAX, PER_TASK_BUDGET_USD, agentXError, planClaimCount, redactText, taskGraphDigest, taskGraphOrder, type DecisionPlanChoices, type PlanDocument, type WorkflowArtifact, type WorkflowSnapshot } from "@agentx/contracts";
+import { DECISION_APPROVE_TAKES, DECISION_PLAN_COMMENTS_MAX, DECISION_PLAN_QUESTIONS_MAX, agentXError, planClaimCount, redactText, taskGraphDigest, taskGraphOrder, type DecisionPlanChoices, type PlanDocument, type WorkflowArtifact } from "@rovara-code/contracts";
+import { PER_TASK_BUDGET_USD, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { listSuggestions, listTaskComments, openCommentsFor } from "../../developer/page-comments.js";
 import { isE2EPlanCorrectionBlockReason, taskKey, tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../../developer/task-records.js";
 import { planFactsOf } from "../../decisions/plan-risk.js";

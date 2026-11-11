@@ -2,7 +2,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { beforeAll, describe, expect, it } from "vitest";
-import { ec2WorkerUserData, type Ec2WorkerBootConfig } from "../../packages/contracts/src/session.js";
+import { ec2WorkerUserData, type Ec2WorkerBootConfig } from "@rovara-code/contracts";
 
 // Runs the EC2 boot script for real in a privileged Amazon Linux 2023 container on arm64: a loop
 // device stands in for the EBS volume, and mkfs, blkid and mount are the real tools. Only the AWS,

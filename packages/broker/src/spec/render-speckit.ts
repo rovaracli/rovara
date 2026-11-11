@@ -1,6 +1,6 @@
 // K1 lane D, D1: the Spec Kit format. `specs/NNN-feature/` holding `spec.md`, `plan.md` and `tasks.md`. `NNN` is the next free three-digit number in the specs folder.
 // Requirements are labelled FR-001, FR-002 ... in order; a bug's observed behaviour is DEF-001 ... and is not checked against the code.
-import { specDraftStatements, type SpecDraft, type SpecFile, type SpecRequirementRef } from "@agentx/contracts";
+import { specDraftStatements, type SpecDraft, type SpecFile, type SpecRequirementRef } from "@rovara-code/contracts";
 import { assertRenderedSpec, extractLabelledLines, resolveSpecFolder, type SpecRenderer, type SpecRenderInput } from "./renderer.js";
 
 /** The Spec Kit label of each canonical `n.m` statement id. */

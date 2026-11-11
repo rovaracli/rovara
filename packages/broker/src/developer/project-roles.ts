@@ -2,7 +2,8 @@
 // maintainer of every project in their org, with no grant. An archived project, or a role that may not start tasks, refuses only the
 // places that start new work (a task start, Slack-started work, the setup check): work that exists keeps going.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { ProjectRoleSchema, agentXError, projectAllows, projectArchivedMessage, projectMetaKey, type OrgId, type OrgRole, type ProjectRole } from "@agentx/contracts";
+import { ProjectRoleSchema, agentXError, projectAllows, projectArchivedMessage, projectMetaKey, type OrgId, type ProjectRole } from "@rovara-code/contracts";
+import { type OrgRole } from "@agentx/cloud-contracts";
 import { ownerKeyForSubject } from "../aws/lambda.js";
 
 /**

@@ -2,7 +2,7 @@
 // through conditional writes, and checked against the stored document and the one access rule.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { COMMENT_RATE, NUDGE_WINDOW_MS, TaskCommentSchema, sharedTaskKey, type TaskComment } from "@agentx/contracts";
+import { COMMENT_RATE, NUDGE_WINDOW_MS, TaskCommentSchema, sharedTaskKey, type TaskComment } from "@rovara-code/contracts";
 import {
   createTaskComment, deleteTaskComment, editTaskComment, listSuggestions, listTaskComments, openCommentsFor, queueCommentAnswer, setSuggestion, takeRate,
 } from "../../packages/broker/src/developer/page-comments.js";

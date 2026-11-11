@@ -8,24 +8,8 @@
 // comment cannot change the run's tools, limits, push target or path (the round is an ordinary coding run, paid like any other, that pushes to the task's own branch at the expected head).
 // While the card waits, failing CI is added to it (and folded into the decision that follows) instead of starting a CI round of its own.
 import { QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  FEEDBACK_AUTONOMY_ACTOR_ID,
-  FEEDBACK_AUTO_ROUNDS_MAX,
-  FEEDBACK_CI_CHECKS_MAX,
-  INDEX_EXPIRY_ATTRIBUTE,
-  decideWorkflowFeedbackFindings,
-  feedbackCardCiFailures,
-  feedbackCiFailuresDigest,
-  feedbackFixedReply,
-  recordWorkflowFeedbackCiFailures,
-  workflowFixRounds,
-  workflowRequestId,
-  type Autonomy,
-  type HostScope,
-  type OrgId,
-  type WorkflowFixRounds,
-  type WorkflowSnapshot,
-} from "@agentx/contracts";
+import { FEEDBACK_AUTONOMY_ACTOR_ID, FEEDBACK_AUTO_ROUNDS_MAX, FEEDBACK_CI_CHECKS_MAX, INDEX_EXPIRY_ATTRIBUTE, feedbackCiFailuresDigest, feedbackFixedReply, workflowRequestId, type Autonomy, type HostScope, type OrgId, type WorkflowFixRounds } from "@rovara-code/contracts";
+import { decideWorkflowFeedbackFindings, feedbackCardCiFailures, recordWorkflowFeedbackCiFailures, workflowFixRounds, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import type { GithubMergeReadBudget } from "../aws/workflow-merge-recovery.js";
 import { WORKFLOW_NO_CANDIDATE_DIGEST, workflowDispatchItem } from "../aws/broker-shared.js";
 import type { TransactItem } from "../agents/table-writes.js";
@@ -328,7 +312,7 @@ export async function autonomyStillHolds(
       for (const login of new Set(bundle.comments.map((comment) => comment.author))) {
         if (isBotLogin(login)) return false;
         const standing = await home.codeHost.standing({ url: home.url }, { login }, deps.scope);
-        if ((standing.permission !== "write" && standing.permission !== "admin") || (standing.accountType !== undefined && standing.accountType !== "User")) return false;
+        if ((standing.permission !== "write" && standing.permission !== "admin") || (standing.accountType !== undefined && standing.accountType !== "person")) return false;
       }
     }
   } catch {

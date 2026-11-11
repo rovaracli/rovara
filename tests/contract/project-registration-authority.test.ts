@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createDeveloperTaskBroker } from "../support/developer-task-broker.js";
 import { call } from "../support/slack-broker.js";
-import { orgScoped } from "@agentx/contracts";
+import { orgScoped } from "@rovara-code/contracts";
 import { TEST_ORG } from "../support/orgs.js";
 
 // Task AUTH1 (finding N2b of the Task 3.1 reviews): registering a revision of an existing project does not make the registrant its administrator.

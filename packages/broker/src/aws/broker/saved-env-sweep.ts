@@ -6,7 +6,7 @@
 //   - otherwise the marker is looked at again in ten minutes.
 // A workspace whose compute cannot be deleted just now (it is starting or stopping) is looked at again; nothing here throws into the sweep.
 import { DeleteCommand, UpdateCommand, QueryCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
-import { WORKFLOW_DISPATCH_DUE_INDEX, WorkspaceInstanceSchema, workspaceRecordFields } from "@agentx/contracts";
+import { WORKFLOW_DISPATCH_DUE_INDEX, WorkspaceInstanceSchema, workspaceRecordFields } from "@rovara-code/contracts";
 import { endBuildJob } from "../../test-env/saved-env.js";
 import { savedEnvEnabled } from "../../test-env/saved-env-switch.js";
 import { TERMINAL, operationKey } from "../cancellation.js";

@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { SessionListReaderSchema } from "@agentx/contracts/web";
+import { SessionListReaderSchema } from "@agentx/cloud-contracts/web";
 import { useAppHost } from "../host.js";
 import { createApiClient } from "./client.js";
 // Its own module: the session list contract is large, and today's Home (api/home.ts) must not load it. Only the new Home imports this.

@@ -9,7 +9,7 @@ const HEAD = "a".repeat(40);
 const MOVED = "b".repeat(40);
 const MERGE_COMMIT = "c".repeat(40);
 const REPO = "https://github.com/acme/payments.git";
-const SCOPE = { system: "private-install" } as const;
+const SCOPE = { system: "install" } as const;
 
 interface MergeAnswer { status: number; body?: Record<string, unknown>; headers?: Record<string, string> }
 interface Fixture {

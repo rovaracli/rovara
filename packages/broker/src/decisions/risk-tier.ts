@@ -1,7 +1,7 @@
 // Decision cards (Decisions D1): the risk tier of a card, from defined inputs only (design proof-test-env 3.7). Paths, size, money, security findings, untested claims, environment changes
 // and the company's locks decide it. No model text sets a tier, and no input can lower one: every rule only raises, a kind never starts below its floor (`DECISION_KIND_FLOOR_RISK`, so an
 // approve_setting is high however small it looks) and a company lock raises through `raiseRisk`. The reasons are fixed words and numbers; a path is shown through `plainLine`.
-import { DECISION_KIND_FLOOR_RISK, raiseRisk, type DecisionKind, type DecisionRisk } from "@agentx/contracts";
+import { DECISION_KIND_FLOOR_RISK, raiseRisk, type DecisionKind, type DecisionRisk } from "@rovara-code/contracts";
 import { DESIGN_AREA_WORDS, DESIGN_TIER_HIGH_CODES, DESIGN_TIER_MEDIUM_CODES, reviewCoverage, type DesignCardFacts } from "../design-review/risk.js";
 import { isSensitivePath } from "../rovara-code/risk.js";
 import { plainLine } from "./text.js";

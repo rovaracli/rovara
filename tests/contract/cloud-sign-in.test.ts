@@ -1,6 +1,7 @@
 // Task 6: the `cloud` sign-in method, with an org created on first sign-in (rules 1 to 4 of resolveOrgOnSignIn).
 import { describe, expect, it } from "vitest";
-import { agentXError, developerOrgKey, orgEmailKey, orgInviteKey, orgMetaKey, singleOrgIdForEnv } from "@agentx/contracts";
+import { agentXError, singleOrgIdForEnv } from "@rovara-code/contracts";
+import { developerOrgKey, orgEmailKey, orgInviteKey, orgMetaKey } from "@agentx/cloud-contracts";
 import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
 import { developerIdentityConfigFromEnvironment, singleOrgIdFor } from "../../packages/broker/src/aws/developer-identity.js";
 import { oidcSignInProvider } from "../../packages/broker/src/developer/providers.js";

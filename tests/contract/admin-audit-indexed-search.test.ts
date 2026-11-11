@@ -2,7 +2,7 @@
 import { createHash, createHmac, createDecipheriv } from "node:crypto";
 import { DeleteCommand, type DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it } from "vitest";
-import { AuditEventInputSchema, auditEventId, auditOperatorId, recordHash, type AuditEventInput, type OrgRole } from "@agentx/contracts";
+import { AuditEventInputSchema, auditEventId, auditOperatorId, recordHash, type AuditEventInput, type OrgRole } from "@agentx/cloud-contracts";
 import { appendEvent } from "../../packages/broker/src/audit/appender.js";
 import { AuditKeyring } from "../../packages/broker/src/audit/keyring.js";
 import { routeAuditRequest, type AuditOrgCaller } from "../../packages/broker/src/audit/routes.js";

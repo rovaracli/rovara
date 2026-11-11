@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { slackTeamOrgKey, type OrgId } from "@agentx/contracts";
+import { slackTeamOrgKey } from "@agentx/cloud-contracts";
+import { type OrgId } from "@rovara-code/contracts";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { slackCallerFor } from "../../packages/broker/src/aws/broker/dependency-wiring.js";
 import { membershipOrgResolver } from "../../packages/broker/src/org/resolve.js";

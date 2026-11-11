@@ -1,20 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { refuseReplayCopy } from "../../developer/eval-copy.js";
 import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  AgentXError,
-  CLOSE_MESSAGES,
-  DeveloperPullRequestRequestSchema,
-  DeveloperTaskCloseRequestSchema,
-  PullRequestResultSchema,
-  WorkspaceClosePreflightResultSchema,
-  agentXError,
-  sharedTaskKey,
-  workspaceSessionKey,
-  type DeveloperCloseResponse,
-  type DeveloperPullRequestResponse,
-  type Operation,
-} from "@agentx/contracts";
+import { AgentXError, CLOSE_MESSAGES, DeveloperPullRequestRequestSchema, DeveloperTaskCloseRequestSchema, PullRequestResultSchema, WorkspaceClosePreflightResultSchema, agentXError, sharedTaskKey, workspaceSessionKey, type Operation } from "@rovara-code/contracts";
+import { type DeveloperCloseResponse, type DeveloperPullRequestResponse } from "@agentx/cloud-contracts";
 import { releaseConflict, releaseItems } from "../../developer/limits.js";
 import {
   aiToolTurn,

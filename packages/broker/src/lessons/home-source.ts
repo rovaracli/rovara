@@ -3,7 +3,7 @@
 // can't see is never counted. Bounded: at most LESSON_HOME_PROJECTS_MAX projects the person maintains, read at once inside Home's source time. Nothing is written. The reader is plugged in at
 // handler start where the team record and lessons are on (`setLessonsHomeReader`); without it the source makes no card.
 import { createHash } from "node:crypto";
-import { lessonsPauseLine, projectAllows, type OrgId } from "@agentx/contracts";
+import { lessonsPauseLine, projectAllows, type OrgId } from "@rovara-code/contracts";
 import { fit, quoted, registerHomeCardSource, type HomeCardSource, type HomeSourceCard } from "../agent-sessions/home.js";
 
 export const LESSON_HOME_PROJECTS_MAX = 10;
@@ -33,7 +33,7 @@ export const lessonsHomeSource: HomeCardSource = {
       const pausedLine = paused === undefined ? undefined : lessonsPauseLine(paused);
       const waitingLine = waiting > 0 ? `${String(waiting)} ${waiting === 1 ? "lesson waits" : "lessons wait"} for a maintainer's OK in ${quoted(project)}` : undefined;
       return {
-        cardId: `lesson_waiting:${hashOf(orgId, project)}`, kind: "lesson_waiting" as const,
+        project, cardId: `lesson_waiting:${hashOf(orgId, project)}`, kind: "lesson_waiting" as const,
         title: waitingLine === undefined ? `Lessons paused in ${quoted(project)}` : `Lessons waiting in ${quoted(project)}`,
         reason: fit([waitingLine, pausedLine].filter((line): line is string => line !== undefined).join(". "), ""),
         at: at ?? (paused === undefined ? new Date(deps.now()).toISOString() : new Date(paused.at).toISOString()),

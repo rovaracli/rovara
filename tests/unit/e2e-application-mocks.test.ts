@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { canonicalJson, e2eApiSchemaComponentId, type E2EApiMockFixture, type E2EMockSpec } from "../../packages/contracts/src/index.js";
+import { canonicalJson, e2eApiSchemaComponentId, type E2EApiMockFixture, type E2EMockSpec } from "@rovara-code/contracts";
 import { mockOriginHost, mockOriginUrl, planApplicationOrigins } from "../../packages/verifier/src/application-mocks.js";
 import { MOCK_UNMOCKED_RESPONSE_DIGEST, mockRequestDigest, mockResponseDigest, type MockLedgerLine } from "../../packages/verifier/src/executor/mock-server.js";
 import { bindMockLedgers, parseMockLedger } from "../../packages/verifier/src/host/mock-ledger.js";

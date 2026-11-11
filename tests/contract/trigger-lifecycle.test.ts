@@ -1,11 +1,11 @@
 // Plan 4 Task 18: what happens to triggers and chains when a member leaves or is merged into another. A trigger is handed to someone who could own it, or turned off with the
 // people who should know told; a chain follows Plan 3's agent rules. Nothing fails silently.
 import { afterEach, describe, expect, it } from "vitest";
-import { TriggerSpecSchema } from "../../packages/contracts/src/agent-recipe.js";
+import { TriggerSpecSchema } from "@rovara-code/contracts";
 import { onMemberRemoved, onMembersMerged } from "../../packages/broker/src/agents/lifecycle.js";
 import { onTriggerOwnersRemoved } from "../../packages/broker/src/triggers/lifecycle.js";
 import { INVESTIGATE_THEN_FIX } from "../support/chain-examples.js";
-import { orgMemberKey } from "../../packages/contracts/src/org-node.js";
+import { orgMemberKey } from "../../packages/cloud-contracts/src/org-node.js";
 import { ARJUN, CARL, DANA, MAX, ORG_A, OWNER, PRIYA, VIV, disposeGateWorlds, setupTriggerWorld, type TriggerWorld } from "../support/trigger-world.js";
 
 afterEach(disposeGateWorlds);

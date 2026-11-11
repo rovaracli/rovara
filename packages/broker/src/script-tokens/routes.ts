@@ -1,6 +1,6 @@
 // Script tokens (UX5b): the settings routes. `GET` and `POST /v1/app/script-tokens` and `DELETE /v1/app/script-tokens/{id}`, for a live browser session only (a sign-in token, the CLI,
 // Slack and every script token are refused before anything is read). Off switch: not found, like any unknown path. Any other method or path under the prefix is not found.
-import { agentXError } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
 import { readChosenName } from "../developer/chosen-name.js";
 import { safeDisplayName } from "../developer/person-name.js";
 import { isFreshSignIn, type DeveloperRecord, type SessionRecord } from "../developer/store.js";

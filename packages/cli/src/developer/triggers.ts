@@ -2,7 +2,7 @@
 // <agent>`, each one signed-in call to the control plane's `/v1/app/{chains,agents}/{id}/triggers` routes. The control plane decides who may do what. Turning a trigger on is
 // a person's decision on the confirmation page (R66): a change that does so prints the page's link, and nothing here confirms anything.
 import { randomUUID } from "node:crypto";
-import { agentXError, newPrefixedId } from "@agentx/contracts";
+import { agentXError, newPrefixedId } from "@rovara-code/contracts";
 import { appRequest, clean, list, positive, readJsonFile, result, seg, str, waitingText, type AppResult } from "./agents.js";
 import type { DeveloperSessionDeps } from "./session.js";
 

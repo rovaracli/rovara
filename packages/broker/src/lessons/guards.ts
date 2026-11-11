@@ -1,5 +1,5 @@
 // Learning v2 text guards (controls C6, C7, C12). Pure code: what a lesson may never ask for, and what always sends a lesson to two people.
-import { cleanLessonText, foldForMatching, redactText } from "@agentx/contracts";
+import { cleanLessonText, foldForMatching, redactText } from "@rovara-code/contracts";
 
 /** Free text from a person or a system, made safe for a model and for storage: secrets redacted, hidden characters and markup removed, bounded. */
 export function cleanForLearning(text: string, maxChars: number): string {

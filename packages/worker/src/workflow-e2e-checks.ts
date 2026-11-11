@@ -1,12 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, realpath } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import {
-  E2EPolicySchema, E2ERoundSchema, E2ERunBindingSchema, E2EScenarioBundleSchema,
-  ProjectSetupRunnerEnvironmentSchema, ProjectSetupRunnerToolchainSchema,
-  canonicalJson, e2eScenarioBundleDigest, isE2EApplicationAdmissionSchemaVersion, selectE2EExecutionPlan, verifyE2ESourceSnapshot,
-  type E2ESourceSnapshot, type E2EWorkflowAdmissionRef, type WorkerInvocation,
-} from "@agentx/contracts";
+import { E2EPolicySchema, E2ERoundSchema, E2ERunBindingSchema, E2EScenarioBundleSchema, ProjectSetupRunnerEnvironmentSchema, ProjectSetupRunnerToolchainSchema, canonicalJson, e2eScenarioBundleDigest, isE2EApplicationAdmissionSchemaVersion, selectE2EExecutionPlan, verifyE2ESourceSnapshot, type E2ESourceSnapshot, type E2EWorkflowAdmissionRef } from "@rovara-code/contracts";
+import { type WorkerInvocation } from "@agentx/cloud-contracts";
 import { executeWorkflowE2EApplicationChecks, type WorkflowE2EApplicationRuntime, type WorkflowE2EModelChannelDependencies } from "./workflow-e2e-application-checks.js";
 import { collectE2EActualCliRun, compileE2EScenarios, e2ePrivateTransferMaxBytes, e2eSnapshotSourceDigest, observeInstalledRuntimeManifestForHost, runE2EActualCli } from "@agentx/verifier";
 

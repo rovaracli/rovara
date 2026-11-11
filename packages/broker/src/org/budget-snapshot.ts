@@ -1,5 +1,5 @@
 // One conditional snapshot/revision protocol for every physical writer of the existing BUDGET document.
-import { agentXError } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
 import { Aliases, NOT_EXISTS } from "../agents/table-writes.js";
 export function budgetDocumentFence(raw: Record<string, unknown> | undefined, options: { repairMalformed?: boolean } = {}) {
   let revision = raw?.revision ?? 0;

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { PlanEvidenceBundleSchema, type PlanClaim, type PlanDocument } from "@agentx/contracts";
+import { PlanEvidenceBundleSchema, type PlanClaim, type PlanDocument } from "@rovara-code/contracts";
 import { resolvePlanEvidence } from "../../packages/broker/src/developer/plan-evidence.js";
 import { planDocument } from "../support/plan-documents.js";
 

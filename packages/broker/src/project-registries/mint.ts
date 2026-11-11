@@ -5,7 +5,7 @@
 //   - a failure is one fixed sentence that names the registry. What the service said (an AWS error, a path, a credential reference's value) is never carried.
 // A generic registry (npm, pypi, maven the customer runs) is reached with a credential the install holds under `credentialRef`; the install supplies `stored`. Without it the
 // registry is refused (fail closed), never tried without a credential.
-import { REGISTRY_TOKEN_SECONDS, RegistryCredentialSchema, agentXError, type ProjectRegistry, type RegistryCredential } from "@agentx/contracts";
+import { REGISTRY_TOKEN_SECONDS, RegistryCredentialSchema, agentXError, type ProjectRegistry, type RegistryCredential } from "@rovara-code/contracts";
 
 export interface CodeArtifactTokenRequest { domain: string; domainOwner: string; region: string; durationSeconds: number }
 export interface MintedToken { token: string; expiresAt: Date; username?: string }

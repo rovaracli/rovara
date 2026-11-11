@@ -1,13 +1,13 @@
 // Plan 2, Task 17: the Public Suffix List the project network settings check domains against.
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { createPublicSuffixMatcher, isPublicSuffix } from "../../packages/contracts/src/public-suffix.js";
-import { PUBLIC_SUFFIX_LIST_COMMIT, PUBLIC_SUFFIX_RULES, registrableDomain } from "../../packages/contracts/src/public-suffix.js";
+import { createPublicSuffixMatcher, isPublicSuffix } from "@rovara-code/contracts";
+import { PUBLIC_SUFFIX_LIST_COMMIT, PUBLIC_SUFFIX_RULES, registrableDomain } from "@rovara-code/contracts";
 
 describe("the generated rules", () => {
   it("name the source commit, hold both sections, and cannot be changed at runtime", () => {
     expect(PUBLIC_SUFFIX_LIST_COMMIT).toMatch(/^[0-9a-f]{40}$/);
-    const source = readFileSync(new URL("../../packages/contracts/src/public-suffix-rules.ts", import.meta.url), "utf8");
+    const source = readFileSync(new URL("../../vendor/rovara-code/packages/contracts/src/public-suffix-rules.ts", import.meta.url), "utf8");
     expect(source).toContain(`Commit: ${PUBLIC_SUFFIX_LIST_COMMIT}`);
     // ICANN section, PRIVATE section, a wildcard rule and an exception rule.
     for (const rule of ["com", "co.uk", "github.io", "s3.amazonaws.com", "*.ck", "!www.ck"]) expect(PUBLIC_SUFFIX_RULES.has(rule), rule).toBe(true);

@@ -2,7 +2,7 @@
 // can be changed without dropped events) and delete; who may; what closing an org does to them. The deliveries use the same stores, so what the routes make is what ingress checks.
 import { describe, expect, it } from "vitest";
 import { HookStore, clearOrgHooks, HOOKS_PER_PROJECT_MAX } from "../../packages/broker/src/triggers/hooks.js";
-import { hookDirectoryKey, hookKey, hookLookupKey } from "../../packages/contracts/src/event-hooks.js";
+import { hookDirectoryKey, hookKey, hookLookupKey } from "@rovara-code/contracts";
 import { DANA, MAX, ORG_A, ORG_B, PRIYA, STRANGER, VIV, setupTriggerWorld, type TriggerWorld } from "../support/trigger-world.js";
 import { FakeHookSecrets, LINEAR_TENANT, OTHER_TENANT, SECRET_1, SECRET_2, TEST_PROVIDERS, iso, setupHookWorld, type HookWorld } from "../support/hook-fixtures.js";
 

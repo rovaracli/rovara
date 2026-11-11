@@ -5,7 +5,7 @@
 // the rest are counted as skipped and left to the sweep. It writes nothing but what a refresh writes.
 import { unmarshall } from "@aws-sdk/util-dynamodb";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { PROJECTOR_CONCURRENCY, PROJECTOR_SESSIONS_PER_BATCH_MAX, type OrgId, type SessionId } from "@agentx/contracts";
+import { PROJECTOR_CONCURRENCY, PROJECTOR_SESSIONS_PER_BATCH_MAX, type OrgId, type SessionId } from "@rovara-code/contracts";
 import type { StreamRecord } from "../developer/notifications.js";
 import { settleSteerDeliveriesFor } from "./steer.js";
 import { refreshSessionSummary, type SummaryDependencies } from "./summary.js";

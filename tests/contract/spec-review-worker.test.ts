@@ -5,12 +5,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
-import { SpecReviewInputSchema, WORKER_INVOCATION_FEATURES, WorkerInvocationSchema, readSpecVerdicts, specRequirementRows, specReviewFindings, type SpecReviewInput, type SpecReviewResult } from "@agentx/contracts";
+import { SpecReviewInputSchema, readSpecVerdicts, specRequirementRows, specReviewFindings, type SpecReviewInput, type SpecReviewResult } from "@rovara-code/contracts";
+import { WORKER_INVOCATION_FEATURES } from "@agentx/cloud-contracts";
+import { WorkerInvocationSchema } from "@agentx/cloud-contracts";
 import { runWorkflowReviews, specWalkPrompt } from "../../packages/worker/src/verification/review.js";
 import { WORKER_IMPLEMENTED_FEATURES } from "../../packages/worker/src/implemented-features.js";
 import type { PiSessionAdapter } from "../../packages/worker/src/pi-session.js";
 import { createEc2Delivery } from "../../packages/broker/src/aws/ec2-delivery.js";
-import { AGENT_WORKER_OUTDATED } from "@agentx/contracts";
+import { AGENT_WORKER_OUTDATED } from "@rovara-code/contracts";
 import { randomUUID } from "node:crypto";
 import { vi } from "vitest";
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { E2EDisplayScenarioSchema, E2EScenarioResultsSchema } from "@agentx/contracts";
+import { E2EDisplayScenarioSchema, E2EScenarioResultsSchema } from "@rovara-code/contracts";
 import {
   e2eMockedBadge, e2eScenarioSummary, renderE2EScenarioRowsHtml, renderE2EScenarioSlackBlocks,
 } from "../../packages/broker/src/e2e-presentation.js";

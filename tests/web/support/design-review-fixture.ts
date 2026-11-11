@@ -1,5 +1,5 @@
 // Design review (DR11): a stored review as the task view carries it, with hostile model words in the places a model writes, and a task page built from it.
-import { WorkflowDesignReviewSchema, designFindingFingerprint, type DesignReviewView, type ReviewerRole } from "@agentx/contracts/web";
+import { WorkflowDesignReviewSchema, designFindingFingerprint, type DesignReviewView, type ReviewerRole } from "@agentx/cloud-contracts/web";
 import { sessionFixture, taskFixture } from "./session-fixture.js";
 import { workspaceWorkflow } from "./workspace-fixture.js";
 

@@ -4,7 +4,8 @@
 // A deleted place (`source_deleted`, `excluded`) also loses its item heads (TR-E5). A `textOnly` request (a removed Rovara source row) removes only the rows that hold free text, walking the place from `walkCursor`.
 // Principal and audience changes that ran out of budget are finished here too. Every run is bounded (requests, items, milliseconds). A request older than an hour is a
 // backlog: the summary says so and the log line is the alarm; hidden rows stay hidden meanwhile.
-import { recordDeleteQueueKey, recordItemHeadKey, recordScopeHash, teamRecordSourceHash, type OrgId } from "@agentx/contracts";
+import { recordDeleteQueueKey, recordItemHeadKey, recordScopeHash, teamRecordSourceHash } from "@agentx/cloud-contracts";
+import { type OrgId } from "@rovara-code/contracts";
 import { auditRecordTombstoned, type RecordAuditSink } from "./audit.js";
 import { purgeAccessOfScope } from "./access.js";
 import { runErasureSweeps } from "./erase.js";

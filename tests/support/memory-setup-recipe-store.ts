@@ -1,6 +1,6 @@
 // An in-memory SetupRecipeStore for tests: compare-and-set on the revision, and the audit entries kept beside the rows.
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import type { OrgId } from "@agentx/contracts";
+import type { OrgId } from "@rovara-code/contracts";
 import type { FakeDynamoDb } from "./fake-dynamodb.js";
 import type { RecipeAuditEntry, SetupRecipeStore, StoredLocks, StoredRecipe } from "../../packages/broker/src/org/setup-recipes.js";
 

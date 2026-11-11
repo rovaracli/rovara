@@ -2,8 +2,9 @@
 // Then: the opinion is stored beside the workflow and nothing else; the pull request carries only an `on` second review's block or "did not run" line; with `cr` off the description is byte for byte today's.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { createWorkflowSnapshot, createCandidateManifest, WorkflowSnapshotSchema, type WorkflowSnapshot } from "../../packages/contracts/src/task-workflow-node.js";
-import { WORKFLOW_SECOND_REVIEW_LINE_MAX, WorkflowSecondReviewBlockSchema, secondReviewBlockFinding, type ModelIdentifier, type SecondOpinion, type WorkflowReviewReport } from "@agentx/contracts";
+import { createWorkflowSnapshot, WorkflowSnapshotSchema, type WorkflowSnapshot } from "../../packages/cloud-contracts/src/task-workflow-node.js";
+import { createCandidateManifest } from "@rovara-code/contracts";
+import { WORKFLOW_SECOND_REVIEW_LINE_MAX, WorkflowSecondReviewBlockSchema, secondReviewBlockFinding, type ModelIdentifier, type SecondOpinion, type WorkflowReviewReport } from "@rovara-code/contracts";
 import { workflowPullRequestBody } from "../../packages/broker/src/aws/developer-tasks.js";
 import { planSecondReview, secondOpinionOf, secondOpinionUnavailable, secondReviewAcknowledgement } from "../../packages/broker/src/rovara-code/second-review.js";
 import { secondOpinionOfTask, secondReviewPullRequestLines, secondReviewTaskView } from "../../packages/broker/src/rovara-code/second-review-store.js";

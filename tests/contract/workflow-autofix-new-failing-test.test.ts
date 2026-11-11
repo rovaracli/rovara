@@ -2,10 +2,8 @@
 // sends it back like any code fault, within the existing limits (two send backs per approved plan, then a person is asked), and never asks a person straight away. The broker sets the fact from its own evidence
 // pack and only while `vx` is on; without it every mapping is today's, and a check that failed before with nothing new still asks.
 import { describe, expect, it } from "vitest";
-import {
-  WORKFLOW_AGENTX_ACTOR_ID, WorkflowDecisionRecordSchema, WorkflowSnapshotSchema, autoFixAskCard, autoFixDecision, classifyBlockedWorkflow, createCandidateManifest, createWorkflowSnapshot, wholeTaskSpendUsd,
-  AUTO_FIX_CODE_CLASS, type AutoFixBudget, type AutoFixFacts, type WorkflowDecision, type WorkflowSnapshot,
-} from "@agentx/contracts";
+import { WORKFLOW_AGENTX_ACTOR_ID, WorkflowDecisionRecordSchema, createCandidateManifest, wholeTaskSpendUsd, type WorkflowDecision } from "@rovara-code/contracts";
+import { WorkflowSnapshotSchema, autoFixAskCard, autoFixDecision, classifyBlockedWorkflow, createWorkflowSnapshot, AUTO_FIX_CODE_CLASS, type AutoFixBudget, type AutoFixFacts, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 
 const NOW = "2026-11-02T12:00:00.000Z";
 const ownerId = "a".repeat(64);

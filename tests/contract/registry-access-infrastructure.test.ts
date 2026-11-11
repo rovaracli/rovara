@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import { Stack } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
-import { BOUND_REGISTRY_DOMAINS_VARIABLE, REGISTRY_TOKEN_SECONDS, parseBoundRegistryDomains } from "@agentx/contracts";
+import { BOUND_REGISTRY_DOMAINS_VARIABLE, REGISTRY_TOKEN_SECONDS, parseBoundRegistryDomains } from "@rovara-code/contracts";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { parseCodeArtifactDomains, registryTokenStatements, type PolicyStatementJson } from "../../infra/lib/registry-access.js";
 import { brokerSettingsIn } from "../support/broker-names-template.js";

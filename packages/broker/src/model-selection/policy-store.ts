@@ -1,6 +1,7 @@
 import type {TransactItem} from "../agents/table-writes.js";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { ModelSelectionPolicyResponseSchema, agentXError, orgSettingsKey, modelSourcesKey, agentGuardrailsKey, type ModelSelectionPolicyResponse, type OrgId, type StageId } from "@agentx/contracts";
+import { ModelSelectionPolicyResponseSchema, agentXError, modelSourcesKey, agentGuardrailsKey, type ModelSelectionPolicyResponse, type OrgId, type StageId } from "@rovara-code/contracts";
+import { orgSettingsKey } from "@agentx/cloud-contracts";
 export interface ModelPolicyReader {tableName:string;documentClient:{send(command:unknown):Promise<unknown>}}
 export const modelSelectionPolicyKey=(orgId:OrgId)=>orgSettingsKey(orgId,"MODEL_SELECTION_POLICY");
 /** No row is a virtual default. A row that cannot be trusted never becomes the default. No write on GET. */

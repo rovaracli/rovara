@@ -1,6 +1,6 @@
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import { describe, expect, it, vi } from "vitest";
-import { TurnCallSchema, TurnRecordSchema, type ConnectorCatalog, type SlackRequestMessage } from "../../packages/contracts/src/index.js";
+import { TurnCallSchema, TurnRecordSchema, type ConnectorCatalog, type SlackRequestMessage } from "@rovara-code/contracts";
 import { createGateSession } from "../../packages/orchestrator/src/action-gate.js";
 import type { OrchestrationApi } from "../../packages/orchestrator/src/orchestration-tools.js";
 import { createOrchestratorRuntime, runOrchestratorTurn } from "../../packages/orchestrator/src/orchestrator.js";

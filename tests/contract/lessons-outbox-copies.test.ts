@@ -2,7 +2,7 @@
 // when a lesson's author is erased, a lesson is retired or a reader loses access. Such a copy keeps no lesson text, and a stage released from a park is delivered without lessons.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import type { Ec2RuntimeBinding } from "../../packages/contracts/src/session.js";
+import type { Ec2RuntimeBinding } from "@rovara-code/contracts";
 import type { Ec2OutboxRecord } from "../../packages/broker/src/aws/lambda.js";
 import { failOutboxOperation } from "../../packages/broker/src/aws/outbox-failure.js";
 import { SessionManager } from "../../packages/broker/src/aws/sessions.js";

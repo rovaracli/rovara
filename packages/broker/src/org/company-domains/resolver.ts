@@ -4,7 +4,7 @@
 //
 // A lookup that fails (timeout, server failure, refusal) is "unavailable". It is never "absent": a flaky name server must not start the clock that makes a domain lost.
 import { Resolver } from "node:dns/promises";
-import { COMPANY_DOMAIN_RECORD_LABEL } from "@agentx/contracts";
+import { COMPANY_DOMAIN_RECORD_LABEL } from "@agentx/cloud-contracts";
 import { normalizeCompanyDomain } from "./normalize.js";
 
 export type TxtLookup =

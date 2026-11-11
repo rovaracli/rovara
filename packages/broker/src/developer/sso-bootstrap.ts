@@ -4,7 +4,8 @@
 // routes that write the mapping need a signed-in admin. The installer runs this once, with their AWS credentials (`rovara sso bootstrap`): it makes the named people the
 // install's owners, writes the first mapping and the first emergency list, and records both in the audit ledger. It refuses once a mapping or a list exists, so it can
 // never be used to change a running install: after that the admin routes are the only way.
-import { EditionSchema, GroupMappingConfigSchema, GroupMappingRuleSchema, GroupClaimNameSchema, agentXError, BREAK_GLASS_MAX_DAYS, requireFeature, singleOrgIdForEnv, type EditionPolicy, type OrgId } from "@agentx/contracts";
+import { EditionSchema, agentXError, singleOrgIdForEnv, type OrgId } from "@rovara-code/contracts";
+import { GroupMappingConfigSchema, GroupMappingRuleSchema, GroupClaimNameSchema, BREAK_GLASS_MAX_DAYS, requireFeature, type EditionPolicy } from "@agentx/cloud-contracts";
 import { createHash } from "node:crypto";
 import { auditOccurrence, auditSsoBreakGlassChanged, auditSsoGroupMappingChanged } from "../audit/events.js";
 import type { AuditRuntime } from "../audit/outbox.js";

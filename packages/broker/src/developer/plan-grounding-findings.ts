@@ -1,4 +1,4 @@
-import { planQualityFinding, type E2EDisplayBaseline, type E2EDisplayScenario, type PlanDocument, type PlanQualityFinding } from "@agentx/contracts";
+import { planQualityFinding, type E2EDisplayBaseline, type E2EDisplayScenario, type PlanDocument, type PlanQualityFinding } from "@rovara-code/contracts";
 
 /**
  * T7b: what a finished grounding round (the proposed plan's must-not-change scenarios on the unchanged app) says about the plan, as plan quality findings.

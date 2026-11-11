@@ -4,8 +4,8 @@
 import { createHmac, randomUUID } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it } from "vitest";
-import { githubInstallationKey } from "../../packages/contracts/src/org-node.js";
-import { TRACKING_COALESCE_SECONDS, TRACKING_GATE_SECONDS, TRACKING_HEARTBEAT_MINUTES, TRACKING_REVIEW_COALESCE_SECONDS } from "../../packages/contracts/src/rovara-code.js";
+import { githubInstallationKey } from "../../packages/cloud-contracts/src/org-node.js";
+import { TRACKING_COALESCE_SECONDS, TRACKING_GATE_SECONDS, TRACKING_HEARTBEAT_MINUTES, TRACKING_REVIEW_COALESCE_SECONDS } from "@rovara-code/contracts";
 import { authorizeLinkedGithubWebhook, handleGithubWebhook, type PullRequestWebhookEvent } from "../../packages/broker/src/aws/github-webhooks.js";
 import { runDueWorkflowMergeTracking, trackingRecoveryItem } from "../../packages/broker/src/aws/workflow-merge-recovery.js";
 import { taskKey } from "../../packages/broker/src/developer/task-records.js";

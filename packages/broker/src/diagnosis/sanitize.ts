@@ -1,10 +1,7 @@
 // Live interaction F2: the broker reads a diagnosis again. A model's answer (the light turn's text, or the deep worker's) is untrusted: it may be misled by text planted in a log, a check's output or a
 // repository file. Nothing it says is ever applied. This module turns the text into the closed set of proposals (`parseDiagnosisProposals`: an unknown kind or field drops the proposal whole, a
 // settings change off the allow-list is dropped) and makes every free-text field redacted, one line, inert (no mention, link, tag or issue reference) and short.
-import {
-  DIAGNOSIS_ANSWER_MAX_CHARS, DIAGNOSIS_PROPOSALS_MAX, parseDiagnosisCitation, parseDiagnosisProposals, redactText,
-  type DiagnosisProposal,
-} from "@agentx/contracts";
+import { DIAGNOSIS_ANSWER_MAX_CHARS, DIAGNOSIS_PROPOSALS_MAX, parseDiagnosisCitation, parseDiagnosisProposals, redactText, type DiagnosisProposal } from "@rovara-code/contracts";
 import { inertLine } from "../rovara-code/inert-text.js";
 
 export interface SanitizedDiagnosis {

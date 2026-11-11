@@ -3,7 +3,8 @@
 // one before the field existed: the golden file below was written by the code without it.
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { SessionViewSchema, errorRefOf } from "../../packages/contracts/src/index.js";
+import { errorRefOf } from "@rovara-code/contracts";
+import { SessionViewSchema } from "@agentx/cloud-contracts";
 import { requireSessionLevel } from "../../packages/broker/src/agent-sessions/access.js";
 import { taskKey } from "../../packages/broker/src/developer/task-records.js";
 import { sessionView, type SessionReadDependencies } from "../../packages/broker/src/agent-sessions/read.js";

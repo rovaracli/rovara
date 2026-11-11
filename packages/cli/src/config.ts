@@ -1,13 +1,7 @@
 import { readFile, realpath, stat } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
-import {
-  AGENTX_NAME_PATTERN,
-  AgentXNameSchema,
-  ProjectDefinitionSchema,
-  agentXError,
-  legacyProjectFields,
-  type ProjectDefinition,
-} from "@agentx/contracts";
+import { AGENTX_NAME_PATTERN, AgentXNameSchema, agentXError, legacyProjectFields } from "@rovara-code/contracts";
+import { ProjectDefinitionSchema, type ProjectDefinition } from "@agentx/cloud-contracts";
 import YAML from "yaml";
 
 const MAX_CONFIG_BYTES = 1_048_576;

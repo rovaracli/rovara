@@ -2,11 +2,7 @@
 // the browser session and never retried (`retry: "never"`): a stale version, a refusal or a throttle is thrown as an `ApiError` for the screen to show in the server's own fixed words.
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import {
-  DeveloperTaskViewSchema, LessonApproveAnswerReaderSchema, LessonApproveBodySchema, LessonDoneAnswerReaderSchema, LessonFeedbackBodySchema, LessonHistoryReaderSchema, LessonCompanyPresetReaderSchema, LessonMergeBodySchema, LessonPresetAnswerReaderSchema, LessonPresetBodySchema, LessonPresetChangeBodySchema, LessonRejectBodySchema,
-  LessonResumeAnswerReaderSchema, LessonResumeSourceBodySchema, LessonRetireBodySchema, LessonRollbackAnswerReaderSchema, LessonRollbackBodySchema, LessonSourcesReaderSchema, LessonsDigestReaderSchema, LessonsViewReaderSchema, LoadedLessonsReaderSchema,
-  ProjectOverviewProjectSchema,
-} from "@agentx/contracts/web";
+import { DeveloperTaskViewSchema, LessonApproveAnswerReaderSchema, LessonApproveBodySchema, LessonDoneAnswerReaderSchema, LessonFeedbackBodySchema, LessonHistoryReaderSchema, LessonCompanyPresetReaderSchema, LessonMergeBodySchema, LessonPresetAnswerReaderSchema, LessonPresetBodySchema, LessonPresetChangeBodySchema, LessonRejectBodySchema, LessonResumeAnswerReaderSchema, LessonResumeSourceBodySchema, LessonRetireBodySchema, LessonRollbackAnswerReaderSchema, LessonRollbackBodySchema, LessonSourcesReaderSchema, LessonsDigestReaderSchema, LessonsViewReaderSchema, LoadedLessonsReaderSchema, ProjectOverviewProjectSchema } from "@agentx/cloud-contracts/web";
 import type { z } from "zod";
 import { useAppHost, type AppHost } from "../host.js";
 import { createApiClient, type SendResult } from "./client.js";

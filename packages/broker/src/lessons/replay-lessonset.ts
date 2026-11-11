@@ -2,7 +2,7 @@
 // curator uses to keep a copy or a flipped copy apart (`copy-match.ts#relate`). A pair is a duplicate when the two say the same thing in the same words once filler is set aside; a contradiction when they are close in
 // words but a negation, direction or number differs, and they reach the same place (a shared repository, or either has no repository).
 import { createHash } from "node:crypto";
-import type { ArmLessonSet } from "@agentx/contracts";
+import type { ArmLessonSet } from "@rovara-code/contracts";
 import { normalizedText, relate } from "./copy-match.js";
 import type { Lesson } from "./types.js";
 

@@ -1,4 +1,4 @@
-import type { PlanDryRunClass } from "@agentx/contracts";
+import type { PlanDryRunClass } from "@rovara-code/contracts";
 
 /**
  * DRYMSG: what a plan card says of a proposed check's try on the unchanged code, from the dry run's fixed class alone. Pure, and every sentence is fixed

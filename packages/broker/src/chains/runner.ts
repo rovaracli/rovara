@@ -11,14 +11,8 @@
 //   - Text a person is shown from a task (a failure reason) is neutralised; text that goes to another agent is redacted (`handoff.ts`).
 import { createHash } from "node:crypto";
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  AGENT_REPORT_MAX_BYTES, AgentXError, BranchIdSchema, CHAIN_MAX_CONCURRENT_RUNS, CHAIN_MAX_STEP_RUNS, CHAIN_START_INPUT_MAX, ChainRunIdSchema, ChainRunStartedBySchema,
-  StepLinkSchema, StepResultSchema, STEP_LINKS_MAX, agentXError, answeredMessage, canonicalJson, chainKey, chainRunKey, chainRunsByChainKey, chainRunsByProjectKey, isBuiltinAgentId, newPrefixedId,
-  GATE_DEFAULT_TIMEOUT_HOURS, STEP_DEFAULT_TIMEOUT_MINUTES, UNVERIFIED_END_PREFIX, openChainRunKey, projectAllows, shortenToBytes, stepSk,
-  type AgentId, type AgentOwner, type ChainId, type ChainRunId, type ChainRunStartedBy, type ChainRunStatus, type Edge,
-  type OrgId, type Payer, type PinnedChainDefinition, type ResultContract, type RunInput, type StepAttemptStatus, type StepResult, type WorkOrigin, type WorkflowSnapshot,
-  workflowAnswer,
-} from "@agentx/contracts";
+import { AGENT_REPORT_MAX_BYTES, AgentXError, BranchIdSchema, CHAIN_MAX_CONCURRENT_RUNS, CHAIN_MAX_STEP_RUNS, CHAIN_START_INPUT_MAX, ChainRunIdSchema, ChainRunStartedBySchema, StepLinkSchema, StepResultSchema, STEP_LINKS_MAX, agentXError, answeredMessage, canonicalJson, chainKey, chainRunKey, chainRunsByChainKey, chainRunsByProjectKey, isBuiltinAgentId, newPrefixedId, GATE_DEFAULT_TIMEOUT_HOURS, STEP_DEFAULT_TIMEOUT_MINUTES, UNVERIFIED_END_PREFIX, openChainRunKey, projectAllows, shortenToBytes, stepSk, type AgentId, type AgentOwner, type ChainId, type ChainRunId, type ChainRunStartedBy, type ChainRunStatus, type Edge, type OrgId, type Payer, type PinnedChainDefinition, type ResultContract, type RunInput, type StepAttemptStatus, type StepResult, type WorkOrigin } from "@rovara-code/contracts";
+import { type WorkflowSnapshot, workflowAnswer } from "@agentx/cloud-contracts";
 import { requireAgentAccess, type AgentCaller } from "../agents/access.js";
 import type { AgentRunRequest, AgentRunResult, AgentRunStarter } from "../agents/runs.js";
 import { resolveAgentForAutonomousRun, resolveAgentForTask, roleOnProject, type RosterDependencies } from "../agents/roster.js";

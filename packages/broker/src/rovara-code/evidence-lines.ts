@@ -4,7 +4,7 @@
 //
 // What stays at every shrink level: the Environment line, the not-run line and the mocked or not-tested bullets (a reader must not miss what was not proved), and the link. The counts per kind and the
 // changed-line coverage go first, from level 2.
-import { evidenceIsFor, type EvidenceMode, type EvidencePack } from "@agentx/contracts";
+import { evidenceIsFor, type EvidenceMode, type EvidencePack } from "@rovara-code/contracts";
 import { AWS_PERMISSIONS_ITEM_ID } from "./dependency-evidence.js";
 import { packDependencyLines } from "./dependency-lines.js";
 import { inertLine } from "./inert-text.js";

@@ -1,5 +1,5 @@
 // "How we work": the six rows of a stage card, worked out from the view. Every value carries the marker the server gave it.
-import type { HowWeWorkViewRead } from "@agentx/contracts/web";
+import type { HowWeWorkViewRead } from "@agentx/cloud-contracts/web";
 /** The view as the page reads it (a newer server may send a word this page does not know: such a value reads as "unknown"). */
 export type ViewRead = HowWeWorkViewRead;
 export type StageRead = ViewRead["stages"][number];

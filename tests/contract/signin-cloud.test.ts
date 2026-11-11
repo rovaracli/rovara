@@ -1,5 +1,5 @@
 // agentx signin cloud (Task 24): turn GitHub and Google sign-in on, change or off on an installed Rovara Cloud environment.
-import { environmentStackName, type ReleaseManifest } from "@agentx/contracts";
+import { environmentStackName, type ReleaseManifest } from "@rovara-code/contracts";
 import { describe, expect, it } from "vitest";
 import { stackParameters } from "../../packages/cli/src/deploy/parameters.js";
 import { readEnvironmentSettings, writeEnvironmentSettings, type EnvironmentSettings } from "../../packages/cli/src/environments/settings.js";

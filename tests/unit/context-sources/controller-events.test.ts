@@ -1,7 +1,8 @@
 // Stdio MCP host redesign, task T10: what the controller tells the broker (events), how the broker records it in the audit trail, pauses a server whose tools changed, and summarises it for
 // the "recent starts" line. Ids, hashes, counts and fixed words only; a secret, a package's output and an address' owner are in none of it.
 import { describe, expect, it } from "vitest";
-import { AUDIT_FACT_KEYS, McpControllerEventSchema, orgScoped, type McpControllerEvent } from "@agentx/contracts";
+import { AUDIT_FACT_KEYS } from "@agentx/cloud-contracts";
+import { McpControllerEventSchema, orgScoped, type McpControllerEvent } from "@rovara-code/contracts";
 import { controllerEventAudit, mcpServerAudit } from "../../../packages/broker/src/context-sources/audit.js";
 import { dynamoControllerEventStore, drainControllerEvents, serverActivities } from "../../../packages/broker/src/context-sources/controller-events.js";
 import { approveMcpServer, dynamoMcpServerStore, listMcpServers, proposeMcpServer, type McpServerDependencies, type McpServerSecrets } from "../../../packages/broker/src/context-sources/mcp-servers.js";
@@ -225,7 +226,7 @@ describe("T10: pausing a server whose tools changed", () => {
     await put(w.db, "EVT#a#1", { type: "changed_needs_review", serverId: w.entry.serverId, at: at(-1_000), approved: w.entry.probe.toolsHash, observed: HASH_B });
     await w.drain();
     expect((await listMcpServers(w.deps, admin)).map((server) => server.status)).toEqual(["changed_needs_review"]);
-    const { stdioSpecIfComplete } = await import("@agentx/contracts");
+    const { stdioSpecIfComplete } = await import("@rovara-code/contracts");
     expect(stdioSpecIfComplete((await w.deps.store.get(ORG, w.entry.serverId))!)).toBeUndefined();
     const { disableMcpServer } = await import("../../../packages/broker/src/context-sources/mcp-servers.js");
     await disableMcpServer(w.deps, admin, w.entry.serverId);

@@ -1,7 +1,7 @@
 // Meta repo lane F: the broker's ports under the intake engine, and the maintainers' notice. Who a tracker account is comes only from a link the org holds (GitHub: the account-to-member
 // link), read in the org asked about and again live; the role on the project is read now; the notice is fixed words and ids.
 import { describe, expect, it } from "vitest";
-import { intakeNoticeKey, intakeItemIdOf, type OrgId } from "@agentx/contracts";
+import { intakeNoticeKey, intakeItemIdOf, type OrgId } from "@rovara-code/contracts";
 import { bindSessionSurface } from "../../packages/broker/src/agent-sessions/bindings.js";
 import { linkGithubMember } from "../../packages/broker/src/rovara-code/github-members.js";
 import { intakePortsOf, type IntakeWiring } from "../../packages/broker/src/intake/wiring.js";

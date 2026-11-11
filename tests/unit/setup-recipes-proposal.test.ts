@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { SetupRecipeBodySchema, SetupRecipeOfferSchema, TestEnvDraftSchema, parseSetupRecipeSource, setupFingerprint, setupRecipeDigest, type OrgId, type SetupRecipeBody, type SetupRecipeOffer } from "@agentx/contracts";
+import { SetupRecipeBodySchema, SetupRecipeOfferSchema, TestEnvDraftSchema, parseSetupRecipeSource, setupFingerprint, setupRecipeDigest, type OrgId, type SetupRecipeBody, type SetupRecipeOffer } from "@rovara-code/contracts";
 import { applyRecipe, registryHostsOf } from "../../packages/worker/src/env-detect/recipes.js";
 import { buildEnvironmentDraft, runDetectors } from "../../packages/worker/src/env-detect/index.js";
 import { emptyDetection, type RepositoryReader } from "../../packages/worker/src/env-detect/types.js";

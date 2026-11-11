@@ -1,6 +1,6 @@
 // Text that GitHub shows to the repository's readers, made inert: nothing in it can mention or notify anyone, link anywhere, cross-reference an issue, embed an image, hide the rest of a
 // description in a comment, or tell the next reader that a Rovara block starts or ends. It is used for every model-written, file-name or branch-name line of a pull request description.
-import { redactText } from "@agentx/contracts";
+import { redactText } from "@rovara-code/contracts";
 import { neutralizeLinearWords } from "./linear-close.js";
 
 /**

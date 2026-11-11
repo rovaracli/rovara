@@ -1,8 +1,8 @@
 // Task 34: a task with no workflow starts at the TASK estimate's run limit, and a run's limit is a function of the org's history. Tests of the
 // mechanics that depend on a known task budget (how a key's cap counts what the task's keys spent, how a Continue starts a new window) seed the
 // history that gives the budget they were written for.
-import { runCostKey } from "../../packages/contracts/src/org-scoped-keys.js";
-import type { OrgId } from "../../packages/contracts/src/org-node.js";
+import { runCostKey } from "@rovara-code/contracts";
+import type { OrgId } from "@rovara-code/contracts";
 import type { FakeDynamoDb } from "./fake-dynamodb.js";
 import { TEST_ORG } from "./orgs.js";
 

@@ -6,7 +6,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { LOOK_OWN_SHADOWS, LOOK_COLORS, LOOK_DENSITY, LOOK_TEXT_PAIRS, LOOK_UI_PAIRS, TOKENS, contrastRatio, lookV2Css, tokensCss } from "../../packages/design-tokens/src/index.js";
 import { ThemeProvider, useTheme } from "../../packages/ui/src/theme.js";
-import { AppNavSchema } from "@agentx/contracts/web";
+import { AppNavSchema } from "@agentx/cloud-contracts/web";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router";
 import { AppHostProvider } from "../../packages/ui/src/host.js";

@@ -1,7 +1,7 @@
 import { App, Stack } from "aws-cdk-lib";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import { beforeAll, describe, expect, it } from "vitest";
-import { WORKSPACE_SESSION_STATE_INDEX } from "../../packages/contracts/src/session.js";
+import { WORKSPACE_SESSION_STATE_INDEX } from "@rovara-code/contracts";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { EC2_WORKER_AMI_PARAMETER, EC2_WORKER_PORT } from "../../infra/lib/ec2-workers.js";
 import { environmentNaming } from "../../infra/lib/naming.js";

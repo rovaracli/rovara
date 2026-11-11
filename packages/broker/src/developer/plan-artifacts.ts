@@ -1,7 +1,7 @@
 // Spec 061: a workflow document read back from storage, whichever way it was stored.
 import { createHash } from "node:crypto";
 import { GetObjectCommand } from "@aws-sdk/client-s3";
-import { PlanEvidenceBundleSchema, WORKFLOW_PLAN_MAX_BYTES, planDocumentMarkdown, readCanonicalPlan, type PlanDocument, type PlanEvidenceBundle, type PlanOwnerAnswers, type WorkflowArtifact } from "@agentx/contracts";
+import { PlanEvidenceBundleSchema, WORKFLOW_PLAN_MAX_BYTES, planDocumentMarkdown, readCanonicalPlan, type PlanDocument, type PlanEvidenceBundle, type PlanOwnerAnswers, type WorkflowArtifact } from "@rovara-code/contracts";
 
 /** The most bytes read for a legacy Markdown document. */
 const MARKDOWN_MAX_BYTES = 1_000_000;

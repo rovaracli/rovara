@@ -1,7 +1,7 @@
 // Design review stage (DR8): the setting a task runs with, read in one place. The project's How we work value (the playbook's `designReview`; Off with the owner's defaults when it has none OR when the stored one cannot be read) held to the
 // company's lock. Consumers (mode resolution, the cost gate, approval by risk) call this and never read the playbook or the lock themselves. A lock that cannot be read gives the strictest posture; a read that fails is
 // the caller's to handle (a task is not started on a guessed setting).
-import type { OrgId } from "@agentx/contracts";
+import type { OrgId } from "@rovara-code/contracts";
 import { readProjectPlaybookDetail, type ProjectPlaybookDetail, type ProjectPlaybookReader } from "../playbook/project-playbook-store.js";
 import type { EffectiveDesignReviewSetting } from "./effective-setting.js";
 import { effectiveDesignReviewSetting, lockedFields, readDesignReviewCompany, type DesignReviewCompanyRead, type LockViolation } from "./lock.js";

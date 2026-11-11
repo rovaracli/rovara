@@ -2,17 +2,7 @@
 // broker checks the administrator first; this module reads and writes the batch.
 import { createHash } from "node:crypto";
 import { GetObjectCommand } from "@aws-sdk/client-s3";
-import {
-  EvalBatchFileSchema,
-  EvalBatchSummarySchema,
-  SlackChannelIdSchema,
-  SlackTeamIdSchema,
-  agentXError,
-  type EvalBatchRecord,
-  type EvalBatchSummary,
-  type SlackRequester,
-  type SlackThread,
-} from "@agentx/contracts";
+import { EvalBatchFileSchema, EvalBatchSummarySchema, SlackChannelIdSchema, SlackTeamIdSchema, agentXError, type EvalBatchRecord, type EvalBatchSummary, type SlackRequester, type SlackThread } from "@rovara-code/contracts";
 import { createBatch, evalBatchResultsKeys, getBatch, getBatchProjectName, isBatchActiveListed, stopBatch, type EvalBatchDependencies } from "./eval-batch.js";
 import type { SwebenchSlackContext } from "./swebench.js";
 

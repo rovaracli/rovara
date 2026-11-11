@@ -4,7 +4,7 @@
 //   - `signatureMatcher`: a matcher that needs no model and no text: two corrections, or a correction and a lesson, are the same when their signatures are similar and neither says "never"
 //     where the other does not (the v1.2 rule). It is a floor: `fusedMatcher` (below) is the matcher for corrections whose text is still there, and falls back to this one for those whose text is gone.
 // Nothing here writes. A correction that has no signature cannot be compared, so the matcher throws and the metric reports it as unjudged rather than guessing.
-import { LearningCorrectionSchema } from "@agentx/contracts";
+import { LearningCorrectionSchema } from "@rovara-code/contracts";
 import { learningSalt } from "../learning/standing.js";
 import { NEGATED, compareSignatures, signatureOf, type Signature } from "../learning/similarity.js";
 import { readLearningPartition, type LearningDeps, type LearningScope } from "../learning/store.js";

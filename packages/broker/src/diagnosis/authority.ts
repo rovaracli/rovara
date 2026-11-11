@@ -4,7 +4,8 @@
 //   an error of a connector           not offered here: no row reports one yet, and an organization-level error is an admin's to read.
 // A diagnosis is a read and a proposal, so it needs no fresh sign-in.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { OrgRoleSchema, orgMemberKey, projectAllows, type ErrorRef, type OrgId, type ProjectRole } from "@agentx/contracts";
+import { OrgRoleSchema, orgMemberKey } from "@agentx/cloud-contracts";
+import { projectAllows, type ErrorRef, type OrgId, type ProjectRole } from "@rovara-code/contracts";
 import { AgentSessionStore } from "../agent-sessions/store.js";
 import { sessionLevelOf, type SessionAccessDependencies } from "../agent-sessions/access.js";
 import { taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";

@@ -1,7 +1,8 @@
 // Spec 061 (slice 1.1, task 5): the PlanEvidence job reads a stored plan's cited code in the background, with retries.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { agentXError, editionPolicy, type HostScope, type WorkflowSnapshot } from "@agentx/contracts";
+import { agentXError, type HostScope } from "@rovara-code/contracts";
+import { editionPolicy, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { githubCodeHost } from "../../packages/broker/src/plugins/code-host/github/index.js";
 import { FakeCodeHost } from "../../packages/broker/src/plugins/fake/code-host.js";
 import { FakeHostModel } from "../../packages/broker/src/plugins/fake/model.js";
@@ -12,7 +13,7 @@ import { PLAN_EVIDENCE_EVENT_SOURCE, planEvidenceDueKey } from "../../packages/b
 import { MAYA, createSingleAnswerPlanBroker } from "../support/developer-task-broker.js";
 import { planAnswer, planDocument } from "../support/plan-documents.js";
 import { TEST_ORG } from "../support/orgs.js";
-import { projectRevisionKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { projectRevisionKey } from "@rovara-code/contracts";
 
 const PREPARED = { result: { preparedBase: [{ repositoryId: "demo", baseCommitSha: "e".repeat(40) }] } };
 const FILE = ["one", "two", "three", "four", "five"].join("\n") + "\n";
@@ -64,7 +65,7 @@ describe("the PlanEvidence job", () => {
     const getFileAtCommit = vi.fn<GetFile>(async () => FILE);
     const outcome = await runPlanEvidenceJob(jobDeps(harness, getFileAtCommit), { taskId, artifactId: artifact.id });
     expect(outcome).toBe("attached");
-    expect(getFileAtCommit).toHaveBeenCalledWith("https://github.com/example/demo.git", "src/charge.ts", "e".repeat(40), { system: "private-install" }, { untilLine: 3, timeoutMs: 30_000 });
+    expect(getFileAtCommit).toHaveBeenCalledWith("https://github.com/example/demo.git", "src/charge.ts", "e".repeat(40), { system: "install" }, { untilLine: 3, timeoutMs: 30_000 });
     expect(bundleOf(harness, taskId, artifact.id).excerpts).toEqual([expect.objectContaining({ claimId: "1", status: "ok", commit: "e".repeat(40), lines: ["two", "three"] })]);
     expect(pointerOf(harness, taskId, artifact.id)!.objectKey).toMatch(new RegExp(`^private/${taskRecord(harness, taskId).ownerKey}/.+/plan-documents/${artifact.id}\\.evidence\\.[0-9a-f]{64}\\.json$`));
     expect(rows(harness)).toEqual([]);
@@ -426,7 +427,7 @@ describe("a deployment with no PlanEvidence function", () => {
     const harness = await createSingleAnswerPlanBroker({ brokerExtra: { githubPullRequests: { getFileAtCommit } } });
     const { taskId, artifact } = await plannedTask(harness);
     expect(rows(harness)).toEqual([]);
-    expect(getFileAtCommit).toHaveBeenCalledWith("https://github.com/example/demo.git", "src/charge.ts", "e".repeat(40), { system: "private-install" }, { untilLine: 3 });
+    expect(getFileAtCommit).toHaveBeenCalledWith("https://github.com/example/demo.git", "src/charge.ts", "e".repeat(40), { system: "install" }, { untilLine: 3 });
     expect(taskRecord(harness, taskId).workflow).toMatchObject({ stage: "PLAN_REVIEW", state: "WAITING" });
     expect(taskRecord(harness, taskId).workflow.artifacts.at(-1)).toEqual(artifact);
     expect(artifact).not.toHaveProperty("evidence");

@@ -2,10 +2,8 @@
 // (`PUT|DELETE /v1/app/projects/{name}/slack-channel`). The admin bind (`PUT /v1/admin/slack/bindings/...`) keeps working as before.
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
-import {
-  auditOperatorId, orgMetaKey, orgProjectCatalogKey, orgSlackTeamKey, projectMemberKey, projectMetaKey, projectRevisionKey, slackBindingKey, slackTeamOrgKey, developerOrgKey,
-  type OrgId, type OrgRole, type ProjectRole,
-} from "../../packages/contracts/src/index.js";
+import { auditOperatorId, orgMetaKey, orgSlackTeamKey, slackTeamOrgKey, developerOrgKey, type OrgRole } from "@agentx/cloud-contracts";
+import { orgProjectCatalogKey, projectMemberKey, projectMetaKey, projectRevisionKey, slackBindingKey, type OrgId, type ProjectRole } from "@rovara-code/contracts";
 import { APP_CSRF_HEADER, appCsrfTokenFor } from "../../packages/broker/src/developer/app-csrf.js";
 import { capturingAuditDeps, type AuditCapture } from "../support/audit-capture.js";
 import { DEV_ISSUER, MAYA, OMAR, bindChannel, createDeveloperTaskBroker, seedMembership, unbindChannel, type Developer } from "../support/developer-task-broker.js";

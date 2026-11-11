@@ -1,6 +1,6 @@
 // TE-2: the pure parts of the candidate check: the lists it runs (and the approval writes), the stored record's reader, and what makes a proposal a setup run's.
 import { describe, expect, it } from "vitest";
-import { INDEX_EXPIRY_ATTRIBUTE, TestEnvironmentBodySchema, type ProjectCommand } from "../../packages/contracts/src/index.js";
+import { INDEX_EXPIRY_ATTRIBUTE, TestEnvironmentBodySchema, type ProjectCommand } from "@rovara-code/contracts";
 import { candidateCheckKey, readCandidateCheck } from "../../packages/broker/src/org/test-env-candidate.js";
 import { candidateLists, candidateListsChecked, commandsMissingFromSettings, commandsToApply, sameCommands } from "../../packages/broker/src/test-env/candidate-commands.js";
 import { isSetupRunProposal } from "../../packages/broker/src/org/test-environment.js";

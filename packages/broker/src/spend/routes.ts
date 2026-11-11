@@ -7,10 +7,8 @@
 // Every key is built from the caller's checked org, so another org's counters and lines can't be reached by any id or cursor. Member and org figures are the
 // counters', which are advisory: LiteLLM's caps stay authoritative (R23). A month is `YYYY-MM` in UTC and defaults to the current one.
 import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  AgentIdSchema, SPEND_ORIGIN_KINDS, agentRunsKey, agentXError, budgetAlertKey, builtinSettingsKey, isBuiltinAgentId, ledgerKey, modelCounter, originCounter, personalCounter,
-  projectAllows, scopeKey, sourceCounter, spendCounterKey, type AgentId, type BudgetScope, type OrgId,
-} from "@agentx/contracts";
+import { AgentIdSchema, agentRunsKey, agentXError, builtinSettingsKey, isBuiltinAgentId, projectAllows, type AgentId, type OrgId } from "@rovara-code/contracts";
+import { SPEND_ORIGIN_KINDS, budgetAlertKey, ledgerKey, modelCounter, originCounter, personalCounter, scopeKey, sourceCounter, spendCounterKey, type BudgetScope } from "@agentx/cloud-contracts";
 import { requireAgentAccess, type AgentCaller } from "../agents/access.js";
 import { readGuardrails } from "../agents/guardrails.js";
 import type { AgentRouteDependencies } from "../agents/routes.js";
@@ -43,7 +41,7 @@ function monthOf(deps: Deps, url: URL): string {
   return asked;
 }
 
-async function getItem(deps: Deps, key: { pk: string; sk: string }): Promise<Item | undefined> {
+async function getItem(deps: Pick<Deps, "documentClient" | "tableName">, key: { pk: string; sk: string }): Promise<Item | undefined> {
   return ((await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: key, ConsistentRead: true }))) as { Item?: Item }).Item;
 }
 
@@ -65,15 +63,15 @@ async function queryPartition(deps: Deps, pk: string, options: { backwards?: boo
 
 const spendPk = (orgId: OrgId, month: string): string => spendCounterKey(orgId, month, "ORG").pk;
 
-interface Figures { spentUsd: number; committedUsd: number; limitUsd?: number }
+export interface Figures { spentUsd: number; committedUsd: number; limitUsd?: number }
 
-async function figuresOf(deps: Deps, orgId: OrgId, month: string, scope: BudgetScope, limits: Map<string, number | undefined>): Promise<Figures> {
+async function figuresOf(deps: Pick<Deps, "documentClient" | "tableName">, orgId: OrgId, month: string, scope: BudgetScope, limits: Map<string, number | undefined>): Promise<Figures> {
   const item = await getItem(deps, spendCounterKey(orgId, month, scopeKey(scope)));
   const limitUsd = limits.get(scopeKey(scope));
   return { spentUsd: num(item?.["spentUsd"]), committedUsd: num(item?.["committedUsd"]), ...(limitUsd === undefined ? {} : { limitUsd }) };
 }
 
-const limitsDeps = (deps: Deps) => ({ documentClient: deps.documentClient, tableName: deps.tableName, ...(deps.cloud === true ? { cloud: true } : {}) });
+const limitsDeps = (deps: Pick<Deps, "documentClient" | "tableName" | "cloud">) => ({ documentClient: deps.documentClient, tableName: deps.tableName, ...(deps.cloud === true ? { cloud: true } : {}) });
 
 // ---- the caller's budget
 
@@ -91,6 +89,17 @@ async function getBudget(deps: Deps, caller: AgentCaller, month: string): Promis
     month, member, org, testing, personalPlan: { tokens: num(personal?.["tokens"]) },
     alerts: alerts.filter((alert) => mine.has(String(alert["scope"]))).map((alert) => ({ scope: alert["scope"], level: alert["level"], spentUsd: alert["spentUsd"], limitUsd: alert["limitUsd"], at: alert["at"] })),
   };
+}
+
+/**
+ * The org's and the caller's own figures for one month, as `GET /v1/app/budget` answers them (the same counters and limits), for the trial view. Both are keyed by the caller's checked org.
+ * Reads only.
+ */
+export async function readOrgAndMemberFigures(deps: Pick<Deps, "documentClient" | "tableName" | "cloud">, who: { orgId: OrgId; developerId: string }, month: string): Promise<{ org: Figures; member: Figures }> {
+  const scopes: BudgetScope[] = [{ kind: "org" }, { kind: "member", developerId: who.developerId }];
+  const limits = await effectiveLimits(limitsDeps(deps), { orgId: who.orgId, month, scopes });
+  const [org, member] = await Promise.all([figuresOf(deps, who.orgId, month, scopes[0]!, limits), figuresOf(deps, who.orgId, month, scopes[1]!, limits)]);
+  return { org, member };
 }
 
 // ---- the org's spend and ledger

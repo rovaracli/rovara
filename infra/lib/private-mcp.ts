@@ -10,7 +10,7 @@
 //   rovaraMcpHostName, rovaraMcpHostedZoneId   the DNS name the certificate is for, and the Route 53 zone the alias record goes in
 //
 // No certificate, name or range is written into the code: each comes from the install's own configuration. Every wrong value stops synth, naming its setting and never echoing a secret.
-import type { Edition } from "@agentx/contracts";
+import type { Edition } from "@rovara-code/contracts";
 import { AGENTX_PRODUCTION_VPC_CIDR } from "./production-foundation.js";
 import { ENTERPRISE_EGRESS_CIDRS_CONTEXT_KEY, parseEnterpriseEgressCidrs } from "./vpc-endpoints.js";
 

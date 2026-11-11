@@ -11,17 +11,8 @@ import {
   type DynamoDBDocumentClient,
   type TransactWriteCommandInput,
 } from "@aws-sdk/lib-dynamodb";
-import {
-  AUDIT_ACTIONS,
-  AUDIT_FACT_KEYS,
-  AUDIT_PENDING_SHARDS,
-  AUDIT_PENDING_TTL_DAYS,
-  AuditEventIdSchema,
-  AuditEventInputSchema,
-  INDEX_EXPIRY_ATTRIBUTE,
-  OrgIdSchema,
-  type AuditEventInput,
-} from "@agentx/contracts";
+import { AUDIT_ACTIONS, AUDIT_FACT_KEYS, AUDIT_PENDING_SHARDS, AUDIT_PENDING_TTL_DAYS, AuditEventIdSchema, AuditEventInputSchema, type AuditEventInput } from "@agentx/cloud-contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, OrgIdSchema } from "@rovara-code/contracts";
 
 /** What the audit functions need at runtime. Both clients are made with `requestTimeout: AUDIT_SDK_REQUEST_TIMEOUT_MS` and `maxAttempts: 2`. */
 export interface AuditRuntime {

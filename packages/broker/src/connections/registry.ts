@@ -3,7 +3,7 @@
 // org; another org's id, an unknown id or a connection with no saved secret reads as not registered. On a cloud
 // install this replaces the install-wide registry for the org's workspaces and tasks.
 import { staticSecretProvider, CredentialUnavailable, type Access, type CredentialProvider, type SecretSource } from "@agentx/gateway";
-import { OrgIdSchema, connectionTakesSecret, type CredentialRecord, type CredentialType, type OrgId } from "@agentx/contracts";
+import { OrgIdSchema, connectionTakesSecret, type CredentialRecord, type CredentialType, type OrgId } from "@rovara-code/contracts";
 import { hostPinProblem, type ConnectorCredentials, type HostPin } from "../aws/credentials.js";
 import { orgConnectorSecretName } from "./org-secrets.js";
 import { vendorHostOf } from "./vendor-hosts.js";

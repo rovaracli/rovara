@@ -1,5 +1,6 @@
 import { transactionAuditEvent } from "../support/transaction-audit.js";
-import { DEFAULT_AGENT_GUARDRAILS, agentGuardrailsKey, orgSettingsKey, orgScoped, orgMemberKey, developerOrgKey, orgProjectCatalogKey, projectAiKey, projectMemberKey, projectMetaKey } from "@agentx/contracts";
+import { DEFAULT_AGENT_GUARDRAILS, agentGuardrailsKey, orgScoped, orgProjectCatalogKey, projectMemberKey, projectMetaKey } from "@rovara-code/contracts";
+import { orgSettingsKey, orgMemberKey, developerOrgKey, projectAiKey } from "@agentx/cloud-contracts";
 import { TEST_ORG } from "../support/orgs.js";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { swebenchDependencies } from "../../packages/broker/src/aws/broker/admin-and-helpers.js";
@@ -7,7 +8,7 @@ import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { unmarshall } from "@aws-sdk/util-dynamodb";
-import { AgentXError, SwebenchLaunchSchema, type SwebenchLaunch } from "@agentx/contracts";
+import { AgentXError, SwebenchLaunchSchema, type SwebenchLaunch } from "@rovara-code/contracts";
 import { swebenchEvalDefinition } from "../../infra/lib/swebench-eval-definition.js";
 import { startSwebenchRun, stopSwebenchRun, type SwebenchDependencies, type SwebenchDeployment } from "../../packages/broker/src/aws/swebench.js";
 import { swebenchDeploymentFromParameters } from "../../packages/broker/src/aws/swebench-settings.js";

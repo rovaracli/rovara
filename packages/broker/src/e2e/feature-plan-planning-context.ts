@@ -1,11 +1,7 @@
-import {
-  E2E_ANONYMOUS_ACCOUNT_PROFILE_ID, E2EApiMockFixtureSchema, canonicalJson, e2eAnonymousRuntimeAccountRef, createE2EOpenApiFixtureDescriptor, e2eApplicationRecipeIsProjectContract, inspectE2EPortableSource,
-  inspectE2EApplicationRepository, isE2EPlaceholderRuntimeProfileId, isE2EQualifiedRuntimeProfileId, readE2EApplicationProjectContract, redactSecrets, verifyE2ESourceSnapshot, withE2EAnonymousTargets,
-  type E2EAppRecipe, type E2EApplicationProjectContract, type E2EPolicy, type E2ERuntimeAccountRef, type E2ESourceSnapshot,
-} from "@agentx/contracts";
+import { E2E_ANONYMOUS_ACCOUNT_PROFILE_ID, E2EApiMockFixtureSchema, canonicalJson, e2eAnonymousRuntimeAccountRef, createE2EOpenApiFixtureDescriptor, e2eApplicationRecipeIsProjectContract, inspectE2EPortableSource, inspectE2EApplicationRepository, isE2EPlaceholderRuntimeProfileId, isE2EQualifiedRuntimeProfileId, readE2EApplicationProjectContract, redactSecrets, verifyE2ESourceSnapshot, withE2EAnonymousTargets, type E2EAppRecipe, type E2EApplicationProjectContract, type E2EPolicy, type E2ERuntimeAccountRef, type E2ESourceSnapshot } from "@rovara-code/contracts";
 import { E2EAccountRegistryError, latestAccountRef, type E2EAccountRegistryEntry } from "./application-account-registry.js";
 import type { ReadyE2ERuntime } from "../aws/e2e-runtime-readiness.js";
-import { E2EApplicationIdentityMissingError, e2eApplicationMetadataSourceRefs } from "@agentx/contracts";
+import { E2EApplicationIdentityMissingError, e2eApplicationMetadataSourceRefs } from "@rovara-code/contracts";
 import * as ts from "typescript";
 
 const MAX_PLANNING_CONTEXT_BYTES = 12_000;

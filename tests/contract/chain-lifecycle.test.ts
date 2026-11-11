@@ -4,9 +4,9 @@
 // and its event are one transaction, and a run's end releases its place in the chain once.
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
-import { agentXError } from "@agentx/contracts";
-import { approvalKey, approverIndexKey, chainKey, chainRunKey, openApprovalKey, openChainRunKey, stepSk } from "../../packages/contracts/src/org-scoped-keys.js";
-import type { ChainDefinitionInput } from "../../packages/contracts/src/chains.js";
+import { agentXError } from "@rovara-code/contracts";
+import { approvalKey, approverIndexKey, chainKey, chainRunKey, openApprovalKey, openChainRunKey, stepSk } from "@rovara-code/contracts";
+import type { ChainDefinitionInput } from "@rovara-code/contracts";
 import { decideApproval, expireApprovals, registerApprovalSubjectHandler } from "../../packages/broker/src/agents/approvals.js";
 import { routeChainRequest } from "../../packages/broker/src/chains/routes.js";
 import { taskEndKey } from "../../packages/broker/src/agents/task-end.js";

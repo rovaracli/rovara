@@ -3,7 +3,7 @@
 // found the real service does. Nothing here reaches AWS or OpenAI.
 import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AgentXError, CHATGPT_CALLBACK_URL } from "@agentx/contracts";
+import { AgentXError, CHATGPT_CALLBACK_URL } from "@rovara-code/contracts";
 import { ACCESS_TOKEN_MARGIN_MS, chatGptConnections, type ChatGptSealer } from "../../packages/broker/src/chatgpt/connections.js";
 import { chatGptAuthorization, chatGptHostId, chatGptModels, parseChatGptCallback, CHATGPT_TOKEN_URL } from "../../packages/broker/src/chatgpt/oauth.js";
 import { developerTokenVerifier } from "../../packages/broker/src/developer/verify-token.js";

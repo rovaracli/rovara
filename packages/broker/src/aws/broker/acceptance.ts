@@ -3,8 +3,10 @@
 import { joinTaskModelFallback } from "../../model-selection/fallback-record.js";
 import { randomUUID } from "node:crypto";
 import { TransactWriteCommand, type TransactWriteCommandInput } from "@aws-sdk/lib-dynamodb";
-import { type AgentXError, blockWorkflow, OperationRequestSchema, PullRequestRequestSchema, PullRequestLifecycleRequestSchema, PullRequestLifecycleResultSchema, agentXError, type Operation, type OperationRequester, type OperationStatus, type ProjectCommand, type WorkflowFeedbackApprovalBinding, type WorkflowFixPayload, type OwnerRedirectInvocation, type WorkflowDependencyInvocation, type WorkflowReviewBase, type WorkflowReviewChecks, type WorkflowReviewPlan, type WorkflowReviewFeedback, type WorkflowReviewNote, type PullRequestLifecycleResult, type WorkerInvocation, type WorkspaceInstance, type E2EWorkflowAdmissionRef, workerProjectDefinition, workflowPublicationContext, workflowPublicationContextDigest, codeRepositoriesOf } from "@agentx/contracts";
-import type { SpecReviewInput, SpecWriteBinding } from "@agentx/contracts";
+import { type AgentXError, OperationRequestSchema, PullRequestRequestSchema, PullRequestLifecycleRequestSchema, PullRequestLifecycleResultSchema, agentXError, type Operation, type OperationRequester, type OperationStatus, type ProjectCommand, type WorkflowFeedbackApprovalBinding, type OwnerRedirectInvocation, type WorkflowDependencyInvocation, type WorkflowReviewBase, type WorkflowReviewChecks, type WorkflowReviewPlan, type WorkflowReviewFeedback, type WorkflowReviewNote, type PullRequestLifecycleResult, type WorkspaceInstance, type E2EWorkflowAdmissionRef, workflowPublicationContextDigest, codeRepositoriesOf } from "@rovara-code/contracts";
+import { workerProjectDefinition } from "@agentx/cloud-contracts";
+import { blockWorkflow, type WorkflowFixPayload, type WorkerInvocation, workflowPublicationContext } from "@agentx/cloud-contracts";
+import type { SpecReviewInput, SpecWriteBinding } from "@rovara-code/contracts";
 import type { ResolvedAttribution } from "../../attribution/resolve.js";
 import type { AuthenticatedIdentity } from "../../auth.js";
 import { flushAuditEvents } from "../../audit/flush.js";

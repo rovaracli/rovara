@@ -2,7 +2,8 @@
 // is only ever inside labelled tags, a planted secret is redacted, and the tier is enforced by the builder itself, so a reader that hands over too much leaks nothing.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { ASK_LIMITS, OUTSIDER_TEXT_LABEL, WORKFLOW_BLOCK_REASONS, sessionBindingKey, type AskAudience } from "../../packages/contracts/src/index.js";
+import { ASK_LIMITS, OUTSIDER_TEXT_LABEL, sessionBindingKey, type AskAudience } from "@rovara-code/contracts";
+import { WORKFLOW_BLOCK_REASONS } from "@agentx/cloud-contracts";
 import { ASK_AUDIENCE_POLICY, ASK_LINK_LINE, askContext, buildAskContext, type AskContextData, type AskContextReaders, type AskViewer } from "../../packages/broker/src/agent-sessions/ask-context.js";
 import { SLACK_CLIENT_NAME } from "../../packages/broker/src/developer/task-records.js";
 import { MAYA, createSingleAnswerPlanBroker } from "../support/developer-task-broker.js";

@@ -4,7 +4,8 @@
 // `cloud` flag. An install with no stamp is an existing install (it was deployed before editions): it keeps today's behaviour, which is "no edition gates", and it
 // is never treated as Enterprise. A stamp that is present but wrong stops the process from starting.
 import { GetParameterCommand, type SSMClient } from "@aws-sdk/client-ssm";
-import { EDITION_ENV_VAR, EditionSchema, agentXError, editionPolicy, resolveEdition, type EditionPolicy } from "@agentx/contracts";
+import { EDITION_ENV_VAR, editionPolicy, resolveEdition, type EditionPolicy } from "@agentx/cloud-contracts";
+import { EditionSchema, agentXError } from "@rovara-code/contracts";
 
 /**
  * @param environment the process environment

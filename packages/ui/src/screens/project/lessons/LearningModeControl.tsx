@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import type { LearningMode } from "@agentx/contracts/web";
+import type { LearningMode } from "@agentx/cloud-contracts/web";
 import { ApiError } from "../../../api/errors.js";
 import { lessonsKey } from "../../../api/lessons.js";
 import { learningModeKey, useLearningMode, useLearningModeWrite } from "../../../api/learning-mode.js";

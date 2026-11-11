@@ -7,9 +7,7 @@
 //   - the entry's `blockedHosts` are shown to people and never act: a name only becomes a host ask through `requestHostAsk`, and an ask grants nothing until a person approves it.
 // The task carries only a count (`setupAgentProgress`) for the Live wall tile.
 import { PutCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  INDEX_EXPIRY_ATTRIBUTE, SETUP_JOURNAL_MAX_ENTRIES, SETUP_JOURNAL_TAIL_BYTES, SetupJournalEntrySchema, redactText, setupDraftKey, type OrgId, type SetupJournalEntry,
-} from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, SETUP_JOURNAL_MAX_ENTRIES, SETUP_JOURNAL_TAIL_BYTES, SetupJournalEntrySchema, redactText, setupDraftKey, type OrgId, type SetupJournalEntry } from "@rovara-code/contracts";
 import { taskKey } from "../developer/task-records.js";
 
 type Client = { send(command: unknown): Promise<unknown> };

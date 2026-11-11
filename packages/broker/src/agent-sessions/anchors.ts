@@ -10,7 +10,7 @@
 // a write to it is `NOT_FOUND`, and a comment already pinned to it reads as `gone` with no excerpt. `current`, `outdated` and `gone` are worked out on every read from the revision the person was
 // looking at against the revision now, the way GitHub marks a review comment outdated after a change. A view that can't be built answers `undefined`: a write is refused, a read says `gone`.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { SessionAnchorRefSchema, type AgentSessionRecord, type SessionAnchor, type SessionAnchorRef, type SessionGoneAnchor, type SessionMessage } from "@agentx/contracts";
+import { SessionAnchorRefSchema, type AgentSessionRecord, type SessionAnchor, type SessionAnchorRef, type SessionGoneAnchor, type SessionMessage } from "@rovara-code/contracts";
 import { taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
 import type { SessionAccessDependencies } from "./access.js";
 import type { SessionReadDependencies } from "./read.js";

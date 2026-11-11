@@ -24,21 +24,7 @@
 // Modes: `preprod` always uses the real service and the round FAILS when it cannot be reached; `mock` always uses the recorded fixtures; `auto` probes pre-prod once at the start of the round and uses the mock when the
 // probe fails. The mode actually used is returned for every service, and goes into the evidence (the Environment line and the `mocked_service` not-tested items), so the PR never says "pre-prod" for a mocked call.
 import type { AssumeRoleCommandInput } from "@aws-sdk/client-sts";
-import {
-  TestAccountAwsSchema,
-  agentXError,
-  arnAccountId,
-  isTestAccountUsableAt,
-  testAccountAwsEndpointHosts,
-  testAccountExternalId,
-  testAccountProdProblems,
-  type EvidenceEnvironment,
-  type ServiceMockFixtureSet,
-  type TestAccount,
-  type TestAccountAws,
-  type TestEnvProdDeny,
-  type TestEnvironmentBody,
-} from "@agentx/contracts";
+import { TestAccountAwsSchema, agentXError, arnAccountId, isTestAccountUsableAt, testAccountAwsEndpointHosts, testAccountExternalId, testAccountProdProblems, type EvidenceEnvironment, type ServiceMockFixtureSet, type TestAccount, type TestAccountAws, type TestEnvProdDeny, type TestEnvironmentBody } from "@rovara-code/contracts";
 
 type Service = TestEnvironmentBody["services"][number];
 

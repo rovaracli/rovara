@@ -8,7 +8,7 @@
 //   5. markup is made inert: links keep their label and lose the address, images keep their alt text, HTML tags and Slack mention markup are gone;
 //   6. the text is redacted once more (step 5 can join pieces), cut to 1,000 characters, and passed through `inertRuleText`, so it is the same text the rule editor would save.
 // Whether the text is worth keeping (not empty, not short, not generic: W3) is `prepareCorrection`. No model reads any of this.
-import { redactText } from "@agentx/contracts";
+import { redactText } from "@rovara-code/contracts";
 import { inertRuleText } from "../playbook/inert-rule-text.js";
 import { contentWords, signatureWords } from "./similarity.js";
 

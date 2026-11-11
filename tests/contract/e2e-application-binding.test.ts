@@ -1,12 +1,6 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import {
-  E2EApplicationApprovalBindingSchema, E2EApplicationPlanIntentSchema, E2EAppBuildManifestSchema,
-  E2EAppArtifactOutputSchema, E2EAppArtifactRefSchema, E2EApplicationRuntimeRefSchema, E2EFeaturePlanIntentAnySchema,
-  E2ERuntimeAccountRefSchema, PlanApprovalRefSchema, SourceRefSchema, canonicalJson, createCandidateManifest, e2eAppBuildManifestDigest,
-  inspectE2ERepository, proposeE2ESetup, type E2EApplicationPlanIntent, type E2EAppBuildManifest,
-  type E2EAppArtifactRef, type E2EPolicy, type E2ESourceSnapshot,
-} from "@agentx/contracts";
+import { E2EApplicationApprovalBindingSchema, E2EApplicationPlanIntentSchema, E2EAppBuildManifestSchema, E2EAppArtifactOutputSchema, E2EAppArtifactRefSchema, E2EApplicationRuntimeRefSchema, E2EFeaturePlanIntentAnySchema, E2ERuntimeAccountRefSchema, PlanApprovalRefSchema, SourceRefSchema, canonicalJson, createCandidateManifest, e2eAppBuildManifestDigest, inspectE2ERepository, proposeE2ESetup, type E2EApplicationPlanIntent, type E2EAppBuildManifest, type E2EAppArtifactRef, type E2EPolicy, type E2ESourceSnapshot } from "@rovara-code/contracts";
 import {
   deriveE2EApplicationApprovalBinding, validateE2EAppBuildBinding,
   e2eApplicationMetadataSourceRefs,

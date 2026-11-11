@@ -1,7 +1,9 @@
 // Live buttons: which of "Ask about this task" (switch `ak`) and "Fix with agent" (switch `fd`) the session view offers this reader, as `you.live`.
 // A key is set only when its switch is on AND the very gate the feature's route uses lets this reader use it on this session. Nothing is offered on a guess; the routes still check again.
 // With both off (the default) this reads nothing from the table and returns undefined, so the view is byte-identical to one without the field.
-import { BROKER_SETTINGS, liveInteractionFlagOn, type ErrorRef, type SessionView } from "@agentx/contracts";
+import { BROKER_SETTINGS } from "@agentx/cloud-contracts";
+import { liveInteractionFlagOn, type ErrorRef } from "@rovara-code/contracts";
+import { type SessionView } from "@agentx/cloud-contracts";
 import { diagnosisSubjectFor } from "../diagnosis/authority.js";
 import { DIAGNOSABLE_KINDS } from "../diagnosis/light.js";
 import { diagnosisEnabled } from "../diagnosis/switch.js";

@@ -7,7 +7,7 @@ import { request as httpRequest, type ClientRequest, type IncomingMessage, type 
 import { request as httpsRequest } from "node:https";
 import { isIP } from "node:net";
 import { Readable } from "node:stream";
-import { agentXError } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
 import type { connectMcp } from "@agentx/gateway";
 import { checkEndpointUrl, dnsResolveHost, type ResolveHost } from "./endpoint-check.js";
 

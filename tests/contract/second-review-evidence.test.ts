@@ -1,7 +1,8 @@
 // Lane cr-settings: the evidence writers. The replay run and the verdict are written ONLY through the admin pool (Rovara staff in Public, the install's administrator in Enterprise), never by a company's admin, member or
 // project; the broker counts the shadow window itself from the company's track record and stores evidence, never a pass; `holds` is recomputed on every read; an admin can only WITHDRAW a verdict.
 import { afterEach, describe, expect, it } from "vitest";
-import { editionPolicy, secondReviewModelKey } from "../../packages/contracts/src/index.js";
+import { editionPolicy } from "@agentx/cloud-contracts";
+import { secondReviewModelKey } from "@rovara-code/contracts";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { MAYA, OMAR } from "../support/developer-task-broker.js";
 import { call } from "../support/slack-broker.js";

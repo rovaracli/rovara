@@ -12,32 +12,8 @@
 //   and only then claims each pull request on its tracking item and merges it, in repository order, with the checked head as `sha`.
 import { createHash } from "node:crypto";
 import { TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  MERGE_CLAIM_SECONDS,
-  MERGE_NOT_READY_MESSAGES as M,
-  MERGE_VIEW_MESSAGE_MAX,
-  MergePressBodySchema,
-  WORKFLOW_BLOCK_REASONS,
-  agentXError,
-  auditPullRequestId,
-  isBranchSyncBlockReason,
-  isCiFixBlockReason,
-  mergeTrackingKey,
-  sessionEventId,
-  type AuditProof,
-  type ChangeRequestStatus,
-  type CodeHost,
-  type CodeSettings,
-  type HostScope,
-  type MergeResult,
-  type MergeTrackingItem,
-  type MergeDone,
-  type MergeRisk,
-  type MergeView,
-  type NeedsConfirmation,
-  type OrgId,
-  type WorkflowSnapshot,
-} from "@agentx/contracts";
+import { MERGE_CLAIM_SECONDS, MERGE_VIEW_MESSAGE_MAX, MergePressBodySchema, agentXError, isBranchSyncBlockReason, isCiFixBlockReason, mergeTrackingKey, sessionEventId, type ChangeRequestStatus, type CodeHost, type CodeSettings, type HostScope, type MergeResult, type MergeDone, type MergeRisk, type MergeView, type NeedsConfirmation, type OrgId } from "@rovara-code/contracts";
+import { MERGE_NOT_READY_MESSAGES as M, WORKFLOW_BLOCK_REASONS, auditPullRequestId, type AuditProof, type MergeTrackingItem, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { auditOccurrence, auditPullRequestMergeRequested } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, tryAuditEvents } from "../audit/outbox.js";
@@ -520,13 +496,13 @@ async function codeOwnersOf(
   const { codeHost, url } = ctx.home;
   if (!codeHost.capabilities.codeOwners || codeHost.codeOwners === undefined) return { ok: true };
   try {
-    const text = await codeHost.codeOwners({ url }, ctx.baseBranch, ctx.scope);
-    if (text === undefined) return { ok: true };
+    const read = await codeHost.codeOwners({ url }, ctx.baseBranch, ctx.scope);
+    if (read === undefined) return { ok: true };
     const changed = await changedPathsOf(codeHost, changeRequestRef(url, ctx.number), ctx.scope);
     // A list cut short could hide a path a code owner owns.
     if (!changed.complete) return { ok: false, unreadable: true };
     return await codeOwnerVerdict({
-      codeOwnersText: text, paths: changed.paths, approverLogins: ctx.approval.approvers.map((approver) => approver.login),
+      codeOwnersRead: read, paths: changed.paths, approverLogins: ctx.approval.approvers.map((approver) => approver.login),
       teamMember: async (team, login) => (await ctx.home.isTeamMember?.(team, login, ctx.scope)) ?? "unknown",
     });
   } catch {

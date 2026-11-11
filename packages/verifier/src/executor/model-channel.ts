@@ -1,20 +1,5 @@
 import { request } from "node:http";
-import {
-  E2E_MODEL_CHANNEL_GENERATE_PATH,
-  E2E_MODEL_CHANNEL_MAX_REQUEST_BYTES,
-  E2E_MODEL_CHANNEL_MAX_RESPONSE_BYTES,
-  E2E_MODEL_CHANNEL_SCHEMA_VERSION,
-  E2E_MODEL_CHANNEL_STEP_PATH,
-  E2E_MODEL_CHANNEL_SYNC_PATH,
-  E2EModelChannelRequestSchema,
-  E2EModelChannelResponseSchema,
-  E2EModelSessionSyncReplySchema,
-  type E2EModelChannelClient,
-  type E2EModelChannelRequest,
-  type E2EModelChannelResponse,
-  type E2EModelChannelStepMarker,
-  type E2EModelSessionSync,
-} from "@agentx/contracts";
+import { E2E_MODEL_CHANNEL_GENERATE_PATH, E2E_MODEL_CHANNEL_MAX_REQUEST_BYTES, E2E_MODEL_CHANNEL_MAX_RESPONSE_BYTES, E2E_MODEL_CHANNEL_SCHEMA_VERSION, E2E_MODEL_CHANNEL_STEP_PATH, E2E_MODEL_CHANNEL_SYNC_PATH, E2EModelChannelRequestSchema, E2EModelChannelResponseSchema, E2EModelSessionSyncReplySchema, type E2EModelChannelClient, type E2EModelChannelRequest, type E2EModelChannelResponse, type E2EModelChannelStepMarker, type E2EModelSessionSync } from "@rovara-code/contracts";
 import { maskModelCall, ModelMaskDepthError } from "./model-mask.js";
 import { createSessionSyncState, syncSessionBeforeCall, type E2EModelSessionSource } from "./model-channel-sync.js";
 

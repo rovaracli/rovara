@@ -3,7 +3,8 @@
 // one the company's connected app lists, read live. Same harness as `source-routes.test.ts` (copied: it is not exported), plus fakes for the live Slack read and the connected apps.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { agentXError, developerOrgKey, orgMemberKey, orgMetaKey, projectMemberKey, projectMetaKey, slackTeamOrgKey, type OrgId } from "@agentx/contracts";
+import { agentXError, projectMemberKey, projectMetaKey, type OrgId } from "@rovara-code/contracts";
+import { developerOrgKey, orgMemberKey, orgMetaKey, slackTeamOrgKey } from "@agentx/cloud-contracts";
 import { handleRecordRoute } from "../../../packages/broker/src/team-record/routes.js";
 import type { SourceWriteContext } from "../../../packages/broker/src/team-record/source-write.js";
 import { classifySlack, linearScope, parseSlackScope, trackerPlaceCheck, type SlackFacts } from "../../../packages/broker/src/team-record/source-places.js";

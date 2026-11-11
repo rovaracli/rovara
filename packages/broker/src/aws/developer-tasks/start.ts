@@ -1,31 +1,6 @@
 import { randomUUID } from "node:crypto";
-import {
-  CHANNEL_PRIVACY_NOT_SET_UP,
-  PRIVATE_CHANNEL_NOT_A_MEMBER,
-  AgentXError,
-  PER_TASK_BUDGET_USD,
-  DEVELOPER_INSTRUCTIONS_MAX_BYTES,
-  codingRequestText,
-  DEVELOPER_EVENTS_DEFAULT,
-  SlackChannelIdSchema,
-  StartDeveloperTaskRequestSchema,
-  agentXError,
-  cleanClientName,
-  SCRIPT_TOKEN_CLIENT_NAME,
-  sharedTaskKey,
-  type DeveloperTaskView,
-  createWorkflowSnapshot,
-  ROVARA_CODE_AGENT_ID,
-  ROVARA_CODE_V2_FOR_NEW_ORGS,
-  newPrefixedId,
-  sessionSurfaceKey,
-  WORKFLOW_PATH_REQUIRED,
-  AUTOMATIC_RUNS_AT_ONCE,
-  isSystemOwnerId,
-  systemOwnerIdOf,
-  SYSTEM_OWNER_PROVIDER,
-  type SessionBinding,
-} from "@agentx/contracts";
+import { CHANNEL_PRIVACY_NOT_SET_UP, PRIVATE_CHANNEL_NOT_A_MEMBER, AgentXError, DEVELOPER_INSTRUCTIONS_MAX_BYTES, codingRequestText, DEVELOPER_EVENTS_DEFAULT, SlackChannelIdSchema, StartDeveloperTaskRequestSchema, agentXError, cleanClientName, SCRIPT_TOKEN_CLIENT_NAME, sharedTaskKey, ROVARA_CODE_AGENT_ID, ROVARA_CODE_V2_FOR_NEW_ORGS, newPrefixedId, sessionSurfaceKey, WORKFLOW_PATH_REQUIRED, AUTOMATIC_RUNS_AT_ONCE, isSystemOwnerId, systemOwnerIdOf, SYSTEM_OWNER_PROVIDER, type SessionBinding } from "@rovara-code/contracts";
+import { PER_TASK_BUDGET_USD, type DeveloperTaskView, createWorkflowSnapshot } from "@agentx/cloud-contracts";
 import { SYSTEM_OWNER_REFUSAL, isSystemOwnerCaller } from "../../developer/system-owner.js";
 import { decideShare, type BoundChannel, type ShareDecision } from "../../developer/share.js";
 import type { SpendPath } from "../../org/budget.js";

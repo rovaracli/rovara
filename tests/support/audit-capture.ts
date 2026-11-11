@@ -7,7 +7,7 @@
 // does it for the broker's table). `hangingAuditDeps()` is the same with a queue whose calls never resolve, as in an outage that
 // makes every request time out: a flush must still return at its deadline and leave the pending item for the drain.
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
-import { AuditEventInputSchema, type AuditAction, type AuditEventInput } from "@agentx/contracts";
+import { AuditEventInputSchema, type AuditAction, type AuditEventInput } from "@agentx/cloud-contracts";
 import type { AuditDeps, AuditPendingItem, AuditRuntime } from "../../packages/broker/src/audit/outbox.js";
 import { FakeAuditSqs } from "./fake-audit-sqs.js";
 import { FakeDynamoDb } from "./fake-dynamodb.js";

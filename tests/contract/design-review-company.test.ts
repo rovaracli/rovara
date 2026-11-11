@@ -1,7 +1,8 @@
 // Design review (DR-FU4): the company's design review policy (allowed, default mode, lock) on the DESIGNREVIEW#LOCK item, who may change it, the switch that reads it.
 // A project runs design review only when `dr` is on AND the company allows it AND the project's effective mode (its own setting, or the company's default, held to the lock) is not Off.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { agentXError, orgMetaKey, projectPlaybookKey } from "../../packages/contracts/src/index.js";
+import { agentXError, projectPlaybookKey } from "@rovara-code/contracts";
+import { orgMetaKey } from "@agentx/cloud-contracts";
 import { DESIGN_REVIEW_LOCK_SK, DesignReviewLockSchema, readDesignReviewCompany, type DesignReviewLock } from "../../packages/broker/src/design-review/lock.js";
 import { designReviewAvailableFor, designReviewEnabledFor, designReviewStillOn } from "../../packages/broker/src/design-review/switch.js";
 import { DESIGN_REVIEW_CHANGE_TTL_MS, approveDesignReviewChange, cancelDesignReviewChange, lockLoosens, requestDesignReviewAllowed, saveDesignReviewCompany, type DesignReviewCompanyDeps } from "../../packages/broker/src/design-review/company.js";

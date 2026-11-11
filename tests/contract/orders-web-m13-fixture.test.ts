@@ -5,13 +5,13 @@ import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
-import { createCandidateManifest } from "@agentx/contracts";
+import { createCandidateManifest } from "@rovara-code/contracts";
 import { inspectE2ERepository, type VerifiedE2ESourceSnapshot } from "../../packages/broker/src/e2e/discovery.js";
-import { canonicalJson } from "../../packages/contracts/src/canonical-json.js";
-import { E2EApiMockFixtureSchema } from "../../packages/contracts/src/e2e-node.js";
-import { e2eApiSchemaComponentId } from "../../packages/contracts/src/e2e-application-services.js";
-import { E2EApplicationProjectContractSchema } from "../../packages/contracts/src/e2e-application-accounts.js";
-import { createE2EOpenApiFixtureDescriptor, validateE2EOpenApiFixtureResponse } from "../../packages/contracts/src/e2e-openapi-fixture.js";
+import { canonicalJson } from "@rovara-code/contracts";
+import { E2EApiMockFixtureSchema } from "@rovara-code/contracts";
+import { e2eApiSchemaComponentId } from "@rovara-code/contracts";
+import { E2EApplicationProjectContractSchema } from "@rovara-code/contracts";
+import { createE2EOpenApiFixtureDescriptor, validateE2EOpenApiFixtureResponse } from "@rovara-code/contracts";
 import { FIXTURE_VARIANTS, renderFixtureVariant } from "../../scripts/fixtures/publish-web-fixture.js";
 
 // Task 3.8: the M1.3 baseline of rovara-orders-web-fixture. It is the unchanged code of the live demo: the export button and route exist for every signed-in account (the

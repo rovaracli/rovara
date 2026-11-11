@@ -7,7 +7,8 @@
 // Unread means at least medium and no files or proof chip on the card.
 // KNOWN LIMIT: "a check proves this claim" is what the PLAN asserts (its `checks.proves` and `scenarioProves`); nothing here runs the check, so a plan can claim proof it does not have and look less
 // risky. The backstop is the merge card, whose tier comes from the pull request's actual changed files and the checks that really ran.
-import type { DecisionRisk, PlanDocument, WorkflowSnapshot } from "@agentx/contracts";
+import type { DecisionRisk, PlanDocument } from "@rovara-code/contracts";
+import type { WorkflowSnapshot } from "@agentx/cloud-contracts";
 import type { LoadedDocument } from "../developer/plan-artifacts.js";
 import { pathsIn, planFiles, planUntestedClaims } from "../developer/plan-one-screen.js";
 import { decisionCardsEnabled } from "../proof/switch.js";

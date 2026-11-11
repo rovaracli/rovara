@@ -1,11 +1,9 @@
 // Design review stage, DR7 slice B: the guards of the dispatch and of the plan check's other ends, one by one, each with a case that fails without it. The whole round trip is in tests/contract/design-review-e2e.test.ts.
 import { describe, expect, it, vi } from "vitest";
-import {
-  DESIGN_REVIEW_ROUNDS_MAX, DesignReviewBindingSchema, WorkflowSnapshotSchema, agentXError, closePlanCritique, createWorkflowSnapshot, decideWorkflow, designReviewDisagreements, enableDesignReview, resolveDesignReview, startDesignReview, submitDesignReview, submitWorkflowArtifact,
-  type ModelSelection, type OrgId, type WorkflowArtifact, type WorkflowProgram, type WorkflowSnapshot,
-} from "@agentx/contracts";
+import { DESIGN_REVIEW_ROUNDS_MAX, DesignReviewBindingSchema, agentXError, designReviewDisagreements, type ModelSelection, type OrgId, type WorkflowArtifact, type WorkflowProgram } from "@rovara-code/contracts";
+import { WorkflowSnapshotSchema, closePlanCritique, createWorkflowSnapshot, decideWorkflow, enableDesignReview, resolveDesignReview, startDesignReview, submitDesignReview, submitWorkflowArtifact, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { designAnswersCommitItems, designAnswersHandler } from "../../packages/broker/src/design-review/answers.js";
-import { DESIGN_REVIEW_DEFAULT_SETTING } from "@agentx/contracts";
+import { DESIGN_REVIEW_DEFAULT_SETTING } from "@rovara-code/contracts";
 import { markEffective } from "../../packages/broker/src/design-review/effective-setting.js";
 import { designReviewCapability } from "../../packages/broker/src/design-review/capability.js";
 import { closeEndedCheck, closeUnstartedCheck, resumeBlockedCheck } from "../../packages/broker/src/design-review/check-ends.js";

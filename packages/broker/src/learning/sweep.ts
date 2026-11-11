@@ -5,7 +5,7 @@
 // project nobody opens. Then it expires open suggestions whose sources have fallen below two. A run deletes at most 500 items, visits at most 50 projects and stops after 20 seconds;
 // the next run resumes from the cursor in `LEARNING_WALK#sweep`. Reads elsewhere already hide an expired item, and nothing is deleted on read.
 import { DeleteCommand, GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { INDEX_EXPIRY_ATTRIBUTE, LEARNING_SUGGESTION_SOURCES_MIN, projectLearningKey, type OrgId } from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, LEARNING_SUGGESTION_SOURCES_MIN, projectLearningKey, type OrgId } from "@rovara-code/contracts";
 import { isExpired, learningItemKind, sameProject } from "./retention.js";
 import { closeSuggestion, readLearningPartition, type LearningDeps } from "./store.js";
 import { runLearningWalk, type ProjectJob, type WalkLimits } from "./walk.js";

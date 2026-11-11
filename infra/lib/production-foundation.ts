@@ -12,7 +12,7 @@ import {
   aws_ssm as ssm,
 } from "aws-cdk-lib";
 import type { Construct } from "constructs";
-import type { Edition } from "@agentx/contracts";
+import type { Edition } from "@rovara-code/contracts";
 import { AgentDnsFirewall, EGRESS_ALLOW_DOMAINS_CONTEXT_KEY, parseExtraAllowDomains } from "./agent-dns-firewall.js";
 import { EgressAlarms, alertsTopicFromName } from "./egress-alarms.js";
 import { Ec2WorkerFoundation } from "./ec2-workers.js";

@@ -1,7 +1,7 @@
 // The routes the new Home reads, for the `home` scenario, once a journey asks (POST /__mock/home-v2 { mode: "full" | "empty" | "actions" }): the decision cards, my open work (the live "mine" read), my ended sessions,
 // the agent directory and the payments project. Not asked, nothing here answers, so every other journey on the `home` scenario sees the cell exactly as before. The ask belongs to one scenario object:
 // the next /__mock/scenario starts clean.
-import { DecisionCardsViewSchema, SessionListSchema } from "@agentx/contracts/web";
+import { DecisionCardsViewSchema, SessionListSchema } from "@agentx/cloud-contracts/web";
 import { projectDecisionCards, type DecisionItem } from "../../../packages/broker/src/decisions/project.js";
 import { homeFixture } from "../../web/support/fixtures.js";
 import { projectFixture } from "../../web/support/project-fixture.js";

@@ -4,7 +4,7 @@
 //   ready                                -> nothing is added;
 //   unchecked, outdated, checking        -> one first event on the task's own prepare (`SETUP_NOT_CHECKED_NOTE`), written in the start's transaction;
 //   failed                               -> the start is refused (`CONFIG_INVALID`, `setupFailedMessage`) before any budget, slot or workspace is touched.
-import { agentXError, type OrgId } from "@agentx/contracts";
+import { agentXError, type OrgId } from "@rovara-code/contracts";
 import { readProjectMeta, type ProjectMetaReader } from "../developer/project-roles.js";
 import { setupStateOf, type SetupCheckedDefinition } from "../org/project-setup-check.js";
 import type { TransactItems } from "../aws/developer-task-actions.js";

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { InstallInfoSchema, editionPolicy, installInfo } from "@agentx/contracts";
+import { InstallInfoSchema, editionPolicy, installInfo } from "@agentx/cloud-contracts";
 import { loadTsaDeps } from "../../packages/broker/src/audit/tsa-client.js";
 import { installEditionPolicy } from "../../packages/broker/src/aws/broker/edition-wiring.js";
 import { MAYA, createDeveloperTaskBroker } from "../support/developer-task-broker.js";

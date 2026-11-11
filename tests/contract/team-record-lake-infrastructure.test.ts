@@ -1,7 +1,7 @@
 import { App, Stack } from "aws-cdk-lib";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
-import { LAKE_TABLES } from "@agentx/contracts";
+import { LAKE_TABLES } from "@agentx/cloud-contracts";
 import { actionsOf, statementJson, tablesOf } from "../support/team-record-cdk.js";
 import { ATHENA_BYTES_CUTOFF_MIN, PHYSICAL_DELETE_BOUND_DAYS, TeamRecordLake } from "../../infra/lib/team-record-lake.js";
 

@@ -2,7 +2,7 @@
 // `purpose: "process"`) is confirmed by someone else who can approve changes in the project, unless the person who asked is the only one who could (a project of one): then they may,
 // on the confirmation page with a fresh sign-in as always, and the `process.published` audit event says so (`selfConfirmedSoleOwner`). The eligible approvers are those of the
 // `agent_publish` rule, read now: the owner, a project maintainer with `manage_agents`, an org owner or admin. Declining your own request is not a confirmation and is never refused.
-import { PROCESS_SELF_CONFIRM_MESSAGE, agentXError } from "@agentx/contracts";
+import { PROCESS_SELF_CONFIRM_MESSAGE, agentXError } from "@rovara-code/contracts";
 import { orgRoleOf } from "../agents/access.js";
 import { sameMember } from "../agents/lifecycle.js";
 import type { AnyApprovalRecord, ApprovalCaller, ApprovalDecisionGuard, ApprovalDependencies } from "../agents/approvals-store.js";

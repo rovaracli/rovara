@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { expect, it } from "vitest";
-import { orgMemberKey, orgMetaKey, orgProjectCatalogKey, projectPk } from "../../packages/contracts/src/index.js";
+import { orgMemberKey, orgMetaKey } from "@agentx/cloud-contracts";
+import { orgProjectCatalogKey, projectPk } from "@rovara-code/contracts";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { clearProjectAllowedDomainProposals } from "../../packages/broker/src/org/project-allowed-domains-cleanup.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";

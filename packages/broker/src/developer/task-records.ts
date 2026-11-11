@@ -1,59 +1,13 @@
 import type { TaskFundingProof } from "../org/task-stop-funding.js";
-import type { SpendingAdmissionReference } from "@agentx/contracts";
+import type { SpendingAdmissionReference } from "@rovara-code/contracts";
 import type { CapturedTaskStop } from "../org/task-stop-admission.js";
 import type { StoredSecondOpinion } from "../rovara-code/second-review-store.js";
 // Spec 025 phase 25b: a developer task's records, owner key, status and failure rules, event text
 // and audit records. No I/O; aws/developer-tasks.ts and the broker's result hook call these.
-import type {ModelFallback} from "@agentx/contracts";
+import type { ModelFallback } from "@rovara-code/contracts";
 import { createHash } from "node:crypto";
-import {
-  BUDGET_EXHAUSTED_FAILURE_MESSAGE,
-  WORKFLOW_NO_CODE_CHANGE_MESSAGE,
-  DeveloperSignInMethodSchema,
-  agentXError,
-  inertName,
-  AiToolTurnRecordSchema,
-  DEVELOPER_EVENT_TEXT_MAX,
-  DEVELOPER_FAILURE_MESSAGE_MAX,
-  DEVELOPER_TASK_OWNER_ISSUER,
-  PullRequestLifecycleResultSchema,
-  PullRequestResultSchema,
-  TURN_TEXT_LIMIT,
-  UNKNOWN_CLIENT_NAME,
-  WORKFLOW_APPLICATION_PLAN_NOT_APPROVABLE_PREFIX,
-  aiToolTurnRecordKeys,
-  capText,
-  lastAssistantResponse,
-  redactAndCap,
-  redactText,
-  slackThreadSubject,
-  slackThreadUrl,
-  type AiToolTurnRecord,
-  type DeveloperRequester,
-  type DeveloperTaskEvent,
-  type DeveloperTaskFailure,
-  type DeveloperTaskFailureCategory,
-  type DeveloperTaskShare,
-  type DeveloperTaskStatus,
-  type Operation,
-  type PauseScope,
-  type RunCheckout,
-  type SetupDraft,
-  type SetupProposal,
-  type SetupRunEndWord,
-  type SetupRunSummary,
-  type WorkflowSnapshot,
-  type WorkflowReviewBase,
-  type DeveloperSignInMethod,
-  type SYSTEM_OWNER_PROVIDER,
-  type AutomaticRunMark,
-  type ErrorRef,
-  type OrgId,
-  type Payer,
-  type Place,
-  type RunEstimate,
-  type WorkOrigin,
-} from "@agentx/contracts";
+import { BUDGET_EXHAUSTED_FAILURE_MESSAGE, WORKFLOW_NO_CODE_CHANGE_MESSAGE, agentXError, inertName, AiToolTurnRecordSchema, DEVELOPER_EVENT_TEXT_MAX, DEVELOPER_FAILURE_MESSAGE_MAX, DEVELOPER_TASK_OWNER_ISSUER, PullRequestLifecycleResultSchema, PullRequestResultSchema, TURN_TEXT_LIMIT, UNKNOWN_CLIENT_NAME, WORKFLOW_APPLICATION_PLAN_NOT_APPROVABLE_PREFIX, aiToolTurnRecordKeys, capText, lastAssistantResponse, redactAndCap, redactText, slackThreadSubject, slackThreadUrl, type AiToolTurnRecord, type DeveloperRequester, type DeveloperTaskEvent, type DeveloperTaskFailure, type DeveloperTaskFailureCategory, type DeveloperTaskShare, type DeveloperTaskStatus, type Operation, type RunCheckout, type SetupDraft, type SetupProposal, type SetupRunEndWord, type SetupRunSummary, type WorkflowReviewBase, type SYSTEM_OWNER_PROVIDER, type AutomaticRunMark, type ErrorRef, type OrgId, type Payer, type Place, type RunEstimate, type WorkOrigin } from "@rovara-code/contracts";
+import { DeveloperSignInMethodSchema, type PauseScope, type WorkflowSnapshot, type DeveloperSignInMethod } from "@agentx/cloud-contracts";
 import type { AuthenticatedIdentity } from "../auth.js";
 import type { TaskAgentRef } from "../agents/roster.js";
 import { isHeartbeat, modelCallView } from "./model-call-view.js";

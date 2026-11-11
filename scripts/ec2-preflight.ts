@@ -14,7 +14,7 @@ import { GetAccountSettingsCommand, LambdaClient } from "@aws-sdk/client-lambda"
 import { GetServiceQuotaCommand, ServiceQuotasClient } from "@aws-sdk/client-service-quotas";
 import { DescribeStateMachineCommand, SFNClient } from "@aws-sdk/client-sfn";
 import { GetParametersCommand, SSMClient } from "@aws-sdk/client-ssm";
-import { BOOT_STAGE2_SHA256_PARAMETER, WORKER_SETTING_PARAMETERS, environmentSettingsPrefix, environmentStackName, getParametersInBatches } from "../packages/contracts/src/index.js";
+import { BOOT_STAGE2_SHA256_PARAMETER, WORKER_SETTING_PARAMETERS, environmentSettingsPrefix, environmentStackName, getParametersInBatches } from "@rovara-code/contracts";
 
 /** The worker instance type's vCPUs: one session needs this much On-Demand Standard headroom. */
 const WORKER_VCPUS = 1;

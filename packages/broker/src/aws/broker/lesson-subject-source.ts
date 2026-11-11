@@ -18,7 +18,8 @@
 //   - Messages people sent to the agent from a session (app or Linear): the route authenticated the sender and checked their level, so the note's developer id names them; they count like any other steerer.
 //   - A read that fails THROWS (the hook catches it): no read is ever treated as "not erased".
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { OrgIdSchema, SLACK_OIDC_ISSUER, workflowFindingFingerprint, type WorkflowArtifact, type WorkflowSnapshot } from "@agentx/contracts";
+import { OrgIdSchema, SLACK_OIDC_ISSUER, workflowFindingFingerprint, type WorkflowArtifact } from "@rovara-code/contracts";
+import { type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { taskKey, taskOwnerKey, tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../../developer/task-records.js";
 import { loadWorkflowDocument } from "../../developer/plan-artifacts.js";
 import type { TaskSubjectBase, TaskSubjectSource } from "../../lessons/task-end.js";

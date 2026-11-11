@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { taskGraphDigest, type PlanClaim, type PlanDecision, type PlanDocument, type PlanEvidenceBundle } from "@agentx/contracts";
+import { taskGraphDigest, type PlanClaim, type PlanDecision, type PlanDocument, type PlanEvidenceBundle } from "@rovara-code/contracts";
 import { claimAnchor, renderPlanDocument, type RenderPlanInput } from "../../packages/broker/src/aws/plan-page/render-plan.js";
 import type { PageCommentView } from "../../packages/broker/src/aws/plan-page/comments.js";
 import { resolvePlanEvidence } from "../../packages/broker/src/developer/plan-evidence.js";

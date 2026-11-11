@@ -3,7 +3,8 @@
 import { createHash } from "node:crypto";
 import { PutObjectCommand } from "@aws-sdk/client-s3";
 import { GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
-import { INDEX_EXPIRY_ATTRIBUTE, type PlanClaim, type PlanDocument, type PlanEvidenceBundle, type WorkflowReviewBase, type WorkflowSnapshot } from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, type PlanClaim, type PlanDocument, type PlanEvidenceBundle, type WorkflowReviewBase } from "@rovara-code/contracts";
+import { type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { taskKey } from "./task-records.js";
 
 export const PLAN_EVIDENCE_PK = "PLAN_EVIDENCE";

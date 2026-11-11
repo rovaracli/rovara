@@ -1,5 +1,5 @@
 // The project's learning routes for the "Suggested rules" journey: the view, accept, dismiss, reopen and remove. State lives for one scenario. Bodies are parsed by the contract's strict schemas, as the real routes do.
-import { LearningCompanySettingsAnswerSchema, LearningCompanySettingsBodySchema, ProjectOverviewLearningSchema, LearningAcceptBodySchema, LearningDismissBodySchema, LearningReopenBodySchema, LearningRuleRemoveBodySchema, LearningViewAnswerSchema, LearningSettingsBodySchema, LearningProposalDecisionBodySchema } from "@agentx/contracts/web";
+import { LearningCompanySettingsAnswerSchema, LearningCompanySettingsBodySchema, ProjectOverviewLearningSchema, LearningAcceptBodySchema, LearningDismissBodySchema, LearningReopenBodySchema, LearningRuleRemoveBodySchema, LearningViewAnswerSchema, LearningSettingsBodySchema, LearningProposalDecisionBodySchema } from "@agentx/cloud-contracts/web";
 import type { MockExchange } from "./how-we-work-mock.js";
 import { mockCellOrigin } from "./port.js";
 interface Suggestion { id: string; stage: string; text: string; revision: number }

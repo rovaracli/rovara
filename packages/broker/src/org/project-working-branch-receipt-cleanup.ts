@@ -2,7 +2,8 @@
 // this module does not release a route, company-close behavior, or working-branch consumers.
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import { AgentXError, OrgIdSchema, agentXError, orgMetaKey, orgScoped } from "@agentx/contracts";
+import { AgentXError, OrgIdSchema, agentXError, orgScoped } from "@rovara-code/contracts";
+import { orgMetaKey } from "@agentx/cloud-contracts";
 import type { DeveloperRouteDependencies } from "../aws/developer-routes.js";
 import type { TransactItem } from "../audit/outbox.js";
 type Deps = Pick<DeveloperRouteDependencies, "documentClient" | "tableName">;

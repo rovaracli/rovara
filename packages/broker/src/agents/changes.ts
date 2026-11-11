@@ -12,25 +12,7 @@ import { budgetActorRefused } from "./budget-authority.js";
 // page. The handlers registered at the bottom are what confirming does: they re-check that what was shown is still what is there,
 // then apply exactly that.
 import { QueryCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  ApprovalIdSchema,
-  STAGE_EDIT_RULES,
-  EMPTY_RECIPE,
-  ROVARA_CODE_V2_FOR_NEW_ORGS,
-  agentXError,
-  atLeast,
-  canonicalJson,
-  canonicalModelName,
-  diffRecipes,
-  orgPk,
-  projectAllows,
-  recipeDigest,
-  type AgentGuardrails,
-  type AgentId,
-  type BaseRef,
-  type OrgId,
-  type ResolvedRecipe,
-} from "@agentx/contracts";
+import { ApprovalIdSchema, STAGE_EDIT_RULES, EMPTY_RECIPE, ROVARA_CODE_V2_FOR_NEW_ORGS, agentXError, atLeast, canonicalJson, canonicalModelName, diffRecipes, orgPk, projectAllows, recipeDigest, type AgentGuardrails, type AgentId, type BaseRef, type OrgId, type ResolvedRecipe } from "@rovara-code/contracts";
 import { agentAccess, checkShares, orgRoleOf, resolveSurvivor, saveShares, sharesAlreadyStored, type AgentCaller, type AgentShare } from "./access.js";
 import {
   getApproval,

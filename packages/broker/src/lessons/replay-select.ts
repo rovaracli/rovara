@@ -1,7 +1,7 @@
 // Lane 7 (DECISIONS 49): which past tasks the replay uses. 40 to 60 finished tasks taken from the repositories where members corrected the agent most, so that lessons actually build up. The choice is
 // deterministic: the same candidates and the same seed give the same tasks, whatever order the candidates arrive in. Pure; no store, no AWS (the operator exports the candidates).
 import { createHash } from "node:crypto";
-import { REPLAY_TASKS_MAX, REPLAY_TASKS_MIN } from "@agentx/contracts";
+import { REPLAY_TASKS_MAX, REPLAY_TASKS_MIN } from "@rovara-code/contracts";
 
 export interface ReplayCandidate {
   taskId: string;

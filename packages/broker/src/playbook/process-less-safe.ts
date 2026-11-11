@@ -3,7 +3,7 @@
 // check, must not move to a weaker model, and their instructions must not change quietly; and no step may start sending a project's code to an AI company the published version never used.
 // Like `lessSafeChanges` it is deliberately blunt: a wrong "safe" is worse than one more click. A step whose model is not set runs on the project's default, whose company and strength are
 // not known here, so an unset model is unknown: it is never the reason for a flag in (a) to (c) (the company check (c) does flag a first model when nothing the current version used is known).
-import { EMPTY_RECIPE, type ResolvedRecipe, type ResolvedStep } from "@agentx/contracts";
+import { EMPTY_RECIPE, type ResolvedRecipe, type ResolvedStep } from "@rovara-code/contracts";
 import { lessSafeChanges } from "../agents/less-safe.js";
 import { classifyStageChoiceChange } from "../model-selection/classify.js";
 

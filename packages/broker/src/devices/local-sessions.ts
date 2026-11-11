@@ -18,54 +18,8 @@
 // so it, its events, the status, the device's last sight and the request's own item (R18) are ONE transaction: all or nothing.
 import { DeleteCommand, GetCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { createHash } from "node:crypto";
-import {
-  DEVICE_COMMAND_KEEP_DAYS,
-  DEVICE_COMMANDS_PAGE_MAX,
-  DeviceCommandViewSchema,
-  INDEX_EXPIRY_ATTRIBUTE,
-  LOCAL_FOLLOWER_STATUS_PER_HOUR,
-  LOCAL_NEEDS_SHARE_MESSAGE,
-  LOCAL_OPEN_MAX_MESSAGE,
-  LOCAL_OPEN_PER_DEVICE_MAX,
-  LOCAL_REGISTER_RATE_MESSAGE,
-  LOCAL_REGISTER_SHARES_MAX,
-  LOCAL_REGISTRATIONS_PER_HOUR,
-  LOCAL_UPDATES_PER_MINUTE_DEVICE,
-  LOCAL_UPDATES_PER_MINUTE_SESSION,
-  LOCAL_UPDATE_RATE_MESSAGE,
-  LOCAL_TOO_MANY_SHARES_MESSAGE,
-  LOCAL_TRANSCRIPT_FULL_MESSAGE,
-  LOCAL_TURNS_MAX,
-  LOCAL_TURN_MAX_CHARS,
-  LocalUpdateBodySchema,
-  RegisterLocalSessionBodySchema,
-  SESSION_RETENTION_DAYS,
-  SessionIdSchema,
-  agentSessionKey,
-  agentXError,
-  canonicalJson,
-  deviceCommandCounterKey,
-  deviceCommandKey,
-  deviceKey,
-  deviceRemovedMessage,
-  deviceSessionKey,
-  deviceRateKey,
-  newPrefixedId,
-  personRateKey,
-  principalKey,
-  projectArchivedMessage,
-  redactText,
-  sessionEventId,
-  sessionRateKey,
-  sessionTurnSk,
-  userChannel,
-  type AgentSessionRecord,
-  type DeviceCommandView,
-  type OrgId,
-  type OrgKey,
-  type OrgRole,
-  type SessionStatus,
-} from "@agentx/contracts";
+import { DEVICE_COMMAND_KEEP_DAYS, DEVICE_COMMANDS_PAGE_MAX, DeviceCommandViewSchema, LOCAL_FOLLOWER_STATUS_PER_HOUR, LOCAL_NEEDS_SHARE_MESSAGE, LOCAL_OPEN_MAX_MESSAGE, LOCAL_OPEN_PER_DEVICE_MAX, LOCAL_REGISTER_RATE_MESSAGE, LOCAL_REGISTRATIONS_PER_HOUR, LOCAL_UPDATES_PER_MINUTE_DEVICE, LOCAL_UPDATES_PER_MINUTE_SESSION, LOCAL_UPDATE_RATE_MESSAGE, LOCAL_TOO_MANY_SHARES_MESSAGE, LOCAL_TRANSCRIPT_FULL_MESSAGE, LocalUpdateBodySchema, RegisterLocalSessionBodySchema, deviceCommandCounterKey, deviceCommandKey, deviceKey, deviceRemovedMessage, deviceSessionKey, deviceRateKey, personRateKey, userChannel, type DeviceCommandView, type OrgRole } from "@agentx/cloud-contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, LOCAL_REGISTER_SHARES_MAX, LOCAL_TURNS_MAX, LOCAL_TURN_MAX_CHARS, SESSION_RETENTION_DAYS, SessionIdSchema, agentSessionKey, agentXError, canonicalJson, newPrefixedId, principalKey, projectArchivedMessage, redactText, sessionEventId, sessionRateKey, sessionTurnSk, type AgentSessionRecord, type OrgId, type OrgKey, type SessionStatus } from "@rovara-code/contracts";
 import { NOT_EXISTS, commit, errorName, failedIndexes, isTransactionConflict, readRequest, type Item, type RequestMark, type TableInput, type TransactItem } from "../agents/table-writes.js";
 import { inertTaskTitle } from "../aws/developer-tasks.js";
 import { readProjectMeta } from "../developer/project-roles.js";

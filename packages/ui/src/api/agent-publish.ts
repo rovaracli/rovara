@@ -1,17 +1,14 @@
 import { useMemo } from "react";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { z } from "zod";
-import {
- AGENT_PUBLISH_NOTE_MAX, AgentIdSchema, AgentPublicationReaderSchema, AgentPublishAnswerReaderSchema, AgentPublishRequestBodySchema, AgentPublishRequestListReaderSchema, AgentPublishRequestReaderSchema,
- AgentPublishWithdrawnReaderSchema, FavouriteAgentsBodySchema, FavouriteAgentsReaderSchema, MAX_FAVOURITE_AGENTS, MyAgentsReaderSchema, ProjectOverviewProjectSchema, PublishTargetSchema,
-} from "@agentx/contracts/web";
+import { AGENT_PUBLISH_NOTE_MAX, AgentIdSchema, AgentPublicationReaderSchema, AgentPublishAnswerReaderSchema, AgentPublishRequestBodySchema, AgentPublishRequestListReaderSchema, AgentPublishRequestReaderSchema, AgentPublishWithdrawnReaderSchema, FavouriteAgentsBodySchema, FavouriteAgentsReaderSchema, MAX_FAVOURITE_AGENTS, MyAgentsReaderSchema, ProjectOverviewProjectSchema, PublishTargetSchema } from "@agentx/cloud-contracts/web";
 import { useAppHost, type AppHost } from "../host.js";
 import { ApiError } from "./errors.js";
 import { createApiClient } from "./client.js";
 
 /**
- * Agent publish requests, favourite agents and suggested agents (experience decisions 23 and 24). The shapes are the server's (`packages/contracts/src/app-agent-publish.ts`, exported from
- * `@agentx/contracts/web`). Decisions are never posted from here: every Approve and Decline is made on the request's confirmation page (`approval.confirmUrl`), with a fresh sign-in.
+ * Agent publish requests, favourite agents and suggested agents (experience decisions 23 and 24). The shapes are the server's (`packages/cloud-contracts/src/app-agent-publish.ts`, exported from
+ * `@agentx/cloud-contracts/web`). Decisions are never posted from here: every Approve and Decline is made on the request's confirmation page (`approval.confirmUrl`), with a fresh sign-in.
  */
 export { PublishTargetSchema, AgentPublishRequestBodySchema, FavouriteAgentsBodySchema, AgentPublishRequestReaderSchema, AgentPublishRequestListReaderSchema, AgentPublishAnswerReaderSchema, AgentPublicationReaderSchema, MyAgentsReaderSchema };
 export const FavouritesReaderSchema = FavouriteAgentsReaderSchema;

@@ -1,9 +1,6 @@
 // Setup and test health SH1: the four results, their fixed reasons and the Testing rows.
 import { describe, expect, it } from "vitest";
-import {
-  TESTING_BLOCKED_REASONS, TESTING_CODE_REASONS, TESTING_COMMAND_MAX, TESTING_PARTIAL_REASONS, TESTING_REASONS, TESTING_REASON_TEXT, TESTING_RESULTS, TESTING_RESULT_LABELS, TESTING_ROWS_MAX,
-  TestingRowSchema, TestingViewSchema, testingSummary,
-} from "@agentx/contracts";
+import { TESTING_BLOCKED_REASONS, TESTING_CODE_REASONS, TESTING_COMMAND_MAX, TESTING_PARTIAL_REASONS, TESTING_REASONS, TESTING_REASON_TEXT, TESTING_RESULTS, TESTING_RESULT_LABELS, TESTING_ROWS_MAX, TestingRowSchema, TestingViewSchema, testingSummary } from "@rovara-code/contracts";
 
 const row = (over: Record<string, unknown> = {}) => ({ label: "unit", command: "pytest -q", status: "passed", ...over });
 const view = (over: Record<string, unknown> = {}) => ({ schemaVersion: 1, result: "verified", reasons: [], rows: [row()], ...over });

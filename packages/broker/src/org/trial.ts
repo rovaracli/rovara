@@ -3,10 +3,8 @@
 // `admitTrial` then `admitMachineTime`, before the proxy is asked anything and before anything is charged); machine
 // time is recorded when compute stops (`recordMachineTime`, called by the session manager at every stop).
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  SESSION_MAX_LIFETIME_MS, agentXError, machineTimeMonthKey, machineTimeOnceKey, openComputeKey, openComputePk, orgMetaKey, trialGithubKey, workspaceSessionKey,
-  type OrgId,
-} from "@agentx/contracts";
+import { SESSION_MAX_LIFETIME_MS, agentXError, workspaceSessionKey, type OrgId } from "@rovara-code/contracts";
+import { machineTimeMonthKey, machineTimeOnceKey, openComputeKey, openComputePk, orgMetaKey, trialGithubKey } from "@agentx/cloud-contracts";
 
 /** Placeholder allowances, in hours of compute per UTC month, until orgs can buy more. */
 export const TRIAL_MACHINE_HOURS_PER_MONTH = 20;
@@ -226,4 +224,18 @@ export async function admitMachineTime(deps: TrialDependencies, orgId: OrgId): P
   // otherwise one workspace could run its 14-day lifetime before any of it counted.
   const used = await machineSecondsUsed(deps, orgId, monthOf(now)) + await runningSeconds(deps, orgId, now);
   if (used >= limit * SECONDS_PER_HOUR) throw machineTimeExceeded();
+}
+
+/**
+ * What the trial view shows of machine time: the plan's hours for the UTC month `now` falls in and the seconds used so far (recorded stops plus what the org's running instances have run), the
+ * same two figures `admitMachineTime` refuses on. Undefined for an org with no plan on record or one the system created (`limited`), which has no allowance. A read: the only write is the best-effort
+ * removal of a stale running marker that `runningSeconds` already makes at every admission.
+ */
+export async function readMachineAllowance(deps: TrialDependencies, orgId: OrgId): Promise<{ month: string; grantedHours: number; usedSeconds: number } | undefined> {
+  const org = await orgOf(deps, orgId);
+  const grantedHours = limited(org) ? allowanceHours(org.plan) : undefined;
+  if (grantedHours === undefined) return undefined;
+  const now = (deps.now ?? Date.now)();
+  const month = monthOf(now);
+  return { month, grantedHours, usedSeconds: await machineSecondsUsed(deps, orgId, month) + await runningSeconds(deps, orgId, now) };
 }

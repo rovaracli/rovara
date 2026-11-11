@@ -2,7 +2,7 @@
 // signed-in calls to the control plane's /v1/app/projects/{name}/members routes; the control plane decides who may do what, and this only
 // names the person (by email or ID, from the org's people) and prints what happened.
 import { randomUUID } from "node:crypto";
-import { ProjectMemberChangeResponseSchema, ProjectMemberRemoveResponseSchema, ProjectMembersResponseSchema, type ProjectMember, type ProjectRole } from "@agentx/contracts";
+import { ProjectMemberChangeResponseSchema, ProjectMemberRemoveResponseSchema, ProjectMembersResponseSchema, type ProjectMember, type ProjectRole } from "@rovara-code/contracts";
 import { sanitizeServerText } from "../auth.js";
 import { developerRequest } from "./commands.js";
 import { resolveOrgMember, type OrgMember } from "./org.js";

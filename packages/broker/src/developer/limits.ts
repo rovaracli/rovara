@@ -1,7 +1,8 @@
 // Spec 025 FR-020 and FR-053: one set of workspace limits for Slack threads and developer tasks.
 // The numbers are the admin's setting when there is one, else the stack parameters (R7).
 import { GetCommand, type TransactWriteCommandInput } from "@aws-sdk/lib-dynamodb";
-import { isSlackLimitPk, orgLimitKey, orgSettingsKey, slackMemberLimitKey, slackOrganizationLimitKey, type OrgId } from "@agentx/contracts";
+import { isSlackLimitPk, orgLimitKey, slackMemberLimitKey, slackOrganizationLimitKey, type OrgId } from "@rovara-code/contracts";
+import { orgSettingsKey } from "@agentx/cloud-contracts";
 import type { CounterKey, WorkspaceCharge } from "./task-records.js";
 
 type Client = { send(command: unknown): Promise<unknown> };

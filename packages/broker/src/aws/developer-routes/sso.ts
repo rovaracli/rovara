@@ -10,9 +10,8 @@
 // A mapping never grants owner (the schema refuses it), so saving one cannot make anyone an owner. Nothing here echoes the provider's words: refusals are fixed sentences.
 import { X509Certificate } from "node:crypto";
 import { z } from "zod";
-import {
-  AUDIT_ERROR_MESSAGES, BREAK_GLASS_MAX_DAYS, BreakGlassOwnersSchema, GroupMappingConfigSchema, GroupMappingRuleSchema, GroupClaimNameSchema, SamlIdpSettingsSchema, agentXError, requireFeature, singleOrgIdForEnv, type GroupMappingConfig, type OrgId,
-} from "@agentx/contracts";
+import { AUDIT_ERROR_MESSAGES, BREAK_GLASS_MAX_DAYS, BreakGlassOwnersSchema, GroupMappingConfigSchema, GroupMappingRuleSchema, GroupClaimNameSchema, SamlIdpSettingsSchema, requireFeature, type GroupMappingConfig } from "@agentx/cloud-contracts";
+import { agentXError, singleOrgIdForEnv, type OrgId } from "@rovara-code/contracts";
 import { auditOccurrence, auditSsoBreakGlassChanged, auditSsoGroupMappingChanged, auditSsoSamlChanged } from "../../audit/events.js";
 import { samlServiceProviderAddresses } from "../../developer/saml.js";
 import type { AdaptedHttpRequest } from "../lambda.js";

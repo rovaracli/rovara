@@ -1,7 +1,7 @@
 // Company setup recipes as a proposal source (SH30 + SR-3), the broker's dispatch half: which approved recipes a SETUP_DRAFT run is offered when the broker dispatches it. The same list is recorded on the operation
 // (`setupRecipeOffers`: id and revision), so what the run later REPORTS using is intersected with what the broker actually sent (`offeredRecipesNamedBy`). Reads only. Off (switch `sp`), or on any read failure:
 // no offers, and the setup draft runs exactly as it does today (a recipe is an optional shortcut; never a reason to fail a run).
-import type { OrgId, SetupRecipeOffer } from "@agentx/contracts";
+import type { OrgId, SetupRecipeOffer } from "@rovara-code/contracts";
 import { logDeveloperEvent } from "../developer/log.js";
 import { setupRecipesEnabled } from "../rovara-code/setup-recipes-switch.js";
 import { recipeOffersForProject, type RecordedOffer } from "./setup-recipe-offers.js";

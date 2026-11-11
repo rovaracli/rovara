@@ -13,14 +13,7 @@
 // A check listed in `alwaysRun` is never selected down; it runs in full and carries no selection.
 import { posix } from "node:path";
 import type { z } from "zod";
-import {
-  isRerunnableTestId,
-  type EvidenceSelectionSchema,
-  TEST_ENV_SELECT_PLACEHOLDER,
-  TEST_ENV_ROUND_BUDGET_MIN,
-  type ProjectCommand,
-  type TestEnvironmentBody,
-} from "@agentx/contracts";
+import { isRerunnableTestId, type EvidenceSelectionSchema, TEST_ENV_SELECT_PLACEHOLDER, TEST_ENV_ROUND_BUDGET_MIN, type ProjectCommand, type TestEnvironmentBody } from "@rovara-code/contracts";
 
 type EvidenceSelection = z.infer<typeof EvidenceSelectionSchema>;
 
@@ -60,7 +53,7 @@ export type SelectionResult =
 export const testFileOf = (id: string): string => id.split("::", 1)[0] ?? id;
 
 /** A glob as the environment writes them (the one implementation is in the contracts, shared with the saved environment key). */
-import { globRegExp } from "@agentx/contracts";
+import { globRegExp } from "@rovara-code/contracts";
 export { globRegExp };
 
 /**
