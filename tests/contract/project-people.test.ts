@@ -4,7 +4,7 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { AgentXError, errorStatus, orgProjectCatalogKey, projectMemberKey, projectMetaKey, projectRevisionKey, type OrgId, type ProjectRole } from "@rovara-code/contracts";
-import { PROJECT_LAST_MAINTAINER_MESSAGE, PROJECT_PEOPLE_STALE_MESSAGE, ProjectPeopleViewSchema, developerOrgKey, orgMemberKey, orgMetaKey, type OrgRole } from "@agentx/cloud-contracts";
+import { PROJECT_LAST_MAINTAINER_MESSAGE, PROJECT_PEOPLE_STALE_MESSAGE, ProjectPeopleViewSchema, developerOrgKey, orgBanKey, orgMemberKey, orgMetaKey, type OrgRole } from "@agentx/cloud-contracts";
 import { routeDeveloperRequest, type DeveloperCaller, type DeveloperRouteDependencies } from "../../packages/broker/src/aws/developer-routes.js";
 import { StatusReply } from "../../packages/broker/src/aws/status-reply.js";
 import { routeProjectPeople } from "../../packages/broker/src/aws/developer-routes/project-people.js";
@@ -329,7 +329,8 @@ describe("code settings from the web (the existing route)", () => {
 // ---- A-31: invites that carry a project ------------------------------------------------------------------------------------------------------------------------------------
 
 const INVITE_PATH = "/v1/app/org/invites/reviewed";
-const inviteBody = (project?: { name: string; role: ProjectRole }, requestId = randomUUID()) => ({ requestId, role: "member", ...(project === undefined ? {} : { project }) });
+/** A project invite goes to a colleague's email (a maintainer's must: review M1); a company-only one is a link. */
+const inviteBody = (project?: { name: string; role: ProjectRole }, requestId = randomUUID(), email: string | null = "new.person@example.test") => ({ requestId, role: "member", ...(project === undefined ? {} : { project, ...(email === null ? {} : { email }) }) });
 const tokenOf = (answer: { body: Record<string, unknown> }) => new URL(String(answer.body.inviteUrl)).hash.slice("#invite=".length);
 async function invite(f: Fixture, who: Who, project: { name: string; role: ProjectRole } = { name: "payments", role: "contributor" }) {
   const answer = await f.call(who, "POST", INVITE_PATH, inviteBody(project));
@@ -369,6 +370,17 @@ describe("who may invite someone straight into a project", () => {
     expect(f.db.find((row) => row.entityType === "ORG_INVITE")).toHaveLength(2);
   });
 
+  it("a maintainer's invite must name a colleague's email: no shareable link; an owner's or admin's project link is fine (review M1)", async () => {
+    const f = fixture();
+    const link = await f.call("maintainer", "POST", INVITE_PATH, inviteBody({ name: "payments", role: "viewer" }, randomUUID(), null));
+    expect(link).toMatchObject({ status: 400, code: "CONFIG_INVALID", message: expect.stringContaining("email address") as unknown });
+    expect(await refusal(f.store.createInvite({ orgId: A, createdBy: MAINT, role: "member", requestId: randomUUID(), reviewed: true, project: { name: "payments", role: "viewer" } }))).toBe("CONFIG_INVALID");
+    expect(f.db.find((row) => row.entityType === "ORG_INVITE")).toEqual([]);
+    for (const who of ["owner", "admin"] as const) expect((await f.call(who, "POST", INVITE_PATH, inviteBody({ name: "payments", role: "viewer" }, randomUUID(), null))).status, who).toBe(200);
+    const made = f.db.find((row) => row.entityType === "ORG_INVITE");
+    expect(made.map((row) => [row.projectInviter, row.email ?? null])).toEqual([["admin", null], ["admin", null]]);
+  });
+
   it("keeps companies apart: another company's project of the same name gives a maintainer of it nothing here, and B's owner can't name A's project", async () => {
     const f = fixture();
     f.member(B, MAINT2, "member");
@@ -395,7 +407,7 @@ describe("who may invite someone straight into a project", () => {
     expect((await f.call("otherMaintainer", "POST", INVITE_PATH, inviteBody({ name: "payments", role: "viewer" }))).status).toBe(403);
     expect(asked).toBe(0);
     expect(await refusal(f.store.createInvite({ orgId: A, createdBy: CONTRIB, role: "member", requestId: randomUUID(), reviewed: true, project: { name: "payments", role: "viewer" } }))).toBe("FORBIDDEN");
-    expect(await refusal(f.store.createInvite({ orgId: A, createdBy: MAINT, role: "member", requestId: randomUUID(), reviewed: true, project: { name: "payments", role: "maintainer" } }))).toBe("FORBIDDEN");
+    expect(await refusal(f.store.createInvite({ orgId: A, createdBy: MAINT, role: "member", requestId: randomUUID(), reviewed: true, email: "x@example.test", project: { name: "payments", role: "maintainer" } }))).toBe("FORBIDDEN");
     expect(await refusal(f.store.createInvite({ orgId: A, createdBy: OWNER, role: "admin", requestId: randomUUID(), reviewed: true, project: { name: "payments", role: "viewer" } }))).toBe("CONFIG_INVALID");
     expect(await refusal(f.store.createInvite({ orgId: A, createdBy: AUDITOR, role: "member", requestId: randomUUID(), reviewed: true, project: { name: "payments", role: "viewer" } }))).toBe("FORBIDDEN");
     // Refused on the live read, before the rate counter or any write: no attempt was even counted.
@@ -580,6 +592,34 @@ describe("accepting an invite that carries a project", () => {
     const orphan = await invite(left, "maintainer");
     left.db.delete(orgMemberKey(A, MAINT));
     expect(await refusal(accept(left, orphan))).toBe("INVITE_INVALID");
+  });
+
+  it("a project maintainer's invite never lifts a ban; an owner's or admin's invite still does (review H1)", async () => {
+    const f = fixture();
+    const banKey = orgBanKey(A, NEWBIE);
+    f.db.set({ ...banKey, entityType: "ORG_BAN", orgId: A, developerId: NEWBIE });
+    const token = await invite(f, "maintainer", { name: "payments", role: "viewer" });
+    expect(await refusal(accept(f, token))).toBe("INVITE_INVALID");
+    expect(f.db.get(banKey)).toBeDefined();
+    expect(f.db.get(orgMemberKey(A, NEWBIE))).toBeUndefined();
+    expect(f.roleIn(NEWBIE)).toBeUndefined();
+    // An owner's invite is still the way back, as before: it clears the ban in the join.
+    const owners = await invite(f, "owner", { name: "payments", role: "viewer" });
+    expect(await accept(f, owners)).toMatchObject({ orgId: A, project: { name: "payments", role: "viewer" } });
+    expect(f.db.get(banKey)).toBeUndefined();
+    // A company-only admin invite too.
+    const other = hex("e");
+    f.db.set({ ...orgBanKey(A, other), entityType: "ORG_BAN", orgId: A, developerId: other });
+    expect(await accept(f, tokenOf(await f.call("admin", "POST", INVITE_PATH, inviteBody())), other)).toEqual({ orgId: A, role: "member" });
+    expect(f.db.get(orgBanKey(A, other))).toBeUndefined();
+  });
+
+  it("an operator's row on the person and project makes the invite invalid, not a config error (review L2)", async () => {
+    const f = fixture();
+    const token = await invite(f, "owner", { name: "payments", role: "viewer" });
+    f.db.set({ ...projectMemberKey(A, NEWBIE, "payments"), entityType: "MEMBERSHIP", projectName: "payments", role: "administrator" });
+    expect(await refusal(accept(f, token))).toBe("INVITE_INVALID");
+    expect(f.db.get(orgMemberKey(A, NEWBIE))).toBeUndefined();
   });
 
   it("refuses an invite whose stored project part this release can't read, rather than joining without it", async () => {

@@ -597,9 +597,10 @@ function createIssuerHandler(deps: DeveloperIdentityDependencies) {
       return await completeSignIn(method, request, code);
     } catch (error) {
       deps.log({ event: "signin.join_error", method, error: errorName(error) });
-      return error instanceof ProviderUnavailableError || error instanceof ProviderNotConfiguredError
-        ? joinUnavailable()
-        : page(500, "Sign-in failed", ["Something went wrong on the Rovara server. Open the invite link again."]);
+      if (error instanceof ProviderUnavailableError || error instanceof ProviderNotConfiguredError) return joinUnavailable();
+      // A-31 review L1: the invite's project (or the account) changed while the join ran; nothing was written and the invite is unused.
+      if (isCode(error, "CHANGE_STALE")) return page(409, "Open the invite link again", ["Something changed while you were joining, so nothing was changed. Open the invite link again to finish joining."]);
+      return page(500, "Sign-in failed", ["Something went wrong on the Rovara server. Open the invite link again."]);
     }
   }
 

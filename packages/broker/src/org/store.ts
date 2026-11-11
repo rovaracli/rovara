@@ -31,6 +31,7 @@ import { startMemberRemoval, type StartedRemoval, type StartRemovalInput } from 
 const DEFAULT_INVITE_TTL_SECONDS = 604_800;
 const INVITE_PROJECT_ADMIN_MESSAGE = "An admin already maintains every project, so an admin invite names no project.";
 const INVITE_PROJECT_MAINTAINER_ROLE_MESSAGE = "A maintainer can invite people into their project as a contributor or a viewer.";
+const INVITE_PROJECT_MAINTAINER_EMAIL_MESSAGE = "A maintainer's invite goes to one colleague's email address. Add their email; only an owner or admin can make a shareable link.";
 const INVITE_PROJECT_CLOSED_MESSAGE = "That project isn't taking new people. Choose an active project.";
 /** A-31: a company member (not an owner or admin, and not the Auditor, who holds no project access). */
 const isPlainMember = (role: unknown): boolean => role === "member";
@@ -312,6 +313,8 @@ export class OrgStore {
       const asMaintainer = !asAdmin && project !== undefined && isPlainMember(actor.role) && grantRoleOf(await this.get(projectMemberKey(input.orgId, input.createdBy, project.name))) === "maintainer";
       if (!asAdmin && !asMaintainer) throw forbidden();
       if (asMaintainer && !(INVITE_PROJECT_ROLES_FOR_MAINTAINERS as readonly string[]).includes(project.role)) throw coded("FORBIDDEN", INVITE_PROJECT_MAINTAINER_ROLE_MESSAGE);
+      // A maintainer's invite is for one named colleague (controller decision on review M1): no shareable link, which anyone it reached could use to join the company.
+      if (asMaintainer && input.email === undefined) throw coded("CONFIG_INVALID", INVITE_PROJECT_MAINTAINER_EMAIL_MESSAGE);
       if (project !== undefined && await projectOpenState(this.input, input.orgId, project.name) !== "open") throw coded("CONFIG_INVALID", INVITE_PROJECT_CLOSED_MESSAGE);
       if (input.reviewed && (input.requestId === undefined || !InviteCreateReceiptSchema.shape.requestId.safeParse(input.requestId).success)) throw coded("CONFIG_INVALID", "Review a valid invite request.");
       const token = randomBytes(32).toString("base64url");
@@ -437,9 +440,13 @@ export class OrgStore {
           },
         },
         ...this.membershipItems({ orgId, developerId: input.developerId, role, email: input.email }),
-        // An invite is the way back after a removal with a ban: it clears the ban in the same transaction.
-        { Delete: { TableName: this.input.tableName, Key: orgBanKey(orgId, input.developerId) } },
+        // An owner's or admin's invite is the way back after a removal with a ban: it clears the ban in the same transaction. A project maintainer's invite
+        // (A-31) never lifts a ban someone above them set: the person must not be banned, checked in the same transaction.
+        invite.projectInviter === "maintainer"
+          ? { ConditionCheck: { TableName: this.input.tableName, Key: orgBanKey(orgId, input.developerId), ConditionExpression: "attribute_not_exists(pk)" } }
+          : { Delete: { TableName: this.input.tableName, Key: orgBanKey(orgId, input.developerId) } },
       ];
+      const banAt = head.length - 1;
       // A-31: the project's items sit after the membership's, so the positions `refuse` reads for the invite and the membership do not move.
       const projectFrom = head.length, projectTo = projectFrom + plan.items.length;
       const items: TransactItem[] = [
@@ -460,6 +467,7 @@ export class OrgStore {
         await this.transact(items, (failed) => {
           if (failed.has(0)) return inviteInvalid();
           if (failed.has(items.length - 1)) return coded("INVITE_INVALID", "that organization has closed");
+          if (failed.has(banAt)) return inviteInvalid();
           if (failed.has(1) || failed.has(2) || failed.has(3)) return alreadyInOrg();
           // The project, its roster or the inviter's standing changed under the join: read it all again.
           if ([...failed].some((index) => index >= projectFrom && index < projectTo)) { projectMoved = true; return coded("CHANGE_STALE", ACCEPT_STALE_MESSAGE); }
@@ -500,7 +508,14 @@ export class OrgStore {
       return { items, note, event: await tryAuditEvent(this.deps(), () => auditProjectMemberInviteSkipped({ ...base, cause: note })) };
     }
     const revision = await readPeopleRevision(this.input, orgId, project.name);
-    const { write } = await grantWrite(this.input, { orgId, project: project.name, developerId, role: project.role, grantedBy: { developerId: invite.createdBy }, now: () => new Date(this.input.now()) });
+    let write: Item;
+    try {
+      ({ write } = await grantWrite(this.input, { orgId, project: project.name, developerId, role: project.role, grantedBy: { developerId: invite.createdBy }, now: () => new Date(this.input.now()) }));
+    } catch (error) {
+      // An operator's row on this person and project (grantWrite will not overwrite it) makes the project part unusable: the invite is refused as invalid, never a raw config error.
+      if (error instanceof AgentXError && error.code === "CONFIG_INVALID") throw inviteInvalid();
+      throw error;
+    }
     items.push(write, projectNotArchivedCheck(this.input, orgId, project.name), peopleRevisionBump(this.input, orgId, project.name, revision, at));
     return { items, project, event: await tryAuditEvent(this.deps(), () => auditProjectMemberJoinedByInvite(base)) };
   }
