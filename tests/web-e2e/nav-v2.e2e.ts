@@ -27,9 +27,11 @@ for (const screen of PAGES) {
    test(`switch off, ${screen.name} ${look.name} at ${String(width)}: today's shell, picture`, async ({ page, context, request, baseURL }) => {
     await enter(page, context, request, baseURL, screen.scenario, look.store, width);await page.goto(screen.path);await expect(screen.ready(page)).toBeVisible();
     await expect(page.locator(".rv-tabbar")).toHaveCount(0);await expect(page.locator(".rv-nav-v2")).toHaveCount(0);
-    const links = await page.getByRole("navigation", { name: "Workspace" }).first().evaluate(node => [...node.querySelectorAll("a")].map(link => link.textContent));
+    const links = await page.locator("aside .rv-sidebar-nav").evaluate(node => [...node.querySelectorAll("a")].map(link => link.textContent));
     expect(links).toContain("Live");expect(links).toContain("Agent directory");
     expect(await noSidewaysScroll(page)).toBe(true);
+    // The Home start box loads after the first paint; wait for it so two runs take the same picture.
+    await page.waitForLoadState("networkidle");
     await evidenceShot(page, { path: `${shots}/off-${screen.name}-${look.name}-${String(width)}.png`, fullPage: false });
    });
   }
@@ -53,7 +55,7 @@ for (const screen of PAGES) {
     await expect(page.locator("aside a[href^='/app/agents/'], .rv-tabbar a[href^='/app/agents/']")).toHaveCount(0);
     if (!phone) {
      await expect(sidebar).toBeVisible();await expect(tabs).toBeHidden();
-     expect(await sidebar.evaluate(node => [...node.querySelectorAll("a")].slice(0, 5).map(link => link.textContent))).toEqual(screen.name === "home" ? ["Home2", "Work", "Projects", "Agents", "Settings"] : expect.arrayContaining(["Work", "Projects", "Agents", "Settings"]));
+     expect(await sidebar.evaluate(node => [...node.querySelectorAll("a")].slice(0, 5).map(link => link.textContent))).toEqual(screen.name === "home" ? ["Home3", "Work", "Projects", "Agents", "Settings"] : expect.arrayContaining(["Work", "Projects", "Agents", "Settings"]));
      for (const label of ["Work", "Projects", "Agents", "Settings"]) await expect(sidebar.getByRole("link", { name: label, exact: true })).toHaveCount(1);
     } else {
      await expect(tabs).toBeVisible();await expect(page.locator("aside")).toBeHidden();
@@ -69,13 +71,19 @@ for (const screen of PAGES) {
      // The top Menu stays for everything else, and is still a 44px target.
      const menu = page.getByRole("button", { name: "Open workspace menu" });await expect(menu).toBeVisible();expect((await menu.boundingBox())!.height).toBeGreaterThanOrEqual(43.5);
     }
-    // Focus: the skip link is first, and every control reached by Tab shows an outline.
-    await page.keyboard.press("Tab");await expect(page.getByRole("link", { name: "Skip to main content" })).toBeFocused();
-    await page.keyboard.press("Tab");await page.keyboard.press("Tab");
-    const focus = await page.evaluate(() => { const node = document.activeElement;if (node === null || node === document.body) return "none";const style = getComputedStyle(node);return style.outlineStyle !== "none" && parseFloat(style.outlineWidth) >= 2 ? "visible" : "hidden"; });
-    expect(focus).not.toBe("hidden");
+    // Focus: the page moves focus to its heading on load, so start from the skip link. It shows itself on focus, and Tab then walks the page in reading order (header, sidebar or Menu, page, never backwards) with a visible outline on every stop.
+    const skip = page.getByRole("link", { name: "Skip to main content" });await skip.focus();await expect(skip).toBeFocused();
+    expect((await skip.boundingBox())!.y).toBeGreaterThanOrEqual(0);
+    const stops: number[] = [], outlines: string[] = [];
+    for (let step = 0; step < 8; step++) {
+     await page.keyboard.press("Tab");
+     const stop = await page.evaluate(() => { const node = document.activeElement;if (node === null || node === document.body) return { index: -1, outline: "none" };const style = getComputedStyle(node);return { index: [...document.querySelectorAll("a, button, input, select, textarea, summary, [tabindex]")].indexOf(node), outline: style.outlineStyle !== "none" && parseFloat(style.outlineWidth) >= 2 ? "visible" : "hidden" }; });
+     stops.push(stop.index);outlines.push(stop.outline);
+    }
+    expect(stops.every((index, at) => index >= 0 && (at === 0 || index > stops[at - 1]!))).toBe(true);expect(outlines).not.toContain("hidden");
     if (phone) { await page.locator(".rv-tabbar a").nth(1).focus();expect(await page.evaluate(() => { const style = getComputedStyle(document.activeElement!);return style.outlineStyle !== "none" && parseFloat(style.outlineWidth) >= 2; })).toBe(true); }
     await page.evaluate(() => { (document.activeElement as HTMLElement | null)?.blur(); });
+    await page.waitForLoadState("networkidle");
     await evidenceShot(page, { path: `${shots}/on-${screen.name}-${look.name}-${String(width)}.png`, fullPage: false });
     await checkA11y(page, { theme: "light" });await checkA11y(page, { theme: "dark" });
    });
