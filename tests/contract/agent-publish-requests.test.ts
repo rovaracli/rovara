@@ -101,7 +101,7 @@ async function world() {
     const agent = await store.get(TEST_ORG, agentId);
     await store.replaceShares({ orgId: TEST_ORG, agentId, upsert: [{ principal, level }], remove: [], expectedSharesRevision: agent?.sharesRevision ?? 0, by: "seed" });
   };
-  const deps = (): ApprovalDependencies => ({ store, projectMembers: members, documentClient: h.db, tableName: "state", now: Date.now, confirmOrigin: CELL, signInStore: new DeveloperSignInStore({ documentClient: h.db, tableName: "signin", now: Date.now }) });
+  const deps = () => ({ store, projectMembers: members, documentClient: h.db, tableName: "state", now: Date.now, confirmOrigin: CELL, signInStore: new DeveloperSignInStore({ documentClient: h.db, tableName: "signin", now: Date.now }) });
   return { ...h, store, members, call, publishedAgent, ask, onPage, pageFor, record, requestOf, addShare, deps };
 }
 
