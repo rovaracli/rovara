@@ -98,6 +98,8 @@ export const LessonsRepoFileStatusSchema = z.object({
   /** True when the code host of at least one repository can write, so the switch can be offered. */
   canEnable: z.boolean(),
   repos: z.array(LessonsRepoFileRowSchema).max(100),
+  /** Whether the caller may answer for lessons missing from a file (the company owner, or a person who can approve lessons here): the card with Retire and Keep shows only then. Absent: no. Computed only while a row asks. */
+  canDecideRetire: z.boolean().optional(),
   /** Repositories Rovara cannot reach (the app is uninstalled, the repository is gone or was removed from the project) while deleted lessons may still be in them: recorded once, tried again weekly. */
   unreachable: z.array(z.object({ repo: z.string().min(1).max(200), lessons: z.number().int().min(0) }).strict()).max(100).optional(),
   /** Open Rovara pull requests that were NOT closed (or taken down) because the code host could not show them or did not say Rovara made them: counted, tried again. */

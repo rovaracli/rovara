@@ -184,12 +184,18 @@ const REPO_FILE_REFUSALS = {
   not_permitted: ["FORBIDDEN", "Only the company owner or a person who can approve this project's lessons can decide this."],
 } as const satisfies Record<string, readonly [AgentXErrorCode, string]>;
 
-/** The company owner, or a person eligible to approve lessons in the project, may answer for lessons that went missing from the file. A roster that cannot be read refuses (fail closed). */
-async function requireRetireDecider(deps: LessonRouteDependencies, caller: DeveloperCaller, project: string): Promise<void> {
-  if (caller.orgRole === "owner") return;
+/** Whether the caller may answer for lessons that went missing from the file: the company owner, or a person eligible to approve lessons in the project (the same check as an approval). `unknown`: the roster could not be read (fail closed). */
+async function retireDeciderOf(deps: LessonRouteDependencies, caller: DeveloperCaller, project: string): Promise<"yes" | "no" | "unknown"> {
+  if (caller.orgRole === "owner") return "yes";
   const group = await deps.lessons.directory.eligibility(caller.orgId, project, { approverId: caller.developerId }).catch(() => undefined);
-  if (group === undefined || !group.complete) throw agentXError("RUNTIME_UNAVAILABLE", "Rovara can't check who may decide this right now. Try again.");
-  if (!idIn(group.eligibleIds, caller.developerId)) throw agentXError("FORBIDDEN", "Only the company owner or a person who can approve this project's lessons can decide this.");
+  if (group === undefined || !group.complete) return "unknown";
+  return idIn(group.eligibleIds, caller.developerId) ? "yes" : "no";
+}
+
+async function requireRetireDecider(deps: LessonRouteDependencies, caller: DeveloperCaller, project: string): Promise<void> {
+  const answer = await retireDeciderOf(deps, caller, project);
+  if (answer === "unknown") throw agentXError("RUNTIME_UNAVAILABLE", "Rovara can't check who may decide this right now. Try again.");
+  if (answer === "no") throw agentXError("FORBIDDEN", "Only the company owner or a person who can approve this project's lessons can decide this.");
 }
 
 async function routeRepoFile(deps: LessonRouteDependencies, caller: DeveloperCaller, method: string, rawProject: string, body: () => unknown): Promise<object> {
@@ -197,7 +203,10 @@ async function routeRepoFile(deps: LessonRouteDependencies, caller: DeveloperCal
   if (method === "GET") {
     const { name } = await deps.projectFor(caller, rawProject);
     await takeBudget(deps, caller, "read");
-    try { return await repoFileStatus(deps.repoFile, { workspaceId: caller.orgId, project: name }); } catch { throw agentXError("RUNTIME_UNAVAILABLE", REPO_FILE_REFUSALS.unreadable[1]); }
+    let status;
+    try { status = await repoFileStatus(deps.repoFile, { workspaceId: caller.orgId, project: name }); } catch { throw agentXError("RUNTIME_UNAVAILABLE", REPO_FILE_REFUSALS.unreadable[1]); }
+    // The card for lessons missing from a file is shown to the people who may answer it, by the route's own rule (asked only while a row waits for an answer).
+    return status.repos.some((row) => row.retireConfirm !== undefined) ? { ...status, canDecideRetire: await retireDeciderOf(deps, caller, name) === "yes" } : status;
   }
   // A write: a role that can write (the Auditor cannot). Not tied to a browser session, so the command line can use it with the developer's own token.
   requireWriterCaller(caller);

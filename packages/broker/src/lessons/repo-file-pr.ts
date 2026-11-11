@@ -69,7 +69,7 @@ export function noticesOf(state: RepoFileState, now: number): string[] {
   if (missing !== undefined) {
     const them = missing.missing === 1 ? "it" : "them";
     if (missing.verdict === "keep") notices.push(`${plural(missing.missing, "missing lesson was", "missing lessons were")} kept; Rovara proposes ${them} back in your lessons PR`);
-    else if (missing.verdict === "retire") notices.push(`Retiring ${plural(missing.missing, "missing lesson", "missing lessons")} was confirmed; Rovara retires ${them} in its next pass`);
+    else if (missing.verdict === "retire") notices.push(`Retiring ${plural(missing.missing, "missing lesson", "missing lessons")} was confirmed; Rovara retires ${them} within a day`);
     else if (awaitingRetireConfirm(state, now)) notices.push(`${plural(missing.missing, "lesson has", "lessons have")} been missing from the lessons file since ${dateOf(missing.at)}. Confirm to retire ${them}, or keep ${them}`);
     else notices.push(`${plural(missing.missing, "lesson is", "lessons are")} missing from the lessons file; on or after ${dateOf(missing.at + READ_BACK_HOLD_MS)} a person will be asked to confirm retiring ${them} unless ${missing.missing === 1 ? "it is" : "they are"} restored`);
   }

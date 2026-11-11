@@ -97,7 +97,7 @@ export async function lessonsMock({ url, method, body, json, record }: MockExcha
  if (url.pathname === "/v1/web/projects/payments/record/sources") { await sourcesRoute({ url, method, body, json, record });return true; }
  if (url.pathname === base && method === "GET") { json(200, view());return true; }
  if (repoRetire !== undefined && url.pathname === base + "/repo") {
-  if (method === "GET") { json(200, LessonsRepoFileStatusSchema.parse({ lessonsOff: false, canEnable: true, repos: [repoRow()], available: [] }));return true; }
+  if (method === "GET") { json(200, LessonsRepoFileStatusSchema.parse({ lessonsOff: false, canEnable: true, repos: [repoRow()], available: [], canDecideRetire: true }));return true; }
   const input = LessonsRepoFileBodySchema.parse(await body());record(input);
   if ((input.action !== "retire_confirm" && input.action !== "retire_keep") || input.held !== RETIRE_DIGEST) { json(409, stale);return true; }
   repoRetire.decided ??= input.action === "retire_confirm" ? "retire" : "keep";json(200, repoRow());return true;

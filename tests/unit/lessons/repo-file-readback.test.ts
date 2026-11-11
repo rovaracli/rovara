@@ -583,6 +583,17 @@ describe("review round 1 (rr3b)", () => {
       expect((await w.store.listAllHeads(w.key)).filter((l) => l.status === "retired")).toEqual([]);
       expect((await w.current()).readBackHeld).toMatchObject({ missing: 7 });
     });
+    it("a retire answer under 7 days old retires nothing (the hold is by the clock, whatever the verdict says)", async () => {
+      const w = await eight();
+      changeFile(w, (t) => t.slice(0, t.indexOf("<!-- rovara:les_bbbb0002 -->")));
+      await pass(w);
+      const held = await w.current();
+      await w.state.put(w.key, { ...held, readBackHeld: { ...held.readBackHeld!, verdict: "retire" } }, held.revision);
+      w.clock.advance(DAY);
+      await w.run({ force: true });
+      expect((await w.store.listAllHeads(w.key)).filter((l) => l.status === "retired")).toEqual([]);
+      expect((await w.current()).readBackHeld).toMatchObject({ missing: 7, verdict: "retire" });
+    });
     it("up to max(3, 25%) removed at once are retired right away", async () => {
       const w = await eight();
       changeFile(w, (t) => ["les_bbbb0001", "les_bbbb0002"].reduce((text, id) => strip(id)(text), t));

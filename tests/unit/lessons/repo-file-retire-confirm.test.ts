@@ -3,7 +3,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { LessonsRepoFileBodySchema } from "@agentx/contracts";
 import { setLearnedLessonsGate } from "../../../packages/broker/src/lessons/policy.js";
-import type { RepoFileRuntime } from "../../../packages/broker/src/lessons/repo-file-job.js";
+import { lessonsRepoFilePublishJob, type RepoFileRuntime } from "../../../packages/broker/src/lessons/repo-file-job.js";
 import { rowOf } from "../../../packages/broker/src/lessons/repo-file-pr.js";
 import { repoFileAction, repoFileStatus } from "../../../packages/broker/src/lessons/repo-file-routes.js";
 import { parseLessonsFile } from "../../../packages/broker/src/lessons/repo-file-format.js";
@@ -16,6 +16,8 @@ const WHO = { developerId: "a".repeat(64) };
 const runtimeOf = (w: W): RepoFileRuntime => ({ deps: w.deps, targets: async () => [w.target], newHolder: () => "job-1" });
 const act = (w: W, action: "retire_confirm" | "retire_keep", held: string | undefined, decider: { developerId: string } | null = WHO) =>
   repoFileAction(runtimeOf(w), w.key, { action, repo: "api", ...(held === undefined ? {} : { held }) }, decider ?? undefined);
+/** The nightly job as it runs: the erasure sweep first (not needed here), then the publish pass and the retire-only read-back for every switched-on repository. */
+const night = (w: W) => lessonsRepoFilePublishJob(runtimeOf(w), WS, ["proj-1"], 60_000, 0);
 const retired = async (w: W) => (await w.store.listAllHeads(w.key)).filter((l) => l.status === "retired");
 const cutAfterFirst = (w: W): void => { const text = w.host.file("main", FILE)!; w.host.setFile("main", FILE, text.slice(0, text.indexOf("<!-- rovara:les_bbbb0002 -->"))); };
 
@@ -85,22 +87,67 @@ describe("a mass disappearance after its week", () => {
 });
 
 describe("confirming the retire", () => {
-  it("is audited before the state changes, then the pass retires the missing lessons (cause removed_in_repository)", async () => {
+  it("is audited first and only recorded: nothing is retired inside the request, the nightly retire-only pass retires them (cause removed_in_repository)", async () => {
     const { w, digest } = await awaiting();
+    const callsBefore = w.host.calls.length;
     const answer = await act(w, "retire_confirm", digest);
     expect(answer.ok).toBe(true);
+    expect(w.host.calls.length).toBe(callsBefore);
     const decided = w.audit.events.filter((e) => e.action === "lesson.repo_file_retire_decided");
     expect(decided).toEqual([expect.objectContaining({ actor: WHO.developerId, facts: { verdict: "retire", missing: 7 } })]);
+    expect(await retired(w)).toEqual([]);
+    expect((await w.current()).readBackHeld).toMatchObject({ verdict: "retire" });
+    expect(rowOf(await w.current(), w.clock.now()).notices).toContain("Retiring 7 missing lessons was confirmed; Rovara retires them within a day");
+    await night(w);
     expect(await retired(w)).toHaveLength(7);
     const state = await w.current();
     expect(state.readBackHeld).toBeUndefined();
     expect(state.readBack).toMatchObject({ retired: 7 });
     expect(w.audit.events.filter((e) => e.action === "lesson.retired" && e.facts["cause"] === "removed_in_repository")).toHaveLength(7);
-    // The decision line is in the ledger before the first retirement.
     const order = w.audit.actions();
     expect(order.indexOf("lesson.repo_file_retire_decided")).toBeLessThan(order.lastIndexOf("lesson.retired"));
-    expect(state.declined.length).toBe(7);
     expect(JSON.stringify(state)).not.toContain(WHO.developerId);
+    // The weekly pass, when it next runs, declines the retired ids as it always did.
+    w.week();
+    await w.run();
+    expect((await w.current()).declined.length).toBe(7);
+  });
+
+  it("a confirm while Rovara's weekly pull request is open leaves the pull request, unmerged and lastPassAt alone, now and when the nightly retire runs", async () => {
+    const { w, digest } = await awaiting();
+    await w.seedLessons(repoLesson("les_cccc0001"));
+    w.week();
+    const opened = await w.run();
+    expect(opened.status).toBe("opened");
+    const before = await w.current();
+    const hostBefore = [...w.host.writes];
+    const prs = JSON.stringify(w.host.prs);
+    expect(before.open).toBeDefined();
+    const digestNow = before.readBackHeld!.digest;
+    expect(digestNow).toBe(digest);
+    w.clock.advance(DAY);
+    expect(await act(w, "retire_confirm", digest)).toMatchObject({ ok: true });
+    await night(w);
+    expect(await retired(w)).toHaveLength(7);
+    const after = await w.current();
+    expect(after.open).toEqual(before.open);
+    expect(after.unmerged).toBe(before.unmerged);
+    expect(after.lastPassAt).toBe(before.lastPassAt);
+    expect(after.closing).toEqual(before.closing);
+    expect(w.host.writes).toEqual(hostBefore);
+    expect(JSON.stringify(w.host.prs)).toBe(prs);
+  });
+
+  it("while lessons are switched off nothing is retired by the nightly job; when they are switched on again it is", async () => {
+    const { w, digest } = await awaiting();
+    await act(w, "retire_confirm", digest);
+    setLearnedLessonsGate(() => false);
+    await night(w);
+    expect(await retired(w)).toEqual([]);
+    expect((await w.current()).readBackHeld).toMatchObject({ verdict: "retire" });
+    setLearnedLessonsGate(() => true);
+    await night(w);
+    expect(await retired(w)).toHaveLength(7);
   });
 
   it("a ledger that is down changes nothing: no verdict, nothing retired", async () => {
@@ -112,35 +159,40 @@ describe("confirming the retire", () => {
     expect(await retired(w)).toEqual([]);
   });
 
-  it("when the file changes after the confirm (before the pass retires anything), nothing is retired and the hold starts over", async () => {
+  it("when the file changes after the confirm (before the nightly retire), nothing is retired and the hold starts over", async () => {
     const { w, digest } = await awaiting();
-    // The forced pass cannot reach the repository, so the answer is recorded and the retire waits for a later pass.
-    w.host.failCalls.add("repositoryIdentity");
     expect(await act(w, "retire_confirm", digest)).toMatchObject({ ok: true });
-    w.host.failCalls.clear();
-    expect((await w.current()).readBackHeld).toMatchObject({ verdict: "retire" });
     expect(await retired(w)).toEqual([]);
     // The team puts one lesson back: a different set is missing now.
     const text = w.host.file("main", FILE)!;
     w.host.setFile("main", FILE, `${text}\n### Whole repository\n\n<!-- rovara:les_bbbb0002 -->\n- Lesson text for les_bbbb0002: use the shared helper.\n`);
-    w.week();
-    await w.run();
+    await night(w);
     expect(await retired(w)).toEqual([]);
     const state = await w.current();
     expect(state.readBackHeld).toMatchObject({ missing: 6 });
     expect(state.readBackHeld!.verdict).toBeUndefined();
     expect(state.readBackHeld!.digest).not.toBe(digest);
+    // The retire-only pass starts nothing on the host.
+    expect(w.host.writes.filter((write) => write.op === "create")).toHaveLength(1);
   });
 
-  it("with the same set still missing, the nightly pass finishes a confirm the forced pass could not", async () => {
+  it("a verdict saved while a pass is running is not overwritten: the pass's own write conflicts and the answer stands", async () => {
     const { w, digest } = await awaiting();
-    w.host.failCalls.add("repositoryIdentity");
-    await act(w, "retire_confirm", digest);
-    w.host.failCalls.clear();
+    const host = w.host as unknown as { fileAtRevision: (...args: unknown[]) => Promise<unknown> };
+    const read = host.fileAtRevision.bind(w.host);
+    let answered = false;
+    host.fileAtRevision = async (...args: unknown[]) => {
+      const text = await read(...args);
+      // A new bullet in the file makes the pass write its read-back; the person's answer lands first.
+      if (!answered) { answered = true; await act(w, "retire_keep", digest); }
+      return typeof text === "string" ? `${text}\n- A bullet the team wrote while the pass was running.\n` : text;
+    };
     w.week();
-    await w.run();
-    expect(await retired(w)).toHaveLength(7);
+    expect(await w.run()).toMatchObject({ status: "problem", problem: "conflict" });
+    expect(answered).toBe(true);
+    expect((await w.current()).readBackHeld).toMatchObject({ verdict: "keep", digest });
   });
+
 });
 
 describe("keeping the lessons", () => {
@@ -181,6 +233,50 @@ describe("keeping the lessons", () => {
     expect(rowOf(await w.current(), w.clock.now()).retireConfirm).toMatchObject({ missing: 7 });
   });
 
+  it("a keep ends when Rovara's restore pull request is merged: removing the same lessons again is a new hold, even between two passes", async () => {
+    const { w, digest } = await awaiting();
+    await act(w, "retire_keep", digest);
+    const first = (await w.current()).readBackHeld!;
+    w.week();
+    const result = await w.run();
+    expect(result).toMatchObject({ status: "opened", adds: 7 });
+    w.host.merge(Number((result as { number: string }).number));
+    // The team removes the same lessons again before Rovara looks at the file once more.
+    cutAfterFirst(w);
+    w.week();
+    await w.run();
+    const state = await w.current();
+    expect(state.readBackHeld).toMatchObject({ missing: 7, digest });
+    expect(state.readBackHeld!.verdict).toBeUndefined();
+    expect(state.readBackHeld!.at).toBeGreaterThan(first.at);
+    expect(await retired(w)).toEqual([]);
+    expect(rowOf(state, w.clock.now()).retireConfirm).toBeUndefined();
+    w.week();
+    await w.run();
+    expect(rowOf(await w.current(), w.clock.now()).retireConfirm).toMatchObject({ missing: 7 });
+  });
+
+  it("a keep ends when the team closes Rovara's restore pull request: a fresh week and a fresh card, not a state stuck with no card", async () => {
+    const { w, digest } = await awaiting();
+    await act(w, "retire_keep", digest);
+    const first = (await w.current()).readBackHeld!;
+    w.week();
+    const result = await w.run();
+    expect(result).toMatchObject({ status: "opened" });
+    w.host.prs.find((pr) => String(pr.number) === (result as { number: string }).number)!.state = "closed";
+    w.week();
+    await w.run();
+    const state = await w.current();
+    expect(state.unmerged).toBe(1);
+    expect(state.readBackHeld).toMatchObject({ missing: 7, digest });
+    expect(state.readBackHeld!.verdict).toBeUndefined();
+    expect(state.readBackHeld!.at).toBeGreaterThan(first.at);
+    w.week();
+    await w.run();
+    expect(rowOf(await w.current(), w.clock.now()).retireConfirm).toMatchObject({ missing: 7 });
+    expect(await retired(w)).toEqual([]);
+  });
+
   it("while the keep stands and nothing else changes, no card comes and nothing retires, however many passes run", async () => {
     const { w, digest } = await awaiting();
     await act(w, "retire_keep", digest);
@@ -218,16 +314,35 @@ describe("what is refused", () => {
     expect(await act(none, "retire_confirm", "0".repeat(16))).toEqual({ ok: false, code: "conflict" });
   });
 
-  it("an answer for a set that already has one returns the row unchanged and writes nothing more", async () => {
+  it("the same answer again returns the row unchanged and writes nothing more; a kept set may be retired; a confirmed retire cannot be turned into a keep", async () => {
     const { w, digest } = await awaiting();
     await act(w, "retire_keep", digest);
     const revision = (await w.current()).revision;
     const events = w.audit.events.length;
-    const again = await act(w, "retire_confirm", digest);
-    expect(again).toMatchObject({ ok: true, row: { repo: "api" } });
+    expect(await act(w, "retire_keep", digest)).toMatchObject({ ok: true, row: { repo: "api" } });
     expect((await w.current()).revision).toBe(revision);
-    expect((await w.current()).readBackHeld!.verdict).toBe("keep");
     expect(w.audit.events.length).toBe(events);
+    // keep -> retire: recorded, audited, and carried out by the nightly job.
+    expect(await act(w, "retire_confirm", digest)).toMatchObject({ ok: true });
+    expect((await w.current()).readBackHeld!.verdict).toBe("retire");
+    expect(w.audit.events.filter((e) => e.action === "lesson.repo_file_retire_decided").map((e) => e.facts["verdict"])).toEqual(["keep", "retire"]);
+    const afterRetire = (await w.current()).revision;
+    expect(await act(w, "retire_confirm", digest)).toMatchObject({ ok: true });
+    expect((await w.current()).revision).toBe(afterRetire);
+    // retire -> keep: a conflict, nothing changes.
+    expect(await act(w, "retire_keep", digest)).toEqual({ ok: false, code: "conflict" });
+    expect((await w.current()).readBackHeld!.verdict).toBe("retire");
+    expect((await w.current()).revision).toBe(afterRetire);
+    await night(w);
+    expect(await retired(w)).toHaveLength(7);
+  });
+
+  it("a switched-off repository takes no answer", async () => {
+    const { w, digest } = await awaiting();
+    const state = await w.current();
+    await w.state.put(w.key, { ...state, enabled: false }, state.revision);
+    expect(await act(w, "retire_confirm", digest)).toEqual({ ok: false, code: "conflict" });
+    expect(w.audit.actions()).not.toContain("lesson.repo_file_retire_decided");
   });
 
   it("without a decider the action is refused (the route is the one that checks who may answer)", async () => {
@@ -273,7 +388,21 @@ describe("who may answer, at the route", () => {
 
     const approver = await awaiting();
     await routeLessons(depsOf(approver.w, { complete: true, eligibleIds: [WHO.developerId] }, "viewer"), caller(), "POST", url, () => ({ action: "retire_confirm", repo: "api", held: approver.digest }));
+    expect((await approver.w.current()).readBackHeld).toMatchObject({ verdict: "retire" });
+    await night(approver.w);
     expect(await retired(approver.w)).toHaveLength(7);
+  });
+
+  it("the status says whether the caller may answer, by the same rule: the owner yes, an approver yes, a maintainer who is neither no, and only while a row waits", async () => {
+    const { w } = await awaiting();
+    const read = async (group: { complete: boolean; eligibleIds: string[] } | "throws", over: Record<string, unknown> = {}) => (await routeLessons(depsOf(w, group), caller(over), "GET", url, () => ({}))) as { canDecideRetire?: boolean };
+    expect((await read({ complete: true, eligibleIds: [] }, { orgRole: "owner" })).canDecideRetire).toBe(true);
+    expect((await read({ complete: true, eligibleIds: [WHO.developerId] })).canDecideRetire).toBe(true);
+    expect((await read({ complete: true, eligibleIds: ["b".repeat(64)] })).canDecideRetire).toBe(false);
+    expect((await read("throws")).canDecideRetire).toBe(false);
+    const quiet = passSetup();
+    await quiet.enable();
+    expect(((await routeLessons(depsOf(quiet, "throws"), caller({ orgRole: "owner" }), "GET", url, () => ({}))) as { canDecideRetire?: boolean }).canDecideRetire).toBeUndefined();
   });
 
   it("every other action keeps the maintainer rule, and a held digest on one of them is refused", async () => {

@@ -109,7 +109,7 @@ describe("the lessons file rows", () => {
   const retire = { missing: 7, since: 1, digest: "0123456789abcdef" };
   const notice = "7 lessons have been missing from the lessons file since 2026-10-24. Confirm to retire them, or keep them";
   let stale = false;
-  const f = setup({ lessons: (request, url) => (url.pathname === REPO_FILE_PATH ? (request.method === "POST" ? (stale ? refusal("CHANGE_STALE", "x") : ok(row())) : ok(status({ repos: [row({ retireConfirm: retire, notices: [notice] })] }))) : undefined) });
+  const f = setup({ lessons: (request, url) => (url.pathname === REPO_FILE_PATH ? (request.method === "POST" ? (stale ? refusal("CHANGE_STALE", "x") : ok(row())) : ok(status({ repos: [row({ retireConfirm: retire, notices: [notice] })], canDecideRetire: true }))) : undefined) });
   const region = await section();
   expect(region.getByText(notice)).toBeTruthy();
   fireEvent.click(region.getByRole("button", { name: "Retire them" }));
@@ -122,9 +122,17 @@ describe("the lessons file rows", () => {
   expect((await region.findByRole("alert")).textContent).toContain("This changed while you were looking at it. Reload and try again.");
  });
 
+ it("the card follows the status's canDecideRetire, not the approver check: an owner who cannot approve sees it, an approver the server did not clear does not", async () => {
+  const notice = "7 lessons have been missing from the lessons file since 2026-10-24. Confirm to retire them, or keep them";
+  setup({ state: { view: view({ canDecide: false }) }, lessons: serving(status({ repos: [row({ retireConfirm: { missing: 7, since: 1, digest: "0123456789abcdef" }, notices: [notice] })], canDecideRetire: true })) });
+  const owner = await section();
+  expect(owner.getByRole("button", { name: "Retire them" })).toBeTruthy();
+  expect(owner.getByRole("button", { name: "Keep them" })).toBeTruthy();
+ });
+
  it("a reader (cannot decide) sees the sentence about missing lessons and no Retire or Keep", async () => {
   const notice = "7 lessons have been missing from the lessons file since 2026-10-24. Confirm to retire them, or keep them";
-  setup({ state: { view: view({ canDecide: false }) }, lessons: serving(status({ repos: [row({ retireConfirm: { missing: 7, since: 1, digest: "0123456789abcdef" }, notices: [notice] })] })) });
+  setup({ state: { view: view({ canDecide: true }) }, lessons: serving(status({ repos: [row({ retireConfirm: { missing: 7, since: 1, digest: "0123456789abcdef" }, notices: [notice] })], canDecideRetire: false })) });
   const readers = await section();
   expect(readers.getByText(notice)).toBeTruthy();
   expect(readers.queryByRole("button", { name: "Retire them" })).toBeNull();

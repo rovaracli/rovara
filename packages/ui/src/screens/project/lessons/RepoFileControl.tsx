@@ -52,7 +52,7 @@ export function RepoFileControl({ project, canChange }: { project: string; canCh
     {row.pointer === "missing" && <>{button(W.POINTER_ADD, { action: "pointer_add", repo: row.repo })}{button(W.POINTER_DECLINE, { action: "pointer_decline", repo: row.repo })}</>}
     {row.enabled && button(W.TURN_OFF, { action: "off", repo: row.repo })}
    </div>}
-   {canChange && row.retireConfirm !== undefined && <div className="rv-lessons-actions" role="group" aria-label={W.RETIRE_CARD + ": " + row.repo} data-testid="lessons-repo-retire-card">
+   {status.canDecideRetire === true && row.retireConfirm !== undefined && <div className="rv-lessons-actions" role="group" aria-label={W.RETIRE_CARD + ": " + row.repo} data-testid="lessons-repo-retire-card">
     {button(W.RETIRE, { action: "retire_confirm", repo: row.repo, held: row.retireConfirm.digest }, true)}{button(W.KEEP, { action: "retire_keep", repo: row.repo, held: row.retireConfirm.digest })}
    </div>}
   </li>;
