@@ -6,7 +6,7 @@ import { evidenceShot } from "./support/screenshot.js";
 // The new Home is off unless storage says so (`rovara.home` = "v2"). Off, it is today's Home. On, in the old look and the v2 look, at phone and desktop widths: the sections come in the agreed order, nothing scrolls
 // sideways, every control is 44px tall on a phone, the page passes axe in both themes and focus is visible. Pictures go to .test-build/web-e2e/home/ (ROVARA_HOME_SHOTS changes the folder, for before/after comparisons).
 const shots = process.env.ROVARA_HOME_SHOTS ?? ".test-build/web-e2e/home", cookie = "11111111-1111-4111-8111-111111111111";
-async function enter(page: Page, context: BrowserContext, request: APIRequestContext, baseURL: string | undefined, width: number, store: Record<string, string>, mode?: "full" | "empty") {
+async function enter(page: Page, context: BrowserContext, request: APIRequestContext, baseURL: string | undefined, width: number, store: Record<string, string>, mode?: "full" | "empty" | "actions") {
  await request.post("/__mock/scenario", { data: { name: "home" } });
  if (mode !== undefined) await request.post("/__mock/home-v2", { data: { mode } });
  await context.addCookies([{ name: "__Host-agentx_review_session", value: cookie, url: baseURL!, secure: true, httpOnly: true, sameSite: "Strict" }]);
@@ -28,6 +28,14 @@ for (const width of [1280, 390] as const) {
   await expect(page.getByText("Project: payments")).toBeVisible();await expect(page.locator(".rv-home-v2")).toHaveCount(0);await page.waitForLoadState("networkidle");expect(chunks, "the new Home's chunk is not requested while the switch is off").toEqual([]);await expect(page.getByRole("heading", { name: "Continue", exact: true })).toHaveCount(0);
   expect(await noSidewaysScroll(page)).toBe(true);
   await evidenceShot(page, { path: `${shots}/off-${String(width)}.png`, fullPage: true });
+ });
+}
+for (const width of [1280, 390] as const) {
+ test(`switch off at ${String(width)} with card actions showing: today's buttons and links, none of the new rows`, async ({ page, context, request, baseURL }) => {
+  await enter(page, context, request, baseURL, width, {}, "actions");await page.goto("/app");
+  await expect(page.getByText("2 things need you")).toBeVisible();await expect(page.getByRole("button", { name: "Review plan" })).toBeVisible();await expect(page.getByRole("link", { name: "Open the plan" })).toBeVisible();await expect(page.getByRole("button", { name: "Retry" })).toBeVisible();await expect(page.getByRole("button", { name: "Dismiss" })).toBeVisible();
+  await expect(page.getByText("Project: payments")).toBeVisible();await expect(page.locator(".rv-hv2-row")).toHaveCount(0);await page.waitForLoadState("networkidle");
+  await evidenceShot(page, { path: `${shots}/off-actions-${String(width)}.png`, fullPage: true });
  });
 }
 for (const look of [{ name: "look-off", store: {} }, { name: "look-v2", store: { "rovara.look": "v2" } }] as const) {
