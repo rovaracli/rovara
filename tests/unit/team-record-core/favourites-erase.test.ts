@@ -2,7 +2,7 @@
 // removes it (the registry names it under the `config` step), and nobody else's item, and not the same person's item in another company.
 import { PutCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it } from "vitest";
-import { agentFavouritesKey } from "@agentx/contracts";
+import { agentFavouritesKey } from "@agentx/cloud-contracts";
 import { erasePerson } from "../../../packages/broker/src/team-record/erase.js";
 import { PERSON_FIELDS } from "../../../packages/broker/src/team-record/person-fields.js";
 import { ORG_A, ORG_B, world } from "../../support/team-record-core.js";

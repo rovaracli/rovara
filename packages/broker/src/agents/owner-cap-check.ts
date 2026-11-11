@@ -2,7 +2,8 @@
 // cap a `PUT owner` is held to: whether moving an agent's (or a chain's) monthly budget from `before` to `after` keeps the new owner's effective total within the cap, with
 // the month's top-up carried to an owner it newly counts for. Reads only; the write is held to the answer's `ownerCap` inside its own transaction.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { agentXError, topUpKey, type AgentId, type BudgetScope, type ChainId, type OrgId } from "@agentx/contracts";
+import { topUpKey, type BudgetScope } from "@agentx/cloud-contracts";
+import { agentXError, type AgentId, type ChainId, type OrgId } from "@rovara-code/contracts";
 import { usdToWholeMicrodollars } from "../org/budget-amount.js";
 import type { OwnerFinancialTerms } from "../spend/owner-approval-terms.js";
 import { ownerShare } from "../spend/owner-total.js";

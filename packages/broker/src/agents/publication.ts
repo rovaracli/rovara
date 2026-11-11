@@ -9,23 +9,8 @@
 // The handler re-checks everything at apply time: the binding, the guardrails, the project, the decider's live role, and decision 92 (a company-shared agent's owner moves
 // only by an org owner or admin). The routes are in publication-routes.ts; this file holds the rules, the handler, the indexes and the views.
 import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  agentPublicationKey,
-  agentPublicationsIndexKey,
-  agentXError,
-  canonicalJson,
-  orgProjectCatalogKey,
-  projectAllows,
-  projectArchivedMessage,
-  type AgentId,
-  type AgentPublication,
-  type AgentPublishRequest,
-  type AgentSummary,
-  type AuditEventInput,
-  type OrgId,
-  type PublishTarget,
-  type ResolvedRecipe,
-} from "@agentx/contracts";
+import { agentPublicationKey, agentPublicationsIndexKey, type AgentPublication, type AgentPublishRequest, type AgentSummary, type AuditEventInput, type PublishTarget } from "@agentx/cloud-contracts";
+import { agentXError, canonicalJson, orgProjectCatalogKey, projectAllows, projectArchivedMessage, type AgentId, type OrgId, type ResolvedRecipe } from "@rovara-code/contracts";
 import { auditAgentPublication } from "../audit/events.js";
 import { auditActorOf } from "../audit/plan3-hooks.js";
 import { readProjectMeta } from "../developer/project-roles.js";

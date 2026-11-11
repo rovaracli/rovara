@@ -6,24 +6,8 @@
 // needs run counts, which are not kept, so it is never sent. Favourites are a personal preference and are not audited.
 import { GetCommand, PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { createHash } from "node:crypto";
-import {
-  AgentIdSchema,
-  AgentXNameSchema,
-  BUILTIN_AGENTS,
-  FavouriteAgentsBodySchema,
-  MAX_FAVOURITE_AGENTS,
-  MAX_SUGGESTED_AGENTS,
-  MY_AGENTS_PATH,
-  MY_FAVOURITE_AGENTS_PATH,
-  agentFavouritesKey,
-  agentSessionKey,
-  agentXError,
-  canonicalJson,
-  mySessionsKey,
-  type AgentCard,
-  type AgentId,
-  type SessionId,
-} from "@agentx/contracts";
+import { FavouriteAgentsBodySchema, MAX_FAVOURITE_AGENTS, MAX_SUGGESTED_AGENTS, MY_AGENTS_PATH, MY_FAVOURITE_AGENTS_PATH, agentFavouritesKey, type AgentCard } from "@agentx/cloud-contracts";
+import { AgentIdSchema, AgentXNameSchema, BUILTIN_AGENTS, agentSessionKey, agentXError, canonicalJson, mySessionsKey, type AgentId, type SessionId } from "@rovara-code/contracts";
 import type { AdaptedHttpRequest } from "../aws/lambda.js";
 import { listVisibleAgents, type AgentCaller, type VisibleAgent } from "./access.js";
 import { publicationOf } from "./publication.js";

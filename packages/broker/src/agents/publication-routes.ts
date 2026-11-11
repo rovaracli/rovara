@@ -3,24 +3,8 @@
 // and `POST /v1/app/agent-publish-requests/{requestId}/withdraw` (only the person who asked). Deciding is the existing `POST /v1/app/approvals/{id}/decide`. Every key is
 // built from the caller's org; roles are read live. The rules, the handler and the views are in publication.ts.
 import { QueryCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  AGENT_PUBLISH_LIST_MAX,
-  AgentPublishRequestBodySchema,
-  AgentPublishWithdrawBodySchema,
-  AgentXError,
-  AgentXNameSchema,
-  CHANGE_APPROVAL_TTL_DAYS,
-  MAX_OPEN_PUBLISH_REQUESTS,
-  agentPublicationKey,
-  agentPublicationsIndexKey,
-  agentXError,
-  canonicalInstant,
-  canonicalJson,
-  isBuiltinAgentId,
-  type AgentId,
-  type AgentOwner,
-  type PublishTarget,
-} from "@agentx/contracts";
+import { AGENT_PUBLISH_LIST_MAX, AgentPublishRequestBodySchema, AgentPublishWithdrawBodySchema, CHANGE_APPROVAL_TTL_DAYS, MAX_OPEN_PUBLISH_REQUESTS, agentPublicationKey, agentPublicationsIndexKey, type PublishTarget } from "@agentx/cloud-contracts";
+import { AgentXError, AgentXNameSchema, agentXError, canonicalInstant, canonicalJson, isBuiltinAgentId, type AgentId, type AgentOwner } from "@rovara-code/contracts";
 import type { AdaptedHttpRequest } from "../aws/lambda.js";
 import { StatusReply } from "../aws/status-reply.js";
 import { requireAccountable, requireAgentAccess, requireOwnerAllowed, type AgentCaller } from "./access.js";
