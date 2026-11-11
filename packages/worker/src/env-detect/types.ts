@@ -127,6 +127,8 @@ export interface RepositoryReader {
   truncated?: boolean;
   /** True once the shared byte budget cut a file (a detector's absence of findings then proves nothing about the files it could not read). */
   budgetExhausted?(): boolean;
+  /** The build and run files (manifests, CI, Docker, compose, Makefile, README) the reader could not serve because they were too large or the budget ran out; at most one more than a detection names. */
+  skippedImportant?(): readonly string[];
   /** The file's text, or undefined when it is missing, binary, unreadable or over the read limits. Never throws. */
   read(path: string): Promise<string | undefined>;
 }

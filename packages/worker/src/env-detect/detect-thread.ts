@@ -5,7 +5,7 @@ import { runDetectors } from "./index.js";
 import type { RepositoryReader } from "./types.js";
 
 interface Start { paths: string[]; truncated: boolean; cwd: string; legacyOnly: boolean; only?: string[] }
-type Reply = { type: "text"; id: number; text: string | undefined; exhausted: boolean };
+type Reply = { type: "text"; id: number; text: string | undefined; exhausted: boolean; skipped?: string[] };
 
 const port = parentPort;
 if (port === null) throw new Error("detect-thread must run as a worker thread");
@@ -13,6 +13,7 @@ const start = workerData as Start;
 const allowed = new Set(start.paths);
 const waiting = new Map<number, (reply: Reply) => void>();
 let exhausted = false;
+let skipped: readonly string[] = [];
 let next = 0;
 
 port.on("message", (message: Reply) => {
@@ -24,12 +25,13 @@ const reader: RepositoryReader = {
   paths: start.paths,
   truncated: start.truncated,
   budgetExhausted: () => exhausted,
+  skippedImportant: () => skipped,
   read(path) {
     if (!allowed.has(path)) return Promise.resolve(undefined);
     return new Promise((resolve) => {
       next += 1;
       const id = next;
-      waiting.set(id, (reply) => { exhausted = reply.exhausted; resolve(reply.text); });
+      waiting.set(id, (reply) => { exhausted = reply.exhausted; skipped = reply.skipped ?? skipped; resolve(reply.text); });
       port.postMessage({ type: "read", id, path });
     });
   },
