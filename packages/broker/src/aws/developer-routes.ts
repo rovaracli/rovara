@@ -195,6 +195,7 @@ import { routeTestHealth } from "./developer-routes/test-health.js";
 import { KNOWN_FAILING_MARKS_BROWSER_MESSAGE, KNOWN_FAILING_MARKS_PATH, routeKnownFailingMarks } from "./developer-routes/known-failing-marks.js";
 import { verifyResultsEnabled } from "../verification/switch.js";
 import { DESIGN_REVIEW_COMPANY_BROWSER_MESSAGE, DESIGN_REVIEW_COMPANY_PATH, routeDesignReviewCompany } from "./developer-routes/design-review-company.js";
+import { APPROVAL_WINDOW_BROWSER_MESSAGE, APPROVAL_WINDOW_PATH, routeApprovalWindow } from "./developer-routes/approval-window.js";
 import { KNOWN_FAILING_POLICY_BROWSER_MESSAGE, KNOWN_FAILING_POLICY_PATH, routeKnownFailingPolicy } from "./developer-routes/known-failing-policy.js";
 import { SECOND_REVIEW_ACK_BROWSER_MESSAGE, acknowledgeSecondReview } from "./developer-tasks/second-review-ack.js";
 import { routeLearningModel } from "./developer-routes/learning-model.js";
@@ -355,6 +356,7 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   }
   // The company setting "always two people" for known-failing marks: changing it is browser-only (the read is open to members).
   if (url.pathname === KNOWN_FAILING_POLICY_PATH && request.method === "POST" && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", KNOWN_FAILING_POLICY_BROWSER_MESSAGE);
+  if (url.pathname === APPROVAL_WINDOW_PATH && decisionCardsEnabled() && request.method === "POST" && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", APPROVAL_WINDOW_BROWSER_MESSAGE);
   if (url.pathname === DESIGN_REVIEW_COMPANY_PATH && request.method === "POST" && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", DESIGN_REVIEW_COMPANY_BROWSER_MESSAGE);
   if (url.pathname === SECOND_REVIEW_PATH && request.method === "POST" && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", SECOND_REVIEW_BROWSER_MESSAGE);
   // Insights: who may see it is changed from a live browser session only (the reads are open to a token by the same role rule).
@@ -605,6 +607,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (testEnvReply !== undefined) return testEnvReply;
   const testHealthReply = await routeTestHealth(deps, caller, request, url);
   if (testHealthReply !== undefined) return testHealthReply;
+  const approvalWindowReply = await routeApprovalWindow(deps, caller, request, url);
+  if (approvalWindowReply !== undefined) return approvalWindowReply;
   const designReviewCompanyReply = await routeDesignReviewCompany(deps, caller, request, url);
   if (designReviewCompanyReply !== undefined) return designReviewCompanyReply;
   const knownFailingPolicyReply = await routeKnownFailingPolicy(deps, caller, request, url);

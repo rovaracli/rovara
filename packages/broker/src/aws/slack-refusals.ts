@@ -1,3 +1,4 @@
+import { isApprovalPlaceWords } from "../approval-place/words.js";
 import { FEEDBACK_REVIEW_RETRY_BUSY, FEEDBACK_REVIEW_RETRY_CHANGED } from "./developer-tasks/feedback-capture.js";
 import { FEEDBACK_CHANGED_SINCE_CARD } from "./developer-tasks/feedback-review.js";
 import { PROJECT_RECORD_NEEDS_ADMIN } from "./broker-shared.js";
@@ -89,6 +90,11 @@ export function slackRiskPlaceRefusal(reason: string): string | undefined {
   return RISK_PLACE.test(reason) ? reason.replace(/&/gu, "&amp;").replace(/</gu, "&lt;").replace(/>/gu, "&gt;") : undefined;
 }
 
+/** Approval place (U4): the other fixed refusals of a plan approval (sign in again, link your account, not an approver), said as they are with Slack's markup escaped. */
+export function slackApprovalPlaceRefusal(reason: string): string | undefined {
+  return isApprovalPlaceWords(reason) ? reason.replace(/&/gu, "&amp;").replace(/</gu, "&lt;").replace(/>/gu, "&gt;") : undefined;
+}
+
 /** An archived project takes no new work (a plan change, a send-back, a retry, Revise the plan): said plainly to the presser, who can ask an admin to restore it. */
 export const SLACK_PROJECT_ARCHIVED = "This project is archived, so new work can't start. Ask an admin to restore it.";
 
@@ -105,7 +111,7 @@ export function slackRefusalMessage(code: string, outOfDate: string, reason = ""
     case "IDEMPOTENCY_CONFLICT": return LOST_RACE.test(reason) ? slackLostRace(reason, decidedBy) : outOfDate;
     case "WORKSPACE_BUSY":
     case "TASK_BUSY": return "AgentX is still working on the previous step. Try again when it posts.";
-    case "FORBIDDEN": return slackRiskPlaceRefusal(reason) ?? "Only the task owner can do that.";
+    case "FORBIDDEN": return slackRiskPlaceRefusal(reason) ?? slackApprovalPlaceRefusal(reason) ?? "Only the task owner can do that.";
     case "REMOVED_FROM_ORG": return SLACK_REMOVED_FROM_ORG;
     case "SLACK_ACCOUNT_NOT_LINKED": return SLACK_ACCOUNT_NOT_LINKED_NOTICE;
     case "PROJECT_ARCHIVED": return SLACK_PROJECT_ARCHIVED;

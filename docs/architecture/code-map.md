@@ -407,6 +407,7 @@ No single test lists every broker read.
 <!-- codemap:files packages/broker/src/aws/developer-routes -->
 | File | What it owns |
 |---|---|
+| `approval-window.ts` | Approval place (U4, decision 83, A-08): `/v1/app/org/approval-window`, the company's recent sign-in window for approvals outside Rovara. |
 | `audit-export-fresh.ts` | Enterprise foundations I2/I1 (controller default, pending the owner's answer): starting an audit export needs a sign-in made within the last few minutes (the rule of the other high-risk actions, `isFreshSignIn`). |
 | `authentication.ts` | (No header comment.) Exports `DeveloperTokenClaims`, `developerClaims`, `getSignIn`. |
 | `card-decide-grade.ts` | Security review follow-up (2026-11-06): the decide-grade sign-in for a HIGH card that has no approval of its own: a high design (the task page's inline approve) and a high requirements or coding plan card. |

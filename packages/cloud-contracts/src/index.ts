@@ -96,6 +96,11 @@ export * from "./saved-env-key-files.js";
 // Company domain verification (owner decision 2026-11-02).
 export * from "./company-domains-web.js";
 export * from "./app-company-rules.js";
+// Approval place (U4): approval-place.ts is a byte copy of Code's file (Code PR #451, public code/next a97b0bee9) that waits for the vendor pin to move: UPSTREAM OWED, see its header and
+// tests/contract/approval-place-upstream-copy.test.ts. app-approval-window.ts and decision-dismiss.ts are Cloud's (the latter owed upstream, see its header).
+export * from "./approval-place.js";
+export * from "./app-approval-window.js";
+export * from "./decision-dismiss.js";
 export * from "./app-billing.js";
 export * from "./app-insights.js";
 export * from "./company-image-mirror.js";

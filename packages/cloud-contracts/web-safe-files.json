@@ -1,6 +1,7 @@
 [
   "packages/cloud-contracts/src/admin-budget.ts",
   "packages/cloud-contracts/src/agent-web-views.ts",
+  "packages/cloud-contracts/src/app-approval-window.ts",
   "packages/cloud-contracts/src/app-billing.ts",
   "packages/cloud-contracts/src/app-company-rules.ts",
   "packages/cloud-contracts/src/app-insights.ts",
@@ -8,8 +9,10 @@
   "packages/cloud-contracts/src/app-lessons-repo-file.ts",
   "packages/cloud-contracts/src/app-nav.ts",
   "packages/cloud-contracts/src/app-projects.ts",
+  "packages/cloud-contracts/src/approval-place.ts",
   "packages/cloud-contracts/src/audit-search.ts",
   "packages/cloud-contracts/src/company-domains-web.ts",
+  "packages/cloud-contracts/src/decision-dismiss.ts",
   "packages/cloud-contracts/src/developer-tasks.ts",
   "packages/cloud-contracts/src/developer-web.ts",
   "packages/cloud-contracts/src/evidence.ts",

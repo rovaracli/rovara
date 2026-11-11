@@ -338,6 +338,54 @@ describe("DeveloperSignInStore identity links", () => {
     expect(db.get(signInIdentityKey(githubId))).toMatchObject({ linkedAt: new Date(T0).toISOString(), lastSignInAt: touched });
     expect(db.get(developerIdentityKey(cloudId, githubId))).toMatchObject({ lastSignInAt: touched });
   });
+
+  it("M2 (approval place): touchIdentity keeps the provider's auth_time beside lastSignInAt, never later than the sign-in, and a sign-in without one keeps the last good one", async () => {
+    const { db, store, tick } = setup();
+    await store.linkIdentity(input({ provider: "oidc", issuer: OIDC_ISSUER, subject: "sso-1", identityKey: ownerKeyForSubject(OIDC_ISSUER, "sso-1") }));
+    const id = ownerKeyForSubject(OIDC_ISSUER, "sso-1");
+    expect(db.get(signInIdentityKey(id))).not.toHaveProperty("lastAuthTime");
+    // A silent renewal 5 seconds later: the provider says the person authenticated at T0 - 1 hour.
+    tick(5_000);
+    await store.touchIdentity(id, (T0 - 3_600_000) / 1000);
+    for (const row of [db.get(signInIdentityKey(id)), db.get(developerIdentityKey(cloudId, id))]) {
+      expect(row).toMatchObject({ lastSignInAt: new Date(T0 + 5_000).toISOString(), lastAuthTime: new Date(T0 - 3_600_000).toISOString() });
+    }
+    // A sign-in with no auth_time moves lastSignInAt and leaves the last good auth time alone.
+    tick(5_000);
+    await store.touchIdentity(id);
+    expect(db.get(signInIdentityKey(id))).toMatchObject({ lastSignInAt: new Date(T0 + 10_000).toISOString(), lastAuthTime: new Date(T0 - 3_600_000).toISOString() });
+    // An auth_time ahead of the clock is clamped to the sign-in; one that is not a plain positive number is none.
+    tick(5_000);
+    await store.touchIdentity(id, (T0 + 99_000_000) / 1000);
+    expect(db.get(signInIdentityKey(id))).toMatchObject({ lastAuthTime: new Date(T0 + 15_000).toISOString() });
+    for (const bad of [Number.NaN, -5, 0, Number.POSITIVE_INFINITY]) {
+      tick(1_000);
+      await store.touchIdentity(id, bad);
+      expect(db.get(signInIdentityKey(id)), String(bad)).toMatchObject({ lastAuthTime: new Date(T0 + 15_000).toISOString() });
+    }
+  });
+
+  it("M2: lastInteractiveSignInAt reads lastAuthTime for a company sign-in (none counts when the provider sent none) and lastSignInAt for an email code; an unlinked identity does not count", async () => {
+    const { db, store, tick } = setup();
+    const sso = ownerKeyForSubject(OIDC_ISSUER, "sso-2");
+    await store.linkIdentity(input({ provider: "oidc", issuer: OIDC_ISSUER, subject: "sso-2", identityKey: sso }));
+    tick(60_000);
+    // A recent sign-in with no auth_time is not a recent sign-in.
+    expect(await store.lastInteractiveSignInAt(cloudId, ["oidc", "saml"])).toBeUndefined();
+    await store.touchIdentity(sso, (T0 - 7_200_000) / 1000);
+    expect(await store.lastInteractiveSignInAt(cloudId, ["oidc", "saml"])).toBe(new Date(T0 - 7_200_000).toISOString());
+    // An email code counts by the time of the sign-in itself; the newest counting one wins; a method not in the list never counts.
+    const code = ownerKeyForSubject("https://cognito.example.test", "code-1");
+    await store.linkIdentity(input({ provider: "cloud", issuer: "https://cognito.example.test", subject: "code-1", identityKey: code }));
+    expect(await store.lastInteractiveSignInAt(cloudId, ["cloud", "oidc"])).toBe(new Date(T0 + 60_000).toISOString());
+    expect(await store.lastInteractiveSignInAt(cloudId, ["github"])).toBeUndefined();
+    expect(await store.lastInteractiveSignInAt(cloudId, ["oidc"])).toBe(new Date(T0 - 7_200_000).toISOString());
+    // Unlinked: gone from the answer.
+    const forward = db.get(signInIdentityKey(code)) as Record<string, unknown>;
+    db.set({ ...forward, unlinkedFrom: cloudId, unlinkedAt: new Date(T0 + 70_000).toISOString() });
+    db.delete(developerIdentityKey(cloudId, code));
+    expect(await store.lastInteractiveSignInAt(cloudId, ["cloud"])).toBeUndefined();
+  });
 });
 
 describe("GET /v1/app/me", () => {
@@ -364,5 +412,25 @@ describe("GET /v1/app/me", () => {
     expect((await brokerCall(h, "GET", "/v1/dev/org", token, "ANY /v1/app/{proxy+}")).status).toBe(404);
     expect((await brokerCall(h, "GET", "/v1/app/me", "not-a-token", "ANY /v1/app/{proxy+}")).status).toBe(401);
     expect((await brokerCall(h, "GET", "/v1/app/other", token, "ANY /v1/app/{proxy+}")).status).toBe(404);
+  });
+});
+
+describe("M2 (approval place): a completed sign-in keeps the provider's auth_time on its identity link", () => {
+  it("records the ID token's auth_time beside lastSignInAt, for the first sign-in and for later ones", async () => {
+    const authenticated = T0 / 1000 - 7_200;
+    const h = identityHarness({ cloud: {}, oidcUsers: [{ ...priya, auth_time: authenticated }] });
+    await signIn(h, "cloud", priya.sub);
+    expect(h.db.get(signInIdentityKey(cloudId))).toMatchObject({ lastAuthTime: new Date(authenticated * 1000).toISOString(), lastSignInAt: new Date(T0).toISOString() });
+    expect(h.db.get(developerIdentityKey(cloudId, cloudId))).toMatchObject({ lastAuthTime: new Date(authenticated * 1000).toISOString() });
+    // A silent renewal later: the provider still says the person authenticated at the same old time.
+    await signIn(h, "cloud", priya.sub);
+    expect(h.db.get(signInIdentityKey(cloudId))).toMatchObject({ lastAuthTime: new Date(authenticated * 1000).toISOString() });
+  });
+
+  it("a provider that sends no auth_time leaves none, so its sign-in is not counted as recent", async () => {
+    const h = identityHarness({ cloud: {}, oidcUsers: [priya] });
+    await signIn(h, "cloud", priya.sub);
+    await signIn(h, "cloud", priya.sub);
+    expect(h.db.get(signInIdentityKey(cloudId))).not.toHaveProperty("lastAuthTime");
   });
 });
