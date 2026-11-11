@@ -1,6 +1,7 @@
 // Merge of Plan 4 and Plan 5: a chain run is read, steered, stopped and retried as a session through the real broker, on Plan 4's own code, with the org of the request.
 // Each seam Plan 5 left for Plan 4 (`ChainSessionReads`, `ChainSteerReads`, `ChainControl`, `chainReadAccess`) answers here instead of RUNTIME_UNAVAILABLE.
 // The run's session is written with the run (Plan 5 Task 3).
+import "../support/automations-on.js";
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 import { SessionViewSchema } from "../../packages/cloud-contracts/src/session-views.js";

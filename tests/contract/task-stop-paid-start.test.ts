@@ -1,3 +1,4 @@
+import "../support/automations-on.js";
 import { transactionAuditEvent } from "../support/transaction-audit.js";
 import * as spendRequests from "../../packages/broker/src/spend/requests.js";
 import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";

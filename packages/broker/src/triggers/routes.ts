@@ -79,6 +79,12 @@ const targetKeyOf = (target: TriggerTarget): string => (target.kind === "chain" 
 
 // ---- access
 
+/** Whether the chain has a company-wide share stored now (read live; chains/routes.ts `chainHasCompanyShare`, kept here so the two route files don't import each other). */
+async function chainHasCompanyShare(deps: { chains?: ChainAccessDeps["store"] | undefined }, orgId: OrgId, chainId: string): Promise<boolean> {
+  if (deps.chains === undefined) return false;
+  return (await deps.chains.listShares(orgId, chainId)).some((share) => (share.principal as { kind?: unknown } | undefined)?.kind === "org");
+}
+
 const chainAccessOf = (deps: Deps): ChainAccessDeps => ({ ...deps, store: deps.chains! });
 
 function storeOf(deps: Deps): TriggerStore {
@@ -112,7 +118,7 @@ export async function requireSettingsOn(deps: Deps, caller: AgentCaller, project
 
 // ---- how a trigger is shown
 
-async function viewOf(deps: Deps, trigger: TriggerRecord): Promise<Shown> {
+export async function viewOf(deps: Deps, trigger: TriggerRecord): Promise<Shown> {
   return {
     triggerId: trigger.triggerId, target: trigger.target, project: trigger.project, spec: trigger.spec, ...(trigger.hookId === undefined ? {} : { hookId: trigger.hookId }),
     enabled: trigger.enabled, ...(trigger.disabledReason === undefined ? {} : { disabledReason: trigger.disabledReason }), maxRunsPerHour: trigger.maxRunsPerHour,
@@ -151,8 +157,9 @@ async function syncSchedule(deps: Deps, trigger: TriggerRecord, wasEnabled: bool
 
 // ---- who is asked
 
-/** The people shown a trigger's turn-on: org owners and admins, and the project's maintainers. The rule decides who may decide. */
+/** The people shown a trigger's turn-on: org owners and admins, and the project's maintainers; for a company-shared chain, org owners and admins only (decision 92). The rule decides who may decide. */
 async function approversFor(deps: Deps, trigger: TriggerRecord): Promise<ApproverSpec> {
+  if (trigger.target.kind === "chain" && await chainHasCompanyShare(deps, trigger.orgId, trigger.target.chainId)) return { kind: "rule", rule: "trigger_enable", candidates: await orgAdmins(deps, trigger.orgId) };
   const candidates = new Set<string>([trigger.createdBy]);
   for (const id of await orgAdmins(deps, trigger.orgId)) candidates.add(id);
   for (const member of await deps.projectMembers.list(trigger.orgId, trigger.project)) if (projectAllows(member.role, "edit_settings")) candidates.add(member.developerId);
@@ -518,7 +525,10 @@ async function mayEnable(deps: ApprovalDependencies, record: ApprovalRecord, cal
   if (role === undefined || !projectAllows(role, "edit_settings")) return false;
   if (trigger.target.kind === "chain") {
     const chain = await deps.chains?.get(record.orgId, trigger.target.chainId);
-    return chain !== undefined && deps.chains !== undefined && atLeast(await chainAccess({ ...deps, store: deps.chains }, caller, chain), "manage");
+    if (chain === undefined || deps.chains === undefined) return false;
+    // Decision 92 (srv/automations): a chain the whole company can use starts on its own only when an org owner or admin says so, judged now.
+    if (orgRole !== "owner" && orgRole !== "admin" && await chainHasCompanyShare(deps, record.orgId, chain.chainId)) return false;
+    return atLeast(await chainAccess({ ...deps, store: deps.chains }, caller, chain), "manage");
   }
   if (isBuiltinAgentId(trigger.target.agentId)) return projectAllows(role, "start_tasks");
   const agent = await deps.store.get(record.orgId, trigger.target.agentId);

@@ -1,3 +1,4 @@
+import "../support/automations-on.js";
 import { fixtureActor } from "../support/money-authority.js";
 // Plan 4 Task 4: the app's chain routes (`/v1/app/chains*`), through the broker's handler with two orgs. A publish or rollback that makes anything less
 // safe than what runs answers 202 with a confirmation link and changes nothing; deciding it is Plan 3's page (R66).

@@ -97,3 +97,6 @@ export { type AppProjectDetail, AppProjectDetailSchema, type AppProjectSummary, 
 export { type SetupApplyResponse, SetupApplyResponseSchema } from "./setup-proposal.js";
 export * from "./finished-as.js";
 export * from "./org-pending-approvals.js";
+
+// srv/automations: the chain and trigger route projections and the project automations list.
+export * from "./app-automations.js";

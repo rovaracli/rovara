@@ -167,6 +167,15 @@ async function chainVersionBinding(chains: ChainStore, chain: ChainRecord): Prom
   return { expectedCurrentVersion: chain.currentVersion, ...(digest === undefined ? {} : { versionDigest: digest }) };
 }
 
+/**
+ * Decision 92 (srv/automations, as for an agent's `requireOwnerOrAdminToMoveShared`): a chain the whole company can use (a stored company share) changes owner
+ * or accountable maintainer only by an org owner or admin. `role` is the mover's live org role.
+ */
+export async function requireOwnerOrAdminToMoveSharedChain(deps: { chains?: ChainStore }, orgId: OrgId, chainId: string, role: string | undefined): Promise<void> {
+  if (role === "owner" || role === "admin" || !await chainHasCompanyShare(deps, orgId, chainId)) return;
+  throw agentXError("FORBIDDEN", "This chain is shared with your whole company, so only an organization owner or admin can change who owns it or answers for it.");
+}
+
 /** Refuses applying a publish or rollback decided by someone who is not an org owner or admin once the chain has been shared company-wide (owner decision 92). */
 async function requireOwnerOrAdminWhileShared(deps: ChainApprovalDeps, record: ApprovalRecord, chainId: string, by: string): Promise<void> {
   if (!await chainHasCompanyShare(deps, record.orgId, chainId)) return;
@@ -426,6 +435,8 @@ async function putOwner(deps: ChainRouteDependencies, caller: AgentCaller, chain
   const { chain, access } = await requireChainAccess(accessOf(deps), caller, chainId, "manage");
   const { mark, replay } = await markRequest(deps, caller, "chain-owner", chainId, input);
   if (replay !== undefined) return waitingReplay(replay.result) ?? { chain: chainView(replay.result as ChainRecord, access) };
+  // Decision 92: a company-shared chain changes owner only by an org owner or admin.
+  await requireOwnerOrAdminToMoveSharedChain(deps, caller.orgId, chain.chainId, caller.orgRole);
   // Store the owner this returns, not the one asked for: a member who was merged into another is named by the survivor.
   const owner = await requireChainOwnerAllowed(deps, caller, input.owner, chain.owner);
   const accountable = input.accountable === undefined ? undefined : owner.kind === "project" ? await requireChainAccountable(deps, caller.orgId, owner.project, input.accountable.developerId) : input.accountable;
@@ -446,6 +457,7 @@ async function putAccountable(deps: ChainRouteDependencies, caller: AgentCaller,
   const { mark, replay } = await markRequest(deps, caller, "chain-accountable", chainId, input);
   if (replay !== undefined) return waitingReplay(replay.result) ?? replay.result as Shown;
   if (chain.owner.kind !== "project") throw agentXError("CONFIG_INVALID", "accountable: only a project's chain has an accountable maintainer");
+  await requireOwnerOrAdminToMoveSharedChain(deps, caller.orgId, chain.chainId, caller.orgRole);
   const accountable = await requireChainAccountable(deps, caller.orgId, chain.owner.project, input.accountable.developerId);
   const done = await holdingOwnerCap(deps, caller, { kind: "chain", chainId: chain.chainId }, chain, withBudgetFields(chain, { accountable }), { op: "set_accountable", accountable }, mark,
     (options) => deps.chains.setAccountable(chain.orgId, chain.chainId, accountable, caller.developerId, mark, { ...options, actor: { developerId: caller.developerId, role: caller.orgRole }, manageSnapshot: chain }));

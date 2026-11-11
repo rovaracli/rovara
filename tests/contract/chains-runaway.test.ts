@@ -2,6 +2,7 @@
 // a chain whose Linear write creates the issue its own trigger listens for); the hourly and the daily caps bound what a loop that gets past those can do; a budget that is used up
 // stops a run before it starts; a disabled, ownerless or deleted trigger never fires; and a flood at a hook is bounded (the route's throttle, the hook's own limits, a flood of forged
 // requests costs no write and almost no read). Every delivery here is a signed Linear or Sentry request through the broker's handler, and every start is the broker's own dispatch.
+import "../support/automations-on.js";
 import { createHmac, randomUUID } from "node:crypto";
 import { App } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";

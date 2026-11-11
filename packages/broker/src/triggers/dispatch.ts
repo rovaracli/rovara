@@ -264,6 +264,12 @@ export interface AutonomousSource {
 /** Starts a chain trigger's run: a member's chain runs as its member; a project's, as the maintainer who turned the trigger on (who answers for what it does). Either is read as whoever a merged developer became. */
 export async function startChainFor(deps: TriggerDispatchDependencies, orgId: OrgId, trigger: TriggerRecord, identity: string, source: AutonomousSource): Promise<{ runId: string }> {
   if (trigger.target.kind !== "chain") throw new Error("not a chain trigger");
+  // srv/automations (E-52): a run nobody watches starts only under an enforced dollar cap. Without the spend engine's admission the runner would not hold it to the
+  // chain's monthly budget, so it is refused (a final refusal, recorded as the trigger's activity), never started unchecked.
+  if (deps.chainRuns?.admission === undefined) throw agentXError("CHAIN_BUDGET_REQUIRED", "This chain can't start a run on its own here: spend limits are not enforced in this deployment.");
+  // A paused automation never starts: the trigger is read again, consistently, just before the start, so a turn-off that landed after the match wins.
+  const current = await deps.triggers?.get(orgId, trigger.triggerId);
+  if (current?.enabled !== true) throw agentXError("CHAIN_UNAVAILABLE", "This trigger was turned off, so it starts nothing.");
   const chain = await deps.chains.get(orgId, trigger.target.chainId);
   if (chain === undefined) throw agentXError("NOT_FOUND", "no chain has that ID");
   const developerId = await resolveSurvivor(deps, orgId, chain.owner.kind === "member" ? chain.owner.developerId : trigger.createdBy);
