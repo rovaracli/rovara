@@ -16,7 +16,8 @@ import { readTestEnvPin, usableTestEnvironment } from "./usable.js";
 import { testEnvironmentEnabled } from "./switch.js";
 import { DEPENDENCIES_WITH_DEVCONTAINER_WORDS, projectUsesDevcontainer } from "./devcontainer-check.js";
 import { approvedFixturesOf, recordsOf, type FixtureStoreFactory } from "./fixture-lookup.js";
-import { testServicesEnabled } from "./test-services-switch.js";
+import { projectImagesEnabled, testServicesEnabled } from "./test-services-switch.js";
+import { readCompanyImages } from "../org/company-test-image-store.js";
 
 const sameCommand = (left: ProjectCommand, right: ProjectCommand): boolean => left.cwd === right.cwd && left.executable === right.executable && JSON.stringify(left.args) === JSON.stringify(right.args);
 
@@ -72,7 +73,9 @@ async function planOf(
     const fixtures = await approvedFixturesOf(recordsOf(deps.fixtureStore), input.orgId, input.project, body);
     // Review I3: the seed files as the approval bound them (a file seed with no bound content is refused: approve again).
     const approvedSeedFiles = await readApprovedSeedFiles(deps, input.orgId, input.project, found.environment.revision);
-    const planned = taskDependencyPlansOf({ body, catalog, edition: env[EDITION_ENV_VAR] === "enterprise" ? "enterprise" : "public", projectId: input.project, fixtures, approvedSeedFiles });
+    // Switch `pj`: the company's approved extra images, read only for an environment that names one (any other plan reads nothing more than before).
+    const companyImages = projectImagesEnabled(env) && body.dependencies.some((dependency) => dependency.backing.kind === "project_image") ? await readCompanyImages(deps, input.orgId) : undefined;
+    const planned = taskDependencyPlansOf({ body, catalog, edition: env[EDITION_ENV_VAR] === "enterprise" ? "enterprise" : "public", projectId: input.project, fixtures, approvedSeedFiles, ...(companyImages === undefined ? {} : { companyImages }) });
     if (!planned.ok) throw agentXError("RUNTIME_UNAVAILABLE", DEPENDENCY_PLAN_REFUSAL_WORDS[planned.reason]);
     dependencies = planned.dependencies;
   }

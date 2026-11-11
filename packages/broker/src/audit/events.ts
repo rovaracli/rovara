@@ -995,6 +995,18 @@ export function auditSetupRecipeChange(input: AuditBuilderBase & { action: Setup
   return build(input.action, input, { kind: "org", id: input.orgId }, input.facts);
 }
 
+// Company-approved extra test-service images (switch `pj`) ---------------------------------------------------------
+
+export type CompanyImageAuditAction = "company_image.proposed" | "company_image.approved" | "company_image.revoked";
+
+/**
+ * `occurrence`: `auditOccurrence(imageId, revision, action)` (every change adds one revision). The target is the company. Facts are the image's id, its pinned digest and the authority; the image's name goes in `details`
+ * (subject `org`), never in a fact.
+ */
+export function auditCompanyImageChange(input: AuditBuilderBase & { action: CompanyImageAuditAction; imageId: string; digest: string; authority: "fresh_sign_in" | "live_admin" | "project_setup" }): AuditEventInput {
+  return build(input.action, input, { kind: "org", id: input.orgId }, { imageId: input.imageId, digest: input.digest, authority: input.authority });
+}
+
 // Saved project images (SV wiring) ---------------------------------------------------------------------------
 
 /** `occurrence`: `auditOccurrence(project, row version, change)`. The target is the project. Facts are fixed words, an image digest and a count: no repository name, command or secret. */

@@ -188,6 +188,21 @@ describe("starting the run", () => {
     await nothingLeft(h);
   });
 
+  it("a company-approved image is refused BY NAME with the same sentence: it is never started, even with the digest the catalog pins, and nothing is pulled or made", async () => {
+    const h = await harness();
+    const company = { imageId: "img_" + "1".repeat(20), registry: "docker.io", repository: "library/postgres", digest: "c".repeat(64) };
+    for (const changes of [{ digest: "c".repeat(64), company }, { company: { ...company, digest: dependency().digest as string }, digest: dependency().digest as string }]) {
+      const error = await h.start([dependency({ backing: "company", ...changes } as never)]).then(() => undefined, (caught: unknown) => caught as TestServicesError);
+      expect(error).toBeInstanceOf(TestServicesError);
+      expect(error!.reason).toBe("pull_failed");
+      expect(error!.message).toBe("Dependency image not available on this worker");
+      expect(error!.failures.get("postgres")).toBe("pull_failed");
+    }
+    expect(h.fake.verbs("network").filter((call) => call[1] === "create")).toEqual([]);
+    expect(h.fake.calls.some((call) => call[0] === "pull")).toBe(false);
+    await nothingLeft(h);
+  });
+
   it("a digest the broker approved that this worker image does not pin gets the same sentence (a newer catalog than the image), and nothing is pulled or made", async () => {
     const h = await harness();
     const error = await h.start([dependency({ digest: "c".repeat(64) })]).then(() => undefined, (caught: unknown) => caught as TestServicesError);

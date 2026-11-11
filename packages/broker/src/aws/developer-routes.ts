@@ -201,6 +201,7 @@ import { SECOND_REVIEW_BROWSER_MESSAGE, SECOND_REVIEW_PATH, routeSecondReview } 
 import { routeTrackerPeople } from "./developer-routes/tracker-people.js";
 import { routeJiraOrgAdmin } from "./developer-routes/jira-org-admin.js";
 import { SETUP_RECIPES_BROWSER_MESSAGE, isSetupRecipesPath, routeSetupRecipes } from "./developer-routes/setup-recipes.js";
+import { COMPANY_TEST_IMAGES_BROWSER_MESSAGE, companyTestImagesEnabled, isCompanyTestImagesPath, routeCompanyTestImages } from "./developer-routes/company-test-images.js";
 import { setupRecipesEnabled } from "../rovara-code/setup-recipes-switch.js";
 import { SAVED_ENV_IMAGE_BROWSER_MESSAGE, isSavedEnvImagePath, routeSavedEnvImage } from "./developer-routes/saved-env-image.js";
 import { routeFixtures } from "./developer-routes/fixtures.js";
@@ -355,6 +356,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (KNOWN_FAILING_MARKS_PATH.test(url.pathname) && verifyResultsEnabled() && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", KNOWN_FAILING_MARKS_BROWSER_MESSAGE);
   // Company setup recipes and locks (switch `sp`): browser-only for reads and writes (off: the path is not found).
   if (isSetupRecipesPath(url.pathname) && setupRecipesEnabled() && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", SETUP_RECIPES_BROWSER_MESSAGE);
+  // Company-approved extra test-service images (switches `tx` and `pj`): a token or the API can read, never change (off: the path is not found).
+  if (isCompanyTestImagesPath(url.pathname) && companyTestImagesEnabled() && request.method === "POST" && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", COMPANY_TEST_IMAGES_BROWSER_MESSAGE);
   // The project's saved environment panel (switch `sv`): browser-only for reads and writes, whatever the method (off: the path is not found).
   if (isSavedEnvImagePath(url.pathname) && savedEnvEnabled() && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", SAVED_ENV_IMAGE_BROWSER_MESSAGE);
   // UX5b: script tokens are made, listed and revoked from a live browser session only (off: the path is not found).
@@ -596,6 +599,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (knownFailingPolicyReply !== undefined) return knownFailingPolicyReply;
   const setupRecipesReply = await routeSetupRecipes(deps, caller, request, url);
   if (setupRecipesReply !== undefined) return setupRecipesReply;
+  const companyTestImagesReply = await routeCompanyTestImages(deps, caller, request, url);
+  if (companyTestImagesReply !== undefined) return companyTestImagesReply;
   const savedEnvImageReply = await routeSavedEnvImage(deps, caller, request, url);
   if (savedEnvImageReply !== undefined) return savedEnvImageReply;
   const fixturesReply = await routeFixtures(deps, caller, request, url);
