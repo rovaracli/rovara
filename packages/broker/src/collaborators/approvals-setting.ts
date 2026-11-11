@@ -54,6 +54,19 @@ export async function collaboratorApprovalsEnabled(deps: Pick<CollaboratorSettin
   return stateOf(await readItem(deps, orgId, project)).enabled;
 }
 
+/**
+ * The switch now, with a ConditionCheck that holds only while the item is exactly as read (none; or this revision, still on): a collaborator's approve carries it in its own transaction, so a switch turned
+ * off between the read and the write refuses the approve.
+ */
+export async function collaboratorSwitchFence(deps: Pick<CollaboratorSettingDeps, "documentClient" | "tableName">, orgId: OrgId, project: string): Promise<{ enabled: boolean; check: Record<string, unknown> }> {
+  const item = await readItem(deps, orgId, project);
+  const state = stateOf(item);
+  const check = item === undefined
+    ? { ConditionCheck: { TableName: deps.tableName, Key: key(orgId, project), ConditionExpression: "attribute_not_exists(pk)" } }
+    : { ConditionCheck: { TableName: deps.tableName, Key: key(orgId, project), ConditionExpression: "#revision = :seen AND #enabled = :on", ExpressionAttributeNames: { "#revision": "revision", "#enabled": "enabled" }, ExpressionAttributeValues: { ":seen": item["revision"], ":on": true } } };
+  return { enabled: state.enabled, check };
+}
+
 interface StoredRequest { id: string; enabled: boolean; expectedRevision: number; answer: { enabled: boolean; revision: number } }
 const storedRequests = (item: Item | undefined): StoredRequest[] => (Array.isArray(item?.["requests"]) ? (item["requests"] as unknown[]) : []).flatMap((entry): StoredRequest[] => {
   const e = entry as Partial<StoredRequest> | null;

@@ -26,15 +26,19 @@ export type ProjectRole = z.infer<typeof ProjectRoleSchema>;
  *   answer_questions             answer a question a task raised for people (a product decision's question). Not a decision: it settles nothing.
  *   approve_product_decisions    approve a PRODUCT decision (wording, a UX option, a scope question). The role may; the decision's own rule (`approvalPlaceDecision`) still decides by risk and the project's
  *                                switch: a collaborator only a LOW one while `collaboratorApprovals` is on. A task's owner decides their own task's product decisions as its owner, not through this permission.
- * Neither ever counts toward a code review, a merge rule or CODEOWNERS: those read the code host's reviews only.
+ *   comment                      comment on a task's session and page (decision 103). The roles that could already comment there (a maintainer, a contributor) and a collaborator; never a viewer.
+ *   ask                          use the live Ask about a task (decision 103), with its rates and its charge to the company's spend like anyone's. A maintainer (who already could) and a collaborator.
+ *                                A contributor asks as before, through a "use" level on the session (a share or a Task People entry); the table does not widen that.
+ * None of these ever counts toward a code review, a merge rule or CODEOWNERS: those read the code host's reviews only.
  */
-export type ProjectPermission = CodeProjectPermission | "answer_questions" | "approve_product_decisions";
+export type ProjectPermission = CodeProjectPermission | "answer_questions" | "approve_product_decisions" | "comment" | "ask";
 
 export const PROJECT_PERMISSIONS: Record<ProjectRole, ReadonlyArray<ProjectPermission>> = {
-  maintainer: [...CODE_PROJECT_PERMISSIONS.maintainer, "answer_questions", "approve_product_decisions"],
-  contributor: [...CODE_PROJECT_PERMISSIONS.contributor, "answer_questions"],
+  maintainer: [...CODE_PROJECT_PERMISSIONS.maintainer, "answer_questions", "approve_product_decisions", "comment", "ask"],
+  contributor: [...CODE_PROJECT_PERMISSIONS.contributor, "answer_questions", "comment"],
   // A viewer's own permissions, and the two new ones. Never `start_tasks` (owner answer Q8: ask, answer, approve low-risk product decisions; the conservative reading of decision 14's "can start work").
-  collaborator: [...CODE_PROJECT_PERMISSIONS.viewer, "answer_questions", "approve_product_decisions"],
+  // Decision 103: a collaborator also comments and uses the live Ask (charged and capped like anyone's).
+  collaborator: [...CODE_PROJECT_PERMISSIONS.viewer, "answer_questions", "approve_product_decisions", "comment", "ask"],
   viewer: [...CODE_PROJECT_PERMISSIONS.viewer],
 };
 

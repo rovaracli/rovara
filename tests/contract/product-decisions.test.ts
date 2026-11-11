@@ -3,24 +3,25 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { approvalPlaceDecision, DEFAULT_RECENT_SIGN_IN_SETTING, ProductDecisionsResponseSchema, type ProductDecisionRisk, type ProductDecisionView } from "@agentx/cloud-contracts";
-import { PRODUCT_DECISION_REFUSALS, raiseProductDecision } from "../../packages/broker/src/product-decisions/store.js";
+import { approvalPlaceDecision, DEFAULT_RECENT_SIGN_IN_SETTING, ProductDecisionsResponseSchema, productDecisionRisk, productDecisionRiskFloor, type ProductDecisionRisk, type ProductDecisionView } from "@agentx/cloud-contracts";
+import { PRODUCT_DECISION_REFUSALS, decideProductDecision, raiseProductDecision } from "../../packages/broker/src/product-decisions/store.js";
+import { projectMetaKey } from "@rovara-code/contracts";
 import { CARA, KIT, LENA, NEO, OTHER_ORG, OTTO, PRIYA, PROJECT, SAM, TASK_ID, collaboratorBench, errorOf, type CollaboratorBench } from "../support/collaborator-bench.js";
 import { TEST_ORG } from "../support/orgs.js";
 import type { Developer } from "../support/developer-task-broker.js";
 
 const LIST = `/v1/app/projects/${PROJECT}/product-decisions`;
 const SWITCH = `/v1/app/projects/${PROJECT}/collaborator-approvals`;
-const OPTIONS = [{ id: "a", label: "Show the banner on checkout" }, { id: "b", label: "Show it on the cart" }];
+const OPTIONS = ["Show the banner on the cart page", "Show it in the header"];
 
 async function raised(b: CollaboratorBench, risk: ProductDecisionRisk = "low", requestId = randomUUID().replaceAll("-", "")): Promise<string> {
-  return (await raiseProductDecision(b.deps, { orgId: TEST_ORG, project: PROJECT, taskId: TASK_ID, requestId, raise: { question: "Where should the banner go?", options: OPTIONS, risk }, raisedBy: { kind: "system", id: "rovara" } })).decisionId;
+  return (await raiseProductDecision(b.deps, { orgId: TEST_ORG, project: PROJECT, taskId: TASK_ID, requestId, raise: { question: "Where should the banner go?", options: OPTIONS, risk, touchedPaths: ["web/src/banner.tsx"], planRisk: "low" }, raisedBy: { kind: "system", id: "rovara" } })).decisionId;
 }
 const withoutRequestId = (body: Record<string, unknown>) => { const { requestId: _requestId, ...rest } = body; return rest; }; // eslint-disable-line @typescript-eslint/no-unused-vars -- the harness adds the request id to every answer
 const decisionsOf = async (b: CollaboratorBench, who: Developer) => ProductDecisionsResponseSchema.parse(withoutRequestId((await b.web(who, "GET", LIST)).body)).decisions;
 const revisionOf = async (b: CollaboratorBench, id: string) => (await decisionsOf(b, PRIYA)).find((d) => d.decisionId === id)!.revision;
 const approve = async (b: CollaboratorBench, who: Developer, id: string, extra: Record<string, unknown> = {}) =>
-  b.web(who, "POST", `${LIST}/${id}`, { action: "approve", requestId: randomUUID(), expectedRevision: await revisionOf(b, id), optionId: "a", ...extra });
+  b.web(who, "POST", `${LIST}/${id}`, { action: "approve", requestId: randomUUID(), expectedRevision: await revisionOf(b, id), optionId: "o1", ...extra });
 const answer = async (b: CollaboratorBench, who: Developer, id: string, text = "The checkout page, please") =>
   b.web(who, "POST", `${LIST}/${id}`, { action: "answer", requestId: randomUUID(), expectedRevision: await revisionOf(b, id), text });
 const productItems = (b: CollaboratorBench) => b.db.find((item) => String(item.sk).startsWith("PRODUCT_DECISION"));
@@ -32,7 +33,7 @@ describe("who may approve a product decision", () => {
       const id = await raised(b);
       const reply = await approve(b, who, id);
       expect(reply.status, `${who.name}: ${JSON.stringify(reply.body)}`).toBe(allowed ? 200 : 403);
-      if (allowed) expect((reply.body.decision as ProductDecisionView).approved).toMatchObject({ optionId: "a", role, class: "product", by: { developerId: who.developerId } });
+      if (allowed) expect((reply.body.decision as ProductDecisionView).approved).toMatchObject({ optionId: "o1", role, class: "product", by: { developerId: who.developerId } });
       else {
         expect(errorOf(reply)?.message).toBe(PRODUCT_DECISION_REFUSALS["role_not_allowed"]);
         expect((await decisionsOf(b, PRIYA))[0]).toMatchObject({ status: "open", revision: 1 });
@@ -97,7 +98,7 @@ describe("a collaborator's approval never counts toward code", () => {
     const id = await raised(b);
     await decisionsOf(b, PRIYA); await decisionsOf(b, CARA);
     const before = new Set(b.db.find(() => true).map((item) => `${String(item.pk)}|${String(item.sk)}`));
-    expect((await b.web(CARA, "POST", `${LIST}/${id}`, { action: "approve", requestId: randomUUID(), expectedRevision: 1, optionId: "a" })).status).toBe(200);
+    expect((await b.web(CARA, "POST", `${LIST}/${id}`, { action: "approve", requestId: randomUUID(), expectedRevision: 1, optionId: "o1" })).status).toBe(200);
     const added = b.db.find((item) => !before.has(`${String(item.pk)}|${String(item.sk)}`)).map((item) => item.entityType);
     // Besides the decision itself (changed in place, below), only the audit's pending item.
     expect(added.every((kind) => kind === "AUDIT_PENDING")).toBe(true);
@@ -126,7 +127,7 @@ describe("answering a product decision", () => {
     // The audit says who answered which decision; the answer's words are never a fact.
     const events = b.audit.recordedBy("product_decision.answered");
     expect(events).toHaveLength(4);
-    expect(JSON.stringify(events.map((event) => event.facts))).not.toContain("checkout");
+    expect(JSON.stringify(events.map((event) => event.facts))).not.toContain("checkout page");
   });
 });
 
@@ -134,10 +135,12 @@ describe("revisions, replays and a settled decision", () => {
   it("refuses a stale revision, answers a replay with the decision and writes nothing, refuses the same id with another body, and refuses deciding twice", async () => {
     const b = await collaboratorBench();
     const id = await raised(b);
-    expect(errorOf(await b.web(CARA, "POST", `${LIST}/${id}`, { action: "approve", requestId: randomUUID(), expectedRevision: 7, optionId: "a" }))?.code).toBe("CHANGE_STALE");
-    expect(errorOf(await b.web(CARA, "POST", `${LIST}/${id}`, { action: "approve", requestId: randomUUID(), expectedRevision: 1, optionId: "zz" }))?.code).toBe("CONFIG_INVALID");
+    expect(errorOf(await b.web(CARA, "POST", `${LIST}/${id}`, { action: "approve", requestId: randomUUID(), expectedRevision: 7, optionId: "o1" }))?.code).toBe("CHANGE_STALE");
+    expect(errorOf(await b.web(CARA, "POST", `${LIST}/${id}`, { action: "approve", requestId: randomUUID(), expectedRevision: 1, optionId: "o3" }))?.code).toBe("CONFIG_INVALID");
+    // An option id is a short assigned id, never words.
+    expect(errorOf(await b.web(CARA, "POST", `${LIST}/${id}`, { action: "approve", requestId: randomUUID(), expectedRevision: 1, optionId: "show-banner" }))?.code).toBe("CONFIG_INVALID");
     const requestId = randomUUID();
-    const body = { action: "approve", requestId, expectedRevision: 1, optionId: "a" };
+    const body = { action: "approve", requestId, expectedRevision: 1, optionId: "o1" };
     const first = await b.web(CARA, "POST", `${LIST}/${id}`, body);
     expect(first.status).toBe(200);
     const items = JSON.stringify(productItems(b));
@@ -146,8 +149,8 @@ describe("revisions, replays and a settled decision", () => {
     expect((replay.body.decision as ProductDecisionView).approved).toEqual((first.body.decision as ProductDecisionView).approved);
     expect(JSON.stringify(productItems(b))).toBe(items);
     expect(b.audit.recordedBy("product_decision.approved")).toHaveLength(1);
-    expect(errorOf(await b.web(CARA, "POST", `${LIST}/${id}`, { ...body, optionId: "b" }))?.code).toBe("CONFIG_INVALID");
-    expect(errorOf(await b.web(PRIYA, "POST", `${LIST}/${id}`, { action: "approve", requestId: randomUUID(), expectedRevision: 2, optionId: "b" }))?.code).toBe("CHANGE_STALE");
+    expect(errorOf(await b.web(CARA, "POST", `${LIST}/${id}`, { ...body, optionId: "o2" }))?.code).toBe("CONFIG_INVALID");
+    expect(errorOf(await b.web(PRIYA, "POST", `${LIST}/${id}`, { action: "approve", requestId: randomUUID(), expectedRevision: 2, optionId: "o2" }))?.code).toBe("CHANGE_STALE");
   });
 
   it("raises one decision for a retried raise, and refuses a raise on a task of another project or company", async () => {
@@ -156,8 +159,8 @@ describe("revisions, replays and a settled decision", () => {
     expect(await raised(b, "low", requestId)).toBe(await raised(b, "low", requestId));
     expect(productItems(b).filter((item) => item.entityType === "PRODUCT_DECISION")).toHaveLength(1);
     expect(b.audit.recordedBy("product_decision.raised")).toHaveLength(1);
-    await expect(raiseProductDecision(b.deps, { orgId: OTHER_ORG, project: PROJECT, taskId: TASK_ID, requestId: "raise-request-0002", raise: { question: "Q?", options: OPTIONS, risk: "low" }, raisedBy: { kind: "system", id: "rovara" } })).rejects.toMatchObject({ code: "NOT_FOUND" });
-    await expect(raiseProductDecision(b.deps, { orgId: TEST_ORG, project: "other", taskId: TASK_ID, requestId: "raise-request-0003", raise: { question: "Q?", options: OPTIONS, risk: "low" }, raisedBy: { kind: "system", id: "rovara" } })).rejects.toMatchObject({ code: "NOT_FOUND" });
+    await expect(raiseProductDecision(b.deps, { orgId: OTHER_ORG, project: PROJECT, taskId: TASK_ID, requestId: "raise-request-0002", raise: { question: "Q?", options: OPTIONS, risk: "low", touchedPaths: [], planRisk: "low" }, raisedBy: { kind: "system", id: "rovara" } })).rejects.toMatchObject({ code: "NOT_FOUND" });
+    await expect(raiseProductDecision(b.deps, { orgId: TEST_ORG, project: "other", taskId: TASK_ID, requestId: "raise-request-0003", raise: { question: "Q?", options: OPTIONS, risk: "low", touchedPaths: [], planRisk: "low" }, raisedBy: { kind: "system", id: "rovara" } })).rejects.toMatchObject({ code: "NOT_FOUND" });
   });
 });
 
@@ -166,7 +169,7 @@ describe("company scoping and browser-only writes", () => {
     const b = await collaboratorBench();
     const id = await raised(b);
     expect(await decisionsOf(b, OTTO)).toEqual([]);
-    const pressed = await b.web(OTTO, "POST", `${LIST}/${id}`, { action: "approve", requestId: randomUUID(), expectedRevision: 1, optionId: "a" });
+    const pressed = await b.web(OTTO, "POST", `${LIST}/${id}`, { action: "approve", requestId: randomUUID(), expectedRevision: 1, optionId: "o1" });
     expect(pressed.status).toBe(404);
     expect(errorOf(pressed)?.message).not.toContain(id);
     expect((await decisionsOf(b, PRIYA))[0]).toMatchObject({ status: "open", revision: 1 });
@@ -175,7 +178,7 @@ describe("company scoping and browser-only writes", () => {
   it("refuses a decide without a live browser session (a sign-in token), before anything is read or written; reading with a token is allowed", async () => {
     const b = await collaboratorBench();
     const id = await raised(b);
-    const token = await b.dev(PRIYA, "POST", `${LIST}/${id}`, { action: "approve", requestId: randomUUID(), expectedRevision: 1, optionId: "a" });
+    const token = await b.dev(PRIYA, "POST", `${LIST}/${id}`, { action: "approve", requestId: randomUUID(), expectedRevision: 1, optionId: "o1" });
     expect(token.status).toBe(403);
     expect(errorOf(token)?.message).toContain("live browser session");
     expect((await b.dev(PRIYA, "GET", LIST)).status).toBe(200);
@@ -187,7 +190,60 @@ describe("company scoping and browser-only writes", () => {
     const id = await raised(b);
     await approve(b, CARA, id);
     const [event] = b.audit.recordedBy("product_decision.approved");
-    expect(event).toMatchObject({ orgId: TEST_ORG, actor: { kind: "member", id: CARA.developerId }, target: { kind: "task", id: TASK_ID }, facts: { decisionId: id, risk: "low", role: "collaborator", optionId: "a", revision: 2, class: "product" } });
-    expect(JSON.stringify(event!.facts)).not.toMatch(/banner|checkout/u);
+    expect(event).toMatchObject({ orgId: TEST_ORG, actor: { kind: "member", id: CARA.developerId }, target: { kind: "task", id: TASK_ID }, facts: { decisionId: id, risk: "low", role: "collaborator", optionId: "o1", revision: 2, class: "product" } });
+    expect(JSON.stringify(event!.facts)).not.toMatch(/banner|header|cart/u);
+  });
+});
+
+describe("the risk floor (M2): the raiser can raise a decision's risk, never lower it", () => {
+  it("is never low for a CODEOWNERS, auth, payments, secrets or migration path, and never below the plan's risk", () => {
+    for (const path of ["CODEOWNERS", ".github/CODEOWNERS", "src/auth/login.ts", "app/oauth-callback.ts", "lib/permissions.ts", "billing/invoice.ts", "src/payments/refund.ts", "config/secrets.yaml", ".env.production", "db/migrations/0042_add.sql", "schema.sql"]) {
+      expect(productDecisionRiskFloor({ touchedPaths: [path], planRisk: "low" }), path).toBe("medium");
+    }
+    for (const path of ["web/src/banner.tsx", "docs/copy.md", "src/author-card.tsx"]) expect(productDecisionRiskFloor({ touchedPaths: [path], planRisk: "low" }), path).toBe("low");
+    expect(productDecisionRiskFloor({ touchedPaths: [], planRisk: "high" })).toBe("high");
+    expect(productDecisionRisk({ risk: "low", touchedPaths: ["src/auth/x.ts"], planRisk: "low" })).toBe("medium");
+    expect(productDecisionRisk({ risk: "high", touchedPaths: [], planRisk: "low" })).toBe("high");
+    expect(productDecisionRisk({ risk: "low", touchedPaths: [], planRisk: "medium" })).toBe("medium");
+  });
+
+  it("stores the floor when a raiser asks for low on a sensitive path: a collaborator cannot approve it", async () => {
+    const b = await collaboratorBench();
+    const { decisionId } = await raiseProductDecision(b.deps, { orgId: TEST_ORG, project: PROJECT, taskId: TASK_ID, requestId: "raise-sensitive-01", raise: { question: "Which login wording?", options: OPTIONS, risk: "low", touchedPaths: ["web/src/auth/login-form.tsx"], planRisk: "low" }, raisedBy: { kind: "system", id: "rovara" } });
+    expect((await decisionsOf(b, CARA))[0]).toMatchObject({ decisionId, risk: "medium", options: [{ id: "o1", label: OPTIONS[0] }, { id: "o2", label: OPTIONS[1] }], you: { canApprove: false, approveRefusal: "role_not_allowed" } });
+    expect((await approve(b, CARA, decisionId)).status).toBe(403);
+    expect(b.audit.recordedBy("product_decision.raised")[0]?.facts).toMatchObject({ risk: "medium" });
+  });
+});
+
+describe("owner notice, archived projects and names", () => {
+  it("tells the task's owner when a collaborator settles their decision (decision 97), and not when the owner does", async () => {
+    const b = await collaboratorBench();
+    const told: Array<{ ownerDeveloperId: string; deciderName: string }> = [];
+    const deps = { ...b.deps, notifyOwner: async (input: { ownerDeveloperId: string; deciderName: string }) => { told.push(input); } };
+    const first = await raised(b);
+    await decideProductDecision(deps, { orgId: TEST_ORG, developerId: CARA.developerId, name: CARA.name, role: "collaborator" }, PROJECT, first, { action: "approve", requestId: randomUUID(), expectedRevision: 1, optionId: "o1" });
+    expect(told).toEqual([expect.objectContaining({ ownerDeveloperId: KIT.developerId, deciderName: CARA.name })]);
+    const second = await raised(b);
+    await decideProductDecision(deps, { orgId: TEST_ORG, developerId: KIT.developerId, name: KIT.name, role: "contributor" }, PROJECT, second, { action: "approve", requestId: randomUUID(), expectedRevision: 1, optionId: "o2" });
+    expect(told).toHaveLength(1);
+  });
+
+  it("refuses answering and approving on an archived project, writing nothing", async () => {
+    const b = await collaboratorBench();
+    const id = await raised(b);
+    b.db.set({ ...projectMetaKey(TEST_ORG, PROJECT), entityType: "PROJECT_META", name: PROJECT, status: "archived", createdAt: "x", createdBy: "y", archivedAt: "z", archivedBy: "y" });
+    for (const body of [{ action: "approve", requestId: randomUUID(), expectedRevision: 1, optionId: "o1" }, { action: "answer", requestId: randomUUID(), expectedRevision: 1, text: "Cart" }]) {
+      await expect(decideProductDecision(b.deps, { orgId: TEST_ORG, developerId: PRIYA.developerId, name: PRIYA.name, role: "maintainer" }, PROJECT, id, body)).rejects.toMatchObject({ code: "PROJECT_ARCHIVED" });
+    }
+    expect(productItems(b)[0]).toMatchObject({ status: "open", revision: 1 });
+  });
+
+  it("shows an erased answerer as 'A former member'", async () => {
+    const b = await collaboratorBench();
+    const id = await raised(b);
+    expect((await answer(b, CARA, id)).status).toBe(200);
+    b.db.set({ pk: `DEVELOPER_NAME#${CARA.developerId}`, sk: "NAME", entityType: "DEVELOPER_NAME", developerId: CARA.developerId, erased: true, erasedAt: "2026-11-11T00:00:00.000Z" });
+    expect((await decisionsOf(b, PRIYA))[0]!.answers[0]!.by.name).toBe("A former member");
   });
 });

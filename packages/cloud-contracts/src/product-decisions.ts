@@ -16,7 +16,8 @@ export const ProductDecisionRiskSchema = z.enum(PRODUCT_DECISION_RISKS);
 export type ProductDecisionRisk = z.infer<typeof ProductDecisionRiskSchema>;
 
 export const ProductDecisionIdSchema = z.string().regex(/^pdq_[A-Za-z0-9_-]{16,40}$/u);
-export const ProductDecisionOptionIdSchema = z.string().regex(/^[a-z0-9_-]{1,32}$/u);
+/** Option ids are assigned by the server, `o1` to `o4`, so no words of an option ever reach an audit fact or an id. */
+export const ProductDecisionOptionIdSchema = z.string().regex(/^o[1-4]$/u);
 
 export const PRODUCT_DECISION_QUESTION_MAX = 300;
 export const PRODUCT_DECISION_OPTION_MAX = 120;
@@ -35,14 +36,46 @@ export const PRODUCT_DECIDER_ROLES = ["owner", "maintainer", "collaborator"] as 
 export const ProductDeciderRoleSchema = z.enum(PRODUCT_DECIDER_ROLES);
 export type ProductDeciderRole = z.infer<typeof ProductDeciderRoleSchema>;
 
-/** What `raiseProductDecision` takes: the question, two to four options, and the tier the raiser judged (deterministic, never lowered). */
+/**
+ * What `raiseProductDecision` takes (the task engine only; there is no route that raises one): the question, two to four option labels (their ids are assigned, `o1`...), the risk the raiser judged, and the
+ * facts the risk FLOOR is computed from: the repository paths the decision touches and the plan's own risk. The stored risk is the higher of the raiser's and the floor (`productDecisionRisk`).
+ */
 export const ProductDecisionRaiseSchema = z.object({
   question: line(PRODUCT_DECISION_QUESTION_MAX),
-  options: z.array(ProductDecisionOptionSchema).min(2).max(PRODUCT_DECISION_OPTIONS_MAX)
-    .refine((options) => new Set(options.map((option) => option.id)).size === options.length, "option ids are unique"),
+  options: z.array(line(PRODUCT_DECISION_OPTION_MAX)).min(2).max(PRODUCT_DECISION_OPTIONS_MAX),
   risk: ProductDecisionRiskSchema,
+  touchedPaths: z.array(z.string().min(1).max(500).regex(NO_HIDDEN)).max(500),
+  planRisk: ProductDecisionRiskSchema,
 }).strict();
 export type ProductDecisionRaise = z.infer<typeof ProductDecisionRaiseSchema>;
+
+/**
+ * M2 (DN-6): the paths that keep a product decision from ever being low: code ownership, authentication and permissions, payments and billing, secrets and credentials, and database migrations. Matched on
+ * the path's segments and file name, case-insensitively. A product decision that touches one is at least medium (so a collaborator can never approve it).
+ */
+const SENSITIVE_PATH_PATTERNS: readonly RegExp[] = [
+  /(^|\/)(\.github\/|docs\/)?CODEOWNERS$/iu,
+  /(^|[/._-])(auth|authn|authz|oauth|oidc|saml|sso|login|signin|sign-in|session|sessions|identity|iam|permission|permissions|rbac|acl)([/._-]|$)/iu,
+  /(^|[/._-])(payment|payments|billing|checkout|invoice|invoices|stripe|paypal|subscription|subscriptions|pricing)([/._-]|$)/iu,
+  /(^|[/._-])(secret|secrets|credential|credentials|token|tokens|keys|kms|vault)([/._-]|$)|(^|\/)\.env(\.|$)/iu,
+  /(^|[/._-])(migration|migrations|migrate)([/._-]|$)|\.sql$/iu,
+];
+
+/** Whether a repository path is one of the sensitive kinds above. */
+export const isSensitiveProductPath = (path: string): boolean => SENSITIVE_PATH_PATTERNS.some((pattern) => pattern.test(path));
+
+const RISK_ORDER: Record<ProductDecisionRisk, number> = { low: 0, medium: 1, high: 2 };
+const higher = (a: ProductDecisionRisk, b: ProductDecisionRisk): ProductDecisionRisk => (RISK_ORDER[a] >= RISK_ORDER[b] ? a : b);
+
+/** The lowest risk a product decision may have: the plan's risk, and never low when it touches a sensitive path. Fixed, deterministic; no model output sets it. */
+export function productDecisionRiskFloor(facts: { touchedPaths: readonly string[]; planRisk: ProductDecisionRisk }): ProductDecisionRisk {
+  return higher(facts.planRisk, facts.touchedPaths.some(isSensitiveProductPath) ? "medium" : "low");
+}
+
+/** The risk a raised decision is stored with: the raiser may raise it above the floor, never lower it below. */
+export function productDecisionRisk(raise: Pick<ProductDecisionRaise, "risk" | "touchedPaths" | "planRisk">): ProductDecisionRisk {
+  return higher(raise.risk, productDecisionRiskFloor(raise));
+}
 
 export const ProductDecisionAnswerSchema = z.object({ by: z.object({ developerId: z.string().min(1).max(100), name: z.string().max(200) }).strict(), text: z.string().min(1).max(PRODUCT_DECISION_ANSWER_MAX), at: z.string().datetime() }).strict();
 

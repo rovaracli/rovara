@@ -14,13 +14,17 @@ import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dyn
 import { agentXError, projectPk, type OrgId } from "@rovara-code/contracts";
 import {
   DEFAULT_RECENT_SIGN_IN_SETTING, PRODUCT_DECISIONS_LIST_MAX, PRODUCT_DECISION_ANSWERS_MAX, ProductDecisionDecideBodySchema, ProductDecisionIdSchema, ProductDecisionRaiseSchema, ProductDecisionViewSchema,
-  approvalPlaceDecision, projectAllows, type ApprovalDeciderRole, type ApprovalPlaceVerdict, type ProductDecisionRaise, type ProductDecisionView, type ProjectRole,
+  approvalPlaceDecision, productDecisionRisk, projectAllows, type ApprovalDeciderRole, type ApprovalPlaceVerdict, type ProductDecisionRaise, type ProductDecisionView, type ProjectRole,
 } from "@agentx/cloud-contracts";
+import { projectMemberKey } from "@rovara-code/contracts";
 import { auditOccurrence, auditProductDecisionAnswered, auditProductDecisionApproved, auditProductDecisionRaised } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, tryAuditEvent, type AuditRuntime } from "../audit/outbox.js";
-import { isTaskOwner, taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
-import { collaboratorApprovalsEnabled } from "../collaborators/approvals-setting.js";
+import { isTaskOwner, taskKey, tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../developer/task-records.js";
+import { collaboratorSwitchFence } from "../collaborators/approvals-setting.js";
+import { nameResolverOf, replacementNames, shownNameOf } from "../developer/name-resolver.js";
+import { readProjectMeta } from "../developer/project-roles.js";
+import { resolveTaskPeopleAccess } from "../developer/task-people.js";
 
 export const PRODUCT_DECISION_SK_PREFIX = "PRODUCT_DECISION#";
 /** Every write request a decision has taken (an answer or the approval), kept ON the decision so a replay is found without a separate expiring item: at most the answers plus one approval. */
@@ -32,6 +36,7 @@ export const PRODUCT_DECISION_SETTLED = "this decision has already been made";
 export const PRODUCT_DECISION_REQUEST_REUSED = "that request id was already used for a different change; use a new one";
 export const PRODUCT_DECISION_ANSWER_FORBIDDEN = "a project viewer can't answer this; ask a maintainer to make you a collaborator";
 export const PRODUCT_DECISION_ANSWERS_FULL = "this decision has as many answers as it can hold";
+export const PRODUCT_DECISION_ARCHIVED = "this project is archived; restore it to answer or decide its product decisions";
 /** The refusals of an approve, by the policy's reason. Fixed words; nothing of the decision or the person is echoed. */
 export const PRODUCT_DECISION_REFUSALS: Record<string, string> = {
   role_not_allowed: "a maintainer or the task's owner decides this one",
@@ -46,6 +51,11 @@ export interface ProductDecisionDeps {
   audit?: AuditRuntime;
   /** A merged-away developer id reads as its survivor when deciding whether the caller owns the task (take-overs). Absent: ids are compared as they are. */
   resolveMember?: ((developerId: string) => Promise<string>) | undefined;
+  /**
+   * Decision 97: when someone other than the task's owner or a co-owner settles a decision (the policy's `notifyOwner`), the owner is told who did. Best effort, after the commit: it never undoes the decision.
+   * The route wires `noticeOwnerOfDecision`. Absent: nobody is told (a harness).
+   */
+  notifyOwner?: ((input: { orgId: OrgId; ownerDeveloperId: string; requestId: string; deciderName: string; title: string }) => Promise<unknown>) | undefined;
 }
 
 /** Who is deciding: their checked org, their id and name, and their LIVE exact role on the project (the route reads it on every request). */
@@ -85,15 +95,18 @@ export async function raiseProductDecision(deps: ProductDecisionDeps, input: { o
   if (await taskOf(deps, input.orgId, input.project, input.taskId) === undefined) throw agentXError("NOT_FOUND", "that task was not found");
   const decisionId = productDecisionIdOf(input.orgId, input.taskId, input.requestId);
   const fingerprint = sha(parsed.data);
+  // M2: the stored risk is never below the fixed floor (the plan's risk; never low for a sensitive path), whatever the raiser asked. Option ids are assigned, so no words reach an id or a fact.
+  const risk = productDecisionRisk(parsed.data);
+  const options = parsed.data.options.map((label, index) => ({ id: `o${String(index + 1)}`, label }));
   const at = iso(deps.now());
   const event = await tryAuditEvent(deps, () => auditProductDecisionRaised({
-    orgId: input.orgId, actor: input.raisedBy, occurredAt: at, occurrence: auditOccurrence("product_decision", decisionId), taskId: input.taskId, decisionId, risk: parsed.data.risk, options: parsed.data.options.length,
+    orgId: input.orgId, actor: input.raisedBy, occurredAt: at, occurrence: auditOccurrence("product_decision", decisionId), taskId: input.taskId, decisionId, risk, options: options.length,
   }));
   try {
     await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [
       { Put: { TableName: deps.tableName, ConditionExpression: "attribute_not_exists(pk)", Item: {
         ...decisionKey(input.orgId, input.project, decisionId), entityType: "PRODUCT_DECISION", orgId: input.orgId, project: input.project, taskId: input.taskId, decisionId,
-        question: parsed.data.question, options: parsed.data.options, risk: parsed.data.risk, status: "open", revision: 1, raisedAt: at, raiseFingerprint: fingerprint, answers: [],
+        question: parsed.data.question, options, risk, status: "open", revision: 1, raisedAt: at, raiseFingerprint: fingerprint, answers: [],
       } } },
       ...(event === undefined ? [] : auditPending(deps, event)),
     ] }));
@@ -118,13 +131,23 @@ async function standingOf(deps: ProductDecisionDeps, caller: ProductDecisionCall
   if (projectAllows(role, "start_tasks")) {
     const task = await taskOf(deps, caller.orgId, decision["project"] as string, decision["taskId"] as string);
     if (task !== undefined && await isTaskOwner(task, caller.developerId, deps.resolveMember)) return "owner";
+    // A co-owner (an `owner` entry of the task's People list) is a co-owner. Anything that cannot be read is not (fail closed).
+    if (task !== undefined) {
+      const people = await resolveTaskPeopleAccess({ documentClient: deps.documentClient, tableName: deps.tableName, now: () => deps.now() }, task, caller.developerId).catch(() => undefined);
+      if (people?.role === "owner") return "co-owner";
+    }
   }
   return role;
 }
 
 /** What the policy says to an approve by this standing, now. The project's switch is read live for a collaborator only (nobody else depends on it). */
-async function approveVerdict(deps: ProductDecisionDeps, caller: ProductDecisionCaller, decision: Item, standing: ApprovalDeciderRole): Promise<ApprovalPlaceVerdict> {
-  const collaboratorApprovals = standing === "collaborator" ? await collaboratorApprovalsEnabled(deps, caller.orgId, decision["project"] as string) : false;
+async function approveVerdict(deps: ProductDecisionDeps, caller: ProductDecisionCaller, decision: Item, standing: ApprovalDeciderRole, fence?: { check?: Item }): Promise<ApprovalPlaceVerdict> {
+  let collaboratorApprovals = false;
+  if (standing === "collaborator") {
+    const read = await collaboratorSwitchFence(deps, caller.orgId, decision["project"] as string);
+    collaboratorApprovals = read.enabled;
+    if (fence !== undefined) fence.check = read.check;
+  }
   // Decided in the browser (the routes are browser-only). A high one needs the fresh sign-in step, which this route does not take yet: it is refused (fail closed), never approved without it.
   return approvalPlaceDecision({
     kind: "product", risk: decision["risk"] as "low" | "medium" | "high", answer: "approve", place: "browser", decider: { role: standing, linked: true },
@@ -132,9 +155,24 @@ async function approveVerdict(deps: ProductDecisionDeps, caller: ProductDecision
   });
 }
 
-const canAnswer = (role: ProjectRole | undefined, standing: ApprovalDeciderRole): boolean => standing === "owner" || (role !== undefined && projectAllows(role, "answer_questions"));
+const canAnswer = (role: ProjectRole | undefined, standing: ApprovalDeciderRole): boolean => standing === "owner" || standing === "co-owner" || (role !== undefined && projectAllows(role, "answer_questions"));
 
-async function viewOf(deps: ProductDecisionDeps, caller: ProductDecisionCaller, item: Item): Promise<ProductDecisionView> {
+/** The names a decision shows, each as the person is shown now (an erased person reads as "A former member"). */
+async function withShownNames(deps: ProductDecisionDeps, orgId: OrgId, item: Item): Promise<Item> {
+  const answers = (Array.isArray(item["answers"]) ? item["answers"] : []) as Array<{ by: { developerId: string; name: string }; at: string }>;
+  const approved = item["approved"] as { by: { developerId: string; name: string }; at: string } | undefined;
+  const ids = [...answers.map((answer) => answer.by.developerId), ...(approved === undefined ? [] : [approved.by.developerId])];
+  if (ids.length === 0) return item;
+  const replaced = await replacementNames(nameResolverOf(deps, orgId), ids);
+  const shown = (by: { developerId: string; name: string }, at: string) => ({ ...by, name: shownNameOf(by.name, by.developerId, replaced, at) });
+  return {
+    ...item, answers: answers.map((answer) => ({ ...answer, by: shown(answer.by, answer.at) })),
+    ...(approved === undefined ? {} : { approved: { ...approved, by: shown(approved.by, approved.at) } }),
+  };
+}
+
+async function viewOf(deps: ProductDecisionDeps, caller: ProductDecisionCaller, stored: Item): Promise<ProductDecisionView> {
+  const item = await withShownNames(deps, caller.orgId, stored);
   const standing = await standingOf(deps, caller, item);
   const open = item["status"] === "open";
   const verdict = open ? await approveVerdict(deps, caller, item, standing) : undefined;
@@ -183,6 +221,7 @@ export async function decideProductDecision(deps: ProductDecisionDeps, caller: P
     return viewOf(deps, caller, decision);
   }
   if (decision["status"] !== "open") throw agentXError("CHANGE_STALE", PRODUCT_DECISION_SETTLED);
+  if ((await readProjectMeta(deps, caller.orgId, project))?.status === "archived") throw agentXError("PROJECT_ARCHIVED", PRODUCT_DECISION_ARCHIVED);
   if (body.expectedRevision !== decision["revision"]) throw agentXError("CHANGE_STALE", PRODUCT_DECISION_STALE);
 
   const standing = await standingOf(deps, caller, decision);
@@ -195,6 +234,8 @@ export async function decideProductDecision(deps: ProductDecisionDeps, caller: P
   const requests = [...(Array.isArray(decision["requests"]) ? decision["requests"] as unknown[] : []), { id: body.requestId, by: caller.developerId, fingerprint, action: body.action, revision }].slice(-REQUESTS_KEPT);
   let update: { UpdateExpression: string; ExpressionAttributeValues: Record<string, unknown>; ExpressionAttributeNames?: Record<string, string> };
   let event;
+  const fences: Item[] = [];
+  let notify = false;
   if (body.action === "answer") {
     if (!canAnswer(caller.role, standing)) throw agentXError("FORBIDDEN", PRODUCT_DECISION_ANSWER_FORBIDDEN);
     const answers = Array.isArray(decision["answers"]) ? decision["answers"] : [];
@@ -204,10 +245,16 @@ export async function decideProductDecision(deps: ProductDecisionDeps, caller: P
   } else {
     const options = (Array.isArray(decision["options"]) ? decision["options"] : []) as Array<{ id?: unknown }>;
     if (!options.some((option) => option.id === body.optionId)) throw agentXError("CONFIG_INVALID", "optionId: not one of this decision's options");
-    const verdict = await approveVerdict(deps, caller, decision, standing);
+    const fence: { check?: Item } = {};
+    const verdict = await approveVerdict(deps, caller, decision, standing, fence);
     if (!verdict.allowed) throw agentXError("FORBIDDEN", PRODUCT_DECISION_REFUSALS[verdict.reason] ?? PRODUCT_DECISION_REFUSALS["role_not_allowed"]!);
     // The policy allowed exactly these standings for a product approve; recorded as the policy saw them, with `class: product` so no code rule can mistake it for a code approval.
     const role = standing === "owner" || standing === "co-owner" ? "owner" : standing === "maintainer" ? "maintainer" : "collaborator";
+    notify = verdict.notifyOwner;
+    // The approve applies only while what it was decided from still holds: the project's switch as read (for a collaborator) and the approver's own grant row as read (their role).
+    if (fence.check !== undefined) fences.push(fence.check);
+    const grant = await grantFence(deps, caller, project);
+    if (grant !== undefined) fences.push(grant);
     update = {
       UpdateExpression: "SET #status = :approved, approved = :record, revision = :next, requests = :requests", ExpressionAttributeNames: { "#status": "status" },
       ExpressionAttributeValues: { ":requests": requests, ":approved": "approved", ":record": { optionId: body.optionId, by: { developerId: caller.developerId, name: caller.name.slice(0, 200) }, role, at, class: "product" }, ":next": revision },
@@ -218,6 +265,7 @@ export async function decideProductDecision(deps: ProductDecisionDeps, caller: P
     await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [
       { Update: { TableName: deps.tableName, Key: key, ...update, ConditionExpression: "revision = :seen AND #st = :open",
         ExpressionAttributeNames: { ...(update.ExpressionAttributeNames ?? {}), "#st": "status" }, ExpressionAttributeValues: { ...update.ExpressionAttributeValues, ":seen": decision["revision"], ":open": "open" } } },
+      ...fences,
       ...(event === undefined ? [] : auditPending(deps, event)),
     ] }));
   } catch (error) {
@@ -228,5 +276,27 @@ export async function decideProductDecision(deps: ProductDecisionDeps, caller: P
     throw agentXError("CHANGE_STALE", PRODUCT_DECISION_STALE);
   }
   if (event !== undefined) await flushAuditEvents(deps, [event]);
+  if (notify) await tellOwner(deps, caller, decision, body.requestId);
   return viewOf(deps, caller, (await getItem(deps, key)) ?? decision);
+}
+
+/** The approver's own grant row as read, as a ConditionCheck: a role changed (or removed) between the read and the write refuses the approve. A caller with no row (a company owner or admin, a channel member) has none to pin. */
+async function grantFence(deps: ProductDecisionDeps, caller: ProductDecisionCaller, project: string): Promise<Item | undefined> {
+  const key = projectMemberKey(caller.orgId, caller.developerId, project);
+  const row = await getItem(deps, key);
+  if (row === undefined) return undefined;
+  const pinned = row["projectRole"] === undefined ? "attribute_not_exists(projectRole)" : "projectRole = :pr";
+  return { ConditionCheck: { TableName: deps.tableName, Key: key, ConditionExpression: `#role = :r AND ${pinned}`, ExpressionAttributeNames: { "#role": "role" },
+    ExpressionAttributeValues: { ":r": row["role"], ...(row["projectRole"] === undefined ? {} : { ":pr": row["projectRole"] }) } } };
+}
+
+/** Decision 97: tell the task's owner who settled their decision. Best effort: a failure is swallowed (the decision stands). */
+async function tellOwner(deps: ProductDecisionDeps, caller: ProductDecisionCaller, decision: Item, requestId: string): Promise<void> {
+  if (deps.notifyOwner === undefined) return;
+  try {
+    const task = await taskOf(deps, caller.orgId, decision["project"] as string, decision["taskId"] as string);
+    const owner = task === undefined ? undefined : tryEffectiveTaskOwner(task);
+    if (owner === undefined || owner.developerId === caller.developerId) return;
+    await deps.notifyOwner({ orgId: caller.orgId, ownerDeveloperId: owner.developerId, requestId, deciderName: caller.name, title: typeof task?.title === "string" ? task.title : "a task" });
+  } catch { /* the decision committed; the notice is best effort */ }
 }

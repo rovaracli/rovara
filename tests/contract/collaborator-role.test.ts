@@ -4,7 +4,7 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { PROJECT_PERMISSIONS as CODE_PROJECT_PERMISSIONS, projectAllows as codeProjectAllows, projectMemberKey, type ProjectPermission as CodePermission } from "@rovara-code/contracts";
-import { PROJECT_PERMISSIONS, PROJECT_ROLE_PRECEDENCE, ProjectRoleSchema, PutProjectMemberBodySchema, projectAllows, projectRoleFloor, type ProjectPermission, type ProjectRole } from "@agentx/cloud-contracts";
+import { GroupMappingRuleSchema, PROJECT_PERMISSIONS, PROJECT_ROLE_PRECEDENCE, ProjectRoleSchema, PutProjectMemberBodySchema, projectAllows, projectRoleFloor, type ProjectPermission, type ProjectRole } from "@agentx/cloud-contracts";
 import { effectiveMemberRole, effectiveProjectRole, grantMemberRoleOf, grantRoleOf } from "../../packages/broker/src/developer/project-roles.js";
 import { setProjectMember } from "../../packages/broker/src/org/project-members.js";
 import { COLLABORATOR_APPROVALS_SK } from "../../packages/broker/src/collaborators/approvals-setting.js";
@@ -13,7 +13,7 @@ import { TEST_ORG } from "../support/orgs.js";
 import { projectPk } from "@rovara-code/contracts";
 
 const CODE_PERMISSIONS: CodePermission[] = ["view", "start_tasks", "edit_settings", "manage_members", "archive", "setup_check", "manage_agents", "approve_spend", "approve_writes", "view_spend"];
-const ALL: ProjectPermission[] = [...CODE_PERMISSIONS, "answer_questions", "approve_product_decisions"];
+const ALL: ProjectPermission[] = [...CODE_PERMISSIONS, "answer_questions", "approve_product_decisions", "comment", "ask"];
 const SWITCH = `/v1/app/projects/${PROJECT}/collaborator-approvals`;
 
 describe("the permission table", () => {
@@ -21,9 +21,10 @@ describe("the permission table", () => {
     expect(ProjectRoleSchema.options).toEqual(["maintainer", "contributor", "collaborator", "viewer"]);
     const table = Object.fromEntries(ProjectRoleSchema.options.map((role) => [role, ALL.filter((action) => projectAllows(role, action))]));
     expect(table).toEqual({
-      maintainer: [...CODE_PERMISSIONS, "answer_questions", "approve_product_decisions"],
-      contributor: ["view", "start_tasks", "answer_questions"],
-      collaborator: ["view", "answer_questions", "approve_product_decisions"],
+      maintainer: [...CODE_PERMISSIONS, "answer_questions", "approve_product_decisions", "comment", "ask"],
+      contributor: ["view", "start_tasks", "answer_questions", "comment"],
+      // Decision 103: a collaborator comments and uses the live Ask; a viewer does neither.
+      collaborator: ["view", "answer_questions", "approve_product_decisions", "comment", "ask"],
       viewer: ["view"],
     });
     for (const role of ProjectRoleSchema.options) for (const action of ALL) expect(projectAllows(role, action), `${role} ${action}`).toBe(PROJECT_PERMISSIONS[role].includes(action));
@@ -42,9 +43,12 @@ describe("the permission table", () => {
     for (const action of ["start_tasks", "approve_writes", "approve_spend", "edit_settings", "manage_members", "manage_agents", "archive", "setup_check", "view_spend"] as const) expect(projectAllows("collaborator", action), action).toBe(false);
   });
 
-  it("floors only the collaborator, and ranks it between contributor and viewer for company sign-in mappings", () => {
+  it("floors only the collaborator, and keeps company sign-in mappings on Code's three roles (a saved collaborator mapping would lock an older broker out after a rollback)", () => {
     expect(ProjectRoleSchema.options.map(projectRoleFloor)).toEqual(["maintainer", "contributor", "viewer", "viewer"]);
-    expect(PROJECT_ROLE_PRECEDENCE).toEqual(["maintainer", "contributor", "collaborator", "viewer"]);
+    expect(PROJECT_ROLE_PRECEDENCE).toEqual(["maintainer", "contributor", "viewer"]);
+    const rule = (role: string) => ({ id: "pm", group: "product", orgRole: "member", projectRoles: [{ project: PROJECT, role }] });
+    expect(GroupMappingRuleSchema.safeParse(rule("viewer")).success).toBe(true);
+    expect(GroupMappingRuleSchema.safeParse(rule("collaborator")).success).toBe(false);
     expect(PutProjectMemberBodySchema.safeParse({ requestId: randomUUID(), role: "collaborator" }).success).toBe(true);
     expect(PutProjectMemberBodySchema.safeParse({ requestId: randomUUID(), role: "owner" }).success).toBe(false);
   });
@@ -127,6 +131,18 @@ describe("the project's collaborator switch", () => {
       [PRIYA.developerId, { enabled: false, revision: 1 }], [LENA.developerId, { enabled: true, revision: 2 }],
     ]);
     expect((await b.web(SAM, "GET", `/v1/app/projects/${PROJECT}`)).body).toMatchObject({ collaboratorApprovals: { enabled: true, revision: 2 } });
+  });
+
+  it("lets any maintainer turn it back on after another maintainer turned it off, with no second admin, and audits both (decision 103)", async () => {
+    const b = await collaboratorBench();
+    b.grant(NEO, "maintainer");
+    expect((await b.web(PRIYA, "PUT", SWITCH, { requestId: randomUUID(), enabled: false, expectedRevision: 0 })).status).toBe(200);
+    const back = await b.web(NEO, "PUT", SWITCH, { requestId: randomUUID(), enabled: true, expectedRevision: 1 });
+    expect(back.status, JSON.stringify(back.body)).toBe(200);
+    expect(back.body).toMatchObject({ collaboratorApprovals: { enabled: true, revision: 2 } });
+    expect(b.audit.recordedBy("project.collaborator_approvals_changed").map((event) => [event.actor.id, event.facts])).toEqual([
+      [PRIYA.developerId, { enabled: false, revision: 1 }], [NEO.developerId, { enabled: true, revision: 2 }],
+    ]);
   });
 
   it("refuses a stale revision (CHANGE_STALE) and writes nothing", async () => {

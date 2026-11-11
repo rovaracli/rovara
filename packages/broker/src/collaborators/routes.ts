@@ -12,6 +12,7 @@ import { latestDefinition, visibleMemberRoles } from "../aws/developer-routes/pr
 import type { DeveloperCaller, DeveloperRouteDependencies } from "../aws/developer-routes/types.js";
 import { readCollaboratorApprovals, setCollaboratorApprovals } from "./approvals-setting.js";
 import { decideProductDecision, listProductDecisions, type ProductDecisionDeps } from "../product-decisions/store.js";
+import { noticeOwnerOfDecision } from "../approval-place/owner-notice.js";
 
 const PATH = /^\/v1\/app\/projects\/([^/]+)\/(collaborator-approvals|product-decisions)(?:\/([^/]+))?$/u;
 export const COLLABORATOR_BROWSER_MESSAGE = "Use a live browser session to change collaborator approvals or decide a product decision.";
@@ -30,7 +31,12 @@ async function projectFor(deps: DeveloperRouteDependencies, caller: DeveloperCal
   return { name, role };
 }
 
-const decisionDeps = (deps: DeveloperRouteDependencies): ProductDecisionDeps => ({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, ...(deps.audit === undefined ? {} : { audit: deps.audit }) });
+const decisionDeps = (deps: DeveloperRouteDependencies): ProductDecisionDeps => ({
+  documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, ...(deps.audit === undefined ? {} : { audit: deps.audit }),
+  // Decision 97: the owner is told who settled their task's product decision (the same message a plan decision by someone else sends).
+  notifyOwner: (input) => noticeOwnerOfDecision({ documentClient: deps.documentClient, tableName: deps.tableName, signInTableName: deps.developer.signInTableName, now: () => deps.now() },
+    { orgId: input.orgId, ownerDeveloperId: input.ownerDeveloperId, requestId: input.requestId, deciderName: input.deciderName, answer: "approve", title: input.title, link: undefined }),
+});
 
 /** Answers a request on these paths, or undefined when the path or method is not one of them (it then falls through as any unknown path). */
 export async function routeCollaboratorRequest(deps: DeveloperRouteDependencies, caller: DeveloperCaller, method: string, pathname: string, body: () => unknown): Promise<CollaboratorApprovalsResponse | ProductDecisionsResponse | ProductDecisionDecideResponse | undefined> {

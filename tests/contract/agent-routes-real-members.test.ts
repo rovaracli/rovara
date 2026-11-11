@@ -26,6 +26,7 @@ const MAX = person("2", "Max"); // maintainer of web (a grant)
 const CARL = person("3", "Carl"); // contributor on web (a grant)
 const EVE = person("4", "Eve"); // a member with no role anywhere
 const VIV = person("5", "Viv"); // viewer on web (a grant)
+const COLE = person("7", "Cole"); // collaborator on web (a grant: role viewer, projectRole collaborator; decision 103)
 const orgResolver: OrgResolver = async (subject) => (subject.developerId === OMAR.developerId ? ORG_B : TEST_ORG);
 
 const SAFE = { instructions: "Summarise the open tickets.", sequence: [{ id: "work", name: "work", kind: "agent" as const, workspace: "none" as const }] };
@@ -46,7 +47,7 @@ async function setup() {
     seedMembership(h.db, who.developerId, { orgId: TEST_ORG, role });
   };
   await enroll(DANA, "admin");
-  for (const who of [MAX, CARL, EVE, VIV]) await enroll(who, "member");
+  for (const who of [MAX, CARL, EVE, VIV, COLE]) await enroll(who, "member");
   const project = (name: string, archived = false) => {
     h.db.set({ ...projectRevisionKey(TEST_ORG, name, 1), entityType: "PROJECT", registeredBy: "seed", registeredAt: "2026-10-01T00:00:00.000Z", definition: StoredProjectDefinitionSchema.parse({ name, revision: 1, repositories: [{ name: "repo", url: "https://github.example/example/repo", path: "repo", defaultBranch: "main", credentialRef: "test" }], setup: [], readiness: [], orchestratorInstructions: "Delegate work." }) });
     h.db.set({ ...orgProjectCatalogKey(TEST_ORG, name), entityType: "PROJECT_CATALOG", name, latestRevision: 1 });
@@ -59,6 +60,7 @@ async function setup() {
   project("web");
   project("old", true);
   for (const name of ["web", "old"]) { grant(name, MAX, "maintainer"); grant(name, CARL, "contributor"); grant(name, VIV, "viewer"); }
+  h.db.set({ ...projectMemberKey(TEST_ORG, COLE.developerId, "web"), entityType: "MEMBERSHIP", ownerKey: COLE.developerId, grantId: randomUUID(), projectName: "web", role: "viewer", projectRole: "collaborator", grantedBy: { developerId: DANA.developerId }, grantedAt: "2026-10-05T00:00:00.000Z" });
   const call = async (who: Developer, method: string, path: string, body?: Record<string, unknown>): Promise<Reply> => {
     const reply = await h.dev(who, method, path, body === undefined ? undefined : { requestId: randomUUID(), ...body });
     const { requestId: _requestId, ...rest } = reply.body; // eslint-disable-line @typescript-eslint/no-unused-vars -- the envelope's id is not part of an answer
@@ -74,6 +76,17 @@ async function setup() {
 }
 
 describe("the agent routes on the real project members", () => {
+  it("gives a collaborator exactly a viewer's agent access: no use of a project's agent and no agent of its own for the project (decision 103)", async () => {
+    const { call, create } = await setup();
+    const owner = { kind: "project", project: "web" };
+    const made = await create(MAX, { owner, accountable: { developerId: MAX.developerId } });
+    const viewer = await call(VIV, "GET", `/v1/app/agents/${made}`);
+    const collaborator = await call(COLE, "GET", `/v1/app/agents/${made}`);
+    expect(collaborator).toEqual(viewer);
+    expect(await call(CARL, "GET", `/v1/app/agents/${made}`)).not.toEqual(viewer);
+    expect((await call(COLE, "POST", "/v1/app/agents", { name: "By Cole", overlay: SAFE, owner, accountable: { developerId: COLE.developerId } })).status).toBe(403);
+  });
+
   it("agents: a project's maintainer (by grant) owns an agent for it, a contributor and an outsider may not, and an org admin may", async () => {
     const { call, create } = await setup();
     const owner = { kind: "project", project: "web" };
