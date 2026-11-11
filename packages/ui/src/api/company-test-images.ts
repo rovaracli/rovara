@@ -9,7 +9,7 @@ export const COMPANY_TEST_IMAGES_PATH = "/v1/app/org/test-images";
 const NEVER = { retry: "never" } as const;
 const line = z.string().max(500);
 const Image = z.object({
-  imageId: z.string(), revision: z.number().int(), status: z.enum(["proposed", "approved"]), image: line, registry: line, digest: z.string().regex(/^[a-f0-9]{64}$/u), family: line, version: line,
+  imageId: z.string(), revision: z.number().int(), status: z.enum(["proposed", "approved"]), image: line, registry: line, official: z.boolean(), digest: z.string().regex(/^[a-f0-9]{64}$/u), family: line, version: line,
   origin: z.enum(["admin", "setup"]), project: line.optional(), proposedBy: line, proposedByYou: z.boolean(), proposedAt: z.string(), approvedAt: z.string().optional(), updatedAt: z.string(),
 });
 export const CompanyTestImagesStateReader = z.object({ images: z.array(Image), catalogAvailable: z.boolean(), kinds: z.array(line) });

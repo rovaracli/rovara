@@ -65,19 +65,20 @@ const startableEmulated = (family: string, backing: DependencyBacking): backing 
 const startableFake = (dependency: Pick<TestEnvDependency, "kind" | "family" | "reset">, backing: DependencyBacking): boolean =>
   backing.kind === "fake" && backing.unmatched === "fail" && dependency.reset === "fresh_per_round" && !(STATEFUL_KINDS.includes(dependency.kind) && !dependency.family.startsWith("aws:"));
 /** A company-approved extra image (switch `pj`): whether it is APPROVED, and at which digest, is asked at approval and at the plan (`planCompanyImage`), which have the company's list. */
-const startableProjectImage = (backing: DependencyBacking): boolean => backing.kind === "project_image";
-const startableBacking = (dependency: Pick<TestEnvDependency, "kind" | "family" | "reset">, backing: DependencyBacking): boolean => startableLocal(backing) || startableEmulated(dependency.family, backing) || startableFake(dependency, backing) || startableProjectImage(backing);
+const startableProjectImage = (backing: DependencyBacking, companyImages: boolean): boolean => companyImages && backing.kind === "project_image";
+const startableBacking = (dependency: Pick<TestEnvDependency, "kind" | "family" | "reset">, backing: DependencyBacking, companyImages: boolean): boolean => startableLocal(backing) || startableEmulated(dependency.family, backing) || startableFake(dependency, backing) || startableProjectImage(backing, companyImages);
 
 /**
  * Whether every dependency is something this release can start: real software from the catalog (no substitute image), or Rovara local AWS for S3, SQS and DynamoDB; the same while coding, and a fallback of nothing at most.
  * The emulated ones share one helper, so they must agree on the image and the region. Pure; no catalog needed.
  */
-export function dependenciesStartableNow(dependencies: readonly TestEnvDependency[]): boolean {
+export function dependenciesStartableNow(dependencies: readonly TestEnvDependency[], options: { /** Switch `pj` is on: a company-approved image (`project_image`) counts. Absent: it does not, so with `pj` off an environment that names one is "not available yet" exactly as before. */ companyImages?: boolean } = {}): boolean {
+  const companyImages = options.companyImages === true;
   const emulated = dependencies.flatMap((dependency) => (dependency.backing.kind === "emulated" ? [dependency.backing] : []));
   if (emulated.some((backing) => backing.catalogId !== emulated[0]!.catalogId || backing.region !== emulated[0]!.region)) return false;
   return dependencies.every((dependency) =>
-    startableBacking(dependency, dependency.backing)
-    && (dependency.workingBacking === undefined || (startableBacking(dependency, dependency.workingBacking) && sameBacking(dependency.workingBacking, dependency.backing)))
+    startableBacking(dependency, dependency.backing, companyImages)
+    && (dependency.workingBacking === undefined || (startableBacking(dependency, dependency.workingBacking, companyImages) && sameBacking(dependency.workingBacking, dependency.backing)))
     && (dependency.fallback === undefined || dependency.fallback.kind === "none"));
 }
 
@@ -175,8 +176,9 @@ function planFake(dependency: TestEnvDependency, backing: FakeBacking, catalog: 
 
 /**
  * A company-approved extra image (switch `pj`): served only when it is on the company's approved list at the exact digest an admin approved (`serviceImageServed`). It runs with the run profile of the signed catalog's entry for
- * its family (user, memory, processes, tmpfs, ports, health check, reset), never one of its own, and the plan names the APPROVED digest. The worker keeps its own rule (it starts only what it can verify and has on the host),
- * so an image the worker cannot vouch for is refused there with the "not available on this worker" sentence; this function only decides what the BROKER will put in a plan.
+ * its family (user, memory, processes, tmpfs, ports, health check, reset), never one of its own. The plan says plainly that it is a COMPANY image (`backing: "company"`, a `company` block with the approval's id, the image's
+ * registry and repository and the approved digest): it is never dressed as one of Rovara's catalog images, whose `catalogId` and `repository` here only name the run profile. The worker keeps its own rule (it starts only
+ * what it can verify and has on the host) and no worker lists the feature yet, so the broker never dispatches such a plan; this function only decides what the BROKER will put in a plan.
  */
 function planCompanyImage(dependency: TestEnvDependency, backing: ProjectImageBacking, catalog: VerifiedCatalog, edition: "public" | "enterprise", approved: readonly CompanyImage[]): { ok: true; plan: unknown } | { ok: false; reason: DependencyPlanRefusal } {
   const served = serviceImageServed({ catalog, edition, approved, request: { imageId: backing.imageId } });
@@ -184,16 +186,18 @@ function planCompanyImage(dependency: TestEnvDependency, backing: ProjectImageBa
   if (served.source !== "company" || served.image.family !== dependency.family) return { ok: false, reason: "not_available_yet" };
   const entry = served.profile;
   return { ok: true, plan: {
-    id: dependency.id, name: dependency.name, kind: dependency.kind, family: dependency.family, backing: "local", catalogId: entry.id, repository: entry.image.repository, digest: served.digest,
+    id: dependency.id, name: dependency.name, kind: dependency.kind, family: dependency.family, backing: "company", catalogId: entry.id, repository: entry.image.repository, digest: served.digest,
+    company: { imageId: served.image.imageId, registry: served.image.registry, repository: served.image.repository, digest: served.digest },
     config: {}, aliases: dependency.connect.hostAliases.length > 0 ? dependency.connect.hostAliases : entry.connect.defaultAliases, connect: dependency.connect.env, seeds: dependency.seeds, reset: dependency.reset,
   } };
 }
 
 /** One dependency's plan, or the reason it cannot be pinned. */
-function planOne(dependency: TestEnvDependency, catalog: VerifiedCatalog, edition: "public" | "enterprise", projectId: string, prodDeny: TestEnvironmentBody["prodDeny"], fixtures: ReadonlyMap<string, ApprovedFixture>, companyImages: readonly CompanyImage[]): { ok: true; plan: unknown } | { ok: false; reason: DependencyPlanRefusal } {
+function planOne(dependency: TestEnvDependency, catalog: VerifiedCatalog, edition: "public" | "enterprise", projectId: string, prodDeny: TestEnvironmentBody["prodDeny"], fixtures: ReadonlyMap<string, ApprovedFixture>, companyImages: readonly CompanyImage[] | undefined): { ok: true; plan: unknown } | { ok: false; reason: DependencyPlanRefusal } {
   const backing = dependency.backing;
-  if (!dependenciesStartableNow([dependency])) return { ok: false, reason: "not_available_yet" };
-  if (backing.kind === "project_image") return planCompanyImage(dependency, backing, catalog, edition, companyImages);
+  // `companyImages` is given only with the switch `pj` on: without it a company image is "not available yet", exactly as before company images existed.
+  if (!dependenciesStartableNow([dependency], { companyImages: companyImages !== undefined })) return { ok: false, reason: "not_available_yet" };
+  if (backing.kind === "project_image") return planCompanyImage(dependency, backing, catalog, edition, companyImages ?? []);
   if (backing.kind === "fake") return planFake(dependency, backing, catalog, edition, projectId, prodDeny, fixtures);
   if (backing.kind === "emulated") return planEmulated(dependency, backing, catalog, edition, projectId, prodDeny);
   if (backing.kind !== "local") return { ok: false, reason: "not_available_yet" };
@@ -233,7 +237,7 @@ export function taskDependencyPlansOf(input: { body: TestEnvironmentBody; /** Sw
     if (!input.catalog.pinned && imaged.length > 0) return { ok: false, reason: imaged.every((dependency) => dependency.backing.kind === "emulated") ? "not_available_yet" : "not_pinned" };
     const plans: TaskDependencyPlan[] = [];
     for (const dependency of dependencies) {
-      const one = planOne(dependency, input.catalog, input.edition, input.projectId ?? "", input.body.prodDeny, input.fixtures ?? new Map(), input.companyImages ?? []);
+      const one = planOne(dependency, input.catalog, input.edition, input.projectId ?? "", input.body.prodDeny, input.fixtures ?? new Map(), input.companyImages);
       if (!one.ok) return one;
       const bound = boundSeeds((one.plan as { seeds: TaskDependencyPlan["seeds"] }).seeds, dependency.id, input.approvedSeedFiles);
       if (bound === undefined) return { ok: false, reason: "seed_file_unbound" };

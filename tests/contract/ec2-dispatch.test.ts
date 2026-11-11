@@ -586,6 +586,21 @@ describe("ec2-ebs delivery", () => {
       expect(await delivery({ workerFeatures: async () => base }).deliver(commandOnly, commandOnly.invocation)).toBe("DELIVERED");
     });
 
+    it("never sends a plan with a company-approved image to a worker that does not list task.testServices.companyImage.v1 (none does yet)", async () => {
+      const company = { imageId: "img_" + "1".repeat(20), registry: "docker.io", repository: "library/postgres", digest: "b".repeat(64) };
+      const postgres = { id: "postgres", name: "Postgres", kind: "database", family: "postgres", backing: "company", catalogId: "postgres@16", repository: "svc/postgres", digest: "b".repeat(64), company, config: {}, aliases: ["postgres"], connect: [], seeds: [], reset: "fresh_per_round" };
+      const plan = { revision: 1, digest: "d".repeat(64), roundBudgetMin: 30, selection: { method: "full", alwaysRun: [], fullSuiteOn: [] }, checks: [{ id: "unit", kind: "test" }], dependencies: [postgres] };
+      const base = ["task.workflowMode", "task.workflowChecks", "task.readiness", "task.testEnvironment.v1", "task.testServices.v1", "task.testServices.aws.v1", "task.testServices.fake.v1", "task.testServices.fileSeed.v1", "task.testServices.seedLock.v1"];
+      const record = taskRecord({ workflowMode: "CHECKS", readiness: [{ cwd: "repo/demo", executable: "npm", args: ["test"], timeoutSeconds: 30 }], testEnvironment: plan });
+      const older = delivery({ workerFeatures: async () => base });
+      await expect(older.deliver(record, record.invocation)).rejects.toThrow(/out of date|upgrade/iu);
+      expect(older.post).not.toHaveBeenCalled();
+      expect(await delivery({ workerFeatures: async () => [...base, "task.testServices.companyImage.v1"] }).deliver(record, record.invocation)).toBe("DELIVERED");
+      // Positive control: the same plan as a catalog dependency goes to the same worker.
+      const catalog = taskRecord({ workflowMode: "CHECKS", readiness: [{ cwd: "repo/demo", executable: "npm", args: ["test"], timeoutSeconds: 30 }], testEnvironment: { ...plan, dependencies: [{ ...postgres, backing: "local", company: undefined }] } });
+      expect(await delivery({ workerFeatures: async () => base }).deliver(catalog, catalog.invocation)).toBe("DELIVERED");
+    });
+
     it("refuses a plan with a LOCKED seed command to a worker that does not list task.testServices.seedLock.v1, and sends it to one that does (SEED-RISK-1)", async () => {
       const lock = { version: 1, hash: "e".repeat(64), from: ["package.json", "prisma/seed.js"] };
       const command = { cwd: "repo/demo", executable: "npm", args: ["run", "seed"], timeoutSeconds: 900 };

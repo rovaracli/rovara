@@ -20,7 +20,7 @@ import { companyPolicyRaw } from "./support/company-policy-raw.js";
 const PATH = "/v1/app/org/test-images";
 const features = { localAgents: false, admin: true, usage: false, chains: false, describe: false, notices: false };
 const image = (changes: Record<string, unknown> = {}) => ({
- imageId: "img_" + "1".repeat(20), revision: 1, status: "proposed", image: "postgres:18", registry: "docker.io", digest: "d".repeat(64), family: "postgres", version: "18", origin: "setup", project: "orders",
+ imageId: "img_" + "1".repeat(20), revision: 1, status: "proposed", image: "postgres:18", registry: "docker.io", official: true, digest: "d".repeat(64), family: "postgres", version: "18", origin: "setup", project: "orders",
  proposedBy: "Maya Chen", proposedByYou: false, proposedAt: "2026-11-11T09:00:00.000Z", updatedAt: "2026-11-11T09:00:00.000Z", ...changes,
 });
 type State = { images: Array<Record<string, unknown>>; catalogAvailable: boolean; kinds: string[] };
@@ -124,6 +124,13 @@ describe("the screen", () => {
   expect(f.posts().map(request => request.body)).toEqual([
    { action: "revoke", imageId: "img_" + "1".repeat(20), expectedRevision: 1 }, { action: "revoke", imageId: "img_" + "4".repeat(20), expectedRevision: 2 }, { action: "add", image: "postgres:17.5" },
   ]);
+ });
+ it("flags an image that is not an official one, says what a revoke does not stop, and flags nothing on an official one", async () => {
+  mount({ state: initial([image(), image({ imageId: "img_" + "5".repeat(20), image: "acme/postgres:16", registry: "ghcr.io", official: false }), image({ imageId: "img_" + "6".repeat(20), image: "mysql:9", status: "approved", revision: 2 })]) });
+  const odd = within(await screen.findByRole("region", { name: "acme/postgres:16" }));
+  expect(odd.getByText(/This is not an official image/)).toBeTruthy();
+  expect(within(screen.getByRole("region", { name: "postgres:18" })).queryByText(/This is not an official image/)).toBeNull();
+  expect(within(screen.getByRole("region", { name: "mysql:9" })).getByText(/A run that has already started finishes with it/)).toBeTruthy();
  });
  it("has no accessibility violations, light and dark", async () => {
   for (const theme of ["light", "dark"] as const) {

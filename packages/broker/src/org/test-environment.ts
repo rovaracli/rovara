@@ -187,7 +187,7 @@ async function refuseDependenciesNotAvailable(deps: TestEnvDeps, orgId: OrgId, p
   const changed = (body.dependencies ?? []).filter((dependency) => !approved.has(JSON.stringify(dependency)));
   if (changed.length === 0) return;
   if (!testServicesEnabled(deps.env)) throw invalid("dependencies: test services are not switched on for this install");
-  if (!dependenciesStartableNow(changed)) throw invalid(DEPENDENCIES_NOT_AVAILABLE_YET);
+  if (!dependenciesStartableNow(changed, { companyImages: projectImagesEnabled(deps.env) })) throw invalid(DEPENDENCIES_NOT_AVAILABLE_YET);
   // A `local` dependency whose catalog entry has no pinned digest is the same "not available yet" (the signed catalog the release ships names no image to start): refused here too, not only when a task is planned. The catalog
   // is asked only when the caller's dependencies carry one (the route's do); one that cannot be read leaves the judgment to the task's plan, which refuses it in fixed words.
   const source = (deps as { serviceCatalog?: () => Promise<VerifiedCatalog | undefined> }).serviceCatalog;

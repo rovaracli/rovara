@@ -38,7 +38,7 @@ function imageOf(raw: Row | undefined, orgId: OrgId): CompanyImage | undefined {
 /** The audit event of one entry: the actor is the person, the target the company, the facts the id, the digest and the authority; the image's name is in `details`. */
 export function companyImageAuditEvent(entry: CompanyImageAuditEntry): AuditEventInput {
   return auditCompanyImageChange({
-    orgId: entry.orgId, actor: { kind: "member", id: entry.actor }, occurredAt: entry.at, occurrence: auditOccurrence(entry.imageId, String(entry.revision), entry.action), action: entry.action,
+    orgId: entry.orgId, actor: { kind: "member", id: entry.actor }, occurredAt: entry.at, occurrence: auditOccurrence(entry.imageId, entry.cycle, String(entry.revision), entry.action), action: entry.action,
     imageId: entry.imageId, digest: entry.digest, authority: entry.authority, details: [{ subject: "org", fields: { image: entry.image } }],
   });
 }

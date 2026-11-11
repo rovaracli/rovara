@@ -2,7 +2,8 @@
 // revokes it; a member, a token and the API cannot approve; the catalog still serves; an unapproved or changed image is refused; every change is audited with ids and digests only.
 import { afterEach, describe, expect, it } from "vitest";
 import { dynamoCompanyImageStore, readCompanyImages } from "../../packages/broker/src/org/company-test-image-store.js";
-import { serviceImageServed, type CompanyImage } from "../../packages/broker/src/test-env/company-images.js";
+import { companyImagesOf, serviceImageServed, type CompanyImage } from "../../packages/broker/src/test-env/company-images.js";
+import { TaskDependencyPlanSchema } from "@agentx/contracts";
 import { taskDependencyPlansOf } from "../../packages/broker/src/test-env/dependency-plan.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { MAYA, OMAR, type Developer } from "../support/developer-task-broker.js";
@@ -158,6 +159,35 @@ describe("naming, approving and revoking", () => {
     expect((await list(t)).images).toEqual([]);
   });
 
+  it("approve, revoke, approve again, revoke again: every round reaches the ledger with event ids of its own (a repeated id would be dropped as a duplicate)", async () => {
+    const { t, audit } = await bench();
+    on();
+    let approved = await approvePostgres(t);
+    expect((await post(t, { action: "revoke", imageId: approved.imageId, expectedRevision: approved.revision })).status).toBe(200);
+    // The same image at the same digest, a week later: its row starts again at revision 1.
+    const again = await approvePostgres(t);
+    expect(again.imageId).toBe(approved.imageId);
+    expect(again.revision).toBe(2);
+    expect((await post(t, { action: "revoke", imageId: again.imageId, expectedRevision: again.revision })).status).toBe(200);
+    approved = await approvePostgres(t);
+    const all = events(audit);
+    expect(all.map((event) => event.action)).toEqual([
+      "company_image.proposed", "company_image.approved", "company_image.revoked", "company_image.proposed", "company_image.approved", "company_image.revoked", "company_image.proposed", "company_image.approved",
+    ]);
+    expect(new Set(all.map((event) => (event as { eventId: string }).eventId)).size).toBe(8);
+    expect(all.filter((event) => event.action === "company_image.approved").map((event) => event.facts?.imageId)).toEqual([approved.imageId, approved.imageId, approved.imageId]);
+  });
+
+  it("flags an image that is not an official one on the admin's card, and not one that is", async () => {
+    const { t, lookup } = await bench();
+    on();
+    lookup.digests.set("ghcr.io/acme/postgres:16", sha("acme-pg16"));
+    await post(t, { action: "add", image: "postgres:18" });
+    await post(t, { action: "add", image: "ghcr.io/acme/postgres:16" });
+    const images = (await list(t)).images as Array<Row & { official: boolean }>;
+    expect(images.map((image) => [image.image, image.official]).sort()).toEqual([["acme/postgres:16", false], ["postgres:18", true]]);
+  });
+
   it("a tag that moved is another digest: the old approval never serves it, and it waits for its own approval", async () => {
     const { t, lookup } = await bench();
     on();
@@ -199,6 +229,10 @@ describe("naming, approving and revoking", () => {
     lookup.digests.set("docker.io/library/postgres:16", sha("postgres-16"));
     expect((await post(t, { action: "add", image: "postgres:16" })).status).toBe(200);
     expect((await list(t)).images).toEqual([]);
+    // The same kind and version from another publisher is not Rovara's image: it is proposed.
+    lookup.digests.set("ghcr.io/acme/postgres:16", sha("acme-pg16"));
+    expect((await post(t, { action: "add", image: "ghcr.io/acme/postgres:16" })).status).toBe(200);
+    expect((await list(t)).images.map((image) => image.status)).toEqual(["proposed"]);
     expect((await list(t)).kinds).toEqual(expect.arrayContaining(["postgres", "mysql", "redis"]));
   });
 });
@@ -220,10 +254,15 @@ describe("what a run is told", () => {
     expect(serviceImageServed({ catalog, edition: "public", approved: images, request: { catalogId: "postgres@16" } })).toMatchObject({ ok: true, source: "catalog", catalogId: "postgres@16" });
     const planned = plan(approved.imageId, images);
     expect(planned, JSON.stringify(planned)).toMatchObject({ ok: true });
-    const [entry] = (planned as { dependencies: Array<{ backing: string; catalogId: string; repository: string; digest: string }> }).dependencies;
-    // The profile is the signed catalog's postgres entry; the digest is the approved one, and the plan holds no image name.
-    expect(entry).toMatchObject({ backing: "local", catalogId: "postgres@16", repository: "svc/postgres", digest: approved.digest });
-    expect(JSON.stringify(planned)).not.toContain("docker.io");
+    const [entry] = (planned as { dependencies: Array<{ backing: string; catalogId: string; repository: string; digest: string; company?: unknown }> }).dependencies;
+    // The profile is the signed catalog's postgres entry; the digest is the approved one; and the plan says in its own words that it is a COMPANY image, from where, under which approval: never a catalog plan.
+    expect(entry).toMatchObject({ backing: "company", catalogId: "postgres@16", repository: "svc/postgres", digest: approved.digest, company: { imageId: approved.imageId, registry: "docker.io", repository: "library/postgres", digest: approved.digest } });
+    expect(TaskDependencyPlanSchema.safeParse(entry).success).toBe(true);
+    // A company block on a catalog plan, a company plan with no block, and one that runs another digest than the approved one are not plans at all.
+    const withCatalog = { ...(entry as object), backing: "local" };
+    const withoutBlock = { ...(entry as object), company: undefined };
+    const otherDigest = { ...(entry as { digest: string }), digest: sha("tampered") };
+    expect([withCatalog, withoutBlock, otherDigest].map((plan) => TaskDependencyPlanSchema.safeParse(plan).success)).toEqual([false, false, false]);
   });
 
   it("refuses an image that is waiting, never approved, revoked, changed, or has no list at all; and a catalog that cannot be read", async () => {
@@ -233,7 +272,9 @@ describe("what a run is told", () => {
     const [waiting] = await stored(t);
     expect(plan(waiting!.imageId, [waiting!])).toEqual({ ok: false, reason: "image_not_approved" });
     expect(plan("img_" + "0".repeat(20), await stored(t))).toEqual({ ok: false, reason: "image_not_approved" });
-    expect(plan(waiting!.imageId, undefined)).toEqual({ ok: false, reason: "image_not_approved" });
+    expect(plan(waiting!.imageId, [])).toEqual({ ok: false, reason: "image_not_approved" });
+    // With pj off no list is given at all: a company image is "not available yet", as before company images existed.
+    expect(plan(waiting!.imageId, undefined)).toEqual({ ok: false, reason: "not_available_yet" });
     const approved = await approvePostgres(t);
     expect(plan(approved.imageId, await stored(t))).toMatchObject({ ok: true });
     await post(t, { action: "revoke", imageId: approved.imageId, expectedRevision: approved.revision });
@@ -243,6 +284,16 @@ describe("what a run is told", () => {
     expect(taskDependencyPlansOf({ body: draftBody({ dependencies: [dependency(approved.imageId)] }), catalog: undefined, edition: "public" })).toEqual({ ok: false, reason: "no_catalog" });
   });
 
+  it("refuses an image of another kind than the dependency's, even when it is approved", async () => {
+    const { t } = await bench();
+    on();
+    const approved = await approvePostgres(t);
+    const images = await stored(t);
+    const mysql = { ...dependency(approved.imageId), family: "mysql", kind: "database", name: "MySQL" };
+    const planned = taskDependencyPlansOf({ body: draftBody({ dependencies: [mysql] }), catalog, edition: "public", projectId: "web", companyImages: images });
+    expect(planned).toEqual({ ok: false, reason: "not_available_yet" });
+  });
+
   it("keeps the company's rows apart: another company's approval is never an approval", async () => {
     const { t } = await bench();
     on();
@@ -250,7 +301,11 @@ describe("what a run is told", () => {
     const mine = await stored(t);
     expect(mine).toHaveLength(1);
     const store = dynamoCompanyImageStore({ documentClient: t.db, tableName: "state" });
-    expect(await store.list("org_" + "0".repeat(32) as never)).toEqual([]);
-    expect(await store.get("org_" + "0".repeat(32) as never, approved.imageId)).toBeUndefined();
+    expect(await store.list(("org_" + "1".repeat(20)) as never)).toEqual([]);
+    expect(await store.get(("org_" + "1".repeat(20)) as never, approved.imageId)).toBeUndefined();
+    // A row that parses but names another company is dropped by the filter itself, whatever key it was read from.
+    const foreign = { ...mine[0]!, orgId: "org_" + "1".repeat(20) };
+    expect(companyImagesOf([foreign, mine[0]], TEST_ORG)).toEqual(mine);
+    expect(companyImagesOf([foreign], TEST_ORG)).toEqual([]);
   });
 });

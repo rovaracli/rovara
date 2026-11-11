@@ -13,7 +13,7 @@ import { logDeveloperEvent } from "../../developer/log.js";
 import { requireLiveCompanyAdmin } from "../../org/company-authority.js";
 import { dynamoCompanyImageStore } from "../../org/company-test-image-store.js";
 import { approveImage, listImages, proposeImageAsAdmin, revokeImage, type CompanyImageCaller, type CompanyImageDeps } from "../../org/company-test-images.js";
-import { COMPANY_IMAGE_DEFAULT_REGISTRY, type CompanyImage } from "../../test-env/company-images.js";
+import { COMPANY_IMAGE_DEFAULT_REGISTRY, isOfficialUpstream, type CompanyImage } from "../../test-env/company-images.js";
 import { registryDigestResolver, type CompanyImageDigestResolver } from "../../test-env/company-image-resolver.js";
 import { projectImagesEnabled, testServicesEnabled } from "../../test-env/test-services-switch.js";
 import { StatusReply } from "../status-reply.js";
@@ -66,7 +66,7 @@ const callerOf = (caller: DeveloperCaller): CompanyImageCaller => ({ orgId: call
 function imageView(image: CompanyImage, context: { caller: DeveloperCaller; people: ReadonlyMap<string, string> }) {
   const name = image.registry === COMPANY_IMAGE_DEFAULT_REGISTRY && image.repository.startsWith("library/") ? image.repository.slice("library/".length) : image.repository;
   return {
-    imageId: image.imageId, revision: image.revision, status: image.status, image: `${name}:${image.tag}`, registry: image.registry, digest: image.digest, family: image.family, version: image.version,
+    imageId: image.imageId, revision: image.revision, status: image.status, image: `${name}:${image.tag}`, registry: image.registry, /** False for any image that is not a Docker Hub official one: the card then says who publishes it is for the admin to judge. */ official: isOfficialUpstream(`${image.registry}/${image.repository}`), digest: image.digest, family: image.family, version: image.version,
     origin: image.origin, ...(image.project === undefined ? {} : { project: image.project }), proposedBy: context.people.get(image.proposedBy) ?? "Unknown", proposedByYou: image.proposedBy === context.caller.developerId,
     proposedAt: image.proposedAt, ...(image.approvedAt === undefined ? {} : { approvedAt: image.approvedAt }), updatedAt: image.updatedAt,
   };

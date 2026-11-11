@@ -14,7 +14,7 @@ import { readApprovedTestEnvironment, type TestEnvDeps } from "../org/test-envir
 import { dependenciesStartableNow } from "./dependency-plan.js";
 import { DEPENDENCIES_WITH_DEVCONTAINER_WORDS, projectUsesDevcontainer } from "./devcontainer-check.js";
 import { testEnvironmentEnabled } from "./switch.js";
-import { testServicesEnabled } from "./test-services-switch.js";
+import { projectImagesEnabled, testServicesEnabled } from "./test-services-switch.js";
 
 export const UNUSED_REASONS = ["none", "unreadable", "names_production", "recording_not_allowed", "services_not_connected", "accounts_not_connected", "tier_not_connected", "dependencies_not_connected", "dependencies_not_available_yet", "dependencies_with_devcontainer"] as const;
 export type UnusedReason = (typeof UNUSED_REASONS)[number];
@@ -49,7 +49,8 @@ export function environmentUnusedReason(environment: TestEnvironment, env: NodeJ
   if (body.accounts.length > 0) return "accounts_not_connected";
   if (body.dependencies !== undefined && body.dependencies.length > 0) {
     if (!testServicesEnabled(env)) return "dependencies_not_connected";
-    if (!dependenciesStartableNow(body.dependencies)) return "dependencies_not_available_yet";
+    // With the switch `pj` off a company-approved image is "not available yet", so the task falls back to the project's own checks exactly as it did before company images existed.
+    if (!dependenciesStartableNow(body.dependencies, { companyImages: projectImagesEnabled(env) })) return "dependencies_not_available_yet";
   }
   return undefined;
 }

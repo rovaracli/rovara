@@ -34,6 +34,8 @@ export const IMAGES_TEXT = {
  APPROVE_HELP: "You approve exactly the image shown here, by its digest. It runs with the same limits as Rovara's own images of that kind. You need to have signed in within the last 10 minutes.",
  DISMISS: "Dismiss",
  REVOKE: "Revoke",
+ REVOKE_HELP: "Revoking stops the next run from using this image. A run that has already started finishes with it.",
+ NOT_OFFICIAL: "This is not an official image. Whoever publishes it decides what is inside, and it will run in your tests. Check that you trust the publisher before you approve it.",
  FROM_SETUP: "Asked for by the setup of the project ",
  FROM_ADMIN: "Added by ",
  KINDS: "Rovara can run these kinds of service: ",
@@ -58,6 +60,7 @@ function Card({ image, children }: { image: CompanyTestImage; children: React.Re
  return <section aria-label={image.image} className="rv-hww-company-card">
   <h2><VisibleText text={image.image} /></h2>
   <p className="rv-muted">From <VisibleText text={image.registry === "docker.io" ? "Docker Hub" : image.registry} />. Kind of service: <VisibleText text={image.family} />. {image.origin === "setup" && image.project !== undefined ? <>{IMAGES_TEXT.FROM_SETUP}<VisibleText text={image.project} />.</> : <>{IMAGES_TEXT.FROM_ADMIN}<VisibleText text={image.proposedBy} />.</>}</p>
+  {!image.official && <p role="note"><strong>{IMAGES_TEXT.NOT_OFFICIAL}</strong></p>}
   <p>Digest it is pinned to: <code><VisibleText text={"sha256:" + image.digest} /></code></p>
   {children}
  </section>;
@@ -98,6 +101,7 @@ function Images() {
    <h2>{IMAGES_TEXT.APPROVED}</h2>
    {approved.length === 0 ? <p className="rv-muted">{IMAGES_TEXT.NONE_APPROVED}</p> : <div className="rv-hww-company-cards">
     {approved.map(image => <Card key={image.imageId} image={image}>
+     <p className="rv-muted">{IMAGES_TEXT.REVOKE_HELP}</p>
      <div className="rv-hww-company-actions"><Button variant="danger" busy={busy === "revoke:" + image.imageId} disabled={busy !== undefined} onClick={() => { void run("revoke:" + image.imageId, () => api.revoke(image), "Revoked.") }}>{IMAGES_TEXT.REVOKE}</Button></div>
     </Card>)}
    </div>}

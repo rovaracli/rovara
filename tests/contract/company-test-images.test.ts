@@ -1,6 +1,9 @@
 // Company-approved extra test-service images, the parts under the routes: reading a reference, the registry lookup, the setup flow that proposes images, and an environment naming an image (approved only for an approved one).
 import { afterEach, describe, expect, it } from "vitest";
+import { EVIDENCE_DEPENDENCY_LABEL_WORDS } from "@agentx/contracts";
 import { dynamoCompanyImageStore } from "../../packages/broker/src/org/company-test-image-store.js";
+import { environmentUnusedReason } from "../../packages/broker/src/test-env/usable.js";
+import { dependencyEvidenceOf } from "../../packages/broker/src/rovara-code/dependency-evidence.js";
 import { proposeTestEnvironment } from "../../packages/broker/src/org/test-environment.js";
 import { proposeImagesFromSetup, approveImage, revokeImage, type CompanyImageAuditEntry, type CompanyImageDeps } from "../../packages/broker/src/org/company-test-images.js";
 import { COMPANY_IMAGES_MAX, COMPANY_IMAGES_MAX_WAITING, companyImageIdOf, readCompanyImage, companyImageStanding, serviceImageServed, type CompanyImage } from "../../packages/broker/src/test-env/company-images.js";
@@ -114,6 +117,9 @@ describe("the setup flow proposes images that are in neither list", () => {
     const now = await deps.store.list(TEST_ORG);
     const standing = (major: string, digest: string) => companyImageStanding({ catalog, edition: "public", approved: now, family: "postgres", major, name: "docker.io/library/postgres", digest });
     expect([standing("18", sha("pg18")), standing("18", sha("moved")), standing("16", sha("pg16"))]).toEqual(["approved", "changed", "catalog"]);
+    // Rovara's list holds Rovara's own images: the same kind and version from another publisher is not "covered".
+    const other = (name: string, major: string) => companyImageStanding({ catalog, edition: "public", approved: now, family: "postgres", major, name, digest: sha("x") });
+    expect([other("ghcr.io/acme/postgres", "16"), other("docker.io/acme/postgres", "16"), other("docker.io/library/postgres", "16")]).toEqual(["none", "none", "catalog"]);
   });
 
   it("never throws and holds nothing up: a lookup that throws, a catalog that cannot be read, and a bad caller are quiet", async () => {
@@ -144,12 +150,12 @@ describe("the store", () => {
     const digest = changes.digest ?? sha("store-image");
     const base = { registry: "docker.io", repository: "library/postgres" };
     return {
-      orgId: TEST_ORG, imageId: companyImageIdOf(base, digest), revision: 1, status: "proposed", ...base, tag: "18", digest, family: "postgres", version: "18", origin: "admin", proposedBy: ADMIN,
+      orgId: TEST_ORG, imageId: companyImageIdOf(base, digest), revision: 1, status: "proposed", ...base, tag: "18", digest, family: "postgres", version: "18", origin: "admin", cycle: "c".repeat(16), proposedBy: ADMIN,
       proposedAt: new Date(NOW).toISOString(), updatedAt: new Date(NOW).toISOString(), ...changes,
     };
   };
   const entry = (next: CompanyImage, action: CompanyImageAuditEntry["action"] = "company_image.proposed"): CompanyImageAuditEntry => ({
-    orgId: next.orgId, action, actor: ADMIN, at: next.updatedAt, imageId: next.imageId, revision: next.revision, digest: next.digest, authority: "live_admin", image: "postgres:18",
+    orgId: next.orgId, action, actor: ADMIN, at: next.updatedAt, imageId: next.imageId, revision: next.revision, digest: next.digest, authority: "live_admin", cycle: next.cycle, image: "postgres:18",
   });
 
   it("writes the row and the audit together, reads them back for its own company only, and fences every write at the revision read", async () => {
@@ -224,7 +230,7 @@ describe("an environment that names an approved image", () => {
     process.env.TEST_SERVICES_ENABLED = "1";
     await proposeImagesFromSetup(ownDeps, { orgId: TEST_ORG, developerId: ADMIN, project: NAME, images: ["postgres:18"] });
     const [waiting] = await own.list(TEST_ORG);
-    await expect(propose(waiting!.imageId)).rejects.toThrow(/not switched on/u);
+    await expect(propose(waiting!.imageId)).rejects.toThrow(/not available yet/u);
     process.env.PROJECT_IMAGES_ENABLED = "1";
     await expect(propose(waiting!.imageId)).rejects.toThrow(/not been approved/u);
     await expect(propose("img_" + "1".repeat(20))).rejects.toThrow(/not been approved/u);
@@ -232,5 +238,33 @@ describe("an environment that names an approved image", () => {
     expect((await propose(waiting!.imageId)).digest).toMatch(/^[a-f0-9]{64}$/u);
     await revokeImage(ownDeps, caller, { imageId: waiting!.imageId, expectedRevision: 2 });
     await expect(propose(waiting!.imageId)).rejects.toThrow(/not been approved/u);
+  });
+});
+
+describe("with pj off, company images change nothing", () => {
+  const dependency = {
+    id: "db", name: "Postgres", kind: "database", family: "postgres", found: [{ path: "docker-compose.yml", line: 4 }], usedBy: ["integration"], backing: { kind: "project_image", imageId: "img_" + "1".repeat(20) },
+    connect: { env: [{ name: "DATABASE_URL", template: "postgres://{user}:{password}@{host}:{port}/{db}" }], hostAliases: ["postgres"] }, seeds: [], reset: "fresh_per_round",
+  };
+  const environment = (): never => ({ revision: 1, environment: draftBody({ dependencies: [dependency] }) } as never);
+
+  it("an environment that names an approved image is used by a task only while pj is on; with pj off it is 'not available yet' and the project's own checks run, as before", () => {
+    expect(environmentUnusedReason(environment(), { TEST_SERVICES_ENABLED: "1" })).toBe("dependencies_not_available_yet");
+    expect(environmentUnusedReason(environment(), { TEST_SERVICES_ENABLED: "1", PROJECT_IMAGES_ENABLED: "0" })).toBe("dependencies_not_available_yet");
+    expect(environmentUnusedReason(environment(), { TEST_SERVICES_ENABLED: "1", PROJECT_IMAGES_ENABLED: "1" })).toBeUndefined();
+    expect(environmentUnusedReason(environment(), { PROJECT_IMAGES_ENABLED: "1" })).toBe("dependencies_not_connected");
+    // An environment with only catalog dependencies does not care about pj.
+    const catalogOnly = { revision: 1, environment: draftBody({ dependencies: [{ ...dependency, backing: { kind: "local", catalogId: "postgres@16", config: {} } }] }) } as never;
+    expect(environmentUnusedReason(catalogOnly, { TEST_SERVICES_ENABLED: "1" })).toBeUndefined();
+  });
+});
+
+describe("the evidence of a company image", () => {
+  it("says it is the company's image, never Rovara's", () => {
+    const rows = dependencyEvidenceOf([{ id: "db", name: "Postgres", backing: "project_image" }], { dependencies: [{ id: "db", started: true, healthy: true, startMs: 800, resetCount: 1 }], unknownCalls: { domains: [], otherCount: 0 } } as never);
+    expect(rows.dependencies).toMatchObject([{ name: "Postgres", backing: "project_image", label: "real_project_image" }]);
+    expect(EVIDENCE_DEPENDENCY_LABEL_WORDS.real_project_image).toBe("real (company-approved image)");
+    const notRun = dependencyEvidenceOf([{ id: "db", name: "Postgres", backing: "project_image" }], undefined);
+    expect(notRun.dependencies[0]).toMatchObject({ backing: "none", label: "not_available", fellBack: { from: "project_image" } });
   });
 });

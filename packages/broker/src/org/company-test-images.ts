@@ -7,6 +7,7 @@
 //   - REVOKING (or dismissing a waiting image) needs a live admin in a browser session; a safety action stays easy. It removes the row and is audited. A revoked image is served no more.
 // Nothing here returns a name, a digest or an error text of a registry: answers are ids, fixed words and the image the admin must read to approve it.
 import { OrgIdSchema, agentXError, type OrgId, type VerifiedCatalog } from "@agentx/contracts";
+import { randomBytes } from "node:crypto";
 import { isFreshSignIn } from "../developer/store.js";
 import {
   COMPANY_IMAGES_MAX, COMPANY_IMAGES_MAX_WAITING, COMPANY_IMAGE_READ_WORDS, CompanyImageIdSchema, companyImageIdOf, companyImageStanding, profileEntryOf, readCompanyImage,
@@ -18,6 +19,8 @@ export type CompanyImageAuditAction = "company_image.proposed" | "company_image.
 export interface CompanyImageAuditEntry {
   orgId: OrgId; action: CompanyImageAuditAction; actor: string; at: string; imageId: string; revision: number; digest: string;
   authority: "fresh_sign_in" | "live_admin" | "project_setup";
+  /** The row's proposal cycle: it keeps the audit event ids of one proposal apart from an earlier proposal of the same image. */
+  cycle: string;
   /** The image as a person reads it: it goes in the event's `details`, never in a fact. */
   image: string;
 }
@@ -74,7 +77,7 @@ export async function requireFreshAdmin(deps: Pick<CompanyImageDeps, "requireAdm
 }
 
 const entryOf = (action: CompanyImageAuditEntry["action"], authority: CompanyImageAuditEntry["authority"], actor: string, image: CompanyImage, at: string): CompanyImageAuditEntry => ({
-  orgId: image.orgId, action, actor, at, imageId: image.imageId, revision: image.revision, digest: image.digest, authority, image: `${image.registry}/${image.repository}:${image.tag}`,
+  orgId: image.orgId, action, actor, at, imageId: image.imageId, revision: image.revision, digest: image.digest, authority, cycle: image.cycle, image: `${image.registry}/${image.repository}:${image.tag}`,
 });
 
 /** The outcome of proposing one name. `covered` and `approved` need nothing more; `waiting` is on the admin's page. */
@@ -101,7 +104,7 @@ async function propose(deps: CompanyImageDeps, input: { orgId: OrgId; actor: str
   const at = deps.now().toISOString();
   const next: CompanyImage = {
     orgId: input.orgId, imageId, revision: 1, status: "proposed", registry: read.image.registry, repository: read.image.repository, tag: read.image.tag, digest, family: read.family, version: read.major,
-    origin: input.origin, proposedBy: input.actor, proposedAt: at, updatedAt: at, ...(input.project === undefined ? {} : { project: input.project.slice(0, 128) }),
+    origin: input.origin, cycle: randomBytes(8).toString("hex"), proposedBy: input.actor, proposedAt: at, updatedAt: at, ...(input.project === undefined ? {} : { project: input.project.slice(0, 128) }),
   };
   // A cancelled create is a race with the same image (or a full counter): the row that won is what the admin sees.
   if (!await deps.store.commit(next, null, entryOf("company_image.proposed", input.authority, input.actor, next, at))) {

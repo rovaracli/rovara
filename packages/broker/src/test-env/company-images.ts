@@ -101,6 +101,11 @@ export const CompanyImageSchema = z.object({
   family: z.string().regex(/^[a-z][a-z0-9-]{0,39}$/u),
   version: z.string().regex(/^\d{1,3}$/u),
   origin: z.enum(["admin", "setup"]),
+  /**
+   * Random per proposal. A revoked image has no row, so the same image proposed again starts at revision 1 again; the cycle keeps that proposal's audit events apart from the earlier one's (an event id is made from the
+   * action and the occurrence, and the ledger drops a repeated id as a duplicate).
+   */
+  cycle: z.string().regex(/^[a-f0-9]{16}$/u),
   proposedBy: z.string().min(1).max(100),
   proposedAt: z.string().datetime(),
   /** The project whose setup asked for it (shown only). */
@@ -200,8 +205,18 @@ export function serviceImageServed(input: { catalog: VerifiedCatalog | undefined
  * `changed` (the company approved this name at another digest), or `none` (it needs an admin's approval). Pure.
  */
 export function companyImageStanding(input: { catalog: VerifiedCatalog; edition: "public" | "enterprise"; approved: readonly CompanyImage[]; family: string; major: string; name: string; digest: string }): "catalog" | "approved" | "changed" | "none" {
+  // Rovara's list holds Rovara's own images. A name is "the same software" only when it is the official upstream one (Docker Hub's `library/` images, and Valkey's own); the same kind from any other publisher is another image.
+  if (!isOfficialUpstream(input.name)) return companyStandingOf(input);
   const live = input.catalog.entries.some((entry) => entry.backing === "local" && entry.family === input.family && entry.status !== "retired" && entry.editions.includes(input.edition) && entry.image.digest !== undefined && (entry.version === input.major || entry.version.startsWith(`${input.major}.`)));
   if (live) return "catalog";
+  return companyStandingOf(input);
+}
+
+/** Docker Hub's official images (`docker.io/library/<name>`) and Valkey's own image: the upstream the catalog's software of that kind comes from. */
+export const isOfficialUpstream = (name: string): boolean => name.startsWith("docker.io/library/") || name === "docker.io/valkey/valkey";
+
+/** The standing of a name that Rovara's list does not cover: approved at this digest, approved at another one, or not approved. */
+function companyStandingOf(input: { catalog: VerifiedCatalog; edition: "public" | "enterprise"; approved: readonly CompanyImage[]; name: string; digest: string }): "approved" | "changed" | "none" {
   const served = serviceImageServed({ catalog: input.catalog, edition: input.edition, approved: input.approved, request: { name: input.name, digest: input.digest } });
   if (served.ok) return "approved";
   return served.reason === "digest_changed" ? "changed" : "none";

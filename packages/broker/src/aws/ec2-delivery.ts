@@ -28,6 +28,7 @@ import {
   DESIGN_REVIEW_WORKER_FEATURE,
   TEST_ENV_PLAN_FEATURE,
   TEST_SERVICES_AWS_PLAN_FEATURE,
+  TEST_SERVICES_COMPANY_IMAGE_PLAN_FEATURE,
   TEST_SERVICES_FAKE_PLAN_FEATURE,
   TEST_SERVICES_FILE_SEED_FEATURE,
   TEST_SERVICES_SEED_LOCK_FEATURE,
@@ -504,6 +505,10 @@ async function forWorkerFeatures(
   }
   // Test services (slice 3): a plan with a fake (the fake server from the worker's own image, and a fixture set fetched through the `fixture-set` callback) also needs the worker to list the fake feature: an older worker's strict parse would refuse the entry.
   if ((invocation.kind === "task" ? invocation.payload.testEnvironment?.dependencies : invocation.kind === "prepare" ? invocation.payload.testServices?.dependencies : undefined)?.some((dependency) => dependency.backing === "fake") === true && !features.includes(TEST_SERVICES_FAKE_PLAN_FEATURE)) {
+    throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
+  }
+  // Company-approved extra images (switch `pj`): a plan with a company image (`backing: "company"`) goes only to a worker that lists the feature (none does yet): an older worker's strict parse would refuse the entry.
+  if ((invocation.kind === "task" ? invocation.payload.testEnvironment?.dependencies : invocation.kind === "prepare" ? invocation.payload.testServices?.dependencies : undefined)?.some((dependency) => dependency.backing === "company") === true && !features.includes(TEST_SERVICES_COMPANY_IMAGE_PLAN_FEATURE)) {
     throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
   }
   // TS-UX-1 item 9: a plan with a seed FILE needs a worker that loads one: an older one would fail the seed.

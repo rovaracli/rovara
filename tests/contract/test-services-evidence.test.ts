@@ -26,7 +26,7 @@ describe("honesty labels (design 2.4)", () => {
   it("has the fixed words of every row", () => {
     expect(evidence.EVIDENCE_DEPENDENCY_LABELS).toEqual(["real", "real_project_image", "company_approved", "rovara_local_aws", "test_account", "recorded_fake", "hand_written_fake", "faked_by_tests", "not_available"]);
     expect(evidence.EVIDENCE_DEPENDENCY_LABEL_WORDS).toEqual({
-      real: "real", real_project_image: "real (your image)", company_approved: "company-approved image", rovara_local_aws: "Rovara local AWS", test_account: "test account",
+      real: "real", real_project_image: "real (company-approved image)", company_approved: "company-approved image", rovara_local_aws: "Rovara local AWS", test_account: "test account",
       recorded_fake: "recorded fake", hand_written_fake: "hand-written fake", faked_by_tests: "faked by your tests", not_available: "not available",
     });
   });
@@ -164,9 +164,9 @@ describe("the pull request lines (design 9.3)", () => {
     it("real: no 'not tested' line", () => {
       expect(dependencyLines([real()], 0)).toEqual({ lines: ["Integration tests ran against: Postgres (real)."], notTested: [] });
     });
-    it("real (your image): no 'not tested' line", () => {
+    it("real (company-approved image): no 'not tested' line", () => {
       const out = dependencyLines([dep({ name: "scorer", label: "real_project_image", backing: "project_image" })], 0);
-      expect(out.lines).toEqual(["Integration tests ran against: scorer (real, your image)."]);
+      expect(out.lines).toEqual(["Integration tests ran against: scorer (real, company-approved image)."]);
       expect(out.notTested).toEqual([]);
     });
     it("company-approved <service> image, with its short digest", () => {
