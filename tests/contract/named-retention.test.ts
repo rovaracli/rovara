@@ -33,7 +33,7 @@ describe("retained resources in a named environment", () => {
 
   it("are RetainExceptOnCreate, so a failed first create deletes them, and still kept on replacement", () => {
     const expected: Record<string, string[]> = {
-      "agentx-staging-access": ["ArtifactBucket AWS::S3::Bucket"],
+      "agentx-staging-access": ["ArtifactBucket AWS::S3::Bucket", "EmbedderImageRepository AWS::ECR::Repository"],
       "agentx-staging-control-plane": [
         "Artifacts AWS::S3::Bucket",
         // The Audit Ledger (Task 5 of its plan): the queues and buckets. Its tables, vault key and alias are in the plain Retain list below.
