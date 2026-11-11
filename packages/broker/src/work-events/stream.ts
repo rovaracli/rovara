@@ -49,10 +49,14 @@ export function workEventsOfStream(records: readonly StreamRecord[]): Array<{ ev
       const previous = entry.dynamodb?.OldImage === undefined ? undefined : unmarshall(entry.dynamodb.OldImage) as Record<string, unknown>;
       const parsedBefore = previous === undefined ? undefined : WorkflowSnapshotSchema.safeParse(previous["workflow"]);
       const client = next["client"];
-      for (const event of workEventsOfTransition({
+      const events = workEventsOfTransition({
         orgId, project, before: parsedBefore?.success === true ? parsedBefore.data : undefined, after: after.data,
         origin: typeof client === "string" && CODE.test(client) ? client : undefined,
-      })) made.push({ eventID: entry.eventID ?? "", event });
+      });
+      // An old image whose workflow cannot be read is an UNKNOWN before-state, not a task with none: only the one idempotent event that does not depend on it (the task's start, whose id and time are fixed by
+      // the task) is made, so no step or wait is invented from a missing baseline.
+      const safe = previous !== undefined && parsedBefore?.success !== true ? events.filter((event) => event.kind === "task_started") : events;
+      for (const event of safe) made.push({ eventID: entry.eventID ?? "", event });
     } catch {
       // Unreadable: the notifier logs it by event id already.
     }

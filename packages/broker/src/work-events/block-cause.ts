@@ -13,7 +13,8 @@ import {
 const R = WORKFLOW_BLOCK_REASONS;
 type Reason = keyof typeof WORKFLOW_BLOCK_REASONS;
 
-const BY_KEY: Partial<Record<Reason, WorkEventBlockCause>> = {
+/** Every reason key has a cause: the type is complete, so a new reason constant does not compile until it is placed (review L1). */
+export const BLOCK_CAUSE_BY_KEY: Record<Reason, WorkEventBlockCause> = {
   checksUnconfirmed: "checks_failed", checkRetryStale: "checks_failed", checkReportUnreadable: "checks_failed", noChecksConfigured: "checks_failed", checksBroken: "checks_failed",
   checkRunnerFailed: "checks_failed", regressionFound: "checks_failed", setupChangedFiles: "checks_failed", codeChangedAfterChecks: "checks_failed", checkedOtherCode: "checks_failed", noCheckResults: "checks_failed",
   repositoriesIncomplete: "run_failed", ruleFilesUnverified: "run_failed", stepRuleFilesUnverified: "run_failed", leftoverProcesses: "run_failed", startUnrecorded: "run_failed",
@@ -30,7 +31,7 @@ const BY_KEY: Partial<Record<Reason, WorkEventBlockCause>> = {
 };
 
 const EXACT = new Map<string, WorkEventBlockCause>();
-for (const [key, cause] of Object.entries(BY_KEY)) EXACT.set(R[key as Reason], cause);
+for (const [key, cause] of Object.entries(BLOCK_CAUSE_BY_KEY)) EXACT.set(R[key as Reason], cause);
 for (const [text, cause] of [
   [UNDERSTAND_UNREADABLE_MESSAGE, "plan_failed"], [UNDERSTAND_TIMED_OUT_MESSAGE, "plan_failed"], [UNDERSTAND_ANSWER_PENDING_MESSAGE, "needs_owner"],
   [WORKFLOW_AUTO_IMPLEMENT_FAILED_MESSAGE, "run_failed"], [WORKFLOW_AUTO_REVIEW_FAILED_MESSAGE, "review_failed"], [WORKFLOW_REVIEW_RESULT_INCOMPLETE_MESSAGE, "review_failed"],
@@ -42,7 +43,7 @@ const SETUP_PREFIXES = [
   WORKFLOW_APPLICATION_RUNTIME_RENEWED_PREFIX, WORKFLOW_APPLICATION_SELECTION_CHANGED_PREFIX, WORKFLOW_APPLICATION_ACCOUNTS_CHANGED_PREFIX,
 ];
 
-/** "<step> operation ended <status>": the reason a run that ended without a result records (`workflowRunEndedReason`). Only the status word is read. */
+/** "<step> operation ended <status>": the reason a run that ended without a result records (`workflowRunEndedReason`, and the feedback review's own wording). Only the status word is read. */
 const RUN_ENDED = /operation ended ([a-z_]+)$/u;
 
 /**
@@ -58,7 +59,8 @@ export function blockCauseOf(reason: string | undefined): WorkEventBlockCause {
   if (isCiFixBlockReason(reason)) return "ci_fix_gave_up";
   if (isBranchSyncBlockReason(reason)) return "branch_sync_failed";
   const ended = RUN_ENDED.exec(reason)?.[1];
-  if (ended === "cancelled" || ended === "canceled") return "cancelled";
-  if (ended === "failed" || ended === "interrupted") return "run_failed";
+  // "interrupted" is a stop that never confirmed (the stuck-cancel release, Close releasing a held workspace), so it is a stop with "cancelled", not a failure.
+  if (ended === "cancelled" || ended === "canceled" || ended === "interrupted") return "cancelled";
+  if (ended === "failed") return "run_failed";
   return "other";
 }

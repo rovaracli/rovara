@@ -92,6 +92,19 @@ describe("the events of a stream batch", () => {
     expect(workEventsOfStream([other, removal, replay, noOrg, unreadable])).toEqual([]);
   });
 
+  it("treats an old image whose workflow cannot be read as an unknown before-state: only the task's idempotent start, no invented step or wait", () => {
+    const unknownBefore = record({ ...taskRow(waiting()), workflow: { stage: "NONSENSE" } }, taskRow(approved()));
+    const made = workEventsOfStream([unknownBefore]).map(({ event }) => event.kind);
+    expect(made).toEqual(["task_started"]);
+    const none = record({ ...taskRow(waiting()), workflow: undefined }, taskRow(approved()));
+    expect(workEventsOfStream([none]).map(({ event }) => event.kind)).toEqual(["task_started"]);
+    // The start is the same row whichever change the reader meets first.
+    const first = workEventsOfStream([change(undefined, planning())]).find(({ event }) => event.kind === "task_started")!.event;
+    const later = workEventsOfStream([unknownBefore])[0]!.event;
+    expect(later.id).toBe(first.id);
+    expect(later.at).toBe(first.at);
+  });
+
   it("makes nothing for a change that moves nothing the events name", () => {
     expect(workEventsOfStream([change(waiting(), { ...waiting(), updatedAt: T2 })])).toEqual([]);
   });

@@ -60,6 +60,29 @@ describe("work events through the broker and the notifier", () => {
     expect(JSON.stringify(n.rows())).not.toMatch(/Maya|Fix the retry bug|Looks right/u);
   });
 
+  it("leaves the notifier batch with no failures when every work-event write fails: the notices are still queued and the failure is logged without content (review L3)", async () => {
+    const broker = await developerBroker(true);
+    const recorded = recordStream(broker.harness.db);
+    const logs: Array<Record<string, unknown>> = [];
+    const queued: unknown[] = [];
+    const handle = createNotifierHandler({
+      documentClient: broker.harness.db, tableName: "state", enqueue: async (notices) => { queued.push(...notices); }, retryLater: async () => undefined, post: async () => ({ ts: "1695500000.000100" }),
+      now: () => Date.now(), log: (entry) => { logs.push(entry); }, deliveryFailed: () => undefined, workEvents: { pause: async () => undefined },
+    });
+    const { workspaceId } = await broker.start({ workflow: true, workflowPath: "QUICK", shareToChannel: true });
+    await broker.finishPrepare(workspaceId);
+    const records = recorded.take().map((record) => ({ ...record, eventSource: "aws:dynamodb" }));
+    // From here every write of a work event fails (the table refuses it); nothing else is touched.
+    broker.harness.db.injectFault({ command: "PutCommand", times: 1000, match: (input) => (input["Item"] as { entityType?: unknown } | undefined)?.entityType === "WORK_EVENT", error: { name: "ProvisionedThroughputExceededException" } });
+    await expect(handle({ Records: records })).resolves.toEqual({ batchItemFailures: [] });
+    expect(broker.harness.db.find((item) => item["entityType"] === "WORK_EVENT")).toEqual([]);
+    const failed = logs.filter((entry) => entry["event"] === "work_event.write_failed");
+    expect(failed.length).toBeGreaterThan(0);
+    for (const entry of failed) expect(Object.keys(entry).sort()).toEqual(["error", "event", "id", "kind", "streamEventId"]);
+    // The notifier's own work was not held up: its notices were queued before the events were written.
+    expect(queued.length).toBeGreaterThan(0);
+  });
+
   it("writes the same rows when the stream delivers the same records again", async () => {
     const broker = await developerBroker(true);
     const recorded = recordStream(broker.harness.db);
