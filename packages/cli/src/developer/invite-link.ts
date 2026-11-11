@@ -96,7 +96,7 @@ export async function resolveInviteCell(parsed: ParsedInviteLink, fetchImplement
   return base;
 }
 
-const InviteSummarySchema = z.object({ orgName: z.string(), role: z.enum(["admin", "member"]), state: z.literal("open") });
+const InviteSummarySchema = z.object({ orgName: z.string(), role: z.enum(["admin", "member"]), state: z.literal("open"), /** A link no address is written for, on an install where only an invite lets a new person sign up: a new person opens it in a browser. */ inBrowserOnly: z.literal(true).optional() });
 const InviteStateSchema = z.object({ state: z.enum(["expired", "used", "unknown"]) });
 export type InviteSummary = z.infer<typeof InviteSummarySchema>;
 
@@ -123,6 +123,8 @@ export async function fetchInviteSummary(cellUrl: string, token: string, fetchIm
 /** The line shown before the browser opens (ruling R19): who the invite is for, in what role, and which server will sign you in. */
 export const inviteConfirmationLine = (summary: InviteSummary, cellUrl: string): string =>
   `This invite is for ${sanitizeServerText(summary.orgName)} (as ${summary.role}) on ${new URL(cellUrl).host}.`;
+/** Said after the confirmation line when the invite is a link no address is written for (`inBrowserOnly`): such a person's first sign-in needs the browser page, which asks for their email address. */
+export const INVITE_BROWSER_NOTE = "This invite is a link, not sent to an email address. If you are new to Rovara, open the link in a browser instead: its page asks for your email address and sends you a sign-in code. If you already have a Rovara account, continue here.";
 export const INVITE_QUESTION = "Open the browser to join? (Y/n)";
 /** With --no-browser nothing opens, so the question does not say it will. */
 export const INVITE_QUESTION_NO_BROWSER = "Continue to join? (Y/n)";

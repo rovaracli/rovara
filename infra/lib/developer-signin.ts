@@ -233,6 +233,8 @@ export class DeveloperSignIn extends Construct {
         DEVELOPER_NOTICE_EMAIL_FROM: Token.asString(Fn.conditionIf(cloud.emailFromSes.logicalId, cloud.emailFrom.valueAsString, "")),
         DEVELOPER_NOTICE_EMAIL_REGION: Token.asString(Fn.conditionIf(cloud.emailFromSes.logicalId, Fn.select(3, Fn.split(":", Fn.join("", [cloud.emailSourceArn.valueAsString, ":::"]))), "")),
         ROVARA_WEB_ORIGIN: cloud.webOrigin.valueAsString,
+        // "New companies by invitation only": "1" makes the sign-in function refuse to create a company for an uninvited cloud or GitHub sign-in.
+        DEVELOPER_NEW_COMPANIES_INVITE_ONLY: cloud.newCompaniesInviteOnly.valueAsString,
         // Plan 3, Task 21a-wiring: who may decide an approval is the broker's question; the decide flow invokes it by this name.
         DECIDE_INSPECT_FUNCTION_NAME: brokerFunctionName,
       }),

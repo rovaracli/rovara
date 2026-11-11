@@ -1,6 +1,7 @@
 import { SERVER_PAGE_ICON, serverPageCss } from "@agentx/design-tokens";
 import { withDecideIsolation } from "./confirm-page.js";
-import { SAML_SIGN_IN_REFUSED_MESSAGE, SessionIdSchema, agentXError, type SignedOutReason } from "@agentx/contracts";
+import { AdminCreateUserCommand, AdminGetUserCommand } from "@aws-sdk/client-cognito-identity-provider";
+import { SAML_SIGN_IN_REFUSED_MESSAGE, SessionIdSchema, agentXError, normalizeEmail, type SignedOutReason } from "@agentx/contracts";
 import { APP_CSRF_HEADER, appCsrfMatches } from "./app-csrf.js";
 // packages/broker/src/developer/server.ts
 // Spec 025 FR-001 to FR-008: the control plane as the developers' sign-in server. Behind
@@ -71,7 +72,7 @@ import { SESSION_MAX_AGE_SECONDS } from "../aws/web-session.js";
 import { INVITE_TOKEN_PATTERN, inviteTokenHash } from "../org/invite-url.js";
 import type { OrgStore } from "../org/store.js";
 import { MERGED_AWAY_MESSAGE } from "../org/store.js";
-import { NO_ORG_ON_INSTALL_MESSAGE, resolveOrgOnSignIn, sameEmail, type ResolveOrgOnSignInDependencies, type SignInNoOrg, type SignInOrg } from "../org/sign-in.js";
+import { INVITATION_ONLY_MESSAGE, NO_ORG_ON_INSTALL_MESSAGE, resolveOrgOnSignIn, sameEmail, type ResolveOrgOnSignInDependencies, type SignInNoOrg, type SignInOrg } from "../org/sign-in.js";
 import { resolveSignInDeveloper, type ResolveSignInDeveloperDependencies } from "./identities.js";
 import {
   expiredInvitePage, joinDonePage, joinExpiredPage, maskEmail, openInvitePage, otherBrowserPage, unknownInvitePage, usedInvitePage, type PageSpec,
@@ -85,7 +86,8 @@ import { companySignInRefusalEvent, decideCompanySignIn, type CompanySignIn, typ
 import { recordAuditEventDurably, recordAuditRead } from "../audit/flush.js";
 import type { AuditRuntime } from "../audit/outbox.js";
 import { createDecideSignIn, type DecideSignInDependencies } from "./decide-signin.js";
-import { issueAccessToken, pkceChallengeMatches, type TokenSigner } from "./tokens.js";
+import type { DecideStore } from "./decide-session.js";
+import { issueAccessToken, pkceChallengeMatches, sha256Hex, type TokenSigner } from "./tokens.js";
 import { issueRealtimeToken } from "../realtime/token.js";
 
 /** `since` (epoch seconds, FR-045): when the method was last turned on. A session started before it
@@ -112,6 +114,13 @@ export interface DeveloperIdentityDependencies {
   singleOrgId?: OrgId;
   /** Told when a sign-in created or joined an org, so the model proxy can be told its budgets (see ResolveOrgOnSignInDependencies.onOrgJoined). */
   onOrgJoined?: ResolveOrgOnSignInDependencies["onOrgJoined"];
+  /** "New companies by invitation only" (the hosted cloud's install setting): a cloud or GitHub sign-in never creates a company. Absent: as always. See ResolveOrgOnSignInDependencies. */
+  newOrgsByInvitationOnly?: boolean;
+  /**
+   * The cloud user pool's admin API, for invitations where new companies are by invitation only: that pool then allows only AdminCreateUser (no self sign-up), so an invited person
+   * with no pool user yet gets one when they open the invite (`ensureInvitedPoolUser`). Absent: nothing is created (a pool that still allows sign-up needs none).
+   */
+  invitedUsers?: { client: { send(command: unknown): Promise<unknown> }; userPoolId: string; limits: Pick<DecideStore, "takeInviteUserSlot" | "releaseInviteUserSlot"> };
   /**
    * Called after a GitHub sign-in resolved the org, with the GitHub account that signed in, so a trial org's trial unlocks (unlockTrial).
    * Best effort: TRIAL_GITHUB_USED (that account already unlocked another org) and any other failure are logged and never fail the sign-in.
@@ -198,16 +207,25 @@ export function enabledMethods(deps: Pick<DeveloperIdentityDependencies, "config
 const ENTITIES: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
 const escape = (text: string) => text.replace(/[&<>"']/g, (c) => ENTITIES[c] ?? c);
 
-function page(statusCode: number, title: string, paragraphs: string[], links: Array<{ href: string; label: string }> = [], refreshTo?: string): HttpResult {
+/** A one-field POST form (an email address) that a page may carry; the invite page's way for a person with no account to ask for a sign-in code. */
+interface PageForm { action: string; hidden: Record<string, string>; prompt: string; field: string; button: string }
+
+function page(statusCode: number, title: string, paragraphs: string[], links: Array<{ href: string; label: string }> = [], refreshTo?: string, form?: PageForm): HttpResult {
   const body = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escape(title)}</title>${SERVER_PAGE_ICON}`
     + (refreshTo === undefined ? "" : `<meta http-equiv="refresh" content="0;url=${escape(refreshTo)}">`)
-    + `<style>${serverPageCss()}h1{line-height:1.2;margin:0 0 1.5rem}.rv-wordmark{font-weight:650;margin:0 0 1.5rem}.rv-server-card{padding:clamp(1rem,4vw,2rem);border:1px solid var(--rv-border);border-radius:var(--rv-radius-lg);background:var(--rv-bg-raised)}p{overflow-wrap:anywhere}a.method{display:flex;align-items:center;min-height:44px;margin:1rem 0;padding:.75rem 1rem;border:1px solid var(--rv-border-strong);border-radius:var(--rv-radius-sm);text-decoration:none;color:var(--rv-accent-text)}</style></head>`
+    + `<style>${serverPageCss()}h1{line-height:1.2;margin:0 0 1.5rem}.rv-wordmark{font-weight:650;margin:0 0 1.5rem}.rv-server-card{padding:clamp(1rem,4vw,2rem);border:1px solid var(--rv-border);border-radius:var(--rv-radius-lg);background:var(--rv-bg-raised)}p{overflow-wrap:anywhere}a.method{display:flex;align-items:center;min-height:44px;margin:1rem 0;padding:.75rem 1rem;border:1px solid var(--rv-border-strong);border-radius:var(--rv-radius-sm);text-decoration:none;color:var(--rv-accent-text)}form{margin:1.5rem 0 0}label{display:block;margin:0 0 .5rem}input,button{font:inherit;min-height:44px;padding:.5rem .75rem;border:1px solid var(--rv-border-strong);border-radius:var(--rv-radius-sm);background:var(--rv-bg-raised);color:inherit;max-width:100%}button{color:var(--rv-accent-text);cursor:pointer;margin:.5rem 0 0}</style></head>`
     + `<body><main><p class="rv-wordmark">Rovara</p><section class="rv-server-card"><h1>${escape(title)}</h1>${paragraphs.map((p) => `<p>${escape(p)}</p>`).join("")}`
-    + `${links.map((link) => `<a class="method" href="${escape(link.href)}">${escape(link.label)}</a>`).join("")}</section></main></body></html>`;
-  return { statusCode, headers: { ...HTML_HEADERS }, body };
+    + `${links.map((link) => `<a class="method" href="${escape(link.href)}">${escape(link.label)}</a>`).join("")}`
+    + (form === undefined ? "" : `<form method="post" action="${escape(form.action)}">${Object.entries(form.hidden).map(([name, value]) => `<input type="hidden" name="${escape(name)}" value="${escape(value)}">`).join("")}`
+      + `<label for="rv-email">${escape(form.prompt)}</label><input id="rv-email" type="email" name="${escape(form.field)}" required maxlength="254" autocomplete="email" spellcheck="false"><br><button type="submit">${escape(form.button)}</button></form>`)
+    + `</section></main></body></html>`;
+  // A form submits only to this server's own address; every other page keeps form-action 'none'.
+  // The form page also sends `referrer-policy: same-origin`: under `no-referrer` a browser sends `Origin: null` with the form's POST. Nothing leaves this server's origin from it (the next hop is a different page).
+  const headers = form === undefined ? { ...HTML_HEADERS } : { ...HTML_HEADERS, "referrer-policy": "same-origin", "content-security-policy": HTML_HEADERS["content-security-policy"].replace("form-action 'none'", "form-action 'self'") };
+  return { statusCode, headers, body };
 }
 
-const render = (spec: PageSpec): HttpResult => page(spec.statusCode, spec.title, spec.paragraphs, spec.links);
+const render = (spec: PageSpec): HttpResult => page(spec.statusCode, spec.title, spec.paragraphs, spec.links, undefined, spec.form);
 const cookieValue = (header: string | undefined, name: string): string | undefined =>
   (header ?? "").split(";").map((part) => part.trim()).find((part) => part.startsWith(`${name}=`))?.slice(name.length + 1);
 
@@ -269,7 +287,11 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
     const accept = Object.entries(http.headers ?? {}).find(([name]) => name.toLowerCase() === "accept")?.[1] ?? "";
     const browserPage = !(/application\/json/i.test(accept) && !/text\/html/i.test(accept));
     if (http.requestContext?.http?.method === "GET" && (http.rawPath === "/v1/auth/join" || http.rawPath === "/v1/auth/join/start") && browserPage) {
-      return redirect(`${primaryOrigin}${http.rawPath}${http.rawQueryString === undefined || http.rawQueryString === "" ? "" : `?${http.rawQueryString}`}`);
+      // Only the invite rides along: an address is never read from a query string, and none is copied into the address the browser is sent to.
+      const forwarded = new URLSearchParams(http.rawQueryString ?? "");
+      forwarded.delete("email");
+      const query = forwarded.toString();
+      return redirect(`${primaryOrigin}${http.rawPath}${query === "" ? "" : `?${query}`}`);
     }
     return own(event);
   };
@@ -361,6 +383,14 @@ function createIssuerHandler(deps: DeveloperIdentityDependencies) {
     // An invite link's token rides the sign-in to its end; the token is never logged, and a malformed one is refused now.
     const invite = query.get("invite");
     if (invite !== null && !INVITE_TOKEN_PATTERN.test(invite)) return invalid("invite is not a valid invite token; ask for a new invite link");
+    // Invitation only: an invite written for an address makes that person's pool user before the sign-in page needs it (the cloud pool has no self sign-up); `agentx login --invite` is the same invite as the browser's.
+    // A link anyone may use names no address, so the CLI tells such a person to open it in a browser (the JSON of the join page says so: inBrowserOnly).
+    if (invite !== null && poolUsersMade) {
+      const described = await deps.orgs.describeInvite(invite);
+      if (described?.state === "open" && described.email !== undefined && await ensureInvitedPoolUser(described.email) !== "ok") {
+        return toClient(redirectUri, { error: "temporarily_unavailable", state: clientState, error_description: "Rovara could not set up your sign-in right now; run agentx login again in a minute" });
+      }
+    }
     if (methods.length === 0) {
       return toClient(redirectUri, { error: "access_denied", state: clientState, error_description: "developer sign-in is not enabled in this AgentX environment; ask an admin to run agentx signin enable slack" });
     }
@@ -443,6 +473,58 @@ function createIssuerHandler(deps: DeveloperIdentityDependencies) {
   const joinUnavailable = (cookies: string[] = []): HttpResult =>
     ({ ...page(503, "Sign-in is unavailable", ["Try opening the invite link again in a moment."]), ...(cookies.length === 0 ? {} : { cookies }) });
 
+  /** Whether opening an invite makes the invitee's pool user: new companies are by invitation only and the cloud pool's admin API is wired (otherwise the pool still allows sign-up, or nothing can be made). */
+  const poolUsersMade = deps.newOrgsByInvitationOnly === true && deps.invitedUsers !== undefined;
+
+  /**
+   * Invitation only: the cloud pool allows only AdminCreateUser, so a person with no pool user cannot sign up on the managed login page. An invite is what lets them in, so opening
+   * one makes their pool user: the address the invite is written for, or the one the person typed for a link anyone may use. The user is verified and no email is sent (Rovara sends its
+   * own); the person signs in with the emailed code, which proves the mailbox every time, and rule 2 (an email-targeted invite grants only to that verified address) still decides who joins.
+   * A native user that already exists is left as it is. A Google-federated user is a different pool user (`Google_...`), which `AdminGetUser` by address does not find, so a native one is
+   * made next to it; it is harmless, because that person keeps signing in with Google. Only an ASCII address is used, as everywhere else an address keys something.
+   * With `limit` (an address a person typed) a user that does not exist yet takes one of the invite's slots, and "limited" answers when they are gone; the log names the invite by a hash
+   * prefix and how many it has made, never the address.
+   */
+  async function ensureInvitedPoolUser(raw: string, limit?: { inviteHash: string; sourceHash?: string }): Promise<"ok" | "invalid" | "failed" | "limited"> {
+    const { email, ascii } = normalizeEmail(raw);
+    if (!ascii || email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return "invalid";
+    const { client, userPoolId, limits } = deps.invitedUsers!;
+    let taken: number | undefined;
+    try {
+      try {
+        await client.send(new AdminGetUserCommand({ UserPoolId: userPoolId, Username: email }));
+        return "ok";
+      } catch (error) {
+        if (errorName(error) !== "UserNotFoundException") throw error;
+      }
+      if (limit !== undefined) {
+        try {
+          taken = await limits.takeInviteUserSlot(limit.inviteHash, limit.sourceHash);
+        } catch (error) {
+          if (!isCode(error, "TOO_MANY_REQUESTS")) throw error;
+          deps.log({ event: "signin.join_pool_user_limited", invite: limit.inviteHash.slice(0, 12) });
+          return "limited";
+        }
+      }
+      try {
+        await client.send(new AdminCreateUserCommand({
+          UserPoolId: userPoolId, Username: email, UserAttributes: [{ Name: "email", Value: email }, { Name: "email_verified", Value: "true" }], MessageAction: "SUPPRESS",
+        }));
+      } catch (error) {
+        // Created by a concurrent open of the same invite: it is there, and this open made nothing.
+        if (errorName(error) !== "UsernameExistsException" && errorName(error) !== "AliasExistsException") throw error;
+        if (limit !== undefined && taken !== undefined) await limits.releaseInviteUserSlot(limit.inviteHash, limit.sourceHash).catch(() => undefined);
+        return "ok";
+      }
+      deps.log({ event: "signin.join_pool_user_created", ...(limit === undefined ? {} : { invite: limit.inviteHash.slice(0, 12), count: taken ?? 0 }) });
+      return "ok";
+    } catch (error) {
+      if (limit !== undefined && taken !== undefined) await limits.releaseInviteUserSlot(limit.inviteHash, limit.sourceHash).catch(() => undefined);
+      deps.log({ event: "signin.join_pool_user_failed", error: errorName(error) });
+      return "failed";
+    }
+  }
+
   /** The page for an invite that cannot be used (expired, used or unknown), or undefined for an open one. */
   async function joinInvite(query: URLSearchParams): Promise<{ page: HttpResult } | { token: string; invite: NonNullable<Awaited<ReturnType<typeof deps.orgs.describeInvite>>>; inviterName: string }> {
     const token = inviteTokenIn(query);
@@ -465,7 +547,8 @@ function createIssuerHandler(deps: DeveloperIdentityDependencies) {
     const answer = (statusCode: number, body: unknown): HttpResult => ({ ...jsonResult(statusCode, body), headers: { ...JSON_HEADERS, vary: "accept", "referrer-policy": "no-referrer", "x-content-type-options": "nosniff" } });
     if (invite === undefined) return answer(404, { state: "unknown" });
     if (invite.state === "expired" || invite.state === "used") return answer(410, { state: invite.state });
-    return answer(200, { orgName: invite.orgName, role: invite.role, state: "open" });
+    // A link anyone may use names no address for the pool user a new person needs when sign-up is off: the CLI tells such a person to open it in a browser, which asks for the address.
+    return answer(200, { orgName: invite.orgName, role: invite.role, state: "open", ...(poolUsersMade && invite.email === undefined ? { inBrowserOnly: true } : {}) });
   }
 
   /** `GET /v1/auth/join?invite=`: the invite, or why it cannot be used. Reads only; creates nothing. */
@@ -475,16 +558,47 @@ function createIssuerHandler(deps: DeveloperIdentityDependencies) {
     const found = await joinInvite(query);
     if ("page" in found) return found.page;
     const { token, invite, inviterName } = found;
+    // Where new companies are by invitation only the cloud pool has no self sign-up: a link anyone may use names no address to make the pool user for, so a person with no account asks for a code here.
+    const asksEmail = invite.email === undefined && poolUsersMade;
     return render(openInvitePage(
       { orgName: invite.orgName, role: invite.role, inviterName, ...(invite.email === undefined ? {} : { maskedEmail: maskEmail(invite.email) }) },
       endpoint(`/join/start?invite=${token}`),
+      asksEmail ? { action: endpoint("/join/start"), invite: token } : undefined,
     ));
   }
 
-  /** `GET /v1/auth/join/start?invite=`: like authorizeBrowser, with the join cookie, the invite's hash and `purpose: "join"`. */
+  /**
+   * `GET /v1/auth/join/start?invite=`: like authorizeBrowser, with the join cookie, the invite's hash and `purpose: "join"`. An email address is never read from the query string.
+   * `POST /v1/auth/join/start` (the link invite's email form, `joinStartForm`) comes to the same place with the address from its body.
+   */
   async function joinStart(query: URLSearchParams): Promise<HttpResult> {
+    return startJoin(query, undefined, undefined);
+  }
+
+  /** `POST /v1/auth/join/start`: the email form of a link invite. The address is in the body, so it is in no URL, log or history; the form's own page is the only one that may submit it. */
+  async function joinStartForm(body: string | undefined, headers: Record<string, string | undefined>, sourceIp: string | undefined): Promise<HttpResult> {
+    // A browser that sends no Referer (or Origin) sends `Origin: null`, which names no site: it is treated as no Origin at all. A real foreign origin is refused.
+    const origin = headers.origin;
+    if (origin !== undefined && origin !== "null" && origin !== new URL(config.issuer).origin) return page(403, "That didn't come from Rovara", ["Open the invite link again and use the form on its page."]);
+    const form = new URLSearchParams(body ?? "");
+    return startJoin(new URLSearchParams({ invite: form.get("invite") ?? "" }), form.get("email") ?? "", sourceIp);
+  }
+
+  async function startJoin(query: URLSearchParams, typed: string | undefined, sourceIp: string | undefined): Promise<HttpResult> {
     const found = await joinInvite(query);
     if ("page" in found) return found.page;
+    // Where the cloud pool allows only AdminCreateUser, the person's pool user is made now, before the sign-in page needs it (see ensureInvitedPoolUser).
+    const viaForm = poolUsersMade && found.invite.email === undefined && typed !== undefined;
+    const address = found.invite.email ?? (poolUsersMade ? typed : undefined);
+    if (address !== undefined && poolUsersMade) {
+      // Without a source address (API Gateway always sets one) only the per-invite cap applies: never one bucket shared by every request that lacks it.
+      const limit = found.invite.email === undefined ? { inviteHash: inviteTokenHash(found.token), ...(sourceIp === undefined || sourceIp === "" ? {} : { sourceHash: sha256Hex(sourceIp) }) } : undefined;
+      const ensured = await ensureInvitedPoolUser(address, limit);
+      const back = [{ href: endpoint(`/join?invite=${found.token}`), label: "Go back to the invite" }];
+      if (ensured === "invalid") return page(400, "Check your email address", ["That doesn't look like an email address."], back);
+      if (ensured === "limited") return page(429, "Too many tries", ["Rovara can't set up another sign-in from this invite right now. Try again in an hour, or ask the person who invited you for a new invite."], back);
+      if (ensured === "failed") return joinUnavailable();
+    }
     const methods = await availableMethods();
     if (methods.length === 0) return page(503, "Sign-in is unavailable", ["Ask a Rovara administrator to enable a sign-in method."]);
     const verifier = randomBytes(32).toString("base64url");
@@ -496,7 +610,11 @@ function createIssuerHandler(deps: DeveloperIdentityDependencies) {
     const cookie = `${JOIN_PKCE_COOKIE}=${verifier}; Secure; HttpOnly; SameSite=Lax; Path=/; Max-Age=600`;
     if (methods.length === 1) {
       if (await store.chooseMethod(auth.id, methods[0]!) === undefined) return joinUnavailable([cookie]);
-      return { ...await joinToProvider(auth.id, auth.nonce, methods[0]!), cookies: [cookie] };
+      const toProvider = await joinToProvider(auth.id, auth.nonce, methods[0]!);
+      // The email form's own page allows form submissions only to this server, and a browser may refuse a redirect off it after one: go on by a page that moves the browser itself.
+      const target = toProvider.headers.location;
+      if (viaForm && toProvider.statusCode === 302 && target !== undefined) return { ...page(200, "Taking you to sign in", ["One moment."], [{ href: target, label: "Continue" }], target), cookies: [cookie] };
+      return { ...toProvider, cookies: [cookie] };
     }
     return { ...page(200, "Sign in to Rovara", [], methods.map((method) => ({
       href: `${endpoint("/authorize")}?request=${encodeURIComponent(auth.id)}&method=${method}`,
@@ -822,7 +940,7 @@ function createIssuerHandler(deps: DeveloperIdentityDependencies) {
     // invite first (it is used up if the person joins), to have the names its page shows.
     const described = join && request.inviteTokenHash !== undefined ? await deps.orgs.describeInviteByHash(request.inviteTokenHash) : undefined;
     const orgDependencies = { orgs: deps.orgs, ...(deps.singleOrgId === undefined ? {} : { singleOrgId: deps.singleOrgId }), singleOrgName: config.env, log: deps.log,
-      ...(deps.onOrgJoined === undefined ? {} : { onOrgJoined: deps.onOrgJoined }) };
+      ...(deps.onOrgJoined === undefined ? {} : { onOrgJoined: deps.onOrgJoined }), ...(deps.newOrgsByInvitationOnly === true ? { newOrgsByInvitationOnly: true } : {}) };
     const orgInput = { method, developerId, displayName: identity.displayName, ...(identity.email === undefined ? {} : { email: identity.email }), emailVerified: identity.emailVerified === true,
       ...(request.inviteTokenHash === undefined ? {} : { inviteTokenHash: request.inviteTokenHash }) };
     let org: SignInOrg | SignInNoOrg;
@@ -833,6 +951,12 @@ function createIssuerHandler(deps: DeveloperIdentityDependencies) {
       org = join || !askedToCreate ? await resolveOrgOnSignIn(orgDependencies, { ...orgInput, allowCreate: false }) : await resolveOrgOnSignIn(orgDependencies, orgInput);
     } catch (error) {
       if (join) throw error;
+      // Invitation only: no company is made for a person who has none and brings no usable invite. Nothing was written for the org; the person is told how to get in.
+      if (isCode(error, "CONFIG_INVALID") && refusalWords(error) === INVITATION_ONLY_MESSAGE) {
+        deps.log({ event: "signin.refused", method, reason: "invitation_only", developerId });
+        if (request.browserReturnTo !== undefined) return browserReturn(request.browserReturnTo, false, undefined, "invitation_only");
+        return client({ error: "access_denied", error_description: INVITATION_ONLY_MESSAGE });
+      }
       // A Slack or company sign-in on a cloud install has no org to join (R51): told to sign in with Rovara, not shown an internal error.
       if (isCode(error, "CONFIG_INVALID") && refusalWords(error) === NO_ORG_ON_INSTALL_MESSAGE) {
         deps.log({ event: "signin.refused", method, reason: "no_org_on_install", developerId });
@@ -882,8 +1006,10 @@ function createIssuerHandler(deps: DeveloperIdentityDependencies) {
     }
     // A browser sign-in of a new person who did not ask for a company ends here: nothing was created, and the app explains the two ways in.
     if (org.orgId === undefined && !askedToCreate && request.browserReturnTo !== undefined) {
-      deps.log({ event: "signin.refused", method, reason: "no_account", developerId });
-      return browserReturn(request.browserReturnTo, false, undefined, "no_account");
+      // Where new companies are by invitation only, "Create a company" is not offered, so the page says invitation only instead.
+      const noAccount = deps.newOrgsByInvitationOnly === true ? "invitation_only" : "no_account";
+      deps.log({ event: "signin.refused", method, reason: noAccount, developerId });
+      return browserReturn(request.browserReturnTo, false, undefined, noAccount);
     }
     // Only a join (or the case above) answers without an org; this sign-in created or joined one.
     if (org.orgId === undefined) throw new Error("sign-in resolved no organization");
@@ -1319,7 +1445,7 @@ function createIssuerHandler(deps: DeveloperIdentityDependencies) {
     return ended();
   }
 
-  async function route(method: string, pathname: string, url: URL, body: string | undefined, headers: Record<string, string | undefined>): Promise<HttpResult> {
+  async function route(method: string, pathname: string, url: URL, body: string | undefined, headers: Record<string, string | undefined>, sourceIp?: string): Promise<HttpResult> {
     if (method === "GET") {
       switch (pathname) {
         case "/v1/auth/.well-known/openid-configuration":
@@ -1357,6 +1483,7 @@ function createIssuerHandler(deps: DeveloperIdentityDependencies) {
       }
     }
     if (method === "POST" && pathname === "/v1/auth/callback/saml") return samlPost(body);
+    if (method === "POST" && pathname === "/v1/auth/join/start") return joinStartForm(body, headers, sourceIp);
     if (method === "POST" && pathname === "/v1/auth/browser/sign-out") return browserSignOut(headers);
     if (method === "POST" && pathname === "/v1/auth/token") return token(new URLSearchParams(body ?? ""));
     if (method === "POST" && pathname === "/v1/auth/revoke") return revokeToken(new URLSearchParams(body ?? ""));
@@ -1534,7 +1661,7 @@ function createIssuerHandler(deps: DeveloperIdentityDependencies) {
     const request = adaptHttpApiEvent(event);
     const url = new URL(request.path, "https://agentx.invalid");
     try {
-      const response = await route(request.method, url.pathname, url, request.body, request.headers);
+      const response = await route(request.method, url.pathname, url, request.body, request.headers, event.requestContext?.http?.sourceIp);
       return url.pathname.startsWith("/v1/auth/decide/") ? withDecideIsolation(response) : response;
     } catch (error) {
       // Only the error's name: a KMS or AWS message can carry a key ARN or other detail.

@@ -329,6 +329,16 @@ Developers need no AWS credentials: they run `npx @preplabsai/rovara-code login 
 To hand tasks to Rovara from Claude Code, Codex or Cursor, and to share them to Slack, they follow
 [docs/mcp-install.md](mcp-install.md).
 
+## New companies by invitation only (Rovara Cloud)
+
+On the hosted Rovara Cloud, nobody can make a company by signing in. A cloud (email code, Google) or GitHub sign-in with no company and no usable invite is refused with "Rovara is invitation-only right now. Ask someone at your company to invite you." Nothing is created: no company, no member, no budget rows. An invite still works, a person who already has a company still signs in, and Slack, company and SAML sign-in are unchanged. A Rovara Code or self-hosted install has no such setting and behaves as before.
+
+- **The setting:** stack parameter `NewCompaniesByInvitationOnly` on `agentx-<env>-control-plane`, default `1`, allowed `0` or `1`. It exists only where the cloud identity does (the `agentxCloud` context). Set it to `0` to let anyone who signs in start a trial company again. The sign-in function reads it as `DEVELOPER_NEW_COMPANIES_INVITE_ONLY`.
+- **The user pool:** the same parameter sets the cloud user pool's `AdminCreateUserConfig.AllowAdminCreateUserOnly` (`1`: true, so nobody can sign up by themselves; `0`: false). It is an in-place update with no interruption; the pool is never replaced.
+- **How an invitee gets in with sign-up off:** opening an invite makes the invitee's pool user with `AdminCreateUser` (email verified, no email sent by Cognito), then the person signs in with the emailed code. An email invite uses the address it is written for. A link invite asks for an email address on its page (a POST form, so the address is in no URL). `agentx login --invite` does the same for an email invite; for a link invite it tells a new person to open the link in a browser. Pool users made from a link invite are capped at 3 per invite per day and 10 per source address per hour (the sign-in table's `DECIDE_RATE#` items), and the log names the invite by a hash prefix and a count, never the address. The sign-in function already holds `cognito-idp:AdminCreateUser` and `AdminGetUser` on this one pool.
+- **If the pool is not wired:** with the setting on but no `DEVELOPER_CLOUD_USER_POOL_ID`, the sign-in function still refuses to make companies and logs `signin.invite_only_without_pool` once at start, because invitees with no pool user cannot be given a sign-in.
+- **A deploy that predates this setting:** a stack that never had the parameter gets `1` on its next update, so the safety setting cannot be left open by omission.
+
 ## A custom domain for the control plane (Rovara Cloud)
 
 Optional, for a Rovara Cloud install deployed with the cdk engine. It puts the control plane (the web app at `/app`, sign-in at `/v1/auth`) at a name you own, for example `https://staging.rovara.dev`, in front of the same HTTP API. Off by default: with nothing set, no resource is added and no address changes.

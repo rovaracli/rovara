@@ -9,6 +9,8 @@ export interface PageSpec {
   title: string;
   paragraphs: string[];
   links?: Array<{ href: string; label: string }>;
+  /** A one-field email form (POST, so the address is in no URL) the page carries; server.ts renders it. */
+  form?: { action: string; hidden: Record<string, string>; prompt: string; field: string; button: string };
 }
 
 /** "priya@acme.dev" becomes "p•••@acme.dev": the first character and the domain, enough to recognize the address and not to learn it. */
@@ -34,7 +36,7 @@ export interface InviteView {
  * An invite no one has used or let expire (200): who invited you, to what, and the way in. A browser page (UX1): no terminal commands; the CLI reads the
  * JSON form of the same address (`agentx login --invite`).
  */
-export function openInvitePage(invite: InviteView, startUrl: string): PageSpec {
+export function openInvitePage(invite: InviteView, startUrl: string, emailForm?: { action: string; invite: string }): PageSpec {
   return {
     statusCode: 200,
     title: `Join ${invite.orgName} on Rovara`,
@@ -43,6 +45,10 @@ export function openInvitePage(invite: InviteView, startUrl: string): PageSpec {
       ...(invite.maskedEmail === undefined ? ["Sign in on the next page to join. No new company is created."] : [`This invite is for ${invite.maskedEmail}. Sign in with that address on the next page to join.`]),
     ],
     links: [{ href: startUrl, label: `Join ${invite.orgName}` }],
+    // Where there is no self sign-up (new companies by invitation only), a person with no account asks for a code at their email address here.
+    ...(emailForm === undefined ? {} : {
+      form: { action: emailForm.action, hidden: { invite: emailForm.invite }, prompt: "New to Rovara? Enter your email address and use the sign-in code we send you.", field: "email", button: "Continue with email" },
+    }),
   };
 }
 
