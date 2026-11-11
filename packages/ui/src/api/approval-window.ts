@@ -3,38 +3,17 @@
 // A 202 (a lengthening waits for a second admin) is an answer of its own, read with `sendAnswer`.
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { z } from "zod";
+import type { z } from "zod";
 import { useAppHost, type AppHost } from "../host.js";
+import { APPROVAL_WINDOW_PATH, ApprovalWindowAnswerReaderSchema, ApprovalWindowBodySchema, ApprovalWindowStateReaderSchema, type ApprovalWindowBody } from "@agentx/cloud-contracts/web";
 import { createApiClient } from "./client.js";
 
-// ---- LOCAL SCHEMAS (replace with `@agentx/cloud-contracts/web` once `packages/cloud-contracts/src/app-approval-window.ts` is on this base) ----
-// They match docs section 2 of briefs/approval-place-api.md exactly (ApprovalWindowStateSchema, ApprovalWindowBodySchema, ApprovalWindowAnswerSchema). Readers ignore unknown fields (forward-compatible); the body is strict.
-export const RECENT_SIGN_IN_DEFAULT_SECONDS = 86400;
-export const RECENT_SIGN_IN_MIN_SECONDS = 3600;
-export const RECENT_SIGN_IN_MAX_SECONDS = 604800;
-const ApprovalWindowPendingSchema = z.object({ changeId: z.string().min(1).max(200), seconds: z.number().int(), proposedByYou: z.boolean(), expiresAt: z.string().min(1).max(40) });
-export const ApprovalWindowStateReaderSchema = z.object({
- revision: z.number().int().nonnegative(), seconds: z.number().int(), isDefault: z.boolean(), defaultSeconds: z.number().int(), minSeconds: z.number().int(), maxSeconds: z.number().int(),
- canChange: z.boolean(), unreadable: z.boolean(), pending: ApprovalWindowPendingSchema.nullish(),
- // Added by the controller after the doc: who last set the window and when. Optional until the server sends them; absent shows today's wording.
- changedBy: z.string().min(1).max(200).nullish(), changedAt: z.string().min(1).max(40).nullish(),
-});
-export const ApprovalWindowAnswerReaderSchema = z.discriminatedUnion("status", [
- ApprovalWindowStateReaderSchema.extend({ status: z.literal("applied") }),
- ApprovalWindowStateReaderSchema.extend({ status: z.literal("needs_approval"), changeId: z.string().min(1).max(200) }),
-]);
-export const ApprovalWindowBodySchema = z.discriminatedUnion("action", [
- z.object({ action: z.literal("set"), expectedRevision: z.number().int().nonnegative(), seconds: z.number().int().min(RECENT_SIGN_IN_MIN_SECONDS).max(RECENT_SIGN_IN_MAX_SECONDS) }).strict(),
- z.object({ action: z.literal("approve"), changeId: z.string().min(1).max(200) }).strict(),
- z.object({ action: z.literal("cancel"), changeId: z.string().min(1).max(200) }).strict(),
-]);
-export type ApprovalWindowState = z.infer<typeof ApprovalWindowStateReaderSchema>;
-export type ApprovalWindowAnswer = z.infer<typeof ApprovalWindowAnswerReaderSchema>;
-export type ApprovalWindowBody = z.infer<typeof ApprovalWindowBodySchema>;
-// ---- END LOCAL SCHEMAS ----
+// The shapes come from the server's contract (`packages/cloud-contracts/src/app-approval-window.ts`); they are re-exported here so the screen and the tests keep one import path. Readers ignore unknown fields (forward-compatible); the body is strict.
+export { APPROVAL_WINDOW_PATH, ApprovalWindowAnswerReaderSchema, ApprovalWindowBodySchema, ApprovalWindowStateReaderSchema, RECENT_SIGN_IN_DEFAULT_SECONDS, RECENT_SIGN_IN_MAX_SECONDS, RECENT_SIGN_IN_MIN_SECONDS } from "@agentx/cloud-contracts/web";
+export type { ApprovalWindowBody, ApprovalWindowState } from "@agentx/cloud-contracts/web";
+/** What the READER returns: the server's `applied` / `needs_approval`, or `unknown` for a status a newer server adds (the screen then says "Saved" and re-reads). */
+export type ApprovalWindowAnswer = z.output<typeof ApprovalWindowAnswerReaderSchema>;
 
-/** The browser reaches the route as `/v1/web/org/approval-window`; the host maps `/v1/app/...` to it, as for the other company settings. */
-export const APPROVAL_WINDOW_PATH = "/v1/app/org/approval-window";
 const NEVER = { retry: "never" } as const;
 
 export function createApprovalWindowApi(host: AppHost) {

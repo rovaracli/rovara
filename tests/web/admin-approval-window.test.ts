@@ -94,7 +94,7 @@ it("shows who set the window and when, whichever of the two the server sends; se
   await screen.findByText(/^Set to 12 hours by <b>Ada<\/b>\[U\+202E\] on Nov 11, 2026\./u);
   expect(markup.container.querySelector("main b")).toBeNull();
   markup.close();
-  const onlyWho = mount({ state: { ...set, changedBy: "Ada Admin", changedAt: null } });
+  const onlyWho = mount({ state: { ...set, changedBy: "Ada Admin" } });
   await screen.findByText(/^Set to 12 hours by Ada Admin\./u);
   onlyWho.close();
   const onlyWhen = mount({ state: { ...set, changedAt: "2026-11-11T12:00:00.000Z" } });
@@ -109,7 +109,8 @@ it("shows who set the window and when, whichever of the two the server sends; se
   expect(screen.queryByText(/Ada Admin/u)).toBeNull();
   unset.close();
   expect(ApprovalWindowStateReaderSchema.safeParse(base({ changedBy: "Ada", changedAt: "2026-11-11T12:00:00.000Z" })).success).toBe(true);
-  expect(ApprovalWindowStateReaderSchema.safeParse(base({ changedBy: null, changedAt: null })).success).toBe(true);
+  // The server leaves both out while the default stands; it never sends null (its schema refuses it), so the reader does too.
+  expect(ApprovalWindowStateReaderSchema.safeParse(base({ changedBy: null, changedAt: null })).success).toBe(false);
 });
 
 it("the policy table is a real table with a plain caption, column and row headers, and says what each place needs", async () => {
@@ -215,9 +216,9 @@ it("cancel withdraws the waiting request, for its proposer and for another admin
   }
 });
 
-it("never offers more than 7 days, even if the server's maximum is higher, and shows the server's refusal word for word", async () => {
+it("never offers more than 7 days (the server's maximum is fixed at 7 days; the list is capped anyway), and shows the server's refusal word for word", async () => {
   const sentence = "seconds: must be at most 604800";
-  const f = mount({ state: { maxSeconds: 14 * DAY }, respond: async request => (request.method === "POST" ? refusal(400, "CONFIG_INVALID", sentence) : undefined) });
+  const f = mount({ respond: async request => (request.method === "POST" ? refusal(400, "CONFIG_INVALID", sentence) : undefined) });
   await screen.findByRole("heading", { name: "Change the window" });
   const values = optionValues(screen.getByLabelText("Window length")).map(Number);
   expect(Math.max(...values)).toBe(7 * DAY);
