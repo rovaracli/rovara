@@ -459,22 +459,22 @@ describe("the /ping feature", () => {
   };
   const listed = (shipped: ServiceCatalog) => catalogPrepullList(shipped);
   it("is advertised only with a test-services configuration AND a pinned local-aws image that root pre-pulls", async () => {
-    expect(testServicesAdvertisedFeatures(env, await files(listed, true))).toEqual(["task.testServices.v1", "task.testServices.fileSeed.v1", "task.testServices.seedLock.v1", "task.testServices.aws.v1"]);
+    expect(testServicesAdvertisedFeatures(env, await files(listed, true))).toEqual(["task.testServices.v1", "task.testServices.fileSeed.v1", "task.testServices.seedLock.v1", "task.testServices.aws.v1", "task.testServices.companyImage.v1"]);
     // no configuration: nothing
     expect(testServicesAdvertisedFeatures({}, await files(listed, true))).toEqual([]);
     // not pinned in the shipped catalog, not in the pre-pull list, a different digest, an empty list: slice 1 only
-    expect(testServicesAdvertisedFeatures(env, await files(listed, false))).toEqual(["task.testServices.v1", "task.testServices.fileSeed.v1", "task.testServices.seedLock.v1"]);
-    expect(testServicesAdvertisedFeatures(env, await files((shipped) => ({ ...listed(shipped), images: [] }), true))).toEqual(["task.testServices.v1", "task.testServices.fileSeed.v1", "task.testServices.seedLock.v1"]);
-    expect(testServicesAdvertisedFeatures(env, await files((shipped) => ({ ...listed(shipped), images: listed(shipped).images.map((image) => (image.id === "local-aws@r1" ? { ...image, digest: "c".repeat(64) } : image)) }), true))).toEqual(["task.testServices.v1", "task.testServices.fileSeed.v1", "task.testServices.seedLock.v1"]);
-    expect(testServicesAdvertisedFeatures(env, await files((shipped) => ({ ...listed(shipped), images: listed(shipped).images.filter((image) => image.id !== "local-aws@r1") }), true))).toEqual(["task.testServices.v1", "task.testServices.fileSeed.v1", "task.testServices.seedLock.v1"]);
+    expect(testServicesAdvertisedFeatures(env, await files(listed, false))).toEqual(["task.testServices.v1", "task.testServices.fileSeed.v1", "task.testServices.seedLock.v1", "task.testServices.companyImage.v1"]);
+    expect(testServicesAdvertisedFeatures(env, await files((shipped) => ({ ...listed(shipped), images: [] }), true))).toEqual(["task.testServices.v1", "task.testServices.fileSeed.v1", "task.testServices.seedLock.v1", "task.testServices.companyImage.v1"]);
+    expect(testServicesAdvertisedFeatures(env, await files((shipped) => ({ ...listed(shipped), images: listed(shipped).images.map((image) => (image.id === "local-aws@r1" ? { ...image, digest: "c".repeat(64) } : image)) }), true))).toEqual(["task.testServices.v1", "task.testServices.fileSeed.v1", "task.testServices.seedLock.v1", "task.testServices.companyImage.v1"]);
+    expect(testServicesAdvertisedFeatures(env, await files((shipped) => ({ ...listed(shipped), images: listed(shipped).images.filter((image) => image.id !== "local-aws@r1") }), true))).toEqual(["task.testServices.v1", "task.testServices.fileSeed.v1", "task.testServices.seedLock.v1", "task.testServices.companyImage.v1"]);
   });
   it("per image: root's note of a repository that did not pre-pull takes only that image out (local-aws gone: slice 1's feature stays; postgres gone: both stay); a malformed or too long note withholds everything (fail closed)", async () => {
     const shipped = await files(listed, true);
-    expect(testServicesAdvertisedFeatures({ ...env, AGENTX_TEST_SERVICES_NOT_PULLED: "svc/local-aws" }, shipped)).toEqual(["task.testServices.v1", "task.testServices.fileSeed.v1", "task.testServices.seedLock.v1"]);
-    expect(testServicesAdvertisedFeatures({ ...env, AGENTX_TEST_SERVICES_NOT_PULLED: "svc/postgres,svc/mysql" }, shipped)).toEqual(["task.testServices.v1", "task.testServices.fileSeed.v1", "task.testServices.seedLock.v1", "task.testServices.aws.v1"]);
-    expect(testServicesAdvertisedFeatures({ ...env, AGENTX_TEST_SERVICES_NOT_PULLED: "svc/postgres,svc/local-aws" }, shipped)).toEqual(["task.testServices.v1", "task.testServices.fileSeed.v1", "task.testServices.seedLock.v1"]);
+    expect(testServicesAdvertisedFeatures({ ...env, AGENTX_TEST_SERVICES_NOT_PULLED: "svc/local-aws" }, shipped)).toEqual(["task.testServices.v1", "task.testServices.fileSeed.v1", "task.testServices.seedLock.v1", "task.testServices.companyImage.v1"]);
+    expect(testServicesAdvertisedFeatures({ ...env, AGENTX_TEST_SERVICES_NOT_PULLED: "svc/postgres,svc/mysql" }, shipped)).toEqual(["task.testServices.v1", "task.testServices.fileSeed.v1", "task.testServices.seedLock.v1", "task.testServices.aws.v1", "task.testServices.companyImage.v1"]);
+    expect(testServicesAdvertisedFeatures({ ...env, AGENTX_TEST_SERVICES_NOT_PULLED: "svc/postgres,svc/local-aws" }, shipped)).toEqual(["task.testServices.v1", "task.testServices.fileSeed.v1", "task.testServices.seedLock.v1", "task.testServices.companyImage.v1"]);
     // Fail closed: `all`, a malformed value and a list past 16 names withhold EVERY test-services feature (an empty value or none means nothing is missing).
-    expect(testServicesAdvertisedFeatures({ ...env, AGENTX_TEST_SERVICES_NOT_PULLED: "" }, shipped)).toEqual(["task.testServices.v1", "task.testServices.fileSeed.v1", "task.testServices.seedLock.v1", "task.testServices.aws.v1"]);
+    expect(testServicesAdvertisedFeatures({ ...env, AGENTX_TEST_SERVICES_NOT_PULLED: "" }, shipped)).toEqual(["task.testServices.v1", "task.testServices.fileSeed.v1", "task.testServices.seedLock.v1", "task.testServices.aws.v1", "task.testServices.companyImage.v1"]);
     const tooMany = Array.from({ length: 17 }, (_, index) => `svc/image${String(index)}`).join(",");
     for (const bad of ["all", "svc/LOCAL-AWS", "local-aws", "svc/local-aws;", "svc/a,", tooMany]) {
       expect(testServicesAdvertisedFeatures({ ...env, AGENTX_TEST_SERVICES_NOT_PULLED: bad }, shipped), bad).toEqual([]);
@@ -485,7 +485,7 @@ describe("the /ping feature", () => {
   });
   it("the withhold boot-stage2.sh writes when the IPv6 wall fails (AGENTX_TEST_SERVICES_NOT_PULLED=all, the last such line in worker.env) yields no task.testServices.* feature, with a complete configuration that otherwise offers both", async () => {
     const shipped = await files(listed, true);
-    expect(testServicesAdvertisedFeatures(env, shipped)).toEqual(["task.testServices.v1", "task.testServices.fileSeed.v1", "task.testServices.seedLock.v1", "task.testServices.aws.v1"]);
+    expect(testServicesAdvertisedFeatures(env, shipped)).toEqual(["task.testServices.v1", "task.testServices.fileSeed.v1", "task.testServices.seedLock.v1", "task.testServices.aws.v1", "task.testServices.companyImage.v1"]);
     const withheld = testServicesAdvertisedFeatures({ ...env, AGENTX_TEST_SERVICES_NOT_PULLED: "all" }, shipped);
     expect(withheld).toEqual([]);
     expect(withheld.filter((feature) => feature.startsWith("task.testServices"))).toEqual([]);
@@ -496,7 +496,7 @@ describe("the /ping feature", () => {
     expect(emulatorImagePrepulled(shipped)).toBe(true);
     await rm(join(shipped.catalog, ".."), { recursive: true, force: true });
     expect(emulatorImagePrepulled(shipped)).toBe(true);
-    expect(testServicesAdvertisedFeatures(env, shipped)).toEqual(["task.testServices.v1", "task.testServices.fileSeed.v1", "task.testServices.seedLock.v1", "task.testServices.aws.v1"]);
+    expect(testServicesAdvertisedFeatures(env, shipped)).toEqual(["task.testServices.v1", "task.testServices.fileSeed.v1", "task.testServices.seedLock.v1", "task.testServices.aws.v1", "task.testServices.companyImage.v1"]);
     forgetEmulatorImageCache();
     expect(emulatorImagePrepulled(shipped)).toBe(false);
   });

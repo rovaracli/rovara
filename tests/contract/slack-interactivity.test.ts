@@ -27,7 +27,8 @@ import type { SendMessageCommand } from "@aws-sdk/client-sqs";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { StrictSlackWeb } from "../support/strict-slack.js";
 import { cleanLine, workflowMessage } from "../../packages/broker/src/developer/workflow-messages.js";
-import { createDeveloperTaskBroker } from "../support/developer-task-broker.js";
+import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
+import { createDeveloperTaskBroker, seedMembership } from "../support/developer-task-broker.js";
 import { SLACK_CHANNEL, SLACK_TEAM } from "../support/slack-broker.js";
 
 // Every workflow modal a test opens is checked against Slack's limits.
@@ -196,6 +197,8 @@ describe("signed Task People form", () => {
               memberOf: request.request.channelIds.filter((channelId) => channelId === taskThread.channelId) })) } },
       },
     });
+    // A task person is an explicit company member (the one explicit-member rule, feat/0515-task-people-v3): a Slack account that never joined is not one.
+    for (const userId of [ownerSlackUserId, targetSlackUserId]) seedMembership(broker.db, developerIdForSlackUser(userId));
     const started = await broker.handler({ source: "agentx.slack-ingress", action: "start-workflow", thread: taskThread,
       userId: ownerSlackUserId, instructions: "Keep task People bound to this thread", workflowPath: "QUICK", requestId: randomUUID() });
     expect(started.statusCode).toBe(200);

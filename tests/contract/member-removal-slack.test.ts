@@ -88,8 +88,10 @@ describe("a task's person proof", () => {
     await expect(resolveTaskPickerPerson(w.deps, task, PRIYA_SLACK)).rejects.toBeDefined();
   });
 
-  it("does not refuse a Slack person who never joined (no member record, no tombstone)", async () => {
+  it("refuses a Slack person who never joined (no member record): a Slack account is not a membership (the one explicit-member rule), and a member record qualifies them", async () => {
     const w = world();
+    await expect(resolveTaskPickerPerson(w.deps, task, "U0NEVER001")).rejects.toBeDefined();
+    seedMembership(w.db, developerIdForSlackUser("U0NEVER001"), { orgId: TEST_ORG, role: "member" });
     expect(await resolveTaskPickerPerson(w.deps, task, "U0NEVER001")).toMatchObject({ slackUserId: "U0NEVER001" });
   });
 });

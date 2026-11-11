@@ -23,7 +23,7 @@ import { type ProjectAuthorityReader } from "../../../packages/broker/src/develo
 import { taskPersonInviteStateConditions, type TaskPersonInviteStateCondition } from "../../../packages/broker/src/aws/task-person-invite-authority-fence.js";
 import { reviewerFindings, reviewerHangs } from "../../support/model-fixtures.js";
 import { feedbackCriticReply } from "../../support/faux-scripts.js";
-import { OMAR, grantProject } from "../../support/developer-task-broker.js";
+import { OMAR, grantProject, seedMembership } from "../../support/developer-task-broker.js";
 import { visibleSlackText } from "../../support/strict-slack.js";
 import { SLACK_MAYA, createWorkflowE2E, type WorkflowE2E } from "../../support/workflow-e2e.js";
 import { EDITS, MERGED, PLAN, PUSHED_FIX, actionIds, atPlanReview, editsOrFix, journeySuite, openDraftPr, runs, said } from "../../support/workflow-e2e-journeys.js";
@@ -1011,6 +1011,8 @@ describe("Suite 11: MCP parity", () => {
       changesEnabled: true, checkTaskPerson: check, taskPersonProof: directory.proof, taskPeopleDisplayRead: directory.display,
       developers: [external],
     } });
+    // Bailey and Riley are company members who have not signed in here (a Slack account that never joined is not a task person: the one explicit-member rule, feat/0515-task-people-v3).
+    for (const person of [SLACK_BAILEY, riley]) seedMembership(e2e.db, person.developerId);
     grantProject(e2e.db, external);
     e2e.db.set({ ...e2e.db.get(`DEVELOPER#${external.developerId}`, "META")!, issuer: "https://login.example.test", subject: "maya-external" });
     const nativePageSession = randomUUID();

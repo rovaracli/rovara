@@ -94,6 +94,9 @@ function installProductionDispatcher(e2e: WorkflowE2E, options: {
   vi.stubEnv("SLACK_TEAM_ID", "T0BSHLLUGBD");
   vi.stubEnv("AGENTX_ENV", LIVE_ENV);
   vi.stubEnv("SLACK_SECRET_ARN", "arn:aws:secretsmanager:us-east-1:944937319445:secret:agentx/agentxlivetest123/slack-z7WaUV");
+  // The proof runtime builds the one secret ARN it may read from the account and region it runs in (task-person-proof-runtime.ts), so a run of the real runtime names both.
+  vi.stubEnv("AGENTX_ACCOUNT_ID", "944937319445");
+  vi.stubEnv("AWS_REGION", "us-east-1");
   vi.stubEnv("INVOKE_SIGNING_KEY_ARN", "arn:aws:kms:us-east-1:123456789012:key/e2e");
   let bindingFenceCount = 0;
   let pauseTransactionCount = 0;

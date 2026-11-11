@@ -21,6 +21,15 @@ function templates(env: string): Map<string, string> {
   return byPart;
 }
 
+/**
+ * The task person proof function is a resource of every environment since 0.5.15 (feat/0515-task-people-v3), and its published version's logical id carries CDK's hash of the function's
+ * properties, which include AGENTX_ENV. A text replacement cannot follow a hash of the name, so the rendered template keeps the placeholder environment's hash (a stable id that changes
+ * with the function's code and settings, which is all a version's id is for) while a direct synth hashes its own name. Everything else must still match exactly: only that hash is left out.
+ */
+function withoutVersionHash(template: string): string {
+  return template.replace(/(TaskPersonProofFunctionCurrentVersion5D5638F1)[0-9a-f]{32}/g, "$1<hash>");
+}
+
 function withCdkContextJson(value: Record<string, unknown>, run: () => void): void {
   const original = process.env[CONTEXT_ENV];
   try {
@@ -79,7 +88,7 @@ describe("templates for any environment", () => {
     const direct = templates(env);
     expect([...placeholderTemplates.keys()].sort()).toEqual([...direct.keys()].sort());
     for (const [part, text] of placeholderTemplates) {
-      expect(renderTemplate(text, env), part).toBe(direct.get(part));
+      expect(withoutVersionHash(renderTemplate(text, env)), part).toBe(withoutVersionHash(direct.get(part)!));
     }
   }, 600_000);
 
