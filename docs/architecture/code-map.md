@@ -273,6 +273,8 @@ No single test lists every broker read.
 | `capture-adapters-wiring.ts` | the GitHub code host through the one capture interface learning reads a host by (team-record/sources/capture-adapters.ts). |
 | `code-host-events.ts` | P6: the broker end of the neutral code host events, for any registered host. |
 | `code-host-poll.ts` | P6: the broker end of the poller. |
+| `company-image-login.ts` | Company-approved images, the worker's pull login (test services, switch `pj`): `POST /v1/internal/workspaces/{w}/operations/{o}/company-image-login`. |
+| `company-image-sessions.ts` | The registry sessions the company image login uses (the saved-environment pull role, for a company image's mirror repository), built from the broker's own settings, or the ones a test injected. |
 | `company-rules-wiring.ts` | Company rules (G-04, switch `si`): the broker's wiring. |
 | `consumer-hosts.ts` | Enterprise foundations P5a-c: the code host and check runner the broker hands to Rovara Code's consumers (merge, merge tracking, CI fix, feedback autonomy). |
 | `context-tools.ts` | the internal context-tool routes (`GET /v1/internal/context-tools`, `POST /v1/internal/context-tools/call`). |
@@ -318,6 +320,7 @@ No single test lists every broker read.
 | `repository-hosts.ts` | Enterprise foundations P5d/P5e: how the broker's task side and route side reach a repository's code host. |
 | `runtime-clients.ts` | the AWS client configuration, DynamoDB client, Step Functions client and EC2 session manager. |
 | `saved-env-aws.ts` | Saved project images (SV wiring): the AWS adapters of the registry's ports. |
+| `saved-env-config.ts` | The environment the saved-environment registry's config is read from (a small module of its own: the company image mirror function uses it too and must not pull the whole broker into its bundle). |
 | `saved-env-lease.ts` | Saved project images (SV wiring): the three handlers over the stored records. |
 | `saved-env-login.ts` | Saved environments (SH25, review M1): the route's handler. |
 | `saved-env-prepare.ts` | Saved environments (SH25): the saved image field of a prepare invocation, and the install of the registry's hooks. |
@@ -412,7 +415,7 @@ No single test lists every broker read.
 | `common.ts` | (No header comment.) Exports `PROJECT_NOT_FOUND_IN_APP`, `signInStoreOf`, `bodyError`. |
 | `company-domains.ts` | Company domain verification (owner decision 2026-11-02): the owner-only "Company domains" routes. |
 | `company-rules.ts` | Company rules (G-04, owner decisions 57 and 85; switch `si`, StandingInstructionsEnabled): the admin's routes. |
-| `company-test-images.ts` | Company-approved extra test-service images (switches `tx` and `pj`): the admin's routes at `/v1/app/org/test-images` (read: any admin; change: browser session, admin, fresh sign-in to approve). |
+| `company-test-images.ts` | Company-approved extra test-service images (switches `tx` and `pj`): the admin's routes. |
 | `connection-usage.ts` | `GET /v1/app/connection-usage`: which projects use each company connection, for the "used by" line of the Connections page. |
 | `decisions.ts` | Decision cards (wire-proof, setup wizard E4): what the card routes (`decisions/routes.ts`) need for one caller, built from the developer route dependencies. |
 | `dependencies.ts` | (No header comment.) Exports `setupDraftDepsOf`, `diagnosisRouteDepsOf`, `agentRunStarterOf`. |
@@ -420,13 +423,14 @@ No single test lists every broker read.
 | `design-review.ts` | Design review stage, DR7 slice C: the routes and the decision cards of a design under review, and the ports the design review's handlers need. |
 | `fixtures.ts` | Test services, slice 3 (s3-fakes-store): the routes for a hand-written fake (a FixtureSet v2) and its review. |
 | `identity-lambda.ts` | (No header comment.) Exports `errorName`, `SLACK_UNAVAILABLE`, `channelMembersThroughLambda`. |
+| `insights.ts` | Insights (srv/insights-reads, switch INSIGHTS_ENABLED): the wiring of `/v1/app/insights*` and `/v1/app/org/insights-access` into the route dispatcher. |
 | `install.ts` | Enterprise foundations E2: GET /v1/app/install. |
 | `intake.ts` | Meta repo lane F (F1): the broker's wiring of the intake routes (`rovara-code`-style: one module, so the router needs two lines). |
 | `jira-org-admin.ts` | The Jira organization admin key (DV-1, owner decision 2026-11-02): `/v1/app/org/jira-org-admin`, the one place a company owner or admin sets or clears the READ-ONLY Atlassian organization admin API key and the Atlassi... |
 | `known-failing-marks.ts` | Setup and test health KF-1: `/v1/app/projects/{name}/known-failing`, the tests a maintainer marked as already failing, and Undo. |
 | `known-failing-policy.ts` | Setup and test health SH17 (owner decision F4): `/v1/app/org/known-failing-policy`, the company setting "always two people" for marking tests as already failing. |
 | `learning-model.ts` | Lessons in production, lane 1b: the company's "lessons model" setting, `/v1/app/org/learning-model` (the model its lesson learning runs on; unset = the cheapest suitable company-billed model). |
-| `lessons-local.ts` | Lessons for local coding tools (decision 46b, lane B1): `POST /v1/dev/projects/{p}/lessons`, the route boundary (project role, `lessons` script-token permission, 60 a minute per person, the day's counter) over `lessons/local-tools.ts#lessonsForLocalTool`. |
+| `lessons-local.ts` | Lessons for local coding tools (decision 46b, lane B1): `POST /v1/dev/projects/{project}/lessons`. |
 | `lessons.ts` | Learning v2 L3b wiring: the lessons routes and the loaded-knowledge routes on the developer routes. |
 | `organization.ts` | (No header comment.) Exports `createProject`, `getAppNavigation`, `getAppMe`. |
 | `outside-cards.ts` | Decision journey slice 3b: outside approvers decide on the card. |
@@ -453,6 +457,6 @@ No single test lists every broker read.
 | `test-environment.ts` | Test environment (wire-testenv, setup wizard E4): the setup routes. |
 | `test-health.ts` | Setup and test health SH28: `/v1/app/projects/{name}/test-health`, behind the `nh` switch (and the test environment): with either off the path is not found, as any unknown path. |
 | `tracker-people.ts` | Tracker people (lane team-record-links): `/v1/app/org/tracker-people`, the page where a company admin maps the Linear and Jira people the automatic linker could not match to a member of the company. |
-| `trial-billing.ts` | Trial and billing reads (srv/trial-reads, switch `bl` for billing): `GET /v1/app/trial`, `GET /v1/app/org/billing` and `.../invoices`, read-only; billing answers `available: false` and is not found while the switch is off. |
+| `trial-billing.ts` | Trial and billing reads (lane srv/trial-reads; design doc briefs/trial-billing-api.md). |
 | `types.ts` | (No header comment.) Exports `CLOSE_STOP_BUDGET_MS`, `DeveloperApiConfiguration`, `DeveloperRouteDependencies`. |
 <!-- /codemap:files -->
