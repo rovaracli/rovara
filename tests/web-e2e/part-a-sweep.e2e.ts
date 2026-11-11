@@ -12,8 +12,8 @@ const flows=[
  {name:"local session",scenario:"session",path:"/app/sessions/"+sid,heading:"Fix duplicate refunds",phone:true},
  // PLAN6: question/Merge controls and code starts are excluded; verify the readable existing code-task projection only.
  {name:"code task projection",scenario:"workspace",path:"/app/sessions/"+sid,heading:"Fix duplicate refunds",phone:true,code:true},
- {name:"directory",scenario:"agents",path:"/app/agents",heading:"Agent directory",phone:false},
- {name:"profile",scenario:"agents",path:"/app/agents/"+agentId,heading:"Payments Expert",phone:false},
+ {name:"directory",scenario:"agents",path:"/app/agents",heading:"Agent directory",phone:true},
+ {name:"profile",scenario:"agents",path:"/app/agents/"+agentId,heading:"Payments Expert",phone:true},
  {name:"builder",scenario:"builder",path:"/app/agents/"+agentId+"/edit",heading:"Payments Expert",phone:false},
  {name:"readonly builder",scenario:"builder",path:"/app/agents/"+agentId+"/edit",heading:"Payments Expert",phone:false,readonly:true},
  // PLAN6: setup-draft authoring belongs to excluded Task18b; the actual manual setup flow is covered separately.
