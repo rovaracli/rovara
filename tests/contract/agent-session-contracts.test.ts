@@ -8,7 +8,8 @@ import { SESSION_SWEEP_CURSOR_KEY, agentSessionKey, changesKey, endedSessionWork
 import { deviceCommandKey, deviceKey, memberDevicesKey, orgSettingsKey } from "../../packages/cloud-contracts/src/org-scoped-keys.js";
 import { HomeCardReaderSchema, HomeCardSchema, HomeResponseReaderSchema, HomeResponseSchema } from "../../packages/cloud-contracts/src/home.js";
 import { OrgIdSchema } from "@rovara-code/contracts";
-import { NeedsConfirmationSchema, ProjectOverviewReaderSchema, ProjectOverviewSchema, SessionEventPageReaderSchema, SessionEventPageSchema, SessionEventReaderSchema, SessionTileReaderSchema, SessionTileSchema } from "@rovara-code/contracts";
+import { NeedsConfirmationSchema, ProjectOverviewReaderSchema, ProjectOverviewSchema, SessionEventPageReaderSchema, SessionEventPageSchema, SessionEventReaderSchema } from "@rovara-code/contracts";
+import { SessionTileReaderSchema, SessionTileSchema } from "@agentx/cloud-contracts";
 import { SessionViewReaderSchema, SessionViewSchema } from "@agentx/cloud-contracts";
 import { allContracts as contracts } from "../support/contracts-barrels.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
@@ -420,7 +421,7 @@ describe("the view schemas", () => {
       "owner", "peek", "project", "retryOf", "revision", "sessionId", "startedBy", "status", "step", "title", "updatedAt", "viewingNow", "where", "you",
     ]);
     expect(Object.keys(SessionTileSchema.shape).sort()).toEqual([
-      "agent", "contractVersion", "createdAt", "endedAt", "kind", "level", "owner", "project", "revision", "sessionId", "summary", "title", "updatedAt", "where",
+      "agent", "contractVersion", "createdAt", "endedAt", "finishedAs", "kind", "level", "owner", "project", "revision", "sessionId", "summary", "title", "updatedAt", "where",
     ]);
     expect(Object.keys(SessionEventSchema.shape).sort()).toEqual(["actor", "at", "eventId", "messageId", "source", "text", "type"]);
   });

@@ -62,6 +62,7 @@ export const REVIEWED_ROLE_SITES_ROUND_1: readonly ReviewedRoleSite[] = [
   { file: "packages/broker/src/agent-sessions/access.ts", needle: 'orgRole: "member"', why: "Asks what project role a person would have as an ordinary member (a viewer check on a shared session); an Auditor is refused earlier by the dispatcher and holds no project role." },
   { file: "packages/broker/src/agent-sessions/home.ts", needle: "OrgRoleSchema.safeParse(member", why: ROUTE_ONLY },
   { file: "packages/broker/src/agent-sessions/live.ts", needle: "OrgRoleSchema.safeParse(member", why: ROUTE_ONLY },
+  { file: "packages/broker/src/agent-sessions/finished-scope.ts", needle: "OrgRoleSchema.safeParse(member", why: "The Finished list rides on GET /v1/app/sessions, which the dispatcher refuses to an Auditor (tests/contract/auditor-gate.test.ts); the role read here only feeds the one session access rule (`sessionAccessFor`) and the live project list, and a non-member role reads as an empty list." },
   { file: "packages/broker/src/agent-sessions/project-overview.ts", needle: "OrgRoleSchema.safeParse(member", why: ROUTE_ONLY },
   { file: "packages/broker/src/agent-sessions/shares.ts", needle: "OrgRoleSchema.safeParse(", why: ROUTE_ONLY },
   { file: "packages/broker/src/agent-sessions/take-over.ts", needle: "OrgRoleSchema.safeParse(", why: ROUTE_ONLY },
