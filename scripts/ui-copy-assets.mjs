@@ -6,6 +6,8 @@ for (const path of ["design/design.css", "look-v2.css", "shell/shell.css", "scre
  "screens/admin/projects/project-slack.css",
  // Lane C: owned waiting-queue filter styles.
  "screens/admin/waiting/waiting.css",
+ // Insights (switch rovara.insights = v2; its own lazy chunk).
+ "screens/insights/insights.css",
  // Spending page (switch rovara.spending = v2).
  "screens/admin/spending.css",
  // Health and readiness (switch rovara.health = v2).
