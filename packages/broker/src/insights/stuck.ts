@@ -17,11 +17,14 @@ import { sessionFromItem } from "../agent-sessions/store.js";
 import { taskKey } from "../developer/task-records.js";
 import { getSpendRequest } from "../spend/requests.js";
 import { insightsNames, type InsightsNameDependencies } from "./names.js";
+import { opaqueRowId } from "./row-id.js";
 import { inScope, type InsightsCaller, type InsightsViewer } from "./scope.js";
 
 export interface InsightsStuckDependencies extends InsightsNameDependencies {
   /** The session reads (the Live wall's). Without them the sessions source is skipped and the list says so. */
   sessions?: LiveDependencies | undefined;
+  /** The key a metadata row's opaque id is made with (`insightsRowKeyOf(server secret)`). Without it the list answers unavailable: a row the reader cannot open must never carry the raw id. */
+  rowKey?: string | undefined;
 }
 export interface StuckQuery { project?: string | undefined; minAgeHours?: number | undefined; limit: number; cursor?: string | undefined }
 
@@ -40,7 +43,10 @@ const log = (event: string, fields: Record<string, unknown> = {}): void => conso
 
 /** One row before it is judged for the reader: what the records say, the same for every reader. */
 interface Draft {
+  /** The raw session id or spending request id. Leaves the broker only on a row the reader can open. */
   itemId: string;
+  /** The opaque id of the same work: what the order and the cursor use, and what a metadata row carries. */
+  sortId: string;
   project: string;
   session?: AgentSessionRecord | undefined;
   spend?: SpendRequestRecord | undefined;
@@ -123,11 +129,12 @@ async function readOpenSpend(deps: InsightsStuckDependencies, orgId: OrgId, nowM
 
 // ---- the list
 
-const cursorOf = (draft: { since: string; itemId: string }): string => Buffer.from(JSON.stringify({ s: draft.since, i: draft.itemId })).toString("base64url");
-function openCursor(raw: string): { since: string; itemId: string } {
+// The cursor and the order use the opaque id, never the raw one: a cursor is handed to every reader, including one who cannot open the row.
+const cursorOf = (draft: { since: string; sortId: string }): string => Buffer.from(JSON.stringify({ s: draft.since, i: draft.sortId })).toString("base64url");
+function openCursor(raw: string): { since: string; sortId: string } {
   try {
     const parsed = JSON.parse(Buffer.from(raw, "base64url").toString("utf8")) as { s?: unknown; i?: unknown };
-    if (typeof parsed.s === "string" && typeof parsed.i === "string" && Number.isFinite(Date.parse(parsed.s)) && /^[A-Za-z0-9_-]{1,100}$/u.test(parsed.i)) return { since: parsed.s, itemId: parsed.i };
+    if (typeof parsed.s === "string" && typeof parsed.i === "string" && Number.isFinite(Date.parse(parsed.s)) && /^[A-Za-z0-9_-]{1,100}$/u.test(parsed.i)) return { since: parsed.s, sortId: parsed.i };
   } catch { /* not ours */ }
   throw agentXError("CONFIG_INVALID", "cursor: not a cursor from this list");
 }
@@ -139,6 +146,12 @@ export const STUCK_COVERAGE = (partial: boolean, truncated: boolean, sessionsRea
 export async function buildStuck(deps: InsightsStuckDependencies, caller: InsightsCaller, viewer: InsightsViewer, query: StuckQuery): Promise<InsightsStuck> {
   const nowMs = deps.now();
   const orgId = caller.orgId;
+  // No key for the opaque ids: nothing is listed (a metadata row must never fall back to the raw id), and the answer says so the way every unreadable list does.
+  if (deps.rowKey === undefined || deps.rowKey === "") {
+    log("insights.stuck_row_key_missing");
+    return { status: "unavailable", asOf: new Date(nowMs).toISOString(), coverage: STUCK_COVERAGE(true, false, false), summary: { total: 0, over24h: 0, over72h: 0, byNextActorKind: Object.fromEntries(KINDS.map((kind) => [kind, 0])), byBlocker: Object.fromEntries(BLOCKERS.map((blocker) => [blocker, 0])) }, items: [] };
+  }
+  const rowKey = deps.rowKey;
   let partial = false, truncated = false;
   const drafts = new Map<string, Draft>();
 
@@ -150,7 +163,7 @@ export async function buildStuck(deps: InsightsStuckDependencies, caller: Insigh
         const status = sessionTaskStatus(session.summary);
         if (!stuckSession(session, status)) continue;
         drafts.set(session.sessionId, {
-          itemId: session.sessionId, project: session.project ?? NO_PROJECT, session, status, blocker: blockerOf(session, undefined, status), kind: kindOf(session, undefined, status),
+          itemId: session.sessionId, sortId: opaqueRowId(rowKey, orgId, session.sessionId), project: session.project ?? NO_PROJECT, session, status, blocker: blockerOf(session, undefined, status), kind: kindOf(session, undefined, status),
           since: session.updatedAt, sinceKind: "last_update",
         });
       }
@@ -185,7 +198,7 @@ export async function buildStuck(deps: InsightsStuckDependencies, caller: Insigh
         if (session !== undefined && session.orgId === orgId && session.endedAt === undefined && (viewer.scope.kind === "company" || (session.project !== undefined && inScope(viewer, session.project)))) {
           const status = sessionTaskStatus(session.summary);
           drafts.set(session.sessionId, {
-            itemId: session.sessionId, project: session.project ?? NO_PROJECT, session, spend: record, status, blocker: "spend", kind: kindOf(session, record, status),
+            itemId: session.sessionId, sortId: opaqueRowId(rowKey, orgId, session.sessionId), project: session.project ?? NO_PROJECT, session, spend: record, status, blocker: "spend", kind: kindOf(session, record, status),
             since: Date.parse(record.createdAt) < Date.parse(session.updatedAt) ? record.createdAt : session.updatedAt, sinceKind: "last_update",
           });
         }
@@ -194,7 +207,7 @@ export async function buildStuck(deps: InsightsStuckDependencies, caller: Insigh
       // A request that belongs to no session (an agent's budget, a month's budget): always a metadata row; a maintainer sees it only when it names one of their projects.
       const project = record.scope?.kind === "project" ? record.scope.project : undefined;
       if (viewer.scope.kind === "projects" && (project === undefined || !inScope(viewer, project))) continue;
-      drafts.set(record.spendRequestId, { itemId: record.spendRequestId, project: project ?? NO_PROJECT, spend: record, status: undefined, blocker: "spend", kind: kindOf(undefined, record, undefined), since: record.createdAt, sinceKind: "state" });
+      drafts.set(record.spendRequestId, { itemId: record.spendRequestId, sortId: opaqueRowId(rowKey, orgId, record.spendRequestId), project: project ?? NO_PROJECT, spend: record, status: undefined, blocker: "spend", kind: kindOf(undefined, record, undefined), since: record.createdAt, sinceKind: "state" });
     }
   } catch (error) {
     if (!(error instanceof Error)) throw error;
@@ -205,7 +218,7 @@ export async function buildStuck(deps: InsightsStuckDependencies, caller: Insigh
   const ageOf = (draft: Draft): number => Math.max(0, Math.floor((nowMs - Date.parse(draft.since)) / HOUR_MS));
   const rows = [...drafts.values()]
     .filter((draft) => (query.project === undefined || draft.project === query.project) && (query.minAgeHours === undefined || ageOf(draft) >= query.minAgeHours))
-    .sort((a, b) => (Date.parse(a.since) - Date.parse(b.since)) || (a.itemId < b.itemId ? -1 : a.itemId > b.itemId ? 1 : 0));
+    .sort((a, b) => (Date.parse(a.since) - Date.parse(b.since)) || (a.sortId < b.sortId ? -1 : a.sortId > b.sortId ? 1 : 0));
 
   const byNextActorKind = Object.fromEntries(KINDS.map((kind) => [kind, 0])) as Record<string, number>;
   const byBlocker = Object.fromEntries(BLOCKERS.map((blocker) => [blocker, 0])) as Record<string, number>;
@@ -216,7 +229,7 @@ export async function buildStuck(deps: InsightsStuckDependencies, caller: Insigh
   if (deps.sessions === undefined && rows.length === 0 && partial) return { status: "unavailable", asOf, coverage, summary, items: [] };
 
   const after = query.cursor === undefined ? undefined : openCursor(query.cursor);
-  const rest = after === undefined ? rows : rows.filter((row) => Date.parse(row.since) > Date.parse(after.since) || (Date.parse(row.since) === Date.parse(after.since) && row.itemId > after.itemId));
+  const rest = after === undefined ? rows : rows.filter((row) => Date.parse(row.since) > Date.parse(after.since) || (Date.parse(row.since) === Date.parse(after.since) && row.sortId > after.sortId));
   const page = rest.slice(0, query.limit);
   const items = await judge(deps, caller, viewer, page, ageOf);
   return { status: "ready", asOf, coverage, summary, items, ...(rest.length > page.length ? { next: cursorOf(page.at(-1)!) } : {}) };
@@ -278,7 +291,8 @@ async function judge(deps: InsightsStuckDependencies, caller: InsightsCaller, vi
     const full = readable !== undefined;
     const reason = readable === undefined ? undefined : status?.reason;
     items.push({
-      itemId: draft.itemId, project: draft.project, blocker: draft.blocker, state,
+      // The raw id only on a row the reader can open; a metadata row carries the opaque one.
+      itemId: full ? draft.itemId : draft.sortId, project: draft.project, blocker: draft.blocker, state,
       stateWords: status === undefined ? SPEND_ONLY_WORDS : (TASK_STATUS_WORDS as Record<string, string>)[status.state] ?? "Status unavailable",
       nextActor, ...(ownerId === undefined ? {} : { owner: { id: ownerId, name: nameOf(ownerId) } }),
       since: draft.since, sinceKind: draft.sinceKind, ageHours: ageOf(draft), visibility: full ? "full" : "metadata",

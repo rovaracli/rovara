@@ -8,16 +8,28 @@ import { paths } from "../../paths.js";
 import { actorKindWords, ageWords, blockerWords, byAge, nextActorWords, notCoveredWords, sinceWords } from "./insights-format.js";
 import { BarList, NotReady, Panel } from "./parts.js";
 
+/**
+ * The in-app path of a row's OWN link, or undefined. A link is never built from `itemId` (on a metadata row it is an opaque id; on any row it only tells rows apart): the server's `link` is the only
+ * source, it is sent only on a row the reader can open, and only a link of the exact `/app/sessions/<session id>` shape on a plain http(s) address is followed (as its path, inside this app).
+ */
+export function openablePath(item: Pick<StuckItem, "visibility" | "link">): string | undefined {
+ if (item.visibility !== "full" || item.link === undefined) return undefined;
+ try {
+  const url = new URL(item.link), match = /^\/app\/sessions\/([A-Za-z0-9_-]+)$/u.exec(url.pathname);
+  const id = match === null ? undefined : SessionIdSchema.safeParse(match[1]);
+  return (url.protocol === "https:" || url.protocol === "http:") && url.username === "" && url.password === "" && url.search === "" && url.hash === "" && id?.success === true ? paths.session(id.data) : undefined;
+ } catch { return undefined; }
+}
 const METADATA_SENTENCE = "You can see that it exists and its state, not its content.";
 function Row({ item }: { item: StuckItem }) {
  // Content only when the server says the reader may open it AND sent it. Anything else (including a visibility value this screen does not know) is a metadata row.
  const full = item.visibility === "full" && item.title !== undefined;
- const linkable = full && SessionIdSchema.safeParse(item.itemId).success;
+ const open = full ? openablePath(item) : undefined;
  return <li className="rv-ins-row">
   <h3>{full ? <VisibleText text={item.title!} /> : "Work you can't open"}</h3>
   <dl className="rv-ins-facts">
    <div><dt>Project</dt><dd><VisibleText text={item.project} /></dd></div>
-   <div><dt>Owner</dt><dd>{item.owner === undefined ? <span className="rv-muted">Not shown yet</span> : <VisibleText text={item.owner.name} />}</dd></div>
+   <div><dt>Owner</dt><dd>{item.owner === undefined ? <span className="rv-muted">No owner recorded</span> : <VisibleText text={item.owner.name} />}</dd></div>
    <div><dt>Waiting on</dt><dd><VisibleText text={nextActorWords(item.nextActor)} /></dd></div>
    <div><dt>State</dt><dd><VisibleText text={item.stateWords} /></dd></div>
    <div><dt>Waiting</dt><dd>{ageWords(item.ageHours)} <span className="rv-muted">{sinceWords(item.sinceKind)}</span></dd></div>
@@ -25,7 +37,7 @@ function Row({ item }: { item: StuckItem }) {
   </dl>
   {full && item.reason !== undefined && <p><VisibleText text={item.reason} /></p>}
   {!full && <p className="rv-muted">{METADATA_SENTENCE}</p>}
-  {linkable && <Link className="rv-ins-open" to={paths.session(item.itemId)}>Open task<span className="rv-visually-hidden">: <VisibleText text={item.title!} /></span></Link>}
+  {open !== undefined && <Link className="rv-ins-open" to={open}>Open task<span className="rv-visually-hidden">: <VisibleText text={item.title!} /></span></Link>}
  </li>;
 }
 export function StuckPanel({ overview, person, project }: { overview: InsightsOverview; person: string | undefined; project: string | undefined }) {

@@ -83,7 +83,10 @@ export const INSIGHTS_BLOCKERS = ["decision", "approval", "spend", "review", "me
 const STATES = ["understanding", "planning", "reviewing_design", "building", "checking", "needs_you", "paused_budget", "ready_to_merge", "merged", "closed", "failed", "finished_run", "unknown"] as const;
 
 export const InsightsStuckItemSchema = z.object({
-  /** The session id (`ses_...`, the same id every surface uses), or `spr_...` for a budget request that belongs to no session. */
+  /**
+   * On a row with `visibility: "full"`: the session id (`ses_...`, the same id every surface uses). On a METADATA row (the reader cannot open the work, and every budget request that belongs to no
+   * session): an OPAQUE id (`itm_` and hex), stable and different in every company, that names nothing elsewhere. It only tells rows apart: never build a link, a lookup or a session id from it.
+   */
   itemId: ItemId,
   /** The project's name, or `No project` for work that has none (not a valid project name, so it cannot be mistaken for one). */
   project: Label,
