@@ -7,7 +7,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { EVIDENCE_RAW_ARTIFACT, EvidenceRawSchema, createCandidateManifest, type CheckEntry, type ProjectCommand } from "@rovara-code/contracts";
 import { collectEvidenceRaw, outputTailOf, saveEvidenceRaw } from "../../packages/worker/src/verification/evidence-raw.js";
 import { WORKER_IMPLEMENTED_FEATURES } from "../../packages/worker/src/implemented-features.js";
-import { EVIDENCE_CAPTURE_FEATURE, WORKER_INVOCATION_FEATURES } from "@rovara-code/contracts";
+import { EVIDENCE_CAPTURE_FEATURE } from "@rovara-code/contracts";
+import { WORKER_INVOCATION_FEATURES } from "@agentx/cloud-contracts";
 
 const DIGEST = "d".repeat(64);
 const CANDIDATE = [{ repositoryId: "api", commitSha: "a".repeat(40), treeSha: "b".repeat(40), baseCommitSha: "c".repeat(40) }];

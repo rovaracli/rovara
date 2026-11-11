@@ -3,6 +3,7 @@
 import { agentXError } from "@rovara-code/contracts";
 import { BudgetsClient } from "@aws-sdk/client-budgets";
 import { CloudFormationClient } from "@aws-sdk/client-cloudformation";
+import { ECRClient } from "@aws-sdk/client-ecr";
 import { CloudWatchClient } from "@aws-sdk/client-cloudwatch";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
@@ -66,7 +67,7 @@ export function registerConfigCommands(program: Command, context: ConfigCommandC
       ...(overrides.pollMs === undefined ? {} : { pollMs: overrides.pollMs }),
       ...(adminSession === undefined ? {} : { adminSession }),
       fetch: overrides.fetch ?? context.fetch,
-      teamRecordProbe: overrides.teamRecordProbe ?? dynamoTeamRecordProbe(new DynamoDBClient(aws)),
+      teamRecordProbe: overrides.teamRecordProbe ?? dynamoTeamRecordProbe(new DynamoDBClient(aws), { ecr: new ECRClient(aws), cloudFormation: new CloudFormationClient(aws) }),
       ...(change === undefined ? {} : { canAsk: overrides.canAsk ?? change.canAsk }),
     };
   };

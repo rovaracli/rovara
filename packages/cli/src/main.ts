@@ -51,7 +51,7 @@ import { projectAddMember, projectAddMemberText, projectMembers, projectMembersT
 import { orgCommentTriggers, orgCommentTriggersText, orgLeave, orgLeaveQuestion, orgLeaveText, orgMembers, orgMembersText, orgRemove, orgRemoveText, orgRoleText, orgSetRole } from "./developer/org.js";
 import { chatGptConnect, chatGptConnectionText, chatGptDisconnect, chatGptDisconnectText, chatGptStatus } from "./developer/chatgpt.js";
 import { LOOPBACK_HOSTS, developerLogin } from "./developer/login.js";
-import { INVITE_QUESTION, INVITE_QUESTION_NO_BROWSER, askYesByDefault, fetchCurrentOrg, fetchInviteSummary, inviteConfirmationLine, inviteOutcomeText, parseInviteLink, resolveInviteCell } from "./developer/invite-link.js";
+import { INVITE_BROWSER_NOTE, INVITE_QUESTION, INVITE_QUESTION_NO_BROWSER, askYesByDefault, fetchCurrentOrg, fetchInviteSummary, inviteConfirmationLine, inviteOutcomeText, parseInviteLink, resolveInviteCell } from "./developer/invite-link.js";
 import { fetchDeveloperWorkspaces, type DeveloperWorkspacesResult } from "./developer/workspaces.js";
 import { runWorkspacesCommand } from "./workspaces-ui/index.js";
 import { listAdminWorkspaces } from "./admin/workspaces.js";
@@ -384,6 +384,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
         const cell = base.origin + base.pathname.replace(/\/+$/, "");
         const summary = await fetchInviteSummary(cell, invite, services.fetchImplementation);
         services.stderr.write(`${inviteConfirmationLine(summary, cell)}\n`);
+        if (summary.inBrowserOnly === true) services.stderr.write(`${INVITE_BROWSER_NOTE}\n`);
         if (!options.yes && !await inviteConfirmer()(options.browser ? INVITE_QUESTION : INVITE_QUESTION_NO_BROWSER)) throw agentXError("CONFIRMATION_DECLINED", "you chose not to join; nothing changed");
         url = cell;
       }

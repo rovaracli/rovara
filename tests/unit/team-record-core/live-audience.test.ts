@@ -1,7 +1,7 @@
 // SRL-4 (owner decision 24b): a Rovara event in the Team record keeps the audience it was written with, but it is ALSO checked against the task's LIVE visibility (Plan 5 shares + People list) every time
 // it is read. Narrowing the task hides its old rows; widening it does not widen them; a visibility that cannot be read shows nothing. Intersection: the recorded audience AND the live one.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { Audience } from "@rovara-code/contracts";
+import type { Audience } from "@agentx/cloud-contracts";
 import { filterVisible, type Visible } from "../../../packages/broker/src/team-record/acl.js";
 import { callRecordTool } from "../../../packages/broker/src/team-record/agent-tools.js";
 import { LIVE_TASKS_PER_REQUEST_MAX, createLiveAudienceReader, mayReadTask, rovaraTaskRefsOf, type TaskVisibilityPort } from "../../../packages/broker/src/team-record/live-audience.js";

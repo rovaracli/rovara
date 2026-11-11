@@ -380,6 +380,7 @@ async function runVerifiedUpgrade(options: UpgradeOptions, deps: UpgradeDependen
           forcedParameters: withEmbedderImage(forcedOperatorValues(settings.version, target), prepared.embedderImageUri),
           ...(declaredBy === undefined ? {} : { declaredParameters: declaredBy }),
           ...(settings.engine === "cdk" && prepared.ensurePassRole !== undefined ? { ensurePassRole: prepared.ensurePassRole } : {}),
+          ...(settings.engine === "cdk" && prepared.publishEmbedderImage !== undefined ? { afterAccess: prepared.publishEmbedderImage } : {}),
           now: deps.now,
         });
       } catch (error) {

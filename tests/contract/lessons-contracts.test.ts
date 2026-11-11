@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { LearnedRefsSchema, LearnedSkillSchema, LessonCandidateSchema, LessonSchema, LoadManifestSchema, MemoryInputSchema, MemorySnapshotSchema, ReflectorOutputSchema, skillFrontMatterRefusal, type OrgId } from "@rovara-code/contracts";
+import { LearnedRefsSchema, LearnedSkillSchema, LoadManifestSchema, MemoryInputSchema, MemorySnapshotSchema, skillFrontMatterRefusal, type OrgId } from "@rovara-code/contracts";
+import { LessonCandidateSchema, LessonSchema, ReflectorOutputSchema } from "@agentx/cloud-contracts";
 import { WorkerInvocationSchema } from "@agentx/cloud-contracts";
 
 const ORG = "org_aaaaaaaaaaaaaaaaaaaa" as OrgId;

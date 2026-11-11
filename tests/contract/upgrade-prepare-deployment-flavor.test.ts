@@ -161,17 +161,27 @@ describe("the Team record's options reach the synth, the deploy and the diff", (
     const root = await checkout();
     const { runner, calls } = harness(root);
     const store = new MemoryParameterStore();
+    const copies: Array<{ source: string; env: string; account: string; region: string }> = [];
+    const checksBeforeBuild: number[] = [];
     store.values.set("/cdk-bootstrap/hnb659fds/version", "21");
     await writeTeamRecordRecord(store, "prod", { enabled: true, // An older record may still hold the retired embeddingModelId: it reads, and is never passed to the synth.
       options: { lake: "false", embeddingModelId: "amazon.titan-embed-text-v2:0" } as never });
     const prepared = await prepareDeployment({
       env: "prod", region: REGION, account: "111122223333", identityMode: "cognito", engine: "cdk", source: root, release: releaseWithEmbedder(), stderr: { write: () => undefined },
-      deps: { identity: { get: async () => ({ account: "111122223333", arn: "arn:aws:sts::111122223333:assumed-role/Admin/upgrade" }) }, store, secrets: { get: async () => undefined, create: async () => undefined }, commandRunner: runner, stackOutputs: async () => ({}) },
+      deps: { identity: { get: async () => ({ account: "111122223333", arn: "arn:aws:sts::111122223333:assumed-role/Admin/upgrade" }) }, store, secrets: { get: async () => undefined, create: async () => undefined }, commandRunner: runner, stackOutputs: async () => ({}), copyEmbedderImage: async (copyInput) => { copies.push(copyInput); }, checkEmbedderCopy: async () => { checksBeforeBuild.push(calls.filter((call) => call.includes("npm run build") || call.includes(" synth ")).length); }, ecr: { send: async () => ({}) } },
     });
     for (const context of CONTEXT) expect(calls.find((call) => call.includes(" synth "))).toContain(context);
     expect(calls.find((call) => call.includes(" synth "))).not.toContain("EmbeddingModelId");
-    // The release's embedder image, in this account and region through the image cache, is what the control plane is told to run.
-    expect(prepared.embedderImageUri).toBe(`111122223333.dkr.ecr.${REGION}.amazonaws.com/agentx-prod/agentx/agentx-embedder@sha256:${"e".repeat(64)}`);
+    // The release's embedder image, copied into this install's own rovara-bundle/<env>/embedder repository (digest preserved, outside the pull-through cache, which Lambda cannot use), is what the control plane is told to run.
+    expect(prepared.embedderImageUri).toBe(`111122223333.dkr.ecr.${REGION}.amazonaws.com/rovara-bundle/prod/embedder@sha256:${"e".repeat(64)}`);
+    // ...and the copy, run before the control plane deploys, takes the release's PUBLIC image into this account and region's registry (the real copy is tested in embedder-public-copy.test.ts).
+    expect(prepared.publishEmbedderImage).toBeDefined();
+    // skopeo and the ECR credential are checked once, before anything is built or deployed
+    expect(checksBeforeBuild).toEqual([0]);
+    expect(copies).toEqual([]);
+    await prepared.publishEmbedderImage!();
+    expect(copies).toHaveLength(1);
+    expect(copies[0]).toMatchObject({ source: EMBEDDER, env: "prod", account: "111122223333", region: REGION });
     await prepared.deployer.deploy({ part: "control-plane", stackName: "agentx-prod-control-plane", parameters: {} } as never).catch(() => undefined);
     const deploy = calls.find((call) => call.includes(" deploy "));
     expect(deploy).toBeDefined();
@@ -199,6 +209,26 @@ describe("the Team record's options reach the synth, the deploy and the diff", (
     expect(calls.some((call) => call.includes("npm run build") || call.includes(" synth "))).toBe(false);
   });
 
+  it("refuses before anything is built when skopeo or the ECR credential is missing for the embedder image copy, and does not check for an image named by hand", async () => {
+    const root = await checkout();
+    const { runner, calls } = harness(root);
+    const store = new MemoryParameterStore();
+    store.values.set("/cdk-bootstrap/hnb659fds/version", "21");
+    await writeTeamRecordRecord(store, "prod", { enabled: true, options: {} });
+    const base = { env: "prod", region: REGION, account: "111122223333", identityMode: "cognito", engine: "cdk", source: root, stderr: { write: () => undefined } } as const;
+    const deps = { identity: { get: async () => ({ account: "111122223333", arn: "arn:aws:sts::111122223333:assumed-role/Admin/upgrade" }) }, store, secrets: { get: async () => undefined, create: async () => undefined }, commandRunner: runner, stackOutputs: async () => ({}) };
+    await expect(prepareDeployment({ ...base, release: releaseWithEmbedder(), deps: { ...deps, checkEmbedderCopy: async () => { throw new Error("skopeo is needed to copy the embedder image. Nothing was deployed"); } } })).rejects.toThrow(/skopeo is needed.*Nothing was deployed/s);
+    expect(calls.some((call) => call.includes("npm run build") || call.includes(" synth "))).toBe(false);
+    // an image named by hand is used as it is: nothing is copied, so nothing is checked
+    let checked = false;
+    const named = `111122223333.dkr.ecr.${REGION}.amazonaws.com/rovara-bundle/prod/embedder@sha256:${"b".repeat(64)}`;
+    const prepared = await prepareDeployment({ ...base, release: releaseWithEmbedder(), embedderImage: named, deps: { ...deps, checkEmbedderCopy: async () => { checked = true; } } });
+    expect(checked).toBe(false);
+    expect(prepared.embedderImageUri).toBe(named);
+    expect(prepared.publishEmbedderImage).toBeUndefined();
+    await prepared.cleanup();
+  });
+
   it("R7: a source upgrade whose release names no embedder image keeps the running one, or takes --embedder-image, and is refused only when neither exists", async () => {
     const own = `111122223333.dkr.ecr.${REGION}.amazonaws.com/rovara/embedder@sha256:${"a".repeat(64)}`;
     const named = `111122223333.dkr.ecr.${REGION}.amazonaws.com/rovara/embedder@sha256:${"b".repeat(64)}`;
@@ -213,6 +243,7 @@ describe("the Team record's options reach the synth, the deploy and the diff", (
         deps: { identity: { get: async () => ({ account: "111122223333", arn: "arn:aws:sts::111122223333:assumed-role/Admin/upgrade" }) }, store, secrets: { get: async () => undefined, create: async () => undefined }, commandRunner: runner, stackOutputs: async () => ({}) },
       });
       expect(prepared.embedderImageUri).toBe(expected);
+      expect(prepared.publishEmbedderImage).toBeUndefined();
       await prepared.cleanup();
     }
   });

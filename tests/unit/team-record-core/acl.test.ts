@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { MAINTAINERS_GROUP, type Audience } from "@rovara-code/contracts";
-import { LIVE_CHECK_CACHE_MS, createLiveCheckCache, satisfiesAcl, visibleWithoutLiveCheck, type Visible } from "../../../packages/broker/src/team-record/acl.js";
+import { MAINTAINERS_GROUP } from "@rovara-code/contracts";
+import { AclSnapshotSchema, AudienceSchema, type Audience } from "@agentx/cloud-contracts";
+import { LIVE_CHECK_CACHE_MS, createLiveCheckCache, ownList, satisfiesAcl, visibleWithoutLiveCheck, type Visible } from "../../../packages/broker/src/team-record/acl.js";
+import { viewerOfCaller } from "../../../packages/broker/src/team-record/access.js";
 import type { ReadAudience } from "../../../packages/broker/src/team-record/types.js";
 import { ORG_A, caller, filterRows as filterVisible } from "../../support/team-record-core.js";
 
@@ -109,5 +111,34 @@ describe("permission filter: the live re-check", () => {
     const result = await filterVisible([live], shared, { liveCheck: async () => { calls += 1; return true; } });
     expect(result.visible).toHaveLength(0);
     expect(calls).toBe(0);
+  });
+});
+
+// Convergence W0-3 review H2: Code's `AclSnapshotSchema.source` takes any id, Cloud's takes the closed list of systems it captures from. Cloud keeps its own (owed-upstream.json), and the lookups by source
+// read the caller's lists by their own keys, so even a source that named a property every record inherits finds nothing instead of throwing.
+describe("the source of a snapshot", () => {
+  const snapshot = (source: unknown) => ({ source, scope: "s", principals: ["1"], capturedAt: "2026-10-30T10:00:00.000Z", liveCheck: "none" });
+
+  it("is a closed list: a source Cloud does not capture from is refused, whatever its spelling", () => {
+    for (const source of ["constructor", "__proto__", "toString", "hasownproperty", "examplehost", "codehost:", "Slack", "slack:x", ""]) {
+      expect(AclSnapshotSchema.safeParse(snapshot(source)).success, source).toBe(false);
+      expect(AudienceSchema.safeParse({ kind: "restricted", acl: snapshot(source) }).success, source).toBe(false);
+    }
+    for (const source of ["slack", "github", "linear", "jira", "mcp", "rovara", "codehost:examplehost"]) expect(AclSnapshotSchema.safeParse(snapshot(source)).success, source).toBe(true);
+  });
+
+  it("finds no list for a source named like an inherited property: it denies and does not throw (acl.ts, access.ts)", () => {
+    const hostile = { source: "constructor", scope: "s", principals: ["123"], groups: [MAINTAINERS_GROUP, "g"], capturedAt: "2026-10-30T10:00:00.000Z", liveCheck: "none" } as never;
+    for (const source of ["constructor", "__proto__", "hasOwnProperty"]) {
+      const someone = caller({ identities: { ids: { github: ["123"] }, groups: { github: ["g"] } } });
+      expect(() => satisfiesAcl(someone, { ...hostile, source })).not.toThrow();
+      expect(satisfiesAcl(someone, { ...hostile, source }), source).toBe(false);
+      const viewer = viewerOfCaller(someone);
+      expect(viewer.ids(source), source).toEqual([]);
+      expect(viewer.groups(source), source).toEqual([]);
+    }
+    // a maintainer still gets the maintainers group at any source, as before
+    expect(satisfiesAcl(caller({ projectRole: "maintainer" }), { ...hostile, source: "constructor" })).toBe(true);
+    expect(ownList({ github: ["1"] }, "github")).toEqual(["1"]);
   });
 });

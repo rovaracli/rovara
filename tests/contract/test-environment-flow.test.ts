@@ -4,7 +4,8 @@
 import { randomUUID } from "node:crypto";
 import { DeleteScheduleCommand, SchedulerClient } from "@aws-sdk/client-scheduler";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { TEST_ENV_DETECT_FEATURE, TEST_ENV_DRAFT_RESULT_KEY, TestEnvironmentBodySchema, WORKER_INVOCATION_FEATURES, orgProjectCatalogKey, projectMemberKey, projectMetaKey, projectRevisionKey, testEnvDigest, type TestEnvDraft } from "@rovara-code/contracts";
+import { TEST_ENV_DETECT_FEATURE, TEST_ENV_DRAFT_RESULT_KEY, TestEnvironmentBodySchema, orgProjectCatalogKey, projectMemberKey, projectMetaKey, projectRevisionKey, testEnvDigest, type TestEnvDraft } from "@rovara-code/contracts";
+import { WORKER_INVOCATION_FEATURES } from "@agentx/cloud-contracts";
 import { WorkerInvocationSchema, githubInstallationKey, orgGithubInstallationKey, type GithubInstallationRecord } from "@agentx/cloud-contracts";
 import { noteBlockedTask, readProjectHealth } from "../../packages/broker/src/test-env/health.js";
 import { healthPortsOf } from "../../packages/broker/src/test-env/health-wiring.js";

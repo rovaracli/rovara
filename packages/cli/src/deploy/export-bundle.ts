@@ -17,7 +17,7 @@ import type { InitAnswers } from "../init/install-state.js";
 import { ACCOUNT_PATTERN, IdentityAnswersSchema, ModelsAnswersSchema, REGION_PATTERN } from "./answer-schemas.js";
 import type { DeployAnswers } from "./deploy-environment.js";
 import { sha256Hex } from "./hash.js";
-import { installOrder, stackParameters, type DeployPart, type InstallAnswers, type StackOutputs } from "./parameters.js";
+import { embedderRepository, installOrder, stackParameters, type DeployPart, type InstallAnswers, type StackOutputs } from "./parameters.js";
 import { assertReleaseCoversRegion, type LoadedRelease } from "./release.js";
 import { callbackSigningKeySecretName } from "./signing-key.js";
 import { PROTECTED_PARTS } from "./deployer.js";
@@ -329,6 +329,14 @@ function accessDeployerStatements(scope: { env: string; partition: string; regio
       Effect: "Allow",
       Action: ["ecr:CreatePullThroughCacheRule", "ecr:DeletePullThroughCacheRule", "ecr:DescribePullThroughCacheRules"],
       Resource: "*",
+    },
+    {
+      // The embedder's repository (a Public install's access stack lists it, outside the pull-through prefix: Lambda cannot pull from the cache). The AWS::ECR::Repository handler's create, read and
+      // delete permissions (registry schema), scoped to the one repository by its exact name; the handler's kms:* actions are for a customer-managed key, which this repository does not use.
+      Sid: "EmbedderRepository",
+      Effect: "Allow",
+      Action: ["ecr:CreateRepository", "ecr:PutLifecyclePolicy", "ecr:SetRepositoryPolicy", "ecr:TagResource", "ecr:DescribeRepositories", "ecr:GetLifecyclePolicy", "ecr:GetRepositoryPolicy", "ecr:ListTagsForResource", "ecr:DeleteRepository"],
+      Resource: `arn:${partition}:ecr:${region}:${account}:repository/${embedderRepository(env)}`,
     },
   ];
 }

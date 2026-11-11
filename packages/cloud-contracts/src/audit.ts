@@ -379,6 +379,10 @@ export const AUDIT_ACTIONS = [
   "script_token.created",
   "script_token.revoked",
   "script_token.used",
+  // Company-approved extra test-service images (switch `pj`): ids, digests, counts and fixed words only. The image's name is in `details`, never a fact.
+  "company_image.proposed",
+  "company_image.approved",
+  "company_image.revoked",
 ] as const;
 
 export const AuditActionSchema = z.enum(AUDIT_ACTIONS);
@@ -731,6 +735,10 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "script_token.created": ["days", "projects", "permissions"],
   "script_token.revoked": ["by"],
   "script_token.used": ["day", "permission"],
+  // Company-approved extra images: `imageId` names the exact image and digest it pinned (`img_` plus the first 20 hex of the sha256 of `registry/repository@sha256:<digest>`); `digest` is that image digest; `authority` is `fresh_sign_in` (approved), `live_admin` (revoked or proposed by an admin) or `project_setup` (proposed from a project's setup).
+  "company_image.proposed": ["imageId", "digest", "authority"],
+  "company_image.approved": ["imageId", "digest", "authority"],
+  "company_image.revoked": ["imageId", "digest", "authority"],
 };
 
 /** `op_` plus the first 24 hex of `sha256(issuer + "\n" + subject)`: a staff member's id in the chain, never their identity. */

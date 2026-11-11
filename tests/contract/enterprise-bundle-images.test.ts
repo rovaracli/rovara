@@ -75,11 +75,28 @@ describe("the model proxy image", () => {
     for (const id of Object.keys(before)) expect(JSON.stringify(after[id]), id).toBe(JSON.stringify(before[id]));
   });
 
-  it("is unchanged in Public and for an install with no edition: the pinned public image, no repository, no pull statement", () => {
+  it("gives every Public install the embedder's repository and nothing else, with the record on or off (Lambda cannot pull from the pull-through cache, so the deploy copies the image there; always in the template so withdrawing the record never drops a retained repository from the stack)", () => {
+    const off = appStacks(PUBLIC);
+    const withRecord = appStacks({ ...PUBLIC, agentxTeamRecord: "enabled" });
+    for (const stacks of [off, withRecord]) {
+      const repositories = resourcesOf(stacks.AgentXAccess!, "AWS::ECR::Repository");
+      // the main guard: the one repository, named outside the environment's pull-through prefix, the same kind as Enterprise's
+      expect(repositories.map(([, repository]) => repository.Properties.RepositoryName)).toEqual(["rovara-bundle/pub/embedder"]);
+      expect(repositories[0]![1].Properties).toMatchObject({ ImageTagMutability: "IMMUTABLE", ImageScanningConfiguration: { ScanOnPush: true } });
+      expect((stacks.AgentXAccess!.toJSON().Resources as Record<string, { DeletionPolicy?: string }>)[repositories[0]![0]]!.DeletionPolicy).toBe("RetainExceptOnCreate");
+      // the control plane still pulls nothing from a bundle repository in Public
+      expect(JSON.stringify(stacks.AgentXControlPlane!.toJSON())).not.toContain("PullBundledImages");
+    }
+    // the access stack does not change when the record goes on or off: withdrawing the record can never remove the repository from the stack (the next switch-on would fail on "already exists")
+    expect(JSON.stringify(withRecord.AgentXAccess!.toJSON())).toBe(JSON.stringify(off.AgentXAccess!.toJSON()));
+    expect(JSON.stringify(appStacks({ ...PUBLIC, agentxTeamRecord: "off" }).AgentXAccess!.toJSON())).toBe(JSON.stringify(off.AgentXAccess!.toJSON()));
+  });
+
+  it("is unchanged in Public and for an install with no edition: the pinned public image, no bundle repository but the embedder's, no pull statement", () => {
     for (const context of [PUBLIC, { agentxEnv: "legacyish" }]) {
       const stacks = appStacks(context);
       expect(litellmImage(stacks.AgentXControlPlane!), JSON.stringify(context)).toBe(LITELLM_IMAGE);
-      expect(resourcesOf(stacks.AgentXAccess!, "AWS::ECR::Repository")).toEqual([]);
+      expect(resourcesOf(stacks.AgentXAccess!, "AWS::ECR::Repository").map(([, repository]) => repository.Properties.RepositoryName), JSON.stringify(context)).toEqual([`rovara-bundle/${String((context as { agentxEnv: string }).agentxEnv)}/embedder`]);
       expect(JSON.stringify(stacks.AgentXControlPlane!.toJSON())).not.toContain("PullBundledImages");
     }
   });

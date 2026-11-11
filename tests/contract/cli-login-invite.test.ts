@@ -285,6 +285,17 @@ describe("agentx login --invite", () => {
     expect(w.openBrowser).not.toHaveBeenCalled();
   });
 
+  it("tells a person with a link invite (browser-only, where sign-up is off) to open it in a browser, and says it of no other invite", async () => {
+    const link = await world({ summary: { status: 200, body: { orgName: "Acme", role: "member", state: "open", inBrowserOnly: true } } });
+    expect(await link.run(["login", "--invite", rovaraLink, "--yes"])).toBe(0);
+    const note = "This invite is a link, not sent to an email address. If you are new to Rovara, open the link in a browser instead: its page asks for your email address and sends you a sign-in code. If you already have a Rovara account, continue here.";
+    expect(link.err.join("")).toContain(`${note}\n`);
+    expect(link.err.join("").indexOf("This invite is for Acme")).toBeLessThan(link.err.join("").indexOf(note));
+    const plain = await world();
+    expect(await plain.run(["login", "--invite", rovaraLink, "--yes"])).toBe(0);
+    expect(plain.err.join("")).not.toContain("open the link in a browser instead");
+  });
+
   it("strips terminal escapes from the organization name before showing it", async () => {
     const w = await world({ summary: { status: 200, body: { orgName: "Ac\u001b[2Jme", role: "admin", state: "open" } } });
     expect(await w.run(["login", "--invite", rovaraLink, "--yes"])).toBe(0);

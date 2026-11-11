@@ -1,6 +1,7 @@
 // Test services, slice 1 T2: which dependencies a task's plan starts (pinned from the signed catalog), when an approved environment with dependencies may be used by a task, and what happens when it cannot be planned.
 import { describe, expect, it, vi } from "vitest";
-import { TestEnvironmentBodySchema, TestEnvTaskPlanSchema, projectMetaKey, projectRevisionKey, testEnvDigest, type OrgId, type ProjectCommand, type TestEnvironment, type TestEnvironmentBody, type VerifiedCatalog } from "@rovara-code/contracts";
+import { TestEnvironmentBodySchema, projectMetaKey, projectRevisionKey, testEnvDigest, type OrgId, type ProjectCommand, type TestEnvironment, type TestEnvironmentBody, type VerifiedCatalog } from "@rovara-code/contracts";
+import { TestEnvTaskPlanSchema } from "@agentx/cloud-contracts";
 import { approveTestEnvironment, proposeTestEnvironment, recordTestEnvProveReport, type TestEnvDeps } from "../../packages/broker/src/org/test-environment.js";
 import { DEPENDENCY_PLAN_REFUSAL_WORDS, TEST_SERVICES_MIN_CATALOG_REVISION, dependenciesStartableNow, serviceCatalogSourceOf, taskDependencyPlansOf } from "../../packages/broker/src/test-env/dependency-plan.js";
 import { DEPENDENCIES_WITH_DEVCONTAINER_WORDS } from "../../packages/broker/src/test-env/devcontainer-check.js";

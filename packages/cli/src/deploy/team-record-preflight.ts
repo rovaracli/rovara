@@ -5,14 +5,20 @@
 // What it can and cannot see: it asks DynamoDB for the one table by its fixed name (derived-names.ts), only while the control plane stack has no Team record yet. A table whose
 // stack is built (the stack has the TeamRecordEnabled parameter) is the record itself and is never reported. Account LIMITS (Lambda memory, ...) are NOT readable here: they are
 // not in any API this CLI may call; docs/runbooks/new-resource-size-vs-account-limit.md lists them and how to confirm each by hand.
-import { agentXError } from "@rovara-code/contracts";
+import { agentXError, environmentStackName } from "@rovara-code/contracts";
 import { teamRecordTableName } from "@agentx/cloud-contracts";
 import type { ParameterStore } from "../environments/parameter-store.js";
+import { embedderRepository } from "./parameters.js";
 import { TEAM_RECORD_PARAMETER, readTeamRecordRecord } from "./team-record-switch.js";
 
 /** What the preflight asks AWS. `undefined` means the probe could not tell (no permission, a network fault): the preflight then warns and the deploy goes on, because the worst case is a rollback. */
 export interface TeamRecordProbe {
   tableState(tableName: string): Promise<{ exists: boolean; itemCount?: number; deletionProtected?: boolean } | undefined>;
+  /**
+   * The embedder's ECR repository (`rovara-bundle/<env>/embedder`): whether it exists, and whether the access stack holds it. A repository that exists but is not in the stack (retained after the
+   * record was withdrawn, or made by hand) makes the access stack update fail on "already exists". Optional: a probe without it skips the check.
+   */
+  embedderRepositoryState?(repository: string, accessStackName: string): Promise<{ exists: boolean; inAccessStack: boolean } | undefined>;
 }
 
 export interface TeamRecordPreflight {
@@ -30,6 +36,17 @@ export const NEW_RESOURCE_RUNBOOK = "docs/runbooks/new-resource-size-vs-account-
 export async function teamRecordPreflight(input: { env: string; built: boolean; probe: TeamRecordProbe | undefined }): Promise<TeamRecordPreflight> {
   const result: TeamRecordPreflight = { refusals: [], warnings: [] };
   if (input.built) return result;
+  if (input.probe?.embedderRepositoryState !== undefined) {
+    const repository = embedderRepository(input.env);
+    const accessStack = environmentStackName(input.env, "access");
+    const repositoryState = await input.probe.embedderRepositoryState(repository, accessStack).catch(() => undefined);
+    if (repositoryState === undefined) {
+      result.warnings.push(`Could not check whether the ECR repository ${repository} is left over from an earlier try. To check by hand: aws ecr describe-repositories --repository-names ${repository}, and see whether the stack ${accessStack} lists it. A repository with that name that the access stack does not hold makes the access stack update fail on "already exists" (${NEW_RESOURCE_RUNBOOK}).`);
+    } else if (repositoryState.exists && !repositoryState.inAccessStack) {
+      result.refusals.push(`The ECR repository ${repository} exists but the access stack ${accessStack} does not hold it, so it is left over (kept when an earlier access stack no longer listed it, or made by hand), and the access stack update would fail on "already exists". `
+        + `Look at what it holds first: aws ecr list-images --repository-name ${repository}. If it holds nothing you need, the account owner deletes it (aws ecr delete-repository --repository-name ${repository} --force) and runs this again; if it holds an image you need, do not delete it: ask for help to import it into the stack. Nothing was changed.`);
+    }
+  }
   const table = teamRecordTableName(input.env);
   const state = input.probe === undefined ? undefined : await input.probe.tableState(table).catch(() => undefined);
   if (state === undefined) {

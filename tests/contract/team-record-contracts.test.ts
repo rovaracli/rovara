@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { AUDIT_FACT_KEYS, AuditEventInputSchema, ProposalCandidateSchema, RecordEventSchema, RecordFactSchema, RecordSearchResponseSchema, SourceConfigSchema, SOURCE_WIDENED_WORDS, SourceWriteBodySchema, SourceWriteReplySchema, SourceWriteReplyReaderSchema, SourcesAdminViewSchema, SourcesAdminViewReaderSchema, auditEventId, memorySnapshotKey, orgOfTeamRecordPk, recordActorIndexValue, recordDeleteQueueKey, recordDerivationKey, recordScopeIndexValue, recordEventKey, recordFactKey, recordSourceIndexValue, recordSourceKey, teamRecordSourceHash, teamRecordWorkspacePrefix, type AuditAction } from "@agentx/cloud-contracts";
-import { TRUST_RANK, WORKER_INVOCATION_FEATURES, learningModeKey, lessonKey, lessonSetKey, lessonVersionKey, loadManifestKey, minTrust, learningModeLockKey, MAINTAINERS_GROUP, teamRecordPk, type OrgId } from "@rovara-code/contracts";
+import { TRUST_RANK, learningModeKey, lessonKey, lessonSetKey, lessonVersionKey, loadManifestKey, minTrust, learningModeLockKey, MAINTAINERS_GROUP, teamRecordPk, type OrgId } from "@rovara-code/contracts";
+import { WORKER_INVOCATION_FEATURES } from "@agentx/cloud-contracts";
 
 const ORG_A = "org_aaaaaaaaaaaaaaaaaaaa" as OrgId;
 const ORG_B = "org_bbbbbbbbbbbbbbbbbbbb" as OrgId;

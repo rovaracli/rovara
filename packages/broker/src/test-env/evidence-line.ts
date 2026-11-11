@@ -31,6 +31,7 @@ export async function evidenceEnvironmentOf(deps: TestEnvDeps, task: { orgId?: O
     const dependencies: PinnedDependency[] = [];
     for (const dependency of body.dependencies ?? []) {
       if (dependency.backing.kind === "emulated") dependencies.push({ id: dependency.id, name: dependency.name, backing: "emulated", awsServices: dependency.backing.awsServices });
+      else if (dependency.backing.kind === "project_image") dependencies.push({ id: dependency.id, name: dependency.name, backing: "project_image" });
       else if (dependency.backing.kind === "local") dependencies.push({ id: dependency.id, name: dependency.name, backing: "local", ...(dependency.backing.substituteImage === undefined ? {} : { substituteImage: true }) });
       else if (dependency.backing.kind === "fake") {
         // Slice 3: what the evidence says about a fake (recorded or hand-written, which revision, when it was recorded) is the STORE's, read for THIS organisation by the pinned digest; the worker's words never set it. A set the store

@@ -3,7 +3,7 @@
 // facts, source settings, the learning mode and the consumer contracts (record queries, the proposal candidate). `workspaceId` is the org id.
 // Keys live in org-scoped-keys.ts; the lesson shapes live in lessons.ts. Every object is strict: an unknown field is a refusal, never ignored.
 import { z } from "zod";
-import { AudienceSchema, OrgIdSchema, RecordProjectSchema, TRUST_RANK, TrustClassSchema } from "@rovara-code/contracts";
+import { ACL_PRINCIPALS_MAX, OrgIdSchema, RecordProjectSchema, TRUST_RANK, TrustClassSchema } from "@rovara-code/contracts";
 
 export const RECORD_SOURCES = ["slack", "github", "linear", "jira", "mcp", "rovara"] as const;
 /**
@@ -20,6 +20,24 @@ export type RecordSource = z.infer<typeof RecordSourceSchema>;
 export const CodehostSourceSchema = z.string().regex(/^codehost:[a-z][a-z0-9-]{0,40}$/);
 export const RecordSystemSchema = z.union([RecordSourceSchema, CodehostSourceSchema]);
 export type RecordSystem = z.infer<typeof RecordSystemSchema>;
+/** The permission snapshot taken at capture. `principals` are source-native ids (Slack user ids, GitHub numeric ids) for private scopes. */
+export const AclSnapshotSchema = z.object({
+  source: RecordSystemSchema,
+  scope: z.string().min(1).max(300),
+  principals: z.array(z.string().min(1).max(100)).max(ACL_PRINCIPALS_MAX).optional(),
+  groups: z.array(z.string().min(1).max(100)).max(50).optional(),
+  capturedAt: z.string().datetime(),
+  /** `on_read`: when shown to a person, re-check at the source (cached 15 minutes). */
+  liveCheck: z.enum(["none", "on_read"]),
+}).strict();
+export type AclSnapshot = z.infer<typeof AclSnapshotSchema>;
+
+/** Who may see a row: every project member, or only the principals the snapshot names. */
+export const AudienceSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("project") }).strict(),
+  z.object({ kind: z.literal("restricted"), acl: AclSnapshotSchema }).strict(),
+]);
+export type Audience = z.infer<typeof AudienceSchema>;
 
 // ---------------------------------------------------------------------------------------------------------------------------
 // Retention and learning mode

@@ -3,11 +3,12 @@
 //   --remote: also fetches the tree of the pinned sha from the public repository and compares it with `git ls-tree -r` of that sha, file by file.
 // Exit 0 when everything matches, 1 otherwise. Node runs this file directly, so only erasable syntax.
 //   node scripts/vendor/verify-rovara-code.ts [--remote]
+import { spawnSync } from "node:child_process";
 import { builtinModules } from "node:module";
 import { existsSync, lstatSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import {
-  CODE_DIR, CODE_SCOPE, PIN_FILE, SHIMS_DIR, defaultLayout, describeDiff, diffManifests, fetchSha, git, localManifest, manifestDigest, parsePin,
+  CODE_DIR, CODE_SCOPE, DEFAULT_REF, PIN_FILE, SHIMS_DIR, defaultLayout, describeDiff, diffManifests, fetchSha, git, localManifest, manifestDigest, parsePin,
   planLinks, planShims, readLinks, readPlanned, remoteManifest, type Layout,
 } from "./rovara-code-vendor.ts";
 
@@ -113,6 +114,25 @@ export function trackedBuildOutput(layout: Layout): string[] {
   return listed.split("\0").filter((path) => BUILD_OUTPUT_PATH.test(path));
 }
 
+/**
+ * The pinned sha must be on `code/next`, not only a commit the public repository happens to serve (GitHub serves a fork's pull request commits by sha too, and the tree check above only proves the copy equals
+ * that sha's tree). `status` is what GitHub's compare answers for `<sha>...code/next`: `identical` or `ahead` mean the sha is `code/next` or an ancestor of it.
+ */
+export function ancestryProblem(sha: string, status: string | undefined): string | undefined {
+  if (status === "identical" || status === "ahead") return undefined;
+  return status === undefined ? `could not ask GitHub whether ${sha} is on code/next` : `the pinned sha ${sha} is not an ancestor of ${DEFAULT_REF} (GitHub says ${status}): pin a commit of code/next`;
+}
+
+/** Asks GitHub (the public repository's compare endpoint, with the token when the environment has one) for the status of `<sha>...code/next`. */
+function compareStatus(repoUrl: string, sha: string): string | undefined {
+  const slug = /github\.com\/([^/]+\/[^/.]+)(?:\.git)?$/u.exec(repoUrl)?.[1];
+  if (slug === undefined) return undefined;
+  const token = process.env["GITHUB_TOKEN"];
+  const run = spawnSync("curl", ["-fsS", "--max-time", "30", "-H", "Accept: application/vnd.github+json", ...(token === undefined || token === "" ? [] : ["-H", `Authorization: Bearer ${token}`]), `https://api.github.com/repos/${slug}/compare/${sha}...${DEFAULT_REF}`], { encoding: "utf8" });
+  if (run.status !== 0) return undefined;
+  try { const status = (JSON.parse(run.stdout) as { status?: unknown }).status; return typeof status === "string" ? status : undefined; } catch { return undefined; }
+}
+
 export interface VerifyResult { ok: boolean; problems: string[]; sha?: string }
 
 export function verifyRovaraCode(layout: Layout, options: { remote?: boolean } = {}): VerifyResult {
@@ -134,6 +154,8 @@ export function verifyRovaraCode(layout: Layout, options: { remote?: boolean } =
   if (manifestDigest(local.entries) !== pin.manifestSha256) problems.push("the copy's files do not hash to the manifest in PIN (a vendored file was edited, added or removed)");
 
   if (options.remote === true) {
+    const ancestry = ancestryProblem(sha, compareStatus(layout.repoUrl, sha));
+    if (ancestry !== undefined) problems.push(ancestry);
     try {
       const fetched = fetchSha(layout.repoUrl, sha, { blobs: false });
       try {

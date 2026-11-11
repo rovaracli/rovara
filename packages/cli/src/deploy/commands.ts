@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { CloudFormationClient, DescribeStacksCommand, ListStackResourcesCommand } from "@aws-sdk/client-cloudformation";
+import { ECRClient } from "@aws-sdk/client-ecr";
 import { IAMClient } from "@aws-sdk/client-iam";
 import { S3Client } from "@aws-sdk/client-s3";
 import { SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
@@ -32,6 +33,7 @@ import type { ChangeSetChange, DeployEvent, StackDeployer, StackOutputs } from "
 import { deployEnvironment, type DeployAnswers, type DeployEnvironmentResult } from "./deploy-environment.js";
 import { ensureCdkPassRole } from "../init/pass-role.js";
 import { writeExportBundle } from "./export-bundle.js";
+import { checkEmbedderCopyPrerequisites, copyEmbedderImage, type CopyEmbedderImageInput } from "./copy-embedder-image.js";
 import { embedderImageUri, installOrder, type DeployPart } from "./parameters.js";
 import { assertReleaseCoversRegion, loadRelease, type LoadedRelease } from "./release.js";
 import { CALLBACK_SIGNING_KEY_BYTES, secretsManagerValueStore, type SecretValueStore } from "./signing-key.js";
@@ -67,6 +69,12 @@ export interface DeployCliDependencies {
   stackParameters?: (stackName: string) => Promise<Record<string, string> | undefined>;
   /** Read-only check for a table left over by a rolled-back Team record build (team-record-preflight.ts). Real DynamoDB by default on the cdk engine. */
   teamRecordProbe?: TeamRecordProbe;
+  /** Copies a Public install's embedder image into its own repository (copy-embedder-image.ts); real ECR and skopeo by default on the cdk engine. */
+  copyEmbedderImage?: (input: CopyEmbedderImageInput) => Promise<unknown>;
+  /** The check that runs before any stack deploys when the install copies the embedder image: skopeo and the ECR credential (copy-embedder-image.ts); real by default on the cdk engine. */
+  checkEmbedderCopy?: (input: { runner: CommandRunner; ecr: { send(command: unknown): Promise<unknown> } }) => Promise<unknown>;
+  /** The ECR client the copy uses (real ECR by default). */
+  ecr?: { send(command: unknown): Promise<unknown> };
   /** The templates engine's AWS clients (real CloudFormation and S3 clients by default). */
   templatesClients?: TemplatesEngineClients;
   /** Overrides the interactive y/N confirmation entirely (and so skips the stdin-is-a-terminal check below). */
@@ -641,7 +649,7 @@ async function deployCommand(options: DeployCommandOptions, deps: DeployCliDepen
     ...(options.engine === "cdk" ? {
       beforeBuild: async (store: ParameterStore) => enforceTeamRecordPreflight({
         env: answers.env, store, controlPlaneParameters: await (deps.stackParameters ?? cloudFormationParametersReader(new CloudFormationClient({ region: answers.region })))(environmentStackName(answers.env, "control-plane")),
-        probe: deps.teamRecordProbe ?? dynamoTeamRecordProbe(new DynamoDBClient({ region: answers.region })), write: (line) => services.stderr.write(`${line}\n`), stoppedMessage: "deploy stopped before anything was built or changed",
+        probe: deps.teamRecordProbe ?? dynamoTeamRecordProbe(new DynamoDBClient({ region: answers.region }), { ecr: new ECRClient({ region: answers.region }), cloudFormation: new CloudFormationClient({ region: answers.region }) }), write: (line) => services.stderr.write(`${line}\n`), stoppedMessage: "deploy stopped before anything was built or changed",
       }),
     } : {}),
     deps,
@@ -666,6 +674,7 @@ async function deployCommand(options: DeployCommandOptions, deps: DeployCliDepen
       ...(prepared.embedderImageUri === undefined ? {} : { forcedParameters: { "control-plane": { EmbedderImageUri: prepared.embedderImageUri } } }),
       ...(prepared.declaredParameters === undefined ? {} : { declaredParameters: prepared.declaredParameters }),
       ...(prepared.ensurePassRole === undefined ? {} : { ensurePassRole: prepared.ensurePassRole }),
+      ...(prepared.publishEmbedderImage === undefined ? {} : { afterAccess: prepared.publishEmbedderImage }),
       ...(prepared.adoptEditionRecord === undefined ? {} : { adoptEditionRecord: prepared.adoptEditionRecord }),
       ...(prepared.settleEditionRecord === undefined ? {} : { settleEditionRecord: prepared.settleEditionRecord }),
       onEvent,
@@ -707,6 +716,12 @@ export interface PreparedDeployment {
   settleEditionRecord?: (completed: boolean) => Promise<void>;
   /** The cdk engine, when the install records the Team record as on: the embedder image of the release (parameters.ts `embedderImageUri`), sent as the control plane's EmbedderImageUri. */
   embedderImageUri?: string;
+  /**
+   * The cdk engine, a Public install with the Team record on and an embedder image the release names: copies that image into the install's own `rovara-bundle/<env>/embedder` repository,
+   * digest preserved, for deployEnvironment's afterAccess (Lambda cannot pull from the pull-through cache; see copy-embedder-image.ts). Undefined for Enterprise (its bundle loads the
+   * image), for an image passed or kept by hand, and for the templates engine.
+   */
+  publishEmbedderImage?: () => Promise<unknown>;
   /** Removes the cdk engine's outputs directory; a no-op for templates. */
   cleanup(): Promise<void>;
 }
@@ -777,6 +792,8 @@ export async function prepareDeployment(input: {
   let builtSource: BuiltSource | undefined;
   let declaredParameters: PreparedDeployment["declaredParameters"];
   let embedderImage: string | undefined;
+  /** The release's public embedder image to copy into the install's own repository (a Public install with the Team record), set below. */
+  let embedderSource: string | undefined;
   if (deps.deployer !== undefined) {
     // A test seam with no synth: the edition is only checked (a changed one is refused).
     await resolveEdition();
@@ -794,6 +811,11 @@ export async function prepareDeployment(input: {
     if (teamRecord !== undefined) {
       try { embedderImage = embedderImageUri({ release: release.manifest, edition, env: input.env, account: input.account, region, partition, override: input.embedderImage, deployed: input.deployedEmbedderImage }); }
       catch (error) { throw agentXError("CONFIG_INVALID", `${error instanceof Error ? error.message : "the embedder image could not be named"}. Nothing was deployed`); }
+      // Enterprise: the signed bundle loads the image. A hand-named image (--embedder-image) is used as it is, and an image kept from the running stack is already in the install's registry. Otherwise a
+      // Public install copies the release's image into its own repository, outside the pull-through cache (Lambda cannot pull from one).
+      if (edition !== "enterprise" && input.embedderImage === undefined) embedderSource = release.manifest.images.embedder;
+      // Before anything is built or deployed: skopeo and the ECR credential, so a missing tool or right never stops the upgrade after some stacks have changed.
+      if (embedderSource !== undefined) await (deps.checkEmbedderCopy ?? ((check) => checkEmbedderCopyPrerequisites(check)))({ runner, ecr: deps.ecr ?? new ECRClient({ region }) });
     }
     await input.beforeBuild?.(store);
     // After the cheap checks, before any cdk deploy: infra/dist is gitignored, so only a fresh
@@ -837,6 +859,12 @@ export async function prepareDeployment(input: {
     ? undefined
     : () => ensureCdkPassRole({ iam: passRoleIam, write: (line) => { input.stderr.write(`${line}\n`); }, account: input.account, region, partition });
 
+  const copySource = embedderSource;
+  const publishEmbedderImage = input.engine !== "cdk" || copySource === undefined ? undefined : async () => {
+    const copy = deps.copyEmbedderImage ?? ((copyInput: CopyEmbedderImageInput) => copyEmbedderImage(copyInput));
+    await copy({ source: copySource, env: input.env, account: input.account, region, ecr: deps.ecr ?? new ECRClient({ region }), runner: deps.commandRunner ?? realCommandRunner(input.stderr), write: (line) => { input.stderr.write(`${line}\n`); } });
+  };
+
   const outputsDir = cdkOutputsDir;
   return {
     deployer,
@@ -847,6 +875,7 @@ export async function prepareDeployment(input: {
     ...(declaredParameters === undefined ? {} : { declaredParameters }),
     ...(embedderImage === undefined ? {} : { embedderImageUri: embedderImage }),
     ...(ensurePassRole === undefined ? {} : { ensurePassRole }),
+    ...(publishEmbedderImage === undefined ? {} : { publishEmbedderImage }),
     ...(input.engine === "cdk" && edition === "enterprise" ? { settleEditionRecord: (completed: boolean) => settleEditionRecord({ store, env: input.env, completed }), adoptEditionRecord: () => adoptOrphanedEditionRecord({ store, env: input.env, edition, foundationResources: deps.foundationResources ?? cloudFormationResourceIds(new CloudFormationClient({ region }), environmentStackName(input.env, "foundation")) }) } : {}),
     async cleanup() {
       if (outputsDir !== undefined) await rm(outputsDir, { recursive: true, force: true });

@@ -4,7 +4,8 @@
 //
 // The store is a PORT: `FixtureReadPort` is the part of `FixtureStore` (test-env/fixture-store.ts) this lane reads. The adapters over S3 and DynamoDB (s3-fakes-store) make the real one; until it is wired
 // `AwsBrokerDependencies.fixtureStore` is absent and every fake is refused.
-import type { OrgId, TaskDependencyPlan, TestEnvDependency, TestEnvironmentBody } from "@rovara-code/contracts";
+import type { OrgId, TestEnvDependency, TestEnvironmentBody } from "@rovara-code/contracts";
+import type { TaskDependencyPlan } from "@agentx/cloud-contracts";
 import type { FixtureDenyFor, FixtureStore } from "./fixture-store.js";
 
 /** What this lane asks of the fixture store. */

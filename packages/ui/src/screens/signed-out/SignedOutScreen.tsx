@@ -11,6 +11,7 @@ export const SIGNED_OUT_COPY: Readonly<Record<SignedOutReason, { message: string
  cancelled: { message: "Sign-in was cancelled.", next: "Nothing changed. Sign in when you're ready." },
  refused: { message: "That account wasn't accepted.", next: "If you used the wrong account, sign out of it at the sign-in provider (or use a private window), then sign in again." },
  no_account: { message: "There's no Rovara account for that sign-in yet, and nothing was created.", next: "Create a company to start a free trial. To join your team instead, open the invite link an owner or admin sent you." },
+ invitation_only: { message: "Rovara is invitation-only right now, and nothing was created.", next: "Ask someone at your company to invite you, then open the invite link they send you." },
  unavailable: { message: "The sign-in service couldn't be reached.", next: "Try again in a minute." },
  method_unavailable: { message: "That sign-in method can't open Rovara here.", next: "Sign in with your email or GitHub instead. Slack sign-in works only once your Slack account is linked to your Rovara account (from your account menu)." },
 };

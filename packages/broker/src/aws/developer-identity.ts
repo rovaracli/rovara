@@ -20,7 +20,7 @@ import { auditRuntimeFromEnvironment } from "../audit/runtime.js";
 import type { AuditRuntime } from "../audit/outbox.js";
 import { ProviderNotConfiguredError, githubSignInProvider, oidcSignInProvider, samlSignInProvider, slackSignInProvider, type SignInProvider } from "../developer/providers.js";
 import { samlServiceProviderAddresses } from "../developer/saml.js";
-import { createDeveloperIdentityHandler, type DeveloperIdentityConfig } from "../developer/server.js";
+import { createDeveloperIdentityHandler, type DeveloperIdentityConfig, type DeveloperIdentityDependencies } from "../developer/server.js";
 import { slackDirectory } from "../developer/slack-directory.js";
 import { DeveloperSignInStore, methodSince } from "../developer/store.js";
 import { kmsTokenSigner } from "../developer/tokens.js";
@@ -236,6 +236,11 @@ let built: ReturnType<typeof createDeveloperIdentityHandler> | undefined;
 let editionGuard: (() => Promise<void>) | undefined;
 
 function build(env: NodeJS.ProcessEnv): ReturnType<typeof createDeveloperIdentityHandler> {
+  return createDeveloperIdentityHandler(buildDependencies(env));
+}
+
+/** Everything the sign-in server is given, from the Lambda's environment. Exported so a test can read what the environment turns on (`DEVELOPER_NEW_COMPANIES_INVITE_ONLY`) without a request. */
+export function buildDependencies(env: NodeJS.ProcessEnv): DeveloperIdentityDependencies {
   const region = env.AWS_REGION === undefined ? {} : { region: env.AWS_REGION };
   const config = developerIdentityConfigFromEnvironment(env);
   const secrets = new SecretsManagerClient(region);
@@ -299,6 +304,7 @@ function build(env: NodeJS.ProcessEnv): ReturnType<typeof createDeveloperIdentit
     cellUrl: env.ROVARA_WEB_ORIGIN || new URL(config.issuer).origin,
   };
   // Plan 3, Task 21a: the decide flow (`/v1/auth/decide/*`) exists on a cloud install that names its pool; its kinds ask the broker (decideKindsFromEnvironment).
+  const invitationOnly = env.DEVELOPER_NEW_COMPANIES_INVITE_ONLY === "1";
   const userPoolId = env.DEVELOPER_CLOUD_USER_POOL_ID ?? "";
   const decide = config.cloud === undefined || config.cloudSettings === undefined || userPoolId === "" ? undefined : {
     store: new DecideStore({ documentClient, tableName: required(env, "DEVELOPER_SIGNIN_TABLE_NAME"), now }),
@@ -306,7 +312,10 @@ function build(env: NodeJS.ProcessEnv): ReturnType<typeof createDeveloperIdentit
     cloudIssuer: config.cloudSettings.issuer.replace(/\/+$/, ""),
     cognito: { client: new CognitoIdentityProviderClient(region), userPoolId },
   };
-  return createDeveloperIdentityHandler({
+  // Invitation only without the cloud pool's admin API (no DEVELOPER_CLOUD_USER_POOL_ID or cloud settings): sign-in still refuses to make companies, but an email invitee with no pool user
+  // cannot be given one, so say so once at cold start instead of failing quietly.
+  if (invitationOnly && decide === undefined) log({ event: "signin.invite_only_without_pool", detail: "new companies are by invitation only but the cloud user pool is not configured; invitees with no pool user cannot sign in" });
+  return {
     config,
     store,
     notice,
@@ -316,6 +325,8 @@ function build(env: NodeJS.ProcessEnv): ReturnType<typeof createDeveloperIdentit
     ...(saml === undefined ? {} : { saml }),
     ...(audit === undefined ? {} : { audit }),
     ...(decide === undefined ? {} : { decide }),
+    // Invitation only: the cloud pool allows only AdminCreateUser then, so opening an invite makes the invitee's pool user (server.ts ensureInvitedPoolUser). The same client, pool and IAM grant as the decide flow's.
+    ...(decide === undefined ? {} : { invitedUsers: { ...decide.cognito, limits: decide.store } }),
     // A duplicate member of one person (from before identity links) is merged into the member their email names, in one transaction over both tables.
     ...duplicateMerger({
       documentClient, tableName: stateTableName, signInStore: store, now,
@@ -325,6 +336,8 @@ function build(env: NodeJS.ProcessEnv): ReturnType<typeof createDeveloperIdentit
     // Orgs and membership live in the State table, beside the records they scope; the sign-in table holds identities only.
     orgs,
     ...(singleOrg === undefined ? {} : { singleOrgId: singleOrg }),
+    // "New companies by invitation only": set by the hosted cloud's stack parameter (cloud-identity.ts); exactly "1" turns it on, anything else (and an install without the variable) leaves sign-in as it was.
+    ...(invitationOnly ? { newOrgsByInvitationOnly: true as const } : {}),
     // Signing in with GitHub opens a trial org (unlockTrial): it claims the GitHub account for the org in the State table.
     // Rovara Code (Plan 6 Task 14): the member's GitHub account is linked in their org, both ways, so an approval on GitHub can be told from a requester's. Best effort and first, so a
     // trial that cannot unlock still links; a failure is the sign-in's log, never its refusal.
@@ -354,7 +367,7 @@ function build(env: NodeJS.ProcessEnv): ReturnType<typeof createDeveloperIdentit
     }),
     now,
     log,
-  });
+  };
 }
 
 export const handler = async (event: HttpApiV2Event | ChannelMembersRequest | TaskPersonProofRequest | TaskChannelPeopleRequest | ChannelInfoRequest | ChannelClassRequest | ChannelListRequest | MemberChannelsRequest | SlackUserByEmailRequest | SlackAuthCheckRequest | EndDeveloperSessionsRequest | EraseDeveloperNameRequest | UnlinkIdentityRequest | StartIdentityLinkRequest | ChannelByNameRequest | RealtimeTokenRequest) => {

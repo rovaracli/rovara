@@ -1,7 +1,9 @@
-import { readFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { GUARD_GATEWAY, GUARD_MARKER, GUARD_PAGE_PATH, GUARD_PATHS, startGuard, substituteGuard, type GuardRun, type GuardWorld } from "../support/agent-probe-guard.js";
+import { GUARD_GATEWAY, GUARD_MARKER, GUARD_PAGE_PATH, GUARD_PATHS, startGuard, substituteGuard, writeWorldFile, type GuardRun, type GuardWorld } from "../support/agent-probe-guard.js";
 
 // Task 4.5 (and its fix round 1): the guard `web-agent-app-isolation-v1` starts the app behind. It looks for the model socket, tries `model-proxy:8080` and the gateway on 8080, starts the
 // app only when every attempt fails, and then keeps checking for the app's whole life: on a short interval, and before it answers each request. The host starts the app before it opens
@@ -187,5 +189,25 @@ describe("the app-start guard of web-agent-app-isolation-v1", () => {
       // The page is the guard's, not the app's: the app never saw the request.
       expect(second.body).not.toContain("app ");
     });
+  });
+});
+
+describe("the harness's world file", () => {
+  it("is never read half written: a reader that reads it in a tight loop while it is rewritten always gets whole JSON (a half-read killed the guard and reset the caller's connection, about one run in eighty)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rovara-world-file-"));
+    const file = join(dir, "world.json");
+    try {
+      writeWorldFile(file, { n: 0, pad: "x".repeat(20_000) });
+      const reader = spawn(process.execPath, ["-e", `const { readFileSync } = require("node:fs"); let bad = 0, reads = 0; const end = Date.now() + 1500;
+        while (Date.now() < end) { try { JSON.parse(readFileSync(${JSON.stringify(file)}, "utf8")); } catch { bad += 1; } reads += 1; } process.stdout.write(JSON.stringify({ bad, reads }));`], { stdio: ["ignore", "pipe", "inherit"] });
+      let out = "";
+      reader.stdout.on("data", (chunk: Buffer) => { out += chunk.toString(); });
+      const done = new Promise<void>((resolve) => reader.on("close", () => resolve()));
+      for (let n = 1; reader.exitCode === null; n += 1) { writeWorldFile(file, { n, pad: "x".repeat(20_000) }); await new Promise((resolve) => setImmediate(resolve)); }
+      await done;
+      const result = JSON.parse(out) as { bad: number; reads: number };
+      expect(result.reads).toBeGreaterThan(100);
+      expect(result.bad).toBe(0);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });

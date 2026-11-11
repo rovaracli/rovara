@@ -1,7 +1,8 @@
 // Test services, slice 2 (broker side): Rovara local AWS (`emulated`) for exactly S3, SQS and DynamoDB. The approval, the plan (checks and coding), the proposal from detector candidates, the approve card, the evidence rows and the
 // pull request lines. Everything else AWS offers, and any emulated dependency without a pinned local-aws, is "not available yet"; with tx off or with no emulated dependency everything reads as it did in slice 1.
 import { describe, expect, it } from "vitest";
-import { TestEnvRegionSchema, TestEnvironmentBodySchema, TestEnvTaskPlanSchema, TaskDependencyPlanSchema, WORKER_INVOCATION_FEATURES, TEST_SERVICES_AWS_PLAN_FEATURE, projectMetaKey, projectRevisionKey, testEnvDigest, type OrgId, type ProjectCommand, type TestEnvironment, type TestEnvironmentBody, type VerifiedCatalog } from "@rovara-code/contracts";
+import { TestEnvRegionSchema, TestEnvironmentBodySchema, TEST_SERVICES_AWS_PLAN_FEATURE, projectMetaKey, projectRevisionKey, testEnvDigest, type OrgId, type ProjectCommand, type TestEnvironment, type TestEnvironmentBody, type VerifiedCatalog } from "@rovara-code/contracts";
+import { TestEnvTaskPlanSchema, TaskDependencyPlanSchema, WORKER_INVOCATION_FEATURES } from "@agentx/cloud-contracts";
 import { sanitizeTestEnvDraft } from "../../packages/broker/src/test-env/draft.js";
 import { approveTestEnvironment, proposeTestEnvironment, recordTestEnvProveReport, type TestEnvDeps } from "../../packages/broker/src/org/test-environment.js";
 import { DEPENDENCY_PLAN_REFUSAL_WORDS, EMULATED_TASK_SERVICES, TEST_SERVICES_MIN_CATALOG_REVISION, dependenciesStartableNow, taskDependencyPlansOf } from "../../packages/broker/src/test-env/dependency-plan.js";

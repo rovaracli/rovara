@@ -4,15 +4,17 @@
 //
 // The image is built by environments/embedder (weights baked in at build time from pinned Hugging Face revisions, every file checked by sha256; every Python package installed by hash;
 // no network at run time) and is named to the stack as a private-ECR image PINNED BY DIGEST: the stack parameter `EmbedderImageUri`. The release names the image (release.json
-// `images.embedder`); the CLI passes it (packages/cli/src/deploy/parameters.ts): from the pull-through cache in a Public install, from the install's own `rovara-bundle/<env>/embedder`
-// repository in an Enterprise one (loaded from the signed bundle). A Team record with no embedder image is refused (decision 27: no keyword-only interim): the template carries a rule that
+// `images.embedder`); the CLI passes it (packages/cli/src/deploy/parameters.ts): in both editions from the install's own `rovara-bundle/<env>/embedder`
+// repository (the access stack creates it when the Team record is built): an Enterprise install's signed bundle is loaded there, and a Public install's deploy copies the release's public image
+// there, digest preserved (packages/cli/src/deploy/copy-embedder-image.ts). NEVER from a pull-through cache repository: Lambda cannot create a function from one (ECR user guide, pull through
+// cache, "Considerations": "AWS Lambda doesn't support pulling container images from Amazon ECR using a pull through cache rule."). A Team record with no embedder image is refused (decision 27: no keyword-only interim): the template carries a rule that
 // fails the stack operation with a message, and the CLI refuses earlier.
 //
 // NO NETWORK, ENFORCED: the function runs in a small VPC of its own (below) whose subnets have no route out (no internet gateway, no NAT, no endpoint), a security group with no
 // egress rule, and DNS turned OFF for the VPC (the Amazon-provided resolver is not filtered by security groups and recurses to the internet, so it would carry a text out as a query name),
 // so even a compromised dependency has nowhere to send a text. Lambda needs none of that to be invoked (the broker calls the Lambda API, not the VPC) or to write logs.
 // Only the broker may invoke it (its role gets `lambda:InvokeFunction` on this one function); the function itself can reach no AWS service: its role holds log writes and the network-interface
-// rights Lambda needs for a VPC, and it has no environment variable.
+// rights Lambda needs for a VPC (on "*", as Lambda requires, and denied to the function's own code by a Deny on lambda:SourceFunctionArn), and it has no environment variable.
 //
 // [verify] on the first Enterprise deploy: a KMS-encrypted ECR repository (the bundle repositories use ECR's default encryption today) may need the deploying role or Lambda to be allowed
 // kms:Decrypt on the key; the image pull by CreateFunction was not tested against a customer-managed key (needs a staging run with an image in such a repository).
@@ -37,6 +39,13 @@ export const EMBEDDER_IMAGE_PATTERN = "^(none|[0-9]{12}\\.dkr\\.ecr\\.[a-z0-9-]+
 
 /** The message CloudFormation shows when the Team record is asked for with no embedder image. */
 export const EMBEDDER_IMAGE_REQUIRED_MESSAGE = "The Team record needs the embedder image: name an image pinned by digest in EmbedderImageUri (agentx upgrade passes the release's own embedder image; agentx config set teamRecord.embedderImage <image> names one by hand). There is no search without it.";
+
+/** What Lambda itself needs in the execution role to attach a function to a VPC, all on "*" (AWS Lambda documentation, configuration-vpc, "Required IAM permissions"). Lambda checks them at CreateFunction. */
+export const EMBEDDER_VPC_ACTIONS_FOR_LAMBDA = [
+  "ec2:CreateNetworkInterface", "ec2:DescribeNetworkInterfaces", "ec2:DescribeSubnets", "ec2:DeleteNetworkInterface", "ec2:AssignPrivateIpAddresses", "ec2:UnassignPrivateIpAddresses",
+] as const;
+/** The documentation's Deny list for the function's own code: the six above plus ec2:DetachNetworkInterface. */
+export const EMBEDDER_VPC_DENIED_TO_CODE = [...EMBEDDER_VPC_ACTIONS_FOR_LAMBDA, "ec2:DetachNetworkInterface"] as const;
 
 /** The embedder's own network: two subnets with no route to anywhere, in a VPC with no gateway and with DNS off. */
 const NETWORK_CIDR = "10.251.0.0/24";
@@ -95,17 +104,26 @@ export function attachEmbedder(stack: Stack, props: EmbedderProps): EmbedderReso
     description: "The Rovara embedder function: writes its own logs and manages its own network interfaces, nothing else",
   });
   logGroup.grantWrite(role);
-  // What Lambda needs to put a function in a VPC (the AWS-managed policy for it also grants logging on every group, which this role must not have): create the network interface in these two
-  // subnets with this security group, and manage the interfaces of this account and region.
-  const networkInterfaces = stack.formatArn({ service: "ec2", resource: "network-interface", resourceName: "*", arnFormat: ArnFormat.SLASH_RESOURCE_NAME });
+  // What Lambda needs to put a function in a VPC. The AWS Lambda documentation (configuration-vpc, "Required IAM permissions") says: "If you prefer to create your own IAM permissions policy, make sure to add all of the
+  // following permissions and allow them on all resources (`"Resource": "*"`)": ec2:CreateNetworkInterface, DescribeNetworkInterfaces, DescribeSubnets, DeleteNetworkInterface, AssignPrivateIpAddresses and
+  // UnassignPrivateIpAddresses. Lambda checks them when it creates the function (the 0.5.13 switch-on failed with "The provided execution role does not have permissions to call DeleteNetworkInterface on EC2"
+  // while this role held that action only on network-interface/*), so a template diff, cfn-lint and a change set cannot show a shortfall. The AWS-managed policy for it also grants logging on every group, which this
+  // role must not have, so the six actions are written out here.
+  // "*" is safe because of the Deny below: the same page says these rights "are also implicitly granted to your function's code" and advises "a deny policy like the following example ... This policy prevents your
+  // function code from making calls to the Amazon EC2 APIs, while still allowing the Lambda service to manage VPC resources on your behalf. The policy uses the `lambda:SourceFunctionArn` condition key, which only
+  // applies to API calls made by your function code during execution." Lambda's own calls to create and delete the interfaces carry no source function ARN (permissions-source-function-arn: "Calls to Amazon Elastic
+  // Compute Cloud (Amazon EC2) to create elastic network interfaces (ENIs) for a VPC-enabled function" do not contain it), so the Deny never touches them. Describing security groups and VPCs is not on the page's list for the
+  // execution role: the page says Lambda checks those with the deploying principal's credentials (the CloudFormation service role, which holds ec2:* and ecr:*), so this role no longer holds them.
+  role.addToPolicy(new iam.PolicyStatement({ sid: "LambdaManagesVpcNetworkInterfaces", actions: [...EMBEDDER_VPC_ACTIONS_FOR_LAMBDA], resources: ["*"] }));
+  // The function's own code can use none of them. The function ARN is built from its name (a plain string, not the function's attribute) so the role's policy does not wait on the function, which waits on the role
+  // (no cycle). The condition key does not support versions or aliases: the unqualified ARN, exactly as the page says.
   role.addToPolicy(new iam.PolicyStatement({
-    sid: "CreateOwnNetworkInterface",
-    actions: ["ec2:CreateNetworkInterface"],
-    resources: [networkInterfaces, ...subnets.map((subnet) => stack.formatArn({ service: "ec2", resource: "subnet", resourceName: subnet.ref, arnFormat: ArnFormat.SLASH_RESOURCE_NAME })), stack.formatArn({ service: "ec2", resource: "security-group", resourceName: securityGroup.attrGroupId, arnFormat: ArnFormat.SLASH_RESOURCE_NAME })],
+    sid: "DenyNetworkInterfacesToOwnCode",
+    effect: iam.Effect.DENY,
+    actions: [...EMBEDDER_VPC_DENIED_TO_CODE],
+    resources: ["*"],
+    conditions: { ArnEquals: { "lambda:SourceFunctionArn": [stack.formatArn({ service: "lambda", resource: "function", resourceName: functionName, arnFormat: ArnFormat.COLON_RESOURCE_NAME })] } },
   }));
-  role.addToPolicy(new iam.PolicyStatement({ sid: "ManageOwnNetworkInterfaces", actions: ["ec2:DeleteNetworkInterface", "ec2:AssignPrivateIpAddresses", "ec2:UnassignPrivateIpAddresses"], resources: [networkInterfaces] }));
-  // Describe calls take no resource.
-  role.addToPolicy(new iam.PolicyStatement({ sid: "DescribeNetwork", actions: ["ec2:DescribeNetworkInterfaces", "ec2:DescribeSubnets", "ec2:DescribeSecurityGroups", "ec2:DescribeVpcs"], resources: ["*"] }));
 
   const fn = new lambda.CfnFunction(stack, "Embedder", {
     functionName,

@@ -42,6 +42,7 @@ import {
   type AuditReplicaSettings,
   type AuditTsaSettings,
 } from "./audit-settings.js";
+import { markCodeContractsPureCommand } from "./code-contracts-bundling.js";
 
 /** S3 bucket names are at most 63 characters. */
 const BUCKET_NAME_MAX = 63;
@@ -756,7 +757,7 @@ export class AuditLedger extends Construct {
         // The key's ARN, never the alias.
         AUDIT_VAULT_KEY_ARN: this.vaultKey.keyArn,
       },
-      bundling: { externalModules: [], minify: true, sourceMap: true, target: "node22" },
+      bundling: { externalModules: [], minify: true, sourceMap: true, target: "node22", commandHooks: { beforeBundling: (inputDir: string) => [markCodeContractsPureCommand(inputDir)], afterBundling: () => [], beforeInstall: () => [] } },
     });
     logGroup.grantWrite(role);
     // The platform's own limits on an export's start: one retry, and no attempt of an event older than 30 minutes. With the timeout,
@@ -912,7 +913,7 @@ export class AuditLedger extends Construct {
         AUDIT_TSA_SPACING_MS: String(AUDIT_TSA_SPACING_MS),
         ...(this.tsa.kind === "custom" ? { AUDIT_TSA_URLS: this.tsa.urls.join(","), AUDIT_TSA_ROOTS_PARAMETER: this.tsa.rootsParameter } : {}),
       },
-      bundling: { externalModules: [], minify: true, sourceMap: true, target: "node22" },
+      bundling: { externalModules: [], minify: true, sourceMap: true, target: "node22", commandHooks: { beforeBundling: (inputDir: string) => [markCodeContractsPureCommand(inputDir)], afterBundling: () => [], beforeInstall: () => [] } },
     });
     // A function on a role of our own gets no log permission from CDK.
     logGroup.grantWrite(role);
@@ -1115,7 +1116,7 @@ export class AuditLedger extends Construct {
         // The key's ARN, never the alias: kms:Update* and kms:CreateAlias let an administrator repoint the alias.
         AUDIT_VAULT_KEY_ARN: this.vaultKey.keyArn,
       },
-      bundling: { externalModules: [], minify: true, sourceMap: true, target: "node22" },
+      bundling: { externalModules: [], minify: true, sourceMap: true, target: "node22", commandHooks: { beforeBundling: (inputDir: string) => [markCodeContractsPureCommand(inputDir)], afterBundling: () => [], beforeInstall: () => [] } },
     });
     // A function on a role of our own gets no log permission from CDK.
     logGroup.grantWrite(appenderRole);

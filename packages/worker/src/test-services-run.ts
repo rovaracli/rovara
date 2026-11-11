@@ -33,7 +33,8 @@ import { createHash, randomBytes } from "node:crypto";
 import { constants as fsConstants, readFileSync } from "node:fs";
 import { open, readFile, realpath, stat } from "node:fs/promises";
 import { resolve, sep } from "node:path";
-import { CATALOG_REGISTRY_ROOT, PrepullListSchema, ServiceCatalogSchema, TEST_SERVICES_AWS_PLAN_FEATURE, TEST_SERVICES_FAKE_PLAN_FEATURE, TEST_SERVICES_FILE_SEED_FEATURE, TEST_SERVICES_PLAN_FEATURE, TEST_SERVICES_SEED_LOCK_FEATURE, TEST_SERVICES_USAGE_LIMITS, TEST_SERVICES_USAGE_RESULT_KEY, TestServicesUsageRecordSchema, agentXError, catalogEntryById, catalogRepositoryName, type CatalogEdition, type CatalogEntry, type ServiceCatalog, type TaskAwsResource, type TaskDependencyPlan, type TestEnvTaskPlan, type TestServicesStartFailure, type TestServicesUsageRecord } from "@rovara-code/contracts";
+import { CATALOG_REGISTRY_ROOT, PrepullListSchema, ServiceCatalogSchema, TEST_SERVICES_AWS_PLAN_FEATURE, TEST_SERVICES_FAKE_PLAN_FEATURE, TEST_SERVICES_FILE_SEED_FEATURE, TEST_SERVICES_PLAN_FEATURE, TEST_SERVICES_SEED_LOCK_FEATURE, TEST_SERVICES_USAGE_LIMITS, TEST_SERVICES_USAGE_RESULT_KEY, TestServicesUsageRecordSchema, agentXError, catalogEntryById, catalogRepositoryName, type CatalogEdition, type CatalogEntry, type ServiceCatalog, type TaskAwsResource, type TestServicesStartFailure, type TestServicesUsageRecord } from "@rovara-code/contracts";
+import { type TaskDependencyPlan, type TestEnvTaskPlan } from "@agentx/cloud-contracts";
 import { TASK_SANDBOX_IMAGE_ENVIRONMENT, type TaskSandbox } from "./task-sandbox.js";
 import { SANDBOX_TARGET, executionFor } from "./execution-target.js";
 import type { ArtifactSink } from "./artifacts.js";
@@ -388,6 +389,9 @@ function resolveDependencies(catalog: ServiceCatalog, dependencies: readonly Tas
       }
       continue;
     }
+    // Company-approved extra images (switch `pj`): this worker has no way to fetch or verify an image of a company's own (it starts only the digests baked into its image), so it refuses the plan BY NAME: a company image is
+    // told apart from a catalog plan with a wrong digest, and it is never started as one. The same "not available on this worker" sentence as a digest it does not pin.
+    if (plan.backing === "company") throw new TestServicesError("pull_failed", new Map([[plan.id, "pull_failed" as const]]));
     bases.push(plan.backing === "fake" ? resolveFake(catalog, plan, config) : resolveLocal(catalog, plan, config));
   }
   return bases;

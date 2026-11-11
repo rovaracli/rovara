@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { taskPersonProofRoleName } from "@agentx/cloud-contracts";
 import { Construct } from "constructs";
 import type { AgentXNaming } from "./naming.js";
+import { markCodeContractsPureCommand } from "./code-contracts-bundling.js";
 
 const APPROVED_ENV = "agentxlivetest123";
 const APPROVED_ACCOUNT = "944937319445";
@@ -60,6 +61,7 @@ export class TaskPersonProof extends Construct {
         minify: true,
         sourceMap: true,
         target: "node22",
+        commandHooks: { beforeBundling: (inputDir: string) => [markCodeContractsPureCommand(inputDir)], afterBundling: () => [], beforeInstall: () => [] },
       },
     });
     const proofFunctionResource = proof.node.defaultChild as lambda.CfnFunction;

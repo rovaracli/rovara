@@ -212,7 +212,7 @@ describe("the card's lines", () => {
   it("say what backs each kind of dependency in fixed words", () => {
     const words = (backing: unknown) => dependencyCardLines([{ id: "x", name: "Thing", kind: "other", family: "x", found: ["model"], usedBy: ["unit"], backing, connect: { env: [], hostAliases: [] }, seeds: [], reset: "fresh_per_round" } as never])[0];
     expect(words({ kind: "test_account", accountId: "a" })).toContain("second person approves");
-    expect(words({ kind: "project_image", imageId: "a" })).toContain("your own image");
+    expect(words({ kind: "project_image", imageId: "a" })).toContain("extra image your company's admin approved");
     expect(words({ kind: "none", reason: "faked_by_tests" })).toContain("faked by your own tests");
     expect(words({ kind: "local", catalogId: "postgres@16", config: {} })).toContain("Found by Rovara's reading of the code.");
   });

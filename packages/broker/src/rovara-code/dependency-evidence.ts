@@ -10,8 +10,8 @@ import { inertLine } from "./inert-text.js";
 export interface PinnedDependency {
   id: string;
   name: string;
-  /** `local`: real software from the catalog. `emulated` (slice 2): Rovara local AWS. `fake` (slice 3): a fake server serving an approved fixture set. */
-  backing: "local" | "emulated" | "fake";
+  /** `project_image` (switch `pj`): an image a company admin approved; its row says so (`real_project_image`, "company-approved image"). `local`: real software from the catalog. `emulated` (slice 2): Rovara local AWS. `fake` (slice 3): a fake server serving an approved fixture set. */
+  backing: "local" | "emulated" | "fake" | "project_image";
   /** True when a company-approved substitute image was pinned (not used in slice 1). */
   substituteImage?: boolean;
   /** `emulated` only: the AWS services the plan asked Rovara local AWS for (the broker's own; the worker's ledger is judged against them). */
@@ -70,6 +70,7 @@ export function dependencyEvidenceOf(pinned: readonly PinnedDependency[], usage:
     if (!ran) return { name, backing: "none", label: "not_available", ...(dependency.backing === "fake" ? {} : { fellBack: { from: dependency.backing, reason: "did_not_start" as const } }) };
     if (dependency.backing === "fake") return fakeRow(dependency, name, used.startMs, usage);
     if (dependency.backing === "emulated") return { name, backing: "emulated", label: evidenceDependencyLabelFor({ backing: "emulated" }), startedMs: used.startMs };
+    if (dependency.backing === "project_image") return { name, backing: "project_image", label: evidenceDependencyLabelFor({ backing: "project_image" }), startedMs: used.startMs };
     return { name, backing: "local", label: evidenceDependencyLabelFor({ backing: "local", ...(dependency.substituteImage === true ? { substituteImage: true } : {}) }), startedMs: used.startMs };
   });
   const notTested: EvidenceNotTested[] = [];

@@ -209,14 +209,38 @@ describe("the switch on: Public cloud", () => {
     expect(JSON.stringify(role.Properties)).not.toMatch(/ManagedPolicyArns/);
     const rolePolicies = Object.entries(resources).filter(([id, resource]) => resource.Type === "AWS::IAM::Policy" && /^EmbedderRole/.test(id));
     const roleStatements = rolePolicies.flatMap(([, resource]) => (resource.Properties.PolicyDocument as { Statement: Array<{ Sid?: string; Action: string | string[]; Resource: unknown }> }).Statement);
-    const roleActions = roleStatements.flatMap((statement) => [statement.Action].flat()).sort();
-    expect(roleActions).toStrictEqual(["ec2:AssignPrivateIpAddresses", "ec2:CreateNetworkInterface", "ec2:DeleteNetworkInterface", "ec2:DescribeNetworkInterfaces", "ec2:DescribeSecurityGroups", "ec2:DescribeSubnets", "ec2:DescribeVpcs", "ec2:UnassignPrivateIpAddresses", "logs:CreateLogStream", "logs:PutLogEvents"]);
-    // Only the describe calls take "*" (they take no resource); creating an interface names these two subnets and this security group.
-    expect(roleStatements.filter((statement) => JSON.stringify(statement.Resource) === '"*"').map((statement) => statement.Sid)).toStrictEqual(["DescribeNetwork"]);
-    const create = roleStatements.find((statement) => statement.Sid === "CreateOwnNetworkInterface")!;
-    expect(JSON.stringify(create.Resource)).toContain("EmbedderSubnet1");
-    expect(JSON.stringify(create.Resource)).toContain("EmbedderSubnet2");
-    expect(JSON.stringify(create.Resource)).toContain("EmbedderSecurityGroup");
+    const allowed = roleStatements.filter((statement) => (statement as { Effect?: string }).Effect !== "Deny");
+    const denied = roleStatements.filter((statement) => (statement as { Effect?: string }).Effect === "Deny");
+    const roleActions = allowed.flatMap((statement) => [statement.Action].flat()).sort();
+    expect(roleActions).toStrictEqual(["ec2:AssignPrivateIpAddresses", "ec2:CreateNetworkInterface", "ec2:DeleteNetworkInterface", "ec2:DescribeNetworkInterfaces", "ec2:DescribeSubnets", "ec2:UnassignPrivateIpAddresses", "logs:CreateLogStream", "logs:PutLogEvents"]);
+    // The 0.5.13 switch-on failed at CreateFunction ("The provided execution role does not have permissions to call DeleteNetworkInterface on EC2") because these actions were scoped to network-interface/*. Lambda checks them when it
+    // creates the function and the AWS Lambda documentation ("Required IAM permissions", configuration-vpc) says to allow all six on "Resource": "*": a template diff, cfn-lint and a change set cannot see the difference, so this
+    // test is the guard. Every one of the six must sit in a statement whose Resource is exactly "*".
+    const onStar = (action: string) => allowed.some((statement) => [statement.Action].flat().includes(action) && JSON.stringify(statement.Resource) === '"*"');
+    for (const action of ["ec2:CreateNetworkInterface", "ec2:DescribeNetworkInterfaces", "ec2:DescribeSubnets", "ec2:DeleteNetworkInterface", "ec2:AssignPrivateIpAddresses", "ec2:UnassignPrivateIpAddresses"]) expect(onStar(action), action).toBe(true);
+    // And no log right is on "*" (the AWS-managed VPC policy would give that): only the one network statement takes "*", and nothing allowed names a network-interface ARN any more.
+    expect(allowed.filter((statement) => JSON.stringify(statement.Resource) === '"*"').map((statement) => statement.Sid).sort()).toStrictEqual(["LambdaManagesVpcNetworkInterfaces"]);
+    expect(allowed.filter((statement) => /logs:/.test(JSON.stringify(statement.Action))).every((statement) => JSON.stringify(statement.Resource) !== '"*"')).toBe(true);
+    // Least privilege kept: "*" is safe only because the function's own code is denied every one of them. lambda:SourceFunctionArn is present only on calls made by the function's code (the Lambda service's own calls to
+    // manage the interfaces do not carry it), the condition names the one function by its UNQUALIFIED arn (the key supports no versions or aliases), and the ARN is a plain string built from the function's name, not a Ref or
+    // GetAtt of the function (the function depends on this role: a reference would be a circular dependency, which synth would also refuse).
+    expect(denied).toHaveLength(1);
+    const deny = denied[0] as unknown as { Sid: string; Effect: string; Action: string[]; Resource: unknown; Condition: Record<string, Record<string, unknown>> };
+    expect(deny.Sid).toBe("DenyNetworkInterfacesToOwnCode");
+    expect(deny.Resource).toBe("*");
+    for (const action of ["ec2:CreateNetworkInterface", "ec2:DeleteNetworkInterface", "ec2:DescribeNetworkInterfaces", "ec2:DescribeSubnets", "ec2:DetachNetworkInterface", "ec2:AssignPrivateIpAddresses", "ec2:UnassignPrivateIpAddresses"]) expect(deny.Action, action).toContain(action);
+    // Everything the allow statements grant on ec2 is denied to the code. (DescribeSecurityGroups and DescribeVpcs are not granted: Lambda checks them with the deploying principal's credentials.)
+    for (const action of roleActions.filter((name) => name.startsWith("ec2:"))) expect(deny.Action, action).toContain(action);
+    expect(Object.keys(deny.Condition)).toStrictEqual(["ArnEquals"]);
+    expect(Object.keys(deny.Condition.ArnEquals!)).toStrictEqual(["lambda:SourceFunctionArn"]);
+    const sourceArn = deny.Condition.ArnEquals!["lambda:SourceFunctionArn"] as unknown[];
+    expect(sourceArn).toHaveLength(1);
+    // Lambda checks the rights at CreateFunction, so the function must wait for the policy that holds them (not only for the role).
+    expect((embedder[0]![1] as unknown as { DependsOn?: string[] }).DependsOn ?? []).toEqual(expect.arrayContaining([expect.stringMatching(/^EmbedderRoleDefaultPolicy[0-9A-F]{8}$/)]));
+    expect(JSON.stringify(sourceArn[0])).toContain(':function:agentx-staging-embedder"');
+    expect(JSON.stringify(sourceArn[0])).not.toMatch(/"Fn::GetAtt"|"Ref":"Embedder[0-9A-F]{8}"|function:agentx-staging-embedder:/);
+    // The Deny holds no wildcard action and no `ec2:*`.
+    expect(deny.Action.some((name) => name.includes("*"))).toBe(false);
   }, 180_000);
 
   it("places the embedder's subnets by the zone IDs of the region it is deployed to", () => {
@@ -232,6 +256,15 @@ describe("the switch on: Public cloud", () => {
     expect(noResFn!.Properties).not.toHaveProperty("ReservedConcurrentExecutions");
     const enterprise = resourcesOf(controlPlane({ ...ENTERPRISE, agentxTeamRecord: "enabled", agentxTeamRecordKmsKeyArn: KMS, agentxTeamRecordEnterpriseWorkspaceId: "org_aaaaaaaaaaaaaaaaaaaa" }));
     expect(Object.values(enterprise).filter((resource) => resource.Type === "AWS::Lambda::Function" && resource.Properties.FunctionName === "agentx-ent-embedder")).toHaveLength(1);
+    // The same network-interface rights in an Enterprise install (Lambda checks them at CreateFunction): the six on "*" for Lambda and the Deny for the function's own code, by the function's own unqualified arn.
+    const entStatements = Object.entries(enterprise).filter(([id, resource]) => resource.Type === "AWS::IAM::Policy" && /^EmbedderRole/.test(id)).flatMap(([, resource]) => (resource.Properties.PolicyDocument as { Statement: Array<{ Sid?: string; Effect: string; Action: string | string[]; Resource: unknown; Condition?: unknown }> }).Statement);
+    const entAllow = entStatements.find((statement) => statement.Sid === "LambdaManagesVpcNetworkInterfaces");
+    expect(entAllow?.Resource).toBe("*");
+    expect([entAllow!.Action].flat().sort()).toStrictEqual(["ec2:AssignPrivateIpAddresses", "ec2:CreateNetworkInterface", "ec2:DeleteNetworkInterface", "ec2:DescribeNetworkInterfaces", "ec2:DescribeSubnets", "ec2:UnassignPrivateIpAddresses"]);
+    const entDeny = entStatements.find((statement) => statement.Effect === "Deny");
+    expect(entDeny?.Sid).toBe("DenyNetworkInterfacesToOwnCode");
+    expect(JSON.stringify(entDeny?.Condition)).toContain('"lambda:SourceFunctionArn"');
+    expect(JSON.stringify(entDeny?.Condition)).toContain(":function:agentx-ent-embedder");
   }, 360_000);
 
   it("schedules the hourly, the nightly and the re-embed job through the recovery role, with no retries, and nothing else", () => {
@@ -286,6 +319,12 @@ describe("the switch on: Public cloud", () => {
     expect(TEAM_RECORD_OPS_MAX_RECEIVES).toBe(5);
     const mapping = Object.values(resources).find((resource) => resource.Type === "AWS::Lambda::EventSourceMapping" && JSON.stringify(resource.Properties).includes("TeamRecordOps"));
     expect(mapping?.Properties).toMatchObject({ FunctionResponseTypes: ["ReportBatchItemFailures"], BatchSize: 10 });
+    // Lambda checks the consumer's role at CreateEventSourceMapping (sqs:ReceiveMessage, sqs:DeleteMessage, sqs:GetQueueAttributes on the queue): a missing one fails the stack at create, where a template diff cannot see it.
+    const policyStatements = Object.values(resources).flatMap((resource) => (resource.Type === "AWS::IAM::Policy" || resource.Type === "AWS::IAM::ManagedPolicy" ? ((resource.Properties.PolicyDocument as { Statement: Array<{ Action: string | string[]; Resource: unknown }> }).Statement) : []));
+    // (CDK merges the queue and its dead-letter queue into one statement: match the queue's own ARN, not the dead-letter queue's.)
+    const onOps = policyStatements.filter((statement) => /"TeamRecordOps[0-9A-F]{8}","Arn"/.test(JSON.stringify(statement.Resource)));
+    const opsActions = new Set(onOps.flatMap((statement) => [statement.Action].flat()));
+    for (const action of ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"]) expect(opsActions.has(action), action).toBe(true);
   }, 180_000);
 
   // TRW-5: the broker reads the dead-letter queue only to delete text out of it, may send a delete to itself as an Event, and every asynchronous invoke it cannot run lands in the failure queue that alarms.

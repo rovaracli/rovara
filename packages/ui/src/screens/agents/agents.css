@@ -17,3 +17,23 @@
 @media (prefers-reduced-motion: reduce) { .rv-agent-profile-tray { animation: none; } }
 .rv-agent-profile { min-width: 0; overflow-wrap: anywhere; }
 .rv-agent-profile-tray .rv-dialog-heading { position: sticky; top: 0; z-index: 1; background: var(--rv-bg-raised); padding-block: var(--rv-space-2); }
+/* Phone (UX, exp/agents-phone): the directory and profile are single-column pages at 360-390px. Everything here sits under the shell's own phone line (767px), so a large screen is unchanged. */
+@media (max-width: 767px) {
+ .rv-agent-desktop-note { margin-block: var(--rv-space-2); font-size: var(--rv-font-sm); }
+ .rv-agent-directory > .rv-agent-desktop-note { margin-top: calc(-1 * var(--rv-space-4)); margin-bottom: var(--rv-space-4); }
+ .rv-agent-directory { min-width: 0; }
+ .rv-agent-directory .rv-page-header .rv-actions > a { width: 100%; }
+ .rv-agent-list > li { flex-direction: column; gap: var(--rv-space-2); padding: var(--rv-space-4) 0; }
+ .rv-agent-list h2 a { display: inline-flex; align-items: center; min-height: 44px; }
+ .rv-agent-back { justify-self: start; margin-inline-start: calc(-1 * var(--rv-space-4)); }
+ .rv-agent-profile > .rv-actions > * { flex: 1 1 auto; }
+ .rv-agent-facts { grid-template-columns: minmax(0, 1fr); gap: 0; }
+ .rv-agent-facts dt { font-weight: 600; margin-top: var(--rv-space-3); }
+ .rv-agent-versions { list-style: none; margin: 0; padding: 0; }
+ .rv-agent-versions > li { padding-block: var(--rv-space-3); border-bottom: 1px solid var(--rv-border); }
+ .rv-agent-versions > li > a:first-child { display: inline-flex; align-items: center; min-height: 44px; }
+ .rv-agent-steps { padding-inline-start: var(--rv-space-5); }
+ .rv-dialog.rv-agent-dialog { overflow-wrap: anywhere; width: calc(100vw - 16px); max-height: calc(100dvh - 16px); }
+ .rv-agent-dialog li { display: flex; flex-wrap: wrap; align-items: center; gap: var(--rv-space-2); }
+ .rv-agent-dialog .rv-button { max-width: 100%; white-space: normal; text-align: center; }
+}

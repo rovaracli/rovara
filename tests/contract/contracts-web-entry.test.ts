@@ -96,6 +96,10 @@ describe("browser contracts entry", () => {
       const source = original.toString("utf8");
       // RULING Q4: React DOM contains an ordinary node: object key.
       expect(/["'`]node:|ts\.createSourceFile/.test(source), file).toBe(false);
+      // Rovara Code's contracts reach the page through `@rovara-code/contracts`, which the graph check above does not follow (it reads this package's own files). What it would catch there is a Node module
+      // kept by the bundle: Vite swaps one for `__vite-browser-external` (a stub that throws when used) and says so only in a warning.
+      expect(source.includes("__vite-browser-external"), file).toBe(false);
+      expect(/\bfrom\s*["'](?:crypto|buffer|util|fs|path|os|zlib|stream|child_process)["']/.test(source), file).toBe(false);
     }
   });
 });

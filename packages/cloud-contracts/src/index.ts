@@ -68,6 +68,9 @@ export { TaskStopAgentReadSchema, type TaskStopAgentRead } from "./task-stop-age
 // Lane A G1: versioned project intent, preserved but not set by legacy settings writes.
 export { TaskStopProjectPolicySchema, type TaskStopProjectPolicy, TaskStopProjectReadSchema, type TaskStopProjectRead } from "./task-stop-project.js";
 
+// Proof and evidence (W4/W5): the evidence pack, decision cards, the test environment and service mocks.
+export * from "./evidence.js";
+
 // Lane C17: bounded company Slack stored-evidence read, browser-safe metadata only.
 export * from "./org-slack-workspace-evidence.js";
 
@@ -79,10 +82,12 @@ export * from "./catalog-trust.js";
 export * from "./catalog-build-flavor.js";
 export * from "./service-catalog-verify.js";
 export * from "./team-record-storage.js";
+export * from "./test-environment-wire.js";
 
 // Learning v2: the Team record and lessons (R1).
 export * from "./team-record.js";
 export * from "./team-record-sources.js";
+export * from "./lessons.js";
 export * from "./app-lessons-repo-file.js";
 export * from "./lessons-local-tools.js";
 export * from "./saved-env-key-files.js";

@@ -1,7 +1,7 @@
 // The inventory of every stored field that can carry a person's id (fix round 11). Erasure does not rely on code paths that happen to know where an id can live: it walks THIS list,
 // by step, and `tests/unit/team-record-core/person-fields.test.ts` fails when a schema gains a field that looks like a person id and is not named here. Adding a field means
 // choosing how it is erased (a step), or saying why it holds no person.
-import type { AclSnapshot } from "@rovara-code/contracts";
+import type { AclSnapshot } from "@agentx/cloud-contracts";
 
 /** The erase steps. Each runs on its own, is reported in `EraseResult.steps`, and is resumed by the next run when it did not finish. */
 export const ERASE_STEPS = ["lake", "principals", "access", "config", "lessons", "asks", "names", "diagnoses", "attribution", "fixtures", "rows"] as const;

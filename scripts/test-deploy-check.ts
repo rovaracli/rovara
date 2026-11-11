@@ -10,7 +10,7 @@
 import { E2E_AGENT_BEDROCK_QUOTA_CODES, E2E_AGENT_RECOMMENDED_MODELS, eligibleE2EAgentModel } from "@rovara-code/contracts";
 import { E2E_RUNTIME_AUTO_RENEWAL_NOTE, E2E_RUNTIME_GENERIC_RENEW_COMMAND, e2eRuntimeExpiryNotice } from "@rovara-code/contracts";
 import { KEYED_MODEL_PROVIDERS, SECRET_ARN_MAX_LENGTH, SECRET_ARN_PATTERN, isKeyedModelProvider, type KeyedModelProvider, type ModelProvider } from "@rovara-code/contracts";
-import { WORKER_INVOCATION_FEATURES } from "@rovara-code/contracts";
+import { WORKER_INVOCATION_FEATURES } from "@agentx/cloud-contracts";
 import { listPricesPerMillion } from "../packages/model-runtime/src/catalog.js";
 import { DEFAULT_E2E_AGENT_MODELS, requireKeyedModel } from "../packages/model-runtime/src/config.js";
 import { requalifyFindings, type RequalifyFacts } from "./test-deploy-requalify.js";

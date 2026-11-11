@@ -65,6 +65,13 @@ export async function claimAutomaticRun(deps: TestEnvDeps, input: { orgId: OrgId
   const expires = Math.floor((now + 62 * DAY_MS) / 1000);
   const counter = key(input.orgId, input.project, monthSk(month));
   const claim = key(input.orgId, input.project, `AUTOMATIC_RUNS#RUN#${input.requestId}`);
+  // A retried start whose claim is already there is counted once and answered as claimed, whatever the cap is now (a maintainer may have lowered it since: the run exists). This comes BEFORE the cap-0 refusal.
+  if (await get(deps, claim) !== undefined) return { claimed: true, used: await countOf(deps, input.orgId, input.project, month), cap, replay: true };
+  // A cap of 0 pauses them all. The counter's own test ("no count yet, or under the cap") would let the month's FIRST run through, because a month with no count has no row to compare, so 0 is refused here.
+  if (cap < 1) {
+    await recordPause(deps, input.orgId, input.project, month, cap);
+    return { claimed: false, used: await countOf(deps, input.orgId, input.project, month), cap };
+  }
   const items = [
     { Put: { TableName: deps.tableName, Item: { ...claim, entityType: "AUTOMATIC_RUN_CLAIM", orgId: input.orgId, project: input.project, requestId: input.requestId, job: input.job, month, claimedAt: iso(now), [INDEX_EXPIRY_ATTRIBUTE]: expires }, ConditionExpression: "attribute_not_exists(pk)" } },
     { Update: { TableName: deps.tableName, Key: counter, UpdateExpression: "SET entityType = if_not_exists(entityType, :entity), orgId = :org, #project = :project, #month = :month, #expiry = :expires ADD #count :one",

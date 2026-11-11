@@ -689,13 +689,16 @@ describe("agentx deploy", () => {
       runner.run = async (command, args, options) => { commands.push(`${command} ${args.join(" ")}`); return inner(command, args, options); };
       const io = capture();
       const asked: string[] = [];
+      const copied: string[] = [];
       const code = await executeCli(
         ["deploy", "--mode", "install", "--engine", "cdk", "--release", releaseDir, "--answers", answersPath, "--source", "/some/source", "--yes"],
-        { ...io, deploy: safeDeployDeps({ identity: fakeIdentity, store, secrets: memorySecrets(), commandRunner: runner, iam: passRolePresentIam(), teamRecordProbe: { tableState: async (name) => { asked.push(name); return probeAnswer; } } }) },
+        { ...io, deploy: safeDeployDeps({ identity: fakeIdentity, store, secrets: memorySecrets(), commandRunner: runner, iam: passRolePresentIam(), copyEmbedderImage: async (copy) => { copied.push(copy.source); }, checkEmbedderCopy: async () => undefined, teamRecordProbe: { tableState: async (name) => { asked.push(name); return probeAnswer; } } }) },
       );
       expect(asked, io.err.join("")).toEqual([`agentx-${ENV}-team-record`]);
       if (expectedCode === 0) {
         expect(code, io.err.join("")).toBe(0);
+        // a Public install copies the release's public embedder image into its own repository before the control plane (Lambda cannot pull from the pull-through cache)
+        expect(copied).toEqual([`public.ecr.aws/rovara/embedder@sha256:${"a".repeat(64)}`]);
         expect(commands.some((line) => !line.startsWith("git "))).toBe(true);
         expect(runner.synthDirs.length).toBeGreaterThan(0);
       } else {
@@ -706,6 +709,7 @@ describe("agentx deploy", () => {
         expect(commands.length).toBeGreaterThan(0);
         expect(commands.every((line) => line.startsWith("git "))).toBe(true);
         expect(runner.synthDirs).toEqual([]);
+        expect(copied).toEqual([]);
       }
     }
   });

@@ -29,6 +29,7 @@ import { BROWSER_RETURN_TO } from "../../../packages/broker/src/developer/server
 import { homeFixture } from "../../web/support/fixtures.js";
 import { FIXTURE_ORG, FIXTURE_DEVELOPER, FIXTURE_SESSION } from "../../web/support/fixtures.js";
 import { scenario } from "./scenarios.js";
+import { workAnswer } from "./work-mock.js";
 import { howWeWorkMock, resetHowWeWork } from "./how-we-work-mock.js";
 import { lessonsMock, resetLessons, resetTaskLessons, setLessonsPaused, setRepoRetire, setDuplicateLesson, setPresetProposal, setSourceEditing, setTrialLessons, taskLessonsMock } from "./lessons-mock.js";
 import { intakeHomeCards, intakeMock, resetIntake, showTicketOnHome } from "./intake-mock.js";
@@ -303,6 +304,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
  if (url.pathname === "/v1/web/org/members" && method === "GET") { json(200, AppOrgMembersResponseSchema.parse({ members: [{ developerId: FIXTURE_DEVELOPER, name: "Priya", role: "member", identities: ["cloud"], joinedAt: "2026-10-23T12:00:00.000Z" }, { developerId: "b".repeat(64), name: "Arjun", role: "member", identities: ["cloud"], joinedAt: "2026-10-23T12:00:00.000Z" }] }));return; }
  if (url.pathname === "/v1/web/projects" && method === "GET") { json(200, { projects: [] });return; }
  }
+ if (current.work !== undefined && (url.pathname === "/v1/web/live" || url.pathname === "/v1/web/sessions") && method === "GET") { json(200, workAnswer(current.work, url));return; }
  if (url.pathname === "/v1/web/live" && method === "GET") { json(200, LiveResponseSchema.parse({ tiles: (current.live ?? []).filter(tile => (url.searchParams.get("filter") !== "needs_me" || tile.needsYou) && (!url.searchParams.has("project") || tile.project === url.searchParams.get("project"))) }));return; }
  if (url.pathname === "/v1/web/home") { json(200, current.name === "project" ? homeFixture({ cards: [...homeSuggestionCards(), ...intakeHomeCards(origin)] as never }) : current.home);return; }
  if (url.pathname === "/v1/web/realtime/token" && method === "POST") { json(200, RealtimeTokenResponseSchema.parse({ token: "fixture-realtime-value", expiresAt: new Date(Date.now() + 900_000).toISOString(), endpoint: origin.replace("https:", "wss:") + "/event/realtime", channels: { user: userChannel(FIXTURE_ORG, FIXTURE_DEVELOPER), projects: { payments: projectChannel(FIXTURE_ORG, "payments") } } }));return; }

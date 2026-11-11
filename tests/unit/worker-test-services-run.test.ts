@@ -6,7 +6,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { TaskDependencyPlanSchema, TestServicesUsageRecordSchema, type ProjectCommand, type ServiceCatalog, type TaskDependencyPlan, type TestEnvTaskPlan } from "@rovara-code/contracts";
+import { TestServicesUsageRecordSchema, type ProjectCommand, type ServiceCatalog } from "@rovara-code/contracts";
+import { TaskDependencyPlanSchema, type TaskDependencyPlan, type TestEnvTaskPlan } from "@agentx/cloud-contracts";
 import { SEALED_DNS_READY_TIMEOUT_MS, withDetachedWorking } from "../../packages/worker/src/check-sandbox.js";
 import { forgetWorkerStartSweeps } from "../../packages/worker/src/service-runner.js";
 import { TaskSandbox } from "../../packages/worker/src/task-sandbox.js";
@@ -185,6 +186,21 @@ describe("starting the run", () => {
     expect(error!.reason).toBe("pull_failed");
     expect(error!.message).toBe("Dependency image not available on this worker");
     expect(error!.failures.get("postgres")).toBe("pull_failed");
+    await nothingLeft(h);
+  });
+
+  it("a company-approved image is refused BY NAME with the same sentence: it is never started, even with the digest the catalog pins, and nothing is pulled or made", async () => {
+    const h = await harness();
+    const company = { imageId: "img_" + "1".repeat(20), registry: "docker.io", repository: "library/postgres", digest: "c".repeat(64) };
+    for (const changes of [{ digest: "c".repeat(64), company }, { company: { ...company, digest: dependency().digest as string }, digest: dependency().digest as string }]) {
+      const error = await h.start([dependency({ backing: "company", ...changes } as never)]).then(() => undefined, (caught: unknown) => caught as TestServicesError);
+      expect(error).toBeInstanceOf(TestServicesError);
+      expect(error!.reason).toBe("pull_failed");
+      expect(error!.message).toBe("Dependency image not available on this worker");
+      expect(error!.failures.get("postgres")).toBe("pull_failed");
+    }
+    expect(h.fake.verbs("network").filter((call) => call[1] === "create")).toEqual([]);
+    expect(h.fake.calls.some((call) => call[0] === "pull")).toBe(false);
     await nothingLeft(h);
   });
 

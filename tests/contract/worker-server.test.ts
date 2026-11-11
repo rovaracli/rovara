@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { WORKER_INVOCATION_FEATURES } from "@rovara-code/contracts";
+import { WORKER_INVOCATION_FEATURES } from "@agentx/cloud-contracts";
 import { type WorkerInvocation } from "@agentx/cloud-contracts";
 import { inspectContainedRuntimeReadinessForHost } from "@agentx/verifier";
 import {

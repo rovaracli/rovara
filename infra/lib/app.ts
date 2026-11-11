@@ -158,7 +158,11 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
       ...(rovaraOrganizationId === undefined ? {} : { rovaraOrganizationId }),
       ...(operatorAccess === undefined ? {} : { operatorAccess }),
       ...(agentxCloud ? { cloud: true } : {}),
-      ...(explicitEdition === "enterprise" ? { bundleImageRepositories: [...BUNDLE_IMAGE_NAMES, ...(teamRecord === undefined ? [] : [BUNDLE_EMBEDDER_IMAGE_NAME])].map((name) => bundleImageRepository(naming.env!, name)) } : {}),
+      ...(explicitEdition === "enterprise" ? { bundleImageRepositories: [...BUNDLE_IMAGE_NAMES, ...(teamRecord === undefined ? [] : [BUNDLE_EMBEDDER_IMAGE_NAME])].map((name) => bundleImageRepository(naming.env!, name)) }
+        // A Public install gets the embedder's repository too, and ONLY that one, whether or not the Team record is on: Lambda cannot create a function from an image in a pull-through cache repository,
+        // so the deploy copies the release's embedder image into this repository (packages/cli/src/deploy/copy-embedder-image.ts). It is always in the template (one empty, retained repository) so that
+        // withdrawing the record (`teamRecord.enabled 0`) never drops it from the stack: a repository that left the stack but was retained would make the next switch-on fail on "already exists".
+        : { embedderImageRepository: bundleImageRepository(naming.env, BUNDLE_EMBEDDER_IMAGE_NAME) }),
       terminationProtection: true,
       env: { region },
     });

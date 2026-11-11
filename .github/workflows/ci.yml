@@ -123,6 +123,9 @@ jobs:
       - name: The pinned copy of Rovara Code matches its sha
         if: hashFiles('vendor/rovara-code/PIN') != ''
         run: node scripts/vendor/verify-rovara-code.ts --remote
+        env:
+          # The check also asks GitHub whether the pinned sha is on code/next; the token keeps it clear of the anonymous rate limit.
+          GITHUB_TOKEN: ${{ github.token }}
       - run: npm run typecheck
         env:
           # tsc -b needs more than the default ~2 GB heap; per step, so test workers keep the default.

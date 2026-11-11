@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { WORKER_INVOCATION_FEATURES } from "@rovara-code/contracts";
+import { WORKER_INVOCATION_FEATURES } from "@agentx/cloud-contracts";
 import { WorkerInvocationSchema } from "@agentx/cloud-contracts";
 
 const base = {

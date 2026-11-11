@@ -6,7 +6,8 @@ import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { PEEK_FEATURE, PEEK_PATCH_MAX_BYTES, PeekAnswerSchema, WORKER_INVOCATION_FEATURES } from "@rovara-code/contracts";
+import { PEEK_FEATURE, PEEK_PATCH_MAX_BYTES, PeekAnswerSchema } from "@rovara-code/contracts";
+import { WORKER_INVOCATION_FEATURES } from "@agentx/cloud-contracts";
 import { WorkerInvocationSchema, type WorkerInvocation } from "@agentx/cloud-contracts";
 import { OperationJournal } from "../../packages/worker/src/journal.js";
 import { WORKER_IMPLEMENTED_FEATURES } from "../../packages/worker/src/implemented-features.js";

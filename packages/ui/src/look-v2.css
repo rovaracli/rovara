@@ -1,0 +1,81 @@
+/*
+ * Density for screen sections, v2 look only. Every rule starts with :root[data-look="v2"], so while the new look is off none of this matches anything and every
+ * screen keeps the paddings, gaps and heights in its own sheet (tests/web/look-off-unchanged.test.ts and a test below it pin that).
+ * The tokens come from packages/design-tokens/src/look.ts and change with data-density (Comfortable or Compact):
+ *   --rv-density-gap   space between sections and between cards (24px / 20px)
+ *   --rv-density-card  padding inside a card (20px / 16px)
+ *   --rv-density-row-y padding above and below a list row, and the gap between small items (14px / 10px)
+ *   --rv-control-size  minimum height of a control: 40px / 36px on a desktop pointer, never below 44px on a phone or touch screen
+ * This file never names how-we-work, session or agents screens: those belong to other lanes.
+ */
+
+/* Page frame (the shell's main column). */
+:root[data-look="v2"] .rv-shell-main{padding-block:calc(var(--rv-density-gap) + 16px)}
+:root[data-look="v2"] .rv-shell-main h1{margin-bottom:calc(var(--rv-density-gap) + 4px)}
+:root[data-look="v2"] .rv-trial-banner{margin-bottom:calc(var(--rv-density-gap) + 4px);padding-block:var(--rv-density-row-y)}
+:root[data-look="v2"] .rv-account section{margin-top:var(--rv-density-gap)}
+@media(max-width:767px){
+ :root[data-look="v2"] .rv-shell-main{padding-block:calc(var(--rv-density-gap) + 4px)}
+}
+
+/* Home: needs-you cards, attention rows, start box. */
+:root[data-look="v2"] .rv-needs-you,:root[data-look="v2"] .rv-home-start{margin-bottom:var(--rv-density-gap)}
+:root[data-look="v2"] .rv-decision-list{gap:var(--rv-density-gap)}
+:root[data-look="v2"] .rv-attention-row{padding-block:var(--rv-density-gap)}
+:root[data-look="v2"] .rv-attention-row article{gap:var(--rv-density-gap)}
+:root[data-look="v2"] .rv-home-error{margin-bottom:var(--rv-density-gap)}
+:root[data-look="v2"] .rv-attention-open,:root[data-look="v2"] .rv-decision-open,:root[data-look="v2"] .rv-decision-panel summary,:root[data-look="v2"] .rv-decision-reject summary{min-height:var(--rv-control-size)}
+
+/* Live / work list. */
+:root[data-look="v2"] .rv-live-toolbar{margin-bottom:var(--rv-density-gap);gap:var(--rv-density-row-y) var(--rv-density-gap)}
+:root[data-look="v2"] .rv-live-list{gap:var(--rv-density-gap)}
+:root[data-look="v2"] .rv-live-tile{padding:var(--rv-density-card)}
+:root[data-look="v2"] .rv-work-list{gap:var(--rv-density-row-y)}
+:root[data-look="v2"] .rv-work-row{padding:var(--rv-density-row-y) var(--rv-density-card);gap:var(--rv-density-row-y) var(--rv-density-gap)}
+:root[data-look="v2"] .rv-work-title{margin-bottom:calc(var(--rv-density-row-y) / 4)}
+:root[data-look="v2"] .rv-work-facts,:root[data-look="v2"] .rv-work-context{gap:calc(var(--rv-density-row-y) / 4) calc(var(--rv-density-row-y) / 2)}
+
+/* Project page: sections, columns, rows. */
+:root[data-look="v2"] .rv-project-section{margin-block:var(--rv-density-gap)}
+:root[data-look="v2"] .rv-project-visibility,:root[data-look="v2"] .rv-project-start{margin-block:var(--rv-density-row-y) var(--rv-density-gap)}
+:root[data-look="v2"] .rv-project-columns{gap:var(--rv-density-gap)}
+:root[data-look="v2"] .rv-project-agents li{padding-block:var(--rv-density-row-y)}
+:root[data-look="v2"] .rv-project-agents li:first-child{padding-top:0}
+:root[data-look="v2"] .rv-project-choices li{padding-block:var(--rv-density-row-y)}
+:root[data-look="v2"] .rv-setup-row,:root[data-look="v2"] .rv-record-hits li,:root[data-look="v2"] .rv-learning-list li{padding-block:var(--rv-density-row-y)}
+:root[data-look="v2"] .rv-learning{margin-block:var(--rv-density-gap)}
+:root[data-look="v2"] .rv-learning-cards,:root[data-look="v2"] .rv-learning-list{gap:var(--rv-density-row-y)}
+:root[data-look="v2"] .rv-learning-dismiss{padding:var(--rv-density-card)}
+@media(max-width:767px){
+ :root[data-look="v2"] .rv-project-columns .rv-project-section{margin-block:calc(var(--rv-density-gap) / 2)}
+}
+
+/* Plain selects on the project page (the Tracker choice) have no height of their own; give them the control height so a phone gets 44px. */
+:root[data-look="v2"] .rv-project select{min-height:var(--rv-control-size)}
+
+/* Settings and admin pages (not how-we-work). */
+:root[data-look="v2"] .rv-admin-context{margin-bottom:var(--rv-density-row-y)}
+:root[data-look="v2"] .rv-admin-nav{margin-bottom:var(--rv-density-gap)}
+:root[data-look="v2"] .rv-admin-nav a,:root[data-look="v2"] .rv-admin-b1-link,:root[data-look="v2"] .rv-admin-archive-review label,:root[data-look="v2"] .rv-admin-search input,:root[data-look="v2"] .rv-audit-filters input,:root[data-look="v2"] .rv-admin-waiting select,:root[data-look="v2"] .rv-connection-guidance>summary{min-height:var(--rv-control-size)}
+:root[data-look="v2"] .rv-admin-section{margin-block:var(--rv-density-gap);gap:var(--rv-density-row-y)}
+:root[data-look="v2"] .rv-admin-search{margin-top:var(--rv-density-gap)}
+:root[data-look="v2"] .rv-admin-role{padding-block:var(--rv-density-row-y)}
+:root[data-look="v2"] .rv-admin-overview-list{gap:var(--rv-density-row-y)}
+:root[data-look="v2"] .rv-admin-domains,:root[data-look="v2"] .rv-conn-list,:root[data-look="v2"] .rv-conn-items{gap:var(--rv-density-gap)}
+:root[data-look="v2"] .rv-admin-domains>li,:root[data-look="v2"] .rv-conn-card{padding:var(--rv-density-card)}
+:root[data-look="v2"] .rv-conn-item,:root[data-look="v2"] .rv-connection-guidance{padding:var(--rv-density-row-y)}
+:root[data-look="v2"] .rv-conn-card{gap:var(--rv-density-row-y)}
+:root[data-look="v2"] .rv-settings-note{padding-block:var(--rv-density-row-y)}
+
+/* Onboarding steps (sign-in and no-company pages are separate and are not touched). */
+:root[data-look="v2"] .rv-onboarding nav{margin-block:var(--rv-density-gap)}
+:root[data-look="v2"] .rv-onboarding-workspace{padding-inline-start:var(--rv-density-gap)}
+:root[data-look="v2"] .rv-onboarding-choice{min-height:var(--rv-control-size);padding-block:calc(var(--rv-density-row-y) / 2)}
+:root[data-look="v2"] .rv-onboarding-workspace>p{margin-block:var(--rv-density-row-y)}
+:root[data-look="v2"] .rv-proposal fieldset{margin-block:var(--rv-density-row-y);padding:var(--rv-density-row-y)}
+:root[data-look="v2"] .rv-proposal-item{padding-block:var(--rv-density-row-y)}
+:root[data-look="v2"] .rv-proposal-card{padding:var(--rv-density-row-y)}
+:root[data-look="v2"] .rv-setup-journal li{padding-block:calc(var(--rv-density-row-y) / 2)}
+@media(max-width:640px){
+ :root[data-look="v2"] .rv-onboarding-workspace{padding-inline-start:var(--rv-density-row-y)}
+}

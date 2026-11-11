@@ -2,7 +2,8 @@
 // broker may do with the fields.
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { E2ECapturePolicySchema, E2EWorkflowAdmissionRefSchema, E2E_CAPTURE_EXTRAS_FEATURE, WORKER_INVOCATION_FEATURES, capturePolicyNeedsExtras } from "@rovara-code/contracts";
+import { E2ECapturePolicySchema, E2EWorkflowAdmissionRefSchema, E2E_CAPTURE_EXTRAS_FEATURE, capturePolicyNeedsExtras } from "@rovara-code/contracts";
+import { WORKER_INVOCATION_FEATURES } from "@agentx/cloud-contracts";
 import { WORKER_IMPLEMENTED_FEATURES } from "../../packages/worker/src/implemented-features.js";
 
 /** The capture policy exactly as a worker built before B1 and B2 parsed it: strict, with four booleans. */

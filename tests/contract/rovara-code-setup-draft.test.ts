@@ -7,7 +7,8 @@ import { randomUUID } from "node:crypto";
 import { agentXError } from "@rovara-code/contracts"; // the package the broker itself imports: an error from the relative path would not be an instance of its AgentXError
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { orgSettingsKey, projectAiKey, WorkerInvocationSchema, githubInstallationKey, orgGithubInstallationKey, type GithubInstallationRecord } from "@agentx/cloud-contracts";
-import { orgScoped, builtinSettingsKey, ROVARA_CODE_AGENT_ID, agentGuardrailsKey, DEFAULT_AGENT_GUARDRAILS, AGENT_WORKER_OUTDATED, DEFAULT_PLANNING_LIMIT_USD, SetupApplyResponseSchema, SetupDraftResponseReaderSchema, SetupDraftResponseSchema, WORKER_INVOCATION_FEATURES, egressDomainsKey, orgProjectCatalogKey, projectMemberKey, projectMetaKey, projectRevisionKey, redactText, setupDraftKey, setupItemsOf, type SetupProposal } from "@rovara-code/contracts";
+import { orgScoped, builtinSettingsKey, ROVARA_CODE_AGENT_ID, agentGuardrailsKey, DEFAULT_AGENT_GUARDRAILS, AGENT_WORKER_OUTDATED, DEFAULT_PLANNING_LIMIT_USD, SetupApplyResponseSchema, SetupDraftResponseReaderSchema, SetupDraftResponseSchema, egressDomainsKey, orgProjectCatalogKey, projectMemberKey, projectMetaKey, projectRevisionKey, redactText, setupDraftKey, setupItemsOf, type SetupProposal } from "@rovara-code/contracts";
+import { WORKER_INVOCATION_FEATURES } from "@agentx/cloud-contracts";
 import { DRAFT_PROPOSE_WORDS, SETUP_APPLY_WORDS, SETUP_DRAFT_BUSY, SETUP_DRAFT_FAILURES, SETUP_DRAFT_NONE_TO_APPLY, SETUP_DRAFT_OLD, SETUP_DRAFT_PULL_REQUEST_ONCE, derivedRequestId, registerBuiltinSetupAppliers } from "../../packages/broker/src/rovara-code/setup-draft.js";
 import { DRAFT_CHECK_WORDS } from "../../packages/broker/src/rovara-code/setup-draft-check.js";
 import { SETUP_ITEM_WORDS, itemDigest, registerSetupItemApplier, unregisterSetupItemApplier } from "../../packages/broker/src/rovara-code/setup-items.js";

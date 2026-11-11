@@ -1,7 +1,8 @@
 // Plan 3 Task 16a (PF31e): the run input, who a run is for, the result contract and the agent-step payload.
 import { describe, expect, it } from "vitest";
 import { PayerSchema, ResultContractSchema, RunInputSchema, WorkOriginSchema, WORK_ORIGINS, codingRequestText, renderRunInput, type RunInput } from "@rovara-code/contracts";
-import { AgentStepPayloadSchema, AGENT_STEP_FEATURE, AGENT_STEP_INPUTS_MAX_BYTES, AGENT_STEP_INSTRUCTIONS_MAX_BYTES, AGENT_RUN_FEATURE, MODEL_ROUTE_FEATURE, ModelRouteSchema, WORKER_INVOCATION_FEATURES } from "@rovara-code/contracts";
+import { AgentStepPayloadSchema, AGENT_STEP_FEATURE, AGENT_STEP_INPUTS_MAX_BYTES, AGENT_STEP_INSTRUCTIONS_MAX_BYTES, AGENT_RUN_FEATURE, MODEL_ROUTE_FEATURE, ModelRouteSchema } from "@rovara-code/contracts";
+import { WORKER_INVOCATION_FEATURES } from "@agentx/cloud-contracts";
 import { WorkerInvocationSchema } from "../../packages/cloud-contracts/src/protocol.js";
 
 const DEVELOPER = "a".repeat(64);

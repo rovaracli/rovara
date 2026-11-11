@@ -53,6 +53,8 @@ export interface DeployEnvironmentInput {
    * CloudFormation (init/pass-role.ts). Called once, just before the first stack deployed through that
    * role (any part but access); a throw stops the deploy there. The templates engine never calls it. */
   ensurePassRole?: () => Promise<unknown>;
+  /** The cdk engine, Public install with the Team record: puts the release's embedder image into the install's own repository (deploy/copy-embedder-image.ts). Called once, right after the access stack (which creates the repository) when this run deploys it, otherwise before the first other stack, so a refusal stops the deploy before foundation, identity, runtime and the control plane change and never leaves the environment split across releases. */
+  afterAccess?: () => Promise<unknown>;
   /** The cdk engine, Enterprise only: makes a retained edition record the foundation stack no longer owns creatable again. Called just before the foundation part deploys. */
   adoptEditionRecord?: () => Promise<unknown>;
   /** After the foundation deploy: `true` when it completed (the backup is no longer needed), `false` when it did not (the record is put back from the backup). */
@@ -333,12 +335,17 @@ export async function deployEnvironment(input: DeployEnvironmentInput): Promise<
     }
 
     let passRoleChecked = false;
+    let imagesPublished = false;
     for (const part of fullOrder) {
       if (!deploySet.has(part)) continue;
       const stackName = environmentStackName(env, part);
       if (part !== "access" && engine === "cdk" && !passRoleChecked && input.ensurePassRole !== undefined) {
         passRoleChecked = true;
         await input.ensurePassRole();
+      }
+      if (part !== "access" && engine === "cdk" && !imagesPublished && input.afterAccess !== undefined) {
+        imagesPublished = true;
+        await input.afterAccess();
       }
       const rawParameters = stackParameters(part, fullAnswers, outputs, { packages: engine === "templates" });
       // F24: only when this deploy is actually sending a stored sign-in choice to the control plane

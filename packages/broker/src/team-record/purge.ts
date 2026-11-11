@@ -6,7 +6,8 @@
 // gone (a vector that cannot be deleted keeps its tombstoned row, so the next run knows what to delete). A step that cannot run (no vector port, a failed batch)
 // leaves the item blocked and counted, never silently done.
 import { createHash } from "node:crypto";
-import { AudienceSchema, type Audience, type OrgId, type TrustClass } from "@rovara-code/contracts";
+import { type OrgId, type TrustClass } from "@rovara-code/contracts";
+import { AudienceSchema, type Audience } from "@agentx/cloud-contracts";
 import { recordDerivationKey, recordFactKey, teamRecordSourceHash } from "@agentx/cloud-contracts";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import type { Item } from "../agents/table-writes.js";

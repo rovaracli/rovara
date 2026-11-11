@@ -8,7 +8,8 @@
 //   - the run's first commands are the environment's checks, in order (`taskWorkflowCheckPolicy` puts them first; a task whose policy was edited since reads as "not the environment's" and runs as it is).
 // A coverage map is not sent: no run produces one yet, and a map of any size would not fit a dispatch. Without it a selection by coverage map runs the whole check and says why.
 import { EDITION_ENV_VAR } from "@agentx/cloud-contracts";
-import { agentXError, testEnvDigest, type OrgId, type ProjectCommand, type TestEnvTaskPlan } from "@rovara-code/contracts";
+import { agentXError, testEnvDigest, type OrgId, type ProjectCommand } from "@rovara-code/contracts";
+import { type TestEnvTaskPlan } from "@agentx/cloud-contracts";
 import { DEPENDENCY_PLAN_REFUSAL_WORDS, taskDependencyPlansOf, type ServiceCatalogSource } from "./dependency-plan.js";
 import { lastNightlyFailures } from "./nightly.js";
 import { readApprovedSeedFiles, type TestEnvDeps } from "../org/test-environment.js";
@@ -17,7 +18,8 @@ import { readTestEnvPin, usableTestEnvironment } from "./usable.js";
 import { testEnvironmentEnabled } from "./switch.js";
 import { DEPENDENCIES_WITH_DEVCONTAINER_WORDS, projectUsesDevcontainer } from "./devcontainer-check.js";
 import { approvedFixturesOf, recordsOf, type FixtureStoreFactory } from "./fixture-lookup.js";
-import { testServicesEnabled } from "./test-services-switch.js";
+import { projectImagesEnabled, testServicesEnabled } from "./test-services-switch.js";
+import { readCompanyImages } from "../org/company-test-image-store.js";
 
 const sameCommand = (left: ProjectCommand, right: ProjectCommand): boolean => left.cwd === right.cwd && left.executable === right.executable && JSON.stringify(left.args) === JSON.stringify(right.args);
 
@@ -73,7 +75,9 @@ async function planOf(
     const fixtures = await approvedFixturesOf(recordsOf(deps.fixtureStore), input.orgId, input.project, body);
     // Review I3: the seed files as the approval bound them (a file seed with no bound content is refused: approve again).
     const approvedSeedFiles = await readApprovedSeedFiles(deps, input.orgId, input.project, found.environment.revision);
-    const planned = taskDependencyPlansOf({ body, catalog, edition: env[EDITION_ENV_VAR] === "enterprise" ? "enterprise" : "public", projectId: input.project, fixtures, approvedSeedFiles });
+    // Switch `pj`: the company's approved extra images, read only for an environment that names one (any other plan reads nothing more than before).
+    const companyImages = projectImagesEnabled(env) && body.dependencies.some((dependency) => dependency.backing.kind === "project_image") ? await readCompanyImages(deps, input.orgId) : undefined;
+    const planned = taskDependencyPlansOf({ body, catalog, edition: env[EDITION_ENV_VAR] === "enterprise" ? "enterprise" : "public", projectId: input.project, fixtures, approvedSeedFiles, ...(companyImages === undefined ? {} : { companyImages }) });
     if (!planned.ok) throw agentXError("RUNTIME_UNAVAILABLE", DEPENDENCY_PLAN_REFUSAL_WORDS[planned.reason]);
     dependencies = planned.dependencies;
   }

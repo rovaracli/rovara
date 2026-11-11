@@ -5,7 +5,7 @@ import { TestEnvironmentBodySchema, projectMetaKey, projectPk, projectRevisionKe
 import { approveTestEnvironment, proposalSeedTrust, proposeTestEnvironment, recordTestEnvProveReport, type TestEnvDeps } from "../../packages/broker/src/org/test-environment.js";
 import { lockLookSeeds, seedCardLinesOf, seedRisksOf, seedTrustOf, type SeedRepoSources } from "../../packages/broker/src/test-env/seed-lock.js";
 import { taskDependencyPlansOf } from "../../packages/broker/src/test-env/dependency-plan.js";
-import { TaskDependencyPlanSchema } from "@rovara-code/contracts";
+import { TaskDependencyPlanSchema } from "@agentx/cloud-contracts";
 import { pinnedCatalog, verifiedCatalog } from "../support/catalog-pinning.js";
 import { treeReader } from "../../packages/broker/src/aws/broker/seed-lock-wiring.js";
 import { capturingAuditDeps, AUDIT_CAPTURE_TABLE } from "../support/audit-capture.js";

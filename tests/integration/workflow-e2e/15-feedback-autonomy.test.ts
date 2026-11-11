@@ -4,7 +4,8 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { fauxAssistantMessage, type FauxResponseStep } from "@earendil-works/pi-ai";
-import { AGENT_WORKER_OUTDATED, FEEDBACK_NOT_RUN_REASON, FEEDBACK_STOPPED_REASON, CI_OUTPUT_BLOCK_HEADER, EMPTY_RECIPE, FEEDBACK_AUTO_ROUNDS_MAX, WORKER_INVOCATION_FEATURES, WorkflowDecisionRequestSchema, WorkflowFeedbackFindingsDecisionRequestSchema, feedbackDecidedByText, feedbackFixedReply, type WorkflowProgram } from "@rovara-code/contracts";
+import { AGENT_WORKER_OUTDATED, FEEDBACK_NOT_RUN_REASON, FEEDBACK_STOPPED_REASON, CI_OUTPUT_BLOCK_HEADER, EMPTY_RECIPE, FEEDBACK_AUTO_ROUNDS_MAX, WorkflowDecisionRequestSchema, WorkflowFeedbackFindingsDecisionRequestSchema, feedbackDecidedByText, feedbackFixedReply, type WorkflowProgram } from "@rovara-code/contracts";
+import { WORKER_INVOCATION_FEATURES } from "@agentx/cloud-contracts";
 import { WorkflowSnapshotSchema } from "@agentx/cloud-contracts";
 import { taskRecipeKey } from "../../../packages/broker/src/developer/task-records.js";
 import { TEST_ORG } from "../../support/orgs.js";

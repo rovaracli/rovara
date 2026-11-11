@@ -1,3 +1,6 @@
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { inflateSync } from "node:zlib";
 import { Stack } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { beforeAll, describe, expect, it } from "vitest";
@@ -5,6 +8,8 @@ import { buildAgentXApp } from "../../infra/lib/app.js";
 import { INFERENCE_PATHS } from "@rovara-code/contracts";
 import { litellmConfig } from "../../packages/model-proxy/src/litellm-config.js";
 import { ROVARA_GUARD_PY } from "../../packages/model-proxy/src/rovara-guard.js";
+import { ROVARA_GUARD_PACKED, ROVARA_GUARD_SHA256 } from "../../packages/model-proxy/src/rovara-guard-packed.js";
+import { litellmStartCommand } from "../../packages/model-proxy/src/start-command.js";
 import { DEFAULT_BEDROCK_MODELS } from "../../packages/model-runtime/src/config.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
 
@@ -84,8 +89,15 @@ describe("model proxy infrastructure (named environments)", () => {
     const definition = container();
     expect(definition.Image).toBe(LITELLM_IMAGE);
     expect(definition.EntryPoint).toEqual(["sh", "-c"]);
-    // The guard module is written next to the config, where LiteLLM loads callbacks from (spike, question 8).
-    expect(definition.Command).toEqual(['printf "%s" "$LITELLM_CONFIG_YAML" > /tmp/litellm.yaml && printf "%s" "$ROVARA_GUARD_PY" > /tmp/rovara_guard.py && exec litellm --config /tmp/litellm.yaml --port 4000']);
+    // The guard module is unpacked next to the config, where LiteLLM loads callbacks from (spike, question 8), and checked against its pinned SHA-256 before LiteLLM starts.
+    expect(definition.Command).toEqual([litellmStartCommand(4000)]);
+    const [command] = definition.Command;
+    expect(command).toMatch(/^printf "%s" "\$LITELLM_CONFIG_YAML" > \/tmp\/litellm\.yaml && python -I -c '[^']+' && exec litellm --config \/tmp\/litellm\.yaml --port 4000$/);
+    // the check comes before LiteLLM, names the hash of the spike's file, and stops the container (sys.exit) rather than carrying on with a guard that does not match
+    expect(command!.indexOf(ROVARA_GUARD_SHA256)).toBeGreaterThan(-1);
+    expect(command!.indexOf(ROVARA_GUARD_SHA256)).toBeLessThan(command!.indexOf("exec litellm"));
+    expect(command).toContain("or sys.exit(");
+    expect(ROVARA_GUARD_SHA256).toBe(createHash("sha256").update(readFileSync(new URL("../../docs/learnings/model-sources-spike/rovara_guard.py", import.meta.url))).digest("hex"));
     const yaml = definition.Environment.find((variable) => variable.Name === "LITELLM_CONFIG_YAML")!.Value as Ref;
     // The region is the one deploy-time value in the text.
     const text = yaml["Fn::Join"]![1].map((part) => (typeof part === "string" ? part : (part as Ref).Ref === "AWS::Region" ? "us-east-1" : "?")).join("");
@@ -108,14 +120,21 @@ describe("model proxy infrastructure (named environments)", () => {
     // the router does not retry under the call id the guard holds for once
     expect(text).toContain("router_settings:\n  num_retries: 0\n");
     expect(text).not.toMatch(/configurable_clientside_auth_params|allow_client_side_credentials|forward_client_headers_to_llm_api|forward_traceparent/);
-    // The module written next to the config is the one the spike verified.
-    expect(definition.Environment).toContainEqual({ Name: "ROVARA_GUARD_PY", Value: ROVARA_GUARD_PY });
+    // The module written next to the config is the one the spike verified: the task definition carries it packed, and unpacked it is the same bytes (and the text the package holds).
+    expect(definition.Environment).toContainEqual({ Name: "ROVARA_GUARD_Z", Value: ROVARA_GUARD_PACKED });
+    const unpacked = inflateSync(Buffer.from(ROVARA_GUARD_PACKED, "base64"));
+    expect(unpacked.equals(readFileSync(new URL("../../docs/learnings/model-sources-spike/rovara_guard.py", import.meta.url)))).toBe(true);
+    expect(unpacked.toString("utf8")).toBe(ROVARA_GUARD_PY);
+    expect(createHash("sha256").update(unpacked).digest("hex")).toBe(ROVARA_GUARD_SHA256);
   });
 
-  it("keeps the task definition well inside ECS's 64 KiB limit with the guard (and its budget section) carried as an environment value", () => {
-    // ECS refuses a task definition over 64 KiB; the guard is the bulk of it. The region token stands in for the deploy-time value.
+  it("keeps the task definition well inside ECS's 64 KiB limit: the guard travels packed, not as its 40 KB text", () => {
+    // ECS refuses a task definition over 64 KiB. The guard text alone was 40 KB of 46.9 KB used; packed it is about 16 KB, so the container definitions take about 20.8 KB (synth, staging) and leave room for
+    // the guard to double. The region token stands in for the deploy-time value. The ceiling is 32 KiB (half the limit); a guard that no longer packs under it needs a derived image.
     const size = Buffer.byteLength(JSON.stringify(taskDefinition().Properties.ContainerDefinitions));
-    expect(size).toBeLessThan(56 * 1024);
+    expect(size).toBeLessThan(32 * 1024);
+    expect(size).toBeLessThan(Buffer.byteLength(ROVARA_GUARD_PY));
+    expect(JSON.stringify(taskDefinition().Properties.ContainerDefinitions)).not.toContain("proxy_handler_instance = RovaraGuard()");
   });
 
   it("keeps models in the database, bounds a request's time at the load balancer's idle timeout, and puts no provider or AWS credential in the environment", () => {
@@ -127,7 +146,7 @@ describe("model proxy infrastructure (named environments)", () => {
     expect(Number(timeout!.Value)).toBeLessThanOrEqual(900);
     // The /anthropic/... and /bedrock/... pass-through routes would use any credential found here (spike notes for Task 25).
     expect(environment.map((variable) => variable.Name).sort()).toEqual([
-      "AWS_REGION", "LITELLM_CONFIG_YAML", "LITELLM_LOCAL_MODEL_COST_MAP", "REQUEST_TIMEOUT", "ROVARA_GUARD_PY", "STORE_MODEL_IN_DB",
+      "AWS_REGION", "LITELLM_CONFIG_YAML", "LITELLM_LOCAL_MODEL_COST_MAP", "REQUEST_TIMEOUT", "ROVARA_GUARD_Z", "STORE_MODEL_IN_DB",
     ]);
     expect(JSON.stringify(container().Secrets)).not.toMatch(/Anthropic|OpenAI|OpenRouter/);
   });

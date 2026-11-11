@@ -15,6 +15,7 @@
 import { createHash } from "node:crypto";
 import { DeleteCommand, GetCommand, PutCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { INDEX_EXPIRY_ATTRIBUTE, SetupValueSourceSchema, TestEnvProveReportSchema, TestEnvironmentBodySchema, TestEnvironmentSchema, agentXError, mediaTierAllowed, projectAllows, projectMetaKey, projectPk, testEnvApprovalRisk, testEnvDigest, testEnvIsProved, testEnvLessSafeChanges, testEnvProdDenyViolations, type DecisionRisk, type OrgId, type ProjectRole, type TestEnvLessSafeField, type TestEnvironment, type TestEnvironmentBody, type TestEnvSeedTrust, catalogEntryById, type VerifiedCatalog } from "@rovara-code/contracts";
+import { EDITION_ENV_VAR } from "@agentx/cloud-contracts";
 import { auditOccurrence, auditProjectTestEnvChanged } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, tryAuditEvent, type AuditDeps, type TransactItem } from "../audit/outbox.js";
@@ -22,10 +23,12 @@ import { readSecondPersonApprovalEvidence, type SecondPersonEvidenceDependencies
 import { decideSecondPersonApproval } from "./second-person-approval.js";
 import { clearSetupRunProposal } from "../rovara-code/setup-run-proposal.js";
 import { dependenciesStartableNow, emulatorServesAll, isPrepulledEntry } from "../test-env/dependency-plan.js";
+import { COMPANY_IMAGE_REFUSAL_WORDS, serviceImageServed } from "../test-env/company-images.js";
+import { readCompanyImages } from "./company-test-image-store.js";
 import { approvedFixturesOf, recordsOf, type FixtureStoreFactory } from "../test-env/fixture-lookup.js";
 import { refuseDependenciesWithDevcontainer } from "../test-env/devcontainer-check.js";
 import { SEED_COMMAND_PROBLEM_WORDS, dependencySeedCommands, seedCommandProblem } from "../test-env/refused-command.js";
-import { testServicesEnabled } from "../test-env/test-services-switch.js";
+import { projectImagesEnabled, testServicesEnabled } from "../test-env/test-services-switch.js";
 import { parseSeedChecks, seedTrustOf, type SeedCheck } from "../test-env/seed-lock.js";
 import { DynamoSoleOwnerSwitch } from "../lessons/dynamo-settings.js";
 import type { TeamRecordTable } from "../team-record/types.js";
@@ -161,7 +164,7 @@ async function refuseDependenciesNotAvailable(deps: TestEnvDeps, orgId: OrgId, p
   const changed = (body.dependencies ?? []).filter((dependency) => !approved.has(JSON.stringify(dependency)));
   if (changed.length === 0) return;
   if (!testServicesEnabled(deps.env)) throw invalid("dependencies: test services are not switched on for this install");
-  if (!dependenciesStartableNow(changed)) throw invalid(DEPENDENCIES_NOT_AVAILABLE_YET);
+  if (!dependenciesStartableNow(changed, { companyImages: projectImagesEnabled(deps.env) })) throw invalid(DEPENDENCIES_NOT_AVAILABLE_YET);
   // A `local` dependency whose catalog entry has no pinned digest is the same "not available yet" (the signed catalog the release ships names no image to start): refused here too, not only when a task is planned. The catalog
   // is asked only when the caller's dependencies carry one (the route's do); one that cannot be read leaves the judgment to the task's plan, which refuses it in fixed words.
   const source = (deps as { serviceCatalog?: () => Promise<VerifiedCatalog | undefined> }).serviceCatalog;
@@ -172,6 +175,18 @@ async function refuseDependenciesNotAvailable(deps: TestEnvDeps, orgId: OrgId, p
       const entry = catalogEntryById(catalog, dependency.backing.catalogId);
       if (!catalog.pinned || entry === undefined || entry.image.digest === undefined || !isPrepulledEntry(catalog, dependency.backing.catalogId)) throw invalid(DEPENDENCIES_NOT_AVAILABLE_YET);
       if (dependency.backing.kind === "emulated" && !emulatorServesAll(entry, dependency.backing.awsServices)) throw invalid(DEPENDENCIES_NOT_AVAILABLE_YET);
+    }
+  }
+  // A company-approved extra image (switch `pj`) is approved only while it is on this company's approved list: the exact image an admin approved, not a waiting one, not one at another digest, and (when the catalog can be read) one
+  // the signed catalog has a run profile for. The plan asks again at every run, so an image revoked after this approval is refused there.
+  const ownImages = changed.flatMap((dependency) => (dependency.backing.kind === "project_image" ? [dependency.backing.imageId] : []));
+  if (ownImages.length > 0) {
+    if (!projectImagesEnabled(deps.env)) throw invalid("dependencies: company-approved images are not switched on for this install");
+    const approved = await readCompanyImages(deps, orgId);
+    for (const imageId of ownImages) {
+      const served = serviceImageServed({ catalog, edition: deps.env?.[EDITION_ENV_VAR] === "enterprise" ? "enterprise" : "public", approved, request: { imageId } });
+      // Without a readable catalog the judgment of the run profile is left to the task's plan, as for a catalog image; the approval itself is checked always.
+      if (!served.ok && !(catalog === undefined && served.reason === "no_catalog" && approved.some((image) => image.imageId === imageId && image.status === "approved"))) throw invalid(`dependencies: ${COMPANY_IMAGE_REFUSAL_WORDS[served.reason]}`);
     }
   }
   // Slice 3: a fake is approved only for a fixture set that is approved for THIS organisation, for the dependency's own family (the store is asked; without one no fake is "available").

@@ -32,7 +32,12 @@ describe("broker.ts hands the broker its edition, stores, plug-ins and guard", (
 
 describe("the sign-in Lambda hands its handler the edition, the stores, the ledger and the guard", () => {
   const identity = source("developer-identity.ts");
-  const handlerCall = identity.slice(identity.indexOf("return createDeveloperIdentityHandler({"));
+  // What the handler is given is assembled by buildDependencies (build() only passes it to createDeveloperIdentityHandler), so the wiring is read from there.
+  const handlerCall = identity.slice(identity.indexOf("export function buildDependencies"), identity.indexOf("export const handler"));
+  it("reads the wiring from a non-empty slice", () => {
+    expect(handlerCall).toContain("return {\n    config,");
+    expect(identity).toMatch(/createDeveloperIdentityHandler\(buildDependencies\(env\)\)/);
+  });
   it.each([
     ["the edition policy", /\.\.\.\(editionPolicy === undefined \? \{\} : \{ editionPolicy \}\)/],
     ["the company sign-in stores", /\.\.\.\(ssoStores === undefined \? \{\} : \{ sso: ssoStores \}\)/],

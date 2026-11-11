@@ -1,5 +1,6 @@
 import { createServer, type Server } from "node:http";
-import { AgentXError, WORKER_PING_FEATURES_FIELD, modelFailureCodeOf, noChangeFindingsFrom, redactText, type WorkerInvocationFeature } from "@rovara-code/contracts";
+import { AgentXError, WORKER_PING_FEATURES_FIELD, modelFailureCodeOf, noChangeFindingsFrom, redactText } from "@rovara-code/contracts";
+import { type WorkerInvocationFeature } from "@agentx/cloud-contracts";
 import { WorkerInvocationSchema, type WorkerInvocation } from "@agentx/cloud-contracts";
 import { WORKER_IMPLEMENTED_FEATURES } from "./implemented-features.js";
 import type { OperationJournal } from "./journal.js";

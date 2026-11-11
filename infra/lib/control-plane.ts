@@ -61,6 +61,7 @@ import { BrokerNames, BrokerSettings } from "./broker-names.js";
 import { REQUALIFY_CONTEXT_KEY, REQUALIFY_DEFAULT_HOUR_UTC, RuntimeRequalify } from "./runtime-requalify.js";
 import { swebenchNames } from "./swebench-eval.js";
 import { SWEBENCH_DEPLOYMENT_MODE } from "./swebench-eval-definition.js";
+import { markCodeContractsPureCommand } from "./code-contracts-bundling.js";
 
 const MAX_DISPATCH_ATTEMPTS = 5;
 // Matches MAX_RECEIVE_COUNT in packages/slack-service, which reports the final attempt in the thread.
@@ -1861,16 +1862,15 @@ export function packagedFunction(
       minify: true,
       sourceMap: true,
       target: "node22",
-      ...(extraFiles.length === 0 && extraDirectories.length === 0 ? {} : {
-        commandHooks: {
-          beforeBundling: () => [],
+      commandHooks: {
+          beforeBundling: (inputDir: string) => [markCodeContractsPureCommand(inputDir)],
           beforeInstall: () => [],
           afterBundling: (_inputDir: string, outputDir: string) => {
+            if (extraFiles.length === 0 && extraDirectories.length === 0) return [];
             const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
             return [...extraFiles.map(([source, name]) => `cp ${quote(source)} ${quote(`${outputDir}/${name}`)}`), ...extraDirectories.map(([source, name]) => `cp -R ${quote(source)} ${quote(`${outputDir}/${name}`)}`)];
           },
-        },
-      }),
+      },
     },
   });
 }

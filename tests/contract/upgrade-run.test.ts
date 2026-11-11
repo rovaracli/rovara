@@ -494,6 +494,28 @@ describe("agentx upgrade with the cdk engine", () => {
     expect(result.doctor).toEqual({ failed: 0, warned: 0 });
   });
 
+  // The Public install's embedder image copy (Lambda cannot pull from the pull-through cache): `prepare` returns the copy, and runUpgrade must hand it to deployEnvironment, which runs it right after
+  // the access stack. Deleting the wiring in run.ts leaves the control plane naming an image nothing copied.
+  it("runs the prepared embedder image copy right after the access stack and before every other stack, only on the cdk engine, and stops there when it refuses", async () => {
+    const order: string[] = [];
+    const h = await cdk();
+    const prepare = h.deps.prepare.bind(h.deps);
+    h.deps.prepare = async (input) => ({ ...(await prepare(input)), publishEmbedderImage: async () => { order.push(`copy after ${h.deployer.deployed.join(",")}`); } });
+    await runUpgrade({ ...options, source: "/src" }, h.deps);
+    expect(order).toEqual(["copy after agentx-staging-access"]);
+    expect(h.deployer.deployed).toEqual(["agentx-staging-access", "agentx-staging-foundation", "agentx-staging-identity", "agentx-staging-runtime", "agentx-staging-control-plane", "agentx-staging-slack"]);
+    // a refusal stops the upgrade before any other stack changes
+    const refused = await cdk();
+    const refusedPrepare = refused.deps.prepare.bind(refused.deps);
+    refused.deps.prepare = async (input) => ({ ...(await refusedPrepare(input)), publishEmbedderImage: async () => { throw new Error("the copy refused"); } });
+    await expect(runUpgrade({ ...options, source: "/src" }, refused.deps)).rejects.toThrow("the copy refused");
+    expect(refused.deployer.deployed).toEqual(["agentx-staging-access"]);
+    // nothing prepared: nothing runs
+    const plain = await cdk();
+    await runUpgrade({ ...options, source: "/src" }, plain.deps);
+    expect(order).toHaveLength(1);
+  });
+
   // Issue 152 replaces live check L7's refusal: a source-built CLI takes the version from the tag.
   it("with a source-built CLI and no --release or --to, builds the release from --source: the tag's version", async () => {
     const built: Array<{ source: string; images?: { worker?: string; slack?: string; bootStage2Sha256?: string } }> = [];

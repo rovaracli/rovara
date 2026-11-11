@@ -13,7 +13,7 @@ export type FakeOrigins = ReadonlyMap<string, { origin: "recorded" | "hand_writt
 export function backingWords(backing: TestEnvDependency["backing"], origins?: FakeOrigins): string {
   switch (backing.kind) {
     case "local": return backing.substituteImage === undefined ? "runs the real software from Rovara's image list" : "runs your company's own build of the image (a second person approves this)";
-    case "project_image": return "runs your own image (a second person approves this)";
+    case "project_image": return "runs an extra image your company's admin approved, with the same limits as Rovara's own (a second person approves adding it)";
     case "emulated": return "runs against Rovara local AWS. Not checked here: AWS permissions and exact AWS behaviour";
     case "test_account": return "uses your test account in sealed checks (a second person approves this)";
     case "fake": {

@@ -31,6 +31,8 @@ const TICKETS_PER_APPROVAL_PER_DAY = 20;
 /** Each member's share of an approval's daily cap, so one eligible member cannot use it up and block the others. */
 const TICKETS_PER_MEMBER_PER_APPROVAL_PER_DAY = 5;
 const CREATE_USERS_PER_MEMBER_PER_DAY = 1;
+const INVITE_USERS_PER_INVITE_PER_DAY = 3;
+const INVITE_USERS_PER_SOURCE_PER_HOUR = 10;
 const HOUR = 3600;
 const DAY = 86_400;
 
@@ -76,22 +78,37 @@ export class DecideStore {
   }
 
   /** Counts one use of `key` in its window, or refuses with 429 when the window is full. The item expires with a margin after its window. */
-  private async take(key: { pk: string; sk: string }, max: number, windowEndsAt: number): Promise<void> {
+  private async take(key: { pk: string; sk: string }, max: number, windowEndsAt: number): Promise<number> {
     try {
-      await this.input.documentClient.send(new UpdateCommand({
+      const updated = await this.input.documentClient.send(new UpdateCommand({
         TableName: this.input.tableName, Key: key,
         UpdateExpression: "SET expiresAt = :ttl ADD hits :one",
         ConditionExpression: "attribute_not_exists(hits) OR hits < :max",
         ExpressionAttributeValues: { ":ttl": windowEndsAt + HOUR, ":one": 1, ":max": max },
-      }));
+        ReturnValues: "ALL_NEW",
+      })) as { Attributes?: { hits?: unknown } } | undefined;
+      return typeof updated?.Attributes?.hits === "number" ? updated.Attributes.hits : 0;
     } catch (error) {
       if (conditionFailed(error)) throw tooMany();
       throw error;
     }
   }
-  private async takeInWindow(scope: string, id: string, max: number, windowSeconds: number): Promise<void> {
+  private async takeInWindow(scope: string, id: string, max: number, windowSeconds: number): Promise<number> {
     const bucket = Math.floor(this.seconds() / windowSeconds);
-    await this.take(rateKey(scope, id, String(bucket)), max, (bucket + 1) * windowSeconds);
+    return this.take(rateKey(scope, id, String(bucket)), max, (bucket + 1) * windowSeconds);
+  }
+  /** Gives back one use of a window taken by `takeInWindow`. Best effort: a failure only makes the limit stricter. */
+  private async giveBack(scope: string, id: string, windowSeconds: number): Promise<void> {
+    const bucket = Math.floor(this.seconds() / windowSeconds);
+    try {
+      await this.input.documentClient.send(new UpdateCommand({
+        TableName: this.input.tableName, Key: rateKey(scope, id, String(bucket)),
+        UpdateExpression: "ADD hits :minus", ConditionExpression: "attribute_exists(hits) AND hits > :zero",
+        ExpressionAttributeValues: { ":minus": -1, ":zero": 0 },
+      }));
+    } catch (error) {
+      if (!conditionFailed(error)) throw error;
+    }
   }
 
   /**
@@ -158,16 +175,30 @@ export class DecideStore {
 
   /** Gives back a slot taken by `takeCreateUserSlot` for an AdminCreateUser that did not succeed. Best effort: a failure only makes the limit stricter. */
   async releaseCreateUserSlot(developerId: string): Promise<void> {
-    const bucket = Math.floor(this.seconds() / DAY);
+    await this.giveBack("CREATE", developerId, DAY);
+  }
+
+  /**
+   * Invitation only (the invite page's email form): the pool user of an address a person typed on a LINK invite is made at most 3 times per invite per day and 10 times per source
+   * address per hour, so a leaked link cannot fill the pool or turn the sign-in email into a mail cannon. 429 with the one text otherwise. `sourceHash` is a hash, never the address.
+   * `sourceHash` is absent when the request carried no source address, and then only the per-invite cap applies. Returns how many the invite has made today, counting this one. Only a user that did not exist yet takes a slot.
+   */
+  async takeInviteUserSlot(inviteHash: string, sourceHash?: string): Promise<number> {
+    const count = await this.takeInWindow("INVITE_USER", inviteHash, INVITE_USERS_PER_INVITE_PER_DAY, DAY);
+    if (sourceHash === undefined) return count;
     try {
-      await this.input.documentClient.send(new UpdateCommand({
-        TableName: this.input.tableName, Key: rateKey("CREATE", developerId, String(bucket)),
-        UpdateExpression: "ADD hits :minus", ConditionExpression: "attribute_exists(hits) AND hits > :zero",
-        ExpressionAttributeValues: { ":minus": -1, ":zero": 0 },
-      }));
+      await this.takeInWindow("INVITE_USER_SRC", sourceHash, INVITE_USERS_PER_SOURCE_PER_HOUR, HOUR);
     } catch (error) {
-      if (!conditionFailed(error)) throw error;
+      await this.giveBack("INVITE_USER", inviteHash, DAY).catch(() => undefined);
+      throw error;
     }
+    return count;
+  }
+
+  /** Gives back the slots of `takeInviteUserSlot` for a creation that did not succeed. */
+  async releaseInviteUserSlot(inviteHash: string, sourceHash?: string): Promise<void> {
+    await this.giveBack("INVITE_USER", inviteHash, DAY);
+    if (sourceHash !== undefined) await this.giveBack("INVITE_USER_SRC", sourceHash, HOUR);
   }
 
   async putState(state: string, record: DecideState): Promise<void> {

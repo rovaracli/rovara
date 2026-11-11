@@ -8,7 +8,8 @@
 // Every word a repository or a person wrote (a dependency's name) goes through `inertLine`, then has its markdown characters escaped (names are joined into one line, so two harmless names could make a link, a
 // strike-through or a code span together), and every finished line is checked again as a whole (`dependencyLineIsInert`); the digest and the date are checked against their shape and otherwise shown as unknown; every other word is fixed
 // here or in the contract. The label is the pack's (the broker computed it from the pinned plan), never the worker's.
-import { EVIDENCE_FALLBACK_REASON_WORDS, evidenceDependencyLabelWords, type EvidenceDependency, type EvidencePack } from "@rovara-code/contracts";
+import { EVIDENCE_FALLBACK_REASON_WORDS, type EvidenceDependency, type EvidencePack } from "@rovara-code/contracts";
+import { evidenceDependencyLabelWords } from "@agentx/cloud-contracts";
 import { AWS_PERMISSIONS_NOT_CHECKED, AWS_PERMISSIONS_NOT_CHECKED_SHORT } from "./dependency-evidence.js";
 import { inertLine } from "./inert-text.js";
 
@@ -28,7 +29,7 @@ const shortDigest = (digest: string | undefined) => (digest !== undefined && /^[
 const recordedDate = (iso: string | undefined) => (iso !== undefined && /^\d{4}-\d{2}-\d{2}T/u.test(iso) ? iso.slice(0, 10) : "an unknown date");
 const fallbackWords = (dependency: EvidenceDependency) => (dependency.fellBack === undefined ? undefined : `fallback: ${EVIDENCE_FALLBACK_REASON_WORDS[dependency.fellBack.reason]}`);
 
-/** A label in a run of words: its parentheses become commas, so the entry has one pair of its own ("real (your image)" is "real, your image"). */
+/** A label in a run of words: its parentheses become commas, so the entry has one pair of its own ("real (company-approved image)" is "real, company-approved image"). */
 const inline = (words: string) => words.replace(" (", ", ").replace(/\)$/u, "");
 
 /**

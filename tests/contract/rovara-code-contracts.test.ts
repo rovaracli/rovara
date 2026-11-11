@@ -11,7 +11,7 @@ import { WorkflowSnapshotSchema, createWorkflowSnapshot } from "../../packages/c
 import { DeveloperTaskViewSchema } from "../../packages/cloud-contracts/src/developer-tasks.js";
 import { DeveloperTaskResponseSchema } from "../../packages/cloud-contracts/src/developer-tasks-node.js";
 import { AgentXErrorCodeSchema, errorStatus } from "@rovara-code/contracts";
-import { WORKER_INVOCATION_FEATURES } from "@rovara-code/contracts";
+import { WORKER_INVOCATION_FEATURES } from "@agentx/cloud-contracts";
 import { WorkerInvocationSchema } from "../../packages/cloud-contracts/src/protocol.js";
 import { codeMilestoneKey, codeSettingsKey, durationHistoryKey, githubMemberKey, memberGithubKey, mergeTrackingKey, prHeadKey, mergeCommitIndexKey, setupDraftKey, trashKey } from "@rovara-code/contracts";
 import { OrgIdSchema, type OrgId } from "@rovara-code/contracts";

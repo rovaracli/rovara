@@ -6,7 +6,8 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import { prepareCandidatePublicationCommit, repositoryGit, temporaryIndexTree } from "../../packages/worker/src/publish.js";
-import { WORKER_INVOCATION_FEATURES, type ActingAttribution } from "@rovara-code/contracts";
+import { type ActingAttribution } from "@rovara-code/contracts";
+import { WORKER_INVOCATION_FEATURES } from "@agentx/cloud-contracts";
 import { WorkerInvocationSchema } from "@agentx/cloud-contracts";
 import { WORKER_IMPLEMENTED_FEATURES } from "../../packages/worker/src/implemented-features.js";
 

@@ -521,6 +521,8 @@ describe("writeExportBundle", () => {
       "AWS::S3::Bucket": "ArtifactBucket",
       "AWS::S3::BucketPolicy": "ArtifactBucket",
       "AWS::ECR::PullThroughCacheRule": "PullThroughCache",
+      // A Public install's access stack lists the embedder's repository (outside the pull-through prefix: Lambda cannot pull from the cache); the deploying principal creates it.
+      "AWS::ECR::Repository": "EmbedderRepository",
       "AWS::IAM::Role": "IamRoles",
       "AWS::IAM::ManagedPolicy": "IamManagedPolicy",
     };
@@ -528,11 +530,14 @@ describe("writeExportBundle", () => {
     // accessDeployerStatements' doc comment) rather than folded silently into the required set.
     const GLOBAL_EXCLUDE = ["iam:PassRole"];
     const ECR_EXCLUDE = [...GLOBAL_EXCLUDE, "secretsmanager:GetSecretValue", "iam:CreateServiceLinkedRole"];
+    // The repository handler's kms:* actions are for a customer-managed key; the embedder's repository uses ECR's default encryption.
+    const ECR_REPOSITORY_EXCLUDE = [...GLOBAL_EXCLUDE, "kms:DescribeKey", "kms:CreateGrant", "kms:RetireGrant"];
 
     function resourceArnFor(resource: { Type: string; Properties?: Record<string, unknown> }): string {
       const props = resource.Properties ?? {};
       if (resource.Type === "AWS::S3::Bucket" || resource.Type === "AWS::S3::BucketPolicy") return `arn:aws:s3:::${STACK_NAME}-000000000000`;
       if (resource.Type === "AWS::ECR::PullThroughCacheRule") return "irrelevant-unscoped";
+      if (resource.Type === "AWS::ECR::Repository") return `arn:aws:ecr:${REGION}:${ACCOUNT}:repository/${props.RepositoryName as string}`;
       if (resource.Type === "AWS::IAM::Role") return `arn:aws:iam::${ACCOUNT}:role/${props.RoleName as string}`;
       if (resource.Type === "AWS::IAM::ManagedPolicy") return `arn:aws:iam::${ACCOUNT}:policy${props.Path as string}${props.ManagedPolicyName as string}`;
       throw new Error(`no resource ARN mapping for ${resource.Type}`);
@@ -545,11 +550,16 @@ describe("writeExportBundle", () => {
       const sid = SID_FOR_TYPE[resource.Type]!;
       const statement = accessDeployer.Statement.find((s) => s.Sid === sid)!;
       const resourceArn = resourceArnFor(resource);
-      const exclude = resource.Type === "AWS::ECR::PullThroughCacheRule" ? ECR_EXCLUDE : GLOBAL_EXCLUDE;
+      const exclude = resource.Type === "AWS::ECR::PullThroughCacheRule" ? ECR_EXCLUDE : resource.Type === "AWS::ECR::Repository" ? ECR_REPOSITORY_EXCLUDE : GLOBAL_EXCLUDE;
       for (const action of requiredActionsFor(handlerPermissions, resource.Type, exclude)) {
         expect(statementAllows(statement, action, resourceArn)).toBe(true);
       }
     }
+
+    // The embedder repository's statement names that one repository, and no other (not a bundle image's, not a pull-through one).
+    const embedderStatement = accessDeployer.Statement.find((s) => s.Sid === "EmbedderRepository")!;
+    expect([embedderStatement.Resource].flat()).toEqual([`arn:aws:ecr:${REGION}:${ACCOUNT}:repository/rovara-bundle/${ENV}/embedder`]);
+    for (const other of [`rovara-bundle/${ENV}/worker`, `agentx-${ENV}/embedder`, "rovara-bundle/other/embedder"]) expect(statementAllows(embedderStatement, "ecr:CreateRepository", `arn:aws:ecr:${REGION}:${ACCOUNT}:repository/${other}`), other).toBe(false);
 
     // The bucket declares no BucketName: CloudFormation names it itself at deploy time as
     // "<StackName>-<LogicalID>-<uniqueID>" (verified against the CloudFormation user guide), so its
