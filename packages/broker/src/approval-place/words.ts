@@ -11,6 +11,8 @@ export const signInAgainWords = (link: string | undefined): string =>
 export const linkAccountWords = (link: string | undefined): string => `Link your account to Rovara first, then try again${at(link)}`;
 /** The person is not the owner or a maintainer of the task's project. */
 export const notAnApproverWords = "Only the task owner or a project maintainer can approve this plan.";
+/** A maintainer deciding someone else's plan cannot set its run limit: the owner decides money. */
+export const RUN_LIMIT_OWNER_DECIDES_WORDS = "A plan's run limit is the task owner's to decide. Ask the owner to approve this plan.";
 /** A rejection is made in the app. */
 export const rejectInAppWords = (link: string | undefined): string => `Rejecting a plan is done in Rovara, signed in${at(link)}`;
 /** The place could not be judged (an unreadable setting, input the policy could not read). */
@@ -25,7 +27,7 @@ const PATTERNS: readonly RegExp[] = [
   new RegExp(String.raw`^Rejecting a plan is done in Rovara, signed in${URL_TAIL}$`, "u"),
   new RegExp(String.raw`^Rovara could not check where this plan can be approved\. Open it in Rovara${URL_TAIL}$`, "u"),
 ];
-const FIXED: ReadonlySet<string> = new Set([notAnApproverWords, placeUnavailableWords]);
+const FIXED: ReadonlySet<string> = new Set([notAnApproverWords, placeUnavailableWords, RUN_LIMIT_OWNER_DECIDES_WORDS]);
 
 /** Whether a refusal's text is one of these sentences (so Slack may say it to the presser). */
 export const isApprovalPlaceWords = (text: string): boolean => FIXED.has(text) || PATTERNS.some((pattern) => pattern.test(text));

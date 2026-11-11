@@ -1,6 +1,6 @@
-// UPSTREAM OWED (U4 lane): this file is a COPY of Rovara Code's packages/contracts/src/approval-place.ts from the Code lane branch `fix/code-approval-place-policy` at commit 82d0c8f7a (private remote, not yet in public code/next).
+// UPSTREAM OWED (U4 lane): this file is a COPY of Rovara Code's packages/contracts/src/approval-place.ts from the Code lane branch `fix/code-approval-place-policy` at commit 35e8330e5 (private remote, not yet in public code/next).
 // It is NOT vendored: `vendor/rovara-code` is pinned to a PUBLIC sha (PIN e99bcaf76), and this file is not in public Code yet, so the pin cannot move to it. Everything below this note is byte for byte the Code file
-// (sha256 efd86f7b2405f1ff3058bc542ca4ae4831e76c22983d181806c28ae57fd58401, checked by tests/contract/approval-place-upstream-copy.test.ts). When the controller has merged it into public code/next and the pin has moved past it, DELETE this copy and import `approvalPlaceDecision` from
+// (sha256 958f384a847909d4ee5ea69db52f9dfc68486ca03811802f40674d7c4c46c0a6, checked by tests/contract/approval-place-upstream-copy.test.ts). When the controller has merged it into public code/next and the pin has moved past it, DELETE this copy and import `approvalPlaceDecision` from
 // `@rovara-code/contracts`; do not edit it here (change Code first). The test fails if this body drifts from the recorded sha256.
 // Approval-place policy (owner decisions 62, 66, 83; requirements A-01, A-02, A-08, A-09, A-49, E-37, E-38): ONE pure function that says whether a person's answer to a decision may be taken from the place it came from, so
 // every surface (the app, a chat, a tracker or code-host comment, an AI tool or token) asks the same question and cannot invent its own rule. Nothing in it reads a store, a clock or a provider: the caller passes what it
@@ -16,7 +16,7 @@
 //   5. Where it may be answered, by answer and risk:
 //        approve  low     browser, tool, or an outside place by a linked person;
 //        approve  medium  browser; or an outside place by a linked person whose last INTERACTIVE Rovara sign-in is inside the company's window (default 24 h, 1 h to 7 days); a tool (an AI tool, the CLI or an API token) gets a link;
-//        approve  high    browser only, and only under the company's fresh sign-in (`freshSignIn`, decided by the caller with its own rule: Code's `checkApprovalSignIn`, Cloud's decide-grade step);
+//        approve  high    browser only, and only under the company's fresh sign-in (`freshSignIn`, decided by the caller with the rule it has: Code's `checkApprovalSignIn`, or an extra sign-in step an approvers plug-in asks for);
 //        reject   any     browser only (a signed-in session), under the fresh sign-in;
 //        request changes  any place a linked person can reach; no sign-in age.
 // The "recent" time is the person's last interactive Rovara sign-in (`Principal.authTime`, the adapter's own fact), never a refresh and never a sign-in at the outside service (decision Q3); a caller that cannot say passes none and the

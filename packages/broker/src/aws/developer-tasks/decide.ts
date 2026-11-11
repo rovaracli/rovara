@@ -41,7 +41,7 @@ import { decisionCardsEnabled } from "../../proof/switch.js";
 import { planFactsOf, planRiskOf } from "../../decisions/plan-risk.js";
 import { evaluateApprovalPlace, isChatCaller, type PlaceAnswer } from "../../approval-place/evaluate.js";
 import { noticeOwnerOfDecision } from "../../approval-place/owner-notice.js";
-import { placeUnavailableWords, placeWordsFor } from "../../approval-place/words.js";
+import { RUN_LIMIT_OWNER_DECIDES_WORDS, placeUnavailableWords, placeWordsFor } from "../../approval-place/words.js";
 import { auditApprovalPlaceDecided, auditOccurrence } from "../../audit/events.js";
 import { flushAuditEvents } from "../../audit/flush.js";
 import { auditPending, tryAuditEvents } from "../../audit/outbox.js";
@@ -214,6 +214,8 @@ export async function decideTaskWorkflow(
   if (seat === "maintainer" && (workflow.artifacts.find((artifact) => artifact.sha256 === request.artifactDigest)?.type !== "plan" || request.decision === "SKIP" || request.closeAsAnswered === true)) {
     throw agentXError("TASK_NOT_FOUND", "no task here that you can see");
   }
+  // The run limit is money, and the task's owner decides it: a maintainer's decision never carries an acknowledged limit and never raises one (`settleRunLimit` refuses a raise from this seat too).
+  if (seat === "maintainer" && request.acknowledgedRunLimitUsd !== undefined) throw agentXError("FORBIDDEN", RUN_LIMIT_OWNER_DECIDES_WORDS);
   // Design review (ON-1): while the stage is on, a design under review is approved ONLY through its decision card (`design-decision.ts`, which passes `designApproval`): that is where the approver's tier, sign-in, browser session,
   // reason for open blockers, membership fence and approval record are checked. Every other way in (this route, the task page, Slack, an AI tool) is refused for an APPROVE at the design. Sending changes back and rejecting are unchanged.
   if (request.decision === "APPROVE" && options.designApproval === undefined && workflow.designReview !== undefined && workflow.reviewPhase === "DESIGN" && designReviewEnabled()) {
@@ -477,7 +479,7 @@ export async function decideTaskWorkflow(
   // limit is raised, starts what the approval would have started.
   // QA6-12: an approval that names the limit it was shown (the task page does) is checked against the limit `acceptRunLimit` itself works out, inside `settleRunLimit`, so the limit
   // written is exactly the one acknowledged (a second, separate recompute could differ if the estimate's history or the spend policy changed in between).
-  const runLimit = request.decision === "APPROVE" && mode === "IMPLEMENT" && deps.modelAccess !== undefined ? await settleRunLimit(deps, caller, task, request.requestId, request.acknowledgedRunLimitUsd, caller.browserSession === true || options.via === "PAGE", options.acceptCopyRunLimit === true && isReplayCopy(task)) : undefined;
+  const runLimit = request.decision === "APPROVE" && mode === "IMPLEMENT" && deps.modelAccess !== undefined ? await settleRunLimit(deps, caller, task, request.requestId, request.acknowledgedRunLimitUsd, caller.browserSession === true || options.via === "PAGE", options.acceptCopyRunLimit === true && isReplayCopy(task), seat === "maintainer") : undefined;
   // The corrected plan's approval ends the E2E correction fence, whether coding starts now or waits for the run limit.
   const correctedPlan = correction !== undefined && request.decision === "APPROVE" && documentType === "plan"
     && currentPlan.sha256 !== correction.artifactSha256 && workflow.candidate?.digest === correction.candidateDigest
@@ -517,6 +519,8 @@ export async function decideTaskWorkflow(
     const fresh = await freshTaskOf();
     const view = await taskView(deps, fresh, { events: 0, details: false });
     await syncIndex(deps, fresh, view.status, view.updatedAt);
+    // The approval committed (coding waits only for the run limit's own approval), so its audit record and the owner's notice are due here as on the other path.
+    if (placed !== undefined) await recordPlaceDecision(deps, task, caller, request.requestId, placed);
     return { task: view };
   }
   try {
@@ -707,7 +711,7 @@ type RunLimitOutcome = { accepted: true; runLimitUsd: number; baselineUsd: numbe
  * (a proxy that can't say refuses the approval, as a Continue is). Not accepted: the `run_limit` request is made through Task 32's seam before anything is
  * written, so a workflow is never blocked on a request that was not made; without the seam (until Task 32 is wired) no request is made and the words are the same.
  */
-async function settleRunLimit(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, task: DeveloperTaskRecord, requestId: string, acknowledgedUsd: number | undefined, browser: boolean, copyAcceptsLimit = false): Promise<RunLimitOutcome> {
+async function settleRunLimit(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, task: DeveloperTaskRecord, requestId: string, acknowledgedUsd: number | undefined, browser: boolean, copyAcceptsLimit = false, ownerDecidesLimit = false): Promise<RunLimitOutcome> {
   const decision = await acceptRunLimit(
     // The approver's project role is read now: from the project's people where agents are set up, else through the caller's own project access.
     { ...estimateDependencies(deps), projectMembers: deps.agentRuns?.projectMembers ?? { roleOf: async () => (await deps.checkAccess(task.project)).role } },
@@ -715,6 +719,8 @@ async function settleRunLimit(deps: DeveloperTaskRouteDependencies, caller: Deve
   );
   // A task with no limit of its own runs on the per-task default, so a raise is measured against that.
   const currentUsd = task.budgetUsd ?? PER_TASK_BUDGET_USD;
+  // A maintainer deciding someone else's plan never raises the owner's run limit (money is the owner's): refused, with no request made and nothing written.
+  if (ownerDecidesLimit && (acknowledgedUsd !== undefined || runLimitRaises(currentUsd, decision.runLimitUsd))) throw agentXError("FORBIDDEN", RUN_LIMIT_OWNER_DECIDES_WORDS);
   // QA6-12: both outcomes carry the limit that would be set; a different one than the person was shown is refused before anything is asked or written.
   if (acknowledgedUsd !== undefined && decision.runLimitUsd !== acknowledgedUsd) {
     throw Object.assign(agentXError("CONFIG_INVALID", runLimitChangedMessage(acknowledgedUsd, decision.runLimitUsd, currentUsd, browser, planApprovalLink(deps, task).link)), { pageReason: "changed" });

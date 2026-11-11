@@ -21,6 +21,10 @@ import { capturingAuditDeps } from "../support/audit-capture.js";
 import { DEV_ISSUER, MAYA, OMAR, createSingleAnswerPlanBroker } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { planAnswer, planDocument } from "../support/plan-documents.js";
+import { fakeModelAccess } from "../support/fake-model-access.js";
+import { planRunLimitChange } from "../../packages/broker/src/spend/run-limit-change.js";
+import { runCostKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { RUN_LIMIT_OWNER_DECIDES_WORDS } from "../../packages/broker/src/approval-place/words.js";
 
 const PREPARED = { result: { preparedBase: [{ repositoryId: "demo", baseCommitSha: "e".repeat(40) }] } };
 const HOUR = 3_600_000;
@@ -37,13 +41,22 @@ const LOW = { document: { claims: [
 type Risk = "low" | "medium" | "high";
 type CallerOptions = { role?: OrgRole; browser?: boolean; session?: string; slackUserId?: string };
 
-async function world() {
+const PROXY_URL = "http://internal-proxy.example.test:4000";
+/** `proxy`: the model proxy is wired, as in a cloud install, so an approval settles the plan's run limit (a raise needs the amount acknowledged, and a tier too low blocks coding until the limit is approved). */
+async function world(options: { proxy?: boolean } = {}) {
   const audit = capturingAuditDeps();
-  const h = await createSingleAnswerPlanBroker({ brokerExtra: { agents: {} }, audit });
+  const access = options.proxy === true ? fakeModelAccess() : undefined;
+  const h = await createSingleAnswerPlanBroker({ brokerExtra: { agents: {}, ...(access === undefined ? {} : { modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true }) }, audit });
+  if (access !== undefined) { access.setMemberSpent(TEST_ORG, MAYA.developerId, 0); access.setOrgSpent(TEST_ORG, 0); }
+  /** What earlier runs cost, so a new plan's estimate (and the run limit approving it sets) is large. */
+  const seedCosts = (costs: readonly number[]) => costs.forEach((costUsd, index) => {
+    const endedAt = new Date(Date.parse("2026-10-01T00:00:00.000Z") + index * 3_600_000).toISOString();
+    h.db.set({ ...runCostKey(TEST_ORG, "payments", "rovara-code", "QUICK", endedAt, `task-QUICK-${String(index)}`), entityType: "RUN_COST", orgId: TEST_ORG, project: "payments", agentId: "rovara-code", path: "QUICK", taskId: `task-QUICK-${String(index)}`, endedAt, costUsd });
+  });
   const meta = (taskId: string) => h.db.get(`DEVTASK#${taskId}`, "META") as Record<string, unknown> & { workspaceId: string; orgId: string; budgetUsd?: number; workflow: { revision: number; stage: string; state: string; decisions: Array<Record<string, unknown>>; artifacts: Array<{ sha256: string; type: string }> } };
   const operationWhere = (workspaceId: string, predicate: (item: Record<string, unknown>) => boolean) => String(h.db.find((item) => item.pk === `WORKSPACE#${workspaceId}` && item.entityType === "OPERATION").filter(predicate).at(-1)!.id);
   /** A Quick task of MAYA's with its plan made and waiting; `risk` picks the plan the tier rule reads (a file in infra is high, unproved claims medium, proved and few files low). */
-  const planned = async (risk: Risk = "medium") => {
+  const planned = async (risk: Risk = "medium", keepBudget = false) => {
     const started = await h.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix the retry bug", client: "test-client", workflow: true, workflowPath: "QUICK" });
     expect(started.status, JSON.stringify(started.body)).toBe(200);
     const taskId = String((started.body.task as { taskId: string }).taskId);
@@ -54,19 +67,23 @@ async function world() {
     await h.artifact(workspaceId, planning, "plan.md", planAnswer(document, risk === "low" ? { checks: LOW.checks } : {}));
     await h.finish(workspaceId, planning, "SUCCEEDED", { result: { workflowMode: "PLAN" } });
     // A high limit already set, so approving raises nothing and needs no acknowledged amount (that rule is not what is under test).
-    h.db.set({ ...meta(taskId), budgetUsd: 1000 });
+    if (!keepBudget) h.db.set({ ...meta(taskId), budgetUsd: 1000 });
     const workflow = meta(taskId).workflow;
     return { taskId, digest: workflow.artifacts.at(-1)!.sha256, revision: workflow.revision };
   };
-  const link = (developerId: string, provider: string, issuer: string, subject: string, lastSignInAt: string) => {
+  const link = (developerId: string, provider: string, issuer: string, subject: string, lastSignInAt: string, lastAuthTime?: string) => {
     const identityKey = ownerKeyForSubject(issuer, subject);
-    const body = { developerId, provider, issuer, subject, linkedAt: "2026-01-01T00:00:00.000Z", lastSignInAt };
+    const body = { developerId, provider, issuer, subject, linkedAt: "2026-01-01T00:00:00.000Z", lastSignInAt, ...(lastAuthTime === undefined ? {} : { lastAuthTime }) };
     h.db.set({ ...signInIdentityKey(identityKey), entityType: "IDENTITY_LINK", ...body });
     h.db.set({ ...developerIdentityKey(developerId, identityKey), entityType: "IDENTITY_LINK", ...body });
   };
   const ago = (ms: number) => new Date(Date.now() - ms).toISOString();
-  /** The person's last interactive sign-in by `provider`, `ms` ago (email code is "cloud", company single sign-on "oidc"/"saml"). */
-  const signedIn = (who: { developerId: string }, provider: "cloud" | "oidc" | "saml" | "github" | "slack", ms: number) => link(who.developerId, provider, provider === "slack" ? SLACK_OIDC_ISSUER : `https://${provider}.example.test`, `${provider}-${who.developerId.slice(0, 6)}`, ago(ms));
+  /**
+   * The person's last sign-in by `provider`, `ms` ago (email code is "cloud", company single sign-on "oidc"/"saml"). A company sign-in also leaves the provider's `auth_time` as `lastAuthTime`: by default as old as the
+   * sign-in, `authAgo` a different age (a silent renewal: the sign-in is recent, the person authenticated long ago), or "none" (the provider sent no `auth_time`).
+   */
+  const signedIn = (who: { developerId: string }, provider: "cloud" | "oidc" | "saml" | "github" | "slack", ms: number, authAgo: number | "none" = ms) =>
+    link(who.developerId, provider, provider === "slack" ? SLACK_OIDC_ISSUER : `https://${provider}.example.test`, `${provider}-${who.developerId.slice(0, 6)}`, ago(ms), provider === "oidc" || provider === "saml" ? (authAgo === "none" ? undefined : ago(authAgo)) : undefined);
   /** Maya's verified Slack sign-in (what makes her Slack user LINKED to her), separate from the sign-in that counts as recent. */
   const linkSlack = (who: { developerId: string; slackUserId?: string }, ms = 0) => link(who.developerId, "slack", SLACK_OIDC_ISSUER, who.slackUserId!, ago(ms));
   const setWindow = (seconds: number) => h.db.set({ pk: orgMetaKey(TEST_ORG).pk, sk: APPROVAL_WINDOW_SETTING_SK, entityType: "APPROVAL_WINDOW", orgId: TEST_ORG, revision: 1, seconds });
@@ -76,7 +93,7 @@ async function world() {
     ...(options.browser === true ? { browserSession: true as const } : {}), ...(options.slackUserId === undefined ? {} : { slackUserId: options.slackUserId }),
   }) as never;
   const deps = (projectRole: ProjectRole = "contributor") => ({
-    documentClient: h.db, tableName: "state", signInTableName: "signin", actions: h.actions, orgId: TEST_ORG, log: () => undefined, now: () => Date.now(), issuer: DEV_ISSUER, learningAudit: audit.audit,
+    documentClient: h.db, tableName: "state", signInTableName: "signin", actions: h.actions, orgId: TEST_ORG, log: () => undefined, now: () => Date.now(), issuer: DEV_ISSUER, learningAudit: audit.audit, ...(access === undefined ? {} : { modelAccess: access }),
     checkAccess: async () => ({ revision: 1, policy: {} as never, access: "granted" as const, channelIds: [], role: projectRole }), projectChannelIds: async () => [],
   }) as never;
   const request = (plan: { digest: string; revision: number }, over: Record<string, unknown> = {}) => ({ requestId: randomUUID(), expectedRevision: plan.revision, decision: "APPROVE", reason: "Approved", artifactDigest: plan.digest, ...over });
@@ -93,7 +110,7 @@ async function world() {
   const decidedAs = (taskId: string) => meta(taskId).workflow.decisions.at(-1) as { decision: string; actorId: string; actorRole: string } | undefined;
   const dms = () => h.db.find((item) => item.entityType === "TASK_ATTENTION_DM");
   const placeEvents = () => audit.recorded().filter((event) => event.action === "approval.place_decided");
-  return { h, meta, planned, signedIn, linkSlack, setWindow, caller, deps, decide, request, decidedAs, dms, placeEvents, ago };
+  return { h, access, seedCosts, meta, planned, signedIn, linkSlack, setWindow, caller, deps, decide, request, decidedAs, dms, placeEvents, ago };
 }
 type World = Awaited<ReturnType<typeof world>>;
 
@@ -203,6 +220,56 @@ describe("medium risk", () => {
     const none = t.caller(MAYA, { session: SLACK_DECISION_SESSION_ID });
     expect(await t.decide(plan.taskId, plan, none)).toMatchObject({ ok: false, message: expect.stringContaining("Link your account to Rovara first") as unknown });
     expect(t.meta(plan.taskId).workflow.decisions).toEqual([]);
+  });
+
+  it("M2: a company sign-in counts by the provider's own auth_time, not by the time Rovara saw a sign-in: a silent single sign-on renewal (sign-in 1 hour ago, authenticated 40 hours ago) is not recent, and neither is a provider that sent no auth_time", async () => {
+    for (const provider of ["oidc", "saml"] as const) {
+      const renewed = await world();
+      renewed.linkSlack(MAYA);
+      renewed.signedIn(MAYA, provider, HOUR, 40 * HOUR);
+      const stale = await renewed.planned("medium");
+      expect(await renewed.decide(stale.taskId, stale, mayaChat(renewed)), `${provider} renewal`).toMatchObject({ ok: false, message: expect.stringContaining(SIGN_IN_AGAIN) as unknown });
+      expect(renewed.placeEvents()).toEqual([]);
+      const none = await world();
+      none.linkSlack(MAYA);
+      none.signedIn(MAYA, provider, HOUR, "none");
+      const noClaim = await none.planned("medium");
+      expect((await none.decide(noClaim.taskId, noClaim, mayaChat(none))).ok, `${provider} without auth_time`).toBe(false);
+      // A real authentication 2 hours ago (the sign-in itself 1 hour ago) is recent, and the audit record says how old it was.
+      const real = await world();
+      real.linkSlack(MAYA);
+      real.signedIn(MAYA, provider, HOUR, 2 * HOUR);
+      const good = await real.planned("medium");
+      expect((await real.decide(good.taskId, good, mayaChat(real))).ok, `${provider} authenticated 2 hours ago`).toBe(true);
+      expect(real.placeEvents()[0]).toMatchObject({ facts: { signInAgeSeconds: 2 * 3600 } });
+    }
+    // An email code is a fresh code typed now: the time of the completed sign-in is the time it counts for, with no auth_time involved.
+    const code = await world();
+    code.linkSlack(MAYA);
+    code.signedIn(MAYA, "cloud", HOUR);
+    const ok = await code.planned("medium");
+    expect((await code.decide(ok.taskId, ok, mayaChat(code))).ok).toBe(true);
+    // Neither one rescues the other: a stale company sign-in beside a recent email code is judged by the newest that counts.
+    const both = await world();
+    both.linkSlack(MAYA);
+    both.signedIn(MAYA, "oidc", HOUR, 40 * HOUR);
+    both.signedIn(MAYA, "cloud", 3 * HOUR);
+    const mixed = await both.planned("medium");
+    expect((await both.decide(mixed.taskId, mixed, mayaChat(both))).ok).toBe(true);
+    expect(both.placeEvents()[0]).toMatchObject({ facts: { signInAgeSeconds: 3 * 3600 } });
+  });
+
+  it("L1: a Slack user who is linked to SOMEONE ELSE is not the pressing person's Slack: the press is refused as not linked", async () => {
+    const t = await world();
+    t.signedIn(MAYA, "cloud", HOUR);
+    t.linkSlack(MAYA);
+    // Omar's own Slack account, linked to Omar. A press by Maya that names Omar's Slack user is not Maya's link.
+    t.linkSlack({ developerId: OMAR.developerId, slackUserId: "U0OMAR001" });
+    const plan = await t.planned("low");
+    const claimsOmarsSlack = t.caller(MAYA, { session: SLACK_DECISION_SESSION_ID, slackUserId: "U0OMAR001" });
+    expect(await t.decide(plan.taskId, plan, claimsOmarsSlack)).toMatchObject({ ok: false, code: "FORBIDDEN", message: expect.stringContaining("Link your account to Rovara first") as unknown });
+    expect(t.meta(plan.taskId).workflow.decisions).toEqual([]);
+    expect(await t.decide(plan.taskId, plan, mayaChat(t))).toEqual({ ok: true });
   });
 
   it("the legacy Slack button's stand-in (a task started in Slack by someone who never signed in) is never recent: medium is refused", async () => {
@@ -389,6 +456,96 @@ describe("who may decide", () => {
     expect(await t.decide(plan.taskId, plan, who, {}, { requestId }, "maintainer")).toEqual({ ok: true });
     expect(t.dms()).toHaveLength(1);
     expect(t.placeEvents()).toHaveLength(1);
+  });
+});
+
+describe("M1: an approval that waits only for the run limit's own approval is still recorded", () => {
+  it("a medium approval from Slack whose run limit needs a higher tier commits the decision (coding waits) and writes the place audit record, as the other path does", async () => {
+    const t = await world({ proxy: true });
+    t.seedCosts([10, 10, 10, 10, 10]);
+    t.linkSlack(MAYA);
+    t.signedIn(MAYA, "cloud", 2 * HOUR);
+    const plan = await t.planned("medium", true);
+    const change = planRunLimitChange(t.meta(plan.taskId))!;
+    expect(change.raises, "positive control: approving raises the limit").toBe(true);
+    const answer = await t.decide(plan.taskId, plan, mayaChat(t), {}, { acknowledgedRunLimitUsd: change.proposedUsd });
+    expect(answer, JSON.stringify(answer)).toEqual({ ok: true });
+    // The early-return path: the decision is recorded and the workflow waits on the limit.
+    expect(t.meta(plan.taskId).workflow).toMatchObject({ stage: "IMPLEMENT", state: "BLOCKED" });
+    expect(t.decidedAs(plan.taskId)).toMatchObject({ decision: "APPROVE" });
+    expect(t.placeEvents()).toHaveLength(1);
+    expect(t.placeEvents()[0]).toMatchObject({ target: { id: plan.taskId }, facts: { place: "chat", risk: "medium", answer: "approve", role: "owner", windowSeconds: 86_400, signInAgeSeconds: 2 * 3600 } });
+  });
+});
+
+describe("L3: a maintainer never sets the owner's run limit (money is the owner's)", () => {
+  it("a maintainer's decision that carries an acknowledged limit is refused with a plain sentence, with or without the model proxy, and nothing is decided", async () => {
+    for (const proxy of [false, true]) {
+      const t = await world({ proxy });
+      const plan = await t.planned("medium");
+      const refused = await t.decide(plan.taskId, plan, t.caller(OMAR, { browser: true }), {}, { acknowledgedRunLimitUsd: 12 }, "maintainer");
+      expect(refused, `proxy ${String(proxy)}`).toMatchObject({ ok: false, code: "FORBIDDEN", message: expect.stringContaining(RUN_LIMIT_OWNER_DECIDES_WORDS) as unknown });
+      expect(t.meta(plan.taskId).workflow.decisions).toEqual([]);
+      expect(t.dms()).toEqual([]);
+    }
+  });
+
+  it("a maintainer's approval that would RAISE the owner's limit is refused even without an amount, so there is nothing to acknowledge; the owner's own approval of the same plan goes on", async () => {
+    const t = await world({ proxy: true });
+    t.seedCosts([10, 10, 10, 10, 10]);
+    const plan = await t.planned("medium", true);
+    const change = planRunLimitChange(t.meta(plan.taskId))!;
+    expect(change.raises).toBe(true);
+    const budgetBefore = t.meta(plan.taskId).budgetUsd;
+    const refused = await t.decide(plan.taskId, plan, t.caller(OMAR, { browser: true }), {}, {}, "maintainer");
+    expect(refused).toMatchObject({ ok: false, code: "FORBIDDEN", message: expect.stringContaining(RUN_LIMIT_OWNER_DECIDES_WORDS) as unknown });
+    expect(t.meta(plan.taskId).workflow.decisions).toEqual([]);
+    expect(t.meta(plan.taskId).budgetUsd, "the owner's limit is untouched").toBe(budgetBefore);
+    const owner = await t.decide(plan.taskId, plan, mayaBrowser(t), {}, { acknowledgedRunLimitUsd: change.proposedUsd });
+    expect(owner, JSON.stringify(owner)).toEqual({ ok: true });
+  });
+
+  it("a maintainer still approves a plan that does not touch the limit (positive control)", async () => {
+    const t = await world({ proxy: true });
+    const plan = await t.planned("medium");
+    expect(await t.decide(plan.taskId, plan, t.caller(OMAR, { browser: true }), {}, {}, "maintainer")).toEqual({ ok: true });
+    expect(t.decidedAs(plan.taskId)).toMatchObject({ actorId: OMAR.developerId, actorRole: "PROJECT_ADMIN" });
+  });
+});
+
+describe("L2: a narrowed People list refuses the maintainer seat", () => {
+  const person = (developerId: string, slackUserId: string, role: "owner" | "commenter" | "viewer" | "denied") => ({ developerId, slackUserId, name: "Someone", role });
+  const withPeople = async (people: Array<ReturnType<typeof person>>) => {
+    const t = await world();
+    const plan = await t.planned("medium");
+    t.h.db.set({ pk: `DEVTASK#${plan.taskId}`, sk: "PEOPLE", schemaVersion: 1, revision: 3, orphaned: false, people });
+    // The Slack-side proof of anyone asked about: eligible and in the channel (so only the list can refuse).
+    const checkTaskPerson = async (_task: unknown, developerId: string) => {
+      const slackUserId = people.find((entry) => entry.developerId === developerId)?.slackUserId ?? "U0NOONE001";
+      return { subject: { developerId, slackUserId }, identity: { developerId, slackUserId, name: "Someone", method: "slack", issuer: "https://slack.com", subject: slackUserId }, eligible: true, channelMember: true };
+    };
+    const deps = { ...(t.deps("maintainer") as unknown as Record<string, unknown>), checkTaskPerson } as never;
+    return { t, plan, deps };
+  };
+
+  it("a maintainer the list denies reads the task as missing: no seat, nothing decided", async () => {
+    const { t, plan, deps } = await withPeople([person(MAYA.developerId, "U0MAYA001", "owner"), person(OMAR.developerId, "U0OMAR001", "denied")]);
+    const omar = t.caller(OMAR, { browser: true });
+    expect(await resolveTaskApprover(deps, omar, plan.taskId)).toBeUndefined();
+    await expect(decideTaskWorkflow(deps, omar, plan.taskId, t.request(plan))).rejects.toMatchObject({ code: "TASK_NOT_FOUND" });
+    expect(t.meta(plan.taskId).workflow.decisions).toEqual([]);
+  });
+
+  it("positive control: the same list with the maintainer on it gives the seat, and the People revision the write is fenced on", async () => {
+    const { t, plan, deps } = await withPeople([person(MAYA.developerId, "U0MAYA001", "owner"), person(OMAR.developerId, "U0OMAR001", "commenter")]);
+    const seat = await resolveTaskApprover(deps, t.caller(OMAR, { browser: true }), plan.taskId);
+    expect(seat).toMatchObject({ role: "maintainer", peopleRevision: 3 });
+  });
+
+  it("a People list that cannot be read refuses the seat too (fail closed)", async () => {
+    const { t, plan, deps } = await withPeople([person(MAYA.developerId, "U0MAYA001", "owner")]);
+    t.h.db.set({ pk: `DEVTASK#${plan.taskId}`, sk: "PEOPLE", schemaVersion: 1, revision: 0, orphaned: false, people: "nobody" });
+    expect(await resolveTaskApprover(deps, t.caller(OMAR, { browser: true }), plan.taskId)).toBeUndefined();
   });
 });
 
