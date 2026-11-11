@@ -6,8 +6,9 @@ import { isAllowedDomainWidening, refuseAllowedDomainWidening } from "./allowed-
 // Each change but the description is a new immutable revision, built from the one the person was looking at (`expectedRevision`) and
 // registered through the same code every project revision goes through. Cloud only: another install's projects change through an administrator.
 import { GetCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { AgentXError, DEFAULT_AGENT_ALLOW_DOMAINS, PROJECT_REVISION_SK_PREFIX, ProjectSettingsBodySchema, SETUP_TIMEOUT, TEST_TIMEOUT, agentXError, errorStatus, projectArchivedMessage, canonicalJson, githubNotConnectedMessage, keepStoredOptions, orgPk, parseCommandLine, projectAllows, projectMetaKey, projectPk, settingOriginOf, withSettingOrigins, type ProjectOriginField, type OrgId, type ProjectCommand, type ProjectRole, type ProjectSettingsBody } from "@rovara-code/contracts";
-import { type AppProjectDetail } from "@agentx/cloud-contracts";
+import { AgentXError, PROJECT_REVISION_SK_PREFIX, ProjectSettingsBodySchema, SETUP_TIMEOUT, TEST_TIMEOUT, agentXError, errorStatus, projectArchivedMessage, canonicalJson, githubNotConnectedMessage, keepStoredOptions, orgPk, parseCommandLine, projectAllows, projectMetaKey, projectPk, settingOriginOf, withSettingOrigins, type ProjectOriginField, type OrgId, type ProjectCommand, type ProjectRole, type ProjectSettingsBody } from "@rovara-code/contracts";
+import { BROAD_ALLOWED_DOMAIN_MESSAGE, isBroadAllowedDomain, type AppProjectDetail } from "@agentx/cloud-contracts";
+import { installDefaultDomains } from "./install-default-allow-domains.js";
 import { ProjectDefinitionSchema, StoredProjectDefinitionSchema, type ProjectDefinition, type StoredProjectDefinition } from "@agentx/cloud-contracts";
 import { githubInstallationKey, type OrgRole } from "@agentx/cloud-contracts";
 import { readProjectMeta } from "../developer/project-roles.js";
@@ -274,6 +275,8 @@ export async function updateProjectSettings<Caller extends ProjectSettingsCaller
   if (latest === undefined) throw agentXError("PROJECT_NOT_FOUND", "project not found");
   const current = latest.definition;
   if (current.revision !== body.expectedRevision) throw agentXError("PROJECT_REVISION_MISMATCH", SETTINGS_STALE_MESSAGE);
+  // A wildcard over AWS or GitHub names is never saved as new (an entry already in the revision may stay until the project drops it).
+  if (body.allowedDomains?.some((domain) => isBroadAllowedDomain(domain) && !(current.network?.allowedDomains ?? []).includes(domain)) === true) throw agentXError("CONFIG_INVALID", BROAD_ALLOWED_DOMAIN_MESSAGE);
   if (deps.cloud && body.allowedDomains !== undefined && isAllowedDomainWidening(current.network?.allowedDomains ?? [], body.allowedDomains)) refuseAllowedDomainWidening();
   if (current.e2e !== undefined || latest.setupApproval !== undefined) {
     throw agentXError("FORBIDDEN", PROJECT_SETTINGS_ADMIN_MANAGED);
@@ -341,7 +344,8 @@ export async function updateProjectSettings<Caller extends ProjectSettingsCaller
     const issue = parsed.error.issues[0];
     throw invalid(`${issue?.path.join(".") || "body"}: ${issue?.message ?? "invalid"}`);
   }
-  const warnings = (domains ?? []).filter((domain) => DEFAULT_AGENT_ALLOW_DOMAINS.includes(domain)).map((domain) => `${domain} is already allowed for every project`);
+  const defaults = installDefaultDomains();
+  const warnings = (domains ?? []).filter((domain) => defaults.includes(domain)).map((domain) => `${domain} is already allowed for every project`);
 
   // A revision identical to the current one but for its number says nothing new; the project stays at the revision the person saw.
   const previous = ProjectDefinitionSchema.safeParse(current);
@@ -389,7 +393,8 @@ export async function updateProjectSettings<Caller extends ProjectSettingsCaller
  */
 async function recordEgress(egress: EgressDomainsDependencies, caller: ProjectSettingsCaller, project: string, domains: readonly string[]): Promise<string[]> {
   const owner = { kind: "project", project } as const;
-  const asked = domains.filter((domain) => !DEFAULT_AGENT_ALLOW_DOMAINS.includes(domain));
+  const defaultsAllowed = installDefaultDomains();
+  const asked = domains.filter((domain) => !defaultsAllowed.includes(domain));
   const { warning } = await putEgressDomains(egress, caller.orgId, owner, asked, { developerId: caller.developerId });
   if (asked.length === 0) return warning === undefined ? [] : [warning];
   return [...egressStatusWarnings(await readEgressDomains(egress, caller.orgId, owner), asked), ...(warning === undefined ? [] : [warning])];

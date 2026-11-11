@@ -21,8 +21,9 @@
 import { createHash } from "node:crypto";
 import { GetCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import { DEFAULT_AGENT_ALLOW_DOMAINS, INDEX_EXPIRY_ATTRIBUTE, SetupHostSchema, agentXError, orgScoped, projectPk, prodDenyMatchesHost, type OrgId, type TestEnvProdDeny } from "@rovara-code/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, SetupHostSchema, agentXError, orgScoped, projectPk, prodDenyMatchesHost, type OrgId, type TestEnvProdDeny } from "@rovara-code/contracts";
 import { orgMemberKey } from "@agentx/cloud-contracts";
+import { installDefaultDomains } from "../org/install-default-allow-domains.js";
 import { auditPending, type AuditRuntime } from "../audit/outbox.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditOccurrence, auditSetupHostAsked, auditSetupHostRefused } from "../audit/events.js";
@@ -146,7 +147,7 @@ function listCovers(list: readonly string[], host: string): boolean {
 }
 /** Whether the host is already reachable by default or by the project's own list (so no ask is needed). */
 export function hostAlreadyAllowed(host: string, projectDomains: readonly string[]): boolean {
-  return listCovers(DEFAULT_AGENT_ALLOW_DOMAINS, host) || listCovers(projectDomains, host);
+  return listCovers(installDefaultDomains(), host) || listCovers(projectDomains, host);
 }
 
 // ---- the stored ask

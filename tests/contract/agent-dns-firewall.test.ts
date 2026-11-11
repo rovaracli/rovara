@@ -3,7 +3,7 @@ import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import {
-  BROAD_DEFAULT_ALLOW_ENTRIES, DEFAULT_AGENT_ALLOW_DOMAINS, DNS_FIREWALL_ASSOCIATION_PRIORITY, hostedAgentAllowDomains, hostedAwsAllowDomains, narrowedDefaultAllowDomains,
+  BEDROCK_SOURCE_REGIONS, BROAD_DEFAULT_ALLOW_ENTRIES, DEFAULT_AGENT_ALLOW_DOMAINS, DNS_FIREWALL_ASSOCIATION_PRIORITY, hostedAgentAllowDomains, hostedAwsAllowDomains, narrowedDefaultAllowDomains,
 } from "../../infra/lib/agent-dns-firewall.js";
 import { AGENTX_PRODUCTION_VPC_CIDR } from "../../infra/lib/production-foundation.js";
 import { brokerNamesIn } from "../support/broker-names-template.js";
@@ -25,6 +25,13 @@ const resourcesOf = (template: Template, type: string): Array<[string, Resource]
 const firewallTypes = (template: Template): string[] =>
   Object.values(template.toJSON().Resources as Record<string, Resource>).map((resource) => resource.Type).filter((type) => type.startsWith("AWS::Route53Resolver::"));
 
+/** A domain as the template holds it: a string, or this account's registry name (the account is a Ref, shown here as ACCOUNT). */
+const ACCOUNT = "ACCOUNT";
+function resolveDomain(domain: string | { "Fn::Join": [string, Array<string | { Ref: string }>] }): string {
+  if (typeof domain === "string") return domain;
+  return domain["Fn::Join"][1].map((part) => (typeof part === "string" ? part : (expect(part).toEqual({ Ref: "AWS::AccountId" }), ACCOUNT))).join(domain["Fn::Join"][0]);
+}
+
 const domainListOf = (template: Template, rule: Rule): [string, Resource] => {
   const list = resourcesOf(template, "AWS::Route53Resolver::FirewallDomainList").find(([id]) => JSON.stringify(rule.FirewallDomainListId).includes(id));
   expect(list).toBeDefined();
@@ -39,7 +46,7 @@ function ruleGroup(template: Template): { allow: Rule; project: Rule; block: Rul
   const allow = rules.find((rule) => rule.Priority === 100)!;
   const project = rules.find((rule) => rule.Priority === 150)!;
   const block = rules.find((rule) => rule.Priority === 200)!;
-  const domainsOf = (rule: Rule): string[] => domainListOf(template, rule)[1].Properties.Domains as string[];
+  const domainsOf = (rule: Rule): string[] => (domainListOf(template, rule)[1].Properties.Domains as Array<string | { "Fn::Join": [string, Array<string | { Ref: string }>] }>).map(resolveDomain);
   return { allow, project, block, allowDomains: domainsOf(allow), blockDomains: domainsOf(block) };
 }
 
@@ -51,7 +58,7 @@ describe("agent DNS firewall (cloud installs)", () => {
     expect(allow).toMatchObject({ Action: "ALLOW", Priority: 100 });
     expect(block).toMatchObject({ Action: "BLOCK", BlockResponse: "NXDOMAIN", Priority: 200 });
     // The default list without its broad entries, plus this install's own AWS hosts (the template's region is us-east-1).
-    expect(allowDomains).toStrictEqual(hostedAgentAllowDomains("us-east-1"));
+    expect(allowDomains).toStrictEqual(hostedAgentAllowDomains("us-east-1", ACCOUNT));
     expect(blockDomains).toStrictEqual(["*"]);
   });
 
@@ -184,7 +191,7 @@ describe("agent DNS firewall (cloud installs)", () => {
   it("adds the domains of the agentxEgressAllowDomains context to the allow list", () => {
     const extended = foundation({ agentxEnv: "staging", agentxCloud: true, agentxEgressAllowDomains: "artifactory.acme.dev, *.pkg.acme.dev,,github.com" });
     const { allowDomains } = ruleGroup(extended);
-    expect(allowDomains).toStrictEqual([...hostedAgentAllowDomains("us-east-1"), "artifactory.acme.dev", "*.pkg.acme.dev"]);
+    expect(allowDomains).toStrictEqual([...hostedAgentAllowDomains("us-east-1", ACCOUNT), "artifactory.acme.dev", "*.pkg.acme.dev"]);
   });
 
   it("rejects an extra domain that is not a domain name", () => {
@@ -294,42 +301,57 @@ describe("the hosted install's allow-list does not carry an exit for an injected
   // Route 53 Resolver DNS Firewall reads a leading `*.` as any subdomain at any depth, and never the bare domain.
   const allowed = (host: string, list: readonly string[]): boolean => list.some((entry) => (entry.startsWith("*.") ? host.endsWith(entry.slice(1)) && host.length > entry.length - 1 : host === entry));
 
-  it("pins the exact AWS hosts of an install in us-west-2", () => {
-    expect(hostedAwsAllowDomains(region)).toStrictEqual([
+  it("pins the exact AWS hosts of an install in us-west-2 (this account's registry, and the company-source regions)", () => {
+    const own = [
       "dynamodb.us-west-2.amazonaws.com", "sqs.us-west-2.amazonaws.com", "s3.us-west-2.amazonaws.com", "*.s3.us-west-2.amazonaws.com",
       "al2023-repos-us-west-2-de612dc2.s3.dualstack.us-west-2.amazonaws.com", "kms.us-west-2.amazonaws.com", "ssm.us-west-2.amazonaws.com", "ec2.us-west-2.amazonaws.com",
       "states.us-west-2.amazonaws.com", "lambda.us-west-2.amazonaws.com", "email.us-west-2.amazonaws.com", "secretsmanager.us-west-2.amazonaws.com", "scheduler.us-west-2.amazonaws.com",
       "sts.us-west-2.amazonaws.com", "sts.amazonaws.com", "monitoring.us-west-2.amazonaws.com", "logs.us-west-2.amazonaws.com", "api.ecr.us-west-2.amazonaws.com",
-      "*.dkr.ecr.us-west-2.amazonaws.com", "bedrock-runtime.us-west-2.amazonaws.com", "bedrock.us-west-2.amazonaws.com", "servicequotas.us-west-2.amazonaws.com", "ecs.us-west-2.amazonaws.com",
+      "123456789012.dkr.ecr.us-west-2.amazonaws.com", "bedrock-runtime.us-west-2.amazonaws.com", "bedrock.us-west-2.amazonaws.com", "servicequotas.us-west-2.amazonaws.com",
       "*.execute-api.us-west-2.amazonaws.com", "*.us-west-2.elb.amazonaws.com", "*.us-west-2.rds.amazonaws.com",
-    ]);
+    ];
+    const list = hostedAwsAllowDomains(region, "123456789012");
+    expect(list.slice(0, own.length)).toStrictEqual(own);
+    // Then Bedrock and STS in every region a company source can name, each exact, and nothing else.
+    expect(list.slice(own.length).every((host) => /^(bedrock-runtime|bedrock|sts)\.[a-z0-9-]+\.amazonaws\.com$/u.test(host))).toBe(true);
+    // Three hosts for each region, less the install's own three already listed above.
+    expect(list.slice(own.length)).toHaveLength(BEDROCK_SOURCE_REGIONS.length * 3 - 3);
+    expect(list).not.toContain("ecs.us-west-2.amazonaws.com");
+    expect(hostedAwsAllowDomains(region).some((host) => host.includes(".dkr.ecr."))).toBe(false);
+  });
+
+  it("serves Bedrock and STS in every region a company's AI source can name, by exact host", () => {
+    const list = hostedAgentAllowDomains(region);
+    for (const other of BEDROCK_SOURCE_REGIONS) for (const host of [`bedrock-runtime.${other}.amazonaws.com`, `bedrock.${other}.amazonaws.com`, `sts.${other}.amazonaws.com`]) expect(allowed(host, list), host).toBe(true);
+    // Only those three services in another region: nothing else of AWS's there.
+    for (const host of ["dynamodb.eu-west-1.amazonaws.com", "s3.eu-west-1.amazonaws.com", "x.s3.eu-west-1.amazonaws.com", "x.execute-api.eu-west-1.amazonaws.com", "ecr.eu-west-1.amazonaws.com", "x.dkr.ecr.eu-west-1.amazonaws.com"]) expect(allowed(host, list), host).toBe(false);
   });
 
   it("has no AWS or GitHub wildcard, even when the pinned copy of Code's list still carries them", () => {
     const old = ["*.amazonaws.com", "*.aws", "github.com", "*.github.com", "*.githubusercontent.com", "ghcr.io"];
-    expect(narrowedDefaultAllowDomains(old)).toStrictEqual(["github.com", "ghcr.io", "pkg-containers.githubusercontent.com"]);
+    expect(narrowedDefaultAllowDomains(old)).toStrictEqual(["github.com", "ghcr.io", "pkg-containers.githubusercontent.com", "raw.githubusercontent.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com", "codeload.github.com"]);
     // Code's narrowed list (the pin after Code's lane) passes through unchanged.
-    const narrowed = ["github.com", "ghcr.io", "*.ghcr.io", "pkg-containers.githubusercontent.com"];
+    const narrowed = ["github.com", "ghcr.io", "*.ghcr.io", "pkg-containers.githubusercontent.com", "raw.githubusercontent.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com", "codeload.github.com"];
     expect(narrowedDefaultAllowDomains(narrowed)).toStrictEqual(narrowed);
     expect(BROAD_DEFAULT_ALLOW_ENTRIES).toStrictEqual(["*.amazonaws.com", "*.aws", "*.github.com", "*.githubusercontent.com"]);
     const list = hostedAgentAllowDomains(region);
     for (const entry of BROAD_DEFAULT_ALLOW_ENTRIES) expect(list, entry).not.toContain(entry);
-    expect(list.filter((entry) => entry.includes("github"))).toStrictEqual(["github.com", "pkg-containers.githubusercontent.com"]);
+    expect(list.filter((entry) => entry.includes("github"))).toStrictEqual(["github.com", "pkg-containers.githubusercontent.com", "raw.githubusercontent.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com", "codeload.github.com"]);
   });
 
   it("does not resolve an attacker's bucket by the global name or in another region, nor GitHub's API, gist, raw or release hosts", () => {
     const list = hostedAgentAllowDomains(region);
     for (const host of [
       "attacker-bucket.s3.amazonaws.com", "attacker-bucket.s3.eu-west-1.amazonaws.com", "s3.amazonaws.com", "s3.eu-west-1.amazonaws.com", "dynamodb.eu-west-1.amazonaws.com",
-      "x.execute-api.eu-west-1.amazonaws.com", "x.lambda-url.us-west-2.on.aws", "x.api.aws", "bedrock-runtime.eu-west-1.amazonaws.com",
-      "api.github.com", "gist.github.com", "uploads.github.com", "codeload.github.com", "raw.githubusercontent.com", "objects.githubusercontent.com", "gist.githubusercontent.com",
+      "x.execute-api.eu-west-1.amazonaws.com", "x.lambda-url.us-west-2.on.aws", "x.api.aws", "999999999999.dkr.ecr.us-west-2.amazonaws.com",
+      "api.github.com", "gist.github.com", "uploads.github.com", "gist.githubusercontent.com", "user-images.githubusercontent.com",
     ]) expect(allowed(host, list), host).toBe(false);
   });
 
   it("still resolves what the machines need: git, image pulls, the regional AWS names, the install's own load balancer and database", () => {
-    const list = hostedAgentAllowDomains(region);
+    const list = hostedAgentAllowDomains(region, "123456789012");
     for (const host of [
-      "github.com", "ghcr.io", "pkg-containers.githubusercontent.com", "registry.npmjs.org", "bedrock-runtime.us-west-2.amazonaws.com", "dynamodb.us-west-2.amazonaws.com",
+      "github.com", "ghcr.io", "pkg-containers.githubusercontent.com", "raw.githubusercontent.com", "codeload.github.com", "registry.npmjs.org", "bedrock-runtime.us-west-2.amazonaws.com", "dynamodb.us-west-2.amazonaws.com",
       "123456789012.dkr.ecr.us-west-2.amazonaws.com", "prod-us-west-2-starport-layer-bucket.s3.us-west-2.amazonaws.com", "al2023-repos-us-west-2-de612dc2.s3.dualstack.us-west-2.amazonaws.com",
       "abc123.execute-api.us-west-2.amazonaws.com", "internal-model-1.us-west-2.elb.amazonaws.com", "db.cluster-xyz.us-west-2.rds.amazonaws.com", "sts.amazonaws.com",
     ]) expect(allowed(host, list), host).toBe(true);
@@ -341,12 +363,15 @@ describe("the hosted install's allow-list does not carry an exit for an injected
 
   it("writes the narrowed list into the template of a hosted install in another region", () => {
     const { allowDomains } = ruleGroup(foundation({ agentxEnv: "staging", agentxCloud: true, agentxRegion: region }));
-    expect(allowDomains).toStrictEqual(hostedAgentAllowDomains(region));
+    expect(allowDomains).toStrictEqual(hostedAgentAllowDomains(region, ACCOUNT));
     expect(allowDomains).not.toContain("*.amazonaws.com");
     expect(allowDomains).not.toContain("*.aws");
     expect(allowDomains).not.toContain("*.github.com");
     expect(allowDomains).not.toContain("*.githubusercontent.com");
     expect(allowDomains).toContain("bedrock-runtime.us-west-2.amazonaws.com");
-    expect(allowDomains).not.toContain("bedrock-runtime.us-east-1.amazonaws.com");
+    // The install's own region is not special for a company source: Bedrock in us-east-1 is served too, by exact host.
+    expect(allowDomains).toContain("bedrock-runtime.us-east-1.amazonaws.com");
+    expect(allowDomains).toContain(`${ACCOUNT}.dkr.ecr.us-west-2.amazonaws.com`);
+    expect(allowDomains.filter((domain) => domain.includes(".dkr.ecr."))).toStrictEqual([`${ACCOUNT}.dkr.ecr.us-west-2.amazonaws.com`]);
   });
 });

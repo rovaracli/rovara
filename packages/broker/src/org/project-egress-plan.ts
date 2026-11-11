@@ -1,17 +1,22 @@
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { AllowedDomainSchema, DEFAULT_AGENT_ALLOW_DOMAINS, EgressDomainsItemSchema, EGRESS_SYNC_KEY, agentXError, egressDomainsKey, type EgressDomainEntry, type OrgId } from "@rovara-code/contracts";
+import { AllowedDomainSchema, EgressDomainsItemSchema, EGRESS_SYNC_KEY, agentXError, egressDomainsKey, type EgressDomainEntry, type OrgId } from "@rovara-code/contracts";
+import { BROAD_ALLOWED_DOMAIN_MESSAGE, isBroadAllowedDomain } from "@agentx/cloud-contracts";
 import type { TransactItem } from "../audit/outbox.js";
+import { installDefaultDomains } from "./install-default-allow-domains.js";
 interface Dependencies { documentClient: { send(command: unknown): Promise<unknown> }; tableName: string; cloud: boolean; now(): Date }
 /** Read and plan only. The caller commits these items WITH its revision,
  * authority fences, receipt and one summary audit. No replan or standalone write. */
 export async function planProjectEgressChange(deps: Dependencies, input: { orgId: OrgId; project: string; actorId: string; domains: readonly string[] }): Promise<{ items: TransactItem[]; pending: string[] }> {
  if (input.domains.length > 50) throw agentXError("CONFIG_INVALID", "At most 50 project website rules are allowed.");
- const wanted = [...new Set(input.domains.map(domain => AllowedDomainSchema.parse(domain)))].filter(domain => !DEFAULT_AGENT_ALLOW_DOMAINS.includes(domain)).sort();
+ const defaults = installDefaultDomains();
+ const wanted = [...new Set(input.domains.map(domain => AllowedDomainSchema.parse(domain)))].filter(domain => !defaults.includes(domain)).sort();
  const owner = { kind: "project" as const, project: input.project }, key = egressDomainsKey(input.orgId, owner);
  const raw = (await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: key, ConsistentRead: true })) as { Item?: unknown }).Item;
  const parsed = raw === undefined ? undefined : EgressDomainsItemSchema.safeParse(raw);
  if (parsed !== undefined && !parsed.success) throw agentXError("RUNTIME_UNAVAILABLE", "The project's website approval record could not be read.");
  const current = parsed?.success ? parsed.data : undefined;
+ // One project's approval is cell-wide, so a wildcard over AWS or GitHub names is never asked for (one already stored may stay until the project drops it).
+ if (wanted.some(domain => isBroadAllowedDomain(domain) && current?.domains.some(entry => entry.domain === domain) !== true)) throw agentXError("CONFIG_INVALID", BROAD_ALLOWED_DOMAIN_MESSAGE);
  if (current !== undefined && (current.orgId !== input.orgId || current.owner.kind !== "project" || current.owner.project !== input.project || !current.active)) throw agentXError("CHANGE_STALE", "Project website state changed. Review it again.");
  const previousTime = current === undefined ? 0 : Date.parse(current.updatedAt);
  if (!Number.isFinite(previousTime)) throw agentXError("RUNTIME_UNAVAILABLE", "The project's website approval record could not be read.");

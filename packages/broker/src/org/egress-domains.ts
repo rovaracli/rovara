@@ -9,7 +9,7 @@ import { auditEgressDecided, auditOccurrence } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, type AuditRuntime } from "../audit/outbox.js";
 import { EGRESS_ALL_ORGS_SK_PREFIX, EGRESS_AUDIT_PK, EGRESS_CONFLICT_MESSAGE, EGRESS_DOMAINS_PK, EGRESS_SYNC_KEY, EGRESS_SYNC_PENDING_WARNING, ALLOWED_DOMAIN_MESSAGE, EgressDomainsItemSchema, AgentXError, agentXError, egressDomainsKey, egressNotPendingMessage, egressOrgSkPrefix, egressPendingWarning, isAllowedDomain, projectMetaKey, egressRejectedWarning, type EgressAuditAction, type EgressDomainEntry, type EgressDomainsItem, type EgressOwner, type OrgId, type OrgKey } from "@rovara-code/contracts";
-import { type AuditActor } from "@agentx/cloud-contracts";
+import { BROAD_ALLOWED_DOMAIN_MESSAGE, isBroadAllowedDomain, type AuditActor } from "@agentx/cloud-contracts";
 import { type AuditEventInput } from "@agentx/cloud-contracts";
 import { readRequestRecord, requestRecordPut, requireSameRequest, type RequestTransactItem } from "./request-records.js";
 
@@ -187,6 +187,9 @@ export async function putEgressDomains(
   // here, before anything is stored or any staff member is asked about it. The value is not repeated: a refusal reaches logs and screens.
   const refused = wanted.findIndex((domain) => !isAllowedDomain(domain));
   if (refused !== -1) throw agentXError("CONFIG_INVALID", `allowedDomains.${String(refused)}: ${ALLOWED_DOMAIN_MESSAGE}`);
+  // One owner's approval is cell-wide: a wildcard over AWS or GitHub names would reopen what the default list closed for every sandbox.
+  const broad = wanted.findIndex(isBroadAllowedDomain);
+  if (broad !== -1) throw agentXError("CONFIG_INVALID", `allowedDomains.${String(broad)}: ${BROAD_ALLOWED_DOMAIN_MESSAGE}`);
   const { result, dirty } = await mutate(deps, egressDomainsKey(orgId, owner), (current, at, ownerActive): Plan<string[]> => {
     const stored = current?.domains ?? [];
     const entries: EgressDomainEntry[] = [];

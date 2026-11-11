@@ -1,4 +1,5 @@
 import {
+  Aws,
   CfnDeletionPolicy,
   CfnOutput,
   type CfnTag,
@@ -291,11 +292,11 @@ export class ProductionFoundationStack extends Stack {
         vpcId: vpc.ref,
         // An Enterprise install starts from its own endpoint names; the public defaults are not on its list.
         // A Public install starts from the default list without its broad entries plus its own regional AWS hosts (DEFAULT-ALLOW-LIST-EXFIL, 0.5.15).
-        baseAllowDomains: enterprise ? enterpriseAllowDomains(props.deploymentRegion, { stdioMcp: props.stdioMcpAllowDomains !== undefined }) : hostedAgentAllowDomains(props.deploymentRegion),
+        baseAllowDomains: enterprise ? enterpriseAllowDomains(props.deploymentRegion, { stdioMcp: props.stdioMcpAllowDomains !== undefined }) : hostedAgentAllowDomains(props.deploymentRegion, Aws.ACCOUNT_ID),
         extraAllowDomains: [
           // The names an install with package-run servers needs (the ECS name is already in its base list).
           ...(enterprise ? (props.stdioMcpAllowDomains ?? []).filter((name) => !enterpriseAllowDomains(props.deploymentRegion, { stdioMcp: true }).includes(name)) : []),
-          ...parseExtraAllowDomains(this.node.tryGetContext(EGRESS_ALLOW_DOMAINS_CONTEXT_KEY), enterprise ? enterpriseAllowDomains(props.deploymentRegion, { stdioMcp: props.stdioMcpAllowDomains !== undefined }) : hostedAgentAllowDomains(props.deploymentRegion)),
+          ...parseExtraAllowDomains(this.node.tryGetContext(EGRESS_ALLOW_DOMAINS_CONTEXT_KEY), enterprise ? enterpriseAllowDomains(props.deploymentRegion, { stdioMcp: props.stdioMcpAllowDomains !== undefined }) : hostedAgentAllowDomains(props.deploymentRegion, Aws.ACCOUNT_ID)),
         ],
       });
       // The control plane's broker keeps this list equal to the approved egress domains (it takes the id as a parameter, like the VPC's).

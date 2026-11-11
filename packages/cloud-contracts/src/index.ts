@@ -105,6 +105,7 @@ export * from "./app-billing.js";
 export * from "./app-insights.js";
 export * from "./app-agent-publish.js";
 export * from "./company-image-mirror.js";
+export * from "./hosted-allow-domains.js";
 export * from "./saved-env-image.js";
 export * from "./app-projects.js";
 export * from "./setup-proposal.js";
