@@ -145,7 +145,7 @@ describe("switch on", () => {
   fireEvent.click(sidebar().getByRole("link", { name: "Work" }));await waitFor(() => expect(f.router.state.location.pathname).toBe("/app/work"));await screen.findByRole("heading", { name: "Live", level: 1 });
   const menu = screen.getByRole("button", { name: "Open workspace menu" });fireEvent.click(menu);const dialog = await screen.findByRole("dialog", { name: "Workspace" });
   expect(within(dialog).getAllByRole("link").slice(0, 5).map(link => link.textContent)).toEqual(["Home3", "Work", "Projects", "Agents", "Settings"]);
-  fireEvent.click(within(dialog).getByRole("link", { name: "Projects" }));await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());expect(f.router.state.location.pathname).toBe("/app/projects");f.close();
+  fireEvent.click(within(dialog).getByRole("link", { name: "Projects" }));await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());await waitFor(() => expect(f.router.state.location.pathname).toBe("/app/projects"));f.close();
  });
  it("sends /app/live to /app/work, keeping the filters and the hash", async () => {
   for (const [from, to, search, hash] of [["/app/live", "/app/work", "", ""], ["/app/live?filter=needs_me&project=payments", "/app/work", "?filter=needs_me&project=payments", ""], ["/app/live?filter=team#top", "/app/work", "?filter=team", "#top"]] as const) {
@@ -157,7 +157,8 @@ describe("switch on", () => {
  });
  it("keeps every old address working: /s/<id>, /app/sessions/<id>, /app/agents, project pages, chains and unknown pages", async () => {
   const s = shell("/s/ses_aaaaaaaaaaaaaaaaaaaa?x=1#plan", { on: true });await waitFor(() => expect(s.router.state.location.pathname).toBe("/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa"));expect(s.router.state.location.search).toBe("?x=1");expect(s.router.state.location.hash).toBe("#plan");s.close();
-  const t = shell("/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa", { on: true });await waitFor(() => expect(t.router.state.location.pathname).toBe("/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa"));expect(screen.getByRole("link", { name: "Skip to main content" })).toBeTruthy();t.close();
+  const t = shell("/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa", { on: true });await waitFor(() => expect(t.router.state.location.pathname).toBe("/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa"));// The session page is a lazy route: the shell appears once its chunk has loaded, which is slow on a cold run, so wait for it.
+  expect(await screen.findByRole("link", { name: "Skip to main content" })).toBeTruthy();t.close();
   const c = shell("/app/chains", { on: true });await screen.findByRole("heading", { name: "This isn't available", level: 1 });expect(c.router.state.location.pathname).toBe("/app/chains");c.close();
   const p = shell("/app/projects/payments", { on: true });await waitFor(() => expect(sidebar().getByRole("link", { name: "payments" }).getAttribute("aria-current")).toBe("page"));expect(p.router.state.location.pathname).toBe("/app/projects/payments");p.close();
   const u = shell("/app/usage", { on: true });expect(await screen.findByText("We couldn't find that. It may not exist, or it hasn't been shared with you.")).toBeTruthy();u.close();
