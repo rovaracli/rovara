@@ -415,18 +415,19 @@ describe("the named TEST proof-only installation gate", () => {
     // the sign-in function's two ConditionCheckItem statements gain `Null: { dynamodb:LeadingKeys: false }`. Checked first: with only those two lines undone, all five tests pass on the lane's pins. Legacy did not move.
     // 2026-11-11 (0.5.14, lane U2, Slack explicit membership): the named and foreign digests were retaken from the values the test reports, after one intended change: the `sm` entry of the broker's packed
     // AGENTX_SETTINGS (the SlackExplicitMembers parameter itself is taken out of the remainder like the other switches). The named-templates snapshot shows exactly that parameter and that entry. Legacy did not move.
+    // 2026-11-11 (0.5.15, lane company-images-worker-v3, merged at 029dc304b): the named and foreign digests were retaken from the values the test reports, after the lane's reviewed additions: the CompanyImageMirror function (own role, mirror state rows only), its img-mirror role (ECR on rovara-env/<env>/o*/c* only), the `cm` entry of AGENTX_NAMES and the mirror role in the saved environment repository policy. Legacy did not move.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "a13dea76690170c051327392fe03bfa91df7d9c20baaa27da060bc5dcde07b10",
-        withoutRoute: "939409dcdbc0d24e047f638c122fee35c659a708654a0e3b03acbe0007a895ca",
+        withRoute: "113afeb82b4c9eed000b0949074a74cb65c786070601a5431ec39df50d8607d4",
+        withoutRoute: "5cec0a6d5620433d3c662c933f5ce1693e9c29e81fd1f733d9d2eb3c3f7a5968",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "129299952a066b6fe003d7f07fbded7bb697adb6352d109c9f4d1b156661db68",
-        withoutRoute: "dcb62f29b25a906322ab4dd043a361fd211380dc166162a1c3d89a18c7bbfede",
+        withRoute: "5c52999d12ae3179bfae711c09a9cb03ddd41e994fcf6c1dea1134f2bd69280e",
+        withoutRoute: "54d2d4fbae27a93c4e11f249f535a7479232f72aff0b18604d7b9132f7d40976",
       },
       {
         label: "legacy",
