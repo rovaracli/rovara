@@ -19,7 +19,7 @@ import { projectFixture } from "./support/project-fixture.js";
 type Answer = { status: number; body: unknown };
 const month = "2026-11", ok = (figures: Record<string, unknown>): Answer => ({ status: 200, body: { month, project: "payments", requestId: "gateway", ...figures } });
 function setup(options: { on?: boolean; canViewSpend?: boolean; spend?: Answer; path?: string } = {}) {
- const base = projectFixture(), overview = options.canViewSpend === false ? projectFixture({ you: { ...base.you, canViewSpend: false }, budget: undefined } as never) : base;
+ const base = projectFixture(), overview = options.canViewSpend === false ? projectFixture({ you: { ...base.you, canViewSpend: false }, budget: undefined }) : base;
  const f = fakeHost(async request => {
   if (request.path === "/v1/app/changes") return { status: 200, body: { notices: [], next: "settled" } };
   if (request.path.endsWith("/start-preview")) return { status: 200, body: { orgId: "org_aaaaaaaaaaaaaaaaaaaa", project: "payments", kind: "disabled" } };
