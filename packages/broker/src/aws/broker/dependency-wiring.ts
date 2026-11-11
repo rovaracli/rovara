@@ -9,6 +9,7 @@ import { readServiceStatusEvidence } from "../service-status-runtime.js";
 import { createWorkingBranchPageProvider, createWorkingBranchProvider } from "../../org/project-working-branch-provider.js";
 import { createHmac, randomUUID } from "node:crypto";
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
+import { withWorkEvents } from "../../work-events/emit.js";
 import { GetObjectCommand } from "@aws-sdk/client-s3";
 import { AgentXError, CHANNEL_TURN_REQUEST_MAX, type DeveloperTaskView, type CodeIntentResult, CONNECTOR_SECRET_PREFIX, ChannelTurnSchema, approvedToolCount, toolBudget, agentXError, type OperationStatus, type ChannelTurn, type ProjectDefinition, type TriggerEvent, redactAndCap, projectRevisionKey, type OrgId, type OrgRole, type ChannelMembersRequest, type Payer, featureEnabled, orgBanKey, orgMemberKey, orgRemovedKey, type WriterOrgRole } from "@agentx/contracts";
 import { liveStoredRole, personWalk, survivorStanding } from "../../org/live-role.js";
@@ -969,7 +970,8 @@ export function developerTaskActions(dependencies: AwsBrokerDependencies): Devel
     deleteCompute: (workspace) => deleteWorkspaceCompute(dependencies, workspace),
     canDeleteCompute: (workspace) => workspace.deploymentMode === "ec2-ebs" && dependencies.deleteEc2Session !== undefined,
     transact: async (items) => {
-      await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: items }));
+      // Work events (U3): the events of any change of a task's workflow in these items commit with it.
+      await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: await withWorkEvents(dependencies, items) }));
     },
     channelActivity: async ({ taskId, operationId, threadSubject }) => {
       const marker = await getItem<{ slackUserId?: unknown; name?: unknown }>(dependencies, { pk: `DEVTASK#${taskId}`, sk: `CHANNEL_OPERATION#${operationId}` });

@@ -3,6 +3,7 @@
 import { joinTaskModelFallback } from "../../model-selection/fallback-record.js";
 import { randomUUID } from "node:crypto";
 import { TransactWriteCommand, type TransactWriteCommandInput } from "@aws-sdk/lib-dynamodb";
+import { withWorkEvents } from "../../work-events/emit.js";
 import { type AgentXError, blockWorkflow, OperationRequestSchema, PullRequestRequestSchema, PullRequestLifecycleRequestSchema, PullRequestLifecycleResultSchema, agentXError, type Operation, type OperationRequester, type OperationStatus, type ProjectCommand, type WorkflowFeedbackApprovalBinding, type WorkflowFixPayload, type OwnerRedirectInvocation, type WorkflowDependencyInvocation, type WorkflowReviewBase, type WorkflowReviewChecks, type WorkflowReviewPlan, type WorkflowReviewFeedback, type WorkflowReviewNote, type PullRequestLifecycleResult, type WorkerInvocation, type WorkspaceInstance, type E2EWorkflowAdmissionRef, workerProjectDefinition, workflowPublicationContext, workflowPublicationContextDigest, codeRepositoriesOf } from "@agentx/contracts";
 import type { SpecReviewInput, SpecWriteBinding } from "@agentx/contracts";
 import type { ResolvedAttribution } from "../../attribution/resolve.js";
@@ -129,7 +130,7 @@ export async function acceptTask(
     dispatchExtras = withAdmittedTaskSource(dependencies.tableName, admittedTask, dispatchExtras, "operationWindow").items;
   }
   try {
-    await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: boundedTurnAdmission(joinTaskModelFallback([
+    await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: await withWorkEvents(dependencies, boundedTurnAdmission(joinTaskModelFallback([
       { Update: {
         TableName: dependencies.tableName,
         Key: workspaceKey(workspaceId),
@@ -155,7 +156,7 @@ export async function acceptTask(
         ConditionExpression: "attribute_not_exists(pk)",
       } }]),
       ...(modelChecks??[]),
-    ],fallback?.items??[])) }));
+    ],fallback?.items??[]))) }));
   } catch (error) {
     if (isConditional(error)) {
       const concurrent = await getItem<{ operationId: string; payloadHash: string }>(dependencies, idempotencyKey);
@@ -356,7 +357,7 @@ export async function acceptPullRequest(
   // I3: the operation says which outbox item carries its description and attribution, so erasing a person can rewrite that copy too.
   if (options.attribution !== undefined) operation.publication.outboxId = outbox.id;
   try {
-    await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: [
+    await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: await withWorkEvents(dependencies, [
       { Update: {
         TableName: dependencies.tableName,
         Key: workspaceKey(workspaceId),
@@ -381,7 +382,7 @@ export async function acceptPullRequest(
         ConditionExpression: "attribute_not_exists(pk)",
       } },
       ...extra(publicOperation(operation)),
-    ] }));
+    ]) }));
   } catch (error) {
     if (isConditional(error)) {
       const concurrent = await getItem<{ operationId: string; payloadHash: string }>(dependencies, idempotencyKey);
@@ -547,7 +548,7 @@ export async function acceptPullRequestLifecycle(
       body: updated.body,
       updatedAt: now,
     };
-    await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: [
+    await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: await withWorkEvents(dependencies, [
       { Put: { TableName: dependencies.tableName, Item: operation, ConditionExpression: "attribute_not_exists(pk)" } },
       { Put: { TableName: dependencies.tableName, Item: updatedRecord } },
       { Put: {
@@ -556,7 +557,7 @@ export async function acceptPullRequestLifecycle(
         ConditionExpression: "attribute_not_exists(pk)",
       } },
       ...extra(publicOperation(operation)),
-    ] }));
+    ]) }));
     return { operation: publicOperation(operation), duplicate: false };
   }
 
@@ -621,7 +622,7 @@ export async function acceptPullRequestLifecycle(
       },
     };
     const outbox = outboxRecord(workspace, invocation);
-    await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: [
+    await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: await withWorkEvents(dependencies, [
       { Update: {
         TableName: dependencies.tableName,
         Key: workspaceKey(workspaceId),
@@ -641,7 +642,7 @@ export async function acceptPullRequestLifecycle(
         ConditionExpression: "attribute_not_exists(pk)",
       } },
       ...extra(publicOperation(operation)),
-    ] }));
+    ]) }));
     return { operation: publicOperation(operation), duplicate: false };
   }
 
@@ -703,7 +704,7 @@ export async function acceptPullRequestLifecycle(
   };
   const outbox = outboxRecord(workspace, invocation);
   try {
-    await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: [
+    await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: await withWorkEvents(dependencies, [
       { Update: {
         TableName: dependencies.tableName,
         Key: workspaceKey(workspaceId),
@@ -723,7 +724,7 @@ export async function acceptPullRequestLifecycle(
         ConditionExpression: "attribute_not_exists(pk)",
       } },
       ...extra(publicOperation(operation)),
-    ] }));
+    ]) }));
   } catch (error) {
     // The workflow's push, as its publication: a concurrent start of the same request is a duplicate, anything else busy.
     if (!workflowBound || !isConditional(error)) throw error;

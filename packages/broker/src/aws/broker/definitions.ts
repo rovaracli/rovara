@@ -21,6 +21,7 @@ import type { AdminReadDependencies } from "../admin-reads.js";
 import type { AuditExportClientDeps } from "../../audit/export.js";
 import type { AuditEraseDeps } from "../../audit/erase.js";
 import type { AuditRuntime } from "../../audit/outbox.js";
+import type { WorkEventsRuntime } from "../../work-events/emit.js";
 import type { GitHubAppCredentialProvider, GitHubTokenScope } from "../../github-app.js";
 import type { CatalogCache } from "@agentx/gateway";
 import type { GitHubMcpDependencies } from "../../github-mcp.js";
@@ -237,6 +238,8 @@ export interface AwsBrokerDependencies {
   documentClient: DynamoDBDocumentClient;
   /** The Audit Ledger's outbox (named environments only); absent on a legacy install, where every audit function does nothing. */
   audit?: AuditRuntime;
+  /** Work events (U3): present only where the State table expires them by TTL (named environments); absent on a legacy install, where nothing is written. */
+  workEvents?: WorkEventsRuntime | undefined;
   /** Live interaction F2: what the chat service's diagnosis routes need (installed by `installDiagnosisService`; absent while the `fd` switch is off or where agents are not set up). */
   diagnosisService?: DiagnosisCoreDependencies;
   /** Live interaction A3: what the Slack task-thread question answers from (installed by `installSlackAsk`; absent where agents are not set up). */

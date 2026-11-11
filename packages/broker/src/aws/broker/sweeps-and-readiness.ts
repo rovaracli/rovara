@@ -69,11 +69,12 @@ export function modelSourceSweepOf(dependencies: AwsBrokerDependencies): ModelSo
 }
 
 /** Task 30: what the spend ledger needs, or undefined where the install has no agents or no model proxy (it then keeps no ledger). */
-export function ledgerOf(dependencies: Pick<AwsBrokerDependencies, "agents" | "modelAccess" | "documentClient" | "tableName" | "cloud">): LedgerDependencies | undefined {
+export function ledgerOf(dependencies: Pick<AwsBrokerDependencies, "agents" | "modelAccess" | "documentClient" | "tableName" | "cloud" | "workEvents">): LedgerDependencies | undefined {
   if (dependencies.agents === undefined || dependencies.modelAccess === undefined) return undefined;
   return {
     documentClient: dependencies.documentClient, tableName: dependencies.tableName, access: dependencies.modelAccess.access, now: Date.now,
     ...(dependencies.cloud === true ? { cloud: true } : {}),
+    ...(dependencies.workEvents === undefined ? {} : { workEvents: dependencies.workEvents }),
   };
 }
 

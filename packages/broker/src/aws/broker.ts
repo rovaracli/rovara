@@ -585,6 +585,8 @@ const brokerInput: AwsBrokerInput = {
   // Lessons in production (lane 2, WB-4, M1): a finished task's reflection goes to this queue (its URL is derived from the environment's name; nothing is passed). Its client gives up quickly (two tries, 1.5 s), like the audit client, so a queue brownout cannot hold a task end.
   ...(teamRecord === undefined || reflectQueueUrlOf(process.env) === undefined ? {} : { lessonsReflectQueue: sqsReflectQueue(new SQSClient({ ...awsClientConfiguration, maxAttempts: 2, requestHandler: { requestTimeout: REFLECT_SDK_REQUEST_TIMEOUT_MS, connectionTimeout: REFLECT_SDK_REQUEST_TIMEOUT_MS } }), reflectQueueUrlOf(process.env)!) }),
   ...(audit === undefined ? {} : { audit }),
+  // Work events (U3): written where the State table expires them by TTL (named environments set AGENTX_ENV); `AGENTX_WORK_EVENTS=off` turns them off.
+  ...(process.env.AGENTX_ENV === undefined || process.env.AGENTX_WORK_EVENTS === "off" ? {} : { workEvents: {} }),
   ...(auditLedger === undefined ? {} : { auditLedger }),
   ...(auditErase === undefined ? {} : { auditErase }),
   s3,

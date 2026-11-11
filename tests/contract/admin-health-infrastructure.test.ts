@@ -325,6 +325,8 @@ describe("the health route's grants (A13)", () => {
       "packages/broker/src/team-record/capture-indexes.ts",
       // Lessons for local coding tools (decision 46b): the per-person, per-project, per-day counter row (LESSON_LOCAL_DAY; fixed numbers only, no text) expires after the index retention; none is a durable record, and only lessons-local.ts writes it.
       "packages/broker/src/aws/developer-routes/lessons-local.ts",
+      // Work events (U3): one row per flow fact of a task, expiring 13 months after its month (WORK_EVENT_RETENTION_MONTHS). Not a durable record of the work itself.
+      "packages/broker/src/work-events/store.ts",
     ]);
     const found = execFileSync("grep", ["-rl", "indexExpiresAt\\|INDEX_EXPIRY_ATTRIBUTE", "packages", "infra/lib", "--include=*.ts", "--exclude-dir=dist", "--exclude-dir=node_modules"], { encoding: "utf8" }).trim().split("\n").filter((file) => file !== "");
     expect(found.filter((file) => !allowed.has(file))).toEqual([]);

@@ -322,3 +322,7 @@ export * from "./task-stop-start-preview.js";
 export { SIGNED_OUT_REASONS, isSignedOutReason, type SignedOutReason } from "./sign-in-reasons.js";
 export * from "./task-status.js";
 export * from "./notification-prefs.js";
+
+// Work events (U3): copied byte for byte from Code (fix/code-work-events). UPSTREAM OWED: Code has not merged it yet and the vendor pin (vendor/rovara-code/PIN) cannot include it; see briefs/work-events.md.
+export * from "./work-event.js";
+export * from "./work-event-node.js";
