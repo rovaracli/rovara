@@ -1,4 +1,3 @@
-import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import type { OwnerFinancialTerms } from "../spend/owner-approval-terms.js";
 // Plan 3 Task 7: the app's routes to build, version, publish, share and update agents (`/v1/app/agents*`). Every body is strict and
 // carries a `requestId` (R18). Each route checks access first, with `requireAgentAccess`: an agent the caller can't see answers the
@@ -9,7 +8,6 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import {
   AgentGuardrailsWriteSchema,
-  topUpKey,
   AgentPublishBodySchema as PublishBodySchema,
   AgentRollbackBodySchema as RollbackBodySchema,
   AgentBudgetBodySchema as BudgetBodySchema,
@@ -39,7 +37,6 @@ import {
   type AgentId,
   type AgentOwner,
   type BaseRef,
-  type BudgetScope,
   type BuiltinAgentId,
   type ChainId,
   type OrgId,
@@ -66,6 +63,9 @@ import {
   type AgentScope,
 } from "./access.js";
 import { isApprovalRoute, routeApprovalRequest } from "./approval-routes.js";
+import { PUBLISH_REQUESTS_PATH, routeAgentPublishRequests, routePublishRequests } from "./publication-routes.js";
+import { isMyAgentsRoute, routeMyAgents } from "./favourites.js";
+import { publicationOf, registerPublicationApprovals } from "./publication.js";
 import { COMMENT_TRIGGERS_PATH, routeCommentTriggers } from "./comment-trigger-routes.js";
 import { CONTEXT_SOURCES_PATH, routeContextSources, type ContextSourceRouteDependencies } from "../context-sources/settings-routes.js";
 import { MCP_SERVERS_PATH, routeMcpServers } from "../context-sources/mcp-server-routes.js";
@@ -96,12 +96,13 @@ import type { ChainViewPorts } from "../chains/view.js";
 import { suggestMaxPerRun, type RequestRunLimit } from "../spend/estimate.js";
 import { ownerShare, withBudgetFields } from "../spend/owner-total.js";
 import { routeSpendRequest } from "../spend/routes.js";
-import { effectiveOwnerCap, isSpendRequestRoute, requestOwnerCap, routeSpendRequests, type SpendRequestHost } from "../spend/requests.js";
+import { isSpendRequestRoute, requestOwnerCap, routeSpendRequests, type SpendRequestHost } from "../spend/requests.js";
+import { ownerCapCheck } from "./owner-cap-check.js";
 import { isConnectionRoute, routeConnectionRequest, type ConnectionRouteDependencies } from "../connections/routes.js";
 import { isProjectConnectorRoute, registerProjectConnectorApprovals, routeProjectConnectorRequest } from "../connections/project-connectors.js";
 import { routeModelSourceRequest, type ModelSourceRouteDependencies } from "../model-sources/routes.js";
 import {
-  applyProjectAiChange, ownerBudgetRefusal, planningLimit, projectSourceOrder, readProjectAiWithRevision, readSpendPolicy, readSpendPolicyWithRevision,
+  applyProjectAiChange, planningLimit, projectSourceOrder, readProjectAiWithRevision, readSpendPolicy, readSpendPolicyWithRevision,
   writeProjectAi, writeSpendPolicy, type ProjectAiChange,
 } from "../spend/settings.js";
 import { isOwnerCapRefusal, updateAvailable, type AgentDraft, type AgentRecord, type AgentVersion, type BuiltinSettings, type OwnerCap, type RequestMark, resolveAgent } from "./store.js";
@@ -184,7 +185,8 @@ const waiting = (result: Extract<ChangeResult<unknown>, { applied: false }>): St
  * spend and connectors, however deep, match before Plan 2's `/v1/app/projects/{name}*` routes.
  */
 export function isAgentRoute(pathname: string): boolean {
-  return /^\/v1\/app\/(agents|skills|approvals|spend-requests|connections|budget)(\/|$)/.test(pathname)
+  return /^\/v1\/app\/(agents|skills|approvals|spend-requests|connections|budget|agent-publish-requests)(\/|$)/.test(pathname)
+    || /^\/v1\/app\/me\/agents(\/|$)/.test(pathname)
     || /^\/v1\/app\/org\/(agent-guardrails|model-sources|model-sources-order|spend|spend-policy|mcp-servers)(\/|$)/.test(pathname)
     || /^\/v1\/app\/tasks\/[^/]+\/(continue-as-task|run-limit-request)$/.test(pathname)
     || /^\/v1\/app\/projects\/[^/]+\/(agents|ai|spend|connectors|builtin-triggers|event-hooks|context-sources)(\/|$)/.test(pathname);
@@ -349,7 +351,7 @@ async function listAgents(deps: AgentRouteDependencies, caller: AgentCaller, url
       const draft = atLeast(visible.access, "edit") ? await deps.store.getDraft(caller.orgId, visible.agentId) : undefined;
       const extendsRef = draft?.extends ?? (visible.record.currentVersion === undefined ? undefined : (await deps.store.getVersion(caller.orgId, visible.agentId, visible.record.currentVersion))?.extends);
       const update = draft === undefined ? undefined : await updateAvailable(deps.store, caller.orgId, visible.agentId);
-      Object.assign(summary, extendsRef === undefined ? {} : { extends: extendsRef }, update === undefined ? {} : { updateAvailable: update });
+      Object.assign(summary, extendsRef === undefined ? {} : { extends: extendsRef }, update === undefined ? {} : { updateAvailable: update }, { publication: await publicationOf(deps, caller, visible.record) });
     }
     agents.push(summary);
   }
@@ -359,6 +361,7 @@ async function listAgents(deps: AgentRouteDependencies, caller: AgentCaller, url
 async function getAgent(deps: AgentRouteDependencies, caller: AgentCaller, agentId: AgentId): Promise<Shown> {
   const { agent, access } = await requireReadableAgent(deps, caller, agentId, "view");
   const shown = await view(deps, caller, agent, access);
+  if ("owner" in agent) shown["publication"] = await publicationOf(deps, caller, agent);
   if (!("owner" in agent)) {
     const version = shown["pinnedVersion"] as number;
     const recipe = deps.store.builtinRecipe(agentId, version);
@@ -838,24 +841,7 @@ export async function holdingOwnerCap<T>(
   before: Parameters<typeof ownerShare>[0], after: Parameters<typeof ownerShare>[0],
   change: OwnerCapChange, mark: RequestMark, run: (options: { ownerCap: OwnerCap }) => Promise<T>,
 ): Promise<T | StatusReply> {
-  const shares = async () => {
-    const survivor = async (share: ReturnType<typeof ownerShare>) => (share === undefined ? undefined : { ...share, owner: await resolveSurvivor(deps, caller.orgId, share.owner) });
-    const [from, to] = [await survivor(ownerShare(before)), await survivor(ownerShare(after))];
-    // Fix round 2 (N-1): its top-up for the month goes with it to an owner it newly counts for.
-    const topUpScope: BudgetScope = subject.kind === "agent" ? { kind: "agent", agentId: subject.agentId } : { kind: "chain", chainId: subject.chainId };
-    let carried = 0, carriedSource: OwnerFinancialTerms["carriedSource"];
-    if (to !== undefined && from?.owner !== to.owner) {
-      const key = topUpKey(caller.orgId, new Date(deps.now()).toISOString().slice(0, 7), topUpScope);
-      const response = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: key, ConsistentRead: true })) as { Item?: Record<string, unknown> };
-      if (response.Item !== undefined && usdToWholeMicrodollars(response.Item.amountUsd) === undefined) throw agentXError("CONFIG_INVALID", "The carried monthly amount could not be read. Review Spending before retrying.");
-      carried = response.Item === undefined ? 0 : response.Item.amountUsd as number;
-      carriedSource = { key, exists: response.Item !== undefined, fields: response.Item ?? {} };
-    }
-    const checked = await ownerBudgetRefusal(deps, caller.orgId, from, to, (owner) => effectiveOwnerCap(deps, caller.orgId, owner), carried);
-    if ("over" in checked && checked.over.ownerFinancialTerms !== undefined && carriedSource !== undefined) checked.over.ownerFinancialTerms = { ...checked.over.ownerFinancialTerms, carriedSource };
-    if ("ownerCap" in checked && carriedSource !== undefined) checked.ownerCap.carriedSource = carriedSource;
-    return checked;
-  };
+  const shares = () => ownerCapCheck(deps, caller.orgId, subject, before, after);
   const ask = async (over: { owner: string; wouldBeUsd: number; capUsd: number; ownerFinancialTerms?: OwnerFinancialTerms }): Promise<StatusReply> => {
     const newOwner = change.op === "set_owner" ? (change.owner.kind === "member" ? change.owner.developerId : change.accountable?.developerId) : change.op === "set_accountable" ? change.accountable.developerId : undefined;
     const monthly = ownerShare(after)?.usd || undefined; // a $0 base has no new limit to name
@@ -1003,6 +989,9 @@ export async function routeAgentRequest(deps: AgentRouteDependencies, caller: Ag
   if (spend !== undefined) return spend;
   // Task 21: the approvals (`/v1/app/approvals*`).
   if (isApprovalRoute(url.pathname)) return routeApprovalRequest(deps, caller, request, url);
+  // Agent publish requests and the Home row's favourite and suggested agents (experience decisions 23 and 24), before the agent paths they would otherwise match.
+  if (PUBLISH_REQUESTS_PATH.test(url.pathname)) return routePublishRequests(deps, caller, request, url);
+  if (isMyAgentsRoute(url.pathname)) return routeMyAgents(deps, caller, request, url);
   // Task 32: the spend requests (`/v1/app/spend-requests*`) and a test run's continue-as-task.
   if (isSpendRequestRoute(url.pathname)) return routeSpendRequests(deps, caller, request, url);
   if (isConnectionRoute(url.pathname)) {
@@ -1117,6 +1106,7 @@ export async function routeAgentRequest(deps: AgentRouteDependencies, caller: Ag
     if (sub === "update-base" && method === "POST") return updateBase(deps, caller, agentId, body());
     if (sub === "adopt" && method === "POST") return adopt(deps, caller, agentId, body());
     if (sub === "runs" && method === "POST") return startRun(deps, caller, agentId, body(), request.headers);
+    if (sub === "publish-requests") return routeAgentPublishRequests(deps, caller, request, agentId, url);
   }
   throw agentXError("NOT_FOUND", "route not found");
 }
@@ -1125,3 +1115,4 @@ registerAgentApprovals();
 registerRunVersionApproval();
 registerProjectConnectorApprovals();
 registerCommentTriggerApprovals();
+registerPublicationApprovals();

@@ -7,6 +7,7 @@
   "packages/contracts/src/agent-sessions.ts",
   "packages/contracts/src/agent-web-views.ts",
   "packages/contracts/src/agent.ts",
+  "packages/contracts/src/app-agent-publish.ts",
   "packages/contracts/src/app-allowed-websites.ts",
   "packages/contracts/src/app-company-rules.ts",
   "packages/contracts/src/app-design-review-company.ts",

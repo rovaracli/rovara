@@ -306,6 +306,7 @@ export * from "./saved-env-image.js";
 export * from "./saved-env-build.js";
 export * from "./app-saved-env.js";
 export * from "./app-company-rules.js";
+export * from "./app-agent-publish.js";
 export * from "./app-design-review-company.js";
 
 // Setup and test health: setup recipes and their fingerprint (SH4).

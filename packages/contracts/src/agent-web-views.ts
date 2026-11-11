@@ -7,6 +7,7 @@ import { AgentOriginViewSchema, SessionMakeAgentCopiedSchema } from "./agent-ses
 import { RunInputSchema } from "./agent-run.js";
 import { SPEND_ORIGIN_KINDS } from "./spend.js";
 import { forwardReader } from "./forward-reader.js";
+import { AgentPublicationSchema } from "./app-agent-publish.js";
 const Version = z.number().int().positive(), Usd = z.number().finite().nonnegative();
 export const AgentScopeSchema = z.enum(["all", "mine", "shared", "builtin"]);
 export const AgentMonthSchema = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/);
@@ -16,6 +17,7 @@ export const AgentViewSchema = z.object({
  owner: AgentOwnerSchema.optional(), accountable: AgentDeveloperRefSchema.optional(), currentVersion: Version.optional(), pinnedVersion: Version.optional(), latestVersion: z.number().int().nonnegative(), draftRevision: Version.optional(),
  monthlyBudgetUsd: Usd.optional(), maxPerRunUsd: Usd.optional(), createdBy: z.string().optional(), createdAt: z.string().optional(), updatedAt: z.string().optional(),
  disabled: z.boolean().optional(), needsLaterConnectors: z.string().optional(), extends: BaseRefSchema.optional(), updateAvailable: z.object({ from: Version, to: Version }).strict().optional(),
+ publication: AgentPublicationSchema.optional(),
 }).strict();
 export const AgentDirectoryResponseSchema = z.object({ agents: z.array(AgentViewSchema) }).strict();
 export const AgentProfileResponseSchema = z.object({ agent: AgentViewSchema, current: z.object({ version: Version, recipe: ResolvedRecipeSchema.optional(), changed: z.boolean(), problem: z.string().optional() }).strict().optional(), suggestedMaxPerRunUsd: Usd, maxPerRunUsd: Usd.optional() }).strict();

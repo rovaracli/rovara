@@ -91,7 +91,7 @@ async function runningNow(deps: ApprovalDependencies, agent: AgentRecord, fallba
 const skillDigestsOf = (recipe: ResolvedRecipe): Record<string, string> => Object.fromEntries(recipe.skills.map((skill) => [skill.skillId, skill.digest]));
 
 /** Refuses a recipe the company's guardrails forbid, by its first problem, `<path>: <message>`. */
-async function requireWithinGuardrails(deps: ApprovalDependencies, orgId: OrgId, recipe: ResolvedRecipe): Promise<void> {
+export async function requireWithinGuardrails(deps: ApprovalDependencies, orgId: OrgId, recipe: ResolvedRecipe): Promise<void> {
   const [first] = await validateRecipeForOrg(deps, orgId, recipe);
   if (first !== undefined) throw agentXError("CONFIG_INVALID", `${first.path}: ${first.message}`);
 }

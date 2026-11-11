@@ -3,7 +3,7 @@ import {modelApplyRefusalOf} from "../model-selection/process-refusal.js";
 // after the claim (applying a change, running a write, telling the subject's handler) is repeatable and found again by the sweep through the OPEN_APPROVALS
 // index. `approvals.ts` re-exports it.
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { ApprovalIdSchema, AgentXError, REMOVAL_FORBIDDEN_MESSAGE, agentXError, approvalKey, type ApprovalId, type OrgId } from "@agentx/contracts";
+import { ApprovalIdSchema, AgentXError, REMOVAL_FORBIDDEN_MESSAGE, agentXError, approvalKey, type ApprovalId, type AuditEventInput, type OrgId } from "@agentx/contracts";
 import { auditApprovalDecided, auditApprovalExpired, auditWriteExecuted } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, tryAuditEvents } from "../audit/outbox.js";
@@ -11,7 +11,7 @@ import { auditActorOf, decisionProofOf } from "../audit/plan3-hooks.js";
 import { ownerFenceOf, taskKey, tryEffectiveTaskOwner } from "../developer/task-records.js";
 import { deciderStillMemberCheck } from "../org/member-removal/guards.js";
 import { sameMember } from "./lifecycle.js";
-import { type AnyApprovalRecord, type ApprovalCaller, approverRefusalFor, type ApprovalDependencies, type ApprovalStatus, DUE_SK, MAX_APPROVAL_ATTEMPTS, PAGE_LIMIT, RETRY_MS, type TransactItem, type WriteApprovalRecord, approverDrops, commitOrLost, counterDrop, dropItem, dueItems, errorNameOf, forbiddenText, getAnyApproval, getApprovalGaveUpHandler, getApprovalSubjectHandler, hasHandlerPhase, iso, log, mayDecideApproval, parseDecideBody, runApprovalDecisionGuards, runOfApproval, shownText, stripCode, taskOfApproval, updateRecord, withFields } from "./approvals-store.js";
+import { type AnyApprovalRecord, type ApprovalCaller, approverRefusalFor, type ApprovalDependencies, type ApprovalStatus, DUE_SK, MAX_APPROVAL_ATTEMPTS, PAGE_LIMIT, RETRY_MS, type TransactItem, type WriteApprovalRecord, approverDrops, commitOrLost, counterDrop, dropItem, dueItems, errorNameOf, forbiddenText, getAnyApproval, getDecisionAuditEvents, getApprovalGaveUpHandler, getApprovalSubjectHandler, hasHandlerPhase, iso, log, mayDecideApproval, parseDecideBody, runApprovalDecisionGuards, runOfApproval, shownText, stripCode, taskOfApproval, updateRecord, withFields } from "./approvals-store.js";
 
 // ---- deciding
 
@@ -218,13 +218,15 @@ export async function runApprovalDecision(deps: ApprovalDependencies, caller: Ap
   const handler = status !== "EXECUTING" && hasHandlerPhase(record);
   const fields = {
     status, decidedBy: caller.developerId, decidedAt: at, decision: body.decision, decisionRequestId: body.requestId, decisionProof: proof,
+    // Only a change record keeps a decline's reason (it is for the person who asked); a step or a write ignores it.
+    ...(body.decision === "DECLINE" && body.reason !== undefined && record.kind === "change" ? { declineReason: body.reason } : {}),
     ...(status === "EXECUTING" ? { executingAt: at, attempts: 1 } : {}),
     ...(status === "EXECUTING" ? {} : { handlerDone: !handler, ...(handler ? { handlerClaimedAt: at, handlerDueAt: iso(now + RETRY_MS) } : {}) }),
   };
   const events = await tryAuditEvents(deps, () => [auditApprovalDecided({
     orgId: record.orgId, actor: auditActorOf(caller.developerId), occurredAt: at, occurrence: record.approvalId, proof, approvalId: record.approvalId,
     kind: record.kind, decision: body.decision, subjectKind: record.subject.kind, ...(record.kind === "write" ? { class: record.class } : {}),
-  })]);
+  }), ...(record.kind === "change" ? getDecisionAuditEvents(record.subject.kind)?.(record, { by: caller.developerId, at, decision: body.decision, ...(proof === undefined ? {} : { proof }), ...(body.reason === undefined ? {} : { reason: body.reason }) }) ?? [] : [])]);
   const items: TransactItem[] = [
     updateRecord(deps, record, fields, "pending", at),
     ...dueItems(deps, record, [record.expiresAt], status === "EXECUTING" || handler ? iso(now + RETRY_MS) : undefined),
@@ -338,6 +340,25 @@ export async function expireApprovalWithReason(deps: ApprovalDependencies, recor
   const current = await getAnyApproval(deps, record.orgId, record.approvalId);
   if (current === undefined || current.status !== "PENDING") return false;
   return await expireOne(deps, current, { reason }) !== undefined;
+}
+
+/**
+ * Ends a PENDING change record because the person who asked took it back (agent publish requests): as an expiry does (`EXPIRED`, its index items dropped), with who and when
+ * (`withdrawnBy`, `withdrawnAt`) and `events` (the subject's own audit event) in the same conditional transaction. Never a decision. False when it was no longer PENDING.
+ */
+export async function withdrawChange(deps: ApprovalDependencies, record: AnyApprovalRecord, by: string, events: AuditEventInput[]): Promise<AnyApprovalRecord | undefined> {
+  if (record.kind !== "change") return undefined;
+  const at = iso(deps.now());
+  const fields = { status: "EXPIRED" as const, handlerDone: true, withdrawnBy: by, withdrawnAt: at };
+  const items: TransactItem[] = [
+    updateRecord(deps, record, fields, "pending"),
+    ...dueItems(deps, record, [record.expiresAt], undefined),
+    ...approverDrops(deps, record),
+    ...events.flatMap((event) => auditPending(deps, event)),
+  ];
+  if (!await commitOrLost(deps, items)) return undefined;
+  await flushAuditEvents(deps, events);
+  return withFields(record, fields);
 }
 
 /** Drives a record that stayed EXECUTING past the retry time again: claimed by a conditional update of `executingAt`, so two sweeps never both run it. */

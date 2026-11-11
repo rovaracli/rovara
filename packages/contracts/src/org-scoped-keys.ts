@@ -323,6 +323,28 @@ export function agentRequestKey(orgId: OrgId, developerId: string, requestId: st
   return { pk: orgScoped(orgId, `AGENT_REQUEST#${developerId}`), sk: requestId };
 }
 
+/**
+ * Agent publish requests (experience decision 24): the org's index of every request, newest last (`<createdAt>#<approvalId>`), which the request lists read. The
+ * approval record is the request; this item names it so a list needs no scan of the approvals.
+ */
+export function agentPublicationsIndexKey(orgId: OrgId, createdAt: string, approvalId: ApprovalId): OrgKey {
+  return { pk: orgScoped(orgId, "AGENT_PUBLICATIONS"), sk: `${canonicalInstant(createdAt)}#${keyPart(approvalId, "an approval id")}` };
+}
+
+/**
+ * One agent's publish requests: `REQ#<createdAt>#<approvalId>` for each request (its history), and `PENDING#<target>` naming the request that waits for that target, so a
+ * second request for the same agent and target is refused while the first waits (`target` is `company` or `project:<name>`).
+ */
+export function agentPublicationKey(orgId: OrgId, agentId: AgentId, item: { request: { createdAt: string; approvalId: ApprovalId } } | { pending: string }): OrgKey {
+  const sk = "pending" in item ? `PENDING#${keyPart(item.pending, "a publish target")}` : `REQ#${canonicalInstant(item.request.createdAt)}#${keyPart(item.request.approvalId, "an approval id")}`;
+  return { pk: orgScoped(orgId, `AGENT_PUBLICATION#${keyPart(agentId, "an agent id")}`), sk };
+}
+
+/** One person's favourite agents in one org (experience decision 23): the ordered ids and a revision, in one item. */
+export function agentFavouritesKey(orgId: OrgId, developerId: string): OrgKey {
+  return { pk: orgScoped(orgId, `AGENT_FAVOURITES#${keyPart(developerId, "a developer id")}`), sk: "META" };
+}
+
 /** An org's agent guardrails: one item holding the document and its revision. */
 export function agentGuardrailsKey(orgId: OrgId): OrgKey {
   return { pk: orgScoped(orgId, "AGENT_GUARDRAILS"), sk: "META" };
