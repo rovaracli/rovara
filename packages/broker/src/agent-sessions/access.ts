@@ -43,8 +43,8 @@ export interface SessionAccessDependencies {
   documentClient: { send(command: unknown): Promise<unknown> };
   tableName: string;
   now: () => number;
-  /** Only `roleOf` is used, and only off the read-only path: it may ask Slack whether the project's channel gives the caller a role. */
-  projectMembers: Pick<ProjectMembers, "roleOf">;
+  /** `roleOf` is used off the read-only path: it may ask Slack whether the project's channel gives the caller a role. The Finished list for Team and Company also asks `projectsOf` (which projects the caller reaches); the broker's own is the full one. */
+  projectMembers: Pick<ProjectMembers, "roleOf"> & Partial<Pick<ProjectMembers, "projectsOf">>;
   /** Plan 4's readers of a chain run (the starter, the run's owner, `view` on the chain and the project, org owners and admins). Without it only the owner and shares see a chain session. */
   chainReadAccess?: (caller: { orgId: OrgId; developerId: string }, session: AgentSessionRecord) => Promise<boolean>;
   /** Plan 4's chain reads (see `ChainSessionReads`). */

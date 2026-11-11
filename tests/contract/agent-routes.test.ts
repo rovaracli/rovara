@@ -1168,13 +1168,14 @@ describe("Plan 3's paths and Plan 2's (PF24)", () => {
     for (const path of [
       "/v1/app/agents", "/v1/app/agents/rovara-code/adopt", "/v1/app/skills", "/v1/app/skills/skl_x", "/v1/app/approvals", "/v1/app/approvals/apr_x/decide",
       "/v1/app/spend-requests", "/v1/app/connections", "/v1/app/connections/con_x", "/v1/app/org/agent-guardrails", "/v1/app/org/model-sources", "/v1/app/org/model-sources/src_x",
-      "/v1/app/org/spend", "/v1/app/org/spend/members", "/v1/app/org/spend-policy", "/v1/app/budget", "/v1/app/tasks/abc/continue-as-task", "/v1/app/tasks/abc/run-limit-request",
+      "/v1/app/org/spend", "/v1/app/org/spend/members", "/v1/app/org/spend-policy", "/v1/app/org/approvals/pending-summary", "/v1/app/budget", "/v1/app/tasks/abc/continue-as-task", "/v1/app/tasks/abc/run-limit-request",
       "/v1/app/projects/web/agents", "/v1/app/projects/web/agents/agt_x", "/v1/app/projects/web/ai", "/v1/app/projects/web/spend", "/v1/app/projects/web/connectors",
       "/v1/app/projects/web/connectors/github/comment-triggers", "/v1/app/projects/web/connectors/linear",
     ]) expect(isAgentRoute(path), path).toBe(true);
     for (const path of [
       "/v1/app/me", "/v1/app/projects", "/v1/app/projects/web", "/v1/app/projects/web/settings", "/v1/app/org", "/v1/app/org/members", "/v1/app/org/members/abc/role",
       "/v1/app/org/leave", "/v1/app/github/connect", "/v1/app/agentsx", "/v1/app/tasks/abc", "/v1/app/tasks/abc/run-limit-requests", "/v1/app/projects/agents", "/v1/dev/projects", "/v1/app/org/spendy",
+      "/v1/app/org/approvals", "/v1/app/org/approvals/pending-summary/x", "/v1/app/org/approvals/pending",
     ]) expect(isAgentRoute(path), path).toBe(false);
   });
 

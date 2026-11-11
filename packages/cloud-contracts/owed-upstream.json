@@ -356,6 +356,19 @@
       "reason": "Decision 70(c) workflow shapes (the re-run of the checks after a merge of the base, its daily allowance, the base-merged block and auto-fix codes) are in Cloud only. Two Code port lanes are building it (fix/code-base-merged-recheck, fix/code-owed-small).SessionView holds the task view and the chain step view."
     },
     {
+      "file": "session-views.ts",
+      "names": [
+        "SessionList",
+        "SessionListReaderSchema",
+        "SessionListSchema",
+        "SessionTile",
+        "SessionTileReaderSchema",
+        "SessionTileSchema"
+      ],
+      "owedUntil": "2026-11-25",
+      "reason": "The Finished list (srv/needs-broker-ui-2) puts `finishedAs` on an ended session's tile; Code's tile has no such field. Same text as Code's with that one field. Code needs the field (FINISHED_AS, finishedAs) before this entry can go."
+    },
+    {
       "file": "setup-proposal.ts",
       "names": [
         "SetupApplyResponse",

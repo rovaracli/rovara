@@ -1,8 +1,8 @@
-// UX2 slice 2 item 1: where a task stands in the ONE status model (`@agentx/contracts` task-status.ts), from its stored records. The session summary (`summary.ts`) stores it for Live, Home, the sidebar
+// UX2 slice 2 item 1: where a task stands in the ONE status model (`@rovara-code/contracts` task-status.ts), from its stored records. The session summary (`summary.ts`) stores it for Live, Home, the sidebar
 // and the timeline; the task view (`task-view.ts`) adds it for the task page, the MCP tools and the CLI; Slack's start post reads it too. The reason and next-step sentences for a stage are the legacy
 // task page's own (`taskPageStage`), so every surface says the same thing. Fixed words only: never task content, never a raw code.
 import { TASK_STATUS_NEXT_MAX, TASK_STATUS_REASON_MAX, failureCause, taskStatusFromSession, type MergeView, type SessionStatus, type TaskStatus } from "@rovara-code/contracts";
-import { type WorkflowSnapshot } from "@agentx/cloud-contracts";
+import { TASK_STATUS_ANSWERED_REASON, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { taskPageStage } from "../aws/developer-tasks/task-page.js";
 import { workflowDocumentName } from "../developer/workflow-messages.js";
 
@@ -47,7 +47,7 @@ export function taskStatusOf(input: TaskStatusInput): TaskStatus {
   if (input.removedReason !== undefined && workflow?.stage !== "MERGED") return status("failed", input.removedReason, "Nothing; this task has ended.");
   if (workflow === undefined) return plainTaskStatus(input);
   if (workflow.stage === "MERGED") return status("merged", undefined, "Nothing; this task is complete.");
-  if (workflow.outcome === "ANSWERED") return status("closed", "Answered: no code change was needed", "Nothing; no code change was needed.");
+  if (workflow.outcome === "ANSWERED") return status("closed", TASK_STATUS_ANSWERED_REASON, "Nothing; no code change was needed.");
   if (!closed && workflow.stage === "CLOSED" && workflow.state === "COMPLETE" && workflow.outcome === "PASSED") {
     // Review I5: the session has ended (every step ran), so it is never "Needs you"; the next step still says the changes wait for the close.
     return status("closed", "every step finished and the changes wait in the task's workspace", "Close the task when you are done with the changes.");

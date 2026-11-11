@@ -31,7 +31,9 @@ for (const path of ["design/design.css", "look-v2.css", "shell/shell.css", "scre
  // Learning v2 L3b: the Lessons and Sources tabs (their own lazy chunk).
  "screens/project/lessons/lessons.css",
  // OWNER DECISION 18: the task page's plan panel and PR feedback view (their own lazy chunks).
- "screens/session/plan-panel.css"]) {
+ "screens/session/plan-panel.css",
+ // Recent sign-in window page (lane exp/approval-window; its own lazy chunk).
+ "screens/admin/approval-window/approval-window.css"]) {
  const source = new URL(`../packages/ui/src/${path}`, import.meta.url);
  const destination = new URL(`../packages/ui/dist/${path}`, import.meta.url);
  await mkdir(fileURLToPath(new URL(".", destination)), { recursive: true });

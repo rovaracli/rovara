@@ -7,7 +7,7 @@ import { usdToWholeMicrodollars } from "../org/budget-amount.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { AgentGuardrailsWriteSchema, AgentIdSchema, AgentOwnerSchema, AgentXNameSchema, BUILTIN_AGENTS, ModelSourceIdSchema, SkillIdSchema, AgentXError, agentXError, atLeast, canonicalJson, defaultModelSourceOrder, diffRecipes, isBuiltinAgentId, projectAllows, recipeRunner, type AgentAccessLevel, type AgentId, type AgentOwner, type BaseRef, type BuiltinAgentId, type ChainId, type OrgId, type ResolvedRecipe, type RunInput } from "@rovara-code/contracts";
-import { AgentPublishBodySchema as PublishBodySchema, AgentRollbackBodySchema as RollbackBodySchema, AgentBudgetBodySchema as BudgetBodySchema, AgentRunBodySchema as RunBodySchema, AgentCreateBodySchema as CreateBodySchema, AgentDraftPutBodySchema as PutDraftBodySchema, SpendPolicyFieldsSchema, SpendPolicySchema, TRIAL_LIMITS_R49, memberAcceptRunLimitUsd, type OwnerCapChange, type ProjectAiSettings } from "@agentx/cloud-contracts";
+import { ORG_PENDING_APPROVALS_PATH, AgentPublishBodySchema as PublishBodySchema, AgentRollbackBodySchema as RollbackBodySchema, AgentBudgetBodySchema as BudgetBodySchema, AgentRunBodySchema as RunBodySchema, AgentCreateBodySchema as CreateBodySchema, AgentDraftPutBodySchema as PutDraftBodySchema, SpendPolicyFieldsSchema, SpendPolicySchema, TRIAL_LIMITS_R49, memberAcceptRunLimitUsd, type OwnerCapChange, type ProjectAiSettings } from "@agentx/cloud-contracts";
 import type { RoutingDependencies } from "../model-sources/routing.js";
 import type { AdaptedHttpRequest } from "../aws/lambda.js";
 import { StatusReply } from "../aws/status-reply.js";
@@ -59,6 +59,7 @@ import type { ChainViewPorts } from "../chains/view.js";
 import { suggestMaxPerRun, type RequestRunLimit } from "../spend/estimate.js";
 import { ownerShare, withBudgetFields } from "../spend/owner-total.js";
 import { routeSpendRequest } from "../spend/routes.js";
+import { orgPendingApprovals } from "./org-pending-summary.js";
 import { isSpendRequestRoute, requestOwnerCap, routeSpendRequests, type SpendRequestHost } from "../spend/requests.js";
 import { ownerCapCheck } from "./owner-cap-check.js";
 import { isConnectionRoute, routeConnectionRequest, type ConnectionRouteDependencies } from "../connections/routes.js";
@@ -151,6 +152,7 @@ export function isAgentRoute(pathname: string): boolean {
   return /^\/v1\/app\/(agents|skills|approvals|spend-requests|connections|budget|agent-publish-requests)(\/|$)/.test(pathname)
     || /^\/v1\/app\/me\/agents(\/|$)/.test(pathname)
     || /^\/v1\/app\/org\/(agent-guardrails|model-sources|model-sources-order|spend|spend-policy|mcp-servers)(\/|$)/.test(pathname)
+    || pathname === ORG_PENDING_APPROVALS_PATH
     || /^\/v1\/app\/tasks\/[^/]+\/(continue-as-task|run-limit-request)$/.test(pathname)
     || /^\/v1\/app\/projects\/[^/]+\/(agents|ai|spend|connectors|builtin-triggers|event-hooks|context-sources)(\/|$)/.test(pathname);
 }
@@ -952,6 +954,11 @@ export async function routeAgentRequest(deps: AgentRouteDependencies, caller: Ag
   // Task 30: the spend reads (`/v1/app/budget`, the org's spend and ledger, a project's and an agent's), before the agent paths they would otherwise match.
   const spend = await routeSpendRequest(deps, caller, request, url);
   if (spend !== undefined) return spend;
+  // srv/needs-broker-ui-2 item 9: the company's pending approvals at a glance (an org owner or admin; read-only).
+  if (url.pathname === ORG_PENDING_APPROVALS_PATH) {
+    if (request.method !== "GET") throw agentXError("NOT_FOUND", "route not found");
+    return orgPendingApprovals(deps, caller);
+  }
   // Task 21: the approvals (`/v1/app/approvals*`).
   if (isApprovalRoute(url.pathname)) return routeApprovalRequest(deps, caller, request, url);
   // Agent publish requests and the Home row's favourite and suggested agents (experience decisions 23 and 24), before the agent paths they would otherwise match.

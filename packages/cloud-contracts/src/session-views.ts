@@ -1,6 +1,7 @@
 import { z } from "zod";
-import { AGENT_SESSION_CONTRACT_VERSION, AGENTX_NAME_PATTERN, ChainRunViewSchema, CountSchema, ErrorRefSchema, forwardReader, InstantSchema, LocalToolSchema, PRESENCE_VIEWERS_MAX, SESSION_ACTIONS, SESSION_ANCHORS_MAX, SESSION_KINDS, SESSION_LEGS_MAX, SESSION_LEVELS, SESSION_MODES, SessionActionSchema, SessionAgentSchema, SessionAnchorRefSchema, SessionIdSchema, SessionLegSchema, SessionOwnerSchema, SessionStartedBySchema, SessionSummarySchema, SessionWhereViewSchema, TaskStatusSchema } from "@rovara-code/contracts";
+import { SessionWhereSchema, LIVE_PAGE_MAX, AGENT_SESSION_CONTRACT_VERSION, AGENTX_NAME_PATTERN, ChainRunViewSchema, CountSchema, ErrorRefSchema, forwardReader, InstantSchema, LocalToolSchema, PRESENCE_VIEWERS_MAX, SESSION_ACTIONS, SESSION_ANCHORS_MAX, SESSION_KINDS, SESSION_LEGS_MAX, SESSION_LEVELS, SESSION_MODES, SessionActionSchema, SessionAgentSchema, SessionAnchorRefSchema, SessionIdSchema, SessionLegSchema, SessionOwnerSchema, SessionStartedBySchema, SessionSummarySchema, SessionWhereViewSchema, TaskStatusSchema } from "@rovara-code/contracts";
 import { DeveloperTaskViewSchema } from "./developer-tasks.js";
+import { FinishedAsSchema } from "./finished-as.js";
 
 export const URL_MAX = 2048;
 
@@ -109,3 +110,42 @@ export const DeveloperTaskViewReaderSchema = forwardReader(DeveloperTaskViewSche
 // ---- asking for a confirmation
 
 export { SoleOwnerConfirmationSchema, CHANGE_TEXT_MAX } from "./needs-confirmation.js";
+
+// ---- the session tile and the session list, with how a finished session ended (srv/needs-broker-ui-2): Cloud's own text of Code's, plus `finishedAs`. Owed upstream: see owed-upstream.json.
+
+/** One session on the Live wall, a project page or a Home card: the header's short form. */
+export const SessionTileSchema = z
+  .object({
+    contractVersion: z.literal(AGENT_SESSION_CONTRACT_VERSION),
+    sessionId: SessionIdSchema,
+    kind: z.enum(SESSION_KINDS),
+    title: z.string().min(1),
+    project: z.string().regex(AGENTX_NAME_PATTERN).optional(),
+    agent: SessionAgentSchema.optional(),
+    owner: SessionOwnerSchema,
+    where: SessionWhereSchema,
+    level: z.enum(SESSION_LEVELS),
+    revision: z.number().int().min(0),
+    summary: SessionSummarySchema,
+    createdAt: InstantSchema,
+    updatedAt: InstantSchema,
+    endedAt: InstantSchema.optional(),
+    /** Only on an ended session: how it ended (`FINISHED_AS`). Absent on an open one and on a tile an older server wrote. */
+    finishedAs: FinishedAsSchema.optional(),
+  })
+  .strict();
+
+export type SessionTile = z.infer<typeof SessionTileSchema>;
+
+export const SessionTileReaderSchema = forwardReader(SessionTileSchema);
+
+/** `GET /v1/app/sessions`: one page of sessions, newest first; `next` is opaque, passed back as `cursor`. */
+export const SessionListSchema = z.object({
+  sessions: z.array(SessionTileSchema).max(LIVE_PAGE_MAX), next: z.string().min(1).max(200).optional(),
+  /** Only on the Finished list for Team or Company, when the caller reaches more projects than one answer reads (the rest are left to their own project's list). */
+  projectsCut: z.literal(true).optional(),
+}).strict();
+
+export type SessionList = z.infer<typeof SessionListSchema>;
+
+export const SessionListReaderSchema = forwardReader(SessionListSchema);
