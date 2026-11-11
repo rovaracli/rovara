@@ -1,5 +1,6 @@
 export { Probe } from "./Probe.js";
 import "./design/design.css";
+import "./look-v2.css";
 export * from "./theme.js";
 export * from "./design/Announcer.js";
 export * from "./design/AvatarStack.js";

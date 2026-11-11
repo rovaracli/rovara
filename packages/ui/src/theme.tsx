@@ -2,6 +2,8 @@ import { createContext, useContext, useEffect, useState, type ReactNode } from "
 import { getNonce } from "get-nonce";
 import { lookV2Css, tokensCss } from "@agentx/design-tokens";
 import { DEFAULT_DENSITY, DENSITY_STORAGE_KEY, isNewLookOn, readDensity, type Density } from "./look.js";
+// Built once when the module loads: the sheet is constant, so it is not rebuilt on every render.
+const THEME_CSS = tokensCss() + lookV2Css();
 export type ThemePreference = "system" | "light" | "dark";
 interface ThemeStorageHost { storage: { get(key: string): string | undefined; set(key: string, value: string): void } }
 /** `newLook` is true while the v2 look is on (see look.ts); `density` and `setDensity` only change anything then. */
@@ -17,6 +19,6 @@ export function ThemeProvider({ host, children }: { host: ThemeStorageHost; chil
  function setPreference(value: ThemePreference) { setState(value);try { host.storage.set("rovara.theme", value); } catch { /* A blocked store does not prevent changing appearance. */ } }
  function setDensity(value: Density) { setDensityState(value);try { host.storage.set(DENSITY_STORAGE_KEY, value); } catch { /* A blocked store does not prevent changing density. */ } }
  // The v2 sheet is inert until data-look="v2" is on the root; it goes after the base tokens so its rules win at equal specificity.
- return <Context.Provider value={{ preference, setPreference, newLook, density, setDensity }}><style nonce={getNonce()}>{tokensCss() + lookV2Css()}</style>{children}</Context.Provider>;
+ return <Context.Provider value={{ preference, setPreference, newLook, density, setDensity }}><style nonce={getNonce()}>{THEME_CSS}</style>{children}</Context.Provider>;
 }
 export function useTheme() { return useContext(Context); }

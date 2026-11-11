@@ -1,9 +1,18 @@
 // @vitest-environment jsdom
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
-import { LOOK_COLORS, LOOK_DENSITY, LOOK_TEXT_PAIRS, LOOK_UI_PAIRS, TOKENS, contrastRatio, lookV2Css, tokensCss } from "../../packages/design-tokens/src/index.js";
+import { LOOK_OWN_SHADOWS, LOOK_COLORS, LOOK_DENSITY, LOOK_TEXT_PAIRS, LOOK_UI_PAIRS, TOKENS, contrastRatio, lookV2Css, tokensCss } from "../../packages/design-tokens/src/index.js";
 import { ThemeProvider, useTheme } from "../../packages/ui/src/theme.js";
+import { AppNavSchema } from "@agentx/contracts/web";
+import { QueryClientProvider } from "@tanstack/react-query";
+import { MemoryRouter } from "react-router";
+import { AppHostProvider } from "../../packages/ui/src/host.js";
+import { createQueryClient } from "../../packages/ui/src/api/query.js";
+import { AccountMenu } from "../../packages/ui/src/shell/AccountMenu.js";
+import { fakeHost } from "./support/fake-host.js";
 import { Chip } from "../../packages/ui/src/design/Chip.js";
 import { DENSITY_STORAGE_KEY, LOOK_STORAGE_KEY, isNewLookOn, readDensity } from "../../packages/ui/src/look.js";
 import { h } from "./support/h.js";
@@ -34,6 +43,30 @@ describe("v2 look tokens", () => {
   expect(css).toContain("prefers-color-scheme: dark");
   expect(css).toContain("pointer: coarse");
   expect(LOOK_DENSITY.comfortable.controlH).toBeGreaterThan(LOOK_DENSITY.compact.controlH);
+ });
+});
+describe("v2 focus halo and component shadows", () => {
+ const rules = () => lookV2Css().split("}").map(rule => rule.split("{") as [string, string | undefined]).filter(([, body]) => body !== undefined);
+ it("keeps a component's own elevation while it has keyboard focus: halo plus shadow, never the halo alone", () => {
+  const owners = rules().filter(([selector]) => selector.includes(":focus-visible") && selector.includes(".rv-"));
+  const selectors = LOOK_OWN_SHADOWS.flatMap(entry => entry.selectors);
+  for (const component of [".rv-surface", ".rv-decision", ".rv-popover", ".rv-tooltip", ".rv-toast", ".rv-dialog"]) expect(selectors, component).toContain(component);
+  for (const { selectors: group, shadow } of LOOK_OWN_SHADOWS) for (const selector of group) {
+   const own = owners.find(([text]) => text.split(",").includes(`:root[data-look="v2"] ${selector}:focus-visible`));
+   expect(own, selector).toBeDefined();
+   expect(own![1], selector).toBe(`box-shadow:var(--rv-focus-halo),var(${shadow})`);
+  }
+  // Elements without a shadow of their own still get the halo alone, and the component rules come later so they win.
+  const all = lookV2Css(), plain = all.indexOf(':root[data-look="v2"] :focus-visible{box-shadow:var(--rv-focus-halo)}');
+  expect(plain).toBeGreaterThan(-1);
+  expect(all.indexOf(':root[data-look="v2"] .rv-surface:focus-visible')).toBeGreaterThan(plain);
+ });
+ it("only names components that really carry that shadow in the sheets", () => {
+  const sheets = readFileSync(join(process.cwd(), "packages/ui/src/design/design.css"), "utf8") + readFileSync(join(process.cwd(), "packages/ui/src/screens/home/home.css"), "utf8");
+  for (const { selectors, shadow } of LOOK_OWN_SHADOWS) for (const selector of selectors) {
+   const rule = new RegExp(`(^|[},\\s])${selector.replace(".", "\\.")}(,[^{]*)?\\{[^}]*box-shadow:var\\(${shadow}`, "mu");
+   expect(sheets, selector).toMatch(rule);
+  }
  });
 });
 describe("v2 look switch", () => {
@@ -72,5 +105,39 @@ describe("Chip", () => {
   expect(screen.getByText("Changed outside Rovara").className).toContain("rv-chip-outside-change");
   expect(container.querySelectorAll("svg[aria-hidden='true']").length).toBe(2);
   expect(screen.getByText("Project default").querySelector("svg")).toBeNull();
+ });
+});
+
+describe("Density choice in the account dialog", () => {
+ const nav = AppNavSchema.parse({ me: { developerId: "a".repeat(64), name: "Priya", orgRole: "owner" }, org: { name: "Trial team" }, homeCount: 0, projects: [], shared: { agents: [], sessions: [] }, features: { admin: true, localAgents: false, usage: false, chains: false, describe: false, notices: false } });
+ function openAccount(stored: Record<string, string>) {
+  const f = fakeHost(async () => ({ status: 200, body: {} })), query = createQueryClient();
+  for (const [key, value] of Object.entries(stored)) f.host.storage.set(key, value);
+  const ui = render(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(ThemeProvider, { host: f.host, children: h(MemoryRouter, null, h(AccountMenu, { nav })) }) }) }));
+  return { ...f, close() { ui.unmount();query.clear(); } };
+ }
+ it("is not shown while the new look is off (the Appearance choice still is)", async () => {
+  const f = openAccount({});
+  await userEvent.click(screen.getByRole("button", { name: "Open account menu" }));
+  expect(await screen.findByRole("group", { name: "Appearance" })).toBeTruthy();
+  expect(screen.queryByRole("group", { name: "Density" })).toBeNull();
+  expect(screen.queryByRole("radio", { name: "Compact" })).toBeNull();
+  f.close();
+ });
+ it("is shown while the new look is on, and choosing Compact stores it and sets the page attribute", async () => {
+  const f = openAccount({ [LOOK_STORAGE_KEY]: "v2" });
+  await userEvent.click(screen.getByRole("button", { name: "Open account menu" }));
+  const group = await screen.findByRole("group", { name: "Density" });
+  expect(group.querySelectorAll("input[type=radio]").length).toBe(2);
+  expect(screen.getByRole<HTMLInputElement>("radio", { name: "Comfortable" }).checked).toBe(true);
+  expect(document.documentElement.getAttribute("data-density")).toBe("comfortable");
+  await userEvent.click(screen.getByRole("radio", { name: "Compact" }));
+  expect(f.host.storage.get(DENSITY_STORAGE_KEY)).toBe("compact");
+  expect(document.documentElement.getAttribute("data-density")).toBe("compact");
+  expect(screen.getByRole<HTMLInputElement>("radio", { name: "Compact" }).checked).toBe(true);
+  await userEvent.click(screen.getByRole("radio", { name: "Comfortable" }));
+  expect(f.host.storage.get(DENSITY_STORAGE_KEY)).toBe("comfortable");
+  expect(document.documentElement.getAttribute("data-density")).toBe("comfortable");
+  f.close();
  });
 });

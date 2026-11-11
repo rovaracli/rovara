@@ -82,6 +82,12 @@ function density(name: Density): string {
  return `--rv-density-row-y:${String(d.rowY)}px;--rv-density-card:${String(d.card)}px;--rv-density-gap:${String(d.gap)}px;--rv-control-h:${String(d.controlH)}px;--rv-font-lg:${String(d.font.lg)}px;--rv-font-xl:${String(d.font.xl)}px;--rv-font-xxl:${String(d.font.xxl)}px;`;
 }
 const ROOT = ':root[data-look="v2"]';
+/** Components that carry their own elevation shadow and the token it uses. While one of them has keyboard focus the focus halo is drawn ON TOP of that elevation, never instead of it. */
+export const LOOK_OWN_SHADOWS = [
+ { selectors: [".rv-surface", ".rv-decision"], shadow: "--rv-shadow-1" },
+ { selectors: [".rv-popover", ".rv-tooltip", ".rv-toast"], shadow: "--rv-shadow-2" },
+ { selectors: [".rv-dialog"], shadow: "--rv-shadow-3" },
+] as const;
 /** The v2 sheet. Append it AFTER tokensCss(); it changes nothing until `data-look="v2"` is on the root. */
 export function lookV2Css(): string {
  const shape = `--rv-radius-sm:${String(LOOK_SHAPE.radius.sm)}px;--rv-radius-md:${String(LOOK_SHAPE.radius.md)}px;--rv-radius-lg:${String(LOOK_SHAPE.radius.lg)}px;--rv-radius-card:var(--rv-radius-md);--rv-motion-fast:${String(LOOK_SHAPE.motionFastMs)}ms;--rv-touch-min:0px;--rv-control-size:max(var(--rv-control-h),var(--rv-touch-min));--rv-focus-offset:2px;`;
@@ -91,5 +97,7 @@ export function lookV2Css(): string {
   + `${ROOT}[data-density="compact"]{${density("compact")}}`
   // Phone and touch screens: every control is at least 44px, whatever the density.
   + `@media (max-width: 767px), (pointer: coarse){${ROOT}{--rv-touch-min:${String(LOOK_SHAPE.touchMinPx)}px}}`
-  + `${ROOT} :focus-visible{box-shadow:var(--rv-focus-halo)}`;
+  // Focus halo: alone on controls without a shadow of their own; combined with the elevation on the ones that have one (later, more specific rules win).
+  + `${ROOT} :focus-visible{box-shadow:var(--rv-focus-halo)}`
+  + LOOK_OWN_SHADOWS.map(({ selectors, shadow }) => selectors.map(selector => `${ROOT} ${selector}:focus-visible`).join(",") + `{box-shadow:var(--rv-focus-halo),var(${shadow})}`).join("");
 }

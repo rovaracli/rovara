@@ -13,6 +13,7 @@ import { createApiClient } from "./api/client.js";
 import { createQueryClient } from "./api/query.js";
 import { appRoutes } from "./routes.js";
 import "./shell/shell.css";
+import "./look-v2.css";
 type Router = ComponentProps<typeof RouterProvider>["router"];
 export type AppRouterFactory = (routes: RouteObject[]) => Router;
 const EMPTY_FEATURES: AppNav["features"] = { localAgents: false, usage: false, admin: false, chains: false, notices: false, describe: false };
