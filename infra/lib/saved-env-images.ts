@@ -66,6 +66,11 @@ export interface SavedEnvImagesProps {
    * Default "none".
    */
   readonly registryScanning?: "basic" | "none";
+  /**
+   * Other principals that may assume the push and manage roles besides the broker (the company image mirror function's role): they assume them with the same one-repository session policy the broker does. The pull
+   * role stays the broker's alone (the broker mints the worker's pull login).
+   */
+  readonly extraAssumers?: readonly iam.IPrincipal[];
 }
 
 export class SavedEnvImages extends Construct {
@@ -90,11 +95,12 @@ export class SavedEnvImages extends Construct {
     const repositories = savedEnvRepositoriesArn(scopeOf, env);
     const brokerPrincipal = new iam.ArnPrincipal(props.brokerRole.roleArn);
 
-    const sessionRole = (logicalId: string, roleName: string, description: string, actions: readonly string[], withToken: boolean): iam.Role => {
+    const extraAssumers = props.extraAssumers ?? [];
+    const sessionRole = (logicalId: string, roleName: string, description: string, actions: readonly string[], withToken: boolean, assumers: readonly iam.IPrincipal[] = []): iam.Role => {
       const role = new iam.Role(this, logicalId, {
         roleName,
         description,
-        assumedBy: brokerPrincipal,
+        assumedBy: assumers.length === 0 ? brokerPrincipal : new iam.CompositePrincipal(brokerPrincipal, ...assumers),
         // The longest session any of them is minted for is the push's 3,600 seconds (the chained-role maximum); the session policy and the duration the broker asks for narrow it.
         maxSessionDuration: Duration.seconds(SAVED_ENV_PUSH_SESSION_SECONDS),
       });
@@ -102,9 +108,9 @@ export class SavedEnvImages extends Construct {
       role.addToPolicy(new iam.PolicyStatement({ sid: "ThisEnvironmentsImages", actions: [...actions], resources: [repositories] }));
       return role;
     };
-    this.pushRole = sessionRole("PushRole", savedEnvPushRoleName(env), "Rovara saved environment images: the broker assumes this with a one-repository session policy to push an image", SAVED_ENV_PUSH_ACTIONS, true);
+    this.pushRole = sessionRole("PushRole", savedEnvPushRoleName(env), "Rovara saved environment images: the broker assumes this with a one-repository session policy to push an image", SAVED_ENV_PUSH_ACTIONS, true, extraAssumers);
     this.pullRole = sessionRole("PullRole", savedEnvPullRoleName(env), "Rovara saved environment images: the broker assumes this with a one-repository session policy to pull an image", SAVED_ENV_PULL_ACTIONS, true);
-    this.manageRole = sessionRole("ManageRole", savedEnvManageRoleName(env), "Rovara saved environment images: the broker assumes this with a one-repository session policy to list and delete images", SAVED_ENV_MANAGE_ACTIONS, false);
+    this.manageRole = sessionRole("ManageRole", savedEnvManageRoleName(env), "Rovara saved environment images: the broker assumes this with a one-repository session policy to list and delete images", SAVED_ENV_MANAGE_ACTIONS, false, extraAssumers);
 
     // The role ECR assumes to create a repository from the template. Only ECR may assume it; it may create repositories under the prefix and apply the policy, lifecycle and tags the template carries.
     this.createRole = new iam.Role(this, "CreateRole", {

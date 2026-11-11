@@ -39,6 +39,16 @@ export const IMAGES_TEXT = {
  FROM_SETUP: "Asked for by the setup of the project ",
  FROM_ADMIN: "Added by ",
  KINDS: "Rovara can run these kinds of service: ",
+ REGISTRIES_HEADING: "Registries images may come from",
+ REGISTRIES_NOTE: "Rovara copies an approved image into your own registry and runs it from there. It can read public images from Docker Hub, ghcr.io, quay.io and public.ecr.aws. Add another public registry here if your images live elsewhere. You need to have signed in within the last 10 minutes.",
+ REGISTRY_FIELD: "Registry host",
+ REGISTRY_HINT: "A host name such as registry.example.com, with no https:// and no port.",
+ REGISTRY_ADD: "Add registry",
+ REGISTRY_REMOVE: "Remove",
+ NO_EXTRA_REGISTRIES: "No extra registry has been added.",
+ COPY_COPYING: "Being copied into your registry. It can run once the copy is done.",
+ COPY_FAILED: "The copy into your registry failed. Rovara tries again on its own; if it keeps failing, revoke the image and add it again.",
+ COPY_READY: "Copied into your registry and ready to run.",
 } as const;
 
 const problem = (error: unknown): { message: string; reauth: boolean; stale: boolean } => error instanceof ApiError
@@ -68,7 +78,7 @@ function Card({ image, children }: { image: CompanyTestImage; children: React.Re
 
 function Images() {
  const { api, read } = useCompanyImages(), host = useAppHost(), query = useQueryClient(), sending = useRef(false);
- const [busy, setBusy] = useState<string>(), [error, setError] = useState<ReturnType<typeof problem>>(), [note, setNote] = useState<string>(), [name, setName] = useState("");
+ const [busy, setBusy] = useState<string>(), [error, setError] = useState<ReturnType<typeof problem>>(), [note, setNote] = useState<string>(), [name, setName] = useState(""), [registry, setRegistry] = useState("");
  useEffect(() => () => { void query.cancelQueries({ queryKey: ["admin", "company-test-images"] }); }, [query]);
  async function run(label: string, work: () => Promise<void>, done?: string): Promise<boolean> {
   if (sending.current) return false;
@@ -91,6 +101,15 @@ function Images() {
     {state.kinds.length > 0 && <p className="rv-muted">{IMAGES_TEXT.KINDS}<VisibleText text={state.kinds.join(", ")} />.</p>}
     <div className="rv-hww-company-actions"><Button type="submit" variant="primary" busy={busy === "add"} disabled={busy !== undefined || name.trim() === ""}>{IMAGES_TEXT.ADD_BUTTON}</Button></div>
    </form>
+   <section aria-label={IMAGES_TEXT.REGISTRIES_HEADING} className="rv-hww-company-card">
+    <h2>{IMAGES_TEXT.REGISTRIES_HEADING}</h2>
+    <p className="rv-muted">{IMAGES_TEXT.REGISTRIES_NOTE}</p>
+    {state.registries.hosts.length === 0 ? <p className="rv-muted">{IMAGES_TEXT.NO_EXTRA_REGISTRIES}</p> : <ul>{state.registries.hosts.map(host => <li key={host}><VisibleText text={host} /> <Button variant="danger" busy={busy === "unregister:" + host} disabled={busy !== undefined} onClick={() => { void run("unregister:" + host, () => api.removeRegistry(host, state.registries.revision), "Removed."); }}>{IMAGES_TEXT.REGISTRY_REMOVE}</Button></li>)}</ul>}
+    <form aria-label={IMAGES_TEXT.REGISTRY_ADD} onSubmit={event => { event.preventDefault();if (registry.trim() !== "") void run("register", () => api.addRegistry(registry.trim(), state.registries.revision), "Added.").then(ok => { if (ok) setRegistry(""); }); }}>
+     <TextField label={IMAGES_TEXT.REGISTRY_FIELD} hint={IMAGES_TEXT.REGISTRY_HINT} value={registry} onChange={event => { setRegistry(event.target.value); }} autoComplete="off" maxLength={253} />
+     <div className="rv-hww-company-actions"><Button type="submit" variant="primary" busy={busy === "register"} disabled={busy !== undefined || registry.trim() === ""}>{IMAGES_TEXT.REGISTRY_ADD}</Button></div>
+    </form>
+   </section>
    <h2>{IMAGES_TEXT.WAITING}</h2>
    {waiting.length === 0 ? <p className="rv-muted">{IMAGES_TEXT.NONE_WAITING}</p> : <div className="rv-hww-company-cards">
     {waiting.map(image => <Card key={image.imageId} image={image}>
@@ -101,6 +120,7 @@ function Images() {
    <h2>{IMAGES_TEXT.APPROVED}</h2>
    {approved.length === 0 ? <p className="rv-muted">{IMAGES_TEXT.NONE_APPROVED}</p> : <div className="rv-hww-company-cards">
     {approved.map(image => <Card key={image.imageId} image={image}>
+     <p className="rv-muted">{image.copy === "ready" ? IMAGES_TEXT.COPY_READY : image.copy === "failed" ? IMAGES_TEXT.COPY_FAILED : IMAGES_TEXT.COPY_COPYING}</p>
      <p className="rv-muted">{IMAGES_TEXT.REVOKE_HELP}</p>
      <div className="rv-hww-company-actions"><Button variant="danger" busy={busy === "revoke:" + image.imageId} disabled={busy !== undefined} onClick={() => { void run("revoke:" + image.imageId, () => api.revoke(image), "Revoked.") }}>{IMAGES_TEXT.REVOKE}</Button></div>
     </Card>)}

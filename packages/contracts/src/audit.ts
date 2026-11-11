@@ -395,6 +395,8 @@ export const AUDIT_ACTIONS = [
   "company_rules.written_back",
   "company_rules.sync_connected",
   "company_rules.sync_disconnected",
+  // The company's own list of extra registries an image may come from: the number of registries and the authority are facts; the hosts go in `details`.
+  "company_image.registries_changed",
 ] as const;
 
 export const AuditActionSchema = z.enum(AUDIT_ACTIONS);
@@ -762,6 +764,7 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "company_rules.written_back": ["version", "revision", "state"],
   "company_rules.sync_connected": ["place"],
   "company_rules.sync_disconnected": ["place"],
+  "company_image.registries_changed": ["registryCount", "authority"],
 };
 
 /** `op_` plus the first 24 hex of `sha256(issuer + "\n" + subject)`: a staff member's id in the chain, never their identity. */

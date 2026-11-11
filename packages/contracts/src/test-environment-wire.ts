@@ -57,6 +57,8 @@ export const TEST_SERVICES_AWS_PLAN_SERVICES = ["s3", "sqs", "dynamodb"] as cons
 const NO_HIDDEN = /^[^\p{Cc}\p{Cf}]*$/u;
 const line = (max: number) => z.string().min(1).max(max).regex(NO_HIDDEN, "one plain line");
 const Sha256 = z.string().regex(/^[a-f0-9]{64}$/u);
+/** A mirror repository of a company image (company-image-mirror.ts `companyImageRepositoryName`): the saved-environment family, `rovara-env/<env>/o<org hash>/p<image hash>`. Written out here, not imported, so the browser entry that reads plans does not pull the registry names in. */
+const MIRROR_REPOSITORY = /^rovara-env\/[a-z][a-z0-9-]{0,19}\/o[a-f0-9]{32}\/p[a-f0-9]{32}$/u;
 const Id = z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/u);
 
 /** The most inline coverage map a CHECKS run is sent: a larger one is not sent (the run then selects nothing and runs the whole check). */
@@ -192,9 +194,10 @@ export const TaskDependencyPlanSchema = z
     /**
      * Only on a `company` entry (switch `pj`): the image a company admin approved, so a company image is never dressed as one of Rovara's catalog images. `imageId` is the approval's id (it names the digest), `registry` and
      * `repository` say where the image comes from, and `digest` is the approved digest (equal to the plan's `digest`). `catalogId` is then only the catalog entry whose RUN PROFILE the image runs with (user, memory, ports,
-     * health check, reset), never the source of the image.
+     * health check, reset), never the source of the image. `digest` is the digest of the image's linux/arm64 manifest (company-image-mirror.ts: the pin is the platform digest). `mirror` is where the worker pulls it from:
+     * a repository of the install's own registry (never the source registry) holding exactly that digest.
      */
-    company: z.object({ imageId: z.string().regex(/^img_[a-f0-9]{20}$/u), registry: z.string().min(4).max(253), repository: z.string().min(1).max(250), digest: Sha256 }).strict().optional(),
+    company: z.object({ imageId: z.string().regex(/^img_[a-f0-9]{20}$/u), registry: z.string().min(4).max(253), repository: z.string().min(1).max(250), digest: Sha256, mirror: z.object({ repository: z.string().regex(MIRROR_REPOSITORY), digest: Sha256 }).strict() }).strict().optional(),
     /** Names and files carried over from the project (database, user, extensions, init files); no password. */
     config: CatalogConfigSchema,
     aliases: z.array(DnsLabelSchema).max(TEST_ENV_DEPENDENCY_LIMITS.hostAliases),
@@ -218,6 +221,7 @@ export const TaskDependencyPlanSchema = z
       if ((TEST_ENV_HELPER_CATALOG_NAMES as readonly string[]).includes(catalogIdName(plan.catalogId))) problem(["catalogId"], "a company image runs with the profile of real software from the catalog, not of one of Rovara's helpers");
       if (plan.company === undefined) problem(["company"], "a company image names the approval it runs");
       else if (plan.company.digest !== plan.digest) problem(["company", "digest"], "a company image runs exactly the digest that was approved");
+      else if (plan.company.mirror.digest !== plan.digest) problem(["company", "mirror", "digest"], "the mirrored copy is exactly the digest that was approved");
       if (plan.aws !== undefined) problem(["aws"], "only an emulated dependency has AWS services");
     } else if (plan.company !== undefined) problem(["company"], "only a company image names an approval");
     if (plan.backing === "fake") {

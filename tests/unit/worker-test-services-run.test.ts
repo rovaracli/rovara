@@ -118,7 +118,7 @@ async function harness(options: { docker?: FakeServicesDockerOptions; sealed?: P
   const sandbox = new TaskSandbox({ rootPath: root, taskId: OPERATION, docker: fake.docker, image: IMAGE, log: () => undefined });
   await sandbox.start();
   const artifactSink = (artifact: { name: string; mediaType: string; content: string }): Promise<void> => { artifacts.push(artifact); return Promise.resolve(); };
-  const start = (dependencies: readonly TaskDependencyPlan[] = [dependency()], hasDevcontainer = false) => startTestServicesRun(config, { dependencies, hasDevcontainer, operationId: OPERATION, rootPath: root, repositoryPaths: [join(root, "app")], sandbox, artifactSink });
+  const start = (dependencies: readonly TaskDependencyPlan[] = [dependency()], hasDevcontainer = false, extra: Partial<Parameters<typeof startTestServicesRun>[1]> = {}) => startTestServicesRun(config, { dependencies, hasDevcontainer, operationId: OPERATION, rootPath: root, repositoryPaths: [join(root, "app")], sandbox, artifactSink, ...extra });
   const checkPlan: CheckPlan = { source: "project", readiness: [TEST_COMMAND], projectBefore: ["passed"] };
   const base: CheckRunners = { runProjectCommand: () => Promise.reject(new Error("the working sandbox's runners must not run a check")), runAgentCommand: () => Promise.reject(new Error("the working sandbox's runners must not run a check")) };
   return { fake, root, runParent, state, logs, artifacts, config, sandbox, start, checkPlan, base };
@@ -188,19 +188,122 @@ describe("starting the run", () => {
     await nothingLeft(h);
   });
 
-  it("a company-approved image is refused BY NAME with the same sentence: it is never started, even with the digest the catalog pins, and nothing is pulled or made", async () => {
-    const h = await harness();
-    const company = { imageId: "img_" + "1".repeat(20), registry: "docker.io", repository: "library/postgres", digest: "c".repeat(64) };
-    for (const changes of [{ digest: "c".repeat(64), company }, { company: { ...company, digest: dependency().digest as string }, digest: dependency().digest as string }]) {
-      const error = await h.start([dependency({ backing: "company", ...changes } as never)]).then(() => undefined, (caught: unknown) => caught as TestServicesError);
-      expect(error).toBeInstanceOf(TestServicesError);
-      expect(error!.reason).toBe("pull_failed");
-      expect(error!.message).toBe("Dependency image not available on this worker");
-      expect(error!.failures.get("postgres")).toBe("pull_failed");
-    }
-    expect(h.fake.verbs("network").filter((call) => call[1] === "create")).toEqual([]);
-    expect(h.fake.calls.some((call) => call[0] === "pull")).toBe(false);
-    await nothingLeft(h);
+  // ---- company-approved images (switch `pj`): pulled from the install's own registry, never from the source, and run with the catalog's profile for their kind
+  const COMPANY_DIGEST = "c".repeat(64);
+  const COMPANY_IMAGE_ID = "img_" + "1".repeat(20);
+  const MIRROR_REPOSITORY = `rovara-env/staging/o${"1".repeat(32)}/p${"2".repeat(32)}`;
+  const COMPANY_REFERENCE = `${REGISTRY}/${MIRROR_REPOSITORY}@sha256:${COMPANY_DIGEST}`;
+  const companyDependency = (change: Record<string, unknown> = {}, company: Record<string, unknown> = {}): TaskDependencyPlan => dependency({
+    backing: "company", digest: COMPANY_DIGEST,
+    company: { imageId: COMPANY_IMAGE_ID, registry: "ghcr.io", repository: "acme/postgres", digest: COMPANY_DIGEST, mirror: { repository: MIRROR_REPOSITORY, digest: COMPANY_DIGEST }, ...company },
+    ...change,
+  } as never);
+  const loginFor = (change: Record<string, unknown> = {}) => ({ login: { registry: REGISTRY, repository: MIRROR_REPOSITORY, username: "AWS", password: "registry-password-for-test", expiresAt: new Date(Date.now() + 30 * 60_000).toISOString(), ...change } });
+
+  describe("a company-approved image", () => {
+    it("is pulled from the install's own registry by its approved digest with a login for that one repository, then run with the catalog's profile for its kind, and the login is gone afterwards", async () => {
+      const h = await harness();
+      const asked: unknown[] = [];
+      const run = await h.start([companyDependency()], false, { companyImageLogin: async (body) => { asked.push(body); return { requestId: "r-1", ...loginFor() }; } });
+      expect(asked).toEqual([{ imageId: COMPANY_IMAGE_ID }]);
+      // One pull, with a throwaway Docker config that held the login for the install's registry only, by digest and never by tag.
+      expect(h.fake.companyPulls).toHaveLength(1);
+      expect(h.fake.companyPulls[0]!.reference).toBe(COMPANY_REFERENCE);
+      expect(h.fake.companyPulls[0]!.reference).not.toMatch(/ghcr\.io|acme|:latest/u);
+      expect(Object.keys((JSON.parse(h.fake.companyPulls[0]!.config!) as { auths: object }).auths)).toEqual([REGISTRY]);
+      await expect(readdir(h.fake.companyPulls[0]!.configDirectory!)).rejects.toThrow();
+      expect(h.fake.pulls).toEqual([]);
+      // The helper starts from that reference with the SAME run profile as a catalog postgres (the entry's, not the image's): the flags, the memory, the tmpfs and the network are the entry's.
+      const helperRun = h.fake.calls.find((call) => call[0] === "run" && call.includes("--detach") && call.includes(COMPANY_REFERENCE));
+      expect(helperRun).toBeDefined();
+      expect(helperRun).toContain("--pull=never");
+      const catalogRun = (await (async () => { const base = await harness(); const baseRun = await base.start(); const found = base.fake.calls.find((call) => call[0] === "run" && call.includes("--detach") && call.includes(`${REGISTRY}/rovara-catalog/staging/svc/postgres@sha256:${DIGEST}`))!; await baseRun.dispose(); await base.sandbox.dispose(); return found; })());
+      const profile = (call: string[], reference: string) => call.filter((arg) => arg !== reference).map((arg) => arg.replace(/rsv-[A-Za-z0-9-]+/gu, "RUN").replace(/\b[0-9a-f]{10,}\b/gu, "H").replace(/172\.30\.\d+\.\d+/gu, "IP"));
+      expect(profile(helperRun!, COMPANY_REFERENCE).filter((arg) => arg.startsWith("--") || arg.startsWith("-")).sort()).toEqual(profile(catalogRun, `${REGISTRY}/rovara-catalog/staging/svc/postgres@sha256:${DIGEST}`).filter((arg) => arg.startsWith("--") || arg.startsWith("-")).sort());
+      expect(h.fake.left().networks).toHaveLength(1);
+      await run.dispose();
+      await h.sandbox.dispose();
+      await nothingLeft(h);
+    });
+
+    it("does not pull an image that is already on this host, and asks for no login", async () => {
+      const h = await harness({ docker: { companyPresent: [COMPANY_REFERENCE] } });
+      let asked = 0;
+      const run = await h.start([companyDependency()], false, { companyImageLogin: async () => { asked += 1; return loginFor(); } });
+      expect(asked).toBe(0);
+      expect(h.fake.companyPulls).toEqual([]);
+      await run.dispose();
+      await h.sandbox.dispose();
+    });
+
+    it("refuses the VOLUME check the same as a catalog image: an image that declares a volume the entry does not cover is not started", async () => {
+      const h = await harness({ docker: { companyPresent: [COMPANY_REFERENCE], companyVolumes: () => ["/var/lib/postgresql/data", "/extra/volume"] } });
+      await expect(h.start([companyDependency()])).rejects.toBeTruthy();
+      expect(h.fake.calls.some((call) => call[0] === "run" && call.includes("--detach") && call.includes(COMPANY_REFERENCE))).toBe(false);
+      await h.sandbox.dispose();
+    });
+
+    it("is refused with the fixed sentence when no login can be had, the login is for another registry or repository or about to expire, or the pull fails: nothing is made", async () => {
+      const cases: Array<[string, Partial<Parameters<typeof startTestServicesRun>[1]>, Record<string, unknown>?]> = [
+        ["no callback", {}],
+        ["the broker refuses", { companyImageLogin: async () => { throw new Error("CALLBACK_FORBIDDEN with a secret in it"); } }],
+        ["an answer that is not a login", { companyImageLogin: async () => ({ login: { password: "x" } }) }],
+        ["another registry", { companyImageLogin: async () => loginFor({ registry: "999999999999.dkr.ecr.us-west-2.amazonaws.com" }) }],
+        ["another repository", { companyImageLogin: async () => loginFor({ repository: `rovara-env/staging/o${"1".repeat(32)}/p${"3".repeat(32)}` }) }],
+        ["a login about to expire", { companyImageLogin: async () => loginFor({ expiresAt: new Date(Date.now() + 10_000).toISOString() }) }],
+        ["a pull that fails", { companyImageLogin: async () => loginFor() }, { companyPullFails: true }],
+        ["a registry that serves other bytes", { companyImageLogin: async () => loginFor() }, { companyPullServesOther: true }],
+      ];
+      for (const [label, extra, docker] of cases) {
+        const h = await harness({ docker: docker ?? {} });
+        const error = await h.start([companyDependency()], false, extra).then(() => undefined, (caught: unknown) => caught as TestServicesError);
+        expect(error, label).toBeInstanceOf(TestServicesError);
+        expect(error!.reason, label).toBe("pull_failed");
+        expect(error!.message, label).toBe("Dependency image not available on this worker");
+        expect(error!.failures.get("postgres"), label).toBe("pull_failed");
+        expect(JSON.stringify([error!.message, h.logs]), label).not.toContain("registry-password-for-test");
+        expect(h.fake.verbs("network").filter((call) => call[1] === "create"), label).toEqual([]);
+        // An image that was pulled and was not the reference is taken off the host.
+        if (label === "a registry that serves other bytes") expect(h.fake.removedImages).toEqual([COMPANY_REFERENCE]);
+        await nothingLeft(h);
+      }
+    });
+
+    it("is refused as a mismatch when the plan is not a company image the worker may run: a mirror outside this install's own family or environment, another digest, another kind, a profile the catalog does not pin", async () => {
+      const bad: Array<[string, TaskDependencyPlan]> = [
+        ["another environment", companyDependency({}, { mirror: { repository: `rovara-env/prod/o${"1".repeat(32)}/p${"2".repeat(32)}`, digest: COMPANY_DIGEST } })],
+        ["a different family than the profile", companyDependency({ family: "mysql" })],
+        ["another profile repository", companyDependency({ repository: "svc/mysql" })],
+      ];
+      for (const [label, plan] of bad) {
+        const h = await harness();
+        await expect(h.start([plan], false, { companyImageLogin: async () => loginFor() }), label).rejects.toMatchObject({ reason: "mismatch" });
+        expect(h.fake.companyPulls, label).toEqual([]);
+        expect(h.fake.verbs("network").filter((call) => call[1] === "create"), label).toEqual([]);
+        await nothingLeft(h);
+      }
+      // A mirror in the catalog's repositories, or anywhere but the mirror family, is not even a plan (the contract refuses it), nor is one whose digest is not the approved digest.
+      for (const repository of ["rovara-catalog/staging/svc/postgres", "svc/postgres", `rovara-env/staging/o${"1".repeat(32)}`, `rovara-env/staging/o${"1".repeat(32)}/p${"2".repeat(32)}/x`, "rovara-env/staging/*"]) {
+        expect(TaskDependencyPlanSchema.safeParse({ ...companyDependency(), company: { ...companyDependency().company, mirror: { repository, digest: COMPANY_DIGEST } } }).success, repository).toBe(false);
+      }
+      expect(TaskDependencyPlanSchema.safeParse({ ...companyDependency(), company: { ...companyDependency().company, mirror: { repository: MIRROR_REPOSITORY, digest: "d".repeat(64) } } }).success).toBe(false);
+      // An unknown profile entry is the not-on-this-worker sentence.
+      const h = await harness();
+      await expect(h.start([companyDependency({ catalogId: "postgres@99" })], false, { companyImageLogin: async () => loginFor() })).rejects.toMatchObject({ reason: "pull_failed" });
+    });
+
+    it("is not started as a catalog image: the catalog's own digest in a company plan, or a company block on a catalog plan, never runs the image", async () => {
+      const h = await harness();
+      await expect(h.start([companyDependency({ digest: DIGEST }, { digest: DIGEST, mirror: { repository: MIRROR_REPOSITORY, digest: DIGEST } })], false, { companyImageLogin: async () => loginFor() })).resolves.toBeDefined();
+      expect(h.fake.companyPulls[0]!.reference).toBe(`${REGISTRY}/${MIRROR_REPOSITORY}@sha256:${DIGEST}`);
+      expect(h.fake.calls.some((call) => call[0] === "run" && call.includes("--detach") && call.some((arg) => arg.includes("rovara-catalog")))).toBe(false);
+    });
+
+    it("pull_failed is also what an install gets when the worker was started with no company login callback (an older entry point)", async () => {
+      const h = await harness();
+      await expect(h.start([companyDependency()])).rejects.toMatchObject({ reason: "pull_failed" });
+      await nothingLeft(h);
+    });
   });
 
   it("a digest the broker approved that this worker image does not pin gets the same sentence (a newer catalog than the image), and nothing is pulled or made", async () => {
@@ -963,7 +1066,17 @@ describe("what the worker advertises", () => {
     expect(testServicesAdvertisedFeatures({ AGENTX_SANDBOX_IMAGE: IMAGE, AGENTX_WORKER_IMAGE: IMAGE })).toEqual([]);
     expect(testServicesAdvertisedFeatures({
       AGENTX_SANDBOX_IMAGE: IMAGE, AGENTX_WORKER_IMAGE: IMAGE, AGENTX_TEST_SERVICES_REGISTRY: REGISTRY, AGENTX_TEST_SERVICES_ENV: "staging", AGENTX_TEST_SERVICES_RUN_DIR: "/run/rovara", AGENTX_TEST_SERVICES_CATALOG_DIR: "/opt/catalog",
-    })).toEqual(["task.testServices.v1", "task.testServices.fileSeed.v1", "task.testServices.seedLock.v1"]); // TS-UX-1 item 9: every worker with test services loads a seed file
+    })).toEqual(["task.testServices.v1", "task.testServices.fileSeed.v1", "task.testServices.seedLock.v1", "task.testServices.companyImage.v1"]); // TS-UX-1 item 9: every worker with test services loads a seed file; and, with the install's own ECR registry, a company image
+  });
+
+  it("lists the company image feature only where the worker can pull from the install's own ECR registry, and never when test services are withheld", () => {
+    const base = { AGENTX_SANDBOX_IMAGE: IMAGE, AGENTX_WORKER_IMAGE: IMAGE, AGENTX_TEST_SERVICES_ENV: "staging", AGENTX_TEST_SERVICES_RUN_DIR: "/run/rovara" };
+    const feature = "task.testServices.companyImage.v1";
+    expect(testServicesAdvertisedFeatures({ ...base, AGENTX_TEST_SERVICES_REGISTRY: REGISTRY })).toContain(feature);
+    expect(testServicesAdvertisedFeatures({ ...base, AGENTX_TEST_SERVICES_REGISTRY: "registry.example.test" })).not.toContain(feature);
+    expect(testServicesAdvertisedFeatures({ ...base, AGENTX_TEST_SERVICES_REGISTRY: `${REGISTRY}:5000` })).not.toContain(feature);
+    expect(testServicesAdvertisedFeatures({ ...base, AGENTX_TEST_SERVICES_REGISTRY: REGISTRY, AGENTX_TEST_SERVICES_NOT_PULLED: "all" })).toEqual([]);
+    expect(testServicesAdvertisedFeatures({ AGENTX_SANDBOX_IMAGE: IMAGE, AGENTX_WORKER_IMAGE: IMAGE })).toEqual([]);
   });
 });
 

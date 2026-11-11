@@ -24,7 +24,7 @@
 // fixed sentence; Docker's own words are never repeated. Everything started is removed.
 import { createHash, randomBytes } from "node:crypto";
 import {
-  CATALOG_FIXED_ARGS, CatalogEntrySchema, FIXTURE_SET_MAX_BYTES, TEST_ENV_RESERVED_ALIASES, TestEnvDependencyIdSchema, agentXError, catalogFixedArgv, catalogIdName,
+  CATALOG_FIXED_ARGS, CatalogEntrySchema, FIXTURE_SET_MAX_BYTES, TEST_ENV_RESERVED_ALIASES, isSavedEnvRepositoryName, TestEnvDependencyIdSchema, agentXError, catalogFixedArgv, catalogIdName,
   type CatalogEntry,
 } from "@agentx/contracts";
 import { DOCKER_CALL_TIMEOUT_MS } from "./setup-network.js";
@@ -138,6 +138,11 @@ export interface HelperRequest {
    */
   awsServices?: readonly string[];
   files?: readonly HelperFile[];
+  /**
+   * A company-approved image (switch `pj`) only: the exact image reference to start, `<registry>/<mirror repository>@sha256:<digest>`, instead of the catalog entry's. The entry still decides how it RUNS (user, memory,
+   * processes, tmpfs, ports, health check): the reference is accepted only in the install's own registry, on a repository of the saved-environment family, by a digest (never a tag).
+   */
+  image?: string;
   /**
    * The fake server only (family `fake-server`, which runs from the worker's own image): which sandbox this phase's fake answers and the fixture set it serves. Present exactly on a fake server's request. The set is the text the
    * worker fetched and checked against the plan's digest (fixture-delivery.ts); the launcher puts it in a read-only file of the run's directory, and the fake checks the digest again before it serves.
@@ -296,6 +301,14 @@ function fakeProgram(net: ServicesNetwork, fake: FakeHelperRequest, address: str
   };
 }
 
+/** A company image's reference, checked: the install's own registry, a saved-environment-shaped repository, a sha256 digest. Anything else is a refused request (the caller maps the throw to `refused`). */
+function companyImageOf(reference: string, registry: string): string {
+  const match = /^(.+?)\/(rovara-env\/[a-z][a-z0-9-]{0,19}\/o[a-f0-9]{32}\/p[a-f0-9]{32})@sha256:[a-f0-9]{64}$/u.exec(reference);
+  // The helpers' registry is the catalog's prefix (`host/rovara-catalog/<env>`); the company image lives under the same HOST, in the mirror family.
+  if (match === null || match[1] !== registry.split("/")[0] || !isSavedEnvRepositoryName(match[2]!)) throw new RangeError("image");
+  return reference;
+}
+
 /** Checks every request and builds its plan; nothing is started or written before this has passed for all of them. */
 function planHelpers(net: ServicesNetwork, input: StartHelpersInput): Plan[] {
   if (!REGISTRY.test(input.registry) || input.registry.length > 120 || Number(/:([0-9]{1,5})(?:\/|$)/u.exec(input.registry)?.[1] ?? 0) > 65_535) throw new HelperStartError("refused", "The test services cannot be started here");
@@ -336,7 +349,7 @@ function planHelpers(net: ServicesNetwork, input: StartHelpersInput): Plan[] {
         const segments = file.to.split("/");
         if (!MOUNT_TARGET.test(file.to) || segments.includes("..") || FORBIDDEN_MOUNT_ROOTS.some((root) => file.to === `/${root}` || file.to.startsWith(`/${root}/`)) || file.to.endsWith(".sock")) throw new RangeError("file");
       }
-      plans.push({ request, index, entry, name: plainName(request.name), address, aliases, prepared, files, image: fake === undefined ? `${input.registry}/${entry.image.repository}@sha256:${entry.image.digest}` : input.probeImage, ...(fake === undefined ? {} : { program: fake.program }) });
+      plans.push({ request, index, entry, name: plainName(request.name), address, aliases, prepared, files, image: fake !== undefined ? input.probeImage : request.image !== undefined ? companyImageOf(request.image, input.registry) : `${input.registry}/${entry.image.repository}@sha256:${entry.image.digest}`, ...(fake === undefined ? {} : { program: fake.program }) });
     } catch (error) {
       if (error instanceof HelperStartError) throw error;
       throw refused(request);
