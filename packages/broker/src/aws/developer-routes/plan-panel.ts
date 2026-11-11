@@ -172,7 +172,11 @@ export async function routePlanPanel(deps: DeveloperRouteDependencies, caller: D
   if (deps.tasks === undefined) throw agentXError("NOT_FOUND", "developer tasks are not set up in this deployment");
   const tasks = developerTaskRouteDependencies(deps, caller);
   const taskId = match[1]!.toLowerCase();
-  if (endpoint.startsWith("documents/")) return new StatusReply(200, planPanelView(await getTaskDocumentView(tasks, caller, taskId), endpoint.slice("documents/".length) as PlanPanelDocument, versionOf(url)));
+  if (endpoint.startsWith("documents/")) {
+    const document = endpoint.slice("documents/".length) as PlanPanelDocument;
+    // Only the coding plan's summary names a decide seat, so only its read works one out (the design and requirements panels make no approver read).
+    return new StatusReply(200, planPanelView(await getTaskDocumentView(tasks, caller, taskId, { decideSeat: document === "plan" }), document, versionOf(url)));
+  }
   if (endpoint === "workflow/feedback") return new StatusReply(200, { review: await feedbackRefusal(() => getWorkflowFeedbackReview(tasks, caller, taskId)) });
   if (endpoint === "workflow/feedback-decision") {
     // The old feedback page's decision, through its own function (`submitWorkflowFeedbackDecision`: owner only, the GitHub refresh, the revision and digest fences), with the MCP tool's strict schema.

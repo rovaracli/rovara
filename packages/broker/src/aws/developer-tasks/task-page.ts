@@ -564,7 +564,13 @@ async function replacedActorNames(deps: Pick<DeveloperTaskRouteDependencies, "do
  * everyone else, including a reader whose checks failed, gets the answer a missing task gets. Each document is read
  * through its recorded key and shown only when its digest matches; review findings are the current code's.
  */
-export async function getTaskDocumentView(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string): Promise<TaskDocumentView> {
+/**
+ * `decideSeat`: work out the reader's decide seat (`decideSeatOf`, with the owner's name for a maintainer) for the view's `decideSeat`. Only the plan panel's coding plan route asks (its access summary is the one reader of it);
+ * every other read (the design and requirements panels, the old page) leaves it off and makes no approver read.
+ */
+export interface DocumentViewOptions { decideSeat?: boolean }
+
+export async function getTaskDocumentView(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string, options: DocumentViewOptions = {}): Promise<TaskDocumentView> {
   const { access, capabilities } = await coherentPageAccess(deps, caller, taskId);
   const { task } = access;
   const owner = access.role === "owner";
@@ -810,8 +816,9 @@ export async function getTaskDocumentView(deps: DeveloperTaskRouteDependencies, 
     ? { ...(noChangeFound === undefined ? {} : { findings: noChangeFound }) } : undefined;
   const deciding = await pageDecidingView(deps, { task, caller, comments, suggestions: shownSuggestions, citations, claimIds });
   const permissions = pageAccess(access, await projectWorkAllowed(deps, task, caller));
-  // Approval place (U4): the seat the plan panel's access summary names (a maintainer's seat with the owner's name); the old page reads only `access`, which stays the owner's rule.
-  const decideSeat = await decideSeatOf(deps, caller, task, permissions.canDecide, { ownerName: true });
+  // Approval place (U4): the seat the plan panel's access summary names (a maintainer's seat with the owner's name), worked out for the coding plan's read only; the old page reads only `access`, which stays the owner's rule.
+  // `decideSeatOf` looks up the owner's name only once the reader has the maintainer's seat.
+  const decideSeat = options.decideSeat === true ? await decideSeatOf(deps, caller, task, permissions.canDecide, { ownerName: true }) : undefined;
   // QA6-03: while a design is under review its approval is only on its decision card; the page points to the card instead of offering a button the server refuses.
   const designCardOnly = designCardOnlyApplies({ canDecide: permissions?.canDecide === true, waitingKind: deciding.waiting?.kind, workflow });
   const stage = taskPageStage(workflow, task.closedAt !== undefined, owner, await publicationAttempts(deps, task), removedReasonOf(task), await mergeViewForWords(deps, task), noChangeHasThread(task.share));

@@ -67,7 +67,7 @@ export interface TaskDocumentView {
   access?: { role: TaskRole; canComment: boolean; canSuggest: boolean; canDecide: boolean; canAsk: boolean };
   /**
    * Approval place (U4): the seat the reader decides the waiting plan from (`decideSeatOf`): "owner" when `access.canDecide`, "maintainer" for a project maintainer (or a company owner or admin) who may decide
-   * someone else's coding plan, with the owner's name as readers see it. Read by the plan panel's access summary only; `access` (and so this page) stays the owner's rule. Read-only: the decide route is the authority.
+   * someone else's coding plan, with the owner's name as readers see it. Present only when the read asked for it (`getTaskDocumentView`'s `decideSeat`: the plan panel's coding plan route, its one reader); `access` (and so the old page) stays the owner's rule. Read-only: the decide route is the authority.
    */
   decideSeat?: { as: "owner" | "maintainer"; ownerName?: string };
   /** Present while the task is blocked on an approved browser and API round that one retry can fix; `canRetry` is whether this reader (the owner) may make it. */
