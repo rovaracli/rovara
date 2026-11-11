@@ -60,6 +60,7 @@ const ROWS: readonly Row[] = [
   ["attribution/links.ts", "dynamoAttributionLinkStore>deletePersonRows", "history", ".developerId"],
   ["developer/task-person-identity.ts", "resolveTaskPickerPerson", "history", ".developerId*2", ".provider*2", ".slackUserId*2"],
   ["developer/task-person-identity.ts", "registerTaskChannelPeople", "history", ".developerId*2", ".provider*2", ".slackUserId*2"],
+  ["developer/task-person-identity.ts", "registerTaskMembers", "history", ".developerId*2", ".provider*2", ".slackUserId*2"],
   ["developer/task-person-identity.ts", "checkTaskPersonIdentity", "history", ".developerId*3", ".provider*3", ".slackUserId*6", ".developerName"],
   ["developer/task-people.ts", "loadTask", "shape", ".developerId"],
   ["developer/task-people.ts", "taskRowCondition", "principal", ".developerId"],

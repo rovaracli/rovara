@@ -105,12 +105,15 @@ What is built today:
 
 Not built yet:
 
-- Task people role changes and automatic invitations are being prepared behind independent
-  named-environment settings: `TaskPeopleChangesEnabled`,
-  `TaskPeoplePublicInvitationsEnabled`, and `TaskPeoplePrivateInvitationsEnabled`. All default to
-  `false`, and upgrades preserve explicitly set values. Slack's default app manifest remains
-  unchanged; the optional scope helper accepts separate choices for a future approved install or
-  reinstall flow. This preparation adds no installer prompt or automatic scope widening.
+- Task people: role changes (who is on a task, take-over of an ownerless task) work behind the named-environment
+  setting `TaskPeopleChangesEnabled` (`agentx config set taskPeople.changesEnabled true`), which defaults to `false`.
+  A task person is any Rovara member, however they sign in (web, GitHub, an identity provider or Slack); a member with
+  no Slack account is checked on their membership and project access alone. Turning it on also creates the task person
+  proof function, in the environment, that the dispatcher's person check needs. Automatic Slack invitations
+  (`TaskPeoplePublicInvitationsEnabled`, `TaskPeoplePrivateInvitationsEnabled`) are deferred: they need a Slack
+  reinstall with new scopes, the invite handler is wired nowhere, and both switches stay `false`. Slack's default app
+  manifest remains unchanged; the optional scope helper accepts separate choices for a future approved install or
+  reinstall flow.
 - Admin tools for AI tools: reading Rovara's state (spec 025 phase 25d) and making confirmed
   changes (phase 25e).
 

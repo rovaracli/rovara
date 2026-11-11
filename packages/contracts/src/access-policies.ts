@@ -485,8 +485,8 @@ export function modelAccessProbeRoleName(env: string): string {
 export const ORGANIZATION_ID_PATTERN = /^o-[a-z0-9]{10,32}$/;
 
 /**
- * The one environment where the control plane builds the Task Person proof role (infra/lib/task-person-proof.ts), by a fixed name.
- * Named here so the deploy role can name the role too.
+ * The one environment whose Task Person proof role (infra/lib/task-person-proof.ts) has a fixed name: it had the role before every environment did, and renaming would replace a live
+ * role. Every other environment's proof role is generated under the environment's role path, which the deploy role already covers. Named here so the deploy role can name the fixed one too.
  */
 export const TASK_PERSON_PROOF_ENV = "agentxlivetest123";
 

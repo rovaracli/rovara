@@ -2,6 +2,7 @@ import { isDeepStrictEqual } from "node:util";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import {
   SlackTeamIdSchema,
+  TASK_PERSON_DEVELOPER_RECORD_PROJECTION,
   agentXError,
   orgMemberKey,
   orgRemovedKey,
@@ -23,9 +24,7 @@ import { effectiveTaskOwner, isTaskTakenOver, ownerActorIdOf, taskOwnerKey } fro
 import { META, type DeveloperRecord } from "../developer/store.js";
 import type { TaskAuthorityAdmission } from "./task-authority-admission.js";
 
-export const TASK_PERSON_DEVELOPER_RECORD_ATTRIBUTES = [
-  "pk", "sk", "developerId", "provider", "issuer", "subject", "slackUserId", "revoked", "mergedInto", "displayName",
-] as const;
+export const TASK_PERSON_DEVELOPER_RECORD_ATTRIBUTES = TASK_PERSON_DEVELOPER_RECORD_PROJECTION;
 
 export type TaskPersonDeveloperRecordProjection = { pk: string; sk: string } & Pick<DeveloperRecord,
   "developerId" | "provider" | "issuer" | "subject" | "slackUserId" | "revoked" | "mergedInto" | "displayName">;

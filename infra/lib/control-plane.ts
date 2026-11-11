@@ -187,11 +187,12 @@ export class ControlPlaneStack extends Stack {
     });
     // Spec 025 phase 25a: declared on the stack itself so the names are exact; named environments only (R3).
     const signInParameters = naming.env === undefined ? undefined : developerSignInParameters(this);
-    const taskPersonProofEnabled = naming.env === "agentxlivetest123" ? new CfnParameter(this, "TaskPersonProofEnabled", {
+    // The task person proof workload (the dispatcher's person guard needs it): in every named environment. It is installed while this is "true" or while TaskPeopleChangesEnabled is.
+    const taskPersonProofEnabled = naming.env !== undefined ? new CfnParameter(this, "TaskPersonProofEnabled", {
       type: "String",
       default: "false",
       allowedValues: ["true", "false"],
-      description: "Install the dedicated task person proof workload in the approved named TEST environment",
+      description: "Install the dedicated task person proof workload on its own. It is installed anyway while TaskPeopleChangesEnabled is true; with both false nothing is created",
     }) : undefined;
 
     const state = new dynamodb.Table(this, "State", {
@@ -1330,10 +1331,11 @@ export class ControlPlaneStack extends Stack {
       realtime.grantPublish(outboxPublisher);
       outboxPublisher.addEnvironment("REALTIME_HTTP_ENDPOINT", realtime.httpEndpoint);
       BrokerNames.of(broker).add("realtimeApi", realtime.dnsPrefix);
-      if (naming.env === "agentxlivetest123" && taskPersonProofEnabled !== undefined) {
+      if (taskPersonProofEnabled !== undefined) {
         new TaskPersonProof(this, "TaskPersonProof", {
           naming,
           enabled: taskPersonProofEnabled,
+          taskPeopleChangesEnabled: signInParameters.taskPeopleChangesEnabled,
           slackTeamId: signInParameters.slackTeamId,
           slackSecret,
           developerSignInTable: developerSignIn.table,
