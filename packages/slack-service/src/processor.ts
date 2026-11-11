@@ -24,6 +24,7 @@ import {
   type ProjectModelOptions,
   parseEvalBatchCommand,
   parseSwebenchCommand,
+  SLACK_NOT_A_MEMBER_NOTICE,
 } from "@agentx/contracts";
 import type { WorkerAccess } from "@agentx/orchestrator";
 import type { GateSession } from "@agentx/orchestrator/action-gate";
@@ -539,7 +540,18 @@ export async function processSlackRequest(
       confirmation = check;
     }
     const workspaceRequestId = deterministicUuid(`${message.eventId}:workspace`);
-    let workspace = await api.ensureWorkspace(workspaceRequestId);
+    let workspace: Awaited<ReturnType<typeof api.ensureWorkspace>>;
+    try {
+      workspace = await api.ensureWorkspace(workspaceRequestId);
+    } catch (error) {
+      // Slack explicit membership (0.5.14): a person Rovara cannot match to a member of the company is told so plainly, once, and the request ends: a retry cannot change who they are.
+      if (!(error instanceof Error) || !/\bSLACK_ACCOUNT_NOT_LINKED\b/u.test(error.message)) throw error;
+      draft.disposition = "workspace_unavailable";
+      log("request.refused", { eventId: message.eventId, reason: "slack_account_not_linked" });
+      await post(SLACK_NOT_A_MEMBER_NOTICE);
+      finished = true;
+      return;
+    }
     // Spec 025 FR-054, C12: a continue thread's turn starts only once the task's workspace is idle.
     if (taskBusy(workspace) && workspace.sharedTask !== undefined) {
       const taskId = workspace.sharedTask.taskId;

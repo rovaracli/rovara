@@ -13,6 +13,7 @@ import { GetObjectCommand } from "@aws-sdk/client-s3";
 import { AgentXError, CHANNEL_TURN_REQUEST_MAX, type DeveloperTaskView, type CodeIntentResult, CONNECTOR_SECRET_PREFIX, ChannelTurnSchema, approvedToolCount, toolBudget, agentXError, type OperationStatus, type ChannelTurn, type ProjectDefinition, type TriggerEvent, redactAndCap, projectRevisionKey, type OrgId, type OrgRole, type ChannelMembersRequest, type Payer, featureEnabled, orgBanKey, orgMemberKey, orgRemovedKey, type WriterOrgRole } from "@agentx/contracts";
 import { liveStoredRole, personWalk, survivorStanding } from "../../org/live-role.js";
 import { requireWriterCaller, type WriterCaller } from "../../org/auditor.js";
+import { slackMemberRule, warnImplicitSlackMember } from "../../org/slack-explicit-members.js";
 import type { TransactItem } from "../../agents/table-writes.js";
 import { adminReader, queryAllItems, type AdminReadDependencies } from "../admin-reads.js";
 import { outcomeMetric } from "../admin-change-audit.js";
@@ -444,14 +445,14 @@ export async function slackCallerFor(dependencies: AwsBrokerDependencies, userId
 }
 
 /** Why a Slack account is refused when it belongs to no member (never the Slack ID or any account ID). */
-export const SLACK_ACCOUNT_NOT_LINKED_MESSAGE = "this Slack account is not a member of the company this Slack workspace is connected to";
+export const SLACK_ACCOUNT_NOT_LINKED_MESSAGE = "this Slack account is not a member of the company this Slack workspace is connected to; ask a Rovara admin to add you, or sign in to Rovara and link your Slack account, then try again";
 
 /**
  * The ONE rule for who a Slack requester is in the org its team is bound to, shared by the ingress callers (slackCallerFor) and the service routes (slackServiceIdentity,
  * slackRequesterRole, model access), so they cannot disagree. A person whose own org is another org (a Slack Connect guest, a stale link) is refused; the company sign-in must still
  * allow them (I-1); their role is read under every id they answer to, so a member merged into another person is judged by the surviving record, and anything that is not a writer's role
  * (the Auditor, an unknown role, a record with no role) is refused (I-2). With no member record at all: an Enterprise (Auditor-role) install refuses them, a removed or banned person
- * (their ORG_REMOVED / ORG_BAN row, under any id they answer to) is refused everywhere, and anyone else is the implicit member of a single-org install. Where a person may be UNLINKED
+ * (their ORG_REMOVED / ORG_BAN row, under any id they answer to) is refused everywhere, and anyone else is the implicit member of a single-org install (on a cloud install, from 0.5.14 and switch `sm`, a person with no member record is refused instead: see slack-explicit-members.ts). Where a person may be UNLINKED
  * (`allowUnlinked`, the service routes) a person with no org at all is that same implicit member: the existing behaviour for an unlinked requester, whose spend ruling R31 admits against the org alone (R31 is a budget ruling and says nothing about roles); the
  * ingress callers need a real caller identity, so for them an unlinked person is refused.
  */
@@ -522,6 +523,13 @@ export async function slackRequesterStanding(dependencies: AwsBrokerDependencies
   }
   if (dependencies.editionPolicy !== undefined && featureEnabled(dependencies.editionPolicy, "auditorRole")) {
     throw agentXError("FORBIDDEN", "this Slack member has not signed in to Rovara; sign in once, then try again");
+  }
+  // The implicit Slack member (0.5.14, switch `sm`): on a cloud install (an org resolver) a person with no explicit, current membership is refused, or, in the "warn" window, served as before and told once.
+  // A single-org install has no membership to ask for. "0" is today's behaviour exactly. Removal and ban were refused above, and a merged person resolved to the survivor's record, so only a person with no record is here.
+  if (dependencies.orgResolver !== undefined) {
+    const rule = slackMemberRule();
+    if (rule === "require") throw agentXError("SLACK_ACCOUNT_NOT_LINKED", SLACK_ACCOUNT_NOT_LINKED_MESSAGE);
+    if (rule === "warn") await warnImplicitSlackMember({ documentClient: dependencies.documentClient, tableName: dependencies.tableName }, orgId, userId);
   }
   return { role: "member", ids, standing };
 }

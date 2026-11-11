@@ -114,6 +114,7 @@ instead: give it a one-line header comment when you next edit it.
 | Task notifications (Slack DM / email, batched) | `packages/broker/src/notifications/` (queue on summary change, delivery in the session sweep via `packages/broker/src/aws/broker/attention-wiring.ts`); the person's setting is `/v1/app/me/notifications` (`notifications/prefs-routes.ts`). |
 | Plug-ins: code hosts and check runners | `packages/broker/src/plugins/`, registered in `packages/broker/src/aws/broker/plugin-wiring.ts#createBrokerPlugins` |
 | Audit | `packages/broker/src/audit/` |
+| Slack explicit membership (switch `sm`): a Slack person with no explicit, current company membership is not the implicit member | the rule: `packages/broker/src/aws/broker/dependency-wiring.ts#slackRequesterStanding` (last step); the switch and the "warn" notice: `packages/broker/src/org/slack-explicit-members.ts`; the plain reply: `packages/slack-service/src/processor.ts` (`SLACK_NOT_A_MEMBER_NOTICE`, `packages/contracts/src/errors.ts`) |
 | Script tokens (switch `pt`): tokens people make for their scripts and CI | `packages/broker/src/script-tokens/` (the token check and its closed route list: `packages/broker/src/script-tokens/authenticate.ts#authenticateScriptToken`, called from `packages/broker/src/aws/developer-routes.ts#routeDeveloperRequest`; settings routes: `packages/broker/src/script-tokens/routes.ts#routeScriptTokens`; screen: `packages/ui/src/screens/settings/ScriptTokensScreen.tsx`; user docs: `docs/script-tokens.md`) |
 
 ## Worker
