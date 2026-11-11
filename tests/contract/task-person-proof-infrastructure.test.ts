@@ -108,6 +108,8 @@ function parentRemainderDigest(template: TemplateJson): string {
   // Mainline #408 kill switches (plan self-check, automatic fixing): parameters and packed settings, no part of the proof-only addition.
   delete remainder.Parameters?.PlanSelfCheckEnabled;
   delete remainder.Parameters?.LearningSuggestionsDefault;
+  // Lane U5 (runtime UI flags): the operator's override, a parameter and a packed setting, no part of the proof-only addition.
+  delete remainder.Parameters?.UiFlagsForceOff;
   delete remainder.Parameters?.AutofixEnabled;
   // Live steer kill switch: a parameter and a packed setting, no part of the proof-only addition.
   delete remainder.Parameters?.LiveSteerEnabled;
@@ -173,7 +175,7 @@ function parentRemainderDigest(template: TemplateJson): string {
   for (const [id] of workflowDependencyEnvironmentEntries(remainder)) {
     const brokerVariables = resources[id]!.Properties!.Environment as { Variables: Record<string, unknown> };
     // The flag is in the broker's settings in a named environment (ENV-ROOM: AGENTX_SETTINGS), and its own variable in the legacy one (which has none).
-    if (brokerVariables.Variables.AGENTX_SETTINGS !== undefined) takeBrokerSettings(brokerVariables.Variables, ["workflowDependencies", "rovaraCodeV2", "planSelfCheck", "autofix", "liveSteer", "liveRedirect", "liveAsk", "liveFix", "proofEvidence", "decisionCards", "testEnvironment", "learnedLessons", "verifyResults", "setupAgent", "testServices", "testAccounts", "projectImages", "secondReview", "setupRecipes", "nightlyHealth", "learningSuggestionsDefault"]);
+    if (brokerVariables.Variables.AGENTX_SETTINGS !== undefined) takeBrokerSettings(brokerVariables.Variables, ["workflowDependencies", "rovaraCodeV2", "planSelfCheck", "autofix", "liveSteer", "liveRedirect", "liveAsk", "liveFix", "proofEvidence", "decisionCards", "testEnvironment", "learnedLessons", "verifyResults", "setupAgent", "testServices", "testAccounts", "projectImages", "secondReview", "setupRecipes", "nightlyHealth", "learningSuggestionsDefault", "uiFlagsForceOff"]);
     delete brokerVariables.Variables.AGENTX_WORKFLOW_DEPENDENCIES_ENABLED;
     delete brokerVariables.Variables.AGENTX_PROJECT_SETUP_RUNTIME_CATALOG_ID;
     delete brokerVariables.Variables.AGENTX_E2E_FEATURE_RUNTIME_CATALOG_ID;
@@ -416,18 +418,21 @@ describe("the named TEST proof-only installation gate", () => {
     // 2026-11-11 (0.5.14, lane U2, Slack explicit membership): the named and foreign digests were retaken from the values the test reports, after one intended change: the `sm` entry of the broker's packed
     // AGENTX_SETTINGS (the SlackExplicitMembers parameter itself is taken out of the remainder like the other switches). The named-templates snapshot shows exactly that parameter and that entry. Legacy did not move.
     // 2026-11-11 (0.5.15, lane company-images-worker-v3, merged at 029dc304b): the named and foreign digests were retaken from the values the test reports, after the lane's reviewed additions: the CompanyImageMirror function (own role, mirror state rows only), its img-mirror role (ECR on rovara-env/<env>/o*/c* only), the `cm` entry of AGENTX_NAMES and the mirror role in the saved environment repository policy. Legacy did not move.
+    // 2026-11-11, U3 work events (merged onto integ/0514 1593cf08e, whose own named and foreign pins are 113afeb8..., 5cec0a6d... and 5c52999d..., 54d2d4fb...): the named and foreign digests below are U3's, retaken from the values the test
+    // reports after ONE intended change: the DeveloperTaskNotifier gains the variable AGENTX_WORK_EVENTS ("on") and one write grant, dynamodb:PutItem on ORG#org_*#WORK_EVENTS#* only. The named-templates snapshot shows exactly that variable
+    // and that statement. Legacy did not move.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "113afeb82b4c9eed000b0949074a74cb65c786070601a5431ec39df50d8607d4",
-        withoutRoute: "5cec0a6d5620433d3c662c933f5ce1693e9c29e81fd1f733d9d2eb3c3f7a5968",
+        withRoute: "6d81f236e95cd53adbb70d1355e93c8fe069583764bd80abc9e5d2a66a3fc2a8",
+        withoutRoute: "cd279afc7b16a8a74d9480c89250737557e074ca7df65c82a6fff9a4674fb722",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "5c52999d12ae3179bfae711c09a9cb03ddd41e994fcf6c1dea1134f2bd69280e",
-        withoutRoute: "54d2d4fbae27a93c4e11f249f535a7479232f72aff0b18604d7b9132f7d40976",
+        withRoute: "fd38c9efb50d2ec4bd996e1dda0f15cb20fd17766f6bd3171f131a72817efe34",
+        withoutRoute: "f939b52668d2a6befa175da466e9a8f4780e733bd1524dfe3f9e45100d5738d6",
       },
       {
         label: "legacy",

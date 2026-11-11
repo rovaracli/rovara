@@ -1,12 +1,20 @@
 import { WORKFLOW_ACTIONABLE_REFUSALS, WORKFLOW_BREAKDOWN_REFUSALS } from "../../developer/workflow-actions.js";
 import { isReplayCopy } from "../../developer/eval-copy.js";
+import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { createHash, randomUUID } from "node:crypto";
 import { AgentXError, agentXError, runLimitRaises, runLimitRaiseText, formatRunLimitUsd, redactText, type TaskComment, type WorkflowStage, type WorkflowDecisionRequest, DECISION_COMMENTS_MAX, WorkflowDecisionDetailSchema, planDocumentMarkdown, sameIdSet, workflowSelectedChecks, WorkflowDecisionRequestSchema, E2EPolicySchema, e2ePolicyDigest, e2eScenarioBundleDigest, WorkflowTransitionError, canonicalJson, validateTaskGraph, taskGraphDigest, type E2EApplicationSelectionRecord, RUN_LIMIT_BLOCK_PREFIX, runLimitBlockText } from "@rovara-code/contracts";
 import { PER_TASK_BUDGET_USD, type DeveloperTaskView, type WorkflowSnapshot, WorkflowSnapshotSchema, decideWorkflow, blockWorkflow } from "@agentx/cloud-contracts";
 import { workflowDependenciesAllowed } from "../../rovara-code/parallel-parts.js";
 import { acceptRunLimit } from "../../spend/estimate.js";
 import { decisionCardsEnabled } from "../../proof/switch.js";
-import { planDecidedOnCard } from "../../decisions/plan-risk.js";
+import { planFactsOf, planRiskOf } from "../../decisions/plan-risk.js";
+import { evaluateApprovalPlace, isChatCaller, type PlaceAnswer } from "../../approval-place/evaluate.js";
+import { noticeOwnerOfDecision } from "../../approval-place/owner-notice.js";
+import { RUN_LIMIT_OWNER_DECIDES_WORDS, placeUnavailableWords, placeWordsFor } from "../../approval-place/words.js";
+import { auditApprovalPlaceDecided, auditOccurrence } from "../../audit/events.js";
+import { flushAuditEvents } from "../../audit/flush.js";
+import { auditPending, tryAuditEvents } from "../../audit/outbox.js";
+import { resolveTaskApprover } from "../../developer/task-access.js";
 import { decisionCardUrl } from "../../decisions/open-path.js";
 import { cleanUsd } from "../../spend/top-ups.js";
 import { aiToolTurn, developerTaskIdentity, effectiveTaskOwner, taskKey, type DeveloperTaskRecord } from "../../developer/task-records.js";
@@ -44,6 +52,7 @@ import {
   taskBaseOption,
   taskPageUrl,
   turnTable,
+  get,
 } from "./common.js";
 import { type AuthorizedTask, accessFence, authorizeTaskAction, authorizeTaskActor } from "./access.js";
 import { taskView } from "./task-view.js";
@@ -140,15 +149,42 @@ export const DESIGN_CARD_ONLY_MESSAGE = "This design is approved from its design
 export async function decideTaskWorkflow(
   deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string, value: unknown,
   /** `changeText`: Stop & redirect on a plan that waits for approval (LR-2): the owner's whole instruction (up to the redirect limit), for the planner's prompt. The decision keeps `reason`, held to its own 500 characters. */
-  options: { via?: "PAGE"; /** Lessons replay (lane 7, re-check N1): set only by the replay approve route. For a replay COPY (`isReplayCopy`) and nothing else, approving accepts the plan's run limit without the amount being acknowledged: the limit is already capped at the copy's own `maxUsd`, so the operator has agreed to it. */ acceptCopyRunLimit?: true; /** Security review (2026-11-06): set only by the plan card's press under the decide-grade sign-in (`withCardDecideGrade`); a HIGH plan is approved with nothing less. */ decideGrade?: true; note?: string; changeText?: string; /** Design review (DR7 slice C): the items an approved design adds to its own transaction (approval record, membership fence, audit). Only `design-decision.ts` passes it. */ designApproval?: { items: TransactItems; /** The person who really pressed Approve. When it is not the owner whose seat the commit uses, the decision is recorded under THIS person, as a project approver's (`PROJECT_ADMIN`), never as the owner's. */ approverId: string } } = {},
+  options: { via?: "PAGE"; /** Lessons replay (lane 7, re-check N1): set only by the replay approve route. For a replay COPY (`isReplayCopy`) and nothing else, approving accepts the plan's run limit without the amount being acknowledged: the limit is already capped at the copy's own `maxUsd`, so the operator has agreed to it. */ acceptCopyRunLimit?: true; /** Security review (2026-11-06): set only by the plan card's press under the decide-grade sign-in (`withCardDecideGrade`); a HIGH plan is approved with nothing less. */ decideGrade?: true; /** Approval place (U4): set only by server code that took the decision from a comment (`approval-place/comment-decision.ts`); the caller's own channel decides every other place. */ place?: "tracker-comment" | "code-host-comment"; /** Approval place (U4): the comment feed resolved the author to this very person through a verified link. Only that feed sets it. */ commentAuthorLinked?: true; note?: string; changeText?: string; /** Design review (DR7 slice C): the items an approved design adds to its own transaction (approval record, membership fence, audit). Only `design-decision.ts` passes it. */ designApproval?: { items: TransactItems; /** The person who really pressed Approve. When it is not the owner whose seat the commit uses, the decision is recorded under THIS person, as a project approver's (`PROJECT_ADMIN`), never as the owner's. */ approverId: string } } = {},
 ): Promise<{ task: DeveloperTaskView }> {
   const request = parse(WorkflowDecisionRequestSchema, value, deps, "workflow-decision");
   // What the planner is told as the requested changes: the decision's reason, or the whole instruction when a redirect brought one.
   const promptRequest = options.changeText === undefined ? request : { ...request, reason: options.changeText };
-  const access = await decidableTask(deps, caller, taskId, request.requestId);
+  // Approval place (U4, owner decision Q7): the task's owner and co-owners decide; with the decision cards on, a project maintainer (a company owner or admin counts as one) may decide a coding plan that is not theirs, and the owner is told.
+  let seat: "owner" | "maintainer" = "owner";
+  let access: AuthorizedTask;
+  try {
+    access = await decidableTask(deps, caller, taskId, request.requestId);
+  } catch (error) {
+    if (!(error instanceof AgentXError) || error.code !== "TASK_NOT_FOUND") throw error;
+    const approver = await resolveTaskApprover(deps, caller, taskId);
+    if (approver === undefined) throw error;
+    // The seat carries no owner authority: `actorId` and `authority` only fill the shape (the engine is given the maintainer as `PROJECT_ADMIN` and no authority, below), and no owner key is made for a person who does not own the task.
+    const actorId = caller.developerId;
+    // The owner's seat in the engine's eyes only for the checks that read the task and its People revision: the decision is recorded as the maintainer's (`PROJECT_ADMIN`), and no owner authority is passed to the engine.
+    access = { task: approver.task, role: "owner", ownerActorIds: approver.ownerActorIds, actorId, authority: { actorId, ownerIds: [] }, ...(approver.peopleRevision === undefined ? {} : { peopleRevision: approver.peopleRevision }) };
+    seat = "maintainer";
+  }
   const { task } = access;
+  // The task as it is now, for the answers after the commit. A maintainer's seat was checked above, live; here the record is only read again (its org is the caller's, or it is no task), so a task that has just ended (a rejection) still answers.
+  const freshTaskOf = async (ended = false): Promise<DeveloperTaskRecord> => {
+    if (seat === "owner") return (await (ended ? authorizeTaskActor : authorizeTaskAction)(deps, caller, taskId, "decide")).task;
+    const row = await get<DeveloperTaskRecord>(deps, taskKey(taskId));
+    if (row === undefined || row.orgId !== caller.orgId) throw agentXError("TASK_NOT_FOUND", "no task here that you can see");
+    return row;
+  };
   if (task.workflow === undefined) throw agentXError("NOT_FOUND", "this task does not have a workflow record");
   const workflow = task.workflow;
+  // A maintainer who is not the owner decides a coding plan, and only that: never a requirements or design document, a skip, or "close as answered". Anything else reads as no task, as it did before.
+  if (seat === "maintainer" && (workflow.artifacts.find((artifact) => artifact.sha256 === request.artifactDigest)?.type !== "plan" || request.decision === "SKIP" || request.closeAsAnswered === true)) {
+    throw agentXError("TASK_NOT_FOUND", "no task here that you can see");
+  }
+  // The run limit is money, and the task's owner decides it: a maintainer's decision never carries an acknowledged limit and never raises one (`settleRunLimit` refuses a raise from this seat too).
+  if (seat === "maintainer" && request.acknowledgedRunLimitUsd !== undefined) throw agentXError("FORBIDDEN", RUN_LIMIT_OWNER_DECIDES_WORDS);
   // Design review (ON-1): while the stage is on, a design under review is approved ONLY through its decision card (`design-decision.ts`, which passes `designApproval`): that is where the approver's tier, sign-in, browser session,
   // reason for open blockers, membership fence and approval record are checked. Every other way in (this route, the task page, Slack, an AI tool) is refused for an APPROVE at the design. Sending changes back and rejecting are unchanged.
   if (request.decision === "APPROVE" && options.designApproval === undefined && workflow.designReview !== undefined && workflow.reviewPhase === "DESIGN" && designReviewEnabled()) {
@@ -156,9 +192,9 @@ export async function decideTaskWorkflow(
   }
   const prior = workflow.decisions.find((decision) => decision.requestId === request.requestId);
   // The decision names whoever really approved. A design approved by a maintainer or the design approver is committed in the owner's seat (the engine knows one decider) but recorded as theirs, with the project approver's role.
-  const approverId = options.designApproval?.approverId;
-  const decidedByOther = approverId !== undefined && approverId !== caller.developerId;
-  const actor = decidedByOther ? { actorId: approverId, role: "PROJECT_ADMIN" as const } : { actorId: access.actorId, role: "TASK_OWNER" as const };
+  const approverId = seat === "maintainer" ? caller.developerId : options.designApproval?.approverId;
+  const decidedByOther = seat === "maintainer" || (approverId !== undefined && approverId !== caller.developerId);
+  const actor = decidedByOther ? { actorId: approverId!, role: "PROJECT_ADMIN" as const } : { actorId: access.actorId, role: "TASK_OWNER" as const };
   const decideOptions = { now: iso(deps), allowedSkipStages: [] as WorkflowStage[], ...(options.via === undefined ? {} : { via: options.via }) };
   const refused = (current: WorkflowSnapshot) => {
     // Only the owner decides, so whoever is refused here is the owner: a task started in Slack keeps no name for them, but
@@ -211,7 +247,8 @@ export async function decideTaskWorkflow(
     noChangeNeeded = { ...loaded.plan.noChangeNeeded, restatement: loaded.plan.title };
   }
   // Decision journey slice 2 (review fix), for every caller (the card, the task page, Slack, MCP, a token): who may approve a coding plan from where.
-  if (prior === undefined && request.decision === "APPROVE" && documentType === "plan" && options.designApproval === undefined) await requirePlanApprovalPlace(deps, caller, task, loaded, request, options.via === "PAGE", options.decideGrade === true);
+  let placed: (PlaceAnswer & PlaceFacts) | undefined;
+  if (prior === undefined && documentType === "plan" && options.designApproval === undefined && (request.decision === "APPROVE" || seat === "maintainer")) placed = await requirePlanApprovalPlace(deps, caller, task, loaded, request, options, seat);
   const correction = task.e2ePlanCorrection;
   if (request.decision === "APPROVE" && documentType === "plan" && correction !== undefined) {
     if (workflow.candidate?.digest !== correction.candidateDigest) {
@@ -340,7 +377,7 @@ export async function decideTaskWorkflow(
     await recordPlanDecisionOutcome(deps, task, workflow, next, documentType);
     // A rejected plan ends the task: it gives back its slot and its workspace now.
     await releaseFinishedTaskQuietly(deps, taskId);
-    const fresh = (await authorizeTaskActor(deps, caller, taskId, "decide")).task;
+    const fresh = await freshTaskOf(true);
     return { task: await taskView(deps, fresh, { events: 0, details: false }) };
   }
   // S2 (any path): from here a run starts: approving a plan starts coding and asking for changes restarts planning, so the send-back's project access rule and the archive check apply (a decision that ends the task, above, starts nothing).
@@ -411,7 +448,7 @@ export async function decideTaskWorkflow(
   // limit is raised, starts what the approval would have started.
   // QA6-12: an approval that names the limit it was shown (the task page does) is checked against the limit `acceptRunLimit` itself works out, inside `settleRunLimit`, so the limit
   // written is exactly the one acknowledged (a second, separate recompute could differ if the estimate's history or the spend policy changed in between).
-  const runLimit = request.decision === "APPROVE" && mode === "IMPLEMENT" && deps.modelAccess !== undefined ? await settleRunLimit(deps, caller, task, request.requestId, request.acknowledgedRunLimitUsd, caller.browserSession === true || options.via === "PAGE", options.acceptCopyRunLimit === true && isReplayCopy(task)) : undefined;
+  const runLimit = request.decision === "APPROVE" && mode === "IMPLEMENT" && deps.modelAccess !== undefined ? await settleRunLimit(deps, caller, task, request.requestId, request.acknowledgedRunLimitUsd, caller.browserSession === true || options.via === "PAGE", options.acceptCopyRunLimit === true && isReplayCopy(task), seat === "maintainer") : undefined;
   // The corrected plan's approval ends the E2E correction fence, whether coding starts now or waits for the run limit.
   const correctedPlan = correction !== undefined && request.decision === "APPROVE" && documentType === "plan"
     && currentPlan.sha256 !== correction.artifactSha256 && workflow.candidate?.digest === correction.candidateDigest
@@ -438,7 +475,7 @@ export async function decideTaskWorkflow(
         accessFence(deps, access),
       ]);
     } catch (error) {
-      const fresh = (await authorizeTaskAction(deps, caller, taskId, "decide")).task;
+      const fresh = await freshTaskOf();
       if (fresh.workflow?.decisions.some((decision) => decision.requestId === request.requestId) === true) return { task: await taskView(deps, fresh, { events: 0, details: false }) };
       if (fresh.workflow !== undefined && fresh.workflow.revision !== workflow.revision) throw refused(fresh.workflow);
       const reasons = (error as { CancellationReasons?: Array<{ Code?: string }> }).CancellationReasons?.map((reason) => reason.Code ?? "None");
@@ -448,9 +485,11 @@ export async function decideTaskWorkflow(
       return busyOrClosing(deps, task, error);
     }
     await recordPlanDecisionOutcome(deps, task, workflow, decidedNext, documentType);
-    const fresh = (await authorizeTaskAction(deps, caller, taskId, "decide")).task;
+    const fresh = await freshTaskOf();
     const view = await taskView(deps, fresh, { events: 0, details: false });
     await syncIndex(deps, fresh, view.status, view.updatedAt);
+    // The approval committed (coding waits only for the run limit's own approval), so its audit record and the owner's notice are due here as on the other path.
+    if (placed !== undefined) await recordPlaceDecision(deps, task, caller, request.requestId, placed);
     return { task: view };
   }
   try {
@@ -490,7 +529,7 @@ export async function decideTaskWorkflow(
   } catch (error) {
     // Another decision got there first: the same request (a double press) is that decision; any other is refused with
     // who decided. That is checked before the comment locks: a decision that won with the same comment also fails its lock.
-    const fresh = (await authorizeTaskAction(deps, caller, taskId, "decide")).task;
+    const fresh = await freshTaskOf();
     if (fresh.workflow?.decisions.some((decision) => decision.requestId === request.requestId) === true) {
       return { task: await taskView(deps, fresh, { events: 0, details: false }) };
     }
@@ -502,7 +541,7 @@ export async function decideTaskWorkflow(
     return busyOrClosing(deps, task, error);
   }
   await recordPlanDecisionOutcome(deps, task, workflow, decidedNext, documentType);
-  const fresh = (await authorizeTaskAction(deps, caller, taskId, "decide")).task;
+  const fresh = await freshTaskOf();
   // M1.3 Task 3.7 (owner decision D2): the approved application plan asks for its informational baseline round. Best effort and after the approval is committed: whatever
   // happens to the baseline, the approval and the checks stand exactly as they are.
   // Meta repo lane D: the approval makes a spec due when the project's spec target says so. Best effort and after the approval is committed; it records an obligation and runs nothing.
@@ -510,6 +549,7 @@ export async function decideTaskWorkflow(
   if (request.decision === "APPROVE" && mode === "IMPLEMENT") await deps.startWorkflowE2EBaseline?.({ task: fresh }).catch((error: unknown) => log(deps, { event: "developer.e2e_baseline_not_started", taskId, errorName: error instanceof Error ? error.name : "unknown" }));
   const view = await taskView(deps, fresh, { events: 0, details: false });
   await syncIndex(deps, fresh, view.status, view.updatedAt);
+  if (placed !== undefined) await recordPlaceDecision(deps, task, caller, request.requestId, placed);
   // v1.2 learning loop (B4): a plan send-back's reason becomes a correction. The one hook for every surface (page, developer API, Slack, MCP). It runs last, after the decision, its
   // detail, the comment locks and the index sync, and within its own small time budget: a slow or failing capture can neither leave the index unsynced nor fail a decision that
   // committed. The decider's own standing is read inside; a failure is logged. (A crash between the commit and this point loses that one correction: replay never captures. Accepted.)
@@ -556,23 +596,80 @@ function planApprovalLink(deps: DeveloperTaskRouteDependencies, task: DeveloperT
   } catch { return { link: undefined, place }; }
 }
 
+/** What the audit and the owner's notice say about the decision's place. */
+interface PlaceFacts { place: string; risk: string; answer: "approve" | "request_changes" | "reject"; role: "owner" | "maintainer"; notifyOwner: boolean }
+
 /**
- * Who may approve a coding plan from where (decision journey slice 2, owner: "medium and high always open the task-page card", "recent sign-in for high"; low is answered where shown):
- *   - (0.5.11, QA6-12b: this replaces "a run limit is acknowledged only from a signed-in browser". Slack, the tools and the API carry the amount too; `settleRunLimit` requires it on every raise.)
- *   - a medium or high plan (its tier is the card's own, from the plan document: `planRiskOf`) is approved only from a signed-in browser (the card, or the plan review page), and a high one only after a
- *     recent sign-in (REAUTH_REQUIRED). A low plan is approved anywhere, as before. This rule holds while the decision cards are on (the first holds always); the refusal links to the card.
+ * Who may approve a coding plan from where. The rule is ONE pure function (`approvalPlaceDecision`, contracts/approval-place.ts, U4) and `approval-place/evaluate.ts` feeds it; nothing here decides a rule. In short, with the decision cards on:
+ *   - low risk: anywhere, by a linked person (a signed-in browser, a tool or token, Slack by a linked Slack user);
+ *   - medium: a signed-in browser; or Slack, a tracker or a pull request comment by a linked person whose last interactive Rovara sign-in is inside the company's window (default 24 hours, at most 7 days); a tool or token gets the card's link;
+ *   - high: the card in a signed-in browser, under the decide-grade sign-in (`decideGrade`), and nothing else;
+ *   - the owner and co-owners decide their own task; a project maintainer may decide a plan that is not theirs (owner notified, decision recorded as the maintainer's).
+ * (0.5.11, QA6-12b: Slack, the tools and the API carry the run limit's amount too; `settleRunLimit` requires it on every raise.) This replaces slice 2's "medium or high is a signed-in browser only", and holds while the decision cards are on.
+ * Returns what the audit and the owner's notice need, or undefined when the rule does not apply (cards off, or an answer the owner path never gated).
  */
-async function requirePlanApprovalPlace(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, task: DeveloperTaskRecord, loaded: Awaited<ReturnType<typeof loadWorkflowDocument>>, request: WorkflowDecisionRequest, page: boolean, decideGrade: boolean): Promise<void> {
-  const browser = caller.browserSession === true || page;
+async function requirePlanApprovalPlace(
+  deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, task: DeveloperTaskRecord, loaded: Awaited<ReturnType<typeof loadWorkflowDocument>>, request: WorkflowDecisionRequest,
+  options: { via?: "PAGE"; decideGrade?: true; place?: "tracker-comment" | "code-host-comment"; commentAuthorLinked?: true }, seat: "owner" | "maintainer",
+): Promise<(PlaceAnswer & PlaceFacts) | undefined> {
   // NOT YET ALWAYS (see the slice 2 report): enforcing this with the cards off refuses Slack and tool approvals of most plans in every deployment (about 1,000 tests approve such plans that way);
   // the owner decides that rollout. Until then it holds while the decision cards are on.
-  const risk = planDecidedOnCard(loaded, task.workflow, task.runEstimate?.highUsd);
-  if (risk === undefined) return;
-  if (!browser) { const { link, place } = planApprovalLink(deps, task); throw agentXError("FORBIDDEN", planRiskPlaceMessage(risk, link, place)); }
-  // Security review (2026-11-06; this replaces the web session's freshness): a HIGH plan is approved only on its card, under the decide-grade sign-in (an email code from a clean sign-in, as the member's own
-  // pool user, for this card, unused, within 10 minutes). The plan review page sends the person to the card.
-  // The page shows the words (`pageReason: "refused"`), never "no access".
-  if (risk === "high" && !decideGrade) { const { link } = planApprovalLink(deps, task); throw Object.assign(agentXError("FORBIDDEN", planRiskPlaceMessage(risk, link, "card")), { pageReason: "refused" }); }
+  if (!decisionCardsEnabled()) return undefined;
+  const risk = planRiskOf(planFactsOf(loaded, task.workflow), task.runEstimate?.highUsd);
+  const answer = request.decision === "APPROVE" ? "approve" as const : request.decision === "REQUEST_CHANGES" ? "request_changes" as const : "reject" as const;
+  // The place is the caller's own channel: a live browser session (or the page), Slack, or a tool/token; only server code that took a comment sets `options.place`.
+  const place = options.place ?? (caller.browserSession === true || options.via === "PAGE" ? "browser" as const : isChatCaller(caller) ? "chat" as const : "tool" as const);
+  let answered: PlaceAnswer;
+  try {
+    answered = await evaluateApprovalPlace(
+      { documentClient: deps.documentClient, tableName: deps.tableName, signInTableName: deps.signInTableName, now: () => deps.now() },
+      { orgId: task.orgId ?? deps.orgId, caller, kind: "plan", risk, answer, place, role: seat, freshSignIn: options.decideGrade === true, ...(options.commentAuthorLinked === true ? { commentAuthorLinked: true as const } : {}) },
+    );
+  } catch (error) {
+    if (error instanceof AgentXError) throw error;
+    log(deps, { event: "developer.approval_place_unavailable", taskId: task.taskId, errorName: error instanceof Error ? error.name : "unknown" });
+    throw agentXError("RUNTIME_UNAVAILABLE", placeUnavailableWords);
+  }
+  const { verdict } = answered;
+  if (verdict.allowed) return { ...answered, place, risk, answer, role: seat, notifyOwner: verdict.notifyOwner };
+  const { link, place: where } = planApprovalLink(deps, task);
+  // A role that may not decide reads as no task for someone who could not see the task at all (unchanged); here the person may see it (a maintainer), so they are told who can.
+  const fixed = placeWordsFor(verdict.reason, link);
+  if (fixed !== undefined) throw agentXError("FORBIDDEN", fixed);
+  // High risk (or a high-risk step) and medium risk by a tool: the plan's own card, as before.
+  const shown = risk === "low" ? "medium" : risk;
+  const refusal = agentXError("FORBIDDEN", planRiskPlaceMessage(shown, link, where));
+  throw verdict.reason === "fresh_sign_in_required" ? Object.assign(refusal, { pageReason: "refused" }) : refusal;
+}
+
+/**
+ * Approval place (U4): after a plan decision committed by someone other than its owner, or a medium approval taken from outside the app, one audit record (fixed words and whole numbers) and, for a decision by someone other
+ * than the owner, a message to the owner. Best effort: neither can fail or undo a decision that committed.
+ */
+async function recordPlaceDecision(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord, caller: DeveloperCaller, requestId: string, placed: PlaceAnswer & PlaceFacts): Promise<void> {
+  try {
+    if (deps.learningAudit !== undefined && (placed.role !== "owner" || placed.windowSeconds !== undefined)) {
+      const at = iso(deps);
+      const events = await tryAuditEvents({ audit: deps.learningAudit }, () => [auditApprovalPlaceDecided({
+        orgId: task.orgId ?? deps.orgId, actor: { kind: "member", id: caller.developerId }, occurredAt: at, occurrence: auditOccurrence("place_decided", task.taskId, requestId),
+        taskId: task.taskId, place: placed.place, risk: placed.risk, answer: placed.answer, role: placed.role,
+        ...(placed.windowSeconds === undefined ? {} : { windowSeconds: placed.windowSeconds }), ...(placed.signInAgeSeconds === undefined ? {} : { signInAgeSeconds: placed.signInAgeSeconds }),
+      })]);
+      // Durable first (the pending item is what the ledger's drain delivers if the queue is down), then sent now.
+      const pending = events.flatMap((event) => auditPending({ audit: deps.learningAudit! }, event));
+      if (pending.length > 0) await deps.documentClient.send(new TransactWriteCommand({ TransactItems: pending }));
+      await flushAuditEvents({ audit: deps.learningAudit }, events);
+    }
+    if (placed.notifyOwner) {
+      const owner = effectiveTaskOwner(task);
+      await noticeOwnerOfDecision(
+        { documentClient: deps.documentClient, tableName: deps.tableName, signInTableName: deps.signInTableName, now: () => deps.now(), ...(deps.log === undefined ? {} : { log: (entry: Record<string, unknown>) => deps.log!(entry) }) },
+        { orgId: task.orgId ?? deps.orgId, ownerDeveloperId: owner.developerId, requestId, deciderName: caller.name, answer: placed.answer, title: task.title, link: planApprovalLink(deps, task).link },
+      );
+    }
+  } catch (error) {
+    log(deps, { event: "developer.approval_place_record_failed", taskId: task.taskId, errorName: error instanceof Error ? error.name : "unknown" });
+  }
 }
 
 /** Plan 3, Task 34: what approving the coding plan did with its run limit. `baselineUsd` is what planning spent, where the run limit's window starts. */
@@ -583,7 +680,7 @@ type RunLimitOutcome = { accepted: true; runLimitUsd: number; baselineUsd: numbe
  * (a proxy that can't say refuses the approval, as a Continue is). Not accepted: the `run_limit` request is made through Task 32's seam before anything is
  * written, so a workflow is never blocked on a request that was not made; without the seam (until Task 32 is wired) no request is made and the words are the same.
  */
-async function settleRunLimit(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, task: DeveloperTaskRecord, requestId: string, acknowledgedUsd: number | undefined, browser: boolean, copyAcceptsLimit = false): Promise<RunLimitOutcome> {
+async function settleRunLimit(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, task: DeveloperTaskRecord, requestId: string, acknowledgedUsd: number | undefined, browser: boolean, copyAcceptsLimit = false, ownerDecidesLimit = false): Promise<RunLimitOutcome> {
   const decision = await acceptRunLimit(
     // The approver's project role is read now: from the project's people where agents are set up, else through the caller's own project access.
     { ...estimateDependencies(deps), projectMembers: deps.agentRuns?.projectMembers ?? { roleOf: async () => (await deps.checkAccess(task.project)).role } },
@@ -591,6 +688,8 @@ async function settleRunLimit(deps: DeveloperTaskRouteDependencies, caller: Deve
   );
   // A task with no limit of its own runs on the per-task default, so a raise is measured against that.
   const currentUsd = task.budgetUsd ?? PER_TASK_BUDGET_USD;
+  // A maintainer deciding someone else's plan never raises the owner's run limit (money is the owner's): refused, with no request made and nothing written.
+  if (ownerDecidesLimit && (acknowledgedUsd !== undefined || runLimitRaises(currentUsd, decision.runLimitUsd))) throw agentXError("FORBIDDEN", RUN_LIMIT_OWNER_DECIDES_WORDS);
   // QA6-12: both outcomes carry the limit that would be set; a different one than the person was shown is refused before anything is asked or written.
   if (acknowledgedUsd !== undefined && decision.runLimitUsd !== acknowledgedUsd) {
     throw Object.assign(agentXError("CONFIG_INVALID", runLimitChangedMessage(acknowledgedUsd, decision.runLimitUsd, currentUsd, browser, planApprovalLink(deps, task).link)), { pageReason: "changed" });

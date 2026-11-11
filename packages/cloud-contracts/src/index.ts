@@ -96,6 +96,11 @@ export * from "./saved-env-key-files.js";
 // Company domain verification (owner decision 2026-11-02).
 export * from "./company-domains-web.js";
 export * from "./app-company-rules.js";
+// Approval place (U4): approval-place.ts is a byte copy of Code's file (Code PR #451, public code/next a97b0bee9) that waits for the vendor pin to move: UPSTREAM OWED, see its header and
+// tests/contract/approval-place-upstream-copy.test.ts. app-approval-window.ts and decision-dismiss.ts are Cloud's (the latter owed upstream, see its header).
+export * from "./approval-place.js";
+export * from "./app-approval-window.js";
+export * from "./decision-dismiss.js";
 export * from "./app-billing.js";
 export * from "./app-insights.js";
 export * from "./app-agent-publish.js";
@@ -107,6 +112,12 @@ export * from "./setup-proposal.js";
 export * from "./task-stop-enrollment.js";
 
 export * from "./task-stop-start-preview.js";
+export * from "./ui-flags.js";
+
+// Work events (U3): copied from Code (fix/code-work-events, Code PR #449), with the two imports of Code's own files (browser-ids, names) taken from @rovara-code/contracts. UPSTREAM OWED: the vendor pin
+// (vendor/rovara-code/PIN) does not include it yet; when it does, delete work-event.ts and work-event-node.ts here and import the names from @rovara-code/contracts. See briefs/work-events.md.
+export * from "./work-event.js";
+export * from "./work-event-node.js";
 export { SIGNED_OUT_REASONS, isSignedOutReason, type SignedOutReason } from "./sign-in-reasons.js";
 
 // Names defined here that the old barrel reached through a re-export file the contracts now take from Rovara Code (convergence W0-3).
