@@ -2,7 +2,9 @@
 // One rule runs through all of it: GREEN NEEDS AN OBSERVATION. A row is Healthy only when a read shows something was seen working (a passed check, a status the vendor reported).
 // A configured thing that nothing has checked is Unknown, a read that was refused or failed is Unknown, and an observation with no recorded time, a time in the future, or a time older than
 // CHECK_STALE_DAYS (measured against the clock) is Unknown ("check it again"). Only the two rows the broker computes live at read time (service qualification, team record delete check) take the read time.
-import type { OrgServiceStatus } from "@agentx/cloud-contracts/web";
+// The GitHub, Slack and AI model rows also take the broker's "health observations" (when each check last ran and what it found): Healthy only with a fresh passing observation, Action needed for a failing one,
+// Unknown with none, a stale one, a future one or one that could not tell. Its ages are the broker's, plus the time since the page read them.
+import type { HealthModelUseObservation, OrgHealthObservationsResponse, OrgServiceStatus } from "@agentx/cloud-contracts/web";
 import type { Read, ReadinessApprovals, ReadinessConnection, ReadinessDesignReview, ReadinessFeatures, ReadinessProject, ReadinessReads, ReadinessSpendRequest } from "../../../api/readiness.js";
 import type { LessonCompanyPreset } from "../../../api/lessons.js";
 import { githubSummary } from "../connections/connection-state.js";
@@ -32,6 +34,7 @@ export interface ReadinessRow {
  /** One plain sentence on what was seen. */ line: string;
  /** Where the answer came from. */ source: string;
  /** When it was last checked, in words; or that no time is recorded. */ checked: string; checkedAt?: string;
+ /** A second plain line, shown under `line` (the backup model line). */ note?: string;
  fix?: Fix;
  /** Raw facts behind the answer (provider names, model ids, stored words). Shown only under "Details". */ details: string[];
 }
@@ -45,6 +48,48 @@ export function stamp(value: string | number | undefined): string | undefined {
  return Number.isFinite(time) && time > 0 ? new Date(time).toLocaleString("en-US", { timeZone: "UTC", dateStyle: "medium", timeStyle: "short" }) + " UTC" : undefined;
 }
 const checkedAt = (value: string | undefined, verb = "Last checked"): { checked: string; checkedAt?: string } => { const words = stamp(value);return words === undefined ? { checked: "Check time not recorded" } : { checked: `${verb} ${words}`, checkedAt: value! }; };
+/** How long ago, in words: "less than a minute ago", "5 minutes ago", "3 hours ago", "2 days ago". */
+export function ago(ms: number): string {
+ const minutes = Math.floor(Math.max(0, ms) / 60_000);
+ if (minutes < 1) return "less than a minute ago";
+ if (minutes < 60) return `${String(minutes)} minute${minutes === 1 ? "" : "s"} ago`;
+ const hours = Math.floor(minutes / 60);
+ if (hours < 24) return `${String(hours)} hour${hours === 1 ? "" : "s"} ago`;
+ const days = Math.floor(hours / 24);
+ return `${String(days)} day${days === 1 ? "" : "s"} ago`;
+}
+/**
+ * What the broker's health observation says about one check. `loading`: not read yet. `unread`: the read was refused, missing or failed (rows stay as they were). `never`: no check on record.
+ * `badtime` and `future`: a check with no readable time, or one dated ahead of the clock: not believed. `stale`: older than CHECK_STALE_DAYS. `ok`, `failed`, `unknown`: a fresh check and what it found.
+ */
+export type ObservedKind = "loading" | "unread" | "never" | "badtime" | "future" | "stale" | "ok" | "failed" | "unknown";
+export interface Observed { kind: ObservedKind; /** Words for the row's time line. */ checked: string; checkedAt?: string; /** How old, in words (not for loading, unread, never, badtime or future). */ age?: string }
+type ObservedFeature = "github" | "slack" | "modelSource";
+/** The age shown is the broker's age at its read plus the time since this page read it, never the browser clock against the stored time. Freshness (future, stale) is judged against the clock, as for every other check. */
+export function observe(read: Read<OrgHealthObservationsResponse>, feature: ObservedFeature, now: number): Observed {
+ if (read.state === "loading") return { kind: "loading", checked: "Not yet" };
+ if (read.state !== "ok") return { kind: "unread", checked: "Check time not recorded" };
+ const item = read.data[feature];
+ if (item === undefined || !item.checked) return { kind: "never", checked: "Never checked" };
+ const elapsed = item.ageSeconds * 1000 + Math.max(0, now - read.at), age = freshness(item.checkedAt, now);
+ if (age === "none") return { kind: "badtime", checked: "Check time not recorded" };
+ if (age === "future") return { kind: "future", checked: "Check time not believed: it is dated in the future" };
+ const words = ago(elapsed), base = { checked: `Checked ${words}`, checkedAt: item.checkedAt, age: words };
+ return age === "stale" || elapsed > CHECK_STALE_DAYS * DAY ? { kind: "stale", ...base } : { kind: item.result, ...base };
+}
+const lastCheckDetail = (label: string, seen: Observed): string => `${label}: ${seen.age === undefined ? seen.checked : `${seen.age}${seen.checkedAt === undefined || stamp(seen.checkedAt) === undefined ? "" : ` (${stamp(seen.checkedAt)!})`}`}`;
+/** What each kind of observation that is not a fresh pass says, after a thing that is configured. `what` names the check ("The last GitHub App check"). */
+function notFresh(seen: Observed, what: string): string {
+ switch (seen.kind) {
+  case "never": return `${what} has never been run, so this can't be called healthy.`;
+  case "badtime": return `${what} has no readable time, so this can't be called healthy.`;
+  case "future": return `${what} is dated in the future, so it isn't believed and this can't be called healthy.`;
+  case "stale": return `${what} was more than ${String(CHECK_STALE_DAYS)} days ago, so this can't be called healthy.`;
+  case "unknown": return `${what} ran but couldn't tell, so this can't be called healthy.`;
+  default: return `${what} is not known, so this can't be called healthy.`;
+ }
+}
+const pending = (id: string, title: string, what: string): ReadinessRow => ({ id, title, status: "checking", line: `Checking ${what}.`, source: "Waiting for the read", checked: "Not yet", details: [] });
 const worst = (a: Status, b: Status): Status => a === "action" || b === "action" ? "action" : a === "unknown" || b === "unknown" ? "unknown" : "healthy";
 
 /** What a row says when its read did not give an answer. Always Unknown. */
@@ -60,7 +105,7 @@ function unread<T>(read: Read<T>, what: string, id: string, title: string, fix: 
 
 // ---- code host
 
-export function codeHostRow(reads: Pick<ReadinessReads, "github" | "githubRequests">): ReadinessRow {
+export function codeHostRow(reads: Pick<ReadinessReads, "github" | "githubRequests" | "observations" | "now">): ReadinessRow {
  const fix: Fix = { text: "Open the GitHub connection.", label: "Open GitHub connection", to: `${CONNECTIONS_PATH}?open=github` };
  const base = { id: "code-host", title: "Code host: GitHub" };
  const missing = unread(reads.github, "the GitHub connection", base.id, base.title, fix);
@@ -69,16 +114,22 @@ export function codeHostRow(reads: Pick<ReadinessReads, "github" | "githubReques
  // The request list is optional detail: waiting for a GitHub admin only matters when nothing is installed.
  const requests = reads.githubRequests.state === "ok" ? reads.githubRequests.data : [];
  const summary = githubSummary(installs, requests);
- // The stored install status has no observation time (connectedAt is when it was connected, not when it was checked), so an active app is Unknown, never Healthy.
- const status: Status = summary.state === "connected" ? "unknown" : "action";
- const source = "The GitHub app's status as GitHub last reported it to Rovara";
- const line = summary.state === "connected" ? `${summary.why} Rovara records no time for that status, so this can't be called healthy.` : summary.why;
- return { ...base, status, line, source, checked: "Check time not recorded", ...(summary.state === "connected" ? { fix } : {}), ...(status === "action" ? { fix: { text: summary.fix ?? fix.text, label: summary.state === "not_connected" ? "Connect GitHub" : "Fix GitHub", to: fix.to } } : {}), details: installs.map(install => `${install.accountLogin}: ${install.status}`) };
+ const details = installs.map(install => `${install.accountLogin}: ${install.status}`);
+ if (summary.state !== "connected") return { ...base, status: "action", line: summary.why, source: "The GitHub app's status as GitHub last reported it to Rovara", checked: "Check time not recorded", fix: { text: summary.fix ?? fix.text, label: summary.state === "not_connected" ? "Connect GitHub" : "Fix GitHub", to: fix.to }, details };
+ // The stored install status has no observation time (connectedAt is when it was connected, not when it was checked), so an active app is Healthy only when the broker's last GitHub App check is fresh and passed.
+ const seen = observe(reads.observations, "github", reads.now);
+ if (seen.kind === "loading") return pending(base.id, base.title, "when the GitHub App was last checked");
+ if (seen.kind === "unread") return { ...base, status: "unknown", line: `${summary.why} Rovara records no time for that status, so this can't be called healthy.`, source: "The GitHub app's status as GitHub last reported it to Rovara", checked: "Check time not recorded", fix, details };
+ const source = "The last GitHub App installed check (run when Rovara's health check runs), and the app's status as GitHub last reported it", seenDetails = [...details, lastCheckDetail("Last GitHub App check", seen)];
+ const when = { checked: seen.checked, ...(seen.checkedAt === undefined ? {} : { checkedAt: seen.checkedAt }) };
+ if (seen.kind === "ok") return { ...base, status: "healthy", line: `${summary.why} The last GitHub App check passed.`, source, ...when, details: seenDetails };
+ if (seen.kind === "failed") return { ...base, status: "action", line: "The last check that the GitHub App is installed failed.", source, ...when, fix: { text: "Open the GitHub connection and fix or reinstall the app.", label: "Fix GitHub", to: fix.to }, details: seenDetails };
+ return { ...base, status: "unknown", line: `${summary.why} ${notFresh(seen, "The last GitHub App check")}`, source, ...when, fix, details: seenDetails };
 }
 
 // ---- chat
 
-export function chatRow(reads: Pick<ReadinessReads, "slack">): ReadinessRow {
+export function chatRow(reads: Pick<ReadinessReads, "slack" | "observations" | "now">): ReadinessRow {
  const fix: Fix = { text: "Open the Slack connection.", label: "Open Slack connection", to: `${CONNECTIONS_PATH}?open=slack` };
  const base = { id: "chat", title: "Chat: Slack" };
  const missing = unread(reads.slack, "the Slack connection", base.id, base.title, fix);
@@ -89,8 +140,15 @@ export function chatRow(reads: Pick<ReadinessReads, "slack">): ReadinessRow {
  const details = [`${String(data.associationCount)} stored workspace links`, `${String(data.unavailableCount)} that could not be used`];
  if (data.unavailableCount > 0) return { ...base, status: "action", line: "Some of the Slack links Rovara stored can't be used.", source, ...when, fix: { text: "Open the Slack connection and see which link is broken.", label: fix.label, to: fix.to }, details };
  if (data.associationCount === 0) return { ...base, status: "unknown", line: "Slack isn't connected to this company, so there is nothing to check.", source, ...when, fix: { text: "Connect Slack if your team talks to Rovara in chat.", label: "Set up Slack", to: fix.to }, details };
- // Stored links are configuration. No read shows that Slack still accepts Rovara's token, so this is never green.
- return { ...base, status: "unknown", line: "Slack is connected, but nothing shows it still works: Rovara has no live check of the chat connection yet.", source, ...when, fix: { text: "Open the Slack connection.", label: fix.label, to: fix.to }, details };
+ // Stored links are configuration: Healthy only when the broker's last live Slack check is fresh and passed.
+ const seen = observe(reads.observations, "slack", reads.now);
+ if (seen.kind === "loading") return pending(base.id, base.title, "when Slack was last checked");
+ if (seen.kind === "unread") return { ...base, status: "unknown", line: "Slack is connected, but nothing shows it still works: Rovara has no live check of the chat connection yet.", source, ...when, fix: { text: "Open the Slack connection.", label: fix.label, to: fix.to }, details };
+ const live = "The last live Slack check (a probe of Rovara's Slack token, run when Rovara's health check runs), and the workspace links Rovara has stored";
+ const seenWhen = { checked: seen.checked, ...(seen.checkedAt === undefined ? {} : { checkedAt: seen.checkedAt }) }, seenDetails = [...details, `Stored workspace links read: ${stamp(data.checkedAt) ?? "time not recorded"}`];
+ if (seen.kind === "ok") return { ...base, status: "healthy", line: "Slack is connected and its last live check passed.", source: live, ...seenWhen, details: seenDetails };
+ if (seen.kind === "failed") return { ...base, status: "action", line: "The last live check of the Slack connection failed.", source: live, ...seenWhen, fix: { text: "Open the Slack connection and reconnect it.", label: fix.label, to: fix.to }, details: seenDetails };
+ return { ...base, status: "unknown", line: `Slack is connected. ${notFresh(seen, "The last live Slack check")}`, source: live, ...seenWhen, fix: { text: "Open the Slack connection.", label: fix.label, to: fix.to }, details: seenDetails };
 }
 
 // ---- saved connections (tracker, monitoring, other tools)
@@ -138,19 +196,45 @@ export const toolsRow = (reads: Pick<ReadinessReads, "connections">, now: number
 // ---- model sources
 
 const PROVIDERS: Readonly<Record<string, string>> = { anthropic: "Anthropic", openai: "OpenAI", openrouter: "OpenRouter", bedrock: "Amazon Bedrock", endpoint: "a gateway endpoint" };
-export function modelRow(reads: Pick<ReadinessReads, "sources">): ReadinessRow {
+const FALLBACK_WORDS: Readonly<Record<string, string>> = { DEFAULT_MODEL_UNAVAILABLE: "the main model was unavailable", MODEL_CALL_REFUSED: "the main model refused the call", CHATGPT_PLAN_UNAVAILABLE: "the ChatGPT plan was unavailable", CONFIGURED_FALLBACK: "the company's settings call for a backup" };
+/** A time of day in UTC, with the date when it is not today (UTC). */
+function clockTime(iso: string, now: number): string {
+ const time = Date.parse(iso);
+ if (!Number.isFinite(time)) return "a time that isn't recorded";
+ const day = (value: number) => new Date(value).toISOString().slice(0, 10), clock = new Date(time).toISOString().slice(11, 16);
+ return `${day(time) === day(now) ? "" : `${new Date(time).toLocaleString("en-US", { timeZone: "UTC", month: "short", day: "numeric" })}, `}${clock} UTC`;
+}
+/** One plain sentence on whether Rovara used a backup model in the last 24 hours; model ids stay under Details. Nothing when no model-governed step has run (or the broker is older). */
+export function fallbackLine(use: HealthModelUseObservation | undefined, now: number): string | undefined {
+ if (use === undefined || !use.checked) return undefined;
+ const reason = use.lastFallbackReason === undefined ? "" : ` (${Object.hasOwn(FALLBACK_WORDS, use.lastFallbackReason) ? FALLBACK_WORDS[use.lastFallbackReason] : "the main model could not be used"})`;
+ if (use.usedFallback) return `Rovara used a backup model in the last ${String(use.windowHours)} hours${reason}${use.lastFallbackAt === undefined ? "" : `; last at ${clockTime(use.lastFallbackAt, now)}`}.`;
+ return `Rovara did not need a backup model in the last ${String(use.windowHours)} hours${use.lastFallbackAt === undefined ? "" : `; the last time was ${clockTime(use.lastFallbackAt, now)}`}.`;
+}
+export function modelRow(reads: Pick<ReadinessReads, "sources" | "observations" | "now">): ReadinessRow {
  const fix: Fix = { text: "Open the AI provider connection.", label: "Open AI models", to: MODELS_PATH };
  const base = { id: "models", title: "AI models" };
  const missing = unread(reads.sources, "the AI model sources", base.id, base.title, fix);
  if (missing !== undefined) return missing;
  if (reads.sources.state !== "ok") return { ...base, status: "unknown", line: "Unknown", source: "", checked: "", details: [] };
  const sources = reads.sources.data.sources;
- const source = "The company's saved AI providers. No read shows whether the main model answered or a fallback was used";
  const details = [...sources.map(item => `${item.label} (${Object.hasOwn(PROVIDERS, item.kind) ? PROVIDERS[item.kind] : item.kind}): ${item.kind === "bedrock" ? "set up outside Rovara" : item.hasCredential ? "key saved" : "no key saved"}; models: ${item.models.map(model => model.catalog.modelId).join(", ") || "none listed"}`)];
  const broken = sources.filter(item => item.kind !== "bedrock" && !item.hasCredential);
- if (broken.length > 0) return { ...base, status: "action", line: `${broken[0]!.label} has no key saved, so Rovara can't use it.`, source, checked: "Check time not recorded", fix: { text: "Add its key, or remove the provider.", label: "Fix AI provider", to: `${CONNECTIONS_PATH}?open=ai-provider` }, details };
+ const seen = observe(reads.observations, "modelSource", reads.now);
+ const use = reads.observations.state === "ok" ? reads.observations.data.modelUse : undefined, backup = fallbackLine(use, reads.now);
+ const note = backup === undefined ? {} : { note: backup };
+ if (use?.checked === true) details.push(`Main model last used: ${use.lastMainAt === undefined ? "never recorded" : stamp(use.lastMainAt) ?? "time not recorded"}`, `Backup model last used: ${use.lastFallbackAt === undefined ? "never recorded" : stamp(use.lastFallbackAt) ?? "time not recorded"}`);
+ const plain = "The company's saved AI providers. No read shows whether the main model answered or a fallback was used";
+ const broken0 = broken[0];
+ if (broken0 !== undefined) return { ...base, status: "action", line: `${broken0.label} has no key saved, so Rovara can't use it.`, source: seen.kind === "unread" ? plain : "The company's saved AI providers, the last Check of an AI provider, and which model answered in the last 24 hours", checked: seen.kind === "unread" || seen.kind === "loading" ? "Check time not recorded" : seen.checked, ...(seen.checkedAt === undefined ? {} : { checkedAt: seen.checkedAt }), ...note, fix: { text: "Add its key, or remove the provider.", label: "Fix AI provider", to: `${CONNECTIONS_PATH}?open=ai-provider` }, details };
  const own = sources.length === 0 ? "Work runs on Rovara's own models." : `${String(sources.length)} AI provider${sources.length === 1 ? " is" : "s are"} saved.`;
- return { ...base, status: "unknown", line: `${own} Rovara doesn't record whether the main model is in use or a fallback was used recently, so this can't be called healthy.`, source, checked: "Check time not recorded", fix: { ...fix, text: "See the order your providers are tried in, and press Check it works on each." }, details };
+ if (seen.kind === "loading") return pending(base.id, base.title, "when the AI providers were last checked");
+ if (seen.kind === "unread") return { ...base, status: "unknown", line: `${own} Rovara doesn't record whether the main model is in use or a fallback was used recently, so this can't be called healthy.`, source: plain, checked: "Check time not recorded", fix: { ...fix, text: "See the order your providers are tried in, and press Check it works on each." }, details };
+ const source = "The last Check of an AI provider (the Check button on a provider), and which model answered in the last 24 hours", when = { checked: seen.checked, ...(seen.checkedAt === undefined ? {} : { checkedAt: seen.checkedAt }) };
+ const seenDetails = [...details, lastCheckDetail("Last AI provider check", seen)];
+ if (seen.kind === "ok") return { ...base, status: "healthy", line: `${own} The last check of an AI provider passed.`, source, ...when, ...note, details: seenDetails };
+ if (seen.kind === "failed") return { ...base, status: "action", line: "The last check of an AI provider failed.", source, ...when, ...note, fix: { text: "Open the AI providers, press Check it works on each and fix the one that fails.", label: "Fix AI provider", to: MODELS_PATH }, details: seenDetails };
+ return { ...base, status: "unknown", line: `${own} ${notFresh(seen, "The last check of an AI provider")}`, source, ...when, ...note, fix: { ...fix, text: "Press Check it works on each provider." }, details: seenDetails };
 }
 
 // ---- each project's environment check
@@ -316,7 +400,7 @@ function ruleItems(design: ReadinessDesignReview | undefined, preset: LessonComp
  return items;
 }
 /** What each read is called when it did not answer. Every read the list or the health counts depend on is here. */
-const READ_WORDS = [["approvals", "approvals waiting in the company"], ["spend", "spending requests"], ["preset", "company lesson rules"], ["designReview", "company design review rules"], ["github", "the GitHub connection"], ["githubRequests", "GitHub installation requests"], ["connections", "saved connections"], ["slack", "the Slack connection"], ["sources", "AI model sources"], ["projects", "project environment checks"], ["serviceStatus", "Rovara's service status and team record check"], ["features", "the turned-on features"]] as const satisfies ReadonlyArray<readonly [keyof ReadinessReads, string]>;
+const READ_WORDS = [["approvals", "approvals waiting in the company"], ["spend", "spending requests"], ["preset", "company lesson rules"], ["designReview", "company design review rules"], ["github", "the GitHub connection"], ["githubRequests", "GitHub installation requests"], ["connections", "saved connections"], ["slack", "the Slack connection"], ["sources", "AI model sources"], ["projects", "project environment checks"], ["serviceStatus", "Rovara's service status and team record check"], ["observations", "when each check last ran"], ["features", "the turned-on features"]] as const satisfies ReadonlyArray<readonly [keyof ReadinessReads, string]>;
 
 export function buildNeedsAdmin(reads: ReadinessReads, readiness: Readiness): NeedsAdmin {
  const items: AdminItem[] = [];

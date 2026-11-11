@@ -50,16 +50,16 @@ for (const look of [{ name: "look-off", store: {} }, { name: "look-v2", store: {
    if (look.name === "look-v2") await expect(page.locator("html")).toHaveAttribute("data-look", "v2");
    const list = page.getByRole("list", { name: "Readiness checks" });
    const row = (title: string) => list.locator(".rv-health-row").filter({ has: page.getByRole("heading", { name: title, exact: true }) });
-   await expect(row("Code host: GitHub")).toContainText("Unknown");await expect(row("Code host: GitHub")).not.toContainText("Healthy");await expect(row("Code host: GitHub")).toContainText("Check time not recorded");
-   await expect(row("Chat: Slack")).toContainText("Unknown");await expect(row("Chat: Slack")).not.toContainText("Healthy");await expect(row("Chat: Slack")).toContainText(/Stored associations read/);
+   await expect(row("Code host: GitHub")).toContainText("Healthy");await expect(row("Code host: GitHub")).toContainText("Checked 5 minutes ago");await expect(row("Code host: GitHub").locator("time")).toHaveAttribute("title", /UTC$/u);
+   await expect(row("Chat: Slack")).toContainText("Action needed");await expect(row("Chat: Slack")).not.toContainText("Healthy");await expect(row("Chat: Slack")).toContainText(/Checked 2 minutes ago/);await expect(row("Chat: Slack").getByRole("link", { name: "Open Slack connection" })).toHaveAttribute("href", "/app/admin/connections?open=slack");
    await expect(row("Tracker: Linear or Jira")).toContainText("Action needed");await expect(row("Tracker: Linear or Jira").getByRole("link", { name: "Fix tracker connection" })).toHaveAttribute("href", "/app/admin/connections?open=linear");
-   await expect(row("AI models")).toContainText("Unknown");await expect(row("AI models")).not.toContainText("claude-fixture-model-1", { useInnerText: true });
+   await expect(row("AI models")).toContainText("Healthy");await expect(row("AI models")).toContainText(/Checked 15 minutes ago/);await expect(row("AI models")).toContainText(/Rovara used a backup model in the last 24 hours \(the main model was unavailable\); last at \d\d:\d\d UTC/u);await expect(row("AI models")).not.toContainText("claude-fixture-model-1", { useInnerText: true });
    await expect(row("Test environment: payments")).toContainText("Action needed");await expect(row("Test environment: payments").getByRole("link", { name: "Fix test setup" })).toHaveAttribute("href", "/app/onboard?project=payments&step=setup");
    await expect(row("Test environment: web")).toContainText("Healthy");await expect(row("Team record")).toContainText("Healthy");await expect(row("Lessons and team record sources")).toContainText("Unknown");
    await expect(row("Turned-on features")).toContainText("Unknown");await expect(row("Rovara service")).toContainText("Healthy");
    await expect(list.locator(".rv-health-row").first()).toHaveAttribute("data-status", "action");
    // Raw facts are behind Details, closed by default.
-   await expect(row("AI models").locator("details")).not.toHaveAttribute("open", "");await expect(page.locator("main")).not.toContainText(/claude-fixture-model-1|org_admin|undefined|NaN|\[object/u, { useInnerText: true });
+   await expect(row("AI models").locator("details")).not.toHaveAttribute("open", "");await expect(page.locator("main")).not.toContainText(/claude-fixture-model-1|DEFAULT_MODEL_UNAVAILABLE|org_admin|undefined|NaN|\[object/u, { useInnerText: true });
    await row("AI models").locator("summary").click();await expect(row("AI models")).toContainText("claude-fixture-model-1");await row("AI models").locator("summary").click();
    expect(await noSidewaysScroll(page)).toBe(true);
    if (phone) {
@@ -75,6 +75,7 @@ for (const look of [{ name: "look-off", store: {} }, { name: "look-v2", store: {
    const needs = page.locator(".rv-health-needs");await expect(needs.getByRole("heading", { name: "What needs an admin" })).toBeVisible();
    await expect(needs.getByText("Raise the company's agent spending guardrail")).toBeVisible();await expect(needs.getByText("Create an issue in Linear")).toBeVisible();await expect(needs.getByText(/Asked by Maya/u)).toBeVisible();await expect(needs.getByText("3 approvals are waiting in the company. The list may be incomplete.")).toBeVisible();await expect(needs.getByRole("button", { name: "Open to review" }).first()).toBeVisible();await expect(needs.getByText("Spending request: More monthly budget")).toBeVisible();await expect(needs.getByText("Company rule proposal")).toBeVisible();
    await expect(needs.getByText("Tracker: Linear or Jira")).toBeVisible();await expect(needs.getByText("Test environment: payments")).toBeVisible();
+   await expect(needs.getByText("Chat: Slack")).toBeVisible();await expect(needs.getByRole("link", { name: "Open Slack connection" })).toHaveAttribute("href", "/app/admin/connections?open=slack");await expect(needs.getByText(/Checked 2 minutes ago/u)).toBeVisible();
    await expect(needs.getByRole("link", { name: "Open the waiting list" }).first()).toHaveAttribute("href", "/app/admin/waiting");
    await expect(needs.getByRole("link", { name: "Open How we work" })).toHaveAttribute("href", "/app/admin/how-we-work");
    await expect(page.locator(".rv-health-glance")).toContainText(/\d+ healthy · \d+ action needed · \d+ unknown/);await expect(page.locator(".rv-health-glance").getByRole("link", { name: "All checks" })).toHaveAttribute("href", "/app/admin/health");
@@ -108,3 +109,18 @@ test("a read that fails shows Unknown, never Healthy, and the page makes no writ
  const calls = await (await request.get("/__mock/requests")).json() as Array<{ method: string; path: string }>;
  expect(calls.filter(call => call.method !== "GET" && /health|connections|approvals|spend|org\//u.test(call.path))).toEqual([]);
 });
+
+for (const status of [404, 403] as const) {
+ test(`when the observations route answers ${String(status)}: today's rows stay, the Health page says so, and What needs an admin names the read`, async ({ page, context, request, baseURL }) => {
+  await enter(page, context, request, baseURL, 1280, { "rovara.health": "v2" });
+  await page.route("**/v1/web/org/health-observations*", route => route.fulfill({ status, contentType: "application/json", body: JSON.stringify({ error: { code: status === 404 ? "NOT_FOUND" : "FORBIDDEN", message: "no" } }) }));
+  await page.goto(HEALTH);await settled(page);
+  await expect(page.getByRole("note").filter({ hasText: /when (each )?checks? last ran/u })).toBeVisible();
+  for (const title of ["Code host: GitHub", "Chat: Slack", "AI models"]) {
+   const row = page.locator(".rv-health-row").filter({ has: page.getByRole("heading", { name: title, exact: true }) });
+   await expect(row).not.toContainText("Healthy");await expect(row).toContainText(title === "Chat: Slack" ? /Stored associations read/u : "Check time not recorded");
+  }
+  await page.goto(OVERVIEW);await expect(page.locator(".rv-health-needs").getByText(/Couldn't read: .*when each check last ran/u)).toBeVisible();
+  await expect(page.locator(".rv-health-glance")).toContainText(/\d+ healthy · \d+ action needed · \d+ unknown/u);
+ });
+}

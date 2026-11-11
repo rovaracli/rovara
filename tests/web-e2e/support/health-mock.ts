@@ -1,6 +1,6 @@
 // The Health and readiness journey (`admin` scenario, switch `rovara.health` = "v2"): every read the readiness list and "What needs an admin" make, answered with fixed rows.
 // Nothing is answered until a test chooses a variant (POST /__mock/health?variant=...), and the scenario endpoint resets it, so other admin journeys keep their real answers.
-// Variants: "mixed" (the default: a failed tracker check, a failed project check, a confirmation, a spending request and a rule proposal waiting) and "calm" (nothing waiting, every check passed).
+// Variants: "mixed" (the default: a failed tracker check, a failing Slack probe, a failed project check, a confirmation, a spending request and a rule proposal waiting) and "calm" (nothing waiting, every check passed).
 // Times are relative to now, so the seven-day age rule behaves the same on any day.
 import { FIXTURE_DEVELOPER, FIXTURE_ORG } from "../../web/support/fixtures.js";
 import { mockCellOrigin } from "./port.js";
@@ -9,6 +9,7 @@ let variant: HealthVariant | undefined;
 export function setHealthVariant(value: string | null): void { variant = value === "mixed" || value === "calm" ? value : undefined; }
 export function resetHealth(): void { variant = undefined; }
 const ago = (ms: number) => new Date(Date.now() - ms).toISOString(), HOUR = 3_600_000, DAY = 24 * HOUR;
+const seen = (ms: number, result: "ok" | "failed") => ({ checked: true, checkedAt: ago(ms), ageSeconds: Math.round(ms / 1000), result });
 const lessonSources = { sources: [{ kind: "slack", scope: "#payments-dev", enabled: true, retention: "30d", health: "ok", audience: "project", updatedAt: ago(DAY), paused: false }], otherPaused: 0 };
 export function healthAnswer(url: URL): { status: number; body: unknown } | undefined {
  if (variant === undefined) return undefined;
@@ -25,6 +26,9 @@ export function healthAnswer(url: URL): { status: number; body: unknown } | unde
  ] });
  if (path === "/v1/web/org/service-status") return done({ orgId: FIXTURE_ORG, source: "stored_runtime_qualification", checkedAt: ago(10 * 60_000), configured: true, checks: [
   { kind: "web", state: "ready", observation: "qualified", reason: "qualified", expiresAt: new Date(Date.now() + 3 * DAY).toISOString() }, { kind: "api", state: "ready", observation: "qualified", reason: "qualified", expiresAt: new Date(Date.now() + 3 * DAY).toISOString() }], teamRecord: { status: "ok", detail: "No team record delete is waiting." } });
+ // When each check last ran (`GET /v1/app/org/health-observations`): "mixed" has a passing GitHub check, a failing Slack probe and a passing AI source check with one backup model use; "calm" has all three passing.
+ if (path === "/v1/web/org/health-observations") return done({ orgId: FIXTURE_ORG, readAt: new Date().toISOString(), github: seen(5 * 60_000, "ok"), slack: seen(mixed ? 2 * 60_000 : 3 * 60_000, mixed ? "failed" : "ok"), modelSource: seen(15 * 60_000, "ok"),
+  modelUse: { checked: true, windowHours: 24, usedMain: true, usedFallback: mixed, lastMainAt: ago(60_000), lastMainAgeSeconds: 60, ...(mixed ? { lastFallbackAt: ago(HOUR), lastFallbackAgeSeconds: 3600, lastFallbackReason: "DEFAULT_MODEL_UNAVAILABLE" } : {}) } });
  if (/^\/v1\/web\/projects\/[^/]+\/lessons\/sources$/u.test(path)) return done(lessonSources);
  // The company's open approvals as the server summarises them (`GET /v1/app/org/approvals/pending-summary`): the total, the newest with their own titles, and the confirmation page's bare link.
  if (path === "/v1/web/org/approvals/pending-summary") return done(mixed ? { total: 3, approvals: [{ approvalId: "apr_aaaaaaaaaaaaaaaaaaaa", kind: "change", subjectKind: "org_guardrail_relax", title: "Raise the company's agent spending guardrail", proposedBy: "Maya", createdAt: ago(3 * HOUR), confirmUrl: mockCellOrigin() + "/v1/app/approve/apr_aaaaaaaaaaaaaaaaaaaa" }, { approvalId: "apr_bbbbbbbbbbbbbbbbbbbb", kind: "write", title: "Create an issue in Linear", createdAt: ago(5 * HOUR), confirmUrl: mockCellOrigin() + "/v1/app/approve/apr_bbbbbbbbbbbbbbbbbbbb" }], truncated: true } : { total: 0, approvals: [] });
