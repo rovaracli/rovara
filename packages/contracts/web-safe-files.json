@@ -11,6 +11,7 @@
   "packages/contracts/src/app-billing.ts",
   "packages/contracts/src/app-company-rules.ts",
   "packages/contracts/src/app-design-review-company.ts",
+  "packages/contracts/src/app-insights.ts",
   "packages/contracts/src/app-known-failing.ts",
   "packages/contracts/src/app-lessons-repo-file.ts",
   "packages/contracts/src/app-lessons.ts",
