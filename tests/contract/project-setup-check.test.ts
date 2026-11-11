@@ -8,7 +8,7 @@ import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { AppProjectDetailSchema, machineTimeMonthKey, orgMetaKey, projectMemberKey, projectMetaKey, projectRevisionKey, type OrgId, type OrgRole, type ProjectRole } from "../../packages/contracts/src/index.js";
 import { sweepStuckSetupChecks } from "../../packages/broker/src/aws/setup-check-close.js";
-import { setupCheckRecordKey, setupCheckWatchKey } from "../../packages/broker/src/org/project-setup-check.js";
+import { FAILED_REASON_MAX, failedStepOf, setupCheckRecordKey, setupCheckWatchKey } from "../../packages/broker/src/org/project-setup-check.js";
 import { MAYA, OMAR, createDeveloperTaskBroker, registerRevision, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
 
@@ -135,6 +135,31 @@ describe("POST /v1/app/projects/{name}/setup-check: the status", () => {
     expect([...step.slice("setup: npm ci - ".length)].length).toBeLessThanOrEqual(300);
     expect(step).not.toContain(PLANTED);
     expect(step).not.toMatch(/[\p{Cc}\p{Cf}]/u);
+  });
+
+  it("keeps the whole failing step to 300 characters when the command is long and the error is 700: the command stays named, the reason is cut with an ellipsis", async () => {
+    const h = await harness();
+    const args = ["run", "test:integration", "--workspace=packages/payments-service", "--reporter=verbose", "--bail", "--coverage", "--runInBand", "--testTimeout=60000", "--detectOpenHandles"];
+    const key = projectRevisionKey(TEST_ORG, NAME, 1);
+    const item = h.db.get(key) as { definition: Record<string, unknown> };
+    h.db.set({ ...item, ...key, definition: { ...item.definition, readiness: [command("npm", args)] } });
+    const { workspaceId, operationId } = await started(h);
+    await h.finish(workspaceId, operationId, "FAILED", { error: `readiness check 0 (npm test in repo/demo) exited 1\nLast lines:\n${"z".repeat(700)}` });
+    const step = (await setupOf(h)).failedStep!;
+    expect(step.length).toBeLessThanOrEqual(300);
+    expect(step).toMatch(/^test: npm run test:integration --workspace=packages\/payments-service /);
+    expect(step.endsWith("…")).toBe(true);
+  });
+
+  it("never returns more than the cap from failedStepOf, for a named step, an unnamed one and a long command", () => {
+    const definition = { setup: [command("make", ["x".repeat(400)])], readiness: [] };
+    for (const error of ["setup step 0 (make in repo/demo) exited 1 " + "e".repeat(700), "readiness check 7 (nope) " + "e".repeat(700), "clone failed " + "e".repeat(700), "setup step 0 (make in repo/demo) exited 1", ""]) {
+      const step = failedStepOf(error, definition);
+      expect(step.length).toBeLessThanOrEqual(FAILED_REASON_MAX);
+    }
+    expect(failedStepOf("setup step 0 (make in repo/demo) " + "e".repeat(700), definition)).toMatch(/^setup: make x{100,} - .*…$/u);
+    expect(failedStepOf("clone failed " + "e".repeat(700), definition)).toHaveLength(300);
+    expect(failedStepOf("clone failed", definition)).toBe("setup: clone failed");
   });
 
   it("redacts again what it reads, in case an operation was stored unredacted", async () => {
