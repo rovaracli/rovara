@@ -476,6 +476,7 @@ function slackRequestQueue(queueUrl: string): SlackRequestQueue {
     },
   };
 }
+// No invite port, on purpose: automatic task people invitations are DEFERRED (owner decision 86; they need a Slack reinstall with new scopes). tests/contract/task-people-invitations-deferred.test.ts fails if this is wired.
 const developer = developerConfiguration();
 const cloudProjectDefaults = cloudProjectDefaultsFromEnvironment(process.env);
 

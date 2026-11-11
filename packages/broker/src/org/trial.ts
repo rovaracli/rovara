@@ -227,3 +227,17 @@ export async function admitMachineTime(deps: TrialDependencies, orgId: OrgId): P
   const used = await machineSecondsUsed(deps, orgId, monthOf(now)) + await runningSeconds(deps, orgId, now);
   if (used >= limit * SECONDS_PER_HOUR) throw machineTimeExceeded();
 }
+
+/**
+ * What the trial view shows of machine time: the plan's hours for the UTC month `now` falls in and the seconds used so far (recorded stops plus what the org's running instances have run), the
+ * same two figures `admitMachineTime` refuses on. Undefined for an org with no plan on record or one the system created (`limited`), which has no allowance. A read: the only write is the best-effort
+ * removal of a stale running marker that `runningSeconds` already makes at every admission.
+ */
+export async function readMachineAllowance(deps: TrialDependencies, orgId: OrgId): Promise<{ month: string; grantedHours: number; usedSeconds: number } | undefined> {
+  const org = await orgOf(deps, orgId);
+  const grantedHours = limited(org) ? allowanceHours(org.plan) : undefined;
+  if (grantedHours === undefined) return undefined;
+  const now = (deps.now ?? Date.now)();
+  const month = monthOf(now);
+  return { month, grantedHours, usedSeconds: await machineSecondsUsed(deps, orgId, month) + await runningSeconds(deps, orgId, now) };
+}

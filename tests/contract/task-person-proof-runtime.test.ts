@@ -38,6 +38,7 @@ function slackReply(url: URL): Response {
 describe("the dedicated Task Person proof Lambda entrypoint", () => {
   beforeEach(() => {
     vi.stubEnv("AGENTX_ENV", "agentxlivetest123");
+    vi.stubEnv("AGENTX_ACCOUNT_ID", "944937319445");
     vi.stubEnv("AWS_REGION", "us-east-1");
     vi.stubEnv("SLACK_TEAM_ID", TEAM);
     vi.stubEnv("SLACK_SECRET_ARN", SECRET_ARN);
@@ -89,10 +90,52 @@ describe("the dedicated Task Person proof Lambda entrypoint", () => {
     expect(JSON.stringify(first)).not.toContain("xoxp-not-used");
   });
 
-  it("fails closed before secret or Slack issuance when the named environment is absent", async () => {
+  it("fails closed before secret or Slack issuance when the environment name is absent or is not an environment name", async () => {
     const runtime = await loadRuntime();
     expect(runtime).toBeDefined();
+    const secretSend = vi.spyOn(SecretsManagerClient.prototype, "send").mockRejectedValue(new Error("must not read"));
+    const slackFetch = vi.fn(async () => new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", slackFetch);
+
+    for (const value of [undefined, "", "Staging", "stag--ing", "-staging"]) {
+      vi.stubEnv("AGENTX_ENV", value);
+      await expect(runtime!.handler(request("6a65246d-b20c-4c69-a1f0-ed9d834221f7"), context)).rejects.toThrow("unavailable");
+    }
+
+    expect(secretSend).not.toHaveBeenCalled();
+    expect(slackFetch).not.toHaveBeenCalled();
+  });
+
+  it("works in any named environment: it reads that environment's own Slack secret in its own account and region (staging, us-west-2)", async () => {
+    const runtime = await loadRuntime();
+    expect(runtime).toBeDefined();
+    const stagingSecret = "arn:aws:secretsmanager:us-west-2:123456789012:secret:agentx/staging/slack-AbC123";
     vi.stubEnv("AGENTX_ENV", "staging");
+    vi.stubEnv("AGENTX_ACCOUNT_ID", "123456789012");
+    vi.stubEnv("AWS_REGION", "us-west-2");
+    vi.stubEnv("SLACK_SECRET_ARN", stagingSecret);
+    const secretSend = vi.spyOn(SecretsManagerClient.prototype, "send").mockResolvedValue({ SecretString: JSON.stringify({ botToken: "xoxb-test-token" }) } as never);
+    vi.stubGlobal("fetch", async (input: string | URL | Request) => slackReply(new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url)));
+
+    const response = await runtime!.handler(request("0b2c7e6a-1d3f-4a55-9d0e-3f1d2b7a9c10"), context) as { result: { ok: boolean; memberOf?: string[] } };
+
+    expect(response.result).toMatchObject({ ok: true, memberOf: [CHANNEL] });
+    expect(secretSend).toHaveBeenCalledTimes(1);
+    expect((secretSend.mock.calls[0]![0] as GetSecretValueCommand).input.SecretId).toBe(stagingSecret);
+  });
+
+  it.each([
+    { label: "another environment's secret", env: { SLACK_SECRET_ARN: "arn:aws:secretsmanager:us-east-1:944937319445:secret:agentx/production/slack-z7WaUV" } },
+    { label: "a secret that is not the Slack one", env: { SLACK_SECRET_ARN: "arn:aws:secretsmanager:us-east-1:944937319445:secret:agentx/agentxlivetest123/connectors/github-z7WaUV" } },
+    { label: "another account's secret", env: { SLACK_SECRET_ARN: "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/agentxlivetest123/slack-z7WaUV" } },
+    { label: "another region's secret", env: { SLACK_SECRET_ARN: "arn:aws:secretsmanager:us-west-2:944937319445:secret:agentx/agentxlivetest123/slack-z7WaUV" } },
+    { label: "a secret ARN with something after the suffix", env: { SLACK_SECRET_ARN: `${SECRET_ARN}/extra` } },
+    { label: "no account named", env: { AGENTX_ACCOUNT_ID: "" } },
+    { label: "no region", env: { AWS_REGION: "" } },
+  ])("refuses $label before any secret or Slack call", async ({ env }) => {
+    const runtime = await loadRuntime();
+    expect(runtime).toBeDefined();
+    for (const [name, value] of Object.entries(env)) vi.stubEnv(name, value);
     const secretSend = vi.spyOn(SecretsManagerClient.prototype, "send").mockRejectedValue(new Error("must not read"));
     const slackFetch = vi.fn(async () => new Response("{}", { status: 200 }));
     vi.stubGlobal("fetch", slackFetch);

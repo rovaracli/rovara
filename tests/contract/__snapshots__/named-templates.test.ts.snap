@@ -692,6 +692,22 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                           {
                             "Ref": "AWS::AccountId",
                           },
+                          ":role/agentx-staging-img-mirror",
+                        ],
+                      ],
+                    },
+                    {
+                      "Fn::Join": [
+                        "",
+                        [
+                          "arn:",
+                          {
+                            "Ref": "AWS::Partition",
+                          },
+                          ":iam::",
+                          {
+                            "Ref": "AWS::AccountId",
+                          },
                           ":role/agentx-staging-record-vectors-data",
                         ],
                       ],
@@ -1585,54 +1601,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                       {
                         "Ref": "AWS::AccountId",
                       },
-                      ":role/agentx-staging-img-push",
-                    ],
-                  ],
-                },
-                {
-                  "Fn::Join": [
-                    "",
-                    [
-                      "arn:",
-                      {
-                        "Ref": "AWS::Partition",
-                      },
-                      ":iam::",
-                      {
-                        "Ref": "AWS::AccountId",
-                      },
-                      ":role/agentx-staging-img-pull",
-                    ],
-                  ],
-                },
-                {
-                  "Fn::Join": [
-                    "",
-                    [
-                      "arn:",
-                      {
-                        "Ref": "AWS::Partition",
-                      },
-                      ":iam::",
-                      {
-                        "Ref": "AWS::AccountId",
-                      },
-                      ":role/agentx-staging-img-manage",
-                    ],
-                  ],
-                },
-                {
-                  "Fn::Join": [
-                    "",
-                    [
-                      "arn:",
-                      {
-                        "Ref": "AWS::Partition",
-                      },
-                      ":iam::",
-                      {
-                        "Ref": "AWS::AccountId",
-                      },
                       ":role/agentx-staging-record-vectors-data",
                     ],
                   ],
@@ -1650,6 +1618,22 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                         "Ref": "AWS::AccountId",
                       },
                       ":role/agentx-staging-connector-secrets*",
+                    ],
+                  ],
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition",
+                      },
+                      ":iam::",
+                      {
+                        "Ref": "AWS::AccountId",
+                      },
+                      ":role/agentx-staging-img-*",
                     ],
                   ],
                 },
@@ -2953,6 +2937,26 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
         },
       ],
     },
+    "TaskPersonProofInstallTaskPersonProofE63432B2": {
+      "Fn::Or": [
+        {
+          "Fn::Equals": [
+            {
+              "Ref": "TaskPersonProofEnabled",
+            },
+            "true",
+          ],
+        },
+        {
+          "Fn::Equals": [
+            {
+              "Ref": "TaskPeopleChangesEnabled",
+            },
+            "true",
+          ],
+        },
+      ],
+    },
   },
   "Description": "AgentX authenticated control plane and durable dispatch foundation",
   "Outputs": {
@@ -3452,6 +3456,16 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
       "Description": "accept: answer mentions a person posts through another app with their own Slack token; ignore: answer only typed mentions",
       "Type": "String",
     },
+    "SlackExplicitMembers": {
+      "AllowedValues": [
+        "0",
+        "1",
+        "warn",
+      ],
+      "Default": "1",
+      "Description": "1: a Slack person who is not an explicit, current member of the company (not removed, not banned) is not served in Slack and is told to ask an admin to add them or to link their account; warn: today's access is kept and each such person gets one direct message that a membership will soon be needed; 0: today's behaviour, a Slack person with no membership is served as an implicit member (agentx config set slack.explicitMembers warn)",
+      "Type": "String",
+    },
     "SlackMemberWorkspaceLimit": {
       "Default": 3,
       "Description": "Maximum Slack thread workspaces one channel member may start",
@@ -3484,6 +3498,15 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
       ],
       "Default": "0",
       "Description": "1: the project's How we work reaches every step in the system prompt, in one block with the company's rules and the precedence wording (turn on only after the worker image that carries task.standingInstructions.v1 is deployed); 0: How we work stays in the user message (agentx config set standingInstructions.enabled 1)",
+      "Type": "String",
+    },
+    "TaskPersonProofEnabled": {
+      "AllowedValues": [
+        "true",
+        "false",
+      ],
+      "Default": "false",
+      "Description": "Install the dedicated task person proof workload on its own. It is installed anyway while TaskPeopleChangesEnabled is true; with both false nothing is created",
       "Type": "String",
     },
     "TestAccountsEnabled": {
@@ -3840,6 +3863,10 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                   {
                     "Ref": "ChatGptConnectionKey03C49F9D",
                   },
+                  ",cm=",
+                  {
+                    "Ref": "CompanyImageMirrorFunctionA216CF6B",
+                  },
                   ",dl=",
                   {
                     "Fn::GetAtt": [
@@ -4052,6 +4079,10 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                   ",si=",
                   {
                     "Ref": "StandingInstructionsEnabled",
+                  },
+                  ",sm=",
+                  {
+                    "Ref": "SlackExplicitMembers",
                   },
                   ",sn=",
                   {
@@ -5603,6 +5634,307 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
       },
       "Type": "AWS::KMS::Key",
       "UpdateReplacePolicy": "Delete",
+    },
+    "CompanyImageMirrorFunctionA216CF6B": {
+      "DependsOn": [
+        "CompanyImageMirrorFunctionServiceRoleDefaultPolicyDC832297",
+        "CompanyImageMirrorFunctionServiceRoleD0BB970E",
+      ],
+      "Properties": {
+        "Code": {
+          "S3Bucket": {
+            "Fn::Sub": "cdk-hnb659fds-assets-\${AWS::AccountId}-\${AWS::Region}",
+          },
+          "S3Key": "<asset-hash>.zip",
+        },
+        "Environment": {
+          "Variables": {
+            "AGENTX_ACCOUNT_ID": {
+              "Ref": "AWS::AccountId",
+            },
+            "AGENTX_ENV": "staging",
+            "SAVED_ENV_KMS_KEY_ARN": {
+              "Fn::GetAtt": [
+                "SavedEnvImagesImagesKey550AA1C0",
+                "Arn",
+              ],
+            },
+            "STATE_TABLE_NAME": {
+              "Ref": "State1C20CC9A",
+            },
+          },
+        },
+        "Handler": "index.handler",
+        "LoggingConfig": {
+          "LogGroup": {
+            "Ref": "CompanyImageMirrorFunctionLogsC756CBF5",
+          },
+        },
+        "MemorySize": 1024,
+        "Role": {
+          "Fn::GetAtt": [
+            "CompanyImageMirrorFunctionServiceRoleD0BB970E",
+            "Arn",
+          ],
+        },
+        "Runtime": "nodejs22.x",
+        "Tags": [
+          {
+            "Key": "agentx:env",
+            "Value": "staging",
+          },
+        ],
+        "Timeout": 900,
+        "TracingConfig": {
+          "Mode": "Active",
+        },
+      },
+      "Type": "AWS::Lambda::Function",
+    },
+    "CompanyImageMirrorFunctionLogsC756CBF5": {
+      "DeletionPolicy": "Delete",
+      "Properties": {
+        "RetentionInDays": 30,
+        "Tags": [
+          {
+            "Key": "agentx:env",
+            "Value": "staging",
+          },
+        ],
+      },
+      "Type": "AWS::Logs::LogGroup",
+      "UpdateReplacePolicy": "Delete",
+    },
+    "CompanyImageMirrorFunctionServiceRoleD0BB970E": {
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": "sts:AssumeRole",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "lambda.amazonaws.com",
+              },
+            },
+          ],
+          "Version": "2012-10-17",
+        },
+        "ManagedPolicyArns": [
+          {
+            "Fn::Join": [
+              "",
+              [
+                "arn:",
+                {
+                  "Ref": "AWS::Partition",
+                },
+                ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole",
+              ],
+            ],
+          },
+        ],
+        "Path": "/agentx/staging/",
+        "PermissionsBoundary": {
+          "Fn::If": [
+            "HasPermissionsBoundary",
+            {
+              "Ref": "PermissionsBoundaryArn",
+            },
+            {
+              "Fn::Join": [
+                "",
+                [
+                  "arn:",
+                  {
+                    "Ref": "AWS::Partition",
+                  },
+                  ":iam::",
+                  {
+                    "Ref": "AWS::AccountId",
+                  },
+                  ":policy/agentx/staging/agentx-staging-boundary",
+                ],
+              ],
+            },
+          ],
+        },
+        "Tags": [
+          {
+            "Key": "agentx:env",
+            "Value": "staging",
+          },
+        ],
+      },
+      "Type": "AWS::IAM::Role",
+    },
+    "CompanyImageMirrorFunctionServiceRoleDefaultPolicyDC832297": {
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "xray:PutTraceSegments",
+                "xray:PutTelemetryRecords",
+              ],
+              "Effect": "Allow",
+              "Resource": "*",
+            },
+            {
+              "Action": [
+                "dynamodb:GetItem",
+                "dynamodb:PutItem",
+                "dynamodb:UpdateItem",
+                "dynamodb:DeleteItem",
+              ],
+              "Condition": {
+                "ForAllValues:StringLike": {
+                  "dynamodb:LeadingKeys": [
+                    "COMPANY_IMAGE_MIRROR#*",
+                  ],
+                },
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "State1C20CC9A",
+                  "Arn",
+                ],
+              },
+              "Sid": "MirrorStateRows",
+            },
+            {
+              "Action": "sts:AssumeRole",
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "CompanyImageMirrorMirrorRoleDC4D2A5A",
+                  "Arn",
+                ],
+              },
+              "Sid": "AssumeTheMirrorRole",
+            },
+          ],
+          "Version": "2012-10-17",
+        },
+        "PolicyName": "CompanyImageMirrorFunctionServiceRoleDefaultPolicyDC832297",
+        "Roles": [
+          {
+            "Ref": "CompanyImageMirrorFunctionServiceRoleD0BB970E",
+          },
+        ],
+      },
+      "Type": "AWS::IAM::Policy",
+    },
+    "CompanyImageMirrorMirrorRoleDC4D2A5A": {
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": "sts:AssumeRole",
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": {
+                  "Fn::GetAtt": [
+                    "CompanyImageMirrorFunctionServiceRoleD0BB970E",
+                    "Arn",
+                  ],
+                },
+              },
+            },
+          ],
+          "Version": "2012-10-17",
+        },
+        "Description": "Rovara company images: the mirror function assumes this with a one-repository session policy to copy an approved image into a mirror repository, check it and delete it",
+        "MaxSessionDuration": 3600,
+        "Path": "/agentx/staging/",
+        "PermissionsBoundary": {
+          "Fn::If": [
+            "HasPermissionsBoundary",
+            {
+              "Ref": "PermissionsBoundaryArn",
+            },
+            {
+              "Fn::Join": [
+                "",
+                [
+                  "arn:",
+                  {
+                    "Ref": "AWS::Partition",
+                  },
+                  ":iam::",
+                  {
+                    "Ref": "AWS::AccountId",
+                  },
+                  ":policy/agentx/staging/agentx-staging-boundary",
+                ],
+              ],
+            },
+          ],
+        },
+        "RoleName": "agentx-staging-img-mirror",
+        "Tags": [
+          {
+            "Key": "agentx:env",
+            "Value": "staging",
+          },
+        ],
+      },
+      "Type": "AWS::IAM::Role",
+    },
+    "CompanyImageMirrorMirrorRoleDefaultPolicy9B9F8B79": {
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "ecr:BatchCheckLayerAvailability",
+                "ecr:InitiateLayerUpload",
+                "ecr:UploadLayerPart",
+                "ecr:CompleteLayerUpload",
+                "ecr:PutImage",
+                "ecr:BatchGetImage",
+                "ecr:DescribeImages",
+                "ecr:CreateRepository",
+                "ecr:TagResource",
+                "ecr:DescribeRepositories",
+                "ecr:GetRepositoryPolicy",
+                "ecr:BatchDeleteImage",
+                "ecr:DeleteRepository",
+              ],
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:",
+                    {
+                      "Ref": "AWS::Partition",
+                    },
+                    ":ecr:",
+                    {
+                      "Ref": "AWS::Region",
+                    },
+                    ":",
+                    {
+                      "Ref": "AWS::AccountId",
+                    },
+                    ":repository/rovara-env/staging/o????????????????????????????????/c????????????????????????????????",
+                  ],
+                ],
+              },
+              "Sid": "MirrorRepositoriesOnly",
+            },
+          ],
+          "Version": "2012-10-17",
+        },
+        "PolicyName": "CompanyImageMirrorMirrorRoleDefaultPolicy9B9F8B79",
+        "Roles": [
+          {
+            "Ref": "CompanyImageMirrorMirrorRoleDC4D2A5A",
+          },
+        ],
+      },
+      "Type": "AWS::IAM::Policy",
     },
     "ConnectorBrokenAlarmBE25C37B": {
       "Properties": {
@@ -8003,6 +8335,15 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
             "DELETER_ARN": {
               "Ref": "SessionsDeleterB48741EA",
             },
+            "DEVELOPER_SIGNIN_TABLE_NAME": {
+              "Fn::If": [
+                "TaskPersonProofInstallTaskPersonProofE63432B2",
+                {
+                  "Ref": "DeveloperSignInTable26CE739E",
+                },
+                "",
+              ],
+            },
             "DISPATCH_QUEUE_ARN": {
               "Fn::GetAtt": [
                 "DispatchQueue898EB017",
@@ -8025,8 +8366,26 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
             "SAVED_ENV_ENABLED": {
               "Ref": "SavedEnvEnabled",
             },
+            "SLACK_TEAM_ID": {
+              "Fn::If": [
+                "TaskPersonProofInstallTaskPersonProofE63432B2",
+                {
+                  "Ref": "SlackTeamId",
+                },
+                "",
+              ],
+            },
             "STATE_TABLE_NAME": {
               "Ref": "State1C20CC9A",
+            },
+            "TASK_PERSON_PROOF_FUNCTION_ARN": {
+              "Fn::If": [
+                "TaskPersonProofInstallTaskPersonProofE63432B2",
+                {
+                  "Ref": "TaskPersonProofFunctionCurrentVersion<code-hash>",
+                },
+                "",
+              ],
             },
           },
         },
@@ -10790,17 +11149,38 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                   "Arn",
                 ],
               },
-              ""]}}},{"Sid":"OnlyThePushRoleMayWrite","Effect":"Deny","Principal":"*","Action":["ecr:InitiateLayerUpload","ecr:UploadLayerPart","ecr:CompleteLayerUpload","ecr:PutImage"],"Condition":{"ArnNotEquals":{"aws:PrincipalArn":"",
+              "","",
+              {
+                "Fn::GetAtt": [
+                  "CompanyImageMirrorMirrorRoleDC4D2A5A",
+                  "Arn",
+                ],
+              },
+              ""]}}},{"Sid":"OnlyThePushRoleMayWrite","Effect":"Deny","Principal":"*","Action":["ecr:InitiateLayerUpload","ecr:UploadLayerPart","ecr:CompleteLayerUpload","ecr:PutImage"],"Condition":{"ArnNotEquals":{"aws:PrincipalArn":["",
               {
                 "Fn::GetAtt": [
                   "SavedEnvImagesPushRole68F53DE7",
                   "Arn",
                 ],
               },
-              ""}}},{"Sid":"OnlyTheManageRoleMayDeleteImages","Effect":"Deny","Principal":"*","Action":["ecr:BatchDeleteImage"],"Condition":{"ArnNotEquals":{"aws:PrincipalArn":["",
+              "","",
+              {
+                "Fn::GetAtt": [
+                  "CompanyImageMirrorMirrorRoleDC4D2A5A",
+                  "Arn",
+                ],
+              },
+              ""]}}},{"Sid":"OnlyTheManageRoleMayDeleteImages","Effect":"Deny","Principal":"*","Action":["ecr:BatchDeleteImage"],"Condition":{"ArnNotEquals":{"aws:PrincipalArn":["",
               {
                 "Fn::GetAtt": [
                   "SavedEnvImagesManageRoleA0F3E8CD",
+                  "Arn",
+                ],
+              },
+              "","",
+              {
+                "Fn::GetAtt": [
+                  "CompanyImageMirrorMirrorRoleDC4D2A5A",
                   "Arn",
                 ],
               },
@@ -15992,6 +16372,228 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
       },
       "Type": "AWS::DynamoDB::Table",
       "UpdateReplacePolicy": "Retain",
+    },
+    "TaskPersonProofDispatcherPolicyA9AE8601": {
+      "Condition": "TaskPersonProofInstallTaskPersonProofE63432B2",
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "dynamodb:GetItem",
+              ],
+              "Condition": {
+                "ForAllValues:StringEquals": {
+                  "dynamodb:Attributes": [
+                    "pk",
+                    "sk",
+                    "developerId",
+                    "provider",
+                    "issuer",
+                    "subject",
+                    "slackUserId",
+                    "revoked",
+                    "mergedInto",
+                    "displayName",
+                  ],
+                },
+                "ForAllValues:StringLike": {
+                  "dynamodb:LeadingKeys": [
+                    "DEVELOPER#*",
+                  ],
+                },
+                "Null": {
+                  "dynamodb:Attributes": "false",
+                  "dynamodb:LeadingKeys": "false",
+                },
+              },
+              "Effect": "Allow",
+              "Resource": [
+                {
+                  "Fn::GetAtt": [
+                    "DeveloperSignInTable26CE739E",
+                    "Arn",
+                  ],
+                },
+              ],
+            },
+            {
+              "Action": [
+                "dynamodb:GetItem",
+              ],
+              "Condition": {
+                "StringNotEqualsIfExists": {
+                  "dynamodb:Select": "SPECIFIC_ATTRIBUTES",
+                },
+              },
+              "Effect": "Deny",
+              "Resource": [
+                {
+                  "Fn::GetAtt": [
+                    "DeveloperSignInTable26CE739E",
+                    "Arn",
+                  ],
+                },
+              ],
+              "Sid": "DenyGetItemUnlessSpecificAttributes",
+            },
+            {
+              "Action": [
+                "lambda:InvokeFunction",
+              ],
+              "Effect": "Allow",
+              "Resource": [
+                {
+                  "Ref": "TaskPersonProofFunctionCurrentVersion<code-hash>",
+                },
+              ],
+            },
+          ],
+          "Version": "2012-10-17",
+        },
+        "PolicyName": "staging-task-person-proof-dispatcher",
+        "Roles": [
+          {
+            "Ref": "DispatcherServiceRole904BCD09",
+          },
+        ],
+      },
+      "Type": "AWS::IAM::Policy",
+    },
+    "TaskPersonProofFunction817A5A36": {
+      "Condition": "TaskPersonProofInstallTaskPersonProofE63432B2",
+      "DependsOn": [
+        "TaskPersonProofRole367E174C",
+      ],
+      "Properties": {
+        "Code": {
+          "S3Bucket": {
+            "Fn::Sub": "cdk-hnb659fds-assets-\${AWS::AccountId}-\${AWS::Region}",
+          },
+          "S3Key": "<asset-hash>.zip",
+        },
+        "Environment": {
+          "Variables": {
+            "AGENTX_ACCOUNT_ID": {
+              "Ref": "AWS::AccountId",
+            },
+            "AGENTX_ENV": "staging",
+            "SLACK_SECRET_ARN": {
+              "Ref": "SlackSecretEA96F13F",
+            },
+            "SLACK_TEAM_ID": {
+              "Ref": "SlackTeamId",
+            },
+          },
+        },
+        "Handler": "index.handler",
+        "MemorySize": 512,
+        "Role": {
+          "Fn::GetAtt": [
+            "TaskPersonProofRole367E174C",
+            "Arn",
+          ],
+        },
+        "Runtime": "nodejs22.x",
+        "Tags": [
+          {
+            "Key": "agentx:env",
+            "Value": "staging",
+          },
+        ],
+        "Timeout": 7,
+      },
+      "Type": "AWS::Lambda::Function",
+    },
+    "TaskPersonProofFunctionCurrentVersion<code-hash>": {
+      "Condition": "TaskPersonProofInstallTaskPersonProofE63432B2",
+      "Metadata": {
+        "aws:cdk:do-not-refactor": true,
+      },
+      "Properties": {
+        "FunctionName": {
+          "Ref": "TaskPersonProofFunction817A5A36",
+        },
+      },
+      "Type": "AWS::Lambda::Version",
+    },
+    "TaskPersonProofRole367E174C": {
+      "Condition": "TaskPersonProofInstallTaskPersonProofE63432B2",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": "sts:AssumeRole",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "lambda.amazonaws.com",
+              },
+            },
+          ],
+          "Version": "2012-10-17",
+        },
+        "Description": "Reads this environment's Slack secret for fresh task person proof",
+        "Path": "/agentx/staging/",
+        "PermissionsBoundary": {
+          "Fn::If": [
+            "HasPermissionsBoundary",
+            {
+              "Ref": "PermissionsBoundaryArn",
+            },
+            {
+              "Fn::Join": [
+                "",
+                [
+                  "arn:",
+                  {
+                    "Ref": "AWS::Partition",
+                  },
+                  ":iam::",
+                  {
+                    "Ref": "AWS::AccountId",
+                  },
+                  ":policy/agentx/staging/agentx-staging-boundary",
+                ],
+              ],
+            },
+          ],
+        },
+        "Tags": [
+          {
+            "Key": "agentx:env",
+            "Value": "staging",
+          },
+        ],
+      },
+      "Type": "AWS::IAM::Role",
+    },
+    "TaskPersonProofSecretReadPolicy562C4775": {
+      "Condition": "TaskPersonProofInstallTaskPersonProofE63432B2",
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "secretsmanager:GetSecretValue",
+              ],
+              "Effect": "Allow",
+              "Resource": [
+                {
+                  "Ref": "SlackSecretEA96F13F",
+                },
+              ],
+            },
+          ],
+          "Version": "2012-10-17",
+        },
+        "PolicyName": "staging-task-person-proof-secret-read",
+        "Roles": [
+          {
+            "Ref": "TaskPersonProofRole367E174C",
+          },
+        ],
+      },
+      "Type": "AWS::IAM::Policy",
     },
     "TestAccountSecretsRole": {
       "Properties": {

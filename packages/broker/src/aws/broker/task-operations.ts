@@ -1,6 +1,6 @@
 // Part of the broker (split out of ../broker.ts): agent steps, the task operation parts, application selection, agent skills and tools.
 
-import { fixtureDigestsOfPlan } from "../../test-env/fixture-lookup.js";
+import { companyImageIdsOfPlan, fixtureDigestsOfPlan } from "../../test-env/fixture-lookup.js";
 import { fixtureStoreForRoutes } from "../../test-env/fixture-store-aws.js";
 import { prepareSecondReview } from "../../rovara-code/second-review-start.js";
 import { learnedContextForOperation } from "./lessons-dispatch.js";
@@ -555,6 +555,9 @@ export async function taskOperationParts(
   // Test services (slice 3): the fixture sets the plan names are kept on the operation, so the `fixture-set` callback delivers those and no other set (and the capability has the action only then).
   const fixtureDigests = fixtureDigestsOfPlan(testEnvironment);
   if (fixtureDigests.length > 0) operation.fixtureSetDigests = fixtureDigests;
+  // Company-approved images (switch `pj`): the images the plan names are kept on the operation, so the `company-image-login` callback gives a login for those and no others.
+  const companyImageIds = companyImageIdsOfPlan(testEnvironment);
+  if (companyImageIds.length > 0) operation.companyImageIds = companyImageIds;
   // SH30 + SR-3 (switch `sp`): the company recipes a setup draft is offered, recorded on this operation (id and revision) so the run's reported recipe sources are intersected with what was sent. Nothing while `sp` is off.
   const recipeOffers = input.workflowMode === "SETUP_DRAFT" && !diagnosing && testEnvironmentEnabled() ? await setupRecipeOffersFor(dependencies, orgId, workspace.projectName) : [];
   if (recipeOffers.length > 0) operation.setupRecipeOffers = recordedOffersOf(recipeOffers);
@@ -582,6 +585,7 @@ export async function taskOperationParts(
       // NH-1: the nightly run's one action, granted only to the verification operation of a nightly task.
       nightlyResult: isNightlyOperation(task, input.workflowMode),
       fixtureDelivery: fixtureDigests.length > 0,
+      companyImageLogin: companyImageIds.length > 0,
     })),
     payload: {
       conversationId: input.conversationId,

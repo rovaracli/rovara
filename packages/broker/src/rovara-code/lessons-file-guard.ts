@@ -6,7 +6,7 @@
 // Why there is no check before a pull request is marked ready (design section 8 names one): every Rovara push goes through a worker guard (`publish.ts` for the first push, `maintain-pull-request.ts#push` for every fix, update and
 // base-merge push), so no pull request Rovara pushes can contain a change to the file, and a merge made by hand on the code host cannot introduce one either. A mark-ready check would cost one unbudgeted `changedFiles` read in the
 // budgeted tracking pass for a case the push guard already closes.
-import { LESSON_FILE_PATH, type ChangeRequestRef, type CodeHost, type HostScope } from "@agentx/contracts";
+import { COMPANY_RULES_DEFAULT_FILE_PATH, LESSON_FILE_PATH, type ChangeRequestRef, type CodeHost, type HostScope } from "@agentx/contracts";
 import { changedPathsOf } from "./host-port.js";
 
 /** Whether a changed path is the lessons file, or something that would replace it: the file itself, or `.rovara` (the folder swapped for a file or a link), compared as NFC and without case (a checkout on a case-insensitive disk writes the same file). */
@@ -16,13 +16,21 @@ export function touchesLessonsFile(path: string): boolean {
   return folded === file || folded === ".rovara" || folded.startsWith(`${file}/`);
 }
 
-export type LessonsFileVerdict = { ok: true } | { ok: false; reason: "touches" | "incomplete" | "unreadable" };
+/** G-04: whether a changed path is the company rules file: the default path, or the path this company connected (the caller reads it from the company's file link). Same folding as above. */
+export function touchesCompanyRulesFile(path: string, connectedPath?: string): boolean {
+  const fold = (value: string): string => value.normalize("NFC").toLowerCase().replace(/\\/gu, "/").replace(/^(?:\.\/)+/u, "").replace(/\/+$/u, "");
+  const folded = fold(path);
+  return [COMPANY_RULES_DEFAULT_FILE_PATH, ...(connectedPath === undefined ? [] : [connectedPath])].map(fold).some((file) => folded === file || folded.startsWith(`${file}/`));
+}
+
+export type LessonsFileVerdict = { ok: true } | { ok: false; reason: "touches" | "touches_company_rules" | "incomplete" | "unreadable" };
 
 /** Whether the change request leaves the lessons file alone. A renamed file counts under both its names (the host's `previousPath`). */
-export async function leavesLessonsFileAlone(codeHost: Pick<CodeHost, "changedFiles">, ref: ChangeRequestRef, scope: HostScope): Promise<LessonsFileVerdict> {
+export async function leavesLessonsFileAlone(codeHost: Pick<CodeHost, "changedFiles">, ref: ChangeRequestRef, scope: HostScope, options: { companyRulesPath?: string | undefined } = {}): Promise<LessonsFileVerdict> {
   try {
     const changed = await changedPathsOf(codeHost as CodeHost, ref, scope);
     if (changed.paths.some(touchesLessonsFile)) return { ok: false, reason: "touches" };
+    if (changed.paths.some((path) => touchesCompanyRulesFile(path, options.companyRulesPath))) return { ok: false, reason: "touches_company_rules" };
     return changed.complete ? { ok: true } : { ok: false, reason: "incomplete" };
   } catch {
     return { ok: false, reason: "unreadable" };

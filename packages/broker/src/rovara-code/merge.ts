@@ -60,6 +60,7 @@ import { codeMilestoneItems, deliverCodeMilestones } from "./milestones.js";
 import { PERMISSION_LOOKUPS_MAX, readBranch, readCi, readMergeTracking, tracksMerge } from "./merge-tracking.js";
 import { approvalReviewsOf, changeRequestRef, changedPathsOf, type ConsumerRepository, type RepositoryResolver } from "./host-port.js";
 import { leavesLessonsFileAlone } from "./lessons-file-guard.js";
+import { connectedCompanyRulesPath } from "../company-rules/connected-path.js";
 
 /** The rule a merge change names: only the person who pressed Merge decides it, while they can still press it. */
 export const MERGE_RULE = "pull_request_merge";
@@ -498,10 +499,13 @@ async function mergeableNow(
   });
   if (!readiness.ready) throw agentXError("MERGE_NOT_READY", readiness.message);
   // Owner decision 50.4: a task's pull request never changes the team's lessons file. Read fresh from the host, after the other readiness words, and failing closed on a list that is cut short or cannot be read.
+  // G-04: the same for the company rules file, at its default path and at the path this company connected (read from its file link while `si` is on; a link that cannot be read fails closed).
+  const companyRulesPath = await connectedCompanyRulesPath(deps, task.orgId);
   for (const [index, step] of plan.entries()) {
     if (facts[index]!.state !== "open") continue;
-    const lessonsFile = await leavesLessonsFileAlone(step.codeHost, changeRequestRef(step.url, step.entry.number), host.scope(task.orgId));
-    if (!lessonsFile.ok) throw agentXError("MERGE_NOT_READY", lessonsFile.reason === "touches" ? M.touchesLessonsFile : M.lessonsFileUnreadable);
+    const lessonsFile = await leavesLessonsFileAlone(step.codeHost, changeRequestRef(step.url, step.entry.number), host.scope(task.orgId), { companyRulesPath: companyRulesPath.path });
+    if (!lessonsFile.ok) throw agentXError("MERGE_NOT_READY", lessonsFile.reason === "touches" ? M.touchesLessonsFile : lessonsFile.reason === "touches_company_rules" ? M.touchesCompanyRulesFile : M.lessonsFileUnreadable);
+    if (!companyRulesPath.ok) throw agentXError("MERGE_NOT_READY", M.lessonsFileUnreadable);
   }
   return { plan: plan.filter((_, index) => facts[index]!.state !== "merged"), settings, alreadyMerged: false, mergedBefore, entries };
 }

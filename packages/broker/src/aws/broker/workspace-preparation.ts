@@ -1,7 +1,7 @@
 // Part of the broker (split out of ../broker.ts): workspace preparation, Slack identities, shared threads and Slack bindings.
 
 import { nameResolverOf, resolveStoredName } from "../../developer/name-resolver.js";
-import { fixtureDigestsOfPlan } from "../../test-env/fixture-lookup.js";
+import { companyImageIdsOfPlan, fixtureDigestsOfPlan } from "../../test-env/fixture-lookup.js";
 import { approvalGrantChange } from "../../org/approval-membership.js";
 import { randomUUID } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
@@ -161,6 +161,8 @@ export async function newWorkspacePreparation(
   // Test services (slice 3): a candidate check whose plan has a fake may ask for that set's read address and no other (the capability has the action only then).
   const fixtureDigests = fixtureDigestsOfPlan({ dependencies: options.testServices });
   if (fixtureDigests.length > 0) operation.fixtureSetDigests = fixtureDigests;
+  const companyImageIds = companyImageIdsOfPlan({ dependencies: options.testServices });
+  if (companyImageIds.length > 0) operation.companyImageIds = companyImageIds;
   // The proposal's own production list (the project may have no approved environment yet): the fixture-set callback scans with the union of this and the approved environment's.
   if (fixtureDigests.length > 0 && options.testServicesDeny !== undefined) operation.fixtureProdDeny = options.testServicesDeny;
   const invocation: WorkerInvocation = {
@@ -170,7 +172,7 @@ export async function newWorkspacePreparation(
     workspaceId,
     fence: workspace.fence,
     projectRevision,
-    callbackCapability: issueCapability(dependencies, workspaceId, operationId, workspace.fence, fixtureDigests.length > 0 ? { fixtureDelivery: true } : {}),
+    callbackCapability: issueCapability(dependencies, workspaceId, operationId, workspace.fence, { ...(fixtureDigests.length > 0 ? { fixtureDelivery: true } : {}), ...(companyImageIds.length > 0 ? { companyImageLogin: true } : {}) }),
     payload: {
       project: workerProjectDefinition(project.definition, options.setupDraft === true ? { includeMeta: true } : {}),
       repositoryGrant: issueRepositoryGrant(
@@ -314,7 +316,8 @@ export async function heldPreparationDispatch(
  */
 export async function slackRequesterRole(dependencies: AwsBrokerDependencies, identity: AuthenticatedIdentity): Promise<ProjectRole> {
   const slack = identity.slack;
-  if (slack === undefined) return "contributor";
+  // Not a Slack request: no Slack person to rank, so no role is made up for one.
+  if (slack === undefined) throw agentXError("FORBIDDEN", "this request does not come from a Slack person");
   return slackRequesterProjectRole(dependencies, requireOrgId(identity.orgId), slack.requester.userId, slack.binding.projectName);
 }
 
@@ -337,7 +340,10 @@ export async function slackRequesterProjectAccess(dependencies: AwsBrokerDepende
     grant = await getMembership(dependencies, orgId, id, projectName);
     if (grant !== undefined) break;
   }
-  return { role: effectiveProjectRole({ developerId, orgRole }, grant, true) ?? "contributor", standing };
+  // No default role: a person the rules give no project role to (the Auditor) is refused, never made a contributor.
+  const role = effectiveProjectRole({ developerId, orgRole }, grant, true);
+  if (role === undefined) throw agentXError("FORBIDDEN", "your company role has no access to this project in Slack");
+  return { role, standing };
 }
 
 /**

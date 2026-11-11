@@ -26,6 +26,10 @@ export function webRouteAllowed(method: string, pathname: string): boolean {
  if (family === "diagnoses") return (method === "POST" && relative === "diagnoses") || (method === "GET" && /^diagnoses\/dgn_[0-9a-z]{20}$/u.test(relative));
  // UX5b: the settings screen for script tokens. Exact shapes, mirroring script-tokens/routes.ts: list, make, revoke one.
  if (family === "script-tokens") return ((method === "GET" || method === "POST") && relative === "script-tokens") || (method === "DELETE" && /^script-tokens\/stk_[0-9a-z]{20}$/u.test(relative));
+ // Trial and billing reads (srv/trial-reads): the trial view is read-only from a browser; the billing paths are under `org/` and their routes answer GET only.
+ if (family === "trial") return read && relative === "trial";
+ // Insights (srv/insights-reads): the reads, exact shapes only (the grant is under `org/insights-access`, which the `org` family carries); the routes check who may.
+ if (family === "insights") return read && /^insights(?:\/(?:stuck|shipped|spend|flow))?$/u.test(relative);
  if (!(WEB_ROUTE_FAMILIES as readonly string[]).includes(family)) return false;
  // Lane B: legacy lifecycle writes remain on the token API for compatibility.
  // Cookie callers must use reviewed paths; legacy Slack writes remain held until B34 exposure ships.

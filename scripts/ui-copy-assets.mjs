@@ -1,13 +1,21 @@
 import { copyFile, mkdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-for (const path of ["design/design.css", "look-v2.css", "shell/shell.css", "screens/home/home.css", "screens/live/live.css", "screens/project/project.css", "screens/session/session.css", "screens/builder/builder.css", "screens/agents/agents.css", "screens/onboarding/onboarding.css", "screens/admin/admin.css",
+for (const path of ["design/design.css", "look-v2.css", "shell/shell.css", "screens/home/home.css", "screens/live/live.css", "screens/project/project.css", "screens/session/session.css", "screens/builder/builder.css", "screens/agents/agents.css", "screens/agents/publish.css", "screens/onboarding/onboarding.css", "screens/onboarding/setup-v2/project-setup.css", "screens/admin/admin.css",
  // Lane B: allowed-websites editor, shared by admin and own-project surfaces.
  "screens/admin/projects/allowed-websites.css",
  "screens/admin/projects/project-slack.css",
  // Lane C: owned waiting-queue filter styles.
  "screens/admin/waiting/waiting.css",
+ // Insights (switch rovara.insights = v2; its own lazy chunk).
+ "screens/insights/insights.css",
  // Spending page (switch rovara.spending = v2).
  "screens/admin/spending.css",
+ // Health and readiness (switch rovara.health = v2).
+ "screens/admin/health/health.css",
+ // Trial page, trial banner and Settings > Billing (switch rovara.billing = v2).
+ "screens/billing/trial-billing.css",
+ // Working agreement panel (switch rovara.agreement = v2).
+ "screens/agreement/agreement.css",
  // Lane C2: owned audit filter styles.
  "screens/admin/audit/audit.css",
  // Lane C12: owned Connections guidance styles.
@@ -16,6 +24,8 @@ for (const path of ["design/design.css", "look-v2.css", "shell/shell.css", "scre
  "screens/admin/models/model-source-guidance.css",
  // Playbook v1.1: the company How we work page.
  "screens/admin/how-we-work/how-we-work.css",
+ // Company rules (G-04): the Company rules page.
+ "screens/admin/company-rules/company-rules.css",
  // v1.2 learning loop: the Suggested rules section of the project How we work tab.
  "screens/project/learning.css",
  // Learning v2 L3b: the Lessons and Sources tabs (their own lazy chunk).

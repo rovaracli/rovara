@@ -126,6 +126,8 @@ export interface OperationRecord extends Operation {
   groundingSourceAsked?: true;
   /** Test services (slice 3): the digests of the fixture sets the run's pinned plan named, written at dispatch. The `fixture-set` callback delivers only these (absent: the run serves no fake). */
   fixtureSetDigests?: string[];
+  /** Company-approved images (switch `pj`): the ids of the company images the run's pinned plan named, written at dispatch. The `company-image-login` callback gives a login for these and no others. */
+  companyImageIds?: string[];
   /** Test services (slice 3, a candidate check's PREPARE operation): the production deny list of the proposal under check, kept so the first check (no approved environment yet) scans a fake with it. */
   fixtureProdDeny?: TestEnvProdDeny;
   workflowFeedbackReview?: { taskId: string; workflowRevision: number; candidateDigest: string } | undefined;
@@ -202,7 +204,7 @@ export interface CallbackClaims {
   workspaceId: string;
   operationId: string;
   fence: number;
-  actions: Array<"events" | "artifacts" | "result" | "candidate-export" | "candidate-build-source" | "baseline-source" | "e2e-admission" | "e2e-evidence" | "e2e-model-budget" | "feedback-bundles" | "feedback-approval" | "pull-request" | "pull-request-update" | "codebuild" | "chatgpt-token" | "chatgpt-status" | "model-fallback" | "model-access" | "agent-skills" | "agent-tools" | "context-tools" | "design-review-packet" | "saved-env-push-login" | "saved-env-result" | "setup-agent" | "nightly-result" | "fixture-set">;
+  actions: Array<"events" | "artifacts" | "result" | "candidate-export" | "candidate-build-source" | "baseline-source" | "e2e-admission" | "e2e-evidence" | "e2e-model-budget" | "feedback-bundles" | "feedback-approval" | "pull-request" | "pull-request-update" | "codebuild" | "chatgpt-token" | "chatgpt-status" | "model-fallback" | "model-access" | "agent-skills" | "agent-tools" | "context-tools" | "design-review-packet" | "saved-env-push-login" | "saved-env-result" | "setup-agent" | "nightly-result" | "fixture-set" | "company-image-login">;
   expiresAt: number;
 }
 
@@ -335,6 +337,8 @@ export interface CapabilityOptions {
   nightlyResult?: boolean;
   /** Test services (slice 3): fetch a fresh read address of an approved fixture set the run's plan names (`POST .../fixture-set`); granted only to an operation whose plan names fixture sets. */
   fixtureDelivery?: boolean;
+  /** Company-approved images: the pull login of a mirrored image the run's plan names (`POST .../company-image-login`); granted only to an operation whose plan names company images. */
+  companyImageLogin?: boolean;
   /** Saved project images: the rebuild job's push login and result (`POST .../saved-env-push-login`, `.../saved-env-result`); granted only to the preparation made for a rebuild job. It lives as long as the other actions (the lease, 3 hours, is shorter), unlike the repository grant (15 minutes). */
   savedEnvBuild?: boolean;
 }
@@ -377,6 +381,7 @@ export function issueCapability(
       ...(options.setupAgent === true ? ["setup-agent" as const] : []),
       ...(options.nightlyResult === true ? ["nightly-result" as const] : []),
       ...(options.fixtureDelivery === true ? ["fixture-set" as const] : []),
+      ...(options.companyImageLogin === true ? ["company-image-login" as const] : []),
       ...(options.savedEnvBuild === true ? ["saved-env-push-login" as const, "saved-env-result" as const] : []),
     ],
     expiresAt: Math.floor(Date.now() / 1_000) + 32_400,

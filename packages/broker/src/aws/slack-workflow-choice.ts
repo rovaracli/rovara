@@ -7,6 +7,7 @@ import {
   REQUEST_ROUTE_KINDS,
   SlackMessageTimestampSchema,
   SlackThreadSchema,
+  SLACK_NOT_A_MEMBER_NOTICE,
   SlackUserIdSchema,
   routeChoiceLabel,
   suggestionCardMessage,
@@ -132,7 +133,7 @@ export function workflowChosenNotice(userId: string, path: WorkflowPath): string
 }
 
 /** What a person hears when their Slack account belongs to no member of the company: it is their account that is not recognised, not the channel (QA6-15). */
-export const SLACK_ACCOUNT_NOT_LINKED_NOTICE = "I can't match your Slack account to a Rovara member, so I can't start work for you. Link it once: sign in to Rovara, open your account menu, choose Link your Slack account, then mention me again.";
+export const SLACK_ACCOUNT_NOT_LINKED_NOTICE = SLACK_NOT_A_MEMBER_NOTICE;
 
 /** Why a task could not start, in plain words; anything unexpected carries `reference` (the Slack event ID) for an admin. */
 export function workflowStartFailureNotice(code: string, reference: string): string {

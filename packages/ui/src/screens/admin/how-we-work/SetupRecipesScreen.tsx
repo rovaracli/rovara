@@ -84,7 +84,7 @@ function Recipes() {
  const state = read.data;
  return <section aria-busy={read.isFetching}>
   <PageHeader focusOnMount title={RECIPES_TEXT.TITLE} description={RECIPES_TEXT.NOTE} />
-  <p><Link to="/app/admin/how-we-work">{RECIPES_TEXT.BACK}</Link></p>
+  <p className="rv-admin-link-row"><Link to="/app/admin/how-we-work">{RECIPES_TEXT.BACK}</Link></p>
   {error !== undefined && <p role="alert"><VisibleText text={error.message} />{error.reauth && <> <Button onClick={() => { host.signIn(host.currentPath()); }}>{RECIPES_TEXT.SIGN_IN_AGAIN}</Button></>}</p>}
   <p role="status">{note ?? ""}</p>
   {read.isPending ? <Skeleton label="Loading setup recipes" /> : notOn ? <p role="status">{RECIPES_TEXT.NOT_ON}</p> : state === undefined ? <div><p role="alert">{RECIPES_TEXT.LOAD_FAILED}</p><Button onClick={() => { void read.refetch(); }}>Try again</Button></div> : <>
@@ -120,6 +120,6 @@ export function SetupRecipesLink() {
  return <section aria-label={RECIPES_TEXT.TITLE} className="rv-hww-company-card rv-hww-suggestions"><h2>{RECIPES_TEXT.TITLE}</h2>
   <p className="rv-muted">Share a setup that worked with the company's other projects.</p>
   {waiting > 0 && <p role="status">{waiting === 1 ? "1 recipe is waiting for approval." : String(waiting) + " recipes are waiting for approval."}</p>}
-  <p><Link to="/app/admin/how-we-work/recipes">Open setup recipes</Link></p>
+  <p className="rv-admin-link-row"><Link to="/app/admin/how-we-work/recipes">Open setup recipes</Link></p>
  </section>;
 }

@@ -124,6 +124,9 @@ export const AUDIT_ACTIONS = [
   "member.removal_completed",
   "member.left",
   "member.renamed",
+  // Insights (decision 32): an admin gave a member the Insights viewer grant or took it away. The target is the member; the grant is a field on their record, never a role. No facts.
+  "insights_access.granted",
+  "insights_access.revoked",
   "org.closed",
   "org.renamed",
   "org.invite_created",
@@ -384,6 +387,19 @@ export const AUDIT_ACTIONS = [
   "company_image.proposed",
   "company_image.approved",
   "company_image.revoked",
+  // The company's own list of extra registries an image may come from: the number of registries and the authority are facts; the hosts go in `details`.
+  "company_image.registries_changed",
+  // Company rules (G-04, decisions 57 and 85, switch `si`): ids, versions, counts, digests and fixed words only. The rules' own text is never a fact: the versions in the store are the record of it.
+  "company_rules.proposed",
+  "company_rules.adopted",
+  "company_rules.approved",
+  "company_rules.rejected",
+  "company_rules.cancelled",
+  "company_rules.expired",
+  "company_rules.repo_proposed",
+  "company_rules.written_back",
+  "company_rules.sync_connected",
+  "company_rules.sync_disconnected",
 ] as const;
 
 export const AuditActionSchema = z.enum(AUDIT_ACTIONS);
@@ -478,6 +494,8 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "member.removal_completed": MEMBER_REMOVAL_COMPLETED_FACTS,
   "member.left": ["role"],
   "member.renamed": [],
+  "insights_access.granted": [],
+  "insights_access.revoked": [],
   "org.closed": ["plan"],
   "org.renamed": [],
   "org.invite_created": ["role", "targeted"],
@@ -740,6 +758,18 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "company_image.proposed": ["imageId", "digest", "authority"],
   "company_image.approved": ["imageId", "digest", "authority"],
   "company_image.revoked": ["imageId", "digest", "authority"],
+  // Company rules: `source` is rovara, repo or seed; `approvalMode` is second_person, sole_owner_exception, admin_review or seed; `place` is the connected repository's place (`github:repo/<id>`); `state` is how a write-back ended.
+  "company_rules.proposed": ["proposalId", "baseVersion", "ruleCount", "digest", "source"],
+  "company_rules.approved": ["proposalId", "version", "baseVersion", "ruleCount", "digest", "source", "approvalMode"],
+  "company_rules.adopted": ["proposalId", "source", "digest"],
+  "company_rules.rejected": ["proposalId", "source", "digest"],
+  "company_rules.cancelled": ["proposalId", "source", "digest"],
+  "company_rules.expired": ["proposalId", "source", "digest"],
+  "company_rules.repo_proposed": ["proposalId", "baseVersion", "ruleCount", "digest", "revision"],
+  "company_rules.written_back": ["version", "revision", "state"],
+  "company_rules.sync_connected": ["place"],
+  "company_rules.sync_disconnected": ["place"],
+  "company_image.registries_changed": ["registryCount", "authority"],
 };
 
 /** `op_` plus the first 24 hex of `sha256(issuer + "\n" + subject)`: a staff member's id in the chain, never their identity. */

@@ -23,6 +23,14 @@ export interface FakeServicesDockerOptions {
   execBytesExit?: (args: readonly string[]) => number;
   /** Slice 3: the state `docker inspect --format {{.State.Status}}` answers for a container (default `running`). */
   stateOf?: (container: string) => string;
+  /** Company-approved images (switch `pj`): the references (`<registry>/rovara-env/...@sha256:...`) already on the host. A pull with a login adds the reference it pulled. */
+  companyPresent?: readonly string[];
+  /** A company image pull exits non-zero. */
+  companyPullFails?: boolean;
+  /** After a company pull, `RepoDigests` names this instead of the reference that was pulled (a registry that served other bytes). */
+  companyPullServesOther?: boolean;
+  /** The volumes a company image declares (`{{json .Config.Volumes}}`), by reference. Default: none. */
+  companyVolumes?: (reference: string) => string[];
 }
 
 export interface RecordedExec {
@@ -38,6 +46,11 @@ export function fakeServicesDocker(options: FakeServicesDockerOptions = {}) {
   const removedNetworks: string[] = [];
   const execs: RecordedExec[] = [];
   const pulls: string[] = [];
+  /** Company image pulls: the reference, the config directory's `config.json` read AT THE TIME of the call (it is removed afterwards), and whether the call had `--config`. */
+  const companyPulls: Array<{ reference: string; config: string | undefined; configDirectory: string | undefined }> = [];
+  const companyPresent = new Set(options.companyPresent ?? []);
+  const removedImages: string[] = [];
+  const isCompany = (reference: string | undefined): boolean => reference !== undefined && reference.includes("/rovara-env/");
   /** The read-only file mounts of each `docker run`, with the file's content AT THE TIME of the run (the run's files are removed later). */
   const mounts: Array<{ container: string; to: string; content: string | undefined }> = [];
   /** Every byte-exact exec (a seed file's load), with what it was given on stdin. */
@@ -78,8 +91,25 @@ export function fakeServicesDocker(options: FakeServicesDockerOptions = {}) {
         return found === undefined ? answer(1, "", "No such object") : answer(0, JSON.stringify(Object.fromEntries([...found.networks].map((name) => [name, {}]))));
       }
       if (verb === "container" && second === "inspect") return containers.has(args[args.length - 1]!) ? answer(0, "id") : answer(1, "", "No such container");
-      if (verb === "image" && second === "inspect" && args.includes("{{json .Config.Volumes}}")) return answer(0, "null\n");
+      if (verb === "image" && second === "inspect" && args.includes("{{json .Config.Volumes}}")) {
+        const volumes = isCompany(args[args.length - 1]) ? options.companyVolumes?.(args[args.length - 1]!) : undefined;
+        return answer(0, volumes === undefined || volumes.length === 0 ? "null\n" : `${JSON.stringify(Object.fromEntries(volumes.map((path) => [path, {}])))}\n`);
+      }
+      if (verb === "image" && second === "inspect" && isCompany(args[args.length - 1])) {
+        const reference = args[args.length - 1]!;
+        if (!companyPresent.has(reference)) return answer(1, "", "No such image");
+        return answer(0, args.includes("{{json .RepoDigests}}") ? JSON.stringify(options.companyPullServesOther === true && companyPulls.length > 0 ? [`${reference.split("@")[0]!}@sha256:${"9".repeat(64)}`] : [reference]) : "id");
+      }
       if (verb === "image" && second === "inspect") return answer(options.imagePresent === false ? 1 : 0);
+      if (verb === "image" && second === "rm") { removedImages.push(args[args.length - 1]!); companyPresent.delete(args[args.length - 1]!); return answer(); }
+      if (verb === "--config" && args[2] === "pull") {
+        let config: string | undefined;
+        try { config = readFileSync(`${args[1]!}/config.json`, "utf8"); } catch { config = undefined; }
+        companyPulls.push({ reference: args[3]!, config, configDirectory: args[1] });
+        if (options.companyPullFails === true) return answer(1, "", "denied");
+        companyPresent.add(args[3]!);
+        return answer();
+      }
       if (verb === "pull") { pulls.push(args[1]!); return answer(options.pullFails === true ? 1 : 0); }
       if (verb === "run" && args.includes("--detach")) {
         const name = args[args.indexOf("--name") + 1]!;
@@ -123,5 +153,5 @@ export function fakeServicesDocker(options: FakeServicesDockerOptions = {}) {
   }
   /** Every container and service network still there, by name (the working sandbox included). */
   const left = (): { containers: string[]; networks: string[] } => ({ containers: [...containers.keys()], networks: [...networks] });
-  return { docker, calls, containers, networks, removedNetworks, execs, byteExecs, pulls, mounts, left, verbs: (verb: string) => calls.filter((call) => call[0] === verb) };
+  return { docker, calls, containers, networks, removedNetworks, execs, byteExecs, pulls, companyPulls, companyPresent, removedImages, mounts, left, verbs: (verb: string) => calls.filter((call) => call[0] === verb) };
 }

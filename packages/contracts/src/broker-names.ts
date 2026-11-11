@@ -98,6 +98,8 @@ export const BROKER_NAMES = {
   slackThreadsTable: { code: "sl", variable: "SLACK_THREADS_TABLE_NAME", kind: "name" },
   turnRecordsTable: { code: "tr", variable: "TURN_RECORDS_TABLE_NAME", kind: "name" },
   planEvidenceFunction: { code: "pe", variable: "PLAN_EVIDENCE_FUNCTION_NAME", kind: "name" },
+  // Company-approved images (0.5.15, `pj`): the mirror function the broker starts when an admin approves an image and when a plan finds an approved image with no finished copy. The broker holds lambda:InvokeFunction on this one function.
+  companyImageMirrorFunction: { code: "cm", variable: "COMPANY_IMAGE_MIRROR_FUNCTION_NAME", kind: "name" },
   // Live interaction A2 (peek): the dispatcher the broker invokes to read a running task's working tree for an Ask. The broker holds lambda:InvokeFunction on this one function and nothing else (control-plane.ts).
   dispatcherFunction: { code: "dp", variable: "DISPATCHER_FUNCTION_ARN", kind: "lambdaFunctionArn" },
   modelAccessFunction: { code: "ma", variable: "MODEL_ACCESS_FUNCTION_NAME", kind: "name" },
@@ -206,6 +208,8 @@ export const BROKER_SETTINGS = {
   standingInstructions: { code: "si", variable: "STANDING_INSTRUCTIONS_ENABLED" },
   // Saved environments (setup-test-health SH25, switch `sv`): a project's proven setup is built into an image, kept in the registry and used by tasks. Stack parameter SavedEnvEnabled, "0" by default: the broker reads it as SAVED_ENV_ENABLED and it is on only when exactly "1". With it off nothing is built, pushed, pulled or sent to a worker. Packed setting, not a Lambda variable (ENV-ROOM).
   savedEnv: { code: "sv", variable: "SAVED_ENV_ENABLED" },
+  // Slack explicit membership (0.5.14, switch `sm`; owner decision Q5): on a cloud install a Slack person with no explicit, current company membership is no longer the implicit member of the company their Slack workspace is bound to (the Slack service routes used to treat them as one). Stack parameter SlackExplicitMembers, "1" by default: the broker reads it as SLACK_EXPLICIT_MEMBERS. "1" (and an absent or unknown value, which fails closed) requires the membership; "warn" keeps today's access and sends each affected person one direct message that access will need a membership soon; "0" restores today's behaviour exactly (the rollback). Single-org installs (no company membership to ask for) are unchanged. Packed setting, not a Lambda variable (ENV-ROOM).
+  slackExplicitMembers: { code: "sm", variable: "SLACK_EXPLICIT_MEMBERS" },
   // Script tokens (UX5b, switch `pt`): people make tokens in the app so their scripts and CI can read and start their own tasks. Stack parameter ScriptTokensEnabled, "0" by default: the broker reads it as SCRIPT_TOKENS_ENABLED and it is on only when exactly "1". Off: the settings routes are not found and every script token is refused. Packed setting, not a Lambda variable (ENV-ROOM).
   scriptTokens: { code: "pt", variable: "SCRIPT_TOKENS_ENABLED" },
   // Test services (test-services.md TS37, switches `tx`, `ta` and `pj`): each is a stack parameter, "0" by default, that reaches the broker as the variable named here, and is on only when it is exactly "1". Nothing reads them yet; while they are off nothing new is reachable and every refusal stays as it is. `tx`: dependencies get a backing (real software, Rovara local AWS, fakes) on a sealed per-run network. Hard-gated at deploy by the Linux checks TS-L1 to TS-L6 (scripts/linux-check-test-services.sh). Packed settings, not Lambda variables (ENV-ROOM).
@@ -225,6 +229,8 @@ export const BROKER_SETTINGS = {
   webFeatures: { code: "wf", variable: "WEB_FEATURES" },
   // 0.5.7: the hosted cloud's custom domain name (empty when none). With a name the broker takes `https://<name>/v1/auth` as the sign-in issuer and the API's own address as the previous one.
   customDomain: { code: "cd", variable: "DEVELOPER_CUSTOM_DOMAIN" },
+  // Billing (lane srv/trial-reads, decision 91, switch `bl`): the owner and admin billing routes (`/v1/app/org/billing*`). The broker reads BILLING_ENABLED and it is on only when it is exactly "1"; off (absent, empty, anything else) every billing path answers not found. The infrastructure half (a stack parameter BillingEnabled, "0" by default, packed into AGENTX_SETTINGS; see the feature-switch recipe in docs/architecture/code-map.md) is NOT wired yet, so a deployed install reads it as off. Do not turn this on before the billing provider exists: the routes would answer `available: false`.
+  billing: { code: "bl", variable: "BILLING_ENABLED" },
 } as const satisfies Record<string, BrokerSettingSpec>;
 
 export type BrokerSettingKey = keyof typeof BROKER_SETTINGS;

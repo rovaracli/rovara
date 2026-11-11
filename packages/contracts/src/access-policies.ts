@@ -1,7 +1,7 @@
 // The two access-stack policy documents as pure functions: no CDK imports, so they can be unit
 // tested with plain strings and printed as JSON (the access stack passes CDK tokens instead).
 import { STACK_PARTS, environmentStackName } from "./environments.js";
-import { savedEnvCreateRoleName, savedEnvManageRoleName, savedEnvPullRoleName, savedEnvPushRoleName, savedEnvRolePrefix } from "./saved-env-image.js";
+import { companyImageMirrorRoleName, savedEnvCreateRoleName, savedEnvManageRoleName, savedEnvPullRoleName, savedEnvPushRoleName, savedEnvRolePrefix } from "./saved-env-image.js";
 import { REALTIME_NAMESPACE } from "./realtime.js";
 
 export interface PolicyScope {
@@ -485,8 +485,8 @@ export function modelAccessProbeRoleName(env: string): string {
 export const ORGANIZATION_ID_PATTERN = /^o-[a-z0-9]{10,32}$/;
 
 /**
- * The one environment where the control plane builds the Task Person proof role (infra/lib/task-person-proof.ts), by a fixed name.
- * Named here so the deploy role can name the role too.
+ * The one environment whose Task Person proof role (infra/lib/task-person-proof.ts) has a fixed name: it had the role before every environment did, and renaming would replace a live
+ * role. Every other environment's proof role is generated under the environment's role path, which the deploy role already covers. Named here so the deploy role can name the fixed one too.
  */
 export const TASK_PERSON_PROOF_ENV = "agentxlivetest123";
 
@@ -518,7 +518,7 @@ const recordStorageNames = (env: string) => ({ vectorBucket: `agentx-${env}-reco
 export function fixedNameEnvironmentRoleNames(env: string): string[] {
   return [
     connectorSecretsRoleName(env), testAccountSecretsRoleName(env), brokerRoleName(env), modelProxyTaskRoleName(env), modelAccessProbeRoleName(env), chainScheduleRoleName(env),
-    savedEnvPushRoleName(env), savedEnvPullRoleName(env), savedEnvManageRoleName(env), savedEnvCreateRoleName(env),
+    savedEnvPushRoleName(env), savedEnvPullRoleName(env), savedEnvManageRoleName(env), savedEnvCreateRoleName(env), companyImageMirrorRoleName(env),
     teamRecordVectorsRoleName(env),
     ...(env === TASK_PERSON_PROOF_ENV ? [taskPersonProofRoleName(env)] : []),
   ];
@@ -543,12 +543,13 @@ const FIXED_NAME_ROLE_LOOKUP_ACTIONS = [
 
 /**
  * `forBoundary`: the boundary (a ceiling, 6,144 characters with no room left) names the ConnectorSecretsRole and the TestAccountSecretsRole, whose names share a prefix, with the one ARN
- * `...connector-secrets*`. The service role's own statement, which is what actually allows the lookups, still names each role exactly.
+ * `...connector-secrets*`, and the saved environment image roles (`agentx-<env>-img-push|pull|manage|mirror`) with the one ARN `...img-*`. The service role's own statement, which is what actually allows the lookups, still names each role exactly.
  */
 function fixedNameRoleLookupStatement(scope: Pick<PolicyScope, "env" | "partition" | "account">, forBoundary = false): PolicyStatementJson {
   const shared = connectorSecretsRoleName(scope.env);
   const names = fixedNameEnvironmentRoleNames(scope.env);
-  const listed = forBoundary ? [...names.filter((name) => !name.startsWith(shared)), `${shared}*`] : names;
+  const images = savedEnvRolePrefix(scope.env);
+  const listed = forBoundary ? [...names.filter((name) => !name.startsWith(shared) && !name.startsWith(images)), `${shared}*`, `${images}*`] : names;
   return {
     Sid: "IamFixedNameRolesNotYetCreated",
     Effect: "Allow",

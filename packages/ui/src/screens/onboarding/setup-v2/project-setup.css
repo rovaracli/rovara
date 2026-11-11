@@ -1,0 +1,47 @@
+/* The rich project setup (switch rovara.setup = v2). Loaded with its own chunk: nothing here exists while the switch is off. */
+.rv-psv2{max-width:64rem;margin-inline:auto}
+.rv-psv2-workspace{min-width:0}
+.rv-psv2 h3{margin-block:var(--rv-space-2)}
+.rv-psv2-actions{display:flex;flex-wrap:wrap;gap:var(--rv-space-2);align-items:center;margin-block:var(--rv-space-3)}
+.rv-psv2-actions .rv-button{margin:0}
+.rv-psv2-company{margin-top:var(--rv-space-6);padding:var(--rv-space-4);border:1px solid var(--rv-border);border-radius:var(--rv-radius-md);background:var(--rv-bg-raised)}
+.rv-psv2-company h2{font-size:var(--rv-font-lg);margin:0 0 var(--rv-space-2)}
+.rv-psv2-company ul{margin:var(--rv-space-3) 0;padding-inline-start:var(--rv-space-5)}
+.rv-psv2-company li{margin-block:var(--rv-space-2);overflow-wrap:anywhere}
+.rv-psv2-group{margin-block:var(--rv-space-4);padding:var(--rv-space-3);min-width:0}
+.rv-psv2-group legend{font-weight:650;padding-inline:var(--rv-space-2)}
+.rv-psv2-choice{display:flex;gap:var(--rv-space-3);align-items:center;min-height:44px;margin:0;overflow-wrap:anywhere}
+.rv-psv2-choice input[type=radio]{width:1.5rem;height:1.5rem;flex-shrink:0;margin:0}
+.rv-psv2-group .rv-check-row{overflow-wrap:anywhere}
+.rv-psv2-repos{list-style:none;margin:var(--rv-space-4) 0;padding:0;display:grid;gap:var(--rv-space-3)}
+.rv-psv2-repo{border:1px solid var(--rv-border);border-inline-start:4px solid var(--rv-border-strong);border-radius:var(--rv-radius-md);padding:var(--rv-space-3) var(--rv-space-4);background:var(--rv-bg-raised);min-width:0}
+.rv-psv2-repo[data-state=needs_action]{border-inline-start-color:var(--rv-status-failed)}
+.rv-psv2-repo[data-state=ready]{border-inline-start-color:var(--rv-status-done)}
+.rv-psv2-repo[data-state=checking]{border-inline-start-color:var(--rv-status-running)}
+.rv-psv2-repo-head{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:var(--rv-space-2)}
+.rv-psv2-repo-head h3{margin:0;font-size:var(--rv-font-lg);overflow-wrap:anywhere;min-width:0}
+.rv-psv2-repo p{margin:var(--rv-space-2) 0;overflow-wrap:anywhere}
+/* onboarding.css styles every .rv-onboarding li as a flex step and every li span as a numbered circle; lists inside the workspace are plain lists, so that is undone here (the stepper nav stays as it is). */
+.rv-psv2 .rv-psv2-workspace li{display:block;font-size:inherit;color:inherit;gap:0}
+.rv-psv2 .rv-psv2-workspace li span{display:inline;width:auto;height:auto;border:0;border-radius:0;place-items:normal}
+.rv-psv2-pill,.rv-psv2 .rv-psv2-workspace li span.rv-psv2-pill{display:inline-flex;align-items:center;gap:var(--rv-space-2);padding:2px var(--rv-space-3);height:auto;width:auto;border:1px solid var(--rv-border-strong);border-radius:var(--rv-radius-lg);background:var(--rv-bg-sunken);color:var(--rv-text);font-weight:600;white-space:nowrap}
+.rv-psv2-glyph,.rv-psv2 .rv-psv2-workspace li span.rv-psv2-glyph{display:inline-grid;place-items:center;width:1.25rem;height:1.25rem;border-radius:50%;border:1px solid var(--rv-border-strong);flex-shrink:0;font-size:.75rem;line-height:1}
+.rv-psv2-failure{margin:var(--rv-space-2) 0;display:grid;gap:var(--rv-space-1)}
+.rv-psv2-failure dt{color:var(--rv-text-muted);font-size:.875rem;margin-top:var(--rv-space-2)}
+.rv-psv2-failure dd{margin:0;overflow-wrap:anywhere}
+.rv-psv2-failure code{white-space:pre-wrap;overflow-wrap:anywhere}
+.rv-psv2-whole{margin-block:var(--rv-space-3)}
+.rv-psv2-panel{margin-block:var(--rv-space-4);min-width:0}
+.rv-psv2-panel[hidden]{display:none}
+.rv-psv2-suggest{margin-block:var(--rv-space-4);padding:var(--rv-space-3);min-width:0}
+.rv-psv2-suggest legend{font-weight:650;padding-inline:var(--rv-space-2)}
+.rv-psv2-suggest ul{list-style:none;margin:0;padding:0;display:grid;gap:var(--rv-space-2)}
+.rv-psv2-suggestion{width:100%;justify-content:flex-start;text-align:start;white-space:normal;overflow-wrap:anywhere}
+.rv-psv2-suggestion[aria-pressed=true]{border-color:var(--rv-accent);box-shadow:inset 0 0 0 1px var(--rv-accent);font-weight:650}
+.rv-psv2-text{min-height:7rem;resize:vertical;font:inherit}
+.rv-psv2-gate,.rv-psv2-refusal{border:1px solid var(--rv-border-strong);border-inline-start:4px solid var(--rv-status-failed);border-radius:var(--rv-radius-md);padding:var(--rv-space-3) var(--rv-space-4);margin-block:var(--rv-space-3);background:var(--rv-bg-raised)}
+.rv-psv2-refusal dl{margin:var(--rv-space-2) 0}
+.rv-psv2-refusal dt{color:var(--rv-text-muted);font-size:.875rem;margin-top:var(--rv-space-2)}
+.rv-psv2-refusal dd{margin:0;overflow-wrap:anywhere}
+.rv-psv2-note,.rv-psv2-later{margin-block:var(--rv-space-3)}
+@media(max-width:640px){.rv-psv2-repo{padding:var(--rv-space-3)}.rv-psv2-actions .rv-button,.rv-psv2-gate .rv-button,.rv-psv2-refusal .rv-button{flex:1 1 100%}}

@@ -8,6 +8,7 @@ import { mergeRoleStatementsOnSynth } from "./merge-role-statements.js";
 import { EgressAlarms } from "./egress-alarms.js";
 import { attachLessonsWorker, attachTeamRecord } from "./team-record-wiring.js";
 import { attachSavedEnvImages } from "./saved-env-images.js";
+import { CompanyImageMirror } from "./company-image-mirror.js";
 import { attachServiceCatalogImages } from "./service-catalog-images.js";
 import { attachProjectRegistries } from "./registry-wiring.js";
 import type { RegistryDomain } from "./registry-access.js";
@@ -187,11 +188,12 @@ export class ControlPlaneStack extends Stack {
     });
     // Spec 025 phase 25a: declared on the stack itself so the names are exact; named environments only (R3).
     const signInParameters = naming.env === undefined ? undefined : developerSignInParameters(this);
-    const taskPersonProofEnabled = naming.env === "agentxlivetest123" ? new CfnParameter(this, "TaskPersonProofEnabled", {
+    // The task person proof workload (the dispatcher's person guard needs it): in every named environment. It is installed while this is "true" or while TaskPeopleChangesEnabled is.
+    const taskPersonProofEnabled = naming.env !== undefined ? new CfnParameter(this, "TaskPersonProofEnabled", {
       type: "String",
       default: "false",
       allowedValues: ["true", "false"],
-      description: "Install the dedicated task person proof workload in the approved named TEST environment",
+      description: "Install the dedicated task person proof workload on its own. It is installed anyway while TaskPeopleChangesEnabled is true; with both false nothing is created",
     }) : undefined;
 
     const state = new dynamodb.Table(this, "State", {
@@ -1174,7 +1176,15 @@ export class ControlPlaneStack extends Stack {
     // Team record (wire-team-record): the whole record, behind the switch `agentxTeamRecord=enabled` (off by default: this block does not run and nothing changes).
     const teamRecordResources = props?.teamRecord !== undefined && naming.env !== undefined ? attachTeamRecord(this, { env: naming.env, region: props.deploymentRegion ?? "us-east-1", context: props.teamRecord, broker, slackIngress, dispatcher, scheduleRole: githubRecoveryRole, alarms: { name: (suffix) => naming.alarmName(suffix), action: notifyOperator, metricsNamespace: naming.metricsNamespace }, ...(props.reservedConcurrency === false ? { reservedConcurrency: false } : {}) }) : undefined;
     // Saved environment images (SH22): the registry side (KMS, creation template, push/pull/manage roles). Nothing pushes until the broker's `sv` setting is on.
-    if (naming.env !== undefined) BrokerNames.of(broker).add("savedEnvKey", attachSavedEnvImages(this, { env: naming.env, brokerRole: broker.role!, cloudFormationRoleName: naming.cloudFormationRoleName, ...(props?.savedEnv?.kmsKeyArn === undefined ? {} : { kmsKeyArn: props.savedEnv.kmsKeyArn }), ...(props?.savedEnv?.registryScan === true ? { registryScanning: "basic" as const } : {}) }).kmsKeyId);
+    if (naming.env !== undefined) {
+      // Company-approved images (0.5.15, switch `pj`): the mirror function copies an approved image into a repository of this registry. Its own role (not the push or manage role) is the only one it assumes, and the template's repository policy names that role.
+      const companyImageMirror = new CompanyImageMirror(this, "CompanyImageMirror", { env: naming.env, account: this.account, region: this.region, partition: this.partition, state });
+      const savedEnvImages = attachSavedEnvImages(this, { env: naming.env, brokerRole: broker.role!, cloudFormationRoleName: naming.cloudFormationRoleName, mirrorRoleArn: companyImageMirror.role.roleArn, ...(props?.savedEnv?.kmsKeyArn === undefined ? {} : { kmsKeyArn: props.savedEnv.kmsKeyArn }), ...(props?.savedEnv?.registryScan === true ? { registryScanning: "basic" as const } : {}) });
+      BrokerNames.of(broker).add("savedEnvKey", savedEnvImages.kmsKeyId);
+      companyImageMirror.function.addEnvironment("SAVED_ENV_KMS_KEY_ARN", savedEnvImages.kmsKeyArn);
+      companyImageMirror.function.grantInvoke(broker);
+      BrokerNames.of(broker).add("companyImageMirrorFunction", companyImageMirror.function.functionName);
+    }
     // Test services (TS19): the catalog's image repositories and their key. NOT behind `TestServicesEnabled` (switch `tx`): the repositories have fixed names and are retained, so a condition would break turning the switch on, off and on again.
     if (naming.env !== undefined) attachServiceCatalogImages(this, { env: naming.env, repositories: SERVICE_CATALOG_REPOSITORIES });
     // N9 (INTG2): a project's private package registries, behind `rovaraCodeArtifactDomains` (off by default: this does not run and nothing changes).
@@ -1330,10 +1340,11 @@ export class ControlPlaneStack extends Stack {
       realtime.grantPublish(outboxPublisher);
       outboxPublisher.addEnvironment("REALTIME_HTTP_ENDPOINT", realtime.httpEndpoint);
       BrokerNames.of(broker).add("realtimeApi", realtime.dnsPrefix);
-      if (naming.env === "agentxlivetest123" && taskPersonProofEnabled !== undefined) {
+      if (taskPersonProofEnabled !== undefined) {
         new TaskPersonProof(this, "TaskPersonProof", {
           naming,
           enabled: taskPersonProofEnabled,
+          taskPeopleChangesEnabled: signInParameters.taskPeopleChangesEnabled,
           slackTeamId: signInParameters.slackTeamId,
           slackSecret,
           developerSignInTable: developerSignIn.table,
@@ -1378,6 +1389,8 @@ export class ControlPlaneStack extends Stack {
       brokerSettings.add("setupRecipes", signInParameters.setupRecipesEnabled.valueAsString);
       // Saved environments (SH25): one switch, a packed setting. Off ("0") unless the operator sets the parameter to "1".
       brokerSettings.add("savedEnv", signInParameters.savedEnvEnabled.valueAsString);
+      // Slack explicit membership (0.5.14, switch `sm`): "1" by default, "warn" or "0" (today's behaviour). A packed setting.
+      brokerSettings.add("slackExplicitMembers", signInParameters.slackExplicitMembers.valueAsString);
       // Script tokens (UX5b): one switch, a packed setting. Off ("0") unless the operator sets the parameter to "1".
       brokerSettings.add("scriptTokens", signInParameters.scriptTokensEnabled.valueAsString);
       // Standing instructions (lane I1): one switch, a packed setting. Off ("0") unless the operator sets the parameter to "1".
