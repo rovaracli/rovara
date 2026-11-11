@@ -163,6 +163,7 @@ export * from "./company-domains-web.js";
 export { JiraOrgAdminMutationBodySchema, JiraOrgAdminResultReaderSchema, type JiraOrgAdminMutationBody } from "./jira-org-admin-web.js";
 export { TrackerPeopleReaderSchema, TrackerPeopleMutationBodySchema, TrackerPeopleResultReaderSchema, type TrackerPeople, type TrackerPeopleMutationBody } from "./tracker-people-web.js";
 export * from "./app-design-review-company.js";
+export * from "./app-company-rules.js";
 export * from "./app-known-failing.js";
 export * from "./app-saved-env.js";
 export * from "./app-second-review.js";
