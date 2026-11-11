@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ITEM_PATH_MAX_STEPS, ItemPathSchema, itemPathHolders, itemPathProblems, itemPathValues, schemaHasItemPath } from "../../packages/contracts/src/index.js";
+import { ITEM_PATH_MAX_STEPS, ItemPathSchema, itemPathHolders, itemPathProblems, itemPathValues, schemaHasItemPath } from "@rovara-code/contracts";
 
 describe("item argument paths (spec 014)", () => {
   it("accepts a name, a.b and a[].b, with at most four steps", () => {

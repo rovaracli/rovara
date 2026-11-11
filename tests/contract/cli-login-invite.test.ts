@@ -5,7 +5,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { INVITE_WRONG_EMAIL_MESSAGE } from "@agentx/contracts";
+import { INVITE_WRONG_EMAIL_MESSAGE } from "@rovara-code/contracts";
 import { ROVARA_DIRECTORY_ORIGIN, inviteOutcomeText, parseInviteLink, resolveInviteCell } from "../../packages/cli/src/developer/invite-link.js";
 import { readDeveloperConfig } from "../../packages/cli/src/developer/config.js";
 import { developerLogin } from "../../packages/cli/src/developer/login.js";

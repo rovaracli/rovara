@@ -30,7 +30,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { z } from "zod";
-import { CATALOG_FILE, CatalogIdSchema, CatalogRegistryHostSchema, ServiceCatalogSchema, catalogRepositoryName } from "@agentx/contracts";
+import { CATALOG_FILE, CatalogIdSchema, CatalogRegistryHostSchema, ServiceCatalogSchema, catalogRepositoryName } from "@rovara-code/contracts";
 import { DEFAULT_CATALOG_DIR, DEFAULT_COMMAND_TIMEOUT_MS, DEFAULT_COPY_TIMEOUT_MS, SourceRefSchema, createCommandPort, parseEntryIds, tagFor, timeoutFlag, type CommandPort } from "./catalog-build.js";
 
 export const OCI_INDEX_MEDIA_TYPE = "application/vnd.oci.image.index.v1+json";

@@ -8,13 +8,8 @@ import { APP_CSRF_HEADER, appCsrfMatches } from "../developer/app-csrf.js";
 // the same 404, so the API never confirms a task exists.
 import { randomBytes } from "node:crypto";
 import { z } from "zod";
-import {
-  CommentDocumentSchema, CommentTargetSchema, DECISION_COMMENTS_MAX, PAGE_API_BODY_MAX_BYTES, PAGE_NOTE_MAX_CHARS,
-  LearningTaskPageBodySchema, TaskPeopleRoleRequestSchema, TaskPeopleTakeOwnershipRequestSchema,
-  type LearningForgetAnswerSchema, type LearningRememberAnswerSchema,
-  type TaskPeopleChangeResult, type TaskPeopleRoleRequest, type TaskPeopleTakeOwnershipRequest, type TaskPeopleView,
-} from "@agentx/contracts";
-import type { DeveloperTaskView } from "@agentx/contracts";
+import { CommentDocumentSchema, CommentTargetSchema, DECISION_COMMENTS_MAX, PAGE_API_BODY_MAX_BYTES, PAGE_NOTE_MAX_CHARS, LearningTaskPageBodySchema, TaskPeopleRoleRequestSchema, TaskPeopleTakeOwnershipRequestSchema, type LearningForgetAnswerSchema, type LearningRememberAnswerSchema, type TaskPeopleChangeResult, type TaskPeopleRoleRequest, type TaskPeopleTakeOwnershipRequest, type TaskPeopleView } from "@rovara-code/contracts";
+import type { DeveloperTaskView } from "@agentx/cloud-contracts";
 import { REVISE_PLAN_REFUSALS } from "../agent-sessions/live-steer-revise.js";
 import { PROJECT_RECORD_NEEDS_ADMIN } from "./broker-shared.js";
 import type { DeveloperCaller } from "./developer-routes.js";

@@ -3,31 +3,7 @@
 import { resolveStoredName } from "../developer/name-resolver.js";
 import { createHash } from "node:crypto";
 import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  AgentSessionRecordSchema,
-  SESSION_TITLE_MAX,
-  agentSessionKey,
-  cleanSessionName,
-  liveSessionKey,
-  mySessionsKey,
-  openAgentSessionKey,
-  principalKey,
-  projectSessionsKey,
-  redactText,
-  sessionEventId,
-  sessionLegSk,
-  sharedSessionsKey,
-  type AgentPrincipal,
-  type AgentSessionRecord,
-  type LocalTool,
-  type OrgId,
-  type Payer,
-  type SessionTrigger,
-  type SessionEvent,
-  type SessionLeg,
-  type SessionLevel,
-  type WorkOrigin,
-} from "@agentx/contracts";
+import { AgentSessionRecordSchema, SESSION_TITLE_MAX, agentSessionKey, cleanSessionName, liveSessionKey, mySessionsKey, openAgentSessionKey, principalKey, projectSessionsKey, redactText, sessionEventId, sessionLegSk, sharedSessionsKey, type AgentPrincipal, type AgentSessionRecord, type LocalTool, type OrgId, type Payer, type SessionTrigger, type SessionEvent, type SessionLeg, type SessionLevel, type WorkOrigin } from "@rovara-code/contracts";
 import { putNew, type TableInput, type TransactItem } from "../agents/table-writes.js";
 import { threadBindingItems } from "./bindings.js";
 import { sessionEventItem } from "./store.js";

@@ -1,7 +1,8 @@
 // Saved project images (SV wiring): what makes the registry look at a project. A push to a project's default branch (any of its repositories), the nightly, the periodic poll and the task-start check each call the
 // registry's decision; a job it queues is started the same way, whichever asked, and one that cannot be started for a reason that will not mend is ended at once.
 import { describe, expect, it, vi } from "vitest";
-import { githubInstallationKey, githubRepoProjectKey, orgProjectCatalogKey, projectMetaKey, projectRevisionKey, type OrgId } from "@agentx/contracts";
+import { githubInstallationKey, githubRepoProjectKey } from "@agentx/cloud-contracts";
+import { orgProjectCatalogKey, projectMetaKey, projectRevisionKey, type OrgId } from "@rovara-code/contracts";
 import { GithubWebhookRetryableError } from "../../packages/broker/src/aws/github-webhooks.js";
 import { runSavedEnvPoll, savedEnvBeforeNightly, savedEnvOnQueued, savedEnvPushQueue } from "../../packages/broker/src/aws/broker/saved-env-triggers.js";
 import type { AwsBrokerDependencies } from "../../packages/broker/src/aws/broker/definitions.js";

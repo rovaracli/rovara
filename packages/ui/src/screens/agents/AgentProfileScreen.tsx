@@ -2,7 +2,7 @@ import { AgentOrigin } from "./AgentOrigin.js";
 import { Suspense, useEffect, useRef, useState } from "react";
 import { Link, useLocation, useParams } from "react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { AgentShareInputSchema, LEVEL_WORDS, StepSettingsSchema, ROVARA_CODE_AGENT_ID } from "@agentx/contracts/web";
+import { AgentShareInputSchema, LEVEL_WORDS, StepSettingsSchema, ROVARA_CODE_AGENT_ID } from "@agentx/cloud-contracts/web";
 import { useAgent, useAgentApi, useAgentSpend, useAgentVersions, type ReadAgent } from "../../api/agents.js";
 import { useAppHost } from "../../host.js";
 import { createRealtimeClient } from "../../realtime/client.js";

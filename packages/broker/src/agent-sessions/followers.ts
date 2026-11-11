@@ -8,22 +8,8 @@
 // own channel is told `session.updated` only when the person was not there already, so a steady heartbeat is silent. Presence never goes to anyone's changes feed: it is
 // not a thing to catch up on.
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  INDEX_EXPIRY_ATTRIBUTE,
-  PRESENCE_TTL_SECONDS,
-  PRESENCE_VIEWERS_MAX,
-  SESSION_FOLLOWERS_MAX,
-  SESSION_RETENTION_DAYS,
-  SessionOwnerSchema,
-  agentSessionKey,
-  agentXError,
-  cleanSessionName,
-  livePresenceKey,
-  sessionChannel,
-  type AgentSessionRecord,
-  type OrgId,
-  type SessionOwner,
-} from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, PRESENCE_TTL_SECONDS, PRESENCE_VIEWERS_MAX, SESSION_FOLLOWERS_MAX, SESSION_RETENTION_DAYS, SessionOwnerSchema, agentSessionKey, agentXError, cleanSessionName, livePresenceKey, type AgentSessionRecord, type OrgId, type SessionOwner } from "@rovara-code/contracts";
+import { sessionChannel } from "@agentx/cloud-contracts";
 import { errorName, failedIndexes, isTransactionConflict, type Item, type TransactItem } from "../agents/table-writes.js";
 import { publishNotices, type RealtimeConfig } from "../realtime/publish.js";
 import { requireSessionLevel, type SessionAccessDependencies, type SessionCaller } from "./access.js";

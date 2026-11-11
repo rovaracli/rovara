@@ -3,7 +3,7 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { SYNTH_CONTEXT_KEYS, SYNTH_EXCLUDED_KEYS, SYNTH_FIXED_KEYS } from "@agentx/contracts";
+import { SYNTH_CONTEXT_KEYS, SYNTH_EXCLUDED_KEYS, SYNTH_FIXED_KEYS } from "@agentx/cloud-contracts";
 
 const ROOT = join(import.meta.dirname, "..", "..");
 const filesIn = (directory: string): string[] => readdirSync(join(ROOT, directory)).filter((name) => name.endsWith(".ts")).map((name) => join(directory, name));
@@ -24,7 +24,7 @@ export function contextKeysRead(): Map<string, string> {
   const modelEndpoints = read("infra/lib/model-endpoints.ts");
   const endpointBlock = /MODEL_ENDPOINT_CONTEXT_KEYS = \{([^}]*)\}/.exec(modelEndpoints)?.[1] ?? "";
   for (const match of endpointBlock.matchAll(/:\s*"([^"]+)"/g)) note(match[1]!, "infra/lib/model-endpoints.ts");
-  for (const path of ["packages/contracts/src/operator-access.ts", "packages/contracts/src/edition.ts"]) {
+  for (const path of ["packages/cloud-contracts/src/operator-access.ts", "packages/cloud-contracts/src/edition.ts"]) {
     for (const match of read(path).matchAll(/export const \w+_CONTEXT_KEY = "([^"]+)"/g)) note(match[1]!, path);
   }
   return found;

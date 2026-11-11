@@ -1,6 +1,6 @@
 // Design review stage, DR7 slice C: the guards the routes and ports add, each with a test that fails without it. The routes themselves are driven end to end in tests/contract/design-review-e2e.test.ts.
 import { describe, expect, it, vi } from "vitest";
-import { type WorkflowSnapshot } from "../../packages/contracts/src/index.js";
+import { type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { commitDesignApproval, designApprovalItems, designDigestOfVersion, membershipFenceItem } from "../../packages/broker/src/aws/developer-tasks/design-decision.js";
 import { designApproveHandler, type DesignApprovalWrite } from "../../packages/broker/src/design-review/approve-handler.js";
 import { designClassificationNoteOf } from "../../packages/broker/src/design-review/mode.js";

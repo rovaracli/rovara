@@ -14,7 +14,7 @@ import { learnedContextForDispatch, loadLessonsForStage, type LoadDeps } from ".
 import { lessonPanelRows } from "../../../packages/broker/src/lessons/panel.js";
 import { readVisible } from "../../../packages/broker/src/lessons/read-visible.js";
 import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.js";
-import { recordAccessKey, recordAccessMemberKey, recordAccessPersonPrefix } from "@agentx/contracts";
+import { recordAccessKey, recordAccessMemberKey, recordAccessPersonPrefix } from "@agentx/cloud-contracts";
 import { ORG_A, addSource, caller, githubDraft, rows, world, type World } from "../../support/team-record-core.js";
 import { deleteDeps } from "../../support/team-record-delete.js";
 import { Audit, Clock, MemoryVectors, PROJECT, allSharedTasks, embedder, lessonRecord, seed as seedLessons, settings } from "../lessons/lesson-helpers.js";

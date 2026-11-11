@@ -5,7 +5,7 @@
 // and does not parse THROWS when read (it is never "absent", which would let a pass write a fresh state over it). The table is taken structurally so this file imports nothing from the Team record.
 import { createHash } from "node:crypto";
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
-import { teamRecordPk } from "@agentx/contracts";
+import { teamRecordPk } from "@rovara-code/contracts";
 import { PrRowSchema, StateUnreadable, checkedState, parseRepoFileState, type PrRow, type RepoFileState, type RepoFileStore } from "./repo-file-state.js";
 import type { ScopeKey } from "./store.js";
 

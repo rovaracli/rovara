@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ContextSourceSchema } from "@agentx/contracts";
+import { ContextSourceSchema } from "@rovara-code/contracts";
 import { confirmSourceChange, proposeSourceChange, readContextSources, rejectSourceChange, validateContextSource, type SettingsActor, type SettingsDependencies } from "../../../packages/broker/src/context-sources/settings.js";
 import { dynamoContextSourceStore } from "../../../packages/broker/src/context-sources/store.js";
 import { FakeDynamoDb } from "../../support/fake-dynamodb.js";

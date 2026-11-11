@@ -1,9 +1,6 @@
 // Shared fakes for the lessons-in-the-repo file tests (lane R2): an in-memory code host with branches, files and change requests that refuses what the real adapter refuses, and the pass's dependencies around the
 // lesson store fakes. No network, no AWS, no model: the pass's `names`, `store`, `state` and `audit` are all in-memory.
-import {
-  COMMIT_CONFLICT_MESSAGE, LESSON_FILE_BRANCH_PATTERN, LESSON_FILE_WRITE_PATHS, agentXError,
-  type ChangeRequestInput, type ChangeRequestRef, type CodeHost, type CommitFilesInput, type PathKind, type RepositoryRef,
-} from "@agentx/contracts";
+import { COMMIT_CONFLICT_MESSAGE, LESSON_FILE_BRANCH_PATTERN, LESSON_FILE_WRITE_PATHS, agentXError, type ChangeRequestInput, type ChangeRequestRef, type CodeHost, type CommitFilesInput, type PathKind, type RepositoryRef } from "@rovara-code/contracts";
 import { setLearnedLessonsGate } from "../../../packages/broker/src/lessons/policy.js";
 import type { LessonAuditEvent } from "../../../packages/broker/src/lessons/ports.js";
 import { sweepDepsOf, sweepErasures } from "../../../packages/broker/src/lessons/repo-file-erase.js";
@@ -186,7 +183,7 @@ export function passSetup(over: { host?: FakeRepoHost; preset?: "standard" | "re
   };
   const hex = { next: 0 };
   deps.randomHex = () => { hex.next += 1; return hex.next.toString(16).padStart(12, "0"); };
-  const target: RepoFileTarget = { name: "api", place: PLACE, repository: { url: REPO_URL }, scope: { system: "private-install" } as never, host: host as unknown as CodeHost };
+  const target: RepoFileTarget = { name: "api", place: PLACE, repository: { url: REPO_URL }, scope: { system: "install" } as never, host: host as unknown as CodeHost };
   const key = KEY;
   return {
     host, store, state, audit, clock, deps, target, key, failAudit, names, spyModel, hex,

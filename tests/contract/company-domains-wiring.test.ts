@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { orgMetaKey, type OrgId } from "@agentx/contracts";
+import { orgMetaKey } from "@agentx/cloud-contracts";
+import { type OrgId } from "@rovara-code/contracts";
 import { APP_CSRF_HEADER, appCsrfTokenFor } from "../../packages/broker/src/developer/app-csrf.js";
 import { runCompanyDomainRecheck, DOMAIN_RECHECK_LIMIT } from "../../packages/broker/src/org/company-domains/recheck.js";
 import type { TxtResolver } from "../../packages/broker/src/org/company-domains/resolver.js";

@@ -4,7 +4,8 @@
 //   - what a project shipped needs the work-event capture that is not built: `people`, `shipped` and `costPerShippedUsd` are null and `outcomes.status` is "unavailable", never a 0.
 // `committedUsd` includes `spentUsd` (held = committed - spent, available = limit - committed), as the Spending page already computes it. Every key is built from the caller's checked company.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { agentXError, scopeKey, spendCounterKey, type BudgetScope, type InsightsSpend, type OrgId } from "@agentx/contracts";
+import { scopeKey, spendCounterKey, type BudgetScope, type InsightsSpend } from "@agentx/cloud-contracts";
+import { agentXError, type OrgId } from "@rovara-code/contracts";
 import { queryPartition } from "../agent-sessions/live.js";
 import { effectiveLimits } from "../spend/settings.js";
 import { cleanUsd } from "../spend/top-ups.js";

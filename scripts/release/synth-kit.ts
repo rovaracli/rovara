@@ -15,7 +15,8 @@ import { copyFile, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } 
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { BUILT_PARTS, ENVIRONMENT_PLACEHOLDER, SynthKitManifestSchema, canonicalJson, environmentStackName, type SynthKitManifest } from "@agentx/contracts";
+import { BUILT_PARTS, SynthKitManifestSchema, type SynthKitManifest } from "@agentx/cloud-contracts";
+import { ENVIRONMENT_PLACEHOLDER, canonicalJson, environmentStackName } from "@rovara-code/contracts";
 import { build, type Plugin } from "esbuild";
 import { SUPPORTED_REGIONS } from "../../infra/lib/production-foundation.js";
 import { createNodeSynthRunner, runKitProcess, systemSandboxEnvironment, type SandboxEnvironment, type SynthRunner } from "../../packages/cli/src/upgrade/bundle/synth-run.js";

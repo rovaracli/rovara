@@ -8,15 +8,7 @@ import type { S3Client } from "@aws-sdk/client-s3";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it } from "vitest";
 import { parseBundle, verifyBundle } from "@rovara/audit-verifier";
-import {
-  AUDIT_DETAILS_SHRED_AFTER_CLOSE_DAYS,
-  AUDIT_PENDING_TTL_DAYS,
-  AUDIT_TRANSIENT_COPY_DAYS,
-  AuditEventInputSchema,
-  auditEventId,
-  auditOperatorId,
-  type AuditEventInput,
-} from "@agentx/contracts";
+import { AUDIT_DETAILS_SHRED_AFTER_CLOSE_DAYS, AUDIT_PENDING_TTL_DAYS, AUDIT_TRANSIENT_COPY_DAYS, AuditEventInputSchema, auditEventId, auditOperatorId, type AuditEventInput } from "@agentx/cloud-contracts";
 import { appendEvent, type AppenderDeps } from "../../packages/broker/src/audit/appender.js";
 import {
   AUDIT_COPIES_GONE_WITHIN_DAYS,

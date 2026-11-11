@@ -17,7 +17,7 @@
 // Every write is conditional on the attempt that was read (a lost race is `already`). The org is part of the key (L2): a task id of another company can never use up this company's claim. The item holds the org,
 // times, the state and key ids; nothing a person wrote.
 import { GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { INDEX_EXPIRY_ATTRIBUTE, LESSONS_REFLECT_LEASE_GRACE_SECONDS, LESSONS_REFLECT_MAX_ATTEMPTS, LESSONS_WORKER_TIMEOUT_SECONDS } from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, LESSONS_REFLECT_LEASE_GRACE_SECONDS, LESSONS_REFLECT_MAX_ATTEMPTS, LESSONS_WORKER_TIMEOUT_SECONDS } from "@rovara-code/contracts";
 import { randomUUID } from "node:crypto";
 
 /** How long a claim is kept: far past the queue's 4 days of retention, so no redelivery of the same message can find the claim gone. */

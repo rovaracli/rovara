@@ -10,10 +10,7 @@
 // excuse one either.
 import { createHash } from "node:crypto";
 import { PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  CITATION_MARKER, CitationSchema, INDEX_EXPIRY_ATTRIBUTE, orgScoped,
-  type Citation, type ContextSource, type OrgId, type PlanCritique, type PlanClaim,
-} from "@agentx/contracts";
+import { CITATION_MARKER, CitationSchema, INDEX_EXPIRY_ATTRIBUTE, orgScoped, type Citation, type ContextSource, type OrgId, type PlanCritique, type PlanClaim } from "@rovara-code/contracts";
 import { checkArguments, contextWriteGate } from "./guards.js";
 import { inertSentence, resolvePresentedTool, resultDigest } from "./present.js";
 import type { CitationRecorder, ContextServerPort } from "./routes.js";
@@ -222,7 +219,7 @@ export async function fetchLiveFacts(deps: ReplayDependencies, input: { orgId: O
 // Reviews
 // ---------------------------------------------------------------------------------------------
 
-export { SOURCE_ONLY_NOTE, downgradeSourceOnlyFindings } from "@agentx/contracts";
+export { SOURCE_ONLY_NOTE, downgradeSourceOnlyFindings } from "@rovara-code/contracts";
 
 /** The call fetched for display: one cited item, with whatever the page shows about it. */
 export async function readCitation(store: Pick<CitationStore, "list">, orgId: OrgId, taskId: string, sourceId: string, itemRef: string): Promise<StoredCitation | undefined> {

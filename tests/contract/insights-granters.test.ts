@@ -1,7 +1,7 @@
 // Insights: who gave a viewer grant, read from the audit ledger (the member record holds no person id). Through the real appender, keyring and indexed reader over fakes: an event counts for a grant only
 // when it names that member as target at exactly the time the grant was written, only `insights_access.granted` counts, another company's events never count, and only a live owner or admin gets an answer.
 import { describe, expect, it } from "vitest";
-import { AuditEventInputSchema, auditEventId, type AuditAction, type OrgRole } from "@agentx/contracts";
+import { AuditEventInputSchema, auditEventId, type AuditAction, type OrgRole } from "@agentx/cloud-contracts";
 import { appendEvent } from "../../packages/broker/src/audit/appender.js";
 import { AuditKeyring } from "../../packages/broker/src/audit/keyring.js";
 import type { AuditExportClientDeps } from "../../packages/broker/src/audit/export.js";

@@ -7,7 +7,7 @@
 //   get_deployment_events  GET /v3/deployments/{idOrUrl}/events            (limit, direction; events carry type, created, payload.text)
 //   check                  GET /v2/user
 // `target` filters on `production` or `staging` in the documentation; `preview` here means "anything that is not production" and is filtered after the request.
-import { VercelConnectorSchema, type OrgConnection, type VercelConnectorConfig } from "@agentx/contracts";
+import { VercelConnectorSchema, type OrgConnection, type VercelConnectorConfig } from "@rovara-code/contracts";
 import { NativeCheckFailed, NativeToolRefusal, type NativeConnectorSpec, type NativeTool, type NativeToolContext } from "./runtime.js";
 import { VendorFetchError } from "./vendor-fetch.js";
 

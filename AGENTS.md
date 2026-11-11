@@ -7,7 +7,7 @@ Read this first. It is short on purpose. For "where does X live", go to [docs/ar
 
 The product is Rovara. Much of the code still uses the old name, so **search for both**:
 
-- Packages are `@agentx/*` (for example `@agentx/contracts`). The CLI binary is `agentx`.
+- Packages are `@agentx/*` (for example `@agentx/cloud-contracts`). The CLI binary is `agentx`.
 - Environment variables and settings use `AGENTX_*` (for example `AGENTX_SETTINGS`). MCP tools start with `agentx_`.
 - Specs under `specs/` (`001-agentx-foundation` and on) are historical. They describe what was built at the time.
   Some numbers repeat (two `008-*` and two `025-*`). Trust the code and `docs/architecture/code-map.md` over a spec.
@@ -18,7 +18,7 @@ The product is Rovara. Much of the code still uses the old name, so **search for
 |---|---|
 | `packages/broker` | The control plane: one AWS Lambda that answers the web app, Slack, GitHub and workers. Most changes land here. |
 | `packages/worker` | Runs a task on an EC2 worker: checkout, agent run, checks, report back to the broker. |
-| `packages/contracts` | Shared types and schemas (zod) used by every package. The barrel is `src/index.ts`. |
+| `packages/cloud-contracts` | Cloud's own shared types and schemas (zod), `@agentx/cloud-contracts`. Names Rovara Code's contracts also own come from `@rovara-code/contracts` (the vendored Code), never from here: one name has one owner (`tests/contract/cloud-contracts-no-duplicate-names.test.ts`, `packages/cloud-contracts/owed-upstream.json`). The barrel is `src/index.ts`; the browser entry is `src/web.ts`. |
 | `packages/web`, `packages/ui` | The web app (`/app`): `web` is the shell and build, `ui` holds the pages and components. |
 | `packages/cli` | The `agentx` command (install, upgrade, project setup). |
 | `packages/slack-service`, `gateway`, `mcp`, `orchestrator`, `model-proxy`, `model-runtime` | Smaller services. See each package's `src/`. |
@@ -42,7 +42,7 @@ node scripts/lint-shards.ts --only <shard>          # one lint shard (`--list` n
 ```
 
 - Don't run the whole suite, `npm run lint` or `typecheck:all` locally unless your brief asks. CI runs them at merge.
-- If vitest can't resolve `@agentx/contracts`, its `dist` is stale: run `npx tsc -b packages/contracts`.
+- If vitest can't resolve `@agentx/cloud-contracts` or `@rovara-code/contracts`, a `dist` is stale: run `npx tsc -b packages/cloud-contracts` (it builds Code's contracts first).
 - Machine-specific rules for the owner's Mac (the heavy-command lock, worker counts, which gates to run) are in the
   task checklist your brief names. That file is the authority on gates. This file is not.
 
@@ -59,7 +59,7 @@ node scripts/lint-shards.ts --only <shard>          # one lint shard (`--list` n
 ## Conventions that save time
 
 - **Feature switches** are two-letter codes (`rd`, `ak`, `vx`, `nh`, ...). The whole list, with what each does, is
-  `BROKER_SETTINGS` in `packages/contracts/src/broker-names.ts`. Search there for `code: "xx"`.
+  `BROKER_SETTINGS` in `packages/cloud-contracts/src/broker-names.ts`. Search there for `code: "xx"`.
 - Big files were split by feature. `packages/broker/src/aws/broker.ts`, `developer-tasks.ts` and
   `developer-routes.ts` are now entry files of a few hundred lines. The code is in the folders with the same names.
   Most files in `aws/broker/` and `aws/developer-routes/` begin with a comment saying what they own. The ownership

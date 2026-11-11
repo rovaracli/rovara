@@ -6,7 +6,8 @@
 //     revision and digest the admin saw on the card, and the signed catalog must have a run profile for the image's family at that moment. Each approval is one transaction with its audit event.
 //   - REVOKING (or dismissing a waiting image) needs a live admin in a browser session; a safety action stays easy. It removes the row and is audited. A revoked image is served no more.
 // Nothing here returns a name, a digest or an error text of a registry: answers are ids, fixed words and the image the admin must read to approve it.
-import { COMPANY_IMAGE_EXTRA_REGISTRIES_MAX, OrgIdSchema, agentXError, companyImageExtraRegistry, companyImageRegistryRule, type CompanyImageMirrorJob, type OrgId, type VerifiedCatalog } from "@agentx/contracts";
+import { COMPANY_IMAGE_EXTRA_REGISTRIES_MAX, companyImageExtraRegistry, companyImageRegistryRule, type CompanyImageMirrorJob } from "@agentx/cloud-contracts";
+import { OrgIdSchema, agentXError, type OrgId, type VerifiedCatalog } from "@rovara-code/contracts";
 import { randomBytes } from "node:crypto";
 import { isFreshSignIn } from "../developer/store.js";
 import {

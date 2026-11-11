@@ -1,9 +1,7 @@
 // Company rules (G-04): what the page is shown (`contracts/src/app-company-rules.ts`), built from the store's records. Pure: names are looked up by the caller and passed in. A member sees the version in force and nothing else;
 // an owner or admin also sees who proposed and approved, the waiting proposal with its diff, the history and the file link. Everything a person or a host wrote (a rule, a note, a login, a repository name) is data for the page
 // to show as plain text.
-import {
-  COMPANY_RULES_APP_LIMITS, COMPANY_RULES_SYNC_PROBLEM_TEXT, type CompanyRulesHistory, type CompanyRulesPerson, type CompanyRulesProposal, type CompanyRulesState, type CompanyRulesSync, type CompanyRulesVersion,
-} from "@agentx/contracts";
+import { COMPANY_RULES_APP_LIMITS, COMPANY_RULES_SYNC_PROBLEM_TEXT, type CompanyRulesHistory, type CompanyRulesPerson, type CompanyRulesProposal, type CompanyRulesState, type CompanyRulesSync, type CompanyRulesVersion } from "@agentx/cloud-contracts";
 import { diffRules, diffSummary, diffWithSides, type Rule } from "./rules.js";
 import { proposalExpired } from "./service.js";
 import type { Actor, Head, ProposalRecord, SyncRecord, VersionRecord } from "./store.js";

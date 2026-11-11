@@ -1,10 +1,7 @@
 // Design review in "How we work" (DR11): the stage card's rows and the settings editor's rules. Pure: no React, no network.
 // The setting shown is the one the project RUNS with (the playbook answer holds it to the company lock); a locked field is read-only and says why. The editor sends the whole setting through the
 // existing playbook PUT (`designReview`), and the broker holds it to the lock and the edition again.
-import {
-  DESIGN_REVIEW_APPROVERS_MAX, DESIGN_REVIEW_CAP_MAX_USD, DESIGN_REVIEW_CAP_MIN_USD, DESIGN_REVIEW_DEFAULT_SETTING, DESIGN_REVIEW_TIERS,
-  type DesignReviewApprover, type DesignReviewSetting, type DesignReviewTier,
-} from "@agentx/contracts/web";
+import { DESIGN_REVIEW_APPROVERS_MAX, DESIGN_REVIEW_CAP_MAX_USD, DESIGN_REVIEW_CAP_MIN_USD, DESIGN_REVIEW_DEFAULT_SETTING, DESIGN_REVIEW_TIERS, type DesignReviewApprover, type DesignReviewSetting, type DesignReviewTier } from "@agentx/cloud-contracts/web";
 import type { Mark, Row } from "./how-we-work-rows.js";
 
 export type SettingField = "mode" | "tier" | "allowSkip" | "capUsdPerTask" | "highRiskApprover";

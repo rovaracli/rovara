@@ -1,6 +1,6 @@
 import { fixtureActor } from "../support/money-authority.js";
 // Plan 4 Task 3: the chain store (records, drafts, immutable versions, names, events, owner totals), who can do what with a chain, and its shares.
-import { projectMemberKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { projectMemberKey } from "@rovara-code/contracts";
 import { seedMembership } from "../support/developer-task-broker.js";
 import { describe, expect, it } from "vitest";
 import { agentAccess, type AgentAccessDeps, type AgentCaller } from "../../packages/broker/src/agents/access.js";
@@ -18,14 +18,16 @@ import {
 import { ChainStore, chainDigest, type ChainRecord } from "../../packages/broker/src/chains/store.js";
 import { validateChainForPublish } from "../../packages/broker/src/chains/validate.js";
 import { DeveloperSignInStore } from "../../packages/broker/src/developer/store.js";
-import type { AgentOwner } from "../../packages/contracts/src/agent-node.js";
-import type { RecipeOverlay } from "../../packages/contracts/src/agent-recipe-node.js";
-import { BUILTIN_AGENTS, builtinDefaultPin, builtinRecipe, currentBuiltinVersion } from "../../packages/contracts/src/agent-templates.js";
-import { DEFAULT_AGENT_GUARDRAILS } from "../../packages/contracts/src/agent-guardrails.js";
-import { CHAIN_MAX_STEPS, type ChainDefinitionInput, type PinnedChainDefinition } from "../../packages/contracts/src/chains.js";
-import type { OrgId, OrgRole } from "../../packages/contracts/src/org.js";
-import { orgMemberKey } from "../../packages/contracts/src/org-node.js";
-import { builtinSettingsKey, chainDirectoryKey, chainKey, chainNameKey, ownerBudgetKey, orgProjectCatalogKey, principalChainSharesKey, principalSharesKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import type { AgentOwner } from "@rovara-code/contracts";
+import type { RecipeOverlay } from "@rovara-code/contracts";
+import { BUILTIN_AGENTS, builtinDefaultPin, builtinRecipe, currentBuiltinVersion } from "@rovara-code/contracts";
+import { DEFAULT_AGENT_GUARDRAILS } from "@rovara-code/contracts";
+import { CHAIN_MAX_STEPS, type ChainDefinitionInput, type PinnedChainDefinition } from "@rovara-code/contracts";
+import type { OrgId } from "@rovara-code/contracts";
+import type { OrgRole } from "../../packages/cloud-contracts/src/org.js";
+import { orgMemberKey } from "../../packages/cloud-contracts/src/org-node.js";
+import { builtinSettingsKey, chainDirectoryKey, chainKey, chainNameKey, orgProjectCatalogKey, principalChainSharesKey, principalSharesKey } from "@rovara-code/contracts";
+import { ownerBudgetKey } from "../../packages/cloud-contracts/src/org-scoped-keys.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { FakeProjectMembers } from "../support/fake-project-members.js";

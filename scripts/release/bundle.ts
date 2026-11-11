@@ -8,21 +8,8 @@ import { copyFile, lstat, mkdir, readFile, readdir, rm, writeFile } from "node:f
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
-import {
-  BUNDLE_LITELLM_IMAGE_NAME,
-  BUNDLE_MANIFEST_FILE,
-  BUNDLE_SIGNATURE_FILE,
-  BundleImageName,
-  BundleManifestSchema,
-  SynthKitManifestSchema,
-  type SynthKitManifest,
-  ImageDigest,
-  ReleaseManifestSchema,
-  type ReleaseManifest,
-  parseBundlePublicKey,
-  sha256OfBytes,
-  type BundleManifest,
-} from "@agentx/contracts";
+import { BUNDLE_LITELLM_IMAGE_NAME, BUNDLE_MANIFEST_FILE, BUNDLE_SIGNATURE_FILE, BundleImageName, BundleManifestSchema, SynthKitManifestSchema, type SynthKitManifest, sha256OfBytes, type BundleManifest } from "@agentx/cloud-contracts";
+import { ImageDigest, ReleaseManifestSchema, type ReleaseManifest, parseBundlePublicKey } from "@rovara-code/contracts";
 import { createHash } from "node:crypto";
 import { LITELLM_SOURCE_IMAGE, imageDigestOf } from "../../infra/lib/bundle-images.js";
 import { assertReleaseFlavorImage, skopeoLabelReader, type ImageLabelReader } from "./image-flavor.js";

@@ -16,11 +16,8 @@ import { failedIndexes } from "./table-writes.js";
 // `registerTaskPauseHandler`, `onTaskEnded`, `prepareSlackReport`.
 import { createHash } from "node:crypto";
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  AGENT_REPORT_MAX_BYTES, AGENT_STEP_INPUTS_MAX_BYTES, AgentRunStateSchema, AgentStepGroundingSchema, AgentXError, BUDGET_EXHAUSTED_FAILURE_MESSAGE, SHORTENED_MARKER, UNVERIFIED_END_PREFIX,
-  agentXError, redactText, renderRunInput, shortenToBytes,
-  type SpendingAdmissionReference, type AgentRunState, type AgentStepTools, type OrgId, type PauseScope, type ResolvedRecipe, type ResolvedStep, type ResultContract, type RunCheckout,
-} from "@agentx/contracts";
+import { AGENT_REPORT_MAX_BYTES, AGENT_STEP_INPUTS_MAX_BYTES, AgentRunStateSchema, AgentStepGroundingSchema, AgentXError, BUDGET_EXHAUSTED_FAILURE_MESSAGE, SHORTENED_MARKER, UNVERIFIED_END_PREFIX, agentXError, redactText, renderRunInput, shortenToBytes, type SpendingAdmissionReference, type AgentRunState, type AgentStepTools, type OrgId, type ResolvedRecipe, type ResolvedStep, type ResultContract, type RunCheckout } from "@rovara-code/contracts";
+import { type PauseScope } from "@agentx/cloud-contracts";
 import type { DeveloperTaskActions, TransactItems } from "../aws/developer-task-actions.js";
 import { WORKFLOW_DISPATCH_PK, agentRunDispatchItem, agentRunDispatchKey } from "../aws/broker-shared.js";
 import { effectiveTaskOwner, taskAgentRunKey, taskKey, taskPointerKey, type DeveloperTaskRecord } from "../developer/task-records.js";

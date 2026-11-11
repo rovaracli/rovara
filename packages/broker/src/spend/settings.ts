@@ -8,32 +8,8 @@ import { projectAiCallerCheck } from "./project-ai-identity.js";
 import { grantRoleOf } from "../developer/project-roles.js";
 import { projectAiLifecycleChecks } from "./project-ai-authority.js";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  DEFAULT_PLANNING_LIMIT_USD,
-  ProjectAiSettingsSchema,
-  TaskStopProjectPolicySchema,
-  TaskStopPendingChangeSchema,
-  sameJsonContent,
-  SpendPolicySchema,
-  TRIAL_LIMITS_R49,
-  agentKey,
-  agentXError,
-  builtinSettingsKey,
-  chainKey,
-  defaultProjectAiSettings,
-  defaultSpendPolicy,
-  isBuiltinAgentId,
-  orgSettingsKey,
-  ownerBudgetKey,
-  projectAiKey,
-  projectMemberKey,
-  scopeKey,
-  type AgentGuardrails,
-  type BudgetScope,
-  type OrgId,
-  type ProjectAiSettings,
-  type SpendPolicy,
-} from "@agentx/contracts";
+import { DEFAULT_PLANNING_LIMIT_USD, sameJsonContent, agentKey, agentXError, builtinSettingsKey, chainKey, isBuiltinAgentId, projectMemberKey, type AgentGuardrails, type OrgId } from "@rovara-code/contracts";
+import { ProjectAiSettingsSchema, TaskStopProjectPolicySchema, TaskStopPendingChangeSchema, SpendPolicySchema, TRIAL_LIMITS_R49, defaultProjectAiSettings, defaultSpendPolicy, orgSettingsKey, ownerBudgetKey, projectAiKey, scopeKey, type BudgetScope, type ProjectAiSettings, type SpendPolicy } from "@agentx/cloud-contracts";
 import { budgetActorChecks, budgetActorRefused, type BudgetActor } from "../agents/budget-authority.js";
 import { readGuardrails } from "../agents/guardrails.js";
 import type { OwnerShare } from "./owner-total.js";

@@ -2,7 +2,7 @@
 // counts the broker holds, never from a model's sentences, and every rule only RAISES (a design that says "small change" but names the data model in `touches` is still high; leaving an area out lowers nothing).
 //
 // The codes that make a design HIGH are the DR1 contract's one list (`DESIGN_REVIEW_HIGH_RISK_REASONS`, which includes `infrastructure` per 3.8), shared with DR2's skip rule.
-import { DESIGN_REVIEW_HIGH_RISK_REASONS, type DesignReason } from "@agentx/contracts";
+import { DESIGN_REVIEW_HIGH_RISK_REASONS, type DesignReason } from "@rovara-code/contracts";
 
 /** Areas that make a design high risk: it needs the configured high-risk approver, a fresh sign-in, and the requester may not approve it (unless the sole owner). */
 export const DESIGN_TIER_HIGH_CODES: readonly DesignReason[] = DESIGN_REVIEW_HIGH_RISK_REASONS;

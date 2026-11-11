@@ -4,7 +4,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { approvedFileKey, bundleApprovalKey, bundleTrustParameter, deployLockParameter, deployProgressParameter, installedBundleParameter, operatorAccessStateParameter, restorePointParameter } from "@agentx/contracts";
+import { approvedFileKey, bundleApprovalKey, bundleTrustParameter, deployLockParameter, deployProgressParameter, installedBundleParameter, operatorAccessStateParameter, restorePointParameter } from "@agentx/cloud-contracts";
 import { builtBundle, newTestKey, type BuiltBundle } from "../support/bundle-fixture.js";
 import { T0, World } from "../support/deployer-world.js";
 
@@ -156,7 +156,7 @@ describe("the deployer re-verifies the signed bundle", () => {
     const record = JSON.parse(recordBytes.toString("utf8")) as { files: Array<{ file: string; versionId: string; sha256: string; bytes: number }> };
     const extra = Buffer.from("extra");
     const versionId = world.putObject(approvedFileKey(bundle.bundleSha256, "legal/RELICENSED.md"), extra);
-    world.putObject(bundleApprovalKey(bundle.bundleSha256), Buffer.from(JSON.stringify({ ...record, files: [...record.files, { file: "legal/RELICENSED.md", versionId, sha256: (await import("@agentx/contracts")).sha256OfBytes(extra), bytes: extra.length }] })));
+    world.putObject(bundleApprovalKey(bundle.bundleSha256), Buffer.from(JSON.stringify({ ...record, files: [...record.files, { file: "legal/RELICENSED.md", versionId, sha256: (await import("@agentx/cloud-contracts")).sha256OfBytes(extra), bytes: extra.length }] })));
     expect(await world.run({ bundleId: bundle.bundleSha256 })).toMatchObject({ status: "refused", reason: expect.stringMatching(/does not list/) });
     world.putObject(bundleApprovalKey(bundle.bundleSha256), Buffer.from(JSON.stringify({ ...record, files: record.files.filter((entry) => entry.file !== "legal/LICENSE") })));
     expect(await world.run({ bundleId: bundle.bundleSha256 })).toMatchObject({ status: "refused", reason: expect.stringMatching(/not the file the signed manifest lists/) });
@@ -169,7 +169,7 @@ describe("the deployer re-verifies the signed bundle", () => {
     const bytes = Buffer.from(`${JSON.stringify({ ...manifest, version: "1.9.9" }, null, 2)}\n`);
     await writeFile(join(bundle.dir, "bundle.json"), bytes);
     const sig = JSON.parse(await readFile(join(bundle.dir, "bundle.sig.json"), "utf8")) as Record<string, unknown>;
-    const { sha256OfBytes } = await import("@agentx/contracts");
+    const { sha256OfBytes } = await import("@agentx/cloud-contracts");
     await writeFile(join(bundle.dir, "bundle.sig.json"), JSON.stringify({ ...sig, bundleSha256: sha256OfBytes(bytes), signature: (await bundle.key.signer.sign(bytes)).toString("base64") }));
     bundle.bundleSha256 = sha256OfBytes(bytes);
     const world = new World();
@@ -182,7 +182,7 @@ describe("the deployer re-verifies the signed bundle", () => {
   /** Rewrites the bundle's release.json with `edit`, then fixes its entry in bundle.json and signs again with the test key: a correctly signed bundle whose release.json differs from what this deployer's schema knows. */
   async function withReleaseEdited(edit: (release: Record<string, any>) => void) { // eslint-disable-line @typescript-eslint/no-explicit-any
     const bundle = await build();
-    const { sha256OfBytes } = await import("@agentx/contracts");
+    const { sha256OfBytes } = await import("@agentx/cloud-contracts");
     const release = JSON.parse(await readFile(join(bundle.dir, "release.json"), "utf8")) as Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
     edit(release);
     const releaseBytes = Buffer.from(`${JSON.stringify(release, null, 2)}\n`);

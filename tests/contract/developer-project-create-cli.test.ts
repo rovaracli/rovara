@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { DeveloperProjectsResponse } from "@agentx/contracts";
+import type { DeveloperProjectsResponse } from "@agentx/cloud-contracts";
 import { developerTokenKey, saveDeveloperEnvironment } from "../../packages/cli/src/developer/config.js";
 import { whoamiText } from "../../packages/cli/src/developer/commands.js";
 import { executeCli } from "../../packages/cli/src/main.js";

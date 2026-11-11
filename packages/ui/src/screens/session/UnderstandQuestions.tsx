@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState, type FormEvent } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { ANSWER_EVERY_QUESTION_MESSAGE, INTENT_ANSWER_MAX_CHARS } from "@agentx/contracts/web";
+import { ANSWER_EVERY_QUESTION_MESSAGE, INTENT_ANSWER_MAX_CHARS } from "@agentx/cloud-contracts/web";
 import { useAppHost } from "../../host.js";
 import { createSessionActions } from "../../api/session-actions.js";
 import { acceptSessionRead } from "../../api/sessions.js";

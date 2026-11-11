@@ -1,7 +1,7 @@
 // Design review stage, DR4 (design-review-stage.md 3.4 steps 2 to 4): the broker verifies a worker's report against the packet it built.
 import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { READ_ONLY_TOOLS, REVIEWER_VERIFY_FAILURES, ReviewerRunSchema, inputProofSentence } from "@agentx/contracts";
+import { READ_ONLY_TOOLS, REVIEWER_VERIFY_FAILURES, ReviewerRunSchema, inputProofSentence } from "@rovara-code/contracts";
 import { buildReviewerPacket, packetDigestOf, type PacketReaders } from "../../packages/broker/src/design-review/packet.js";
 import {
   verifyReviewerReport, verifyRound, runVerdictOf, type FirstCallUsageReader, type UsageCheck, type VerifyReviewerInput,

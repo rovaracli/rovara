@@ -7,8 +7,8 @@
 // (`requireLiveCompanyAdmin`: the member row, the person's pointer, the sign-in identity and the open company, all now), never taken from a token's claim. With the switch off, or on an edition with no
 // trial, the two billing paths are "not found" for everyone, owner or not, as any unknown path. `org` is a browser route family and `trial` was added to it, so the app reaches these as `/v1/web/...`;
 // a token may read them by role. The POST of programme M is not here: any other method is not found. Answers are fixed words, numbers and ids; never a card, a provider id or a token.
-import { AgentXError, agentXError, type OrgId } from "@agentx/contracts";
-import { InvoiceListSchema, INVOICES_MAX_PAGE } from "@agentx/contracts";
+import { AgentXError, agentXError, type OrgId } from "@rovara-code/contracts";
+import { InvoiceListSchema, INVOICES_MAX_PAGE } from "@agentx/cloud-contracts";
 import { orgTrial } from "../../app-nav/nav.js";
 import { listOrganizationMembers } from "../../org/directory.js";
 import { billingEnabled } from "../../org/billing-switch.js";

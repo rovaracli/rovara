@@ -12,7 +12,7 @@
 // Cost (no AWS call was made to measure; EventBridge Scheduler pricing is $1.00 per million invocations after 14 million free a month): the schedules themselves are free at any size this runs at. The cost of a
 // night is the worker's time for the whole suite once (design 7 estimates 45 minutes for each of 5 to 6 repositories), charged to the project, and none of it is incurred until a run can be started.
 import { SchedulerClient } from "@aws-sdk/client-scheduler";
-import { NIGHTLY_SOURCE, type OrgId, type TestEnvironment } from "@agentx/contracts";
+import { NIGHTLY_SOURCE, type OrgId, type TestEnvironment } from "@rovara-code/contracts";
 import { scheduleSettingsFromEnvironment, type SchedulerPort } from "../triggers/schedules.js";
 import type { TestEnvRouteHooks } from "../aws/developer-routes/test-environment.js";
 import type { TestEnvDeps } from "../org/test-environment.js";

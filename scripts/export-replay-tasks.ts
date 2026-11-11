@@ -31,10 +31,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { unmarshall } from "@aws-sdk/util-dynamodb";
-import {
-  AUTO_FIX_BLOCK_CAUSES, EvidencePackSchema, WORKFLOW_BLOCK_REASONS, WorkflowSnapshotSchema, workflowApplicationEvidenceCodes,
-  type EvidencePack, type OrgId,
-} from "@agentx/contracts";
+import { AUTO_FIX_BLOCK_CAUSES, WORKFLOW_BLOCK_REASONS, WorkflowSnapshotSchema } from "@agentx/cloud-contracts";
+import { EvidencePackSchema, workflowApplicationEvidenceCodes, type EvidencePack, type OrgId } from "@rovara-code/contracts";
 import type { DeveloperTaskRecord } from "../packages/broker/src/developer/task-records.js";
 import { fullSuiteOf } from "../packages/broker/src/aws/developer-tasks/testing-view.js";
 import { alreadyFailingForResults, readKnownFailingRow } from "../packages/broker/src/test-env/known-failing.js";

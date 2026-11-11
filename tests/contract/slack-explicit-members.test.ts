@@ -2,7 +2,8 @@
 // workspace is bound to. Covers each closed fallback, removed and banned people, a merged person, an explicit member, the three switch values and the plain Slack reply.
 import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { SLACK_NOT_A_MEMBER_NOTICE, parseSlackThreadSubject, type SlackRequestMessage } from "../../packages/contracts/src/index.js";
+import { SLACK_NOT_A_MEMBER_NOTICE } from "@agentx/cloud-contracts";
+import { parseSlackThreadSubject, type SlackRequestMessage } from "@rovara-code/contracts";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { slackRequesterRole } from "../../packages/broker/src/aws/broker/workspace-preparation.js";
 import { createNotifierHandler } from "../../packages/broker/src/aws/developer-task-notifier.js";

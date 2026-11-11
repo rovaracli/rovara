@@ -1,4 +1,4 @@
-import {STAGE_IDS,STAGE_EDIT_RULES,STAGE_REFERENCE,ModelIdentifierSchema,StageModelChoiceSchema,agentXError,type ProjectModels,type ModelIdentifier,type ModelSelection,type StageModelChoice,type StageId,type ResolvedRecipe,type RecipeOverlay} from "@agentx/contracts";
+import { STAGE_IDS, STAGE_EDIT_RULES, STAGE_REFERENCE, ModelIdentifierSchema, StageModelChoiceSchema, agentXError, type ProjectModels, type ModelIdentifier, type ModelSelection, type StageModelChoice, type StageId, type ResolvedRecipe, type RecipeOverlay } from "@rovara-code/contracts";
 const unavailable=()=>agentXError("RUNTIME_UNAVAILABLE","The model settings could not be read. Reload and try again.");
 export function stageChoiceOf(raw:unknown,stage:StageId,recipe:ResolvedRecipe):StageModelChoice|undefined {
  if(typeof raw!=="object" || raw===null) return undefined;

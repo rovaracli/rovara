@@ -1,4 +1,4 @@
-import { SessionViewSchema, SessionMessageSchema, DeveloperTaskViewSchema, type SessionView } from "@agentx/contracts/web";
+import { SessionViewSchema, SessionMessageSchema, DeveloperTaskViewSchema, type SessionView } from "@agentx/cloud-contracts/web";
 export const SESSION_FIXTURE_ID = "ses_aaaaaaaaaaaaaaaaaaaa";
 export const sessionPerson = { developerId: "a".repeat(64), name: "Priya" };
 export function sessionFixture(overrides: Partial<SessionView> = {}): SessionView {

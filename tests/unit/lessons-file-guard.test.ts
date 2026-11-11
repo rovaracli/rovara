@@ -1,12 +1,12 @@
 // Lessons in the repo, lane R2 (owner decision 50.4): a task's pull request may not touch `.rovara/lessons.md`. The path rule (shared by the worker's push check and the broker's merge check) and the broker's check through the
 // code host's changed files: a rename counts under both names, a list cut short or unreadable fails closed.
 import { describe, expect, it } from "vitest";
-import type { ChangeRequestFilesPage } from "@agentx/contracts";
+import type { ChangeRequestFilesPage } from "@rovara-code/contracts";
 import { leavesLessonsFileAlone, touchesCompanyRulesFile, touchesLessonsFile } from "../../packages/broker/src/rovara-code/lessons-file-guard.js";
 import { COMPANY_RULES_FILE_REFUSAL, LESSONS_FILE_REFUSAL, assertLessonsFileUntouched, assertPushCarriesNoLessonsFile as pushGuard, isCompanyRulesFilePath, isLessonsFilePath } from "../../packages/worker/src/lessons-file-guard.js";
 
 const REF = { repository: { url: "https://github.com/acme/api" }, id: "7", url: "" };
-const SCOPE = { system: "private-install" } as never;
+const SCOPE = { system: "install" } as never;
 const file = (path: string, previousPath?: string) => ({ path, status: "modified", additions: 1, deletions: 0, ...(previousPath === undefined ? {} : { previousPath }) });
 const host = (pages: ChangeRequestFilesPage[] | Error) => ({ changedFiles: async (_ref: unknown, page: number) => { if (pages instanceof Error) throw pages; return pages[page - 1] ?? { files: [] }; } });
 

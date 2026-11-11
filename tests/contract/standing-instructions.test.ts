@@ -2,13 +2,10 @@
 // gets with the switch off (as before) and on (How we work moves into the system prompt block). Golden text on purpose: the wording is part of the prompt version.
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { BUILTIN_AGENTS } from "../../packages/contracts/src/agent-templates.js";
-import { DEFAULT_AGENT_GUARDRAILS } from "../../packages/contracts/src/agent-guardrails.js";
-import { EMPTY_RECIPE, applyOverlay, type RecipeLayer, type RecipeOverlay, type ResolvedRecipe } from "../../packages/contracts/src/agent-recipe-node.js";
-import {
-  AGENTX_PREAMBLE_VERSION, COMPANY_RULES_EXCEED_BUDGET_MESSAGE, COMPANY_RULE_LIMITS, ROVARA_CODE_AGENT_ID, STANDING_INSTRUCTIONS_WORDING, StandingInstructionsPayloadSchema,
-  agentxPreambleSha256, assertCompanyRulesWithinBudget, type AgentId, type CompanyInstructionsSnapshot,
-} from "../../packages/contracts/src/index.js";
+import { BUILTIN_AGENTS } from "@rovara-code/contracts";
+import { DEFAULT_AGENT_GUARDRAILS } from "@rovara-code/contracts";
+import { EMPTY_RECIPE, applyOverlay, type RecipeLayer, type RecipeOverlay, type ResolvedRecipe } from "@rovara-code/contracts";
+import { AGENTX_PREAMBLE_VERSION, COMPANY_RULES_EXCEED_BUDGET_MESSAGE, COMPANY_RULE_LIMITS, ROVARA_CODE_AGENT_ID, STANDING_INSTRUCTIONS_WORDING, StandingInstructionsPayloadSchema, agentxPreambleSha256, assertCompanyRulesWithinBudget, type AgentId, type CompanyInstructionsSnapshot } from "@rovara-code/contracts";
 import { applyAgentStep, type DispatchMode } from "../../packages/broker/src/agents/dispatch.js";
 import { buildStandingInstructions } from "../../packages/broker/src/instructions/standing-block.js";
 import { emptyCompanyInstructionsSource, readCompanyInstructions } from "../../packages/broker/src/instructions/company-source.js";

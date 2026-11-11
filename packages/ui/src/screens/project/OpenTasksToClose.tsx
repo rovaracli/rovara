@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link } from "react-router";
 import { useQueryClient } from "@tanstack/react-query";
-import { SessionIdSchema } from "@agentx/contracts/web";
+import { SessionIdSchema } from "@agentx/cloud-contracts/web";
 import { mergeLiveTiles, useLive } from "../../api/live.js";
 import { useAppHost } from "../../host.js";
 import { workPlace } from "../../nav-flags.js";

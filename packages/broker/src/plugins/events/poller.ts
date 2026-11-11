@@ -13,9 +13,7 @@
 //  - one target that fails is retried with a growing, capped delay and never stops the others; one install follows at most `MAX_POLL_TARGETS` change requests.
 // What a pass does not do: read comments (that needs the host's feedback read for each target). A review, a check, a push to the change request, and its merge or close are found.
 import { createHash } from "node:crypto";
-import {
-  agentXError, hostRateLimitRetryAt, type ChangeRequestRef, type ChangeRequestState, type ChangeRequestStatus, type CodeHost, type CodeHostEvent, type HostScope, type PluginKind, type ReadBudget,
-} from "@agentx/contracts";
+import { agentXError, hostRateLimitRetryAt, type ChangeRequestRef, type ChangeRequestState, type ChangeRequestStatus, type CodeHost, type CodeHostEvent, type HostScope, type PluginKind, type ReadBudget } from "@rovara-code/contracts";
 import { reserveAndConsume } from "./intake.js";
 import type { EventReservations } from "./reservations.js";
 

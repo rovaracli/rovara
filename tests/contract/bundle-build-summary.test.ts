@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mkdtemp, rm } from "node:fs/promises";
 import { afterEach, describe, expect, it } from "vitest";
-import { environmentStackName } from "@agentx/contracts";
+import { environmentStackName } from "@rovara-code/contracts";
 import { diffStack, summariseBuild } from "../../packages/cli/src/upgrade/bundle/build-summary.js";
 import { buildAtApproval } from "../../packages/cli/src/upgrade/bundle/build-at-approval.js";
 import type { BuiltBundle as Bundle } from "../support/bundle-fixture.js";

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { hostRateLimitRetryAt } from "@agentx/contracts";
+import { hostRateLimitRetryAt } from "@rovara-code/contracts";
 import { createCodeHostTap, gitRevertedCommits, humanEditFile, revertedCommits, runHumanEdit, revertedPullRequests, type CodeHostDiff, type CodeHostEvent, type CodeHostRepo, type HumanEditInput } from "../../packages/broker/src/team-record/sources/codehost.js";
 import { createGithubDiffReader, createGithubRecordTap, githubEventsOf } from "../../packages/broker/src/team-record/sources/github.js";
 import { createRovaraEmitter, type RovaraEventBase } from "../../packages/broker/src/team-record/sources/rovara.js";

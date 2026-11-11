@@ -4,7 +4,8 @@
 import { randomUUID } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { beforeAll, describe, expect, it } from "vitest";
-import { WorkflowSnapshotSchema, createCandidateManifest, createWorkflowSnapshot, mergeTrackingKey, mergeTrackingDecisionDigest, type MergeTrackingItem, type WorkflowSnapshot } from "@agentx/contracts";
+import { WorkflowSnapshotSchema, createWorkflowSnapshot, mergeTrackingDecisionDigest, type MergeTrackingItem, type WorkflowSnapshot } from "@agentx/cloud-contracts";
+import { createCandidateManifest, mergeTrackingKey } from "@rovara-code/contracts";
 import { reconcileTaskPullRequestFeedback } from "../../packages/broker/src/aws/github-webhooks.js";
 import { ORG_A, sessionWorld } from "../support/agent-session-world.js";
 import { MAYA, mergeButtonBroker } from "../support/merge-button-broker.js";

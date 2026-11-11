@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { recordEventKey, recordSourceConfigIndexValue, recordSourceIndexValue, recordScopeIndexValue, teamRecordPk } from "@agentx/contracts";
+import { recordEventKey, recordSourceConfigIndexValue, recordSourceIndexValue, recordScopeIndexValue } from "@agentx/cloud-contracts";
+import { teamRecordPk } from "@rovara-code/contracts";
 import { createSourceConfigPort } from "../../../packages/broker/src/team-record/sink.js";
 import { eventFromItem, deterministicEventId } from "../../../packages/broker/src/team-record/store.js";
 import { GITHUB_SCOPE, ORG_A, ORG_B, T0, addSource, githubDraft, rows, setLock, setMode, world } from "../../support/team-record-core.js";

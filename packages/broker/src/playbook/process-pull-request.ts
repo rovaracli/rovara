@@ -1,7 +1,7 @@
 // "How we work" (F4): instructions written on the pull request stage are used nowhere (the pull request description never read them, and the feedback review drops a process layer's), so a project's
 // process layer can't add or change them yet. Removing what is there stays allowed. Refused where the overlay is written or published: create, draft save, publish (immediate, confirmed and in
 // the store). Ordinary agents may still set them.
-import { HOW_WE_WORK_UNUSED_STAGE_NOTE, agentXError, type AgentId, type OrgId, type RecipeOverlay } from "@agentx/contracts";
+import { HOW_WE_WORK_UNUSED_STAGE_NOTE, agentXError, type AgentId, type OrgId, type RecipeOverlay } from "@rovara-code/contracts";
 
 export const PROCESS_PULL_REQUEST_MESSAGE = HOW_WE_WORK_UNUSED_STAGE_NOTE;
 

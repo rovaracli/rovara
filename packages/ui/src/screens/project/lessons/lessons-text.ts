@@ -1,5 +1,5 @@
 // The fixed words of the Lessons tab, the Sources tab and the task page's lessons list. Text from a lesson or a source is never put into these sentences as markup: the screens show it as text.
-import type { LESSON_TIER_REASONS } from "@agentx/contracts/web";
+import type { LESSON_TIER_REASONS } from "@agentx/cloud-contracts/web";
 import { ApiError } from "../../../api/errors.js";
 import { visibleText } from "../../../design/VisibleText.js";
 

@@ -3,7 +3,8 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { EvidencePackSchema, WORKFLOW_BLOCK_REASONS, WorkflowSnapshotSchema, createCandidateManifest, createWorkflowSnapshot } from "@agentx/contracts";
+import { EvidencePackSchema, createCandidateManifest } from "@rovara-code/contracts";
+import { WORKFLOW_BLOCK_REASONS, WorkflowSnapshotSchema, createWorkflowSnapshot } from "@agentx/cloud-contracts";
 import { hasCodeSignal, hasUnconfirmedFailure, knownSetsOf, readSnapshotFolder, replayOne, replayResults, replayText, type RawKnown, type ViewOf } from "../../scripts/replay-results.js";
 
 const candidate = createCandidateManifest([{ repositoryId: "app", commitSha: "1".repeat(40), treeSha: "2".repeat(40), baseCommitSha: "3".repeat(40) }]);

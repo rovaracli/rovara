@@ -1,7 +1,7 @@
 // SEED-RISK-1, through the whole broker: the look's propose locks a detected seed command from the repository as GitHub gives it at the default branch's head, the setup page shows that proposal (not the unlocked
 // one it recomputes from the draft) as MEDIUM with the reason, and one maintainer approves it with one press. A model's seed, or a GitHub that cannot be read, stays HIGH.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { DecisionCardsViewSchema, type TestEnvDraft } from "../../packages/contracts/src/index.js";
+import { DecisionCardsViewSchema, type TestEnvDraft } from "@rovara-code/contracts";
 import { OMAR } from "../support/developer-task-broker.js";
 import { ENV, command, draftBody, draftOf, setupWizardBench, withSwitch } from "../support/setup-wizard-testenv.js";
 import { pinnedCatalog, verifiedCatalog } from "../support/catalog-pinning.js";

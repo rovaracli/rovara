@@ -1,6 +1,6 @@
 // Fix round 6 (Opus recheck-5, N-11): a place that narrows, or is deleted, is hidden from the first write of the change, never only after a pass.
 import { describe, expect, it } from "vitest";
-import { recordScopeHash } from "@agentx/contracts";
+import { recordScopeHash } from "@agentx/cloud-contracts";
 import { runDeleteWorker } from "../../../packages/broker/src/team-record/delete-worker.js";
 import { recordSearch } from "../../../packages/broker/src/team-record/query.js";
 import { createRecordSink } from "../../../packages/broker/src/team-record/sink.js";

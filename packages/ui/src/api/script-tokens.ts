@@ -1,5 +1,5 @@
 // Script tokens (UX5b): the settings calls. Every write is sent once from the browser session (never retried here): a made token is shown once, so a repeat would only be refused.
-import { CreatedScriptTokenReaderSchema, RevokedScriptTokenReaderSchema, ScriptTokenListReaderSchema, type ScriptTokenPermission } from "@agentx/contracts/web";
+import { CreatedScriptTokenReaderSchema, RevokedScriptTokenReaderSchema, ScriptTokenListReaderSchema, type ScriptTokenPermission } from "@agentx/cloud-contracts/web";
 import { createApiClient } from "./client.js";
 import type { AppHost } from "../host.js";
 

@@ -2,7 +2,7 @@
 // (a requester's own approval does not count when self-approval is off), so the link is a positive identification: one GitHub account to one member of the org, and
 // one member to one account. Both directions are written in one transaction. The items live in the org's own partitions.
 import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { githubMemberKey, memberGithubKey, orgScoped, type OrgId } from "@agentx/contracts";
+import { githubMemberKey, memberGithubKey, orgScoped, type OrgId } from "@rovara-code/contracts";
 
 export interface GithubMemberDependencies {
   documentClient: { send(command: unknown): Promise<unknown> };

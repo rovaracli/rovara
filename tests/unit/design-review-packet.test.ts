@@ -1,7 +1,7 @@
 // Design review stage, DR4 (design-review-stage.md 3.4 step 1): the broker builds each reviewer's packet.
 import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { DESIGN_REVIEW_PACKET_ITEMS_MAX, ReviewerPacketItemSchema, type ContextSource, type ContextToolCallResponse } from "@agentx/contracts";
+import { DESIGN_REVIEW_PACKET_ITEMS_MAX, ReviewerPacketItemSchema, type ContextSource, type ContextToolCallResponse } from "@rovara-code/contracts";
 import {
   PACKET_BYTES_MAX, PacketBuildError, buildReviewerPacket, estimateInputTokens, itemOf, mcpItemReaderOf, packetDigestOf, renderPacketDocument, renderPacketRequest,
   type PacketReaders,

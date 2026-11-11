@@ -1,9 +1,10 @@
 import { Aws, CfnCondition, Duration, Fn, aws_iam as iam, aws_lambda as lambda, aws_lambda_nodejs as lambdaNodejs } from "aws-cdk-lib";
 import type { CfnParameter, aws_dynamodb as dynamodb, aws_secretsmanager as secretsmanager } from "aws-cdk-lib";
 import { resolve } from "node:path";
-import { TASK_PERSON_DEVELOPER_RECORD_PROJECTION, TASK_PERSON_PROOF_ENV, taskPersonProofRoleName } from "@agentx/contracts";
+import { TASK_PERSON_DEVELOPER_RECORD_PROJECTION, TASK_PERSON_PROOF_ENV, taskPersonProofRoleName } from "@agentx/cloud-contracts";
 import { Construct } from "constructs";
 import type { AgentXNaming } from "./naming.js";
+import { markCodeContractsPureCommand } from "./code-contracts-bundling.js";
 
 // The attributes the dispatcher may read from a developer sign-in row are exactly the ones the person runtime asks for
 // (packages/broker/src/aws/task-person-runtime.ts reads TASK_PERSON_DEVELOPER_RECORD_PROJECTION); one list, so they cannot drift.
@@ -72,6 +73,7 @@ export class TaskPersonProof extends Construct {
         minify: true,
         sourceMap: true,
         target: "node22",
+        commandHooks: { beforeBundling: (inputDir: string) => [markCodeContractsPureCommand(inputDir)], afterBundling: () => [], beforeInstall: () => [] },
       },
     });
     const proofFunctionResource = proof.node.defaultChild as lambda.CfnFunction;

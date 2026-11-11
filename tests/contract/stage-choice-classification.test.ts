@@ -11,7 +11,7 @@ it("classifies the existing guardrail model changes with unchanged words", () =>
  expect(classifyStageChoiceChange({ kind: "guardrails", before: { forbiddenModels: [opus], requireCrossCompanyReview: true }, after: { forbiddenModels: [], requireCrossCompanyReview: false } })).toEqual(["Allows the model anthropic/claude-opus-4 again", "Turns off the rule that a review step uses a model from a different AI company"]);
 });
 it("classifies a new route provider even when the model vendor is unchanged",async()=>{
- const {EMPTY_RECIPE}=await import("../../packages/contracts/src/index.js");
+ const { EMPTY_RECIPE } = await import("@rovara-code/contracts");
  const before={...structuredClone(EMPTY_RECIPE),steps:[{id:"build",name:"Build",kind:"build" as const,settings:{instructions:[],model:opus}}]};
  const after={...before,steps:[{...before.steps[0]!,settings:{instructions:[],model:{provider:"amazon-bedrock",modelId:"us.anthropic.claude-opus-4-v1:0"}}}]};
  expect(classifyStageChoiceChange({kind:"process",before,after,firstPublish:false})).toEqual(['Lets the step "Build" send data through a new model provider (amazon-bedrock)']);
@@ -22,7 +22,7 @@ it("uses existing model rules for effective project selection changes",()=>{
  expect(classifyStageChoiceChange({kind:"selection",before:{code_review:opus},after:{code_review:haiku}})).toContain('Moves the review step "code_review" to a weaker model');
 });
 it("tells Nova apart from Claude and from other Bedrock families when it asks whether a step reaches a new AI company (SH33)",async()=>{
- const {EMPTY_RECIPE}=await import("../../packages/contracts/src/index.js");
+ const { EMPTY_RECIPE } = await import("@rovara-code/contracts");
  const bedrock=(modelId:string)=>({provider:"amazon-bedrock",modelId});
  const recipe=(model:{provider:string;modelId:string})=>({...structuredClone(EMPTY_RECIPE),steps:[{id:"build",name:"Build",kind:"build" as const,settings:{instructions:[],model}}]});
  const change=(from:{provider:string;modelId:string},to:{provider:string;modelId:string})=>classifyStageChoiceChange({kind:"process",before:recipe(from),after:recipe(to),firstPublish:false});

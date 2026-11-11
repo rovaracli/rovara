@@ -4,23 +4,21 @@
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
-import { ROVARA_CODE_BUILD_GUIDANCE, ROVARA_CODE_PLAN_GUIDANCE } from "../../packages/contracts/src/agent-templates.js";
+import { ROVARA_CODE_BUILD_GUIDANCE, ROVARA_CODE_PLAN_GUIDANCE } from "@rovara-code/contracts";
 import { releaseFinishedTask } from "../../packages/broker/src/aws/developer-tasks.js";
 import { planDocumentInstructions } from "../../packages/broker/src/aws/broker-shared.js";
 import type { DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
 import { slackSectionTexts, workflowMessage } from "../../packages/broker/src/developer/workflow-messages.js";
 import { estimateDuration, noteDurationAtPullRequest, noteFinishedTaskDuration, noteTaskDuration, recordTaskDuration } from "../../packages/broker/src/rovara-code/duration.js";
 import { taskViewForClient } from "../../packages/broker/src/rovara-code/task-view-compat.js";
-import {
-  PLAN_MISSING_CHANGE, PLAN_MISSING_FILES, PLAN_MISSING_TESTS, asksForPlanParts, planAnswerMissingParts, planAnswerProposesChecks, planMissingParts, parsePlanDocument, planDocumentMarkdown, readCanonicalPlan, type PlanDocument,
-} from "../../packages/contracts/src/workflow-plan-document.js";
-import { createWorkflowSnapshot, WorkflowSnapshotSchema } from "../../packages/contracts/src/task-workflow-node.js";
-import { createCandidateManifest } from "../../packages/contracts/src/task-workflow-node.js";
-import type { OrgId } from "../../packages/contracts/src/org.js";
-import { builtinSettingsKey, durationHistoryKey } from "../../packages/contracts/src/org-scoped-keys.js";
-import { DEFAULT_RUN_MINUTES, DURATION_HISTORY_SIZE, formatMinutes } from "../../packages/contracts/src/rovara-code.js";
-import { RUN_MINUTES_MAX, RunEstimateSchema, type RunEstimate } from "../../packages/contracts/src/spend.js";
-import { DeveloperTaskResponseSchema } from "../../packages/contracts/src/index.js";
+import { PLAN_MISSING_CHANGE, PLAN_MISSING_FILES, PLAN_MISSING_TESTS, asksForPlanParts, planAnswerMissingParts, planAnswerProposesChecks, planMissingParts, parsePlanDocument, planDocumentMarkdown, readCanonicalPlan, type PlanDocument } from "@rovara-code/contracts";
+import { createWorkflowSnapshot, WorkflowSnapshotSchema } from "../../packages/cloud-contracts/src/task-workflow-node.js";
+import { createCandidateManifest } from "@rovara-code/contracts";
+import type { OrgId } from "@rovara-code/contracts";
+import { builtinSettingsKey, durationHistoryKey } from "@rovara-code/contracts";
+import { DEFAULT_RUN_MINUTES, DURATION_HISTORY_SIZE, formatMinutes } from "@rovara-code/contracts";
+import { RUN_MINUTES_MAX, RunEstimateSchema, type RunEstimate } from "@rovara-code/contracts";
+import { DeveloperTaskResponseSchema } from "@agentx/cloud-contracts";
 import { MAYA, createSingleAnswerPlanBroker } from "../support/developer-task-broker.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { fakeModelAccess } from "../support/fake-model-access.js";

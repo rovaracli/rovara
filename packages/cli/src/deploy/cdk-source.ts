@@ -7,7 +7,7 @@ import type { TeamRecordOptions } from "./team-record-switch.js";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
-import { agentXError, environmentStackName, type Edition } from "@agentx/contracts";
+import { agentXError, environmentStackName, type Edition } from "@rovara-code/contracts";
 import { CDK_CONSTRUCT_IDS, cdkAppArguments, type CommandRunner } from "./cdk-engine.js";
 import type { DeployPart } from "./parameters.js";
 

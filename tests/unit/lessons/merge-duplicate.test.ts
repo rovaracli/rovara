@@ -1,7 +1,7 @@
 // Lessons in production, lane 5, final round: a person's one-click "Merge into the existing lesson" for a possible duplicate (POST .../lessons/{id}/merge). Authority is the point: an eligible person who can read BOTH lessons,
 // a live browser session, a version the person read; and the merge itself is the curator's own fold (`mergeInto`) under all its limits, with AND-merged trust flags.
 import { describe, expect, it } from "vitest";
-import { AgentXError, type OrgId } from "@agentx/contracts";
+import { AgentXError, type OrgId } from "@rovara-code/contracts";
 import { routeLessons, type LessonRouteDependencies } from "../../../packages/broker/src/lessons/routes.js";
 import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.js";
 import type { AccessCheckPort } from "../../../packages/broker/src/team-record/access-port.js";

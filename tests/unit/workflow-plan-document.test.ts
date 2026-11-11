@@ -2,10 +2,8 @@
 /* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-assignment -- the tests edit parsed JSON drafts into invalid shapes */
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import {
-  PLAN_CLAIMS_MAX, PLAN_DECISIONS_MAX, WORKFLOW_BLOCK_REASONS, WorkflowArtifactSchema, canonicalPlanJson, diffPlanDocuments, lastFencedBlock, parsePlanDocument,
-  planClaimCount, planClaimIds, planDocumentMarkdown, planSummaryLines, readCanonicalPlan, retiredClaimIds, type PlanDocument, type PlanOwnerAnswers, type WorkflowCheck,
-} from "@agentx/contracts";
+import { PLAN_CLAIMS_MAX, PLAN_DECISIONS_MAX, WorkflowArtifactSchema, canonicalPlanJson, diffPlanDocuments, lastFencedBlock, parsePlanDocument, planClaimCount, planClaimIds, planDocumentMarkdown, planSummaryLines, readCanonicalPlan, retiredClaimIds, type PlanDocument, type PlanOwnerAnswers, type WorkflowCheck } from "@rovara-code/contracts";
+import { WORKFLOW_BLOCK_REASONS } from "@agentx/cloud-contracts";
 import { planAnswer, planDocument, type RawChecksInput } from "../support/plan-documents.js";
 
 const UNREADABLE = "AgentX could not read the proposed checks";

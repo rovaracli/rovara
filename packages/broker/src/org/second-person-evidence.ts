@@ -1,5 +1,6 @@
 import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
-import { agentXError, canonicalJson, developerOrgKey, orgMemberKey, orgMetaKey, orgPk, projectMemberKey, projectMetaKey, type OrgId } from "@agentx/contracts";
+import { agentXError, canonicalJson, orgPk, projectMemberKey, projectMetaKey, type OrgId } from "@rovara-code/contracts";
+import { developerOrgKey, orgMemberKey, orgMetaKey } from "@agentx/cloud-contracts";
 import type { TransactItem } from "../audit/outbox.js";
 import { secondPersonMembershipCondition, type ApprovalDecisionInput } from "./second-person-approval.js";
 

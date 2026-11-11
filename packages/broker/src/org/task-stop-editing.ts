@@ -1,10 +1,7 @@
 import { createHash } from "node:crypto";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import {
- canonicalJson, agentXError, orgScoped, orgMemberKey, orgSettingsKey, projectAiKey, orgProjectCatalogKey, projectMetaKey,
- TaskStopCompanyPolicySchema, TaskStopProjectPolicySchema, TaskStopPendingChangeSchema, TaskStopEditingContextSchema,
- TaskStopEditBodySchema, TaskStopDecisionBodySchema, TaskStopEditResultSchema, taskStopEditKind, type TaskStopEditablePolicy,
-} from "@agentx/contracts";
+import { canonicalJson, agentXError, orgScoped, orgProjectCatalogKey, projectMetaKey } from "@rovara-code/contracts";
+import { orgMemberKey, orgSettingsKey, projectAiKey, TaskStopCompanyPolicySchema, TaskStopProjectPolicySchema, TaskStopPendingChangeSchema, TaskStopEditingContextSchema, TaskStopEditBodySchema, TaskStopDecisionBodySchema, TaskStopEditResultSchema, taskStopEditKind, type TaskStopEditablePolicy } from "@agentx/cloud-contracts";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "../aws/developer-routes.js";
 import { readRequest, commit, type TransactItem } from "../agents/table-writes.js";
 import { auditPending } from "../audit/outbox.js";

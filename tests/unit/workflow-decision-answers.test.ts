@@ -1,8 +1,7 @@
 // A plan decision that carries the owner's answers and the comments they included: what is recorded, and what a replay is.
 import { describe, expect, it } from "vitest";
-import {
-  WorkflowDecisionSchema, WorkflowTransitionError, createWorkflowSnapshot, decideWorkflow, submitWorkflowArtifact, type WorkflowSnapshot,
-} from "@agentx/contracts";
+import { WorkflowDecisionSchema, WorkflowTransitionError } from "@rovara-code/contracts";
+import { createWorkflowSnapshot, decideWorkflow, submitWorkflowArtifact, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { reorderMaps } from "../support/fake-dynamodb.js";
 
 const taskId = "8b579b4b-eaa7-4bf2-87bc-6da86b97c9e6";

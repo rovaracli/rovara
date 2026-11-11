@@ -1,5 +1,5 @@
 import type {TransactItem} from "../agents/table-writes.js";
-import {ModelSelectionSchema,STAGE_REFERENCE,agentXError,type ModelSelection,type StageId} from "@agentx/contracts";
+import { ModelSelectionSchema, STAGE_REFERENCE, agentXError, type ModelSelection, type StageId } from "@rovara-code/contracts";
 type Scope={orgId:string;workspaceId:string;conversationId:string;taskId:string};
 /** Match the existing reviewer: the latest completed Build supplies the code under review. */
 export function taskStageReferenceOperation(operations:readonly Record<string,unknown>[],scope:Scope,reference:"plan"|"build") {

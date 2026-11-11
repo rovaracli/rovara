@@ -10,10 +10,7 @@ import { visibleOpenCount } from "./pr-visibility.js";
 // after the card is built; a read that has not answered in time is dropped and left to the next read. The settler (B6's `settle`) is plugged in with `setLearningHomeSettler`; without one Home
 // reads no approval at all. Home never reads versions: deciding that a published version carries the rule is the settler's, on the learning routes.
 import { createHash } from "node:crypto";
-import {
-  ApprovalIdSchema, LearningRuleSchema, LearningStateSchema, orgLearningSettingsKey, projectAllows, projectLearningKey, projectMetaKey,
-  type ApprovalId, type LearningState, type OrgId,
-} from "@agentx/contracts";
+import { ApprovalIdSchema, LearningRuleSchema, LearningStateSchema, orgLearningSettingsKey, projectAllows, projectLearningKey, projectMetaKey, type ApprovalId, type LearningState, type OrgId } from "@rovara-code/contracts";
 import { fit, quoted, registerHomeCardSource, HOME_SOURCE_TIMEOUT_MS, type HomeCardSource, type HomeDependencies, type HomeSourceCard } from "../agent-sessions/home.js";
 import { batchGetItems, keyText } from "../agent-sessions/live.js";
 import { getAnyApproval } from "../agents/approvals-store.js";

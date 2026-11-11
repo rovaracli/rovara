@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
-import { E2EPolicySchema, E2E_DEFAULT_LIMITS, E2E_MODEL_ROUTE_DEFAULT_BUDGETS, canonicalJson, e2ePolicyDigest, OrgIdSchema, type OrgId, type E2EApplicationPlanIntent } from "@agentx/contracts";
+import { E2EPolicySchema, E2E_DEFAULT_LIMITS, E2E_MODEL_ROUTE_DEFAULT_BUDGETS, canonicalJson, e2ePolicyDigest, OrgIdSchema, type OrgId, type E2EApplicationPlanIntent } from "@rovara-code/contracts";
 import { STALE_RUN_SWEEP_AGE_MS } from "../../packages/verifier/src/host/docker-application-host.js";
 import { e2eApplicationModelUseWithinRound } from "../../packages/verifier/src/application-result-adapter.js";
 import { DEFAULT_E2E_AGENT_MODELS } from "../../packages/model-runtime/src/config.js";

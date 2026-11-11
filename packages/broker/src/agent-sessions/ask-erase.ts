@@ -5,10 +5,7 @@
 // names, no cap), ASKEXP#<day> (one item per Ask, by the day it expires).
 import { createHash } from "node:crypto";
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  AskRecordSchema, INDEX_EXPIRY_ATTRIBUTE, askByPersonKey, askByPersonPk, askExpiryPk, askLinearScrubKey, askMentionKey, askMentionPk, sessionAskKey,
-  type AskRecord, type OrgId, type SessionId,
-} from "@agentx/contracts";
+import { AskRecordSchema, INDEX_EXPIRY_ATTRIBUTE, askByPersonKey, askByPersonPk, askExpiryPk, askLinearScrubKey, askMentionKey, askMentionPk, sessionAskKey, type AskRecord, type OrgId, type SessionId } from "@rovara-code/contracts";
 
 export type AskItem = Record<string, unknown>;
 export interface AskStoreTable {

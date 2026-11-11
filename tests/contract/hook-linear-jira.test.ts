@@ -4,17 +4,17 @@
 // per event). Layer 3 reads what the code left in logs: ids and codes only, never what a sender wrote.
 import { createHmac } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
-import { RUN_START_TITLE_MAX } from "../../packages/contracts/src/chains.js";
-import { hookEventKey } from "../../packages/contracts/src/event-hooks.js";
+import { RUN_START_TITLE_MAX } from "@rovara-code/contracts";
+import { hookEventKey } from "@rovara-code/contracts";
 import { dispatchTriggerEvent } from "../../packages/broker/src/triggers/dispatch.js";
 import type { HookDelivery } from "../../packages/broker/src/triggers/ingress.js";
 import { hookProviders } from "../../packages/broker/src/triggers/providers/index.js";
 import { jiraProvider } from "../../packages/broker/src/triggers/providers/jira.js";
 import { linearProvider } from "../../packages/broker/src/triggers/providers/linear.js";
-import type { HookRecord } from "@agentx/contracts";
+import type { HookRecord } from "@rovara-code/contracts";
 import { HOOK_1, HOOK_2, LINEAR_TENANT, ORG_A, SECRET_1, SECRET_2, TEAM, setupHookWorld, type HookWorld } from "../support/hook-fixtures.js";
 import { HOOK_A, disposeGateWorlds, setupTriggerWorld } from "../support/trigger-world.js";
-import type { ChainDefinitionInput } from "../../packages/contracts/src/chains.js";
+import type { ChainDefinitionInput } from "@rovara-code/contracts";
 
 afterEach(disposeGateWorlds);
 

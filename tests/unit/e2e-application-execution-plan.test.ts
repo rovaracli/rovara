@@ -1,13 +1,10 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { E2EExpectedCaseSchema } from "../../packages/contracts/src/e2e-node.js";
-import { canonicalJson } from "../../packages/contracts/src/canonical-json.js";
-import { E2EApplicationPlanIntentSchema, createCandidateManifest, e2eApplicationMetadataSourceRefs, inspectE2ERepository,
-  E2ERegisteredRuntimeSchema, E2ERuntimeCapabilityDescriptorSchema, e2eRuntimeCapabilityDigest, e2eScenarioBundleDigest,
-  proposeE2ESetup, type E2EPolicy, type E2ESourceSnapshot } from "../../packages/contracts/src/index.js";
-import { e2eApplicationUpstreamTestIdFromIdentity, projectE2EApplicationPortableSelection, selectE2EApplicationExecutionPlan,
-  type E2EApplicationPlanSelectionInput } from "../../packages/contracts/src/e2e-application-execution-plan.js";
-import { e2eCaseIdFromIdentity, e2eCaseIdentityDigest, e2eUpstreamTestIdFromIdentity } from "../../packages/contracts/src/e2e-case-identity.js";
+import { E2EExpectedCaseSchema } from "@rovara-code/contracts";
+import { canonicalJson } from "@rovara-code/contracts";
+import { E2EApplicationPlanIntentSchema, createCandidateManifest, e2eApplicationMetadataSourceRefs, inspectE2ERepository, E2ERegisteredRuntimeSchema, E2ERuntimeCapabilityDescriptorSchema, e2eRuntimeCapabilityDigest, e2eScenarioBundleDigest, proposeE2ESetup, type E2EPolicy, type E2ESourceSnapshot } from "@rovara-code/contracts";
+import { e2eApplicationUpstreamTestIdFromIdentity, projectE2EApplicationPortableSelection, selectE2EApplicationExecutionPlan, type E2EApplicationPlanSelectionInput } from "@rovara-code/contracts";
+import { e2eCaseIdFromIdentity, e2eCaseIdentityDigest, e2eUpstreamTestIdFromIdentity } from "../../packages/cloud-contracts/src/e2e-case-identity.js";
 import { deriveE2EApplicationApprovalBinding } from "../../packages/broker/src/e2e/application-plan-binding.js";
 import { deriveE2EFeaturePortableApprovalBinding } from "../../packages/broker/src/e2e/feature-plan-intent.js";
 import { deriveE2EApplicationFeatureExecutionSelection } from "../../packages/broker/src/e2e/application-feature-plan-intent.js";

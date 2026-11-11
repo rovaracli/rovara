@@ -1,5 +1,5 @@
 // Sign in with ChatGPT (#341): which tasks run on a ChatGPT plan, whose plan, and on which model.
-import type { ModelSelection, OperationRequester, OrgModelSources } from "@agentx/contracts";
+import type { ModelSelection, OperationRequester, OrgModelSources } from "@rovara-code/contracts";
 import { catalogModel } from "@agentx/model-runtime/catalog";
 import type { ChatGptConnections } from "./connections.js";
 

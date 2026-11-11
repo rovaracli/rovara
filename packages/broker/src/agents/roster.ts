@@ -4,24 +4,7 @@
 // `resolveAgentForAutonomousRun` is the same without a person (H3). The routes that change a roster are in routes.ts, which owns the
 // repeated-request marks; this file holds the checks, the storage and the views they use.
 import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  AgentXNameSchema,
-  BUILTIN_AGENTS,
-  ROVARA_CODE_AGENT_ID,
-  agentXError,
-  atLeast,
-  isBuiltinAgentId,
-  orgProjectCatalogKey,
-  projectAgentKey,
-  projectAllows,
-  recipeDigest,
-  type AgentAccessLevel,
-  type AgentId,
-  type OrgId,
-  type ProjectRole,
-  type ResolvedRecipe,
-  projectArchivedMessage,
-} from "@agentx/contracts";
+import { AgentXNameSchema, BUILTIN_AGENTS, ROVARA_CODE_AGENT_ID, agentXError, atLeast, isBuiltinAgentId, orgProjectCatalogKey, projectAgentKey, projectAllows, recipeDigest, type AgentAccessLevel, type AgentId, type OrgId, type ProjectRole, type ResolvedRecipe, projectArchivedMessage } from "@rovara-code/contracts";
 import { readProjectMeta, requireNewWorkAllowed } from "../developer/project-roles.js";
 import { agentAccess, listVisibleAgents, requireAgentAccess, type AgentCaller } from "./access.js";
 import type { ApprovalDependencies } from "./approvals.js";

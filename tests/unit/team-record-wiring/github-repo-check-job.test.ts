@@ -2,7 +2,7 @@
 // its source row reads as failing); nothing is removed on an error, for an install with no App, or for a repository already removed; the check runs AFTER every company's delete and erase work, inside
 // the job's budget, with a deadline on every GitHub call, and walks the companies from where the last run stopped.
 import { describe, expect, it } from "vitest";
-import { orgProjectCatalogKey, projectRevisionKey, type OrgId } from "@agentx/contracts";
+import { orgProjectCatalogKey, projectRevisionKey, type OrgId } from "@rovara-code/contracts";
 import { createTeamRecordRuntime } from "../../../packages/broker/src/team-record/runtime.js";
 import type { InstallationRepositoriesPort } from "../../../packages/broker/src/team-record/github-repo-existence.js";
 import { getSourceConfigByScope, putSourceConfig } from "../../../packages/broker/src/team-record/store.js";

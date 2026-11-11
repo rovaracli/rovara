@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { AuditEventInputSchema, learningModeKey, learningModeLockKey, lessonKey, lessonSetKey, teamRecordPk, recordDeveloperHash } from "@agentx/contracts";
+import { AuditEventInputSchema, recordDeveloperHash } from "@agentx/cloud-contracts";
+import { learningModeKey, learningModeLockKey, lessonKey, lessonSetKey, teamRecordPk } from "@rovara-code/contracts";
 import { erasePerson, eraseProject, eraseWorkspace } from "../../../packages/broker/src/team-record/erase.js";
 import { lessonFate, supportedByCode } from "../../../packages/broker/src/team-record/lesson-fate.js";
 import { tableLakeDeleteQueue } from "../../../packages/broker/src/team-record/lake-queue.js";

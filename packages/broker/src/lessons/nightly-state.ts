@@ -7,7 +7,7 @@
 // Nothing here names a person or a lesson. A read that fails is "no memory": the pass runs from the top with no grace written.
 import { createHash } from "node:crypto";
 import { GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
-import { teamRecordPk } from "@agentx/contracts";
+import { teamRecordPk } from "@rovara-code/contracts";
 import type { TeamRecordTable } from "../team-record/types.js";
 
 export type NightlyPass = "expire" | "promote" | "repair";

@@ -1,7 +1,7 @@
 // Review N4: where the controller keeps the day it first saw a bundle unreferenced. One small item per bundle in the probe-slot partition, which the controller's role already reads, writes and deletes.
 import { describe, expect, it } from "vitest";
 import { PutCommand } from "@aws-sdk/lib-dynamodb";
-import { orgScoped } from "@agentx/contracts";
+import { orgScoped } from "@rovara-code/contracts";
 import { dynamoBundleMarks } from "../../../packages/broker/src/mcp-host/bundle-marks.js";
 import { FakeDynamoDb } from "../../support/fake-dynamodb.js";
 import { ORG } from "../context-sources/fixtures.js";

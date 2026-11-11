@@ -3,7 +3,7 @@
 // of the listed size and digest, and strictly the sample schema); anything else is ignored and nothing here throws. The diff is computed here from the two stored samples, never from anything the
 // worker says about them, and it carries paths only, never a value.
 import { createHash } from "node:crypto";
-import { EVIDENCE_API_SAMPLES_MAX, EVIDENCE_ARTIFACT_MAX_BYTES, EVIDENCE_ARTIFACT_RETENTION, diffApiSamples, parseApiSample, type ApiSample, type ArtifactRef, type EvidenceRaw } from "@agentx/contracts";
+import { EVIDENCE_API_SAMPLES_MAX, EVIDENCE_ARTIFACT_MAX_BYTES, EVIDENCE_ARTIFACT_RETENTION, diffApiSamples, parseApiSample, type ApiSample, type ArtifactRef, type EvidenceRaw } from "@rovara-code/contracts";
 
 export interface SampleFile {
   /** The index of the request step the sample records. */

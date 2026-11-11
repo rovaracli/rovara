@@ -1,7 +1,7 @@
 // Wire lane D (MB-6): the project setting each kind of setup item sets, by the name the settings origins use. Every origin field has an item kind that sets it, so the lanes that add an applier
 // (context sources, intake) get their setting's origin read the same way as the built-in ones.
 import { describe, expect, it } from "vitest";
-import { PROJECT_ORIGIN_FIELDS, SETUP_ITEM_KINDS, type SetupItem } from "@agentx/contracts";
+import { PROJECT_ORIGIN_FIELDS, SETUP_ITEM_KINDS, type SetupItem } from "@rovara-code/contracts";
 import { settingFieldOf } from "../../packages/broker/src/rovara-code/setup-items.js";
 
 const of = (kind: SetupItem["kind"]) => settingFieldOf({ kind });

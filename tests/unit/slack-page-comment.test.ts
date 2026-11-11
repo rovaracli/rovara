@@ -1,9 +1,7 @@
 // Spec 061 slice 2, Task 9: the Slack service answers a task page comment in task mode (no tools) and writes the answer
 // back to the broker. Nothing is ever posted in Slack for it, and an older service discards the message.
 import { describe, expect, it, vi } from "vitest";
-import {
-  SlackPageCommentMessageSchema, SlackRequestMessageSchema, pageCommentEventId, type SlackCommentAnsweredRequest, type SlackPageCommentMessage, type SlackThreadWorkspaceResult,
-} from "../../packages/contracts/src/index.js";
+import { SlackPageCommentMessageSchema, SlackRequestMessageSchema, pageCommentEventId, type SlackCommentAnsweredRequest, type SlackPageCommentMessage, type SlackThreadWorkspaceResult } from "@rovara-code/contracts";
 import { NO_TEXT_RESPONSE } from "../../packages/orchestrator/src/orchestrator.js";
 import { processGroup, type QueueClient } from "../../packages/slack-service/src/consumer.js";
 import { handlePageComment, PAGE_COMMENT_ANSWER_MAX_CHARS } from "../../packages/slack-service/src/page-comment.js";

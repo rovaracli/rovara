@@ -2,7 +2,7 @@
 // resolve-findings decision with at least one finding to fix (source FINDINGS, decision REQUEST_CHANGES; accepting every finding is an approval and returns nothing to coding). Rovara's own sends back (AGENTX actor,
 // source AUTO_FIX / AUTO_RETRY / GATE) are never a person's. The announcement's round number (`announceTaskSendBack`) and the reflector's list of send-back requests (`lesson-subject-source.ts`) both use this, so a
 // round is never repeated and a send-back whose row was written is the one the reflector reads.
-import type { WorkflowSnapshot } from "@agentx/contracts";
+import type { WorkflowSnapshot } from "@agentx/cloud-contracts";
 
 type Decision = WorkflowSnapshot["decisions"][number];
 

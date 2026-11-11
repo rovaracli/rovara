@@ -1,6 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { Link } from "react-router";
-import { SessionIdSchema } from "@agentx/contracts/web";
+import { SessionIdSchema } from "@agentx/cloud-contracts/web";
 import { useAppHost } from "../../host.js";
 import { workPlace } from "../../nav-flags.js";
 import { createRunApi } from "../../api/runs.js";

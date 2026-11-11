@@ -2,10 +2,8 @@
 // output: the labels of the checks a model proposed, the paths in a diff) into the four lists the person reads: what passed, what failed, what could not be checked
 // and which tests were added. Every string in it is redacted, on one line and cut to its limit, and the whole report is parsed by `VerificationReportSchema` before
 // it leaves this module. It is plain text for every reader: the task page, Slack and the PR body escape it for their own markup, and nothing here builds HTML.
-import {
-  VerificationReportSchema, redactText, workflowCheckResultBroken, workflowIsReviewOnly, workflowSelectedChecks,
-  type VerificationReport, type WorkflowSnapshot,
-} from "@agentx/contracts";
+import { VerificationReportSchema, redactText, workflowCheckResultBroken, workflowIsReviewOnly, workflowSelectedChecks, type VerificationReport } from "@rovara-code/contracts";
+import { type WorkflowSnapshot } from "@agentx/cloud-contracts";
 
 /** The build rule of a version 2 task, exact: it ends every build prompt (the plan's text). */
 export const IMPLEMENT_TEST_RULE = "Add or update tests for every behaviour you change. If a change can't be tested, say why in your final message.";

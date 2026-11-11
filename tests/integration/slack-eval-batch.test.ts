@@ -2,14 +2,7 @@
 // FR-003), and the batch watcher posts the batch's progress and its summary table there (FR-010),
 // opening the thread of a batch started from the CLI (Ruling 19), with a fake clock and stubbed APIs.
 import { describe, expect, it, vi } from "vitest";
-import type {
-  EvalBatchSlackStartResult,
-  EvalBatchSummary,
-  EvalBatchWatchChange,
-  EvalBatchWatched,
-  ProjectModelOptions,
-  SlackRequestMessage,
-} from "../../packages/contracts/src/index.js";
+import type { EvalBatchSlackStartResult, EvalBatchSummary, EvalBatchWatchChange, EvalBatchWatched, ProjectModelOptions, SlackRequestMessage } from "@rovara-code/contracts";
 import { processSlackRequest, type ProcessorDependencies } from "../../packages/slack-service/src/processor.js";
 import {
   EVAL_BATCH_CLAIM_MS,

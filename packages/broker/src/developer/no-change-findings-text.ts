@@ -1,6 +1,6 @@
 // The words for a coding run that ended with no code change: what the agent found, for Slack. The findings are untrusted (a command's output and a model's words): they were redacted and bounded
 // when they were built, and every line is made inert and redacted again here, so nothing in them can mention anyone, link anywhere or open a tag.
-import { NO_CHANGE_CHOICES_LINE, NO_CHANGE_COMMANDS_HEADER, NO_CHANGE_DETAILS_LABEL, NO_CHANGE_FULL_OUTPUT_LABEL, NO_CHANGE_VALUE_HIDDEN, NO_CHANGE_NO_CONCLUSION_LEAD, maskSecretValues, NO_CHANGE_FOUND_HEADER, NO_CHANGE_NEEDED_LINE, noChangeFindingsFrom, type NoChangeFindings } from "@agentx/contracts";
+import { NO_CHANGE_CHOICES_LINE, NO_CHANGE_COMMANDS_HEADER, NO_CHANGE_DETAILS_LABEL, NO_CHANGE_FULL_OUTPUT_LABEL, NO_CHANGE_VALUE_HIDDEN, NO_CHANGE_NO_CONCLUSION_LEAD, maskSecretValues, NO_CHANGE_FOUND_HEADER, NO_CHANGE_NEEDED_LINE, noChangeFindingsFrom, type NoChangeFindings } from "@rovara-code/contracts";
 import { inertLine } from "../rovara-code/inert-text.js";
 
 /** One line of untrusted text for Slack: redacted and inert (`inertLine`), a `>` written as an entity so no line starts a quote, and a backtick made an apostrophe so no text opens or closes code. `&` and `<` are already entities. */

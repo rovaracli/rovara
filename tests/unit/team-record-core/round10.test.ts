@@ -1,7 +1,7 @@
 // Fix round 10 (Opus recheck-9): erasure never short-circuits and leaves the id nowhere (R9-2, R9-3), deleting a place purges every item unit under it (R9-4), a comment with
 // its own visibility gets its own unit (R9-5), and the low items (registry, conversion read failure, queued sink seed, overlay tie).
 import { describe, expect, it } from "vitest";
-import { aclUnitOfSource, recordAccessMemberKey, recordAccessPersonPrefix, RECORD_SOURCES } from "@agentx/contracts";
+import { aclUnitOfSource, recordAccessMemberKey, recordAccessPersonPrefix, RECORD_SOURCES } from "@agentx/cloud-contracts";
 import { applyAudienceEvent, applyMemberEvents } from "../../../packages/broker/src/team-record/access.js";
 import { runDeleteWorker } from "../../../packages/broker/src/team-record/delete-worker.js";
 import { ERASE_SWEEP_DELAY_MS, erasePerson, runErasureSweeps } from "../../../packages/broker/src/team-record/erase.js";

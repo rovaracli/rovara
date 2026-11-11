@@ -9,7 +9,7 @@
 // The repositories, the creation template, the key and the other roles are the saved environment images' own (saved-env-images.ts); the template's repository policy names this role too. The function reaches the public internet only for the registries the broker's allowlist names (a Lambda outside a VPC).
 import { Duration, aws_iam as iam, type aws_dynamodb as dynamodb, type aws_lambda_nodejs as lambdaNodejs } from "aws-cdk-lib";
 import { Construct } from "constructs";
-import { COMPANY_IMAGE_MIRROR_ACTIONS, companyImageMirrorRoleName, companyImageRepositoriesArn } from "@agentx/contracts";
+import { COMPANY_IMAGE_MIRROR_ACTIONS, companyImageMirrorRoleName, companyImageRepositoriesArn } from "@agentx/cloud-contracts";
 import { packagedFunction } from "./control-plane.js";
 
 export interface CompanyImageMirrorProps {

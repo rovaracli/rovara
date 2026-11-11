@@ -6,7 +6,8 @@ import { storeDesignTemplate } from "../../design-review/template-store.js";
 import { designTemplateRetryPrompt } from "../../design-review/template.js";
 import { createHash } from "node:crypto";
 import { GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
-import { submitWorkflowArtifact, submitPlanCritique, closePlanCritique, retryPlanCritique, readPlanCritique, parsePlanDocument, planAnswerMissingParts, withCiChecks, groundingScenarioIds, parseCommentAnswers, commentRefInAuthor, commentIdInAuthor, COMMENT_AUTHOR_PREFIX, UNPLACED_COMMENT_AUTHOR, plainPageRefs, type PlanQualityFinding, type CommentAnswer, type PlanClaim, type WorkflowDecisionDetail, retiredClaimIds, canonicalPlanJson, type PlanDocument, type PlanEvidenceBundle, blockWorkflow, WorkflowSnapshotSchema, validateTaskGraph, workflowIsDesignReviewing, WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE, WORKFLOW_LEFTOVER_PROCESSES_MESSAGE, WORKFLOW_BLOCK_REASONS, BUDGET_EXHAUSTED_FAILURE_MESSAGE, type OperationStatus, type WorkflowSnapshot, WORKFLOW_PLAN_MAX_BYTES, PLAN_DRY_RUN_FEATURE, type PlanDryRunClass, ROVARA_CODE_AGENT_ID, type RunEstimate } from "@agentx/contracts";
+import { submitWorkflowArtifact, submitPlanCritique, closePlanCritique, retryPlanCritique, blockWorkflow, WorkflowSnapshotSchema, WORKFLOW_BLOCK_REASONS, type WorkflowSnapshot } from "@agentx/cloud-contracts";
+import { readPlanCritique, parsePlanDocument, planAnswerMissingParts, withCiChecks, groundingScenarioIds, parseCommentAnswers, commentRefInAuthor, commentIdInAuthor, COMMENT_AUTHOR_PREFIX, UNPLACED_COMMENT_AUTHOR, plainPageRefs, type PlanQualityFinding, type CommentAnswer, type PlanClaim, type WorkflowDecisionDetail, retiredClaimIds, canonicalPlanJson, type PlanDocument, type PlanEvidenceBundle, validateTaskGraph, workflowIsDesignReviewing, WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE, WORKFLOW_LEFTOVER_PROCESSES_MESSAGE, BUDGET_EXHAUSTED_FAILURE_MESSAGE, type OperationStatus, WORKFLOW_PLAN_MAX_BYTES, PLAN_DRY_RUN_FEATURE, type PlanDryRunClass, ROVARA_CODE_AGENT_ID, type RunEstimate } from "@rovara-code/contracts";
 import { queryAllItems } from "../admin-reads.js";
 import { decisionComments, pageCommentsPrompt, promptComments, readDecisionDetail } from "../../developer/owner-answers.js";
 import { writePlannerReplies } from "../../developer/page-comments.js";
@@ -17,7 +18,7 @@ import { planCitesCode, planEvidenceSources } from "../../developer/plan-evidenc
 import { resolvePlanEvidence } from "../../developer/plan-evidence.js";
 import type { OperationRecord } from "../cancellation.js";
 import { isE2EPlanCorrectionBlockReason, type DeveloperTaskRecord } from "../../developer/task-records.js";
-import { planQualityFinding } from "@agentx/contracts";
+import { planQualityFinding } from "@rovara-code/contracts";
 import { plannedExpectation } from "../../developer/plan-grounding-findings.js";
 import { estimateRun } from "../../spend/estimate.js";
 import { CRITIC_MODEL_ATTEMPTS_MAX, criticModelUnusable, critiqueModelOf } from "../../rovara-code/critic.js";

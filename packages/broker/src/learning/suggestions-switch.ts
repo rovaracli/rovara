@@ -9,10 +9,8 @@
 //
 // A record that does not read (an unknown value from a newer writer) is skipped: the install default applies, as for a company that never chose.
 import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  LearningCompanySettingsSchema, LearningSuggestionSwitchSchema, agentXError, orgLearningSettingsKey,
-  type AuditActor, type LearningCompanySettingsAnswer, type LearningSuggestionSwitch, type OrgId,
-} from "@agentx/contracts";
+import { LearningCompanySettingsSchema, LearningSuggestionSwitchSchema, agentXError, orgLearningSettingsKey, type LearningCompanySettingsAnswer, type LearningSuggestionSwitch, type OrgId } from "@rovara-code/contracts";
+import { type AuditActor } from "@agentx/cloud-contracts";
 import { flushLearningEvents, learningEvents, suggestionsSetEvent } from "./audit.js";
 import type { LearningDeps, LearningScope } from "./store.js";
 

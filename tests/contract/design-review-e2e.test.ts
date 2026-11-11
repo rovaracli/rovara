@@ -5,10 +5,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  BUDGET_EXHAUSTED_FAILURE_MESSAGE, DesignReviewBindingSchema, PacketDeliverySchema, WORKFLOW_BLOCK_REASONS, WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE, WorkflowSnapshotSchema, createWorkflowSnapshot, decideWorkflow, enableDesignReview, packetDigestOf, submitWorkflowArtifact,
-  type DesignReviewBinding, type ReviewerRole, type WorkflowArtifact, type WorkflowProgram, type WorkflowSnapshot,
-} from "../../packages/contracts/src/index.js";
+import { BUDGET_EXHAUSTED_FAILURE_MESSAGE, DesignReviewBindingSchema, PacketDeliverySchema, WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE, packetDigestOf, type DesignReviewBinding, type ReviewerRole, type WorkflowArtifact, type WorkflowProgram } from "@rovara-code/contracts";
+import { WORKFLOW_BLOCK_REASONS, WorkflowSnapshotSchema, createWorkflowSnapshot, decideWorkflow, enableDesignReview, submitWorkflowArtifact, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { designSpendCommitItems } from "../../packages/broker/src/design-review/spend-follow.js";
 import { applyDesignSpendChoice } from "../../packages/broker/src/design-review/spend-choice.js";
 import { designAnswersCommitItems } from "../../packages/broker/src/design-review/answers.js";
@@ -17,7 +15,7 @@ import { designReviewKeyIds } from "../../packages/broker/src/design-review/slot
 import { readSlotPacket } from "../../packages/broker/src/design-review/packet-store.js";
 import { WORKFLOW_NO_CANDIDATE_DIGEST, workflowDispatchItem } from "../../packages/broker/src/aws/broker-shared.js";
 import { keyIdOf } from "../../packages/broker/src/org/budget.js";
-import { parkDesignReview } from "../../packages/contracts/src/index.js";
+import { parkDesignReview } from "@agentx/cloud-contracts";
 import { designCardFactsOf } from "../../packages/broker/src/design-review/card-source.js";
 import { DEV_ISSUER, MAYA, OMAR, seedMembership, createSingleAnswerPlanBroker, type Developer } from "../support/developer-task-broker.js";
 import { designWaitArmOf } from "../../packages/broker/src/design-review/wait-rows.js";
@@ -28,15 +26,16 @@ import { designApprovalKey } from "../../packages/broker/src/aws/developer-tasks
 import { proofDesignContextOf } from "../../packages/broker/src/aws/developer-tasks/design-proof.js";
 import { designSpecStateOf, specDesignLineOf } from "../../packages/broker/src/aws/developer-tasks/design-spec.js";
 import { designProofLine } from "../../packages/broker/src/design-review/proof-line.js";
-import { orgMetaKey } from "../../packages/contracts/src/index.js";
-import { projectMemberKey, projectMetaKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { orgMetaKey } from "@agentx/cloud-contracts";
+import { projectMemberKey, projectMetaKey } from "@rovara-code/contracts";
 import type * as CatalogModule from "@agentx/model-runtime/catalog";
 import { fakeModelAccess } from "../support/fake-model-access.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
-import { builtinSettingsKey, modelKeyKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { builtinSettingsKey } from "@rovara-code/contracts";
+import { modelKeyKey } from "../../packages/cloud-contracts/src/org-scoped-keys.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { seedDesignReviewCompany } from "../support/design-review-company.js";
-import { projectPlaybookKey } from "../../packages/contracts/src/index.js";
+import { projectPlaybookKey } from "@rovara-code/contracts";
 
 // A test can take the catalog's price away from every model (a source whose models are not on the list): "cost unavailable", the unpriced path.
 // `scale` multiplies every list price (a costly model), for a high cost card.

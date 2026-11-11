@@ -4,8 +4,8 @@
 // fresh session.
 import type { SendEmailCommand } from "@aws-sdk/client-sesv2";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { StartIdentityLinkRequest, UnlinkIdentityRequest } from "@agentx/contracts";
-import { FRESH_SIGN_IN_SECONDS } from "@agentx/contracts";
+import type { StartIdentityLinkRequest, UnlinkIdentityRequest } from "@rovara-code/contracts";
+import { FRESH_SIGN_IN_SECONDS } from "@rovara-code/contracts";
 import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
 import {
   DeveloperSignInStore, REAUTH_SAME_METHOD, REAUTH_TO_CHANGE_METHODS, RELINK_ALREADY, RELINK_NOT_REMOVED, RELINK_OWN_ACCOUNT, developerIdentityKey, isFreshSignIn,

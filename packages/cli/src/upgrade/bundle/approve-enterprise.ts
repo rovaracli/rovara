@@ -2,7 +2,8 @@
 // credentials: verifies the signed bundle (done by the caller), reads the install's recorded settings, builds the install's exact templates from the release's own pinned
 // CDK app, shows what it built against what is deployed, and only then places the build and writes the approval, which pins the hash of the result and every setting.
 // The Rovara operator supplies no input to any of this: it has no command here, no access to the settings and no say in the bundle's kit.
-import { agentXError, environmentStackName, synthSettingsSha256, type ApprovalRecord, type BuiltPart } from "@agentx/contracts";
+import { agentXError, environmentStackName } from "@rovara-code/contracts";
+import { synthSettingsSha256, type ApprovalRecord, type BuiltPart } from "@agentx/cloud-contracts";
 import { readRecordedEdition } from "../../deploy/edition.js";
 import type { ParameterStore } from "../../environments/parameter-store.js";
 import type { EnvironmentSettings } from "../../environments/settings.js";

@@ -1,5 +1,5 @@
 import { Link, useParams, useSearchParams } from "react-router";
-import { AgentVersionsResponseReaderSchema } from "@agentx/contracts/web";
+import { AgentVersionsResponseReaderSchema } from "@agentx/cloud-contracts/web";
 import { DataTable } from "../../../design/DataTable.js";
 import { PageHeader } from "../../../design/PageHeader.js";
 import { ReadState, useAdminRead } from "../projects/read.js";

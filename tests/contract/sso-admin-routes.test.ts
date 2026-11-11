@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { BREAK_GLASS_MAX_DAYS, editionPolicy } from "@agentx/contracts";
+import { BREAK_GLASS_MAX_DAYS, editionPolicy } from "@agentx/cloud-contracts";
 import { APP_CSRF_HEADER, appCsrfTokenFor } from "../../packages/broker/src/developer/app-csrf.js";
 import { dynamoBreakGlassStore, readBreakGlassForSignIn } from "../../packages/broker/src/developer/group-mapping.js";
 import { lockoutMessage } from "../../packages/broker/src/aws/developer-routes/sso.js";

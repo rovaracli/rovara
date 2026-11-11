@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { PARALLEL_PARTS_MAX } from "../../packages/contracts/src/rovara-code.js";
-import { taskGraphDigest } from "../../packages/contracts/src/workflow-dependencies-node.js";
+import { PARALLEL_PARTS_MAX } from "@rovara-code/contracts";
+import { taskGraphDigest } from "@rovara-code/contracts";
 import { workspaceLimitsKey } from "../../packages/broker/src/developer/limits.js";
 import { MAYA, createSingleAnswerPlanBroker } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";

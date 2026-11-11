@@ -1,9 +1,7 @@
 // Slice 1.1 Task 8: a task-thread mention the Slack service answers as a question (read only, no tools) or confirms as saved.
 import { fauxAssistantMessage, fauxText, fauxToolCall, type Context } from "@earendil-works/pi-ai";
 import { describe, expect, it, vi } from "vitest";
-import {
-  slackThreadSubject, type RequestRouteKind, type RequestRouteOutcome, type SlackRequestMessage, type SlackThreadWorkspaceResult, type TaskQuestionRoute,
-} from "../../packages/contracts/src/index.js";
+import { slackThreadSubject, type RequestRouteKind, type RequestRouteOutcome, type SlackRequestMessage, type SlackThreadWorkspaceResult, type TaskQuestionRoute } from "@rovara-code/contracts";
 import { ANSWER_ONLY_INSTRUCTIONS, NO_TEXT_RESPONSE, runOrchestratorTurn } from "../../packages/orchestrator/src/orchestrator.js";
 import type { OrchestrationApi } from "../../packages/orchestrator/src/orchestration-tools.js";
 import { processGroup, type QueueClient } from "../../packages/slack-service/src/consumer.js";

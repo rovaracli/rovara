@@ -31,16 +31,7 @@
 // A known window: `deliver` hands out a signed read good for 15 minutes. The row is read again after the URL is signed and a set withdrawn in the meantime is refused, but a URL already handed out stays good
 // until it expires (up to FIXTURE_READ_URL_SECONDS); withdrawing stops new URLs, it cannot recall one. The worker pins the digest, so what such a URL returns is still exactly the approved bytes.
 import { createHash } from "node:crypto";
-import {
-  AGENTX_NAME_PATTERN,
-  FIXTURE_SET_MAX_BYTES,
-  FixtureSetSchema,
-  OrgIdSchema,
-  canonicalJson,
-  fixtureSetDigest,
-  type FixtureSet,
-  type TestEnvProdDeny,
-} from "@agentx/contracts";
+import { AGENTX_NAME_PATTERN, FIXTURE_SET_MAX_BYTES, FixtureSetSchema, OrgIdSchema, canonicalJson, fixtureSetDigest, type FixtureSet, type TestEnvProdDeny } from "@rovara-code/contracts";
 import type { DecisionItem } from "../decisions/project.js";
 import { scanText, type DataGuardFindingKind } from "@agentx/verifier";
 import { plainLine } from "../decisions/text.js";

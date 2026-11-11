@@ -2,7 +2,7 @@
 // (`test-env/nightly-usable.ts`). It exists only while `vx` is on. It asks the code host the repository's RECORD names (`baseBranchHead`), in the org's own connection, and only for a project with exactly
 // one repository: a nightly records one head, which several repositories cannot be compared with. Any failure to read (no host, a project that cannot be read, a host error) is "unknown", and an unknown head
 // refuses the stale baseline, which is what happens without this reader.
-import type { OrgId } from "@agentx/contracts";
+import type { OrgId } from "@rovara-code/contracts";
 import type { NightlyHeadReader } from "../../test-env/nightly-usable.js";
 import { verifyResultsEnabled } from "../../verification/switch.js";
 import type { AwsBrokerDependencies } from "./definitions.js";

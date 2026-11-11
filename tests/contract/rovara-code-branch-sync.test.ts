@@ -2,15 +2,10 @@
 // round), the two slots of merge tracking (conflict, sync) over a fake GitHub (merge only when needed, at most four a day, never over a person's push), and the plan of what a finished merge
 // is (clean, conflicted, refused for workflow files, lost) from what GitHub shows. Nothing here rebases or force-pushes, and nothing a person did not leave to Rovara is overwritten.
 import { afterEach, describe, expect, it } from "vitest";
-import {
-  BRANCH_SYNC_UNSURE_MESSAGE, SYNC_BACKOFF_MINUTES, SYNC_FAILURES_MAX, branchSyncGiveUpMessage, isBranchSyncGiveUpReason,
-  branchConflictAskMessage, isBranchConflictAskReason, retryWorkflowBranchSync,
-  BRANCH_SYNCS_PER_DAY_MAX, BRANCH_WORKFLOW_FILES_MESSAGE, CONFLICT_ROUNDS_MAX, WorkflowSnapshotSchema, WorkflowTransitionError, blockWorkflowBranchSync, branchConflictStopMessage, createCandidateManifest,
-  createWorkflowSnapshot, endWorkflowBranchSync, autoFixDecision, workflowAutomaticRetryDecision, workflowAutoFixCounts, wholeTaskSpendUsd, WORKFLOW_BLOCK_REASONS, BASE_MERGED_RETRY_REASON, BASE_MERGED_RETRIES_PER_DAY, baseMergedRetriesToday, WORKFLOW_AGENTX_ACTOR_ID, WORKFLOW_AUTO_ACTION_LIMIT, workflowAutoActionRequestId, holdWorkflowCandidateOnPullRequests, WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, isBranchSyncBlockReason, observeWorkflowPullRequest, recordWorkflowBranchSync, recordWorkflowPullRequestUpdate, recordWorkflowSyncConflict,
-  recordWorkflowVerification, startWorkflowBranchSync, startWorkflowBranchSyncRun, startWorkflowFix, workflowFollowsOnlyMerge, type WorkflowProgram, type WorkflowSnapshot,
-} from "@agentx/contracts";
-import { mergeTrackingKey } from "../../packages/contracts/src/org-scoped-keys.js";
-import type { MergeTrackingItem } from "../../packages/contracts/src/rovara-code.js";
+import { BRANCH_SYNC_UNSURE_MESSAGE, SYNC_BACKOFF_MINUTES, SYNC_FAILURES_MAX, branchSyncGiveUpMessage, isBranchSyncGiveUpReason, branchConflictAskMessage, isBranchConflictAskReason, BRANCH_SYNCS_PER_DAY_MAX, BRANCH_WORKFLOW_FILES_MESSAGE, CONFLICT_ROUNDS_MAX, WorkflowTransitionError, branchConflictStopMessage, createCandidateManifest, wholeTaskSpendUsd, WORKFLOW_AGENTX_ACTOR_ID, WORKFLOW_AUTO_ACTION_LIMIT, workflowAutoActionRequestId, WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, isBranchSyncBlockReason, type WorkflowProgram } from "@rovara-code/contracts";
+import { retryWorkflowBranchSync, WorkflowSnapshotSchema, blockWorkflowBranchSync, createWorkflowSnapshot, endWorkflowBranchSync, autoFixDecision, workflowAutomaticRetryDecision, workflowAutoFixCounts, WORKFLOW_BLOCK_REASONS, BASE_MERGED_RETRY_REASON, BASE_MERGED_RETRIES_PER_DAY, baseMergedRetriesToday, holdWorkflowCandidateOnPullRequests, observeWorkflowPullRequest, recordWorkflowBranchSync, recordWorkflowPullRequestUpdate, recordWorkflowSyncConflict, recordWorkflowVerification, startWorkflowBranchSync, startWorkflowBranchSyncRun, startWorkflowFix, workflowFollowsOnlyMerge, type WorkflowSnapshot } from "@agentx/cloud-contracts";
+import { mergeTrackingKey } from "@rovara-code/contracts";
+import type { MergeTrackingItem } from "../../packages/cloud-contracts/src/rovara-code.js";
 import { trackPullRequest } from "../../packages/broker/src/rovara-code/merge-tracking.js";
 import {
   branchSyncRequestId, bumpSyncs, classifySyncFailure, conflictDecider, decideBranchSync, decideConflict, installBranchSyncDeciders, isWorkflowFilesRefusal, planBranchSyncOutcome, syncDecider, syncsToday,
@@ -20,7 +15,7 @@ import { baseMergedRechecksItself, candidateIsOnPullRequest } from "../../packag
 import { autofixBlockRows } from "../../packages/broker/src/aws/workflow-autofix-dispatch-exhaust.js";
 import { workflowMessage } from "../../packages/broker/src/developer/workflow-messages.js";
 import { taskViewForClient } from "../../packages/broker/src/rovara-code/task-view-compat.js";
-import { blockWorkflowPullRequestUpdate } from "@agentx/contracts";
+import { blockWorkflowPullRequestUpdate } from "@agentx/cloud-contracts";
 import { installCiFixDecider, uninstallCiFixDecider } from "../../packages/broker/src/rovara-code/ci-fix.js";
 import { HEAD_A, HEAD_B, NOW, SESSION_ID, TASK_ID, status, world, type TrackingWorld } from "../support/rovara-code-tracking.js";
 

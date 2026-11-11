@@ -1,7 +1,7 @@
 // Rovara Code (Plan 6 Task 14), through the whole broker: a version 2 task's recovery row becomes its tracking row when its first pull request opens, the merge-recovery
 // schedule runs the tracking pass beside the merge pass, GitHub's check and status deliveries wake the row, and a version 1 task keeps the row it always had.
 import { describe, expect, it } from "vitest";
-import { mergeTrackingKey, prHeadKey } from "../../../packages/contracts/src/org-scoped-keys.js";
+import { mergeTrackingKey, prHeadKey } from "@rovara-code/contracts";
 import { createWorkflowE2E, type WorkflowE2E } from "../../support/workflow-e2e.js";
 import { PLAN, atPlanReview, editsOrFix, journeySuite } from "../../support/workflow-e2e-journeys.js";
 import { TEST_ORG } from "../../support/orgs.js";

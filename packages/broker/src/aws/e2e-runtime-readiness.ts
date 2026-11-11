@@ -1,19 +1,5 @@
 import { createHash } from "node:crypto";
-import {
-  canonicalJson,
-  E2ERegisteredRuntimeSchema,
-  E2ERuntimeReadinessSchema,
-  Ec2RuntimeBindingSchema,
-  resolveE2ERuntimeReadiness,
-  type E2EAssertion,
-  type E2EEvidenceScope,
-  type E2EReadyRuntimeProfile,
-  type E2ERuntimeReadiness,
-  type E2ERuntimeReadinessInput,
-  type E2ERuntimeStatus,
-  type E2EStep,
-  type Ec2RuntimeBinding,
-} from "@agentx/contracts";
+import { canonicalJson, E2ERegisteredRuntimeSchema, E2ERuntimeReadinessSchema, Ec2RuntimeBindingSchema, resolveE2ERuntimeReadiness, type E2EAssertion, type E2EEvidenceScope, type E2EReadyRuntimeProfile, type E2ERuntimeReadiness, type E2ERuntimeReadinessInput, type E2ERuntimeStatus, type E2EStep, type Ec2RuntimeBinding } from "@rovara-code/contracts";
 import type { z } from "zod";
 import type { TransactItems } from "./developer-task-actions.js";
 

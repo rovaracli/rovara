@@ -1,7 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { Link } from "react-router";
 import { useQuery } from "@tanstack/react-query";
-import { formatUsdMicrodollars, SessionIdSchema, type HowWeWorkViewReaderSchema } from "@agentx/contracts/web";
+import { formatUsdMicrodollars, SessionIdSchema, type HowWeWorkViewReaderSchema } from "@agentx/cloud-contracts/web";
 import { useAppHost } from "../../host.js";
 import { workPlace } from "../../nav-flags.js";
 import { createCodeApi, CODE_TEXT_MAX, DESIGN_FIRST_REFUSED } from "../../api/code.js";

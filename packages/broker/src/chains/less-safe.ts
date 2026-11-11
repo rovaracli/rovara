@@ -1,12 +1,7 @@
 // What makes a new version of a chain less safe than the one that runs (Plan 4 Task 4, human decision N6). A publish or a rollback that does any
 // of this waits for a person on the confirmation page; anything else applies at once. Pure but for two questions only the org can answer, which the
 // caller supplies: an agent's name, and what a newer version of the same agent adds (Plan 3's `lessSafeChanges` over the two recipes).
-import {
-  GATE_DEFAULT_TIMEOUT_HOURS,
-  STEP_DEFAULT_TIMEOUT_MINUTES,
-  type ApproverRule,
-  type PinnedChainDefinition,
-} from "@agentx/contracts";
+import { GATE_DEFAULT_TIMEOUT_HOURS, STEP_DEFAULT_TIMEOUT_MINUTES, type ApproverRule, type PinnedChainDefinition } from "@rovara-code/contracts";
 
 export interface ChainLessSafeLookups {
   /** The name people know an agent by (a built-in's name, or a custom agent's). */

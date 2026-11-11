@@ -1,22 +1,8 @@
-import {TaskModelFallbackRequestSchema,type TaskModelFallbackRequest,type TaskModelFallbackAuthorization} from "@agentx/contracts";
+import { TaskModelFallbackRequestSchema, type TaskModelFallbackRequest, type TaskModelFallbackAuthorization } from "@rovara-code/contracts";
 import {parseTaskModelFallbackAuthorization,taskModelPolicyBindingsMatch} from "./model-fallback-authority.js";
 import { createHash } from "node:crypto";
-import {
-  CodeBuildCheckResultSchema,
-  E2EModelDayBudgetRequestSchema,
-  E2EModelDayBudgetResponseSchema,
-  WorkflowFeedbackBundleRefSchema,
-  WorkflowFeedbackApprovalBindingSchema,
-  WorkflowFeedbackTaskChecksSchema,
-  agentXError,
-  type CheckEntry,
-  type WorkerInvocation,
-  type WorkflowFeedbackApprovalBinding,
-  type WorkflowFeedbackTaskChecks,
-  type E2EModelDayBudgetRequest,
-  type E2EModelDayBudgetResponse,
-  type E2EWorkflowAdmissionRef,
-} from "@agentx/contracts";
+import { CodeBuildCheckResultSchema, E2EModelDayBudgetRequestSchema, E2EModelDayBudgetResponseSchema, WorkflowFeedbackBundleRefSchema, WorkflowFeedbackApprovalBindingSchema, WorkflowFeedbackTaskChecksSchema, agentXError, type CheckEntry, type WorkflowFeedbackApprovalBinding, type WorkflowFeedbackTaskChecks, type E2EModelDayBudgetRequest, type E2EModelDayBudgetResponse, type E2EWorkflowAdmissionRef } from "@rovara-code/contracts";
+import { type WorkerInvocation } from "@agentx/cloud-contracts";
 import type { ArtifactSink } from "./artifacts.js";
 import type { EventBatchSink } from "./events.js";
 import type { WorkerTerminalResult } from "./server.js";

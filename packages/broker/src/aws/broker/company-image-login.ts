@@ -11,9 +11,8 @@
 //   - the repository is `companyImageRepositoryName` of the organisation and the image: never a name from the request. The login is for that one repository (a session policy), short lived, and is never logged;
 //   - a run asks at most `COMPANY_IMAGE_LOGIN_MAX_PER_OPERATION` times: a counter on the operation, added to with a condition.
 import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  COMPANY_IMAGE_LOGIN_MAX_PER_OPERATION, CompanyImageLoginRequestSchema, SavedEnvRegistryAuthSchema, agentXError, companyImageRegistryRule, companyImageRepositoryName, type OrgId, type SavedEnvRegistryAuth,
-} from "@agentx/contracts";
+import { COMPANY_IMAGE_LOGIN_MAX_PER_OPERATION, CompanyImageLoginRequestSchema, SavedEnvRegistryAuthSchema, companyImageRegistryRule, companyImageRepositoryName, type SavedEnvRegistryAuth } from "@agentx/cloud-contracts";
+import { agentXError, type OrgId } from "@rovara-code/contracts";
 import { dynamoCompanyImageStore } from "../../org/company-test-image-store.js";
 import { readMirrorState } from "../../test-env/company-image-mirror-state.js";
 import { mintPullSessionFor, type SavedEnvSessionConfig, type SavedEnvSessionPorts } from "../../test-env/saved-env-session.js";

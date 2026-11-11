@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { slackRequestText, splitSlackMessage } from "../../packages/contracts/src/index.js";
+import { slackRequestText, splitSlackMessage } from "@rovara-code/contracts";
 import { lastAssistantText } from "../../packages/orchestrator/src/orchestrator.js";
 
 describe("Slack text helpers", () => {

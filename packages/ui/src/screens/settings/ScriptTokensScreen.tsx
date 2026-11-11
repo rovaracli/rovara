@@ -2,7 +2,7 @@
 // An owner or admin also sees the company's other tokens, to revoke them. One column, so it works on a phone.
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { AppNavReaderSchema, SCRIPT_TOKEN_DEFAULT_DAYS, SCRIPT_TOKEN_MAX_DAYS, SCRIPT_TOKEN_NAME_MAX, type ScriptTokenPermission } from "@agentx/contracts/web";
+import { AppNavReaderSchema, SCRIPT_TOKEN_DEFAULT_DAYS, SCRIPT_TOKEN_MAX_DAYS, SCRIPT_TOKEN_NAME_MAX, type ScriptTokenPermission } from "@agentx/cloud-contracts/web";
 import { useAppHost } from "../../host.js";
 import { createApiClient } from "../../api/client.js";
 import { ApiError } from "../../api/errors.js";

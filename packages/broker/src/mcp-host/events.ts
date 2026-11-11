@@ -5,7 +5,7 @@
 // Bounded: at most `maxPerWindow` events in a window (a crash loop is already slowed by the controller's backoff; this stops it from filling the table), and nothing is waited for.
 import { randomBytes } from "node:crypto";
 import { PutCommand } from "@aws-sdk/lib-dynamodb";
-import { McpControllerEventSchema, orgScoped, type McpControllerEvent, type OrgId } from "@agentx/contracts";
+import { McpControllerEventSchema, orgScoped, type McpControllerEvent, type OrgId } from "@rovara-code/contracts";
 import type { ControllerEvent } from "@agentx/gateway";
 
 type DocumentClient = { send(command: unknown): Promise<unknown> };

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
-import { workflowApplicationEvidenceCodes, workflowSendBackOffered, type WorkflowSnapshot } from "@agentx/contracts";
+import { workflowApplicationEvidenceCodes } from "@rovara-code/contracts";
+import { workflowSendBackOffered, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { workflowSlackHandlers, type SlackBlockAction } from "../../packages/broker/src/aws/slack-interactivity.js";
 import { workflowMessage } from "../../packages/broker/src/developer/workflow-messages.js";
 import { E2E_OWNER_SENTENCES } from "../../packages/broker/src/e2e/owner-sentences.js";

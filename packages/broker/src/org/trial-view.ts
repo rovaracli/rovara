@@ -4,9 +4,7 @@
 //
 // Today's allowance REFRESHES MONTHLY (decision 34 plans a one-time allowance for later), so every allowance says `refresh: "monthly"` with its month, and the `ends` sentence says the allowance renews.
 // `ended`, `stopped`, `own_key`, `billed`, `past_due` and `suspended` are not reachable yet: nothing records a choice, a payment or a suspension.
-import {
-  BUDGET_WARNING_RATIO, BillingStateSchema, TrialViewSchema, type Allowance, type BillingState, type OrgRole, type TrialPhase, type TrialView,
-} from "@agentx/contracts";
+import { BUDGET_WARNING_RATIO, BillingStateSchema, TrialViewSchema, type Allowance, type BillingState, type OrgRole, type TrialPhase, type TrialView } from "@agentx/cloud-contracts";
 import { MINIMUM_REMAINING_USD } from "./budget.js";
 
 const SECONDS_PER_HOUR = 3600;

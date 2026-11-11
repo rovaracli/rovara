@@ -5,16 +5,7 @@
 //   3. the recorded responses are scanned again: a hit blocks the whole set and the report names kind, source and entry, never the text;
 //   4. the set is validated against the contract (bounds) and its digest is the pin the environment holds.
 // Sending is bounded: at most 500 inputs (the set's own limit), one at a time, each with a deadline. `send` is the caller's own (an AWS SDK call with the short-lived role, an HTTP call); the recorder holds no credential.
-import {
-  SERVICE_MOCK_BODY_MAX_BYTES,
-  SERVICE_MOCK_ENTRIES_MAX,
-  SERVICE_MOCK_LATENCY_MAX_MS,
-  ServiceMockFixtureSetSchema,
-  serviceMockFixtureSetDigest,
-  type DataGuardReport,
-  type ServiceMockFixtureSet,
-  type TestEnvProdDeny,
-} from "@agentx/contracts";
+import { SERVICE_MOCK_BODY_MAX_BYTES, SERVICE_MOCK_ENTRIES_MAX, SERVICE_MOCK_LATENCY_MAX_MS, ServiceMockFixtureSetSchema, serviceMockFixtureSetDigest, type DataGuardReport, type ServiceMockFixtureSet, type TestEnvProdDeny } from "@rovara-code/contracts";
 import { guardFixtureSet, guardInputs } from "../data-guard.js";
 import { hashOfRequest } from "./fixture-set.js";
 import { inferJsonSchema } from "./schema.js";

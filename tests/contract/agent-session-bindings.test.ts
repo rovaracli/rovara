@@ -4,7 +4,7 @@
 import { randomUUID } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { beforeAll, describe, expect, it, vi } from "vitest";
-import { agentSessionKey, sessionBindingKey, sessionSurfaceKey, type SessionBinding } from "../../packages/contracts/src/index.js";
+import { agentSessionKey, sessionBindingKey, sessionSurfaceKey, type SessionBinding } from "@rovara-code/contracts";
 import { createTaskSessionItems, ensureTaskSession } from "../../packages/broker/src/agent-sessions/create.js";
 import { bindSessionSurface, sessionForSurface } from "../../packages/broker/src/agent-sessions/bindings.js";
 import { sessionView, type SessionReadDependencies } from "../../packages/broker/src/agent-sessions/read.js";

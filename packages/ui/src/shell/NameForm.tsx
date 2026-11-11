@@ -1,6 +1,6 @@
 import { useState, type FormEvent, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { SetMyNameBodySchema, SetMyNameResponseReaderSchema } from "@agentx/contracts/web";
+import { SetMyNameBodySchema, SetMyNameResponseReaderSchema } from "@agentx/cloud-contracts/web";
 import { useAppHost } from "../host.js";
 import { createApiClient } from "../api/client.js";
 import { ApiError } from "../api/errors.js";

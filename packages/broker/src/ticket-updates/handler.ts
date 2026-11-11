@@ -10,10 +10,7 @@
 //     delivery tries again (bounded by the milestone's attempts). A missing scope is noted for the company's settings page and the update is skipped: it never fails the task.
 import { createHash } from "node:crypto";
 import { DeleteCommand, GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  AgentXError, INDEX_EXPIRY_ATTRIBUTE, TICKET_MOMENT_WORDS, intakeItemIdOf, ticketUpdateCallsKey,
-  type CodeMilestone, type CodeMilestoneKind, type OrgId, type TicketTracker, type TicketUpdateMoment,
-} from "@agentx/contracts";
+import { AgentXError, INDEX_EXPIRY_ATTRIBUTE, TICKET_MOMENT_WORDS, intakeItemIdOf, ticketUpdateCallsKey, type CodeMilestone, type CodeMilestoneKind, type OrgId, type TicketTracker, type TicketUpdateMoment } from "@rovara-code/contracts";
 import { readIntakeItem } from "../intake/store.js";
 import { resolveTaskVisibility } from "../lessons/task-visibility.js";
 import { sessionBindingsOf } from "../rovara-code/session-bindings.js";

@@ -3,18 +3,8 @@
 // them within `REALTIME_PUBLISH_DEADLINE_MS`. A notice is never a reason for anything else to fail: a request that fails is logged by the kind of channel and the error's
 // name, and the person's feed (changes.ts) already holds the notice for the client that missed it. Without an API (`realtime` undefined) nothing is posted.
 import { createHash, createHmac } from "node:crypto";
-import {
-  ENDED_SESSION_STATUSES,
-  REALTIME_EVENTS_PER_PUBLISH,
-  REALTIME_PUBLISH_DEADLINE_MS,
-  parseRealtimeChannel,
-  projectChannel,
-  sessionChannel,
-  userChannel,
-  type AgentSessionRecord,
-  type RealtimeNotice,
-  type SessionSummary,
-} from "@agentx/contracts";
+import { ENDED_SESSION_STATUSES, REALTIME_EVENTS_PER_PUBLISH, REALTIME_PUBLISH_DEADLINE_MS, type AgentSessionRecord, type SessionSummary } from "@rovara-code/contracts";
+import { parseRealtimeChannel, projectChannel, sessionChannel, userChannel, type RealtimeNotice } from "@agentx/cloud-contracts";
 
 /** The change that is being told: what `SessionChange` (notice-sink.ts) holds of it. */
 export interface NoticedChange {

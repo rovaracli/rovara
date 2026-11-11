@@ -17,7 +17,7 @@
 // call is repeatable (it is keyed by the cause or by the set) and is made AFTER the state is stored, from the state itself, so a retry of a failed call does the same thing.
 import { createHash } from "node:crypto";
 import { GetCommand, PutCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { INDEX_EXPIRY_ATTRIBUTE, NIGHTLY_FAILED_MAX, agentXError, canonicalJson, projectAllows, projectPk, type OrgId, type ProjectRole, type StoredNightlyHealth, type TestingBlockedReason } from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, NIGHTLY_FAILED_MAX, agentXError, canonicalJson, projectAllows, projectPk, type OrgId, type ProjectRole, type StoredNightlyHealth, type TestingBlockedReason } from "@rovara-code/contracts";
 import { z } from "zod";
 import { auditOccurrence, auditProjectTestHealthSettingChanged } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";

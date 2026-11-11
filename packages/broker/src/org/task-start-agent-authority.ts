@@ -1,7 +1,8 @@
 // A frozen numeric stop does not freeze visibility, archive state or roster
 // membership. Hold those live sources in the accepted task transaction.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { isWriterOrgRole, AgentGuardrailsSchema, AgentOwnerSchema, AgentPrincipalSchema, agentGuardrailsKey, builtinSettingsKey, agentKey, projectAgentKey, projectMemberKey, isBuiltinAgentId, type AgentId, type OrgId, type OrgRole } from "@agentx/contracts";
+import { isWriterOrgRole, type OrgRole } from "@agentx/cloud-contracts";
+import { AgentGuardrailsSchema, AgentOwnerSchema, AgentPrincipalSchema, agentGuardrailsKey, builtinSettingsKey, agentKey, projectAgentKey, projectMemberKey, isBuiltinAgentId, type AgentId, type OrgId } from "@rovara-code/contracts";
 import { Aliases, type TableInput, type TransactItem } from "../agents/table-writes.js";
 import { budgetActorRefused } from "../agents/budget-authority.js";
 export async function taskStartAgentAuthorityChecks(deps: Pick<TableInput, "documentClient" | "tableName">,

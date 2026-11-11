@@ -1,5 +1,5 @@
 import { GetCommand, QueryCommand, UpdateCommand, PutCommand, type DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
-import { E2EReplayResultSchema, INDEX_EXPIRY_ATTRIBUTE, indexExpiresAt, type E2EApplicationReplay, type E2EReplayReason, type E2EReplayResult, type E2EReplaySourceCase } from "@agentx/contracts";
+import { E2EReplayResultSchema, INDEX_EXPIRY_ATTRIBUTE, indexExpiresAt, type E2EApplicationReplay, type E2EReplayReason, type E2EReplayResult, type E2EReplaySourceCase } from "@rovara-code/contracts";
 import type { DeveloperTaskRecord } from "../developer/task-records.js";
 import { verifyApplicationE2EEvidence, type ApplicationEvidenceInput, type ApplicationEvidenceVerification } from "../e2e/application-evidence.js";
 import { isConditional } from "./broker-shared.js";

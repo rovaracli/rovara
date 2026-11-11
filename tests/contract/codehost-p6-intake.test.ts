@@ -3,7 +3,8 @@
 // about, read through the neutral link (the neutral row, then GitHub's old row).
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { editionPolicy, prHeadKey, type CodeHost, type CodeHostEvent } from "../../packages/contracts/src/index.js";
+import { editionPolicy } from "@agentx/cloud-contracts";
+import { prHeadKey, type CodeHost, type CodeHostEvent } from "@rovara-code/contracts";
 import { handleCodeHostWebhook, type CodeHostEventsDependencies } from "../../packages/broker/src/aws/broker/code-host-events.js";
 import { githubCodeHost } from "../../packages/broker/src/plugins/code-host/github/index.js";
 import { FakeCodeHost, fakeSignedDelivery } from "../../packages/broker/src/plugins/fake/code-host.js";
@@ -13,7 +14,7 @@ import { codeHostEventHash, codeHostEventKey, dynamoEventReservations } from "..
 import { codeHostRepositoryKey } from "../../packages/broker/src/plugins/events/repository-key.js";
 import { NO_HOST_MESSAGE, createPluginRegistry } from "../../packages/broker/src/plugins/registry.js";
 import { findLinkedChangeRequest, linkedChangeRequestItem, linkedChangeRequestKey } from "../../packages/broker/src/rovara-code/linked-change-requests.js";
-import { TRACKING_COALESCE_SECONDS, TRACKING_HEARTBEAT_MINUTES, TRACKING_REVIEW_COALESCE_SECONDS } from "../../packages/contracts/src/rovara-code.js";
+import { TRACKING_COALESCE_SECONDS, TRACKING_HEARTBEAT_MINUTES, TRACKING_REVIEW_COALESCE_SECONDS } from "@rovara-code/contracts";
 import { trackingRecoveryItem } from "../../packages/broker/src/aws/workflow-merge-recovery.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { TEST_ORG } from "../support/orgs.js";

@@ -43,8 +43,8 @@ describe("the mcp-runner-linux CI job", () => {
   it("builds the packages the tests import before it runs them, and installs before it builds", async () => {
     const order = (await job()).steps.map((step) => step.run ?? "");
     expect(order.indexOf("npm ci")).toBeGreaterThan(-1);
-    expect(order.indexOf("npm ci")).toBeLessThan(order.indexOf("npx tsc -b packages/contracts packages/gateway packages/broker"));
-    expect(order.indexOf("npx tsc -b packages/contracts packages/gateway packages/broker")).toBeLessThan(order.indexOf("npx vitest run tests/linux/mcp-runner"));
+    expect(order.indexOf("npm ci")).toBeLessThan(order.indexOf("npx tsc -b packages/cloud-contracts packages/gateway packages/broker"));
+    expect(order.indexOf("npx tsc -b packages/cloud-contracts packages/gateway packages/broker")).toBeLessThan(order.indexOf("npx vitest run tests/linux/mcp-runner"));
   });
   it("does nothing costly unless a file of the runner changed (a pull request), and always runs on a manual run or a push", async () => {
     const steps = (await job()).steps;

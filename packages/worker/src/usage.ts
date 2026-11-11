@@ -1,13 +1,6 @@
 // Moved to @agentx/contracts in feature 013 so the Slack orchestrator's turn records share the shape.
-import { SECOND_REVIEW_OPERATION_TAG, type UsageStats } from "@agentx/contracts";
-export {
-  createTaskUsageTelemetry,
-  effectiveCacheRetention,
-  type PiCacheRetention,
-  type TaskUsageOutcome,
-  type TaskUsageTelemetry,
-  type UsageStats,
-} from "@agentx/contracts";
+import { SECOND_REVIEW_OPERATION_TAG, type UsageStats } from "@rovara-code/contracts";
+export { createTaskUsageTelemetry, effectiveCacheRetention, type PiCacheRetention, type TaskUsageOutcome, type TaskUsageTelemetry, type UsageStats } from "@rovara-code/contracts";
 
 /**
  * Spec 053: usage as the control plane receives it, in a usage event or an eval result callback. A

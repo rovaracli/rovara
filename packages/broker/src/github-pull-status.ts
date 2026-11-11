@@ -1,6 +1,6 @@
 // Rovara Code (Plan 6 Task 14): what GitHub says about one pull request for merge tracking, and the parsing of it. Pure functions over GitHub's JSON, so each answer is
 // checked field by field before anything decides on it; an answer that does not fit throws (the tracking pass then tries again), it is never read as "fine".
-import { agentXError } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
 
 /** A check or status on the head: `pending` until it has finished. */
 export type PullRequestCheckStatus = "pending" | "completed";

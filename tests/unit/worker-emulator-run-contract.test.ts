@@ -2,7 +2,7 @@
 // every argument list, and the env file seam records what was written. HIGH risk (secrets), so the tests are about where each of the three per-run values goes and where it does not.
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { ServiceCatalogSchema, type CatalogEntry } from "../../packages/contracts/src/service-catalog.js";
+import { ServiceCatalogSchema, type CatalogEntry } from "@rovara-code/contracts";
 import { runNetworkAddresses, runNetworkBridge, runNetworkHelperIp, runNetworkLabelArgs, runNetworkName, type ServicesNetwork } from "../../packages/worker/src/run-network.js";
 import {
   EMULATOR_CONTROL_PATHS, HelperStartError, controlRequestArgs, newLocalAwsCredentials, startHelpers, type HelperFiles, type HelperRequest,

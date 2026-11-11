@@ -6,7 +6,7 @@ import { workFixture } from "./work-mock.js";
 import { mockCellOrigin } from "./port.js";
 import { workspaceFixture } from "../../web/support/workspace-fixture.js";
 import { sessionFixture } from "../../web/support/session-fixture.js";
-import type { AgentVersionViewSchema,ResolvedRecipeSchema, AgentShareViewSchema, SessionMessageSchema, SessionShareSchema } from "@agentx/contracts/web";
+import type { AgentVersionViewSchema, ResolvedRecipeSchema, AgentShareViewSchema, SessionMessageSchema, SessionShareSchema } from "@agentx/cloud-contracts/web";
 import { navFixture, meFixture, homeFixture } from "../../web/support/fixtures.js";
 export interface Scenario { name: "admin" | "onboarding" | "shell" | "home" | "session" | "workspace" | "live" | "work" | "project" | "agents" | "builder"; work?: ReturnType<typeof workFixture>; agent?: ReturnType<typeof agentProfile>; builder?:ReturnType<typeof builderFixture>;agentVersions?:Array<ReturnType<typeof AgentVersionViewSchema.parse>>;agentRecipes?:Record<string,ReturnType<typeof ResolvedRecipeSchema.parse>>; agentShares?: Array<ReturnType<typeof AgentShareViewSchema.parse>>; project?: ReturnType<typeof projectFixture>; live?: Array<ReturnType<typeof liveFixture>>; changes?: Array<{ type: "session.updated"; sessionId: string; revision: number; at: string; sk: string }>; session?: ReturnType<typeof sessionFixture>; messages?: Array<ReturnType<typeof SessionMessageSchema.parse>>; shares?: Array<ReturnType<typeof SessionShareSchema.parse>>; nav: ReturnType<typeof navFixture>; me: ReturnType<typeof meFixture>; home: ReturnType<typeof homeFixture> }
 export function scenario(name: string): Scenario {

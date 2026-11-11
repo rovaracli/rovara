@@ -4,7 +4,8 @@
 // Every write is ONE TransactWriteItems: the row (conditional on the revision the caller read), the counters and the audit item. A cancelled transaction answers false (the caller then says CHANGE_STALE). A write without an
 // audit ledger is refused: approving an image is company authority, so there is no unaudited path.
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { OrgIdSchema, agentXError, companyImageExtraRegistriesOf, companyImageRegistryRule, orgPk, type AuditEventInput, type CompanyImageMirrorRef, type OrgId } from "@agentx/contracts";
+import { companyImageExtraRegistriesOf, companyImageRegistryRule, type AuditEventInput, type CompanyImageMirrorRef } from "@agentx/cloud-contracts";
+import { OrgIdSchema, agentXError, orgPk, type OrgId } from "@rovara-code/contracts";
 import { auditCompanyImageChange, auditCompanyImageRegistriesChanged, auditOccurrence } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, type AuditRuntime, type TransactItem } from "../audit/outbox.js";

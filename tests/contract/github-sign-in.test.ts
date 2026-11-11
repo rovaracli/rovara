@@ -1,7 +1,7 @@
 // Task 22: the `github` sign-in method on cloud installs. GitHub is not OIDC, so the broker's own sign-in server
 // runs the OAuth web flow (providers.ts githubSignInProvider); everything downstream is the `cloud` method's rules.
 import { describe, expect, it } from "vitest";
-import { developerOrgKey, orgEmailKey, orgMetaKey, trialGithubKey } from "@agentx/contracts";
+import { developerOrgKey, orgEmailKey, orgMetaKey, trialGithubKey } from "@agentx/cloud-contracts";
 import { developerClaims } from "../../packages/broker/src/aws/developer-routes.js";
 import { createDeveloperApiConfiguration } from "../../packages/broker/src/aws/workflow-dependencies-configuration.js";
 import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";

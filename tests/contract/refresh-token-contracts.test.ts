@@ -1,7 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  CredentialRegistrationSchema, OAUTH_AUTHORIZATION_PROFILES, OAuthAppSecretSchema, OAuthRefreshTokenSecretSchema, oauthProfile,
-} from "../../packages/contracts/src/index.js";
+import { CredentialRegistrationSchema, OAUTH_AUTHORIZATION_PROFILES, OAuthAppSecretSchema, OAuthRefreshTokenSecretSchema, oauthProfile } from "@rovara-code/contracts";
 
 describe("oauth-refresh-token secrets and sign-in profiles (phase 7)", () => {
   it("parses the stored secret only with a client and a refresh token, and nothing that could redirect the broker", () => {

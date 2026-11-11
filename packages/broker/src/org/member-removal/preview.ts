@@ -2,7 +2,8 @@
 // maintained projects), and the fixed lines for what ends. Every count is capped (`COUNT_CAP`, "or more"), and one that cannot be read is left at zero with a warning, so a preview
 // never blocks a removal.
 import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
-import { MEMBER_GRANT_SK_PREFIX, approverIndexKey, memberGithubKey, memberGrantsPk, openSpendRequestsKey, type OrgId } from "@agentx/contracts";
+import { MEMBER_GRANT_SK_PREFIX, approverIndexKey, memberGithubKey, memberGrantsPk, type OrgId } from "@rovara-code/contracts";
+import { openSpendRequestsKey } from "@agentx/cloud-contracts";
 import type { AgentRouteDependencies } from "../../agents/routes.js";
 
 export const COUNT_CAP = 1000;

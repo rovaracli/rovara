@@ -7,7 +7,8 @@
 // setting that cannot be read gives OFF here (the caller of a read that must not guess uses `readEffectiveDesignReview`, which throws).
 // The switch is read at every step, not only when a task enters the stage (B2-m3): `dr` at 0, the company no longer allowing it, or the project set to Off, ends a review under way at its next round or planner run, as not run
 // (`switched_off`). A run already working finishes; nothing is approved for anyone. A review the PERSON asked for (design first) keeps going while the stage exists, whatever the project's mode (owner Q3): see `designReviewStillOn`.
-import { liveInteractionFlagOn, BROKER_SETTINGS, type OrgId } from "@agentx/contracts";
+import { liveInteractionFlagOn, type OrgId } from "@rovara-code/contracts";
+import { BROKER_SETTINGS } from "@agentx/cloud-contracts";
 import type { ProjectPlaybookReader } from "../playbook/project-playbook-store.js";
 import { readDesignReviewCompany } from "./lock.js";
 import { readEffectiveWhenAllowed } from "./setting.js";

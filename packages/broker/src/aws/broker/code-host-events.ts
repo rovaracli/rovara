@@ -3,7 +3,7 @@
 //
 // The org an event belongs to is the host's own binding, supplied by the caller (`orgOf`), never read from the event: for GitHub it is the App installation's org, for another host the
 // install's own binding. With no `orgOf` nothing is consumed. The HTTP route that would call this is not mounted here (see the report: "Wiring pending").
-import type { CodeHostEvent, HostScope, OrgId, RawDelivery } from "@agentx/contracts";
+import type { CodeHostEvent, HostScope, OrgId, RawDelivery } from "@rovara-code/contracts";
 import { receiveCodeHostDelivery } from "../../plugins/events/intake.js";
 import { dynamoEventReservations, type EventReservations } from "../../plugins/events/reservations.js";
 import type { CodeHostRouter } from "../../plugins/registry.js";

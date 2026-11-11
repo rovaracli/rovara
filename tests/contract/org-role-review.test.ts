@@ -1,5 +1,6 @@
 import { expect, it } from "vitest";
-import { AgentXError, orgMemberKey, developerOrgKey, orgMetaKey } from "@agentx/contracts";
+import { AgentXError } from "@rovara-code/contracts";
+import { orgMemberKey, developerOrgKey, orgMetaKey } from "@agentx/cloud-contracts";
 import { routeDeveloperRequest, type DeveloperRouteDependencies, type DeveloperCaller } from "../../packages/broker/src/aws/developer-routes.js";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";

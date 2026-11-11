@@ -4,7 +4,7 @@ import { screen, fireEvent, waitFor } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { createMemoryRouter, MemoryRouter, RouterProvider } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
-import { AppNavSchema, type AppNav } from "@agentx/contracts/web";
+import { AppNavSchema, type AppNav } from "@agentx/cloud-contracts/web";
 import { ApiError } from "../../packages/ui/src/api/errors.js";
 import { App } from "../../packages/ui/src/App.js";
 import { appRoutes } from "../../packages/ui/src/routes.js";

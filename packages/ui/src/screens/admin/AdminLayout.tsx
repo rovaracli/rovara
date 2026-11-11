@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { NavLink, Outlet, useOutletContext, useLocation, useNavigate } from "react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { AppMeResponseReaderSchema } from "@agentx/contracts/web";
+import { AppMeResponseReaderSchema } from "@agentx/cloud-contracts/web";
 import { useAppHost } from "../../host.js";
 import { createApiClient } from "../../api/client.js";
 import { Button } from "../../design/Button.js";

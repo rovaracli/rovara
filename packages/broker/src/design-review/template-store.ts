@@ -2,7 +2,7 @@
 // a Markdown design document under its own digest, and submitted for review by the workflow's ordinary move (`submitWorkflowArtifact`, which sends a design of a task with a design review to its review). A design that does not read
 // is not stored: the caller asks the planner again with what was wrong, or blocks. Only reached when the task has a `designReview`; with it off the claims format is stored as before.
 import { createHash } from "node:crypto";
-import { submitWorkflowArtifact, type WorkflowSnapshot } from "@agentx/contracts";
+import { submitWorkflowArtifact, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { readDesignTemplate } from "./template.js";
 
 export interface DesignTemplateInput {

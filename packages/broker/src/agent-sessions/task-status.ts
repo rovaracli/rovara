@@ -1,9 +1,8 @@
 // UX2 slice 2 item 1: where a task stands in the ONE status model (`@agentx/contracts` task-status.ts), from its stored records. The session summary (`summary.ts`) stores it for Live, Home, the sidebar
 // and the timeline; the task view (`task-view.ts`) adds it for the task page, the MCP tools and the CLI; Slack's start post reads it too. The reason and next-step sentences for a stage are the legacy
 // task page's own (`taskPageStage`), so every surface says the same thing. Fixed words only: never task content, never a raw code.
-import {
-  TASK_STATUS_NEXT_MAX, TASK_STATUS_REASON_MAX, failureCause, taskStatusFromSession, type MergeView, type SessionStatus, type TaskStatus, type WorkflowSnapshot,
-} from "@agentx/contracts";
+import { TASK_STATUS_NEXT_MAX, TASK_STATUS_REASON_MAX, failureCause, taskStatusFromSession, type MergeView, type SessionStatus, type TaskStatus } from "@rovara-code/contracts";
+import { type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { taskPageStage } from "../aws/developer-tasks/task-page.js";
 import { workflowDocumentName } from "../developer/workflow-messages.js";
 

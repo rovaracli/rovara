@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { E2EModelChannelResponseSchema, E2EModelRouteDefinitionSchema, e2eModelRouteRevision } from "../../packages/contracts/src/e2e-model-channel.js";
+import { E2EModelChannelResponseSchema, E2EModelRouteDefinitionSchema, e2eModelRouteRevision } from "@rovara-code/contracts";
 import { createGovernedE2EModelRoute, createInMemoryE2EDayBudget } from "../../packages/model-runtime/src/e2e-route.js";
 import {
   SCRIPTED_E2E_ROUTE_ID,

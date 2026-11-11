@@ -3,7 +3,8 @@
 // request" start (always QUICK), and "Make a change anyway" (which carries over the first task's path only when that was "request" too). A start that left the choice to Understand has
 // "understand". Understand may answer a question instead of planning only when the start named no path: otherwise its answer is read as the restatement of the change to plan, as it already
 // is for a task that follows an answered one. The web's Start work box sends no path, so its starts are Understand's to route. The effect of a named path is only ever more planning and approval.
-import type { IntentAssessment, WorkflowPath, WorkflowSnapshot } from "@agentx/contracts";
+import type { IntentAssessment, WorkflowPath } from "@rovara-code/contracts";
+import type { WorkflowSnapshot } from "@agentx/cloud-contracts";
 
 /** The assumption an explicit-path conversion states, in fixed words (the person's own choice is the only thing named). */
 export function explicitPathAssumption(path: WorkflowPath): string {

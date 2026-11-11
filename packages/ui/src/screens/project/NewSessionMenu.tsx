@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { AgentIdSchema, ROVARA_CODE_AGENT_ID, type ProjectOverviewReaderSchema } from "@agentx/contracts/web";
+import { AgentIdSchema, ROVARA_CODE_AGENT_ID, type ProjectOverviewReaderSchema } from "@agentx/cloud-contracts/web";
 import { Button } from "../../design/Button.js";
 import { Dialog } from "../../design/Dialog.js";
 import { VisibleText } from "../../design/VisibleText.js";

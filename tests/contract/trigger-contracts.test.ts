@@ -1,17 +1,15 @@
 // Plan 4 Task 18: the trigger contracts: the event and schedule variants of a recipe's triggers, the tables of event types and filter keys, schedules, the
 // normalised event and its summary, the targets, the keys a trigger lives under, and the built-in suggestions.
 import { describe, expect, it } from "vitest";
-import { BUILTIN_AGENT_IDS } from "../../packages/contracts/src/agent.js";
-import { BUILTIN_AGENTS } from "../../packages/contracts/src/agent-templates.js";
-import { RecipeOverlaySchema, TriggerSpecSchema } from "../../packages/contracts/src/agent-recipe.js";
-import { EMPTY_RECIPE, TRIGGER_KINDS_AT_LAUNCH, recipeProblems } from "../../packages/contracts/src/agent-recipe-node.js";
-import { BUILTIN_TRIGGER_SUGGESTIONS } from "../../packages/contracts/src/builtin-triggers.js";
-import { EVENT_FILTER_KEYS, EVENT_SOURCES, EVENT_TYPES, SCHEDULE_INTERVAL_MINUTES, ScheduleSpecSchema, eventFilterKeys } from "../../packages/contracts/src/trigger-specs.js";
-import { MAX_TRIGGERS_PER_TARGET, TRIGGER_ACTIVITY_TTL_DAYS, TRIGGER_DEFAULT_MAX_RUNS_PER_HOUR, TRIGGER_MAX_RUNS_PER_HOUR, triggerScheduleRate, triggerSpecWidens } from "../../packages/contracts/src/trigger-specs.js";
-import { TriggerEventSchema, TriggerTargetSchema, triggerSummary, type TriggerEvent } from "../../packages/contracts/src/triggers.js";
-import {
-  targetTriggersKey, triggerActivityKey, triggerKey, triggerMatchKey, triggerNoticeKey, triggersByCreatorKey, triggerTargetKey,
-} from "../../packages/contracts/src/org-scoped-keys.js";
+import { BUILTIN_AGENT_IDS } from "@rovara-code/contracts";
+import { BUILTIN_AGENTS } from "@rovara-code/contracts";
+import { RecipeOverlaySchema, TriggerSpecSchema } from "@rovara-code/contracts";
+import { EMPTY_RECIPE, TRIGGER_KINDS_AT_LAUNCH, recipeProblems } from "@rovara-code/contracts";
+import { BUILTIN_TRIGGER_SUGGESTIONS } from "@rovara-code/contracts";
+import { EVENT_FILTER_KEYS, EVENT_SOURCES, EVENT_TYPES, SCHEDULE_INTERVAL_MINUTES, ScheduleSpecSchema, eventFilterKeys } from "@rovara-code/contracts";
+import { MAX_TRIGGERS_PER_TARGET, TRIGGER_ACTIVITY_TTL_DAYS, TRIGGER_DEFAULT_MAX_RUNS_PER_HOUR, TRIGGER_MAX_RUNS_PER_HOUR, triggerScheduleRate, triggerSpecWidens } from "@rovara-code/contracts";
+import { TriggerEventSchema, TriggerTargetSchema, triggerSummary, type TriggerEvent } from "@rovara-code/contracts";
+import { targetTriggersKey, triggerActivityKey, triggerKey, triggerMatchKey, triggerNoticeKey, triggersByCreatorKey, triggerTargetKey } from "@rovara-code/contracts";
 import { TEST_ORG } from "../support/orgs.js";
 
 const ORG = TEST_ORG;

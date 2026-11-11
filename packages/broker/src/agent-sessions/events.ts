@@ -5,21 +5,7 @@
 // position alone (`onlyTheEventCancelled`) means "already recorded": the caller treats it as success and retries the rest without it. An event is never a
 // reason for the caller's own work to fail: build it with the helpers here, which answer undefined rather than throw.
 import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  SESSION_EVENTS_PAGE_MAX,
-  SESSION_EVENT_TEXT_MAX,
-  SessionEventSchema,
-  agentSessionKey,
-  agentXError,
-  cleanSessionName,
-  hideEmailAddresses,
-  redactText,
-  sessionEventId,
-  type OrgId,
-  type SessionEvent,
-  type SessionEventPage,
-  type SessionId,
-} from "@agentx/contracts";
+import { SESSION_EVENTS_PAGE_MAX, SESSION_EVENT_TEXT_MAX, SessionEventSchema, agentSessionKey, agentXError, cleanSessionName, hideEmailAddresses, redactText, sessionEventId, type OrgId, type SessionEvent, type SessionEventPage, type SessionId } from "@rovara-code/contracts";
 import { failedIndexes, type TableInput, type TransactItem } from "../agents/table-writes.js";
 import { followMerges } from "../agents/access.js";
 import type { DeveloperSignInStore } from "../developer/store.js";

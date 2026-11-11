@@ -1,10 +1,6 @@
 // Settings of the audit ledger (Task 5 of the Audit Ledger plan), read from CDK context and checked at
 // synth. Pure functions, no CDK imports, so a test can feed them any value.
-import {
-  AUDIT_GOVERNANCE_RETENTION_DAYS,
-  AUDIT_RETENTION_DAYS_DEFAULT,
-  AUDIT_RETENTION_DAYS_MIN_COMPLIANCE,
-} from "@agentx/contracts";
+import { AUDIT_GOVERNANCE_RETENTION_DAYS, AUDIT_RETENTION_DAYS_DEFAULT, AUDIT_RETENTION_DAYS_MIN_COMPLIANCE } from "@agentx/cloud-contracts";
 import type { AgentXNaming } from "./naming.js";
 
 export type AuditLockMode = "COMPLIANCE" | "GOVERNANCE";

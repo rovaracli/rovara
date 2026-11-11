@@ -1,5 +1,5 @@
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
-import { LEGACY_WORKER_CREDENTIAL_KINDS, agentXError, credentialKindIsSendable, credentialKindNeedsWorkerFeature, type HostScope } from "@agentx/contracts";
+import { LEGACY_WORKER_CREDENTIAL_KINDS, agentXError, credentialKindIsSendable, credentialKindNeedsWorkerFeature, type HostScope } from "@rovara-code/contracts";
 
 interface RepositoryGrantClaims {
   version: 3;

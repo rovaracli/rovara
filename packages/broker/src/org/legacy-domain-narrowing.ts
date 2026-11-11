@@ -1,7 +1,9 @@
 import { planPendingWebsiteInvalidation } from "./project-domain-invalidation.js";
 import { createHash } from "node:crypto";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { INDEX_EXPIRY_ATTRIBUTE, agentXError, canonicalJson, projectMetaKey, projectPk, type AuditActor, type AuditEventInput, type OrgId, type ProjectSettingsBody } from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, agentXError, canonicalJson, projectMetaKey, projectPk, type OrgId, type ProjectSettingsBody } from "@rovara-code/contracts";
+import { type AuditActor } from "@agentx/cloud-contracts";
+import { type AuditEventInput } from "@agentx/cloud-contracts";
 import { auditPending, type AuditRuntime, type TransactItem } from "../audit/outbox.js";
 import { auditOccurrence } from "../audit/events.js";
 import { auditProjectAllowedDomains } from "../audit/allowed-domains.js";

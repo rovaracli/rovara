@@ -2,7 +2,8 @@
 // change unless they are the only one who could. Ordinary agents are judged and confirmed exactly as before.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { ROVARA_CODE_AGENT_ID, type AgentId, type OrgRole } from "../../packages/contracts/src/index.js";
+import { ROVARA_CODE_AGENT_ID, type AgentId } from "@rovara-code/contracts";
+import { type OrgRole } from "@agentx/cloud-contracts";
 import { decideApproval, getAnyApproval } from "../../packages/broker/src/agents/approvals.js";
 import { confirmedBySoleOwner } from "../../packages/broker/src/playbook/process-approvals.js";
 import { publishDraft, rollbackAgent } from "../../packages/broker/src/agents/changes.js";
@@ -11,7 +12,7 @@ import { postProjectProcess } from "../../packages/broker/src/playbook/process-l
 import type { ProjectPlaybookDependencies } from "../../packages/broker/src/playbook/routes.js";
 import { ARJUN, MAX, OLA, ORG_A, PRIYA } from "../support/agent-session-world.js";
 import { mergeWorld as baseWorld, type MergeWorld } from "../support/rovara-code-merge-world.js";
-import { agentXError } from "../../packages/contracts/src/index.js";
+import { agentXError } from "@rovara-code/contracts";
 
 const MESSAGE = "Someone else who can approve changes in this project must confirm this.";
 const ROLES: Record<string, OrgRole> = { [OLA]: "admin" };

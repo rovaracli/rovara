@@ -1,7 +1,8 @@
 // v1.2 learning loop: the audit events of the learning paths (design 8), built in one place so every path emits the same way. Each path asks for its events with `learningEvents`, puts the
 // returned `items` in the transaction that changes the state, and calls `flushLearningEvents` after the commit. Without a ledger (`deps.audit` absent) there are no items and no events.
 // Every fact is an id, a count or a fixed word: no correction text, rule text or note is ever a fact.
-import type { AuditActor, AuditEventInput } from "@agentx/contracts";
+import type { AuditActor } from "@agentx/cloud-contracts";
+import type { AuditEventInput } from "@agentx/cloud-contracts";
 import { SYSTEM_ACTOR, auditActorOf } from "../audit/plan3-hooks.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import {

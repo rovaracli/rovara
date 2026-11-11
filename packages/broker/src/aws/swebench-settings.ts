@@ -1,11 +1,4 @@
-import {
-  agentXError,
-  SWEBENCH_SETTING_PARAMETERS,
-  SwebenchRunnerFeaturesSchema,
-  SwebenchSettingsSchema,
-  WORKER_SETTING_PARAMETERS,
-  type SwebenchLaunch,
-} from "@agentx/contracts";
+import { agentXError, SWEBENCH_SETTING_PARAMETERS, SwebenchRunnerFeaturesSchema, SwebenchSettingsSchema, WORKER_SETTING_PARAMETERS, type SwebenchLaunch } from "@rovara-code/contracts";
 import type { SwebenchDeployment } from "./swebench.js";
 
 const ECR_DIGEST_IMAGE = /^\d{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com\/[a-z0-9]+(?:[._/-][a-z0-9]+)*@sha256:[0-9a-f]{64}$/;

@@ -19,7 +19,7 @@ import { lstat, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { dirname, isAbsolute, join } from "node:path";
-import { McpStdioProposalSchema, type McpStdioProposal } from "@agentx/contracts";
+import { McpStdioProposalSchema, type McpStdioProposal } from "@rovara-code/contracts";
 import {
   BUNDLE_LIMITS, BundleError, INSTALL_STEPS_SENTENCE, bootstrapEnvironment, LOCKFILE_LIMITS, runnerTokenWellFormed, runsAsRoot, RootRefusedError, NpmTarballError, binOf, checkLockfile, extractNpmTarball, lockfileHash, normalizeTree, writeBundle,
   type LockfileRule, type LockfileVerdict,

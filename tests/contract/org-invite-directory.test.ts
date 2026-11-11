@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { expect, it, vi } from "vitest";
-import { AgentXError, errorStatus, orgMemberKey, orgMetaKey, orgInviteKey, orgPk, developerOrgKey } from "@agentx/contracts";
+import { AgentXError, errorStatus, orgPk } from "@rovara-code/contracts";
+import { orgMemberKey, orgMetaKey, orgInviteKey, developerOrgKey } from "@agentx/cloud-contracts";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { routeDeveloperRequest, type DeveloperCaller, type DeveloperRouteDependencies } from "../../packages/broker/src/aws/developer-routes.js";
 import { inviteTokenHash } from "../../packages/broker/src/org/invite-url.js";

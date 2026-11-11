@@ -5,7 +5,7 @@ import { resolveStageModel, type StageModelInput } from "../../packages/broker/s
 import { candidatesOf } from "../../packages/broker/src/rovara-code/critic.js";
 import { reviewDefaultExtras, STAGE_POOL_MAX } from "../../packages/broker/src/model-selection/review-default-pool.js";
 import { reviewNoOtherCompanyLine } from "../../packages/broker/src/rovara-code/review-model-lines.js";
-import { EffectiveStageModelSchema } from "../../packages/contracts/src/stage-models.js";
+import { EffectiveStageModelSchema } from "@rovara-code/contracts";
 
 const sonnet = { provider: "anthropic", modelId: "claude-sonnet-4" };
 const opus = { provider: "anthropic", modelId: "claude-opus-4" };
@@ -169,7 +169,7 @@ import { loadPinnedTaskStage } from "../../packages/broker/src/model-selection/t
 import { prepareTaskModelPolicyPin } from "../../packages/broker/src/model-selection/task-pin.js";
 import { createDeveloperTaskBroker } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
-import { agentGuardrailsKey, builtinRecipe, DEFAULT_AGENT_GUARDRAILS, recipeDigest } from "../../packages/contracts/src/index.js";
+import { agentGuardrailsKey, builtinRecipe, DEFAULT_AGENT_GUARDRAILS, recipeDigest } from "@rovara-code/contracts";
 
 const OPENAI = "src_bbbbbbbbbbbbbbbbbbbb";
 const claudeSonnet = { provider: "amazon-bedrock", modelId: "us.anthropic.claude-sonnet-5" };
@@ -328,7 +328,7 @@ describe("M3 and L5: the pool matches the approved list exactly and compares mod
     expect(reviewDefaultExtras({ servable: [gpt], approved: [gpt], forbidden: [], have: new Set(), size: 0 })).toEqual([gpt]);
   });
   it("one model over two routes is one model: a pool already holding it by its canonical name is not given it again", async () => {
-    const { canonicalModelName } = await import("../../packages/contracts/src/index.js");
+    const { canonicalModelName } = await import("@rovara-code/contracts");
     expect(reviewDefaultExtras({ servable: [gpt], approved: undefined, forbidden: [], have: new Set([canonicalModelName(bedrockGpt)]), size: 1 })).toEqual([]);
   });
 });
@@ -360,7 +360,7 @@ describe("L2 and L3: what the broker says", () => {
   });
   it("the company page's read says which checking steps default to a different company, from the saved policy", async () => {
     const { getCompanyModelSelectionPolicy } = await import("../../packages/broker/src/model-selection/company-read.js");
-    const { orgMemberKey, developerOrgKey, orgMetaKey } = await import("../../packages/contracts/src/index.js");
+    const { orgMemberKey, developerOrgKey, orgMetaKey } = await import("@agentx/cloud-contracts");
     const h = await createDeveloperTaskBroker();
     const dev = "a".repeat(64);
     h.db.set({ ...orgMemberKey(TEST_ORG, dev), orgId: TEST_ORG, developerId: dev, role: "admin" });

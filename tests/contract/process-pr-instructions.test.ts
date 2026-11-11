@@ -3,7 +3,7 @@
 // in the store). Other stages' instructions and ordinary agents are unchanged.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { ROVARA_CODE_AGENT_ID, agentKey, agentVersionSk, agentXError, recipeDigest, type AgentId, type RecipeOverlay } from "../../packages/contracts/src/index.js";
+import { ROVARA_CODE_AGENT_ID, agentKey, agentVersionSk, agentXError, recipeDigest, type AgentId, type RecipeOverlay } from "@rovara-code/contracts";
 import { getApprovalSubjectHandler, type ApprovalRecord } from "../../packages/broker/src/agents/approvals.js";
 import { publishDraft, resolveRecipe, rollbackAgent } from "../../packages/broker/src/agents/changes.js";
 import { routeAgentRequest } from "../../packages/broker/src/agents/routes.js";

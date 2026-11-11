@@ -27,9 +27,9 @@ import { mkdir, readFile } from "node:fs/promises";
 import { gzipSync } from "node:zlib";
 import { pathToFileURL } from "node:url";
 import { dirname, join, resolve } from "node:path";
-import {
-  CatalogEntrySchema, checkMirrorServesDigest, loadSignedCatalog, resolveCatalogImage, type CatalogEntry, type RegistryManifestPort, type SubstituteApprovalPort, type VerifiedCatalog,
-} from "@agentx/contracts";
+import { CatalogEntrySchema, type CatalogEntry, type RegistryManifestPort, type SubstituteApprovalPort, type VerifiedCatalog } from "@rovara-code/contracts";
+import { checkMirrorServesDigest, resolveCatalogImage } from "@agentx/cloud-contracts";
+import { loadSignedCatalog } from "@agentx/cloud-contracts";
 import type * as RunNetworkModule from "../packages/worker/src/run-network.js";
 import type * as ServiceHelpersModule from "../packages/worker/src/service-helpers.js";
 import type * as ServiceRunnerModule from "../packages/worker/src/service-runner.js";

@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { SETUP_AGENT_LIMITS_DEFAULT } from "../../packages/contracts/src/index.js";
+import { SETUP_AGENT_LIMITS_DEFAULT } from "@rovara-code/contracts";
 import { runSetupAgentInvocation } from "../../packages/worker/src/setup-agent-invocation.js";
 import { SETUP_ISOLATION_ENVIRONMENT, SETUP_ISOLATION_UNAVAILABLE_MESSAGE, setupIsolationUnavailable } from "../../packages/worker/src/setup-isolation.js";
 import type { DockerCli } from "../../packages/worker/src/swebench/containers.js";

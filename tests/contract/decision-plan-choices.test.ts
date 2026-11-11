@@ -4,12 +4,12 @@
 import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { commentKey } from "../../packages/broker/src/developer/page-comments.js";
-import { DECISION_COMMENTS_MAX, PAGE_NOTE_MAX_CHARS } from "../../packages/contracts/src/task-comments.js";
-import { DECISION_PLAN_COMMENTS_MAX, DECISION_PLAN_NOTE_MAX, DecisionApproveBodySchema, planChoicesProblem } from "../../packages/contracts/src/decision-card-tabs.js";
+import { DECISION_COMMENTS_MAX, PAGE_NOTE_MAX_CHARS } from "@rovara-code/contracts";
+import { DECISION_PLAN_COMMENTS_MAX, DECISION_PLAN_NOTE_MAX, DecisionApproveBodySchema, planChoicesProblem } from "@rovara-code/contracts";
 import { browserRequests } from "../support/browser-session.js";
 import { MAYA, OMAR, createSingleAnswerPlanBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
-import { projectMemberKey } from "@agentx/contracts";
+import { projectMemberKey } from "@rovara-code/contracts";
 import { planAnswer, planDocument } from "../support/plan-documents.js";
 
 const PREPARED = { result: { preparedBase: [{ repositoryId: "demo", baseCommitSha: "e".repeat(40) }] } };

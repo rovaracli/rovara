@@ -7,9 +7,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
-import { CATALOG_STAGING_ACCOUNT_ID, CATALOG_STAGING_ONLY_SIGNING_KEYS, CatalogSignatureSchema, ServiceCatalogSchema, loadSignedCatalog, parseBundlePublicKey, sha256HexOf, type CatalogSigningKey } from "@agentx/contracts";
-import { loadSignedCatalogWithKeys, trustedKeyPemsFor } from "@agentx/contracts/testing";
-import { FLAVOR_FILE, STAGING_KEYS_FILE, STAGING_KEY_DATA_FILE, setCatalogFlavor } from "../../packages/contracts/tools/catalog-flavor.js";
+import { CATALOG_STAGING_ACCOUNT_ID, CATALOG_STAGING_ONLY_SIGNING_KEYS, loadSignedCatalog } from "@agentx/cloud-contracts";
+import { CatalogSignatureSchema, ServiceCatalogSchema, parseBundlePublicKey, sha256HexOf, type CatalogSigningKey } from "@rovara-code/contracts";
+import { loadSignedCatalogWithKeys, trustedKeyPemsFor } from "@agentx/cloud-contracts/testing";
+import { FLAVOR_FILE, STAGING_KEYS_FILE, STAGING_KEY_DATA_FILE, setCatalogFlavor } from "../../packages/cloud-contracts/tools/catalog-flavor.js";
 
 const sourceFile = (name: string) => new URL(`../../${name}`, import.meta.url);
 const catalogBytes = readFileSync(sourceFile("environments/service-catalog/catalog.json"));

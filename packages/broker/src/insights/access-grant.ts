@@ -7,7 +7,8 @@
 // fingerprint, never a person's id, and expires with the State table's TTL.
 import { createHash } from "node:crypto";
 import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { INDEX_EXPIRY_ATTRIBUTE, OrgRoleSchema, agentXError, auditEventId, orgMemberKey, orgPk, orgScoped, type AuditEventInput, type InsightsAccess, type InsightsAccessBody, type OrgId } from "@agentx/contracts";
+import { OrgRoleSchema, auditEventId, orgMemberKey, type AuditEventInput, type InsightsAccess, type InsightsAccessBody } from "@agentx/cloud-contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, agentXError, orgPk, orgScoped, type OrgId } from "@rovara-code/contracts";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, type AuditDeps } from "../audit/outbox.js";
 import { queryPartition } from "../agent-sessions/live.js";

@@ -2,7 +2,7 @@
 // (`readiness:<index of the command in the check plan>`) and breaks if the worker's format changes. Check `provenIndex` is a test runner whose new test fails on the
 // original code; every other check is a linter that passed (the worker marks it not applicable and the proof does not count it). Test support only.
 import { rm } from "node:fs/promises";
-import type { CheckEntry, ProjectCommand, TestProof } from "../../packages/contracts/src/index.js";
+import type { CheckEntry, ProjectCommand, TestProof } from "@rovara-code/contracts";
 import type { CheckPlan } from "../../packages/worker/src/verification/checks.js";
 import { runTestProof, serializeTestProof } from "../../packages/worker/src/verification/test-proof.js";
 import { FAKE_TEST_COMMAND, fakeTestRunner, passedEntry, repositoryWithCandidate } from "./test-proof-fixture.js";

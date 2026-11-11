@@ -1,6 +1,6 @@
 // N9 (INTG2): the registries a prepare invocation carries. Built where the invocation is built, so an install that cannot serve them refuses the START with a fixed sentence rather than
 // letting setup run without the registry and fail on a 401 (and never falling back to a public mirror). A run that only reads (`readOnly`) runs none of the project's code, so it carries none.
-import { REGISTRY_PROBLEM_MESSAGES, agentXError, prepareRegistriesOf, registryProblems, type BoundRegistryDomain, type Edition, type PrepareRegistries, type ProjectRegistry } from "@agentx/contracts";
+import { REGISTRY_PROBLEM_MESSAGES, agentXError, prepareRegistriesOf, registryProblems, type BoundRegistryDomain, type Edition, type PrepareRegistries, type ProjectRegistry } from "@rovara-code/contracts";
 import { REGISTRIES_OFF_MESSAGE } from "./exchange.js";
 
 /** The feature message: a worker that does not list `prepare.registries.v1` is refused at delivery with this, the same sentence as an old worker meeting any new field. */

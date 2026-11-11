@@ -1,7 +1,7 @@
 // Lessons in production, lane 2 (WB-7): a commit that meets an unfinished earlier change (the staged rollback's open intent) resumes it first and tries once more; still stuck is a fixed LESSON_BUSY refusal,
 // never the RUNTIME_UNAVAILABLE that `heal` throws (a route would show that as the service being down).
 import { describe, expect, it } from "vitest";
-import { AgentXError } from "@agentx/contracts";
+import { AgentXError } from "@rovara-code/contracts";
 import { DynamoLessonStore } from "../../../packages/broker/src/lessons/dynamo-store.js";
 import type { Lesson } from "../../../packages/broker/src/lessons/types.js";
 import { ORG_A } from "../../support/team-record-core.js";

@@ -1,10 +1,7 @@
 // The mirror's state, one row per approved image, in a partition of its own (`COMPANY_IMAGE_MIRROR#<org>`, sort key the image id): the mirror function may write that partition and nothing else, and the broker reads it when it
 // plans a run. A state is only for the digest it names (an image id names its digest). Rows are operational, not authority: nothing here is an approval, and a missing or damaged row only means "not copied (yet)".
 import { GetCommand, PutCommand, UpdateCommand, DeleteCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  COMPANY_IMAGE_MIRROR_ATTEMPTS_MAX, COMPANY_IMAGE_MIRROR_RETRY_MS, COMPANY_IMAGE_MIRROR_STALE_MS, CompanyImageMirrorStateSchema, companyImageMirrorPartition,
-  type CompanyImageMirrorFailure, type CompanyImageMirrorState,
-} from "@agentx/contracts";
+import { COMPANY_IMAGE_MIRROR_ATTEMPTS_MAX, COMPANY_IMAGE_MIRROR_RETRY_MS, COMPANY_IMAGE_MIRROR_STALE_MS, CompanyImageMirrorStateSchema, companyImageMirrorPartition, type CompanyImageMirrorFailure, type CompanyImageMirrorState } from "@agentx/cloud-contracts";
 
 export interface MirrorTable { documentClient: { send(command: unknown): Promise<unknown> }; tableName: string }
 const key = (orgId: string, imageId: string): { pk: string; sk: string } => ({ pk: companyImageMirrorPartition(orgId), sk: imageId });

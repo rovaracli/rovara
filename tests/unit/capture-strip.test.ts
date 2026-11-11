@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { E2ECapturePolicySchema, E2EPolicySchema, EVIDENCE_ARTIFACT_RETENTION, EvidencePackSchema, type CheckEntry, type EvidenceEnvironment } from "../../packages/contracts/src/index.js";
+import { E2ECapturePolicySchema, E2EPolicySchema, EVIDENCE_ARTIFACT_RETENTION, EvidencePackSchema, type CheckEntry, type EvidenceEnvironment } from "@rovara-code/contracts";
 import { CAPTURE_ARTIFACTS_FILE, CAPTURE_DIR, CAPTURE_STRIP_MAX_FRAMES, admittedCapturePolicy, captureStripFileName, createCaptureRecorder, encodedBytes, finalizeCaptureArtifacts, stripStepIndexes } from "../../packages/verifier/src/executor/capture.js";
 import { createCredentialRedactor } from "../../packages/verifier/src/executor/redact.js";
 import { snapshotExecutorOutput } from "../../packages/verifier/src/host/executor-readback.js";

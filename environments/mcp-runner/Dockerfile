@@ -14,7 +14,7 @@ FROM public.ecr.aws/docker/library/node:22.23.2-bookworm-slim@sha256:83f487e0a63
 WORKDIR /opt/agentx
 COPY package.json package-lock.json tsconfig.json tsconfig.base.json ./
 COPY packages/model-runtime/package.json packages/model-runtime/package.json
-COPY packages/contracts/package.json packages/contracts/package.json
+COPY packages/cloud-contracts/package.json packages/cloud-contracts/package.json
 COPY packages/verifier/package.json packages/verifier/package.json
 COPY packages/audit-verifier/package.json packages/audit-verifier/package.json
 COPY packages/gateway/package.json packages/gateway/package.json
@@ -30,23 +30,25 @@ COPY packages/ui/package.json packages/ui/package.json
 COPY packages/web/package.json packages/web/package.json
 COPY upstream/e2e-0.20.0.tgz upstream/e2e-0.20.0.tgz
 COPY infra/package.json infra/package.json
+# Rovara Code's contracts (convergence W0-3): the pinned copy under vendor/ and the @rovara-code/* workspace shims over it. npm ci links the shims (they are workspace members
+# in the lockfile); tsc -b builds Code's contracts through the project reference of packages/cloud-contracts.
+COPY vendor/rovara-code-shims vendor/rovara-code-shims
 RUN npm ci --ignore-scripts
 
-# The programs import only @agentx/contracts and @agentx/gateway (and the MCP SDK and zod under them). Each is bundled with everything it imports into one file, so the image holds
-# no node_modules at all, and no AWS SDK. The build graph is audit-verifier -> contracts -> gateway: the contracts project references ../audit-verifier (tsconfig), so tsc -b builds it first
-# and needs its sources and tsconfig.json, not only its package.json.
+# The programs import only @rovara-code/contracts (Rovara Code's, vendored) and @agentx/gateway (and the MCP SDK and zod under them). Each is bundled with everything it imports into one file, so the image holds
+# no node_modules at all, and no AWS SDK. The build graph is audit-verifier -> cloud-contracts -> gateway, with Code's contracts under cloud-contracts: the contracts project references ../audit-verifier
+# and Code's contracts project (tsconfig), so tsc -b builds them first and needs their sources and tsconfig.json, not only a package.json.
 COPY packages/audit-verifier packages/audit-verifier
-COPY packages/contracts packages/contracts
+COPY packages/cloud-contracts packages/cloud-contracts
+COPY vendor/rovara-code/tsconfig.base.json vendor/rovara-code/tsconfig.base.json
+COPY vendor/rovara-code/packages/contracts vendor/rovara-code/packages/contracts
 COPY packages/gateway packages/gateway
 COPY packages/broker/src/mcp-runner packages/broker/src/mcp-runner
-RUN npx tsc -b packages/contracts packages/gateway --pretty false
+RUN npx tsc -b packages/cloud-contracts packages/gateway --pretty false
+# environments/mcp-runner/bundle.mjs holds the esbuild options (and the one plugin that says Rovara Code's contract files have no side effects).
+COPY environments/mcp-runner/bundle.mjs environments/mcp-runner/bundle.mjs
 RUN set -eu; \
-    for entry in serve-main:serve fetch-main:fetch install-main:install; do \
-      src="${entry%%:*}"; out="${entry##*:}"; \
-      npx esbuild "packages/broker/src/mcp-runner/$src.ts" --bundle --platform=node --target=node22 --format=esm --legal-comments=none \
-        --banner:js="import { createRequire as __rovaraCreateRequire } from 'node:module'; const require = __rovaraCreateRequire(import.meta.url);" \
-        --outfile="/opt/mcp-runner/$out.mjs"; \
-    done; \
+    node environments/mcp-runner/bundle.mjs serve-main serve fetch-main fetch install-main install; \
     chmod 0644 /opt/mcp-runner/*.mjs
 
 # The root file system, assembled from the pinned node image.

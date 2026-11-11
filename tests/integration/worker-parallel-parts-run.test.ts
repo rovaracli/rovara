@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { BUDGET_EXHAUSTED_FAILURE_MESSAGE, taskGraphDigest, type TaskGraphV1 } from "@agentx/contracts";
+import { BUDGET_EXHAUSTED_FAILURE_MESSAGE, taskGraphDigest, type TaskGraphV1 } from "@rovara-code/contracts";
 import { WorkerCancellationController } from "../../packages/worker/src/cancel.js";
 import { runTaskInvocation, type TaskInvocationResult } from "../../packages/worker/src/run-task.js";
 import { readCandidateRepositories } from "../../packages/worker/src/verification/candidate.js";

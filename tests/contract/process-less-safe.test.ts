@@ -1,7 +1,7 @@
 // "How we work" (H4): which changes to a project's process layer wait for a person on the confirmation page. These are the extra rules for a process layer (a plan check or review
 // that loses its independence or moves to a weaker model, a model from a new AI company, changed instructions of a plan check or review); an ordinary agent is judged as before.
 import { describe, expect, it } from "vitest";
-import { EMPTY_RECIPE, type ResolvedRecipe, type ResolvedStep } from "../../packages/contracts/src/agent-recipe-node.js";
+import { EMPTY_RECIPE, type ResolvedRecipe, type ResolvedStep } from "@rovara-code/contracts";
 import { PROCESS_DEFAULT_STEP_TIMEOUT_MINUTES, lessSafeChangesFor, processLessSafeChanges } from "../../packages/broker/src/playbook/process-less-safe.js";
 
 type Model = { provider: string; modelId: string };

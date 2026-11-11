@@ -7,11 +7,7 @@
 // The switch (`ak`, LIVE_ASK_ENABLED) is OFF by default: the routes then answer NOT_FOUND exactly as if they did not exist.
 import { createHash } from "node:crypto";
 import { GetCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  ASK_ANSWER_LABEL, ASK_LIMITS, ASK_RATE, ASK_UNAVAILABLE_MESSAGE, hideEmailAddresses, redactText, AskAnsweredRequestSchema, AskBodySchema, AskQueueMessageSchema, AskStatusSchema, AskTurnRequestSchema, ASK_TURN_RULES, INDEX_EXPIRY_ATTRIBUTE,
-  agentXError, askLockKey, askRequestKey, projectArchivedMessage, askRouteAttributes, sessionAskKey, sessionRateKey,
-  type AskAnsweredRequest, type AskStatus, type AskTurnResult, type OrgId, type SessionLevel,
-} from "@agentx/contracts";
+import { ASK_ANSWER_LABEL, ASK_LIMITS, ASK_RATE, ASK_UNAVAILABLE_MESSAGE, hideEmailAddresses, redactText, AskAnsweredRequestSchema, AskBodySchema, AskQueueMessageSchema, AskStatusSchema, AskTurnRequestSchema, ASK_TURN_RULES, INDEX_EXPIRY_ATTRIBUTE, agentXError, askLockKey, askRequestKey, projectArchivedMessage, askRouteAttributes, sessionAskKey, sessionRateKey, type AskAnsweredRequest, type AskStatus, type AskTurnResult, type OrgId, type SessionLevel } from "@rovara-code/contracts";
 import { failedIndexes } from "../agents/table-writes.js";
 import { taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
 import { readProjectMeta } from "../developer/project-roles.js";

@@ -3,7 +3,7 @@
 // listing of that commit (a listing GitHub cut short reads nothing), and file reads at that same commit through the org's own installation. Only regular files (mode 100644 or 100755) are read or listed: a link, a
 // submodule or anything else makes the read throw or the listing unknown, so the seed stays HIGH. A repository that cannot be read this way (another host, a tree cut short, another branch) is listed with why (M2),
 // so a seed in its folder stays HIGH and never falls through to a repository above it.
-import { SEED_LOCK_LIMITS, type OrgId, type SeedSourceReader } from "@agentx/contracts";
+import { SEED_LOCK_LIMITS, type OrgId, type SeedSourceReader } from "@rovara-code/contracts";
 import { GITHUB_HOST_KIND } from "../../plugins/code-host/github/index.js";
 import type { SeedRepoSource, SeedRepoSources } from "../../test-env/seed-lock.js";
 import type { AwsBrokerDependencies } from "./definitions.js";

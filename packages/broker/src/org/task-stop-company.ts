@@ -1,7 +1,8 @@
 // Read-only typed company default; scope preview and paid admission remain separate.
 import { createHash } from "node:crypto";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { AgentXError, agentXError, orgSettingsKey, TaskStopCompanyPolicySchema, TaskStopCompanyReadSchema, type TaskStopCompanyRead } from "@agentx/contracts";
+import { AgentXError, agentXError } from "@rovara-code/contracts";
+import { orgSettingsKey, TaskStopCompanyPolicySchema, TaskStopCompanyReadSchema, type TaskStopCompanyRead } from "@agentx/cloud-contracts";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "../aws/developer-routes.js";
 import { getTaskStopCeiling } from "./task-stop-ceiling.js";
 type Dependencies = Pick<DeveloperRouteDependencies, "documentClient" | "tableName" | "now">;

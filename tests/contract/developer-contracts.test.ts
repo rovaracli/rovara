@@ -1,16 +1,6 @@
 import { describe, expect, it } from "vitest";
-import {
-  AGENTX_CLI_CLIENT_ID,
-  AgentXConfigurationSchema,
-  ChannelMembersRequestSchema,
-  DEVELOPER_API_VERSION,
-  DEVELOPER_TOKEN_AUDIENCE,
-  DeveloperProjectsResponseSchema,
-  DeveloperTokenResponseSchema,
-  apiVersionCompatible,
-  developerIssuer,
-  isLoopbackRedirectUri,
-} from "@agentx/contracts";
+import { AGENTX_CLI_CLIENT_ID, AgentXConfigurationSchema, ChannelMembersRequestSchema, DEVELOPER_API_VERSION, DEVELOPER_TOKEN_AUDIENCE, DeveloperTokenResponseSchema, apiVersionCompatible, developerIssuer, isLoopbackRedirectUri } from "@rovara-code/contracts";
+import { DeveloperProjectsResponseSchema } from "@agentx/cloud-contracts";
 
 const configuration = {
   env: "staging",

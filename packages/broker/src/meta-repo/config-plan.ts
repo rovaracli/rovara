@@ -10,30 +10,8 @@
 // A value a person typed is never replaced silently: when the project's value of a field was set by a person and differs from the file's, the item carries
 // `conflict: "person_value"`, and apply replaces it only when the maintainer names that field in `useFile`.
 import { parseDocument } from "yaml";
-import {
-  META_CONFIG_MAX_BYTES,
-  META_CONFIG_FILE_PATHS,
-  SETUP_TIMEOUT,
-  TEST_TIMEOUT,
-  AgentXError,
-  canonicalJson,
-  codeRepositoriesOf,
-  formatCommandLine,
-  metaConfigReferenceProblems,
-  metaRepositoryOf,
-  parseCommandLine,
-  parseMetaProjectConfig,
-  parseMetaProjectConfigJson,
-  projectMetaShape,
-  safePathPart,
-  specFolderProblem,
-  settingOriginOf,
-  type MetaConfigParse,
-  type MetaConfigProblem,
-  type MetaProjectConfig,
-  type ProjectCommand,
-  type StoredProjectDefinition,
-} from "@agentx/contracts";
+import { META_CONFIG_MAX_BYTES, META_CONFIG_FILE_PATHS, SETUP_TIMEOUT, TEST_TIMEOUT, AgentXError, canonicalJson, codeRepositoriesOf, formatCommandLine, metaConfigReferenceProblems, metaRepositoryOf, parseCommandLine, parseMetaProjectConfig, parseMetaProjectConfigJson, projectMetaShape, safePathPart, specFolderProblem, settingOriginOf, type MetaConfigParse, type MetaConfigProblem, type MetaProjectConfig, type ProjectCommand } from "@rovara-code/contracts";
+import { type StoredProjectDefinition } from "@agentx/cloud-contracts";
 
 export { META_CONFIG_FILE_PATHS };
 

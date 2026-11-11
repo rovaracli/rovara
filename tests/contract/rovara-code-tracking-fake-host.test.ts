@@ -1,9 +1,9 @@
 // Enterprise foundations P5a: merge tracking reads and acts through the CodeHost port, so a whole pass runs on `FakeCodeHost`: the status (draft, head, checks, reviews, mergeability), the
 // standing of each reviewer, taking a draft out of draft and asking for reviewers. Every one of those spends the pass's request allowance, whatever the host.
 import { describe, expect, it } from "vitest";
-import { mergeTrackingKey } from "../../packages/contracts/src/org-scoped-keys.js";
-import type { MergeTrackingItem } from "../../packages/contracts/src/rovara-code.js";
-import { codeSettingsKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { mergeTrackingKey } from "@rovara-code/contracts";
+import type { MergeTrackingItem } from "../../packages/cloud-contracts/src/rovara-code.js";
+import { codeSettingsKey } from "@rovara-code/contracts";
 import { trackPullRequest, trackTask, rowBudget, TrackingRequestCapError } from "../../packages/broker/src/rovara-code/merge-tracking.js";
 import { FakeCodeHost } from "../../packages/broker/src/plugins/fake/code-host.js";
 import { FakeHostModel } from "../../packages/broker/src/plugins/fake/model.js";

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
-import { parseSlackThreadSubject } from "../../packages/contracts/src/slack.js";
+import { parseSlackThreadSubject } from "@rovara-code/contracts";
 import { createSignedServiceFetch } from "../../packages/slack-service/src/signing-fetch.js";
 import { createThreadApi } from "../../packages/slack-service/src/thread-api.js";
 import { brokerFetch } from "../support/broker-fetch.js";

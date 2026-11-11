@@ -4,15 +4,15 @@
 // a selector that fails never leaves a write without approvers. Plan 3's behaviour (one decided approval runs once; the argument hash and the re-checks) is unchanged.
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { GrantedTool, OrgId, ToolFacts } from "@agentx/contracts";
-import { projectMetaKey, projectRevisionKey } from "@agentx/contracts";
+import type { GrantedTool, OrgId, ToolFacts } from "@rovara-code/contracts";
+import { projectMetaKey, projectRevisionKey } from "@rovara-code/contracts";
 import { approvalsWriteGate, registerWriteApproverSelector, type AgentWriteGateInput } from "../../packages/broker/src/agents/agent-tools-routes.js";
 import { approvalTaskEventKey, getApproverRule, type WriteApprovalRecord } from "../../packages/broker/src/agents/approvals.js";
 import { WRITE_APPROVER_RULE, writeApproversFor, type ApprovedCall } from "../../packages/broker/src/agents/write-gate.js";
 import { memoryRunCache } from "../../packages/broker/src/agents/run-cache.js";
 import type { ClassifyAgentWriteDependencies } from "../../packages/broker/src/agents/write-class.js";
 import { registerChainRunner } from "../../packages/broker/src/chains/index.js";
-import type { ChainDefinitionInput } from "../../packages/contracts/src/chains.js";
+import type { ChainDefinitionInput } from "@rovara-code/contracts";
 import { ARJUN, CARL, CELL, DANA, MAX, ORG_A, PRIYA, VIV, callerOf, disposeGateWorlds, setupGateWorld } from "../support/chain-gate-world.js";
 
 const runner = () => import("../../packages/broker/src/chains/runner.js");

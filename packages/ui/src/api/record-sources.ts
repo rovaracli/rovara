@@ -3,7 +3,7 @@
 // so a write reads its own refusal here. Only the fixed `code` is kept; the server's text is never shown.
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ProjectOverviewProjectSchema, SourceWriteReplyReaderSchema, SourcesAdminViewReaderSchema, type SourceWriteBody } from "@agentx/contracts/web";
+import { ProjectOverviewProjectSchema, SourceWriteReplyReaderSchema, SourcesAdminViewReaderSchema, type SourceWriteBody } from "@agentx/cloud-contracts/web";
 import { useAppHost, type AppHost } from "../host.js";
 import { createApiClient } from "./client.js";
 import { ApiError } from "./errors.js";

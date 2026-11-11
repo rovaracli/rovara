@@ -1,4 +1,5 @@
-import { createCandidateManifest, createWorkflowSnapshot, WorkflowSnapshotSchema, type WorkflowFeedbackBundle, type WorkflowSnapshot } from "@agentx/contracts";
+import { createCandidateManifest, type WorkflowFeedbackBundle } from "@rovara-code/contracts";
+import { createWorkflowSnapshot, WorkflowSnapshotSchema, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { describe, expect, it, vi } from "vitest";
 import { reconcileTaskPullRequestFeedback, type ReconcileTaskPullRequestFeedbackInput } from "../../packages/broker/src/aws/github-webhooks.js";
 import type { GitHubPullRequestFeedback } from "../../packages/broker/src/github-app.js";

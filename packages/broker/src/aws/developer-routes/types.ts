@@ -4,7 +4,8 @@ import type { CompanyImageDigestResolver } from "../../test-env/company-image-re
 import type { CompanyRulesRepositories } from "../../company-rules/sync.js";
 import type { TeamRecordRuntime } from "../../team-record/runtime.js";
 import type { EvidenceErase } from "../../rovara-code/evidence-erase.js";
-import type { CompanyImageMirrorJob, CreateProjectFromMetaBody, EditionPolicy } from "@agentx/contracts";
+import type { CompanyImageMirrorJob, EditionPolicy } from "@agentx/cloud-contracts";
+import type { CreateProjectFromMetaBody } from "@rovara-code/contracts";
 import type { CodeHostRouter } from "../../plugins/registry.js";
 import type { LessonViewDeps } from "../../lessons/view.js";
 import type { ApproveDeps } from "../../lessons/approve.js";
@@ -20,43 +21,8 @@ import type { AllowedDomainBrowserDependencies } from "../../org/project-allowed
 import type { WorkingBranchReviewDependencies } from "../../org/project-working-branch.js";
 import type { WorkingBranchListDependencies } from "../../org/project-working-branch-list.js";
 import type { SlackRequestQueue } from "../../developer/page-comments.js";
-import type {
-  ChannelByNameRequest,
-  ChannelByNameResponse,
-  ChannelClassRequest,
-  ChannelClassResponse,
-  ChannelListRequest,
-  ChannelListResponse,
-  MemberChannelsRequest,
-  ChannelInfoRequest,
-  ChannelInfoResponse,
-  ChannelMembersRequest,
-  ChannelMembersResponse,
-  DeveloperSignInMethod,
-  EndDeveloperSessionsRequest,
-  EraseDeveloperNameRequest,
-  EraseDeveloperNameResponse,
-  EndDeveloperSessionsResponse,
-  RealtimeTokenAnswer,
-  RealtimeTokenRequest,
-  UnlinkIdentityRequest,
-  UnlinkIdentityResponse,
-  StartIdentityLinkRequest,
-  StartIdentityLinkResponse,
-  OrgId,
-  OrgRole,
-  SlackAuthCheckResponse,
-  SlackUserByEmailRequest,
-  SlackUserByEmailResponse,
-  TaskPersonProofRequest,
-  TaskPersonProofResponse,
-  TaskChannelPeopleRequest,
-  TaskChannelPeopleResponse,
-  TaskPeopleDisplayReadRequest,
-  TaskPeopleDisplayReadResponse,
-  MergeTrackingItem,
-  MergeView,
-} from "@agentx/contracts";
+import type { ChannelByNameRequest, ChannelByNameResponse, ChannelClassRequest, ChannelClassResponse, ChannelListRequest, ChannelListResponse, MemberChannelsRequest, ChannelInfoRequest, ChannelInfoResponse, ChannelMembersRequest, ChannelMembersResponse, EndDeveloperSessionsRequest, EraseDeveloperNameRequest, EraseDeveloperNameResponse, EndDeveloperSessionsResponse, UnlinkIdentityRequest, UnlinkIdentityResponse, StartIdentityLinkRequest, StartIdentityLinkResponse, OrgId, SlackAuthCheckResponse, SlackUserByEmailRequest, SlackUserByEmailResponse, TaskPersonProofRequest, TaskPersonProofResponse, TaskChannelPeopleRequest, TaskChannelPeopleResponse, TaskPeopleDisplayReadRequest, TaskPeopleDisplayReadResponse, MergeView } from "@rovara-code/contracts";
+import type { DeveloperSignInMethod, RealtimeTokenAnswer, RealtimeTokenRequest, OrgRole, MergeTrackingItem } from "@agentx/cloud-contracts";
 import type { EgressDomainsDependencies } from "../../org/egress-domains.js";
 import type { ProjectSettingsDependencies } from "../../org/project-settings.js";
 import type { ProjectMembers } from "../../org/project-members.js";

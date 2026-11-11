@@ -3,7 +3,7 @@ import type * as NonceModule from "get-nonce";
 import { afterEach, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { getNonce, setNonce } from "get-nonce";
-import { AppMeResponseReaderSchema } from "@agentx/contracts/web";
+import { AppMeResponseReaderSchema } from "@agentx/cloud-contracts/web";
 import { mountWebApp } from "../../packages/web/src/bootstrap.js";
 const render = vi.hoisted(() => vi.fn());
 vi.mock("react-dom/client", () => ({ createRoot: vi.fn(() => ({ render })) }));

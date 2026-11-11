@@ -3,7 +3,7 @@
 import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { SynthKitManifestSchema } from "@agentx/contracts";
+import { SynthKitManifestSchema } from "@agentx/cloud-contracts";
 
 /** The asset id and bytes of the one package the test release signs (tests/support/bundle-fixture.ts writes the same). */
 export const FAKE_ASSET = createHash("sha256").update("asset").digest("hex");

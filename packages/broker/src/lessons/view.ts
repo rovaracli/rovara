@@ -1,7 +1,7 @@
 // Learning v2 L3b: what the Lessons tab, the Sources tab and the task page's lessons list read (design 1.2). Everything a viewer is told goes through `readVisible` (the frozen
 // snapshot AND the access records now), so a lesson from a source the viewer cannot see is counted for a person who decides and otherwise not mentioned. People are named the way the
 // rest of Rovara names them (`attributionNameOf`; an erased or unreadable person is "a former member"). Nothing here writes: the writes are in routes.ts, through the lesson library.
-import { agentXError, type LessonPerson, type LessonsPauseCode, type LessonView, type LessonsViewAnswer, type OrgId } from "@agentx/contracts";
+import { agentXError, type LessonPerson, type LessonsPauseCode, type LessonView, type LessonsViewAnswer, type OrgId } from "@rovara-code/contracts";
 import { attributionNameOf, type AttributionReader } from "../attribution/resolve.js";
 import type { TeamRecordTable } from "../team-record/types.js";
 import { listSourceConfigs } from "../team-record/store.js";

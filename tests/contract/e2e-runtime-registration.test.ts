@@ -1,15 +1,8 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { canonicalJson } from "@agentx/contracts";
-import {
-  E2ERuntimeProbeManifestSchema,
-  E2ERuntimeCapabilityDescriptorSchema,
-  E2ERegisteredRuntimeSchema,
-  assertE2ERuntimeProbeManifestIdentity,
-  e2eRuntimeCapabilityDigest,
-  type E2ERuntimeCapabilityDescriptor,
-} from "../../packages/contracts/src/index.js";
+import { canonicalJson } from "@rovara-code/contracts";
+import { E2ERuntimeProbeManifestSchema, E2ERuntimeCapabilityDescriptorSchema, E2ERegisteredRuntimeSchema, assertE2ERuntimeProbeManifestIdentity, e2eRuntimeCapabilityDigest, type E2ERuntimeCapabilityDescriptor } from "@rovara-code/contracts";
 import {
   admitE2ERegisteredRuntime,
   e2eRegisteredRuntimeKey,
@@ -19,7 +12,7 @@ import { RUNTIME_PROPOSAL_MAX_BYTES, issueRuntimeInstallChallenge, registerRunti
 import type { AuthenticatedIdentity } from "../../packages/broker/src/auth.js";
 import { ROVARA_HTTP_ENGINE_DESCRIPTOR } from "../../packages/verifier/src/rovara-http-engine-descriptor.js";
 import { qualifyInstalledWebApiRuntime } from "../../packages/verifier/src/install-qualification.js";
-import { WEB_API_CHALLENGE_LIFETIME_MS, WEB_API_PROBE_PROPOSAL_MAX_BYTES, WEB_API_REQUIRED_PROBES, runtimeInstallationProposalSha256, webApiRuntimeInstallProposalSha256, type RuntimeInstallChallenge } from "../../packages/contracts/src/index.js";
+import { WEB_API_CHALLENGE_LIFETIME_MS, WEB_API_PROBE_PROPOSAL_MAX_BYTES, WEB_API_REQUIRED_PROBES, runtimeInstallationProposalSha256, webApiRuntimeInstallProposalSha256, type RuntimeInstallChallenge } from "@rovara-code/contracts";
 import { proposalFor } from "../support/p0-runtime-proposal.js";
 import { createFakeRuntimeRegistry } from "../support/runtime-registry-fakes.js";
 import { fakeLinuxEnvironment, fakeProbeRunner, privateEvidenceRoot, webApiChallenge } from "../support/web-api-qualification.js";

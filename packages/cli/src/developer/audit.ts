@@ -10,7 +10,8 @@ import { X509Certificate } from "node:crypto";
 import { lstat, open, readFile, rm, stat } from "node:fs/promises";
 import { dirname } from "node:path";
 import { gunzipSync } from "node:zlib";
-import { AUDIT_ERROR_MESSAGES, AUDIT_EXPORT_MAX_RECORDS, AgentXError, agentXError } from "@agentx/contracts";
+import { AUDIT_ERROR_MESSAGES, AUDIT_EXPORT_MAX_RECORDS } from "@agentx/cloud-contracts";
+import { AgentXError, agentXError } from "@rovara-code/contracts";
 import {
   AUDIT_LIMITS_COPY,
   defaultAnchors,

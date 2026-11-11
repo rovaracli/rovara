@@ -8,8 +8,9 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { DEVELOPER_TOOLS, createAgentXMcpServer, httpControlPlaneClient, type ToolContext } from "../../packages/mcp/src/index.js";
 import { taskPageStage } from "../../packages/broker/src/aws/developer-tasks.js";
 import { workflowMessage } from "../../packages/broker/src/developer/workflow-messages.js";
-import { MERGE_NOT_READY_MESSAGES as M } from "../../packages/contracts/src/rovara-code.js";
-import { WorkflowSnapshotSchema, createCandidateManifest, createWorkflowSnapshot, type WorkflowSnapshot } from "../../packages/contracts/src/task-workflow-node.js";
+import { MERGE_NOT_READY_MESSAGES as M } from "../../packages/cloud-contracts/src/rovara-code.js";
+import { WorkflowSnapshotSchema, createWorkflowSnapshot, type WorkflowSnapshot } from "../../packages/cloud-contracts/src/task-workflow-node.js";
+import { createCandidateManifest } from "@rovara-code/contracts";
 import { CELL, MAYA, mergeButtonBroker, type MergeButtonBroker } from "../support/merge-button-broker.js";
 import { loadSlackBroker } from "../support/slack-broker.js";
 

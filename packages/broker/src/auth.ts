@@ -1,12 +1,6 @@
 import { createHash } from "node:crypto";
-import {
-  agentXError,
-  type DeveloperSignInMethod,
-  type OrgId,
-  type SlackChannelBinding,
-  type SlackRequester,
-  type SlackThread,
-} from "@agentx/contracts";
+import { agentXError, type OrgId, type SlackChannelBinding, type SlackRequester, type SlackThread } from "@rovara-code/contracts";
+import { type DeveloperSignInMethod } from "@agentx/cloud-contracts";
 import {
   createRemoteJWKSet,
   jwtVerify,

@@ -8,7 +8,7 @@
 import { useMemo } from "react";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import type { z } from "zod";
-import { BillingActionBodySchema, BillingAnswerReaderSchema, BillingStateReaderSchema, InvoiceListReaderSchema, TrialViewReaderSchema } from "@agentx/contracts/web";
+import { BillingActionBodySchema, BillingAnswerReaderSchema, BillingStateReaderSchema, InvoiceListReaderSchema, TrialViewReaderSchema } from "@agentx/cloud-contracts/web";
 import { safeAppPath, safeExternalUrl } from "../text/links.js";
 import { useAppHost, type AppHost } from "../host.js";
 import { createApiClient } from "./client.js";

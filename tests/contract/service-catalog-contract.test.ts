@@ -1,7 +1,7 @@
 // Test services TS2 (contract and data): the image catalog's schema, its closed list of fixed arguments, the unpinned v1 data file and the Rovara local AWS entry's service tiers.
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import * as cat from "../../packages/contracts/src/service-catalog.js";
+import * as cat from "@rovara-code/contracts";
 
 const FILE = "environments/service-catalog/catalog.json";
 /** The data file as the tests edit it: loosely typed on purpose, so a test can break any field and the schema, not the compiler, is what refuses it. */

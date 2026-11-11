@@ -1,14 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  E2EApplicationAccountDefinitionSchema, E2EApplicationPlanIntentSchema, E2EApplicationSelectionRecordSchema, E2EPolicySchema, createCandidateManifest,
-  WORKFLOW_APPLICATION_ACCOUNTS_CHANGED_PREFIX, deriveE2EApplicationRuntimeAccountRef, e2eApplicationAccountDefinitionDigest, workflowApplicationRetryOffered,
-  E2EWorkflowAdmissionRefSchema, WORKFLOW_APPLICATION_ROUND_REFUSED_PREFIX, WORKFLOW_APPLICATION_SELECTION_CHANGED_PREFIX, WORKFLOW_APPLICATION_RUNTIME_RENEWED_PREFIX, WORKFLOW_APPLICATION_RUNTIME_UNUSABLE_PREFIX,
-  WORKFLOW_APPLICATION_PLAN_NOT_APPROVABLE_PREFIX, canonicalPlanJson, workflowSendBackOffered,
-  WORKFLOW_BLOCK_REASONS, WorkflowSnapshotSchema, workflowRequestId, workspaceSessionKey, readCanonicalPlan, portableOperationId, type E2EApplicationPlanIntent,
-  selectE2EApplicationExecutionPlan, E2EScenarioSchema, e2eAnonymousRuntimeAccountRef, E2E_APPLICATION_ADMISSION_SCHEMA_V2,
-  type E2EScenario, type E2ESourceSnapshot,
-} from "@agentx/contracts";
+import { E2EApplicationAccountDefinitionSchema, E2EApplicationPlanIntentSchema, E2EApplicationSelectionRecordSchema, E2EPolicySchema, createCandidateManifest, WORKFLOW_APPLICATION_ACCOUNTS_CHANGED_PREFIX, deriveE2EApplicationRuntimeAccountRef, e2eApplicationAccountDefinitionDigest, workflowApplicationRetryOffered, E2EWorkflowAdmissionRefSchema, WORKFLOW_APPLICATION_ROUND_REFUSED_PREFIX, WORKFLOW_APPLICATION_SELECTION_CHANGED_PREFIX, WORKFLOW_APPLICATION_RUNTIME_RENEWED_PREFIX, WORKFLOW_APPLICATION_RUNTIME_UNUSABLE_PREFIX, WORKFLOW_APPLICATION_PLAN_NOT_APPROVABLE_PREFIX, canonicalPlanJson, workflowRequestId, workspaceSessionKey, readCanonicalPlan, portableOperationId, type E2EApplicationPlanIntent, selectE2EApplicationExecutionPlan, E2EScenarioSchema, e2eAnonymousRuntimeAccountRef, E2E_APPLICATION_ADMISSION_SCHEMA_V2, type E2EScenario, type E2ESourceSnapshot } from "@rovara-code/contracts";
+import { workflowSendBackOffered, WORKFLOW_BLOCK_REASONS, WorkflowSnapshotSchema } from "@agentx/cloud-contracts";
 import { deriveE2EApplicationFeatureExecutionSelection } from "../../packages/broker/src/e2e/application-feature-plan-intent.js";
 import { evaluateApplicationPlanApproval } from "../../packages/broker/src/e2e/application-plan-approval.js";
 import { buildFeatureE2EPlanningContext, describeFeatureE2EExecutableKinds }
@@ -793,7 +786,7 @@ describe("ordinary feature PLAN with an approved qualified web target", () => {
     // A newer revision of the project is bound elsewhere; the task is pinned to the revision it started on.
     planned.harness.db.set({ ...pinned, sk: `REV#${String(definition.revision + 1).padStart(12, "0")}`, definition: { ...definition, revision: definition.revision + 1 }, runtimeBinding: otherBinding });
     // Production registration advances the catalog together with its immutable revision.
-    const {orgProjectCatalogKey}=await import("@agentx/contracts");
+    const { orgProjectCatalogKey } = await import("@rovara-code/contracts");
     const catalogKey=orgProjectCatalogKey(TEST_ORG,"payments");
     planned.harness.db.set({...planned.harness.db.get(catalogKey)!,latestRevision:definition.revision+1});
     const approved = await decide(planned, "APPROVE");

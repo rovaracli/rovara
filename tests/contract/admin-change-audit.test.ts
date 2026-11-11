@@ -4,7 +4,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { auditStepItem, listAudit, logChangeStep, outcomeMetric, readAudit, recordRefusedAttempt, writeProposal, type AuditStep, type AuditStore } from "../../packages/broker/src/aws/admin-change-audit.js";
-import { outcomeOfStatus, type AdminChangeAuditRecord } from "../../packages/contracts/src/index.js";
+import { outcomeOfStatus, type AdminChangeAuditRecord } from "@rovara-code/contracts";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 
 const CHANGE = "55555555-5555-4555-8555-555555555555";

@@ -3,7 +3,7 @@
 // item and no audit item on the session. The retry now authorizes the same way before and after it commits, and records itself whenever a run started.
 import { createHash, randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
-import { agentSessionKey, projectMemberKey } from "../../packages/contracts/src/index.js";
+import { agentSessionKey, projectMemberKey } from "@rovara-code/contracts";
 import { MAYA, OMAR, createSingleAnswerPlanBroker, grantProject } from "../support/developer-task-broker.js";
 import { finishPlanningWithMarkdown } from "../support/plan-documents.js";
 import { TEST_ORG } from "../support/orgs.js";

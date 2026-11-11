@@ -2,7 +2,7 @@
 // charges nothing and claims nothing while no run can be started.
 import { CreateScheduleCommand, DeleteScheduleCommand } from "@aws-sdk/client-scheduler";
 import { describe, expect, it, vi } from "vitest";
-import { NIGHTLY_SOURCE, TestEnvironmentBodySchema, projectMetaKey, projectPk, testEnvDigest, type OrgId, type TestEnvironment, type TestEnvironmentBody } from "@agentx/contracts";
+import { NIGHTLY_SOURCE, TestEnvironmentBodySchema, projectMetaKey, projectPk, testEnvDigest, type OrgId, type TestEnvironment, type TestEnvironmentBody } from "@rovara-code/contracts";
 import type { TestEnvDeps } from "../../packages/broker/src/org/test-environment.js";
 import { fireTestEnvNightly, isTestEnvNightlyEvent, nightlyHooks, nightlyScheduleDependencies } from "../../packages/broker/src/test-env/nightly-wiring.js";
 import { nightlyScheduleName, type NightlyRunPort } from "../../packages/broker/src/test-env/nightly.js";

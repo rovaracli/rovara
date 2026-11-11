@@ -1,23 +1,8 @@
 // What a trigger needs of the rest of the system, in one place (Plan 4 Task 18): `triggerProblems` answers what a trigger needs and does not have. The routes ask it before they
 // store or turn on a trigger; the rechecks ask it after a change that might have taken something away; dispatch (Task 20) and the schedule handler (Task 26) ask it again
 // before every start, so a change that no recheck saw is still caught. It reads live and trusts nothing stored on the trigger but what the trigger itself says.
-import {
-  AgentXError,
-  BUILTIN_TRIGGER_SUGGESTIONS,
-  ROVARA_CODE_AGENT_ID,
-  agentXError,
-  chainBudgetRequiredMessage,
-  intakeEventRequiredFilter,
-  isBuiltinAgentId,
-  isIntakeEventSpec,
-  projectAllows,
-  scopeKey,
-  type AgentId,
-  type AgentXErrorCode,
-  type OrgId,
-  type ResolvedRecipe,
-  type TriggerTarget,
-} from "@agentx/contracts";
+import { AgentXError, BUILTIN_TRIGGER_SUGGESTIONS, ROVARA_CODE_AGENT_ID, agentXError, chainBudgetRequiredMessage, intakeEventRequiredFilter, isBuiltinAgentId, isIntakeEventSpec, projectAllows, type AgentId, type AgentXErrorCode, type OrgId, type ResolvedRecipe, type TriggerTarget } from "@rovara-code/contracts";
+import { scopeKey } from "@agentx/cloud-contracts";
 import { orgRoleOf, requireAgentAccess, resolveSurvivor, type AgentCaller } from "../agents/access.js";
 import { shownText } from "../agents/approvals.js";
 import { resolveRecipe } from "../agents/changes.js";

@@ -36,31 +36,7 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { z } from "zod";
-import {
-  CATALOG_FILE,
-  CATALOG_MAX_BYTES,
-  CATALOG_SIGNATURE_ALGORITHM,
-  CATALOG_SIGNATURE_FILE,
-  CatalogIdSchema,
-  CATALOG_PLATFORMS,
-  CatalogRegistryHostSchema,
-  PrepullListSchema,
-  ServiceCatalogSchema,
-  catalogPrepullList,
-  catalogRepositoryName,
-  catalogSigningMessage,
-  combinedSbomRef,
-  imageStatementMessage,
-  parseBundlePublicKey,
-  sha256HexOf,
-  verifyCatalogSignature,
-  verifyImageStatement,
-  type CatalogEntry,
-  type CatalogSignature,
-  type ImageChildStatement,
-  type ServiceCatalog,
-  type SignedImageStatement,
-} from "@agentx/contracts";
+import { CATALOG_FILE, CATALOG_MAX_BYTES, CATALOG_SIGNATURE_ALGORITHM, CATALOG_SIGNATURE_FILE, CatalogIdSchema, CATALOG_PLATFORMS, CatalogRegistryHostSchema, PrepullListSchema, ServiceCatalogSchema, catalogPrepullList, catalogRepositoryName, catalogSigningMessage, combinedSbomRef, imageStatementMessage, parseBundlePublicKey, sha256HexOf, verifyCatalogSignature, verifyImageStatement, type CatalogEntry, type CatalogSignature, type ImageChildStatement, type ServiceCatalog, type SignedImageStatement } from "@rovara-code/contracts";
 import { kmsBundleSigner, type BundleSigner } from "./release/bundle.js";
 
 const execFileAsync = promisify(execFile);

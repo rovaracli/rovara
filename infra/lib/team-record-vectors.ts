@@ -5,7 +5,7 @@
 import { type CfnTag, Duration, RemovalPolicy, aws_iam as iam } from "aws-cdk-lib";
 import { CfnIndex, CfnVectorBucket } from "aws-cdk-lib/aws-s3vectors";
 import { Construct } from "constructs";
-import { NON_FILTERABLE_VECTOR_KEYS, VECTOR_DIMENSION_DEFAULT, teamRecordVectorIndexName, teamRecordVectorsRoleName } from "@agentx/contracts";
+import { NON_FILTERABLE_VECTOR_KEYS, VECTOR_DIMENSION_DEFAULT, teamRecordVectorIndexName, teamRecordVectorsRoleName } from "@agentx/cloud-contracts";
 
 /** The IAM policy variable that holds the session's index name. The broker tags every AssumeRole with `rovara-index` = the workspace's index name (team-record/vector-access.ts). */
 export const SESSION_INDEX_VARIABLE = "${aws:PrincipalTag/rovara-index}";

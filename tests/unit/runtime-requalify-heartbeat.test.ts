@@ -1,7 +1,7 @@
 // ARGUARD: the daily check reports how long ago the last renewal succeeded, so `RuntimeRequalifyStale` has a number to breach on. Before this the only metric was a 1 on success, so a
 // renewal that never ran left no data and no alarm.
 import { beforeEach, describe, expect, it } from "vitest";
-import { REQUALIFY_AGE_METRIC, REQUALIFY_PROFILE_ID, REQUALIFY_STALE_AFTER_DAYS, requalifyLastSuccessKey, requalifyScheduleEnabledKey } from "../../packages/contracts/src/index.js";
+import { REQUALIFY_AGE_METRIC, REQUALIFY_PROFILE_ID, REQUALIFY_STALE_AFTER_DAYS, requalifyLastSuccessKey, requalifyScheduleEnabledKey } from "@rovara-code/contracts";
 import { runRequalifyAction } from "../../packages/broker/src/aws/runtime-requalify-steps.js";
 import { recordRenewalSuccess } from "../../packages/broker/src/aws/runtime-requalify-heartbeat.js";
 import { FakeCloud } from "../support/requalify-fake-cloud.js";

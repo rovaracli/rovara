@@ -8,7 +8,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { McpServerEntry, McpStdioProposal } from "@agentx/contracts";
+import type { McpServerEntry, McpStdioProposal } from "@rovara-code/contracts";
 import { createMcpController, type McpController } from "../../packages/gateway/src/mcp-controller.js";
 import { directoryBundleStore } from "../../packages/gateway/src/mcp-runner/bundle-store.js";
 import { localTaskRunner } from "../../packages/gateway/src/mcp-runner/local-runner.js";

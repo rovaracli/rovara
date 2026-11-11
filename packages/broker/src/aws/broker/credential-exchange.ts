@@ -5,7 +5,7 @@
 // The worker's wire shape stays `{username, password}` or `{token}` for the two legacy kinds (an older worker refuses any other field). An ssh key goes as `{ssh: {...}}`
 // and only to a worker that said it takes one (P8: the `x-agentx-credential-kinds` header, and the `repository.credentialKinds.v1` ping feature the dispatcher checks);
 // the grant service drops any other kind. A kind no worker takes (helper) is refused here rather than sent.
-import { agentXError, workerGitCredentialUsable, type GitCredential, type GitCredentialRefusal } from "@agentx/contracts";
+import { agentXError, workerGitCredentialUsable, type GitCredential, type GitCredentialRefusal } from "@rovara-code/contracts";
 import type { GitHubTokenScope } from "../../github-app.js";
 import { WORKER_CANNOT_TAKE_CREDENTIAL, type RepositoryAccess, type RepositoryCredential } from "../../repository-access.js";
 import type { CodeHostRouter } from "../../plugins/registry.js";

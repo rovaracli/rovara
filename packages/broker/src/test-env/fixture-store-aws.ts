@@ -13,7 +13,7 @@
 import { GetObjectCommand, HeadObjectCommand, PutObjectCommand, type S3Client } from "@aws-sdk/client-s3";
 import { GetCommand, PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
-import { AGENTX_NAME_PATTERN, FIXTURE_PROTOCOLS, OrgIdSchema, orgPk } from "@agentx/contracts";
+import { AGENTX_NAME_PATTERN, FIXTURE_PROTOCOLS, OrgIdSchema, orgPk } from "@rovara-code/contracts";
 import { z } from "zod";
 import {
   FIXTURE_READ_URL_SECONDS, createFixtureStore,

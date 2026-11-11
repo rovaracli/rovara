@@ -3,23 +3,11 @@
 // tools on its connectors. A tool is granted only when all of them agree. The result is a list of `GrantedTool`s, each with the facts Task 20b's write
 // classification reads. `resolveToolGrants` is pure: the broker passes in the project's connectors and the catalogs it discovered, and calls it again at
 // every call, so a grant is never a thing the model carries.
-import {
-  AgentConnectorTypeSchema,
-  PI_TOOL_NAMES,
-  agentXError,
-  toolPatternMatches,
-  type AgentConnectorType,
-  type ConnectorCatalog,
-  type GrantedTool,
-  type PresentedTool,
-  type ResolvedStep,
-  type ToolFacts,
-  type ToolGrant,
-} from "@agentx/contracts";
+import { AgentConnectorTypeSchema, PI_TOOL_NAMES, agentXError, toolPatternMatches, type AgentConnectorType, type ConnectorCatalog, type GrantedTool, type PresentedTool, type ResolvedStep, type ToolFacts, type ToolGrant } from "@rovara-code/contracts";
 import { GITHUB_AGENT_TOOL_PERMISSIONS, isGitHubAgentToolRefused } from "./github-agent-tools.js";
 import { nonTextFactProblems } from "./write-class.js";
 
-export { toolGrantProblems } from "@agentx/contracts";
+export { toolGrantProblems } from "@rovara-code/contracts";
 
 /** What a grant needs to know about a project connector: its name, its type, and what the project approved on it. */
 export interface GrantConnector {

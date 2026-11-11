@@ -3,8 +3,10 @@
 // sign-in within the last 10 minutes. With the switch off no card path exists, no Slack press is read, and the Lambda answers the press as any unknown button.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { DecisionCardsViewSchema, SLACK_OIDC_ISSUER, editionPolicy, type MergeTrackingItem } from "../../packages/contracts/src/index.js";
-import { WorkflowSnapshotSchema, createCandidateManifest, createWorkflowSnapshot, type WorkflowSnapshot } from "../../packages/contracts/src/task-workflow-node.js";
+import { DecisionCardsViewSchema, SLACK_OIDC_ISSUER } from "@rovara-code/contracts";
+import { editionPolicy, type MergeTrackingItem } from "@agentx/cloud-contracts";
+import { WorkflowSnapshotSchema, createWorkflowSnapshot, type WorkflowSnapshot } from "../../packages/cloud-contracts/src/task-workflow-node.js";
+import { createCandidateManifest } from "@rovara-code/contracts";
 import type { DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
 import { mergeItemOf, mergeItemsFor, reviewVerdictOf, type MergeSourcePorts } from "../../packages/broker/src/decisions/merge-source.js";
 import { projectDecisionCards } from "../../packages/broker/src/decisions/project.js";

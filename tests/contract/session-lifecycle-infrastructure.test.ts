@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { Stack } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { beforeAll, describe, expect, it } from "vitest";
-import { CONTROL_PLANE_FOUNDATION_PARAMETERS } from "../../packages/contracts/src/session.js";
+import { CONTROL_PLANE_FOUNDATION_PARAMETERS } from "@rovara-code/contracts";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 
 type Resource = { Type: string; Properties: Record<string, unknown> };

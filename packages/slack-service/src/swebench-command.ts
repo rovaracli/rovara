@@ -1,17 +1,6 @@
 // Spec 043: the `eval swebench` command. Starts one run, waits for it in this thread (the thread's
 // queue holds its later messages meanwhile, as a coding task's does), and posts the result.
-import {
-  SWEBENCH_RUN_TIME_LIMIT_SECONDS,
-  SWEBENCH_TERMINAL_STATUSES,
-  swebenchFamily,
-  type ModelIdentifier,
-  type ProjectModelOptions,
-  type SecbenchVerdict,
-  type SwebenchCommand,
-  type SwebenchDataset,
-  type SwebenchRun,
-  type SwebenchStartResult,
-} from "@agentx/contracts";
+import { SWEBENCH_RUN_TIME_LIMIT_SECONDS, SWEBENCH_TERMINAL_STATUSES, swebenchFamily, type ModelIdentifier, type ProjectModelOptions, type SecbenchVerdict, type SwebenchCommand, type SwebenchDataset, type SwebenchRun, type SwebenchStartResult } from "@rovara-code/contracts";
 import { matchApprovedModel, modelOptionsMessage } from "./model-command.js";
 import { escapeText } from "./slack-format.js";
 

@@ -14,7 +14,7 @@
 //   - After 3 weekly pull requests in a row that nobody merged, additions and edits stop; removals go on.
 //   - Caps: 300 lessons and 64 KB; adds stop at a cap, removals are never blocked.
 import { createHash } from "node:crypto";
-import { LESSON_FILE_MAX_BYTES, LESSON_FILE_MAX_LESSONS } from "@agentx/contracts";
+import { LESSON_FILE_MAX_BYTES, LESSON_FILE_MAX_LESSONS } from "@rovara-code/contracts";
 import { hasStaleCitation } from "./trial.js";
 import { TEAM_FILE_TEXT, hasPersonApproval, repoFileBlockers, type RepoFileBlocker } from "./repo-eligibility.js";
 import {

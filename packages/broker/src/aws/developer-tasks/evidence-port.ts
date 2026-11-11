@@ -1,7 +1,7 @@
 // Proof and evidence (wire-proof): what the task routes need to show a task's evidence: the pack kept for the task's current code (rovara-code/evidence-keep.ts), as the pull request shows it (counts, a link) and as the
 // task page shows it (links to stored artifacts). It exists only while the proof switch is on (`evidenceRouteDependencies`, aws/broker/evidence-wiring.ts): with the switch off nothing builds it, every reader sees `undefined`
 // and the pull request, the task view and the routes are exactly what they were. A pack is read only for the digest it was kept for, so evidence of earlier code is never shown against later code.
-import { resolveEvidenceMode, type EvidencePack, type EvidenceView } from "@agentx/contracts";
+import { resolveEvidenceMode, type EvidencePack, type EvidenceView } from "@rovara-code/contracts";
 import type { TestProofActions } from "../../developer/test-proof-lines.js";
 import { evidenceViewOf, type EvidenceArtifactState } from "../../rovara-code/evidence-pack.js";
 import type { ProofEvidenceContext } from "../../rovara-code/evidence-lines.js";

@@ -17,10 +17,9 @@
 // (WORKFLOW_DISPATCH_DUE_INDEX) under its own partition value, so it needs no new index and no new schedule.
 import { createHash, randomBytes } from "node:crypto";
 import { BatchGetCommand, GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  COMPANY_DOMAIN_LOST_AFTER_DAYS, COMPANY_DOMAIN_LOST_WATCH_DAYS, COMPANY_DOMAIN_MAX_PER_ORG, COMPANY_DOMAIN_PENDING_DAYS, COMPANY_DOMAIN_TAKEOVER_CONFIRM_MS, COMPANY_DOMAIN_TXT_PREFIX, WORKFLOW_DISPATCH_DUE_INDEX,
-  agentXError, orgMetaKey, orgPk, type AuditActor, type CompanyDomainCheckResult, type CompanyDomainView, type OrgId,
-} from "@agentx/contracts";
+import { COMPANY_DOMAIN_LOST_AFTER_DAYS, COMPANY_DOMAIN_LOST_WATCH_DAYS, COMPANY_DOMAIN_MAX_PER_ORG, COMPANY_DOMAIN_PENDING_DAYS, COMPANY_DOMAIN_TAKEOVER_CONFIRM_MS, COMPANY_DOMAIN_TXT_PREFIX, orgMetaKey, type CompanyDomainCheckResult, type CompanyDomainView } from "@agentx/cloud-contracts";
+import { WORKFLOW_DISPATCH_DUE_INDEX, agentXError, orgPk, type OrgId } from "@rovara-code/contracts";
+import { type AuditActor } from "@agentx/cloud-contracts";
 import { SYSTEM_ACTOR, auditActorOf } from "../../audit/plan3-hooks.js";
 import { auditCompanyDomainAdded, auditCompanyDomainLost, auditCompanyDomainRemoved, auditCompanyDomainVerified, auditOccurrence } from "../../audit/events.js";
 import { flushAuditEvents } from "../../audit/flush.js";

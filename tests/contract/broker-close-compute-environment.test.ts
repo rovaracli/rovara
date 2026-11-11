@@ -4,7 +4,7 @@
 // This loads the real broker entry module the way the Lambda does: the environment is what the control plane gives the broker (the synthesized
 // function's variables, only the packed ones), plus the region and account Lambda gives it.
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { BROKER_NAMES, BROKER_NAMES_VARIABLE, BROKER_SETTINGS, BROKER_SETTINGS_VARIABLE } from "@agentx/contracts";
+import { BROKER_NAMES, BROKER_NAMES_VARIABLE, BROKER_SETTINGS, BROKER_SETTINGS_VARIABLE } from "@agentx/cloud-contracts";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { hydrateBrokerEnvironment, type MutableEnvironment } from "../../packages/broker/src/aws/broker-environment.js";
 import { brokerVariables } from "../support/broker-packed-variables.js";

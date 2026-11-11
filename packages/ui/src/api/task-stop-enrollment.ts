@@ -1,5 +1,5 @@
 // Loaded with the owner enforcement step; stale scope responses never drive a write or sign-in.
-import { OrgIdSchema, TaskStopEnrollmentBodySchema, TaskStopEnrollmentReadSchema, TaskStopEnrollmentResultSchema, TaskStopReviewBodySchema, TaskStopReviewSchema } from "@agentx/contracts/web";
+import { OrgIdSchema, TaskStopEnrollmentBodySchema, TaskStopEnrollmentReadSchema, TaskStopEnrollmentResultSchema, TaskStopReviewBodySchema, TaskStopReviewSchema } from "@agentx/cloud-contracts/web";
 import type { AppHost, ApiMethod, ApiResponse } from "../host.js";
 import { exactAnswer } from "./without-request-id.js";
 import { ApiError } from "./errors.js";

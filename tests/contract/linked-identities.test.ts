@@ -1,7 +1,8 @@
 // Plan 2, Task 2: one developer per person. A second sign-in route for the same verified email is linked to the first route's
 // developer, never added as a second member, and `GET /v1/app/me` lists the linked methods.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { AppMeResponseSchema, developerOrgKey, normalizeEmail, orgEmailKey, orgMemberKey, orgPk, projectMemberKey, projectRevisionKey, type OrgId } from "@agentx/contracts";
+import { AppMeResponseSchema, developerOrgKey, orgEmailKey, orgMemberKey } from "@agentx/cloud-contracts";
+import { normalizeEmail, orgPk, projectMemberKey, projectRevisionKey, type OrgId } from "@rovara-code/contracts";
 import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
 import { resolveSignInDeveloper } from "../../packages/broker/src/developer/identities.js";
 import { developerTokenVerifier } from "../../packages/broker/src/developer/verify-token.js";

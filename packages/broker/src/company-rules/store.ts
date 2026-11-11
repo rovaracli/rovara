@@ -10,7 +10,8 @@
 // Every write is ONE TransactWriteItems that holds the rows, the fences the caller read (the second-person evidence) and the audit event's pending item. A cancelled transaction answers "conflict": the caller reads again and says
 // CHANGE_STALE. A write without an audit ledger is refused: changing company rules is company authority, so there is no unaudited path.
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { INDEX_EXPIRY_ATTRIBUTE, OrgIdSchema, agentXError, orgPk, type AuditEventInput, type OrgId } from "@agentx/contracts";
+import { type AuditEventInput } from "@agentx/cloud-contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, OrgIdSchema, agentXError, orgPk, type OrgId } from "@rovara-code/contracts";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, type AuditRuntime, type TransactItem } from "../audit/outbox.js";
 import type { Rule } from "./rules.js";

@@ -7,26 +7,7 @@
 // Everything here reads live (an opt-out, the role of whoever decides, the project's repositories): nothing is trusted from an earlier request.
 import { createHash } from "node:crypto";
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  AgentXNameSchema,
-  COMMENT_TRIGGER_STALE_TEXT,
-  CommentTriggerOptOutRequestSchema,
-  CommentTriggerRepositorySchema,
-  COMMENT_TRIGGER_UNREADABLE_TEXT,
-  INDEX_EXPIRY_ATTRIBUTE,
-  StoredCommentTriggerOptOutSchema,
-  agentXError,
-  commentTriggerEventKey,
-  commentTriggerEventsPk,
-  commentTriggerLapseNotice,
-  commentTriggerOptOutKey,
-  commentTriggerOptOutRepositoryPrefix,
-  commentTriggerOptOutsPk,
-  projectAllows,
-  type CommentTriggerOptOut,
-  type OrgId,
-  type StoredCommentTriggerOptOut,
-} from "@agentx/contracts";
+import { AgentXNameSchema, COMMENT_TRIGGER_STALE_TEXT, CommentTriggerOptOutRequestSchema, CommentTriggerRepositorySchema, COMMENT_TRIGGER_UNREADABLE_TEXT, INDEX_EXPIRY_ATTRIBUTE, StoredCommentTriggerOptOutSchema, agentXError, commentTriggerEventKey, commentTriggerEventsPk, commentTriggerLapseNotice, commentTriggerOptOutKey, commentTriggerOptOutRepositoryPrefix, commentTriggerOptOutsPk, projectAllows, type CommentTriggerOptOut, type OrgId, type StoredCommentTriggerOptOut } from "@rovara-code/contracts";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditOccurrence, auditOptOutApplied, auditOptOutLapsed } from "../audit/events.js";
 import { auditPending, tryAuditEvents } from "../audit/outbox.js";

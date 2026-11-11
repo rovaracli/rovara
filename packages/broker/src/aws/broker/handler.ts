@@ -24,7 +24,7 @@ import { appCsrfTokenFor } from "../../developer/app-csrf.js";
 import { createHash } from "node:crypto";
 import { PutCommand } from "@aws-sdk/lib-dynamodb";
 import { PutObjectCommand } from "@aws-sdk/client-s3";
-import { AgentXError, E2ESetupProposalSchema, inspectE2ERepository, proposeE2ESetup, WEB_API_RUNTIME_PROFILE_ID, verifyE2ESourceSnapshot, verifyE2ESetupProposal, canonicalJson, agentXError, projectSetupApprovalKey, type OrgId, isAdminChangePressEvent, type AdminChangePressEvent, sameJsonContent, type E2ESourceSnapshot, E2E_AGENT_UNAVAILABLE_REASONS, E2E_MODEL_ROUTE_CHANGED_REAPPROVE } from "@agentx/contracts";
+import { AgentXError, E2ESetupProposalSchema, inspectE2ERepository, proposeE2ESetup, WEB_API_RUNTIME_PROFILE_ID, verifyE2ESourceSnapshot, verifyE2ESetupProposal, canonicalJson, agentXError, projectSetupApprovalKey, type OrgId, isAdminChangePressEvent, type AdminChangePressEvent, sameJsonContent, type E2ESourceSnapshot, E2E_AGENT_UNAVAILABLE_REASONS, E2E_MODEL_ROUTE_CHANGED_REAPPROVE } from "@rovara-code/contracts";
 import type { AuthenticatedIdentity } from "../../auth.js";
 import { routeAdminRead } from "../admin-reads.js";
 import { pressAdminChange, routeAdminChange } from "../admin-changes.js";
@@ -77,7 +77,7 @@ import { routeDeveloperRequest, type DeveloperCaller, type DeveloperRouteDepende
 import { releasePendingFinishedTasks } from "../developer-tasks.js";
 import { runDueWorkflowMergeRecovery, runDueWorkflowMergeTracking } from "../workflow-merge-recovery.js";
 import { mergeViewOf } from "../../rovara-code/merge.js";
-import type { MergeTrackingItem } from "@agentx/contracts";
+import type { MergeTrackingItem } from "@agentx/cloud-contracts";
 import { resolveHeadEventTask } from "../../rovara-code/tracking-events.js";
 import { adaptHttpApiEvent, identityFromJwtClaims, type HttpApiV2Event } from "../lambda.js";
 import { getSwebenchRunForThread, handleSwebenchCallback, isSwebenchCallbackPath, startSwebenchRun } from "../swebench.js";
@@ -119,7 +119,7 @@ import { isWorkflowDispatchRecoveryEvent, retryDueWorkflowDispatches, startDuePl
 import { connectSlackTeam, deleteSlackBinding, disconnectSlackTeam, getTeamSlackBinding, putSlackBinding, requireSlackRequesterMayWork, requireSlackServiceRole, slackServiceIdentity } from "./workspace-preparation.js";
 import { SLACK_APPROVAL_OUT_OF_DATE, SLACK_BUTTON_OUT_OF_DATE, answerSlackWorkflowEvent, replyNotSavedAnswer, routeWorkspaceRequest, unexpectedErrorAnswer } from "./workspace-routes.js";
 import { OUTCOME_SETTLE_PASS_MS, releaseDependenciesOf } from "./terminal-and-github-events.js";
-import { auditOperatorId } from "@agentx/contracts";
+import { auditOperatorId } from "@agentx/cloud-contracts";
 import { learningFirstTick } from "../../spend/settlement-job.js";
 import { learningWalkDeps, resumeOpenLearningWalks } from "../../learning/cleanup.js";
 import { requirePricedTaskStopAdmission } from "../../org/task-stop-unpriced.js";

@@ -2,7 +2,7 @@
 // made for, and only the latest one can be confirmed), M-1 (the owner rule checks `use` on a custom agent) and M-2 (a missing chain store fails closed). I-1 (no link in
 // the gate_waiting event) is in chain-gates.test.ts and chain-view.test.ts.
 import { afterEach, describe, expect, it } from "vitest";
-import { TriggerSpecSchema } from "../../packages/contracts/src/agent-recipe.js";
+import { TriggerSpecSchema } from "@rovara-code/contracts";
 import { getApprovalSubjectHandler } from "../../packages/broker/src/agents/approvals.js";
 import { builtinTriggerIdFor } from "../../packages/broker/src/triggers/routes.js";
 import { closeTriggerEnableApproval } from "../../packages/broker/src/triggers/lifecycle.js";

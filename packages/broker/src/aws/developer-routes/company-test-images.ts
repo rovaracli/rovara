@@ -8,7 +8,8 @@
 // The authority is `org/company-test-images.ts` (fresh sign-in read from the stored session, audited in the write's own transaction); this file builds its dependencies. Answers are ids, digests, fixed words and the image an
 // admin must read to approve it; never an error text from a registry.
 import { z } from "zod";
-import { EDITION_ENV_VAR, agentXError, type OrgId } from "@agentx/contracts";
+import { EDITION_ENV_VAR } from "@agentx/cloud-contracts";
+import { agentXError, type OrgId } from "@rovara-code/contracts";
 import { logDeveloperEvent } from "../../developer/log.js";
 import { requireLiveCompanyAdmin } from "../../org/company-authority.js";
 import { dynamoCompanyImageStore } from "../../org/company-test-image-store.js";

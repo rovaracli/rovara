@@ -9,8 +9,9 @@
 // was made an admin, an Auditor or a member again since the grant is not an Insights viewer until an admin gives it again. This module does not change the live-role read that Slack and the
 // confirmation page share (`org/live-role.ts`); the grant is read here, with its own GetItem, so nothing that reads a role changes.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { OrgRoleSchema, agentXError, orgMemberKey, projectAllows, type OrgId } from "@agentx/contracts";
-import type { InsightsOverview } from "@agentx/contracts";
+import { OrgRoleSchema, orgMemberKey } from "@agentx/cloud-contracts";
+import { agentXError, projectAllows, type OrgId } from "@rovara-code/contracts";
+import type { InsightsOverview } from "@agentx/cloud-contracts";
 import type { ProjectMembers } from "../org/project-members.js";
 
 export const INSIGHTS_REFUSED = "Insights is for company owners and admins, people an admin gave access, and project maintainers.";

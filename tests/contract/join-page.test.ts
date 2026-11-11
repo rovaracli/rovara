@@ -3,7 +3,7 @@
 // org, member, DEVELOPER_ORG# item, session or code (Review Focus 2, I8).
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { developerOrgKey, orgInviteKey } from "@agentx/contracts";
+import { developerOrgKey, orgInviteKey } from "@agentx/cloud-contracts";
 import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
 import { maskEmail } from "../../packages/broker/src/developer/join-page.js";
 import { inviteTokenHash } from "../../packages/broker/src/org/invite-url.js";

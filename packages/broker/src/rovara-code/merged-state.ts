@@ -3,7 +3,8 @@
 // "merged" (the task view's pull request list reads it). When the pull request was merged on GitHub rather than by Rovara's Merge, and no approval was recorded for it, the session's timeline
 // says so, as a fact: "Merged on GitHub by <login>; no approval was recorded."
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { SessionIdSchema, mergeTrackingDecisionDigest, sessionEventId, type MergeTrackingItem, type OrgId, type WorkflowSnapshot } from "@agentx/contracts";
+import { SessionIdSchema, sessionEventId, type OrgId } from "@rovara-code/contracts";
+import { mergeTrackingDecisionDigest, type MergeTrackingItem, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { sessionEventItem } from "../agent-sessions/store.js";
 import type { TransactItem } from "../agents/table-writes.js";
 import { readMergeTracking, trackingWriteItem } from "./merge-tracking.js";

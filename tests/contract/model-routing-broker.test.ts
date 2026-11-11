@@ -3,7 +3,8 @@
 // from the org's assistant model or the orchestrator's own. Everything here goes through the real broker over a fake table and a fake proxy.
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it, vi } from "vitest";
-import { DEFAULT_AGENT_GUARDRAILS, ModelSourceSchema, agentXError, agentGuardrailsKey, modelCounter, modelKeyKey, modelSourcesKey, scopeKey, sourceAlias, spendCounterKey, type ModelSource } from "@agentx/contracts";
+import { DEFAULT_AGENT_GUARDRAILS, ModelSourceSchema, agentXError, agentGuardrailsKey, modelSourcesKey, sourceAlias, type ModelSource } from "@rovara-code/contracts";
+import { modelCounter, modelKeyKey, scopeKey, spendCounterKey } from "@agentx/cloud-contracts";
 import { bedrockClaudeModelIds } from "@agentx/model-runtime/catalog";
 import { ModelSourceStore } from "../../packages/broker/src/model-sources/store.js";
 import { keyIdOf } from "../../packages/broker/src/org/budget.js";

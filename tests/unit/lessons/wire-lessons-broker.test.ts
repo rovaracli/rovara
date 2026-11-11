@@ -2,7 +2,8 @@
 // Covers: the approved-only and stale-citation filters of the loader, the dispatch call (`learnedContextForOperation`), the old-worker fallback at delivery, the load report hook,
 // and the directory, audit sink and citation verifier the runtime is built from.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { LearnedRefsSchema, LEARNED_CONTEXT_FEATURE, LEARNED_LOAD_REPORT_FIELD, type LoadReport, type WorkerInvocation } from "../../../packages/contracts/src/index.js";
+import { LearnedRefsSchema, LEARNED_CONTEXT_FEATURE, LEARNED_LOAD_REPORT_FIELD, type LoadReport } from "@rovara-code/contracts";
+import { type WorkerInvocation } from "@agentx/cloud-contracts";
 import { withoutLearnedContext } from "../../../packages/broker/src/aws/ec2-delivery.js";
 import { LESSON_LOAD_DEADLINE_MS, learnedContextForOperation, lessonStageOf } from "../../../packages/broker/src/aws/broker/lessons-dispatch.js";
 import { afterWorkerEvents } from "../../../packages/broker/src/aws/broker/lessons-report.js";

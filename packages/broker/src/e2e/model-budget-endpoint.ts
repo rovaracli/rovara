@@ -1,8 +1,5 @@
 import { GetCommand, TransactWriteCommand, type DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
-import {
-  E2EModelDayBudgetRequestSchema, E2E_MODEL_BUDGET_SCHEMA_VERSION, E2E_MODEL_ROUTE_DEFAULT_BUDGETS, INDEX_EXPIRY_ATTRIBUTE, agentXError, indexExpiresAt,
-  type E2EModelDayBudgetRequest, type E2EModelDayBudgetResponse, type OrgId,
-} from "@agentx/contracts";
+import { E2EModelDayBudgetRequestSchema, E2E_MODEL_BUDGET_SCHEMA_VERSION, E2E_MODEL_ROUTE_DEFAULT_BUDGETS, INDEX_EXPIRY_ATTRIBUTE, agentXError, indexExpiresAt, type E2EModelDayBudgetRequest, type E2EModelDayBudgetResponse, type OrgId } from "@rovara-code/contracts";
 import { taskKey } from "../developer/task-records.js";
 import { deriveE2EAgentRoute, e2eModelBudgetKey, e2eModelBudgetReservationKey, isTransientAwsFault, type E2EAgentInstallation } from "./model-route-registry.js";
 

@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { z } from "zod";
-import { AgentAccessLevelSchema, AgentIdSchema, AgentOwnerSchema, ProjectOverviewProjectSchema, forwardReader } from "@agentx/contracts/web";
+import { AgentAccessLevelSchema, AgentIdSchema, AgentOwnerSchema, ProjectOverviewProjectSchema, forwardReader } from "@agentx/cloud-contracts/web";
 import { useAppHost, type AppHost } from "../host.js";
 import { ApiError } from "./errors.js";
 import { createApiClient } from "./client.js";

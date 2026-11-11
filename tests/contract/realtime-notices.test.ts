@@ -5,22 +5,8 @@ import { QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { Sha256 } from "@aws-crypto/sha256-js";
 import { SignatureV4 } from "@smithy/signature-v4";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  CHANGES_FEED_DAYS,
-  REALTIME_TOKEN_PROJECTS_MAX,
-  RealtimeNoticeSchema,
-  RealtimeTokenResponseSchema,
-  agentSessionKey,
-  changesKey,
-  parseRealtimeChannel,
-  projectChannel,
-  projectSegment,
-  sessionChannel,
-  userChannel,
-  type AgentSessionRecord,
-  type OrgId,
-  type RealtimeNotice,
-} from "../../packages/contracts/src/index.js";
+import { CHANGES_FEED_DAYS, agentSessionKey, changesKey, type AgentSessionRecord, type OrgId } from "@rovara-code/contracts";
+import { REALTIME_TOKEN_PROJECTS_MAX, RealtimeNoticeSchema, RealtimeTokenResponseSchema, parseRealtimeChannel, projectChannel, projectSegment, sessionChannel, userChannel, type RealtimeNotice } from "@agentx/cloud-contracts";
 import { notifySessionChange, registerSessionNoticeSink, type SessionChange } from "../../packages/broker/src/agent-sessions/notice-sink.js";
 import { routeAgentSessionRequest } from "../../packages/broker/src/agent-sessions/routes.js";
 import { readChanges, writeChanges } from "../../packages/broker/src/realtime/changes.js";

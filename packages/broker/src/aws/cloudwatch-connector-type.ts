@@ -4,7 +4,7 @@
 import { CloudWatchClient } from "@aws-sdk/client-cloudwatch";
 import { CloudWatchLogsClient } from "@aws-sdk/client-cloudwatch-logs";
 import { AssumeRoleCommand, STSClient, type AssumeRoleCommandOutput } from "@aws-sdk/client-sts";
-import { CloudWatchConnectorSchema, type OrgConnection, type OrgId } from "@agentx/contracts";
+import { CloudWatchConnectorSchema, type OrgConnection, type OrgId } from "@rovara-code/contracts";
 import { CredentialUnavailable, type Binder, type ConnectorDefinition, type CredentialProvider, type IssuedCredential, type connectMcp } from "@agentx/gateway";
 import { connectorLedgerKeys } from "./connector-ledger.js";
 import type { ConnectorType } from "./connector-types.js";

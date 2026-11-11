@@ -1,26 +1,11 @@
-import {
-  agentXError,
-  type WorkflowSnapshot,
-  type PlanOwnerAnswers,
-  workflowSelectedChecks,
-  type WorkflowCheckPolicy,
-  canonicalPlanJson,
-  canonicalJson,
-  retiredClaimIds,
-  type PlanDocument,
-  taskGraphDigest,
-  type PlanDocumentKind,
-  type WorkflowDecision,
-  type WorkflowDependencyInvocation,
-  type WorkflowFeatureE2EIntent,
-  workflowDependencyAttemptTerminalProgress,
-} from "@agentx/contracts";
+import { agentXError, type PlanOwnerAnswers, workflowSelectedChecks, type WorkflowCheckPolicy, canonicalPlanJson, canonicalJson, retiredClaimIds, type PlanDocument, taskGraphDigest, type PlanDocumentKind, type WorkflowDecision, type WorkflowDependencyInvocation, type WorkflowFeatureE2EIntent, workflowDependencyAttemptTerminalProgress } from "@rovara-code/contracts";
+import { type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { parallelPartsDecision, parallelPartsForTask } from "../../rovara-code/parallel-parts.js";
 import type { DeveloperTaskRecord } from "../../developer/task-records.js";
 import { planDocumentKindName, previousPlanDocumentBlock } from "../broker-shared.js";
 import { loadWorkflowDocument, type LoadedDocument } from "../../developer/plan-artifacts.js";
 import { ownerAnswersFor, ownerAnswersSentence } from "../../developer/owner-answers.js";
-import type { TaskGraphV1 } from "@agentx/contracts";
+import type { TaskGraphV1 } from "@rovara-code/contracts";
 import type { DeveloperTaskRouteDependencies } from "./types.js";
 
 /** The claim IDs this task's earlier structured documents dropped (they may not come back), in order; a document that cannot be read is skipped. */

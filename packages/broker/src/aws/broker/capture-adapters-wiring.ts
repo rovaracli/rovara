@@ -8,7 +8,7 @@ import { GITHUB_HOST_KIND } from "../../plugins/code-host/github/index.js";
 import { changeRequestRef } from "../../rovara-code/host-port.js";
 import { captureAdapterOf, githubPullRequestAddress, type CodeHostCaptureAdapter } from "../../team-record/sources/capture-adapters.js";
 import { createGithubDiffReader } from "../../team-record/sources/github.js";
-import type { CodeHost } from "@agentx/contracts";
+import type { CodeHost } from "@rovara-code/contracts";
 
 export function githubCaptureAdapter(input: {
   provider: { getRepositoryCompareJson(repositoryUrl: string, apiPath: string, scope: GitHubTokenScope): Promise<{ status: number; body: unknown }> };
@@ -16,7 +16,7 @@ export function githubCaptureAdapter(input: {
   /** A cloud install mints every token for one company; a private install has one system scope. */
   cloud: boolean;
 }): CodeHostCaptureAdapter {
-  const scopeOf = (workspaceId: string): GitHubTokenScope => (input.cloud ? { orgId: workspaceId } : { system: "private-install" });
+  const scopeOf = (workspaceId: string): GitHubTokenScope => (input.cloud ? { orgId: workspaceId } : { system: "install" });
   const diffs = createGithubDiffReader(async (path, context) => (context === undefined
     ? { status: 0, body: undefined }
     : input.provider.getRepositoryCompareJson(`https://github.com/${context.fullName}`, path, scopeOf(context.workspaceId))));

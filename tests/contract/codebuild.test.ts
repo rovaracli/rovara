@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { AwsCodeBuildGateway } from "../../packages/broker/src/codebuild.js";
 import { createWorkerCallbackSinks } from "../../packages/worker/src/callback-client.js";
 import { runCodeBuildGates } from "../../packages/worker/src/codebuild.js";
-import type { WorkerInvocation } from "@agentx/contracts";
+import type { WorkerInvocation } from "@agentx/cloud-contracts";
 
 describe("CodeBuild broker adapter", () => {
   it("starts an approved project at the exact commit without mutable build overrides", async () => {

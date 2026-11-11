@@ -1,7 +1,8 @@
 // A world for the Fix with agent tests: the session world (people, projects, a task and its session), a task view that reports a failed task with an ErrorRef, and the diagnosis dependencies on the
 // same fake table. Nothing here is a secret; tokens in planted text are built at run time.
 import { randomUUID } from "node:crypto";
-import { taskFailureErrorRef, type DeveloperTaskView, type ErrorRef } from "@agentx/contracts";
+import { taskFailureErrorRef, type ErrorRef } from "@rovara-code/contracts";
+import { type DeveloperTaskView } from "@agentx/cloud-contracts";
 import type { DiagnosisDependencies } from "../../packages/broker/src/diagnosis/light.js";
 import type { DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
 import { ARJUN, MAX, ORG_A, PRIYA, sessionWorld } from "./agent-session-world.js";

@@ -23,7 +23,7 @@ import {
   type LockedObjectV1,
   type OrgSealV1,
 } from "@rovara/audit-verifier";
-import { AUDIT_TSA_ENDPOINTS, AUDIT_TSA_SPACING_MS, AUDIT_TSA_TIMEOUT_MS } from "@agentx/contracts";
+import { AUDIT_TSA_ENDPOINTS, AUDIT_TSA_SPACING_MS, AUDIT_TSA_TIMEOUT_MS } from "@agentx/cloud-contracts";
 import { epochIdAt, leavesObjectKey, lockedPutInput, sealObjectKey, statementObjectKey, tokenObjectKey } from "../../packages/broker/src/audit/anchor.js";
 import {
   TsaError,

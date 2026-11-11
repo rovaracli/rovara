@@ -5,7 +5,8 @@
 //  3. PUBLIC SLACK: message text is never stored in the Public edition (processed, then dropped), whatever the source row says; the positive control shows Enterprise does store it.
 import { readFileSync, readdirSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { LESSON_EMBEDDER, retiredTeamRecordVectorIndexName, teamRecordVectorIndexName, teamRecordPk, TEAM_RECORD_EMBEDDER, TEAM_RECORD_OPS_MAX_RECEIVES, TEAM_RECORD_QUEUED_PUT_MAX_AGE_MS, recordActorSourceHash, recordDeveloperHash, developerOrgKey, githubInstallationKey, githubMemberKey, memberGithubKey, githubRepoProjectKey, orgMetaKey, orgSlackTeamKey, orgProjectCatalogKey, projectMetaKey, projectRevisionKey, slackTeamOrgKey, type OrgId } from "@agentx/contracts";
+import { LESSON_EMBEDDER, retiredTeamRecordVectorIndexName, teamRecordVectorIndexName, TEAM_RECORD_EMBEDDER, TEAM_RECORD_OPS_MAX_RECEIVES, TEAM_RECORD_QUEUED_PUT_MAX_AGE_MS, recordActorSourceHash, recordDeveloperHash, developerOrgKey, githubInstallationKey, githubRepoProjectKey, orgMetaKey, orgSlackTeamKey, slackTeamOrgKey } from "@agentx/cloud-contracts";
+import { teamRecordPk, githubMemberKey, memberGithubKey, orgProjectCatalogKey, projectMetaKey, projectRevisionKey, type OrgId } from "@rovara-code/contracts";
 import { announceHumanSendBack } from "../../../packages/broker/src/lessons/send-back-events.js";
 import { drainTeamRecordQueue, installTeamRecordEmitter, isTeamRecordJobEvent, isTeamRecordQueueEvent, isTeamRecordSlackEvent, recordSlackForward, runTeamRecordJob, uninstallTeamRecordEmitter } from "../../../packages/broker/src/aws/broker/team-record-wiring.js";
 import { lessonSimilarityFor } from "../../../packages/broker/src/aws/broker/lessons-wiring.js";

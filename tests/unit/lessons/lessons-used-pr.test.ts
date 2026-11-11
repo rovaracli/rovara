@@ -3,7 +3,8 @@
 // The list shrinks with the other lists, the markers stay, titles are inert, a restricted lesson is never named.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { WorkflowSnapshotSchema, createCandidateManifest, createWorkflowSnapshot } from "../../../packages/contracts/src/task-workflow-node.js";
+import { WorkflowSnapshotSchema, createWorkflowSnapshot } from "../../../packages/cloud-contracts/src/task-workflow-node.js";
+import { createCandidateManifest } from "@rovara-code/contracts";
 import { workflowPullRequestBody, workflowPullRequestStatusLines } from "../../../packages/broker/src/aws/developer-tasks.js";
 import { rovaraPullRequestBody, ROVARA_STATUS_END, ROVARA_STATUS_START, PULL_REQUEST_BODY_MAX_BYTES } from "../../../packages/broker/src/rovara-code/pull-request-body.js";
 import { repositoryVisibilityOf } from "../../../packages/broker/src/aws/broker/lessons-wiring.js";

@@ -27,20 +27,16 @@ import { workflowMessage } from "../../packages/broker/src/developer/workflow-me
 import {
   ANSWERS_BLOCK_HEADER, EXPLICIT_PATH_RULE, PLAN_UNDERSTANDING_HEADER, UNDERSTAND_REQUEST_HEADER, UNDERSTAND_RULES, understandPrompt,
 } from "../../packages/broker/src/rovara-code/understand.js";
-import { DEFAULT_AGENT_GUARDRAILS, type AgentGuardrails } from "../../packages/contracts/src/agent-guardrails.js";
-import { EMPTY_RECIPE, type ResolvedRecipe, type ResolvedStep } from "../../packages/contracts/src/agent-recipe-node.js";
-import type { AgentId } from "../../packages/contracts/src/agent.js";
-import { builtinSettingsKey } from "../../packages/contracts/src/org-scoped-keys.js";
-import type { ModelSelection } from "../../packages/contracts/src/models-node.js";
-import {
-  INTENT_BLOCK_INFO_STRING, UNDERSTAND_ARTIFACT_NAME, UNDERSTAND_ARTIFACT_MAX_BYTES, UNDERSTAND_TIMED_OUT_MESSAGE,
-  UNDERSTAND_TIMEOUT_MINUTES, UNDERSTAND_UNREADABLE_MESSAGE, UNDERSTAND_WATCHDOG_GRACE_MINUTES, checkIntentAssessment, intentAssumptionLine, readIntentArtifact, readIntentBlock,
-  type IntentAssessment, type IntentQuestion,
-} from "../../packages/contracts/src/index.js";
-import { WORKFLOW_BLOCK_REASONS } from "../../packages/contracts/src/task-workflow.js";
-import { WORKFLOW_LIVE_STEER_REAPPROVAL_MESSAGE } from "../../packages/contracts/src/live-steer.js";
-import { WORKFLOW_LEFTOVER_PROCESSES_MESSAGE, WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE } from "../../packages/contracts/src/task-workflow-node.js";
-import { WorkflowSnapshotSchema, createWorkflowSnapshot, endStuckUnderstand, recordIntentAssessment, startWorkflowPlanAfterUnderstand, startWorkflowUnderstand } from "../../packages/contracts/src/task-workflow-node.js";
+import { DEFAULT_AGENT_GUARDRAILS, type AgentGuardrails } from "@rovara-code/contracts";
+import { EMPTY_RECIPE, type ResolvedRecipe, type ResolvedStep } from "@rovara-code/contracts";
+import type { AgentId } from "@rovara-code/contracts";
+import { builtinSettingsKey } from "@rovara-code/contracts";
+import type { ModelSelection } from "@rovara-code/contracts";
+import { INTENT_BLOCK_INFO_STRING, UNDERSTAND_ARTIFACT_NAME, UNDERSTAND_ARTIFACT_MAX_BYTES, UNDERSTAND_TIMED_OUT_MESSAGE, UNDERSTAND_TIMEOUT_MINUTES, UNDERSTAND_UNREADABLE_MESSAGE, UNDERSTAND_WATCHDOG_GRACE_MINUTES, checkIntentAssessment, intentAssumptionLine, readIntentArtifact, readIntentBlock, type IntentAssessment, type IntentQuestion } from "@rovara-code/contracts";
+import { WORKFLOW_BLOCK_REASONS } from "../../packages/cloud-contracts/src/task-workflow.js";
+import { WORKFLOW_LIVE_STEER_REAPPROVAL_MESSAGE } from "@rovara-code/contracts";
+import { WORKFLOW_LEFTOVER_PROCESSES_MESSAGE, WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE } from "@rovara-code/contracts";
+import { WorkflowSnapshotSchema, createWorkflowSnapshot, endStuckUnderstand, recordIntentAssessment, startWorkflowPlanAfterUnderstand, startWorkflowUnderstand } from "../../packages/cloud-contracts/src/task-workflow-node.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { MAYA, createSingleAnswerPlanBroker } from "../support/developer-task-broker.js";
 import { fakeModelAccess } from "../support/fake-model-access.js";

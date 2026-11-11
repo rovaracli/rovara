@@ -5,7 +5,7 @@
 // Each is written only for a task whose session follows a ticket (a `tracker_item` binding), so no other task gains an item. The milestone names no session, so nothing is added to the session's
 // timeline. Every function here is best effort and never throws: the work it follows stands without it.
 import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import type { OrgId } from "@agentx/contracts";
+import type { OrgId } from "@rovara-code/contracts";
 import type { TaskEndHandler } from "../agents/task-end.js";
 import { codeMilestoneItems, deliverCodeMilestones } from "../rovara-code/milestones.js";
 import { sessionBindingsOf } from "../rovara-code/session-bindings.js";

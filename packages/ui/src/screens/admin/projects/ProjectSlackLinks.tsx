@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { AppMeResponseReaderSchema } from "@agentx/contracts/web";
+import { AppMeResponseReaderSchema } from "@agentx/cloud-contracts/web";
 import { useAppHost } from "../../../host.js";
 import { SlackLinksEditor } from "./SlackLinksEditor.js";
 type Props = { orgId: string; project: string; available: boolean };

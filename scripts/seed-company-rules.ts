@@ -11,7 +11,7 @@ import { pathToFileURL } from "node:url";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import type { SQSClient } from "@aws-sdk/client-sqs";
-import { OrgIdSchema } from "@agentx/contracts";
+import { OrgIdSchema } from "@rovara-code/contracts";
 import { readNumberedDraft, readRulesFile } from "../packages/broker/src/company-rules/rules.js";
 import { seedCompanyRules } from "../packages/broker/src/company-rules/seed.js";
 import { dynamoCompanyRulesStore } from "../packages/broker/src/company-rules/store.js";

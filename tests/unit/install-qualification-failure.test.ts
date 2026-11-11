@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { WEB_API_REQUIRED_PROBES } from "../../packages/contracts/src/index.js";
+import { WEB_API_REQUIRED_PROBES } from "@rovara-code/contracts";
 import { main as qualificationCli } from "../../packages/verifier/src/install-qualification-cli.js";
 import {
   QUALIFICATION_FAILURE_CODE, QUALIFICATION_FAILURE_MAX_BYTES, QUALIFICATION_FAILURE_MAX_CODES, QualificationStageError, WebApiQualificationRejected,

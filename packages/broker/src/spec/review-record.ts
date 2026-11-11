@@ -1,7 +1,7 @@
 // K1 lane D, D3: the broker's record of a code review's walk of the spec, and the export W4's requirement-to-evidence table reads. The worker's report is read again here (schema, bounds), is kept only
 // when it is about the commit the broker recorded for the spec, and is written with the review's own result.
 import { QueryCommand } from "@aws-sdk/lib-dynamodb";
-import { SpecReviewResultSchema, specRequirementRows, type SpecReviewResult } from "@agentx/contracts";
+import { SpecReviewResultSchema, specRequirementRows, type SpecReviewResult } from "@rovara-code/contracts";
 import type { TransactItem } from "./hooks.js";
 import type { SpecStore } from "./hooks.js";
 

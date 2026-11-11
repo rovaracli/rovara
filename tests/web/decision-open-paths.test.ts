@@ -3,7 +3,7 @@
 import { expect, it } from "vitest";
 import { matchRoutes } from "react-router";
 import { appRoutes } from "../../packages/ui/src/routes.js";
-import { decisionFocusPath, decisionTaskSessionOf, DECISION_LABELS } from "@agentx/contracts";
+import { decisionFocusPath, decisionTaskSessionOf, DECISION_LABELS } from "@rovara-code/contracts";
 import { decisionCardUrl, taskOpenPath, sessionOpenPath } from "../../packages/broker/src/decisions/open-path.js";
 import { specChoiceItemOf } from "../../packages/broker/src/spec/decision-item.js";
 import { hostAskItem, type SetupHostAsk } from "../../packages/broker/src/rovara-code/setup-host-ask.js";

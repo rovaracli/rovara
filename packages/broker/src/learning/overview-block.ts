@@ -1,6 +1,6 @@
 // v1.2 learning loop, B7: the maintainer-only `learning` block of a project's overview (design 6.2 and 6.4). It is built from the METRIC items of this month and last, the project's active rules, and
 // the repeats of those rules among this month's corrections. Counts and ids only. A project created again under the same name has none of the old counts (reads ignore another project's items).
-import { LearningRuleSchema, type ProjectOverviewLearning } from "@agentx/contracts";
+import { LearningRuleSchema, type ProjectOverviewLearning } from "@rovara-code/contracts";
 import { prCaptureOff } from "./grouping.js";
 import { metricMonth, readMetric } from "./metric.js";
 import { effectiveSuggestions } from "./suggestions-switch.js";

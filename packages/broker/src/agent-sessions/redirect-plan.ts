@@ -1,7 +1,8 @@
 // Stop & redirect: what a redirect does for a task in the state it is in (live-interaction design 3.1, "What the redirect does" and "When nothing is running"). A pure reading of the task row, so phase 1
 // and phase 2 judge the same facts the same way and a state this code does not know is refused, not guessed at.
-import { WORKFLOW_BLOCK_REASONS, type RedirectKind, type RedirectMode, type RedirectRefusal } from "@agentx/contracts";
-import { workflowRedirectReviseOffered, workflowSendBackOffered } from "@agentx/contracts";
+import { WORKFLOW_BLOCK_REASONS } from "@agentx/cloud-contracts";
+import { type RedirectKind, type RedirectMode, type RedirectRefusal } from "@rovara-code/contracts";
+import { workflowRedirectReviseOffered, workflowSendBackOffered } from "@agentx/cloud-contracts";
 import type { DeveloperTaskRecord } from "../developer/task-records.js";
 import { WORKFLOW_STEP_STAGE, stoppedStepReason } from "../aws/workflow-cancel-reconcile.js";
 

@@ -1,7 +1,7 @@
 // S3-L2 and S3-L5 (release 0.5.7): one email rule for free text (`replaceEmailAddresses`, with `hideEmailAddresses` as the usual placeholder), and the spelled-out at signs: `[at]`, `(at)`, `{at}`
 // and a plain " at " between a first.last name and a domain. Table-driven: every row is a text and what it must become, so a false positive (a sentence with "at") and a leak read the same way.
 import { describe, expect, it } from "vitest";
-import { EMAIL_HIDDEN, hideEmailAddresses, replaceEmailAddresses } from "../../packages/contracts/src/index.js";
+import { EMAIL_HIDDEN, hideEmailAddresses, replaceEmailAddresses } from "@rovara-code/contracts";
 import { scrubAskText } from "../../packages/broker/src/agent-sessions/ask-store.js";
 import { displayText } from "../../packages/broker/src/e2e/application-display.js";
 import { cleanNoteText } from "../../packages/broker/src/team-record/distill.js";

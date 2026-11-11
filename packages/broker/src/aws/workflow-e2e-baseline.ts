@@ -1,5 +1,5 @@
 import { GetCommand, PutCommand, UpdateCommand, type DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
-import { E2EDisplayBaselineSchema, INDEX_EXPIRY_ATTRIBUTE, indexExpiresAt, type E2EDisplayBaseline } from "@agentx/contracts";
+import { E2EDisplayBaselineSchema, INDEX_EXPIRY_ATTRIBUTE, indexExpiresAt, type E2EDisplayBaseline } from "@rovara-code/contracts";
 import { z } from "zod";
 import type { DeveloperTaskRecord } from "../developer/task-records.js";
 import { AGENT_STEPS_ONLY_BASELINE, UNAVAILABLE_BASELINE, baselineOf, scrubScenarioResults, type DisplayArtifact } from "../e2e/application-display.js";

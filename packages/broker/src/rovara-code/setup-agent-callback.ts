@@ -10,7 +10,7 @@
 // Nothing in a reply is repository or command text except the person's own command (which only a maintainer could type and the broker already checked).
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import { agentXError, type OrgId, type TestEnvProdDeny } from "@agentx/contracts";
+import { agentXError, type OrgId, type TestEnvProdDeny } from "@rovara-code/contracts";
 import { readApprovedTestEnvironment } from "../org/test-environment.js";
 import { latestRevision } from "../org/project-settings.js";
 import { taskKey, taskPointerKey, type DeveloperTaskPointerRecord, type DeveloperTaskRecord } from "../developer/task-records.js";

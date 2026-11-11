@@ -1,4 +1,4 @@
-import { NO_CHANGE_CHOICES_NO_THREAD, NO_CHANGE_CHOICES_PAGE, NO_CHANGE_COMMANDS_HEADER, NO_CHANGE_FOUND_HEADER, NO_CHANGE_NEEDED_LINE, NO_CHANGE_NO_CONCLUSION_LEAD, isNoCodeChangedReason, noChangeHasThread } from "@agentx/contracts/web";
+import { NO_CHANGE_CHOICES_NO_THREAD, NO_CHANGE_CHOICES_PAGE, NO_CHANGE_COMMANDS_HEADER, NO_CHANGE_FOUND_HEADER, NO_CHANGE_NEEDED_LINE, NO_CHANGE_NO_CONCLUSION_LEAD, isNoCodeChangedReason, noChangeHasThread } from "@agentx/cloud-contracts/web";
 import { VisibleText } from "../../design/VisibleText.js";
 import type { ReadTask } from "./workspace-types.js";
 // A coding run that ended with no code change: what the agent found (the broker redacted, bounded and filtered it: no output of a command that reads the environment or a secret file, secret-looking values hidden),

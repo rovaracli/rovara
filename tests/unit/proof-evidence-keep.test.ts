@@ -3,7 +3,7 @@
 import { createHash } from "node:crypto";
 import { GetObjectCommand, PutObjectCommand, type S3Client } from "@aws-sdk/client-s3";
 import { describe, expect, it } from "vitest";
-import { EvidencePackSchema, type CheckEntry, type TestEnvProdDeny } from "../../packages/contracts/src/index.js";
+import { EvidencePackSchema, type CheckEntry, type TestEnvProdDeny } from "@rovara-code/contracts";
 import { evidenceFindings, guardPack, guardRaw, evidenceTexts } from "../../packages/broker/src/rovara-code/evidence-guard.js";
 import { evidencePackKey, keepEvidence, loadEvidencePack, policyKindsOf, type KeepEvidenceDeps } from "../../packages/broker/src/rovara-code/evidence-keep.js";
 import { keepEvidenceAfterChecks, evidenceRouteDependencies } from "../../packages/broker/src/aws/broker/evidence-wiring.js";

@@ -2,7 +2,7 @@
 // worker cannot know whether a database will be proposed). The BROKER decides where it lands: the seed of the first database dependency it proposes (real software or Rovara local AWS, never a fake), after the same
 // refusals a seed always gets (`seedCommandProblem`: download-and-run, secrets, system variables, length). ONLY a command the dependency actually took is taken out of the setup commands (`withoutRoutedSeeds`, and the draft's own setup commands in `draft.ts`); one that was refused, dropped (test services off) or had no database to go to stays a setup command. Nothing here approves anything: a seed
 // command is a less-safe change (`dependency_seed`), so a second person still confirms it. Notes are fixed words, never the command.
-import { formatCommandLine, parseCommandLine, TEST_ENV_DEPENDENCY_LIMITS, TestEnvDependenciesSchema, type ProjectCommand, type SetupProposal, type TestEnvDependency, type TestEnvDraft } from "@agentx/contracts";
+import { formatCommandLine, parseCommandLine, TEST_ENV_DEPENDENCY_LIMITS, TestEnvDependenciesSchema, type ProjectCommand, type SetupProposal, type TestEnvDependency, type TestEnvDraft } from "@rovara-code/contracts";
 import { seedCommandProblem } from "./refused-command.js";
 
 export const SEED_OFFERED_NOTE = "A command that fills the database was found. It is offered as the test database's seed, not as a setup command: setup has no database. It runs where the project's own setup runs, with the same access (in the working phase it can reach the internet). When it is the repository's own seed script, unchanged, one maintainer can approve it; any other seed command, and any migrate command, needs a second person.";

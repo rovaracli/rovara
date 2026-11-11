@@ -9,7 +9,8 @@
 //   Nothing a look finds is trusted as authority: the file's text is data that goes through the same checks as a typed proposal (`readRulesFile` -> `normalizeRules`). A host that fails is "try again later", never a change.
 //   Every write of the sync row is conditional on the revision read; a pass that loses a race stops quietly and the next pass starts again.
 import { createHash, randomBytes } from "node:crypto";
-import { COMPANY_RULES_DEFAULT_FILE_PATH, COMPANY_RULES_PROPOSAL_TTL_MS, GitBranchNameSchema, OrgIdSchema, agentXError, COMMIT_CONFLICT_MESSAGE, COMMIT_SYMLINK_MESSAGE, type AuditEventInput, type OrgId } from "@agentx/contracts";
+import { COMPANY_RULES_DEFAULT_FILE_PATH, COMPANY_RULES_PROPOSAL_TTL_MS, type AuditEventInput } from "@agentx/cloud-contracts";
+import { GitBranchNameSchema, OrgIdSchema, agentXError, COMMIT_CONFLICT_MESSAGE, COMMIT_SYMLINK_MESSAGE, type OrgId } from "@rovara-code/contracts";
 import { auditCompanyRules, auditOccurrence } from "../audit/events.js";
 import { guardTarget, headOf, readOwnPr, type RepoFileTarget } from "../lessons/repo-file-host.js";
 import { COMPANY_RULES_BRANCH_PREFIX, PATH_PROBLEM_WORDS, companyRulesPathProblem } from "./path.js";

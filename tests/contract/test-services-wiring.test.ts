@@ -5,7 +5,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { CATALOG_FILE, CATALOG_SIGNATURE_FILE, CATALOG_SIGNATURE_ALGORITHM, catalogSigningMessage, parseBundlePublicKey, sha256HexOf } from "@agentx/contracts";
+import { CATALOG_FILE, CATALOG_SIGNATURE_FILE, CATALOG_SIGNATURE_ALGORITHM, catalogSigningMessage, parseBundlePublicKey, sha256HexOf } from "@rovara-code/contracts";
 import { brokerDependencies } from "../../packages/broker/src/aws/broker/dependency-wiring.js";
 import { forgetInvokedFunctionArn, lambdaAccountId, noteInvokedFunctionArn } from "../../packages/broker/src/test-env/lambda-identity.js";
 import { SHIPPED_CATALOG_FOLDER, releaseServiceCatalogSource, shippedCatalogDirectory } from "../../packages/broker/src/test-env/shipped-catalog.js";

@@ -2,7 +2,7 @@
 // a verification run is sent, and what the evidence says about the environment.
 import { GetObjectCommand, PutObjectCommand, type S3Client } from "@aws-sdk/client-s3";
 import { describe, expect, it, vi } from "vitest";
-import { TestEnvironmentBodySchema, projectMetaKey, projectPk, testEnvDigest, type CheckEntry, type OrgId, type TestEnvironment, type TestEnvironmentBody, type ProjectCommand } from "@agentx/contracts";
+import { TestEnvironmentBodySchema, projectMetaKey, projectPk, testEnvDigest, type CheckEntry, type OrgId, type TestEnvironment, type TestEnvironmentBody, type ProjectCommand } from "@rovara-code/contracts";
 import { keepEvidence, loadEvidencePack, type KeepEvidenceDeps } from "../../packages/broker/src/rovara-code/evidence-keep.js";
 import { approveTestEnvironment, proposeTestEnvironment, recordTestEnvProveReport, type TestEnvDeps } from "../../packages/broker/src/org/test-environment.js";
 import { evidenceEnvironmentOf } from "../../packages/broker/src/test-env/evidence-line.js";

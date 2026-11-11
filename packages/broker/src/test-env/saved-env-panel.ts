@@ -1,7 +1,7 @@
 // Setup and test health SH26: what the project's Environment panel shows of the saved environment image, and its Reset. The panel carries fixed words, counts and times only (contracts `app-saved-env.ts`): no
 // digest, repository, command or secret. Reset is for a maintainer of the project: the role is checked HERE, from the role the route read for the caller, before any row is written; a viewer or a contributor
 // changes nothing and is not audited as having asked. With the `sv` switch off the panel does not exist (`disabled`).
-import { SAVED_ENV_PANEL_FAILURES, projectAllows, type ProjectRole, type SavedEnvPanel } from "@agentx/contracts";
+import { SAVED_ENV_PANEL_FAILURES, projectAllows, type ProjectRole, type SavedEnvPanel } from "@rovara-code/contracts";
 import { requestReset, type SavedEnvDeps, type SavedEnvState } from "./saved-env.js";
 
 const DAY_MS = 86_400_000;

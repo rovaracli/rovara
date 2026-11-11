@@ -2,10 +2,11 @@
 // view's ports: the task view of the first step, as a reader of the run is shown it, and nothing to someone who does not read the run.
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
-import { ChainRunViewSchema } from "../../packages/contracts/src/chain-session.js";
-import { ChainRunEventPageSchema, ChainStepTaskViewSchema } from "../../packages/contracts/src/chain-session.js";
-import { DEFAULT_AGENT_GUARDRAILS } from "../../packages/contracts/src/agent-guardrails.js";
-import { agentGuardrailsKey, orgProjectCatalogKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { ChainRunViewSchema } from "@rovara-code/contracts";
+import { ChainRunEventPageSchema } from "@rovara-code/contracts";
+import { ChainStepTaskViewSchema } from "../../packages/cloud-contracts/src/chain-session.js";
+import { DEFAULT_AGENT_GUARDRAILS } from "@rovara-code/contracts";
+import { agentGuardrailsKey, orgProjectCatalogKey } from "@rovara-code/contracts";
 import { MAYA, OMAR, createDeveloperTaskBroker, type Developer } from "../support/developer-task-broker.js";
 import { FakeProjectMembers } from "../support/fake-project-members.js";
 import { TEST_ORG } from "../support/orgs.js";

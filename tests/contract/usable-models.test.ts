@@ -2,7 +2,7 @@
 // with 403 "<model> is not available for this account". Each rule below has a fixture where ONLY sonnet-4-6 is usable.
 import { describe, expect, it } from "vitest";
 import { GetCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { canonicalModelName, type ModelIdentifier } from "@agentx/contracts";
+import { canonicalModelName, type ModelIdentifier } from "@rovara-code/contracts";
 import { bedrockClaudeModelIds } from "@agentx/model-runtime/catalog";
 import { foundationModelIdOf } from "@agentx/model-runtime/model-discovery";
 import { FAILURE_TTL_MS, MODEL_USABILITY_KEY, PROBE_MAX_AGE_MS, PROBE_TTL_MS, availabilityDenied, createUsableModels, withoutUnusable, type AvailabilityProbe } from "../../packages/broker/src/model-sources/usable-models.js";
@@ -14,9 +14,9 @@ import { criticModelFor, criticModelUnusable } from "../../packages/broker/src/r
 import { modelCallView } from "../../packages/broker/src/developer/model-call-view.js";
 import { describeModelCallNote, modelFailureNextAction, sanitizeModelCallEvent } from "../../packages/worker/src/model-call-monitor.js";
 import { failedTurn } from "../../packages/worker/src/session-events.js";
-import { secondReviewModelUnusable } from "../../packages/contracts/src/second-review.js";
-import { DEFAULT_AGENT_GUARDRAILS, editionFromEnvironment, modelNotEnabledSentence } from "@agentx/contracts";
-import type { OrgId } from "../../packages/contracts/src/org.js";
+import { secondReviewModelUnusable } from "@rovara-code/contracts";
+import { DEFAULT_AGENT_GUARDRAILS, editionFromEnvironment, modelNotEnabledSentence } from "@rovara-code/contracts";
+import type { OrgId } from "@rovara-code/contracts";
 
 const org = "org_aaaaaaaaaaaaaaaaaaaa" as OrgId;
 const bedrock = (id: string): ModelIdentifier => ({ provider: "amazon-bedrock", modelId: `us.anthropic.${id}` });

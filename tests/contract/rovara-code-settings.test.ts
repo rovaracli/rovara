@@ -1,7 +1,8 @@
 // Rovara Code (Plan 6 Task 19): a project's code settings. A maintainer reads and changes them; turning self-approval on waits for an organization owner or admin on the confirmation
 // page, and everything else applies at once under the revision the caller read.
 import { describe, expect, it } from "vitest";
-import { CODE_SETTINGS_STALE_MESSAGE, DEFAULT_CODE_SETTINGS, NeedsConfirmationSchema, agentXError, codeSettingsKey, type OrgRole } from "../../packages/contracts/src/index.js";
+import { CODE_SETTINGS_STALE_MESSAGE, DEFAULT_CODE_SETTINGS, NeedsConfirmationSchema, agentXError, codeSettingsKey } from "@rovara-code/contracts";
+import { type OrgRole } from "@agentx/cloud-contracts";
 import { getAnyApproval, getApprovalSubjectHandler } from "../../packages/broker/src/agents/approvals.js";
 import { changeTitleOf } from "../../packages/broker/src/agents/approval-decide-kind.js";
 import { getCodeSettings, putCodeSettings, readCodeSettings, type CodeSettingsDependencies } from "../../packages/broker/src/rovara-code/code-settings.js";

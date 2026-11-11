@@ -16,33 +16,9 @@ import { promisify } from "node:util";
 import { gzip } from "node:zlib";
 import { DeleteObjectCommand, GetObjectCommand, PutObjectCommand, type S3Client } from "@aws-sdk/client-s3";
 import { GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  AUDIT_ERROR_MESSAGES,
-  AUDIT_EXPORT_MAX_RECORDS,
-  AUDIT_EXPORT_AVAILABLE_DAYS,
-  AUDIT_EXPORT_MAX_EVENT_AGE_SECONDS,
-  AUDIT_EXPORT_TIMEOUT_SECONDS,
-  AUDIT_EXPORT_URL_SECONDS,
-  AgentXError,
-  agentXError,
-  genesisHash,
-  inclusionPath,
-  orgScoped,
-  sealHash,
-  sealLeafData,
-  verifyBundle,
-  type AuditActor,
-  type AuditBundleV1,
-  type AuditRecordV1,
-  type BundleDetail,
-  type BundleReport,
-  type BundleSeal,
-  type BundleTimestamp,
-  type EpochStatementV1,
-  type LockedObjectV1,
-  type OrgId,
-  type OrgSealV1,
-} from "@agentx/contracts";
+import { AUDIT_ERROR_MESSAGES, AUDIT_EXPORT_MAX_RECORDS, AUDIT_EXPORT_AVAILABLE_DAYS, AUDIT_EXPORT_MAX_EVENT_AGE_SECONDS, AUDIT_EXPORT_TIMEOUT_SECONDS, AUDIT_EXPORT_URL_SECONDS, genesisHash, inclusionPath, sealHash, sealLeafData, verifyBundle, type AuditBundleV1, type AuditRecordV1, type BundleDetail, type BundleReport, type BundleSeal, type BundleTimestamp, type EpochStatementV1, type LockedObjectV1, type OrgSealV1 } from "@agentx/cloud-contracts";
+import { AgentXError, agentXError, orgScoped, type OrgId } from "@rovara-code/contracts";
+import { type AuditActor } from "@agentx/cloud-contracts";
 import { leavesObjectKey, recordsObjectKey, sealObjectKey, statementObjectKey, tokenObjectKey } from "./anchor.js";
 import { auditExported } from "./events.js";
 import { flushAuditEvents } from "./flush.js";

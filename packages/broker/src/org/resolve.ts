@@ -2,7 +2,7 @@
 // Multi-tenancy (ruling R1): which org a caller belongs to. The resolver is injected where
 // identities and developer callers are built. The default serves a single-org install (ruling R3);
 // Task 5 sources the org from the sign-in token, and a test can inject a resolver with two orgs.
-import { OrgIdSchema, agentXError, singleOrgIdForEnv, type OrgId } from "@agentx/contracts";
+import { OrgIdSchema, agentXError, singleOrgIdForEnv, type OrgId } from "@rovara-code/contracts";
 import type { OrgStore } from "./store.js";
 
 /** Who is asking: an admin or workspace owner by `ownerKey`, a developer by `developerId`. */

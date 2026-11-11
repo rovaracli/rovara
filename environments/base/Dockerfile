@@ -6,7 +6,7 @@ FROM public.ecr.aws/docker/library/node:22.23.2-bookworm-slim@sha256:83f487e0a63
 WORKDIR /opt/agentx
 COPY package.json package-lock.json tsconfig.json tsconfig.base.json ./
 COPY packages/model-runtime/package.json packages/model-runtime/package.json
-COPY packages/contracts/package.json packages/contracts/package.json
+COPY packages/cloud-contracts/package.json packages/cloud-contracts/package.json
 COPY packages/verifier/package.json packages/verifier/package.json
 COPY packages/audit-verifier/package.json packages/audit-verifier/package.json
 COPY packages/gateway/package.json packages/gateway/package.json
@@ -22,11 +22,16 @@ COPY packages/ui/package.json packages/ui/package.json
 COPY packages/web/package.json packages/web/package.json
 COPY upstream/e2e-0.20.0.tgz upstream/e2e-0.20.0.tgz
 COPY infra/package.json infra/package.json
+# Rovara Code's contracts (convergence W0-3): the pinned copy under vendor/ and the @rovara-code/* workspace shims over it. npm ci links the shims (they are workspace members
+# in the lockfile); tsc -b builds Code's contracts through the project reference of packages/cloud-contracts.
+COPY vendor/rovara-code-shims vendor/rovara-code-shims
 RUN npm ci --ignore-scripts
 
 COPY packages/model-runtime packages/model-runtime
 COPY packages/audit-verifier packages/audit-verifier
-COPY packages/contracts packages/contracts
+COPY packages/cloud-contracts packages/cloud-contracts
+COPY vendor/rovara-code/tsconfig.base.json vendor/rovara-code/tsconfig.base.json
+COPY vendor/rovara-code/packages/contracts vendor/rovara-code/packages/contracts
 COPY packages/verifier packages/verifier
 COPY packages/worker packages/worker
 # The catalog flavor (test services slice 1): the image's flavor is this build argument, never whatever the checkout says. "release" (the default, for every public and Enterprise release) generates the staging-only catalog
@@ -36,10 +41,10 @@ ARG CATALOG_FLAVOR=release
 # The whole catalog directory, build stage only (the staging signing key file may not exist, and a COPY of a glob that matches nothing fails the build; a directory always exists).
 COPY environments/service-catalog environments/service-catalog
 RUN case "$CATALOG_FLAVOR" in release|staging) ;; *) echo "CATALOG_FLAVOR is release or staging" >&2; exit 1 ;; esac \
-    && node packages/contracts/tools/catalog-flavor.ts "$CATALOG_FLAVOR" --root /opt/agentx
-RUN npx tsc -b packages/contracts packages/verifier packages/worker --pretty false \
-    && grep -q "CATALOG_BUILD_FLAVOR = \"$CATALOG_FLAVOR\";" packages/contracts/dist/catalog-build-flavor.js \
-    && { [ "$CATALOG_FLAVOR" != release ] || grep -q "CATALOG_STAGING_ONLY_SIGNING_KEYS = \[\];" packages/contracts/dist/catalog-staging-keys.js; }
+    && node packages/cloud-contracts/tools/catalog-flavor.ts "$CATALOG_FLAVOR" --root /opt/agentx
+RUN npx tsc -b packages/cloud-contracts packages/verifier packages/worker --pretty false \
+    && grep -q "CATALOG_BUILD_FLAVOR = \"$CATALOG_FLAVOR\";" packages/cloud-contracts/dist/catalog-build-flavor.js \
+    && { [ "$CATALOG_FLAVOR" != release ] || grep -q "CATALOG_STAGING_ONLY_SIGNING_KEYS = \[\];" packages/cloud-contracts/dist/catalog-staging-keys.js; }
 RUN npm prune --omit=dev --workspaces
 
 # The Docker CLI and Compose plugin, which run a project's devcontainer through the EC2 host's
@@ -102,7 +107,9 @@ COPY --from=build /opt/agentx/package-lock.json ./package-lock.json
 COPY --from=build /opt/agentx/node_modules ./node_modules
 COPY --from=build /opt/agentx/packages/model-runtime ./packages/model-runtime
 COPY --from=build /opt/agentx/packages/audit-verifier ./packages/audit-verifier
-COPY --from=build /opt/agentx/packages/contracts ./packages/contracts
+COPY --from=build /opt/agentx/packages/cloud-contracts ./packages/cloud-contracts
+COPY --from=build /opt/agentx/vendor/rovara-code/packages/contracts ./vendor/rovara-code/packages/contracts
+COPY --from=build /opt/agentx/vendor/rovara-code-shims ./vendor/rovara-code-shims
 COPY --from=build /opt/agentx/packages/verifier ./packages/verifier
 COPY --from=build /opt/agentx/packages/worker ./packages/worker
 # The signed service catalog beside the worker's pre-pull list (test services slice 1): catalog.json is always there, catalog.sig.json once the catalog is built, so the glob always matches.

@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 import { Link } from "react-router";
-import { ANSWER_SOURCES_MAX, SessionIdSchema, answerSourceLine, plainAnswerText } from "@agentx/contracts/web";
+import { ANSWER_SOURCES_MAX, SessionIdSchema, answerSourceLine, plainAnswerText } from "@agentx/cloud-contracts/web";
 import { useAppHost } from "../../host.js";
 import { workPlace } from "../../nav-flags.js";
 import { createSessionActions } from "../../api/session-actions.js";

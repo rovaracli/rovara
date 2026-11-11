@@ -1,10 +1,8 @@
 // Lane srv/trial-reads: the read-only trial and billing routes (design doc briefs/trial-billing-api.md), through the real dispatcher. Covers the roles, the company scoping, the real figures from the
 // existing allowance sources (spend counters and the machine-hour counters), the billing switch, that nothing is written and nothing about a provider or a card is returned, and the contract schemas.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  AgentXError, BROKER_SETTINGS, BillingActionBodySchema, BillingAnswerReaderSchema, BillingStateReaderSchema, BillingStateSchema, InvoiceListReaderSchema, InvoiceSchema, TrialViewReaderSchema, TrialViewSchema, type BillingState, type TrialView,
-  developerOrgKey, editionPolicy, errorStatus, machineTimeMonthKey, openComputeKey, orgMemberKey, orgMetaKey, orgSettingsKey, scopeKey, spendCounterKey, workspaceSessionKey,
-} from "@agentx/contracts";
+import { BROKER_SETTINGS, BillingActionBodySchema, BillingAnswerReaderSchema, BillingStateReaderSchema, BillingStateSchema, InvoiceListReaderSchema, InvoiceSchema, TrialViewReaderSchema, TrialViewSchema, type BillingState, type TrialView, developerOrgKey, editionPolicy, machineTimeMonthKey, openComputeKey, orgMemberKey, orgMetaKey, orgSettingsKey, scopeKey, spendCounterKey } from "@agentx/cloud-contracts";
+import { AgentXError, errorStatus, workspaceSessionKey } from "@rovara-code/contracts";
 import { MINIMUM_REMAINING_USD } from "../../packages/broker/src/org/budget.js";
 import { TASK_START_FLOOR_USD } from "../../packages/broker/src/org/trial-view.js";
 import { routeDeveloperRequest, type DeveloperCaller, type DeveloperRouteDependencies } from "../../packages/broker/src/aws/developer-routes.js";

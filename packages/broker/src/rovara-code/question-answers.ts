@@ -3,9 +3,8 @@
 //
 // The questions are a model's words (bounded, redacted and made single lines when they were read); the answers are a person's, cleaned again by `answerIntentQuestions`. Neither is
 // ever put in a log line, an event or a milestone: the milestone and the timeline say only how many questions, and by whom.
-import {
-  INTENT_ANSWER_MAX_CHARS, QUESTIONS_MESSAGE_HEADER, sessionEventId, type CodeMilestone, type IntentAnswer, type IntentQuestion, type OrgId, type WorkflowSnapshot,
-} from "@agentx/contracts";
+import { INTENT_ANSWER_MAX_CHARS, QUESTIONS_MESSAGE_HEADER, sessionEventId, type CodeMilestone, type IntentAnswer, type IntentQuestion, type OrgId } from "@rovara-code/contracts";
+import { type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { type TransactItem } from "../agents/table-writes.js";
 import { WORKFLOW_NO_CANDIDATE_DIGEST, workflowDispatchItem } from "../aws/broker-shared.js";
 import { taskKey } from "../developer/task-records.js";

@@ -1,6 +1,7 @@
 // Own-grant project AI writes bind the native caller profile in their existing atomic commit.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { DeveloperSignInMethodSchema, agentXError } from "@agentx/contracts";
+import { DeveloperSignInMethodSchema } from "@agentx/cloud-contracts";
+import { agentXError } from "@rovara-code/contracts";
 import { methodSessionsEndedAttribute } from "../developer/store.js";
 import { Aliases, type TransactItem } from "../agents/table-writes.js";
 

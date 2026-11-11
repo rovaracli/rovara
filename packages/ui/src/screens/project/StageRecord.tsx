@@ -1,4 +1,4 @@
-import { isWordedRecord, stageOfLessSafeReason, trackRecordLines, type HowWeWorkTrackRecord } from "@agentx/contracts/web";
+import { isWordedRecord, stageOfLessSafeReason, trackRecordLines, type HowWeWorkTrackRecord } from "@agentx/cloud-contracts/web";
 import { VisibleText } from "../../design/VisibleText.js";
 import type { StageRead } from "./how-we-work-rows.js";
 

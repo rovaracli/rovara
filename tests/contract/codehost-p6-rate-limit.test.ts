@@ -1,7 +1,7 @@
 // Enterprise foundations P6: the neutral rate-limit signal. A host that has told Rovara to slow down throws `HostRateLimitError` (GitHub's class is one), and everything that bounds its reads
 // (merge tracking, the merge sweep) reads that one signal: it stops, keeps what it has and tries again when the host said it may.
 import { describe, expect, it } from "vitest";
-import { HostRateLimitError, hostRateLimitRetryAt } from "../../packages/contracts/src/index.js";
+import { HostRateLimitError, hostRateLimitRetryAt } from "@rovara-code/contracts";
 import { GithubMergeRateLimitError } from "../../packages/broker/src/github-app.js";
 import { isHostRateLimit, rateLimitRetryAt } from "../../packages/broker/src/rovara-code/host-port.js";
 import { reconcileTrackingTask, trackPullRequest } from "../../packages/broker/src/rovara-code/merge-tracking.js";

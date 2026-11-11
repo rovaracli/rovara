@@ -5,7 +5,7 @@
 //                                                               runs before this file (a write with no valid token is refused there). The role is the one the broker reads for the session's person, never one the request names.
 //   PUT   /v1/app/projects/{name}/environment-image/setting     { enabled }: the project's `savedEnv.enabled` setting. A maintainer, from a browser; audited (`saved_env.setting_changed`, who and the new value).
 // The registry's rules are in `test-env/saved-env-panel.ts` and `test-env/saved-env.ts`; this file reads the caller's role and passes it.
-import { SavedEnvResetBodySchema, SavedEnvSettingBodySchema, agentXError, projectAllows } from "@agentx/contracts";
+import { SavedEnvResetBodySchema, SavedEnvSettingBodySchema, agentXError, projectAllows } from "@rovara-code/contracts";
 import { logDeveloperEvent } from "../../developer/log.js";
 import { savedEnvPanel, resetFromPanel } from "../../test-env/saved-env-panel.js";
 import { setProjectEnabled } from "../../test-env/saved-env.js";

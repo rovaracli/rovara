@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { egressDomainsKey, EGRESS_SYNC_KEY, type OrgId } from "../../packages/contracts/src/index.js";
+import { egressDomainsKey, EGRESS_SYNC_KEY, type OrgId } from "@rovara-code/contracts";
 import { planProjectEgressChange } from "../../packages/broker/src/org/project-egress-plan.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 const orgId = "org_aaaaaaaaaaaaaaaaaaaa" as OrgId, project = "payments", actorId = "a".repeat(64), at = "2026-10-29T21:00:00.000Z";

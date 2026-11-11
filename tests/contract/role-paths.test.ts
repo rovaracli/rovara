@@ -8,7 +8,8 @@
 // agentx-staging-connector-secrets"), and so is the rollback's delete. So each fixed-name role needs its exact
 // path-less ARN named, for the read and delete actions only, in the deploy role and in the boundary it carries.
 import { Stack } from "aws-cdk-lib";
-import { brokerRoleName, chainScheduleRoleName, connectorSecretsRoleName, modelAccessProbeRoleName, modelProxyTaskRoleName, savedEnvCreateRoleName, savedEnvRolePrefix, companyImageMirrorRoleName, savedEnvManageRoleName, savedEnvPullRoleName, savedEnvPushRoleName, teamRecordVectorsRoleName, testAccountSecretsRoleName } from "@agentx/contracts";
+import { brokerRoleName, chainScheduleRoleName, connectorSecretsRoleName, modelAccessProbeRoleName, modelProxyTaskRoleName, companyImageMirrorRoleName, teamRecordVectorsRoleName, testAccountSecretsRoleName } from "@agentx/cloud-contracts";
+import { savedEnvCreateRoleName, savedEnvRolePrefix, savedEnvManageRoleName, savedEnvPullRoleName, savedEnvPushRoleName } from "@rovara-code/contracts";
 import { Template } from "aws-cdk-lib/assertions";
 import { beforeAll, describe, expect, it } from "vitest";
 import { buildAgentXApp } from "../../infra/lib/app.js";

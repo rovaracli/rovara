@@ -4,14 +4,14 @@
 // broker itself, only for that topic, only in an AWS account the org connected. Layer 1 drives verification, Layer 2 the hook route with a recording dispatcher, Layer 3 the real
 // dispatch and the hook-creation routes, Layer 4 what the code left in logs.
 import { afterEach, describe, expect, it } from "vitest";
-import { HOOK_BODY_MAX_BYTES, SNS_CERT_CACHE_HOURS, SNS_CERT_FETCHES_PER_MINUTE, SNS_CERT_MAX_BYTES } from "../../packages/contracts/src/event-hooks.js";
-import { RUN_START_TITLE_MAX, type ChainDefinitionInput } from "../../packages/contracts/src/chains.js";
+import { HOOK_BODY_MAX_BYTES, SNS_CERT_CACHE_HOURS, SNS_CERT_FETCHES_PER_MINUTE, SNS_CERT_MAX_BYTES } from "@rovara-code/contracts";
+import { RUN_START_TITLE_MAX, type ChainDefinitionInput } from "@rovara-code/contracts";
 import { dispatchTriggerEvent } from "../../packages/broker/src/triggers/dispatch.js";
 import type { HookDelivery } from "../../packages/broker/src/triggers/ingress.js";
 import { hookProviders } from "../../packages/broker/src/triggers/providers/index.js";
 import { cloudwatchProvider, confirmationTarget } from "../../packages/broker/src/triggers/providers/cloudwatch-sns.js";
 import { SnsCertMemory, parseSnsMessage, snsStringToSign, verifySnsMessage, type SnsMessage } from "../../packages/broker/src/triggers/sns-verify.js";
-import type { HookRecord } from "@agentx/contracts";
+import type { HookRecord } from "@rovara-code/contracts";
 import { HOOK_1, LINEAR_TENANT, ORG_A, ORG_B, setupHookWorld, type HookWorld } from "../support/hook-fixtures.js";
 import { START } from "../support/chain-run-world.js";
 import {

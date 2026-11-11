@@ -1,15 +1,6 @@
 import { createHash } from "node:crypto";
-import {
-  BROKER_NAMES,
-  BROKER_NAMES_VARIABLE,
-  BROKER_SETTINGS,
-  BROKER_SETTINGS_VARIABLE,
-  Ec2RuntimeBindingSchema,
-  agentXError,
-  type LegacyDeploymentMode,
-  type Ec2RuntimeBinding,
-  type WorkerInvocation,
-} from "@agentx/contracts";
+import { BROKER_NAMES, BROKER_NAMES_VARIABLE, BROKER_SETTINGS, BROKER_SETTINGS_VARIABLE, type WorkerInvocation } from "@agentx/cloud-contracts";
+import { Ec2RuntimeBindingSchema, agentXError, type LegacyDeploymentMode, type Ec2RuntimeBinding } from "@rovara-code/contracts";
 import type { AuthenticatedIdentity } from "../auth.js";
 import type { WorkflowE2EReadinessMarker } from "./broker-shared.js";
 

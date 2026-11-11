@@ -3,24 +3,8 @@
 // publish or rollback that makes anything less safe than what runs (less-safe.ts) answers `202 { status: "NEEDS_CONFIRMATION", confirmUrl, changes }`
 // and changes nothing until a person confirms it on the page (R66), as Plan 3's agent changes do.
 import { z } from "zod";
-import {
-  AGENTX_NAME_PATTERN,
-  CHAIN_REVISION_CONFLICT_MESSAGE,
-  CHAIN_START_INPUT_MAX,
-  ChainIdSchema,
-  ChainRunIdSchema,
-  AgentOwnerSchema,
-  MAX_SPEND_SETTING_USD,
-  agentXError,
-  atLeast,
-  isBuiltinAgentId,
-  projectAllows,
-  type AgentAccessLevel,
-  type ChainDefinitionInput,
-  type ChainId,
-  type OrgId,
-  type OwnerCapChange,
-} from "@agentx/contracts";
+import { AGENTX_NAME_PATTERN, CHAIN_REVISION_CONFLICT_MESSAGE, CHAIN_START_INPUT_MAX, ChainIdSchema, ChainRunIdSchema, AgentOwnerSchema, agentXError, atLeast, isBuiltinAgentId, projectAllows, type AgentAccessLevel, type ChainDefinitionInput, type ChainId, type OrgId } from "@rovara-code/contracts";
+import { MAX_SPEND_SETTING_USD, type OwnerCapChange } from "@agentx/cloud-contracts";
 import type { AdaptedHttpRequest } from "../aws/lambda.js";
 import { StatusReply } from "../aws/status-reply.js";
 import { checkShares, orgRoleOf, resolveSurvivor, whoNeeds, type AgentCaller } from "../agents/access.js";

@@ -1,6 +1,7 @@
 import { expect, it, vi } from "vitest";
 import { QueryCommand } from "@aws-sdk/lib-dynamodb";
-import { AppNavSchema, liveSessionKey, orgMetaKey } from "@agentx/contracts";
+import { AppNavSchema, orgMetaKey } from "@agentx/cloud-contracts";
+import { liveSessionKey } from "@rovara-code/contracts";
 import { MAYA, OMAR, seedMembership, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
 async function setup() {
@@ -55,7 +56,7 @@ it("coalesces production source reads across separately authenticated requests",
 
 /** 40 projects Maya may see and 300 of her running sessions across them, one of which needs her. */
 async function bigNavWorld() {
- const { projectRevisionKey, orgProjectCatalogKey, agentSessionKey } = await import("@agentx/contracts");
+ const { projectRevisionKey, orgProjectCatalogKey, agentSessionKey } = await import("@rovara-code/contracts");
  const { grantProject } = await import("../support/developer-task-broker.js");
  const { sessionWorld } = await import("../support/agent-session-world.js");
  const { taskKey } = await import("../../packages/broker/src/developer/task-records.js");
@@ -104,7 +105,7 @@ async function decisionCardsNav(failApproverList = false) {
  const logged: string[] = [], log = vi.spyOn(console, "log").mockImplementation((line: unknown) => { logged.push(String(line)); });
  try {
  const { h } = await bigNavWorld(), original = h.db.send.bind(h.db), partitions: string[] = [];
- const approverPk = String((await import("@agentx/contracts")).approverIndexKey(TEST_ORG, MAYA.developerId, "apr_00000000000000000000").pk);
+ const approverPk = String((await import("@rovara-code/contracts")).approverIndexKey(TEST_ORG, MAYA.developerId, "apr_00000000000000000000").pk);
  h.db.send = async command => {
  const pk = command instanceof QueryCommand ? String(command.input.ExpressionAttributeValues?.[":pk"]) : undefined;
  if (pk !== undefined) partitions.push(pk);
@@ -147,7 +148,7 @@ it("keeps production navigation separate across organizations", async () => {
 it("rechecks role and server feature switches before reusing a production projection", async () => {
  vi.stubEnv("WEB_FEATURES", "usage,admin,chains,notices,describe");
  try {
- const { projectRevisionKey, orgProjectCatalogKey } = await import("@agentx/contracts");
+ const { projectRevisionKey, orgProjectCatalogKey } = await import("@rovara-code/contracts");
  const h = await setup(), revision = await h.actions.projectRevision(TEST_ORG, "payments", 1);if (revision === undefined) throw new Error("missing project fixture");
  h.db.set({ ...revision, ...projectRevisionKey(TEST_ORG, "admin-only", 1), definition: { ...revision.definition, name: "admin-only" } });h.db.set({ ...orgProjectCatalogKey(TEST_ORG, "admin-only"), entityType: "PROJECT_CATALOG", name: "admin-only", latestRevision: 1 });
  const read = async () => { const response = await h.dev(MAYA, "GET", "/v1/app/nav");expect(response.status).toBe(200);const body = { ...response.body };delete body.requestId;return AppNavSchema.parse(body); };

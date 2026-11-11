@@ -1,4 +1,4 @@
-import { REQUALIFY_REFUSAL_PREFIX, agentXError } from "@agentx/contracts";
+import { REQUALIFY_REFUSAL_PREFIX, agentXError } from "@rovara-code/contracts";
 
 /**
  * A renewal that was running while the control plane was deployed carries the state the previous code wrote: its `instance` has no `workspaceId` or

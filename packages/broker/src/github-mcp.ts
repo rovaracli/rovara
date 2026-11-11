@@ -1,4 +1,4 @@
-import type { GitHubMcpPolicy, GitHubMcpRequest, GitHubMcpResult, GitHubMcpTool, SlackRequester } from "@agentx/contracts";
+import type { GitHubMcpPolicy, GitHubMcpRequest, GitHubMcpResult, GitHubMcpTool, SlackRequester } from "@rovara-code/contracts";
 import {
   approveTools,
   discoverTools,

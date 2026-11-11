@@ -4,7 +4,7 @@
 import { GetObjectCommand, HeadObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
 import { GetCommand, PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it } from "vitest";
-import { FixtureSetSchema, canonicalJson, fixtureEntry, fixtureSetDigest, type FixtureSet, type TestEnvProdDeny } from "@agentx/contracts";
+import { FixtureSetSchema, canonicalJson, fixtureEntry, fixtureSetDigest, type FixtureSet, type TestEnvProdDeny } from "@rovara-code/contracts";
 import { createFixtureStore, fixtureObjectKey, verifiedFixtureDecision, type FixtureRecord } from "../../packages/broker/src/test-env/fixture-store.js";
 import { awsFixtureStore, dynamoFixtureIndex, fixtureStoreForRoutes, s3FixtureObjects } from "../../packages/broker/src/test-env/fixture-store-aws.js";
 

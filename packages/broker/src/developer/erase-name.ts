@@ -1,7 +1,7 @@
 // ERASE-NAME-1: erasing the name a person is shown by. Two places hold it: the State item `DEVELOPER_NAME#<id>` (the name the person chose, developer/chosen-name.ts) and the displayName of their
 // sign-in record. The item becomes a tombstone first (so every reader that reads the chosen name reads "erased" at once, with no name left in storage), then the sign-in function clears the
 // record's name, because the broker has no write on that table. Repeatable: a second run changes nothing. Throws when the sign-in record could not be cleared, so the caller repeats the erase.
-import type { EraseDeveloperNameRequest, EraseDeveloperNameResponse } from "@agentx/contracts";
+import type { EraseDeveloperNameRequest, EraseDeveloperNameResponse } from "@rovara-code/contracts";
 import { eraseChosenName, type ChosenNameClient } from "./chosen-name.js";
 
 export interface NameEraserInput {

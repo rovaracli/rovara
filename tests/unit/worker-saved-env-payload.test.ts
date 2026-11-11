@@ -1,6 +1,9 @@
 // SH25: the prepare invocation's saved environment field: its schema, the feature a worker lists for it, and the options the worker builds from it.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { PREPARE_SAVED_ENV_FEATURE, PrepareSavedEnvSchema, WORKER_INVOCATION_FEATURES, WorkerInvocationSchema, savedEnvRepositoryName } from "../../packages/contracts/src/index.js";
+import { PREPARE_SAVED_ENV_FEATURE, savedEnvRepositoryName } from "@rovara-code/contracts";
+import { PrepareSavedEnvSchema } from "@agentx/cloud-contracts";
+import { WORKER_INVOCATION_FEATURES } from "@agentx/cloud-contracts";
+import { WorkerInvocationSchema } from "@agentx/cloud-contracts";
 import { WORKER_IMPLEMENTED_FEATURES } from "../../packages/worker/src/implemented-features.js";
 import { createSavedEnvLoginProvider } from "../../packages/worker/src/saved-env/login.js";
 import { savedEnvOptionsOf } from "../../packages/worker/src/saved-env/use.js";
@@ -72,6 +75,9 @@ describe("the worker's request for the pull login", () => {
       async () => new Response(`denied ${secret}`, { status: 403 }),
       async () => new Response("not json", { status: 200 }),
       async () => new Response(JSON.stringify({ login: { ...login, registry: "evil.example.com" } }), { status: 200 }),
+      // a registry on the worker's own machine, which Code's default schema takes and the hosted one refuses (W0-3 review H1)
+      async () => new Response(JSON.stringify({ login: { ...login, registry: "127.0.0.1:5000", username: "rovara-local" } }), { status: 200 }),
+      async () => new Response(JSON.stringify({ login: { ...login, registry: "localhost:5001", username: "rovara-local" } }), { status: 200 }),
       async () => { throw new Error(`down ${secret}`); },
     ] as Array<typeof fetch>) {
       const error = await createSavedEnvLoginProvider({ controlPlaneUrl: "https://cp.example.test", invocation, fetchImplementation })().then(() => undefined, (caught: unknown) => caught);

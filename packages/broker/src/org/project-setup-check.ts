@@ -9,10 +9,8 @@
 //   the sweep fails a stalled check at); PREPARATION_FAILED -> failed, with the failing step read from the prepare's recorded error; anything else
 //   -> ready. A workspace the check closed reads as the status it had when it closed (`closedFrom`).
 import { QueryCommand, TransactWriteCommand, GetCommand, UpdateCommand, type TransactWriteCommandInput } from "@aws-sdk/lib-dynamodb";
-import {
-  INDEX_EXPIRY_ATTRIBUTE, agentXError, formatCommandLine, projectMetaKey, redactText,
-  type AppProjectSummary, type OrgId, type OrgKey, type PreparePins, type ProjectCommand,
-} from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, agentXError, formatCommandLine, projectMetaKey, redactText, type OrgId, type OrgKey, type PreparePins, type ProjectCommand } from "@rovara-code/contracts";
+import { type AppProjectSummary } from "@agentx/cloud-contracts";
 import { STUCK_SETUP_MS } from "../aws/stuck-setup.js";
 import { chargeConflict, chargeItems, limitReached } from "../developer/limits.js";
 import { CANDIDATE_CHECK_ENTITY, candidateCheckKey, candidateExpiry } from "./test-env-candidate.js";

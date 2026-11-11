@@ -3,7 +3,8 @@
 // rows) refuse before they read anything. An unknown host kind is refused with the router's sentence everywhere. Every guard here fails a test when it is removed.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { createCandidateManifest, createWorkflowSnapshot, editionPolicy, type WorkflowSnapshot } from "@agentx/contracts";
+import { createCandidateManifest } from "@rovara-code/contracts";
+import { createWorkflowSnapshot, editionPolicy, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { acceptPullRequest, acceptPullRequestLifecycle } from "../../packages/broker/src/aws/broker/acceptance.js";
 import { brokerDependencies } from "../../packages/broker/src/aws/broker/dependency-wiring.js";
 import { completedBranchSyncItems, completedWorkflowItems } from "../../packages/broker/src/aws/broker/workflow-items.js";

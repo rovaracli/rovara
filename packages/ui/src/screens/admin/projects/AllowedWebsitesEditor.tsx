@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ProjectAllowedWebsitesMutationBodySchema, ProjectAllowedWebsitesApprovalBodySchema, ProjectAllowedWebsitesDecisionBodySchema, type ProjectAllowedWebsitesReview, type ProjectAllowedWebsitesResult } from "@agentx/contracts/web";
+import { ProjectAllowedWebsitesMutationBodySchema, ProjectAllowedWebsitesApprovalBodySchema, ProjectAllowedWebsitesDecisionBodySchema, type ProjectAllowedWebsitesReview, type ProjectAllowedWebsitesResult } from "@agentx/cloud-contracts/web";
 import { useAppHost } from "../../../host.js";
 import { createAllowedWebsitesApi } from "../../../api/allowed-websites.js";
 import { TextArea } from "../../../design/TextArea.js";

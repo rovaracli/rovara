@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { SlackRequestMessage, SlackThreadPrepareResult, SlackThreadWorkspaceResult, TurnRecord } from "../../packages/contracts/src/index.js";
+import type { SlackRequestMessage, SlackThreadPrepareResult, SlackThreadWorkspaceResult, TurnRecord } from "@rovara-code/contracts";
 import { deterministicUuid } from "../../packages/slack-service/src/ids.js";
 import { LIMIT_REFUSAL, ORGANIZATION_LIMIT_REFUSAL, createLazyWorker, unavailableRefusal } from "../../packages/slack-service/src/lazy-worker.js";
 import {

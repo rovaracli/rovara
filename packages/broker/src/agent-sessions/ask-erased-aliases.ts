@@ -7,7 +7,7 @@
 // answer, and a leaked copy of this list says nothing readable. Once the last Ask that could have named them has expired, the entry goes with it.
 import { createHmac } from "node:crypto";
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
-import { ASK_RETENTION_DAYS, INDEX_EXPIRY_ATTRIBUTE, askErasedAliasKey, askErasedAliasPk, type OrgId } from "@agentx/contracts";
+import { ASK_RETENTION_DAYS, INDEX_EXPIRY_ATTRIBUTE, askErasedAliasKey, askErasedAliasPk, type OrgId } from "@rovara-code/contracts";
 import { FORMER_MEMBER_MENTION, askPersonTag, type AskStoreTable } from "./ask-erase.js";
 import { normaliseWords, skeletonOf } from "./ask-names.js";
 

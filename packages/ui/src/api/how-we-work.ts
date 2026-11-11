@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { AgentIdSchema, HowWeWorkViewReaderSchema, ProjectOverviewProjectSchema, ProjectPlaybookResponseReaderSchema } from "@agentx/contracts/web";
+import { AgentIdSchema, HowWeWorkViewReaderSchema, ProjectOverviewProjectSchema, ProjectPlaybookResponseReaderSchema } from "@agentx/cloud-contracts/web";
 import { useAppHost, type AppHost } from "../host.js";
 import { createApiClient } from "./client.js";
 

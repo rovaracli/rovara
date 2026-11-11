@@ -1,58 +1,19 @@
 // Plan 3 Task 3a: agent ids, owners and access levels, the recipe and overlay schemas, model helpers,
 // the new error codes, the org-scoped agent keys and the spend placeholder constants.
 import { describe, expect, it } from "vitest";
-import {
-  AGENT_DESCRIPTION_MAX,
-  AGENT_NAME_MAX,
-  AgentIdSchema,
-  AgentOwnerSchema,
-  AgentPrincipalSchema,
-  AutonomySchema,
-  BUILTIN_AGENT_IDS,
-  BaseRefSchema,
-  ROVARA_CODE_AGENT_ID,
-  atLeast,
-  newPrefixedId,
-} from "../../packages/contracts/src/agent-node.js";
-import {
-  AGENT_STEP_KINDS,
-  ApprovalRulesSchema,
-  CODING_STEP_KINDS,
-  PiToolNameSchema,
-  READ_ONLY_TOOLS,
-  RecipeOverlaySchema,
-  ResolvedRecipeSchema,
-  STEP_TOOLS,
-  StepIdSchema,
-  StepSettingsSchema,
-  StepSpecSchema,
-  TRIGGER_KINDS_AT_LAUNCH,
-  ToolGrantSchema,
-  TriggerSpecSchema,
-} from "../../packages/contracts/src/agent-recipe-node.js";
-import { AgentXErrorCodeSchema, errorStatus } from "../../packages/contracts/src/errors.js";
-import { PROJECT_PERMISSIONS, projectAllows } from "../../packages/contracts/src/app-projects.js";
-import { canonicalModelName, modelCompany } from "../../packages/contracts/src/models-node.js";
-import { ModelListSchema } from "../../packages/contracts/src/agent.js";
-import { PlanCritiqueSchema } from "../../packages/contracts/src/rovara-code.js";
-import { StageModelCandidateSchema } from "../../packages/contracts/src/stage-models.js";
-import { OrgIdSchema, orgScoped } from "../../packages/contracts/src/org-node.js";
-import {
-  agentDirectoryKey,
-  agentKey,
-  agentNameKey,
-  agentTasksKey,
-  agentVersionSk,
-  builtinSettingsKey,
-  principalKey,
-  principalSharesKey,
-  projectAgentKey,
-  skillDirectoryKey,
-  skillKey,
-  skillNameKey,
-} from "../../packages/contracts/src/org-scoped-keys.js";
-import * as spend from "../../packages/contracts/src/spend.js";
-import * as contracts from "../../packages/contracts/src/index.js";
+import { AGENT_DESCRIPTION_MAX, AGENT_NAME_MAX, AgentIdSchema, AgentOwnerSchema, AgentPrincipalSchema, AutonomySchema, BUILTIN_AGENT_IDS, BaseRefSchema, ROVARA_CODE_AGENT_ID, atLeast, newPrefixedId } from "@rovara-code/contracts";
+import { AGENT_STEP_KINDS, ApprovalRulesSchema, CODING_STEP_KINDS, PiToolNameSchema, READ_ONLY_TOOLS, RecipeOverlaySchema, ResolvedRecipeSchema, STEP_TOOLS, StepIdSchema, StepSettingsSchema, StepSpecSchema, TRIGGER_KINDS_AT_LAUNCH, ToolGrantSchema, TriggerSpecSchema } from "@rovara-code/contracts";
+import { AgentXErrorCodeSchema, errorStatus } from "@rovara-code/contracts";
+import { PROJECT_PERMISSIONS, projectAllows } from "@rovara-code/contracts";
+import { canonicalModelName, modelCompany } from "@rovara-code/contracts";
+import { ModelListSchema } from "@rovara-code/contracts";
+import { PlanCritiqueSchema } from "@rovara-code/contracts";
+import { StageModelCandidateSchema } from "@rovara-code/contracts";
+import { OrgIdSchema, orgScoped } from "@rovara-code/contracts";
+import { agentDirectoryKey, agentKey, agentNameKey, agentTasksKey, agentVersionSk, builtinSettingsKey, principalKey, principalSharesKey, projectAgentKey, skillDirectoryKey, skillKey, skillNameKey } from "@rovara-code/contracts";
+import * as spend from "@rovara-code/contracts";
+import * as spendFile from "../../packages/cloud-contracts/src/spend.js";
+import * as contracts from "@rovara-code/contracts";
 
 const ORG = OrgIdSchema.parse("org_0123456789abcdefghij");
 const DEVELOPER = "a".repeat(64);
@@ -491,9 +452,9 @@ function otherOrg() {
 describe("spend placeholder constants", () => {
   it("has the exact names and values", () => {
     expect(spend.RUN_LIMIT_MULTIPLIER).toBe(2);
-    expect(spend.LEAD_APPROVAL_THRESHOLD_USD).toBe(10);
-    expect(spend.ADMIN_APPROVAL_THRESHOLD_USD).toBe(100);
-    expect(spend.BUDGET_WARNING_RATIO).toBe(0.8);
+    expect(spendFile.LEAD_APPROVAL_THRESHOLD_USD).toBe(10);
+    expect(spendFile.ADMIN_APPROVAL_THRESHOLD_USD).toBe(100);
+    expect(spendFile.BUDGET_WARNING_RATIO).toBe(0.8);
     expect(spend.MAX_RUN_LIMIT_USD).toBe(1000);
     expect(spend.DEFAULT_RUN_ESTIMATE_USD).toEqual({
       QUICK: { lowUsd: 1, highUsd: 3 },
@@ -502,18 +463,18 @@ describe("spend placeholder constants", () => {
       AGENT: { lowUsd: 0.5, highUsd: 2 },
     });
     expect(spend.DEFAULT_PLANNING_LIMIT_USD).toEqual({ QUICK: 2, FULL: 6 });
-    expect(spend.TESTING_ALLOWANCE_USD).toBe(10);
-    expect(spend.PER_TEST_CAP_USD).toBe(2);
-    expect(spend.DEFAULT_MAX_AGENT_MONTHLY_USD).toBe(50);
-    expect(spend.DEFAULT_MAX_PER_RUN_CEILING_USD).toBe(100);
-    expect(spend.DEFAULT_OWNER_AGENT_BUDGET_CAP_USD).toBe(100);
+    expect(spendFile.TESTING_ALLOWANCE_USD).toBe(10);
+    expect(spendFile.PER_TEST_CAP_USD).toBe(2);
+    expect(spendFile.DEFAULT_MAX_AGENT_MONTHLY_USD).toBe(50);
+    expect(spendFile.DEFAULT_MAX_PER_RUN_CEILING_USD).toBe(100);
+    expect(spendFile.DEFAULT_OWNER_AGENT_BUDGET_CAP_USD).toBe(100);
     expect(spend.ESTIMATE_HISTORY_SIZE).toBe(20);
     expect(spend.ESTIMATE_MIN_SAMPLES).toBe(5);
-    expect(spend.SPEND_REQUEST_TTL_DAYS).toBe(7);
-    expect(spend.WRITE_APPROVAL_TTL_DAYS).toBe(7);
-    expect(spend.OWNER_ANSWER_HOURS).toBe(24);
-    expect(spend.MAX_PENDING_APPROVALS_PER_STEP).toBe(10);
-    expect(spend.DEFAULT_MAX_AUTONOMY).toBe("prepare");
-    expect(spend.APPROVAL_EXECUTING_RETRY_MINUTES).toBe(5);
+    expect(spendFile.SPEND_REQUEST_TTL_DAYS).toBe(7);
+    expect(spendFile.WRITE_APPROVAL_TTL_DAYS).toBe(7);
+    expect(spendFile.OWNER_ANSWER_HOURS).toBe(24);
+    expect(spendFile.MAX_PENDING_APPROVALS_PER_STEP).toBe(10);
+    expect(spendFile.DEFAULT_MAX_AUTONOMY).toBe("prepare");
+    expect(spendFile.APPROVAL_EXECUTING_RETRY_MINUTES).toBe(5);
   });
 });

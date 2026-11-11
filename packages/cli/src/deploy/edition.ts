@@ -5,7 +5,8 @@
 //  - a deploy that asks for none but finds a record uses the recorded one, so a redeploy never drops the stamp from the functions (that would turn an Enterprise
 //    install into one with no edition gates, silently);
 //  - an unreadable record is refused, never read as "no record".
-import { EditionSchema, agentXError, assertEditionUnchanged, editionAtSynth, type Edition } from "@agentx/contracts";
+import { EditionSchema, agentXError, type Edition } from "@rovara-code/contracts";
+import { assertEditionUnchanged, editionAtSynth } from "@agentx/cloud-contracts";
 import { CLOUD_NEEDS_CDK_MESSAGE } from "./answer-schemas.js";
 import type { ParameterStore } from "../environments/parameter-store.js";
 

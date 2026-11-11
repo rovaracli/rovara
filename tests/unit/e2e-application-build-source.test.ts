@@ -3,8 +3,8 @@ import { chmod, mkdtemp, readFile, readdir, realpath, rm, symlink } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { canonicalJson, createCandidateManifest, type E2ESourceSnapshot } from "@agentx/contracts";
-import { E2EApplicationBuildSourceManifestSchema as SourceManifestSchema } from "../../packages/contracts/src/e2e-application-execution.js";
+import { canonicalJson, createCandidateManifest, type E2ESourceSnapshot } from "@rovara-code/contracts";
+import { E2EApplicationBuildSourceManifestSchema as SourceManifestSchema } from "@rovara-code/contracts";
 import { encodeE2EApplicationBuildSourceArchive, materializeE2EApplicationBuildSource,
   validateE2EApplicationBuildSourceManifest } from "../../packages/verifier/src/application-build-source.js";
 

@@ -1,10 +1,8 @@
 // Design review stage (DR2; designs-2026-10-30/design-review-stage.md 3.1): does this task get its design checked before a person approves it?
 // Pure. Code decides ON or OFF, who decided it, and whether the task is forced onto the Full path. Understand's `design` field is a reading of the request, never a decision: model
 // words are shown to people as inert text (through `plainLine`) and never set the tier, the approver, the cost or the mode.
-import {
-  DESIGN_REVIEW_HIGH_RISK_REASONS, designReasonPhrase, skipRefusalText, skipVerdict,
-  type DesignReason, type IntentAssessment, type SkipVerdict, type WorkflowSnapshot,
-} from "@agentx/contracts";
+import { DESIGN_REVIEW_HIGH_RISK_REASONS, designReasonPhrase, skipRefusalText, skipVerdict, type DesignReason, type IntentAssessment, type SkipVerdict } from "@rovara-code/contracts";
+import { type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { plainLine } from "../decisions/text.js";
 import { inertLine } from "../rovara-code/inert-text.js";
 import { DESIGN_REVIEW_FAIL_CLOSED_SETTING, isEffectiveSetting, type EffectiveDesignReviewSetting } from "./effective-setting.js";

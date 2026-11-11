@@ -2,8 +2,9 @@
 // address. Fake addresses are built at runtime.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { EMAIL_HIDDEN } from "../../packages/contracts/src/index.js";
-import { WorkflowSnapshotSchema, createCandidateManifest, createWorkflowSnapshot } from "../../packages/contracts/src/task-workflow-node.js";
+import { EMAIL_HIDDEN } from "@rovara-code/contracts";
+import { WorkflowSnapshotSchema, createWorkflowSnapshot } from "../../packages/cloud-contracts/src/task-workflow-node.js";
+import { createCandidateManifest } from "@rovara-code/contracts";
 import { fitPullRequestBody } from "../../packages/broker/src/aws/developer-tasks/pull-request-body.js";
 import { workflowPullRequestBody, workflowPullRequestStatusLines } from "../../packages/broker/src/aws/developer-tasks.js";
 import { PULL_REQUEST_STATUS_END, PULL_REQUEST_STATUS_START } from "../../packages/broker/src/developer/pull-request-feedback-section.js";

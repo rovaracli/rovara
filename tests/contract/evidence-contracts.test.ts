@@ -1,11 +1,11 @@
 // Proof and evidence P1: the EvidencePack contract (bounds, strictness, cross-field rules), its view with artifact links, the check kind on checks, retention and the evidence mode.
 import { describe, expect, it } from "vitest";
-import { CheckClassSchema, CheckEntrySchema, CheckOutcomeSchema } from "../../packages/contracts/src/checks.js";
-import { DeveloperTaskViewReaderSchema } from "../../packages/contracts/src/session-views.js";
-import { DeveloperTaskViewSchema } from "../../packages/contracts/src/developer-tasks.js";
-import { ProofTableViewSchema } from "../../packages/contracts/src/rovara-code.js";
-import { WorkflowCheckSchema } from "../../packages/contracts/src/task-workflow.js";
-import * as evidence from "../../packages/contracts/src/evidence.js";
+import { CheckClassSchema, CheckEntrySchema, CheckOutcomeSchema } from "@rovara-code/contracts";
+import { DeveloperTaskViewReaderSchema } from "../../packages/cloud-contracts/src/session-views.js";
+import { DeveloperTaskViewSchema } from "../../packages/cloud-contracts/src/developer-tasks.js";
+import { ProofTableViewSchema } from "@rovara-code/contracts";
+import { WorkflowCheckSchema } from "@rovara-code/contracts";
+import * as evidence from "../../vendor/rovara-code/packages/contracts/src/evidence.js";
 import { taskViewForClient } from "../../packages/broker/src/rovara-code/task-view-compat.js";
 
 const sha = (letter: string) => letter.repeat(64);

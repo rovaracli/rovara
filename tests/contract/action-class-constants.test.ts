@@ -1,8 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  CONSEQUENTIAL_KEYS, CONSEQUENTIAL_VALUES, OUTWARD_KEYS, OUTWARD_WORDS, READ_VERBS, ROVARA_LABEL, SAFE_CHANGE_KEYS, TRACKER_ITEM_WORDS, WRITE_VERBS,
-  destructiveSignal, nameWords,
-} from "../../packages/contracts/src/index.js";
+import { CONSEQUENTIAL_KEYS, CONSEQUENTIAL_VALUES, OUTWARD_KEYS, OUTWARD_WORDS, READ_VERBS, ROVARA_LABEL, SAFE_CHANGE_KEYS, TRACKER_ITEM_WORDS, WRITE_VERBS, destructiveSignal, nameWords } from "@rovara-code/contracts";
 
 describe("the write-classification constants", () => {
   it("pins the safe and consequential argument keys", () => {

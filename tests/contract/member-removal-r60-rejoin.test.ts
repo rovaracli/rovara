@@ -2,7 +2,8 @@
 // its member payer; work that started after the rejoin runs. The tombstone has no expiry, so it outlives any task. One function (`checkOwnerStillMember`) is behind every path;
 // the model key mint and the paused-resume drop use the same rule.
 import { describe, expect, it } from "vitest";
-import { chainRunKey, orgRemovedKey } from "../../packages/contracts/src/index.js";
+import { chainRunKey } from "@rovara-code/contracts";
+import { orgRemovedKey } from "@agentx/cloud-contracts";
 import { requireCreatorStillMember, requireOrgOpenFor, creatorRemovedMessage } from "../../packages/broker/src/developer/creator-member.js";
 import { creatorGone } from "../../packages/broker/src/spend/requests.js";
 import { taskKey, type DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";

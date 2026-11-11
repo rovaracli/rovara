@@ -1,4 +1,4 @@
-import { agentXError, redactText, type PlanDocument, type WorkflowArtifact } from "@agentx/contracts";
+import { agentXError, redactText, type PlanDocument, type WorkflowArtifact } from "@rovara-code/contracts";
 import { loadWorkflowDocument } from "../developer/plan-artifacts.js";
 import { planCheckSummary, type PlanCheckSummary } from "../developer/plan-check-summary.js";
 import { SELF_CHECK_NOT_APPLICABLE, loadPlanSelfCheck } from "../developer/plan-self-check.js";

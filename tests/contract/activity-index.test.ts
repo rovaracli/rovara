@@ -3,12 +3,12 @@
 // index items the admin routes read without scanning.
 import { marshall } from "@aws-sdk/util-dynamodb";
 import { describe, expect, it, vi } from "vitest";
-import { FailureIndexRecordSchema, UsageIndexRecordSchema } from "../../packages/contracts/src/index.js";
+import { FailureIndexRecordSchema, UsageIndexRecordSchema } from "@rovara-code/contracts";
 import { slackThreadKey } from "../../packages/broker/src/aws/slack-thread-key.js";
 import { indexActivity, type IndexStore } from "../../packages/broker/src/aws/activity-index.js";
 import type { StreamRecord } from "../../packages/broker/src/developer/notifications.js";
-import { orgFailureDayPk, orgUsageDayPk } from "../../packages/contracts/src/org-scoped-keys.js";
-import { singleOrgIdForEnv } from "../../packages/contracts/src/org-node.js";
+import { orgFailureDayPk, orgUsageDayPk } from "@rovara-code/contracts";
+import { singleOrgIdForEnv } from "@rovara-code/contracts";
 
 // No AGENTX_ENV in a test: the install is the legacy, unnamed one, whose single org derives from "default".
 const TEST_ORG = singleOrgIdForEnv("default");

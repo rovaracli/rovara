@@ -6,10 +6,9 @@
 // The second half proves the journey needs each method of the port: with any method the journey used taken away from the host, the journey does not reach "merged".
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import {
-  CodeIntentRequestSchema, editionPolicy, type CodeHost, type CodeIntentRequest,
-} from "@agentx/contracts";
-import { createCandidateManifest } from "../../packages/contracts/src/task-workflow-node.js";
+import { CodeIntentRequestSchema, type CodeHost, type CodeIntentRequest } from "@rovara-code/contracts";
+import { editionPolicy } from "@agentx/cloud-contracts";
+import { createCandidateManifest } from "@rovara-code/contracts";
 import { portCredentialResolver } from "../../packages/broker/src/aws/broker/credential-exchange.js";
 import type { IntakePorts } from "../../packages/broker/src/intake/engine.js";
 import { githubCodeHost } from "../../packages/broker/src/plugins/code-host/github/index.js";

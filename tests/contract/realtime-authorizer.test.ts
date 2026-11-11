@@ -3,15 +3,8 @@
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { GetPublicKeyCommand, SignCommand } from "@aws-sdk/client-kms";
 import { describe, expect, it, vi } from "vitest";
-import {
-  REALTIME_TOKEN_PROJECTS_MAX,
-  agentSessionKey,
-  projectChannel,
-  projectSegment,
-  sessionChannel,
-  userChannel,
-  type OrgId,
-} from "../../packages/contracts/src/index.js";
+import { REALTIME_TOKEN_PROJECTS_MAX, projectChannel, projectSegment, sessionChannel, userChannel } from "@agentx/cloud-contracts";
+import { agentSessionKey, type OrgId } from "@rovara-code/contracts";
 import { authorizeRealtime, type AuthorizerDependencies, type RealtimeAuthorizerEvent } from "../../packages/broker/src/realtime/authorizer.js";
 import { issueRealtimeToken, verifyRealtimeToken } from "../../packages/broker/src/realtime/token.js";
 import { kmsTokenSigner, type TokenSigner } from "../../packages/broker/src/developer/tokens.js";

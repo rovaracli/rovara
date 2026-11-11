@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { ProjectModelOptions, SlackRequestMessage, SwebenchRun } from "../../packages/contracts/src/index.js";
+import type { ProjectModelOptions, SlackRequestMessage, SwebenchRun } from "@rovara-code/contracts";
 import { HANDOFF_FINAL_IDLE_TEXT, HANDOFF_TEXT, TurnHandedOffError } from "../../packages/slack-service/src/interrupted-turn.js";
 import { processSlackRequest, type ProcessorDependencies } from "../../packages/slack-service/src/processor.js";
 import { resultMessage } from "../../packages/slack-service/src/swebench-command.js";

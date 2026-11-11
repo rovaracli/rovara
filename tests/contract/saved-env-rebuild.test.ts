@@ -4,7 +4,9 @@
 vi.hoisted(() => { process.env["STATE_TABLE_NAME"] ??= "state"; });
 import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { INDEX_EXPIRY_ATTRIBUTE, PREPARE_SAVED_ENV_BUILD_FEATURE, SavedEnvBuildResultSchema, WORKER_INVOCATION_FEATURES, WORKFLOW_DISPATCH_DUE_INDEX, WORKSPACE_PROJECT_INDEX, WorkerInvocationSchema, agentXError, savedEnvRepositoryName, type Ec2RuntimeBinding, type OrgId, type WorkerInvocation } from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, PREPARE_SAVED_ENV_BUILD_FEATURE, SavedEnvBuildResultSchema, WORKFLOW_DISPATCH_DUE_INDEX, WORKSPACE_PROJECT_INDEX, agentXError, savedEnvRepositoryName, type Ec2RuntimeBinding, type OrgId } from "@rovara-code/contracts";
+import { WORKER_INVOCATION_FEATURES } from "@agentx/cloud-contracts";
+import { WorkerInvocationSchema, type WorkerInvocation } from "@agentx/cloud-contracts";
 import { createSavedEnvBuildLease } from "../../packages/broker/src/aws/dispatcher.js";
 import { createEc2Delivery, type Ec2DeliveryDependencies } from "../../packages/broker/src/aws/ec2-delivery.js";
 import type { Ec2OutboxRecord } from "../../packages/broker/src/aws/lambda.js";

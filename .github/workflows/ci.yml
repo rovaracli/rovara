@@ -92,7 +92,7 @@ jobs:
             fi
             echo "Changed paths compared with $base."
           fi
-          if grep -Eq '^(packages/worker/|packages/contracts/src/(service-catalog|test-env|test-services)|environments/(base|service-catalog)/|infra/lib/(worker|ec2|network|access)|scripts/(linux-check-test-services|ci-test-services-linux|ci-docker25-engine|ci-egress-capture)|\.github/workflows/ci\.yml)' "$changed"; then
+          if grep -Eq '^(packages/worker/|packages/cloud-contracts/src/(service-catalog|test-env|test-services)|vendor/rovara-code/packages/contracts/src/(service-catalog|test-env|test-services)|environments/(base|service-catalog)/|infra/lib/(worker|ec2|network|access)|scripts/(linux-check-test-services|ci-test-services-linux|ci-docker25-engine|ci-egress-capture)|\.github/workflows/ci\.yml)' "$changed"; then
             echo "test_services=true" >> "$GITHUB_OUTPUT"
           else
             echo "test_services=false" >> "$GITHUB_OUTPUT"
@@ -123,6 +123,9 @@ jobs:
       - name: The pinned copy of Rovara Code matches its sha
         if: hashFiles('vendor/rovara-code/PIN') != ''
         run: node scripts/vendor/verify-rovara-code.ts --remote
+        env:
+          # The check also asks GitHub whether the pinned sha is on code/next; the token keeps it clear of the anonymous rate limit.
+          GITHUB_TOKEN: ${{ github.token }}
       - run: npm run typecheck
         env:
           # tsc -b needs more than the default ~2 GB heap; per step, so test workers keep the default.
@@ -477,7 +480,7 @@ jobs:
       # The tests drive the real controller and programs through their built output.
       - name: Build the packages the runner tests use
         if: steps.paths.outputs.run == 'true'
-        run: npx tsc -b packages/contracts packages/gateway packages/broker
+        run: npx tsc -b packages/cloud-contracts packages/gateway packages/broker
         env:
           NODE_OPTIONS: --max-old-space-size=6144
       - name: The runner on Linux (real containers, ECS flags)

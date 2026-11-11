@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { Command } from "commander";
 import YAML from "yaml";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { E2EPolicySchema, type E2EPolicy } from "@agentx/contracts";
+import { E2EPolicySchema, type E2EPolicy } from "@rovara-code/contracts";
 import { inspectE2ERepository, proposeE2ESetup } from "../../packages/broker/src/e2e/discovery.js";
 import { loadProjectConfig } from "../../packages/cli/src/config.js";
 import { firstProjectStep } from "../../packages/cli/src/init/finish-steps.js";

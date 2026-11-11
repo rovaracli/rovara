@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall, getCurrentTools, type TranscriptContext } from "@earendil-works/pi-ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ContextToolCallResponse, ContextToolCatalog } from "../../packages/contracts/src/index.js";
+import type { ContextToolCallResponse, ContextToolCatalog } from "@rovara-code/contracts";
 import { createContextTools } from "../../packages/worker/src/context-sources/bridge.js";
 import { createDefaultPiSessionAdapter, createWorkspacePiSession } from "../../packages/worker/src/pi-session.js";
 import { FAUX_MODEL, fauxModelRuntime } from "../support/faux-model.js";

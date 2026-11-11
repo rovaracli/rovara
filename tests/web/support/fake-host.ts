@@ -1,4 +1,4 @@
-import type { RealtimeTokenResponse } from "@agentx/contracts/web";
+import type { RealtimeTokenResponse } from "@agentx/cloud-contracts/web";
 import { vi } from "vitest";
 import type { AppHost, ApiRequest, ApiResponse } from "../../../packages/ui/src/host.js";
 import { FakeSocket } from "./fake-socket.js";

@@ -4,7 +4,7 @@
 //   - an argument that is an address must be on the source's own host, so a source's tool is never a fetcher for other sites;
 //   - an argument may not carry a credential-shaped string;
 //   - unless the source is allowed to receive code, an argument may not look like code. This is a heuristic: bounded, not a guarantee.
-import { CONTEXT_SOURCE_LIMITS, redactText } from "@agentx/contracts";
+import { CONTEXT_SOURCE_LIMITS, redactText } from "@rovara-code/contracts";
 import { annotationVerdict, nameSuggestsWrite, type DiscoveredTool } from "./settings.js";
 
 export type ArgumentRefusal = "not_object" | "too_big" | "address_off_host" | "carries_secret" | "looks_like_code" | "too_deep";

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { TransactWriteCommand, type DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
-import { E2E_MODEL_ROUTE_DEFAULT_BUDGETS, OrgIdSchema, projectPk, type OrgId } from "@agentx/contracts";
+import { E2E_MODEL_ROUTE_DEFAULT_BUDGETS, OrgIdSchema, projectPk, type OrgId } from "@rovara-code/contracts";
 import {
   e2eAccountDefinitionKey, e2eAccountLatestKey, e2eAccountRevisionPrefix,
 } from "../../packages/broker/src/e2e/application-account-registry.js";

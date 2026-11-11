@@ -1,6 +1,7 @@
 // S2 (send-back gate completeness): the one place a step Rovara is about to start on its own (a fix round, a custom sequence's next coding step, a PR-feedback critic) is refused because the
 // task's owner may no longer have work started for them. The refusal is written on the task (one conditional write: a plain reason, nothing run or paid for) and audited with fixed words.
-import { WorkflowTransitionError, stopWorkflowStepNotRun, type WorkflowSnapshot } from "@agentx/contracts";
+import { WorkflowTransitionError } from "@rovara-code/contracts";
+import { stopWorkflowStepNotRun, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { taskKey, type DeveloperTaskRecord } from "../../developer/task-records.js";
 import { ownerStopTarget, ownerWorkRefusal, recordWorkRefused, type WorkRefusalPath } from "../../developer/work-refusal.js";
 import { isConditional } from "../broker-shared.js";

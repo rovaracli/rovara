@@ -5,7 +5,8 @@
 // The structural shapes below match the storage lane's interfaces (no lane imports another's files). A row with a tombstone is never listed, never counted and is
 // never marked archived: the mark is conditional on "no tombstone", so a delete that lands during an archive run wins.
 import { GetCommand, PutCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { RECORD_EVENT_SK_PREFIX, recordEventKey, teamRecordPk, teamRecordSourceHash, workspaceVectorBucketKey, type OrgId, type RecordEvent } from "@agentx/contracts";
+import { RECORD_EVENT_SK_PREFIX, recordEventKey, teamRecordSourceHash, workspaceVectorBucketKey, type RecordEvent } from "@agentx/cloud-contracts";
+import { teamRecordPk, type OrgId } from "@rovara-code/contracts";
 import { Aliases, errorName, type Item } from "../agents/table-writes.js";
 import { eventFromItem } from "./store.js";
 import type { HotArchiveSource } from "./archiver.js";

@@ -11,9 +11,7 @@
 // Nothing here is a hot-file edit: `routeLoadedKnowledge` is the one function `developer-routes.ts` calls (see the report's wiring section).
 import { createHash } from "node:crypto";
 import { GetCommand, PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  INDEX_EXPIRY_ATTRIBUTE, LOADED_KNOWLEDGE_STAGES, LoadedKnowledgeManifestSchema, agentXError, loadedKnowledgeOfProgress, type LoadedKnowledgeManifest, type OrgId,
-} from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, LOADED_KNOWLEDGE_STAGES, LoadedKnowledgeManifestSchema, agentXError, loadedKnowledgeOfProgress, type LoadedKnowledgeManifest, type OrgId } from "@rovara-code/contracts";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 import type { DeveloperTaskRouteDependencies } from "../aws/developer-tasks.js";
 import { resolveTaskAccess } from "./task-access.js";

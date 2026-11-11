@@ -1,7 +1,7 @@
 // Trust fix A2: the model that reviews a version 2 task's code. A review that nobody set a model for does not run on the model that wrote the code: Rovara picks a different one the way it picks
 // the plan check's (the critic's pieces, so there is one capability order and one rule for models an account cannot use), and records when only the builder's own model was usable. This is the one
 // place the choice is made, with the allowed and callable models as its input, so a model resolver can later call it for the Review step's default.
-import { canonicalModelName, sameModelOrUnrecognised, type AgentGuardrails, type ModelIdentifier, type ModelSelection } from "@agentx/contracts";
+import { canonicalModelName, sameModelOrUnrecognised, type AgentGuardrails, type ModelIdentifier, type ModelSelection } from "@rovara-code/contracts";
 import { differentCompany } from "../agents/dispatch.js";
 import { candidatesOf, type CriticModelLimits } from "./critic.js";
 

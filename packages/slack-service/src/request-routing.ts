@@ -3,17 +3,7 @@
 // else gets a card suggesting Quick or Full (or, unclear, offering all three), and nothing starts until its requester
 // presses a button there, which the Slack ingress Lambda answers.
 import { DeleteCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  routedChoiceId,
-  slackThreadSubject,
-  suggestionCardMessage,
-  workflowChoiceKey,
-  workflowChoicePut,
-  workflowChoiceQuestionUpdate,
-  type RequestSuggestion,
-  type SlackRequestMessage,
-  type SlackThread,
-} from "@agentx/contracts";
+import { routedChoiceId, slackThreadSubject, suggestionCardMessage, workflowChoiceKey, workflowChoicePut, workflowChoiceQuestionUpdate, type RequestSuggestion, type SlackRequestMessage, type SlackThread } from "@rovara-code/contracts";
 import type { RequestRoute, RequestRouter } from "@agentx/orchestrator/request-router";
 import type { ServiceLog } from "./processor.js";
 

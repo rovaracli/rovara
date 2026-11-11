@@ -1,7 +1,7 @@
 // Company-approved images: where an image may come from. The registry allowlist (four built-in registries and the company's own list), by the host the list names and not by the shape of a typed name; the check that a
 // registry's name resolves only to public addresses; the closed registry client (token host, redirects, caps); and the digest the resolver pins (the linux/arm64 platform manifest, not the index).
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { COMPANY_IMAGE_REGISTRIES, companyImageExtraRegistriesOf, companyImageExtraRegistry, companyImageRegistryRule } from "@agentx/contracts";
+import { COMPANY_IMAGE_REGISTRIES, companyImageExtraRegistriesOf, companyImageExtraRegistry, companyImageRegistryRule } from "@agentx/cloud-contracts";
 import { isPublicAddress, resolvesOnlyToPublicAddresses } from "../../packages/broker/src/test-env/public-address.js";
 import { RegistryClientError, createRegistryClient } from "../../packages/broker/src/test-env/company-image-registry-client.js";
 import { registryDigestResolver } from "../../packages/broker/src/test-env/company-image-resolver.js";

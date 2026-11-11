@@ -1,5 +1,6 @@
 import { GetCommand, PutCommand, TransactWriteCommand, UpdateCommand, type DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
-import { WORKFLOW_BLOCK_REASONS, WORKFLOW_PULL_REQUEST_UPDATE_WORKER_OUTDATED, WorkflowSnapshotSchema, blockWorkflow, blockWorkflowPullRequestUpdate } from "@agentx/contracts";
+import { WORKFLOW_BLOCK_REASONS, WorkflowSnapshotSchema, blockWorkflow, blockWorkflowPullRequestUpdate } from "@agentx/cloud-contracts";
+import { WORKFLOW_PULL_REQUEST_UPDATE_WORKER_OUTDATED } from "@rovara-code/contracts";
 import { closeEndedCheck } from "../design-review/check-ends.js";
 import { releaseFailedPreparation } from "./failed-preparation.js";
 import type { DurableOutboxRecord } from "./lambda.js";

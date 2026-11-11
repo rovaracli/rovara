@@ -9,7 +9,8 @@
 //     `sole_owner_exception`.
 // It writes nothing itself: `commit` is the broker's design-phase decision (`decide.ts`), a port. Wiring pending (hot file): `handlers.approve_design = designApproveHandler(...)` in the performer's handler list, and
 // the route passing `reason` and `shown` (see report.md "Wiring pending").
-import { agentXError, type EditionPolicy } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
+import { type EditionPolicy } from "@agentx/cloud-contracts";
 import { DECISION_CHANGED_MESSAGE, DECISION_OPEN_FIRST_MESSAGE, type DecisionCaller, type PerformInput, type PerformOutcome } from "../decisions/routes.js";
 import { perform, type KindHandler } from "../decisions/performer.js";
 import { projectDecisionCards, type DecisionItem } from "../decisions/project.js";

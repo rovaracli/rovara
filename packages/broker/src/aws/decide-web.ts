@@ -2,7 +2,7 @@
 // They have no bearer token to rely on (a token is exactly what a local assistant holds): the browser's decide session cookie, its CSRF
 // field and the cell's own Origin authorize them, all checked by `requireDecideSession`. A bearer token reaching either route gets
 // REAUTH_REQUIRED with a ticketed confirmUrl, as JSON, from the broker's usual error answer.
-import { AgentXError, agentXError, type OrgId } from "@agentx/contracts";
+import { AgentXError, agentXError, type OrgId } from "@rovara-code/contracts";
 import { confirmPage, decidedPage, forbiddenPage, notFoundPage, reauthPage, refusedPage, resultPage, type PageResponse } from "../developer/confirm-page.js";
 import { kindPrefixOf, mayDecide, type DecideKind } from "../developer/decide-kinds.js";
 import {

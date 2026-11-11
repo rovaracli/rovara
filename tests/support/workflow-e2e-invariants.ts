@@ -16,7 +16,7 @@
 //              workspace; every counter is at least 0, a member's count is its tasks and threads, and an organization's
 //              count is its members' counts summed.
 import { afterEach, beforeEach } from "vitest";
-import { WorkflowSnapshotSchema, openReviewFindings, type WorkflowSnapshot } from "@agentx/contracts";
+import { WorkflowSnapshotSchema, openReviewFindings, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { FEEDBACK_REVIEW_RETRY_ACTION, workflowDocumentName, workflowDocumentType, workflowMessage, type WorkflowMessage, type WorkflowMessageContext } from "../../packages/broker/src/developer/workflow-messages.js";
 import { planUnreadableCategory } from "../../packages/broker/src/developer/plan-check-summary.js";
 import { briefLength, visibleSlackText } from "./strict-slack.js";

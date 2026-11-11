@@ -1,9 +1,7 @@
 // Learning v2 L4: the loader (design §4.7). At a stage's dispatch it picks the lessons that apply and returns the `learnedContext` payload for the worker
 // and the manifest that records what was chosen. It never blocks a task: any failure loads nothing. Wiring it into the dispatch is one small hunk in
 // aws/broker.ts beside the promptSection composition (see the report, "Wiring pending (hot file)").
-import {
-  LEARNED_CONTEXT_FEATURE, LEARNED_CONTEXT_MAX_BYTES, LEARNED_CONTEXT_MAX_LESSONS, cleanLessonText, type CodeCitation, type LearnedContext, type LearnedLesson, type LessonStage,
-} from "@agentx/contracts";
+import { LEARNED_CONTEXT_FEATURE, LEARNED_CONTEXT_MAX_BYTES, LEARNED_CONTEXT_MAX_LESSONS, cleanLessonText, type CodeCitation, type LearnedContext, type LearnedLesson, type LessonStage } from "@rovara-code/contracts";
 import { globToRegExp } from "./guards.js";
 import { safeScopeLabel } from "./render.js";
 import { approversRequired, modeAllows, resolveLearning, resolveLoadBudget, type ApprovalPolicy, type LearningSettingsReader, type LoadBudget, type ResolvedLearning } from "./policy.js";

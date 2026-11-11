@@ -2,8 +2,8 @@
 import { createHash } from "node:crypto";
 import type { FeatureE2EPlanningContextResult } from "../e2e/feature-plan-planning-context.js";
 import { describeFeatureE2EExecutableKinds, offersApplicationE2EPlan } from "../e2e/feature-plan-executable-kinds.js";
-import { INDEX_EXPIRY_ATTRIBUTE, OPERATION_PROMPT_MAX_BYTES, PLAN_DOCUMENT_INFO_STRING, PLAN_PARTS_SENTENCE, type PlanDocumentKind } from "@agentx/contracts";
-import { commentRefInAuthor } from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, OPERATION_PROMPT_MAX_BYTES, PLAN_DOCUMENT_INFO_STRING, PLAN_PARTS_SENTENCE, type PlanDocumentKind } from "@rovara-code/contracts";
+import { commentRefInAuthor } from "@rovara-code/contracts";
 import type { TransactItems } from "./developer-task-actions.js";
 
 /** A stable hash of a JSON value: idempotency records compare a retried request's payload with it. */

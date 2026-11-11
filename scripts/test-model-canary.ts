@@ -24,12 +24,12 @@ import { CloudFormationClient, DescribeStacksCommand } from "@aws-sdk/client-clo
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { GetParametersCommand, SSMClient } from "@aws-sdk/client-ssm";
 import { DynamoDBDocumentClient, PutCommand } from "@aws-sdk/lib-dynamodb";
-import { DRIVING_TEST_BUDGET, E2E_MODEL_CHECK_REQUEST_SCHEMA, MODEL_CHECK_MAX_PER_RUNNER } from "../packages/contracts/src/e2e-model-check.js";
-import { E2E_AGENT_RECOMMENDED_MODELS } from "../packages/contracts/src/e2e-agent-models.js";
-import { environmentSettingsPrefix, environmentStackName } from "../packages/contracts/src/environments.js";
-import { getParametersInBatches } from "../packages/contracts/src/ssm-parameters.js";
-import { e2eQualificationPrefix } from "../packages/contracts/src/session.js";
-import type { ModelProvider } from "../packages/contracts/src/model-providers.js";
+import { DRIVING_TEST_BUDGET, E2E_MODEL_CHECK_REQUEST_SCHEMA, MODEL_CHECK_MAX_PER_RUNNER } from "@rovara-code/contracts";
+import { E2E_AGENT_RECOMMENDED_MODELS } from "@rovara-code/contracts";
+import { environmentSettingsPrefix, environmentStackName } from "@rovara-code/contracts";
+import { getParametersInBatches } from "@rovara-code/contracts";
+import { e2eQualificationPrefix } from "@rovara-code/contracts";
+import type { ModelProvider } from "@rovara-code/contracts";
 import { recordDrivingTest, validateModelCheckResult, type ExpectedModelCheck } from "../packages/broker/src/e2e/model-checks.js";
 import { e2eAgentInstallationFromParameters, e2eModelDiscoveryKey, readE2EModelRouteShape } from "../packages/broker/src/e2e/model-route-registry.js";
 import { deriveE2EAgentRouteForModel, e2eAgentRouteDefinitionDigest, type E2EAgentInstallation } from "../packages/model-runtime/src/e2e-route-derive.js";

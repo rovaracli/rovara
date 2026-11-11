@@ -5,7 +5,8 @@
 // The reason and ticket are checked here with the control plane's own rules and words (broker/audit/admin-routes.ts), so a typo is
 // refused before a call is made. Every staff poll of an export is itself a recorded read, so the poll is no more often than every
 // 10 seconds, and it stops the moment the export is ready, failed or expired.
-import { AUDIT_ERROR_MESSAGES, OrgIdSchema, agentXError, type OrgId } from "@agentx/contracts";
+import { AUDIT_ERROR_MESSAGES } from "@agentx/cloud-contracts";
+import { OrgIdSchema, agentXError, type OrgId } from "@rovara-code/contracts";
 import {
   AuditExportStartSchema,
   AuditExportViewSchema,

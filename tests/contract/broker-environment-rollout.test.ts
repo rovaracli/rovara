@@ -5,7 +5,7 @@
 //    naming module can derive it (DERIVED_BROKER_VARIABLES), in which case it is derived.
 // A value that is malformed is still fatal in both: only an unknown code is tolerated.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { BROKER_NAMES_VARIABLE, BROKER_SETTINGS_VARIABLE } from "@agentx/contracts";
+import { BROKER_NAMES_VARIABLE, BROKER_SETTINGS_VARIABLE } from "@agentx/cloud-contracts";
 import { brokerNamesFromEnvironment, brokerSettingsFromEnvironment, hydrateBrokerEnvironment, type MutableEnvironment } from "../../packages/broker/src/aws/broker-environment.js";
 
 const SCOPE = { AWS_REGION: "us-west-2", AGENTX_ACCOUNT_ID: "123456789012", AGENTX_ENV: "staging" };

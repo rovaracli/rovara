@@ -1,1 +1,1 @@
-export { SessionResponseReaderSchema } from "@agentx/contracts/web";
+export { SessionResponseReaderSchema } from "@agentx/cloud-contracts/web";

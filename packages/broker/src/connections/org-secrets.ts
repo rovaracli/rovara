@@ -6,7 +6,7 @@
 // key-building mistake is refused here as well as by IAM. A value is never logged and never put in an error.
 import { CreateSecretCommand, DeleteSecretCommand, DescribeSecretCommand, GetSecretValueCommand, PutSecretValueCommand } from "@aws-sdk/client-secrets-manager";
 import { AssumeRoleCommand, type AssumeRoleCommandOutput } from "@aws-sdk/client-sts";
-import { OrgIdSchema, agentXError, type OrgId } from "@agentx/contracts";
+import { OrgIdSchema, agentXError, type OrgId } from "@rovara-code/contracts";
 
 export const ORG_TAG_KEY = "rovara:org";
 const SESSION_SECONDS = 900;

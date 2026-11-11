@@ -1,6 +1,6 @@
 // Read-only preparation for the company writer. These conditions authorize no
 // mutation by themselves: the writer must commit them with identity, receipt and audit.
-import {ModelSelectionPolicyPutSchema,STAGE_EDIT_GROUPS,STAGE_REFERENCE,AgentXError,agentXError,canonicalJson,forbiddenModelMatcher,sameModelOrUnrecognised,type ModelIdentifier,type StageId} from "@agentx/contracts";
+import { ModelSelectionPolicyPutSchema, STAGE_EDIT_GROUPS, STAGE_REFERENCE, AgentXError, agentXError, canonicalJson, forbiddenModelMatcher, sameModelOrUnrecognised, type ModelIdentifier, type StageId } from "@rovara-code/contracts";
 import {readGuardrailsWithRevision} from "../agents/guardrails.js";
 import {requireCompanyModelPolicyAuthority} from "./company-read.js";
 import {readModelSelectionPolicy,modelSelectionRevisionChecks,type ModelPolicyReader} from "./policy-store.js";

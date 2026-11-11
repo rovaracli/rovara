@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { EvidenceRawSchema, type CheckEntry, type ProjectCommand } from "../../packages/contracts/src/index.js";
+import { EvidenceRawSchema, type CheckEntry, type ProjectCommand } from "@rovara-code/contracts";
 import { collectEvidenceRaw, type CollectEvidenceInput } from "../../packages/worker/src/verification/evidence-raw.js";
 import { changedMigrationFiles, isMigrationPath, migrationDirectionOf, migrationEvidence, migrationIdOf, schemaChangesOf } from "../../packages/worker/src/verification/migration-check.js";
 

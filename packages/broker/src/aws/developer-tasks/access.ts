@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { PutCommand } from "@aws-sdk/lib-dynamodb";
-import { type AgentXError, agentXError, isSystemOwnerId, type StartDeveloperTaskRequest } from "@agentx/contracts";
+import { type AgentXError, agentXError, isSystemOwnerId, type StartDeveloperTaskRequest } from "@rovara-code/contracts";
 import { aiToolTurn, taskKey, taskOwnerKey, isTaskOwner, isTaskTakenOver, tryEffectiveTaskOwner, type DeveloperTaskRecord, type TurnParty } from "../../developer/task-records.js";
 import type { TransactItems } from "../developer-task-actions.js";
 import type { DeveloperCaller } from "../developer-routes.js";

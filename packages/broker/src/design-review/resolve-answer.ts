@@ -4,10 +4,8 @@
 // unreadable, refused or not allowed by a move is the planner's revision failing: the design goes to the person as reviewed, with the findings unresolved (design-review-stage.md 3.2 "Planner revision fails").
 //
 // The planner's run itself (the prompt, the revised design's storage) is not here: this takes the answer and the stored revised design and decides what they mean.
-import {
-  DESIGN_REVIEW_ROUNDS_MAX, WorkflowTransitionError, askDesignQuestions, closeDesignReview, readDesignResolve, resolutionOf, resolveDesignReview,
-  type CitablePacketItem, type PinnedCommits, type ReviewerRole, type WorkflowArtifact, type WorkflowSnapshot,
-} from "@agentx/contracts";
+import { DESIGN_REVIEW_ROUNDS_MAX, WorkflowTransitionError, readDesignResolve, resolutionOf, type CitablePacketItem, type PinnedCommits, type ReviewerRole, type WorkflowArtifact } from "@rovara-code/contracts";
+import { askDesignQuestions, closeDesignReview, resolveDesignReview, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { checkPlannerEvidence } from "./citations.js";
 
 export interface PlannerResolveInput {

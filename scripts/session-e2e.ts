@@ -11,7 +11,7 @@ import { pathToFileURL } from "node:url";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { SFNClient, StartExecutionCommand } from "@aws-sdk/client-sfn";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
-import type { Ec2RuntimeBinding, WorkspaceSession } from "../packages/contracts/src/index.js";
+import type { Ec2RuntimeBinding, WorkspaceSession } from "@rovara-code/contracts";
 import { SessionManager } from "../packages/broker/src/aws/sessions.js";
 
 interface Options { region: string; profile?: string; idleWait: boolean }

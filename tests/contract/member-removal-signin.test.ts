@@ -1,7 +1,7 @@
 // Member removal (v1.1), task 2, review C1: a rejoin before the movers finish must not bring the old access back. The sign-in step always runs, with `at` the removal's own
 // time (never "now"), and the grants, devices and limit S0 recorded are cut even when the person has come back; only the hand-offs are cancelled.
 import { describe, expect, it } from "vitest";
-import { memberRemovalRecordKey } from "@agentx/contracts";
+import { memberRemovalRecordKey } from "@agentx/cloud-contracts";
 import { onMemberRemoved } from "../../packages/broker/src/agents/lifecycle.js";
 import { HOUR, OWNER, SAM, T0, removalWorld } from "../support/member-removal-world.js";
 

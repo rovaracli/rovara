@@ -1,7 +1,8 @@
 // Owner decision 86 (neutral identity A-13): a task person is any Rovara member, whether they signed in with the web, GitHub, an identity provider or Slack, and not only a Slack
 // person. A member with no Slack account is qualified on their membership and project access alone, never on a Slack proof, and the project's Slack channels give them nothing.
 import { describe, expect, it, vi } from "vitest";
-import { orgMemberKey, orgRemovedKey, type TaskPersonProofRequest, type TaskPersonProofResponse } from "@agentx/contracts";
+import { orgMemberKey, orgRemovedKey } from "@agentx/cloud-contracts";
+import { type TaskPersonProofRequest, type TaskPersonProofResponse } from "@rovara-code/contracts";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
 import {

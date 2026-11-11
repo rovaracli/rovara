@@ -3,7 +3,7 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { TestEnvironmentBodySchema, isRerunnableTestId, isValidTestId, testIdOf } from "@agentx/contracts";
+import { TestEnvironmentBodySchema, isRerunnableTestId, isValidTestId, testIdOf } from "@rovara-code/contracts";
 import { hasUnconfirmedFailingTest } from "../../packages/broker/src/verification/result.js";
 import { nightlyHealthOf } from "../../packages/broker/src/test-env/nightly.js";
 import { runNightly, type NightlyPorts } from "../../packages/worker/src/nightly-run.js";

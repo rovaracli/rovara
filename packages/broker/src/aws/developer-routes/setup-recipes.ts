@@ -14,9 +14,7 @@
 // Answers are fixed words, booleans, ids and the recipe text an admin must read to approve it; never a person's name, a repository name or a secret.
 import { randomBytes } from "node:crypto";
 import { z } from "zod";
-import {
-  SETUP_MARKER_FILES, AgentXError, agentXError, formatCommandLine, markerFilesOf, orgProjectCatalogPk, projectAllows, type OrgId, type SetupFingerprintInput,
-} from "@agentx/contracts";
+import { SETUP_MARKER_FILES, AgentXError, agentXError, formatCommandLine, markerFilesOf, orgProjectCatalogPk, projectAllows, type OrgId, type SetupFingerprintInput } from "@rovara-code/contracts";
 import { logDeveloperEvent } from "../../developer/log.js";
 import { requireLiveCompanyAdmin } from "../../org/company-authority.js";
 import { readApprovedTestEnvironment } from "../../org/test-environment.js";

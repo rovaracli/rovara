@@ -5,7 +5,7 @@ import { expect, it } from "vitest";
 import { screen, fireEvent, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { QueryClientProvider, useQuery } from "@tanstack/react-query";
-import { AppNavReaderSchema, AppNavSchema } from "@agentx/contracts/web";
+import { AppNavReaderSchema, AppNavSchema } from "@agentx/cloud-contracts/web";
 import { HomeStart } from "../../packages/ui/src/screens/home/HomeStart.js";
 import { StartWorkBox } from "../../packages/ui/src/screens/project/StartWorkBox.js";
 import { howWeWorkKey } from "../../packages/ui/src/api/how-we-work.js";

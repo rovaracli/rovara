@@ -1,46 +1,9 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { canonicalJson } from "../../packages/contracts/src/canonical-json.js";
-import * as barrel from "../../packages/contracts/src/index.js";
-import { E2E_DEFAULT_LIMITS } from "../../packages/contracts/src/e2e-node.js";
-import {
-  E2E_AGENT_TOOL_NAMES,
-  E2E_MODEL_CHANNEL_SOCKET_PATH,
-  E2E_MODEL_CHANNEL_STEP_PATH,
-  E2E_MODEL_FREE_LIMITS,
-  E2E_MODEL_FREE_LIMITS_BEFORE_RUN_1,
-  E2EModelChannelStepMarkerSchema,
-  E2EModelDayBudgetRequestSchema,
-  E2EModelDayBudgetResponseSchema,
-  e2eEffectiveRoundLimits,
-  e2eEffectiveRoundLimitsBeforeRun1,
-  e2eModelRouteRevisionNumber,
-  e2eScannableEmailLocalPart,
-  E2E_MODEL_CHANNEL_MAX_REQUEST_BYTES,
-  E2E_MODEL_CHANNEL_MAX_RESPONSE_BYTES,
-  E2E_MODEL_ROUTE_DEFAULT_BUDGETS,
-  E2EAgentActionLedgerSchema,
-  E2E_MODEL_PROVIDERS,
-  E2EAgentTraceBindingSchema,
-  E2EModelChannelRequestSchema,
-  E2EModelChannelResponseSchema,
-  E2EModelReceiptSchema,
-  E2EModelRouteDefinitionSchema,
-  checkE2EGroupModelBudget,
-  crossCheckE2EAgentLedgerReceipts,
-  checkE2EStepModelAccounting,
-  e2eAgentValueDigest,
-  e2eAgentValueKeyId,
-  e2eModelReceiptAdmissibleForRound,
-  e2eServedModelMatchesPin,
-  e2eModelRouteInvokedIdentifier,
-  e2eModelRouteRevision,
-  generateE2EAgentValueKey,
-  isVerifiedE2EAgentActionLedger,
-  parseVerifiedE2EAgentActionLedger,
-  reviewCapturedE2EAgentTrace,
-  type VerifiedE2EAgentActionLedger,
-} from "../../packages/contracts/src/e2e-model-channel.js";
+import { canonicalJson } from "@rovara-code/contracts";
+import { allContracts as barrel } from "../support/contracts-barrels.js";
+import { E2E_DEFAULT_LIMITS } from "@rovara-code/contracts";
+import { E2E_AGENT_TOOL_NAMES, E2E_MODEL_CHANNEL_SOCKET_PATH, E2E_MODEL_CHANNEL_STEP_PATH, E2E_MODEL_FREE_LIMITS, E2E_MODEL_FREE_LIMITS_BEFORE_RUN_1, E2EModelChannelStepMarkerSchema, E2EModelDayBudgetRequestSchema, E2EModelDayBudgetResponseSchema, e2eEffectiveRoundLimits, e2eEffectiveRoundLimitsBeforeRun1, e2eModelRouteRevisionNumber, e2eScannableEmailLocalPart, E2E_MODEL_CHANNEL_MAX_REQUEST_BYTES, E2E_MODEL_CHANNEL_MAX_RESPONSE_BYTES, E2E_MODEL_ROUTE_DEFAULT_BUDGETS, E2EAgentActionLedgerSchema, E2E_MODEL_PROVIDERS, E2EAgentTraceBindingSchema, E2EModelChannelRequestSchema, E2EModelChannelResponseSchema, E2EModelReceiptSchema, E2EModelRouteDefinitionSchema, checkE2EGroupModelBudget, crossCheckE2EAgentLedgerReceipts, checkE2EStepModelAccounting, e2eAgentValueDigest, e2eAgentValueKeyId, e2eModelReceiptAdmissibleForRound, e2eServedModelMatchesPin, e2eModelRouteInvokedIdentifier, e2eModelRouteRevision, generateE2EAgentValueKey, isVerifiedE2EAgentActionLedger, parseVerifiedE2EAgentActionLedger, reviewCapturedE2EAgentTrace, type VerifiedE2EAgentActionLedger } from "@rovara-code/contracts";
 
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 const RUN_ID = "7f1c2a4e-5b6d-4c8e-9f01-23456789abcd";

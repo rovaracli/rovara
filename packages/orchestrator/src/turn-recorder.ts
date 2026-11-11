@@ -1,25 +1,6 @@
 import { createHash } from "node:crypto";
 import type { InlineExtension } from "@earendil-works/pi-coding-agent";
-import {
-  TURN_ARGUMENT_LIMIT,
-  TURN_CALL_LIMIT,
-  TURN_GATE_REASON_LIMIT,
-  TurnGateSchema,
-  redactAndCap,
-  type TurnGate,
-  TURN_RECORDING_ERROR_LIMIT,
-  TurnObservationSchema,
-  capText,
-  createTaskUsageTelemetry,
-  redactArguments,
-  taskResultChecks,
-  type CheckReport,
-  type TaskUsageTelemetry,
-  type TurnCall,
-  type TurnObservation,
-  type TurnOutcome,
-  type UsageStats,
-} from "@agentx/contracts";
+import { TURN_ARGUMENT_LIMIT, TURN_CALL_LIMIT, TURN_GATE_REASON_LIMIT, TurnGateSchema, redactAndCap, type TurnGate, TURN_RECORDING_ERROR_LIMIT, TurnObservationSchema, capText, createTaskUsageTelemetry, redactArguments, taskResultChecks, type CheckReport, type TaskUsageTelemetry, type TurnCall, type TurnObservation, type TurnOutcome, type UsageStats } from "@rovara-code/contracts";
 
 interface RecordedArguments { text: string; fingerprint: string }
 interface PendingCall { name: string; startedAt: number; rawArguments: unknown; recorded?: RecordedArguments; call?: TurnCall }

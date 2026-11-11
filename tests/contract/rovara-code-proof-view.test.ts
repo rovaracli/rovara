@@ -2,11 +2,12 @@
 // plan with claims, and a client that does not ask for the version 2 view never receives it.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { DeveloperTaskViewSchema } from "../../packages/contracts/src/developer-tasks.js";
-import { ProofTableViewSchema } from "../../packages/contracts/src/rovara-code.js";
-import { createCandidateManifest, type WorkflowSnapshot } from "../../packages/contracts/src/task-workflow-node.js";
-import { WorkflowSnapshotSchema, createWorkflowSnapshot } from "../../packages/contracts/src/task-workflow-node.js";
-import type { PlanDocument, TestProof } from "../../packages/contracts/src/index.js";
+import { DeveloperTaskViewSchema } from "../../packages/cloud-contracts/src/developer-tasks.js";
+import { ProofTableViewSchema } from "@rovara-code/contracts";
+import { createCandidateManifest } from "@rovara-code/contracts";
+import { type WorkflowSnapshot } from "../../packages/cloud-contracts/src/task-workflow-node.js";
+import { WorkflowSnapshotSchema, createWorkflowSnapshot } from "../../packages/cloud-contracts/src/task-workflow-node.js";
+import type { PlanDocument, TestProof } from "@rovara-code/contracts";
 import { buildProofTable } from "../../packages/broker/src/rovara-code/proof-table.js";
 import { proofCheckResults } from "../../packages/broker/src/rovara-code/proof-section.js";
 import { proofTableView } from "../../packages/broker/src/rovara-code/proof-view.js";

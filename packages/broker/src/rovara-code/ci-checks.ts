@@ -3,7 +3,7 @@
 // command or believes the repository: the files are parsed as data, only plain single-program commands that verify code are kept (no shell syntax at all), and every folder stays inside the
 // repository. Anything that can't be read leaves the plan as it was.
 import { parse } from "yaml";
-import { WORKFLOW_PROPOSED_CHECKS_MAX, hasControlCharacter, proposedCheckProblem, type CiCheckInput } from "@agentx/contracts";
+import { WORKFLOW_PROPOSED_CHECKS_MAX, hasControlCharacter, proposedCheckProblem, type CiCheckInput } from "@rovara-code/contracts";
 
 /**
  * What the reading of a repository's CI definition needs of a host: the entries of a directory and a file's text, read-only, at one commit of the default branch. A host gives this view

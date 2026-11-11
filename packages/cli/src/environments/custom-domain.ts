@@ -1,7 +1,7 @@
 // 0.5.7: an environment's optional custom domain, in a record of its own (`/agentx/<env>/custom-domain`), not in the environment settings or the install answers.
 // Those two are strict schemas in every release: a 0.5.6 command reading a settings document with keys it does not know refuses it, and an emergency rollback to
 // 0.5.6 must still be able to read the environment. The record is read only by 0.5.7 and later; 0.5.6 never looks at it.
-import { agentXError, environmentSettingsPrefix } from "@agentx/contracts";
+import { agentXError, environmentSettingsPrefix } from "@rovara-code/contracts";
 import { z } from "zod";
 import type { ParameterStore } from "./parameter-store.js";
 

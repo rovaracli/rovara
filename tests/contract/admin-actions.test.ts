@@ -7,7 +7,8 @@ import { MAX_PER_ORGANIZATION, MAX_PER_PERSON, isWholeLimit, readWorkspaceLimits
 import { emailIndexKey } from "../../packages/broker/src/developer/store.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { TEST_ORG } from "../support/orgs.js";
-import { orgSettingsKey, projectMemberKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { orgSettingsKey } from "../../packages/cloud-contracts/src/org-scoped-keys.js";
+import { projectMemberKey } from "@rovara-code/contracts";
 
 const ADMIN = { issuer: "https://identity.example.test", subject: "admin-subject" };
 type AdminActionFixtureOverrides = Omit<Partial<AdminActionDependencies>, "signInTableName"> & { signInTableName?: string | undefined };

@@ -7,21 +7,7 @@ import { randomUUID } from "node:crypto";
 import { fixtureActor } from "../support/money-authority.js";
 import type { AgentRouteDependencies } from "../../packages/broker/src/agents/routes.js";
 import { describe, expect, it } from "vitest";
-import {
-  AgentOriginSchema,
-  DEFAULT_AGENT_GUARDRAILS,
-  agentGuardrailsKey,
-  AgentOriginViewSchema,
-  SESSION_ACTIONS,
-  SESSION_RETENTION_DAYS,
-  SessionMakeAgentBodySchema,
-  agentSessionKey,
-  agentKey,
-  agentRequestKey,
-  projectMemberKey,
-  type AgentId,
-  type OrgId,
-} from "../../packages/contracts/src/index.js";
+import { AgentOriginSchema, DEFAULT_AGENT_GUARDRAILS, agentGuardrailsKey, AgentOriginViewSchema, SESSION_ACTIONS, SESSION_RETENTION_DAYS, SessionMakeAgentBodySchema, agentSessionKey, agentKey, agentRequestKey, projectMemberKey, type AgentId, type OrgId } from "@rovara-code/contracts";
 import { routeAgentRequest } from "../../packages/broker/src/agents/routes.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
 import type { ApprovalDependencies } from "../../packages/broker/src/agents/approvals.js";

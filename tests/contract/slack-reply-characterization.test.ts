@@ -2,7 +2,7 @@
 // Pins how the Slack processor posts a turn's reply and what it records, before spec 014 phase 14d
 // adds the Details button. The harness never passes postWithBlocks, so these hold afterwards too.
 import { describe, expect, it, vi } from "vitest";
-import { agentXError, splitSlackMessage, type SlackRequestMessage, type SlackThreadWorkspaceResult } from "../../packages/contracts/src/index.js";
+import { agentXError, splitSlackMessage, type SlackRequestMessage, type SlackThreadWorkspaceResult } from "@rovara-code/contracts";
 import { processSlackRequest, type ProcessorDependencies, type TurnInput } from "../../packages/slack-service/src/processor.js";
 import { slackReplyText } from "../../packages/slack-service/src/slack-format.js";
 import { DynamoTurnRecordWriter } from "../../packages/slack-service/src/turn-records.js";

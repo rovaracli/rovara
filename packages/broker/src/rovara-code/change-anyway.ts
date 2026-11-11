@@ -3,7 +3,8 @@
 // owner, or a person with "can use" on it (read live, as every session action is); the new task is the caller's: they pay (m11), `start_tasks` and `requireNewWorkAllowed` are
 // `startTask`'s own checks, so a person without the project role is refused there (`PROJECT_ACCESS_DENIED`). Nothing here reads a payer or a path from the request body.
 import { z } from "zod";
-import { RUN_INPUT_TEXT_MAX_BYTES, agentXError, answeredMessage, workflowAnswer, type CodeIntentResult, type DeveloperTaskView } from "@agentx/contracts";
+import { RUN_INPUT_TEXT_MAX_BYTES, agentXError, answeredMessage, type CodeIntentResult } from "@rovara-code/contracts";
+import { workflowAnswer, type DeveloperTaskView } from "@agentx/cloud-contracts";
 import { requireSessionLevel } from "../agent-sessions/access.js";
 import type { SessionReadDependencies } from "../agent-sessions/read.js";
 import { taskOfSession, type ControlCaller } from "../agent-sessions/stop.js";

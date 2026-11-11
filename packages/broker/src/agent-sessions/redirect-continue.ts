@@ -10,18 +10,8 @@
 //   - any failure to start leaves the step blocked with the instruction as a note (`left_blocked`: the owner's Retry reads it), never half started, and the sweep closes what nobody finished.
 // The cap window is never reset (the restart keeps it) and a pause that waits for an approval is never skipped (the restart refuses over it).
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  REDIRECT_LEFT_BLOCKED_MESSAGE,
-  REDIRECT_NOT_CARRIED_OUT_MESSAGE,
-  REDIRECT_STOPPING_SWEEP_MINUTES,
-  REDIRECT_TEXT_MAX_CHARS,
-  WORKFLOW_BLOCK_REASONS,
-  redactText,
-  sessionEventId,
-  type OwnerRedirectInvocation,
-  type RedirectRecord,
-  type RedirectState,
-} from "@agentx/contracts";
+import { REDIRECT_LEFT_BLOCKED_MESSAGE, REDIRECT_NOT_CARRIED_OUT_MESSAGE, REDIRECT_STOPPING_SWEEP_MINUTES, REDIRECT_TEXT_MAX_CHARS, redactText, sessionEventId, type OwnerRedirectInvocation, type RedirectRecord, type RedirectState } from "@rovara-code/contracts";
+import { WORKFLOW_BLOCK_REASONS } from "@agentx/cloud-contracts";
 import type { TransactItem } from "../agents/table-writes.js";
 import type { AuditRuntime } from "../audit/outbox.js";
 import { getItem } from "./stop.js";

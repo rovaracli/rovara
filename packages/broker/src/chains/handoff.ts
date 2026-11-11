@@ -3,10 +3,7 @@
 // to Plan 3's limit, so a long Sentry, Jira or alarm title can't make `startAgentRun` refuse; and the whole hand-off stays inside Plan 3's item limits and the
 // chain's own byte total, dropping the oldest report first and never the item that says what the run is about.
 import { z } from "zod";
-import {
-  CONTEXT_TITLE_MAX, HANDOFF_ITEM_MAX_BYTES, HANDOFF_MAX_BYTES, HANDOFF_MAX_ITEMS, RUN_EVENT_KEY_MAX, RUN_START_TITLE_MAX, shortenToBytes,
-  type RunContextItem, type StepResult,
-} from "@agentx/contracts";
+import { CONTEXT_TITLE_MAX, HANDOFF_ITEM_MAX_BYTES, HANDOFF_MAX_BYTES, HANDOFF_MAX_ITEMS, RUN_EVENT_KEY_MAX, RUN_START_TITLE_MAX, shortenToBytes, type RunContextItem, type StepResult } from "@rovara-code/contracts";
 
 // ---- secrets
 

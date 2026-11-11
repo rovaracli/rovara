@@ -1,6 +1,6 @@
 // Wire lane D (MF-2, applier part): an approved intake card becomes ONE intake source of the project. The mapping from a suggestion to a source, the bound on sources, and that nothing else is touched.
 import { describe, expect, it } from "vitest";
-import { IntakeChannelRefSchema, intakeSourceCountKey, type OrgId, type SetupIntakeValue } from "@agentx/contracts";
+import { IntakeChannelRefSchema, intakeSourceCountKey, type OrgId, type SetupIntakeValue } from "@rovara-code/contracts";
 import { INTAKE_SETUP_WORDS, intakeRefOfSetupValue } from "../../packages/broker/src/intake/setup-applier.js";
 import { INTAKE_MAX_SOURCES_PER_PROJECT, addIntakeSource, listIntakeSources, replaceIntakeSources } from "../../packages/broker/src/intake/sources.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";

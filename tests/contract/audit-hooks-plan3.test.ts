@@ -1,5 +1,5 @@
 import { fixtureProject } from "../support/project-ai-source.js";
-import { projectMemberKey } from "@agentx/contracts";
+import { projectMemberKey } from "@rovara-code/contracts";
 import { fixtureActor } from "../support/money-authority.js";
 // Task 19: the Audit Ledger's hooks in Plan 3's code. Each audited action adds its pending audit item to the DynamoDB transaction that commits
 // the action, so the action and its audit item are written together or not at all; the flush after the commit is best effort.
@@ -11,20 +11,8 @@ import { fixtureActor } from "../support/money-authority.js";
 // connectors, opt-outs. Their hand-offs are listed in the Task 19 report.
 import { createHash, randomUUID } from "node:crypto";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import {
-  AUDIT_FLUSH_DEADLINE_MS,
-  agentGuardrailsKey,
-  agentKey,
-  agentVersionSk,
-  auditEventId,
-  builtinSettingsKey,
-  connectionKey,
-  orgProjectCatalogKey,
-  orgSettingsKey,
-  projectAiKey,
-  type AuditEventInput,
-  type OrgId,
-} from "../../packages/contracts/src/index.js";
+import { AUDIT_FLUSH_DEADLINE_MS, auditEventId, orgSettingsKey, projectAiKey, type AuditEventInput } from "@agentx/cloud-contracts";
+import { agentGuardrailsKey, agentKey, agentVersionSk, builtinSettingsKey, connectionKey, orgProjectCatalogKey, type OrgId } from "@rovara-code/contracts";
 import { auditOccurrence } from "../../packages/broker/src/audit/events.js";
 import { decisionProofOf } from "../../packages/broker/src/audit/plan3-hooks.js";
 import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
@@ -45,10 +33,11 @@ import { getApprovalSubjectHandler, type ApprovalDependencies, type ApprovalReco
 import { mergeDuplicateMember } from "../../packages/broker/src/org/merge-members.js";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { writeProjectAi, writeSpendPolicy } from "../../packages/broker/src/spend/settings.js";
-import { BUILTIN_AGENTS, builtinRecipe, builtinDefaultPin, currentBuiltinVersion } from "../../packages/contracts/src/agent-templates.js";
-import { DEFAULT_AGENT_GUARDRAILS } from "../../packages/contracts/src/agent-guardrails.js";
-import { RUN_LIMIT_MULTIPLIER, defaultSpendPolicy } from "../../packages/contracts/src/spend.js";
-import type { AgentId, AgentOwner } from "../../packages/contracts/src/agent-node.js";
+import { BUILTIN_AGENTS, builtinRecipe, builtinDefaultPin, currentBuiltinVersion } from "@rovara-code/contracts";
+import { DEFAULT_AGENT_GUARDRAILS } from "@rovara-code/contracts";
+import { RUN_LIMIT_MULTIPLIER } from "@rovara-code/contracts";
+import { defaultSpendPolicy } from "../../packages/cloud-contracts/src/spend.js";
+import type { AgentId, AgentOwner } from "@rovara-code/contracts";
 import { FakeProjectMembers } from "../support/fake-project-members.js";
 import { capturingAuditDeps, hangingAuditDeps, AUDIT_CAPTURE_TABLE, type AuditCapture } from "../support/audit-capture.js";
 import { MAYA, createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";

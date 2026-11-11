@@ -1,7 +1,7 @@
 import { useRef, useState } from "react";
 import { SettingsNote } from "../SettingsNote.js";
 import { useQueryClient } from "@tanstack/react-query";
-import type { SecondReviewState } from "@agentx/contracts/web";
+import type { SecondReviewState } from "@agentx/cloud-contracts/web";
 import { ApiError } from "../../../api/errors.js";
 import { secondReviewKey, useSecondReview, useSecondReviewApi } from "../../../api/second-review.js";
 import { useAppHost } from "../../../host.js";

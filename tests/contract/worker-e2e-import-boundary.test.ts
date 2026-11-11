@@ -27,6 +27,9 @@ const BANNED_SPECIFIER = /^(?:ai|@ai-sdk\/.+|e2e\/agent|@agentx\/verifier\/execu
 function resolveSource(from: string, specifier: string, packagesDir: string): string | null {
   const candidates = (base: string) => [base.replace(/\.js$/, ".ts"), base.replace(/\.js$/, ""), `${base}.ts`, join(base, "index.ts")];
   if (specifier.startsWith(".")) return candidates(resolve(dirname(from), specifier)).find((path) => existsSync(path) && statSync(path).isFile()) ?? null;
+  // Rovara Code's package (the pinned copy, convergence W0-3): followed through its source, like a workspace package.
+  const code = /^@rovara-code\/([a-z-]+)$/.exec(specifier);
+  if (code !== null) return [join(ROOT, "vendor/rovara-code/packages", code[1]!, "src/index.ts")].find((path) => existsSync(path)) ?? null;
   const workspace = WORKSPACE.exec(specifier);
   if (workspace === null) return null;
   const [, name, subpath] = workspace;
@@ -75,7 +78,7 @@ describe("the worker's static import graph", () => {
   it("is a graph the walker really followed (positive controls): the worker's modules, the verifier through its main entry, and the model runtime with its provider layer", () => {
     const files = [...graph.visited].map((path) => relative(packagesDir, path).replaceAll("\\", "/"));
     for (const expected of ["worker/src/e2e-model-channel-session.ts", "worker/src/workflow-e2e-application-checks.ts", "verifier/src/host/docker-application-host.ts", "verifier/src/executor/redact.ts",
-      "model-runtime/src/e2e-route.ts", "contracts/src/e2e-model-channel.ts"]) expect(files, expected).toContain(expected);
+      "model-runtime/src/e2e-route.ts", "../vendor/rovara-code/packages/contracts/src/e2e-model-channel.ts"]) expect(files, expected).toContain(expected);
     expect(graph.externals.has("@earendil-works/pi-ai")).toBe(true);
     // The executor's own run, host and channel client are not in it.
     expect(files).not.toContain("verifier/src/executor/model-channel.ts");

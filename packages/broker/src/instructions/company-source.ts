@@ -1,7 +1,7 @@
 // Standing instructions (lane I2, owner decision 51): the port the block reads the company's rules from. Provider-neutral: the Cloud store (lane I3) and Code's local file (lane I6) are two adapters
 // of this one interface, and nothing here names an organisation table, a chat tool or a code host. Keep this folder free of Cloud-only imports (org/, spend/, audit/, team-record/) so the port to Code can carry it.
 import { foldedRuleText } from "./standing-block.js";
-import { CompanyInstructionsSnapshotSchema, agentXError, assertCompanyRulesWithinBudget, type CompanyInstructionsSnapshot } from "@agentx/contracts";
+import { CompanyInstructionsSnapshotSchema, agentXError, assertCompanyRulesWithinBudget, type CompanyInstructionsSnapshot } from "@rovara-code/contracts";
 
 export interface CompanyInstructionsSource {
   /**

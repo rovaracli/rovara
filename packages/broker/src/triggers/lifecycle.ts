@@ -3,17 +3,7 @@
 // owners; the change that caused it still succeeds. A member who leaves or is merged hands their triggers on, or turns them off and says so: nothing fails silently.
 import { randomBytes } from "node:crypto";
 import { QueryCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  ApprovalIdSchema,
-  BUILTIN_AGENT_IDS,
-  agentKey,
-  approvalKey,
-  chainKey,
-  isBuiltinAgentId,
-  orgPk,
-  type OrgId,
-  type TriggerTarget,
-} from "@agentx/contracts";
+import { ApprovalIdSchema, BUILTIN_AGENT_IDS, agentKey, approvalKey, chainKey, isBuiltinAgentId, orgPk, type OrgId, type TriggerTarget } from "@rovara-code/contracts";
 import { shownText } from "../agents/approvals.js";
 import { approverDrops, commitOrLost, dueItems, getAnyApproval, type ApprovalDependencies } from "../agents/approvals-store.js";
 import { Aliases, type TransactItem } from "../agents/table-writes.js";

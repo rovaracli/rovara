@@ -1,6 +1,6 @@
 // L4 (worker side): citation validation against the base commit, and rendering. Poisoning classes P5 and P7 (render side).
 import { describe, expect, it } from "vitest";
-import { cleanLessonText, type LearnedContext, type LearnedLesson } from "../../../packages/contracts/src/index.js";
+import { cleanLessonText, type LearnedContext, type LearnedLesson } from "@rovara-code/contracts";
 import { CITATION_CHECK_DEADLINE_MS, checkCitation, learnedContextSection, renderLearnedBlock, validateLearnedContext, type BaseFile, type BaseFileReader } from "../../../packages/worker/src/learned-context.js";
 import { BASE, codeCite } from "./lesson-helpers.js";
 

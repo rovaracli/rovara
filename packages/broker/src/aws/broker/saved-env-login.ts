@@ -1,6 +1,6 @@
 // Saved environments (SH25, review M1): the route's handler. The rules are in ../../test-env/saved-env-login.ts; this file only reads the stored records they ask for.
 import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { agentXError } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
 import { operationKey, requireOperation } from "../cancellation.js";
 import { requireWorkspace } from "./records.js";
 import { SAVED_ENV_LOGIN_MAX_PER_OPERATION, exchangeSavedEnvLoginCore } from "../../test-env/saved-env-login.js";

@@ -1,7 +1,8 @@
 // M37 controller: one ordinary custom-agent owner transfer, with real HTTP and native commit.
 import { randomUUID } from "node:crypto";
 import { expect, it } from "vitest";
-import { agentKey, agentRequestKey, developerOrgKey, orgMemberKey, orgMetaKey, OrgIdSchema } from "@agentx/contracts";
+import { agentKey, agentRequestKey, OrgIdSchema } from "@rovara-code/contracts";
+import { developerOrgKey, orgMemberKey, orgMetaKey } from "@agentx/cloud-contracts";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { MAYA, OMAR } from "../support/developer-task-broker.js";
 import { ADA, BEN, DEB, TRIAGE, setup } from "../support/spend-world.js";

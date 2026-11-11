@@ -2,7 +2,8 @@
 // The merge is the same path the confirmation page uses (the claim, the head pin, the method fallback, the audit in the claim's transaction). The risk is shown, and a medium or high one is
 // part of what the person saw. A token (the CLI, an AI tool) never merges: it gets the confirmation link, which only a browser decides.
 import { describe, expect, it } from "vitest";
-import { MERGE_NOT_READY_MESSAGES as M, MergeDoneReaderSchema, MergeViewSchema, NeedsConfirmationSchema } from "../../packages/contracts/src/index.js";
+import { MERGE_NOT_READY_MESSAGES as M } from "@agentx/cloud-contracts";
+import { MergeDoneReaderSchema, MergeViewSchema, NeedsConfirmationSchema } from "@rovara-code/contracts";
 import { mergeReadiness, mergeViewOf, pressMerge, riskOfTask, type HumanApproval, type MergePullRequestFacts } from "../../packages/broker/src/rovara-code/merge.js";
 import { routeAgentSessionRequest } from "../../packages/broker/src/agent-sessions/routes.js";
 import { taskKey } from "../../packages/broker/src/developer/task-records.js";

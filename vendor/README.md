@@ -1,8 +1,8 @@
 # vendor/: the pinned copy of public Rovara Code
 
 Convergence plan W0-1 (owner decision 72, O1): Cloud carries a read-only copy of public Rovara Code at one exact sha, so Cloud code can import Code's
-packages while Cloud still builds as one repository. Packages published from Code's mainline come later (wave 4). Nothing in Cloud's own code imports
-this yet except `tests/contract/vendor-rovara-code-smoke.test.ts`.
+packages while Cloud still builds as one repository. Packages published from Code's mainline come later (wave 4). Since W0-3 (R4) Cloud's code imports Code's contracts through `@rovara-code/contracts` (every name Code's contracts own); the other shims are
+still used only by `tests/contract/vendor-rovara-code-smoke.test.ts`.
 
 ## What is here
 
@@ -21,8 +21,11 @@ Code and Cloud both publish `@agentx/*`, and npm refuses two workspaces with one
 - Inside `rovara-code/`, Code's own imports of `@agentx/contracts` and the like must reach Code's packages, not Cloud's. Node, TypeScript, Vite and esbuild all
   resolve a bare name by walking up from the importing file, so `vendor/node_modules/@agentx/*` (found before the repository's `node_modules`) does it with no
   loader hook, no `paths` mapping and no edit to a vendored file. A path mapping could not: TypeScript has one `paths` table per program.
-- Wave 0 lane W0-3 renames Cloud's contracts to `@agentx/cloud-contracts`. When Code's contracts take the name `@agentx/contracts` in Cloud, the shim layer is
-  the one place to change.
+- Wave 0 lane W0-3 renamed Cloud's contracts to `@agentx/cloud-contracts` (the name `@agentx/contracts` now belongs to the vendored Code alone), and Cloud imports
+  the shared names from `@rovara-code/contracts`. The browser entry `@agentx/cloud-contracts/web` re-exports the browser-safe ones; `vite.config.ts` tells the bundler Code's built
+  contracts have no side effects (the way Cloud's own package says so), so Node-only modules are tree-shaken out.
+  The same is said for the Lambda bundles (`scripts/vendor/mark-code-contracts-pure.mjs`, run by their beforeBundling hook), the release signer and the mcp-runner.
+  All of it is a stopgap: Code's contracts `package.json` gets `"sideEffects": false` (Code branch `fix/code-contracts-side-effects`), and the day the pin has it the four workarounds are deleted.
 
 Code's third-party dependencies resolve to Cloud's installed packages (same lockfile family). `verify-rovara-code.ts` fails if any of them resolves to a version other
 than the one Code declares; the one existing difference (`playwright-core`) is the link in `THIRD_PARTY_LINKS`. It also fails if Code's source imports an `@agentx/<name>`

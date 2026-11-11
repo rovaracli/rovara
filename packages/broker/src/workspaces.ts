@@ -1,8 +1,4 @@
-import {
-  agentXError,
-  type StoredDeploymentMode,
-  type WorkspaceStatus,
-} from "@agentx/contracts";
+import { agentXError, type StoredDeploymentMode, type WorkspaceStatus } from "@rovara-code/contracts";
 import type { AuthenticatedIdentity } from "./auth.js";
 import { authorizeProject, authorizeWorkspace, type ProjectMembership } from "./authorization.js";
 import type { InMemoryProjectRegistry } from "./projects.js";

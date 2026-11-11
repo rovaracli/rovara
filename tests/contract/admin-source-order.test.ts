@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { expect, it } from "vitest";
-import { AgentXError, developerOrgKey, modelSourcesKey, orgMemberKey, orgMetaKey, orgScoped } from "@agentx/contracts";
+import { AgentXError, modelSourcesKey, orgScoped } from "@rovara-code/contracts";
+import { developerOrgKey, orgMemberKey, orgMetaKey } from "@agentx/cloud-contracts";
 import { ModelSourceStore, type ModelSourceStoreInput } from "../../packages/broker/src/model-sources/store.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";

@@ -11,7 +11,7 @@
 //   - The token service (`WWW-Authenticate` realm) must be one of the rule's auth hosts. Anonymous pull tokens only: there are no registry credentials anywhere in this module.
 //   - Every body has a size cap and every request a time limit: 8 seconds for the headers of any reply and for the whole of a manifest or token; a BLOB's body has no fixed total (a layer is hundreds of megabytes and each part
 //     upload to the install's registry waits on the stream) but ends after `REGISTRY_BLOB_IDLE_MS` with no byte. Nothing here returns an error text of a registry: failures are one of five fixed reasons.
-import { companyImageRegistryRule, type CompanyImageRegistryRule } from "@agentx/contracts";
+import { companyImageRegistryRule, type CompanyImageRegistryRule } from "@agentx/cloud-contracts";
 import { resolvesOnlyToPublicAddresses, type AddressLookup } from "./public-address.js";
 
 export type RegistryFailure = "not_allowed" | "not_found" | "too_large" | "unavailable" | "timeout";

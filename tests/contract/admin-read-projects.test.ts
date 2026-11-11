@@ -3,8 +3,8 @@ import { describe, expect, it } from "vitest";
 import { createAdminReadBroker } from "../support/admin-read-broker.js";
 import { registerRevision } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
-import { orgProjectCatalogKey } from "../../packages/contracts/src/org-scoped-keys.js";
-import { projectRevisionKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { orgProjectCatalogKey } from "@rovara-code/contracts";
+import { projectRevisionKey } from "@rovara-code/contracts";
 
 describe("GET /v1/admin/projects (FR-038, FR-030)", () => {
   it("lists a project with its latest revision, repositories, mode, connectors and task policy", async () => {

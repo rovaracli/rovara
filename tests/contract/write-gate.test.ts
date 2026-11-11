@@ -4,11 +4,9 @@
 // These tests call the functions directly; the decide routes are Task 21a's wiring (the route tests here use a stub of its guard).
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import {
-  INDEX_EXPIRY_ATTRIBUTE, agentXError, approvalKey, approverIndexKey, orgMemberKey, orgProjectCatalogKey, orgRemovedKey, projectMetaKey, projectRevisionKey,
-  type ActionPolicy, type ConnectorResult, type GrantedTool, type OrgId, type OrgRole, type ToolFacts,
-} from "@agentx/contracts";
-import { describeAction } from "../../packages/contracts/src/action-class.js";
+import { INDEX_EXPIRY_ATTRIBUTE, agentXError, approvalKey, approverIndexKey, orgProjectCatalogKey, projectMetaKey, projectRevisionKey, type ActionPolicy, type ConnectorResult, type GrantedTool, type OrgId, type ToolFacts } from "@rovara-code/contracts";
+import { orgMemberKey, orgRemovedKey, type OrgRole } from "@agentx/cloud-contracts";
+import { describeAction } from "@rovara-code/contracts";
 import type { AgentCaller } from "../../packages/broker/src/agents/access.js";
 import {
   createPendingChange, createStepApproval, decideApproval, expireApprovals, getAnyApproval, listApprovalsFor, runApprovalSweep, registerApprovalSubjectHandler, registerApproverRule,

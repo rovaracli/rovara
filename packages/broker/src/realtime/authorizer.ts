@@ -15,15 +15,8 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { KMSClient } from "@aws-sdk/client-kms";
-import {
-  orgMemberKey,
-  orgProjectCatalogPk,
-  parseRealtimeChannel,
-  projectMemberKey,
-  projectSegment,
-  userSegment,
-  type RealtimeTokenClaims,
-} from "@agentx/contracts";
+import { orgMemberKey, parseRealtimeChannel, projectSegment, userSegment, type RealtimeTokenClaims } from "@agentx/cloud-contracts";
+import { orgProjectCatalogPk, projectMemberKey } from "@rovara-code/contracts";
 import { NO_SLACK_PROJECT_MEMBERS, resolveSessionAccess, type SessionAccessDependencies } from "../agent-sessions/access.js";
 import { grantRoleOf } from "../developer/project-roles.js";
 import { kmsTokenSigner, type PublicSigningJwk } from "../developer/tokens.js";

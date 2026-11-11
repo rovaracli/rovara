@@ -14,11 +14,11 @@
 // event (the app's own invite, before any message) writes only that person's entry and the unit is an overlay: a read is allowed iff the row's own snapshot allows it AND no
 // removal entry for the reader is newer than that snapshot. After seeding the record is authoritative.
 import { createHash } from "node:crypto";
+import { ownList } from "./acl.js";
 import { BatchGetCommand, DeleteCommand, GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  MAINTAINERS_GROUP, recordAccessErasedKey, recordAccessKey, recordAccessMemberKey, recordAccessMemberPrefix, recordAccessPersonKey, recordAccessPersonPrefix, scopeAndAncestors,
-  type AclSnapshot, type Audience, type OrgId,
-} from "@agentx/contracts";
+import { MAINTAINERS_GROUP, type OrgId } from "@rovara-code/contracts";
+import { type AclSnapshot, type Audience } from "@agentx/cloud-contracts";
+import { recordAccessErasedKey, recordAccessKey, recordAccessMemberKey, recordAccessMemberPrefix, recordAccessPersonKey, recordAccessPersonPrefix, scopeAndAncestors } from "@agentx/cloud-contracts";
 import { Aliases, errorName, type Item } from "../agents/table-writes.js";
 import { queryPrefix } from "./store.js";
 import type { RecordCaller, TeamRecordTable } from "./types.js";
@@ -428,7 +428,7 @@ export interface AccessViewer {
 }
 
 export const viewerOfCaller = (caller: RecordCaller): AccessViewer => ({
-  ids: (source) => caller.identities.ids[source] ?? [], groups: (source) => caller.identities.groups[source] ?? [], maintainer: caller.projectRole === "maintainer",
+  ids: (source) => ownList(caller.identities.ids, source), groups: (source) => ownList(caller.identities.groups, source), maintainer: caller.projectRole === "maintainer",
 });
 
 /** A viewer given as flat lists (the learning lane keeps identities without a source): every id and group counts in every source. */

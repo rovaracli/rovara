@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import { describe, expect, it, vi } from "vitest";
-import { agentXError, type ConnectorCatalog } from "../../packages/contracts/src/index.js";
-import { TurnObservationSchema } from "../../packages/contracts/src/turns.js";
+import { agentXError, type ConnectorCatalog } from "@rovara-code/contracts";
+import { TurnObservationSchema } from "@rovara-code/contracts";
 import { createOrchestratorRuntime, runOrchestratorTurn } from "../../packages/orchestrator/src/orchestrator.js";
 import type { OrchestrationApi } from "../../packages/orchestrator/src/orchestration-tools.js";
 import { TurnRecorder } from "../../packages/orchestrator/src/turn-recorder.js";

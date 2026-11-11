@@ -6,18 +6,8 @@ import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { LambdaClient } from "@aws-sdk/client-lambda";
 import { SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import { SQSClient } from "@aws-sdk/client-sqs";
-import {
-  CONFIRMATION_TTL_MS,
-  DETAILS_ACTION,
-  createWorkflowSnapshot,
-  submitWorkflowArtifact,
-  TURN_DETAILS_ATTRIBUTES,
-  TurnRecordSchema,
-  queuedBehindAttributes,
-  queuedBehindOf,
-  turnRecordKeys,
-  type TurnRecord,
-} from "../../packages/contracts/src/index.js";
+import { CONFIRMATION_TTL_MS, DETAILS_ACTION, TURN_DETAILS_ATTRIBUTES, TurnRecordSchema, queuedBehindAttributes, queuedBehindOf, turnRecordKeys, type TurnRecord } from "@rovara-code/contracts";
+import { createWorkflowSnapshot, submitWorkflowArtifact } from "@agentx/cloud-contracts";
 import {
   DETAILS_NOT_FOUND,
   DETAILS_NOT_SAVED,

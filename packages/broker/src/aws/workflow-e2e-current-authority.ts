@@ -1,4 +1,4 @@
-import { canonicalJson, taskGraphDigest } from "@agentx/contracts";
+import { canonicalJson, taskGraphDigest } from "@rovara-code/contracts";
 
 export interface WorkflowE2ECanonicalPlanInput {
   taskId: string;

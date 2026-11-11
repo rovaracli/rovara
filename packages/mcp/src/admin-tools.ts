@@ -2,10 +2,7 @@
 // Spec 025 FR-030: the admin read tools. They change nothing and need no confirmation (US5); the
 // server offers them only while an admin sign-in is held (FR-028, A15). Every result goes through
 // the server's redaction and caps (FR-029, A16).
-import {
-  ADMIN_FAILURES_DEFAULT_LIMIT, ADMIN_LIST_MAX, ADMIN_WORKSPACES_DEFAULT_LIMIT, AdminUsageGroupBySchema, MISSING_ALARM_STATE, WorkspaceStatusSchema, inertName,
-  type AdminRequester, type AdminUsageGroupBy,
-} from "@agentx/contracts";
+import { ADMIN_FAILURES_DEFAULT_LIMIT, ADMIN_LIST_MAX, ADMIN_WORKSPACES_DEFAULT_LIMIT, AdminUsageGroupBySchema, MISSING_ALARM_STATE, WorkspaceStatusSchema, inertName, type AdminRequester, type AdminUsageGroupBy } from "@rovara-code/contracts";
 import { z } from "zod";
 import { ADMIN_SIGN_IN_STEP, type AdminControlPlaneClient } from "./admin-client.js";
 import { ToolError } from "./errors.js";

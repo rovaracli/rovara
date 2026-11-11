@@ -3,10 +3,8 @@
 // place and thread as untrusted data, and writes the answer back only for the task's own thread.
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import {
-  ANSWER_STALE_MS, SlackPageCommentMessageSchema, SlackRequestMessageSchema, agentxAnswerCommentId, pageCommentAttributes, pageCommentEventId,
-  type PlanDocument, type TaskComment, type WorkflowSnapshot,
-} from "@agentx/contracts";
+import { ANSWER_STALE_MS, SlackPageCommentMessageSchema, SlackRequestMessageSchema, agentxAnswerCommentId, pageCommentAttributes, pageCommentEventId, type PlanDocument, type TaskComment } from "@rovara-code/contracts";
+import { type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { createPageComment, listPageComments, type DeveloperTaskRouteDependencies } from "../../packages/broker/src/aws/developer-tasks.js";
 import type { DeveloperCaller } from "../../packages/broker/src/aws/developer-routes.js";
 import { deleteTaskComment, editTaskComment, takeAskRateAcrossTasks, takeRate } from "../../packages/broker/src/developer/page-comments.js";

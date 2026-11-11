@@ -1,5 +1,6 @@
 import { expect, it, vi } from "vitest";
-import { developerOrgKey, orgMemberKey, orgMetaKey, type OrgId } from "@agentx/contracts";
+import { developerOrgKey, orgMemberKey, orgMetaKey } from "@agentx/cloud-contracts";
+import { type OrgId } from "@rovara-code/contracts";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 const orgId = "org_aaaaaaaaaaaaaaaaaaaa" as OrgId, developerId = "a".repeat(64), now = Date.parse("2026-10-30T14:30:00Z");
 function fixture() {
