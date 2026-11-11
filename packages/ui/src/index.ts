@@ -6,6 +6,7 @@ export * from "./design/AvatarStack.js";
 export * from "./design/Banner.js";
 export * from "./design/Button.js";
 export * from "./design/Card.js";
+export * from "./design/Chip.js";
 export * from "./design/Checkbox.js";
 export * from "./design/DataTable.js";
 export * from "./design/Dialog.js";
