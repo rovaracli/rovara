@@ -34,6 +34,8 @@ export const WORKER_IMPLEMENTED_FEATURES = [
   "task.workflowParallelParts",
   // Plan 6 Task 17: a merge of the base branch into a workflow task's pull request branch, and a conflict round's fix pushed as a merge commit.
   "maintain.workflowSync",
+  // "Continue in your own tool" (owner Q13): a read-only maintain run that checks out a pull request head pushed outside Rovara, with a clone credential (maintain-pull-request.ts adoptOutsideHead).
+  "maintain.workflowAdopt.v1",
   // Mainline #408: the plan dry run (a coding plan's proposed checks tried on the unchanged code; the executor monitor withholds it on a host without the executor image) and the grounding round (T7a/T7b).
   "task.workflowPlanDryRun.v1", "task.workflowE2EGroundingChecks.v1",
   // Mainline #413 (MIDSTEPCOOKIE): the executor syncs the browser's session values before every model call; the application-runtime monitor withholds it on a host whose executor image lacks the session-sync label.

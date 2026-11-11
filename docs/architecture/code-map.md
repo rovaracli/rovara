@@ -313,6 +313,7 @@ No single test lists every broker read.
 | `model-access.ts` | write gate, model access (web and Slack), turn routing and budgets. |
 | `nightly-head.ts` | Setup and test health SH17 (quiet repository): the reader of a project's default-branch head that lets a nightly baseline older than 7 days still count when the branch has not moved since it ran (`test-env/nightly-usa... |
 | `nightly-run-wiring.ts` | The nightly run's joints to the broker's own dependencies (NH-1). |
+| `outside-recheck.ts` | "Continue in your own tool" (owner Q13), the broker's half of a person's Recheck of a pull request head pushed outside Rovara. |
 | `plan-answers.ts` | plan critique, plan answers, CI checks and planner replies. |
 | `plugin-wiring.ts` | Enterprise foundations P4: the plug-ins the broker registers. |
 | `project-registration.ts` | project registration, cloud project creation, the project catalog and setup admission. |
@@ -349,6 +350,7 @@ No single test lists every broker read.
 | `ticket-updates-wiring.ts` | Slice 5 "Outside tools" (owner decision 6): the broker's wiring of ticket updates. |
 | `workflow-e2e-verification.ts` | verifying workflow E2E evidence, authority checks and presentations. |
 | `workflow-items.ts` | retries, evidence jobs and the items each completed workflow step writes. |
+| `working-branch-port.ts` | "Continue in your own tool", the host side of "publish working branch" (E-28): reads and creates `agentx/<taskId>` in one of the task's repositories with a push token the broker mints for itself, the same grant and ex... |
 | `workspace-preparation.ts` | workspace preparation, Slack identities, shared threads and Slack bindings. |
 | `workspace-routes.ts` | Slack refusal answers, workspace routing, connector and GitHub context. |
 <!-- /codemap:files -->
@@ -363,6 +365,7 @@ No single test lists every broker read.
 | `cancel.ts` | (No header comment.) Exports `TaskActor`, `cancelTaskFor`, `BLOCKED_NOT_RUNNING`. |
 | `close.ts` | (No header comment.) Exports `openPullRequest`, `finishTaskClose`, `workflowTaskFinished`. |
 | `common.ts` | (No header comment.) Exports `creatorGuard`, `TASK_ID`, `iso`. |
+| `continue-loop.ts` | "Continue in your own tool", the server side (decision 4; E-28..E-31, owner Q13): what the task view says about the working branch and about pushes that did not come from Rovara, and the one write that makes a working... |
 | `continue.ts` | (No header comment.) Exports `continueTask`, `heldPreparationOptions`, `heldSavedEnvPin`. |
 | `decide.ts` | (No header comment.) Exports `recordPublishedCandidateOutcomes`, `DESIGN_CARD_ONLY_MESSAGE`, `decideTaskWorkflow`. |
 | `design-decision.ts` | Design review stage, DR7 slice C (money W2): the COMMIT PORT of `designApproveHandler`. |
@@ -392,7 +395,7 @@ No single test lists every broker read.
 | `start.ts` | (No header comment.) Exports `limitError`, `chargeFailure`, `shareFor`. |
 | `task-answer-context.ts` | (No header comment.) Exports `workflowTaskAnswerContext`, `taskCommentSection`, `taskOwnsThread`. |
 | `task-index.ts` | (No header comment.) Exports `runResultOf`, `ownerIndexRowOf`, `syncIndex`. |
-| `task-page.ts` | (No header comment.) Exports `designCardOnlyApplies`, `taskPageStage`, `publicationAttempts`. |
+| `task-page.ts` | (No header comment.) Exports `DecideSeat`, `decideSeatOf`, `designCardOnlyApplies`. |
 | `task-people.ts` | (No header comment.) Exports `taskPeopleEffectsDependencies`, `getTaskPeople`, `getTaskPeopleCapabilities`. |
 | `task-reads.ts` | (No header comment.) Exports `readTask`, `getTaskPlan`, `listTasks`. |
 | `task-view.ts` | (No header comment.) Exports `candidateChangedFiles`, `candidateDiffText`, `unpublishedOf`. |
@@ -422,6 +425,7 @@ No single test lists every broker read.
 | `company-rules.ts` | Company rules (G-04, owner decisions 57 and 85; switch `si`, StandingInstructionsEnabled): the admin's routes. |
 | `company-test-images.ts` | Company-approved extra test-service images (switches `tx` and `pj`): the admin's routes. |
 | `connection-usage.ts` | `GET /v1/app/connection-usage`: which projects use each company connection, for the "used by" line of the Connections page. |
+| `continue-loop.ts` | "Continue in your own tool" (decision 4, owner Q13): the two actions of the task page's Continue panel, both for the task's owner (or a co-owner) in a live browser session: POST /v1/app/tasks/{id}/continue/publish-bra... |
 | `decisions.ts` | Decision cards (wire-proof, setup wizard E4): what the card routes (`decisions/routes.ts`) need for one caller, built from the developer route dependencies. |
 | `dependencies.ts` | (No header comment.) Exports `setupDraftDepsOf`, `diagnosisRouteDepsOf`, `agentRunStarterOf`. |
 | `design-review-company.ts` | Design review (DR-FU4): `/v1/app/org/design-review`, the company's How we work card for design review, for company owners and admins only. |

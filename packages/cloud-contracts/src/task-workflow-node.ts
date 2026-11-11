@@ -893,6 +893,70 @@ export function recordWorkflowBranchSync(currentInput: unknown, input: { reposit
   });
 }
 
+// ---- "Continue in your own tool" (owner Q13): a person's Recheck of a pull request head pushed outside Rovara
+
+/**
+ * A person asked Rovara to re-check the head `headSha` of one open pull request, which Rovara did not make: WAIT_FOR_MERGE/WAITING becomes WAIT_FOR_MERGE/RUNNING with the re-check marked
+ * (`adopting`), while a read-only worker run checks that exact head out (it pushes nothing). Refused while anything of Rovara's is under way (a fix, a merge of the base, the owner's card), for a
+ * pull request that is not open or has no recorded head, and for a head that IS the recorded one (nothing changed outside). A task whose changes need browser or API checks is refused: its
+ * re-check would have no source export.
+ */
+export function startWorkflowOutsideRecheck(currentInput: unknown, input: { repositoryId: string; number: number; headSha: string; requestId: string; actorId: string; now: string }): WorkflowSnapshot {
+  const current = validSnapshot(currentInput);
+  if (current.stage !== "WAIT_FOR_MERGE" || current.state !== "WAITING" || current.fixSource !== undefined || current.branchSync !== undefined || ownerCardOpen(current)) {
+    throw new WorkflowTransitionError("the workflow is not waiting for the merge with nothing being changed");
+  }
+  if (current.e2e?.required === true) throw new WorkflowTransitionError("a task with browser or API checks is not re-checked from an outside head");
+  if (!/^[a-f0-9]{40}$/u.test(input.headSha)) throw new WorkflowTransitionError("the re-check names an invalid commit");
+  const pullRequest = openPullRequestOf(current, input.repositoryId, input.number);
+  if (pullRequest?.headSha === undefined || current.candidate === undefined) throw new WorkflowTransitionError("the pull request is not open, or has no recorded head");
+  if (pullRequest.headSha === input.headSha) throw new WorkflowTransitionError("the head is the one Rovara recorded: nothing changed outside");
+  return WorkflowSnapshotSchema.parse({
+    ...current, revision: current.revision + 1, state: "RUNNING", updatedAt: input.now,
+    outsideRecheck: { repositoryId: input.repositoryId, number: input.number, headSha: input.headSha, previousHeadSha: pullRequest.headSha, requestId: input.requestId, actorId: input.actorId, phase: "adopting", at: input.now },
+  });
+}
+
+/** The read-only run did not adopt the head (it failed, was lost, or the head moved): the task waits for the merge exactly as it did, with its earlier verified candidate. */
+export function endWorkflowOutsideRecheck(currentInput: unknown, now: string): WorkflowSnapshot {
+  const current = validSnapshot(currentInput);
+  if (current.stage !== "WAIT_FOR_MERGE" || current.state !== "RUNNING" || current.outsideRecheck?.phase !== "adopting") throw new WorkflowTransitionError("no re-check of an outside head is being adopted");
+  const { outsideRecheck: _marker, ...rest } = current;
+  void _marker;
+  return WorkflowSnapshotSchema.parse({ ...rest, revision: current.revision + 1, state: "WAITING", updatedAt: now });
+}
+
+/**
+ * The read-only run checked the head out and the host still shows it: that exact head is the task's NEW CANDIDATE (as a merge of the base is, owner decision 67b), on the task's base. The pull
+ * request's entry and every record of the old candidate move to it; the earlier checks, reviews, accepted findings and risk are dropped (they were for other code). The task is at VERIFY/BLOCKED with
+ * the re-check's reason until the person's checks start (`checking`).
+ */
+export function adoptWorkflowOutsideHead(currentInput: unknown, input: { headTreeSha: string; now: string }): WorkflowSnapshot {
+  const current = validSnapshot(currentInput);
+  const marker = current.outsideRecheck;
+  if (current.stage !== "WAIT_FOR_MERGE" || current.state !== "RUNNING" || marker?.phase !== "adopting" || !/^[a-f0-9]{40}$/u.test(input.headTreeSha)) {
+    throw new WorkflowTransitionError("no re-check of an outside head is being adopted");
+  }
+  const candidate = current.candidate;
+  const pullRequest = openPullRequestOf(current, marker.repositoryId, marker.number);
+  const entry = candidate?.repositories.find((repository) => repository.repositoryId === marker.repositoryId);
+  if (candidate === undefined || entry === undefined || pullRequest?.headSha !== marker.previousHeadSha) throw new WorkflowTransitionError("the pull request no longer holds the head the re-check started from");
+  const renewed = createCandidateManifest(candidate.repositories.map((repository) => repository.repositoryId === marker.repositoryId
+    ? { repositoryId: repository.repositoryId, commitSha: marker.headSha, treeSha: input.headTreeSha, ...(repository.baseCommitSha === undefined ? {} : { baseCommitSha: repository.baseCommitSha }) } : repository));
+  const pullRequests = (current.pullRequests ?? []).map((entry_) => {
+    if (entry_ !== pullRequest) return entry_.candidateDigest === candidate.digest ? { ...entry_, candidateDigest: renewed.digest } : entry_;
+    const { syncedFrom: _syncedFrom, ...rest } = entry_;
+    void _syncedFrom;
+    return { ...rest, headSha: marker.headSha, headTreeSha: input.headTreeSha, candidateDigest: renewed.digest };
+  });
+  const { verification: _verification, reviews: _reviews, acceptedFindings: _accepted, risk: _risk, syncFailures: _failures, ...rest } = current;
+  void _verification; void _reviews; void _accepted; void _risk; void _failures;
+  return WorkflowSnapshotSchema.parse({
+    ...rest, revision: current.revision + 1, stage: "VERIFY", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.outsideRecheck, candidate: renewed, pullRequests,
+    outsideRecheck: { ...marker, phase: "checking", at: input.now }, pullRequestUpdatedAt: input.now, updatedAt: input.now,
+  });
+}
+
 /** Saves recoverable review input without inventing an independent report or code authority. */
 export function collectWorkflowFeedbackBundles(currentInput: unknown, input: {
   bundleRefs: unknown; threadObservations: unknown;
@@ -2133,4 +2197,4 @@ export function decideWorkflow(
     ...(current.checkPolicy === undefined ? {} : { checkPolicy: { ...current.checkPolicy, selectedOptionalIds: selectedOptionalCheckIds } }),
   });
 }
-export { BASE_MERGED_RETRIES_PER_DAY, BASE_MERGED_RETRY_REASON, BASE_MERGED_RECHECKING_MILESTONE, BASE_MERGED_NEEDS_YOU_MILESTONE, WORKFLOW_BLOCK_REASONS, WorkflowSnapshotShapeSchema, WorkflowSnapshotViewSchema } from "./task-workflow.js";
+export { OUTSIDE_RECHECK_MILESTONE, BASE_MERGED_RETRIES_PER_DAY, BASE_MERGED_RETRY_REASON, BASE_MERGED_RECHECKING_MILESTONE, BASE_MERGED_NEEDS_YOU_MILESTONE, WORKFLOW_BLOCK_REASONS, WorkflowSnapshotShapeSchema, WorkflowSnapshotViewSchema } from "./task-workflow.js";

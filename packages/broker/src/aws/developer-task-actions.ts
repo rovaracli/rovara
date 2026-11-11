@@ -81,7 +81,7 @@ export interface DeveloperTaskActions {
    * changed on GitHub (its head moved, or it is no longer open), before anything is started. With `mergeBaseCommit` (a conflict round's fix) the push is a merge commit whose second parent is that commit of the base. With
    * `sync` (Plan 6 Task 17) it is a merge of exactly that base commit into the branch, onto the head the workflow recorded.
    */
-  acceptPullRequestUpdate(identity: AuthenticatedIdentity, workspaceId: string, request: PullRequestLifecycleRequest, extra: ExtraItems, binding: { candidateDigest: string; treeSha: string; baseCommitSha: string; expectedHeadCommit: string; fixSource?: WorkflowFixPayload["source"]; mergeBaseCommit?: string } | { sync: { baseCommit: string; expectedHeadCommit: string } }): Promise<{ operation: Operation; duplicate: boolean }>;
+  acceptPullRequestUpdate(identity: AuthenticatedIdentity, workspaceId: string, request: PullRequestLifecycleRequest, extra: ExtraItems, binding: { candidateDigest: string; treeSha: string; baseCommitSha: string; expectedHeadCommit: string; fixSource?: WorkflowFixPayload["source"]; mergeBaseCommit?: string } | { sync: { baseCommit: string; expectedHeadCommit: string } } | { adopt: { headCommit: string; previousHeadCommit: string } }): Promise<{ operation: Operation; duplicate: boolean }>;
   /**
    * How many workflow publications of this repository's checked tree, for this candidate, ended without succeeding in
    * the workspace. Unchecked: callers must load the owned task first.

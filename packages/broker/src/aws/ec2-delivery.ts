@@ -2,7 +2,7 @@ import { META_FEATURE_MISSING } from "../meta-repo/prepare-meta.js";
 import { REGISTRY_FEATURE_MISSING } from "../project-registries/prepare.js";
 import { nonLegacyCredentialKindsOfGrant } from "../repository-access.js";
 import { AGENT_RUN_FEATURE, AGENT_STEP_FEATURE, AGENT_WORKER_OUTDATED, LEARNED_CONTEXT_FEATURE, EVAL_FILES_FEATURE, MODEL_ROUTE_FEATURE, E2E_AGENT_MODEL_CHOICE_FEATURE, E2E_AGENT_STEPS_FEATURE, E2E_CAPTURE_EXTRAS_FEATURE, E2E_MODEL_SESSION_SYNC_FEATURE, E2E_AGENT_UNAVAILABLE_REASONS, E2E_MODEL_FREE_LIMITS_FEATURE, E2E_REPLAY_CHECKS_FEATURE, GROUNDING_CHECKS_FEATURE, DIAGNOSIS_WORKER_FEATURE, SETUP_AGENT_FEATURE, NIGHTLY_RUN_FEATURE, STANDING_INSTRUCTIONS_FEATURE, SETUP_RECIPES_FEATURE, EVIDENCE_CAPTURE_FEATURE, TEST_ENV_COVERAGE_PATH_FEATURE, TEST_ENV_DETECT_FEATURE, SECOND_REVIEWER_FEATURE, DESIGN_REVIEW_WORKER_FEATURE, TEST_ENV_PLAN_FEATURE, TEST_SERVICES_AWS_PLAN_FEATURE, TEST_SERVICES_FAKE_PLAN_FEATURE, TEST_SERVICES_FILE_SEED_FEATURE, TEST_SERVICES_SEED_LOCK_FEATURE, TEST_SERVICES_PLAN_FEATURE, PREPARE_REGISTRIES_FEATURE, PREPARE_SAVED_ENV_FEATURE, PREPARE_SAVED_ENV_BUILD_FEATURE, PREPARE_PINS_FEATURE, credentialKindsOfWorkerFeatures, OWNER_REDIRECT_FEATURE, PLAN_DRY_RUN_FEATURE, E2E_APPLICATION_ADMISSION_SCHEMA_V2, WORKER_INVOKE_AUTHORIZATION_SCHEME, WORKFLOW_PULL_REQUEST_UPDATE_WORKER_OUTDATED, agentXError, isE2EApplicationAdmissionSchemaVersion, modelSelectionFor, workerInvokeToken, workerInvokeTokenPayload, workflowPublicationContextDigest, type E2EWorkflowAdmissionRef, type Ec2RuntimeBinding, type EvalFilesPayload, type LearnedContext, type LearnedRefs } from "@rovara-code/contracts";
-import { TEST_SERVICES_COMPANY_IMAGE_PLAN_FEATURE, workflowPublicationContext, type WorkerInvocation } from "@agentx/cloud-contracts";
+import { OUTSIDE_RECHECK_WORKER_FEATURE, OUTSIDE_RECHECK_WORKER_MISSING, TEST_SERVICES_COMPANY_IMAGE_PLAN_FEATURE, workflowPublicationContext, type WorkerInvocation } from "@agentx/cloud-contracts";
 import { asksForApplicationPlan, asksForCodeAnchors, asksForPlanQuality, withoutApplicationPlanText, withoutCodeAnchorText, withoutPlanQualityText } from "./broker-shared.js";
 import type { Ec2OutboxRecord } from "./lambda.js";
 import { serialWorkerCanResume } from "../rovara-code/parallel-parts.js";
@@ -364,6 +364,7 @@ async function forWorkerFeatures(
   const carriesPullRequestUpdate = invocation.kind === "maintain" && invocation.payload.workflowCandidateTreeSha !== undefined;
   // Plan 6 Task 17: a merge of the base branch, and a fix pushed as a merge commit. An older worker would merge whatever the base is by now, or push a commit with one parent.
   const carriesBranchSync = invocation.kind === "maintain" && (invocation.payload.workflowSync !== undefined || invocation.payload.workflowMergeBase !== undefined);
+  const carriesAdopt = invocation.kind === "maintain" && invocation.payload.workflowAdopt !== undefined;
   const carriesChatGpt = invocation.kind === "task" && invocation.payload.chatgpt !== undefined;
   const carriesProjectSetupSmoke = invocation.kind === "project-setup-smoke";
   const agentStep = invocation.kind === "task" ? invocation.payload.agentStep : undefined;
@@ -392,7 +393,7 @@ async function forWorkerFeatures(
   const carriesLearnedContext = invocation.kind === "task" && (invocation.payload.learnedContext !== undefined || invocation.payload.learnedRefs !== undefined);
   // Test environment and test services: a preparation that carries `testServices`, or a task that carries `testEnvironment`, reaches the feature gates below even when it carries nothing else (the gates are never skipped for it).
   const carriesTestServices = (invocation.kind === "task" && invocation.payload.testEnvironment !== undefined) || (invocation.kind === "prepare" && invocation.payload.testServices !== undefined);
-  if (requestedThinkingLevel === undefined && !carriesSavedEnv && !carriesSavedEnvBuild && !carriesChatGpt && !carriesReadiness && !carriesReviewChecks && !carriesWorkflowMode && !carriesWorkflowBase && !carriesStructuredPlans && !carriesCodeAnchors && !carriesPlanQuality && !carriesApplicationPlans && !carriesApplicationAdmission && !carriesAgentSteps && !carriesCaptureExtras && !carriesReportChecks && !carriesCandidateTree && !carriesPublicationMode && !carriesPublishBase && !carriesAttribution && !carriesPullRequestUpdate && !carriesBranchSync && !carriesWorkflowDependencies && !carriesProjectSetupSmoke && !carriesAgentStep && !carriesModelRoute && !carriesReviewers && !carriesFix && !carriesContextSources && !carriesOwnerRedirect && !carriesFeedbackAutonomy && !carriesCheckout && !carriesMeta && !carriesRegistries && !carriesPins && !carriesCredentialKinds && !carriesModelPolicy && !carriesSpec && !carriesLearnedContext && !carriesTestServices && !carriesStandingInstructions) return invocation;
+  if (requestedThinkingLevel === undefined && !carriesSavedEnv && !carriesSavedEnvBuild && !carriesChatGpt && !carriesReadiness && !carriesReviewChecks && !carriesWorkflowMode && !carriesWorkflowBase && !carriesStructuredPlans && !carriesCodeAnchors && !carriesPlanQuality && !carriesApplicationPlans && !carriesApplicationAdmission && !carriesAgentSteps && !carriesCaptureExtras && !carriesReportChecks && !carriesCandidateTree && !carriesPublicationMode && !carriesPublishBase && !carriesAttribution && !carriesPullRequestUpdate && !carriesBranchSync && !carriesAdopt && !carriesWorkflowDependencies && !carriesProjectSetupSmoke && !carriesAgentStep && !carriesModelRoute && !carriesReviewers && !carriesFix && !carriesContextSources && !carriesOwnerRedirect && !carriesFeedbackAutonomy && !carriesCheckout && !carriesMeta && !carriesRegistries && !carriesPins && !carriesCredentialKinds && !carriesModelPolicy && !carriesSpec && !carriesLearnedContext && !carriesTestServices && !carriesStandingInstructions) return invocation;
   let features: readonly string[] = [];
   if (workerFeatures !== undefined) {
     try {
@@ -663,6 +664,8 @@ async function forWorkerFeatures(
     throw agentXError("RUNTIME_UNAVAILABLE", WORKFLOW_PULL_REQUEST_UPDATE_WORKER_OUTDATED);
   }
   // The base commit a merge names changes what the push is, so the field is never dropped.
+  // "Continue in your own tool": an adoption of an outside head is never dropped for an older worker, which would read the sync as a merge of the base and push; the run is refused instead.
+  if (carriesAdopt && !features.includes(OUTSIDE_RECHECK_WORKER_FEATURE)) throw agentXError("RUNTIME_UNAVAILABLE", OUTSIDE_RECHECK_WORKER_MISSING);
   if (carriesBranchSync && !features.includes("maintain.workflowSync")) {
     throw agentXError("RUNTIME_UNAVAILABLE", WORKFLOW_PULL_REQUEST_UPDATE_WORKER_OUTDATED);
   }

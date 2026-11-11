@@ -26,7 +26,7 @@ import { gatedTaskWorkspace, workspaceTaskOwner } from "./model-access.js";
 import { boundedTurnAdmission } from "../../model-selection/turn-admission.js";
 import { adoptLegacyPullRequest, publicationProject, requireAdministrator, requireOwnedWorkspace, requireProjectAuthority, requireWorkspace } from "./records.js";
 import { creatorCheckOf, githubScopeOf } from "./scope-helpers.js";
-import { changeRequestRef, hostOfRepository, pullRequestDetailsOf, requireGithubHost } from "./repository-hosts.js";
+import { canReadBranchAndTree, changeRequestRef, hostOfRepository, pullRequestDetailsOf, repositoryRefOf, requireGithubHost } from "./repository-hosts.js";
 import { taskOperationParts } from "./task-operations.js";
 import type { DesignReviewDispatch } from "../../design-review/round-ports.js";
 import { latestChecksItem, recordTerminalResult } from "./terminal-result.js";
@@ -422,6 +422,11 @@ export async function acceptPullRequestLifecycle(
      * own dispatch passes it.
      */
     workflowSync?: { baseCommit: string; expectedHeadCommit: string };
+    /**
+     * "Continue in your own tool" (owner Q13): a read-only adoption of a pull request head pushed outside Rovara, asked for by a person's Recheck: only a sync whose worker checks out exactly
+     * `headCommit`, which GitHub must show as the head now, on a pull request whose record still holds `previousHeadCommit` (Rovara's own last head). The grant is a clone grant: it cannot push.
+     */
+    workflowAdopt?: { headCommit: string; previousHeadCommit: string };
   } = {},
 ): Promise<{ operation: Operation; duplicate: boolean }> {
   const request = PullRequestLifecycleRequestSchema.parse(value);
@@ -440,8 +445,13 @@ export async function acceptPullRequestLifecycle(
   if (branchSync !== undefined && (candidate !== undefined || request.action !== "sync" || !/^[a-f0-9]{40}$/.test(branchSync.baseCommit) || !/^[a-f0-9]{40}$/.test(branchSync.expectedHeadCommit))) {
     throw agentXError("CONFIG_INVALID", "workflow merge of the base branch does not match its request");
   }
-  // The head the workflow recorded, for either kind of change the workflow makes to its own pull request.
-  const workflowHead = candidate?.expectedHeadCommit ?? branchSync?.expectedHeadCommit;
+  const adopt = options.workflowAdopt;
+  if (adopt !== undefined && (candidate !== undefined || branchSync !== undefined || request.action !== "sync" || !/^[a-f0-9]{40}$/.test(adopt.headCommit) || !/^[a-f0-9]{40}$/.test(adopt.previousHeadCommit)
+    || adopt.headCommit === adopt.previousHeadCommit)) {
+    throw agentXError("CONFIG_INVALID", "workflow adoption of an outside head does not match its request");
+  }
+  // The head the workflow recorded, for either kind of change the workflow makes to its own pull request (an adoption: the head Rovara recorded before the outside push).
+  const workflowHead = candidate?.expectedHeadCommit ?? branchSync?.expectedHeadCommit ?? adopt?.previousHeadCommit;
   const workflowBound = workflowHead !== undefined;
   const requestHash = hashJson({
     repository: request.repository,
@@ -451,6 +461,7 @@ export async function acceptPullRequestLifecycle(
     ...(request.body === undefined ? {} : { body: request.body }),
     ...(candidate === undefined ? {} : { candidateDigest: candidate.candidateDigest, candidateTreeSha: candidate.treeSha, ...(candidate.mergeBaseCommit === undefined ? {} : { mergeBaseCommit: candidate.mergeBaseCommit }) }),
     ...(branchSync === undefined ? {} : { branchSyncBase: branchSync.baseCommit, branchSyncHead: branchSync.expectedHeadCommit }),
+    ...(adopt === undefined ? {} : { adoptHead: adopt.headCommit, adoptPrevious: adopt.previousHeadCommit }),
   });
   const idempotencyKey = {
     pk: `IDEMPOTENCY#${identity.ownerKey}#${workspaceId}`,
@@ -496,8 +507,13 @@ export async function acceptPullRequestLifecycle(
   if (remote.headBranch !== record.headBranch || remote.baseBranch !== record.baseBranch) {
     throw agentXError("STALE_FENCE", "pull request branch identity changed outside AgentX");
   }
-  if (remote.headCommit !== record.expectedHeadCommit) {
-    throw agentXError("STALE_FENCE", "pull request head changed outside AgentX; reconcile it before retrying");
+  // An adoption is of the head the person saw: GitHub must show exactly it now (the fence when the run starts); any other change is refused if the head moved.
+  if (remote.headCommit !== (adopt?.headCommit ?? record.expectedHeadCommit)) {
+    throw agentXError("STALE_FENCE", adopt === undefined ? "pull request head changed outside AgentX; reconcile it before retrying" : "the pull request changed again since the re-check was asked for");
+  }
+  // An adoption's branch (read from Git) must be at the head too: GitHub moves a pull request's head a moment after a push, and a push that just landed must not be adopted past.
+  if (adopt !== undefined && canReadBranchAndTree(dependencies, host) && await host.branchHead(repositoryRefOf(repository.url), record.headBranch, scope) !== adopt.headCommit) {
+    throw agentXError("STALE_FENCE", "the pull request changed again since the re-check was asked for");
   }
 
   const now = new Date().toISOString();
@@ -674,6 +690,7 @@ export async function acceptPullRequestLifecycle(
     codeBuildGates: repository.codeBuildGates ?? [],
     ...(candidate === undefined ? {} : { workflowCandidate: { candidateDigest: candidate.candidateDigest, treeSha: candidate.treeSha, baseCommitSha: candidate.baseCommitSha, ...(candidate.mergeBaseCommit === undefined ? {} : { mergeBaseCommit: candidate.mergeBaseCommit }) } }),
     ...(branchSync === undefined ? {} : { workflowSync: { baseCommit: branchSync.baseCommit, expectedHeadCommit: branchSync.expectedHeadCommit } }),
+    ...(adopt === undefined ? {} : { workflowAdopt: { headCommit: adopt.headCommit, previousHeadCommit: adopt.previousHeadCommit } }),
   };
   const invocation: WorkerInvocation = {
     protocolVersion: 1,
@@ -690,9 +707,11 @@ export async function acceptPullRequestLifecycle(
       pullRequestNumber: record.number,
       headBranch: record.headBranch,
       baseBranch: record.baseBranch,
-      expectedHeadCommit: record.expectedHeadCommit,
+      // An adoption fences on the outside head it checks out; every other change on the head Rovara recorded.
+      expectedHeadCommit: adopt?.headCommit ?? record.expectedHeadCommit,
+      // An adoption pushes nothing, so its grant is a clone grant: a push with it is refused by the host's credential exchange.
       repositoryGrant: issueRepositoryGrant(
-        dependencies, project, identity.ownerKey, workspaceId, operationId, "push", record.repository,
+        dependencies, project, identity.ownerKey, workspaceId, operationId, adopt === undefined ? "push" : "clone", record.repository,
       ),
       // The reviewed fix: the worker pushes exactly this tree, built on the pinned base's history, or refuses before pushing.
       ...(candidate === undefined ? {} : { workflowCandidateTreeSha: candidate.treeSha, workflowBaseCommit: candidate.baseCommitSha }),
@@ -701,6 +720,7 @@ export async function acceptPullRequestLifecycle(
       // A conflict round's fix is a merge commit of the base commit the merge was tried with; a merge of the base names that commit and the head it is for (Plan 6 Task 17).
       ...(candidate?.mergeBaseCommit === undefined ? {} : { workflowMergeBase: candidate.mergeBaseCommit }),
       ...(branchSync === undefined ? {} : { workflowSync: { baseCommit: branchSync.baseCommit, expectedHeadCommit: branchSync.expectedHeadCommit } }),
+      ...(adopt === undefined ? {} : { workflowAdopt: { headCommit: adopt.headCommit } }),
     },
   };
   const outbox = outboxRecord(workspace, invocation);
