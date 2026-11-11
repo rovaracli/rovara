@@ -12,7 +12,7 @@ export const AppNavSchema = z.object({
  me: z.object({ developerId: z.string().regex(/^[a-f0-9]{64}$/u), name: z.string().min(1), orgRole: OrgRoleSchema, nameChosen: z.boolean().optional() }).strict(),
  org: z.object({ name: z.string().min(1), trial: AppTrialSchema.optional() }).strict(),
  homeCount: CountSchema,
- projects: z.array(z.object({ name: z.string().regex(AGENTX_NAME_PATTERN), agents: z.array(NavAgentSchema.extend({ running: CountSchema, needsYou: CountSchema })) }).strict()).max(50),
+ projects: z.array(z.object({ name: z.string().regex(AGENTX_NAME_PATTERN), /** How many of the caller's own "needs you" items (the cards and pending decisions Home counts) are about this project; for the Projects page. Absent where the server does not say. Never more than `homeCount` in all. */ needsYou: CountSchema.optional(), agents: z.array(NavAgentSchema.extend({ running: CountSchema, needsYou: CountSchema })) }).strict()).max(50),
  shared: z.object({ agents: z.array(NavAgentSchema).max(20), sessions: z.array(NavSessionSchema).max(10) }).strict(),
  features: z.object({ localAgents: z.boolean(), usage: z.boolean(), admin: z.boolean(), chains: z.boolean(), notices: z.boolean(), describe: z.boolean(), /** UX5b: present (true) only where the install's script tokens switch `pt` is on. */ scriptTokens: z.literal(true).optional(), /** OWNER DECISION 18: present (true) only where the decision cards switch `dk` is on: the task page's plan panel and feedback view are there only then. */ decisionCards: z.literal(true).optional() }).strict(),
  /** QA6-10: the release this deployment runs ("0.5.8"), from the deploy. Absent where the deploy does not say. */
