@@ -15,6 +15,7 @@ import { OrgStore } from "../../org/store.js";
 import { TERMINAL, getItem, operationKey, type OperationRecord } from "../cancellation.js";
 import { aiToolTurn, completedTurn, githubWorkflowPullRequestKey, OUTCOME, partyOfTask, taskKey, taskPointerKey, type DeveloperTaskPointerRecord, type DeveloperTaskRecord, type StoredEvent } from "../../developer/task-records.js";
 import { findLinkedChangeRequest } from "../../rovara-code/linked-change-requests.js";
+import { recordOutsidePushEvent, type OutsidePushDependencies } from "../../rovara-code/outside-push.js";
 import type { GitHubPullRequestFeedback } from "../../github-app.js";
 import { codeHostRepositoryKey } from "../../plugins/events/repository-key.js";
 import { GITHUB_HOST_KIND } from "../../plugins/code-host/github/index.js";
@@ -394,6 +395,15 @@ function mergeObservationFacts(observation: MergeObservation): GitHubPullRequest
   };
 }
 
+function outsidePushDependencies(dependencies: AwsBrokerDependencies): OutsidePushDependencies {
+  return {
+    documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: () => new Date().toISOString(),
+    loadTask: (taskId) => getItem<DeveloperTaskRecord>(dependencies, taskKey(taskId)),
+    repositoryUrl: (project, revision, repositoryId, orgId) => webhookRepositoryUrl(dependencies)(project, revision, repositoryId, orgId),
+    installationOrg: (installationId) => boundInstallationOrg({ documentClient: dependencies.documentClient, tableName: dependencies.tableName }, installationId),
+  };
+}
+
 /** Reconcile every PR webhook against GitHub; comments and delivery order never grant authority. */
 export async function processGithubWorkflowEvent(
   dependencies: AwsBrokerDependencies,
@@ -406,11 +416,22 @@ export async function processGithubWorkflowEvent(
     await wakeFromHeadEvent(headEventDependencies(dependencies), event);
     return;
   }
+  // "Last pushed by": a push to a task's working branch only says who pushed which head; there is no pull request to read.
+  if (event.kind === "BRANCH_PUSH") {
+    await recordOutsidePushEvent(outsidePushDependencies(dependencies), event);
+    return;
+  }
   const neutral = options?.neutral;
   // Meta repo lane D (D4): a person editing or approving a task's spec pull request. One read for any other pull request; a failure here never fails the delivery.
   if (neutral === undefined) await handleSpecPullRequestEvent(dependencies, event);
   // Bug I: a review (given, edited or dismissed), or a pull request made ready, pushed to or reopened, wakes the task's tracking row too, so the pass that reads the reviews from GitHub
   // comes in seconds, not at the heartbeat. The delivery still goes on to the feedback path below; a wake that fails only means the pass comes at its own time.
+  // A push to a pull request (synchronize) names its pusher: kept as a hint for "last pushed by"; a failure here never fails the delivery.
+  if (options === undefined && neutral === undefined && event.action === "synchronize") {
+    await recordOutsidePushEvent(outsidePushDependencies(dependencies), event).catch((error: unknown) => {
+      console.log(JSON.stringify({ component: "broker", event: "outside_push.record_failed", deliveryId, error: error instanceof Error ? error.name : "unknown" }));
+    });
+  }
   if (options === undefined && wakesTrackingRow(event)) {
     await wakeFromPullRequestEvent(headEventDependencies(dependencies), event).catch((error: unknown) => {
       console.log(JSON.stringify({ component: "broker", event: "tracking.wake_failed", deliveryId, error: error instanceof Error ? error.name : "unknown" }));
@@ -838,6 +859,8 @@ export async function reconcileWorkflowMergeRecoveryTask(
 
 async function githubEventStillAuthorized(dependencies: AwsBrokerDependencies, event: ReceivedGithubWebhook["event"]): Promise<boolean> {
   if (event.kind === "HEAD_STATUS") return await resolveHeadEventTask(headEventDependencies(dependencies), event) !== undefined;
+  // A push to a working branch is checked against the task's own rows and the installation's binding when it is recorded.
+  if (event.kind === "BRANCH_PUSH") return true;
   return authorizeLinkedGithubWebhook({
     documentClient: dependencies.documentClient,
     tableName: dependencies.tableName,

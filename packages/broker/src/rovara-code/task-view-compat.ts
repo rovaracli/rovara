@@ -23,15 +23,15 @@ function withoutRunMinutes(view: DeveloperTaskView): DeveloperTaskView {
 
 /**
  * The task as a client that does not send `x-agentx-task-view: 2` may read it: UNDERSTAND and PLAN_CRITIQUE read as PLAN, the outcome ANSWERED as CLOSED, the
- * definition version as 1.0.0, and the fields version 1 did not have are left out. The version 2 fields of the view (`verificationReport`, `proofTable`, `evidence`, `reviewModelLines`, `reviewRound`, `mergeTracking`, `merge`, `earlyRiskSignal`) are left out too, and the estimate's time range. A view with no workflow and none of those fields is returned as it is.
+ * definition version as 1.0.0, and the fields version 1 did not have are left out. The version 2 fields of the view (`verificationReport`, `proofTable`, `evidence`, `reviewModelLines`, `reviewRound`, `mergeTracking`, `merge`, `earlyRiskSignal`, `continueLoop`) are left out too, and the estimate's time range. A view with no workflow and none of those fields is returned as it is.
  */
 export function taskViewForClient(input: DeveloperTaskView, headers: Headers): DeveloperTaskView {
   if (readsTaskViewVersion2(headers)) return input;
   const view = withoutRunMinutes(input);
   // Version 2 fields of the view itself (Task 12): an older client's strict view has no place for them, so they are left out whether or not a workflow is there.
-  const { verificationReport: _verificationReport, proofTable: _proofTable, evidence: _evidence, reviewModelLines: _reviewModelLines, reviewRound: _reviewRound, mergeTracking: _mergeTracking, merge: _merge, earlyRiskSignal: _earlyRiskSignal, ...withoutNewFields } = view; // eslint-disable-line @typescript-eslint/no-unused-vars -- left out on purpose
+  const { verificationReport: _verificationReport, proofTable: _proofTable, evidence: _evidence, reviewModelLines: _reviewModelLines, reviewRound: _reviewRound, mergeTracking: _mergeTracking, merge: _merge, earlyRiskSignal: _earlyRiskSignal, continueLoop: _continueLoop, ...withoutNewFields } = view; // eslint-disable-line @typescript-eslint/no-unused-vars -- left out on purpose
   const workflow = withoutNewFields.workflow;
-  if (workflow === undefined) return "verificationReport" in view || "proofTable" in view || "evidence" in view || "reviewModelLines" in view || "reviewRound" in view || "mergeTracking" in view || "merge" in view || "earlyRiskSignal" in view ? withoutNewFields : view;
+  if (workflow === undefined) return "verificationReport" in view || "proofTable" in view || "evidence" in view || "reviewModelLines" in view || "reviewRound" in view || "mergeTracking" in view || "merge" in view || "earlyRiskSignal" in view || "continueLoop" in view ? withoutNewFields : view;
   const rest: Record<string, unknown> = { ...workflow };
   for (const field of NEW_WORKFLOW_FIELDS) delete rest[field];
   // A cause of a failed push that version 1 clients do not know reads as the one they do (Plan 6 Task 17).
@@ -54,7 +54,7 @@ export function taskViewForClient(input: DeveloperTaskView, headers: Headers): D
 function projectable(task: unknown): boolean {
   if (task === null || typeof task !== "object") return false;
   const view = task as Record<string, unknown>;
-  return view.workflow !== undefined || "verificationReport" in view || "proofTable" in view || "evidence" in view || "reviewModelLines" in view || "reviewRound" in view || "mergeTracking" in view || "merge" in view || "earlyRiskSignal" in view;
+  return view.workflow !== undefined || "verificationReport" in view || "proofTable" in view || "evidence" in view || "reviewModelLines" in view || "reviewRound" in view || "mergeTracking" in view || "merge" in view || "earlyRiskSignal" in view || "continueLoop" in view;
 }
 
 /** A route's answer with its `task` (if it has one) projected for the client; any other answer is returned as it is. */

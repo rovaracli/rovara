@@ -287,6 +287,8 @@ const ROWS: readonly Row[] = [
   ["repository-access.ts", "inspect", "principal", ".ownerKey"],
   // Meta repo lane D: the broker's own meta-repository token is issued for the task's principal (`ownerKey`, with the workspace and an operation id it makes), as `repositoryGrants.issue` is for a worker; it never changes, and the broker uses it itself
   ["aws/broker/spec-wiring.ts", "metaClient", "principal", ".ownerKey"],
+  // Continue in your own tool: the push grant for the task's working branch is made for the task's principal (`ownerKey`) and workspace, as a worker's own grant would be
+  ["aws/broker/working-branch-port.ts", "clientOf", "principal", ".ownerKey"],
   // Proof and evidence P6: an evidence file is stored under the task's object prefix (`private/<ownerKey>/<workspace>/evidence/<task>/<sha256>`), the task's principal; who may download it is decided by `authorize()` before either read
   ["aws/evidence-artifacts.ts", "keyOf", "principal", ".ownerKey"],
   ["aws/evidence-artifacts.ts", "serveEvidenceArtifact", "principal", ".ownerKey"],

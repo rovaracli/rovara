@@ -1074,6 +1074,16 @@ export function auditTaskWorkRefused(input: AuditBuilderBase & { taskId: string;
   return build("task.work_refused", input, { kind: "task", id: input.taskId }, { path: input.path, cause: input.reason });
 }
 
+/** Continue in your own tool: an owner made the task's working branch (`created` false: it was already there). The target is the task; never a branch name, a repository or a person's name. */
+export function auditTaskWorkingBranchPublished(input: AuditBuilderBase & { taskId: string; created: boolean }): AuditEventInput {
+  return build("task.working_branch_published", input, { kind: "task", id: input.taskId }, { created: input.created });
+}
+
+/** Continue in your own tool: an owner asked Rovara to re-check a head that changed outside Rovara. `outcome` is `started` or a fixed word for why it was refused. */
+export function auditTaskRecheckRequested(input: AuditBuilderBase & { taskId: string; outcome: string }): AuditEventInput {
+  return build("task.recheck_requested", input, { kind: "task", id: input.taskId }, { outcome: input.outcome }, [input.outcome]);
+}
+
 // Script tokens (UX5b, switch `pt`) ------------------------------------------------------------------------------
 
 /**

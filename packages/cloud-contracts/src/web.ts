@@ -97,3 +97,4 @@ export { type AppProjectDetail, AppProjectDetailSchema, type AppProjectSummary, 
 export { type SetupApplyResponse, SetupApplyResponseSchema } from "./setup-proposal.js";
 export * from "./finished-as.js";
 export * from "./org-pending-approvals.js";
+export * from "./continue-loop.js";

@@ -3,6 +3,7 @@ import { decisionRouteDepsOf } from "./decisions.js";
 import { pendingDecisionRefs } from "../../decisions/routes.js";
 import { designActionsFor } from "./design-review.js";
 import { taskPageActionsFor } from "../developer-tasks/task-page.js";
+import { continueLoopViewFor } from "../developer-tasks/continue-loop.js";
 import { randomUUID } from "node:crypto";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { AgentXError, agentXError, forbiddenModelMatcher, isSystemOwnerId, MEMBER_GRANT_SK_PREFIX, memberGrantsPk, type AgentId, type RunInput, StartDeveloperTaskRequestSchema } from "@rovara-code/contracts";
@@ -527,10 +528,13 @@ export function developerTaskRouteDependencies(
     ...(deps.readSpecPullRequest === undefined ? {} : { readSpecPullRequest: deps.readSpecPullRequest }),
     ...(deps.publishSpecFiles === undefined ? {} : { publishSpecFiles: deps.publishSpecFiles }),
     ...(deps.currentBaseCommit === undefined ? {} : { currentBaseCommit: deps.currentBaseCommit }),
+    ...(deps.workingBranchPort === undefined ? {} : { workingBranchPort: deps.workingBranchPort }),
+    ...(deps.startOutsideRecheck === undefined ? {} : { startOutsideRecheck: deps.startOutsideRecheck }),
     ...(deps.taskAutonomyNow === undefined ? {} : { taskAutonomyNow: deps.taskAutonomyNow }),
     ...(deps.designReview === undefined ? {} : { designReview: deps.designReview }),
     designActions: designActionsFor(deps, caller),
     pageActions: (task) => taskPageActionsFor(developerTaskRouteDependencies(deps, caller), caller, task),
+    continueLoop: (task, tracked) => continueLoopViewFor(developerTaskRouteDependencies(deps, caller), caller, task, tracked),
     ...(deps.workflowE2EScenarioResults === undefined ? {} : { workflowE2EScenarioResults: deps.workflowE2EScenarioResults }),
     ...(deps.workflowE2EArtifact === undefined ? {} : { workflowE2EArtifact: deps.workflowE2EArtifact }),
     ...(deps.evidence === undefined ? {} : { evidence: deps.evidence }),

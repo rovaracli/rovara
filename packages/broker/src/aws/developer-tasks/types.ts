@@ -21,6 +21,7 @@ import type { MergeView } from "@rovara-code/contracts";
 import type { CodeHostRouter } from "../../plugins/registry.js";
 import { type AuditRuntime } from "../../audit/outbox.js";
 import type { DesignReviewRoundPorts } from "../../design-review/round-ports.js";
+import type { StartOutsideRecheck, WorkingBranchPort } from "./continue-loop.js";
 
 export interface DeveloperTaskRouteDependencies {
   documentClient: { send(command: unknown): Promise<unknown> };
@@ -91,6 +92,12 @@ export interface DeveloperTaskRouteDependencies {
   pageActions?: (task: DeveloperTaskRecord) => Promise<DeveloperTaskView["pageActions"]>;
   /** The commit the base branch of one of the task's pull requests is at now (Plan 6 Task 17: the commit Rovara merges into the branch). Throws when GitHub cannot say. */
   currentBaseCommit?(task: DeveloperTaskRecord, pullRequest: { repositoryId: string; number: number }): Promise<string>;
+  /** Continue in your own tool: the host operations on a task repository's working branch (`agentx/<taskId>`), for the publish action. Absent: the action answers RUNTIME_UNAVAILABLE. */
+  workingBranchPort?: WorkingBranchPort;
+  /** Continue in your own tool: the working branch, the pushes that did not come from Rovara and what the caller may press, for the caller these dependencies were built for. Absent: the view carries none. */
+  /** Continue in your own tool: starts the re-check of a head that changed outside Rovara (continue-loop.ts#StartOutsideRecheck). Absent: the action answers RUNTIME_UNAVAILABLE and the view offers none. */
+  startOutsideRecheck?: StartOutsideRecheck;
+  continueLoop?: (task: DeveloperTaskRecord, tracked: readonly MergeTrackingItem[]) => Promise<DeveloperTaskView["continueLoop"]>;
   /** How far Rovara may go on its own with the task now: the stricter of its frozen recipe and the company's limit, read each time (`suggest` when it cannot be read). Checked before each paid step of a round Rovara decided itself (Plan 6 Task 16). */
   taskAutonomyNow?(task: DeveloperTaskRecord): Promise<"suggest" | "prepare" | "run">;
   /** M1.3 Task 3.7: the per-scenario rows of the task's current browser and API round, for the task page; the screenshot behind a row, by digest; the baseline round asked for at APPROVE. */

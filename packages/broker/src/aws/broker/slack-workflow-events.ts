@@ -38,6 +38,7 @@ import { refreshTaskFeedbackForOwnerDecision } from "./terminal-and-github-event
 import { loadWorkflowE2EArtifact, loadWorkflowE2EScenarioResults, workflowE2EPresentation, workflowE2EPublicationChecks } from "./workflow-e2e-verification.js";
 import { getSlackBinding, sharedStopFences, sharedThread, sharedThreadOpen, verifiedSharedStopBinding } from "./workspace-preparation.js";
 import { specSeamsOf } from "./spec-wiring.js";
+import { workingBranchPortOf } from "./working-branch-port.js";
 import { recordSlackWorkflowRefusal } from "./workspace-routes.js";
 
 /**
@@ -395,6 +396,9 @@ export function workflowApplicationRouteDependencies(dependencies: AwsBrokerDepe
     refreshTaskFeedback: (taskId: string) => refreshTaskFeedbackForOwnerDecision(dependencies, taskId),
     // Wire lane D (MD-1): the spec seams, so a publication or a review that needs the spec works on this path too.
     ...specSeamsOf(dependencies),
+    // Continue in your own tool: the host side of "publish working branch".
+    workingBranchPort: dependencies.workingBranchPort ?? workingBranchPortOf(dependencies),
+    ...(dependencies.outsideRecheck === undefined ? {} : { startOutsideRecheck: dependencies.outsideRecheck }),
     // Proof and evidence (wire-proof): the evidence port, only while the proof switch is on (nothing is added otherwise).
     ...evidenceRouteDependencies(dependencies),
     ...nightlyHeadDependencies(dependencies),
