@@ -3,6 +3,7 @@
 // Variants: "mixed" (the default: a failed tracker check, a failed project check, a confirmation, a spending request and a rule proposal waiting) and "calm" (nothing waiting, every check passed).
 // Times are relative to now, so the seven-day age rule behaves the same on any day.
 import { FIXTURE_DEVELOPER, FIXTURE_ORG } from "../../web/support/fixtures.js";
+import { mockCellOrigin } from "./port.js";
 export type HealthVariant = "mixed" | "calm";
 let variant: HealthVariant | undefined;
 export function setHealthVariant(value: string | null): void { variant = value === "mixed" || value === "calm" ? value : undefined; }
@@ -25,7 +26,8 @@ export function healthAnswer(url: URL): { status: number; body: unknown } | unde
  if (path === "/v1/web/org/service-status") return done({ orgId: FIXTURE_ORG, source: "stored_runtime_qualification", checkedAt: ago(10 * 60_000), configured: true, checks: [
   { kind: "web", state: "ready", observation: "qualified", reason: "qualified", expiresAt: new Date(Date.now() + 3 * DAY).toISOString() }, { kind: "api", state: "ready", observation: "qualified", reason: "qualified", expiresAt: new Date(Date.now() + 3 * DAY).toISOString() }], teamRecord: { status: "ok", detail: "No team record delete is waiting." } });
  if (/^\/v1\/web\/projects\/[^/]+\/lessons\/sources$/u.test(path)) return done(lessonSources);
- if (path === "/v1/web/approvals") return done({ approvals: mixed ? [{ approvalId: "apr_aaaaaaaaaaaaaaaaaaaa", kind: "org_guardrail_relax", status: "PENDING", createdAt: ago(3 * HOUR) }] : [] });
+ // The company's open approvals as the server summarises them (`GET /v1/app/org/approvals/pending-summary`): the total, the newest with their own titles, and the confirmation page's bare link.
+ if (path === "/v1/web/org/approvals/pending-summary") return done(mixed ? { total: 3, approvals: [{ approvalId: "apr_aaaaaaaaaaaaaaaaaaaa", kind: "change", subjectKind: "org_guardrail_relax", title: "Raise the company's agent spending guardrail", proposedBy: "Maya", createdAt: ago(3 * HOUR), confirmUrl: mockCellOrigin() + "/v1/app/approve/apr_aaaaaaaaaaaaaaaaaaaa" }, { approvalId: "apr_bbbbbbbbbbbbbbbbbbbb", kind: "write", title: "Create an issue in Linear", createdAt: ago(5 * HOUR), confirmUrl: mockCellOrigin() + "/v1/app/approve/apr_bbbbbbbbbbbbbbbbbbbb" }], truncated: true } : { total: 0, approvals: [] });
  if (path === "/v1/web/spend-requests") return done({ spendRequests: mixed ? [{ spendRequestId: "spr_aaaaaaaaaaaaaaaaaaaa", status: "PENDING", createdAt: ago(2 * HOUR), expiresAt: new Date(Date.now() + 5 * DAY).toISOString(), kind: "month", amountUsd: 25, approverRole: "org_admin" }] : [] });
  if (path === "/v1/web/org/lessons/preset") return done({ preset: "standard" });
  if (path === "/v1/web/org/design-review") return done({ revision: 1, allowed: mixed, lock: {}, unreadable: false, ...(mixed ? { pending: { changeId: "chg_aaaaaaaaaaaaaaaaaaaa", kind: "lock", proposedByYou: false, expiresAt: new Date(Date.now() + 5 * DAY).toISOString() } } : {}) });

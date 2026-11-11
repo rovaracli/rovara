@@ -5,7 +5,7 @@ import { createMemoryRouter, RouterProvider } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { LiveScreen } from "../../packages/ui/src/screens/live/LiveScreen.js";
 import { isWorkListOn, WORK_STORAGE_KEY } from "../../packages/ui/src/screens/live/work-list-flags.js";
-import { WORK_VIEWS, formatAge, liveFiltersFor, liveStatus, nextActor, rowFromFinished, rowFromLive, sortFinished, sortRows, workViewFor, type WorkRow } from "../../packages/ui/src/screens/live/work-list.js";
+import { FINISHED_AS_WORDS, WORK_VIEWS, finishedState, formatAge, liveFiltersFor, liveStatus, nextActor, rowFromFinished, rowFromLive, sortFinished, sortRows, workViewFor, type WorkRow } from "../../packages/ui/src/screens/live/work-list.js";
 import { AppHostProvider, type ApiRequest, type ApiResponse } from "../../packages/ui/src/host.js";
 import { Announcer } from "../../packages/ui/src/design/Announcer.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
@@ -112,6 +112,15 @@ describe("a finished row", () => {
  });
 });
 
+describe("how a finished session ended", () => {
+ it("has plain words for each finishedAs, and none for a session an older server sent without it", () => {
+  expect(Object.fromEntries(Object.entries(FINISHED_AS_WORDS).map(([key, state]) => [key, state.label]))).toEqual({ merged: "Merged", closed: "Closed", finished_no_code: "Finished (no code)", finished: "Finished" });
+  const own = { label: "Failed", tone: "danger" as const };
+  expect(finishedState(undefined, own)).toBe(own);expect(finishedState("unknown", own)).toBe(own);expect(finishedState("finished", own)).toBe(own);expect(finishedState("merged", own)).toEqual({ label: "Merged", tone: "success" });
+  expect(rowFromFinished(finishedFixture({ finishedAs: "finished_no_code" }), NOW).state).toEqual({ label: "Finished (no code)", tone: "success" });
+ });
+});
+
 describe("the order", () => {
  const row = (id: string, attention: boolean, ageMs: number): WorkRow => ({ ...rowFromLive(liveFixture({ sessionId: id }), NOW), attention, ageMs });
  it("puts what needs attention first, then the rest, each most recently updated first", () => {
@@ -125,10 +134,10 @@ describe("the order", () => {
 });
 
 type Tile = ReturnType<typeof liveFixture>;
-function setup(options: { work?: boolean; path?: string; byFilter?: Record<string, Tile[]>; failFilter?: string; ended?: ReturnType<typeof finishedFixture>[]; theme?: "light" | "dark" } = {}) {
+function setup(options: { work?: boolean; path?: string; byFilter?: Record<string, Tile[]>; failFilter?: string; ended?: ReturnType<typeof finishedFixture>[]; cut?: boolean; theme?: "light" | "dark" } = {}) {
  const f = fakeHost(async (request: ApiRequest): Promise<ApiResponse> => {
   if (request.path.startsWith("/v1/app/live")) { const filter = new URL(request.path, "https://x.example").searchParams.get("filter") ?? "all";if (filter === options.failFilter) return { status: 403, body: { error: { code: "FORBIDDEN", message: "Your access ended." } } };return { status: 200, body: { tiles: options.byFilter?.[filter] ?? [] } }; }
-  if (request.path.startsWith("/v1/app/sessions?")) return { status: 200, body: { sessions: options.ended ?? [] } };
+  if (request.path.startsWith("/v1/app/sessions?")) return { status: 200, body: { sessions: options.ended ?? [], ...(options.cut === true ? { projectsCut: true } : {}) } };
   if (request.path === "/v1/app/nav") return { status: 200, body: navFixture() };
   return { status: 200, body: { notices: [], next: "settled" } };
  });
@@ -167,12 +176,31 @@ describe("the screen", () => {
   expect(f.calls()).toEqual(expect.arrayContaining(["/v1/app/live?filter=needs_me", "/v1/app/live?filter=failed"]));
   expect(screen.getAllByRole("heading", { level: 2 }).map(item => item.textContent)).toEqual(["Review the plan", "Retry the build"]);f.close();
  });
- it("reads Finished from the ended-sessions list: my own with no project, the project's with one", async () => {
+ it("reads Finished from the ended-sessions list: everything the reader may open (company scope) with no project, the project's with one", async () => {
   const f = setup({ path: "/app/live?view=finished", ended: [finishedFixture({ endedAt: new Date(Date.now() - 2 * 24 * HOUR).toISOString() })] });
   const row = (await screen.findByRole("heading", { name: "Fix duplicate refunds" })).closest("li")!;
-  expect(within(row).getByText("finished 2 d ago")).toBeTruthy();expect(within(row).getByText("Closed")).toBeTruthy();expect(within(row).queryByRole("button")).toBeNull();expect(f.calls()).toContain("/v1/app/sessions?owner=me&status=ended");expect(screen.getByText(/Your finished work/u)).toBeTruthy();
+  expect(within(row).getByText("finished 2 d ago")).toBeTruthy();expect(within(row).getByText("Closed")).toBeTruthy();expect(within(row).queryByRole("button")).toBeNull();expect(f.calls()).toContain("/v1/app/sessions?scope=company&status=ended");expect(f.calls().some(path => path.includes("owner=me"))).toBe(false);expect(screen.getByText(/Finished work you can open/u)).toBeTruthy();
   f.close();
   const withProject = setup({ path: "/app/live?view=finished&project=payments", ended: [] });await screen.findByText("No finished work yet");expect(withProject.calls()).toContain("/v1/app/sessions?project=payments&status=ended");expect(screen.getByText("Finished work in payments")).toBeTruthy();withProject.close();
+ });
+ it("says how each finished session ended, in plain words, from finishedAs; a failed run that the server calls plain finished keeps Failed", async () => {
+  const ended = [
+   finishedFixture({ sessionId: "ses_aaaaaaaaaaaaaaaaaaaa", title: "Merged one", finishedAs: "merged" }), finishedFixture({ sessionId: SESSION_B, title: "Closed one", finishedAs: "closed" }),
+   finishedFixture({ sessionId: SESSION_C, title: "Answered one", finishedAs: "finished_no_code" }), finishedFixture({ sessionId: "ses_dddddddddddddddddddd", title: "Plain one", finishedAs: "finished" }),
+   finishedFixture({ sessionId: "ses_eeeeeeeeeeeeeeeeeeee", title: "Failed one", finishedAs: "finished", summary: { ...finishedFixture().summary, status: "failed" } }), finishedFixture({ sessionId: "ses_ffffffffffffffffffff", title: "Older server" }),
+  ];
+  const f = setup({ path: "/app/live?view=finished", ended });await screen.findByRole("heading", { name: "Merged one" });
+  const word = (title: string) => within((screen.getByRole("heading", { name: title }).closest("li")) as HTMLElement).getByText(/^(Merged|Closed|Finished \(no code\)|Finished|Failed)$/u).textContent;
+  expect([word("Merged one"), word("Closed one"), word("Answered one"), word("Plain one"), word("Failed one"), word("Older server")]).toEqual(["Merged", "Closed", "Finished (no code)", "Finished", "Failed", "Closed"]);
+  f.close();
+ });
+ it("says some projects are left out when the answer says so, and only on the all-projects Finished list", async () => {
+  const f = setup({ path: "/app/live?view=finished", ended: [finishedFixture()], cut: true });await screen.findByRole("heading", { name: "Fix duplicate refunds" });
+  expect(screen.getByText("Some projects aren't included; filter by project to see them.")).toBeTruthy();f.close();
+  const whole = setup({ path: "/app/live?view=finished", ended: [finishedFixture()] });await screen.findByRole("heading", { name: "Fix duplicate refunds" });
+  expect(screen.queryByText(/Some projects aren't included/u)).toBeNull();whole.close();
+  const one = setup({ path: "/app/live?view=finished&project=payments", ended: [finishedFixture()], cut: true });await screen.findByRole("heading", { name: "Fix duplicate refunds" });
+  expect(screen.queryByText(/Some projects aren't included/u)).toBeNull();one.close();
  });
  it("keeps what loaded when one of the two Needs attention reads fails, with a notice; the empty state still carries the notice", async () => {
   const plan = tile({ sessionId: SESSION_B, title: "Review the plan", kind: "task", status: "needs_person", statusWords: "Needs you: decide", needsYou: true });

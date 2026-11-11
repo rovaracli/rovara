@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect } from "vitest";
-import { screen, within, waitFor } from "@testing-library/react";
+import { screen, within, waitFor, fireEvent } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { AppNavSchema } from "@agentx/cloud-contracts/web";
@@ -32,7 +32,7 @@ function reads(over: Partial<ReadinessReads> = {}): ReadinessReads {
   sources: ok({ sources: [{ sourceId: "src_a", kind: "anthropic", label: "Company Anthropic key", hasCredential: true, models: [{ catalog: { provider: "anthropic", modelId: "claude-secret-model-1" } }] }] }),
   projects: ok([project("payments", "ready", { checkedAt: "2026-11-10T09:00:00.000Z" })]), serviceStatus: ok(service as never), features: ok({ localAgents: false, usage: true, chains: false, notices: false, describe: true, scriptTokens: false, decisionCards: false }),
   lessons: [{ project: "payments", read: ok({ sources: [{ kind: "slack", scope: "#dev", enabled: true, retention: "30d", health: "ok", audience: "project", updatedAt: "2026-11-10T00:00:00Z", paused: false }], otherPaused: 0 } as never) }], lessonsSkipped: 0,
-  approvals: ok([]), spend: ok([]), preset: ok({ preset: "standard" } as never), designReview: ok({ allowed: false, unreadable: false }), busy: false, now: NOW, refetch() {}, ...over,
+  approvals: ok({ total: 0, approvals: [] }), spend: ok([]), preset: ok({ preset: "standard" } as never), designReview: ok({ allowed: false, unreadable: false }), busy: false, now: NOW, refetch() {}, ...over,
  };
 }
 
@@ -151,14 +151,16 @@ describe("status mapping: green needs an observation", () => {
 });
 
 describe("What needs an admin", () => {
- const approvals = ok([{ approvalId: "apr_a", kind: "org_guardrail", status: "PENDING", createdAt: "2026-11-10T10:00:00.000Z" }]);
+ const item = (id: string, over: Record<string, unknown> = {}) => ({ approvalId: id, kind: "change", subjectKind: "org_guardrail", title: "Loosen the company's design review rules", proposedBy: "Maya", createdAt: "2026-11-10T10:00:00.000Z", confirmUrl: "https://cell.example/v1/app/approve/" + id, ...over });
+ const approvals = ok({ total: 1, approvals: [item("apr_a")] } as never);
  const spend = ok([{ spendRequestId: "spr_a", status: "PENDING", createdAt: "2026-11-10T11:00:00.000Z", kind: "month", amountUsd: 25 }]);
  it("lists confirmations, spending requests and rule proposals, each with where to fix it; waiting-for-others comes last", () => {
   const r = reads({ approvals, spend, designReview: ok({ allowed: false, unreadable: false, pending: { kind: "allowed", proposedByYou: true, expiresAt: "2026-11-17T10:00:00.000Z" } }), preset: ok({ preset: "regulated", proposal: { changeId: "c", to: "standard", mine: false, soleOwner: false, expiresAt: 1 } } as never) });
   const need = buildNeedsAdmin(r, buildReadiness(r, NOW));
   expect(need.items.map(item => item.id)).toEqual(["approval:apr_a", "spend:spr_a", "rule:lessons-preset", "rule:design-review"]);
-  expect(need.items[0]).toMatchObject({ title: "Protected change to confirm", link: { to: "/app/admin/waiting" }, when: "Asked Nov 10, 2026, 10:00 AM UTC" });
-  expect(need.items[0]!.why).not.toMatch(/org_guardrail/);expect(need.items[0]!.details).toEqual(["Kind: org_guardrail"]);
+  expect(need.items[0]).toMatchObject({ title: "Loosen the company's design review rules", link: { to: "/app/admin/waiting" }, when: "Asked Nov 10, 2026, 10:00 AM UTC", confirmUrl: "https://cell.example/v1/app/approve/apr_a", why: "A protected change waits for a person to confirm. Asked by Maya." });
+  expect(need.items[0]!.why).not.toMatch(/org_guardrail/);expect(need.items[0]!.details).toEqual(["Kind: change", "Change: org_guardrail"]);
+  expect(need.approvals).toEqual({ total: 1, truncated: false });
   expect(need.items[1]).toMatchObject({ title: "Spending request: More monthly budget", why: "A spending request for $25.00 is waiting for a decision." });
   expect(need.items[3]).toMatchObject({ others: true, link: { to: "/app/admin/how-we-work" } });expect(need.items[3]!.why).toMatch(/You asked/);
   expect(need.unread).toEqual([]);
@@ -171,12 +173,12 @@ describe("What needs an admin", () => {
  it("never claims 'nothing' over a read that failed: it names what could not be read", () => {
   const r = reads({ approvals: failed, spend: failed });
   const need = buildNeedsAdmin(r, buildReadiness(r, NOW));
-  expect(need.items).toEqual([]);expect(need.unread).toEqual(["confirmations waiting for you", "spending requests"]);
+  expect(need.items).toEqual([]);expect(need.unread).toEqual(["approvals waiting in the company", "spending requests"]);
  });
  it("a refused or missing read is unread too: for an owner or admin it is an anomaly, never 'nothing'", () => {
   for (const read of [refused, missing]) {
    const r = reads({ approvals: read, spend: read, preset: read, designReview: read });
-   expect(buildNeedsAdmin(r, buildReadiness(r, NOW)).unread).toEqual(["confirmations waiting for you", "spending requests", "company lesson rules", "company design review rules"]);
+   expect(buildNeedsAdmin(r, buildReadiness(r, NOW)).unread).toEqual(["approvals waiting in the company", "spending requests", "company lesson rules", "company design review rules"]);
   }
  });
  it("every read the list depends on is named when it did not answer, the lessons reads included", () => {
@@ -188,9 +190,21 @@ describe("What needs an admin", () => {
   const r = reads({ lessons: [{ project: "payments", read: ok({ sources: [{ kind: "slack", scope: "#dev", enabled: true, retention: "30d", health: "failing", audience: "project", updatedAt: "x", paused: false }], otherPaused: 0 } as never) }] });
   expect(buildNeedsAdmin(r, buildReadiness(r, NOW)).items.map(item => [item.title, item.link.to])).toEqual([["Lessons and team record sources", "/app/projects/payments?tab=sources"]]);
  });
- it("only items still PENDING are listed", () => {
-  const r = reads({ approvals: ok([{ approvalId: "apr_a", kind: "k", status: "APPROVED", createdAt: "2026-11-10T10:00:00.000Z" }, { approvalId: "apr_b", kind: "k", status: "PENDING", createdAt: "2026-11-10T10:00:00.000Z" }]), spend: ok([{ spendRequestId: "spr_a", status: "EXPIRED", createdAt: "2026-11-10T11:00:00.000Z" }]) });
-  expect(buildNeedsAdmin(r, buildReadiness(r, NOW)).items.map(item => item.id)).toEqual(["approval:apr_b"]);
+ it("every approval the summary lists is an item, the total and the truncated flag come through, and a proposer or kind the summary leaves out is not invented", () => {
+  const r = reads({ approvals: ok({ total: 120, truncated: true, approvals: [item("apr_b", { kind: "write", subjectKind: undefined, proposedBy: undefined }), item("apr_c", { kind: "step" })] } as never) });
+  const need = buildNeedsAdmin(r, buildReadiness(r, NOW));
+  expect(need.items.map(entry => entry.id)).toEqual(["approval:apr_b", "approval:apr_c"]);
+  expect(need.approvals).toEqual({ total: 120, truncated: true });
+  expect(need.items[0]).toMatchObject({ why: "An agent's change waits for a person to confirm.", details: ["Kind: write"] });
+  expect(need.items[1]!.why).toBe("A step of a run waits for a person to confirm. Asked by Maya.");
+  // A kind this version does not know is still listed, in general words.
+  const odd = reads({ approvals: ok({ total: 1, approvals: [item("apr_d", { kind: "unknown" })] } as never) });
+  expect(buildNeedsAdmin(odd, buildReadiness(odd, NOW)).items[0]!.why).toBe("An approval is waiting for a person to confirm. Asked by Maya.");
+ });
+ it("an empty summary says nothing is waiting, and no total is claimed over a read that did not answer", () => {
+  expect(buildNeedsAdmin(reads({ approvals: ok({ total: 0, approvals: [] }) }), buildReadiness(reads(), NOW)).approvals).toEqual({ total: 0, truncated: false });
+  const r = reads({ approvals: failed });
+  expect(buildNeedsAdmin(r, buildReadiness(r, NOW)).approvals).toBeUndefined();
  });
 });
 
@@ -207,7 +221,7 @@ const answers = (): Answers => ({
  "/v1/app/projects": { status: 200, body: { projects: [{ name: "payments", status: "active", latestRevision: 1, repositories: [], myRole: "maintainer", setup: { status: "failed", checkedAt: "2026-11-10T09:00:00.000Z" } }] } },
  "/v1/app/org/service-status": { status: 200, body: service },
  "/v1/app/projects/payments/lessons/sources": { status: 200, body: { sources: [{ kind: "slack", scope: "#dev", enabled: true, retention: "30d", health: "ok", audience: "project", updatedAt: "2026-11-10T00:00:00Z", paused: false }], otherPaused: 0 } },
- "/v1/app/approvals": { status: 200, body: { approvals: [{ approvalId: "apr_aaaaaaaaaaaaaaaaaaaa", kind: "org_guardrail", status: "PENDING", createdAt: "2026-11-10T10:00:00.000Z" }] } },
+ "/v1/app/org/approvals/pending-summary": { status: 200, body: { total: 2, approvals: [{ approvalId: "apr_aaaaaaaaaaaaaaaaaaaa", kind: "change", subjectKind: "org_guardrail", title: "Loosen the company's design review rules", proposedBy: "Maya", createdAt: "2026-11-10T10:00:00.000Z", confirmUrl: "https://cell.example/v1/app/approve/apr_aaaaaaaaaaaaaaaaaaaa" }], truncated: true } },
  "/v1/app/spend-requests": { status: 200, body: { spendRequests: [{ spendRequestId: "spr_aaaaaaaaaaaaaaaaaaaa", status: "PENDING", createdAt: "2026-11-10T11:00:00.000Z", kind: "month", amountUsd: 25 }] } },
  "/v1/app/org/lessons/preset": { status: 200, body: { preset: "standard" } },
  "/v1/app/org/design-review": { status: 200, body: { revision: 1, allowed: false, lock: {}, unreadable: false } },
@@ -224,7 +238,7 @@ function mount(options: { on?: boolean; role?: string; path?: string; override?:
  return { ...f, ...view, query, router, close() { view.unmount();router.dispose();query.clear(); } };
 }
 const called = (f: ReturnType<typeof mount>, path: string) => f.request.mock.calls.filter(([r]) => r.path.split("?")[0] === path).length;
-const READ_PATHS = ["/v1/app/github/installations", "/v1/app/connections", "/v1/app/org/model-sources", "/v1/app/approvals", "/v1/app/spend-requests", "/v1/app/org/lessons/preset", "/v1/app/org/design-review", "/v1/app/projects/payments/lessons/sources"];
+const READ_PATHS = ["/v1/app/github/installations", "/v1/app/connections", "/v1/app/org/model-sources", "/v1/app/org/approvals/pending-summary", "/v1/app/spend-requests", "/v1/app/org/lessons/preset", "/v1/app/org/design-review", "/v1/app/projects/payments/lessons/sources"];
 
 describe("the Health page", () => {
  it("off: today's page, and none of the readiness reads are made", async () => {
@@ -280,7 +294,16 @@ describe("the admin overview", () => {
   try {
    await screen.findByRole("heading", { name: "Company settings" });
    expect(screen.queryByRole("heading", { name: "What needs an admin" })).toBeNull();
-   expect(called(f, "/v1/app/approvals")).toBe(0);expect(called(f, "/v1/app/spend-requests")).toBe(0);expect(called(f, "/v1/app/connections")).toBe(0);
+   expect(called(f, "/v1/app/org/approvals/pending-summary")).toBe(0);expect(called(f, "/v1/app/spend-requests")).toBe(0);expect(called(f, "/v1/app/connections")).toBe(0);
+  } finally { f.close(); }
+ });
+ it("on, owner: an approval whose link is not this app's own confirmation address is not opened from the list; the waiting list is offered instead", async () => {
+  const f = mount({ path: "/app/admin", override: { "/v1/app/org/approvals/pending-summary": { status: 200, body: { total: 1, approvals: [{ approvalId: "apr_aaaaaaaaaaaaaaaaaaaa", kind: "change", title: "Loosen the company's design review rules", createdAt: "2026-11-10T10:00:00.000Z", confirmUrl: "https://elsewhere.example/v1/app/approve/apr_aaaaaaaaaaaaaaaaaaaa" }] } } } });
+  try {
+   const section = (await screen.findByRole("heading", { name: "What needs an admin" })).closest("section")!;
+   await waitFor(() => expect(within(section).getByText("Loosen the company's design review rules")).toBeTruthy());
+   expect(within(section).getByText("1 approval is waiting in the company.")).toBeTruthy();expect(within(section).queryByText(/may be incomplete/)).toBeNull();
+   expect(within(section).queryByRole("button", { name: "Open to review" })).toBeNull();
   } finally { f.close(); }
  });
  it("on, owner: What needs an admin lists the waiting items with links, and the health counts link to the Health page", async () => {
@@ -288,7 +311,11 @@ describe("the admin overview", () => {
   try {
    const heading = await screen.findByRole("heading", { name: "What needs an admin" });
    const section = heading.closest("section")!;
-   await waitFor(() => expect(within(section).getByText("Protected change to confirm")).toBeTruthy());
+   await waitFor(() => expect(within(section).getByText("Loosen the company's design review rules")).toBeTruthy());
+   expect(within(section).getByText("2 approvals are waiting in the company. The list may be incomplete.")).toBeTruthy();
+   expect(within(section).getByText(/Asked by Maya/)).toBeTruthy();
+   fireEvent.click(within(section).getByRole("button", { name: "Open to review" }));
+   expect(f.host.openExternal).toHaveBeenCalledWith("https://cell.example/v1/app/approve/apr_aaaaaaaaaaaaaaaaaaaa");
    expect(within(section).getByText("Spending request: More monthly budget")).toBeTruthy();
    expect(within(section).getByText("Tracker: Linear or Jira")).toBeTruthy();expect(within(section).getByText("Test environment: payments")).toBeTruthy();
    const links = within(section).getAllByRole("link").map(link => link.getAttribute("href"));
@@ -306,14 +333,14 @@ describe("the admin overview", () => {
   try {
    await screen.findByRole("heading", { level: 1 });await waitFor(() => expect(called(f, "/v1/app/me")).toBeGreaterThan(0));
    expect(screen.queryByRole("heading", { name: "What needs an admin" })).toBeNull();
-   expect(called(f, "/v1/app/approvals")).toBe(0);expect(called(f, "/v1/app/spend-requests")).toBe(0);
+   expect(called(f, "/v1/app/org/approvals/pending-summary")).toBe(0);expect(called(f, "/v1/app/spend-requests")).toBe(0);
   } finally { f.close(); }
  });
  it("on, nothing waiting and every read answered: says so plainly; a failed read is named instead", async () => {
-  const quiet: Answers = { "/v1/app/approvals": { status: 200, body: { approvals: [] } }, "/v1/app/spend-requests": { status: 200, body: { spendRequests: [] } }, "/v1/app/connections": { status: 200, body: { connections: [] } }, "/v1/app/projects": { status: 200, body: { projects: [] } } };
+  const quiet: Answers = { "/v1/app/org/approvals/pending-summary": { status: 200, body: { total: 0, approvals: [] } }, "/v1/app/spend-requests": { status: 200, body: { spendRequests: [] } }, "/v1/app/connections": { status: 200, body: { connections: [] } }, "/v1/app/projects": { status: 200, body: { projects: [] } } };
   const f = mount({ path: "/app/admin", override: quiet });
   try { await screen.findByText("Nothing needs an admin right now."); } finally { f.close(); }
-  const g = mount({ path: "/app/admin", override: { ...quiet, "/v1/app/approvals": { status: 500, body: {} } } });
-  try { await screen.findByText(/Couldn't read: confirmations waiting for you/, undefined, { timeout: 10000 }); expect(screen.queryByText("Nothing needs an admin right now.")).toBeNull(); } finally { g.close(); }
+  const g = mount({ path: "/app/admin", override: { ...quiet, "/v1/app/org/approvals/pending-summary": { status: 500, body: {} } } });
+  try { await screen.findByText(/Couldn't read: approvals waiting in the company/, undefined, { timeout: 10000 }); expect(screen.queryByText("Nothing needs an admin right now.")).toBeNull(); } finally { g.close(); }
  });
 });

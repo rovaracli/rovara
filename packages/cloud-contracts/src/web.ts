@@ -97,3 +97,6 @@ export { type AppProjectDetail, AppProjectDetailSchema, type AppProjectSummary, 
 export { type SetupApplyResponse, SetupApplyResponseSchema } from "./setup-proposal.js";
 export * from "./finished-as.js";
 export * from "./org-pending-approvals.js";
+
+// A project's merge rules (`GET /v1/app/projects/{p}/code-settings`, any project role): Code's own reader, named here so the web app reads it through its one entry (exp/wire-reads; Working agreement).
+export { CodeSettingsResponseReaderSchema, type CodeSettingsResponseRead } from "@rovara-code/contracts";

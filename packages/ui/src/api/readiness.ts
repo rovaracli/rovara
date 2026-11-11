@@ -7,13 +7,14 @@
 //   GET /v1/app/projects                                          each project's environment check
 //   GET /v1/app/org/service-status                                stored runtime qualification and the team record's delete check
 //   GET /v1/app/projects/{p}/lessons/sources                      the team record's sources, per project (the first 20 projects)
-//   GET /v1/app/approvals?status=PENDING, /v1/app/spend-requests  what waits for a second admin
+//   GET /v1/app/org/approvals/pending-summary                     the company's open approvals: the total and the newest (owner or admin; the contract's reader)
+//   GET /v1/app/spend-requests                                    spending requests that wait for a second admin
 //   GET /v1/app/org/lessons/preset, /v1/app/org/design-review     company rules a different admin must confirm (owner or admin; anyone else is refused)
 // A read that is refused, missing or failed is never turned into a figure: it is `refused`, `missing` or `failed`, and the page says "Unknown" for it.
 import { useEffect, useMemo, useState } from "react";
 import { useQueries, useQuery, useQueryClient, type UseQueryResult } from "@tanstack/react-query";
 import { z } from "zod";
-import { AppProjectsResponseSchema, GithubInstallationsResponseReaderSchema, OrgSlackWorkspaceEvidenceResponseReaderSchema, type OrgServiceStatus } from "@agentx/cloud-contracts/web";
+import { AppProjectsResponseSchema, GithubInstallationsResponseReaderSchema, ORG_PENDING_APPROVALS_PATH, OrgPendingApprovalsSummaryReaderSchema, OrgSlackWorkspaceEvidenceResponseReaderSchema, type OrgServiceStatus } from "@agentx/cloud-contracts/web";
 import { useAppHost } from "../host.js";
 import { ApiError } from "./errors.js";
 import { createApiClient } from "./client.js";
@@ -43,7 +44,6 @@ export const ReadinessGithubSchema = { parse(value: unknown) { return GithubInst
 const RequestsSchema = z.object({ requests: z.array(z.object({ accountLogin: text(100).optional(), status: text(64), requestedAt: text(40) })).max(1000) });
 const ConnectionsSchema = z.object({ connections: z.array(z.object({ connectionId: text(100), type: text(64), label: text(200), hasCredential: z.boolean(), access: text(20).optional(), updatedAt: text(40), lastCheck: z.object({ ok: z.boolean(), at: text(40) }).optional(), ticketUpdates: text(40).optional() })).max(1000) });
 const SourcesSchema = z.object({ sources: z.array(z.object({ sourceId: text(100), kind: text(40), label: text(200), hasCredential: z.boolean(), models: z.array(z.object({ catalog: z.object({ provider: text(100), modelId: text(256) }) })).max(20) })).max(10), order: z.array(text(100)).max(12).optional() });
-const ApprovalsSchema = z.object({ approvals: z.array(z.object({ approvalId: text(200), kind: text(200), status: text(40), createdAt: text(40), confirmUrl: text(2048).optional() })).max(1000) });
 const ProjectsSchema = { parse(value: unknown) { return AppProjectsResponseSchema.parse(value).projects.map(p => ({ name: p.name, status: p.status, setup: { status: p.setup.status, checkedAt: p.setup.checkedAt, failedStep: p.setup.failedStep } })); } };
 
 export type ReadinessGithub = ReturnType<typeof ReadinessGithubSchema.parse>;
@@ -51,7 +51,9 @@ export type ReadinessRequests = z.infer<typeof RequestsSchema>["requests"];
 export type ReadinessConnection = z.infer<typeof ConnectionsSchema>["connections"][number];
 export type ReadinessSources = z.infer<typeof SourcesSchema>;
 export type ReadinessProject = ReturnType<typeof ProjectsSchema.parse>[number];
-export type ReadinessApproval = z.infer<typeof ApprovalsSchema>["approvals"][number];
+/** The company's open approvals as the server summarises them: `total`, the newest `approvals`, and `truncated` when the open index was longer than one answer reads. */
+export type ReadinessApprovals = z.output<typeof OrgPendingApprovalsSummaryReaderSchema>;
+export type ReadinessApproval = ReadinessApprovals["approvals"][number];
 export type ReadinessSpendRequest = z.infer<typeof SpendRequestsReaderSchema>["spendRequests"][number];
 export type ReadinessSlack = { checkedAt: string; associationCount: number; unavailableCount: number };
 export type ReadinessDesignReview = { allowed: boolean; unreadable: boolean; pending?: { kind: "allowed" | "lock"; proposedByYou: boolean; expiresAt: string } };
@@ -62,14 +64,14 @@ export type LessonsRead = { project: string; read: Read<LessonSources> };
 export const LESSONS_PROJECT_CAP = 20;
 export const READINESS_PATHS = {
  github: "/v1/app/github/installations", githubRequests: "/v1/app/github/requests", connections: "/v1/app/connections", slack: "/v1/app/org/slack-workspace-evidence", sources: "/v1/app/org/model-sources",
- projects: "/v1/app/projects", approvals: "/v1/app/approvals?status=PENDING", spend: "/v1/app/spend-requests",
+ projects: "/v1/app/projects", approvals: ORG_PENDING_APPROVALS_PATH, spend: "/v1/app/spend-requests",
 } as const;
 
 export interface ReadinessScope { orgId: string; developerId: string; role: string; enabled: boolean }
 export interface ReadinessReads {
  github: Read<ReadinessGithub>; githubRequests: Read<ReadinessRequests>; connections: Read<ReadinessConnection[]>; slack: Read<ReadinessSlack>; sources: Read<ReadinessSources>; projects: Read<ReadinessProject[]>;
  serviceStatus: Read<OrgServiceStatus>; features: Read<ReadinessFeatures>; lessons: LessonsRead[]; lessonsSkipped: number;
- approvals: Read<ReadinessApproval[]>; spend: Read<ReadinessSpendRequest[]>; preset: Read<LessonCompanyPreset>; designReview: Read<ReadinessDesignReview>;
+ approvals: Read<ReadinessApprovals>; spend: Read<ReadinessSpendRequest[]>; preset: Read<LessonCompanyPreset>; designReview: Read<ReadinessDesignReview>;
  /** The clock (milliseconds), kept in state so render stays pure: set when the page opens, on every "Check again" and once a minute, so a tab left open ages its observations. */ now: number; /** True while any read is still going. */ busy: boolean; refetch(): void;
 }
 
@@ -94,7 +96,7 @@ export function useReadinessReads({ orgId, developerId, role, enabled }: Readine
  useEffect(() => { serviceApi.setScopeActive(enabled);return () => { serviceApi.setScopeActive(false); }; }, [serviceApi, enabled]);
  const serviceStatus = useQuery({ ...options("service-status", () => serviceApi.read()) }) as UseQueryResult<OrgServiceStatus>;
  const nav = useNav();
- const approvals = useQuery({ ...options("approvals", () => api.get(READINESS_PATHS.approvals, ApprovalsSchema)) }) as UseQueryResult<{ approvals: ReadinessApproval[] }>;
+ const approvals = useQuery({ ...options("approvals", () => api.get(READINESS_PATHS.approvals, OrgPendingApprovalsSummaryReaderSchema)) }) as UseQueryResult<ReadinessApprovals>;
  const spend = useQuery({ ...options("spend", () => api.get(READINESS_PATHS.spend, SpendRequestsReaderSchema)) }) as UseQueryResult<{ spendRequests: ReadinessSpendRequest[] }>;
  const lessonsApi = useMemo(() => createLessonsApi(host), [host]), designApi = useMemo(() => createDesignReviewCompanyApi(host), [host]);
  const preset = useQuery({ ...options("preset", () => lessonsApi.companyPreset()) }) as UseQueryResult<LessonCompanyPreset>;
@@ -108,7 +110,7 @@ export function useReadinessReads({ orgId, developerId, role, enabled }: Readine
   slack: toRead(slack), sources: toRead(sources), projects: toRead(projects), serviceStatus: toRead(serviceStatus),
   features: toReadOf(nav, value => ({ localAgents: value.features.localAgents, usage: value.features.usage, chains: value.features.chains, notices: value.features.notices, describe: value.features.describe, scriptTokens: value.features.scriptTokens === true, decisionCards: value.features.decisionCards === true })),
   lessons: shown.map((project, index) => ({ project, read: toRead(lessonQueries[index]! as UseQueryResult<LessonSources>) })), lessonsSkipped: Math.max(0, names.length - shown.length),
-  approvals: toReadOf(approvals, value => value.approvals), spend: toReadOf(spend, value => value.spendRequests),
+  approvals: toRead(approvals), spend: toReadOf(spend, value => value.spendRequests),
   preset: toRead(preset), designReview: toRead(designReview),
   now, busy: all.some(query => query.isFetching), refetch() { setNow(Date.now());for (const query of all) void query.refetch({ cancelRefetch: false }); },
  };
