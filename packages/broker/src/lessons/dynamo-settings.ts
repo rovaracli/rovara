@@ -11,6 +11,7 @@ import { errorName, type Item } from "../agents/table-writes.js";
 import type { TeamRecordTable } from "../team-record/types.js";
 import { LOAD_BUDGET_MIN, TIER0_APPROVAL_DEFAULT, type LearningPreset, type LearningSettings, type LearningSettingsReader, type LoadBudgetSetting } from "./policy.js";
 import type { PresetChange, PresetChangeStore, PresetScope, PresetStore } from "./preset-setting.js";
+import type { LocalToolsSettings, LocalToolsSettingsStore } from "./local-tools.js";
 import type { SoleOwnerSwitchChange, SoleOwnerSwitchStore, Tier0Fence, Tier0Level, Tier0Scope, Tier0SettingsStore } from "./sole-owner-switch.js";
 
 const pkOf = (scope: Tier0Scope): string => teamRecordPk(scope.workspaceId, scope.kind === "project" ? scope.project : undefined);
@@ -251,4 +252,38 @@ export function dynamoLearningSettings(table: TeamRecordTable, settings: Tier0Se
       };
     },
   };
+}
+
+const LOCAL_TOOLS_PROJECT_SK = "LESSONSET#LOCALTOOLS";
+const LOCAL_TOOLS_COMPANY_SK = "LESSONSET#COMPANYSTAY";
+/**
+ * Lessons for local coding tools (decision 46b), read now on every call and never cached: the project's own "local coding tools can fetch lessons" choice (`LESSONSET#LOCALTOOLS`, `enabled`: absent means ON, because the default is on
+ * under Standard) and the company's "lessons stay in Rovara" switch (`LESSONSET#COMPANYSTAY`, `stays`: absent means off). Neither item names a person. A stored value that is not a boolean is not "unset": the read throws and the caller refuses.
+ */
+export class DynamoLocalToolsSettings implements LocalToolsSettingsStore {
+  constructor(private readonly table: TeamRecordTable) {}
+  private async item(key: { pk: string; sk: string }): Promise<Item | undefined> {
+    return (await this.table.documentClient.send(new GetCommand({ TableName: this.table.tableName, Key: key, ConsistentRead: true })) as { Item?: Item }).Item;
+  }
+  async read(workspaceId: string, project: string): Promise<LocalToolsSettings> {
+    const [own, company] = await Promise.all([
+      this.item({ pk: teamRecordPk(workspaceId, project), sk: LOCAL_TOOLS_PROJECT_SK }),
+      this.item({ pk: teamRecordPk(workspaceId, undefined), sk: LOCAL_TOOLS_COMPANY_SK }),
+    ]);
+    if (own !== undefined && typeof own.enabled !== "boolean") throw new Error("the stored local-tools setting is not valid");
+    if (company !== undefined && typeof company.stays !== "boolean") throw new Error("the stored lessons-stay-in-Rovara setting is not valid");
+    return { ...(own === undefined ? {} : { projectOn: own.enabled as boolean }), companyStays: company === undefined ? false : company.stays as boolean };
+  }
+  async readCompany(workspaceId: string): Promise<boolean> {
+    const company = await this.item({ pk: teamRecordPk(workspaceId, undefined), sk: LOCAL_TOOLS_COMPANY_SK });
+    if (company !== undefined && typeof company.stays !== "boolean") throw new Error("the stored lessons-stay-in-Rovara setting is not valid");
+    return company === undefined ? false : company.stays as boolean;
+  }
+  // The items name no person (the ledger has the actor): the project erase and the workspace erase already wipe the `LESSONSET` prefix.
+  async setProject(workspaceId: string, project: string, enabled: boolean, at: number): Promise<void> {
+    await this.table.documentClient.send(new PutCommand({ TableName: this.table.tableName, Item: { pk: teamRecordPk(workspaceId, project), sk: LOCAL_TOOLS_PROJECT_SK, entityType: "LESSON_SETTINGS", enabled, updatedAt: at } }));
+  }
+  async setCompany(workspaceId: string, stays: boolean, at: number): Promise<void> {
+    await this.table.documentClient.send(new PutCommand({ TableName: this.table.tableName, Item: { pk: teamRecordPk(workspaceId, undefined), sk: LOCAL_TOOLS_COMPANY_SK, entityType: "LESSON_SETTINGS", stays, updatedAt: at } }));
+  }
 }

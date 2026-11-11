@@ -121,7 +121,8 @@ export function createAgentXMcpServer(options: {
         }),
       };
       try {
-        await context.compatibility();
+        // A tool that must never stop an agent (the lessons tool) skips the version check and answers any failure with its own plain result.
+        if (tool.unavailable === undefined) await context.compatibility();
         const result = await tool.handler(context, input, call);
         const notice = admin ? await context.adminSignInNotice?.() : undefined;
         // First, so the length cap never cuts it off a long result.
@@ -129,6 +130,11 @@ export function createAgentXMcpServer(options: {
         return { content: [{ type: "text" as const, text: safeText(text, LONGEST_TEXT) }], structuredContent: safeStructured(result.structured) };
       } catch (error) {
         const failure = error instanceof ToolError ? error : new ToolError("CONTROL_PLANE_UNAVAILABLE", "the AgentX MCP server hit an unexpected problem");
+        if (tool.unavailable !== undefined) {
+          options.log?.({ event: "tool.unavailable", tool: tool.name, code: failure.code });
+          const fallback = tool.unavailable(failure);
+          return { content: [{ type: "text" as const, text: safeText(fallback.text, LONGEST_TEXT) }], structuredContent: safeStructured(fallback.structured) };
+        }
         // The code and tool only: never the message, which can quote the developer's text.
         options.log?.({ event: "tool.failed", tool: tool.name, code: failure.code, ...(error instanceof ToolError ? {} : { error: error instanceof Error ? error.name : "unknown" }) });
         return errorResult(failure);

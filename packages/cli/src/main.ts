@@ -50,6 +50,8 @@ import { loadProjectConfig } from "./config.js";
 import { checkDeveloperProject, projectCheckText } from "./developer/project-check.js";
 import { projectCodeSettings } from "./developer/code-settings.js";
 import { projectLessonsRepo } from "./developer/lessons-repo.js";
+import { localLessons, localToolsSetting } from "./developer/lessons-local.js";
+import type { Checkout } from "./developer/checkout.js";
 import { archiveProjectQuestion, archiveProjectText, changeDeveloperProjectArchive, changeDeveloperProjectSettings, createDeveloperProject, restoreProjectText, createProjectText, developerLogout, projectSettingsText, projectShowText, showDeveloperProject, fetchDeveloperProjects, fetchLinkedIdentities, linkSignInMethod, linkText, logoutText, unlinkSignInMethod, unlinkText, whoamiText, type FreshSignIn } from "./developer/commands.js";
 import { readDeveloperConfig, resolveDeveloperEnvironment } from "./developer/config.js";
 import {
@@ -211,6 +213,9 @@ export interface CliDependencies {
   stdin?: Readable;
   /** `agentx mcp`'s clock for waits, for tests. */
   mcpClock?: McpServeDeps["clock"];
+  /** `agentx lessons` and the MCP lessons tool (decision 46b), for tests: the directory and what its git checkout holds. */
+  cwd?: string;
+  checkout?: (cwd: string) => Promise<Checkout>;
   /** `agentx mcp install`'s runner for the claude command, for tests. */
   runCommand?: McpInstallDeps["run"];
   /** `agentx mcp install`'s Codex settings folder, for tests; CODEX_HOME by default. */
@@ -729,6 +734,27 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
   const printResult = (command: Command, result: AppResult) => {
     services.stdout.write(globalOptions(command).json ? formatSuccess({ env: result.env, url: result.url, ...result.data }, true) : result.text);
   };
+  // Lessons for local coding tools (decision 46b, lane B2): the team's lessons for the repository this command runs in. Read only here; never fails an agent (one fixed line and exit 0).
+  const lessonsCommand = program
+    .command("lessons")
+    .description("print your team's Rovara lessons for the repository you are in: short rules learned from past reviews and fixes. Run it before you plan or code; it prints one line and exits 0 when none apply or Rovara can't be reached")
+    .option("--task <summary>", "a one-line summary of the change; it only ranks the lessons and is never stored")
+    .option("--files <paths...>", "the files you expect to change (relative to the repository)")
+    .option("--stage <stage>", "plan, code (the default) or review")
+    .option("--repo <remote>", "the repository's git remote, when it is not the origin of the current directory")
+    .option("--all", "the whole set for this repository in one block (up to 300 lessons), not only the best fit", false)
+    .action(async (options: { task?: string; files?: string[]; stage?: string; repo?: string; all: boolean }, command: Command) => {
+      const globals = globalOptions(command);
+      const answer = await localLessons({ ...developerSession(), ...(dependencies.checkout === undefined ? {} : { checkout: dependencies.checkout }) }, developerEnv(command), {
+        project: globals.project, repo: options.repo, task: options.task, files: options.files ?? [], stage: options.stage, all: options.all, cwd: dependencies.cwd ?? process.cwd(),
+      });
+      services.stdout.write(globals.json ? formatSuccess(answer.data, true) : answer.text);
+    });
+  lessonsCommand
+    .command("local")
+    .description("show whether local coding tools get this project's lessons and why not, or switch it on or off for the project (a maintainer; on by default under the Standard preset, off under Regulated)")
+    .argument("[action]", "status (the default), on or off")
+    .action(async (action: string | undefined, _options: unknown, command: Command) => printResult(command, await localToolsSetting(developerSession(), developerEnv(command), globalOptions(command).project, action)));
   // Chains and triggers are hidden from help (owner decision 2026-11-07); the commands, code and data stay, so nothing existing breaks.
   const chains = program.command("chains", { hidden: true }).description("design, publish, share and roll back chains of agents and approval gates");
   chains
@@ -2669,6 +2695,8 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
           adminSession,
           adminSignInExpiry,
           cliInvocation,
+          ...(dependencies.cwd === undefined ? {} : { cwd: dependencies.cwd }),
+          ...(dependencies.checkout === undefined ? {} : { checkout: dependencies.checkout }),
           stdin: dependencies.stdin ?? process.stdin,
           stdout: (dependencies.stdout ?? process.stdout) as Writable,
           stderr: services.stderr,

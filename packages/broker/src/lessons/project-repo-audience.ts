@@ -15,6 +15,7 @@
 import { QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { PROJECT_REVISION_SK_PREFIX, RepositoryDefinitionSchema, codeRepositoriesOf, projectPk, projectRevisionKey, repositoryHostOf, type OrgId, type RepositoryDefinition } from "@agentx/contracts";
 import { isScopeClosed } from "../team-record/item-head.js";
+import { normalizeRemote } from "./repo-remote.js";
 import { ACL_SCOPE_MAX, type Lesson } from "./types.js";
 
 /** The places (`<source>:repo/<id>`) of the repositories a project has now. Throws when the project definition cannot be read. */
@@ -26,6 +27,12 @@ export interface ProjectRepoScopesPort {
    * revision, either side has no pinned id, or the repository is not one of the project's now. Throws when the project definition cannot be read. Absent: no pull request can name a repository-only lesson (decision 36).
    */
   placeOf?(orgId: OrgId, project: string, name: string, startingRevision?: number): Promise<string | undefined>;
+  /**
+   * Lessons for local coding tools (decision 46b): the project repository whose REGISTERED address is `remote` (already normalised by `normalizeRemote`), by the project's latest revision, read now. `name` is its name in the
+   * project (what a lesson's scope names); `place` is its `github:repo/<id>`, absent for a repository with no pinned id, one on another host, or one whose place the Team record has closed (so a lesson restricted to a repository is
+   * then never returned for it). Undefined when no repository of the project has that address. Throws when the project definition cannot be read. Absent: a local tool's repository cannot be proved, so nothing is returned.
+   */
+  byRemote?(orgId: OrgId, project: string, remote: string): Promise<{ name: string; place?: string } | undefined>;
 }
 
 /** The port rides on the task-visibility port the access check carries (as the lesson audiences do), so the shared access port and the Team record's port types stay exactly as they were. */
@@ -93,8 +100,8 @@ type Send = { send(command: unknown): Promise<unknown> };
 
 interface PinnedRepository { name: string; place: string }
 
-/** The GitHub repositories (by pinned immutable id) of the project's LATEST revision, or of revision `revision` when given. Throws when the project or its definition cannot be read. */
-async function pinnedRepositories(table: { documentClient: Send; tableName: string }, orgId: OrgId, project: string, revision?: number): Promise<PinnedRepository[]> {
+/** The code repositories of the project's LATEST revision, or of revision `revision` when given, as the definition parses them. Throws when the project or its definition cannot be read. */
+async function definitionRepositories(table: { documentClient: Send; tableName: string }, orgId: OrgId, project: string, revision?: number): Promise<RepositoryDefinition[]> {
   const response = await table.documentClient.send(new QueryCommand({
     TableName: table.tableName,
     KeyConditionExpression: "pk = :pk AND begins_with(sk, :revision)",
@@ -108,12 +115,20 @@ async function pinnedRepositories(table: { documentClient: Send; tableName: stri
   if (revision !== undefined && response.Items?.[0] === undefined) return [];
   const definition = response.Items?.[0]?.definition as { repositories?: unknown } | undefined;
   if (definition === undefined || !Array.isArray(definition.repositories)) throw new Error("lessons: the project definition can't be read");
-  const found: PinnedRepository[] = [];
+  const found: RepositoryDefinition[] = [];
   for (const entry of codeRepositoriesOf({ repositories: definition.repositories as RepositoryDefinition[] })) {
     const parsed = RepositoryDefinitionSchema.safeParse(entry);
-    if (!parsed.success) continue;
-    const host: { kind: string; repositoryId?: number | undefined } = repositoryHostOf(parsed.data);
-    if (host.kind === "github" && host.repositoryId !== undefined) found.push({ name: parsed.data.name, place: `github:repo/${String(host.repositoryId)}` });
+    if (parsed.success) found.push(parsed.data);
+  }
+  return found;
+}
+
+/** The GitHub repositories (by pinned immutable id) of the project's LATEST revision, or of revision `revision` when given. Throws when the project or its definition cannot be read. */
+async function pinnedRepositories(table: { documentClient: Send; tableName: string }, orgId: OrgId, project: string, revision?: number): Promise<PinnedRepository[]> {
+  const found: PinnedRepository[] = [];
+  for (const repository of await definitionRepositories(table, orgId, project, revision)) {
+    const host: { kind: string; repositoryId?: number | undefined } = repositoryHostOf(repository);
+    if (host.kind === "github" && host.repositoryId !== undefined) found.push({ name: repository.name, place: `github:repo/${String(host.repositoryId)}` });
   }
   return found;
 }
@@ -128,6 +143,16 @@ async function pinnedRepositories(table: { documentClient: Send; tableName: stri
  */
 export function tableProjectRepoScopes(table: { documentClient: Send; tableName: string }, options: { record?: { documentClient: Send; tableName: string } | undefined } = {}): ProjectRepoScopesPort {
   return {
+    async byRemote(orgId, project, remote) {
+      for (const repository of await definitionRepositories(table, orgId, project)) {
+        if (normalizeRemote(repository.url) !== remote) continue;
+        const host: { kind: string; repositoryId?: number | undefined } = repositoryHostOf(repository);
+        if (host.kind !== "github" || host.repositoryId === undefined) return { name: repository.name };
+        const place = `github:repo/${String(host.repositoryId)}`;
+        return options.record !== undefined && await isScopeClosed(options.record, orgId, place) ? { name: repository.name } : { name: repository.name, place };
+      }
+      return undefined;
+    },
     async read(orgId, project) {
       const pinned = await pinnedRepositories(table, orgId, project);
       const open = options.record === undefined ? pinned : (await Promise.all(pinned.map(async (repository) => ((await isScopeClosed(options.record!, orgId, repository.place)) ? undefined : repository)))).flatMap((repository) => (repository === undefined ? [] : [repository]));

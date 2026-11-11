@@ -306,6 +306,7 @@ export {
 } from "./developer-routes/authentication.js";
 import { LEARNING_PATH, routeLearning } from "../learning/routes.js";
 import { routeLessonsFor, routeLoadedKnowledgeFor } from "./developer-routes/lessons.js";
+import { routeLocalLessonsFor } from "./developer-routes/lessons-local.js";
 import { recordWriteContextOf } from "./developer-routes/team-record-source-write.js";
 import { LEARNING_SETTINGS_PATH, routeLearningSettings } from "../learning/settings-routes.js";
 import { REVIEW_DEFAULT_NOTICE_PATH, dismissReviewDefaultNotice, readReviewDefaultNotice } from "../model-selection/review-default-notice.js";
@@ -704,6 +705,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
     if (learned !== undefined) return learned;
   }
   // Learning v2 L3b: the lessons and Sources tabs and the task's lessons; "what the agent loaded". Each answers undefined where the install has not wired it.
+  const localLessons = await routeLocalLessonsFor(deps, caller, request.method, url, () => jsonBody(request));
+  if (localLessons !== undefined) return localLessons;
   const lessonsAnswer = await routeLessonsFor(deps, caller, request.method, url, () => jsonBody(request)) ?? await routeLoadedKnowledgeFor(deps, caller, request.method, url);
   if (lessonsAnswer !== undefined) return lessonsAnswer;
   // Team record (wire-team-record): `/v1/app/projects/{project}/record/...`, only where the record's switch is on. The org is the session's; the project role is the one the existing access check finds.

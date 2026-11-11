@@ -30,6 +30,8 @@ const SetupLocksRow = lazy(() => import("./SetupLocksRow.js"));
 const DesignReviewCompanyRow = lazy(() => import("./DesignReviewCompanyRow.js"));
 // LT-2: the company's lessons setting (Standard / Regulated and the request to go back to Standard). Its own chunk; an owner or admin only, and nothing where lessons are not set up.
 const LessonsPresetRow = lazy(() => import("./LessonsPresetRow.js"));
+// Decision 46b: the company's "lessons stay in Rovara" switch for coding tools. Its own chunk; an owner or admin only, and nothing where the setting is not there.
+const LessonsLocalToolsRow = lazy(() => import("./LessonsLocalToolsRow.js"));
 
 const effortChoice = (effort: CompanyOverride["thinkingLevel"]): EffortChoice => effort === undefined ? "inherit" : effort === null ? "null" : effort;
 type Notice = { kind: "saved" } | { kind: "saved_reload_failed" } | { kind: "stale" } | { kind: "failed"; text: string } | { kind: "confirm"; url: string | undefined; changes: string[]; soleOwner: SoleOwnerConfirmation | undefined };
@@ -44,6 +46,7 @@ export function HowWeWorkCompanyScreen() {
   <p><Link to="/app/admin/models/sources">Back to AI models</Link></p>
   <LearningSuggestionsRow />
   {(role === "owner" || role === "admin") && <Suspense fallback={null}><LessonsPresetRow /></Suspense>}
+  {(role === "owner" || role === "admin") && <Suspense fallback={null}><LessonsLocalToolsRow /></Suspense>}
   <KnownFailingPolicyRow />
   <SetupRecipesLink />
   {(role === "owner" || role === "admin") && <Suspense fallback={null}><SetupLocksRow /></Suspense>}

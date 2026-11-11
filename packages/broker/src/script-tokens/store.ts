@@ -185,7 +185,7 @@ export async function createScriptToken(deps: ScriptTokenDependencies, caller: S
   if (deps.audit === undefined) throw auditUnavailable();
   const days = input.days ?? SCRIPT_TOKEN_DEFAULT_DAYS;
   const projects = [...input.projects].sort();
-  const permissions = (["read", "start"] as const).filter((permission) => input.permissions.includes(permission));
+  const permissions = (["read", "start", "lessons"] as const).filter((permission) => input.permissions.includes(permission));
   const { orgId, developerId } = caller;
   const mark: RequestMark = { orgId, developerId, requestId: input.requestId, fingerprint: sha256({ route: "script_token_create", name: input.name, projects, permissions, days }) };
   const earlier = await readRequest(deps, orgId, developerId, input.requestId);
