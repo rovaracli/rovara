@@ -47,6 +47,7 @@ export function appRoutes(features: AppNav["features"], options: { newNav?: bool
   { path: "models/steps", element: <Navigate to="/app/admin/how-we-work" replace /> },
   { path: "health", lazy: async () => ({ Component: (await import("./screens/admin/health/ServiceStatusScreen.js")).ServiceStatusScreen }) },
   { path: "health/runtime/:kind", lazy: async () => ({ Component: (await import("./screens/admin/health/ServiceStatusScreen.js")).ServiceStatusScreen }) },
+  { path: "new-screens", lazy: async () => ({ Component: (await import("./screens/admin/new-screens/NewScreensScreen.js")).NewScreensScreen }) },
   { path: "domains", lazy: async () => ({ Component: (await import("./screens/admin/domains/CompanyDomainsScreen.js")).CompanyDomainsScreen }) },
   { path: "projects", lazy: async () => ({ Component: (await import("./screens/admin/projects/ProjectsScreen.js")).ProjectsScreen }) },
   { path: "projects/:name", lazy: async () => ({ Component: (await import("./screens/admin/projects/ProjectDetailScreen.js")).ProjectDetailScreen }) },

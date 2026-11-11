@@ -84,3 +84,11 @@
  .rv-admin-surface .rv-switch::before{content:"";position:absolute;z-index:-1;left:-1px;right:-1px;top:8px;height:26px;box-sizing:border-box;border:1px solid var(--rv-border-strong);border-radius:var(--rv-radius-lg);background:var(--rv-bg-sunken)}
  .rv-admin-surface .rv-switch[data-state=checked]::before{background:var(--rv-accent)}
 }
+/* U5: Settings > New screens. */
+.rv-newscreens-list{list-style:none;padding:0;margin:var(--rv-space-4) 0;display:grid;gap:var(--rv-space-4);max-width:76ch}
+.rv-newscreens-list>li,.rv-newscreens-previews{border:1px solid var(--rv-border-strong);border-radius:var(--rv-radius-sm);padding:var(--rv-space-4);display:grid;gap:var(--rv-space-2);justify-items:start;max-width:76ch}
+.rv-newscreens-list p,.rv-newscreens-previews p{margin:0;overflow-wrap:anywhere}
+.rv-newscreens-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:var(--rv-space-3)}
+.rv-newscreens-head h2,.rv-newscreens-previews h2{margin:0;font-size:var(--rv-font-lg)}
+.rv-newscreens-state{font-size:var(--rv-font-sm)}
+.rv-newscreens-error{overflow-wrap:anywhere}
