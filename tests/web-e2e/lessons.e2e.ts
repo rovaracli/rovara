@@ -196,6 +196,25 @@ test("a request to go back to Standard is found in the Lessons tab: a different 
  const sent = ((await (await request.get("/__mock/requests")).json()) as Sent).filter(item => item.method === "POST" && item.path.startsWith(BASE + "/preset/"));
  expect(sent.map(item => [item.path, item.body])).toEqual([[BASE + "/preset/approve", { changeId: "chg-7" }], [BASE + "/preset/cancel", { changeId: "chg-7" }]]);
 });
+test("lessons missing from the lessons file wait for a person: the card offers Retire and Keep, sends the digest once, and shows the answer, on desktop and phone", async ({ page, context, request, baseURL }) => {
+ await openTab(page, context, request, baseURL);
+ await request.post("/__mock/repo-retire");await page.reload();
+ const section = page.getByRole("region", { name: "Lessons file in the repo" });
+ await expect(section.getByText("7 lessons have been missing from the lessons file since 2026-10-24. Confirm to retire them, or keep them")).toBeVisible();
+ const card = section.getByRole("group", { name: "Lessons missing from the file: api" });
+ await expect(card.getByRole("button", { name: "Retire them" })).toBeVisible();
+ await expect(card.getByRole("button", { name: "Keep them" })).toBeVisible();
+ await evidenceShot(page, { path: ".test-build/web-e2e/lessons-retire-card-desktop.png", fullPage: true });
+ await checkA11y(page, { theme: "light" });await checkA11y(page, { theme: "dark" });
+ await page.setViewportSize({ width: 390, height: 900 });
+ expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(0);
+ await evidenceShot(page, { path: ".test-build/web-e2e/lessons-retire-card-phone.png", fullPage: true });
+ await card.getByRole("button", { name: "Keep them" }).click();
+ await expect(section.getByText("7 missing lessons were kept; Rovara proposes them back in your lessons PR")).toBeVisible();
+ await expect(section.getByRole("group", { name: "Lessons missing from the file: api" })).toHaveCount(0);
+ const sent = ((await (await request.get("/__mock/requests")).json()) as Sent).filter(item => item.method === "POST" && item.path === BASE + "/repo");
+ expect(sent.map(item => item.body)).toEqual([{ action: "retire_keep", repo: "api", held: "0123456789abcdef" }]);
+});
 test("the company page shows the company's lessons setting: an owner requires a person everywhere, and another admin finds and approves the request to go back", async ({ page, context, request, baseURL }) => {
  await request.post("/__mock/scenario", { data: { name: "admin" } });
  await context.addCookies([{ name: "__Host-agentx_review_session", value: "11111111-1111-4111-8111-111111111111", url: baseURL!, secure: true, httpOnly: true, sameSite: "Strict" }]);

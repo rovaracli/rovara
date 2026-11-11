@@ -13,7 +13,7 @@
 //   POST /v1/app/projects/{p}/lessons/rollback
 //   POST /v1/app/projects/{p}/lessons/sources/resume       a maintainer resumes a paused source (UX-4b; `resumeAndResettle`)
 //   GET  /v1/app/projects/{p}/lessons/repo                 the project's repositories with the state of their `.rovara/lessons.md` (R2); answers even while lessons are off
-//   POST /v1/app/projects/{p}/lessons/repo                 a maintainer switches a repository's lessons file on or off, resumes it after the team deleted the file, or answers the pointer (R2; audited)
+//   POST /v1/app/projects/{p}/lessons/repo                 a maintainer switches a repository's lessons file on or off, resumes it after the team deleted the file, or answers the pointer (R2; audited); the company owner or an approver retires or keeps lessons that went missing from the file (decision 78)
 //   GET  /v1/app/projects/{p}/lessons/local-tools          whether local coding tools get this project's lessons now, and why not (any member; decision 46b)
 //   POST /v1/app/projects/{p}/lessons/local-tools          a maintainer switches it on or off for the project (audited; not tied to a browser session, so the command line can use it)
 //   GET  /v1/app/org/lessons/local-tools                   an owner or admin reads the company's "lessons stay in Rovara" switch
@@ -42,6 +42,7 @@ import { rollbackLessonSetSettled } from "./rollback.js";
 import { resumeAndResettle, type ProcessDeps } from "./process.js";
 import { buildLessonHistory, pauseMatches, buildLessonSources, buildLessonsDigest, buildLessonsView, buildLoadedLessons, SNAPSHOTS_MAX, type LessonViewDeps } from "./view.js";
 import type { ScopeKey } from "./store.js";
+import { idIn } from "./types.js";
 
 export const LESSONS_PATH = /^\/v1\/app\/projects\/([^/]+)\/lessons(?:\/([A-Za-z0-9_-]{1,64})(?:\/(approve|reject|merge|retire|history|resume|cancel))?)?$/u;
 /** The company's preset (an owner or admin): `POST` sets it, `POST .../approve` and `.../cancel` decide a proposal to loosen it. */
@@ -187,22 +188,44 @@ const REPO_FILE_REFUSALS = {
   not_found: ["NOT_FOUND", "No such repository in this project."], unreadable: ["RUNTIME_UNAVAILABLE", "Rovara can't read this project's repositories right now. Try again."],
   host_cannot_write: ["CONFIG_INVALID", "This repository's code host can't take a pull request from Rovara."], audit_unavailable: ["RUNTIME_UNAVAILABLE", "That couldn't be recorded, so nothing changed. Try again."],
   conflict: ["CHANGE_STALE", "This setting changed while you were looking at it. Reload and try again."],
+  not_permitted: ["FORBIDDEN", "Only the company owner or a person who can approve this project's lessons can decide this."],
 } as const satisfies Record<string, readonly [AgentXErrorCode, string]>;
+
+/** Whether the caller may answer for lessons that went missing from the file: the company owner, or a person eligible to approve lessons in the project (the same check as an approval). `unknown`: the roster could not be read (fail closed). */
+async function retireDeciderOf(deps: LessonRouteDependencies, caller: DeveloperCaller, project: string): Promise<"yes" | "no" | "unknown"> {
+  if (caller.orgRole === "owner") return "yes";
+  const group = await deps.lessons.directory.eligibility(caller.orgId, project, { approverId: caller.developerId }).catch(() => undefined);
+  if (group === undefined || !group.complete) return "unknown";
+  return idIn(group.eligibleIds, caller.developerId) ? "yes" : "no";
+}
+
+async function requireRetireDecider(deps: LessonRouteDependencies, caller: DeveloperCaller, project: string): Promise<void> {
+  const answer = await retireDeciderOf(deps, caller, project);
+  if (answer === "unknown") throw agentXError("RUNTIME_UNAVAILABLE", "Rovara can't check who may decide this right now. Try again.");
+  if (answer === "no") throw agentXError("FORBIDDEN", "Only the company owner or a person who can approve this project's lessons can decide this.");
+}
 
 async function routeRepoFile(deps: LessonRouteDependencies, caller: DeveloperCaller, method: string, rawProject: string, body: () => unknown): Promise<object> {
   if (deps.repoFile === undefined) throw agentXError("NOT_FOUND", "Lessons are not available for this project.");
   if (method === "GET") {
     const { name } = await deps.projectFor(caller, rawProject);
     await takeBudget(deps, caller, "read");
-    try { return await repoFileStatus(deps.repoFile, { workspaceId: caller.orgId, project: name }); } catch { throw agentXError("RUNTIME_UNAVAILABLE", REPO_FILE_REFUSALS.unreadable[1]); }
+    let status;
+    try { status = await repoFileStatus(deps.repoFile, { workspaceId: caller.orgId, project: name }); } catch { throw agentXError("RUNTIME_UNAVAILABLE", REPO_FILE_REFUSALS.unreadable[1]); }
+    // The card for lessons missing from a file is shown to the people who may answer it, by the route's own rule (asked only while a row waits for an answer).
+    return status.repos.some((row) => row.retireConfirm !== undefined) ? { ...status, canDecideRetire: await retireDeciderOf(deps, caller, name) === "yes" } : status;
   }
   // A write: a role that can write (the Auditor cannot). Not tied to a browser session, so the command line can use it with the developer's own token.
   requireWriterCaller(caller);
   const { name, role } = await deps.projectFor(caller, rawProject);
-  if (role !== "maintainer") throw agentXError("FORBIDDEN", "Only a maintainer of this project can change this.");
-  await takeBudget(deps, caller, "decision");
   const input = strictBody(LessonsRepoFileBodySchema, body());
-  const result = await repoFileAction(deps.repoFile, { workspaceId: caller.orgId, project: name }, input);
+  // Retiring or keeping lessons that went missing from the file (owner decision 78) is a person's decision, not a maintainer's switch: the company owner, or a person who can approve lessons in this project (the same check as an
+  // approval). A maintainer who is neither is refused. Every other action keeps the maintainer rule.
+  const retireAnswer = input.action === "retire_confirm" || input.action === "retire_keep";
+  if (retireAnswer) await requireRetireDecider(deps, caller, name);
+  else if (role !== "maintainer") throw agentXError("FORBIDDEN", "Only a maintainer of this project can change this.");
+  await takeBudget(deps, caller, "decision");
+  const result = await repoFileAction(deps.repoFile, { workspaceId: caller.orgId, project: name }, input, retireAnswer ? { developerId: caller.developerId } : undefined);
   if (!result.ok) { const [code, message] = REPO_FILE_REFUSALS[result.code]; throw agentXError(code, message); }
   return result.row;
 }

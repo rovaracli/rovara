@@ -2198,11 +2198,12 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
   // Lessons in the repo (R2): the status of a project's `.rovara/lessons.md` and its weekly pull request, and the switch for a repository (a maintainer).
   projectCommand
     .command("lessons-repo")
-    .description("show or change a project's lessons file (.rovara/lessons.md) and its weekly pull request: status, on, off, resume (after the team deleted the file), pointer-add, pointer-decline (on, off and the rest need a maintainer)")
+    .description("show or change a project's lessons file (.rovara/lessons.md) and its weekly pull request: status, on, off, resume (after the team deleted the file), pointer-add, pointer-decline (on, off and the rest need a maintainer), retire-confirm and retire-keep (the company owner or a person who can approve lessons answers for lessons that went missing from the file; they need --held)")
     .argument("<project>", "the project's name")
-    .argument("[action]", "status (the default), on, off, resume, pointer-add or pointer-decline")
+    .argument("[action]", "status (the default), on, off, resume, pointer-add, pointer-decline, retire-confirm or retire-keep")
     .option("--repo <name>", "the repository's name in the project (needed for everything but status)")
-    .action(async (project: string, action: string | undefined, options: { repo?: string }, command: Command) => printResult(command, await projectLessonsRepo(developerSession(), developerEnv(command), project, action, options)));
+    .option("--held <digest>", "the digest the status shows for the missing lessons (only for retire-confirm and retire-keep)")
+    .action(async (project: string, action: string | undefined, options: { repo?: string; held?: string }, command: Command) => printResult(command, await projectLessonsRepo(developerSession(), developerEnv(command), project, action, options)));
   // Plan 2, Task 22: a maintainer has the project's setup and test commands run on a fresh workspace, and waits for the answer.
   projectCommand
     .command("check")

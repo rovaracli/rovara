@@ -12,10 +12,12 @@ const W = {
  LOADING: "Loading", FAILED: "Couldn't read this setting. Try again.", TRY_AGAIN: "Try again", OFF: "Lessons are off for this project, so no pull request is opened until they are switched on.",
  NONE: "No repository has the lessons file switched on.", TURN_ON: "Turn on", TURN_OFF: "Turn off", RESUME: "Resume", POINTER_ADD: "Add the pointer back", POINTER_DECLINE: "Don't ask again", OPEN_PR: "Open the pull request",
  ON: "On", OFF_STATE: "Off", NO_PR: "No pull request is open.", CHANGE_FAILED: "Couldn't change that. Try again.", NOT_ALLOWED: "A maintainer of this project can change this.", AVAILABLE: "Can be switched on",
+ RETIRE: "Retire them", KEEP: "Keep them", RETIRE_CARD: "Lessons missing from the file", STALE: "This changed while you were looking at it. Reload and try again.", DECIDERS: "Only the company owner or a person who can approve this project's lessons can decide this.",
 } as const;
 
 type Row = LessonsRepoFileStatus["repos"][number];
-const failure = (error: unknown): string => (error instanceof ApiError && error.code === "FORBIDDEN" ? W.NOT_ALLOWED : W.CHANGE_FAILED);
+const isRetire = (body: LessonsRepoFileBody): boolean => body.action === "retire_confirm" || body.action === "retire_keep";
+const failure = (error: unknown, body: LessonsRepoFileBody): string => error instanceof ApiError && error.code === "FORBIDDEN" ? (isRetire(body) ? W.DECIDERS : W.NOT_ALLOWED) : error instanceof ApiError && error.code === "CHANGE_STALE" ? W.STALE : W.CHANGE_FAILED;
 
 /**
  * The lessons file of each repository (Cloud's rows; Code shows the same lines through `agentx project lessons-repo`). Every sentence is fixed wording from the server, shown as text. A maintainer switches a repository on or off,
@@ -34,7 +36,7 @@ export function RepoFileControl({ project, canChange }: { project: string; canCh
   if (busy !== undefined) return;
   setBusy(body.repo + body.action);setError(undefined);
   try { await api.act(project, body);await query.invalidateQueries({ queryKey: lessonsRepoFileKey(project) }); }
-  catch (cause) { setError(failure(cause)); }
+  catch (cause) { setError(failure(cause, body));await query.invalidateQueries({ queryKey: lessonsRepoFileKey(project) }); }
   finally { setBusy(undefined); }
  }
  const button = (label: string, body: LessonsRepoFileBody, primary = false) => <Button key={body.action} variant={primary ? "primary" : "secondary"} busy={busy === body.repo + body.action} disabled={busy !== undefined} onClick={() => { void act(body); }}>{label}</Button>;
@@ -49,6 +51,9 @@ export function RepoFileControl({ project, canChange }: { project: string; canCh
     {row.fileDeleted && button(W.RESUME, { action: "resume", repo: row.repo }, true)}
     {row.pointer === "missing" && <>{button(W.POINTER_ADD, { action: "pointer_add", repo: row.repo })}{button(W.POINTER_DECLINE, { action: "pointer_decline", repo: row.repo })}</>}
     {row.enabled && button(W.TURN_OFF, { action: "off", repo: row.repo })}
+   </div>}
+   {status.canDecideRetire === true && row.retireConfirm !== undefined && <div className="rv-lessons-actions" role="group" aria-label={W.RETIRE_CARD + ": " + row.repo} data-testid="lessons-repo-retire-card">
+    {button(W.RETIRE, { action: "retire_confirm", repo: row.repo, held: row.retireConfirm.digest }, true)}{button(W.KEEP, { action: "retire_keep", repo: row.repo, held: row.retireConfirm.digest })}
    </div>}
   </li>;
  };
