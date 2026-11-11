@@ -10,7 +10,8 @@ import { routeDeveloperRequest, type DeveloperCaller, type DeveloperRouteDepende
 import { webRouteAllowed } from "../../packages/broker/src/aws/web-auth.js";
 import { requireAuditorRoute, AUDITOR_REFUSED } from "../../packages/broker/src/org/auditor.js";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
-import { reviewClaimDepsOf } from "../../packages/broker/src/review-groups/routes.js";
+import { realTaskOwners, reviewClaimDepsOf } from "../../packages/broker/src/review-groups/routes.js";
+import type { DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
 import { humanApprovalOf } from "../../packages/broker/src/rovara-code/approval.js";
 import { mergeReadiness } from "../../packages/broker/src/rovara-code/merge.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
@@ -117,6 +118,22 @@ describe("the wiring asks the code host through the project's own port", () => {
     expect(await deps.liveProjectRole(org, "web", "d".repeat(64))).toBe("contributor");
     expect(await deps.liveProjectRole(org, "web", "b".repeat(64))).toBeUndefined();
     expect(await deps.liveProjectRole(org, "web", "c".repeat(64))).toBeUndefined();
+  });
+});
+
+describe("the task's real owners, whoever asks", () => {
+  const creator = "1".repeat(64), taker = "2".repeat(64), coOwner = "3".repeat(64), commenter = "4".repeat(64);
+  const record = (over: Record<string, unknown> = {}) => ({ taskId: TASK, developerId: creator, developerName: "Cara", ...over }) as unknown as DeveloperTaskRecord;
+  it("are the effective owner and every owner entry of the People list, never a commenter", () => {
+    expect(realTaskOwners(record(), { people: [{ developerId: coOwner, role: "owner" }, { developerId: commenter, role: "commenter" }] })).toEqual([creator, coOwner]);
+    expect(realTaskOwners(record(), undefined)).toEqual([creator]);
+  });
+  it("name the taker of a task taken over", () => {
+    const taken = record({ currentOwner: { developerId: taker, name: "Tom", provider: "oidc", since: "2026-11-11T00:00:00Z" } });
+    expect(realTaskOwners(taken, undefined)[0]).toBe(taker);
+  });
+  it("throw when the owner can't be read (the wiring answers `unknown` and the routes fail closed)", () => {
+    expect(() => realTaskOwners(record({ currentOwner: { developerId: taker } }), undefined)).toThrow();
   });
 });
 

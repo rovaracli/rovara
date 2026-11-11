@@ -11,7 +11,8 @@ import { safeDisplayName } from "../developer/person-name.js";
 import { nameResolverOf, resolveStoredName } from "../developer/name-resolver.js";
 import { githubLoginOf } from "../developer/requester-text.js";
 import { resolveTaskAccess } from "../developer/task-access.js";
-import { tryEffectiveTaskOwner } from "../developer/task-records.js";
+import { effectiveTaskOwner, type DeveloperTaskRecord } from "../developer/task-records.js";
+import { loadTaskPeople } from "../developer/task-people.js";
 import { readCodeSettings } from "../rovara-code/code-settings.js";
 import { changeRequestRef } from "../rovara-code/host-port.js";
 import { readMergeTracking } from "../rovara-code/merge-tracking.js";
@@ -27,6 +28,12 @@ import { getReviewGroups, putReviewGroups } from "./groups.js";
 
 export const REVIEW_GROUPS_BROWSER_MESSAGE = REVIEW_GROUP_MESSAGES.browserOnly;
 
+/** A task's real owners as member ids: its effective owner (a taker first) and every owner entry of its People list. Throws when the owner can't be read. */
+export function realTaskOwners(record: DeveloperTaskRecord, people: { people: ReadonlyArray<{ developerId: string; role: string }> } | undefined): string[] {
+  const entries = (people?.people ?? []).filter((person) => person.role === "owner").map((person) => person.developerId);
+  return [...new Set([effectiveTaskOwner(record).developerId, ...entries])];
+}
+
 /** Whether a request writes review groups or a claim: the dispatcher sends anything but a live browser session away first. */
 export function isReviewGroupsWrite(method: string, pathname: string): boolean {
   return (method === "PUT" && REVIEW_GROUPS_PATH.test(pathname)) || (method === "POST" && TASK_REVIEW_ACTION_PATH.test(pathname));
@@ -38,6 +45,8 @@ export function reviewClaimDepsOf(deps: DeveloperRouteDependencies, caller: Deve
   const members = projectMembersOf(deps);
   const store = signInStoreOf(deps);
   const access = { ...table, projectMembers: members, signInStore: store } as OwnedAccessDeps;
+  /** The task records this request read (`taskFor`), for its owners. */
+  const records = new Map<string, DeveloperTaskRecord>();
   return {
     ...table, now: () => deps.now(),
     ...(deps.audit === undefined ? {} : { audit: deps.audit }),
@@ -59,14 +68,32 @@ export function reviewClaimDepsOf(deps: DeveloperRouteDependencies, caller: Deve
     },
     taskFor: async (who, taskId) => {
       const found = await resolveTaskAccess(developerTaskRouteDependencies(deps, caller), who as DeveloperCaller, taskId, "read");
-      const owner = tryEffectiveTaskOwner(found.task);
-      const ownerIds = [...new Set([...(owner === undefined ? [] : [owner.developerId]), ...found.ownerActorIds.filter((id) => /^[a-f0-9]{64}$/u.test(id))])];
       const task = found.task;
       if (task.orgId === undefined) throw agentXError("TASK_NOT_FOUND", "no task here that you can see");
-      return {
-        task: { taskId: task.taskId, orgId: task.orgId, project: task.project, startingRevision: task.startingRevision, ...(task.closedAt === undefined ? {} : { closedAt: task.closedAt }), ...(task.workflow === undefined ? {} : { workflow: { stage: task.workflow.stage, state: task.workflow.state } }) },
-        ownerIds,
-      };
+      records.set(task.taskId, task);
+      return { task: { taskId: task.taskId, orgId: task.orgId, project: task.project, startingRevision: task.startingRevision, ...(task.closedAt === undefined ? {} : { closedAt: task.closedAt }), ...(task.workflow === undefined ? {} : { workflow: { stage: task.workflow.stage, state: task.workflow.state } }) } };
+    },
+    // The task's own owners, read from the task and its People list, never from the caller's access (a session-level reader is told none).
+    ownersOf: async (task) => {
+      const record = records.get(task.taskId);
+      if (record === undefined) return "unknown";
+      try {
+        return realTaskOwners(record, await loadTaskPeople(table, task.taskId));
+      } catch {
+        return "unknown";
+      }
+    },
+    // The target reads the task as any reader would: their own live company role, the task's People list and the project's access.
+    canReadTask: async (task, developerId) => {
+      try {
+        const orgRole = await orgRoleOf(access, task.orgId, developerId);
+        if (!isWriterOrgRole(orgRole)) return false;
+        const target: DeveloperCaller = { developerId, orgId: task.orgId, orgRole, name: "A member", amr: caller.amr, sessionId: caller.sessionId };
+        const found = await resolveTaskAccess(developerTaskRouteDependencies(deps, target), target, task.taskId, "read");
+        return found.task.orgId === task.orgId;
+      } catch {
+        return false;
+      }
     },
     readTracking: (taskId, orgId) => readMergeTracking(table, taskId, orgId),
     allowSelfApproval: async (orgId, project) => (await readCodeSettings(table, orgId, project)).allowSelfApproval,

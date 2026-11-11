@@ -11,6 +11,7 @@
 import { PutCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { reviewClaimsPk, reviewGroupsKey } from "@agentx/cloud-contracts";
 import type { OrgId } from "@rovara-code/contracts";
+import { ERASED_DEVELOPER_ID } from "../team-record/store.js";
 import { readReviewGroups } from "./groups.js";
 
 export interface ReviewEraseTable {
@@ -23,9 +24,19 @@ const isConditional = (error: unknown): boolean => error instanceof Error && (er
 export const REVIEW_CLAIM_ERASE_READS_MAX = 2_000;
 const PAGE = 100;
 
-/** Takes the person out of every group of the project. True when nothing of theirs is left in the document. */
+/** Who last changed an item becomes the 64-zero stand-in when it was the erased person (as `scrubTier0Developer` does), whatever else the item says. */
+async function scrubUpdatedBy(table: ReviewEraseTable, key: { pk: unknown; sk: unknown }, developerId: string): Promise<void> {
+  await table.documentClient.send(new UpdateCommand({
+    TableName: table.tableName, Key: key, UpdateExpression: "SET updatedBy = :zero", ConditionExpression: "updatedBy = :erased",
+    ExpressionAttributeValues: { ":zero": ERASED_DEVELOPER_ID, ":erased": developerId },
+  })).catch((error: unknown) => { if (!isConditional(error)) throw error; });
+}
+
+/** Takes the person out of every group of the project, and out of the document's `updatedBy`. True when nothing of theirs is left in the document. */
 export async function scrubReviewGroupsPerson(table: ReviewEraseTable, orgId: OrgId, project: string, developerId: string, at: string): Promise<boolean> {
   const stored = await readReviewGroups(table, orgId, project);
+  // `updatedBy` first, whether or not they are in a group now and whether or not the groups read: they may have saved the document and since left every group.
+  await scrubUpdatedBy(table, reviewGroupsKey(orgId, project), developerId);
   if (stored === "unreadable") return false;
   if (!stored.groups.some((group) => group.members.includes(developerId))) return true;
   const groups = stored.groups.map((group) => ({ ...group, members: group.members.filter((member) => member !== developerId) }));
@@ -59,6 +70,8 @@ export async function scrubReviewClaimsPerson(table: ReviewEraseTable, orgId: Or
     })) as { Items?: Array<Record<string, unknown>>; LastEvaluatedKey?: Record<string, unknown> };
     for (const item of page.Items ?? []) {
       read += 1;
+      // Who last changed a claim they don't hold (they released it, reassigned it, claimed it and lost it): that id goes too.
+      if (item["holder"] !== developerId && item["updatedBy"] === developerId) await scrubUpdatedBy(table, { pk: item["pk"], sk: item["sk"] }, developerId);
       if (item["holder"] !== developerId || typeof item["revision"] !== "number") continue;
       try {
         await table.documentClient.send(new UpdateCommand({

@@ -32,7 +32,8 @@ interface World {
   logins: Map<string, string>;
   tracking: MergeTrackingItem[];
   task: ReviewTask;
-  owners: string[];
+  owners: string[] | "unknown";
+  unreadable: Set<string>;
   selfApproval: boolean;
   hostAnswer: "requested" | "refused" | "unavailable" | "throw";
   asked: Array<{ repositoryId: string; number: number; login: string }>;
@@ -60,6 +61,7 @@ function world(): World {
     tracking: [trackingItem("repo_web", 7)],
     task: { taskId: TASK, orgId: ORG, project: "web", startingRevision: 3, workflow: { stage: "WAIT_FOR_MERGE", state: "WAITING" } },
     owners: [OWEN],
+    unreadable: new Set<string>(),
     selfApproval: false,
     hostAnswer: "requested",
     asked: [] as World["asked"],
@@ -81,8 +83,10 @@ function world(): World {
     nameOf: async (_orgId, who) => NAMES[who] ?? "A former member",
     taskFor: async (caller, taskId) => {
       if (taskId !== TASK || caller.orgId !== ORG || live(caller.orgId, w.task.project, caller.developerId) === undefined) throw agentXError("TASK_NOT_FOUND", "no task here that you can see");
-      return { task: w.task, ownerIds: w.owners };
+      return { task: w.task };
     },
+    ownersOf: async () => w.owners,
+    canReadTask: async (task, who) => task.taskId === TASK && live(task.orgId, task.project, who) !== undefined && !w.unreadable.has(who),
     readTracking: async (taskId, orgId) => w.tracking.filter((item) => item.taskId === taskId && item.orgId === orgId),
     allowSelfApproval: async () => w.selfApproval,
     githubLoginOf: async (_orgId, who) => w.logins.get(who),
@@ -337,7 +341,7 @@ describe("a task's review: claim, release, reassign", () => {
     expect(again).toEqual(first);
     expect(w.audit.recordedBy("review.claim_changed")).toHaveLength(1);
     expect(w.asked).toHaveLength(1);
-    expect(await err(claimReview(w.deps, w.caller(ALICE), TASK, { ...body, groupId: "rgp_0000000000000000" }))).toEqual({ code: "CONFIG_INVALID", message: W.requestReused });
+    expect(await err(claimReview(w.deps, w.caller(ALICE), TASK, { ...body, reviewKey: "0".repeat(64) }))).toEqual({ code: "CONFIG_INVALID", message: W.requestReused });
   });
 
   it("a host request that did not go through stays `pending`/`unavailable`, and a repeat of the same request asks again", async () => {
@@ -370,6 +374,44 @@ describe("a task's review: claim, release, reassign", () => {
     expect(await err(reassignAs(w, MAINT, groupId, OWEN))).toEqual({ code: "CONFIG_INVALID", message: W.targetOwnTask });
     w.selfApproval = true;
     expect((await claimAs(w, OWEN, groupId)).claim).toMatchObject({ developerId: OWEN });
+  });
+
+  it("a repeat of a request is refused once the caller's live role is gone (claim: demoted; reassign: no longer a maintainer)", async () => {
+    const { w, groupId } = await withGroup();
+    const view = await reviewOf(w, ALICE);
+    const body = { requestId: rid(), expectedRevision: 0, reviewKey: view.reviewKey, groupId };
+    await claimReview(w.deps, w.caller(ALICE), TASK, body);
+    w.projectRoles.set(ALICE, "viewer");
+    expect(await err(claimReview(w.deps, w.caller(ALICE), TASK, body))).toEqual({ code: "FORBIDDEN", message: W.notInGroup });
+    w.projectRoles.set(ALICE, "contributor");
+    // taken out of the group (still a contributor): the repeat is refused too
+    await putReviewGroups(w.deps, w.caller(MAINT), "web", groupsBody(1, [{ groupId, name: "Payments reviewers", members: [BOB] }]));
+    expect(await err(claimReview(w.deps, w.caller(ALICE), TASK, body))).toEqual({ code: "FORBIDDEN", message: W.notInGroup });
+    await putReviewGroups(w.deps, w.caller(MAINT), "web", groupsBody(2, [{ groupId, name: "Payments reviewers", members: [ALICE, BOB] }]));
+    const now = await reviewOf(w, MAINT);
+    const move = { requestId: rid(), expectedRevision: now.revision, reviewKey: now.reviewKey, groupId, to: BOB };
+    await reassignReview(w.deps, w.caller(MAINT), TASK, move);
+    w.projectRoles.set(MAINT, "contributor");
+    expect(await err(reassignReview(w.deps, w.caller(MAINT), TASK, move))).toEqual({ code: "FORBIDDEN", message: W.reassignMaintainers });
+  });
+
+  it("reassign refuses a target who can't read the task (the People list leaves them out), and nothing is written or asked", async () => {
+    const { w, groupId } = await withGroup();
+    w.unreadable.add(BOB);
+    expect(await err(reassignAs(w, MAINT, groupId, BOB))).toEqual({ code: "CONFIG_INVALID", message: W.targetCantRead });
+    expect(w.db.get(reviewClaimKey(ORG, "web", TASK))).toBeUndefined();
+    expect(w.asked).toEqual([]);
+    w.unreadable.delete(BOB);
+    expect((await reassignAs(w, MAINT, groupId, BOB)).claim).toMatchObject({ developerId: BOB });
+  });
+
+  it("owners that can't be read fail closed: no claim, no reassign, and the page offers no Claim", async () => {
+    const { w, groupId } = await withGroup();
+    w.owners = "unknown";
+    expect((await reviewOf(w, ALICE)).canClaim).toBe(false);
+    expect(await err(claimAs(w, ALICE, groupId))).toEqual({ code: "RUNTIME_UNAVAILABLE", message: W.ownersUnknown });
+    expect(await err(reassignAs(w, MAINT, groupId, BOB))).toEqual({ code: "RUNTIME_UNAVAILABLE", message: W.ownersUnknown });
+    expect(w.db.get(reviewClaimKey(ORG, "web", TASK))).toBeUndefined();
   });
 
   it("only the holder releases; the review goes back to the group and the release is audited", async () => {

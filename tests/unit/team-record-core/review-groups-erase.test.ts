@@ -86,8 +86,40 @@ describe("a person's erase removes them from review groups and gives back their 
     expect(get(w, reviewClaimKey(ORG_A, "web", ids[149]!))).not.toHaveProperty("holder");
   });
 
+  it("turns `updatedBy` naming the person into the 64-zero stand-in on every groups document and claim of the project, member, holder or not", async () => {
+    const w = world();
+    const ZERO = "0".repeat(64);
+    // they saved the groups and have since left every group
+    await put(w, { ...groupsDoc(ORG_A, "api", 2, [{ groupId: "rgp_0000000000000003", name: "API", members: [STAYS] }]), updatedBy: GONE });
+    // they are in a group and saved it
+    await put(w, { ...groupsDoc(ORG_A, "web", 3, [{ groupId: "rgp_0000000000000001", name: "Payments", members: [GONE, STAYS] }]), updatedBy: GONE });
+    // a document that does not read still loses their id
+    await put(w, { ...groupsDoc(ORG_A, "ops", 1, []), groups: "garbage", updatedBy: GONE });
+    // a claim someone else holds, that they reassigned
+    await put(w, { ...claim(ORG_A, "web", TASK_2, STAYS), updatedBy: GONE });
+    // a claim nobody holds, that they released
+    const released = claim(ORG_A, "api", TASK_3, STAYS);
+    delete (released as Record<string, unknown>)["holder"];
+    await put(w, { ...released, updatedBy: GONE });
+    // someone else's change, and another company's
+    await put(w, { ...claim(ORG_A, "web", TASK_1, STAYS), updatedBy: STAYS });
+    await put(w, { ...groupsDoc(ORG_B, "api", 1, []), updatedBy: GONE });
+
+    await erasePerson(deleteDeps(w).deps, ORG_A, { developerId: GONE, projects: ["web", "api", "ops"] }, "erase-review-5");
+
+    expect(get(w, reviewGroupsKey(ORG_A, "api"))).toMatchObject({ updatedBy: ZERO, revision: 2 });
+    expect(get(w, reviewGroupsKey(ORG_A, "web"))).toMatchObject({ updatedBy: "erase", revision: 4 });
+    expect(get(w, reviewGroupsKey(ORG_A, "ops"))).toMatchObject({ updatedBy: ZERO, groups: "garbage" });
+    expect(get(w, reviewClaimKey(ORG_A, "web", TASK_2))).toMatchObject({ updatedBy: ZERO, holder: STAYS, revision: 1 });
+    expect(get(w, reviewClaimKey(ORG_A, "api", TASK_3))).toMatchObject({ updatedBy: ZERO });
+    expect(get(w, reviewClaimKey(ORG_A, "web", TASK_1))).toMatchObject({ updatedBy: STAYS });
+    expect(get(w, reviewGroupsKey(ORG_B, "api"))).toMatchObject({ updatedBy: GONE });
+    for (const item of w.db.find((entry) => entry.orgId === ORG_A && (entry.entityType === "REVIEW_GROUPS" || entry.entityType === "REVIEW_CLAIM"))) expect(JSON.stringify(item)).not.toContain(GONE);
+  });
+
   it("the registry names both under the config step", () => {
     expect(PERSON_FIELDS.find((field) => field.names.includes("reviewGroupMembers"))).toMatchObject({ store: "hot", step: "config" });
     expect(PERSON_FIELDS.find((field) => field.names.includes("holder"))).toMatchObject({ store: "hot", step: "config" });
+    expect(PERSON_FIELDS.find((field) => field.names.includes("reviewGroupMembers"))?.names).toContain("updatedBy");
   });
 });

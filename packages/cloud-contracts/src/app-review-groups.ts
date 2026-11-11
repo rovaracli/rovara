@@ -159,6 +159,8 @@ export const REVIEW_GROUP_MESSAGES = {
   reassignMaintainers: "Only a project maintainer, or a company owner or admin, can reassign a review.",
   targetNotInGroup: "to: that person isn't an eligible member of the review group.",
   ownTask: "You asked for this task, so someone else reviews it.",
+  targetCantRead: "to: that person can't open this task, so they can't review it. Add them to the task's people first.",
+  ownersUnknown: "Rovara couldn't check who owns this task. Try again in a minute.",
   targetOwnTask: "to: that person asked for this task, so someone else reviews it.",
   linkGithub: "Link your GitHub account to claim reviews: the claim makes you the requested reviewer on GitHub.",
   targetNoGithub: "to: that person hasn't linked a GitHub account, so they can't be the requested reviewer.",

@@ -50,7 +50,14 @@ export interface ReviewTask {
 
 export interface ReviewClaimDeps extends ReviewGroupsDeps {
   /** The task, when the caller can read it, with the ids of its owner (as the task access rule gives them); `TASK_NOT_FOUND` otherwise (also for another company's task). */
-  taskFor(caller: ReviewCaller, taskId: string): Promise<{ task: ReviewTask; ownerIds: readonly string[] }>;
+  taskFor(caller: ReviewCaller, taskId: string): Promise<{ task: ReviewTask }>;
+  /**
+   * The task's REAL owners (its effective owner and every owner entry of its People list), as member ids, whoever asks: never the caller's view of them (a reader through a session
+   * level sees none). `unknown` when they can't be read: claims and reassigns then fail closed.
+   */
+  ownersOf(task: ReviewTask): Promise<readonly string[] | "unknown">;
+  /** Whether that member, with their own live role, can read the task (the task's People list and project access decide, as for any reader). Never throws: unknown is false. */
+  canReadTask(task: ReviewTask, developerId: string): Promise<boolean>;
   /** The task's merge tracking items (what the code host last said about each pull request). */
   readTracking(taskId: string, orgId: OrgId): Promise<MergeTrackingItem[]>;
   /** Whether the project lets a person approve their own task's pull request (code settings). */
@@ -120,7 +127,7 @@ function liveHolder(claim: StoredClaim, groups: readonly StoredGroup[], roles: R
 
 interface Situation {
   task: ReviewTask;
-  ownerIds: readonly string[];
+  owners: readonly string[] | "unknown";
   groups: StoredGroup[];
   claim: StoredClaim;
   waiting: MergeTrackingItem[];
@@ -130,14 +137,14 @@ interface Situation {
 }
 
 async function situation(deps: ReviewClaimDeps, caller: ReviewCaller, taskId: string): Promise<Situation> {
-  const { task, ownerIds } = await deps.taskFor(caller, taskId);
+  const { task } = await deps.taskFor(caller, taskId);
   if (task.orgId !== caller.orgId) throw agentXError("TASK_NOT_FOUND", "no task here that you can see");
   const stored = await readReviewGroups(deps, caller.orgId, task.project);
   if (stored === "unreadable") throw agentXError("CONFIG_INVALID", UNREADABLE_GROUPS);
   const [claim, items, callerRole] = await Promise.all([readClaim(deps, caller.orgId, task.project, task.taskId), deps.readTracking(task.taskId, caller.orgId), deps.liveProjectRole(caller.orgId, task.project, caller.developerId)]);
   const roles = new Map<string, ProjectRole | undefined>([[caller.developerId, callerRole]]);
   if (claim.holder !== undefined && !roles.has(claim.holder)) roles.set(claim.holder, await deps.liveProjectRole(caller.orgId, task.project, claim.holder));
-  return { task, ownerIds, groups: stored.groups, claim, waiting: waitingPullRequests(task, items), callerRole, roles, held: liveHolder(claim, stored.groups, roles) };
+  return { task, owners: await deps.ownersOf(task), groups: stored.groups, claim, waiting: waitingPullRequests(task, items), callerRole, roles, held: liveHolder(claim, stored.groups, roles) };
 }
 
 async function viewOf(deps: ReviewClaimDeps, caller: ReviewCaller, s: Situation): Promise<TaskReviewView> {
@@ -147,7 +154,7 @@ async function viewOf(deps: ReviewClaimDeps, caller: ReviewCaller, s: Situation)
   const ageHours = since === undefined ? undefined : Math.max(0, Math.floor((now - since) / HOUR_MS));
   const callerEligible = mayReview(s.callerRole);
   const claimable = callerEligible ? s.groups.filter((group) => group.members.includes(caller.developerId)) : [];
-  const ownTaskBlocked = s.ownerIds.includes(caller.developerId) && !await deps.allowSelfApproval(caller.orgId, s.task.project);
+  const ownTaskBlocked = s.owners === "unknown" || (s.owners.includes(caller.developerId) && !await deps.allowSelfApproval(caller.orgId, s.task.project));
   const waiting = s.waiting.length > 0;
   return {
     waiting,
@@ -266,6 +273,12 @@ async function replay(deps: ReviewClaimDeps, caller: ReviewCaller, s: Situation,
   return getTaskReview(deps, caller, s.task.taskId);
 }
 
+/** A task's owner does not review it unless the project allows self-approval; owners that can't be read refuse (fail closed). */
+async function requireNotOwner(deps: ReviewClaimDeps, s: Situation, developerId: string, code: "FORBIDDEN" | "CONFIG_INVALID", words: string): Promise<void> {
+  if (s.owners === "unknown") throw agentXError("RUNTIME_UNAVAILABLE", W.ownersUnknown);
+  if (s.owners.includes(developerId) && !await deps.allowSelfApproval(s.task.orgId, s.task.project)) throw agentXError(code, words);
+}
+
 /** The checks shared by claim and reassign: something waits, under the key named; the revision named is the one stored. */
 function requireFresh(s: Situation, body: { expectedRevision: number; reviewKey: string }): void {
   if (body.expectedRevision !== s.claim.revision) throw agentXError("CHANGE_STALE", W.stale);
@@ -278,13 +291,14 @@ export async function claimReview(deps: ReviewClaimDeps, caller: ReviewCaller, t
   const s = await situation(deps, caller, taskId);
   const body = parse(ReviewClaimBodySchema, raw);
   const digest = digestOf("claim", body);
-  if (s.claim.lastRequestId === body.requestId) return replay(deps, caller, s, digest);
+  // The live role and the group come first, for a repeat of a request too: a person who lost either since gets nothing back.
   if (!mayReview(s.callerRole)) throw agentXError("FORBIDDEN", W.notInGroup);
   const group = s.groups.find((entry) => entry.groupId === body.groupId);
   if (group === undefined) throw agentXError("CONFIG_INVALID", W.noGroup);
   if (!group.members.includes(caller.developerId)) throw agentXError("FORBIDDEN", W.notInGroup);
+  if (s.claim.lastRequestId === body.requestId) return replay(deps, caller, s, digest);
   requireFresh(s, body);
-  if (s.ownerIds.includes(caller.developerId) && !await deps.allowSelfApproval(caller.orgId, s.task.project)) throw agentXError("FORBIDDEN", W.ownTask);
+  await requireNotOwner(deps, s, caller.developerId, "FORBIDDEN", W.ownTask);
   if (s.held !== undefined) {
     if (s.held.holder === caller.developerId && s.held.group.groupId === group.groupId) return viewOf(deps, caller, s);
     throw agentXError("CHANGE_STALE", s.held.holder === caller.developerId ? W.stale : W.alreadyClaimed);
@@ -314,14 +328,17 @@ export async function reassignReview(deps: ReviewClaimDeps, caller: ReviewCaller
   const s = await situation(deps, caller, taskId);
   const body = parse(ReviewReassignBodySchema, raw);
   const digest = digestOf("reassign", body);
-  if (s.claim.lastRequestId === body.requestId) return replay(deps, caller, s, digest);
+  // The caller's live role comes first, for a repeat of a request too.
   if (s.callerRole === undefined || !projectAllows(s.callerRole, "manage_members")) throw agentXError("FORBIDDEN", W.reassignMaintainers);
   const group = s.groups.find((entry) => entry.groupId === body.groupId);
   if (group === undefined) throw agentXError("CONFIG_INVALID", W.noGroup);
+  if (s.claim.lastRequestId === body.requestId) return replay(deps, caller, s, digest);
   requireFresh(s, body);
   if (s.held !== undefined && s.held.group.groupId !== group.groupId) throw agentXError("CHANGE_STALE", W.stale);
   if (!group.members.includes(body.to) || !mayReview(await deps.liveProjectRole(caller.orgId, s.task.project, body.to))) throw agentXError("CONFIG_INVALID", W.targetNotInGroup);
-  if (s.ownerIds.includes(body.to) && !await deps.allowSelfApproval(caller.orgId, s.task.project)) throw agentXError("CONFIG_INVALID", W.targetOwnTask);
+  // The new holder must be able to read the task themselves (its People list may leave them out), and is not its owner unless self-approval is on.
+  if (!await deps.canReadTask(s.task, body.to)) throw agentXError("CONFIG_INVALID", W.targetCantRead);
+  await requireNotOwner(deps, s, body.to, "CONFIG_INVALID", W.targetOwnTask);
   if (s.held?.holder === body.to) return viewOf(deps, caller, s);
   const login = await deps.githubLoginOf(caller.orgId, body.to);
   if (login === undefined) throw agentXError("CONFIG_INVALID", W.targetNoGithub);
