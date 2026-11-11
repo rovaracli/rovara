@@ -8,12 +8,15 @@
   },
   "workspaces": [
     "packages/*",
-    "infra"
+    "infra",
+    "vendor/rovara-code-shims/*"
   ],
   "scripts": {
     "build": "tsc -b && node scripts/check-worker-dist.ts && npm run build:web",
     "check:worker-dist": "node scripts/check-worker-dist.ts",
     "clean": "tsc -b --clean",
+    "vendor:update": "node scripts/vendor/update-rovara-code.ts",
+    "vendor:verify": "node scripts/vendor/verify-rovara-code.ts",
     "lint": "node scripts/lint-shards.ts",
     "lint:single": "node --max-old-space-size=14336 node_modules/eslint/bin/eslint.js .",
     "agentx": "node packages/cli/dist/bin.js",

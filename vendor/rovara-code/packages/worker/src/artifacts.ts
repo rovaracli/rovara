@@ -1,0 +1,158 @@
+import { createHash, randomUUID } from "node:crypto";
+import { readFile, stat } from "node:fs/promises";
+import { resolve } from "node:path";
+import type { PreparationManifest } from "./prepare.js";
+import { redactCredentials } from "./events.js";
+import { runIsolatedGit } from "./isolated-repository.js";
+
+const MAX_GIT_OUTPUT_BYTES = 67_108_864;
+// The control plane accepts artifacts up to 5 MB. Leave room for the
+// truncation notice and any JSON/HTTP framing added by the callback client.
+export const MAX_WORKSPACE_DIFF_BYTES = 4_500_000;
+export const MISSING_BASE_NOTE =
+  "[the commit this workspace was prepared at is not in this repository: the diff shows uncommitted changes only, not commits]";
+const TRUNCATION_NOTICE = "\n\n[workspace diff truncated to fit the AgentX artifact limit]\n";
+
+export interface WorkerArtifact {
+  name: string;
+  mediaType: string;
+  content: string;
+}
+
+export type ArtifactSink = (artifact: WorkerArtifact) => Promise<void>;
+
+/**
+ * Publishes every repository's status and its diff against the commit the workspace was prepared
+ * at, so changes the agent committed show with the ones it did not (#208). `changed` is true when
+ * any repository's `git status` lists a change, including an untracked file (#158), or its HEAD has
+ * moved from that commit (#208), as publication judges it. So a `git pull` or a checkout of another
+ * branch counts too, and its upstream commits show in the diff, as they would in a publication.
+ */
+export async function publishWorkspaceDiff(rootPath: string, sink: ArtifactSink): Promise<{ changed: boolean }> {
+  const manifest = JSON.parse(
+    await readFile(resolve(rootPath, ".agentx/preparation-manifest.json"), "utf8"),
+  ) as PreparationManifest;
+  const sections: string[] = [];
+  let changed = false;
+  for (const repository of manifest.repositories) {
+    const directory = resolve(rootPath, repository.path);
+    // Every Git call here runs in a throwaway repository that never reads the workspace repository's config (isolated-repository.ts).
+    const head = await gitHead(directory);
+    const base = await startingCommit(directory, repository.resolvedCommit);
+    const stdout = await runIsolatedGit(directory, ["diff", ...SAFE_DIFF_OPTIONS, "--binary", base ?? "HEAD", "--"], { timeout: 60_000, maxBuffer: MAX_GIT_OUTPUT_BYTES });
+    const status = await runIsolatedGit(directory, ["status", "--short", "--untracked-files=all", "--ignore-submodules=dirty"], { timeout: 30_000, maxBuffer: MAX_GIT_OUTPUT_BYTES });
+    // The same rule as publication: a HEAD that is not the recorded commit is a change.
+    if (status.trim() !== "" || head !== repository.resolvedCommit) changed = true;
+    // Never silent: a diff that cannot show committed changes says so, before the sections diffStat reads.
+    const note = base === undefined ? `${MISSING_BASE_NOTE}\n` : "";
+    sections.push(`## ${repository.name}\n\n${note}### status\n${status}\n### diff\n${stdout}`);
+  }
+  await sink({
+    name: "workspace.diff",
+    mediaType: "text/plain; charset=utf-8",
+    content: boundWorkspaceDiff(String(redactCredentials(sections.join("\n")))),
+  });
+  return { changed };
+}
+
+/**
+ * Options for every diff AgentX reads from a workspace repository: no external diff or textconv command the repository
+ * configures, and no Git run inside a nested repository (under its own config) to see whether its files changed.
+ */
+const SAFE_DIFF_OPTIONS = ["--no-ext-diff", "--no-textconv", "--ignore-submodules=dirty"] as const;
+
+/** The repository's HEAD commit. */
+async function gitHead(directory: string, signal?: AbortSignal): Promise<string> {
+  const stdout = await runIsolatedGit(directory, ["rev-parse", "HEAD"], { timeout: 30_000, maxBuffer: MAX_GIT_OUTPUT_BYTES, ...(signal === undefined ? {} : { signal }) });
+  return stdout.trim();
+}
+
+/**
+ * The commit the workspace was prepared at, when the repository still has it. Without it (it was
+ * pruned, or an old manifest holds no commit ID) the diff falls back to HEAD, shows only
+ * uncommitted changes and says so; `changed` still counts the moved HEAD.
+ */
+async function startingCommit(directory: string, resolvedCommit: string): Promise<string | undefined> {
+  if (!/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(resolvedCommit)) return undefined;
+  try {
+    await runIsolatedGit(directory, ["cat-file", "-e", `${resolvedCommit}^{commit}`], { timeout: 30_000, maxBuffer: MAX_GIT_OUTPUT_BYTES });
+    return resolvedCommit;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * A digest of every repository's state: its HEAD commit, so a commit counts as a change (#208), its
+ * status, its diff against HEAD, and the size and modification time of each untracked file. Two
+ * equal digests mean a task changed nothing, even when an earlier turn left the tree changed
+ * (#158). An untracked directory that git lists as one entry (such as a nested repository) is
+ * covered only by its own size and time.
+ */
+export async function workspaceFingerprint(rootPath: string): Promise<string> {
+  const manifest = JSON.parse(
+    await readFile(resolve(rootPath, ".agentx/preparation-manifest.json"), "utf8"),
+  ) as PreparationManifest;
+  return repositoriesFingerprint(manifest.repositories.map((repository) => ({ name: repository.name, directory: resolve(rootPath, repository.path) })));
+}
+
+/** How many untracked files the recorder's fingerprint stats (M-9); past it, the digest never matches (Ruling H). */
+export const MAX_FINGERPRINT_UNTRACKED_STATS = 5_000;
+
+/**
+ * The spec 051 recorder's fingerprint: repositoriesFingerprint with the untracked-file cap. Past the cap an edit to an
+ * untracked file could go unseen, so each read gets a fresh digest and the test run's before counts as unknown.
+ */
+export function recorderFingerprint(
+  repositories: ReadonlyArray<{ name: string; directory: string }>,
+  signal?: AbortSignal,
+  maxUntrackedStats: number = MAX_FINGERPRINT_UNTRACKED_STATS,
+): Promise<string> {
+  return repositoriesFingerprint(repositories, { maxUntrackedStats, ...(signal === undefined ? {} : { signal }) });
+}
+
+/**
+ * workspaceFingerprint's digest over the given repositories. It respects each repository's .gitignore. An aborted
+ * `signal` stops the git calls and the stat loop, and rejects. Uncapped by default, as workspaceFingerprint has always
+ * been; with `maxUntrackedStats`, a read past the cap mixes in a nonce, so no two such reads match.
+ */
+export async function repositoriesFingerprint(
+  repositories: ReadonlyArray<{ name: string; directory: string }>,
+  options: { signal?: AbortSignal; maxUntrackedStats?: number } = {},
+): Promise<string> {
+  const { signal } = options;
+  const maxUntrackedStats = options.maxUntrackedStats ?? Number.POSITIVE_INFINITY;
+  const hash = createHash("sha256");
+  for (const { name, directory } of repositories) {
+    signal?.throwIfAborted();
+    // Each call runs in a throwaway repository that never reads the workspace repository's config: the agent may change it between reads, or during one.
+    const head = await gitHead(directory, signal);
+    const status = await runIsolatedGit(directory, ["status", "--porcelain", "-z", "--untracked-files=all", "--ignore-submodules=dirty"],
+      { timeout: 30_000, maxBuffer: MAX_GIT_OUTPUT_BYTES, ...(signal === undefined ? {} : { signal }) });
+    const diff = await runIsolatedGit(directory, ["diff", ...SAFE_DIFF_OPTIONS, "--binary", "HEAD", "--"],
+      { timeout: 60_000, maxBuffer: MAX_GIT_OUTPUT_BYTES, ...(signal === undefined ? {} : { signal }) });
+    hash.update(`${name}\u0000${head}\u0000${status}\u0000${diff}\u0000`);
+    let statted = 0;
+    for (const entry of status.split("\u0000")) {
+      if (!entry.startsWith("?? ")) continue;
+      if (statted >= maxUntrackedStats) {
+        hash.update(`capped\u0000${randomUUID()}\u0000`);
+        break;
+      }
+      statted += 1;
+      signal?.throwIfAborted();
+      const file = await stat(resolve(directory, entry.slice(3))).catch(() => undefined);
+      hash.update(`${entry}\u0000${file?.size ?? -1}\u0000${file?.mtimeMs ?? -1}\u0000`);
+    }
+  }
+  return hash.digest("hex");
+}
+
+export function boundWorkspaceDiff(content: string): string {
+  if (Buffer.byteLength(content, "utf8") <= MAX_WORKSPACE_DIFF_BYTES) return content;
+  const noticeBytes = Buffer.byteLength(TRUNCATION_NOTICE, "utf8");
+  const prefix = Buffer.from(content, "utf8")
+    .subarray(0, MAX_WORKSPACE_DIFF_BYTES - noticeBytes - 4)
+    .toString("utf8");
+  return `${prefix}${TRUNCATION_NOTICE}`;
+}

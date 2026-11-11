@@ -1,4 +1,6 @@
 node_modules/
+# vendor/ holds the pinned copy of public Rovara Code (vendor/README.md). The links that let Code's own @agentx/* imports resolve inside it are committed.
+!/vendor/node_modules/
 dist/
 build/
 coverage/

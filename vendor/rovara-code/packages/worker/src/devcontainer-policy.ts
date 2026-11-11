@@ -1,0 +1,525 @@
+import { lstatSync, readlinkSync } from "node:fs";
+import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
+
+/**
+ * What a project's dev container may ask Docker for (docker containment). The dev container config is in the
+ * repository, so the agent can rewrite it during a task; its `runArgs`, `mounts` and the like reach the worker host's
+ * Docker unchanged. A setting that would give the container the host (privileges, the host's process, IPC, network or
+ * user namespaces, host devices, the Docker socket, host files outside the workspace) is refused, and so is
+ * `initializeCommand`, which runs on the worker itself rather than in the container.
+ *
+ * Checked before `devcontainer up` (devcontainerConfigRefusal): devcontainer.json, and the full configuration the CLI
+ * would use, with every feature's and the image's own `devcontainer.metadata` settings merged in. Checked again after
+ * (containerProblems), on the container as Docker ran it. One added capability is allowed: SYS_PTRACE, which debuggers
+ * need to trace the container's own processes.
+ */
+
+/** Docker's data root on an EC2 worker: a folder of the workspace volume (boot.sh), skipped by the worker's walks. */
+export const DOCKER_DATA_DIRECTORY = ".docker";
+/** The verifier's private runtime on an EC2 worker's workspace volume (boot.sh): the worker's, never the project's. */
+export const RUNTIME_BACKING_DIRECTORY = ".agentx-runtime";
+/** The container problem a missing mask over the Docker data folder is reported as. */
+export const DOCKER_DATA_VISIBLE = "the workspace's Docker data folder (.docker) visible inside it";
+/** The problem a missing mask over one of the worker's own folders of the workspace is reported as (workspace-state.ts). */
+export const WORKER_STATE_VISIBLE = "the worker's own folders of the workspace (.agentx, agent-sessions, .agentx-runtime) visible inside it";
+/** Folders of the workspace volume that are the worker's: no bind mount may reach into one. */
+const WORKER_FOLDERS = [DOCKER_DATA_DIRECTORY, ".agentx", "agent-sessions", RUNTIME_BACKING_DIRECTORY];
+
+export interface DevcontainerPolicyContext {
+  /** The AgentX workspace (canonical). */
+  rootPath: string;
+  /** The repository folder the dev container is for: `${localWorkspaceFolder}`. */
+  workspaceFolder: string;
+  /** The folder of devcontainer.json, which `build.context` and `build.dockerfile` are relative to. */
+  configFolder?: string;
+  /** How a host path is resolved before it is checked (hostPathResolver), so a link out of the workspace counts. */
+  resolvePath?: (path: string) => string;
+}
+
+/** The one added capability allowed: tracing the container's own processes, which debuggers need. */
+const ALLOWED_CAPABILITY = /^(?:CAP_)?SYS_PTRACE$/iu;
+const onlyAllowedCapabilities = (value: unknown) =>
+  Array.isArray(value) && value.every((entry) => typeof entry === "string" && ALLOWED_CAPABILITY.test(entry));
+
+/** A plain reason naming the first setting AgentX does not allow, or undefined. */
+export function devcontainerConfigRefusal(config: unknown, context: DevcontainerPolicyContext): string | undefined {
+  if (config === null || typeof config !== "object" || Array.isArray(config)) return undefined;
+  const settings = config as Record<string, unknown>;
+  if (settings.initializeCommand !== undefined) return "initializeCommand (it runs on the worker host)";
+  if (settings.dockerComposeFile !== undefined) return "dockerComposeFile (Docker Compose dev containers)";
+  if (settings.privileged !== undefined && settings.privileged !== false) return "privileged";
+  if (settings.capAdd !== undefined && !onlyAllowedCapabilities(settings.capAdd)) return "capAdd";
+  if (settings.securityOpt !== undefined && !(Array.isArray(settings.securityOpt) && settings.securityOpt.length === 0)) return "securityOpt";
+  if (settings.mounts !== undefined) {
+    if (!Array.isArray(settings.mounts)) return "mounts that are not a list";
+    for (const mount of settings.mounts) {
+      const reason = mountRefusal(mount, context, { allowRoot: false });
+      if (reason !== undefined) return `mounts with ${reason}`;
+    }
+  }
+  if (settings.workspaceMount !== undefined) {
+    const reason = mountRefusal(settings.workspaceMount, context, { allowRoot: false });
+    if (reason !== undefined) return `workspaceMount with ${reason}`;
+  }
+  if (settings.runArgs !== undefined) {
+    if (!Array.isArray(settings.runArgs) || !settings.runArgs.every((arg) => typeof arg === "string")) return "runArgs that are not a list of strings";
+    const reason = runArgsRefusal(settings.runArgs, context);
+    if (reason !== undefined) return `runArgs ${reason}`;
+  }
+  const build = settings.build !== null && typeof settings.build === "object" && !Array.isArray(settings.build)
+    ? settings.build as Record<string, unknown>
+    : {};
+  // The devcontainer CLI reads the top-level `dockerFile` and `context` in preference to `build.*` when the first is present,
+  // so every spelling is checked, and each must be inside the repository folder.
+  for (const [name, values] of [
+    ["build.dockerfile", [build.dockerfile, settings.dockerFile]],
+    ["build.context", [build.context, settings.context]],
+  ] as const) {
+    for (const value of values) {
+      if (value === undefined) continue;
+      const outside = buildPathRefusal(value, context);
+      if (outside !== undefined) return `${name} outside the repository folder (${outside})`;
+    }
+  }
+  if (build.cacheFrom !== undefined) {
+    const sources = Array.isArray(build.cacheFrom) ? build.cacheFrom : [build.cacheFrom];
+    if (!sources.every((source) => typeof source === "string")) return "build.cacheFrom that is not a string or a list of strings";
+    if (!sources.every(cacheSourceAllowed)) return "build.cacheFrom that is not an image or type=registry,ref=<image>";
+  }
+  if (build.args !== undefined && build.args !== null && typeof build.args === "object" && !Array.isArray(build.args)) {
+    const refused = Object.keys(build.args).find(isBuildKitArgument);
+    if (refused !== undefined) return `build.args ${refused.toUpperCase()}`;
+  }
+  if (build.options !== undefined) {
+    if (!Array.isArray(build.options) || !build.options.every((arg) => typeof arg === "string")) return "build.options that are not a list of strings";
+    const reason = buildOptionsRefusal(build.options);
+    if (reason !== undefined) return `build.options ${reason}`;
+  }
+  // A reference to the worker's own environment would copy its variables into the container; it is refused wherever it is.
+  if (mentionsWorkerEnvironment(config)) return "a ${localEnv} reference (it would copy the worker's environment into the container)";
+  return undefined;
+}
+
+/** Whether `${localEnv:…}` (or its alias `${env:…}`) appears in a key or a value anywhere in the configuration. */
+function mentionsWorkerEnvironment(value: unknown): boolean {
+  if (typeof value === "string") return /\$\{\s*(?:localEnv|env)\s*[:}]/iu.test(value);
+  if (Array.isArray(value)) return value.some(mentionsWorkerEnvironment);
+  if (value !== null && typeof value === "object") return Object.entries(value).some(([key, entry]) => mentionsWorkerEnvironment(key) || mentionsWorkerEnvironment(entry));
+  return false;
+}
+
+/**
+ * A Dockerfile or build context path, relative to devcontainer.json's folder: allowed only inside the repository folder.
+ * The build shares the whole context, and the whole folder of the Dockerfile, with the build's frontend, and the workspace
+ * holds more than the repository (the worker's own folders).
+ */
+function buildPathRefusal(value: unknown, context: DevcontainerPolicyContext): string | undefined {
+  if (typeof value !== "string") return String(value);
+  const substituted = substituteLocal(value, context);
+  if (substituted.includes("${")) return value;
+  const folder = context.configFolder ?? join(context.workspaceFolder, ".devcontainer");
+  const path = resolve(folder, substituted);
+  const resolvePath = context.resolvePath ?? ((candidate: string) => resolve(candidate));
+  const fromRepository = relative(resolvePath(resolve(context.workspaceFolder)), resolvePath(path));
+  return fromRepository.startsWith("..") || isAbsolute(fromRepository) ? path : undefined;
+}
+
+/**
+ * A build cache source in the one form read the same everywhere: an image reference, or `type=registry,ref=<image>`. Any
+ * other kind (a folder of the worker, a cache service) or any quote or repeated setting is refused.
+ */
+function cacheSourceAllowed(source: string): boolean {
+  if (/["'`\s]/u.test(source) || source === "") return false;
+  if (!source.includes("=") && !source.includes(",")) return true;
+  const parts = source.split(",");
+  const keys = parts.map((part) => part.slice(0, Math.max(part.indexOf("="), 0)));
+  return parts.length === 2 && keys[0] === "type" && parts[0] === "type=registry" && keys[1] === "ref" && parts[1]!.length > 4 && !parts[1]!.slice(4).includes("=");
+}
+
+/** A build argument that sets BuildKit itself (`BUILDKIT_SYNTAX` names the frontend image that reads the build). */
+const isBuildKitArgument = (name: string) => /^buildkit_/iu.test(name);
+
+/**
+ * `docker build` options that reach outside the build: the host's network or extra privileges, files written to or
+ * read from the worker, or another build context.
+ */
+const BUILD_REFUSED = new Set(["--output", "--iidfile", "--metadata-file", "--allow", "--security-opt", "--secret", "--ssh", "--build-context", "--cache-to", "--file", "--push"]);
+const BUILD_SHORT = new Map([["o", "--output"], ["f", "--file"]]);
+
+function buildOptionsRefusal(args: readonly string[]): string | undefined {
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]!;
+    if (arg.startsWith("--")) {
+      const equals = arg.indexOf("=");
+      const name = equals === -1 ? arg : arg.slice(0, equals);
+      if (BUILD_REFUSED.has(name)) return name;
+      if (name === "--cache-from") {
+        const given = equals === -1 ? args[++index] ?? "" : arg.slice(equals + 1);
+        if (!cacheSourceAllowed(given)) return "--cache-from that is not an image or type=registry,ref=<image>";
+      }
+      if (name === "--build-arg") {
+        const given = equals === -1 ? args[++index] ?? "" : arg.slice(equals + 1);
+        if (isBuildKitArgument(given)) return `--build-arg ${given.split("=")[0]!.toUpperCase()}`;
+        // `--build-arg NAME` takes the value from the worker's own environment.
+        if (!hasInlineValue(given)) return "--build-arg without a value (NAME alone reads the worker's environment)";
+      }
+      if (name === "--network" || name === "--net") {
+        const given = equals === -1 ? args[++index] ?? "" : arg.slice(equals + 1);
+        if (given === "host") return "--network=host";
+        if (given.startsWith("container:")) return "--network=container:";
+      }
+    } else if (arg.startsWith("-") && arg.length > 1) {
+      for (const flag of arg.slice(1)) {
+        const refused = BUILD_SHORT.get(flag);
+        if (refused !== undefined) return refused;
+        if (flag !== "q") break;
+      }
+    }
+  }
+  return undefined;
+}
+
+function substituteLocal(value: string, context: DevcontainerPolicyContext): string {
+  return value
+    .replaceAll("${localWorkspaceFolder}", context.workspaceFolder)
+    .replaceAll("${localWorkspaceFolderBasename}", basename(context.workspaceFolder));
+}
+
+/** Long `docker run` flags that hand the container part of the host whatever their value. */
+const ALWAYS_REFUSED = new Set(["--pid", "--security-opt", "--device", "--device-cgroup-rule", "--volumes-from", "--gpus", "--cidfile", "--label-file", "--volume-driver"]);
+/** Long flags refused when their value is `host` (and, for these three, another container's namespace). */
+const HOST_VALUE = new Map([["--ipc", true], ["--network", true], ["--net", true], ["--userns", false], ["--uts", false], ["--cgroupns", false]]);
+/** `docker run` short flags without a value; every other short flag takes one. */
+const SHORT_BOOLEAN = new Set(["d", "i", "t", "P", "q"]);
+
+/** `-e NAME` and `--env NAME` copy the variable from the worker's own environment, which `devcontainer up` inherits. */
+const ENV_WITHOUT_VALUE = "-e or --env without a value (NAME alone copies the worker's environment variable)";
+/** Whether a `NAME=value` setting carries its value: a name, an equals sign, then whatever follows (possibly empty). */
+const hasInlineValue = (setting: string) => setting.indexOf("=") >= 1;
+
+function runArgsRefusal(args: readonly string[], context: DevcontainerPolicyContext): string | undefined {
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]!;
+    const next = () => {
+      index += 1;
+      return args[index] ?? "";
+    };
+    if (arg.startsWith("--")) {
+      const equals = arg.indexOf("=");
+      const name = equals === -1 ? arg : arg.slice(0, equals);
+      const value = () => (equals === -1 ? next() : arg.slice(equals + 1));
+      if (name === "--privileged") {
+        if (equals === -1 || arg.slice(equals + 1) !== "false") return "--privileged";
+      } else if (ALWAYS_REFUSED.has(name)) {
+        return name;
+      } else if (name === "--cap-add") {
+        if (!ALLOWED_CAPABILITY.test(value())) return "--cap-add";
+      } else if (HOST_VALUE.has(name)) {
+        const given = value();
+        const label = name === "--net" ? "--network" : name;
+        if (given === "host") return `${label}=host`;
+        if (HOST_VALUE.get(name) === true && given.startsWith("container:")) return `${label}=container:`;
+      } else if (name === "--env") {
+        if (!hasInlineValue(value())) return ENV_WITHOUT_VALUE;
+      } else if (name === "--env-file") {
+        return "--env-file (it reads a file of the worker)";
+      } else if (name === "--volume") {
+        const reason = volumeRefusal(value(), context);
+        if (reason !== undefined) return reason;
+      } else if (name === "--mount") {
+        const reason = mountRefusal(value(), context, { allowRoot: false });
+        if (reason !== undefined) return reason;
+      }
+    } else if (arg.startsWith("-") && arg.length > 1) {
+      // A cluster of short flags, as Docker's flag parser reads it: boolean flags, then at most one that takes the
+      // rest of the cluster, or the next argument, as its value.
+      const cluster = arg.slice(1);
+      for (let position = 0; position < cluster.length; position += 1) {
+        const flag = cluster[position]!;
+        if (SHORT_BOOLEAN.has(flag)) continue;
+        const rest = cluster.slice(position + 1).replace(/^=/u, "");
+        const given = rest !== "" ? rest : next();
+        if (flag === "v") {
+          const reason = volumeRefusal(given, context);
+          if (reason !== undefined) return reason;
+        } else if (flag === "e" && !hasInlineValue(given)) {
+          return ENV_WITHOUT_VALUE;
+        }
+        break;
+      }
+    }
+  }
+  return undefined;
+}
+
+/** `-v SOURCE:TARGET[:OPTIONS]`: a source that is a path is a bind mount; anything else names a volume. */
+function volumeRefusal(spec: string, context: DevcontainerPolicyContext): string | undefined {
+  // The source runs to the first colon outside a `${…}` variable.
+  const source = /^(?:\$\{[^}]*\}|[^:])*/u.exec(spec)?.[0] ?? "";
+  if (source.length === spec.length) return undefined;
+  const named = substituteVolumeName(source, context);
+  if (!/^[/.~]/u.test(named) && !named.includes("${")) return namedVolumeRefusal(source, context);
+  return bindRefusal(source, context, { allowRoot: false });
+}
+
+/** The variables of a volume's name that the devcontainer CLI fills in, and each is specific to the project or the container. */
+const VOLUME_NAME_VARIABLES = ["${devcontainerId}", "${localWorkspaceFolderBasename}"];
+/** Names of AgentX's own Docker volumes (the masks over the worker's folders, Docker's data, and the like) start with this. */
+const AGENTX_VOLUME_PREFIX = /^\s*agentx/iu;
+
+function substituteVolumeName(source: string, context: DevcontainerPolicyContext): string {
+  return substituteLocal(source, context).replaceAll("${devcontainerId}", "0");
+}
+
+/**
+ * A named volume attaches whatever volume of that name already exists on the worker host's Docker, so a name is allowed
+ * only when it carries a part specific to the project folder: ${devcontainerId} (a hash of the local folder and the
+ * config path, the same across rebuilds) or ${localWorkspaceFolderBasename} (the folder's name, which another project
+ * with the same folder name shares). It must not be one of AgentX's, by the `agentx` prefix as written or as the
+ * devcontainer CLI fills the name in. A volume without a source is anonymous and new.
+ */
+function namedVolumeRefusal(source: string, context: DevcontainerPolicyContext): string | undefined {
+  if (source === "") return undefined;
+  const name = substituteVolumeName(source, context);
+  if (name.includes("/") || name.includes("${")) return `a volume named ${source}`;
+  if (AGENTX_VOLUME_PREFIX.test(source) || AGENTX_VOLUME_PREFIX.test(name)) return `a volume named ${source} (volumes named agentx… are AgentX's own)`;
+  if (!VOLUME_NAME_VARIABLES.some((variable) => source.includes(variable))) {
+    return `a volume named ${source} (a named volume must have \${devcontainerId} or \${localWorkspaceFolderBasename} in its name, so it is specific to the project folder)`;
+  }
+  return undefined;
+}
+
+/**
+ * The settings a mount may carry. Anything else is refused rather than parsed: the policy reads a mount in one strict form
+ * (each setting once, under one spelling, with no quote), so it cannot read it differently from the tool that runs it.
+ */
+const MOUNT_SETTINGS = new Set(["type", "source", "src", "target", "destination", "dst", "readonly", "ro", "external", "consistency", "volume-nocopy", "tmpfs-size", "tmpfs-mode"]);
+/** Settings that mean the same thing under different spellings: only one of each group may be given. */
+const MOUNT_SPELLINGS = new Map([["src", "source"], ["destination", "target"], ["dst", "target"], ["ro", "readonly"]]);
+const OBJECT_MOUNT_SETTINGS = new Set(["type", "source", "target"]);
+
+/** A `--mount` string (`type=bind,source=…,target=…`) or a devcontainer.json mount object. */
+function mountRefusal(mount: unknown, context: DevcontainerPolicyContext, options: { allowRoot: boolean }): string | undefined {
+  const fields: Record<string, string> = {};
+  if (typeof mount === "string") {
+    if (/["'`]/u.test(mount)) return "a mount with a quote";
+    const seen = new Set<string>();
+    for (const part of mount.split(",")) {
+      const equals = part.indexOf("=");
+      const key = (equals === -1 ? part : part.slice(0, equals)).trim().toLowerCase();
+      if (key.startsWith("volume-opt") || key === "volume-driver") return "a volume with driver options";
+      if (!MOUNT_SETTINGS.has(key)) return `a mount with the setting ${key === "" ? "(empty)" : key}`;
+      const canonical = MOUNT_SPELLINGS.get(key) ?? key;
+      if (seen.has(canonical)) return `a mount with a setting given twice (${canonical})`;
+      seen.add(canonical);
+      fields[key] = equals === -1 ? "true" : part.slice(equals + 1).trim();
+    }
+  } else if (mount !== null && typeof mount === "object" && !Array.isArray(mount)) {
+    for (const [key, value] of Object.entries(mount)) {
+      if (/[,"'`]/u.test(key) || /[,"'`]/u.test(String(value))) return "a mount with a comma or a quote in a field";
+      if (!OBJECT_MOUNT_SETTINGS.has(key)) return `a mount with the setting ${key}`;
+      fields[key] = String(value);
+    }
+  } else {
+    return "a mount AgentX cannot read";
+  }
+  // Docker reads the type without regard to case, so the policy does.
+  const type = (fields.type ?? "volume").toLowerCase();
+  const source = fields.source ?? fields.src;
+  if (type === "volume") return source === undefined ? undefined : namedVolumeRefusal(source, context);
+  if (type === "tmpfs") return undefined;
+  if (type !== "bind") return `a ${fields.type} mount`;
+  if (source === undefined) return "a bind mount without a source";
+  return bindRefusal(source, context, options);
+}
+
+/**
+ * A host path given to a bind mount: allowed only inside the repository folder, never the workspace itself (AgentX mounts
+ * that itself, with the worker's own folders hidden), and never in one of those folders.
+ */
+function bindRefusal(source: string, context: DevcontainerPolicyContext, options: { allowRoot: boolean }): string | undefined {
+  const substituted = substituteLocal(source, context);
+  if (substituted.includes("${") || !isAbsolute(substituted)) return `a bind mount of ${source}`;
+  const resolvePath = context.resolvePath ?? ((path: string) => resolve(path));
+  const path = resolvePath(resolve(substituted));
+  const root = resolvePath(resolve(context.rootPath));
+  // Shown as written (with the workspace folder filled in): a link is followed for the check only.
+  const fromRepository = relative(resolvePath(resolve(context.workspaceFolder)), path);
+  const inRepository = !fromRepository.startsWith("..") && !isAbsolute(fromRepository);
+  return inRepository && hostPathAllowed(path, root, options) ? undefined : `a bind mount of ${resolve(substituted)}`;
+}
+
+function hostPathAllowed(path: string, root: string, options: { allowRoot: boolean }): boolean {
+  const fromRoot = relative(root, path);
+  if (fromRoot === "") return options.allowRoot;
+  if (fromRoot.startsWith("..") || isAbsolute(fromRoot)) return false;
+  return WORKER_FOLDERS.every((folder) => {
+    const fromFolder = relative(join(root, folder), path);
+    return fromFolder.startsWith("..") || isAbsolute(fromFolder);
+  });
+}
+
+/** The parts of `docker inspect` that say what a container was given. */
+export interface ContainerInspection {
+  HostConfig?: {
+    Privileged?: boolean;
+    CapAdd?: readonly string[] | null;
+    SecurityOpt?: readonly string[] | null;
+    PidMode?: string;
+    IpcMode?: string;
+    NetworkMode?: string;
+    UsernsMode?: string;
+    UTSMode?: string;
+    CgroupnsMode?: string;
+    Devices?: readonly unknown[] | null;
+    VolumesFrom?: readonly string[] | null;
+    DeviceRequests?: readonly unknown[] | null;
+  };
+  Mounts?: ReadonlyArray<{ Type?: string; Name?: string; Source?: string; Destination?: string }> | null;
+}
+
+/**
+ * What a started dev container was given that AgentX does not allow, as Docker reports it. Binds of the workspace
+ * itself are AgentX's own; where the Docker data folder exists, each must have it hidden by a volume (or tmpfs) mounted
+ * over the same place inside, since Docker's own data is not the project's. The worker's own folders of the workspace
+ * (`maskedPaths`, workspace-state.ts) must be hidden the same way: task code in the container must not write them.
+ */
+export function containerProblems(
+  inspection: ContainerInspection,
+  context: { rootPath: string; dockerDataPath?: string; maskedPaths?: readonly string[]; resolvePath?: (path: string) => string },
+): string[] {
+  const host = inspection.HostConfig ?? {};
+  const problems: string[] = [];
+  const nonEmpty = (value: readonly unknown[] | null | undefined) => (value?.length ?? 0) > 0;
+  if (host.Privileged === true) problems.push("privileged");
+  if (nonEmpty(host.CapAdd) && !onlyAllowedCapabilities(host.CapAdd)) problems.push("--cap-add");
+  if (nonEmpty(host.SecurityOpt)) problems.push("--security-opt");
+  if (host.PidMode !== undefined && host.PidMode !== "" && host.PidMode !== "private") problems.push("--pid");
+  for (const [mode, flag, containers] of [[host.IpcMode, "--ipc", true], [host.NetworkMode, "--network", true], [host.UsernsMode, "--userns", false], [host.UTSMode, "--uts", false], [host.CgroupnsMode, "--cgroupns", false]] as const) {
+    if (mode === "host") problems.push(`${flag}=host`);
+    else if (containers && mode?.startsWith("container:") === true) problems.push(`${flag}=container:`);
+  }
+  if (nonEmpty(host.Devices)) problems.push("--device");
+  if (nonEmpty(host.DeviceRequests)) problems.push("--gpus");
+  if (nonEmpty(host.VolumesFrom)) problems.push("--volumes-from");
+  const resolvePath = context.resolvePath ?? ((path: string) => resolve(path));
+  const root = resolvePath(resolve(context.rootPath));
+  const mounts = inspection.Mounts ?? [];
+  let dataVisible = false;
+  let stateVisible = false;
+  for (const mount of mounts) {
+    if (mount.Type !== "bind") continue;
+    const source = mount.Source === undefined ? undefined : resolvePath(resolve(mount.Source));
+    if (source === undefined || !hostPathAllowed(source, root, { allowRoot: true })) {
+      problems.push(`a bind mount of ${mount.Source ?? "an unknown path"}`);
+      continue;
+    }
+    if (mount.Destination === undefined) continue;
+    // Each folder the worker hides must be hidden by a volume (or tmpfs) mounted over the same place inside.
+    for (const [hide, isData] of [...(context.dockerDataPath === undefined ? [] : [[context.dockerDataPath, true] as const]), ...(context.maskedPaths ?? []).map((path) => [path, false] as const)]) {
+      const toHidden = relative(source, resolvePath(resolve(hide)));
+      if (toHidden.startsWith("..") || isAbsolute(toHidden)) continue;
+      const hiddenAt = join(mount.Destination, toHidden);
+      if (mounts.some((other) => (other.Type === "volume" || other.Type === "tmpfs") && other.Destination === hiddenAt)) continue;
+      if (isData) dataVisible = true;
+      else stateVisible = true;
+    }
+  }
+  if (dataVisible) problems.push(DOCKER_DATA_VISIBLE);
+  if (stateVisible) problems.push(WORKER_STATE_VISIBLE);
+  return problems;
+}
+
+const MAX_LINK_HOPS = 40;
+
+/**
+ * Where a host path leads, as Docker would follow it: every component below the (canonical) workspace root is checked
+ * with lstat, and a link is followed by its target, even when that target does not exist in the worker (it may on the
+ * host). A path, or a link target, outside the workspace is returned as it is, without following anything there: the
+ * worker's view of the filesystem outside the workspace is not the host's. Past the first missing component the rest
+ * is appended as written, since nothing below a missing folder exists. A component that cannot be checked (any error
+ * but "does not exist" or "not a folder", such as no permission) or too many links lead to `/`, which is refused.
+ */
+export function hostPathResolver(rootPath: string): (path: string) => string {
+  const root = resolve(rootPath);
+  const within = (path: string) => {
+    const fromRoot = relative(root, path);
+    return fromRoot === "" || (!fromRoot.startsWith("..") && !isAbsolute(fromRoot));
+  };
+  const parts = (path: string) => relative(root, path).split(sep).filter((part) => part !== "");
+  return (input) => {
+    const target = resolve(input);
+    if (!within(target)) return target;
+    let current = root;
+    let pending = parts(target);
+    let hops = 0;
+    while (pending.length > 0) {
+      const next = join(current, pending.shift()!);
+      let isLink: boolean;
+      try {
+        isLink = lstatSync(next).isSymbolicLink();
+      } catch (error) {
+        const code = (error as { code?: unknown }).code;
+        if (code === "ENOENT" || code === "ENOTDIR") return join(next, ...pending);
+        return "/";
+      }
+      if (!isLink) {
+        current = next;
+        continue;
+      }
+      hops += 1;
+      if (hops > MAX_LINK_HOPS) return "/";
+      let link: string;
+      try {
+        link = readlinkSync(next);
+      } catch {
+        return "/";
+      }
+      const linkTarget = resolve(current, link);
+      if (!within(linkTarget)) return join(linkTarget, ...pending);
+      current = root;
+      pending = [...parts(linkTarget), ...pending];
+    }
+    return current;
+  };
+}
+
+/** devcontainer.json: JSON with comments and trailing commas. */
+export function parseJsonc(text: string): unknown {
+  let output = "";
+  let index = 0;
+  while (index < text.length) {
+    const char = text[index]!;
+    if (char === "\"") {
+      let end = index + 1;
+      while (end < text.length && text[end] !== "\"") end += text[end] === "\\" ? 2 : 1;
+      output += text.slice(index, end + 1);
+      index = end + 1;
+    } else if (char === "/" && text[index + 1] === "/") {
+      while (index < text.length && text[index] !== "\n") index += 1;
+    } else if (char === "/" && text[index + 1] === "*") {
+      const end = text.indexOf("*/", index + 2);
+      index = end === -1 ? text.length : end + 2;
+    } else if (char === ",") {
+      // A comma followed only by whitespace and comments before a closing bracket is a trailing comma.
+      let ahead = index + 1;
+      for (;;) {
+        while (ahead < text.length && /\s/u.test(text[ahead]!)) ahead += 1;
+        if (text.startsWith("//", ahead)) {
+          while (ahead < text.length && text[ahead] !== "\n") ahead += 1;
+        } else if (text.startsWith("/*", ahead)) {
+          const end = text.indexOf("*/", ahead + 2);
+          ahead = end === -1 ? text.length : end + 2;
+        } else {
+          break;
+        }
+      }
+      if (text[ahead] !== "}" && text[ahead] !== "]") output += char;
+      index += 1;
+    } else {
+      output += char;
+      index += 1;
+    }
+  }
+  return JSON.parse(output) as unknown;
+}

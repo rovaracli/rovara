@@ -23,6 +23,7 @@ The product is Rovara. Much of the code still uses the old name, so **search for
 | `packages/cli` | The `agentx` command (install, upgrade, project setup). |
 | `packages/slack-service`, `gateway`, `mcp`, `orchestrator`, `model-proxy`, `model-runtime` | Smaller services. See each package's `src/`. |
 | `packages/verifier`, `audit-verifier` | Check verification and the audit ledger's verifier. |
+| `vendor/` | A read-only copy of public Rovara Code at a pinned sha (`vendor/rovara-code`), checked byte for byte; Cloud code imports it as `@rovara-code/*`. Never edit it: see `vendor/README.md`. |
 | `infra/` | AWS CDK app (`infra/bin`, stacks and constructs in `infra/lib`). |
 | `tests/` | `unit`, `contract`, `integration`, `e2e`, `web`, `web-e2e`, `live`, `staging` and more. Tests are grouped by kind, not by package. |
 | `scripts/` | Repo scripts: lint shards, typecheck baseline, release, preflight. |
