@@ -28,6 +28,7 @@ const BEFORE_C1 = [
 
 /** Variables the broker's code reads that the control plane does not always provide, each for a reason. */
 const OPTIONAL = new Map<string, string>([
+  ["AGENTX_WORK_EVENTS", "work events (U3) are on in named environments when unset; only the value `off` turns them off, so nothing needs to provide it"],
   ["AWS_REGION", "Lambda sets it for every function"],
   ["DEVELOPER_IDENTITY_FUNCTION_ARN", "the sign-in function by ARN, which still works where an environment gives one instead of DEVELOPER_IDENTITY_FUNCTION_NAME"],
   ["AGENTX_RELEASE_VERSION", "set by the release, for the health route; absent on an install made from source"],
