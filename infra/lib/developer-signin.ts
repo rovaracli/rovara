@@ -283,8 +283,8 @@ export class DeveloperSignIn extends Construct {
     // Healing a duplicate member (mergeDuplicateMember) touches exactly these further keys, each with only the action it uses.
     // A member's project grants (`ORG#<id>#MEMBER#<developer>`): copied to the survivor (PutItem), listed (Query), then removed (DeleteItem).
     // The org's budget settings (`ORG#<id>#SETTINGS`): read, and written back with the duplicate's override moved (GetItem, PutItem).
-    // Since 0.5.15 a merge never leaves the survivor's company and never closes an org (IDENTITY-HEALING-CROSS-ORG); the Query grant on
-    // the bare org partition and the project catalog below was for the old race-org check and can be narrowed in a later infra change.
+    // Since 0.5.15 a merge never leaves the survivor's company and never closes an org (IDENTITY-HEALING-CROSS-ORG), so the old race-org
+    // check's Query on the project catalog is gone. The Query on the bare org partition stays: OrgStore.hasSlackTeam lists it (SLACK_TEAM# rows).
     // The duplicate's member row, in the bare org partition, and the developer's org pointer are deleted (DeleteItem). IAM leading keys
     // cannot tell the member row from the org record in that partition, so the DeleteItem grant reaches both; the code deletes only the
     // member row. A transaction's Delete is authorized as DeleteItem. No `ORG#*` wildcard, no scan, no other org-scoped row.
@@ -319,7 +319,7 @@ export class DeveloperSignIn extends Construct {
     }));
     fn.addToRolePolicy(new iam.PolicyStatement({
       actions: ["dynamodb:Query"], resources: [props.state.tableArn],
-      conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": [`ORG#${orgPattern}#MEMBER#*`, `ORG#${orgPattern}`, `ORG#${orgPattern}#PROJECT_CATALOG`] } },
+      conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": [`ORG#${orgPattern}#MEMBER#*`, `ORG#${orgPattern}`] } },
     }));
     fn.addToRolePolicy(new iam.PolicyStatement({
       actions: ["dynamodb:DeleteItem"], resources: [props.state.tableArn],
