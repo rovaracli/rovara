@@ -1900,6 +1900,24 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
       },
       "Type": "AWS::IAM::ManagedPolicy",
     },
+    "EmbedderImageRepository": {
+      "DeletionPolicy": "RetainExceptOnCreate",
+      "Properties": {
+        "ImageScanningConfiguration": {
+          "ScanOnPush": true,
+        },
+        "ImageTagMutability": "IMMUTABLE",
+        "RepositoryName": "rovara-bundle/staging/embedder",
+        "Tags": [
+          {
+            "Key": "agentx:env",
+            "Value": "staging",
+          },
+        ],
+      },
+      "Type": "AWS::ECR::Repository",
+      "UpdateReplacePolicy": "Retain",
+    },
     "OperatorRole": {
       "Properties": {
         "AssumeRolePolicyDocument": {
