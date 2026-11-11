@@ -59,6 +59,28 @@ describe("the monthly cap on a project's automatic runs", () => {
     expect(paused[0]).toMatchObject({ actor: { kind: "system", id: "rovara" }, target: { kind: "project", name: PROJECT }, facts: { month: "2026-11", cap: 2 } });
   });
 
+  it("a cap of 0 allows no run at all, not even the month's first: nothing is counted, claimed or started, and the pause is recorded once", async () => {
+    const b = bench();
+    await maintainer(b, 0);
+    expect(await claim(b, 1)).toEqual({ claimed: false, used: 0, cap: 0 });
+    expect(await claim(b, 2)).toEqual({ claimed: false, used: 0, cap: 0 });
+    expect(await readAutomaticRunsUse(b.deps, ORG, PROJECT)).toMatchObject({ used: 0, cap: 0, paused: true });
+    expect(b.audit.recordedBy("automatic_runs.paused")).toHaveLength(1);
+    // no claim row was written for a refused run, so giving it back is a no-op and a later raise starts it
+    await maintainer(b, 1, "request-cap-0002");
+    expect(await claim(b, 1)).toMatchObject({ claimed: true, used: 1, replay: false });
+  });
+
+  it("a retried start whose run already exists is answered as a replay, even when the cap has since been set to 0", async () => {
+    const b = bench();
+    expect(await claim(b, 1)).toMatchObject({ claimed: true, used: 1, replay: false });
+    await maintainer(b, 0);
+    expect(await claim(b, 1)).toEqual({ claimed: true, used: 1, cap: 0, replay: true });
+    // a different request is refused, and the pause is only recorded for that one
+    expect(await claim(b, 2)).toEqual({ claimed: false, used: 1, cap: 0 });
+    expect(b.audit.recordedBy("automatic_runs.paused")).toHaveLength(1);
+  });
+
   it("starts again the next month, and the new month can be paused and recorded again", async () => {
     const b = bench();
     await maintainer(b, 1);

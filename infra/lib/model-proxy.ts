@@ -1,5 +1,5 @@
 import { INFERENCE_PATHS, MODEL_PROXY_INFERENCE_PORT, MODEL_PROXY_URL_PARAMETER, modelProxyTaskRoleName } from "@agentx/contracts";
-import { ROVARA_GUARD_PY, litellmConfig } from "@agentx/model-proxy";
+import { ROVARA_GUARD_ENV, ROVARA_GUARD_PACKED, litellmConfig, litellmStartCommand } from "@agentx/model-proxy";
 import {
   Duration,
   Fn,
@@ -46,10 +46,10 @@ const DATABASE_USER = "litellm";
 /** LiteLLM's unauthenticated liveness route. */
 const HEALTH_CHECK_PATH = "/health/liveliness";
 /**
- * Writes the generated config and the guard module beside it (LiteLLM loads a callback module from the config's directory), then
- * replaces the shell with LiteLLM so it receives the stop signal.
+ * Writes the generated config, unpacks the guard module beside it and checks its SHA-256 (LiteLLM loads a callback module from the config's directory), then replaces the shell with LiteLLM so it
+ * receives the stop signal. The guard travels packed (about 16 KB, not its 40 KB text): ECS holds a task definition to 64 KiB, and the guard was most of it (packages/model-proxy/src/start-command.ts).
  */
-const START_COMMAND = `printf "%s" "$LITELLM_CONFIG_YAML" > /tmp/litellm.yaml && printf "%s" "$ROVARA_GUARD_PY" > /tmp/rovara_guard.py && exec litellm --config /tmp/litellm.yaml --port ${MODEL_PROXY_PORT}`;
+const START_COMMAND = litellmStartCommand(MODEL_PROXY_PORT);
 
 /**
  * `sts:AssumeRole` into another AWS account's role, for a company's own Bedrock source: never a role in this account, and only with
@@ -318,7 +318,7 @@ export class ModelProxy extends Construct {
           // Company models are added and removed at run time through the management API, and every replica reads them from the database.
           { name: "STORE_MODEL_IN_DB", value: "True" },
           { name: "REQUEST_TIMEOUT", value: String(MODEL_PROXY_REQUEST_TIMEOUT_SECONDS) },
-          { name: "ROVARA_GUARD_PY", value: ROVARA_GUARD_PY },
+          { name: ROVARA_GUARD_ENV, value: ROVARA_GUARD_PACKED },
           // Prices come from the cost map shipped in the pinned image, never fetched at start: a proxy that cannot reach GitHub still starts.
           { name: "LITELLM_LOCAL_MODEL_COST_MAP", value: "True" },
         ],

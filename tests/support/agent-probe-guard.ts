@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -35,6 +35,17 @@ export const GUARD_ROUTE_TABLE = "Iface\tDestination\tGateway\tFlags\tRefCnt\tUs
 export const GUARD_PAGE_PATH = "/__rovara-guard";
 export const GUARD_MARKER = 'data-testid="guard-in-request-checks"';
 
+/**
+ * Writes the world file so the guard never reads half of it. The guard reads the file at every check and at every timer it sets, while a test may be changing it: a plain write empties the file
+ * first, a read in between is "Unexpected end of JSON input", the guard (an unhandled rejection) dies with code 1, and the caller sees the connection reset (the flake of 2026-11-10: about one run in
+ * eighty). A file written beside it and renamed over it is always whole, the old one or the new one.
+ */
+export function writeWorldFile(file: string, world: unknown): void {
+  const next = `${file}.next`;
+  writeFileSync(next, JSON.stringify(world));
+  renameSync(next, file);
+}
+
 export function substituteGuard(script: string, replacements: readonly (readonly [string, string])[]): string {
   let out = script;
   for (const [literal, replacement] of replacements) {
@@ -57,21 +68,27 @@ import dns from 'node:dns/promises';
 import { syncBuiltinESMExports } from 'node:module';
 import { EventEmitter } from 'node:events';
 import { readFileSync } from 'node:fs';
-// The world is read again at every attempt, so a test can change it while the guard runs (a path that opens later).
-const world = new Proxy({}, { get: (_, key) => JSON.parse(readFileSync(process.env.GUARD_WORLD_FILE, 'utf8'))[key] });
+// The world is read again at every check, so a test can change it while the guard runs (a path that opens later). A check is read ONCE, when it starts (its name lookup): the connects it makes
+// answer from that reading, so a check that began before a test changed the world is never half in the old world and half in the new (a descheduled guard would otherwise end itself on a
+// world the test set for a later request, and the caller would see the connection reset).
+const read = () => JSON.parse(readFileSync(process.env.GUARD_WORLD_FILE, 'utf8'));
+const world = new Proxy({}, { get: (_, key) => read()[key] });
+let check = read();
 const log = (entry) => process.stdout.write(JSON.stringify(entry) + '\\n');
 net.connect = (options) => {
   const address = options.host + ':' + options.port;
   log({ connect: address });
   const socket = new EventEmitter();
   socket.destroy = () => undefined;
-  setImmediate(() => socket.emit(world.connects[options.host] ?? 'timeout', new Error('connect error')));
+  const outcome = check.connects[options.host] ?? 'timeout';
+  setImmediate(() => socket.emit(outcome, new Error('connect error')));
   return socket;
 };
 dns.lookup = async (name) => {
+  check = read();
   log({ lookup: name });
-  if (world.proxyAddress === null) throw Object.assign(new Error('ENOTFOUND'), { code: 'ENOTFOUND' });
-  return { address: world.proxyAddress, family: 4 };
+  if (check.proxyAddress === null) throw Object.assign(new Error('ENOTFOUND'), { code: 'ENOTFOUND' });
+  return { address: check.proxyAddress, family: 4 };
 };
 const realSetTimeout = globalThis.setTimeout;
 const realSetInterval = globalThis.setInterval;
@@ -121,7 +138,7 @@ export async function startGuard(script: string, world: GuardWorld): Promise<Gua
   const root = realpathSync(mkdtempSync(join(tmpdir(), "rovara-guard-")));
   const prepared = prepareGuardWorld(script, world, root);
   const worldFile = join(root, "world.json");
-  writeFileSync(worldFile, JSON.stringify(world));
+  writeWorldFile(worldFile, world);
   const child: ChildProcess = spawn(process.execPath, ["--import", prepared.patchPath, "--input-type=module", "-e", prepared.patched], { cwd: root, env: { PATH: process.env.PATH ?? "", GUARD_WORLD_FILE: worldFile }, stdio: ["ignore", "pipe", "pipe"] });
   let out = ""; let err = ""; let code: number | null = null; let done = false;
   child.stdout?.on("data", (chunk: Buffer) => { out += chunk.toString(); });
@@ -131,6 +148,9 @@ export async function startGuard(script: string, world: GuardWorld): Promise<Gua
   const deadline = Date.now() + 15_000;
   while (!done && !lines().some((line) => line.started === true) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20));
   const started = lines().some((line) => line.started === true);
+  // The guard's own loop begins its first check the moment the app is up, in the same breath as the start. A test that changes the world right after the start must not meet that check half done:
+  // wait until it has begun (its name lookup is the second one, after the one at start) and so has read the world as it is now. Every later check reads the world afresh.
+  while (started && !done && lines().filter((line) => line.lookup !== undefined).length < 2 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));
   const port = lines().find((line) => line.started === true)?.port ?? null;
   const stop = () => { child.kill("SIGKILL"); rmSync(root, { recursive: true, force: true }); };
   return { started, port, exitCode: () => code, stderr: () => err,
@@ -145,7 +165,7 @@ export async function startGuard(script: string, world: GuardWorld): Promise<Gua
       req.on("error", reject); req.end();
     }),
     mountSocket: () => writeFileSync(prepared.socketPath, ""),
-    setWorld: (change) => { const next = { ...world, ...change, connects: { ...world.connects, ...change.connects } }; writeFileSync(worldFile, JSON.stringify(next)); },
+    setWorld: (change) => { const next = { ...world, ...change, connects: { ...world.connects, ...change.connects } }; writeWorldFile(worldFile, next); },
     stop };
 }
 
@@ -157,6 +177,6 @@ export function localGuardInvocation(script: string, root: string): { args: stri
   const world: GuardWorld = { socket: false, proxyAddress: "172.20.0.2", nameserver: "172.20.0.2", gatewayRoute: true, connects: {} };
   const prepared = prepareGuardWorld(script, world, root, false);
   const worldFile = join(root, "world.json");
-  writeFileSync(worldFile, JSON.stringify(world));
+  writeWorldFile(worldFile, world);
   return { args: ["--import", prepared.patchPath, "--input-type=module", "-e", prepared.patched], env: { GUARD_WORLD_FILE: worldFile } };
 }

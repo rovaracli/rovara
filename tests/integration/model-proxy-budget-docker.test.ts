@@ -9,7 +9,7 @@ import { readFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { describe, expect, it } from "vitest";
 import { LITELLM_SOURCE_IMAGE } from "../../infra/lib/bundle-images.js";
-import { ROVARA_GUARD_PY, litellmConfig } from "../../packages/model-proxy/src/index.js";
+import { ROVARA_GUARD_ENV, ROVARA_GUARD_PACKED, litellmConfig, litellmStartCommand } from "../../packages/model-proxy/src/index.js";
 
 const fixture = (name: string) => readFileSync(new URL(`../fixtures/model-proxy-budget/${name}`, import.meta.url), "utf8");
 const docker = (args: string[]) => execFileSync("docker", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
@@ -58,9 +58,9 @@ describe.skipIf(!usable)("model proxy task budget against the pinned LiteLLM (do
         docker(["run", "-d", "--name", `${run}-proxy${String(index)}`, "--network", network, "-p", `127.0.0.1:${String(port)}:4000`,
           "-e", `LITELLM_MASTER_KEY=${master}`, "-e", `DATABASE_URL=postgresql://litellm:${password}@${postgres}:5432/litellm`, "-e", `LITELLM_SALT_KEY=${randomBytes(16).toString("hex")}`,
           "-e", "STORE_MODEL_IN_DB=True", "-e", "REQUEST_TIMEOUT=900", "-e", "LITELLM_LOCAL_MODEL_COST_MAP=True",
-          "-e", `LITELLM_CONFIG_YAML=${config}`, "-e", `ROVARA_GUARD_PY=${ROVARA_GUARD_PY}`,
+          "-e", `LITELLM_CONFIG_YAML=${config}`, "-e", `${ROVARA_GUARD_ENV}=${ROVARA_GUARD_PACKED}`,
           "--entrypoint", "sh", LITELLM_SOURCE_IMAGE, "-c",
-          'printf "%s" "$LITELLM_CONFIG_YAML" > /tmp/litellm.yaml && printf "%s" "$ROVARA_GUARD_PY" > /tmp/rovara_guard.py && exec litellm --config /tmp/litellm.yaml --port 4000']);
+          litellmStartCommand(4000)]);
       });
       const deadline = Date.now() + 240_000;
       for (const port of ports) await healthy(`http://127.0.0.1:${String(port)}`, deadline);
