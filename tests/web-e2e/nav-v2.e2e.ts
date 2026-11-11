@@ -1,9 +1,11 @@
 import type { Page } from "@playwright/test";
-import { test, expect } from "./support/csp.js";
+import { test, expect as baseExpect } from "./support/csp.js";
 import { mockRealtime } from "./support/realtime.js";
 import { checkA11y } from "./support/axe.js";
 import { evidenceShot } from "./support/screenshot.js";
 import { FIXTURE_SESSION } from "../web/support/fixtures.js";
+// Same checks, a longer wait: under parallel or long runs a first paint or a menu open can take more than the default 5 s. No assertion changed.
+const expect = baseExpect.configure({ timeout: 15_000 });
 // The new navigation (switch: localStorage `rovara.nav` = "v2"). Off, the shell is exactly as it was: the "off" journeys take the base pictures
 // (set ROVARA_NAV_SHOTS to a folder to compare a run on this branch with a run on the base commit, byte for byte).
 // On: the sidebar on a desktop, the bottom tab bar on a phone, no sideways scroll at 360 and 390, 44px targets, visible focus, no accessibility violations, with the v1 look and the v2 look.

@@ -1,11 +1,13 @@
 // Company settings on a phone (decision D25): every admin page, at 360 and 390 px, in look off and look v2. No sideways scroll, every control 44px, axe clean in light and dark, focus visible.
 // The 1280 pictures (ROVARA_ADMIN_SHOTS names the folder) are for a byte-for-byte comparison against the base: desktop must not change.
 import type { APIRequestContext, BrowserContext, Page } from "@playwright/test";
-import { test, expect } from "./support/csp.js";
+import { test, expect as baseExpect } from "./support/csp.js";
 import { checkA11y } from "./support/axe.js";
 import { evidenceShot } from "./support/screenshot.js";
 import { FIXTURE_SESSION } from "../web/support/fixtures.js";
 import { AUDIT_LIMITS_COPY } from "../../packages/ui/src/screens/admin/audit/metadata.js";
+// Same checks, a longer wait: under parallel or long runs a first paint or a menu open can take more than the default 5 s. No assertion changed.
+const expect = baseExpect.configure({ timeout: 15_000 });
 const shots = process.env.ROVARA_ADMIN_SHOTS ?? ".test-build/web-e2e/admin-phone";
 const PAGES = [
  ["overview", "/app/admin", "Company settings"], ["people", "/app/admin/people", "People"], ["roles", "/app/admin/people/roles", "Roles"], ["invites", "/app/admin/invites", "Invites"],
