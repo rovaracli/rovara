@@ -14,6 +14,8 @@ export const SIGNED_OUT_REASONS = [
   "refused",
   /** A new person with no company who did not ask to create one (OWNER DECISION 5: nothing is created silently). */
   "no_account",
+  /** New companies are by invitation only on this install (the hosted cloud): nothing was created; the person asks someone at their company for an invite. */
+  "invitation_only",
   /** The sign-in provider could not be reached. */
   "unavailable",
   /** That sign-in method cannot create or join a company here (Slack or company sign-in on Rovara Cloud). */

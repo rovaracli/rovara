@@ -430,6 +430,10 @@ export function identityHarness(options: {
   audit?: AuditCapture;
   /** The sign-in store audits the identity links it makes and removes, as the Lambda's does (`audit` alone leaves it unaudited, as before). */
   storeAudit?: boolean;
+  /** "New companies by invitation only" (the hosted cloud's setting): a cloud or GitHub sign-in with no company and no usable invite is refused. Absent: as always. */
+  newOrgsByInvitationOnly?: boolean;
+  /** The cloud pool's admin API for opening an invite (needs `newOrgsByInvitationOnly`): the harness's `cognito` fake. */
+  invitedUsers?: boolean;
 } = {}) {
   let clock = T0;
   const now = () => clock;
@@ -479,6 +483,7 @@ export function identityHarness(options: {
     orgs,
     ...(options.notice === undefined ? {} : { notice: options.notice }),
     ...(options.singleOrg === false ? {} : { singleOrgId: TEST_ORG }),
+    ...(options.newOrgsByInvitationOnly === true ? { newOrgsByInvitationOnly: true } : {}),
     ...(options.editionPolicy === undefined ? {} : { editionPolicy: options.editionPolicy }),
     ...(ssoStores === undefined ? {} : { sso: ssoStores }),
     ...(samlProvider === undefined ? {} : { saml: samlProvider }),
@@ -495,6 +500,7 @@ export function identityHarness(options: {
   if (options.decide !== undefined) {
     deps.decide = { store: decideStore, kinds: options.decide.kinds ?? {}, cloudIssuer: OIDC_ISSUER, cognito: { client: cognito, userPoolId: "us-east-1_TESTPOOL" } };
   }
+  if (options.invitedUsers === true) deps.invitedUsers = { client: cognito, userPoolId: "us-east-1_TESTPOOL", limits: decideStore };
   options.audit?.attach(state);
   const handler = createDeveloperIdentityHandler(deps);
   const http = async (event: HttpApiV2Event) => handler(event) as Promise<HttpResult>;

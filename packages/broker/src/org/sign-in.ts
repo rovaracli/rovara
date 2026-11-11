@@ -1,7 +1,7 @@
 // packages/broker/src/org/sign-in.ts
 // Multi-tenancy: which org a person lands in when they sign in. A developer who already belongs to an
 // org keeps it. Otherwise, in order: an invite token joins the org that invited them, a cloud sign-in
-// creates an org of its own, and a Slack or company sign-in joins the install's single org (ruling R2)
+// creates an org of its own (unless the install is invitation-only for new companies), and a Slack or company sign-in joins the install's single org (ruling R2)
 // as a member. A person's second sign-in route is never a second member: identities.ts links it to the
 // first route's developer before this runs, so that developer already has its org. A GitHub sign-in
 // (Task 22) is a cloud sign-in route for all of this: it accepts invites and creates an org like `cloud`.
@@ -15,6 +15,11 @@ export interface ResolveOrgOnSignInDependencies {
   singleOrgId?: OrgId;
   /** The name that single org is created with the first time someone joins it; the environment's name. */
   singleOrgName?: string;
+  /**
+   * "New companies by invitation only" (the hosted cloud's install setting; absent or false everywhere else, which changes nothing). When true, rule 3 never creates a
+   * company: a cloud or GitHub sign-in with no company and no usable invite is refused with INVITATION_ONLY_MESSAGE before anything is written. Rules 1, 2 and 4 are untouched.
+   */
+  newOrgsByInvitationOnly?: boolean;
   /**
    * Called after a sign-in created or joined an org (not for a person who already had one), so the model proxy knows the org and
    * the member before the first key names them. Best effort: a failure is logged and never fails the sign-in, and the first key
@@ -60,6 +65,8 @@ export interface SignInNoOrg {
 
 /** What rule 4 says on an install with no single org (a cloud install, ruling R51): a Slack or company sign-in has no org to join there. */
 export const NO_ORG_ON_INSTALL_MESSAGE = "Sign in with Rovara on this install: Slack and company sign-ins do not create or join an organization here";
+/** What rule 3 says on an install where new companies are by invitation only: no company is made, and the person is told how to get in. */
+export const INVITATION_ONLY_MESSAGE = "Rovara is invitation-only right now. Ask someone at your company to invite you, then open the invite link they send you";
 export const REMOVED_FROM_ORG_MESSAGE = "You were removed from this organization. Ask an admin to invite you again.";
 const codeOf = (error: unknown) => (error as { code?: unknown }).code;
 /** The same address on both sides, and only for ASCII ones: Unicode folding must not make two different addresses equal (U+212A is "k"). */
@@ -153,8 +160,9 @@ async function resolveOrg(deps: ResolveOrgOnSignInDependencies, input: ResolveOr
     return { noOrg: true, ...(inviteError === undefined || inviteError === "ALREADY_IN_ORG" ? { inviteError: "INVITE_INVALID" as const } : { inviteError }) };
   }
 
-  // Rule 3: a cloud sign-in with nowhere to go starts an org of its own.
+  // Rule 3: a cloud sign-in with nowhere to go starts an org of its own, unless new companies are by invitation only: then nothing is created (no org, no budget rows).
   if (cloud) {
+    if (deps.newOrgsByInvitationOnly === true) throw agentXError("CONFIG_INVALID", INVITATION_ONLY_MESSAGE);
     try {
       const orgId = await indexing((email) => orgs.createOrgWithOwner({
         name: defaultTeamName(input.displayName, input.developerId), developerId: input.developerId, ...(email === undefined ? {} : { email }),

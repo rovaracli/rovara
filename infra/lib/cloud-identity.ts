@@ -53,6 +53,8 @@ export class CloudIdentity extends Construct {
   readonly emailFrom: CfnParameter;
   readonly emailSourceArn: CfnParameter;
   readonly emailFromSes: CfnCondition;
+  /** "New companies by invitation only" ("1", the default here, or "0"): the sign-in function reads it as DEVELOPER_NEW_COMPANIES_INVITE_ONLY (developer-identity.ts). */
+  readonly newCompaniesInviteOnly: CfnParameter;
 
   constructor(scope: Construct, id: string, props: CloudIdentityProps) {
     super(scope, id);
@@ -109,6 +111,14 @@ export class CloudIdentity extends Construct {
         Fn.conditionNot(Fn.conditionEquals(emailSourceArn.valueAsString, "")),
       ),
     });
+    // The hosted cloud lets only invited people into a company (the safety fix of 0.5.14): a cloud or GitHub sign-in with no company and no usable invite is refused
+    // instead of making a company with default AI budgets on Rovara's own model account. This construct exists only on the hosted cloud (agentxCloud context), so a Rovara Code or
+    // self-hosted install has no such parameter and its sign-in is unchanged. "0" restores the old self-serve behaviour. It also turns the user pool's self sign-up off (below), so a later deploy cannot open the pool again.
+    this.newCompaniesInviteOnly = new CfnParameter(stack, "NewCompaniesByInvitationOnly", {
+      type: "String", default: "1", allowedValues: ["0", "1"],
+      description: "1: only an invite, or an existing company, lets a cloud or GitHub sign-in into a company; nobody can create one by signing in. 0: anyone who signs in with no company gets a trial company of their own",
+    });
+    const inviteOnly = new CfnCondition(stack, "NewCompaniesByInvitationOnlyOn", { expression: Fn.conditionEquals(this.newCompaniesInviteOnly.valueAsString, "1") });
     this.webOrigin = new CfnParameter(stack, "RovaraWebOrigin", {
       type: "String", default: "https://rovara.dev", allowedPattern: "^https://[^/\\s]+$",
       description: "The hosted Rovara web app's origin, which invite links point at",
@@ -120,7 +130,9 @@ export class CloudIdentity extends Construct {
     // when CloudSignInEmailFrom and CloudSignInEmailSourceArn are set (the overrides below). The built-in sender has a daily cap.
     const pool = new cognito.UserPool(this, "UserPool", {
       userPoolName: `rovara-${props.env}-cloud`,
-      selfSignUpEnabled: true,
+      // Self sign-up follows NewCompaniesByInvitationOnly (adminCreateUserConfig below): off by default, so nobody can make an email account by themselves. An invite makes the invitee's
+      // pool user with AdminCreateUser instead (developer/server.ts ensureInvitedPoolUser, on the sign-in function's existing grant).
+      selfSignUpEnabled: false,
       signInAliases: { email: true },
       autoVerify: { email: true },
       standardAttributes: { email: { required: true, mutable: true } },
@@ -136,7 +148,9 @@ export class CloudIdentity extends Construct {
       removalPolicy: RemovalPolicy.RETAIN,
     });
     const cfnPool = pool.node.defaultChild as cognito.CfnUserPool;
-    cfnPool.adminCreateUserConfig = { allowAdminCreateUserOnly: false };
+    // "1" (the default): admin-create-only, so self sign-up is off. "0": the old open pool. SelfSignUpEnabled is not a CloudFormation property; CDK writes it as this property, inverted. Both
+    // values are an in-place update with no interruption (AWS::Cognito::UserPool AdminCreateUserConfig: "Update requires: No interruption"), so the pool is never replaced.
+    cfnPool.adminCreateUserConfig = { allowAdminCreateUserOnly: Fn.conditionIf(inviteOnly.logicalId, true, false) };
     // Both are in-place updates (no interruption, so the pool is never replaced). DEVELOPER makes Cognito call Amazon SES
     // and create its service-linked role AWSServiceRoleForAmazonCognitoIdpEmailService on first use. The one-time sign-in
     // code template is EmailAuthenticationSubject/Message; the API's EmailMfaConfiguration is not a CloudFormation property.

@@ -44,7 +44,8 @@ describe("cloud identity infrastructure", () => {
     const template = cloud();
     expect(resourcesOf(template, "AWS::Cognito::UserPool")).toHaveLength(1);
     template.hasResourceProperties("AWS::Cognito::UserPool", {
-      AdminCreateUserConfig: { AllowAdminCreateUserOnly: false },
+      // Self sign-up follows NewCompaniesByInvitationOnly: admin-create-only unless it is "0" (see the invitation-only tests below).
+      AdminCreateUserConfig: { AllowAdminCreateUserOnly: { "Fn::If": ["NewCompaniesByInvitationOnlyOn", true, false] } },
       UsernameAttributes: ["email"],
       AutoVerifiedAttributes: ["email"],
       Schema: Match.arrayWith([Match.objectLike({ Name: "email", Required: true })]),
@@ -298,13 +299,60 @@ describe("cloud sign-in codes from a branded Amazon SES sender (Task 7)", () => 
   };
   const evaluated = (parameters: Record<string, string>) => {
     const { json, properties } = pool(cloud());
-    return evaluate(properties, { parameters, conditions: json.Conditions }) as Record<string, unknown>;
+    return evaluate(properties, { parameters: { NewCompaniesByInvitationOnly: "1", ...parameters }, conditions: json.Conditions }) as Record<string, unknown>;
   };
 
   it("keeps the user pool's logical id, so nothing is replaced", () => {
     const { json } = pool(cloud());
     const pools = Object.entries(json.Resources).filter(([, resource]) => resource.Type === "AWS::Cognito::UserPool");
     expect(pools.map(([id]) => id)).toEqual([POOL_LOGICAL_ID]);
+  });
+
+  describe("new companies by invitation only (0.5.14)", () => {
+    const inviteOnly = (value: string) => evaluated({ CloudSignInEmailFrom: "", CloudSignInEmailSourceArn: "", CloudIdentityDomainPrefix: "rovara-staging", NewCompaniesByInvitationOnly: value });
+
+    it("is a parameter that is on by default on the hosted cloud, with only 0 and 1 allowed", () => {
+      const { json } = pool(cloud());
+      expect(json.Parameters.NewCompaniesByInvitationOnly).toMatchObject({ Type: "String", Default: "1", AllowedValues: ["0", "1"] });
+      expect(json.Conditions.NewCompaniesByInvitationOnlyOn).toEqual({ "Fn::Equals": [{ Ref: "NewCompaniesByInvitationOnly" }, "1"] });
+    });
+
+    it("turns self sign-up off (AllowAdminCreateUserOnly true) by default and when 1, and back on only when 0", () => {
+      expect((pool(cloud()).json.Parameters.NewCompaniesByInvitationOnly as { Default: string }).Default).toBe("1");
+      expect(inviteOnly("1").AdminCreateUserConfig).toEqual({ AllowAdminCreateUserOnly: true });
+      expect(inviteOnly("0").AdminCreateUserConfig).toEqual({ AllowAdminCreateUserOnly: false });
+    });
+
+    it("changes the pool in place: the two settings differ only in AdminCreateUserConfig, never in a property that replaces the pool", () => {
+      const on = inviteOnly("1"), off = inviteOnly("0");
+      const differing = Object.keys({ ...on, ...off }).filter((key) => JSON.stringify(on[key]) !== JSON.stringify(off[key]));
+      expect(differing).toEqual(["AdminCreateUserConfig"]);
+      // The properties Cognito cannot update in place (the stack's own comment on the pool) are the same in both and unconditional.
+      const replacing = ["UsernameAttributes", "AliasAttributes", "AutoVerifiedAttributes", "Schema", "UserPoolName"];
+      for (const key of replacing) expect(JSON.stringify(pool(cloud()).properties[key] ?? null), key).not.toContain("NewCompaniesByInvitationOnly");
+      expect(pool(cloud()).json.Resources[POOL_LOGICAL_ID]).not.toHaveProperty("Condition");
+    });
+
+    it("gives the sign-in function (and only it) the setting, as the variable it reads", () => {
+      const template = cloud();
+      expect(identityEnvironment(template).DEVELOPER_NEW_COMPANIES_INVITE_ONLY).toEqual({ Ref: "NewCompaniesByInvitationOnly" });
+      expect(JSON.stringify(brokerEnvironment(template))).not.toContain("NEW_COMPANIES_INVITE_ONLY");
+    });
+
+    it("is not in a Rovara Code or self-hosted install (no cloud identity there), whose templates are unchanged", () => {
+      const text = JSON.stringify(controlPlane({ agentxEnv: "staging" }).toJSON());
+      expect(text).not.toContain("NewCompaniesByInvitationOnly");
+      expect(text).not.toContain("NEW_COMPANIES_INVITE_ONLY");
+    });
+
+    it("keeps the sign-in function's Cognito grant to the two admin actions on this one pool, which opening an invite uses", () => {
+      const template = cloud();
+      const grant = resourcesOf(template, "AWS::IAM::Policy").flatMap(([, policy]) => policy.Properties.PolicyDocument.Statement)
+        .filter((statement) => JSON.stringify(statement.Action).includes("cognito-idp:"));
+      expect(grant).toHaveLength(1);
+      expect([grant[0]!.Action].flat().sort()).toEqual(["cognito-idp:AdminCreateUser", "cognito-idp:AdminGetUser"]);
+      expect(JSON.stringify(grant[0]!.Resource)).toContain(POOL_LOGICAL_ID);
+    });
   });
 
   it("declares CloudSignInEmailFrom and CloudSignInEmailSourceArn with empty defaults, and the condition needs both", () => {
