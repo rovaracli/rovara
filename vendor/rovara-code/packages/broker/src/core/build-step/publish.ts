@@ -10,7 +10,7 @@ import {
   type ChangeRequestRef, type CodeHost, type TransactItem, type WorkflowSnapshot,
 } from "@agentx/contracts";
 import { codeHostForRecord, providerOf } from "../../plugins/routing.js";
-import { NO_LESSONS_USED, riskFromFiles } from "./changed-files.js";
+import { lessonsUsedOf, riskFromFiles, ticketIssueKeyOf } from "./changed-files.js";
 import { openBranchWriters } from "../branch-sync/branch-writers.js";
 import { linkedChangeRequestStep } from "../proof/revert/linked-change-requests.js";
 import { pullRequestTitle, workflowPullRequestBody } from "../proof/workflow-pull-request-body.js";
@@ -72,7 +72,11 @@ export async function startPublication(deps: TaskFlowDeps, row: RowRef, options:
   // AFTER the push (`verifyPublishedChanges`), never from what the worker reports, so until then the level is high and says why.
   const judged = rovaraV2 ? riskFromFiles(workflow, undefined) : workflow;
   const title = pullRequestTitle(task.title, rovaraV2);
-  const body = workflowPullRequestBody(task, judged, plan?.text, undefined, { lessonsUsed: NO_LESSONS_USED });
+  const proof = await deps.designReview?.proofContext?.(deps, task, workflow).catch(() => undefined);
+  const secondLines = deps.secondReview?.prLines(task, candidate.digest, workflow.acceptedFindings) ?? [];
+  const lessonsUsed = await lessonsUsedOf(deps, task, repository.repositoryId);
+  const linearIssueKey = await ticketIssueKeyOf(deps, task);
+  const body = workflowPullRequestBody(task, judged, plan?.text, undefined, { ...(linearIssueKey === undefined ? {} : { linearIssueKey }), ...(lessonsUsed === undefined ? {} : { lessonsUsed }), ...(secondLines.length === 0 ? {} : { secondReviewLines: secondLines }), ...(proof === undefined ? {} : { proof }) });
   const baseCommitSha = (workflow.reviewBase ?? task.preparedBase)?.find((entry) => entry.repositoryId === repository.repositoryId)?.baseCommitSha;
   const operationId = newId(deps);
   const headBranch = headBranchOf(operationId);

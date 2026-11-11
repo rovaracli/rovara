@@ -11,11 +11,14 @@ import { createHash } from "node:crypto";
 import { LOCAL_OWNER_PROVIDER } from "../../ports/policy-defaults.js";
 import {
   IMPLICIT_COMPANY_ID, WorkflowDecisionRequestSchema, WorkflowSnapshotSchema, WorkflowTransitionError, change, decideWorkflow, when,
-  type DecisionRisk, type DocumentKey, type DocumentStore, type PolicySubject, type Principal, type TransactItem, type WorkflowSnapshot,
+  type DecisionRisk, type DocumentKey, type DocumentStore, type PolicySubject, type Principal, type TransactItem, type WorkflowArtifact, type WorkflowSnapshot,
 } from "@agentx/contracts";
+import { WORKFLOW_BREAKDOWN_REFUSALS } from "../../developer/workflow-actions.js";
 import { SubjectRefusal, type AppliedDecision, type DecisionAttempt, type DecisionSubject, type LoadedSubject } from "./approval-gate.js";
 
 export const WORKFLOW_DOCUMENT_KIND = "workflow-document";
+/** What a refused decision says when the structured plan it names cannot be read back. */
+export const PLAN_UNREADABLE_REFUSAL = "the plan could not be read back, so it was not approved; refresh and try again";
 
 /** The task document's key, as the hosted product keeps it. */
 export const workflowTaskKey = (taskId: string): DocumentKey => ({ pk: `DEVTASK#${taskId}`, sk: "META" });
@@ -43,14 +46,28 @@ export interface WorkflowSubjectOptions {
    * the checked document. NOT supplying it means "high": a request nobody could grade is never graded low.
    */
   riskOf?: (task: Record<string, unknown>, workflow: WorkflowSnapshot) => DecisionRisk | Promise<DecisionRisk>;
+  /**
+   * The decided plan's own facts, read from the checked document: its decisions (each with its option ids and AgentX's recommendation) and what it says of needing no change. The engine checks the owner's
+   * answers against them. Called for every approval of a structured plan (and for answers or a close as answered); "unreadable" refuses the decision. Absent, answers are refused (a plan whose decisions are not known takes none).
+   */
+  planFactsOf?: (task: Record<string, unknown>, workflow: WorkflowSnapshot, artifact: WorkflowArtifact) => Promise<Pick<WorkflowDecisionDetails, "planDecisions" | "noChangeNeeded"> | "unreadable">;
   /** Who asked for the decision, when it is not the owner themselves (a request another person made). Absent: the owner. */
   requestedBy?: (task: Record<string, unknown>, workflow: WorkflowSnapshot) => Principal | undefined;
   /** When the waiting request stops being answerable (ISO). Absent: it does not expire. */
   expiresAt?: (task: Record<string, unknown>, workflow: WorkflowSnapshot) => string | undefined;
   /** More steps for the decision's transaction, from the stage machine. They must not name the task's own key. */
-  onDecided?: (context: { taskId: string; task: Record<string, unknown>; before: WorkflowSnapshot; after: WorkflowSnapshot; attempt: DecisionAttempt; approver: Principal; at: string }) => readonly TransactItem[] | Promise<readonly TransactItem[]>;
+  /**
+   * A rule of the document's own that must hold before the decision is applied (the design review's: a design with an open blocker is approved only with a one-line reason). Throws `SubjectRefusal`. Runs for every verified approver's decision, on the state the gate loaded.
+   */
+  checkDecision?: (context: { task: Record<string, unknown>; workflow: WorkflowSnapshot; attempt: DecisionAttempt }) => void | Promise<void>;
+  onDecided?: (context: { taskId: string; task: Record<string, unknown>; before: WorkflowSnapshot; after: WorkflowSnapshot; attempt: DecisionAttempt; approver: Principal; at: string; /** The risk the request was graded at. */ risk?: DecisionRisk | undefined }) => readonly TransactItem[] | Promise<readonly TransactItem[]>;
   /** Whether a verified repository collaborator may decide as a project approver (decision 45.3). Default true. Ignored when `actorFor` is given. */
   collaboratorsMayDecide?: boolean;
+  /**
+   * The work breakdown (spec 059) an approval of the plan waiting now would bind: the graph's digest, read from the stored document the approval's own digest names, or the sentence that refuses the approval
+   * (not enabled, not one pinned repository, an invalid graph). Absent: no breakdown is bound. With it, every surface that approves a plan binds the same graph: the one in the document it approved.
+   */
+  breakdown?: (input: { task: Record<string, unknown>; workflow: WorkflowSnapshot; artifactDigest: string }) => Promise<{ digest?: string | undefined; refusal?: string | undefined }>;
   /** The identity provider whose `owner` is the owner of every task (default: Code's local owner). Ignored when `actorFor` is given. */
   ownerProvider?: string;
   /** The id the engine knows a person by. Default: the local owner decides as the task's owner (a one-developer install owns every task). */
@@ -132,14 +149,42 @@ export function createWorkflowDocumentSubject(options: WorkflowSubjectOptions): 
       const actor = actors[0];
       if (actor === undefined || actors.some((entry) => entry === undefined)) throw new SubjectRefusal("not_the_approver", "That person cannot decide this task.");
       const approver = approvers[0]!;
-      const details = (attempt.details ?? {}) as WorkflowDecisionDetails;
+      await options.checkDecision?.({ task, workflow, attempt });
+      const given = (attempt.details ?? {}) as WorkflowDecisionDetails;
+      // The plan's own decisions and what it says of needing no change come from the stored document the decision binds, never from what a surface sent: the surface's copies are dropped. A structured plan
+      // that cannot be read back is refused when it is approved or answered (fail closed): an approval is never recorded for bytes nobody could check.
+      const { planDecisions: _surfaceDecisions, noChangeNeeded: _surfaceNoChange, ...surface } = given;
+      void _surfaceDecisions; void _surfaceNoChange;
+      const decidedArtifact = workflow.artifacts.find((entry) => entry.sha256 === attempt.seen.artifactDigest);
+      let facts: Awaited<ReturnType<NonNullable<WorkflowSubjectOptions["planFactsOf"]>>> | undefined;
+      if (options.planFactsOf !== undefined && decidedArtifact?.format === "structured" && (attempt.outcome === "approve" || surface.answers !== undefined || surface.closeAsAnswered === true)) {
+        facts = await options.planFactsOf(task, workflow, decidedArtifact);
+        if (facts === "unreadable") throw new SubjectRefusal("invalid_outcome", PLAN_UNREADABLE_REFUSAL);
+      }
+      const details: WorkflowDecisionDetails = { ...surface, ...(facts === undefined || facts === "unreadable" ? {} : facts) };
       const decision = attempt.outcome === "approve" ? "APPROVE" : attempt.outcome === "reject" ? "REJECT" : "REQUEST_CHANGES";
+      // The work breakdown of the plan being approved (spec 059): derived from the stored document the approval binds by its digest. A digest the surface sent must be that one; a plan with none takes none.
+      let workBreakdownDigest = details.workBreakdownDigest;
+      // A repeat of an approval the workflow already holds keeps the digest it was recorded with, so the engine answers it as the repeat it is.
+      const prior = workflow.decisions.find((entry) => entry.requestId === attempt.requestId);
+      if (attempt.outcome === "approve" && prior?.decision === "APPROVE" && prior.workBreakdownDigest !== undefined) workBreakdownDigest = prior.workBreakdownDigest;
+      else if (attempt.outcome === "approve" && options.breakdown !== undefined && currentDocumentType(workflow) === "plan") {
+        const found = await options.breakdown({ task, workflow, artifactDigest: attempt.seen.artifactDigest });
+        if (found.refusal !== undefined) throw new SubjectRefusal("invalid_outcome", found.refusal);
+        if (found.digest !== undefined) {
+          if (workBreakdownDigest !== undefined && workBreakdownDigest !== found.digest) throw new SubjectRefusal("invalid_outcome", WORKFLOW_BREAKDOWN_REFUSALS.digestChanged);
+          workBreakdownDigest = found.digest;
+        } else if (workBreakdownDigest !== undefined) throw new SubjectRefusal("invalid_outcome", WORKFLOW_BREAKDOWN_REFUSALS.noBreakdown);
+      } else if (options.breakdown === undefined && workBreakdownDigest !== undefined) {
+        // Nothing here can say which graph a plan carries, so a digest a surface sent cannot be checked: it is refused, not passed to the engine as if it were.
+        throw new SubjectRefusal("invalid_outcome", WORKFLOW_BREAKDOWN_REFUSALS.digestChanged);
+      }
       const request = WorkflowDecisionRequestSchema.safeParse({
         requestId: attempt.requestId, expectedRevision: attempt.seen.revision, decision, artifactDigest: attempt.seen.artifactDigest,
         reason: attempt.reason ?? (decision === "APPROVE" ? "Approved." : decision === "REJECT" ? "Rejected." : "Changes requested."),
         ...(details.answers === undefined ? {} : { answers: details.answers }), ...(details.includedCommentIds === undefined ? {} : { includedCommentIds: details.includedCommentIds }),
         ...(details.selectedOptionalCheckIds === undefined ? {} : { selectedOptionalCheckIds: details.selectedOptionalCheckIds }),
-        ...(details.workBreakdownDigest === undefined ? {} : { workBreakdownDigest: details.workBreakdownDigest }),
+        ...(workBreakdownDigest === undefined ? {} : { workBreakdownDigest }),
         ...(details.closeAsAnswered === undefined ? {} : { closeAsAnswered: details.closeAsAnswered }),
         ...(details.acknowledgedRunLimitUsd === undefined ? {} : { acknowledgedRunLimitUsd: details.acknowledgedRunLimitUsd }),
       });
@@ -149,7 +194,7 @@ export function createWorkflowDocumentSubject(options: WorkflowSubjectOptions): 
         after = decideWorkflow(workflow, request.data, actor, {
           now: at, allowedSkipStages: [], ...(details.via === undefined ? {} : { via: details.via }),
           ...(details.planDecisions === undefined ? {} : { decisions: details.planDecisions }),
-          ...(details.workBreakdownDigest === undefined ? {} : { workBreakdownDigest: details.workBreakdownDigest }),
+          ...(workBreakdownDigest === undefined ? {} : { workBreakdownDigest }),
           ...(details.noChangeNeeded === undefined ? {} : { noChangeNeeded: details.noChangeNeeded as never }),
         });
       } catch (error) {
@@ -159,7 +204,7 @@ export function createWorkflowDocumentSubject(options: WorkflowSubjectOptions): 
       // The engine answers an unchanged snapshot for a repeat of a decision it already holds; nothing is left to write.
       if (after.revision === workflow.revision) throw new SubjectRefusal("invalid_outcome", "The workflow already holds this decision.");
       const taskId = loaded.request.subject.id;
-      const extra = options.onDecided === undefined ? [] : await options.onDecided({ taskId, task, before: workflow, after, attempt, approver, at });
+      const extra = options.onDecided === undefined ? [] : await options.onDecided({ taskId, task, before: workflow, after, attempt, approver, at, risk: loaded.request.risk });
       return {
         ops: [change.set("workflow", jsonOf(after)), change.set("updatedAt", at)],
         extra,

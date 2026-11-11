@@ -22,7 +22,7 @@ runDocumentStoreConformance("sqlite", { async create() { /* a fresh empty store 
 
 One registry holds every adapter, by **plug-in point** and name (`createAdapterRegistry`). The points are `code-host`, `tracker`,
 `check-runner`, `channel`, `worker-machines`, `storage`, `queue`, `monitoring`, `learning`, `team-record-source`, `identity`,
-`build-system`, and the policy seams `admission`, `audit-sink`, `approvers`, `metering` and `model-keys`, `secrets` (below), `object-storage` (provisional, below), `model-provider` (below), `company-instructions` (read-only company rules, below) and `outbound-events` (signed events out, below). A point holds either many
+`build-system`, and the policy seams `admission`, `audit-sink`, `approvers`, `metering` and `model-keys`, `secrets` (below), `object-storage` (provisional, below), `model-provider` (below), `company-instructions` (read-only company rules, below) and `outbound-events` (signed events out, below), `image-registry` (a project's saved environment image, below) and `scheduler` (when something is due, below). A point holds either many
 adapters by name (every code host) or one (the store, the queue, each policy seam).
 
 It is the registry Pratik's channel adapters (spec 062 phase 3) use, with the `channel` point. An out-of-process adapter that an
@@ -64,6 +64,14 @@ The config file (JSON, `version: 1`) names the adapters to load:
 Two optional abilities of the `CodeHost` port serve comment commands: `comments(ref, { since, page })` (the comments of a change request's conversation, oldest first: id, the change request it is on, author with account type,
 text, `createdAt`, `updatedAt`; **fetch only**, owner decision 66) and `postComment(ref, text)` (one comment of Rovara's own fixed text; on an account that is also a person's it carries `ROVARA_REPLY_MARKER`). A host without them
 simply has no comment commands. Whether a comment is a command, fresh, edited, on the right thread or from someone who may approve is decided in Rovara's core (`core/pr-commands/comment-checks.ts`), never by the plug-in.
+
+## Learning
+
+`learning` (`packages/contracts/src/ports/learning.ts`, `LearningAdapter`) is how a host makes lessons comparable, and nothing else: an optional `embedder(company)` (text to a vector of fixed `dimension`, with a `spec` naming the model) and an optional
+`vectors(company)` (where a lesson's vector is kept; the default is beside the lessons in the document store). With neither, lessons are compared on code-aware keywords and cited paths, so a laptop needs no network and no model download. The lessons themselves
+live in the `storage` point (`DocumentLessonStore`, the keys of `lesson-keys.ts`, the same rows a hosted install keeps), their model calls go through the install's model, their spend through `admission` and `metering`, their audit through `audit-sink`
+(`lesson.*` actions; `rovara up` registers the document audit sink, so approvals, including the sole-owner exception, and retire requests are kept) and their approvals through `approvers` (`kind: "lesson"`, bound to the lesson's text and version). Code registers `local` (keywords) as the default; `ROVARA_LESSONS_EMBEDDER=local` makes it also give a hashing embedder
+that runs in the process (it finds shared words and word forms, not meaning). The point's cardinality is many; the first adapter that is not `local` is used. The lessons switch and the gate the library asks before a learning call are process-wide (one install per process), not per project or per company.
 
 ## Company scope
 
@@ -200,7 +208,13 @@ Each has a Code default (`policy-defaults.ts`) and a suite in `policy-conformanc
 | `AuditSink` (`stage` steps for the caller's transaction, `record`) | `rovara up`: `DocumentAuditSink`, an `AUDIT#` row in the same store (lane P6); the bare registry default writes nothing | the audit ledger's outbox |
 | `Approvers` (`requirement`, `verify` a proof) | the local machine owner by session, or a repository collaborator with write permission by comment (decision 45.3); one approver, self-approval allowed | a second person, the browser rule |
 | `IdentityProvider` (`authenticate`, `resolveExternalAccount`, `getPrincipal`; optional `beginSignIn`, `completeSignIn`, `signOut`, `listMembers`, `accountsOf`) | the local owner (lists itself, its linked accounts), plus outside accounts the owner linked in config | members and single sign-on |
-| `Metering` (`price`, `record`; every entry has an `entryId`, recorded once) | tokens times a price table | proxy key spend |
+| `Metering` (`price`, `record`; every entry has an `entryId`, recorded once) | tokens times a price: the model provider's own table, else the catalog's list price; a model neither knows is recorded as unknown, never free (`core/cost/price-table.ts`) | proxy key spend |
+
+**The per-step model rule has its own small seam** (`ModelSelectionSeams`, `core/model-selection/service.ts`): which models the install could serve, whether one can be called now, which is the install's own, and how a call to one is routed (the proxy alias and request format). Code answers it from its model providers and key store (`local/app/model-selection.ts`); the hosted product answers it from its model sources. The choice function (`resolveStageModel`), the setting's row (`MODEL_SELECTION_POLICY`, the hosted layout), the record of refused models (`MODEL_USABILITY`) and the price lookup (`ModelPrices`) are shared; a price is the model provider's own table, else the catalog's list price, a cap never assumes less than the catalog's list price, and a model with no price in dollars is not offered where a cap applies.
+
+**What a host that adopts the model rule must keep.** The read and choose path is shared. The owner's write path (`apply`) is for ONE owner on one install: it checks a fresh page session, the revision it was drawn at and the approvers port's *requirement* (never a proof, and it has no request receipt, second-person confirmation or preview across projects), so a host with several people keeps its own writer for the policy row, or adds those here before it writes through this one. A host also passes the two things that are its own: `defaultReviewDefault` (what a policy that does not say reads as: `install-model` for Code, `different-company` for a host whose rule that is) and `capApplies` (a host that always holds a budget passes `() => true`). The worker's calls reach the task's cost ledger through the `Metering` it hands the model proxy (`LocalApp.meter` in Code): a host whose proxy spend is read elsewhere must make that spend readable to `grant`'s budget the same way.
+
+**A reserving `Admission` adapter needs a reservation lifetime.** Some callers ask for an allowance, keep its `reservationId` on a record they write next, and give it back when that record's work ends (the second review does: it asks at the review step's start and releases when the operation ends; a diagnosis and an Ask ask for a `model.call` before their model call and settle it with what the call used as soon as the provider may have been paid, giving it back only when nothing was sent). Every path that ends normally gives it back, and a restart is safe because the id is on the stored record. A crash between `admit` and the write of that record leaves a hold nothing can find: each start asks under a key of its own, so a retry does not reuse it. An adapter that really holds money must therefore expire a reservation by itself (a time to live, or its own sweep). Code's default holds nothing.
 
 **Approvals are bound.** An `ApprovalRequest` carries `requestId`, `revision`, `artifactDigest`, the project and an optional expiry. An
 `ApprovalProof` names the request, revision and digest it approves and carries a `token` that the method's issuer checks (the identity
@@ -235,6 +249,8 @@ the shape of Cloud's `CompanyInstructionsSource` so Cloud's port is a copy of th
 Code's adapter (`FileCompanyInstructions`, plug-in `@agentx/local-adapters/company-instructions`, the default of `rovara up`) reads `company-instructions.md` in the state folder (`~/.rovara` by default; a plug-in's default is the state folder the install runs from) at every call: bullets under `## Required` and `## Preferred`, a bullet with no
 heading is Required, a line it cannot place is refused (naming the line) instead of being dropped, and the file must be a plain file owned by the user and not writable by others, in a folder that is a real folder owned by the user and not writable by group or others. At most 64 KiB are read from the open file. The version is the SHA-256 of the file's bytes, so it is also the hash a task records.
 The file is outside every repository on purpose: a repository's writers cannot edit the company's rules.
+The core builds the rules into the step's system prompt (`core/instructions`): the dispatch reads them at every step, so a step started after the file changed carries the newest, puts them first (Required, then Preferred), then the project's How we work (`docs/how-we-work.md`),
+and refuses the step with a sentence when the file is over the limits, cannot be read, or the whole block is over the worker's limit. A worker that does not list `task.standingInstructions.v1` is refused the step, never sent it without the block.
 
 ### Team-record sources: the unknown-source rule (lane P6, item T1)
 
@@ -292,6 +308,29 @@ and asks the point; it does not write its own reader.
   Install a `secrets` plug-in only from a source you trust as you would trust the broker.
 - A conformance suite for every adapter is `tests/support/ports/secret-store-conformance.ts`.
 
+## Monitoring (the `monitoring` point)
+
+A monitoring adapter is one read-only source of operational facts (an error tracker, a metrics service, an on-call tool) that the owner connects to Rovara. The interface is small on purpose
+(`packages/contracts/src/ports/monitoring.ts`): `kind` (the connection type it serves), `vendor` (words for the owner), `readOnly: true`, `takesSecret`, `tools()` (name, description and a closed JSON
+Schema for each read-only tool) and `check(input)`. **This is a new interface (decision 42a); the owner decides it alone (decision 63), and the plug-in author is told.**
+
+- The point holds many adapters, each named by its kind. Code ships `sentry`, `datadog`, `grafana`, `pagerduty` and `vercel` (`monitoring/native-adapters.ts`, over the connector specs in `connectors/native`); `rovara up`
+  registers them after the config's plug-ins are loaded and before the registry is sealed, and a plug-in's own adapter for a kind is left in place. CloudWatch is an AWS service and is not one of them.
+- `check` gets the company, the connection's **settings** (never its secret), the saved secret as a `SecretValue` (a kind that assumes a role has none) and **the only fetch it may use**: the core holds it to the vendor's
+  origin (or, for an address the owner typed, pins it to the addresses it checked) and follows no redirect. An adapter never builds its own fetch, never stores the secret and never quotes it in a message.
+- An adapter does not save a connection, approve a tool or widen what a tool may do: adding a connection and approving a tool are the owner's acts on a page (decision 66). Whatever a tool returns is data; the
+  core frames it as untrusted text before a model sees it.
+- `connectionChecksFromRegistry(registry)` answers the connection store's checks from whatever adapters the registry holds; a kind with no adapter is "not available on this install".
+
+### Connection secrets
+
+A connection's key or token is not in its record. The record keeps whether a secret was saved and the id of the version its own save wrote; the value is under the name
+`agentx/<env>/org-connectors/<company>/<id>` (the hosted product's name, so a later switch moves no data), written and removed through `ConnectionSecrets` (`connections/org-secrets.ts`: `read`, `put`,
+`scheduleDelete`). Code's adapter (`connections/local-secrets.ts`) keeps one file per saved version in `<state folder>/connection-secrets/<company>/` (folder `0700`, files `0600`, written without following a link,
+at most 16 KiB) and **reads them back through the `secrets` socket** as `{ "file": "<absolute path>" }`, so that socket's file rules apply (no link in the path, a plain file that is yours, not readable by others, small).
+A save writes its version first, and the record's commit decides which save won: a version no record names is never read. The newest two versions are kept; older ones are removed; removing a connection removes all.
+A `secrets` plug-in that does not know `{ "file" }` makes saved connections read as "no key" until it does (a configured plug-in is the source of truth for reads).
+
 ## Object storage (lane L9a, PROVISIONAL: owner decision 58, until Pratik agrees)
 
 The `object-storage` point (one adapter) is where files live that are too big or too plain for the document store: proof evidence, plan documents, a
@@ -335,6 +374,7 @@ guard's allow-lists are untouched, and the task budget reads the provider's pric
 - **The older closed list stays** (`MODEL_PROVIDERS` in `contracts/src/model-providers.ts`): it is Cloud's list of providers an administrator can configure for a role, and Cloud moves to the plug-in point later (Code first).
 - **Cloud rule, for later (documentation only).** A custom provider address in Cloud must be an administrator-approved HTTPS address; Cloud refuses `http`, an address with sign-in data, and an address not on the approved list, and
   the provider's `prices` and `address` are never taken from a project or a task. Code's rule is the laptop one: `https`, or `http` for this computer only.
+- **The broker's own one-shot calls.** A diagnosis (Fix with agent) is a model call the broker makes for itself, so it has no worker, workspace or operation record. It goes through the same proxy and the same rules: the broker mints a token in-process (`ModelTokenBook.mint`, never through the capability route) for a one-shot operation of its own (`OneShotOperations`, live only while the call runs, so the proxy's `active` check ends the token with the call), and calls the callback listener over loopback. The route carries a spending cap priced from the model's own rates (a model with no price is not used), and the proxy meters the call as it does a worker's. No interface changes: `ModelGrantSource` is wrapped (`withOneShotOperations`), not extended.
 
 ## Code host, tracker and check runner
 
@@ -378,7 +418,7 @@ review, item. A caller reads an adapter's `capabilities` and never branches on i
   branch for a new change request), `changeRequestForBranch`, `deleteBranch`, `PathKind` `"symlink"`, and the change request facts `authoredByRovara` and `baseRepositoryId`. They are copied from Cloud's lessons repo
   file lane (`commit-files.ts` is `github-commit-files.ts`). A host without them has no lessons file; nothing else changes. On a laptop signed in with the owner's own token `authoredByRovara` is absent (the host
   account is the owner's, so Rovara cannot tell its own pull requests from the owner's): never a guess.
-  Nothing in Code calls these yet. When the lessons pass is ported it must bring Cloud's `guardTarget` and `verifyRepository` checks with it and treat a `"symlink"` path as not a file (Cloud's `lessons-wiring.ts` reader is the model); `pathKind` returning `"symlink"` instead of throwing changes no behaviour today.
+  The lessons pass (`lessons/repo-file-*.ts`) calls them, with `guardTarget` and `verifyRepository` first and a `"symlink"` path read as not a file; it runs only for a repository the owner switched on.
 - **External checks (lane P2, item C5, decision 61).** A repository's `externalChecks` are `{ provider, name, reference, timeoutMinutes }`; `codeBuildGates` is the same list in CodeBuild's words and stays readable
   (the two share one set of names, at most 8 together and 420 minutes). A worker is still sent `codeBuildGates` only (its job line is unchanged, decision 65), made from the CodeBuild checks by
   `workerProjectDefinition`, in the order of `repositoryExternalChecks` (generic checks first). A check of a provider no runner of this release runs is refused when the project is saved and when a task starts (before any machine), with a clear sentence; the dispatcher turns the backstop throw into a failed operation. Cloud must not take `externalChecks` until its worker and record readers do (DEFERRED-CHECKS, P2-EXTERNAL-CHECKS-CLOUD-ADOPTION). The check-runner factory (`CheckRunnerAdapter.create`) stays synchronous and takes
@@ -435,7 +475,7 @@ review, item. A caller reads an adapter's `capabilities` and never branches on i
   repository record's `host.kind` (`codeHostForRecord`). The task flow's other calls to `github-app.ts` move in their own lanes.
 - **Untrusted text** from a code host or tracker (comments, logs, item bodies) is data: it reaches a model only inside a labelled block, and
   the GitHub mapping cuts every text to the port's bounds so a long comment never fails a read.
-- **Linear.** The adapter carries its own copy of the Linear webhook rules (`tracker/linear/webhook.ts`: the signature check, the issue key
+- **Linear and Jira.** Both adapters bring their own client for a laptop (`tracker/linear/api.ts`, `tracker/jira/`); see "Tracker intake and write-back" below. The Linear adapter carries its own copy of the Linear webhook rules (`tracker/linear/webhook.ts`: the signature check, the issue key
   rule and the issue-created mapping) because Cloud's adapter imports the trigger framework, which is not ported. The install gives the
   adapter what it may do (read an issue, post a comment, the hook's signing secret); what it is not given, it does not offer.
 
@@ -445,8 +485,21 @@ company id keeps the `org_` shape (Code's implicit company already uses it). The
 "Enterprise foundations" are fixed: Code loads the adapters its owner's config names (decision 40), and nothing is Enterprise-only.
 
 Not ported with these points (they are in Cloud's `plugins/` and belong to later lanes): the event intake and poller
-(`events/`, which keep their state in DynamoDB and move onto the document store), the tracker start path (`tracker/start.ts`, which feeds
-Cloud's intake engine), and `github-only.ts` (the "this step speaks GitHub only" refusal).
+(`events/`, which keep their state in DynamoDB and move onto the document store), and `github-only.ts` (the "this step speaks GitHub only" refusal). The tracker start path is `core/intake/tracker-events.ts` (see below).
+
+## Tracker intake and write-back
+
+A tracker starts a task and hears about it. The intake engine, its store, the poll, the ticket updates and the session's binding to its ticket are Cloud's, moved onto the document store; every tracker-specific word is in an adapter.
+
+- **The rule (`core/intake/engine.ts`).** A task starts only from a **member's act**: who put the label on (or assigned the ticket) is resolved, through the **identity port** (`resolveExternalAccount` over the neutral outside-account shape `{ provider, tenant, accountId }`: a Linear user id with no tenant, a Jira account id with the site as tenant), to a person the install knows; that person's right to start work is asked of `TaskAccess.checkStart`; the start is the task flow's own `start`, so admission, limits and the project's rules apply. Anyone else, an automation, or an act made right after Rovara changed the ticket (`own-writes.ts`: Rovara notes what it writes before it writes it) waits as a row for the owner to start or dismiss. A ticket **never approves**: the task is a workflow whose plan waits for the owner. An account of another provider than the ticket's tracker is nobody's. The code is tracker-free; `IntakeCandidate.trackerWord` lets an adapter say its deliveries are believed only on its own word (`confirmActor`).
+- **Reading (`Tracker.askedFor`, new, optional).** A tracker that cannot send a hook is asked: `askedFor({ when: { label | assignedToRovara }, connection?, limit, signal }, scope)` answers the open items that carry the label or are assigned to the sign-in's own account, each with its title and body (data), the writer, **who did it from the tracker's own history** (a `TrackerActor` with an `ExternalAccountRef`), and the tracker's own change-log entry. A failure is a `TrackerSearchError` with a fixed code (`CONNECTION_MISSING`, `CONNECTION_AMBIGUOUS`, `CONNECTION_REFUSED`, `RATE_LIMITED`, `SEARCH_FAILED`), never the tracker's words. `capabilities.intake` says it. A tracker that sends a hook uses `core/intake/tracker-events.ts` (`events.normalise`, then the item read fresh) into the same engine.
+- **Writing (`Tracker.comment` with `TrackerCommentOptions`, `Tracker.setStatusByName`, new, optional).** `comment(ref, body, scope, { key, requirePrivate })`: the same `key` is the same comment (Linear: a comment id made from the company and the key; Jira: a comment property holding a hash of the key, found again only when the sign-in's own account wrote it), and `requirePrivate` makes it internal where the tracker can tell. `setStatusByName(ref, name, scope)` moves the item to the status the project calls `name` (matched without case) or says `no_such_status`. A refusal is a `TrackerWriteRefusedError` (`needs_write_access`, `not_found`, `no_such_status`, `not_connected`); a rate limit or a fault that may pass is an ordinary error and the milestone is delivered again.
+- **The write-back (`core/ticket-updates/`).** A milestone handler (`app.milestones.register`) on five moments (`started`, `plan_ready`, `pr_ready` as `pr_opened`, `merged`, `closed`); the first, second and last are written as milestones by `moments.ts` (the plan and the close from the session summary's change hook). It writes only to the ticket the task's session is bound to **and** intake's own item says started this task; fixed words, the task's title made inert, the status moved to, and the pull request's https link; one claim per moment, 12 writes a task and 120 an hour a tracker; a tracker that refuses is noted per tracker (`readWriteAccess`).
+- **The binding (`core/sessions/bindings.ts`).** A task's session and its ticket follow each other, bound in the start's own transaction (`startExtras`): the session's `BINDING#tracker_item` row and the reverse `SESSION_SURFACE` row, written together, each only if absent; a ticket follows one session, so a start for a ticket that already follows another is refused. A task started from a ticket keeps `ticket: { system, id }` on its record (set by intake only, never by a request), and the plan page credits its request to the ticket ("from ticket ENG-1"), not to the owner; the request holds the ticket's words in one fenced block no line of the ticket can close, labelled with an id only this install can make. A Linear ticket and a `linear_issue` binding are one surface. The merged milestone and the session view read the bindings, and a Linear ticket's pull request says `Fixes <KEY>`.
+- **Who asked (the history).** The account is the author of the change that LAST touched the label (or the assignee) in the issue's WHOLE history, ordered by the changes' own times, never the order of the answer; it counts only when that change put the label on. A removal after it, a tie, a change with no readable time, or a history not read to its end (Linear: more than a few pages of 100; Jira: a change log with no total, or not ended within ten pages) credits nobody, and the ticket waits for the owner. The time of the act is passed on (`occurredAt`), so the own-write windows are measured from it.
+- **The poll (`core/intake/poll.ts`).** `rovara up` polls every source (`pollAll`: a laptop has no webhook). It is due by `nextPollAt`, taken by a conditional update, counted per hour, backed off on failure, and a source that has failed for an hour is noted for the owner (`INTAKE_NOTICE` rows and the log). Sources are the project's **intake rule** (`core/intake/sources.ts`): one row each in the one `INTAKE_SOURCES` partition, at most eight a project.
+- **Keys.** Cloud's layout, unchanged: `INTAKE_ITEM`, `INTAKE_SOURCES`, `INTAKE_SOURCE_COUNT`, `INTAKE_CALLS`, `INTAKE_EVENT`, `INTAKE_CHANGE`, `INTAKE_OWN`, `INTAKE_NOTICES`, `TICKET_UPDATES`, `TICKET_UPDATE_CALLS`, `TICKET_WRITE_ACCESS`, `SESSION_BINDING`, `SESSION_SURFACE`, and a task's `TICKET_UPDATE#` claims. Who a tracker account is has no Cloud row here: the identity port answers (Code's local identity reads `linkedAccounts` from the config; Cloud's links live in its team record).
+- **Not here.** Cloud's org connections and their stored keys (a laptop's sign-in is read from the secrets socket), the tracker people page and the member links (identity), the Home cards, the setup-agent applier, the webhook receivers and the trigger framework, GitHub Issues as a ticket source, the Ask in Linear comments, and linking a session to a ticket by hand (`session link`). Linear and Jira are the only adapters; a third registers itself under its own kind with no change here.
 
 ## The channel point and Pratik's registry
 
@@ -455,7 +508,17 @@ and, for in-process adapters, `start(sink)`. The sink applies the same binding, 
 (`ChannelInboundSink`). **Not done in W0:** the registry is per process, while Pratik's records live in the state table, so an adapter
 registered by an HTTP call is not yet visible to other processes. The follow-up is a record-backed source that wraps each stored
 `ChannelAdapterRecord` as a webhook `ChannelAdapter` (signing in `deliver`), and a rule that refuses a config name already used by a
-record. Slack is not a `channel` adapter yet: spec 062's `AdapterChannelIdSchema` refuses the id `slack`.
+record.
+
+**Slack is an ordinary `channel` adapter now** (owner decision 58). `AdapterChannelIdSchema` takes any channel id, `slack` included; the id a webhook adapter may be REGISTERED over HTTP under (`RegisteredChannelIdSchema`) still excludes `slack`, because the hosted product serves that chat tool on its own built-in path until it moves onto the adapter. The in-process adapter is `packages/broker/src/plugins/channel/slack` (module `@agentx/broker/plugins/channel-slack`; see `docs/local.md`, "Chat and notices"). What an in-process adapter hears goes through `createChannelSink` (`core/channel/sink.ts`), which applies the channel API's checks: the actor and the conversation share a tenant, the space is bound to one of the adapter's projects, the adapter's event id is used once, the account is linked to a person (an unlinked one gets a one-use code, once an hour), and a decision matches an open card Rovara posted (`core/channel/cards.ts`) for that exact conversation, revision and digest, of a kind the adapter may decide (`adapterMayDecide`), before the `decide` seam asks the approval gate with a credential of the method `chat-<channel>`. Links, bindings, cards, claims and the thread of a start are stored under the company scope (`ORG#<company>#...`, decision 58); the hosted adapter registry's records (`CHANNEL_ADAPTERS`, and the unscoped link keys of registered adapters) are unchanged.
+
+**For a many-company host.** The sink reads its company and its person from two seams (`companyOf`, `personOf` in `createChannelSink`), with Code's single company and the owner's links as the defaults: a host whose chat app serves several companies answers `companyOf` from a tenant-to-company index, and a host that identifies people by its own sign-in answers `personOf` from that identity data instead of link rows; every key the sink reads or writes is then under the company that answered. The work seam's items carry the company. Moving a host onto these keys needs a backfill: `ORG#<company>#CHANNEL_TENANTS` (one row per channel and tenant a space is bound in, `<channel>/<tenant>`) is new, so existing bindings must get their row or `listAllChannelBindings` will not find them; unbinding leaves the row, which is harmless. Hosted Slack bindings already use the same `ORG#` layout.
+
+A chat method is one act: `chat-<channel>` is never a strong method. `isCommentMethod` (`core/decisions/strong-methods.ts`) matches it with `code-host-*` and the plug-in's `commentMethods`, so the gate drops it from the high-risk and reject sets whatever an approvers plug-in names, and the credential carries the account that pressed (`claimedAccount`) for the plug-in to check against its own identity data.
+
+New optional field on `progress` event data: `onlyTo`, the one account that may see the text (a link code goes to the person who asked, never to the thread); an adapter that cannot show a message to one person must not post it. The Slack adapter posts it as an ephemeral message. A Slack account of another workspace than the conversation's (a guest from a shared channel) is taken from the speaker's own workspace, and the sink gives it nothing. A Slack conversation's space may now be a direct message; a host with its own Slack path should check nothing there relied on channel ids alone.
+
+New optional field on `ChannelAdapter`: `noThread`, the thread id the adapter reads as "no thread" (a message at the top of a space, such as a direct message). A Slack conversation's space may now be a direct message (`D...`); a binding of a space to a project stays on channels.
 
 ### Neutral MCP names (item H3)
 
@@ -481,7 +544,7 @@ A `build-system` adapter is a way of building code that the built-in detectors d
 | --- | --- | --- |
 | `detectorModule` | A package name the worker image installs, or an absolute `.js`/`.mjs` path inside the image. It exports `detectors: [{ name, run }]` (`run` is the worker's `Detector`). | The worker runs them after the built-in detectors, in the detector thread under its wall clock and memory limit. A name may not be a built-in's. A module that cannot be loaded adds a fixed-words note and nothing else. |
 | `setupPrograms` | Program names (never a shell such as `sh` or `bash`, or `env`, `xargs`, `sudo`) the setup governor groups into steps by subcommand (`examplebuild build //a:b` is its own step, as `npm ci` is). | `setup-agent-journal.ts`, set once at worker boot. |
-| `keyFileGlobs` | Files whose content decides what a saved environment holds. | **Not used yet, and refused when non-empty** (`BUILD_SYSTEM_KEY_FILE_GLOBS_WIRED` is false): Code has no saved-environment job builder or environment key yet. When it does, `detectorGlobsWithBuildSystems` puts them in the job's `detectorGlobs` and in the broker's own key, so both sides hash the same files (register: DEFERRED-CHECKS, BUILD-SYSTEM-KEYFILE-GLOBS). |
+| `keyFileGlobs` | Files whose content decides what a saved environment holds. | The rebuild job builder (`savedEnvBuildInputsOf`, `core/test-env/saved-env-rebuild.ts`) merges them into the job's `detectorGlobs` AND into the broker's own key-file listing with `detectorGlobsWithBuildSystems`, so the worker and the broker hash the same files and a changed key file changes the environment key (`BUILD_SYSTEM_KEY_FILE_GLOBS_WIRED` is true). More than 200 globs in all fails closed. |
 
 **It does not travel in a job.** A module path in a job would let every job name code for the worker to load. The profile is the operator's, like the worker image: the machine launcher (`DockerWorkerMachines`, option `buildSystems`,
 read from the registry with `collectBuildSystemProfiles`) puts the profiles into the worker's start-up environment as `ROVARA_BUILD_SYSTEMS`, a name a machine spec cannot set. The worker reads it once at boot and refuses to start on a value it cannot
@@ -491,6 +554,19 @@ or that carries a name other than the adapter's, stops the machine from starting
 **Trust (for the owner, decision 65).** A plug-in detector is trusted, owner-configured code that runs **with the worker's own powers**: the bounded reader limits only what the built-in detectors are handed, and an imported module has `fs`, `child_process` and the network like any other code in the worker image. It parses text from the repository, so a bug in it is worker code execution. Install only a detector you would install into the worker itself. When no detector thread can be started, plug-in detectors are **not** run (and a fixed-words note says so); they are never imported into the worker's main thread. The real-path check of an absolute module path and the later import are two steps; a file the operator swaps in between is imported, and no repository, task or job can reach that window.
 
 The internal build-system detector stays an optional plug-in package outside the core (decision 45.11).
+
+## Setting a project up (the setup agent)
+
+The setup agent (`packages/broker/src/core/setup-agent/`, the owner's side in `docs/local.md`) is core code on the existing ports; it adds no plug-in interface and changes none.
+- `DocumentStore`: the run's pointer, journal, commands, website asks, the proposal row and the candidate revision are plain rows under Cloud's `SETUP_DRAFT#` and project keys; every race is a condition or a transaction (the single-run pointer, the command counter, the open-asks counter, the catalog move).
+- `Approvers` through the approval gate: two subjects, `setup-host` (a website a run asked for) and `setup-proposal` (a project's candidate setup commands). Both are `risk: "high"`, so only a strong method decides them (the local page's own session; a code host comment never does), and
+  both are bound to what the owner saw: the ask and its time, or the digest of the commands and the candidate revision. The proposal is waiting for a decision only once its candidate check passed.
+- `WorkerMachines`: the run and the check are ordinary operations (`workflowMode: "SETUP_AGENT"` with the limits and commits in the payload; a check is a preparation on the candidate revision); the machine's start reads the owner's approved websites (`extraAllowedDomains`).
+- `CodeHost`: the citation re-read is `fileAtRevision` at the commit the run read, through the project's own connection.
+- `BuildSystem` (see "Build systems" above): the worker's setup governor groups commands by the profiles' `setupPrograms`, and the machine launcher passes the registry's profiles in `ROVARA_BUILD_SYSTEMS` as for every worker; nothing in the setup flow names a build system, and the internal detector is not here (decision 45.11).
+- `Metering`/`ModelProvider`: a run's model calls go through the model proxy like any task step; a run without a model route is refused at the start.
+
+Provider-specific code in the flow: none. What stays Cloud-only: the company's locks and the second-admin rule for loosening them, the company switch that turns setup runs off, recipes the company offers its projects (`org/setup-recipes.ts`, `setup-recipe-*`), the audit ledger events of the setup rows (the gate's own audit records the decisions), and the browser step-up.
 
 ## Open ids for trackers and events, and the comment seam (lane P6, item E1)
 
@@ -564,7 +640,7 @@ and the build step reads it against the contracts' schemas and the task's own re
 - **Reviews** start by themselves on the checked code; each report must be for this code, from this run, and exactly the reviews asked for.
 - **Fixing a block** (`runAutofix`, the policy in `@agentx/contracts` `workflow-autofix.ts`): a code fault goes back to coding at most twice per approved plan; a hiccup of the checks or reviews is
   retried once; anything unclear, a person's job or a reached limit is an ask (`autofixAsk` on the task), with what failed. `deps.taskSpendUsd` says what the task cost; **nothing priced counts as
-  nothing spent**, so with no price table the count limits alone bound the rounds (a decision for the owner under "Needs both owners").
+  nothing spent**, so a model with no price (neither its provider's table nor the catalog's list) leaves the count limits alone to bound the rounds (the hosted product's to decide).
 - **Plan risk** (`gradePlanRisk`): the planner's own document may only RAISE the tier. The core computes a floor itself from every path the plan's text and the request name (sensitive paths, count of files, a cost estimate where the task has one) and the tier is the higher of the two; a plan that claims every claim is proved is not thereby low.
 - **A task's artifacts**: an artifact name is kept once per operation, except the names in `REPLACEABLE_ARTIFACT_NAMES` (`checks.json`, which the worker saves again after the one extra turn it gives a coding run whose rerun found a regression): the last post stands, each under its own digest.
 - **Late callbacks.** Every action of a worker (events, artifacts, the uploads, the pull request, the update) goes through one path: capability, ids, fence, and, for everything but a repeat of the result, that the operation has not ended.
@@ -575,7 +651,33 @@ and the build step reads it against the contracts' schemas and the task's own re
 - **One automatic retry** applies where it does in Cloud: a blocked VERIFY or REVIEW whose run was lost or whose start was tried until its budget ran out (the AUTOFIX row carries the cause). A coding run, a publication or a push that is lost blocks for the owner's Retry, as in Cloud. Retry works for a blocked coding run, checks, reviews, publication and the push of a fix (the block "pull request update failed").
 - **Open pull requests** (`maintain.ts`): the reviewed fix is appended as exactly the reviewed tree onto the recorded head; the base branch is merged in on merge tracking's request. A head that
   moved (a person's push) is never overwritten. Both are `maintain` operations with the `pull-request-update` callback.
-- The uploads a coding run makes besides its result (`candidate-export` and friends) feed only the browser and API checks (E2E), which Code does not run yet: they are shape-checked and not kept.
+- The uploads a coding run makes besides its result (`candidate-export`, `candidate-build-source`, `baseline-source`) are checked and kept on the object-storage port by `core/e2e/uploads.ts`: they are the committed source the browser and API checks (E2E) run from (see "Browser and API checks" below).
+
+## Browser and API checks (`core/e2e/`)
+
+The checks that run the app a task changed in a browser and against its API (E2E) on the document store and object storage. Cloud's `workflow-e2e-*`, `e2e-*` and `broker/e2e-rounds` code is on DynamoDB and S3; the same code lives under
+`packages/broker/src/aws/` (unchanged DynamoDB form, used by the older broker and its tests) and in `packages/broker/src/e2e/` (the shared parts: the plan and admission builders, the evidence verifier, the account registry's rows, the display
+and the model route registry). `core/e2e/` is the ports version of what reads and writes:
+
+- **Stored keys are Cloud's, byte for byte**: `ORG#<company>#PROJECT#<project>` / `E2E_ACCOUNT#...`, `E2E_ACCOUNT_LATEST#...` and `E2E_MODEL_BUDGET#<day>` (the org-scoped project partition: `projectPk`), `DEVTASK#<task>` / `E2E_BASELINE#<plan digest>`,
+  `E2E_REPLAY#...`, `E2E_GROUNDING#...`, `E2E_FEATURE_VERIFIER#<catalog>` / `PROFILE#<profile>#<kind>`, `WORKSPACE#<workspace>` / `CANDIDATE_EXPORT#<operation>`, `CANDIDATE_BUILD_SOURCE#...`, `BASELINE_SOURCE#...`, `WORKFLOW_E2E_UPLOAD#<operation>#<group run>`,
+  and the object keys `workflow-candidate-sources/sha256/...`, `workflow-e2e-admissions/sha256/...`, `workflow-e2e-evidence/sha256/...`, `workflow-e2e-group-evidence/sha256/...`. The account and day-budget rows moved from `PROJECT#<project>` to the company-scoped
+  partition (Cloud already stores them there); Code's older broker path now writes the same rows under its one company. Existing `PROJECT#<project>` / `E2E_ACCOUNT*` and `E2E_MODEL_BUDGET*` rows are not read: re-register the project's setup (the day budget starts again).
+- **Records** (`baseline.ts`, `replay.ts`, `grounding.ts`, `account-registry.ts`, `runtime-readiness.ts`, `artifacts.ts`): same functions as Cloud with the store parameter changed (`{ store: DocumentStore; now? }` and `{ objects: ObjectStorage }`); a write that fails its condition is the
+  same boolean answer; fences are `TransactItem` checks.
+- **No cloud client**: the parts of the baseline, replay, grounding and artifact code, and of the model route registry, that touch no cloud client are in `e2e/` (`baseline-round.ts`, `replay-round.ts`, `grounding-round.ts`, `stored-artifacts.ts`, `model-route-read.ts`); `aws/` imports them from there, and `tests/unit/core-e2e-imports.test.ts` fails if anything under `core/e2e` loads a cloud SDK.
+- **Uploads** (`uploads.ts`, `uploads-chunks.ts`): the three coding-run uploads, chunk by chunk, bound to the operation and its fence, in order, held to their digest, the tree inventory and the byte bounds, then stored under their content address. They are kept only for a task whose approved plan
+  needs the checks (and for a planning run asked for the unchanged code); for any other task `rovara up` answers them in the shape the worker sends and keeps nothing, so the size of a code base never holds up a result. Code too big for the install's object storage is answered
+  `{ accepted: false, reason: "too-large" }`, the coding run's row records it, and the checks block with one fixed sentence. A chunk is staged with a short retention class and deleted when its upload fails, so a left-over chunk expires by itself; kept objects use the never-expiring `task-document` class (they are
+  the code a round runs on) and grow until the task's files are removed. The worker's reads of its admission and its evidence uploads are served the same way (`callbacks.ts`), bound to the round's record. Local upload rules differ from Cloud's in one way: an operation counts as live in `DISPATCHING` as well as `RUNNING` (the local listener serves no heartbeat).
+- **Verification** (`verification.ts`): reads a round's admission and evidence back from where the broker stored them, holds them to their content addresses, re-collects every group itself (the worker's verdict is never read) and judges the result. A baseline, replay or grounding
+  round only settles its own record and never moves the workflow. The build step uses it at the end of a candidate's checks: the checks pass only on a round the broker verified, and the rows the verdict stands on are fenced into the transaction that records it.
+- **Authority** (`authority.ts`, `local-authority.ts`): whether the owner, the project's policy, the candidate's source and the runtime are still what the round was admitted under is the `E2EAuthority` seam. Code's `createLocalE2EAuthority` checks the approved plan, the project
+  policy (pinned and latest), the creator (`TaskAccess.checkStep`, and the proof Code records for its one owner: a direct administrator grant `local-owner`), and the stored source; the runtime rows, the test accounts and the setup approval are one more seam
+  (`currentSelection`). With none, no round passes (fail closed). The seam must return only attested rows: runtime rows that passed qualification and are READY now, and the accounts as registered now; this layer fences what it is given (the catalog row, the project's revision with its policy, setup approval and runtime binding, every runtime row the round ran on, the plan's accounts) and fails when the catalog row, the setup approval or a runtime row is missing, but it cannot tell an attested row from one that is not.
+
+What is not here (Cloud-only or waiting on another feature): starting a round (admission building, the runtime and account selection, the baseline, replay and grounding starts), the model budget and route registry on the store (`e2e/model-budget-endpoint.ts`, `e2e/model-route-registry.ts`
+and `e2e/model-checks.ts` still read through the DynamoDB client; decision-51 gaps), the dollar cap on AI navigation (Cloud's `e2e/model-spend.ts` is on the spend ledger; Code would bind it to `Admission`), run-scoped accounts' revocation against a live app, and the browser tests of Cloud's web app.
 
 ## Shared names Cloud imports, not copies (owner decision 60, item R4)
 
@@ -595,8 +697,8 @@ Cloud's own files keep only what is Cloud's (its adapters, its policies, its dat
   instead of a list length, base64 text instead of bytes. That changes the stored format, so it needs a one-time data migration in Cloud. Owner decision 60 settles it (item S2; this replaces
   "a decision for both owners"): **the document store stays small.** Sets and list append are NOT added to the port or to SQLite. Cloud's budget, limit and session code moves to one row per item
   (a marker row per charged task, a counter row) with a one-time migration on the Cloud side. L6a's workspace limits already use that pattern.
-- **A scheduler, realtime push and email notices.** Each is a provider dependency of the core
-  today and has no port yet (object storage has a provisional one, and secrets have the `secrets` point above). The relay "from a timer" is the caller's timer.
+- **Realtime push and email notices.** Each is a provider dependency of the core today and has no port yet (object storage has a provisional one, secrets have the `secrets` point above, and
+  the `scheduler` and `image-registry` points are below). The relay "from a timer" is the caller's timer.
 - **Sign-in flows.** `IdentityProvider` answers who a credential is; begin/complete/sign-out, authentication freshness and member
   listing for single sign-on are interface additions for the lane that needs them.
 - A SQLite adapter must use UTF-8 text with BINARY collation for the code-point order and refuse lone surrogates in keys.
@@ -618,4 +720,49 @@ claim, and the single merge path that re-reads the code host and merges at the c
 - **Seams the neighbouring lanes fill** (`seams.ts`): the task record (`MergeTask`, read by `MergeHost.loadTask`), the session timeline (`SessionTimeline`), the milestone hook
   (`CodeMilestones`), the session bindings, the project's code settings (`CodeSettingsReader`; Code's default has self-approval ON, one owner), the reverse link from a change request
   to its task, and `MergePeople` (who a person is on the code host). Cloud's members, its track record and its reviewer reminders plug into the same seams and hooks.
+  `CodeMilestones` is filled by `core/milestones`: the items are Cloud's `CODE_MILESTONE#<kind>#<n>` rows (with the sweep's due-time attributes under `CODE_MILESTONE`) and a session line, committed with the change; `register` takes the handlers an adapter
+  supplies, `deliver` tells them after the commit and `deliverDue` (the app's timer) tells again one that failed, at most 5 times (the per-handler `tries_`, `done_` and `lease_` attributes are Cloud's). It needs the dispatch rows' `workflow-dispatch-due` index.
 - **Keys are Cloud's** (`mergeTrackingKey`, `prHeadKey`, `mergeCommitIndexKey`, the task's own partition), so Cloud consumes the same layout with no migration.
+
+## Scheduler (a new interface: both owners approve)
+
+The `scheduler` point (one adapter) says WHEN. A `ScheduleEntry` names a company, a schedule id, a rule (a five-field cron in a named time zone, or "every N minutes"), an on/off switch and a target
+(`{ kind, ref }`, ids only: a schedule is stored by an outside system and listed in its console, so it never holds a secret or a person's text). `put` creates or replaces (idempotent on company and
+id), `remove` deletes (not an error when absent), `get` reads back, and `subscribe` registers the one handler that hears of each fire. A fire is a `DueSchedule`: the time the rule meant, a `slotId`
+that is the same for every delivery of one fire, and an `attempt` count. The handler resolves when it has HANDLED the fire, including by deciding to start nothing; if it throws, the scheduler may
+deliver the same fire again and finally gives it up.
+
+The core decides what a fire does from what is stored then. The nightly test run checks that the schedule is still on, that the fire is fresh, that something merged, that no run is in flight, and
+claims the slot with a conditional write before it starts anything, so a scheduler that fires twice, late or after a restart does no harm. `capabilities` says which rules an adapter honours; a rule
+it does not honour is refused at `put`, never run differently. Code's adapter is a timer inside `rovara up` (`createIntervalScheduler` in `@agentx/local-adapters`): UTC crons and intervals, its
+schedules kept in the state database, one late delivery for a fire missed while `rovara up` was not running (within an hour). Code's default, `none`, refuses `put` with `unavailable`. Cloud's adapter
+will be the cloud scheduler. `tests/support/ports/scheduler-conformance.ts` is the conformance suite (the fake, the local timer and Cloud's later adapter all run it).
+
+## Image registry (a new interface: both owners approve)
+
+The `image-registry` point (one adapter) is where a project's saved environment image lives. The broker never talks to a registry itself: it asks the port for a short-lived login for ONE repository
+(`login`, to push or to pull), whether the repository is the one Rovara makes (`inspect`: `matches`, `absent`, or `unusable` when somebody else created it first with other settings), the images it holds
+(`list`), and to delete images or the repository. What makes an image trustworthy stays in the core (`core/test-env/saved-env*.ts`): which approved environment it was built for, that a Prove run
+passed, that the job that pushes is the job that was queued, the 30-day ceiling, keeping the newest N. A repository name is built by `savedEnvRepositoryName` (a hash of the company and the project) and
+every call refuses a name of any other shape, so no wildcard or extra segment reaches a registry call. The worker never sees the registry's own credentials: a login is a `SavedEnvRegistryAuth`.
+`capabilities.workerPush` and `workerPull` say whether a worker can push and pull with its own container tooling; when they are false the core queues no build and names no image to a worker.
+
+**What changed in the login's shape:** `SavedEnvRegistryAuth.registry` accepts the cloud registry's host or a registry on this machine (`localhost` or `127.0.0.1` with a port, nothing else), and `username`
+is the hosted registry's fixed user name or `rovara-local`. A hosted install validates with `HostedSavedEnvRegistryAuthSchema` (the same schema made by `savedEnvRegistryAuthSchema({ allowLocal: false })`), which takes only the cloud registry's host and user name, so a hosted worker is never told to log in to a loopback address. Code's adapter runs one registry container on the owner's Docker, published on the loopback address only; that registry has no login check, so the adapter refuses worker access until one that checks it is built. Code's default, `none`, answers every call with `unavailable`.
+Cloud's adapter will be its cloud registry (a login scoped to one repository; the policy builders are in `saved-env-image.ts`). `tests/support/ports/image-registry-conformance.ts` is
+the conformance suite.
+
+## The test environment (`core/test-env/`)
+
+A project's test environment is a setting Rovara PROPOSES, a Prove run checks, and the owner approves once; each approved change is a new immutable revision, and a task keeps the revision it started
+with. The stored rows are Cloud's, key for key (`TESTENV#PROPOSAL#<digest>`, `#PROVE#<digest>`, `#REV#<revision>`, `#LATEST`, the task's `#PIN#<task>`, `#NIGHTLY#...`), under `projectPk(company, project)`, so
+Cloud can switch to this code with no data move.
+
+- **The approval is a subject of the approval gate** (`createTestEnvironmentSubject`, kind `test-environment`). Cloud's own checks (a maintainer role, a fresh sign-in, a second person for a less-safe
+  change, a confirmation card) are the Approvers seam's rules here. A less-safe change, a proposal a setup run or draft made, and any card the contract grades high are HIGH risk, so only the methods the
+  approvers plug-in names as strong may approve them, and `minApprovers` says whether a second person is needed. The environment still refuses, in fixed words: an unproved proposal, a seed file the
+  check did not load, a production target, recordings outside the sandbox and preview tiers, a kind of backing that is not available, an archived project, and a revision other than the one the person saw.
+- **The task flow takes it through one seam** (`TaskFlowDeps.testEnvironment`, `core/test-env/seam.ts`): a starting workflow task pins the newest usable revision in its own start transaction (an environment the flow cannot carry out is
+  recorded as not applied, with the reason); a coding or verification run is told the plan of the pinned revision and the worker features it needs (a worker that lacks one is refused the run, never sent it without).
+- **Switches** are environment variables read by leaf modules (`switch.ts`): `ROVARA_TEST_ENVIRONMENT` (on unless `0`), `ROVARA_TEST_SERVICES`, `ROVARA_TEST_ACCOUNTS`, `ROVARA_PROJECT_IMAGES`,
+  `ROVARA_SAVED_ENVIRONMENTS` and `ROVARA_NIGHTLY_HEALTH` (each on only when exactly `1`).

@@ -1,13 +1,21 @@
 // Lane L6a, task flow core: the records the flow keeps in the document store, and the plain-JSON conversion that goes with them.
 import type {
+  DesignReviewBinding,
   DocumentKey,
   JsonValue,
   Operation,
+  SetupAgentLimits,
+  SetupProposal,
+  SetupRunEndWord,
+  SetupRunSummary,
+  SetupVerification,
   StoredDocument,
   WorkspaceStatus,
 } from "@agentx/contracts";
 import type { DeveloperTaskPointerRecord, DeveloperTaskRecord } from "../../developer/task-records.js";
 import type { WorkspaceCharge } from "./keys.js";
+import type { SecondReviewOperationPlan } from "../second-review/store.js";
+import type { OperationModelChoice } from "./step-model.js";
 
 /** The task record: Cloud's `DEVTASK#<id>/META` item. `provider` is the identity adapter's name (a string), not Cloud's closed sign-in list. */
 export type TaskRecord = Omit<DeveloperTaskRecord, "provider" | "charge"> & {
@@ -18,10 +26,32 @@ export type TaskRecord = Omit<DeveloperTaskRecord, "provider" | "charge"> & {
   admissionReservationId?: string;
   /** The task's session (lane L6b), created in the same transaction as the task when the install wires sessions. */
   sessionId?: string;
+  /** The person asked for the design to be reviewed before any code (`design first`), whatever the project's setting says. */
+  designFirst?: { by: string; at: string };
+  /** What the task is for, when it is not ordinary work: a run that sets a project up by running its commands (`core/setup-agent`). */
+  purpose?: "setup_agent";
+  /** A setup run: the limits it started with. */
+  setupAgentLimits?: SetupAgentLimits;
+  /** A setup run: who pressed Stop and when. Written before the cancel, so the end can tell a person's stop from any other cancel. */
+  setupAgentStop?: { by: string; at: string };
+  /** A setup run: how many commands the journal holds, for the live view. */
+  setupAgentProgress?: { commands: number; at: string };
+  /** A setup run's end: the proposal and summary the broker read again from the worker's answer, or the fixed sentence for why there is none. */
+  setupAgentResult?:
+    | { status: "ready"; stop: SetupRunEndWord; proposal: SetupProposal; summary: SetupRunSummary }
+    | { status: "failed"; stop: SetupRunEndWord; failure: string; proposal?: SetupProposal; summary?: SetupRunSummary };
+  /** A setup run: what re-reading the proposal's citations from the code host found, kept once every verdict was final. */
+  setupAgentVerification?: { at: string; items: Record<string, SetupVerification> };
+  /** The end of a setup run, written once with its result. */
+  agentRunEnd?: { state: string; at: string };
 };
 
 /** Cloud's `WORKSPACE#<id>/DEVELOPER_TASK` pointer: how a worker callback finds the task. The requester names the identity adapter, not a closed sign-in list. */
-export type TaskPointerRecord = Omit<DeveloperTaskPointerRecord, "requester"> & { requester: { kind: "developer"; developerId: string; provider: string } };
+export type TaskPointerRecord = Omit<DeveloperTaskPointerRecord, "requester" | "pendingWorkflowMode"> & {
+  requester: { kind: "developer"; developerId: string; provider: string };
+  /** The mode the first run is queued with; a setup run's is its own (`SETUP_AGENT`). */
+  pendingWorkflowMode?: "PLAN" | "IMPLEMENT" | "SETUP_AGENT";
+};
 
 /** `WORKSPACE#<id>/META`: where a task's worker runs. `machine` is set once a worker machine was started for it. */
 export interface WorkspaceRecord {
@@ -34,6 +64,8 @@ export interface WorkspaceRecord {
   ownerKey: string;
   projectName: string;
   projectRevision: number;
+  /** The commit of the project's playbook the task pinned when it started (`StandingInstructionsSeam.pin`): every step of the task reads the file at it. Absent: the head of the default branch. */
+  playbookCommit?: string;
   status: WorkspaceStatus;
   /** The one operation that holds the workspace (single writer); null when none does. */
   activeOperationId: string | null;
@@ -80,6 +112,19 @@ export interface OperationRecord extends Operation {
   maintenance?: MaintenanceExpectation;
   /** A publish operation's expectation (lane L10): what the worker may open a pull request with, fixed by the broker when the publication started. The pull request callback is held to it. */
   publication?: PublicationExpectation;
+  /**
+   * Second review: this REVIEW operation carries a second reviewer (another AI company's model, inside the same operation), or records why it could not: the candidate it is about and the plan (or the fixed
+   * reason it did not run). The one REVIEW end reads it (`secondOpinionFromReviewResult`); no other code does and nothing waits on it.
+   */
+  secondReviewPlan?: SecondReviewOperationPlan;
+  /** Design review: the binding the broker stored when it dispatched a design-review round (the reviewers' slots and models, the merge step, the pinned commits). The worker is sent it in the payload; the packets and the keys are served only for the slots it names. */
+  designReview?: DesignReviewBinding;
+  /** The model the install's rule chose for this step, and why (see `step-model.ts`). Absent: the step ran on the install's one model. */
+  modelChoice?: OperationModelChoice;
+  /** The source that serves the operation's models (a design-review round records it on each reviewer run). */
+  modelSourceId?: string;
+  /** The ids of the model keys the operation's calls used (the planner's resolve run, whose spend the review counts). */
+  modelKeyIds?: string[];
   /** The worker machine and delivery time, once the operation was handed to a machine. */
   deliveredAt?: string;
   machineId?: string;
@@ -118,9 +163,9 @@ export interface PublicationExpectation {
 }
 
 /** `WORKFLOW_DISPATCH` rows: the intent to start the next workflow step with no one asking, written in the transaction that made it due. */
-export type DispatchKind = "UNDERSTAND" | "PLAN" | "IMPLEMENT" | "REVIEW" | "PUBLISH" | "SYNC" | "AUTOFIX";
+export type DispatchKind = "UNDERSTAND" | "PLAN" | "REPLAN" | "CRITIQUE" | "CRITIC_REPLAN" | "IMPLEMENT" | "REVIEW" | "PUBLISH" | "SYNC" | "AUTOFIX";
 /** The kinds the stage machine's own runner starts (Cloud's `startTaskWorkflowUnderstandFromSystem` and `startTaskWorkflowPlanFromSystem`). */
-export const READING_DISPATCH_KINDS: readonly DispatchKind[] = ["UNDERSTAND", "PLAN"];
+export const READING_DISPATCH_KINDS: readonly DispatchKind[] = ["UNDERSTAND", "PLAN", "REPLAN"];
 
 export interface DispatchRowRecord {
   pk: string;
@@ -138,6 +183,10 @@ export interface DispatchRowRecord {
   dispatchDueSk: string;
   indexExpiresAt: number;
   lastError?: string;
+  /** A REPLAN row: what the planner is told on its automatic second run (the plan's problems, or what could not be read), kept on the row. */
+  planPrompt?: string;
+  /** A CRITIQUE row: who approved running the design review without a price (the cost hold's "run it anyway"). Only this lets a round start from the hold. */
+  costApprovedBy?: string;
   /** An AUTOFIX row: how the block it looks at came about when no finished run wrote it (the run was lost, or its start was tried until the budget ran out). */
   cause?: "run-lost" | "dispatch-exhausted";
 }

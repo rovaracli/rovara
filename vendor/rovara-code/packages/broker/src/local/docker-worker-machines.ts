@@ -21,10 +21,11 @@ import { chmod, mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { localAllowedDomains } from "./isolation/allow-list.js";
 import {
-  BROKER_ALIAS, CALLBACK_RELAY_PORT, GATEWAY_INGRESS_PORT, ISOLATION_CONFIG_LABEL, ISOLATION_VERSION, OWNER_LABEL, SOCKET_GUARD_ALIAS, SOCKET_GUARD_PORT, WORKER_ALIAS,
+  BROKER_ALIAS, CALLBACK_RELAY_PORT, GATEWAY_INGRESS_PORT, ISOLATION_CONFIG_LABEL, ISOLATION_VERSION, OWNER_LABEL, SANDBOX_LABEL, SOCKET_GUARD_ALIAS, SOCKET_GUARD_PORT, WORKER_ALIAS,
   createGateway, createGuard, dockerRun, ensureNetworks, gatewayAddresses, isolationNames, type IsolationNames, type Run,
 } from "./isolation/stack.js";
 import {
+  ANSWERED_INVOCATION_KINDS,
   BUILD_SYSTEM_PROFILES_ENV,
   MachineError,
   WORKER_PING_FEATURES_FIELD,
@@ -40,6 +41,7 @@ import {
   type WorkerMachines,
 } from "@agentx/contracts";
 import type { DockerRunner } from "./docker-runner.js";
+import { type LocalTestServices, localTestServicesDigestPart, testServicesEnvironment } from "./test-services.js";
 import type { InvokeSigner } from "./invoke-signer.js";
 import { MODEL_PROXY_PREFIX } from "./model-proxy/proxy.js";
 import { WORKSPACES_DIRECTORY_NAME, ensurePrivateDirectory } from "./state-directory.js";
@@ -58,10 +60,34 @@ export const GENERATION_LABEL = "rovara.local.generation";
 /** The addresses the gateway had when the worker (and the guard) were made: `<worker network>,<sandbox network>`. A different pair means the worker's name server is stale. */
 export const GATEWAY_ADDRESS_LABEL = "rovara.local.gwaddr";
 /** The label the worker puts on the sandboxes it starts (`TASK_SANDBOX_WORKSPACE_LABEL`). */
+/** The guard's folder for the copies of a worker's run files: next to the run folder, never inside it. */
+const bindDirectoryOf = (runDirectory: string): string => `${runDirectory}-binds`;
+
 const SANDBOX_WORKSPACE_LABEL = "agentx.workspace";
 const MACHINE_NAME = /^rovara-worker-[0-9a-f]{24}$/;
 const MACHINE_KEY = /^[A-Za-z0-9._-]{1,128}$/;
 const COMPANY_ID = /^[A-Za-z0-9_-]{1,64}$/;
+const ANSWER_MAX_BYTES = 1_048_576;
+
+/** A JSON body of at most `limit` bytes; anything else (too long, not JSON, an array) reads as an empty answer. */
+async function readBoundedJson(response: Response, limit: number): Promise<Record<string, unknown>> {
+  if (response.body === null) return {};
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = (await reader.read().catch(() => ({ done: true as const, value: undefined }))) as { done: boolean; value: Uint8Array | undefined };
+    if (done) break;
+    size += value?.byteLength ?? 0;
+    if (size > limit) { await reader.cancel().catch(() => undefined); return {}; }
+    if (value !== undefined) chunks.push(value);
+  }
+  try {
+    const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
+  } catch { return {}; }
+}
+
 const MAX_INVOCATION_BYTES = 1_048_576;
 export const LOCAL_WORKER_IMAGE_BUILD_HINT = "build it from a Rovara checkout: docker build -f environments/base/Dockerfile -t rovara-worker:local .";
 
@@ -80,6 +106,14 @@ const RESERVED_ENVIRONMENT = new Set([
   "AGENTX_SANDBOX_NETWORK",
   // Lane L9a: the model proxy's address is the broker's to set (below). A spec cannot point the worker's model calls elsewhere.
   "AGENTX_MODEL_PROXY_URL",
+  // Test services: the broker alone says which registry, catalog environment and run folder the worker uses and which image is its own; a project cannot point them elsewhere.
+  "AGENTX_TEST_SERVICES_REGISTRY",
+  "AGENTX_TEST_SERVICES_ENV",
+  "AGENTX_TEST_SERVICES_RUN_DIR",
+  "AGENTX_TEST_SERVICES_EDITION",
+  "AGENTX_TEST_SERVICES_MAX_MEM_MIB",
+  "AGENTX_TEST_SERVICES_NOT_PULLED",
+  "AGENTX_WORKER_IMAGE",
   "AGENTX_RUNTIME",
   "AGENTX_WORKER_PROCESS_SCOPE",
   // Port lane P6 (item B1): the build systems' detector modules are the operator's; a spec (a project) cannot name code for the worker to load.
@@ -124,6 +158,21 @@ export interface DockerWorkerMachinesOptions {
   buildSystems?: (() => Promise<readonly BuildSystemProfile[]> | readonly BuildSystemProfile[]) | undefined;
   /** Websites the sandboxes and the worker may reach beyond the default list (the cloud's, without its own network's names). */
   allowedDomains?: readonly string[];
+  /**
+   * Test services (dependencies on a sealed per-run network): the registry the catalog images were pulled from, the catalog environment, the full references of the images that were pulled (the only helpers the
+   * guard lets start) and the run folder. Absent: the worker is not told about test services and the guard is the plain one. A change re-creates an idle machine, like any other change of its configuration.
+   */
+  testServices?: LocalTestServices | undefined;
+  /**
+   * More websites for machines that START from now on, read at each start with the name of the project the machine is for: the hosts the owner approved for a setup run of THAT project. A change makes the machine's digest differ, so its next start remakes the machine with the new list
+   * (keeping its workspace); a machine that is running is not touched. A name the cloud would refuse is not added (it is left out, never passed on).
+   */
+  extraAllowedDomains?: (project: string | undefined) => Promise<readonly string[]> | readonly string[];
+  /**
+   * The registries a project's dev container may pull its image from (the Docker socket guard serves a dev container only from these). Default: none (the install decides, `devcontainerRegistriesForInstall`); an empty list is dev containers off.
+   * It is the owner's: it comes from the environment of `rovara up` and never from a project or a task.
+   */
+  devcontainerRegistries?: readonly string[];
   signer: InvokeSigner;
   docker: DockerRunner;
   /** Most machines running at once. Default 4. */
@@ -181,6 +230,17 @@ export class DockerWorkerMachines implements WorkerMachines {
     this.capabilities = { isolation: "container", persistentVolume: true, canStop: true, maxConcurrentMachines: options.maxConcurrentMachines === undefined ? 4 : options.maxConcurrentMachines };
   }
 
+  #devcontainerRegistries(): readonly string[] {
+    return this.#options.devcontainerRegistries ?? [];
+  }
+
+  /** The websites a machine starting now may reach: the install's list and the hosts the owner approved. An approved name the allow-list rules refuse is left out. */
+  async #allowedNow(project: string | undefined): Promise<string[]> {
+    const extra = (await this.#options.extraAllowedDomains?.(project)) ?? [];
+    const accepted = extra.filter((entry) => { try { localAllowedDomains([entry]); return true; } catch { return false; } });
+    return accepted.length === 0 ? this.#allowed : localAllowedDomains([...(this.#options.allowedDomains ?? []), ...accepted]);
+  }
+
   /** One start at a time in this process, so the limit on running machines holds and two starts of one key do not race. */
   start(spec: MachineSpec): Promise<MachineHandle> {
     const run = this.#queue.then(() => this.#start(spec));
@@ -201,8 +261,13 @@ export class DockerWorkerMachines implements WorkerMachines {
     const names = isolationNames(hash);
     const callback = this.#options.callback();
     const buildSystems = this.#options.buildSystems === undefined ? [] : [...(await this.#options.buildSystems())];
-    const environment = this.#environment(spec, workspaceDirectory, image, names, buildSystems);
-    const digest = createHash("sha256").update(JSON.stringify([image, Object.entries(environment).sort(([a], [b]) => (a < b ? -1 : 1)), ISOLATION_VERSION, this.#allowed, callback.tcpPort, callback.socketDirectory ?? null])).digest("hex");
+    const allowed = await this.#allowedNow(spec.projectName);
+    // Test services: the worker is told its own image as a pinned id (the resolver guard may run nothing else), and where its run folder is. The folder is outside every workspace: a sandbox never sees it.
+    const services = this.#options.testServices;
+    const runDirectory = services === undefined ? undefined : join(services.runDirectoryParent ?? join(resolve(this.#options.stateDirectory), "test-services"), hash);
+    const imageId = services === undefined ? undefined : await this.#imageId(image);
+    const environment = { ...this.#environment(spec, workspaceDirectory, image, names, buildSystems), ...(services === undefined || runDirectory === undefined || imageId === undefined ? {} : testServicesEnvironment(services, { runDirectory, workerImageId: imageId })) };
+    const digest = createHash("sha256").update(JSON.stringify([image, Object.entries(environment).sort(([a], [b]) => (a < b ? -1 : 1)), ISOLATION_VERSION, allowed, this.#devcontainerRegistries(), callback.tcpPort, callback.socketDirectory ?? null, services === undefined ? null : localTestServicesDigestPart(services, imageId)])).digest("hex");
     const run: Run = dockerRun(this.#options.docker);
 
     const existing = await this.#inspect(name);
@@ -220,6 +285,7 @@ export class DockerWorkerMachines implements WorkerMachines {
       // address. The workspace folder is a bind mount and survives.
       await this.#removeStack(names);
       await this.#removeSandboxes(name);
+      await this.#removeServices(name);
     } else {
       // Helpers a failed start left behind would block the names.
       await this.#removeStack(names);
@@ -234,6 +300,15 @@ export class DockerWorkerMachines implements WorkerMachines {
     await this.#sweepEnvironmentFiles();
     await mkdir(workspaceDirectory, { recursive: true, mode: 0o777 });
     await chmod(workspaceDirectory, 0o777);
+    if (runDirectory !== undefined) {
+      // The same rule as the workspaces folder: a private parent (0700) so no other user reaches it, and a folder the worker (user 1000) can write.
+      await ensurePrivateDirectory(resolve(runDirectory, ".."));
+      await mkdir(runDirectory, { recursive: true, mode: 0o777 });
+      await chmod(runDirectory, 0o777);
+      // The guard's own folder for the copies of the run files: beside the run folder (never inside it), and not mounted into the worker.
+      await mkdir(bindDirectoryOf(runDirectory), { recursive: true, mode: 0o777 });
+      await chmod(bindDirectoryOf(runDirectory), 0o777);
+    }
 
     const group = await this.#dockerGroup(image);
     const generation = 1 + randomInt(999_999_998);
@@ -242,7 +317,7 @@ export class DockerWorkerMachines implements WorkerMachines {
       const nets = await ensureNetworks(run, names, [`${OWNER_LABEL}=${hash}`, `${STATE_LABEL}=${this.#stateKey}`]);
       const useSocket = callback.socketDirectory !== undefined;
       await createGateway(run, {
-        image, labels: baseLabels, names, nets, allowed: this.#allowed, workspaceId, callback,
+        image, labels: baseLabels, names, nets, allowed, workspaceId, callback,
         user: useSocket && typeof process.getuid === "function" && typeof process.getgid === "function" ? `${process.getuid()}:${process.getgid()}` : "1000:1000",
       });
       const gatewayStarted = await this.#docker(["start", names.gateway]);
@@ -253,6 +328,8 @@ export class DockerWorkerMachines implements WorkerMachines {
       await createGuard(run, {
         image, labels: [...baseLabels, gatewayLabel], names, socketPath: this.#socket, socketGroup: group, workspaceDirectory,
         workspaceKey: createHash("sha256").update(resolve(workspaceDirectory)).digest("hex").slice(0, 16), owner: hash, sandboxDns: addresses.sandbox,
+        ...(services === undefined || runDirectory === undefined || imageId === undefined ? {} : { services: { images: services.images, guardImage: imageId, runDirectory, bindDirectory: bindDirectoryOf(runDirectory), socketGroup: Number(group), ...(services.maxMemoryMiB === undefined ? {} : { maxMemoryMiB: services.maxMemoryMiB }) } }),
+        devcontainerRegistries: this.#devcontainerRegistries(),
       });
       const guardStarted = await this.#docker(["start", names.guard]);
       if (guardStarted.exitCode !== 0) throw new MachineError("unavailable", `Docker could not start the Docker socket guard: ${this.#reason(guardStarted.stderr)}`);
@@ -284,6 +361,7 @@ export class DockerWorkerMachines implements WorkerMachines {
           "--dns", addresses.worker,
           "--env-file", envFile,
           "--volume", `${workspaceDirectory}:${workspaceDirectory}`,
+          ...(runDirectory === undefined ? [] : ["--volume", `${runDirectory}:${runDirectory}`]),
           "--log-opt", "max-size=10m",
           "--log-opt", "max-file=3",
           image,
@@ -299,6 +377,14 @@ export class DockerWorkerMachines implements WorkerMachines {
       throw error;
     }
     return handle("starting");
+  }
+
+  /** The worker image's id (`sha256:<64 hex>`), the one form of the image a pinned reference may take for a tag. */
+  async #imageId(image: string): Promise<string> {
+    const found = await this.#docker(["image", "inspect", "--format", "{{.Id}}", image]);
+    const id = found.stdout.trim();
+    if (found.exitCode !== 0 || !/^sha256:[a-f0-9]{64}$/.test(id)) throw new MachineError("unavailable", `the worker image ${image} is not on this machine; ${LOCAL_WORKER_IMAGE_BUILD_HINT}`);
+    return id;
   }
 
   /** Starts a stopped machine again (guard, gateway, worker). False when the helpers are gone or the gateway came back on other addresses, so the machine must be rebuilt. */
@@ -326,6 +412,34 @@ export class DockerWorkerMachines implements WorkerMachines {
   }
 
   /** Removes the worker, the gateway and the guard of a machine (a missing one is fine). Networks stay: they are reused by the rebuild. */
+  /**
+   * Test services only: the service containers a worker made (the guard labels them with this machine's owner label and the class `service`) and the run networks it made, then its run folder. With test services off nothing
+   * here runs. A container or network that stays keeps the folder, as for a sandbox that stays.
+   */
+  async #removeServices(machineId: string): Promise<void> {
+    const services = this.#options.testServices;
+    if (services === undefined) return;
+    const hash = machineId.slice("rovara-worker-".length);
+    const containers = await this.#docker(["ps", "--all", "--quiet", "--filter", `label=${OWNER_LABEL}=${hash}`, "--filter", `label=${SANDBOX_LABEL}=service`]);
+    if (containers.exitCode !== 0) throw new MachineError("unavailable", `Docker did not answer: ${this.#reason(containers.stderr)}`);
+    const ids = containers.stdout.split("\n").map((line) => line.trim()).filter((line) => /^[0-9a-f]{12,64}$/.test(line));
+    if (ids.length > 0) {
+      const removed = await this.#docker(["rm", "--force", "--volumes", ...ids]);
+      if (removed.exitCode !== 0 && !/no such (object|container)/i.test(removed.stderr)) throw new MachineError("unavailable", `Docker could not remove the test service containers: ${this.#reason(removed.stderr)}`);
+    }
+    const networks = await this.#docker(["network", "ls", "--quiet", "--filter", `label=${OWNER_LABEL}=${hash}`, "--filter", "name=rovara-svc-"]);
+    if (networks.exitCode !== 0) throw new MachineError("unavailable", `Docker did not answer: ${this.#reason(networks.stderr)}`);
+    for (const id of networks.stdout.split("\n").map((line) => line.trim()).filter((line) => /^[0-9a-f]{12,64}$/.test(line))) {
+      const removed = await this.#docker(["network", "rm", id]);
+      if (removed.exitCode !== 0 && !/no such (object|network)|not found/i.test(removed.stderr)) throw new MachineError("unavailable", `Docker could not remove a test services network: ${this.#reason(removed.stderr)}`);
+    }
+    if (machineId === `rovara-worker-${hash}`) {
+      const folder = join(services.runDirectoryParent ?? join(resolve(this.#options.stateDirectory), "test-services"), hash);
+      await rm(folder, { recursive: true, force: true }).catch(() => undefined);
+      await rm(bindDirectoryOf(folder), { recursive: true, force: true }).catch(() => undefined);
+    }
+  }
+
   async #removeStack(names: IsolationNames): Promise<void> {
     const removed = await this.#docker(["rm", "--force", "--volumes", names.worker, names.gateway, names.guard]);
     if (removed.exitCode !== 0 && !/no such (object|container)/i.test(removed.stderr)) throw new MachineError("unavailable", `Docker could not replace the worker: ${this.#reason(removed.stderr)}`);
@@ -340,6 +454,7 @@ export class DockerWorkerMachines implements WorkerMachines {
     await this.#docker(["stop", "--time", "5", names.guard, names.gateway], 30_000);
     // After the worker, so a sandbox it started meanwhile goes too.
     await this.#removeSandboxes(machineId).catch(() => undefined);
+    await this.#removeServices(machineId).catch(() => undefined);
   }
 
   async terminate(machineId: string): Promise<void> {
@@ -347,6 +462,7 @@ export class DockerWorkerMachines implements WorkerMachines {
     const names = isolationNames(machineId.slice("rovara-worker-".length));
     await this.#removeStack(names);
     await this.#removeSandboxes(machineId);
+    await this.#removeServices(machineId);
     for (const network of [names.workerNet, names.sandboxNet, names.externalNet]) {
       const removed = await this.#docker(["network", "rm", network]);
       // A network that is still in use means a container is still on it; keep the folder, as for a sandbox that stays.
@@ -424,8 +540,11 @@ export class DockerWorkerMachines implements WorkerMachines {
     if (response.status === 401) throw new MachineError("unauthorized", "the worker refused the job's credentials");
     if (response.status === 400 || response.status === 409 || response.status === 413) throw new MachineError("rejected", `the worker refused the job (HTTP ${response.status})`);
     if (!response.ok) throw new MachineError("unavailable", `the worker answered HTTP ${response.status}`);
-    const answer = (await response.json().catch(() => ({}))) as { duplicate?: unknown };
-    return { duplicate: answer.duplicate === true };
+    // The worker's answer is read at most `ANSWER_MAX_BYTES` (a peek's patch is bounded to 128 KiB by its own schema, a steer answer is a few words): a worker that sends more is not buffered whole.
+    const answer = await readBoundedJson(response, ANSWER_MAX_BYTES) as { duplicate?: unknown };
+    // A live steer and a peek are answered on this request: the broker reads the answer with the kind's own schema.
+    const answered = (ANSWERED_INVOCATION_KINDS as readonly string[]).includes(invocation.kind) && typeof answer === "object" && answer !== null && !Array.isArray(answer);
+    return { duplicate: answer.duplicate === true, ...(answered ? { answer: answer } : {}) };
   }
 
   /** Stops every running worker of this state folder (not another folder's) (what `rovara up` does on Ctrl-C). Volumes are kept. */

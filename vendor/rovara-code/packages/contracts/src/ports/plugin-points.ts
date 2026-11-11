@@ -9,6 +9,7 @@
 import { isBuiltin } from "node:module";
 import { z } from "zod";
 import { PluginKindSchema } from "../plugins/common.js";
+import { ExternalAccountRefSchema } from "../outside-account.js";
 import type { ChannelCapabilities, ChannelDecision, ChannelEvent, StepUpKind } from "../channel-adapter.js";
 import type { InboundMessage } from "../conversation.js";
 import type { CodeHost } from "../plugins/code-host.js";
@@ -17,15 +18,19 @@ import type { DocumentStore } from "./document-store.js";
 import type { JsonObject } from "./json.js";
 import type { ModelKeyStore } from "./model-keys.js";
 import { MODEL_PROVIDER_ID_PATTERN, MODEL_REQUEST_FORMATS, type ModelProviderAdapter } from "./model-provider.js";
+import type { ImageRegistry } from "./image-registry.js";
 import type { ObjectStorage } from "./object-storage.js";
 import type { OutboundEventsAdapter } from "./outbound-events.js";
 import type { SecretStore } from "./secrets.js";
+import type { MonitoringAdapter } from "./monitoring.js";
 import type { CheckRunnerAdapter } from "./plugin-adapters.js";
 import type { Admission, Approvers, IdentityProvider, Metering } from "./policy.js";
 import type { AuditSink } from "./audit-sink.js";
 import type { BuildSystem } from "./build-system.js";
 import type { CompanyInstructionsSource } from "./company-instructions.js";
+import type { LearningAdapter } from "./learning.js";
 import type { QueueService } from "./queue.js";
+import type { Scheduler } from "./scheduler.js";
 import type { WorkerMachines } from "./worker-machines.js";
 
 /** Every place an adapter can plug in. A new point is an interface change (both owners). */
@@ -57,6 +62,10 @@ export const PLUGIN_POINTS = [
   "model-provider",
   /** Owner decision 60 (R2): where an adapter's secrets are read (`read(ref)` returns a `SecretValue`). */
   "secrets",
+  /** Where a project's saved environment image lives (login for one repository, list, delete). Code: a registry container on the owner's Docker; Cloud: its cloud registry. */
+  "image-registry",
+  /** When something is due (the nightly test run). The scheduler only says when; the core decides what starts. Code: a local timer; Cloud: its cloud scheduler. */
+  "scheduler",
 ] as const;
 export const PluginPointSchema = z.enum(PLUGIN_POINTS);
 export type PluginPoint = z.infer<typeof PluginPointSchema>;
@@ -88,6 +97,8 @@ export const PLUGIN_POINT_CARDINALITY: Readonly<Record<PluginPoint, "one" | "man
   "outbound-events": "many",
   "model-provider": "many",
   secrets: "one",
+  "image-registry": "one",
+  scheduler: "one",
 };
 
 /**
@@ -119,6 +130,11 @@ export interface ChannelAdapter {
   readonly projects: readonly string[];
   /** Decision kinds that must be made on the task page, not through this adapter (`ChannelAdapterRecord.stepUp`). */
   readonly stepUp: readonly StepUpKind[];
+  /**
+   * Optional. The thread id this adapter reads as "no thread": a message to a space itself, at its top, not a reply in one. A notice to a person's own space (a direct message) has no thread to name, and a conversation
+   * reference always carries one; an adapter whose tool has threads names here the id that stands for none. Absent: the adapter has no such id, and a notice to it names a real thread.
+   */
+  readonly noThread?: string;
   /** Rovara to the channel. At least once: `event.id` is stable across retries, so an adapter drops a repeat. */
   deliver(event: ChannelEvent): Promise<void>;
   /** In-process adapters begin listening here. Webhook adapters need no listener: they post to the channel API. */
@@ -126,7 +142,7 @@ export interface ChannelAdapter {
 }
 
 /**
- * The thing an adapter of a point that has no port yet must be (monitoring, learning, team-record-source). The lane
+ * The thing an adapter of a point that has no port yet must be (team-record-source). The lane
  * that defines the point's port narrows its line in `PluginPointTypes` to the real interface. Until then only the name is known.
  */
 export interface UnspecifiedAdapter {
@@ -142,8 +158,8 @@ export interface PluginPointTypes {
   "worker-machines": WorkerMachines;
   storage: DocumentStore;
   queue: QueueService;
-  monitoring: UnspecifiedAdapter;
-  learning: UnspecifiedAdapter;
+  monitoring: MonitoringAdapter;
+  learning: LearningAdapter;
   "team-record-source": UnspecifiedAdapter;
   identity: IdentityProvider;
   "build-system": BuildSystem;
@@ -157,6 +173,8 @@ export interface PluginPointTypes {
   "outbound-events": OutboundEventsAdapter;
   "model-provider": ModelProviderAdapter;
   secrets: SecretStore;
+  "image-registry": ImageRegistry;
+  scheduler: Scheduler;
 }
 
 export type AdapterOf<P extends PluginPoint> = PluginPointTypes[P];
@@ -272,6 +290,12 @@ export const PluginConfigSchema = z.object({
    * Absent or false: such a token is refused for a worker, and a fine-grained token limited to the project's repositories is required. A cloud install ignores it.
    */
   allowBroadTokenForWorker: z.boolean().optional(),
+  /**
+   * Laptop only, owner-set: the outside accounts that are the owner's own, in the neutral shape (`provider`, `tenant`, `accountId`): a Linear user id (`{ "provider": "linear", "tenant": "", "accountId": "..." }`), a Jira account id
+   * (`tenant` is the site, `acme.atlassian.net`). A ticket asks for work as the owner only when its tracker says an account listed here made the act (a label put on it, an assignment); anyone else's act makes the ticket wait for the
+   * owner to say "Start". Absent: no tracker account is the owner's, and every ticket waits.
+   */
+  linkedAccounts: z.array(ExternalAccountRefSchema).max(50).optional(),
   /**
    * Port lane L13 (laptop only, owner-set): the model a task step calls, e.g. `{ "provider": "openrouter", "id": "anthropic/claude-sonnet-4.6" }`; the provider is any registered `model-provider` (item K2). Absent: the install's first provider with a key
    * (Anthropic, then OpenAI, then OpenRouter) and that provider's default model. Read only from the owner's own config; a project or a task cannot set it.

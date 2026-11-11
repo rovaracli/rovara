@@ -29,6 +29,8 @@ const WORDS: Record<GateRefusalReason, { reason: "stale" | "refused" | "not_foun
 /** What a gate answer says to a page or a comment. A repeat of a finished decision is a success (the same answer again). */
 export function localResultOf(result: GateResult, done?: string): LocalActionResult {
   if (result.status !== "refused") return { ok: true, ...(done === undefined ? {} : { message: done }) };
+  // A rule of the document's own (a design with an open blocker needs a reason) says so in its own words, which are fixed text.
+  if (result.reason === "invalid" && result.detail.startsWith("reason: ")) return { ok: false, reason: "invalid", message: result.detail.slice("reason: ".length) };
   return { ok: false, ...WORDS[result.reason] };
 }
 
@@ -44,6 +46,7 @@ interface SurfaceDecision {
   proof: ApprovalProof;
   outcome: DecisionAttempt["outcome"];
   note?: string | undefined;
+  answers?: ReadonlyArray<{ decisionId: string; optionId: string; opened: boolean }> | undefined;
   via?: "PAGE";
 }
 
@@ -59,14 +62,14 @@ export function createDecisionActions(options: DecisionActionsOptions) {
       companyId: options.companyId, kind: WORKFLOW_DOCUMENT_KIND, subjectId: input.taskId, requestId: input.approval.requestId, outcome: input.outcome,
       seen: { revision: input.approval.revision, artifactDigest: input.approval.artifactDigest },
       credentials: [{ method: input.proof.method, token: input.proof.token, ...(input.proof.claimedAccount === undefined ? {} : { claimedAccount: input.proof.claimedAccount }) }],
-      ...(reason === undefined || reason === "" ? {} : { reason }), details: input.via === undefined ? {} : { via: input.via },
+      ...(reason === undefined || reason === "" ? {} : { reason }), details: { ...(input.via === undefined ? {} : { via: input.via }), ...(input.answers === undefined || input.answers.length === 0 ? {} : { answers: input.answers }) },
     });
     return localResultOf(result, done);
   };
   return {
     /** The plan page's Approve and Request changes. */
-    decidePlan: (input: { taskId: string; decision: "approve" | "changes"; note?: string; approval: ApprovalOffer; proof: ApprovalProof }): Promise<LocalActionResult> =>
-      decide({ taskId: input.taskId, approval: input.approval, proof: input.proof, outcome: input.decision === "approve" ? "approve" : "request_changes", note: input.note, via: "PAGE" }, input.decision === "approve" ? "Approved. Rovara is going ahead." : "Sent back with your changes."),
+    decidePlan: (input: { taskId: string; decision: "approve" | "changes"; note?: string; answers?: ReadonlyArray<{ decisionId: string; optionId: string; opened: boolean }>; approval: ApprovalOffer; proof: ApprovalProof }): Promise<LocalActionResult> =>
+      decide({ taskId: input.taskId, approval: input.approval, proof: input.proof, outcome: input.decision === "approve" ? "approve" : "request_changes", note: input.note, answers: input.answers, via: "PAGE" }, input.decision === "approve" ? "Approved. Rovara is going ahead." : "Sent back with your changes."),
     /** The design page's Approve and Reject. A rejected design is sent back with the reason (a task is closed on its own page, not by a click on a design). */
     decideDesign: (input: { taskId: string; decision: "approve" | "reject"; note?: string; approval: ApprovalOffer; proof: ApprovalProof }): Promise<LocalActionResult> =>
       decide({ taskId: input.taskId, approval: input.approval, proof: input.proof, outcome: input.decision === "approve" ? "approve" : "request_changes", note: input.note, via: "PAGE" }, input.decision === "approve" ? "Approved." : "Sent back."),

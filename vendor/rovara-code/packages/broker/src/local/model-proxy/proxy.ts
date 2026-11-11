@@ -10,7 +10,7 @@
 //      real key from the `model-keys` port, calls the provider with it, passes the answer back, and records what the call used through the `metering` port.
 // The key is a `SecretValue` until the moment the provider's request header is built. It is not logged, not stored, not put in any answer, and an answer
 // that contains it is cut off. A provider's error text is never passed on as it came (OpenAI's 401 repeats part of the key); it is shortened and scrubbed.
-// Not here: Bedrock (it needs the computer's AWS sign-in; listed as a decision 51 gap) and design-review key slots.
+// Not here: Bedrock (it needs the computer's AWS sign-in).
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { TASK_BUDGET_EXCEEDED_PREFIX, providerFormat, type AdapterRegistry, type AgentXError, type Cost, type Metering, type ModelKeyStore, type ModelProviderAdapter } from "@agentx/contracts";
@@ -21,8 +21,8 @@ import {
   PROXY_PATH_API, RequestNotAllowed, checkRequestBody, checkRequestHeaders, upstreamTarget, type ProviderEndpoints,
 } from "./providers.js";
 import { SignInProblem, needsCredential, signCall } from "./sign-in.js";
-import { ModelTokenBook } from "./tokens.js";
-import type { ModelGrantSource, ModelProviderBook, ModelProxyEvent, ProxyApi, ProxyProvider, ProxyRoute } from "./types.js";
+import { ModelTokenBook, type RouteLedger } from "./tokens.js";
+import type { ModelGrant, ModelGrantSource, ModelProviderBook, ModelProxyEvent, ProxyApi, ProxyProvider, ProxyRoute } from "./types.js";
 import { UsageCollector, type TokenUsage } from "./usage.js";
 
 export const MODEL_ACCESS_PATH = "/v1/internal/model-access";
@@ -30,6 +30,12 @@ export const MODEL_PROXY_PREFIX = "/v1/internal/model-proxy";
 /** Stamped on every call by the worker's own egress gateway (and cleared of whatever the worker sent): the workspace the call really comes from. */
 export const WORKSPACE_HEADER = "x-rovara-workspace";
 export const CAPABILITY_HEADER = "x-agentx-callback-capability";
+/** A design-review slot's token lives past the whole stage (the stage limit is 40 minutes): 60 minutes. It is blocked when the round is recorded. */
+export const SLOT_TOKEN_SECONDS = 60 * 60;
+/** The cost of a call at an assumed price, rounded up: input and cache tokens at the input price. */
+export function assumedCost(price: NonNullable<ModelGrant["assumedPrice"]>, tokens: { input: number; output: number }): Cost {
+  return { micros: Math.ceil((tokens.input * price.inputMicrosPerMillionTokens + tokens.output * price.outputMicrosPerMillionTokens) / 1_000_000), currency: "USD" };
+}
 export const MODEL_PROXY_REQUEST_MAX_BYTES = 8 * 1_048_576;
 const WHOLE_ANSWER_MAX_BYTES = 32 * 1_048_576;
 const ERROR_BODY_MAX_BYTES = 65_536;
@@ -87,9 +93,14 @@ export interface LocalModelProxy {
   access(request: { path: string; headers: Readonly<Record<string, string | undefined>> }): Promise<BrokerResponse>;
   /** The task flow calls this when an operation settles (finished, failed, cancelled): its tokens and its spend record are freed at once and not at its next refused call. */
   operationEnded(operationId: string): void;
+  /** What the design review needs of its reviewers' keys: blocks them, and measures what they spent. */
+  readonly slotKeys: { closeKeys(keyIds: readonly string[]): void; spendUsd(keyIds: readonly string[]): number | undefined };
   /** `POST /v1/internal/model-proxy/...`: writes the whole answer, streamed. Never throws. */
   handle(request: IncomingMessage, response: ServerResponse): Promise<void>;
 }
+
+/** What a budgeted call to a model with no price is refused with (the model has no price in its provider's table or the catalog, so the budget cannot be held). */
+export const MODEL_NOT_PRICED_MESSAGE = "this model has no price on this computer, so the task budget cannot be held: add its price to its model provider, or choose a model that has one";
 
 class Refusal extends Error {
   constructor(readonly status: number, readonly code: string, message: string, readonly headers: Record<string, string> = {}) {
@@ -195,10 +206,10 @@ export function createLocalModelProxy(options: LocalModelProxyOptions): LocalMod
   };
 
   /** The most a call could cost, or null when its model has no price. Input is priced at the dearer of the plain and the cache-write rate. */
-  async function worstCaseCost(route: ProxyRoute, worst: TokenUsage): Promise<Cost | null> {
+  async function worstCaseCost(route: ProxyRoute, worst: TokenUsage, assumed?: ModelGrant["assumedPrice"]): Promise<Cost | null> {
     const plain = await options.metering.price({ provider: route.provider, modelId: route.model, tokens: worst });
     const written = await options.metering.price({ provider: route.provider, modelId: route.model, tokens: { input: 0, output: worst.output, cacheRead: 0, cacheWrite: worst.input } });
-    if (plain === null || written === null) return null;
+    if (plain === null || written === null) return assumed === undefined ? null : assumedCost(assumed, { input: worst.input + worst.cacheRead + worst.cacheWrite, output: worst.output });
     return { micros: Math.max(plain.micros, written.micros), currency: plain.currency };
   }
 
@@ -214,10 +225,10 @@ export function createLocalModelProxy(options: LocalModelProxyOptions): LocalMod
       tell({ event: "token_refused", code: "other_workspace" });
       return { statusCode: 403, headers: { ...JSON_HEADERS }, body: JSON.stringify({ error: { code: "CALLBACK_FORBIDDEN", message: "the call carries no workspace" } }) };
     }
-    if (url.searchParams.has("slot")) return notAllowed("design-review model slots are not served on this computer yet");
+    const slot = url.searchParams.get("slot") ?? undefined;
     let grant;
     try {
-      grant = await options.grants.grant(capability);
+      grant = await options.grants.grant(capability, slot);
     } catch (error) {
       const code = (error as Partial<AgentXError>).code === "STALE_FENCE" ? "STALE_FENCE" : "CALLBACK_FORBIDDEN";
       tell({ event: "token_refused", code });
@@ -247,15 +258,24 @@ export function createLocalModelProxy(options: LocalModelProxyOptions): LocalMod
       const fix = keyed && options.keySource !== undefined ? `put it in a place ${options.keySource} reads` : credentialFix(first);
       return notAllowed(`no ${providers.join(" or ")} ${keyed ? "key" : "sign-in"} is set on this computer; ${fix} and restart rovara up`);
     }
+    // A slot's token has a spend record of its own, made when it is minted, and its ceiling is held per call (the proxy reserves the worst case of a call against it); only an operation's own budget is checked here.
     const ledger = tokens.ledger(grant.operationId);
-    if (grant.budget !== undefined) {
+    if (grant.budget !== undefined && grant.slot === undefined) {
       if (ledger.currency !== undefined && ledger.currency !== grant.budget.currency) return notAllowed("this task's budget is in another currency than its spend");
-      if (ledger.spentMicros + ledger.reservedMicros >= grant.budget.micros) return budgetAccessRefusal();
+      if (ledger.spentMicros + ledger.unrecordedMicros + ledger.reservedMicros >= grant.budget.micros) return budgetAccessRefusal();
     }
-    let minted;
+    let minted: ReturnType<ModelTokenBook["mint"]> | undefined;
     try {
-      minted = tokens.mint(grant);
-    } catch {
+      minted = tokens.mint(grant, grant.slot === undefined ? {} : { ttlSeconds: SLOT_TOKEN_SECONDS });
+      // A design-review slot's token is recorded (its id, never the token): a second ask for the slot is refused by the grant source, and the round is verified against the ids it recorded.
+      if (grant.slot !== undefined) await options.grants.slotMinted?.(grant, { keyId: minted.keyId, expiresAt: minted.expiresAt });
+    } catch (error) {
+      if (grant.slot !== undefined && (error as Partial<AgentXError>).code === "FORBIDDEN") {
+        if (minted !== undefined) tokens.closeKeys([minted.keyId]);
+        tell({ event: "token_refused", code: "slot_asked_again" });
+        return { statusCode: 403, headers: { ...JSON_HEADERS }, body: JSON.stringify({ error: { code: "FORBIDDEN", message: "a design review asks for a model key by one of its own slots" } }) };
+      }
+      if (minted !== undefined) tokens.closeKeys([minted.keyId]);
       return { statusCode: 503, headers: { ...JSON_HEADERS }, body: JSON.stringify({ error: { code: "MODEL_PROXY_UNAVAILABLE", message: "the model proxy has too many live tokens" } }) };
     }
     tell({ event: "token_minted", operationId: grant.operationId });
@@ -268,7 +288,7 @@ export function createLocalModelProxy(options: LocalModelProxyOptions): LocalMod
       return;
     }
     response.writeHead(refusal.status, { ...JSON_HEADERS, connection: "close", ...refusal.headers });
-    response.end(refusalBody(refusal.code, refusal.message, refusal.code === "budget_exceeded" ? "budget_exceeded" : undefined));
+    response.end(refusalBody(refusal.code, refusal.message, refusal.code === "budget_exceeded" || refusal.code === "model_not_priced" ? refusal.code : undefined));
   }
 
   async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -307,13 +327,17 @@ export function createLocalModelProxy(options: LocalModelProxyOptions): LocalMod
     if (headers[WORKSPACE_HEADER] !== token.workspaceId) throw new Refusal(403, "other_workspace", "this token belongs to another workspace");
 
     // ---- the concurrency cap: checked and taken in one synchronous step, before the first await, so a burst cannot all pass the check
-    const ledger = tokens.ledger(token.operationId);
+    const ledger = tokens.ledger(token.ledgerId);
     if (ledger.inFlight >= maxConcurrent) throw new Refusal(429, "too_many_requests", "this task has too many model calls running", { "retry-after": "2" });
     ledger.inFlight += 1;
     let reserved = 0;
+    let routeReserved = 0;
+    let routeSlot: RouteLedger | undefined;
     const release = (): void => {
       ledger.reservedMicros -= reserved;
       reserved = 0;
+      if (routeSlot !== undefined) routeSlot.reservedMicros -= routeReserved;
+      routeReserved = 0;
     };
     const controller = new AbortController();
     let provider: ProxyProvider | undefined;
@@ -335,8 +359,17 @@ export function createLocalModelProxy(options: LocalModelProxyOptions): LocalMod
       if (settled || route === undefined || !requestSent || !(upstreamOk || controller.signal.aborted)) return;
       settled = true;
       const seen = complete ? collector.finish() : undefined;
+      // A capped route counts what the call used (or the most it could have) against its own cap, whatever the Metering port can price.
+      if (route.cap !== undefined && routeSlot !== undefined) {
+        const used = seen ?? worst, rates = route.cap.usdPerMTok;
+        routeSlot.spentMicros += Math.ceil(used.input * rates.input + used.output * rates.output + used.cacheRead * rates.cacheRead + used.cacheWrite * rates.cacheWrite);
+      }
       if (seen === undefined) tell({ event: "unmetered", code: "charged_maximum", operationId: token.operationId, provider: route.provider });
-      await record(token, route, seen ?? worst, ledger).catch(() => tell({ event: "unmetered", code: "meter_failed", operationId: token.operationId, provider: route.provider }));
+      await record(token, route, seen ?? worst, ledger, token.assumedPrice).catch(async () => {
+        tell({ event: "unmetered", code: "meter_failed", operationId: token.operationId, provider: route.provider });
+        failClosed(token, ledger);
+        await chargeUnrecorded(token, route, seen ?? worst, ledger);
+      });
     };
     let route: ProxyRoute | undefined;
     try {
@@ -374,15 +407,29 @@ export function createLocalModelProxy(options: LocalModelProxyOptions): LocalMod
 
       // ---- the budget: the most this call could cost is held against it until the call settles to what it used
       worst = worstCaseUsage(body, raw.byteLength);
+      // A capped route (the second reviewer's model) has its own limit in this operation, priced from the route's own rates: the worst case of this call is held against it until the call settles, and a call that
+      // could not fit under the cap is refused as a spent budget. Nothing awaits between this check and the hold.
+      if (route.cap !== undefined) {
+        routeSlot = tokens.routeLedger(token.operationId, route.alias);
+        const capMicros = Math.round(route.cap.capUsd * 1_000_000);
+        const rates = route.cap.usdPerMTok;
+        const maximum = Math.ceil(worst.input * Math.max(rates.input, rates.cacheWrite) + worst.output * rates.output);
+        if (routeSlot.spentMicros + routeSlot.reservedMicros + maximum > capMicros) throw budgetRefusal();
+        routeReserved = maximum;
+        routeSlot.reservedMicros += routeReserved;
+      }
       if (token.budget !== undefined) {
         if (ledger.currency !== undefined && ledger.currency !== token.budget.currency) throw new Refusal(403, "model_not_allowed", "this task's budget is in another currency than its spend");
-        const maximum = await worstCaseCost(route, worst);
-        if (maximum === null) throw new Refusal(403, "model_not_allowed", "this model has no price on this computer, so the task budget cannot be held");
-        if (maximum.currency !== token.budget.currency) throw new Refusal(403, "model_not_allowed", "this model is priced in another currency than the task's budget");
+        const maximum = await worstCaseCost(route, worst, token.assumedPrice);
+        // An unpriced model is refused where a cap applies, and refused as "not priced" (its own error type): the worker reads it as a model this install cannot use, and the broker learns it
+        // the way it learns a model an account refused, so the next choice leaves it out instead of trying it again (the same words as the hosted proxy's guard: `model_not_priced`).
+        if (maximum === null) throw new Refusal(403, "model_not_priced", MODEL_NOT_PRICED_MESSAGE);
+        // A price in another currency than the budget is no price to it: refused as not priced too, so the broker learns the model and leaves it out.
+        if (maximum.currency !== token.budget.currency) throw new Refusal(403, "model_not_priced", "this model is priced in another currency than the task's budget, so the budget cannot be held");
         // Nothing awaits between this check and the reservation below. A budget that is spent, or cannot pay for this call even with nothing else running, ends the task (422).
         // A call that would fit alone but not beside the calls running now is told to wait (429): their reservations come back when they settle.
-        if (ledger.spentMicros + maximum.micros > token.budget.micros) throw budgetRefusal();
-        if (ledger.spentMicros + ledger.reservedMicros + maximum.micros > token.budget.micros) throw new Refusal(429, "budget_held", "other model calls of this task hold the budget for now; try again shortly", { "retry-after": "2" });
+        if (ledger.spentMicros + ledger.unrecordedMicros + maximum.micros > token.budget.micros) throw budgetRefusal();
+        if (ledger.spentMicros + ledger.unrecordedMicros + ledger.reservedMicros + maximum.micros > token.budget.micros) throw new Refusal(429, "budget_held", "other model calls of this task hold the budget for now; try again shortly", { "retry-after": "2" });
         reserved = maximum.micros;
         ledger.reservedMicros += reserved;
       }
@@ -437,6 +484,7 @@ export function createLocalModelProxy(options: LocalModelProxyOptions): LocalMod
       try {
         // redirect "manual": a redirect is never followed (the next address would get the key); it is an error.
         requestSent = true;
+        tokens.noteCall(token.operationId, route.alias);
         upstream = await transport(target.url, { method: "POST", headers: upstreamHeaders, body: forwardedText, redirect: "manual", signal: controller.signal });
       } catch {
         throw new Refusal(controller.signal.aborted ? 504 : 502, "provider_unreachable", `the ${route.provider} provider could not be reached`);
@@ -487,8 +535,27 @@ export function createLocalModelProxy(options: LocalModelProxyOptions): LocalMod
     }
   }
 
+  /**
+   * A call the Metering port could not record still counts against the operation's own budget, priced without recording it (it is not in the cost ledger the next step's budget is taken from; this keeps the operation itself bounded, and is kept apart from the
+   * spend that is in the ledger so a token made again does not take it off the ledger's total). An unpriceable call is charged nothing here: it was refused before it was sent when the budget could not price it.
+   */
+  async function chargeUnrecorded(token: { budget: Cost | undefined; slot?: string | undefined }, route: ProxyRoute, usage: TokenUsage, ledger: { currency: string | undefined; unrecordedMicros: number }): Promise<void> {
+    if (token.slot !== undefined || token.budget === undefined) return;
+    const cost = await options.metering.price({ provider: route.provider, modelId: route.model, tokens: { input: usage.input, output: usage.output, cacheRead: usage.cacheRead, cacheWrite: usage.cacheWrite } }).catch(() => null);
+    if (cost === null || cost.currency !== token.budget.currency) return;
+    ledger.currency = cost.currency;
+    ledger.unrecordedMicros += cost.micros;
+  }
+
+  /** A design-review slot whose call could not be counted is charged its whole ceiling: its later calls are refused, and the broker reads the full ceiling as what it spent. Never under-counted. */
+  function failClosed(token: { slot?: string | undefined; budget: Cost | undefined }, ledger: { spentMicros: number; currency: string | undefined }): void {
+    if (token.slot === undefined || token.budget === undefined) return;
+    ledger.currency = token.budget.currency;
+    ledger.spentMicros = Math.max(ledger.spentMicros, token.budget.micros);
+  }
+
   /** Records what the call used and adds its cost to the operation's spend. Recording the same entry twice counts once (the port's rule). */
-  async function record(token: { operationId: string; taskId: string | undefined; projectName: string | undefined; budget: Cost | undefined }, route: ProxyRoute, usage: TokenUsage, ledger: { currency: string | undefined; spentMicros: number; unpriced: number }): Promise<void> {
+  async function record(token: { operationId: string; taskId: string | undefined; projectName: string | undefined; budget: Cost | undefined; slot?: string | undefined }, route: ProxyRoute, usage: TokenUsage, ledger: { currency: string | undefined; spentMicros: number; unpriced: number }, assumed?: ModelGrant["assumedPrice"]): Promise<void> {
     const result = await options.metering.record({
       companyId: options.companyId,
       entryId: `${token.operationId}:${randomUUID()}`,
@@ -497,8 +564,15 @@ export function createLocalModelProxy(options: LocalModelProxyOptions): LocalMod
       ...(token.taskId === undefined ? {} : { taskId: token.taskId }),
       ...(token.projectName === undefined ? {} : { projectName: token.projectName }),
     });
+    if (result.cost === null && assumed !== undefined) {
+      // An unpriced slot the owner accepted: the slot's own record counts the call at the assumed price (an upper bound); the cost ledger above recorded it as unknown.
+      ledger.currency = "USD";
+      ledger.spentMicros += assumedCost(assumed, { input: usage.input + usage.cacheRead + usage.cacheWrite, output: usage.output }).micros;
+      return;
+    }
     if (result.cost === null || (ledger.currency !== undefined && ledger.currency !== result.cost.currency)) {
       ledger.unpriced += 1;
+      failClosed(token, ledger);
       return;
     }
     ledger.currency = result.cost.currency;
@@ -522,7 +596,14 @@ export function createLocalModelProxy(options: LocalModelProxyOptions): LocalMod
     return new Refusal(outgoing, "provider_error", cleaned === "" ? `the provider answered HTTP ${String(status)}` : `the provider answered HTTP ${String(status)}: ${cleaned}`, headers);
   }
 
-  return { tokens, access, handle, operationEnded: (operationId) => tokens.forgetOperation(operationId) };
+  const slotKeys = {
+    closeKeys: (keyIds: readonly string[]): void => tokens.closeKeys(keyIds),
+    spendUsd: (keyIds: readonly string[]): number | undefined => {
+      const spent = tokens.keySpend(keyIds);
+      return spent === undefined || (spent.currency !== undefined && spent.currency !== "USD") ? undefined : spent.micros / 1_000_000;
+    },
+  };
+  return { tokens, access, handle, operationEnded: (operationId) => tokens.forgetOperation(operationId), slotKeys };
 }
 
 async function readBounded(upstream: Response, limit: number, keyBytes: readonly Buffer[] = []): Promise<string> {

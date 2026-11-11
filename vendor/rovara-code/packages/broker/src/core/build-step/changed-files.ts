@@ -11,6 +11,7 @@ import { codeHostForRecord } from "../../plugins/routing.js";
 import { CHANGED_PATH_PAGES, changeRequestRef } from "../merge/host-port.js";
 import { parseChangedFiles } from "../proof/changed-files.js";
 import { recomputeRisk, type ChangedFilesRead, type LessonsUsedSection } from "../proof/pull-request-body.js";
+import { linearIssueKeyOfBindings } from "../proof/linear-close.js";
 import { workflowPullRequestBody } from "../proof/workflow-pull-request-body.js";
 import type { TaskFlowDeps } from "../task-flow/deps.js";
 import { workspaceOperations } from "../task-flow/reads.js";
@@ -32,6 +33,15 @@ export const verifiedFilesKey = (workspaceId: string, candidateDigest: string) =
 
 /** The "Lessons used" section of a description on an install with no lessons: it says so, so the section is there and a reader knows why it is empty. */
 export const NO_LESSONS_USED: LessonsUsedSection = { count: 0, taskUrl: "", entries: [], none: true };
+
+/**
+ * The "Lessons used" section of the description of the task's pull request in one repository. An install with no lessons says so (`NO_LESSONS_USED`); one with lessons asks them (`TaskFlowDeps.lessonsUsed`), which
+ * counts what the task was given and names it only where the repository's readers may read it. A failure is no section: a description never waits on, or fails because of, lessons.
+ */
+export async function lessonsUsedOf(deps: Pick<TaskFlowDeps, "lessonsUsed">, task: { taskId: string; project: string; startingRevision: number }, repositoryId: string): Promise<LessonsUsedSection | undefined> {
+  if (deps.lessonsUsed === undefined) return NO_LESSONS_USED;
+  try { return await deps.lessonsUsed(task, repositoryId); } catch { return undefined; }
+}
 
 /** The workflow with its risk judged for the code, from the files the CODE HOST gave; with none (`undefined`) the risk is high and says why. */
 export function riskFromFiles(workflow: WorkflowSnapshot, verified: ChangedFilesRead | undefined): WorkflowSnapshot {
@@ -139,9 +149,14 @@ export async function verifyPublishedChanges(deps: TaskFlowDeps, task: TaskRecor
   await deps.store.put({ item: { ...verifiedFilesKey(task.workspaceId, candidate.digest), entityType: "VERIFIED_FILES", candidateDigest: candidate.digest, complete, verifiedAt: iso(deps), files: JSON.parse(JSON.stringify(all.slice(0, 200))) as never } });
   // The description says what changed, read from the host. A description a person edited is left as they left it.
   const plan = await approvedCodingPlan(deps.artifacts, workflow).catch(() => undefined);
-  const body = workflowPullRequestBody(task, judged.risk === undefined ? workflow : { ...workflow, risk: judged.risk }, plan?.text, undefined, { changedFiles: read, lessonsUsed: NO_LESSONS_USED });
+  const proof = await deps.designReview?.proofContext?.(deps, task, workflow).catch(() => undefined);
+  const secondLines = deps.secondReview?.prLines(task, candidate.digest, workflow.acceptedFindings) ?? [];
+  const linearIssueKey = await ticketIssueKeyOf(deps, task);
   for (const entry of hosts) {
     try {
+      // Each repository's description names the lessons that repository's readers may read.
+      const lessonsUsed = await lessonsUsedOf(deps, task, entry.repositoryId);
+      const body = workflowPullRequestBody(task, judged.risk === undefined ? workflow : { ...workflow, risk: judged.risk }, plan?.text, undefined, { changedFiles: read, ...(linearIssueKey === undefined ? {} : { linearIssueKey }), ...(lessonsUsed === undefined ? {} : { lessonsUsed }), ...(secondLines.length === 0 ? {} : { secondReviewLines: secondLines }), ...(proof === undefined ? {} : { proof }) });
       const record = await pullRequestRecordOf(deps, task.workspaceId, entry.repositoryId, entry.number);
       const ref = changeRequestRef(entry.url, entry.number);
       beforeRequest?.();
@@ -164,4 +179,17 @@ export async function verifiedChangedFiles(deps: Pick<TaskFlowDeps, "store">, wo
   const row = await deps.store.get(verifiedFilesKey(workspaceId, candidateDigest));
   if (row === undefined || !Array.isArray(row["files"])) return undefined;
   return { files: row["files"] as unknown as ChangedFilesRead["files"][number][], complete: row["complete"] === true };
+}
+
+/**
+ * The Linear issue the task's session follows (the ticket intake started it from): the pull request's description then says `Fixes <KEY>`, which Linear's own GitHub integration closes the issue on when it merges.
+ * A read that fails leaves the line out (the next rewrite of the description adds it). 51 gap: the closing line is Linear's; a second tracker would need its own behind the Tracker port.
+ */
+export async function ticketIssueKeyOf(deps: Pick<TaskFlowDeps, "sessionBindings" | "companyId">, task: Pick<TaskRecord, "sessionId">): Promise<string | undefined> {
+  if (deps.sessionBindings === undefined || task.sessionId === undefined) return undefined;
+  try {
+    return linearIssueKeyOfBindings(await deps.sessionBindings.read(deps.companyId, task.sessionId));
+  } catch {
+    return undefined;
+  }
 }

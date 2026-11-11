@@ -3,8 +3,8 @@
 // the candidate, so a recovered or repeated row is the first one's duplicate.
 import { createHash } from "node:crypto";
 import {
-  EVIDENCE_CAPTURE_FEATURE, abandonWorkflowFix, sendBackProblems, workflowIsReviewOnly, workflowRequestId, workflowReviewRoles, workflowSelectedChecks, workflowVerificationPosition,
-  type JsonValue, type ProjectDefinition, type WorkflowReviewChecks, type WorkflowSnapshot,
+  AgentXError, EVIDENCE_CAPTURE_FEATURE, abandonWorkflowFix, blockWorkflow, sendBackProblems, workflowIsReviewOnly, workflowRequestId, workflowReviewRoles, workflowSelectedChecks, workflowVerificationPosition,
+  type JsonValue, type ProjectCommand, type ProjectDefinition, type WorkflowDependencyInvocation, type WorkflowReviewChecks, type WorkflowSnapshot,
 } from "@agentx/contracts";
 import { readCiEvidence, ciFixPrompt, ciFixPromptWithoutOutput } from "../ci-fix/ci-fix.js";
 import { conflictFixPrompt } from "../branch-sync/branch-sync.js";
@@ -12,9 +12,11 @@ import { withTestRule } from "../proof/verification-report.js";
 import type { TaskFlowDeps } from "../task-flow/deps.js";
 import { resolveRowItem } from "../task-flow/dispatch-rows.js";
 import { readTask } from "../task-flow/reads.js";
+import type { StepTestPlan } from "../test-env/seam.js";
 import { toDocument, type TaskRecord, type WorkspaceRecord } from "../task-flow/records.js";
-import { acceptStep, commitWorkflow, readWorkspace, type StepStart } from "../task-flow/stage-machine.js";
-import { iso, log } from "../task-flow/support.js";
+import { acceptStep, acceptStepWithNotes, commitWorkflow, readWorkspace, type StepStart } from "../task-flow/stage-machine.js";
+import { iso, log, newId } from "../task-flow/support.js";
+import { firstGraphInvocation, restartedGraphInvocation, resumeGraphInvocation, workflowWithCurrentGraphOperation } from "../work-breakdown/invocation.js";
 import { codeHostForRecord } from "../../plugins/routing.js";
 import { approvedCodingPlan, reviewPlanOf } from "./plan-input.js";
 import {
@@ -128,16 +130,50 @@ export async function startImplementation(deps: TaskFlowDeps, row: RowRef): Prom
   }
   const startFrom = fixStartHead(workflow);
   const readiness = selectedCheckCommands(workflow).readiness;
+  // Ordered work (spec 059): a plan the owner approved with a work breakdown is coded as that breakdown, never as plain coding. A fix round (CI, a conflict, feedback) carries none (the worker protocol forbids it): it
+  // works on the code the ordered run left.
+  let graph: { invocation: WorkflowDependencyInvocation; note?: string } | undefined;
+  if (workflow.workflowDependenciesApproval !== undefined && workflow.fixSource === undefined) {
+    try {
+      if (workflow.workflowDependenciesOperationId === undefined) graph = await firstGraphInvocation(deps, task);
+      else {
+        // A run that goes on from an earlier one: a retry resumes from the checkpoints the history acknowledged; a send-back runs the whole plan again over the code the workspace holds.
+        const resumed = await resumeGraphInvocation(deps, task);
+        if (resumed !== undefined) graph = { invocation: found2.length > 0 ? restartedGraphInvocation(resumed, workflow) : resumed };
+      }
+    } catch (error) {
+      if (!(error instanceof AgentXError)) throw error;
+      // A refusal is the plan's, not a hiccup of the machine: it blocks the task with its sentence instead of being tried until the row is given up on.
+      log(deps, { event: "build_step.work_breakdown_refused", taskId: task.taskId, code: error.code });
+      await commitWorkflow(deps, task, blockWorkflow(workflow, error.message.replace(`${error.code}: `, "").slice(0, 500), receivedAt));
+      return settled(deps, row, "STALE");
+    }
+  }
+  // The approved test environment this task pinned: its dependencies are started for the coding run (the working sandbox gets them while the agent codes). A plan that cannot be built blocks the task with its sentence.
+  const testPlan = await testPlanFor(deps, task, "IMPLEMENT", undefined);
+  if (typeof testPlan === "string") {
+    await commitWorkflow(deps, task, blockWorkflow(workflow, testPlan, receivedAt));
+    return settled(deps, row, "STALE");
+  }
+  const operationId = graph === undefined ? undefined : newId(deps);
   const payload = jsonOf({
     ...(readiness === undefined ? {} : { readiness }),
+    ...(testPlan === undefined ? {} : { testEnvironment: testPlan.plan }),
     ...baseOf(task, workflow),
     ...(workflow.fixSource === undefined ? {} : { workflowFix: { source: workflow.fixSource, ...(startFrom === undefined ? {} : { startFrom }) } }),
+    ...(graph === undefined ? {} : { workflowDependencies: graph.invocation }),
   });
-  const accepted = await acceptStep(deps, {
-    task, workspace, requestId, prompt: withTestRule(prompt, next), workflowMode: "IMPLEMENT", workflow: { current: workflow, next },
+  const accepted = await acceptStepWithNotes(deps, {
+    task, workspace, requestId, prompt: withTestRule(prompt, next), workflowMode: "IMPLEMENT",
+    workflow: { current: workflow, next: operationId === undefined ? next : workflowWithCurrentGraphOperation(next, operationId, graph?.invocation) },
     extra: [resolveRowItem(deps, task.taskId, row.workflowRevision)], payload,
-    requires: ["task.workflowMode", ...(readiness === undefined ? [] : ["task.readiness"]), ...(payload["workflowBase"] === undefined ? [] : ["task.workflowBase"]), ...(workflow.fixSource === undefined ? [] : ["task.workflowFix"])],
+    requires: [
+      "task.workflowMode", ...(readiness === undefined ? [] : ["task.readiness"]), ...(payload["workflowBase"] === undefined ? [] : ["task.workflowBase"]), ...(workflow.fixSource === undefined ? [] : ["task.workflowFix"]),
+      ...(graph === undefined ? [] : ["task.workflowDependencies"]),
+      ...(testPlan === undefined ? [] : testPlan.requires),
+    ],
     extraActions: ["candidate-export", "candidate-build-source", "baseline-source"],
+    ...(graph === undefined || operationId === undefined ? {} : { workflowDependencies: graph.invocation, operationId, ...(graph.note === undefined ? {} : { firstEvent: graph.note }) }),
   });
   return settled(deps, row, accepted.result);
 }
@@ -175,13 +211,30 @@ export async function startChecksRerun(deps: TaskFlowDeps, row: RowRef, retry: {
   const readiness = selected.map((check) => check.command);
   // Lane L12: a rerun of the checks also saves the raw parts of its evidence (test reports, coverage) for the pack, when this install keeps evidence.
   const capture = deps.keepEvidence !== undefined;
-  const payload = jsonOf({ ...(readiness.length === 0 ? {} : { readiness }), ...(capture ? { evidenceCapture: true } : {}), ...baseOf(task, workflow) });
+  // The task's pinned environment: a verification run whose first commands are the environment's checks is told its selection, budget and dependencies.
+  const testPlan = await testPlanFor(deps, task, "CHECKS", readiness);
+  if (typeof testPlan === "string") {
+    await commitWorkflow(deps, task, blockWorkflow(workflow, testPlan, receivedAt));
+    return settled(deps, row, "STALE");
+  }
+  const payload = jsonOf({ ...(readiness.length === 0 ? {} : { readiness }), ...(testPlan === undefined ? {} : { testEnvironment: testPlan.plan }), ...(capture ? { evidenceCapture: true } : {}), ...baseOf(task, workflow) });
   const accepted = await acceptStep(deps, {
     task, workspace, requestId: workflowRequestId("agentx-checks", task.taskId, workflow.revision), prompt: "Run the task's selected checks again on the current code. Do not edit files.", workflowMode: "CHECKS",
     workflow: { current: workflow, next }, extra: [resolveRowItem(deps, task.taskId, row.workflowRevision)], payload,
-    requires: ["task.workflowMode", ...(readiness.length === 0 ? [] : ["task.readiness"]), ...(payload["workflowBase"] === undefined ? [] : ["task.workflowBase"]), ...(capture ? [EVIDENCE_CAPTURE_FEATURE] : [])],
+    requires: ["task.workflowMode", ...(readiness.length === 0 ? [] : ["task.readiness"]), ...(payload["workflowBase"] === undefined ? [] : ["task.workflowBase"]), ...(capture ? [EVIDENCE_CAPTURE_FEATURE] : []), ...(testPlan === undefined ? [] : testPlan.requires)],
   });
   return settled(deps, row, accepted.result);
+}
+
+/** The test plan of a step, or the sentence that refuses it (a dependency that cannot be pinned, a dev container): never a plan with the dependencies left out, which would only fail the tests in a confusing way. */
+async function testPlanFor(deps: TaskFlowDeps, task: TaskRecord, mode: "IMPLEMENT" | "CHECKS", readiness: readonly ProjectCommand[] | undefined): Promise<StepTestPlan | string | undefined> {
+  if (deps.testEnvironment === undefined) return undefined;
+  try {
+    return await deps.testEnvironment.stepPlan({ project: task.project, taskId: task.taskId, mode, ...(readiness === undefined ? {} : { readiness }) });
+  } catch (error) {
+    if (error instanceof AgentXError) return error.message.replace(`${error.code}: `, "").slice(0, 500);
+    throw error;
+  }
 }
 
 // ---- reviews
@@ -228,6 +281,8 @@ export async function startReview(deps: TaskFlowDeps, row: RowRef, options: { re
   };
   const plan = await reviewPlanOf(deps.artifacts, workflow);
   const checks = reviewChecksOf(workflow);
+  // Second review: does this review carry a second reviewer? It runs INSIDE this operation, so there is no second step, hold or row; with the feature off, or the mode `off`, this is nothing.
+  const second = deps.secondReview === undefined ? {} : await deps.secondReview.prepare({ task, reviewers: roles });
   const note = verification.reviewOnly === true ? AUTOMATIC_REVIEW_ONLY_NOTE : AUTOMATIC_REVIEW_NOTE;
   const payload = jsonOf({
     workflowReviewNote: note, ...baseOf(task, workflow),
@@ -235,11 +290,18 @@ export async function startReview(deps: TaskFlowDeps, row: RowRef, options: { re
     ...(plan === undefined ? {} : { workflowReviewPlan: plan }),
     ...(workflow.definitionVersion === "1.1.0" ? { workflowReviewRisk: true } : {}),
     ...(roles.length === 2 ? {} : { workflowReviewers: roles }),
+    ...(second.field === undefined ? {} : { workflowSecondReviewer: jsonOf(second.field) }),
   });
   const accepted = await acceptStep(deps, {
     task, workspace, requestId: workflowRequestId("agentx-auto-review", task.taskId, workflow.revision, candidate.digest), prompt: reviewPrompt({ candidateDigest: candidate.digest, roles }), workflowMode: "REVIEW",
-    workflow: { current: workflow, next }, extra: [resolveRowItem(deps, task.taskId, row.workflowRevision)], payload,
+    workflow: { current: workflow, next }, extra: [resolveRowItem(deps, task.taskId, row.workflowRevision)], payload, ...(second.record === undefined ? {} : { secondReviewPlan: second.record }),
     requires: ["task.workflowMode", "task.workflowReview", ...(checks === undefined ? [] : ["task.workflowReviewChecks"]), ...(plan === undefined ? [] : ["task.workflowReviewPlan"]), ...(payload["workflowReviewRisk"] === undefined ? [] : ["task.workflowReviewRisk"]), ...(roles.length === 2 ? [] : ["task.workflowReviewers"])],
+  }).catch(async (error: unknown) => {
+    // A start that threw carries no operation: the allowance held for its second review goes back before the error goes on.
+    await deps.secondReview?.releaseHold(second.record?.reservationId);
+    throw error;
   });
+  // The step did not start (the task moved on, the workspace was busy, or it repeats one that started): the allowance held for this start goes back now; a started step's own hold is released when it ends.
+  if (accepted.result !== "STARTED") await deps.secondReview?.releaseHold(second.record?.reservationId);
   return settled(deps, row, accepted.result);
 }

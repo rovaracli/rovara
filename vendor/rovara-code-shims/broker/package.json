@@ -21,13 +21,49 @@
       "types": "./local.d.ts",
       "default": "./local.js"
     },
+    "./plugins/channel-slack": {
+      "types": "./plugins/channel-slack.d.ts",
+      "default": "./plugins/channel-slack.js"
+    },
+    "./core/agents": {
+      "types": "./core/agents.d.ts",
+      "default": "./core/agents.js"
+    },
+    "./core/automatic-runs": {
+      "types": "./core/automatic-runs.d.ts",
+      "default": "./core/automatic-runs.js"
+    },
+    "./core/automation": {
+      "types": "./core/automation.d.ts",
+      "default": "./core/automation.js"
+    },
     "./core/build-step": {
       "types": "./core/build-step.d.ts",
       "default": "./core/build-step.js"
     },
+    "./core/chains": {
+      "types": "./core/chains.d.ts",
+      "default": "./core/chains.js"
+    },
+    "./core/channel": {
+      "types": "./core/channel.d.ts",
+      "default": "./core/channel.js"
+    },
     "./core/cost": {
       "types": "./core/cost.d.ts",
       "default": "./core/cost.js"
+    },
+    "./core/diagnosis": {
+      "types": "./core/diagnosis.d.ts",
+      "default": "./core/diagnosis.js"
+    },
+    "./core/instructions": {
+      "types": "./core/instructions.d.ts",
+      "default": "./core/instructions.js"
+    },
+    "./core/intake": {
+      "types": "./core/intake.d.ts",
+      "default": "./core/intake.js"
     },
     "./core/local-pages": {
       "types": "./core/local-pages.d.ts",
@@ -37,21 +73,57 @@
       "types": "./core/merge.d.ts",
       "default": "./core/merge.js"
     },
+    "./core/meta-repo": {
+      "types": "./core/meta-repo.d.ts",
+      "default": "./core/meta-repo.js"
+    },
+    "./core/milestones": {
+      "types": "./core/milestones.d.ts",
+      "default": "./core/milestones.js"
+    },
     "./core/notify": {
       "types": "./core/notify.d.ts",
       "default": "./core/notify.js"
+    },
+    "./core/playbook": {
+      "types": "./core/playbook.d.ts",
+      "default": "./core/playbook.js"
     },
     "./core/pr-commands": {
       "types": "./core/pr-commands.d.ts",
       "default": "./core/pr-commands.js"
     },
+    "./core/script-tokens": {
+      "types": "./core/script-tokens.d.ts",
+      "default": "./core/script-tokens.js"
+    },
+    "./core/second-review": {
+      "types": "./core/second-review.d.ts",
+      "default": "./core/second-review.js"
+    },
     "./core/sessions": {
       "types": "./core/sessions.d.ts",
       "default": "./core/sessions.js"
     },
+    "./core/spec": {
+      "types": "./core/spec.d.ts",
+      "default": "./core/spec.js"
+    },
     "./core/task-flow": {
       "types": "./core/task-flow.d.ts",
       "default": "./core/task-flow.js"
+    },
+    "./core/ticket-updates": {
+      "types": "./core/ticket-updates.d.ts",
+      "default": "./core/ticket-updates.js"
+    },
+    "./core/triggers": {
+      "types": "./core/triggers.d.ts",
+      "default": "./core/triggers.js"
+    },
+    "./core/work-breakdown": {
+      "types": "./core/work-breakdown.d.ts",
+      "default": "./core/work-breakdown.js"
     },
     "./ports": {
       "types": "./ports.d.ts",

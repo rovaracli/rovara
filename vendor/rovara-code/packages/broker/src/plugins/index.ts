@@ -11,6 +11,11 @@ export { codeBuildCheckRunner, checkOfBuild, CODEBUILD_CAPABILITIES, CODEBUILD_R
 export { codeBuildPlugin, type CodeBuildPluginOptions } from "./check-runner/codebuild/plugin.js";
 export { linearTracker, LINEAR_TRACKER_KIND, type LinearTrackerAccess, type LinearIssueRead, type LinearReplyPort } from "./tracker/linear/index.js";
 export { linearTrackerPlugin, type LinearTrackerPluginOptions } from "./tracker/linear/plugin.js";
+export { createLinearApiAccess, linearCommentIdFor, workspaceOfIssueUrl, type LinearApiOptions } from "./tracker/linear/api.js";
+export { jiraTracker, jiraSiteOf, JIRA_TRACKER_KIND, type JiraApiOptions } from "./tracker/jira/index.js";
+export { jiraTrackerPlugin, type JiraTrackerPluginOptions } from "./tracker/jira/plugin.js";
 // The fakes are not exported here: their webhook secrets are public constants, so a production build must not be able to enable one by accident. Tests import `./fake/` by path.
 // Port lane P5 (item K2): the model-provider plug-in point (built-in rows, the helper that makes a module, Bedrock).
 export * from "./model-provider/index.js";
+// Owner decision 58: the chat tool's channel adapter, a plug-in like the others. Its module for a config entry is `@agentx/broker/plugins/channel-slack`.
+export { SlackChannel, slackChannelPlugin, SLACK_CHANNEL_NAME, SLACK_CAPABILITIES, type SlackChannelOptions, type SlackChannelPluginOptions } from "./channel/slack/index.js";

@@ -18,6 +18,8 @@ export async function retryBlockedStep(deps: TaskFlowDeps, taskId: string, expec
   if (task === undefined || task.closedAt !== undefined || workflow === undefined || workflow.state !== "BLOCKED") throw agentXError("CONFIG_INVALID", NOTHING_TO_RETRY_STEP);
   // The page the owner pressed Retry on was for one revision: a task that moved on since is not retried by a button that was for something else.
   if (expectedRevision !== undefined && workflow.revision !== expectedRevision) throw agentXError("CONFIG_INVALID", "This changed since you read it. Read the latest and try again.");
+  // A blocked design review (a round, or the planner's answer to its findings) resumes through the review's own move; its blocked round's spend is already counted.
+  if (await deps.designReview?.retryBlocked(deps, task, expectedRevision)) return;
   const ref = { taskId, workflowRevision: workflow.revision };
   const now = iso(deps);
   /** What the owner's Retry started: "STALE" means the step is not one that can be run again from where the task is. */
@@ -43,11 +45,12 @@ export async function retryBlockedStep(deps: TaskFlowDeps, taskId: string, expec
     await runDispatchRow(deps, { taskId, workflowRevision: due.revision, kind: "PUBLISH" });
     return;
   }
-  if (workflow.stage !== "UNDERSTAND" && workflow.stage !== "PLAN" && workflow.stage !== "IMPLEMENT") throw agentXError("CONFIG_INVALID", NOTHING_TO_RETRY_STEP);
+  if (workflow.stage !== "UNDERSTAND" && workflow.stage !== "PLAN" && workflow.stage !== "PLAN_CRITIQUE" && workflow.stage !== "IMPLEMENT") throw agentXError("CONFIG_INVALID", NOTHING_TO_RETRY_STEP);
   const { blockReason: _blockReason, ...rest } = workflow;
   void _blockReason;
   const next = WorkflowSnapshotSchema.parse({ ...rest, revision: workflow.revision + 1, state: "READY", updatedAt: now });
-  const kind = workflow.stage === "UNDERSTAND" ? "UNDERSTAND" as const : workflow.stage === "PLAN" ? "PLAN" as const : "IMPLEMENT" as const;
+  // The plan check is run again (the critiques kept so far stay): Cloud's Retry plan check.
+  const kind = workflow.stage === "UNDERSTAND" ? "UNDERSTAND" as const : workflow.stage === "PLAN" ? "PLAN" as const : workflow.stage === "PLAN_CRITIQUE" ? "CRITIQUE" as const : "IMPLEMENT" as const;
   if (!(await commitWorkflow(deps, task, next, [dispatchRowItem(deps, taskId, next.revision, kind, now)]))) throw agentXError("CONFIG_INVALID", "The task changed while you were retrying. Read it again.");
   await runDispatchRow(deps, { taskId, workflowRevision: next.revision, kind });
 }
