@@ -16,6 +16,8 @@ const ApprovalWindowPendingSchema = z.object({ changeId: z.string().min(1).max(2
 export const ApprovalWindowStateReaderSchema = z.object({
  revision: z.number().int().nonnegative(), seconds: z.number().int(), isDefault: z.boolean(), defaultSeconds: z.number().int(), minSeconds: z.number().int(), maxSeconds: z.number().int(),
  canChange: z.boolean(), unreadable: z.boolean(), pending: ApprovalWindowPendingSchema.nullish(),
+ // Added by the controller after the doc: who last set the window and when. Optional until the server sends them; absent shows today's wording.
+ changedBy: z.string().min(1).max(200).nullish(), changedAt: z.string().min(1).max(40).nullish(),
 });
 export const ApprovalWindowAnswerReaderSchema = z.discriminatedUnion("status", [
  ApprovalWindowStateReaderSchema.extend({ status: z.literal("applied") }),

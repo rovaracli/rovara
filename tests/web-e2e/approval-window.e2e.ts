@@ -10,9 +10,10 @@ const shots = process.env.ROVARA_APPROVAL_WINDOW_SHOTS ?? ".test-build/web-e2e/a
 const HOUR = 3600, DAY = 86400, ROUTE = /\/v1\/web\/org\/approval-window(\?.*)?$/u;
 type Viewer = "first" | "second";
 /** A stateful stand-in for the server: one waiting request at a time, and the viewer (which admin is looking) decides `proposedByYou`. */
-function fakeServer(options: { off?: boolean; seconds?: number } = {}) {
- const model: { revision: number; seconds: number; pending?: { changeId: string; seconds: number; by: Viewer } | undefined; viewer: Viewer } = { revision: 1, seconds: options.seconds ?? DAY, viewer: "first" };
+function fakeServer(options: { off?: boolean; seconds?: number; reauth?: boolean } = {}) {
+ const model: { revision: number; seconds: number; pending?: { changeId: string; seconds: number; by: Viewer } | undefined; viewer: Viewer; changed?: boolean } = { revision: 1, seconds: options.seconds ?? DAY, viewer: "first" };
  const state = () => ({ revision: model.revision, seconds: model.seconds, isDefault: model.seconds === DAY, defaultSeconds: DAY, minSeconds: HOUR, maxSeconds: 7 * DAY, canChange: true, unreadable: false,
+  ...(model.changed === true ? { changedBy: "Ada Admin", changedAt: "2026-11-11T12:00:00.000Z" } : {}),
   ...(model.pending === undefined ? {} : { pending: { changeId: model.pending.changeId, seconds: model.pending.seconds, proposedByYou: model.pending.by === model.viewer, expiresAt: "2026-11-18T09:00:00.000Z" } }) });
  const posts: unknown[] = [];
  const refuse = (status: number, code: string, message: string) => ({ status, json: { error: { code, message } } });
@@ -20,9 +21,10 @@ function fakeServer(options: { off?: boolean; seconds?: number } = {}) {
   await page.route(ROUTE, route => {
    if (options.off === true) return route.fulfill(refuse(404, "NOT_FOUND", "none"));
    if (route.request().method() === "GET") return route.fulfill({ json: state() });
+   if (options.reauth === true) return route.fulfill(refuse(403, "REAUTH_REQUIRED", "Sign in again to change the window. It needs a sign-in within the last 10 minutes."));
    const body = route.request().postDataJSON() as { action: string; seconds?: number; changeId?: string };posts.push(body);
    if (body.action === "set") {
-    if (body.seconds! <= model.seconds) { model.seconds = body.seconds!;model.revision += 1;return route.fulfill({ json: { status: "applied", ...state() } }); }
+    if (body.seconds! <= model.seconds) { model.seconds = body.seconds!;model.revision += 1;model.changed = true;return route.fulfill({ json: { status: "applied", ...state() } }); }
     if (model.pending !== undefined) return route.fulfill(refuse(409, "CHANGE_STALE", "A request is already waiting for a different admin. Withdraw it first."));
     model.pending = { changeId: "chg_0123456789abcdef", seconds: body.seconds!, by: model.viewer };
     return route.fulfill({ status: 202, json: { status: "needs_approval", changeId: model.pending.changeId, ...state() } });
@@ -30,7 +32,7 @@ function fakeServer(options: { off?: boolean; seconds?: number } = {}) {
    if (body.action === "approve") {
     if (model.pending === undefined) return route.fulfill(refuse(409, "CHANGE_STALE", "That request is no longer waiting."));
     if (model.pending.by === model.viewer) return route.fulfill(refuse(403, "FORBIDDEN", "A different admin has to approve this. If you are the company's only admin, only the company owner can do it alone."));
-    model.seconds = model.pending.seconds;model.pending = undefined;model.revision += 1;return route.fulfill({ json: { status: "applied", ...state() } });
+    model.seconds = model.pending.seconds;model.pending = undefined;model.revision += 1;model.changed = true;return route.fulfill({ json: { status: "applied", ...state() } });
    }
    model.pending = undefined;return route.fulfill({ json: { status: "applied", ...state() } });
   });
@@ -105,9 +107,19 @@ test("shorten to 4 hours applies at once", async ({ page, context, request, base
  await expect(page.getByText("Saved. The window is now 4 hours.")).toBeVisible();
  await expect(page.getByText("People can approve medium-risk work from chat or comments if they signed in to Rovara in the last 4 hours.")).toBeVisible();
  await expect(page.getByRole("region", { name: "Waiting for a second admin" })).toHaveCount(0);
- await expect(page.getByText(/Your company changed this from the default \(24 hours\)/u)).toBeVisible();
+ await expect(page.getByText(/^Set to 4 hours by Ada Admin on Nov 11, 2026\./u)).toBeVisible();
+ await expect(page.getByRole("link", { name: "Who changed it and when is in the audit log" })).toHaveAttribute("href", "/app/admin/audit");
  expect(server.posts).toEqual([{ action: "set", expectedRevision: 1, seconds: 4 * HOUR }]);
  await evidenceShot(page, { path: `${shots}/shortened-1280.png`, fullPage: true });
+});
+
+test("a refused sign-in (403 REAUTH_REQUIRED) offers Sign in again and does not redirect by itself", async ({ page, context, request, baseURL }) => {
+ const server = fakeServer({ reauth: true });
+ await enter(page, context, request, baseURL, 1280, {}, server);await page.goto("/app/admin/approval-window");await settled(page);
+ await picker(page).selectOption(String(3 * DAY));await page.getByRole("button", { name: "Save window" }).click();
+ await expect(page.getByRole("alert")).toContainText("Sign in again to change the window. It needs a sign-in within the last 10 minutes.");
+ const again = page.getByRole("button", { name: "Sign in again" });await expect(again).toBeVisible();
+ await page.waitForLoadState("networkidle");expect(new URL(page.url()).pathname).toBe("/app/admin/approval-window");
 });
 
 test("the nav lists it under Security and sign-in, and a server with it off says 'not turned on' and shows no link", async ({ page, context, request, baseURL }) => {

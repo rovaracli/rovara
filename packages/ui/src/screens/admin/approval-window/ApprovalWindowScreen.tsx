@@ -11,7 +11,7 @@ import { Skeleton } from "../../../design/Skeleton.js";
 import { VisibleText } from "../../../design/VisibleText.js";
 import { SettingsNote } from "../SettingsNote.js";
 import { useAdminContext } from "../AdminLayout.js";
-import { currentSentence, durationWords, expires, policyRows, T, windowChoices } from "./approval-window-text.js";
+import { changedParts, currentSentence, durationWords, expires, policyRows, T, windowChoices } from "./approval-window-text.js";
 import "../how-we-work/how-we-work.css";
 import "./approval-window.css";
 
@@ -45,6 +45,7 @@ function useWrite(orgId: string, developerId: string) {
 }
 
 function CurrentSection({ state }: { state: ApprovalWindowState }) {
+ const changed = changedParts(state.seconds, state.changedBy, state.changedAt);
  return <section aria-label={T.CURRENT_HEADING} className="rv-hww-company-card rv-aw-card"><h2>{T.CURRENT_HEADING}</h2>
   <p><strong>{currentSentence(state.seconds)}</strong></p>
   {state.unreadable && <p role="alert">{T.UNREADABLE}</p>}
@@ -52,7 +53,7 @@ function CurrentSection({ state }: { state: ApprovalWindowState }) {
    <div><dt>Default</dt><dd>{durationWords(state.defaultSeconds)}</dd></div>
    <div><dt>Your company</dt><dd>{state.unreadable ? "Could not be read" : state.isDefault ? "The default" : durationWords(state.seconds)}</dd></div>
   </dl>
-  <p className="rv-muted">{state.isDefault || state.unreadable ? T.DEFAULT_LINE : T.SET_LINE + " (" + durationWords(state.defaultSeconds) + ")."} {!state.isDefault && !state.unreadable && <Link to="/app/admin/audit">{T.AUDIT_LINK}</Link>}</p>
+  <p className="rv-muted">{state.isDefault || state.unreadable ? T.DEFAULT_LINE : changed === undefined ? T.SET_LINE + " (" + durationWords(state.defaultSeconds) + ")." : <>{changed.before}{changed.by !== undefined && <> by <VisibleText text={changed.by} /></>}{changed.after}</>} {!state.isDefault && !state.unreadable && <Link to="/app/admin/audit">{T.AUDIT_LINK}</Link>}</p>
   <p className="rv-muted">{T.SLACK_GITHUB}</p>
  </section>;
 }

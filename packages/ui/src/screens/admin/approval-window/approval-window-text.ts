@@ -74,6 +74,13 @@ export function windowChoices(current: number, minSeconds: number, maxSeconds: n
  if (!list.includes(current)) list.push(current);
  return list.sort((a, b) => a - b);
 }
+/** "Set to 12 hours by Ada Admin on Nov 11, 2026": whichever of who and when the server sent; nothing when it sent neither. */
+export function changedParts(seconds: number, changedBy: string | null | undefined, changedAt: string | null | undefined): { before: string; by?: string; after: string } | undefined {
+ const date = changedAt === null || changedAt === undefined ? undefined : new Date(changedAt), day = date === undefined || Number.isNaN(date.getTime()) ? undefined : date.toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" });
+ const who = changedBy === null || changedBy === undefined || changedBy === "" ? undefined : changedBy;
+ if (who === undefined && day === undefined) return undefined;
+ return { before: `Set to ${durationWords(seconds)}`, ...(who === undefined ? {} : { by: who }), after: (day === undefined ? "" : ` on ${day}`) + "." };
+}
 export const expires = (iso: string): string => { const date = new Date(iso);return Number.isNaN(date.getTime()) ? "" : `Expires ${date.toLocaleDateString()}.`; };
 
 export interface PolicyRow { place: string; low: string; medium: string; high: string }

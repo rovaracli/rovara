@@ -82,6 +82,36 @@ it("says the window in plain words with the default and the company's value, lin
   def.close();
 });
 
+it("shows who set the window and when, whichever of the two the server sends; sent neither, today's wording", async () => {
+  const set = { seconds: 12 * HOUR, isDefault: false, revision: 5 };
+  const both = mount({ state: { ...set, changedBy: "Ada Admin", changedAt: "2026-11-11T12:00:00.000Z" } });
+  const line = await screen.findByText(/^Set to 12 hours by Ada Admin on Nov 11, 2026\./u);
+  expect(line.textContent).toContain("Who changed it and when is in the audit log");
+  expect(within(line).getByRole("link", { name: "Who changed it and when is in the audit log" }).getAttribute("href")).toBe("/app/admin/audit");
+  expect(screen.queryByText(/Your company changed this from the default/u)).toBeNull();
+  both.close();
+  const markup = mount({ state: { ...set, changedBy: "<b>Ada</b>\u202e", changedAt: "2026-11-11T12:00:00.000Z" } });
+  await screen.findByText(/^Set to 12 hours by <b>Ada<\/b>\[U\+202E\] on Nov 11, 2026\./u);
+  expect(markup.container.querySelector("main b")).toBeNull();
+  markup.close();
+  const onlyWho = mount({ state: { ...set, changedBy: "Ada Admin", changedAt: null } });
+  await screen.findByText(/^Set to 12 hours by Ada Admin\./u);
+  onlyWho.close();
+  const onlyWhen = mount({ state: { ...set, changedAt: "2026-11-11T12:00:00.000Z" } });
+  await screen.findByText(/^Set to 12 hours on Nov 11, 2026\./u);
+  onlyWhen.close();
+  const neither = mount({ state: set });
+  await screen.findByText(/^Your company changed this from the default \(24 hours\)\./u);
+  expect(screen.queryByText(/^Set to /u)).toBeNull();
+  neither.close();
+  const unset = mount({ state: { changedBy: "Ada Admin", changedAt: "2026-11-11T12:00:00.000Z" } });
+  await screen.findByText(/This is the default\. Your company has not changed it\./u);
+  expect(screen.queryByText(/Ada Admin/u)).toBeNull();
+  unset.close();
+  expect(ApprovalWindowStateReaderSchema.safeParse(base({ changedBy: "Ada", changedAt: "2026-11-11T12:00:00.000Z" })).success).toBe(true);
+  expect(ApprovalWindowStateReaderSchema.safeParse(base({ changedBy: null, changedAt: null })).success).toBe(true);
+});
+
 it("the policy table is a real table with a plain caption, column and row headers, and says what each place needs", async () => {
   const f = mount({ state: { seconds: 4 * HOUR, isDefault: false } });
   const table = await screen.findByRole("table", { name: /Where work can be approved, by risk level/u });
@@ -204,21 +234,25 @@ it("never offers more than 7 days, even if the server's maximum is higher, and s
 });
 
 it("a refused sign-in asks to sign in again, and the button starts the sign-in", async () => {
-  const f = mount({ state: { pending: pending(false) }, respond: async request => (request.method === "POST" ? refusal(401, "REAUTH_REQUIRED", "Sign in again to approve this. It needs a sign-in within the last 10 minutes.") : undefined) });
+  const f = mount({ state: { pending: pending(false) }, respond: async request => (request.method === "POST" ? refusal(403, "REAUTH_REQUIRED", "Sign in again to approve this. It needs a sign-in within the last 10 minutes.") : undefined) });
   fireEvent.click(await screen.findByRole("button", { name: "Approve the longer window" }));
   await screen.findByText("Sign in again to approve this. It needs a sign-in within the last 10 minutes.");
+  // A 403 REAUTH_REQUIRED never redirects by itself: only the button starts the sign-in.
+  expect(f.host.signIn).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole("button", { name: "Sign in again" }));
+  expect(f.host.signIn).toHaveBeenCalledTimes(1);
   expect(f.host.signIn).toHaveBeenCalledWith("/app/live");
   f.close();
 });
 
 it("a lengthening that needs a fresh sign-in says so too", async () => {
-  const f = mount({ respond: async request => (request.method === "POST" ? refusal(401, "REAUTH_REQUIRED", "Sign in again to lengthen the window.") : undefined) });
+  const f = mount({ respond: async request => (request.method === "POST" ? refusal(403, "REAUTH_REQUIRED", "Sign in again to lengthen the window.") : undefined) });
   await screen.findByRole("heading", { name: "Change the window" });
   fireEvent.change(screen.getByLabelText("Window length"), { target: { value: String(3 * DAY) } });
   fireEvent.click(screen.getByRole("button", { name: "Save window" }));
   await screen.findByText("Sign in again to lengthen the window.");
   expect(screen.getByRole("button", { name: "Sign in again" })).toBeTruthy();
+  expect(f.host.signIn).not.toHaveBeenCalled();
   f.close();
 });
 
