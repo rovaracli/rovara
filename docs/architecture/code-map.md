@@ -163,6 +163,13 @@ instead: give it a one-line header comment when you next edit it.
 - The CDK app is `infra/bin/agentx.ts`. It calls `infra/lib/app.ts#buildAgentXApp`, which creates every stack. The main
   one is `infra/lib/control-plane.ts#ControlPlaneStack`.
 
+## Port conformance (Cloud adapters on Code's ports)
+
+Convergence plan wave 0, lane W0-5. Code's ports (`vendor/rovara-code/packages/contracts/src/ports/`) each have a conformance suite in Code (`vendor/rovara-code/tests/support/ports/`, carried by the pinned copy, byte for byte).
+`tests/conformance/conformance.test.ts` runs every suite against Code's fakes (the positive control, `tests/conformance/code-fakes.ts`) and against every Cloud adapter registered in
+`tests/conformance/adapters/index.ts#CLOUD_ADAPTERS`. A wave 1 adapter lane registers its adapter with `tests/conformance/registry.ts#defineCloudAdapter` and gets its port's suite with no other wiring.
+The port-to-suite table is `tests/conformance/ports.ts`; the guards are `tests/conformance/guards.test.ts`. How to register: [cloud-adapter-conformance.md](cloud-adapter-conformance.md).
+
 ## How to add common things
 
 Each recipe lists the files to touch in order and the tests that fail if you forget one. When in doubt, read the

@@ -2,6 +2,7 @@
   "extends": "./base-referenced.json",
   "include": [
     "../tests/acceptance/**/*.ts",
+    "../tests/conformance/**/*.ts",
     "../tests/e2e/**/*.ts",
     "../tests/egress/**/*.ts",
     "../tests/eval/**/*.ts",
