@@ -5,7 +5,8 @@
 //   GET   /v1/app/org/company-rules/sync            owner or admin: the connected file's status, what it held at the last look, and its diff against the version in force.
 //   POST  /v1/app/org/company-rules                 a live owner or admin, from a LIVE BROWSER SESSION (a token or the API is refused here and before this in the entry file); `service.ts` and `sync.ts` hold the rules:
 //           { action: "propose", requestId, baseVersion, rules, note? }           the one waiting proposal (202 needs_approval);
-//           { action: "approve", proposalId, expectedDigest, soleOwnerAcknowledged? }   a different admin, signed in within 10 minutes;
+//           { action: "adopt", proposalId, expectedDigest }                       a first admin adopts a proposal that came back from the repository (nothing changes; the adopter is audited);
+//           { action: "approve", proposalId, expectedDigest, soleOwnerAcknowledged? }   a different admin (than the proposer or the adopter), signed in within 10 minutes;
 //           { action: "reject", proposalId, expectedDigest } / { action: "cancel", proposalId };
 //           { action: "sync-connect", repository, path?, branch? } / { action: "sync-disconnect" } / { action: "sync-now" }.
 // Answers are ids, counts, fixed words and the rules' own text; never an error text from a code host.
@@ -15,7 +16,7 @@ import {
 } from "@agentx/contracts";
 import { logDeveloperEvent } from "../../developer/log.js";
 import { requireLiveCompanyAdmin } from "../../org/company-authority.js";
-import { approvalHint, approveProposal, cancelProposal, proposeRules, rejectProposal, type CompanyRulesDeps } from "../../company-rules/service.js";
+import { adoptProposal, approvalHint, approveProposal, cancelProposal, proposeRules, rejectProposal, type CompanyRulesDeps } from "../../company-rules/service.js";
 import { dynamoCompanyRulesStore, type CompanyRulesStore } from "../../company-rules/store.js";
 import { connectSync, disconnectSync, oweWriteBack, runSyncPass, type SyncDeps } from "../../company-rules/sync.js";
 import { actorIds, historyView, limitsView, livePending, proposalView, syncSummaryView, syncView, versionView, type Names } from "../../company-rules/view.js";
@@ -85,7 +86,7 @@ async function stateOf(deps: DeveloperRouteDependencies, caller: DeveloperCaller
   if (!admin) return { enabled: true, viewer, limits: limitsView(), current: current === undefined ? null : versionView(current, false, new Map()), pending: null, sync: null };
   const [waiting, sync] = await Promise.all([head.pendingProposalId === undefined ? undefined : store.proposal(caller.orgId, head.pendingProposalId), store.sync(caller.orgId)]);
   const pending = livePending(waiting, deps.now());
-  const names = await namesOf(deps, [...actorIds(current?.approvedBy, current?.proposedBy, pending?.proposedBy), ...(sync === undefined ? [] : [sync.connectedBy])]);
+  const names = await namesOf(deps, [...actorIds(current?.approvedBy, current?.proposedBy, current?.adoptedBy, pending?.proposedBy, pending?.adoptedBy), ...(sync === undefined ? [] : [sync.connectedBy])]);
   const hint = pending === undefined ? undefined : await approvalHint(service, caller2(caller), pending, head);
   return {
     enabled: true, viewer, limits: limitsView(),
@@ -125,7 +126,7 @@ async function readSub(deps: DeveloperRouteDependencies, caller: DeveloperCaller
     const version = await store.version(caller.orgId, number);
     if (version === undefined) throw agentXError("NOT_FOUND", "No such version.");
     const earlier = number > 1 ? await store.version(caller.orgId, number - 1) : undefined;
-    const names = await namesOf(deps, actorIds(version.approvedBy, version.proposedBy));
+    const names = await namesOf(deps, actorIds(version.approvedBy, version.proposedBy, version.adoptedBy));
     return new StatusReply(200, { version: versionView(version, true, names), diffFromPrevious: diffRules(earlier?.rules ?? [], version.rules) });
   }
   if (path === `${COMPANY_RULES_PATH}/sync`) {
@@ -170,6 +171,7 @@ export async function routeCompanyRules(deps: DeveloperRouteDependencies, caller
   let status: CompanyRulesAnswer["status"] = "done";
   switch (body.action) {
     case "propose": { await proposeRules(service, who, body); status = "needs_approval"; break; }
+    case "adopt": { await adoptProposal(service, who, body); status = "adopted"; break; }
     case "approve": {
       await approveProposal(service, who, body); status = "approved";
       if (sync !== undefined) await oweWriteBack(sync, caller.orgId);

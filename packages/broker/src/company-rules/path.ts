@@ -13,7 +13,7 @@ const ALLOWED_DOT_DIRECTORIES: ReadonlySet<string> = new Set([".rovara"]);
  */
 const RESERVED_FILE_NAMES: ReadonlySet<string> = new Set(["agents.md", "claude.md", "gemini.md", "copilot-instructions.md", "lessons.md", "readme.md", "contributing.md", "security.md", "code_of_conduct.md", "changelog.md", "license.md"]);
 
-export type PathProblem = "empty" | "too_long" | "not_markdown" | "bad_characters" | "bad_segment" | "hidden_directory" | "reserved_name";
+export type PathProblem = "empty" | "too_long" | "not_markdown" | "bad_characters" | "bad_segment" | "hidden_directory" | "reserved_name" | "steering_folder";
 
 /**
  * Why a path cannot be the company rules file, or undefined. A plain repository path to a Markdown file: letters, digits, dot, dash, underscore and slash, at most 200 characters, no empty, dot or dot-dot segment, no leading
@@ -26,6 +26,8 @@ export function companyRulesPathProblem(path: string): PathProblem | undefined {
   const segments = path.split("/");
   if (segments.some((segment) => segment === "" || segment === "." || segment === "..")) return "bad_segment";
   if (segments.slice(0, -1).some((segment) => segment.startsWith(".") && !ALLOWED_DOT_DIRECTORIES.has(segment))) return "hidden_directory";
+  // Rovara's own folder holds the file directly (`.rovara/x.md`): its subfolders (`.rovara/rules/`, read by tasks as repository steering) are not for it, and neither is a runbooks folder anywhere.
+  if ((segments[0] === ".rovara" && segments.length > 2) || segments.slice(0, -1).some((segment) => /^runbooks?$/iu.test(segment))) return "steering_folder";
   const file = segments[segments.length - 1] ?? "";
   if (file.startsWith(".") || !/\.md$/iu.test(file)) return "not_markdown";
   if (RESERVED_FILE_NAMES.has(file.toLowerCase())) return "reserved_name";
@@ -39,5 +41,6 @@ export const PATH_PROBLEM_WORDS: Record<PathProblem, string> = {
   bad_characters: "The file path may use letters, digits, dots, dashes, underscores and slashes only.",
   bad_segment: "The file path must be a plain path inside the repository.",
   hidden_directory: "The file cannot be in a hidden folder other than .rovara.",
+  steering_folder: "Choose a file directly in .rovara (for example .rovara/company-rules.md) or in an ordinary folder: a file under .rovara/rules or a runbooks folder is read by tasks as repository guidance.",
   reserved_name: "That file name is kept for something else (agent instructions, the lessons file or a project's readme). Choose another file, for example .rovara/company-rules.md.",
 };

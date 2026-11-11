@@ -17,6 +17,8 @@ export const COMPANY_RULES_CURRENT_PATH = `${COMPANY_RULES_PATH}/current`;
 export const COMPANY_RULES_PROPOSAL_TTL_MS = 7 * 86_400_000;
 
 const Priority = z.enum(["required", "preferred"]);
+/** An id as it is stored: lower case. The app may send either case; it is lower-cased on the way in (an upper-case id once wedged the waiting slot). */
+const LowerUuid = z.string().uuid().transform((value) => value.toLowerCase());
 const Iso = z.string().datetime();
 const Digest = z.string().regex(/^[a-f0-9]{64}$/u);
 
@@ -56,6 +58,8 @@ export const CompanyRulesVersionSchema = z.object({
   source: z.enum(COMPANY_RULES_SOURCES).optional(),
   approvalMode: z.enum(COMPANY_RULES_APPROVAL_MODES).optional(),
   baseVersion: z.number().int().min(0).optional(),
+  /** The admin who adopted a proposal that came back from the repository (the person the second admin's approval is measured against). */
+  adoptedBy: CompanyRulesPersonSchema.nullable().optional(),
   /** The proposer's note (admins only); for a version made from the repository, the fixed line saying which file and revision. Plain text. */
   note: z.string().max(COMPANY_RULES_NOTE_MAX).nullable().optional(),
 }).strict();
@@ -78,13 +82,16 @@ export const CompanyRulesProposalSchema = z.object({
   digest: Digest,
   note: z.string().max(COMPANY_RULES_NOTE_MAX).nullable(),
   proposedBy: CompanyRulesPersonSchema,
+  /** A repository proposal: who adopted it (null until an admin does); nobody can approve it before. */
+  adoptedBy: CompanyRulesPersonSchema.nullable(),
+  /** You proposed it, or (a repository proposal) you adopted it: a different admin approves. */
   proposedByYou: z.boolean(),
   proposedAt: Iso,
   expiresAt: Iso,
   diff: CompanyRulesDiffSchema,
   approval: z.object({
     canApprove: z.boolean(),
-    reason: z.enum(["you_proposed", "stale", "expired"]).nullable(),
+    reason: z.enum(["you_proposed", "needs_adoption", "stale", "expired"]).nullable(),
     freshSignInNeeded: z.boolean(),
     soleOwner: CompanyRulesSoleOwnerSchema.nullable(),
   }).strict(),
@@ -171,16 +178,17 @@ export const CompanyRulesSyncSchema = z.discriminatedUnion("connected", [
 export type CompanyRulesSync = z.infer<typeof CompanyRulesSyncSchema>;
 export const CompanyRulesSyncReaderSchema = forwardReader(CompanyRulesSyncSchema);
 
-const ProposalId = z.string().uuid();
+const ProposalId = LowerUuid;
 const RepositoryName = z.string().min(3).max(200).regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}\/[A-Za-z0-9._-]{1,100}$/u);
 
 /** What the app sends. The server decides who may; a refusal comes back in its own words. */
 export const CompanyRulesBodySchema = z.discriminatedUnion("action", [
   z.object({
-    action: z.literal("propose"), requestId: z.string().uuid(), baseVersion: z.number().int().min(0).max(999_999_999),
+    action: z.literal("propose"), requestId: LowerUuid, baseVersion: z.number().int().min(0).max(999_999_999),
     /** An empty list is allowed (rules are optional: it clears them). Up to 200 are read so that the server, not the schema, says which limit a list is over (30 rules). */
     rules: z.array(CompanyRuleViewSchema).max(200), note: z.string().max(COMPANY_RULES_NOTE_MAX).optional(),
   }).strict(),
+  z.object({ action: z.literal("adopt"), proposalId: LowerUuid, expectedDigest: Digest }).strict(),
   z.object({ action: z.literal("approve"), proposalId: ProposalId, expectedDigest: Digest, soleOwnerAcknowledged: z.literal(true).optional() }).strict(),
   z.object({ action: z.literal("reject"), proposalId: ProposalId, expectedDigest: Digest }).strict(),
   z.object({ action: z.literal("cancel"), proposalId: ProposalId }).strict(),
@@ -192,7 +200,7 @@ export type CompanyRulesBody = z.infer<typeof CompanyRulesBodySchema>;
 
 /** 202 `needs_approval` after a proposal, 200 for the rest. `state` is the state for this caller, exactly as GET returns it. */
 export const CompanyRulesAnswerSchema = z.object({
-  status: z.enum(["needs_approval", "approved", "rejected", "cancelled", "done"]),
+  status: z.enum(["needs_approval", "adopted", "approved", "rejected", "cancelled", "done"]),
   state: CompanyRulesStateSchema,
 }).strict();
 export type CompanyRulesAnswer = z.infer<typeof CompanyRulesAnswerSchema>;

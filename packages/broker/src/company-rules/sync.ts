@@ -191,15 +191,20 @@ export async function runSyncPass(deps: SyncDeps, orgId: OrgId): Promise<void> {
   if (state === "missing" && current !== undefined && next.writeBack === undefined) next.writeBack = { version: current.version, state: "waiting", updatedAt: seen.checkedAt };
 
   // From the repository: an edit nobody handled yet becomes a proposal.
-  if (state === "differs" && seen.rules !== undefined && seen.revision !== undefined && fileDigest !== undefined && fileDigest !== sync.handledFileDigest) {
+  // A handled edit is forgotten when the version moves (the edit is then measured against a new base).
+  if (next.handledFileDigest !== undefined && next.handledAtVersion !== head.latestVersion) { delete next.handledFileDigest; delete next.handledAtVersion; }
+  const handled = next.handledFileDigest;
+  // A file that still holds the last version the two agreed on is not an edit: only Rovara moved, and the write-back is what is owed.
+  const repoEdited = fileDigest !== undefined && fileDigest !== sync.syncedDigest;
+  if (state === "differs" && repoEdited && seen.rules !== undefined && seen.revision !== undefined && fileDigest !== undefined && fileDigest !== handled) {
     const waiting = await pendingOf(deps, orgId, head.pendingProposalId);
     const now = deps.now();
     const expired = waiting !== undefined && proposalExpired(waiting, now);
-    if (waiting !== undefined && !expired && waiting.digest === fileDigest) next.handledFileDigest = fileDigest;
+    if (waiting !== undefined && !expired && waiting.digest === fileDigest) { next.handledFileDigest = fileDigest; next.handledAtVersion = head.latestVersion; }
     // A waiting proposal from a person is left alone: the edit is proposed after it is decided.
     else if (waiting === undefined || expired || waiting.source === "repo") {
       const id = repoProposalId(orgId, fileDigest, head.latestVersion);
-      if (await deps.store.proposal(orgId, id) !== undefined) next.handledFileDigest = fileDigest;
+      if (await deps.store.proposal(orgId, id) !== undefined) { next.handledFileDigest = fileDigest; next.handledAtVersion = head.latestVersion; }
       else {
         const proposal: ProposalRecord = {
           proposalId: id, state: "pending", baseVersion: head.latestVersion, source: "repo", rules: seen.rules, digest: fileDigest, note: SYNC_WORDS.imported(sync.path, seen.revision),
@@ -211,7 +216,7 @@ export async function runSyncPass(deps: SyncDeps, orgId: OrgId): Promise<void> {
           proposedEvent(orgId, proposal, "company_rules.repo_proposed"),
         ];
         // A lost race (someone proposed first) leaves the edit unhandled: it is looked at again at the next pass.
-        if (await deps.store.createProposal({ orgId, proposal, expectedBase: head.latestVersion, ...(waiting === undefined ? {} : { replacing: waiting, replacingOutcome: outcome }), events }) === "ok") next.handledFileDigest = fileDigest;
+        if (await deps.store.createProposal({ orgId, proposal, expectedBase: head.latestVersion, ...(waiting === undefined ? {} : { replacing: waiting, replacingOutcome: outcome }), events }) === "ok") { next.handledFileDigest = fileDigest; next.handledAtVersion = head.latestVersion; }
       }
     }
   }

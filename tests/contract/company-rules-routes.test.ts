@@ -5,7 +5,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { COMPANY_RULES_CURRENT_PATH, COMPANY_RULES_PATH, CompanyRulesAnswerReaderSchema, CompanyRulesCurrentReaderSchema, CompanyRulesHistoryReaderSchema, CompanyRulesStateReaderSchema, type CompanyRulesState } from "@agentx/contracts";
 import { companyRulesSourceOver } from "../../packages/broker/src/company-rules/source.js";
 import { readCompanyInstructions } from "../../packages/broker/src/instructions/company-source.js";
-import { dynamoCompanyRulesStore } from "../../packages/broker/src/company-rules/store.js";
+import { dynamoCompanyRulesStore, type CompanyRulesStore } from "../../packages/broker/src/company-rules/store.js";
+import { approveProposal } from "../../packages/broker/src/company-rules/service.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { MAYA, OMAR, type Developer } from "../support/developer-task-broker.js";
 import { setupWizardBench, type Bench } from "../support/setup-wizard-testenv.js";
@@ -446,5 +447,63 @@ describe("an empty list, notes, the member read and the nav flag", () => {
     const off = await other.t.dev(OMAR, "GET", "/v1/app/nav");
     expect(off.status).toBe(200);
     expect((off.body.features as Record<string, unknown>)).not.toHaveProperty("companyRules");
+  });
+});
+
+describe("ids are lower case, and a damaged head is loud", () => {
+  it("an upper-case request id is stored lower case, can be approved by either case, and never wedges the slot", async () => {
+    const { t } = await bench({ maya: "admin" });
+    const id = randomUUID().toUpperCase();
+    expect((await propose(t, { requestId: id })).status).toBe(202);
+    const pending = (await stateOf(t)).pending!;
+    expect(pending.proposalId).toBe(id.toLowerCase());
+    expect(t.db.get({ pk: `ORG#${TEST_ORG}`, sk: "COMPANYRULES#HEAD" })).toMatchObject({ pendingProposalId: id.toLowerCase() });
+    expect((await propose(t, { requestId: id })).status).toBe(202);
+    const done = await post(t, { action: "approve", proposalId: pending.proposalId.toUpperCase(), expectedDigest: pending.digest }, MAYA);
+    expect(done.status, JSON.stringify(done.body)).toBe(200);
+    expect((await stateOf(t)).pending).toBeNull();
+    expect((await propose(t, { baseVersion: 1, rules: rules("next one") })).status).toBe(202);
+  });
+
+  it("a head that names a damaged pending id is refused loudly (503), never read as 'nothing waiting'; an operator clears it by removing the attribute", async () => {
+    const { t } = await bench({ maya: "admin" });
+    expect((await propose(t)).status).toBe(202);
+    const head = t.db.get({ pk: `ORG#${TEST_ORG}`, sk: "COMPANYRULES#HEAD" })!;
+    t.db.set({ ...head, pendingProposalId: "NOT-AN-ID" });
+    const read = await get(t);
+    expect(read.status).toBe(503);
+    expect(errorCode(read)).toBe("RUNTIME_UNAVAILABLE");
+    expect((await propose(t, { rules: rules("another") }, MAYA)).status).toBe(503);
+    const { pendingProposalId: _removed, ...cleared } = head;
+    void _removed;
+    t.db.set(cleared);
+    expect((await get(t)).status).toBe(200);
+  });
+});
+
+describe("the second-person fences are part of the approving transaction", () => {
+  it("an admin demoted between the evidence read and the commit stops the approval: nothing is approved, nothing is audited as approved", async () => {
+    const { t, audit } = await bench({ maya: "admin" });
+    expect((await propose(t)).status).toBe(202);
+    const pending = (await stateOf(t)).pending!;
+    const inner = dynamoCompanyRulesStore({ documentClient: t.db, tableName: "state", audit: audit.audit });
+    // The approver is demoted AFTER the evidence was read and BEFORE the write commits.
+    const racing: CompanyRulesStore = { ...inner, decideProposal: async (input) => { await t.person(MAYA, "member"); return inner.decideProposal(input); } };
+    const service = { store: racing, now: Date.now, requireAdmin: () => Promise.resolve(), requireFreshSignIn: () => Promise.resolve(), evidence: { documentClient: t.db, tableName: "state", signInTableName: "signin", now: Date.now } };
+    await expect(approveProposal(service, { orgId: TEST_ORG, developerId: MAYA.developerId }, { proposalId: pending.proposalId, expectedDigest: pending.digest })).rejects.toMatchObject({ code: "CHANGE_STALE" });
+    expect(await inner.version(TEST_ORG, 1)).toBeUndefined();
+    expect((await inner.head(TEST_ORG)).latestVersion).toBe(0);
+    expect(events(audit).filter((event) => event.action === "company_rules.approved")).toEqual([]);
+    expect((await inner.proposal(TEST_ORG, pending.proposalId))!.state).toBe("pending");
+  });
+
+  it("and without that race the same call approves (positive control)", async () => {
+    const { t, audit } = await bench({ maya: "admin" });
+    expect((await propose(t)).status).toBe(202);
+    const pending = (await stateOf(t)).pending!;
+    const inner = dynamoCompanyRulesStore({ documentClient: t.db, tableName: "state", audit: audit.audit });
+    const service = { store: inner, now: Date.now, requireAdmin: () => Promise.resolve(), requireFreshSignIn: () => Promise.resolve(), evidence: { documentClient: t.db, tableName: "state", signInTableName: "signin", now: Date.now } };
+    const done = await approveProposal(service, { orgId: TEST_ORG, developerId: MAYA.developerId }, { proposalId: pending.proposalId, expectedDigest: pending.digest });
+    expect(done.version.version).toBe(1);
   });
 });

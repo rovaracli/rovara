@@ -386,6 +386,7 @@ export const AUDIT_ACTIONS = [
   "company_image.revoked",
   // Company rules (G-04, decisions 57 and 85, switch `si`): ids, versions, counts, digests and fixed words only. The rules' own text is never a fact: the versions in the store are the record of it.
   "company_rules.proposed",
+  "company_rules.adopted",
   "company_rules.approved",
   "company_rules.rejected",
   "company_rules.cancelled",
@@ -753,6 +754,7 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   // Company rules: `source` is rovara, repo or seed; `approvalMode` is second_person, sole_owner_exception, admin_review or seed; `place` is the connected repository's place (`github:repo/<id>`); `state` is how a write-back ended.
   "company_rules.proposed": ["proposalId", "baseVersion", "ruleCount", "digest", "source"],
   "company_rules.approved": ["proposalId", "version", "baseVersion", "ruleCount", "digest", "source", "approvalMode"],
+  "company_rules.adopted": ["proposalId", "source", "digest"],
   "company_rules.rejected": ["proposalId", "source", "digest"],
   "company_rules.cancelled": ["proposalId", "source", "digest"],
   "company_rules.expired": ["proposalId", "source", "digest"],

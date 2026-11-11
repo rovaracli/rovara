@@ -45,6 +45,12 @@ async function approvedVersion(t: Bench, texts: string[], base: number) {
 }
 const fileOf = (texts: string[], version = 1) => renderRulesFile(normalizeRules(rules(...texts)), version);
 const V1 = ["Never push to main.", "Small PRs."];
+/** The company of one: its owner proposes, and approves their own change with the acknowledgement. */
+async function approvedVersion1(t: Bench) {
+  expect((await propose(t, V1, 0)).status).toBe(202);
+  const pending = (await stateOf(t)).pending!;
+  expect((await post(t, { action: "approve", proposalId: pending.proposalId, expectedDigest: pending.digest, soleOwnerAcknowledged: true })).status).toBe(200);
+}
 
 describe("connecting the file", () => {
   it("a live admin with a recent sign-in connects a repository the company's GitHub reaches; the connection pins the repository's id and is audited", async () => {
@@ -135,6 +141,8 @@ describe("to the repository: an approved version is written back as a pull reque
     expect((await stateOf(t)).sync).toMatchObject({ status: "in_sync" });
     // A newer version is owed to the file again, as a new pull request.
     await approvedVersion(t, [...V1, "Say what you ran."], 1);
+    // Only Rovara moved: the file still holds the last agreed version, which is not an edit, so nothing waits and one pull request is owed.
+    expect((await stateOf(t)).pending).toBeNull();
     expect(repo.openPulls()).toHaveLength(1);
     expect(repo.pulls).toHaveLength(2);
     repo.close(2);
@@ -202,6 +210,36 @@ describe("from the repository: an edit of the file is a proposal, never an appro
     return ctx;
   }
 
+  it("approving a Rovara version while the file still holds the last agreed one is NOT a repository edit: no proposal is made to undo it, however many passes run", async () => {
+    const { t, audit, repo } = await connectedAndMerged();
+    await approvedVersion(t, [...V1, "Say what you ran."], 1);
+    await syncNow(t);
+    await syncNow(t);
+    expect((await stateOf(t)).pending).toBeNull();
+    expect(events(audit, "company_rules.repo_proposed")).toEqual([]);
+    expect(t.db.find((item) => String(item.sk).startsWith("COMPANYRULES#P#") && item.source === "repo")).toEqual([]);
+    expect(repo.pulls).toHaveLength(2);
+    expect(await syncOf(t)).toMatchObject({ pendingFromRepo: false, changedSide: "rovara" });
+    // The slot is free for Rovara's own next change.
+    expect((await propose(t, [...V1, "Say what you ran.", "And another."], 2)).status).toBe(202);
+  });
+
+  it("a rejected repository edit is forgotten when the version moves: the file still holding it is an edit against the new version, and is proposed again", async () => {
+    const { t, repo } = await connectedAndMerged();
+    repo.push(FILE, fileOf([...V1, "Rejected edit."], 1));
+    await syncNow(t);
+    const first = (await stateOf(t)).pending!;
+    await post(t, { action: "reject", proposalId: first.proposalId, expectedDigest: first.digest }, MAYA);
+    await syncNow(t);
+    expect((await stateOf(t)).pending).toBeNull();
+    await approvedVersion(t, [...V1, "Rovara's own."], 1);
+    await syncNow(t);
+    const again = (await stateOf(t)).pending!;
+    expect(again).toMatchObject({ source: "repo", baseVersion: 2 });
+    expect(again.rules.map((rule) => rule.text)).toContain("Rejected edit.");
+    expect(again.proposalId).not.toBe(first.proposalId);
+  });
+
   it("a changed file becomes ONE pending proposal from the repository, with the diff, and the rules in force do not change", async () => {
     const { t, audit, repo } = await connectedAndMerged();
     repo.push(FILE, fileOf([...V1, "Add tests for what you change."], 1));
@@ -219,20 +257,85 @@ describe("from the repository: an edit of the file is a proposal, never an appro
     expect(events(audit, "company_rules.repo_proposed")).toHaveLength(1);
   });
 
-  it("an admin approves it with a fresh sign-in (version 2, 'admin_review'); the file already matches, so nothing is written back", async () => {
-    const { t, repo } = await connectedAndMerged();
+  const adopt = (t: Bench, pending: { proposalId: string; digest: string }, who: Developer = OMAR) => post(t, { action: "adopt", proposalId: pending.proposalId, expectedDigest: pending.digest }, who);
+  const approve = (t: Bench, pending: { proposalId: string; digest: string }, who: Developer, extra: Record<string, unknown> = {}) => post(t, { action: "approve", proposalId: pending.proposalId, expectedDigest: pending.digest, ...extra }, who);
+
+  it("needs TWO admins (decision 85): one adopts it, a DIFFERENT admin approves with a fresh sign-in; nobody can approve it before it is adopted, and the adopter cannot approve it alone", async () => {
+    const { t, audit, repo } = await connectedAndMerged();
     repo.push(FILE, fileOf([...V1, "Add tests for what you change."], 1));
     await syncNow(t);
     const pending = (await stateOf(t)).pending!;
-    t.ageSignIn(OMAR, 20);
-    const stale = await post(t, { action: "approve", proposalId: pending.proposalId, expectedDigest: pending.digest });
-    expect(code(stale)).toBe("REAUTH_REQUIRED");
-    t.ageSignIn(OMAR, 1);
-    const done = await post(t, { action: "approve", proposalId: pending.proposalId, expectedDigest: pending.digest });
+    expect(pending).toMatchObject({ source: "repo", adoptedBy: null, approval: { canApprove: false, reason: "needs_adoption" } });
+    // Not adopted yet: nobody may approve it, whoever they are.
+    for (const who of [OMAR, MAYA]) {
+      const refused = await approve(t, pending, who, { soleOwnerAcknowledged: true });
+      expect(refused.status, JSON.stringify(refused.body)).toBe(403);
+      expect(JSON.stringify(refused.body)).toContain("adopt");
+    }
+    expect((await stateOf(t)).current).toMatchObject({ version: 1 });
+    // A member cannot adopt it; an admin can, and only the first one does.
+    const adopted = await adopt(t, pending);
+    expect(adopted.status, JSON.stringify(adopted.body)).toBe(200);
+    expect(CompanyRulesAnswerReaderSchema.parse(adopted.body).status).toBe("adopted");
+    expect(events(audit, "company_rules.adopted")).toHaveLength(1);
+    expect(events(audit, "company_rules.adopted")[0]).toMatchObject({ actor: { kind: "member", id: OMAR.developerId }, facts: { proposalId: pending.proposalId, source: "repo", digest: pending.digest } });
+    expect((await adopt(t, pending)).status).toBe(200);
+    expect(events(audit, "company_rules.adopted")).toHaveLength(1);
+    const second = await adopt(t, pending, MAYA);
+    expect(second.status).toBe(409);
+    const view = (await stateOf(t, MAYA)).pending!;
+    expect(view).toMatchObject({ adoptedBy: { id: OMAR.developerId }, proposedByYou: false, approval: { canApprove: true } });
+    expect((await stateOf(t)).pending).toMatchObject({ proposedByYou: true, approval: { canApprove: false, reason: "you_proposed" } });
+    // The adopter cannot approve it alone while another admin exists, however fresh the sign-in.
+    const alone = await approve(t, pending, OMAR, { soleOwnerAcknowledged: true });
+    expect(alone.status, JSON.stringify(alone.body)).toBe(403);
+    expect((await stateOf(t)).current).toMatchObject({ version: 1 });
+    // The different admin needs a fresh sign-in, then approves.
+    t.ageSignIn(MAYA, 20);
+    expect(code(await approve(t, pending, MAYA))).toBe("REAUTH_REQUIRED");
+    t.ageSignIn(MAYA, 1);
+    const done = await approve(t, pending, MAYA);
     expect(done.status, JSON.stringify(done.body)).toBe(200);
-    expect((await stateOf(t)).current).toMatchObject({ version: 2, source: "repo", approvalMode: "admin_review" });
+    expect((await stateOf(t)).current).toMatchObject({ version: 2, source: "repo", approvalMode: "second_person", approvedBy: { id: MAYA.developerId }, adoptedBy: { id: OMAR.developerId } });
+    expect(events(audit, "company_rules.approved").at(-1)).toMatchObject({ actor: { id: MAYA.developerId }, facts: { source: "repo", approvalMode: "second_person" } });
+    // The file already holds it: nothing is written back.
     expect(repo.pulls).toHaveLength(1);
     expect((await syncOf(t))).toMatchObject({ fileState: "match" });
+  });
+
+  it("a company of one: the owner adopts a repository edit and may approve it only with the acknowledgement, inside the cool-off never", async () => {
+    const repo = new FakeCompanyRepo();
+    const { t } = await bench(repo, {});
+    await approvedVersion1(t);
+    await connect(t);
+    repo.merge(1);
+    await syncNow(t);
+    repo.push(FILE, fileOf([...V1, "One more."], 1));
+    await syncNow(t);
+    const pending = (await stateOf(t)).pending!;
+    expect((await adopt(t, pending)).status).toBe(200);
+    expect((await stateOf(t)).pending!.approval).toMatchObject({ canApprove: true, soleOwner: { available: true } });
+    const without = await approve(t, pending, OMAR);
+    expect(without.status).toBe(403);
+    expect(JSON.stringify(without.body)).toContain("only owner");
+    const done = await approve(t, pending, OMAR, { soleOwnerAcknowledged: true });
+    expect(done.status, JSON.stringify(done.body)).toBe(200);
+    expect((await stateOf(t)).current).toMatchObject({ version: 2, approvalMode: "sole_owner_exception", adoptedBy: { id: OMAR.developerId } });
+  });
+
+  it("only a repository proposal is adopted, only by a live admin, and only the proposal the person looked at", async () => {
+    const { t, repo } = await connectedAndMerged();
+    expect((await propose(t, [...V1, "From Rovara."], 1)).status).toBe(202);
+    const mine = (await stateOf(t)).pending!;
+    expect((await adopt(t, mine, MAYA)).status).toBe(400);
+    expect((await post(t, { action: "cancel", proposalId: mine.proposalId })).status).toBe(200);
+    repo.push(FILE, fileOf([...V1, "From the repository."], 1));
+    await syncNow(t);
+    const edit = (await stateOf(t)).pending!;
+    expect((await adopt(t, { ...edit, digest: "0".repeat(64) })).status).toBe(409);
+    await t.person(MAYA, "member");
+    expect((await adopt(t, edit, MAYA)).status).toBe(403);
+    expect((await stateOf(t)).pending).toMatchObject({ adoptedBy: null });
   });
 
   it("rejecting it puts Rovara's version back in the file as a pull request (Rovara is home), and the same edit is not proposed again", async () => {
@@ -367,7 +470,8 @@ describe("from the repository: an edit of the file is a proposal, never an appro
     const state = await stateOf(t);
     expect(state.current).toMatchObject({ version: 1 });
     expect(state.pending).toMatchObject({ source: "repo" });
-    expect((await stateOf(t, MAYA)).pending!.approval).toMatchObject({ canApprove: true });
+    // It waits for an admin to adopt it; the text in it is only text for them to read.
+    expect((await stateOf(t, MAYA)).pending!.approval).toMatchObject({ canApprove: false, reason: "needs_adoption" });
   });
 });
 

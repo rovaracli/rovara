@@ -1,6 +1,6 @@
 // Company rules (G-04): the parts under the routes. The rule list's checks and canonical form, the diff, the file's writer and reader (Rovara Code's format), the store's rows (versions immutable, one waiting proposal, the head moving one
 // number at a time), the Cloud source of the CompanyInstructionsSource port, and the operator's seed (the owner-approved 14 rules). The routes, the approval guards and the file sync have their own files.
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { COMPANY_RULES_APP_LIMITS, COMPANY_RULE_LIMITS, CompanyRulesStateSchema, STANDING_INSTRUCTIONS_WORDING, type CompanyRule } from "@agentx/contracts";
 import * as web from "../../packages/contracts/src/web.js";
 import { diffRules, diffWithSides, normalizeRules, readNumberedDraft, readRulesFile, renderRulesFile, rulesDigest } from "../../packages/broker/src/company-rules/rules.js";
@@ -8,6 +8,7 @@ import { companyRulesSourceOver } from "../../packages/broker/src/company-rules/
 import { seedCompanyRules } from "../../packages/broker/src/company-rules/seed.js";
 import { dynamoCompanyRulesStore, type ProposalRecord, type VersionRecord } from "../../packages/broker/src/company-rules/store.js";
 import { companyRulesPathProblem } from "../../packages/broker/src/company-rules/path.js";
+import { connectedCompanyRulesPath } from "../../packages/broker/src/company-rules/connected-path.js";
 import { readCompanyInstructions } from "../../packages/broker/src/instructions/company-source.js";
 import { auditCompanyRules } from "../../packages/broker/src/audit/events.js";
 import { parseSeedArgs, rulesOfDraft } from "../../scripts/seed-company-rules.js";
@@ -132,7 +133,23 @@ describe("the file", () => {
 
   it("only a plain Markdown path is a company rules file", () => {
     for (const ok of [".rovara/company-rules.md", "docs/rules.md", "COMPANY.MD", "a/b/c.md"]) expect(companyRulesPathProblem(ok), ok).toBeUndefined();
-    for (const bad of ["", "/abs.md", "../x.md", "a//b.md", "a/./b.md", ".github/rules.md", ".git/x.md", ".hidden.md", "rules.txt", "a b.md", "a\\b.md", "x".repeat(200) + ".md", "AGENTS.md", "docs/CLAUDE.md", ".rovara/lessons.md", "README.md", ".github/copilot-instructions.md"]) expect(companyRulesPathProblem(bad), bad).toBeDefined();
+    for (const bad of ["", "/abs.md", "../x.md", "a//b.md", "a/./b.md", ".github/rules.md", ".git/x.md", ".hidden.md", "rules.txt", "a b.md", "a\\b.md", "x".repeat(200) + ".md", "AGENTS.md", "docs/CLAUDE.md", ".rovara/lessons.md", "README.md", ".github/copilot-instructions.md", ".rovara/rules/company.md", ".rovara/sub/x.md", "runbooks/deploy.md", "docs/runbooks/deploy.md", "docs/Runbook/x.md"]) expect(companyRulesPathProblem(bad), bad).toBeDefined();
+  });
+});
+
+describe("the connected path for the merge guard", () => {
+  afterEach(() => { delete process.env.STANDING_INSTRUCTIONS_ENABLED; });
+  const row = { pk: `ORG#${TEST_ORG}`, sk: "COMPANYRULES#SYNC", revision: 1, repositoryName: "acme/meta", repositoryUrl: "https://github.com/acme/meta.git", repositoryId: 5, path: "docs/our-rules.md", branch: "main", connectedBy: ADA, connectedAt: at, fileState: "match" };
+  it("is the company's connected path while si is on, nothing while it is off or nothing is connected, and unreadable (fail closed) when the link cannot be read", async () => {
+    const db = new FakeDynamoDb();
+    const table = { documentClient: db, tableName: "state" };
+    process.env.STANDING_INSTRUCTIONS_ENABLED = "1";
+    expect(await connectedCompanyRulesPath(table, TEST_ORG)).toEqual({ ok: true });
+    db.set(row);
+    expect(await connectedCompanyRulesPath(table, TEST_ORG)).toEqual({ ok: true, path: "docs/our-rules.md" });
+    expect(await connectedCompanyRulesPath({ documentClient: { send: () => Promise.reject(new Error("down")) }, tableName: "state" }, TEST_ORG)).toEqual({ ok: false });
+    delete process.env.STANDING_INSTRUCTIONS_ENABLED;
+    expect(await connectedCompanyRulesPath(table, TEST_ORG)).toEqual({ ok: true });
   });
 });
 
@@ -293,36 +310,89 @@ describe("the Cloud source of the company's rules", () => {
 
 describe("the operator's seed", () => {
   const rules = () => readNumberedDraft(STANDING_INSTRUCTIONS_DRAFT);
-  it("a dry run writes nothing; --apply writes version 1 as 'seed' with its audit event; a second run changes nothing", async () => {
+  const REF = "owner decision 85, 2026-11-11";
+  it("a dry run writes nothing; --apply writes version 1 as 'seed' with the operator's own approval note and its audit event; a second run changes nothing", async () => {
     const { store, audit, db } = bench();
     const deps = { store, now: () => Date.parse(at) };
     const dry = await seedCompanyRules(deps, { orgId: TEST_ORG, rules: rules(), apply: false });
     expect(dry.status).toBe("would_seed");
     expect(db.find((item) => String(item.sk).startsWith("COMPANYRULES#"))).toEqual([]);
-    const done = await seedCompanyRules(deps, { orgId: TEST_ORG, rules: rules(), apply: true });
+    const done = await seedCompanyRules(deps, { orgId: TEST_ORG, rules: rules(), apply: true, approvalRef: REF });
     expect(done.status).toBe("seeded");
-    expect(await store.version(TEST_ORG, 1)).toMatchObject({ source: "seed", approvalMode: "seed", approvedBy: { kind: "seed" }, proposalId: "seed", baseVersion: 0 });
+    expect(await store.version(TEST_ORG, 1)).toMatchObject({ source: "seed", approvalMode: "seed", approvedBy: { kind: "seed" }, proposalId: "seed", baseVersion: 0, note: REF });
     expect((await store.version(TEST_ORG, 1))!.rules).toHaveLength(14);
     expect(await companyRulesSourceOver(store).current(TEST_ORG)).toMatchObject({ version: "1" });
     const [seeded] = audit.recordedBy("company_rules.approved");
     expect(seeded).toMatchObject({ actor: { kind: "system" }, facts: { version: 1, ruleCount: 14, source: "seed", approvalMode: "seed" } });
-    const again = await seedCompanyRules(deps, { orgId: TEST_ORG, rules: rules(), apply: true });
+    const again = await seedCompanyRules(deps, { orgId: TEST_ORG, rules: rules(), apply: true, approvalRef: REF });
     expect(again.status).toBe("already_has_versions");
     expect(audit.recordedBy("company_rules.approved")).toHaveLength(1);
   });
 
-  it("is refused for a company that has a waiting proposal, and for rules over the limits", async () => {
-    const { store } = bench();
-    await store.createProposal({ orgId: TEST_ORG, proposal: proposalOf(ID1, 0), expectedBase: 0, events: [event("company_rules.proposed", ID1)] });
-    expect((await seedCompanyRules({ store, now: () => 1 }, { orgId: TEST_ORG, rules: rules(), apply: true })).status).toBe("already_has_versions");
-    await expect(seedCompanyRules({ store: bench().store, now: () => 1 }, { orgId: TEST_ORG, rules: Array.from({ length: 31 }, (_, index) => rule(`r${String(index)}`)), apply: true })).rejects.toThrow(/size budget/);
+  it("writes nothing unless the operator says what approved the rules: no approval reference, an empty one, a long one or a secret-like one is refused, and no note is made up", async () => {
+    const { store, db } = bench();
+    const deps = { store, now: () => Date.parse(at) };
+    const fake = ["gh", "p_", "q".repeat(36)].join("");
+    for (const approvalRef of [undefined, "", "   ", "x".repeat(301), `approved with ${fake}`]) {
+      await expect(seedCompanyRules(deps, { orgId: TEST_ORG, rules: rules(), apply: true, approvalRef }), String(approvalRef)).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+    }
+    expect(db.find((item) => String(item.sk).startsWith("COMPANYRULES#"))).toEqual([]);
+    expect(JSON.stringify(await seedCompanyRules(deps, { orgId: TEST_ORG, rules: rules(), apply: false }))).not.toContain("decision 85");
   });
 
-  it("reads its options strictly", () => {
-    expect(parseSeedArgs(["--state-table", "t", "--org", TEST_ORG, "--draft", "d.md"], {})).toMatchObject({ stateTable: "t", apply: false });
-    expect(parseSeedArgs(["--state-table", "t", "--org", TEST_ORG, "--draft", "d.md", "--apply"], {}).apply).toBe(true);
-    for (const bad of [["--org", TEST_ORG, "--draft", "d"], ["--state-table", "t", "--org", "nope", "--draft", "d"], ["--state-table", "t", "--org", TEST_ORG, "--draft", "d", "--apply", "--dry-run"], ["--bogus"]]) expect(() => parseSeedArgs(bad, {})).toThrow();
+  it("is refused, saying which, for a company that has a version or a waiting proposal; a company whose only proposal was cancelled can still be seeded; and for rules over the limits", async () => {
+    const waiting = bench();
+    await waiting.store.createProposal({ orgId: TEST_ORG, proposal: proposalOf(ID1, 0), expectedBase: 0, events: [event("company_rules.proposed", ID1)] });
+    expect((await seedCompanyRules({ store: waiting.store, now: () => 1 }, { orgId: TEST_ORG, rules: rules(), apply: true, approvalRef: REF })).status).toBe("proposal_waiting");
+    // The proposal is cancelled: the head now holds latestVersion 0 and nothing waits. That is not "already has versions".
+    const proposal = proposalOf(ID1, 0);
+    await waiting.store.decideProposal({ orgId: TEST_ORG, proposal, outcome: "cancelled", decidedBy: { kind: "member", id: ADA }, decidedAt: at, events: [] });
+    expect(await waiting.store.head(TEST_ORG)).toMatchObject({ latestVersion: 0 });
+    expect((await seedCompanyRules({ store: waiting.store, now: () => 1 }, { orgId: TEST_ORG, rules: rules(), apply: true, approvalRef: REF })).status).toBe("seeded");
+    await expect(seedCompanyRules({ store: bench().store, now: () => 1 }, { orgId: TEST_ORG, rules: Array.from({ length: 31 }, (_, index) => rule(`r${String(index)}`)), apply: true, approvalRef: REF })).rejects.toThrow(/size budget/);
   });
+
+  it("the store itself refuses a seed under a waiting proposal or over a version, whatever the caller checked", async () => {
+    const waiting = bench();
+    await waiting.store.createProposal({ orgId: TEST_ORG, proposal: proposalOf(ID1, 0), expectedBase: 0, events: [event("company_rules.proposed", ID1)] });
+    const first = proposalOf(ID2, 0, normalizeRules([rule("seeded")]));
+    const version = versionOf(first);
+    expect(await waiting.store.seedVersion({ orgId: TEST_ORG, version: { ...version, proposalId: "seed", source: "seed", approvalMode: "seed" }, events: [] })).toBe("conflict");
+    expect(await waiting.store.version(TEST_ORG, 1)).toBeUndefined();
+    const taken = bench();
+    const p = proposalOf(ID1, 0);
+    await taken.store.createProposal({ orgId: TEST_ORG, proposal: p, expectedBase: 0, events: [event("company_rules.proposed", ID1)] });
+    await taken.store.decideProposal({ orgId: TEST_ORG, proposal: p, outcome: "approved", decidedBy: { kind: "member", id: BEN }, decidedAt: at, version: versionOf(p), events: [event("company_rules.approved", ID1)] });
+    expect(await taken.store.seedVersion({ orgId: TEST_ORG, version: { ...version, proposalId: "seed", source: "seed", approvalMode: "seed" }, events: [] })).toBe("conflict");
+    expect((await taken.store.version(TEST_ORG, 1))!.rules).toEqual(p.rules);
+  });
+
+  it("reads its options strictly: --apply needs the approval reference and the same company id again", () => {
+    const base = ["--state-table", "t", "--org", TEST_ORG, "--draft", "d.md"];
+    expect(parseSeedArgs(base, {})).toMatchObject({ stateTable: "t", apply: false });
+    expect(parseSeedArgs([...base, "--apply", "--approval-ref", "owner go", "--confirm-org", TEST_ORG], {})).toMatchObject({ apply: true, approvalRef: "owner go" });
+    for (const bad of [["--org", TEST_ORG, "--draft", "d"], ["--state-table", "t", "--org", "nope", "--draft", "d"], [...base, "--apply", "--dry-run"], ["--bogus"], [...base, "--apply"],
+      [...base, "--apply", "--approval-ref", "owner go"], [...base, "--apply", "--confirm-org", TEST_ORG], [...base, "--apply", "--approval-ref", "owner go", "--confirm-org", "org_aaaaaaaaaaaaaaaaaaaa"], [...base, "--apply", "--approval-ref", " ", "--confirm-org", TEST_ORG]]) {
+      expect(() => parseSeedArgs(bad, {}), bad.join(" ")).toThrow();
+    }
+  });
+});
+
+describe("the history of proposals that did not become a version", () => {
+  it("lists the latest ones newest first by when they ended, however many there have been and whatever their ids", async () => {
+    const { store } = bench();
+    const ids = Array.from({ length: 60 }, (_, n) => `${(0xffffff - n * 7919).toString(16).padStart(8, "0")}-0000-4000-8000-${String(n).padStart(12, "0")}`);
+    for (const [n, id] of ids.entries()) {
+      const proposal = proposalOf(id, 0, normalizeRules([rule(`rule ${String(n)}`)]));
+      await store.createProposal({ orgId: TEST_ORG, proposal, expectedBase: 0, events: [event("company_rules.proposed", id)] });
+      const decidedAt = new Date(Date.parse(at) + n * 60_000).toISOString();
+      await store.decideProposal({ orgId: TEST_ORG, proposal, outcome: n % 2 === 0 ? "rejected" : "cancelled", decidedBy: { kind: "member", id: BEN }, decidedAt, events: [event("company_rules.rejected", id)] });
+    }
+    const latest = await store.decided(TEST_ORG, 20);
+    expect(latest.map((p) => p.proposalId)).toEqual(ids.slice(-20).reverse());
+    expect(latest.every((p) => p.state === "rejected" || p.state === "cancelled")).toBe(true);
+    expect((await store.decided(TEST_ORG, 5)).map((p) => p.proposalId)).toEqual(ids.slice(-5).reverse());
+  }, 60_000);
 });
 
 describe("the state's schema", () => {

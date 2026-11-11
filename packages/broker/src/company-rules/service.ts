@@ -3,7 +3,8 @@
 //   - APPROVING needs a live company owner or admin, signed in within the last 10 minutes (the stored session, never the request), who is not the proposer. The decision is the shared second-person one (`decideSecondPersonApproval`):
 //     a different eligible admin, or, for a company whose only eligible person is its only owner, the sole-owner exception after the 24 hour cool-off, and only with the person's acknowledgement. The evidence the decision rested
 //     on (both people's live authority and the company's membership generation) is fenced into the SAME transaction as the new version and its audit event, so a person added, removed or demoted in between stops it.
-//     A proposal that came back from the company's repository has no person as its proposer: any live admin may approve it (the repository's own review was the first look); it is a version made by "admin_review".
+//     A proposal that came back from the company's repository has no person as its proposer, so it needs TWO admins (decision 85, second-admin approval): a first admin ADOPTS it (nothing changes; the adopter is audited and becomes the
+//     proposer the rule measures against) and a DIFFERENT admin approves, or the sole-owner exception applies with its cool-off and acknowledgement, exactly as for a proposal made in Rovara. Without an adopter nobody may approve it.
 //   - REJECTING is the approver's refusal (a different admin; a repository proposal: any admin). CANCELLING is the proposer withdrawing their own. Neither needs a recent sign-in: a safety action stays easy.
 //   - A version is immutable and never rewritten; the head moves one number at a time. The approver pins the proposal's digest, so what they saw is what is approved.
 // Nothing here reads a host or writes a file: the repository side is `sync.ts`. Rule text is data: it is folded, screened for secrets and held to the limits on the way in (`rules.ts`) and is never run.
@@ -40,11 +41,17 @@ export const COMPANY_RULES_WORDS = {
   notYours: "Only the person who proposed a change can withdraw it.",
   notFound: "No such proposal.",
   acknowledge: "Acknowledge that you are approving your own change as the company's only owner.",
+  adoptFirst: "This change came from the company's repository. One admin has to adopt it first, and a different admin then approves it.",
+  adoptedAlready: "Another admin already adopted this change. A different admin than the one who adopted it approves it.",
+  notFromRepo: "Only a change that came from the company's repository is adopted.",
 } as const;
 
 const memberOf = (caller: CompanyRulesCaller): Actor => ({ kind: "member", id: caller.developerId });
 const iso = (ms: number): string => new Date(ms).toISOString();
 const isMember = (actor: Actor, developerId: string): boolean => actor.kind === "member" && actor.id === developerId;
+/** The person a different admin's approval is measured against: the proposer, or, for a repository proposal, the admin who adopted it. */
+const accountablePerson = (proposal: ProposalRecord): Extract<Actor, { kind: "member" }> | undefined =>
+  proposal.proposedBy.kind === "member" ? proposal.proposedBy : proposal.adoptedBy?.kind === "member" ? proposal.adoptedBy : undefined;
 
 /** The audit actor of what a person or Rovara did: members are themselves; the repository, the seed and the system are Rovara acting (the repository's login stays out of the ledger). */
 function auditActor(actor: Actor): AuditEventInput["actor"] {
@@ -120,13 +127,43 @@ async function waitingProposal(deps: CompanyRulesDeps, orgId: OrgId, proposalId:
   return proposal;
 }
 
-/** What the approver's authority is for this proposal: the fence to commit with it, and the mode the version records. */
+/** What the approver's authority is for this proposal: the fence to commit with it, and the mode the version records. A proposal nobody is accountable for (a repository edit not yet adopted) cannot be approved. */
 async function approvalAuthority(deps: CompanyRulesDeps, caller: CompanyRulesCaller, proposal: ProposalRecord, soleOwnerAcknowledged: boolean | undefined): Promise<{ conditions: TransactItem[]; mode: ApprovalMode }> {
-  if (proposal.proposedBy.kind !== "member") return { conditions: await readCompanyAdminActorConditions(deps.evidence, { orgId: caller.orgId, actorId: caller.developerId }), mode: "admin_review" };
-  const evidence = await readSecondPersonApprovalEvidence(deps.evidence, { orgId: caller.orgId, proposerId: proposal.proposedBy.id, approverId: caller.developerId });
+  const accountable = accountablePerson(proposal);
+  if (accountable === undefined) throw agentXError("FORBIDDEN", COMPANY_RULES_WORDS.adoptFirst);
+  const evidence = await readSecondPersonApprovalEvidence(deps.evidence, { orgId: caller.orgId, proposerId: accountable.id, approverId: caller.developerId });
   const decision = decideSecondPersonApproval(evidence.decisionInput);
   if (decision.mode === "sole_owner_exception" && soleOwnerAcknowledged !== true) throw agentXError("FORBIDDEN", COMPANY_RULES_WORDS.acknowledge);
   return { conditions: evidence.conditions, mode: decision.mode };
+}
+
+const adoptedEvent = (orgId: OrgId, proposal: ProposalRecord, adopter: Actor, at: string): AuditEventInput =>
+  event(orgId, "company_rules.adopted", adopter, at, [proposal.proposalId, "adopted"], { proposalId: proposal.proposalId, source: proposal.source, digest: proposal.digest });
+
+/** A first admin adopts a proposal that came back from the repository. It changes nothing that runs; it names the person a DIFFERENT admin's approval is measured against, and is audited. */
+export async function adoptProposal(deps: CompanyRulesDeps, caller: CompanyRulesCaller, input: { proposalId: string; expectedDigest: string }): Promise<{ proposal: ProposalRecord; replay: boolean }> {
+  validCaller(caller);
+  await deps.requireAdmin(caller);
+  const proposal = await waitingProposal(deps, caller.orgId, input.proposalId);
+  if (proposal.source !== "repo") throw agentXError("CONFIG_INVALID", COMPANY_RULES_WORDS.notFromRepo);
+  if (proposal.digest !== input.expectedDigest) throw stale(COMPANY_RULES_WORDS.digest);
+  if (proposal.adoptedBy !== undefined) {
+    if (proposal.state === "pending" && isMember(proposal.adoptedBy, caller.developerId)) return { proposal, replay: true };
+    throw stale(COMPANY_RULES_WORDS.adoptedAlready);
+  }
+  if (proposal.state !== "pending") throw stale(COMPANY_RULES_WORDS.decided);
+  const now = deps.now();
+  if (proposalExpired(proposal, now)) throw stale(COMPANY_RULES_WORDS.expired);
+  const head = await deps.store.head(caller.orgId);
+  if (head.latestVersion !== proposal.baseVersion || head.pendingProposalId !== proposal.proposalId) throw stale(COMPANY_RULES_WORDS.moved);
+  const conditions = await readCompanyAdminActorConditions(deps.evidence, { orgId: caller.orgId, actorId: caller.developerId });
+  const at = iso(now);
+  if (await deps.store.adoptProposal({ orgId: caller.orgId, proposal, adopter: memberOf(caller), adoptedAt: at, conditions, events: [adoptedEvent(caller.orgId, proposal, memberOf(caller), at)] }) === "conflict") {
+    const after = await deps.store.proposal(caller.orgId, proposal.proposalId);
+    if (after?.adoptedBy !== undefined && isMember(after.adoptedBy, caller.developerId)) return { proposal: after, replay: true };
+    throw stale(COMPANY_RULES_WORDS.moved);
+  }
+  return { proposal: { ...proposal, adoptedBy: memberOf(caller), adoptedAt: at }, replay: false };
 }
 
 export type ApproveResult = { version: VersionRecord; replay: boolean };
@@ -151,7 +188,7 @@ export async function approveProposal(deps: CompanyRulesDeps, caller: CompanyRul
   const at = iso(now);
   const version: VersionRecord = {
     version: proposal.baseVersion + 1, digest: proposal.digest, rules: proposal.rules, source: proposal.source, approvalMode: mode, proposedBy: proposal.proposedBy, approvedBy: memberOf(caller),
-    proposalId: proposal.proposalId, baseVersion: proposal.baseVersion, proposedAt: proposal.proposedAt, approvedAt: at, ...(proposal.note === undefined ? {} : { note: proposal.note }),
+    proposalId: proposal.proposalId, baseVersion: proposal.baseVersion, proposedAt: proposal.proposedAt, approvedAt: at, ...(proposal.note === undefined ? {} : { note: proposal.note }), ...(proposal.adoptedBy === undefined ? {} : { adoptedBy: proposal.adoptedBy }),
   };
   const approved = event(caller.orgId, "company_rules.approved", memberOf(caller), at, [proposal.proposalId, "approved"], {
     proposalId: proposal.proposalId, version: version.version, baseVersion: proposal.baseVersion, ruleCount: version.rules.length, digest: version.digest, source: proposal.source, approvalMode: mode,
@@ -200,12 +237,15 @@ export async function cancelProposal(deps: CompanyRulesDeps, caller: CompanyRule
   return { proposal: { ...proposal, state: "cancelled", decidedAt: at, decidedBy: memberOf(caller) }, replay: false };
 }
 
-/** What the page tells the person about approving the waiting proposal (the server decides again at approve). The sole-owner hint is read only for the proposer, whose own approval is the only case it matters for. */
-export async function approvalHint(deps: CompanyRulesDeps, caller: CompanyRulesCaller, proposal: ProposalRecord, head: { latestVersion: number }): Promise<{ canApprove: boolean; reason: "you_proposed" | "stale" | "expired" | null; soleOwner: { available: boolean; availableAt: string | null; reasonCode: "SOLE_OWNER_COOL_OFF" | "SECOND_PERSON_REQUIRED" | "ELIGIBILITY_UNAVAILABLE" | "SOLE_OWNER_EXCEPTION_AVAILABLE" } | null }> {
+type SoleOwnerHint = { available: boolean; availableAt: string | null; reasonCode: "SOLE_OWNER_COOL_OFF" | "SECOND_PERSON_REQUIRED" | "ELIGIBILITY_UNAVAILABLE" | "SOLE_OWNER_EXCEPTION_AVAILABLE" };
+/** What the page tells the person about approving the waiting proposal (the server decides again at approve). The sole-owner hint is read only for the person the approval is measured against (the proposer, or a repository proposal's adopter), whose own approval is the only case it matters for. */
+export async function approvalHint(deps: CompanyRulesDeps, caller: CompanyRulesCaller, proposal: ProposalRecord, head: { latestVersion: number }): Promise<{ canApprove: boolean; reason: "you_proposed" | "needs_adoption" | "stale" | "expired" | null; soleOwner: SoleOwnerHint | null }> {
   if (proposalExpired(proposal, deps.now())) return { canApprove: false, reason: "expired", soleOwner: null };
   if (head.latestVersion !== proposal.baseVersion) return { canApprove: false, reason: "stale", soleOwner: null };
-  if (!isMember(proposal.proposedBy, caller.developerId)) return { canApprove: true, reason: null, soleOwner: null };
-  let soleOwner: { available: boolean; availableAt: string | null; reasonCode: "SOLE_OWNER_COOL_OFF" | "SECOND_PERSON_REQUIRED" | "ELIGIBILITY_UNAVAILABLE" | "SOLE_OWNER_EXCEPTION_AVAILABLE" } = { available: false, availableAt: null, reasonCode: "ELIGIBILITY_UNAVAILABLE" };
+  const accountable = accountablePerson(proposal);
+  if (accountable === undefined) return { canApprove: false, reason: "needs_adoption", soleOwner: null };
+  if (accountable.id !== caller.developerId) return { canApprove: true, reason: null, soleOwner: null };
+  let soleOwner: SoleOwnerHint = { available: false, availableAt: null, reasonCode: "ELIGIBILITY_UNAVAILABLE" };
   try {
     const evidence = await readSecondPersonApprovalEvidence(deps.evidence, { orgId: caller.orgId, proposerId: caller.developerId, approverId: caller.developerId });
     if (decideSecondPersonApproval(evidence.decisionInput).mode === "sole_owner_exception") soleOwner = { available: true, availableAt: null, reasonCode: "SOLE_OWNER_EXCEPTION_AVAILABLE" };

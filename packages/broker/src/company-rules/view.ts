@@ -27,7 +27,7 @@ export function personOf(actor: Actor, names: Names): CompanyRulesPerson {
 export function versionView(version: VersionRecord, admin: boolean, names: Names): CompanyRulesVersion {
   return {
     version: version.version, digest: version.digest, rules: version.rules.map((rule) => ({ text: rule.text, priority: rule.priority })), ruleCount: version.rules.length, approvedAt: version.approvedAt,
-    ...(admin ? { approvedBy: personOf(version.approvedBy, names), proposedBy: personOf(version.proposedBy, names), source: version.source, approvalMode: version.approvalMode, baseVersion: version.baseVersion, note: version.note ?? null } : {}),
+    ...(admin ? { approvedBy: personOf(version.approvedBy, names), proposedBy: personOf(version.proposedBy, names), source: version.source, approvalMode: version.approvalMode, baseVersion: version.baseVersion, note: version.note ?? null, adoptedBy: version.adoptedBy === undefined ? null : personOf(version.adoptedBy, names) } : {}),
   };
 }
 
@@ -37,7 +37,8 @@ export function proposalView(proposal: ProposalRecord, input: { current: readonl
   return {
     proposalId: proposal.proposalId, state: "pending", baseVersion: proposal.baseVersion, stale: input.head.latestVersion !== proposal.baseVersion, source: proposal.source,
     rules: proposal.rules.map((rule) => ({ text: rule.text, priority: rule.priority })), ruleCount: proposal.rules.length, digest: proposal.digest, note: proposal.note ?? null,
-    proposedBy: personOf(proposal.proposedBy, input.names), proposedByYou: proposal.proposedBy.kind === "member" && proposal.proposedBy.id === input.developerId,
+    proposedBy: personOf(proposal.proposedBy, input.names), adoptedBy: proposal.adoptedBy === undefined ? null : personOf(proposal.adoptedBy, input.names),
+    proposedByYou: [proposal.proposedBy, proposal.adoptedBy].some((who) => who?.kind === "member" && who.id === input.developerId),
     proposedAt: proposal.proposedAt, expiresAt: proposal.expiresAt, diff: diffRules(input.current, proposal.rules), approval: input.hint,
   };
 }

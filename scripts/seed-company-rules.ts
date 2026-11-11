@@ -1,11 +1,11 @@
 // Company rules (G-04, owner decision 85): loads the owner-approved first version of a company's standing instructions. For the operator, once per company, after the install that turns `si` on. NOT an API route and NOT run by CI.
 //
 //   under the release wrapper (it sets the account, region and credentials and refuses --profile):
-//   ~/.local/share/rovara-tools/staging-aws.sh npx tsx scripts/seed-company-rules.ts --state-table <state table> --org <org id> --draft <standing-instructions-draft.md> [--apply]
+//   ~/.local/share/rovara-tools/staging-aws.sh npx tsx scripts/seed-company-rules.ts --state-table <state table> --org <org id> --draft <standing-instructions-draft.md> [--apply --approval-ref "<what approved it>" --confirm-org <the same org id>]
 //
 // DEFAULT is a dry run: it reads the draft, checks it (the 30 x 600 / 12,000 limits, empty rules, secret-like text), reads the company's head row and prints the rule counts and the digest. It writes nothing. --apply writes version 1 and
-// its audit event in ONE transaction, only if the company has no version and no waiting proposal (`seedCompanyRules`). The audit event is left as a pending item and sent on by the broker's drain, so no queue is needed here.
-// EXIT CODES: 0 done (or the dry run is clean); 1 the draft is not valid or a store fault; 2 bad option; 3 the company already has versions (nothing was written).
+// its audit event in ONE transaction, only if the company has no version and no waiting proposal (`seedCompanyRules`). --apply needs --approval-ref (what approved the rules, in the operator's words: it becomes the version's note, and nothing else is claimed) and --confirm-org (the same company id again, so a wrong --org is caught). The audit event is left as a pending item and sent on by the broker's drain, so no queue is needed here.
+// EXIT CODES: 0 done (or the dry run is clean); 1 the draft is not valid or a store fault; 2 bad option; 3 the company already has versions or a waiting proposal (nothing was written).
 import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
@@ -16,9 +16,9 @@ import { readNumberedDraft, readRulesFile } from "../packages/broker/src/company
 import { seedCompanyRules } from "../packages/broker/src/company-rules/seed.js";
 import { dynamoCompanyRulesStore } from "../packages/broker/src/company-rules/store.js";
 
-export interface SeedArgs { stateTable: string; org: string; draft: string; region?: string; apply: boolean }
+export interface SeedArgs { stateTable: string; org: string; draft: string; region?: string; apply: boolean; approvalRef?: string }
 
-const VALUE_OPTIONS = ["--state-table", "--org", "--draft", "--region"];
+const VALUE_OPTIONS = ["--state-table", "--org", "--draft", "--region", "--approval-ref", "--confirm-org"];
 const FLAG_OPTIONS = ["--apply", "--dry-run"];
 
 export function parseSeedArgs(argv: readonly string[], env: Readonly<Record<string, string | undefined>> = process.env): SeedArgs {
@@ -42,7 +42,11 @@ export function parseSeedArgs(argv: readonly string[], env: Readonly<Record<stri
   if (org === undefined || !OrgIdSchema.safeParse(org).success) throw new Error("--org must be a company id (org_...)");
   if (draft === undefined) throw new Error("--draft is required");
   const region = values.get("--region") ?? env.AWS_REGION;
-  return { stateTable, org, draft, ...(region === undefined ? {} : { region }), apply: flags.has("--apply") };
+  const apply = flags.has("--apply");
+  const approvalRef = values.get("--approval-ref");
+  if (apply && (approvalRef === undefined || approvalRef.trim() === "")) throw new Error("--apply requires --approval-ref <what approved these rules>");
+  if (apply && values.get("--confirm-org") !== org) throw new Error("--apply requires --confirm-org <the same company id as --org>");
+  return { stateTable, org, draft, ...(region === undefined ? {} : { region }), apply, ...(approvalRef === undefined ? {} : { approvalRef }) };
 }
 
 /** The draft's rules: the numbered draft the owner approved, or a file in the bullet format the file sync reads. */
@@ -62,8 +66,9 @@ export async function main(argv: readonly string[], log: (line: string) => void 
     const documentClient = DynamoDBDocumentClient.from(new DynamoDBClient({ ...(args.region === undefined ? {} : { region: args.region }) }));
     const audit = { sqs: {} as SQSClient, queueUrl: "unused", documentClient, tableName: args.stateTable, now: Date.now, log: () => undefined, pendingOnly: true as const };
     const store = dynamoCompanyRulesStore({ documentClient, tableName: args.stateTable, audit });
-    const result = await seedCompanyRules({ store, now: Date.now }, { orgId: OrgIdSchema.parse(args.org), rules, apply: args.apply });
-    if (result.status === "already_has_versions") { log("The company already has company rules (or a proposal is waiting). Nothing was written."); return 3; }
+    const result = await seedCompanyRules({ store, now: Date.now }, { orgId: OrgIdSchema.parse(args.org), rules, apply: args.apply, approvalRef: args.approvalRef });
+    if (result.status === "already_has_versions") { log("The company already has company rules. Nothing was written."); return 3; }
+    if (result.status === "proposal_waiting") { log("A change to the company rules is waiting for a decision. Nothing was written."); return 3; }
     const required = result.version.rules.filter((rule) => rule.priority === "required").length;
     log(`${result.status === "seeded" ? "Seeded" : "Would seed"} version 1: ${String(result.version.rules.length)} rules (${String(required)} Required, ${String(result.version.rules.length - required)} Preferred), digest ${result.version.digest}.`);
     if (result.status === "would_seed") log("Dry run: nothing was written. Add --apply to write it.");
