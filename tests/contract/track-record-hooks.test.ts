@@ -48,7 +48,7 @@ function status(overrides: Partial<ChangeRequestStatus> = {}): ChangeRequestStat
     requiredChecks: [], targetHasRequiredChecks: false, headDefinesChecks: true, requestedReviewers: 0, reviews: [], ...overrides,
   };
 }
-const person = (state: "APPROVED" | "CHANGES_REQUESTED", id = "1", accountType = "person") => ({ reviewer: { login: `user${id}`, hostUserId: id }, accountType, state, revision: "a".repeat(40), submittedAt: T1 });
+const person = (state: "APPROVED" | "CHANGES_REQUESTED", id = "1", accountType: "person" | "bot" | "other" = "person") => ({ reviewer: { login: `user${id}`, hostUserId: id }, accountType, state, revision: "a".repeat(40), submittedAt: T1 });
 const workflowOf = (prs: Array<{ number: number; state: string; repositoryId?: string; candidateDigest?: string }>) => ({
   pullRequests: prs.map((pr) => ({ repositoryId: pr.repositoryId ?? "web", number: pr.number, state: pr.state, candidateDigest: pr.candidateDigest ?? CANDIDATE })),
 }) as unknown as WorkflowSnapshot;
@@ -235,7 +235,7 @@ describe("a pull request merges", () => {
   });
 
   it("a merge nobody reviewed holds the reviews but marks them; a bot's review, and an outsider's approval, are not a person's", async () => {
-    for (const reviews of [[person("APPROVED", "9", "Bot")], [person("APPROVED", "8")], []]) {
+    for (const reviews of [[person("APPROVED", "9", "bot")], [person("APPROVED", "8")], []]) {
       const w = await seeded();
       await merge(w, { reviews });
       expect(byClaim(w.db, "review_pass:CRITIC")[0]).toMatchObject({ state: "held", reason: "merged_without_person_review", unreviewedMerge: true });

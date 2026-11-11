@@ -49,7 +49,7 @@ describe("the signer program, built the way the sign job builds it", () => {
     const workflow = YAML.parse(await read(".github/workflows/release.yml")) as { jobs: Record<string, { steps: Array<{ run?: string }> }> };
     // The job builds with scripts/release/signer/build.mjs; the test builds with the same options in memory.
     expect(workflow.jobs.sign!.steps.map((step) => step.run ?? "").filter((run) => run.includes("build.mjs"))).toEqual(["node scripts/release/signer/build.mjs"]);
-    const { signerBuildOptions } = await import("../../scripts/release/signer/build.mjs") as { signerBuildOptions: () => Record<string, unknown> };
+    const { signerBuildOptions } = await import("../../scripts/release/signer/build.mjs");
     const { outfile: _outfile, ...options } = signerBuildOptions();
     void _outfile;
     const result = await build({ ...options, write: false, metafile: true, logLevel: "silent" });

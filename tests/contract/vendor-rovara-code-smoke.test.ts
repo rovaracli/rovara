@@ -13,14 +13,14 @@ const ORG = `org_${"a".repeat(20)}`;
 
 describe("Cloud code importing the pinned copy of Rovara Code", () => {
   it("runs a Code core function against a Code contract type, with the default estimate when there is no history", async () => {
-    const store = { query: () => Promise.resolve({ items: [] }) };
+    const store = { query: () => Promise.resolve({ items: [] }) } as unknown as Parameters<typeof estimateRun>[0]["store"];
     const estimate: RunEstimate = await estimateRun({ store }, { orgId: ORG, project: "example", agentId: ROVARA_CODE_AGENT_ID, path: "TASK" });
     expect(estimate).toMatchObject({ basis: "default", samples: 0, lowUsd: DEFAULT_RUN_ESTIMATE_USD.TASK.lowUsd, highUsd: DEFAULT_RUN_ESTIMATE_USD.TASK.highUsd });
   });
 
   it("works the estimate from history the way Code does, and plans the run limit from it", async () => {
     const items = Array.from({ length: ESTIMATE_MIN_SAMPLES }, () => ({ costUsd: 1.2 }));
-    const store = { query: () => Promise.resolve({ items }) };
+    const store = { query: () => Promise.resolve({ items }) } as unknown as Parameters<typeof estimateRun>[0]["store"];
     const estimate = await estimateRun({ store }, { orgId: ORG, project: "example", agentId: ROVARA_CODE_AGENT_ID, path: "FULL" });
     expect(estimate).toMatchObject({ basis: "history", samples: ESTIMATE_MIN_SAMPLES, lowUsd: 1.5, highUsd: 1.5 });
     await expect(planRunLimit({ store }, { orgId: ORG, project: "example", requestedRunLimitUsd: 1 })).resolves.toBe(1);

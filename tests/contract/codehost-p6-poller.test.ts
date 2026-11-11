@@ -68,7 +68,7 @@ const statusOf = (overrides: Partial<ChangeRequestStatus> = {}): ChangeRequestSt
   requestedReviewers: 0, reviews: [], ...overrides,
 });
 const TARGET: PollTarget = { id: "t", ref: { repository: { url: URL }, id: "1", url: `${URL}/pull/1` } };
-const review = (login: string, state: "APPROVED" | "CHANGES_REQUESTED", revision = "a".repeat(40)) => ({ reviewer: { login, hostUserId: "9" }, accountType: "User", state, revision, submittedAt: "2026-10-31T10:00:00.000Z" });
+const review = (login: string, state: "APPROVED" | "CHANGES_REQUESTED", revision = "a".repeat(40)) => ({ reviewer: { login, hostUserId: "9" }, accountType: "person" as const, state, revision, submittedAt: "2026-10-31T10:00:00.000Z" });
 const passing = (name: string) => ({ name, state: "completed" as const, conclusion: "success" as const, required: false, url: "" });
 
 describe("P6: what a poll finds becomes the events a webhook would have given", () => {

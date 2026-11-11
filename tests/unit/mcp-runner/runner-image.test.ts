@@ -9,7 +9,6 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { build } from "esbuild";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-// @ts-expect-error plain JavaScript (the Dockerfile runs it before anything is built)
 import { runnerBundleOptions } from "../../../environments/mcp-runner/bundle.mjs";
 import { writeBundle } from "../../../packages/gateway/src/mcp-runner/bundle.js";
 

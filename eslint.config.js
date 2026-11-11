@@ -22,6 +22,11 @@ export default tseslint.config(
       "tests/fixtures/e2e-web-api-app/**",
       "tests/fixtures/test-services-escape-project/**",
       "tests/support/stdio-mcp-fixture.mjs",
+      // Plain JavaScript build programs the images and the release signer run before anything is built (with their declaration files for the tests that import them).
+      "environments/mcp-runner/bundle.mjs",
+      "environments/mcp-runner/bundle.d.mts",
+      "scripts/release/signer/build.mjs",
+      "scripts/release/signer/build.d.mts",
       "tests/support/stdio-runner-fixture.mjs",
       "tests/linux/mcp-runner/adversary-mcp.mjs",
       "tests/staging/selfcheck-mcp/**",

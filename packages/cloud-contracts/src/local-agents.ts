@@ -1,7 +1,8 @@
 // Plan 5 Task 17: a person's registered Macs (devices) and the company's rules for local agents (which tools, on which projects).
 // The ids, limits, tool names and the texts of LOCAL_AGENT_NOT_ALLOWED are in `agent-sessions.ts`; this file holds the shapes of what is stored and sent.
 import { z } from "zod";
-import { AgentPrincipalSchema, AGENTX_NAME_PATTERN, DEVICE_LABEL_MAX, DeviceIdSchema, DEVICES_PER_MEMBER_MAX, LOCAL_REGISTER_SHARES_MAX, LOCAL_TOOLS, LOCAL_TURN_MAX_CHARS, LOCAL_UPDATE_TURNS_MAX, LocalToolSchema, OrgIdSchema, SESSION_STATUSES, SessionIdSchema, SessionLevelSchema, SessionMessageIdSchema } from "@rovara-code/contracts";
+import type { SESSION_STATUSES} from "@rovara-code/contracts";
+import { AgentPrincipalSchema, AGENTX_NAME_PATTERN, DEVICE_LABEL_MAX, DeviceIdSchema, DEVICES_PER_MEMBER_MAX, LOCAL_REGISTER_SHARES_MAX, LOCAL_TOOLS, LOCAL_TURN_MAX_CHARS, LOCAL_UPDATE_TURNS_MAX, LocalToolSchema, OrgIdSchema, SessionIdSchema, SessionLevelSchema, SessionMessageIdSchema } from "@rovara-code/contracts";
 
 /** A project list in the rule holds at most this many names. */
 export const LOCAL_AGENT_PROJECTS_MAX = 100;
