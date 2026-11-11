@@ -21,6 +21,7 @@ export const ADMIN_SECTIONS: readonly AdminSection[] = [
   { id: "work", title: "How work runs", items: [
     { to: "/app/admin/how-we-work", label: "How we work", area: "how-we-work", blurb: "Company defaults for steps and models, design review and learning, and the locks projects can't change.", action: "Review how we work" },
     { to: "/app/admin/projects", label: "Projects", area: "projects", blurb: "Each project's repositories, people, Slack links and working branches.", action: "Review projects" },
+    { to: "/app/admin/new-screens", label: "New screens", area: "new-screens", blurb: "Turn the new screens on for the whole company, or let people try them in their own browser first.", action: "Open new screens" },
     { to: "/app/admin/agents", label: "Agents", area: "agents", blurb: "Agent versions and the company's agent guardrails.", action: "Review agents" },
   ] },
   { id: "security", title: "Security and sign-in", items: [

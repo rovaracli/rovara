@@ -1,6 +1,6 @@
 // RULING Q42: the used App entry owns global design CSS even when the library barrel is tree-shaken.
 import "./design/design.css";
-import { useEffect, useMemo, useState, type ComponentProps } from "react";
+import { useEffect, useMemo, useRef, useState, type ComponentProps } from "react";
 import { RouterProvider, type RouteObject } from "react-router";
 import { QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { AppNavReaderSchema, type AppNav } from "@agentx/contracts/web";
@@ -16,6 +16,7 @@ import { isNewNavOn } from "./nav-flags.js";
 import { isInsightsOn } from "./screens/insights/insights-flags.js";
 import { isBillingV2On } from "./billing-flags.js";
 import { isAgentPublishOn } from "./screens/agents/publish-flags.js";
+import { applyNavUiFlags, syncUiFlags } from "./ui-flags.js";
 import "./shell/shell.css";
 import "./look-v2.css";
 type Router = ComponentProps<typeof RouterProvider>["router"];
@@ -26,8 +27,11 @@ function Startup({ createRouter }: { createRouter: AppRouterFactory }) {
  const standalone = /^\/app\/(?:signup|welcome|signed-out)\/?(?:\?|$)/u.test(host.currentPath());
  const nav = useQuery({ queryKey: ["nav"], queryFn: () => api.get("/v1/app/nav", AppNavReaderSchema), enabled: !standalone });
  const features = nav.data?.features;
- const [newNav] = useState(() => isNewNavOn(host)), [insights] = useState(() => isInsightsOn(host)), [billing] = useState(() => isBillingV2On(host)), [publish] = useState(() => isAgentPublishOn(host));
- const router = useMemo(() => standalone || features !== undefined ? createRouter(appRoutes(features ?? EMPTY_FEATURES, { newNav, insights, billing, publish })) : undefined, [createRouter, features, newNav, insights, billing, publish, standalone]);
+ // The layout switches are read ONCE, when the navigation answer first arrives (it carries the company's runtime flags, ui-flags.ts), so the route table never changes under a person mid-task.
+ const options = useRef<{ newNav: boolean; insights: boolean; billing: boolean; publish: boolean }>(undefined);
+ if (options.current === undefined && (standalone || nav.data !== undefined)) { applyNavUiFlags(host, nav.data);options.current = { newNav: isNewNavOn(host), insights: isInsightsOn(host), billing: isBillingV2On(host), publish: isAgentPublishOn(host) }; }
+ const latched = options.current;
+ const router = useMemo(() => latched !== undefined && (standalone || features !== undefined) ? createRouter(appRoutes(features ?? EMPTY_FEATURES, latched)) : undefined, [createRouter, features, latched, standalone]);
  useEffect(() => () => { router?.dispose(); }, [router]);
  if (router !== undefined) return <RouterProvider router={router} />;
  if (nav.isPending) return <main className="rv-entry"><Skeleton label="Loading workspace" /></main>;
@@ -36,5 +40,7 @@ function Startup({ createRouter }: { createRouter: AppRouterFactory }) {
 export function App({ host, createRouter }: { host: AppHost; createRouter: AppRouterFactory }) {
  const [query] = useState(createQueryClient);
  useEffect(() => () => query.clear(), [query]);
+ // Lane U5: the company's runtime UI flags ride the navigation answer; keep the host's flag store equal to the newest one.
+ useEffect(() => syncUiFlags(query.getQueryCache(), host), [query, host]);
  return <AppHostProvider host={host}><QueryClientProvider client={query}><ThemeProvider host={host}><Announcer><ErrorBoundary reload={() => host.navigate(host.currentPath())}><Startup createRouter={createRouter} /></ErrorBoundary></Announcer></ThemeProvider></QueryClientProvider></AppHostProvider>;
 }
