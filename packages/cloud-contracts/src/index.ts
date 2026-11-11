@@ -107,6 +107,11 @@ export * from "./task-stop-enrollment.js";
 
 export * from "./task-stop-start-preview.js";
 export * from "./ui-flags.js";
+
+// Work events (U3): copied from Code (fix/code-work-events, Code PR #449), with the two imports of Code's own files (browser-ids, names) taken from @rovara-code/contracts. UPSTREAM OWED: the vendor pin
+// (vendor/rovara-code/PIN) does not include it yet; when it does, delete work-event.ts and work-event-node.ts here and import the names from @rovara-code/contracts. See briefs/work-events.md.
+export * from "./work-event.js";
+export * from "./work-event-node.js";
 export { SIGNED_OUT_REASONS, isSignedOutReason, type SignedOutReason } from "./sign-in-reasons.js";
 
 // Names defined here that the old barrel reached through a re-export file the contracts now take from Rovara Code (convergence W0-3).
