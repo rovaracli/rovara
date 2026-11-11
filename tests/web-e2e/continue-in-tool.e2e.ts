@@ -51,7 +51,7 @@ for (const width of [360, 390, 1280] as const) {
   await expect(sheet.getByText("Fix duplicate refunds", { exact: true })).toBeVisible();
   await expect(sheet.getByText("11111111-1111-4111-8111-111111111111", { exact: true })).toBeVisible();
   await expect(sheet.getByRole("link", { name: "acme/payments #42" })).toBeVisible();
-  await expect(sheet.getByText(/When you push to the task's branch, Rovara will mark the work 'Changed outside Rovara · checks needed'\. Press Recheck when you're ready\./u)).toBeVisible();
+  await expect(sheet.getByText(/When you push to the task's branch, your commits show up on its pull request\. Rovara doesn't re-run its checks on pushes made outside it yet/u)).toBeVisible();
   await expect(sheet.getByText(/trusted, project-wide lessons/u)).toBeVisible();
   await expect(sheet.getByRole("button", { name: /recheck/iu })).toHaveCount(0);
   // Copy says Copied, and the clipboard got the command.

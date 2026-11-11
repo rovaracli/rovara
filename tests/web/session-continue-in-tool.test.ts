@@ -149,7 +149,8 @@ it("never offers a Recheck button: the outside-push state and a manual recheck r
  const f = setup({ ...base(), display: { state: "changed_outside", reason: "Someone pushed to the branch.", next: "Recheck." } } as never);
  const dialog = await open();
  expect(within(dialog).queryByRole("button", { name: /recheck/iu })).toBeNull();
- expect(dialog.textContent).toContain("Changed outside Rovara · checks needed");
+ expect(dialog.textContent).toContain("doesn't re-run its checks on pushes made outside it yet");
+ expect(dialog.textContent).not.toContain("Press Recheck");
  expect(f.request.mock.calls.some(([request]) => /recheck/iu.test(request.path))).toBe(false);
  f.close();
 });

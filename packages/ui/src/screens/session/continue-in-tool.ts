@@ -17,7 +17,7 @@ export const installCommand = (tool: ToolKind): string => "npx " + CLI_PACKAGE +
 export const LOAD_TOOLS = ["agentx_get_task", "agentx_get_plan"] as const;
 export const LESSONS_TOOL = "rovara_lessons";
 export const NO_BRANCH_YET = "The branch appears once Rovara opens the pull request.";
-export const PUSH_EXPLAINER = "When you push to the task's branch, Rovara will mark the work 'Changed outside Rovara · checks needed'. Press Recheck when you're ready.";
+export const PUSH_EXPLAINER = "When you push to the task's branch, your commits show up on its pull request. Rovara doesn't re-run its checks on pushes made outside it yet, so mention the change to your reviewer.";
 
 /** A branch name that is safe to put into a sentence and a prompt: plain git-ref characters only. Anything else is treated as unknown. */
 const BRANCH = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/u;
