@@ -182,7 +182,8 @@ export const InsightsFlowSchema = z.object({
 }).strict();
 
 export const InsightsAccessSchema = z.object({
-  viewers: z.array(z.object({ person: InsightsPersonSchema, grantedBy: InsightsPersonSchema, grantedAt: Iso }).strict()).max(10_000),
+  /** `grantedBy` comes from the audit ledger and is ABSENT when it cannot be read (the date is always there): a name is never guessed. */
+  viewers: z.array(z.object({ person: InsightsPersonSchema, grantedBy: InsightsPersonSchema.optional(), grantedAt: Iso }).strict()).max(10_000),
   /** Members who could be given access: not an owner, an admin or an Auditor, and not already a viewer. */
   eligibleCount: Count,
 }).strict();

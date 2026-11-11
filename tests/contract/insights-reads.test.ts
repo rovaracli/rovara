@@ -8,6 +8,7 @@ import { agentSessionKey, liveSessionKey, orgMemberKey, spendCounterKey, spendRe
 import { InsightsAccessReaderSchema, InsightsOverviewSchema, InsightsSpendSchema, InsightsStuckSchema } from "../../packages/contracts/src/app-insights.js";
 import { routeInsights, type InsightsDependencies } from "../../packages/broker/src/insights/routes.js";
 import { grantHolds } from "../../packages/broker/src/insights/scope.js";
+import { chosenNameKey } from "../../packages/broker/src/developer/chosen-name.js";
 import { changeInsightsAccess } from "../../packages/broker/src/insights/access-grant.js";
 import type { LiveDependencies } from "../../packages/broker/src/agent-sessions/live.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
@@ -30,8 +31,8 @@ function company() {
   w.member(ORG_A, OWNER, "owner");
   w.member(ORG_A, AUDITOR, "auditor");
   w.member(ORG_B, BO_ADMIN, "admin");
-  // ZED is a member with no project role who holds the viewer grant, given by Ola.
-  const grantTo = (who: string, by = OLA, at = "2026-10-10T00:00:00.000Z") => w.db.set({ ...w.db.get(orgMemberKey(ORG_A, who))!, insightsViewer: true, insightsGrantedAt: at, insightsGrantedBy: by });
+  // ZED is a member with no project role who holds the viewer grant (given by Ola: the ledger says so, the record does not).
+  const grantTo = (who: string, at = "2026-10-10T00:00:00.000Z") => w.db.set({ ...w.db.get(orgMemberKey(ORG_A, who))!, insightsViewer: true, insightsGrantedAt: at });
   grantTo(ZED);
   const sent: unknown[] = [];
   const audit = capturingAuditDeps({ db: w.db, now: () => w.clock.now });
@@ -354,7 +355,9 @@ describe("the viewer grant", () => {
     const { c } = stuckWorld();
     for (const who of [c.who.owner, c.who.admin]) {
       const list = InsightsAccessReaderSchema.parse(ok(await c.call(who, "GET", PATH)));
-      expect(list).toEqual({ viewers: [{ person: { id: ZED, name: "Zed" }, grantedBy: { id: OLA, name: "Ola" }, grantedAt: "2026-10-10T00:00:00.000Z" }], eligibleCount: 4 });
+      // No ledger lookup is wired here: the date is always there, the name of who gave it is left out, never guessed.
+      expect(list).toEqual({ viewers: [{ person: { id: ZED, name: "Zed" }, grantedAt: "2026-10-10T00:00:00.000Z" }], eligibleCount: 4 });
+      expect(list.viewers[0]).not.toHaveProperty("grantedBy");
     }
     for (const who of [c.who.viewer, c.who.maintainer, c.who.member, c.who.auditor, c.who.stranger]) expect(code(await c.call(who, "GET", PATH)), who.developerId).toBe("FORBIDDEN");
     // Another company's members are not counted or listed.
@@ -362,15 +365,41 @@ describe("the viewer grant", () => {
     expect(theirs).toEqual({ viewers: [], eligibleCount: 1 });
   });
 
+  it("names who gave a grant from the ledger, for exactly that grant, and leaves the name out when the ledger cannot say", async () => {
+    const { c } = stuckWorld();
+    const asked: Array<Array<{ developerId: string; at: string }>> = [];
+    const ledger = (answer: Map<string, string> | Error): Extra => ({ grantedBy: async (_caller, grants) => { asked.push([...grants]); if (answer instanceof Error) throw answer; return answer; } });
+    // The ledger names Ola: the list shows her, resolved live.
+    const named = ok(await c.call(c.who.admin, "GET", PATH, undefined, ledger(new Map([[ZED, OLA]]))));
+    expect(named.viewers).toEqual([{ person: { id: ZED, name: "Zed" }, grantedBy: { id: OLA, name: "Ola" }, grantedAt: "2026-10-10T00:00:00.000Z" }]);
+    expect(asked).toEqual([[{ developerId: ZED, at: "2026-10-10T00:00:00.000Z" }]]);
+    // A granter who was erased reads "A former member", from the live name items; the stored id is not what is shown.
+    c.db.set({ ...chosenNameKey(OLA), entityType: "DEVELOPER_NAME", developerId: OLA, erased: true, erasedAt: "2026-10-12T00:00:00.000Z" });
+    expect(ok(await c.call(c.who.admin, "GET", PATH, undefined, ledger(new Map([[ZED, OLA]])))).viewers[0].grantedBy).toMatchObject({ name: "A former member" });
+    // A ledger that fails, or does not know the grant: the date only, no name, no guess; the answer is still 200 and still lists the grant.
+    for (const answer of [new Error("ledger down"), new Map<string, string>()]) {
+      const reply = ok(await c.call(c.who.admin, "GET", PATH, undefined, ledger(answer)));
+      expect(reply.viewers).toEqual([{ person: { id: ZED, name: "Zed" }, grantedAt: "2026-10-10T00:00:00.000Z" }]);
+    }
+    // Only an owner or admin reaches the lookup at all.
+    asked.length = 0;
+    expect(code(await c.call(c.who.viewer, "GET", PATH, undefined, ledger(new Map([[ZED, OLA]]))))).toBe("FORBIDDEN");
+    expect(asked).toEqual([]);
+  });
+
   it("grants on the member's record, audits it in the same transaction, and takes effect at the next read", async () => {
     const { c } = stuckWorld();
     const before = ok(await c.call(c.who.maintainer, "GET", "/v1/app/insights/spend"));
     expect(before.scope).toBe("projects");
+    const memberBefore = { ...c.db.get(orgMemberKey(ORG_A, MAX))! };
     const answer = ok(await c.call(c.who.admin, "POST", PATH, body(MAX)));
     expect(answer.viewers.map((viewer: Item) => (viewer.person as { id: string }).id).sort()).toEqual([MAX, ZED].sort());
     expect(answer.eligibleCount).toBe(3);
     const record = c.db.get(orgMemberKey(ORG_A, MAX))!;
-    expect(record).toMatchObject({ role: "member", insightsViewer: true, insightsGrantedBy: OLA, insightsGrantedAt: iso(T0) });
+    expect(record).toMatchObject({ role: "member", insightsViewer: true, insightsGrantedAt: iso(T0) });
+    // The record gains exactly a flag and a time: no person id of the granter (or anyone) is written to it.
+    expect(Object.keys(record).filter((key) => !(key in memberBefore)).sort()).toEqual(["insightsGrantedAt", "insightsViewer"]);
+    expect(JSON.stringify(record)).not.toContain(OLA);
     // One transaction: the actor's role check, the member change, the request item and the audit item.
     const [transaction] = c.db.transactions().slice(-1);
     expect(transaction!.map((entry) => Object.keys(entry)[0])).toEqual(["ConditionCheck", "Update", "Put", "Put"]);
@@ -411,7 +440,7 @@ describe("the viewer grant", () => {
     expect(ok(await c.call(c.who.viewer, "GET", "/v1/app/insights/spend")).scope).toBe("company");
     const answer = ok(await c.call(c.who.owner, "POST", PATH, body(ZED, "revoke")));
     expect(answer).toMatchObject({ viewers: [], eligibleCount: 5 });
-    expect(c.db.get(orgMemberKey(ORG_A, ZED))).not.toHaveProperty("insightsGrantedBy");
+    expect(c.db.get(orgMemberKey(ORG_A, ZED))).not.toHaveProperty("insightsGrantedAt");
     expect(code(await c.call(c.who.viewer, "GET", "/v1/app/insights/spend"))).toBe("FORBIDDEN");
     expect(events(c).map((event) => event.action)).toEqual(["insights_access.revoked"]);
   });
@@ -484,7 +513,7 @@ describe("the viewer grant", () => {
     // A role change BEFORE the grant is fine.
     c.db.set({ ...record, roleUpdatedAt: "2026-10-09T00:00:00.000Z" });
     expect(ok(await c.call(c.who.viewer, "GET", "/v1/app/insights/spend")).scope).toBe("company");
-    for (const bad of [{ role: "auditor" }, { role: "admin" }, { insightsGrantedBy: "Priya" }, { insightsGrantedAt: "soon" }, { insightsViewer: "yes" }, { roleUpdatedAt: "later" }]) expect(grantHolds({ ...record, ...bad }), JSON.stringify(bad)).toBe(false);
+    for (const bad of [{ role: "auditor" }, { role: "admin" }, { insightsGrantedAt: "soon" }, { insightsViewer: "yes" }, { roleUpdatedAt: "later" }]) expect(grantHolds({ ...record, ...bad }), JSON.stringify(bad)).toBe(false);
     c.db.set({ ...record, role: "auditor" });
     expect(code(await c.call(c.caller(ZED, "member"), "GET", "/v1/app/insights/spend"))).toBe("FORBIDDEN");
     // A grant gives an owner or an admin nothing extra, and a regrant after a role change replaces the stale one.

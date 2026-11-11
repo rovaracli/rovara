@@ -85,8 +85,9 @@ describe("through the route dispatcher", () => {
     for (const role of ["owner", "admin"] as const) {
       const f = fixture(role);
       const granted = await f.call("POST", ACCESS, grant(other));
-      expect(bodyOf(granted), role).toMatchObject({ viewers: [{ person: { id: other, name: "Arjun" }, grantedBy: { id: actor, name: "Priya" } }], eligibleCount: 0 });
-      expect(f.record(other)).toMatchObject({ role: "member", insightsViewer: true, insightsGrantedBy: actor });
+      expect(bodyOf(granted), role).toMatchObject({ viewers: [{ person: { id: other, name: "Arjun" } }], eligibleCount: 0 });
+      expect(f.record(other)).toMatchObject({ role: "member", insightsViewer: true });
+      expect(JSON.stringify(f.record(other))).not.toContain(actor);
       expect(f.audit.recorded().map((event) => event.action)).toEqual(["insights_access.granted"]);
       expect(bodyOf(await f.call("POST", ACCESS, { ...grant(other, "revoke"), requestId: "33333333-3333-4333-8333-333333333333" }))).toMatchObject({ viewers: [], eligibleCount: 1 });
       expect(f.audit.recorded().map((event) => event.action)).toEqual(["insights_access.granted", "insights_access.revoked"]);

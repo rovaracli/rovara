@@ -1,7 +1,7 @@
 // Insights: who may see what (decisions 12, 32, 33). The scope is read live on every request from the caller's own member record (one consistent GetItem under the caller's checked company),
 // never from the token and never from the request:
 //   owner or admin           the whole company, per-person spend included;
-//   Insights viewer          the whole company, no per-person spend; a GRANT on a member (never a fifth role): `insightsViewer`, `insightsGrantedAt`, `insightsGrantedBy` on the member record;
+//   Insights viewer          the whole company, no per-person spend; a GRANT on a member (never a fifth role): `insightsViewer` and `insightsGrantedAt` on the member record (no person id: who gave it is read from the audit ledger);
 //   project maintainer       the projects they maintain (`projectAllows(role, "view_spend")`), no per-person spend;
 //   any other member         nothing (FORBIDDEN);
 //   the Auditor, or a role this release does not know      nothing: the dispatcher's allow-list is positive and does not list Insights, and this check refuses them again (FORBIDDEN).
@@ -15,7 +15,6 @@ import type { ProjectMembers } from "../org/project-members.js";
 
 export const INSIGHTS_REFUSED = "Insights is for company owners and admins, people an admin gave access, and project maintainers.";
 export const INSIGHTS_ADMIN_ONLY = "Only a company owner or admin can see or change who has Insights access.";
-const DEVELOPER_ID = /^[a-f0-9]{64}$/u;
 
 /** What the Insights routes need to know who is asking: `DeveloperCaller` fits. */
 export interface InsightsCaller { developerId: string; orgId: OrgId; orgRole: string; browserSession?: true | undefined }
@@ -46,13 +45,11 @@ export async function readMemberRecord(deps: Pick<InsightsScopeDependencies, "do
 }
 
 /**
- * Whether a member record holds a valid Insights grant: a plain `member` role, the grant fields complete and well formed, and no role change since the grant (`roleUpdatedAt` is set by every role
+ * Whether a member record holds a valid Insights grant: a plain `member` role, the grant fields well formed, and no role change since the grant (`roleUpdatedAt` is set by every role
  * change; one later than the grant, or one that cannot be read, voids it). Anything unreadable is no grant.
  */
 export function grantHolds(item: Item | undefined): boolean {
   if (item === undefined || item["insightsViewer"] !== true || item["role"] !== "member") return false;
-  const grantedBy = item["insightsGrantedBy"];
-  if (typeof grantedBy !== "string" || !DEVELOPER_ID.test(grantedBy)) return false;
   const grantedAt = typeof item["insightsGrantedAt"] === "string" ? Date.parse(item["insightsGrantedAt"]) : Number.NaN;
   if (!Number.isFinite(grantedAt)) return false;
   if (item["roleUpdatedAt"] !== undefined) {

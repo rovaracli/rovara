@@ -1,6 +1,5 @@
-// Insights: the viewer grant (decision 32). An admin gives a plain member the Insights viewer grant, or takes it away. The grant is three fields on the member's own record (`insightsViewer`,
-// `insightsGrantedAt`, `insightsGrantedBy`), never a role, and it widens nothing but the scope of the Insights reads (rows the person could not open stay metadata rows).
-//   GET   an owner or admin (read live from the member record): who holds the grant, who gave it and when, and how many members could be given it;
+// Insights: the viewer grant (decision 32). An admin gives a plain member the Insights viewer grant, or takes it away. The grant is two fields on the member's own record (`insightsViewer`, `insightsGrantedAt`: a flag and a time, no person id), never a role, and it widens nothing but the scope of the Insights reads (rows the person could not open stay metadata rows).
+//   GET   an owner or admin (read live from the member record): who holds the grant, when it was given, who gave it (read from the audit ledger's `insights_access.granted` event for exactly that grant, and left out when none can be read: never guessed), and how many members could be given it;
 //   POST  an owner or admin, from a live browser session only (the route checks it again here): { action: "grant" | "revoke", requestId, developerId }.
 // One transaction holds the change, the actor's role check, the request item that makes a repeat of the same requestId answer the stored outcome and write nothing, and the audit item
 // (`insights_access.granted` / `insights_access.revoked`, the member as target, no facts). The same requestId with a different body is refused (CONFIG_INVALID). A grant to an owner, an admin or an
@@ -12,6 +11,7 @@ import { INDEX_EXPIRY_ATTRIBUTE, OrgRoleSchema, agentXError, auditEventId, orgMe
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, type AuditDeps } from "../audit/outbox.js";
 import { queryPartition } from "../agent-sessions/live.js";
+import type { GrantLookup } from "./granters.js";
 import { insightsNames, type InsightsNameDependencies } from "./names.js";
 import { INSIGHTS_ADMIN_ONLY, grantHolds, readMemberRecord, type InsightsCaller, type InsightsScopeDependencies } from "./scope.js";
 
@@ -19,7 +19,10 @@ export const INSIGHTS_ACCESS_BROWSER_MESSAGE = "Use a live browser session to ch
 const REQUEST_MEMORY_SECONDS = 7 * 24 * 3600;
 const MEMBERS_MAX = 10_000;
 
-export interface InsightsAccessDependencies extends InsightsScopeDependencies, InsightsNameDependencies, AuditDeps {}
+export interface InsightsAccessDependencies extends InsightsScopeDependencies, InsightsNameDependencies, AuditDeps {
+  /** Who gave each grant, from the audit ledger. Without it (or when it cannot be read) the list shows the date only. */
+  grantedBy?: GrantLookup | undefined;
+}
 type Item = Record<string, unknown>;
 
 const requestKey = (orgId: OrgId, requestId: string) => ({ pk: orgScoped(orgId, "INSIGHTS_ACCESS_REQUEST"), sk: requestId });
@@ -43,11 +46,16 @@ async function listAccess(deps: InsightsAccessDependencies, caller: InsightsCall
   const members = await queryPartition(deps, orgPk(caller.orgId), { prefix: "MEMBER#", max: MEMBERS_MAX });
   const holders = members.items.filter((item) => grantHolds(item));
   const eligibleCount = members.items.filter((item) => item["role"] === "member" && !grantHolds(item)).length;
-  const ids = holders.flatMap((item) => [String(item["developerId"]), String(item["insightsGrantedBy"])]);
-  const names = await insightsNames(deps, caller.orgId, ids);
-  const viewers = holders.map((item) => {
-    const id = String(item["developerId"]), by = String(item["insightsGrantedBy"]);
-    return { person: { id, name: names.get(id) ?? "Unknown" }, grantedBy: { id: by, name: names.get(by) ?? "Unknown" }, grantedAt: new Date(Date.parse(String(item["insightsGrantedAt"]))).toISOString() };
+  const grants = holders.map((item) => ({ developerId: String(item["developerId"]), at: new Date(Date.parse(String(item["insightsGrantedAt"]))).toISOString() }));
+  // Who gave each grant: the ledger's event for exactly this member at exactly this time. A ledger that cannot answer leaves the name out; nothing is guessed.
+  let granters = new Map<string, string>();
+  if (deps.grantedBy !== undefined && grants.length > 0) {
+    try { granters = await deps.grantedBy(caller, grants); } catch { console.log(JSON.stringify({ component: "broker", event: "insights.granters_unavailable" })); }
+  }
+  const names = await insightsNames(deps, caller.orgId, [...grants.map((grant) => grant.developerId), ...granters.values()]);
+  const viewers = grants.map((grant) => {
+    const by = granters.get(grant.developerId);
+    return { person: { id: grant.developerId, name: names.get(grant.developerId) ?? "Unknown" }, ...(by === undefined ? {} : { grantedBy: { id: by, name: names.get(by) ?? "Unknown" } }), grantedAt: grant.at };
   }).sort((a, b) => a.person.name.localeCompare(b.person.name) || a.person.id.localeCompare(b.person.id));
   return { viewers, eligibleCount };
 }
@@ -88,17 +96,17 @@ export async function changeInsightsAccess(deps: InsightsAccessDependencies, cal
     ? {
       Update: {
         TableName: deps.tableName, Key: orgMemberKey(orgId, body.developerId),
-        UpdateExpression: "SET insightsViewer = :yes, insightsGrantedAt = :at, insightsGrantedBy = :by",
+        UpdateExpression: "SET insightsViewer = :yes, insightsGrantedAt = :at",
         // What was read is what is written over: a member who is still a plain member, with no grant (or the very stale one that was read).
         ConditionExpression: target["insightsViewer"] === undefined ? "attribute_exists(pk) AND #role = :member AND attribute_not_exists(insightsViewer)" : "attribute_exists(pk) AND #role = :member AND insightsGrantedAt = :seen",
         ExpressionAttributeNames: { "#role": "role" },
-        ExpressionAttributeValues: { ":yes": true, ":at": at, ":by": caller.developerId, ":member": "member", ...(target["insightsViewer"] === undefined ? {} : { ":seen": target["insightsGrantedAt"] }) },
+        ExpressionAttributeValues: { ":yes": true, ":at": at, ":member": "member", ...(target["insightsViewer"] === undefined ? {} : { ":seen": target["insightsGrantedAt"] }) },
       },
     }
     : {
       Update: {
         TableName: deps.tableName, Key: orgMemberKey(orgId, body.developerId),
-        UpdateExpression: "REMOVE insightsViewer, insightsGrantedAt, insightsGrantedBy",
+        UpdateExpression: "REMOVE insightsViewer, insightsGrantedAt",
         ConditionExpression: "attribute_exists(pk) AND attribute_exists(insightsViewer)",
       },
     };

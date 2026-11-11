@@ -4,6 +4,7 @@
 import { INSIGHTS_ACCESS_BROWSER_MESSAGE, INSIGHTS_ACCESS_PATH, isInsightsPath, routeInsights, type InsightsDependencies } from "../../insights/routes.js";
 import type { StatusReply } from "../status-reply.js";
 import type { AdaptedHttpRequest } from "../lambda.js";
+import { ledgerGrantLookup } from "../../insights/granters.js";
 import { projectMembersOf } from "./project-list.js";
 import { sessionReadDependencies } from "./dependencies.js";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "./types.js";
@@ -16,7 +17,7 @@ export function insightsDependenciesOf(deps: DeveloperRouteDependencies, caller:
   return {
     documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, signInTableName: deps.developer.signInTableName,
     projectMembers: deps.agents?.projectMembers ?? projectMembersOf(deps), sessions,
-    ...(deps.audit === undefined ? {} : { audit: deps.audit }), ...(deps.cloud === true ? { cloud: true } : {}),
+    ...(deps.audit === undefined ? {} : { audit: deps.audit }), ...(deps.auditLedger === undefined ? {} : { grantedBy: ledgerGrantLookup(deps.auditLedger) }), ...(deps.cloud === true ? { cloud: true } : {}),
   };
 }
 
