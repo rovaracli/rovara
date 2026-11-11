@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect } from "vitest";
-import { screen, fireEvent, within } from "@testing-library/react";
+import { screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { AppNavSchema } from "@agentx/contracts/web";
@@ -9,15 +9,15 @@ import { AppHostProvider, type ApiRequest, type ApiResponse } from "../../packag
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { ThemeProvider } from "../../packages/ui/src/theme.js";
 import { isSpendingV2On, SPENDING_STORAGE_KEY } from "../../packages/ui/src/screens/admin/spending-flags.js";
-import { approverWords, availableUsd, barShares, isOverAllowance, monthLabel, percentOf, requestKindWords, sourceWords } from "../../packages/ui/src/screens/admin/spending-format.js";
+import { approverWords, availableUsd, barShares, heldUsd, isOverAllowance, monthLabel, percentOf, requestKindWords, sourceWords } from "../../packages/ui/src/screens/admin/spending-format.js";
 import { fakeHost } from "./support/fake-host.js";
 import { renderUi } from "./support/render.js";
 import { h } from "./support/h.js";
 import { expectNoAxeViolations } from "./support/axe.js";
 const orgId = "org_aaaaaaaaaaaaaaaaaaaa", me = "a".repeat(64), maya = "b".repeat(64), gone = "c".repeat(64);
 const settings = { orgId, checkedAt: "2026-11-11T12:00:00Z", coverage: "monthly_base_settings_only", orgMonthly: { kind: "limited", microdollars: 500_000_000, source: "configured" }, memberDefaultMonthly: { kind: "limited", microdollars: 29_000_000, source: "configured" }, memberOverrideCount: 2, memberOverrideCoverage: "configured_only_membership_not_checked", usage: "not_checked", topUps: "not_checked", enforcement: "not_checked" };
-const budget = { month: "2026-11", member: { spentUsd: 12.5, committedUsd: 1, limitUsd: 29 }, org: { spentUsd: 200, committedUsd: 50, limitUsd: 500 }, testing: { spentUsd: 0, committedUsd: 0 }, personalPlan: { tokens: 0 }, alerts: [] };
-const orgSpend = { month: "2026-11", totalUsd: 200, committedUsd: 50, limitUsd: 500, byProject: [{ project: "payments", spentUsd: 150, committedUsd: 30 }, { project: "web", spentUsd: 50, committedUsd: 20 }], byMember: [{ developerId: maya, spentUsd: 187.5 }, { developerId: me, spentUsd: 12.5 }, { developerId: gone, spentUsd: 0.25 }], byAgent: [], byModel: [], bySource: [{ source: "rovara", spentUsd: 150 }, { source: "anthropic", spentUsd: 50 }, { source: "mystery_enum", spentUsd: 0 }] };
+const budget = { month: "2026-11", member: { spentUsd: 12.5, committedUsd: 13.5, limitUsd: 29 }, org: { spentUsd: 200, committedUsd: 250, limitUsd: 500 }, testing: { spentUsd: 0, committedUsd: 0 }, personalPlan: { tokens: 0 }, alerts: [] };
+const orgSpend = { month: "2026-11", totalUsd: 200, committedUsd: 250, limitUsd: 500, byProject: [{ project: "payments", spentUsd: 150, committedUsd: 180 }, { project: "web", spentUsd: 50, committedUsd: 70 }], byMember: [{ developerId: maya, spentUsd: 187.5 }, { developerId: me, spentUsd: 12.5 }, { developerId: gone, spentUsd: 0.25 }], byAgent: [], byModel: [], bySource: [{ source: "rovara", spentUsd: 150 }, { source: "anthropic", spentUsd: 50 }, { source: "mystery_enum", spentUsd: 0 }] };
 const confirmUrl = "https://cell.example/v1/app/approve/spr_aaaaaaaaaaaaaaaaaaaa";
 const requests = { spendRequests: [{ spendRequestId: "spr_aaaaaaaaaaaaaaaaaaaa", status: "PENDING", createdAt: "2026-11-10T10:00:00.000Z", kind: "month", amountUsd: 25, reason: "Release week", approverRole: "org_admin", confirmUrl }, { spendRequestId: "spr_bbbbbbbbbbbbbbbbbbbb", status: "PENDING", createdAt: "2026-11-10T11:00:00.000Z", kind: "run_limit", amountUsd: 5, approverRole: "project_maintainer", confirmUrl: "https://evil.example/x" }] };
 const members = { members: [{ developerId: me, name: "Priya", role: "owner" }, { developerId: maya, name: "Maya", role: "member" }] };
@@ -57,17 +57,32 @@ describe("the switch", () => {
 });
 
 describe("number and word formatting", () => {
- it("works out available, the bar and the share without going past 100 or below 0", () => {
-  expect(availableUsd({ spentUsd: 200, committedUsd: 50, limitUsd: 500 })).toBe(250);
-  expect(availableUsd({ spentUsd: 0.1, committedUsd: 0.2, limitUsd: 0.3 })).toBe(0);
-  expect(availableUsd({ spentUsd: 600, committedUsd: 0, limitUsd: 500 })).toBe(0);
-  expect(availableUsd({ spentUsd: 5, committedUsd: 0 })).toBeUndefined();
-  expect(isOverAllowance({ spentUsd: 480, committedUsd: 30, limitUsd: 500 })).toBe(true);
-  expect(isOverAllowance({ spentUsd: 480, committedUsd: 20, limitUsd: 500 })).toBe(false);
-  expect(barShares({ spentUsd: 200, committedUsd: 50, limitUsd: 500 })).toEqual({ spent: 40, held: 10 });
-  expect(barShares({ spentUsd: 480, committedUsd: 100, limitUsd: 500 })).toEqual({ spent: 96, held: 4 });
-  expect(barShares({ spentUsd: 5, committedUsd: 1, limitUsd: 0 })).toEqual({ spent: 0, held: 0 });
-  expect(barShares({ spentUsd: 5, committedUsd: 1 })).toEqual({ spent: 0, held: 0 });
+// Broker shape (spend/ledger.ts): committedUsd is "what was spent plus what open keys hold", so it already contains the spend, and admission room is limit - committedUsd.
+ it("available = max(0, limit - committed); held = max(0, committed - spent); over = committed > limit (committed already includes spend)", () => {
+  // the review's example: $500 limit, $200 spent, nothing running (committed $200): $300 left, nothing held, not over.
+  expect(availableUsd({ spentUsd: 200, committedUsd: 200, limitUsd: 500 })).toBe(300);
+  expect(heldUsd({ spentUsd: 200, committedUsd: 200, limitUsd: 500 })).toBe(0);
+  expect(isOverAllowance({ spentUsd: 200, committedUsd: 200, limitUsd: 500 })).toBe(false);
+  // $260 spent, nothing running: $240 left and no "past the allowance".
+  expect(availableUsd({ spentUsd: 260, committedUsd: 260, limitUsd: 500 })).toBe(240);
+  expect(isOverAllowance({ spentUsd: 260, committedUsd: 260, limitUsd: 500 })).toBe(false);
+  // $200 spent and $50 held by running work (committed $250).
+  expect(availableUsd({ spentUsd: 200, committedUsd: 250, limitUsd: 500 })).toBe(250);
+  expect(heldUsd({ spentUsd: 200, committedUsd: 250, limitUsd: 500 })).toBe(50);
+  // over, and never negative
+  expect(isOverAllowance({ spentUsd: 480, committedUsd: 540, limitUsd: 500 })).toBe(true);
+  expect(isOverAllowance({ spentUsd: 480, committedUsd: 500, limitUsd: 500 })).toBe(false);
+  expect(availableUsd({ spentUsd: 480, committedUsd: 540, limitUsd: 500 })).toBe(0);
+  expect(availableUsd({ spentUsd: 0.1, committedUsd: 0.4, limitUsd: 0.3 })).toBe(0);
+  expect(heldUsd({ spentUsd: 5, committedUsd: 4 })).toBe(0);
+  expect(availableUsd({ spentUsd: 5, committedUsd: 5 })).toBeUndefined();
+ });
+ it("the bar is spent first, then held (committed minus spent), together never past 100", () => {
+  expect(barShares({ spentUsd: 200, committedUsd: 200, limitUsd: 500 })).toEqual({ spent: 40, held: 0 });
+  expect(barShares({ spentUsd: 200, committedUsd: 250, limitUsd: 500 })).toEqual({ spent: 40, held: 10 });
+  expect(barShares({ spentUsd: 480, committedUsd: 600, limitUsd: 500 })).toEqual({ spent: 96, held: 4 });
+  expect(barShares({ spentUsd: 5, committedUsd: 6, limitUsd: 0 })).toEqual({ spent: 0, held: 0 });
+  expect(barShares({ spentUsd: 5, committedUsd: 6 })).toEqual({ spent: 0, held: 0 });
   expect(percentOf(150, 200)).toBe(75);
   expect(percentOf(1, 0)).toBe(0);
  });
@@ -93,7 +108,7 @@ describe("the Spending page, switch on", () => {
    const figures = screen.getByRole("heading", { name: /This month/ }).nextElementSibling as HTMLElement;
    expect(within(figures).getByText("Spent").nextElementSibling?.textContent).toBe("$200.00");
    expect(within(figures).getByText("Held for work in progress").nextElementSibling?.textContent).toBe("$50.00");
-   expect(within(figures).getByText("Available").nextElementSibling?.textContent).toBe("$250.00");
+   expect(within(figures).getByText("Available to the company").nextElementSibling?.textContent).toBe("$250.00");
    expect(figures.textContent).toContain("$500.00");
    const sources = await screen.findByRole("list", { name: "Spending by source" });
    expect(within(sources).getByText("Rovara-provided")).toBeTruthy();expect(within(sources).getByText("Company Anthropic key")).toBeTruthy();expect(within(sources).getByText("Another source")).toBeTruthy();
@@ -162,14 +177,70 @@ describe("the Spending page, switch on", () => {
    expect(document.querySelector(".rv-spend-bar")).toBeNull();
   } finally { f.close(); }
  });
- it("past the allowance: says so and never shows a negative available amount", async () => {
-  const f = mount({ answers: { "/v1/app/budget": { status: 200, body: { ...budget, org: { spentUsd: 520, committedUsd: 10, limitUsd: 500 } } } } });
+ it("past the allowance (committed > limit): says so and never shows a negative available amount", async () => {
+  const f = mount({ answers: { "/v1/app/budget": { status: 200, body: { ...budget, org: { spentUsd: 520, committedUsd: 530, limitUsd: 500 } } } } });
   try {
    await screen.findByText(/past the company's allowance/);
    const figures = screen.getByRole("heading", { name: /This month/ }).nextElementSibling as HTMLElement;
-   expect(within(figures).getByText("Available").nextElementSibling?.textContent).toBe("$0.00");
+   expect(within(figures).getByText("Available to the company").nextElementSibling?.textContent).toBe("$0.00");
+   expect(within(figures).getByText("Held for work in progress").nextElementSibling?.textContent).toBe("$10.00");
    expect(document.querySelector<HTMLElement>(".rv-spend-bar-spent")?.style.width).toBe("100%");
    expect(document.querySelector<HTMLElement>(".rv-spend-bar-held")?.style.width).toBe("0%");
+  } finally { f.close(); }
+ });
+ for (const [spent, available] of [[200, "$300.00"], [260, "$240.00"]] as const) it(`$500 limit, $${String(spent)} spent, nothing running: ${available} available, nothing held, no warning`, async () => {
+  const f = mount({ answers: { "/v1/app/budget": { status: 200, body: { ...budget, org: { spentUsd: spent, committedUsd: spent, limitUsd: 500 } } } } });
+  try {
+   await screen.findByText("Held for work in progress");const figures = screen.getByRole("heading", { name: /This month/ }).nextElementSibling as HTMLElement;
+   expect(within(figures).getByText("Spent").nextElementSibling?.textContent).toBe(`$${String(spent)}.00`);
+   expect(within(figures).getByText("Held for work in progress").nextElementSibling?.textContent).toBe("$0.00");
+   expect(within(figures).getByText("Available to the company").nextElementSibling?.textContent).toBe(available);
+   expect(screen.queryByText(/past the company's allowance/)).toBeNull();
+   expect(document.querySelector<HTMLElement>(".rv-spend-bar-held")?.style.width).toBe("0%");
+  } finally { f.close(); }
+ });
+ it("an amount under half a cent says so instead of reading $0.00", async () => {
+  const f = mount({ answers: { "/v1/app/budget": { status: 200, body: { ...budget, org: { spentUsd: 0.002, committedUsd: 0.002, limitUsd: 500 } } } } });
+  try { await screen.findByText("Held for work in progress");const figures = screen.getByRole("heading", { name: /This month/ }).nextElementSibling as HTMLElement;expect(within(figures).getByText("Spent").nextElementSibling?.textContent).toBe("<$0.01"); } finally { f.close(); }
+ });
+ it("the heading is there while loading and when the read fails", async () => {
+  let release!: (value: ApiResponse) => void;
+  const pending = new Promise<ApiResponse>(done => { release = done; });
+  const f = mount({ answers: { "/v1/app/budget": () => pending as unknown as ApiResponse } });
+  try {
+   expect(await screen.findByRole("heading", { name: "This month" })).toBeTruthy();
+   release({ status: 400, body: { error: { code: "CONFIG_INVALID" } } });
+   await screen.findByText(/Couldn't load this month's spending/);
+   expect(screen.getByRole("heading", { name: "This month" })).toBeTruthy();
+  } finally { f.close(); }
+ });
+ it("a failed budget read says Unavailable for your own allowance, not No limit set", async () => {
+  const f = mount({ answers: { "/v1/app/budget": { status: 400, body: { error: { code: "CONFIG_INVALID" } } } } });
+  try {
+   const table = await screen.findByRole("table", { name: "Spending by person this month" });
+   const row = within(table).getByText("(you)").closest("tr")!;
+   expect(within(row as HTMLElement).getByText("Unavailable")).toBeTruthy();
+   expect(within(row as HTMLElement).queryByText("No limit set")).toBeNull();
+  } finally { f.close(); }
+ });
+ it("a failed members read does not call current people Former member", async () => {
+  const f = mount({ answers: { "/v1/app/org/members": { status: 400, body: { error: { code: "CONFIG_INVALID" } } } } });
+  try {
+   const table = await screen.findByRole("table", { name: "Spending by person this month" });
+   expect(within(table).queryByText("Former member")).toBeNull();expect(within(table).getAllByText("Name unavailable").length).toBeGreaterThan(0);
+   expect(screen.getByText(/Names are unavailable right now/)).toBeTruthy();
+  } finally { f.close(); }
+ });
+ it("after a failed refresh no figures stay on the page, own figures included", async () => {
+  let fail = false;
+  const f = mount({ answers: { "/v1/app/budget": () => fail ? { status: 400, body: { error: { code: "CONFIG_INVALID" } } } : { status: 200, body: budget }, "/v1/app/org/spend": () => fail ? forbiddenBody : { status: 200, body: orgSpend } } });
+  try {
+   await screen.findByText("$250.00");
+   fail = true;fireEvent.click(screen.getByRole("button", { name: "Refresh spending" }));
+   await screen.findByText(/Couldn't load this month's spending/);
+   await waitFor(() => expect(screen.queryByText("$250.00")).toBeNull());
+   expect(screen.queryByText(/Amounts are Rovara's running totals/)).toBeNull();
+   expect(document.body.textContent).not.toContain("$12.50");
   } finally { f.close(); }
  });
  it("each failed read says so for its own part only, with no stale or invented amounts, and Refresh asks again", async () => {

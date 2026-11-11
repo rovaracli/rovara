@@ -44,7 +44,7 @@ for (const look of [{ name: "look-off", store: {} }, { name: "look-v2", store: {
    await expect(page.getByRole("heading", { name: "Spending", level: 1 })).toBeVisible();await ready(page);
    if (look.name === "look-v2") await expect(page.locator("html")).toHaveAttribute("data-look", "v2");
    await expect(page.getByRole("heading", { name: "This month: November 2026" })).toBeVisible();
-   const figures = page.locator(".rv-spend-figures");await expect(figures).toContainText("$200.00");await expect(figures).toContainText("$50.00");await expect(figures).toContainText("$250.00");
+   const figures = page.locator(".rv-spend-figures");await expect(figures).toContainText("$200.00");await expect(figures).toContainText("$50.00");await expect(figures).toContainText("$250.00");await expect(figures).toContainText("Available to the company");
    await expect(page.getByRole("list", { name: "Spending by source" })).toContainText("Rovara-provided");await expect(page.getByRole("list", { name: "Spending by source" })).toContainText("Company Anthropic key");
    const people = page.getByRole("table", { name: "Spending by person this month" });await expect(people).toContainText("Maya");await expect(people).toContainText("Priya");await expect(people).toContainText("$187.50");
    const projects = page.getByRole("table", { name: "Spending by project this month" });await expect(projects).toContainText("payments");await expect(projects).toContainText("$150.00");
@@ -75,7 +75,7 @@ test("switch on at 390, dark: a viewer the broker refuses the company breakdown 
 
 test("switch on at 390: past the allowance and an empty month say so plainly", async ({ page, context, request, baseURL }) => {
  await enter(page, context, request, baseURL, 390, { "rovara.spending": "v2" }, "over");await page.goto(PATH);
- await expect(page.getByText(/past the company's allowance/)).toBeVisible();await expect(page.locator(".rv-spend-figures")).toContainText("$0.00");expect(await noSidewaysScroll(page)).toBe(true);
+ await expect(page.getByText(/past the company's allowance/)).toBeVisible();await expect(page.locator(".rv-spend-figures")).toContainText("$60.00");await expect(page.locator(".rv-spend-figures")).toContainText("$0.00");expect(await noSidewaysScroll(page)).toBe(true);
  await evidenceShot(page, { path: `${shots}/over-390.png`, fullPage: true });await checkA11y(page, { theme: "light" });
  await request.post("/__mock/spending?variant=empty");await page.getByRole("button", { name: "Refresh spending" }).click();
  await expect(page.getByText(/No monthly allowance is set/)).toBeVisible();await expect(page.getByText("No spending requests are waiting for you.")).toBeVisible();await expect(page.getByText("No project has spent anything this month yet.")).toBeVisible();

@@ -7,19 +7,23 @@ export function monthLabel(month: string): string {
  if (match === null) return "This month";
  return new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, 1)).toLocaleDateString("en-US", { month: "long", year: "numeric", timeZone: "UTC" });
 }
-/** What is left of the allowance after what was spent and what is held, never below zero; undefined when there is no allowance to measure against. */
+// The broker's `committedUsd` is "what was spent plus what open keys hold": it ALREADY contains the spend (spend/ledger.ts), and a limit is checked against it
+// (admission room = limit - committedUsd). So held is what is left over after the spend, and available is measured from committed alone.
+/** Held for work in progress: committed minus spent, never below zero. */
+export function heldUsd(figures: Figures): number { return Math.max(0, micro(figures.committedUsd) - micro(figures.spentUsd)) / 1_000_000; }
+/** What is left of the allowance: limit minus committed (which already includes spend), never below zero; undefined when there is no allowance to measure against. */
 export function availableUsd(figures: Figures): number | undefined {
  if (figures.limitUsd === undefined) return undefined;
- return Math.max(0, micro(figures.limitUsd) - micro(figures.spentUsd) - micro(figures.committedUsd)) / 1_000_000;
+ return Math.max(0, micro(figures.limitUsd) - micro(figures.committedUsd)) / 1_000_000;
 }
-/** True when spent and held together are past the allowance. */
+/** True when committed (spend plus holds) is past the allowance. */
 export function isOverAllowance(figures: Figures): boolean {
- return figures.limitUsd !== undefined && micro(figures.spentUsd) + micro(figures.committedUsd) > micro(figures.limitUsd);
+ return figures.limitUsd !== undefined && micro(figures.committedUsd) > micro(figures.limitUsd);
 }
-/** The two bar segments as whole-or-fractional percentages of the allowance: spent first, then held, together never past 100. Both 0 when there is no allowance to measure. */
+/** The two bar segments as percentages of the allowance: spent first, then held (committed minus spent), together never past 100. Both 0 when there is no allowance to measure. */
 export function barShares(figures: Figures): { spent: number; held: number } {
  if (figures.limitUsd === undefined || figures.limitUsd <= 0) return { spent: 0, held: 0 };
- const limit = micro(figures.limitUsd), spent = Math.min(100, (micro(figures.spentUsd) / limit) * 100), held = Math.min(100 - spent, (micro(figures.committedUsd) / limit) * 100);
+ const limit = micro(figures.limitUsd), spent = Math.min(100, (micro(figures.spentUsd) / limit) * 100), held = Math.min(100 - spent, (micro(heldUsd(figures)) / limit) * 100);
  return { spent: Math.round(spent * 10) / 10, held: Math.round(held * 10) / 10 };
 }
 /** A share of a total as a whole percent; 0 when the total is 0. */

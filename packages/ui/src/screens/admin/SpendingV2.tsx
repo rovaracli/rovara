@@ -14,12 +14,16 @@ import { VisibleText } from "../../design/VisibleText.js";
 import { useAdminContext } from "./AdminLayout.js";
 import { SettingsNote } from "./SettingsNote.js";
 import { TaskStopEditor } from "./TaskStopEditor.js";
-import { approverWords, availableUsd, barShares, isOverAllowance, monthLabel, percentOf, requestKindWords, sourceWords, type Figures } from "./spending-format.js";
+import { approverWords, availableUsd, barShares, heldUsd, isOverAllowance, monthLabel, percentOf, requestKindWords, sourceWords, type Figures } from "./spending-format.js";
 /** The Spending page lives at /app/admin/money/budgets today. A spending request is approved on Rovara's confirmation page, which the waiting page links to. */
 const WAITING_PATH = "/app/admin/waiting";
 const forbidden = (error: unknown): boolean => error instanceof ApiError && error.status === 403;
 const time = (value: string | undefined): string => { const parsed = value === undefined ? Number.NaN : Date.parse(value);return Number.isFinite(parsed) ? new Date(parsed).toLocaleString("en-US", { timeZone: "UTC", dateStyle: "medium", timeStyle: "short" }) + " UTC" : "Unavailable"; };
 const dollars = (microdollars: number): number => microdollars / 1_000_000;
+/** An amount in dollars; a non-zero amount under half a cent says so instead of reading as $0.00. */
+function Usd({ usd }: { usd: number }) { return usd > 0 && usd < 0.005 ? <span className="rv-money">&lt;$0.01</span> : <Money usd={usd} />; }
+/** A read's data, but never after its latest refresh failed: a failed refresh keeps no figures on the page. */
+const fresh = <T,>(read: UseQueryResult<T>): T | undefined => read.isError ? undefined : read.data;
 
 /** One read's waiting, restricted and failed states. `restricted` is what to say when the broker answers 403: that person is simply not shown this part. */
 function Part<T>({ read, title, restricted, children }: { read: UseQueryResult<T>; title: string; restricted?: ReactNode; children: (data: T) => ReactNode }) {
@@ -38,32 +42,31 @@ function Bar({ figures }: { figures: Figures }) {
 function ThisMonth({ budget, source }: { budget: SpendBudget; source: UseQueryResult<OrgSpend> }) {
  const figures = budget.org, available = availableUsd(figures);
  return <>
-  <h2 id="rv-spend-month">This month: {monthLabel(budget.month)}</h2>
   <div className="rv-spend-card rv-surface">
    <dl className="rv-spend-figures">
-    <div><dt>Spent</dt><dd><Money usd={figures.spentUsd} /></dd></div>
-    <div><dt>Held for work in progress</dt><dd><Money usd={figures.committedUsd} /></dd></div>
-    <div><dt>Available</dt><dd>{available === undefined ? "No limit set" : <Money usd={available} />}</dd></div>
+    <div><dt>Spent</dt><dd><Usd usd={figures.spentUsd} /></dd></div>
+    <div><dt>Held for work in progress</dt><dd><Usd usd={heldUsd(figures)} /></dd></div>
+    <div><dt>Available to the company</dt><dd>{available === undefined ? "No limit set" : <Usd usd={available} />}</dd></div>
    </dl>
    {figures.limitUsd === undefined ? <p>No monthly allowance is set for the company, so there is nothing to measure against.</p> : <>
     <Bar figures={figures} />
-    <p className="rv-spend-legend"><span className="rv-spend-key rv-spend-key-spent" aria-hidden="true" /> Spent <span className="rv-spend-key rv-spend-key-held" aria-hidden="true" /> Held <span>of the company's allowance of <Money usd={figures.limitUsd} /></span></p>
-    {isOverAllowance(figures) && <p role="status" className="rv-spend-over">Spent and held amounts are past the company's allowance this month.</p>}
+    <p className="rv-spend-legend"><span className="rv-spend-key rv-spend-key-spent" aria-hidden="true" /> Spent <span className="rv-spend-key rv-spend-key-held" aria-hidden="true" /> Held <span>of the company's allowance of <Usd usd={figures.limitUsd} /></span></p>
+    {isOverAllowance(figures) && <p role="status" className="rv-spend-over">Spent and held amounts together are past the company's allowance this month.</p>}
    </>}
-   <p className="rv-muted">Held amounts are set aside for AI calls that have not finished yet. Available is the allowance minus what was spent and what is held.</p>
+   <p className="rv-muted">Held is money set aside for AI calls that have not finished yet. Available to the company is the allowance minus what was spent and what is held. It is the company's figure, not yours: your own allowance may be smaller.</p>
   </div>
   <h3>Where the money comes from</h3>
-  <Part read={source} title="the split by source" restricted="The split by source is shown to company owners and admins.">{data => data.bySource.length === 0 ? <p>No AI spending is recorded for this month yet.</p> : <ul className="rv-spend-list" aria-label="Spending by source">{data.bySource.map(row => <li key={row.source}><span><VisibleText text={sourceWords(row.source)} /></span><span><Money usd={row.spentUsd} /> <span className="rv-muted">({String(percentOf(row.spentUsd, figures.spentUsd))}% of spent)</span></span></li>)}</ul>}</Part>
+  <Part read={source} title="the split by source" restricted="The split by source is shown to company owners and admins.">{data => data.bySource.length === 0 ? <p>No AI spending is recorded for this month yet.</p> : <ul className="rv-spend-list" aria-label="Spending by source">{data.bySource.map(row => <li key={row.source}><span><VisibleText text={sourceWords(row.source)} /></span><span><Usd usd={row.spentUsd} /> <span className="rv-muted">({String(percentOf(row.spentUsd, figures.spentUsd))}% of spent)</span></span></li>)}</ul>}</Part>
  </>;
 }
 
 type PersonRow = { id: string; name: ReactNode; spentUsd: number; allowance: ReactNode };
 const personColumns: readonly Column<PersonRow>[] = [
- { key: "person", title: "Person", render: row => row.name }, { key: "spent", title: "Spent", render: row => <Money usd={row.spentUsd} /> }, { key: "allowance", title: "Allowance", render: row => row.allowance },
+ { key: "person", title: "Person", render: row => row.name }, { key: "spent", title: "Spent", render: row => <Usd usd={row.spentUsd} /> }, { key: "allowance", title: "Allowance", render: row => row.allowance },
 ];
 type ProjectRow = OrgSpend["byProject"][number];
 const projectColumns: readonly Column<ProjectRow>[] = [
- { key: "project", title: "Project", render: row => <VisibleText text={row.project} /> }, { key: "spent", title: "Spent", render: row => <Money usd={row.spentUsd} /> }, { key: "held", title: "Held", render: row => <Money usd={row.committedUsd} /> },
+ { key: "project", title: "Project", render: row => <VisibleText text={row.project} /> }, { key: "spent", title: "Spent", render: row => <Usd usd={row.spentUsd} /> }, { key: "held", title: "Held", render: row => <Usd usd={heldUsd(row)} /> },
 ];
 
 export function SpendingV2() {
@@ -71,21 +74,24 @@ export function SpendingV2() {
  const reads = useSpendingReads({ orgId, developerId, role, enabled: !checking });
  const { budget, orgSpend, requests, settings, members } = reads;
  const busy = checking || reads.all.some(read => read.isFetching);
- const names = new Map((members.data?.members ?? []).map(member => [member.developerId, member.name]));
- const settingsOk = settings.data !== undefined && settings.data.orgId === orgId ? settings.data : undefined;
+ // A failed refresh keeps no figures on the page: every figure below comes from `fresh`, which is undefined after an error.
+ const budgetData = fresh(budget), orgSpendData = fresh(orgSpend), settingsData = fresh(settings), membersData = fresh(members);
+ const names = new Map((membersData?.members ?? []).map(member => [member.developerId, member.name]));
+ const settingsOk = settingsData !== undefined && settingsData.orgId === orgId ? settingsData : undefined;
  const memberDefault = settingsOk?.memberDefaultMonthly;
- const defaultAllowance = memberDefault === undefined ? "Company default (not available)" : memberDefault.kind === "unlimited" ? "No limit set" : <Money usd={dollars(memberDefault.microdollars)} />;
- const own = budget.data?.member;
- const ownAllowance = own?.limitUsd === undefined ? "No limit set" : <Money usd={own.limitUsd} />;
- const people: PersonRow[] = (orgSpend.data?.byMember ?? []).map(row => {
+ const defaultAllowance = memberDefault === undefined ? "Company default (not available)" : memberDefault.kind === "unlimited" ? "No limit set" : <Usd usd={dollars(memberDefault.microdollars)} />;
+ const own = budgetData?.member;
+ const ownAllowance = own === undefined ? "Unavailable" : own.limitUsd === undefined ? "No limit set" : <Usd usd={own.limitUsd} />;
+ const namesLoaded = membersData !== undefined;
+ const people: PersonRow[] = (orgSpendData?.byMember ?? []).map(row => {
   const name = names.get(row.developerId), mine = row.developerId === developerId;
-  return { id: row.developerId, name: mine ? <>{name === undefined ? "You" : <VisibleText text={name} />} <span className="rv-muted">(you)</span></> : name === undefined ? "Former member" : <VisibleText text={name} />, spentUsd: row.spentUsd, allowance: mine ? ownAllowance : defaultAllowance };
+  return { id: row.developerId, name: mine ? <>{name === undefined ? "You" : <VisibleText text={name} />} <span className="rv-muted">(you)</span></> : name !== undefined ? <VisibleText text={name} /> : namesLoaded ? "Former member" : members.isError ? "Name unavailable" : "Loading name", spentUsd: row.spentUsd, allowance: mine ? ownAllowance : defaultAllowance };
  });
  const overrides = settingsOk?.memberOverrideCount ?? 0;
  const openRequests = (rows: SpendRequestRow[]) => rows.filter(row => row.status === "PENDING");
  const requestColumns: readonly Column<SpendRequestRow>[] = [
   { key: "what", title: "Request", render: row => requestKindWords(row.kind) },
-  { key: "amount", title: "Amount", render: row => row.amountUsd === undefined ? "Not provided" : <Money usd={row.amountUsd} /> },
+  { key: "amount", title: "Amount", render: row => row.amountUsd === undefined ? "Not provided" : <Usd usd={row.amountUsd} /> },
   { key: "why", title: "Reason", render: row => row.reason === undefined || row.reason === "" ? "No reason given" : <VisibleText text={row.reason} /> },
   { key: "who", title: "Who can approve", render: row => approverWords(row.approverRole) },
   { key: "asked", title: "Asked", render: row => time(row.createdAt) },
@@ -95,11 +101,12 @@ export function SpendingV2() {
   <PageHeader focusOnMount title="Spending" description="What the company has spent this month, what is held for work in progress, and what is left." actions={<Button aria-disabled={busy} onClick={() => { if (!busy) reads.all.forEach(read => { void read.refetch(); }); }}>Refresh spending</Button>} />
   <SettingsNote area="money" />
   {checking && <p role="status">Checking company access...</p>}
-  <section aria-labelledby="rv-spend-month" className="rv-spend-block"><Part read={budget} title="this month's spending">{data => <ThisMonth budget={data} source={orgSpend} />}</Part></section>
+  <section aria-labelledby="rv-spend-month" className="rv-spend-block"><h2 id="rv-spend-month">This month{budgetData === undefined ? "" : `: ${monthLabel(budgetData.month)}`}</h2><Part read={budget} title="this month's spending">{data => <ThisMonth budget={data} source={orgSpend} />}</Part></section>
 
   <section aria-labelledby="rv-spend-people" className="rv-spend-block">
    <h2 id="rv-spend-people">People</h2>
-   <Part read={orgSpend} title="spending by person" restricted={<>Spending by person is shown to company owners and admins. You see your own spending{own === undefined ? "." : <>: <Money usd={own.spentUsd} /> spent, <Money usd={own.committedUsd} /> held, allowance {own.limitUsd === undefined ? "not set" : <Money usd={own.limitUsd} />}.</>}</>}>{() => people.length === 0 ? <p>No one has spent anything this month yet.</p> : <>
+   <Part read={orgSpend} title="spending by person" restricted={<>Spending by person is shown to company owners and admins. You see your own spending{own === undefined ? "." : <>: <Usd usd={own.spentUsd} /> spent, <Usd usd={heldUsd(own)} /> held, allowance {own.limitUsd === undefined ? "not set" : <Usd usd={own.limitUsd} />}.</>}</>}>{() => people.length === 0 ? <p>No one has spent anything this month yet.</p> : <>
+    {members.isError && <p role="note">Names are unavailable right now, so people are not named. Refresh to try again.</p>}
     <DataTable caption="Spending by person this month" columns={personColumns} rows={people} rowKey={row => row.id} />
     <p className="rv-muted">The allowance shown for other people is the company default for a member{overrides > 0 ? `. ${String(overrides)} ${overrides === 1 ? "person has" : "people have"} their own allowance, which is not shown here` : ""}.</p>
    </>}</Part>
@@ -124,16 +131,16 @@ export function SpendingV2() {
    <h2 id="rv-spend-limits">Limits</h2>
    <Part read={settings} title="monthly limits" restricted="Monthly limits are shown to company owners and admins.">{() => settingsOk === undefined ? <p role="alert">Couldn't load monthly limits. No current amounts are shown. Refresh to try again.</p> : <>
     <dl className="rv-spend-limits">
-     <div><dt>Company, each month</dt><dd>{settingsOk.orgMonthly.kind === "unlimited" ? "No limit set" : <Money usd={dollars(settingsOk.orgMonthly.microdollars)} />}</dd></div>
-     <div><dt>Each member, each month</dt><dd>{settingsOk.memberDefaultMonthly.kind === "unlimited" ? "No limit set" : <Money usd={dollars(settingsOk.memberDefaultMonthly.microdollars)} />}</dd></div>
+     <div><dt>Company, each month</dt><dd>{settingsOk.orgMonthly.kind === "unlimited" ? "No limit set" : <Usd usd={dollars(settingsOk.orgMonthly.microdollars)} />}</dd></div>
+     <div><dt>Each member, each month</dt><dd>{settingsOk.memberDefaultMonthly.kind === "unlimited" ? "No limit set" : <Usd usd={dollars(settingsOk.memberDefaultMonthly.microdollars)} />}</dd></div>
      <div><dt>People with their own allowance</dt><dd>{String(settingsOk.memberOverrideCount)}</dd></div>
     </dl>
-    {budget.data?.org.limitUsd !== undefined && settingsOk.orgMonthly.kind === "limited" && Math.round(budget.data.org.limitUsd * 1_000_000) !== settingsOk.orgMonthly.microdollars && <p>This month's company allowance, with approved top-ups, is <Money usd={budget.data.org.limitUsd} />.</p>}
+    {budgetData?.org.limitUsd !== undefined && settingsOk.orgMonthly.kind === "limited" && Math.round(budgetData.org.limitUsd * 1_000_000) !== settingsOk.orgMonthly.microdollars && <p>This month's company allowance, with approved top-ups, is <Usd usd={budgetData.org.limitUsd} />.</p>}
    </>}</Part>
    <p className="rv-muted">Limits can't be changed in the web yet.</p>
   </section>
 
   {(role === "owner" || role === "admin") && <TaskStopEditor />}
-  {budget.data !== undefined && <p className="rv-muted">Amounts are Rovara's running totals for {monthLabel(budget.data.month)} (UTC). The AI provider's own limits are what stop work.</p>}
+  {budgetData !== undefined && <p className="rv-muted">Amounts are Rovara's running totals for {monthLabel(budgetData.month)} (UTC). The AI provider's own limits are what stop work.</p>}
  </section>;
 }
