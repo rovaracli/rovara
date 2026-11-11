@@ -16,7 +16,7 @@ const containing = (items: unknown[]): unknown => expect.arrayContaining(items);
 afterEach(() => { delete process.env.STANDING_INSTRUCTIONS_ENABLED; });
 const on = () => { process.env.STANDING_INSTRUCTIONS_ENABLED = "1"; };
 const PATH = COMPANY_RULES_PATH;
-const rules = (...texts: string[]) => texts.map((text, index) => ({ text, priority: index === 0 ? "required" : "preferred" }));
+const rules = (...texts: string[]): Array<{ text: string; priority: "required" | "preferred" }> => texts.map((text, index) => ({ text, priority: index === 0 ? "required" as const : "preferred" as const }));
 
 async function bench(options: { maya?: "admin" | "member" } = {}) {
   const audit = capturingAuditDeps();
@@ -30,7 +30,7 @@ const post = (t: Bench, body: unknown, who: Developer = OMAR) => t.web(who, "POS
 const stateOf = async (t: Bench, who: Developer = OMAR): Promise<CompanyRulesState> => {
   const reply = await get(t, who);
   expect(reply.status, JSON.stringify(reply.body)).toBe(200);
-  return CompanyRulesStateReaderSchema.parse(reply.body);
+  return CompanyRulesStateReaderSchema.parse(reply.body) as CompanyRulesState;
 };
 const errorCode = (reply: { body: Record<string, unknown> }) => (reply.body.error as { code: string }).code;
 const rows = (t: Bench) => t.db.find((item) => String(item.sk).startsWith("COMPANYRULES#"));

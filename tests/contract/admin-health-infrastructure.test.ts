@@ -325,6 +325,8 @@ describe("the health route's grants (A13)", () => {
       "packages/broker/src/team-record/capture-indexes.ts",
       // Lessons for local coding tools (decision 46b): the per-person, per-project, per-day counter row (LESSON_LOCAL_DAY; fixed numbers only, no text) expires after the index retention; none is a durable record, and only lessons-local.ts writes it.
       "packages/broker/src/aws/developer-routes/lessons-local.ts",
+      // 2026-11-11, G-04 company rules: a DECIDED proposal (rejected, cancelled, expired, or the one that became a version) is kept 400 days for the history list and then removed by the TTL. The durable record is the version row (never given the attribute), and neither a waiting proposal, the head nor the file link carries it; only company-rules/store.ts writes it.
+      "packages/broker/src/company-rules/store.ts",
     ]);
     const found = execFileSync("grep", ["-rl", "indexExpiresAt\\|INDEX_EXPIRY_ATTRIBUTE", "packages", "infra/lib", "--include=*.ts", "--exclude-dir=dist", "--exclude-dir=node_modules"], { encoding: "utf8" }).trim().split("\n").filter((file) => file !== "");
     expect(found.filter((file) => !allowed.has(file))).toEqual([]);

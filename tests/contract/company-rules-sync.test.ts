@@ -19,7 +19,7 @@ const containing = (items: unknown[]): unknown => expect.arrayContaining(items);
 afterEach(() => { delete process.env.STANDING_INSTRUCTIONS_ENABLED; });
 const PATH = COMPANY_RULES_PATH;
 const FILE = ".rovara/company-rules.md";
-const rules = (...texts: string[]) => texts.map((text, index) => ({ text, priority: index === 0 ? "required" : "preferred" }));
+const rules = (...texts: string[]): Array<{ text: string; priority: "required" | "preferred" }> => texts.map((text, index) => ({ text, priority: index === 0 ? "required" as const : "preferred" as const }));
 
 async function bench(repo = new FakeCompanyRepo(), options: { maya?: "admin" | "member" } = { maya: "admin" }) {
   const audit = capturingAuditDeps();
