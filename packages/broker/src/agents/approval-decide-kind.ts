@@ -16,7 +16,7 @@ import { recordApprovalViewed } from "./approval-viewed.js";
 import { decisionCardsEnabled } from "../proof/switch.js";
 import { decideApproval, getAnyApproval, mayDecideApproval, runOfApproval, shownPersonName, shownText, type AgentChangeSubject, type AnyApprovalRecord, type ApprovalDependencies } from "./approvals.js";
 import { WRITE_APPROVER_RULE } from "./write-gate.js";
-import { resolveRecipe } from "./changes.js";
+import { agentHasCompanyShare, resolveRecipe } from "./changes.js";
 import { TRACK_RECORD_DEADLINE_MS, readTrackRecordsByKind } from "../playbook/track-record.js";
 
 const NAME_MAX = 80;
@@ -34,8 +34,14 @@ async function whoMayDecide(deps: ApprovalDependencies, record: AnyApprovalRecor
       case "org_admin":
       case "agent_manager": return "an organization owner or admin";
       case "pull_request_merge": return "the person who pressed Merge, while they can still merge this task";
-      case "agent_publish": return "the agent's owner, a maintainer of its project, or an organization owner or admin";
-      case "chain_publish": return "someone who manages the chain: its owner, a maintainer who manages its project's agents, or an organization owner or admin";
+      case "agent_publish": {
+        // An agent the whole company can use is decided by an org owner or admin only (owner decision 92), whichever way the request was asked.
+        const subject = record.subject as { kind?: unknown; agentId?: unknown };
+        const shared = (subject.kind === "agent_publish" || subject.kind === "agent_rollback") && typeof subject.agentId === "string" && await agentHasCompanyShare(deps, record.orgId, subject.agentId);
+        return shared ? "an organization owner or admin" : "the agent's owner, a maintainer of its project, or an organization owner or admin";
+      }
+      case "chain_company_share": return "an organization owner or admin";
+      case "chain_publish": return record.subject.kind === "chain_share" ? "an organization owner or admin" : "someone who manages the chain: its owner, a maintainer who manages its project's agents, or an organization owner or admin";
       case "project_settings": return "a maintainer of this project";
       case "session_share_org": return "the person who asked, while they can still share the session";
       case "session_take_over": return "the person who asked, while they can still take the session over";

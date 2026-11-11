@@ -28,7 +28,7 @@ import {
   confirmUrlFor, createPendingChange, registerApprovalSubjectHandler, registerApproverRule,
   type ApprovalDependencies, type ApprovalRecord, type ApproverSpec, type ChainChangeSubject,
 } from "../agents/approvals.js";
-import { orgAdmins } from "../agents/changes.js";
+import { orgAdmins, orgOwnerOrAdmin } from "../agents/changes.js";
 import { lessSafeChanges } from "../agents/less-safe.js";
 import { holdingOwnerCap, jsonBody, logRecheckFailed, markRequest, parseBody, waitingReplay, type AgentRouteDependencies } from "../agents/routes.js";
 import { resolveAgent, type RecipeProblemsError } from "../agents/store.js";
@@ -170,12 +170,20 @@ async function chainApprovers(deps: ChainRouteDependencies, chain: ChainRecord):
   return { kind: "rule", rule: "chain_publish", candidates: [...candidates] };
 }
 
+/**
+ * Who is asked to confirm a company-wide share of a chain: the org's owners and admins only (owner decision 92). The chain's own member owner and a
+ * project's maintainers ask; they never decide. The rule `chain_company_share` is the live org owner-or-admin check.
+ */
+async function companyShareApprovers(deps: ChainRouteDependencies, chain: ChainRecord): Promise<ApproverSpec> {
+  return { kind: "rule", rule: "chain_company_share", candidates: await orgAdmins(deps, chain.orgId) };
+}
+
 async function waitForPerson(
-  deps: ChainRouteDependencies, caller: AgentCaller, chain: ChainRecord, requestId: string, subject: ChainChangeSubject, changes: string[],
+  deps: ChainRouteDependencies, caller: AgentCaller, chain: ChainRecord, requestId: string, subject: ChainChangeSubject, changes: string[], approvers?: ApproverSpec,
 ): Promise<StatusReply> {
   // A change that needs a person can't be confirmed on an archived chain, so it is not asked for.
   if (chain.status === "archived") throw agentXError("CHAIN_UNAVAILABLE", `${chain.name} is archived, so a change that needs confirmation can't be made. Unarchive it first, then ask again.`);
-  const record = await createPendingChange(deps, { orgId: caller.orgId, requestId, requestedBy: caller.developerId, subject, changes, approvers: await chainApprovers(deps, chain) });
+  const record = await createPendingChange(deps, { orgId: caller.orgId, requestId, requestedBy: caller.developerId, subject, changes, approvers: approvers ?? await chainApprovers(deps, chain) });
   // A replay of a request that was decided since is not waiting any more.
   if (record.status !== "PENDING") throw agentXError("APPROVAL_CLOSED", "this request was already decided");
   return waiting({ confirmUrl: confirmUrlFor(deps, record), changes: record.changes });
@@ -404,7 +412,7 @@ async function putShares(deps: ChainRouteDependencies, caller: AgentCaller, chai
     // Sharing with everyone, or letting everyone do more, waits for a person on the page, as an agent's does.
     const can = { view: "see", use: "run", edit: "change" }[wanted.level];
     const subject: ChainChangeSubject = { kind: "chain_share", chainId: chain.chainId, shares, expectedSharesRevision: chain.sharesRevision ?? 0 };
-    return waitForPerson(deps, caller, chain, input.requestId, subject, [`Shares ${chain.name} with everyone in your company, who can then ${can} it`]);
+    return waitForPerson(deps, caller, chain, input.requestId, subject, [`Shares ${chain.name} with everyone in your company, who can then ${can} it`], await companyShareApprovers(deps, chain));
   }
   return { shares: await setChainShares(accessOf(deps), { orgId: chain.orgId, chainId: chain.chainId, shares, by: caller.developerId, request: mark }) };
 }
@@ -662,7 +670,10 @@ async function managesChain(deps: ChainApprovalDeps, record: ApprovalRecord, cal
 
 /** Registers what Task 4 makes confirmable: the `chain_publish` rule and the handlers for a publish and a rollback. Safe to call more than once. */
 export function registerChainApprovals(): void {
-  registerApproverRule("chain_publish", (deps, record, caller) => managesChain(deps, record as ApprovalRecord, caller));
+  // A company-wide chain share is decided by an org owner or admin only (owner decision 92). A request asked before this, under `chain_publish`, is held to the same
+  // check, judged now, so the chain's owner or a maintainer in its stored candidates can't decide it.
+  registerApproverRule("chain_publish", (deps, record, caller) => ((record as ApprovalRecord).subject.kind === "chain_share" ? orgOwnerOrAdmin(deps, record, caller) : managesChain(deps, record as ApprovalRecord, caller)));
+  registerApproverRule("chain_company_share", (deps, record, caller) => orgOwnerOrAdmin(deps, record, caller));
   registerApprovalSubjectHandler("chain_publish", (deps, record) => confirmPublish(deps, record as ApprovalRecord));
   registerApprovalSubjectHandler("chain_rollback", (deps, record) => confirmRollback(deps, record as ApprovalRecord));
   registerApprovalSubjectHandler("chain_share", (deps, record) => confirmShare(deps, record as ApprovalRecord));

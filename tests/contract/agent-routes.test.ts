@@ -1545,3 +1545,126 @@ it("refuses a budget write if ownership moves after manage access but before the
   expect(f.db.get(key)?.maxPerRunUsd).toBe(1); expect(f.db.get(key)?.owner).toEqual({ kind: "member", developerId: EVE.developerId });
   expect(f.db.find(row => row.kind === "budget_changed").length).toBe(count);
 });
+
+// Owner decision 92: while the whole company can use an agent (a stored company share), a less-safe publish or rollback of it is decided by an org owner or
+// admin, never by its author alone; the same applies to a request that was asked before the share existed.
+describe("a company-shared agent's less-safe publish and rollback need an owner or admin (decision 92)", () => {
+  const WRITE = [{ connector: { type: "linear" as const }, access: "read_write" as const }];
+  const READ = [{ connector: { type: "linear" as const }, access: "read" as const }];
+  const decide = (deps: ApprovalDependencies, who: Developer, orgRole: OrgRole, approvalId: string) =>
+    decideApproval(deps, { orgId: TEST_ORG, developerId: who.developerId, orgRole }, approvalId, { requestId: randomUUID(), decision: "APPROVE" });
+  const refusal = (promise: Promise<unknown>) => promise.then(() => undefined, (thrown: Error) => thrown);
+  /** What an admin's confirmed company share leaves stored. */
+  const shareWithCompany = (store: AgentStore, agentId: AgentId) =>
+    store.replaceShares({ orgId: TEST_ORG, agentId, upsert: [{ principal: { kind: "org" }, level: "use" }], remove: [], expectedSharesRevision: 0, by: DANA.developerId });
+
+  it("asks only the org's owners and admins for a less-safe publish, and refuses the author deciding it", async () => {
+    const { create, seed, saveDraft, publish, state, store, approvals, deps, db } = await setup();
+    seedMembership(db, OWEN.developerId, { orgId: TEST_ORG, role: "owner" });
+    const agentId = await create(MAYA);
+    await seed(agentId, SAFE);
+    await shareWithCompany(store, agentId);
+    await saveDraft(MAYA, agentId, withLinearWrite());
+    expect((await publish(MAYA, agentId)).status).toBe(202);
+    const [record] = approvals();
+    expect(record).toMatchObject({ subject: { kind: "agent_publish", agentId }, approvers: { rule: "agent_manager" } });
+    expect(candidatesOf(record!).sort()).toEqual([DANA.developerId, OWEN.developerId].sort());
+    // Positive control: Maya does hold manage on her agent.
+    expect(await refusal(decide(deps, MAYA, "member", record!.approvalId))).toMatchObject({ message: expect.stringMatching(/^FORBIDDEN: /) as string });
+    expect((await state(agentId)).currentVersion).toBe(1);
+    expect((await decide(deps, DANA, "admin", record!.approvalId)).status).toBe("APPROVED_DONE");
+    expect((await state(agentId)).currentVersion).toBe(2);
+  });
+
+  it("does the same for a rollback to a looser version, and an owner can confirm it", async () => {
+    const { create, seed, call, state, store, approvals, deps, db } = await setup();
+    seedMembership(db, OWEN.developerId, { orgId: TEST_ORG, role: "owner" });
+    const agentId = await create(MAYA);
+    await seed(agentId, { ...SAFE, tools: WRITE });
+    await seed(agentId, { ...SAFE, tools: READ });
+    await shareWithCompany(store, agentId);
+    expect((await call(MAYA, "POST", `/v1/app/agents/${agentId}/rollback`, { version: 1 })).status).toBe(202);
+    const [record] = approvals();
+    expect(record).toMatchObject({ subject: { kind: "agent_rollback", agentId }, approvers: { rule: "agent_manager" } });
+    expect(candidatesOf(record!)).not.toContain(MAYA.developerId);
+    expect(await refusal(decide(deps, MAYA, "member", record!.approvalId))).toMatchObject({ message: expect.stringMatching(/^FORBIDDEN: /) as string });
+    expect((await state(agentId)).currentVersion).toBe(2);
+    expect((await decide(deps, OWEN, "owner", record!.approvalId)).status).toBe("APPROVED_DONE");
+    expect((await state(agentId)).currentVersion).toBe(1);
+  });
+
+  it("keeps today's rules for an agent the company can't use: its author still confirms their own less-safe publish", async () => {
+    const { create, seed, saveDraft, publish, state, approvals, deps } = await setup();
+    const agentId = await create(MAYA);
+    await seed(agentId, SAFE);
+    await saveDraft(MAYA, agentId, withLinearWrite());
+    expect((await publish(MAYA, agentId)).status).toBe(202);
+    const [record] = approvals();
+    expect(record).toMatchObject({ approvers: { rule: "agent_publish" } });
+    expect(candidatesOf(record!)).toContain(MAYA.developerId);
+    expect((await decide(deps, MAYA, "member", record!.approvalId)).status).toBe("APPROVED_DONE");
+    expect((await state(agentId)).currentVersion).toBe(2);
+  });
+
+  it("applies a safe publish of a shared agent at once, with nobody asked", async () => {
+    const { create, seed, saveDraft, publish, state, store, approvals } = await setup();
+    const agentId = await create(MAYA);
+    await seed(agentId, SAFE);
+    await shareWithCompany(store, agentId);
+    await saveDraft(MAYA, agentId, { ...SAFE, instructions: "Only words, newest first." });
+    expect((await publish(MAYA, agentId)).status).toBe(200);
+    expect((await state(agentId)).currentVersion).toBe(2);
+    expect(approvals()).toEqual([]);
+  });
+
+  it("holds a request asked before the company share existed (rule agent_publish, the author among its candidates), judged now", async () => {
+    const { create, seed, saveDraft, publish, state, store, approvals, deps } = await setup();
+    const agentId = await create(MAYA);
+    await seed(agentId, SAFE);
+    await saveDraft(MAYA, agentId, withLinearWrite());
+    expect((await publish(MAYA, agentId)).status).toBe(202);
+    const [record] = approvals();
+    expect(record).toMatchObject({ approvers: { rule: "agent_publish" } });
+    expect(candidatesOf(record!)).toContain(MAYA.developerId);
+    await shareWithCompany(store, agentId);
+    // The page says who may decide it now, for a request made under the old rule.
+    expect(await approvalDecideKind(deps).inspect({ orgId: TEST_ORG, developerId: MAYA.developerId, approvalId: record!.approvalId })).toMatchObject({ status: "forbidden", who: "an organization owner or admin" });
+    expect(await refusal(decide(deps, MAYA, "member", record!.approvalId))).toMatchObject({ message: expect.stringMatching(/^FORBIDDEN: /) as string });
+    expect((await state(agentId)).currentVersion).toBe(1);
+    expect((await decide(deps, DANA, "admin", record!.approvalId)).status).toBe("APPROVED_DONE");
+  });
+
+  it("tells the page's reader that an owner or admin decides a shared agent's change, and the old words for an unshared one", async () => {
+    const { create, seed, saveDraft, publish, store, approvals, deps } = await setup();
+    const shared = await create(MAYA);
+    const alone = await create(EVE);
+    for (const agentId of [shared, alone]) await seed(agentId, SAFE);
+    await shareWithCompany(store, shared);
+    await saveDraft(MAYA, shared, withLinearWrite());
+    await saveDraft(EVE, alone, withLinearWrite());
+    await publish(MAYA, shared);
+    await publish(EVE, alone);
+    const of = (agentId: AgentId) => approvals().find((record) => (record.subject as { agentId: string }).agentId === agentId)!.approvalId;
+    // Eve sees her own unshared agent's page; Max can't decide either and is told who can.
+    const sharedPage = await approvalDecideKind(deps).inspect({ orgId: TEST_ORG, developerId: MAYA.developerId, approvalId: of(shared) });
+    expect(sharedPage).toMatchObject({ status: "forbidden", who: "an organization owner or admin" });
+    const alonePage = await approvalDecideKind(deps).inspect({ orgId: TEST_ORG, developerId: MAX.developerId, approvalId: of(alone) });
+    expect(alonePage).toMatchObject({ status: "forbidden", who: "the agent's owner, a maintainer of its project, or an organization owner or admin" });
+  });
+
+  it("L3: a company-share request stored with the member owner among its candidates still can't be decided by them", async () => {
+    const { call, create, seed, store, approvals, deps, db } = await setup();
+    const agentId = await create(MAYA);
+    await seed(agentId, SAFE);
+    expect((await call(MAYA, "PUT", `/v1/app/agents/${agentId}/shares`, { shares: [{ principal: { kind: "org" }, level: "use" }] })).status).toBe(202);
+    const [record] = approvals();
+    // As the code before decision 91 stored it: the owner listed first, then the admins.
+    const key = approvalKey(TEST_ORG, record!.approvalId);
+    db.set({ ...db.get(key.pk, key.sk)!, approvers: { kind: "rule", rule: "agent_manager", candidates: [MAYA.developerId, DANA.developerId] } });
+    expect(candidatesOf(approvals()[0]!)).toContain(MAYA.developerId);
+    expect(await refusal(decide(deps, MAYA, "member", record!.approvalId))).toMatchObject({ message: expect.stringMatching(/^FORBIDDEN: /) as string });
+    expect(await store.listShares(TEST_ORG, agentId)).toEqual([]);
+    expect((await decide(deps, DANA, "admin", record!.approvalId)).status).toBe("APPROVED_DONE");
+    expect(await store.listShares(TEST_ORG, agentId)).toHaveLength(1);
+  });
+});

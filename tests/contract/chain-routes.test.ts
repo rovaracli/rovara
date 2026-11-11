@@ -5,7 +5,7 @@ import { projectMemberKey } from "../../packages/contracts/src/org-scoped-keys.j
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { approvalDecideKind } from "../../packages/broker/src/agents/approval-decide-kind.js";
-import { getApprovalSubjectHandler, getApproverRule, type ApprovalDependencies, type ApprovalRecord, type ApproverSpec } from "../../packages/broker/src/agents/approvals.js";
+import { decideApproval, getApprovalSubjectHandler, getApproverRule, type ApprovalDependencies, type ApprovalRecord, type ApproverSpec } from "../../packages/broker/src/agents/approvals.js";
 import { AgentStore, type BuiltinSource } from "../../packages/broker/src/agents/store.js";
 import { isChainRoute, STARTER_CHAIN_DEFINITION, type ChainRouteDependencies, type ChainTriggerHooks } from "../../packages/broker/src/chains/routes.js";
 import { ChainStore, chainDigest } from "../../packages/broker/src/chains/store.js";
@@ -35,6 +35,7 @@ const CARL = person("3", "Carl"); // contributor on web
 const EVE = person("4", "Eve"); // a member with no role anywhere
 const VIV = person("5", "Viv"); // viewer on web
 const ARJUN = person("6", "Arjun"); // a member
+const OWEN = person("7", "Owen"); // org owner
 const orgResolver: OrgResolver = async (subject) => (subject.developerId === OMAR.developerId ? ORG_B : TEST_ORG);
 const SAFE_OVERLAY: RecipeOverlay = { instructions: "x", sequence: [{ id: "work", name: "Work", kind: "agent", workspace: "none" }] };
 
@@ -1059,8 +1060,9 @@ describe("sharing a chain with the whole company waits for the page", () => {
     expect(asked.body).toMatchObject({ status: "NEEDS_CONFIRMATION", changes: [`Shares ${(await s.state(chainId)).name} with everyone in your company, who can then run it`] });
     expect(await s.chains.listShares(TEST_ORG, chainId)).toHaveLength(1);
     expect((await s.call(CARL, "GET", `/v1/app/chains/${chainId}`)).status).toBe(404);
-    expect(s.approvals()[0]).toMatchObject({ kind: "change", status: "PENDING", subject: { kind: "chain_share", chainId, expectedSharesRevision: 1 }, approvers: { kind: "rule", rule: "chain_publish" } });
-    expect(candidatesOf(s.approvals()[0]!).sort()).toEqual([DANA.developerId, MAYA.developerId].sort());
+    expect(s.approvals()[0]).toMatchObject({ kind: "change", status: "PENDING", subject: { kind: "chain_share", chainId, expectedSharesRevision: 1 }, approvers: { kind: "rule", rule: "chain_company_share" } });
+    // Owner decision 92: only the org's owners and admins are asked; the chain's own author is not.
+    expect(candidatesOf(s.approvals()[0]!)).toEqual([DANA.developerId]);
     // Once the company can see it, asking for more is a widening again.
     await s.chains.replaceShares({ orgId: TEST_ORG, chainId, upsert: [{ principal: { kind: "org" }, level: "view" }], remove: [], expectedSharesRevision: (await s.state(chainId)).sharesRevision ?? 0, by: DANA.developerId });
     const raise = await s.call(MAYA, "PUT", sharesPath(chainId), { shares: [member(EVE), company("edit")] });
@@ -1147,3 +1149,77 @@ describe("how the broker wires chains", () => {
   });
 });
 
+
+// Owner decision 92: only an org owner or admin confirms a company-wide chain share (as for an agent's). The chain's author and a project's maintainers ask; they
+// never decide, whatever the record's stored candidates say.
+describe("who may confirm a company-wide chain share (decision 92)", () => {
+  const COMPANY = { principal: { kind: "org" }, level: "use" };
+  const decide = (deps: ApprovalDependencies, who: Developer, orgRole: OrgRole, approvalId: string) =>
+    decideApproval(deps, { orgId: TEST_ORG, developerId: who.developerId, orgRole }, approvalId, { requestId: randomUUID(), decision: "APPROVE" });
+
+  it("refuses the non-admin author, and a maintainer who owns the project's chain; nothing is shared", async () => {
+    const s = await setup();
+    const mine = await s.create(MAYA);
+    expect((await s.call(MAYA, "PUT", `/v1/app/chains/${mine}/shares`, { shares: [COMPANY] })).status).toBe(202);
+    const web = (await s.call(MAX, "POST", "/v1/app/chains", { name: "Web chain", owner: { kind: "project", project: "web" }, accountable: { developerId: MAX.developerId } })).body.chain as { chainId: string };
+    expect((await s.call(MAX, "PUT", `/v1/app/chains/${web.chainId}/shares`, { shares: [COMPANY] })).status).toBe(202);
+    const [asked, webAsked] = s.approvals();
+    // Positive control: both hold manage on their chain, which is what the old rule accepted.
+    expect((await s.call(MAYA, "GET", `/v1/app/chains/${mine}`)).body.chain).toMatchObject({ access: "manage" });
+    expect((await s.call(MAX, "GET", `/v1/app/chains/${web.chainId}`)).body.chain).toMatchObject({ access: "manage" });
+    expect(await thrownMessage(decide(s.deps, MAYA, "member", asked!.approvalId))).toMatch(/^FORBIDDEN: /);
+    expect(await thrownMessage(decide(s.deps, MAX, "member", webAsked!.approvalId))).toMatch(/^FORBIDDEN: /);
+    expect(await thrownMessage(decide(s.deps, MAYA, "admin", asked!.approvalId))).toMatch(/^FORBIDDEN: /);
+    expect(await s.chains.listShares(TEST_ORG, mine)).toEqual([]);
+    expect(await s.chains.listShares(TEST_ORG, web.chainId)).toEqual([]);
+    expect(s.approvals().map((record) => record.status)).toEqual(["PENDING", "PENDING"]);
+  });
+
+  it("lets an org admin, an org owner and an admin who is the author confirm it", async () => {
+    const s = await setup();
+    seedMembership(s.db, OWEN.developerId, { orgId: TEST_ORG, role: "owner" });
+    const byAdmin = await s.create(MAYA);
+    const byOwner = await s.create(MAYA);
+    const own = await s.create(DANA);
+    for (const [asker, chainId] of [[MAYA, byAdmin], [MAYA, byOwner], [DANA, own]] as const) expect((await s.call(asker, "PUT", `/v1/app/chains/${chainId}/shares`, { shares: [COMPANY] })).status).toBe(202);
+    const idOf = (chainId: string) => s.approvals().find((record) => (record.subject as { chainId?: string }).chainId === chainId)!.approvalId;
+    expect((await decide(s.deps, DANA, "admin", idOf(byAdmin))).status).toBe("APPROVED_DONE");
+    expect((await decide(s.deps, OWEN, "owner", idOf(byOwner))).status).toBe("APPROVED_DONE");
+    expect((await decide(s.deps, DANA, "admin", idOf(own))).status).toBe("APPROVED_DONE");
+    for (const chainId of [byAdmin, byOwner, own]) expect((await s.chains.listShares(TEST_ORG, chainId)).map((share) => share.principal.kind)).toEqual(["org"]);
+  });
+
+  it("holds a request asked before this (rule chain_publish, the author among its candidates) to the same check, judged now", async () => {
+    const s = await setup();
+    const chainId = await s.create(MAYA);
+    expect((await s.call(MAYA, "PUT", `/v1/app/chains/${chainId}/shares`, { shares: [COMPANY] })).status).toBe(202);
+    const [fresh] = s.approvals();
+    // Rewritten as the previous code stored it: the chain_publish rule, with the author listed.
+    const key = approvalKey(TEST_ORG, fresh!.approvalId);
+    s.db.set({ ...s.db.get(key.pk, key.sk)!, approvers: { kind: "rule", rule: "chain_publish", candidates: [MAYA.developerId, DANA.developerId] } });
+    expect(candidatesOf(s.approvals()[0]!)).toContain(MAYA.developerId);
+    // The page names who may decide it, for this old record too.
+    expect(await approvalDecideKind(s.deps).inspect({ orgId: TEST_ORG, developerId: MAYA.developerId, approvalId: fresh!.approvalId })).toMatchObject({ status: "forbidden", who: "an organization owner or admin" });
+    expect(await thrownMessage(decide(s.deps, MAYA, "member", fresh!.approvalId))).toMatch(/^FORBIDDEN: /);
+    expect(await s.chains.listShares(TEST_ORG, chainId)).toEqual([]);
+    expect((await decide(s.deps, DANA, "admin", fresh!.approvalId)).status).toBe("APPROVED_DONE");
+    expect(await s.chains.listShares(TEST_ORG, chainId)).toHaveLength(1);
+  });
+
+  it("leaves a chain publish to whoever manages the chain, as before", async () => {
+    const s = await setup();
+    const rule = getApproverRule("chain_publish")!;
+    const chainId = await s.create(MAYA);
+    const record = { orgId: TEST_ORG, kind: "change", subject: { kind: "chain_publish", chainId } } as unknown as ApprovalRecord;
+    expect(await rule(s.deps, record, { orgId: TEST_ORG, developerId: MAYA.developerId, orgRole: "member" })).toBe(true);
+    expect(await rule(s.deps, record, { orgId: TEST_ORG, developerId: EVE.developerId, orgRole: "member" })).toBe(false);
+  });
+
+  it("says on the page that an owner or admin decides", async () => {
+    const s = await setup();
+    const chainId = await s.create(MAYA);
+    expect((await s.call(MAYA, "PUT", `/v1/app/chains/${chainId}/shares`, { shares: [COMPANY] })).status).toBe(202);
+    const inspected = await approvalDecideKind(s.deps).inspect({ orgId: TEST_ORG, developerId: MAYA.developerId, approvalId: s.approvals()[0]!.approvalId });
+    expect(inspected).toMatchObject({ status: "forbidden", who: "an organization owner or admin" });
+  });
+});
