@@ -11,6 +11,7 @@ import { turnStagesForMode, prepareTurnModelPolicy } from "../../model-selection
 import { reviewFailures, criticFailures } from "../../model-selection/task-failures.js";
 import { taskStageReferenceChecks, taskStageReferences, scopedTaskOperations, taskStageReferenceOperation } from "../../model-selection/task-references.js";
 import { prepareTurnModelFallback, prepareTaskModelFallback } from "../../model-selection/fallback-record.js";
+import type { ModelUseObservation } from "../../org/health-observations.js";
 import type { StageModelResult } from "../../model-selection/resolver.js";
 import { loadPinnedTaskStage } from "../../model-selection/task-live.js";
 import { type TaskModelPolicyBinding, STAGE_OPERATION_MAPPING, sharedTaskKey, type SharedTaskRecord } from "@rovara-code/contracts";
@@ -327,7 +328,7 @@ export async function taskOperationParts(
   workspace: WorkspaceInstance,
   input: { requestId: string; conversationId: string; prompt: string; conversationStarted: boolean; requester: { requestedBy?: OperationRequester }; orgId?: OrgId; operationId?: string; shared?: boolean; planRevision?: true; legacyTask?: boolean; workflowMode?: "UNDERSTAND" | "PLAN" | "PLAN_CRITIQUE" | "IMPLEMENT" | "REVIEW" | "CHECKS" | "FEEDBACK_REVIEW" | "SETUP_DRAFT" | "SETUP_AGENT" | "SPEC_WRITE"; specWrite?: SpecWriteBinding; workflowReviewSpec?: SpecReviewInput; workflowPhase?: "REQUIREMENTS" | "DESIGN" | "IMPLEMENTATION_PLAN"; readiness?: ProjectCommand[]; workflowFeedbackReview?: { taskId: string; workflowRevision: number; candidateDigest: string }; workflowFeedbackApproval?: WorkflowFeedbackApprovalBinding; workflowE2EAdmission?: E2EWorkflowAdmissionRef; workflowE2EBaselineSource?: true; workflowDependencies?: WorkflowDependencyInvocation; workflowBase?: WorkflowReviewBase; workflowReviewChecks?: WorkflowReviewChecks; workflowReviewPlan?: WorkflowReviewPlan; workflowReviewFeedback?: WorkflowReviewFeedback; workflowReviewNote?: WorkflowReviewNote; programStepId?: string; workflowReviewers?: ReadonlyArray<"CRITIC" | "SECURITY">; workflowReviewRisk?: true; workflowFix?: WorkflowFixPayload; ownerRedirect?: OwnerRedirectInvocation; retiredClaimIds?: readonly string[]; slackThread?: SlackThread; agentRun?: AgentRunStepInput; designReview?: DesignReviewDispatch },
   now: string,
-): Promise<{ operation: OperationRecord; outbox: ReturnType<typeof outboxRecord>; fence: number;modelChecks?:TransactItems;turnAudit?:ReturnType<typeof prepareTurnModelFallback>;fallback?:Awaited<ReturnType<typeof prepareTaskModelFallback>> }> {
+): Promise<{ operation: OperationRecord; outbox: ReturnType<typeof outboxRecord>; fence: number;modelChecks?:TransactItems;turnAudit?:ReturnType<typeof prepareTurnModelFallback>;fallback?:Awaited<ReturnType<typeof prepareTaskModelFallback>>;modelUse?:ModelUseObservation }> {
   // Ruling R60, as a backstop for any launch path that did not check first: a task whose creator was removed starts nothing.
   await requireWorkspaceCreatorStillMember(creatorCheckOf(dependencies), workspace.id);
   // The caller's org when there is one (a Slack thread's is its team's); a background writer reads it from the record.
@@ -660,7 +661,9 @@ export async function taskOperationParts(
   if(fallback?.replayed===true)throw agentXError("IDEMPOTENCY_CONFLICT","The fallback operation has already been recorded.");
   const modelChecks=turnPolicy===undefined?undefined:[...turnPolicy.checks,...(turnAudit?.items??[])];
   if(modelChecks!==undefined&&modelChecks.length>25)throw new TurnAdmissionLimitError(modelChecks.length,25);
-  return { operation, outbox: outboxRecord(workspace, invocation), fence,...(modelChecks===undefined?{}:{modelChecks}),...(turnAudit===undefined?{}:{turnAudit}),...(fallback===undefined?{}:{fallback}) };
+  // 0.5.15: which model ran this step, for the Health page: set only for a step the company's model policy governed, and recorded by the caller once the step is committed.
+  const modelUse:ModelUseObservation|undefined=operation.modelPolicy===undefined?undefined:{orgId,use:fallback?.reasonCode!==undefined||turnAudit!==undefined?{kind:"fallback",reason:(fallback?.reasonCode??turnAudit!.reasonCode)}:{kind:"main"}};
+  return { operation, outbox: outboxRecord(workspace, invocation), fence,...(modelChecks===undefined?{}:{modelChecks}),...(turnAudit===undefined?{}:{turnAudit}),...(fallback===undefined?{}:{fallback}),...(modelUse===undefined?{}:{modelUse}) };
 }
 
 /**

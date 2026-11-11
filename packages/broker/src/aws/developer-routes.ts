@@ -126,6 +126,7 @@ import "./task-web.js";
 import "./task-web-api.js";
 import "./task-e2e-artifact.js";
 import { readOrgServiceStatus } from "../org/service-status.js";
+import { readOrgHealthObservations } from "../org/health-observations.js";
 import { CompanySameModelPolicyRefusal } from "../model-selection/company-prepare.js";
 import { updateCompanyModelPolicy } from "../model-selection/company-approval.js";
 import { ModelSelectionPolicyAppliedSchema, ModelSelectionPolicyPendingSchema, ReviewDefaultNoticeBodySchema } from "@rovara-code/contracts";
@@ -151,7 +152,7 @@ import { readReviewedProjectArchiveAppPreview } from "../org/reviewed-project-ar
 import { revokeOrganizationInvite } from "../org/invite-revocation.js";
 import { logDeveloperEvent } from "../developer/log.js";
 import { listOrganizationInvites } from "../org/invite-directory.js";
-import { OrgMemberRoleChangeBodySchema } from "@agentx/cloud-contracts";
+import { OrgMemberRoleChangeBodySchema, ORG_HEALTH_OBSERVATIONS_PATH } from "@agentx/cloud-contracts";
 import { listOrganizationMembers, lookupOrganizationMember } from "../org/directory.js";
 import { getMemberRemoval, previewMemberRemoval, startMemberRemovalRoute } from "../org/member-removal/routes.js";
 import { taskResponseForClient } from "../rovara-code/task-view-compat.js";
@@ -833,6 +834,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (request.method === "POST" && (url.pathname === "/v1/dev/org/invites" || url.pathname === "/v1/app/org/invites")) return createOrganizationInvite(deps, caller, jsonBody(request));
   // Lane C17: metadata-only Slack association evidence; scope comes only from the authenticated caller.
   if (request.method === "GET" && url.pathname === "/v1/app/org/service-status") return readOrgServiceStatus({ documentClient: deps.documentClient, tableName: deps.tableName, signInTableName: deps.developer.signInTableName, now: deps.now, ...deps.serviceStatus }, caller, { expectedOrgId: url.searchParams.get("expectedOrgId") });
+  // 0.5.15: when each health check last ran for this company (a live owner or admin on a browser session; the company is the session's).
+  if (request.method === "GET" && url.pathname === ORG_HEALTH_OBSERVATIONS_PATH) return readOrgHealthObservations({ documentClient: deps.documentClient, tableName: deps.tableName, signInTableName: deps.developer.signInTableName, now: deps.now }, caller, { expectedOrgId: url.searchParams.get("expectedOrgId") });
   if (request.method === "GET" && url.pathname === "/v1/app/org/slack-workspace-evidence") {
     if (url.search !== "" || (request.body !== undefined && request.body.trim() !== "")) throw agentXError("CONFIG_INVALID", "Slack workspace evidence accepts no query parameters or body.");
     return readSlackWorkspaceEvidence(deps, caller);

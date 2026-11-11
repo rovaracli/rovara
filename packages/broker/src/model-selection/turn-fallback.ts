@@ -13,6 +13,7 @@ import {turnStagesForMode,parseTurnModelPin} from "./turn-policy.js";
 import {loadPinnedTaskStageContext} from "./task-live.js";
 import {routeTaskFallback} from "./fallback-route.js";
 import {prepareTurnModelFallback} from "./fallback-record.js";
+import {recordModelUse} from "../org/health-observations.js";
 import {flushAuditEvents} from "../audit/flush.js";
 import type {TaskModelAuthorizationDependencies} from "./authorize-fallback.js";
 import type {TransactItem} from "../agents/table-writes.js";
@@ -70,5 +71,5 @@ export async function authorizeTurnModelFallback(deps:TurnFallbackDependencies&{
  const items:TransactItem[]=[...checks,...history.items,{Update:{TableName:deps.tableName,Key:operationKey(input.workspaceId,input.operationId),UpdateExpression:"SET #model = :next, modelRoute = :route"+(operation.fundingSourceId===undefined?"":", fundingSourceId = :fundingSourceId")+", modelFallbackAuthorization = :authorization, modelFallbackRequestDigest = :digest, modelFallbacks = :history, modelFallbackReceipts = :receipts, modelFallbackRevision = :revision REMOVE chatgptDeveloperId",ConditionExpression:predicate+" AND attribute_not_exists(modelFallbackAuthorization) AND "+(operation.modelFallbackRevision===undefined?"attribute_not_exists(modelFallbackRevision)":"modelFallbackRevision = :oldRevision"),ExpressionAttributeNames:names,ExpressionAttributeValues:{...values,...(operation.fundingSourceId===undefined?{}:{":fundingSourceId":context.decision.sourceId}),":next":model,":route":nextRoute,":authorization":authorization,":digest":requestDigest,":history":history.fields.modelFallbacks,":receipts":history.fields.modelFallbackReceipts,":revision":history.fields.modelFallbackRevision,...(operation.modelFallbackRevision===undefined?{}:{":oldRevision":operation.modelFallbackRevision})}}}];
  if(items.length>25)throw refused();
  await deps.documentClient.send(new TransactWriteCommand({TransactItems:items}));
- await flushAuditEvents(deps.audit===undefined?{}:{audit:deps.audit},[history.event]);return authorization;
+ await flushAuditEvents(deps.audit===undefined?{}:{audit:deps.audit},[history.event]);await recordModelUse(deps,input.orgId,{kind:"fallback",reason:history.reasonCode});return authorization;
 }

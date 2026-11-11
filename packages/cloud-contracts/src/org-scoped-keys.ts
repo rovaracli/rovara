@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import { type AgentId, type ApprovalId, canonicalInstant, type DeviceId, type OrgId, OrgIdSchema, type OrgKey, orgPk, orgScoped, type SessionId, teamRecordPk } from "@rovara-code/contracts";
 import { scopeKey, type BudgetScope } from "./spend.js";
 
-export type OrgSettingName = "WORKSPACE_LIMITS" | "BUDGET" | "BUDGET_SYNCED" | "SPEND_POLICY" | "LOCAL_AGENTS" | "TASK_STOP_POLICY" | "MODEL_SELECTION_POLICY" | "REVIEW_DEFAULT_NOTICE";
+export type OrgSettingName = "WORKSPACE_LIMITS" | "BUDGET" | "BUDGET_SYNCED" | "SPEND_POLICY" | "LOCAL_AGENTS" | "TASK_STOP_POLICY" | "MODEL_SELECTION_POLICY" | "REVIEW_DEFAULT_NOTICE" | "HEALTH_MODEL_SOURCE_CHECK" | "HEALTH_MODEL_USE" | "HEALTH_SLACK_PROBE" | "HEALTH_GITHUB_CHECK";
 
 export function orgSettingsKey(orgId: OrgId, name: OrgSettingName): OrgKey {
   return { pk: orgScoped(orgId, "SETTINGS"), sk: name };

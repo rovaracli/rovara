@@ -12,6 +12,7 @@ import {routeTaskFallback} from "./fallback-route.js";
 import {flushAuditEvents} from "../audit/flush.js";
 import {modelIdentityChecks} from "./authority.js";
 import {prepareTaskModelFallback,type FallbackRecordDependencies} from "./fallback-record.js";
+import {recordModelUse} from "../org/health-observations.js";
 import type {TaskStageLiveDependencies,loadPinnedTaskStageContext} from "./task-live.js";
 import type {DeveloperSignInStore} from "../developer/store.js";
 type Context=Awaited<ReturnType<typeof loadPinnedTaskStageContext>>;
@@ -60,7 +61,7 @@ export async function prepareTaskModelAuthorization(deps:TaskModelAuthorizationD
  const update=prepared.items[0]?.Update;if(update===undefined)throw refused();
  update.ConditionExpression=`(${update.ConditionExpression}) AND (${taskCondition})`;update.ExpressionAttributeNames={...update.ExpressionAttributeNames,...taskNames};update.ExpressionAttributeValues={...update.ExpressionAttributeValues,...taskValues};
  const items:TransactItem[]=[...checks,...prepared.items,{Update:{TableName:deps.tableName,Key:operationKey(input.workspaceId,input.operationId),UpdateExpression:"SET #model = :next, modelRoute = :route"+(operation.fundingSourceId===undefined?"":", fundingSourceId = :fundingSourceId")+", modelFallbackAuthorization = :authorization, modelFallbackRequestDigest = :digest REMOVE chatgptDeveloperId",ConditionExpression:"orgId = :org AND id = :operation AND modelTaskId = :task AND fence = :fence AND #status = :status AND #model = :before AND modelPolicy = :binding AND attribute_not_exists(modelFallbackAuthorization)",ExpressionAttributeNames:{"#model":"model","#status":"status"},ExpressionAttributeValues:{":org":input.orgId,":operation":input.operationId,":task":input.taskId,":fence":input.fence,":status":operation.status,":before":current.data,":binding":binding.data,...(operation.fundingSourceId===undefined?{}:{":fundingSourceId":context.decision.sourceId}),":next":model,":route":expectedRoute,":authorization":authorization,":digest":requestDigest}}}];
- if(items.length>90)throw refused();return {authorization,replayed:false as const,event:prepared.event,items};
+ if(items.length>90)throw refused();return {authorization,replayed:false as const,event:prepared.event,reasonCode:decision.fallback.reasonCode,items};
 }
 
 /** HTTP boundary verifies the signature first; no reply is released before this atomic commit. */
@@ -70,6 +71,6 @@ export async function authorizeTaskModelFallback(deps:TaskModelAuthorizationDepe
  const route=await routeTaskFallback(deps.routing,{orgId:input.orgId,project:input.context.pin.project,agent:input.context.pin.processAgentId,stage:input.context.stage,model:decision.model,sourceId:decision.sourceId});
  const prepared=await prepareTaskModelAuthorization(deps,{...input,route});
  await deps.documentClient.send(new TransactWriteCommand({TransactItems:prepared.items}));
- if(prepared.event!==undefined)await flushAuditEvents(deps.audit===undefined?{}:{audit:deps.audit},[prepared.event]);
+ if(prepared.event!==undefined){await flushAuditEvents(deps.audit===undefined?{}:{audit:deps.audit},[prepared.event]);await recordModelUse(deps,input.orgId,{kind:"fallback",reason:prepared.reasonCode});}
  return prepared.authorization;
 }
