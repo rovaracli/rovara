@@ -11,9 +11,10 @@ import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { ApiError } from "../../packages/ui/src/api/errors.js";
 import { OnboardScreen } from "../../packages/ui/src/screens/onboarding/OnboardScreen.js";
 import { PROJECT_SETUP_STORAGE_KEY, isProjectSetupV2On } from "../../packages/ui/src/screens/onboarding/project-setup-flags.js";
-import { attributeFailure, recoveryChoices, repoCheckModel, runIsOf, type EnvRun } from "../../packages/ui/src/screens/onboarding/setup-v2/repo-check.js";
+import { attributeFailure, codeRepositoriesOf, recoveryChoices, repoCheckModel, runIsOf, type EnvRun } from "../../packages/ui/src/screens/onboarding/setup-v2/repo-check.js";
 import { firstTaskGate, refusalOf, suggestFirstOutcomes } from "../../packages/ui/src/screens/onboarding/setup-v2/first-task.js";
 import { nameProblem, planCreate } from "../../packages/ui/src/screens/onboarding/setup-v2/repo-plan.js";
+import ProjectSetupV2 from "../../packages/ui/src/screens/onboarding/setup-v2/ProjectSetupV2.js";
 import { EnvironmentStep } from "../../packages/ui/src/screens/onboarding/setup-v2/EnvironmentStep.js";
 import { FirstTaskStep } from "../../packages/ui/src/screens/onboarding/setup-v2/FirstTaskStep.js";
 import { setupFailureOf } from "../../packages/ui/src/screens/onboarding/steps/setup-failure.js";
@@ -79,6 +80,45 @@ it("an unchecked or outdated project says so on every repository, and the meta r
  expect(repoCheckModel({ repositories: [API], setup: { status: "outdated" } }).rows[0]!.label).toBe("Settings changed");
  // A meta repo that is also code is not listed twice.
  expect(repoCheckModel({ repositories: [API], setup: { status: "ready" }, metaRepository: "ACME/checkout-api" }).rows).toHaveLength(1);
+});
+
+// The project read's own `metaRepository` (also listed in `repositories`): authoritative, so the meta repo row survives a reload.
+const META = { fullName: "acme/mobile-meta", defaultBranch: "main" };
+it("the project read's meta repository is its own row, not a code repository, and the check covers the code repositories only", () => {
+ const model = repoCheckModel({ repositories: [API, IOS, META], setup: { status: "ready" }, metaRepository: { fullName: "acme/mobile-meta" } });
+ expect(model.rows.map(row => [row.fullName, row.role, row.state])).toEqual([["acme/checkout-api", "code", "ready"], ["acme/checkout-ios", "code", "ready"], ["acme/mobile-meta", "meta", "meta"]]);
+ expect(model.allReady).toBe(true);
+ // A failure is placed among the code repositories: with one code repository left it is that one's, even though the meta repo is also in the list.
+ const failed = repoCheckModel({ repositories: [IOS, META], setup: { status: "failed", failedStep: FAIL_IOS }, metaRepository: { fullName: "acme/mobile-meta" } });
+ expect(failed.rows.map(row => [row.fullName, row.state])).toEqual([["acme/checkout-ios", "needs_action"], ["acme/mobile-meta", "meta"]]);
+ expect(failed.unattributed).toBeUndefined();
+ // A project whose one repository is its own meta repo is one code row, and not listed twice.
+ const also = repoCheckModel({ repositories: [META], setup: { status: "unchecked" }, metaRepository: { fullName: "acme/mobile-meta", alsoCode: true } });
+ expect(also.rows.map(row => [row.fullName, row.role, row.state])).toEqual([["acme/mobile-meta", "code", "not_checked"]]);
+ // No meta repository in the read, no name chosen: today's rows.
+ expect(repoCheckModel({ repositories: [API, IOS], setup: { status: "ready" } }).rows.map(row => row.role)).toEqual(["code", "code"]);
+ expect(codeRepositoriesOf([API, META], { fullName: "ACME/mobile-meta" })).toEqual([API]);
+ expect(codeRepositoriesOf([API, META], "acme/mobile-meta")).toEqual([API, META]);
+ expect(codeRepositoriesOf([META], { fullName: "acme/mobile-meta", alsoCode: true })).toEqual([META]);
+});
+
+it("after a reload (nothing chosen in this session) the project read still gives the meta repo row, and the first task is not written across the meta repo", async () => {
+ const withMeta = AppProjectDetailSchema.parse({ ...detail({ status: "ready" }, [API, IOS, META]), metaRepository: META });
+ const setup = (project: AppProjectDetail | undefined) => h(ProjectSetupV2, { canAdd: true, maintainerOnly: false, installations: [{ installationId: 55, accountLogin: "acme" }], installationsState: "ready", refreshInstallations: vi.fn(), githubRequested: false, projectName: "mobile", project: { data: project, isPending: false, isError: false, refetch: vi.fn() }, onProject: vi.fn(), refreshProject: vi.fn(), onBackToProject: vi.fn() });
+ const f = mount(setup(withMeta), { path: "/app/onboard?project=mobile&step=check" });
+ const list = await screen.findByRole("list", { name: "Repositories" });
+ expect(within(list).getAllByRole("heading", { level: 3 }).map(node => node.textContent)).toEqual(["acme/checkout-api", "acme/checkout-ios", "acme/mobile-meta"]);
+ expect(within(list).getByText("Meta repo")).toBeTruthy();expect(screen.getByText("All ready.")).toBeTruthy();
+ f.close();
+ // The read without the field (an older server) is today's page: the meta repo is a code row, since nothing says otherwise.
+ const old = mount(setup(detail({ status: "ready" }, [API, IOS])), { path: "/app/onboard?project=mobile&step=check" });
+ const oldList = await screen.findByRole("list", { name: "Repositories" });
+ expect(within(oldList).queryByText("Meta repo")).toBeNull();expect(within(oldList).getAllByRole("heading", { level: 3 })).toHaveLength(2);
+ old.close();
+ const first = mount(h(FirstTaskStep, { project: withMeta, metaRepository: withMeta.metaRepository, onBack: vi.fn() }), { start: () => STARTED() });
+ expect(await screen.findByRole("button", { name: /Map how checkout-api and checkout-ios work together and write a summary to mobile-meta/ })).toBeTruthy();
+ expect(screen.queryByRole("button", { name: /mobile-meta and|and mobile-meta work/ })).toBeNull();
+ first.close();
 });
 
 it("recovery: the setup agent first only where it is on, then Retry, then Edit; rows that are fine offer none", () => {

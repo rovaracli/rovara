@@ -128,6 +128,45 @@ describe("the Spending page, switch on", () => {
    expect(f.request.mock.calls.every(([r]) => r.method === "GET" || r.path.includes("task-stop"))).toBe(true);
   } finally { f.close(); }
  });
+ it("people: a person's own allowance is shown where the settings read lists one, everyone else is labelled as the company default; absent, nothing is added", async () => {
+  const withOverrides = { "/v1/app/org/budget-settings": { status: 200 as const, body: { ...settings, memberOverrides: [{ developerId: maya, microdollars: 75_000_000 }, { developerId: gone, microdollars: 0 }] } } };
+  const f = mount({ answers: withOverrides });
+  try {
+   const table = await screen.findByRole("table", { name: "Spending by person this month" });
+   const row = (name: string) => within(table).getByText(name).closest("tr") as HTMLElement;
+   await within(table).findByText("Maya");
+   expect(row("Maya").textContent).toContain("$75.00");expect(row("Maya").textContent).toContain("(own allowance)");expect(row("Maya").textContent).not.toContain("$29.00");
+   // A person with an override of nothing is shown as $0.00, not as the default.
+   expect(row("Former member").textContent).toContain("$0.00");expect(row("Former member").textContent).toContain("(own allowance)");
+   // The caller's own row keeps their own figure from the budget read.
+   expect(row("(you)").textContent).toContain("$29.00");
+   expect(screen.getByText(/A person's own allowance is shown where one is set\. Everyone else shows the company default for a member\./)).toBeTruthy();
+  } finally { f.close(); }
+  // Someone with an override and everyone else: the list is there, and a person not on it is the default.
+  const some = mount({ answers: { "/v1/app/org/budget-settings": { status: 200 as const, body: { ...settings, memberOverrides: [{ developerId: gone, microdollars: 5_000_000 }] } } } });
+  try {
+   const table = await screen.findByRole("table", { name: "Spending by person this month" });
+   await within(table).findByText("Maya");
+   const maya = within(table).getByText("Maya").closest("tr") as HTMLElement;
+   expect(maya.textContent).toContain("$29.00");expect(maya.textContent).toContain("(company default)");expect(maya.textContent).not.toContain("(own allowance)");
+  } finally { some.close(); }
+  // The read without the list is today's page: the default with no label, and the old sentence about the count.
+  const none = mount();
+  try {
+   const table = await screen.findByRole("table", { name: "Spending by person this month" });
+   await within(table).findByText("Maya");
+   expect(table.textContent).not.toContain("(company default)");expect(table.textContent).not.toContain("(own allowance)");
+   expect(screen.getByText(/2 people have their own allowance, which is not shown here/)).toBeTruthy();
+  } finally { none.close(); }
+ });
+ it("people: where the settings read is refused (it is for owners and admins only) no allowance is invented for anyone but the caller", async () => {
+  const f = mount({ role: "admin", answers: { "/v1/app/org/budget-settings": { status: 403, body: { error: { code: "FORBIDDEN", message: "Only an org owner or admin can see the company's budget settings." } } } } });
+  try {
+   const table = await screen.findByRole("table", { name: "Spending by person this month" });
+   await within(table).findByText("Maya");
+   expect(table.textContent).not.toContain("(own allowance)");expect(table.textContent).not.toContain("(company default)");expect(within(table).getByText("Maya").closest("tr")!.textContent).toContain("Company default (not available)");
+  } finally { f.close(); }
+ });
  it("requests: plain words, who can approve, an own-origin confirmation link opens, any other falls back to the waiting page", async () => {
   const f = mount();
   try {

@@ -9,15 +9,16 @@ import { ConfirmInBrowser } from "../../../confirm/ConfirmInBrowser.js";
 import { Button } from "../../../design/Button.js";
 import { VisibleText } from "../../../design/VisibleText.js";
 import { OpenTasksToClose } from "../../project/OpenTasksToClose.js";
+import { codeRepositoriesOf, metaNameOf, type MetaRepositoryRef } from "./repo-check.js";
 import { FIRST_TASK_MAX, firstTaskGate, refusalOf, suggestFirstOutcomes, type Refusal } from "./first-task.js";
 
 /**
  * Setup ends here: pick one of the suggested first outcomes (or write your own) and start it. It goes through the existing start route (the one Home's and the project page's start box use); on success the page
  * opens the new task. A refusal shows the server's reason and what to do about it. The step says first when the environment isn't ready, with the way back, instead of letting the press fail.
  */
-export function FirstTaskStep({ project, metaRepository, onBack }: { project: AppProjectDetail; metaRepository?: string | undefined; onBack: () => void }) {
+export function FirstTaskStep({ project, metaRepository, onBack }: { project: AppProjectDetail; metaRepository?: MetaRepositoryRef | undefined; onBack: () => void }) {
  const host = useAppHost(), api = useMemo(() => createCodeApi(host), [host]), field = useId(), overview = useProject(project.name);
- const suggestions = useMemo(() => suggestFirstOutcomes(project.repositories.map(repository => repository.fullName), metaRepository), [project.repositories, metaRepository]);
+ const suggestions = useMemo(() => suggestFirstOutcomes(codeRepositoriesOf(project.repositories, metaRepository).map(repository => repository.fullName), metaNameOf(metaRepository)), [project.repositories, metaRepository]);
  const [text, setText] = useState(""), [busy, setBusy] = useState(false), [started, setStarted] = useState<{ session?: string }>(), [refusal, setRefusal] = useState<Refusal>(), [pending, setPending] = useState<Exclude<SendResult<unknown>, { kind: "done" }>>(), [closed, setClosed] = useState(0);
  const sending = useRef(false), intent = useRef<{ text: string; requestId: string } | undefined>(undefined), alive = useRef(true);
  useEffect(() => { alive.current = true;return () => { alive.current = false; }; }, []);

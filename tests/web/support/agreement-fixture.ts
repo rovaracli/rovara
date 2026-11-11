@@ -1,6 +1,6 @@
 // The routes the Working agreement panel reads, as one cell: the project's How we work view, the design review setting, the lessons and learning settings, the known failing policy, the company rules count and the
 // stage models. Each part can be changed, or left out (answered 404, the way an install without it answers).
-import { LearningViewAnswerSchema } from "@agentx/cloud-contracts/web";
+import { CompanyRulesStateSchema, LearningViewAnswerSchema } from "@agentx/cloud-contracts/web";
 import type { ApiRequest, ApiResponse } from "../../../packages/ui/src/host.js";
 import { fakeHost } from "./fake-host.js";
 import { navFixture } from "./fixtures.js";
@@ -27,7 +27,11 @@ export const playbook = (over: Record<string, unknown> = {}, setting: Record<str
 });
 export const learning = (settings: Record<string, unknown> = {}) => LearningViewAnswerSchema.parse({ settings: { prComments: "on", locked: false, ...settings }, suggestions: [], dismissed: [], rules: [], skippedUnlinked: 0, canDecide: true });
 export const policy = (over: Record<string, unknown> = {}) => ({ alwaysTwoPeople: true, pendingLoosening: false, ...over });
-export const rules = (required: number, preferred: number, over: Record<string, unknown> = {}) => ({ enabled: true, viewer: { role: "admin", canPropose: true, canDecide: true }, current: required + preferred === 0 ? null : { version: 3, rules: [...Array.from({ length: required }, () => ({ text: "Never log secrets.", priority: "required" })), ...Array.from({ length: preferred }, () => ({ text: "Prefer small pull requests.", priority: "preferred" }))] }, pending: null, ...over });
+/** The company rules answer as the contract's strict schema reads it (the admin route's state; the member route's `current` is the same shape without `viewer`, `pending` and `sync`, which the reader leaves unread). */
+export const rules = (required: number, preferred: number, over: Record<string, unknown> = {}) => {
+ const list = [...Array.from({ length: required }, () => ({ text: "Never log secrets.", priority: "required" })), ...Array.from({ length: preferred }, () => ({ text: "Prefer small pull requests.", priority: "preferred" }))];
+ return CompanyRulesStateSchema.parse({ enabled: true, viewer: { role: "admin", canPropose: true, canDecide: true }, limits: { maxRules: 30, maxRuleCharacters: 600, maxTotalCharacters: 12_000 }, current: list.length === 0 ? null : { version: 3, digest: "c".repeat(64), rules: list, ruleCount: list.length, approvedAt: "2026-11-11T05:00:00.000Z" }, pending: null, sync: null, ...over });
+};
 export const models = () => StageModelsResponseSchema.parse(stageModelsRaw({
  build: stageEntry("build", { projectChoice: { model: mid(SONNET) }, effective: effective(SONNET, { decidedBy: "project", reason: "PROJECT_CHOICE" }) }),
  code_review: stageEntry("code_review", { locked: true, effective: effective(OPUS, { decidedBy: "company", locked: true, reason: "COMPANY_LOCK" }) }),

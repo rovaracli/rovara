@@ -1,34 +1,28 @@
-// The one read the Working agreement panel needs that no other screen makes yet: how many company rules (standing instructions) apply. It is the company rules read of the `si` switch.
+// The one read the Working agreement panel needs that no other screen makes: how many company rules (standing instructions) apply. It is the company rules read of the `si` switch, through the contract's own readers
+// (`CompanyRulesStateReaderSchema`, `CompanyRulesCurrentReaderSchema`), the same ones Settings > Company rules uses.
 // Asked only where the nav answer says `features.companyRules` is true. A member reads `GET /v1/app/org/company-rules/current` (the version in force only); an owner or admin reads `GET /v1/app/org/company-rules`
-// (which also says whether a proposal waits). Read loosely and for counts only: the panel never shows a rule's text. A refusal (404, 403) is said as "Not available yet". When Settings > Company rules lands in this
-// build, swap this reader for its contract reader (`CompanyRulesCurrentReaderSchema`, `COMPANY_RULES_CURRENT_PATH`); nothing else changes.
+// (which also says whether a proposal waits). The panel keeps counts only and never shows a rule's text. A refusal (404, 403) is said as "Not available yet".
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useAppHost, type AppHost } from "../host.js";
-import { createApiClient, type Reader } from "./client.js";
+import { createCompanyRulesApi } from "./company-rules.js";
 
-export const COMPANY_RULES_READ_PATH = "/v1/app/org/company-rules";
-export const COMPANY_RULES_CURRENT_READ_PATH = COMPANY_RULES_READ_PATH + "/current";
 export interface CompanyRulesSummary { required: number; preferred: number; version?: number; pending: boolean }
-const record = (value: unknown): Record<string, unknown> | undefined => typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
-export const CompanyRulesSummaryReader: Reader<CompanyRulesSummary> = { parse(value: unknown): CompanyRulesSummary {
- const body = record(value);
- if (body === undefined || !("current" in body)) throw new Error("Unreadable company rules");
- const pending = body.pending !== undefined && body.pending !== null;
- if (body.current === null) return { required: 0, preferred: 0, pending };
- const current = record(body.current);
- if (current === undefined || !Array.isArray(current.rules)) throw new Error("Unreadable company rules");
+/** What both answers have that the panel counts: the version in force, and (the admin state only) whether a proposal waits. The contract's readers keep a priority word this version does not know as "unknown". */
+interface CompanyRulesAnswer { current: { version: number; rules: ReadonlyArray<{ priority: string }> } | null; pending?: unknown }
+/** The counts of either answer: the admin read (`state`, which may carry a waiting proposal) or the member read (`current`, which never does). A rule whose priority this version cannot read refuses the whole read, as before: no count is shown that might leave a rule out. */
+export function companyRulesSummaryOf(answer: CompanyRulesAnswer): CompanyRulesSummary {
+ const pending = answer.pending !== undefined && answer.pending !== null;
+ if (answer.current === null) return { required: 0, preferred: 0, pending };
  let required = 0, preferred = 0;
- for (const entry of current.rules) {
-  const priority = record(entry)?.priority;
-  if (priority === "required") required += 1; else if (priority === "preferred") preferred += 1; else throw new Error("Unreadable company rules");
+ for (const rule of answer.current.rules) {
+  if (rule.priority === "required") required += 1; else if (rule.priority === "preferred") preferred += 1; else throw new Error("Unreadable company rules");
  }
- const version = current.version;
- return { required, preferred, pending, ...(typeof version === "number" && Number.isInteger(version) && version >= 1 ? { version } : {}) };
-} };
+ return { required, preferred, pending, version: answer.current.version };
+}
 export function createAgreementApi(host: AppHost) {
- const api = createApiClient(host);
- return { companyRules: (admin: boolean) => api.get(admin ? COMPANY_RULES_READ_PATH : COMPANY_RULES_CURRENT_READ_PATH, CompanyRulesSummaryReader) };
+ const api = createCompanyRulesApi(host);
+ return { companyRules: async (admin: boolean): Promise<CompanyRulesSummary> => companyRulesSummaryOf(admin ? await api.state() : await api.current()) };
 }
 export const agreementKey = ["agreement"] as const;
 /** `enabled`: the nav answer says company rules are on (`features.companyRules`). Off, nothing is requested. */

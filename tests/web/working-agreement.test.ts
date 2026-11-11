@@ -9,7 +9,8 @@ import { DESIGN_REVIEW_DEFAULT_SETTING, ProjectPlaybookResponseSchema, StageMode
 import { AGREEMENT_STORAGE_KEY, isWorkingAgreementOn } from "../../packages/ui/src/screens/agreement/agreement-flags.js";
 import { ORIGIN_LABEL, T, type Origin } from "../../packages/ui/src/screens/agreement/agreement-text.js";
 import { brief, companyRulesRows, designReviewModeLock, designReviewRows, isLocked, knownFailingRows, layerRows, learningRows, lessonsRows, modelRows, originOfMark, taskRows, type AgreementRow } from "../../packages/ui/src/screens/agreement/agreement-rows.js";
-import { CompanyRulesSummaryReader } from "../../packages/ui/src/api/agreement.js";
+import { companyRulesSummaryOf } from "../../packages/ui/src/api/agreement.js";
+import { currentFor, memberState, proposalFor } from "./support/company-rules-fixture.js";
 import { WorkingAgreementPanel } from "../../packages/ui/src/screens/agreement/WorkingAgreementPanel.js";
 import { ProjectScreen } from "../../packages/ui/src/screens/project/ProjectScreen.js";
 import { PipelineTab } from "../../packages/ui/src/screens/session/PipelineTab.js";
@@ -194,14 +195,17 @@ describe("model, lessons, learning, known failing and company rule rows", () => 
   expect(companyRulesRows({ required: 0, preferred: 0, pending: false })[0]).toMatchObject({ value: "No company rules yet", origin: "none" });
   expect(isLocked(companyRulesRows({ required: 5, preferred: 0, pending: false })[0]!)).toBe(false);
  });
- it("the company rules reader takes the member answer (no proposal) as well as the admin one", () => {
-  const member = { enabled: true, limits: { maxRules: 30, maxRuleCharacters: 600, maxTotalCharacters: 12000 }, current: rules(1, 1).current };
-  expect(CompanyRulesSummaryReader.parse(member)).toEqual({ required: 1, preferred: 1, pending: false, version: 3 });
+ it("the company rules counts come from the contract's own answers: the member's `current` (no proposal) as well as the admin's state", () => {
+  expect(companyRulesSummaryOf(currentFor())).toMatchObject({ required: 7, preferred: 7, pending: false, version: 1 });
+  expect(companyRulesSummaryOf(memberState())).toMatchObject({ required: 7, preferred: 7, pending: false, version: 1 });
+  expect(companyRulesSummaryOf(rules(2, 1))).toEqual({ required: 2, preferred: 1, pending: false, version: 3 });
  });
- it("the company rules reader takes counts only, and refuses anything it cannot read", () => {
-  expect(CompanyRulesSummaryReader.parse(rules(2, 1))).toEqual({ required: 2, preferred: 1, pending: false, version: 3 });
-  expect(CompanyRulesSummaryReader.parse(rules(0, 0, { pending: { proposalId: "x" } }))).toEqual({ required: 0, preferred: 0, pending: true });
-  for (const bad of [null, "x", {}, { current: {} }, { current: { rules: [{ priority: "must" }] } }]) expect(() => CompanyRulesSummaryReader.parse(bad)).toThrow();
+ it("counts only: a waiting proposal is a flag, no rules is zero with no version", () => {
+  expect(companyRulesSummaryOf(rules(1, 0, { pending: proposalFor() }))).toEqual({ required: 1, preferred: 0, pending: true, version: 3 });
+  expect(companyRulesSummaryOf(rules(0, 0))).toEqual({ required: 0, preferred: 0, pending: false });
+ });
+ it("a rule whose priority this version cannot read refuses the read instead of leaving it out of the count", () => {
+  expect(() => companyRulesSummaryOf({ current: { version: 1, rules: [{ priority: "required" }, { priority: "unknown" }] } })).toThrow("Unreadable company rules");
  });
  it("task rows: a person's Design first or Skip is a task choice; Auto follows the project; the process comes from the agent", () => {
   expect(taskRows({ designReview: { decidedBy: "person" } })[0]).toMatchObject({ origin: "task-choice", value: "A person asked for design first" });
@@ -274,7 +278,7 @@ describe("the panel", () => {
   expect(within(row).getAllByRole("link", { name: "Company rules in Company settings" })[0]!.getAttribute("href")).toBe("/app/admin/company-rules");
  });
  it("says Waiting for a second admin on a protected change that is pending, and only there", async () => {
-  panel({ lessons: lessonsView({ preset: "regulated", presetLockedByCompany: false, presetProposal: { changeId: "chg_1", to: "standard", mine: false, soleOwner: false, expiresAt: 1 } }), policy: policy({ pendingLoosening: true }), learning: learning({ pendingProposal: { id: "prop_1" } }), rules: rules(1, 0, { pending: { proposalId: "p" } }) });await settled();
+  panel({ lessons: lessonsView({ preset: "regulated", presetLockedByCompany: false, presetProposal: { changeId: "chg_1", to: "standard", mine: false, soleOwner: false, expiresAt: 1 } }), policy: policy({ pendingLoosening: true }), learning: learning({ pendingProposal: { id: "prop_1" } }), rules: rules(1, 0, { pending: proposalFor() }) });await settled();
   expect(screen.getAllByText(T.PENDING)).toHaveLength(4);
   for (const title of ["Who approves lessons", "Marking a failing test as known", "Learn from pull request review comments", "Company rules"]) expect(within(rowOf(title)).getByText(T.PENDING)).toBeTruthy();
   expect(within(rowOf("Learning from work")).queryByText(T.PENDING)).toBeNull();
