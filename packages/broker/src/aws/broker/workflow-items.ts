@@ -1,5 +1,6 @@
 // Part of the broker (split out of ../broker.ts): retries, evidence jobs and the items each completed workflow step writes.
 
+import { OUTSIDE_RECHECK_NOT_ADOPTED, outsideRecheckOutcomeItem } from "../developer-tasks/continue-loop.js";
 import { createHash } from "node:crypto";
 import { QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
@@ -515,11 +516,12 @@ export async function completedOutsideAdoptItems(
     ExpressionAttributeNames: { "#stage": "stage", "#state": "state" },
     ExpressionAttributeValues: { ":workflow": next, ":now": now, ":revision": workflow.revision, ":stage": "WAIT_FOR_MERGE", ":running": "RUNNING" },
   } });
-  const notAdopted = (): TransactItems => [taskUpdate(endWorkflowOutsideRecheck(workflow, now))];
+  const notAdopted = (reason: string = OUTSIDE_RECHECK_NOT_ADOPTED.moved): TransactItems => [taskUpdate(endWorkflowOutsideRecheck(workflow, now)),
+    outsideRecheckOutcomeItem(dependencies.tableName, task.taskId, marker.requestId, "not_adopted", reason, now)];
   const parsed = terminalStatus === "SUCCEEDED" ? PullRequestLifecycleResultSchema.safeParse(result) : undefined;
   const reported = parsed?.success === true && parsed.data.repository === maintenance.repository && parsed.data.action === "sync" && parsed.data.number === maintenance.pullRequestNumber
     && parsed.data.commit === adopt.headCommit && parsed.data.treeSha !== undefined ? parsed.data : undefined;
-  if (reported === undefined) return notAdopted();
+  if (reported === undefined) return notAdopted(terminalStatus === "SUCCEEDED" ? OUTSIDE_RECHECK_NOT_ADOPTED.moved : OUTSIDE_RECHECK_NOT_ADOPTED.unfinished);
   // What GitHub shows now: the fence when the result is recorded. A head that moved, a closed pull request, another branch or another tree records nothing.
   let shown: { headCommit: string; headTreeSha: string; state: string; headBranch: string } | undefined;
   const project = await requireRecordProject(dependencies, task, task.project, task.startingRevision);
@@ -614,16 +616,27 @@ async function outsideRecheckRestored(dependencies: AwsBrokerDependencies, task:
   const workflow = task.workflow;
   const { outsideRecheck: _marker, blockReason: _reason, ...base } = workflow;
   void _marker; void _reason;
+  const outcome = outsideRecheckOutcomeItem(dependencies.tableName, task.taskId, recheck.requestId, "stale", "the pull request changed again while its checks ran", now);
   const stale = (): { workflow: WorkflowSnapshot; items: TransactItems } => {
     const { verification: _verification, ...rest } = base;
     void _verification;
-    return { workflow: WorkflowSnapshotSchema.parse({ ...rest, revision: workflow.revision + 1, stage: "VERIFY", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.outsideRecheckStale, updatedAt: now }), items: [] };
+    return { workflow: WorkflowSnapshotSchema.parse({ ...rest, revision: workflow.revision + 1, stage: "VERIFY", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.outsideRecheckStale, updatedAt: now }), items: [outcome] };
   };
   const kept = await getItem<{ requestId?: unknown; headSha?: unknown; previousHeadSha?: unknown; previous?: Record<string, unknown> }>(dependencies, outsideRecheckRestoreKey(task.taskId));
   if (kept?.previous === undefined || kept.requestId !== recheck.requestId || kept.headSha !== recheck.headSha || kept.previousHeadSha !== recheck.previousHeadSha) return stale();
   const cleared: Record<string, unknown> = { ...base };
   for (const field of RESTORED_FIELDS) delete cleared[field];
-  const parsed = WorkflowSnapshotSchema.safeParse({ ...cleared, ...kept.previous, revision: workflow.revision + 1, stage: "WAIT_FOR_MERGE", state: "WAITING", updatedAt: now });
+  // The pull requests come back at the heads and candidate Rovara had, but what GitHub said of them since (open, merged, closed, and when it was seen) is today's, never the old copy's.
+  const previousPullRequests = Array.isArray(kept.previous["pullRequests"]) ? kept.previous["pullRequests"] as Array<Record<string, unknown>> : undefined;
+  const pullRequests = previousPullRequests?.map((entry) => {
+    const now_ = (workflow.pullRequests ?? []).find((current) => current.repositoryId === entry["repositoryId"] && current.number === entry["number"]);
+    if (now_ === undefined) return entry;
+    const { state: _state, observedAt: _observedAt, ...rest } = entry;
+    void _state; void _observedAt;
+    return { ...rest, state: now_.state, ...(now_.observedAt === undefined ? {} : { observedAt: now_.observedAt }) };
+  });
+  const parsed = WorkflowSnapshotSchema.safeParse({ ...cleared, ...kept.previous, ...(pullRequests === undefined ? {} : { pullRequests }), revision: workflow.revision + 1, stage: "WAIT_FOR_MERGE", state: "WAITING",
+    outsideRecheckStale: { headSha: recheck.headSha, at: now }, updatedAt: now });
   if (!parsed.success) return stale();
   const restored = parsed.data;
   const project = await requireRecordProject(dependencies, task, task.project, task.startingRevision);
@@ -635,6 +648,7 @@ async function outsideRecheckRestored(dependencies: AwsBrokerDependencies, task:
       ExpressionAttributeValues: { ":head": recheck.previousHeadSha, ":now": now, ":adopted": recheck.headSha },
     } },
     { Delete: { TableName: dependencies.tableName, Key: outsideRecheckRestoreKey(task.taskId) } },
+    outcome,
   ] };
 }
 
@@ -1187,7 +1201,8 @@ export async function completedWorkflowItems(
     // recorded): a head that moved while it ran makes the result stale, not passing. The task then goes back to what it had before the adoption, and the new head reads as changed outside.
     const recheck = task.workflow.outsideRecheck;
     if (recheck !== undefined && recheck.phase !== "adopting") {
-      const fenced = operation.workflowMode === "CHECKS" && recheck.phase === "checking" && terminalStatus === "SUCCEEDED" && await outsidePullRequestHead(dependencies, task, recheck.repositoryId, recheck.number) !== recheck.headSha;
+      // A failed or stopped run on a head that moved is fenced the same as a finished one: nothing of it is recorded.
+      const fenced = operation.workflowMode === "CHECKS" && recheck.phase === "checking" && await outsidePullRequestHead(dependencies, task, recheck.repositoryId, recheck.number) !== recheck.headSha;
       if (fenced) {
         const restored = await outsideRecheckRestored(dependencies, task as DeveloperTaskRecord & { workflow: WorkflowSnapshot }, recheck, now);
         next = restored.workflow;

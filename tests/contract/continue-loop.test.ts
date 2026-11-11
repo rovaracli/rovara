@@ -701,6 +701,16 @@ describe("the two actions, through the broker", () => {
       expect(t.recheck).not.toHaveBeenCalled();
       await expect(recheckAction(t.routeDeps(grantedAs("contributor")), OWNER_CALLER, t.taskId, { ...body, headSha: HEAD_C })).rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
       expect(t.recheck).not.toHaveBeenCalled();
+      // The same request after its adoption failed answers the failure, in plain words.
+      t.harness.db.set({ ...(t.harness.db.get(`DEVTASK#${t.taskId}`, `OUTSIDE_RECHECK#${String(body.requestId)}`) as Record<string, unknown>), outcome: "not_adopted", outcomeReason: "the run that takes the code didn't finish" });
+      await expect(recheckAction(t.routeDeps(grantedAs("contributor")), OWNER_CALLER, t.taskId, body)).rejects.toMatchObject({ code: "STALE_FENCE", message: expect.stringContaining("the run that takes the code didn't finish") as string });
+      expect(t.recheck).not.toHaveBeenCalled();
+    });
+
+    it("no Recheck while the owner's feedback card waits", () => {
+      const pullRequests = [{ repositoryId: "payments", number: 7, state: "OPEN", headSha: HEAD_A }];
+      expect(recheckPossible({ stage: "WAIT_FOR_MERGE", state: "WAITING", pullRequests, feedbackReview: { status: "PENDING" } } as never, { repositoryId: "payments", number: 7 })).toBe(false);
+      expect(recheckPossible({ stage: "WAIT_FOR_MERGE", state: "WAITING", pullRequests, feedbackReview: { status: "COLLECTING" } } as never, { repositoryId: "payments", number: 7 })).toBe(false);
     });
   });
 });

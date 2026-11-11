@@ -655,7 +655,8 @@ async function forWorkerFeatures(
   if (savedEnvUnsupported) {
     console.log(JSON.stringify({ component: "dispatcher", event: "dispatch.saved_env_omitted", reason: workerFeatures === undefined ? "no-probe" : "worker-lacks-feature", operationId: invocation.operationId, workspaceId: invocation.workspaceId }));
   }
-  const withAttribution = withoutSavedEnv(withoutCoveragePath(withoutSecondReviewer(withoutTestEnvRecipes(withoutTestEnvDetect(withoutEvidenceCapture(attributionUnsupported ? withoutAttribution(invocation) : invocation, evidenceUnsupported), detectUnsupported), recipesUnsupported), secondReviewerUnsupported), coveragePathUnsupported), savedEnvUnsupported);
+  const withFixRepositories = withoutFixStartRepositories(invocation, !features.includes("task.workflowFixStartRepositories.v1"));
+  const withAttribution = withoutSavedEnv(withoutCoveragePath(withoutSecondReviewer(withoutTestEnvRecipes(withoutTestEnvDetect(withoutEvidenceCapture(attributionUnsupported ? withoutAttribution(withFixRepositories) : withFixRepositories, evidenceUnsupported), detectUnsupported), recipesUnsupported), secondReviewerUnsupported), coveragePathUnsupported), savedEnvUnsupported);
   if (attributionUnsupported) {
     console.log(JSON.stringify({ component: "dispatcher", event: "dispatch.attribution_omitted", reason: workerFeatures === undefined ? "no-probe" : "worker-lacks-feature", operationId: invocation.operationId, workspaceId: invocation.workspaceId }));
   }
@@ -1082,6 +1083,14 @@ function withoutCoveragePath(invocation: WorkerInvocation, drop: boolean): Worke
   if (!drop || invocation.kind !== "task" || invocation.payload.testEnvironment === undefined) return invocation;
   const plan = invocation.payload.testEnvironment;
   return { ...invocation, payload: { ...invocation.payload, testEnvironment: { ...plan, checks: plan.checks.map(({ id, kind, selectArgs }) => ({ id, kind, ...(selectArgs === undefined ? {} : { selectArgs }) })) } } };
+}
+
+/** The invocation without a several-repository fix's start heads when `drop` (an older worker parses the fix strictly; it then restores a single repository as before). */
+function withoutFixStartRepositories(invocation: WorkerInvocation, drop: boolean): WorkerInvocation {
+  if (!drop || invocation.kind !== "task" || invocation.payload.workflowFix?.startFromRepositories === undefined) return invocation;
+  const { startFromRepositories: _dropped, ...workflowFix } = invocation.payload.workflowFix;
+  void _dropped;
+  return { ...invocation, payload: { ...invocation.payload, workflowFix } };
 }
 
 /** The invocation without the evidence request when `drop` (and the very object back otherwise). */

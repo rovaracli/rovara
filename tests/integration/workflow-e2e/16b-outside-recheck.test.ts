@@ -125,20 +125,28 @@ describe("Suite 16b: Recheck of a head pushed outside Rovara", () => {
   });
 
   it("16b.2 a head that moves while the checks run makes the result stale, not passing: nothing of it is recorded, the task is back on its earlier checked code, and the new head reads as changed outside", async () => {
-    const armed: { push?: () => void } = {};
+    const armed: { push?: () => void; e2e?: WorkflowE2E } = {};
+    const SEEN = "2026-11-11T13:00:00.000Z";
     const { e2e, pullRequest } = await waitingForMerge({ checkResult: () => {
-      // While the re-check's checks run, someone pushes again (the push lands before the result is recorded).
+      // While the re-check's checks run, someone pushes again (the push lands before the result is recorded), and GitHub was seen again meanwhile (the pull request's observedAt moves on).
+      if (armed.push !== undefined && armed.e2e !== undefined) {
+        const stored = task(armed.e2e);
+        const workflow = stored.workflow as { pullRequests: Array<Record<string, unknown>> };
+        armed.e2e.db.set({ ...stored, workflow: { ...workflow, pullRequests: workflow.pullRequests.map((entry) => ({ ...entry, observedAt: SEEN })) } });
+      }
       armed.push?.();
       armed.push = undefined;
       return undefined;
     } });
+    armed.e2e = e2e;
     const before = pullRequest.commit;
     const beforeDigest = e2e.workflow().candidate!.digest;
     const outside = await e2e.pushOutside(pullRequest.headBranch, "outside.ts", "export const outside = 1;\n");
     await track(e2e);
     const again = await e2e.prepareOutsidePush(pullRequest.headBranch, "outside.ts", "export const outside = 2;\n");
     armed.push = () => { again.push(); };
-    expect((await recheck(e2e, outside)).status).toBe(200);
+    const requestId = randomUUID();
+    expect((await recheck(e2e, outside, requestId)).status).toBe(200);
     await runAll(e2e, 2);
     expect(armed.push).toBeUndefined();
     const after = e2e.workflow();
@@ -148,10 +156,38 @@ describe("Suite 16b: Recheck of a head pushed outside Rovara", () => {
     expect(after.candidate!.digest).toBe(beforeDigest);
     expect(after.pullRequests?.[0]).toMatchObject({ headSha: before });
     expect(pullRequestRecord(e2e).expectedHeadCommit).toBe(before);
+    // What GitHub said of the pull request since is today's, not the pre-adoption copy's.
+    expect(after.pullRequests?.[0]).toMatchObject({ state: "OPEN", observedAt: SEEN });
+    // A repeat of the same request answers how it ended, not "started".
+    const repeat = await recheck(e2e, outside, requestId);
+    expect(repeat.status).toBe(409);
+    expect(JSON.stringify(repeat.body)).toContain("changed again while Rovara was re-checking it");
     await track(e2e);
     expect(tracking(e2e)).toMatchObject({ headByRovara: false, headSha: again.commit });
     // The new head is offered for a re-check of its own.
     expect((await recheck(e2e, again.commit)).status).toBe(200);
+  });
+
+  it("16b.2b a checks run that FAILS on a head that moved is fenced the same: nothing of it is recorded and the task is back on its earlier checked code", async () => {
+    const { e2e, pullRequest } = await waitingForMerge();
+    const before = pullRequest.commit;
+    const beforeDigest = e2e.workflow().candidate!.digest;
+    const outside = await e2e.pushOutside(pullRequest.headBranch, "outside.ts", "export const outside = 1;\n");
+    await track(e2e);
+    expect((await recheck(e2e, outside)).status).toBe(200);
+    // The adoption runs; the person's checks are queued next (one step, then the harness stops before running them).
+    await e2e.settle(1).catch(() => undefined);
+    expect(e2e.workflow()).toMatchObject({ stage: "VERIFY", state: "RUNNING", outsideRecheck: { phase: "checking", headSha: outside } });
+    // Someone pushes again, and the checks run itself fails.
+    await e2e.pushOutside(pullRequest.headBranch, "outside.ts", "export const outside = 2;\n");
+    e2e.worker.failNext("task:CHECKS", "RUNTIME_UNAVAILABLE: the check runner stopped");
+    await runAll(e2e, 2);
+    const after = e2e.workflow();
+    expect(after).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING" });
+    expect(after.outsideRecheck).toBeUndefined();
+    expect(after.candidate!.digest).toBe(beforeDigest);
+    expect(after.verification?.results.every((result) => result.status === "PASS")).toBe(true);
+    expect(pullRequestRecord(e2e).expectedHeadCommit).toBe(before);
   });
 
   it("16b.3 a head that moves before the adoption is recorded is not adopted: the task waits for the merge with its earlier checked code", async () => {
@@ -162,13 +198,18 @@ describe("Suite 16b: Recheck of a head pushed outside Rovara", () => {
     const beforeDigest = e2e.workflow().candidate!.digest;
     const outside = await e2e.pushOutside(pullRequest.headBranch, "outside.ts", "export const outside = 1;\n");
     await track(e2e);
-    expect((await recheck(e2e, outside)).status).toBe(200);
+    const requestId = randomUUID();
+    expect((await recheck(e2e, outside, requestId)).status).toBe(200);
     await runAll(e2e, 2);
     const after = e2e.workflow();
     expect(after).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING" });
     expect(after.outsideRecheck).toBeUndefined();
     expect(after.candidate!.digest).toBe(beforeDigest);
     expect(pullRequestRecord(e2e).expectedHeadCommit).not.toBe(outside);
+    // A repeat of the same request answers that the code was not taken, not "started".
+    const repeat = await recheck(e2e, outside, requestId);
+    expect(repeat.status).toBe(409);
+    expect(JSON.stringify(repeat.body)).toContain("couldn't take that code: the pull request changed again");
   });
 
   it("16b.4 the head the owner saw must be the one GitHub shows: a press for a head that moved on is refused and adopts nothing", async () => {

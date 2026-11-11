@@ -521,7 +521,9 @@ export function recordWorkflowPullRequestUpdate(currentInput: unknown, input: { 
   void _blockReason;
   void _failure;
   void _approval;
-  const rest = withoutFix(restWithFix);
+  const { outsideRecheckStale: _stale, ...restWithoutStale } = withoutFix(restWithFix);
+  void _stale;
+  const rest = restWithoutStale;
   const history = [...(current.feedbackReviewHistory ?? [])];
   const report = feedbackReview?.reviewRef;
   if (report !== undefined && !history.some((entry) => entry.sha256 === report.sha256)) history.push(report);
@@ -878,9 +880,10 @@ export function recordWorkflowBranchSync(currentInput: unknown, input: { reposit
   });
   const reviewBase = renewed.repositories.every((repository) => repository.baseCommitSha !== undefined)
     ? renewed.repositories.map((repository) => ({ repositoryId: repository.repositoryId, baseCommitSha: repository.baseCommitSha as string })) : current.reviewBase;
-  const { branchSync: _branchSync, syncFailures: _failures, ...rest } = current;
+  const { branchSync: _branchSync, syncFailures: _failures, outsideRecheckStale: _stale, ...rest } = current;
   void _branchSync;
   void _failures;
+  void _stale;
   const verification = current.verification?.candidateDigest === candidate.digest ? { ...current.verification, candidateDigest: renewed.digest } : current.verification;
   const reviews = rekey(current.reviews);
   const acceptedFindings = rekey(current.acceptedFindings);
@@ -911,8 +914,10 @@ export function startWorkflowOutsideRecheck(currentInput: unknown, input: { repo
   const pullRequest = openPullRequestOf(current, input.repositoryId, input.number);
   if (pullRequest?.headSha === undefined || current.candidate === undefined) throw new WorkflowTransitionError("the pull request is not open, or has no recorded head");
   if (pullRequest.headSha === input.headSha) throw new WorkflowTransitionError("the head is the one Rovara recorded: nothing changed outside");
+  const { outsideRecheckStale: _stale, ...unsaid } = current;
+  void _stale;
   return WorkflowSnapshotSchema.parse({
-    ...current, revision: current.revision + 1, state: "RUNNING", updatedAt: input.now,
+    ...unsaid, revision: current.revision + 1, state: "RUNNING", updatedAt: input.now,
     outsideRecheck: { repositoryId: input.repositoryId, number: input.number, headSha: input.headSha, previousHeadSha: pullRequest.headSha, requestId: input.requestId, actorId: input.actorId, phase: "adopting", at: input.now },
   });
 }

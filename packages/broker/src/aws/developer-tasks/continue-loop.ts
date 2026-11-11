@@ -94,6 +94,8 @@ export async function readWorkingBranches(deps: Table, taskId: string): Promise<
 export function recheckPossible(workflow: WorkflowSnapshot | undefined, pullRequest: { repositoryId: string; number: number }): boolean {
   // A task whose changes need browser or API checks is not re-checked from an outside head (its checks need a source export the adoption does not make), as a merge of the base is not.
   if (workflow === undefined || workflow.stage !== "WAIT_FOR_MERGE" || workflow.state !== "WAITING" || workflow.branchSync !== undefined || workflow.fixSource !== undefined || workflow.e2e?.required === true) return false;
+  // The owner's feedback card is waiting (or being collected): nothing else starts on the pull request until it is answered.
+  if (workflow.feedbackReview?.status === "PENDING" || workflow.feedbackReview?.status === "COLLECTING") return false;
   return (workflow.pullRequests ?? []).some((entry) => entry.repositoryId === pullRequest.repositoryId && entry.number === pullRequest.number && entry.state === "OPEN" && entry.headSha !== undefined);
 }
 
@@ -184,7 +186,13 @@ export async function continueLoopViewFor(deps: DeveloperTaskRouteDependencies, 
     const features = await deps.outsideRecheckFeatures(task).catch(() => undefined);
     if (features !== undefined && !features.includes(OUTSIDE_RECHECK_WORKER_FEATURE)) recheck = false;
   }
-  return continueLoopViewOf(deps, task, access, tracked, { publish: deps.workingBranchPort !== undefined, recheck });
+  let publish = deps.workingBranchPort !== undefined;
+  // Both presses meet the project's own work rule (send-back access, archive): one read, and the buttons are offered only to a reader who would pass it.
+  if ((recheck || publish) && mayWorkOn(access, task)) {
+    const passes = await requireProjectSendBackRole(deps, task, caller).then(() => true, () => false);
+    if (!passes) { recheck = false; publish = false; }
+  }
+  return continueLoopViewOf(deps, task, access, tracked, { publish, recheck });
 }
 
 // ---- publish the working branch
@@ -276,7 +284,21 @@ const NOT_NOW = "Rovara can re-check once the task is waiting for the merge and 
 
 /** One person's Recheck request, kept so a repeat of the same request starts nothing more (and another request ID is not mistaken for it). */
 export const outsideRecheckRequestKey = (taskId: string, requestId: string) => ({ pk: `DEVTASK#${taskId}`, sk: `OUTSIDE_RECHECK#${requestId}` });
-interface OutsideRecheckRequestRecord { pk: string; sk: string; entityType: "OUTSIDE_RECHECK_REQUEST"; taskId: string; repository: string; number: number; headSha: string; actorId: string; at: string }
+interface OutsideRecheckRequestRecord { pk: string; sk: string; entityType: "OUTSIDE_RECHECK_REQUEST"; taskId: string; repository: string; number: number; headSha: string; actorId: string; at: string;
+  /** How the request ended when it did not end in recorded checks: the head was not taken (`not_adopted`, with the plain reason), or the checks' result went stale. */
+  outcome?: OutsideRecheckOutcome; outcomeReason?: string }
+export type OutsideRecheckOutcome = "not_adopted" | "stale";
+/** The plain reasons a request was not taken, as a repeat of it answers them. */
+export const OUTSIDE_RECHECK_NOT_ADOPTED = { moved: "the pull request changed again", unfinished: "the run that takes the code didn't finish" } as const;
+
+/** Records how a person's Recheck request ended without recorded checks, so a repeat of the same request answers that (an update of the request's own row; nothing if it is gone). */
+export function outsideRecheckOutcomeItem(tableName: string, taskId: string, requestId: string, outcome: OutsideRecheckOutcome, reason: string, now: string) {
+  return { Update: {
+    TableName: tableName, Key: outsideRecheckRequestKey(taskId, requestId),
+    UpdateExpression: "SET outcome = :outcome, outcomeReason = :reason, outcomeAt = :now", ConditionExpression: "attribute_exists(pk)",
+    ExpressionAttributeValues: { ":outcome": outcome, ":reason": reason.slice(0, 300), ":now": now },
+  } };
+}
 
 /** The operation request ID of the adoption run: one per task, head and person's request, so a retried start is the same run. */
 export function outsideRecheckOperationRequestId(taskId: string, headSha: string, requestId: string): string {
@@ -368,6 +390,9 @@ export async function recheckAction(deps: DeveloperTaskRouteDependencies, caller
   const prior = (await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: outsideRecheckRequestKey(task.taskId, request.requestId), ConsistentRead: true })) as { Item?: OutsideRecheckRequestRecord }).Item;
   if (prior !== undefined) {
     if (prior.headSha !== request.headSha || prior.repository !== request.repository || prior.number !== request.number || prior.actorId !== access.actorId) throw agentXError("IDEMPOTENCY_CONFLICT", "This request ID was already used for another re-check.");
+    // A repeat of a request that ended without recorded checks answers how it ended, not "started".
+    if (prior.outcome === "stale") throw agentXError("STALE_FENCE", "The pull request changed again while Rovara was re-checking it, so that result doesn't count. Reload and press Recheck on the new code.");
+    if (prior.outcome === "not_adopted") throw agentXError("STALE_FENCE", `Rovara couldn't take that code: ${prior.outcomeReason ?? OUTSIDE_RECHECK_NOT_ADOPTED.unfinished}. Reload and press Recheck again.`);
     await audit();
     return { status: "started" };
   }

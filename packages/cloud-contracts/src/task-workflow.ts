@@ -61,7 +61,7 @@ export const WORKFLOW_BLOCK_REASONS = {
   /** "Continue in your own tool" (owner Q13): a person asked Rovara to re-check a pull request head pushed outside Rovara; Rovara took that exact head as the task's code and starts its checks now. */
   outsideRecheck: "Someone pushed to the pull request outside Rovara and a re-check was asked for, so Rovara took that code as the task's code and is starting its checks.",
   /** The pull request's head moved again while Rovara re-checked the earlier one: that result is not the code on the pull request, so it is not recorded as passing. */
-  outsideRecheckStale: "The pull request changed again while Rovara was re-checking it, so that result doesn't count. Press Recheck on the new code.",
+  outsideRecheckStale: "The pull request changed again while Rovara was re-checking it, so that result doesn't count. Choose Retry checks to check the code Rovara took again, or send the task back.",
   /** The company's limit on how far Rovara may act on its own was lowered while the merged code's checks re-ran: the reviews (paid) did not start. */
   recheckAutonomyLowered: "Rovara is no longer set to act on its own here, so it stopped before the reviews of the merged code. Choose Retry reviews to run them.",
   /** A rerun of the checks of code a pull request already holds ran on other code than the code the pull request shows. */
@@ -225,6 +225,11 @@ export const WorkflowSnapshotShapeSchema = z.object({
     phase: z.enum(["adopting", "checking"]),
     at: z.string().datetime(),
   }).strict().optional(),
+  /**
+   * Version 2 ("Continue in your own tool"): the last re-check's result went stale (the pull request moved while its checks ran), so the task went back to its earlier checked code. Said once in the
+   * thread; removed by the next change to the pull requests' heads (a push, a merge of the base, another re-check).
+   */
+  outsideRecheckStale: z.object({ headSha: z.string().regex(/^[a-f0-9]{40}$/), at: z.string().datetime() }).strict().optional(),
   /** S2: a queued step is waiting for Slack to answer the access check (an outage). `revision` is the workflow revision it waits at, so a later step never inherits the note. Set and cleared by the dispatcher; the page says "Waiting for Slack". */
   accessCheckWaitSince: z.object({ revision: z.number().int().positive(), since: z.string().datetime() }).strict().optional(),
   /**
