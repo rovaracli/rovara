@@ -30,6 +30,10 @@
 :root[data-look="v2"] .rv-live-toolbar{margin-bottom:var(--rv-density-gap);gap:var(--rv-density-row-y) var(--rv-density-gap)}
 :root[data-look="v2"] .rv-live-list{gap:var(--rv-density-gap)}
 :root[data-look="v2"] .rv-live-tile{padding:var(--rv-density-card)}
+:root[data-look="v2"] .rv-work-list{gap:var(--rv-density-row-y)}
+:root[data-look="v2"] .rv-work-row{padding:var(--rv-density-row-y) var(--rv-density-card);gap:var(--rv-density-row-y) var(--rv-density-gap)}
+:root[data-look="v2"] .rv-work-title{margin-bottom:calc(var(--rv-density-row-y) / 4)}
+:root[data-look="v2"] .rv-work-facts,:root[data-look="v2"] .rv-work-context{gap:calc(var(--rv-density-row-y) / 4) calc(var(--rv-density-row-y) / 2)}
 
 /* Project page: sections, columns, rows. */
 :root[data-look="v2"] .rv-project-section{margin-block:var(--rv-density-gap)}

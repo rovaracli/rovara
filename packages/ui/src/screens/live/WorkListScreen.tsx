@@ -43,13 +43,14 @@ export function WorkListScreen() {
  const content = <>
   {note !== undefined && <p className="rv-muted rv-work-note"><VisibleText text={note} /></p>}
   {work.isPending && <Skeleton label="Loading work" />}
+  {work.partial && <div role="alert" className="rv-work-note"><p>Some work couldn't be loaded, so this list may be incomplete.</p><Button onClick={() => { void work.refetch(); }}>Try again</Button></div>}
   {work.isError && <div role="alert"><p><VisibleText text={work.error instanceof ApiError ? work.error.message : "Couldn't load work. Try again."} /></p><Button onClick={() => { void work.refetch(); }}>Try again</Button></div>}
   {rows !== undefined && rows.length === 0 && <EmptyState title={EMPTY[view].title} description={EMPTY[view].description} />}
   {rows !== undefined && rows.length > 0 && <ul className="rv-work-list" aria-label={WORK_VIEW_LABELS[view]}>{rows.map(row => <WorkRowItem key={row.sessionId} row={row} onChanged={() => query.invalidateQueries({ queryKey: ["live"] })} />)}</ul>}
   {work.hasNextPage && <Button busy={work.isFetchingNextPage} onClick={() => { void work.fetchNextPage(); }}>Load more work</Button>}
  </>;
  return <section className="rv-live rv-work"><PageHeader title="Work" />
-  <div className="rv-live-toolbar"><Select label="Project" value={project ?? "__all"} onValueChange={value => choose("project", value === "__all" ? undefined : value)} options={[{ value: "__all", label: "All projects" }, ...projects.map(name => ({ value: name, label: name }))]} />{work.ready && view !== "finished" && <span className="rv-muted" role="status">{connection === "reconnecting" ? "Reconnecting" : connection === "online" ? "Live updates connected" : "Connecting live updates"}</span>}</div>
+  <div className="rv-live-toolbar"><Select label="Project" value={project ?? "__all"} onValueChange={value => choose("project", value === "__all" ? undefined : value)} options={[{ value: "__all", label: "All projects" }, ...projects.map(name => ({ value: name, label: name }))]} />{work.ready && <span className="rv-muted" role="status">{connection === "reconnecting" ? "Reconnecting" : connection === "online" ? "Live updates connected" : "Connecting live updates"}</span>}</div>
   <div className="rv-work-views"><Tabs label="Work views" value={view} onValueChange={value => choose("view", value)} items={WORK_VIEWS.map(value => ({ value, label: WORK_VIEW_LABELS[value], content: value === view ? content : null }))} /></div>
  </section>;
 }

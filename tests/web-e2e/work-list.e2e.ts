@@ -42,10 +42,10 @@ for (const look of [{ name: "look-off", store: {} }, { name: "look-v2", store: {
    await expect(page.getByRole("heading", { name: "Work", level: 1 })).toBeVisible();await expect(page.getByRole("heading", { name: TITLES.export })).toBeVisible();
    if (look.name === "look-v2") await expect(page.locator("html")).toHaveAttribute("data-look", "v2");
    await expect(page.getByRole("tab")).toHaveText(["Mine", "Team", "Needs attention", "Finished"]);
-   // Mine: needs attention first (the longest wait on top), then the rest, most recently changed first.
-   await expect(page.locator(".rv-work-title")).toHaveText([TITLES.retry, TITLES.plan, TITLES.export, TITLES.ledger]);
-   const plan = rowOf(page, TITLES.plan);await expect(plan).toContainText("Needs a decision");await expect(plan).toContainText("waiting 3 h");await expect(plan).toContainText("Next: You");await expect(plan).toContainText("Cloud");
-   const retry = rowOf(page, TITLES.retry);await expect(retry).toContainText("Failed");await expect(retry).toContainText("waiting 2 d");await expect(retry).toContainText("Next: You");
+   // Mine: needs attention first, then the rest, each most recently updated first.
+   await expect(page.locator(".rv-work-title")).toHaveText([TITLES.plan, TITLES.retry, TITLES.export, TITLES.ledger]);
+   const plan = rowOf(page, TITLES.plan);await expect(plan).toContainText("Needs a decision");await expect(plan).toContainText("updated 3 h ago");await expect(plan).toContainText("Next: You");await expect(plan).toContainText("Cloud");
+   const retry = rowOf(page, TITLES.retry);await expect(retry).toContainText("Failed");await expect(retry).toContainText("updated 2 d ago");await expect(retry).toContainText("Next: You");
    const building = rowOf(page, TITLES.export);await expect(building).toContainText("Building");await expect(building).toContainText("updated 20 min ago");await expect(building).toContainText("Next: Rovara");
    // A session on a person's own machine: where it runs is said, who acts next is not (Rovara is not the one working).
    const ledger = rowOf(page, TITLES.ledger);await expect(ledger).toContainText("On Priya's MacBook");await expect(ledger).not.toContainText("Next:");
@@ -69,7 +69,7 @@ test("switch on at 390: Team, Needs attention and Finished, and the project filt
  await enter(page, context, request, baseURL, 390, { "rovara.work": "v2" });await page.goto("/app/live");
  await expect(page.getByRole("heading", { name: TITLES.export })).toBeVisible();
  await page.getByRole("tab", { name: "Team" }).click();await expect(page).toHaveURL(/view=team/u);await expect(page.locator(".rv-work-title")).toHaveText([TITLES.team]);await expect(rowOf(page, TITLES.team)).toContainText("Checking");await expect(page.getByText("Work on projects you're part of")).toBeVisible();
- await page.getByRole("tab", { name: "Needs attention" }).click();await expect(page.locator(".rv-work-title")).toHaveText([TITLES.retry, TITLES.plan]);expect(await noSidewaysScroll(page)).toBe(true);await evidenceShot(page, { path: `${shots}/attention-390.png`, fullPage: true });
+ await page.getByRole("tab", { name: "Needs attention" }).click();await expect(page.locator(".rv-work-title")).toHaveText([TITLES.plan, TITLES.retry]);expect(await noSidewaysScroll(page)).toBe(true);await evidenceShot(page, { path: `${shots}/attention-390.png`, fullPage: true });
  await page.getByRole("tab", { name: "Finished" }).click();await expect(page.locator(".rv-work-title")).toHaveText([TITLES.merged, TITLES.twice]);
  await expect(rowOf(page, TITLES.merged)).toContainText("Merged");await expect(rowOf(page, TITLES.merged)).toContainText("finished 5 h ago");await expect(rowOf(page, TITLES.twice)).toContainText("On Priya's MacBook");await expect(page.locator(".rv-work-row button")).toHaveCount(0);
  await expect(page.getByText(/Your finished work/u)).toBeVisible();expect(await noSidewaysScroll(page)).toBe(true);expect(await smallTargets(page)).toEqual([]);await evidenceShot(page, { path: `${shots}/finished-390.png`, fullPage: true });

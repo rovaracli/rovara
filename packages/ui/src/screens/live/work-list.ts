@@ -49,9 +49,9 @@ export interface WorkRow {
  project: string | undefined;
  agent: string | undefined;
  state: PlainState;
- /** Waiting on someone to act: the sort puts these first. */
+ /** Needs a person to act and this viewer can act on it: the sort puts these first and the row is marked. */
  attention: boolean;
- /** "waiting 3 h", "updated 5 min ago", "finished 2 d ago"; undefined when the row has no usable time. */
+ /** "updated 5 min ago" on a live row, "finished 2 d ago" in Finished; undefined when the row has no usable time. The broker has no "waiting since" time, so a live row never says "waiting". */
  age: string | undefined;
  ageMs: number;
  /** The ISO time the age counts from, for a `<time>` element. */
@@ -84,10 +84,12 @@ function placeOf(where: { kind: string; label?: unknown; offline?: unknown }): W
 }
 
 export function rowFromLive(tile: ReadLiveTile, now: number): WorkRow {
- const status = liveStatus(tile), state = plainState(status, undefined), attention = tile.needsYou || statusNeedsSomeone(status), age = ageOf(tile.updatedAt, now);
+ const status = liveStatus(tile), state = plainState(status, undefined), age = ageOf(tile.updatedAt, now);
+ // Marked only where this viewer can do something about it: a decision waiting on them, or work that needs someone and they are offered Retry, Close or Approve (a teammate's failed task they cannot touch is not).
+ const attention = tile.needsYou || (statusNeedsSomeone(status) && (tile.actions.includes("retry") || tile.actions.includes("close") || tile.approvalUrl !== undefined));
  return {
   sessionId: tile.sessionId, title: tile.title, project: tile.project, agent: tile.agent?.name, state, attention,
-  age: age === undefined ? undefined : attention ? "waiting " + age.text : age.text === "<1 min" ? "updated just now" : "updated " + age.text + " ago",
+  age: age === undefined ? undefined : age.text === "<1 min" ? "updated just now" : "updated " + age.text + " ago",
   ageMs: age?.ms ?? 0, since: age === undefined ? undefined : tile.updatedAt, next: nextActor(tile, status.state),
   place: placeOf(tile.where),
   live: { actions: tile.actions, following: tile.following, approvalUrl: tile.approvalUrl },
@@ -106,9 +108,9 @@ export function rowFromFinished(tile: ReadFinishedTile, now: number): WorkRow {
  };
 }
 
-/** Needs attention first, the longest-waiting at the top; then everything else, the most recently changed first. Rows that tie keep the order they came in. */
+/** Needs attention first, then everything else; each group with the most recently updated first. Rows that tie keep the order they came in. */
 export function sortRows(rows: readonly WorkRow[]): WorkRow[] {
- return rows.map((row, index) => ({ row, index })).sort((a, b) => Number(b.row.attention) - Number(a.row.attention) || (a.row.attention ? b.row.ageMs - a.row.ageMs : a.row.ageMs - b.row.ageMs) || a.index - b.index).map(item => item.row);
+ return rows.map((row, index) => ({ row, index })).sort((a, b) => Number(b.row.attention) - Number(a.row.attention) || a.row.ageMs - b.row.ageMs || a.index - b.index).map(item => item.row);
 }
 /** Finished work, the most recently finished first. */
 export const sortFinished = (rows: readonly WorkRow[]): WorkRow[] => rows.map((row, index) => ({ row, index })).sort((a, b) => a.row.ageMs - b.row.ageMs || a.index - b.index).map(item => item.row);

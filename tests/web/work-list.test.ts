@@ -51,11 +51,11 @@ describe("age", () => {
 });
 
 describe("a live row", () => {
- it("says the plain state, waiting age and You for a decision waiting on me", () => {
+ it("says the plain state, updated age and You for a decision waiting on me", () => {
   const row = rowFromLive(liveFixture({ kind: "task", status: "needs_person", statusWords: "Needs you: the plan needs your decision", needsYou: true, updatedAt: ago(3 * HOUR + 120_000) }), NOW);
-  expect(row.state).toEqual({ label: "Needs a decision", tone: "attention" });expect(row.attention).toBe(true);expect(row.age).toBe("waiting 3 h");expect(row.next).toBe("You");
+  expect(row.state).toEqual({ label: "Needs a decision", tone: "attention" });expect(row.attention).toBe(true);expect(row.age).toBe("updated 3 h ago");expect(row.next).toBe("You");
  });
- it("says updated, not waiting, for work that is not waiting on anyone, and Rovara works on its own states", () => {
+ it("says updated for work that is not waiting on anyone, and Rovara works on its own states", () => {
   const row = rowFromLive(liveFixture({ kind: "task", status: "running", statusWords: "Checking", updatedAt: ago(5 * 60_000) }), NOW);
   expect(row.state.label).toBe("Checking");expect(row.attention).toBe(false);expect(row.age).toBe("updated 5 min ago");expect(row.next).toBe("Rovara");
   expect(rowFromLive(liveFixture({ updatedAt: ago(10_000) }), NOW).age).toBe("updated just now");
@@ -76,6 +76,17 @@ describe("a live row", () => {
   const failed = { statusWords: "Failed: the run stopped with an error", status: "failed" as const };
   expect(rowFromLive(liveFixture({ kind: "task", ...failed, actions: ["watch", "retry"] }), NOW)).toMatchObject({ next: "You", attention: true, state: { label: "Failed", tone: "danger" } });
   expect(rowFromLive(liveFixture({ kind: "task", ...failed, actions: ["watch"] }), NOW).next).toBeUndefined();
+ });
+ it("never says waiting: the broker has no waiting-since time, so every live row counts from its last update", () => {
+  for (const tile of [liveFixture({ kind: "task", status: "needs_person", statusWords: "Needs you: decide", needsYou: true }), liveFixture({ kind: "task", status: "failed", statusWords: "Failed: it stopped", actions: ["retry"] }), liveFixture({})]) expect(rowFromLive({ ...tile, updatedAt: ago(7 * HOUR) }, NOW).age).toBe("updated 7 h ago");
+ });
+ it("marks a row as needing attention only where the viewer can act: a teammate's failed task they cannot touch is not marked", () => {
+  const failed = { kind: "task" as const, status: "failed" as const, statusWords: "Failed: it stopped" };
+  expect(rowFromLive(liveFixture({ ...failed, actions: ["watch"] }), NOW).attention).toBe(false);
+  expect(rowFromLive(liveFixture({ ...failed, actions: ["watch", "retry"] }), NOW).attention).toBe(true);
+  expect(rowFromLive(liveFixture({ kind: "task", status: "needs_person", statusWords: "Ready to merge", actions: ["watch", "close"] }), NOW).attention).toBe(true);
+  expect(rowFromLive(liveFixture({ kind: "task", status: "needs_person", statusWords: "Needs you: waiting on a reviewer", needsYou: false, actions: ["watch"] }), NOW).attention).toBe(false);
+  expect(rowFromLive(liveFixture({ kind: "task", status: "needs_person", statusWords: "Needs you: decide", needsYou: true, actions: ["watch"] }), NOW).attention).toBe(true);
  });
  it("says where it runs: Cloud or a person's machine, and whether that machine is offline", () => {
   expect(rowFromLive(liveFixture({ where: { kind: "cloud" } }), NOW).place).toEqual({ text: "Cloud", offline: false });
@@ -103,9 +114,9 @@ describe("a finished row", () => {
 
 describe("the order", () => {
  const row = (id: string, attention: boolean, ageMs: number): WorkRow => ({ ...rowFromLive(liveFixture({ sessionId: id }), NOW), attention, ageMs });
- it("puts what needs attention first, longest waiting at the top, then the rest, most recently changed first", () => {
+ it("puts what needs attention first, then the rest, each most recently updated first", () => {
   const sorted = sortRows([row("ses_aaaaaaaaaaaaaaaaaaaa", false, 10), row(SESSION_B, true, 5), row(SESSION_C, true, 50), row("ses_dddddddddddddddddddd", false, 1)]);
-  expect(sorted.map(item => item.sessionId)).toEqual([SESSION_C, SESSION_B, "ses_dddddddddddddddddddd", "ses_aaaaaaaaaaaaaaaaaaaa"]);
+  expect(sorted.map(item => item.sessionId)).toEqual([SESSION_B, SESSION_C, "ses_dddddddddddddddddddd", "ses_aaaaaaaaaaaaaaaaaaaa"]);
  });
  it("keeps the given order for rows that tie, and sorts finished work newest first", () => {
   expect(sortRows([row(SESSION_B, false, 5), row(SESSION_C, false, 5)]).map(item => item.sessionId)).toEqual([SESSION_B, SESSION_C]);
@@ -114,9 +125,9 @@ describe("the order", () => {
 });
 
 type Tile = ReturnType<typeof liveFixture>;
-function setup(options: { work?: boolean; path?: string; byFilter?: Record<string, Tile[]>; ended?: ReturnType<typeof finishedFixture>[]; theme?: "light" | "dark" } = {}) {
+function setup(options: { work?: boolean; path?: string; byFilter?: Record<string, Tile[]>; failFilter?: string; ended?: ReturnType<typeof finishedFixture>[]; theme?: "light" | "dark" } = {}) {
  const f = fakeHost(async (request: ApiRequest): Promise<ApiResponse> => {
-  if (request.path.startsWith("/v1/app/live")) { const filter = new URL(request.path, "https://x.example").searchParams.get("filter") ?? "all";return { status: 200, body: { tiles: options.byFilter?.[filter] ?? [] } }; }
+  if (request.path.startsWith("/v1/app/live")) { const filter = new URL(request.path, "https://x.example").searchParams.get("filter") ?? "all";if (filter === options.failFilter) return { status: 403, body: { error: { code: "FORBIDDEN", message: "Your access ended." } } };return { status: 200, body: { tiles: options.byFilter?.[filter] ?? [] } }; }
   if (request.path.startsWith("/v1/app/sessions?")) return { status: 200, body: { sessions: options.ended ?? [] } };
   if (request.path === "/v1/app/nav") return { status: 200, body: navFixture() };
   return { status: 200, body: { notices: [], next: "settled" } };
@@ -142,19 +153,19 @@ describe("the screen", () => {
  it("shows one row with state, age, next actor and place, and no raw words", async () => {
   const f = setup({ byFilter: { mine: [tile({ kind: "task", status: "needs_person", statusWords: "Needs you: the plan needs your decision", needsYou: true, peek: "Worker status: RUNNING", step: "RUNNING", where: { kind: "mac", label: "Priya's MacBook", offline: false } })] } });
   const row = (await screen.findByRole("heading", { name: "Fix duplicate refunds" })).closest("li")!;
-  expect(within(row).getByText("Needs a decision")).toBeTruthy();expect(within(row).getByText("waiting 3 h")).toBeTruthy();expect(within(row).getByText("You")).toBeTruthy();expect(within(row).getByText("On Priya's MacBook")).toBeTruthy();expect(within(row).getByRole("link", { name: "payments" })).toBeTruthy();
+  expect(within(row).getByText("Needs a decision")).toBeTruthy();expect(within(row).getByText("updated 3 h ago")).toBeTruthy();expect(within(row).getByText("You")).toBeTruthy();expect(within(row).getByText("On Priya's MacBook")).toBeTruthy();expect(within(row).getByRole("link", { name: "payments" })).toBeTruthy();
   expect(row.textContent).not.toMatch(/RUNNING|Worker status|needs_person|claude-|anthropic\./u);f.close();
  });
  it("leaves the next actor out when the data does not say", async () => {
   const f = setup({ byFilter: { mine: [tile({ kind: "task", status: "needs_person", statusWords: "Needs you: waiting on a reviewer", needsYou: false })] } });
   const row = (await screen.findByRole("heading", { name: "Fix duplicate refunds" })).closest("li")!;expect(within(row).getByText("Needs a decision")).toBeTruthy();expect(row.textContent).not.toContain("Next:");f.close();
  });
- it("lists Needs attention from both today's needs-me and failed filters, once each, needs-attention first and longest waiting first", async () => {
+ it("lists Needs attention from both today's needs-me and failed filters, once each, most recently updated first", async () => {
   const waiting = tile({ sessionId: SESSION_B, title: "Review the plan", kind: "task", status: "needs_person", statusWords: "Needs you: decide", needsYou: true, updatedAt: new Date(Date.now() - 5 * HOUR).toISOString() });
   const failed = tile({ sessionId: SESSION_C, title: "Retry the build", kind: "task", status: "failed", statusWords: "Failed: the run stopped with an error", actions: ["watch", "retry"], updatedAt: new Date(Date.now() - 9 * HOUR).toISOString() });
   const f = setup({ path: "/app/live?view=attention", byFilter: { needs_me: [waiting, failed], failed: [failed] } });await screen.findByRole("heading", { name: "Review the plan" });
   expect(f.calls()).toEqual(expect.arrayContaining(["/v1/app/live?filter=needs_me", "/v1/app/live?filter=failed"]));
-  expect(screen.getAllByRole("heading", { level: 2 }).map(item => item.textContent)).toEqual(["Retry the build", "Review the plan"]);f.close();
+  expect(screen.getAllByRole("heading", { level: 2 }).map(item => item.textContent)).toEqual(["Review the plan", "Retry the build"]);f.close();
  });
  it("reads Finished from the ended-sessions list: my own with no project, the project's with one", async () => {
   const f = setup({ path: "/app/live?view=finished", ended: [finishedFixture({ endedAt: new Date(Date.now() - 2 * 24 * HOUR).toISOString() })] });
@@ -162,6 +173,16 @@ describe("the screen", () => {
   expect(within(row).getByText("finished 2 d ago")).toBeTruthy();expect(within(row).getByText("Closed")).toBeTruthy();expect(within(row).queryByRole("button")).toBeNull();expect(f.calls()).toContain("/v1/app/sessions?owner=me&status=ended");expect(screen.getByText(/Your finished work/u)).toBeTruthy();
   f.close();
   const withProject = setup({ path: "/app/live?view=finished&project=payments", ended: [] });await screen.findByText("No finished work yet");expect(withProject.calls()).toContain("/v1/app/sessions?project=payments&status=ended");expect(screen.getByText("Finished work in payments")).toBeTruthy();withProject.close();
+ });
+ it("keeps what loaded when one of the two Needs attention reads fails, with a notice; the empty state still carries the notice", async () => {
+  const plan = tile({ sessionId: SESSION_B, title: "Review the plan", kind: "task", status: "needs_person", statusWords: "Needs you: decide", needsYou: true });
+  const f = setup({ path: "/app/live?view=attention", byFilter: { needs_me: [plan] }, failFilter: "failed" });await screen.findByRole("heading", { name: "Review the plan" });
+  expect(await screen.findByText("Some work couldn't be loaded, so this list may be incomplete.")).toBeTruthy();expect(screen.getAllByRole("button", { name: "Try again" })).toHaveLength(1);f.close();
+  const empty = setup({ path: "/app/live?view=attention", failFilter: "failed", byFilter: {} });await screen.findByText("Nothing needs attention");expect(await screen.findByText(/may be incomplete/u)).toBeTruthy();empty.close();
+ });
+ it("refreshes the Finished list when a notice refreshes Live", async () => {
+  const f = setup({ path: "/app/live?view=finished", ended: [] });await screen.findByText("No finished work yet");const before = f.calls().filter(path => path.startsWith("/v1/app/sessions?")).length;
+  await f.query.invalidateQueries({ queryKey: ["live"] });await waitFor(() => expect(f.calls().filter(path => path.startsWith("/v1/app/sessions?")).length).toBeGreaterThan(before));f.close();
  });
  it("shows an honest empty state per view", async () => {
   const f = setup({ path: "/app/live?view=attention" });await screen.findByText("Nothing needs attention");f.close();
