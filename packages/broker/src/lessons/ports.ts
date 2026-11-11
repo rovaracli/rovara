@@ -1,6 +1,6 @@
 // Learning v2: the seams of the learning lane. The record core (R-lanes), storage and ingest are built in parallel; each interface here is what this
 // lane needs from them, with an in-memory stand-in in the tests. Nothing here talks to AWS.
-import type { LessonStage, LessonsPauseCode } from "@agentx/contracts";
+import type { LessonStage, LessonsPauseCode } from "@rovara-code/contracts";
 import type { TaskFailureTally } from "./pause.js";
 import type { Lesson, LessonAuditAction, IdentitySet } from "./types.js";
 

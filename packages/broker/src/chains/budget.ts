@@ -3,10 +3,7 @@
 // step), an admission (`admitChainRun`), and a limit of its own per run that each step is started under (`stepRunLimitUsd`) and settled against (`settleStepSpend`).
 // A chain's monthly budget is counted in its owner's one monthly total with their agents' budgets (R65; `spend/owner-budgets.ts`, which both stores share), and
 // the routes that change it are in routes.ts.
-import {
-  DEFAULT_PERSON_CHAIN_RUN_LIMIT_USD, agentXError,
-  type ChainId, type OrgId, type Payer, type PinnedChainDefinition, type WorkOrigin,
-} from "@agentx/contracts";
+import { DEFAULT_PERSON_CHAIN_RUN_LIMIT_USD, agentXError, type ChainId, type OrgId, type Payer, type PinnedChainDefinition, type WorkOrigin } from "@rovara-code/contracts";
 import { admitWork } from "../spend/admission.js";
 import type { AdmissionDependencies } from "../org/budget.js";
 import { resolvePayer, type NamedPerson, type PayerFacts } from "../spend/payer.js";

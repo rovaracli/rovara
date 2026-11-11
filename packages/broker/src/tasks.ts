@@ -1,4 +1,4 @@
-import { OperationRequestSchema, agentXError, type OperationRequest } from "@agentx/contracts";
+import { OperationRequestSchema, agentXError, type OperationRequest } from "@rovara-code/contracts";
 import type { AuthenticatedIdentity } from "./auth.js";
 import { assertNoUntrustedRoutingFields, authorizeProject, authorizeWorkspace, type ProjectMembership } from "./authorization.js";
 import type { OperationStore } from "./operations.js";

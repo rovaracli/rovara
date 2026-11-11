@@ -1,6 +1,7 @@
 // Lessons in production, lane 2 (WB-4): the queue message holds ids only; the worker claims a reflection once, runs it under a deadline, and answers SQS's partial-batch way.
 import { describe, expect, it, vi } from "vitest";
-import { LESSONS_REFLECT_LEASE_GRACE_SECONDS, LESSONS_REFLECT_MAX_ATTEMPTS, LESSONS_REFLECT_MAX_RECEIVES, LESSONS_REFLECT_RETRY_BACKOFF_SECONDS, LESSONS_WORKER_TIMEOUT_SECONDS, lessonsReflectDeadLetterName, lessonsReflectQueueName } from "@agentx/contracts";
+import { LESSONS_REFLECT_LEASE_GRACE_SECONDS, LESSONS_REFLECT_MAX_ATTEMPTS, LESSONS_REFLECT_MAX_RECEIVES, LESSONS_REFLECT_RETRY_BACKOFF_SECONDS, LESSONS_WORKER_TIMEOUT_SECONDS } from "@rovara-code/contracts";
+import { lessonsReflectDeadLetterName, lessonsReflectQueueName } from "@agentx/cloud-contracts";
 import { CLAIM_TTL_SECONDS, LEASE_MS, dynamoReflectClaims, reflectClaimKey, type ClaimStore, type Lease, type TakeResult } from "../../../packages/broker/src/lessons/reflect-claims.js";
 import { ReflectMessageSchema, parseReflectMessage, reflectQueueUrlOf, sqsReflectQueue, sqsReflectVisibility } from "../../../packages/broker/src/lessons/reflect-queue.js";
 import { handleReflectBatch, retryDelaySeconds, runReflectMessage, type ReflectWorkerDeps } from "../../../packages/broker/src/lessons/reflect-worker.js";

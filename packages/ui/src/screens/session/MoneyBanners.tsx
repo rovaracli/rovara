@@ -1,5 +1,5 @@
 import { lazy, Suspense, useMemo, useRef, useState } from "react";
-import { DeveloperTaskViewSchema, budgetPauseNext, budgetScopeName } from "@agentx/contracts/web";
+import { DeveloperTaskViewSchema, budgetPauseNext, budgetScopeName } from "@agentx/cloud-contracts/web";
 import { useAppHost } from "../../host.js";
 import { createSessionApi } from "../../api/sessions.js";
 import { ApiError } from "../../api/errors.js";

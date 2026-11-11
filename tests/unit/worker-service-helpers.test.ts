@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
 import { createServer, type AddressInfo } from "node:net";
 import { describe, expect, it } from "vitest";
-import { CatalogEntrySchema, ServiceCatalogSchema, type CatalogEntry } from "../../packages/contracts/src/service-catalog.js";
+import { CatalogEntrySchema, ServiceCatalogSchema, type CatalogEntry } from "@rovara-code/contracts";
 import { runNetworkAddresses, runNetworkBridge, runNetworkHelperIp, runNetworkLabelArgs, runNetworkName, type ServicesNetwork } from "../../packages/worker/src/run-network.js";
 import {
   HELPER_ALIAS_PATTERN, HelperStartError, helperContainerName, startHelpers, sweepServicesNetworksAtWorkerStart,

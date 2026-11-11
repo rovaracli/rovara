@@ -1,6 +1,6 @@
 // TE-2 test support: the report of a proposal's CANDIDATE check, written the way the broker leaves it (a ready workspace, and the record that names the digest, the settings revision and the exact commands it ran).
 // The lists are the real ones (`candidateLists` of the stored proposal against the project's latest settings) unless a test hands in others, to play a check that ran something else.
-import { INDEX_EXPIRY_ATTRIBUTE, projectPk, type OrgId, type PreparePins, type ProjectCommand } from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, projectPk, type OrgId, type PreparePins, type ProjectCommand } from "@rovara-code/contracts";
 import { CANDIDATE_CHECK_ENTITY, candidateCheckKey, candidateExpiry } from "../../packages/broker/src/org/test-env-candidate.js";
 import { isSetupRunProposal } from "../../packages/broker/src/org/test-environment.js";
 import { candidateListsChecked } from "../../packages/broker/src/test-env/candidate-commands.js";

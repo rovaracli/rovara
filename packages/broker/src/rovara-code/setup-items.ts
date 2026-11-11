@@ -5,10 +5,8 @@
 //     built in (setup-draft.ts). A source, an intake trigger and a secret are the business of the lane that owns each (context sources, intake): until that lane registers an
 //     applier, the item is shown as "can't be set up from here yet" and gets no card, because a card for something nobody can apply would be theatre.
 import { createHash } from "node:crypto";
-import {
-  canonicalJson, codeRepositoriesOf, formatCommandLine, setupItemHandling, settingOriginOf,
-  type IntakeChannelRef, type ProjectOriginField, type ProjectSettingsBody, type SetupItem, type SetupItemKind, type SetupProposal, type SetupReviewEntry, type StoredProjectDefinition,
-} from "@agentx/contracts";
+import { canonicalJson, codeRepositoriesOf, formatCommandLine, setupItemHandling, settingOriginOf, type IntakeChannelRef, type ProjectOriginField, type ProjectSettingsBody, type SetupItem, type SetupItemKind, type SetupProposal, type SetupReviewEntry } from "@rovara-code/contracts";
+import { type StoredProjectDefinition } from "@agentx/cloud-contracts";
 
 /** What a person is told when an item cannot be applied from here (fixed words, never a model's or a repository's). */
 export const SETUP_ITEM_WORDS = {

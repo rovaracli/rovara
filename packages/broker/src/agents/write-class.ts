@@ -9,42 +9,7 @@
 // A write is `safe` only when its name says it records something (a create, a comment, a label) and nothing in the call needs a person; every other
 // write waits (fix round 1, C1). Tool names are split on every character that is not a letter or digit, after NFKC and the confusable fold (C2).
 import { QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  BULK_ITEM_LIMIT,
-  CONSEQUENTIAL_KEYS,
-  CONSEQUENTIAL_VALUES,
-  DESTRUCTIVE_WORDS,
-  INDEX_EXPIRY_ATTRIBUTE,
-  OUTWARD_KEYS,
-  OUTWARD_WORDS,
-  ROVARA_LABEL,
-  SAFE_CHANGE_KEYS,
-  TRACKER_ITEM_WORDS,
-  WRITE_VERBS,
-  agentItemKey,
-  agentItemsPk,
-  agentXError,
-  baseClass,
-  cleanText,
-  commentSignal,
-  destructiveSignal,
-  itemCount,
-  itemPathValues,
-  matchingPolicyRules,
-  nameWords,
-  normalizeForMatching,
-  stripMentions,
-  toolPatternMatches,
-  type ActionClass,
-  type ActionPolicy,
-  type AgentConnectorType,
-  type ApprovalRules,
-  type Autonomy,
-  type GrantedTool,
-  type OrgId,
-  type ToolFacts,
-  type WriteClass,
-} from "@agentx/contracts";
+import { BULK_ITEM_LIMIT, CONSEQUENTIAL_KEYS, CONSEQUENTIAL_VALUES, DESTRUCTIVE_WORDS, INDEX_EXPIRY_ATTRIBUTE, OUTWARD_KEYS, OUTWARD_WORDS, ROVARA_LABEL, SAFE_CHANGE_KEYS, TRACKER_ITEM_WORDS, WRITE_VERBS, agentItemKey, agentItemsPk, agentXError, baseClass, cleanText, commentSignal, destructiveSignal, itemCount, itemPathValues, matchingPolicyRules, nameWords, normalizeForMatching, stripMentions, toolPatternMatches, type ActionClass, type ActionPolicy, type AgentConnectorType, type ApprovalRules, type Autonomy, type GrantedTool, type OrgId, type ToolFacts, type WriteClass } from "@rovara-code/contracts";
 import { commentTriggerRule } from "./comment-trigger-optouts.js";
 import { resolveLabelNames, type LabelConnector, type LabelNameDependencies } from "./label-names.js";
 

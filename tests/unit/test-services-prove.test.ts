@@ -1,7 +1,7 @@
 // Test services, slice 1 T5: the Prove of an environment with dependencies. The two new steps ("start dependencies", "dependency usage check") are derived by the broker from the usage record the candidate check
 // reported; a check with no record proves nothing about them; an environment with dependencies is proved only when both passed; the record is kept, validated, on the candidate check; the plan for the check is pinned.
 import { describe, expect, it } from "vitest";
-import { INDEX_EXPIRY_ATTRIBUTE, TEST_ENV_REFUSALS, projectRevisionKey, TestEnvironmentBodySchema, TestEnvProveReportSchema, testEnvDigest, testEnvIsProved, type OrgId, type TestServicesUsageRecord } from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, TEST_ENV_REFUSALS, projectRevisionKey, TestEnvironmentBodySchema, TestEnvProveReportSchema, testEnvDigest, testEnvIsProved, type OrgId, type TestServicesUsageRecord } from "@rovara-code/contracts";
 import { candidateDependencyPlan } from "../../packages/broker/src/aws/developer-routes/test-environment-candidate.js";
 import { CANDIDATE_CHECK_ENTITY, candidateCheckKey, readCandidateCheck, recordCandidateUsage } from "../../packages/broker/src/org/test-env-candidate.js";
 import { BACKING_PLACES } from "../../packages/broker/src/test-env/backing-choice.js";

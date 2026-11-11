@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import { useAppHost } from "../../host.js";
 import { createSessionActions } from "../../api/session-actions.js";
-import { CLOSE_MESSAGES } from "@agentx/contracts/web";
+import { CLOSE_MESSAGES } from "@agentx/cloud-contracts/web";
 import { ApiError } from "../../api/errors.js";
 import { Button } from "../../design/Button.js";
 import { Dialog } from "../../design/Dialog.js";

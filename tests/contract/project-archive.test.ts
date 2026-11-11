@@ -3,10 +3,9 @@
 // return, still approved, when it is restored. A closed org's projects are archived the same way.
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import {
-  AppProjectsResponseSchema, EGRESS_SYNC_PENDING_WARNING, egressDomainsKey, orgProjectCatalogKey, projectMemberKey, projectMetaKey, projectRevisionKey, type EgressOwner, type OrgId,
-} from "../../packages/contracts/src/index.js";
-import { createCandidateManifest } from "../../packages/contracts/src/task-workflow-node.js";
+import { EGRESS_SYNC_PENDING_WARNING, egressDomainsKey, orgProjectCatalogKey, projectMemberKey, projectMetaKey, projectRevisionKey, type EgressOwner, type OrgId } from "@rovara-code/contracts";
+import { AppProjectsResponseSchema } from "@agentx/cloud-contracts";
+import { createCandidateManifest } from "@rovara-code/contracts";
 import { approvedUnion, decideEgressDomain, putEgressDomains, readEgressDomains, type EgressDomainsDependencies } from "../../packages/broker/src/org/egress-domains.js";
 import { archiveProject, restoreProject } from "../../packages/broker/src/org/project-archive.js";
 import { EVIDENCE_ERASE_PENDING_WARNING } from "../../packages/broker/src/aws/developer-routes/project-archive-setup.js";

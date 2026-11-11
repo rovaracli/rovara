@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import * as workflowContracts from "../../packages/contracts/src/task-workflow-node.js";
-import {
-  WorkflowSnapshotSchema, WorkflowTransitionError, createCandidateManifest, createWorkflowSnapshot, submitWorkflowReview,
-} from "../../packages/contracts/src/task-workflow-node.js";
+import * as workflowContracts from "@rovara-code/contracts";
+import * as workflowContractsFile from "../../packages/cloud-contracts/src/task-workflow-node.js";
+import { WorkflowSnapshotSchema, createWorkflowSnapshot, submitWorkflowReview } from "../../packages/cloud-contracts/src/task-workflow-node.js";
+import { WorkflowTransitionError, createCandidateManifest } from "@rovara-code/contracts";
 
 const taskId = "8b579b4b-eaa7-4bf2-87bc-6da86b97c9e6";
 const ownerId = "a".repeat(64);
@@ -23,7 +23,7 @@ describe("the owner resolves each blocking review finding", () => {
   const request = (workflow: { revision: number }, resolutions: Array<{ findingId: string; action: "ACCEPT" | "FIX"; note: string }>, requestId = "22222222-2222-4222-8222-222222222222") =>
     ({ requestId, expectedRevision: workflow.revision, candidateDigest: candidate.digest, resolutions });
   const id = (role: "CRITIC" | "SECURITY", finding: { text: string; file?: string; line?: number }) => workflowContracts.workflowFindingFingerprint(role, finding);
-  const resolve = (workflow: unknown, input: unknown, actorId = ownerId) => workflowContracts.resolveWorkflowReviewFindings(workflow, input, { actorId }, { now: at });
+  const resolve = (workflow: unknown, input: unknown, actorId = ownerId) => workflowContractsFile.resolveWorkflowReviewFindings(workflow, input, { actorId }, { now: at });
 
   it("fingerprints a finding from its role, text, file and line, and lists the open ones", () => {
     expect(id("CRITIC", parser)).toMatch(/^[a-f0-9]{64}$/);
@@ -32,7 +32,7 @@ describe("the owner resolves each blocking review finding", () => {
     expect(id("CRITIC", { text: parser.text })).not.toBe(id("CRITIC", parser));
     expect(id("CRITIC", { ...parser, line: 13 })).not.toBe(id("CRITIC", parser));
     const workflow = blockedWith([report("CRITIC", "FINDINGS", [parser, { text: "Old code", origin: "PRE_EXISTING" }]), report("SECURITY", "FINDINGS", [token])]);
-    expect(workflowContracts.openReviewFindings(workflow)).toEqual([
+    expect(workflowContractsFile.openReviewFindings(workflow)).toEqual([
       { findingId: id("CRITIC", parser), role: "CRITIC", text: parser.text, file: "src/parse.ts", line: 12 },
       { findingId: id("SECURITY", token), role: "SECURITY", text: token.text },
     ]);
@@ -50,8 +50,8 @@ describe("the owner resolves each blocking review finding", () => {
     expect(next.decisions.at(-1)).toMatchObject({ requestId: "22222222-2222-4222-8222-222222222222", source: "FINDINGS", actorId: ownerId, actorRole: "TASK_OWNER" });
     // The stored reviews are untouched, and no finding is open or sent back any more.
     expect(next.reviews).toEqual(workflow.reviews);
-    expect(workflowContracts.openReviewFindings(next)).toEqual([]);
-    expect(workflowContracts.sendBackProblems(next)).toEqual([]);
+    expect(workflowContractsFile.openReviewFindings(next)).toEqual([]);
+    expect(workflowContractsFile.sendBackProblems(next)).toEqual([]);
   });
 
   it("sends only the fix findings back to coding, and still records the accepted one", () => {
@@ -60,7 +60,7 @@ describe("the owner resolves each blocking review finding", () => {
     expect(next).toMatchObject({ stage: "IMPLEMENT", state: "READY", revision: 7 });
     expect(next.decisions.at(-1)).toMatchObject({ decision: "REQUEST_CHANGES", source: "FINDINGS" });
     expect(next.acceptedFindings?.map((entry) => entry.fingerprint)).toEqual([id("SECURITY", token)]);
-    expect(workflowContracts.sendBackProblems(next)).toEqual([{ source: "code review", text: "New parser drops the last line. (src/parse.ts:12)" }]);
+    expect(workflowContractsFile.sendBackProblems(next)).toEqual([{ source: "code review", text: "New parser drops the last line. (src/parse.ts:12)" }]);
   });
 
   it("refuses an accept with no reason, a missing, unknown or repeated finding, a stale revision or digest, and anyone but the owner", () => {
@@ -113,7 +113,7 @@ describe("the owner resolves each blocking review finding", () => {
     expect(repeated).toMatchObject({ stage: "PULL_REQUEST", state: "READY" });
     const fresh = submitWorkflowReview(submitWorkflowReview(retrying, report("SECURITY", "PASS", []), at), report("CRITIC", "FINDINGS", [parser, { text: "Another problem.", origin: "INTRODUCED" }]), at);
     expect(fresh).toMatchObject({ stage: "REVIEW", state: "BLOCKED" });
-    expect(workflowContracts.openReviewFindings(fresh).map((entry) => entry.text)).toEqual(["Another problem."]);
+    expect(workflowContractsFile.openReviewFindings(fresh).map((entry) => entry.text)).toEqual(["Another problem."]);
   });
 
   it("names the review that did not pass in the block reason, not the one recorded last", () => {
@@ -134,9 +134,9 @@ describe("the owner resolves each blocking review finding", () => {
     // The same finding on another candidate is open again.
     const again = blockedWith([report("CRITIC", "FINDINGS", [parser], other.digest), report("SECURITY", "PASS", [], other.digest)],
       { candidate: other, acceptedFindings: mixed.acceptedFindings, verification: verification(other.digest) });
-    expect(workflowContracts.openReviewFindings(again).map((entry) => entry.findingId)).toEqual([id("CRITIC", parser)]);
-    expect(workflowContracts.workflowSendBackOffered(again)).toBe(true);
-    expect(workflowContracts.sendBackProblems(again)).toHaveLength(1);
+    expect(workflowContractsFile.openReviewFindings(again).map((entry) => entry.findingId)).toEqual([id("CRITIC", parser)]);
+    expect(workflowContractsFile.workflowSendBackOffered(again)).toBe(true);
+    expect(workflowContractsFile.sendBackProblems(again)).toHaveLength(1);
   });
 
   it("keeps at most 100 accepted findings, dropping the oldest", () => {

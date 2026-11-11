@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { E2EModelDayBudgetRequest } from "../../packages/contracts/src/e2e-model-channel.js";
+import type { E2EModelDayBudgetRequest } from "@rovara-code/contracts";
 import { createGovernedE2EModelRoute, type E2EDayLimits } from "../../packages/model-runtime/src/e2e-route.js";
 import { createE2EModelDayBudgetClient } from "../../packages/worker/src/e2e-model-day-budget-client.js";
 import { RUN_ID, bedrockRoute, channelRequest, tapAnswer } from "../support/e2e-model-fixtures.js";

@@ -1,7 +1,7 @@
 // Saved project images (SV wiring, switch `sv`): the project's Environment panel and its Reset, through the whole broker with live browser sessions. Browser only (a token is refused for every method), the
 // maintainer role comes from the session's person, a write needs the same CSRF header as every /v1/app write, and the switch off means the paths do not exist.
 import { afterEach, describe, expect, it } from "vitest";
-import { SavedEnvPanelSchema, SavedEnvResetAnswerSchema } from "@agentx/contracts";
+import { SavedEnvPanelSchema, SavedEnvResetAnswerSchema } from "@rovara-code/contracts";
 import { APP_CSRF_HEADER, appCsrfTokenFor } from "../../packages/broker/src/developer/app-csrf.js";
 import { MAYA, OMAR } from "../support/developer-task-broker.js";
 import { NAME, setupWizardBench } from "../support/setup-wizard-testenv.js";

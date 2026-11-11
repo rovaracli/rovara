@@ -8,7 +8,8 @@
 // Every refusal is the fixed `pull_failed` for the dependency (the same words as an image that is not on this worker); the callers never see a registry's, a login's or Docker's text.
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { CompanyImageLoginReplySchema, isCompanyImageRepositoryName, savedEnvRepositoryPrefix, type SavedEnvRegistryAuth } from "@agentx/contracts";
+import { CompanyImageLoginReplySchema, isCompanyImageRepositoryName, type SavedEnvRegistryAuth } from "@agentx/cloud-contracts";
+import { savedEnvRepositoryPrefix } from "@rovara-code/contracts";
 import type { DockerCli } from "./swebench/containers.js";
 
 /** The worker's call to the broker's `company-image-login` (callback-client.ts): `{ imageId }` in, the broker's raw answer out. */

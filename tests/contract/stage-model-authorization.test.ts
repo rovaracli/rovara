@@ -22,7 +22,7 @@ async function fixture(explicit=false,http=false){
  const workspace=h.db.get(`WORKSPACE#${workspaceId}`,"META")!;h.db.set({...workspace,status:"BUSY",fence:2,activeOperationId:operationId});
  h.db.set({pk:`WORKSPACE#${workspaceId}`,sk:`OPERATION#${operationId}`,entityType:"OPERATION",id:operationId,kind:"task",workspaceId,orgId:TEST_ORG,modelTaskId:taskId,modelPolicy:binding,model:failedModel,status:"RUNNING",fence:2,workflowMode:"IMPLEMENT"});
  const cap=capturingAuditDeps({db:h.db}),deps={documentClient:h.db,tableName:"state",routing:{},now:Date.now,audit:cap.audit,modelSignInTableName:"signin",signInStore:new DeveloperSignInStore({documentClient:h.db,tableName:"signin",now:Date.now})};
- const {ResolvedRecipeSchema}=await import("../../packages/contracts/src/index.js");const recipe=ResolvedRecipeSchema.parse(frozen.recipe);
+ const { ResolvedRecipeSchema } = await import("@rovara-code/contracts");const recipe=ResolvedRecipeSchema.parse(frozen.recipe);
  const context=await loadPinnedTaskStageContext(deps,{orgId:TEST_ORG,project:"payments",agentId:"rovara-code",recipe,digest:String(frozen.digest),pin:frozen.modelPolicyPin,stage:"build",priorModels:{},deniedModels:[failedModel],defaultPreferred:failedModel});
  const input={verifiedClaims:{workspaceId,operationId,fence:2,actions:["model-fallback" as const],expiresAt:Math.floor(Date.now()/1000)+60,modelPolicy:binding},orgId:TEST_ORG,taskId,workspaceId,operationId,fence:2,request:{version:1 as const,binding,reason:"unavailable" as const,failedModel},context};
  return {h,cap,deps,input};
@@ -57,7 +57,7 @@ it("replays exactly once and rejects a closed task racing the prepared transacti
 });
 it("refuses a model fallback for a task whose owner has become an Auditor, and still serves a member (I2 re-check)",async()=>{
  const {h,deps,input}=await fixture();
- const {orgMemberKey}=await import("../../packages/contracts/src/index.js");
+ const { orgMemberKey } = await import("@agentx/cloud-contracts");
  const key=orgMemberKey(TEST_ORG,MAYA.developerId),row=h.db.get(key)!;
  expect((await prepareTaskModelAuthorization(deps,input)).items.length).toBeGreaterThan(0);
  h.db.set({...row,role:"auditor"});
@@ -70,7 +70,7 @@ for(const change of ["member","identity","workspace","operation-org","operation-
   const {h,cap,deps,input}=await fixture();
   if(replay){const first=await prepareTaskModelAuthorization(deps,input);await h.db.send(new TransactWriteCommand({TransactItems:first.items}));}
   const prepared=await prepareTaskModelAuthorization(deps,input);
-  const {orgMemberKey}=await import("../../packages/contracts/src/index.js");
+  const { orgMemberKey } = await import("@agentx/cloud-contracts");
   if(change==="member"){const key=orgMemberKey(TEST_ORG,MAYA.developerId),row=h.db.get(key)!;h.db.set({...row,role:"viewer"});}
   if(change==="identity"){const row=h.db.get(`DEVELOPER#${MAYA.developerId}`,"META")!;h.db.set({...row,revoked:true});}
   if(change==="workspace"){const row=h.db.get(`WORKSPACE#${input.workspaceId}`,"META")!;h.db.set({...row,fence:3});}

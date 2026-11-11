@@ -1,7 +1,7 @@
 // One card per decision on Home (decision journey slice 1): an older Home card about a session is left out while a pending decision card already holds that decision for the same task, so
 // "Needs you" is the one place it is decided. Only the kinds a decision card replaces today are left out: a plan to review (the design or requirements card), the owner's own pull request
 // (the merge card). Home's questions card (Understand's questions) is another decision than the design questions card and stays. Every other older card stays until slice 2 makes it a decision card. When the decision cards cannot be read, nothing is left out.
-import { decisionTaskSessionOf } from "@agentx/contracts/web";
+import { decisionTaskSessionOf } from "@agentx/cloud-contracts/web";
 import type { ReadDecision } from "../../api/decisions.js";
 import type { ReadHomeCard } from "../../api/home.js";
 

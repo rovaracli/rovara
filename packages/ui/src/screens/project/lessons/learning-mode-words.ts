@@ -1,5 +1,5 @@
 // UX-4b: the four learning modes in the person's words, shared by the mode control and the project setup checklist.
-import type { LearningMode } from "@agentx/contracts/web";
+import type { LearningMode } from "@agentx/cloud-contracts/web";
 
 /** The four modes, loosest last, with what each does in a sentence. */
 export const MODE_ORDER: readonly LearningMode[] = ["off", "collect", "suggest", "on"];

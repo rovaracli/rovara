@@ -15,7 +15,7 @@ import { LOCAL_AWS_SERVICE_KEYS, newLocalAwsCredentials, startHelpers, type Help
 import { CONTROL_ANSWER_MAX_BYTES, probeCli } from "../../packages/worker/src/service-probe.js";
 import { FLOODED_AWS_USAGE, UNREADABLE_AWS_USAGE, buildServiceUsageRecord, mergeAwsUsage } from "../../packages/worker/src/service-usage-record.js";
 import { createServiceRedactor } from "../../packages/worker/src/service-env.js";
-import { ServiceCatalogSchema } from "../../packages/contracts/src/service-catalog.js";
+import { ServiceCatalogSchema } from "@rovara-code/contracts";
 import { readFileSync } from "node:fs";
 import type { DockerCli } from "../../packages/worker/src/swebench/containers.js";
 

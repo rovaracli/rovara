@@ -8,7 +8,8 @@
 //             { action: "approve", changeId }                              a different admin approves the waiting request, signed in within the last 10 minutes (REAUTH_REQUIRED otherwise);
 //             { action: "cancel", changeId }                               withdraws the waiting request (its proposer, or any admin).
 // A loosening and an approval need a sign-in within the last 10 minutes, like the other company safeguards. The rules and the transaction are design-review/company.ts. Answers are fixed words, booleans, numbers and ids.
-import { featureEnabled, agentXError, DesignReviewCompanyBodySchema, DESIGN_REVIEW_COMPANY_PATH, type DesignReviewCompanyBody, type DesignReviewCompanyState, type OrgId } from "@agentx/contracts";
+import { featureEnabled } from "@agentx/cloud-contracts";
+import { agentXError, DesignReviewCompanyBodySchema, DESIGN_REVIEW_COMPANY_PATH, type DesignReviewCompanyBody, type DesignReviewCompanyState, type OrgId } from "@rovara-code/contracts";
 import { secondPersonTier0Authority } from "../../lessons/tier0-authority.js";
 import { readCompanyAdminActorConditions } from "../../org/second-person-evidence.js";
 import { sameId } from "../../lessons/types.js";

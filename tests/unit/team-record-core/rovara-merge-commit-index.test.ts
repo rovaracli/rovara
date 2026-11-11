@@ -4,7 +4,8 @@
 import { randomUUID } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it, vi } from "vitest";
-import { INDEX_EXPIRY_ATTRIBUTE, githubInstallationKey, githubMemberKey, githubRepoProjectKey, developerOrgKey, orgMemberKey, projectMemberKey, projectRevisionKey, type OrgId } from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, githubMemberKey, projectMemberKey, projectRevisionKey, type OrgId } from "@rovara-code/contracts";
+import { githubInstallationKey, githubRepoProjectKey, developerOrgKey, orgMemberKey } from "@agentx/cloud-contracts";
 import { createTeamRecordRuntime } from "../../../packages/broker/src/team-record/runtime.js";
 import { SdkUnavailableError } from "../../../packages/broker/src/team-record/aws-adapters.js";
 import { createRovaraPullRequestIndex } from "../../../packages/broker/src/rovara-code/rovara-pull-request-index.js";

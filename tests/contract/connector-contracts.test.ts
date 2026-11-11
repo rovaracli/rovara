@@ -1,13 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  ConnectorCallRequestSchema,
-  ConnectorCatalogSchema,
-  ConnectorResultSchema,
-  JIRA_PROJECT_TOOL_ACCESS,
-  SlackThreadWorkspaceResultSchema,
-  ThreadConnectorSchema,
-  ToolApprovalSchema,
-} from "../../packages/contracts/src/index.js";
+import { ConnectorCallRequestSchema, ConnectorCatalogSchema, ConnectorResultSchema, JIRA_PROJECT_TOOL_ACCESS, SlackThreadWorkspaceResultSchema, ThreadConnectorSchema, ToolApprovalSchema } from "@rovara-code/contracts";
 
 const hash = "a".repeat(64);
 

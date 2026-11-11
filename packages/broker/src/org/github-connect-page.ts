@@ -3,7 +3,8 @@ import { SERVER_PAGE_ICON, serverPageCss } from "@agentx/design-tokens";
 // callback answers with one of these. Every value that came from GitHub or from a name a person chose is escaped; the policy allows
 // only this page's own style and a form back to the same origin. Nothing here is a secret: the confirmation token travels in a cookie.
 import { randomBytes } from "node:crypto";
-import { GITHUB_INSTALLATION_TAKEN_MESSAGE, githubInstallRequestCopy } from "@agentx/contracts";
+import { GITHUB_INSTALLATION_TAKEN_MESSAGE } from "@rovara-code/contracts";
+import { githubInstallRequestCopy } from "@agentx/cloud-contracts";
 import { escapeHtml, safeResponse, type WebResponse } from "../aws/web-session.js";
 
 export type ConnectPageKind = "confirm" | "connected" | "connected_trial_used" | "cancelled" | "requested" | "not_linked" | "not_yours" | "not_allowed" | "unattributed" | "taken" | "expired";

@@ -1,9 +1,5 @@
 import { createHash } from "node:crypto";
-import {
-  canonicalJson, E2E_MODEL_CHANNEL_SCHEMA_VERSION, Ec2RuntimeBindingSchema, ProjectSetupRunnerEnvironmentSchema, ProjectSetupRunnerToolchainSchema, type Ec2RuntimeBinding,
-  E2ERegisteredRuntimeSchema, E2ERuntimeCapabilityDescriptorSchema, WEB_API_NETWORK_POLICY_DIGEST, WEB_API_RUNTIME_PROFILE_ID,
-  e2eRuntimeCapabilityDigest, webApiProposalQualifiesAgent, type E2ERegisteredRuntime, type E2ERuntimeCapabilityDescriptor, type WebApiRuntimeInstallProposal,
-} from "@agentx/contracts";
+import { canonicalJson, E2E_MODEL_CHANNEL_SCHEMA_VERSION, Ec2RuntimeBindingSchema, ProjectSetupRunnerEnvironmentSchema, ProjectSetupRunnerToolchainSchema, type Ec2RuntimeBinding, E2ERegisteredRuntimeSchema, E2ERuntimeCapabilityDescriptorSchema, WEB_API_NETWORK_POLICY_DIGEST, WEB_API_RUNTIME_PROFILE_ID, e2eRuntimeCapabilityDigest, webApiProposalQualifiesAgent, type E2ERegisteredRuntime, type E2ERuntimeCapabilityDescriptor, type WebApiRuntimeInstallProposal } from "@rovara-code/contracts";
 import { ROVARA_HTTP_ENGINE_DESCRIPTOR } from "@agentx/verifier";
 import { z } from "zod";
 

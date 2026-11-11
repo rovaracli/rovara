@@ -1,10 +1,5 @@
 import { createHash } from "node:crypto";
-import {
-  E2EModelRouteDefinitionSchema, E2E_AGENT_ELIGIBLE_MODELS, E2E_AGENT_RECOMMENDED_MODELS, E2E_AGENT_UNAVAILABLE_REASONS, E2E_DEFAULT_MODEL_ROUTE_ID, E2E_MODEL_ROUTE_CHANGED_REAPPROVE,
-  E2E_MODEL_ROUTE_DEFAULT_BUDGETS, E2E_MODEL_SCRIPTED_ROUTE_PREFIX, KEYED_MODEL_PROVIDERS, MODEL_PROVIDERS, SECRET_ARN_PATTERN, canonicalJson, e2eAgentModelsFor, e2eModelRouteRevision,
-  e2eModelRouteRevisionNumber, eligibleE2EAgentModel, isKeyedModelProvider,
-  type E2EModelRouteDefinition, type EligibleE2EAgentModel, type ModelProvider,
-} from "@agentx/contracts";
+import { E2EModelRouteDefinitionSchema, E2E_AGENT_ELIGIBLE_MODELS, E2E_AGENT_RECOMMENDED_MODELS, E2E_AGENT_UNAVAILABLE_REASONS, E2E_DEFAULT_MODEL_ROUTE_ID, E2E_MODEL_ROUTE_CHANGED_REAPPROVE, E2E_MODEL_ROUTE_DEFAULT_BUDGETS, E2E_MODEL_SCRIPTED_ROUTE_PREFIX, KEYED_MODEL_PROVIDERS, MODEL_PROVIDERS, SECRET_ARN_PATTERN, canonicalJson, e2eAgentModelsFor, e2eModelRouteRevision, e2eModelRouteRevisionNumber, eligibleE2EAgentModel, isKeyedModelProvider, type E2EModelRouteDefinition, type EligibleE2EAgentModel, type ModelProvider } from "@rovara-code/contracts";
 
 /**
  * The route of the AI browser-test agent that an installation's worker settings give (M1.4 Tasks 4.2 and 4.3a), and the check the worker makes of an admission's route

@@ -4,7 +4,7 @@
 //   AGENTS.md and the Copilot file: a sentence under a "Team lessons" heading.   CLAUDE.md: Claude Code's import line, `@.rovara/lessons.md` (a missing file is harmless: an import of a path that is not there is skipped).
 //   AGENTS.md is created only when the repository has no agent instructions file at all. A symbolic link is never written to (its target is where the pointer belongs).
 // Not done here, on purpose: Cursor rules (`@file` inside a rule) and Kiro steering (`#[[file:...]]`). Their syntax was not checked against the tools' docs in this lane, so nothing is written for them (see the lane report).
-import { LESSON_FILE_PATH, LESSON_FILE_POINTER_PATHS } from "@agentx/contracts";
+import { LESSON_FILE_PATH, LESSON_FILE_POINTER_PATHS } from "@rovara-code/contracts";
 
 export type PointerPath = (typeof LESSON_FILE_POINTER_PATHS)[number];
 export const POINTER_SENTENCE = `Before you change code in this repository, read \`${LESSON_FILE_PATH}\`: it holds lessons this team has already learned from its own reviews and commits.`;

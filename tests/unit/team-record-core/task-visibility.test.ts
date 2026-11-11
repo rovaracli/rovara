@@ -1,6 +1,6 @@
 // Who may read the Team record's rows about a task: its Plan 5 visibility (session shares + the People list), never the C1 Slack-channel flag `task.shared` (design 4.4.2).
 import { describe, expect, it } from "vitest";
-import { agentSessionKey } from "@agentx/contracts";
+import { agentSessionKey } from "@rovara-code/contracts";
 import { taskKey } from "../../../packages/broker/src/developer/task-records.js";
 import { SHARED_WITH_MAX, resolveTaskVisibility } from "../../../packages/broker/src/lessons/task-visibility.js";
 import { ARJUN, MIA, ORG_A, ORG_B, PRIYA, OLA, sessionWorld } from "../../support/agent-session-world.js";

@@ -1,7 +1,7 @@
 // Enterprise foundations I2/I1 (controller default, pending the owner's answer): starting an audit export needs a sign-in made within the last few minutes (the rule of the other
 // high-risk actions, `isFreshSignIn`). An export is the whole log in one file, and the Auditor, who exists to read it, signs in through the company's provider, so a stolen or
 // long-running session cannot pull it out unnoticed. Reading records and status, and fetching an export that is ready, do not need it.
-import { agentXError } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
 import { isFreshSignIn, type SessionRecord } from "../../developer/store.js";
 import { getSignIn } from "./authentication.js";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "./types.js";

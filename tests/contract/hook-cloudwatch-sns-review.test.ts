@@ -2,13 +2,13 @@
 // and where the host is built. M-2: a delivery is believed only while the hook's AWS account is still one the org connected (read now), and removing that connection turns the hooks of
 // the account off.
 import { afterEach, describe, expect, it } from "vitest";
-import { HOOK_TENANT_SCHEMAS } from "../../packages/contracts/src/event-hooks.js";
+import { HOOK_TENANT_SCHEMAS } from "@rovara-code/contracts";
 import { disableHooksOfAccount, type HookStore } from "../../packages/broker/src/triggers/hooks.js";
 import { cloudwatchProvider } from "../../packages/broker/src/triggers/providers/cloudwatch-sns.js";
 import { SnsCertMemory, parseSnsMessage, snsHostOfTopic, verifySnsMessage } from "../../packages/broker/src/triggers/sns-verify.js";
 import { OrgConnectionStore } from "../../packages/broker/src/connections/store.js";
 import { OrgSecrets } from "../../packages/broker/src/connections/org-secrets.js";
-import type { HookRecord } from "@agentx/contracts";
+import type { HookRecord } from "@rovara-code/contracts";
 import { HOOK_1, LINEAR_TENANT, ORG_A, ORG_B, setupHookWorld } from "../support/hook-fixtures.js";
 import { START } from "../support/chain-run-world.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import type { E2EWorkflowAdmissionRef } from "@agentx/contracts";
+import type { E2EWorkflowAdmissionRef } from "@rovara-code/contracts";
 import { createWorkflowE2EAdmissionAgentStepsReader, createWorkflowE2EAdmissionSchemaReader } from "../../packages/broker/src/aws/workflow-e2e-admission-schema.js";
 
 const sha = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");

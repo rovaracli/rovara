@@ -1,5 +1,5 @@
 // The words of Settings > Company rules. Fixed text; what the server says (a refusal, a name, a note, a rule's own text) is shown through VisibleText where it appears.
-import type { CompanyRulesVersion } from "@agentx/contracts/web";
+import type { CompanyRulesVersion } from "@agentx/cloud-contracts/web";
 export const T = {
  TITLE: "Company rules",
  INTRO: "Company rules are the standing instructions your company gives every Rovara agent. Every agent on every step of every task reads them, in every project. Each rule is Required (the agent must never break it) or Preferred (the agent follows it unless the task can't be done that way, and says so). Rules are optional: with none, agents follow Rovara's rules and each project's How we work.",

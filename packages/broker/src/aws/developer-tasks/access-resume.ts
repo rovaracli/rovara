@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { DeleteCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { agentXError, type DeveloperTaskView, WorkflowSnapshotSchema } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
+import { type DeveloperTaskView, WorkflowSnapshotSchema } from "@agentx/cloud-contracts";
 import { aiToolTurn, taskKey } from "../../developer/task-records.js";
 import { WORKFLOW_DISPATCH_PK, hashJson, isConditional, workflowDispatchItem, type WorkflowDispatchRecord } from "../broker-shared.js";
 import type { DeveloperCaller } from "../developer-routes.js";

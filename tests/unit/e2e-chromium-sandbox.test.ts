@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ChromiumSandboxAttestationSchema, evaluateChromiumSandbox } from "../../packages/contracts/src/index.js";
+import { ChromiumSandboxAttestationSchema, evaluateChromiumSandbox } from "@rovara-code/contracts";
 
 const runId = "7f1d1c6e-4f43-4d5c-9b8f-2a6f3c0a9d11";
 const browser = { pid: 40, nsPidDepth: 1, seccompFilters: 1, uidMap: "0 0 4294967295" };

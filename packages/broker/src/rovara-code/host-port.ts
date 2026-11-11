@@ -7,7 +7,8 @@
 // Two small things that the CodeHost port does not carry yet live here, named, so the gap is visible and not silent:
 //   - `isTeamMember`: whether a person is in a team of the repository's organization (CODEOWNERS teams). GitHub-only today; absent means "unknown", which fails closed.
 //   - (P6 closed the rate-limit gap: a host's limit is the neutral `HostRateLimitError`, which GitHub's class extends.)
-import { hostRateLimitRetryAt, type ChangeRequestRef, type ChangeRequestStatus, type CheckRunner, type CodeHost, type HostScope, type OrgId, type Review } from "@agentx/contracts";
+import { hostRateLimitRetryAt, type ChangeRequestRef, type ChangeRequestStatus, type CheckRunner, type CodeHost, type HostScope, type OrgId, type Review } from "@rovara-code/contracts";
+import { hostTypeOfAccountKind } from "../plugins/code-host/neutral-words.js";
 import type { PullRequestReview } from "../github-pull-status.js";
 
 /** One repository of a task's project, as the consumers read it. */
@@ -39,7 +40,7 @@ export const changeRequestRef = (repositoryUrl: string, number: number): ChangeR
  */
 export function approvalReviewsOf(reviews: ChangeRequestStatus["reviews"] | readonly Review[]): PullRequestReview[] {
   return reviews.filter((review) => review.reviewer.hostUserId !== undefined || review.state !== "APPROVED").map((review) => ({
-    githubUserId: review.reviewer.hostUserId ?? `login:${review.reviewer.login.toLowerCase()}`, login: review.reviewer.login, userType: review.accountType, state: review.state,
+    githubUserId: review.reviewer.hostUserId ?? `login:${review.reviewer.login.toLowerCase()}`, login: review.reviewer.login, userType: hostTypeOfAccountKind(review.accountType) ?? "", state: review.state,
     commitId: review.revision, submittedAt: review.submittedAt,
   }));
 }

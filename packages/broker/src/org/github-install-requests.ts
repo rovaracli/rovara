@@ -14,29 +14,8 @@
 // Lambda that died after the commit).
 import { randomUUID } from "node:crypto";
 import { DeleteCommand, GetCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  GITHUB_INSTALL_NOTICE_OUTBOX_PK,
-  GITHUB_INSTALL_REQUEST_QUEUE_PK,
-  GITHUB_INSTALL_REQUEST_TTL_MS,
-  agentXError,
-  githubAuditKey,
-  githubDeliveryKey,
-  githubInstallNoticeOutboxKey,
-  githubInstallRequestKey,
-  githubInstallRequestQueueKey,
-  githubInstallationEverBoundKey,
-  githubInstallationKey,
-  orgGithubInstallRequestKey,
-  orgGithubInstallationKey,
-  orgMemberKey,
-  orgMetaKey,
-  orgPk,
-  type GithubInstallNoticeOutboxRecord,
-  type GithubInstallRequestRecord,
-  type GithubInstallationRecord,
-  type OrgId,
-  type OrgRole,
-} from "@agentx/contracts";
+import { GITHUB_INSTALL_NOTICE_OUTBOX_PK, GITHUB_INSTALL_REQUEST_QUEUE_PK, GITHUB_INSTALL_REQUEST_TTL_MS, githubAuditKey, githubDeliveryKey, githubInstallNoticeOutboxKey, githubInstallRequestKey, githubInstallRequestQueueKey, githubInstallationEverBoundKey, githubInstallationKey, orgGithubInstallRequestKey, orgGithubInstallationKey, orgMemberKey, orgMetaKey, type GithubInstallNoticeOutboxRecord, type GithubInstallRequestRecord, type GithubInstallationRecord, type OrgRole } from "@agentx/cloud-contracts";
+import { agentXError, orgPk, type OrgId } from "@rovara-code/contracts";
 import { auditGithubConnected } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, tryAuditEvent } from "../audit/outbox.js";

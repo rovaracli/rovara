@@ -6,6 +6,9 @@ export default defineConfig({
   assetsInlineLimit: 0, outDir: "dist/app", manifest: true,
   rollupOptions: {
    preserveEntrySignatures: "allow-extension",
+   // Rovara Code's built contracts (vendor/rovara-code, reached through @rovara-code/contracts) are side-effect free, as Cloud's own contracts package says it is in its package.json. Code's
+   // package.json does not (it is read only, convergence W0-3), so say it here: otherwise every module of Code's barrel, the Node-only ones and their `node:` imports included, would be kept.
+   treeshake: { moduleSideEffects: (id: string) => !/[\\/]vendor[\\/]rovara-code[\\/]packages[\\/]contracts[\\/]dist[\\/]/u.test(id) },
    output: {
     // RULING Q42: preserve CSP initialization order and keep shared React out of deferred Markdown.
     strictExecutionOrder: true,

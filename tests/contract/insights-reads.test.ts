@@ -4,8 +4,9 @@
 // the per-person spend filter, the company boundary, the grant writer's owner/admin check, its browser-only rule, its idempotency and its audit.
 import { QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
-import { agentSessionKey, liveSessionKey, orgMemberKey, spendCounterKey, spendRequestKey, openSpendRequestsKey, type OrgId, type SessionStatus } from "../../packages/contracts/src/index.js";
-import { InsightsAccessReaderSchema, InsightsOverviewSchema, InsightsSpendSchema, InsightsStuckSchema } from "../../packages/contracts/src/app-insights.js";
+import { orgMemberKey, spendCounterKey, spendRequestKey, openSpendRequestsKey } from "@agentx/cloud-contracts";
+import { agentSessionKey, liveSessionKey, type OrgId, type SessionStatus } from "@rovara-code/contracts";
+import { InsightsAccessReaderSchema, InsightsOverviewSchema, InsightsSpendSchema, InsightsStuckSchema } from "@agentx/cloud-contracts";
 import { routeInsights, type InsightsDependencies } from "../../packages/broker/src/insights/routes.js";
 import { grantHolds } from "../../packages/broker/src/insights/scope.js";
 import { chosenNameKey } from "../../packages/broker/src/developer/chosen-name.js";

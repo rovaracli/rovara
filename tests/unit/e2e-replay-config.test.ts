@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { APPLICATION_E2E_TEST_PATH } from "../../packages/contracts/src/e2e-application-execution-plan.js";
+import { APPLICATION_E2E_TEST_PATH } from "@rovara-code/contracts";
 import { E2E_REPLAY_EXECUTOR_NAME, E2E_REPLAY_EXECUTOR_VERSION, expectedE2EApplicationConfigDigest, renderE2EApplicationDeclaration } from "../../packages/verifier/src/application-templates.js";
 
 // M1.4 Task 4.6b, test 20: the replay config's digest is pinned to the pinned runner's own `resolveConfig`, and the digests every other kind of group already had do not move (stored

@@ -2,5 +2,5 @@
   "extends": "../tsconfig.base.json",
   "compilerOptions": { "rootDir": ".", "outDir": "dist" },
   "include": ["bin/**/*.ts", "lib/**/*.ts"],
-  "references": [{ "path": "../packages/contracts" }, { "path": "../packages/model-proxy" }, { "path": "../packages/model-runtime" }]
+  "references": [{ "path": "../packages/cloud-contracts" }, { "path": "../vendor/rovara-code/packages/contracts" }, { "path": "../packages/model-proxy" }, { "path": "../packages/model-runtime" }]
 }

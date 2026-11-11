@@ -1,7 +1,8 @@
 // Test support for the customer-owned bundle deployer: an in-memory bucket with object versions and delete markers, parameter store and CloudFormation.
 import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
-import { BUNDLE_PUBLIC_DEPLOYED_KINDS, BundleManifestSchema, approvedFileKey, bundleApprovalKey, bundleTrustParameter, environmentStackName, operatorAccessStateParameter, sha256OfBytes, type ApprovalRecord } from "@agentx/contracts";
+import { BUNDLE_PUBLIC_DEPLOYED_KINDS, BundleManifestSchema, approvedFileKey, bundleApprovalKey, bundleTrustParameter, operatorAccessStateParameter, sha256OfBytes, type ApprovalRecord } from "@agentx/cloud-contracts";
+import { environmentStackName } from "@rovara-code/contracts";
 import { runDeployer, type DeployerPorts, type StackState } from "../../packages/broker/src/bundle-deployer/deploy.js";
 import type { BuiltBundle } from "./bundle-fixture.js";
 

@@ -1,7 +1,8 @@
-import * as Web from "../../packages/contracts/src/web.js";
+import * as Web from "@agentx/cloud-contracts/web";
 import { expect, it } from "vitest";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { AgentXError, errorStatus, agentGuardrailsKey, orgMemberKey, orgMetaKey, developerOrgKey, DEFAULT_AGENT_GUARDRAILS, orgProjectCatalogKey, projectAiKey, projectMetaKey } from "@agentx/contracts";
+import { AgentXError, errorStatus, agentGuardrailsKey, DEFAULT_AGENT_GUARDRAILS, orgProjectCatalogKey, projectMetaKey } from "@rovara-code/contracts";
+import { orgMemberKey, orgMetaKey, developerOrgKey, projectAiKey } from "@agentx/cloud-contracts";
 import { routeDeveloperRequest, type DeveloperCaller, type DeveloperRouteDependencies } from "../../packages/broker/src/aws/developer-routes.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 const A = "org_aaaaaaaaaaaaaaaaaaaa", B = "org_bbbbbbbbbbbbbbbbbbbb";

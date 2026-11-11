@@ -12,7 +12,7 @@ import { cleanForLearning, globToRegExp } from "./guards.js";
 import type { AccessCheckPort } from "../team-record/access-port.js";
 import { readVisible, type LessonLog } from "./read-visible.js";
 import type { IdentitySet, Lesson } from "./types.js";
-import type { LoadReport } from "@agentx/contracts";
+import type { LoadReport } from "@rovara-code/contracts";
 
 const DAY = 86_400_000;
 export const REVERT_WINDOW_MS = 14 * DAY;

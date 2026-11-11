@@ -1,7 +1,8 @@
 // Member removal (v1.1), S7: the removal's last step. One transaction ends the removal record (`DONE`, or `CANCELLED_REJOINED` when the person came back before the
 // hand-offs ran), deletes the marker and writes the one `member.removal_completed` audit item. Conditional on the record still being `STARTED`, so it is written once per removal.
 import { TransactWriteCommand, DeleteCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
-import { memberRemovalRecordKey, type OrgId, type OrgKey } from "@agentx/contracts";
+import { memberRemovalRecordKey } from "@agentx/cloud-contracts";
+import { type OrgId, type OrgKey } from "@rovara-code/contracts";
 import { auditMemberRemovalCompleted } from "../../audit/events.js";
 import { flushAuditEvents } from "../../audit/flush.js";
 import { auditPending, tryAuditEvent, type AuditDeps, type AuditRuntime } from "../../audit/outbox.js";

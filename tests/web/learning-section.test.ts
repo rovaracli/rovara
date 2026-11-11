@@ -4,7 +4,7 @@ import { act, cleanup, screen, fireEvent, waitFor, within } from "@testing-libra
 import { MemoryRouter, Routes, Route } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { userEvent } from "@testing-library/user-event";
-import { LearningAcceptBodySchema, LearningDismissBodySchema, LearningReopenBodySchema, LearningRuleRemoveBodySchema, LEARNING_TEXT_MAX } from "@agentx/contracts/web";
+import { LearningAcceptBodySchema, LearningDismissBodySchema, LearningReopenBodySchema, LearningRuleRemoveBodySchema, LEARNING_TEXT_MAX } from "@agentx/cloud-contracts/web";
 import { ProjectScreen } from "../../packages/ui/src/screens/project/ProjectScreen.js";
 import { AppHostProvider } from "../../packages/ui/src/host.js";
 import { Announcer } from "../../packages/ui/src/design/Announcer.js";

@@ -1,4 +1,4 @@
-import { slackLimitPk } from "../../packages/contracts/src/org-scoped-keys.js";
+import { slackLimitPk } from "@rovara-code/contracts";
 import { TEST_ORG } from "../support/orgs.js";
 import { TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it, vi } from "vitest";

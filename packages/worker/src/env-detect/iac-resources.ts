@@ -3,7 +3,7 @@
 // expect them find them. The existing `iac.ts` only says which kind of IaC the repository uses; this file reads what is in it.
 // Reads only: a template is data, never deployed, and no Terraform or CDK command is run. YAML is read under `safe-yaml.ts`'s limits. A name is kept only when it is written as a plain identifier (letters, digits,
 // `.`, `_`, `-`); anything built from a function or a variable falls back to the template's own id for the resource. The key schema is attribute NAMES and the types S, N or B.
-import { looksLikeSecretValue } from "@agentx/contracts";
+import { looksLikeSecretValue } from "@rovara-code/contracts";
 import { callArguments, candidate, DEPENDENCY_SKIP_DIRS, mergeCandidates, MAX_RESOURCES } from "./dependency-candidates.js";
 import { ownEntries, ownGet, pairOf, parseSafeYaml, YAML_REFUSAL_WORDS } from "./safe-yaml.js";
 import { lineOf, type DependencyCandidate, type DependencyKeyAttribute, type DependencyResource, type Detector, type RepositoryReader } from "./types.js";

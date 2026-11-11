@@ -1,7 +1,7 @@
 // Company AI sources (Plan 3 Task 24b, fix round 1): taking a source out of the world. A source lives in three places, the org's record, the model proxy
 // (its models and key) and, for an endpoint, an egress item whose approved host is in the cell-wide union. Releasing one is the egress release and the
 // proxy removal; both can be repeated, so a removal that died half-way is finished by running this again. Removing the record entry is the caller's.
-import { AgentXError, agentXError, type OrgId } from "@agentx/contracts";
+import { AgentXError, agentXError, type OrgId } from "@rovara-code/contracts";
 import type { ModelAccess } from "../model-proxy/access.js";
 import { putEgressDomains, type EgressDomainsDependencies } from "../org/egress-domains.js";
 import type { ModelSourceStore } from "./store.js";

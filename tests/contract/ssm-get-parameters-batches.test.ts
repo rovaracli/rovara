@@ -1,9 +1,9 @@
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { SSM_GET_PARAMETERS_MAX_NAMES, getParametersInBatches } from "../../packages/contracts/src/ssm-parameters.js";
+import { SSM_GET_PARAMETERS_MAX_NAMES, getParametersInBatches } from "@rovara-code/contracts";
 import { readWorkerSettings } from "../../packages/broker/src/aws/session-steps.js";
-import { BOOT_STAGE2_SHA256_PARAMETER, MODEL_PROXY_URL_PARAMETER, WORKER_SETTING_PARAMETERS } from "../../packages/contracts/src/session.js";
+import { BOOT_STAGE2_SHA256_PARAMETER, MODEL_PROXY_URL_PARAMETER, WORKER_SETTING_PARAMETERS } from "@rovara-code/contracts";
 
 /** SSM GetParameters as it behaves: more than 10 names is a ValidationException; unknown names come back in InvalidParameters. */
 function fakeSsm(store: Record<string, string>) {

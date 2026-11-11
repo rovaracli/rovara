@@ -5,7 +5,8 @@
 // The pure parts (state, rendering, the link) are in ../../spec/; the effects here are the same ones the workflow already uses (a system-started run with its own conversation, the broker's publish).
 import { createHash } from "node:crypto";
 import { PutCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { AgentXError, SPEC_REVIEW_REQUIREMENTS_MAX, SpecReviewInputSchema, agentXError, metaRepositoryOf, specStripHidden, workflowRequestId, type SpecFile, type SpecKind, type SpecReviewInput, type WorkflowSnapshot } from "@agentx/contracts";
+import { AgentXError, SPEC_REVIEW_REQUIREMENTS_MAX, SpecReviewInputSchema, agentXError, metaRepositoryOf, specStripHidden, workflowRequestId, type SpecFile, type SpecKind, type SpecReviewInput } from "@rovara-code/contracts";
+import { type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { developerTaskIdentity, taskKey, tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../../developer/task-records.js";
 import { specChoiceItemOf } from "../../spec/decision-item.js";
 import type { DecisionItem } from "../../decisions/project.js";

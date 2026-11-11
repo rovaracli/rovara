@@ -1,7 +1,7 @@
 // Meta lane F, fix round 1 (Opus review): the lease is fenced by its holder (I1), a ticket's body survives a cut-short direct start (M1), the list reply parses as its contract (M2),
 // and the waiting-list size is one constant (M2). The probes of the review, turned round: each asserts the fixed behaviour.
 import { describe, expect, it } from "vitest";
-import { agentXError, intakeItemIdOf, IntakeWaitingListSchema, INTAKE_MAX_WAITING_PER_PROJECT, type CodeIntentRequest, type OrgId } from "@agentx/contracts";
+import { agentXError, intakeItemIdOf, IntakeWaitingListSchema, INTAKE_MAX_WAITING_PER_PROJECT, type CodeIntentRequest, type OrgId } from "@rovara-code/contracts";
 import { ingestIntake, startWaitingIntake, type IntakeCandidate, type IntakePorts } from "../../packages/broker/src/intake/engine.js";
 import { readIntakeItem, INTAKE_START_LEASE_MS, INTAKE_MAX_WAITING_PER_PROJECT as STORE_MAX } from "../../packages/broker/src/intake/store.js";
 import { INTAKE_PATH, routeIntakeRequest } from "../../packages/broker/src/intake/routes.js";

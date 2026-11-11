@@ -5,7 +5,7 @@ import {
   UpdateCommand,
   type TransactWriteCommandInput,
 } from "@aws-sdk/lib-dynamodb";
-import { TRACKING_COALESCE_SECONDS, TRACKING_GATE_SECONDS, TRACKING_HEARTBEAT_MINUTES, TRACKING_MAX_ROWS } from "@agentx/contracts";
+import { TRACKING_COALESCE_SECONDS, TRACKING_GATE_SECONDS, TRACKING_HEARTBEAT_MINUTES, TRACKING_MAX_ROWS } from "@rovara-code/contracts";
 
 type TransactItems = NonNullable<TransactWriteCommandInput["TransactItems"]>;
 type DocumentClient = { send(command: unknown): Promise<unknown> };

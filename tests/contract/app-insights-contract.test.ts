@@ -1,11 +1,8 @@
 // Insights (srv/insights-reads): the shapes the browser reads and sends. Strict for what the server answers; the readers keep what a newer server adds and read a new enum value as "unknown".
 import { describe, expect, it } from "vitest";
-import {
-  InsightsAccessBodySchema, InsightsAccessReaderSchema, InsightsAccessSchema, InsightsFlowReaderSchema, InsightsFlowSchema, InsightsOverviewReaderSchema, InsightsOverviewSchema, InsightsShippedReaderSchema,
-  InsightsShippedSchema, InsightsSpendReaderSchema, InsightsSpendSchema, InsightsStuckReaderSchema, InsightsStuckSchema,
-} from "../../packages/contracts/src/app-insights.js";
-import * as web from "../../packages/contracts/src/web.js";
-import * as barrel from "../../packages/contracts/src/index.js";
+import { InsightsAccessBodySchema, InsightsAccessReaderSchema, InsightsAccessSchema, InsightsFlowReaderSchema, InsightsFlowSchema, InsightsOverviewReaderSchema, InsightsOverviewSchema, InsightsShippedReaderSchema, InsightsShippedSchema, InsightsSpendReaderSchema, InsightsSpendSchema, InsightsStuckReaderSchema, InsightsStuckSchema } from "@agentx/cloud-contracts";
+import * as web from "@agentx/cloud-contracts/web";
+import * as barrel from "@agentx/cloud-contracts";
 
 const id = (digit: string) => digit.repeat(64);
 const at = "2026-11-11T09:00:00.000Z";

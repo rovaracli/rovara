@@ -1,6 +1,6 @@
 // Index only final, nonerasable canonical metadata. Postings survive erasure and shredding.
 import { createHash } from "node:crypto";
-import type { AuditRecordV1 } from "@agentx/contracts";
+import type { AuditRecordV1 } from "@agentx/cloud-contracts";
 export type AuditIndexDimension = "action" | "actor" | "target";
 export const AUDIT_INDEX_COVERAGE = "FILTER#v1#COVERAGE";
 export function auditFramed(parts: readonly string[]): Buffer {

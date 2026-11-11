@@ -5,12 +5,10 @@
 // The unit-level cases (every payload at every plant site, the merge checks, the Proof line) are in tests/unit/design-review-poisoning.test.ts.
 import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  PacketDeliverySchema, UNDERSTAND_ARTIFACT_NAME, WorkflowDesignReviewSchema, projectPlaybookKey, readDesignMeta, reviewerMessagesOf, type DesignCitation, type IntentAssessment, type WorkflowDesignReview,
-} from "../../packages/contracts/src/index.js";
+import { PacketDeliverySchema, UNDERSTAND_ARTIFACT_NAME, WorkflowDesignReviewSchema, projectPlaybookKey, readDesignMeta, reviewerMessagesOf, type DesignCitation, type IntentAssessment, type WorkflowDesignReview } from "@rovara-code/contracts";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
-import { builtinSettingsKey } from "../../packages/contracts/src/org-scoped-keys.js";
-import { DESIGN_REVIEW_DEFAULT_SETTING } from "../../packages/contracts/src/design-review.js";
+import { builtinSettingsKey } from "@rovara-code/contracts";
+import { DESIGN_REVIEW_DEFAULT_SETTING } from "@rovara-code/contracts";
 import { cardOfItem, detailsOfItem } from "../../packages/broker/src/decisions/project.js";
 import { designApproveItem, designCardFactsOf } from "../../packages/broker/src/design-review/card-source.js";
 import { applyPlannerResolve } from "../../packages/broker/src/design-review/resolve-answer.js";

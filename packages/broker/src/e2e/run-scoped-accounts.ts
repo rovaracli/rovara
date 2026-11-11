@@ -28,7 +28,7 @@
 //   - one account failing to provision revokes the ones already made (and the one that was being made) and refuses the round's media;
 //   - nothing secret is kept on a lease: the secrets a provisioner returns go to the caller's redactor list and nowhere else; refs are short plain identifiers.
 import { z } from "zod";
-import { provisionerIsRunScoped, TestEnvAccountSchema, type TestEnvAccount } from "@agentx/contracts";
+import { provisionerIsRunScoped, TestEnvAccountSchema, type TestEnvAccount } from "@rovara-code/contracts";
 
 /** A lease may outlive its round by at most this long (design 3.4: round end + 15 minutes). */
 export const RUN_SCOPED_GRACE_MS = 15 * 60_000;

@@ -2,7 +2,7 @@
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { LIGHT_CRITIC_PROMPT_ID, REVIEWER_ROLES, ReviewerRunSchema, readDesignMerge, readDesignResolve, readDesignReview } from "../../packages/contracts/src/index.js";
+import { LIGHT_CRITIC_PROMPT_ID, REVIEWER_ROLES, ReviewerRunSchema, readDesignMerge, readDesignResolve, readDesignReview } from "@rovara-code/contracts";
 import { ALL_DESIGN_REVIEW_PROMPTS, CRITIC_LIGHT_PROMPT, MATERIAL_MARKER, MERGE_PROMPT, REVIEWER_PROMPTS, promptDigest, promptRecord, reviewerPromptFor } from "../../packages/broker/src/design-review/prompts/index.js";
 
 const root = process.cwd();

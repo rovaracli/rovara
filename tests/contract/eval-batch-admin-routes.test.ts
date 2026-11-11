@@ -2,7 +2,7 @@ import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
 import { issuer } from "../support/slack-broker.js";
 // Spec 052 Task 5: the admin routes of eval batches (FR-001, FR-003, FR-009, FR-010). Each is behind
 // the administrator claim and the administrator membership of the channel's project.
-import { slackBindingPk } from "../../packages/contracts/src/org-scoped-keys.js";
+import { slackBindingPk } from "@rovara-code/contracts";
 import { TEST_ORG } from "../support/orgs.js";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { swebenchDeploymentForTests } from "../support/eval-batch-admin.js";

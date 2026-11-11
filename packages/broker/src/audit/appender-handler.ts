@@ -5,7 +5,7 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { KMSClient } from "@aws-sdk/client-kms";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
-import { AuditEventInputSchema, type AuditEventInput } from "@agentx/contracts";
+import { AuditEventInputSchema, type AuditEventInput } from "@agentx/cloud-contracts";
 import { requiredEnvironment } from "../aws/lambda.js";
 import { appendEvent, type AppenderDeps } from "./appender.js";
 import { AuditKeyring } from "./keyring.js";

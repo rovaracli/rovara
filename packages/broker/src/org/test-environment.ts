@@ -14,31 +14,8 @@
 // is an ordinary approval. The caller (the confirmation page route) fences the two people's live authority in its own transaction; this module checks only what it is handed.
 import { createHash } from "node:crypto";
 import { DeleteCommand, GetCommand, PutCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  INDEX_EXPIRY_ATTRIBUTE,
-  SetupValueSourceSchema,
-  TestEnvProveReportSchema,
-  TestEnvironmentBodySchema,
-  TestEnvironmentSchema,
-  agentXError,
-  mediaTierAllowed,
-  projectAllows,
-  projectMetaKey,
-  projectPk,
-  testEnvApprovalRisk,
-  testEnvDigest,
-  testEnvIsProved,
-  testEnvLessSafeChanges,
-  testEnvProdDenyViolations,
-  type DecisionRisk,
-  type OrgId,
-  type ProjectRole,
-  type TestEnvLessSafeField,
-  type TestEnvironment,
-  type TestEnvironmentBody,
-  type TestEnvSeedTrust,
-  catalogEntryById, EDITION_ENV_VAR, type CompanyImageMirrorJob, type VerifiedCatalog,
-} from "@agentx/contracts";
+import { EDITION_ENV_VAR, type CompanyImageMirrorJob } from "@agentx/cloud-contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, SetupValueSourceSchema, TestEnvProveReportSchema, TestEnvironmentBodySchema, TestEnvironmentSchema, agentXError, mediaTierAllowed, projectAllows, projectMetaKey, projectPk, testEnvApprovalRisk, testEnvDigest, testEnvIsProved, testEnvLessSafeChanges, testEnvProdDenyViolations, type DecisionRisk, type OrgId, type ProjectRole, type TestEnvLessSafeField, type TestEnvironment, type TestEnvironmentBody, type TestEnvSeedTrust, catalogEntryById, type VerifiedCatalog } from "@rovara-code/contracts";
 import { auditOccurrence, auditProjectTestEnvChanged } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, tryAuditEvent, type AuditDeps, type TransactItem } from "../audit/outbox.js";

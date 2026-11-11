@@ -3,7 +3,7 @@ import {ProcessModelRefusal} from "./process-refusal.js";
 import {mergeProcessModelAuthorityChecks} from "./authority.js";
 import {z} from "zod";
 // Ordinary project turns share the task resolver, but freeze policy on their operation.
-import {STAGE_OPERATION_MAPPING,SlackUserIdSchema,canonicalModelName,AgentIdSchema,ResolvedRecipeSchema,builtinRecipe,recipeDigest,ROVARA_CODE_AGENT_ID,agentXError,type StageId,type OrgId,type ModelIdentifier,type AgentId,type ResolvedRecipe} from "@agentx/contracts";
+import { STAGE_OPERATION_MAPPING, SlackUserIdSchema, canonicalModelName, AgentIdSchema, ResolvedRecipeSchema, builtinRecipe, recipeDigest, ROVARA_CODE_AGENT_ID, agentXError, type StageId, type OrgId, type ModelIdentifier, type AgentId, type ResolvedRecipe } from "@rovara-code/contracts";
 import {resolveAgent,type AgentStore} from "../agents/store.js";
 import {loadStageModelSnapshot} from "./snapshot.js";
 import {prepareTaskModelPolicyPin,taskModelPolicyAdmissionChecks,parseTaskModelPolicyPin,type TaskModelPolicyPin} from "./task-pin.js";

@@ -1,7 +1,7 @@
 // TS-UX-1 (0.5.10) review fixes, through the whole broker: a migrate or seed command leaves the SETUP proposal only when a database dependency actually took it as its seed (I-1), the seed field shows and edits every
 // command and the audit line says what changed (I-2, M-4), and the role is checked before anything else is read (M-1).
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { TEST_ENV_DRAFT_RESULT_KEY, type TestEnvDraft } from "../../packages/contracts/src/index.js";
+import { TEST_ENV_DRAFT_RESULT_KEY, type TestEnvDraft } from "@rovara-code/contracts";
 import { SEED_LEFT_OUT_OF_SETUP_NOTE } from "../../packages/broker/src/test-env/seed-routing.js";
 import { MAYA, OMAR } from "../support/developer-task-broker.js";
 import { ENV, NAME, command, draftBody, draftOf, setupWizardBench, withSwitch, type Bench } from "../support/setup-wizard-testenv.js";

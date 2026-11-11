@@ -2,7 +2,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { controllerConfigFromEnv, legacyToolsHashOf, packageSecretName, registryFor, start, toolsHashOf } from "../../../packages/broker/src/mcp-host/main.js";
-import type { McpServerEntry, McpStdioSpec } from "@agentx/contracts";
+import type { McpServerEntry, McpStdioSpec } from "@rovara-code/contracts";
 import { legacyToolsHash, summariseProbe } from "../../../packages/broker/src/context-sources/mcp-servers.js";
 
 const ENV = {

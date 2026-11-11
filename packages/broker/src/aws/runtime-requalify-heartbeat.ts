@@ -1,8 +1,6 @@
 import { PutMetricDataCommand } from "@aws-sdk/client-cloudwatch";
 import { GetCommand, PutCommand, type DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
-import {
-  REQUALIFY_AGE_METRIC, REQUALIFY_PROFILE_ID, RequalifyLastSuccessSchema, RequalifyScheduleEnabledSchema, requalifyLastSuccessKey, requalifyScheduleEnabledKey,
-} from "@agentx/contracts";
+import { REQUALIFY_AGE_METRIC, REQUALIFY_PROFILE_ID, RequalifyLastSuccessSchema, RequalifyScheduleEnabledSchema, requalifyLastSuccessKey, requalifyScheduleEnabledKey } from "@rovara-code/contracts";
 import type { RequalifyStepsDependencies } from "./runtime-requalify-steps.js";
 
 /**

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { WEB_API_REQUIRED_PROBES, canonicalJson, e2eScenarioBundleDigest, webApiProbeRunId, type E2EScenarioBundle, type WebApiProbeEvidence } from "../../packages/contracts/src/index.js";
+import { WEB_API_REQUIRED_PROBES, canonicalJson, e2eScenarioBundleDigest, webApiProbeRunId, type E2EScenarioBundle, type WebApiProbeEvidence } from "@rovara-code/contracts";
 import { deriveWebApiProbeObservation, verifyWebApiProbeRecord } from "../../packages/verifier/src/web-api-probe-evidence.js";
 import { fixtureEvidence, fixtureProbeRuns, webApiChallenge, WEB_API_FIXTURE_NOW } from "../support/web-api-qualification.js";
 

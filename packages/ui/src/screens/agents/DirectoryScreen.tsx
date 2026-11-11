@@ -1,7 +1,7 @@
 import { Suspense, useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router";
-import { AgentIdSchema, AgentScopeSchema } from "@agentx/contracts/web";
+import { AgentIdSchema, AgentScopeSchema } from "@agentx/cloud-contracts/web";
 import { useAgents, useAgent, type AgentScope } from "../../api/agents.js";
 import { ApiError } from "../../api/errors.js";
 import { paths } from "../../paths.js";

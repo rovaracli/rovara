@@ -1,7 +1,7 @@
 import { chmod, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { evaluateWebApiProbeObservation } from "../../packages/contracts/src/index.js";
+import { evaluateWebApiProbeObservation } from "@rovara-code/contracts";
 import { installedExecutorSeccompProfilePath } from "../../packages/verifier/src/host/executor-seccomp.js";
 import { WEB_API_BUILD_IMAGE, createWebApiProbeRunner } from "../../packages/verifier/src/host/web-api-probe-runner.js";
 import { ciImage, ensureLocalImage } from "../support/ci-images.js";

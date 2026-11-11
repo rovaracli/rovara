@@ -1,7 +1,7 @@
 // Proof and test environment E13 (review I1, I2): the round's key through the REAL mintOperationKey and spend ledger. The proxy is asked for exactly the round's worst case, and the key is reserved on the ledger
 // (project, org and member scopes each hold the cap) before the grant is returned. A room smaller than the worst case refuses the round and leaves no hold behind.
 import { describe, expect, it } from "vitest";
-import { scopeKey, spendCounterKey, type BudgetScope } from "@agentx/contracts";
+import { scopeKey, spendCounterKey, type BudgetScope } from "@agentx/cloud-contracts";
 import { mintRoundKeyPort, startE2eRoundSpend } from "../../packages/broker/src/e2e/model-spend.js";
 import { admitWork, mintOperationKey } from "../../packages/broker/src/spend/admission.js";
 import { finalizeKey, type LedgerDependencies } from "../../packages/broker/src/spend/ledger.js";

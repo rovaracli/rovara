@@ -1,6 +1,6 @@
 // Company rules (lane exp/company-rules): the pure parts of the page, kept apart from the screen so they can be tested to the exact boundary. Counting follows the server (it folds white space and removes hidden characters,
 // then counts code points); the server still decides, this only says early what it will refuse. The wording of the block is `STANDING_INSTRUCTIONS_WORDING` from the web entry.
-import { COMPANY_RULES_APP_LIMITS, STANDING_INSTRUCTIONS_WORDING, type CompanyRuleView, type CompanyRulesDiff } from "@agentx/contracts/web";
+import { COMPANY_RULES_APP_LIMITS, STANDING_INSTRUCTIONS_WORDING, type CompanyRuleView, type CompanyRulesDiff } from "@agentx/cloud-contracts/web";
 
 export type Priority = CompanyRuleView["priority"];
 export interface DraftRule { id: string; text: string; priority: Priority }

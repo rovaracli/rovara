@@ -1,4 +1,4 @@
-import type { StageId } from "@agentx/contracts/web";
+import type { StageId } from "@agentx/cloud-contracts/web";
 /** One stage that ran on a model other than the one wanted (an entry of the task view's `modelFallbacks`). A stage a newer server added reads as "unknown". */
 export type ModelFallbackNote = { stage: StageId | "unknown"; used: string; wanted: string | null };
 export const STAGE_NAMES: Readonly<Record<StageId, string>> = { understand: "Understand", plan: "Plan", plan_check: "Plan check", build: "Build", code_review: "Code review", security_review: "Security review", pull_request: "Pull request" };

@@ -1,10 +1,6 @@
 import { describe, expect, it } from "vitest";
-import {
-  workflowPublicationContext,
-  workflowPublicationContextDigest,
-  type WorkerInvocation,
-  type WorkflowPublicationContextV1,
-} from "@agentx/contracts";
+import { workflowPublicationContext, type WorkerInvocation } from "@agentx/cloud-contracts";
+import { workflowPublicationContextDigest, type WorkflowPublicationContextV1 } from "@rovara-code/contracts";
 
 const sha = (character: string) => character.repeat(40);
 

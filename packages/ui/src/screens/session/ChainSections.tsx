@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { useLocation, useNavigate } from "react-router";
 import { useQuery } from "@tanstack/react-query";
-import { ChainRunViewReaderSchema, SessionStepTaskResponseReaderSchema } from "@agentx/contracts/web";
+import { ChainRunViewReaderSchema, SessionStepTaskResponseReaderSchema } from "@agentx/cloud-contracts/web";
 import { createApiClient } from "../../api/client.js";
 import { ApiError } from "../../api/errors.js";
 import { useAppHost } from "../../host.js";

@@ -1,7 +1,8 @@
 // 0.5.11 (QA6-12b): what approving a coding plan does to the run limit, worked out from the task record alone, for the surfaces that show it before the approval (the Slack plan message, the task view the
 // tools read). It measures as the decision does (`planRunLimit` in estimate.ts, then `settleRunLimit` in aws/developer-tasks/decide.ts): the plan's estimate held to a lower limit the start asked for, against the
 // task's limit or the per-task default. The decision itself recomputes the limit (the estimate or the spend policy may have moved since) and refuses an acknowledgement that no longer matches.
-import { PER_TASK_BUDGET_USD, runLimitRaises, type WorkflowSnapshot } from "@agentx/contracts";
+import { PER_TASK_BUDGET_USD, type WorkflowSnapshot } from "@agentx/cloud-contracts";
+import { runLimitRaises } from "@rovara-code/contracts";
 import type { DeveloperTaskRecord } from "../developer/task-records.js";
 import { planRunLimit, type EstimateDependencies } from "./estimate.js";
 

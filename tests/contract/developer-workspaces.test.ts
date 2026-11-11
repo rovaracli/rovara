@@ -1,8 +1,8 @@
 // Spec 041: GET /v1/dev/workspaces -- the projects a developer may use, with the workspaces in
 // them, read through the sparse byWorkspaceProject index.
-import { slackBindingPk } from "../../packages/contracts/src/org-scoped-keys.js";
+import { slackBindingPk } from "@rovara-code/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { WORKSPACE_PROJECT_INDEX, orgScoped, type ChannelMembersRequest, type ChannelMembersResponse } from "@agentx/contracts";
+import { WORKSPACE_PROJECT_INDEX, orgScoped, type ChannelMembersRequest, type ChannelMembersResponse } from "@rovara-code/contracts";
 import type { DeveloperApiConfiguration } from "../../packages/broker/src/aws/developer-routes.js";
 import { developerTokenVerifier } from "../../packages/broker/src/developer/verify-token.js";
 import { createAdminBroker, type AdminHandler } from "../support/admin-broker.js";
@@ -10,7 +10,7 @@ import { localSigner } from "../support/developer-fakes.js";
 import { seedMembership } from "../support/developer-task-broker.js";
 import type { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { TEST_ORG } from "../support/orgs.js";
-import { projectMemberKey, projectRevisionKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { projectMemberKey, projectRevisionKey } from "@rovara-code/contracts";
 
 const ISSUER = "https://abc123.execute-api.us-east-1.amazonaws.com/v1/auth";
 const developerId = "d".repeat(64);

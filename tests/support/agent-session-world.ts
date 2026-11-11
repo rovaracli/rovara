@@ -2,18 +2,8 @@
 // owner of the sessions made here), Arjun (contributor), Mia (viewer), Max (maintainer by grant), Ola (org admin with no grant) and Zed (a member with
 // no project role). Org B has Bo. Grants are written as the real rows (`projectMemberKey`), and the project members fake answers the Slack-channel path.
 import { randomUUID } from "node:crypto";
-import {
-  agentSessionKey,
-  orgMemberKey,
-  orgProjectCatalogKey,
-  projectMemberKey,
-  projectMetaKey,
-  type AgentSessionRecord,
-  type OrgId,
-  type OrgRole,
-  type ProjectRole,
-  type SessionLevel,
-} from "@agentx/contracts";
+import { agentSessionKey, orgProjectCatalogKey, projectMemberKey, projectMetaKey, type AgentSessionRecord, type OrgId, type ProjectRole, type SessionLevel } from "@rovara-code/contracts";
+import { orgMemberKey, type OrgRole } from "@agentx/cloud-contracts";
 import { DeveloperSignInStore } from "../../packages/broker/src/developer/store.js";
 import type { DeveloperCaller } from "../../packages/broker/src/aws/developer-routes.js";
 import { taskKey } from "../../packages/broker/src/developer/task-records.js";

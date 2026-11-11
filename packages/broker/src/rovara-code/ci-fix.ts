@@ -4,26 +4,8 @@
 // before it reaches a model, and it can change nothing about the run's tools, limits or path. A round is paid work: it is started like any coding run, so the payer, the step budget,
 // the planning limit and the run limit apply to it as to the first build.
 import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  CI_BLOCK_BYTES_MAX,
-  CI_FAILED_JOBS_MAX,
-  CI_FIX_ROUNDS_MAX,
-  CI_LOG_BYTES_MAX,
-  CI_OUTPUT_BLOCK_HEADER,
-  GITHUB_ACTIONS_APP_ID,
-  INDEX_EXPIRY_ATTRIBUTE,
-  blockWorkflowCiFix,
-  ciFixAskMessage,
-  ciFixStopMessage,
-  ciFixUnrelatedMessage,
-  redactText,
-  startWorkflowFix,
-  workflowFixRounds,
-  type Autonomy,
-  type MergeTrackingItem,
-  type OrgId,
-  type WorkflowSnapshot,
-} from "@agentx/contracts";
+import { CI_BLOCK_BYTES_MAX, CI_FAILED_JOBS_MAX, CI_FIX_ROUNDS_MAX, CI_LOG_BYTES_MAX, CI_OUTPUT_BLOCK_HEADER, GITHUB_ACTIONS_APP_ID, INDEX_EXPIRY_ATTRIBUTE, ciFixAskMessage, ciFixStopMessage, ciFixUnrelatedMessage, redactText, type Autonomy, type OrgId } from "@rovara-code/contracts";
+import { blockWorkflowCiFix, startWorkflowFix, workflowFixRounds, type MergeTrackingItem, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { isHostRateLimit } from "./host-port.js";
 import { logTail } from "../github-job-log.js";
 import { WORKFLOW_NO_CANDIDATE_DIGEST, workflowDispatchItem } from "../aws/broker-shared.js";

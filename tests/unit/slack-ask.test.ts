@@ -1,9 +1,7 @@
 // Live interaction A3: the chat service answers an Ask about a task (the web's or Linear's) with the read-only turn, and writes the answer back to the broker. No Slack thread, member or channel is
 // involved, nothing is posted in Slack, the question's text is never logged, and an older service discards the message.
 import { describe, expect, it, vi } from "vitest";
-import {
-  AskQueueMessageSchema, SlackRequestMessageSchema, askRouteAttributes, isAskRoute, type AskAnsweredRequest, type AskQueueMessage, type AskTurnResult,
-} from "../../packages/contracts/src/index.js";
+import { AskQueueMessageSchema, SlackRequestMessageSchema, askRouteAttributes, isAskRoute, type AskAnsweredRequest, type AskQueueMessage, type AskTurnResult } from "@rovara-code/contracts";
 import { NO_TEXT_RESPONSE } from "../../packages/orchestrator/src/orchestrator.js";
 import { processGroup, type QueueClient } from "../../packages/slack-service/src/consumer.js";
 import { handleAsk, type AskServiceApi } from "../../packages/slack-service/src/ask-question.js";

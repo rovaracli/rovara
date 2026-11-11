@@ -3,7 +3,7 @@
 // and the channel and prints what happened and what to do next. The bot's name is not something the control plane tells a developer, so the next step
 // says it in general words.
 import { randomUUID } from "node:crypto";
-import { ProjectSlackChannelRemoveResponseSchema, ProjectSlackChannelResponseSchema } from "@agentx/contracts";
+import { ProjectSlackChannelRemoveResponseSchema, ProjectSlackChannelResponseSchema } from "@rovara-code/contracts";
 import { sanitizeServerText } from "../auth.js";
 import { developerRequest } from "./commands.js";
 import type { DeveloperSessionDeps } from "./session.js";

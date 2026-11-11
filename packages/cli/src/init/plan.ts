@@ -2,9 +2,7 @@
 // init will create, and an estimated monthly cost at a stated usage, then ask. Prices are us-east-1
 // list prices checked on the date in PRICES_CHECKED; the orchestrator per-turn figures come from the
 // 2026-09-25 evaluation in the spec's Decisions.
-import {
-  keyedProviderSecretName, KEYED_MODEL_PROVIDERS, defaultBoundaryName, environmentCloudFormationRoleName, environmentOperatorRoleName, environmentRolePath, environmentStackName,
-} from "@agentx/contracts";
+import { keyedProviderSecretName, KEYED_MODEL_PROVIDERS, defaultBoundaryName, environmentCloudFormationRoleName, environmentOperatorRoleName, environmentRolePath, environmentStackName } from "@rovara-code/contracts";
 import type { DirectProvider } from "../deploy/answer-schemas.js";
 import { installOrder } from "../deploy/parameters.js";
 import { callbackSigningKeySecretName } from "../deploy/signing-key.js";

@@ -9,7 +9,7 @@
 // no way to reply in Linear (`LinearReplyPort`), nothing is read or spent.
 import { createHash } from "node:crypto";
 import { GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
-import { ASK_QUESTION_MAX_CHARS, ASK_UNAVAILABLE_MESSAGE, INDEX_EXPIRY_ATTRIBUTE, askLinearCommentKey, redactText, type HookRecord, type OrgId } from "@agentx/contracts";
+import { ASK_QUESTION_MAX_CHARS, ASK_UNAVAILABLE_MESSAGE, INDEX_EXPIRY_ATTRIBUTE, askLinearCommentKey, redactText, type HookRecord, type OrgId } from "@rovara-code/contracts";
 import { admitAsk, withoutMentions, type AskDependencies } from "../agent-sessions/ask.js";
 import { sessionForSurface } from "../agent-sessions/bindings.js";
 import { linearWorkspaceOfBinding } from "./linear-close.js";

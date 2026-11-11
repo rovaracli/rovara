@@ -1,9 +1,10 @@
 // Live interaction: the ask switch (`ak`, LIVE_ASK_ENABLED) is gated on two pieces of wiring. Until both exist, adding the switch to any deploy file fails here. Gates are listed in
-// LIVE_INTERACTION_DEPLOY_GATES (packages/contracts/src/live-interaction.ts).
+// LIVE_INTERACTION_DEPLOY_GATES (vendor/rovara-code/packages/contracts/src/live-interaction.ts).
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { BROKER_SETTINGS, LIVE_INTERACTION_DEPLOY_GATES, LIVE_INTERACTION_FLAGS } from "../../packages/contracts/src/index.js";
+import { BROKER_SETTINGS } from "@agentx/cloud-contracts";
+import { LIVE_INTERACTION_DEPLOY_GATES, LIVE_INTERACTION_FLAGS } from "@rovara-code/contracts";
 import { ERASE_STEPS, PERSON_FIELDS, REQUIRED_ERASE_STEPS } from "../../packages/broker/src/team-record/person-fields.js";
 
 const ROOT = process.cwd();
@@ -24,7 +25,7 @@ export const namesAskSwitch = (text: string): boolean => /LIVE_ASK_ENABLED|LiveA
 export const callsSweep = (text: string): boolean => /(^|[^.\w])sweepExpiredAsks\s*\(/mu.test(text.replace(/\/\/.*$/gmu, "").replace(/\/\*[\s\S]*?\*\//gu, ""));
 
 const deployFiles = (): string[] => [
-  join(ROOT, "packages/contracts/src/broker-names.ts"), join(ROOT, "packages/cli/src/config/keys.ts"), join(ROOT, "packages/cli/src/deploy/parameters.ts"),
+  join(ROOT, "packages/cloud-contracts/src/broker-names.ts"), join(ROOT, "packages/cli/src/config/keys.ts"), join(ROOT, "packages/cli/src/deploy/parameters.ts"),
   ...sourceFiles(join(ROOT, "infra/lib")),
 ];
 const productionFiles = (): string[] => ["broker", "worker", "cli"].flatMap((pkg) => sourceFiles(join(ROOT, "packages", pkg, "src")))

@@ -1,7 +1,8 @@
 // Spec 025 A13: the health answer. Every probe has a time limit and answers `unknown` with a reason
 // when it is not set up or fails, so the route itself never fails for a probe. Details carry
 // counts, names, codes and error classes only.
-import { ADMIN_API_VERSION, DEVELOPER_API_VERSION, MISSING_ALARM_STATE, type AdminHealthCheck, type OrgId, type AdminHealthResponse, type SlackAuthCheckResponse } from "@agentx/contracts";
+import { ADMIN_API_VERSION, DEVELOPER_API_VERSION, MISSING_ALARM_STATE, type AdminHealthCheck, type OrgId, type SlackAuthCheckResponse } from "@rovara-code/contracts";
+import { type AdminHealthResponse } from "@agentx/cloud-contracts";
 import type { AuthenticatedIdentity } from "../auth.js";
 import { requireOrgId } from "../org/resolve.js";
 import { opsFailuresCheck, type OpsFailures } from "../team-record/ops-failures.js";

@@ -6,10 +6,12 @@ import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
 import { registerCodeMilestoneHandler } from "../../packages/broker/src/rovara-code/milestones.js";
 import { workflowMessage } from "../../packages/broker/src/developer/workflow-messages.js";
-import { agentSessionKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { agentSessionKey } from "@rovara-code/contracts";
 import { refreshSessionSummary } from "../../packages/broker/src/agent-sessions/summary.js";
-import { builtinSettingsKey, projectMemberKey } from "../../packages/contracts/src/org-scoped-keys.js";
-import { DeveloperTaskResponseSchema, SessionResponseReaderSchema, TaskResponseReaderSchema, SessionResponseSchema, UNDERSTAND_ARTIFACT_NAME, type CodeMilestone } from "../../packages/contracts/src/index.js";
+import { builtinSettingsKey, projectMemberKey } from "@rovara-code/contracts";
+import { DeveloperTaskResponseSchema, TaskResponseReaderSchema } from "@agentx/cloud-contracts";
+import { UNDERSTAND_ARTIFACT_NAME, type CodeMilestone } from "@rovara-code/contracts";
+import { SessionResponseReaderSchema, SessionResponseSchema } from "@agentx/cloud-contracts";
 import { seedMembership, MAYA, OMAR, createDeveloperTaskBroker, type Developer } from "../support/developer-task-broker.js";
 import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { recordWorkflowThreadNote } from "../../packages/broker/src/aws/developer-tasks.js";
@@ -21,11 +23,10 @@ import { taskOwnerKey } from "../../packages/broker/src/developer/task-records.j
 import { fakeModelAccess } from "../support/fake-model-access.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { SLACK_CHANNEL, SLACK_TEAM } from "../support/slack-broker.js";
-import { intentQuestionsMessage, QUESTIONS_MESSAGE_HEADER, YOUR_CALL_WORDS } from "../../packages/contracts/src/rovara-code.js";
-import {
-  INTENT_ANSWER_MAX_CHARS, INTENT_NOT_WAITING_MESSAGE, UNDERSTAND_ROUNDS_MAX, type IntentAnswer, type IntentAssessment,
-} from "../../packages/contracts/src/index.js";
-import { IntentAnswerRefusal, WorkflowSnapshotSchema, answerIntentQuestions, createWorkflowSnapshot, recordIntentAssessment, startWorkflowUnderstand } from "../../packages/contracts/src/task-workflow-node.js";
+import { intentQuestionsMessage, QUESTIONS_MESSAGE_HEADER, YOUR_CALL_WORDS } from "@rovara-code/contracts";
+import { INTENT_ANSWER_MAX_CHARS, INTENT_NOT_WAITING_MESSAGE, UNDERSTAND_ROUNDS_MAX, type IntentAnswer, type IntentAssessment } from "@rovara-code/contracts";
+import { IntentAnswerRefusal } from "@rovara-code/contracts";
+import { WorkflowSnapshotSchema, answerIntentQuestions, createWorkflowSnapshot, recordIntentAssessment, startWorkflowUnderstand } from "../../packages/cloud-contracts/src/task-workflow-node.js";
 import { ANSWERS_BLOCK_HEADER, UNDERSTAND_REQUEST_HEADER, UNDERSTAND_RULES, understandPrompt } from "../../packages/broker/src/rovara-code/understand.js";
 import { loadSlackBroker } from "../support/slack-broker.js";
 

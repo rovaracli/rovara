@@ -1,8 +1,8 @@
 // Lane cr-settings: the mode writer, `review.otherCompany` (off, shadow, on) for the company and, as an override that can only be stricter, for a project. Through the whole broker with a live browser session, behind `cr`.
 // Raising applies at once; `on` only for a model whose evidence holds; LOWERING is a proposal a DIFFERENT admin approves (signed in within 10 minutes), with no sole-owner exception; every change is audited in its own transaction.
 import { afterEach, describe, expect, it } from "vitest";
-import { secondReviewModelKey } from "../../packages/contracts/src/index.js";
-import { SecondReviewStateSchema } from "../../packages/contracts/src/app-second-review.js";
+import { secondReviewModelKey } from "@rovara-code/contracts";
+import { SecondReviewStateSchema } from "@rovara-code/contracts";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { MAYA, OMAR } from "../support/developer-task-broker.js";
 import { NAME, setupWizardBench, type Bench } from "../support/setup-wizard-testenv.js";
@@ -10,7 +10,7 @@ import { seedHoldingEvidence, seedTrackRow, replayRun, verdictFor, BASELINE } fr
 import { secondReviewReplayKey, secondReviewVerdictKey } from "../../packages/broker/src/org/second-review-settings.js";
 import { openModeChange, openModeChanges, requestSecondReviewMode, type ModeDeps } from "../../packages/broker/src/org/second-review-mode.js";
 import { QueryCommand } from "@aws-sdk/lib-dynamodb";
-import { orgMetaKey } from "../../packages/contracts/src/index.js";
+import { orgMetaKey } from "@agentx/cloud-contracts";
 import { TEST_ORG } from "../support/orgs.js";
 
 afterEach(() => { delete process.env.SECOND_REVIEW_ENABLED; });

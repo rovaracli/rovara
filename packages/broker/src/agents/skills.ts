@@ -4,21 +4,7 @@
 // under the org, so one org's skill id means nothing to another. Who may create or change a skill is decided by the routes (routes.ts).
 import { createHash } from "node:crypto";
 import { GetCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  newPrefixedId,
-  orgScoped,
-  skillDirectoryKey,
-  skillKey,
-  skillNameKey,
-  type AgentOwner,
-  type OrgId,
-  type OrgKey,
-  type RecipeProblem,
-  type ResolvedRecipe,
-  type ResolvedSkill,
-  type SkillId,
-  type SkillRef,
-} from "@agentx/contracts";
+import { newPrefixedId, orgScoped, skillDirectoryKey, skillKey, skillNameKey, type AgentOwner, type OrgId, type OrgKey, type RecipeProblem, type ResolvedRecipe, type ResolvedSkill, type SkillId, type SkillRef } from "@rovara-code/contracts";
 import { coded, commit, errorName, putNew, strip, updateItem, type Item, type RequestMark, type TableInput, type TransactItem } from "./table-writes.js";
 
 /**

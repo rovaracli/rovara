@@ -1,6 +1,7 @@
 // Task 5 (ruling R2): a sign-in puts the developer in an org, and every access token carries it.
 import { describe, expect, it } from "vitest";
-import { agentXError, developerOrgKey, orgMemberKey, orgMetaKey } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
+import { developerOrgKey, orgMemberKey, orgMetaKey } from "@agentx/cloud-contracts";
 import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
 import { resolveOrgOnSignIn } from "../../packages/broker/src/org/sign-in.js";
 import { OrgStore } from "../../packages/broker/src/org/store.js";

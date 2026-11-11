@@ -7,10 +7,7 @@
 //   - a standing rule may have answered a card, never a high one (the rule is ignored and the card stays pending);
 //   - a Full-path requirements and design pair is ONE card with two tabs that still records two approvals (owner Q1).
 // Anything an item says in words (a title, a question, a path) is flattened to plain text and cut; fixed words come from this file.
-import {
-  DECISION_LABELS, DECISION_REJECT_REASONS, decisionFocusPath, DESIGN_SOURCE_ONLY_LABEL, DecisionCardIdSchema, DecisionCardSchema, DecisionPlanChoicesSchema, DecisionTabsSchema, decisionFriction, canonicalJson,
-  type CardAction, type DecisionPlanChoices, type DecisionCard, type DecisionKind, type DecisionDetailGroup, type DecisionRejectReason, type DecisionRisk, type DecisionTab, type DecisionTabId, type EvidenceChip,
-} from "@agentx/contracts";
+import { DECISION_LABELS, DECISION_REJECT_REASONS, decisionFocusPath, DESIGN_SOURCE_ONLY_LABEL, DecisionCardIdSchema, DecisionCardSchema, DecisionPlanChoicesSchema, DecisionTabsSchema, decisionFriction, canonicalJson, type CardAction, type DecisionPlanChoices, type DecisionCard, type DecisionKind, type DecisionDetailGroup, type DecisionRejectReason, type DecisionRisk, type DecisionTab, type DecisionTabId, type EvidenceChip } from "@rovara-code/contracts";
 import { DECISION_SPEND_LOW_MAX_USD, riskTierOf, type DecisionLocks, type TierInputs, type TierResult } from "./risk-tier.js";
 import { reviewCoverage, type DesignCardFacts } from "../design-review/risk.js";
 import { cardDigest } from "./digest.js";

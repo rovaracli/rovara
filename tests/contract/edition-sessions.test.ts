@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { decodeJwt } from "jose";
 import { describe, expect, it } from "vitest";
-import { editionPolicy, orgMetaKey } from "@agentx/contracts";
+import { editionPolicy, orgMetaKey } from "@agentx/cloud-contracts";
 import { APP_CSRF_HEADER, appCsrfTokenFor } from "../../packages/broker/src/developer/app-csrf.js";
 import { sessionWithinEditionCap } from "../../packages/broker/src/developer/edition-methods.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";

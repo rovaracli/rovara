@@ -5,10 +5,10 @@
 // are one transaction.
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { CHAIN_MAX_STEP_RUNS, type ChainDefinitionInput } from "../../packages/contracts/src/chains.js";
-import { BUILTIN_AGENTS } from "../../packages/contracts/src/agent-templates.js";
-import { agentXError } from "@agentx/contracts";
-import { chainRunKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { CHAIN_MAX_STEP_RUNS, type ChainDefinitionInput } from "@rovara-code/contracts";
+import { BUILTIN_AGENTS } from "@rovara-code/contracts";
+import { agentXError } from "@rovara-code/contracts";
+import { chainRunKey } from "@rovara-code/contracts";
 import { INVESTIGATE_THEN_FIX } from "../support/chain-examples.js";
 import { ORG_A, PRIYA, callerOf, decisionBy, setupWorld, type ChainWorld } from "../support/chain-run-world.js";
 import { loadSlackBroker } from "../support/slack-broker.js";

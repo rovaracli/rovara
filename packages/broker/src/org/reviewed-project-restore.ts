@@ -3,7 +3,7 @@
 import { createHash } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import { AgentXError, AgentXNameSchema, agentXError, orgScoped } from "@agentx/contracts";
+import { AgentXError, AgentXNameSchema, agentXError, orgScoped } from "@rovara-code/contracts";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "../aws/developer-routes.js";
 import { auditProjectRestored, auditOccurrence } from "../audit/events.js";
 import { auditPending, type TransactItem } from "../audit/outbox.js";

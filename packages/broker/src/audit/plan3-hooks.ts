@@ -6,7 +6,8 @@
 // several limits can move in one write) is the occurrence: a retry of a refused write records nothing, and two changes never share an id. The agent store
 // writes an `EVENT#` item for every notable change; its sort key is the occurrence of the events about that change (the field joins it where one
 // write records several).
-import type { AuditActor, AuditProof, AuditDetailPart, AuditEventInput, ProjectAiSettings, SpendPolicy } from "@agentx/contracts";
+import type { AuditActor } from "@agentx/cloud-contracts";
+import type { AuditProof, AuditDetailPart, AuditEventInput, ProjectAiSettings, SpendPolicy } from "@agentx/cloud-contracts";
 import { auditBudgetChanged, auditOccurrence, auditOwnerChanged, auditSpendPolicyChanged } from "./events.js";
 
 export const SYSTEM_ACTOR: AuditActor = { kind: "system", id: "rovara" };

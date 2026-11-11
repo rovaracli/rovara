@@ -4,7 +4,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { BatchGetImageCommand, GetAuthorizationTokenCommand } from "@aws-sdk/client-ecr";
-import { BundleSignatureSchema, sha256OfBytes, verifyBundleSignature } from "@agentx/contracts";
+import { BundleSignatureSchema, sha256OfBytes, verifyBundleSignature } from "@agentx/cloud-contracts";
 import { kmsBundleSigner } from "../../scripts/release/bundle.js";
 import { loadBundleImages } from "../../packages/cli/src/upgrade/bundle/load-images.js";
 import { verifyBundle } from "../../packages/cli/src/upgrade/bundle/verify.js";
@@ -41,7 +41,7 @@ describe("the KMS bundle signer", () => {
 
 describe("bundle signing keys", () => {
   it("accepts only an ECDSA P-256 public key: not another curve, not a private key", async () => {
-    const { parseBundlePublicKey } = await import("@agentx/contracts");
+    const { parseBundlePublicKey } = await import("@rovara-code/contracts");
     const p256 = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
     expect(parseBundlePublicKey(p256.publicKey.export({ type: "spki", format: "pem" }).toString()).keyId).toMatch(/^[a-f0-9]{64}$/);
     expect(() => parseBundlePublicKey(generateKeyPairSync("ec", { namedCurve: "secp384r1" }).publicKey.export({ type: "spki", format: "pem" }).toString())).toThrow(/P-256/);

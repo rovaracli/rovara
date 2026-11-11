@@ -3,7 +3,7 @@
 import { fixtureActor } from "../support/money-authority.js";
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { ROVARA_CODE_AGENT_ID, agentKey, agentXError, type AgentId } from "../../packages/contracts/src/index.js";
+import { ROVARA_CODE_AGENT_ID, agentKey, agentXError, type AgentId } from "@rovara-code/contracts";
 import { setShares, type AgentShare } from "../../packages/broker/src/agents/access.js";
 import { publishDraft, shareAgent } from "../../packages/broker/src/agents/changes.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";

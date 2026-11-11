@@ -1,4 +1,4 @@
-import { SessionListSchema, SessionTileSchema, AgentDirectoryResponseSchema } from "@agentx/contracts/web";
+import { SessionListSchema, SessionTileSchema, AgentDirectoryResponseSchema } from "@agentx/cloud-contracts/web";
 import { sessionPerson } from "./session-fixture.js";
 import { liveFixture } from "./live-fixture.js";
 import { agentProfile } from "./agent-fixture.js";

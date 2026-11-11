@@ -2,10 +2,8 @@
 // FakeDynamoDb, with a sign-in Lambda that can be made to fail, so a test can run a removal, bring the person back and run the sweep in the order a real day would.
 // One table plays the State table and the sign-in table.
 import { randomUUID } from "node:crypto";
-import {
-  MEMBER_REMOVAL_QUEUE_PK, developerOrgKey, deviceKey, memberDevicesKey, memberRemovalRecordKey, orgMemberKey, orgSettingsKey, projectMemberKey, projectMetaKey,
-  type OrgId, type OrgRole, type RecipeOverlay,
-} from "@agentx/contracts";
+import { MEMBER_REMOVAL_QUEUE_PK, developerOrgKey, deviceKey, memberDevicesKey, memberRemovalRecordKey, orgMemberKey, orgSettingsKey, type OrgRole } from "@agentx/cloud-contracts";
+import { projectMemberKey, projectMetaKey, type OrgId, type RecipeOverlay } from "@rovara-code/contracts";
 import { followMerges } from "../../packages/broker/src/agents/access.js";
 import { memberRemovalHook, runMemberMergeDrain, type LifecycleDeps } from "../../packages/broker/src/agents/lifecycle.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";

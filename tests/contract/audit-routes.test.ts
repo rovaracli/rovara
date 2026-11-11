@@ -6,15 +6,8 @@
 // through the broker's handler to show the wiring. The fakes do not enforce IAM: the broker's grants are pinned in
 // audit-ledger-infrastructure.test.ts.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  AUDIT_LIMITS_COPY,
-  AuditEventInputSchema,
-  agentXError,
-  auditOperatorId,
-  type AuditEventInput,
-  type OrgId,
-  type OrgRole,
-} from "@agentx/contracts";
+import { AUDIT_LIMITS_COPY, AuditEventInputSchema, auditOperatorId, type AuditEventInput, type OrgRole } from "@agentx/cloud-contracts";
+import { agentXError, type OrgId } from "@rovara-code/contracts";
 import { appendEvent } from "../../packages/broker/src/audit/appender.js";
 import { auditExportId, exportObjectKey } from "../../packages/broker/src/audit/export.js";
 import { readAuditRecords } from "../../packages/broker/src/audit/reader.js";

@@ -6,15 +6,7 @@
 import { createHash } from "node:crypto";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import {
-  ConnectionIdSchema,
-  INDEX_EXPIRY_ATTRIBUTE,
-  agentRequestKey,
-  agentXError,
-  canonicalJson,
-  cloudwatchExternalId,
-  newPrefixedId,
-} from "@agentx/contracts";
+import { ConnectionIdSchema, INDEX_EXPIRY_ATTRIBUTE, agentRequestKey, agentXError, canonicalJson, cloudwatchExternalId, newPrefixedId } from "@rovara-code/contracts";
 import type { AgentCaller } from "../agents/access.js";
 import type { RequestMark } from "../agents/table-writes.js";
 import type { AdaptedHttpRequest } from "../aws/lambda.js";

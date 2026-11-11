@@ -1,7 +1,7 @@
 // v1.2 learning loop: retention (design §3.2). Corrections, source records, dismissed patterns and terminal suggestions carry `indexExpiresAt`, 180 days after they were written (or
 // ended), on the attribute the State table's TTL watches. The TTL runs only in named environments, so every read here also treats an item whose time has passed as absent, and the
 // learning sweep (sweep.ts) deletes such items where there is no TTL. Nothing deletes on read: a project nobody opens again would keep its text.
-import { INDEX_EXPIRY_ATTRIBUTE, LEARNING_RATE_ITEM_SECONDS, LEARNING_RETENTION_DAYS } from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, LEARNING_RATE_ITEM_SECONDS, LEARNING_RETENTION_DAYS } from "@rovara-code/contracts";
 
 type Item = Record<string, unknown>;
 

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { jiraConnector, presentCatalog, reviewTools, type CatalogTool } from "../../packages/gateway/src/index.js";
 import { capabilitiesManifest } from "../../packages/orchestrator/src/manifest.js";
 import { orchestratorSystemPrompt } from "../../packages/orchestrator/src/orchestrator.js";
-import type { ConnectorCatalog } from "../../packages/contracts/src/index.js";
+import type { ConnectorCatalog } from "@rovara-code/contracts";
 import { vendorTools } from "../support/vendor-fixtures.js";
 
 // Recorded shape of GitHub's issue tools after feature 007 narrowing (owner and repo removed).

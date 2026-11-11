@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { AppProjectDetail } from "@agentx/contracts/web";
+import type { AppProjectDetail } from "@agentx/cloud-contracts/web";
 import { useOnboardingApi } from "../../../api/onboarding.js";
 import { ApiError } from "../../../api/errors.js";
 import { useAppHost } from "../../../host.js";

@@ -1,6 +1,6 @@
 import { readServiceStatusEvidence } from "../../../packages/broker/src/aws/service-status-runtime.js";
 import { e2eRegisteredRuntimeKey } from "../../../packages/broker/src/aws/e2e-runtime-readiness.js";
-import { WEB_API_RUNTIME_PROFILE_ID } from "@agentx/contracts";
+import { WEB_API_RUNTIME_PROFILE_ID } from "@rovara-code/contracts";
 import { commitRegisteredProjectAllowedDomains } from "../../../packages/broker/src/org/project-allowed-domains.js";
 import { createHash, generateKeyPairSync } from "node:crypto";
 import { GitHubAppCredentialProvider } from "../../../packages/broker/src/github-app.js";
@@ -9,7 +9,8 @@ import { createWorkingBranchProvider, createWorkingBranchPageProvider } from "..
 import { seedLaneB, readLaneBAgents } from "./admin-projects-agents.js";
 // Real admin routes over a persistent, bounded transactional table; unsupported expressions fail closed.
 import { BatchGetCommand, TransactGetCommand, GetCommand, QueryCommand, TransactWriteCommand, DeleteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { BUILTIN_AGENT_IDS, DEFAULT_AGENT_GUARDRAILS, agentGuardrailsKey, builtinSettingsKey, orgScoped, orgSettingsKey, projectAiKey, orgMemberKey, orgMetaKey, orgSlackTeamKey, slackTeamOrgKey, slackBindingKey, developerOrgKey, modelSourcesKey, OrgRoleSchema, type OrgRole } from "@agentx/contracts";
+import { BUILTIN_AGENT_IDS, DEFAULT_AGENT_GUARDRAILS, agentGuardrailsKey, builtinSettingsKey, orgScoped, slackBindingKey, modelSourcesKey } from "@rovara-code/contracts";
+import { orgSettingsKey, projectAiKey, orgMemberKey, orgMetaKey, orgSlackTeamKey, slackTeamOrgKey, developerOrgKey, OrgRoleSchema, type OrgRole } from "@agentx/cloud-contracts";
 import { appCsrfTokenFor } from "../../../packages/broker/src/developer/app-csrf.js";
 import { ModelSourceStore } from "../../../packages/broker/src/model-sources/store.js";
 import { OrgStore } from "../../../packages/broker/src/org/store.js";

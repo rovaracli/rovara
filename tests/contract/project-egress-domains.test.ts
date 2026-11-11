@@ -3,9 +3,7 @@
 // The scheduled run first backfills a request for every domain stored before approvals existed.
 import { GetFirewallDomainListCommand, UpdateFirewallDomainsCommand } from "@aws-sdk/client-route53resolver";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  EGRESS_SYNC_KEY, egressDomainsKey, isAllowedDomain, projectMetaKey, projectRevisionKey, type EgressAuditItem, type EgressDomainsItem, type EgressOwner, type OrgId,
-} from "../../packages/contracts/src/index.js";
+import { EGRESS_SYNC_KEY, egressDomainsKey, isAllowedDomain, projectMetaKey, projectRevisionKey, type EgressAuditItem, type EgressDomainsItem, type EgressOwner, type OrgId } from "@rovara-code/contracts";
 import {
   EGRESS_BACKFILL_KEY, EGRESS_RECONCILE_CONCURRENCY, EMPTY_UNION_SENTINEL, FIREWALL_DOMAINS_PER_CALL, backfillLegacyEgress, reconcileEgressWithRevisions, runEgressDomainsSync, syncCellAllowList,
 } from "../../packages/broker/src/aws/egress-domains-sync.js";

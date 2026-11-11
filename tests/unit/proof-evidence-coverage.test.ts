@@ -2,7 +2,7 @@
 // A worker that sends no coverage (an older worker, or a project with no report) gives a pack without it, and the pull request says "no coverage report" plainly.
 import { GetObjectCommand, PutObjectCommand, type S3Client } from "@aws-sdk/client-s3";
 import { describe, expect, it } from "vitest";
-import type { CheckEntry } from "../../packages/contracts/src/index.js";
+import type { CheckEntry } from "@rovara-code/contracts";
 import { evidenceLines } from "../../packages/broker/src/rovara-code/evidence-lines.js";
 import { keepEvidence, loadEvidencePack, type KeepEvidenceDeps } from "../../packages/broker/src/rovara-code/evidence-keep.js";
 

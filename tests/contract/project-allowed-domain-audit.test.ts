@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AuditEventInputSchema } from "../../packages/contracts/src/audit.js";
+import { AuditEventInputSchema } from "../../packages/cloud-contracts/src/audit.js";
 import { auditProjectAllowedDomains } from "../../packages/broker/src/audit/allowed-domains.js";
 
 const base = { orgId: "org_aaaaaaaaaaaaaaaaaaaa", actor: { kind: "member" as const, id: "a".repeat(64) }, occurredAt: "2026-10-29T21:00:00.000Z", occurrence: "request1", projectName: "payments", requestId: "11111111-1111-4111-8111-111111111111", proposalId: "22222222-2222-4222-8222-222222222222", fromRevision: 1, toRevision: 2, added: 50, removed: 50, beforeDigest: "a".repeat(64), afterDigest: "b".repeat(64) };

@@ -5,7 +5,7 @@
 // once per call, and never puts it, or a key, in an error. Network failures and 5xx answers are
 // MODEL_PROXY_UNAVAILABLE; a 4xx carries the proxy's message.
 import { createHash, randomInt } from "node:crypto";
-import { AgentXError, INFERENCE_PATHS, agentXError, errorStatus, bedrockExternalId, endpointSecretRefProblem, modelSourceOrgProblem, type OrgId } from "@agentx/contracts";
+import { AgentXError, INFERENCE_PATHS, agentXError, errorStatus, bedrockExternalId, endpointSecretRefProblem, modelSourceOrgProblem, type OrgId } from "@rovara-code/contracts";
 import { LearningNotForwarded, type KeyAudit, type LearningCompletion, type LearningCompletionInput, type MemberSpend, type MintKeyInput, type MintedKey, type ModelAccess, type SourceCheck, type SpendFigures, type UpsertSourceInput } from "./access.js";
 import { endpointQualified } from "../model-sources/endpoint-digest.js";
 import { credentialNameOf, proxyModelsOf, sourceAliasPrefix, sourceUsesKey, type PriceLookup } from "./sources.js";

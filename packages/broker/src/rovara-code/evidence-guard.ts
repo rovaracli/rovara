@@ -6,7 +6,7 @@
 // Digests (64 hex characters) and ISO timestamps (exact shape) are skipped: a run of digits inside a hash is not a card number, and scanning them would block about one pack in a hundred for nothing. Text is
 // normalised (NFKC) before it is scanned.
 import { scanText, type DataGuardFindingKind } from "@agentx/verifier";
-import type { EvidencePack, EvidenceRaw, TestEnvProdDeny } from "@agentx/contracts";
+import type { EvidencePack, EvidenceRaw, TestEnvProdDeny } from "@rovara-code/contracts";
 import type { NewArtifact } from "./evidence-pack.js";
 import { fixedToolName } from "./evidence-risk.js";
 

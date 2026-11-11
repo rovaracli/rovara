@@ -4,8 +4,8 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { createCandidateManifest } from "../../packages/contracts/src/index.js";
-import { createWorkflowSnapshot } from "../../packages/contracts/src/task-workflow-node.js";
+import { createCandidateManifest } from "@rovara-code/contracts";
+import { createWorkflowSnapshot } from "../../packages/cloud-contracts/src/task-workflow-node.js";
 import { rovaraPullRequestBody } from "../../packages/broker/src/rovara-code/pull-request-body.js";
 
 const WORKER = join(__dirname, "../../packages/worker/src");

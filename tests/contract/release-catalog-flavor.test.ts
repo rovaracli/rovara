@@ -7,8 +7,8 @@ import { join } from "node:path";
 import { readFileSync } from "node:fs";
 import YAML from "yaml";
 import { afterEach, describe, expect, it } from "vitest";
-import { CATALOG_STAGING_ACCOUNT_ID, catalogTrustedKeyPems } from "@agentx/contracts";
-import { FLAVOR_FILE, STAGING_KEYS_FILE, STAGING_KEY_DATA_FILE, setCatalogFlavor } from "../../packages/contracts/tools/catalog-flavor.js";
+import { CATALOG_STAGING_ACCOUNT_ID, catalogTrustedKeyPems } from "@agentx/cloud-contracts";
+import { FLAVOR_FILE, STAGING_KEYS_FILE, STAGING_KEY_DATA_FILE, setCatalogFlavor } from "../../packages/cloud-contracts/tools/catalog-flavor.js";
 import { CATALOG_FLAVOR_TOOL, buildStagingArtifacts, restoreReleaseFlavor } from "../../scripts/test-deploy.js";
 import { skopeoLabelReader } from "../../scripts/release/image-flavor.js";
 import { buildRelease, assertReleaseCatalogTree } from "../../scripts/release/build.js";
@@ -32,12 +32,12 @@ interface TreeParts { flavorSrc?: string; keysSrc?: string; flavorDist?: string 
 /** A throwaway checkout holding just the files the tree check reads. */
 async function tree(parts: TreeParts = {}): Promise<string> {
   const root = await temporary("release-tree-");
-  await mkdir(join(root, "packages/contracts/src"), { recursive: true });
-  await mkdir(join(root, "packages/contracts/dist"), { recursive: true });
-  await writeFile(join(root, "packages/contracts/src/catalog-build-flavor.ts"), parts.flavorSrc ?? FLAVOR_SRC("release"));
-  await writeFile(join(root, "packages/contracts/src/catalog-staging-keys.ts"), parts.keysSrc ?? KEYS_SRC("[]"));
-  if (parts.flavorDist !== null) await writeFile(join(root, "packages/contracts/dist/catalog-build-flavor.js"), parts.flavorDist ?? FLAVOR_DIST("release"));
-  if (parts.keysDist !== null) await writeFile(join(root, "packages/contracts/dist/catalog-staging-keys.js"), parts.keysDist ?? KEYS_DIST("[]"));
+  await mkdir(join(root, "packages/cloud-contracts/src"), { recursive: true });
+  await mkdir(join(root, "packages/cloud-contracts/dist"), { recursive: true });
+  await writeFile(join(root, "packages/cloud-contracts/src/catalog-build-flavor.ts"), parts.flavorSrc ?? FLAVOR_SRC("release"));
+  await writeFile(join(root, "packages/cloud-contracts/src/catalog-staging-keys.ts"), parts.keysSrc ?? KEYS_SRC("[]"));
+  if (parts.flavorDist !== null) await writeFile(join(root, "packages/cloud-contracts/dist/catalog-build-flavor.js"), parts.flavorDist ?? FLAVOR_DIST("release"));
+  if (parts.keysDist !== null) await writeFile(join(root, "packages/cloud-contracts/dist/catalog-staging-keys.js"), parts.keysDist ?? KEYS_DIST("[]"));
   return root;
 }
 const labels = (flavor: string | undefined): ImageLabelReader => async () => (flavor === undefined ? {} : { [CATALOG_FLAVOR_LABEL]: flavor });
@@ -152,7 +152,7 @@ describe("the worker image build", () => {
     expect(dockerfile.match(/^ARG CATALOG_FLAVOR=release$/gmu)).toHaveLength(2);
     expect(dockerfile).toContain('LABEL ai.rovara.catalog-flavor="${CATALOG_FLAVOR}"');
     expect(dockerfile).toContain('case "$CATALOG_FLAVOR" in release|staging) ;; *) echo "CATALOG_FLAVOR is release or staging" >&2; exit 1 ;; esac');
-    expect(dockerfile.indexOf("node packages/contracts/tools/catalog-flavor.ts")).toBeLessThan(dockerfile.indexOf("npx tsc -b packages/contracts"));
+    expect(dockerfile.indexOf("node packages/cloud-contracts/tools/catalog-flavor.ts")).toBeLessThan(dockerfile.indexOf("npx tsc -b packages/cloud-contracts"));
   });
 });
 
@@ -166,7 +166,7 @@ describe("the staging build path", () => {
     const { runner, seen } = recording();
     buildStagingArtifacts(runner);
     expect(seen).toEqual([["npx", "tsx", CATALOG_FLAVOR_TOOL, "staging"], ["npm", "run", "build"]]);
-    expect(CATALOG_FLAVOR_TOOL).toBe("packages/contracts/tools/catalog-flavor.ts");
+    expect(CATALOG_FLAVOR_TOOL).toBe("packages/cloud-contracts/tools/catalog-flavor.ts");
     restoreReleaseFlavor(runner);
     expect(seen.at(-1)).toEqual(["npx", "tsx", CATALOG_FLAVOR_TOOL, "release"]);
   });
@@ -179,9 +179,9 @@ describe("the staging build path", () => {
       await mkdir(join(root, file, ".."), { recursive: true });
       await cp(new URL(`../../${file}`, import.meta.url), join(root, file));
     }
-    await mkdir(join(root, "packages/contracts/dist"), { recursive: true });
-    await writeFile(join(root, "packages/contracts/dist/catalog-build-flavor.js"), FLAVOR_DIST("release"));
-    await writeFile(join(root, "packages/contracts/dist/catalog-staging-keys.js"), KEYS_DIST("[]"));
+    await mkdir(join(root, "packages/cloud-contracts/dist"), { recursive: true });
+    await writeFile(join(root, "packages/cloud-contracts/dist/catalog-build-flavor.js"), FLAVOR_DIST("release"));
+    await writeFile(join(root, "packages/cloud-contracts/dist/catalog-staging-keys.js"), KEYS_DIST("[]"));
     await mkdir(join(root, "environments/service-catalog"), { recursive: true });
     await writeFile(join(root, STAGING_KEY_DATA_FILE), JSON.stringify([{ keyId: "a".repeat(64), algorithm: "ECDSA_SHA_256", publicKey: "-----BEGIN PUBLIC KEY-----\nAAAA\n-----END PUBLIC KEY-----\n" }]));
     await expect(assertReleaseCatalogTree(root)).resolves.toBeUndefined();
@@ -199,9 +199,9 @@ describe("the staging build path", () => {
       await mkdir(join(root, file, ".."), { recursive: true });
       await cp(new URL(`../../${file}`, import.meta.url), join(root, file));
     }
-    await mkdir(join(root, "packages/contracts/dist"), { recursive: true });
-    await writeFile(join(root, "packages/contracts/dist/catalog-build-flavor.js"), FLAVOR_DIST("release"));
-    await writeFile(join(root, "packages/contracts/dist/catalog-staging-keys.js"), KEYS_DIST("[]"));
+    await mkdir(join(root, "packages/cloud-contracts/dist"), { recursive: true });
+    await writeFile(join(root, "packages/cloud-contracts/dist/catalog-build-flavor.js"), FLAVOR_DIST("release"));
+    await writeFile(join(root, "packages/cloud-contracts/dist/catalog-staging-keys.js"), KEYS_DIST("[]"));
     await mkdir(join(root, "environments/service-catalog"), { recursive: true });
     await writeFile(join(root, STAGING_KEY_DATA_FILE), JSON.stringify([{ keyId: "c".repeat(64), algorithm: "ECDSA_SHA_256", publicKey: "-----BEGIN PUBLIC KEY-----\nAAAA\n-----END PUBLIC KEY-----\n" }]));
     // a runner that does what the commands do to this tree: the switch rewrites the files, and the build is killed half way

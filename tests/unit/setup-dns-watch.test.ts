@@ -4,7 +4,7 @@
 import { createSocket } from "node:dgram";
 import { connect, createServer } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
-import { SETUP_BLOCKED_HOSTS_MAX } from "../../packages/contracts/src/setup-run.js";
+import { SETUP_BLOCKED_HOSTS_MAX } from "@rovara-code/contracts";
 import { SetupDnsWatch, parseDnsPacket } from "../../packages/worker/src/setup-dns-watch.js";
 
 const TYPE = { A: 1, AAAA: 28, MX: 15, TXT: 16, PTR: 12, HTTPS: 65 } as const;

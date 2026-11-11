@@ -3,7 +3,8 @@
 // versions, the approvals and the learning records say afterwards.
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { LearningAcceptAnswerSchema, LearningDismissAnswerSchema, agentXError, approvalKey, orgLearningSettingsKey, orgMemberKey, orgMetaKey, projectLearningKey, projectMemberKey, type AgentId } from "../../packages/contracts/src/index.js";
+import { LearningAcceptAnswerSchema, LearningDismissAnswerSchema, agentXError, approvalKey, orgLearningSettingsKey, projectLearningKey, projectMemberKey, type AgentId } from "@rovara-code/contracts";
+import { orgMemberKey, orgMetaKey } from "@agentx/cloud-contracts";
 import { decideApproval, getAnyApproval } from "../../packages/broker/src/agents/approvals.js";
 import { publishDraft } from "../../packages/broker/src/agents/changes.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";

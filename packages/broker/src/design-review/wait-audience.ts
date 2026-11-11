@@ -5,7 +5,8 @@
 //   - 72 hours, the park and the close: the same people and the project's maintainers ("waiting on Priya for 3 days").
 //   - THE APPROVER LEFT: the configured high-risk approver is no longer an eligible member (a named person who left, a group or a maintainer set that is now empty). The remaining eligible approvers are asked; when the
 //     configured set is gone altogether, the project's maintainers are asked instead (3.7: they are asked to name one). When nobody is eligible, the requester and the company's owners are told so.
-import { type DesignReason, type DesignReviewSetting, type EditionPolicy } from "@agentx/contracts";
+import { type DesignReason, type DesignReviewSetting } from "@rovara-code/contracts";
+import { type EditionPolicy } from "@agentx/cloud-contracts";
 import { highRiskApprovers, type DesignApproverDirectory } from "./approval.js";
 import type { DesignWaitNoticeStep } from "./wait-clock.js";
 import { isHighRiskCodes } from "./risk.js";

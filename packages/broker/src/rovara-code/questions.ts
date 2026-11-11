@@ -7,11 +7,9 @@
 import { createHash } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import {
-  INTENT_NOT_WAITING_MESSAGE, INTENT_QUESTIONS_MAX, IntentAnswerRefusal, IntentAnswerSchema, UNDERSTAND_ROUNDS_MAX, agentXError, answerIntentQuestions, atLeast, hideEmailAddresses,
-  memberGrantsPk, MEMBER_GRANT_SK_PREFIX, sharedSessionsKey, SessionIdSchema, SessionLevelSchema,
-  type AgentPrincipal, type AgentSessionRecord, type SessionView, type WorkflowSnapshot,
-} from "@agentx/contracts";
+import { INTENT_NOT_WAITING_MESSAGE, INTENT_QUESTIONS_MAX, IntentAnswerRefusal, IntentAnswerSchema, UNDERSTAND_ROUNDS_MAX, agentXError, atLeast, hideEmailAddresses, memberGrantsPk, MEMBER_GRANT_SK_PREFIX, sharedSessionsKey, SessionIdSchema, SessionLevelSchema, type AgentPrincipal, type AgentSessionRecord } from "@rovara-code/contracts";
+import { type SessionView } from "@agentx/cloud-contracts";
+import { answerIntentQuestions, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { failedIndexes, type TransactItem } from "../agents/table-writes.js";
 import { requireSessionLevel, type SessionAccess } from "../agent-sessions/access.js";
 import { onlyTheEventCancelled } from "../agent-sessions/events.js";

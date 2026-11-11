@@ -1,7 +1,9 @@
 // Fix round 1 (Opus review of lr-record): one or more tests per finding, each failing without its fix.
 import { observeRowAccess } from "../../../packages/broker/src/team-record/access.js";
 import { describe, expect, it } from "vitest";
-import { recordDeleteQueueKey, recordScopeHash, teamRecordSourceHash, workspaceVectorBucketKey, erasedPersonKey, recordActorSourceHash, learningModeLockKey, teamRecordPk, type Audience } from "@agentx/contracts";
+import { recordDeleteQueueKey, recordScopeHash, teamRecordSourceHash, workspaceVectorBucketKey, erasedPersonKey, recordActorSourceHash } from "@agentx/cloud-contracts";
+import { learningModeLockKey, teamRecordPk } from "@rovara-code/contracts";
+import { type Audience } from "@agentx/cloud-contracts";
 import { runDeleteWorker } from "../../../packages/broker/src/team-record/delete-worker.js";
 import { erasePerson, eraseProject, eraseWorkspace } from "../../../packages/broker/src/team-record/erase.js";
 import { pastWork, recordSearch, recordFacts, type RecordQueryDependencies, type PastWorkTask } from "../../../packages/broker/src/team-record/query.js";

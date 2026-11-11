@@ -5,7 +5,8 @@
 //  - `tableMergeIndex`: a Rovara pull request's merge commit, in both directions (pull request to commit for the task's lessons, commit to task for a revert named by commit). Task ids and shas only.
 import { createHash } from "node:crypto";
 import { DeleteCommand, GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
-import { TEAM_RECORD_GSI2, OrgIdSchema, recordActorIndexValue, teamRecordPk, type OrgId } from "@agentx/contracts";
+import { TEAM_RECORD_GSI2, recordActorIndexValue } from "@agentx/cloud-contracts";
+import { OrgIdSchema, teamRecordPk, type OrgId } from "@rovara-code/contracts";
 import type { ActorResolverPort, OnceClaimPort, PushIndexPort, PushRecord, RovaraPullRequest } from "./sources/ports.js";
 import { sourceOfHost } from "./sources/codehost.js";
 import type { TeamRecordTable } from "./types.js";

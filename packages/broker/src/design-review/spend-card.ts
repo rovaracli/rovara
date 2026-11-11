@@ -1,7 +1,7 @@
 // Design review stage (DR8): the `approve_spend` card SOURCE for the cost gate (3.6). It turns a gate decision (`estimate.ts`, `gateDesignReviewCost`) into the pending item the decision projector
 // (`decisions/project.ts`) makes a card from. Pure: no store, no clock, no route. The card's tier comes from `riskTierOf` alone (by the amount asked; "cost unavailable" asks for nothing priced, so it is low),
 // and the choices are `choose` actions, each a POST of this server. The route that receives them (and re-checks the caller's live authority, the skip rules and the lock) is wiring pending (DR7/DR11).
-import { type DesignReviewTier } from "@agentx/contracts";
+import { type DesignReviewTier } from "@rovara-code/contracts";
 import type { DecisionItem } from "../decisions/project.js";
 import type { DesignReviewCapGate, DesignSpendChoice } from "./estimate.js";
 

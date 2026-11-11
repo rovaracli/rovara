@@ -2,7 +2,7 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
-import { ASANA_PROJECT_TOOL_ACCESS, itemPathProblems } from "../../packages/contracts/src/index.js";
+import { ASANA_PROJECT_TOOL_ACCESS, itemPathProblems } from "@rovara-code/contracts";
 import {
   ASANA_CREATE_TASK_ITEM_KEYS, ASANA_ITEM_ARGUMENTS, ASANA_MCP_ENDPOINT, ASANA_TASK_REFERENCES, ASANA_TOKEN_ENDPOINT, ASANA_UPDATE_TASK_ITEM_KEYS, asanaBinder, asanaConnector, asanaProjectGuard, executeTool, GuardRejection, presentCatalog, reviewTools,
   type AsanaProjectScope, type ConnectorContext, type Invocation, type Ledger, type McpToolResult, type ToolApproval,

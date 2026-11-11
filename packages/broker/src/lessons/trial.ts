@@ -8,7 +8,7 @@
 // Fix round 1 (Opus review): the lesson's WORDS must come from the member's correction and the cited code (`lessonClaimsSupported`), every cited span must be a member correction (`memberCorrectionOf`),
 // risky wording families and non-fact/convention/pitfall types never trial (`hasRiskyTrialWording`, `TRIAL_TYPES`), and a trial lesson is live only while every setting in force allows it
 // (`ResolvedLearning.trialAllowed`: Standard, mode On, no company approval floor, no required group, no two-person requirement).
-import { foldForMatching, isMeaningfulAnchor } from "@agentx/contracts";
+import { foldForMatching, isMeaningfulAnchor } from "@rovara-code/contracts";
 import { emitAudit, modeAllows, requireAudit, type LearningPreset, type LearningMode } from "./policy.js";
 import type { LessonDeps } from "./ports.js";
 import { mayNameInRepository, viewedForLessons } from "./project-repo-audience.js";

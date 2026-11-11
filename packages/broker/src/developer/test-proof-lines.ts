@@ -2,7 +2,7 @@
 // test-proof.json at the end of a CHECKS run, bound to the candidate digest; this reads it at publication. Informational only: no line
 // here ever blocks a pull request. A proof bound to any other candidate, one that does not parse, and one from another workspace's
 // key are ignored. Quoted labels are redacted and made inert by the caller's `inert` (developer-tasks.ts passes inertPlanLine).
-import { TEST_PROOF_ARTIFACT, TestProofSchema, redactText, type TestProof } from "@agentx/contracts";
+import { TEST_PROOF_ARTIFACT, TestProofSchema, redactText, type TestProof } from "@rovara-code/contracts";
 import { byCreated, type OperationFacts } from "./task-records.js";
 
 const OPERATIONS_READ = 10;

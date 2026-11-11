@@ -1,10 +1,6 @@
 // A CheckRunner over the in-memory model: checks are what the model holds for a revision, runs are started and finished by the test.
 import { createHash } from "node:crypto";
-import {
-  agentXError, CheckStartRequestSchema, CheckTargetSchema, HostScopeSchema,
-  type Check, type CheckConclusion, type CheckRunRef, type CheckRunner, type CheckRunnerCapabilities, type CheckStartRequest, type CheckTarget, type HostScope, type ReadBudget,
-  type UntrustedText,
-} from "@agentx/contracts";
+import { agentXError, CheckStartRequestSchema, CheckTargetSchema, HostScopeSchema, type Check, type CheckConclusion, type CheckRunRef, type CheckRunner, type CheckRunnerCapabilities, type CheckStartRequest, type CheckTarget, type HostScope, type ReadBudget, type UntrustedText } from "@rovara-code/contracts";
 import type { FakeHostModel } from "./model.js";
 
 export const FAKE_RUNNER_KIND = "fake-checks";

@@ -3,7 +3,7 @@
 // same hardening profile holds. No Docker: a fake daemon that answers the few commands the launcher uses.
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { ServiceCatalogSchema, type CatalogEntry } from "../../packages/contracts/src/service-catalog.js";
+import { ServiceCatalogSchema, type CatalogEntry } from "@rovara-code/contracts";
 import { runNetworkAddresses, runNetworkBridge, runNetworkHelperIp, runNetworkLabelArgs, runNetworkName, type ServicesNetwork } from "../../packages/worker/src/run-network.js";
 import { HelperStartError, startHelpers, type HelperFiles, type HelperRequest } from "../../packages/worker/src/service-helpers.js";
 import { fakeServicesDocker } from "../support/fake-services-docker.js";

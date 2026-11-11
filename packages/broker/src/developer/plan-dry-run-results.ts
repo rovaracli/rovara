@@ -1,8 +1,5 @@
 import { createHash } from "node:crypto";
-import {
-  PLAN_DRY_RUN_FEATURE, PlanDryRunReportSchema, planDryRunCommandSha256, planQualityFinding,
-  type OriginalCodeResult, type PlanDryRunClass, type PlanDryRunUnavailableReason, type PlanQualityFinding,
-} from "@agentx/contracts";
+import { PLAN_DRY_RUN_FEATURE, PlanDryRunReportSchema, planDryRunCommandSha256, planQualityFinding, type OriginalCodeResult, type PlanDryRunClass, type PlanDryRunUnavailableReason, type PlanQualityFinding } from "@rovara-code/contracts";
 
 /**
  * PLANDRYRUN, the control plane's side: reads what the planning worker reported about trying a coding plan's proposed checks on the unchanged code, and turns it into the

@@ -2,17 +2,13 @@
 // really sealed), a fake KMS and a fake intake queue, with a world of org A (12 records, 10 sealed) and org B (3 records).
 // Shared by audit-routes.test.ts and audit-view-page.test.ts.
 import { expect } from "vitest";
-import {
-  AuditEventInputSchema,
-  auditEventId,
-  type AuditEventInput,
-} from "@agentx/contracts";
+import { AuditEventInputSchema, auditEventId, type AuditEventInput } from "@agentx/cloud-contracts";
 import { appendEvent, type AppenderDeps } from "../../packages/broker/src/audit/appender.js";
 import type { AuditExportClientDeps, AuditExportEvent } from "../../packages/broker/src/audit/export.js";
 import { AuditKeyring } from "../../packages/broker/src/audit/keyring.js";
 import type { AuditReadDeps } from "../../packages/broker/src/audit/reader.js";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
-import { orgMetaKey } from "../../packages/contracts/src/org-node.js";
+import { orgMetaKey } from "../../packages/cloud-contracts/src/org-node.js";
 import { FakeAuditSqs } from "./fake-audit-sqs.js";
 import { FakeKms } from "./fake-kms.js";
 import { A, B, LEDGER, SEALS, at, harness, iso, run, type Harness } from "./audit-anchor-harness.js";

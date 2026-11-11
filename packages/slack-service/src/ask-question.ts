@@ -4,7 +4,7 @@
 //
 // The service never decides who may ask or what the turn may know: the broker built the context for the Ask's audience and the asker's level at this moment, or refused (then the Ask is failed, in
 // fixed words, and nothing is retried in the background). The question's text is kept only in this process while it runs, and is never logged.
-import { AskAnsweredRequestSchema, AskTurnResultSchema, ASK_ANSWER_MAX_CHARS, ASK_LIMITS, type AskAnsweredRequest, type AskQueueMessage, type AskRef, type AskTurnResult } from "@agentx/contracts";
+import { AskAnsweredRequestSchema, AskTurnResultSchema, ASK_ANSWER_MAX_CHARS, ASK_LIMITS, type AskAnsweredRequest, type AskQueueMessage, type AskRef, type AskTurnResult } from "@rovara-code/contracts";
 import { NO_TEXT_RESPONSE } from "@agentx/orchestrator/orchestrator";
 import type { ServiceLog } from "./processor.js";
 

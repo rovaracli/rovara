@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { canonicalJson } from "@agentx/contracts";
+import { canonicalJson } from "@rovara-code/contracts";
 import { admitProjectSetupRuntime, projectSetupRuntimeKey, ProjectSetupRuntimeRecordSchema } from "../../packages/broker/src/aws/project-setup-runtime-catalog.js";
 
 const binding = {

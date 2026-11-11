@@ -2,7 +2,7 @@
 // ran. The pull request says what each was backed by, unknown calls are counted as registrable domain + count, and a pack without dependencies is what it was.
 import { GetObjectCommand, PutObjectCommand, type S3Client } from "@aws-sdk/client-s3";
 import { describe, expect, it } from "vitest";
-import { EvidencePackSchema, EvidenceRawSchema, TestEnvironmentBodySchema, projectMetaKey, projectRevisionKey, type CheckEntry, type EvidenceEnvironment, type OrgId, type EvidenceRaw } from "@agentx/contracts";
+import { EvidencePackSchema, EvidenceRawSchema, TestEnvironmentBodySchema, projectMetaKey, projectRevisionKey, type CheckEntry, type EvidenceEnvironment, type OrgId, type EvidenceRaw } from "@rovara-code/contracts";
 import { BLOCKED_CALLS_ITEM_ID, NO_USAGE_RECORD_ITEM, dependencyEvidenceOf } from "../../packages/broker/src/rovara-code/dependency-evidence.js";
 import { buildEvidencePack } from "../../packages/broker/src/rovara-code/evidence-pack.js";
 import { keepEvidence, loadEvidencePack, type KeepEvidenceDeps } from "../../packages/broker/src/rovara-code/evidence-keep.js";

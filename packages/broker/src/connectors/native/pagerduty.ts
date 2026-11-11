@@ -10,7 +10,7 @@
 //   list_oncalls               GET /oncalls (escalation_policy_ids[])    (oncalls[].user, escalation_policy, escalation_level, start, end)
 //   check                      GET /abilities
 // Not read from the documentation pages: `GET /services/{id}` (used to learn a service's escalation policy; it is PagerDuty's long-standing service route).
-import { PagerDutyConnectorSchema, type OrgConnection, type PagerDutyConnectorConfig } from "@agentx/contracts";
+import { PagerDutyConnectorSchema, type OrgConnection, type PagerDutyConnectorConfig } from "@rovara-code/contracts";
 import { NativeCheckFailed, NativeToolRefusal, type NativeConnectorSpec, type NativeTool, type NativeToolContext } from "./runtime.js";
 import { VendorFetchError } from "./vendor-fetch.js";
 

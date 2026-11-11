@@ -1,4 +1,4 @@
-import { DeveloperTaskViewReaderSchema, SessionAnchorRefSchema, type SessionAnchorRef } from "@agentx/contracts/web";
+import { DeveloperTaskViewReaderSchema, SessionAnchorRefSchema, type SessionAnchorRef } from "@agentx/cloud-contracts/web";
 import type { ReadSession } from "./SessionHeader.js";
 export type ReadTask = ReturnType<typeof DeveloperTaskViewReaderSchema.parse>;
 export type CommentOnPart = (anchor: SessionAnchorRef, source: HTMLElement) => void;

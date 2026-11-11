@@ -4,7 +4,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { BatchGetCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it, vi } from "vitest";
-import { agentSessionKey, agentXError, approvalKey, approverIndexKey, changesKey, liveSessionKey, mySessionsKey, orgMemberKey, sessionChannel, sessionEventId, sharedSessionsKey, userChannel, type OrgId, type Payer } from "@agentx/contracts";
+import { agentSessionKey, agentXError, approvalKey, approverIndexKey, changesKey, liveSessionKey, mySessionsKey, sessionEventId, sharedSessionsKey, type OrgId, type Payer } from "@rovara-code/contracts";
+import { orgMemberKey, sessionChannel, userChannel } from "@agentx/cloud-contracts";
 import { approvalDecideKind } from "../../packages/broker/src/agents/approval-decide-kind.js";
 import { createWriteApprovalRecord, getAnyApproval, getApprovalSubjectHandler, getApproverRule, listApprovalsFor, mayDecideApproval, type AnyApprovalRecord, type ApprovalDependencies } from "../../packages/broker/src/agents/approvals.js";
 import { WRITE_APPROVER_RULE } from "../../packages/broker/src/agents/write-gate.js";
@@ -21,7 +22,7 @@ import { DECIDE_COOKIE, DecideStore, csrfTokenFor, mintConfirmUrl, requireDecide
 import { resolveTaskDispatchPeople } from "../../packages/broker/src/developer/task-people.js";
 import { effectiveTaskOwner, taskIndexKey, taskKey, taskOwnerKey, type DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
 import { mintTagsFor, paymentOfTask } from "../../packages/broker/src/spend/payer.js";
-import { NeedsConfirmationSchema, SessionEventSchema } from "../../packages/contracts/src/index.js";
+import { NeedsConfirmationSchema, SessionEventSchema } from "@rovara-code/contracts";
 import { FORMER_MEMBER_NAME, chosenNameKey, eraseChosenName } from "../../packages/broker/src/developer/chosen-name.js";
 import { forgetResolvedNames } from "../../packages/broker/src/developer/name-resolver.js";
 import { placeholderDisplayName } from "../../packages/broker/src/developer/person-name.js";

@@ -15,17 +15,7 @@ import type { S3Client } from "@aws-sdk/client-s3";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { checkChain, genesisHash, recordHash, verifyBundle, type AuditBundleV1, type AuditRecordV1 } from "@rovara/audit-verifier";
 import { runCli } from "../../packages/audit-verifier/src/cli.js";
-import {
-  AUDIT_FLUSH_DEADLINE_MS,
-  AUDIT_TSA_ENDPOINTS,
-  AUDIT_TSA_SPACING_MS,
-  AuditEventInputSchema,
-  auditOperatorId,
-  sealHash,
-  type AuditEventInput,
-  type OrgRole,
-  type OrgSealV1,
-} from "@agentx/contracts";
+import { AUDIT_FLUSH_DEADLINE_MS, AUDIT_TSA_ENDPOINTS, AUDIT_TSA_SPACING_MS, AuditEventInputSchema, auditOperatorId, sealHash, type AuditEventInput, type OrgRole, type OrgSealV1 } from "@agentx/cloud-contracts";
 import type { AppenderDeps } from "../../packages/broker/src/audit/appender.js";
 import { processAuditBatch } from "../../packages/broker/src/audit/appender-handler.js";
 import { drainAuditPending } from "../../packages/broker/src/audit/drain.js";
@@ -52,7 +42,7 @@ import type { AdaptedHttpRequest } from "../../packages/broker/src/aws/lambda.js
 import { CSRF_COOKIE, SESSION_COOKIE, type WebResponse } from "../../packages/broker/src/aws/web-session.js";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { writeBudgets, type BudgetDependencies } from "../../packages/broker/src/org/budget.js";
-import { orgMetaKey } from "../../packages/contracts/src/org-node.js";
+import { orgMetaKey } from "../../packages/cloud-contracts/src/org-node.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import {
   A, B, BUCKET, C, E0, E1, LEDGER, SEALS, at, crash, eventsOf, harness, iso, orgOf, run, snapshot, stateOf, storedRecords, type Command,

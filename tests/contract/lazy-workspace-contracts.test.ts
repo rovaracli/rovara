@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { SlackThreadPrepareResultSchema, SlackThreadWorkspaceResultSchema } from "../../packages/contracts/src/slack.js";
-import { WorkspaceInstanceSchema, WorkspaceStatusSchema } from "../../packages/contracts/src/workspace.js";
+import { SlackThreadPrepareResultSchema, SlackThreadWorkspaceResultSchema } from "@rovara-code/contracts";
+import { WorkspaceInstanceSchema, WorkspaceStatusSchema } from "@rovara-code/contracts";
 
 const PRE_LAZY_STATUSES = ["PREPARING", "READY", "PREPARATION_FAILED", "BUSY", "UNHEALTHY", "STOPPED", "RESUMING", "CLOSING", "CLOSED"];
 const workspaceId = "11111111-1111-4111-8111-111111111111";

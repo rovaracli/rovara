@@ -3,9 +3,8 @@
 // a newer base that loosens something the less-safe rules cover waits for a second person, one that only adds stricter steps publishes at once. Running tasks keep their version.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import {
-  BUILTIN_AGENTS, HowWeWorkViewSchema, ROVARA_CODE_AGENT_ID, agentXError, builtinDefaultPin, builtinRecipe, currentBuiltinVersion, type AgentId, type OrgRole, type ResolvedRecipe,
-} from "../../packages/contracts/src/index.js";
+import { BUILTIN_AGENTS, HowWeWorkViewSchema, ROVARA_CODE_AGENT_ID, agentXError, builtinDefaultPin, builtinRecipe, currentBuiltinVersion, type AgentId, type ResolvedRecipe } from "@rovara-code/contracts";
+import { type OrgRole } from "@agentx/cloud-contracts";
 import { decideApproval } from "../../packages/broker/src/agents/approvals.js";
 import { routeAgentRequest } from "../../packages/broker/src/agents/routes.js";
 import { publishDraft, resolveRecipe } from "../../packages/broker/src/agents/changes.js";

@@ -7,10 +7,12 @@
 // Slice 1 starts real software from the catalog only (backing `local`, no substitute image). Slice 2 adds Rovara local AWS (backing `emulated`, entry `local-aws`) for exactly S3, SQS and DynamoDB. Slice 3 adds a fake (backing `fake`,
 // entry `fake-server`, which runs from the worker's own image) for an APPROVED, digest-pinned fixture set of this organisation, answering requests with no recording with an error (`fail`). Every other backing, and every
 // other AWS service, is "not available yet", at approval (`dependenciesStartableNow`) and again here.
-import { TEST_SERVICES_AWS_PLAN_SERVICES, emulatorServiceTier, loadSignedCatalog, type CatalogEntry, type CatalogTrustContext, type TaskDependencyPlan, type TestEnvDependency, type TestEnvironmentBody, type VerifiedCatalog, TaskDependencyPlanSchema, TASK_DEPENDENCY_PLAN_MAX, catalogEntryById, catalogIdName, catalogPrepullList } from "@agentx/contracts";
+import { TEST_SERVICES_AWS_PLAN_SERVICES, emulatorServiceTier, type CatalogEntry, type CatalogTrustContext, type TestEnvDependency, type TestEnvironmentBody, type VerifiedCatalog, TASK_DEPENDENCY_PLAN_MAX, catalogEntryById, catalogIdName, catalogPrepullList } from "@rovara-code/contracts";
+import { type TaskDependencyPlan, TaskDependencyPlanSchema } from "@agentx/cloud-contracts";
+import { loadSignedCatalog } from "@agentx/cloud-contracts";
 import { STATEFUL_KINDS, chooseBacking, effectiveAllowedBackings, type BackingPlace, type SkipReason } from "./backing-choice.js";
 import { COMPANY_IMAGE_REFUSAL_WORDS, serviceImageServed, type CompanyImage } from "./company-images.js";
-import type { CompanyImageMirrorRef } from "@agentx/contracts";
+import type { CompanyImageMirrorRef } from "@agentx/cloud-contracts";
 import type { ApprovedFixture } from "./fixture-lookup.js";
 
 /**

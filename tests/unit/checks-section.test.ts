@@ -1,16 +1,6 @@
 // Spec 051 Task 5 (FR-008): the pull request's checks section is deterministic text, and only a regression is a draft.
 import { describe, expect, it } from "vitest";
-import {
-  AGENTX_PREAMBLE_VERSION,
-  agentxPreambleSha256,
-  checkOutputTail,
-  checksForSection,
-  checksMakeDraft,
-  checksSection,
-  nextStandingFailures,
-  type CheckEntry,
-  type CheckReport,
-} from "@agentx/contracts";
+import { AGENTX_PREAMBLE_VERSION, agentxPreambleSha256, checkOutputTail, checksForSection, checksMakeDraft, checksSection, nextStandingFailures, type CheckEntry, type CheckReport } from "@rovara-code/contracts";
 
 const entry = (overrides: Partial<CheckEntry>): CheckEntry => ({
   id: "readiness:0", label: "npm test", source: "project", before: "passed", after: "passed", class: "passing",

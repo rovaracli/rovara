@@ -5,7 +5,7 @@
 import { App, CfnParameter, Stack } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
-import { SERVICE_CATALOG_REPOSITORIES, catalogRepositoryName } from "@agentx/contracts";
+import { SERVICE_CATALOG_REPOSITORIES, catalogRepositoryName } from "@rovara-code/contracts";
 import { SERVICE_CATALOG_KEEP_TAGGED, attachServiceCatalogImages, serviceCatalogLifecyclePolicy } from "../../infra/lib/service-catalog-images.js";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { defaultBoundaryStatements, serviceRoleStatements, type PolicyScope } from "../../infra/lib/access-policies.js";

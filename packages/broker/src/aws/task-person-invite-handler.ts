@@ -1,18 +1,5 @@
 import { randomUUID } from "node:crypto";
-import {
-  TaskPersonInviteClaimRequestSchema,
-  TaskPersonInviteExecutionReceiptSchema,
-  TaskPersonInviteOutcomeSchema,
-  SlackTeamIdSchema,
-  SlackChannelIdSchema,
-  SlackUserIdSchema,
-  WorkflowStageSchema,
-  WorkflowStateSchema,
-  agentXError,
-  type TaskPersonInviteClaimRequest,
-  type TaskPersonInviteExecutionReceipt,
-  type TaskPersonInviteOutcome,
-} from "@agentx/contracts";
+import { TaskPersonInviteClaimRequestSchema, TaskPersonInviteExecutionReceiptSchema, TaskPersonInviteOutcomeSchema, SlackTeamIdSchema, SlackChannelIdSchema, SlackUserIdSchema, WorkflowStageSchema, WorkflowStateSchema, agentXError, type TaskPersonInviteClaimRequest, type TaskPersonInviteExecutionReceipt, type TaskPersonInviteOutcome } from "@rovara-code/contracts";
 import type { TaskAuthorityAdmission } from "./task-authority-admission.js";
 import type { DeveloperTaskRecord } from "../developer/task-records.js";
 import { taskOwnerKey } from "../developer/task-records.js";

@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import { App } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { DeleteObjectCommand, GetObjectCommand, HeadObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
-import { E2E_ARTIFACT_RETENTION_TAG_KEY, EVIDENCE_ARTIFACT_MAX_BYTES, EVIDENCE_ARTIFACT_RETENTION, buildApiSample, type EvidenceView } from "../../packages/contracts/src/index.js";
+import { E2E_ARTIFACT_RETENTION_TAG_KEY, EVIDENCE_ARTIFACT_MAX_BYTES, EVIDENCE_ARTIFACT_RETENTION, buildApiSample, type EvidenceView } from "@rovara-code/contracts";
 import { EVIDENCE_PRESIGN_SECONDS, deleteEvidenceArtifacts, evidenceArtifactKey, evidenceBytesAreKind, evidenceTagging, serveEvidenceArtifact, statEvidenceArtifacts, storeEvidenceArtifacts, type EvidenceDownloadDependencies } from "../../packages/broker/src/aws/evidence-artifacts.js";
 import { evidenceDownloadAudit, evidenceDownloadResponse, handleEvidenceDownload } from "../../packages/broker/src/aws/evidence-download-route.js";
 import { evidenceViewOf } from "../../packages/broker/src/rovara-code/evidence-pack.js";

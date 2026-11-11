@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it, vi } from "vitest";
-import { WorkspaceInstanceSchema, workspaceRecordFields } from "../../packages/contracts/src/workspace.js";
+import { WorkspaceInstanceSchema, workspaceRecordFields } from "@rovara-code/contracts";
 import { createDispatcherHandler } from "../../packages/broker/src/aws/dispatcher.js";
 import { parseRuntimeBinding } from "../../packages/broker/src/aws/lambda.js";
 import {
@@ -9,7 +9,7 @@ import {
   registerSlackProject, serviceCall,
 } from "../support/slack-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
-import { projectRevisionKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { projectRevisionKey } from "@rovara-code/contracts";
 
 // Representative wire values from the retired architecture, kept with its design history.
 const routing = JSON.parse(readFileSync(new URL("../../specs/036-ec2-only-runtime/historical-routing.json", import.meta.url), "utf8")) as {

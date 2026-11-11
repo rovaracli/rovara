@@ -6,41 +6,8 @@ import { undoCodeShare } from "../rovara-code/sharing.js";
 import { createHash } from "node:crypto";
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import {
-  AgentPrincipalSchema,
-  CHANGES_FEED_DAYS,
-  INDEX_EXPIRY_ATTRIBUTE,
-  LEVEL_WORDS,
-  NeedsConfirmationSchema,
-  SESSION_REVISION_CONFLICT_MESSAGE,
-  SESSION_RETENTION_DAYS,
-  SESSION_SHARES_MAX,
-  SessionLevelSchema,
-  agentSessionKey,
-  agentXError,
-  changesKey,
-  cleanSessionName,
-  orgMemberKey,
-  orgProjectCatalogKey,
-  principalKey,
-  projectMemberKey,
-  sessionEventId,
-  sessionLevelRequiredMessage,
-  sessionRequestKey,
-  sessionViewerOnlyMessage,
-  sharedSessionsKey,
-  OrgRoleSchema,
-  type AgentPrincipal,
-  type AgentSessionRecord,
-  type ApprovalId,
-  type AuditProof,
-  type NeedsConfirmation,
-  type OrgId,
-  type OrgRole,
-  type SessionLevel,
-  atLeast,
-  hideEmailAddresses,
-} from "@agentx/contracts";
+import { AgentPrincipalSchema, CHANGES_FEED_DAYS, INDEX_EXPIRY_ATTRIBUTE, LEVEL_WORDS, NeedsConfirmationSchema, SESSION_REVISION_CONFLICT_MESSAGE, SESSION_RETENTION_DAYS, SESSION_SHARES_MAX, SessionLevelSchema, agentSessionKey, agentXError, changesKey, cleanSessionName, orgProjectCatalogKey, principalKey, projectMemberKey, sessionEventId, sessionLevelRequiredMessage, sessionRequestKey, sessionViewerOnlyMessage, sharedSessionsKey, type AgentPrincipal, type AgentSessionRecord, type ApprovalId, type NeedsConfirmation, type OrgId, type SessionLevel, atLeast, hideEmailAddresses } from "@rovara-code/contracts";
+import { orgMemberKey, OrgRoleSchema, type AuditProof, type OrgRole } from "@agentx/cloud-contracts";
 import type { DeveloperSignInStore } from "../developer/store.js";
 import { grantRoleOf } from "../developer/project-roles.js";
 import {

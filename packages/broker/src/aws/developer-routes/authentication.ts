@@ -1,5 +1,6 @@
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { DEVELOPER_TOKEN_AUDIENCE, agentXError, singleOrgIdForEnv, type DeveloperSignInMethod, type OrgId, type OrgRole, OrgIdSchema, OrgRoleSchema } from "@agentx/contracts";
+import { DEVELOPER_TOKEN_AUDIENCE, agentXError, singleOrgIdForEnv, type OrgId, OrgIdSchema } from "@rovara-code/contracts";
+import { type DeveloperSignInMethod, type OrgRole, OrgRoleSchema } from "@agentx/cloud-contracts";
 import { methodAllowedByEdition, sessionWithinEditionCap } from "../../developer/edition-methods.js";
 import { safeDisplayName } from "../../developer/person-name.js";
 import { requireAuditorEdition } from "../../org/auditor.js";

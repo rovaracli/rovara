@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import type { ChatGptConnectionView, Ec2RuntimeBinding, TaskPersonProofRequest, TaskPersonProofResponse, WorkflowSnapshot } from "@agentx/contracts";
+import type { ChatGptConnectionView, Ec2RuntimeBinding, TaskPersonProofRequest, TaskPersonProofResponse } from "@rovara-code/contracts";
+import type { WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { createEc2Delivery, type Ec2DeliveryDependencies } from "../../packages/broker/src/aws/ec2-delivery.js";
 import type { Ec2OutboxRecord } from "../../packages/broker/src/aws/lambda.js";

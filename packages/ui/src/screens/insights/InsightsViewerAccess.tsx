@@ -1,6 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { AppOrgMembersResponseReaderSchema } from "@agentx/contracts/web";
+import { AppOrgMembersResponseReaderSchema } from "@agentx/cloud-contracts/web";
 import { useAppHost } from "../../host.js";
 import { createApiClient } from "../../api/client.js";
 import { ApiError } from "../../api/errors.js";

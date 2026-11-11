@@ -2,7 +2,7 @@
 // file holds what the learning lane needs so it can build against the design now. Names follow the design, so R1 can replace the schemas in place.
 // All schemas are strict: a field this build does not know (a tool, a grant, a budget) is refused, which is control C6.
 import { z } from "zod";
-import { LessonStageSchema, LessonTypeSchema, CodeCitationSchema, type LessonStage, type LessonType } from "@agentx/contracts";
+import { LessonStageSchema, LessonTypeSchema, CodeCitationSchema, type LessonStage, type LessonType } from "@rovara-code/contracts";
 
 export type { LessonStage, LessonType };
 

@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { archiveOrgProjects } from "../../packages/broker/src/org/project-archive.js";
 import { clearProjectPartitionJob, runLearningWalk, type ProjectJob } from "../../packages/broker/src/learning/walk.js";
-import { learningWalkKey, projectLearningKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { learningWalkKey, projectLearningKey } from "@rovara-code/contracts";
 import { NOW_MS, ORG_B, makeWorld, seedCorrection, seedItem, seedProject, type World } from "../support/learning-world.js";
 import { TEST_ORG } from "../support/orgs.js";
 

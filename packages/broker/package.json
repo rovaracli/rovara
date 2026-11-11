@@ -12,7 +12,8 @@
   },
   "types": "./dist/index.d.ts",
   "dependencies": {
-    "@agentx/contracts": "0.1.0",
+    "@agentx/cloud-contracts": "0.1.0",
+    "@rovara-code/contracts": "0.1.0",
     "@agentx/gateway": "0.1.0",
     "@agentx/model-runtime": "0.1.0",
     "@agentx/verifier": "0.1.0",

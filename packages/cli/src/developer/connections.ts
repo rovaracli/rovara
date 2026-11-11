@@ -3,7 +3,7 @@
 // (hidden on a terminal), sent once in the request body and never printed, logged or kept; the control plane stores it where only the
 // organization's own role session can read it, and never returns it.
 import { randomUUID } from "node:crypto";
-import { ConnectionAccessSchema, agentXError } from "@agentx/contracts";
+import { ConnectionAccessSchema, agentXError } from "@rovara-code/contracts";
 import { z } from "zod";
 import { sanitizeServerText } from "../auth.js";
 import { developerRequest } from "./commands.js";

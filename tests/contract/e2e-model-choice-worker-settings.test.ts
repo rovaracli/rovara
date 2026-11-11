@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { WORKER_SETTING_PARAMETERS, chunkParameterNames } from "../../packages/contracts/src/session.js";
+import { WORKER_SETTING_PARAMETERS, chunkParameterNames } from "@rovara-code/contracts";
 
 // M1.4 Task 4.10A, test 9: the AI navigation model is a setting the broker reads, never a worker boot variable, and the code that reads every other worker setting copes with it.
 

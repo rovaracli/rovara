@@ -3,13 +3,13 @@
 // MCP-started Quick task to its draft PR, a Slack-started task decided through MCP, each recovery tool against its Slack
 // button, PR feedback decided through MCP [R4, decision D4], and agentx_get_task's next step at every stage.
 import { ensureTaskSession } from "../../../packages/broker/src/agent-sessions/create.js";
-import { agentSessionKey, projectMemberKey } from "@agentx/contracts";
-import { slackBindingPk } from "../../../packages/contracts/src/org-scoped-keys.js";
+import { agentSessionKey, projectMemberKey } from "@rovara-code/contracts";
+import { slackBindingPk } from "@rovara-code/contracts";
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { describe, expect, it } from "vitest";
-import { DeveloperSignInMethodSchema, SlackUserIdSchema, SLACK_OIDC_ISSUER, openReviewFindings, TaskPersonInviteClaimRequestSchema, type TaskPeopleDisplayReadRequest,
-  type TaskPersonProofRequest, type TaskPersonInviteClaimRequest, type TaskPersonInviteExecutionReceipt } from "@agentx/contracts";
+import { DeveloperSignInMethodSchema, openReviewFindings } from "@agentx/cloud-contracts";
+import { SlackUserIdSchema, SLACK_OIDC_ISSUER, TaskPersonInviteClaimRequestSchema, type TaskPeopleDisplayReadRequest, type TaskPersonProofRequest, type TaskPersonInviteClaimRequest, type TaskPersonInviteExecutionReceipt } from "@rovara-code/contracts";
 import { developerIdForSlackUser } from "../../../packages/broker/src/aws/admin-actions.js";
 import type { CheckTaskPerson } from "../../../packages/broker/src/developer/task-people.js";
 import { taskOwnerKey } from "../../../packages/broker/src/developer/task-records.js";
@@ -28,7 +28,7 @@ import { visibleSlackText } from "../../support/strict-slack.js";
 import { SLACK_MAYA, createWorkflowE2E, type WorkflowE2E } from "../../support/workflow-e2e.js";
 import { EDITS, MERGED, PLAN, PUSHED_FIX, actionIds, atPlanReview, editsOrFix, journeySuite, openDraftPr, runs, said } from "../../support/workflow-e2e-journeys.js";
 import { PAGE_ORIGIN } from "../../support/page-browser.js";
-import { memberGrantsPk, projectPk } from "../../../packages/contracts/src/org-scoped-keys.js";
+import { memberGrantsPk, projectPk } from "@rovara-code/contracts";
 import { TEST_ORG } from "../../support/orgs.js";
 
 const WAITING_FOR_MERGE = "Waiting for the pull request to be merged. Review and merge it on GitHub; the task finishes when it's merged.";

@@ -102,7 +102,7 @@ it("a member sees the providers but cannot add, check or remove", () => {
 
 it("opens the account menu on its Leave step from an invite to another company, and leaves nothing without the click", async () => {
  const { AccountMenu } = await import("../../packages/ui/src/shell/AccountMenu.js");
- const { AppNavSchema } = await import("@agentx/contracts/web");
+ const { AppNavSchema } = await import("@agentx/cloud-contracts/web");
  const nav = AppNavSchema.parse({ me: { developerId: "a".repeat(64), name: "Priya", orgRole: "owner" }, org: { name: "Trial team" }, homeCount: 0, projects: [], shared: { agents: [], sessions: [] }, features: { admin: true, localAgents: false, usage: false, chains: false, describe: false, notices: false } });
  const g = fakeHost(async () => ({ status: 200, body: me([]) }));g.host.currentPath = () => "/app?account=leave";
  const query = createQueryClient(), ui = renderUi(h(AppHostProvider, { host: g.host, children: h(QueryClientProvider, { client: query, children: h(AccountMenu, { nav }) }) }));

@@ -2,7 +2,8 @@
 // the liveness check of its task) are judged by the system owner's own standing: the company is open and the project is active.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { agentXError, isSystemOwnerId, orgMetaKey, projectMetaKey, projectRevisionKey, systemOwnerIdOf, systemOwnerName } from "../../packages/contracts/src/index.js";
+import { agentXError, isSystemOwnerId, projectMetaKey, projectRevisionKey, systemOwnerIdOf, systemOwnerName } from "@rovara-code/contracts";
+import { orgMetaKey } from "@agentx/cloud-contracts";
 import type { Ec2OutboxRecord } from "../../packages/broker/src/aws/lambda.js";
 import { guardTaskDispatch } from "../../packages/broker/src/aws/task-dispatch-access.js";
 import { checkProjectAccess } from "../../packages/broker/src/aws/developer-routes/project-access.js";

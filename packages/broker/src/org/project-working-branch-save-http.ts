@@ -1,6 +1,6 @@
 // Browser-only setting exposure. CLI and task consumers are not released.
 import { z } from "zod";
-import { AgentXNameSchema, ProjectWorkingBranchReceiptSchema, ProjectWorkingBranchSaveResultSchema, agentXError, orgScoped } from "@agentx/contracts";
+import { AgentXNameSchema, ProjectWorkingBranchReceiptSchema, ProjectWorkingBranchSaveResultSchema, agentXError, orgScoped } from "@rovara-code/contracts";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "../aws/developer-routes.js";
 import { takeRateAt } from "../developer/page-comments.js";
 import { readProjectLifecycleAuthority as authority, readProjectLifecycleRecord as read } from "./reviewed-project-archive.js";

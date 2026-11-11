@@ -1,7 +1,7 @@
 // Enterprise foundations, task P3: GitHub Actions as a CheckRunner. A listing is the checks GitHub reports on a pull request's head (the same read merge tracking
 // makes), and a log is a job's log tail. It wraps `GitHubAppCredentialProvider`; `github-app.ts` is not edited. It lists by change request only: GitHub's read
 // is a pull request's status, so a bare revision (or a run) is refused rather than answered with an empty list.
-import { agentXError, HostScopeSchema, type Check, type CheckRunner, type CheckRunnerCapabilities, type CheckTarget, type HostScope, type ReadBudget, type UntrustedText } from "@agentx/contracts";
+import { agentXError, HostScopeSchema, type Check, type CheckRunner, type CheckRunnerCapabilities, type CheckTarget, type HostScope, type ReadBudget, type UntrustedText } from "@rovara-code/contracts";
 import type { GitHubAppCredentialProvider } from "../../../github-app.js";
 import { checkOf, pullRequestNumber } from "../../code-host/github/mapping.js";
 

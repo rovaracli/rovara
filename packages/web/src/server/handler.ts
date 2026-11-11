@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { SessionIdSchema } from "@agentx/contracts/web";
+import { SessionIdSchema } from "@agentx/cloud-contracts/web";
 import { HSTS, appHeaders, assetOrigin, type AppEnvironment } from "./headers.js";
 import { notFound, serveAsset, type AppResponse } from "./assets.js";
 import { renderShell } from "./shell.js";

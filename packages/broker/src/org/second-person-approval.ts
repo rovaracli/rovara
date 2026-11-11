@@ -1,4 +1,4 @@
-import { agentXError } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
 /** Shared policy only. Callers must obtain complete server-side evidence and fence
  * its generation and both people's live authority in their committing transaction.
  * This decision is not a transferable approval capability. */

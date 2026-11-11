@@ -4,7 +4,7 @@ import { expect, it } from "vitest";
 import { screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, createMemoryRouter, RouterProvider } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
-import { DecisionCardsViewSchema, SessionViewReaderSchema } from "@agentx/contracts/web";
+import { DecisionCardsViewSchema, SessionViewReaderSchema } from "@agentx/cloud-contracts/web";
 import { AppHostProvider } from "../../packages/ui/src/host.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { Announcer } from "../../packages/ui/src/design/Announcer.js";
@@ -320,7 +320,7 @@ it("Q7: a high card that (wrongly) carries an approve action shows no Approve an
 });
 it("Q7: the client's api refuses to post an approve for a high card, whatever its actions say", async () => {
  const { createDecisionsApi, readDecisions, mayApproveHere } = await import("../../packages/ui/src/api/decisions.js");
- const { DecisionCardsViewReaderSchema } = await import("@agentx/contracts/web");
+ const { DecisionCardsViewReaderSchema } = await import("@agentx/cloud-contracts/web");
  const view = viewOf([highItem]);
  const wrong = DecisionCardsViewReaderSchema.parse({ ...view, cards: view.cards.map(c => ({ ...c, actions: [{ kind: "approve", label: "Approve", href: "/v1/app/decisions/approve_setting/set1/approve", method: "POST" }, ...c.actions] })) });
  const [decision] = readDecisions(wrong);

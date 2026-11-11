@@ -1,7 +1,7 @@
 // Plan 3 Task 14b (R3-3): a label id in an agent's call is turned into the label's name by the connector's own label list, read by the broker, so the
 // trigger-label rule sees the name. An id that can't be resolved is `undefined`, which the caller treats as consequential. The model never supplies the mapping.
 import { describe, expect, it, vi } from "vitest";
-import { commentSignal, type OrgId } from "@agentx/contracts";
+import { commentSignal, type OrgId } from "@rovara-code/contracts";
 import { githubLabelLister, resolveLabelNames, type LabelConnector, type LabelLister } from "../../packages/broker/src/agents/label-names.js";
 import { memoryRunCache, taskRunCache, type RunCache } from "../../packages/broker/src/agents/run-cache.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";

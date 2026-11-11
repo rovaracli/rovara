@@ -3,7 +3,8 @@
 // never an unverified one). Links live in the org's own record partition (so a company erase takes them) as two items: the forward one (author id -> person) and a reverse one under a hash of
 // the person (person -> author ids), which is how a person erase finds them and removes them.
 import { DeleteCommand, GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { recordDeveloperHash, replaceEmailAddresses, teamRecordPk, type OrgId } from "@agentx/contracts";
+import { recordDeveloperHash } from "@agentx/cloud-contracts";
+import { replaceEmailAddresses, teamRecordPk, type OrgId } from "@rovara-code/contracts";
 import { isErasedActor } from "./erased.js";
 import { queryPrefix } from "./store.js";
 import type { TeamRecordTable } from "./types.js";

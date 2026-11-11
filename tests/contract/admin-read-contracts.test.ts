@@ -1,33 +1,11 @@
 // tests/contract/admin-read-contracts.test.ts
 // Spec 025 phase 25d, Task 1: the admin read shapes (FR-038) and the derived index records (A5).
 import { describe, expect, it } from "vitest";
-import {
-  ADMIN_API_VERSION,
-  ADMIN_INDEX_RETENTION_DAYS,
-  ADMIN_LIST_MAX,
-  ADMIN_USAGE_READ_MAX,
-  AdminBindingsResponseSchema,
-  AdminFailuresResponseSchema,
-  AdminHealthResponseSchema,
-  AdminMeResponseSchema,
-  AdminProjectsResponseSchema,
-  AdminRequesterSchema,
-  AdminUsageGroupBySchema,
-  AdminUsageResponseSchema,
-  AdminWorkspacesResponseSchema,
-  DEVELOPER_API_VERSION,
-  FailureIndexRecordSchema,
-  INDEX_EXPIRY_ATTRIBUTE,
-  SlackAuthCheckRequestSchema,
-  SlackUserByEmailRequestSchema,
-  UsageIndexRecordSchema,
-  WorkspaceStatusSchema,
-  indexDay,
-  indexExpiresAt,
-} from "../../packages/contracts/src/index.js";
+import { ADMIN_API_VERSION, ADMIN_INDEX_RETENTION_DAYS, ADMIN_LIST_MAX, ADMIN_USAGE_READ_MAX, AdminBindingsResponseSchema, AdminFailuresResponseSchema, AdminMeResponseSchema, AdminProjectsResponseSchema, AdminRequesterSchema, AdminUsageGroupBySchema, AdminUsageResponseSchema, AdminWorkspacesResponseSchema, DEVELOPER_API_VERSION, FailureIndexRecordSchema, INDEX_EXPIRY_ATTRIBUTE, SlackAuthCheckRequestSchema, SlackUserByEmailRequestSchema, UsageIndexRecordSchema, WorkspaceStatusSchema, indexDay, indexExpiresAt } from "@rovara-code/contracts";
+import { AdminHealthResponseSchema } from "@agentx/cloud-contracts";
 import { TEST_ORG } from "../support/orgs.js";
-import { orgFailureIndexKey, orgProjectCatalogKey, orgUsageIndexKey } from "../../packages/contracts/src/org-scoped-keys.js";
-import { orgScoped } from "../../packages/contracts/src/org-node.js";
+import { orgFailureIndexKey, orgProjectCatalogKey, orgUsageIndexKey } from "@rovara-code/contracts";
+import { orgScoped } from "@rovara-code/contracts";
 
 const OPERATION = "11111111-1111-4111-8111-111111111111";
 const WORKSPACE = "22222222-2222-4222-8222-222222222222";

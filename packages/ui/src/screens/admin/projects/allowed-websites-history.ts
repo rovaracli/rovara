@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { ProjectAllowedWebsitesMutationBodySchema, ProjectAllowedWebsitesApprovalBodySchema, ProjectAllowedWebsitesDecisionBodySchema, ProjectAllowedWebsitesReviewReaderSchema } from "@agentx/contracts/web";
+import { ProjectAllowedWebsitesMutationBodySchema, ProjectAllowedWebsitesApprovalBodySchema, ProjectAllowedWebsitesDecisionBodySchema, ProjectAllowedWebsitesReviewReaderSchema } from "@agentx/cloud-contracts/web";
 
 const scopeSchema = z.object({ orgId: ProjectAllowedWebsitesMutationBodySchema.shape.expectedOrgId, developerId: z.string().regex(/^[a-f0-9]{64}$/), project: ProjectAllowedWebsitesReviewReaderSchema.shape.project }).strict();
 const requestSchema = z.union([

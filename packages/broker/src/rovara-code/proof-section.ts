@@ -3,7 +3,8 @@
 //
 // The shrink order, level by level (`proofSection(...)(level)`): 0 full evidence; 1 fewer and shorter evidence entries; 2 evidence as counts; 3 the same, and the proven and passed rows folded into one
 // count line; 4 shorter requirement text and bullets without text. A failed row, a partly tested row and a not-tested item are listed at every level: they are what a reader must not miss.
-import { TestProofSchema, workflowCheckResultBroken, workflowSelectedChecks, type PlanClaim, type PlanDocument, type TestProof, type WorkflowSnapshot } from "@agentx/contracts";
+import { TestProofSchema, workflowCheckResultBroken, workflowSelectedChecks, type PlanClaim, type PlanDocument, type TestProof } from "@rovara-code/contracts";
+import { type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { designLinksByClaim } from "../design-review/proof-links.js";
 import { designProofLine, type ProofDesignContext } from "../design-review/proof-line.js";
 import { evidenceLines, type ProofEvidenceContext } from "./evidence-lines.js";

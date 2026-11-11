@@ -4,7 +4,7 @@ import { FakeTestAccountStore } from "./fake-test-account-store.js";
 import { testAccountSecretsPolicyStatements, testAccountSecretsTrustPolicy } from "../../infra/lib/test-account-secrets-policy.js";
 import { TestAccountSecrets } from "../../packages/broker/src/test-env/test-account-secrets.js";
 import type { TestAccountCaller, TestAccountDeps } from "../../packages/broker/src/test-env/test-accounts.js";
-import { agentXError, type TestEnvProdDeny } from "@agentx/contracts";
+import { agentXError, type TestEnvProdDeny } from "@rovara-code/contracts";
 
 export const ORG = `org_${"a1b2c3d4e5".repeat(2)}`;
 export const OTHER_ORG = `org_${"z9y8x7w6v5".repeat(2)}`;

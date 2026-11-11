@@ -1,7 +1,8 @@
 // Enterprise foundations, Wave 2 (P7, I2, I3): the one place the pieces of this lane are put together for the broker. The handler and the publication step call THESE functions, a line each, and
 // `tests/contract/enterprise-identity-wiring.test.ts` checks that every call site that has been wired still calls them, so a wiring line that is later lost fails a test. The lines are applied in the
 // broker's files; the test requires all of them.
-import { WorkflowDecisionRecordSchema, type EditionPolicy, type OrgId } from "@agentx/contracts";
+import { WorkflowDecisionRecordSchema, type OrgId } from "@rovara-code/contracts";
+import { type EditionPolicy } from "@agentx/cloud-contracts";
 import { dynamoAttributionLinkStore, type AttributionLinkStore } from "../attribution/links.js";
 import { dynamoAttributionReader, resolveActingAttribution, type ResolvedAttribution } from "../attribution/resolve.js";
 

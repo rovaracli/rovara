@@ -1,22 +1,7 @@
 import { logDeveloperEvent } from "../../developer/log.js";
 import { QueryCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  AgentXNameSchema,
-  CHANNEL_MEMBERS_MAX_CHANNELS,
-  DEVELOPER_WORKSPACES_PER_PROJECT,
-  WORKSPACE_PROJECT_INDEX,
-  WorkspaceInstanceSchema,
-  agentXError,
-  isSystemOwnerId,
-  systemOwnerIdOf,
-  workspaceProjectIndexValue,
-  workspaceRecordFields,
-  type ProjectRole,
-  type DeveloperTaskPolicy,
-  type DeveloperWorkspace,
-  type DeveloperWorkspacesResponse,
-  type OrgId,
-} from "@agentx/contracts";
+import { AgentXNameSchema, CHANNEL_MEMBERS_MAX_CHANNELS, DEVELOPER_WORKSPACES_PER_PROJECT, WORKSPACE_PROJECT_INDEX, WorkspaceInstanceSchema, agentXError, isSystemOwnerId, systemOwnerIdOf, workspaceProjectIndexValue, workspaceRecordFields, type ProjectRole, type DeveloperTaskPolicy, type DeveloperWorkspace, type OrgId } from "@rovara-code/contracts";
+import { type DeveloperWorkspacesResponse } from "@agentx/cloud-contracts";
 import { accessDeniedMessage } from "../../developer/access.js";
 import { isSystemOwnerCaller } from "../../developer/system-owner.js";
 import { effectiveProjectRole } from "../../developer/project-roles.js";

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import type { WorkflowCanvasCloseout, WorkflowCanvasCloseoutAttempt } from "@agentx/contracts";
+import type { WorkflowCanvasCloseout, WorkflowCanvasCloseoutAttempt } from "@rovara-code/contracts";
 
 const DigestSchema = z.string().regex(/^[a-f0-9]{64}$/);
 const ArtifactSchema = z.object({

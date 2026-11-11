@@ -2,14 +2,8 @@
 // is bounded by AUDIT_FLUSH_DEADLINE_MS; whatever it does not finish stays as a pending item for the drain.
 import { SendMessageBatchCommand } from "@aws-sdk/client-sqs";
 import { DeleteCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  AUDIT_ERROR_MESSAGES,
-  AUDIT_FLUSH_DEADLINE_MS,
-  AUDIT_SDK_REQUEST_TIMEOUT_MS,
-  AuditEventInputSchema,
-  agentXError,
-  type AuditEventInput,
-} from "@agentx/contracts";
+import { AUDIT_ERROR_MESSAGES, AUDIT_FLUSH_DEADLINE_MS, AUDIT_SDK_REQUEST_TIMEOUT_MS, AuditEventInputSchema, type AuditEventInput } from "@agentx/cloud-contracts";
+import { agentXError } from "@rovara-code/contracts";
 import { auditEventWithoutDetails, auditPendingItem, auditPendingKey, describeInvalidAuditEvent, type AuditDeps, type AuditRuntime } from "./outbox.js";
 
 /** SendMessageBatch takes at most ten entries. */

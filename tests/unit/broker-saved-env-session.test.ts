@@ -1,6 +1,7 @@
 // SH22: the broker's registry sessions for saved environment images. A session is minted only for an APPROVED, PROVED environment, names ONE repository in its policy, and fails with a fixed word.
 import { describe, expect, it } from "vitest";
-import { SAVED_ENV_PULL_SESSION_SECONDS, SAVED_ENV_PUSH_SESSION_SECONDS, companyImageRepositoryName, savedEnvRepositoryName } from "../../packages/contracts/src/index.js";
+import { companyImageRepositoryName } from "@agentx/cloud-contracts";
+import { SAVED_ENV_PULL_SESSION_SECONDS, SAVED_ENV_PUSH_SESSION_SECONDS, savedEnvRepositoryName } from "@rovara-code/contracts";
 import { expectedRepositoryPolicy, mintManageSession, mintPullSession, mintPushSession, mintPullSessionFor, mintScanSession, verifyRepository, verifyRepositoryNamed, type RepositoryDescription, type SavedEnvSessionConfig, type SavedEnvSessionPorts } from "../../packages/broker/src/test-env/saved-env-session.js";
 
 const SCOPE = { partition: "aws", region: "us-west-2", account: "111122223333" };
@@ -80,6 +81,13 @@ describe("push session", () => {
   it("a token for another registry shape is refused (the login must be for an ECR host)", async () => {
     const p = ports({ authorizationToken: async () => ({ password: secretText(), registry: "evil.example.com", expiresAtMs: NOW + 1_000_000 }) });
     expect(await mintPushSession(CONFIG, p, { ...ids, approved: APPROVED })).toEqual({ ok: false, reason: "unavailable" });
+  });
+
+  it("a token for a registry on the machine itself is refused too (W0-3 review H1)", async () => {
+    for (const registry of ["127.0.0.1:5000", "localhost:5001"]) {
+      const p = ports({ authorizationToken: async () => ({ password: secretText(), registry, expiresAtMs: NOW + 1_000_000 }) });
+      expect(await mintPushSession(CONFIG, p, { ...ids, approved: APPROVED }), registry).toEqual({ ok: false, reason: "unavailable" });
+    }
   });
 
   it("two projects of one org, and one project id in two orgs, get different repositories", async () => {

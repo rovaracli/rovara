@@ -6,30 +6,7 @@
 //   minutes forward: a body dated ahead could outlive its de-duplication item and be replayed); 10. de-duplication by a conditional put; 11. dispatch.
 // A delivery that is refused answers one body whatever the reason, so the answer says nothing about which hooks exist. Secrets, bodies and header values never reach a log.
 import { GetCommand, PutCommand, DeleteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  EVENT_DEDUPE_TTL_HOURS,
-  SNS_FETCH_TIMEOUT_MS,
-  EVENT_MAX_AGE_HOURS,
-  EVENT_MAX_FUTURE_MINUTES,
-  HOOK_BODY_MAX_BYTES,
-  HOOK_FAILED_VERIFY_PER_MINUTE,
-  HOOK_MAX_DELIVERIES_PER_MINUTE,
-  HOOK_MAX_EVENTS_PER_DELIVERY,
-  HOOK_PRE_VERIFY_PER_IP_PER_MINUTE,
-  HOOK_SECRET_REREAD_MIN_AGE_SECONDS,
-  HookIdSchema,
-  HookSecretSchema,
-  HookSourceSchema,
-  INDEX_EXPIRY_ATTRIBUTE,
-  TriggerEventSchema,
-  hookEventKey,
-  hookRateKey,
-  type HookRecord,
-  type HookSecret,
-  type HookSource,
-  type OrgId,
-  type TriggerEvent,
-} from "@agentx/contracts";
+import { EVENT_DEDUPE_TTL_HOURS, SNS_FETCH_TIMEOUT_MS, EVENT_MAX_AGE_HOURS, EVENT_MAX_FUTURE_MINUTES, HOOK_BODY_MAX_BYTES, HOOK_FAILED_VERIFY_PER_MINUTE, HOOK_MAX_DELIVERIES_PER_MINUTE, HOOK_MAX_EVENTS_PER_DELIVERY, HOOK_PRE_VERIFY_PER_IP_PER_MINUTE, HOOK_SECRET_REREAD_MIN_AGE_SECONDS, HookIdSchema, HookSecretSchema, HookSourceSchema, INDEX_EXPIRY_ATTRIBUTE, TriggerEventSchema, hookEventKey, hookRateKey, type HookRecord, type HookSecret, type HookSource, type OrgId, type TriggerEvent } from "@rovara-code/contracts";
 import type { ConnectedAwsAccounts, HookStore } from "./hooks.js";
 import type { HookProvider, HookHeaders } from "./providers/types.js";
 import { confirmationTarget } from "./providers/cloudwatch-sns.js";

@@ -4,11 +4,12 @@ import { httpControlPlaneClient } from "../../packages/mcp/src/client.js";
 import { DEVELOPER_TOOLS } from "../../packages/mcp/src/tools.js";
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
-import { agentSessionKey, orgMemberKey, projectMemberKey, changesKey, sharedSessionsKey, sessionBindingKey, sessionSurfaceKey } from "@agentx/contracts";
+import { agentSessionKey, projectMemberKey, changesKey, sharedSessionsKey, sessionBindingKey, sessionSurfaceKey } from "@rovara-code/contracts";
+import { orgMemberKey } from "@agentx/cloud-contracts";
 import { putSessionShare, deleteSessionShare } from "../../packages/broker/src/agent-sessions/shares.js";
 import { routeAgentSessionRequest, type SessionRouteDependencies } from "../../packages/broker/src/agent-sessions/routes.js";
 import { MAYA, OMAR, bearerFor, createDeveloperTaskBroker, markThreadPosted } from "../support/developer-task-broker.js";
-import { NeedsConfirmationReaderSchema, NeedsConfirmationSchema, SessionShareDeleteResponseReaderSchema, SessionShareDeleteResponseSchema } from "../../packages/contracts/src/index.js";
+import { NeedsConfirmationReaderSchema, NeedsConfirmationSchema, SessionShareDeleteResponseReaderSchema, SessionShareDeleteResponseSchema } from "@rovara-code/contracts";
 import { loadSlackBroker } from "../support/slack-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
@@ -20,7 +21,7 @@ import { noticesOf } from "../../packages/broker/src/developer/notifications.js"
 import { widenedShareMessage } from "../../packages/broker/src/developer/share-messages.js";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import type { DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
-import { createWorkflowSnapshot } from "../../packages/contracts/src/task-workflow-node.js";
+import { createWorkflowSnapshot } from "../../packages/cloud-contracts/src/task-workflow-node.js";
 import { taskIndexKey, taskKey } from "../../packages/broker/src/developer/task-records.js";
 import { ARJUN, PRIYA, ORG_A, ORG_B, sessionWorld } from "../support/agent-session-world.js";
 

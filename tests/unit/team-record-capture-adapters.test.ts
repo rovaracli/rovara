@@ -1,6 +1,6 @@
 // Lessons capture lane: the one interface learning reads a code host through. A host adds itself by registering an adapter; the registry picks by host name and by pull request address.
 import { describe, expect, it } from "vitest";
-import type { ChangeRequestFeedback, CodeHost } from "@agentx/contracts";
+import type { ChangeRequestFeedback, CodeHost } from "@rovara-code/contracts";
 import { captureAdapterOf, createCaptureAdapters, githubPullRequestAddress } from "../../packages/broker/src/team-record/sources/capture-adapters.js";
 import type { CodeHostDiff } from "../../packages/broker/src/team-record/sources/codehost.js";
 
@@ -74,7 +74,7 @@ describe("the GitHub adapter", () => {
     expect(calls).toEqual([["https://github.com/acme/api", `/repos/acme/api/compare/${"a".repeat(40)}...${"b".repeat(40)}?per_page=100`, { orgId: "org_aaaaaaaaaaaaaaaaaaaa" }]]);
     const privateInstall = githubCaptureAdapter({ provider, codeHost: feedback([]), cloud: false });
     await privateInstall.diffs!.compare({ repo, base: "a".repeat(40), head: "b".repeat(40) });
-    expect(calls[1]).toMatchObject([expect.any(String), expect.any(String), { system: "private-install" }]);
+    expect(calls[1]).toMatchObject([expect.any(String), expect.any(String), { system: "install" }]);
     const view = await adapter.pullRequestFeedback!({ workspaceId: "org_aaaaaaaaaaaaaaaaaaaa", project: "p", taskId: "t", address: { host: "github", repository: "acme/api", number: 7 }, url: "https://github.com/acme/api/pull/7" });
     expect(view).toEqual({ comments: [{ kind: "review_comment", id: "5", line: 3 }] });
   });

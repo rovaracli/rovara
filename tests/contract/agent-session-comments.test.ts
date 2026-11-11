@@ -3,22 +3,8 @@
 // redacted before it is cut or noticed. `GET .../messages` is one conversation over two stores: the session's own messages and the task page's comments, read through.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import {
-  COMMENT_RATE,
-  RealtimeNoticeSchema,
-  SESSION_MESSAGES_MAX,
-  SESSION_MESSAGES_PAGE_MAX,
-  SESSION_MESSAGE_MAX_CHARS,
-  SESSION_RETENTION_DAYS,
-  SessionEventSchema,
-  SessionMessageIdSchema,
-  SessionMessagePageSchema,
-  SessionMessageSchema,
-  agentSessionKey,
-  sessionChannel,
-  sessionRateKey,
-  type AgentSessionRecord,
-} from "../../packages/contracts/src/index.js";
+import { COMMENT_RATE, SESSION_MESSAGES_MAX, SESSION_MESSAGES_PAGE_MAX, SESSION_MESSAGE_MAX_CHARS, SESSION_RETENTION_DAYS, SessionEventSchema, SessionMessageIdSchema, SessionMessagePageSchema, SessionMessageSchema, agentSessionKey, sessionRateKey, type AgentSessionRecord } from "@rovara-code/contracts";
+import { RealtimeNoticeSchema, sessionChannel } from "@agentx/cloud-contracts";
 import { editSessionMessage, deleteSessionMessage, listSessionMessages, sendSessionMessage, type SessionMessageDependencies } from "../../packages/broker/src/agent-sessions/messages.js";
 import { routeAgentSessionRequest } from "../../packages/broker/src/agent-sessions/routes.js";
 import { resolveTaskAccess } from "../../packages/broker/src/developer/task-access.js";

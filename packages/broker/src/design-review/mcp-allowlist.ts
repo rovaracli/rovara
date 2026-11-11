@@ -9,7 +9,7 @@
 //   - the tool is one the admin ticked with the `read` role (a lookup of one item), never `search` or `status`;
 //   - the arguments are built by code from the item ref alone.
 // The route then applies its own checks again (stage permission, the ticked tool, argument rules, the stage's allowance) when the call is made.
-import { ContextSourceIdSchema, type ContextSource, type ContextSourceTool } from "@agentx/contracts";
+import { ContextSourceIdSchema, type ContextSource, type ContextSourceTool } from "@rovara-code/contracts";
 import { presentedToolName } from "../context-sources/present.js";
 
 /** Systems whose items are people talking to each other. A packet never carries them, whatever the admin ticked. Matched against `ContextSource.system`. */

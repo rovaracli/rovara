@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ModelRuntime, type AgentSessionRuntime } from "@earendil-works/pi-coding-agent";
 import { z } from "zod";
-import { agentXError, type ConnectorCatalog } from "../../packages/contracts/src/index.js";
+import { agentXError, type ConnectorCatalog } from "@rovara-code/contracts";
 import type { OrchestrationApi } from "../../packages/orchestrator/src/orchestration-tools.js";
 import { createOrchestratorRuntime, createPiSessionRuntime, runOrchestratorTurn } from "../../packages/orchestrator/src/orchestrator.js";
 import { createGateSession, type ActionClassifier, type GateSession } from "../../packages/orchestrator/src/action-gate.js";

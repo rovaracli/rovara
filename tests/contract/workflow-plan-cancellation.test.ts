@@ -3,7 +3,8 @@
 // workflow write in the cancel's transaction never fails the cancel.
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { WORKFLOW_BLOCK_REASONS, WorkflowFeedbackBundleSchema, WorkflowSnapshotSchema, collectWorkflowFeedbackBundles, createCandidateManifest, createWorkflowSnapshot, type WorkflowSnapshot } from "@agentx/contracts";
+import { WORKFLOW_BLOCK_REASONS, WorkflowSnapshotSchema, collectWorkflowFeedbackBundles, createWorkflowSnapshot, type WorkflowSnapshot } from "@agentx/cloud-contracts";
+import { WorkflowFeedbackBundleSchema, createCandidateManifest } from "@rovara-code/contracts";
 import { startTaskWorkflowFeedbackReviewFromWebhook } from "../../packages/broker/src/aws/developer-tasks.js";
 import { releaseFailedCancelWorkspace } from "../../packages/broker/src/aws/failed-cancel-release.js";
 import { sweepStuckCancels } from "../../packages/broker/src/aws/stuck-cancels.js";

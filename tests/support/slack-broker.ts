@@ -10,7 +10,8 @@ import { RepositoryGrantService } from "../../packages/broker/src/repository-acc
 import { capturingAuditDeps } from "./audit-capture.js";
 import { FakeDynamoDb, type FakeDynamoDbOptions } from "./fake-dynamodb.js";
 import { TEST_ENV } from "./orgs.js";
-import { orgSlackTeamKey, slackTeamOrgKey, slackBindingKey } from "../../packages/contracts/src/index.js";
+import { orgSlackTeamKey, slackTeamOrgKey } from "@agentx/cloud-contracts";
+import { slackBindingKey } from "@rovara-code/contracts";
 
 export const issuer = "https://identity.example.test";
 export const account = "111122223333";

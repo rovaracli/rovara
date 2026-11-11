@@ -1,6 +1,6 @@
 // Learning v2 L3a: risk tiers (design §4.5.3). Evaluated by code. The classifier flags (escalation words, the judge's escalate flag, reviewer stages)
 // can only raise a tier, never lower it. A lesson that comes from an outsider or an ineligible task is "never". One that asks for a capability change is tier 2 with the reason `capability_request`.
-import { isMeaningfulAnchor } from "@agentx/contracts";
+import { isMeaningfulAnchor } from "@rovara-code/contracts";
 import { hasCommandOrUrl, hasEncodedBlob, hasEscalationWords, requestsCapabilityChange, touchesRiskyPath } from "./guards.js";
 import { renderTier0, type Tier0Text, type VerifiedMaterial } from "./render.js";
 import { viewedForLessons } from "./project-repo-audience.js";

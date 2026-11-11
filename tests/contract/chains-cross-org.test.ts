@@ -5,7 +5,7 @@
 import { randomUUID } from "node:crypto";
 import { decideApproval, type ApprovalDependencies } from "../../packages/broker/src/agents/approvals.js";
 import { beforeAll, describe, expect, it } from "vitest";
-import { hookKey } from "@agentx/contracts";
+import { hookKey } from "@rovara-code/contracts";
 import { loadSlackBroker } from "../support/slack-broker.js";
 import { OMAR } from "../support/developer-task-broker.js";
 import { OTHER_TOPIC_ARN, SNS_ACCOUNT, SNS_TOPIC_ARN, confirmationFields, notificationFields, signSns } from "../support/sns-fixtures.js";

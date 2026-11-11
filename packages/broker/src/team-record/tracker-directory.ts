@@ -4,7 +4,7 @@
 // conditions hold. No connection, no read: a company that has not connected a tool is never asked about it. Reads are bounded (pages, people, time) and a run can be repeated: it changes nothing already right.
 import { z } from "zod";
 import { GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
-import { teamRecordPk, type OrgId } from "@agentx/contracts";
+import { teamRecordPk, type OrgId } from "@rovara-code/contracts";
 import { isErasedActor } from "./erased.js";
 import { AUTOLINK_LINKED_WHY, autoLinkRefusal, exactAutoLinkEmail, type AutoLinkReason, type CompanyControl, type VerifiedDomainsPort } from "./tracker-autolink.js";
 import { clearUnmatchedTrackerUser, developerOfTrackerAuthor, isAutoLinkSuppressed, noteUnmatchedTrackerUser, pruneUnmatchedTrackerUsers, shownName } from "./identity-links.js";

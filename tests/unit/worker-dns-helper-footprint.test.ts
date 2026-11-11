@@ -17,10 +17,10 @@ function importsOf(source: string): string[] {
 }
 
 const HELPER_MODULES = ["packages/worker/src/sealed-dns-helper.ts", "packages/worker/src/setup-dns-watch-helper.ts", "packages/worker/src/setup-dns-watch.ts"];
-const ALLOWED = new Set(["./setup-dns-watch.js", "@agentx/contracts/dns-helper"]);
+const ALLOWED = new Set(["./setup-dns-watch.js", "@rovara-code/contracts/dns-helper"]);
 
 describe("the DNS helpers load little enough for their 128 MB limit", () => {
-  it("the helpers' modules import only node built-ins, each other and @agentx/contracts/dns-helper (never the barrel)", async () => {
+  it("the helpers' modules import only node built-ins, each other and @rovara-code/contracts/dns-helper (never the barrel)", async () => {
     for (const path of HELPER_MODULES) {
       const specifiers = importsOf(await readFile(path, "utf8"));
       expect(specifiers.length, path).toBeGreaterThan(0);
@@ -29,9 +29,9 @@ describe("the DNS helpers load little enough for their 128 MB limit", () => {
   });
 
   it("the contracts entry loads only its two small modules, and they load only zod", async () => {
-    expect(importsOf(await readFile("packages/contracts/src/dns-helper.ts", "utf8")).sort()).toEqual(["./errors.js", "./setup-run.js"]);
-    for (const path of ["packages/contracts/src/errors.ts", "packages/contracts/src/setup-run.ts"]) expect(importsOf(await readFile(path, "utf8")), path).toEqual(["zod"]);
-    const manifest = JSON.parse(await readFile("packages/contracts/package.json", "utf8")) as { exports: Record<string, string> };
+    expect(importsOf(await readFile("vendor/rovara-code/packages/contracts/src/dns-helper.ts", "utf8")).sort()).toEqual(["./errors.js", "./setup-run.js"]);
+    for (const path of ["vendor/rovara-code/packages/contracts/src/errors.ts", "vendor/rovara-code/packages/contracts/src/setup-run.ts"]) expect(importsOf(await readFile(path, "utf8")), path).toEqual(["zod"]);
+    const manifest = JSON.parse(await readFile("vendor/rovara-code/packages/contracts/package.json", "utf8")) as { exports: Record<string, string> };
     expect(manifest.exports["./dns-helper"]).toBe("./dist/dns-helper.js");
   });
 
@@ -41,11 +41,11 @@ describe("the DNS helpers load little enough for their 128 MB limit", () => {
       expect(child.status, child.stderr).toBe(0);
       return Number(child.stdout.trim()) / 1024;
     };
-    const lean = peak("@agentx/contracts/dns-helper");
+    const lean = peak("@rovara-code/contracts/dns-helper");
     // About 55 MB measured (node 22.23.2); the node process alone is about 40 MB. Under 96 MB leaves the helper's sockets and record room inside 128 MB.
     expect(lean).toBeLessThan(96);
     // The barrel is the reason for the entry: if it ever became small, this test should be revisited, not the limit raised.
-    expect(peak("@agentx/contracts")).toBeGreaterThan(lean + 50);
+    expect(peak("@rovara-code/contracts")).toBeGreaterThan(lean + 50);
   });
 
   it("both helpers keep a 128 MB cap with swap at the same size (the limit is kept, not removed)", () => {

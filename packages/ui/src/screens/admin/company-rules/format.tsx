@@ -1,5 +1,5 @@
 // Dates and people on the Company rules page. Names, logins and notes come from the server or from a code host: plain text, control characters shown.
-import type { CompanyRulesPerson } from "@agentx/contracts/web";
+import type { CompanyRulesPerson } from "@agentx/cloud-contracts/web";
 import { VisibleText } from "../../../design/VisibleText.js";
 export function formatDay(value: string): string {
  const date = new Date(value);

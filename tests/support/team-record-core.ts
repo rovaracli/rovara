@@ -1,6 +1,7 @@
 // Test helpers for the record core (lane "record"): a fake TeamRecord table, a mutable clock, drafts and callers.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { learningModeKey, learningModeLockKey, type OrgId, type RecordSystem, type RetentionMode } from "@agentx/contracts";
+import { learningModeKey, learningModeLockKey, type OrgId } from "@rovara-code/contracts";
+import { type RecordSystem, type RetentionMode } from "@agentx/cloud-contracts";
 import type { AccessReader } from "../../packages/broker/src/team-record/access.js";
 import { filterVisible, type FilterDependencies, type FilterResult, type Visible } from "../../packages/broker/src/team-record/acl.js";
 import { createRecordSink } from "../../packages/broker/src/team-record/sink.js";

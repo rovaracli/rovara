@@ -8,7 +8,7 @@
 // Generic by design (owner rule, 2026-10-30): a tap turns one kind of source event into a `RecordDraft`; it knows nothing about a
 // particular customer, code host, tracker or MCP server beyond the small adapters named in each file.
 
-import { minTrust } from "@agentx/contracts";
+import { minTrust } from "@rovara-code/contracts";
 
 export type TrustClass = "member" | "rovara" | "system" | "outsider";
 

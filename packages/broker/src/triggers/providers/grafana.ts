@@ -9,7 +9,7 @@
 // and its `occurredAt` is that start, so a repeat of an alert that started more than 24 hours ago is dropped as stale by ingress, as the plan intends. An alert that can't be read is
 // skipped, the others of the group are not. Rovara's Grafana connection is read-only, so there is no actor to guard against.
 import { z } from "zod";
-import type { HookRecord, TriggerEvent } from "@agentx/contracts";
+import type { HookRecord, TriggerEvent } from "@rovara-code/contracts";
 import { hmacHexEquals, tokenEquals, type HookHeaders, type HookProvider, type Normalized } from "./types.js";
 import { headerOf, httpsLinkOn, isoOfText, titleOf, valuesOf } from "./shared.js";
 

@@ -18,7 +18,7 @@ import {
   aws_stepfunctions as sfn,
 } from "aws-cdk-lib";
 import { Construct } from "constructs";
-import { BOOT_STAGE2_SHA256_PARAMETER, QUALIFIED_AMI_SETTING_NAME, REQUALIFY_AGE_METRIC, REQUALIFY_DRAIN_ALLOWED_ATTRIBUTES, REQUALIFY_STALE_AFTER_DAYS, REQUALIFY_TAGS, WORKER_SETTING_PARAMETERS, WORKSPACE_SESSION_STATE_INDEX } from "@agentx/contracts";
+import { BOOT_STAGE2_SHA256_PARAMETER, QUALIFIED_AMI_SETTING_NAME, REQUALIFY_AGE_METRIC, REQUALIFY_DRAIN_ALLOWED_ATTRIBUTES, REQUALIFY_STALE_AFTER_DAYS, REQUALIFY_TAGS, WORKER_SETTING_PARAMETERS, WORKSPACE_SESSION_STATE_INDEX } from "@rovara-code/contracts";
 import { packagedFunction } from "./control-plane.js";
 import { EC2_WORKER_AMI_PARAMETER } from "./ec2-workers.js";
 import type { AgentXNaming } from "./naming.js";

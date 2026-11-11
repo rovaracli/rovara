@@ -7,21 +7,8 @@
 // (the first two as SHA-256 only); the user token lives inside one callback and is revoked before it returns.
 import { randomBytes } from "node:crypto";
 import { GetCommand, QueryCommand, TransactWriteCommand, UpdateCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  agentXError,
-  githubConnectStateKey,
-  githubDeliveryKey,
-  githubInstallationEverBoundKey,
-  githubInstallationKey,
-  orgGithubInstallationKey,
-  orgMemberKey,
-  orgMetaKey,
-  orgPk,
-  type GithubInstallationRecord,
-  type OrgId,
-  type OrgRecord,
-  type OrgRole,
-} from "@agentx/contracts";
+import { agentXError, orgPk, type OrgId } from "@rovara-code/contracts";
+import { githubConnectStateKey, githubDeliveryKey, githubInstallationEverBoundKey, githubInstallationKey, orgGithubInstallationKey, orgMemberKey, orgMetaKey, type GithubInstallationRecord, type OrgRecord, type OrgRole } from "@agentx/cloud-contracts";
 import { auditGithubConnected, auditGithubDisconnected, auditGithubInstallationChanged, auditOccurrence } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, tryAuditEvent } from "../audit/outbox.js";
@@ -523,7 +510,7 @@ export async function requireRepositoryConnected(
 ): Promise<{ installationId: number; githubRepositoryId: number }> {
   const installationId = await connectedInstallation(deps, orgId, owner, name, pinnedInstallationId);
   if (deps.app.repositoryIdentity === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "reading a repository from GitHub is not set up in this deployment; ask Rovara support");
-  const scope: GitHubTokenScope = deps.cloud ? { orgId } : { system: "private-install" };
+  const scope: GitHubTokenScope = deps.cloud ? { orgId } : { system: "install" };
   const identity = await deps.app.repositoryIdentity(`https://github.com/${owner}/${name}.git`, scope);
   if (identity === undefined) throw agentXError("GITHUB_NOT_CONNECTED", githubNotConnectedMessage(`${owner}/${name}`));
   return { installationId, githubRepositoryId: identity.repositoryId };

@@ -3,24 +3,7 @@
 // session created lazily for an old task) is corrected within a few runs. The drain gives an ended session's items their retention expiry, day by day from
 // a saved day, so a schedule that was down for any length of time loses nothing.
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  INDEX_EXPIRY_ATTRIBUTE,
-  SESSION_RETENTION_DAYS,
-  SESSION_SWEEP_BUDGET_MS,
-  SESSION_SWEEP_CURSOR_KEY,
-  SESSION_SWEEP_PAGE,
-  agentSessionKey,
-  mySessionsKey,
-  projectSessionsKey,
-  sessionBindingKey,
-  sessionSurfaceKey,
-  sharedSessionsKey,
-  type AgentPrincipal,
-  type AgentSessionRecord,
-  type OrgId,
-  type SessionBinding,
-  type SessionId,
-} from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, SESSION_RETENTION_DAYS, SESSION_SWEEP_BUDGET_MS, SESSION_SWEEP_CURSOR_KEY, SESSION_SWEEP_PAGE, agentSessionKey, mySessionsKey, projectSessionsKey, sessionBindingKey, sessionSurfaceKey, sharedSessionsKey, type AgentPrincipal, type AgentSessionRecord, type OrgId, type SessionBinding, type SessionId } from "@rovara-code/contracts";
 import { closeQueuedSteers } from "./steer.js";
 import { AgentSessionStore } from "./store.js";
 import { ENDED_DRAIN_CURSOR_KEY, refreshSessionSummary, type SummaryDependencies } from "./summary.js";

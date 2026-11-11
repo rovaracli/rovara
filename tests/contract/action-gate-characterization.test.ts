@@ -3,7 +3,7 @@
 // exists (mainline plus 14a, 14b and 14c part 1): the tools a turn offers, how a connector call
 // reaches the control plane, and what agentx_create_pull_request answers in a thread with no compute.
 import { describe, expect, it, vi } from "vitest";
-import type { ConnectorCatalog, SlackRequestMessage } from "../../packages/contracts/src/index.js";
+import type { ConnectorCatalog, SlackRequestMessage } from "@rovara-code/contracts";
 import { createOrchestratorRuntime } from "../../packages/orchestrator/src/orchestrator.js";
 import { NO_WORKSPACE_TO_PUBLISH, type OrchestrationApi } from "../../packages/orchestrator/src/orchestration-tools.js";
 import { createHostedSlackRuntime } from "../../packages/slack-service/src/runtime.js";

@@ -5,48 +5,8 @@ import { DeleteCommand, DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCo
 import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import { SendMessageCommand, SQSClient } from "@aws-sdk/client-sqs";
 import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
-import {
-  ADMIN_CHANGE_CANCEL_ACTION,
-  ADMIN_CHANGE_CONFIRM_ACTION,
-  CONFIRM_APPROVE_ACTION,
-  CONFIRM_CANCEL_ACTION,
-  SlackChannelIdSchema,
-  SlackMessageTimestampSchema,
-  SlackRequestMessageSchema,
-  SlackTeamIdSchema,
-  SlackThreadSchema,
-  SlackUserIdSchema,
-  TaskPeopleViewSchema,
-  WORKFLOW_RESOLVE_FINDINGS_MAX,
-  WorkflowSnapshotSchema,
-  openReviewFindings,
-  WORKFLOW_BLOCK_REASONS,
-  workflowKeepPullRequestsOffered,
-  workflowPublicationRetryable,
-  workflowResolveFindingsOffered,
-  workflowSelectedChecks,
-  workflowSendBackOffered,
-  PER_TASK_BUDGET_USD,
-  formatRunLimitUsd,
-  runLimitRaiseText,
-  workflowReviseOffered,
-  workflowReadmitsApplicationRound,
-  answeredConfirmationBlocks,
-  confirmationClickEventId,
-  confirmationKey,
-  pendingConfirmationFromItem,
-  queuedBehindAttributes,
-  slackThreadSubject,
-  type AdminChangePressEvent,
-  type PendingConfirmation,
-  type SlackRequestMessage,
-  type SlackThread,
-  type TaskPeopleView,
-  type WorkflowCheck,
-  type WorkflowCheckPolicy,
-  type WorkflowOpenFinding,
-  type WorkflowSnapshot,
-} from "@agentx/contracts";
+import { ADMIN_CHANGE_CANCEL_ACTION, ADMIN_CHANGE_CONFIRM_ACTION, CONFIRM_APPROVE_ACTION, CONFIRM_CANCEL_ACTION, SlackChannelIdSchema, SlackMessageTimestampSchema, SlackRequestMessageSchema, SlackTeamIdSchema, SlackThreadSchema, SlackUserIdSchema, TaskPeopleViewSchema, WORKFLOW_RESOLVE_FINDINGS_MAX, workflowPublicationRetryable, workflowSelectedChecks, formatRunLimitUsd, runLimitRaiseText, workflowReadmitsApplicationRound, answeredConfirmationBlocks, confirmationClickEventId, confirmationKey, pendingConfirmationFromItem, queuedBehindAttributes, slackThreadSubject, type AdminChangePressEvent, type PendingConfirmation, type SlackRequestMessage, type SlackThread, type TaskPeopleView, type WorkflowCheck, type WorkflowCheckPolicy, type WorkflowOpenFinding } from "@rovara-code/contracts";
+import { WorkflowSnapshotSchema, openReviewFindings, WORKFLOW_BLOCK_REASONS, workflowKeepPullRequestsOffered, workflowResolveFindingsOffered, workflowSendBackOffered, PER_TASK_BUDGET_USD, workflowReviseOffered, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { requiredEnvironment, type HttpApiV2Event } from "./lambda.js";
 import {
   SLACK_TASK_THREADS_OFF_NOTICE, createAnswerQueue, parseSlackSecrets, threadPendingCounter, validSignature, type SlackIngressLog, type SlackSecrets,

@@ -8,11 +8,8 @@
 //
 // The section's shrink order (`testingSectionLines(view, level)`, level 0..4): 0 every row in full; 1 commands cut to 60 characters; 2 and above the passed rows fold into one count line; 3 and above the other
 // commands are cut to 40. NEVER dropped at any level: the result line, and every blocked, failed, not-run, pending and already-failing row with its fixed reason.
-import {
-  E2E_PROJECT_CHECK_ID, TESTING_REASON_CLASS, TESTING_REASON_TEXT, TESTING_RESULT_LABELS, TESTING_ROW_STATUS_LABELS, TESTING_ROWS_MAX, TESTING_COMMAND_MAX, TESTING_LABEL_MAX, TestingViewSchema, redactText, testingSummary,
-  workflowCheckResultBroken, workflowSelectedChecks,
-  type AutoFixBudget, type AutoFixFacts, type EvidencePack, type TestingBlockedReason, type TestingReason, type TestingRow, type TestingView, type WorkflowSnapshot,
-} from "@agentx/contracts";
+import { E2E_PROJECT_CHECK_ID, TESTING_REASON_CLASS, TESTING_REASON_TEXT, TESTING_RESULT_LABELS, TESTING_ROW_STATUS_LABELS, TESTING_ROWS_MAX, TESTING_COMMAND_MAX, TESTING_LABEL_MAX, TestingViewSchema, redactText, testingSummary, workflowCheckResultBroken, workflowSelectedChecks, type EvidencePack, type TestingBlockedReason, type TestingReason, type TestingRow, type TestingView } from "@rovara-code/contracts";
+import { type AutoFixBudget, type AutoFixFacts, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { classifyTestingResult, hasUnconfirmedFailingTest, type FullSuiteState, type KnownFailingEntry, type ResultWaiting } from "../verification/result.js";
 import { inertLine } from "./inert-text.js";
 

@@ -1,7 +1,7 @@
 // Plan 3 Task 7: which changes to a recipe wait for a person on the confirmation page (human decision 2026-10-20, R9-1, R9-2).
 import { describe, expect, it } from "vitest";
-import { BUILTIN_AGENTS } from "../../packages/contracts/src/agent-templates.js";
-import { EMPTY_RECIPE, type ResolvedRecipe, type ResolvedStep, type ToolGrant } from "../../packages/contracts/src/agent-recipe-node.js";
+import { BUILTIN_AGENTS } from "@rovara-code/contracts";
+import { EMPTY_RECIPE, type ResolvedRecipe, type ResolvedStep, type ToolGrant } from "@rovara-code/contracts";
 import { lessSafeChanges } from "../../packages/broker/src/agents/less-safe.js";
 
 const settings = (extra: Record<string, unknown> = {}) => ({ instructions: [], ...extra });

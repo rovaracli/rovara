@@ -1,5 +1,5 @@
 // "Suggested rules": every fixed word of the section, and how a refusal is read. Who may decide, what is less safe and whose standing counts come from the server; nothing here works any of that out.
-import { LEARNING_DISMISS_KINDS, LEARNING_PROJECT_WIDE, STAGE_IDS, type StageRefusal } from "@agentx/contracts/web";
+import { LEARNING_DISMISS_KINDS, LEARNING_PROJECT_WIDE, STAGE_IDS, type StageRefusal } from "@agentx/cloud-contracts/web";
 import { ApiError } from "../../api/errors.js";
 import { isRefusalCode } from "../../api/stage-models.js";
 import { safeAppPath } from "../../text/links.js";

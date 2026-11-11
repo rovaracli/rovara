@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { marshall } from "@aws-sdk/util-dynamodb";
 import { afterEach, describe, expect, it } from "vitest";
-import { EvidencePackSchema, NightlyBaselineSchema, WORKFLOW_BLOCK_REASONS, WorkflowSnapshotSchema, createCandidateManifest, createWorkflowSnapshot, projectPk, projectRevisionKey } from "@agentx/contracts";
+import { EvidencePackSchema, NightlyBaselineSchema, createCandidateManifest, projectPk, projectRevisionKey } from "@rovara-code/contracts";
+import { WORKFLOW_BLOCK_REASONS, WorkflowSnapshotSchema, createWorkflowSnapshot } from "@agentx/cloud-contracts";
 import { CONTENT_KEYS, SKIP_REASONS, exportReplayTasks, exportText, nameHash, readInputFile, redactPack, scrubWorkflow, unsafeStrings, writeSnapshots, type ExportInput } from "../../scripts/export-replay-tasks.js";
 import { ReplaySnapshotSchema, readSnapshotFolder, replayResults } from "../../scripts/replay-results.js";
 

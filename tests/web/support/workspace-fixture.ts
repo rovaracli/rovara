@@ -1,5 +1,6 @@
-import { createWorkflowSnapshot, E2ESharedViewSchema } from "@agentx/contracts";
-import { type SessionView } from "@agentx/contracts/web";
+import { createWorkflowSnapshot } from "@agentx/cloud-contracts";
+import { E2ESharedViewSchema } from "@rovara-code/contracts";
+import { type SessionView } from "@agentx/cloud-contracts/web";
 import { sessionFixture, taskFixture, sessionPerson } from "./session-fixture.js";
 const now = "2026-10-23T12:00:00.000Z", taskId = "11111111-1111-4111-8111-111111111111";
 export function workspaceWorkflow() { return { ...createWorkflowSnapshot({ taskId, ownerId: sessionPerson.developerId, now }), stage: "PLAN_REVIEW", state: "WAITING", planContent: "# Refund investigation\n\nCheck the idempotency key.", artifacts: [{ id: "plan-1", type: "plan", version: 1, sha256: "a".repeat(64), producer: "planner", objectKey: "fixtures/plan.md", createdAt: now }] }; }

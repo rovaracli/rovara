@@ -1,9 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  MEMBER_GRANT_SK_PREFIX, memberGrantsPk, orgFailureIndexKey, orgLimitKey, orgProjectCatalogKey, orgProjectCatalogPk, orgSettingsKey, orgUsageIndexKey,
-  projectMemberKey, projectMetaKey, projectPk, projectRevisionKey, projectSelectionKey,
-} from "../../packages/contracts/src/org-scoped-keys.js";
-import { singleOrgIdForEnv, type OrgId } from "../../packages/contracts/src/org-node.js";
+import { MEMBER_GRANT_SK_PREFIX, memberGrantsPk, orgFailureIndexKey, orgLimitKey, orgProjectCatalogKey, orgProjectCatalogPk, orgUsageIndexKey, projectMemberKey, projectMetaKey, projectPk, projectRevisionKey, projectSelectionKey } from "@rovara-code/contracts";
+import { orgSettingsKey } from "../../packages/cloud-contracts/src/org-scoped-keys.js";
+import { singleOrgIdForEnv, type OrgId } from "@rovara-code/contracts";
 import { checkProjectAccess, type DeveloperApiConfiguration, type DeveloperCaller } from "../../packages/broker/src/aws/developer-routes.js";
 import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
 import { readWorkspaceLimits } from "../../packages/broker/src/developer/limits.js";

@@ -1,8 +1,8 @@
 // Test services TS1 (contract): the dependency and its backing, the rules of design 2.2, the less-safe fields, the list caps and the reader of today's v1 services.
 import { describe, expect, it } from "vitest";
-import * as dep from "../../packages/contracts/src/test-env-dependency.js";
-import * as shared from "../../packages/contracts/src/test-services-shared.js";
-import { TestEnvServiceSchema, type TestEnvService } from "../../packages/contracts/src/test-environment.js";
+import * as dep from "@rovara-code/contracts";
+import * as shared from "@rovara-code/contracts";
+import { TestEnvServiceSchema, type TestEnvService } from "@rovara-code/contracts";
 
 const sha = (letter: string) => letter.repeat(64);
 const base = (over: Record<string, unknown> = {}) => ({

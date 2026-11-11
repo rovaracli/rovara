@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { Context } from "@earendil-works/pi-ai";
-import { BUDGET_EXHAUSTED_FAILURE_MESSAGE, DeveloperTaskFailureCategorySchema } from "../../packages/contracts/src/index.js";
+import { BUDGET_EXHAUSTED_FAILURE_MESSAGE, DeveloperTaskFailureCategorySchema } from "@rovara-code/contracts";
 import { ModelBudgetExhaustedError, PROXY_DEFAULT_MAX_OUTPUT_TOKENS, budgetExhaustedFromMarker, createConfiguredModelRuntime } from "../../packages/model-runtime/src/index.js";
 import { BUDGET_HELD_MAX_WAIT_MS, budgetHeldBody, budgetHeldDelayMs, budgetMaxTokensHint, withOutputLimit } from "../../packages/model-runtime/src/budget.js";
 import { failureCategory } from "../../packages/broker/src/developer/task-records.js";

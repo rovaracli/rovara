@@ -24,31 +24,8 @@
 import { GetCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import {
-  AgentXError,
-  BUDGET_EXHAUSTED_FAILURE_MESSAGE,
-  SETUP_HOST_WAIT_MAX_HOURS,
-  SETUP_RUN_LIMIT_STOPS,
-  SetupRunSummarySchema,
-  agentXError,
-  effectiveSetupAgentLimits,
-  isSetupRunLimitStop,
-  oneLineText,
-  projectAllows,
-  runRequestKey,
-  sanitizeSetupProposal,
-  setupDraftKey,
-  type OrgId,
-  type Payer,
-  type ProjectRole,
-  type SetupAgentLimits,
-  type SetupAgentWire,
-  type SetupProposal,
-  type SetupVerification,
-  type SetupRunEndWord,
-  type SetupRunSummary,
-  type StoredProjectDefinition,
-} from "@agentx/contracts";
+import { AgentXError, BUDGET_EXHAUSTED_FAILURE_MESSAGE, SETUP_HOST_WAIT_MAX_HOURS, SETUP_RUN_LIMIT_STOPS, SetupRunSummarySchema, agentXError, effectiveSetupAgentLimits, isSetupRunLimitStop, oneLineText, projectAllows, runRequestKey, sanitizeSetupProposal, setupDraftKey, type OrgId, type Payer, type ProjectRole, type SetupAgentLimits, type SetupAgentWire, type SetupProposal, type SetupVerification, type SetupRunEndWord, type SetupRunSummary } from "@rovara-code/contracts";
+import { type StoredProjectDefinition } from "@agentx/cloud-contracts";
 import type { AgentRunResult } from "../agents/runs.js";
 import type { TransactItem } from "../agents/table-writes.js";
 import type { DeveloperCaller } from "../aws/developer-routes.js";

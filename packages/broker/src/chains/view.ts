@@ -1,46 +1,14 @@
 // Plan 4 Task 10: what Plan 5's sessions read of a chain run. A run is one session (its id is the session's): `chainRunView` is the run with a section per step attempt,
 // `chainRunEvents` its append-only log, `chainStepTask` the chain-scoped read of a step's task, and `listChainRuns` the runs of a chain or a project. The shapes are
-// `packages/contracts/src/chain-session.ts`; everything written here is parsed with the strict schema first, so a field that is not in the contract can't reach a client.
+// `packages/cloud-contracts/src/chain-session.ts`; everything written here is parsed with the strict schema first, so a field that is not in the contract can't reach a client.
 //
 // Who reads a run: its starter, its owner, anyone with `view` on the chain and on its project, and org owners and admins; anyone else, and any other org, gets
 // `NOT_FOUND`, the same as for a run that does not exist. A step's task needs more: a project role with `start_tasks`, so a project viewer keeps the section's summary and
 // not the task's detail. Plan 5 passes an internal session actor after its own check of the session's level: it takes the place of the reader rule only (the step task's
 // role requirement stays) and is an argument of these functions, never something a route, a query parameter, a header or a body can set.
 import { QueryCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  AGENTX_NAME_PATTERN,
-  CHAIN_RUN_EVENTS_PAGE_MAX,
-  CHAIN_RUN_LIST_PAGE_MAX,
-  CHAIN_RUN_STATUSES,
-  CHAIN_SESSION_CONTRACT_VERSION,
-  STEP_LINK_URL_MAX,
-  ChainIdSchema,
-  ChainRunEventPageSchema,
-  ChainRunIdSchema,
-  ChainRunListSchema,
-  ChainRunViewSchema,
-  ChainStepTaskViewSchema,
-  ROVARA_CODE_AGENT_ID,
-  agentXError,
-  atLeast,
-  capText,
-  chainRunKey,
-  chainRunsByChainPk,
-  chainRunsByProjectPk,
-  projectAllows,
-  redactText,
-  runEventSk,
-  type ChainRunEventPage,
-  type ChainRunList,
-  type ChainRunStatus,
-  type ChainRunSection,
-  type ChainRunSummary,
-  type ChainRunView,
-  type ChainStepTaskView,
-  type DeveloperTaskView,
-  type OrgId,
-  type PinnedChainDefinition,
-} from "@agentx/contracts";
+import { AGENTX_NAME_PATTERN, CHAIN_RUN_EVENTS_PAGE_MAX, CHAIN_RUN_LIST_PAGE_MAX, CHAIN_RUN_STATUSES, CHAIN_SESSION_CONTRACT_VERSION, STEP_LINK_URL_MAX, ChainIdSchema, ChainRunEventPageSchema, ChainRunIdSchema, ChainRunListSchema, ChainRunViewSchema, ROVARA_CODE_AGENT_ID, agentXError, atLeast, capText, chainRunKey, chainRunsByChainPk, chainRunsByProjectPk, projectAllows, redactText, runEventSk, type ChainRunEventPage, type ChainRunList, type ChainRunStatus, type ChainRunSection, type ChainRunSummary, type ChainRunView, type OrgId, type PinnedChainDefinition } from "@rovara-code/contracts";
+import { ChainStepTaskViewSchema, type ChainStepTaskView, type DeveloperTaskView } from "@agentx/cloud-contracts";
 import { orgRoleOf, type AgentCaller } from "../agents/access.js";
 import { confirmUrlFor, getAnyApproval, mayDecideApproval, shownText, type AnyApprovalRecord } from "../agents/approvals.js";
 import { sameMember } from "../agents/lifecycle.js";

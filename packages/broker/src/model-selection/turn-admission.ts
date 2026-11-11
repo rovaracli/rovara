@@ -1,5 +1,5 @@
 // Join admission fences to existing same-item mutations without dropping a condition.
-import {AgentXError,canonicalJson,agentXError} from "@agentx/contracts";
+import { AgentXError, canonicalJson, agentXError } from "@rovara-code/contracts";
 import type {TransactItem} from "../agents/table-writes.js";
 export function joinTurnAdmissionChecks(items:readonly TransactItem[]):TransactItem[] {
  const result:TransactItem[]=[];const positions=new Map<string,number>();

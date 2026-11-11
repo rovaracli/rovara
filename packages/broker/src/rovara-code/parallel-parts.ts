@@ -5,7 +5,7 @@
 // parts: the plan's cap (PARALLEL_PARTS_MAX), and the room the person and the org have in their workspace slots. The task holds one slot already, so it may run its own
 // part plus one more for each free slot; an org at its limit builds serially.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { PARALLEL_PARTS_MAX, parallelPartsFor, taskGraphOrder, type OrgId, type TaskGraphV1, type WorkItemProgressV1, type WorkflowParallel } from "@agentx/contracts";
+import { PARALLEL_PARTS_MAX, parallelPartsFor, taskGraphOrder, type OrgId, type TaskGraphV1, type WorkItemProgressV1, type WorkflowParallel } from "@rovara-code/contracts";
 import { developerCharge, readWorkspaceLimits } from "../developer/limits.js";
 import type { WorkspaceCharge } from "../developer/task-records.js";
 

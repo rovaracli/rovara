@@ -4,7 +4,7 @@
 // person the mapping let in, until the end of that sign-in's session (the edition's cap). A refused sign-in removes it. The Slack ingress asks for it before it acts, so a
 // person removed from the groups is refused in Slack within the cap at the latest, and at their next company sign-in attempt at the soonest.
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
-import { agentXError, orgPk, type OrgId } from "@agentx/contracts";
+import { agentXError, orgPk, type OrgId } from "@rovara-code/contracts";
 
 export const SLACK_NOT_ALLOWED_MESSAGE = "Sign in to Rovara with your company account first. This Slack account is not signed in to Rovara, or your access has ended.";
 

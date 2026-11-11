@@ -4,15 +4,15 @@
 // template is untouched (agent-templates.test.ts holds its digest), and an organisation that pinned it keeps it.
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
-import { BUILTIN_AGENT_IDS, type BuiltinAgentId } from "../../packages/contracts/src/agent.js";
-import { AgentConnectorTypeSchema, ResolvedRecipeSchema, TriggerSpecSchema } from "../../packages/contracts/src/agent-recipe.js";
-import { formatRecipeProblem, recipeDigest, recipeProblems, recipeRunner, type ResolvedRecipe, type ToolGrant } from "../../packages/contracts/src/agent-recipe-node.js";
-import { BUILTIN_AGENTS, builtinRecipe, currentBuiltinVersion } from "../../packages/contracts/src/agent-templates.js";
-import { BUILTIN_TRIGGER_SUGGESTIONS } from "../../packages/contracts/src/builtin-triggers.js";
-import type { ConnectorCatalog, PresentedTool } from "../../packages/contracts/src/connectors-node.js";
-import { builtinSettingsKey } from "../../packages/contracts/src/org-scoped-keys.js";
-import { EVENT_TYPES, EventTriggerSpecSchema, ScheduleTriggerSpecSchema, eventFilterKeys } from "../../packages/contracts/src/trigger-specs.js";
-import { toolPatternMatches } from "../../packages/contracts/src/action-policy-node.js";
+import { BUILTIN_AGENT_IDS, type BuiltinAgentId } from "@rovara-code/contracts";
+import { AgentConnectorTypeSchema, ResolvedRecipeSchema, TriggerSpecSchema } from "@rovara-code/contracts";
+import { formatRecipeProblem, recipeDigest, recipeProblems, recipeRunner, type ResolvedRecipe, type ToolGrant } from "@rovara-code/contracts";
+import { BUILTIN_AGENTS, builtinRecipe, currentBuiltinVersion } from "@rovara-code/contracts";
+import { BUILTIN_TRIGGER_SUGGESTIONS } from "@rovara-code/contracts";
+import type { ConnectorCatalog, PresentedTool } from "@rovara-code/contracts";
+import { builtinSettingsKey } from "@rovara-code/contracts";
+import { EVENT_TYPES, EventTriggerSpecSchema, ScheduleTriggerSpecSchema, eventFilterKeys } from "@rovara-code/contracts";
+import { toolPatternMatches } from "@rovara-code/contracts";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
 import { GITHUB_AGENT_TOOL_PERMISSIONS } from "../../packages/broker/src/agents/github-agent-tools.js";
 import { resolveToolGrants, type GrantConnector } from "../../packages/broker/src/agents/tool-grants.js";

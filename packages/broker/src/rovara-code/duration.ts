@@ -3,10 +3,7 @@
 // Every figure is a whole number of minutes between 5 and `RUN_MINUTES_MAX`, so what a person reads is bounded and never a made-up number. Only version 2 tasks (1.1.0) are
 // recorded; a version 1 task writes nothing. A duration is one item and costs no model call: this is not a spend path.
 import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  DEFAULT_RUN_MINUTES, DURATION_HISTORY_SIZE, DURATION_MIN_SAMPLES, INDEX_EXPIRY_ATTRIBUTE, RUN_MINUTES_MAX, durationHistoryKey,
-  type OrgId, type RunMinutes,
-} from "@agentx/contracts";
+import { DEFAULT_RUN_MINUTES, DURATION_HISTORY_SIZE, DURATION_MIN_SAMPLES, INDEX_EXPIRY_ATTRIBUTE, RUN_MINUTES_MAX, durationHistoryKey, type OrgId, type RunMinutes } from "@rovara-code/contracts";
 import type { DeveloperTaskRecord } from "../developer/task-records.js";
 import { taskKey } from "../developer/task-records.js";
 import { NOT_EXISTS, errorName } from "../agents/table-writes.js";

@@ -1,6 +1,6 @@
 // "How we work" (H4 fix round 1): a project's process layer changes how the stages of Rovara Code work, not which stages there are. An overlay `sequence` (adding, removing, reordering or
 // re-naming stages) is refused for a process layer at draft save, creation and publish; it is a later track. Ordinary agents may still set one.
-import { agentXError, type RecipeOverlay } from "@agentx/contracts";
+import { agentXError, type RecipeOverlay } from "@rovara-code/contracts";
 
 export const PROCESS_SEQUENCE_MESSAGE = "How we work can't change the order of stages yet.";
 

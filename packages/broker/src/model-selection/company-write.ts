@@ -2,7 +2,7 @@
 // through the existing approval flow. No caller-supplied approval flag is accepted.
 import {createHash} from "node:crypto";
 import {TransactWriteCommand} from "@aws-sdk/lib-dynamodb";
-import {ModelSelectionPolicyPutSchema,agentXError,canonicalJson,STAGE_IDS,agentRequestKey,INDEX_EXPIRY_ATTRIBUTE,approvalKey,type OrgId} from "@agentx/contracts";
+import { ModelSelectionPolicyPutSchema, agentXError, canonicalJson, STAGE_IDS, agentRequestKey, INDEX_EXPIRY_ATTRIBUTE, approvalKey, type OrgId } from "@rovara-code/contracts";
 import {commit,readRequest} from "../agents/table-writes.js";
 import {getApproval,type ApprovalRecord,type ApprovalDependencies} from "../agents/approvals.js";
 import {auditPending,type AuditRuntime} from "../audit/outbox.js";

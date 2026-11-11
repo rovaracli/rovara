@@ -6,7 +6,7 @@ import { Button } from "../../../design/Button.js";
 import { TextArea } from "../../../design/TextArea.js";
 import { TextField } from "../../../design/TextField.js";
 import { VisibleText } from "../../../design/VisibleText.js";
-import { COMPANY_RULES_NOTE_MAX, COMPANY_RULE_INPUT_MAX } from "@agentx/contracts/web";
+import { COMPANY_RULES_NOTE_MAX, COMPANY_RULE_INPUT_MAX } from "@agentx/cloud-contracts/web";
 import { T } from "./company-rules-text.js";
 import { DiffView, PreviewBlock } from "./parts.js";
 import { addRule, canMove, checkRules, deleteRule, diffRules, draftFrom, editRule, foldRuleText, moveRule, PRIORITY_WORDS, sameRules, setPriority, toRules, type DraftRule, type Limits, type Priority } from "./rules-logic.js";

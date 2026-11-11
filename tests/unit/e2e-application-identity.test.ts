@@ -4,9 +4,9 @@ import { execFileSync } from "node:child_process";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { list } from "e2e/runner";
-import { APPLICATION_E2E_TEST_PATH, e2eApplicationUpstreamTestIdFromIdentity } from "../../packages/contracts/src/e2e-application-execution-plan.js";
-import { canonicalJson, e2eExecutionPlanDigest } from "../../packages/contracts/src/index.js";
-import { e2eCaseIdFromIdentity } from "../../packages/contracts/src/e2e-case-identity.js";
+import { APPLICATION_E2E_TEST_PATH, e2eApplicationUpstreamTestIdFromIdentity } from "@rovara-code/contracts";
+import { canonicalJson, e2eExecutionPlanDigest } from "@rovara-code/contracts";
+import { e2eCaseIdFromIdentity } from "../../packages/cloud-contracts/src/e2e-case-identity.js";
 import { compareE2EApplicationPublicList, createE2EApplicationSelectionPacket, E2EApplicationSelectionPacketSchema } from "../../packages/verifier/src/application-identity.js";
 import { expectedE2EApplicationConfigDigest, renderE2EApplicationDeclaration, renderE2EApplicationGeneratedTest } from "../../packages/verifier/src/application-templates.js";
 

@@ -12,10 +12,8 @@
 import { createHash } from "node:crypto";
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { unmarshall } from "@aws-sdk/util-dynamodb";
-import {
-  INDEX_EXPIRY_ATTRIBUTE, OrgIdSchema, SecondOpinionSchema, SecondReviewTrackRowSchema, blockingFindings, orgMetaKey, reviewCleared, secondReviewModelKey, summarizeSecondReviewTrack, workflowFindingFingerprint,
-  type OrgId, type SecondReviewTrackRecord, type SecondReviewTrackRow,
-} from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, OrgIdSchema, SecondOpinionSchema, SecondReviewTrackRowSchema, blockingFindings, reviewCleared, secondReviewModelKey, summarizeSecondReviewTrack, workflowFindingFingerprint, type OrgId, type SecondReviewTrackRecord, type SecondReviewTrackRow } from "@rovara-code/contracts";
+import { orgMetaKey } from "@agentx/cloud-contracts";
 import { z } from "zod";
 import type { StreamRecord } from "../developer/notifications.js";
 import type { SettingsTable } from "../org/second-review-settings.js";

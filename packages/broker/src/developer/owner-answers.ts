@@ -1,10 +1,8 @@
 // Spec 061 slice 2: the owner's answers and the comments they sent with a decision, as the next step reads them (the
 // Markdown copy, the planner's prompt), and the sentence a page decision that came too late is refused with (FR-035).
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  TaskCommentSchema, WorkflowDecisionDetailSchema, commentTargetText, redactText,
-  type PlanDocument, type PlanOwnerAnswers, type TaskComment, type WorkflowArtifact, type WorkflowDecisionDetail, type WorkflowSnapshot,
-} from "@agentx/contracts";
+import { TaskCommentSchema, WorkflowDecisionDetailSchema, commentTargetText, redactText, type PlanDocument, type PlanOwnerAnswers, type TaskComment, type WorkflowArtifact, type WorkflowDecisionDetail } from "@rovara-code/contracts";
+import { type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import type { DeveloperTaskRouteDependencies } from "../aws/developer-tasks.js";
 import { withoutKeys } from "./page-comments.js";
 import { inertReplyText } from "./prompt-text.js";

@@ -1,5 +1,5 @@
 // The project's process layer for the "How we work" journey: the effective view, the ensure call and the layer's draft, diff, publish and versions. State lives for one scenario.
-import { AgentDraftPutBodySchema, AgentPublishBodySchema } from "@agentx/contracts/web";
+import { AgentDraftPutBodySchema, AgentPublishBodySchema } from "@agentx/cloud-contracts/web";
 import { agentProfile } from "../../web/support/agent-fixture.js";
 import { LAYER, diffBody, draftBody, howWeWorkView } from "../../web/support/how-we-work-view.js";
 import { effective, mid, stageEntry, stageModelsRaw } from "../../web/support/stage-models-raw.js";

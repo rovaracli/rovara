@@ -1,7 +1,7 @@
 import "./project-slack.css";
 import { SlackBindEditor } from "./SlackBindEditor.js";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ReviewedSlackUnbindBodySchema } from "@agentx/contracts/web";
+import { ReviewedSlackUnbindBodySchema } from "@agentx/cloud-contracts/web";
 import { useAppHost } from "../../../host.js";
 import { ApiError } from "../../../api/errors.js";
 import { createProjectSlackApi } from "../../../api/project-slack.js";

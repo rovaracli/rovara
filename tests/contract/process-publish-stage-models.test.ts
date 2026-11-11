@@ -3,7 +3,7 @@
 // ordinary agent) publishes exactly as before.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { canonicalModelName, projectRevisionKey, recipeDigest, ROVARA_CODE_AGENT_ID, type AgentId } from "../../packages/contracts/src/index.js";
+import { canonicalModelName, projectRevisionKey, recipeDigest, ROVARA_CODE_AGENT_ID, type AgentId } from "@rovara-code/contracts";
 import { bedrockClaudeModelIds } from "@agentx/model-runtime/catalog";
 import { decideApproval, getAnyApproval, getApprovalSubjectHandler, type ApprovalRecord } from "../../packages/broker/src/agents/approvals.js";
 import { publishDraft, resolveRecipe, rollbackAgent } from "../../packages/broker/src/agents/changes.js";

@@ -3,11 +3,10 @@
 // removed (no endless retry), and the refusal is audited with fixed words. An allowed owner (or a company admin) still gets the round.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import {
-  FEEDBACK_AUTONOMY_ACTOR_ID, WorkflowSnapshotSchema, createCandidateManifest, decideWorkflowFeedbackFindings, orgMemberKey, orgRemovedKey, projectMemberKey, projectMetaKey, startWorkflowFix, type WorkflowSnapshot,
-} from "@agentx/contracts";
+import { FEEDBACK_AUTONOMY_ACTOR_ID, createCandidateManifest, projectMemberKey, projectMetaKey } from "@rovara-code/contracts";
+import { WorkflowSnapshotSchema, decideWorkflowFeedbackFindings, orgMemberKey, orgRemovedKey, startWorkflowFix, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
-import { builtinSettingsKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { builtinSettingsKey } from "@rovara-code/contracts";
 import { ciEvidenceItem, ciOutputBlock } from "../../packages/broker/src/rovara-code/ci-fix.js";
 import { WORKFLOW_NO_CANDIDATE_DIGEST, workflowDispatchItem } from "../../packages/broker/src/aws/broker-shared.js";
 import { MAYA, OMAR, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
@@ -16,7 +15,7 @@ import { fakeModelAccess } from "../support/fake-model-access.js";
 import { seedReview } from "../support/rovara-code-feedback.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { pullRequestDetails } from "../support/p5-world.js";
-import { agentXError } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
 import { notifyOthersOfStop } from "../../packages/broker/src/developer/work-refusal.js";
 import { taskPageStage } from "../../packages/broker/src/aws/developer-tasks/task-page.js";
 

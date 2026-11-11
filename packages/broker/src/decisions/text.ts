@@ -1,4 +1,4 @@
-import { hideEmailAddresses } from "@agentx/contracts";
+import { hideEmailAddresses } from "@rovara-code/contracts";
 
 // Plain one-line text for cards: no email address (S3), whatever came from a person, a plan or a repository is flattened to one line, stripped of hidden and control characters and cut at a word. Nothing here is markup.
 export function plainLine(value: string, max: number): string {

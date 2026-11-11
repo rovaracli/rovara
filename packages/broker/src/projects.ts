@@ -1,4 +1,5 @@
-import { ProjectDefinitionSchema, agentXError, sameJsonContent, type ProjectDefinition } from "@agentx/contracts";
+import { agentXError, sameJsonContent } from "@rovara-code/contracts";
+import { ProjectDefinitionSchema, type ProjectDefinition } from "@agentx/cloud-contracts";
 import type { AuthenticatedIdentity } from "./auth.js";
 import { authorizeProject, type ProjectMembership } from "./authorization.js";
 

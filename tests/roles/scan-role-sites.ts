@@ -74,5 +74,8 @@ export function roleSites(repoRoot: string): RoleSite[] {
     try { if (!statSync(root).isDirectory()) continue; } catch { continue; }
     for (const path of walk(root)) sites.push(...roleSitesIn(readFileSync(path, "utf8"), relative(repoRoot, path).replace(/\\/g, "/")));
   }
+  // Rovara Code's contracts (the pinned copy) hold role checks Cloud's code runs too (convergence W0-3), so the scan reads them where they are.
+  const codeContracts = join(repoRoot, "vendor", "rovara-code", "packages", "contracts", "src");
+  for (const path of walk(codeContracts)) sites.push(...roleSitesIn(readFileSync(path, "utf8"), relative(repoRoot, path).replace(/\\/g, "/")));
   return sites;
 }

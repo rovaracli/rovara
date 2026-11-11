@@ -1,7 +1,7 @@
 // Lessons in the repo, lane R2, review round 1 (LESSONS-REPO-FILE-REVIEW.md): the seven reviewer probes as real tests, plus the cases the fixes added.
 // Principle A: a failed read stops the write for that repo (never "absent"), and nothing is deleted that is not provably Rovara's own. Principle B: removals are never blocked.
 import { afterEach, describe, expect, it } from "vitest";
-import type { PathKind, RepositoryRef } from "@agentx/contracts";
+import type { PathKind, RepositoryRef } from "@rovara-code/contracts";
 import { setLearnedLessonsGate } from "../../../packages/broker/src/lessons/policy.js";
 import { parseLessonsFile } from "../../../packages/broker/src/lessons/repo-file-format.js";
 import { switchRepoFileOff } from "../../../packages/broker/src/lessons/repo-file-pass.js";

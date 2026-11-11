@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { orgMemberKey } from "../../packages/contracts/src/org-node.js";
-import { projectMemberKey, projectRevisionKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { orgMemberKey } from "../../packages/cloud-contracts/src/org-node.js";
+import { projectMemberKey, projectRevisionKey } from "@rovara-code/contracts";
 import { taskPersonInviteStateConditions, type TaskPersonProjectAuthorityWitness } from "../../packages/broker/src/aws/task-person-invite-authority-fence.js";
 import { TEST_ORG } from "../support/orgs.js";
 

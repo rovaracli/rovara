@@ -3,9 +3,7 @@
 // 2 to 3 SUGGESTIONS (marked, with a one-line reason made of fixed words), and nothing else: the choice is the company's, and the default (the top suggestion) is used only while nobody has chosen.
 //
 // There is no hidden driving-test gate: any eligible model may run in shadow straight away. Running in `on` (blocking) is a separate step that needs a track record (see second-review.ts, `verified`).
-import {
-  canonicalModelName, modelCompany, secondReviewModelKey, secondReviewedByLine, type ModelCompany, type ModelIdentifier, type SecondReviewModelRef, type SecondReviewReplayRun, type SecondReviewVerdict, secondReviewVerdictHolds,
-} from "@agentx/contracts";
+import { canonicalModelName, modelCompany, secondReviewModelKey, secondReviewedByLine, type ModelCompany, type ModelIdentifier, type SecondReviewModelRef, type SecondReviewReplayRun, type SecondReviewVerdict, secondReviewVerdictHolds } from "@rovara-code/contracts";
 import { differentCompany } from "../agents/dispatch.js";
 import { isBatchVariant, isFreeVariant } from "../model-sources/model-variants.js";
 import { candidatesOf, criticCapabilityTier, rankCriticModels, type CriticModelLimits } from "./critic.js";

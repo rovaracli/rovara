@@ -3,7 +3,8 @@
 // and the same projects (an archived project is left out of `projectsOf`, a project with no revision is not one), and the same roles
 // for a person the project's Slack channel gives access (a contributor, unless an explicit grant says otherwise, Plan 3 Task 11).
 import { describe, expect, it } from "vitest";
-import { orgMemberKey, orgProjectCatalogKey, projectMemberKey, projectMetaKey, projectRevisionKey, type OrgId, type OrgRole, type ProjectRole } from "../../packages/contracts/src/index.js";
+import { orgMemberKey, type OrgRole } from "@agentx/cloud-contracts";
+import { orgProjectCatalogKey, projectMemberKey, projectMetaKey, projectRevisionKey, type OrgId, type ProjectRole } from "@rovara-code/contracts";
 import { createProjectMembers } from "../../packages/broker/src/org/project-members.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { FakeProjectMembers } from "../support/fake-project-members.js";

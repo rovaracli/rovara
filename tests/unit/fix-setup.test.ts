@@ -1,7 +1,8 @@
 // Setup and test health SH17: the Fix setup record (one per project per cause, later tasks join), its card source, and its two decisions ("Mark as known failing" and "Not now").
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { AUTO_FIX_ENVIRONMENT_CODES, type EvidencePack } from "@agentx/contracts";
+import { AUTO_FIX_ENVIRONMENT_CODES } from "@agentx/cloud-contracts";
+import { type EvidencePack } from "@rovara-code/contracts";
 import { projectDecisionCards, type DecisionItem } from "../../packages/broker/src/decisions/project.js";
 import { fixSetupHandler } from "../../packages/broker/src/decisions/performer.js";
 import {

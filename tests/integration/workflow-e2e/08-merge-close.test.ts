@@ -2,11 +2,12 @@
 // suite 7. Here: a merge in every stage (while the feedback review runs, while a proposal waits, while the fix is made,
 // while it is pushed [LIVE-BUG B4], at someone else's head), closing from Slack (while waiting for the merge, and a
 // blocked task's discard), a teammate's Close, and the Canvas closeout.
-import { slackLimitPk } from "../../../packages/contracts/src/org-scoped-keys.js";
+import { slackLimitPk } from "@rovara-code/contracts";
 import { TEST_ORG } from "../../support/orgs.js";
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { WORKFLOW_BLOCK_REASONS, agentXError } from "@agentx/contracts";
+import { WORKFLOW_BLOCK_REASONS } from "@agentx/cloud-contracts";
+import { agentXError } from "@rovara-code/contracts";
 import { developerIdForSlackUser } from "../../../packages/broker/src/aws/admin-actions.js";
 import { CLOSED_REPLY } from "../../../packages/broker/src/developer/share-messages.js";
 import { SLACK_TEAM } from "../../support/slack-broker.js";

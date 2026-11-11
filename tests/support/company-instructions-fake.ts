@@ -1,5 +1,5 @@
 // A test fake for the CompanyInstructionsSource port (lane I2): answers the given snapshots in turn (the last one repeats; an Error among them fails that call), or fails every call when given an Error. Records the company key of each call.
-import type { CompanyInstructionsSnapshot } from "../../packages/contracts/src/index.js";
+import type { CompanyInstructionsSnapshot } from "@rovara-code/contracts";
 import type { CompanyInstructionsSource } from "../../packages/broker/src/instructions/company-source.js";
 
 export interface FakeCompanyInstructionsSource extends CompanyInstructionsSource {

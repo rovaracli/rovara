@@ -1,7 +1,7 @@
 // WL-6: a stage's lessons are built from the lesson store AT DELIVERY from ids and versions, so a lesson erased, retired, withdrawn, expired, edited or hidden after the stage was queued is not delivered,
 // and nothing but ids and versions needs to sit in an outbox row, a queue message or a dead-letter copy.
 import { describe, expect, it } from "vitest";
-import { learnedRefsOf, type LearnedRefs } from "../../../packages/contracts/src/index.js";
+import { learnedRefsOf, type LearnedRefs } from "@rovara-code/contracts";
 import { learnedContextFromRefs, type DeliveryDeps } from "../../../packages/broker/src/lessons/deliver.js";
 import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.js";
 import type { Lesson } from "../../../packages/broker/src/lessons/types.js";

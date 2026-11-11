@@ -3,7 +3,7 @@
 import type { DescribeAlarmsCommand, DescribeAlarmsCommandOutput } from "@aws-sdk/client-cloudwatch";
 import type { GetQueueAttributesCommand, GetQueueAttributesCommandOutput } from "@aws-sdk/client-sqs";
 import { describe, expect, it } from "vitest";
-import { HEALTH_ALARM_CONDITIONAL_SUFFIXES, HEALTH_ALARM_SUFFIXES, HEALTH_ALARM_TEAM_RECORD_SUFFIXES } from "@agentx/contracts";
+import { HEALTH_ALARM_CONDITIONAL_SUFFIXES, HEALTH_ALARM_SUFFIXES, HEALTH_ALARM_TEAM_RECORD_SUFFIXES } from "@agentx/cloud-contracts";
 import { healthProbes, type HealthProbeInput } from "../../packages/broker/src/aws/health-probes.js";
 import { createAdminReadBroker } from "../support/admin-read-broker.js";
 

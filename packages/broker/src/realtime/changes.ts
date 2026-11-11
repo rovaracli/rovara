@@ -2,21 +2,8 @@
 // catches up with `GET /v1/app/changes?since=<cursor>` and a client that was never told still can be. A feed item holds ids and numbers only, like the notice.
 import { createHash } from "node:crypto";
 import { PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  CHANGES_FEED_DAYS,
-  CHANGES_PAGE_MAX,
-  CHANGES_SETTLE_MS,
-  INDEX_EXPIRY_ATTRIBUTE,
-  RealtimeNoticeSchema,
-  SessionSharedNoticeSchema,
-  CodeSettingsChangedNoticeSchema,
-  agentXError,
-  changesKey,
-  type ChangesFeedEntry,
-  type ChangesFeedPage,
-  type OrgId,
-  type RealtimeNotice,
-} from "@agentx/contracts";
+import { CHANGES_FEED_DAYS, CHANGES_PAGE_MAX, CHANGES_SETTLE_MS, INDEX_EXPIRY_ATTRIBUTE, agentXError, changesKey, type OrgId } from "@rovara-code/contracts";
+import { RealtimeNoticeSchema, SessionSharedNoticeSchema, CodeSettingsChangedNoticeSchema, type ChangesFeedEntry, type ChangesFeedPage, type RealtimeNotice } from "@agentx/cloud-contracts";
 
 export interface ChangesDependencies {
   documentClient: { send(command: unknown): Promise<unknown> };

@@ -4,7 +4,7 @@
 import { randomUUID } from "node:crypto";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
 import { refreshSessionSummary } from "../../packages/broker/src/agent-sessions/summary.js";
-import { UNDERSTAND_ARTIFACT_NAME, builtinSettingsKey, projectMemberKey, type IntentAssessment } from "../../packages/contracts/src/index.js";
+import { UNDERSTAND_ARTIFACT_NAME, builtinSettingsKey, projectMemberKey, type IntentAssessment } from "@rovara-code/contracts";
 import { MAYA, bearerFor, createDeveloperTaskBroker, seedMembership, DEV_ISSUER, type Developer } from "./developer-task-broker.js";
 import { fakeModelAccess } from "./fake-model-access.js";
 import { TEST_ORG } from "./orgs.js";

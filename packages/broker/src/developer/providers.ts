@@ -1,7 +1,8 @@
 // Spec 025 FR-002 to FR-004: the Slack and company OIDC providers, and the GitHub OAuth provider of cloud installs (Task 22). The code exchange runs here,
 // server side, with the client secret; the laptop never sees it.
 import { jwtVerify, type JWTPayload, type JWTVerifyGetKey } from "jose";
-import { GroupClaimNameSchema, SLACK_OIDC_ISSUER, SlackTeamIdSchema, SlackUserIdSchema, cleanDisplayName, containsEmailAddress, SAML_RESPONSE_MAX_BYTES, SAML_SIGN_IN_REFUSED_MESSAGE, type DeveloperSignInMethod, type OrgId, type SamlIdpConfig } from "@agentx/contracts";
+import { GroupClaimNameSchema, SAML_RESPONSE_MAX_BYTES, SAML_SIGN_IN_REFUSED_MESSAGE, type DeveloperSignInMethod, type SamlIdpConfig } from "@agentx/cloud-contracts";
+import { SLACK_OIDC_ISSUER, SlackTeamIdSchema, SlackUserIdSchema, cleanDisplayName, containsEmailAddress, type OrgId } from "@rovara-code/contracts";
 import { SAML_HANDLE, SAML_STASH_TTL_SECONDS, claimAssertion, samlAuthorizeUrl, samlServiceProviderMetadata, verifySamlResponse, type SamlReplayStore, type SamlResponseStash, type SamlServiceProvider } from "./saml.js";
 import { randomBytes } from "node:crypto";
 

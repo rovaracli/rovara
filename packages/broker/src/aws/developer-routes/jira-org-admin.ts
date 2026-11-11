@@ -6,7 +6,7 @@
 //            { action: "clear", requestId, connectionId }
 // There is no read: the key is write-only and nothing returns it. A save through the connection's own route that leaves the pair out keeps it. The reply is a fixed word. Refusals name the field, never its value.
 import { z } from "zod";
-import { AtlassianOrgAdminKey, AtlassianOrgId, ConnectionIdSchema, agentXError } from "@agentx/contracts";
+import { AtlassianOrgAdminKey, AtlassianOrgId, ConnectionIdSchema, agentXError } from "@rovara-code/contracts";
 import { logDeveloperEvent } from "../../developer/log.js";
 import { StatusReply } from "../status-reply.js";
 import type { AdaptedHttpRequest } from "../lambda.js";

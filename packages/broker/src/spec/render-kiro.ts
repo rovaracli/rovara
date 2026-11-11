@@ -3,7 +3,7 @@
 // Facts from the Kiro specs pages: EARS is "WHEN [condition/event] THE SYSTEM SHALL [expected behavior]"; `bugfix.md` has three sections, "Current Behavior (Defect)", "Expected
 // Behavior (Correct)" and "Unchanged Behavior (Regression Prevention)". The pages do not state the folder or the `tasks.md` layout: the folder is `.kiro/specs/<feature>/` (the project can change
 // it with `pathTemplate`), and `tasks.md` is a numbered checkbox list with requirement references.
-import { specDraftStatements, type SpecDraft, type SpecFile, type SpecRequirementRef } from "@agentx/contracts";
+import { specDraftStatements, type SpecDraft, type SpecFile, type SpecRequirementRef } from "@rovara-code/contracts";
 import { assertRenderedSpec, extractLabelledLines, resolveSpecFolder, type SpecRenderer, type SpecRenderInput } from "./renderer.js";
 
 export const KIRO_BUGFIX_SECTIONS = ["Current Behavior (Defect)", "Expected Behavior (Correct)", "Unchanged Behavior (Regression Prevention)"] as const;

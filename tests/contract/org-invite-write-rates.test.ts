@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { expect, it } from "vitest";
-import { AgentXError, developerOrgKey, errorStatus, orgMemberKey, orgMetaKey, orgScoped } from "@agentx/contracts";
+import { AgentXError, errorStatus, orgScoped } from "@rovara-code/contracts";
+import { developerOrgKey, orgMemberKey, orgMetaKey } from "@agentx/cloud-contracts";
 import { routeDeveloperRequest, type DeveloperCaller, type DeveloperRouteDependencies } from "../../packages/broker/src/aws/developer-routes.js";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";

@@ -6,23 +6,7 @@
 // unless they are an admin themselves. The other settings in the same request still apply at once, and the change is bound to the revision they leave.
 import { createHash } from "node:crypto";
 import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  CHANGES_FEED_DAYS,
-  CODE_SETTINGS_STALE_MESSAGE,
-  CodeSettingsBodySchema,
-  CodeSettingsSchema,
-  DEFAULT_CODE_SETTINGS,
-  INDEX_EXPIRY_ATTRIBUTE,
-  agentXError,
-  changesKey,
-  codeSettingsKey,
-  projectAllows,
-  type CodeSettings,
-  type CodeSettingsBody,
-  type CodeSettingsResponse,
-  type OrgId,
-  type ProjectRole,
-} from "@agentx/contracts";
+import { CHANGES_FEED_DAYS, CODE_SETTINGS_STALE_MESSAGE, CodeSettingsBodySchema, CodeSettingsSchema, DEFAULT_CODE_SETTINGS, INDEX_EXPIRY_ATTRIBUTE, agentXError, changesKey, codeSettingsKey, projectAllows, type CodeSettings, type CodeSettingsBody, type CodeSettingsResponse, type OrgId, type ProjectRole } from "@rovara-code/contracts";
 import { confirmationReply } from "../agent-sessions/shares.js";
 import { createPendingChange, registerApprovalSubjectHandler, type ApprovalDependencies } from "../agents/approvals.js";
 import type { AnyApprovalRecord } from "../agents/approvals-store.js";

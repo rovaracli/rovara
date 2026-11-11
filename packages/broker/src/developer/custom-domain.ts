@@ -1,7 +1,7 @@
 // 0.5.7: the hosted cloud's optional custom domain (infra/lib/custom-domain.ts). The sign-in server and the broker read it the same way: with a name,
 // `https://<name>/v1/auth` is the issuer (the address links, redirect URIs, cookies and CORS are built from), and the API's own address, which keeps
 // answering, stays an issuer too: tokens signed under it are still accepted until they expire, and the sign-in server answers on that host as itself.
-import { agentXError } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
 
 /** A lower-case DNS name of at least two labels, as the stack parameter allows. */
 const DOMAIN = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;

@@ -2,7 +2,7 @@
 // agentx_get_task showed the questions only inside the summary. The plan allows AI tools to answer (Plan 6 Task 25: agentx_answer_task_questions); the person's authority is the same as in the app
 // ("can use" on the session, judged by the control plane), and nothing here approves a plan, merges or spends. These tests drive the real MCP server against the real broker handler.
 import { describe, expect, it } from "vitest";
-import { ANSWER_EVERY_QUESTION_MESSAGE, INTENT_NOT_WAITING_MESSAGE } from "../../packages/contracts/src/index.js";
+import { ANSWER_EVERY_QUESTION_MESSAGE, INTENT_NOT_WAITING_MESSAGE } from "@rovara-code/contracts";
 import { DEVELOPER_TOOLS } from "../../packages/mcp/src/tools.js";
 import { OMAR } from "../support/developer-task-broker.js";
 import { signedInClient } from "../support/mcp-broker-client.js";

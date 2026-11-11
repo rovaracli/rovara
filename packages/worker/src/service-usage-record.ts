@@ -29,10 +29,7 @@
 // reads that as "could not be checked" and fails the usage step.
 //
 // The record is the broker contract's `TestServicesUsageRecord` (contracts/src/test-services-usage.ts, s1-broker T1); the tests parse every record this module builds with `TestServicesUsageRecordSchema`.
-import {
-  AwsOperationNameSchema, AwsServiceKeySchema, TEST_SERVICES_AWS_USAGE_LIMITS, TEST_SERVICES_USAGE_LIMITS, TEST_SERVICES_USAGE_SCHEMA_VERSION, TestServicesAwsUsageSchema, hostProblem, looksLikeSecretValue, registrableDomain,
-  type TestServicesAwsUsage, type TestServicesDependencyUsage, type TestServicesFakeUsage, type TestServicesStartFailure, type TestServicesUsageRecord,
-} from "@agentx/contracts";
+import { AwsOperationNameSchema, AwsServiceKeySchema, TEST_SERVICES_AWS_USAGE_LIMITS, TEST_SERVICES_USAGE_LIMITS, TEST_SERVICES_USAGE_SCHEMA_VERSION, TestServicesAwsUsageSchema, hostProblem, looksLikeSecretValue, registrableDomain, type TestServicesAwsUsage, type TestServicesDependencyUsage, type TestServicesFakeUsage, type TestServicesStartFailure, type TestServicesUsageRecord } from "@rovara-code/contracts";
 import { readSealedDnsRecord, type SealedDnsRecord } from "./check-sandbox.js";
 import { EmulatorControlError } from "./emulator-control.js";
 import { EmulatorLedgerError, type EmulatorLedger, type EmulatorLedgerPort } from "./emulator-ledger.js";

@@ -2,7 +2,7 @@
 import { randomUUID } from "node:crypto";
 import { PutCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it, vi } from "vitest";
-import { SpecTargetSchema, type SpecFile, type SpecTarget } from "@agentx/contracts";
+import { SpecTargetSchema, type SpecFile, type SpecTarget } from "@rovara-code/contracts";
 import type { readSpecPullRequestOf } from "../../packages/broker/src/aws/broker/spec-wiring.js";
 import { handleSpecPullRequestEvent } from "../../packages/broker/src/aws/broker/spec-wiring.js";
 import { createSpecHooks, type SpecWorld } from "../../packages/broker/src/spec/hooks.js";

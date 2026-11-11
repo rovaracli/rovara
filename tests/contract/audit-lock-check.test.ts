@@ -6,7 +6,8 @@
 import { Stack } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
-import { AUDIT_VERSION_SWEEP_KEYS_PER_RUN, ENVIRONMENT_PLACEHOLDER } from "@agentx/contracts";
+import { AUDIT_VERSION_SWEEP_KEYS_PER_RUN } from "@agentx/cloud-contracts";
+import { ENVIRONMENT_PLACEHOLDER } from "@rovara-code/contracts";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import type { AuditLedger } from "../../infra/lib/audit-ledger.js";
 import { auditLockSettings } from "../../infra/lib/audit-settings.js";

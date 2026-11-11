@@ -1,14 +1,5 @@
 import { PutCommand, type DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
-import {
-  TURN_TEXT_LIMIT,
-  TurnRecordSchema,
-  redactAndCap,
-  turnRecordKeys,
-  type SlackRequestMessage,
-  type TurnDisposition,
-  type TurnObservation,
-  type TurnRecord,
-} from "@agentx/contracts";
+import { TURN_TEXT_LIMIT, TurnRecordSchema, redactAndCap, turnRecordKeys, type SlackRequestMessage, type TurnDisposition, type TurnObservation, type TurnRecord } from "@rovara-code/contracts";
 import type { ServiceLog } from "./processor.js";
 
 /** DynamoDB's item limit is 400 KB; this leaves room for keys and attribute overhead. */

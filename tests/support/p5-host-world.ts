@@ -1,7 +1,7 @@
 // Enterprise foundations P5d/P5e: a broker's dependencies over a fake table, with GitHub (a stand-in provider that must never be asked about the fake or unknown repositories) and a registered fake
 // code host. The project `demo` holds a GitHub repository, one on the fake host, one on a host this install has not registered, and a meta repository on each of GitHub and the fake host.
 import { expect, vi } from "vitest";
-import { editionPolicy } from "../../packages/contracts/src/index.js";
+import { editionPolicy } from "@agentx/cloud-contracts";
 import type { rewriteDescriptionsOfTask } from "../../packages/broker/src/aws/broker/attribution-erasure.js";
 import { githubCodeHost } from "../../packages/broker/src/plugins/code-host/github/index.js";
 import { FakeCodeHost } from "../../packages/broker/src/plugins/fake/code-host.js";
@@ -19,7 +19,7 @@ export const FAKE_META_URL = "https://git.example.test/acme/api-meta";
 export const GITHUB_META_URL = "https://github.com/acme/web-meta";
 export const TASK = "11111111-1111-4111-8111-111111111111";
 export const WORKSPACE = "ws-1";
-export const SCOPE = { system: "private-install" } as const;
+export const SCOPE = { system: "install" } as const;
 
 export const REPOSITORIES: TestRepository[] = [
   { name: "web", url: GITHUB_URL },

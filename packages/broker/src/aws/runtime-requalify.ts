@@ -3,12 +3,7 @@ import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { PutObjectCommand } from "@aws-sdk/client-s3";
 import { DescribeInstancesCommand, type EC2Client } from "@aws-sdk/client-ec2";
 import { z } from "zod";
-import {
-  agentXError, canonicalJson, e2eQualificationPrefix, Ec2RuntimeBindingSchema, REQUALIFIER_ISSUER, REQUALIFY_ENVIRONMENT_PATTERN, REQUALIFY_PROFILE_ID,
-  REQUALIFY_REFUSAL_PREFIX, REQUALIFY_TAGS, RequalifyLockSchema, RequalifyRunRecordSchema, requalifierSubject, requalifyLockKey, requalifyRunKey,
-  E2E_QUALIFICATION_INSTANCE_ID_PATTERN, E2E_QUALIFICATION_ROLE_ID_PATTERN,
-  type Ec2RuntimeBinding, type RequalifyReasonCode, type RequalifyRunRecord, type RequalifyRunnerIdentity, type WebApiRuntimeInstallProposal,
-} from "@agentx/contracts";
+import { agentXError, canonicalJson, e2eQualificationPrefix, Ec2RuntimeBindingSchema, REQUALIFIER_ISSUER, REQUALIFY_ENVIRONMENT_PATTERN, REQUALIFY_PROFILE_ID, REQUALIFY_REFUSAL_PREFIX, REQUALIFY_TAGS, RequalifyLockSchema, RequalifyRunRecordSchema, requalifierSubject, requalifyLockKey, requalifyRunKey, E2E_QUALIFICATION_INSTANCE_ID_PATTERN, E2E_QUALIFICATION_ROLE_ID_PATTERN, type Ec2RuntimeBinding, type RequalifyReasonCode, type RequalifyRunRecord, type RequalifyRunnerIdentity, type WebApiRuntimeInstallProposal } from "@rovara-code/contracts";
 import type { AuthenticatedIdentity } from "../auth.js";
 import { e2eModelCheckRunnerKey } from "../e2e/model-route-registry.js";
 import { e2eRegisteredRuntimeKey } from "./e2e-runtime-readiness.js";

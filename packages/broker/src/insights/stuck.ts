@@ -6,11 +6,8 @@
 // Counts and the order need only the sessions' own records, so the (bounded) access judging runs on the page that is answered, not on the whole list. A source that fails is skipped, logged with fixed
 // words, and says so in `coverage.partial`; a list never fails for one source.
 import { QueryCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  INSIGHTS_STUCK_NOT_COVERED, INSIGHTS_STUCK_SOURCES, LIVE_INDEX_SCAN_MAX, SessionIdSchema, TASK_STATUS_WORDS, agentSessionKey, agentXError, hideEmailAddresses, liveSessionKey, openSpendRequestsKey,
-  sessionLink, sessionTaskStatus, statusNeedsSomeone,
-  type AgentSessionRecord, type InsightsCoverage, type OrgId, type InsightsNextActor, type InsightsStuck, type InsightsStuckItem, type SpendRequestRecord, type TaskStatus,
-} from "@agentx/contracts";
+import { INSIGHTS_STUCK_NOT_COVERED, INSIGHTS_STUCK_SOURCES, openSpendRequestsKey, type InsightsCoverage, type InsightsNextActor, type InsightsStuck, type InsightsStuckItem, type SpendRequestRecord } from "@agentx/cloud-contracts";
+import { LIVE_INDEX_SCAN_MAX, SessionIdSchema, TASK_STATUS_WORDS, agentSessionKey, agentXError, hideEmailAddresses, liveSessionKey, sessionLink, sessionTaskStatus, statusNeedsSomeone, type AgentSessionRecord, type OrgId, type TaskStatus } from "@rovara-code/contracts";
 import { newSessionRoleMemo, effectiveOwnerId, sessionAccessFor } from "../agent-sessions/access.js";
 import { batchGetItems, keyText, queryPartition, type LiveDependencies } from "../agent-sessions/live.js";
 import { sessionFromItem } from "../agent-sessions/store.js";

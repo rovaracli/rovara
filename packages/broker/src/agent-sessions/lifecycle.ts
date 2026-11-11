@@ -18,39 +18,8 @@
 import { moveAsksOnMerge } from "./ask-erase.js";
 import { createHash } from "node:crypto";
 import { DeleteCommand, GetCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  AGENTX_NAME_PATTERN,
-  DeviceIdSchema,
-  LOCAL_ORG_CLOSED_MESSAGE,
-  INDEX_EXPIRY_ATTRIBUTE,
-  LIVE_INDEX_SCAN_MAX,
-  OrgIdSchema,
-  SessionIdSchema,
-  SlackUserIdSchema,
-  agentSessionKey,
-  agentXError,
-  changesKey,
-  cleanSessionName,
-  deviceKey,
-  livePresenceKey,
-  liveSessionKey,
-  memberDevicesKey,
-  mySessionsKey,
-  openAgentSessionKey,
-  orgPk,
-  orgProjectCatalogPk,
-  projectMonthStatsKey,
-  projectSessionsKey,
-  sessionBindingKey,
-  sessionSurfaceKey,
-  sharedSessionsKey,
-  type AgentPrincipal,
-  type DeveloperSignInMethod,
-  type OrgId,
-  type Payer,
-  type SessionBinding,
-  type SessionLevel,
-} from "@agentx/contracts";
+import { AGENTX_NAME_PATTERN, DeviceIdSchema, INDEX_EXPIRY_ATTRIBUTE, LIVE_INDEX_SCAN_MAX, OrgIdSchema, SessionIdSchema, SlackUserIdSchema, agentSessionKey, agentXError, changesKey, cleanSessionName, livePresenceKey, liveSessionKey, mySessionsKey, openAgentSessionKey, orgPk, orgProjectCatalogPk, projectMonthStatsKey, projectSessionsKey, sessionBindingKey, sessionSurfaceKey, sharedSessionsKey, type AgentPrincipal, type OrgId, type Payer, type SessionBinding, type SessionLevel } from "@rovara-code/contracts";
+import { LOCAL_ORG_CLOSED_MESSAGE, deviceKey, memberDevicesKey, type DeveloperSignInMethod } from "@agentx/cloud-contracts";
 import { checkTime, registerMemberMover } from "../agents/lifecycle.js";
 import { errorName, failedIndexes, type Item, type TransactItem } from "../agents/table-writes.js";
 import type { DeveloperSignInStore } from "../developer/store.js";

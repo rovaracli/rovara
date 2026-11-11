@@ -3,7 +3,7 @@
 // may still run it" until the reconciler's idle check, ten minutes later. Stop then said "Nothing was running" and Close said "still working".
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { workspaceSessionKey } from "../../packages/contracts/src/session.js";
+import { workspaceSessionKey } from "@rovara-code/contracts";
 import { MAYA, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
 
 /** A task whose preparation is done and whose first coding step is dispatching (its operation holds the workspace). */

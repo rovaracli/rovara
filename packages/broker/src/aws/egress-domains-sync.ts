@@ -7,18 +7,7 @@
 // the union, and clears the marker only if `dirtySeq` is still what it read, so a change made meanwhile keeps it dirty and is sent next time.
 import { GetCommand, PutCommand, QueryCommand, ScanCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { GetFirewallDomainListCommand, UpdateFirewallDomainsCommand, type Route53ResolverClient } from "@aws-sdk/client-route53resolver";
-import {
-  DEFAULT_AGENT_ALLOW_DOMAINS,
-  EGRESS_DOMAINS_PK,
-  EGRESS_SYNC_KEY,
-  EgressSyncMarkerSchema,
-  PROJECT_REVISION_SK_PREFIX,
-  isAllowedDomain,
-  orgOfProjectPk,
-  projectPk,
-  type OrgId,
-  type OrgKey,
-} from "@agentx/contracts";
+import { DEFAULT_AGENT_ALLOW_DOMAINS, EGRESS_DOMAINS_PK, EGRESS_SYNC_KEY, EgressSyncMarkerSchema, PROJECT_REVISION_SK_PREFIX, isAllowedDomain, orgOfProjectPk, projectPk, type OrgId, type OrgKey } from "@rovara-code/contracts";
 import { reconcileProjectEgress } from "../org/project-archive.js";
 import { RECONCILE_READ_CONCURRENCY, settleBounded } from "../org/settle-bounded.js";
 import { approvedUnion, listEgressItems, putEgressDomains, readEgressDomains, type EgressDomainsDependencies } from "../org/egress-domains.js";

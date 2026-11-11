@@ -1,8 +1,8 @@
 // Lessons capture lane: what the lesson loader is told about a task besides its title (review finding: the dispatch passed `files: []` and no plan summary, so path scopes never filtered and similarity had
 // nothing to read). From the task's latest plan document, by its own structure: a short summary (the title and the top-level claims) and the files it names (the code it cites, and the files its claims
 // name in words). Pure and bounded. A path that is absolute, climbs out of the repository or is not a plain relative path is left out: this feeds a glob match, nothing else.
-import type { PlanClaim, PlanDocument } from "@agentx/contracts";
-import { cleanLessonText } from "@agentx/contracts";
+import type { PlanClaim, PlanDocument } from "@rovara-code/contracts";
+import { cleanLessonText } from "@rovara-code/contracts";
 
 export const PLAN_FACTS_SUMMARY_MAX = 600;
 export const PLAN_FACTS_MAX_FILES = 30;

@@ -1,7 +1,8 @@
 // Internal project-scoped read seam; no HTTP, save or task-admission consumer.
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import { AgentXError, OrgIdSchema, AgentXNameSchema, ProjectWorkingBranchPageBodySchema, ProjectWorkingBranchPageSchema, WorkingBranchPageFactsSchema, agentXError, canonicalJson, type StoredProjectDefinition } from "@agentx/contracts";
+import { AgentXError, OrgIdSchema, AgentXNameSchema, ProjectWorkingBranchPageBodySchema, ProjectWorkingBranchPageSchema, WorkingBranchPageFactsSchema, agentXError, canonicalJson } from "@rovara-code/contracts";
+import { type StoredProjectDefinition } from "@agentx/cloud-contracts";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "../aws/developer-routes.js";
 import { parseGitHubRepository } from "../github-app.js";
 import { githubPinsOf } from "./project-working-branch-host.js";

@@ -2,7 +2,7 @@
 // which until now held only the project's approved models (or Rovara's own Claude models) and the models a setting names; another company's model the company can use never reached it. This adds the models
 // the company's sources can serve (`servableModels`), strongest first (the existing ranking), a few from each company, only while the pool has room: a named model is never displaced and the pool never grows past its limit.
 // Only models of a good capability tier are added (the floor below), and the approved list is matched by provider and model id exactly, as the project's own approved models are.
-import { canonicalModelName, modelCompany, type ModelIdentifier } from "@agentx/contracts";
+import { canonicalModelName, modelCompany, type ModelIdentifier } from "@rovara-code/contracts";
 import { candidatesOf, criticCapabilityTier } from "../rovara-code/critic.js";
 
 export const STAGE_POOL_MAX = 23;

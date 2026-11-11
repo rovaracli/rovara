@@ -1,7 +1,7 @@
 // Design review stage, DR12: builds the Proof section's design context from what the broker holds, through two ports the AWS layer supplies (no new env var, no IAM: they read the task's own artifact store and
 // its own approval record). Fail closed: no design review on the task, no approved design, a text that does not hash to the approved digest, or an approval record that is missing gives NO context, and the Proof section
 // is then exactly what it was. Nothing about an unapproved design is ever claimed.
-import type { WorkflowSnapshot } from "@agentx/contracts";
+import type { WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { approvedDesignDigestOf } from "../spec/approved-design.js";
 import { verifiedDesignText } from "./proof-links.js";
 import type { DesignProofApproval, ProofDesignContext } from "./proof-line.js";

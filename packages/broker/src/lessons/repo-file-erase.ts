@@ -10,7 +10,7 @@
 //   - Every host write is audited first; a ledger that is down skips the write (it is tried again at the next sweep).
 // No model call. Provider-neutral: everything outside lessons code is the `CodeHost` port.
 import { randomBytes } from "node:crypto";
-import { LESSON_FILE_MAX_BYTES, LESSON_FILE_PATH } from "@agentx/contracts";
+import { LESSON_FILE_MAX_BYTES, LESSON_FILE_PATH } from "@rovara-code/contracts";
 import { applyFileChanges, looseItems, normalizeBlockText, parseLessonsFile, textHash } from "./repo-file-format.js";
 import { Unconfirmed, freshBranchName, guardTarget, headOf, readOwnPr, verifyRepository, watchRowOf, type RepoFileTarget } from "./repo-file-host.js";
 import { requireAudit } from "./policy.js";

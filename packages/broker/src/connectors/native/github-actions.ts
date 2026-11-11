@@ -14,7 +14,8 @@
 // `actions` and `deployments` at read or write); GET /repos/{owner}/{repo}/actions/runs (status, branch, per_page; each run has `repository.id`), /actions/runs/{run_id},
 // /actions/runs/{run_id}/jobs (filter, per_page; a job has `run_id`, `run_url`, `steps`), /actions/jobs/{job_id}/logs (302, `Location` valid for 1 minute; the page names
 // no host, so the two host families of the brief are used), /deployments (environment, per_page; `repository_url`) and /deployments/{id}/statuses (`deployment_url`, `repository_url`).
-import { redactText, type OrgId, type RepositoryDefinition } from "@agentx/contracts";
+import { redactText, type OrgId } from "@rovara-code/contracts";
+import { type RepositoryDefinition } from "@agentx/cloud-contracts";
 import { CredentialUnavailable } from "@agentx/gateway";
 import { GITHUB_ACTIONS_AGENT_TOOL_PERMISSIONS, githubActionsToolPermissions, type GitHubActionsToolPermissionSet, type GitHubAgentTokenPermissions } from "../../agents/github-agent-tools.js";
 import { NativeToolRefusal, type NativeRouting, type NativeTool, type NativeToolContext } from "./runtime.js";

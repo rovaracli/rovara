@@ -2,7 +2,8 @@
 // rules always have the same digest, a file written from a version reads back as exactly that version, and the prompt's own grouping (`standing-block.ts`) changes nothing. This file also holds the diff of two lists, the Markdown
 // file's writer and reader (the format Rovara Code reads: `## Required` and `## Preferred` headings with `- ` bullets), and nothing that touches a store, a host or the clock.
 import { createHash } from "node:crypto";
-import { agentXError, assertCompanyRulesWithinBudget, canonicalJson, redactText, type CompanyRule, type CompanyRulesDiff } from "@agentx/contracts";
+import { type CompanyRulesDiff } from "@agentx/cloud-contracts";
+import { agentXError, assertCompanyRulesWithinBudget, canonicalJson, redactText, type CompanyRule } from "@rovara-code/contracts";
 import { foldedRuleText } from "../instructions/standing-block.js";
 
 /** A larger file is refused unread: the rules are at most 12,000 characters, so this leaves room for headings and layout (the size Rovara Code reads). */

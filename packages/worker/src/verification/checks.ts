@@ -3,17 +3,7 @@
 // round's budget, and stopped at once by the round's signal.
 import { realpath, stat } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
-import {
-  checkOutputTail,
-  classifyCheck,
-  matchTestCommand,
-  redactSecrets,
-  redactText,
-  type CheckEntry,
-  type CheckOutcome,
-  type ProjectCommand,
-  type PublicationCheckResult,
-} from "@agentx/contracts";
+import { checkOutputTail, classifyCheck, matchTestCommand, redactSecrets, redactText, type CheckEntry, type CheckOutcome, type ProjectCommand, type PublicationCheckResult } from "@rovara-code/contracts";
 import type { BashOperations } from "@earendil-works/pi-coding-agent";
 import { MAX_COMMAND_OUTPUT_BYTES, redactedTail, tailCollector } from "../collected-process.js";
 import { devcontainerBashOperations, runDevcontainerCommand, type DevcontainerCli, type DevcontainerTarget } from "../devcontainer.js";

@@ -1,16 +1,8 @@
 // Who can do what with a chain (Plan 4 Task 3): Plan 3's agent rules, applied to a chain's owner, accountable maintainer and shares. The rules
 // themselves are `evaluateOwned`, `checkShares`, `saveSharesOf` and `requireOwnerAllowed` in agents/access.ts, one implementation for both; this
 // file reads a chain's record and its shares from the chain store and words the refusals for a chain.
-import {
-  TRIAL_LIMITS_R49,
-  agentXError,
-  atLeast,
-  projectAllows,
-  type AgentAccessLevel,
-  type AgentOwner,
-  type ChainId,
-  type OrgId,
-} from "@agentx/contracts";
+import { TRIAL_LIMITS_R49 } from "@agentx/cloud-contracts";
+import { agentXError, atLeast, projectAllows, type AgentAccessLevel, type AgentOwner, type ChainId, type OrgId } from "@rovara-code/contracts";
 import {
   Lookups,
   evaluateOwned,

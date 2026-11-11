@@ -2,7 +2,8 @@
 
 import { randomUUID } from "node:crypto";
 import { PutCommand } from "@aws-sdk/lib-dynamodb";
-import { AgentXError, ConnectorCallRequestSchema, GitHubMcpRequestSchema, githubConnectorOf, SlackRequesterSchema, SlackThreadSchema, agentXError, slackThreadUrl, type SlackThread, type WorkspaceInstance, type OrgId, INDEX_EXPIRY_ATTRIBUTE, indexExpiresAt } from "@agentx/contracts";
+import { AgentXError, ConnectorCallRequestSchema, GitHubMcpRequestSchema, SlackRequesterSchema, SlackThreadSchema, agentXError, slackThreadUrl, type SlackThread, type WorkspaceInstance, type OrgId, INDEX_EXPIRY_ATTRIBUTE, indexExpiresAt } from "@rovara-code/contracts";
+import { githubConnectorOf } from "@agentx/cloud-contracts";
 import type { AuthenticatedIdentity } from "../../auth.js";
 import { ZodError } from "zod";
 import type { GitHubTokenScope } from "../../github-app.js";

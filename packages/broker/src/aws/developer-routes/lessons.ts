@@ -1,7 +1,7 @@
 // Learning v2 L3b wiring: the lessons routes and the loaded-knowledge routes on the developer routes. This module builds what the routes need from the route dependencies; the thin entry file only
 // calls the two functions below. Everything answers `undefined` (the route falls through to "not found", as before) when the install has no `lessons` / `loadedKnowledge` ports, and the lessons
 // routes answer "not found" for a project whose learning mode is Off.
-import { agentXError, orgScoped } from "@agentx/contracts";
+import { agentXError, orgScoped } from "@rovara-code/contracts";
 import { LOADED_KNOWLEDGE_PATH, routeLoadedKnowledge } from "../../developer/loaded-knowledge.js";
 import { takeRateAt } from "../../developer/page-comments.js";
 import { resolveTaskAccess } from "../../developer/task-access.js";

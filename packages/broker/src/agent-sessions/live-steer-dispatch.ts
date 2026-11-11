@@ -4,17 +4,8 @@
 // No log line, event or error holds the message's text (the worker's own error body is never repeated).
 import { GetCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import {
-  LIVE_STEER_FEATURE,
-  LiveSteerAnswerSchema,
-  WORKER_INVOKE_AUTHORIZATION_SCHEME,
-  agentXError,
-  liveSteerOperationId,
-  workerInvokeToken,
-  workerInvokeTokenPayload,
-  workspaceSessionKey,
-  type WorkerInvocation,
-} from "@agentx/contracts";
+import { LIVE_STEER_FEATURE, LiveSteerAnswerSchema, WORKER_INVOKE_AUTHORIZATION_SCHEME, agentXError, liveSteerOperationId, workerInvokeToken, workerInvokeTokenPayload, workspaceSessionKey } from "@rovara-code/contracts";
+import { type WorkerInvocation } from "@agentx/cloud-contracts";
 import type { DurableOutboxRecord } from "../aws/lambda.js";
 import { deliverSteerLive, steerStillQueued, type SteerDependencies } from "./steer.js";
 

@@ -1,14 +1,6 @@
 import { describe, expect, it } from "vitest";
-import {
-  ActionPolicySchema,
-  IN_HOUSE_TOOL_NAMES,
-  PresentedToolSchema,
-  ProjectDefinitionSchema,
-  SlackThreadWorkspaceResultSchema,
-  StoredProjectDefinitionSchema,
-  ToolPatternSchema,
-  toolPatternMatches,
-} from "../../packages/contracts/src/index.js";
+import { ActionPolicySchema, IN_HOUSE_TOOL_NAMES, PresentedToolSchema, SlackThreadWorkspaceResultSchema, ToolPatternSchema, toolPatternMatches } from "@rovara-code/contracts";
+import { ProjectDefinitionSchema, StoredProjectDefinitionSchema } from "@agentx/cloud-contracts";
 import { ORCHESTRATION_TOOL_NAMES } from "../../packages/orchestrator/src/orchestration-tools.js";
 
 const repository = { name: "api", url: "https://github.com/example/api.git", path: "repo/api", defaultBranch: "main", credentialRef: "github-app" };

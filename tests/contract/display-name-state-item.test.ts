@@ -3,7 +3,7 @@
 // a ConditionCheck on the sign-in record (not revoked, not merged), and the audit's pending item (State). Readers lay the chosen name over the record's.
 import { BatchGetCommand, GetCommand, PutCommand, TransactWriteCommand, UpdateCommand, DeleteCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it } from "vitest";
-import { auditEventId } from "../../packages/contracts/src/index.js";
+import { auditEventId } from "@agentx/cloud-contracts";
 import { auditOccurrence } from "../../packages/broker/src/audit/events.js";
 import { chosenNameKey } from "../../packages/broker/src/developer/chosen-name.js";
 import { placeholderDisplayName } from "../../packages/broker/src/developer/person-name.js";

@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { SessionIdSchema } from "@agentx/contracts/web";
+import { SessionIdSchema } from "@agentx/cloud-contracts/web";
 import { useAppHost } from "../../host.js";
 import { paths } from "../../paths.js";
 import { createHomeApi, homeAction, type HomeAction, type ReadHomeCard } from "../../api/home.js";

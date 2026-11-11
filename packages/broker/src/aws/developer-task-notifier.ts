@@ -6,7 +6,7 @@
 import { taskStatusOf } from "../agent-sessions/task-status.js";
 import { decisionCardsEnabled } from "../proof/switch.js";
 import { decisionCardUrl, sessionPageUrl } from "../decisions/open-path.js";
-import { SessionIdSchema, taskStatusText } from "@agentx/contracts";
+import { SessionIdSchema, taskStatusText } from "@rovara-code/contracts";
 import { planRunLimitChange, planRunLimitChangeLive, waitsOnCodingPlan } from "../spend/run-limit-change.js";
 import { chatGptFallbackText } from "../chatgpt/fallback-notice.js";
 import { developerIdForSlackUser } from "./admin-actions.js";
@@ -16,7 +16,8 @@ import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-sec
 import { GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { ChangeMessageVisibilityCommand, SQSClient, SendMessageBatchCommand } from "@aws-sdk/client-sqs";
 import { DynamoDBDocumentClient, GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { INDEX_EXPIRY_ATTRIBUTE, NUDGE_WINDOW_MS, sameJsonContent, AdminChangePendingRecordSchema, planClaimCount, planSummaryLines, PullRequestResultSchema, SHARE_DELIVERY_WINDOW_MS, WorkflowFeedbackReviewReportSchema, adminChangeKey, describeWorkflowCheckChanges, redactText, workflowCheckCommandText, workflowFeedbackCheckChanges, indexExpiresAt, lastAssistantResponse, sharedTaskKey, WORKFLOW_BLOCK_REASONS, WORKFLOW_PUBLISH_CANDIDATE_CHANGED_MESSAGE, workflowPublicationRetryable, taskGraphDigest, type PendingChange, type PlanClaim, type PlanDocument, type WorkflowArtifact, type WorkflowCheck, type WorkflowCanvasLineage, type WorkflowSnapshot } from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, NUDGE_WINDOW_MS, sameJsonContent, AdminChangePendingRecordSchema, planClaimCount, planSummaryLines, PullRequestResultSchema, SHARE_DELIVERY_WINDOW_MS, WorkflowFeedbackReviewReportSchema, adminChangeKey, describeWorkflowCheckChanges, redactText, workflowCheckCommandText, workflowFeedbackCheckChanges, indexExpiresAt, lastAssistantResponse, sharedTaskKey, WORKFLOW_PUBLISH_CANDIDATE_CHANGED_MESSAGE, workflowPublicationRetryable, taskGraphDigest, type PendingChange, type PlanClaim, type PlanDocument, type WorkflowArtifact, type WorkflowCheck, type WorkflowCanvasLineage } from "@rovara-code/contracts";
+import { WORKFLOW_BLOCK_REASONS, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { adminChangeExpiredMessage, adminChangeMessage, adminChangeOutcomeMessage } from "../developer/change-messages.js";
 import { loadWorkflowDocument, type LoadedDocument } from "../developer/plan-artifacts.js";
 import { planDecidedOnCard } from "../decisions/plan-risk.js";

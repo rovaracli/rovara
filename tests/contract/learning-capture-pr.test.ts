@@ -1,5 +1,6 @@
 import { expect, it } from "vitest";
-import { agentGuardrailsKey, githubMemberKey, orgMemberKey, orgMetaKey, projectMetaKey, projectLearningKey, DEFAULT_AGENT_GUARDRAILS } from "@agentx/contracts";
+import { agentGuardrailsKey, githubMemberKey, projectMetaKey, projectLearningKey, DEFAULT_AGENT_GUARDRAILS } from "@rovara-code/contracts";
+import { orgMemberKey, orgMetaKey } from "@agentx/cloud-contracts";
 import { makeWorld, PROJECT_CREATED } from "../support/learning-world.js";
 import type { GitHubFeedbackComment } from "../../packages/broker/src/github-app.js";
 const person = "a".repeat(64);
@@ -51,13 +52,13 @@ it("B8 a project off write racing capture prevents the correction transaction",a
  await capturePullRequestCorrections(deps,f.input).catch(()=>undefined);expect(raced).toBe(true);expect(f.db.find(row=>row.entityType==="LEARNING_CORRECTION")).toEqual([]);
 });
 it("B8 a contributor grant reduced during capture cannot store member feedback",async()=>{
- const {capturePullRequestCorrections}=await import("../../packages/broker/src/learning/capture-pr.js"),{projectMemberKey}=await import("@agentx/contracts"),{TransactWriteCommand}=await import("@aws-sdk/lib-dynamodb"),f=fixture();
+ const {capturePullRequestCorrections}=await import("../../packages/broker/src/learning/capture-pr.js"),{ projectMemberKey } = await import("@rovara-code/contracts"),{TransactWriteCommand}=await import("@aws-sdk/lib-dynamodb"),f=fixture();
  f.db.set({...orgMemberKey(f.scope.orgId,person),orgId:f.scope.orgId,developerId:person,role:"member"});const key=projectMemberKey(f.scope.orgId,person,f.scope.project);f.db.set({...key,role:"developer",projectRole:"contributor",ownerKey:person,projectName:f.scope.project,grantId:"grant1"});let raced=false;
  const deps={...f.deps,documentClient:{send:async(command:Parameters<typeof f.db.send>[0])=>{if(command instanceof TransactWriteCommand&&!raced){raced=true;f.db.set({...key,role:"developer",projectRole:"viewer",ownerKey:person,projectName:f.scope.project,grantId:"grant1"});}return f.db.send(command);}}};
  await capturePullRequestCorrections(deps,f.input).catch(()=>undefined);expect(raced).toBe(true);expect(f.db.find(row=>row.entityType==="LEARNING_CORRECTION")).toEqual([]);
 });
 it("B8 a closing company cannot capture more PR correction text",async()=>{
- const {capturePullRequestCorrections}=await import("../../packages/broker/src/learning/capture-pr.js"),{orgMetaKey}=await import("@agentx/contracts"),f=fixture();f.db.set({...orgMetaKey(f.scope.orgId),orgId:f.scope.orgId,closingAt:new Date(f.clock.ms).toISOString()});
+ const {capturePullRequestCorrections}=await import("../../packages/broker/src/learning/capture-pr.js"),{ orgMetaKey } = await import("@agentx/cloud-contracts"),f=fixture();f.db.set({...orgMetaKey(f.scope.orgId),orgId:f.scope.orgId,closingAt:new Date(f.clock.ms).toISOString()});
  expect((await capturePullRequestCorrections(f.deps,f.input)).captured).toBe(0);
 });
 it("B8 PR captures run existing grouping and preserve edits until a suggestion uses the source",async()=>{

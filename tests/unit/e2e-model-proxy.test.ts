@@ -4,18 +4,11 @@ import { mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  E2EModelChannelResponseSchema,
-  E2EModelReceiptSchema,
-  checkE2EGroupModelBudget,
-  checkE2EStepModelAccounting,
-  e2eModelRouteRevision,
-  type E2EModelReceipt,
-} from "../../packages/contracts/src/e2e-model-channel.js";
+import { E2EModelChannelResponseSchema, E2EModelReceiptSchema, checkE2EGroupModelBudget, checkE2EStepModelAccounting, e2eModelRouteRevision, type E2EModelReceipt } from "@rovara-code/contracts";
 import { createGovernedE2EModelRoute, createInMemoryE2EDayBudget, type E2EInvoke } from "../../packages/model-runtime/src/e2e-route.js";
 import { createCredentialRedactor } from "../../packages/verifier/src/executor/redact.js";
 import { createE2ECredentialGuard } from "../../packages/worker/src/e2e-model-credential-guard.js";
-import { e2eScannableEmailLocalPart } from "../../packages/contracts/src/e2e-model-channel.js";
+import { e2eScannableEmailLocalPart } from "@rovara-code/contracts";
 import { startE2EModelProxy, type E2EModelEvidenceSink, type E2EModelProxy, type E2EModelTranscript } from "../../packages/worker/src/e2e-model-proxy.js";
 import { CASE_ID, MODEL_ID, RUN_ID, bedrockRoute, call, channelRequest, installationEnvironment, keyedRoute, loweredBudgets, tapAnswer } from "../support/e2e-model-fixtures.js";
 import { cleanRedirectingEnvironment } from "../support/e2e-clean-environment.js";

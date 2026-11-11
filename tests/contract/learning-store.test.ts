@@ -4,8 +4,8 @@ import {
   captureCorrection, clearCorrectionText, closeSuggestion, getLearningItem, openSuggestion, putDismissed, readLearningPartition, readLearningState, type CaptureInput,
 } from "../../packages/broker/src/learning/store.js";
 import { learningExpiry, learningItemKind } from "../../packages/broker/src/learning/retention.js";
-import { LEARNING_DAILY_AUTOMATIC_MAX, LEARNING_DAILY_PR_MAX, LEARNING_LIVE_CORRECTIONS_MAX, LEARNING_OPEN_SUGGESTIONS_MAX, LEARNING_REMEMBER_MAX, LearningSuggestionSchema } from "../../packages/contracts/src/project-learning.js";
-import { projectLearningKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { LEARNING_DAILY_AUTOMATIC_MAX, LEARNING_DAILY_PR_MAX, LEARNING_LIVE_CORRECTIONS_MAX, LEARNING_OPEN_SUGGESTIONS_MAX, LEARNING_REMEMBER_MAX, LearningSuggestionSchema } from "@rovara-code/contracts";
+import { projectLearningKey } from "@rovara-code/contracts";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { DAY_MS, NOW_MS, ORG_B, PROJECT_CREATED, epochSeconds, iso, makeWorld, seedCorrection, seedItem, type World } from "../support/learning-world.js";

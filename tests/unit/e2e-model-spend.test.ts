@@ -1,6 +1,6 @@
 // Proof and test environment E13: AI navigation on Cloud is charged through a capped proxy key. Worst case reserved first, never an uncharged call, key given back when the round ends.
 import { describe, expect, it } from "vitest";
-import { E2E_MODEL_ROUTE_DEFAULT_BUDGETS, E2E_PROXY_KEY_FEATURE, E2eProxyGrantSchema, agentXError, e2eProxyGate, e2eRoundWorstCaseUsd } from "@agentx/contracts";
+import { E2E_MODEL_ROUTE_DEFAULT_BUDGETS, E2E_PROXY_KEY_FEATURE, E2eProxyGrantSchema, agentXError, e2eProxyGate, e2eRoundWorstCaseUsd } from "@rovara-code/contracts";
 import { mintRoundKeyPort, closeE2eRoundSpend, startE2eRoundSpend, type MintedRoundKey, type RoundSpendPorts } from "../../packages/broker/src/e2e/model-spend.js";
 
 const ORG = "org_aaaaaaaaaaaaaaaaaaaa" as const;

@@ -1,4 +1,4 @@
-import { AskQueueMessageSchema, DiagnosisQueueMessageSchema, SlackPageCommentMessageSchema, SlackRequestMessageSchema, type AskQueueMessage, type DiagnosisQueueMessage, type SlackPageCommentMessage, type SlackRequestMessage, type TaskQuestionRoute } from "@agentx/contracts";
+import { AskQueueMessageSchema, DiagnosisQueueMessageSchema, SlackPageCommentMessageSchema, SlackRequestMessageSchema, type AskQueueMessage, type DiagnosisQueueMessage, type SlackPageCommentMessage, type SlackRequestMessage, type TaskQuestionRoute } from "@rovara-code/contracts";
 import { HANDOFF_MILLISECONDS, TurnHandedOffError } from "./interrupted-turn.js";
 import type { ServiceLog } from "./processor.js";
 

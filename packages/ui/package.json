@@ -9,7 +9,7 @@
     "build": "tsc -b && node ../../scripts/ui-copy-assets.mjs"
   },
   "dependencies": {
-    "@agentx/contracts": "0.1.0",
+    "@agentx/cloud-contracts": "0.1.0",
     "@agentx/design-tokens": "0.1.0",
     "react": "19.3.0",
     "react-dom": "19.3.0",

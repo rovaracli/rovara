@@ -1,6 +1,6 @@
 import { useId } from "react";
 import { visibleText } from "../../design/VisibleText.js";
-import type { ModelListSchema, StepSettingsSchema } from "@agentx/contracts/web";
+import type { ModelListSchema, StepSettingsSchema } from "@agentx/cloud-contracts/web";
 export type Models=ReturnType<typeof ModelListSchema.parse>["models"];
 type Model=ReturnType<typeof StepSettingsSchema.parse>["model"];
 export function ModelPicker({label,id,value,models,onChange}:{label:string;id?:string;value:Model;models:Models;onChange:(model:Model)=>void}) {const generated=useId(),key=(model:NonNullable<Model>)=>JSON.stringify([model.provider,model.modelId]);const selected=value===undefined?"inherit":value?key(value):"";return <div className="rv-field"><label htmlFor={id??generated}>{label}</label><select className="rv-input" id={id??generated} value={selected} onChange={event=>onChange(event.target.value==="inherit"?undefined:models.find(model=>key(model)===event.target.value)??null)}><option value="inherit">Keep inherited model</option><option value="">Use project selection</option>{selected!=="inherit"&&selected&&!models.some(model=>key(model)===selected)&&<option value={selected} disabled>Current model unavailable</option>}{models.map(model=><option key={key(model)} value={key(model)} disabled={model.unusableReason!==undefined} title={model.unusableReason}>{visibleText(model.label)+(model.unusableReason===undefined?"":": "+visibleText(model.unusableReason))}</option>)}</select></div>;}

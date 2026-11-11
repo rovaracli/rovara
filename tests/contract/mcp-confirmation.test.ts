@@ -8,7 +8,7 @@ import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import type { ToolCall } from "../../packages/mcp/src/tools.js";
 import { ADMIN_SIGN_IN_STEP, APPLY_UNKNOWN_STEP, CHANGE_PENDING_STEP, SLACK_POLL_MS, ToolError, changeError, confirmChange, createAgentXMcpServer, httpAdminClient, httpControlPlaneClient, type AdminControlPlaneClient, type ToolContext, type ToolDefinition } from "../../packages/mcp/src/index.js";
-import type { AdminChangeView } from "../../packages/contracts/src/index.js";
+import type { AdminChangeView } from "@rovara-code/contracts";
 
 const CHANGE = "55555555-5555-4555-8555-555555555555";
 const view = (extra: Partial<AdminChangeView> = {}): AdminChangeView => ({

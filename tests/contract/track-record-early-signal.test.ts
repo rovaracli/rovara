@@ -4,14 +4,15 @@ import { randomUUID } from "node:crypto";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { describe, expect, it } from "vitest";
-import { DeveloperTaskViewSchema } from "../../packages/contracts/src/developer-tasks.js";
-import { EarlyRiskSignalSchema, ROVARA_CODE_AGENT_ID, earlyRiskSignalText } from "../../packages/contracts/src/index.js";
-import { createCandidateManifest, type WorkflowSnapshot } from "../../packages/contracts/src/task-workflow-node.js";
+import { DeveloperTaskViewSchema } from "../../packages/cloud-contracts/src/developer-tasks.js";
+import { EarlyRiskSignalSchema, ROVARA_CODE_AGENT_ID, earlyRiskSignalText } from "@rovara-code/contracts";
+import { createCandidateManifest } from "@rovara-code/contracts";
+import { type WorkflowSnapshot } from "../../packages/cloud-contracts/src/task-workflow-node.js";
 import { taskView } from "../../packages/broker/src/aws/developer-tasks.js";
 import { developerTaskRouteDependencies } from "../../packages/broker/src/aws/developer-routes.js";
 import { recordOutcomeSample } from "../../packages/broker/src/rovara-code/outcomes.js";
 import { MAYA, OMAR, createSingleAnswerPlanBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
-import { agentSessionKey, projectMemberKey } from "../../packages/contracts/src/index.js";
+import { agentSessionKey, projectMemberKey } from "@rovara-code/contracts";
 import { getProjectHowWeWork } from "../../packages/broker/src/playbook/routes.js";
 import { MAX, ORG_A } from "../support/agent-session-world.js";
 import { mergeWorld } from "../support/rovara-code-merge-world.js";
@@ -210,9 +211,8 @@ describe("where the early score may appear", () => {
       "broker/src/aws/developer-tasks/task-view.ts",
       "broker/src/rovara-code/early-risk-signal.ts",
       "broker/src/rovara-code/task-view-compat.ts",
-      "contracts/src/developer-tasks.ts",
-      "contracts/src/early-risk-signal.ts",
-      "contracts/src/how-we-work-track-record.ts",
+      "cloud-contracts/src/developer-tasks.ts",
+      "cloud-contracts/src/web.ts",
       "ui/src/screens/session/EarlySignal.tsx",
     ]);
     const forbidden = walk(root).filter((path) => /slack|pull-request-body|how-we-work|effective\.ts|track-record\.ts/.test(relative(root, path)) && /earlyRiskSignal|EarlyRiskSignal|risk_low/.test(readFileSync(path, "utf8")))

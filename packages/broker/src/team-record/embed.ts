@@ -1,7 +1,7 @@
 // R3: the Team record's embedding client. Since DECISIONS 27 it calls the self-hosted embedder (environments/embedder, Qwen3-Embedding-0.6B, 1,024 dimensions) in
 // both editions; Bedrock embeddings (Amazon Titan, Cohere) are gone. The model, its pinned revision and its spec are `TEAM_RECORD_EMBEDDER` in contracts, and the client
 // refuses any answer that is not that spec, so a changed model can never put vectors beside the ones already stored (the index name carries the spec too).
-import { TEAM_RECORD_EMBEDDER, VECTOR_DIMENSION_DEFAULT } from "@agentx/contracts";
+import { TEAM_RECORD_EMBEDDER, VECTOR_DIMENSION_DEFAULT } from "@agentx/cloud-contracts";
 import { EmbedderError, trimEmbedderText, type EmbedderCall, type EmbedderClient, type EmbedderErrorCode } from "../embedder/client.js";
 import { assertVector } from "./vectors.js";
 

@@ -10,7 +10,7 @@ import { mentionsRepoPlace } from "./project-repo-audience.js";
 import { attributableSources, clearSourcePause, coldSourcesOf, isHeldBySource, projectBrakeOn } from "./sources.js";
 import { lessonValue } from "./value.js";
 import { isCorroborated } from "./value.js";
-import { isMeaningfulAnchor } from "@agentx/contracts";
+import { isMeaningfulAnchor } from "@rovara-code/contracts";
 import type { LessonDraft } from "./reflect.js";
 import { nextVersion, type ScopeKey } from "./store.js";
 import { classifyTier, type TierContext } from "./tier.js";

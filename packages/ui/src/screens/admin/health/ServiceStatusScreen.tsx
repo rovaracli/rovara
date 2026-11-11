@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { SettingsNote } from "../SettingsNote.js";
 import { Link, useParams } from "react-router";
-import type { OrgServiceStatus } from "@agentx/contracts/web";
+import type { OrgServiceStatus } from "@agentx/cloud-contracts/web";
 import { useAppHost } from "../../../host.js";
 import { createServiceStatusApi } from "../../../api/service-status.js";
 import { PageHeader } from "../../../design/PageHeader.js";

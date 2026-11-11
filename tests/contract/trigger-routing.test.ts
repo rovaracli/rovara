@@ -1,8 +1,8 @@
 // Plan 4 Task 18: the trigger routes are reachable through the real broker, on the paths the plan names, and answer what the route functions answer.
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
-import { DEFAULT_AGENT_GUARDRAILS } from "../../packages/contracts/src/agent-guardrails.js";
-import { agentGuardrailsKey, orgProjectCatalogKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { DEFAULT_AGENT_GUARDRAILS } from "@rovara-code/contracts";
+import { agentGuardrailsKey, orgProjectCatalogKey } from "@rovara-code/contracts";
 import { TriggerStore } from "../../packages/broker/src/triggers/store.js";
 import { MAYA, OMAR, createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import { FakeProjectMembers } from "../support/fake-project-members.js";

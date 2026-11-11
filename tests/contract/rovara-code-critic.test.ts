@@ -3,11 +3,9 @@
 // the same company. There is no "different AI company" requirement. Its answer is untrusted: it is bounded, redacted and labelled, and it can never approve the plan.
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
-import {
-  PLAN_CRITIC_POINTS_MAX, PLAN_CRITIC_REVISIONS_MAX, PLAN_CRITIQUE_INFO_STRING, WorkflowSnapshotSchema, ModelSourceSchema, closePlanCritique, createWorkflowSnapshot, decideWorkflow, skipPlanRevision,
-  readPlanCritique, submitPlanCritique, submitWorkflowArtifact, type PlanCritique, type WorkflowProgram, type WorkflowSnapshot,
-} from "@agentx/contracts";
-import { builtinRecipe, builtinDefaultPin, currentBuiltinVersion, BUILTIN_AGENTS, canonicalModelName, AgentXError, BUDGET_EXHAUSTED_FAILURE_MESSAGE, DEFAULT_AGENT_GUARDRAILS, PLAN_CRITIC_BLOCK_HEADER, type ModelIdentifier, type ResolvedRecipe } from "@agentx/contracts";
+import { PLAN_CRITIC_POINTS_MAX, PLAN_CRITIC_REVISIONS_MAX, PLAN_CRITIQUE_INFO_STRING, ModelSourceSchema, readPlanCritique, type PlanCritique, type WorkflowProgram } from "@rovara-code/contracts";
+import { WorkflowSnapshotSchema, closePlanCritique, createWorkflowSnapshot, decideWorkflow, skipPlanRevision, submitPlanCritique, submitWorkflowArtifact, type WorkflowSnapshot } from "@agentx/cloud-contracts";
+import { builtinRecipe, builtinDefaultPin, currentBuiltinVersion, BUILTIN_AGENTS, canonicalModelName, AgentXError, BUDGET_EXHAUSTED_FAILURE_MESSAGE, DEFAULT_AGENT_GUARDRAILS, PLAN_CRITIC_BLOCK_HEADER, type ModelIdentifier, type ResolvedRecipe } from "@rovara-code/contracts";
 import { bedrockClaudeModelIds } from "@agentx/model-runtime/catalog";
 import { ModelSourceStore } from "../../packages/broker/src/model-sources/store.js";
 import { PLAN_CRITIQUE_ANSWER_MAX_BYTES, settlePlanCritique } from "../../packages/worker/src/plan-critic.js";
@@ -15,12 +13,13 @@ import { AgentStore } from "../../packages/broker/src/agents/store.js";
 import { servableModels } from "../../packages/broker/src/model-sources/routing.js";
 import { defaultWorkerModel } from "../../packages/broker/src/agents/dispatch.js";
 import { CRITIC_MODEL_ATTEMPTS_MAX, criticCapabilityTier, legacyCriticCapabilityTier, criticModelFor, criticModelUnusable, rankCriticModels, recommendCriticModel, type CriticModelInput } from "../../packages/broker/src/rovara-code/critic.js";
-import { WORKFLOW_LEFTOVER_PROCESSES_MESSAGE, WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE, WORKFLOW_BLOCK_REASONS } from "@agentx/contracts";
+import { WORKFLOW_LEFTOVER_PROCESSES_MESSAGE, WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE } from "@rovara-code/contracts";
+import { WORKFLOW_BLOCK_REASONS } from "@agentx/cloud-contracts";
 import { taskPageStep } from "../../packages/broker/src/aws/developer-tasks.js";
 import { critiqueLines, critiqueModelOf } from "../../packages/broker/src/rovara-code/critic.js";
-import { WorkflowCritiqueSchema } from "../../packages/contracts/src/rovara-code.js";
+import { WorkflowCritiqueSchema } from "@rovara-code/contracts";
 import { workflowMessage } from "../../packages/broker/src/developer/workflow-messages.js";
-import { agentGuardrailsKey, builtinSettingsKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { agentGuardrailsKey, builtinSettingsKey } from "@rovara-code/contracts";
 import { MAYA, OMAR, createSingleAnswerPlanBroker } from "../support/developer-task-broker.js";
 import { fakeModelAccess } from "../support/fake-model-access.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
@@ -31,7 +30,7 @@ import { blockStoppedWorkflowRun } from "../../packages/broker/src/aws/workflow-
 import { failOutboxOperation } from "../../packages/broker/src/aws/outbox-failure.js";
 import { call, loadSlackBroker, registerSlackProject } from "../support/slack-broker.js";
 import { refreshSessionSummary } from "../../packages/broker/src/agent-sessions/summary.js";
-import { agentSessionKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { agentSessionKey } from "@rovara-code/contracts";
 
 beforeAll(async () => {
   await loadSlackBroker();

@@ -1,6 +1,6 @@
 // Slice 5 "Outside tools": the project's intake routes for the Tickets section and the Home ticket card (`project` scenario, project "payments"). State lives for one scenario. Bodies are parsed by
 // the contract's strict schemas, as the real routes do.
-import { DEFAULT_TICKET_UPDATES, IntakeChannelRefSchema, TicketUpdatesPutBodySchema, TicketUpdatesViewSchema, type IntakeChannelRef, type TicketUpdatesSettings } from "@agentx/contracts";
+import { DEFAULT_TICKET_UPDATES, IntakeChannelRefSchema, TicketUpdatesPutBodySchema, TicketUpdatesViewSchema, type IntakeChannelRef, type TicketUpdatesSettings } from "@rovara-code/contracts";
 import { z } from "zod";
 import type { MockExchange } from "./how-we-work-mock.js";
 

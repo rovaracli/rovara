@@ -1,7 +1,8 @@
 // Insights (srv/insights-reads): the routes through the real route dispatcher (`routeDeveloperRequest`), the same bench as the Auditor tests: the role gate, the browser-only rule for the grant (refused
 // BEFORE the token is even checked), reads open to a token by the same role rule, the switch, and the browser's route list. The reads themselves are in insights-reads.test.ts.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AgentXError, developerOrgKey, editionPolicy, orgMemberKey, orgMetaKey, type OrgRole } from "@agentx/contracts";
+import { developerOrgKey, editionPolicy, orgMemberKey, orgMetaKey, type OrgRole } from "@agentx/cloud-contracts";
+import { AgentXError } from "@rovara-code/contracts";
 import { routeDeveloperRequest, type DeveloperCaller, type DeveloperRouteDependencies } from "../../packages/broker/src/aws/developer-routes.js";
 import { webRouteAllowed } from "../../packages/broker/src/aws/web-auth.js";
 import { AUDITOR_ALLOWED_ROUTES, AUDITOR_REFUSED, requireAuditorRoute } from "../../packages/broker/src/org/auditor.js";

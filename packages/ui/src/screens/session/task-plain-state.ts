@@ -1,4 +1,4 @@
-import { TaskStatusReaderSchema, budgetRaisers, taskStatusFromSession } from "@agentx/contracts/web";
+import { TaskStatusReaderSchema, budgetRaisers, taskStatusFromSession } from "@agentx/cloud-contracts/web";
 import { mayApproveHere, type ReadDecision } from "../../api/decisions.js";
 import type { ReadSession } from "./SessionHeader.js";
 import type { ReadTask } from "./workspace-types.js";

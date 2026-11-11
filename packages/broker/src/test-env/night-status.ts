@@ -4,7 +4,7 @@
 //   unavailable  the night cannot run at all today: services_unsupported, registries_unsupported, branch_not_default. Written by the fire. Never "needs repair".
 // A row is one item per night slot, kept 7 days. At most ONE retry the same UTC day, only after an `infra` failure (`sameDayRetryOf`).
 import { GetCommand, PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
-import { INDEX_EXPIRY_ATTRIBUTE, NIGHT_FAILED_REASONS, NIGHT_UNAVAILABLE_REASONS, projectPk, type NightFailedReason, type NightUnavailableReason, type OrgId } from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, NIGHT_FAILED_REASONS, NIGHT_UNAVAILABLE_REASONS, projectPk, type NightFailedReason, type NightUnavailableReason, type OrgId } from "@rovara-code/contracts";
 import type { TestEnvDeps } from "../org/test-environment.js";
 
 export type NightRow =

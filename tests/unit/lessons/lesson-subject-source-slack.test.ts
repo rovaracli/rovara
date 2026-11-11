@@ -2,7 +2,8 @@
 // The subject source names the authors (`slackAuthor`, `threadNotes`); the resolver (`lessonSlackAuthor`) proves the link. Every doubt is an outsider (fail closed).
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { SLACK_OIDC_ISSUER, slackTeamOrgKey } from "@agentx/contracts";
+import { SLACK_OIDC_ISSUER } from "@rovara-code/contracts";
+import { slackTeamOrgKey } from "@agentx/cloud-contracts";
 import { MAX_SLACK_AUTHORS, MAX_THREAD_REPLIES, lessonSubjectSource, type LessonSubjectSourceDeps, type ThreadNoteAuthor } from "../../../packages/broker/src/aws/broker/lesson-subject-source.js";
 import { threadNoteAuthors } from "../../../packages/broker/src/aws/broker/lesson-thread-note-authors.js";
 import { lessonSlackAuthor } from "../../../packages/broker/src/aws/broker/lesson-slack-author.js";

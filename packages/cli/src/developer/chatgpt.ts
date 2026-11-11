@@ -3,10 +3,7 @@
 // OpenAI's callback on 127.0.0.1:1455 (the only callback OpenAI allows) and passes the code, the
 // state and the client ID on. Nothing token-bearing is written on this computer.
 import { createServer, type Server } from "node:http";
-import {
-  CHATGPT_CALLBACK_URL, CLI_PACKAGE_NAME, ChatGptConnectStartSchema, ChatGptConnectionViewSchema, agentXError,
-  type ChatGptConnectFinishRequest, type ChatGptConnectionView,
-} from "@agentx/contracts";
+import { CHATGPT_CALLBACK_URL, CLI_PACKAGE_NAME, ChatGptConnectStartSchema, ChatGptConnectionViewSchema, agentXError, type ChatGptConnectFinishRequest, type ChatGptConnectionView } from "@rovara-code/contracts";
 import { sanitizeServerText } from "../auth.js";
 import { developerRequest } from "./commands.js";
 import type { DeveloperSessionDeps } from "./session.js";

@@ -2,7 +2,7 @@
 // first level, with evidence, decisions, badges and what changed. A pure function of its input apart from the
 // drawing of diagrams. All model text is redacted and escaped here; the markup carries class names only (the page
 // owns the styles) and no inline style or event handler.
-import { commentIdInAuthor, commentRefInAuthor, creditsPageComment, diffPlanDocuments, redactText, taskGraphDigest, taskGraphOrder, type PlanClaim, type PlanDecision, type PlanDocument, type PlanDocumentKind, type PlanEvidenceBundle, type PlanEvidenceInput, type WorkItemProgressV1 } from "@agentx/contracts";
+import { commentIdInAuthor, commentRefInAuthor, creditsPageComment, diffPlanDocuments, redactText, taskGraphDigest, taskGraphOrder, type PlanClaim, type PlanDecision, type PlanDocument, type PlanDocumentKind, type PlanEvidenceBundle, type PlanEvidenceInput, type WorkItemProgressV1 } from "@rovara-code/contracts";
 import { escapeHtml } from "../web-session.js";
 import { planCheckSummary } from "../../developer/plan-check-summary.js";
 import { NOT_CHECKED_SENTENCE, type PlanSelfCheckView } from "../../developer/plan-self-check.js";

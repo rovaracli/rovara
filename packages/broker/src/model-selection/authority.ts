@@ -1,6 +1,7 @@
 // Server-only commit fences for a process-model change. No new authority store or writes.
 import {GetCommand} from "@aws-sdk/lib-dynamodb";
-import {canonicalJson,agentXError,projectMemberKey,orgMemberKey,OrgRoleSchema,type OrgId,type OrgRole, isWriterOrgRole } from "@agentx/contracts";
+import { canonicalJson, agentXError, projectMemberKey, type OrgId } from "@rovara-code/contracts";
+import { orgMemberKey, OrgRoleSchema, type OrgRole, isWriterOrgRole } from "@agentx/cloud-contracts";
 import {budgetActorChecks} from "../agents/budget-authority.js";
 import {projectAiLifecycleChecks} from "../spend/project-ai-authority.js";
 import type {TransactItem} from "../agents/table-writes.js";

@@ -2,7 +2,8 @@
 // then a merged Rovara pull request queues a job (ids only, never a diff), the job proves the authors, reads the compare live through the host's capture adapter, hands it on once, and keeps nothing.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { githubMemberKey, githubInstallationKey, githubRepoProjectKey, projectRevisionKey, developerOrgKey, orgMemberKey } from "@agentx/contracts";
+import { githubMemberKey, projectRevisionKey } from "@rovara-code/contracts";
+import { githubInstallationKey, githubRepoProjectKey, developerOrgKey, orgMemberKey } from "@agentx/cloud-contracts";
 import { createTeamRecordRuntime } from "../../../packages/broker/src/team-record/runtime.js";
 import { SdkUnavailableError } from "../../../packages/broker/src/team-record/aws-adapters.js";
 import { putSourceConfig } from "../../../packages/broker/src/team-record/store.js";

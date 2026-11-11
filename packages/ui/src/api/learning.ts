@@ -1,7 +1,7 @@
 // The v1.2 learning loop calls of the project page: the suggestions a project's corrections produced, and deciding them (design §6.2). The server decides who may, what is less safe and which standing counts; this file only sends and reads.
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { LearningCompanySettingsAnswerReaderSchema, LearningCompanySettingsBodySchema, LearningAcceptAnswerReaderSchema, LearningDismissAnswerReaderSchema, LearningReopenAnswerReaderSchema, LearningRuleRemoveAnswerReaderSchema, LearningViewAnswerReaderSchema, ProjectOverviewProjectSchema, LearningAcceptBodySchema, LearningDismissBodySchema, LearningRuleRemoveBodySchema, LearningProposalDecisionAnswerReaderSchema, LearningProposalDecisionBodySchema, LearningSettingsAnswerReaderSchema, LearningSettingsBodySchema } from "@agentx/contracts/web";
+import { LearningCompanySettingsAnswerReaderSchema, LearningCompanySettingsBodySchema, LearningAcceptAnswerReaderSchema, LearningDismissAnswerReaderSchema, LearningReopenAnswerReaderSchema, LearningRuleRemoveAnswerReaderSchema, LearningViewAnswerReaderSchema, ProjectOverviewProjectSchema, LearningAcceptBodySchema, LearningDismissBodySchema, LearningRuleRemoveBodySchema, LearningProposalDecisionAnswerReaderSchema, LearningProposalDecisionBodySchema, LearningSettingsAnswerReaderSchema, LearningSettingsBodySchema } from "@agentx/cloud-contracts/web";
 import type { z } from "zod";
 import { useAppHost, type AppHost } from "../host.js";
 import { isConfirmUrl } from "../text/links.js";

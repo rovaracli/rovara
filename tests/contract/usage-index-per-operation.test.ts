@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { marshall } from "@aws-sdk/util-dynamodb";
 import { describe, expect, it } from "vitest";
-import { WorkerInvocationSchema } from "../../packages/contracts/src/index.js";
+import { WorkerInvocationSchema } from "@agentx/cloud-contracts";
 import { indexActivity, type IndexStore } from "../../packages/broker/src/aws/activity-index.js";
 import { autofixOperationUsage } from "../../packages/broker/src/aws/broker/dispatch.js";
 import type { StreamRecord } from "../../packages/broker/src/developer/notifications.js";

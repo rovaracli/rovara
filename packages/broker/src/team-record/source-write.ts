@@ -13,11 +13,8 @@
 // sentences; nothing a client sent (a place, an id, a word) is echoed.
 import { createHash, randomUUID } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  AgentXError, SOURCE_WIDENED_WORDS, parseSlackPlaceInput, scopeAndAncestors, SourceConfigSchema, SourceWriteBodySchema, SourcesAdminViewSchema,
-  agentXError, canonicalJson, isWriterOrgRole, recordScopeMarkerKey, recordSourceKey,
-  type AuditEventInput, type OrgId, type RetentionMode, type SourceConfig, type SourceWidenedWord, type SourceWriteBody,
-} from "@agentx/contracts";
+import { AgentXError, agentXError, canonicalJson, type OrgId } from "@rovara-code/contracts";
+import { SOURCE_WIDENED_WORDS, parseSlackPlaceInput, scopeAndAncestors, SourceConfigSchema, SourceWriteBodySchema, SourcesAdminViewSchema, isWriterOrgRole, recordScopeMarkerKey, recordSourceKey, type AuditEventInput, type RetentionMode, type SourceConfig, type SourceWidenedWord, type SourceWriteBody } from "@agentx/cloud-contracts";
 import { updateItem, errorName, isTransactionConflict, NOT_EXISTS } from "../agents/table-writes.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, type AuditDeps, type TransactItem } from "../audit/outbox.js";

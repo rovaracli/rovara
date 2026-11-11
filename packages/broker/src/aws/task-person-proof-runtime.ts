@@ -1,5 +1,5 @@
 import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
-import { EnvironmentNameSchema, SlackTeamIdSchema, agentXError } from "@agentx/contracts";
+import { EnvironmentNameSchema, SlackTeamIdSchema, agentXError } from "@rovara-code/contracts";
 import { slackDirectory } from "../developer/slack-directory.js";
 import { createTaskPersonProofHandler } from "./task-person-proof-handler.js";
 

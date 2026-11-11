@@ -2,7 +2,7 @@
 // native tools only read, so a later tool whose name gains a word of Plan 3's `WRITE_VERBS` or `DESTRUCTIVE_WORDS` (a `run`, a `cancel`, a `delete`) would make a
 // read-approved tool wait for a person, or worse be mistaken for a write; this test fails the day one is added. Arguments are filled from each tool's own schema.
 import { describe, expect, it } from "vitest";
-import type { AgentConnectorType, GrantedTool } from "../../packages/contracts/src/index.js";
+import type { AgentConnectorType, GrantedTool } from "@rovara-code/contracts";
 import { classifyWrite } from "../../packages/broker/src/agents/write-class.js";
 import { PROJECT_CONNECTOR_TOOLS } from "../../packages/broker/src/connections/project-connectors.js";
 import { CLOUDWATCH_TOOLS } from "../../packages/broker/src/connectors/native/cloudwatch.js";

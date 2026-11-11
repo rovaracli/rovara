@@ -1,6 +1,6 @@
 // Small pieces of the Company rules page: a numbered list of rules, a comparison of two lists, and the preview of the block agents read.
 import { changeKind, numbered, PRIORITY_WORDS, priorityChangedCount, summaryWords, type ChangeKind } from "./rules-logic.js";
-import type { CompanyRuleView, CompanyRulesDiff } from "@agentx/contracts/web";
+import type { CompanyRuleView, CompanyRulesDiff } from "@agentx/cloud-contracts/web";
 import { VisibleText } from "../../../design/VisibleText.js";
 import { previewBlock } from "./rules-logic.js";
 import { T } from "./company-rules-text.js";

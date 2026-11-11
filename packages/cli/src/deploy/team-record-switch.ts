@@ -3,7 +3,7 @@
 // cdk command (init, upgrade, diff, the declared-parameter synth) passes them back. Before this record existed nothing passed the context, so an `agentx upgrade` synthesized the control plane
 // without the record. An older CLI still does: its upgrade's data guard refuses the removal (docs/day-two.md). Once built, `agentx config set teamRecord.enabled 0` PAUSES the record through
 // the stack parameter: erasure, removals and expiry keep running, and the data is kept.
-import { agentXError, environmentSettingsPrefix } from "@agentx/contracts";
+import { agentXError, environmentSettingsPrefix } from "@rovara-code/contracts";
 import type { ParameterStore } from "../environments/parameter-store.js";
 
 /** The record's own parameter, beside the environment settings (a separate value so an older CLI, whose settings schema is strict, still reads the settings). */

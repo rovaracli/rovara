@@ -3,16 +3,8 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import {
-  WORKER_INVOKE_AUTHORIZATION_SCHEME,
-  workerInvokeToken,
-  workerInvokeTokenPayload,
-  WorkerInvokeTokenClaimsSchema,
-  workflowPublicationContext,
-  workflowPublicationContextDigest,
-  type WorkerInvocation,
-  type WorkerInvokeTokenClaims,
-} from "../../packages/contracts/src/index.js";
+import { WORKER_INVOKE_AUTHORIZATION_SCHEME, workerInvokeToken, workerInvokeTokenPayload, WorkerInvokeTokenClaimsSchema, workflowPublicationContextDigest, type WorkerInvokeTokenClaims } from "@rovara-code/contracts";
+import { workflowPublicationContext, type WorkerInvocation } from "@agentx/cloud-contracts";
 import {
   OperationJournal,
   createWorkerServerState,

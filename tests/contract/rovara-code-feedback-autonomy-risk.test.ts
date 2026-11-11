@@ -1,8 +1,8 @@
 // Rovara Code (Plan 6 Tasks 15 and 16): a fix to an open pull request (for CI, a conflict or review comments) may not hide the failure it was asked to fix. A fix that removes or skips tests,
 // or changes CI configuration, is high risk (Task 13's risk rules, recomputed when the fix is pushed). The same change as an ordinary build is judged as it always was.
 import { describe, expect, it } from "vitest";
-import { RiskAssessmentSchema, type VerificationReport } from "@agentx/contracts";
-import { createCandidateManifest } from "@agentx/contracts";
+import { RiskAssessmentSchema, type VerificationReport } from "@rovara-code/contracts";
+import { createCandidateManifest } from "@rovara-code/contracts";
 import { parseChangedFiles } from "../../packages/broker/src/rovara-code/changed-files.js";
 import { CI_CONFIG_PATH_PATTERNS, assessRisk, type RiskInput } from "../../packages/broker/src/rovara-code/risk.js";
 

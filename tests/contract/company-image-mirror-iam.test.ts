@@ -3,10 +3,8 @@
 import { App } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
-import {
-  COMPANY_IMAGE_MIRROR_ACTIONS, SAVED_ENV_MANAGE_ACTIONS, SAVED_ENV_PUSH_ACTIONS, companyImageMirrorRoleName, companyImageMirrorSessionPolicy, companyImageRepositoriesArn, companyImageRepositoryName,
-  isCompanyImageRepositoryName, isSavedEnvRepositoryName, savedEnvManageRoleName, savedEnvPullRoleName, savedEnvPushRoleName, savedEnvRepositoryArn, savedEnvRepositoryName, savedEnvRepositoryPolicy,
-} from "@agentx/contracts";
+import { COMPANY_IMAGE_MIRROR_ACTIONS, companyImageMirrorRoleName, companyImageMirrorSessionPolicy, companyImageRepositoriesArn, companyImageRepositoryName, isCompanyImageRepositoryName, savedEnvRepositoryArn, savedEnvRepositoryPolicy } from "@agentx/cloud-contracts";
+import { SAVED_ENV_MANAGE_ACTIONS, SAVED_ENV_PUSH_ACTIONS, isSavedEnvRepositoryName, savedEnvManageRoleName, savedEnvPullRoleName, savedEnvPushRoleName, savedEnvRepositoryName } from "@rovara-code/contracts";
 import { ControlPlaneStack } from "../../infra/lib/control-plane.js";
 import { environmentNaming } from "../../infra/lib/naming.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";

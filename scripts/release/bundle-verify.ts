@@ -4,16 +4,8 @@ import { createReadStream } from "node:fs";
 import { lstat, readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
-import {
-  BUNDLE_MANIFEST_FILE,
-  BUNDLE_SIGNATURE_FILE,
-  BundleManifestSchema,
-  ReleaseManifestSchema,
-  SynthKitManifestSchema,
-  sha256OfBytes,
-  type BundleManifest,
-  type ReleaseManifest,
-} from "@agentx/contracts";
+import { BUNDLE_MANIFEST_FILE, BUNDLE_SIGNATURE_FILE, BundleManifestSchema, SynthKitManifestSchema, sha256OfBytes, type BundleManifest } from "@agentx/cloud-contracts";
+import { ReleaseManifestSchema, type ReleaseManifest } from "@rovara-code/contracts";
 import { ociArchiveDigests } from "./oci-archive.js";
 
 /** The `sha256:<hex>` of a digest-pinned image reference. (infra/lib/bundle-images.ts has the same function; it is repeated because that file brings in aws-cdk-lib, which the signing job's program must not carry.) */

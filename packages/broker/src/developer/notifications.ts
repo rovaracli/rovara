@@ -3,7 +3,7 @@
 import type { AttributeValue } from "@aws-sdk/client-dynamodb";
 import { isEvalRunMark } from "../lessons/eval-run.js";
 import { unmarshall } from "@aws-sdk/util-dynamodb";
-import { WORKFLOW_BLOCK_REASONS, WorkflowSnapshotSchema, type WorkflowSnapshot } from "@agentx/contracts";
+import { WORKFLOW_BLOCK_REASONS, WorkflowSnapshotSchema, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 
 export interface StreamRecord {
   eventID?: string;

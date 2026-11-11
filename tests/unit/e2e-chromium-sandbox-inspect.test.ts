@@ -5,7 +5,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { evaluateChromiumSandbox } from "../../packages/contracts/src/index.js";
+import { evaluateChromiumSandbox } from "@rovara-code/contracts";
 import { attestWhenSettled, inspectChromiumSandbox, listChromiumProcesses, openChromiumProcessLister, readChromiumProcessFacts } from "../../packages/verifier/src/executor/chromium-sandbox.js";
 
 const runId = "7f1d1c6e-4f43-4d5c-9b8f-2a6f3c0a9d11";

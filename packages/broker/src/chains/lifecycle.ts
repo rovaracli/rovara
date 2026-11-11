@@ -13,10 +13,7 @@
 //     until the clean-up is done (the task is asked to stop, a gate's approval is closed), and then the item and the chain's place are given back, once. A crash between the
 //     two leaves a cancelled run with its item, which the sweep finishes.
 import { QueryCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  ApprovalIdSchema, CHAIN_RUN_CLOSED_MESSAGE, CHAIN_RUN_MAX_HOURS, ChainRunIdSchema, GATE_DEFAULT_TIMEOUT_HOURS, OrgIdSchema, STEP_DEFAULT_TIMEOUT_MINUTES, agentXError, approvalKey, atLeast, chainKey,
-  openChainRunKey, type ChainRunId, type OrgId, type PinnedChainDefinition,
-} from "@agentx/contracts";
+import { ApprovalIdSchema, CHAIN_RUN_CLOSED_MESSAGE, CHAIN_RUN_MAX_HOURS, ChainRunIdSchema, GATE_DEFAULT_TIMEOUT_HOURS, OrgIdSchema, STEP_DEFAULT_TIMEOUT_MINUTES, agentXError, approvalKey, atLeast, chainKey, openChainRunKey, type ChainRunId, type OrgId, type PinnedChainDefinition } from "@rovara-code/contracts";
 import { z } from "zod";
 import { orgRoleOf, type AgentCaller } from "../agents/access.js";
 import { getAnyApproval, approverDrops, commitOrLost, dueItems, type ApprovalDependencies } from "../agents/approvals-store.js";

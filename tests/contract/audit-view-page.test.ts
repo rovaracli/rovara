@@ -5,7 +5,8 @@
 // member's own. The bench is Task 12's (FakeDynamoDb for every table, the real appender, a fake KMS and intake queue); the
 // page is called directly with a session lookup the test controls, and a last group goes through the broker's handler.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AUDIT_LIMITS_COPY, auditOperatorId, AuditEventInputSchema, auditEventId, agentXError, type AuditEventInput, type OrgRole } from "@agentx/contracts";
+import { AUDIT_LIMITS_COPY, auditOperatorId, AuditEventInputSchema, auditEventId, type AuditEventInput, type OrgRole } from "@agentx/cloud-contracts";
+import { agentXError } from "@rovara-code/contracts";
 import { appendEvent } from "../../packages/broker/src/audit/appender.js";
 import { eraseAuditSubject } from "../../packages/broker/src/audit/erase.js";
 import { auditExportId, exportObjectKey } from "../../packages/broker/src/audit/export.js";

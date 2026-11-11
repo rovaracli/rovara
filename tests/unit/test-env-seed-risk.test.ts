@@ -1,11 +1,11 @@
 // SEED-RISK-1 (owner decision 2026-11-07): a seed command DETECTED UNCHANGED from the repository's own script, run only on Rovara's sealed test database, is MEDIUM (one maintainer approves); anything else stays HIGH.
 // The broker locks it from the repository itself (never the worker's word), stores its own checks with the proposal, and the approval reads them again from the store.
 import { describe, expect, it } from "vitest";
-import { TestEnvironmentBodySchema, projectMetaKey, projectPk, projectRevisionKey, seedScriptLockOf, testEnvApprovalRisk, testEnvLessSafeChanges, type OrgId, type TestEnvironmentBody } from "@agentx/contracts";
+import { TestEnvironmentBodySchema, projectMetaKey, projectPk, projectRevisionKey, seedScriptLockOf, testEnvApprovalRisk, testEnvLessSafeChanges, type OrgId, type TestEnvironmentBody } from "@rovara-code/contracts";
 import { approveTestEnvironment, proposalSeedTrust, proposeTestEnvironment, recordTestEnvProveReport, type TestEnvDeps } from "../../packages/broker/src/org/test-environment.js";
 import { lockLookSeeds, seedCardLinesOf, seedRisksOf, seedTrustOf, type SeedRepoSources } from "../../packages/broker/src/test-env/seed-lock.js";
 import { taskDependencyPlansOf } from "../../packages/broker/src/test-env/dependency-plan.js";
-import { TaskDependencyPlanSchema } from "@agentx/contracts";
+import { TaskDependencyPlanSchema } from "@agentx/cloud-contracts";
 import { pinnedCatalog, verifiedCatalog } from "../support/catalog-pinning.js";
 import { treeReader } from "../../packages/broker/src/aws/broker/seed-lock-wiring.js";
 import { capturingAuditDeps, AUDIT_CAPTURE_TABLE } from "../support/audit-capture.js";

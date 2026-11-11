@@ -1,7 +1,7 @@
 // The one-time "reviews now use a model from a different company" notice (owner decision 2026-11-02): read by any member, dismissed for the company by an owner or admin. The server decides who may; this file only sends and reads.
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ReviewDefaultNoticeAnswerReaderSchema, ReviewDefaultNoticeBodySchema } from "@agentx/contracts/web";
+import { ReviewDefaultNoticeAnswerReaderSchema, ReviewDefaultNoticeBodySchema } from "@agentx/cloud-contracts/web";
 import { useAppHost, type AppHost } from "../host.js";
 import { createApiClient } from "./client.js";
 

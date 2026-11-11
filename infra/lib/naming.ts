@@ -1,15 +1,5 @@
 import type { App } from "aws-cdk-lib";
-import {
-  EnvironmentNameSchema,
-  environmentCloudFormationRoleName,
-  environmentConnectorSecretPrefix,
-  environmentMetricsNamespace,
-  environmentOperatorRoleName,
-  environmentPullThroughPrefix,
-  environmentSettingsPrefix,
-  environmentStackName,
-  type StackPart,
-} from "@agentx/contracts";
+import { EnvironmentNameSchema, environmentCloudFormationRoleName, environmentConnectorSecretPrefix, environmentMetricsNamespace, environmentOperatorRoleName, environmentPullThroughPrefix, environmentSettingsPrefix, environmentStackName, type StackPart } from "@rovara-code/contracts";
 
 export interface AgentXNaming {
   /** undefined for legacy naming. */

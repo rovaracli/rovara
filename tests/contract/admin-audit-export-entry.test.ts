@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { AUDIT_EXPORT_ENTRY_PATH, AUDIT_VERIFIER_EXTENDS_EXAMPLE } from "../../packages/ui/src/screens/admin/audit/metadata.js";
 import { expect, it } from "vitest";
-import type { OrgRole } from "@agentx/contracts";
+import type { OrgRole } from "@agentx/cloud-contracts";
 import { createAuditViewPage, AUDIT_VIEW_PATH, AUDIT_VIEW_EXPORT_PATH, type AuditViewCaller } from "../../packages/broker/src/audit/view-page.js";
 import { SESSION_COOKIE, CSRF_COOKIE } from "../../packages/broker/src/aws/web-session.js";
 import { A, B } from "../support/audit-anchor-harness.js";

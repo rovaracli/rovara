@@ -2,7 +2,8 @@ import {expect,it} from "vitest";
 import {QueryCommand} from "@aws-sdk/lib-dynamodb";
 import {previewCompanyModelPolicy} from "../../packages/broker/src/model-selection/policy-preview.js";
 import {FakeDynamoDb} from "../support/fake-dynamodb.js";
-import {orgMemberKey,developerOrgKey,orgMetaKey,orgScoped,orgProjectCatalogKey,projectRevisionKey,STAGE_IDS} from "../../packages/contracts/src/index.js";
+import { orgMemberKey, developerOrgKey, orgMetaKey } from "@agentx/cloud-contracts";
+import { orgScoped, orgProjectCatalogKey, projectRevisionKey, STAGE_IDS } from "@rovara-code/contracts";
 import type {StageModelSnapshot} from "../../packages/broker/src/model-selection/read.js";
 const org="org_aaaaaaaaaaaaaaaaaaaa",person="a".repeat(64),model={provider:"anthropic",modelId:"claude-sonnet-4"},other={provider:"anthropic",modelId:"claude-opus-4"};
 function fixture(role="owner",count=1){

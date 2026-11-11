@@ -1,4 +1,4 @@
-import { AuditEventInputSchema, type AuditAction, type AuditEventInput } from "@agentx/contracts";
+import { AuditEventInputSchema, type AuditAction, type AuditEventInput } from "@agentx/cloud-contracts";
 import { expect } from "vitest";
 
 export function transactionAuditEvent(items: readonly Record<string, unknown>[] | undefined, action: AuditAction): AuditEventInput | undefined {

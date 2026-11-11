@@ -13,46 +13,9 @@ import { takeRateAt } from "../developer/page-comments.js";
 // burns the invite. Invite tokens are stored only as SHA-256 hashes.
 import { randomBytes, randomUUID } from "node:crypto";
 import { DeleteCommand, GetCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  MEMBER_GRANT_SK_PREFIX,
-  AgentXError,
-  AuditEventInputSchema,
-  InviteCreateReceiptSchema,
-  agentXError,
-  LAST_OWNER_MESSAGE,
-  currentBuiltinVersion,
-  ROVARA_CODE_V2_FOR_NEW_ORGS,
-  developerOrgKey,
-  githubInstallationKey,
-  memberGrantsPk,
-  memberRemovalQueueKey,
-  newOrgId as generateOrgId,
-  normalizeEmail,
-  orgBanKey,
-  orgEmailKey,
-  orgInviteKey,
-  orgInviteDirectoryKey,
-  orgInviteRequestKey,
-  orgRenameRequestKey,
-  orgMemberKey,
-  orgMetaKey,
-  orgPk,
-  orgRemovedKey,
-  orgSettingsKey,
-  orgScoped,
-  orgSlackTeamKey,
-  budgetSyncedKey,
-  slackTeamOrgKey,
-  type AgentXErrorCode,
-  type AuditActor,
-  type AuditEventInput,
-  type OrgId,
-  type OrgInviteRecord,
-  type OrgKey,
-  type OrgMembershipRecord,
-  type OrgRecord,
-  type OrgRole,
-} from "@agentx/contracts";
+import { MEMBER_GRANT_SK_PREFIX, AgentXError, agentXError, LAST_OWNER_MESSAGE, currentBuiltinVersion, ROVARA_CODE_V2_FOR_NEW_ORGS, memberGrantsPk, normalizeEmail, orgPk, orgScoped, type AgentXErrorCode, type OrgId, type OrgKey } from "@rovara-code/contracts";
+import { type AuditActor } from "@agentx/cloud-contracts";
+import { AuditEventInputSchema, InviteCreateReceiptSchema, developerOrgKey, githubInstallationKey, memberRemovalQueueKey, newOrgId as generateOrgId, orgBanKey, orgEmailKey, orgInviteKey, orgInviteDirectoryKey, orgInviteRequestKey, orgRenameRequestKey, orgMemberKey, orgMetaKey, orgRemovedKey, orgSettingsKey, orgSlackTeamKey, budgetSyncedKey, slackTeamOrgKey, type AuditEventInput, type OrgInviteRecord, type OrgMembershipRecord, type OrgRecord, type OrgRole } from "@agentx/cloud-contracts";
 import { scheduleAuditShred } from "../audit/erase.js";
 import { auditMemberJoined, auditMemberRoleChanged, auditOccurrence, auditOrgRenamed, auditOrgClosed, auditOrgInviteCreated } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";

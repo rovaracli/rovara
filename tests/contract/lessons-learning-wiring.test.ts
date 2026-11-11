@@ -1,7 +1,8 @@
 // Lessons in production, lane 1: the task-end learning dependencies are built where the Team record AND the model path exist, and the inline model-calling handler is NOT registered from production wiring.
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { lessonKey, lessonSetKey, spendCounterKey } from "@agentx/contracts";
+import { lessonKey, lessonSetKey } from "@rovara-code/contracts";
+import { spendCounterKey } from "@agentx/cloud-contracts";
 import { hasTaskEndHandlers } from "../../packages/broker/src/agents/task-end.js";
 import { installLearningTaskEnd, learningDepsInUse, uninstallLearningTaskEnd } from "../../packages/broker/src/aws/broker/learning-wiring.js";
 import type { learningDepsFor, lessonsRuntimeFor } from "../../packages/broker/src/aws/broker/lessons-wiring.js";

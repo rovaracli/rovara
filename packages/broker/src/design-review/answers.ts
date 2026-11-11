@@ -2,7 +2,8 @@
 //   - `designAnswersCommitItems`: the contract move `answerDesignQuestions` and the CRITIC_REPLAN row that makes the planner's resolve run due, at the NEW revision, in ONE transaction (the answers and the next step can never differ);
 //   - `designAnswersHandler`: every permission check, so a route is one line. The audience is the requester, and for a high-risk design the high-risk approver too (`designQuestionAudience`); an Auditor, a viewer or a
 //     non-member is never in it. The first answer counts. Nobody answers for the person: this never builds an answer.
-import { WorkflowTransitionError, agentXError, answerDesignQuestions, isHighRiskDesign, type DesignReason, type EditionPolicy, type WorkflowSnapshot } from "@agentx/contracts";
+import { WorkflowTransitionError, agentXError, isHighRiskDesign, type DesignReason } from "@rovara-code/contracts";
+import { answerDesignQuestions, type EditionPolicy, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { taskKey } from "../developer/task-records.js";
 import { WORKFLOW_NO_CANDIDATE_DIGEST, workflowDispatchItem } from "../aws/broker-shared.js";
 import { designQuestionAudience, type DesignApproverDirectory } from "./approval.js";

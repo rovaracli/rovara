@@ -1,6 +1,6 @@
 import { Link } from "react-router";
 import { useQuery } from "@tanstack/react-query";
-import type { AppNavReaderSchema } from "@agentx/contracts/web";
+import type { AppNavReaderSchema } from "@agentx/cloud-contracts/web";
 import { COLLECTING_TEXT as T, collectingCount } from "./learning-text.js";
 
 /** Shown in place of the empty state while the company's suggestions are off: Rovara keeps collecting corrections, and says where to turn suggestions on. The company page is a link only for a company owner or admin (the same signal the sidebar's Admin link uses, read from the shell's cached nav); anyone else would land on "Administration unavailable". */

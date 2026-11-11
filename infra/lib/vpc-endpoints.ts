@@ -2,7 +2,8 @@
 // install's own VPC, and their security groups let traffic out only to the VPC and to addresses the customer's network team approved: never to the whole internet.
 import { Aws, type CfnTag, aws_ec2 as ec2 } from "aws-cdk-lib";
 import { Construct } from "constructs";
-import { EDITION_CONTEXT_KEY, EditionSchema, type Edition } from "@agentx/contracts";
+import { EDITION_CONTEXT_KEY } from "@agentx/cloud-contracts";
+import { EditionSchema, type Edition } from "@rovara-code/contracts";
 
 /**
  * The AWS services an Enterprise install reaches through an interface endpoint with private DNS. The first eight are what the workers and the model proxy

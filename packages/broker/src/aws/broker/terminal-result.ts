@@ -5,7 +5,7 @@ import { continueRedirectAfterStop } from "../../agent-sessions/redirect-hook.js
 import { clearLiveDeliveredSince } from "../../agent-sessions/steer.js";
 import { posix as posixPath } from "node:path";
 import { PutCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { TEST_ENV_DRAFT_NONE_KEY, TEST_ENV_DRAFT_RESULT_KEY, TEST_SERVICES_USAGE_RESULT_KEY, checksForSection, StandingFailuresSchema, nextStandingFailures, type StandingFailure, WORKFLOW_REGRESSED_CHECK_MAX, WORKFLOW_REGRESSED_CHECKS_MAX, WORKFLOW_NO_CODE_CHANGE_MESSAGE, noChangeFindingsFrom, BUDGET_EXHAUSTED_FAILURE_MESSAGE, taskResultChecks, type CheckEntry, type LatestChecks, PullRequestResultSchema, WorkspaceClosePreflightResultSchema, agentXError, type OperationStatus, type WorkspaceInstance, redactAndCap, redactText } from "@agentx/contracts";
+import { TEST_ENV_DRAFT_NONE_KEY, TEST_ENV_DRAFT_RESULT_KEY, TEST_SERVICES_USAGE_RESULT_KEY, checksForSection, StandingFailuresSchema, nextStandingFailures, type StandingFailure, WORKFLOW_REGRESSED_CHECK_MAX, WORKFLOW_REGRESSED_CHECKS_MAX, WORKFLOW_NO_CODE_CHANGE_MESSAGE, noChangeFindingsFrom, BUDGET_EXHAUSTED_FAILURE_MESSAGE, taskResultChecks, type CheckEntry, type LatestChecks, PullRequestResultSchema, WorkspaceClosePreflightResultSchema, agentXError, type OperationStatus, type WorkspaceInstance, redactAndCap, redactText } from "@rovara-code/contracts";
 import { keepCandidateUsage } from "../../org/test-env-candidate.js";
 import { recordPrepareFailureEvent } from "../operation-events.js";
 import { releaseFailedPreparation } from "../failed-preparation.js";

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DescribeInstancesCommand } from "@aws-sdk/client-ec2";
-import { RequalifyRunRecordSchema, REQUALIFY_REFUSAL_PREFIX, REQUALIFY_TAGS, requalifyLockKey, requalifyRunKey, webApiRuntimeInstallProposalSha256, type RuntimeInstallChallenge } from "../../packages/contracts/src/index.js";
+import { RequalifyRunRecordSchema, REQUALIFY_REFUSAL_PREFIX, REQUALIFY_TAGS, requalifyLockKey, requalifyRunKey, webApiRuntimeInstallProposalSha256, type RuntimeInstallChallenge } from "@rovara-code/contracts";
 import { e2eRegisteredRuntimeKey } from "../../packages/broker/src/aws/e2e-runtime-readiness.js";
 import { e2eModelCheckRunnerKey } from "../../packages/broker/src/e2e/model-route-registry.js";
 import { issueChallengeAs, issueRuntimeInstallChallenge, registerRuntimeInstallation, registerWebApiRuntimeInstallation } from "../../packages/broker/src/aws/runtime-installation.js";

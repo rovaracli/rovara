@@ -1,7 +1,7 @@
 // Lessons in production, lane 1: the company's learning spend cap ($20 a month in Public, none of its own in Enterprise). `admit` is a look at the month's `LEARNING` counter; the binding hold is the learning key's
 // reservation in the spend ledger (tests/contract/learning-customer-model.test.ts and tests/contract/spend-ledger.test.ts).
 import { describe, expect, it } from "vitest";
-import { spendCounterKey } from "@agentx/contracts";
+import { spendCounterKey } from "@agentx/cloud-contracts";
 import { LEARNING_COUNTER, PUBLIC_LEARNING_MONTHLY_CAP_USD, companyLearningSpend, learningMonthOf, learningMonthlyCapUsd } from "../../../packages/broker/src/aws/broker/learning-spend.js";
 import { FakeDynamoDb } from "../../support/fake-dynamodb.js";
 import { WS } from "./lesson-helpers.js";

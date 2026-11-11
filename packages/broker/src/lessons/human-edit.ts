@@ -8,7 +8,7 @@
 //  - The model call is the reflector's: it goes through the customer-pays `PipelineModel` and the company's learning spend (lane 1), tool-less.
 //  - The task's own facts (intent, plan, who started and steered it) come from the same source as the task-end reflection; the task's send-backs, findings and close reason are that reflection's.
 //  - A model error THROWS (the tap gives the claim back and the queue retries). A spend refusal, an ineligible task or a reply with no lesson is a quiet "0 candidates".
-import { hostRateLimitRetryAt } from "@agentx/contracts";
+import { hostRateLimitRetryAt } from "@rovara-code/contracts";
 import type { HumanEditExtractorPort, HumanEditInput, HumanEditJob } from "../team-record/sources/codehost.js";
 import { currentLearningAttempt } from "./learning-deadline.js";
 import { learningCaps, modeAllows, resolveLearning, type LearningSettingsReader } from "./policy.js";

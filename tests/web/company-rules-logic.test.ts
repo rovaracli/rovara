@@ -1,7 +1,7 @@
 // Company rules (lane exp/company-rules): the pure parts of the page, to the exact boundary: the limits and counts, the comparison of two lists, the preview of the block, and the wording copied from the contract.
 import { describe, expect, it } from "vitest";
-import { STANDING_INSTRUCTIONS_WORDING, COMPANY_RULE_LIMITS } from "@agentx/contracts";
-import { COMPANY_RULES_APP_LIMITS, STANDING_INSTRUCTIONS_WORDING as WEB_WORDING } from "@agentx/contracts/web";
+import { STANDING_INSTRUCTIONS_WORDING, COMPANY_RULE_LIMITS } from "@rovara-code/contracts";
+import { COMPANY_RULES_APP_LIMITS, STANDING_INSTRUCTIONS_WORDING as WEB_WORDING } from "@agentx/cloud-contracts/web";
 import { buildStandingInstructions } from "../../packages/broker/src/instructions/standing-block.js";
 import { canMove, characterCount, checkRules, changeKind, diffRules, draftFrom, foldRuleText, moveRule, numbered, previewBlock, sameRules, setPriority, summaryWords, toDiff, toRule, addRule, deleteRule, type DraftRule } from "../../packages/ui/src/screens/admin/company-rules/rules-logic.js";
 import { RULES_14 } from "./support/company-rules-fixture.js";

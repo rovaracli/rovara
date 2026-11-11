@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { createHash } from "node:crypto";
-import { canonicalJson, DeveloperTaskResponseSchema, knownTaskView, type DeveloperTaskView } from "@agentx/contracts";
+import { canonicalJson } from "@rovara-code/contracts";
+import { DeveloperTaskResponseSchema, knownTaskView, type DeveloperTaskView } from "@agentx/cloud-contracts";
 
 const ShaSchema = z.string().regex(/^[a-f0-9]{40}$/u);
 const DigestSchema = z.string().regex(/^[a-f0-9]{64}$/u);

@@ -1,7 +1,7 @@
 import { takeRateAt } from "../developer/page-comments.js";
 import { requireLiveCompanyAdmin, type CompanyAuthorityDependencies, type CompanyViewer } from "./company-authority.js";
 import { z } from "zod";
-import { connectorHealthErrorRef, e2eRuntimeExpiryNotice, OrgIdSchema, agentXError, orgScoped, type ErrorRef, type OrgId } from "@agentx/contracts";
+import { connectorHealthErrorRef, e2eRuntimeExpiryNotice, OrgIdSchema, agentXError, orgScoped, type ErrorRef, type OrgId } from "@rovara-code/contracts";
 import { opsFailuresCheck, type OpsFailures } from "../team-record/ops-failures.js";
 type RuntimeKind = "web" | "api";
 export interface ServiceObservation {

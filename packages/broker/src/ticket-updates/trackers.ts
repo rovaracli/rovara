@@ -7,7 +7,7 @@
 // Every key goes only to the tracker's own address, no redirect is followed, an answer is read to a cap, and no error carries the key or the text. A rate limit or a fault that may pass THROWS
 // (the milestone delivery tries again, a bounded number of times); every other answer is a value, so a ticket that cannot be written never fails the task.
 import { createHash } from "node:crypto";
-import { agentXError, type OrgId, type TicketTracker } from "@agentx/contracts";
+import { agentXError, type OrgId, type TicketTracker } from "@rovara-code/contracts";
 import { LINEAR_GRAPHQL, OrgConnectionStore, readConnection, readConnectionSecret, type OrgConnectionDeps, type OrgConnectionRecord } from "../connections/store.js";
 import type { GitHubTokenScope } from "../github-app.js";
 import type { LinearReplyPort } from "../rovara-code/linear-comments.js";

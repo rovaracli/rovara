@@ -2,7 +2,8 @@
 // process has to guess it from another setting at run time.
 import { Aws, type IAspect, aws_ecs as ecs, aws_iam as iam, aws_lambda as lambda } from "aws-cdk-lib";
 import type { IConstruct } from "constructs";
-import { EDITION_ENV_VAR, type Edition } from "@agentx/contracts";
+import { EDITION_ENV_VAR } from "@agentx/cloud-contracts";
+import { type Edition } from "@rovara-code/contracts";
 
 export class EditionEnvironment implements IAspect {
   constructor(private readonly edition: Edition) {}

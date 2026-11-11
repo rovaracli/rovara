@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { E2E_APPLICATION_ADMISSION_SCHEMA_V2, canonicalJson, e2eRuntimeBindingKey } from "@agentx/contracts";
+import { E2E_APPLICATION_ADMISSION_SCHEMA_V2, canonicalJson, e2eRuntimeBindingKey } from "@rovara-code/contracts";
 import { decodeE2EApplicationExecutionAdmission, e2eCompiledRuntime, validateE2EApplicationExecutionAdmission } from "@agentx/verifier";
 import { buildApplicationExecutionAdmission } from "../../packages/broker/src/e2e/application-admission.js";
 import { evaluateApplicationPlanApproval } from "../../packages/broker/src/e2e/application-plan-approval.js";

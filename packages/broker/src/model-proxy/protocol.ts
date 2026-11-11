@@ -1,5 +1,5 @@
 // The wire format between ModelAccessInvoker (broker) and the ModelAccessFunction handler (ruling R28).
-import { ModelSourceSchema, OrgIdSchema, type AgentXErrorCode } from "@agentx/contracts";
+import { ModelSourceSchema, OrgIdSchema, type AgentXErrorCode } from "@rovara-code/contracts";
 import { z } from "zod";
 
 const DeveloperIdSchema = z.string().min(1).max(256);

@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { createCandidateManifest, workflowFindingFingerprint } from "../../packages/contracts/src/task-workflow-node.js";
-import { taskGraphDigest, type WorkItemProgressV1 } from "../../packages/contracts/src/workflow-dependencies-node.js";
+import { createCandidateManifest, workflowFindingFingerprint } from "@rovara-code/contracts";
+import { taskGraphDigest, type WorkItemProgressV1 } from "@rovara-code/contracts";
 import { executeSerialWorkflowDependencies } from "../../packages/worker/src/workflow-dependencies.js";
 import { MAYA, OMAR, createSingleAnswerPlanBroker, grantProject } from "../support/developer-task-broker.js";
 import { planAnswer, planDocument } from "../support/plan-documents.js";
-import { agentSessionKey, projectMetaKey } from "../../packages/contracts/src/index.js";
+import { agentSessionKey, projectMetaKey } from "@rovara-code/contracts";
 import { TEST_ORG } from "../support/orgs.js";
 
 const passingChecks = () => ({ status: "verified", source: "project", preambleVersion: "1", preambleSha256: "c".repeat(64),

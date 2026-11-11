@@ -25,21 +25,8 @@
 // or what is in an image (the worker's build). With the feature off nothing pushes, and the empty template and roles cost nothing.
 import { Aws, CfnOutput, Duration, Stack, Token, aws_ecr as ecr, aws_iam as iam, aws_kms as kms } from "aws-cdk-lib";
 import { Construct } from "constructs";
-import {
-  SAVED_ENV_KEEP_DEFAULT,
-  SAVED_ENV_PUSH_SESSION_SECONDS,
-  savedEnvCreateRoleName,
-  savedEnvLifecyclePolicy,
-  savedEnvManageRoleName,
-  savedEnvPullRoleName,
-  savedEnvPushRoleName,
-  savedEnvRepositoriesArn,
-  savedEnvRepositoryPolicy,
-  savedEnvRepositoryPrefix,
-  SAVED_ENV_MANAGE_ACTIONS,
-  SAVED_ENV_PULL_ACTIONS,
-  SAVED_ENV_PUSH_ACTIONS,
-} from "@agentx/contracts";
+import { SAVED_ENV_KEEP_DEFAULT, SAVED_ENV_PUSH_SESSION_SECONDS, savedEnvCreateRoleName, savedEnvLifecyclePolicy, savedEnvManageRoleName, savedEnvPullRoleName, savedEnvPushRoleName, savedEnvRepositoriesArn, savedEnvRepositoryPrefix, SAVED_ENV_MANAGE_ACTIONS, SAVED_ENV_PULL_ACTIONS, SAVED_ENV_PUSH_ACTIONS } from "@rovara-code/contracts";
+import { savedEnvRepositoryPolicy } from "@agentx/cloud-contracts";
 
 const KEEP_ON_ROLLBACK_METADATA = "agentx:retain-on-create-rollback";
 

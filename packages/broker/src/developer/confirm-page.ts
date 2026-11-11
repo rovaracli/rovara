@@ -7,7 +7,7 @@ import { SERVER_PAGE_ICON, serverPageCss } from "@agentx/design-tokens";
 // instead of `'none'` so its form can post, plus `X-Frame-Options: DENY`. The referrer policy is `same-origin`, NOT `no-referrer`: with
 // `no-referrer` a browser sends `Origin: null` on the form's post, which the strict Origin check refuses. Nothing is sent to another
 // origin either way.
-import {StageModelFixHrefSchema} from "@agentx/contracts";
+import { StageModelFixHrefSchema } from "@rovara-code/contracts";
 import type { ConfirmView } from "./decide-kinds.js";
 
 export interface PageResponse { statusCode: number; headers: Record<string, string>; body: string }

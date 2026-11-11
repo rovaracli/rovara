@@ -1,6 +1,7 @@
 // Design review stage, B2-M1 (money): what the planner's resolve run may spend. The resolve run is an ordinary planning run in the task's own conversation, so it has the task's normal key; while it runs for a design review
 // its key is also held to what is left under the REVIEW's cap, and its measured spend is added to the review's `spentUsd` when it ends (`designResolveOutcome`). Pure: this reads no store.
-import { addDesignUsd, workflowIsDesignReviewing, type WorkflowSnapshot } from "@agentx/contracts";
+import { addDesignUsd, workflowIsDesignReviewing } from "@rovara-code/contracts";
+import { type WorkflowSnapshot } from "@agentx/cloud-contracts";
 
 /** The two facts of an operation that make it a design review's planner run. */
 export interface PlannerRunFacts { workflowMode?: string | undefined; planRevision?: boolean | undefined }

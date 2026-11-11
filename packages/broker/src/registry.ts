@@ -1,9 +1,4 @@
-import {
-  agentXError,
-  WorkspaceInstanceSchema,
-  type WorkspaceInstance,
-  type WorkspaceStatus,
-} from "@agentx/contracts";
+import { agentXError, WorkspaceInstanceSchema, type WorkspaceInstance, type WorkspaceStatus } from "@rovara-code/contracts";
 
 export class InMemoryRegistry {
   readonly workspaces = new Map<string, WorkspaceInstance>();

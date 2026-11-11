@@ -2,7 +2,7 @@
 // tracker unless the project allows it; a missing scope is shown and skipped, never a failure; rate limited; sent once. And the tracker writers use the connection's access as it is.
 import { GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it, vi } from "vitest";
-import { agentSessionKey, intakeItemIdOf, sessionBindingKey, ticketUpdatesSettingsKey, type CodeMilestone, type OrgId, type TicketTracker } from "@agentx/contracts";
+import { agentSessionKey, intakeItemIdOf, sessionBindingKey, ticketUpdatesSettingsKey, type CodeMilestone, type OrgId, type TicketTracker } from "@rovara-code/contracts";
 import { claimIntakeItem, markIntakeStarted } from "../../packages/broker/src/intake/store.js";
 import { TICKET_UPDATES_PER_TASK, inertTicketTitle, sendTicketUpdate, ticketUpdateText, type TicketUpdatesDependencies } from "../../packages/broker/src/ticket-updates/handler.js";
 import { readWriteAccess } from "../../packages/broker/src/ticket-updates/settings.js";
@@ -115,7 +115,7 @@ describe("private tasks and public trackers", () => {
     await sendTicketUpdate(w.deps, w.milestone("merged"));
     expect(w.calls[1]).toMatchObject({ tracker: "github", requirePrivate: true });
     // A maintainer cannot save the switch any more.
-    const { TicketUpdatesSettingsSchema } = await import("@agentx/contracts");
+    const { TicketUpdatesSettingsSchema } = await import("@rovara-code/contracts");
     expect(TicketUpdatesSettingsSchema.safeParse({ comments: true, changeStatus: false, statuses: {}, privateSessions: true }).success).toBe(false);
   });
 
@@ -153,7 +153,7 @@ describe("once, and rate limited", () => {
 
   it("stops at the per-company hourly cap for one tracker; another tracker and another org are not touched (and the per-task count is not spent by a cap)", async () => {
     const { TICKET_UPDATES_PER_HOUR } = await import("../../packages/broker/src/ticket-updates/handler.js");
-    const { ticketUpdateCallsKey } = await import("@agentx/contracts");
+    const { ticketUpdateCallsKey } = await import("@rovara-code/contracts");
     const w = world();
     await w.setup();
     const hour = new Date(NOW).toISOString().slice(0, 13);

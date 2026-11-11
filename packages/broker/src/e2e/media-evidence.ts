@@ -3,7 +3,7 @@
 // left out and named. Whether a kept file is shown is not decided here: the evidence pack builder applies the gate (run-scoped accounts, tier, company setting, revocation proof) and the caller deletes the
 // files it withholds, so a withheld video cannot be fetched by its hash.
 import { createHash } from "node:crypto";
-import { EVIDENCE_ARTIFACT_MAX_BYTES, EVIDENCE_ARTIFACT_MAGIC, EVIDENCE_ARTIFACT_RETENTION, evaluatePublicationGate, type ArtifactRef, type EvidenceRaw, type MediaGateInput, type MediaGateResult } from "@agentx/contracts";
+import { EVIDENCE_ARTIFACT_MAX_BYTES, EVIDENCE_ARTIFACT_MAGIC, EVIDENCE_ARTIFACT_RETENTION, evaluatePublicationGate, type ArtifactRef, type EvidenceRaw, type MediaGateInput, type MediaGateResult } from "@rovara-code/contracts";
 import { scrubTrace, type ScrubStats } from "@agentx/verifier";
 import { revocationSettledAt, type RevocationReport } from "./run-scoped-accounts.js";
 import type { buildEvidencePack } from "../rovara-code/evidence-pack.js";

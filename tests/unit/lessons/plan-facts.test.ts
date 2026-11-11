@@ -1,6 +1,6 @@
 // Lessons capture lane: what the loader is told about a task besides its title: a short summary of the approved plan and the files the plan names. Pure, bounded, and made only from the plan's own structure.
 import { describe, expect, it } from "vitest";
-import type { PlanDocument } from "@agentx/contracts";
+import type { PlanDocument } from "@rovara-code/contracts";
 import { PLAN_FACTS_MAX_FILES, PLAN_FACTS_SUMMARY_MAX, planLoadFacts } from "../../../packages/broker/src/lessons/plan-facts.js";
 
 const plan = (claims: PlanDocument["claims"], title = "Retry failed HTTP calls"): PlanDocument => ({ schemaVersion: 1, title, why: [], claims, notChanging: [], risks: [], decisions: [] });
@@ -43,7 +43,7 @@ describe("planFactsFor (the broker's read of the plan)", () => {
     return planFactsFor({ s3: s3 as never, artifactBucketName: "bucket" })({ taskId: "t", orgId: "o", workflow: { artifacts: fill } });
   }
   it("reads the latest plan: a structured plan gives its summary and files, a Markdown plan its first lines and no files", async () => {
-    const { canonicalPlanJson } = await import("@agentx/contracts");
+    const { canonicalPlanJson } = await import("@rovara-code/contracts");
     const full = { ...plan([{ id: "1", text: "Edit src/http/client.ts", evidence: [{ kind: "code", path: "src/http/client.ts", startLine: 1, endLine: 2 }] }]), why: [{ text: "Calls fail", author: "maya" }], notChanging: ["The API"], risks: ["Retries storm"] } as PlanDocument;
     const doc = canonicalPlanJson(full);
     const structured = await facts([artifact(doc, { format: "structured" })], { "plans/x": doc });

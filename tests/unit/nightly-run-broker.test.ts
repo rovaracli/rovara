@@ -2,7 +2,7 @@
 // switches off nothing runs and nothing is read.
 import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it, vi } from "vitest";
-import { NightlyResultSchema, TestEnvironmentBodySchema, agentXError, projectMetaKey, projectPk, systemOwnerIdOf, type NightlyResult, type OrgId, type TestEnvironmentBody } from "@agentx/contracts";
+import { NightlyResultSchema, TestEnvironmentBodySchema, agentXError, projectMetaKey, projectPk, systemOwnerIdOf, type NightlyResult, type OrgId, type TestEnvironmentBody } from "@rovara-code/contracts";
 import { setAutomaticRunsCap } from "../../packages/broker/src/automatic-runs/cap.js";
 import { resolvePayer } from "../../packages/broker/src/spend/payer.js";
 import { taskKey, taskPointerKey } from "../../packages/broker/src/developer/task-records.js";

@@ -2,7 +2,7 @@
 // install's copy of the embedder image, deploy/copy-embedder-image.ts). The credential comes from ECR and goes to skopeo in a 0600 file in a 0700 directory, never on its command line where
 // any local user could read it (review M2); the caller removes the directory when it is done.
 import { GetAuthorizationTokenCommand } from "@aws-sdk/client-ecr";
-import { agentXError } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

@@ -10,7 +10,7 @@
 //   search_logs      POST /api/v2/logs/events/search       logs_read_data (filter.query/from/to, sort, page.limit)
 //   check            GET  /api/v1/validate (API key), then GET /api/v1/monitor/search?per_page=1 (the application key)
 // Not confirmed in the documentation: the monitor search syntax for tags and states (`tag:"k:v"`, `status:alert`), which is Datadog's long-standing syntax.
-import { DatadogConnectorSchema, type DatadogConnectorConfig, type OrgConnection } from "@agentx/contracts";
+import { DatadogConnectorSchema, type DatadogConnectorConfig, type OrgConnection } from "@rovara-code/contracts";
 import { NativeCheckFailed, NativeToolRefusal, type NativeConnectorSpec, type NativeTool, type NativeToolContext } from "./runtime.js";
 import { VendorFetchError } from "./vendor-fetch.js";
 

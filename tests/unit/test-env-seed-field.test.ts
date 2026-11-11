@@ -1,7 +1,7 @@
 // TS-UX-1 (0.5.10): the seed as a plain field. A maintainer types one command line for a dependency; the broker reads it (one program), places it in the directory of the environment's own commands, refuses what a seed is
 // always refused, and stores it as an edited proposal that is a less-safe (high) change. An empty line clears it.
 import { describe, expect, it } from "vitest";
-import { TestEnvironmentBodySchema, projectMetaKey, projectRevisionKey, testEnvApprovalRisk, testEnvLessSafeChanges, type OrgId, type TestEnvironmentBody } from "@agentx/contracts";
+import { TestEnvironmentBodySchema, projectMetaKey, projectRevisionKey, testEnvApprovalRisk, testEnvLessSafeChanges, type OrgId, type TestEnvironmentBody } from "@rovara-code/contracts";
 import { capturingAuditDeps, AUDIT_CAPTURE_TABLE } from "../support/audit-capture.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 

@@ -79,7 +79,7 @@ export const CATEGORY_TITLES: Readonly<Record<OutboundCategory, { title: string;
   },
 };
 
-const DEFAULT_ALLOW = ["packages/contracts/src/default-allow-domains.ts"];
+const DEFAULT_ALLOW = ["vendor/rovara-code/packages/contracts/src/default-allow-domains.ts"];
 
 export const HOST_RULES: readonly HostRule[] = [
   {
@@ -106,7 +106,7 @@ export const HOST_RULES: readonly HostRule[] = [
     hosts: ["api.anthropic.com", "api.openai.com", "auth.openai.com", "chatgpt.com", "openrouter.ai"],
   },
   {
-    category: "agent-egress-default", why: "The default list of package, image and OS mirror hosts agent machines may resolve. (GitHub's, Docker Hub's token and API hosts are also the company image registry allowlist's, in the file named for it.)", files: [...DEFAULT_ALLOW, "packages/contracts/src/company-image-mirror.ts", "packages/broker/src/test-env/company-images.ts"],
+    category: "agent-egress-default", why: "The default list of package, image and OS mirror hosts agent machines may resolve. (GitHub's, Docker Hub's token and API hosts are also the company image registry allowlist's, in the file named for it.)", files: [...DEFAULT_ALLOW, "packages/cloud-contracts/src/company-image-mirror.ts", "packages/broker/src/test-env/company-images.ts"],
     hosts: [
       "crates.io", "*.crates.io", "mcr.microsoft.com", "*.data.mcr.microsoft.com", "ghcr.io", "*.ghcr.io", "*.githubusercontent.com", "rubygems.org", "*.rubygems.org",
       "archive.ubuntu.com", "ports.ubuntu.com", "security.ubuntu.com", "deb.debian.org", "security.debian.org", "dl-cdn.alpinelinux.org", "auth.docker.io", "registry-1.docker.io",
@@ -115,7 +115,7 @@ export const HOST_RULES: readonly HostRule[] = [
     ],
   },
   {
-    category: "company-image-registry", why: "The registries a company-approved test image may come from (Docker Hub and Quay, beside GitHub's above and Amazon's public registry below), by name, and the other spellings of Docker Hub that are refused as not another registry.", files: ["packages/contracts/src/company-image-mirror.ts", "packages/broker/src/test-env/company-images.ts", "packages/ui/src/screens/admin/how-we-work/CompanyImagesScreen.tsx"],
+    category: "company-image-registry", why: "The registries a company-approved test image may come from (Docker Hub and Quay, beside GitHub's above and Amazon's public registry below), by name, and the other spellings of Docker Hub that are refused as not another registry.", files: ["packages/cloud-contracts/src/company-image-mirror.ts", "packages/broker/src/test-env/company-images.ts", "packages/ui/src/screens/admin/how-we-work/CompanyImagesScreen.tsx"],
     hosts: ["docker.io", "index.docker.io", "registry.docker.io", "hub.docker.com", "quay.io"],
   },
   {
@@ -123,7 +123,7 @@ export const HOST_RULES: readonly HostRule[] = [
     hosts: ["repo.maven.apache.org"],
   },
   {
-    category: "agent-egress-default", why: "The npm registry: in the default list, the setup draft's default allowed domain, and the registry an install uses for package-run MCP servers when it sets rovaraMcpPublicNpm and names none.", files: [...DEFAULT_ALLOW, "packages/worker/src/setup-draft.ts", "packages/contracts/src/e2e-native-recipes.ts", "infra/lib/private-mcp.ts"],
+    category: "agent-egress-default", why: "The npm registry: in the default list, the setup draft's default allowed domain, and the registry an install uses for package-run MCP servers when it sets rovaraMcpPublicNpm and names none.", files: [...DEFAULT_ALLOW, "packages/worker/src/setup-draft.ts", "vendor/rovara-code/packages/contracts/src/e2e-native-recipes.ts", "infra/lib/private-mcp.ts"],
     hosts: ["registry.npmjs.org"],
   },
   {
@@ -145,7 +145,7 @@ export const HOST_RULES: readonly HostRule[] = [
     ],
   },
   {
-    category: "aws-service-principal", why: "The ECR service principal in the trust policy of the role ECR assumes to create a saved-environment repository from the creation template (an IAM principal, not a call); and, as the iam:AWSServiceName condition on the deploy role's one service-linked-role statement for ECR's creation-template role (a policy value, not a call).", files: ["infra/lib/saved-env-images.ts", "packages/contracts/src/access-policies.ts"],
+    category: "aws-service-principal", why: "The ECR service principal in the trust policy of the role ECR assumes to create a saved-environment repository from the creation template (an IAM principal, not a call); and, as the iam:AWSServiceName condition on the deploy role's one service-linked-role statement for ECR's creation-template role (a policy value, not a call).", files: ["infra/lib/saved-env-images.ts", "packages/cloud-contracts/src/access-policies.ts"],
     hosts: ["ecr.amazonaws.com"],
   },
   {
@@ -153,7 +153,7 @@ export const HOST_RULES: readonly HostRule[] = [
     hosts: ["codeartifact.amazonaws.com"],
   },
   {
-    category: "audit-timestamp", why: "The two public timestamp authorities the audit anchor asks by default.", files: ["packages/contracts/src/audit.ts", "packages/audit-verifier/src/trust-roots.ts"],
+    category: "audit-timestamp", why: "The two public timestamp authorities the audit anchor asks by default.", files: ["packages/cloud-contracts/src/audit.ts", "packages/audit-verifier/src/trust-roots.ts"],
     hosts: ["timestamp.digicert.com", "timestamp.sectigo.com"],
   },
   {
@@ -174,7 +174,7 @@ export const HOST_RULES: readonly HostRule[] = [
     hosts: ["token.actions.githubusercontent.com"],
   },
   {
-    category: "deploy-supply-chain", why: "The upstream registry of the image pull-through cache rule, and one of the registries a company-approved test image may be copied from (the allowlist names it).", files: ["infra/lib/access.ts", "packages/contracts/src/company-image-mirror.ts"],
+    category: "deploy-supply-chain", why: "The upstream registry of the image pull-through cache rule, and one of the registries a company-approved test image may be copied from (the allowlist names it).", files: ["infra/lib/access.ts", "packages/cloud-contracts/src/company-image-mirror.ts"],
     hosts: ["public.ecr.aws"],
   },
   {

@@ -1,5 +1,5 @@
 import { expect, it, vi } from "vitest";
-import { HomeResponseReaderSchema } from "@agentx/contracts/web";
+import { HomeResponseReaderSchema } from "@agentx/cloud-contracts/web";
 import { createApiClient } from "../../packages/ui/src/api/client.js";
 import { acceptSessionRead, mergeSessionMessages, createSessionApi } from "../../packages/ui/src/api/sessions.js";
 import { queryKeysFor } from "../../packages/ui/src/realtime/invalidate.js";

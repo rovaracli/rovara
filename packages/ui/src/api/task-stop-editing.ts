@@ -1,4 +1,4 @@
-import { OrgIdSchema, TaskStopEditingContextSchema, TaskStopEditResultSchema, TaskStopEditBodySchema, TaskStopDecisionBodySchema } from "@agentx/contracts/web";
+import { OrgIdSchema, TaskStopEditingContextSchema, TaskStopEditResultSchema, TaskStopEditBodySchema, TaskStopDecisionBodySchema } from "@agentx/cloud-contracts/web";
 import type { AppHost, ApiMethod, ApiResponse } from "../host.js";
 import { ApiError } from "./errors.js";
 import { withoutRequestId } from "./without-request-id.js";

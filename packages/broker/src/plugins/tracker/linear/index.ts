@@ -9,11 +9,7 @@
 // Linear's own start (the `linear` trigger source, `triggers/providers/linear.ts`) is NOT moved onto this adapter: it starts work by the payer rules of an assignment, and the neutral
 // start is a member's act (`intake/engine.ts`). Both spellings are valid (`trackerOfCodeIntent`); which one an install uses is its choice.
 import { createHash } from "node:crypto";
-import {
-  agentXError, HostScopeSchema, TrackerEventSchema, TrackerItemSchema,
-  type HookRecord, type HostScope, type NeutralStatus, type OrgId, type RawDelivery, type Tracker, type TrackerCapabilities, type TrackerEvent, type TrackerEvents, type TrackerItem,
-  type TrackerItemRef, type UntrustedText,
-} from "@agentx/contracts";
+import { agentXError, HostScopeSchema, TrackerEventSchema, TrackerItemSchema, type HookRecord, type HostScope, type NeutralStatus, type OrgId, type RawDelivery, type Tracker, type TrackerCapabilities, type TrackerEvent, type TrackerEvents, type TrackerItem, type TrackerItemRef, type UntrustedText } from "@rovara-code/contracts";
 import { normalizeIssueKey } from "../../../rovara-code/linear-close.js";
 import type { LinearReplyPort } from "../../../rovara-code/linear-comments.js";
 import { linearProvider } from "../../../triggers/providers/linear.js";

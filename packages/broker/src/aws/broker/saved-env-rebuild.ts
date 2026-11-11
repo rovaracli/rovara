@@ -9,7 +9,9 @@
 // Fails closed: no approver, a moved approved environment, a repository the job has no commit for, or no build inputs (the base image and secret names, from the install) start nothing, and the job's lease runs out.
 import { randomUUID } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { WorkspaceInstanceSchema, savedEnvRepositoryName, testEnvDigest, workerProjectDefinition, type OrgId, type PrepareSavedEnvBuild, type WorkerInvocation } from "@agentx/contracts";
+import { WorkspaceInstanceSchema, savedEnvRepositoryName, testEnvDigest, type OrgId, type PrepareSavedEnvBuild } from "@rovara-code/contracts";
+import { workerProjectDefinition } from "@agentx/cloud-contracts";
+import { type WorkerInvocation } from "@agentx/cloud-contracts";
 import { readApprovedBy, readApprovedTestEnvironment } from "../../org/test-environment.js";
 import type { SavedEnvDeps } from "../../test-env/saved-env.js";
 import { savedEnvEnabled } from "../../test-env/saved-env-switch.js";

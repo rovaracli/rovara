@@ -3,7 +3,8 @@
 // Secrets: the user token and the authorization code are never logged or stored.
 import { createHash } from "node:crypto";
 import { GetCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { agentXError, githubConnectStateKey, trialGithubKey, type OrgId, type OrgRecord, type OrgRole } from "@agentx/contracts";
+import { agentXError, type OrgId } from "@rovara-code/contracts";
+import { githubConnectStateKey, trialGithubKey, type OrgRecord, type OrgRole } from "@agentx/cloud-contracts";
 import type { AuditRuntime } from "../audit/outbox.js";
 import type { GitHubInstallation, GitHubInstallationRepository, GitHubTokenScope } from "../github-app.js";
 

@@ -3,18 +3,8 @@
 // named test here kills: the owner check at restart, the claim (one start), the revision condition, the worker check, the instruction's framing, the skipped note, the Revise transition, the sweep.
 import { createHash, randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import {
-  OWNER_REDIRECT_FEATURE,
-  REDIRECT_LEFT_BLOCKED_MESSAGE,
-  REDIRECT_NOT_CARRIED_OUT_MESSAGE,
-  REDIRECT_RETRY_INSTRUCTIONS,
-  WORKFLOW_REDIRECT_PLAN_DECISION_REASON,
-  WORKFLOW_REDIRECT_SEND_BACK_REASON,
-  agentSessionKey,
-  orgMemberKey,
-  projectMemberKey,
-  workspaceSessionKey,
-} from "../../packages/contracts/src/index.js";
+import { OWNER_REDIRECT_FEATURE, REDIRECT_LEFT_BLOCKED_MESSAGE, REDIRECT_NOT_CARRIED_OUT_MESSAGE, REDIRECT_RETRY_INSTRUCTIONS, WORKFLOW_REDIRECT_PLAN_DECISION_REASON, WORKFLOW_REDIRECT_SEND_BACK_REASON, agentSessionKey, projectMemberKey, workspaceSessionKey } from "@rovara-code/contracts";
+import { orgMemberKey } from "@agentx/cloud-contracts";
 import { livePersonLabel } from "../../packages/broker/src/agent-sessions/live-steer.js";
 import { continueRedirect, judgeRedirect, sweepStoppingRedirects } from "../../packages/broker/src/agent-sessions/redirect-continue.js";
 import { readOpenRedirect, readRedirect, redirectKey } from "../../packages/broker/src/agent-sessions/redirect-state.js";

@@ -1,4 +1,4 @@
-import { AgentXError, environmentStackName } from "@agentx/contracts";
+import { AgentXError, environmentStackName } from "@rovara-code/contracts";
 import { describe, expect, it } from "vitest";
 import { githubChecks, githubWebhookChecks } from "../../packages/cli/src/doctor/github.js";
 import { GITHUB_WEBHOOK_EVENTS, githubAppSecretName, githubWebhookUrl } from "../../packages/cli/src/init/github-app.js";

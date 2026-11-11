@@ -2,7 +2,7 @@
 // start; each label event counts once (a replayed webhook starts nothing more); a re-label while the earlier task runs is a duplicate; a ticket that still carries its label after its task ended
 // never restarts by itself (a poll has no label event).
 import { describe, expect, it } from "vitest";
-import { agentXError, intakeItemIdOf, type CodeIntentRequest, type OrgId } from "@agentx/contracts";
+import { agentXError, intakeItemIdOf, type CodeIntentRequest, type OrgId } from "@rovara-code/contracts";
 import { ingestIntake, startWaitingIntake, type IntakeCandidate, type IntakePorts } from "../../packages/broker/src/intake/engine.js";
 import { listWaitingIntakeItems, readIntakeItem } from "../../packages/broker/src/intake/store.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";

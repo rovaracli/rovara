@@ -1,7 +1,7 @@
 // Live interaction F2: the broker reads a diagnosis again (`sanitizeDiagnosis`). A model's answer may have been steered by text planted in a log or a repository file; whatever it says, the result is the
 // closed set of proposals, with every free-text field redacted, one line, inert and short, and a settings change only on the allow-list. Tokens are built at run time.
 import { describe, expect, it } from "vitest";
-import { DIAGNOSIS_PROPOSALS_MAX, DiagnosisProposalSchema } from "../../packages/contracts/src/index.js";
+import { DIAGNOSIS_PROPOSALS_MAX, DiagnosisProposalSchema } from "@rovara-code/contracts";
 import { extractJsonObject, proposalCounts, sanitizeDiagnosis } from "../../packages/broker/src/diagnosis/sanitize.js";
 
 const TOKEN = `ghp_${"a1B2".repeat(9)}`;

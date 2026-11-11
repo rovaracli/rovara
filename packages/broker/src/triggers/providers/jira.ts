@@ -6,7 +6,7 @@
 // Atlassian's page gives `timestamp` as a 13-digit number without naming the unit; it is read as milliseconds. Its sample spells the user's key `accoundId`; the key Jira sends,
 // and the one the connection check records, is `accountId`. The delivery's `X-Atlassian-Webhook-Identifier` is not used: the event key is the issue's id.
 import { z } from "zod";
-import { TRIGGER_SUBJECT_BODY_MAX, type HookRecord, type TriggerEvent } from "@agentx/contracts";
+import { TRIGGER_SUBJECT_BODY_MAX, type HookRecord, type TriggerEvent } from "@rovara-code/contracts";
 import { hmacHexEquals, type HookHeaders, type HookProvider, type Normalized } from "./types.js";
 import { headerOf, isoOfMillis, titleOf, valuesOf } from "./shared.js";
 

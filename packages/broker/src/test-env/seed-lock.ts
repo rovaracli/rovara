@@ -13,10 +13,7 @@
 // Fail closed everywhere: no code host, a read that fails, a host other than GitHub, a source that is not a detector's: no lock, HIGH.
 import { GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import {
-  INDEX_EXPIRY_ATTRIBUTE, SEED_LOCK_REFUSALS, SEED_LOCK_REFUSAL_WORDS, TestEnvironmentBodySchema, projectPk, seedScriptLockOf, seedTargetsOnlySealedTestDb, testEnvSeedSignature,
-  type OrgId, type SeedSourceReader, type TestEnvDraft, type TestEnvironmentBody, type TestEnvSeedTrust,
-} from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, SEED_LOCK_REFUSALS, SEED_LOCK_REFUSAL_WORDS, TestEnvironmentBodySchema, projectPk, seedScriptLockOf, seedTargetsOnlySealedTestDb, testEnvSeedSignature, type OrgId, type SeedSourceReader, type TestEnvDraft, type TestEnvironmentBody, type TestEnvSeedTrust } from "@rovara-code/contracts";
 import { sameCommand } from "./seed-routing.js";
 
 /**

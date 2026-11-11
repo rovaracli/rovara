@@ -3,7 +3,8 @@
 // the in-flight marker, idempotency by request id, and the cancel that must follow the commit. Phase 2 (the restart) is `redirect-continue.test.ts`.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { OWNER_REDIRECT_FEATURE, REDIRECT_REFUSAL_MESSAGES, WORKFLOW_BLOCK_REASONS, REDIRECT_SLACK_STATUS_LINE, agentSessionKey, agentXError, type OrgId } from "../../packages/contracts/src/index.js";
+import { OWNER_REDIRECT_FEATURE, REDIRECT_REFUSAL_MESSAGES, REDIRECT_SLACK_STATUS_LINE, agentSessionKey, agentXError, type OrgId } from "@rovara-code/contracts";
+import { WORKFLOW_BLOCK_REASONS } from "@agentx/cloud-contracts";
 import { redirectSession, type RedirectConfig, type RedirectDependencies } from "../../packages/broker/src/agent-sessions/redirect.js";
 import { endRedirect, readOpenRedirect, readRedirect, redirectKey } from "../../packages/broker/src/agent-sessions/redirect-state.js";
 import { stopSession } from "../../packages/broker/src/agent-sessions/stop.js";

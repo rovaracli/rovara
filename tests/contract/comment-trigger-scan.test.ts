@@ -2,7 +2,7 @@
 // Everything runs on an in-memory repository (tests/support/fake-repository.ts), so what was read, and how often, is read off the record.
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import type { OrgId } from "@agentx/contracts";
+import type { OrgId } from "@rovara-code/contracts";
 import {
   BOT_CONFIG_PATHS,
   MAX_FILE_BYTES,
@@ -905,7 +905,7 @@ describe("merge keys (round 2, item 8)", () => {
 
 describe("what the scan says it covers (round 2, item 10)", () => {
   it("has one fixed note the page can show", async () => {
-    const { COMMENT_TRIGGER_COVERAGE_NOTE } = await import("@agentx/contracts");
+    const { COMMENT_TRIGGER_COVERAGE_NOTE } = await import("@rovara-code/contracts");
     expect(COMMENT_TRIGGER_COVERAGE_NOTE).toBe("Rovara reads every workflow of the repository, the scripts and manifests they name, local actions and the shell scripts those run in turn. For npm, make and well-known Python tools it reads their configuration files, not the tests or code they run. It can't see code fetched or built at run time, a command run by bare name or found on the PATH, files a Python or JavaScript script imports, or a Docker build context; where it can't tell which file runs, it asks a person.");
   });
 });

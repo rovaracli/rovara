@@ -1,7 +1,7 @@
 // Setup and test health SH17 (owner decision F4): the company setting "always two people" for marking tests as already failing. OFF by default. Turning it ON applies at once; turning it OFF needs a DIFFERENT eligible
 // admin (the one-admin rule: no sole-owner exception for loosening); an unreadable value counts as ON; every change is audited under this setting's own ledger names.
 import { describe, expect, it } from "vitest";
-import type { AuditEventInput } from "@agentx/contracts";
+import type { AuditEventInput } from "@agentx/cloud-contracts";
 import { KnownFailingPolicyStore, alwaysTwoPeople, approveAlwaysTwoPeopleOff, knownFailingPolicyAuditSink, setAlwaysTwoPeople, type KnownFailingPolicyDeps } from "../../packages/broker/src/org/known-failing-policy.js";
 import type { Tier0Authority } from "../../packages/broker/src/lessons/sole-owner-switch.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";

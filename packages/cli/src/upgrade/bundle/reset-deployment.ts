@@ -1,6 +1,7 @@
 // Enterprise foundations, N6 fix round 2 (review N8): a deployment that failed and whose bundle was then withdrawn leaves a progress record that makes the deployer refuse
 // every other bundle. Only the customer's administrators (the operator role has no Parameter Store access) clear it, with this command.
-import { DEPLOY_LOCK_STALE_MS, agentXError, deployLockParameter, deployProgressParameter } from "@agentx/contracts";
+import { DEPLOY_LOCK_STALE_MS, deployLockParameter, deployProgressParameter } from "@agentx/cloud-contracts";
+import { agentXError } from "@rovara-code/contracts";
 import type { ParameterStore } from "../../environments/parameter-store.js";
 
 export interface ResetOutcome {

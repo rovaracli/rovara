@@ -3,13 +3,13 @@ import { fixtureActor, seedMaintainerGrant } from "../support/money-authority.js
 // triggers; a trigger is not turned off for a fault of ours; a subject a trigger just started a run for is not started again for 30 minutes; the run is noted on the trigger even
 // when the activity item could not be written.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { TriggerEvent } from "@agentx/contracts";
+import type { TriggerEvent } from "@rovara-code/contracts";
 import { addToRoster } from "../../packages/broker/src/agents/roster.js";
 import { dispatchTriggerEvent, type TriggerDispatchDependencies } from "../../packages/broker/src/triggers/dispatch.js";
 import { ownerQualifies, triggerProblems } from "../../packages/broker/src/triggers/requirements.js";
-import { triggerKey } from "../../packages/contracts/src/org-scoped-keys.js";
-import type { RecipeOverlay } from "../../packages/contracts/src/agent-recipe-node.js";
-import type { ChainDefinitionInput } from "../../packages/contracts/src/chains.js";
+import { triggerKey } from "@rovara-code/contracts";
+import type { RecipeOverlay } from "@rovara-code/contracts";
+import type { ChainDefinitionInput } from "@rovara-code/contracts";
 import { DANA, MAX, ORG_A, PRIYA, disposeGateWorlds, setupTriggerWorld, type TriggerWorld } from "../support/trigger-world.js";
 
 afterEach(() => disposeGateWorlds());

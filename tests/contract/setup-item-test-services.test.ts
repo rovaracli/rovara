@@ -1,6 +1,7 @@
 // UX-4b: with test services on, a dev container is not offered beside the test environment: the item says why and where to go instead, and the other items are unchanged.
 import { describe, expect, it } from "vitest";
-import type { SetupItem, StoredProjectDefinition } from "@agentx/contracts";
+import type { SetupItem } from "@rovara-code/contracts";
+import type { StoredProjectDefinition } from "@agentx/cloud-contracts";
 import { SETUP_ITEM_WORDS, unavailableReason } from "../../packages/broker/src/rovara-code/setup-items.js";
 
 const definition = { name: "web", revision: 2, setup: [], readiness: [], repositories: [{ name: "web", url: "https://github.com/acme/web", defaultBranch: "main", path: "." }] } as unknown as StoredProjectDefinition;

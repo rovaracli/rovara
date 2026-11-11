@@ -1,7 +1,7 @@
 // TS-UX-1 (0.5.10): the broker attaches the draft's seed commands to the database dependency it proposes (never to setup), refuses an unsafe one, says so when there is no database to hold it, and the less-safe
 // reading (a second person, high risk) follows from the seed, as it always did.
 import { describe, expect, it } from "vitest";
-import { TestEnvironmentBodySchema, formatCommandLine, testEnvLessSafeChanges, testEnvApprovalRisk, type SetupProposal, type TestEnvironmentBody } from "@agentx/contracts";
+import { TestEnvironmentBodySchema, formatCommandLine, testEnvLessSafeChanges, testEnvApprovalRisk, type SetupProposal, type TestEnvironmentBody } from "@rovara-code/contracts";
 import { SEED_LEFT_OUT_OF_SETUP_NOTE, SEED_NOT_TAKEN_NOTE, SEED_NO_DATABASE_NOTE, attachDraftSeeds, SEED_OFFERED_NOTE, SEED_REFUSED_NOTE, withoutRoutedSeeds } from "../../packages/broker/src/test-env/seed-routing.js";
 import { sanitizeTestEnvDraft } from "../../packages/broker/src/test-env/draft.js";
 import { pinnedCatalog, verifiedCatalog } from "../support/catalog-pinning.js";

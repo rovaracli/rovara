@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { expect, it } from "vitest";
-import { orgMetaKey, orgSlackTeamKey, projectMetaKey, slackBindingKey, slackTeamOrgKey } from "@agentx/contracts";
+import { orgMetaKey, orgSlackTeamKey, slackTeamOrgKey } from "@agentx/cloud-contracts";
+import { projectMetaKey, slackBindingKey } from "@rovara-code/contracts";
 import type { DeveloperApiConfiguration } from "../../packages/broker/src/aws/developer-routes.js";
 import { APP_CSRF_HEADER, appCsrfTokenFor } from "../../packages/broker/src/developer/app-csrf.js";
 import { createAdminBroker } from "../support/admin-broker.js";

@@ -7,7 +7,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { TEST_SERVICES_AWS_USAGE_PROBLEMS, TEST_SERVICES_AWS_USAGE_WORDS } from "@agentx/contracts";
+import { TEST_SERVICES_AWS_USAGE_PROBLEMS, TEST_SERVICES_AWS_USAGE_WORDS } from "@rovara-code/contracts";
 
 const SCRIPT = new URL("../../scripts/staging-test-services-e2e.sh", import.meta.url).pathname;
 const code = readFileSync(SCRIPT, "utf8").split("\n").filter((line) => !line.trimStart().startsWith("#")).join("\n");

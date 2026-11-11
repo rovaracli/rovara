@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
-import { E2EApplicationPlanIntentSchema, E2E_MODEL_ROUTE_DEFAULT_BUDGETS, canonicalJson, deriveE2EApplicationRuntimeAccountRef, e2eApplicationMetadataSourceRefs, type E2EScenario } from "@agentx/contracts";
+import { E2EApplicationPlanIntentSchema, E2E_MODEL_ROUTE_DEFAULT_BUDGETS, canonicalJson, deriveE2EApplicationRuntimeAccountRef, e2eApplicationMetadataSourceRefs, type E2EScenario } from "@rovara-code/contracts";
 import { decodeE2EApplicationExecutionAdmission, e2eApplicationGroupAgentSteps, e2eApplicationGroupUsesModel, validateE2EApplicationExecutionAdmission } from "@agentx/verifier";
 import { ApplicationDispatchRefusal } from "../../packages/broker/src/e2e/application-dispatch-check.js";
 import { applicationApprovedPlanDigest, buildApplicationExecutionAdmission, buildApplicationReplayAdmission, type ApplicationAdmissionInput, type ApplicationRoundApproval } from "../../packages/broker/src/e2e/application-admission.js";
