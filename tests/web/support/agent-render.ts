@@ -10,7 +10,7 @@ import { h } from "./h.js";
 import { fakeHost } from "./fake-host.js";
 import { navFixture, meFixture } from "./fixtures.js";
 import { agentDirectory, agentProfile, AGENT_FIXTURE_ID, agentPerson } from "./agent-fixture.js";
-export function renderAgents(options: { path?: string; profile?: ReturnType<typeof agentProfile>; reply?: (request: ApiRequest) => Promise<ApiResponse>; live?: unknown[]; liveReply?: () => Promise<ApiResponse>; projectRole?: "viewer" | "contributor"; projectStatus?: "active" | "archived"; agentOnProject?: boolean; shares?: unknown[]; versions?:unknown[]; theme?: "light" | "dark"; width?: number } = {}) {
+export function renderAgents(options: { path?: string; profile?: ReturnType<typeof agentProfile>; reply?: (request: ApiRequest) => Promise<ApiResponse>; live?: unknown[]; liveReply?: () => Promise<ApiResponse>; projectRole?: "viewer" | "contributor"; projectStatus?: "active" | "archived"; agentOnProject?: boolean; shares?: unknown[]; versions?:unknown[]; theme?: "light" | "dark"; width?: number; storage?: Record<string, string> } = {}) {
  let profile = options.profile ?? agentProfile();
  const f = fakeHost(async request => {
   if (request.method !== "GET") return options.reply?.(request) ?? { status: 200, body: { agent: profile.agent } };
@@ -27,6 +27,7 @@ export function renderAgents(options: { path?: string; profile?: ReturnType<type
   if (request.path === "/v1/app/projects") return { status: 200, body: { projects: ["payments", "checkout"].map(name => ({ name, status: options.projectStatus ?? "active", latestRevision: 1, repositories: [], myRole: options.projectRole ?? "contributor", setup: { status: "ready" } })) } };
   return options.reply?.(request) ?? { status: 404, body: { error: { code: "NOT_FOUND", message: "Not found." } } };
  });
+ for (const [key, value] of Object.entries(options.storage ?? {})) f.storage.set(key, value);
  if (options.width !== undefined) { const width = options.width;f.host.viewport = { width: () => width, subscribe: () => () => undefined }; }
  const query = createQueryClient();query.setQueryData(["nav"], navFixture());
  const router = createMemoryRouter([{ path: "/app/agents/:id?", element: h(DirectoryScreen, {}) }], { initialEntries: [options.path ?? "/app/agents"] });
