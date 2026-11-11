@@ -125,6 +125,7 @@
   "packages/contracts/src/ticket-updates.ts",
   "packages/contracts/src/tracker-people-web.ts",
   "packages/contracts/src/trigger-specs.ts",
+  "packages/contracts/src/ui-flags.ts",
   "packages/contracts/src/verification-result.ts",
   "packages/contracts/src/web-hash.ts",
   "packages/contracts/src/web-init.ts",

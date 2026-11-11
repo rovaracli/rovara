@@ -73,8 +73,9 @@ it("counts 300 visible sessions across 40 projects without reading the live inde
  // Slice 5 (5d0486742, waiting tickets on Home) added the waiting-ticket Home card source, which nav runs for its "needs you" count (the same number Home shows): one Query of each
  // project's INTAKE_ITEM partition the caller may start tasks in, at most INTAKE_HOME_PROJECTS_MAX (10) projects, however many there are (144 = 134 + 10). There is no org-wide index of
  // waiting tickets to read instead; the rest is unchanged (3 per project plus 14 fixed).
+ // Lane U5 (runtime UI flags) added one fixed GetItem per request (the company's UI_FLAGS row, read outside the navigation cache): 95 = 94 + 1.
  expect(intakeReads).toBe(INTAKE_HOME_PROJECTS_MAX);
- expect(counts).toEqual({ BatchGetCommand: 15, GetCommand: 94, QueryCommand: 134 + INTAKE_HOME_PROJECTS_MAX });
+ expect(counts).toEqual({ BatchGetCommand: 15, GetCommand: 95, QueryCommand: 134 + INTAKE_HOME_PROJECTS_MAX });
  expect(names).not.toContain("ScanCommand");
 });
 

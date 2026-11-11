@@ -38,7 +38,7 @@ describe("hydrateBrokerEnvironment: the settings (AGENTX_SETTINGS)", () => {
     taskPeopleChanges: "true", taskPeoplePublicInvitations: "false", taskPeoplePrivateInvitations: "true", workflowDependencies: "false",
     slackTeamId: "T0123456789", signInSlack: "enabled", signInSlackSince: "1761000000", oidcSince: "0", mcpConfirmElicitation: "disabled", rovaraCodeV2: "false", planSelfCheck: "true", autofix: "false", liveSteer: "1", liveRedirect: "1", liveAsk: "0", liveFix: "0", proofEvidence: "0", decisionCards: "1", testEnvironment: "0", learnedLessons: "0", verifyResults: "0", secondReview: "0", setupRecipes: "0", nightlyHealth: "0", learningSuggestionsDefault: "off",
     teamRecord: "0", teamRecordActive: "1", teamRecordLake: "0", projectRegistries: "0", setupAgent: "0", savedEnv: "0", scriptTokens: "0", standingInstructions: "0", testServices: "0", testAccounts: "0", projectImages: "0", designReview: "0",
-    githubAppCredentialRef: "github-agentx-sdlc", githubAppId: "1234567", developerGithubClientId: "Iv1.0123456789abcdef", webFeatures: "admin", customDomain: "staging.rovara.dev",
+    githubAppCredentialRef: "github-agentx-sdlc", githubAppId: "1234567", developerGithubClientId: "Iv1.0123456789abcdef", webFeatures: "admin", customDomain: "staging.rovara.dev", uiFlagsForceOff: "look-nav",
   };
 
   it("puts every setting back under the variable the broker reads, to the text it was given", () => {
@@ -148,6 +148,7 @@ describe("the control plane wires each setting and name to what it came from", (
       testAccounts: { Ref: "TestAccountsEnabled" },
       projectImages: { Ref: "ProjectImagesEnabled" },
       learningSuggestionsDefault: { Ref: "LearningSuggestionsDefault" },
+      uiFlagsForceOff: { Ref: "UiFlagsForceOff" },
       // Moved out of the broker's own variables to keep its 400 bytes of room (ENV-ROOM): the parameters admit plain text only in a named environment.
       githubAppCredentialRef: { Ref: "GitHubAppCredentialRef" },
       githubAppId: { Ref: "GitHubAppId" },

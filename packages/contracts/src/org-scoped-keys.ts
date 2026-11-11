@@ -90,6 +90,11 @@ export function defaultWorkspaceKey(orgId: OrgId, ownerKey: string, project: str
   return { pk: orgScoped(orgId, `OWNER#${ownerKey}`), sk: `PROJECT#${project}` };
 }
 
+/** The company's runtime UI flags (lane U5): `ORG#<org>` / `UI_FLAGS`. One row, a map of known flag names to on/off plus the preview permission, fenced by `revision`. Absent until the company first changes one: everything is off. */
+export function orgUiFlagsKey(orgId: OrgId): OrgKey {
+  return { pk: orgPk(orgId), sk: "UI_FLAGS" };
+}
+
 /** The company's own learning settings (the master "suggestions" switch): `ORG#<org>` / `LEARNING_SETTINGS`. Absent until the company first chooses. */
 export function orgLearningSettingsKey(orgId: OrgId): OrgKey {
   return { pk: orgPk(orgId), sk: "LEARNING_SETTINGS" };

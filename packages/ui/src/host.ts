@@ -30,4 +30,6 @@ export interface AppHost {
 }
 const Context = createContext<AppHost | undefined>(undefined);
 export function AppHostProvider({ host, children }: { host: AppHost; children: ReactNode }) { return createElement(Context.Provider, { value: host }, children); }
+/** The host, or undefined outside a provider (a hook that must not throw, such as the flag readers). */
+export function useOptionalAppHost(): AppHost | undefined { return useContext(Context); }
 export function useAppHost(): AppHost { const host = useContext(Context);if (host === undefined) throw new Error("Rovara's host is unavailable.");return host; }

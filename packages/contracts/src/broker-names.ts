@@ -225,6 +225,8 @@ export const BROKER_SETTINGS = {
   webFeatures: { code: "wf", variable: "WEB_FEATURES" },
   // 0.5.7: the hosted cloud's custom domain name (empty when none). With a name the broker takes `https://<name>/v1/auth` as the sign-in issuer and the API's own address as the previous one.
   customDomain: { code: "cd", variable: "DEVELOPER_CUSTOM_DOMAIN" },
+  // Lane U5 (runtime UI flags): the install operator's override, stack parameter UiFlagsForceOff (`none` by default; `all`, or flag names joined by `-`). It forces those screens off for every company and wins over a company's own switch and over previews (contracts/ui-flags.ts `uiFlagsForcedOff`).
+  uiFlagsForceOff: { code: "uo", variable: "UI_FLAGS_FORCE_OFF" },
 } as const satisfies Record<string, BrokerSettingSpec>;
 
 export type BrokerSettingKey = keyof typeof BROKER_SETTINGS;

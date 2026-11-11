@@ -55,6 +55,7 @@ import { REVISION_READS_AT_ONCE, mapLimit, projectMembersOf } from "./project-li
 import { archiveDepsOf, egressDepsOf } from "./project-archive-setup.js";
 import { sessionReadDependencies } from "./dependencies.js";
 import { clearOrgLearning } from "../../learning/cleanup.js";
+import { navUiFlags } from "../../org/ui-flags/store.js";
 
 /**
  * `POST /v1/app/projects` (and its alias `POST /v1/dev/projects`): an owner or admin of a cloud org creates a project from a repository its
@@ -109,7 +110,11 @@ export async function getAppNavigation(deps: DeveloperRouteDependencies, caller:
   adapters.delete(key);adapters.set(key, cached);
   if (adapters.size > 256) { const first = adapters.keys().next().value;if (first !== undefined) adapters.delete(first); }
  }
- try { return await appNav(cached.deps, caller); }
+ try {
+  const nav = await appNav(cached.deps, caller);
+  // Lane U5: the company's runtime UI flags ride the navigation answer. Read on every request, outside the five-second cache above, so a change shows at once and the operator's override is never stale.
+  return { ...nav, uiFlags: await navUiFlags({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, caller.orgId) };
+ }
  catch (error) { if (adapters.get(key) === cached) adapters.delete(key);throw error; }
  finally { cached.release(); }
 }

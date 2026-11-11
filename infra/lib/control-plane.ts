@@ -1396,6 +1396,8 @@ export class ControlPlaneStack extends Stack {
       brokerSettings.add("verifyResults", signInParameters.verifyResultsEnabled.valueAsString);
       // v1.2 learning loop: the install default of the company's master suggestions switch, a packed setting. Off unless the operator sets the parameter.
       brokerSettings.add("learningSuggestionsDefault", signInParameters.learningSuggestionsDefault.valueAsString);
+      // Lane U5 (runtime UI flags): the operator's override, a packed setting. `none` unless the operator sets the parameter.
+      brokerSettings.add("uiFlagsForceOff", signInParameters.uiFlagsForceOff.valueAsString);
       // Sign in with ChatGPT (#338): seals each developer's ChatGPT tokens in the State table. A
       // connection belongs to a signed-in developer, so it exists only where developer sign-in
       // does. Only the broker encrypts and decrypts with it, always under an encryption context

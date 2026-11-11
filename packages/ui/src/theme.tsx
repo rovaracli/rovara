@@ -1,7 +1,8 @@
-import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
 import { getNonce } from "get-nonce";
 import { lookV2Css, tokensCss } from "@agentx/design-tokens";
 import { DEFAULT_DENSITY, DENSITY_STORAGE_KEY, isNewLookOn, readDensity, type Density } from "./look.js";
+import { uiFlagsStoreOf } from "./ui-flags.js";
 // Built once when the module loads: the sheet is constant, so it is not rebuilt on every render.
 const THEME_CSS = tokensCss() + lookV2Css();
 export type ThemePreference = "system" | "light" | "dark";
@@ -10,7 +11,8 @@ interface ThemeStorageHost { storage: { get(key: string): string | undefined; se
 const Context = createContext<{ preference: ThemePreference; setPreference: (value: ThemePreference) => void; newLook: boolean; density: Density; setDensity: (value: Density) => void }>({ preference: "system", setPreference: () => undefined, newLook: false, density: DEFAULT_DENSITY, setDensity: () => undefined });
 export function ThemeProvider({ host, children }: { host: ThemeStorageHost; children: ReactNode }) {
  const [preference, setState] = useState<ThemePreference>(() => { try { const stored = host.storage.get("rovara.theme");return stored === "light" || stored === "dark" ? stored : "system"; } catch { return "system"; } });
- const [newLook] = useState(() => isNewLookOn(host)), [density, setDensityState] = useState<Density>(() => readDensity(host));
+ // The look follows the server flag as soon as the navigation answer arrives (and a later change), unlike the layout flags, which are read once when a screen mounts.
+ const newLook = useSyncExternalStore(uiFlagsStoreOf(host).subscribe, () => isNewLookOn(host)), [density, setDensityState] = useState<Density>(() => readDensity(host));
  useEffect(() => { if (preference === "system") document.documentElement.removeAttribute("data-theme");else document.documentElement.setAttribute("data-theme", preference); }, [preference]);
  useEffect(() => {
  const root = document.documentElement;

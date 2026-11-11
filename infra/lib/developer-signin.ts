@@ -66,6 +66,7 @@ export interface DeveloperSignInParameters {
   projectImagesEnabled: CfnParameter;
   /** v1.2 learning loop: whether a company that never chose gets suggested rules (the install-wide default of its master switch). Off unless an operator turns it on. */
   learningSuggestionsDefault: CfnParameter;
+  uiFlagsForceOff: CfnParameter;
 }
 
 /** Declared on the stack itself, so the parameter names are exactly these. */
@@ -109,6 +110,7 @@ export function developerSignInParameters(stack: Stack): DeveloperSignInParamete
     testAccountsEnabled: new CfnParameter(stack, "TestAccountsEnabled", { type: "String", default: "0", allowedValues: ["0", "1"], description: "1: a project may use the customer's own test accounts for a dependency, each approved by a second admin (needs testServices.enabled; turn on only after the test-account proxy is deployed); 0: no test account is stored, approved or used (agentx config set testAccounts.enabled 1)" }),
     projectImagesEnabled: new CfnParameter(stack, "ProjectImagesEnabled", { type: "String", default: "0", allowedValues: ["0", "1"], description: "1: a project may bring its own images for a dependency (reviewed compose services, a model image); needs testServices.enabled; 0: only Rovara's image catalog is used (agentx config set projectImages.enabled 1)" }),
     learningSuggestionsDefault: new CfnParameter(stack, "LearningSuggestionsDefault", { type: "String", default: "off", allowedValues: ["on", "off"], description: "Whether a company that has not chosen gets suggested rules from Rovara's learning (on) or only has its corrections collected (off). A company's own choice always wins. Off unless an operator turns it on" }),
+    uiFlagsForceOff: new CfnParameter(stack, "UiFlagsForceOff", { type: "String", default: "none", allowedPattern: "^(none|all|[A-Za-z]+(-[A-Za-z]+)*)$", maxLength: 64, description: "Screens to hold back for every company on this install, whatever a company chose in the app: none, all, or screen names joined by a hyphen (look-nav-home-work-spending-leadingHeader are the ones that exist today). A name the broker does not know turns every screen off (fail closed). Companies turn screens on in the app with no deploy; this is the operator's emergency lever (agentx config set ui.forceOff <value>)" }),
     liveRedirectEnabled: new CfnParameter(stack, "LiveRedirectEnabled", { type: "String", default: "0", allowedValues: ["0", "1"], description: "1: the task owner can stop a running step and redirect it with a new instruction (only after the dispatcher, broker and worker image that carry Stop & redirect are deployed); 0: the redirect route is off (agentx config set liveRedirect.enabled 1)" }),
     mcpConfirmElicitation: new CfnParameter(stack, "McpConfirmElicitation", { type: "String", default: "enabled", allowedValues: ["enabled", "disabled"], description: "enabled: an admin may confirm a change from an AI tool in the tool's own pop-up; disabled: only the Slack Confirm button (or the CLI)" }),
   };

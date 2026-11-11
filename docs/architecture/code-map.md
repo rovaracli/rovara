@@ -445,4 +445,5 @@ No single test lists every broker read.
 | `test-health.ts` | Setup and test health SH28: `/v1/app/projects/{name}/test-health`, behind the `nh` switch (and the test environment): with either off the path is not found, as any unknown path. |
 | `tracker-people.ts` | Tracker people (lane team-record-links): `/v1/app/org/tracker-people`, the page where a company admin maps the Linear and Jira people the automatic linker could not match to a member of the company. |
 | `types.ts` | (No header comment.) Exports `CLOSE_STOP_BUDGET_MS`, `DeveloperApiConfiguration`, `DeveloperRouteDependencies`. |
+| `ui-flags.ts` | Runtime per-company UI flags (lane U5, requirement P-52): the owner's and admin's "Company screens" routes. |
 <!-- /codemap:files -->
