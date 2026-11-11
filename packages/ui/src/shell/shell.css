@@ -40,3 +40,5 @@
 .rv-company-gate{max-width:560px;display:grid;gap:var(--rv-space-4,16px)}
 .rv-company-gate h1{margin:0}
 .rv-company-gate-actions{display:flex;flex-wrap:wrap;gap:var(--rv-space-3,12px)}
+/* The back link of the "Open on a larger screen" page (only where a caller passes backTo). */
+.rv-large-screen-back a{display:inline-flex;align-items:center;min-height:44px}
