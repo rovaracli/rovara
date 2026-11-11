@@ -185,12 +185,12 @@ describe("merging on the fake code host", () => {
     try {
       process.env.STANDING_INSTRUCTIONS_ENABLED = "1";
       const connected = await fakeWorld({ host: touching("docs/our-rules.md") });
-      connected.w.db.set(link as never);
+      connected.w.db.set(link);
       expect(await codeOf(webPress(connected.w))).toEqual({ code: "MERGE_NOT_READY", message: M.touchesCompanyRulesFile });
       expect(connected.model.getChangeRequest(connected.crId).state).toBe("open");
       delete process.env.STANDING_INSTRUCTIONS_ENABLED;
       const off = await fakeWorld({ host: touching("docs/our-rules.md") });
-      off.w.db.set(link as never);
+      off.w.db.set(link);
       expect((await webPress(off.w)).status).toBe(200);
     } finally { delete process.env.STANDING_INSTRUCTIONS_ENABLED; }
   });
