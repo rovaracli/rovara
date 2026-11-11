@@ -327,6 +327,52 @@ describe("a company's own registry sends its blobs through a redirect (decision 
     expect(completed).not.toContain(layer);
   });
 
+  it("follows at most three redirects for a blob, and refuses the fourth, for a company's own registry and for a built-in one", async () => {
+    const hosts = ["h1.example.net", "h2.example.net", "h3.example.net", "h4.example.net", "h5.example.net"];
+    const table = Object.fromEntries(hosts.map((host) => [host, ["54.5.5.5"]]));
+    /** The registry sends the blob through `hops` redirects, one host after another, and the last host serves it. */
+    const chain = (registry: string, apiHost: string, redirects: number) => {
+      const seen: string[] = [];
+      const fetchImpl: Parameters<typeof createRegistryClient>[0]["fetchImpl"] = async (url) => {
+        const host = new URL(url).host;
+        seen.push(host);
+        const step = host === apiHost ? 0 : hosts.indexOf(host) + 1;
+        if (step < redirects) return reply(307, { location: `https://${hosts[step]}/blob` });
+        return reply(200, {}, image.layers[0]!);
+      };
+      const client = createRegistryClient({ registry, extra: ["registry.example.com"], repository: registry === "docker.io" ? "library/postgres" : "acme/postgres", fetchImpl, lookup: fakeLookup({ ...PUBLIC_HOSTS, ...table }).lookup });
+      return { client, seen };
+    };
+    for (const [registry, apiHost] of [["registry.example.com", "registry.example.com"]] as const) {
+      const three = chain(registry, apiHost, 3);
+      expect(await read(three.client.blob(layer, 1_000))).toBe("layer one bytes");
+      expect(three.seen).toEqual([apiHost, "h1.example.net", "h2.example.net", "h3.example.net"]);
+      const four = chain(registry, apiHost, 4);
+      await expect(read(four.client.blob(layer, 1_000))).rejects.toMatchObject({ reason: "unavailable" });
+      // The fourth redirect is not followed: the fifth host is never asked.
+      expect(four.seen).toEqual([apiHost, "h1.example.net", "h2.example.net", "h3.example.net"]);
+      const many = chain(registry, apiHost, 5);
+      await expect(read(many.client.blob(layer, 1_000))).rejects.toMatchObject({ reason: "unavailable" });
+      expect(many.seen).not.toContain("h5.example.net");
+    }
+    // A built-in registry: its blob hosts are listed ones (a `.docker.com` name), and the same cap holds.
+    const builtIn = (redirects: number) => {
+      const seen: string[] = [];
+      const names = ["a.docker.com", "b.docker.com", "c.docker.com", "d.docker.com", "e.docker.com"];
+      const fetchImpl: Parameters<typeof createRegistryClient>[0]["fetchImpl"] = async (url) => {
+        const host = new URL(url).host;
+        seen.push(host);
+        const step = host === "registry-1.docker.io" ? 0 : names.indexOf(host) + 1;
+        return step < redirects ? reply(307, { location: `https://${names[step]}/blob` }) : reply(200, {}, image.layers[0]!);
+      };
+      return { seen, client: createRegistryClient({ registry: "docker.io", extra: [], repository: "library/postgres", fetchImpl, lookup: fakeLookup({ ...PUBLIC_HOSTS, ...Object.fromEntries(names.map((name) => [name, ["54.5.5.5"]])) }).lookup }) };
+    };
+    expect(await read(builtIn(3).client.blob(layer, 1_000))).toBe("layer one bytes");
+    const refused = builtIn(4);
+    await expect(read(refused.client.blob(layer, 1_000))).rejects.toMatchObject({ reason: "unavailable" });
+    expect(refused.seen).toEqual(["registry-1.docker.io", "a.docker.com", "b.docker.com", "c.docker.com"]);
+  });
+
   it("keeps the built-in registries to their listed blob hosts", async () => {
     const reg = fakeRegistry({ repository: "library/postgres", images: [image], blobRedirectTo: "https://storage.googleapis.com" });
     const client = createRegistryClient({ registry: "docker.io", extra: [], repository: "library/postgres", fetchImpl: reg.fetchImpl, lookup: fakeLookup({ ...PUBLIC_HOSTS, "storage.googleapis.com": ["54.5.5.5"] }).lookup });

@@ -118,12 +118,12 @@ function samePolicy(text: string | undefined, expected: unknown): boolean {
 }
 
 /** The repository policy the creation template gives every repository of this environment: built from the three fixed-name roles' ARNs, the same function the template uses. */
-export function expectedRepositoryPolicy(config: SavedEnvSessionConfig): ReturnType<typeof savedEnvRepositoryPolicy> {
+export function expectedRepositoryPolicy(config: SavedEnvSessionConfig, options: { withMirror?: boolean } = {}): ReturnType<typeof savedEnvRepositoryPolicy> {
   return savedEnvRepositoryPolicy({
     pushRoleArn: roleArnOf(config, savedEnvPushRoleName(config.env)),
     pullRoleArn: roleArnOf(config, savedEnvPullRoleName(config.env)),
     manageRoleArn: roleArnOf(config, savedEnvManageRoleName(config.env)),
-    mirrorRoleArn: roleArnOf(config, companyImageMirrorRoleName(config.env)),
+    ...(options.withMirror === false ? {} : { mirrorRoleArn: roleArnOf(config, companyImageMirrorRoleName(config.env)) }),
   });
 }
 
@@ -187,7 +187,12 @@ export async function verifyManaged(config: SavedEnvSessionConfig, ports: SavedE
   let found: RepositoryDescription | "absent";
   try { found = await ports.inspectRepository(manage.credentials, manage.repository); } catch { return { ok: false, reason: "unavailable" }; }
   if (found === "absent") return { ok: true, state: "absent" };
-  const same = found.encryptionType === "KMS" && found.kmsKey === config.kmsKeyArn && found.imageTagMutability === "IMMUTABLE" && samePolicy(found.policyText, expectedRepositoryPolicy(config));
+  // A creation template applies only to repositories created AFTER it changes, and nothing rewrites the policy of an existing one. So a saved environment's (project's) repository made before the mirror role was added has
+  // the policy the template made then, without the mirror role, and it is exactly as good: the mirror role has no right there. It is accepted in either form. A mirror repository can only have been made by the template that
+  // names the mirror role, so it must have the policy WITH it (anything else is a repository someone else made first).
+  const policyIsRight = samePolicy(found.policyText, expectedRepositoryPolicy(config))
+    || (!isCompanyImageRepositoryName(manage.repository) && samePolicy(found.policyText, expectedRepositoryPolicy(config, { withMirror: false })));
+  const same = found.encryptionType === "KMS" && found.kmsKey === config.kmsKeyArn && found.imageTagMutability === "IMMUTABLE" && policyIsRight;
   return same ? { ok: true, state: "matches" } : { ok: false, reason: "unavailable" };
 }
 

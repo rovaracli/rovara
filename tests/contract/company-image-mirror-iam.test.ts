@@ -115,6 +115,12 @@ describe("the synthesised control plane", () => {
     for (const name of [savedEnvPushRoleName("staging"), savedEnvManageRoleName("staging"), savedEnvPullRoleName("staging")]) expect(trustedBy(roleId(name)), name).toEqual([brokerId]);
   });
 
+  it("keeps the broker and the mirror function out of any VPC in every edition, which is what lets the DNS check stand without pinning the connection (a Lambda outside a VPC has no route to a private address of the install)", () => {
+    const functions = Object.entries(all).filter(([id, resource]) => resource.Type === "AWS::Lambda::Function" && (id.startsWith("Broker") || id.startsWith("CompanyImageMirrorFunction")));
+    expect(functions.map(([id]) => id.replace(/[A-F0-9]{8}$/u, "")).sort()).toEqual(["Broker", "CompanyImageMirrorFunction"]);
+    for (const [id, resource] of functions) expect(resource.Properties["VpcConfig"], id).toBeUndefined();
+  });
+
   it("names the mirror role in the creation template's repository policy, and the repository policy still lets no other principal in", () => {
     const creation = Object.values(all).find((resource) => resource.Type === "AWS::ECR::RepositoryCreationTemplate")!;
     const text = JSON.stringify(creation.Properties["RepositoryPolicy"]);
