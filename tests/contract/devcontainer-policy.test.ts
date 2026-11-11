@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  DEVCONTAINER_NETWORK_UNWALLED,
   DOCKER_DATA_VISIBLE,
   WORKER_STATE_VISIBLE,
   containerProblems,
@@ -397,5 +398,31 @@ describe("the started dev container, checked as Docker ran it (docker containmen
     expect(containerProblems(maskedState, hidden)).toEqual([]);
     // A workspace without a Docker data folder (a developer machine) has nothing to hide.
     expect(containerProblems({ ...ordinary, Mounts: [ordinary.Mounts![0]!] }, { rootPath: "/mnt/workspace" })).toEqual([]);
+  });
+});
+
+describe("dev containers on the walled task network (TASK-BRIDGE-UNWALLED)", () => {
+  const walled = { ...context, walledNetwork: "agentx-task" };
+  const withArgs = (runArgs: string[]) => devcontainerConfigRefusal({ image: "node:22", runArgs }, walled);
+
+  it.each([["--network=bridge"], ["--network=agentx-task"], ["--net=my-net"]])("refuses %s in runArgs when the worker puts the container on the walled network, because the last --network would override it", (arg) => {
+    expect(withArgs([arg])).toMatch(/^runArgs --net(work)? \(dev containers on this worker join the agentx-task network\)$/u);
+  });
+
+  it.each([[["--network", "bridge"]], [["--net", "default"]], [["--init", "--network", "host"]]])("refuses the split spelling %j too", (args) => {
+    expect(withArgs(args)).toMatch(/dev containers on this worker join the agentx-task network/u);
+  });
+
+  it("still allows a runArgs network where nothing is walled (a developer's own machine), and other runArgs on a worker", () => {
+    expect(devcontainerConfigRefusal({ image: "node:22", runArgs: ["--network=my-net"] }, context)).toBeUndefined();
+    expect(withArgs(["--init", "--shm-size=1g"])).toBeUndefined();
+  });
+
+  it("reports a started container that is not on the walled network, and accepts one that is", () => {
+    const inspection = (NetworkMode: string): ContainerInspection => ({ HostConfig: { Privileged: false, NetworkMode, IpcMode: "private", PidMode: "" }, Mounts: [{ Type: "bind", Source: "/mnt/workspace", Destination: "/mnt/workspace" }] });
+    const checks = { rootPath: "/mnt/workspace", walledNetwork: "agentx-task" };
+    expect(containerProblems(inspection("agentx-task"), checks)).toEqual([]);
+    for (const mode of ["bridge", "default", "my-net", "", "host"]) expect(containerProblems(inspection(mode), checks), mode).toContain(DEVCONTAINER_NETWORK_UNWALLED);
+    expect(containerProblems(inspection("bridge"), { rootPath: "/mnt/workspace" })).toEqual([]);
   });
 });

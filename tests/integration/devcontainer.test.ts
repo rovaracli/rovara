@@ -1056,7 +1056,7 @@ function fileToolsDocker(hostFolder?: string, options: { nodeFails?: boolean } =
   const docker: DockerCli = {
     async run(args) {
       runs.push([...args]);
-      if (args[0] === "network" && args[1] === "inspect") return { exitCode: 0, stdout: "bridge {} false", stderr: "" };
+      if (args[0] === "network" && args[1] === "inspect") return { exitCode: 0, stdout: 'bridge {"com.docker.network.bridge.name":"rvbtask"} false', stderr: "" };
       if (args[0] === "inspect") return { exitCode: 0, stdout: JSON.stringify(hostFolder === undefined ? [] : [{ Type: "bind", Source: hostFolder, Destination: "/workspaces/sample" }]), stderr: "" };
       if (options.nodeFails === true && args.includes("--version")) return { exitCode: 127, stdout: "", stderr: "exec format error" };
       return { exitCode: 0, stdout: "", stderr: "" };

@@ -5,6 +5,7 @@ import { availableParallelism, tmpdir, totalmem } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  TASK_SANDBOX_BRIDGE,
   TASK_SANDBOX_NETWORK,
   TaskSandbox,
   assertLocalTaskExecutionAllowed,
@@ -22,6 +23,8 @@ import type { DockerCli } from "../../packages/worker/src/swebench/containers.js
 const IMAGE = "123456789012.dkr.ecr.us-west-2.amazonaws.com/agentx-staging/worker@sha256:" + "a".repeat(64);
 const TASK = "0b9f6a1e-6c1e-4c53-9d0a-5d3a1d6f2c11";
 const EC2 = { AGENTX_WORKER_PROCESS_SCOPE: "container" };
+/** What `docker network inspect` prints for the task network as AgentX creates it: a bridge with the fixed interface name the boot firewall walls. */
+const WALLED_NETWORK = `bridge {"com.docker.network.bridge.name":"${TASK_SANDBOX_BRIDGE}"} false`;
 
 /** A fake Docker CLI that records every call and answers like a healthy daemon. */
 function fakeDocker(behaviour: { networkExists?: boolean; network?: string; stale?: string[]; failRun?: string; failExec?: boolean; failRm?: number } = {}) {
@@ -33,7 +36,7 @@ function fakeDocker(behaviour: { networkExists?: boolean; network?: string; stal
       const [verb, noun] = args;
       if (verb === "network" && noun === "inspect") {
         return behaviour.networkExists === true || behaviour.network !== undefined
-          ? { exitCode: 0, stdout: behaviour.network ?? "bridge {} false", stderr: "" }
+          ? { exitCode: 0, stdout: behaviour.network ?? WALLED_NETWORK, stderr: "" }
           : { exitCode: 1, stdout: "", stderr: "" };
       }
       if (verb === "rm" && rmFailures > 0) { rmFailures -= 1; return { exitCode: 1, stdout: "", stderr: "device or resource busy" }; }
@@ -186,23 +189,36 @@ describe("starting and stopping a sandbox", () => {
     const root = await workspace();
     const missing = fakeDocker();
     await new TaskSandbox({ rootPath: root, taskId: TASK, docker: missing.docker, image: IMAGE }).start();
-    expect(missing.calls).toContainEqual(["network", "create", "--driver", "bridge", TASK_SANDBOX_NETWORK]);
+    // The fixed interface name is what the boot firewall's `rvb+` rules match; without it Docker names the bridge br-<hex> and no wall applies (TASK-BRIDGE-UNWALLED).
+    expect(missing.calls).toContainEqual(["network", "create", "--driver", "bridge", "--opt", "com.docker.network.bridge.name=rvbtask", TASK_SANDBOX_NETWORK]);
+    expect(TASK_SANDBOX_BRIDGE).toBe("rvbtask");
 
     const present = fakeDocker({ networkExists: true });
     await new TaskSandbox({ rootPath: root, taskId: TASK, docker: present.docker, image: IMAGE }).start();
     expect(present.verbs("network").map((call) => call[1])).toEqual(["inspect"]);
   });
 
-  it("does not trust a network of that name that is not a plain bridge: it is removed and made again", async () => {
+  it("does not trust a network of that name that is not the walled plain bridge: it is removed and made again", async () => {
     const root = await workspace();
-    for (const network of ["overlay {} false", "bridge {\"com.docker.network.bridge.host_binding_ipv4\":\"0.0.0.0\"} false", "bridge {} true"]) {
+    for (const network of [
+      "overlay {} false",
+      "bridge {\"com.docker.network.bridge.host_binding_ipv4\":\"0.0.0.0\"} false",
+      `bridge {"com.docker.network.bridge.name":"${TASK_SANDBOX_BRIDGE}"} true`,
+      // Made by an earlier release, without the bridge name (Docker's br-<hex>, which no firewall rule matches), or with another name: recreated.
+      "bridge {} false",
+      "bridge null false",
+      "bridge {\"com.docker.network.bridge.name\":\"docker0\"} false",
+      "bridge {\"com.docker.network.bridge.name\":\"rvbtaskx\"} false",
+      `bridge {"com.docker.network.bridge.name":"${TASK_SANDBOX_BRIDGE}","com.docker.network.bridge.enable_icc":"true"} false`,
+    ]) {
       const fake = fakeDocker({ network });
       await new TaskSandbox({ rootPath: root, taskId: TASK, docker: fake.docker, image: IMAGE }).start();
-      expect(fake.verbs("network").map((call) => call[1])).toEqual(["inspect", "rm", "create"]);
+      expect(fake.verbs("network").map((call) => call[1]), network).toEqual(["inspect", "rm", "create"]);
+      expect(fake.verbs("network")[2]).toContain("com.docker.network.bridge.name=rvbtask");
     }
   });
 
-  it("fails closed when a network that is not a plain bridge cannot be removed", async () => {
+  it("fails closed when a network that is not the walled bridge cannot be removed", async () => {
     const root = await workspace();
     const calls: string[][] = [];
     const docker: DockerCli = {
@@ -213,7 +229,7 @@ describe("starting and stopping a sandbox", () => {
         return { exitCode: 0, stdout: "", stderr: "" };
       },
     };
-    await expect(new TaskSandbox({ rootPath: root, taskId: TASK, docker, image: IMAGE }).start()).rejects.toThrow(/not a plain bridge and could not be removed/u);
+    await expect(new TaskSandbox({ rootPath: root, taskId: TASK, docker, image: IMAGE }).start()).rejects.toThrow(/not the walled bridge \(rvbtask\) and could not be removed/u);
     expect(calls.some((args) => args[0] === "run")).toBe(false);
   });
 
@@ -224,7 +240,7 @@ describe("starting and stopping a sandbox", () => {
     const docker: DockerCli = {
       run: async (args) => {
         calls.push([...args]);
-        if (args[0] === "network" && args[1] === "inspect") return { exitCode: ++inspections === 1 ? 1 : 0, stdout: "bridge {} false", stderr: "" };
+        if (args[0] === "network" && args[1] === "inspect") return { exitCode: ++inspections === 1 ? 1 : 0, stdout: WALLED_NETWORK, stderr: "" };
         if (args[0] === "network" && args[1] === "create") return { exitCode: 1, stdout: "", stderr: "network with name agentx-task already exists" };
         return { exitCode: 0, stdout: "", stderr: "" };
       },

@@ -18,6 +18,8 @@ import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 export const DOCKER_DATA_DIRECTORY = ".docker";
 /** The verifier's private runtime on an EC2 worker's workspace volume (boot.sh): the worker's, never the project's. */
 export const RUNTIME_BACKING_DIRECTORY = ".agentx-runtime";
+/** The container problem a dev container that is not on the walled network is reported as (the one problem that is cured by creating the container again, like the two masks below). */
+export const DEVCONTAINER_NETWORK_UNWALLED = "a network that the worker firewall does not wall (it must be the worker's task network)";
 /** The container problem a missing mask over the Docker data folder is reported as. */
 export const DOCKER_DATA_VISIBLE = "the workspace's Docker data folder (.docker) visible inside it";
 /** The problem a missing mask over one of the worker's own folders of the workspace is reported as (workspace-state.ts). */
@@ -34,6 +36,11 @@ export interface DevcontainerPolicyContext {
   configFolder?: string;
   /** How a host path is resolved before it is checked (hostPathResolver), so a link out of the workspace counts. */
   resolvePath?: (path: string) => string;
+  /**
+   * The walled network every dev container joins on an EC2 worker (task-network.ts). The worker puts `--network <name>` on the container's `docker run`, so a `runArgs` network of the repository's own
+   * would override it (the last `--network` wins): with this set, any `--network` / `--net` in `runArgs` is refused, whatever its value.
+   */
+  walledNetwork?: string;
 }
 
 /** The one added capability allowed: tracing the container's own processes, which debuggers need. */
@@ -214,6 +221,8 @@ function runArgsRefusal(args: readonly string[], context: DevcontainerPolicyCont
         return name;
       } else if (name === "--cap-add") {
         if (!ALLOWED_CAPABILITY.test(value())) return "--cap-add";
+      } else if (context.walledNetwork !== undefined && (name === "--network" || name === "--net")) {
+        return `${name} (dev containers on this worker join the ${context.walledNetwork} network)`;
       } else if (HOST_VALUE.has(name)) {
         const given = value();
         const label = name === "--net" ? "--network" : name;
@@ -386,7 +395,7 @@ export interface ContainerInspection {
  */
 export function containerProblems(
   inspection: ContainerInspection,
-  context: { rootPath: string; dockerDataPath?: string; maskedPaths?: readonly string[]; resolvePath?: (path: string) => string },
+  context: { rootPath: string; dockerDataPath?: string; maskedPaths?: readonly string[]; resolvePath?: (path: string) => string; walledNetwork?: string },
 ): string[] {
   const host = inspection.HostConfig ?? {};
   const problems: string[] = [];
@@ -399,6 +408,7 @@ export function containerProblems(
     if (mode === "host") problems.push(`${flag}=host`);
     else if (containers && mode?.startsWith("container:") === true) problems.push(`${flag}=container:`);
   }
+  if (context.walledNetwork !== undefined && host.NetworkMode !== context.walledNetwork) problems.push(DEVCONTAINER_NETWORK_UNWALLED);
   if (nonEmpty(host.Devices)) problems.push("--device");
   if (nonEmpty(host.DeviceRequests)) problems.push("--gpus");
   if (nonEmpty(host.VolumesFrom)) problems.push("--volumes-from");

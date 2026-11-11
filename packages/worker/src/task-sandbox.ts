@@ -10,6 +10,7 @@ import { containerBashOperations, runContainerCommand, type ContainerCommandOpti
 import { fileOpsExec, type FileOpsTarget } from "./file-ops-exec.js";
 import type { CommandResult } from "./readiness.js";
 import { hiddenWorkspaceDirectories } from "./workspace-state.js";
+import { TASK_SANDBOX_NETWORK, ensureTaskNetwork, isEc2WorkerRuntime } from "./task-network.js";
 import { createDockerCli, taskContainerExec, type DockerCli } from "./swebench/containers.js";
 
 /**
@@ -23,8 +24,8 @@ import { createDockerCli, taskContainerExec, type DockerCli } from "./swebench/c
  * A project's devcontainer is the other sandbox (devcontainer.ts, devcontainer-policy.ts).
  */
 
-/** The user-defined bridge network of every sandbox: outbound internet works, the host's network and other containers' do not. */
-export const TASK_SANDBOX_NETWORK = "agentx-task";
+/** The user-defined bridge network of every sandbox (task-network.ts: its fixed `rvbtask` interface is the one the boot firewall walls). */
+export { TASK_SANDBOX_NETWORK, TASK_SANDBOX_BRIDGE, taskNetworkCreateArgs, ensureTaskNetwork, isEc2WorkerRuntime } from "./task-network.js";
 /** The label every sandbox carries, with the ID of the operation it serves. */
 export const TASK_SANDBOX_LABEL = "agentx.task";
 /** The label that says which workspace a sandbox belongs to, so a worker removes only its own. */
@@ -103,15 +104,6 @@ const SANDBOX_START_TIMEOUT_MS = 5 * 60_000;
 const DOCKER_CALL_TIMEOUT_MS = 60_000;
 /** What hides a folder of the workspace volume that is not the project's. */
 export const MASK_OPTIONS = "ro,noexec,nosuid,size=4k";
-
-/**
- * An EC2 worker, by either marker: boot.sh writes AGENTX_RUNTIME=ec2 to the worker's environment, and the worker image sets
- * AGENTX_WORKER_PROCESS_SCOPE=container. Neither is needed for the sandbox, which is the default everywhere; they make
- * the local shell impossible to ask for.
- */
-export function isEc2WorkerRuntime(environment: NodeJS.ProcessEnv = process.env): boolean {
-  return environment.AGENTX_RUNTIME === "ec2" || environment.AGENTX_WORKER_PROCESS_SCOPE === "container";
-}
 
 /**
  * The local shell runs task code as a child of the worker. It is for tests and a developer's own machine, and only when
@@ -408,25 +400,8 @@ export class TaskSandbox {
     }
   }
 
-  /**
-   * Idempotent: another start may create the network between the check and the create. The data root persists on the
-   * workspace volume, so a network of this name is not trusted: it must be a plain bridge, or it is removed and made again.
-   */
   private async ensureNetwork(): Promise<void> {
-    const inspect = ["network", "inspect", "--format", "{{.Driver}} {{json .Options}} {{.Internal}}", TASK_SANDBOX_NETWORK];
-    const found = await this.docker.run(inspect, { timeoutMs: DOCKER_CALL_TIMEOUT_MS });
-    if (found.exitCode === 0) {
-      if (/^bridge (\{\}|null) false$/u.test(found.stdout.trim())) return;
-      const removed = await this.docker.run(["network", "rm", TASK_SANDBOX_NETWORK], { timeoutMs: DOCKER_CALL_TIMEOUT_MS });
-      if (removed.exitCode !== 0) {
-        throw agentXError("RUNTIME_UNAVAILABLE", `the ${TASK_SANDBOX_NETWORK} network is not a plain bridge and could not be removed, so AgentX did not start the task sandbox: ${(removed.stderr || removed.stdout).trim().slice(0, 300)}`);
-      }
-    }
-    const created = await this.docker.run(["network", "create", "--driver", "bridge", TASK_SANDBOX_NETWORK], { timeoutMs: DOCKER_CALL_TIMEOUT_MS });
-    if (created.exitCode === 0) return;
-    if (/^bridge (\{\}|null) false$/u.test((await this.docker.run(inspect, { timeoutMs: DOCKER_CALL_TIMEOUT_MS })).stdout.trim())) return;
-    const detail = (created.stderr || created.stdout).trim().split("\n").slice(-3).join(" ").slice(0, 400);
-    throw agentXError("RUNTIME_UNAVAILABLE", `AgentX could not create the ${TASK_SANDBOX_NETWORK} network for the task sandbox: ${detail || `exit ${String(created.exitCode)}`}`);
+    await ensureTaskNetwork(this.docker);
   }
 }
 

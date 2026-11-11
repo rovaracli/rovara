@@ -24,7 +24,7 @@ function recordingDocker(exec: { exitCode: number; stdout: string; stderr: strin
   const docker: DockerCli = {
     run: async (args, options) => {
       calls.push({ args: [...args], timeoutMs: options?.timeoutMs, hasSignal: options?.signal !== undefined });
-      if (args[0] === "network" && args[1] === "inspect") return { exitCode: 0, stdout: "bridge {} false", stderr: "" };
+      if (args[0] === "network" && args[1] === "inspect") return { exitCode: 0, stdout: 'bridge {"com.docker.network.bridge.name":"rvbtask"} false', stderr: "" };
       if (args[0] === "exec") { options?.onStdout?.(Buffer.from(exec.stdout)); options?.onStderr?.(Buffer.from(exec.stderr)); return exec; }
       return { exitCode: 0, stdout: "", stderr: "" };
     },

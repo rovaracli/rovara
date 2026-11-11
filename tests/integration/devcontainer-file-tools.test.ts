@@ -115,7 +115,7 @@ function fakeDocker(options: { hostFolder?: string; nodeFails?: boolean; runFail
   const docker: DockerCli = {
     async run(args) {
       runs.push([...args]);
-      if (args[0] === "network" && args[1] === "inspect") return { exitCode: 0, stdout: "bridge {} false", stderr: "" };
+      if (args[0] === "network" && args[1] === "inspect") return { exitCode: 0, stdout: 'bridge {"com.docker.network.bridge.name":"rvbtask"} false', stderr: "" };
       if (args[0] === "inspect") {
         return { exitCode: 0, stdout: JSON.stringify(options.mounts ?? []), stderr: "" };
       }

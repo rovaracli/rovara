@@ -1,5 +1,6 @@
 import { execFile as execFileCallback } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { accessSync, constants as fsConstants } from "node:fs";
 import { lstat, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
@@ -11,6 +12,7 @@ import type { BashOperations } from "@earendil-works/pi-coding-agent";
 import { runCollected, TIMEOUT_KILL_GRACE_MS } from "./collected-process.js";
 import {
   DOCKER_DATA_DIRECTORY,
+  DEVCONTAINER_NETWORK_UNWALLED,
   DOCKER_DATA_VISIBLE,
   WORKER_STATE_VISIBLE,
   containerProblems,
@@ -24,6 +26,7 @@ import { AGENTX_GIT_IDENTITY_ENVIRONMENT } from "./git.js";
 import { fileOpsExec, type FileOpsTarget } from "./file-ops-exec.js";
 import type { CommandResult } from "./readiness.js";
 import { createDockerCli, type DockerCli } from "./swebench/containers.js";
+import { TASK_SANDBOX_NETWORK, ensureTaskNetwork, isEc2WorkerRuntime } from "./task-network.js";
 import { hiddenWorkspaceDirectories, isMaskVolumeName } from "./workspace-state.js";
 
 const execFile = promisify(execFileCallback);
@@ -151,6 +154,12 @@ export interface DevcontainerCli {
    * as Docker ran it after, removed when it breaks them. The bundled CLI has these; a test seam without them skips both.
    */
   checks?: DevcontainerChecks;
+  /**
+   * Set on an EC2 worker: every container this CLI starts joins this network (the docker wrapper puts it on `docker run` and `docker create`), which has the fixed interface the boot firewall walls, instead of
+   * the default bridge (docker0, which the worker's own container also uses, so it cannot be walled). `ensure` makes the network right before a start; the policy refuses a `runArgs` network and a started
+   * container that is not on it.
+   */
+  walledNetwork?: { name: string; ensure(): Promise<void> };
 }
 
 /** The configuration `devcontainer up` would use, read by the devcontainer CLI without starting anything. */
@@ -220,8 +229,9 @@ export function preparedDevcontainerTarget(
  * stopped), and runs its lifecycle commands. Idempotent.
  */
 export async function ensureDevcontainer(cli: DevcontainerCli, target: DevcontainerTarget): Promise<DevcontainerUpResult> {
-  await assertDevcontainerConfigAllowed(target);
-  const lockfile = cli.checks === undefined ? undefined : await assertFullConfigurationAllowed(cli.checks, target);
+  const walledNetwork = cli.walledNetwork?.name;
+  await assertDevcontainerConfigAllowed(target, walledNetwork);
+  const lockfile = cli.checks === undefined ? undefined : await assertFullConfigurationAllowed(cli.checks, target, walledNetwork);
   // `up` fetches remote features again. With a lockfile of the digests just checked, and --frozen-lockfile, it uses
   // exactly that content or fails before it builds anything.
   const start = (hidden: readonly string[]) => lockfile === undefined
@@ -230,16 +240,18 @@ export async function ensureDevcontainer(cli: DevcontainerCli, target: Devcontai
   // On an EC2 worker the workspace volume also holds Docker's data root, the verifier's runtime and the worker's own state,
   // none of them the project's: a volume mounted over each inside the dev container hides it there.
   let hidden = await hiddenWorkspaceDirectories(target.rootPath);
+  // The network is made (or made again, when an earlier release's has no walled interface) before any container can join it.
+  await cli.walledNetwork?.ensure();
   const started = await start(hidden);
   if (cli.checks === undefined) return started;
-  let { problems, volumes } = await startedContainerProblems(cli.checks, started.containerId, target, hidden);
+  let { problems, volumes } = await startedContainerProblems(cli.checks, started.containerId, target, hidden, walledNetwork);
   let current = started;
-  if (problems.length > 0 && problems.every((problem) => problem === DOCKER_DATA_VISIBLE || problem === WORKER_STATE_VISIBLE)) {
-    // A container created before AgentX hid these folders: created again, with them hidden.
+  if (problems.length > 0 && problems.every((problem) => problem === DOCKER_DATA_VISIBLE || problem === WORKER_STATE_VISIBLE || problem === DEVCONTAINER_NETWORK_UNWALLED)) {
+    // A container created before AgentX hid these folders, or before it was put on the walled network (a stopped one of an earlier release is on docker0): created again, with them hidden and on the network.
     await removeStartedContainer(cli.checks, current.containerId, volumes);
     hidden = await hiddenWorkspaceDirectories(target.rootPath);
     current = await start(hidden);
-    ({ problems, volumes } = await startedContainerProblems(cli.checks, current.containerId, target, hidden));
+    ({ problems, volumes } = await startedContainerProblems(cli.checks, current.containerId, target, hidden, walledNetwork));
   }
   if (problems.length > 0) {
     await removeStartedContainer(cli.checks, current.containerId, volumes);
@@ -249,7 +261,7 @@ export async function ensureDevcontainer(cli: DevcontainerCli, target: Devcontai
 }
 
 /** Refuses a devcontainer.json that asks Docker for part of the worker host (devcontainer-policy.ts). */
-async function assertDevcontainerConfigAllowed(target: DevcontainerTarget): Promise<void> {
+async function assertDevcontainerConfigAllowed(target: DevcontainerTarget, walledNetwork?: string): Promise<void> {
   const shown = relative(target.rootPath, target.configPath);
   let text: string;
   try {
@@ -265,14 +277,15 @@ async function assertDevcontainerConfigAllowed(target: DevcontainerTarget): Prom
   } catch {
     throw agentXError("CONFIG_INVALID", `AgentX could not read the dev container config ${shown} as JSON with comments, so it did not start it`);
   }
-  const reason = devcontainerConfigRefusal(config, policyContext(target));
+  const reason = devcontainerConfigRefusal(config, policyContext(target, walledNetwork));
   if (reason !== undefined) {
     throw agentXError("CONFIG_INVALID", `The dev container config ${shown} uses ${reason}, which AgentX does not allow: it would give code in the container the worker host. Remove it; see "Dev container" in docs/project-configuration.md for what is allowed.`.slice(0, 1_000));
   }
 }
 
-function policyContext(target: DevcontainerTarget) {
+function policyContext(target: DevcontainerTarget, walledNetwork?: string) {
   return {
+    ...(walledNetwork === undefined ? {} : { walledNetwork }),
     rootPath: target.rootPath,
     workspaceFolder: target.workspaceFolder,
     configFolder: dirname(target.configPath),
@@ -284,14 +297,14 @@ function policyContext(target: DevcontainerTarget) {
  * Refuses, before any container starts, what the dev container's features or its image's `devcontainer.metadata` label
  * would add: the devcontainer CLI merges them into the configuration `up` uses, and reads that without starting anything.
  */
-async function assertFullConfigurationAllowed(checks: DevcontainerChecks, target: DevcontainerTarget): Promise<FeatureLockfile> {
+async function assertFullConfigurationAllowed(checks: DevcontainerChecks, target: DevcontainerTarget, walledNetwork?: string): Promise<FeatureLockfile> {
   let full: DevcontainerFullConfiguration;
   try {
     full = await checks.fullConfiguration(target);
   } catch (error) {
     throw new Error(`AgentX could not read the dev container's full configuration (with its features and image), so it did not start it: ${error instanceof Error ? error.message : String(error)}`.slice(0, 512), { cause: error });
   }
-  const context = policyContext(target);
+  const context = policyContext(target, walledNetwork);
   const reason = devcontainerConfigRefusal(full.configuration, context)
     ?? devcontainerConfigRefusal(full.mergedConfiguration, context)
     ?? (full.workspaceMount === undefined ? undefined : devcontainerConfigRefusal({ workspaceMount: full.workspaceMount }, context));
@@ -399,6 +412,7 @@ async function startedContainerProblems(
   containerId: string,
   target: DevcontainerTarget,
   hidden: readonly string[],
+  walledNetwork?: string,
 ): Promise<{ problems: string[]; volumes: string[] }> {
   let inspection: ContainerInspection;
   try {
@@ -414,6 +428,7 @@ async function startedContainerProblems(
     resolvePath: hostPathResolver(target.rootPath),
     ...(dockerDataPath === undefined ? {} : { dockerDataPath }),
     maskedPaths,
+    ...(walledNetwork === undefined ? {} : { walledNetwork }),
   });
   // The mask volumes this container was given, which go with it.
   const volumes = (inspection.Mounts ?? []).flatMap((mount) => (mount.Type === "volume" && mount.Name !== undefined && isMaskVolumeName(mount.Name) ? [mount.Name] : []));
@@ -726,17 +741,42 @@ function devcontainerExec(cli: DevcontainerCli, target: DevcontainerTarget): Con
   ], options);
 }
 
-/** The `devcontainer` CLI bundled with the worker, run with this Node. */
-export function createDevcontainerCli(options: { dockerPath?: string } = {}): DevcontainerCli {
+/**
+ * The docker wrapper the worker image ships (packages/worker/ec2/docker-walled.sh): it puts `--network agentx-task` on every `docker run` and `docker create`, so an EC2 worker's dev containers join the
+ * walled task network (TASK-BRIDGE-UNWALLED) instead of docker0.
+ */
+export const WALLED_DOCKER_PATH = "/opt/agentx/packages/worker/ec2/docker-walled.sh";
+export const WALLED_DOCKER_ENVIRONMENT = "AGENTX_WALLED_DOCKER";
+
+function walledDockerPath(environment: NodeJS.ProcessEnv): string {
+  const path = environment[WALLED_DOCKER_ENVIRONMENT] || WALLED_DOCKER_PATH;
+  try {
+    accessSync(path, fsConstants.X_OK);
+  } catch {
+    // Fail closed: a worker whose image lacks the wrapper must not start dev containers on the unwalled default bridge.
+    throw agentXError("RUNTIME_UNAVAILABLE", `AgentX did not start the dev container: the walled docker wrapper ${path} is missing from the worker image, and a dev container on the default bridge is not walled off from the host and private networks`);
+  }
+  return path;
+}
+
+/**
+ * The `devcontainer` CLI bundled with the worker, run with this Node. On an EC2 worker (`walled`, by default) every container it starts joins the walled task network, through the docker wrapper
+ * above; `dockerPath` then names the wrapper (a test's own, in tests).
+ */
+export function createDevcontainerCli(options: { dockerPath?: string; walled?: boolean; environment?: NodeJS.ProcessEnv } = {}): DevcontainerCli {
   const require = createRequire(import.meta.url);
   const script = resolve(dirname(require.resolve("@devcontainers/cli/package.json")), "devcontainer.js");
-  const docker = options.dockerPath ?? "docker";
+  const environment = options.environment ?? process.env;
+  const walled = options.walled ?? isEc2WorkerRuntime(environment);
+  const dockerPath = options.dockerPath ?? (walled ? walledDockerPath(environment) : undefined);
+  const docker = dockerPath ?? "docker";
   const run: DevcontainerCli["run"] = (args, runOptions) => runCollected(process.execPath, [
     script,
-    ...(options.dockerPath === undefined || args[0] === undefined ? args : [args[0], "--docker-path", options.dockerPath, ...args.slice(1)]),
+    ...(dockerPath === undefined || args[0] === undefined ? args : [args[0], "--docker-path", dockerPath, ...args.slice(1)]),
   ], runOptions);
   return {
     run,
+    ...(walled ? { walledNetwork: { name: TASK_SANDBOX_NETWORK, ensure: () => ensureTaskNetwork(createDockerCli()) } } : {}),
     // The same `docker` the devcontainer CLI runs.
     checks: {
       async fullConfiguration(target) {

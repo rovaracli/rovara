@@ -79,7 +79,7 @@ function fakeDocker(initial: Record<string, string>, options: { mounts?: unknown
     async run(args) {
       runs.push([...args]);
       events.push(`run ${args[0]}`);
-      if (args[0] === "network" && args[1] === "inspect") return { exitCode: 0, stdout: "bridge {} false", stderr: "" };
+      if (args[0] === "network" && args[1] === "inspect") return { exitCode: 0, stdout: 'bridge {"com.docker.network.bridge.name":"rvbtask"} false', stderr: "" };
       if (args[0] === "run" && options.failRun === true) return { exitCode: 1, stdout: "", stderr: "no" };
       if (args[0] === "inspect") return { exitCode: 0, stdout: JSON.stringify(options.mounts ?? []), stderr: "" };
       return { exitCode: 0, stdout: "", stderr: "" };

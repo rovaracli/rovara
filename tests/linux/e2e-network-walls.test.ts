@@ -7,7 +7,11 @@ import { WEB_API_BUILD_IMAGE } from "../../packages/verifier/src/host/web-api-pr
 import { ensureLocalImage } from "../support/ci-images.js";
 import { APP_NODE_IMAGE, createLinuxHost, linuxRunInput, removeProbeDirs, runProbe } from "../support/linux-runtime.js";
 import { runIsolatedE2EApplication } from "../../packages/verifier/src/application-runtime.js";
-import { assertFirewallInstalled, docker, listenOnAllAddresses, reachScript, runNodeIn, startRoutedPrivateServer } from "../support/linux-network-walls.js";
+import { assertFirewallInstalled, docker, listenOnAllAddresses, reachScript, runNodeIn, runProgram, startRoutedPrivateServer } from "../support/linux-network-walls.js";
+import { existsSync } from "node:fs";
+import { networkInterfaces } from "node:os";
+import { TASK_SANDBOX_BRIDGE, TASK_SANDBOX_NETWORK, ensureTaskNetwork } from "../../packages/worker/src/task-network.js";
+import { createDockerCli } from "../../packages/worker/src/swebench/containers.js";
 
 // Real Docker, with the container firewall the CI `linux-runtime` job installs from packages/worker/ec2/boot.sh (the very heredoc the EC2 boot runs).
 // Each wall is shown against a control: the same connection from a container that is not behind the wall succeeds, so a timeout is the firewall, not a broken test.
@@ -108,4 +112,91 @@ describe.runIf(process.platform === "linux" && process.env.ROVARA_DOCKER === "1"
       expect(across.code).not.toBe(0);
     } finally { await docker("rm", "-f", `rovara-wall-server-${first.value}`); }
   }, 300_000);
+  // TASK-BRIDGE-UNWALLED (0.5.15): the task sandbox network used to be a plain `docker network create`, whose bridge Docker names br-<hex>; no rule matched it, so a task's commands could reach VPC addresses and the host's
+  // ports. It is now created by the worker's own code (ensureTaskNetwork) with the fixed `rvbtask` interface, and dev containers join it through the worker's docker wrapper.
+  describe("the task sandbox network (agentx-task)", () => {
+    let taskNetworkWasMade = false;
+    beforeAll(async () => {
+      // Whatever an earlier run left under this name is replaced by the real thing, exactly as the worker does.
+      await ensureTaskNetwork(createDockerCli());
+      taskNetworkWasMade = true;
+    }, 120_000);
+    afterAll(async () => { if (taskNetworkWasMade) await docker("network", "rm", TASK_SANDBOX_NETWORK); }, 60_000);
+
+    it("is created with the rvbtask host interface, which the firewall's rvb+ rules match", async () => {
+      const inspected = await docker("network", "inspect", "-f", '{{index .Options "com.docker.network.bridge.name"}}', TASK_SANDBOX_NETWORK);
+      expect(inspected.stdout.trim()).toBe(TASK_SANDBOX_BRIDGE);
+      expect(existsSync(`/sys/class/net/${TASK_SANDBOX_BRIDGE}`)).toBe(true);
+    });
+
+    it("cannot reach a server the host listens on (its gateway address), though a container on the default bridge can", async () => {
+      const script = reachScript([["gateway", host.port]]);
+      const control = await runNodeIn("bridge", script);
+      expect(control.stdout.trim(), `control: ${control.stderr}`).toBe('["open"]');
+      const walled = await runNodeIn(TASK_SANDBOX_NETWORK, script);
+      expect(walled.stdout.trim(), walled.stderr).toBe('["timeout"]');
+      expect(walled.code).toBe(7);
+    }, 120_000);
+
+    it("cannot reach a private (10.x) address routed beyond the host, though a container on the default bridge can", async () => {
+      const routed = await startRoutedPrivateServer(host.port);
+      try {
+        const script = reachScript([[routed.address, host.port]]);
+        const control = await runNodeIn("bridge", script);
+        expect(control.stdout.trim(), `control: ${control.stderr}`).toBe('["open"]');
+        const walled = await runNodeIn(TASK_SANDBOX_NETWORK, script);
+        expect(walled.stdout.trim(), walled.stderr).toBe('["timeout"]');
+        expect(walled.code).toBe(7);
+      } finally { await routed.stop(); }
+    }, 120_000);
+
+    it("cannot reach a port the host publishes for a container (the worker's :8080 is published like this), though a container on an ordinary network can", async () => {
+      const address = Object.values(networkInterfaces()).flat().find((entry) => entry?.family === "IPv4" && !entry.internal)?.address;
+      expect(address, "a non-loopback IPv4 address of this host").toBeDefined();
+      const name = `rovara-wall-published-${Date.now()}`;
+      const serve = "require('net').createServer(s=>{s.on('error',()=>{});s.end('published\\n')}).listen(8080,'0.0.0.0')";
+      const started = await docker("run", "-d", "--rm", "--pull=never", "--name", name, "-p", "0:8080", "--cap-drop=ALL", "--user", "1000:1000", APP_NODE_IMAGE, "node", "-e", serve);
+      expect(started.code, started.stderr).toBe(0);
+      const control = `rovara-wall-control-pub-${Date.now()}`;
+      networks.push(control);
+      try {
+        const published = Number((await docker("port", name, "8080/tcp")).stdout.trim().split("\n")[0]?.split(":").pop());
+        expect(published).toBeGreaterThan(0);
+        const script = reachScript([[address!, published]]);
+        expect((await docker("network", "create", control)).code).toBe(0);
+        const open = await runNodeIn(control, script);
+        expect(open.stdout.trim(), `control: ${open.stderr}`).toBe('["open"]');
+        const walled = await runNodeIn(TASK_SANDBOX_NETWORK, script);
+        expect(walled.stdout.trim(), walled.stderr).toBe('["timeout"]');
+        expect(walled.code).toBe(7);
+      } finally { await docker("rm", "-f", name); }
+    }, 120_000);
+
+    it("cannot reach the instance metadata address or the link-local resolver address", async () => {
+      const walled = await runNodeIn(TASK_SANDBOX_NETWORK, reachScript([["169.254.169.254", 80], ["169.254.169.253", 53]]));
+      expect(walled.stdout, walled.stderr).not.toContain("open");
+      expect(walled.code).not.toBe(0);
+    }, 120_000);
+
+    it("still resolves names and fetches the package registry over the internet", async () => {
+      const fetchRegistry = "fetch('https://registry.npmjs.org/').then(r=>{console.log('registry status '+r.status);process.exit(r.status===200?0:1)},e=>{console.log('registry error '+String(e.cause&&e.cause.code||e));process.exit(1)})";
+      const walled = await runNodeIn(TASK_SANDBOX_NETWORK, fetchRegistry);
+      expect(walled.stdout, walled.stderr).toContain("registry status 200");
+      expect(walled.code).toBe(0);
+    }, 120_000);
+
+    it("is the network a container started through the dev container wrapper joins, with the same walls", async () => {
+      const wrapper = new URL("../../packages/worker/ec2/docker-walled.sh", import.meta.url).pathname;
+      const hardened = ["--rm", "--pull=never", "--cap-drop=ALL", "--security-opt", "no-new-privileges", "--user", "1000:1000", APP_NODE_IMAGE, "node", "-e"];
+      const gateway = await runProgram(wrapper, "run", ...hardened, reachScript([["gateway", host.port]]));
+      expect(gateway.stdout.trim(), gateway.stderr).toBe('["timeout"]');
+      const registry = await runProgram(wrapper, "run", ...hardened, "fetch('https://registry.npmjs.org/').then(r=>process.exit(r.status===200?0:1),()=>process.exit(1))");
+      expect(registry.code, registry.stderr).toBe(0);
+      const joined = await runProgram(wrapper, "run", "-d", "--name", "rovara-wall-wrapper-check", "--pull=never", APP_NODE_IMAGE, "sleep", "30");
+      try {
+        expect(joined.code, joined.stderr).toBe(0);
+        expect((await docker("inspect", "-f", "{{.HostConfig.NetworkMode}}", "rovara-wall-wrapper-check")).stdout.trim()).toBe(TASK_SANDBOX_NETWORK);
+      } finally { await docker("rm", "-f", "rovara-wall-wrapper-check"); }
+    }, 180_000);
+  });
 });

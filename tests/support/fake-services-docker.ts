@@ -66,7 +66,7 @@ export function fakeServicesDocker(options: FakeServicesDockerOptions = {}) {
         for (const [name, found] of containers) if (found.networks.has(network)) members[`id-${name}`] = { Name: name, IPv4Address: `${found.ips.get(network) ?? "0.0.0.0"}/24` };
         return answer(0, JSON.stringify(members));
       }
-      if (verb === "network" && second === "inspect") return answer(0, "bridge {} false");
+      if (verb === "network" && second === "inspect") return answer(0, 'bridge {"com.docker.network.bridge.name":"rvbtask"} false');
       if (verb === "network" && second === "create") { networks.add(args[args.length - 1]!); return answer(); }
       if (verb === "network" && second === "rm") { removedNetworks.push(args[2]!); networks.delete(args[2]!); return answer(); }
       if (verb === "network" && second === "connect") {

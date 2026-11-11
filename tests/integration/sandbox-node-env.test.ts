@@ -32,7 +32,7 @@ afterEach(async () => {
 function localContainers(home: string): DockerCli {
   return {
     run: async (args, options) => {
-      if (args[0] === "network" && args[1] === "inspect") return { exitCode: 0, stdout: "bridge {} false", stderr: "" };
+      if (args[0] === "network" && args[1] === "inspect") return { exitCode: 0, stdout: 'bridge {"com.docker.network.bridge.name":"rvbtask"} false', stderr: "" };
       if (args[0] !== "exec") return { exitCode: 0, stdout: "", stderr: "" };
       const flags: Record<string, string> = {};
       let index = 1;
