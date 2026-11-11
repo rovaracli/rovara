@@ -5,12 +5,18 @@ import { AppShell } from "./shell/AppShell.js";
 import { NotFound } from "./shell/NotFound.js";
 import { Unavailable } from "./shell/Unavailable.js";
 import { RouteError } from "./shell/ErrorBoundary.js";
+import { paths } from "./paths.js";
 /** UX2 slice 2 item 4: ONE task address. `/s/<id>` (older links) goes to `/app/sessions/<id>`, keeping the query and the tab. */
 function OldSessionAddress() { const { id = "" } = useParams(), location = useLocation();return <Navigate replace to={{ pathname: "/app/sessions/" + encodeURIComponent(id), search: location.search, hash: location.hash }} />; }
 function Page({ title }: { title: string }) { return <section><h1 tabIndex={-1}>{title}</h1></section>; }
-export function appRoutes(features: AppNav["features"]): RouteObject[] {
+/** New navigation only: `/app/live` is now Work. The query (filters) and the hash are kept, so an old bookmark or Slack link lands on the same view. */
+function LiveToWork() { const location = useLocation();return <Navigate replace to={{ pathname: paths.work, search: location.search, hash: location.hash }} />; }
+const liveScreen = async () => ({ Component: (await import("./screens/live/LiveScreen.js")).LiveScreen });
+/** `newNav` is the new-navigation switch (nav-flags.ts). Off, this is exactly the route table as it was: no Work, no Projects list, Live stays Live. */
+export function appRoutes(features: AppNav["features"], options: { newNav?: boolean } = {}): RouteObject[] {
+ const newNav = options.newNav === true;
  const children: RouteObject[] = [
- { index: true, element: <HomeScreen /> }, { path: "live", lazy: async () => ({ Component: (await import("./screens/live/LiveScreen.js")).LiveScreen }) },
+ { index: true, element: <HomeScreen /> }, ...(newNav ? [{ path: "live", element: <LiveToWork /> }, { path: "work", lazy: liveScreen }, { path: "projects", lazy: async () => ({ Component: (await import("./screens/project/ProjectsListScreen.js")).ProjectsListScreen }) }] : [{ path: "live", lazy: liveScreen }]),
  { path: "projects/:name", lazy: async () => ({ Component: (await import("./screens/project/ProjectScreen.js")).ProjectScreen }) }, { path: "sessions/:id", lazy: async () => ({ Component: (await import("./screens/session/SessionScreen.js")).SessionScreen }) },
  { path: "agents/:id?", lazy: async () => ({ Component: (await import("./screens/agents/DirectoryScreen.js")).DirectoryScreen }) }, { path: "agents/new", lazy: async () => ({ Component: (await import("./screens/builder/NewAgentScreen.js")).NewAgentScreen }) },
  { path: "agents/:id/edit", lazy: async () => ({ Component: (await import("./screens/builder/BuilderScreen.js")).BuilderScreen }) },
