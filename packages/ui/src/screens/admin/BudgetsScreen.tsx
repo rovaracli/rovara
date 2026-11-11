@@ -11,6 +11,8 @@ import { DataTable, type Column } from "../../design/DataTable.js";
 import { PageHeader } from "../../design/PageHeader.js";
 import { Skeleton } from "../../design/Skeleton.js";
 import { useAdminContext } from "./AdminLayout.js";
+import { SpendingV2 } from "./SpendingV2.js";
+import { isSpendingV2On } from "./spending-flags.js";
 type Row = { label: string; limit: AdminBudgetSettings["orgMonthly"] };
 const columns: readonly Column<Row>[] = [
  { key: "scope", title: "Monthly base", render: row => row.label },
@@ -18,7 +20,9 @@ const columns: readonly Column<Row>[] = [
  { key: "source", title: "Source", render: row => row.limit.source === "configured" ? "Set by company" : row.limit.source === "cloud_default" ? "Existing cloud default" : "Not configured" },
 ];
 export function BudgetsScreen() {
- const { orgId, developerId, role } = useAdminContext();
+ const { orgId, developerId, role } = useAdminContext(), host = useAppHost();
+ // Switch rovara.spending = "v2" (off by default): the Spending page replaces this one. The broker decides what each person is shown; the page shows what comes back.
+ if (isSpendingV2On(host)) return <div key={`${orgId}:${developerId}:${role}:v2`}><SpendingV2 /></div>;
  if (role !== "owner" && role !== "admin") return <section><PageHeader focusOnMount title="Spending" /><p role="alert">Only current company owners and admins can view these budgets. No amounts are shown.</p></section>;
  return <div key={`${orgId}:${developerId}:${role}`}><MonthlyBase orgId={orgId} developerId={developerId} role={role} /><TaskStopEditor /></div>;
 }

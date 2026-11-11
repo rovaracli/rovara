@@ -1,0 +1,27 @@
+/* Spending page (switch rovara.spending = v2). New file: nothing here is read while the switch is off. Single column, wrapping text, 44px targets. */
+.rv-spending{max-width:76ch}
+.rv-spend-block{margin-block:var(--rv-density-gap,var(--rv-space-6))}
+.rv-spend-block h2{margin-bottom:var(--rv-space-3)}
+.rv-spend-card{display:grid;gap:var(--rv-space-4)}
+.rv-spend-card p,.rv-spend-block p{margin:0;overflow-wrap:anywhere}
+.rv-spend-block>p,.rv-spend-block>.rv-table-wrap{margin-top:var(--rv-space-3)}
+.rv-spend-figures,.rv-spend-limits{margin:0;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--rv-space-4)}
+.rv-spend-limits{grid-template-columns:minmax(0,1fr)}
+.rv-spend-figures dt,.rv-spend-limits dt{color:var(--rv-text-muted);font-size:var(--rv-font-sm)}
+.rv-spend-figures dd{margin:0;font-size:var(--rv-font-xl);font-weight:600;overflow-wrap:anywhere}
+.rv-spend-limits dd{margin:0;overflow-wrap:anywhere}
+.rv-spend-limits>div{display:flex;flex-wrap:wrap;justify-content:space-between;gap:var(--rv-space-2);padding-block:var(--rv-space-2);border-bottom:1px solid var(--rv-border)}
+.rv-spend-bar{display:flex;height:14px;border:1px solid var(--rv-border-strong);border-radius:var(--rv-radius-sm);background:var(--rv-bg-sunken);overflow:hidden}
+.rv-spend-bar-spent{background:var(--rv-accent)}
+.rv-spend-bar-held{background:repeating-linear-gradient(45deg,var(--rv-status-needs-you) 0 4px,var(--rv-bg-raised) 4px 8px)}
+.rv-spend-legend{display:flex;flex-wrap:wrap;align-items:center;gap:var(--rv-space-2)}
+.rv-spend-key{display:inline-block;width:12px;height:12px;border:1px solid var(--rv-border-strong);border-radius:2px}
+.rv-spend-key-spent{background:var(--rv-accent)}
+.rv-spend-key-held{background:repeating-linear-gradient(45deg,var(--rv-status-needs-you) 0 3px,var(--rv-bg-raised) 3px 6px)}
+.rv-spend-over{color:var(--rv-danger);font-weight:600}
+.rv-spend-list{list-style:none;padding:0;margin:0;display:grid}
+.rv-spend-list li{display:flex;flex-wrap:wrap;justify-content:space-between;gap:var(--rv-space-2);padding-block:var(--rv-space-3);border-bottom:1px solid var(--rv-border)}
+.rv-spend-link{display:inline-flex;align-items:center;min-height:44px}
+@media(max-width:767px){
+ .rv-spend-figures{grid-template-columns:minmax(0,1fr)}
+}
