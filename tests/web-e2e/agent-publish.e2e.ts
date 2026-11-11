@@ -157,6 +157,10 @@ test("ask, then approve as another person: the requester sees it waiting, the ad
  await evidenceShot(page, { path: `${shots}/requests-decide-1280.png`, fullPage: true });
  await checkA11y(page, { theme: "light" });await checkA11y(page, { theme: "dark" });
  await page.getByRole("button", { name: "Approve Payments Expert for payments" }).click();
+ // One click posts nothing: the card asks first, and Cancel keeps it waiting.
+ await expect(page.getByRole("group", { name: "Confirm approving Payments Expert" })).toBeVisible();expect(world.decided).toEqual([]);
+ await page.getByRole("button", { name: "Cancel" }).click();await expect(page.getByRole("group", { name: "Confirm approving Payments Expert" })).toHaveCount(0);expect(world.decided).toEqual([]);
+ await page.getByRole("button", { name: "Approve Payments Expert for payments" }).click();await page.getByRole("button", { name: "Yes, approve" }).click();
  await expect(page.getByText("Approved Payments Expert for the payments project.")).toBeVisible();
  expect(world.decided).toEqual([{ requestId: expect.stringMatching(/^[0-9a-f-]{36}$/) as unknown, decision: "APPROVE" }]);
  // Back as the requester: approved.
@@ -173,7 +177,9 @@ for (const width of [360, 390] as const) {
   await page.goto("/app/agents/requests");await expect(page.getByRole("tab", { name: "To decide (2)" })).toBeVisible();
   expect(await noSidewaysScroll(page)).toBe(true);expect(await smallTargets(page)).toEqual([]);
   await expect(page.getByRole("button", { name: /^Approve on the confirmation page/ })).toBeVisible();
-  await page.getByRole("button", { name: "Approve Payments Expert for payments" }).click();await expect(page.getByRole("alert")).toHaveText("Only a maintainer of payments can decide this.");
+  await page.getByRole("button", { name: "Approve Payments Expert for payments" }).click();await expect(page.getByRole("group", { name: "Confirm approving Payments Expert" })).toBeVisible();
+  expect(await noSidewaysScroll(page)).toBe(true);expect(await smallTargets(page)).toEqual([]);
+  await page.getByRole("button", { name: "Yes, approve" }).click();await expect(page.getByRole("alert")).toHaveText("Only a maintainer of payments can decide this.");
   await page.getByRole("button", { name: "Decline Payments Expert for payments" }).click();await expect(page.getByRole("textbox", { name: /Why\?/ })).toBeVisible();
   expect(await noSidewaysScroll(page)).toBe(true);expect(await smallTargets(page)).toEqual([]);
   await evidenceShot(page, { path: `${shots}/requests-decide-${String(width)}.png`, fullPage: true });

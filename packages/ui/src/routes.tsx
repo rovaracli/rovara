@@ -13,12 +13,13 @@ function Page({ title }: { title: string }) { return <section><h1 tabIndex={-1}>
 function LiveToWork() { const location = useLocation();return <Navigate replace to={{ pathname: paths.work, search: location.search, hash: location.hash }} />; }
 const liveScreen = async () => ({ Component: (await import("./screens/live/LiveScreen.js")).LiveScreen });
 /** `newNav` is the new-navigation switch (nav-flags.ts). Off, this is exactly the route table as it was: no Work, no Projects list, Live stays Live. */
-export function appRoutes(features: AppNav["features"], options: { newNav?: boolean; insights?: boolean; billing?: boolean } = {}): RouteObject[] {
- const newNav = options.newNav === true, billing = options.billing === true;
+export function appRoutes(features: AppNav["features"], options: { newNav?: boolean; insights?: boolean; billing?: boolean; publish?: boolean } = {}): RouteObject[] {
+ const newNav = options.newNav === true, billing = options.billing === true, publish = options.publish === true;
  const children: RouteObject[] = [
  { index: true, element: <HomeScreen /> }, ...(newNav ? [{ path: "live", element: <LiveToWork /> }, { path: "work", lazy: liveScreen }, { path: "projects", lazy: async () => ({ Component: (await import("./screens/project/ProjectsListScreen.js")).ProjectsListScreen }) }] : [{ path: "live", lazy: liveScreen }]),
  { path: "projects/:name", lazy: async () => ({ Component: (await import("./screens/project/ProjectScreen.js")).ProjectScreen }) }, { path: "sessions/:id", lazy: async () => ({ Component: (await import("./screens/session/SessionScreen.js")).SessionScreen }) },
- { path: "agents/requests", lazy: async () => ({ Component: (await import("./screens/agents/PublishRequestsScreen.js")).default }) },
+ // Publish requests (switch `rovara.publish`, publish-flags.ts): registered only while the switch is on, so off the address is like any other: it falls to the agent directory, as it did before.
+ ...(publish ? [{ path: "agents/requests", lazy: async () => ({ Component: (await import("./screens/agents/PublishRequestsScreen.js")).default }) }] : []),
  { path: "agents/:id?", lazy: async () => ({ Component: (await import("./screens/agents/DirectoryScreen.js")).DirectoryScreen }) }, { path: "agents/new", lazy: async () => ({ Component: (await import("./screens/builder/NewAgentScreen.js")).NewAgentScreen }) },
  { path: "agents/:id/edit", lazy: async () => ({ Component: (await import("./screens/builder/BuilderScreen.js")).BuilderScreen }) },
  { path: "onboard", lazy: async () => ({ Component: (await import("./screens/onboarding/OnboardScreen.js")).OnboardScreen }) },

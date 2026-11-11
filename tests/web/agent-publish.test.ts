@@ -3,7 +3,14 @@
 // the requests list, favourites, suggested agents and their reasons. Everything is read against fixtures shaped like the API doc; the server is built in parallel.
 import { expect, it } from "vitest";
 import { screen, fireEvent, waitFor, within } from "@testing-library/react";
-import type { ApiRequest } from "../../packages/ui/src/host.js";
+import { QueryClientProvider } from "@tanstack/react-query";
+import { createMemoryRouter, RouterProvider } from "react-router";
+import { AppHostProvider, type ApiRequest } from "../../packages/ui/src/host.js";
+import { appRoutes } from "../../packages/ui/src/routes.js";
+import { createQueryClient } from "../../packages/ui/src/api/query.js";
+import { Announcer } from "../../packages/ui/src/design/Announcer.js";
+import { renderUi } from "./support/render.js";
+import { h } from "./support/h.js";
 import { AGENT_PUBLISH_STORAGE_KEY, isAgentPublishOn } from "../../packages/ui/src/screens/agents/publish-flags.js";
 import { askEffect, cannotDecideLine, outcomeLine, publicationLine, reasonLabel, stateWords, summaryLines, waitingLine, dedupeSuggested, toggledFavourites } from "../../packages/ui/src/screens/agents/publish-words.js";
 import { AgentPublishAnswerReaderSchema, AgentPublishRequestListReaderSchema, MyAgentsReaderSchema, publicationOf } from "../../packages/ui/src/api/agent-publish.js";
@@ -157,6 +164,14 @@ it("lists what waits for an approver with the summary and the less-safe sentence
  expect(screen.getByText("This makes the agent less safe:")).toBeTruthy();expect(screen.getByText("Adds write access to github")).toBeTruthy();expect(screen.getByText(waiting.effect)).toBeTruthy();expect(screen.getByText(/Used it on 6 releases/)).toBeTruthy();
  expect(screen.getByRole("tab", { name: "To decide (1)" })).toBeTruthy();
  fireEvent.click(screen.getByRole("button", { name: "Approve Release notes writer for payments" }));
+ // One click does not post: a confirm step says what approving does (ownership moves), and Cancel posts nothing.
+ const confirm = screen.getByRole("group", { name: "Confirm approving Release notes writer" });
+ expect(within(confirm).getByText(waiting.effect)).toBeTruthy();expect(sentTo(f, "/v1/app/approvals/" + approvalId(1) + "/decide")).toHaveLength(0);
+ fireEvent.click(within(confirm).getByRole("button", { name: "Cancel" }));
+ expect(screen.queryByRole("group", { name: "Confirm approving Release notes writer" })).toBeNull();expect(sentTo(f, "/v1/app/approvals/" + approvalId(1) + "/decide")).toHaveLength(0);
+ fireEvent.click(screen.getByRole("button", { name: "Approve Release notes writer for payments" }));
+ expect(sentTo(f, "/v1/app/approvals/" + approvalId(1) + "/decide")).toHaveLength(0);
+ fireEvent.click(screen.getByRole("button", { name: "Yes, approve" }));
  expect(await screen.findByText("Approved Release notes writer for the payments project.")).toBeTruthy();
  const [decide] = sentTo(f, "/v1/app/approvals/" + approvalId(1) + "/decide");
  expect(decide!.method).toBe("POST");expect(decide!.body).toEqual({ requestId: expect.stringMatching(/^[0-9a-f-]{36}$/) as unknown, decision: "APPROVE" });
@@ -165,6 +180,11 @@ it("lists what waits for an approver with the summary and the less-safe sentence
 it("declines with an optional reason", async () => {
  const f = renderRequests(r => lists([publishRequest(1)], [])(r) ?? (r.path.endsWith("/decide") ? ok({}) : undefined));
  fireEvent.click(await screen.findByRole("button", { name: "Decline Release notes writer for payments" }));
+ // Decline asks once more before anything is sent; Cancel posts nothing.
+ expect(screen.getByRole("group", { name: "Confirm declining Release notes writer" })).toBeTruthy();expect(sentTo(f, "/v1/app/approvals/" + approvalId(1) + "/decide")).toHaveLength(0);
+ fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+ expect(screen.queryByRole("group", { name: "Confirm declining Release notes writer" })).toBeNull();expect(sentTo(f, "/v1/app/approvals/" + approvalId(1) + "/decide")).toHaveLength(0);
+ fireEvent.click(screen.getByRole("button", { name: "Decline Release notes writer for payments" }));
  fireEvent.change(screen.getByRole("textbox", { name: /Why\?/ }), { target: { value: "Needs a budget first." } });
  fireEvent.click(screen.getByRole("button", { name: "Decline request" }));
  expect(await screen.findByText("Declined Release notes writer for the payments project.")).toBeTruthy();
@@ -174,6 +194,7 @@ it("declines with an optional reason", async () => {
 it("says sign in again when the decide route wants a recent sign-in, and signs in back to this page", async () => {
  const f = renderRequests(r => lists([publishRequest(1)], [])(r) ?? (r.path.endsWith("/decide") ? ok(errorBody("REAUTH_REQUIRED", "Sign in again to decide this."), 403) : undefined));
  fireEvent.click(await screen.findByRole("button", { name: "Approve Release notes writer for payments" }));
+ fireEvent.click(screen.getByRole("button", { name: "Yes, approve" }));
  expect((await screen.findByRole("alert")).textContent).toBe("Sign in again to decide this.");
  fireEvent.click(screen.getByRole("button", { name: "Sign in again" }));
  expect(f.host.signIn).toHaveBeenCalledWith("/app/live");
@@ -183,6 +204,7 @@ it("says sign in again when the decide route wants a recent sign-in, and signs i
 it("shows the server's refusal of a decision word for word and leaves the request waiting", async () => {
  const f = renderRequests(r => lists([publishRequest(1)], [])(r) ?? (r.path.endsWith("/decide") ? ok(errorBody("FORBIDDEN", "Only a maintainer of payments can decide this."), 403) : undefined));
  fireEvent.click(await screen.findByRole("button", { name: "Approve Release notes writer for payments" }));
+ fireEvent.click(screen.getByRole("button", { name: "Yes, approve" }));
  expect((await screen.findByRole("alert")).textContent).toBe("Only a maintainer of payments can decide this.");
  expect(screen.getByRole("button", { name: "Approve Release notes writer for payments" })).toBeTruthy();expect(screen.queryByText(/^Approved/)).toBeNull();
  f.close();
@@ -226,6 +248,32 @@ it("is not found while the switch is off", async () => {
  expect(await screen.findByRole("heading", { name: "Not found" })).toBeTruthy();
  expect(f.request.mock.calls.filter(([request]) => /publish-requests/u.test(request.path))).toEqual([]);
  f.close();
+});
+it("registers the requests route only while the switch is on; off, the address is like any unknown one and falls to the agent directory", async () => {
+ const nav = navFixture(), paths = (publish: boolean) => appRoutes(nav.features, { publish }).flatMap(route => route.children ?? []).map(route => route.path);
+ expect(paths(false)).not.toContain("agents/requests");expect(paths(true)).toContain("agents/requests");
+ expect(appRoutes(nav.features).flatMap(route => route.children ?? []).map(route => route.path)).not.toContain("agents/requests");
+ expect(paths(true).indexOf("agents/requests")).toBeLessThan(paths(true).indexOf("agents/:id?"));
+ const open = async (on: boolean) => {
+  const f = fakeHost(async request => request.path === "/v1/app/nav" ? ok(nav) : request.path.startsWith("/v1/app/agent-publish-requests") ? ok({ requests: [] }) : ok(errorBody("NOT_FOUND", "Not found."), 404));
+  if (on) f.storage.set(AGENT_PUBLISH_STORAGE_KEY, "v2");
+  const query = createQueryClient();query.setQueryData(["nav"], nav);
+  const router = createMemoryRouter(appRoutes(nav.features, { publish: on }), { initialEntries: ["/app/agents/requests"] });
+  const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(Announcer, { children: h(RouterProvider, { router }) }) }) }));
+  return { ...f, close() { ui.unmount();router.dispose();query.clear(); } };
+ };
+ const off = await open(false);
+ try {
+  // The directory takes "requests" as an agent id, which is not a valid one, so it says "not found" without asking the server.
+  await screen.findByText(/We couldn't find that\./);
+  expect(screen.queryByRole("heading", { name: "Publish requests" })).toBeNull();
+  expect(off.request.mock.calls.filter(([request]) => request.path.startsWith("/v1/app/agent-publish-requests"))).toEqual([]);
+ } finally { off.close(); }
+ const on = await open(true);
+ try {
+  expect(await screen.findByRole("heading", { name: "Publish requests" })).toBeTruthy();
+  expect(on.request.mock.calls.some(([request]) => request.path === "/v1/app/agents/requests")).toBe(false);
+ } finally { on.close(); }
 });
 for (const theme of ["light", "dark"] as const) it("has an accessible requests page in " + theme, async () => {
  const { expectNoAxeViolations } = await import("./support/axe.js");
