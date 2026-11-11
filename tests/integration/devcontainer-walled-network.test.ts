@@ -59,14 +59,14 @@ describe("a dev container on an EC2 worker", () => {
   it("is removed and refused when the second start is still not on the network (nothing else cures it)", async () => {
     const target = await workspace();
     const { cli, removed } = fakeCli(target.rootPath, ["bridge", "bridge"]);
-    await expect(ensureDevcontainer(cli, target)).rejects.toMatchObject({ code: "CONFIG_INVALID", message: expect.stringMatching(/does not wall/u) });
+    await expect(ensureDevcontainer(cli, target)).rejects.toMatchObject({ code: "CONFIG_INVALID", message: expect.stringMatching(/does not wall/u) as string });
     expect(removed).toEqual(["id-1", "id-2"]);
   });
 
   it("refuses a runArgs network before anything starts, because it would override the walled one", async () => {
     const target = await workspace('{ "image": "node:22", "runArgs": ["--network=bridge"] }\n');
     const { cli, events } = fakeCli(target.rootPath, ["agentx-task"]);
-    await expect(ensureDevcontainer(cli, target)).rejects.toMatchObject({ code: "CONFIG_INVALID", message: expect.stringMatching(/--network/u) });
+    await expect(ensureDevcontainer(cli, target)).rejects.toMatchObject({ code: "CONFIG_INVALID", message: expect.stringMatching(/--network/u) as string });
     expect(events).toEqual([]);
   });
 
