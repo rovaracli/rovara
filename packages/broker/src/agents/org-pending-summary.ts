@@ -88,7 +88,7 @@ export async function orgPendingApprovals(deps: ApprovalDependencies, caller: Ag
   for (let from = 0; from < wanted.length; from += READS_AT_ONCE) {
     const records = await Promise.all(wanted.slice(from, from + READS_AT_ONCE).map((id) => getAnyApproval(deps, orgId, id as never)));
     const live = records.filter((record): record is AnyApprovalRecord => record !== undefined && record.orgId === orgId && record.status === "PENDING" && Date.parse(record.expiresAt) > now);
-    const mine = await Promise.all(live.map((record) => record.approvers.kind === "rule" ? mayDecideApproval(deps, caller, record).catch(() => false) : true));
+    const mine = await Promise.all(live.map(async (record) => record.approvers.kind !== "rule" || await mayDecideApproval(deps, caller, record).catch(() => false)));
     live.forEach((record, index) => { if (mine[index] === true) open.push(record); });
   }
   open.sort((left, right) => right.createdAt.localeCompare(left.createdAt) || (left.approvalId < right.approvalId ? 1 : -1));
