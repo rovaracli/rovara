@@ -34,6 +34,7 @@ import { intakeHomeCards, intakeMock, resetIntake, showTicketOnHome } from "./in
 import { resetTestEnvironment, testEnvironmentMock } from "./test-environment-mock.js";
 import { learningMock, learningSettingsMock, lockLearning, resetLearning, overviewLearning, homeSuggestionCards } from "./learning-mock.js";
 import { companyPolicyMock, resetCompanyPolicy } from "./company-policy-mock.js";
+import { homeV2Mock } from "./home-mock.js";
 import { mockCellOrigin, mockCellPort, SLOT_ENV } from "./port.js";
 const origin = mockCellOrigin(), directory = resolve(".test-build/web-e2e/tls-" + (process.env[SLOT_ENV] ?? "0")); // one directory per mock cell process: several start at once, and none may read a half-written key
 mkdirSync(directory, { recursive: true });
@@ -104,6 +105,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
  if (url.pathname === "/__mock/learning-settings" && await learningSettingsMock({ url, method, json, record: value => { evidence.body = value; }, body: async () => { let text = "";for await (const chunk of request) text += String(chunk);return text === "" ? {} : JSON.parse(text) as unknown; } })) return;
  if (url.pathname === "/__mock/company-policy" && await companyPolicyMock({ url, method, record: () => undefined, json, body: async () => { let text = "";for await (const chunk of request) text += String(chunk);return text === "" ? {} : JSON.parse(text) as unknown; } })) return;
  if (url.pathname === "/__mock/requests") { json(200, requests);return; }
+ if (await homeV2Mock({ url, method, json, scenario: current, record: () => undefined, body: async () => { let text = "";for await (const chunk of request) text += String(chunk);return JSON.parse(text) as unknown; } })) return;
  const evidence: { method: string; path: string; body?: unknown } = { method, path: url.pathname };requests.push(evidence);
  if(url.pathname.startsWith("/review/"+TASK_PAGE_FIXTURE_ID+"/task")){
  let body:string|undefined;if(method==="POST"){body="";for await(const chunk of request)body+=String(chunk);evidence.body=JSON.parse(body) as unknown;}

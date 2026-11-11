@@ -24,6 +24,10 @@
 :root[data-look="v2"] .rv-attention-row{padding-block:var(--rv-density-gap)}
 :root[data-look="v2"] .rv-attention-row article{gap:var(--rv-density-gap)}
 :root[data-look="v2"] .rv-home-error{margin-bottom:var(--rv-density-gap)}
+/* The new Home (behind rovara.home): its rhythm follows the density. */
+:root[data-look="v2"] .rv-hv2-section,:root[data-look="v2"] .rv-hv2-start-grid{margin-bottom:var(--rv-density-gap)}
+:root[data-look="v2"] .rv-hv2-list,:root[data-look="v2"] .rv-hv2-start-grid{gap:var(--rv-density-gap)}
+:root[data-look="v2"] .rv-hv2-link,:root[data-look="v2"] .rv-hv2-main h3 a,:root[data-look="v2"] .rv-hv2-agent{min-height:var(--rv-control-size)}
 :root[data-look="v2"] .rv-attention-open,:root[data-look="v2"] .rv-decision-open,:root[data-look="v2"] .rv-decision-panel summary,:root[data-look="v2"] .rv-decision-reject summary{min-height:var(--rv-control-size)}
 
 /* Live / work list. */
