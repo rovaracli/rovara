@@ -18,7 +18,7 @@ import { approverWords, availableUsd, barShares, isOverAllowance, monthLabel, pe
 /** The Spending page lives at /app/admin/money/budgets today. A spending request is approved on Rovara's confirmation page, which the waiting page links to. */
 const WAITING_PATH = "/app/admin/waiting";
 const forbidden = (error: unknown): boolean => error instanceof ApiError && error.status === 403;
-const time = (value: string | undefined): string => { const parsed = value === undefined ? Number.NaN : Date.parse(value);return Number.isFinite(parsed) ? new Date(parsed).toLocaleString("en-US", { timeZone: "UTC" }) + " UTC" : "Unavailable"; };
+const time = (value: string | undefined): string => { const parsed = value === undefined ? Number.NaN : Date.parse(value);return Number.isFinite(parsed) ? new Date(parsed).toLocaleString("en-US", { timeZone: "UTC", dateStyle: "medium", timeStyle: "short" }) + " UTC" : "Unavailable"; };
 const dollars = (microdollars: number): number => microdollars / 1_000_000;
 
 /** One read's waiting, restricted and failed states. `restricted` is what to say when the broker answers 403: that person is simply not shown this part. */
@@ -27,7 +27,7 @@ function Part<T>({ read, title, restricted, children }: { read: UseQueryResult<T
  if (read.isPending) return <Skeleton label={`Loading ${title}`} />;
  if (read.isError && forbidden(read.error) && restricted !== undefined) return <p className="rv-muted" role="note">{restricted}</p>;
  if (read.isError) return <p role="alert">Couldn't load {title}. No current amounts are shown. Refresh to try again.</p>;
- return <>{children(read.data!)}</>;
+ return <>{children(read.data)}</>;
 }
 
 function Bar({ figures }: { figures: Figures }) {
@@ -87,7 +87,7 @@ export function SpendingV2() {
   { key: "what", title: "Request", render: row => requestKindWords(row.kind) },
   { key: "amount", title: "Amount", render: row => row.amountUsd === undefined ? "Not provided" : <Money usd={row.amountUsd} /> },
   { key: "why", title: "Reason", render: row => row.reason === undefined || row.reason === "" ? "No reason given" : <VisibleText text={row.reason} /> },
-  { key: "who", title: "Who can approve", render: row => <>{approverWords(row.approverRole)} <span className="rv-muted">(checked when opened)</span></> },
+  { key: "who", title: "Who can approve", render: row => approverWords(row.approverRole) },
   { key: "asked", title: "Asked", render: row => time(row.createdAt) },
   { key: "open", title: "Action", render: row => { const link = safeConfirmUrl(row.confirmUrl, host.origin);return link === undefined ? <Link className="rv-spend-link" to={WAITING_PATH}>Approve in Waiting for people</Link> : <Button onClick={() => { host.openExternal(link); }}>Open to review</Button>; } },
  ];
@@ -117,7 +117,7 @@ export function SpendingV2() {
    <h2 id="rv-spend-requests">Requests</h2>
    <Part read={requests} title="spending requests">{data => { const open = openRequests(data.spendRequests);return open.length === 0 ? <p>No spending requests are waiting for you.</p> : <DataTable caption="Spending requests waiting" columns={requestColumns} rows={open} rowKey={row => row.spendRequestId} />; }}</Part>
    <p><Link className="rv-spend-link" to={WAITING_PATH}>See everything waiting for people</Link></p>
-   <p className="rv-muted">Requests are approved on Rovara's confirmation page, never from this list.</p>
+   <p className="rv-muted">Requests are approved on Rovara's confirmation page, never from this list. Who can approve is checked again when a request is opened.</p>
   </section>
 
   <section aria-labelledby="rv-spend-limits" className="rv-spend-block">

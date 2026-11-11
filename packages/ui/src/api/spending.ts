@@ -13,6 +13,9 @@ import { AdminBudgetSettingsSchema, AppOrgMembersResponseReaderSchema } from "@a
 import { isConfirmUrl } from "../text/links.js";
 import { useAppHost } from "../host.js";
 import { createApiClient, type Reader } from "./client.js";
+import { withoutRequestId } from "./without-request-id.js";
+/** The gateway adds a `requestId` to every object answer; the settings schema is strict, so it is taken off before reading (as the budget settings api does). */
+const SettingsReader: Reader<z.infer<typeof AdminBudgetSettingsSchema>> = { parse: value => AdminBudgetSettingsSchema.parse(withoutRequestId(value)) };
 const usd = z.number().finite().nonnegative().max(1e9);
 const month = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/u);
 const label = z.string().min(1).max(200);
@@ -45,7 +48,7 @@ export function useSpendingReads({ orgId, developerId, role, enabled }: Spending
  const budget = useQuery(read("budget", SPENDING_PATHS.budget, SpendBudgetReaderSchema));
  const orgSpend = useQuery(read("org-spend", SPENDING_PATHS.orgSpend, OrgSpendReaderSchema));
  const requests = useQuery(read("requests", SPENDING_PATHS.requests, SpendRequestsReaderSchema));
- const settings = useQuery(read("settings", SPENDING_PATHS.settings, AdminBudgetSettingsSchema));
+ const settings = useQuery(read("settings", SPENDING_PATHS.settings, SettingsReader));
  const members = useQuery(read("members", SPENDING_PATHS.members, AppOrgMembersResponseReaderSchema));
  return { budget, orgSpend, requests, settings, members, all: [budget, orgSpend, requests, settings, members] as const };
 }

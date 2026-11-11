@@ -25,3 +25,5 @@
 @media(max-width:767px){
  .rv-spend-figures{grid-template-columns:minmax(0,1fr)}
 }
+.rv-spend-block h3{margin-top:var(--rv-space-5)}
+.rv-spend-block .rv-table .rv-button{white-space:nowrap}
