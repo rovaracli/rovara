@@ -213,12 +213,15 @@ describe("a run whose usage cannot be worked out reports none, and says so", () 
     protocolVersion: 1, kind: "task", operationId, workspaceId: WORKSPACE_ID, fence: 1, projectRevision: 1, callbackCapability: "c".repeat(64),
     payload: { conversationId, ...(started ? { conversationStarted: true } : {}), prompt: "THE APPROVED PLAN", workflowMode: "SPEC_WRITE", specWrite: { format: "kiro", kind: "feature", planDigest: PLAN_DIGEST }, workflowBase: [{ repositoryId: "payments", baseCommitSha: base }] },
   });
-  const run = async (rootPath: string, pi: ReturnType<typeof fakePi>, input: ReturnType<typeof invocation>) => {
+  const run = async (rootPath: string, pi: ReturnType<typeof fakePi>, input: ReturnType<typeof invocation>, options: { refuse?: true } = {}) => {
     const events: Array<{ type: string; payload: unknown }> = [];
     const logged: string[] = [];
     await runTaskInvocation(input, {
       rootPath, model: { provider: "test", modelId: "first-v1" }, piAdapter: pi.adapter, log: (_level, line) => { logged.push(line); },
-      eventSink: async (batch) => { for (const event of (Array.isArray(batch) ? batch : [batch]) as typeof events) events.push(event); },
+      eventSink: async (batch) => {
+        if (options.refuse) throw new Error("the control plane did not take the events");
+        for (const event of (Array.isArray(batch) ? batch : [batch]) as typeof events) events.push(event);
+      },
       artifactSink: async () => undefined,
     });
     return { usage: events.filter((event) => event.type === "usage"), logged };
@@ -236,6 +239,29 @@ describe("a run whose usage cannot be worked out reports none, and says so", () 
     const second = await run(w.rootPath, pi, invocation(randomUUID(), conversationId, w.base, true));
     expect(second.usage).toHaveLength(0);
     expect(second.logged.some((line) => line.includes("usage.baseline_unavailable"))).toBe(true);
+  });
+
+  it("keeps the stats at the end of such a run as the figure, so a retry of the next run, which died before its event was sent, reports that attempt's spend too", async () => {
+    const w = await workspace();
+    const conversationId = randomUUID();
+    const costs = { next: [0.05] as Array<number | null> };
+    const pi = fakePi(conversationId, costs);
+    await run(w.rootPath, pi, invocation(randomUUID(), conversationId, w.base, false));
+    await withoutReportedUsage(w.rootPath);
+    // This run cannot work out its own spend (nothing is sent for its 0.07), but the conversation now has a figure.
+    costs.next = [0.07];
+    pi.statsFail.once = true;
+    expect((await run(w.rootPath, pi, invocation(randomUUID(), conversationId, w.base, true))).usage).toHaveLength(0);
+    const kept = JSON.parse(await readFile(join(w.rootPath, ".agentx/conversations.json"), "utf8")) as { conversations: Record<string, { reportedUsage?: { cost: number } }> };
+    expect(kept.conversations[conversationId]?.reportedUsage?.cost).toBeCloseTo(0.12, 6);
+    // The next operation makes its model calls and dies before its event is sent; the retry reports both attempts.
+    const operationId = randomUUID();
+    costs.next = [0.02];
+    await run(w.rootPath, pi, invocation(operationId, conversationId, w.base, true), { refuse: true }).catch(() => undefined);
+    costs.next = [0.03];
+    const retry = await run(w.rootPath, pi, invocation(operationId, conversationId, w.base, true));
+    expect(retry.usage).toHaveLength(1);
+    expect((retry.usage[0]!.payload as { costUsd: number }).costUsd).toBeCloseTo(0.05, 6);
   });
 
   it("sends no event for a run with no model call on a fresh session either, as on a reopened one", async () => {

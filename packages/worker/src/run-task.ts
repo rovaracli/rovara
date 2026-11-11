@@ -1776,6 +1776,8 @@ async function runTask(
 
     let telemetryFailure = evidenceFailure;
     let usageToKeep: UsageStats | undefined;
+    /** True when the figure is kept without an event: the run's own spend could not be told apart from the running total, so nothing was sent for it. */
+    let usageKeptUnsent = false;
     try {
       const running = session.getSessionStats();
       const spent = statsSince(running, usageBaseline);
@@ -1792,6 +1794,11 @@ async function runTask(
         await emit("usage", usageForControlPlane(redactedUsage, dependencies.model));
         // Kept once the control plane has the event (after the final flush below).
         usageToKeep = running;
+      } else if (!usageBaselineKnown) {
+        // Nothing is sent for a run whose baseline could not be read, but the stats now are what the conversation has added up to. Kept, the next run (and a retry of it that dies before its event) starts
+        // from the right figure and does not fall back to the stats at reopen.
+        usageToKeep = running;
+        usageKeptUnsent = true;
       }
       await artifactSink({
         name: "usage.json",
@@ -1805,7 +1812,7 @@ async function runTask(
     await flushEvents();
     // What the usage events sent so far add up to is kept in the conversation record once the control plane has taken the event. A refused send leaves it unkept, and the next attempt then
     // reports this spend too: a repeat is the safe side, a loss is not. (Flushing again sends nothing when nothing is pending, so the batches are the ones the run made.)
-    if (usageToKeep !== undefined && await events.flush().then(() => true, () => false)) {
+    if (usageToKeep !== undefined && (usageKeptUnsent || await events.flush().then(() => true, () => false))) {
       try {
         await conversations.recordReportedUsage(conversationId, { tokens: { input: usageToKeep.tokens.input, output: usageToKeep.tokens.output, cacheRead: usageToKeep.tokens.cacheRead, cacheWrite: usageToKeep.tokens.cacheWrite, total: usageToKeep.tokens.total }, cost: usageToKeep.cost });
       } catch { logUsageNote(log, "usage.reported_not_kept", invocation.operationId); }
