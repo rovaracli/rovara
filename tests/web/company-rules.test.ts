@@ -445,6 +445,9 @@ it("the history lists each version with who proposed, who approved and when, the
  expect(history.textContent).toContain("Rejected");
  expect(history.textContent).toContain("Company repository (pat-the-editor)");
  expect(history.textContent).toContain("Source: The repository file.");
+ // A decided repository proposal says who adopted it; a version nobody adopted says nothing about adoption.
+ expect(history.textContent).toContain("Adopted by Ada Admin.");
+ expect(two.textContent).not.toContain("Adopted by");
  fireEvent.click(within(history).getByRole("button", { name: "View version 2" }));
  const view = await within(history).findByRole("region", { name: "Version 2" });
  await within(view).findByRole("group", { name: "Changes in version 2" });
@@ -783,5 +786,15 @@ it("a Rovara proposal never shows Adopt, and a version made from the repository 
  fireEvent.click(await within(history).findByRole("button", { name: "View version 2" }));
  const region = await within(history).findByRole("region", { name: "Version 2" });
  await within(region).findByText(/Adopted by Ada Admin\./u);
+ f.close();
+});
+
+it("history rows say who adopted a version made from the repository file", async () => {
+ const base = historyFor(), entries = base.entries.map(entry => (entry.version === 2 ? { ...entry, source: "repo", approvalMode: "admin_review", proposedBy: REPO, adoptedBy: ADA } : entry));
+ const f = mount({ history: { ...base, entries } });
+ const history = (await screen.findByRole("heading", { name: "History" })).closest("section")!;
+ const two = (await within(history).findByRole("heading", { name: "Version 2" })).closest("li")!;
+ expect(two.textContent).toContain("Proposed by Company repository (pat-the-editor). Adopted by Ada Admin. 14 rules.");
+ expect(within(history).getByRole("heading", { name: "Version 1" }).closest("li")!.textContent).not.toContain("Adopted by");
  f.close();
 });

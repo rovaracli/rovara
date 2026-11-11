@@ -55,10 +55,10 @@ export function memberState(over: Record<string, unknown> = {}): CompanyRulesSta
 export function historyFor(over: Record<string, unknown> = {}) {
  return CompanyRulesHistorySchema.parse({
   entries: [
-   { version: 2, approvedAt: "2026-11-12T05:00:00.000Z", approvedBy: OMAR, proposedBy: ADA, source: "rovara", approvalMode: "second_person", ruleCount: 14, summary: { added: 0, removed: 0, changed: 1, unchanged: 13 }, note: "Shorter wording for rule 13" },
-   { version: 1, approvedAt: now, approvedBy: SETUP, proposedBy: SETUP, source: "seed", approvalMode: "seed", ruleCount: 14, summary: { added: 14, removed: 0, changed: 0, unchanged: 0 }, note: null },
+   { version: 2, approvedAt: "2026-11-12T05:00:00.000Z", approvedBy: OMAR, proposedBy: ADA, source: "rovara", approvalMode: "second_person", ruleCount: 14, summary: { added: 0, removed: 0, changed: 1, unchanged: 13 }, note: "Shorter wording for rule 13", adoptedBy: null },
+   { version: 1, approvedAt: now, approvedBy: SETUP, proposedBy: SETUP, source: "seed", approvalMode: "seed", ruleCount: 14, summary: { added: 14, removed: 0, changed: 0, unchanged: 0 }, note: null, adoptedBy: null },
   ],
-  decided: [{ proposalId: "22222222-2222-4222-8222-222222222222", state: "rejected", source: "repo", proposedBy: REPO, proposedAt: "2026-11-11T07:00:00.000Z", decidedAt: "2026-11-11T08:00:00.000Z", decidedBy: ADA, note: "Edit the scope rule" }],
+  decided: [{ proposalId: "22222222-2222-4222-8222-222222222222", state: "rejected", source: "repo", proposedBy: REPO, proposedAt: "2026-11-11T07:00:00.000Z", decidedAt: "2026-11-11T08:00:00.000Z", decidedBy: ADA, note: "Edit the scope rule", adoptedBy: ADA }],
   nextBefore: null, ...over,
  });
 }
