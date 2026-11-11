@@ -14,6 +14,7 @@
   "scripts": {
     "build": "tsc -b && node scripts/check-worker-dist.ts && npm run build:web",
     "check:worker-dist": "node scripts/check-worker-dist.ts",
+    "boundary:check": "node scripts/boundary-check.ts",
     "clean": "tsc -b --clean",
     "vendor:update": "node scripts/vendor/update-rovara-code.ts",
     "vendor:verify": "node scripts/vendor/verify-rovara-code.ts",
