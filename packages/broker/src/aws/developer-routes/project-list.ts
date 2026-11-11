@@ -8,6 +8,7 @@ import {
   PROJECT_REVISION_SK_PREFIX,
   SLACK_BINDING_SK_PREFIX,
   developerTaskPolicy,
+  metaRepositoryOf,
   memberGrantsPk,
   orgProjectCatalogPk,
   projectPk,
@@ -278,6 +279,7 @@ export async function appProjectSummary(
   meta: ProjectMetaItem | undefined,
 ): Promise<AppProjectSummary> {
   const { definition } = record;
+  const metaRepository = metaRepositoryOf(definition);
   const setup = await setupStateOf(setupCheckDepsOf(deps), meta, definition);
   // Live interaction F1: what "Fix with agent" is about when the setup check failed or is outdated (fixed codes and the project's name only; the failed step's text is not copied).
   const setupRef = setupCheckErrorRef({ project: name, status: setup.status, at: setup.checkedAt ?? new Date(deps.now()).toISOString() });
@@ -287,6 +289,7 @@ export async function appProjectSummary(
     status: meta?.status ?? "active",
     latestRevision: definition.revision,
     repositories: definition.repositories.map((repository) => ({ name: repository.name, fullName: repositoryFullName(repository), defaultBranch: repository.defaultBranch })),
+    ...(metaRepository === undefined ? {} : { metaRepository: { name: metaRepository.name, fullName: repositoryFullName(metaRepository), defaultBranch: metaRepository.defaultBranch, ...(metaRepository.alsoCode === true ? { alsoCode: true } : {}) } }),
     myRole: role,
     setup: setupRef === undefined ? setup : { ...setup, errorRef: setupRef },
   };

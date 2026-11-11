@@ -46,6 +46,11 @@ export const AppProjectSummarySchema = z.object({
   status: ProjectStatusSchema,
   latestRevision: z.number().int().positive(),
   repositories: z.array(z.object({ name: z.string().optional(), fullName: z.string(), defaultBranch: z.string() })),
+  /**
+   * The project's meta repository (the one repository whose role is `meta`), also listed in `repositories`. Absent for a project that predates meta repos.
+   * `alsoCode` is true when the project's one repository is its own meta repo. Names and the branch only: nothing from inside the repository.
+   */
+  metaRepository: z.object({ name: z.string().optional(), fullName: z.string(), defaultBranch: z.string(), alsoCode: z.boolean().optional() }).optional(),
   myRole: ProjectRoleSchema,
   setup: z.object({
     status: ProjectSetupStatusSchema,
