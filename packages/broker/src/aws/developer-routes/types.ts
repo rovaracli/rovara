@@ -1,6 +1,7 @@
 import type { RepoFileRuntime } from "../../lessons/repo-file-job.js";
 import type { ServiceCatalogSource } from "../../test-env/dependency-plan.js";
 import type { CompanyImageDigestResolver } from "../../test-env/company-image-resolver.js";
+import type { CompanyRulesRepositories } from "../../company-rules/sync.js";
 import type { TeamRecordRuntime } from "../../team-record/runtime.js";
 import type { EvidenceErase } from "../../rovara-code/evidence-erase.js";
 import type { CreateProjectFromMetaBody } from "@rovara-code/contracts";
@@ -115,6 +116,8 @@ export interface DeveloperRouteDependencies {
   serviceCatalog?: ServiceCatalogSource;
   /** Company-approved extra images (switch `pj`): the digest lookup of a tag. Absent: the registry API over global fetch (`registryDigestResolver`). A test gives a fake. */
   companyImageResolver?: CompanyImageDigestResolver;
+  /** Company rules (G-04, switch `si`): how the file sync reaches a repository (the company's GitHub connection, and the code host). Absent: the rules work, but no repository can be connected. */
+  companyRulesRepositories?: CompanyRulesRepositories;
   /** SEED-RISK-1: the project's repositories as the code host gives them at their default branch's head, for the broker's own seed locks (`lockLookSeeds`). Absent: no seed command is locked, every one is HIGH. */
   seedRepoSources?: SeedRepoSources;
   /** Saved project images: the registry (store, sessions, ECR), only where the install's `sv` switch is on and it was installed. Without it the project's Environment panel routes do not exist. */

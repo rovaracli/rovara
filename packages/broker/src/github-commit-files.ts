@@ -12,6 +12,7 @@
 //  - each file is read on the branch first and written only when its text differs, so the same call twice changes nothing (the second answers `changed: false`);
 //  - every path is a plain repository path (no empty, dot or dot-dot segment, no backslash, no control character), and every request is bounded in time and follows no redirect.
 import { COMMIT_CONFLICT_MESSAGE, COMMIT_SYMLINK_MESSAGE, GitBranchNameSchema, LESSON_FILE_BRANCH_PATTERN, LESSON_FILE_WRITE_PATHS, agentXError } from "@rovara-code/contracts";
+import { COMPANY_RULES_BRANCH_PATTERN, companyRulesPathProblem } from "./company-rules/path.js";
 
 const ALLOWED_PATHS: ReadonlySet<string> = new Set(LESSON_FILE_WRITE_PATHS);
 const TIMEOUT_MS = 10_000;
@@ -112,10 +113,11 @@ async function post(context: GithubWriteContext, tail: string, body: unknown, wh
  * (fix round 4, G4). Returns the branch's head after the write, and whether anything changed.
  */
 export async function commitFilesOn(context: GithubWriteContext, request: CommitFilesRequest): Promise<{ revision: string; changed: boolean }> {
-  if (!LESSON_FILE_BRANCH_PATTERN.test(request.branch) || !GitBranchNameSchema.safeParse(request.branch).success || request.branch === request.baseBranch) throw agentXError("CONFIG_INVALID", "branch name is invalid");
+  const companyRules = COMPANY_RULES_BRANCH_PATTERN.test(request.branch);
+  if (!(LESSON_FILE_BRANCH_PATTERN.test(request.branch) || companyRules) || !GitBranchNameSchema.safeParse(request.branch).success || request.branch === request.baseBranch) throw agentXError("CONFIG_INVALID", "branch name is invalid");
   if (!GitBranchNameSchema.safeParse(request.baseBranch).success) throw agentXError("CONFIG_INVALID", "branch name is invalid");
   const files = request.files.map((file) => ({ path: checkedRepositoryPath(file.path), content: file.content }));
-  if (files.some((file) => !ALLOWED_PATHS.has(file.path))) throw agentXError("CONFIG_INVALID", "file path is not one Rovara writes lessons to");
+  if (files.some((file) => (companyRules ? companyRulesPathProblem(file.path) !== undefined : !ALLOWED_PATHS.has(file.path)))) throw agentXError("CONFIG_INVALID", companyRules ? "file path is not one Rovara writes company rules to" : "file path is not one Rovara writes lessons to");
   for (const sha of [request.baseRevision, request.expectedHead]) if (sha !== undefined && !SHA.test(sha)) throw agentXError("CONFIG_INVALID", "commit identity is invalid");
   const baseHead = await headOf(context, request.baseBranch);
   if (baseHead === undefined) throw agentXError("CONFIG_INVALID", "the base branch does not exist");
@@ -170,7 +172,7 @@ export async function commitFilesOn(context: GithubWriteContext, request: Commit
  * request closes that pull request, which is why the pass uses it to clean up a write whose pull request was never recorded.
  */
 export async function deleteBranchOn(context: GithubWriteContext, branch: string): Promise<"deleted" | "gone"> {
-  if (!LESSON_FILE_BRANCH_PATTERN.test(branch)) throw agentXError("CONFIG_INVALID", "branch name is invalid");
+  if (!LESSON_FILE_BRANCH_PATTERN.test(branch) && !COMPANY_RULES_BRANCH_PATTERN.test(branch)) throw agentXError("CONFIG_INVALID", "branch name is invalid");
   const response = await send(context, `/git/refs/heads/${encodePath(branch)}`, { method: "DELETE" });
   // Only GitHub's own "Reference does not exist" (a 422) means there was nothing to delete. A 404 (the repository or the permission), any other 422 and every other refusal is a failure the caller tries again, never "gone" (review L3).
   if (response.status === 422 && await doesNotExist(response)) { drop(response); return "gone"; }

@@ -95,6 +95,7 @@ export * from "./saved-env-key-files.js";
 
 // Company domain verification (owner decision 2026-11-02).
 export * from "./company-domains-web.js";
+export * from "./app-company-rules.js";
 
 export * from "./task-stop-enrollment.js";
 

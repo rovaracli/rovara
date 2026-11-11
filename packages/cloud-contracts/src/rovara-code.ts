@@ -90,6 +90,8 @@ export const MERGE_NOT_READY_MESSAGES = {
   codeOwnersUnreadable: "Rovara couldn't read this repository's code owners, so it can't tell whether a code owner approved. Try again in a minute.",
   /** Lessons in the repo (decision 50.4): `.rovara/lessons.md` is the team's file and changes only through Rovara's own weekly lessons pull request, never through a task's. */
   touchesLessonsFile: "This pull request changes .rovara/lessons.md, which only the team's weekly lessons pull request may change. Take that file out of this pull request.",
+  /** G-04: the company rules file (the default path, or the one the company connected) changes only through the company rules in Rovara, never through a task's pull request. */
+  touchesCompanyRulesFile: "This pull request changes the company rules file, which changes only through the company rules in Rovara. Take that file out of this pull request.",
   lessonsFileUnreadable: "Rovara couldn't read the full list of files this pull request changes, so it can't tell whether it leaves .rovara/lessons.md alone. Try again in a minute.",
   riskChanged: (level: "low" | "medium" | "high"): string => `The risk of this pull request is now ${level}. Check it and press Merge again.`,
 } as const;
