@@ -25,7 +25,6 @@
  .rv-agent-directory .rv-page-header .rv-actions > a { width: 100%; }
  .rv-agent-list > li { flex-direction: column; gap: var(--rv-space-2); padding: var(--rv-space-4) 0; }
  .rv-agent-list h2 a { display: inline-flex; align-items: center; min-height: 44px; }
- .rv-agent-profile-tray { width: 100vw; }
  .rv-agent-back { justify-self: start; margin-inline-start: calc(-1 * var(--rv-space-4)); }
  .rv-agent-profile > .rv-actions > * { flex: 1 1 auto; }
  .rv-agent-facts { grid-template-columns: minmax(0, 1fr); gap: 0; }

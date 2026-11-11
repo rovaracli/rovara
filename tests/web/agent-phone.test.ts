@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { screen, fireEvent, waitFor, within } from "@testing-library/react";
@@ -70,4 +70,22 @@ it("the builder and the new-agent page still sit behind the larger-screen block"
  const f = fakeHost(async () => ({ status: 404, body: { error: { code: "NOT_FOUND", message: "Not found." } } })), query = createQueryClient(), router = createMemoryRouter([{ path: "/app/agents/new", element: h(NewAgentScreen, {}) }], { initialEntries: ["/app/agents/new"] });
  const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(RouterProvider, { router }) }) }));
  expect(ui.container.querySelector(".rv-large-screen-content")).not.toBeNull();expect(within(ui.container).getByRole("heading", { name: "Open on a larger screen", hidden: true })).toBeTruthy();ui.unmount();router.dispose();query.clear();
+});
+const draftReply = async () => ({ status: 200, body: { draft: { revision: 10, overlay: { instructions: "Retain refund checks." }, extends: { agentId: "ticket-triage", version: 2 }, updatedBy: "a".repeat(64), updatedAt: "2026-10-23T12:00:00.000Z" }, changes: ["/base/version"] } });
+it("on a phone Review update is off: no draft change, no move to the blocked builder, and it says why", async () => {
+ const f = renderAgents({ path: profilePath, width: 390, reply: draftReply }), navigate = vi.spyOn(f.host, "navigate");
+ const button = await screen.findByRole<HTMLButtonElement>("button", { name: "Review update" });
+ expect(button.disabled).toBe(true);expect(screen.getByText("Review updates on a larger screen.").getAttribute("role")).toBe("note");expect(button.getAttribute("aria-describedby")).toBe("rv-agent-update-note");
+ fireEvent.click(button);await new Promise(resolve => setTimeout(resolve, 50));
+ expect(f.request.mock.calls.some(([request]) => request.path.endsWith("/update-base") || request.path.endsWith("/draft") || request.method !== "GET")).toBe(false);expect(navigate).not.toHaveBeenCalled();f.close();
+});
+it("on a large screen Review update still updates the base and opens the builder", async () => {
+ const f = renderAgents({ path: profilePath, width: 1280, reply: draftReply }), navigate = vi.spyOn(f.host, "navigate");
+ const button = await screen.findByRole<HTMLButtonElement>("button", { name: "Review update" });expect(button.disabled).toBe(false);expect(screen.queryByText("Review updates on a larger screen.")).toBeNull();
+ fireEvent.click(button);await waitFor(() => expect(navigate).toHaveBeenCalledWith("/app/agents/" + AGENT_FIXTURE_ID + "/edit?review=base"));
+ expect(f.request.mock.calls.filter(([request]) => request.path.endsWith("/update-base"))).toHaveLength(1);f.close();
+});
+it("a built-in's Adopt stays usable on a phone", async () => {
+ const base = agentProfile(), builtin = agentProfile({ agent: { ...base.agent, agentId: "ticket-triage", builtin: true, owner: undefined, access: "manage", pinnedVersion: 1, latestVersion: 2 } });
+ const f = renderAgents({ path: "/app/agents/ticket-triage", width: 390, profile: builtin });const adopt = await screen.findByRole<HTMLButtonElement>("button", { name: "Adopt v2" });expect(adopt.disabled).toBe(false);expect(screen.queryByText("Review updates on a larger screen.")).toBeNull();f.close();
 });
