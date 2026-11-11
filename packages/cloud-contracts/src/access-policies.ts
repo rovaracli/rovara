@@ -537,7 +537,7 @@ const FIXED_NAME_ROLE_LOOKUP_ACTIONS = [
 ];
 
 /**
- * `forBoundary`: the boundary (a ceiling, 6,144 characters with no room left) names the ConnectorSecretsRole and the TestAccountSecretsRole, whose names share a prefix, with the one ARN
+ * `forBoundary`: the boundary (a ceiling, 6,144 characters with no room left) names the two role list actions with BOUNDARY_ROLE_LIST_ACTIONS, and names the ConnectorSecretsRole and the TestAccountSecretsRole, whose names share a prefix, with the one ARN
  * `...connector-secrets*`. Every other fixed-name role, the saved environment image roles (`img-push|pull|manage|create`) and the company image mirror role (`img-mirror`) among them, is named exactly here: no
  * wildcard may admit a role that is not named (a `img-*` ARN would let the boundary permit DeleteRole on any role of that prefix). The service role's own statement, which is what actually allows the lookups, names each role exactly too.
  */
@@ -548,7 +548,7 @@ function fixedNameRoleLookupStatement(scope: Pick<PolicyScope, "env" | "partitio
   return {
     Sid: "IamFixedNameRolesNotYetCreated",
     Effect: "Allow",
-    Action: [...FIXED_NAME_ROLE_LOOKUP_ACTIONS],
+    Action: forBoundary ? withBoundaryRoleListPattern(FIXED_NAME_ROLE_LOOKUP_ACTIONS) : [...FIXED_NAME_ROLE_LOOKUP_ACTIONS],
     // Not the root-path roles: IamRoles names those in full (the same ARN), and the deployed boundary has little room.
     Resource: listed.map((name) => `arn:${scope.partition}:iam::${scope.account}:role/${name}`).filter((arn) => !rootPathRoles(scope).includes(arn)),
   };
@@ -579,6 +579,21 @@ function environmentRoles(scope: Pick<PolicyScope, "env" | "partition" | "accoun
  */
 function rootPathRoles(scope: Pick<PolicyScope, "env" | "partition" | "account">): string[] {
   return [`arn:${scope.partition}:iam::${scope.account}:role/${savedEnvCreateRoleName(scope.env)}`];
+}
+
+/**
+ * The boundary's one action pattern for iam:ListRolePolicies and iam:ListAttachedRolePolicies (2026-11-11, for room after the image roles were named exactly again; nothing new allowed): against AWS's service
+ * authorization reference for IAM (tests/fixtures/iam-actions-2026-11-03.json), no other action matches. The deploy role's own policy keeps both names; tests/contract/access-policies.test.ts pins the match set.
+ */
+export const BOUNDARY_ROLE_LIST_ACTIONS = "iam:List*RolePolicies";
+
+/** `actions` with the two role list actions as the one BOUNDARY_ROLE_LIST_ACTIONS pattern, where the first of them stood. */
+function withBoundaryRoleListPattern(actions: readonly string[]): string[] {
+  const named = ["iam:ListRolePolicies", "iam:ListAttachedRolePolicies"];
+  if (!named.every((action) => actions.includes(action))) throw new Error("the boundary's role list pattern stands for both role list actions");
+  const first = actions.findIndex((action) => named.includes(action));
+  const rest = actions.filter((action) => !named.includes(action));
+  return [...rest.slice(0, first), BOUNDARY_ROLE_LIST_ACTIONS, ...rest.slice(first)];
 }
 
 /** The boundary's one action pattern for INSTANCE_PROFILE_ACTIONS (see defaultBoundaryStatements): the same seven actions, checked against AWS's service authorization reference. */
@@ -728,7 +743,8 @@ export function defaultBoundaryStatements(scope: Pick<PolicyScope, "env" | "part
     },
     // iam:PassRole joins the role actions (the operator passes the service role to CloudFormation; CloudFormation passes the environment's roles to Lambda, ECS, EC2 and the rest): the same actions on the same
     // two ARNs as before, in one statement instead of two. The service role (a root-path role) is passed by the separate PassServiceRole statement below.
-    { Sid: "IamRoles", Effect: "Allow", Action: [...ROLE_ACTIONS, "iam:PassRole"], Resource: withRootRoles },
+    // 2026-11-11: the two role list actions as the one BOUNDARY_ROLE_LIST_ACTIONS pattern (exactly those two), here and in the lookup statement below, for room.
+    { Sid: "IamRoles", Effect: "Allow", Action: withBoundaryRoleListPattern([...ROLE_ACTIONS, "iam:PassRole"]), Resource: withRootRoles },
     // The service role carries this boundary, so the path-less lookups it is granted (see fixedNameRoleLookupStatement) are named here too.
     fixedNameRoleLookupStatement(scope, true),
     // 2026-11-03: `iam:*InstanceProfile` is exactly the seven INSTANCE_PROFILE_ACTIONS: against AWS's service authorization reference for IAM, no other action name ends in InstanceProfile (the list and tag
