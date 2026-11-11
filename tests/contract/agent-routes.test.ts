@@ -9,7 +9,7 @@ import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 import { AgentStore, resolveAgent } from "../../packages/broker/src/agents/store.js";
 import type { ApprovalDependencies, ApprovalRecord, ApproverSpec } from "../../packages/broker/src/agents/approvals.js";
-import { getApprovalSubjectHandler, getApproverRule } from "../../packages/broker/src/agents/approvals.js";
+import { decideApproval, getApprovalSubjectHandler, getApproverRule } from "../../packages/broker/src/agents/approvals.js";
 import { isAgentRoute } from "../../packages/broker/src/agents/routes.js";
 import { approvalDecideKind } from "../../packages/broker/src/agents/approval-decide-kind.js";
 import { DeveloperSignInStore } from "../../packages/broker/src/developer/store.js";
@@ -34,6 +34,7 @@ const MAX = person("2", "Max"); // maintainer of web
 const CARL = person("3", "Carl"); // contributor on web
 const EVE = person("4", "Eve"); // a member with no role anywhere
 const VIV = person("5", "Viv"); // viewer on web
+const OWEN = person("7", "Owen"); // org owner
 const OLD_EVE = "6".repeat(64); // a sign-in Eve was merged from
 const orgResolver: OrgResolver = async (subject) => (subject.developerId === OMAR.developerId ? ORG_B : TEST_ORG);
 
@@ -814,6 +815,97 @@ describe("sharing, owners, accountable people and archiving", () => {
     expect(approvals()).toHaveLength(0);
   });
 
+  // Decision 24: an admin publishes company-wide. A person who only manages the agent (its member owner, a project's maintainer) asks; they never decide.
+  describe("who may confirm a company-wide share (decision 24)", () => {
+    const COMPANY = { principal: { kind: "org" }, level: "use" } as const;
+    const asCaller = (who: Developer, orgRole: OrgRole) => ({ orgId: TEST_ORG, developerId: who.developerId, orgRole });
+    const decide = (deps: ApprovalDependencies, who: Developer, orgRole: OrgRole, approvalId: string) =>
+      decideApproval(deps, asCaller(who, orgRole), approvalId, { requestId: randomUUID(), decision: "APPROVE" });
+    const refusal = (promise: Promise<unknown>) => promise.then(() => undefined, (thrown: Error) => thrown);
+
+    it("refuses the non-admin author confirming their own company-wide share, and the share stays unwritten", async () => {
+      const { call, create, seed, store, approvals, deps } = await setup();
+      const agentId = await create(MAYA);
+      await seed(agentId, SAFE);
+      expect((await call(MAYA, "PUT", `/v1/app/agents/${agentId}/shares`, { shares: [COMPANY] })).status).toBe(202);
+      const [record] = approvals();
+      // Positive control: Maya really does hold manage on her own agent, which is what the old rule accepted.
+      expect((await call(MAYA, "GET", `/v1/app/agents/${agentId}`)).body.agent).toMatchObject({ access: "manage" });
+      const error = await refusal(decide(deps, MAYA, "member", record!.approvalId));
+      expect(error?.message).toMatch(/^FORBIDDEN: /);
+      expect(await store.listShares(TEST_ORG, agentId)).toEqual([]);
+      expect(approvals()[0]).toMatchObject({ status: "PENDING" });
+      expect(candidatesOf(record!)).not.toContain(MAYA.developerId);
+      // The real caller role is read now, so a caller who claims admin but is a member is refused too.
+      expect((await refusal(decide(deps, MAYA, "admin", record!.approvalId)))?.message).toMatch(/^FORBIDDEN: /);
+      expect(await store.listShares(TEST_ORG, agentId)).toEqual([]);
+    });
+
+    it("refuses a project maintainer who owns the project's agent", async () => {
+      const { call, create, seed, store, approvals, deps } = await setup();
+      const agentId = await create(MAX, SAFE, { owner: { kind: "project", project: "web" }, accountable: { developerId: MAX.developerId } });
+      await seed(agentId, SAFE);
+      expect((await call(MAX, "PUT", `/v1/app/agents/${agentId}/shares`, { shares: [COMPANY] })).status).toBe(202);
+      expect((await refusal(decide(deps, MAX, "member", approvals()[0]!.approvalId)))?.message).toMatch(/^FORBIDDEN: /);
+      expect(await store.listShares(TEST_ORG, agentId)).toEqual([]);
+    });
+
+    it("lets an org admin confirm it, and the share is written", async () => {
+      const { call, create, seed, store, approvals, deps } = await setup();
+      const agentId = await create(MAYA);
+      await seed(agentId, SAFE);
+      expect((await call(MAYA, "PUT", `/v1/app/agents/${agentId}/shares`, { shares: [COMPANY] })).status).toBe(202);
+      expect(candidatesOf(approvals()[0]!)).toContain(DANA.developerId);
+      expect((await decide(deps, DANA, "admin", approvals()[0]!.approvalId)).status).toBe("APPROVED_DONE");
+      expect(await store.listShares(TEST_ORG, agentId)).toEqual([expect.objectContaining({ principal: { kind: "org" }, level: "use", grantedBy: DANA.developerId })]);
+    });
+
+    it("lets an org owner confirm it, and the share is written", async () => {
+      const { call, create, seed, store, approvals, deps, db } = await setup();
+      seedMembership(db, OWEN.developerId, { orgId: TEST_ORG, role: "owner" });
+      const agentId = await create(MAYA);
+      await seed(agentId, SAFE);
+      expect((await call(MAYA, "PUT", `/v1/app/agents/${agentId}/shares`, { shares: [COMPANY] })).status).toBe(202);
+      expect(candidatesOf(approvals()[0]!)).toContain(OWEN.developerId);
+      expect((await decide(deps, OWEN, "owner", approvals()[0]!.approvalId)).status).toBe("APPROVED_DONE");
+      expect(await store.listShares(TEST_ORG, agentId)).toEqual([expect.objectContaining({ principal: { kind: "org" }, level: "use", grantedBy: OWEN.developerId })]);
+    });
+
+    it("lets an admin who is the author confirm their own request (still through the page, never at once)", async () => {
+      const { call, create, seed, store, approvals, deps } = await setup();
+      const agentId = await create(DANA);
+      await seed(agentId, SAFE);
+      expect((await call(DANA, "PUT", `/v1/app/agents/${agentId}/shares`, { shares: [COMPANY] })).status).toBe(202);
+      expect(await store.listShares(TEST_ORG, agentId)).toEqual([]);
+      expect((await decide(deps, DANA, "admin", approvals()[0]!.approvalId)).status).toBe("APPROVED_DONE");
+      expect(await store.listShares(TEST_ORG, agentId)).toHaveLength(1);
+    });
+
+    it("judges an admin by the role they hold now: a demoted admin is refused", async () => {
+      const { call, create, seed, store, approvals, deps, db } = await setup();
+      const agentId = await create(MAYA);
+      await seed(agentId, SAFE);
+      expect((await call(MAYA, "PUT", `/v1/app/agents/${agentId}/shares`, { shares: [COMPANY] })).status).toBe(202);
+      db.set({ ...db.get(orgMemberKey(TEST_ORG, DANA.developerId)), role: "member" });
+      expect((await refusal(decide(deps, DANA, "admin", approvals()[0]!.approvalId)))?.message).toMatch(/^FORBIDDEN: /);
+      expect(await store.listShares(TEST_ORG, agentId)).toEqual([]);
+    });
+
+    it("keeps project and person shares as they were: the author applies them at once, with nobody asked", async () => {
+      const { call, create, seed, store, approvals } = await setup();
+      const agentId = await create(MAYA);
+      await seed(agentId, SAFE);
+      const saved = await call(MAYA, "PUT", `/v1/app/agents/${agentId}/shares`, { shares: [member(EVE, "edit"), { principal: { kind: "project", project: "web" }, level: "use" }] });
+      expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+      expect((await store.listShares(TEST_ORG, agentId)).map((share) => share.principal.kind).sort()).toEqual(["member", "project"]);
+      expect(approvals()).toHaveLength(0);
+      // A project's maintainer shares their project's agent with another project at once too.
+      const web = await create(MAX, SAFE, { owner: { kind: "project", project: "web" }, accountable: { developerId: MAX.developerId } });
+      expect((await call(MAX, "PUT", `/v1/app/agents/${web}/shares`, { shares: [member(EVE, "use")] })).status).toBe(200);
+      expect(approvals()).toHaveLength(0);
+    });
+  });
+
   it("lowers or removes the company share at once", async () => {
     const { call, create, seed, approvals, store } = await setup();
     const agentId = await create(MAYA);
@@ -1197,7 +1289,8 @@ describe("the confirmation page for a change names the agent and the versions", 
     const agentId = await create(MAYA, SAFE, { name: "Payments ops" });
     await seed(agentId, SAFE);
     expect((await call(MAYA, "PUT", `/v1/app/agents/${agentId}/shares`, { shares: [{ principal: { kind: "org" }, level: "use" }] })).status).toBe(202);
-    expect((await factsOf(deps, MAYA, approvals()[0]!.approvalId))["Agent"]).toBe(`Payments ops (${agentId})`);
+    // The author asked; an org admin is who sees and decides it (decision 24).
+    expect((await factsOf(deps, DANA, approvals()[0]!.approvalId))["Agent"]).toBe(`Payments ops (${agentId})`);
     await saveDraft(MAYA, agentId, withLinearWrite());
     expect((await publish(MAYA, agentId)).status).toBe(202);
     const publishRecord = approvals().find((record) => record.subject.kind === "agent_publish")!;

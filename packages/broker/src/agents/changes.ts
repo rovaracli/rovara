@@ -42,6 +42,7 @@ import {
   type AgentChangeSubject,
   type ApprovalDependencies,
   type ApprovalRecord,
+  type ApproverRuleCheck,
   type ApproverSpec,
 } from "./approvals.js";
 import { lessSafeGuardrailChanges, readGuardrailsWithRevision, requireAgentEnabled, validateRecipeForOrg, writeGuardrails, type StoredGuardrails } from "./guardrails.js";
@@ -229,7 +230,7 @@ export async function orgAdmins(deps: ApprovalDependencies, orgId: OrgId): Promi
  * Who sees a change to this agent listed for confirmation: the owner (the member, or a project's accountable maintainer and every
  * maintainer with `manage_agents`) and the org's owners and admins. It decides only who is shown it; the rule decides who may decide.
  */
-export async function agentApprovers(deps: ApprovalDependencies, agent: AgentRecord, rule: "agent_publish" | "agent_manager"): Promise<ApproverSpec> {
+export async function agentApprovers(deps: ApprovalDependencies, agent: AgentRecord, rule: "agent_publish"): Promise<ApproverSpec> {
   // The owner (a project's accountable maintainer) is named first, so the approver list's cap never drops the person the member movers find it through (m-3).
   const candidates = new Set<string>();
   if (agent.owner.kind === "member") candidates.add(await resolveSurvivor(deps, agent.orgId, agent.owner.developerId));
@@ -241,6 +242,15 @@ export async function agentApprovers(deps: ApprovalDependencies, agent: AgentRec
 
 export async function orgAdminApprovers(deps: ApprovalDependencies, orgId: OrgId): Promise<ApproverSpec> {
   return { kind: "rule", rule: "org_admin", candidates: await orgAdmins(deps, orgId) };
+}
+
+/**
+ * Who is asked to confirm a company-wide share of an agent: the org's owners and admins only (decision 24). The agent's own member owner, and a
+ * project's maintainers, are not listed: they ask, they don't decide. The rule is `agent_manager`, which `registerAgentApprovals` registers as the
+ * live org owner-or-admin check, so a request already waiting under that rule is held to it too.
+ */
+export async function companyShareApprovers(deps: ApprovalDependencies, orgId: OrgId): Promise<ApproverSpec> {
+  return { kind: "rule", rule: "agent_manager", candidates: await orgAdmins(deps, orgId) };
 }
 
 export async function waitForPerson(
@@ -410,7 +420,7 @@ export async function shareAgent(
   requireActiveForConfirmation(agent);
   const can = { view: "see", use: "run", edit: "change" }[wantedCompany.level];
   const subject: AgentChangeSubject = { kind: "agent_share", agentId: agent.agentId, shares, expectedSharesRevision: agent.sharesRevision ?? 0 };
-  return waitForPerson(deps, caller, input.requestId, subject, [`Shares ${agent.name} with everyone in your company, who can then ${can} it`], await agentApprovers(deps, agent, "agent_manager"));
+  return waitForPerson(deps, caller, input.requestId, subject, [`Shares ${agent.name} with everyone in your company, who can then ${can} it`], await companyShareApprovers(deps, agent.orgId));
 }
 
 // ---- guardrails
@@ -559,21 +569,23 @@ async function managesAgent(deps: ApprovalDependencies, record: ApprovalRecord, 
 
 /**
  * Registers what Task 7 makes confirmable: the `agent_publish` rule (publish and rollback; the agent's owner or an org owner or admin,
- * evaluated live), the `agent_manager` rule for sharing company-wide, the `org_admin` rule (adopting a built-in's version, and the
+ * evaluated live), the `agent_manager` rule for sharing company-wide (an org owner or admin, read live; owner decision 91), the `org_admin` rule (adopting a built-in's version, and the
  * guardrail relaxations), and the handlers for each subject kind. Safe to call more than once.
  */
 export function registerAgentApprovals(): void {
   registerCompanyModelPolicyApprovals();
   registerApproverRule("agent_publish", managesAgent);
-  registerApproverRule("agent_manager", managesAgent);
   // The person who asked for a change to a project's process cannot confirm it while someone else could ("How we work", H4).
   registerApprovalDecisionGuard("process_self_confirm", processSelfConfirmGuard({ candidatesOf: async (deps, agent) => { const spec = await agentApprovers(deps, agent, "agent_publish"); return spec.kind === "rule" ? spec.candidates : spec.ids; }, mayDecide: managesAgent }));
   // Read now, never from the caller's session: a person demoted since they signed in can't decide (R68).
-  registerApproverRule("org_admin", async (deps, record, caller) => {
+  const orgOwnerOrAdmin: ApproverRuleCheck = async (deps, record, caller) => {
     if (caller.orgId !== record.orgId) return false;
     const role = await orgRoleOf(deps, record.orgId, caller.developerId);
     return role !== undefined && isOrgAdmin(role);
-  });
+  };
+  registerApproverRule("org_admin", orgOwnerOrAdmin);
+  // Sharing an agent company-wide needs an org owner or admin (owner decision 91, experience decision 24), never the agent's author or a project maintainer just because they manage it.
+  registerApproverRule("agent_manager", orgOwnerOrAdmin);
   registerApprovalSubjectHandler("agent_publish", confirmPublish);
   registerApprovalSubjectHandler("agent_rollback", confirmRollback);
   registerApprovalSubjectHandler("builtin_adopt", confirmAdopt);

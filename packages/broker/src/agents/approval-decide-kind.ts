@@ -31,10 +31,10 @@ async function whoMayDecide(deps: ApprovalDependencies, record: AnyApprovalRecor
         const run = await runOfApproval(deps, record);
         return run === undefined ? "a project maintainer" : `${shownPersonName(run.owner, NAME_MAX)} or a project maintainer`;
       }
-      case "org_admin": return "an organization owner or admin";
+      case "org_admin":
+      case "agent_manager": return "an organization owner or admin";
       case "pull_request_merge": return "the person who pressed Merge, while they can still merge this task";
-      case "agent_publish":
-      case "agent_manager": return "the agent's owner, a maintainer of its project, or an organization owner or admin";
+      case "agent_publish": return "the agent's owner, a maintainer of its project, or an organization owner or admin";
       case "chain_publish": return "someone who manages the chain: its owner, a maintainer who manages its project's agents, or an organization owner or admin";
       case "project_settings": return "a maintainer of this project";
       case "session_share_org": return "the person who asked, while they can still share the session";
