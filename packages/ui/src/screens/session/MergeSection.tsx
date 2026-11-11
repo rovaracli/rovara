@@ -12,6 +12,7 @@ import { VisibleText } from "../../design/VisibleText.js";
 import type { ReadSession } from "./SessionHeader.js";
 import type { ReadDecision } from "../../api/decisions.js";
 import { workspaceTask, type ReadTask } from "./workspace-types.js";
+import { MERGE_SECTION_ID } from "./task-plain-state.js";
 
 const BRANCH_WORDS: Record<string, string> = { up_to_date: "Branch up to date", behind: "Branch behind its base", conflicted: "Branch conflicts with its base", unknown: "Branch not read yet" };
 type Item = NonNullable<ReadTask["mergeTracking"]>[number];
@@ -72,7 +73,7 @@ export function MergeSection({ session, task }: { session: ReadSession; task: Re
    setError(failure instanceof ApiError ? failure.message : "Couldn't press Merge. Try again.");setOpen(false);
   } finally { sending.current = false;setBusy(false); }
  }
- return <section aria-label="Merge" className="rv-merge">
+ return <section id={MERGE_SECTION_ID} aria-label="Merge" className="rv-merge">
   <p className="rv-merge-state">{merged ? <strong>Merged</strong> : merge(task) ? <strong>Ready to merge</strong> : <><strong>Not ready to merge.</strong> <VisibleText text={task.merge.message ?? ""} /></>}</p>
   {task.merge.risk && <div className="rv-merge-risk" aria-label="Risk"><p><strong>{RISK_WORDS[levelOf(task.merge.risk)!]}</strong></p>{task.merge.risk.reasons.length > 0 && <ul>{task.merge.risk.reasons.map(reason => <li key={reason}><VisibleText text={reason} /></li>)}</ul>}</div>}
   {done && <p role="status"><VisibleText text={done} /></p>}
