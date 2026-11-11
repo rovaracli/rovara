@@ -1,6 +1,6 @@
 import { AppMeResponseReaderSchema, RealtimeTokenResponseReaderSchema, SessionIdSchema } from "@agentx/contracts/web";
 import type { ApiRequest, ApiResponse, AppHost, RealtimeSocket } from "@agentx/ui";
-import { ApiError, createApiClient, SIGN_IN_REPEAT_GUARD_MS } from "@agentx/ui";
+import { ApiError, COMPANY_HEADER, createApiClient, pageCompany, isCompanySwitcherOn, reloadIntoActiveCompany, SIGN_IN_REPEAT_GUARD_MS, withCompanyHeader } from "@agentx/ui";
 import { safeExternalUrl, isGithubInstallationUrl, isSlackLinkUrl, isGithubLinkUrl, joinLinkPath } from "../../ui/src/text/links.js";
 export interface BrowserWindow {
  // Lane A: optional on hosts without clipboard support; never falls back to storage.
@@ -9,7 +9,7 @@ export interface BrowserWindow {
  addEventListener?: (type: "resize", listener: () => void) => void;
  removeEventListener?: (type: "resize", listener: () => void) => void;
  location: Pick<Location, "origin" | "pathname" | "search" | "assign">;
- fetch: typeof fetch;localStorage: Pick<Storage, "getItem" | "setItem">;sessionStorage: Pick<Storage, "getItem" | "setItem">;
+ fetch: typeof fetch;localStorage: Pick<Storage, "getItem" | "setItem"> & Partial<Pick<Storage, "removeItem" | "key" | "length">>;sessionStorage: Pick<Storage, "getItem" | "setItem">;
  document: Pick<Document, "createElement" | "body" | "title">;URL: Pick<typeof URL, "createObjectURL" | "revokeObjectURL">;WebSocket: typeof WebSocket;
  open(url: string, target: string, features: string): unknown;
 }
@@ -28,13 +28,14 @@ export function createBrowserHost(win: BrowserWindow): AppHost {
  async function fetchJson(path: string, init: RequestInit): Promise<ApiResponse> {
   const response = await win.fetch(path, { ...init, credentials: "same-origin", redirect: "error" });
   let body: unknown;try { body = response.status === 204 ? undefined : await response.json(); } catch { body = undefined; }
-  return { status: response.status, body };
+  const company = response.headers.get("x-rovara-company");
+  return company === null ? { status: response.status, body } : { status: response.status, body, company };
  }
  async function refresh(): Promise<void> {
-  refreshing ??= (async () => { const response = await fetchJson("/v1/web/me", { method: "GET", headers: { accept: "application/json" } });if (response.status !== 200) throw new ApiError(response.status, "AUTH_REQUIRED", "Sign in to continue.");const me = AppMeResponseReaderSchema.safeParse(response.body);if (!me.success || me.data.csrf === undefined) throw new ApiError(401, "AUTH_REQUIRED", "Sign in to continue.");csrf = me.data.csrf; })().finally(() => { refreshing = undefined; });
+  refreshing ??= (async () => { const company = isCompanySwitcherOn({ storage: host.storage }) ? pageCompany(transport) : undefined, response = await fetchJson("/v1/web/me", { method: "GET", headers: company === undefined ? { accept: "application/json" } : { accept: "application/json", [COMPANY_HEADER]: company } });if (response.status !== 200) throw new ApiError(response.status, "AUTH_REQUIRED", "Sign in to continue.");const me = AppMeResponseReaderSchema.safeParse(response.body);if (!me.success || me.data.csrf === undefined) throw new ApiError(401, "AUTH_REQUIRED", "Sign in to continue.");csrf = me.data.csrf; })().finally(() => { refreshing = undefined; });
   return refreshing;
  }
- const transport = { async request(input: ApiRequest): Promise<ApiResponse> {
+ const rawTransport = { async request(input: ApiRequest): Promise<ApiResponse> {
   const path = apiPath(input.path), write = input.method !== "GET" && input.method !== "HEAD", headers = new Headers({ accept: "application/json" });
   for (const [name, value] of Object.entries(input.headers ?? {})) { if (name.toLowerCase() === "authorization") throw new Error("Browser requests use your sign-in.");headers.set(name, value); }
   const body = input.body === undefined ? undefined : JSON.stringify(input.body);if (body !== undefined) headers.set("content-type", "application/json");
@@ -45,6 +46,8 @@ export function createBrowserHost(win: BrowserWindow): AppHost {
   if (input.method === "GET" && input.path === "/v1/app/me" && response.status === 200) { const me = AppMeResponseReaderSchema.safeParse(response.body);if (me.success) csrf = me.data.csrf; }
   return response;
  } };
+ // The company switcher (rovara.companies = "v2" on this device): every request names the page's company, on this one transport. Off, requests pass through untouched.
+ const transport = withCompanyHeader(rawTransport, { isOn: () => isCompanySwitcherOn({ storage: host.storage }), onStale: () => { reloadIntoActiveCompany(host); } });
  const host: AppHost = {
   // Lane A: copy only on explicit UI invocation; sanitize platform failures.
   async copyText(text) { try { if (win.navigator?.clipboard === undefined) throw new Error("Unavailable");await win.navigator.clipboard.writeText(text); } catch { throw new Error("Copying is unavailable. Try a browser that supports secure clipboard access."); } },
@@ -75,7 +78,9 @@ export function createBrowserHost(win: BrowserWindow): AppHost {
    csrf = undefined;win.location.assign("/app/signed-out?reason=ended");
   },
   viewport: { width: () => win.innerWidth ?? 0, subscribe(listener) { win.addEventListener?.("resize", listener);return () => win.removeEventListener?.("resize", listener); } },
-  storage: { get(key) { try { return win.localStorage.getItem(key) ?? undefined; } catch { return undefined; } }, set(key, value) { try { win.localStorage.setItem(key, value); } catch { /* Preferences are optional. */ } } }, features: { admin: true },
+  storage: { get(key) { try { return win.localStorage.getItem(key) ?? undefined; } catch { return undefined; } }, set(key, value) { try { win.localStorage.setItem(key, value); } catch { /* Preferences are optional. */ } },
+   // The company switcher clears per-company drafts with these two. A blocked store lists nothing and removes nothing.
+   keys() { try { const store = win.localStorage;return Array.from({ length: store.length ?? 0 }, (_, index) => store.key?.(index) ?? null).filter((key): key is string => key !== null); } catch { return []; } }, remove(key) { try { win.localStorage.removeItem?.(key); } catch { /* Nothing to remove from a blocked store. */ } } }, features: { admin: true },
  };
  const api = createApiClient(host);return host;
 }

@@ -16,10 +16,13 @@ import { RelativeTime } from "../../design/RelativeTime.js";
 import { Skeleton } from "../../design/Skeleton.js";
 import { VisibleText } from "../../design/VisibleText.js";
 import { HomeCardRow } from "./HomeCardRow.js";
+import { useAgentPublishOn } from "../agents/publish-flags.js";
 import { StatePill } from "./StatePill.js";
 import { continueRows, decisionSession, decisionState, finishedRows, needsYouSessions, pickAgents, type HomeRow } from "./home-rows.js";
 // The start box is the existing one (outcome first); it loads after the first paint like on today's Home.
 const HomeStart = lazy(async () => ({ default: (await import("./HomeStart.js")).HomeStart }));
+// Favourites and suggested agents (exp/agent-publish): loaded only where its own switch (`rovara.publish`) is on, on top of this Home's switch.
+const HomeAgentsRow = lazy(() => import("./HomeAgentsRow.js"));
 
 const WORK_LINK = paths.live, NO_CARDS: readonly ReadHomeCard[] = [];
 
@@ -75,7 +78,14 @@ export function HomeV2({ home, shown, total, needsYou, unavailable }: HomeV2Prop
  const ended = useMemo(() => finishedRows(finished.data?.sessions ?? []), [finished.data]);
  const recent = useMemo(() => [...cont, ...ended].map(row => row.agentId).filter((id): id is string => id !== undefined), [cont, ended]);
  const agents = useMemo(() => pickAgents(directory.isError ? [] : directory.data?.agents ?? [], recent), [directory.isError, directory.data, recent]);
- const startId = useId(), agentsId = useId(), needsId = useId(), continueId = useId(), finishedId = useId();
+ const publishOn = useAgentPublishOn(), startId = useId(), agentsId = useId(), needsId = useId(), continueId = useId(), finishedId = useId();
+ // Today's agents row: the recently used agents, then the directory's first ones. The publishing row falls back to it when the server cannot answer.
+ const today = <>
+    {directory.isPending && <Skeleton label="Loading agents" />}
+    {directory.isError && <p className="rv-muted">Couldn't load agents. See all agents to try again.</p>}
+    {!directory.isPending && !directory.isError && agents.length === 0 && <p className="rv-hv2-empty">No agents are available yet.</p>}
+    {agents.length > 0 && <ul className="rv-hv2-agent-list" aria-label="Agents">{agents.map(agent => <li key={agent.agentId}><Link className="rv-hv2-agent" to={paths.agent(agent.agentId)}><span className="rv-hv2-agent-name"><VisibleText text={agent.name} /></span><span className="rv-hv2-agent-note"><VisibleText text={agent.note} /></span></Link></li>)}</ul>}
+ </>;
  const needsLoading = home.isPending || decisions.isPending, needsEmpty = !needsLoading && !home.isError && !decisions.isError && !unavailable && shown !== undefined && shown.length === 0 && pending.length === 0 && total === 0 && needsYou === 0;
  return <section className="rv-home rv-home-v2">
   <PageHeader title="Home" {...(shown !== undefined && needsYou > 0 ? { description: `${needsYou} ${needsYou === 1 ? "thing needs" : "things need"} you` } : {})} />
@@ -93,10 +103,7 @@ export function HomeV2({ home, shown, total, needsYou, unavailable }: HomeV2Prop
     {nav !== undefined && nav.projects.length === 0 ? <p className="rv-hv2-empty">You aren't on a project yet, so there is nothing to start here.</p> : <Suspense fallback={<Skeleton label="Loading the start box" />}><HomeStart /></Suspense>}
    </section>
    <section className="rv-hv2-card rv-hv2-agents" aria-labelledby={agentsId}><div className="rv-hv2-head"><h2 id={agentsId}>Or start with an agent</h2><Link className="rv-hv2-link" to={paths.directory}>See all agents</Link></div>
-    {directory.isPending && <Skeleton label="Loading agents" />}
-    {directory.isError && <p className="rv-muted">Couldn't load agents. See all agents to try again.</p>}
-    {!directory.isPending && !directory.isError && agents.length === 0 && <p className="rv-hv2-empty">No agents are available yet.</p>}
-    {agents.length > 0 && <ul className="rv-hv2-agent-list" aria-label="Agents">{agents.map(agent => <li key={agent.agentId}><Link className="rv-hv2-agent" to={paths.agent(agent.agentId)}><span className="rv-hv2-agent-name"><VisibleText text={agent.name} /></span><span className="rv-hv2-agent-note"><VisibleText text={agent.note} /></span></Link></li>)}</ul>}
+    {publishOn ? <Suspense fallback={<Skeleton label="Loading agents" />}><HomeAgentsRow fallback={today} /></Suspense> : today}
    </section>
   </div>
   <Section id={continueId} title="Continue" link={{ to: WORK_LINK, label: "See all in Work" }}>
