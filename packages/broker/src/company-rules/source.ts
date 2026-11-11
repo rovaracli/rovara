@@ -10,7 +10,8 @@ export function companyRulesSourceOver(store: CompanyRulesStore): CompanyInstruc
     async current(company: string): Promise<CompanyInstructionsSnapshot | undefined> {
       const orgId = OrgIdSchema.safeParse(company);
       if (!orgId.success) return undefined;
-      const head = await store.head(orgId.data);
+      // The agent path needs the approved version only: a damaged pending proposal id (which the admin routes and the sync refuse loudly) must not take the approved rules away from every step.
+      const head = await store.currentHead(orgId.data);
       if (head.latestVersion === 0) return undefined;
       const version = await store.version(orgId.data, head.latestVersion);
       if (version === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "The company rules could not be read.");

@@ -3,7 +3,7 @@
 // that is down and a repository that is not the one connected change nothing; and Rovara writes only to a company-rules branch and a plain Markdown path.
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
-import { COMPANY_RULES_PATH, CompanyRulesAnswerReaderSchema, CompanyRulesStateReaderSchema, CompanyRulesSyncReaderSchema, type CompanyRulesState } from "@agentx/contracts";
+import { COMPANY_RULES_PATH, CompanyRulesAnswerReaderSchema, CompanyRulesHistoryReaderSchema, CompanyRulesStateReaderSchema, CompanyRulesSyncReaderSchema, type CompanyRulesState } from "@agentx/contracts";
 import { commitFilesOn } from "../../packages/broker/src/github-commit-files.js";
 import { installCompanyRulesJob } from "../../packages/broker/src/aws/broker/company-rules-wiring.js";
 import { readRulesFile, renderRulesFile, normalizeRules } from "../../packages/broker/src/company-rules/rules.js";
@@ -224,6 +224,29 @@ describe("from the repository: an edit of the file is a proposal, never an appro
     expect((await propose(t, [...V1, "Say what you ran.", "And another."], 2)).status).toBe(202);
   });
 
+  it("an older version Rovara itself wrote, reaching the file after a newer approval, is not an edit: no revert is proposed, and the newer version is still owed", async () => {
+    const { t, repo } = await bench();
+    await approvedVersion(t, V1, 0);
+    await connect(t);
+    expect(repo.openPulls()).toHaveLength(1);
+    // The host is down when version 2 is approved: the first pull request is not brought up to date.
+    repo.down = true;
+    await approvedVersion(t, [...V1, "Say what you ran."], 1);
+    repo.down = false;
+    // A person merges the pull request for version 1: the file now holds version 1, and the current version is 2.
+    repo.merge(1);
+    await syncNow(t);
+    await syncNow(t);
+    expect((await stateOf(t)).pending).toBeNull();
+    expect(t.db.find((item) => String(item.sk).startsWith("COMPANYRULES#P#") && item.source === "repo")).toEqual([]);
+    expect(await syncOf(t)).toMatchObject({ pendingFromRepo: false, fileState: "differs" });
+    // Version 2 is owed to the file, and goes out as a new pull request.
+    expect(repo.pulls).toHaveLength(2);
+    expect(repo.openPulls()).toHaveLength(1);
+    expect(repo.pulls[1]!.title).toBe("Rovara: company rules, version 2");
+    expect((await propose(t, [...V1, "Say what you ran.", "Next."], 2)).status).toBe(202);
+  });
+
   it("a rejected repository edit is forgotten when the version moves: the file still holding it is an edit against the new version, and is proposed again", async () => {
     const { t, repo } = await connectedAndMerged();
     repo.push(FILE, fileOf([...V1, "Rejected edit."], 1));
@@ -303,7 +326,7 @@ describe("from the repository: an edit of the file is a proposal, never an appro
     expect((await syncOf(t))).toMatchObject({ fileState: "match" });
   });
 
-  it("a company of one: the owner adopts a repository edit and may approve it only with the acknowledgement, inside the cool-off never", async () => {
+  it("a company of one: the owner adopts a repository edit and may approve it only with the acknowledgement and only outside the 24 hour cool-off", async () => {
     const repo = new FakeCompanyRepo();
     const { t } = await bench(repo, {});
     await approvedVersion1(t);
@@ -318,9 +341,37 @@ describe("from the repository: an edit of the file is a proposal, never an appro
     const without = await approve(t, pending, OMAR);
     expect(without.status).toBe(403);
     expect(JSON.stringify(without.body)).toContain("only owner");
+    // The company lost an eligible person an hour ago: inside the cool-off the exception is not available, acknowledged or not.
+    const meta = t.db.find((item) => item.pk === `ORG#${TEST_ORG}` && item.approvalMembershipVersion !== undefined)[0]!;
+    t.db.set({ ...meta, approvalLastCompanyEligibleLossAt: new Date(Date.now() - 3_600_000).toISOString() });
+    expect((await stateOf(t)).pending!.approval).toMatchObject({ canApprove: false, soleOwner: { available: false, reasonCode: "SOLE_OWNER_COOL_OFF" } });
+    const inside = await approve(t, pending, OMAR, { soleOwnerAcknowledged: true });
+    expect(inside.status, JSON.stringify(inside.body)).toBe(403);
+    expect((await stateOf(t)).current).toMatchObject({ version: 1 });
+    // Outside it (the loss is more than a day old), the acknowledged approval goes through.
+    t.db.set({ ...meta, approvalLastCompanyEligibleLossAt: new Date(Date.now() - 2 * 86_400_000).toISOString() });
     const done = await approve(t, pending, OMAR, { soleOwnerAcknowledged: true });
     expect(done.status, JSON.stringify(done.body)).toBe(200);
     expect((await stateOf(t)).current).toMatchObject({ version: 2, approvalMode: "sole_owner_exception", adoptedBy: { id: OMAR.developerId } });
+  });
+
+  it("the history says who adopted a repository change, on the version and on a decided proposal, and null for the rest", async () => {
+    const { t, repo } = await connectedAndMerged();
+    repo.push(FILE, fileOf([...V1, "Adopted and approved."], 1));
+    await syncNow(t);
+    const first = (await stateOf(t)).pending!;
+    await adopt(t, first);
+    expect((await approve(t, first, MAYA)).status).toBe(200);
+    repo.push(FILE, fileOf([...V1, "Adopted and approved.", "Adopted, then rejected."], 2));
+    await syncNow(t);
+    const second = (await stateOf(t)).pending!;
+    await adopt(t, second);
+    expect((await post(t, { action: "reject", proposalId: second.proposalId, expectedDigest: second.digest }, MAYA)).status).toBe(200);
+    const history = CompanyRulesHistoryReaderSchema.parse((await get(t, OMAR, "/history")).body);
+    expect(history.entries.map((entry) => [entry.version, entry.source, entry.adoptedBy?.id ?? null])).toEqual([[2, "repo", OMAR.developerId], [1, "rovara", null]]);
+    expect(history.decided[0]).toMatchObject({ state: "rejected", source: "repo", adoptedBy: { id: OMAR.developerId } });
+    const one = ((await get(t, OMAR, "/versions/2")).body as { version: { adoptedBy: { id: string } } }).version;
+    expect(one.adoptedBy.id).toBe(OMAR.developerId);
   });
 
   it("only a repository proposal is adopted, only by a live admin, and only the proposal the person looked at", async () => {

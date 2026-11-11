@@ -301,6 +301,21 @@ describe("the Cloud source of the company's rules", () => {
     await expect(readCompanyInstructions(source, TEST_ORG)).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
   });
 
+  it("a damaged pending id on the head is refused by `head` but does not take the approved rules from the source (`currentHead` ignores it)", async () => {
+    const { store, db } = bench();
+    const proposal = proposalOf(ID1, 0);
+    await store.createProposal({ orgId: TEST_ORG, proposal, expectedBase: 0, events: [event("company_rules.proposed", ID1)] });
+    await store.decideProposal({ orgId: TEST_ORG, proposal, outcome: "approved", decidedBy: { kind: "member", id: BEN }, decidedAt: at, version: versionOf(proposal), events: [event("company_rules.approved", ID1)] });
+    const head = db.get({ pk: `ORG#${TEST_ORG}`, sk: "COMPANYRULES#HEAD" })!;
+    db.set({ ...head, pendingProposalId: "NOT-AN-ID" });
+    await expect(store.head(TEST_ORG)).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    expect(await store.currentHead(TEST_ORG)).toEqual({ latestVersion: 1, latestDigest: proposal.digest });
+    expect(await companyRulesSourceOver(store).current(TEST_ORG)).toEqual({ version: "1", rules: proposal.rules });
+    // A head that is damaged in its version number is still refused by both: that one is not served.
+    db.set({ ...head, latestVersion: "one" });
+    await expect(store.currentHead(TEST_ORG)).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+  });
+
   it("what it answers passes the port's own checks (the snapshot schema and the limits)", async () => {
     const store = await approved([rule("ok")]);
     const snapshot = await readCompanyInstructions(companyRulesSourceOver(store), TEST_ORG);

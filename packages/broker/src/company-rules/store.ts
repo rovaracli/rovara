@@ -53,6 +53,8 @@ export interface SyncRecord {
   handledFileDigest?: string;
   /** The version in force when `handledFileDigest` was set: a handled edit is forgotten when the version moves. */
   handledAtVersion?: number;
+  /** The digest of every version Rovara itself wrote to the file through a pull request (the last 20). A file that equals one of them is Rovara's own older write reaching the branch late, not an edit made in the repository. */
+  writtenDigests?: string[];
   /** The version's digest and rules the last time the file matched it: the point the two last agreed on, which says which side changed since. */
   syncedDigest?: string; syncedRules?: Rule[];
   /** The version a write-back is owed for (waiting), or the pull request that carries it. */
@@ -105,11 +107,12 @@ function rulesOf(value: unknown): Rule[] | undefined {
 }
 const isoOf = (value: unknown): string | undefined => (typeof value === "string" && Number.isFinite(Date.parse(value)) ? value : undefined);
 
-function headOf(raw: Row | undefined): Head {
+function headOf(raw: Row | undefined, options: { ignorePending?: boolean } = {}): Head {
   if (raw === undefined) return { latestVersion: 0 };
   const latest = raw.latestVersion;
   if (typeof latest !== "number" || !Number.isSafeInteger(latest) || latest < 0) throw unavailable();
   // A pending id that is not a well-formed id is a damaged head, not "nothing waiting": it is refused loudly (an operator removes the attribute), never silently dropped.
+  if (options.ignorePending === true) return { latestVersion: latest, ...(typeof raw.latestDigest === "string" ? { latestDigest: raw.latestDigest } : {}) };
   if (raw.pendingProposalId !== undefined && !isUuid(raw.pendingProposalId)) { console.log(JSON.stringify({ component: "company_rules", event: "company_rules.head_pending_id_malformed" })); throw unavailable(); }
   return { latestVersion: latest, ...(typeof raw.latestDigest === "string" ? { latestDigest: raw.latestDigest } : {}), ...(typeof raw.pendingProposalId === "string" ? { pendingProposalId: raw.pendingProposalId } : {}) };
 }
@@ -159,6 +162,8 @@ export function syncOf(raw: Row | undefined): SyncRecord | undefined {
 
 export interface CompanyRulesStore {
   head(orgId: OrgId): Promise<Head>;
+  /** The newest approved version number and digest, and NOTHING about a waiting proposal: what the agent steps need. A damaged pending id does not matter here (it does to `head`, which refuses it loudly), so the approved rules keep being served. */
+  currentHead(orgId: OrgId): Promise<Pick<Head, "latestVersion" | "latestDigest">>;
   version(orgId: OrgId, version: number): Promise<VersionRecord | undefined>;
   /** Newest first, below `before` when given. At most `limit` (bounded). */
   versions(orgId: OrgId, input: { before?: number; limit: number }): Promise<VersionRecord[]>;
@@ -232,6 +237,7 @@ export function dynamoCompanyRulesStore(table: CompanyRulesTable): CompanyRulesS
 
   return {
     async head(orgId) { if (!orgOk(orgId)) throw unavailable(); return headOf(await read(headKey(orgId))); },
+    async currentHead(orgId) { if (!orgOk(orgId)) throw unavailable(); return headOf(await read(headKey(orgId)), { ignorePending: true }); },
     async version(orgId, version) {
       if (!orgOk(orgId) || !Number.isSafeInteger(version) || version < 1 || version > 999_999_999) return undefined;
       return versionOf(await read(versionKey(orgId, version)));

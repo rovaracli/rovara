@@ -87,6 +87,7 @@ export function historyView(input: { versions: readonly VersionRecord[]; before:
   const entries = input.versions.map((version) => ({
     version: version.version, approvedAt: version.approvedAt, approvedBy: personOf(version.approvedBy, input.names), proposedBy: personOf(version.proposedBy, input.names),
     source: version.source, approvalMode: version.approvalMode, ruleCount: version.rules.length, summary: diffSummary(input.before(version.version) ?? [], version.rules), note: version.note ?? null,
+    adoptedBy: version.adoptedBy === undefined ? null : personOf(version.adoptedBy, input.names),
   }));
   const last = input.versions[input.versions.length - 1];
   return {
@@ -94,6 +95,7 @@ export function historyView(input: { versions: readonly VersionRecord[]; before:
     decided: input.decided.flatMap((proposal) => (proposal.state === "rejected" || proposal.state === "cancelled" || proposal.state === "expired") && proposal.decidedAt !== undefined ? [{
       proposalId: proposal.proposalId, state: proposal.state, source: proposal.source, proposedBy: personOf(proposal.proposedBy, input.names), proposedAt: proposal.proposedAt, decidedAt: proposal.decidedAt,
       decidedBy: proposal.decidedBy === undefined ? null : personOf(proposal.decidedBy, input.names), note: proposal.note ?? null,
+      adoptedBy: proposal.adoptedBy === undefined ? null : personOf(proposal.adoptedBy, input.names),
     }] : []),
     nextBefore: input.hasMoreBelow && last !== undefined && entries.length >= input.limit ? last.version : null,
   };

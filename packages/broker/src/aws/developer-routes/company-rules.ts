@@ -116,7 +116,7 @@ async function readSub(deps: DeveloperRouteDependencies, caller: DeveloperCaller
     const lowest = shown.length === 0 ? 0 : shown[shown.length - 1]!.version;
     const below = new Map(versions.map((version) => [version.version, version.rules] as const));
     const needed = lowest > 1 && !below.has(lowest - 1) ? await store.version(caller.orgId, lowest - 1) : undefined;
-    const names = await namesOf(deps, [...shown.flatMap((version) => actorIds(version.approvedBy, version.proposedBy)), ...decided.flatMap((proposal) => actorIds(proposal.proposedBy, proposal.decidedBy))]);
+    const names = await namesOf(deps, [...shown.flatMap((version) => actorIds(version.approvedBy, version.proposedBy, version.adoptedBy)), ...decided.flatMap((proposal) => actorIds(proposal.proposedBy, proposal.adoptedBy, proposal.decidedBy))]);
     return new StatusReply(200, historyView({ versions: shown, before: (version) => below.get(version - 1) ?? (needed !== undefined && needed.version === version - 1 ? needed.rules : undefined), decided, names, limit: wanted, hasMoreBelow: versions.length > wanted }));
   }
   const one = VersionPath.exec(path);

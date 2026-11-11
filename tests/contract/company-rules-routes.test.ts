@@ -506,4 +506,20 @@ describe("the second-person fences are part of the approving transaction", () =>
     const done = await approveProposal(service, { orgId: TEST_ORG, developerId: MAYA.developerId }, { proposalId: pending.proposalId, expectedDigest: pending.digest });
     expect(done.version.version).toBe(1);
   });
+
+  it("with an approved version and a damaged pending id, agent steps still get the approved rules while every route answers 503", async () => {
+    const { t } = await bench({ maya: "admin" });
+    await approvedVersion(t);
+    expect((await propose(t, { baseVersion: 1, rules: rules("a waiting change") })).status).toBe(202);
+    const head = t.db.get({ pk: `ORG#${TEST_ORG}`, sk: "COMPANYRULES#HEAD" })!;
+    t.db.set({ ...head, pendingProposalId: "NOT-AN-ID" });
+    const source = companyRulesSourceOver(dynamoCompanyRulesStore({ documentClient: t.db, tableName: "state" }));
+    expect(await readCompanyInstructions(source, TEST_ORG)).toMatchObject({ version: "1", rules: [{ text: "Never push to main.", priority: "required" }, { text: "Small PRs.", priority: "preferred" }] });
+    // The routes that read the head (the state, the file link) refuse loudly; the history reads immutable versions only and does not touch the pending id.
+    for (const read of [await get(t), await get(t, OMAR, "/sync")]) expect(read.status).toBe(503);
+    expect((await get(t, OMAR, "/history")).status).toBe(200);
+    expect((await propose(t, { baseVersion: 1, rules: rules("another") }, MAYA)).status).toBe(503);
+    // The damage is only in the pending id: the approved version is untouched, and the source never answers a waiting proposal's rules.
+    expect(JSON.stringify(await source.current(TEST_ORG))).not.toContain("a waiting change");
+  });
 });

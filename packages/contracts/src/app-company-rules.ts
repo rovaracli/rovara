@@ -123,11 +123,11 @@ const Summary = z.object({ added: z.number().int().min(0), removed: z.number().i
 export const CompanyRulesHistorySchema = z.object({
   entries: z.array(z.object({
     version: z.number().int().min(1), approvedAt: Iso, approvedBy: CompanyRulesPersonSchema, proposedBy: CompanyRulesPersonSchema,
-    source: z.enum(COMPANY_RULES_SOURCES), approvalMode: z.enum(COMPANY_RULES_APPROVAL_MODES), ruleCount: z.number().int().min(0), summary: Summary, note: z.string().max(COMPANY_RULES_NOTE_MAX).nullable(),
+    source: z.enum(COMPANY_RULES_SOURCES), approvalMode: z.enum(COMPANY_RULES_APPROVAL_MODES), ruleCount: z.number().int().min(0), summary: Summary, note: z.string().max(COMPANY_RULES_NOTE_MAX).nullable(), adoptedBy: CompanyRulesPersonSchema.nullable(),
   }).strict()).max(50),
   decided: z.array(z.object({
     proposalId: z.string().uuid(), state: z.enum(["rejected", "cancelled", "expired"]), source: z.enum(["rovara", "repo"]),
-    proposedBy: CompanyRulesPersonSchema, proposedAt: Iso, decidedAt: Iso, decidedBy: CompanyRulesPersonSchema.nullable(), note: z.string().max(COMPANY_RULES_NOTE_MAX).nullable(),
+    proposedBy: CompanyRulesPersonSchema, proposedAt: Iso, decidedAt: Iso, decidedBy: CompanyRulesPersonSchema.nullable(), note: z.string().max(COMPANY_RULES_NOTE_MAX).nullable(), adoptedBy: CompanyRulesPersonSchema.nullable(),
   }).strict()).max(20),
   nextBefore: z.number().int().min(1).nullable(),
 }).strict();

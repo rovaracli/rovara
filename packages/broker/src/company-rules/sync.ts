@@ -195,7 +195,8 @@ export async function runSyncPass(deps: SyncDeps, orgId: OrgId): Promise<void> {
   if (next.handledFileDigest !== undefined && next.handledAtVersion !== head.latestVersion) { delete next.handledFileDigest; delete next.handledAtVersion; }
   const handled = next.handledFileDigest;
   // A file that still holds the last version the two agreed on is not an edit: only Rovara moved, and the write-back is what is owed.
-  const repoEdited = fileDigest !== undefined && fileDigest !== sync.syncedDigest;
+  // ...nor is a file that holds an OLDER version Rovara itself wrote (its pull request for that version reached the branch after a newer approval): that too is only Rovara having moved.
+  const repoEdited = fileDigest !== undefined && fileDigest !== sync.syncedDigest && !(sync.writtenDigests ?? []).includes(fileDigest);
   if (state === "differs" && repoEdited && seen.rules !== undefined && seen.revision !== undefined && fileDigest !== undefined && fileDigest !== handled) {
     const waiting = await pendingOf(deps, orgId, head.pendingProposalId);
     const now = deps.now();
@@ -235,9 +236,10 @@ async function writeBack(deps: SyncDeps, orgId: OrgId, target: RepoFileTarget, s
   const at = iso(deps.now());
   if (target.host.commitFiles === undefined) return failedWith(sync, wb, current, "no_pull_request_support", at);
   const content = renderRulesFile(current.rules, current.version);
+  const writtenDigests = [...(sync.writtenDigests ?? []).filter((digest) => digest !== current.digest), current.digest].slice(-20);
   const opened = (branch: string, head: string, ref: { id: string; url: string }): SyncRecord => {
     const number = Number(ref.id);
-    return { ...sync, writeBack: { version: current.version, state: "open", branch, head, ...(Number.isSafeInteger(number) && number > 0 ? { number } : {}), ...(ref.url.startsWith("https://") ? { url: ref.url } : {}), updatedAt: at } };
+    return { ...sync, writtenDigests, writeBack: { version: current.version, state: "open", branch, head, ...(Number.isSafeInteger(number) && number > 0 ? { number } : {}), ...(ref.url.startsWith("https://") ? { url: ref.url } : {}), updatedAt: at } };
   };
   const written = (head: string): AuditEventInput => eventOf(orgId, "company_rules.written_back", at, { kind: "system", id: "rovara" }, [String(current.version), head, "written_back"], { version: current.version, revision: head, state: "open" });
   try {
@@ -253,7 +255,7 @@ async function writeBack(deps: SyncDeps, orgId: OrgId, target: RepoFileTarget, s
           if (wb.version === current.version) return { ...sync, writeBack: { ...wb, state: "open", updatedAt: at } };
           const result = await target.host.commitFiles({ repository: target.repository, branch: wb.branch, baseBranch: sync.branch, message: SYNC_WORDS.commit(current.version), files: [{ path: sync.path, content }], fromBase: false, expectedHead: found.details.headRevision, previous: [{ path: sync.path, content: await fileOnBranch(target, wb.branch, sync.path) }] }, target.scope);
           await target.host.updateChangeRequest({ repository: target.repository, id: String(wb.number), url: wb.url ?? "" }, { title: SYNC_WORDS.pullRequestTitle(current.version), body: SYNC_WORDS.pullRequestBody(current.version, sync.path) }, target.scope).catch(() => undefined);
-          const done: SyncRecord = { ...sync, writeBack: { ...wb, version: current.version, state: "open", head: result.revision, updatedAt: at } };
+          const done: SyncRecord = { ...sync, writtenDigests, writeBack: { ...wb, version: current.version, state: "open", head: result.revision, updatedAt: at } };
           if (await deps.store.writeSync({ orgId, next: done, expectedRevision: revision.value, events: [written(result.revision)] }) === "conflict") return sync;
           revision.value += 1;
           return { ...done, revision: revision.value };
@@ -279,7 +281,7 @@ async function writeBack(deps: SyncDeps, orgId: OrgId, target: RepoFileTarget, s
     }
     if (branch === undefined || seen.revision === undefined) return failedWith(sync, wb, current, "host_unavailable", at);
     // The branch name is recorded BEFORE anything is written to the host, so a pass that dies after the write finds its own branch.
-    const recorded: SyncRecord = { ...sync, writeBack: { version: current.version, state: "waiting", branch, updatedAt: at } };
+    const recorded: SyncRecord = { ...sync, writtenDigests, writeBack: { version: current.version, state: "waiting", branch, updatedAt: at } };
     if (await deps.store.writeSync({ orgId, next: recorded, expectedRevision: revision.value }) === "conflict") return sync;
     revision.value += 1;
     const committed = await target.host.commitFiles({ repository: target.repository, branch, baseBranch: sync.branch, message: SYNC_WORDS.commit(current.version), files: [{ path: sync.path, content }], fromBase: true, baseRevision: seen.revision, previous: [{ path: sync.path, content: seen.text ?? null }] }, target.scope);
