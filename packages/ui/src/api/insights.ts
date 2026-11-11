@@ -6,7 +6,7 @@
 //   GET  /v1/app/insights/flow               flow health
 //   GET  /v1/app/org/insights-access         [owner or admin] who holds the Insights viewer grant
 //   POST /v1/app/org/insights-access         [owner or admin, browser session only] grant or revoke
-// The readers are the contract's (`packages/contracts/src/app-insights.ts`, from `@agentx/contracts/web`): built with `forwardReader`, so a value a newer server adds reads as "unknown" instead of failing the page.
+// The readers are the contract's (`packages/cloud-contracts/src/app-insights.ts`, from `@agentx/cloud-contracts/web`): built with `forwardReader`, so a value a newer server adds reads as "unknown" instead of failing the page.
 // Shapes the screens rely on:
 //   - the access list's `grantedBy` is OPTIONAL (the audit ledger may not know who gave a grant): show the date without a name;
 //   - the flow answer's `company` is OPTIONAL (absent unless `status` is "ready"): check `status` first; shipped and flow answer `status: "unavailable"` until the work-event capture exists;
@@ -17,10 +17,7 @@
 import { useMemo } from "react";
 import { useInfiniteQuery, useQuery, type UseQueryResult } from "@tanstack/react-query";
 import type { z } from "zod";
-import {
- InsightsAccessReaderSchema, InsightsFlowReaderSchema, InsightsOverviewReaderSchema, InsightsShippedReaderSchema, InsightsSpendReaderSchema, InsightsStuckReaderSchema,
- type InsightsAccessBody,
-} from "@agentx/contracts/web";
+import { InsightsAccessReaderSchema, InsightsFlowReaderSchema, InsightsOverviewReaderSchema, InsightsShippedReaderSchema, InsightsSpendReaderSchema, InsightsStuckReaderSchema, type InsightsAccessBody } from "@agentx/cloud-contracts/web";
 import { useAppHost } from "../host.js";
 import { createApiClient } from "./client.js";
 

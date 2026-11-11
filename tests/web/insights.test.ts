@@ -10,7 +10,7 @@ import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { ThemeProvider } from "../../packages/ui/src/theme.js";
 import { isInsightsOn, INSIGHTS_STORAGE_KEY } from "../../packages/ui/src/screens/insights/insights-flags.js";
 import { ageWords, barPercent, durationWords, nextActorWords, notCoveredWords, notReadyWords, rateWords, recentMonths } from "../../packages/ui/src/screens/insights/insights-format.js";
-import { InsightsOverviewReaderSchema, InsightsSpendReaderSchema, InsightsStuckReaderSchema } from "@agentx/contracts/web";
+import { InsightsOverviewReaderSchema, InsightsSpendReaderSchema, InsightsStuckReaderSchema } from "@agentx/cloud-contracts/web";
 import { currentDestination, destinationsFor } from "../../packages/ui/src/shell/destinations.js";
 import { fakeHost } from "./support/fake-host.js";
 import { renderUi } from "./support/render.js";

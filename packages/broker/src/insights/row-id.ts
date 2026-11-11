@@ -3,7 +3,7 @@
 // session list cursor is sealed with, derived under its own label so no other use of it can recompute an id). It is stable (the same work reads the same on every request, for paging and for the screen's
 // own bookkeeping), different in every company, and cannot be reversed or looked up in a table of ids without the key. Nothing builds a link from it. A row the reader can open carries the raw id.
 import { createHmac } from "node:crypto";
-import { agentXError, type OrgId } from "@agentx/contracts";
+import { agentXError, type OrgId } from "@rovara-code/contracts";
 
 export const INSIGHTS_OPAQUE_PREFIX = "itm_";
 

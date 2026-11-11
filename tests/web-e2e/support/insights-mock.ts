@@ -1,5 +1,5 @@
 import type { Page } from "@playwright/test";
-// The Insights journey's reads (`page.route` fixtures, no server). Shapes are the contract's (packages/contracts/src/app-insights.ts), as the server sends them: a session id and a link only on a row the reader can open, an opaque `itm_...` id on a metadata row, `grantedBy` absent when the ledger cannot say, `totals` and `byPerson` absent for a maintainer (and `byPerson` for a viewer).
+// The Insights journey's reads (`page.route` fixtures, no server). Shapes are the contract's (packages/cloud-contracts/src/app-insights.ts), as the server sends them: a session id and a link only on a row the reader can open, an opaque `itm_...` id on a metadata row, `grantedBy` absent when the ledger cannot say, `totals` and `byPerson` absent for a maintainer (and `byPerson` for a viewer).
 // Variants: "owner" (company scope, per-person spend present, grant control), "viewer" (company scope, no per-person spend, no grant control), "maintainer" (two projects, no company totals), "refused" (the overview answers 403).
 export type InsightsVariant = "owner" | "viewer" | "maintainer" | "refused";
 const ME = "a".repeat(64), MAYA = "b".repeat(64), SAM = "c".repeat(64), ASOF = "2026-11-11T12:00:00.000Z";
