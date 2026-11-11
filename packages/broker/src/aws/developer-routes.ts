@@ -134,6 +134,7 @@ import { requireCompanyModelPolicyAuthority, getCompanyModelSelectionPolicy } fr
 import { getStageModels } from "../model-selection/read.js";
 import { loadStageModelSnapshot } from "../model-selection/snapshot.js";
 import { projectSlackBrowserHttp } from "../org/project-slack-browser-http.js";
+import { COLLABORATOR_BROWSER_MESSAGE, collaboratorBrowserOnly, routeCollaboratorRequest } from "../collaborators/routes.js";
 import { projectAllowedDomainsHttp } from "../org/project-allowed-domains-http.js";
 import { getTaskStopProject } from "../org/task-stop-project.js";
 import { getTaskStopAgent } from "../org/task-stop-agent.js";
@@ -368,6 +369,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (isSetupRecipesPath(url.pathname) && setupRecipesEnabled() && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", SETUP_RECIPES_BROWSER_MESSAGE);
   // Company-approved extra test-service images (switches `tx` and `pj`): a token or the API can read, never change (off: the path is not found).
   if (isCompanyTestImagesPath(url.pathname) && companyTestImagesEnabled() && request.method === "POST" && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", COMPANY_TEST_IMAGES_BROWSER_MESSAGE);
+  // Collaborator role (W11): the collaborator switch and product decisions are changed from a live browser session only (reads are open to anyone who can see the project).
+  if (collaboratorBrowserOnly(request.method, url.pathname) && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", COLLABORATOR_BROWSER_MESSAGE);
   // Company rules (G-04, switch `si`): a token or the API can read, never change (off: the path is not found).
   if (isCompanyRulesPath(url.pathname) && companyRulesEnabled() && request.method === "POST" && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", COMPANY_RULES_BROWSER_MESSAGE);
   // The project's saved environment panel (switch `sv`): browser-only for reads and writes, whatever the method (off: the path is not found).
@@ -524,6 +527,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (request.method === "POST" && projectSettingsUndo !== null) return undoToProvenSetup(deps, caller, projectSettingsUndo[1]!, jsonBody(request));
   const metaConfigRoute = /^\/v1\/app\/projects\/([^/]+)\/meta-config(?:\/(apply|dismiss|check))?$/.exec(url.pathname);
   if (metaConfigRoute !== null && (request.method === "GET" || request.method === "POST")) return projectMetaConfigRoute(deps, caller, metaConfigRoute[1]!, metaConfigRoute[2], request.method, request.method === "POST" ? jsonBody(request) : undefined);
+  const collaboratorAnswer = await routeCollaboratorRequest(deps, caller, request.method, url.pathname, () => jsonBody(request));
+  if (collaboratorAnswer !== undefined) return collaboratorAnswer;
   const projectMembersRoute = /^\/v1\/app\/projects\/([^/]+)\/members(?:\/([a-f0-9]{64}))?$/.exec(url.pathname);
   if (projectMembersRoute !== null) {
     if (request.method === "GET" && projectMembersRoute[2] === undefined) return getProjectMembers(deps, caller, projectMembersRoute[1]!);

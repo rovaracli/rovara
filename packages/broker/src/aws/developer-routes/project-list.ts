@@ -1,10 +1,10 @@
 import { logDeveloperEvent } from "../../developer/log.js";
 import type { z } from "zod";
 import { QueryCommand } from "@aws-sdk/lib-dynamodb";
-import { StoredProjectDefinitionSchema, type AppProjectSummary, type AppProjectsResponse, type DeveloperProjectsResponse } from "@agentx/cloud-contracts";
+import { StoredProjectDefinitionSchema, projectRoleFloor, type AppProjectSummary, type AppProjectsResponse, type DeveloperProjectsResponse, type ProjectRole as MemberRole } from "@agentx/cloud-contracts";
 import { CHANNEL_MEMBERS_MAX_CHANNELS, MEMBER_GRANT_SK_PREFIX, PROJECT_REVISION_SK_PREFIX, SLACK_BINDING_SK_PREFIX, developerTaskPolicy, metaRepositoryOf, memberGrantsPk, orgProjectCatalogPk, projectPk, slackBindingPk, setupCheckErrorRef, type ProjectRole, type ChannelInfoResponse, type ChannelMembersRequest, type ChannelMembersResponse, type DeveloperTaskPolicy, type OrgId, type SlackChannelBinding, SESSION_PROJECT_BINDINGS_MAX } from "@rovara-code/contracts";
 import { resolveDeveloperAccess } from "../../developer/access.js";
-import { effectiveProjectRole, grantRoleOf, grantedByOf, readProjectMeta, type ProjectMetaItem } from "../../developer/project-roles.js";
+import { effectiveMemberRole, effectiveProjectRole, grantRoleOf, grantedByOf, readProjectMeta, type ProjectMetaItem } from "../../developer/project-roles.js";
 import { createProjectMembers, survivorOf, type ProjectMembers, type ProjectMembersDependencies } from "../../org/project-members.js";
 import { setupStateOf, type SetupCheckDependencies } from "../../org/project-setup-check.js";
 import type { DeveloperCaller, DeveloperRouteDependencies, ProjectAccessCaller } from "./types.js";
@@ -254,6 +254,7 @@ export async function appProjectSummary(
   role: ProjectRole,
   record: NonNullable<Awaited<ReturnType<typeof latestProjectRecord>>>,
   meta: ProjectMetaItem | undefined,
+  memberRole?: MemberRole,
 ): Promise<AppProjectSummary> {
   const { definition } = record;
   const metaRepository = metaRepositoryOf(definition);
@@ -268,6 +269,8 @@ export async function appProjectSummary(
     repositories: definition.repositories.map((repository) => ({ name: repository.name, fullName: repositoryFullName(repository), defaultBranch: repository.defaultBranch })),
     ...(metaRepository === undefined ? {} : { metaRepository: { name: metaRepository.name, fullName: repositoryFullName(metaRepository), defaultBranch: metaRepository.defaultBranch, ...(metaRepository.alsoCode === true ? { alsoCode: true } : {}) } }),
     myRole: role,
+    // Collaborator role (W11): the exact role; `myRole` stays the three-valued floor today's pages read.
+    myProjectRole: memberRole ?? role,
     setup: setupRef === undefined ? setup : { ...setup, errorRef: setupRef },
   };
 }
@@ -278,11 +281,16 @@ export async function appProjectSummary(
  * read is keyed by `caller.orgId`, so another org's project of the same name is never reached. With `only`, just that name.
  */
 export async function visibleProjectRoles(deps: DeveloperRouteDependencies, caller: DeveloperCaller, only?: string): Promise<Map<string, ProjectRole>> {
-  const roles = new Map<string, ProjectRole>();
+  return new Map([...await visibleMemberRoles(deps, caller, only)].map(([name, role]) => [name, projectRoleFloor(role)]));
+}
+
+/** Collaborator role (W11): the same projects with the caller's EXACT role in each (a collaborator is a collaborator). `visibleProjectRoles` is its floor, so the two cannot disagree. */
+export async function visibleMemberRoles(deps: DeveloperRouteDependencies, caller: DeveloperCaller, only?: string): Promise<Map<string, MemberRole>> {
+  const roles = new Map<string, MemberRole>();
   if (caller.orgRole === "owner" || caller.orgRole === "admin") {
     const names = only !== undefined ? [only]
       : (await queryAll<{ name?: unknown }>(deps, orgProjectCatalogPk(caller.orgId), "PROJECT#")).flatMap((entry) => (typeof entry.name === "string" ? [entry.name] : []));
-    for (const name of names) roles.set(name, effectiveProjectRole(caller, undefined, false)!);
+    for (const name of names) roles.set(name, effectiveMemberRole(caller, undefined, false)!);
     return roles;
   }
   const grantRows = (await grantRowsOf(deps, caller)).filter((row) => only === undefined || row.projectName === only);
@@ -297,7 +305,7 @@ export async function visibleProjectRoles(deps: DeveloperRouteDependencies, call
     channelMembers: safeChannelMembers(deps),
   });
   for (const [name, entry] of access.projects) {
-    const role = effectiveProjectRole(caller, grantOf.get(name), entry.access === "channel");
+    const role = effectiveMemberRole(caller, grantOf.get(name), entry.access === "channel");
     if (role !== undefined && policies.has(name)) roles.set(name, role);
   }
   return roles;
@@ -305,13 +313,13 @@ export async function visibleProjectRoles(deps: DeveloperRouteDependencies, call
 
 /** `GET /v1/app/projects`: the caller's projects, sorted by name. Archived ones only with `?include=archived`. */
 export async function listAppProjects(deps: DeveloperRouteDependencies, caller: DeveloperCaller, includeArchived: boolean): Promise<AppProjectsResponse> {
-  const roles = await visibleProjectRoles(deps, caller);
+  const roles = await visibleMemberRoles(deps, caller);
   const names = [...roles.keys()].sort();
   const built = await mapLimit(names, REVISION_READS_AT_ONCE, async (name) => {
     const [record, meta] = await Promise.all([latestProjectRecord(deps, caller.orgId, name), readProjectMeta(deps, caller.orgId, name)]);
     // A catalog entry with no readable revision is not a project the app can show.
     if (record === undefined || (meta?.status === "archived" && !includeArchived)) return undefined;
-    return appProjectSummary(deps, name, roles.get(name)!, record, meta);
+    return appProjectSummary(deps, name, projectRoleFloor(roles.get(name)!), record, meta, roles.get(name));
   });
   return { projects: built.filter((project): project is AppProjectSummary => project !== undefined) };
 }

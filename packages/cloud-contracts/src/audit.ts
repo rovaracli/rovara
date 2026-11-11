@@ -368,6 +368,12 @@ export const AUDIT_ACTIONS = [
   "project.automatic_runs_cap_changed",
   "automatic_runs.paused",
   "automatic_run.ended",
+  // Collaborator role (W11, decisions 14 and 36): the project's switch for collaborators' low-risk product approvals changed; a product decision a task raised was raised, answered or approved. Fixed words,
+  // revisions and counts only: never the question, an option's words or an answer's text.
+  "project.collaborator_approvals_changed",
+  "product_decision.raised",
+  "product_decision.answered",
+  "product_decision.approved",
   // Saved project images (SV wiring): ids, digests, counts and fixed words only.
   "saved_env.changed",
   "saved_env.setting_changed",
@@ -749,6 +755,14 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "automatic_runs.paused": ["month", "cap"],
   // Rovara ended an automatic run itself: `job` as above, `cause` is `project_stopped` (the project was archived or the company closed) or `too_old` (it ran past its time and the sweep ended it).
   "automatic_run.ended": ["job", "cause"],
+  // `enabled` is the switch after the change, `revision` its new revision.
+  "project.collaborator_approvals_changed": ["enabled", "revision"],
+  // `decisionId` is the product decision's id (`pdq_`), `risk` its tier, `options` how many it has.
+  "product_decision.raised": ["decisionId", "risk", "options"],
+  // `revision` is the decision's revision after the answer.
+  "product_decision.answered": ["decisionId", "risk", "revision"],
+  // `role` is who settled it as the policy saw them (`owner`, `maintainer`, `collaborator`); `optionId` the chosen option's id; `class` is always `product` (never a code approval).
+  "product_decision.approved": ["decisionId", "risk", "role", "optionId", "revision", "class"],
   // `change` is a fixed word of the saved environment registry's ledger (queued, recorded, refused, failed, marked stale, reset, images deleted, archived, deleted, registered, walk, scan, lease refused); `cause` a fixed word; `digest` an image digest.
   "saved_env.changed": ["change", "cause", "digest", "count"],
   // `enabled` is the project's savedEnv.enabled setting after the change.

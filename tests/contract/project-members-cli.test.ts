@@ -116,7 +116,7 @@ describe("agentx project add-member", () => {
     expect(h.out.join("")).toBe("Priya Raman is now a maintainer in web.\nSam Okoye is now a viewer in web.\n");
   });
 
-  it("needs --role, and only maintainer, contributor or viewer; nothing is sent", async () => {
+  it("needs --role, and only maintainer, contributor, collaborator or viewer; nothing is sent", async () => {
     const h = await cli(routes());
     // The argument parser words these refusals itself, on the process's own stderr.
     const refusals: string[] = [];
@@ -129,7 +129,7 @@ describe("agentx project add-member", () => {
       stderr.mockRestore();
     }
     expect(refusals.join("")).toContain("required option '--role <role>' not specified");
-    expect(refusals.join("")).toContain("Allowed choices are maintainer, contributor, viewer");
+    expect(refusals.join("")).toContain("Allowed choices are maintainer, contributor, collaborator, viewer");
     expect(h.calls).toEqual([]);
   });
 

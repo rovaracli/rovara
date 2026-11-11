@@ -2,7 +2,8 @@
 // SAML attribute later) to a Rovara org role and to project roles. The mapping is read at every sign-in and fails closed: a person with no mapped group has no
 // access. An owner is never granted by mapping. Enterprise edition only (the `sso` feature).
 import { z } from "zod";
-import { AGENTX_NAME_PATTERN, type OrgId, type OrgKey, orgPk, ProjectRoleSchema } from "@rovara-code/contracts";
+import { AGENTX_NAME_PATTERN, type OrgId, type OrgKey, orgPk } from "@rovara-code/contracts";
+import { ProjectRoleSchema } from "./project-roles.js";
 import { OrgRoleSchema, type OrgRole } from "./org.js";
 
 /** Roles a mapping may grant: every org role but `owner`. A mapping that names `owner` does not parse, so no stored record can grant it. */
@@ -15,7 +16,8 @@ export type MappableOrgRole = z.infer<typeof MappableOrgRoleSchema>;
  */
 export const MAPPED_ORG_ROLE_PRECEDENCE: readonly MappableOrgRole[] = ["admin", "member", "auditor"];
 // Auditor ranks last, but it never loses to a writer's role quietly: a person who matches an Auditor rule and an admin or member rule is refused (`auditor_and_writer`), not made the writer.
-export const PROJECT_ROLE_PRECEDENCE = ["maintainer", "contributor", "viewer"] as const;
+// Collaborator role (W11): a collaborator ranks above a viewer (it may answer and approve low product decisions) and below a contributor (it starts no work).
+export const PROJECT_ROLE_PRECEDENCE = ["maintainer", "contributor", "collaborator", "viewer"] as const;
 
 const NO_CONTROL = /^[^\p{Cc}\p{Cf}]*$/u;
 

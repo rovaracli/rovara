@@ -2,7 +2,9 @@
 // signed-in calls to the control plane's /v1/app/projects/{name}/members routes; the control plane decides who may do what, and this only
 // names the person (by email or ID, from the org's people) and prints what happened.
 import { randomUUID } from "node:crypto";
-import { ProjectMemberChangeResponseSchema, ProjectMemberRemoveResponseSchema, ProjectMembersResponseSchema, type ProjectMember, type ProjectRole } from "@rovara-code/contracts";
+import { ProjectMemberRemoveResponseSchema } from "@rovara-code/contracts";
+// Collaborator role (W11): the people shapes that can name a collaborator (`projectRole`, the exact role; `role` is its three-valued floor for older readers).
+import { ProjectMemberChangeResponseSchema, ProjectMembersResponseSchema, type ProjectMember, type ProjectRole } from "@agentx/cloud-contracts";
 import { sanitizeServerText } from "../auth.js";
 import { developerRequest } from "./commands.js";
 import { resolveOrgMember, type OrgMember } from "./org.js";
@@ -25,7 +27,7 @@ function sourceText(member: ProjectMember): string {
 export function projectMembersText(result: { env: string; url: string; project: string; members: readonly ProjectMember[] }): string {
   const lines = [`People in ${clean(result.project)} on ${result.env} (${result.url}):`];
   for (const member of result.members) {
-    lines.push(`  ${clean(member.name)}${member.email === undefined ? "" : ` <${clean(member.email)}>`}  ${member.role}  (${sourceText(member)})`);
+    lines.push(`  ${clean(member.name)}${member.email === undefined ? "" : ` <${clean(member.email)}>`}  ${member.projectRole ?? member.role}  (${sourceText(member)})`);
   }
   return `${lines.join("\n")}\n`;
 }
@@ -37,10 +39,10 @@ export async function projectAddMember(
   const { body } = await developerRequest(deps, env, `${membersPath(project)}/${found.member.developerId}`, ProjectMemberChangeResponseSchema, {
     method: "PUT", body: { requestId: randomUUID(), role }, explain: true,
   });
-  return { ...found, project, role: body.member.role };
+  return { ...found, project, role: body.member.projectRole ?? body.member.role };
 }
 
-const ROLE_PHRASE = { maintainer: "a maintainer", contributor: "a contributor", viewer: "a viewer" } as const;
+const ROLE_PHRASE = { maintainer: "a maintainer", contributor: "a contributor", collaborator: "a collaborator", viewer: "a viewer" } as const;
 export const projectAddMemberText = (result: { project: string; member: OrgMember; role: ProjectRole }) =>
   `${clean(result.member.name)} is now ${ROLE_PHRASE[result.role]} in ${clean(result.project)}.\n`;
 

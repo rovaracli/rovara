@@ -3,7 +3,7 @@
 // places that start new work (a task start, Slack-started work, the setup check): work that exists keeps going.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { ProjectRoleSchema, agentXError, projectAllows, projectArchivedMessage, projectMetaKey, type OrgId, type ProjectRole } from "@rovara-code/contracts";
-import { type OrgRole } from "@agentx/cloud-contracts";
+import { projectRoleFloor, type OrgRole, type ProjectRole as MemberRole } from "@agentx/cloud-contracts";
 import { ownerKeyForSubject } from "../aws/lambda.js";
 
 /**
@@ -23,9 +23,20 @@ export type GrantedBy = { developerId: string } | { system: "admin" };
  * privileged role.
  */
 export function grantRoleOf(grant: GrantItem | undefined): ProjectRole | undefined {
+  const role = grantMemberRoleOf(grant);
+  return role === undefined ? undefined : projectRoleFloor(role);
+}
+
+/**
+ * Collaborator role (W11): the EXACT role a grant row gives, a collaborator included. A collaborator's row is written `role: viewer, projectRole: collaborator`, so every reader that knows only the coarse
+ * `role` (and `grantRoleOf`, and an older broker) reads it as a viewer, its floor. Only `role: viewer` with `projectRole: collaborator` is a collaborator; `role: developer` with `projectRole: collaborator`
+ * contradicts itself and reads as the least privileged role, a viewer. Everything else reads as `grantRoleOf` always did.
+ */
+export function grantMemberRoleOf(grant: GrantItem | undefined): MemberRole | undefined {
   if (grant === undefined) return undefined;
-  if (grant.role === "viewer") return "viewer";
+  if (grant.role === "viewer") return grant.projectRole === "collaborator" ? "collaborator" : "viewer";
   if (grant.role !== "developer") return undefined;
+  if (grant.projectRole === "collaborator") return "viewer";
   const stored = ProjectRoleSchema.safeParse(grant.projectRole);
   return stored.success ? stored.data : "contributor";
 }
@@ -63,10 +74,16 @@ export interface ProjectMetaItem {
  * even when the person is also in the project's Slack channel; otherwise a contributor with channel access; otherwise none.
  */
 export function effectiveProjectRole(caller: { orgRole: OrgRole; developerId: string }, grant: GrantItem | undefined, channelAccess: boolean): ProjectRole | undefined {
+  const role = effectiveMemberRole(caller, grant, channelAccess);
+  return role === undefined ? undefined : projectRoleFloor(role);
+}
+
+/** The same rule with the EXACT role (a collaborator is a collaborator, not its viewer floor): the one place it is decided, so the floor and the exact role can never disagree. */
+export function effectiveMemberRole(caller: { orgRole: OrgRole; developerId: string }, grant: GrantItem | undefined, channelAccess: boolean): MemberRole | undefined {
   if (caller.orgRole === "owner" || caller.orgRole === "admin") return "maintainer";
   // The Auditor has no project role, whatever grant or channel it may also hold: it reads the audit log and writes nothing.
   if (caller.orgRole === "auditor") return undefined;
-  const granted = grantRoleOf(grant);
+  const granted = grantMemberRoleOf(grant);
   if (granted !== undefined) return granted;
   return channelAccess ? "contributor" : undefined;
 }

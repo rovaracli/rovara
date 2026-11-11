@@ -29,6 +29,8 @@
   "packages/cloud-contracts/src/org-slack-workspace-evidence.ts",
   "packages/cloud-contracts/src/org.ts",
   "packages/cloud-contracts/src/pending-api.ts",
+  "packages/cloud-contracts/src/product-decisions.ts",
+  "packages/cloud-contracts/src/project-roles.ts",
   "packages/cloud-contracts/src/realtime-readers.ts",
   "packages/cloud-contracts/src/realtime.ts",
   "packages/cloud-contracts/src/rovara-code.ts",

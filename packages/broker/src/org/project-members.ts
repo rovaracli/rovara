@@ -12,12 +12,12 @@
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { randomUUID } from "node:crypto";
 import { INDEX_EXPIRY_ATTRIBUTE, MEMBER_GRANT_SK_PREFIX, PROJECT_REVISION_SK_PREFIX, agentXError, memberGrantsPk, orgPk, orgProjectCatalogPk, projectMemberKey, projectMetaKey, projectPk, type OrgId, type OrgKey, type ProjectRole } from "@rovara-code/contracts";
-import { OrgRoleSchema, orgMemberKey, type AuditEventInput, type OrgRole } from "@agentx/cloud-contracts";
+import { OrgRoleSchema, ProjectRoleSchema, orgMemberKey, projectRoleFloor, type AuditEventInput, type OrgRole, type ProjectRole as MemberRole } from "@agentx/cloud-contracts";
 import { auditOccurrence, auditProjectMemberChanged, auditProjectMemberRemoved } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, tryAuditEvent, type AuditRuntime } from "../audit/outbox.js";
 import { approvalGrantChange } from "./approval-membership.js";
-import { effectiveProjectRole, grantRoleOf, grantedByOf, type GrantedBy } from "../developer/project-roles.js";
+import { effectiveMemberRole, effectiveProjectRole, grantMemberRoleOf, grantRoleOf, grantedByOf, type GrantedBy } from "../developer/project-roles.js";
 
 /** A person in a project, as Plan 3 reads one: `grant` for a person holding a grant, `org_role` for an org owner or admin. */
 export interface ProjectMembers {
@@ -130,8 +130,8 @@ async function idsFor(deps: Pick<ProjectMembersDependencies, "developerRecord">,
   return survivor === developerId ? [developerId] : [survivor, developerId];
 }
 
-/** One person in a project with what the route shows beyond `ProjectMembers.list`: who granted it. */
-export interface ProjectMemberRow { developerId: string; role: ProjectRole; source: "grant" | "org_role"; grantedBy?: GrantedBy }
+/** One person in a project with what the route shows beyond `ProjectMembers.list`: who granted it, and (collaborator role, W11) the exact role beside its three-valued floor `role`. */
+export interface ProjectMemberRow { developerId: string; role: ProjectRole; memberRole: MemberRole; source: "grant" | "org_role"; grantedBy?: GrantedBy }
 
 /**
  * Everyone with a role in the project: each org owner and admin (`org_role`, maintainer, once, whatever grants they also hold) and each
@@ -141,30 +141,39 @@ export interface ProjectMemberRow { developerId: string; role: ProjectRole; sour
 export async function listProjectMembers(deps: ProjectMembersDependencies, orgId: OrgId, project: string): Promise<ProjectMemberRow[]> {
   if (!await projectExists(deps, orgId, project)) return [];
   const rows = await mapLimit(await orgMembers(deps, orgId), async (member): Promise<ProjectMemberRow | undefined> => {
-    if (member.role === "owner" || member.role === "admin") return { developerId: member.developerId, role: "maintainer", source: "org_role" };
+    if (member.role === "owner" || member.role === "admin") return { developerId: member.developerId, role: "maintainer", memberRole: "maintainer", source: "org_role" };
     // Only a member holds a project role by grant. An Auditor (or a role this release does not know) is not listed whatever grant it was left with (I2).
     if (member.role !== "member") return undefined;
     const grant = await readGrant(deps, orgId, member.developerId, project);
-    const role = grantRoleOf(grant);
-    return role === undefined ? undefined : { developerId: member.developerId, role, source: "grant", grantedBy: grantedByOf(grant) };
+    const memberRole = grantMemberRoleOf(grant);
+    return memberRole === undefined ? undefined : { developerId: member.developerId, role: projectRoleFloor(memberRole), memberRole, source: "grant", grantedBy: grantedByOf(grant) };
   });
   return rows.filter((row): row is ProjectMemberRow => row !== undefined);
+}
+
+/**
+ * Collaborator role (W11): a person's EXACT role in a project, read live (a collaborator is a collaborator, not its viewer floor). `ProjectMembers.roleOf` is this role's floor, so the two cannot disagree.
+ * Only the collaborator paths (product decisions, the people routes, the project read) ask for the exact role; everything else keeps Code's three roles.
+ */
+export async function projectMemberRoleOf(deps: ProjectMembersDependencies, orgId: OrgId, project: string, caller: { developerId: string; orgRole: OrgRole }): Promise<MemberRole | undefined> {
+  if (!await projectExists(deps, orgId, project)) return undefined;
+  if (caller.orgRole === "owner" || caller.orgRole === "admin") return effectiveMemberRole(caller, undefined, false);
+  let grant: Item | undefined;
+  for (const id of await idsFor(deps, caller.developerId)) {
+    const found = await readGrant(deps, orgId, id, project);
+    if (grantRoleOf(found) !== undefined) { grant = found; break; }
+  }
+  // An explicit grant is the role, even for a person who is also in the channel; the channel is asked only when there is no grant.
+  const channel = grant === undefined && deps.channelAccess !== undefined && await deps.channelAccess(orgId, project, caller.developerId);
+  return effectiveMemberRole(caller, grant, channel);
 }
 
 /** What Plan 3 (and the routes) read people through. See the interface. */
 export function createProjectMembers(deps: ProjectMembersDependencies): ProjectMembers {
   return {
     async roleOf(orgId, project, caller) {
-      if (!await projectExists(deps, orgId, project)) return undefined;
-      if (caller.orgRole === "owner" || caller.orgRole === "admin") return effectiveProjectRole(caller, undefined, false);
-      let grant: Item | undefined;
-      for (const id of await idsFor(deps, caller.developerId)) {
-        const found = await readGrant(deps, orgId, id, project);
-        if (grantRoleOf(found) !== undefined) { grant = found; break; }
-      }
-      // An explicit grant is the role, even for a person who is also in the channel; the channel is asked only when there is no grant.
-      const channel = grant === undefined && deps.channelAccess !== undefined && await deps.channelAccess(orgId, project, caller.developerId);
-      return effectiveProjectRole(caller, grant, channel);
+      const role = await projectMemberRoleOf(deps, orgId, project, caller);
+      return role === undefined ? undefined : projectRoleFloor(role);
     },
 
     async list(orgId, project) {
@@ -202,11 +211,19 @@ export function createProjectMembers(deps: ProjectMembersDependencies): ProjectM
 const OPERATOR_ROW_MESSAGE = (project: string) => `that person administers \`${project}\` for the operator, so they cannot be given a project role here`;
 
 /** The item for a new grant. Its shape is the one this task fixes: the E2E proof needs `entityType`, `ownerKey` and a UUID `grantId`. */
-function newGrantItem(orgId: OrgId, project: string, developerId: string, role: ProjectRole, grantedBy: GrantedBy, at: string): Item {
+function newGrantItem(orgId: OrgId, project: string, developerId: string, role: MemberRole, grantedBy: GrantedBy, at: string): Item {
   return {
     ...projectMemberKey(orgId, developerId, project), entityType: "MEMBERSHIP", ownerKey: developerId, grantId: randomUUID(), projectName: project,
-    role: role === "viewer" ? "viewer" : "developer", projectRole: role, grantedBy, grantedAt: at,
+    role: storedRoleOf(role), projectRole: role, grantedBy, grantedAt: at,
   };
+}
+
+/**
+ * The coarse `role` a grant row stores: `developer` for a maintainer or contributor, `viewer` for a viewer AND for a collaborator (W11). A collaborator starts no work and is no task participant, so
+ * every reader of the coarse role (and an older broker) treats it as the viewer it is there; only `grantMemberRoleOf` reads `projectRole: collaborator` back.
+ */
+export function storedRoleOf(role: MemberRole): "developer" | "viewer" {
+  return role === "viewer" || role === "collaborator" ? "viewer" : "developer";
 }
 
 /** The logical project role and immutable grant identity must still be the
@@ -224,21 +241,21 @@ function grantSnapshot(existing: Item): { condition: string; values: Item } {
  * them), conditioned on the role that was read. The operator's `administrator` row is never overwritten: the key is shared, so a grant would
  * replace it.
  */
-async function grantWrite(deps: ProjectMembersDependencies, input: { orgId: OrgId; project: string; developerId: string; role: ProjectRole; grantedBy: GrantedBy; now: () => Date }): Promise<{ write: Item; fromRole: ProjectRole | undefined }> {
+async function grantWrite(deps: ProjectMembersDependencies, input: { orgId: OrgId; project: string; developerId: string; role: MemberRole; grantedBy: GrantedBy; now: () => Date }): Promise<{ write: Item; fromRole: MemberRole | undefined }> {
   const { orgId, project, developerId, role } = input;
   const existing = await readGrant(deps, orgId, developerId, project);
   if (existing !== undefined && existing.role !== "developer" && existing.role !== "viewer") throw agentXError("CONFIG_INVALID", OPERATOR_ROW_MESSAGE(project));
   if (existing === undefined) {
     return { fromRole: undefined, write: { Put: { TableName: deps.tableName, Item: newGrantItem(orgId, project, developerId, role, input.grantedBy, input.now().toISOString()), ConditionExpression: "attribute_not_exists(pk)" } } };
   }
-  return { fromRole: grantRoleOf(existing), write: { Update: {
+  return { fromRole: grantMemberRoleOf(existing), write: { Update: {
     TableName: deps.tableName, Key: projectMemberKey(orgId, developerId, project),
     UpdateExpression: "SET #role = :role, projectRole = :projectRole, entityType = if_not_exists(entityType, :entity), ownerKey = if_not_exists(ownerKey, :owner), projectName = if_not_exists(projectName, :project), grantId = if_not_exists(grantId, :grantId)",
     // Only the row that was read: an operator's row that appeared in between is not overwritten.
     ConditionExpression: "attribute_exists(pk) AND #role = :seen AND " + grantSnapshot(existing).condition,
     ExpressionAttributeNames: { "#role": "role" },
     ExpressionAttributeValues: {
-      ":role": role === "viewer" ? "viewer" : "developer", ":projectRole": role, ":entity": "MEMBERSHIP", ":owner": developerId, ":project": project, ":grantId": randomUUID(), ":seen": existing.role, ...grantSnapshot(existing).values,
+      ":role": storedRoleOf(role), ":projectRole": role, ":entity": "MEMBERSHIP", ":owner": developerId, ":project": project, ":grantId": randomUUID(), ":seen": existing.role, ...grantSnapshot(existing).values,
     },
   } } };
 }
@@ -253,10 +270,10 @@ function stillMember(deps: ProjectMembersDependencies, orgId: OrgId, developerId
 }
 
 /** The write that removes a developer's grant and the role it gave, or undefined when there is none to remove (the operator's `administrator` row is not a project role and stays). */
-async function revokeWrite(deps: ProjectMembersDependencies, orgId: OrgId, project: string, developerId: string): Promise<{ write: Item; role: ProjectRole | undefined } | undefined> {
+async function revokeWrite(deps: ProjectMembersDependencies, orgId: OrgId, project: string, developerId: string): Promise<{ write: Item; role: MemberRole | undefined } | undefined> {
   const existing = await readGrant(deps, orgId, developerId, project);
   if (existing === undefined || (existing.role !== "developer" && existing.role !== "viewer")) return undefined;
-  return { role: grantRoleOf(existing), write: { Delete: {
+  return { role: grantMemberRoleOf(existing), write: { Delete: {
     TableName: deps.tableName, Key: projectMemberKey(orgId, developerId, project),
     ConditionExpression: "attribute_exists(pk) AND #role = :seen AND " + grantSnapshot(existing).condition, ExpressionAttributeNames: { "#role": "role" }, ExpressionAttributeValues: { ":seen": existing.role, ...grantSnapshot(existing).values },
   } } };
@@ -280,7 +297,7 @@ type StoredRequest = { indexExpiresAt?: unknown; action?: unknown; target?: unkn
  * The stored outcome of a request id already used on this project, or undefined for a fresh one. A replay must be the same caller, action,
  * person and role; anything else with that id is IDEMPOTENCY_CONFLICT (so one caller can neither read nor replay another's request).
  */
-async function replayOf(deps: ProjectMemberChangeDependencies, orgId: OrgId, project: string, requestId: string, expected: { action: "put" | "remove"; target: string; role?: ProjectRole; by: string }): Promise<unknown> {
+async function replayOf(deps: ProjectMemberChangeDependencies, orgId: OrgId, project: string, requestId: string, expected: { action: "put" | "remove"; target: string; role?: MemberRole; by: string }): Promise<unknown> {
   const stored = (await getItem(deps, memberRequestKey(orgId, project, requestId))) as StoredRequest | undefined;
   if (stored === undefined) return undefined;
   // The State table's TTL can lag by a day or two: a record past its expiry is gone, as far as a request id is concerned.
@@ -292,7 +309,7 @@ async function replayOf(deps: ProjectMemberChangeDependencies, orgId: OrgId, pro
 }
 
 /** The request's record, written in the same transaction as the change it belongs to, so a change is never applied without its id being remembered. */
-function requestWrite(deps: ProjectMemberChangeDependencies, orgId: OrgId, project: string, requestId: string, record: { action: "put" | "remove"; target: string; role?: ProjectRole; by: string; response: unknown }): Item {
+function requestWrite(deps: ProjectMemberChangeDependencies, orgId: OrgId, project: string, requestId: string, record: { action: "put" | "remove"; target: string; role?: MemberRole; by: string; response: unknown }): Item {
   const at = deps.now();
   return { Put: {
     TableName: deps.tableName,
@@ -346,12 +363,14 @@ export async function setProjectMember(
   deps: ProjectMemberChangeDependencies,
   orgId: OrgId,
   project: string,
-  input: { requestId: string; developerId: string; role: ProjectRole; actor: { developerId: string } },
-): Promise<{ developerId: string; role: ProjectRole }> {
+  input: { requestId: string; developerId: string; role: MemberRole; actor: { developerId: string } },
+): Promise<{ developerId: string; role: MemberRole }> {
+  // Checked here as well as at the route (every boundary): a role that is not one of Cloud's four is never stored.
+  if (!ProjectRoleSchema.safeParse(input.role).success) throw agentXError("CONFIG_INVALID", "role: must be maintainer, contributor, collaborator or viewer");
   const expected = { action: "put" as const, target: input.developerId, role: input.role, by: input.actor.developerId };
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
     const replayed = await replayOf(deps, orgId, project, input.requestId, expected);
-    if (replayed !== undefined) return replayed as { developerId: string; role: ProjectRole };
+    if (replayed !== undefined) return replayed as { developerId: string; role: MemberRole };
     const developerId = await resolveTarget(deps, orgId, input.developerId);
     const response = { developerId, role: input.role };
     const { write, fromRole } = await grantWrite(deps, { orgId, project, developerId, role: input.role, grantedBy: { developerId: input.actor.developerId }, now: deps.now });

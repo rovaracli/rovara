@@ -126,7 +126,7 @@ describe("GET /v1/app/projects", () => {
     expect(answer.status).toBe(200);
     expect(AppProjectsResponseSchema.parse(answer.body)).toEqual({ projects: [{
       name: "payments", status: "active", latestRevision: 1, repositories: [{ name: "demo", fullName: "example/demo", defaultBranch: "main" }],
-      myRole: "maintainer", setup: { status: "unchecked" },
+      myRole: "maintainer", myProjectRole: "maintainer", setup: { status: "unchecked" },
     }] });
   });
 
@@ -221,7 +221,9 @@ describe("GET /v1/app/projects/{name}", () => {
     expect(answer.status).toBe(200);
     expect(AppProjectDetailSchema.parse(answer.body)).toEqual({
       name: "web", description: "The website", status: "active", latestRevision: 1, repositories: [{ name: "web", fullName: "Acme/web", defaultBranch: "trunk" }],
-      myRole: "maintainer", setup: { status: "unchecked" },
+      myRole: "maintainer", myProjectRole: "maintainer", setup: { status: "unchecked" },
+      // Collaborator role (W11, decision 36): on by default, and an owner (a maintainer of every project) may change it.
+      collaboratorApprovals: { enabled: true, revision: 0, isDefault: true, canChange: true },
       settings: { setupCommands: ["npm ci"], testCommands: ["npm test -- --run"], devcontainer: null, allowedDomains: [] },
       // TE-4: commands nobody has checked are unproven, and with nothing proved before there is nothing to go back to.
       settingsProof: { status: "unproven", reason: "These commands have not been checked yet.", canUndo: false },

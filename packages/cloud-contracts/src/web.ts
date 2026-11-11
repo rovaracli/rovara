@@ -97,3 +97,8 @@ export { type AppProjectDetail, AppProjectDetailSchema, type AppProjectSummary, 
 export { type SetupApplyResponse, SetupApplyResponseSchema } from "./setup-proposal.js";
 export * from "./finished-as.js";
 export * from "./org-pending-approvals.js";
+
+// Collaborator role (W11): product decisions and the collaborator switch (Cloud-only names). The role shadow (project-roles.ts) is NOT exported here yet: the UI still reads Code's three roles,
+// and the UI lane switches to it when it shows the collaborator (`myProjectRole`, a member's `projectRole`).
+export * from "./product-decisions.js";
+export { projectRoleFloor, PROJECT_ROLE_ORDER, ProjectRoleSchema as CloudProjectRoleSchema, type ProjectRole as CloudProjectRole } from "./project-roles.js";
