@@ -45,7 +45,7 @@ export function HowWeWorkCompanyScreen() {
  const [notice, setNotice] = useState<Notice>(), { role } = useAdminContext();
  const reread = async (): Promise<boolean> => !(await read.refetch()).isError;
  return <UnsavedChanges><section><PageHeader focusOnMount title={T.PAGE_TITLE} description={T.PAGE_NOTE} /><SettingsNote area="how-we-work" /><p className="rv-muted">{T.SAVE_MODEL_NOTE}</p>
-  <p><Link to="/app/admin/models/sources">Back to AI models</Link></p>
+  <p className="rv-admin-link-row"><Link to="/app/admin/models/sources">Back to AI models</Link></p>
   <LearningSuggestionsRow />
   {(role === "owner" || role === "admin") && <Suspense fallback={null}><LessonsPresetRow /></Suspense>}
   {(role === "owner" || role === "admin") && <Suspense fallback={null}><LessonsLocalToolsRow /></Suspense>}

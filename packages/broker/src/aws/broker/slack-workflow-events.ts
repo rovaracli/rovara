@@ -28,7 +28,8 @@ import { taskAccessFence } from "../../developer/task-people.js";
 import { cancelRunningTask, type TaskCancellation } from "./acceptance.js";
 import { swebenchDependencies } from "./admin-and-helpers.js";
 import type { AwsBrokerDependencies } from "./definitions.js";
-import { agentRouteDependencies, developerTaskActions, requireRecordProject, requireSlackAllowedByEdition, slackCallerFor, slackTeamOrg } from "./dependency-wiring.js";
+import { agentRouteDependencies, developerTaskActions, requireRecordProject, requireSlackAllowedByEdition, requireSlackRequesterWriterRole, slackCallerFor, slackTeamOrg } from "./dependency-wiring.js";
+import { slackMemberRule } from "../../org/slack-explicit-members.js";
 import { dispatchWorkflowContinuation } from "./e2e-rounds.js";
 import { getMembership, requireWorkspace } from "./records.js";
 import { creatorCheckOf, githubScope, installOrgId, resolveSlackThreadKey } from "./scope-helpers.js";
@@ -864,12 +865,23 @@ export function isSlackStopTaskEvent(event: unknown): event is SlackStopTaskEven
   return value.source === "agentx.slack-ingress" && value.action === "stop-task" && value.requestContext === undefined;
 }
 
-export async function stopSlackThreadTask(dependencies: AwsBrokerDependencies, event: SlackStopTaskEvent): Promise<TaskCancellation | { outcome: "NOT_OWNER" }> {
+export async function stopSlackThreadTask(dependencies: AwsBrokerDependencies, event: SlackStopTaskEvent): Promise<TaskCancellation | { outcome: "NOT_OWNER" } | { outcome: "NOT_A_MEMBER" }> {
   const thread = SlackThreadSchema.parse(event.thread);
   const requester = SlackRequesterSchema.parse({ teamId: thread.teamId, userId: event.userId });
   const teamOrg = await slackTeamOrg(dependencies, thread.teamId);
   // Enterprise foundations I-6: whoever stops a task through Slack must still be allowed by the company sign-in, in every branch below.
   await requireSlackAllowedByEdition(dependencies, requester.userId, teamOrg);
+  // Slack explicit membership (0.5.14, switch `sm`): the legacy teammate stop (a shared thread with no People record, a plain thread workspace) used to let anyone in the thread stop a task. With the switch on,
+  // on a cloud install, the person must be an explicit, current member, as for every other Slack entry point; otherwise they are told so, as a private notice, and nothing is stopped. The "warn" and "0" values
+  // leave this path exactly as it was.
+  if (dependencies.orgResolver !== undefined && slackMemberRule() === "require") {
+    try { await requireSlackRequesterWriterRole(dependencies, requester.userId, teamOrg, { allowUnlinked: true }); }
+    catch (error) {
+      const code = (error as { code?: unknown } | null)?.code;
+      if (code !== "SLACK_ACCOUNT_NOT_LINKED" && code !== "REMOVED_FROM_ORG") throw error;
+      return { outcome: "NOT_A_MEMBER" };
+    }
+  }
   const binding = await getSlackBinding(dependencies, teamOrg, thread.teamId, thread.channelId);
   if (!binding) throw agentXError("FORBIDDEN", "Slack channel is not bound to a project");
   // Spec 043 FR-005: a thread running a SWE-bench run stops the run.

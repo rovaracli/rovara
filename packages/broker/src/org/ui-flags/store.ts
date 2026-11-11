@@ -32,20 +32,27 @@ export interface UiFlagsSettings {
   previews: boolean;
   revision: number;
   changedAt?: string;
+  /** Set only when a row exists whose `revision` is present but not a whole number of 1 or more: what is stored there, so the next write can replace exactly that row (see `writeUiFlags`). */
+  unreadableRevision?: { value: unknown };
 }
 
 const KNOWN = new Set<string>(UI_FLAG_NAMES);
 const isCancellation = (error: unknown): boolean => error instanceof Error && (error.name === "TransactionCanceledException" || error.name === "ConditionalCheckFailedException");
 const send = <T>(deps: UiFlagsDeps, command: unknown): Promise<T> => deps.documentClient.send(command as never) as Promise<T>;
 
-/** The company's settings from its stored item (or none). A value that does not read counts as off. */
+/**
+ * The company's settings from its stored item (or none). A value that does not read counts as off. A row whose revision does not read is UNREADABLE as a whole: every flag is off and previews are not allowed
+ * (a flag value is trusted only beside a revision the fence can hold), at revision 0, and `unreadableRevision` says what is stored so an admin's next change replaces the row instead of being locked out.
+ */
 export function settingsFromItem(item: Item | undefined): UiFlagsSettings {
   if (item === undefined) return { flags: {}, previews: false, revision: 0 };
+  if (!(typeof item.revision === "number" && Number.isInteger(item.revision) && item.revision >= 1)) {
+    return { flags: {}, previews: false, revision: 0, ...(item.revision === undefined ? {} : { unreadableRevision: { value: item.revision } }) };
+  }
   const stored = typeof item.flags === "object" && item.flags !== null && !Array.isArray(item.flags) ? item.flags as Record<string, unknown> : {};
   const flags: Partial<Record<UiFlagName, boolean>> = {};
   for (const [name, value] of Object.entries(stored)) if (KNOWN.has(name) && typeof value === "boolean") flags[name as UiFlagName] = value;
-  const revision = typeof item.revision === "number" && Number.isInteger(item.revision) && item.revision >= 1 ? item.revision : 0;
-  return { flags, previews: item.previews === true, revision, ...(typeof item.changedAt === "string" ? { changedAt: item.changedAt } : {}) };
+  return { flags, previews: item.previews === true, revision: item.revision, ...(typeof item.changedAt === "string" ? { changedAt: item.changedAt } : {}) };
 }
 
 export async function readUiFlags(deps: UiFlagsDeps, orgId: OrgId, options: { consistent: boolean } = { consistent: true }): Promise<UiFlagsSettings> {
@@ -121,9 +128,11 @@ export async function writeUiFlags(deps: UiFlagsDeps, input: { orgId: OrgId; dev
       TableName: deps.tableName, Key: key,
       // Update, not Put: a field a newer writer added stays.
       UpdateExpression: "SET entityType = :type, orgId = :org, #flags = :flags, previews = :previews, #revision = :next, changedAt = :at, changedBy = :by",
-      ConditionExpression: input.expectedRevision === 0 ? "attribute_not_exists(pk) OR attribute_not_exists(#revision)" : "#revision = :expected",
+      // The fence holds the revision the caller read. Revision 0 is "no usable row": no row, a row with no revision, or a row whose stored revision is malformed, which is replaced only while that same raw value is still stored
+      // (so a malformed row never locks the admin out, and two writers still cannot both replace it).
+      ConditionExpression: input.expectedRevision !== 0 ? "#revision = :expected" : current.unreadableRevision === undefined ? "attribute_not_exists(pk) OR attribute_not_exists(#revision)" : "#revision = :raw",
       ExpressionAttributeNames: { "#flags": "flags", "#revision": "revision" },
-      ExpressionAttributeValues: { ":type": "UI_FLAGS", ":org": input.orgId, ":flags": flags, ":previews": previews, ":next": revision, ":at": at, ":by": input.developerId, ...(input.expectedRevision === 0 ? {} : { ":expected": input.expectedRevision }) },
+      ExpressionAttributeValues: { ":type": "UI_FLAGS", ":org": input.orgId, ":flags": flags, ":previews": previews, ":next": revision, ":at": at, ":by": input.developerId, ...(input.expectedRevision !== 0 ? { ":expected": input.expectedRevision } : current.unreadableRevision === undefined ? {} : { ":raw": current.unreadableRevision.value }) },
     },
   };
   try { await send(deps, new TransactWriteCommand({ TransactItems: [write, { Put: pending }] })); }

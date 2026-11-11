@@ -3452,6 +3452,16 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
       "Description": "accept: answer mentions a person posts through another app with their own Slack token; ignore: answer only typed mentions",
       "Type": "String",
     },
+    "SlackExplicitMembers": {
+      "AllowedValues": [
+        "0",
+        "1",
+        "warn",
+      ],
+      "Default": "1",
+      "Description": "1: a Slack person who is not an explicit, current member of the company (not removed, not banned) is not served in Slack and is told to ask an admin to add them or to link their account; warn: today's access is kept and each such person gets one direct message that a membership will soon be needed; 0: today's behaviour, a Slack person with no membership is served as an implicit member (agentx config set slack.explicitMembers warn)",
+      "Type": "String",
+    },
     "SlackMemberWorkspaceLimit": {
       "Default": 3,
       "Description": "Maximum Slack thread workspaces one channel member may start",
@@ -4059,6 +4069,10 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                   ",si=",
                   {
                     "Ref": "StandingInstructionsEnabled",
+                  },
+                  ",sm=",
+                  {
+                    "Ref": "SlackExplicitMembers",
                   },
                   ",sn=",
                   {

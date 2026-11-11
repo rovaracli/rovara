@@ -1,7 +1,7 @@
 import { createHash, createHmac } from "node:crypto";
 import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it } from "vitest";
-import { CLOSED_SHARED_NOTICE, SlackRequestMessageSchema, VIEW_ONLY_NOTICE, sharedNoticeClaim, sharedNoticeKey, taskQuestionAttributes, taskQuestionOf, type SlackRequestMessage, type TaskQuestionRoute } from "../../packages/contracts/src/index.js";
+import { CLOSED_SHARED_NOTICE, SLACK_NOT_A_MEMBER_NOTICE, SlackRequestMessageSchema, VIEW_ONLY_NOTICE, sharedNoticeClaim, sharedNoticeKey, taskQuestionAttributes, taskQuestionOf, type SlackRequestMessage, type TaskQuestionRoute } from "../../packages/contracts/src/index.js";
 import {
   captureFeedbackNoteThroughBroker,
   createSlackIngressHandler,
@@ -41,7 +41,7 @@ function harness(options: {
   failCount?: number;
   failRelease?: number;
   failDecrement?: number;
-  stop?: { outcome?: "CANCEL_REQUESTED" | "NOTHING_RUNNING" | "NOT_OWNER"; throws?: boolean };
+  stop?: { outcome?: "CANCEL_REQUESTED" | "NOTHING_RUNNING" | "NOT_OWNER" | "NOT_A_MEMBER"; throws?: boolean };
   workflowStart?: { throws?: boolean; errorCode?: string };
   workflowChoice?: { throws?: boolean; waiting?: boolean };
   workflowSelection?: { outcome?: WorkflowChoiceOutcome; throws?: boolean; errorCode?: string };
@@ -1036,6 +1036,14 @@ describe("the stop command (#126)", () => {
     expect(logs.map((entry) => entry.event)).toContain("stop.failed");
   });
 
+  it("tells a person who is not an explicit company member so, privately, in the plain words, and queues nothing (0.5.14, switch `sm`)", async () => {
+    const { handler, queue, posts, ephemerals } = harness({ stop: { outcome: "NOT_A_MEMBER" } });
+    expect((await send(handler, stopMention("stop"))).status).toBe(200);
+    expect(queue).toEqual([]);
+    expect(posts).toEqual([]);
+    expect(ephemerals.map((entry) => entry.text)).toEqual([SLACK_NOT_A_MEMBER_NOTICE]);
+  });
+
   it("leaves stop as an ordinary request when the ingress has no stop wiring", async () => {
     const { handler, queue } = harness();
     await send(handler, stopMention("stop"));
@@ -1425,6 +1433,12 @@ describe("shared task threads (spec 025 FR-035, C10)", () => {
     expect(teammate.posts).toEqual([]);
     expect(teammate.queue).toEqual([]);
     expect(teammate.ephemerals).toEqual([{ channel, threadTs: "1695500000.000001", user: "U0TEAMMATE1", text: "Only the person who started this task can stop it." }]);
+    // 0.5.14 (switch `sm`): a person who is not an explicit member of the company is told so privately, in the plain words, and nothing is posted or queued.
+    const stranger = harness({ shared: { threads }, stop: { outcome: "NOT_A_MEMBER" } });
+    await send(stranger.handler, signedEvent(mention({ eventId: "EvMateStop3", event: { user: "U0STRANGER1", thread_ts: "1695500000.000001", ts: "1695500002.000006", text: `<@${bot}> stop` } })));
+    expect(stranger.posts).toEqual([]);
+    expect(stranger.queue).toEqual([]);
+    expect(stranger.ephemerals).toEqual([{ channel, threadTs: "1695500000.000001", user: "U0STRANGER1", text: SLACK_NOT_A_MEMBER_NOTICE }]);
   });
 
   it("saves the text of a reply posted with a file, and saves a plain \"stop\" as a reply rather than stopping", async () => {
@@ -1462,6 +1476,7 @@ describe("the broker adapters for thread replies (no 500 for an expected refusal
   it("reads the stop outcome, including a teammate's NOT_OWNER, and throws for anything else", async () => {
     const thread = { teamId: team, channelId: channel, threadTs: "1695500000.000001" };
     expect(await stopTaskThroughBroker(answering(200, { outcome: "NOT_OWNER" }), thread, "U0TEAMMATE1")).toBe("NOT_OWNER");
+    expect(await stopTaskThroughBroker(answering(200, { outcome: "NOT_A_MEMBER" }), thread, "U0STRANGER1")).toBe("NOT_A_MEMBER");
     expect(await stopTaskThroughBroker(answering(200, { outcome: "CANCEL_REQUESTED", targetOperationId: "x" }), thread, pratik)).toBe("CANCEL_REQUESTED");
     await expect(stopTaskThroughBroker(answering(200, { outcome: "MAYBE" }), thread, pratik)).rejects.toThrow(/stop failed/);
     await expect(stopTaskThroughBroker(answering(403, { error: { code: "FORBIDDEN" } }), thread, pratik)).rejects.toThrow(/stop failed/);

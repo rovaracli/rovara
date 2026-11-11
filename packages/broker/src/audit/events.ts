@@ -1007,6 +1007,18 @@ export function auditCompanyImageChange(input: AuditBuilderBase & { action: Comp
   return build(input.action, input, { kind: "org", id: input.orgId }, { imageId: input.imageId, digest: input.digest, authority: input.authority });
 }
 
+// Company rules (G-04, decisions 57 and 85) ---------------------------------------------------------------------------
+
+export type CompanyRulesAuditAction = Extract<AuditAction, `company_rules.${string}`>;
+
+/**
+ * `occurrence`: `auditOccurrence(proposalId or the connection's time, action)` (a proposal is decided once; a version number is never reused). The target is the company. Facts are ids, version numbers, counts, digests and fixed
+ * words only: the rules' text is never in an event (the immutable versions in the store are its record), and a repository's name goes in `details` (subject `org`), never in a fact.
+ */
+export function auditCompanyRules(input: AuditBuilderBase & { action: CompanyRulesAuditAction; facts: Record<string, Fact> }): AuditEventInput {
+  return build(input.action, input, { kind: "org", id: input.orgId }, input.facts);
+}
+
 // Saved project images (SV wiring) ---------------------------------------------------------------------------
 
 /** `occurrence`: `auditOccurrence(project, row version, change)`. The target is the project. Facts are fixed words, an image digest and a count: no repository name, command or secret. */

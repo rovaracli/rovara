@@ -38,6 +38,8 @@ const ADDED_DECLARATIONS: Record<string, string> = {
  */
 const NEW_RULES: Record<string, Record<string, string> | null> = {
  ".rv-chip": null, ".rv-chip svg": null, ".rv-chip-company-lock": null, ".rv-chip-outside-change": null,
+ // Company switcher (exp/company-switcher, behind rovara.companies): each selector needs an element only the switcher renders (a company button, menu, list or gate), so none matches anything while it is off.
+ ".rv-company-button": null, ".rv-company-button:hover": null, ".rv-company-chevron": null, ".rv-company-menu": null, ".rv-company-item": null, ".rv-company-text": null, ".rv-company-name": null, ".rv-company-role": null, ".rv-company-check": null, ".rv-company-error": null, ".rv-company-list": null, ".rv-company-list h2": null, ".rv-company-list ul": null, ".rv-company-row": null, ".rv-company-row:hover": null, ".rv-company-row[aria-current=true]": null, ".rv-company-gate": null, ".rv-company-gate h1": null, ".rv-company-gate-actions": null,
  // New navigation (switch `rovara.nav`): each selector needs an element only the new navigation renders (.rv-nav-v2 on the shell, .rv-tabbar, .rv-nav-icon, .rv-projects-*; the toast rule needs .rv-tabbar on the page), so none matches anything while it is off.
  ".rv-nav-v2 .rv-nav-label": null, ".rv-nav-icon": null, ".rv-nav-v2 .rv-sidebar-primary": null, ".rv-tabbar": null, ".rv-tabbar a": null, ".rv-tabbar a[aria-current=page]": null, ".rv-tabbar .rv-nav-label": null, ".rv-tabbar .rv-nav-count": null,
  ".rv-projects-list": null, ".rv-projects-list a": null, ".rv-projects-list a:hover": null, ".rv-projects-name": null, ".rv-projects-counts": null,

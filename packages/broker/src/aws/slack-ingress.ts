@@ -29,6 +29,7 @@ import {
   isStopCommand,
   parseConfirmationReply,
   queuedBehindAttributes,
+  SLACK_NOT_A_MEMBER_NOTICE,
   sharedNoticeClaim,
   sharedTaskKey,
   slackBindingKey,
@@ -288,14 +289,14 @@ const PATH_WITHOUT_REQUEST_NOTICE = "Add your request after it, for example `qui
  */
 export const SLACK_TASK_THREADS_OFF_NOTICE = "AgentX can't run tasks from Slack threads here yet. Ask an AgentX admin to turn on Slack task threads.";
 
-/** NOT_OWNER: a Slack-started task's own thread, where only the task's owner may stop it. */
-export type StopOutcome = "CANCEL_REQUESTED" | "NOTHING_RUNNING" | "NOT_OWNER";
+/** NOT_OWNER: a Slack-started task's own thread, where only the task's owner may stop it. NOT_A_MEMBER (0.5.14, switch `sm`): the person is not an explicit, current member of the company, so nothing is stopped. */
+export type StopOutcome = "CANCEL_REQUESTED" | "NOTHING_RUNNING" | "NOT_OWNER" | "NOT_A_MEMBER";
 
 /** The stop command through the broker's `stop-task` event; any other answer throws. */
 export async function stopTaskThroughBroker(invoke: (event: Record<string, unknown>) => Promise<BrokerReply>, thread: SlackThread, userId: string): Promise<StopOutcome> {
   const reply = await invoke({ source: "agentx.slack-ingress", action: "stop-task", thread, userId });
   const body = asRecord(JSON.parse(reply.body ?? "{}"));
-  if (reply.statusCode !== 200 || (body.outcome !== "CANCEL_REQUESTED" && body.outcome !== "NOTHING_RUNNING" && body.outcome !== "NOT_OWNER")) {
+  if (reply.statusCode !== 200 || (body.outcome !== "CANCEL_REQUESTED" && body.outcome !== "NOTHING_RUNNING" && body.outcome !== "NOT_OWNER" && body.outcome !== "NOT_A_MEMBER")) {
     throw new Error("broker stop failed");
   }
   return body.outcome;
@@ -551,8 +552,8 @@ export function createSlackIngressHandler(dependencies: SlackIngressDependencies
         await post(dependencies, log, thread, "Stopping the running task. I'll reply here once it has stopped.", "stop.notice_failed");
         return respond(200, { ok: true });
       }
-      if (outcome === "NOT_OWNER") {
-        await ephemeral(dependencies, log, thread, mention.userId, NOT_OWNER_STOP_NOTICE);
+      if (outcome === "NOT_OWNER" || outcome === "NOT_A_MEMBER") {
+        await ephemeral(dependencies, log, thread, mention.userId, outcome === "NOT_OWNER" ? NOT_OWNER_STOP_NOTICE : SLACK_NOT_A_MEMBER_NOTICE);
         return respond(200, { ok: true });
       }
       // Nothing is running: the request goes to the orchestrator like any other.
@@ -753,7 +754,7 @@ async function workflowThreadReply(
       if (outcome === "CANCEL_REQUESTED") {
         await post(dependencies, log, thread, "Stopping the running task. I'll reply here once it has stopped.", "stop.notice_failed");
       } else {
-        await ephemeral(dependencies, log, thread, mention.userId, outcome === "NOT_OWNER" ? NOT_OWNER_STOP_NOTICE : NOTHING_RUNNING_NOTICE);
+        await ephemeral(dependencies, log, thread, mention.userId, outcome === "NOT_OWNER" ? NOT_OWNER_STOP_NOTICE : outcome === "NOT_A_MEMBER" ? SLACK_NOT_A_MEMBER_NOTICE : NOTHING_RUNNING_NOTICE);
       }
       return respond(200, { ok: true });
     }

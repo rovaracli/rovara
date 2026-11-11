@@ -278,9 +278,69 @@ describe("the navigation answer's flags", () => {
 
   it("reads a stored row that does not read as off: unknown names, non-boolean values and a bad revision are ignored", () => {
     expect(settingsFromItem(undefined)).toEqual({ flags: {}, previews: false, revision: 0 });
-    const odd = settingsFromItem({ flags: { look: true, nav: "yes", unknownFlag: true, home: false }, previews: "true", revision: "3" });
-    expect(odd).toEqual({ flags: { look: true, home: false }, previews: false, revision: 0 });
+    const odd = settingsFromItem({ flags: { look: true, nav: "yes", unknownFlag: true, home: false }, previews: "true", revision: 3 });
+    expect(odd).toEqual({ flags: { look: true, home: false }, previews: false, revision: 3 });
     expect(uiFlagsMapOf(odd, new Set()).look).toBe("on");
+    // A row whose revision does not read is unreadable as a whole: nothing in it is trusted.
+    const unreadable = settingsFromItem({ flags: { look: true }, previews: true, revision: "3" });
+    expect(unreadable).toEqual({ flags: {}, previews: false, revision: 0, unreadableRevision: { value: "3" } });
+    expect(uiFlagsMapOf(unreadable, new Set())).toEqual(ALL_OFF);
     expect(uiFlagsMapOf(settingsFromItem({ flags: "look", revision: 2 }), new Set()).look).toBe("off");
+  });
+});
+
+describe("a stored row whose revision does not read", () => {
+  const MALFORMED: unknown[] = ["abc", "3", 0, -2, 1.5, null, { m: 1 }, true];
+  const seed = (w: ReturnType<typeof world>, revision: unknown) => w.db.set({ ...orgUiFlagsKey(ORG_A), entityType: "UI_FLAGS", orgId: ORG_A, flags: { look: true, nav: true }, previews: true, revision, changedAt: "2026-11-11T09:00:00.000Z" });
+
+  it("reads as every flag off, in the admin answer and the navigation answer, and does not lock the admin out", async () => {
+    for (const revision of MALFORMED) {
+      const w = world();
+      seed(w, revision);
+      const owner = w.caller(ORG_A);
+      w.signIn(owner, 0);
+      const read = await w.call(owner, "GET");
+      expect(read, JSON.stringify(revision)).toMatchObject({ revision: 0, previews: false });
+      for (const row of read.flags) expect(row, JSON.stringify(revision)).toMatchObject({ enabled: false, state: "off" });
+      expect(await navUiFlags({ documentClient: w.db, tableName: "state", now: w.deps.now }, ORG_A, {})).toEqual(ALL_OFF);
+      // The next change replaces the row (a conditional write on what is stored) and the company is back in service.
+      const put = await w.call(owner, "PUT", { expectedRevision: 0, flags: { home: true } });
+      expect(put, JSON.stringify(revision)).toMatchObject({ revision: 1, previews: false });
+      expect(stateOf(put, "home")).toMatchObject({ enabled: true, state: "on" });
+      expect(stateOf(put, "look")).toMatchObject({ enabled: false, state: "off" });
+      expect(w.stored(ORG_A)).toMatchObject({ revision: 1, flags: { home: true } });
+      expect(w.capture.recordedBy("company.ui_flags_changed")).toHaveLength(1);
+      expect(await w.call(owner, "PUT", { expectedRevision: 1, flags: { nav: true } })).toMatchObject({ revision: 2 });
+    }
+  });
+
+  it("is still fenced: two writers who both read the unreadable row cannot both replace it", async () => {
+    const w = world();
+    seed(w, "abc");
+    const owner = w.caller(ORG_A);
+    w.signIn(owner, 0);
+    const results = await Promise.allSettled([w.call(owner, "PUT", { expectedRevision: 0, flags: { look: true } }), w.call(owner, "PUT", { expectedRevision: 0, flags: { nav: true } })]);
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "rejected")).toMatchObject([{ reason: { code: "CHANGE_STALE" } }]);
+    expect(w.stored(ORG_A)?.revision).toBe(1);
+  });
+
+  it("a write made against a row that turned unreadable meanwhile is stale, not a silent overwrite", async () => {
+    const w = world();
+    const owner = w.caller(ORG_A);
+    w.signIn(owner, 0);
+    await w.call(owner, "PUT", { expectedRevision: 0, flags: { look: true } });
+    seed(w, "garbled");
+    await expect(w.call(owner, "PUT", { expectedRevision: 1, flags: { nav: true } })).rejects.toMatchObject({ code: "CHANGE_STALE" });
+    expect(w.stored(ORG_A)?.revision).toBe("garbled");
+  });
+
+  it("a row with no revision at all is replaced the same way", async () => {
+    const w = world();
+    w.db.set({ ...orgUiFlagsKey(ORG_A), entityType: "UI_FLAGS", orgId: ORG_A, flags: { look: true }, previews: true });
+    const owner = w.caller(ORG_A);
+    w.signIn(owner, 0);
+    expect(await w.call(owner, "GET")).toMatchObject({ revision: 0 });
+    expect(await w.call(owner, "PUT", { expectedRevision: 0, flags: { home: true } })).toMatchObject({ revision: 1 });
   });
 });

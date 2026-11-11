@@ -176,6 +176,25 @@ describe("merging on the fake code host", () => {
     expect(clean.model.getChangeRequest(clean.crId).state).toBe("merged");
   });
 
+  it("never merges a task's pull request that changes the company rules file (G-04): at its default path, or at the path the company connected (read while si is on); the connected path is not read while si is off", async () => {
+    const touching = (path: string) => (m: FakeHostModel) => { const host = new FakeCodeHost(m); host.changedFiles = async () => ({ files: [{ path, status: "modified", additions: 1, deletions: 0 }] }); return host; };
+    const byDefault = await fakeWorld({ host: touching(".rovara/company-rules.md") });
+    expect(await codeOf(webPress(byDefault.w))).toEqual({ code: "MERGE_NOT_READY", message: M.touchesCompanyRulesFile });
+    expect(byDefault.model.getChangeRequest(byDefault.crId).state).toBe("open");
+    const link = { pk: `ORG#${ORG_A}`, sk: "COMPANYRULES#SYNC", entityType: "COMPANY_RULES_SYNC", orgId: ORG_A, revision: 1, repositoryName: "acme/meta", repositoryUrl: "https://github.com/acme/meta.git", repositoryId: 5, path: "docs/our-rules.md", branch: "main", connectedBy: "a".repeat(64), connectedAt: "2026-11-11T05:00:00.000Z", fileState: "match" };
+    try {
+      process.env.STANDING_INSTRUCTIONS_ENABLED = "1";
+      const connected = await fakeWorld({ host: touching("docs/our-rules.md") });
+      connected.w.db.set(link);
+      expect(await codeOf(webPress(connected.w))).toEqual({ code: "MERGE_NOT_READY", message: M.touchesCompanyRulesFile });
+      expect(connected.model.getChangeRequest(connected.crId).state).toBe("open");
+      delete process.env.STANDING_INSTRUCTIONS_ENABLED;
+      const off = await fakeWorld({ host: touching("docs/our-rules.md") });
+      off.w.db.set(link);
+      expect((await webPress(off.w)).status).toBe(200);
+    } finally { delete process.env.STANDING_INSTRUCTIONS_ENABLED; }
+  });
+
   it("never merges on a host that does not offer merge: it is found before any claim is made", async () => {
     const { w, model, crId } = await fakeWorld({ host: (m) => { const host = new FakeCodeHost(m); Object.defineProperty(host, "merge", { value: undefined }); return host; } });
     const refusal = await codeOf(webPress(w));

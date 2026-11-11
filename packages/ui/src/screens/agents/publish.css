@@ -1,0 +1,55 @@
+/* Agent publishing (exp/agent-publish, behind rovara.publish). Every selector here needs an element only the publishing screens render, so while the switch is off none of it matches anything. */
+.rv-pub-star { display: inline-flex; align-items: center; justify-content: center; min-width: 44px; min-height: 44px; padding: 0; border: 1px solid transparent; border-radius: var(--rv-radius-md); background: transparent; color: var(--rv-text-muted); cursor: pointer; }
+.rv-pub-star:hover { background: var(--rv-bg-sunken); }
+.rv-pub-star svg { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linejoin: round; }
+.rv-pub-star[aria-pressed="true"] { color: var(--rv-text); }
+.rv-pub-star[aria-pressed="true"] svg { fill: currentColor; }
+.rv-pub-star:disabled { cursor: default; opacity: 0.6; }
+.rv-pub-fav { display: inline-flex; flex-direction: column; align-items: flex-end; gap: var(--rv-space-1); }
+.rv-pub-fav-error { font-size: var(--rv-font-sm); color: var(--rv-danger); max-width: 24ch; text-align: end; }
+.rv-pub-extras { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--rv-space-5); margin-block: var(--rv-space-4); }
+.rv-pub-col { min-width: 0; border: 1px solid var(--rv-border); border-radius: var(--rv-radius-lg); padding: var(--rv-space-4); background: var(--rv-bg-raised); }
+.rv-pub-col h2 { font-size: var(--rv-font-lg); margin-bottom: var(--rv-space-2); }
+.rv-pub-agents { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--rv-space-2); }
+.rv-pub-agents > li { display: flex; justify-content: space-between; align-items: flex-start; gap: var(--rv-space-3); border-top: 1px solid var(--rv-border); padding-top: var(--rv-space-2); }
+.rv-pub-agents > li:first-child { border-top: 0; padding-top: 0; }
+.rv-pub-agents > li > div { min-width: 0; overflow-wrap: anywhere; }
+.rv-pub-agents a { display: inline-flex; align-items: center; min-height: 44px; font-weight: 600; }
+.rv-pub-agents p { margin: 0; font-size: var(--rv-font-sm); }
+.rv-pub-reason { color: var(--rv-text); font-weight: 600; }
+.rv-pub-count { display: inline-block; margin-inline-start: var(--rv-space-2); min-width: 1.5em; padding: 0 var(--rv-space-2); border-radius: var(--rv-radius-md); background: var(--rv-accent); color: var(--rv-on-accent); text-align: center; font-size: var(--rv-font-sm); }
+.rv-pub-screen { display: grid; gap: var(--rv-space-4); min-width: 0; overflow-wrap: anywhere; }
+.rv-pub-notice { border-left: 3px solid var(--rv-accent); padding: var(--rv-space-2) var(--rv-space-3); background: var(--rv-bg-raised); }
+.rv-pub-list { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--rv-space-4); margin-block: var(--rv-space-4); }
+.rv-pub-card { display: grid; gap: var(--rv-space-3); border: 1px solid var(--rv-border); border-radius: var(--rv-radius-lg); padding: var(--rv-space-4); background: var(--rv-bg-raised); min-width: 0; }
+.rv-pub-head { display: flex; justify-content: space-between; align-items: center; gap: var(--rv-space-3); flex-wrap: wrap; }
+.rv-pub-head h3 { font-size: var(--rv-font-lg); min-width: 0; }
+.rv-pub-head h3 a { display: inline-flex; align-items: center; min-height: 44px; }
+.rv-pub-state { border: 1px solid var(--rv-border-strong); border-radius: var(--rv-radius-md); padding: 0 var(--rv-space-2); font-size: var(--rv-font-sm); font-weight: 600; color: var(--rv-text); }
+.rv-pub-state[data-state="pending"] { border-color: var(--rv-status-needs-you); }
+.rv-pub-state[data-state="declined"], .rv-pub-state[data-state="failed"] { border-color: var(--rv-danger); }
+.rv-pub-note { font-style: italic; max-width: 65ch; }
+.rv-pub-effect, .rv-pub-outcome { max-width: 65ch; }
+.rv-pub-details > summary { cursor: pointer; min-height: 44px; display: list-item; padding-block: var(--rv-space-2); font-weight: 600; }
+.rv-pub-facts { display: grid; gap: var(--rv-space-2); margin: 0; }
+.rv-pub-facts > div { display: grid; grid-template-columns: minmax(8em, max-content) minmax(0, 1fr); gap: var(--rv-space-3); }
+.rv-pub-facts dt { font-weight: 600; }
+.rv-pub-facts dd { margin: 0; }
+.rv-pub-less-safe { margin-top: var(--rv-space-3); border-left: 3px solid var(--rv-danger); padding-left: var(--rv-space-3); }
+.rv-pub-less-safe ul { margin: var(--rv-space-1) 0 0; padding-inline-start: var(--rv-space-5); }
+.rv-pub-empty { color: var(--rv-text-muted); }
+.rv-pub-decline { display: grid; gap: var(--rv-space-2); }
+.rv-pub-dialog { overflow-wrap: anywhere; }
+.rv-pub-profile { display: grid; gap: var(--rv-space-3); }
+@media (max-width: 767px) {
+ .rv-pub-extras { grid-template-columns: minmax(0, 1fr); gap: var(--rv-space-3); }
+ .rv-pub-facts > div { grid-template-columns: minmax(0, 1fr); gap: 0; }
+ .rv-pub-screen .rv-page-header .rv-actions > a { width: 100%; }
+ .rv-pub-card .rv-actions > .rv-button, .rv-pub-profile .rv-actions > .rv-button { flex: 1 1 auto; }
+ .rv-pub-dialog .rv-button { max-width: 100%; white-space: normal; text-align: center; }
+}
+.rv-pub-home-sub { font-size: var(--rv-font-sm); font-weight: 600; margin: var(--rv-space-2) 0 var(--rv-space-1); color: var(--rv-text-muted); }
+.rv-pub-dialog h3 { margin: var(--rv-space-4) 0 var(--rv-space-2); font-size: var(--rv-font-lg); }
+.rv-pub-dialog .rv-field, .rv-pub-dialog .rv-pub-effect { margin-block: var(--rv-space-3); }
+.rv-pub-dialog .rv-pub-summary { margin-bottom: var(--rv-space-3); }
+.rv-pub-dialog .rv-actions { margin-top: var(--rv-space-3); }

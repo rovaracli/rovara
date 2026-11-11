@@ -23,6 +23,7 @@ export { PendingConfirmationReaderSchema, PendingAdminApprovalReaderSchema, ApiE
 export type { OrgId } from "./org.js";
 
 export * from "./app-nav.js";
+export * from "./app-billing.js";
 export * from "./script-tokens.js";
 
 export { TICKET_PATTERN } from "./confirmation.js";
@@ -163,6 +164,9 @@ export * from "./company-domains-web.js";
 export { JiraOrgAdminMutationBodySchema, JiraOrgAdminResultReaderSchema, type JiraOrgAdminMutationBody } from "./jira-org-admin-web.js";
 export { TrackerPeopleReaderSchema, TrackerPeopleMutationBodySchema, TrackerPeopleResultReaderSchema, type TrackerPeople, type TrackerPeopleMutationBody } from "./tracker-people-web.js";
 export * from "./app-design-review-company.js";
+export * from "./app-company-rules.js";
+// The fixed wording of the standing instructions block: the Company rules page shows how the rules are put to the agent.
+export { STANDING_INSTRUCTIONS_WORDING } from "./standing-instructions.js";
 export * from "./app-known-failing.js";
 export * from "./app-saved-env.js";
 export * from "./app-second-review.js";
