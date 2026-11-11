@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// Agent publishing (exp/agent-publish): the switch, the ask flow (project and company, and the immediate publish for a maintainer), the approver's decide (approve, decline, REAUTH_REQUIRED, a refusal word for word),
+// Agent publishing (exp/agent-publish): the switch, the ask flow (project and company, and the immediate publish for a maintainer), the approver's Approve and Decline (both on the confirmation page, never a POST to decide),
 // the requests list, favourites, suggested agents and their reasons. Everything is read against fixtures shaped like the API doc; the server is built in parallel.
 import { expect, it } from "vitest";
 import { screen, fireEvent, waitFor, within } from "@testing-library/react";
@@ -19,7 +19,7 @@ import { renderBuilder } from "./support/builder-render.js";
 import { agentProfile, AGENT_FIXTURE_ID } from "./support/agent-fixture.js";
 import { fakeHost } from "./support/fake-host.js";
 import { navFixture } from "./support/fixtures.js";
-import { ON, agentCard, approvalId, errorBody, me, myAgents, ok, other, publishRequest, renderRequests, summary, uuid } from "./support/publish-fixture.js";
+import { ON, agentCard, errorBody, me, myAgents, ok, other, publishRequest, renderRequests, summary, uuid } from "./support/publish-fixture.js";
 
 const PROFILE = "/app/agents/" + AGENT_FIXTURE_ID, PUBLISH = "/v1/app/agents/" + AGENT_FIXTURE_ID + "/publish-requests";
 const withPublication = (publication: unknown, agent: Record<string, unknown> = {}) => { const base = agentProfile();return { ...base, agent: { ...base.agent, ...agent, publication } } as unknown as ReturnType<typeof agentProfile>; };
@@ -157,70 +157,54 @@ it("shows a waiting request on the profile, a way in for the person who decides,
 });
 
 const lists = (pending: unknown[], mine: unknown[]) => (r: ApiRequest) => r.path === "/v1/app/nav" ? ok(navFixture()) : r.path.startsWith("/v1/app/agent-publish-requests?") ? ok({ requests: r.path.includes("mine=1") ? mine : pending }) : undefined;
-it("lists what waits for an approver with the summary and the less-safe sentences, and approves a project request through the decide route", async () => {
+const CONFIRM = "https://cell.example/v1/app/approve/tkt_abc123";
+const anyDecide = (f: { request: { mock: { calls: Array<[ApiRequest]> } } }) => f.request.mock.calls.map(([request]) => request).filter(request => request.path.includes("/decide"));
+it("lists what waits for an approver with the summary and the less-safe sentences, and approves a project request on the confirmation page", async () => {
  const waiting = publishRequest(1);
- const f = renderRequests(r => lists([waiting], [])(r) ?? (r.path === "/v1/app/approvals/" + approvalId(1) + "/decide" ? ok({ ok: true }) : undefined));
+ const f = renderRequests(lists([waiting], []));
  expect(await screen.findByRole("heading", { name: "Release notes writer" })).toBeTruthy();
  expect(screen.getByText("This makes the agent less safe:")).toBeTruthy();expect(screen.getByText("Adds write access to github")).toBeTruthy();expect(screen.getByText(waiting.effect)).toBeTruthy();expect(screen.getByText(/Used it on 6 releases/)).toBeTruthy();
  expect(screen.getByRole("tab", { name: "To decide (1)" })).toBeTruthy();
  fireEvent.click(screen.getByRole("button", { name: "Approve Release notes writer for payments" }));
- // One click does not post: a confirm step says what approving does (ownership moves), and Cancel posts nothing.
+ // One click does not leave: a confirm step says what approving does (ownership moves) and that it is confirmed on the next page; Cancel goes nowhere.
  const confirm = screen.getByRole("group", { name: "Confirm approving Release notes writer" });
- expect(within(confirm).getByText(waiting.effect)).toBeTruthy();expect(sentTo(f, "/v1/app/approvals/" + approvalId(1) + "/decide")).toHaveLength(0);
+ expect(within(confirm).getByText(waiting.effect)).toBeTruthy();expect(within(confirm).getByText(/You'll confirm on the next page/)).toBeTruthy();
  fireEvent.click(within(confirm).getByRole("button", { name: "Cancel" }));
- expect(screen.queryByRole("group", { name: "Confirm approving Release notes writer" })).toBeNull();expect(sentTo(f, "/v1/app/approvals/" + approvalId(1) + "/decide")).toHaveLength(0);
+ expect(screen.queryByRole("group", { name: "Confirm approving Release notes writer" })).toBeNull();expect(f.host.openExternal).not.toHaveBeenCalled();
  fireEvent.click(screen.getByRole("button", { name: "Approve Release notes writer for payments" }));
- expect(sentTo(f, "/v1/app/approvals/" + approvalId(1) + "/decide")).toHaveLength(0);
- fireEvent.click(screen.getByRole("button", { name: "Yes, approve" }));
- expect(await screen.findByText("Approved Release notes writer for the payments project.")).toBeTruthy();
- const [decide] = sentTo(f, "/v1/app/approvals/" + approvalId(1) + "/decide");
- expect(decide!.method).toBe("POST");expect(decide!.body).toEqual({ requestId: expect.stringMatching(/^[0-9a-f-]{36}$/) as unknown, decision: "APPROVE" });
+ fireEvent.click(screen.getByRole("button", { name: "Continue to approve" }));
+ expect(f.host.openExternal).toHaveBeenCalledWith(CONFIRM);
+ // The screen never posts a decision: the decide route refuses a script's request (RULING Q10).
+ expect(anyDecide(f)).toEqual([]);
  f.close();
 });
-it("declines with an optional reason", async () => {
- const f = renderRequests(r => lists([publishRequest(1)], [])(r) ?? (r.path.endsWith("/decide") ? ok({}) : undefined));
+it("declines on the confirmation page too, where the reason is written", async () => {
+ const f = renderRequests(lists([publishRequest(1)], []));
  fireEvent.click(await screen.findByRole("button", { name: "Decline Release notes writer for payments" }));
- // Decline asks once more before anything is sent; Cancel posts nothing.
- expect(screen.getByRole("group", { name: "Confirm declining Release notes writer" })).toBeTruthy();expect(sentTo(f, "/v1/app/approvals/" + approvalId(1) + "/decide")).toHaveLength(0);
- fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
- expect(screen.queryByRole("group", { name: "Confirm declining Release notes writer" })).toBeNull();expect(sentTo(f, "/v1/app/approvals/" + approvalId(1) + "/decide")).toHaveLength(0);
+ const confirm = screen.getByRole("group", { name: "Confirm declining Release notes writer" });
+ expect(within(confirm).getByText(/You'll confirm on the next page/)).toBeTruthy();expect(within(confirm).queryByRole("textbox")).toBeNull();
+ fireEvent.click(within(confirm).getByRole("button", { name: "Cancel" }));
+ expect(screen.queryByRole("group", { name: "Confirm declining Release notes writer" })).toBeNull();expect(f.host.openExternal).not.toHaveBeenCalled();
  fireEvent.click(screen.getByRole("button", { name: "Decline Release notes writer for payments" }));
- fireEvent.change(screen.getByRole("textbox", { name: /Why\?/ }), { target: { value: "Needs a budget first." } });
- fireEvent.click(screen.getByRole("button", { name: "Decline request" }));
- expect(await screen.findByText("Declined Release notes writer for the payments project.")).toBeTruthy();
- expect(sentTo(f, "/v1/app/approvals/" + approvalId(1) + "/decide")[0]!.body).toMatchObject({ decision: "DECLINE", reason: "Needs a budget first." });
+ fireEvent.click(screen.getByRole("button", { name: "Continue to decline" }));
+ expect(f.host.openExternal).toHaveBeenCalledWith(CONFIRM);
+ expect(anyDecide(f)).toEqual([]);
  f.close();
 });
-it("says sign in again when the decide route wants a recent sign-in, and signs in back to this page", async () => {
- const f = renderRequests(r => lists([publishRequest(1)], [])(r) ?? (r.path.endsWith("/decide") ? ok(errorBody("REAUTH_REQUIRED", "Sign in again to decide this."), 403) : undefined));
- fireEvent.click(await screen.findByRole("button", { name: "Approve Release notes writer for payments" }));
- fireEvent.click(screen.getByRole("button", { name: "Yes, approve" }));
- expect((await screen.findByRole("alert")).textContent).toBe("Sign in again to decide this.");
- fireEvent.click(screen.getByRole("button", { name: "Sign in again" }));
- expect(f.host.signIn).toHaveBeenCalledWith("/app/live");
- expect(screen.getByRole("button", { name: "Or confirm on the next page" })).toBeTruthy();
- f.close();
-});
-it("shows the server's refusal of a decision word for word and leaves the request waiting", async () => {
- const f = renderRequests(r => lists([publishRequest(1)], [])(r) ?? (r.path.endsWith("/decide") ? ok(errorBody("FORBIDDEN", "Only a maintainer of payments can decide this."), 403) : undefined));
- fireEvent.click(await screen.findByRole("button", { name: "Approve Release notes writer for payments" }));
- fireEvent.click(screen.getByRole("button", { name: "Yes, approve" }));
- expect((await screen.findByRole("alert")).textContent).toBe("Only a maintainer of payments can decide this.");
- expect(screen.getByRole("button", { name: "Approve Release notes writer for payments" })).toBeTruthy();expect(screen.queryByText(/^Approved/)).toBeNull();
- f.close();
-});
-it("approves a company-wide request only on the confirmation page: Approve opens it and posts nothing", async () => {
+it("approves a company-wide request on the confirmation page the same way, posting nothing", async () => {
  const company = publishRequest(5, { target: { kind: "company" }, effect: "Shares Release notes writer with everyone." });
  const f = renderRequests(lists([company], []));
- fireEvent.click(await screen.findByRole("button", { name: "Approve on the confirmation page: Release notes writer for Company" }));
- expect(f.host.openExternal).toHaveBeenCalledWith("https://cell.example/v1/app/approve/tkt_abc123");
- expect(sentTo(f, "/v1/app/approvals/" + approvalId(5) + "/decide")).toEqual([]);
+ fireEvent.click(await screen.findByRole("button", { name: "Approve Release notes writer for Company" }));
+ fireEvent.click(screen.getByRole("button", { name: "Continue to approve" }));
+ expect(f.host.openExternal).toHaveBeenCalledWith(CONFIRM);
+ expect(anyDecide(f)).toEqual([]);
  f.close();
 });
 it("refuses a confirmation link that is not this app's own", async () => {
  const company = publishRequest(5, { target: { kind: "company" }, approval: { canDecide: true, reason: null, freshSignInNeeded: true, confirmUrl: "https://evil.example/v1/app/approve/tkt_x" } });
  const f = renderRequests(lists([company], []));
- fireEvent.click(await screen.findByRole("button", { name: "Approve on the confirmation page: Release notes writer for Company" }));
+ fireEvent.click(await screen.findByRole("button", { name: "Approve Release notes writer for Company" }));
+ fireEvent.click(screen.getByRole("button", { name: "Continue to approve" }));
  expect((await screen.findByRole("alert")).textContent).toContain("The confirmation page isn't available");expect(f.host.openExternal).not.toHaveBeenCalled();
  f.close();
 });

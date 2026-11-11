@@ -1105,3 +1105,15 @@ export function auditCompanyUiFlagsChanged(input: AuditBuilderBase & { revision:
     revision: input.revision, turnedOn: input.turnedOn.length === 0 ? "none" : input.turnedOn.join("+"), turnedOff: input.turnedOff.length === 0 ? "none" : input.turnedOff.join("+"), previews: input.previews,
   });
 }
+
+// Agent publish requests (experience decision 24, owner decision 91) ---------------------------------------------------------------------
+
+export type AgentPublicationAuditAction = Extract<AuditAction, `agent_publication.${string}`>;
+
+/**
+ * `occurrence`: the request's approval id (a request is asked, decided and withdrawn once each), or for a request applied at once `auditOccurrence(agentId, requestId)`.
+ * The target is the agent. Facts are the approval id, the version, `targetKind` and fixed words: the target project's name is never a fact.
+ */
+export function auditAgentPublication(input: AuditBuilderBase & { action: AgentPublicationAuditAction; agentId: string; facts: Record<string, Fact> }): AuditEventInput {
+  return build(input.action, input, { kind: "agent", id: input.agentId }, input.facts);
+}
