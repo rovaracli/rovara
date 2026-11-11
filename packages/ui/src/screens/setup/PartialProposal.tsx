@@ -1,4 +1,4 @@
-import { setupItemsOf, type SetupAgentView } from "@agentx/contracts/web";
+import { setupItemsOf, type SetupAgentView } from "@agentx/cloud-contracts/web";
 import { VisibleText } from "../../design/VisibleText.js";
 import { PARTIAL_WORDS, VERDICT_WORDS } from "./words.js";
 

@@ -1,6 +1,7 @@
 import { nativeSnapshotConditions } from "../org/native-snapshot-conditions.js";
 import { z } from "zod";
-import { agentKey, chainKey, builtinSettingsKey, isBuiltinAgentId, AgentOwnerSchema, orgSettingsKey, ownerBudgetKey, topUpKey, type OrgId, type SpendRequestRecord } from "@agentx/contracts";
+import { agentKey, chainKey, builtinSettingsKey, isBuiltinAgentId, AgentOwnerSchema, type OrgId } from "@rovara-code/contracts";
+import { orgSettingsKey, ownerBudgetKey, topUpKey, type SpendRequestRecord } from "@agentx/cloud-contracts";
 import type { TransactItem } from "../agents/table-writes.js";
 import { ownerShare, type BudgetSubject } from "./owner-total.js";
 import { ApprovalSourceSchema, staleApproval } from "./approval-source.js";

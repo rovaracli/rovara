@@ -4,7 +4,8 @@ import { metricMonth, metricUpdateItem, ensureMetricCurrent } from "./metric.js"
 // B8: only the already-authorized linked-task feedback reader calls this module.
 import { createHash } from "node:crypto";
 import { GetCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { agentGuardrailsKey, githubMemberKey, orgMemberKey, orgMetaKey, projectMemberKey, projectMetaKey, projectLearningKey, type OrgId } from "@agentx/contracts";
+import { agentGuardrailsKey, githubMemberKey, projectMemberKey, projectMetaKey, projectLearningKey, type OrgId } from "@rovara-code/contracts";
+import { orgMemberKey, orgMetaKey } from "@agentx/cloud-contracts";
 import type { GitHubFeedbackComment } from "../github-app.js";
 import { readGuardrails } from "../agents/guardrails.js";
 import { learningScopeOf, learningSalt, readStanding } from "./standing.js";

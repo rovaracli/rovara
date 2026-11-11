@@ -1,5 +1,5 @@
 import { DeleteCommand, PutCommand, type DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
-import { REQUALIFY_PROFILE_ID, RequalifyLockSchema, requalifyLockKey } from "@agentx/contracts";
+import { REQUALIFY_PROFILE_ID, RequalifyLockSchema, requalifyLockKey } from "@rovara-code/contracts";
 
 /**
  * The single-flight lock of the test machine's renewal (AUTOREQUALIFY): one run, automatic or the operator's script, holds it at a time. The row is

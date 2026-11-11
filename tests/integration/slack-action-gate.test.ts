@@ -1,13 +1,6 @@
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import { describe, expect, it, vi } from "vitest";
-import {
-  CONFIRMATION_TTL_MS,
-  confirmationClickEventId,
-  type ConnectorCatalog,
-  type PendingConfirmation,
-  type SlackRequestMessage,
-  type SlackThreadWorkspaceResult,
-} from "../../packages/contracts/src/index.js";
+import { CONFIRMATION_TTL_MS, confirmationClickEventId, type ConnectorCatalog, type PendingConfirmation, type SlackRequestMessage, type SlackThreadWorkspaceResult } from "@rovara-code/contracts";
 import { ClassifierError, type ClassifierInput } from "../../packages/orchestrator/src/action-classifier.js";
 import { argumentsHash } from "../../packages/orchestrator/src/action-gate.js";
 import { ControlPlaneApi } from "../../packages/orchestrator/src/control-plane-api.js";

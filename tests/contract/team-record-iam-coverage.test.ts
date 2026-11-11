@@ -13,7 +13,7 @@ import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { Stack, type App } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { beforeAll, describe, expect, it } from "vitest";
-import { teamRecordTableBucketName, teamRecordVectorBucketName, teamRecordWorkGroupName } from "@agentx/contracts";
+import { teamRecordTableBucketName, teamRecordVectorBucketName, teamRecordWorkGroupName } from "@agentx/cloud-contracts";
 import { SERVICE_ROLE_SERVICES, TEAM_RECORD_LIST_ACTIONS, teamRecordVectorsRoleName } from "../../infra/lib/access-policies.js";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";

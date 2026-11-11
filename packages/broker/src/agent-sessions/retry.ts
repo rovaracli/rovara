@@ -9,19 +9,8 @@
 // The chain parts are behind Plan 4's seam and refuse before anything is written when it is not wired.
 import { createHash } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  AgentRunStateSchema,
-  agentSessionKey,
-  agentXError,
-  INDEX_EXPIRY_ATTRIBUTE,
-  projectAllows,
-  runRequestKey,
-  sessionEventId,
-  type AgentSessionRecord,
-  type OrgId,
-  type SessionView,
-  type WorkOrigin,
-} from "@agentx/contracts";
+import { AgentRunStateSchema, agentSessionKey, agentXError, INDEX_EXPIRY_ATTRIBUTE, projectAllows, runRequestKey, sessionEventId, type AgentSessionRecord, type OrgId, type WorkOrigin } from "@rovara-code/contracts";
+import { type SessionView } from "@agentx/cloud-contracts";
 import { isRovaraCodeTask } from "../agents/rovara-code-task.js";
 import { RUN_RECORD_MEMORY_DAYS } from "../agents/runs.js";
 import { paymentOfTask } from "../spend/payer.js";

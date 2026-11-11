@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { AppNavSchema, AppNavReaderSchema } from "../../packages/contracts/src/app-nav.js";
+import { AppNavSchema, AppNavReaderSchema } from "../../packages/cloud-contracts/src/app-nav.js";
 import { appNav, type AppNavDependencies, type NavCaller } from "../../packages/broker/src/app-nav/nav.js";
 const A = "agt_aaaaaaaaaaaaaaaaaaaa", S = "ses_aaaaaaaaaaaaaaaaaaaa";
 const priya: NavCaller = { orgId: "org_aaaaaaaaaaaaaaaaaaaa", developerId: "a".repeat(64), name: "Priya", orgRole: "member" };
@@ -9,7 +9,7 @@ function fixture() {
  projects: vi.fn(async () => [{ name: "payments" }]),
  rosters: vi.fn(async () => [{ project: "payments", agentId: A, name: "Payments expert" }]),
  live: vi.fn(async () => [{ sessionId: S, project: "payments", agentId: A, running: true, needsYou: true }]),
- home: vi.fn(async () => ({ total: 3 })),
+ home: vi.fn(async (): Promise<{ total: number; needsYou?: number; byProject?: Record<string, number> }> => ({ total: 3 })),
  sharedAgents: vi.fn(async () => [{ agentId: A, name: "Payments expert" }]),
  sharedSessions: vi.fn(async () => [{ sessionId: S, title: "Investigate payment timeout" }, { sessionId: "ses_bbbbbbbbbbbbbbbbbbbb", title: "Closed task", endedAt: "2026-10-24T12:00:00Z" }]),
  org: vi.fn(async () => ({ name: "Acme", plan: "trial" as const })),
@@ -23,6 +23,17 @@ describe("navigation contract and aggregation", () => {
  expect(value.homeCount).toBe(3);expect(value.projects).toEqual([{ name: "payments", agents: [{ agentId: A, name: "Payments expert", running: 1, needsYou: 1 }] }]);
  expect(value.shared.sessions).toEqual([{ sessionId: S, title: "Investigate payment timeout" }]);expect(value.org.trial?.state).toBe("locked");expect(value.features.admin).toBe(false);expect(value.features.usage).toBe(true);
  expect(AppNavSchema.parse(value)).toEqual(value);
+ });
+ it("adds each project's own needs-you count only when the source gives one, and never takes it from the prototype", async () => {
+ const f = fixture();
+ expect("needsYou" in (await appNav(f.deps, priya)).projects[0]!).toBe(false);
+ const g = fixture();g.sources.projects.mockResolvedValue([{ name: "payments" }, { name: "constructor" }, { name: "quiet" }]);g.sources.rosters.mockResolvedValue([]);
+ g.sources.home.mockResolvedValue({ total: 5, needsYou: 5, byProject: { payments: 3, elsewhere: 2 } });
+ const value = await appNav(g.deps, priya);
+ expect(value.homeCount).toBe(5);expect(value.projects.map(project => [project.name, project.needsYou])).toEqual([["constructor", 0], ["payments", 3], ["quiet", 0]]);
+ expect(AppNavSchema.parse(value)).toEqual(value);
+ // An older reader built from the schema before the field still reads the answer (the reader ignores what it does not know).
+ expect(AppNavReaderSchema.parse(value).projects[1]).toMatchObject({ name: "payments", needsYou: 3 });
  });
  it("coalesces concurrent reads, caches for five seconds, and never shares a cache between people or orgs", async () => {
  const f = fixture();await Promise.all([appNav(f.deps, priya), appNav(f.deps, priya)]);

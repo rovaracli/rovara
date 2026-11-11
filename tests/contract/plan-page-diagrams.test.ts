@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { planDocumentMarkdown, type PlanDocument, type PlanEvidenceInput } from "@agentx/contracts";
+import { planDocumentMarkdown, type PlanDocument, type PlanEvidenceInput } from "@rovara-code/contracts";
 import { renderDiagram } from "../../packages/broker/src/aws/plan-page/diagrams.js";
 import { planDocument } from "../support/plan-documents.js";
 

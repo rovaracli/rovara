@@ -7,7 +7,7 @@
 // reader checks. The company's close erases the partition (`org/track-record-cleanup.ts`). The row is written in the same transaction that records the merge (`merged-state.ts#mergedStateItems`), holds no person, and expires (the state table's TTL attribute) well after the
 // longest time a revert is useful to the track record. The reader is `rovara-pull-request-index.ts`. GitHub only, as the reverse links read by `team-record/runtime.ts` are.
 import { GetCommand, PutCommand, ScanCommand } from "@aws-sdk/lib-dynamodb";
-import { INDEX_EXPIRY_ATTRIBUTE, mergeCommitIndexKey, type OrgId } from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, mergeCommitIndexKey, type OrgId } from "@rovara-code/contracts";
 import type { TransactItem } from "../agents/table-writes.js";
 import { taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
 

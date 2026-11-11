@@ -7,7 +7,8 @@
 //  - A record that names a host this install has not registered is refused by the router with a fixed sentence (`NO_HOST_MESSAGE`). Nothing here answers it with GitHub.
 //  - A repository is found by the project revision a task or workspace pinned, by name when the caller has it, else by address. An address held by repositories of different hosts is refused.
 //  - A use the port cannot express yet (see "Left for P6" in the lane report) keeps the GitHub provider, through `githubProviderOf`, which refuses any other host with a fixed sentence.
-import { agentXError, repositoryHostOf, type ChangeRequestDetails, type ChangeRequestFeedback, type CodeHost, type HostScope, type RepositoryDefinition } from "@agentx/contracts";
+import { agentXError, type ChangeRequestDetails, type ChangeRequestFeedback, type CodeHost, type HostScope } from "@rovara-code/contracts";
+import { repositoryHostOf, type RepositoryDefinition } from "@agentx/cloud-contracts";
 import type { GitHubPullRequestDetails } from "../../github-app.js";
 import { GITHUB_HOST_KIND } from "../../plugins/code-host/github/index.js";
 import { GITHUB_ONLY_MESSAGE } from "../../plugins/code-host/github-only.js";

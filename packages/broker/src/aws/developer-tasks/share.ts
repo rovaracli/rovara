@@ -1,14 +1,6 @@
 import { randomUUID } from "node:crypto";
-import {
-  AdminShareModeRequestSchema,
-  ShareDeveloperTaskRequestSchema,
-  agentXError,
-  agentSessionKey,
-  developerTaskPolicy,
-  sharedTaskKey,
-  type DeveloperTaskShare,
-  type DeveloperTaskView,
-} from "@agentx/contracts";
+import { AdminShareModeRequestSchema, ShareDeveloperTaskRequestSchema, agentXError, agentSessionKey, developerTaskPolicy, sharedTaskKey, type DeveloperTaskShare } from "@rovara-code/contracts";
+import { type DeveloperTaskView } from "@agentx/cloud-contracts";
 import { channelLabel, decideMode } from "../../developer/share.js";
 import {
   aiToolTurn,

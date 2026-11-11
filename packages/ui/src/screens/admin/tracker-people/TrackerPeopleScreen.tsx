@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { SettingsNote } from "../SettingsNote.js";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { AppOrgMembersResponseReaderSchema, TrackerPeopleMutationBodySchema, TrackerPeopleReaderSchema, TrackerPeopleResultReaderSchema, type TrackerPeopleMutationBody } from "@agentx/contracts/web";
+import { AppOrgMembersResponseReaderSchema, TrackerPeopleMutationBodySchema, TrackerPeopleReaderSchema, TrackerPeopleResultReaderSchema, type TrackerPeopleMutationBody } from "@agentx/cloud-contracts/web";
 import { useAppHost } from "../../../host.js";
 import { createApiClient } from "../../../api/client.js";
 import { ApiError } from "../../../api/errors.js";

@@ -1,4 +1,4 @@
-import { WEB_API_RUNTIME_PROFILE_ID } from "@agentx/contracts";
+import { WEB_API_RUNTIME_PROFILE_ID } from "@rovara-code/contracts";
 import { e2eRegisteredRuntimeKey, readE2ERuntimeStatus } from "./e2e-runtime-readiness.js";
 import type { StoredRuntimeEvidence } from "../org/service-status.js";
 /** Reuse doctor's two-key reader while retaining evidence that it silently drops. */

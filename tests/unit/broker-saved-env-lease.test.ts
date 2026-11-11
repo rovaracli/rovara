@@ -1,7 +1,7 @@
 // Saved project images (SV wiring): the rebuild job's push login and result, and a preparation's fallback report. The login and the result answer to the job's lease AND the preparation's own grant, for the
 // preparation made for that job only; nothing about the registry is told to the worker beyond one sentence.
 import { beforeEach, describe, expect, it } from "vitest";
-import { SavedEnvBuildResultSchema } from "../../packages/contracts/src/index.js";
+import { SavedEnvBuildResultSchema } from "@rovara-code/contracts";
 import { checkRebuild, leaseForDispatch } from "../../packages/broker/src/test-env/saved-env.js";
 import { SAVED_ENV_PUSH_LOGIN_MAX_PER_OPERATION, savedEnvFallbackCore, savedEnvPushLoginCore, savedEnvResultCore, type SavedEnvLeaseContext } from "../../packages/broker/src/test-env/saved-env-lease.js";
 import { COMMIT, KEY, dig, imageOf, manifestOf, savedEnvWorld } from "../support/saved-env-world.js";

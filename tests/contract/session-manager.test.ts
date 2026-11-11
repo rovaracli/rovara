@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import type { Ec2RuntimeBinding } from "../../packages/contracts/src/session.js";
+import type { Ec2RuntimeBinding } from "@rovara-code/contracts";
 import { SessionManager, sessionFromItem } from "../../packages/broker/src/aws/sessions.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 

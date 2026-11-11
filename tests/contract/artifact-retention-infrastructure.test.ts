@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { App, Stack } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
-import { E2E_ARTIFACT_RETENTION_DAYS, E2E_ARTIFACT_RETENTION_TAG, E2E_ARTIFACT_RETENTION_TAG_KEY, E2E_ARTIFACT_RETENTION_TAG_VALUE } from "@agentx/contracts";
+import { E2E_ARTIFACT_RETENTION_DAYS, E2E_ARTIFACT_RETENTION_TAG, E2E_ARTIFACT_RETENTION_TAG_KEY, E2E_ARTIFACT_RETENTION_TAG_VALUE } from "@rovara-code/contracts";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { ControlPlaneStack } from "../../infra/lib/control-plane.js";
 import { environmentNaming } from "../../infra/lib/naming.js";
@@ -103,7 +103,7 @@ describe("the broker tags a screenshot, and only a screenshot, with that retenti
       .trim().split("\n").filter((file) => file !== "");
     // P6: the evidence store tags with the same KEY and the evidence classes' own values; it must never carry the screenshot tag.
     // wire-proof (fix round 1): the evidence pack is tagged with the evidence classes' own value (`evidence-std`) through evidence-keep.ts, never the screenshot tag.
-    expect(found.sort()).toEqual(["packages/broker/src/aws/evidence-artifacts.ts", "packages/broker/src/aws/workflow-e2e-artifacts.ts", "packages/broker/src/rovara-code/evidence-keep.ts", "packages/contracts/src/e2e-view-node.ts"]);
+    expect(found.sort()).toEqual(["packages/broker/src/aws/evidence-artifacts.ts", "packages/broker/src/aws/workflow-e2e-artifacts.ts", "packages/broker/src/rovara-code/evidence-keep.ts"]);
   });
 
   it("keeps the evidence store off the screenshot's tag value, so an evidence object never expires as a screenshot", () => {

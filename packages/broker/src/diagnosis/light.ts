@@ -6,11 +6,7 @@
 // reaches settings only through "Apply this change" (propose.ts), by the ordinary route and as that person.
 // The switch (`fd`, LIVE_FIX_ENABLED) is OFF by default: every route then answers NOT_FOUND exactly as if it did not exist.
 import { createHash } from "node:crypto";
-import {
-  DIAGNOSIS_FAILURE_WORDS, DIAGNOSIS_REFUSALS, DIAGNOSIS_UNAVAILABLE_MESSAGE, SETUP_DRAFT_STALE_MINUTES, DiagnosisAnsweredRequestSchema, DiagnosisIdSchema, DiagnosisQueueMessageSchema, DiagnosisRefSchema, DiagnosisStartBodySchema, DiagnosisStatusSchema,
-  DiagnosisRecordSchema, agentXError, diagnosisRouteAttributes, errorRefKey,
-  type DiagnosisRecord, type DiagnosisStatus, type DiagnosisTier, type DiagnosisTurnResult, type OrgId,
-} from "@agentx/contracts";
+import { DIAGNOSIS_FAILURE_WORDS, DIAGNOSIS_REFUSALS, DIAGNOSIS_UNAVAILABLE_MESSAGE, SETUP_DRAFT_STALE_MINUTES, DiagnosisAnsweredRequestSchema, DiagnosisIdSchema, DiagnosisQueueMessageSchema, DiagnosisRefSchema, DiagnosisStartBodySchema, DiagnosisStatusSchema, DiagnosisRecordSchema, agentXError, diagnosisRouteAttributes, errorRefKey, type DiagnosisRecord, type DiagnosisStatus, type DiagnosisTier, type DiagnosisTurnResult, type OrgId } from "@rovara-code/contracts";
 import type { SlackRequestQueue } from "../developer/page-comments.js";
 import { auditDiagnosisProposed, auditDiagnosisStarted } from "../audit/events.js";
 import { auditActorOf } from "../audit/plan3-hooks.js";

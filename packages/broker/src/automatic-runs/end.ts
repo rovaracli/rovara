@@ -4,7 +4,7 @@
 //   the session sweep     a run older than `AUTOMATIC_RUN_MAX_MS` is cancelled on its worker (best effort), ended and queued for release, and its end audited ("automatic_run.ended").
 // "Ended" is `agentRunEnd` (CANCELLED) plus the release mark the recovery sweep releases from: the workspace and the slot go back there, as they do for a night that finished. Every write is idempotent (the first end stands).
 import { DeleteCommand, GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { AUTOMATIC_RUN_MAX_MS, AutomaticJobSchema, INDEX_EXPIRY_ATTRIBUTE, OrgIdSchema, projectPk, type AutomaticRunEndReason } from "@agentx/contracts";
+import { AUTOMATIC_RUN_MAX_MS, AutomaticJobSchema, INDEX_EXPIRY_ATTRIBUTE, OrgIdSchema, projectPk, type AutomaticRunEndReason } from "@rovara-code/contracts";
 import { auditAutomaticRunEnded } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditTransact, tryAuditEvent, type AuditDeps } from "../audit/outbox.js";

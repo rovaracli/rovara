@@ -2,7 +2,7 @@
 // renderer: `renderLesson`, `renderLessonsFile`) with the one pointer line in AGENTS.md (`withPointer`). The BROKER renders it at a replay copy's dispatch, from the copy's frozen snapshot, and sends it to the worker as
 // extra files valid only for a replay copy (`aws/broker/lessons-dispatch.ts`); the worker places them in the copy's checkout and keeps them out of any diff. A lesson R2 would not put in a file (no text, a scope that is
 // not plain tokens, a scope naming only other repositories) is not offered, exactly as for a team. The MCP arm is not built.
-import { LESSON_FILE_PATH } from "@agentx/contracts";
+import { LESSON_FILE_PATH } from "@rovara-code/contracts";
 import { renderLessonsFile } from "./repo-file-format.js";
 import { renderLesson } from "./repo-file-plan.js";
 import { withPointer } from "./repo-file-pointer.js";

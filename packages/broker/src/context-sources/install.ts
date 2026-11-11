@@ -7,7 +7,7 @@
 //   MCP_HOST_URL, MCP_HOST_TOKEN  the host's address (https; http only on this machine's loopback) and the bearer the broker presents
 //
 // Public ignores every private-network setting. A host address that is not https stops the install even while package-run servers are off, so a later switch-on cannot send the token in clear.
-import { EditionSchema, agentXError, type Edition } from "@agentx/contracts";
+import { EditionSchema, agentXError, type Edition } from "@rovara-code/contracts";
 import type { AuditDeps } from "../audit/outbox.js";
 import { cidrBlockListOf, parseInstallCidrs } from "../connections/private-endpoints.js";
 import { contextSourceAudit, controllerEventAudit, mcpServerAudit } from "./audit.js";

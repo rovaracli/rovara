@@ -1,10 +1,7 @@
 // Live interaction part 2, task T0: the contracts (redirect, ask, ErrorRef, diagnosis proposals, switches), the edition rows and the audit builders.
 import { describe, expect, it } from "vitest";
-import {
-  ASK_LIMITS, ASK_RATE, AUDIT_FACT_KEYS, AskBodySchema, AskRecordSchema, AuditEventInputSchema, BROKER_SETTINGS, DIAGNOSIS_PROPOSALS_MAX, DIAGNOSIS_RATE, ERROR_REF_KINDS, ErrorRefSchema,
-  LIVE_INTERACTION_FLAGS, OWNER_REDIRECT_FEATURE, OwnerRedirectInvocationSchema, REDIRECT_RATE, RedirectBodySchema, RedirectRecordSchema, askAuditMode, askStoresText, diagnosisPathDenied, diagnosisPrefillAllowed, DIAGNOSIS_PREFILL_ALLOW,
-  editionPolicy, errorRefKey, errorRefOf, liveInteractionFlagOn, parseDiagnosisProposals, requireFeature, WORKFLOW_BLOCK_REASONS,
-} from "../../packages/contracts/src/index.js";
+import { ASK_LIMITS, ASK_RATE, AskBodySchema, AskRecordSchema, DIAGNOSIS_PROPOSALS_MAX, DIAGNOSIS_RATE, ERROR_REF_KINDS, ErrorRefSchema, LIVE_INTERACTION_FLAGS, OWNER_REDIRECT_FEATURE, OwnerRedirectInvocationSchema, REDIRECT_RATE, RedirectBodySchema, RedirectRecordSchema, askAuditMode, askStoresText, diagnosisPathDenied, diagnosisPrefillAllowed, DIAGNOSIS_PREFILL_ALLOW, errorRefKey, errorRefOf, liveInteractionFlagOn, parseDiagnosisProposals } from "@rovara-code/contracts";
+import { AUDIT_FACT_KEYS, AuditEventInputSchema, BROKER_SETTINGS, editionPolicy, requireFeature, WORKFLOW_BLOCK_REASONS } from "@agentx/cloud-contracts";
 import {
   auditDiagnosisBundlePrepared, auditDiagnosisProposalRaised, auditDiagnosisProposed, auditDiagnosisStarted, auditDiagnosisSupportEscalated, auditSessionRedirected, auditTaskAsked, auditOccurrence,
 } from "../../packages/broker/src/audit/events.js";

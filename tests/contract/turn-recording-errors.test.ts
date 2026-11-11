@@ -1,6 +1,6 @@
 // Recording failures are named in the record by fixed category, so a broken recorder never fails silently.
 import { describe, expect, it, vi } from "vitest";
-import { EMPTY_TURN_OBSERVATION, TurnObservationSchema, TurnRecordSchema } from "../../packages/contracts/src/turns.js";
+import { EMPTY_TURN_OBSERVATION, TurnObservationSchema, TurnRecordSchema } from "@rovara-code/contracts";
 import { TurnRecorder } from "../../packages/orchestrator/src/turn-recorder.js";
 
 const now = "2026-09-24T12:00:00.000Z";

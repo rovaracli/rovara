@@ -1,7 +1,8 @@
 // Plan 3 Task 29: every expense has a payer and a place, counted once. The payer is whose budget the work is charged to and is named from where the work
 // came from (`resolvePayer`); the place is the project it works on. `budgetScopesFor` turns the two into the budgets the work is counted against, which
 // Task 31 checks and Task 30 records. Plan 4 widens both with its chain payer and the `chain` scope.
-import { ROVARA_CODE_AGENT_ID, agentXError, type AgentId, type BudgetScope, type ChainId, type ChainRunId, type Payer, type Place, type WorkOrigin } from "@agentx/contracts";
+import { ROVARA_CODE_AGENT_ID, agentXError, type AgentId, type ChainId, type ChainRunId, type Payer, type Place, type WorkOrigin } from "@rovara-code/contracts";
+import { type BudgetScope } from "@agentx/cloud-contracts";
 import type { DeveloperTaskRecord } from "../developer/task-records.js";
 import type { MintTags } from "../model-proxy/access.js";
 

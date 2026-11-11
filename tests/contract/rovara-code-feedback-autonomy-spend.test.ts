@@ -3,9 +3,10 @@
 // build step and held to the run limit, the member's budget and the org's, and running out pauses the round (the same round resumes at the person's retry). A person's push before it starts stops it.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { BUDGET_EXHAUSTED_FAILURE_MESSAGE, FEEDBACK_AUTONOMY_ACTOR_ID, decideWorkflowFeedbackFindings, type WorkflowSnapshot } from "@agentx/contracts";
+import { BUDGET_EXHAUSTED_FAILURE_MESSAGE, FEEDBACK_AUTONOMY_ACTOR_ID } from "@rovara-code/contracts";
+import { decideWorkflowFeedbackFindings, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
-import { builtinSettingsKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { builtinSettingsKey } from "@rovara-code/contracts";
 import { IMPLEMENT_TEST_RULE } from "../../packages/broker/src/rovara-code/verification-report.js";
 import { workflowDispatchItem } from "../../packages/broker/src/aws/broker-shared.js";
 import { MAYA, createDeveloperTaskBroker } from "../support/developer-task-broker.js";

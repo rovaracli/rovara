@@ -5,7 +5,7 @@
 // is refused unless the model is one the company can use for learning right now (company-billed source, not forbidden, and not a free, router or zero-priced model: `unfitForLearning`). Nothing here calls a model.
 // The change and its audit line are ONE transaction (a conditional put or delete plus the audit's pending item), so a lost race leaves neither, and a change never lacks its line.
 import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { canonicalModelName, teamRecordPk, type ModelIdentifier, type OrgId } from "@agentx/contracts";
+import { canonicalModelName, teamRecordPk, type ModelIdentifier, type OrgId } from "@rovara-code/contracts";
 import { errorName } from "../agents/table-writes.js";
 import { customerProviderRouting, unfitForLearning } from "../model-sources/diagnosis-provider.js";
 import { servableModels, type RoutingDependencies } from "../model-sources/routing.js";

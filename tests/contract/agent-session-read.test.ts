@@ -6,19 +6,9 @@ import { chainRunViewOf } from "../support/chain-run-view.js";
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 import type * as BrokerModule from "../../packages/broker/src/aws/broker.js";
-import { LIVE_INDEX_SCAN_MAX, agentXError, agentSessionKey, liveSessionKey, mySessionsKey, openAgentSessionKey, projectSessionsKey, sessionBindingKey, sharedSessionsKey, type OrgId } from "../../packages/contracts/src/index.js";
-import {
-  NeedsConfirmationSchema,
-  SessionListReaderSchema,
-  SessionListSchema,
-  SessionResponseReaderSchema,
-  SessionResponseSchema,
-  SessionShareDeleteResponseSchema,
-  SessionSharePutResponseSchema,
-  SessionSharesResponseSchema,
-  SessionStepTaskResponseSchema,
-  SessionViewSchema,
-} from "../../packages/contracts/src/index.js";
+import { LIVE_INDEX_SCAN_MAX, agentXError, agentSessionKey, liveSessionKey, mySessionsKey, openAgentSessionKey, projectSessionsKey, sessionBindingKey, sharedSessionsKey, type OrgId } from "@rovara-code/contracts";
+import { NeedsConfirmationSchema, SessionListReaderSchema, SessionListSchema, SessionShareDeleteResponseSchema, SessionSharePutResponseSchema, SessionSharesResponseSchema } from "@rovara-code/contracts";
+import { SessionResponseReaderSchema, SessionResponseSchema, SessionStepTaskResponseSchema, SessionViewSchema } from "@agentx/cloud-contracts";
 import { createTaskSessionItems, ensureTaskSession } from "../../packages/broker/src/agent-sessions/create.js";
 import { newSessionRoleMemo, requireSessionLevel } from "../../packages/broker/src/agent-sessions/access.js";
 import { listSessions, sessionStepTask, sessionView, type SessionReadDependencies } from "../../packages/broker/src/agent-sessions/read.js";
@@ -27,7 +17,7 @@ import { AgentSessionStore } from "../../packages/broker/src/agent-sessions/stor
 import { createWriteApprovalRecord, getApprovalSubjectHandler, getApproverRule, type WriteApprovalRecord } from "../../packages/broker/src/agents/approvals.js";
 import { can, resolveTaskAccess } from "../../packages/broker/src/developer/task-access.js";
 import { mayDecideSpendRequest } from "../../packages/broker/src/spend/requests.js";
-import { spendRequestKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { spendRequestKey } from "../../packages/cloud-contracts/src/org-scoped-keys.js";
 import { taskKey } from "../../packages/broker/src/developer/task-records.js";
 import { DEV_ISSUER, MAYA, OMAR, createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";

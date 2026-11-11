@@ -3,7 +3,7 @@
 //   structured   what is needed: the document's title and the first sentence of its first "why"; what Rovara will do: its top-level claims in order, then (only while fewer than three) their
 //                first sub-claims, at most five lines.
 //   Markdown     what is needed: its first heading (or first line); what Rovara will do: the next lines with text, list markers and emphasis taken off, at most five.
-import { DECISION_PLAN_SUMMARY_LINES_MAX, redactText, type PlanClaim } from "@agentx/contracts";
+import { DECISION_PLAN_SUMMARY_LINES_MAX, redactText, type PlanClaim } from "@rovara-code/contracts";
 import type { LoadedDocument } from "../developer/plan-artifacts.js";
 
 const NEEDED_MAX = 300;

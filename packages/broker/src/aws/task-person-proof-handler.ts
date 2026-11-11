@@ -1,13 +1,4 @@
-import {
-  TaskDispatchProofRequestSchema,
-  TaskDispatchProofResponseSchema,
-  TaskPersonProofResponseSchema,
-  SlackTeamIdSchema,
-  agentXError,
-  type TaskDispatchProofResponse,
-  type TaskPersonProofRequest,
-  type TaskPersonProofResponse,
-} from "@agentx/contracts";
+import { TaskDispatchProofRequestSchema, TaskDispatchProofResponseSchema, TaskPersonProofResponseSchema, SlackTeamIdSchema, agentXError, type TaskDispatchProofResponse, type TaskPersonProofRequest, type TaskPersonProofResponse } from "@rovara-code/contracts";
 
 export interface TaskPersonProofReadAdmission {
   readonly deadlineAt: number;

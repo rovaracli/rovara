@@ -2,10 +2,7 @@
 // does not parse reads as the defaults (comments on, status changes OFF, private sessions never written to a public tracker). A save is conditional on the revision the maintainer read, so two
 // saves at once give a clear conflict, never a silent overwrite; the same request id again answers the stored settings and writes nothing.
 import { GetCommand, PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  DEFAULT_TICKET_UPDATES, TICKET_TRACKERS, TicketUpdatesSettingsSchema, agentXError, orgScoped, ticketUpdatesSettingsKey, ticketWriteAccessKey,
-  type OrgId, type TicketTracker, type TicketUpdatesSettings, type TicketWriteAccessView,
-} from "@agentx/contracts";
+import { DEFAULT_TICKET_UPDATES, TICKET_TRACKERS, TicketUpdatesSettingsSchema, agentXError, orgScoped, ticketUpdatesSettingsKey, ticketWriteAccessKey, type OrgId, type TicketTracker, type TicketUpdatesSettings, type TicketWriteAccessView } from "@rovara-code/contracts";
 
 export interface TicketUpdatesTable {
   documentClient: { send(command: unknown): Promise<unknown> };

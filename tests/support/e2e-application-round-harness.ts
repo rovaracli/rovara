@@ -1,9 +1,7 @@
 import { vi } from "vitest";
 import { createHash, randomUUID } from "node:crypto";
-import {
-  E2EApplicationPlanIntentSchema, E2EPolicySchema, WorkflowSnapshotSchema, workflowRequestId, workspaceSessionKey,
-  type E2EApplicationExecutionAdmission, type E2EScenario, type E2ESourceSnapshot, type E2EWorkflowAdmissionRef, E2EWorkflowAdmissionRefSchema,
-} from "@agentx/contracts";
+import { E2EApplicationPlanIntentSchema, E2EPolicySchema, workflowRequestId, workspaceSessionKey, type E2EApplicationExecutionAdmission, type E2EScenario, type E2ESourceSnapshot, type E2EWorkflowAdmissionRef, E2EWorkflowAdmissionRefSchema } from "@rovara-code/contracts";
+import { WorkflowSnapshotSchema } from "@agentx/cloud-contracts";
 import { decodeE2EApplicationExecutionAdmission } from "@agentx/verifier";
 import { buildFeatureE2EPlanningContext } from "../../packages/broker/src/e2e/feature-plan-planning-context.js";
 import { accountRegistryEntriesFromRows } from "../../packages/broker/src/e2e/application-account-registry.js";
@@ -19,7 +17,7 @@ import { PROFILE, ordersContractManifest, shaCanonical, snapshotOf, webApiRow } 
 import type { E2EApplicationReport } from "../../packages/verifier/src/application-report-schema.js";
 import { collectApplicationGroupEvidence, type ApplicationGroupEvidence, type ObservedApiOutcome } from "./e2e-application-evidence-fixture.js";
 import { TEST_ORG, testProjectPk } from "./orgs.js";
-import { editionPolicy } from "../../packages/contracts/src/index.js";
+import { editionPolicy } from "@agentx/cloud-contracts";
 import { githubCodeHost } from "../../packages/broker/src/plugins/code-host/github/index.js";
 import { FakeCodeHost } from "../../packages/broker/src/plugins/fake/code-host.js";
 import { FakeHostModel } from "../../packages/broker/src/plugins/fake/model.js";

@@ -4,9 +4,8 @@
 //
 // A bare git repository on disk is not modelled here: the worker-side fake git server belongs to P10 (the end-to-end task), which needs a real clone.
 import { createHash } from "node:crypto";
-import {
-  agentXError, type ChangeRequestFile, type Check, type HostPermission, type MergeMethod, type MergeResult, type ReviewState, type Review,
-} from "@agentx/contracts";
+import { accountKindOfHostType } from "../code-host/neutral-words.js";
+import { agentXError, type ChangeRequestFile, type Check, type HostPermission, type MergeMethod, type MergeResult, type ReviewState, type Review } from "@rovara-code/contracts";
 
 export interface FakeAccount { login: string; permission: HostPermission; accountType: string; hostUserId: string }
 export interface FakeComment {
@@ -189,7 +188,7 @@ export class FakeHostModel {
   addReview(id: string, input: { login: string; state: ReviewState; body?: string; revision?: string }): Review {
     const cr = this.cr(id);
     const account = this.accounts.get(input.login) ?? this.setAccount(input.login, "write");
-    const review: Review = { reviewer: { login: account.login, hostUserId: account.hostUserId }, accountType: account.accountType, state: input.state, revision: input.revision ?? this.headRevisionOf(cr), submittedAt: this.now() };
+    const review: Review = { reviewer: { login: account.login, hostUserId: account.hostUserId }, accountType: accountKindOfHostType(account.accountType) ?? "other", state: input.state, revision: input.revision ?? this.headRevisionOf(cr), submittedAt: this.now() };
     const reviewId = this.nextCommentId();
     cr.reviews.push(review);
     cr.reviewMeta.push({ id: reviewId, body: input.body ?? "" });
@@ -298,9 +297,9 @@ export class FakeHostModel {
   }
 
   /** The host's word on whether the change request can merge: draft, conflicts, a required check failing or pending, else clean. */
-  mergeableState(cr: FakeChangeRequest): "clean" | "dirty" | "blocked" | "draft" {
+  mergeableState(cr: FakeChangeRequest): "clean" | "conflicted" | "blocked" | "draft" {
     if (cr.draft) return "draft";
-    if (cr.conflicts) return "dirty";
+    if (cr.conflicts) return "conflicted";
     const checks = this.checksOf(this.headRevisionOf(cr));
     for (const name of this.requiredChecks) {
       const found = checks.find((check) => check.name === name);

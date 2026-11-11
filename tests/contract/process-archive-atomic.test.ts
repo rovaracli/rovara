@@ -1,7 +1,7 @@
 // "How we work" follow-up F2: archiving a process layer checks, in the archive's own transaction, that the playbook did not come to point at it after the route looked.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { ROVARA_CODE_AGENT_ID, projectPlaybookKey, type AgentId } from "../../packages/contracts/src/index.js";
+import { ROVARA_CODE_AGENT_ID, projectPlaybookKey, type AgentId } from "@rovara-code/contracts";
 import { routeAgentRequest } from "../../packages/broker/src/agents/routes.js";
 import { postProjectProcess } from "../../packages/broker/src/playbook/process-layer.js";
 import { CELL, MAX, ORG_A } from "../support/agent-session-world.js";

@@ -1,6 +1,7 @@
 // An in-memory TestAccountStore for tests (test services TS26): optimistic versions like the DynamoDB adapter's condition, the audit events and approval conditions it was handed kept for the test to read, and
 // a day counter. It has none of the adapter's cross-item races (the company cap and the daily roll-up are counted here without a transaction).
-import { AuditEventInputSchema, type AuditEventInput, type OrgId } from "@agentx/contracts";
+import { AuditEventInputSchema, type AuditEventInput } from "@agentx/cloud-contracts";
+import { type OrgId } from "@rovara-code/contracts";
 import type { DayUsage, StoredTestAccount, TestAccountStore } from "../../packages/broker/src/test-env/test-accounts.js";
 import type { TransactItem } from "../../packages/broker/src/audit/outbox.js";
 

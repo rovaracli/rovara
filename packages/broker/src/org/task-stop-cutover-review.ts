@@ -2,12 +2,8 @@
 import { isDeepStrictEqual } from "node:util";
 import { QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import {
- AgentGuardrailsSchema, AgentIdSchema, BUILTIN_AGENT_IDS, OrgModelSourcesSchema, ROVARA_CODE_AGENT_ID,
- TaskStopCompanyPolicySchema, TaskStopProjectPolicySchema, WORKSPACE_PROJECT_INDEX, agentGuardrailsKey, agentKey,
- builtinSettingsKey, isBuiltinAgentId, modelSourcesKey, orgProjectCatalogKey, orgScoped, projectAiKey, projectMetaKey,
- workspaceProjectIndexValue, type TaskStopImpact,
-} from "@agentx/contracts";
+import { AgentGuardrailsSchema, AgentIdSchema, BUILTIN_AGENT_IDS, OrgModelSourcesSchema, ROVARA_CODE_AGENT_ID, WORKSPACE_PROJECT_INDEX, agentGuardrailsKey, agentKey, builtinSettingsKey, isBuiltinAgentId, modelSourcesKey, orgProjectCatalogKey, orgScoped, projectMetaKey, workspaceProjectIndexValue } from "@rovara-code/contracts";
+import { TaskStopCompanyPolicySchema, TaskStopProjectPolicySchema, projectAiKey, type TaskStopImpact } from "@agentx/cloud-contracts";
 import { taskKey, taskPointerKey, type DeveloperTaskRecord } from "../developer/task-records.js";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 import type { TransactItem } from "../agents/table-writes.js";

@@ -2,7 +2,7 @@
 // ingress, broker, notifier and worker run-task. The owner's answers and the comments they send reach the coder and the planner exactly as before; a teammate and an outsider still cannot decide, and
 // the read-only page refuses every write. Each scenario checks that no code is written until the owner approves.
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
-import type { ChannelMembersRequest, ChannelMembersResponse } from "@agentx/contracts";
+import type { ChannelMembersRequest, ChannelMembersResponse } from "@rovara-code/contracts";
 import { createWorkflowE2E, type WorkflowE2E } from "../support/workflow-e2e.js";
 import { MAYA, type Developer } from "../support/developer-task-broker.js";
 import { SLACK_CHANNEL } from "../support/slack-broker.js";

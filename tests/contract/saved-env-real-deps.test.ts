@@ -1,7 +1,7 @@
 // Saved project images (SV wiring): the registry's real bindings. Built only while sv is on and the install can run the registry; the approved environment, its Prove report and the default branch heads come from the
 // broker's own stores and code host; the key and the build inputs come from readers the install gives, and without them the registry queues nothing.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { TestEnvironmentBodySchema, orgPk, testEnvDigest } from "@agentx/contracts";
+import { TestEnvironmentBodySchema, orgPk, testEnvDigest } from "@rovara-code/contracts";
 import { brokerDependencies } from "../../packages/broker/src/aws/broker/dependency-wiring.js";
 import { expectedEnvironmentKey } from "../../packages/broker/src/test-env/saved-env-key.js";
 import { realSavedEnvDeps, savedEnvConfigOf, savedEnvDefaultHeads, savedEnvSecretNames } from "../../packages/broker/src/aws/broker/saved-env-real.js";

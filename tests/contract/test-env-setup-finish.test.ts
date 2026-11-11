@@ -2,7 +2,7 @@
 // proposes, checks and proves (item 2); the project's own setup check runs with the approved test services (item 3); the second person's confirmation is a card on the same screen (item 1).
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
-import { projectPk, testEnvDigest, type TestEnvironmentBody } from "../../packages/contracts/src/index.js";
+import { projectPk, testEnvDigest, type TestEnvironmentBody } from "@rovara-code/contracts";
 import { pinnedCatalog, verifiedCatalog } from "../support/catalog-pinning.js";
 import { approvalDecideKind } from "../../packages/broker/src/agents/approval-decide-kind.js";
 import { lookIsStale, ownWriteOf, recordOwnSettingsWrite, readOwnSettingsWrite } from "../../packages/broker/src/test-env/own-settings-write.js";

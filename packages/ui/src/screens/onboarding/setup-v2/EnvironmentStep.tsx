@@ -1,6 +1,6 @@
 import { Suspense, lazy, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import type { AppProjectDetail } from "@agentx/contracts/web";
+import type { AppProjectDetail } from "@agentx/cloud-contracts/web";
 import { PendingChangeError, useOnboardingApi } from "../../../api/onboarding.js";
 import { useSetupAgentApi } from "../../../api/setup-agent.js";
 import { useTestEnvironmentApi } from "../../../api/test-environment.js";

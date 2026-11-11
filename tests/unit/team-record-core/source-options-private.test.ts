@@ -3,7 +3,8 @@
 // session org. Same harness shape as `source-options.test.ts` (copied: not exported).
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { developerOrgKey, orgMemberKey, orgMetaKey, projectMemberKey, projectMetaKey, slackTeamOrgKey, teamRecordPk, type OrgId } from "@agentx/contracts";
+import { developerOrgKey, orgMemberKey, orgMetaKey, slackTeamOrgKey } from "@agentx/cloud-contracts";
+import { projectMemberKey, projectMetaKey, teamRecordPk, type OrgId } from "@rovara-code/contracts";
 import { createTeamRecordRuntime, type TeamRecordRuntime } from "../../../packages/broker/src/team-record/runtime.js";
 import { dynamoRateLimiter } from "../../../packages/broker/src/team-record/query.js";
 import { handleRecordRoute } from "../../../packages/broker/src/team-record/routes.js";

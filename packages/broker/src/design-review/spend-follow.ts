@@ -5,7 +5,8 @@
 //                            `costApproved` (`startDesignReview`), in the same write that creates the round's operation. The approval is bound to that revision: a changed hold has another revision and the row is stale;
 //   skip                     the review closes to the next phase (`skipDesignReview`); a skip before any design exists puts the task on to its design, so a PLAN row is due.
 // Nothing here checks who may choose: that is `designSpendChoiceHandler`, which calls the commit port only after every permission check.
-import { WorkflowTransitionError, type WorkflowSnapshot } from "@agentx/contracts";
+import { WorkflowTransitionError } from "@rovara-code/contracts";
+import { type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { taskKey } from "../developer/task-records.js";
 import { WORKFLOW_NO_CANDIDATE_DIGEST, workflowDispatchItem } from "../aws/broker-shared.js";
 import { applyDesignSpendChoice, type DesignSpendWrite } from "./spend-choice.js";

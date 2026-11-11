@@ -3,7 +3,7 @@
 // is next due, how many reads in a row failed, when it last told the maintainers). The record names a connection by name only: never an address, never a secret.
 import { createHash } from "node:crypto";
 import { GetCommand, PutCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { agentXError, IntakeChannelRefSchema, intakeSourceCountKey, intakeSourceKey, intakeSystemOf, type IntakeChannelRef, type OrgId } from "@agentx/contracts";
+import { agentXError, IntakeChannelRefSchema, intakeSourceCountKey, intakeSourceKey, intakeSystemOf, type IntakeChannelRef, type OrgId } from "@rovara-code/contracts";
 import type { IntakeTable } from "./store.js";
 
 export interface IntakeSourceRecord {

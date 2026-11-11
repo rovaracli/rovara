@@ -9,20 +9,8 @@ import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall, type FauxResponseStep, type TranscriptContext } from "@earendil-works/pi-ai";
 import type { BashOperations, InlineExtension } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it, vi } from "vitest";
-import {
-  agentxPreambleSha256,
-  AGENTX_PREAMBLE_VERSION,
-  CheckReportSchema,
-  createCandidateManifest,
-  lastAssistantResponse,
-  type CheckReport,
-  type ProjectCommand,
-  type WorkerInvocation,
-  taskGraphDigest,
-  type WorkflowFeedbackBundle,
-  type WorkflowFeedbackBundleRef,
-  WorkflowFeedbackBundleSchema,
-} from "../../packages/contracts/src/index.js";
+import { agentxPreambleSha256, AGENTX_PREAMBLE_VERSION, CheckReportSchema, createCandidateManifest, lastAssistantResponse, type CheckReport, type ProjectCommand, taskGraphDigest, type WorkflowFeedbackBundle, type WorkflowFeedbackBundleRef, WorkflowFeedbackBundleSchema } from "@rovara-code/contracts";
+import { type WorkerInvocation } from "@agentx/cloud-contracts";
 import type { WorkerArtifact } from "../../packages/worker/src/artifacts.js";
 import { WorkerCancellationController, WorkerOperationCancelledError } from "../../packages/worker/src/cancel.js";
 import type { WorkerEvent } from "../../packages/worker/src/events.js";

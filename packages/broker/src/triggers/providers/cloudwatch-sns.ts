@@ -6,7 +6,7 @@
 // (`2017-01-12T16:30:42.236+0000`), which is read as the same time. Whoever may publish to the customer's topic can write any alarm into it, so the account check protects against
 // another account's alarms, not against the customer's own principals. Rovara only reads CloudWatch, so there is no actor to guard against.
 import { z } from "zod";
-import type { HookRecord, TriggerEvent } from "@agentx/contracts";
+import type { HookRecord, TriggerEvent } from "@rovara-code/contracts";
 import type { HookHeaders, HookProvider, HookSetup, Normalized } from "./types.js";
 import { isoOfText, titleOf, valuesOf } from "./shared.js";
 import { parseSnsMessage, snsHostOfTopic, type SnsMessage } from "../sns-verify.js";

@@ -1,5 +1,5 @@
 // K1 lane D, D1: Rovara's own format, for teams with no spec habit: one `spec.md` (summary, requirements as EARS lines, design, tasks).
-import { specDraftStatements, type SpecDraft, type SpecFile, type SpecRequirementRef } from "@agentx/contracts";
+import { specDraftStatements, type SpecDraft, type SpecFile, type SpecRequirementRef } from "@rovara-code/contracts";
 import { assertRenderedSpec, extractLabelledLines, resolveSpecFolder, type SpecRenderer, type SpecRenderInput } from "./renderer.js";
 
 function markdown(draft: SpecDraft): string {

@@ -1,5 +1,5 @@
 import { installOrgIdFromEnvironment } from "../org/resolve.js";
-import { OrgIdSchema } from "@agentx/contracts";
+import { OrgIdSchema } from "@rovara-code/contracts";
 import { resolveSlackThreadKey } from "./slack-thread-key.js";
 // Issue 195: a cancel that never reaches the worker never holds a workspace for good. Stopping a
 // task moves it to CANCEL_REQUESTED and queues a cancel operation; if that cancel is lost (its
@@ -30,7 +30,7 @@ import { resolveSlackThreadKey } from "./slack-thread-key.js";
 // for a release INTERRUPTED and not yet released) under the fence read, and on the workspace still
 // being held by it, so a cancel result that lands first stands.
 import { GetCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { AgentXError, WorkspaceInstanceSchema, workspaceRecordFields } from "@agentx/contracts";
+import { AgentXError, WorkspaceInstanceSchema, workspaceRecordFields } from "@rovara-code/contracts";
 import { taskPointerKey } from "../developer/task-records.js";
 import { getItem, requestCancellation, type CancellationDependencies } from "./cancellation.js";
 import { releaseFailedPreparation } from "./failed-preparation.js";

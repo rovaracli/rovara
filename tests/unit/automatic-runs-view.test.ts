@@ -1,6 +1,7 @@
 // What a project's page says about its automatic runs: "Started by Rovara (nightly)", the project's own "Automatic runs" line, the pause, and the reminder when the person who approved the setup has left.
 import { describe, expect, it } from "vitest";
-import { TestEnvironmentBodySchema, orgMemberKey, projectMetaKey, type OrgId, type TestEnvironmentBody } from "@agentx/contracts";
+import { TestEnvironmentBodySchema, projectMetaKey, type OrgId, type TestEnvironmentBody } from "@rovara-code/contracts";
+import { orgMemberKey } from "@agentx/cloud-contracts";
 import { taskKey } from "../../packages/broker/src/developer/task-records.js";
 import { setAutomaticRunsCap } from "../../packages/broker/src/automatic-runs/cap.js";
 import { startAutomaticRun } from "../../packages/broker/src/automatic-runs/start.js";

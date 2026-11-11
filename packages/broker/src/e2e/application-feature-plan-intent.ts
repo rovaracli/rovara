@@ -1,14 +1,8 @@
 import { createHash } from "node:crypto";
-import {
-  E2EApplicationPlanIntentSchema, E2EPolicySchema, E2EScenarioBundleSchema, canonicalJson, e2eScenarioBundleDigest,
-  type E2EApplicationApprovalBinding, type E2EApplicationPlanIntent, type E2EExecutionPlan, type E2EPortableApprovalBinding,
-  type E2EScenarioBundle, type E2ESourceSnapshot, type E2ESetupProposal, type PlanApprovalRef,
-  type E2ERegisteredRuntime, type E2ERuntimeAvailability, type E2ERuntimeAccountRef,
-} from "@agentx/contracts";
+import { E2EApplicationPlanIntentSchema, E2EPolicySchema, E2EScenarioBundleSchema, canonicalJson, e2eScenarioBundleDigest, type E2EApplicationApprovalBinding, type E2EApplicationPlanIntent, type E2EExecutionPlan, type E2EPortableApprovalBinding, type E2EScenarioBundle, type E2ESourceSnapshot, type E2ESetupProposal, type PlanApprovalRef, type E2ERegisteredRuntime, type E2ERuntimeAvailability, type E2ERuntimeAccountRef } from "@rovara-code/contracts";
 import { deriveE2EApplicationApprovalBinding } from "./application-plan-binding.js";
 import { deriveE2EFeatureApprovedMockSelections, deriveE2EFeaturePortableApprovalBinding } from "./feature-plan-intent.js";
-import { projectE2EApplicationPortableSelection, selectE2EApplicationExecutionPlan, type E2EApplicationPlanSelectionInput,
-  type E2EApplicationPortableProjection } from "@agentx/contracts";
+import { projectE2EApplicationPortableSelection, selectE2EApplicationExecutionPlan, type E2EApplicationPlanSelectionInput, type E2EApplicationPortableProjection } from "@rovara-code/contracts";
 import { admitE2EFeatureVerifier, E2E_FEATURE_PROCESS_RESPONSE_SCOPE, type E2EFeatureVerifierRecord } from "../aws/e2e-feature-verifier-catalog.js";
 
 const sha256 = (value: string | Uint8Array) => createHash("sha256").update(value).digest("hex");

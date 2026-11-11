@@ -1,11 +1,6 @@
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  E2EModelChannelResponseSchema,
-  E2EModelReceiptSchema,
-  e2eModelRouteInvokedIdentifier,
-  e2eModelRouteRevision,
-} from "../../packages/contracts/src/e2e-model-channel.js";
+import { E2EModelChannelResponseSchema, E2EModelReceiptSchema, e2eModelRouteInvokedIdentifier, e2eModelRouteRevision } from "@rovara-code/contracts";
 import * as modelRuntime from "../../packages/model-runtime/src/index.js";
 import {
   createGovernedE2EModelRoute,

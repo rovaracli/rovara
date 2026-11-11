@@ -1,7 +1,7 @@
 // wire-team-record fix round 1, B2: the company's close runs the Team record's erase as a MANDATORY step. A failure stops the close (the company stays closing), and a fresh close finishes it.
 import { randomUUID } from "node:crypto";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import type { OrgId } from "../../packages/contracts/src/org.js";
+import type { OrgId } from "@rovara-code/contracts";
 import { MAYA, OMAR, createDeveloperTaskBroker, seedMembership } from "../support/developer-task-broker.js";
 import { FakeProjectMembers } from "../support/fake-project-members.js";
 import { TEST_ORG } from "../support/orgs.js";

@@ -1,7 +1,7 @@
 // Enterprise foundations P9: trackers in the plug-in registry. Linear is the install's own; any other tracker is an Enterprise plug-in; a kind with no tracker is refused with a fixed
 // sentence, and nothing falls back to another tracker.
 import { describe, expect, it } from "vitest";
-import { editionPolicy } from "@agentx/contracts";
+import { editionPolicy } from "@agentx/cloud-contracts";
 import { FakeCodeHost } from "../../packages/broker/src/plugins/fake/code-host.js";
 import { FAKE_TRACKER_KIND, FakeTracker } from "../../packages/broker/src/plugins/fake/tracker.js";
 import { NO_TRACKER_MESSAGE, createPluginRegistry } from "../../packages/broker/src/plugins/registry.js";

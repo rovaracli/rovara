@@ -1,13 +1,7 @@
 // Issue 157: a deploy that stops the Slack service mid-turn. The old task hands the turn off, and
 // the redelivered message re-attaches to the worker operation instead of running the model again.
 import { describe, expect, it, vi } from "vitest";
-import {
-  CONFIRMATION_TTL_MS,
-  type PendingConfirmation,
-  type SlackRequestMessage,
-  type SlackThreadWorkspaceResult,
-  type SlackThreadPrepareResult,
-} from "../../packages/contracts/src/index.js";
+import { CONFIRMATION_TTL_MS, type PendingConfirmation, type SlackRequestMessage, type SlackThreadWorkspaceResult, type SlackThreadPrepareResult } from "@rovara-code/contracts";
 import { argumentsHash } from "../../packages/orchestrator/src/action-gate.js";
 import { createDynamoConfirmationStore } from "../../packages/slack-service/src/confirmation-store.js";
 import { ALREADY_USED_BY_THIS_REQUEST_TEXT } from "../../packages/slack-service/src/confirmations.js";
@@ -16,7 +10,7 @@ import {
   HANDOFF_FINAL_FINISHED_TEXT, HANDOFF_FINAL_IDLE_TEXT, HANDOFF_FINAL_TEXT, HANDOFF_TASK_TEXT, HANDOFF_TEXT, RESUME_NOT_FOUND_TEXT, TurnHandedOffError, type ActiveTurn, type TurnNote,
 } from "../../packages/slack-service/src/interrupted-turn.js";
 import { processSlackRequest, type CancelOutcome, type ProcessorDependencies, type ThreadServiceApi, type ThreadState, type TurnInput } from "../../packages/slack-service/src/processor.js";
-import { agentXError } from "../../packages/contracts/src/index.js";
+import { agentXError } from "@rovara-code/contracts";
 import { preparationFailedMessage } from "../../packages/slack-service/src/messages.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 

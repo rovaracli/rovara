@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { expect, it } from "vitest";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { agentKey, chainKey, spendRequestKey } from "@agentx/contracts";
+import { agentKey, chainKey } from "@rovara-code/contracts";
+import { spendRequestKey } from "@agentx/cloud-contracts";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
 import { ChainStore } from "../../packages/broker/src/chains/store.js";
 import { decideSpendRequest } from "../../packages/broker/src/spend/requests.js";

@@ -3,7 +3,8 @@
 // sole-owner exception (audited as such, and refused when the company turned the exception off).
 import { createHash, randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { DecisionCardsViewSchema, orgMetaKey, teamRecordPk } from "../../packages/contracts/src/index.js";
+import { DecisionCardsViewSchema, teamRecordPk } from "@rovara-code/contracts";
+import { orgMetaKey } from "@agentx/cloud-contracts";
 
 // The card routes are not a browser family yet (web-browser-auth.test.ts keeps decisions out of /v1/web); this file lets them through so a real cookie session (`browserSession`) can press them.
 vi.mock("../../packages/broker/src/aws/web-auth.js", async (original) => {

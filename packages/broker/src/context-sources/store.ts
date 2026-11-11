@@ -1,7 +1,7 @@
 // E1: the DynamoDB store of a project's context sources. One document per project (with a revision) and one item per pending change; a decided change is
 // kept for the audit trail until its expiry. Every key starts with the org, so another org's items cannot be read by building a key from the caller's org.
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { ContextSourceSchema, ContextSourcesDocumentSchema, INDEX_EXPIRY_ATTRIBUTE, orgScoped, type ContextSourcesDocument, type OrgId } from "@agentx/contracts";
+import { ContextSourceSchema, ContextSourcesDocumentSchema, INDEX_EXPIRY_ATTRIBUTE, orgScoped, type ContextSourcesDocument, type OrgId } from "@rovara-code/contracts";
 import type { ContextSourceChange, ContextSourceStore } from "./settings.js";
 
 type DocumentClient = { send(command: unknown): Promise<unknown> };

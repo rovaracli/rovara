@@ -5,7 +5,7 @@
 //   4. no counter of money is kept by Rovara: an admitted diagnosis writes the person, the project, the open place and the request, nothing else.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { DIAGNOSIS_RATE, DIAGNOSIS_REFUSALS, ErrorRefSchema, diagnosisKey, diagnosisOpenKey, diagnosisRateKey, errorRefKey, type OrgId } from "../../packages/contracts/src/index.js";
+import { DIAGNOSIS_RATE, DIAGNOSIS_REFUSALS, ErrorRefSchema, diagnosisKey, diagnosisOpenKey, diagnosisRateKey, errorRefKey, type OrgId } from "@rovara-code/contracts";
 import { startLightDiagnosis } from "../../packages/broker/src/diagnosis/light.js";
 import { admitDiagnosis, claimDiagnosisKey, claimDiagnosisRetry, eraseDiagnosisPerson, readDiagnosisRequest } from "../../packages/broker/src/diagnosis/store.js";
 import { ARJUN, ORG_A, PRIYA, diagnosisWorld, type DiagnosisWorld } from "../support/diagnosis-world.js";

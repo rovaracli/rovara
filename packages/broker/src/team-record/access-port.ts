@@ -2,7 +2,8 @@
 // snapshot taken when it was learned; this port asks the access records NOW, for the places the lesson was learned from, so a person removed from a channel stops getting
 // that channel's lessons. The same check as a record search (`judgeAccess`), with the same fail-closed rules: a restricted place without a record denies, and a record that
 // cannot be read throws RUNTIME_UNAVAILABLE (the caller must not treat that as "visible", nor as "hidden").
-import { aclUnitOfSource, agentXError, scopeAndAncestors, type OrgId } from "@agentx/contracts";
+import { aclUnitOfSource, scopeAndAncestors } from "@agentx/cloud-contracts";
+import { agentXError, type OrgId } from "@rovara-code/contracts";
 import { createAccessReader, judgeAccess, viewerOfLists } from "./access.js";
 import type { TaskVisibilityPort } from "./live-audience.js";
 import type { TeamRecordTable } from "./types.js";

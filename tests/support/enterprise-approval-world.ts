@@ -1,7 +1,8 @@
 // An Enterprise install as the approval and the deployer see it: the customer's Parameter Store (CLI side), the deployer's world (bucket, stacks, Parameter Store), and a signed bundle
 // that carries a synthesis kit. `approve` is `bundle approve` against it.
 
-import { editionRecordParameter, environmentStackName, synthSettingsParameter, type ApprovalRecord, type SynthSettings } from "@agentx/contracts";
+import { editionRecordParameter, synthSettingsParameter, type ApprovalRecord, type SynthSettings } from "@agentx/cloud-contracts";
+import { environmentStackName } from "@rovara-code/contracts";
 import type { ApprovalStore } from "../../packages/cli/src/upgrade/bundle/approve.js";
 import { approveEnterpriseBundle, type ApproveEnterpriseInput } from "../../packages/cli/src/upgrade/bundle/approve-enterprise.js";
 import { buildAtApproval } from "../../packages/cli/src/upgrade/bundle/build-at-approval.js";

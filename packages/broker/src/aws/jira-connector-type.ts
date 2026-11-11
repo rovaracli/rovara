@@ -1,4 +1,4 @@
-import { JiraConnectorSchema } from "@agentx/contracts";
+import { JiraConnectorSchema } from "@rovara-code/contracts";
 import { JIRA_MCP_ENDPOINT, jiraApprovals, jiraConnector, type JiraScope } from "@agentx/gateway";
 import { presetConnectorType } from "./connector-presets.js";
 

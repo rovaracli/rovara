@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 import { call, createAuditedSlackBroker as createBroker, loadSlackBroker, orchestratorPrincipal, type Handler } from "../support/slack-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
-import { projectRevisionKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { projectRevisionKey } from "@rovara-code/contracts";
 
 const team = "T0BSHLLUGBD";
 const channel = "C0123456789";

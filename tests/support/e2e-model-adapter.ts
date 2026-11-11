@@ -1,5 +1,5 @@
 import { request } from "node:http";
-import { E2EModelChannelResponseSchema, type E2EModelChannelRequest } from "../../packages/contracts/src/e2e-model-channel.js";
+import { E2EModelChannelResponseSchema, type E2EModelChannelRequest } from "@rovara-code/contracts";
 
 /**
  * A test-only AI SDK v4 `LanguageModel` that talks to the worker proxy over its socket and to nothing else. It is the

@@ -9,7 +9,9 @@
 // Only ids, codes and counts are logged: never a title, a branch, a label or a body.
 import { GetCommand, PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import { OrgIdSchema, RUN_START_TITLE_MAX, TRIGGER_SUBJECT_BODY_MAX, TriggerEventSchema, githubInstallationKey, githubRepoProjectKey, metaRepositoryOf, type OrgId, type StoredProjectDefinition, type TriggerEvent } from "@agentx/contracts";
+import { OrgIdSchema, RUN_START_TITLE_MAX, TRIGGER_SUBJECT_BODY_MAX, TriggerEventSchema, metaRepositoryOf, type OrgId, type TriggerEvent } from "@rovara-code/contracts";
+import { type StoredProjectDefinition } from "@agentx/cloud-contracts";
+import { githubInstallationKey, githubRepoProjectKey } from "@agentx/cloud-contracts";
 import { GithubWebhookRetryableError } from "../aws/github-webhooks.js";
 import { latestRevision } from "../org/project-settings.js";
 import type { AuthorVerdict, TriggerDispatchContext } from "./dispatch.js";

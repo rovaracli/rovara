@@ -2,7 +2,8 @@
 // plan check, code and security review, or tests. A change about no stage with a record shows none, and the confirmation rules are unchanged.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { ROVARA_CODE_AGENT_ID, type AgentId, type OrgRole, type OutcomeClaim } from "../../packages/contracts/src/index.js";
+import { ROVARA_CODE_AGENT_ID, type AgentId, type OutcomeClaim } from "@rovara-code/contracts";
+import { type OrgRole } from "@agentx/cloud-contracts";
 import { getAnyApproval } from "../../packages/broker/src/agents/approvals.js";
 import { publishDraft } from "../../packages/broker/src/agents/changes.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";

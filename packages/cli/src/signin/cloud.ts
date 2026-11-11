@@ -8,7 +8,7 @@
 // domain, and the account's sandbox status is reported (a warning, never a refusal).
 import { DescribeStacksCommand, type Stack } from "@aws-sdk/client-cloudformation";
 import { GetAccountCommand, GetEmailIdentityCommand } from "@aws-sdk/client-sesv2";
-import { AgentXError, agentXError, environmentStackName } from "@agentx/contracts";
+import { AgentXError, agentXError, environmentStackName } from "@rovara-code/contracts";
 import { CloudSignInAnswersSchema, type CloudSignInAnswers } from "../deploy/answer-schemas.js";
 import { updateStackParameters } from "../deploy/parameter-update.js";
 import { withEnvironmentLock } from "../environments/lock.js";

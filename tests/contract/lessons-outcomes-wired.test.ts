@@ -2,7 +2,7 @@
 // sends ids to the queue, the queue's consumer is the real reflect worker (lease, deadline) running `learnFromEndedTaskTyped`, which counts the outcome with the runtime's counters and its model-backed judge, and the real
 // nightly job settles the marks that fell due. Mutation checks (done by hand, see the lane's report): dropping `countOutcome`'s call in task-end.ts fails the first test; dropping the Off guard fails the Off test.
 import { describe, expect, it } from "vitest";
-import type { AuditEventInput } from "../../packages/contracts/src/index.js";
+import type { AuditEventInput } from "@agentx/cloud-contracts";
 import { lessonsNightlyJob, type LessonsJobDeps } from "../../packages/broker/src/lessons/jobs.js";
 import type { PipelineModel } from "../../packages/broker/src/lessons/ports.js";
 import { dynamoReflectClaims } from "../../packages/broker/src/lessons/reflect-claims.js";

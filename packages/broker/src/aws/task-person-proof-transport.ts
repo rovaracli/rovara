@@ -1,11 +1,4 @@
-import {
-  TaskDispatchProofRequestSchema,
-  TaskDispatchProofResponseSchema,
-  SlackTeamIdSchema,
-  agentXError,
-  type TaskPersonProofRequest,
-  type TaskPersonProofResponse,
-} from "@agentx/contracts";
+import { TaskDispatchProofRequestSchema, TaskDispatchProofResponseSchema, SlackTeamIdSchema, agentXError, type TaskPersonProofRequest, type TaskPersonProofResponse } from "@rovara-code/contracts";
 import type { TaskAuthorityAdmission } from "./task-authority-admission.js";
 
 export interface TaskPersonProofInvokeResponse {

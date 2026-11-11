@@ -2,9 +2,8 @@
 // check refuses it where the edition has no Auditor; the role is given only where the edition has it; and it holds no project role. Every case fails when the
 // rule it names is removed (the mutations are listed in the lane report).
 import { describe, expect, it } from "vitest";
-import {
-  AgentXError, OrgRoleSchema, developerOrgKey, editionPolicy, orgMemberKey, orgMetaKey, type EditionPolicy, type OrgRole,
-} from "@agentx/contracts";
+import { AgentXError } from "@rovara-code/contracts";
+import { OrgRoleSchema, developerOrgKey, editionPolicy, orgMemberKey, orgMetaKey, type EditionPolicy, type OrgRole } from "@agentx/cloud-contracts";
 import { routeDeveloperRequest, authenticateDeveloper, type DeveloperCaller, type DeveloperRouteDependencies } from "../../packages/broker/src/aws/developer-routes.js";
 import { effectiveProjectRole } from "../../packages/broker/src/developer/project-roles.js";
 import { AUDITOR_REFUSED } from "../../packages/broker/src/org/auditor.js";

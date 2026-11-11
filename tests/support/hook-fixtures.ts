@@ -2,7 +2,7 @@
 // that checks an HMAC-SHA256 (and one that checks a token) and a dispatcher that records what it was asked to start. Nothing here is Plan 4's code: the tests build deliveries the
 // way a vendor would (signed over the exact bytes) and read what ingress answered and what it left behind.
 import { createHmac, randomUUID } from "node:crypto";
-import { agentXError, canonicalJson, HOOK_TENANT_SCHEMAS, hookKey, hookLookupKey, type HookRecord, type HookSource, type OrgId, type TriggerEvent } from "@agentx/contracts";
+import { agentXError, canonicalJson, HOOK_TENANT_SCHEMAS, hookKey, hookLookupKey, type HookRecord, type HookSource, type OrgId, type TriggerEvent } from "@rovara-code/contracts";
 import { HookStore, type HookSecrets } from "../../packages/broker/src/triggers/hooks.js";
 import { HookIngressMemory, receiveHook, type HookDelivery, type HookIngressDeps, type HookReply } from "../../packages/broker/src/triggers/ingress.js";
 import { hmacHexEquals, tokenEquals, type HookProvider, type Normalized } from "../../packages/broker/src/triggers/providers/types.js";

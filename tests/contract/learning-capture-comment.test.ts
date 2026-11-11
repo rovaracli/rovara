@@ -1,11 +1,11 @@
 // v1.2 learning loop, B3: "Remember this" and "Forget" on a task-page comment (design 2.1, 2.4, 5.1; review Critical 1).
 // Standing is worked out at capture, from the live company and project records, never from the request.
 import { describe, expect, it } from "vitest";
-import { LEARNING_REMEMBER_MAX, LearningCorrectionSchema } from "../../packages/contracts/src/project-learning.js";
+import { LEARNING_REMEMBER_MAX, LearningCorrectionSchema } from "@rovara-code/contracts";
 import { forgetTaskComment, liveRememberedNoteIds, rememberTaskComment } from "../../packages/broker/src/learning/capture-comment.js";
 import { groupCorrections } from "../../packages/broker/src/learning/grouping.js";
 import { openSuggestion, readLearningState, suggestionSk } from "../../packages/broker/src/learning/store.js";
-import { githubMemberKey, orgLearningSettingsKey, projectMemberKey } from "../../packages/contracts/src/index.js";
+import { githubMemberKey, orgLearningSettingsKey, projectMemberKey } from "@rovara-code/contracts";
 import type { PageTaskFixture } from "../support/page-tasks.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";

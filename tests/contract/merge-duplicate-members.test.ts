@@ -2,7 +2,8 @@ import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 // Plan 2, Task 3: one person who signed in two ways before identity links is two members of the same org. The duplicate's next
 // sign-in merges it into the member the verified email names: grants, budget override and role move over, and the duplicate retires.
 import { describe, expect, it } from "vitest";
-import { developerOrgKey, memberGrantsPk, orgEmailKey, orgMemberKey, orgMetaKey, orgPk, orgProjectCatalogKey, orgSettingsKey, projectMemberKey, trialGithubKey, type OrgId, type OrgRole } from "@agentx/contracts";
+import { developerOrgKey, orgEmailKey, orgMemberKey, orgMetaKey, orgSettingsKey, trialGithubKey, type OrgRole } from "@agentx/cloud-contracts";
+import { memberGrantsPk, orgPk, orgProjectCatalogKey, projectMemberKey, type OrgId } from "@rovara-code/contracts";
 import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
 import { resolveSignInDeveloper, type ResolveSignInDeveloperDependencies } from "../../packages/broker/src/developer/identities.js";
 import type { ProviderIdentity } from "../../packages/broker/src/developer/providers.js";

@@ -12,10 +12,7 @@ import {
   SQSClient,
 } from "@aws-sdk/client-sqs";
 import { defaultProvider } from "@aws-sdk/credential-provider-node";
-import {
-  SLACK_CHAT_ATTRIBUTE, SLACK_NOTE_TS_ATTRIBUTE, SLACK_QUEUED_BEHIND_ATTRIBUTE, SLACK_ROUTE_ATTRIBUTE, SLACK_TASK_ID_ATTRIBUTE, confirmationBlocks,
-  SlackRequestMessageSchema, isAskRoute, isDiagnosisRoute, isPageCommentRoute, queuedBehindOf, routeOf, sharedNoticeClaim, taskQuestionOf, type AskRef, type DiagnosisRef, type SlackRequestMessage,
-} from "@agentx/contracts";
+import { SLACK_CHAT_ATTRIBUTE, SLACK_NOTE_TS_ATTRIBUTE, SLACK_QUEUED_BEHIND_ATTRIBUTE, SLACK_ROUTE_ATTRIBUTE, SLACK_TASK_ID_ATTRIBUTE, confirmationBlocks, SlackRequestMessageSchema, isAskRoute, isDiagnosisRoute, isPageCommentRoute, queuedBehindOf, routeOf, sharedNoticeClaim, taskQuestionOf, type AskRef, type DiagnosisRef, type SlackRequestMessage } from "@rovara-code/contracts";
 import { ControlPlaneApi } from "@agentx/orchestrator/control-plane-api";
 import { runOrchestratorTurn } from "@agentx/orchestrator/orchestrator";
 import { createDynamoActiveTurnStore } from "./active-turn-store.js";

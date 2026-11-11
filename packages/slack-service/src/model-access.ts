@@ -1,7 +1,7 @@
 // A Slack turn's model access (Task 13): the proxy's address and a key minted for this turn alone, from the control plane's
 // POST /v1/service/model-access. The orchestrator holds no provider secret; the key stays in memory until shortly before it
 // expires, is asked for once at a time, and is never logged.
-import { ModelIdentifierSchema, ModelRouteSchema, agentXError, safeRefusalWords, type InvocationModelRoute } from "@agentx/contracts";
+import { ModelIdentifierSchema, ModelRouteSchema, agentXError, safeRefusalWords, type InvocationModelRoute } from "@rovara-code/contracts";
 
 /** Asked for again this long before the key expires, so no request carries one about to lapse. */
 export const TURN_ACCESS_MARGIN_MS = 60_000;

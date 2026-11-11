@@ -6,24 +6,7 @@ import {
   type DynamoDBDocumentClient,
   type UpdateCommandInput,
 } from "@aws-sdk/lib-dynamodb";
-import {
-  Ec2RuntimeBindingSchema,
-  ProjectSetupSessionSchema,
-  WORKSPACE_SESSION_STATE_INDEX,
-  WorkspaceSessionSchema,
-  agentXError,
-  canonicalJson,
-  sessionDeletionName,
-  sessionProvisioningName,
-  workspaceSessionKey,
-  projectSetupSessionKey,
-  projectRevisionKey,
-  type Ec2RuntimeBinding,
-  type OrgId,
-  type WorkspaceSession,
-  type WorkspaceSessionState,
-  type ProjectSetupSession,
-} from "@agentx/contracts";
+import { Ec2RuntimeBindingSchema, ProjectSetupSessionSchema, WORKSPACE_SESSION_STATE_INDEX, WorkspaceSessionSchema, agentXError, canonicalJson, sessionDeletionName, sessionProvisioningName, workspaceSessionKey, projectSetupSessionKey, projectRevisionKey, type Ec2RuntimeBinding, type OrgId, type WorkspaceSession, type WorkspaceSessionState, type ProjectSetupSession } from "@rovara-code/contracts";
 import { createHash } from "node:crypto";
 import { installOrgIdFromEnvironment, orgOf } from "../org/resolve.js";
 import { openCompute, recordMachineTime } from "../org/trial.js";

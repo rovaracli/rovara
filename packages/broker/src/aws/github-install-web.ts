@@ -1,7 +1,7 @@
 // Plan 2, Task 13: the two public routes GitHub's install flow and the confirm page use. They have no API Gateway authorizer and no
 // developer token: the callback is a redirect from github.com whose state names the person (checked against GitHub), and the confirm
 // post is authorized by a cookie only the callback's browser holds, plus the cell's own Origin.
-import { agentXError } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
 import {
   clearedConnectCookie, completeGithubConnect, connectReturnTo, confirmGithubConnect, connectCookie, GITHUB_CONNECT_COOKIE,
   type ConnectOutcome, type GithubConnectionDependencies,

@@ -38,7 +38,8 @@
 // Order of writes per row: embed, put the vector, mark the row. A row that was erased or lost its text meanwhile refuses the mark (condition on the text and on no tombstone), and the vector
 // just put is deleted again, so a vector never outlives its row because of this job.
 import { GetCommand, PutCommand, QueryCommand, DeleteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { OrgIdSchema, TEAM_RECORD_GSI5, TEAM_RECORD_ORG_DIRECTORY_PK, recordEventKey, recordTextDueIndexValue, type OrgId, type RecordEvent } from "@agentx/contracts";
+import { OrgIdSchema, type OrgId } from "@rovara-code/contracts";
+import { TEAM_RECORD_GSI5, TEAM_RECORD_ORG_DIRECTORY_PK, recordEventKey, recordTextDueIndexValue, type RecordEvent } from "@agentx/cloud-contracts";
 import { errorName, type Item } from "../agents/table-writes.js";
 import { embedWithFlag, eventVectorItem, eventVectorKey, markRowEmbedded } from "./ingest.js";
 import { EmbedUnavailableError } from "./embed.js";

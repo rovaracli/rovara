@@ -1,7 +1,7 @@
 // Test services TS28: an AWS dev account as a test account (a narrow STS session built from the approved actions and resources, the regional endpoints as the proxy's hosts, production and Rovara's own
 // accounts refused), then the probe and the mode used per service (unchanged from proof and test environment E9).
 import { describe, expect, it } from "vitest";
-import { EvidenceEnvironmentSchema, TestEnvironmentBodySchema, testAccountApprovalDigest, type TestAccount, type TestEnvironmentBody, type TestEnvProdDeny } from "@agentx/contracts";
+import { EvidenceEnvironmentSchema, TestEnvironmentBodySchema, testAccountApprovalDigest, type TestAccount, type TestEnvironmentBody, type TestEnvProdDeny } from "@rovara-code/contracts";
 import {
   AWS_TEST_ACCOUNT_CODES, AWS_TEST_ACCOUNT_SESSION_SECONDS, AwsTestAccountError, SESSION_POLICY_MAX_CHARS, awsTestAccountHosts, awsTestAccountMessage, awsTestAccountSessionPolicy, evidenceServices,
   openAwsTestAccountSession, preprodUnreachableNextStep, probePreprod, probeRequestOf, resolveRoundModes, type AssumedCredentials, type AwsTestAccountPort,

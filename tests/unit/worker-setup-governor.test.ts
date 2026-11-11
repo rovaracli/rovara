@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { SETUP_AGENT_LIMITS_DEFAULT, SETUP_AGENT_LIMITS_MAX, SETUP_JOURNAL_MAX_ENTRIES, SETUP_RUN_LIMIT_STOPS, SetupJournalEntrySchema, SetupRunSummarySchema, type SetupAgentLimits, type SetupRunEndWord } from "../../packages/contracts/src/index.js";
+import { SETUP_AGENT_LIMITS_DEFAULT, SETUP_AGENT_LIMITS_MAX, SETUP_JOURNAL_MAX_ENTRIES, SETUP_RUN_LIMIT_STOPS, SetupJournalEntrySchema, SetupRunSummarySchema, type SetupAgentLimits, type SetupRunEndWord } from "@rovara-code/contracts";
 import { SETUP_AGENT_MAX_OUTPUT_TOKENS, SetupAgentGovernor, centsFromDollars, estimateNextTurnCents, finishStoppedRun, governorSessionListener, isProbeCommand, stepKeyOf, type SetupGovernorInput } from "../../packages/worker/src/setup-agent-journal.js";
 import { setupAgentShell, type SetupCommandRecord } from "../../packages/worker/src/setup-agent.js";
 

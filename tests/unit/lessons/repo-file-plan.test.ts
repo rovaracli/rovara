@@ -1,6 +1,6 @@
 // Lessons in the repo, lane R2: the pure proposal (design rev 2 section 5, step 2), the pointer, the pull request words and the status lines.
 import { describe, expect, it } from "vitest";
-import { LESSON_FILE_MAX_BYTES, LESSON_FILE_MAX_LESSONS } from "@agentx/contracts";
+import { LESSON_FILE_MAX_BYTES, LESSON_FILE_MAX_LESSONS } from "@rovara-code/contracts";
 import { pointerTargets, withPointer } from "../../../packages/broker/src/lessons/repo-file-pointer.js";
 import { planRepoFile, removalReasonOf, renderLesson, sectionOf, REMOVAL_REASONS, type PlanInput } from "../../../packages/broker/src/lessons/repo-file-plan.js";
 import { noticesOf, prBody, prTitle, rowOf } from "../../../packages/broker/src/lessons/repo-file-pr.js";

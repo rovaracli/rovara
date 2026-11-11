@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ReviewedInviteCreateBodySchema } from "@agentx/contracts/web";
+import { ReviewedInviteCreateBodySchema } from "@agentx/cloud-contracts/web";
 import type { z } from "zod";
 import { useAppHost } from "../../host.js";
 import { ApiError } from "../../api/errors.js";

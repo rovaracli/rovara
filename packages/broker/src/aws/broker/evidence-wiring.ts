@@ -4,8 +4,9 @@
 import { fixtureStoreForRoutes } from "../../test-env/fixture-store-aws.js";
 import { GetObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
-import type { CheckEntry, OrgId } from "@agentx/contracts";
-import { workflowSelectedChecks, type WorkflowSnapshot } from "@agentx/contracts";
+import type { CheckEntry, OrgId } from "@rovara-code/contracts";
+import { workflowSelectedChecks } from "@rovara-code/contracts";
+import { type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { createEvidenceErase, markEvidenceStored, resumeEvidenceErase, type EvidenceErase } from "../../rovara-code/evidence-erase.js";
 import { keepEvidence, policyKindsOf, type KeepEvidenceResult } from "../../rovara-code/evidence-keep.js";
 import { proofEvidenceEnabled } from "../../proof/switch.js";

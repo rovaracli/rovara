@@ -1,6 +1,6 @@
 // E5: what the plan page shows under each claim that cites a source: the claim's markers matched to what the stages read (citations.ts), the quote only where
 // this reader may see it (quotes.ts), what the plan check found, and the live facts fetched fresh for this page.
-import type { Citation, ContextSource, OrgId, PlanClaim } from "@agentx/contracts";
+import type { Citation, ContextSource, OrgId, PlanClaim } from "@rovara-code/contracts";
 import type { ClaimSourceView } from "../aws/plan-page/render-plan.js";
 import { claimCitations, fetchLiveFacts, type CitationCheck, type CitationStore, type ReplayDependencies, type StoredCitation } from "./citations.js";
 import { citationViews, type QuoteDependencies, type QuoteViewer, type ResultStore } from "./quotes.js";

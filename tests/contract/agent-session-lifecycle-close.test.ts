@@ -2,10 +2,8 @@
 // expires in 30 days, and another org's rows of every kind are left as they are. A close whose session clearing fails stops before the org is closed, and leaving again finishes it.
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
-import {
-  agentSessionKey, changesKey, deviceKey, endedSessionWorkKey, liveSessionKey, memberDevicesKey, mySessionsKey, openAgentSessionKey, orgMetaKey, projectSessionsKey,
-  type OrgId,
-} from "../../packages/contracts/src/index.js";
+import { agentSessionKey, changesKey, endedSessionWorkKey, liveSessionKey, mySessionsKey, openAgentSessionKey, projectSessionsKey, type OrgId } from "@rovara-code/contracts";
+import { deviceKey, memberDevicesKey, orgMetaKey } from "@agentx/cloud-contracts";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { MAYA, OMAR, createDeveloperTaskBroker, seedMembership } from "../support/developer-task-broker.js";

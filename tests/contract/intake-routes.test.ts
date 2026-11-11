@@ -1,6 +1,6 @@
 // Meta repo lane F (F1): the routes of intake. Contributors see and start the tickets that wait for a member; a maintainer sets the places work is asked for; a project the caller can't see answers 404.
 import { describe, expect, it } from "vitest";
-import { agentXError, intakeItemIdOf, type OrgId, type ProjectRole } from "@agentx/contracts";
+import { agentXError, intakeItemIdOf, type OrgId, type ProjectRole } from "@rovara-code/contracts";
 import { ingestIntake, type IntakeCandidate, type IntakePorts } from "../../packages/broker/src/intake/engine.js";
 import { INTAKE_PATH, routeIntakeRequest } from "../../packages/broker/src/intake/routes.js";
 import { listIntakeSources, replaceIntakeSources, intakeSourceIdOf } from "../../packages/broker/src/intake/sources.js";

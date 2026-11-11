@@ -5,8 +5,10 @@
 import { chainRunViewOf } from "../support/chain-run-view.js";
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { agentSessionKey, agentXError, changesKey, runRequestKey, sessionChannel, sessionEventId, userChannel, type OrgId, type Payer } from "@agentx/contracts";
-import { SessionResponseReaderSchema, SessionCloseResponseReaderSchema, SessionEventSchema } from "../../packages/contracts/src/index.js";
+import { agentSessionKey, agentXError, changesKey, runRequestKey, sessionEventId, type OrgId, type Payer } from "@rovara-code/contracts";
+import { sessionChannel, userChannel } from "@agentx/cloud-contracts";
+import { SessionEventSchema } from "@rovara-code/contracts";
+import { SessionResponseReaderSchema, SessionCloseResponseReaderSchema } from "@agentx/cloud-contracts";
 import { closeSession, stopSession, type ChainControl, type SessionControlHost } from "../../packages/broker/src/agent-sessions/stop.js";
 import { RUN_RECORD_MEMORY_DAYS } from "../../packages/broker/src/agents/runs.js";
 import { retryRunRequestId, retrySession } from "../../packages/broker/src/agent-sessions/retry.js";

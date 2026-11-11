@@ -6,7 +6,8 @@
 // The edited spec's requirements reach the planner as DATA: read by the broker from the meta repository at the head the owner was shown, made plain (hidden characters out, credentials redacted,
 // one line each), cut to a bound, in a fenced block under a sentence saying it is text from a pull request and not instructions. The reason the decision carries is a fixed sentence.
 import { createHash, randomUUID } from "node:crypto";
-import { WorkflowTransitionError, agentXError, redactText, replanForChangedSpec, specStripHidden, workflowOwnerAuthorized, type DeveloperTaskView, type SpecFile, type WorkflowSnapshot } from "@agentx/contracts";
+import { WorkflowTransitionError, agentXError, redactText, specStripHidden, workflowOwnerAuthorized, type SpecFile } from "@rovara-code/contracts";
+import { replanForChangedSpec, type DeveloperTaskView, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { loadWorkflowDocument } from "../../developer/plan-artifacts.js";
 import { requireNewWorkAllowed } from "../../developer/project-roles.js";
 import { aiToolTurn, developerTaskIdentity, taskKey } from "../../developer/task-records.js";

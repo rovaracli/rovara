@@ -1,8 +1,8 @@
 // Plan 4 Task 19: the public endpoint vendors post events to. Security is the point: a forged request is refused with one answer, writes nothing and costs no AWS call beyond
 // what the plan allows; a replayed body is a duplicate or too old; the sender can't choose the project or the hook; nothing secret reaches a log.
 import { describe, expect, it } from "vitest";
-import { HOOK_BODY_MAX_BYTES, HOOK_FAILED_VERIFY_PER_MINUTE, HOOK_MAX_DELIVERIES_PER_MINUTE, HOOK_MAX_EVENTS_PER_DELIVERY, HOOK_PRE_VERIFY_PER_IP_PER_MINUTE } from "../../packages/contracts/src/event-hooks.js";
-import { hookEventKey, hookRateKey } from "../../packages/contracts/src/event-hooks.js";
+import { HOOK_BODY_MAX_BYTES, HOOK_FAILED_VERIFY_PER_MINUTE, HOOK_MAX_DELIVERIES_PER_MINUTE, HOOK_MAX_EVENTS_PER_DELIVERY, HOOK_PRE_VERIFY_PER_IP_PER_MINUTE } from "@rovara-code/contracts";
+import { hookEventKey, hookRateKey } from "@rovara-code/contracts";
 import { WindowCounter } from "../../packages/broker/src/triggers/ingress.js";
 import { HOOK_2, HOOK_OTHER_ORG, LINEAR_TENANT, ORG_A, ORG_B, OTHER_TENANT, SECRET_1, SECRET_2, iso, setupHookWorld, type HookWorld, type TestBody } from "../support/hook-fixtures.js";
 

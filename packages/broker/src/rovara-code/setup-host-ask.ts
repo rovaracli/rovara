@@ -21,9 +21,8 @@
 import { createHash } from "node:crypto";
 import { GetCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import {
-  DEFAULT_AGENT_ALLOW_DOMAINS, INDEX_EXPIRY_ATTRIBUTE, SetupHostSchema, agentXError, orgMemberKey, orgScoped, projectPk, prodDenyMatchesHost, type OrgId, type TestEnvProdDeny,
-} from "@agentx/contracts";
+import { DEFAULT_AGENT_ALLOW_DOMAINS, INDEX_EXPIRY_ATTRIBUTE, SetupHostSchema, agentXError, orgScoped, projectPk, prodDenyMatchesHost, type OrgId, type TestEnvProdDeny } from "@rovara-code/contracts";
+import { orgMemberKey } from "@agentx/cloud-contracts";
 import { auditPending, type AuditRuntime } from "../audit/outbox.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditOccurrence, auditSetupHostAsked, auditSetupHostRefused } from "../audit/events.js";

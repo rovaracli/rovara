@@ -1,10 +1,7 @@
 // The CheckRunner contract: external build and check results. An adapter lists the checks on what it can list, never answers an empty list for a target
 // it cannot list, reads a log as untrusted bounded text, and starts a run once per idempotency key.
 import { expect } from "vitest";
-import {
-  CheckRunnerCapabilitiesSchema,
-  type Check, type CheckRunner, type CheckTarget, type HostScope, type RepositoryRef,
-} from "../../packages/contracts/src/index.js";
+import { CheckRunnerCapabilitiesSchema, type Check, type CheckRunner, type CheckTarget, type HostScope, type RepositoryRef } from "@rovara-code/contracts";
 import type { FakeHostModel } from "../../packages/broker/src/plugins/fake/model.js";
 import { rejection, type ContractCheck } from "./contract-kit.js";
 

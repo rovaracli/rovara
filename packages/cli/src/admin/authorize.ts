@@ -3,9 +3,7 @@ import { createServer } from "node:http";
 import {
   GetSecretValueCommand, PutSecretValueCommand, TagResourceCommand, type SecretsManagerClient,
 } from "@aws-sdk/client-secrets-manager";
-import {
-  AgentXError, CredentialRegistrationSchema, OAUTH_AUTHORIZATION_PROFILES, OAuthAppSecretSchema, agentXError, mcpEndpointProblem, oauthProfile,
-} from "@agentx/contracts";
+import { AgentXError, CredentialRegistrationSchema, OAUTH_AUTHORIZATION_PROFILES, OAuthAppSecretSchema, agentXError, mcpEndpointProblem, oauthProfile } from "@rovara-code/contracts";
 import { createPkceParameters } from "../auth.js";
 import { registerCredential } from "./credential.js";
 import { discoverOAuth, registerClient } from "./oauth-discovery.js";

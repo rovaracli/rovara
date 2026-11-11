@@ -1,7 +1,7 @@
 // Sign in with ChatGPT for `rovara doctor` (#343): the admin's settings, how many people are
 // connected, and whether the control plane reaches OpenAI. Names and counts only, never a person or a token.
 import { QueryCommand } from "@aws-sdk/lib-dynamodb";
-import type { ChatGptHealth } from "@agentx/contracts";
+import type { ChatGptHealth } from "@rovara-code/contracts";
 import { CHATGPT_AUTHORIZE_URL, CHATGPT_RESOURCE } from "./oauth.js";
 import { readChatGptSettings } from "./settings.js";
 

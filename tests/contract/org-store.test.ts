@@ -1,8 +1,9 @@
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { projectMetaKey, projectMemberKey, orgMemberKey } from "../../packages/contracts/src/index.js";
+import { projectMetaKey, projectMemberKey } from "@rovara-code/contracts";
+import { orgMemberKey } from "@agentx/cloud-contracts";
 import { describe, expect, it } from "vitest";
-import type { OrgId } from "../../packages/contracts/src/org-node.js";
-import { orgInviteKey, orgMetaKey, slackTeamOrgKey } from "../../packages/contracts/src/org-node.js";
+import type { OrgId } from "@rovara-code/contracts";
+import { orgInviteKey, orgMetaKey, slackTeamOrgKey } from "../../packages/cloud-contracts/src/org-node.js";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { inviteTokenHash } from "../../packages/broker/src/org/invite-url.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";

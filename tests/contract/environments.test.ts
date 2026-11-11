@@ -1,12 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  DEFAULT_ENVIRONMENT,
-  EnvironmentNameSchema,
-  STACK_PARTS,
-  environmentConnectorSecretPrefix,
-  environmentSettingsPrefix,
-  environmentStackName,
-} from "@agentx/contracts";
+import { DEFAULT_ENVIRONMENT, EnvironmentNameSchema, STACK_PARTS, environmentConnectorSecretPrefix, environmentSettingsPrefix, environmentStackName } from "@rovara-code/contracts";
 
 describe("environment names", () => {
   it.each(["production", "staging", "dev-2", "a", "a1", "abcdefghijklmnopqrst"])("accepts %s", (name) => {

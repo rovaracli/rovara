@@ -8,7 +8,7 @@
 //      subscription can refuse a model the agreement lists).
 // Both are advice for DEFAULT choices only. Nothing here refuses a model somebody chose, and it never narrows a list to nothing: with no usable model left, the full list stands and today's per-task fallbacks handle it.
 import { GetCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { canonicalModelName, type ModelIdentifier } from "@agentx/contracts";
+import { canonicalModelName, type ModelIdentifier } from "@rovara-code/contracts";
 import { bedrockClaudeModelIds, type ProxyGeography } from "@agentx/model-runtime/catalog";
 import { foundationModelIdOf, type AvailabilityRow } from "@agentx/model-runtime/model-discovery";
 

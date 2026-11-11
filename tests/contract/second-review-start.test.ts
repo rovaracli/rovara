@@ -5,11 +5,10 @@ import { randomUUID } from "node:crypto";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import {
-  SECOND_REVIEW_BLOCK_REASON, SECOND_REVIEW_RESULT_KEY, WORKFLOW_AUTO_SEND_BACK_LIMIT, classifyBlockedWorkflow, configuredSecondReviewMode, narrowedSecondReviewModels, secondReviewDidNotRunLine, secondReviewModelKey, workflowSendBackOffered,
-  type ModelIdentifier, type SecondOpinion, type SecondReviewReplayCase, type SecondReviewReplayRun, type SecondReviewVerdict, type WorkflowReviewReport,
-} from "@agentx/contracts";
-import { WorkflowSnapshotSchema, createCandidateManifest, createWorkflowSnapshot, openReviewFindings, resolveWorkflowReviewFindings, returnWorkflowToImplementationAutomatically, sendBackProblems, type WorkflowSnapshot } from "../../packages/contracts/src/task-workflow-node.js";
+import { SECOND_REVIEW_BLOCK_REASON, SECOND_REVIEW_RESULT_KEY, WORKFLOW_AUTO_SEND_BACK_LIMIT, configuredSecondReviewMode, narrowedSecondReviewModels, secondReviewDidNotRunLine, secondReviewModelKey, type ModelIdentifier, type SecondOpinion, type SecondReviewReplayCase, type SecondReviewReplayRun, type SecondReviewVerdict, type WorkflowReviewReport } from "@rovara-code/contracts";
+import { classifyBlockedWorkflow, workflowSendBackOffered } from "@agentx/cloud-contracts";
+import { WorkflowSnapshotSchema, createWorkflowSnapshot, openReviewFindings, resolveWorkflowReviewFindings, returnWorkflowToImplementationAutomatically, sendBackProblems, type WorkflowSnapshot } from "../../packages/cloud-contracts/src/task-workflow-node.js";
+import { createCandidateManifest } from "@rovara-code/contracts";
 import { completedWorkflowItems } from "../../packages/broker/src/aws/broker/workflow-items.js";
 import { taskKey } from "../../packages/broker/src/developer/task-records.js";
 import { planSecondReview, secondOpinionOf, secondOpinionUnavailable, secondReviewAcknowledgement, secondReviewUnavailableDecision, type SecondReviewPlanInput } from "../../packages/broker/src/rovara-code/second-review.js";
@@ -20,7 +19,8 @@ import { prepareSecondReview } from "../../packages/broker/src/rovara-code/secon
 import type { AwsBrokerDependencies } from "../../packages/broker/src/aws/broker/definitions.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { litellmConfig } from "../../packages/model-proxy/src/litellm-config.js";
-import { orgMetaKey, TaskUsageTelemetrySchema, createTaskUsageTelemetry } from "@agentx/contracts";
+import { orgMetaKey } from "@agentx/cloud-contracts";
+import { TaskUsageTelemetrySchema, createTaskUsageTelemetry } from "@rovara-code/contracts";
 import { reviewUsageArtifactName } from "../../packages/worker/src/usage.js";
 import { acceptSecondReport } from "../../packages/broker/src/rovara-code/second-review.js";
 
@@ -343,7 +343,7 @@ describe("key rule 3: `on` and blocked sends back, within the same cap", () => {
   });
 
   it("owner-accepted findings are filtered: the opinion does not block on them and the fixer is not told them", async () => {
-    const fingerprint = (await import("@agentx/contracts")).workflowFindingFingerprint("CRITIC", { text: BLOCKING.text });
+    const fingerprint = (await import("@rovara-code/contracts")).workflowFindingFingerprint("CRITIC", { text: BLOCKING.text });
     const accepted = [{ candidateDigest: code.digest, role: "CRITIC", fingerprint, text: BLOCKING.text, reason: "ok", actorId: ownerId, at: NOW }];
     const db = new FakeDynamoDb();
     const operationId = randomUUID();

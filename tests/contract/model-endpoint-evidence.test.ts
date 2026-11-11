@@ -1,7 +1,8 @@
 // N8: a company's own model endpoint in governed stage selection. It counts as a source-level candidate (`qualified_endpoint`) only while it is usable NOW, and it
 // is never a spending-stop exemption: the task-stop funding proof is not captured for it, so the usual stop rules apply.
 import { describe, expect, it } from "vitest";
-import { ModelSourceSchema, editionPolicy, egressDomainsKey, orgSettingsKey, type Edition, type ModelIdentifier, type OrgId } from "@agentx/contracts";
+import { ModelSourceSchema, egressDomainsKey, type Edition, type ModelIdentifier, type OrgId } from "@rovara-code/contracts";
+import { editionPolicy, orgSettingsKey } from "@agentx/cloud-contracts";
 import { readStageModelEvidence, type StageEvidenceDependencies } from "../../packages/broker/src/model-selection/evidence.js";
 import { stageCandidateVerified } from "../../packages/broker/src/model-selection/resolver.js";
 import { endpointQualificationDigest } from "../../packages/broker/src/model-sources/endpoint-digest.js";

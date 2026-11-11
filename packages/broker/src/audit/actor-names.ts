@@ -1,7 +1,7 @@
 // QA6-09: the Audit page names the members its records are about. A record holds a person's opaque id (the ledger keeps no name outside its sealed details), so the page asks for the names now, the same way a task's
 // attribution does (`attribution/resolve.ts`): the display name the company already shows (never an email address), only for a person who is or was one of THIS org's people, and "A former member" for a person
 // who was erased. An id the org does not know, or one that cannot be read, is left out (the page then shows the record's own words). A name is never written to the ledger or a log.
-import { OrgIdSchema, type OrgId } from "@agentx/contracts";
+import { OrgIdSchema, type OrgId } from "@rovara-code/contracts";
 import { safeDisplayName } from "../developer/person-name.js";
 import { dynamoAttributionReader, type AttributionReader } from "../attribution/resolve.js";
 import type { AuditActorNames } from "./routes.js";

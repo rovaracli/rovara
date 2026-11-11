@@ -1,6 +1,6 @@
 import { Suspense, lazy, useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import type { AppProjectDetail, SetupApplyResponse } from "@agentx/contracts/web";
+import type { AppProjectDetail, SetupApplyResponse } from "@agentx/cloud-contracts/web";
 import { PendingChangeError, useOnboardingApi } from "../../../api/onboarding.js";
 import { ApiError } from "../../../api/errors.js";
 import { useAppHost } from "../../../host.js";
@@ -9,7 +9,7 @@ import { Button } from "../../../design/Button.js";
 import { TextArea } from "../../../design/TextArea.js";
 import { TextField } from "../../../design/TextField.js";
 import { VisibleText } from "../../../design/VisibleText.js";
-import { DEFAULT_RUN_ESTIMATE_USD } from "@agentx/contracts/web";
+import { DEFAULT_RUN_ESTIMATE_USD } from "@agentx/cloud-contracts/web";
 import { ProposalReview } from "./ProposalReview.js";
 import { setupFailureOf } from "./setup-failure.js";
 /** UX-4b: what asking costs, before the press: a draft is a paid run limited like a Quick task, paid by the same rules as any task. */

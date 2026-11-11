@@ -3,7 +3,7 @@
 //   - the approved requirements' ids, for the broker's own findings (design-review-stage.md 3.3);
 //   - the pinned commits, which are the BROKER's (the task's prepared base), never a worker's `baseCommits`;
 //   - the task's own request thread, withheld from every packet (security M6/N8).
-import { readDesignMeta, type ContextSource } from "@agentx/contracts";
+import { readDesignMeta, type ContextSource } from "@rovara-code/contracts";
 import { parseMcpItemRef, type PacketOriginItem } from "./mcp-allowlist.js";
 import type { DesignSourceRef } from "./packet.js";
 

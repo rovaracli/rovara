@@ -1,7 +1,8 @@
 // Shared current-person commit fences for ordinary project coding turns.
 import {taskKey,taskPointerKey,effectiveTaskOwner,ownerFenceOf,type DeveloperTaskRecord} from "../developer/task-records.js";
 import {GetCommand} from "@aws-sdk/lib-dynamodb";
-import {OrgRoleSchema,agentXError,orgMemberKey,projectMemberKey,slackBindingKey,developerOrgKey,orgMetaKey,orgRemovedKey,orgBanKey,slackTeamOrgKey,type OrgId} from "@agentx/contracts";
+import { OrgRoleSchema, orgMemberKey, developerOrgKey, orgMetaKey, orgRemovedKey, orgBanKey, slackTeamOrgKey } from "@agentx/cloud-contracts";
+import { agentXError, projectMemberKey, slackBindingKey, type OrgId } from "@rovara-code/contracts";
 import {developerIdForSlackUser} from "../aws/admin-actions.js";
 import {budgetActorChecks} from "../agents/budget-authority.js";
 import {effectiveProjectRole} from "../developer/project-roles.js";

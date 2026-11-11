@@ -1,7 +1,8 @@
 // Track record (v1.2, slice 1): the early "PR risk low" score, private to the task's owner. It is read for one task: only when the task's pull request was published with risk "low" (the risk is of the
 // code now on the task and a pull request exists), from the outcome store's rate of the claim over the last 30 days. A read that fails leaves it out. The caller adds it to the task view only for the task's owner
 // (`taskView`'s `actor: "owner"`); nothing here is read for a thread post, the shared card or the pull request.
-import type { EarlyRiskSignal, OrgId, WorkflowSnapshot } from "@agentx/contracts";
+import type { EarlyRiskSignal, OrgId } from "@rovara-code/contracts";
+import type { WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { errorName } from "../agents/table-writes.js";
 import { readOutcomeRate } from "./outcomes.js";
 

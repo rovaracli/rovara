@@ -29,7 +29,7 @@
 //   - Bounded: a set holds at most MAX_SET_MEMBERS lessons and a commit at most MAX_COMMIT_WRITES lessons; beyond that the call throws (fail closed), it never writes part of a commit.
 import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import { BatchGetCommand, DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { AgentXError, INDEX_EXPIRY_ATTRIBUTE, agentXError, lessonKey, lessonSetKey, lessonVersionKey, loadManifestKey, type OrgId } from "@agentx/contracts";
+import { AgentXError, INDEX_EXPIRY_ATTRIBUTE, agentXError, lessonKey, lessonSetKey, lessonVersionKey, loadManifestKey, type OrgId } from "@rovara-code/contracts";
 import { NOT_EXISTS, errorName, failedIndexes, isTransactionConflict, type Item, type TransactItem } from "../agents/table-writes.js";
 import type { TeamRecordTable } from "../team-record/types.js";
 import type { CommitResult, DeletionIntent, LessonStore, LoadManifest, PendingOutcome, ProjectFlags, ScopeKey, SetSnapshot } from "./store.js";

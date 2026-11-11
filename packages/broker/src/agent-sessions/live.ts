@@ -7,38 +7,8 @@
 // The index item (`LIVE_SESSIONS`) is only a list of ids with the few facts that narrow it before anything is read (open or ended, project, who is needed); a tile's words, owner and cost
 // come from the session record, which the summary refresh writes in the same transaction. Nothing here is cached: a revoked grant or share is gone from the next answer.
 import { BatchGetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  AGENTX_NAME_PATTERN,
-  INDEX_EXPIRY_ATTRIBUTE,
-  LIVE_ENDED_KEEP_HOURS,
-  LIVE_FILTERS,
-  LIVE_INDEX_SCAN_MAX,
-  LIVE_PAGE_MAX,
-  LIVE_VIEWING_MAX,
-  LiveTileSchema,
-  MEMBER_GRANT_SK_PREFIX,
-  OrgRoleSchema,
-  sessionTaskStatus, statusNeedsSomeone, taskStatusText,
-  SessionIdSchema,
-  SessionLevelSchema,
-  agentSessionKey,
-  agentXError,
-  hideEmailAddresses,
-  livePresenceKey,
-  liveSessionKey,
-  memberGrantsPk,
-  orgMemberKey,
-  sharedSessionsKey,
-  type AgentPrincipal,
-  type AgentSessionRecord,
-  type LiveFilter,
-  type LiveResponse,
-  type LiveTile,
-  type OrgId,
-  type ProjectRole,
-  type SessionLevel,
-  type SessionOwner,
-} from "@agentx/contracts";
+import { AGENTX_NAME_PATTERN, INDEX_EXPIRY_ATTRIBUTE, LIVE_ENDED_KEEP_HOURS, LIVE_FILTERS, LIVE_INDEX_SCAN_MAX, LIVE_PAGE_MAX, LIVE_VIEWING_MAX, LiveTileSchema, MEMBER_GRANT_SK_PREFIX, sessionTaskStatus, statusNeedsSomeone, taskStatusText, SessionIdSchema, SessionLevelSchema, agentSessionKey, agentXError, hideEmailAddresses, livePresenceKey, liveSessionKey, memberGrantsPk, sharedSessionsKey, type AgentPrincipal, type AgentSessionRecord, type LiveFilter, type LiveResponse, type LiveTile, type OrgId, type ProjectRole, type SessionLevel, type SessionOwner } from "@rovara-code/contracts";
+import { OrgRoleSchema, orgMemberKey } from "@agentx/cloud-contracts";
 import { grantRoleOf } from "../developer/project-roles.js";
 import { taskKey } from "../developer/task-records.js";
 import type { Item } from "../agents/table-writes.js";

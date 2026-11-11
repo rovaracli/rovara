@@ -6,11 +6,12 @@
 //   - an approved registered server over stdio (Enterprise): the MCP host, an operator-configured private URL with its own token. No server code runs here.
 // No other connection type is reached by this port yet: Linear and Jira are native connectors and are added behind this same port later (not in this lane).
 import { connectMcp, listMcpTools, type McpConnection, type McpToolResult } from "@agentx/gateway";
-import { agentXError, editionPolicy, featureEnabled, type ContextSourceServer, type Edition, type McpAuth, type McpServerEntry, type OrgId } from "@agentx/contracts";
+import { agentXError, type ContextSourceServer, type Edition, type McpAuth, type McpServerEntry, type OrgId } from "@rovara-code/contracts";
+import { editionPolicy, featureEnabled } from "@agentx/cloud-contracts";
 import { mcpEndpointGuard, type McpEndpointGuard } from "../connections/pinned-endpoint.js";
 import { privateMcpEndpointGuard, probeMcpEndpointGuard } from "../connections/private-endpoints.js";
 import { McpProbeError, STDIO_OFF_MESSAGE, allowedTargets, stdioAvailable, toolsDifferFromApproved, type McpHostControl, type McpProber, type McpServerSecrets, type McpServerStore } from "./mcp-servers.js";
-import { MCP_INSTALL_FAILURES, type McpInstallFailureCode } from "@agentx/contracts";
+import { MCP_INSTALL_FAILURES, type McpInstallFailureCode } from "@rovara-code/contracts";
 import type { ContextServerPort, ContextServerSession } from "./routes.js";
 import type { DiscoveredTool, SourceEnvironment } from "./settings.js";
 

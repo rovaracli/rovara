@@ -2,7 +2,8 @@
 import { randomUUID, generateKeyPairSync, sign } from "node:crypto";
 import { marshall } from "@aws-sdk/util-dynamodb";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { agentSessionKey, liveSessionKey, mySessionsKey, projectSessionsKey, sharedSessionsKey, sessionChannel, projectChannel, userChannel, type AgentSessionRecord, type OrgId } from "../../packages/contracts/src/index.js";
+import { agentSessionKey, liveSessionKey, mySessionsKey, projectSessionsKey, sharedSessionsKey, type AgentSessionRecord, type OrgId } from "@rovara-code/contracts";
+import { sessionChannel, projectChannel, userChannel } from "@agentx/cloud-contracts";
 import { routeAgentSessionRequest, type SessionRouteDependencies } from "../../packages/broker/src/agent-sessions/routes.js";
 import { bindSessionSurface, sessionForSurface } from "../../packages/broker/src/agent-sessions/bindings.js";
 import { resolveSlackThreadKey } from "../../packages/broker/src/aws/slack-thread-key.js";

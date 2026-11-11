@@ -1,6 +1,6 @@
 // Invite mutations deliberately do not inherit generic automatic network/429 POST retries.
-import type { InviteCreateReceiptSchema } from "@agentx/contracts/web";
-import { ReviewedInviteCreateBodySchema, ReviewedInviteCreateResponseSchema, AgentXErrorCodeSchema, AppOrgInviteStatusSchema, OrgIdSchema, OrgInvitePublicIdSchema, RevokeOrganizationInviteBodySchema, RevokeOrganizationInviteResponseSchema } from "@agentx/contracts/web";
+import type { InviteCreateReceiptSchema } from "@agentx/cloud-contracts/web";
+import { ReviewedInviteCreateBodySchema, ReviewedInviteCreateResponseSchema, AgentXErrorCodeSchema, AppOrgInviteStatusSchema, OrgIdSchema, OrgInvitePublicIdSchema, RevokeOrganizationInviteBodySchema, RevokeOrganizationInviteResponseSchema } from "@agentx/cloud-contracts/web";
 import type { z } from "zod";
 import type { ApiRequest, ApiResponse, AppHost } from "../host.js";
 import { ApiError } from "./errors.js";

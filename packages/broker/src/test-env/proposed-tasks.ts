@@ -6,7 +6,7 @@
 // so it is not proposed again either). Holds fixed words, a count, a day and test ids (already bounded by the nightly contract); no output, no message text. Whatever builds a task from a proposal treats
 // `title` and `testIds` as DATA, never as instructions. Not behind the `nh` switch: what was stored is read and dismissed with it off.
 import { GetCommand, PutCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { INDEX_EXPIRY_ATTRIBUTE, NIGHTLY_FAILED_MAX, agentXError, projectAllows, projectPk, type OrgId, type ProjectRole } from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, NIGHTLY_FAILED_MAX, agentXError, projectAllows, projectPk, type OrgId, type ProjectRole } from "@rovara-code/contracts";
 import { z } from "zod";
 import type { TestEnvDeps } from "../org/test-environment.js";
 import type { ProposedFixTaskPort } from "./health.js";

@@ -7,7 +7,8 @@
 //   - an open blocker allows approval only with a one-line reason (Q8), which goes on the PR's Proof line;
 //   - only a high-risk approver may skip a high-risk design review (Q10), and nobody may when the setting says no skipping.
 // Any comparison here is of people's ids and the setting's kind, never of a company role: eligibility comes from the caller's directory, so an Auditor (who holds no project role) is never in it.
-import { featureEnabled, type DesignReason, type DesignReviewSetting, type EditionPolicy } from "@agentx/contracts";
+import { featureEnabled, type EditionPolicy } from "@agentx/cloud-contracts";
+import { type DesignReason, type DesignReviewSetting } from "@rovara-code/contracts";
 import { secondPersonOutcome, type ApprovalEligibility } from "../org/approval-by-risk.js";
 import { isHighRiskCodes } from "./risk.js";
 

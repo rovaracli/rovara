@@ -7,10 +7,7 @@
 //   - its answer is read again by `sanitizeDiagnosis` (the worker's copy is never trusted) and written in the task's own result transaction (`diagnosisEndItems`), which cannot fail on the diagnosis's records.
 // A deep diagnosis can never act either: its proposals are text for a person, exactly as the light tier's.
 import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  DIAGNOSIS_DEEP_TITLE, DIAGNOSIS_REFUSALS, DIAGNOSIS_RETENTION_DAYS, DiagnosisDeepBodySchema, INDEX_EXPIRY_ATTRIBUTE, DiagnosisRecordSchema, ROVARA_CODE_AGENT_ID, agentXError, diagnosisKey,
-  type DiagnosisRecord, type DiagnosisStatus, type OrgId, type RunInput,
-} from "@agentx/contracts";
+import { DIAGNOSIS_DEEP_TITLE, DIAGNOSIS_REFUSALS, DIAGNOSIS_RETENTION_DAYS, DiagnosisDeepBodySchema, INDEX_EXPIRY_ATTRIBUTE, DiagnosisRecordSchema, ROVARA_CODE_AGENT_ID, agentXError, diagnosisKey, type DiagnosisRecord, type DiagnosisStatus, type OrgId, type RunInput } from "@rovara-code/contracts";
 import { createHash } from "node:crypto";
 import { auditDiagnosisStarted } from "../audit/events.js";
 import { auditActorOf } from "../audit/plan3-hooks.js";

@@ -1,7 +1,7 @@
 // Playbook P1/P3 (final review I2): reading the Proof section's inputs must stay cheap. The task's operations are passed in, not read again; the newest operations' artifact listings are read together;
 // no listing is made for a task with no checks recorded for the current code; and a slow read inside the PR-feedback rewrite replaces an old Proof table with a one-line marker.
 import { describe, expect, it, vi } from "vitest";
-import type { PlanDocument, TestProof } from "../../packages/contracts/src/index.js";
+import type { PlanDocument, TestProof } from "@rovara-code/contracts";
 import { loadProofContext } from "../../packages/broker/src/rovara-code/proof-inputs.js";
 import { loadTestProof } from "../../packages/broker/src/rovara-code/test-proof-reader.js";
 import { hadProofSection, proofReadLimitMs, withinTime } from "../../packages/broker/src/rovara-code/proof-keep.js";

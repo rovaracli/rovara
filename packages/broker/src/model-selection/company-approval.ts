@@ -1,7 +1,7 @@
 import {readRequest} from "../agents/table-writes.js";
 import {requireCompanyModelPolicyAuthority} from "./company-read.js";
 // The existing guardrail confirmation flow, with B33's shared live evidence policy.
-import {agentXError,NeedsConfirmationSchema,type NeedsConfirmation,ModelSelectionPolicyPutSchema,NEEDS_CONFIRMATION_CHANGES_MAX} from "@agentx/contracts";
+import { agentXError, NeedsConfirmationSchema, type NeedsConfirmation, ModelSelectionPolicyPutSchema, NEEDS_CONFIRMATION_CHANGES_MAX } from "@rovara-code/contracts";
 import {createPendingChange,confirmUrlFor,registerApprovalDecisionGuard,registerApprovalSubjectHandler,type ApprovalDependencies} from "../agents/approvals.js";
 import {orgAdminApprovers} from "../agents/changes.js";
 import type {AgentCaller} from "../agents/access.js";

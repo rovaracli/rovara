@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import type { BashOperations } from "@earendil-works/pi-coding-agent";
-import { SETUP_AGENT_LIMITS_DEFAULT } from "../../packages/contracts/src/index.js";
+import { SETUP_AGENT_LIMITS_DEFAULT } from "@rovara-code/contracts";
 import { dropUntrackedCitations, trackedPathsOf } from "../../packages/worker/src/setup-citations.js";
 import { readSetupProposalAnswer } from "../../packages/worker/src/setup-draft.js";
 import { scanRepositories } from "../../packages/worker/src/setup-scan.js";

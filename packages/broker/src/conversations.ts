@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { agentXError } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
 import type { AuthenticatedIdentity } from "./auth.js";
 import { authorizeWorkspace } from "./authorization.js";
 import type { InMemoryRegistry } from "./registry.js";

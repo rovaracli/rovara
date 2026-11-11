@@ -1,6 +1,7 @@
 // The project's lessons routes for the Lessons tab journey: the view, approve, reject, remove and the sources. State lives for one scenario. Bodies are parsed by the contract's strict schemas,
 // as the real routes do, and the one-tap / two-person rules are applied here the way the broker applies them (a second person is a different one; a stale version is refused).
-import { LessonApproveBodySchema, LessonsRepoFileBodySchema, LessonsRepoFileStatusSchema, LessonPresetChangeBodySchema, LessonFeedbackBodySchema, LessonMergeBodySchema, LessonPresetBodySchema, LocalToolsProjectBodySchema, LoadedLessonsSchema, LessonRejectBodySchema, LessonRetireBodySchema, LessonSourcesSchema, LessonViewSchema, LessonsDigestSchema, LessonsViewSchema, SourceWriteBodySchema, SourcesAdminViewSchema } from "@agentx/contracts";
+import { LessonApproveBodySchema, LessonPresetChangeBodySchema, LessonFeedbackBodySchema, LessonMergeBodySchema, LessonPresetBodySchema, LoadedLessonsSchema, LessonRejectBodySchema, LessonRetireBodySchema, LessonSourcesSchema, LessonViewSchema, LessonsDigestSchema, LessonsViewSchema } from "@rovara-code/contracts";
+import { LessonsRepoFileBodySchema, LessonsRepoFileStatusSchema, LocalToolsProjectBodySchema, SourceWriteBodySchema, SourcesAdminViewSchema } from "@agentx/cloud-contracts";
 import type { MockExchange } from "./how-we-work-mock.js";
 
 const NOW = Date.parse("2026-11-01T12:00:00.000Z");

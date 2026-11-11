@@ -8,7 +8,8 @@
 // A record that cannot be read throws. Callers refuse the capture; they never guess a standing.
 import { createHash } from "node:crypto";
 import { GetCommand, type TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { OrgRoleSchema, orgMemberKey, orgMetaKey, projectMemberKey, projectMetaKey, type LearningStanding, type OrgId, type OrgRole, type ProjectRole } from "@agentx/contracts";
+import { OrgRoleSchema, orgMemberKey, orgMetaKey, type OrgRole } from "@agentx/cloud-contracts";
+import { projectMemberKey, projectMetaKey, type LearningStanding, type OrgId, type ProjectRole } from "@rovara-code/contracts";
 import { effectiveProjectRole, readProjectMeta } from "../developer/project-roles.js";
 import type { LearningScope } from "./store.js";
 

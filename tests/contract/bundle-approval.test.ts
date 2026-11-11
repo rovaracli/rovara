@@ -2,7 +2,7 @@
 // N6 fix round 1: the customer's side. `bundle approve` verifies, then places files and writes the approval record last; `bundle withdraw` removes it; and the Rovara
 // operator's client sends the deployer a bundle id and nothing else. The deployer itself is tested in bundle-deployer.test.ts against records written by this code's shape.
 import { afterEach, describe, expect, it } from "vitest";
-import { ApprovalRecordSchema, bundleApprovalKey, sha256OfBytes } from "@agentx/contracts";
+import { ApprovalRecordSchema, bundleApprovalKey, sha256OfBytes } from "@agentx/cloud-contracts";
 import { approveBundle, withdrawApproval, type ApprovalStore } from "../../packages/cli/src/upgrade/bundle/approve.js";
 import { MAX_DEPLOYER_CALLS, startApprovedDeployment } from "../../packages/cli/src/upgrade/bundle/deployer-client.js";
 import { verifyBundle } from "../../packages/cli/src/upgrade/bundle/verify.js";
@@ -97,7 +97,7 @@ describe("agentx bundle reset-deployment (review N8)", () => {
   it("clears a stuck progress record and lock, says which bundle it belonged to, and leaves everything else", async () => {
     const { MemoryParameterStore } = await import("../support/memory-parameter-store.js");
     const { resetDeployment } = await import("../../packages/cli/src/upgrade/bundle/reset-deployment.js");
-    const { deployLockParameter, deployProgressParameter } = await import("@agentx/contracts");
+    const { deployLockParameter, deployProgressParameter } = await import("@agentx/cloud-contracts");
     const store = new MemoryParameterStore();
     await store.put(deployProgressParameter("ent"), JSON.stringify({ schemaVersion: 1, bundleId: "b".repeat(64), startedAt: "2026-10-31T10:00:00.000Z", done: ["foundation"] }));
     await store.put(deployLockParameter("ent"), JSON.stringify({ startedAt: 1 }));
@@ -110,7 +110,7 @@ describe("agentx bundle reset-deployment (review N8)", () => {
   it("refuses while a deployer run holds a live lock (it may still be working), clears an unreadable lock, and clears a stale one", async () => {
     const { MemoryParameterStore } = await import("../support/memory-parameter-store.js");
     const { resetDeployment } = await import("../../packages/cli/src/upgrade/bundle/reset-deployment.js");
-    const { deployLockParameter, deployProgressParameter } = await import("@agentx/contracts");
+    const { deployLockParameter, deployProgressParameter } = await import("@agentx/cloud-contracts");
     const store = new MemoryParameterStore();
     await store.put(deployProgressParameter("ent"), JSON.stringify({ schemaVersion: 1, bundleId: "b".repeat(64), startedAt: "2026-10-31T10:00:00.000Z", done: [] }));
     await store.put(deployLockParameter("ent"), JSON.stringify({ startedAt: 1_000_000, token: "x" }));

@@ -6,7 +6,7 @@ import { createNoticeInvalidator } from "../../realtime/invalidate.js";
 import { LIVE_REFETCH_DEBOUNCE_MS } from "../../constants.js";
 import { useParams, useSearchParams, Link } from "react-router";
 import { useQueryClient } from "@tanstack/react-query";
-import { AgentIdSchema, ProjectOverviewProjectSchema } from "@agentx/contracts/web";
+import { AgentIdSchema, ProjectOverviewProjectSchema } from "@agentx/cloud-contracts/web";
 import { useProject } from "../../api/projects.js";
 import { ApiError } from "../../api/errors.js";
 import { Button } from "../../design/Button.js";

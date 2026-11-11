@@ -6,10 +6,7 @@ import type { FileHandle } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { E2ERoundSchema, E2ERunBindingSchema, E2EApplicationCliHostDescriptorSchema, E2EApplicationEvidenceRefSchema,
-  E2ETargetSchema,
-  ProjectSetupRunnerToolchainSchema, canonicalJson, copyBoundedE2EJsonData,
-  type E2ERound, type E2ERunBinding, type ProjectSetupRunnerToolchain } from "@agentx/contracts";
+import { E2ERoundSchema, E2ERunBindingSchema, E2EApplicationCliHostDescriptorSchema, E2EApplicationEvidenceRefSchema, E2ETargetSchema, ProjectSetupRunnerToolchainSchema, canonicalJson, copyBoundedE2EJsonData, type E2ERound, type E2ERunBinding, type ProjectSetupRunnerToolchain } from "@rovara-code/contracts";
 import { compareE2EApplicationPublicList, type E2EApplicationSelectionPacket } from "./application-identity.js";
 import { validateE2ECompiledApplicationAdmission, type E2ECompiledApplicationSuite } from "./application-scenarios.js";
 import { createE2EApplicationRuntimeAssets } from "./application-runtime-assets.js";

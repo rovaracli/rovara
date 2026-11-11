@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { E2EModelReceiptSchema } from "../../packages/contracts/src/e2e-model-channel.js";
+import { E2EModelReceiptSchema } from "@rovara-code/contracts";
 import { deriveE2EAgentRoute, e2eAgentInstallationFromEnvironment, e2eAgentRouteDefinitionDigest } from "../../packages/model-runtime/src/e2e-route-derive.js";
 import { e2eAgentRouteDefinitionDigest as brokerDigest } from "../../packages/broker/src/e2e/model-route-registry.js";
 import type { E2EInvoke, E2EInvokeInput, E2EInvokeOutput } from "../../packages/model-runtime/src/e2e-route.js";

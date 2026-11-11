@@ -1,7 +1,7 @@
 // E2: what one stage has used of its sources: calls and bytes per source, failures per source, and the stage's total calls. One item per operation,
 // updated with atomic adds that carry their cap as a condition, so parallel calls (up to 4) cannot jointly pass a cap.
 import { GetCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { INDEX_EXPIRY_ATTRIBUTE, orgScoped, type OrgId } from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, orgScoped, type OrgId } from "@rovara-code/contracts";
 
 type DocumentClient = { send(command: unknown): Promise<unknown> };
 

@@ -1,14 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { z } from "zod";
-import {
-  DEFAULT_DEVELOPER_TASK_POLICY,
-  DeveloperTaskPolicySchema,
-  OperationSchema,
-  ProjectDefinitionSchema,
-  PullRequestRequestSchema,
-  agentXError,
-  developerTaskPolicy,
-} from "../../packages/contracts/src/index.js";
+import { DEFAULT_DEVELOPER_TASK_POLICY, DeveloperTaskPolicySchema, OperationSchema, PullRequestRequestSchema, agentXError, developerTaskPolicy } from "@rovara-code/contracts";
+import { ProjectDefinitionSchema } from "@agentx/cloud-contracts";
 
 const definition: z.input<typeof ProjectDefinitionSchema> = {
   name: "payments",

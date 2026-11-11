@@ -7,10 +7,8 @@
 // tests/contract/design-review-poisoning.test.ts. Every test has a positive control (the benign case really does take the path the hostile one is held to).
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import {
-  DESIGN_REASONS, DESIGN_REVIEW_DEFAULT_SETTING, PACKET_FRAME_TAGS, WorkflowDesignReviewSchema, editionPolicy, findingRestsOnSourceAlone, itemOf, packetDigestOf, promptDigest, readDesignMeta, readDesignResolve,
-  readDesignReview, renderPacketRequest, reviewerMessagesOf, type DecisionCard, type DesignCitation, type DesignQuestion, type DesignReason, type DesignResolutionDraft, type ReviewerRole, type WorkflowDesignReview,
-} from "@agentx/contracts";
+import { DESIGN_REASONS, DESIGN_REVIEW_DEFAULT_SETTING, PACKET_FRAME_TAGS, WorkflowDesignReviewSchema, findingRestsOnSourceAlone, itemOf, packetDigestOf, promptDigest, readDesignMeta, readDesignResolve, readDesignReview, renderPacketRequest, reviewerMessagesOf, type DecisionCard, type DesignCitation, type DesignQuestion, type DesignReason, type DesignResolutionDraft, type ReviewerRole, type WorkflowDesignReview } from "@rovara-code/contracts";
+import { editionPolicy } from "@agentx/cloud-contracts";
 import { cardOfItem, detailsOfItem, projectDecisionCards } from "../../packages/broker/src/decisions/project.js";
 import { designApproveHandler, type DesignApprovalContext, type DesignApprovalWrite, type DesignApproveInput } from "../../packages/broker/src/design-review/approve-handler.js";
 import type { DesignApproverDirectory } from "../../packages/broker/src/design-review/approval.js";

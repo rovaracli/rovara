@@ -3,8 +3,8 @@
 // (it comes from the sign-in identity), so what tells the memberships apart is time: the new name's `chosenAt` is the day the new membership began.
 import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
-import { sessionEventId } from "../../packages/contracts/src/index.js";
-import { ASK_RETENTION_DAYS } from "../../packages/contracts/src/index.js";
+import { sessionEventId } from "@rovara-code/contracts";
+import { ASK_RETENTION_DAYS } from "@rovara-code/contracts";
 import { askAliasHashKey, erasedNameIsChosenAgain, readErasedAliases, rememberErasedAliases } from "../../packages/broker/src/agent-sessions/ask-erased-aliases.js";
 import { appendSessionEvent, readSessionEvents } from "../../packages/broker/src/agent-sessions/events.js";
 import { ownerNameOverlay, ownerNamedAt } from "../../packages/broker/src/agent-sessions/owner-names.js";

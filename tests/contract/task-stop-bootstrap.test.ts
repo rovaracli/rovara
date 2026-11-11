@@ -1,7 +1,8 @@
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { expect, it } from "vitest";
-import { orgMetaKey, orgSettingsKey, agentGuardrailsKey, agentKey, orgScoped, builtinSettingsKey, ROVARA_CODE_AGENT_ID, BUILTIN_AGENT_IDS, projectAiKey, orgProjectCatalogKey, DEFAULT_AGENT_GUARDRAILS } from "@agentx/contracts";
+import { orgMetaKey, orgSettingsKey, projectAiKey } from "@agentx/cloud-contracts";
+import { agentGuardrailsKey, agentKey, orgScoped, builtinSettingsKey, ROVARA_CODE_AGENT_ID, BUILTIN_AGENT_IDS, orgProjectCatalogKey, DEFAULT_AGENT_GUARDRAILS } from "@rovara-code/contracts";
 import * as taskStopBootstrap from "../../packages/broker/src/org/task-stop-bootstrap.js";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";

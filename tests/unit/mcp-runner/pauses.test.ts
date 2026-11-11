@@ -1,7 +1,7 @@
 // Stdio MCP host redesign (fix round 1, S2): where the controller keeps a pause.
 import { describe, expect, it } from "vitest";
 import { PutCommand } from "@aws-sdk/lib-dynamodb";
-import { orgScoped } from "@agentx/contracts";
+import { orgScoped } from "@rovara-code/contracts";
 import { dynamoPauses } from "../../../packages/broker/src/mcp-host/pauses.js";
 import { FakeDynamoDb } from "../../support/fake-dynamodb.js";
 import { ORG } from "../context-sources/fixtures.js";

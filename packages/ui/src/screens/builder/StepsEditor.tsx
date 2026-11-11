@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { DndContext, KeyboardSensor, PointerSensor, useSensor, useSensors, closestCenter } from "@dnd-kit/core";
 import { SortableContext, useSortable, sortableKeyboardCoordinates, verticalListSortingStrategy } from "@dnd-kit/sortable";
-import { MAX_RECIPE_STEPS, StepSpecSchema, type StepSettingsSchema } from "@agentx/contracts/web";
+import { MAX_RECIPE_STEPS, StepSpecSchema, type StepSettingsSchema } from "@agentx/cloud-contracts/web";
 import { allowedStepKinds, moveStep, removeStep, type Step } from "./draft-state.js";
 import { StepSettingsPanel, type InheritedSettings } from "./StepSettingsPanel.js";
 import type { Models } from "./ModelPicker.js";

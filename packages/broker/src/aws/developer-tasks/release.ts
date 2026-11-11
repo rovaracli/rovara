@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { DeleteCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { AgentXError } from "@agentx/contracts";
+import { AgentXError } from "@rovara-code/contracts";
 import { recordRunCost } from "../../spend/estimate.js";
 import { noteFinishedTaskDuration } from "../../rovara-code/duration.js";
 import type { ModelAccess } from "../../model-proxy/access.js";

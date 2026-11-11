@@ -1,8 +1,8 @@
 // The Slack words for a run that needed no code change: every line of the findings is untrusted (a command's output, a model's words), so it is made inert and redacted, and the longest
 // message the limits allow is still a valid Slack post.
 import { describe, expect, it } from "vitest";
-import { WorkflowSnapshotSchema, createWorkflowSnapshot } from "../../packages/contracts/src/task-workflow-node.js";
-import { NO_CHANGE_FINDINGS_TOTAL_MAX, NO_CODE_CHANGED_REASON, buildNoChangeFindings } from "../../packages/contracts/src/no-change-findings.js";
+import { WorkflowSnapshotSchema, createWorkflowSnapshot } from "../../packages/cloud-contracts/src/task-workflow-node.js";
+import { NO_CHANGE_FINDINGS_TOTAL_MAX, NO_CODE_CHANGED_REASON, buildNoChangeFindings } from "@rovara-code/contracts";
 import { noCodeChangedText } from "../../packages/broker/src/developer/no-change-findings-text.js";
 import { workflowMessage } from "../../packages/broker/src/developer/workflow-messages.js";
 import { RunFindings } from "../../packages/worker/src/no-change-findings.js";

@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import type { PiSessionAdapter, PiSessionInput } from "../../packages/worker/src/pi-session.js";
 import { parseWorkflowReviewerResponse, reclassifyFinding, runWorkflowReviews } from "../../packages/worker/src/verification/review.js";
 import { candidateChanges, candidateDiff, parseCandidateChanges, type CandidateChange } from "../../packages/worker/src/verification/diff.js";
-import type { WorkflowReviewFinding } from "../../packages/contracts/src/index.js";
+import type { WorkflowReviewFinding } from "@rovara-code/contracts";
 
 const execFile = promisify(execFileCallback);
 

@@ -5,17 +5,7 @@
 //
 // This module is the sequence. Admission and minting are PORTS (the real `admitWork` and `mintOperationKey`, bound to the broker's dependencies where the hot file wires them), so the sequence and the money rules are
 // tested without a ledger. The existing day-budget reservation (`model-budget-endpoint.ts`) stays as a second cap; this adds the dollar cap.
-import {
-  E2E_PROXY_GRANT_MAX_TTL_SECONDS,
-  E2E_PROXY_GRANT_SCHEMA_VERSION,
-  E2eProxyGrantSchema,
-  e2eRoundWorstCaseUsd,
-  type AgentXError,
-  type E2EModelRouteBudgets,
-  type E2eModelPrice,
-  type E2eProxyGrant,
-  type OrgId,
-} from "@agentx/contracts";
+import { E2E_PROXY_GRANT_MAX_TTL_SECONDS, E2E_PROXY_GRANT_SCHEMA_VERSION, E2eProxyGrantSchema, e2eRoundWorstCaseUsd, type AgentXError, type E2EModelRouteBudgets, type E2eModelPrice, type E2eProxyGrant, type OrgId } from "@rovara-code/contracts";
 import type { MintOperationDependencies, MintOperationKeyInput, MintedOperationKey } from "../spend/admission.js";
 
 /** The spend refusals a round can meet. The words are the ledger's own (which scope is full); the card asks the people who can raise it. */

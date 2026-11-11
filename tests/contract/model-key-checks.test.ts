@@ -3,7 +3,7 @@
 // every model of its team, so the mint is refused unless the team is scoped, the key read back is exactly what was asked for, and a periodic audit blocks
 // any key that has drifted. The fake keeps keys and teams the way the real one does, and can be told to store a key differently from the request.
 import { createHash } from "node:crypto";
-import { INFERENCE_PATHS, type AgentXError } from "@agentx/contracts";
+import { INFERENCE_PATHS, type AgentXError } from "@rovara-code/contracts";
 import { describe, expect, it, vi } from "vitest";
 import type { ModelAccess } from "../../packages/broker/src/model-proxy/access.js";
 import { AUDIT_MAX_PAGES, ModelProxyClient } from "../../packages/broker/src/model-proxy/client.js";

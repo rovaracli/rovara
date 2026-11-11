@@ -3,7 +3,8 @@
 // an issue follows one session in the org; replacing is explicit; the change is one transaction with its timeline line and its audit record; nothing crosses an org. A binding is a routing
 // hint only: it gives nobody any authority on the session.
 import { describe, expect, it } from "vitest";
-import { orgMemberKey, sessionBindingKey, sessionSurfaceKey, type OrgId } from "@agentx/contracts";
+import { orgMemberKey } from "@agentx/cloud-contracts";
+import { sessionBindingKey, sessionSurfaceKey, type OrgId } from "@rovara-code/contracts";
 import type { SessionReadDependencies } from "../../packages/broker/src/agent-sessions/read.js";
 import { routeAgentSessionRequest } from "../../packages/broker/src/agent-sessions/routes.js";
 import { bindSessionSurface } from "../../packages/broker/src/agent-sessions/bindings.js";

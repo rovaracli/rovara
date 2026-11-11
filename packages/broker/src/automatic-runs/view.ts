@@ -1,7 +1,8 @@
 // What a project's page says about its automatic runs (owner decision 2026-11-02): the runs Rovara started by itself ("Started by Rovara (nightly)"), its own "Automatic runs" line (this month's runs against the cap, and
 // that the cap has paused them), and the reminder to review the setup when the person who approved it has left. Fixed words, counts and days: nothing from a repository, and no task id (a person cannot open a task they do not own).
 import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
-import { AutomaticJobSchema, orgMemberKey, projectPk, startedByAutomaticWords, type AutomaticJob, type OrgId } from "@agentx/contracts";
+import { AutomaticJobSchema, projectPk, startedByAutomaticWords, type AutomaticJob, type OrgId } from "@rovara-code/contracts";
+import { orgMemberKey } from "@agentx/cloud-contracts";
 import { taskKey } from "../developer/task-records.js";
 import type { TestEnvDeps } from "../org/test-environment.js";
 import { readApprovedBy, readApprovedTestEnvironment } from "../org/test-environment.js";

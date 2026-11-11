@@ -2,7 +2,8 @@
 // never written; after a rejoin the old listing is only dropped.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { approverIndexKey, orgMemberKey } from "@agentx/contracts";
+import { approverIndexKey } from "@rovara-code/contracts";
+import { orgMemberKey } from "@agentx/cloud-contracts";
 import { createPendingChange, getAnyApproval, registerApprovalSubjectHandler } from "../../packages/broker/src/agents/approvals.js";
 import { HOUR, OWNER, PAT, SAM, ANA, removalWorld } from "../support/member-removal-world.js";
 

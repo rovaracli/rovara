@@ -11,7 +11,7 @@
 // answer is one word plus display names, never an approval.
 // The event shape is unreachable from HTTP: an API Gateway event has `requestContext` and `routeKey`, and `isDecideInspectEvent` refuses anything that does.
 import { InvokeCommand } from "@aws-sdk/client-lambda";
-import { OrgIdSchema } from "@agentx/contracts";
+import { OrgIdSchema } from "@rovara-code/contracts";
 import { z } from "zod";
 import { mayDecide, type DecideInspection, type DecideKind, type DecideKinds } from "./decide-kinds.js";
 

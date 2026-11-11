@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import * as contracts from "@agentx/contracts";
+import * as contracts from "@rovara-code/contracts";
 import * as broker from "../../packages/broker/src/e2e/application-plan-binding.js";
 
 // The approval binding derivation is pure, so it lives in contracts where the verifier's production probe runner can use it

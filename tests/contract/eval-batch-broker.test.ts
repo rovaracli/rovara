@@ -1,9 +1,11 @@
-import { DEFAULT_AGENT_GUARDRAILS, agentGuardrailsKey, orgMemberKey, developerOrgKey, orgSettingsKey, orgScoped, orgProjectCatalogKey, projectAiKey, projectMemberKey } from "@agentx/contracts";
+import { DEFAULT_AGENT_GUARDRAILS, agentGuardrailsKey, orgScoped, orgProjectCatalogKey, projectMemberKey } from "@rovara-code/contracts";
+import { orgMemberKey, developerOrgKey, orgSettingsKey, projectAiKey } from "@agentx/cloud-contracts";
 // Spec 052 Task 3: batch records, top-up under a cost cap, the single infrastructure retry, and stop.
 // Offline: FakeDynamoDb, a vi.fn state machine and S3, and a fake clock.
 import { describe, expect, it, vi, type Mock } from "vitest";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { orgMetaKey, SwebenchLaunchSchema, agentXError, summarize, type ModelIdentifier, type SwebenchLaunch } from "@agentx/contracts";
+import { orgMetaKey } from "@agentx/cloud-contracts";
+import { SwebenchLaunchSchema, agentXError, summarize, type ModelIdentifier, type SwebenchLaunch } from "@rovara-code/contracts";
 import {
   EVAL_BATCH_REFERENCE_TOKENS,
   createBatch,

@@ -6,7 +6,7 @@ import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
 import { ControlPlaneStack } from "../../infra/lib/control-plane.js";
 import { environmentNaming } from "../../infra/lib/naming.js";
-import { brokerRoleName } from "@agentx/contracts";
+import { brokerRoleName } from "@agentx/cloud-contracts";
 import { brokerNamesIn, brokerSettingsIn } from "../support/broker-names-template.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
 

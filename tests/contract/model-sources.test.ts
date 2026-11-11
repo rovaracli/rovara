@@ -4,7 +4,8 @@ import {bedrockClaudeModelIds} from "@agentx/model-runtime/catalog";
 // transaction. An endpoint's host is an egress item that waits for Rovara staff on cloud. The kinds are off at launch, so most tests turn them on.
 import { randomUUID } from "node:crypto";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { DEFAULT_AGENT_GUARDRAILS, agentGuardrailsKey, agentXError, editionPolicy, type Edition, type OrgModelSources } from "@agentx/contracts";
+import { DEFAULT_AGENT_GUARDRAILS, agentGuardrailsKey, agentXError, type Edition, type OrgModelSources } from "@rovara-code/contracts";
+import { editionPolicy } from "@agentx/cloud-contracts";
 import { endpointQualificationDigest } from "../../packages/broker/src/model-sources/endpoint-digest.js";
 import { ModelSourceStore } from "../../packages/broker/src/model-sources/store.js";
 import { chatGptTaskSelection } from "../../packages/broker/src/chatgpt/task-model.js";
@@ -12,12 +13,13 @@ import type { ChatGptConnections } from "../../packages/broker/src/chatgpt/conne
 import { approvedUnion, decideEgressDomain, readEgressDomains, type EgressDomainsDependencies } from "../../packages/broker/src/org/egress-domains.js";
 import { CHATGPT_SETTINGS_KEY } from "../../packages/broker/src/chatgpt/settings.js";
 import type { OrgResolver } from "../../packages/broker/src/org/resolve.js";
-import { MODEL_SOURCES_NEED_PROXY, MODEL_SOURCE_STILL_APPLYING, type SourceLaunch } from "../../packages/contracts/src/model-sources.js";
-import { egressDomainsKey, egressRejectedWarning } from "../../packages/contracts/src/egress.js";
-import type { OrgId, OrgRole } from "../../packages/contracts/src/org-node.js";
-import { agentRequestKey, modelSourcesKey } from "../../packages/contracts/src/org-scoped-keys.js";
-import { auditEventId } from "../../packages/contracts/src/audit.js";
-import { INDEX_EXPIRY_ATTRIBUTE } from "../../packages/contracts/src/admin.js";
+import { MODEL_SOURCES_NEED_PROXY, MODEL_SOURCE_STILL_APPLYING, type SourceLaunch } from "@rovara-code/contracts";
+import { egressDomainsKey, egressRejectedWarning } from "@rovara-code/contracts";
+import type { OrgId } from "@rovara-code/contracts";
+import type { OrgRole } from "../../packages/cloud-contracts/src/org-node.js";
+import { agentRequestKey, modelSourcesKey } from "@rovara-code/contracts";
+import { auditEventId } from "../../packages/cloud-contracts/src/audit.js";
+import { INDEX_EXPIRY_ATTRIBUTE } from "@rovara-code/contracts";
 import { auditOccurrence } from "../../packages/broker/src/audit/events.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { OMAR, createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
@@ -29,10 +31,10 @@ import { releaseOrgModelSources } from "../../packages/broker/src/model-sources/
 import { MODEL_SOURCE_SWEEP_BUDGET_MS, sweepModelSources } from "../../packages/broker/src/model-sources/sweep.js";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { listEgressItems, putEgressDomains } from "../../packages/broker/src/org/egress-domains.js";
-import { developerOrgKey, orgMemberKey, orgMetaKey } from "../../packages/contracts/src/org-node.js";
+import { developerOrgKey, orgMemberKey, orgMetaKey } from "../../packages/cloud-contracts/src/org-node.js";
 import { createAuditedSlackBroker, ensureWorkspace, loadSlackBroker, markReady, registerSlackProject, serviceCall, SLACK_CHANNEL, SLACK_TEAM } from "../support/slack-broker.js";
 import { chatGptConnections, type ChatGptSealer } from "../../packages/broker/src/chatgpt/connections.js";
-import type { ChatGptConnectionView } from "../../packages/contracts/src/index.js";
+import type { ChatGptConnectionView } from "@rovara-code/contracts";
 
 const ORG_B = "org_bbbbbbbbbbbbbbbbbbbb" as OrgId;
 const person = (digit: string, name: string): Developer => ({ developerId: digit.repeat(64), name, provider: "oidc", sessionId: `s-${name.toLowerCase()}` });
@@ -1030,7 +1032,7 @@ describe("what a task does with the org's order", () => {
     const { handler, db } = createAuditedSlackBroker({ extra: { chatgpt: service, ...(options.proxy === false ? {} : { modelAccess: { access: fakeModelAccess(), proxyUrl: "https://proxy.example.com" } }) } });
     prepare(db);
     await registerSlackProject(handler, { models });
-    if(options.explicit){const {projectSelectionKey}=await import("../../packages/contracts/src/index.js");db.set({...projectSelectionKey(TEST_ORG,"payments"),model:{provider:models.default.provider,modelId:models.default.modelId}});}
+    if(options.explicit){const { projectSelectionKey } = await import("@rovara-code/contracts");db.set({...projectSelectionKey(TEST_ORG,"payments"),model:{provider:models.default.provider,modelId:models.default.modelId}});}
     const workspace = await ensureWorkspace(handler, thread, maya);
     const workspaceId = workspace.body.workspaceId as string;
     markReady(db, workspaceId);

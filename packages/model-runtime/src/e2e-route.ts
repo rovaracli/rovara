@@ -1,20 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import {
-  E2EModelChannelRequestSchema,
-  E2EModelChannelResponseSchema,
-  E2EModelFailureSchema,
-  E2EModelReceiptSchema,
-  E2EModelRouteDefinitionSchema,
-  canonicalJson,
-  e2eModelRouteInvokedIdentifier,
-  e2eModelRouteRevision,
-  e2eServedModelMatchesPin,
-  type E2EModelChannelRequest,
-  type E2EModelChannelResponse,
-  type E2EModelFailure,
-  type E2EModelReceipt,
-  type E2EModelRouteDefinition,
-} from "@agentx/contracts";
+import { E2EModelChannelRequestSchema, E2EModelChannelResponseSchema, E2EModelFailureSchema, E2EModelReceiptSchema, E2EModelRouteDefinitionSchema, canonicalJson, e2eModelRouteInvokedIdentifier, e2eModelRouteRevision, e2eServedModelMatchesPin, type E2EModelChannelRequest, type E2EModelChannelResponse, type E2EModelFailure, type E2EModelReceipt, type E2EModelRouteDefinition } from "@rovara-code/contracts";
 
 /**
  * The governed model route for e2e `agent` steps (M1.4 Task 4.1).

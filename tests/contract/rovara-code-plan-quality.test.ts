@@ -4,8 +4,8 @@
 // part: the checks the repository's CI workflow files require are read, merged into the plan's proposed checks and shown in its Checks section whether they are proposed or already run as
 // project checks. The pull request line is tested in rovara-code-pr-body.test.ts, and the digests in rovara-code-golden.test.ts.
 import { describe, expect, it } from "vitest";
-import { builtinRecipe, ROVARA_CODE_BUILD_GUIDANCE, ROVARA_CODE_PLAN_GUIDANCE } from "../../packages/contracts/src/agent-templates.js";
-import { PLAN_DOCUMENT_INFO_STRING, parsePlanDocument, planAnswerProposesChecks, planDocumentMarkdown, withCiChecks, type CiCheckInput } from "../../packages/contracts/src/workflow-plan-document.js";
+import { builtinRecipe, ROVARA_CODE_BUILD_GUIDANCE, ROVARA_CODE_PLAN_GUIDANCE } from "@rovara-code/contracts";
+import { PLAN_DOCUMENT_INFO_STRING, parsePlanDocument, planAnswerProposesChecks, planDocumentMarkdown, withCiChecks, type CiCheckInput } from "@rovara-code/contracts";
 import { PLAN_CRITIC_QUALITY_CHECKLIST, planCritiquePrompt } from "../../packages/broker/src/rovara-code/critic.js";
 import { CI_CHECKS_MAX, ciChecksFromWorkflows, readCiChecks } from "../../packages/broker/src/rovara-code/ci-checks.js";
 import { planAnswer, planDocument } from "../support/plan-documents.js";

@@ -3,17 +3,15 @@
 import { fixtureActor } from "../support/money-authority.js";
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import {
-  AgentXErrorCodeSchema, DEFAULT_PROJECT_PLAYBOOK, PLAYBOOK_STALE_MESSAGE, ProjectPlaybookBodySchema, ProjectPlaybookSchema, ROVARA_CODE_AGENT_ID, agentKey, agentXError, errorStatus, projectPlaybookKey,
-  type AgentId, type OrgRole,
-} from "../../packages/contracts/src/index.js";
+import { AgentXErrorCodeSchema, DEFAULT_PROJECT_PLAYBOOK, PLAYBOOK_STALE_MESSAGE, ProjectPlaybookBodySchema, ProjectPlaybookSchema, ROVARA_CODE_AGENT_ID, agentKey, agentXError, errorStatus, projectPlaybookKey, type AgentId } from "@rovara-code/contracts";
+import { type OrgRole } from "@agentx/cloud-contracts";
 import { getProjectPlaybook, putProjectPlaybook, type ProjectPlaybookDependencies } from "../../packages/broker/src/playbook/routes.js";
 import { projectProcessOf } from "../../packages/broker/src/playbook/project-process.js";
 import { readProjectPlaybook } from "../../packages/broker/src/playbook/project-playbook-store.js";
 import { MAX, MIA, OLA, ORG_A, PRIYA, ZED, BO, ORG_B } from "../support/agent-session-world.js";
 import { mergeWorld, type MergeWorld } from "../support/rovara-code-merge-world.js";
 import { MAYA, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
-import { projectMemberKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { projectMemberKey } from "@rovara-code/contracts";
 import { TEST_ORG } from "../support/orgs.js";
 
 const ROLES: Record<string, OrgRole> = { [OLA]: "admin" };

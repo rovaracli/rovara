@@ -1,7 +1,8 @@
 // Enterprise upgrades are built at approval (owner decision 2026-10-31, option A). The settings a build is made from are the install's OWN, recorded by the
 // customer's administrators in Parameter Store (`/agentx/<env>/synth-settings`). They are read here, from the install, and from nowhere else: not from a bundle,
 // not from a flag, not from anything the Rovara operator can reach (the operator role has no Parameter Store access).
-import { SynthSettingsSchema, agentXError, synthSettingsParameter, synthSettingsSha256, type SynthSettings } from "@agentx/contracts";
+import { SynthSettingsSchema, synthSettingsParameter, synthSettingsSha256, type SynthSettings } from "@agentx/cloud-contracts";
+import { agentXError } from "@rovara-code/contracts";
 import type { EnvironmentSettings } from "../../environments/settings.js";
 import type { ParameterStore } from "../../environments/parameter-store.js";
 

@@ -25,7 +25,7 @@ import { pathToFileURL } from "node:url";
 import { CloudFormationClient, DescribeStacksCommand } from "@aws-sdk/client-cloudformation";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, ScanCommand } from "@aws-sdk/lib-dynamodb";
-import { environmentStackName } from "../packages/contracts/src/environments.js";
+import { environmentStackName } from "@rovara-code/contracts";
 
 const DEFAULT_REGION = "us-east-1";
 const DEFAULT_PAUSE_MS = 200;

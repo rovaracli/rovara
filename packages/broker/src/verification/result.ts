@@ -11,11 +11,8 @@
 //   4. Partially verified: nothing failed or was blocked, but something planned did not run or could not be read.
 //   5. Verified: every required check ran on the current candidate, the evidence is for exactly this code, and nothing is missing.
 // Anything that cannot be read is never Verified.
-import {
-  autoFixDecision, classifyBlockedWorkflow, E2E_PROJECT_CHECK_ID, isValidTestId,
-  type AutoFixBudget, type AutoFixCode, type AutoFixFacts, type EvidencePack, type TestingBlockedReason, type TestingCodeReason, type TestingPartialReason, type TestingReason, type TestingResult,
-  type WorkflowSnapshot,
-} from "@agentx/contracts";
+import { autoFixDecision, classifyBlockedWorkflow, type AutoFixBudget, type AutoFixCode, type AutoFixFacts, type WorkflowSnapshot } from "@agentx/cloud-contracts";
+import { E2E_PROJECT_CHECK_ID, isValidTestId, type EvidencePack, type TestingBlockedReason, type TestingCodeReason, type TestingPartialReason, type TestingReason, type TestingResult } from "@rovara-code/contracts";
 
 /** What a "waiting" answer is waiting for. A fixed list: the caller words it. */
 export const RESULT_WAITING = ["not_checked_yet", "retry_pending", "original_code_pending", "cause_unknown", "needs_a_person"] as const;

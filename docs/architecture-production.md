@@ -301,7 +301,7 @@ creates it (`iam:GetRole`) and cleans it up by name if the create rolls back, an
 exist yet against the path-less ARN `arn:<partition>:iam::<account>:role/<name>`, not the path ARN. The service role and the
 default boundary therefore also allow `iam:GetRole`, `iam:GetRolePolicy`, `iam:ListRolePolicies`, `iam:ListAttachedRolePolicies`,
 `iam:DeleteRolePolicy`, `iam:DetachRolePolicy` and `iam:DeleteRole` (no create or change action) on
-`role/agentx-<env>-connector-secrets`, and in the Task Person proof environment on `role/<env>-task-person-proof`. The roles
+`role/agentx-<env>-connector-secrets`, and in the one environment whose Task Person proof role has a fixed name (`agentxlivetest123`) on `role/<env>-task-person-proof`. Every other environment's proof role is generated under the environment's path, so it needs no such statement. The roles
 themselves are still created under `/agentx/<env>/`. A company-supplied boundary needs the same statement.
 
 What this does and does not protect, plainly:

@@ -2,7 +2,7 @@
 // to call and never looks inside a body itself. The two comparisons here are the only ways a provider may compare a secret: both hash both sides to a fixed length and compare
 // the digests with `timingSafeEqual`, so neither the length of a secret nor the first byte that differs shows in how long a refusal takes.
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
-import type { HookRecord, HookSource, TriggerEvent } from "@agentx/contracts";
+import type { HookRecord, HookSource, TriggerEvent } from "@rovara-code/contracts";
 
 export type HookHeaders = Record<string, string | undefined>;
 

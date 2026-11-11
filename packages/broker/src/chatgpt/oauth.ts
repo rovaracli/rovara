@@ -5,7 +5,7 @@
 // hand (a pasted address, or the CLI's own listener), and is exchanged here with the PKCE verifier
 // only the control plane holds.
 import { createHash, randomBytes } from "node:crypto";
-import { CHATGPT_AGENT_NAME, CHATGPT_CALLBACK_URL, agentXError } from "@agentx/contracts";
+import { CHATGPT_AGENT_NAME, CHATGPT_CALLBACK_URL, agentXError } from "@rovara-code/contracts";
 
 export const CHATGPT_AUTHORIZE_URL = "https://auth.openai.com/api/accounts/authorize";
 export const CHATGPT_TOKEN_URL = "https://auth.openai.com/api/accounts/oauth/token";

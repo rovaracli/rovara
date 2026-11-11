@@ -6,10 +6,7 @@
 //   3. every citation is checked against THAT reviewer's own packet items and the round's pins (`filterReviewerCitations`);
 //   4. what is left is merged: the merge model's grouping is used only if it passes every merge check over exactly this set of findings, otherwise the code-only merge (`mergeDesignFindings`).
 // Rovara's own findings (own-findings.ts) are added by the caller with `withOwnFindings`.
-import {
-  filterReviewerCitations, lightCriticWritesParaphrase, mergeDesignFindings,
-  readDesignReview, type CitablePacketItem, type DesignFinding, type DesignReviewBinding, type DesignReviewWorkerResult, type DroppedCitation, type DroppedFinding, type PinnedCommits, type RawDesignFinding, type ReviewerRole,
-} from "@agentx/contracts";
+import { filterReviewerCitations, lightCriticWritesParaphrase, mergeDesignFindings, readDesignReview, type CitablePacketItem, type DesignFinding, type DesignReviewBinding, type DesignReviewWorkerResult, type DroppedCitation, type DroppedFinding, type PinnedCommits, type RawDesignFinding, type ReviewerRole } from "@rovara-code/contracts";
 import type { ReviewerVerifyFailure, VerifyResult } from "./verify.js";
 
 export interface RoundReviewerState {

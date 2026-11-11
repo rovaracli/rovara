@@ -1,7 +1,7 @@
 // Rovara Code (playbook round 2, R1a): the pure guard that decides whether Understand's `answer` ends the task or is planned instead. The broker's use of it is covered in
 // rovara-code-understand.test.ts and rovara-code-answered.test.ts.
 import { describe, expect, it } from "vitest";
-import type { IntentAssessment, WorkflowIntent } from "@agentx/contracts";
+import type { IntentAssessment, WorkflowIntent } from "@rovara-code/contracts";
 import { assessmentForTask, explicitPathAssumption, isExplicitPath } from "../../packages/broker/src/rovara-code/explicit-path.js";
 
 const answer: IntentAssessment = { kind: "answer", restatement: "What does the retry flag do?", answer: "It turns retries on.", sources: [{ repository: "demo", path: "src/retry.ts", line: 4 }] };

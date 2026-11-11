@@ -4,16 +4,8 @@
 import { randomUUID } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { afterEach, describe, expect, it } from "vitest";
-import {
-  WorkflowSnapshotSchema,
-  createCandidateManifest,
-  createWorkflowSnapshot,
-  sessionBindingKey,
-  type CodeMilestone,
-  type OrgId,
-  type SessionBinding,
-  type WorkflowSnapshot,
-} from "@agentx/contracts";
+import { WorkflowSnapshotSchema, createWorkflowSnapshot, type WorkflowSnapshot } from "@agentx/cloud-contracts";
+import { createCandidateManifest, sessionBindingKey, type CodeMilestone, type OrgId, type SessionBinding } from "@rovara-code/contracts";
 import { bindSessionSurface, sessionForSurface } from "../../packages/broker/src/agent-sessions/bindings.js";
 import { onTaskEnded, registerTaskEndHandler, type TaskEndEvent } from "../../packages/broker/src/agents/task-end.js";
 import { reconcileTaskPullRequestFeedback } from "../../packages/broker/src/aws/github-webhooks.js";

@@ -1,6 +1,7 @@
 import {budgetActorChecks} from "../agents/budget-authority.js";
 import {GetCommand} from "@aws-sdk/lib-dynamodb";
-import {ModelSelectionPolicyResponseSchema,STAGE_IDS,agentXError,editionFromEnvironment,forbiddenModelMatcher,modelCompany,modelNotEnabledSentence,orgMemberKey,developerOrgKey,orgMetaKey,type OrgId,type ModelIdentifier} from "@agentx/contracts";
+import { ModelSelectionPolicyResponseSchema, STAGE_IDS, agentXError, editionFromEnvironment, forbiddenModelMatcher, modelCompany, modelNotEnabledSentence, type OrgId, type ModelIdentifier } from "@rovara-code/contracts";
+import { orgMemberKey, developerOrgKey, orgMetaKey } from "@agentx/cloud-contracts";
 import {bedrockClaudeModelIds,catalogModel} from "@agentx/model-runtime/catalog";
 import {readGuardrails} from "../agents/guardrails.js";
 import {effectiveSources} from "../model-sources/routing.js";

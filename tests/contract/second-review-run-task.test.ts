@@ -6,7 +6,7 @@ import { mkdir, mkdtemp, realpath, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { SECOND_REVIEW_RESULT_KEY, SecondReviewResultSchema, TaskUsageTelemetrySchema } from "../../packages/contracts/src/index.js";
+import { SECOND_REVIEW_RESULT_KEY, SecondReviewResultSchema, TaskUsageTelemetrySchema } from "@rovara-code/contracts";
 import type { PiSessionAdapter } from "../../packages/worker/src/pi-session.js";
 import { runTaskInvocation } from "../../packages/worker/src/run-task.js";
 

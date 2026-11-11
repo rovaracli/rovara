@@ -1,6 +1,7 @@
 // Spec 041: what `agentx workspaces` reads from the control plane, and what it prints when there is
 // no browser to show it in. The page in ../workspaces-ui/ renders the same response.
-import { DeveloperWorkspacesResponseSchema, type DeveloperWorkspace, type DeveloperWorkspacesResponse } from "@agentx/contracts";
+import { DeveloperWorkspacesResponseSchema, type DeveloperWorkspacesResponse } from "@agentx/cloud-contracts";
+import { type DeveloperWorkspace } from "@rovara-code/contracts";
 import { sanitizeServerText } from "../auth.js";
 import { developerGet } from "./commands.js";
 import type { DeveloperSessionDeps } from "./session.js";

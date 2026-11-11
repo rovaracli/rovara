@@ -2,7 +2,8 @@
 // with the placeholder limits. Per-task caps still apply; operators retain their existing private-install credential authority.
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
-import { DEFAULT_MEMBER_MONTHLY_BUDGET_USD, DEFAULT_ORG_MONTHLY_BUDGET_USD, PER_TASK_BUDGET_USD, budgetSyncedKey, orgSettingsKey, singleOrgIdForEnv } from "../../packages/contracts/src/index.js";
+import { DEFAULT_MEMBER_MONTHLY_BUDGET_USD, DEFAULT_ORG_MONTHLY_BUDGET_USD, PER_TASK_BUDGET_USD, budgetSyncedKey, orgSettingsKey } from "@agentx/cloud-contracts";
+import { singleOrgIdForEnv } from "@rovara-code/contracts";
 import { MAX_BUDGET_USD, readBudgets, syncBudgets } from "../../packages/broker/src/org/budget.js";
 import { admitMember, nextKeyCap } from "../support/admission.js";
 import { OrgStore } from "../../packages/broker/src/org/store.js";

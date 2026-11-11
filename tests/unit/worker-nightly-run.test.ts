@@ -1,6 +1,6 @@
 // NH-1: the nightly run on the worker. The Prove sequence over the approved environment, one rerun of failures, the coverage map, and ONE tally for the counts and the step words.
 import { describe, expect, it } from "vitest";
-import { CoverageMapSchema, isRerunnableTestId, isValidTestId, testIdOf, NightlyResultSchema, type NightlyResult, TestEnvironmentBodySchema, type CoverageMapData, type ProjectCommand, type TestEnvironmentBody } from "@agentx/contracts";
+import { CoverageMapSchema, isRerunnableTestId, isValidTestId, testIdOf, NightlyResultSchema, type NightlyResult, TestEnvironmentBodySchema, type CoverageMapData, type ProjectCommand, type TestEnvironmentBody } from "@rovara-code/contracts";
 import { coverageMapDigest, nightlyHealthOf, splitFailures as brokerSplitFailures } from "../../packages/broker/src/test-env/nightly.js";
 import { coverageMapDigestOf, coverageMapFromContexts, runNightly, splitFailures, type NightlyPorts } from "../../packages/worker/src/nightly-run.js";
 import { counted, type ParsedTestReport, type ReportedTest } from "../../packages/worker/src/verification/test-report.js";

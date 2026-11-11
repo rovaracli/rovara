@@ -12,15 +12,7 @@
 //   - "test account for nightly only" (owner Q6): tasks never use the account, the nightly tries it first.
 //
 // Every word in the answer is fixed here. Nothing a repository or a person wrote (a dependency's name, an account's label) is echoed: the answer holds ids that passed their contract's pattern, and fixed sentences.
-import {
-  emulatorChoosable,
-  isTestAccountUsableAt,
-  testAccountProdProblems,
-  type CatalogEntry,
-  type ServiceCatalog,
-  type TestAccount,
-  type TestEnvProdDeny,
-} from "@agentx/contracts";
+import { emulatorChoosable, isTestAccountUsableAt, testAccountProdProblems, type CatalogEntry, type ServiceCatalog, type TestAccount, type TestEnvProdDeny } from "@rovara-code/contracts";
 
 // ---- what is allowed
 

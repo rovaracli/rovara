@@ -1,6 +1,7 @@
 // Enterprise foundations, N6 fix round 1: how the Rovara operator starts an upgrade. It does not deploy anything itself. It invokes the customer-owned deployer in the
 // customer's account with a bundle id and nothing else, and reports what the deployer answers. The deployer re-verifies the bundle against the customer's approval.
-import { DeployerResultSchema, DeployerRequestSchema, agentXError, bundleDeployerFunctionName, type DeployerResult } from "@agentx/contracts";
+import { DeployerResultSchema, DeployerRequestSchema, bundleDeployerFunctionName, type DeployerResult } from "@agentx/cloud-contracts";
+import { agentXError } from "@rovara-code/contracts";
 
 export interface DeployerInvoker {
   /** Invokes the function with `payload` (synchronously) and returns its parsed response; a function error or an unparsable response is thrown. */

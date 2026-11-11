@@ -8,10 +8,7 @@
 //   - `proveAfterAgent`: removes the agent's sandbox first, refuses a "fresh" sandbox that is the agent's own (same id or same workspace), runs the Prove sequence only through the fresh sandbox's ports,
 //     and removes it again. The agent's sandbox is handed over as a bare `{ id, rootPath, dispose }`: it has no way to run a command, so the proof cannot be run in it by mistake.
 // Nothing here trusts the agent's words for a verdict: the Prove report is bound to the digest of the exact environment that was run, and the broker reads it again.
-import {
-  TestEnvironmentBodySchema, TestEnvironmentProposalSchema, formatCommandLine, SETUP_PERSON_SOURCE, observedSource, parseCommandLine, remoteCodeReason, testEnvDigest, testEnvIsProved,
-  type ProjectCommand, type SetupDraft, type SetupJournalEntry, type SetupProposal, type SetupReplacement, type TestEnvProveReport, type TestEnvValueSource, type TestEnvironmentProposal,
-} from "@agentx/contracts";
+import { TestEnvironmentBodySchema, TestEnvironmentProposalSchema, formatCommandLine, SETUP_PERSON_SOURCE, observedSource, parseCommandLine, remoteCodeReason, testEnvDigest, testEnvIsProved, type ProjectCommand, type SetupDraft, type SetupJournalEntry, type SetupProposal, type SetupReplacement, type TestEnvProveReport, type TestEnvValueSource, type TestEnvironmentProposal } from "@rovara-code/contracts";
 import { realpath } from "node:fs/promises";
 import { resolve, sep } from "node:path";
 import type { EnvironmentDraft } from "./env-detect/propose.js";

@@ -4,8 +4,8 @@
 // `hmacHexEquals`). Layer 1 drives the route with a recording dispatcher. Layer 2 drives it with the real dispatch. Layer 3 reads what the code left in logs.
 import { createHmac } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { HOOK_MAX_EVENTS_PER_DELIVERY, HOOK_BODY_MAX_BYTES, hookEventKey } from "../../packages/contracts/src/event-hooks.js";
-import { RUN_START_TITLE_MAX, type ChainDefinitionInput } from "../../packages/contracts/src/chains.js";
+import { HOOK_MAX_EVENTS_PER_DELIVERY, HOOK_BODY_MAX_BYTES, hookEventKey } from "@rovara-code/contracts";
+import { RUN_START_TITLE_MAX, type ChainDefinitionInput } from "@rovara-code/contracts";
 import { dispatchTriggerEvent } from "../../packages/broker/src/triggers/dispatch.js";
 import type { HookDelivery } from "../../packages/broker/src/triggers/ingress.js";
 import { hookProviders } from "../../packages/broker/src/triggers/providers/index.js";
@@ -14,7 +14,7 @@ import { grafanaProvider } from "../../packages/broker/src/triggers/providers/gr
 import { vercelProvider } from "../../packages/broker/src/triggers/providers/vercel.js";
 import type * as TypesModule from "../../packages/broker/src/triggers/providers/types.js";
 import { hmacHexEquals, tokenEquals } from "../../packages/broker/src/triggers/providers/types.js";
-import type { HookRecord } from "@agentx/contracts";
+import type { HookRecord } from "@rovara-code/contracts";
 import { HOOK_1, HOOK_2, ORG_A, SECRET_1, SECRET_2, setupHookWorld, type HookWorld } from "../support/hook-fixtures.js";
 import { HOOK_A, DANA, disposeGateWorlds, setupTriggerWorld } from "../support/trigger-world.js";
 

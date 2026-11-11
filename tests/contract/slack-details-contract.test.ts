@@ -1,19 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  DETAILS_ACTION,
-  SLACK_SECTION_TEXT_LIMIT,
-  TURN_DETAILS_ATTRIBUTES,
-  TurnDetailsSchema,
-  TurnRecordSchema,
-  detailsButtonValue,
-  detailsExpireAt,
-  detailsReplyBlocks,
-  parseDetailsButtonValue,
-  splitSectionText,
-  turnDetailsFromItem,
-  turnDetailsKey,
-  turnRecordKeys,
-} from "../../packages/contracts/src/index.js";
+import { DETAILS_ACTION, SLACK_SECTION_TEXT_LIMIT, TURN_DETAILS_ATTRIBUTES, TurnDetailsSchema, TurnRecordSchema, detailsButtonValue, detailsExpireAt, detailsReplyBlocks, parseDetailsButtonValue, splitSectionText, turnDetailsFromItem, turnDetailsKey, turnRecordKeys } from "@rovara-code/contracts";
 
 const subject = "T0BSHLLUGBD/C0123456789/1695500000.000001";
 const reference = { receivedAt: "2026-09-24T10:00:00.000Z", eventId: "EvTURN00001" };

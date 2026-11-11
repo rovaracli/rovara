@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
-import { E2E_APPLICATION_AGGREGATE_EVIDENCE_MAX_BYTES, E2E_APPLICATION_GROUP_EVIDENCE_MAX_BYTES, E2EApplicationSelectionRecordSchema, E2EWorkflowEvidenceRefSchema, E2EWorkflowGroupEvidenceRefSchema, WORKFLOW_APPLICATION_RUNTIME_UNUSABLE_PREFIX, WORKFLOW_APPLICATION_SELECTION_CHANGED_PREFIX, workflowSendBackOffered } from "@agentx/contracts";
+import { E2E_APPLICATION_AGGREGATE_EVIDENCE_MAX_BYTES, E2E_APPLICATION_GROUP_EVIDENCE_MAX_BYTES, E2EApplicationSelectionRecordSchema, E2EWorkflowEvidenceRefSchema, E2EWorkflowGroupEvidenceRefSchema, WORKFLOW_APPLICATION_RUNTIME_UNUSABLE_PREFIX, WORKFLOW_APPLICATION_SELECTION_CHANGED_PREFIX } from "@rovara-code/contracts";
+import { workflowSendBackOffered } from "@agentx/cloud-contracts";
 import { e2eApplicationPrivateTransferMaxBytes } from "@agentx/verifier";
 import { developerTaskRouteDependencies } from "../../packages/broker/src/aws/developer-routes.js";
 import { getTaskDocumentView, retryApplicationRoundOnPage, startTaskWorkflowPublicationFromSystem } from "../../packages/broker/src/aws/developer-tasks.js";
@@ -11,7 +12,8 @@ import { MAYA, grantProject } from "../support/developer-task-broker.js";
 import { browserRequests } from "../support/browser-session.js";
 import { apiRowKey, sha, startApplicationRound, type ApplicationRound } from "../support/e2e-application-round-harness.js";
 import { TEST_ORG } from "../support/orgs.js";
-import { orgMemberKey, projectMemberKey, slackBindingKey } from "@agentx/contracts";
+import { orgMemberKey } from "@agentx/cloud-contracts";
+import { projectMemberKey, slackBindingKey } from "@rovara-code/contracts";
 
 // An application round on the real broker: the dispatch builds the admission, the worker's callbacks upload genuinely collected evidence, the broker
 // verifies it independently of the worker at the result callback, and what it decides gates publication exactly as it does for portable rounds.

@@ -31,13 +31,8 @@ import {
   type S3Client,
 } from "@aws-sdk/client-s3";
 import { GetCommand, PutCommand, QueryCommand, type DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
-import {
-  AUDIT_GOVERNANCE_RETENTION_DAYS,
-  AUDIT_RETENTION_DAYS_MIN_COMPLIANCE,
-  AUDIT_VERSION_SWEEP_KEYS_PER_RUN,
-  canonicalJson,
-  type LockedObjectV1,
-} from "@agentx/contracts";
+import { AUDIT_GOVERNANCE_RETENTION_DAYS, AUDIT_RETENTION_DAYS_MIN_COMPLIANCE, AUDIT_VERSION_SWEEP_KEYS_PER_RUN, type LockedObjectV1 } from "@agentx/cloud-contracts";
+import { canonicalJson } from "@rovara-code/contracts";
 
 export type LockMode = "COMPLIANCE" | "GOVERNANCE";
 export type AuditLockProfileName = "production" | "trial";

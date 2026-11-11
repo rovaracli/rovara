@@ -7,7 +7,7 @@ import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { createServer as createHttpServer } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
-import { OrgIdSchema, isPackageServerId, stdioSpecIfComplete, type McpStdioProposal, type McpStdioSpec } from "@agentx/contracts";
+import { OrgIdSchema, isPackageServerId, stdioSpecIfComplete, type McpStdioProposal, type McpStdioSpec } from "@rovara-code/contracts";
 import { EC2Client } from "@aws-sdk/client-ec2";
 import { S3Client } from "@aws-sdk/client-s3";
 import { SecretsManagerClient } from "@aws-sdk/client-secrets-manager";

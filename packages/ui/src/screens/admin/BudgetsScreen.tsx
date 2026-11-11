@@ -2,7 +2,7 @@ import { TaskStopEditor } from "./TaskStopEditor.js";
 import { SettingsNote } from "./SettingsNote.js";
 import { useEffect, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { formatUsdMicrodollars, type AdminBudgetSettings } from "@agentx/contracts/web";
+import { formatUsdMicrodollars, type AdminBudgetSettings } from "@agentx/cloud-contracts/web";
 import { useAppHost } from "../../host.js";
 import { createBudgetSettingsApi } from "../../api/budget-settings.js";
 import { ApiError } from "../../api/errors.js";

@@ -2,7 +2,7 @@
 // when a call succeeds; the model's hold is sized by its own quote; a failed call counts toward the nightly budget (R6); a CI failure from the subject source's CI path is a measured outcome (R2).
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { LESSONS_PAUSE_CODES, lessonsPauseText, teamRecordPk } from "../../../packages/contracts/src/index.js";
+import { LESSONS_PAUSE_CODES, lessonsPauseText, teamRecordPk } from "@rovara-code/contracts";
 import { lessonSubjectSource } from "../../../packages/broker/src/aws/broker/lesson-subject-source.js";
 import { taskKey, taskOwnerKey } from "../../../packages/broker/src/developer/task-records.js";
 import { withLearningAttempt, noteLearningFault, type LearningAttempt } from "../../../packages/broker/src/lessons/learning-deadline.js";

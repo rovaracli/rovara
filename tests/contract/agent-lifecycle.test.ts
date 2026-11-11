@@ -1,13 +1,12 @@
-import { orgMetaKey } from "@agentx/contracts";
+import { orgMetaKey } from "@agentx/cloud-contracts";
 import { fixtureActor, seedMaintainerGrant } from "../support/money-authority.js";
 // Plan 3 Task 11: what happens to agents when a member is merged into another, a member is removed, or a project is archived. The sign-in
 // function only leaves a marker in the `MEMBER_MERGE_QUEUE` partition; the broker's 5-minute sweep drains it and moves what the duplicate
 // owned. A removal moves what the person owned at once, and leaves the same kind of marker until it has.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import {
-  MEMBER_MERGE_QUEUE_PK, MEMBER_REMOVAL_QUEUE_PK, agentKey, developerOrgKey, memberMergeQueueKey, memberRemovalQueueKey, orgMemberKey, orgProjectCatalogKey, principalSharesKey, projectMetaKey, skillKey, type AgentId, type OrgId, type OrgRole, type RecipeOverlay,
-} from "@agentx/contracts";
+import { MEMBER_MERGE_QUEUE_PK, MEMBER_REMOVAL_QUEUE_PK, developerOrgKey, memberMergeQueueKey, memberRemovalQueueKey, orgMemberKey, type OrgRole } from "@agentx/cloud-contracts";
+import { agentKey, orgProjectCatalogKey, principalSharesKey, projectMetaKey, skillKey, type AgentId, type OrgId, type RecipeOverlay } from "@rovara-code/contracts";
 import { agentAccess, followMerges, type AgentAccessDeps, type AgentCaller } from "../../packages/broker/src/agents/access.js";
 import {
   drainMemberMerges, drainMemberRemovals, memberRemovalHook, onMemberRemoved, onMembersMerged, onProjectArchived, onProjectMemberChanged, registerMemberMover, resolveMember, runMemberMergeDrain, sameMember, type LifecycleDeps, type MemberMover,

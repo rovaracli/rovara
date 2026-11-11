@@ -12,10 +12,7 @@
 // fixed reason; the design and the requirements are never left out (the build is refused instead).
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import {
-  DESIGN_REVIEW_PACKET_ITEMS_MAX, DesignReviewTierSchema, PACKET_DIGEST_VERSION, ReviewerPacketItemSchema, ReviewerRoleSchema, itemOf, neutralizePacketText, packetDigestOf, promptDigest, renderPacketDocument, renderPacketRequest, reviewerMessagesOf,
-  type ContextSource, type ContextToolCallResponse, type PacketDelivery, type PacketDocument, type PacketItemKind, type ReviewerPacketItem,
-} from "@agentx/contracts";
+import { DESIGN_REVIEW_PACKET_ITEMS_MAX, DesignReviewTierSchema, PACKET_DIGEST_VERSION, ReviewerPacketItemSchema, ReviewerRoleSchema, itemOf, neutralizePacketText, packetDigestOf, promptDigest, renderPacketDocument, renderPacketRequest, reviewerMessagesOf, type ContextSource, type ContextToolCallResponse, type PacketDelivery, type PacketDocument, type PacketItemKind, type ReviewerPacketItem } from "@rovara-code/contracts";
 import { isOriginItem, packetMcpCall, type PacketMcpOptions, type PacketMcpRefusal } from "./mcp-allowlist.js";
 import { reviewerPromptFor } from "./prompts/index.js";
 

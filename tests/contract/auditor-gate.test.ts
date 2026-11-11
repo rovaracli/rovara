@@ -2,7 +2,7 @@
 // of the hundreds of role checks remembering the new role: the route dispatcher refuses everything an Auditor asks for except a short allow-list. These cases
 // fail when the rule they name is removed.
 import { describe, expect, it } from "vitest";
-import { editionPolicy } from "@agentx/contracts";
+import { editionPolicy } from "@agentx/cloud-contracts";
 import {
   AUDITOR_ALLOWED_ROUTES,
   AUDITOR_REFUSED,

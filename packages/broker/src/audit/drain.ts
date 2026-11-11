@@ -1,7 +1,7 @@
 // The drain: every minute, sends whatever the flush did not deliver. Idempotent by construction: the queue deduplicates on
 // the event id for five minutes and the appender claims every event id, so an event sent twice is appended once.
 import { QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { AUDIT_PENDING_FAIL_AFTER_DAYS, AUDIT_PENDING_SHARDS, AuditEventInputSchema } from "@agentx/contracts";
+import { AUDIT_PENDING_FAIL_AFTER_DAYS, AUDIT_PENDING_SHARDS, AuditEventInputSchema } from "@agentx/cloud-contracts";
 import { deleteAuditPending, sendAuditEvents } from "./flush.js";
 import { auditEventWithoutDetails, auditPendingPartition, describeInvalidAuditEvent, type AuditDeps, type AuditPendingItem, type AuditRuntime } from "./outbox.js";
 

@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { ControlPlaneApi } from "../../packages/orchestrator/src/control-plane-api.js";
 import { createOrchestratorRuntime } from "../../packages/orchestrator/src/orchestrator.js";
 import { ORCHESTRATION_TOOL_NAMES, RECOVERY_TOOL_NAMES } from "../../packages/orchestrator/src/orchestration-tools.js";
-import { ConnectorCallRequestSchema, type ConnectorCatalog } from "../../packages/contracts/src/index.js";
+import { ConnectorCallRequestSchema, type ConnectorCatalog } from "@rovara-code/contracts";
 import { createFixtureDirectory } from "../fixtures/index.js";
 
 describe("connector tools in the real Pi runtime", () => {

@@ -10,26 +10,7 @@
 // and when the session ends the messages no step took are made `not_delivered` (`closeQueuedSteers`). The session counts its queued messages (`sessionQueuedSteersKey`), so a session with none
 // is not searched. No log line, event or notice holds a message's text.
 import { GetCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  AppNoteSchema,
-  ENDED_SESSION_STATUSES,
-  INDEX_EXPIRY_ATTRIBUTE,
-  LIVE_STEER_REAPPROVAL_REASON,
-  LIVE_STEER_REVISED_REASON,
-  SESSION_ENDED_MESSAGE,
-  SESSION_RETENTION_DAYS,
-  WORKFLOW_THREAD_NOTES_MAX,
-  SessionMessageSchema,
-  agentSessionKey,
-  agentXError,
-  sessionEventId,
-  sessionQueuedSteersKey,
-  type AgentSessionRecord,
-  type AppNote,
-  type OrgId,
-  type SessionId,
-  type SessionMessage,
-} from "@agentx/contracts";
+import { AppNoteSchema, ENDED_SESSION_STATUSES, INDEX_EXPIRY_ATTRIBUTE, LIVE_STEER_REAPPROVAL_REASON, LIVE_STEER_REVISED_REASON, SESSION_ENDED_MESSAGE, SESSION_RETENTION_DAYS, WORKFLOW_THREAD_NOTES_MAX, SessionMessageSchema, agentSessionKey, agentXError, sessionEventId, sessionQueuedSteersKey, type AgentSessionRecord, type AppNote, type OrgId, type SessionId, type SessionMessage } from "@rovara-code/contracts";
 import { failedIndexes, isTransactionConflict, type Item, type TransactItem } from "../agents/table-writes.js";
 import { taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
 import { openQuestions } from "../rovara-code/question-answers.js";

@@ -1,6 +1,6 @@
 import { developerIdForSlackUser } from "./admin-actions.js";
 import { SLACK_WORKFLOW_SESSION_ID } from "../developer/task-records.js";
-import type { OrgId } from "@agentx/contracts";
+import type { OrgId } from "@rovara-code/contracts";
 import type { DeveloperCaller } from "./developer-routes.js";
 
 /** Stable AgentX identity for a Slack user, paired with their Slack ID for channel membership checks. */

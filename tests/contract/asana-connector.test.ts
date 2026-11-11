@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { ASANA_PROJECT_TOOL_ACCESS, ConnectorsSchema, type CredentialType, ProjectDefinitionSchema, StoredProjectDefinitionSchema } from "../../packages/contracts/src/index.js";
+import { ASANA_PROJECT_TOOL_ACCESS, ConnectorsSchema, type CredentialType } from "@rovara-code/contracts";
+import { ProjectDefinitionSchema, StoredProjectDefinitionSchema } from "@agentx/cloud-contracts";
 import { ASANA_MCP_ENDPOINT, ASANA_TOKEN_ENDPOINT, CredentialUnavailable } from "../../packages/gateway/src/index.js";
 import { asanaConnectorType } from "../../packages/broker/src/aws/asana-connector-type.js";
 import { BUILT_IN_CONNECTOR_TYPES, resolveConnectors, type ResolvedConnector } from "../../packages/broker/src/aws/connector-types.js";

@@ -3,11 +3,10 @@
 // org's, and running out pauses the round (the same round resumes at the person's retry). The owner's Retry of a CI fix that waited for them is a route of its own, checked here too.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import {
-  BUDGET_EXHAUSTED_FAILURE_MESSAGE, CI_OUTPUT_BLOCK_HEADER, WorkflowSnapshotSchema, ciFixAskMessage, ciFixStopMessage, createCandidateManifest, startWorkflowFix, type WorkflowSnapshot,
-} from "@agentx/contracts";
+import { BUDGET_EXHAUSTED_FAILURE_MESSAGE, CI_OUTPUT_BLOCK_HEADER, ciFixAskMessage, ciFixStopMessage, createCandidateManifest } from "@rovara-code/contracts";
+import { WorkflowSnapshotSchema, startWorkflowFix, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
-import { builtinSettingsKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { builtinSettingsKey } from "@rovara-code/contracts";
 import { ciEvidenceItem, ciOutputBlock } from "../../packages/broker/src/rovara-code/ci-fix.js";
 import { IMPLEMENT_TEST_RULE } from "../../packages/broker/src/rovara-code/verification-report.js";
 import { WORKFLOW_NO_CANDIDATE_DIGEST, workflowDispatchItem } from "../../packages/broker/src/aws/broker-shared.js";

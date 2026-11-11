@@ -9,8 +9,8 @@ import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
 const ROOT = process.cwd();
-const CONTRACTS_ENTRY = path.join(ROOT, "packages", "contracts", "src", "index.ts");
-const CONTRACTS_TSCONFIG = path.join(ROOT, "packages", "contracts", "tsconfig.json");
+const CONTRACTS_ENTRY = path.join(ROOT, "packages", "cloud-contracts", "src", "index.ts");
+const CONTRACTS_TSCONFIG = path.join(ROOT, "packages", "cloud-contracts", "tsconfig.json");
 
 interface BarrelDuplicate { barrel: string; name: string; definedIn: string[] }
 
@@ -91,8 +91,8 @@ describe("the contracts barrel", () => {
 
   it("exports no name from two different modules", () => {
     const result = findBarrelDuplicates(CONTRACTS_ENTRY, options);
-    // A scan that read nothing cannot pass: the barrel and its plugins sub-barrel are known, and it names well over a thousand things.
-    expect(result.barrels).toEqual(expect.arrayContaining(["packages/contracts/src/index.ts", "packages/contracts/src/plugins/index.ts"]));
+    // A scan that read nothing cannot pass: the barrel is known (the plugins sub-barrel is Rovara Code's now), and it names well over a thousand things.
+    expect(result.barrels).toEqual(expect.arrayContaining(["packages/cloud-contracts/src/index.ts"]));
     expect(result.names).toBeGreaterThan(1000);
     expect(result.unresolved).toEqual([]);
     expect(result.duplicates.map((entry) => `${entry.name} (${entry.barrel}): ${entry.definedIn.join(" | ")}`)).toEqual([]);

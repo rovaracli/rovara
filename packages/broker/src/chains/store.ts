@@ -6,30 +6,7 @@
 // that each pinned agent version and built-in pin is still what validation saw.
 import { unarchiveActorChecks, archiveActorChecks, actorGrantChecks, budgetActorChecks, budgetActorRefused, destinationChecks, fenceRefusal, type DestinationNeed } from "../agents/budget-authority.js";
 import { createHash } from "node:crypto";
-import {
-  sameJsonContent,
-  AGENT_DESCRIPTION_MAX,
-  AGENT_NAME_MAX,
-  ChainDefinitionSchema,
-  PinnedChainDefinitionSchema,
-  agentGuardrailsKey,
-  agentKey,
-  agentVersionSk,
-  builtinSettingsKey,
-  canonicalJson,
-  chainDirectoryKey,
-  chainKey,
-  chainNameKey,
-  isBuiltinAgentId,
-  newPrefixedId,
-  orgScoped,
-  type AgentOwner,
-  type AgentPrincipal,
-  type ChainDefinition,
-  type ChainId,
-  type OrgId,
-  type PinnedChainDefinition,
-} from "@agentx/contracts";
+import { sameJsonContent, AGENT_DESCRIPTION_MAX, AGENT_NAME_MAX, ChainDefinitionSchema, PinnedChainDefinitionSchema, agentGuardrailsKey, agentKey, agentVersionSk, builtinSettingsKey, canonicalJson, chainDirectoryKey, chainKey, chainNameKey, isBuiltinAgentId, newPrefixedId, orgScoped, type AgentOwner, type AgentPrincipal, type ChainDefinition, type ChainId, type OrgId, type PinnedChainDefinition } from "@rovara-code/contracts";
 import { auditPublished } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditActorOf, accountableChangedEvent, chainBudgetEvents, ownerMovedEvent } from "../audit/plan3-hooks.js";

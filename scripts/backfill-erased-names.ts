@@ -29,7 +29,7 @@ import { pathToFileURL } from "node:url";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
 import { DynamoDBDocumentClient, GetCommand, ScanCommand } from "@aws-sdk/lib-dynamodb";
-import type { EraseDeveloperNameRequest, EraseDeveloperNameResponse } from "@agentx/contracts";
+import type { EraseDeveloperNameRequest, EraseDeveloperNameResponse } from "@rovara-code/contracts";
 import { eraseDeveloperNameThroughLambda } from "../packages/broker/src/aws/developer-routes/identity-lambda.js";
 import { chosenNameKey, readNameItems, rejoinedOf, type ChosenNameClient, type ChosenNameItem } from "../packages/broker/src/developer/chosen-name.js";
 import { nameEraserOf } from "../packages/broker/src/developer/erase-name.js";

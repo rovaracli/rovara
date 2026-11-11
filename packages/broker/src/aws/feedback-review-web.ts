@@ -1,7 +1,7 @@
 import { SERVER_PAGE_ICON, serverPageCss } from "@agentx/design-tokens";
 import { randomBytes } from "node:crypto";
 import { z } from "zod";
-import { describeWorkflowCheckChanges, workflowCheckCommandText } from "@agentx/contracts";
+import { describeWorkflowCheckChanges, workflowCheckCommandText } from "@rovara-code/contracts";
 import type { DeveloperCaller } from "./developer-routes.js";
 import type { AdaptedHttpRequest } from "./lambda.js";
 import {

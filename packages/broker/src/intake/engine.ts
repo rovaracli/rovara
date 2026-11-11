@@ -13,19 +13,7 @@
 //   that may pass (the start service away) is thrown, after the ticket is given back, so the poll or the webhook's retry does it again.
 //
 // Nothing here knows a tracker. An adapter (a webhook provider, a poll's search) turns its tracker's words into an `IntakeCandidate`; this file decides.
-import {
-  AgentXError,
-  INTAKE_TITLE_MAX,
-  IntakeExternalRefSchema,
-  intakeItemIdOf,
-  type CodeIntentRequest,
-  type IntakeExternalRef,
-  type IntakeStanding,
-  type IntakeTrackerChannel,
-  type IntakeWaitReason,
-  type OrgId,
-  type SessionBinding,
-} from "@agentx/contracts";
+import { AgentXError, INTAKE_TITLE_MAX, IntakeExternalRefSchema, intakeItemIdOf, type CodeIntentRequest, type IntakeExternalRef, type IntakeStanding, type IntakeTrackerChannel, type IntakeWaitReason, type OrgId, type SessionBinding } from "@rovara-code/contracts";
 import { ticketRunInput, inertTitle, inertTicketLine, inertWriter, prepareTicketBody, WAITING_BODY_MAX_BYTES } from "./ticket-text.js";
 import { intakeRequestId } from "./ids.js";
 import { ownWriteVerdictOf } from "./own-writes.js";

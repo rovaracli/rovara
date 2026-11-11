@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { canonicalJson, createCandidateManifest, createE2EOpenApiFixtureDescriptor, type E2EScenario, type E2ESourceSnapshot } from "@agentx/contracts";
+import { canonicalJson, createCandidateManifest, createE2EOpenApiFixtureDescriptor, type E2EScenario, type E2ESourceSnapshot } from "@rovara-code/contracts";
 import { inspectE2ERepository, proposeE2ESetup } from "../../packages/broker/src/e2e/discovery.js";
 import { selectE2EExecutionPlan as selectRawE2EExecutionPlan } from "../../packages/broker/src/e2e/execution-plan.js";
 import { withTestPortableApproval } from "../e2e-test-approval.js";

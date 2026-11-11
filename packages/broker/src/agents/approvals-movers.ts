@@ -2,7 +2,8 @@
 // APPROVER# items and the run owner of PENDING approvals; a removal re-routes them to the successor. Conditional, repeatable, audited as `approval.rerouted`.
 // `approvals.ts` re-exports it.
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { ApprovalIdSchema, INDEX_EXPIRY_ATTRIBUTE, approvalKey, approverIndexKey, canonicalJson, orgMemberKey, orgPk, type ApprovalId, type AuditEventInput, type OrgId } from "@agentx/contracts";
+import { ApprovalIdSchema, INDEX_EXPIRY_ATTRIBUTE, approvalKey, approverIndexKey, canonicalJson, orgPk, type ApprovalId, type OrgId } from "@rovara-code/contracts";
+import { orgMemberKey, type AuditEventInput } from "@agentx/cloud-contracts";
 import { auditApprovalRerouted, auditOccurrence } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, tryAuditEvents } from "../audit/outbox.js";

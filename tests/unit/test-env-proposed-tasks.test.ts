@@ -1,6 +1,6 @@
 // Setup and test health SH28: the store of proposed fix tasks, and the erase of everything the health stored.
 import { describe, expect, it } from "vitest";
-import { INDEX_EXPIRY_ATTRIBUTE, type OrgId } from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, type OrgId } from "@rovara-code/contracts";
 import { dismissProposedFixTask, listProposedFixTasks, proposedFixTaskStore } from "../../packages/broker/src/test-env/proposed-tasks.js";
 import { AUDIT_CAPTURE_TABLE, capturingAuditDeps } from "../support/audit-capture.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";

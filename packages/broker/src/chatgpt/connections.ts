@@ -14,10 +14,7 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { DeleteCommand, GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { DecryptCommand, EncryptCommand, type KMSClient } from "@aws-sdk/client-kms";
-import {
-  CHATGPT_CONNECT_STATE_SECONDS, CLI_COMMAND_NAME, ChatGptConnectFinishRequestSchema, agentXError, AgentXError,
-  type ChatGptConnectionStatus, type ChatGptConnectionView, type ChatGptConnectStart, type ChatGptHealth, type OrgId, type OrgModelSources,
-} from "@agentx/contracts";
+import { CHATGPT_CONNECT_STATE_SECONDS, CLI_COMMAND_NAME, ChatGptConnectFinishRequestSchema, agentXError, AgentXError, type ChatGptConnectionStatus, type ChatGptConnectionView, type ChatGptConnectStart, type ChatGptHealth, type OrgId, type OrgModelSources } from "@rovara-code/contracts";
 import { readChatGptSettings, type ChatGptSettings } from "./settings.js";
 import { CHATGPT_CONNECTIONS_INDEX_PK, chatGptHealth } from "./health.js";
 import { chatGptAuthorization, chatGptModels, exchangeChatGptCode, parseChatGptCallback, refreshChatGptTokens } from "./oauth.js";

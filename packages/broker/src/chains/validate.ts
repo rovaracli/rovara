@@ -2,20 +2,7 @@
 // bound) and is pure. `validateChainForPublish` adds what needs the org: the caller's `use` access to each agent, the agent version each step is pinned
 // to, Plan 3's guardrail check of each agent's recipe, and that no coding agent has to choose a branch. `autonomousTriggerProblems` is what an event or
 // schedule trigger needs of a published chain on top of that (a run limit, a budget, a gate someone other than the starter can decide).
-import {
-  agentXError,
-  AgentXError,
-  type AgentId,
-  isBuiltinAgentId,
-  recipeRunner,
-  type ChainDefinition,
-  type ChainStep,
-  type ChainStepId,
-  type OrgId,
-  type PinnedChainDefinition,
-  type ResolvedRecipe,
-  type StepTarget,
-} from "@agentx/contracts";
+import { agentXError, AgentXError, type AgentId, isBuiltinAgentId, recipeRunner, type ChainDefinition, type ChainStep, type ChainStepId, type OrgId, type PinnedChainDefinition, type ResolvedRecipe, type StepTarget } from "@rovara-code/contracts";
 import { requireAgentAccess, type AgentAccessDeps, type AgentCaller } from "../agents/access.js";
 import { readGuardrailsWithRevision, validateRecipeForOrg, type ServableModels } from "../agents/guardrails.js";
 import { resolveAgent, type AgentRecord } from "../agents/store.js";

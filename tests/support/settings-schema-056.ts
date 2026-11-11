@@ -1,7 +1,7 @@
 // A copy of the 0.5.6 CLI's strict environment settings schema (packages/cli/src/environments/settings.ts @ v0.5.6), kept so a test can prove that a 0.5.6 binary still reads the settings
 // 0.5.7 wrote (an emergency rollback). Do not "fix" it to follow the current schema: that is the point.
 import { z } from "zod";
-import { EnvironmentNameSchema, MODEL_PROVIDERS, SECRET_ARN_MAX_LENGTH, SECRET_ARN_PATTERN } from "@agentx/contracts";
+import { EnvironmentNameSchema, MODEL_PROVIDERS, SECRET_ARN_MAX_LENGTH, SECRET_ARN_PATTERN } from "@rovara-code/contracts";
 
 // FROZEN copies of the 0.5.6 answer schemas the settings schema embeds (packages/cli/src/deploy/answer-schemas.ts @ v0.5.6). They are not imported from the live file on purpose:
 // a change there must not change what a 0.5.6 binary is shown to accept.

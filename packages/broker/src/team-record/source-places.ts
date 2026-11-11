@@ -1,7 +1,7 @@
 // What a Slack, Linear or Jira place IS, decided on the server for the source write route (source-row lane, task 7). Pure pieces and one reader over the connected trackers; nothing here writes.
 //   Slack: `slack:<team>/<channel>` is parsed, and the channel's live facts (`SlackFacts`, read by the DeveloperIdentity function that holds the bot token) become one of the five `SlackScope` classes.
 //   Linear and Jira: a place is accepted only when a connected app of this company lists it (`trackerPlaceCheck`), read live, a page at a time, within a budget. Unknown is never "yes".
-import type { OrgId } from "@agentx/contracts";
+import type { OrgId } from "@rovara-code/contracts";
 import type { SlackScope } from "./edition.js";
 import type { ConnectedTrackersPort } from "./tracker-directory.js";
 

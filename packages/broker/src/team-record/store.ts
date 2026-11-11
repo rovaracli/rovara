@@ -2,40 +2,8 @@
 // the partition); every row read back is parsed with its strict schema and one that does not parse is dropped, never shown. Writes are idempotent.
 import { createHash } from "node:crypto";
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  INDEX_EXPIRY_ATTRIBUTE,
-  RecordEventSchema,
-  RecordFactSchema,
-  SourceConfigSchema,
-  TEAM_RECORD_GSI1,
-  TEAM_RECORD_GSI2,
-  TEAM_RECORD_GSI3,
-  TEAM_RECORD_GSI4,
-  TEAM_RECORD_GSI5,
-  RECORD_DELETE_QUEUE_SK_PREFIX,
-  RECORD_EVENT_SK_PREFIX,
-  RECORD_FACT_SK_PREFIX,
-  RECORD_SOURCE_SK_PREFIX,
-  recordActorIndexValue,
-  recordActorSourceIndexValue,
-  recordTextDueIndexValue,
-  recordDeleteQueueKey,
-  recordDerivationKey,
-  recordEventKey,
-  recordFactKey,
-  recordPlaceIndexValue,
-  recordScopeIndexValue,
-  recordSourceConfigIndexValue,
-  recordSourceIndexValue,
-  recordSourceKey,
-  teamRecordPk,
-  teamRecordSourceHash,
-  type OrgId,
-  type RecordEvent,
-  type RecordFact,
-  type RecordSystem,
-  type SourceConfig,
-} from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, teamRecordPk, type OrgId } from "@rovara-code/contracts";
+import { RecordEventSchema, RecordFactSchema, SourceConfigSchema, TEAM_RECORD_GSI1, TEAM_RECORD_GSI2, TEAM_RECORD_GSI3, TEAM_RECORD_GSI4, TEAM_RECORD_GSI5, RECORD_DELETE_QUEUE_SK_PREFIX, RECORD_EVENT_SK_PREFIX, RECORD_FACT_SK_PREFIX, RECORD_SOURCE_SK_PREFIX, recordActorIndexValue, recordActorSourceIndexValue, recordTextDueIndexValue, recordDeleteQueueKey, recordDerivationKey, recordEventKey, recordFactKey, recordPlaceIndexValue, recordScopeIndexValue, recordSourceConfigIndexValue, recordSourceIndexValue, recordSourceKey, teamRecordSourceHash, type RecordEvent, type RecordFact, type RecordSystem, type SourceConfig } from "@agentx/cloud-contracts";
 import { Aliases, NOT_EXISTS, errorName, withoutUndefined, type Item } from "../agents/table-writes.js";
 import { recordHeadIndexValue, reopenScope } from "./item-head.js";
 import { retentionRefusal } from "./retention.js";

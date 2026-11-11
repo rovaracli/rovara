@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { COMPANY_DOMAIN_MAX_PER_ORG, COMPANY_DOMAIN_TAKEOVER_CONFIRM_MS, orgMetaKey, type OrgId } from "@agentx/contracts";
+import { COMPANY_DOMAIN_MAX_PER_ORG, COMPANY_DOMAIN_TAKEOVER_CONFIRM_MS, orgMetaKey } from "@agentx/cloud-contracts";
+import { type OrgId } from "@rovara-code/contracts";
 import {
   COMPANY_DOMAIN_RECHECK_PK, addCompanyDomain, applyCheck, checkCompanyDomain, claimKey, getClaim, getEntry, getOwn, isVerifiedCompanyDomain, listEntries, ownKey, recheckDueDomains, recordValue, removeCompanyDomain, resultOf, toView,
   type ClaimRecord, type CompanyDomainDeps,

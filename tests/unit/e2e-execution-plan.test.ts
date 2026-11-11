@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { WEB_API_RUNTIME_PROFILE_ID, createCandidateManifest, e2eExecutionPlanDigest, e2ePlanHasCompleteRequiredCriteria, type E2EPolicy, type E2EScenario, type E2ESourceSnapshot } from "@agentx/contracts";
+import { WEB_API_RUNTIME_PROFILE_ID, createCandidateManifest, e2eExecutionPlanDigest, e2ePlanHasCompleteRequiredCriteria, type E2EPolicy, type E2EScenario, type E2ESourceSnapshot } from "@rovara-code/contracts";
 import { effectiveContractTargetId, portableE2EUpstreamTestId, PORTABLE_E2E_TEST_PATH, selectE2EExecutionPlan as selectRawE2EExecutionPlan } from "../../packages/broker/src/e2e/execution-plan.js";
 import { withTestPortableApproval } from "../e2e-test-approval.js";
 import { inspectE2ERepository } from "../../packages/broker/src/e2e/discovery.js";

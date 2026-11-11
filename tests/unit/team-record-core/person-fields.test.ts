@@ -7,7 +7,7 @@ import { ACTOR_STRUCTURED_FIELDS, ERASE_STEPS, PERSON_FIELDS, REQUIRED_ERASE_STE
 
 const ROOT = join(__dirname, "../../..");
 const SCHEMA_FILES = [
-  "packages/contracts/src/team-record.ts", "packages/contracts/src/team-record-sources.ts", "packages/contracts/src/lessons.ts", "packages/contracts/src/learned-context.ts", "packages/contracts/src/audit.ts",
+  "packages/cloud-contracts/src/team-record.ts", "packages/cloud-contracts/src/team-record-sources.ts", "vendor/rovara-code/packages/contracts/src/lessons.ts", "vendor/rovara-code/packages/contracts/src/learned-context.ts", "packages/cloud-contracts/src/audit.ts",
   "packages/broker/src/lessons/types.ts", "packages/broker/src/team-record/types.ts", "packages/broker/src/team-record/shared-types.ts",
 ];
 /** A field name that looks like it holds a person. */

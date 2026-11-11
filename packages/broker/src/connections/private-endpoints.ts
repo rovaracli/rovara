@@ -11,7 +11,7 @@
 //      connection is not reached.
 // Addresses on the never-called list stay refused whatever the allow-list says: an admin's approval cannot reach the instance metadata service.
 import { BlockList, isIP } from "node:net";
-import { agentXError } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
 import { dnsResolveHost, type CheckedEndpoint, type ResolveHost } from "./endpoint-check.js";
 import { pinnedFetch, type McpEndpointGuard, type RequestFunction } from "./pinned-endpoint.js";
 

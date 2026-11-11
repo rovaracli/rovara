@@ -5,7 +5,7 @@
 // Marks are named by everything stored with them; a mark that was undone, changed or marked again since the list was shown answers CHANGE_STALE. The expiry of a mark by a passing nightly is not a route: it happens when a
 // nightly is recorded (`known-failing-undo.ts`). Answers are fixed words, booleans, numbers and the test ids a maintainer already sees on the Fix setup card.
 import { z } from "zod";
-import { agentXError, projectAllows, type OrgId } from "@agentx/contracts";
+import { agentXError, projectAllows, type OrgId } from "@rovara-code/contracts";
 import { logDeveloperEvent } from "../../developer/log.js";
 import { KNOWN_FAILING_MAX, KnownFailingMarkSchema, readKnownFailingRow } from "../../test-env/known-failing.js";
 import { KNOWN_FAILING_UNDO_BROWSER_MESSAGE, undoKnownFailing } from "../../test-env/known-failing-undo.js";

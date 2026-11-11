@@ -3,7 +3,7 @@
 import { lazy, Suspense, useCallback, useContext, useSyncExternalStore, type ReactNode } from "react";
 import { useSearchParams } from "react-router";
 import { QueryClientContext } from "@tanstack/react-query";
-import type { ReadAppNav } from "@agentx/contracts/web";
+import type { ReadAppNav } from "@agentx/cloud-contracts/web";
 import { useDecisions } from "../../api/decisions.js";
 import { FEEDBACK_VIEW, isPanelDocument, panelDocumentOfCard, type PanelDocument } from "./panel-docs.js";
 

@@ -1,7 +1,7 @@
 // FR-048: agentx config's fixed, documented keys. Each maps to exactly one place: a stack parameter,
 // an SSM value (the environment settings) or a control-plane setting. docs/day-two.md lists the
 // same table.
-import { CHATGPT_DEFAULT_PREFERRED_MODEL, ChatGptModelIdSchema, MODEL_FALLBACK_NONE, MODEL_FALLBACK_PATTERN, agentXError, environmentSettingsPrefix, environmentStackName } from "@agentx/contracts";
+import { CHATGPT_DEFAULT_PREFERRED_MODEL, ChatGptModelIdSchema, MODEL_FALLBACK_NONE, MODEL_FALLBACK_PATTERN, agentXError, environmentSettingsPrefix, environmentStackName } from "@rovara-code/contracts";
 import { catalogModel } from "@agentx/model-runtime/catalog";
 import { AlertEmailSchema, MAX_BUDGET_USD } from "../deploy/answer-schemas.js";
 import type { DeployPart } from "../deploy/parameters.js";
@@ -82,6 +82,17 @@ export function embedderImageHome(value: string): { account: string; region: str
   return match === null ? undefined : { account: match[1] as string, region: match[2] as string };
 }
 
+/**
+ * The task people invitation switches (TaskPeoplePublicInvitationsEnabled, TaskPeoplePrivateInvitationsEnabled) can be turned off and not on: automatic Slack invitations of task people are
+ * deferred (owner decision 86), because they need a Slack reinstall with new scopes and the invite handler is wired nowhere. A switch that did nothing must not read as one that works.
+ */
+const invitationsDeferred = (key: string) => (value: string): string => {
+  const trimmed = value.trim();
+  if (trimmed === "false") return trimmed;
+  if (trimmed === "true") return refuse(key, "false for now: automatic Slack invitations are not built yet (they need a Slack reinstall with new scopes)");
+  return refuse(key, "false");
+};
+
 const parameter = (part: DeployPart, name: string): ConfigTarget => ({ kind: "stack-parameter", part, parameter: name });
 
 export const CONFIG_KEYS: readonly ConfigKey[] = [
@@ -153,6 +164,10 @@ export const CONFIG_KEYS: readonly ConfigKey[] = [
   { key: "testServices.enabled", description: "1: a project's dependencies (databases, caches, queues, AWS services, outside APIs) get a backing for test runs on a sealed per-run network (turn on only after the Linux checks TS-L1 to TS-L6 pass and the worker image that carries the service runner is deployed); 0: today's flow, services are refused as before", target: parameter("control-plane", "TestServicesEnabled"), defaultValue: "0", parse: oneOf("testServices.enabled", ["0", "1"]) },
   { key: "testAccounts.enabled", description: "1: a project may use the customer's own test accounts for a dependency, each approved by a second admin (needs testServices.enabled); 0: no test account is stored, approved or used", target: parameter("control-plane", "TestAccountsEnabled"), defaultValue: "0", parse: oneOf("testAccounts.enabled", ["0", "1"]) },
   { key: "projectImages.enabled", description: "1: a project may bring its own images for a dependency (reviewed compose services, a model image; needs testServices.enabled); 0: only Rovara's image catalog is used", target: parameter("control-plane", "ProjectImagesEnabled"), defaultValue: "0", parse: oneOf("projectImages.enabled", ["0", "1"]) },
+  { key: "workflowDependencies.enabled", description: "true: a task can break its work into serial parts inside one task (spec 059: the plan's breakdown is approved, run in order, and a failed part is retried); false: tasks run as one piece, as before. Existing tasks keep working either way", target: parameter("control-plane", "WorkflowDependenciesEnabled"), defaultValue: "false", parse: oneOf("workflowDependencies.enabled", ["true", "false"]) },
+  { key: "taskPeople.changesEnabled", description: "true: a task's owner can manage who is on a task (owner, commenter, viewer or denied) and a person can take over an ownerless task; a task person is a current member of the company who may write (not an Auditor), however they sign in (web, GitHub, an identity provider or Slack); a Slack account or channel alone is not a membership, and People lists exist for tasks shared into Slack. Turning it on also creates the task person proof function the dispatcher needs; false: People are not changed and tasks behave as before", target: parameter("control-plane", "TaskPeopleChangesEnabled"), defaultValue: "false", parse: oneOf("taskPeople.changesEnabled", ["true", "false"]) },
+  { key: "taskPeople.publicInvitations", description: "false (the only value for now): automatic Slack invitations of a task person to a public task channel are not built yet; they need a Slack reinstall with new scopes", target: parameter("control-plane", "TaskPeoplePublicInvitationsEnabled"), defaultValue: "false", parse: invitationsDeferred("taskPeople.publicInvitations") },
+  { key: "taskPeople.privateInvitations", description: "false (the only value for now): automatic Slack invitations of a task person to a private task channel are not built yet; they need a Slack reinstall with new scopes", target: parameter("control-plane", "TaskPeoplePrivateInvitationsEnabled"), defaultValue: "false", parse: invitationsDeferred("taskPeople.privateInvitations") },
 ];
 
 export function configKey(name: string): ConfigKey {

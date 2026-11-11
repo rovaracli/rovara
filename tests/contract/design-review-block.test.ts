@@ -1,9 +1,6 @@
 // Design review stage, DR3 (design-review-stage.md 3.5, 3.12): reading the reviewers', merge step's and planner's blocks, and checking the merge.
 import { describe, expect, it } from "vitest";
-import {
-  DESIGN_REVIEW_FINDINGS_MAX, DesignFindingSchema, checkDesignMerge, designFindingCoveredBy, designFindingFingerprint, designRawFingerprints, findingRestsOnSourceAlone, mergeDesignFindings, mergeDesignFindingsByCode, readDesignMerge, readDesignMeta, readDesignResolve,
-  normalizeDesignSection, readDesignReview, type DesignCitation, type RawDesignFinding,
-} from "../../packages/contracts/src/index.js";
+import { DESIGN_REVIEW_FINDINGS_MAX, DesignFindingSchema, checkDesignMerge, designFindingCoveredBy, designFindingFingerprint, designRawFingerprints, findingRestsOnSourceAlone, mergeDesignFindings, mergeDesignFindingsByCode, readDesignMerge, readDesignMeta, readDesignResolve, normalizeDesignSection, readDesignReview, type DesignCitation, type RawDesignFinding } from "@rovara-code/contracts";
 import { STAGING_COMPREHENSION_ANSWER, STAGING_CRITIC_ANSWER } from "../support/design-review-staging-answers.js";
 
 const contains = (text: string): string => expect.stringContaining(text) as string;

@@ -7,7 +7,7 @@ import { createWorkflowE2E } from "../../support/workflow-e2e.js";
 import { EDITS, PLAN, TEAMMATE, actionIds, atPlanReview, expectNoJargon, journeySuite, runs, said } from "../../support/workflow-e2e-journeys.js";
 import { workflowStartedNotice } from "../../../packages/broker/src/aws/slack-workflow-choice.js";
 import { TEST_ORG } from "../../support/orgs.js";
-import { orgSettingsKey } from "../../../packages/contracts/src/org-scoped-keys.js";
+import { orgSettingsKey } from "../../../packages/cloud-contracts/src/org-scoped-keys.js";
 
 const OWNER = MAYA.slackUserId!;
 const APPROVED = `Coding plan approved by <@${OWNER}>. Writing the code now; then I'll run 1 check.`;

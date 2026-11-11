@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { recordActorSourceHash, recordScopeHash, teamRecordSourceHash, workspaceVectorBucketKey, recordDeveloperHash } from "@agentx/contracts";
+import { recordActorSourceHash, recordScopeHash, teamRecordSourceHash, workspaceVectorBucketKey, recordDeveloperHash } from "@agentx/cloud-contracts";
 import { ensureWorkspaceVectorBucket, getWorkspaceVectorBucket, tableHotArchiveSource, tableHotStatsSource } from "../../../packages/broker/src/team-record/hot-source.js";
 import { expireRawText } from "../../../packages/broker/src/team-record/text-expiry.js";
 import { tableLakeDeleteQueue } from "../../../packages/broker/src/team-record/lake-queue.js";

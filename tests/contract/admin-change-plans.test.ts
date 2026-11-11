@@ -2,16 +2,16 @@
 // Spec 025 E6, E7, E11, E12: a plan says exactly what will happen, against current state, and
 // changes nothing; its hash moves when the state it covers moves.
 import { capturingAuditDeps, type AuditCapture } from "../support/audit-capture.js";
-import { slackBindingPk } from "../../packages/contracts/src/org-scoped-keys.js";
+import { slackBindingPk } from "@rovara-code/contracts";
 import { describe, expect, it, vi } from "vitest";
 import { CredentialUnavailable } from "@agentx/gateway";
-import { redactSecrets, type ChannelInfoRequest, type ChannelMembersRequest } from "@agentx/contracts";
+import { redactSecrets, type ChannelInfoRequest, type ChannelMembersRequest } from "@rovara-code/contracts";
 import { fieldDiff, looksLikeSecret, planChange, resolveChannel, stateHash, type PlanDependencies } from "../../packages/broker/src/aws/admin-change-plans.js";
 import { CredentialRegistry } from "../../packages/broker/src/aws/credentials.js";
 import { createAdminReadBroker } from "../support/admin-read-broker.js";
 import { SLACK_CHANNEL, SLACK_TEAM } from "../support/slack-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
-import { projectMemberKey, projectRevisionKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { projectMemberKey, projectRevisionKey } from "@rovara-code/contracts";
 
 const PLANTED = `ghp_${"D".repeat(36)}`;
 const admin = { issuer: "https://identity.example.test", subject: "admin-subject", ownerKey: "", orgId: TEST_ORG, isAdministrator: true, claims: {} };

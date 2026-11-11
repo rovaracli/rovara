@@ -2,15 +2,16 @@
 // The DECIDER's standing is read live at capture, on every surface (task page, developer API, Slack, MCP), never taken from the task role.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { type PlanDocument, type TaskComment, type WorkflowSnapshot } from "@agentx/contracts";
+import { type PlanDocument, type TaskComment } from "@rovara-code/contracts";
+import { type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { decideTaskWorkflow, type DeveloperTaskRouteDependencies } from "../../packages/broker/src/aws/developer-tasks.js";
 import type { DeveloperCaller } from "../../packages/broker/src/aws/developer-routes.js";
 import { captureSendBack, sendBackSourceKey } from "../../packages/broker/src/learning/capture-decision.js";
 import { learningSalt } from "../../packages/broker/src/learning/standing.js";
 import { signatureOf } from "../../packages/broker/src/learning/similarity.js";
 import { captureCorrection, readLearningState } from "../../packages/broker/src/learning/store.js";
-import { orgMemberKey } from "../../packages/contracts/src/index.js";
-import { LearningCorrectionSchema, type LearningCorrection } from "../../packages/contracts/src/project-learning.js";
+import { orgMemberKey } from "@agentx/cloud-contracts";
+import { LearningCorrectionSchema, type LearningCorrection } from "@rovara-code/contracts";
 import { MAYA, OMAR, createSingleAnswerPlanBroker, type Developer } from "../support/developer-task-broker.js";
 import { planAnswer } from "../support/plan-documents.js";
 import { pagePlan } from "../support/page-tasks.js";
@@ -352,7 +353,7 @@ describe("send-back capture: changes between the read and the write store nothin
   it("a full store refuses the correction and logs store_full with ids only", async () => {
     const t = await waitingPlan();
     seedPerson(t.harness.db, MAYA_CALLER, "contributor");
-    const { LEARNING_LIVE_CORRECTIONS_MAX } = await import("../../packages/contracts/src/project-learning.js");
+    const { LEARNING_LIVE_CORRECTIONS_MAX } = await import("@rovara-code/contracts");
     const first = await captureCorrection(learningDeps(t.harness), scope, {
       id: "earlier-correction", stage: "plan", source: "send_back", sourceKey: "decision#other-task#other-request", sourceRef: { taskId: "other-task" }, taskId: "other-task",
       text: "Always run the linter before committing.", signature: [], author: SAM_ID, standing: "member", limit: "automatic",

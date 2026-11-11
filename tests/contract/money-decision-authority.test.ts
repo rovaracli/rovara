@@ -2,7 +2,8 @@
 import { randomUUID } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { expect, it } from "vitest";
-import { orgMemberKey, developerOrgKey, orgMetaKey, spendRequestKey, agentKey, topUpKey, type BudgetScope, type SpendRequestRecord } from "@agentx/contracts";
+import { orgMemberKey, developerOrgKey, orgMetaKey, spendRequestKey, topUpKey, type BudgetScope, type SpendRequestRecord } from "@agentx/cloud-contracts";
+import { agentKey } from "@rovara-code/contracts";
 import { createSpendRequest, decideSpendRequest, type SpendRequestHost } from "../../packages/broker/src/spend/requests.js";
 import { effectiveLimits } from "../../packages/broker/src/spend/settings.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";

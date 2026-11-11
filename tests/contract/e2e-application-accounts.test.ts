@@ -1,26 +1,13 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { canonicalJson } from "../../packages/contracts/src/canonical-json.js";
-import { E2EAppRecipeSchema } from "../../packages/contracts/src/e2e-node.js";
-import { E2EApplicationRuntimeRefSchema } from "../../packages/contracts/src/e2e-application.js";
-import type { E2ESourceSnapshot } from "../../packages/contracts/src/e2e-source.js";
-import { createCandidateManifest } from "../../packages/contracts/src/task-workflow-node.js";
+import { canonicalJson } from "@rovara-code/contracts";
+import { E2EAppRecipeSchema } from "@rovara-code/contracts";
+import { E2EApplicationRuntimeRefSchema } from "@rovara-code/contracts";
+import type { E2ESourceSnapshot } from "@rovara-code/contracts";
+import { createCandidateManifest } from "@rovara-code/contracts";
 import type { z } from "zod";
-import { e2eApplicationRecipeOrigin, inspectE2EApplicationRepository, inspectE2ERepository, withE2EAnonymousTargets } from "../../packages/contracts/src/e2e-catalog.js";
-import {
-  E2EApplicationAccountDefinitionSchema,
-  E2EApplicationProjectContractSchema,
-  deriveE2EApplicationRuntimeAccountRef,
-  bindE2EApplicationAccountTargets,
-  e2eAnonymousVariantOf,
-  E2E_ANONYMOUS_ACCOUNT_PROFILE_ID,
-  e2eAnonymousRuntimeAccountRef,
-  e2eApplicationAccountDefinitionDigest,
-  e2eApplicationAccountTargetId,
-  e2eSyntheticAccountContractDigest,
-  readE2EApplicationProjectContract,
-  validateE2EApplicationAccountBinding,
-} from "../../packages/contracts/src/e2e-application-accounts.js";
+import { e2eApplicationRecipeOrigin, inspectE2EApplicationRepository, inspectE2ERepository, withE2EAnonymousTargets } from "@rovara-code/contracts";
+import { E2EApplicationAccountDefinitionSchema, E2EApplicationProjectContractSchema, deriveE2EApplicationRuntimeAccountRef, bindE2EApplicationAccountTargets, e2eAnonymousVariantOf, E2E_ANONYMOUS_ACCOUNT_PROFILE_ID, e2eAnonymousRuntimeAccountRef, e2eApplicationAccountDefinitionDigest, e2eApplicationAccountTargetId, e2eSyntheticAccountContractDigest, readE2EApplicationProjectContract, validateE2EApplicationAccountBinding } from "@rovara-code/contracts";
 
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 type ProjectSource = { agentx: { e2e: z.infer<typeof E2EApplicationProjectContractSchema> } };

@@ -1,4 +1,4 @@
-import { redactAndCap, slackThreadUrl, type SlackThread, type SlackWorkspaceLimit } from "@agentx/contracts";
+import { redactAndCap, slackThreadUrl, type SlackThread, type SlackWorkspaceLimit } from "@rovara-code/contracts";
 import { escapeText } from "./slack-format.js";
 
 // Thread notices follow the reply formatting (spec 014 FR-022): the static texts below contain no

@@ -6,23 +6,9 @@
 // item (so a repeat answers the stored outcome), the session's `stopped` event and the audit item.
 import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import {
-  ENDED_SESSION_STATUSES,
-  INDEX_EXPIRY_ATTRIBUTE,
-  LOCAL_STOPS_PER_HOUR,
-  LOCAL_STOP_RATE_MESSAGE,
-  SESSION_ENDED_MESSAGE,
-  agentSessionKey,
-  agentXError,
-  cleanSessionName,
-  sessionEventId,
-  type AgentSessionRecord,
-  type CodeIntentResult,
-  type DeveloperTaskView,
-  type OrgId,
-  type SessionView,
-  type SessionCloseResponseSchema,
-} from "@agentx/contracts";
+import { ENDED_SESSION_STATUSES, INDEX_EXPIRY_ATTRIBUTE, SESSION_ENDED_MESSAGE, agentSessionKey, agentXError, cleanSessionName, sessionEventId, type AgentSessionRecord, type CodeIntentResult, type OrgId } from "@rovara-code/contracts";
+import { type SessionView, type SessionCloseResponseSchema } from "@agentx/cloud-contracts";
+import { LOCAL_STOPS_PER_HOUR, LOCAL_STOP_RATE_MESSAGE, type DeveloperTaskView } from "@agentx/cloud-contracts";
 import type { AgentRunRequest, AgentRunResult } from "../agents/runs.js";
 import { failedIndexes, isTransactionConflict, type Item, type TransactItem } from "../agents/table-writes.js";
 import { flushAuditEvents } from "../audit/flush.js";

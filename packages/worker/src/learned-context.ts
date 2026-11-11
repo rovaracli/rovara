@@ -5,10 +5,7 @@
 //   3. renders the survivors as one delimited, labelled block of advice (control C12), re-cleaned of hidden characters and markup, and
 //   4. returns the load report the broker turns into counters.
 // Wiring pending: the payload field in the invocation schema and the one prompt-assembly hunk in run-task.ts (see the lane report).
-import {
-  LearnedContextSchema, cleanLessonText, locateCitation,
-  type CitationLocation, type CodeCitation, type LearnedContext, type LearnedLesson, type LoadReport, type LessonStage,
-} from "@agentx/contracts";
+import { LearnedContextSchema, cleanLessonText, locateCitation, type CitationLocation, type CodeCitation, type LearnedContext, type LearnedLesson, type LoadReport, type LessonStage } from "@rovara-code/contracts";
 
 /** What the check needs of a file at the base commit: its lines, or only the count when the file is too large to hold. */
 export interface BaseFile { lineCount: number; lines: string[] | undefined }

@@ -1,7 +1,7 @@
 // Fix round 12 (Opus final check 2): an erased person is never written back (N1), a cleared place keeps the index an erase needs (N2), the settings step covers every project (N3),
 // mentions of the person leave other people's words (N4), the erase schedules its own second pass (the race), and the developer id is hashed in the marker and the lake queue (G3).
 import { describe, expect, it } from "vitest";
-import { recordAccessPersonKey, recordDeveloperHash } from "@agentx/contracts";
+import { recordAccessPersonKey, recordDeveloperHash } from "@agentx/cloud-contracts";
 import { applyAudienceEvent } from "../../../packages/broker/src/team-record/access.js";
 import { toLakeEventRow } from "../../../packages/broker/src/team-record/archiver.js";
 import { runDeleteWorker } from "../../../packages/broker/src/team-record/delete-worker.js";

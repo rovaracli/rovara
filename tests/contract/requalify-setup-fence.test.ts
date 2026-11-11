@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { canonicalJson, requalifyHoldKey as holdKeyOf } from "@agentx/contracts";
+import { canonicalJson, requalifyHoldKey as holdKeyOf } from "@rovara-code/contracts";
 import { projectSetupBindingDigest, projectSetupRuntimeKey } from "../../packages/broker/src/aws/project-setup-runtime-catalog.js";
 import { REQUALIFY_DEFERRED_MESSAGE } from "../../packages/broker/src/e2e/requalify-hold.js";
 import { createSingleAnswerPlanBroker } from "../support/developer-task-broker.js";

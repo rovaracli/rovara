@@ -1,6 +1,6 @@
 // TE-3: the pure part of proving a setup draft's commands before they are saved (rovara-code/setup-draft-check.ts).
 import { describe, expect, it } from "vitest";
-import { StoredProjectDefinitionSchema } from "@agentx/contracts";
+import { StoredProjectDefinitionSchema } from "@agentx/cloud-contracts";
 import { draftCommandLists, draftCommandsDigest, judgeDraftCheck } from "../../packages/broker/src/rovara-code/setup-draft-check.js";
 
 const definition = StoredProjectDefinitionSchema.parse({

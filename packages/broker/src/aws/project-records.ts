@@ -1,5 +1,5 @@
 // A registered project revision's record, read the same way by the broker and the plan evidence job.
-import { agentXError, projectRevisionKey, type OrgId } from "@agentx/contracts";
+import { agentXError, projectRevisionKey, type OrgId } from "@rovara-code/contracts";
 import { getItem, type StateTable } from "./cancellation.js";
 import type { RegisteredProjectRecord } from "./broker.js";
 

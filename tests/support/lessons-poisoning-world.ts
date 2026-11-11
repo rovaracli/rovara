@@ -9,9 +9,9 @@
 //
 // Nothing here calls AWS or a model. The task-side facts (who started a task, with what intent, steered by whom) come from `TaskSubjectSource`, which the connecting lane builds from the task record;
 // here each test states them, and states them FROM the trust the real capture gave the planted rows (`trustOf`), never from the test's own idea of who is an outsider.
-import { OrgIdSchema, type OrgId } from "@agentx/contracts";
+import { OrgIdSchema, type OrgId } from "@rovara-code/contracts";
 import { createCodeFacts, type CodeFactsReader } from "../../packages/broker/src/lessons/code-facts.js";
-import { locateCitation } from "@agentx/contracts";
+import { locateCitation } from "@rovara-code/contracts";
 import type { CitationVerifier } from "../../packages/broker/src/lessons/ports.js";
 import { approveLesson, listWaiting, type ApproveDeps } from "../../packages/broker/src/lessons/approve.js";
 import { loadLessonsForStage, type LoadDeps, type LoadRequest } from "../../packages/broker/src/lessons/load.js";

@@ -1,12 +1,12 @@
 // tests/contract/shared-task-identity.test.ts
 // Spec 025 FR-054, C11, C13, C14: a shared thread's service calls, resolved by the broker.
-import { slackLimitPk } from "../../packages/contracts/src/org-scoped-keys.js";
+import { slackLimitPk } from "@rovara-code/contracts";
 import { TEST_ORG } from "../support/orgs.js";
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { indexExpiresAt, SLACK_OIDC_ISSUER } from "@agentx/contracts";
+import { indexExpiresAt, SLACK_OIDC_ISSUER } from "@rovara-code/contracts";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
-import { MAYA, createDeveloperTaskBroker, markThreadPosted, teammate } from "../support/developer-task-broker.js";
+import { MAYA, createDeveloperTaskBroker, markThreadPosted, seedMembership, teammate } from "../support/developer-task-broker.js";
 import { SLACK_TEAM, loadSlackBroker } from "../support/slack-broker.js";
 
 const PRIYA = "U0PRIYA001";
@@ -40,6 +40,8 @@ async function continueThread(mode: "view" | "continue" = "continue", peopleProo
   const workspaces = () => harness.db.find((item) => item.entityType === "WORKSPACE").length;
   const seedPeople = (role: "owner" | "viewer" | "denied", userId = PRIYA) => {
     const developerId = developerIdForSlackUser(userId);
+    // A task person is a member of the company (owner decision 86), whatever Slack and the channel say.
+    seedMembership(harness.db, developerId);
     const personId = randomUUID();
     const createdAt = new Date().toISOString();
     harness.db.set({ pk: `DEVTASK#${taskId}`, sk: "PEOPLE", schemaVersion: 1, revision: 3, orphaned: false,

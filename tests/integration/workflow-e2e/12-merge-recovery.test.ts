@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { agentXError } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it } from "vitest";
 import { mergeRecoveryItem } from "../../../packages/broker/src/aws/workflow-merge-recovery.js";

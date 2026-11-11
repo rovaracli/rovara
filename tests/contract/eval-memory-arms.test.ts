@@ -1,9 +1,7 @@
 // Lane 7 (0.5.12, DECISIONS 38, 49): the memory dimension with N named arms (off / on:<pipeline> / file:<label> / mcp:<label>) and the comparison over all of them. The two-arm contract of W1
 // (`eval-memory-contracts.test.ts`) keeps passing: a result written with arms "on" and "off" is still read.
 import { describe, expect, it } from "vitest";
-import {
-  EVAL_ARMS_MAX, EvalMemoryDimensionSchema, armPipeline, canonicalArm, compareArms, compareMemoryArms, evalMemoryArms, memoryInputForArm, parseArm, readArmRows, type ArmRunRow,
-} from "@agentx/contracts";
+import { EVAL_ARMS_MAX, EvalMemoryDimensionSchema, armPipeline, canonicalArm, compareArms, compareMemoryArms, evalMemoryArms, memoryInputForArm, parseArm, readArmRows, type ArmRunRow } from "@rovara-code/contracts";
 
 const SNAPSHOT = `snp_${"0123456789abcdef0123"}`;
 const row = (task: string, arm: string, resolved: boolean | undefined, repeat = 1): ArmRunRow => ({ task, arm, resolved, repeat });

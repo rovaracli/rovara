@@ -5,7 +5,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach } from "vitest";
-import type { McpStdioSpec } from "@agentx/contracts";
+import type { McpStdioSpec } from "@rovara-code/contracts";
 import { createMcpController, type ApprovedServer, type McpController, type McpControllerOptions, type ProbedTool } from "../../packages/gateway/src/mcp-controller.js";
 import { directoryBundleStore, type BundleStore } from "../../packages/gateway/src/mcp-runner/bundle-store.js";
 import { FakeRunner, sha256, toolsHashOfNames, type FakeRunnerOptions } from "./mcp-controller-fixtures.js";

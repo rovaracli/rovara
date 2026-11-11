@@ -1,7 +1,8 @@
 // Shared world for the Re-plan tests. (Wire lane D (MD-1): "Re-plan" on a changed spec, through the real routes and a real task. The owner's press sends the work back to planning with the edited requirements as data; it is the owner's alone;
 // the workflow, the planning run and the spec's record move together or not at all; a repeat of the press is the same press; and nothing is built until the owner approves the revised plan.
 import { createHash, randomUUID } from "node:crypto";
-import { SpecTargetSchema, WorkflowSnapshotSchema, createWorkflowSnapshot, type SpecFile } from "@agentx/contracts";
+import { SpecTargetSchema, type SpecFile } from "@rovara-code/contracts";
+import { WorkflowSnapshotSchema, createWorkflowSnapshot } from "@agentx/cloud-contracts";
 import { vi } from "vitest";
 import { MAYA, createDeveloperTaskBroker } from "./developer-task-broker.js";
 import { TEST_ORG } from "./orgs.js";

@@ -4,7 +4,7 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { DEVELOPER_EVENT_TEXT_MAX, DeveloperTaskEventSchema } from "@agentx/contracts";
+import { DEVELOPER_EVENT_TEXT_MAX, DeveloperTaskEventSchema } from "@rovara-code/contracts";
 import { recentTaskEvents, taskEvent, type StoredEvent } from "../../packages/broker/src/developer/task-records.js";
 import { MAYA, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
 

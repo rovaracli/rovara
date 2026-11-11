@@ -13,7 +13,8 @@
 // This is for lessons ONLY. The Team record's own access check (`team-record/access-port.ts`, `access.ts`) is unchanged: it still answers "restricted" for these rows, and `viewedForLessons` merely stops asking it
 // about places that are the project's own repositories. Callers keep the lesson they passed in; only the checks look at the converted copy.
 import { QueryCommand } from "@aws-sdk/lib-dynamodb";
-import { PROJECT_REVISION_SK_PREFIX, RepositoryDefinitionSchema, codeRepositoriesOf, projectPk, projectRevisionKey, repositoryHostOf, type OrgId, type RepositoryDefinition } from "@agentx/contracts";
+import { PROJECT_REVISION_SK_PREFIX, codeRepositoriesOf, projectPk, projectRevisionKey, type OrgId } from "@rovara-code/contracts";
+import { RepositoryDefinitionSchema, repositoryHostOf, type RepositoryDefinition } from "@agentx/cloud-contracts";
 import { isScopeClosed } from "../team-record/item-head.js";
 import { normalizeRemote } from "./repo-remote.js";
 import { ACL_SCOPE_MAX, type Lesson } from "./types.js";

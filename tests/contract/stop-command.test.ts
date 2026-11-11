@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isStopCommand } from "../../packages/contracts/src/index.js";
+import { isStopCommand } from "@rovara-code/contracts";
 
 describe("the Slack stop command (#126)", () => {
   it.each(["stop", "Stop", "STOP!", "abort", "halt", "stop it", "cancel that", "stop now", "stop working",

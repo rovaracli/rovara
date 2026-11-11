@@ -1,17 +1,7 @@
 // Spec 052 FR-002: the `eval batch` command. It resolves the form's models against the project's
 // approved list, as `eval swebench` does, has the broker build and record the batch, and posts its
 // start message. It does not wait: the batch watcher posts the batch's progress and summary.
-import type {
-  EvalBatchCommand,
-  EvalBatchModel,
-  EvalBatchSlackStartRequest,
-  EvalBatchSlackStartResult,
-  EvalBatchWatchChange,
-  EvalBatchWatched,
-  EvalBatchWatchUpdateResult,
-  ModelIdentifier,
-  ProjectModelOptions,
-} from "@agentx/contracts";
+import type { EvalBatchCommand, EvalBatchModel, EvalBatchSlackStartRequest, EvalBatchSlackStartResult, EvalBatchWatchChange, EvalBatchWatched, EvalBatchWatchUpdateResult, ModelIdentifier, ProjectModelOptions } from "@rovara-code/contracts";
 import { matchApprovedModel, modelOptionsMessage } from "./model-command.js";
 import { escapeText } from "./slack-format.js";
 import { DATASET_NAMES } from "./swebench-command.js";

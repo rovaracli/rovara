@@ -14,14 +14,15 @@ import { validateChainForPublish } from "../../packages/broker/src/chains/valida
 import { taskAgentRunKey, taskKey, taskOwnerKey } from "../../packages/broker/src/developer/task-records.js";
 import { DeveloperSignInStore } from "../../packages/broker/src/developer/store.js";
 import type { AdmissionDependencies } from "../../packages/broker/src/org/budget.js";
-import type { AgentOwner } from "../../packages/contracts/src/agent-node.js";
-import type { RecipeOverlay } from "../../packages/contracts/src/agent-recipe-node.js";
-import { ChainDefinitionSchema, type ChainDefinitionInput } from "../../packages/contracts/src/chains.js";
-import type { OrgId, OrgRole } from "../../packages/contracts/src/org.js";
-import { orgMemberKey } from "../../packages/contracts/src/org-node.js";
-import { chainRunKey, orgProjectCatalogKey, runRequestKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import type { AgentOwner } from "@rovara-code/contracts";
+import type { RecipeOverlay } from "@rovara-code/contracts";
+import { ChainDefinitionSchema, type ChainDefinitionInput } from "@rovara-code/contracts";
+import type { OrgId } from "@rovara-code/contracts";
+import type { OrgRole } from "../../packages/cloud-contracts/src/org.js";
+import { orgMemberKey } from "../../packages/cloud-contracts/src/org-node.js";
+import { chainRunKey, orgProjectCatalogKey, runRequestKey } from "@rovara-code/contracts";
 // The package the broker imports, not its source: an error must be an instance of the class the broker tests for.
-import { agentXError, type AgentXError } from "@agentx/contracts";
+import { agentXError, type AgentXError } from "@rovara-code/contracts";
 import { FakeDynamoDb } from "./fake-dynamodb.js";
 import { fakeModelAccess } from "./fake-model-access.js";
 import { FakeProjectMembers } from "./fake-project-members.js";

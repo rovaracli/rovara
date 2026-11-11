@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { parseSlackPlaceInput } from "@agentx/contracts/web";
+import { parseSlackPlaceInput } from "@agentx/cloud-contracts/web";
 import { useQueryClient } from "@tanstack/react-query";
 import { sourceOptionsRoot } from "../../../api/record-source-options.js";
 import { sourcesAdminKey, type SourcesAdminViewData } from "../../../api/record-sources.js";

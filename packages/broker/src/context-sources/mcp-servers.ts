@@ -8,10 +8,8 @@
 // Public never reaches any of this (the `privateMcpServers` feature is Enterprise only).
 import { createHash, randomBytes } from "node:crypto";
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  MCP_INSTALL_FAILURES, MCP_PROBE_FAILURES, McpServerEntrySchema, PACKAGE_SERVER_ID_PREFIX, McpServerProposalTransportSchema, agentXError, canonicalJson, editionPolicy, featureEnabled, orgScoped, readStoredMcpServerEntry, requireFeature, stdioSpecIfComplete,
-  type Edition, type McpInstallFailureCode, type McpProbeFailure, type McpServerEntry, type McpServerProbe, type McpServerTransport, type McpStdioProposal, type OrgId,
-} from "@agentx/contracts";
+import { MCP_INSTALL_FAILURES, MCP_PROBE_FAILURES, McpServerEntrySchema, PACKAGE_SERVER_ID_PREFIX, McpServerProposalTransportSchema, agentXError, canonicalJson, orgScoped, readStoredMcpServerEntry, stdioSpecIfComplete, type Edition, type McpInstallFailureCode, type McpProbeFailure, type McpServerEntry, type McpServerProbe, type McpServerTransport, type McpStdioProposal, type OrgId } from "@rovara-code/contracts";
+import { editionPolicy, featureEnabled, requireFeature } from "@agentx/cloud-contracts";
 import { parsePrivateTarget, type AllowedTarget } from "../connections/private-endpoints.js";
 import type { ControllerEventStore, DrainDependencies } from "./controller-events.js";
 import { inertSentence } from "./present.js";

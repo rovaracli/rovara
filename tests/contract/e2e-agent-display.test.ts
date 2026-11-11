@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { E2EDisplayBaselineSchema, E2EDisplayScenarioSchema, E2EDisplayScenarioV2Schema, E2EDisplayBaselineV2Schema, E2EScenarioResultsSchema } from "@agentx/contracts";
+import { E2EDisplayBaselineSchema, E2EDisplayScenarioSchema, E2EDisplayScenarioV2Schema, E2EDisplayBaselineV2Schema, E2EScenarioResultsSchema } from "@rovara-code/contracts";
 import { row } from "../support/e2e-scenario-results.js";
 import { agentNavigation, agentRow } from "../support/e2e-agent-display.js";
 

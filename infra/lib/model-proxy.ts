@@ -1,4 +1,5 @@
-import { INFERENCE_PATHS, MODEL_PROXY_INFERENCE_PORT, MODEL_PROXY_URL_PARAMETER, modelProxyTaskRoleName } from "@agentx/contracts";
+import { INFERENCE_PATHS, MODEL_PROXY_URL_PARAMETER } from "@rovara-code/contracts";
+import { MODEL_PROXY_INFERENCE_PORT, modelProxyTaskRoleName } from "@agentx/cloud-contracts";
 import { ROVARA_GUARD_ENV, ROVARA_GUARD_PACKED, litellmConfig, litellmStartCommand } from "@agentx/model-proxy";
 import {
   Duration,

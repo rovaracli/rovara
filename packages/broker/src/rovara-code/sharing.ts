@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 // Legacy Slack shares use the session's live authority and the existing share DELETE route.
 import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { agentSessionKey, agentXError, changesKey, sharedTaskKey, sessionBindingKey, sessionSurfaceKey, sessionEventId, INDEX_EXPIRY_ATTRIBUTE, cleanSessionName, type OrgId } from "@agentx/contracts";
+import { agentSessionKey, agentXError, changesKey, sharedTaskKey, sessionBindingKey, sessionSurfaceKey, sessionEventId, INDEX_EXPIRY_ATTRIBUTE, cleanSessionName, type OrgId } from "@rovara-code/contracts";
 import { sessionEventItem } from "../agent-sessions/store.js";
 import { widenedShareMessage } from "../developer/share-messages.js";
 import type { TransactItem } from "../agents/table-writes.js";

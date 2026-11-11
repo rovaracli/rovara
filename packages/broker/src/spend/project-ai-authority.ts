@@ -1,6 +1,7 @@
 // Native read snapshots for the existing project AI settings commit; no lifecycle/catalog writes.
 import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
-import { StoredProjectDefinitionSchema, PROJECT_REVISION_SK_PREFIX, agentXError, projectArchivedMessage, projectPk, projectRevisionKey, projectMetaKey, orgProjectCatalogKey, type OrgId } from "@agentx/contracts";
+import { PROJECT_REVISION_SK_PREFIX, agentXError, projectArchivedMessage, projectPk, projectRevisionKey, projectMetaKey, orgProjectCatalogKey, type OrgId } from "@rovara-code/contracts";
+import { StoredProjectDefinitionSchema } from "@agentx/cloud-contracts";
 import { Aliases, type TransactItem } from "../agents/table-writes.js";
 type Deps = { documentClient: { send(command: unknown): Promise<unknown> }; tableName: string };
 type Item = Record<string, unknown>;

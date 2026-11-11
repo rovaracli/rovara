@@ -7,7 +7,7 @@ import { installOrgIdFromEnvironment } from "../org/resolve.js";
 // the task in the member counter's `tasks` set). Each marker is removed in the same transaction
 // that decrements, so a repeated release, or a later close, never gives the slot back twice.
 import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { type OrgId, OrgIdSchema, parseSlackThreadSubject, slackMemberLimitKey, slackOrganizationLimitKey } from "@agentx/contracts";
+import { type OrgId, OrgIdSchema, parseSlackThreadSubject, slackMemberLimitKey, slackOrganizationLimitKey } from "@rovara-code/contracts";
 import { releaseConflict, releaseItems } from "../developer/limits.js";
 import { taskKey, taskPointerKey, type DeveloperTaskRecord, type DeveloperTaskPointerRecord } from "../developer/task-records.js";
 

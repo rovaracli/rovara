@@ -1,13 +1,7 @@
 // Setup and test health SH16: the three new environment codes, every code's class, the Fix setup mapping of an ask, and the limits that must not move.
 import { describe, expect, it } from "vitest";
-import {
-  AUTO_FIX_CODES, AUTO_FIX_CODE_CLASS, AUTO_FIX_DEFAULT_CAP_USD, AUTO_FIX_BASELINE_REQUEST_LIMIT, AUTO_FIX_ENVIRONMENT_CODES, WORKFLOW_AGENTX_ACTOR_ID, WORKFLOW_APPLICATION_ACCOUNTS_CHANGED_PREFIX,
-  WORKFLOW_APPLICATION_EVIDENCE_INCOMPLETE_PREFIX, WORKFLOW_APPLICATION_PLAN_NOT_APPROVABLE_PREFIX, WORKFLOW_APPLICATION_ROUND_REFUSED_PREFIX, WORKFLOW_APPLICATION_RUNTIME_RENEWED_PREFIX,
-  WORKFLOW_APPLICATION_RUNTIME_UNUSABLE_PREFIX, WORKFLOW_APPLICATION_SELECTION_CHANGED_PREFIX, WORKFLOW_AUTO_ACTION_LIMIT, WORKFLOW_AUTO_RETRY_LIMIT, WORKFLOW_AUTO_REVIEW_FAILED_MESSAGE,
-  WORKFLOW_AUTO_SEND_BACK_LIMIT, WORKFLOW_BLOCK_REASONS, WORKFLOW_HISTORY_REWRITTEN_MESSAGE, WorkflowDecisionRecordSchema, WorkflowSnapshotSchema, autoFixAskCard, autoFixDecision,
-  classifyBlockedWorkflow, createCandidateManifest, createWorkflowSnapshot, wholeTaskSpendUsd,
-  type AutoFixAskReason, type AutoFixBudget, type AutoFixCode, type AutoFixFacts, type WorkflowDecision, type WorkflowSnapshot,
-} from "@agentx/contracts";
+import { AUTO_FIX_CODES, AUTO_FIX_CODE_CLASS, AUTO_FIX_ENVIRONMENT_CODES, WORKFLOW_BLOCK_REASONS, WorkflowSnapshotSchema, autoFixAskCard, autoFixDecision, classifyBlockedWorkflow, createWorkflowSnapshot, type AutoFixAskReason, type AutoFixBudget, type AutoFixCode, type AutoFixFacts, type WorkflowSnapshot } from "@agentx/cloud-contracts";
+import { AUTO_FIX_DEFAULT_CAP_USD, AUTO_FIX_BASELINE_REQUEST_LIMIT, WORKFLOW_AGENTX_ACTOR_ID, WORKFLOW_APPLICATION_ACCOUNTS_CHANGED_PREFIX, WORKFLOW_APPLICATION_EVIDENCE_INCOMPLETE_PREFIX, WORKFLOW_APPLICATION_PLAN_NOT_APPROVABLE_PREFIX, WORKFLOW_APPLICATION_ROUND_REFUSED_PREFIX, WORKFLOW_APPLICATION_RUNTIME_RENEWED_PREFIX, WORKFLOW_APPLICATION_RUNTIME_UNUSABLE_PREFIX, WORKFLOW_APPLICATION_SELECTION_CHANGED_PREFIX, WORKFLOW_AUTO_ACTION_LIMIT, WORKFLOW_AUTO_RETRY_LIMIT, WORKFLOW_AUTO_REVIEW_FAILED_MESSAGE, WORKFLOW_AUTO_SEND_BACK_LIMIT, WORKFLOW_HISTORY_REWRITTEN_MESSAGE, WorkflowDecisionRecordSchema, createCandidateManifest, wholeTaskSpendUsd, type WorkflowDecision } from "@rovara-code/contracts";
 import { autoFixCodeSentence } from "../../packages/broker/src/developer/autofix-messages.js";
 
 const taskId = "8b579b4b-eaa7-4bf2-87bc-6da86b97c9e6";

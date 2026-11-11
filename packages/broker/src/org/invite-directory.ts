@@ -2,7 +2,8 @@ import { logDeveloperEvent } from "../developer/log.js";
 // Sparse org invite projection. Canonical records decide pending state; bearer material never leaves this module.
 import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import { AgentXError, AppOrgInvitesResponseSchema, OrgIdSchema, agentXError, orgInviteDirectoryKey, orgInviteKey, orgMemberKey, orgPk, orgScoped } from "@agentx/contracts";
+import { AgentXError, OrgIdSchema, agentXError, orgPk, orgScoped } from "@rovara-code/contracts";
+import { AppOrgInvitesResponseSchema, orgInviteDirectoryKey, orgInviteKey, orgMemberKey } from "@agentx/cloud-contracts";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "../aws/developer-routes.js";
 import { takeRateAt } from "../developer/page-comments.js";
 import { inviteEmailAvailable } from "./invite-email.js";

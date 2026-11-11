@@ -4,7 +4,8 @@
 import { approvalGrantChange } from "../org/approval-membership.js";
 import { randomUUID } from "node:crypto";
 import { GetCommand, PutCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { SLACK_OIDC_ISSUER, SlackUserIdSchema, agentXError, projectMemberKey, type EndDeveloperSessionsRequest, type EndDeveloperSessionsResponse, type DeveloperSignInMethod, type OrgId } from "@agentx/contracts";
+import { SLACK_OIDC_ISSUER, SlackUserIdSchema, agentXError, projectMemberKey, type EndDeveloperSessionsRequest, type EndDeveloperSessionsResponse, type OrgId } from "@rovara-code/contracts";
+import { type DeveloperSignInMethod } from "@agentx/cloud-contracts";
 import { MAX_PER_ORGANIZATION, MAX_PER_PERSON, isWholeLimit, workspaceLimitsKey } from "../developer/limits.js";
 import { emailIndexKey } from "../developer/store.js";
 import { ownerKeyForSubject } from "./lambda.js";

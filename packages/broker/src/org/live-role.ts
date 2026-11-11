@@ -2,7 +2,8 @@
 // approval page, GitHub reviews, task paths). The dispatcher holds an Auditor to a short allow-list; these surfaces ask here instead, and a person who is not a writer
 // (the Auditor, or a role this release does not know) is refused. A person with no member record has no role: the caller decides what that means for its surface.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { OrgRoleSchema, agentXError, isWriterOrgRole, orgMemberKey, type OrgId, type OrgRole, type WriterOrgRole } from "@agentx/contracts";
+import { OrgRoleSchema, isWriterOrgRole, orgMemberKey, type OrgRole, type WriterOrgRole } from "@agentx/cloud-contracts";
+import { agentXError, type OrgId } from "@rovara-code/contracts";
 
 type DocumentClient = { send(command: unknown): Promise<unknown> };
 
@@ -28,9 +29,9 @@ export async function personIds(deps: { documentClient: DocumentClient; signInTa
 }
 
 /** `personIds`, and the identity link's `unlinkedFrom` (the developer a Slack identity was unlinked from) from the same read of the link, so a caller needs one walk, not two. */
-export async function personWalk(deps: { documentClient: DocumentClient; signInTableName?: string | undefined }, developerId: string): Promise<{ ids: string[]; unlinkedFrom: string | undefined }> {
-  if (deps.signInTableName === undefined) return { ids: [developerId], unlinkedFrom: undefined };
-  const read = async (key: { pk: string; sk: string }) => (await deps.documentClient.send(new GetCommand({ TableName: deps.signInTableName, Key: key, ConsistentRead: true })) as { Item?: Record<string, unknown> }).Item;
+export async function personWalk(deps: { documentClient: DocumentClient; signInTableName?: string | undefined; /** A caller that cannot read the sign-in table itself (the dispatcher) gives the one read it may make. */ readSignIn?: ((key: { pk: string; sk: string }) => Promise<Record<string, unknown> | undefined>) | undefined }, developerId: string): Promise<{ ids: string[]; unlinkedFrom: string | undefined }> {
+  if (deps.signInTableName === undefined && deps.readSignIn === undefined) return { ids: [developerId], unlinkedFrom: undefined };
+  const read = deps.readSignIn ?? (async (key: { pk: string; sk: string }) => (await deps.documentClient.send(new GetCommand({ TableName: deps.signInTableName, Key: key, ConsistentRead: true })) as { Item?: Record<string, unknown> }).Item);
   const link = await read({ pk: `SIGNIN_IDENTITY#${developerId}`, sk: "META" });
   const unlinkedFrom = typeof link?.["unlinkedFrom"] === "string" ? link["unlinkedFrom"] : undefined;
   let pendingLink = link !== undefined && link["unlinkedFrom"] === undefined && typeof link["developerId"] === "string" && link["developerId"] !== developerId ? link["developerId"] : undefined;

@@ -3,7 +3,7 @@
 // they differ), who approved and at what risk tier, and, when the design was approved with an open blocker, the approver's one-line reason (Q8). No finding text, no question, no reviewer wording, no
 // paraphrase: the pull request is public to the repository's readers, and findings stay on the task page (Q9).
 // The approver's label and the reason are people's words: both go through `inertLine`.
-import { inputProofSentence, type InputProof, type WorkflowDesignReview } from "@agentx/contracts";
+import { inputProofSentence, type InputProof, type WorkflowDesignReview } from "@rovara-code/contracts";
 import { inertLine } from "../rovara-code/inert-text.js";
 import { reviewersForRound } from "./estimate.js";
 import { reviewCoverage } from "./risk.js";

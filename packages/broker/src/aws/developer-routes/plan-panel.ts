@@ -10,7 +10,7 @@
 //   POST /v1/app/tasks/{id}/workflow/feedback-retry                Retry review of a PR feedback review that did not finish (`retryTaskWorkflowFeedbackReview`: the Slack button's own function, owner only, replay-safe by review digest)
 // OWNER DECISION 18(d): only while the decision cards are on (dk=1); with them off these paths are not found and the old pages are the only place, unchanged.
 // Every route is for a live browser session only (the web adapter checks its cookie, Origin and CSRF header); a token is refused before anything is read. Bodies are the old page's strict schemas.
-import { PAGE_API_BODY_MAX_BYTES, WorkflowFeedbackFindingsDecisionRequestSchema, WorkflowFeedbackReviewRetryRequestSchema, agentXError, redactText, type PlanClaim, type PlanDocument } from "@agentx/contracts";
+import { PAGE_API_BODY_MAX_BYTES, WorkflowFeedbackFindingsDecisionRequestSchema, WorkflowFeedbackReviewRetryRequestSchema, agentXError, redactText, type PlanClaim, type PlanDocument } from "@rovara-code/contracts";
 import { decisionCardsEnabled } from "../../proof/switch.js";
 import { FEEDBACK_REVIEW_RETRY_BUSY, FEEDBACK_REVIEW_RETRY_CHANGED, createPageComment, deletePageComment, editPageComment, getTaskDocumentView, getWorkflowFeedbackReview, retryTaskWorkflowFeedbackReview, setPageSuggestion, submitWorkflowFeedbackDecision } from "../developer-tasks.js";
 import { PageCommentDeleteSchema, PageCommentEditSchema, PageCommentInputSchema, PageSuggestionInputSchema } from "../task-web-api.js";

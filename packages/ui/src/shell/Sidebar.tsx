@@ -1,7 +1,7 @@
 import { useAppHost } from "../host.js";
 import { useId } from "react";
 import { NavLink } from "react-router";
-import type { ReadAppNav } from "@agentx/contracts/web";
+import type { ReadAppNav } from "@agentx/cloud-contracts/web";
 import { paths } from "../paths.js";
 import { VisibleText } from "../design/VisibleText.js";
 import { StatusDot } from "../design/StatusDot.js";

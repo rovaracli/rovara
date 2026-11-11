@@ -8,18 +8,8 @@
 // words the message that way. Nothing in a message can reach a budget, a tool, a permission or an approval: the invocation has no field for them. No log line or event holds the text.
 import { createHash } from "node:crypto";
 import { GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  INDEX_EXPIRY_ATTRIBUTE,
-  LIVE_STEER_STEPS,
-  LIVE_STEER_STEP_OF_MODE,
-  LIVE_STEER_TEXT_MAX_CHARS,
-  liveSteerOperationId,
-  redactText,
-  type AgentSessionRecord,
-  type LiveSteerStep,
-  type SessionMessage,
-  type WorkerInvocation,
-} from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, LIVE_STEER_STEPS, LIVE_STEER_STEP_OF_MODE, LIVE_STEER_TEXT_MAX_CHARS, liveSteerOperationId, redactText, type AgentSessionRecord, type LiveSteerStep, type SessionMessage } from "@rovara-code/contracts";
+import { type WorkerInvocation } from "@agentx/cloud-contracts";
 import { issueCapability, operationKey } from "../aws/cancellation.js";
 import { taskPointerKey, type DeveloperTaskRecord } from "../developer/task-records.js";
 import type { SteerDependencies } from "./steer.js";

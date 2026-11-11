@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { expect, it } from "vitest";
-import { developerOrgKey, githubInstallationKey, orgMemberKey, orgMetaKey, orgProjectCatalogKey, orgScoped, projectMetaKey, projectRevisionKey } from "@agentx/contracts";
+import { developerOrgKey, githubInstallationKey, orgMemberKey, orgMetaKey } from "@agentx/cloud-contracts";
+import { orgProjectCatalogKey, orgScoped, projectMetaKey, projectRevisionKey } from "@rovara-code/contracts";
 import type { DeveloperCaller } from "../../packages/broker/src/aws/developer-routes.js";
 import * as commands from "../../packages/broker/src/org/project-settings.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";

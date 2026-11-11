@@ -1,6 +1,7 @@
 import { QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { expect, it } from "vitest";
-import { developerOrgKey, orgMemberKey, orgMetaKey, orgSlackTeamKey, projectMemberKey, projectMetaKey, slackBindingKey, slackTeamOrgKey, type OrgId } from "@agentx/contracts";
+import { developerOrgKey, orgMemberKey, orgMetaKey, orgSlackTeamKey, slackTeamOrgKey } from "@agentx/cloud-contracts";
+import { projectMemberKey, projectMetaKey, slackBindingKey, type OrgId } from "@rovara-code/contracts";
 import { projectSlackBrowserHttp } from "../../packages/broker/src/org/project-slack-browser-http.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";

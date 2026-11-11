@@ -4,32 +4,7 @@
 // record's `revision`: a lost race is a conflict, never an overwrite.
 import { DeleteCommand, GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import {
-  EventTriggerSpecSchema,
-  INDEX_EXPIRY_ATTRIBUTE,
-  OrgIdSchema,
-  MAX_TRIGGERS_PER_TARGET,
-  ScheduleTriggerSpecSchema,
-  TriggerTargetSchema,
-  TRIGGER_ACTIVITY_TTL_DAYS,
-  newPrefixedId,
-  orgScoped,
-  pendingTriggerScheduleKey,
-  targetTriggerCountKey,
-  targetTriggersKey,
-  triggerActivityKey,
-  triggerKey,
-  triggerMatchKey,
-  triggerNoticeKey,
-  triggerTargetKey,
-  triggersByCreatorKey,
-  type EventTriggerSpec,
-  type OrgId,
-  type OrgKey,
-  type ScheduleTriggerSpec,
-  type TriggerOutcome,
-  type TriggerTarget,
-} from "@agentx/contracts";
+import { EventTriggerSpecSchema, INDEX_EXPIRY_ATTRIBUTE, OrgIdSchema, MAX_TRIGGERS_PER_TARGET, ScheduleTriggerSpecSchema, TriggerTargetSchema, TRIGGER_ACTIVITY_TTL_DAYS, newPrefixedId, orgScoped, pendingTriggerScheduleKey, targetTriggerCountKey, targetTriggersKey, triggerActivityKey, triggerKey, triggerMatchKey, triggerNoticeKey, triggerTargetKey, triggersByCreatorKey, type EventTriggerSpec, type OrgId, type OrgKey, type ScheduleTriggerSpec, type TriggerOutcome, type TriggerTarget } from "@rovara-code/contracts";
 import { coded, commit, strip, transact, withoutUndefined, type Item, type RequestMark, type TableInput, type TransactItem } from "../agents/table-writes.js";
 
 export type TriggerSpec = EventTriggerSpec | ScheduleTriggerSpec;

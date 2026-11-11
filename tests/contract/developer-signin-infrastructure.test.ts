@@ -183,10 +183,10 @@ describe("developer sign-in infrastructure (named environments)", () => {
   });
 
   // Issue 173: the reconciler reads it too, for the unwaited task note's bot token (named environments only).
-  it("lets only the ingress, the orchestrator task role, DeveloperIdentity, the task notifier and the reconciler read the Slack secret (R2, FR-034, #173)", () => {
+  it("lets only the ingress, the orchestrator task role, DeveloperIdentity, the task notifier, the reconciler and the task person proof (only while task people or the proof is switched on) read the Slack secret (R2, FR-034, #173)", () => {
     const [secretId] = ofType(named, "AWS::SecretsManager::Secret").find(([, resource]) => resource.Properties.Name === "agentx/staging/slack")!;
     const readers = rolesThatMay(named, "secretsmanager:GetSecretValue", secretId, SAMPLE_SLACK_SECRET_ARN);
-    expect(readers).toEqual(["DeveloperSignInFunctionServiceRole", "DeveloperTaskNotifierFunctionServiceRole", "SessionsReconcilerServiceRole", "SlackIngressServiceRole", "SlackOrchestratorTaskRole"]);
+    expect(readers).toEqual(["DeveloperSignInFunctionServiceRole", "DeveloperTaskNotifierFunctionServiceRole", "SessionsReconcilerServiceRole", "SlackIngressServiceRole", "SlackOrchestratorTaskRole", "TaskPersonProofRole"]);
   });
 
   it("lets DeveloperIdentity read only its own company sign-in secret besides the Slack secret", () => {

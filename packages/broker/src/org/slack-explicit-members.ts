@@ -9,7 +9,8 @@
 // A removed or banned person is refused before this step in every mode, and a person merged into a member resolves to the survivor's record before it: this step only ever sees a person with no record.
 // An install with no org resolver (a single-org install) has no company membership to ask for and is unchanged in every mode.
 import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { BROKER_SETTINGS, INDEX_EXPIRY_ATTRIBUTE, orgScoped, type OrgId } from "@agentx/contracts";
+import { BROKER_SETTINGS } from "@agentx/cloud-contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, orgScoped, type OrgId } from "@rovara-code/contracts";
 
 export type SlackMemberRule = "require" | "warn" | "off";
 

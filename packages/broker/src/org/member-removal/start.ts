@@ -3,11 +3,9 @@
 // and body answer the same removal again, another body is refused. On an install with no movers wired the access step runs here, in place.
 import { randomUUID } from "node:crypto";
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  LAST_OWNER_MESSAGE, MEMBER_ALREADY_REMOVED_MESSAGE, MEMBER_REMOVAL_EMAIL_CAP, MEMBER_REMOVAL_GRANTS_MAX, MEMBER_REMOVAL_LEFTOVER_EMAILS_MAX, REMOVAL_CHANGE_STALE_MESSAGE, REMOVAL_FORBIDDEN_MESSAGE,
-  REMOVAL_CLEANUP_UNFINISHED_MESSAGE, REMOVAL_REQUEST_REUSED_MESSAGE, REMOVAL_TOO_MANY_GRANTS_MESSAGE, SUCCESSOR_INVALID_MESSAGE, agentXError, githubMemberKey, memberGithubKey, memberGrantsPk, memberRemovalRecordKey,
-  MEMBER_GRANT_SK_PREFIX, orgEmailKey, orgMemberKey, orgPk, orgSettingsKey, type AuditActor, type MemberRemovalRecord, type MemberRemovalState, type OrgId, type OrgRole, type RemovedGrant,
-} from "@agentx/contracts";
+import { LAST_OWNER_MESSAGE, agentXError, githubMemberKey, memberGithubKey, memberGrantsPk, MEMBER_GRANT_SK_PREFIX, orgPk, type OrgId } from "@rovara-code/contracts";
+import { type AuditActor } from "@agentx/cloud-contracts";
+import { MEMBER_ALREADY_REMOVED_MESSAGE, MEMBER_REMOVAL_EMAIL_CAP, MEMBER_REMOVAL_GRANTS_MAX, MEMBER_REMOVAL_LEFTOVER_EMAILS_MAX, REMOVAL_CHANGE_STALE_MESSAGE, REMOVAL_FORBIDDEN_MESSAGE, REMOVAL_CLEANUP_UNFINISHED_MESSAGE, REMOVAL_REQUEST_REUSED_MESSAGE, REMOVAL_TOO_MANY_GRANTS_MESSAGE, SUCCESSOR_INVALID_MESSAGE, memberRemovalRecordKey, orgEmailKey, orgMemberKey, orgSettingsKey, type MemberRemovalRecord, type MemberRemovalState, type OrgRole, type RemovedGrant } from "@agentx/cloud-contracts";
 import { auditMemberLeft, auditMemberRemoved, auditOccurrence } from "../../audit/events.js";
 import { flushAuditEvents } from "../../audit/flush.js";
 import { auditPending, tryAuditEvent, type AuditDeps, type AuditRuntime } from "../../audit/outbox.js";

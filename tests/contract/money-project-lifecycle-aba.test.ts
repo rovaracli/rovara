@@ -1,7 +1,8 @@
 // M33: real archive then restore inside an existing AI-settings write; no new lifecycle policy.
 import { randomUUID } from "node:crypto";
 import { expect, it } from "vitest";
-import { projectAiKey, projectMetaKey } from "@agentx/contracts";
+import { projectAiKey } from "@agentx/cloud-contracts";
+import { projectMetaKey } from "@rovara-code/contracts";
 import { applyArchiveRequest } from "../../packages/broker/src/org/project-archive.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { BEN, DEB, setup } from "../support/spend-world.js";

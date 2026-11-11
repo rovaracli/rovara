@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { recordDerivationKey, recordFactKey, teamRecordSourceHash, AuditEventInputSchema } from "@agentx/contracts";
+import { recordDerivationKey, recordFactKey, teamRecordSourceHash, AuditEventInputSchema } from "@agentx/cloud-contracts";
 import { DELETE_BACKLOG_SECONDS, DEFAULT_DELETE_BUDGET, runDeleteWorker } from "../../../packages/broker/src/team-record/delete-worker.js";
 import { listScopeWork, getRecordFact } from "../../../packages/broker/src/team-record/store.js";
 import { createRecordSink } from "../../../packages/broker/src/team-record/sink.js";

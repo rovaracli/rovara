@@ -10,7 +10,7 @@
 // The orgs with a record are walked from a saved cursor, so a run that runs out of time carries on where it stopped. Every call that can wait on the
 // proxy or the table is bounded by the run's time budget, so a slow proxy cannot take the spend sweep's time.
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
-import type { ModelSource, OrgId } from "@agentx/contracts";
+import type { ModelSource, OrgId } from "@rovara-code/contracts";
 import type { ModelAccess } from "../model-proxy/access.js";
 import { listEgressItems, putEgressDomains } from "../org/egress-domains.js";
 import { releaseSource, viaProxy, type ModelSourceCleanupDependencies } from "./release.js";

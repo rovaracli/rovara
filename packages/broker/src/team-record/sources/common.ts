@@ -1,5 +1,5 @@
 // Shared helpers of the source taps. Nothing here logs, and nothing here throws on hostile input: bad input is dropped or cut.
-import { redactText } from "@agentx/contracts";
+import { redactText } from "@rovara-code/contracts";
 import type { Retention, Scalar, SourceConfig, SourceConfigPort, CaptureModePort, SourceSystem, RecordDraft } from "./ports.js";
 
 export const TEXT_MAX_BYTES = 8 * 1024;

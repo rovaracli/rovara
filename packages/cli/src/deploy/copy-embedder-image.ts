@@ -13,7 +13,7 @@
 // `checkEmbedderCopyPrerequisites` checks skopeo and the authorization token BEFORE any stack deploys (the push rights on the repository cannot be tried before the repository exists);
 // the copy itself runs right after the access stack, before foundation, identity, runtime and the control plane, so a refusal never leaves the environment split across releases.
 import { BatchGetImageCommand, GetAuthorizationTokenCommand } from "@aws-sdk/client-ecr";
-import { agentXError } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import type { CommandRunner } from "./cdk-engine.js";

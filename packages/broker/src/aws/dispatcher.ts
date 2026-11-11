@@ -5,7 +5,8 @@ import { S3Client } from "@aws-sdk/client-s3";
 import { SFNClient, StartExecutionCommand } from "@aws-sdk/client-sfn";
 import { GetCommand, QueryCommand, DynamoDBDocumentClient, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { randomUUID } from "node:crypto";
-import { Ec2RuntimeBindingSchema, ProjectSetupExecutionSchema, ProjectSetupOperationSchema, ProjectSetupSessionSchema, SlackTeamIdSchema, WORKER_PING_FEATURES_FIELD, WorkerInvocationSchema, agentXError, isDispatcherPeekEvent, type DispatcherPeekEvent, type DispatcherPeekReply, projectSetupExecutionKey, projectSetupOperationKey, projectSetupSessionKey, workspaceSessionKey, MEMBER_GRANT_SK_PREFIX, PROJECT_REVISION_SK_PREFIX, memberGrantsPk, orgMemberKey, projectMemberKey, projectPk, projectRevisionKey, projectSetupApprovalKey, slackBindingPk, SLACK_BINDING_SK_PREFIX, type OrgId, type SlackChannelBinding, type WorkerInvocation } from "@agentx/contracts";
+import { Ec2RuntimeBindingSchema, ProjectSetupExecutionSchema, ProjectSetupOperationSchema, ProjectSetupSessionSchema, SlackTeamIdSchema, WORKER_PING_FEATURES_FIELD, agentXError, isDispatcherPeekEvent, type DispatcherPeekEvent, type DispatcherPeekReply, projectSetupExecutionKey, projectSetupOperationKey, projectSetupSessionKey, workspaceSessionKey, MEMBER_GRANT_SK_PREFIX, PROJECT_REVISION_SK_PREFIX, memberGrantsPk, projectMemberKey, projectPk, projectRevisionKey, projectSetupApprovalKey, slackBindingPk, SLACK_BINDING_SK_PREFIX, type OrgId, type SlackChannelBinding } from "@rovara-code/contracts";
+import { WorkerInvocationSchema, orgMemberKey, type WorkerInvocation } from "@agentx/cloud-contracts";
 import { installOrgIdFromEnvironment, orgOf } from "../org/resolve.js";
 import { requiredEnvironment, type DurableOutboxRecord, type Ec2OutboxRecord, type OutboxStatus } from "./lambda.js";
 import type { Ec2Delivery } from "./ec2-delivery.js";
@@ -542,7 +543,8 @@ function taskPersonRuntimePorts(input: {
         TableName: input.stateTableName,
         Key: key,
         ConsistentRead: true,
-        ...projection(["pk", "sk"]),
+        // `role` too: the membership check reads a member row's role (a company Auditor is no task person).
+        ...projection(["pk", "sk", "role"]),
       }), { abortSignal });
       input.admission.assertOpen();
       return (response as { Item?: Record<string, unknown> }).Item;
@@ -609,7 +611,8 @@ const taskDispatchGuard = (record: DurableOutboxRecord, context?: { remainingTim
   const admission = createTaskAuthorityAdmission({ now: () => Date.now(), lambdaRemainingMs: context?.remainingTimeMs() ?? 60_000 });
   const proofArn = process.env.TASK_PERSON_PROOF_FUNCTION_ARN;
   const slackTeamId = process.env.SLACK_TEAM_ID ?? "";
-  const personRuntime = proofArn === undefined || proofArn.trim() === "" || !SlackTeamIdSchema.safeParse(slackTeamId).success ? undefined : createTaskPersonRuntime({
+  // An install with no Slack has no team id (it is "" there): the person check still runs for people with no Slack account. A team id that is set but is not one fails closed.
+  const personRuntime = proofArn === undefined || proofArn.trim() === "" || (slackTeamId !== "" && !SlackTeamIdSchema.safeParse(slackTeamId).success) ? undefined : createTaskPersonRuntime({
     orgId: installOrgIdFromEnvironment(),
     admission,
     ports: taskPersonRuntimePorts({

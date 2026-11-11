@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import type { E2EApplicationBuildSourceManifest, E2ESourceSnapshot } from "@agentx/contracts";
+import type { E2EApplicationBuildSourceManifest, E2ESourceSnapshot } from "@rovara-code/contracts";
 import { assessCandidateBuildSource, candidateBuildSourceAdmissionReference } from "../../packages/broker/src/aws/candidate-build-source.js";
 import { exportCandidateBuildSource } from "../../packages/worker/src/e2e-build-source-export.js";
 import { createProcessCandidateGit } from "../../packages/worker/src/e2e-candidate-source.js";

@@ -3,7 +3,7 @@ import { expect, it, vi } from "vitest";
 import { screen, fireEvent, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
-import { HomeResponseSchema, HomeCardReaderSchema } from "@agentx/contracts/web";
+import { HomeResponseSchema, HomeCardReaderSchema } from "@agentx/cloud-contracts/web";
 import type { ApiRequest, ApiResponse } from "../../packages/ui/src/host.js";
 import { sessionFixture } from "./support/session-fixture.js";
 import { HomeScreen } from "../../packages/ui/src/screens/home/HomeScreen.js";

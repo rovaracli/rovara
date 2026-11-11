@@ -12,7 +12,7 @@
 import { GetCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import { INDEX_EXPIRY_ATTRIBUTE, agentXError, projectAllows, redactText, setupDraftKey, type OrgId } from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, agentXError, projectAllows, redactText, setupDraftKey, type OrgId } from "@rovara-code/contracts";
 import { StatusReply } from "../aws/status-reply.js";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 import { readState, type SetupAgentDependencies } from "./setup-agent.js";

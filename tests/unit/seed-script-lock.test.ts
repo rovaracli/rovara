@@ -1,7 +1,7 @@
 // SEED-RISK-1: the seed script lock (contracts seed-script-lock.ts). What a seed command resolves to is defined and hashed the same way for the broker and the worker; anything the resolver does not understand is
 // refused (the seed stays HIGH), and any change to what runs changes the hash.
 import { describe, expect, it } from "vitest";
-import { seedLockHolds, seedScriptLockOf, type SeedSourceReader } from "@agentx/contracts";
+import { seedLockHolds, seedScriptLockOf, type SeedSourceReader } from "@rovara-code/contracts";
 
 const cmd = (executable: string, args: string[], env?: Record<string, string>) => ({ cwd: "repo/web", executable, args, timeoutSeconds: 900, ...(env === undefined ? {} : { env }) });
 /** A reader over an in-memory tree (paths relative to the command's folder; `above` are files in folders above it, up to the repository root). */

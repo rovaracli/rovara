@@ -3,7 +3,8 @@
 // an approval, whether the approval exists in the member's org, whether the member may decide it NOW (R68: evaluated live, never from
 // stored candidates), what the page shows, and what deciding does. 21a-wiring registers `apr_` (change, write and step approvals) and
 // Task 32 registers `spr_` (spend requests); until a kind is registered, its approvals are not found.
-import type { AuditProof, OrgId } from "@agentx/contracts";
+import type { AuditProof } from "@agentx/cloud-contracts";
+import type { OrgId } from "@rovara-code/contracts";
 
 /** The two prefixes an approval id can have: `apr_` (approvals) and `spr_` (spend requests). */
 export type DecideKindPrefix = "apr" | "spr";

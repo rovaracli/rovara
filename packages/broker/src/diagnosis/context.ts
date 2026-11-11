@@ -5,10 +5,8 @@
 // and anything in them may have come from a repository file, a check's output or a person outside the project: the data says so, in words, before it. A secret never appears (a project's secrets are
 // not read at all), and no other task, project, person or Slack text is read.
 import { createHmac } from "node:crypto";
-import {
-  DIAGNOSIS_CONTEXT_MAX_BYTES, DIAGNOSIS_ERROR_CONTEXT_MAX_BYTES, DIAGNOSIS_RUNBOOKS, OUTSIDER_TEXT_LABEL, diagnosisPrefillGuide, diagnosisTurnRules, errorRefKey,
-  type DeveloperTaskView, type ErrorRef, type OrgId,
-} from "@agentx/contracts";
+import { DIAGNOSIS_CONTEXT_MAX_BYTES, DIAGNOSIS_ERROR_CONTEXT_MAX_BYTES, DIAGNOSIS_RUNBOOKS, OUTSIDER_TEXT_LABEL, diagnosisPrefillGuide, diagnosisTurnRules, errorRefKey, type ErrorRef, type OrgId } from "@rovara-code/contracts";
+import { type DeveloperTaskView } from "@agentx/cloud-contracts";
 import { readCodeSettings } from "../rovara-code/code-settings.js";
 import { inertLine } from "../rovara-code/inert-text.js";
 import { plainBlockReason } from "../developer/workflow-messages.js";

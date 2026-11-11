@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { FakeCheckRunner } from "../../packages/broker/src/plugins/fake/check-runner.js";
 import { FakeCodeHost, fakeSignedDelivery, type FakeRawEvent } from "../../packages/broker/src/plugins/fake/code-host.js";
 import { FakeTracker } from "../../packages/broker/src/plugins/fake/tracker.js";
-import type { CodeHostEvents, GitCredential, RepositoryRef } from "../../packages/contracts/src/index.js";
+import type { CodeHostEvents, GitCredential, RepositoryRef } from "@rovara-code/contracts";
 import { checkRunnerChecks } from "./check-runner.contract.js";
 import { codeHostChecks } from "./code-host.contract.js";
 import { runContract } from "./contract-kit.js";

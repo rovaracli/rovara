@@ -1,7 +1,7 @@
 // Fix round 1 (Opus review), contracts side: I4 inert text, M1 fences, I6 spec folders, I5 evidence.
 import { micromark } from "micromark";
 import { describe, expect, it } from "vitest";
-import { SpecDraftSchema, SpecReviewInputSchema, SpecTargetSchema, readSpecVerdicts, specFileNameProblem, specFolderProblem, specLine, specMarkdown } from "@agentx/contracts";
+import { SpecDraftSchema, SpecReviewInputSchema, SpecTargetSchema, readSpecVerdicts, specFileNameProblem, specFolderProblem, specLine, specMarkdown } from "@rovara-code/contracts";
 import { assertRenderedSpec, extractLabelledLines, rovaraRenderer, teamTemplateRenderer } from "../../packages/broker/src/spec/index.js";
 
 const PLAN = "a".repeat(64);

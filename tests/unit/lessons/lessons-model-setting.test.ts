@@ -1,8 +1,9 @@
 // Lessons in production, lane 1b: the company's optional "lessons model" setting. An owner or admin sets it from a live browser session; it must be a company-billed, non-forbidden model; it is audited
 // (no ledger entry, no change); a write is conditional on the value that was read; unset means the cheapest suitable model.
 import { describe, expect, it } from "vitest";
-import { AgentXError } from "@agentx/contracts";
-import { DEFAULT_AGENT_GUARDRAILS, ModelSourceSchema, agentGuardrailsKey, editionPolicy, type ModelIdentifier } from "../../../packages/contracts/src/index.js";
+import { AgentXError } from "@rovara-code/contracts";
+import { DEFAULT_AGENT_GUARDRAILS, ModelSourceSchema, agentGuardrailsKey, type ModelIdentifier } from "@rovara-code/contracts";
+import { editionPolicy } from "@agentx/cloud-contracts";
 import { routeLearningModel } from "../../../packages/broker/src/aws/developer-routes/learning-model.js";
 import { readLessonsModel } from "../../../packages/broker/src/lessons/model-setting.js";
 import { LEDGERED, lessonAuditSink } from "../../../packages/broker/src/lessons/audit-sink.js";

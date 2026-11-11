@@ -10,7 +10,8 @@
 // (`dropScopeClaim`), the others are in the project's partition.
 import { createHash } from "node:crypto";
 import { DeleteCommand, GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { INDEX_EXPIRY_ATTRIBUTE, recordSourceKey, teamRecordPk, teamRecordSourceHash, type OrgId, type SourceConfig } from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, teamRecordPk, type OrgId } from "@rovara-code/contracts";
+import { recordSourceKey, teamRecordSourceHash, type SourceConfig } from "@agentx/cloud-contracts";
 import { Aliases, NOT_EXISTS, type Item } from "../agents/table-writes.js";
 import { sourceConfigFromItem } from "./store.js";
 import type { TeamRecordTable } from "./types.js";

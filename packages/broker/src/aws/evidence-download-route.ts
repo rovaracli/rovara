@@ -2,7 +2,7 @@
 // `serveEvidenceArtifact`; mounting the route (and building its dependencies from the task record) is one hunk in the hot file `developer-routes.ts`, see the lane report. The answer carries no task text, and
 // a refusal says only that the thing is not there.
 import { PRIVATE_HEADERS, safeResponse, type WebResponse } from "./web-session.js";
-import type { AuditEventInput } from "@agentx/contracts";
+import type { AuditEventInput } from "@agentx/cloud-contracts";
 import { auditEvidenceDownloaded, type AuditBuilderBase } from "../audit/events.js";
 import { serveEvidenceArtifact, type EvidenceDownload, type EvidenceDownloadDependencies } from "./evidence-artifacts.js";
 

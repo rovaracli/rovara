@@ -1,7 +1,8 @@
 // What the approver is shown before anything is written: the settings the build used (a secret as its hash), the hash of the result, and per stack WHICH resources change against the
 // stack as it is deployed now, with the properties that differ. Network, IAM, KMS and resource-policy changes are listed first and marked. Every line is made from fixed words, counts and
 // names from the templates' own logical ids and types that look like ids; nothing from a file is printed raw.
-import { BUILT_PARTS, accessTemplatesAgree, canonicalJson, redactedSynthSettings, type BuiltPart, type SynthSettings } from "@agentx/contracts";
+import { BUILT_PARTS, accessTemplatesAgree, redactedSynthSettings, type BuiltPart, type SynthSettings } from "@agentx/cloud-contracts";
+import { canonicalJson } from "@rovara-code/contracts";
 import type { BuiltBundle } from "./build-at-approval.js";
 
 export type ChangeCategory = "NETWORK" | "IAM" | "KMS" | "RESOURCE POLICY";

@@ -47,7 +47,7 @@ describe("loading a release for install", () => {
   });
 });
 
-// The schema (packages/contracts/src/release.ts) already refuses a release.json whose `file`
+// The schema (vendor/rovara-code/packages/contracts/src/release.ts) already refuses a release.json whose `file`
 // values could escape the release directory, but the loader must not rely on that alone: whoever
 // can edit release.json also controls its recorded sha256, so a checksum match alone proves
 // nothing about where the path points. containedPath is the loader's own, independent guard;

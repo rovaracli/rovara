@@ -2,8 +2,8 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { gunzipSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
-import { ec2WorkerBootScript, Ec2RuntimeBindingSchema } from "../../packages/contracts/src/session.js";
-import { canonicalJson } from "../../packages/contracts/src/index.js";
+import { ec2WorkerBootScript, Ec2RuntimeBindingSchema } from "@rovara-code/contracts";
+import { canonicalJson } from "@rovara-code/contracts";
 import { ec2Binding } from "../../packages/cli/src/setup/project-add.js";
 import {
   QUALIFICATION_POLL_TIMEOUT_MS,

@@ -1,6 +1,6 @@
-import { slackBindingPk } from "../../packages/contracts/src/org-scoped-keys.js";
+import { slackBindingPk } from "@rovara-code/contracts";
 import { GetCommand, ScanCommand } from "@aws-sdk/lib-dynamodb";
-import { SLACK_OIDC_ISSUER } from "@agentx/contracts";
+import { SLACK_OIDC_ISSUER } from "@rovara-code/contracts";
 import { describe, expect, it, vi } from "vitest";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
@@ -9,7 +9,7 @@ import { createTaskPersonRuntime, TASK_PERSON_DEVELOPER_RECORD_ATTRIBUTES, type 
 import { checkTaskPersonIdentity } from "../../packages/broker/src/developer/task-person-identity.js";
 import { taskOwnerKey, type DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
 import { TEST_ORG } from "../support/orgs.js";
-import { projectMemberKey, projectRevisionKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { projectMemberKey, projectRevisionKey } from "@rovara-code/contracts";
 
 const taskId = "11111111-1111-4111-8111-111111111111";
 const slackUserId = "U0123456789";
@@ -51,11 +51,12 @@ function ports(input: { task?: DeveloperTaskRecord; memberOf?: string[]; develop
     slackCallsUsed: 1,
   };
   });
-  // Member removal's check: nobody here was removed, so there is no tombstone to read.
-  const readOrgRecord = vi.fn<TaskPersonRuntimePorts["readOrgRecord"]>(async () => undefined);
+  // Nobody here was removed (no tombstone), and everybody is a member of the company who may write (a member row: owner decision 86, a Slack account is not a membership).
+  const readOrgRecord = vi.fn<TaskPersonRuntimePorts["readOrgRecord"]>(async ({ key }) => String(key.sk).startsWith("MEMBER#") ? { ...key, role: "member" } : undefined);
   return { readTaskRecord, readDeveloperRecord, readOrgRecord, projectAuthorityReader, taskPersonProof } as unknown as TaskPersonRuntimePorts & {
     readTaskRecord: typeof readTaskRecord;
     readDeveloperRecord: typeof readDeveloperRecord;
+    readOrgRecord: typeof readOrgRecord;
     projectAuthorityReader: typeof projectAuthorityReader;
     taskPersonProof: typeof taskPersonProof;
   };
@@ -78,7 +79,9 @@ describe("task person runtime factory", () => {
     });
 
     expect(injected.readTaskRecord.mock.calls.map(([request]) => request.sortKey)).toEqual(["META", `PERSON_SUBJECT#${nativeDeveloperId}`]);
-    expect(injected.readDeveloperRecord.mock.calls).toHaveLength(0);
+    // One sign-in row read: the membership check follows the person's merges (none here) to the member record of the survivor.
+    expect(injected.readDeveloperRecord.mock.calls).toHaveLength(1);
+    expect(injected.readDeveloperRecord.mock.calls[0]?.[0].developerId).toBe(nativeDeveloperId);
     expect(injected.taskPersonProof.mock.calls).toEqual([[
       { kind: "task-person-proof", slackUserId, channelIds: [channelId] }, admission,
     ]]);
@@ -253,7 +256,8 @@ describe("task person runtime factory", () => {
     });
 
     const developerReads = injected.readDeveloperRecord.mock.calls;
-    expect(developerReads).toHaveLength(3);
+    // The check reads the person's row for the identity (twice) and once for the status, and the membership check's walk once more.
+    expect(developerReads).toHaveLength(4);
     expect(developerReads[0]?.[0]).toMatchObject({
       developerId: externalDeveloperId,
       consistentRead: true,
@@ -278,6 +282,28 @@ describe("task person runtime factory", () => {
     expect(injected.readTaskRecord.mock.calls).toHaveLength(0);
   });
 
+  it("reads no sign-in row or member row of anyone but the person and the people their rows say they were merged into", async () => {
+    const admission = createTaskAuthorityAdmission({ now: () => 1_000, lambdaRemainingMs: 20_000 });
+    const injected = ports();
+    const stranger = "e".repeat(64);
+    const checker = createTaskPersonRuntime({ orgId: TEST_ORG,
+      admission, ports: injected, stateTableName: "state", slackTeamId, now: () => 1_000,
+      uuid: () => "22222222-2222-4222-8222-222222222222",
+      checkIdentity: async (dependencies) => {
+        await expect(dependencies.developerRecord(stranger)).rejects.toMatchObject({ code: "SLACK_UNAVAILABLE" });
+        await expect(dependencies.documentClient.send(new GetCommand({
+          TableName: "state", Key: { pk: `ORG#${TEST_ORG}`, sk: `MEMBER#${stranger}` }, ConsistentRead: true,
+        }))).rejects.toMatchObject({ code: "SLACK_UNAVAILABLE" });
+        return { eligible: false } as never;
+      },
+    });
+
+    await checker.checkTaskPerson(nativeTask(), nativeDeveloperId);
+
+    expect(injected.readDeveloperRecord.mock.calls).toHaveLength(0);
+    expect(injected.readOrgRecord.mock.calls).toHaveLength(0);
+  });
+
   it("refuses an unlinked PERSON row before issuing a State read", async () => {
     const admission = createTaskAuthorityAdmission({ now: () => 1_000, lambdaRemainingMs: 20_000 });
     const injected = ports();
@@ -294,6 +320,67 @@ describe("task person runtime factory", () => {
 
     await expect(checker.checkTaskPerson(nativeTask(), nativeDeveloperId)).rejects.toMatchObject({ code: "SLACK_UNAVAILABLE" });
     expect(injected.readTaskRecord.mock.calls).toHaveLength(0);
+  });
+
+  describe("on an install with no Slack team (decision 86: a web or GitHub sign-in company)", () => {
+    const issuer = "https://github.com";
+    const subject = "nia-12345";
+    const niaId = ownerKeyForSubject(issuer, subject);
+    const githubTask = () => ({ ...nativeTask(), developerId: niaId, provider: "github", slackUserId: undefined, developerName: "Nia" }) as unknown as DeveloperTaskRecord;
+    const githubRecord = { pk: `DEVELOPER#${niaId}`, sk: "META", developerId: niaId, provider: "github", issuer, subject, revoked: false, displayName: "Nia" };
+    const noSlack = (admission: ReturnType<typeof createTaskAuthorityAdmission>, testPorts: TaskPersonRuntimePorts, team = "") => createTaskPersonRuntime({ orgId: TEST_ORG,
+      admission, ports: testPorts, stateTableName: "state", slackTeamId: team, now: () => 1_000, uuid: () => "22222222-2222-4222-8222-222222222222" });
+    const grantPorts = () => {
+      const injected = ports({ task: githubTask(), developerRecord: githubRecord });
+      injected.projectAuthorityReader.memberships.mockImplementation(async (_developerId: string, _admission: unknown, signal: AbortSignal) => ({
+        items: [{ ...projectMemberKey(TEST_ORG, niaId, "payments-api"), projectName: "payments-api", role: "developer" }] as never, complete: !signal.aborted }));
+      return injected;
+    };
+
+    it("qualifies a person with no Slack account: a witness on their grant, no Slack proof, no channel bindings read", async () => {
+      const admission = createTaskAuthorityAdmission({ now: () => 1_000, lambdaRemainingMs: 20_000 });
+      const injected = grantPorts();
+      const checker = noSlack(admission, injected);
+
+      await expect(checker.checkTaskPerson(githubTask(), niaId)).resolves.toMatchObject({ eligible: true, channelMember: true, identity: { developerId: niaId, method: "github" } });
+
+      expect(injected.taskPersonProof.mock.calls).toHaveLength(0);
+      expect(injected.projectAuthorityReader.bindings.mock.calls).toHaveLength(0);
+      await expect(checker.stateAuthorityWitnessForOwnerActor(githubTask(), taskOwnerKey(niaId, taskId))).resolves.toMatchObject({
+        taskId, developerId: niaId, access: "granted", membership: { role: "developer", projectName: "payments-api" },
+      });
+    });
+
+    it("a team id that is set but is not one still fails closed", async () => {
+      const admission = createTaskAuthorityAdmission({ now: () => 1_000, lambdaRemainingMs: 20_000 });
+      await expect(noSlack(admission, grantPorts(), "not-a-team").checkTaskPerson(githubTask(), niaId)).rejects.toMatchObject({ code: "PROJECT_ACCESS_DENIED" });
+    });
+
+    it("a person with a Slack account cannot be proved without a team: unavailable, no proof call", async () => {
+      const admission = createTaskAuthorityAdmission({ now: () => 1_000, lambdaRemainingMs: 20_000 });
+      const injected = ports();
+      await expect(noSlack(admission, injected).checkTaskPerson(nativeTask(), nativeDeveloperId)).rejects.toMatchObject({ code: "SLACK_UNAVAILABLE" });
+      expect(injected.taskPersonProof.mock.calls).toHaveLength(0);
+    });
+
+    it("reads only the person's own sign-in row and the member rows of the people it says they were merged into", async () => {
+      const admission = createTaskAuthorityAdmission({ now: () => 1_000, lambdaRemainingMs: 20_000 });
+      const survivor = "9".repeat(64);
+      const injected = ports({ developerRecord: { pk: `DEVELOPER#${nativeDeveloperId}`, sk: "META", developerId: nativeDeveloperId, provider: "slack", issuer: "https://slack.com", subject: slackUserId, slackUserId, mergedInto: survivor } });
+      // (The survivor has a member row here, so the person is a member through them.)
+      await expect(noSlack(admission, injected, slackTeamId).checkTaskPerson(nativeTask(), nativeDeveloperId)).resolves.toMatchObject({ eligible: true });
+      expect(injected.readDeveloperRecord.mock.calls.map(([request]) => request.developerId)).toEqual([nativeDeveloperId, survivor]);
+      const keys = injected.readOrgRecord.mock.calls.map(([request]) => request.key.sk);
+      expect([...new Set(keys)]).toEqual([`MEMBER#${nativeDeveloperId}`, `MEMBER#${survivor}`]);
+    });
+
+    it("a taker who is a company auditor has no project witness, whatever grant they hold", async () => {
+      const admission = createTaskAuthorityAdmission({ now: () => 1_000, lambdaRemainingMs: 20_000 });
+      const injected = grantPorts();
+      injected.readOrgRecord.mockImplementation(async ({ key }) => String(key.sk).startsWith("MEMBER#") ? { ...key, role: "auditor" } : undefined);
+      const taken = { ...githubTask(), currentOwner: { developerId: niaId, name: "Nia", provider: "github", since: "2026-10-22T11:00:00.000Z" } } as unknown as DeveloperTaskRecord;
+      await expect(noSlack(admission, injected).projectAuthorityWitnessForOwner(taken)).resolves.toBeUndefined();
+    });
   });
 
   it("rejects an invalid developer identity before calling injected State ports", async () => {

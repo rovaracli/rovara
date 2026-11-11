@@ -1,7 +1,7 @@
 import { createServer } from "node:http";
 import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import type { OrgId } from "@agentx/contracts";
+import type { OrgId } from "@rovara-code/contracts";
 import { DECIDE_COOKIE, DecideReauthRequired, DecideStore, csrfTokenFor, requireDecideNavigation, requireDecideSession, type DecideRequestContext } from "../../packages/broker/src/developer/decide-session.js";
 import type { DecideKind } from "../../packages/broker/src/developer/decide-kinds.js";
 import { routeDecidePage } from "../../packages/broker/src/aws/decide-web.js";

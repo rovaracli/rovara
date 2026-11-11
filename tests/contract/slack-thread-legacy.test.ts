@@ -1,4 +1,4 @@
-import { slackTeamOrgKey } from "@agentx/contracts";
+import { slackTeamOrgKey } from "@agentx/cloud-contracts";
 import { randomUUID } from "node:crypto";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { resolveSlackThreadKey, slackThreadKey } from "../../packages/broker/src/aws/slack-thread-key.js";

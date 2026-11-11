@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
 import { createServer, type AddressInfo } from "node:net";
 import { describe, expect, it } from "vitest";
-import { CatalogEntrySchema, ServiceCatalogSchema, type CatalogEntry } from "../../packages/contracts/src/service-catalog.js";
+import { CatalogEntrySchema, ServiceCatalogSchema, type CatalogEntry } from "@rovara-code/contracts";
 import { runNetworkAddresses, runNetworkBridge, runNetworkHelperIp, runNetworkLabelArgs, runNetworkName, type ServicesNetwork } from "../../packages/worker/src/run-network.js";
 import {
   HELPER_ALIAS_PATTERN, HelperStartError, helperContainerName, startHelpers, sweepServicesNetworksAtWorkerStart,
@@ -181,6 +181,43 @@ describe("the alias rule (TS-RN-3 rule 2)", () => {
     const t = setup();
     await t.run([request("postgres", "postgres@16")]);
     expect(flag(t.started()[0]!, "--network-alias")).toEqual(["postgres"]);
+  });
+});
+
+describe("a company-approved image's reference (switch `pj`)", () => {
+  const HOST = "registry.example.test";
+  const MIRROR = `rovara-env/staging/o${"1".repeat(32)}/c${"2".repeat(32)}`;
+  const reference = (host = HOST, repository = MIRROR, tail = `@sha256:${"c".repeat(64)}`) => `${host}/${repository}${tail}`;
+  const run = (image: string | undefined) => setup().run([request("db", "postgres@16", image === undefined ? {} : { image })]);
+
+  it("starts the image by the reference it is given, with the entry's profile, and nothing else of the image's own", async () => {
+    const accepted = setup();
+    await accepted.run([request("db", "postgres@16", { image: reference() })]);
+    const started = accepted.calls.find((call) => call[0] === "run" && call.includes("--detach"))!;
+    expect(started).toContain(reference());
+    expect(started).toContain("--pull=never");
+    const catalogRun = setup();
+    await catalogRun.run([request("db", "postgres@16")]);
+    const catalogStart = catalogRun.calls.find((call) => call[0] === "run" && call.includes("--detach"))!;
+    const normal = (call: string[], image: string) => call.filter((arg) => arg !== image).map((arg) => arg.replace(/[0-9a-f]{10,}/gu, "H"));
+    expect(normal(started, reference())).toEqual(normal(catalogStart, catalogStart.find((arg) => arg.includes("@sha256:"))!));
+  });
+
+  it("refuses a reference that is not the registry's host and a mirror repository by digest: another host, a tag, a catalog repository, a path trick, a missing digest", async () => {
+    for (const image of [
+      reference("evil.example.org"), reference(`${HOST}:5000`), reference(HOST, "rovara-catalog/staging/svc/postgres"), reference(HOST, `${MIRROR}/extra`), reference(HOST, MIRROR, ":18"), reference(HOST, MIRROR, ""),
+      reference(HOST, MIRROR, `@sha256:${"c".repeat(63)}`), reference(HOST, MIRROR, `@sha512:${"c".repeat(64)}`), `${HOST}/../${MIRROR}@sha256:${"c".repeat(64)}`, `${reference()} --privileged`, reference(HOST, "rovara-env/staging/*"), "",
+    ]) {
+      await expect(run(image), image).rejects.toMatchObject({ reason: "refused" });
+    }
+  });
+
+  it("holds an image that declares a volume the entry does not cover to the same VOLUME check as any catalog image", async () => {
+    const covered = setup({ volumesFor: () => ["/var/lib/postgresql/data"] });
+    await covered.run([request("db", "postgres@16", { image: reference() })]);
+    const uncovered = setup({ volumesFor: () => ["/var/lib/postgresql/data", "/data"] });
+    await expect(uncovered.run([request("db", "postgres@16", { image: reference() })])).rejects.toMatchObject({ reason: "refused" });
+    expect(uncovered.calls.some((call) => call[0] === "run" && call.includes("--detach"))).toBe(false);
   });
 });
 

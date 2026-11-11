@@ -5,7 +5,8 @@
 // A row that is missing, belongs to another workspace, project or task, is hidden (erased, deleted at its source), or names someone who is not a member gives no person, and a
 // send-back without a person is not a measured outcome. Internal reads: the audience of the lesson is the subject's, set by the caller, not by this read.
 import { QueryCommand } from "@aws-sdk/lib-dynamodb";
-import { RECORD_EVENT_SK_PREFIX, teamRecordPk, type OrgId, type RecordEvent } from "@agentx/contracts";
+import { RECORD_EVENT_SK_PREFIX, type RecordEvent } from "@agentx/cloud-contracts";
+import { teamRecordPk, type OrgId } from "@rovara-code/contracts";
 import { bySource } from "../team-record/store.js";
 import { eventFromItem } from "../team-record/store.js";
 import type { TeamRecordTable } from "../team-record/types.js";

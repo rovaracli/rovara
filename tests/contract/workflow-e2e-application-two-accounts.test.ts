@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { canonicalJson } from "@agentx/contracts";
+import { canonicalJson } from "@rovara-code/contracts";
 import { createE2EApplicationCollectionOracleFromCompiledSuite } from "@agentx/verifier";
 import { admittedRuntimeAccountRef } from "../../packages/verifier/src/application-result-adapter.js";
 import { disposeRealCandidates } from "../support/e2e-application-candidate.js";

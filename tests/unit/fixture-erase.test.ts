@@ -3,7 +3,7 @@
 import { DeleteObjectsCommand, ListObjectsV2Command, type S3Client } from "@aws-sdk/client-s3";
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it } from "vitest";
-import type { OrgId } from "../../packages/contracts/src/index.js";
+import type { OrgId } from "@rovara-code/contracts";
 import { createEvidenceErase } from "../../packages/broker/src/rovara-code/evidence-erase.js";
 import { FIXTURE_ERASED_ACTOR, fixtureObjectsOfOrg } from "../../packages/broker/src/test-env/fixture-erase.js";
 import { fixtureObjectKey, type FixtureRecord } from "../../packages/broker/src/test-env/fixture-store.js";

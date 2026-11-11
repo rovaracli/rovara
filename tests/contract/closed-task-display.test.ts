@@ -2,7 +2,7 @@
 // a decision" (it was closed at the plan). The header, the pipeline, the actions and the merge block must all agree that it is closed.
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
-import { createWorkflowSnapshot } from "../../packages/contracts/src/task-workflow-node.js";
+import { createWorkflowSnapshot } from "../../packages/cloud-contracts/src/task-workflow-node.js";
 import { MAYA, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
 import { loadSlackBroker } from "../support/slack-broker.js";
 import { refreshSessionSummary } from "../../packages/broker/src/agent-sessions/summary.js";

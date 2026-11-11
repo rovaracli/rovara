@@ -2,7 +2,7 @@
 // the workflow, the planning run and the spec's record move together or not at all; a repeat of the press is the same press; and nothing is built until the owner approves the revised plan.
 import { PutCommand } from "@aws-sdk/lib-dynamodb";
 import type { SpecState } from "../../packages/broker/src/spec/state.js";
-import { projectMemberKey, projectMetaKey } from "@agentx/contracts";
+import { projectMemberKey, projectMetaKey } from "@rovara-code/contracts";
 import { describe, expect, it } from "vitest";
 import { MAYA, OMAR, grantProject } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";

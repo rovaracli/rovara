@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { SpecTargetSchema, type SpecFile, type SpecTarget } from "@agentx/contracts";
+import { SpecTargetSchema, type SpecFile, type SpecTarget } from "@rovara-code/contracts";
 import { createSpecHooks, specStateItem, type SpecStore, type SpecTaskRef, type SpecWorld, type TransactItem } from "../../packages/broker/src/spec/hooks.js";
 import { specOperationEndItems, type SpecEndEnvironment } from "../../packages/broker/src/spec/end-items.js";
 import { specIsDue } from "../../packages/broker/src/spec/due.js";

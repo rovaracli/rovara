@@ -2,13 +2,12 @@
 // every request, every task, workspace and operation record carries its org, and another org's resource reads as not found.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { createWorkflowSnapshot, developerOrgKey, orgScoped, type OrgId } from "@agentx/contracts";
+import { createWorkflowSnapshot, developerOrgKey } from "@agentx/cloud-contracts";
+import { orgScoped, type OrgId } from "@rovara-code/contracts";
 import { authorizeWorkspace } from "../../packages/broker/src/authorization.js";
 import { resolveTaskAccess } from "../../packages/broker/src/developer/task-access.js";
 import type { OrgResolver } from "../../packages/broker/src/org/resolve.js";
-import {
-  projectMemberKey, projectRevisionKey, projectSetupApprovalKey, workspaceProjectIndexAttributes,
-} from "../../packages/contracts/src/org-scoped-keys.js";
+import { projectMemberKey, projectRevisionKey, projectSetupApprovalKey, workspaceProjectIndexAttributes } from "@rovara-code/contracts";
 import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
 import { MAYA, OMAR, bearerFor, createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import { SLACK_CHANNEL, call, createBroker, issuer, loadSlackBroker } from "../support/slack-broker.js";

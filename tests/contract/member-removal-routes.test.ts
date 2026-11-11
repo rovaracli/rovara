@@ -2,8 +2,8 @@
 // DELETE that keeps its answer and hands over to the person who removes.
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { memberRemovalRecordKey, orgEmailKey, orgMemberKey, type OrgRole } from "@agentx/contracts";
-import { memberGithubKey, projectMemberKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { memberRemovalRecordKey, orgEmailKey, orgMemberKey, type OrgRole } from "@agentx/cloud-contracts";
+import { memberGithubKey, projectMemberKey } from "@rovara-code/contracts";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { MAYA, OMAR, createSingleAnswerPlanBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";

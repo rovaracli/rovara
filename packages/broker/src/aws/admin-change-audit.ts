@@ -3,10 +3,7 @@
 // table (30 days by TTL), under its own export partition. Written once, then only stepped forward:
 // the outcome, once set, never changes, and no route writes this record. Log lines carry IDs only.
 import { GetCommand, PutCommand, QueryCommand, UpdateCommand, type TransactWriteCommandInput } from "@aws-sdk/lib-dynamodb";
-import {
-  ADMIN_CHANGES_PARTITION, ADMIN_CHANGE_REFUSED_ATTEMPTS_MAX, AdminChangeAuditRecordSchema, adminChangeAuditKeys, agentXError, outcomeOfStatus, redactSecrets,
-  type AdminChangeAuditRecord, type AdminChangeOutcome, type AdminChangeStatus, type RefusedAttemptReason,
-} from "@agentx/contracts";
+import { ADMIN_CHANGES_PARTITION, ADMIN_CHANGE_REFUSED_ATTEMPTS_MAX, AdminChangeAuditRecordSchema, adminChangeAuditKeys, agentXError, outcomeOfStatus, redactSecrets, type AdminChangeAuditRecord, type AdminChangeOutcome, type AdminChangeStatus, type RefusedAttemptReason } from "@rovara-code/contracts";
 
 /** One item of a TransactWriteItems call, so every item's shape is checked by the compiler. */
 export type TransactItem = NonNullable<TransactWriteCommandInput["TransactItems"]>[number];

@@ -7,7 +7,7 @@
 // goes on after the last finished project. A job that stops inside a project (`"partial"`) leaves the cursor where it was, so the next run repeats that project: jobs must be
 // idempotent. Writes to the walk item are conditional on its `version`, so two overlapping runs cannot both move the cursor; the loser stops with `busy`.
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { AgentXNameSchema, LearningWalkKindSchema, agentXError, learningWalkKey, orgProjectCatalogPk, type OrgId } from "@agentx/contracts";
+import { AgentXNameSchema, LearningWalkKindSchema, agentXError, learningWalkKey, orgProjectCatalogPk, type OrgId } from "@rovara-code/contracts";
 import { readLearningPartition, type LearningDeps } from "./store.js";
 
 export const WALK_CATALOG_PAGE = 25;

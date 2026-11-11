@@ -3,7 +3,7 @@
 import { randomUUID } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { beforeAll, describe, expect, it } from "vitest";
-import type { OrgId } from "../../packages/contracts/src/org.js";
+import type { OrgId } from "@rovara-code/contracts";
 import { TriggerStore } from "../../packages/broker/src/triggers/store.js";
 import { MAYA, OMAR, createDeveloperTaskBroker, seedMembership } from "../support/developer-task-broker.js";
 import { FakeProjectMembers } from "../support/fake-project-members.js";

@@ -12,7 +12,7 @@
 import { z } from "zod";
 import { auditOccurrence, auditProjectFixtureSetDecided } from "../../audit/events.js";
 import { recordAuditEventDurably } from "../../audit/flush.js";
-import { FixtureSetSchema, agentXError, projectAllows, type TestEnvironmentBody } from "@agentx/contracts";
+import { FixtureSetSchema, agentXError, projectAllows, type TestEnvironmentBody } from "@rovara-code/contracts";
 import { logDeveloperEvent } from "../../developer/log.js";
 import type { SessionRecord } from "../../developer/store.js";
 import { readApprovedTestEnvironment } from "../../org/test-environment.js";

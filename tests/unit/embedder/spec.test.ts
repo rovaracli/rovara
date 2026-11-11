@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync, existsSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { LESSON_EMBEDDER, TEAM_RECORD_EMBEDDER } from "@agentx/contracts";
+import { LESSON_EMBEDDER, TEAM_RECORD_EMBEDDER } from "@agentx/cloud-contracts";
 import { EMBEDDER_BLANK_CODE_POINTS, EMBEDDER_LIMITS } from "../../../packages/broker/src/embedder/client.js";
 
 interface Model { repo: string; revision: string; dimension: number; spec: string; pooling: string; maxTokens: number; prefix: string[]; suffix: string[]; license: string; outputs: Record<string, string>; files: Record<string, string>; referenceFiles: Record<string, string> }

@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { AgentPublishBodySchema,AgentRollbackBodySchema,AgentBudgetBodySchema,AgentRunBodySchema,AgentPublishResponseReaderSchema,BuilderTestingBudgetReaderSchema,TaskResponseReaderSchema, AgentCreateBodySchema, AgentDraftPutBodySchema, AgentDraftResponseReaderSchema, AgentWriteResponseReaderSchema, ModelListReaderSchema, BuilderGuardrailsReaderSchema, BuilderSkillsReaderSchema, AgentIdSchema } from "@agentx/contracts/web";
+import { AgentPublishBodySchema, AgentRollbackBodySchema, AgentBudgetBodySchema, AgentRunBodySchema, AgentPublishResponseReaderSchema, BuilderTestingBudgetReaderSchema, TaskResponseReaderSchema, AgentCreateBodySchema, AgentDraftPutBodySchema, AgentDraftResponseReaderSchema, AgentWriteResponseReaderSchema, ModelListReaderSchema, BuilderGuardrailsReaderSchema, BuilderSkillsReaderSchema, AgentIdSchema } from "@agentx/cloud-contracts/web";
 import { useAppHost,type AppHost } from "../host.js";
 import { createApiClient } from "./client.js";
 import type { Overlay } from "../screens/builder/draft-state.js";

@@ -2,7 +2,8 @@
 // question the send-back gate asks a person (`requireProjectSendBackRole`), about the person the work runs as: the task's owner now. A refusal is final (nothing retries it), is written on
 // the task by the caller, and is audited here with fixed words only (`task.work_refused`).
 import { GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
-import { AgentXError, WORKFLOW_NOT_RUN_PREFIX, isSystemOwnerId, orgMemberKey, type OrgRole } from "@agentx/contracts";
+import { AgentXError, WORKFLOW_NOT_RUN_PREFIX, isSystemOwnerId } from "@rovara-code/contracts";
+import { orgMemberKey, type OrgRole } from "@agentx/cloud-contracts";
 import { auditTaskWorkRefused, auditOccurrence } from "../audit/events.js";
 import { flushAuditEvents, recordAuditEventDurably } from "../audit/flush.js";
 import type { AuditRuntime } from "../audit/outbox.js";

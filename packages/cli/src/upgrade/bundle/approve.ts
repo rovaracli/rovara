@@ -4,19 +4,8 @@
 // Deleting that record (`bundle withdraw`) withdraws the approval; the deployer reads the current record on every start.
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import {
-  ApprovalRecordSchema,
-  BUNDLE_MANIFEST_FILE,
-  BUNDLE_PUBLIC_DEPLOYED_KINDS,
-  BUNDLE_SIGNATURE_FILE,
-  agentXError,
-  approvedFileKey,
-  bundleApprovalKey,
-  redactedSynthSettings,
-  sha256OfBytes,
-  type ApprovalRecord,
-  type SynthSettings,
-} from "@agentx/contracts";
+import { ApprovalRecordSchema, BUNDLE_MANIFEST_FILE, BUNDLE_PUBLIC_DEPLOYED_KINDS, BUNDLE_SIGNATURE_FILE, approvedFileKey, bundleApprovalKey, redactedSynthSettings, sha256OfBytes, type ApprovalRecord, type SynthSettings } from "@agentx/cloud-contracts";
+import { agentXError } from "@rovara-code/contracts";
 import type { BuiltBundle } from "./build-at-approval.js";
 import type { VerifiedBundle } from "./verify.js";
 

@@ -1,22 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
-import { canonicalJson } from "../../packages/contracts/src/canonical-json.js";
-import {
-  E2EPolicySchema,
-  E2EScenarioBundleSchema,
-  E2EExecutionPlanSchema,
-  E2EQualifiedResultSchema,
-  aggregateE2EVerification,
-  e2eExecutionPlanDigest,
-  E2E_WORKER_PROTOCOL,
-  assertE2EWorkerProtocol,
-  e2eBindingDigest,
-  projectE2EVerification,
-  validateE2EScenarioBundleForPolicy,
-} from "../../packages/contracts/src/e2e-node.js";
-import { ProjectDefinitionSchema } from "../../packages/contracts/src/project-node.js";
-import { WorkflowCheckSchema } from "../../packages/contracts/src/task-workflow-node.js";
-import { e2eCaseIdFromIdentity, e2eUpstreamTestIdFromIdentity } from "../../packages/contracts/src/e2e-case-identity.js";
+import { canonicalJson } from "@rovara-code/contracts";
+import { E2EPolicySchema, E2EScenarioBundleSchema, E2EExecutionPlanSchema, E2EQualifiedResultSchema, aggregateE2EVerification, e2eExecutionPlanDigest, E2E_WORKER_PROTOCOL, assertE2EWorkerProtocol, e2eBindingDigest, projectE2EVerification, validateE2EScenarioBundleForPolicy } from "@rovara-code/contracts";
+import { ProjectDefinitionSchema } from "@agentx/cloud-contracts";
+import { WorkflowCheckSchema } from "@rovara-code/contracts";
+import { e2eCaseIdFromIdentity, e2eUpstreamTestIdFromIdentity } from "../../packages/cloud-contracts/src/e2e-case-identity.js";
 
 const limits = {
   runTimeoutMs: 600000, startupTimeoutMs: 60000, preparationTimeoutMs: 180000, caseTimeoutMs: 90000,

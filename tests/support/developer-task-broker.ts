@@ -3,7 +3,8 @@
 import { randomUUID } from "node:crypto";
 import { marshall } from "@aws-sdk/util-dynamodb";
 import { vi, type Mock } from "vitest";
-import { developerOrgKey, orgMemberKey, orgMetaKey, sharedTaskKey, singleOrgIdForEnv, type OrgId, type OrgRole, type ChannelInfoRequest, type ChannelInfoResponse, type ChannelMembersRequest, type ChannelMembersResponse } from "@agentx/contracts";
+import { developerOrgKey, orgMemberKey, orgMetaKey, type OrgRole } from "@agentx/cloud-contracts";
+import { sharedTaskKey, singleOrgIdForEnv, type OrgId, type ChannelInfoRequest, type ChannelInfoResponse, type ChannelMembersRequest, type ChannelMembersResponse } from "@rovara-code/contracts";
 import type { OrgResolver } from "../../packages/broker/src/org/resolve.js";
 import type { DeveloperApiConfiguration } from "../../packages/broker/src/aws/developer-routes.js";
 import type { DeveloperTaskActions } from "../../packages/broker/src/aws/developer-task-actions.js";
@@ -15,7 +16,7 @@ import { localSigner } from "./developer-fakes.js";
 import type { FakeDynamoDb, FakeDynamoDbOptions } from "./fake-dynamodb.js";
 import { seedLegacySlackBinding, SLACK_CHANNEL, SLACK_TEAM, call, createBroker, loadSlackBroker, orchestratorPrincipal, registerSlackProject, type Handler } from "./slack-broker.js";
 import { TEST_ENV, TEST_ORG } from "./orgs.js";
-import { projectMemberKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { projectMemberKey } from "@rovara-code/contracts";
 
 export const DEV_ISSUER = "https://abc123.execute-api.us-east-1.amazonaws.com/v1/auth";
 export interface Developer { developerId: string; name: string; provider: "slack" | "oidc"; sessionId: string; slackUserId?: string }

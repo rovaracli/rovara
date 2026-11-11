@@ -1,6 +1,6 @@
 // Design review stage, DR5 (3.12 items 5 and 6): a reviewer's citation must match something THAT reviewer was given. The broker applies the check to the answer it reads itself.
 import { describe, expect, it } from "vitest";
-import type { DesignCitation, RawDesignFinding, ReviewerRole } from "@agentx/contracts";
+import type { DesignCitation, RawDesignFinding, ReviewerRole } from "@rovara-code/contracts";
 import { buildReviewerPacket, renderPacketDocument } from "../../packages/broker/src/design-review/packet.js";
 import { filterReviewerCitations, citationProblem, checkResolveCitations, type CitablePacketItem } from "../../packages/broker/src/design-review/citations.js";
 

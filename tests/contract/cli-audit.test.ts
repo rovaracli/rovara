@@ -11,7 +11,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { CallToolResultSchema } from "@modelcontextprotocol/sdk/types.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AUDIT_ERROR_MESSAGES, AUDIT_LIMITS_COPY } from "@agentx/contracts";
+import { AUDIT_ERROR_MESSAGES, AUDIT_LIMITS_COPY } from "@agentx/cloud-contracts";
 import { tokenStoreKey } from "../../packages/cli/src/auth.js";
 import { developerTokenKey, saveDeveloperEnvironment } from "../../packages/cli/src/developer/config.js";
 import { downloadExport, parseExportBytes, terminalSafe } from "../../packages/cli/src/developer/audit.js";

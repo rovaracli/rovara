@@ -12,23 +12,7 @@ import { CreateScheduleCommand, DeleteScheduleCommand, FlexibleTimeWindowMode, G
 import { ChangeMessageVisibilityCommand, DeleteMessageCommand, ReceiveMessageCommand, SendMessageCommand } from "@aws-sdk/client-sqs";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import {
-  CHAIN_RUN_MAX_HOURS,
-  ChainRunIdSchema,
-  ORG_MAX_AUTONOMOUS_RUNS_PER_DAY,
-  OrgIdSchema,
-  SCHEDULE_MISSED_GRACE_MINUTES,
-  ScheduleTriggerSpecSchema,
-  TRIGGER_MAX_RUNS_PER_HOUR,
-  TriggerIdSchema,
-  agentXError,
-  chainScheduleGroupName,
-  orgAutonomousKey,
-  triggerRateKey,
-  type OrgId,
-  type ScheduleSpec,
-  type TriggerOutcome,
-} from "@agentx/contracts";
+import { CHAIN_RUN_MAX_HOURS, ChainRunIdSchema, ORG_MAX_AUTONOMOUS_RUNS_PER_DAY, OrgIdSchema, SCHEDULE_MISSED_GRACE_MINUTES, ScheduleTriggerSpecSchema, TRIGGER_MAX_RUNS_PER_HOUR, TriggerIdSchema, agentXError, chainScheduleGroupName, orgAutonomousKey, triggerRateKey, type OrgId, type ScheduleSpec, type TriggerOutcome } from "@rovara-code/contracts";
 import { readRunRequest } from "../agents/runs.js";
 import { taskEndKey } from "../agents/task-end.js";
 import { taskKey } from "../developer/task-records.js";

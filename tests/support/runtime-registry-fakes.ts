@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { runtimeInstallChallengeDigest, type RuntimeInstallChallenge } from "../../packages/contracts/src/index.js";
+import { runtimeInstallChallengeDigest, type RuntimeInstallChallenge } from "@rovara-code/contracts";
 import type { RuntimeInstallationDependencies } from "../../packages/broker/src/aws/runtime-installation.js";
 
 /**

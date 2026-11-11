@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { afterEach, expect, it } from "vitest";
-import { canonicalJson, developerOrgKey, githubInstallationKey, orgMemberKey, orgProjectCatalogKey, projectMetaKey, projectRevisionKey, projectSetupApprovalKey, projectSetupExecutionKey, projectSetupOperationKey, projectSetupSessionKey, ProjectSetupExecutionSchema, ProjectSetupOperationSchema, ProjectSetupSessionSchema, projectMemberKey, WorkerInvocationSchema } from "@agentx/contracts";
+import { canonicalJson, orgProjectCatalogKey, projectMetaKey, projectRevisionKey, projectSetupApprovalKey, projectSetupExecutionKey, projectSetupOperationKey, projectSetupSessionKey, ProjectSetupExecutionSchema, ProjectSetupOperationSchema, ProjectSetupSessionSchema, projectMemberKey } from "@rovara-code/contracts";
+import { developerOrgKey, githubInstallationKey, orgMemberKey, WorkerInvocationSchema } from "@agentx/cloud-contracts";
 import type { DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
 import type { DeveloperCaller } from "../../packages/broker/src/aws/developer-routes.js";
 import { currentWorkflowPublicationAuthorityForTask } from "../../packages/broker/src/aws/developer-tasks.js";

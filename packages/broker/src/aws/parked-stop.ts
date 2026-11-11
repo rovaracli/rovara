@@ -2,7 +2,7 @@
 // (the cancel invocation) used to fail with NOT_FOUND, which held the workspace until the reconciler's idle check ten minutes later. The parked delivery is withdrawn instead, in one
 // transaction, so it is never sent when the compute comes up; the caller then ends the step as a successful cancel does.
 import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { workspaceSessionKey } from "@agentx/contracts";
+import { workspaceSessionKey } from "@rovara-code/contracts";
 
 type Client = { send(command: unknown): Promise<unknown> };
 

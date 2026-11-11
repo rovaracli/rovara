@@ -1,9 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  ENTERPRISE_SESSION_MAX_SECONDS, assertEditionUnchanged, editionAtSynth,
-  EDITION_FEATURES, EDITION_FEATURE_TABLE, EDITION_MISSING_MESSAGE, EDITION_UNKNOWN_MESSAGE, ENTERPRISE_ONLY_MESSAGE, InstallInfoSchema, NOT_AVAILABLE_YET_MESSAGE,
-  NOT_IN_THIS_EDITION_MESSAGE, editionPolicy, featureEnabled, installInfo, requireFeature, resolveEdition, type EditionFeature,
-} from "../../packages/contracts/src/edition.js";
+import { ENTERPRISE_SESSION_MAX_SECONDS, assertEditionUnchanged, editionAtSynth, EDITION_FEATURES, EDITION_FEATURE_TABLE, EDITION_MISSING_MESSAGE, EDITION_UNKNOWN_MESSAGE, ENTERPRISE_ONLY_MESSAGE, InstallInfoSchema, NOT_AVAILABLE_YET_MESSAGE, NOT_IN_THIS_EDITION_MESSAGE, editionPolicy, featureEnabled, installInfo, requireFeature, resolveEdition, type EditionFeature } from "../../packages/cloud-contracts/src/edition.js";
 
 // The feature table of the Enterprise foundations design (section 3.1), written out again here so that changing a row in the code is a change a reviewer sees in two places.
 /** What a call throws, or undefined. */

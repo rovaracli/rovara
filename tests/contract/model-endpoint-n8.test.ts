@@ -2,10 +2,8 @@
 // matcher, the address an endpoint may resolve to, and when an install has custom endpoints at all. The routes are in model-sources.test.ts, routing in model-routing.test.ts,
 // the proxy side in model-proxy-sources.test.ts.
 import { describe, expect, it } from "vitest";
-import {
-  MODEL_ENDPOINT_SECRET_PREFIX, ModelSourceSchema, editionPolicy, endpointForbiddenModelProblem, endpointSecretRefProblem, isModelEndpointSecretRef, modelSourceInputSchema, modelSourceSchema,
-  type ModelIdentifier,
-} from "@agentx/contracts";
+import { MODEL_ENDPOINT_SECRET_PREFIX, ModelSourceSchema, endpointForbiddenModelProblem, endpointSecretRefProblem, isModelEndpointSecretRef, modelSourceInputSchema, modelSourceSchema, type ModelIdentifier } from "@rovara-code/contracts";
+import { editionPolicy } from "@agentx/cloud-contracts";
 import { endpointQualificationDigest, endpointQualified } from "../../packages/broker/src/model-sources/endpoint-digest.js";
 import {
   checkModelEndpointHost, customEndpointsAllowed, endpointRangesFromEnvironment, modelEndpointChecker, modelEndpointInstall,
@@ -240,7 +238,7 @@ describe("the install's wiring (N8)", () => {
   it("gives routing the edition and the company's forbidden models, read from the guardrails when asked", async () => {
     const { routingOf } = await import("../../packages/broker/src/aws/broker/scope-helpers.js");
     const { FakeDynamoDb } = await import("../support/fake-dynamodb.js");
-    const { DEFAULT_AGENT_GUARDRAILS, agentGuardrailsKey } = await import("@agentx/contracts");
+    const { DEFAULT_AGENT_GUARDRAILS, agentGuardrailsKey } = await import("@rovara-code/contracts");
     const db = new FakeDynamoDb();
     const orgId = "org_aaaaaaaaaaaaaaaaaaaa" as never;
     db.set({ ...agentGuardrailsKey(orgId), entityType: "AGENT_GUARDRAILS", revision: 1, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, forbiddenModels: [sonnet] } });

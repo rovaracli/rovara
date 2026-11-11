@@ -6,30 +6,8 @@
 // - just before a person presses Merge (Task 19 asks for it).
 // A merge is pushed only to the task's own branch, on the head Rovara recorded (a person's push wins), by the existing maintain path. With the agent set to `suggest` Rovara changes nothing on its own, a merge
 // of the base included. This file holds the decisions, the plan of what a finished merge is, and the slots' deciders; the broker does the reads and the writes.
-import {
-  BRANCH_SYNCS_PER_DAY_MAX,
-  BRANCH_WORKFLOW_FILES_MESSAGE,
-  branchConflictAskMessage,
-  branchSyncGiveUpMessage,
-  SYNC_FAILURES_MAX,
-  type Autonomy,
-  CONFLICT_PATHS_BLOCK_HEADER,
-  WorkflowTransitionError,
-  blockWorkflowBranchSync,
-  branchConflictStopMessage,
-  endWorkflowBranchSync,
-  recordWorkflowBranchSync,
-  redactText,
-  recordWorkflowSyncConflict,
-  startWorkflowBranchSync,
-  workflowFixRoundsLeft,
-  workflowRequestId,
-  type BranchSyncReason,
-  type MergeTrackingItem,
-  type PullRequestLifecycleResult,
-  type WorkflowBranchSync,
-  type WorkflowSnapshot,
-} from "@agentx/contracts";
+import { BRANCH_SYNCS_PER_DAY_MAX, BRANCH_WORKFLOW_FILES_MESSAGE, branchConflictAskMessage, branchSyncGiveUpMessage, SYNC_FAILURES_MAX, type Autonomy, CONFLICT_PATHS_BLOCK_HEADER, WorkflowTransitionError, branchConflictStopMessage, redactText, workflowRequestId, type BranchSyncReason, type PullRequestLifecycleResult } from "@rovara-code/contracts";
+import { blockWorkflowBranchSync, endWorkflowBranchSync, recordWorkflowBranchSync, recordWorkflowSyncConflict, startWorkflowBranchSync, workflowFixRoundsLeft, type MergeTrackingItem, type WorkflowBranchSync, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { WORKFLOW_NO_CANDIDATE_DIGEST, workflowDispatchItem } from "../aws/broker-shared.js";
 import { codeMilestoneItems } from "./milestones.js";
 import { registerMergeActionDecider, type MergeActionContext, type MergeActionInput, type MergeActionRequest } from "./merge-tracking.js";

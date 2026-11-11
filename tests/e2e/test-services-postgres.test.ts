@@ -11,10 +11,8 @@ import { mkdir, mkdtemp, readdir, realpath, rm, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  CATALOG_SIGNATURE_ALGORITHM, EvidencePackSchema, TestEnvDraftSchema, TestServicesUsageRecordSchema, catalogSigningMessage, parseBundlePublicKey, projectMetaKey, projectRevisionKey, sha256HexOf, testEnvDigest,
-  type OrgId, type ProjectCommand, type TaskDependencyPlan, type TestEnvDraft, type TestEnvTaskPlan, type TestEnvironmentBody, type TestServicesUsageRecord,
-} from "@agentx/contracts";
+import { CATALOG_SIGNATURE_ALGORITHM, EvidencePackSchema, TestEnvDraftSchema, TestServicesUsageRecordSchema, catalogSigningMessage, parseBundlePublicKey, projectMetaKey, projectRevisionKey, sha256HexOf, testEnvDigest, type OrgId, type ProjectCommand, type TestEnvDraft, type TestEnvironmentBody, type TestServicesUsageRecord } from "@rovara-code/contracts";
+import { type TaskDependencyPlan, type TestEnvTaskPlan } from "@agentx/cloud-contracts";
 import { approveTestEnvironment, proposeTestEnvironment, recordTestEnvProveReport, type TestEnvDeps } from "../../packages/broker/src/org/test-environment.js";
 import { buildEvidencePack } from "../../packages/broker/src/rovara-code/evidence-pack.js";
 import { evidenceLines } from "../../packages/broker/src/rovara-code/evidence-lines.js";
@@ -395,7 +393,7 @@ describe("5. with tx off the worker and the broker are what they were (golden)",
 describe("6. Prove: the candidate check's record goes from the worker to the Prove report", () => {
   afterEach(() => { delete process.env.TEST_SERVICES_ENABLED; delete process.env.TEST_ENVIRONMENT_ENABLED; vi.unstubAllEnvs(); });
 
-  /** The release's catalog, signed by a TEST key and read through the broker's own source (signature check, minimum revision): `@agentx/contracts/testing` supplies the key, in test code only. */
+  /** The release's catalog, signed by a TEST key and read through the broker's own source (signature check, minimum revision): `@agentx/cloud-contracts/testing` supplies the key, in test code only. */
   async function signedSource() {
     const signer = testSigner();
     const catalogBytes = Buffer.from(`${JSON.stringify(pinnedCatalog(), null, 2)}\n`, "utf8");

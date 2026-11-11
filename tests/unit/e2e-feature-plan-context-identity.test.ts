@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { E2EApplicationIdentityMissingError, E2EApplicationPlanIntentSchema, WEB_API_RUNTIME_PROFILE_ID, createCandidateManifest, inspectE2ERepository, proposeE2ESetup,
-  type E2EPolicy, type E2ESourceSnapshot } from "@agentx/contracts";
+import { E2EApplicationIdentityMissingError, E2EApplicationPlanIntentSchema, WEB_API_RUNTIME_PROFILE_ID, createCandidateManifest, inspectE2ERepository, proposeE2ESetup, type E2EPolicy, type E2ESourceSnapshot } from "@rovara-code/contracts";
 import { readFileSync } from "node:fs";
 import { buildFeatureE2EPlanningContext, describeFeatureE2EExecutableKinds } from "../../packages/broker/src/e2e/feature-plan-planning-context.js";
 import { evaluateApplicationPlanApproval } from "../../packages/broker/src/e2e/application-plan-approval.js";

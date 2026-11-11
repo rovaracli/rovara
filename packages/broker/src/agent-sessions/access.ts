@@ -11,32 +11,8 @@
 import { resolveStoredName } from "../developer/name-resolver.js";
 import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import {
-  AgentPrincipalSchema,
-  ENDED_SESSION_STATUSES,
-  OrgRoleSchema,
-  isWriterOrgRole,
-  SessionIdSchema,
-  SessionLevelSchema,
-  agentSessionKey,
-  agentXError,
-  atLeast,
-  cleanSessionName,
-  orgMemberKey,
-  projectMemberKey,
-  sessionLevelRequiredMessage,
-  sessionViewerOnlyMessage,
-  type AgentPrincipal,
-  type AgentSessionRecord,
-  type OrgId,
-  type OrgRole,
-  type DeveloperTaskView,
-  type ProjectRole,
-  type SessionAction,
-  type SessionLevel,
-  type SessionStatus,
-  TaskStatusSchema,
-} from "@agentx/contracts";
+import { AgentPrincipalSchema, ENDED_SESSION_STATUSES, SessionIdSchema, SessionLevelSchema, agentSessionKey, agentXError, atLeast, cleanSessionName, projectMemberKey, sessionLevelRequiredMessage, sessionViewerOnlyMessage, type AgentPrincipal, type AgentSessionRecord, type OrgId, type ProjectRole, type SessionAction, type SessionLevel, type SessionStatus, TaskStatusSchema } from "@rovara-code/contracts";
+import { OrgRoleSchema, isWriterOrgRole, orgMemberKey, type OrgRole, type DeveloperTaskView } from "@agentx/cloud-contracts";
 import type { ProjectMembers } from "../agents/access.js";
 import { grantRoleOf } from "../developer/project-roles.js";
 import { UNNAMED_MEMBER, effectiveTaskOwner, isTaskTakenOver, takenOverSince, taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";

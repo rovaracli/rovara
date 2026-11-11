@@ -1,7 +1,8 @@
 // Owner decision 2026-11-02: reviews now default to a model from a different company, for every company at once. A company sees one notice on How we work, and a company owner or admin can dismiss it for the whole
 // company. The dismissal is one record (`ORG#<org>` / settings `REVIEW_DEFAULT_NOTICE`), written in the same transaction as its audit event, so a dismissal the ledger cannot take does not happen. Any member reads.
 import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { ReviewDefaultNoticeAnswerSchema, agentXError, orgSettingsKey, type AuditEventInput, type OrgId, type ReviewDefaultNoticeAnswer } from "@agentx/contracts";
+import { ReviewDefaultNoticeAnswerSchema, agentXError, type OrgId, type ReviewDefaultNoticeAnswer } from "@rovara-code/contracts";
+import { orgSettingsKey, type AuditEventInput } from "@agentx/cloud-contracts";
 import { auditActorOf } from "../audit/plan3-hooks.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditOccurrence, auditReviewDefaultNoticeDismissed } from "../audit/events.js";

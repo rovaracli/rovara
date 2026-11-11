@@ -4,12 +4,12 @@
 // after the plan's longest run. M-3: a late claim is given back when a cap skips the slot. M-4: a dead letter that keeps failing is parked after a few tries, and the queue's age is
 // alarmed. M-5: a schedule that could not be deleted with its trigger is logged.
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
-import { agentXError, orgAutonomousKey, triggerRateKey } from "@agentx/contracts";
+import { agentXError, orgAutonomousKey, triggerRateKey } from "@rovara-code/contracts";
 import { taskKey } from "../../packages/broker/src/developer/task-records.js";
 import { createChainScheduler, createDeadLetters, fireChainSchedule, handleChainSchedule, sweepSchedules, type ScheduleSettings } from "../../packages/broker/src/triggers/schedules.js";
 import type { TriggerDispatchDependencies } from "../../packages/broker/src/triggers/dispatch.js";
-import type { ChainDefinitionInput } from "../../packages/contracts/src/chains.js";
-import { ScheduleTriggerSpecSchema } from "../../packages/contracts/src/trigger-specs.js";
+import type { ChainDefinitionInput } from "@rovara-code/contracts";
+import { ScheduleTriggerSpecSchema } from "@rovara-code/contracts";
 import { createDeveloperTaskBroker } from "../support/developer-task-broker.js";
 import { FakeDeadLetterQueue, FakeSchedulerClient } from "../support/fake-scheduler.js";
 import { loadSlackBroker } from "../support/slack-broker.js";

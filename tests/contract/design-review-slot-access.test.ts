@@ -3,7 +3,8 @@
 import { randomUUID } from "node:crypto";
 import type * as CatalogModule from "@agentx/model-runtime/catalog";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { DEFAULT_AGENT_GUARDRAILS, DesignReviewBindingSchema, PacketDeliverySchema, agentGuardrailsKey, canonicalModelName, modelKeyKey, packetDigestOf, type DesignReviewBinding, type ModelIdentifier, type ReviewerRole } from "@agentx/contracts";
+import { DEFAULT_AGENT_GUARDRAILS, DesignReviewBindingSchema, PacketDeliverySchema, agentGuardrailsKey, canonicalModelName, packetDigestOf, type DesignReviewBinding, type ModelIdentifier, type ReviewerRole } from "@rovara-code/contracts";
+import { modelKeyKey } from "@agentx/cloud-contracts";
 import { designReviewKeyBudgets } from "../../packages/broker/src/design-review/estimate.js";
 import { buildReviewerPacket, type PacketReaders } from "../../packages/broker/src/design-review/packet.js";
 import { putSlotPackets, readSlotPacket } from "../../packages/broker/src/design-review/packet-store.js";

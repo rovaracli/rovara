@@ -3,7 +3,7 @@ import { SettingsNote } from "./SettingsNote.js";
 import { InviteRevokeDialog, type InviteRevokeTarget } from "./InviteRevokeDialog.js";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { AppOrgInvitesResponseReaderSchema } from "@agentx/contracts/web";
+import { AppOrgInvitesResponseReaderSchema } from "@agentx/cloud-contracts/web";
 import { useAppHost } from "../../host.js";
 import { createApiClient } from "../../api/client.js";
 import { ApiError } from "../../api/errors.js";

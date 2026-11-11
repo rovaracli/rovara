@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { GetTemplateCommand } from "@aws-sdk/client-cloudformation";
 import { afterEach, describe, expect, it } from "vitest";
-import { BundleManifestSchema, sha256OfBytes } from "@agentx/contracts";
+import { BundleManifestSchema, sha256OfBytes } from "@agentx/cloud-contracts";
 import { ParameterExistsError } from "../../packages/cli/src/environments/parameter-store.js";
 import { readEnvironmentSettings, writeEnvironmentSettings } from "../../packages/cli/src/environments/settings.js";
 import { installedBundleParameter, restorePointParameter } from "../../packages/cli/src/upgrade/bundle/restore-point.js";

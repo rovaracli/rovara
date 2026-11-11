@@ -1,7 +1,7 @@
 // Design review (DR-FU4): the calls of the company's How we work card for design review. The server decides who may and what a change is; this file only sends and reads. Every write is sent once from the browser
 // session (`retry: "never"`); the 202 (allowing design review waits for a different admin) is an answer of its own, so it is read with `sendAnswer`.
 import { useMemo } from "react";
-import { DESIGN_REVIEW_COMPANY_PATH, DesignReviewCompanyAnswerReaderSchema, DesignReviewCompanyBodySchema, DesignReviewCompanyStateReaderSchema, type DesignReviewCompanyBody } from "@agentx/contracts/web";
+import { DESIGN_REVIEW_COMPANY_PATH, DesignReviewCompanyAnswerReaderSchema, DesignReviewCompanyBodySchema, DesignReviewCompanyStateReaderSchema, type DesignReviewCompanyBody } from "@agentx/cloud-contracts/web";
 import { useAppHost, type AppHost } from "../host.js";
 import { createApiClient } from "./client.js";
 

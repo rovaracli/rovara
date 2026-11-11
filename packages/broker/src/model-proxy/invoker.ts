@@ -3,7 +3,7 @@
 // an answer in time, or to read the answer is MODEL_PROXY_UNAVAILABLE; an `ok: false` answer becomes
 // an AgentXError with the same code.
 import { InvokeCommand, LambdaClient, type InvokeCommandOutput, type LambdaClientConfig } from "@aws-sdk/client-lambda";
-import { AgentXErrorCodeSchema, agentXError, type AgentXError, type OrgId } from "@agentx/contracts";
+import { AgentXErrorCodeSchema, agentXError, type AgentXError, type OrgId } from "@rovara-code/contracts";
 import { z } from "zod";
 import { LearningNotForwarded, type KeyAudit, type LearningCompletion, type LearningCompletionInput, type MemberSpend, type MintKeyInput, type MintedKey, type ModelAccess, type SourceCheck, type SpendFigures, type UpsertSourceInput } from "./access.js";
 import { learnedLessonsOn } from "../lessons/switch.js";

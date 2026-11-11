@@ -3,8 +3,9 @@
 // dispatch hands the ticket to the intake engine, where WHO did it decides. The label and the assignee are only routing hints.
 import { createHmac } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
-import type { HookRecord, OrgId, TriggerEvent } from "@agentx/contracts";
-import { githubInstallationKey, githubRepoProjectKey, orgAutonomousKey, orgGithubInstallationKey, orgProjectCatalogKey, projectRevisionKey, triggerRateKey } from "../../packages/contracts/src/index.js";
+import type { HookRecord, OrgId, TriggerEvent } from "@rovara-code/contracts";
+import { githubInstallationKey, githubRepoProjectKey, orgGithubInstallationKey } from "@agentx/cloud-contracts";
+import { orgAutonomousKey, orgProjectCatalogKey, projectRevisionKey, triggerRateKey } from "@rovara-code/contracts";
 import { jiraProvider } from "../../packages/broker/src/triggers/providers/jira.js";
 import { githubTriggerEvents, type GithubTriggerDependencies } from "../../packages/broker/src/triggers/github-events.js";
 import { dispatchTriggerEvent } from "../../packages/broker/src/triggers/dispatch.js";

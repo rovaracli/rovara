@@ -1,6 +1,6 @@
 // The two budget questions the older tests ask, put to Task 31's functions: may this member (or, with none, the org alone) start work, and what may the
 // task's next key spend. `admitWork` and `mintOperationKey` take a payer, a place and the run's limits; these take the three things those tests always named.
-import { ROVARA_CODE_AGENT_ID, type OrgId } from "@agentx/contracts";
+import { ROVARA_CODE_AGENT_ID, type OrgId } from "@rovara-code/contracts";
 import type { AdmissionDependencies, BudgetDependencies, SpendPath } from "../../packages/broker/src/org/budget.js";
 import { admitWork } from "../../packages/broker/src/spend/admission.js";
 import { mintOperationKey } from "../../packages/broker/src/spend/admission.js";

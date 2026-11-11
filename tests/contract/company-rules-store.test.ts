@@ -1,8 +1,9 @@
 // Company rules (G-04): the parts under the routes. The rule list's checks and canonical form, the diff, the file's writer and reader (Rovara Code's format), the store's rows (versions immutable, one waiting proposal, the head moving one
 // number at a time), the Cloud source of the CompanyInstructionsSource port, and the operator's seed (the owner-approved 14 rules). The routes, the approval guards and the file sync have their own files.
 import { afterEach, describe, expect, it } from "vitest";
-import { COMPANY_RULES_APP_LIMITS, COMPANY_RULE_LIMITS, CompanyRulesStateSchema, STANDING_INSTRUCTIONS_WORDING, type CompanyRule } from "@agentx/contracts";
-import * as web from "../../packages/contracts/src/web.js";
+import { COMPANY_RULES_APP_LIMITS, CompanyRulesStateSchema } from "@agentx/cloud-contracts";
+import { COMPANY_RULE_LIMITS, STANDING_INSTRUCTIONS_WORDING, type CompanyRule } from "@rovara-code/contracts";
+import * as web from "@agentx/cloud-contracts/web";
 import { diffRules, diffWithSides, normalizeRules, readNumberedDraft, readRulesFile, renderRulesFile, rulesDigest } from "../../packages/broker/src/company-rules/rules.js";
 import { companyRulesSourceOver } from "../../packages/broker/src/company-rules/source.js";
 import { seedCompanyRules } from "../../packages/broker/src/company-rules/seed.js";

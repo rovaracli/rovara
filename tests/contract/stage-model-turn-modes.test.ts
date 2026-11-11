@@ -2,7 +2,7 @@ import {expect,it} from "vitest";
 import {prepareTurnModelPolicy} from "../../packages/broker/src/model-selection/turn-policy.js";
 import {mergeWorld} from "../support/rovara-code-merge-world.js";
 import {ORG_A,MAX} from "../support/agent-session-world.js";
-import {projectRevisionKey,canonicalModelName} from "@agentx/contracts";
+import { projectRevisionKey, canonicalModelName } from "@rovara-code/contracts";
 import {bedrockClaudeModelIds} from "@agentx/model-runtime/catalog";
 function fixture(same=false){
  const w=mergeWorld(),seen=new Set<string>(),models=bedrockClaudeModelIds("us").filter(modelId=>{const name=canonicalModelName({provider:"amazon-bedrock",modelId});if(seen.has(name))return false;seen.add(name);return true;});

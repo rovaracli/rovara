@@ -1,5 +1,5 @@
 // Native signed-in maintainer and verified catalog fixtures for C53 Slack model writes.
-import {STAGE_IDS,projectMemberKey} from "../../packages/contracts/src/index.js";
+import { STAGE_IDS, projectMemberKey } from "@rovara-code/contracts";
 import {bedrockClaudeModelIds} from "../../packages/model-runtime/src/catalog.js";
 import {developerIdForSlackUser} from "../../packages/broker/src/aws/admin-actions.js";
 import {createDeveloperTaskBroker,seedMembership} from "./developer-task-broker.js";

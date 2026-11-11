@@ -7,11 +7,7 @@
 // which never counts as different (`differentCompany`). The forbidden-model check is `forbiddenModelMatcher` through the critic's `candidatesOf`, which refuses an unrecognised Bedrock id whenever
 // anything is forbidden and matches by `canonicalModelName`, so another route to a forbidden model is forbidden too.
 import { isBatchVariant } from "../model-sources/model-variants.js";
-import {
-  SECOND_REVIEW_CANDIDATES_MAX, SecondOpinionSchema, secondReviewDidNotRunLine, blockingFindings, modelCompany, narrowedSecondReviewModels, secondReviewModelKey, secondReviewVerdictHolds,
-  type AcceptedFindingRef, type ModelCompany, type ModelIdentifier, type ModelSelection, type SecondOpinion, type SecondOpinionUnavailableReason, type SecondReviewChoice, type SecondReviewMode, type SecondReviewModelRef,
-  type SecondReviewReplayRun, type SecondReviewSkipReason, type SecondReviewVerdict, type WorkflowReviewReport,
-} from "@agentx/contracts";
+import { SECOND_REVIEW_CANDIDATES_MAX, SecondOpinionSchema, secondReviewDidNotRunLine, blockingFindings, modelCompany, narrowedSecondReviewModels, secondReviewModelKey, secondReviewVerdictHolds, type AcceptedFindingRef, type ModelCompany, type ModelIdentifier, type ModelSelection, type SecondOpinion, type SecondOpinionUnavailableReason, type SecondReviewChoice, type SecondReviewMode, type SecondReviewModelRef, type SecondReviewReplayRun, type SecondReviewSkipReason, type SecondReviewVerdict, type WorkflowReviewReport } from "@rovara-code/contracts";
 import { differentCompany } from "../agents/dispatch.js";
 import { createHash } from "node:crypto";
 import { ROUTE_PROVIDER } from "@agentx/model-runtime/catalog";
@@ -140,7 +136,7 @@ export function againstModels(input: { buildRanModels: ReadonlyArray<ModelIdenti
   return all.filter((model) => { const key = `${model.provider.toLowerCase()}\0${model.modelId.toLowerCase()}`; if (seen.has(key)) return false; seen.add(key); return true; });
 }
 
-export { secondReviewModelUnusable } from "@agentx/contracts";
+export { secondReviewModelUnusable } from "@rovara-code/contracts";
 
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------------
 // The opinion: what a finished second review means

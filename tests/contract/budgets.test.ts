@@ -2,9 +2,10 @@
 // The broker never talks to LiteLLM (ruling R28), so every proxy call here goes through a fake ModelAccess.
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it, vi } from "vitest";
-import { DEFAULT_MEMBER_MONTHLY_BUDGET_USD, DEFAULT_ORG_MONTHLY_BUDGET_USD, PER_TASK_BUDGET_USD, agentXError, budgetSyncedKey, errorStatus, orgMetaKey, orgSettingsKey, type OrgId } from "../../packages/contracts/src/index.js";
+import { DEFAULT_MEMBER_MONTHLY_BUDGET_USD, DEFAULT_ORG_MONTHLY_BUDGET_USD, PER_TASK_BUDGET_USD, budgetSyncedKey, orgMetaKey, orgSettingsKey } from "@agentx/cloud-contracts";
+import { agentXError, errorStatus, type OrgId } from "@rovara-code/contracts";
 // The package the broker imports, not its source: the broker tests an error for that package's class.
-import { agentXError as proxyError } from "@agentx/contracts";
+import { agentXError as proxyError } from "@rovara-code/contracts";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { MINIMUM_REMAINING_USD, ensureSynced, keyIdOf, mintKeyHealing, readBudgets, syncBudgets } from "../../packages/broker/src/org/budget.js";
 import { admitMember, nextKeyCap } from "../support/admission.js";

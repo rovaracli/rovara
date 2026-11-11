@@ -19,7 +19,7 @@ import {
   workflowStartedNotice,
 } from "../../packages/broker/src/aws/slack-workflow-choice.js";
 import { PutCommand } from "@aws-sdk/lib-dynamodb";
-import { suggestionCardMessage, workflowChoicePut } from "../../packages/contracts/src/index.js";
+import { suggestionCardMessage, workflowChoicePut } from "@rovara-code/contracts";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { StrictSlackWeb, visibleSlackText } from "../support/strict-slack.js";
 

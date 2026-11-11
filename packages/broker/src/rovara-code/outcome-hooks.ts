@@ -8,10 +8,8 @@
 // (`DEVTASK#<taskId>` / `OUTCOME_KEYS#<round>`, holding that creation time). A key is then rebuilt from the pointer, the claim and the round, and nothing a whole-workflow write does can lose it
 // (the keys are not in the workflow, which other writers replace as a whole). The pointer is written once and kept; a retry reuses its creation time, so a retry is the same sample.
 import { GetCommand, PutCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  INDEX_EXPIRY_ATTRIBUTE, OUTCOME_PENDING_KEPT_DAYS, ROVARA_CODE_AGENT_ID, outcomeSampleKey, outcomeStageOf,
-  type ChangeRequestStatus, type OrgId, type OutcomeClaim, type OutcomeReason, type OutcomeSample, type OutcomeSampleKey, type OutcomeState, type WorkflowCritique, type WorkflowSnapshot,
-} from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, OUTCOME_PENDING_KEPT_DAYS, ROVARA_CODE_AGENT_ID, outcomeSampleKey, outcomeStageOf, type ChangeRequestStatus, type OrgId, type OutcomeClaim, type OutcomeReason, type OutcomeSample, type OutcomeSampleKey, type OutcomeState, type WorkflowCritique } from "@rovara-code/contracts";
+import { type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { NOT_EXISTS, errorName } from "../agents/table-writes.js";
 import type { TaskAgentRef } from "../agents/roster.js";
 import type { TestProofRead } from "../developer/test-proof-lines.js";

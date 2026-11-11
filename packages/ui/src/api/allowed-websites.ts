@@ -1,7 +1,5 @@
 import { z } from "zod";
-import { OrgIdSchema, ProjectAllowedWebsitesMutationBodySchema, ProjectAllowedWebsitesApprovalBodySchema, ProjectAllowedWebsitesDecisionBodySchema,
- ProjectAllowedWebsitesReviewReaderSchema, ProjectAllowedWebsitesProposalReaderSchema, ProjectAllowedWebsitesResultReaderSchema,
- type ProjectAllowedWebsitesMutationBody, type ProjectAllowedWebsitesApprovalBody, type ProjectAllowedWebsitesDecisionBody } from "@agentx/contracts/web";
+import { OrgIdSchema, ProjectAllowedWebsitesMutationBodySchema, ProjectAllowedWebsitesApprovalBodySchema, ProjectAllowedWebsitesDecisionBodySchema, ProjectAllowedWebsitesReviewReaderSchema, ProjectAllowedWebsitesProposalReaderSchema, ProjectAllowedWebsitesResultReaderSchema, type ProjectAllowedWebsitesMutationBody, type ProjectAllowedWebsitesApprovalBody, type ProjectAllowedWebsitesDecisionBody } from "@agentx/cloud-contracts/web";
 import type { AppHost, ApiRequest, ApiResponse } from "../host.js";
 import { ApiError } from "./errors.js";
 const message = "Website request could not be confirmed. Check its status before resending.";

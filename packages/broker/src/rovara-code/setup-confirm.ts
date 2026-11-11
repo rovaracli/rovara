@@ -10,10 +10,8 @@
 //   - the reply says `proved: false` until the wizard has a passing Prove for this digest, and the page keeps its approve step behind the wizard's, not behind this reply.
 // Pure where it can be: `environmentFromProposal` builds the environment and says what it left out; `confirmSetupAgent` is the checked sequence.
 import { z } from "zod";
-import {
-  SETUP_TIMEOUT, TEST_TIMEOUT, TestEnvironmentBodySchema, agentXError, parseCommandLine, setupItemsOf,
-  type ProjectRole, type SetupProposal, type SetupVerification, type StoredProjectDefinition, type TestEnvironmentBody,
-} from "@agentx/contracts";
+import { SETUP_TIMEOUT, TEST_TIMEOUT, TestEnvironmentBodySchema, agentXError, parseCommandLine, setupItemsOf, type ProjectRole, type SetupProposal, type SetupVerification, type TestEnvironmentBody } from "@rovara-code/contracts";
+import { type StoredProjectDefinition } from "@agentx/cloud-contracts";
 import { refusedCommand } from "../test-env/draft.js";
 import type { DeveloperCaller } from "../aws/developer-routes/types.js";
 import { StatusReply } from "../aws/status-reply.js";

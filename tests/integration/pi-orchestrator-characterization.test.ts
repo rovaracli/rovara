@@ -10,7 +10,7 @@ import { fauxAssistantMessage, fauxToolCall, getCurrentSystemPrompt, getCurrentT
 import type { AgentSessionRuntime, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { describe, expect, it, vi } from "vitest";
-import type { ConnectorCatalog } from "../../packages/contracts/src/index.js";
+import type { ConnectorCatalog } from "@rovara-code/contracts";
 import { createGateSession } from "../../packages/orchestrator/src/action-gate.js";
 import type { OrchestrationApi } from "../../packages/orchestrator/src/orchestration-tools.js";
 import { createOrchestratorRuntime, createPiSessionRuntime, orchestratorSystemPrompt, runOrchestratorTurn, type ExtensionFailure } from "../../packages/orchestrator/src/orchestrator.js";

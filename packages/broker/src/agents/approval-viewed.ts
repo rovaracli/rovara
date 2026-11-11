@@ -2,7 +2,7 @@
 // rendered for that person (`DecideKind.opened`, called by the page's GET), never by the eligibility checks that run before a decision (`inspect` is also called by the sign-in and session code and right before
 // a decision, so recording there would make the rule vacuous). The rule is enforced as a decision guard, so every route that can decide the approval (the page, `POST /v1/app/approvals/{id}/decide`) meets it.
 import { GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
-import { agentXError, approvalKey, type OrgId } from "@agentx/contracts";
+import { agentXError, approvalKey, type OrgId } from "@rovara-code/contracts";
 import { registerApprovalDecisionGuard, type AnyApprovalRecord, type ApprovalDependencies } from "./approvals-store.js";
 
 export const KNOWN_FAILING_OPEN_FIRST_MESSAGE = "Open this page and read the tests first, then confirm.";

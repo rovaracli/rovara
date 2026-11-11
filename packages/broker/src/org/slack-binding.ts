@@ -8,10 +8,8 @@
 // and the owner unbinds it there first. Everything is keyed by the `orgId` it is given.
 import { createHash } from "node:crypto";
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  SLACK_BINDING_SK_PREFIX, SlackChannelBindingSchema, agentXError, orgPk, projectPk, slackBindingKey, slackBindingPk,
-  type AuditEventInput, type OrgId, type OrgKey, type SlackChannelBinding,
-} from "@agentx/contracts";
+import { SLACK_BINDING_SK_PREFIX, SlackChannelBindingSchema, agentXError, orgPk, projectPk, slackBindingKey, slackBindingPk, type OrgId, type OrgKey, type SlackChannelBinding } from "@rovara-code/contracts";
+import { type AuditEventInput } from "@agentx/cloud-contracts";
 import { auditOccurrence, auditSlackChannelBound, auditSlackChannelUnbound } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, tryAuditEvent, type AuditRuntime } from "../audit/outbox.js";

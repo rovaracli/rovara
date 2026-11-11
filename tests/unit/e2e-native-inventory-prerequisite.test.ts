@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { createCandidateManifest, type E2ESourceSnapshot } from "@agentx/contracts";
+import { createCandidateManifest, type E2ESourceSnapshot } from "@rovara-code/contracts";
 import { inspectE2ERepository } from "../../packages/broker/src/e2e/discovery.js";
 
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
