@@ -1,11 +1,14 @@
 // Test services, TS5 (design test-services.md, 2.4 and 9.3): the honesty labels, the evidence fields that carry them, and the pull request lines built from them. Pure: nothing is wired.
 import { describe, expect, it } from "vitest";
-import { allContracts as evidence } from "../support/contracts-barrels.js";
+import * as codeEvidence from "@rovara-code/contracts";
+import * as cloudEvidence from "@agentx/cloud-contracts";
+// The words of the labels are Cloud's (company-approved images, owed-upstream.json); the rest of the evidence contract is Code's.
+const evidence = { ...codeEvidence, ...cloudEvidence } as Omit<typeof codeEvidence, keyof typeof cloudEvidence> & typeof cloudEvidence;
 import { dependencyLines, dependencyLineIsInert, packDependencyLines, DEPENDENCY_LEVEL_LAST } from "../../packages/broker/src/rovara-code/dependency-lines.js";
 import { TEST_ENV_BACKING_KINDS, TEST_ENV_NONE_REASONS } from "@rovara-code/contracts";
 import { environmentLine } from "../../packages/broker/src/rovara-code/evidence-lines.js";
 
-type Dep = evidence.EvidenceDependency;
+type Dep = codeEvidence.EvidenceDependency;
 const sha = (letter: string) => letter.repeat(64);
 const dep = (overrides: Record<string, unknown> & { name: string; label: Dep["label"]; backing: Dep["backing"] }): Dep => overrides;
 const real = (name = "Postgres") => dep({ name, label: "real", backing: "local" });
@@ -157,7 +160,7 @@ describe("the pull request lines (design 9.3)", () => {
   it("says nothing when there are no dependencies, so today's pull request is unchanged", () => {
     expect(dependencyLines(undefined, 0)).toEqual({ lines: [], notTested: [] });
     expect(dependencyLines([], 0)).toEqual({ lines: [], notTested: [] });
-    expect(packDependencyLines(pack(undefined) as unknown as evidence.EvidencePack, 0)).toEqual({ lines: [], notTested: [] });
+    expect(packDependencyLines(pack(undefined) as unknown as codeEvidence.EvidencePack, 0)).toEqual({ lines: [], notTested: [] });
   });
 
   describe("each row of 2.4", () => {
@@ -388,12 +391,12 @@ describe("the pull request lines (design 9.3)", () => {
   });
 
   it("is taken from the pack only", () => {
-    const out = packDependencyLines(pack([real(), emulated("S3")]) as unknown as evidence.EvidencePack, 0);
+    const out = packDependencyLines(pack([real(), emulated("S3")]) as unknown as codeEvidence.EvidencePack, 0);
     expect(out.lines[0]).toBe("Integration tests ran against: Postgres (real), S3 (Rovara local AWS).");
   });
   it("leaves the existing Environment line as it was", () => {
-    const withDeps = pack([real()]) as unknown as evidence.EvidencePack;
-    const without = pack(undefined) as unknown as evidence.EvidencePack;
+    const withDeps = pack([real()]) as unknown as codeEvidence.EvidencePack;
+    const without = pack(undefined) as unknown as codeEvidence.EvidencePack;
     expect(environmentLine(withDeps, 0)).toBe(environmentLine(without, 0));
   });
 });

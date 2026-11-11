@@ -128,7 +128,7 @@ function compareStatus(repoUrl: string, sha: string): string | undefined {
   const slug = /github\.com\/([^/]+\/[^/.]+)(?:\.git)?$/u.exec(repoUrl)?.[1];
   if (slug === undefined) return undefined;
   const token = process.env["GITHUB_TOKEN"];
-  const run = spawnSync("curl", ["-fsS", "--max-time", "30", "-H", "Accept: application/vnd.github+json", ...(token === undefined || token === "" ? [] : ["-H", `Authorization: Bearer ${token}`]), `https://api.github.com/repos/${slug}/compare/${sha}...${DEFAULT_REF}`], { encoding: "utf8" });
+  const run = spawnSync("curl", ["-fsS", "--max-time", "30", "-H", "Accept: application/vnd.github+json", ...(token === undefined || token === "" ? [] : ["-H", `Authorization: Bearer ${token}`]), `https://api.github.com/repos/${slug}/compare/${sha}...${DEFAULT_REF}?per_page=1`], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
   if (run.status !== 0) return undefined;
   try { const status = (JSON.parse(run.stdout) as { status?: unknown }).status; return typeof status === "string" ? status : undefined; } catch { return undefined; }
 }

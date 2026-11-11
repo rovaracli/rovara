@@ -4,4 +4,4 @@
 import * as cloud from "@agentx/cloud-contracts";
 import * as code from "@rovara-code/contracts";
 
-export const allContracts = { ...code, ...cloud } as typeof code & typeof cloud;
+export const allContracts = { ...code, ...cloud } as Omit<typeof code, keyof typeof cloud> & typeof cloud;
