@@ -237,6 +237,34 @@ it("the decision list (Home's Needs you and the task page share it): every seat,
  query.clear();
 });
 
+it("a HIGH coding plan's card offers Reject too, to the owner and to a maintainer (no fresh sign-in is needed to reject)", async () => {
+ const high: DecisionItem = { ...base(), kind: "approve_plan", path: "quick", files: ["infra/iam/payments-role.tf"], claims: 2, untestedClaims: 0 };
+ for (const [owner, seat] of [[true, { decideAs: "owner" }], [false, { decideAs: "maintainer" }]] as const) {
+  const f = taskPage({ owner, seat, items: [high], answer: request => request.method === "POST" && request.path.endsWith("/reject") ? decided("approve_plan:" + TASK, "rejected") : undefined });
+  const card = await cardOn();
+  expect(readDecisions(viewWithReject([high]))[0]!.card.risk).toBe("high");
+  await waitFor(() => expect(within(card).getByText("Reject", { selector: "summary" })).toBeTruthy());
+  fireEvent.click(within(card).getByRole("button", { name: "Wrong approach" }));
+  await waitFor(() => expect(f.posts().find(request => request.path.endsWith("/reject"))?.body).toMatchObject({ reason: "wrong_approach" }));
+  f.close();
+ }
+});
+
+it("a maintainer is offered Reject only on a coding plan: another kind's \"Not now\" stays hidden from them (the server refuses it), and stays for the owner", async () => {
+ const feedback: DecisionItem = { ...base({ subjectId: "fb1" }), kind: "review_feedback", comments: 2, touchesSensitivePaths: false };
+ const decisions = readDecisions(viewWithReject([feedback, plan()]));
+ const f = fakeHost();
+ const query = createQueryClient();
+ for (const [seat, notNow, reject] of [[{ as: "owner" as const }, true, true], [{ as: "maintainer" as const, ownerName: "Maya Chen" }, false, true]] as const) {
+  const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { initialEntries: [SESSION_PATH], children: h(DecisionList, { decisions, label: "Decisions", seat }) }) }) }));
+  const cards = await screen.findAllByRole("article");
+  expect(cards.some(card => within(card).queryByText("Not now", { selector: "summary" }) !== null), JSON.stringify(seat)).toBe(notNow);
+  expect(cards.some(card => within(card).queryByText("Reject", { selector: "summary" }) !== null), JSON.stringify(seat)).toBe(reject);
+  ui.unmount();
+ }
+ query.clear();
+});
+
 it("readers: the seat comes only from a real decideAs word; an unknown seat word is read as the narrower one; absent is nothing", () => {
  expect(readDecideSeat({ canDecide: true })).toBeUndefined();
  expect(readDecideSeat(undefined)).toBeUndefined();

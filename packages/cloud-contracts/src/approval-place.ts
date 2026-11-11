@@ -1,6 +1,6 @@
-// UPSTREAM OWED (U4 lane): this file is a COPY of Rovara Code's packages/contracts/src/approval-place.ts from the Code lane branch `fix/code-approval-place-policy` at commit 35e8330e5, then changed by Code lane branch `fix/code-reject-from-slack` (owner decision 99, a rejection judged like a medium approval) at commit 1bf8fedcf (private remote, not yet in public code/next).
+// UPSTREAM OWED (U4 lane): this file is a COPY of Rovara Code's packages/contracts/src/approval-place.ts from the Code lane branch `fix/code-approval-place-policy` at commit 35e8330e5, then changed by Code lane branch `fix/code-reject-from-slack` (owner decision 99, a rejection judged like a medium approval) at commit 1bf8fedcf, and again (request changes judged like a reject) at commit 062f50bbf (private remote, not yet in public code/next).
 // It is NOT vendored: `vendor/rovara-code` is pinned to a PUBLIC sha (PIN e99bcaf76), and this file is not in public Code yet, so the pin cannot move to it. Everything below this note is byte for byte the Code file
-// (sha256 e8d6595fd4ac93b2264ad3f9ee268f3738533fbe0e0f727f8e9860bef97d7ef8, checked by tests/contract/approval-place-upstream-copy.test.ts). When the controller has merged it into public code/next and the pin has moved past it, DELETE this copy and import `approvalPlaceDecision` from
+// (sha256 4170caae1c8ca8cd1cb5e170d664d82460ad3a4268fe21b25bd69cf7f8d0ed31, checked by tests/contract/approval-place-upstream-copy.test.ts). When the controller has merged it into public code/next and the pin has moved past it, DELETE this copy and import `approvalPlaceDecision` from
 // `@rovara-code/contracts`; do not edit it here (change Code first). The test fails if this body drifts from the recorded sha256.
 // Approval-place policy (owner decisions 62, 66, 83; requirements A-01, A-02, A-08, A-09, A-49, E-37, E-38): ONE pure function that says whether a person's answer to a decision may be taken from the place it came from, so
 // every surface (the app, a chat, a tracker or code-host comment, an AI tool or token) asks the same question and cannot invent its own rule. Nothing in it reads a store, a clock or a provider: the caller passes what it
@@ -19,7 +19,7 @@
 //        approve  high    browser only, and only under the company's fresh sign-in (`freshSignIn`, decided by the caller with the rule it has: Code's `checkApprovalSignIn`, or an extra sign-in step an approvers plug-in asks for);
 //        reject   any     judged like a MEDIUM approval, at every risk (decision 99): browser; or an outside place by a linked person whose last INTERACTIVE Rovara sign-in is inside the company's window; a tool gets a link.
 //                         No fresh sign-in step: a rejection only stops work, so only approving HIGH-risk work needs the app under the fresh sign-in;
-//        request changes  any place a linked person can reach; no sign-in age.
+//        request changes  judged the same way as a reject (decision 99, "same terms"): browser; or an outside place by a linked person inside the company's window; a tool gets a link; no fresh sign-in.
 // The "recent" time is the person's last interactive Rovara sign-in (`Principal.authTime`, the adapter's own fact), never a refresh and never a sign-in at the outside service (decision Q3); a caller that cannot say passes none and the
 // answer is "sign in again". The window is a COMPANY SETTING: shortening applies at once; lengthening needs a second admin's confirmation (decision 83), which `checkRecentSignInChange` reports and the store enforces.
 //
@@ -90,11 +90,11 @@ export interface ApprovalPlaceInput {
     role: ApprovalDeciderRole;
     /** Outside places only: the outside account maps to a Rovara person of this company. For `browser` and `tool` the authenticated session or token is the link and this is not read. */
     linked: boolean;
-    /** The person's last interactive Rovara sign-in (ISO time), when the identity adapter knows. Read for a medium approval or a rejection from an outside place. */
+    /** The person's last interactive Rovara sign-in (ISO time), when the identity adapter knows. Read for a medium approval, a rejection or a request for changes from an outside place. */
     authTime?: string | undefined;
   };
   settings: {
-    /** The company's window. Read only for a medium approval or a rejection from an outside place. */
+    /** The company's window. Read only for a medium approval, a rejection or a request for changes from an outside place. */
     recentSignIn: RecentSignInSetting;
     /** The project's switch for collaborators' low-risk product approvals (default on). */
     collaboratorApprovals: boolean;
@@ -116,7 +116,7 @@ export type ApprovalPlaceReason =
   | "role_not_allowed"
   | "collaborator_approvals_off"
   | "high_risk_browser_only"
-  | "reject_tool_needs_app"
+  | "tool_needs_app"
   | "tool_low_risk_only"
   | "fresh_sign_in_required"
   | "no_sign_in_time"
@@ -180,24 +180,22 @@ export function approvalPlaceDecision(input: ApprovalPlaceInput): ApprovalPlaceV
   const notifyOwner = decider.role !== "owner" && decider.role !== "co-owner";
   const allowed: ApprovalPlaceVerdict = { allowed: true, reason: "ok", needs: [], effect: "decision", notifyOwner };
 
-  if (answer === "request_changes") return allowed;
+  // Decision 99: a rejection, and asking for changes, are judged like a MEDIUM approval at every risk (browser; or an outside place by a linked person with a recent interactive sign-in; a tool gets a link), and need no fresh sign-in.
+  const likeMedium = answer === "reject" || answer === "request_changes";
+  if (likeMedium && place === "tool") return refused("tool_needs_app", ["open_in_rovara"]);
 
-  // Decision 99: a rejection is judged like a MEDIUM approval at every risk (browser; or an outside place by a linked person with a recent interactive sign-in; a tool gets a link), and needs no fresh sign-in.
-  const rejecting = answer === "reject";
-  if (rejecting && place === "tool") return refused("reject_tool_needs_app", ["open_in_rovara"]);
-
-  // answer === "approve" (or "reject", judged below as medium)
-  if (risk === "high" && !rejecting) {
+  // answer === "approve" (or a reject / request changes, judged below as medium)
+  if (risk === "high" && !likeMedium) {
     const needs: ApprovalPlaceNeed[] = [];
     if (place !== "browser") needs.push("open_in_rovara");
     if (!input.freshSignIn) needs.push("fresh_sign_in");
     if (place !== "browser") return refused("high_risk_browser_only", needs);
     return input.freshSignIn ? allowed : refused("fresh_sign_in_required", needs);
   }
-  if ((risk === "low" && !rejecting) || place === "browser") return allowed;
+  if ((risk === "low" && !likeMedium) || place === "browser") return allowed;
   if (place === "tool") return refused("tool_low_risk_only", ["open_in_rovara"]);
 
-  // A medium approval (or any rejection) from an outside place: a linked person with a recent interactive Rovara sign-in.
+  // A medium approval (or any rejection or request for changes) from an outside place: a linked person with a recent interactive Rovara sign-in.
   const window = RecentSignInSettingSchema.safeParse(input.settings.recentSignIn);
   if (!window.success) return refused("invalid_setting", ["open_in_rovara"]);
   const signedIn = typeof decider.authTime === "string" ? Date.parse(decider.authTime) : Number.NaN;

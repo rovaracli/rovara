@@ -248,10 +248,10 @@ export async function decideTaskWorkflow(
   }
   // Decision journey slice 2 (review fix), for every caller (the card, the task page, Slack, MCP, a token): who may approve a coding plan from where.
   let placed: (PlaceAnswer & PlaceFacts) | undefined;
-  // Owner decision 99: a rejection is judged like a medium approval. A maintainer's every answer is judged; the owner's approval is; and the owner's rejection from an OUTSIDE place (Slack, a comment) is, like a medium approval (a linked person
-  // with a recent sign-in), while their rejection from the app, a tool or the CLI is unchanged (not gated by place). A rejection loads no document, so the risk the audit records is read best effort for a maintainer's.
+  // Owner decision 99: a rejection and a request for changes are judged like a medium approval. A maintainer's every answer is judged; the owner's approval and EVERY rejection are (the app: no sign-in age; a tool, MCP or the CLI: the card's link; Slack
+  // or a comment: a linked person with a recent sign-in); the owner's request for changes is judged when it comes from an OUTSIDE place (Slack, a comment) and unchanged from the app, a tool or the CLI. A rejection loads no document, so the risk the audit records is read best effort.
   const outsideCaller = options.place !== undefined || isChatCaller(caller);
-  if (prior === undefined && documentType === "plan" && options.designApproval === undefined && (request.decision === "APPROVE" || seat === "maintainer" || (request.decision === "REJECT" && outsideCaller))) {
+  if (prior === undefined && documentType === "plan" && options.designApproval === undefined && (request.decision === "APPROVE" || request.decision === "REJECT" || seat === "maintainer" || (request.decision === "REQUEST_CHANGES" && outsideCaller))) {
     const forRisk = loaded ?? (request.decision === "REJECT" && decided !== undefined ? await loadWorkflowDocument(read, decided, {}).catch(() => undefined) : undefined);
     placed = await requirePlanApprovalPlace(deps, caller, task, forRisk, request, options, seat);
   }
@@ -613,7 +613,8 @@ interface PlaceFacts { place: string; risk: string; answer: "approve" | "request
  *   - low risk: anywhere, by a linked person (a signed-in browser, a tool or token, Slack by a linked Slack user);
  *   - medium: a signed-in browser; or Slack, a tracker or a pull request comment by a linked person whose last interactive Rovara sign-in is inside the company's window (default 24 hours, at most 7 days); a tool or token gets the card's link;
  *   - high: approving needs the card in a signed-in browser, under the decide-grade sign-in (`decideGrade`), and nothing else;
- *   - rejecting (owner decision 99), at every risk, is judged like a medium approval and needs no fresh sign-in: the browser; or Slack or a comment by a linked person with a recent interactive sign-in; a tool or token gets the card's link;
+ *   - rejecting and asking for changes (owner decision 99), at every risk, are judged like a medium approval and need no fresh sign-in: the browser; or Slack or a comment by a linked person with a recent interactive sign-in; a tool or token gets the card's link
+ *     (the owner's request for changes from a tool or the CLI is unchanged; a maintainer's is judged like every answer of theirs);
  *   - the owner and co-owners decide their own task; a project maintainer may approve, ask for changes or reject a plan that is not theirs (owner notified, decision recorded as the maintainer's).
  * (0.5.11, QA6-12b: Slack, the tools and the API carry the run limit's amount too; `settleRunLimit` requires it on every raise.) This replaces slice 2's "medium or high is a signed-in browser only", and holds while the decision cards are on.
  * Returns what the audit and the owner's notice need, or undefined when the rule does not apply (cards off, or an answer the owner path never gated).
