@@ -24,7 +24,7 @@ describe("rovara_guard.py", () => {
     // The Python of the container's start command, with the file it writes moved into a temporary folder.
     const unpack = (packed: string) => {
       const dir = mkdtempSync(join(tmpdir(), "rovara-guard-unpack-"));
-      const python = /python -c '([^']+)'/u.exec(litellmStartCommand(4000))![1]!.replace("/tmp/rovara_guard.py", join(dir, "rovara_guard.py"));
+      const python = /python -I -c '([^']+)'/u.exec(litellmStartCommand(4000))![1]!.replace("/tmp/rovara_guard.py", join(dir, "rovara_guard.py"));
       const result = spawnSync("python3", ["-I", "-c", python], { env: { [ROVARA_GUARD_ENV]: packed }, encoding: "utf8" });
       return { result, file: join(dir, "rovara_guard.py") };
     };

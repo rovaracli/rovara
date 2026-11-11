@@ -92,7 +92,7 @@ describe("model proxy infrastructure (named environments)", () => {
     // The guard module is unpacked next to the config, where LiteLLM loads callbacks from (spike, question 8), and checked against its pinned SHA-256 before LiteLLM starts.
     expect(definition.Command).toEqual([litellmStartCommand(4000)]);
     const [command] = definition.Command;
-    expect(command).toMatch(/^printf "%s" "\$LITELLM_CONFIG_YAML" > \/tmp\/litellm\.yaml && python -c '[^']+' && exec litellm --config \/tmp\/litellm\.yaml --port 4000$/);
+    expect(command).toMatch(/^printf "%s" "\$LITELLM_CONFIG_YAML" > \/tmp\/litellm\.yaml && python -I -c '[^']+' && exec litellm --config \/tmp\/litellm\.yaml --port 4000$/);
     // the check comes before LiteLLM, names the hash of the spike's file, and stops the container (sys.exit) rather than carrying on with a guard that does not match
     expect(command!.indexOf(ROVARA_GUARD_SHA256)).toBeGreaterThan(-1);
     expect(command!.indexOf(ROVARA_GUARD_SHA256)).toBeLessThan(command!.indexOf("exec litellm"));
