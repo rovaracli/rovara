@@ -165,7 +165,7 @@ describe("start and stop", () => {
   it("the runner never imports the sealed sandbox or the DNS helper: its imports are the launcher, the network, Docker and Prove's types", () => {
     const source = readFileSync(new URL("../../packages/worker/src/service-runner.ts", import.meta.url), "utf8");
     const imports = [...source.matchAll(/from "([^"]+)"/gu)].map((match) => match[1]);
-    expect(imports.sort()).toEqual(["./prove.js", "./run-network.js", "./service-helpers.js", "./setup-network.js", "./swebench/containers.js", "@agentx/contracts"]);
+    expect(imports.sort()).toEqual(["./prove.js", "./run-network.js", "./service-helpers.js", "./setup-network.js", "./swebench/containers.js", "@rovara-code/contracts"]);
   });
 });
 

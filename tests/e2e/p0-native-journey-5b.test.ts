@@ -11,7 +11,8 @@ import type { GitHubRepositoryApi } from "../../packages/cli/src/setup/project-f
 import { addProject, ec2Binding } from "../../packages/cli/src/setup/project-add.js";
 import { fakeControlPlane, FOUNDATION_OUTPUTS } from "../support/setup-fakes.js";
 import { scriptedPrompter } from "../support/init-fakes.js";
-import { canonicalJson, canonicalPlanJson, createCandidateManifest, parsePlanDocument, readCanonicalPlan, planDocumentMarkdown, portableOperationId, ProjectDefinitionSchema, workerInvokeToken, workerInvokeTokenPayload, workspaceSessionKey, type WorkerInvokeTokenClaims, type E2EPolicy, type E2ESourceSnapshot } from "@rovara-code/contracts";
+import { canonicalJson, canonicalPlanJson, createCandidateManifest, parsePlanDocument, readCanonicalPlan, planDocumentMarkdown, portableOperationId, workerInvokeToken, workerInvokeTokenPayload, workspaceSessionKey, type WorkerInvokeTokenClaims, type E2EPolicy, type E2ESourceSnapshot } from "@rovara-code/contracts";
+import { ProjectDefinitionSchema } from "@agentx/cloud-contracts";
 import { WorkerInvocationSchema, WorkflowSnapshotSchema, workflowSendBackOffered, sendBackProblems, type DeveloperTaskView } from "@agentx/cloud-contracts";
 import { executeCli } from "../../packages/cli/src/main.js";
 import { developerTokenKey, saveDeveloperEnvironment } from "../../packages/cli/src/developer/config.js";

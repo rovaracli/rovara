@@ -1,6 +1,7 @@
 import { personNameForText } from "../../developer/requester-text.js";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { PLAN_WHY_REQUEST_MAX_CHARS, type ProjectCommand, type ProjectDefinition, type TestEnvironmentBody, agentXError, SYSTEM_OWNER_PROVIDER, isSystemOwnerId, developerTaskPolicy, redactText, taskTitle, type StartDeveloperTaskRequest, type WorkflowReviewBase, type WorkflowCheckPolicy, FEEDBACK_STOPPED_REASON, isRunLimitBlockReason } from "@rovara-code/contracts";
+import { PLAN_WHY_REQUEST_MAX_CHARS, type ProjectCommand, type TestEnvironmentBody, agentXError, SYSTEM_OWNER_PROVIDER, isSystemOwnerId, developerTaskPolicy, redactText, taskTitle, type StartDeveloperTaskRequest, type WorkflowReviewBase, type WorkflowCheckPolicy, FEEDBACK_STOPPED_REASON, isRunLimitBlockReason } from "@rovara-code/contracts";
+import { type ProjectDefinition } from "@agentx/cloud-contracts";
 import { type WorkflowSnapshot, stopWorkflowFeedbackRound, blockWorkflow, isBaseMergedRetry, WORKFLOW_BLOCK_REASONS } from "@agentx/cloud-contracts";
 import type { z } from "zod";
 import type { EstimateDependencies } from "../../spend/estimate.js";

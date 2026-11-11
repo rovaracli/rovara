@@ -2,7 +2,8 @@
 
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
-import { CandidateManifestSchema, WEB_API_RUNTIME_PROFILE_ID, canonicalJson, SlackChannelIdSchema, SlackTeamIdSchema, agentXError, unhandledDeploymentMode, workspaceProjectIndexAttributes, type WorkspaceInstance, modelKey, orgProjectCatalogKey, projectMemberKey, type OrgId, cloudwatchRoleAccount, codeRepositoriesOf, repositoryHostOf, parseWorkerCredentialKindsHeader, WORKER_CREDENTIAL_KINDS_HEADER } from "@rovara-code/contracts";
+import { CandidateManifestSchema, WEB_API_RUNTIME_PROFILE_ID, canonicalJson, SlackChannelIdSchema, SlackTeamIdSchema, agentXError, unhandledDeploymentMode, workspaceProjectIndexAttributes, type WorkspaceInstance, modelKey, orgProjectCatalogKey, projectMemberKey, type OrgId, cloudwatchRoleAccount, codeRepositoriesOf, parseWorkerCredentialKindsHeader, WORKER_CREDENTIAL_KINDS_HEADER } from "@rovara-code/contracts";
+import { repositoryHostOf } from "@agentx/cloud-contracts";
 import { listWorkflowE2EReplayRecords, type ReplayRecord } from "../workflow-e2e-replay.js";
 import type { AuthenticatedIdentity } from "../../auth.js";
 import { z } from "zod";

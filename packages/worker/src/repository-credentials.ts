@@ -1,4 +1,5 @@
-import { SshCredentialMaterialSchema, WORKER_CREDENTIAL_KINDS_HEADER, agentXError, type GitCredentialKind, type ProjectDefinition } from "@rovara-code/contracts";
+import { SshCredentialMaterialSchema, WORKER_CREDENTIAL_KINDS_HEADER, agentXError, type GitCredentialKind } from "@rovara-code/contracts";
+import { type ProjectDefinition } from "@agentx/cloud-contracts";
 import { type WorkerInvocation } from "@agentx/cloud-contracts";
 
 /**

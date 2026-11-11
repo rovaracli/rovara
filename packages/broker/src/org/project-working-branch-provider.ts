@@ -1,5 +1,6 @@
 // Internal adapter only: no route, save or task-start integration.
-import { agentXError, type StoredProjectDefinition } from "@rovara-code/contracts";
+import { agentXError } from "@rovara-code/contracts";
+import { type StoredProjectDefinition } from "@agentx/cloud-contracts";
 import type { GitHubAppCredentialProvider } from "../github-app.js";
 import type { WorkingBranchReviewDependencies } from "./project-working-branch.js";
 import { githubPinsOf } from "./project-working-branch-host.js";

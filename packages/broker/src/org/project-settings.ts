@@ -6,7 +6,8 @@ import { isAllowedDomainWidening, refuseAllowedDomainWidening } from "./allowed-
 // Each change but the description is a new immutable revision, built from the one the person was looking at (`expectedRevision`) and
 // registered through the same code every project revision goes through. Cloud only: another install's projects change through an administrator.
 import { GetCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { AgentXError, DEFAULT_AGENT_ALLOW_DOMAINS, PROJECT_REVISION_SK_PREFIX, ProjectDefinitionSchema, ProjectSettingsBodySchema, SETUP_TIMEOUT, StoredProjectDefinitionSchema, TEST_TIMEOUT, agentXError, errorStatus, projectArchivedMessage, canonicalJson, githubNotConnectedMessage, keepStoredOptions, orgPk, parseCommandLine, projectAllows, projectMetaKey, projectPk, settingOriginOf, withSettingOrigins, type ProjectOriginField, type AppProjectDetail, type OrgId, type ProjectCommand, type ProjectDefinition, type ProjectRole, type ProjectSettingsBody, type StoredProjectDefinition } from "@rovara-code/contracts";
+import { AgentXError, DEFAULT_AGENT_ALLOW_DOMAINS, PROJECT_REVISION_SK_PREFIX, ProjectSettingsBodySchema, SETUP_TIMEOUT, TEST_TIMEOUT, agentXError, errorStatus, projectArchivedMessage, canonicalJson, githubNotConnectedMessage, keepStoredOptions, orgPk, parseCommandLine, projectAllows, projectMetaKey, projectPk, settingOriginOf, withSettingOrigins, type ProjectOriginField, type AppProjectDetail, type OrgId, type ProjectCommand, type ProjectRole, type ProjectSettingsBody } from "@rovara-code/contracts";
+import { ProjectDefinitionSchema, StoredProjectDefinitionSchema, type ProjectDefinition, type StoredProjectDefinition } from "@agentx/cloud-contracts";
 import { githubInstallationKey, type OrgRole } from "@agentx/cloud-contracts";
 import { readProjectMeta } from "../developer/project-roles.js";
 import { cloudRepositoryEntry } from "./cloud-projects.js";

@@ -120,8 +120,8 @@ instead: give it a one-line header comment when you next edit it.
 - A task run: `packages/worker/src/run-task.ts#runTaskInvocation`, started from `packages/worker/src/main.ts`. Its
   HTTP server is `packages/worker/src/server.ts`.
 - The features this worker supports: `packages/worker/src/implemented-features.ts#WORKER_IMPLEMENTED_FEATURES`. The
-  protocol version and the features an invocation can require are in `packages/cloud-contracts/src/protocol.ts#AGENTX_PROTOCOL_VERSION`
-  and `packages/cloud-contracts/src/protocol.ts#WORKER_INVOCATION_FEATURES`.
+  protocol version and the features an invocation can require are in `vendor/rovara-code/packages/contracts/src/protocol.ts#AGENTX_PROTOCOL_VERSION`
+  and `vendor/rovara-code/packages/contracts/src/protocol.ts#WORKER_INVOCATION_FEATURES`.
 - Lessons on the worker: `packages/worker/src/learned-context.ts#validateLearnedContext`.
 - There is no `executor/run.ts` in the worker. The one in `packages/verifier/src/executor/run.ts` is the E2E executor.
 
@@ -185,7 +185,7 @@ snapshot tests below, and a per-switch test copied from a sibling such as `tests
 ### A worker feature, so older workers are refused (example: ff8cd431f, `task.ownerRedirect.v1`)
 
 1. Define the feature string in a contracts file (that example used `vendor/rovara-code/packages/contracts/src/live-interaction.ts`).
-2. Add it to `packages/cloud-contracts/src/protocol.ts#WORKER_INVOCATION_FEATURES`, and add the optional field to the
+2. Add it to `vendor/rovara-code/packages/contracts/src/protocol.ts#WORKER_INVOCATION_FEATURES`, and add the optional field to the
    invocation schema in the same file.
 3. Refuse delivery to a worker that lacks it: `packages/broker/src/aws/ec2-delivery.ts#forWorkerFeatures`.
 4. Add it to `packages/worker/src/implemented-features.ts#WORKER_IMPLEMENTED_FEATURES` only once the worker really

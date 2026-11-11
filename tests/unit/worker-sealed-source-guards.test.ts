@@ -26,9 +26,9 @@ export const PUBLIC_SEALED_ROUND_NAMES: readonly string[] = ["runSealedCheckRoun
 export const SEALED_ROUND_USERS: readonly string[] = [`${W}check-round-runners.ts`, `${W}service-usage-record.ts`, `${W}test-services-run.ts`, `${W}run-task.ts`, `${W}prepare.ts`];
 /** The record's contract type and schema (`TestServicesUsageRecord`, ...): the contract itself, the worker that builds it, and the broker modules that turn it into evidence and Prove steps (s1-broker T4, T5). */
 export const USAGE_RECORD_USERS: readonly string[] = [
-  "vendor/rovara-code/packages/contracts/src/test-services-usage.ts", "packages/cloud-contracts/src/index.ts",
+  "packages/cloud-contracts/src/index.ts",
   // the evidence file the worker writes (EvidenceRawSchema) carries the record under `testServices`, so evidence.ts imports its schema (s1-broker T4)
-  "vendor/rovara-code/packages/contracts/src/evidence.ts", `${W}service-usage-record.ts`, `${W}test-services-run.ts`, `${W}verification/evidence-raw.ts`,
+  `${W}service-usage-record.ts`, `${W}test-services-run.ts`, `${W}verification/evidence-raw.ts`,
   "packages/broker/src/rovara-code/evidence-pack.ts", "packages/broker/src/test-env/evidence-line.ts", "packages/broker/src/test-env/prove-from-setup-check.ts",
   "packages/broker/src/org/test-env-candidate.ts", "packages/broker/src/aws/developer-routes/test-environment-candidate.ts",
 ];
@@ -87,7 +87,7 @@ describe("the sealed round's source guards", () => {
   it("every file under packages/*/src passes", async () => {
     const sources = await sourcesOfAllPackages();
     // Not an empty search: the modules themselves are there.
-    for (const path of [`${W}check-sandbox.ts`, `${W}check-round-runners.ts`, `${W}service-usage-record.ts`, "vendor/rovara-code/packages/contracts/src/test-services-usage.ts"]) expect(sources.some((source) => source.path === path), path).toBe(true);
+    for (const path of [`${W}check-sandbox.ts`, `${W}check-round-runners.ts`, `${W}service-usage-record.ts`]) expect(sources.some((source) => source.path === path), path).toBe(true);
     expect(sealedSourceViolations(sources)).toEqual([]);
   });
 

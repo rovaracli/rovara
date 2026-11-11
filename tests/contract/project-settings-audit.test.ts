@@ -7,7 +7,8 @@ import {modelSelectionSlackWorld,SELECTION_MODELS} from "../support/model-select
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 import { AuditEventInputSchema, type AuditEventInput } from "@agentx/cloud-contracts";
-import { agentRequestKey, orgProjectCatalogKey, projectAgentKey, projectMetaKey, type AgentId, type OrgId, type StoredProjectDefinition } from "@rovara-code/contracts";
+import { agentRequestKey, orgProjectCatalogKey, projectAgentKey, projectMetaKey, type AgentId, type OrgId } from "@rovara-code/contracts";
+import { type StoredProjectDefinition } from "@agentx/cloud-contracts";
 import { projectDefinitionAuditEvents } from "../../packages/broker/src/playbook/project-settings-audit.js";
 import { addToRoster, removeFromRoster } from "../../packages/broker/src/agents/roster.js";
 import type { ApprovalDependencies } from "../../packages/broker/src/agents/approvals.js";

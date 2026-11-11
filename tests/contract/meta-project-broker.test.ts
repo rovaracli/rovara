@@ -5,7 +5,8 @@ import { randomUUID } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it, vi } from "vitest";
 import { agentXError } from "@rovara-code/contracts";
-import { ProjectDefinitionSchema, StoredProjectDefinitionSchema, orgProjectCatalogKey, parseCommandLine, projectMetaKey, projectRevisionKey, type OrgId, type ProjectRole } from "@rovara-code/contracts";
+import { orgProjectCatalogKey, parseCommandLine, projectMetaKey, projectRevisionKey, type OrgId, type ProjectRole } from "@rovara-code/contracts";
+import { ProjectDefinitionSchema, StoredProjectDefinitionSchema } from "@agentx/cloud-contracts";
 import { githubInstallationKey, githubRepoProjectKey, projectCreateRequestKey } from "@agentx/cloud-contracts";
 import { parseMetaConfigFile, planMetaConfigChange, githubFullName } from "../../packages/broker/src/meta-repo/config-plan.js";
 import {

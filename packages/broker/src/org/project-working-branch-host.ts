@@ -5,7 +5,8 @@
 // Known asymmetry (latent, P7 follow-up): this reader and the agent GitHub connector's `pinOf` honour a pin that exists only on `host`. Other control-plane checks (task start, credentials,
 // trigger events, allowed domains, project registration) still read the top-level `installationId` / `githubRepositoryId` alone. Nothing writes a `host`-only GitHub record yet
 // (`withRepositoryHost` is a no-op), so the two readings agree on every record that exists; the day writes turn on, those readers move to `repositoryHostOf` together.
-import { agentXError, repositoryHostOf, type RepositoryDefinition } from "@rovara-code/contracts";
+import { agentXError } from "@rovara-code/contracts";
+import { repositoryHostOf, type RepositoryDefinition } from "@agentx/cloud-contracts";
 
 export interface GitHubPins { installationId: number | undefined; githubRepositoryId: number | undefined }
 

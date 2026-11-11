@@ -3,7 +3,8 @@
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { RepositoryGrantService } from "../../packages/broker/src/repository-access.js";
-import { codeRepositoriesOf, StoredProjectDefinitionSchema } from "@rovara-code/contracts";
+import { codeRepositoriesOf } from "@rovara-code/contracts";
+import { StoredProjectDefinitionSchema } from "@agentx/cloud-contracts";
 import { issueRepositoryGrant } from "../../packages/broker/src/aws/broker/admin-and-helpers.js";
 import { createBroker, ensureWorkspace, loadSlackBroker, markReady, registerSlackProject, serviceCall } from "../support/slack-broker.js";
 import { SLACK_CHANNEL, SLACK_TEAM } from "../support/slack-broker.js";

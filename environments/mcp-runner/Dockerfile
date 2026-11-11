@@ -45,13 +45,10 @@ COPY vendor/rovara-code/packages/contracts vendor/rovara-code/packages/contracts
 COPY packages/gateway packages/gateway
 COPY packages/broker/src/mcp-runner packages/broker/src/mcp-runner
 RUN npx tsc -b packages/cloud-contracts packages/gateway --pretty false
+# environments/mcp-runner/bundle.mjs holds the esbuild options (and the one plugin that says Rovara Code's contract files have no side effects).
+COPY environments/mcp-runner/bundle.mjs environments/mcp-runner/bundle.mjs
 RUN set -eu; \
-    for entry in serve-main:serve fetch-main:fetch install-main:install; do \
-      src="${entry%%:*}"; out="${entry##*:}"; \
-      npx esbuild "packages/broker/src/mcp-runner/$src.ts" --bundle --platform=node --target=node22 --format=esm --legal-comments=none \
-        --banner:js="import { createRequire as __rovaraCreateRequire } from 'node:module'; const require = __rovaraCreateRequire(import.meta.url);" \
-        --outfile="/opt/mcp-runner/$out.mjs"; \
-    done; \
+    node environments/mcp-runner/bundle.mjs serve-main serve fetch-main fetch install-main install; \
     chmod 0644 /opt/mcp-runner/*.mjs
 
 # The root file system, assembled from the pinned node image.

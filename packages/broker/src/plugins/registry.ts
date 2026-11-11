@@ -4,7 +4,8 @@
 // today GitHub, for every repository (the repository `host` field and the choice by `host.kind` are task P7). A kind with no adapter is refused with a fixed sentence.
 // The edition decides what may be registered: GitHub, GitHub Actions and CodeBuild are the install's own; any other kind is an Enterprise plug-in.
 import { ENTERPRISE_ONLY_MESSAGE, requireFeature, type EditionPolicy } from "@agentx/cloud-contracts";
-import { PluginKindSchema, agentXError, repositoryHostOf, type CheckRunner, type CodeHost, type PluginKind, type RepositoryDefinition, type RepositoryHost, type RepositoryRef, type Tracker } from "@rovara-code/contracts";
+import { PluginKindSchema, agentXError, type CheckRunner, type CodeHost, type PluginKind, type RepositoryRef, type Tracker } from "@rovara-code/contracts";
+import { repositoryHostOf, type RepositoryDefinition, type RepositoryHost } from "@agentx/cloud-contracts";
 
 /** The code host every install has. */
 export const BUILT_IN_CODE_HOST_KIND: PluginKind = "github";

@@ -1,7 +1,8 @@
 // Part of the broker (split out of ../broker.ts): write gate, model access (web and Slack), turn routing and budgets.
 
 import { sessionPageUrl } from "../../decisions/open-path.js";
-import { AgentXError, agentXError, type OperationRequester, type ProjectDefinition, SlackModelAccessRequestSchema, recipeDigest, type InvocationModelRoute, type ModelIdentifier, slackBindingPk, SLACK_BINDING_SK_PREFIX, type OrgId, chainRunKey, ROVARA_CODE_AGENT_ID, type AgentId, type Payer, type Place, DIAGNOSIS_LIGHT_BUDGET_USD, DIAGNOSIS_NO_PROVIDER_MESSAGE } from "@rovara-code/contracts";
+import { AgentXError, agentXError, type OperationRequester, SlackModelAccessRequestSchema, recipeDigest, type InvocationModelRoute, type ModelIdentifier, slackBindingPk, SLACK_BINDING_SK_PREFIX, type OrgId, chainRunKey, ROVARA_CODE_AGENT_ID, type AgentId, type Payer, type Place, DIAGNOSIS_LIGHT_BUDGET_USD, DIAGNOSIS_NO_PROVIDER_MESSAGE } from "@rovara-code/contracts";
+import { type ProjectDefinition } from "@agentx/cloud-contracts";
 import { PER_TASK_BUDGET_USD } from "@agentx/cloud-contracts";
 import { queryAllItems } from "../admin-reads.js";
 import { DynamoConnectorLedger, GITHUB_LEDGER, connectorLedgerKeys } from "../connector-ledger.js";

@@ -9,6 +9,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { build } from "esbuild";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+// @ts-expect-error plain JavaScript (the Dockerfile runs it before anything is built)
+import { runnerBundleOptions } from "../../../environments/mcp-runner/bundle.mjs";
 import { writeBundle } from "../../../packages/gateway/src/mcp-runner/bundle.js";
 
 const dockerfile = await readFile("environments/mcp-runner/Dockerfile", "utf8");
@@ -67,10 +69,8 @@ let out: string;
 beforeAll(async () => {
   out = await mkdtemp(join(tmpdir(), "runner-image-"));
   for (const [source, name] of [["serve-main", "serve"], ["fetch-main", "fetch"], ["install-main", "install"]] as const) {
-    await build({
-      entryPoints: [resolve(`packages/broker/src/mcp-runner/${source}.ts`)], bundle: true, platform: "node", target: "node22", format: "esm", legalComments: "none", outfile: join(out, "bin", `${name}.mjs`),
-      banner: { js: "import { createRequire as __rovaraCreateRequire } from 'node:module'; const require = __rovaraCreateRequire(import.meta.url);" }, logLevel: "silent",
-    });
+    // The same options the Dockerfile builds with (environments/mcp-runner/bundle.mjs).
+    await build(runnerBundleOptions(resolve(`packages/broker/src/mcp-runner/${source}.ts`), join(out, "bin", `${name}.mjs`)));
   }
 }, 120_000);
 afterAll(async () => { await rm(out, { recursive: true, force: true }); });
@@ -139,7 +139,7 @@ describe("T5 the bundled programs run on their own", () => {
       // The real serve.mjs takes its tools from the image only, so the stub tools are given to the same `start` through a small entry bundled the same way.
       await writeFile(join(out, "hide-main.ts"), 'process.argv[1] = "/nonexistent/entry";\n');
       await writeFile(join(out, "serve-with-stubs.ts"), `// (serve-main starts itself when it is the program being run; this entry is, so hide-main.ts, evaluated first, hides that.)\nimport "./hide-main.ts";\nimport { start } from ${JSON.stringify(resolve("packages/broker/src/mcp-runner/serve-main.ts"))};\nawait start({ env: process.env, tools: { setpriv: ${JSON.stringify(join(out, "setpriv"))}, prlimit: ${JSON.stringify(join(out, "prlimit"))}, node: process.execPath } });\n`);
-      await build({ entryPoints: [join(out, "serve-with-stubs.ts")], bundle: true, platform: "node", target: "node22", format: "esm", legalComments: "none", outfile: join(out, "bin", "serve-with-stubs.mjs"), banner: { js: "import { createRequire as __rovaraCreateRequire } from 'node:module'; const require = __rovaraCreateRequire(import.meta.url);" }, logLevel: "silent" });
+      await build(runnerBundleOptions(join(out, "serve-with-stubs.ts"), join(out, "bin", "serve-with-stubs.mjs")));
       const server = spawn(process.execPath, [join(out, "bin", "serve-with-stubs.mjs")], {
         cwd: out, stdio: ["ignore", "pipe", "pipe"],
         env: { MCP_RUNNER_TOKEN: TOKEN, MCP_BUNDLE_HASH: bundleHash, MCP_PACKAGE_NAME: "@acme/sim-mcp", MCP_SERVER_ARGS: "[]", MCP_SECRET_ENV: "[]", MCP_MEMORY_MIB: "512", PORT: String(port), MCP_BUNDLE_DIR: volume, MCP_HOME_DIR: join(out, "home"), MCP_TMP_DIR: join(out, "tmp") },

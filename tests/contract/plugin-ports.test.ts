@@ -109,7 +109,7 @@ describe("change requests", () => {
       id: "7", state: "open", draft: false, headRevision: sha, targetBranch: "main", mergeableState: "clean", mergeable: true,
       checks: [{ name: "ci", state: "completed", conclusion: "success", required: true, url: "" }], requiredChecks: [{ name: "ci" }], targetHasRequiredChecks: true,
       headDefinesChecks: true, requestedReviewers: 0,
-      reviews: [{ reviewer: { login: "pat" }, accountType: "User", state: "APPROVED", revision: sha, submittedAt: "2026-10-30T00:00:00Z" }],
+      reviews: [{ reviewer: { login: "pat" }, accountType: "person", state: "APPROVED", revision: sha, submittedAt: "2026-10-30T00:00:00Z" }],
     };
     expect(ChangeRequestStatusSchema.parse(status)).toEqual(status);
     expect(ChangeRequestStatusSchema.safeParse({ ...status, mergeableState: "fine" }).success).toBe(false);

@@ -1,6 +1,6 @@
 // Proof and evidence D1 (contract): one card holds one decision; the risk tier decides the friction; a high card has no approve action; nothing is bulk-approved; a lock only raises a tier.
 import { describe, expect, it } from "vitest";
-import * as cards from "@rovara-code/contracts";
+import * as cards from "../../vendor/rovara-code/packages/contracts/src/decision-cards.js";
 import { HOME_CARD_KINDS } from "../../packages/cloud-contracts/src/home.js";
 
 const at = "2026-10-30T12:00:00.000Z";

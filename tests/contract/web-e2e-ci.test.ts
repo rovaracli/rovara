@@ -39,7 +39,7 @@ it("builds once, in a job the browser legs and the final gate wait for, and arch
 });
 it("the build guard names what is missing from an unpacked build", () => {
  const root = mkdtempSync(join(tmpdir(), "e2e-build-")), put = (path: string) => { mkdirSync(join(root, path, ".."), { recursive: true });writeFileSync(join(root, path), "x") };
- for (const name of ["contracts", "web"]) { put(`packages/${name}/package.json`);put(`packages/${name}/tsconfig.json`) }
+ for (const name of ["cloud-contracts", "web"]) { put(`packages/${name}/package.json`);put(`packages/${name}/tsconfig.json`) }
  put("packages/notes/README.md");
  expect(missingBuildOutputs(root)).toEqual(["packages/cloud-contracts/dist", "packages/web/dist", "packages/web/dist/app/index.html", "packages/cloud-contracts/dist/index.js"]);
  put("packages/cloud-contracts/dist/index.js");put("packages/web/dist/app/index.html");expect(missingBuildOutputs(root)).toEqual([]);

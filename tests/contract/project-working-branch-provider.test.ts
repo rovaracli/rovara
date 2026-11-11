@@ -1,6 +1,7 @@
 import { generateKeyPairSync } from "node:crypto";
 import { expect, it, vi } from "vitest";
-import { AgentXError, StoredProjectDefinitionSchema, orgProjectCatalogKey, projectRevisionKey, projectMetaKey, type OrgId } from "@rovara-code/contracts";
+import { AgentXError, orgProjectCatalogKey, projectRevisionKey, projectMetaKey, type OrgId } from "@rovara-code/contracts";
+import { StoredProjectDefinitionSchema } from "@agentx/cloud-contracts";
 import { githubInstallationKey, developerOrgKey, orgMemberKey, orgMetaKey } from "@agentx/cloud-contracts";
 import { GitHubAppCredentialProvider } from "../../packages/broker/src/github-app.js";
 import { installationBindingCheck } from "../../packages/broker/src/org/github-connection.js";

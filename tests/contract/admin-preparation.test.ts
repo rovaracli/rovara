@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { ProjectDefinition } from "@rovara-code/contracts";
+import type { ProjectDefinition } from "@agentx/cloud-contracts";
 import {
   InMemoryProjectRegistry,
   InMemoryRegistry,

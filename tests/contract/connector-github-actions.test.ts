@@ -5,7 +5,8 @@
 import { generateKeyPairSync } from "node:crypto";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { discoverTools, executeTool, type Ledger } from "@agentx/gateway";
-import { ProjectDefinitionSchema, agentXError, githubNotConnectedMessage, type GrantedTool, type OrgId } from "@rovara-code/contracts";
+import { agentXError, githubNotConnectedMessage, type GrantedTool, type OrgId } from "@rovara-code/contracts";
+import { ProjectDefinitionSchema } from "@agentx/cloud-contracts";
 import { GITHUB_ACTIONS_AGENT_TOOL_PERMISSIONS, githubActionsToolPermissions } from "../../packages/broker/src/agents/github-agent-tools.js";
 import { classifyWrite } from "../../packages/broker/src/agents/write-class.js";
 import { BUILT_IN_CONNECTOR_TYPES, resolveConnectors, type ResolvedConnector } from "../../packages/broker/src/aws/connector-types.js";

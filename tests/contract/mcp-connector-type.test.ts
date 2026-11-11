@@ -1,7 +1,7 @@
 // Spec 055: the generic `mcp` connector type in the broker, and credential host pinning for it and
 // for the built-in presets.
 import { describe, expect, it, vi } from "vitest";
-import { ProjectDefinitionSchema } from "@rovara-code/contracts";
+import { ProjectDefinitionSchema } from "@agentx/cloud-contracts";
 import { CredentialUnavailable } from "../../packages/gateway/src/index.js";
 import { mcpConnectorType } from "../../packages/broker/src/aws/connector-presets.js";
 import { BUILT_IN_CONNECTOR_TYPES, resolveConnectors } from "../../packages/broker/src/aws/connector-types.js";

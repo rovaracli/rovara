@@ -1,5 +1,6 @@
 // Lane B browser fixture: real project/agent reads over the existing persistent fake table.
-import { StoredProjectDefinitionSchema, orgProjectCatalogKey, projectRevisionKey, projectMetaKey, projectMemberKey } from "@rovara-code/contracts";
+import { orgProjectCatalogKey, projectRevisionKey, projectMetaKey, projectMemberKey } from "@rovara-code/contracts";
+import { StoredProjectDefinitionSchema } from "@agentx/cloud-contracts";
 import { githubInstallationKey } from "@agentx/cloud-contracts";
 import { AgentStore } from "../../../packages/broker/src/agents/store.js";
 import { routeAgentRequest } from "../../../packages/broker/src/agents/routes.js";

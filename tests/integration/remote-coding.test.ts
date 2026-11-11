@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import type { ProjectDefinition } from "@rovara-code/contracts";
+import type { ProjectDefinition } from "@agentx/cloud-contracts";
 import type { WorkerInvocation } from "@agentx/cloud-contracts";
 import {
   InMemoryRegistry,

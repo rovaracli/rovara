@@ -1,6 +1,7 @@
 import { createHash, generateKeyPairSync } from "node:crypto";
 import { expect, it, vi } from "vitest";
-import { AgentXError, canonicalJson, agentXError, StoredProjectDefinitionSchema, orgProjectCatalogKey, projectRevisionKey, projectMetaKey, projectMemberKey } from "@rovara-code/contracts";
+import { AgentXError, canonicalJson, agentXError, orgProjectCatalogKey, projectRevisionKey, projectMetaKey, projectMemberKey } from "@rovara-code/contracts";
+import { StoredProjectDefinitionSchema } from "@agentx/cloud-contracts";
 import { githubInstallationKey, developerOrgKey, orgMemberKey, orgMetaKey } from "@agentx/cloud-contracts";
 import type { DeveloperCaller } from "../../packages/broker/src/aws/developer-routes.js";
 import { allContracts as contracts } from "../support/contracts-barrels.js";

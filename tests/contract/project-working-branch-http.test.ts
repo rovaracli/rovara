@@ -1,7 +1,8 @@
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { generateKeyPairSync } from "node:crypto";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { StoredProjectDefinitionSchema, orgProjectCatalogKey, projectRevisionKey, projectMetaKey, projectMemberKey, orgScoped } from "@rovara-code/contracts";
+import { orgProjectCatalogKey, projectRevisionKey, projectMetaKey, projectMemberKey, orgScoped } from "@rovara-code/contracts";
+import { StoredProjectDefinitionSchema } from "@agentx/cloud-contracts";
 import { githubInstallationKey, orgMetaKey, orgMemberKey } from "@agentx/cloud-contracts";
 import { allContracts as contracts } from "../support/contracts-barrels.js";
 import * as browser from "@agentx/cloud-contracts/web";

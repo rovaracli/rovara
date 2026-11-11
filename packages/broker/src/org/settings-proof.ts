@@ -4,7 +4,8 @@
 // This module is the stored record and the pure reading of it. One item per project (`PROJECT#.../SETTINGS_PROOF`); each part is written as a whole, with a condition on the part it replaces. No command text
 // is ever shown from here: the lists are kept so the check, the write and the undo use exactly what was proved.
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { canonicalJson, projectMetaKey, type OrgId, type OrgKey, type ProjectCommand, type StoredProjectDefinition } from "@rovara-code/contracts";
+import { canonicalJson, projectMetaKey, type OrgId, type OrgKey, type ProjectCommand } from "@rovara-code/contracts";
+import { type StoredProjectDefinition } from "@agentx/cloud-contracts";
 
 type Send = { send(command: unknown): Promise<unknown> };
 export interface ProofStoreDependencies { documentClient: Send; tableName: string; now: () => number }

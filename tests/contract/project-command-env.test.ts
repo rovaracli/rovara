@@ -1,4 +1,5 @@
-import { ProjectCommandSchema, ProjectDefinitionSchema, StoredProjectDefinitionSchema } from "@rovara-code/contracts";
+import { ProjectCommandSchema } from "@rovara-code/contracts";
+import { ProjectDefinitionSchema, StoredProjectDefinitionSchema } from "@agentx/cloud-contracts";
 import { describe, expect, it } from "vitest";
 
 // #54 (first slice): a project command may set environment variables for itself.

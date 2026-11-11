@@ -11,7 +11,8 @@
 // Every change carries a request item (R18) and the audit event in the same transaction as the project revision (`registerProjectFor`'s `extraItems`).
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import { AgentXError, AgentXNameSchema, ConnectionIdSchema, ConnectorConfigSchema, ConnectorNameSchema, ProjectDefinitionSchema, agentXError, canonicalJson, connectionTakesSecret, projectAllows, type ConnectorConfig, type ConnectorPreflight, type OrgId, type ProjectDefinition, type RegistrationPreflight, type StoredProjectDefinition, projectArchivedMessage } from "@rovara-code/contracts";
+import { AgentXError, AgentXNameSchema, ConnectionIdSchema, ConnectorConfigSchema, ConnectorNameSchema, agentXError, canonicalJson, connectionTakesSecret, projectAllows, type ConnectorConfig, type ConnectorPreflight, type OrgId, type RegistrationPreflight, projectArchivedMessage } from "@rovara-code/contracts";
+import { ProjectDefinitionSchema, type ProjectDefinition, type StoredProjectDefinition } from "@agentx/cloud-contracts";
 import { type AuditProof } from "@agentx/cloud-contracts";
 import { orgRoleOf, resolveSurvivor, type AgentCaller } from "../agents/access.js";
 import {

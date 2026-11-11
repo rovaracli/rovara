@@ -2,7 +2,8 @@
 //
 // Pure (no I/O, no broker dependencies), so the route side and the broker side share one sentence and one rule: a repository record that names a host this install has not registered is
 // refused with the router's fixed `NO_HOST_MESSAGE`; one on a registered host that is not GitHub is refused with `GITHUB_ONLY_MESSAGE`; only GitHub (and a record that names no host) goes on.
-import { agentXError, repositoryHostOf, type RepositoryDefinition } from "@rovara-code/contracts";
+import { agentXError } from "@rovara-code/contracts";
+import { repositoryHostOf, type RepositoryDefinition } from "@agentx/cloud-contracts";
 import { NO_HOST_MESSAGE, registeredCodeHostKinds, type CodeHostRouter } from "../registry.js";
 
 /** Said when a step has no code host port counterpart yet and the repository is not on GitHub. Fixed: it never names the host. */

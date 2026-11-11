@@ -3,12 +3,12 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
-import * as ids from "@rovara-code/contracts";
-import * as chains from "@rovara-code/contracts";
-import * as org from "@rovara-code/contracts";
-import * as sessions from "@rovara-code/contracts";
-import * as sessionsNode from "@rovara-code/contracts";
-import * as slack from "@rovara-code/contracts";
+import * as ids from "../../vendor/rovara-code/packages/contracts/src/browser-ids.js";
+import * as chains from "../../vendor/rovara-code/packages/contracts/src/chains.js";
+import * as org from "../../vendor/rovara-code/packages/contracts/src/company-scope.js";
+import * as sessions from "../../vendor/rovara-code/packages/contracts/src/agent-sessions.js";
+import * as sessionsNode from "../../vendor/rovara-code/packages/contracts/src/agent-sessions-node.js";
+import * as slack from "../../vendor/rovara-code/packages/contracts/src/slack.js";
 
 const root = process.cwd();
 const NODE_BUILTINS = ["fs", "path", "crypto", "util", "os", "zlib", "stream", "buffer", "child_process", "url"];
@@ -38,9 +38,9 @@ async function importGraph(entry: string): Promise<{ files: Set<string>; nodeImp
 
 describe("rovara-code.ts is browser-safe", () => {
   it("reaches no Node module through any import", async () => {
-    const { files, nodeImports } = await importGraph("packages/cloud-contracts/src/rovara-code.ts");
+    const { files, nodeImports } = await importGraph("vendor/rovara-code/packages/contracts/src/rovara-code.ts");
     expect(nodeImports).toEqual([]);
-    expect(files.has("packages/cloud-contracts/src/rovara-code.ts")).toBe(true);
+    expect(files.has("vendor/rovara-code/packages/contracts/src/rovara-code.ts")).toBe(true);
   });
 
   it("would notice a Node import (positive control: the Node sibling reaches node:crypto)", async () => {

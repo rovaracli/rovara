@@ -1,7 +1,7 @@
 // PF6: Plan 3's agent routes on Plan 2 Task 21's real `ProjectMembers`. The broker is built with `agents: {}` (as the deployed handler is), so
 // it builds `createProjectMembers` itself over the table, and the people are real items: org members, a project's revision, and grants. One
 // block per route family (agents, skills, roster, AI settings, approvals), each checking a role that comes from a grant and one from the org role.
-import { StoredProjectDefinitionSchema } from "@rovara-code/contracts";
+import { StoredProjectDefinitionSchema } from "@agentx/cloud-contracts";
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";

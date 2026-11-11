@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
 import { canonicalJson } from "@rovara-code/contracts";
 import { E2EPolicySchema, E2EScenarioBundleSchema, E2EExecutionPlanSchema, E2EQualifiedResultSchema, aggregateE2EVerification, e2eExecutionPlanDigest, E2E_WORKER_PROTOCOL, assertE2EWorkerProtocol, e2eBindingDigest, projectE2EVerification, validateE2EScenarioBundleForPolicy } from "@rovara-code/contracts";
-import { ProjectDefinitionSchema } from "@rovara-code/contracts";
+import { ProjectDefinitionSchema } from "@agentx/cloud-contracts";
 import { WorkflowCheckSchema } from "@rovara-code/contracts";
 import { e2eCaseIdFromIdentity, e2eUpstreamTestIdFromIdentity } from "../../packages/cloud-contracts/src/e2e-case-identity.js";
 

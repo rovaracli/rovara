@@ -1,4 +1,5 @@
-import { AgentXError, ConnectionIdSchema, itemPathProblems, type ConnectorPreflight, type ProjectDefinition, type RegistrationPreflight } from "@rovara-code/contracts";
+import { AgentXError, ConnectionIdSchema, itemPathProblems, type ConnectorPreflight, type RegistrationPreflight } from "@rovara-code/contracts";
+import { type ProjectDefinition } from "@agentx/cloud-contracts";
 import { ConnectorNotConnected, isObject, presentCatalog, TARGET_CONFLICT_REASON, type CatalogTool, type GuardedItemTools, type SkippedTool } from "@agentx/gateway";
 import { discoverScope, stripCode, type ScopeContextBase, type ScopeDiscovery } from "./connector-routes.js";
 import type { ResolvedConnector } from "./connector-types.js";

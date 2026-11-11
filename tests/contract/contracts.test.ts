@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { OperationRequestSchema, PullRequestRequestSchema, PullRequestResultSchema, PullRequestLifecycleRequestSchema, PullRequestLifecycleResultSchema, ProjectDefinitionSchema, StoredProjectDefinitionSchema, legacyProjectFields, WorkspaceInstanceSchema } from "@rovara-code/contracts";
+import { OperationRequestSchema, PullRequestRequestSchema, PullRequestResultSchema, PullRequestLifecycleRequestSchema, PullRequestLifecycleResultSchema, legacyProjectFields, WorkspaceInstanceSchema } from "@rovara-code/contracts";
+import { ProjectDefinitionSchema, StoredProjectDefinitionSchema } from "@agentx/cloud-contracts";
 import { WorkerInvocationSchema } from "@agentx/cloud-contracts";
 
 const digest = `registry.example.com/payments@sha256:${"a".repeat(64)}`;

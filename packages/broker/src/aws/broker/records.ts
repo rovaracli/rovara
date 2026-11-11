@@ -5,7 +5,8 @@ import { writeProjectModelSelection } from "../../model-selection/selection-writ
 import { survivorOf } from "../../org/project-members.js";
 import { GetCommand, PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { GetObjectCommand } from "@aws-sdk/client-s3";
-import { ProjectModelOptionsSchema, ProjectModelSelectionRequestSchema, WorkspaceInstanceSchema, agentXError, workspaceRecordFields, type Operation, type ProjectDefinition, type WorkspaceInstance, modelKey, type ModelRef, type ModelSelection, type ProjectModelOptions, PROJECT_REVISION_SK_PREFIX, projectMemberKey, defaultWorkspaceKey, projectPk, projectSelectionKey, type OrgId } from "@rovara-code/contracts";
+import { ProjectModelOptionsSchema, ProjectModelSelectionRequestSchema, WorkspaceInstanceSchema, agentXError, workspaceRecordFields, type Operation, type WorkspaceInstance, modelKey, type ModelRef, type ModelSelection, type ProjectModelOptions, PROJECT_REVISION_SK_PREFIX, projectMemberKey, defaultWorkspaceKey, projectPk, projectSelectionKey, type OrgId } from "@rovara-code/contracts";
+import { type ProjectDefinition } from "@agentx/cloud-contracts";
 import { OrgRoleSchema, isWriterOrgRole, type OrgRole, orgMemberKey } from "@agentx/cloud-contracts";
 import type { AuthenticatedIdentity } from "../../auth.js";
 import { authorizeWorkspace } from "../../authorization.js";

@@ -211,9 +211,8 @@ describe("where the early score may appear", () => {
       "broker/src/aws/developer-tasks/task-view.ts",
       "broker/src/rovara-code/early-risk-signal.ts",
       "broker/src/rovara-code/task-view-compat.ts",
-      "contracts/src/developer-tasks.ts",
-      "contracts/src/early-risk-signal.ts",
-      "contracts/src/how-we-work-track-record.ts",
+      "cloud-contracts/src/developer-tasks.ts",
+      "cloud-contracts/src/web.ts",
       "ui/src/screens/session/EarlySignal.tsx",
     ]);
     const forbidden = walk(root).filter((path) => /slack|pull-request-body|how-we-work|effective\.ts|track-record\.ts/.test(relative(root, path)) && /earlyRiskSignal|EarlyRiskSignal|risk_low/.test(readFileSync(path, "utf8")))

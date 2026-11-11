@@ -8,7 +8,8 @@
 //
 // Old workers: the prepare payload is a strict schema, so the delivery step refuses a `meta` request for a worker that does not list `prepare.metaRepo` (ec2-delivery.ts), with
 // the "needs a newer worker" message, rather than dropping the field and running without the team's rules.
-import { META_KNOWLEDGE_DEFAULTS, PrepareMetaSchema, agentXError, metaRepositoryOf, projectMetaShape, type MetaKnowledgeKind, type OrgId, type PrepareMeta, type StoredProjectDefinition } from "@rovara-code/contracts";
+import { META_KNOWLEDGE_DEFAULTS, PrepareMetaSchema, agentXError, metaRepositoryOf, projectMetaShape, type MetaKnowledgeKind, type OrgId, type PrepareMeta } from "@rovara-code/contracts";
+import { type StoredProjectDefinition } from "@agentx/cloud-contracts";
 
 /** The feature a worker lists when it can materialize the meta repository. Added to the contracts' WORKER_INVOCATION_FEATURES. */
 export const META_PREPARE_FEATURE = "prepare.metaRepo" as const;

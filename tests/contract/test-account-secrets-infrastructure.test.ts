@@ -9,7 +9,7 @@ import { buildAgentXApp } from "../../infra/lib/app.js";
 import { testAccountSecretsPolicyStatements, testAccountSecretsTrustPolicy } from "../../infra/lib/test-account-secrets-policy.js";
 import { defaultBoundaryStatements, fixedNameEnvironmentRoleNames, testAccountSecretsRoleName } from "../../packages/cloud-contracts/src/access-policies.js";
 import * as accessPolicies from "../../packages/cloud-contracts/src/access-policies.js";
-import * as savedEnvImage from "@rovara-code/contracts";
+import * as savedEnvImage from "../../vendor/rovara-code/packages/contracts/src/saved-env-image.js";
 import { resolveSessionPolicy } from "../../packages/broker/src/test-env/test-account-secrets.js";
 import { testAccountSecretName, testAccountSecretTags } from "@rovara-code/contracts";
 import { FAKE_BROKER_ROLE_ARN, FakeOrgSecrets, type FakeSecretsClient } from "../support/fake-org-secrets.js";

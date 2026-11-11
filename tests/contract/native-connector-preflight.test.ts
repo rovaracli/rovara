@@ -3,7 +3,8 @@
 // paths" and refused every one of them, so no project could attach one through the app. A read-only native connector that declares none is as it should be; a connector that can
 // write and declares none, or a malformed or duplicated declaration, is still refused.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ProjectDefinitionSchema, type OrgId } from "@rovara-code/contracts";
+import { type OrgId } from "@rovara-code/contracts";
+import { ProjectDefinitionSchema } from "@agentx/cloud-contracts";
 import { resolveConnectors } from "../../packages/broker/src/aws/connector-types.js";
 import { sentryConnectorType } from "../../packages/broker/src/aws/sentry-connector-type.js";
 import { preflightConnectors } from "../../packages/broker/src/aws/registration-preflight.js";

@@ -1,7 +1,8 @@
 import { readProjectAllowedDomainsReview } from "../../packages/broker/src/org/project-allowed-domains.js";
 import { randomUUID } from "node:crypto";
 import { expect, it } from "vitest";
-import { ProjectDefinitionSchema, orgProjectCatalogKey, projectMetaKey, projectRevisionKey, type OrgId } from "@rovara-code/contracts";
+import { orgProjectCatalogKey, projectMetaKey, projectRevisionKey, type OrgId } from "@rovara-code/contracts";
+import { ProjectDefinitionSchema } from "@agentx/cloud-contracts";
 import { developerOrgKey, orgMemberKey, orgMetaKey } from "@agentx/cloud-contracts";
 import { projectAllowedDomainsHttp } from "../../packages/broker/src/org/project-allowed-domains-http.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";

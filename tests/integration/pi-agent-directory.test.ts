@@ -7,7 +7,7 @@ import { chmod, mkdir, mkdtemp, realpath, rm, stat, writeFile } from "node:fs/pr
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { promisify } from "node:util";
-import { ProjectDefinitionSchema, type ProjectDefinition } from "@rovara-code/contracts";
+import { ProjectDefinitionSchema, type ProjectDefinition } from "@agentx/cloud-contracts";
 import { type WorkerInvocation } from "@agentx/cloud-contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DevcontainerCli } from "../../packages/worker/src/devcontainer.js";

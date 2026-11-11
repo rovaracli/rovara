@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { IN_HOUSE_TOOL_COUNT, ProjectDefinitionSchema, TOOL_LIMIT, TOOL_WARNING_THRESHOLD } from "@rovara-code/contracts";
+import { IN_HOUSE_TOOL_COUNT, TOOL_LIMIT, TOOL_WARNING_THRESHOLD } from "@rovara-code/contracts";
+import { ProjectDefinitionSchema } from "@agentx/cloud-contracts";
 import { TARGET_CONFLICT_REASON } from "@agentx/gateway";
 import { describe, expect, it, vi } from "vitest";
 import { resolveConnectors, type ResolvedConnector } from "../../packages/broker/src/aws/connector-types.js";

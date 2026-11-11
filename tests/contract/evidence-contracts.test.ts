@@ -5,7 +5,7 @@ import { DeveloperTaskViewReaderSchema } from "../../packages/cloud-contracts/sr
 import { DeveloperTaskViewSchema } from "../../packages/cloud-contracts/src/developer-tasks.js";
 import { ProofTableViewSchema } from "@rovara-code/contracts";
 import { WorkflowCheckSchema } from "@rovara-code/contracts";
-import * as evidence from "@rovara-code/contracts";
+import * as evidence from "../../vendor/rovara-code/packages/contracts/src/evidence.js";
 import { taskViewForClient } from "../../packages/broker/src/rovara-code/task-view-compat.js";
 
 const sha = (letter: string) => letter.repeat(64);

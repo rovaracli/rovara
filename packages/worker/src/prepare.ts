@@ -11,7 +11,8 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
-import { StoredProjectDefinitionSchema, agentXError, redactText, type PrepareMeta, type PrepareRegistry, type ProjectCommand, type StoredProjectDefinition } from "@rovara-code/contracts";
+import { agentXError, redactText, type PrepareMeta, type PrepareRegistry, type ProjectCommand } from "@rovara-code/contracts";
+import { StoredProjectDefinitionSchema, type StoredProjectDefinition } from "@agentx/cloud-contracts";
 import { defaultVenvLinkPolicy, isVenvInterpreterLink, type VenvLinkPolicy } from "./workspace-links.js";
 import { materializeMetaKnowledge } from "./meta-checkout.js";
 import {
