@@ -10,7 +10,7 @@ import { isAbsolute, join, relative, sep } from "node:path";
 import { promisify } from "node:util";
 import { fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai";
 import { onTestFinished, vi } from "vitest";
-import { SharedTaskRecordSchema, agentXError, SlackChannelBindingSchema, SlackRequestMessageSchema, TaskPeopleViewSchema, sharedTaskKey, slackBindingPk, slackThreadSubject, type ChannelMembersRequest, type ChannelMembersResponse, type ProjectCommand, type SlackRequestMessage, type SlackThread, type TaskQuestionRoute, type TaskPeopleDisplayReadRequest, type TaskPeopleDisplayReadResponse, type TaskPersonProofRequest, type TaskPersonProofResponse, type TaskPersonInviteClaimRequest, type TaskPersonInviteOutcome, type WorkflowOptionalCheck } from "@rovara-code/contracts";
+import { SLACK_OIDC_ISSUER, SharedTaskRecordSchema, agentXError, SlackChannelBindingSchema, SlackRequestMessageSchema, TaskPeopleViewSchema, sharedTaskKey, slackBindingPk, slackThreadSubject, type ChannelMembersRequest, type ChannelMembersResponse, type ProjectCommand, type SlackRequestMessage, type SlackThread, type TaskQuestionRoute, type TaskPeopleDisplayReadRequest, type TaskPeopleDisplayReadResponse, type TaskPersonProofRequest, type TaskPersonProofResponse, type TaskPersonInviteClaimRequest, type TaskPersonInviteOutcome, type WorkflowOptionalCheck } from "@rovara-code/contracts";
 import { WORKER_INVOCATION_FEATURES } from "@agentx/cloud-contracts";
 import { WorkerInvocationSchema, WorkflowSnapshotSchema, type WorkerInvocation, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import type { AttributeValue } from "@aws-sdk/client-dynamodb";
@@ -392,12 +392,14 @@ export async function createWorkflowE2E(options: {
   db.set({ pk: `SESSION#${SLACK_MAYA.sessionId}`, sk: "META", sessionId: SLACK_MAYA.sessionId, developerId: SLACK_MAYA.developerId, amr: "slack",
     startedAt: new Date(Date.now() - 60_000).toISOString(), endsAt: Math.floor(Date.now() / 1000) + 604_800 });
   db.set({ pk: `DEVELOPER#${SLACK_MAYA.developerId}`, sk: "META", developerId: SLACK_MAYA.developerId, provider: "slack", displayName: SLACK_MAYA.name,
-    slackUserId: SLACK_MAYA.slackUserId, firstSignInAt: "x", lastSignInAt: "x", revoked: false });
+    slackUserId: SLACK_MAYA.slackUserId, issuer: SLACK_OIDC_ISSUER, subject: SLACK_MAYA.slackUserId, firstSignInAt: "x", lastSignInAt: "x", revoked: false });
   for (const developer of options.taskPeople?.developers ?? []) {
     db.set({ pk: `SESSION#${developer.sessionId}`, sk: "META", sessionId: developer.sessionId, developerId: developer.developerId, amr: developer.provider,
       startedAt: new Date(Date.now() - 60_000).toISOString(), endsAt: Math.floor(Date.now() / 1000) + 604_800 });
     db.set({ pk: `DEVELOPER#${developer.developerId}`, sk: "META", developerId: developer.developerId, provider: developer.provider,
       displayName: developer.name, ...(developer.slackUserId === undefined ? {} : { slackUserId: developer.slackUserId }),
+      // A Slack sign-in row names its issuer and subject (the task person membership check reads the whole projected row).
+      ...(developer.provider === "slack" && developer.slackUserId !== undefined ? { issuer: SLACK_OIDC_ISSUER, subject: developer.slackUserId } : {}),
       firstSignInAt: "x", lastSignInAt: "x", revoked: false });
   }
   const readiness = options.readiness ?? [E2E_CHECK];

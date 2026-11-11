@@ -11,6 +11,7 @@ import { agentXError } from "@rovara-code/contracts";
 import { developerIdForSlackUser } from "../../../packages/broker/src/aws/admin-actions.js";
 import { CLOSED_REPLY } from "../../../packages/broker/src/developer/share-messages.js";
 import { SLACK_TEAM } from "../../support/slack-broker.js";
+import { seedMembership } from "../../support/developer-task-broker.js";
 import { createWorkflowE2E, type WorkflowE2E } from "../../support/workflow-e2e.js";
 import { EDITS, FIXED, MERGED, PLAN, TEAMMATE, actionIds, atPlanReview, editsOrFix, journeySuite, openDraftPr, runs, said } from "../../support/workflow-e2e-journeys.js";
 
@@ -53,6 +54,8 @@ const afterCompletion = (e2e: WorkflowE2E) => said(e2e).slice(said(e2e).indexOf(
 
 function grantCurrentCoOwner(e2e: WorkflowE2E): void {
   const taskId = e2e.taskId();
+  // A co-owner is a current company member (the one explicit-member rule, feat/0515-task-people-v3): a Slack account with no member record is not one.
+  seedMembership(e2e.db, developerIdForSlackUser(CO_OWNER));
   const people = [
     { slackUserId: OWNER, role: "owner" as const },
     { slackUserId: CO_OWNER, role: "owner" as const },

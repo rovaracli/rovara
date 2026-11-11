@@ -1185,7 +1185,7 @@ export class ControlPlaneStack extends Stack {
       BrokerNames.of(broker).add("savedEnvKey", savedEnvImages.kmsKeyId);
       companyImageMirror.function.addEnvironment("SAVED_ENV_KMS_KEY_ARN", savedEnvImages.kmsKeyArn);
       companyImageMirror.function.grantInvoke(broker);
-      BrokerNames.of(broker).add("companyImageMirrorFunction", companyImageMirror.function.functionName);
+      // The broker finds the mirror function by its derived name (companyImageMirrorFunctionName), not by a name passed in AGENTX_NAMES (the broker's environment has no room for it).
     }
     // Test services (TS19): the catalog's image repositories and their key. NOT behind `TestServicesEnabled` (switch `tx`): the repositories have fixed names and are retained, so a condition would break turning the switch on, off and on again.
     if (naming.env !== undefined) attachServiceCatalogImages(this, { env: naming.env, repositories: SERVICE_CATALOG_REPOSITORIES });

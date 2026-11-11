@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  BOUNDARY_INSTANCE_PROFILE_ACTIONS, BOUNDARY_NAMED_READS, BOUNDARY_SERVICES, CLOUDFRONT_BOUNDARY_ACTIONS, MANAGED_POLICY_ACTIONS, SERVICE_LINKED_ROLE_SERVICES, SERVICE_ROLE_SERVICES, defaultBoundaryArn, defaultBoundaryName, defaultBoundaryStatements, operatorRoleStatements, serviceRoleStatements, withoutSids, type PolicyScope,
+  BOUNDARY_INSTANCE_PROFILE_ACTIONS, BOUNDARY_NAMED_READS, BOUNDARY_ROLE_LIST_ACTIONS, BOUNDARY_SERVICES, CLOUDFRONT_BOUNDARY_ACTIONS, MANAGED_POLICY_ACTIONS, SERVICE_LINKED_ROLE_SERVICES, SERVICE_ROLE_SERVICES, defaultBoundaryArn, defaultBoundaryName, defaultBoundaryStatements, operatorRoleStatements, serviceRoleStatements, withoutSids, type PolicyScope,
 } from "../../infra/lib/access-policies.js";
 import { readFileSync } from "node:fs";
 import { brokerRoleName, modelAccessProbeRoleName, modelProxyTaskRoleName } from "@agentx/cloud-contracts";
@@ -499,13 +499,14 @@ describe("default permission boundary", () => {
     expect(iam).not.toContain("*");
     expect(iam.filter((a) => /User|Group|AccessKey|LoginProfile|PolicyVersion|^iam:(Create|Delete)Policy$|DefaultPolicyVersion/.test(a))).toEqual([]);
     // 2026-11-03: the one wildcard is the instance profile pattern, which is exactly the seven INSTANCE_PROFILE_ACTIONS (pinned in "names the instance profile actions with one pattern" below).
-    expect(iam.filter((a) => a.includes("*"))).toEqual([BOUNDARY_INSTANCE_PROFILE_ACTIONS]);
+    // 2026-11-11: and the role list pattern, which is exactly iam:ListRolePolicies and iam:ListAttachedRolePolicies (pinned in "names the two role list actions with one pattern" below), in IamRoles and the lookup statement.
+    expect(iam.filter((a) => a.includes("*"))).toEqual([BOUNDARY_ROLE_LIST_ACTIONS, BOUNDARY_ROLE_LIST_ACTIONS, BOUNDARY_INSTANCE_PROFILE_ACTIONS]);
   });
 
   it("scopes role actions and PassRole to AgentX's own roles", () => {
     const byId = Object.fromEntries(allows.map((s) => [s.Sid, s]));
     expect([byId.IamRoles!.Resource].flat()).toEqual(["arn:aws:iam::123456789012:role/agentx/staging/*", "arn:aws:iam::123456789012:role/agentx-staging-img-create"]);
-    expect(byId.IamRoles!.Action.every((a) => /^iam:[A-Za-z]*Role[A-Za-z]*$/.test(a))).toBe(true);
+    expect(byId.IamRoles!.Action.every((a) => /^iam:[A-Za-z]*Role[A-Za-z]*$/.test(a) || a === BOUNDARY_ROLE_LIST_ACTIONS)).toBe(true);
     // 2026-11-03: iam:PassRole is in IamRoles (the same two ARNs), and the service role is passed by PassServiceRole alone: the union of what is allowed is what PassRoles and IamRoles allowed before.
     expect(byId.IamRoles!.Action).toContain("iam:PassRole");
     expect(byId.PassRoles).toBeUndefined();
@@ -569,6 +570,18 @@ describe("default permission boundary", () => {
     const matched = iamActions.actions.filter((action) => actionPattern(BOUNDARY_INSTANCE_PROFILE_ACTIONS).test(action));
     expect([...matched].sort()).toEqual([...named].sort());
     expect(boundary.Resource).toBe("arn:aws:iam::123456789012:instance-profile/agentx/staging/*");
+  });
+
+  it("names the two role list actions with one pattern that matches exactly those two (against AWS's IAM action list of 2026-11-03), and otherwise the same actions the deploy role names", () => {
+    const matched = iamActions.actions.filter((action) => actionPattern(BOUNDARY_ROLE_LIST_ACTIONS).test(action));
+    expect([...matched].sort()).toEqual(["iam:ListAttachedRolePolicies", "iam:ListRolePolicies"]);
+    const deploy = serviceRoleStatements(scope);
+    for (const sid of ["IamRoles", "IamFixedNameRolesNotYetCreated"]) {
+      const inBoundary = allows.find((s) => s.Sid === sid)!.Action;
+      const expanded = inBoundary.flatMap((a) => (a === BOUNDARY_ROLE_LIST_ACTIONS ? matched : [a]));
+      expect([...expanded].sort(), sid).toEqual([...deploy.find((s) => s.Sid === sid)!.Action].sort());
+      expect(inBoundary.filter((a) => a.includes("*")), sid).toEqual([BOUNDARY_ROLE_LIST_ACTIONS]);
+    }
   });
 
   it("lets the roles it bounds read Bedrock model availability (bedrock:GetFoundationModelAvailability has no resource type, so it needs Resource \"*\"), through the Services statement's bedrock:* and no Deny", () => {
@@ -664,6 +677,8 @@ describe("CloudFront permissions (web app deploy)", () => {
         // tests/contract/default-boundary-equivalence.test.ts proves it permits what v0.5.2's did. The limit below is unchanged (6144 - 90).
         // TR-SWITCH-B1/B2 (2026-11-08): the Team record's three services, Glue reads, GetDataAccess, the vector role and the sharing Deny took the boundary's worst case from 5,585 to 6,014 (limit below 6,054: 40 left) and the service role's
         // from 7,864 to 9,198 (limit 9,240: 42 left; IAM's real cap is 10,240, so about 1,040 remain). The next addition to either policy needs a compression pass, or a deliberate decision to lower the margin, first.
+        // 2026-11-11: the image roles named exactly again in the lookup list (img-push, img-pull, img-manage, img-mirror; no img-* wildcard) took the worst case to 6,086, 32 over; naming the two role list actions with
+        // BOUNDARY_ROLE_LIST_ACTIONS (exactly those two, in IamRoles and the lookup statement) saved 60, so it is 6,026 (28 left). Nothing new is allowed (default-boundary-equivalence holds).
         const boundary = size(withoutSids(defaultBoundaryStatements(longest)));
         worst = Math.max(worst, boundary);
         expect(boundary, `boundary, ${env}, ${rovaraOrganizationId ?? "no org id"}`).toBeLessThanOrEqual(6144 - 90);

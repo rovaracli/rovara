@@ -26,7 +26,6 @@ const NAMES = {
   slackThreadsTable: "agentx-staging-control-plane-SlackThreads36E14C1E-1A2B3C4D5E6F7",
   turnRecordsTable: "agentx-staging-control-plane-TurnRecords69ECFCD9-1A2B3C4D5E6F7",
   planEvidenceFunction: "agentx-staging-control-plane-PlanEvidence3615C4CB-1A2B3C4D5E6F7",
-  companyImageMirrorFunction: "agentx-staging-control-plane-CompanyImageMirrorFunction3C1D2E4F-8A9B0C1D2E3F",
   modelAccessFunction: "agentx-staging-control-plane-ModelAccessFunction1B50ECC9-1A2B3C4D5E6F7",
   dispatcherFunction: "agentx-staging-control-plane-Dispatcher6C5A7D1F-1A2B3C4D5E6F7",
   slackRequestQueue: "agentx-staging-control-plane-SlackRequestQueueCC82C864-1A2B3C4D5E6F7",
@@ -113,7 +112,8 @@ describe("hydrateBrokerEnvironment: the names (AGENTX_NAMES)", () => {
       SLACK_THREADS_TABLE_NAME: NAMES.slackThreadsTable,
       TURN_RECORDS_TABLE_NAME: NAMES.turnRecordsTable,
       PLAN_EVIDENCE_FUNCTION_NAME: NAMES.planEvidenceFunction,
-      COMPANY_IMAGE_MIRROR_FUNCTION_NAME: NAMES.companyImageMirrorFunction,
+      // Company images (0.5.15): the mirror function has a fixed name, derived from AGENTX_ENV, not passed.
+      COMPANY_IMAGE_MIRROR_FUNCTION_NAME: "agentx-staging-company-image-mirror",
       MODEL_ACCESS_FUNCTION_NAME: NAMES.modelAccessFunction,
       // LA-1 (peek): the dispatcher's name becomes its function ARN.
       DISPATCHER_FUNCTION_ARN: `arn:aws:lambda:us-west-2:123456789012:function:${NAMES.dispatcherFunction}`,
