@@ -21,6 +21,7 @@ import {
   AgentXNameSchema,
   BUILTIN_AGENTS,
   ModelSourceIdSchema,
+  ORG_PENDING_APPROVALS_PATH,
   SkillIdSchema,
   SpendPolicyFieldsSchema,
   SpendPolicySchema,
@@ -96,6 +97,7 @@ import type { ChainViewPorts } from "../chains/view.js";
 import { suggestMaxPerRun, type RequestRunLimit } from "../spend/estimate.js";
 import { ownerShare, withBudgetFields } from "../spend/owner-total.js";
 import { routeSpendRequest } from "../spend/routes.js";
+import { orgPendingApprovals } from "./org-pending-summary.js";
 import { effectiveOwnerCap, isSpendRequestRoute, requestOwnerCap, routeSpendRequests, type SpendRequestHost } from "../spend/requests.js";
 import { isConnectionRoute, routeConnectionRequest, type ConnectionRouteDependencies } from "../connections/routes.js";
 import { isProjectConnectorRoute, registerProjectConnectorApprovals, routeProjectConnectorRequest } from "../connections/project-connectors.js";
@@ -186,6 +188,7 @@ const waiting = (result: Extract<ChangeResult<unknown>, { applied: false }>): St
 export function isAgentRoute(pathname: string): boolean {
   return /^\/v1\/app\/(agents|skills|approvals|spend-requests|connections|budget)(\/|$)/.test(pathname)
     || /^\/v1\/app\/org\/(agent-guardrails|model-sources|model-sources-order|spend|spend-policy|mcp-servers)(\/|$)/.test(pathname)
+    || pathname === ORG_PENDING_APPROVALS_PATH
     || /^\/v1\/app\/tasks\/[^/]+\/(continue-as-task|run-limit-request)$/.test(pathname)
     || /^\/v1\/app\/projects\/[^/]+\/(agents|ai|spend|connectors|builtin-triggers|event-hooks|context-sources)(\/|$)/.test(pathname);
 }
@@ -1001,6 +1004,11 @@ export async function routeAgentRequest(deps: AgentRouteDependencies, caller: Ag
   // Task 30: the spend reads (`/v1/app/budget`, the org's spend and ledger, a project's and an agent's), before the agent paths they would otherwise match.
   const spend = await routeSpendRequest(deps, caller, request, url);
   if (spend !== undefined) return spend;
+  // srv/needs-broker-ui-2 item 9: the company's pending approvals at a glance (an org owner or admin; read-only).
+  if (url.pathname === ORG_PENDING_APPROVALS_PATH) {
+    if (request.method !== "GET") throw agentXError("NOT_FOUND", "route not found");
+    return orgPendingApprovals(deps, caller);
+  }
   // Task 21: the approvals (`/v1/app/approvals*`).
   if (isApprovalRoute(url.pathname)) return routeApprovalRequest(deps, caller, request, url);
   // Task 32: the spend requests (`/v1/app/spend-requests*`) and a test run's continue-as-task.

@@ -95,6 +95,13 @@ const TITLES: Record<string, string> = {
 /** What a pending change is called: the title of its page (Home shows it too). */
 export const changeTitleOf = (kind: string): string => TITLES[kind] ?? "Confirm a change";
 
+/** The titles of the confirmation page of a write and of a step. */
+export const WRITE_APPROVAL_TITLE = "An agent wants to make a change";
+export const STEP_APPROVAL_TITLE = "A run is waiting for you";
+
+/** The title the confirmation page shows for a record, whatever its kind: the one place the words live (the company's pending summary lists them too). */
+export const confirmTitleOf = (record: Pick<AnyApprovalRecord, "kind"> & { subject: { kind: string } }): string => (record.kind === "write" ? WRITE_APPROVAL_TITLE : record.kind === "step" ? STEP_APPROVAL_TITLE : changeTitleOf(record.subject.kind));
+
 const fact = (label: string, value: string) => ({ label, value });
 const prefix = (digest: string) => digest.slice(0, 12);
 
@@ -191,7 +198,7 @@ async function viewOf(deps: ApprovalDependencies, record: AnyApprovalRecord): Pr
   const expires = fact("Expires", record.expiresAt);
   if (record.kind === "write") {
     return {
-      title: "An agent wants to make a change",
+      title: WRITE_APPROVAL_TITLE,
       facts: [
         ...(record.agent === undefined ? [] : [fact("Agent", record.agent.name)]),
         fact("Project", record.project), fact("Run", record.subject.taskId), fact("Step", record.subject.stepId), fact("Run owner", record.owner.name),
@@ -206,7 +213,7 @@ async function viewOf(deps: ApprovalDependencies, record: AnyApprovalRecord): Pr
   if (record.kind === "step") {
     const run = await runOfApproval(deps, record);
     return {
-      title: "A run is waiting for you",
+      title: STEP_APPROVAL_TITLE,
       facts: [...(run === undefined ? [] : [fact("Project", run.project), fact("Run owner", run.owner.name)]), expires],
       paragraphs: [record.prompt],
     };

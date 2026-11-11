@@ -72,6 +72,7 @@
   "packages/contracts/src/notification-prefs.ts",
   "packages/contracts/src/onboarding.ts",
   "packages/contracts/src/org-budget.ts",
+  "packages/contracts/src/org-pending-approvals.ts",
   "packages/contracts/src/org-slack-workspace-evidence.ts",
   "packages/contracts/src/org.ts",
   "packages/contracts/src/outcomes.ts",
