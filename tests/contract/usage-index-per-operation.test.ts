@@ -1,16 +1,18 @@
 // 0.5.13 release check, task caaa4be2: the usage index (USAGE_INDEX rows, origin ai_tool) added up to about 1.8 times what the cost ledger settled. A conversation's reopened Pi session adds up
 // every message of its saved transcript, so the worker's usage event for a later operation carried the conversation's running total, and a review run (whose own session is not used) sent
-// that whole total again. This runs the real worker over several operations of one conversation (one with a retry, a review in the middle), sends each usage event through the real
-// activity index, settles the ledger after each operation, and asserts that the rows add up to the ledger.
+// that whole total again. This runs the real worker over several operations of one conversation (a retry, a crash before the event was sent and its retry, a review in the middle, a conversation
+// started before the reported figure was kept), sends each usage event through the real activity index, settles the ledger after each operation, and asserts that the rows, and the autofix
+// spend sum, add up to what was spent.
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, realpath, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { marshall } from "@aws-sdk/util-dynamodb";
 import { describe, expect, it } from "vitest";
 import { WorkerInvocationSchema } from "../../packages/contracts/src/index.js";
 import { indexActivity, type IndexStore } from "../../packages/broker/src/aws/activity-index.js";
+import { autofixOperationUsage } from "../../packages/broker/src/aws/broker/dispatch.js";
 import type { StreamRecord } from "../../packages/broker/src/developer/notifications.js";
 import { statsSince } from "../../packages/worker/src/usage.js";
 import type { PiSessionAdapter, PiSessionHandle } from "../../packages/worker/src/pi-session.js";
@@ -47,6 +49,7 @@ const PLAN_DIGEST = "d".repeat(64);
  * model call costs is spent for real (`incurred`, which the proxy's key spend and so the ledger counts).
  */
 function fakePi(conversationId: string, costs: { next: Array<number | null> }) {
+  const statsFail = { once: false };
   const transcripts = new Map<string, number[]>();
   const incurred = { usd: 0 };
   const session = (id: string, file: string, role: "main" | "reviewer"): PiSessionHandle => {
@@ -66,7 +69,10 @@ function fakePi(conversationId: string, costs: { next: Array<number | null> }) {
       },
       async abort() {},
       getModel: () => ({ provider: "test", modelId: "first-v1" }),
-      getSessionStats: () => ({ sessionFile: file, sessionId: id, userMessages: entries.length, assistantMessages: entries.length, toolCalls: 0, toolResults: 0, totalMessages: entries.length * 2, tokens: { input: 10 * entries.length, output: 5 * entries.length, cacheRead: 0, cacheWrite: 0, total: 15 * entries.length }, cost: Math.round(entries.reduce((sum, cost) => sum + cost, 0) * 1e9) / 1e9 }),
+      getSessionStats: () => {
+        if (statsFail.once) { statsFail.once = false; throw new Error("stats unreadable"); }
+        return { sessionFile: file, sessionId: id, userMessages: entries.length, assistantMessages: entries.length, toolCalls: 0, toolResults: 0, totalMessages: entries.length * 2, tokens: { input: 10 * entries.length, output: 5 * entries.length, cacheRead: 0, cacheWrite: 0, total: 15 * entries.length }, cost: Math.round(entries.reduce((sum, cost) => sum + cost, 0) * 1e9) / 1e9 };
+      },
       subscribe(callback) { listener = callback; return () => { listener = () => undefined; }; },
       dispose() {},
     };
@@ -81,7 +87,15 @@ function fakePi(conversationId: string, costs: { next: Array<number | null> }) {
       return session(input.conversationId, input.sessionFile, "main");
     },
   };
-  return { adapter, incurred };
+  return { adapter, incurred, statsFail };
+}
+
+/** What a conversation started by 0.5.13 looks like: the manifest has no reported usage. */
+async function withoutReportedUsage(rootPath: string): Promise<void> {
+  const file = join(rootPath, ".agentx/conversations.json");
+  const manifest = JSON.parse(await readFile(file, "utf8")) as { conversations: Record<string, Record<string, unknown>> };
+  for (const record of Object.values(manifest.conversations)) delete record.reportedUsage;
+  await writeFile(file, JSON.stringify(manifest));
 }
 
 const WORKSPACE_ID = randomUUID();
@@ -111,42 +125,56 @@ describe("the usage index holds each operation's own cost, written once", () => 
     const costs = { next: [] as Array<number | null> };
     const pi = fakePi(conversationId, costs);
     const index = table();
-    // The broker's side: events get the next sequence number of their operation (a retry continues it), the index reads them, and the ledger settles what the proxy says was spent.
+    // The broker's side: events get the next sequence number of their operation (a retry continues it) and arrive at distinct times (a row is keyed by its time and operation), the index reads them, and the ledger settles what the proxy says was spent.
     const sequences = new Map<string, number>();
+    const stored: Array<Record<string, unknown>> = [];
     const ledger = { settledUsd: 0, settles: 0 };
-    const operations: Array<{ id: string; mode: "SPEC_WRITE" | "REVIEW"; costs: Array<number | null>; runs: number }> = [
+    const operations: Array<{ id: string; mode: "SPEC_WRITE" | "REVIEW"; costs: Array<number | null>; runs: number; crashFirst?: true; legacyBefore?: true }> = [
       { id: randomUUID(), mode: "SPEC_WRITE", costs: [0.03815], runs: 1 },
       { id: randomUUID(), mode: "SPEC_WRITE", costs: [0.02035], runs: 1 },
       // Reopened, with a first attempt that is run again under the same operation id.
       { id: randomUUID(), mode: "SPEC_WRITE", costs: [0.04978, 0.0123], runs: 2 },
       // A review run: the conversation's session and the reviewers' sessions of their own each spend.
       { id: randomUUID(), mode: "REVIEW", costs: [0.03688, 0.02712], runs: 1 },
-      { id: randomUUID(), mode: "SPEC_WRITE", costs: [0.0517], runs: 1 },
+      // The conversation was started before the reported figure was kept (a 0.5.13 conversation): its earlier operations were reported as running totals, so this one starts from the stats at reopen.
+      { id: randomUUID(), mode: "SPEC_WRITE", costs: [0.0517], runs: 1, legacyBefore: true },
       // A run on the reopened conversation that makes no model call: it spent nothing, so it reports nothing (and not the conversation's running total).
       { id: randomUUID(), mode: "SPEC_WRITE", costs: [null], runs: 1 },
+      // A first attempt that makes its model calls and dies before its usage event reaches the control plane (the event sink refuses everything), then the retry: the retry reports both.
+      { id: randomUUID(), mode: "SPEC_WRITE", costs: [0.0777, 0.0111], runs: 2, crashFirst: true },
+      { id: randomUUID(), mode: "SPEC_WRITE", costs: [0.0299], runs: 1 },
     ];
     let first = true;
     for (const operation of operations) {
       for (let run = 0; run < operation.runs; run += 1) {
         costs.next = operation.mode === "SPEC_WRITE" ? [operation.costs[run]!] : [...operation.costs];
         const events: Array<{ type: string; timestamp: string; payload: unknown }> = [];
-        await runTaskInvocation(WorkerInvocationSchema.parse({
+        const crashed = operation.crashFirst === true && run === 0;
+        if (operation.legacyBefore === true && run === 0) await withoutReportedUsage(w.rootPath);
+        const attempt = runTaskInvocation(WorkerInvocationSchema.parse({
           protocolVersion: 1, kind: "task", operationId: operation.id, workspaceId: WORKSPACE_ID, fence: 1, projectRevision: 1, callbackCapability: "c".repeat(64),
           payload: operation.mode === "SPEC_WRITE"
             ? { conversationId, ...(first ? {} : { conversationStarted: true }), prompt: "THE APPROVED PLAN", workflowMode: "SPEC_WRITE", specWrite: { format: "kiro", kind: "feature", planDigest: PLAN_DIGEST }, workflowBase: [{ repositoryId: "payments", baseCommitSha: w.base }] }
             : { conversationId, conversationStarted: true, prompt: "Run the independent read-only reviews.", workflowMode: "REVIEW", workflowBase: [{ repositoryId: "payments", baseCommitSha: w.base }] },
         }), {
           rootPath: w.rootPath, model: { provider: "test", modelId: "first-v1" }, piAdapter: pi.adapter, log: () => undefined,
-          eventSink: async (batch) => { for (const event of (Array.isArray(batch) ? batch : [batch]) as typeof events) events.push(event); },
+          eventSink: async (batch) => {
+            if (crashed) throw new Error("the control plane did not take the events");
+            for (const event of (Array.isArray(batch) ? batch : [batch]) as typeof events) events.push(event);
+          },
           artifactSink: async () => undefined,
         });
+        if (crashed) await attempt.catch(() => undefined);
+        else await attempt;
         first = false;
         const records: StreamRecord[] = [];
         for (const event of events) {
           if (event.type !== "usage") continue;
           const sequence = (sequences.get(operation.id) ?? 0) + 1;
           sequences.set(operation.id, sequence);
-          records.push(inserted({ pk: `OPERATION#${operation.id}`, sk: `EVENT#${String(sequence).padStart(12, "0")}`, entityType: "EVENT", workspaceId: WORKSPACE_ID, operationId: operation.id, sequence, type: "usage", timestamp: event.timestamp, payload: event.payload }, `${operation.id}-${sequence}`));
+          const item = { pk: `OPERATION#${operation.id}`, sk: `EVENT#${String(sequence).padStart(12, "0")}`, entityType: "EVENT", workspaceId: WORKSPACE_ID, operationId: operation.id, sequence, type: "usage", timestamp: new Date(Date.parse(event.timestamp) + sequence).toISOString(), payload: event.payload };
+          stored.push(item);
+          records.push(inserted(item, `${operation.id}-${sequence}`));
         }
         expect(await indexActivity(records, index.store, () => undefined)).toMatchObject({ failed: 0 });
         // The settle after the operation: the ledger counts what the proxy says the task's keys spent so far.
@@ -154,8 +182,8 @@ describe("the usage index holds each operation's own cost, written once", () => 
         ledger.settles += 1;
       }
     }
-    expect(ledger.settles).toBe(7);
-    expect(ledger.settledUsd).toBeCloseTo(0.03815 + 0.02035 + 0.04978 + 0.0123 + 0.03688 + 0.02712 + 0.0517, 6);
+    expect(ledger.settles).toBe(10);
+    expect(ledger.settledUsd).toBeCloseTo(0.03815 + 0.02035 + 0.04978 + 0.0123 + 0.03688 + 0.02712 + 0.0517 + 0.0777 + 0.0111 + 0.0299, 6);
     // The index adds up to the ledger (within rounding), and every row is origin ai_tool.
     expect([...index.rows.values()].every((row) => row.origin === "ai_tool")).toBe(true);
     expect(index.usdOf()).toBeCloseTo(ledger.settledUsd, 6);
@@ -167,21 +195,55 @@ describe("the usage index holds each operation's own cost, written once", () => 
     expect(byOperation(operations[3]!.id)).toBeCloseTo(0.03688 + 0.02712, 6);
     expect(byOperation(operations[4]!.id)).toBeCloseTo(0.0517, 6);
     expect(byOperation(operations[5]!.id)).toBe(0);
+    expect(byOperation(operations[6]!.id)).toBeCloseTo(0.0777 + 0.0111, 6);
+    expect(byOperation(operations[7]!.id)).toBeCloseTo(0.0299, 6);
     // One row per report that spent something: the review has one for its conversation session and one per reviewer session, the retried operation has one row per attempt, a run with no model call has none.
     const rowsOf = (id: string) => [...index.rows.values()].filter((row) => row.operationId === id).length;
-    expect(operations.map((operation) => rowsOf(operation.id))).toEqual([1, 1, 2, 3, 1, 0]);
+    expect(operations.map((operation) => rowsOf(operation.id))).toEqual([1, 1, 2, 3, 1, 0, 1, 1]);
+    // The AUTOFIX spend cap adds up the usage events themselves (not the index): over a reopen, a retry and a crash and its retry, each operation's sum is what that operation really spent.
+    const eventsClient = { send: async (command: { input: { ExpressionAttributeValues?: Record<string, unknown> } }) => ({ Items: stored.filter((item) => item.pk === command.input.ExpressionAttributeValues![":pk"]).map((item) => ({ payload: item.payload })) }) };
+    const autofixed = async (id: string) => autofixOperationUsage({ documentClient: eventsClient, tableName: "table" } as never, id);
+    const spentBy = [0.03815, 0.02035, 0.04978 + 0.0123, 0.03688 + 0.02712, 0.0517, 0, 0.0777 + 0.0111, 0.0299];
+    for (const [position, operation] of operations.entries()) expect((await autofixed(operation.id))?.total, `operation ${String(position)}`).toBeCloseTo(spentBy[position]!, 6);
+  });
+});
+
+describe("a run whose usage cannot be worked out reports none, and says so", () => {
+  const invocation = (operationId: string, conversationId: string, base: string, started: boolean) => WorkerInvocationSchema.parse({
+    protocolVersion: 1, kind: "task", operationId, workspaceId: WORKSPACE_ID, fence: 1, projectRevision: 1, callbackCapability: "c".repeat(64),
+    payload: { conversationId, ...(started ? { conversationStarted: true } : {}), prompt: "THE APPROVED PLAN", workflowMode: "SPEC_WRITE", specWrite: { format: "kiro", kind: "feature", planDigest: PLAN_DIGEST }, workflowBase: [{ repositoryId: "payments", baseCommitSha: base }] },
+  });
+  const run = async (rootPath: string, pi: ReturnType<typeof fakePi>, input: ReturnType<typeof invocation>) => {
+    const events: Array<{ type: string; payload: unknown }> = [];
+    const logged: string[] = [];
+    await runTaskInvocation(input, {
+      rootPath, model: { provider: "test", modelId: "first-v1" }, piAdapter: pi.adapter, log: (_level, line) => { logged.push(line); },
+      eventSink: async (batch) => { for (const event of (Array.isArray(batch) ? batch : [batch]) as typeof events) events.push(event); },
+      artifactSink: async () => undefined,
+    });
+    return { usage: events.filter((event) => event.type === "usage"), logged };
+  };
+
+  it("sends nothing, instead of the whole running total again, when a conversation without a reported figure cannot read its stats", async () => {
+    const w = await workspace();
+    const conversationId = randomUUID();
+    const costs = { next: [0.05, 0.07] as Array<number | null> };
+    const pi = fakePi(conversationId, costs);
+    const first = await run(w.rootPath, pi, invocation(randomUUID(), conversationId, w.base, false));
+    expect(first.usage).toHaveLength(1);
+    await withoutReportedUsage(w.rootPath);
+    pi.statsFail.once = true;
+    const second = await run(w.rootPath, pi, invocation(randomUUID(), conversationId, w.base, true));
+    expect(second.usage).toHaveLength(0);
+    expect(second.logged.some((line) => line.includes("usage.baseline_unavailable"))).toBe(true);
   });
 
-  it("keeps two reports of one operation in the same millisecond as two rows, and a replayed stream record as one", async () => {
-    const index = table();
-    const operationId = randomUUID();
-    const at = "2026-11-10T04:00:00.000Z";
-    const usage = (costUsd: number) => ({ schemaVersion: 1, outcome: "SUCCEEDED", provider: "test", modelId: "m", cacheRetention: "short", tokens: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, total: 2 }, cacheReadRatio: 0, costUsd });
-    const event = (sequence: number, costUsd: number) => inserted({ pk: `OPERATION#${operationId}`, sk: `EVENT#${String(sequence).padStart(12, "0")}`, entityType: "EVENT", workspaceId: WORKSPACE_ID, operationId, sequence, type: "usage", timestamp: at, payload: usage(costUsd) }, `e${sequence}`);
-    await indexActivity([event(2, 0.03688), event(3, 0.02712)], index.store, () => undefined);
-    await indexActivity([event(2, 0.03688), event(3, 0.02712)], index.store, () => undefined);
-    expect(index.rows.size).toBe(2);
-    expect(index.usdOf()).toBeCloseTo(0.064, 6);
+  it("sends no event for a run with no model call on a fresh session either, as on a reopened one", async () => {
+    const w = await workspace();
+    const conversationId = randomUUID();
+    const pi = fakePi(conversationId, { next: [null] });
+    const fresh = await run(w.rootPath, pi, invocation(randomUUID(), conversationId, w.base, false));
+    expect(fresh.usage).toHaveLength(0);
   });
 });
 

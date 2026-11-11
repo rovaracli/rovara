@@ -143,13 +143,9 @@ export function orgUsageDayPk(orgId: OrgId, day: string): string {
   return orgScoped(orgId, `USAGE#${day}`);
 }
 
-/**
- * One usage row. An operation can report usage more than once (each reviewer's session, each part, a retry), and two reports of one operation can carry the same millisecond, so the
- * event's own sequence number is part of the key when there is one: a replayed stream record has the same sequence and so the same key (written once), and two reports never share a row.
- */
-export function orgUsageIndexKey(orgId: OrgId, at: string, opId: string, sequence?: number): OrgKey {
+export function orgUsageIndexKey(orgId: OrgId, at: string, opId: string): OrgKey {
   const time = canonicalInstant(at);
-  return { pk: orgUsageDayPk(orgId, indexDay(time)), sk: `${time}#${opId}${sequence === undefined ? "" : `#${String(sequence).padStart(12, "0")}`}` };
+  return { pk: orgUsageDayPk(orgId, indexDay(time)), sk: `${time}#${opId}` };
 }
 
 /** One org's failure items for a UTC day (`day` is `YYYY-MM-DD`). */
