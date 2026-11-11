@@ -130,6 +130,14 @@ describe("the broker calls", () => {
     expect(posted[0]!.body).toEqual({ jobId: "job-1", leaseToken: LEASE });
   });
 
+  it("takes no login for a registry on the worker's own machine (W0-3 review H1)", async () => {
+    const seen: unknown[] = [];
+    const loopback = (registry: string) => new Response(JSON.stringify({ login: { ...goodLogin, registry, username: "rovara-local" } }), { status: 200 });
+    const { deps } = bench({ answers: [loopback("127.0.0.1:5000"), loopback("localhost:5001")], during: async (ports) => { seen.push(await ports.pushSession({ repository: REPOSITORY })); seen.push(await ports.pushSession({ repository: REPOSITORY })); } });
+    await runSavedEnvRebuild(deps);
+    expect(seen).toEqual([undefined, undefined]);
+  });
+
   it("gets no login when the broker refuses or cannot be reached", async () => {
     const seen: unknown[] = [];
     const { deps } = bench({ answers: [new Response("no", { status: 403 }), new Error("down")], during: async (ports) => { seen.push(await ports.pushSession({ repository: REPOSITORY })); seen.push(await ports.pushSession({ repository: REPOSITORY })); } });

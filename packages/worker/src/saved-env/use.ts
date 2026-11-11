@@ -23,7 +23,7 @@ import { randomBytes } from "node:crypto";
 import { cp, lstat, mkdir, mkdtemp, readFile, readdir, readlink, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { SAVED_ENV_IMAGE_MANIFEST_PATH, SAVED_ENV_IMAGE_SEED_PATH, SAVED_ENV_LABEL_KEY, SAVED_ENV_LABEL_REVISION, PrepareSavedEnvSchema, SavedEnvImageManifestSchema, SavedEnvRegistryAuthSchema, type PrepareSavedEnv, type SavedEnvImageManifest, type SavedEnvRegistryAuth, type SavedEnvUseStep } from "@rovara-code/contracts";
+import { SAVED_ENV_IMAGE_MANIFEST_PATH, SAVED_ENV_IMAGE_SEED_PATH, SAVED_ENV_LABEL_KEY, SAVED_ENV_LABEL_REVISION, PrepareSavedEnvSchema, SavedEnvImageManifestSchema, HostedSavedEnvRegistryAuthSchema, type PrepareSavedEnv, type SavedEnvImageManifest, type SavedEnvRegistryAuth, type SavedEnvUseStep } from "@rovara-code/contracts";
 import { type StoredProjectDefinition } from "@agentx/cloud-contracts";
 import { assertCredentialFreeRemote, runGitWithCredential, type GitCredential } from "../git-auth.js";
 import { createDockerCli, type DockerCli } from "../swebench/containers.js";
@@ -111,7 +111,7 @@ async function extractImage(options: SavedEnvUseOptions, repositories: readonly 
   if (use.testEnvRevision !== use.taskTestEnvRevision) throw new Fallback("revision");
   // the login is fetched as late as possible and checked before anything is pulled with it
   let auth: SavedEnvRegistryAuth;
-  try { auth = SavedEnvRegistryAuthSchema.parse(await options.login()); } catch { throw new Fallback("login"); }
+  try { auth = HostedSavedEnvRegistryAuthSchema.parse(await options.login()); } catch { throw new Fallback("login"); }
   if (auth.repository !== use.repository) throw new Fallback("login");
   if (Date.parse(auth.expiresAt) - (options.now ?? Date.now)() < LOGIN_MIN_REMAINING_MS) throw new Fallback("expired");
   const reference = `${auth.registry}/${use.repository}@${use.digest}`;

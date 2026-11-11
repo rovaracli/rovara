@@ -19,7 +19,7 @@
 // The org and the project come from the broker's own verified operation, never from the worker's request: the worker names neither (the caller derives the repository from the operation's project).
 //
 // The AWS calls are PORTS: `assume` (STS AssumeRole with the policy) and `authorizationToken` (ECR GetAuthorizationToken with the assumed session's credentials). Their adapters are wired with the routes (SH24/SH25).
-import { SAVED_ENV_MANAGE_SESSION_SECONDS, SAVED_ENV_PULL_SESSION_SECONDS, SAVED_ENV_PUSH_SESSION_SECONDS, canonicalJson, environmentRolePath, SavedEnvRegistryAuthSchema, savedEnvManageRoleName, savedEnvManageSessionPolicy, savedEnvPullRoleName, savedEnvPullSessionPolicy, savedEnvPushRoleName, savedEnvPushSessionPolicy, savedEnvRepositoryName, savedEnvRepositoryPolicy, savedEnvScanSessionPolicy, type SavedEnvAccountScope, type SavedEnvRegistryAuth, type SessionPolicyJson } from "@rovara-code/contracts";
+import { SAVED_ENV_MANAGE_SESSION_SECONDS, SAVED_ENV_PULL_SESSION_SECONDS, SAVED_ENV_PUSH_SESSION_SECONDS, canonicalJson, environmentRolePath, HostedSavedEnvRegistryAuthSchema, savedEnvManageRoleName, savedEnvManageSessionPolicy, savedEnvPullRoleName, savedEnvPullSessionPolicy, savedEnvPushRoleName, savedEnvPushSessionPolicy, savedEnvRepositoryName, savedEnvRepositoryPolicy, savedEnvScanSessionPolicy, type SavedEnvAccountScope, type SavedEnvRegistryAuth, type SessionPolicyJson } from "@rovara-code/contracts";
 
 export interface SessionCredentials { accessKeyId: string; secretAccessKey: string; sessionToken: string }
 
@@ -81,7 +81,7 @@ async function mint(
     const assumed = await ports.assume({ roleArn: roleArnOf(config, roleName), sessionName: sessionName(kind, ports.now()), policy: text, durationSeconds });
     const token = await ports.authorizationToken(assumed.credentials);
     const expiresAtMs = Math.min(assumed.expiresAtMs, token.expiresAtMs);
-    const parsed = SavedEnvRegistryAuthSchema.safeParse({ registry: token.registry, repository, username: "AWS", password: token.password, expiresAt: new Date(expiresAtMs).toISOString() });
+    const parsed = HostedSavedEnvRegistryAuthSchema.safeParse({ registry: token.registry, repository, username: "AWS", password: token.password, expiresAt: new Date(expiresAtMs).toISOString() });
     return parsed.success ? { ok: true, auth: parsed.data, expiresAtMs } : { ok: false, reason: "unavailable" };
   } catch {
     // Nothing from the error is kept: an AWS error can carry an ARN or a request id.

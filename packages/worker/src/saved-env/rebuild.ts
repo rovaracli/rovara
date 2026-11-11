@@ -12,7 +12,7 @@
 // The result is posted whatever it is (a failure is a fixed word), and the sandbox, the workspace's checkouts and everything the build made are removed. Nothing about the lease token leaves this file: it is not logged.
 import { rm } from "node:fs/promises";
 import path from "node:path";
-import { SAVED_ENV_PUSH_LOGIN_PATH, SAVED_ENV_RESULT_PATH, SavedEnvRegistryAuthSchema, agentXError, imageDigestOfReference, type SavedEnvBuildResult, type SavedEnvRegistryAuth } from "@rovara-code/contracts";
+import { SAVED_ENV_PUSH_LOGIN_PATH, SAVED_ENV_RESULT_PATH, HostedSavedEnvRegistryAuthSchema, agentXError, imageDigestOfReference, type SavedEnvBuildResult, type SavedEnvRegistryAuth } from "@rovara-code/contracts";
 import { type WorkerInvocation } from "@agentx/cloud-contracts";
 import { SANDBOX_TARGET, executionFor, proveCommandPort } from "../execution-target.js";
 import type { PreparationManifest } from "../prepare.js";
@@ -127,7 +127,7 @@ export async function runSavedEnvRebuild(deps: SavedEnvRebuildDependencies): Pro
   const pushSession = async (request: { repository: string }): Promise<SavedEnvRegistryAuth | undefined> => {
     try {
       const answer = await post(SAVED_ENV_PUSH_LOGIN_PATH, { jobId: job.jobId, leaseToken }, 60_000) as { login?: unknown };
-      const parsed = SavedEnvRegistryAuthSchema.safeParse(answer.login);
+      const parsed = HostedSavedEnvRegistryAuthSchema.safeParse(answer.login);
       return parsed.success && parsed.data.repository === request.repository ? parsed.data : undefined;
     } catch { return undefined; }
   };

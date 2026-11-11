@@ -73,6 +73,9 @@ describe("the worker's request for the pull login", () => {
       async () => new Response(`denied ${secret}`, { status: 403 }),
       async () => new Response("not json", { status: 200 }),
       async () => new Response(JSON.stringify({ login: { ...login, registry: "evil.example.com" } }), { status: 200 }),
+      // a registry on the worker's own machine, which Code's default schema takes and the hosted one refuses (W0-3 review H1)
+      async () => new Response(JSON.stringify({ login: { ...login, registry: "127.0.0.1:5000", username: "rovara-local" } }), { status: 200 }),
+      async () => new Response(JSON.stringify({ login: { ...login, registry: "localhost:5001", username: "rovara-local" } }), { status: 200 }),
       async () => { throw new Error(`down ${secret}`); },
     ] as Array<typeof fetch>) {
       const error = await createSavedEnvLoginProvider({ controlPlaneUrl: "https://cp.example.test", invocation, fetchImplementation })().then(() => undefined, (caught: unknown) => caught);

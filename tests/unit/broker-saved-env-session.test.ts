@@ -82,6 +82,13 @@ describe("push session", () => {
     expect(await mintPushSession(CONFIG, p, { ...ids, approved: APPROVED })).toEqual({ ok: false, reason: "unavailable" });
   });
 
+  it("a token for a registry on the machine itself is refused too (W0-3 review H1)", async () => {
+    for (const registry of ["127.0.0.1:5000", "localhost:5001"]) {
+      const p = ports({ authorizationToken: async () => ({ password: secretText(), registry, expiresAtMs: NOW + 1_000_000 }) });
+      expect(await mintPushSession(CONFIG, p, { ...ids, approved: APPROVED }), registry).toEqual({ ok: false, reason: "unavailable" });
+    }
+  });
+
   it("two projects of one org, and one project id in two orgs, get different repositories", async () => {
     const seen = new Set<string>();
     for (const input of [{ orgId: "org-1", projectId: "p1" }, { orgId: "org-1", projectId: "p2" }, { orgId: "org-2", projectId: "p1" }]) {
