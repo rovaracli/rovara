@@ -8,10 +8,11 @@
 // WHERE AN IMAGE MAY COME FROM. Only the registries below (and the extra registries a company admin added for that company) are ever contacted, by the HOST THIS FILE NAMES for them, never by a host taken from the typed
 // name. A registry's token service and its blob redirects are held to hosts named here too.
 //
-// THE MIRROR. One private repository per approved image, in the install's own registry, under the saved-environment prefix (`rovara-env/<env>/o<org hash>/p<image hash>`): the creation template, the key, the immutable tags
-// and the repository policy that saved environment images already have apply to it, and the same three roles reach it. The worker pulls from it with a login the broker mints for that one repository.
+// THE MIRROR. One private repository per approved image, in the install's own registry, under the saved-environment prefix with a last segment of its own (`rovara-env/<env>/o<org hash>/c<image hash>`; a project's saved
+// environment is `.../p<hash>`): the creation template, the key, the immutable tags and the repository policy that saved environment images have apply to it. The mirror function pushes and deletes through a role of its own
+// (`companyImageMirrorRoleName`) whose IAM policy reaches `o?{32}/c?{32}` only, never a project's repository; the broker mints the worker's pull login for that one repository.
 import { z } from "zod";
-import { SavedEnvRegistryAuthSchema, isSavedEnvRepositoryName, savedEnvRepositoryPrefix } from "./saved-env-image.js";
+import { SavedEnvRegistryAuthSchema, isCompanyImageRepositoryName, savedEnvRepositoryPrefix } from "./saved-env-image.js";
 import { sha256Hex } from "./web-hash.js";
 import { OrgIdSchema } from "./org.js";
 
@@ -27,6 +28,12 @@ export interface CompanyImageRegistryRule {
   readonly authHosts: readonly string[];
   /** Blob downloads may be redirected to a host with one of these suffixes (a leading dot: a sub-domain only), over https. No other redirect is followed. */
   readonly blobHostSuffixes: readonly string[];
+  /**
+   * A company's own registry (an extra one) usually sends blobs to object storage through a redirect (GitLab, Harbor, Artifactory, Artifact Registry), to a host nobody can list in advance. For those, a blob redirect may go to ANY
+   * host that passes the same checks as every request: https, no port, a public DNS name that resolves to public addresses only (no IP literal, no private, metadata or link-local address). The registry's token is never sent to it,
+   * and the blob is held to its digest wherever it came from. Built-in registries keep their short suffix lists instead.
+   */
+  readonly blobAnyPublicHost?: boolean;
 }
 
 export const COMPANY_IMAGE_REGISTRIES: readonly CompanyImageRegistryRule[] = [
@@ -65,14 +72,14 @@ export function companyImageExtraRegistriesOf(list: unknown): string[] {
 
 /**
  * The rule for a registry as an image name spells it, or undefined when the registry is not allowed for this company. Exact match only: `ghcr.io.evil.example`, `GHCR.IO`, `ghcr.io:443`, `ghcr.io.` and `user@ghcr.io` are
- * all different text and match nothing. An extra registry is asked at its own host, its token service must be that host, and a blob redirect is not followed (nothing is allowed to send a download elsewhere).
+ * all different text and match nothing. An extra registry is asked at its own host and its token service must be that host; a blob it redirects may go to any public https host (see `blobAnyPublicHost`).
  */
 export function companyImageRegistryRule(registry: string, extra: readonly string[] = []): CompanyImageRegistryRule | undefined {
   const builtIn = COMPANY_IMAGE_REGISTRIES.find((rule) => rule.name === registry);
   if (builtIn !== undefined) return builtIn;
   const host = companyImageExtraRegistry(registry);
   if (host === undefined || !extra.includes(host)) return undefined;
-  return { name: host, apiHost: host, authHosts: [host], blobHostSuffixes: [] };
+  return { name: host, apiHost: host, authHosts: [host], blobHostSuffixes: [], blobAnyPublicHost: true };
 }
 
 // ---- the mirror's names
@@ -82,15 +89,15 @@ const Hex64 = z.string().regex(/^[a-f0-9]{64}$/u);
 const ImageId = z.string().regex(/^img_[a-f0-9]{20}$/u);
 
 /**
- * The mirror repository of one approved image of one company: `rovara-env/<env>/o<hash of the org>/p<hash of the org and the image id>`. The same shape as a saved environment's repository (so the creation template, the key,
- * the repository policy and the three fixed roles apply), under a hash domain of its own, so it can never be a project's repository. Throws on text that is not an org id or an image id.
+ * The mirror repository of one approved image of one company: `rovara-env/<env>/o<hash of the org>/c<hash of the org and the image id>`. Under the saved environments' prefix and org segment (so the creation template, the
+ * key and the repository policy apply), with its own last segment `c`, so IAM can keep the mirror's role out of every project repository (`p`). Throws on text that is not an org id or an image id.
  */
 export function companyImageRepositoryName(input: { env: string; orgId: string; imageId: string }): string {
   const org = OrgIdSchema.parse(input.orgId);
   const image = ImageId.parse(input.imageId);
   const orgHash = sha256Hex(`rovara.saved-env.org\u0000${org}`).slice(0, 32);
   const imageHash = sha256Hex(`rovara.company-image.repository\u0000${org}\u0000${image}`).slice(0, 32);
-  return `${savedEnvRepositoryPrefix(input.env)}/o${orgHash}/p${imageHash}`;
+  return `${savedEnvRepositoryPrefix(input.env)}/o${orgHash}/c${imageHash}`;
 }
 
 /** The tag the mirror gives the one image of a repository (a tagged image is not expired by the template's untagged rule; the digest, not the tag, is what anyone pulls). */
@@ -104,7 +111,7 @@ export type CompanyImageLoginRequest = z.infer<typeof CompanyImageLoginRequestSc
 export const CompanyImageLoginReplySchema = z.object({ login: SavedEnvRegistryAuthSchema }).strict();
 
 /** The mirror's address inside a plan: the repository (a saved-environment-shaped name) and the platform digest it holds. */
-export const CompanyImageMirrorRefSchema = z.object({ repository: z.string().refine(isSavedEnvRepositoryName, "a mirror repository name"), digest: Hex64 }).strict();
+export const CompanyImageMirrorRefSchema = z.object({ repository: z.string().refine(isCompanyImageRepositoryName, "a mirror repository name"), digest: Hex64 }).strict();
 export type CompanyImageMirrorRef = z.infer<typeof CompanyImageMirrorRefSchema>;
 
 // ---- the mirror job and its state
@@ -123,13 +130,15 @@ export const CompanyImageMirrorJobSchema = z.discriminatedUnion("action", [
 ]);
 export type CompanyImageMirrorJob = z.infer<typeof CompanyImageMirrorJobSchema>;
 
+/** `attempts` stops counting here (the row must stay readable: a row that does not parse is "no state", and the copier could then never claim it). */
+export const COMPANY_IMAGE_MIRROR_ATTEMPTS_MAX = 1000;
 export const CompanyImageMirrorStateSchema = z.object({
   state: z.enum(["copying", "ready", "failed"]),
   /** The approved (platform) digest this state is for: a state for another digest says nothing about this one (an image id names its digest, so a state is never read for another). */
   digest: Hex64,
-  repository: z.string().refine(isSavedEnvRepositoryName, "a mirror repository name"),
+  repository: z.string().refine(isCompanyImageRepositoryName, "a mirror repository name"),
   reason: z.enum(COMPANY_IMAGE_MIRROR_FAILURES).optional(),
-  attempts: z.number().int().min(0).max(1000),
+  attempts: z.number().int().min(0).max(COMPANY_IMAGE_MIRROR_ATTEMPTS_MAX),
   startedAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
 }).strict();

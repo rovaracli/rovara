@@ -40,11 +40,13 @@ const reasonOf = (error: unknown): CompanyImageMirrorFailure => {
 };
 
 /** Splits a byte stream into upload parts of `MIRROR_PART_BYTES` (the last may be smaller), holding the whole to `digest` as it goes. Throws `digest_mismatch` at the end when the bytes do not hash to it. */
-export async function* verifiedParts(stream: AsyncIterable<Uint8Array>, digest: string, partBytes = MIRROR_PART_BYTES): AsyncGenerator<Uint8Array> {
+export async function* verifiedParts(stream: AsyncIterable<Uint8Array>, digest: string, partBytes = MIRROR_PART_BYTES, expired: () => boolean = () => false): AsyncGenerator<Uint8Array> {
   const hash = createHash("sha256");
   let pending: Buffer[] = [];
   let held = 0;
   for await (const chunk of stream) {
+    // The copy's own deadline is checked while a blob streams, not only between blobs: a layer that starts late stops with `timeout` instead of running into the function's own timeout.
+    if (expired()) throw new MirrorFailure("timeout");
     hash.update(chunk);
     pending.push(Buffer.from(chunk));
     held += chunk.byteLength;
@@ -96,7 +98,7 @@ export async function copyApprovedImage(ports: CopyPorts, input: CopyInput & { r
       if (present.has(blob)) continue;
       if (ports.now() >= ports.deadlineMs) throw new MirrorFailure("timeout");
       const bytes = blob === manifest.config.digest ? (async function* () { yield config; })() : source.blob(blob, MIRROR_BLOB_MAX_BYTES);
-      await ports.ecr.uploadBlob(blob, verifiedParts(bytes, blob));
+      await ports.ecr.uploadBlob(blob, verifiedParts(bytes, blob, MIRROR_PART_BYTES, () => ports.now() >= ports.deadlineMs));
     }
     if (ports.now() >= ports.deadlineMs) throw new MirrorFailure("timeout");
     await ports.ecr.putImage({ manifest: new TextDecoder().decode(top.bytes), mediaType: manifest.mediaType ?? top.mediaType, digest: reference, tag: companyImageMirrorTag(input.digest) });

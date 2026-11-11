@@ -191,7 +191,7 @@ describe("starting the run", () => {
   // ---- company-approved images (switch `pj`): pulled from the install's own registry, never from the source, and run with the catalog's profile for their kind
   const COMPANY_DIGEST = "c".repeat(64);
   const COMPANY_IMAGE_ID = "img_" + "1".repeat(20);
-  const MIRROR_REPOSITORY = `rovara-env/staging/o${"1".repeat(32)}/p${"2".repeat(32)}`;
+  const MIRROR_REPOSITORY = `rovara-env/staging/o${"1".repeat(32)}/c${"2".repeat(32)}`;
   const COMPANY_REFERENCE = `${REGISTRY}/${MIRROR_REPOSITORY}@sha256:${COMPANY_DIGEST}`;
   const companyDependency = (change: Record<string, unknown> = {}, company: Record<string, unknown> = {}): TaskDependencyPlan => dependency({
     backing: "company", digest: COMPANY_DIGEST,
@@ -249,7 +249,7 @@ describe("starting the run", () => {
         ["the broker refuses", { companyImageLogin: async () => { throw new Error("CALLBACK_FORBIDDEN with a secret in it"); } }],
         ["an answer that is not a login", { companyImageLogin: async () => ({ login: { password: "x" } }) }],
         ["another registry", { companyImageLogin: async () => loginFor({ registry: "999999999999.dkr.ecr.us-west-2.amazonaws.com" }) }],
-        ["another repository", { companyImageLogin: async () => loginFor({ repository: `rovara-env/staging/o${"1".repeat(32)}/p${"3".repeat(32)}` }) }],
+        ["another repository", { companyImageLogin: async () => loginFor({ repository: `rovara-env/staging/o${"1".repeat(32)}/c${"3".repeat(32)}` }) }],
         ["a login about to expire", { companyImageLogin: async () => loginFor({ expiresAt: new Date(Date.now() + 10_000).toISOString() }) }],
         ["a pull that fails", { companyImageLogin: async () => loginFor() }, { companyPullFails: true }],
         ["a registry that serves other bytes", { companyImageLogin: async () => loginFor() }, { companyPullServesOther: true }],
@@ -271,7 +271,7 @@ describe("starting the run", () => {
 
     it("is refused as a mismatch when the plan is not a company image the worker may run: a mirror outside this install's own family or environment, another digest, another kind, a profile the catalog does not pin", async () => {
       const bad: Array<[string, TaskDependencyPlan]> = [
-        ["another environment", companyDependency({}, { mirror: { repository: `rovara-env/prod/o${"1".repeat(32)}/p${"2".repeat(32)}`, digest: COMPANY_DIGEST } })],
+        ["another environment", companyDependency({}, { mirror: { repository: `rovara-env/prod/o${"1".repeat(32)}/c${"2".repeat(32)}`, digest: COMPANY_DIGEST } })],
         ["a different family than the profile", companyDependency({ family: "mysql" })],
         ["another profile repository", companyDependency({ repository: "svc/mysql" })],
       ];
@@ -283,7 +283,7 @@ describe("starting the run", () => {
         await nothingLeft(h);
       }
       // A mirror in the catalog's repositories, or anywhere but the mirror family, is not even a plan (the contract refuses it), nor is one whose digest is not the approved digest.
-      for (const repository of ["rovara-catalog/staging/svc/postgres", "svc/postgres", `rovara-env/staging/o${"1".repeat(32)}`, `rovara-env/staging/o${"1".repeat(32)}/p${"2".repeat(32)}/x`, "rovara-env/staging/*"]) {
+      for (const repository of ["rovara-catalog/staging/svc/postgres", "svc/postgres", `rovara-env/staging/o${"1".repeat(32)}`, `rovara-env/staging/o${"1".repeat(32)}/c${"2".repeat(32)}/x`, "rovara-env/staging/*"]) {
         expect(TaskDependencyPlanSchema.safeParse({ ...companyDependency(), company: { ...companyDependency().company, mirror: { repository, digest: COMPANY_DIGEST } } }).success, repository).toBe(false);
       }
       expect(TaskDependencyPlanSchema.safeParse({ ...companyDependency(), company: { ...companyDependency().company, mirror: { repository: MIRROR_REPOSITORY, digest: "d".repeat(64) } } }).success).toBe(false);

@@ -186,7 +186,7 @@ describe("the alias rule (TS-RN-3 rule 2)", () => {
 
 describe("a company-approved image's reference (switch `pj`)", () => {
   const HOST = "registry.example.test";
-  const MIRROR = `rovara-env/staging/o${"1".repeat(32)}/p${"2".repeat(32)}`;
+  const MIRROR = `rovara-env/staging/o${"1".repeat(32)}/c${"2".repeat(32)}`;
   const reference = (host = HOST, repository = MIRROR, tail = `@sha256:${"c".repeat(64)}`) => `${host}/${repository}${tail}`;
   const run = (image: string | undefined) => setup().run([request("db", "postgres@16", image === undefined ? {} : { image })]);
 

@@ -9,6 +9,7 @@ import { auditCompanyImageChange, auditCompanyImageRegistriesChanged, auditOccur
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, type AuditRuntime, type TransactItem } from "../audit/outbox.js";
 import { COMPANY_IMAGES_MAX, COMPANY_IMAGES_MAX_WAITING, CompanyImageIdSchema, CompanyImageSchema, companyImagesOf, type CompanyImage } from "../test-env/company-images.js";
+import { deleteMirrorState } from "../test-env/company-image-mirror-state.js";
 import { readCompanyImageMirrors, type MirrorStarter } from "../test-env/company-image-mirrors.js";
 import type { CompanyImageAuditEntry, CompanyImageRegistriesAuditEntry, CompanyImageStore } from "./company-test-images.js";
 
@@ -158,6 +159,11 @@ export function dynamoCompanyImageStore(table: CompanyImageTable): CompanyImageS
       const put = { Put: { TableName: table.tableName, Item: { ...registriesKey(orgId), entityType: "COMPANY_TEST_IMAGE_REGISTRIES", revision: entry.revision, hosts, updatedAt: entry.at, updatedBy: entry.actor },
         ...(expectedRevision === 0 ? { ConditionExpression: "attribute_not_exists(pk)" } : { ConditionExpression: "#revision = :expected", ExpressionAttributeNames: { "#revision": "revision" }, ExpressionAttributeValues: { ":expected": expectedRevision } }) } };
       return transact([put], companyImageRegistriesAuditEvent(entry));
+    },
+
+    async clearMirror(orgId, imageId) {
+      if (!OrgIdSchema.safeParse(orgId).success || !CompanyImageIdSchema.safeParse(imageId).success) return;
+      await deleteMirrorState(table, orgId, imageId);
     },
 
     async remove(current, entry) {

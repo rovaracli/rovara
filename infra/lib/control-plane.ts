@@ -1176,12 +1176,11 @@ export class ControlPlaneStack extends Stack {
     const teamRecordResources = props?.teamRecord !== undefined && naming.env !== undefined ? attachTeamRecord(this, { env: naming.env, region: props.deploymentRegion ?? "us-east-1", context: props.teamRecord, broker, slackIngress, dispatcher, scheduleRole: githubRecoveryRole, alarms: { name: (suffix) => naming.alarmName(suffix), action: notifyOperator, metricsNamespace: naming.metricsNamespace }, ...(props.reservedConcurrency === false ? { reservedConcurrency: false } : {}) }) : undefined;
     // Saved environment images (SH22): the registry side (KMS, creation template, push/pull/manage roles). Nothing pushes until the broker's `sv` setting is on.
     if (naming.env !== undefined) {
-      // Company-approved images (0.5.15, switch `pj`): the mirror function copies an approved image into a repository of this registry. It is made first so the push and manage roles can trust its role.
-      const companyImageMirror = new CompanyImageMirror(this, "CompanyImageMirror", { env: naming.env, account: this.account, state });
-      const savedEnvImages = attachSavedEnvImages(this, { env: naming.env, brokerRole: broker.role!, cloudFormationRoleName: naming.cloudFormationRoleName, extraAssumers: [companyImageMirror.principal], ...(props?.savedEnv?.kmsKeyArn === undefined ? {} : { kmsKeyArn: props.savedEnv.kmsKeyArn }), ...(props?.savedEnv?.registryScan === true ? { registryScanning: "basic" as const } : {}) });
+      // Company-approved images (0.5.15, switch `pj`): the mirror function copies an approved image into a repository of this registry. Its own role (not the push or manage role) is the only one it assumes, and the template's repository policy names that role.
+      const companyImageMirror = new CompanyImageMirror(this, "CompanyImageMirror", { env: naming.env, account: this.account, region: this.region, partition: this.partition, state });
+      const savedEnvImages = attachSavedEnvImages(this, { env: naming.env, brokerRole: broker.role!, cloudFormationRoleName: naming.cloudFormationRoleName, mirrorRoleArn: companyImageMirror.role.roleArn, ...(props?.savedEnv?.kmsKeyArn === undefined ? {} : { kmsKeyArn: props.savedEnv.kmsKeyArn }), ...(props?.savedEnv?.registryScan === true ? { registryScanning: "basic" as const } : {}) });
       BrokerNames.of(broker).add("savedEnvKey", savedEnvImages.kmsKeyId);
       companyImageMirror.function.addEnvironment("SAVED_ENV_KMS_KEY_ARN", savedEnvImages.kmsKeyArn);
-      companyImageMirror.allowAssume([savedEnvImages.pushRole, savedEnvImages.manageRole]);
       companyImageMirror.function.grantInvoke(broker);
       BrokerNames.of(broker).add("companyImageMirrorFunction", companyImageMirror.function.functionName);
     }

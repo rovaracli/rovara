@@ -64,7 +64,7 @@ export function fakeRegistry(options: { host?: FakeRegistryHost; repository: str
   const fetchImpl: RegistryFetch = async (url, init) => {
     const address = new URL(url);
     requests.push({ url, authorization: init.headers["authorization"] !== undefined });
-    if (address.host === host.authHost || address.host === (options.realm ?? "").replace(/^https:\/\//u, "").split("/")[0]) return reply(200, {}, JSON.stringify({ token: "fake-token-value" }));
+    if ((address.host === host.authHost || address.host === (options.realm ?? "").replace(/^https:\/\//u, "").split("/")[0]) && (address.host !== host.apiHost || address.pathname === "/token")) return reply(200, {}, JSON.stringify({ token: "fake-token-value" }));
     if (address.host === host.blobHost) {
       const blob = blobs.get(`sha256:${address.pathname.split("/").at(-1) ?? ""}`);
       return blob === undefined ? reply(404) : reply(200, {}, blob);

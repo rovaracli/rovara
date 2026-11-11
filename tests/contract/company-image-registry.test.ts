@@ -1,6 +1,6 @@
 // Company-approved images: where an image may come from. The registry allowlist (four built-in registries and the company's own list), by the host the list names and not by the shape of a typed name; the check that a
 // registry's name resolves only to public addresses; the closed registry client (token host, redirects, caps); and the digest the resolver pins (the linux/arm64 platform manifest, not the index).
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { COMPANY_IMAGE_REGISTRIES, companyImageExtraRegistriesOf, companyImageExtraRegistry, companyImageRegistryRule } from "@agentx/contracts";
 import { isPublicAddress, resolvesOnlyToPublicAddresses } from "../../packages/broker/src/test-env/public-address.js";
 import { RegistryClientError, createRegistryClient } from "../../packages/broker/src/test-env/company-image-registry-client.js";
@@ -209,5 +209,127 @@ describe("the digest the resolver pins", () => {
     const reg = fakeRegistry({ repository: "library/postgres", images: [arm], tags: { "18": { bytes: arm.manifestBytes, type: MANIFEST_TYPE } } });
     expect(await resolverFor(reg, { ...PUBLIC_HOSTS, "registry-1.docker.io": ["127.0.0.1"] })(postgres)).toBeUndefined();
     expect(reg.requests).toEqual([]);
+  });
+});
+
+describe("a layer streams for as long as bytes keep arriving", () => {
+  const image = makeImage();
+  const layer = `sha256:${hex(image.layers[0]!)}`;
+  const sleep = (ms: number) => new Promise<void>((resolve) => { setTimeout(resolve, ms); });
+  afterEach(() => { vi.useRealTimers(); });
+  /** Like a real fetch body, the fake stops when the request's signal is aborted (a timer that is left running ends the download). */
+  const nap = (ms: number, signal: AbortSignal) => new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(resolve, ms);
+    signal.addEventListener("abort", () => { clearTimeout(timer); reject(new Error("aborted")); }, { once: true });
+  });
+  /** A registry whose blob body comes in `chunks` pieces, `every` ms apart (then optionally stops for good). */
+  const slowRegistry = (chunks: number, every: number, stall = false) => {
+    const reg = fakeRegistry({ repository: "library/postgres", images: [image] });
+    const base = reg.fetchImpl;
+    reg.fetchImpl = async (url, init) => {
+      if (!url.includes("/blobs/")) return base(url, init);
+      return {
+        status: 200, headers: { get: () => null },
+        body: (async function* () {
+          for (let index = 0; index < chunks; index += 1) { await nap(every, init.signal); yield new TextEncoder().encode(`part${String(index)};`); }
+          if (stall) await new Promise<never>(() => undefined);
+        })(),
+      };
+    };
+    return createRegistryClient({ registry: "docker.io", extra: [], repository: "library/postgres", fetchImpl: reg.fetchImpl, lookup: fakeLookup(PUBLIC_HOSTS).lookup });
+  };
+  const readAll = async (iterable: AsyncIterable<Uint8Array>): Promise<string> => { const parts: Uint8Array[] = []; for await (const part of iterable) parts.push(part); return Buffer.concat(parts).toString(); };
+
+  it("completes a download that takes 30 seconds in 5-second steps, though a reply's headers and a manifest get 8 seconds", async () => {
+    vi.useFakeTimers();
+    const reading = readAll(slowRegistry(6, 5_000).blob(layer, 1_000));
+    await vi.advanceTimersByTimeAsync(31_000);
+    expect(await reading).toBe("part0;part1;part2;part3;part4;part5;");
+  });
+
+  it("ends a stalled download after the idle time with the fixed word `timeout`, and not before", async () => {
+    vi.useFakeTimers();
+    const result = readAll(slowRegistry(2, 5_000, true).blob(layer, 1_000)).then(() => "finished", (error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(10_000 + 29_000);
+    let settled = false;
+    void result.then(() => { settled = true; });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(await result).toMatchObject({ reason: "timeout" });
+  });
+
+  it("gives a reply 8 seconds to start: a registry that never answers is `unavailable`", async () => {
+    vi.useFakeTimers();
+    const never = createRegistryClient({ registry: "docker.io", extra: [], repository: "library/postgres", fetchImpl: () => new Promise(() => undefined), lookup: fakeLookup(PUBLIC_HOSTS).lookup });
+    const result = never.manifest("18").then(() => "answered", (error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(9_000);
+    expect(await result).toMatchObject({ reason: "unavailable" });
+    const slowHeaders = createRegistryClient({ registry: "docker.io", extra: [], repository: "library/postgres", fetchImpl: async () => { await sleep(9_000); return reply(200); }, lookup: fakeLookup(PUBLIC_HOSTS).lookup });
+    const blob = readAll(slowHeaders.blob(layer, 1_000)).then(() => "answered", (error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(await blob).toMatchObject({ reason: "unavailable" });
+  });
+});
+
+describe("a company's own registry sends its blobs through a redirect (decision 93)", () => {
+  const image = makeImage();
+  const layer = `sha256:${hex(image.layers[0]!)}`;
+  const own = (blobHost: string | undefined, table: Record<string, string[]>, target: string | undefined) => {
+    const reg = fakeRegistry({ host: { apiHost: "registry.example.com", ...(blobHost === undefined ? {} : { blobHost }) }, repository: "acme/postgres", images: [image], auth: true, realm: "https://registry.example.com/token", ...(target === undefined ? {} : { blobRedirectTo: target }) });
+    return { reg, client: createRegistryClient({ registry: "registry.example.com", extra: ["registry.example.com"], repository: "acme/postgres", fetchImpl: reg.fetchImpl, lookup: fakeLookup({ ...PUBLIC_HOSTS, ...table }).lookup }) };
+  };
+  const read = async (iterable: AsyncIterable<Uint8Array>) => { const parts: Uint8Array[] = []; for await (const part of iterable) parts.push(part); return Buffer.concat(parts).toString(); };
+
+  it("follows a redirect to a public https host, whatever its name, and sends no Authorization header to it", async () => {
+    for (const host of ["storage.googleapis.com", "my-bucket.s3.us-west-2.amazonaws.com", "cdn.some-customer.net"]) {
+      const { reg, client } = own(host, { [host]: ["54.5.5.5"] }, `https://${host}`);
+      expect(await read(client.blob(layer, 1_000)), host).toBe("layer one bytes");
+      const hop = reg.requests.find((request) => new URL(request.url).host === host);
+      expect(hop?.authorization, host).toBe(false);
+      // The registry's own request carried the token it asked for; the redirected one never did.
+      expect(reg.requests.filter((request) => new URL(request.url).host === "registry.example.com" && request.url.includes("/blobs/")).some((request) => request.authorization)).toBe(true);
+    }
+  });
+
+  it("refuses a redirect to a private, loopback, link-local, metadata, IP-literal, http or odd-port host, or a name that does not resolve", async () => {
+    const cases: Array<[string, string, Record<string, string[]>]> = [
+      ["a private name", "https://internal-bucket.example.net", { "internal-bucket.example.net": ["10.0.0.9"] }],
+      ["a loopback name", "https://loop.example.net", { "loop.example.net": ["127.0.0.1"] }],
+      ["a metadata name", "https://meta.example.net", { "meta.example.net": ["169.254.169.254"] }],
+      ["a name with a private answer among public ones", "https://mixed.example.net", { "mixed.example.net": ["54.5.5.5", "192.168.1.5"] }],
+      ["the metadata address", "https://169.254.169.254", {}],
+      ["a decimal IP literal", "https://2130706433", {}],
+      ["an IPv6 literal", "https://[::1]", {}],
+      ["http", "http://cdn.example.net", { "cdn.example.net": ["54.5.5.5"] }],
+      ["an odd port", "https://cdn.example.net:8443", { "cdn.example.net": ["54.5.5.5"] }],
+      ["credentials in the address", "https://user:pw@cdn.example.net", { "cdn.example.net": ["54.5.5.5"] }],
+      ["a name that does not resolve", "https://nowhere.example.net", {}],
+    ];
+    for (const [label, target, table] of cases) {
+      const { reg, client } = own(undefined, table, target);
+      await expect(read(client.blob(layer, 1_000)), label).rejects.toBeInstanceOf(RegistryClientError);
+      const reached = reg.requests.map((request) => request.url).filter((url) => !url.startsWith("https://registry.example.com/"));
+      expect(reached, label).toEqual([]);
+    }
+  });
+
+  it("holds the bytes to their digest wherever they came from: a redirect target that serves other bytes is refused by the copy", async () => {
+    const { reg, client } = own("cdn.some-customer.net", { "cdn.some-customer.net": ["54.5.5.5"] }, "https://cdn.some-customer.net");
+    reg.blobs.set(layer, new TextEncoder().encode("bytes from somewhere else"));
+    const { copyApprovedImage } = await import("../../packages/broker/src/test-env/company-image-mirror.js");
+    const completed: string[] = [];
+    const result = await copyApprovedImage({
+      registry: () => client, now: () => 0, deadlineMs: 1e12,
+      ecr: { available: async () => new Set(), uploadBlob: async (digest, parts) => { for await (const part of parts) void part; completed.push(digest); }, putImage: async () => undefined, readBack: async () => image.digest },
+    }, { registry: "registry.example.com", extraRegistries: ["registry.example.com"], digest: image.digest, repository: "acme/postgres" });
+    expect(result).toEqual({ ok: false, reason: "digest_mismatch" });
+    expect(completed).not.toContain(layer);
+  });
+
+  it("keeps the built-in registries to their listed blob hosts", async () => {
+    const reg = fakeRegistry({ repository: "library/postgres", images: [image], blobRedirectTo: "https://storage.googleapis.com" });
+    const client = createRegistryClient({ registry: "docker.io", extra: [], repository: "library/postgres", fetchImpl: reg.fetchImpl, lookup: fakeLookup({ ...PUBLIC_HOSTS, "storage.googleapis.com": ["54.5.5.5"] }).lookup });
+    await expect(read(client.blob(layer, 1_000))).rejects.toMatchObject({ reason: "not_allowed" });
   });
 });

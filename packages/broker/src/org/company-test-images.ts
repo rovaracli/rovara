@@ -40,6 +40,11 @@ export interface CompanyImageStore {
   commitRegistries(orgId: OrgId, hosts: readonly string[], expectedRevision: number, entry: CompanyImageRegistriesAuditEntry): Promise<boolean>;
   /** Removes the row at the revision read (a revoke or a dismissal). */
   remove(current: CompanyImage, entry: CompanyImageAuditEntry): Promise<boolean>;
+  /**
+   * Forgets the mirror's state row of a revoked image. A copy that is still running finds its row gone when it tries to record its result, and then deletes what it made (a revoke while a copy runs must not leave the copy behind).
+   * Best effort, after the row is removed.
+   */
+  clearMirror?(orgId: OrgId, imageId: string): Promise<void>;
 }
 
 export interface CompanyImageCaller { orgId: OrgId; developerId: string; sessionId?: string | undefined }
@@ -192,6 +197,8 @@ export async function revokeImage(deps: CompanyImageDeps, caller: CompanyImageCa
   const at = deps.now().toISOString();
   if (!await deps.store.remove(current, entryOf("company_image.revoked", "live_admin", caller.developerId, { ...current, revision: current.revision + 1 }, at))) throw stale();
   // A revoked image is served by no new plan (its row is gone). Its mirrored copy is deleted too, best effort: nothing can pull it without a login, and a login is minted only for an approved image.
+  // The state row goes first, so a copy still running finds it gone, deletes what it made and records nothing.
+  await Promise.resolve(deps.store.clearMirror?.(current.orgId, current.imageId)).catch(() => undefined);
   await deps.startMirror?.({ action: "delete", orgId: current.orgId, imageId: current.imageId }).catch(() => undefined);
 }
 

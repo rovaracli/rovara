@@ -153,7 +153,7 @@ describe("the company's own registries and the copy into the install's registry"
     expect(jobs[0]).toMatchObject({ imageId: approved.imageId, registry: "docker.io", extraRegistries: [] });
     expect((await list(t)).images[0]).toMatchObject({ status: "approved", copy: "none" });
     const key = { pk: `COMPANY_IMAGE_MIRROR#${TEST_ORG}`, sk: approved.imageId };
-    const base = { ...key, entityType: "COMPANY_IMAGE_MIRROR", digest: approved.digest, repository: `rovara-env/staging/o${"1".repeat(32)}/p${"2".repeat(32)}`, attempts: 1, startedAt: "2026-11-11T10:00:00.000Z", updatedAt: "2026-11-11T10:00:00.000Z" };
+    const base = { ...key, entityType: "COMPANY_IMAGE_MIRROR", digest: approved.digest, repository: `rovara-env/staging/o${"1".repeat(32)}/c${"2".repeat(32)}`, attempts: 1, startedAt: "2026-11-11T10:00:00.000Z", updatedAt: "2026-11-11T10:00:00.000Z" };
     for (const state of ["copying", "failed", "ready"] as const) {
       t.db.set({ ...base, state, ...(state === "failed" ? { reason: "no_arm64" } : {}) });
       expect((await list(t)).images[0], state).toMatchObject({ copy: state });

@@ -27,6 +27,9 @@ import {
   environmentRolePath,
   SavedEnvRegistryAuthSchema,
   savedEnvManageRoleName,
+  companyImageMirrorRoleName,
+  companyImageMirrorSessionPolicy,
+  isCompanyImageRepositoryName,
   savedEnvManageSessionPolicy,
   savedEnvPullRoleName,
   savedEnvPullSessionPolicy,
@@ -120,6 +123,7 @@ export function expectedRepositoryPolicy(config: SavedEnvSessionConfig): ReturnT
     pushRoleArn: roleArnOf(config, savedEnvPushRoleName(config.env)),
     pullRoleArn: roleArnOf(config, savedEnvPullRoleName(config.env)),
     manageRoleArn: roleArnOf(config, savedEnvManageRoleName(config.env)),
+    mirrorRoleArn: roleArnOf(config, companyImageMirrorRoleName(config.env)),
   });
 }
 
@@ -179,7 +183,7 @@ export async function verifyRepositoryNamed(config: SavedEnvSessionConfig, ports
   return verifyManaged(config, ports, manage);
 }
 
-async function verifyManaged(config: SavedEnvSessionConfig, ports: SavedEnvSessionPorts, manage: Extract<ManageResult, { ok: true }>): Promise<{ ok: true; state: "matches" | "absent" } | { ok: false; reason: SessionRefusal }> {
+export async function verifyManaged(config: SavedEnvSessionConfig, ports: SavedEnvSessionPorts, manage: { credentials: SessionCredentials; repository: string }): Promise<{ ok: true; state: "matches" | "absent" } | { ok: false; reason: SessionRefusal }> {
   let found: RepositoryDescription | "absent";
   try { found = await ports.inspectRepository(manage.credentials, manage.repository); } catch { return { ok: false, reason: "unavailable" }; }
   if (found === "absent") return { ok: true, state: "absent" };
@@ -216,12 +220,6 @@ export async function mintPullSession(config: SavedEnvSessionConfig, ports: Save
   return mintRaw(config, ports, "pull", savedEnvPullRoleName(config.env), savedEnvPullSessionPolicy(config.scope, repository), repository, SAVED_ENV_PULL_SESSION_SECONDS);
 }
 
-/** A push login for a repository named by the caller. The caller has already decided WHO may push there (the mirror's own checks); the session policy names that one repository. */
-export function mintPushSessionFor(config: SavedEnvSessionConfig, ports: SavedEnvSessionPorts, repository: string): Promise<MintResult> {
-  if (!config.enabled) return Promise.resolve({ ok: false, reason: "disabled" });
-  return mintRaw(config, ports, "push", savedEnvPushRoleName(config.env), savedEnvPushSessionPolicy(config.scope, repository), repository, SAVED_ENV_PUSH_SESSION_SECONDS);
-}
-
 /** A pull login for a repository named by the caller (a company image's mirror), for the seconds the worker's pull may take. The repository must be there and be the one the template made. */
 export async function mintPullSessionFor(config: SavedEnvSessionConfig, ports: SavedEnvSessionPorts, repository: string): Promise<MintResult> {
   if (!config.enabled) return { ok: false, reason: "disabled" };
@@ -230,11 +228,17 @@ export async function mintPullSessionFor(config: SavedEnvSessionConfig, ports: S
   return mintRaw(config, ports, "pull", savedEnvPullRoleName(config.env), savedEnvPullSessionPolicy(config.scope, repository), repository, SAVED_ENV_PULL_SESSION_SECONDS);
 }
 
-/** The registry session as a push for the push session's own credentials (the mirror pushes with the ECR API, not with a docker login). */
-export async function assumePushCredentials(config: SavedEnvSessionConfig, ports: SavedEnvSessionPorts, repository: string): Promise<{ ok: true; credentials: SessionCredentials } | { ok: false; reason: SessionRefusal }> {
+/**
+ * Credentials for the company image mirror's OWN role (`companyImageMirrorRoleName`), with a session policy that names ONE mirror repository. Not the push or manage role: those reach every saved environment's
+ * repositories, and the mirror function, which parses untrusted bytes from the internet, must not. The role's own IAM policy reaches `o?/c?` mirror repositories only. Used for the template check, the copy and the revoke's delete.
+ */
+export async function mintMirrorCredentials(config: SavedEnvSessionConfig, ports: SavedEnvSessionPorts, repository: string): Promise<{ ok: true; credentials: SessionCredentials } | { ok: false; reason: SessionRefusal }> {
   if (!config.enabled) return { ok: false, reason: "disabled" };
   try {
-    const assumed = await ports.assume({ roleArn: roleArnOf(config, savedEnvPushRoleName(config.env)), sessionName: sessionName("push", ports.now()), policy: JSON.stringify(savedEnvPushSessionPolicy(config.scope, repository)), durationSeconds: SAVED_ENV_PUSH_SESSION_SECONDS });
+    if (!isCompanyImageRepositoryName(repository)) return { ok: false, reason: "bad_ids" };
+    const policy = JSON.stringify(companyImageMirrorSessionPolicy(config.scope, repository));
+    if (policy.length >= 2_048) return { ok: false, reason: "unavailable" };
+    const assumed = await ports.assume({ roleArn: roleArnOf(config, companyImageMirrorRoleName(config.env)), sessionName: sessionName("mirror", ports.now()), policy, durationSeconds: SAVED_ENV_PUSH_SESSION_SECONDS });
     return { ok: true, credentials: assumed.credentials };
   } catch {
     return { ok: false, reason: "unavailable" };

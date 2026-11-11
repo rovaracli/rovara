@@ -2,7 +2,7 @@
 // plans a run. A state is only for the digest it names (an image id names its digest). Rows are operational, not authority: nothing here is an approval, and a missing or damaged row only means "not copied (yet)".
 import { GetCommand, PutCommand, UpdateCommand, DeleteCommand } from "@aws-sdk/lib-dynamodb";
 import {
-  COMPANY_IMAGE_MIRROR_RETRY_MS, COMPANY_IMAGE_MIRROR_STALE_MS, CompanyImageMirrorStateSchema, companyImageMirrorPartition,
+  COMPANY_IMAGE_MIRROR_ATTEMPTS_MAX, COMPANY_IMAGE_MIRROR_RETRY_MS, COMPANY_IMAGE_MIRROR_STALE_MS, CompanyImageMirrorStateSchema, companyImageMirrorPartition,
   type CompanyImageMirrorFailure, type CompanyImageMirrorState,
 } from "@agentx/contracts";
 
@@ -37,7 +37,7 @@ export async function claimMirror(table: MirrorTable, input: { orgId: string; im
   const existing = await readMirrorState(table, input.orgId, input.imageId).catch(() => undefined);
   if (existing !== undefined && existing.digest === input.digest && !mirrorNeedsStart(existing, input.digest, input.nowMs)) return false;
   const at = new Date(input.nowMs).toISOString();
-  const next: CompanyImageMirrorState = { state: "copying", digest: input.digest, repository: input.repository, attempts: (existing?.attempts ?? 0) + 1, startedAt: at, updatedAt: at };
+  const next: CompanyImageMirrorState = { state: "copying", digest: input.digest, repository: input.repository, attempts: Math.min(COMPANY_IMAGE_MIRROR_ATTEMPTS_MAX, (existing?.attempts ?? 0) + 1), startedAt: at, updatedAt: at };
   try {
     await table.documentClient.send(new PutCommand({
       TableName: table.tableName, Item: { ...key(input.orgId, input.imageId), entityType: "COMPANY_IMAGE_MIRROR", ...next },
@@ -51,8 +51,11 @@ export async function claimMirror(table: MirrorTable, input: { orgId: string; im
   }
 }
 
-/** The copier records its result, only while it still owns the copy (the row is `copying` and was started when this call claimed it). */
-export async function finishMirror(table: MirrorTable, input: { orgId: string; imageId: string; startedAt: string; nowMs: number } & ({ ok: true } | { ok: false; reason: CompanyImageMirrorFailure })): Promise<void> {
+/**
+ * The copier records its result, only while it still owns the copy (the row is `copying` and was started when this call claimed it). Answers whether it did: false means the row is gone or another copy owns it (the image
+ * was revoked, or revoked and approved again, while this copy ran).
+ */
+export async function finishMirror(table: MirrorTable, input: { orgId: string; imageId: string; startedAt: string; nowMs: number } & ({ ok: true } | { ok: false; reason: CompanyImageMirrorFailure })): Promise<boolean> {
   const at = new Date(input.nowMs).toISOString();
   try {
     await table.documentClient.send(new UpdateCommand({
@@ -62,8 +65,10 @@ export async function finishMirror(table: MirrorTable, input: { orgId: string; i
       ExpressionAttributeNames: { "#state": "state" },
       ExpressionAttributeValues: { ":copying": "copying", ":started": input.startedAt, ":at": at, ...(input.ok ? { ":ready": "ready" } : { ":failed": "failed", ":reason": input.reason }) },
     }));
+    return true;
   } catch (error) {
     if (!conditionFailed(error)) throw error;
+    return false;
   }
 }
 

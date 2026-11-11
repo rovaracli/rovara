@@ -24,7 +24,7 @@
 // fixed sentence; Docker's own words are never repeated. Everything started is removed.
 import { createHash, randomBytes } from "node:crypto";
 import {
-  CATALOG_FIXED_ARGS, CatalogEntrySchema, FIXTURE_SET_MAX_BYTES, TEST_ENV_RESERVED_ALIASES, isSavedEnvRepositoryName, TestEnvDependencyIdSchema, agentXError, catalogFixedArgv, catalogIdName,
+  CATALOG_FIXED_ARGS, CatalogEntrySchema, FIXTURE_SET_MAX_BYTES, TEST_ENV_RESERVED_ALIASES, isCompanyImageRepositoryName, TestEnvDependencyIdSchema, agentXError, catalogFixedArgv, catalogIdName,
   type CatalogEntry,
 } from "@agentx/contracts";
 import { DOCKER_CALL_TIMEOUT_MS } from "./setup-network.js";
@@ -301,11 +301,11 @@ function fakeProgram(net: ServicesNetwork, fake: FakeHelperRequest, address: str
   };
 }
 
-/** A company image's reference, checked: the install's own registry, a saved-environment-shaped repository, a sha256 digest. Anything else is a refused request (the caller maps the throw to `refused`). */
+/** A company image's reference, checked: the install's own registry, a company-image mirror repository, a sha256 digest. Anything else is a refused request (the caller maps the throw to `refused`). */
 function companyImageOf(reference: string, registry: string): string {
-  const match = /^(.+?)\/(rovara-env\/[a-z][a-z0-9-]{0,19}\/o[a-f0-9]{32}\/p[a-f0-9]{32})@sha256:[a-f0-9]{64}$/u.exec(reference);
+  const match = /^(.+?)\/(rovara-env\/[a-z][a-z0-9-]{0,19}\/o[a-f0-9]{32}\/c[a-f0-9]{32})@sha256:[a-f0-9]{64}$/u.exec(reference);
   // The helpers' registry is the catalog's prefix (`host/rovara-catalog/<env>`); the company image lives under the same HOST, in the mirror family.
-  if (match === null || match[1] !== registry.split("/")[0] || !isSavedEnvRepositoryName(match[2]!)) throw new RangeError("image");
+  if (match === null || match[1] !== registry.split("/")[0] || !isCompanyImageRepositoryName(match[2]!)) throw new RangeError("image");
   return reference;
 }
 

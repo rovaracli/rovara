@@ -57,8 +57,8 @@ export const TEST_SERVICES_AWS_PLAN_SERVICES = ["s3", "sqs", "dynamodb"] as cons
 const NO_HIDDEN = /^[^\p{Cc}\p{Cf}]*$/u;
 const line = (max: number) => z.string().min(1).max(max).regex(NO_HIDDEN, "one plain line");
 const Sha256 = z.string().regex(/^[a-f0-9]{64}$/u);
-/** A mirror repository of a company image (company-image-mirror.ts `companyImageRepositoryName`): the saved-environment family, `rovara-env/<env>/o<org hash>/p<image hash>`. Written out here, not imported, so the browser entry that reads plans does not pull the registry names in. */
-const MIRROR_REPOSITORY = /^rovara-env\/[a-z][a-z0-9-]{0,19}\/o[a-f0-9]{32}\/p[a-f0-9]{32}$/u;
+/** A mirror repository of a company image (company-image-mirror.ts `companyImageRepositoryName`): the saved-environment family, `rovara-env/<env>/o<org hash>/c<image hash>`. Written out here, not imported, so the browser entry that reads plans does not pull the registry names in. */
+const MIRROR_REPOSITORY = /^rovara-env\/[a-z][a-z0-9-]{0,19}\/o[a-f0-9]{32}\/c[a-f0-9]{32}$/u;
 const Id = z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/u);
 
 /** The most inline coverage map a CHECKS run is sent: a larger one is not sent (the run then selects nothing and runs the whole check). */

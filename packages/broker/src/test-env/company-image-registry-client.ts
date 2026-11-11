@@ -9,11 +9,12 @@
 //   - https only, no port, no credentials, and `redirect: "manual"`. A manifest or token request that is redirected fails. A BLOB request may follow up to three redirects, each to https on a host that has one of the
 //     rule's blob host suffixes, resolved and checked as above, and the registry's token is NOT sent to the new host.
 //   - The token service (`WWW-Authenticate` realm) must be one of the rule's auth hosts. Anonymous pull tokens only: there are no registry credentials anywhere in this module.
-//   - Every body has a size cap and every request a time limit. Nothing here returns an error text of a registry: failures are one of four fixed reasons.
+//   - Every body has a size cap and every request a time limit: 8 seconds for the headers of any reply and for the whole of a manifest or token; a BLOB's body has no fixed total (a layer is hundreds of megabytes and each part
+//     upload to the install's registry waits on the stream) but ends after `REGISTRY_BLOB_IDLE_MS` with no byte. Nothing here returns an error text of a registry: failures are one of five fixed reasons.
 import { companyImageRegistryRule, type CompanyImageRegistryRule } from "@agentx/contracts";
 import { resolvesOnlyToPublicAddresses, type AddressLookup } from "./public-address.js";
 
-export type RegistryFailure = "not_allowed" | "not_found" | "too_large" | "unavailable";
+export type RegistryFailure = "not_allowed" | "not_found" | "too_large" | "unavailable" | "timeout";
 export class RegistryClientError extends Error {
   constructor(readonly reason: RegistryFailure) { super(`registry: ${reason}`); this.name = "RegistryClientError"; }
 }
@@ -25,7 +26,10 @@ export const MANIFEST_ACCEPT = [
   "application/vnd.oci.image.index.v1+json", "application/vnd.docker.distribution.manifest.list.v2+json",
   "application/vnd.oci.image.manifest.v1+json", "application/vnd.docker.distribution.manifest.v2+json",
 ].join(", ");
+/** The time to get a reply's headers, and the whole of a manifest, a token or a small blob. */
 export const REGISTRY_REQUEST_TIMEOUT_MS = 8_000;
+/** A layer streams for as long as it needs, as long as bytes keep arriving: this long with no byte at all ends it (`timeout`). The copy's own deadline bounds the whole. */
+export const REGISTRY_BLOB_IDLE_MS = 30_000;
 export const MANIFEST_MAX_BYTES = 4 * 1024 * 1024;
 const TOKEN_MAX_BYTES = 16 * 1024;
 const BLOB_REDIRECTS_MAX = 3;
@@ -58,6 +62,34 @@ async function readCapped(body: AsyncIterable<Uint8Array> | null, max: number): 
   return out;
 }
 
+/**
+ * A body that ends with `timeout` when no byte arrives for `idleMs`. The wait for each chunk is raced against the timer (a body that ignores the abort signal still ends), and the source is told to stop. The source
+ * is not awaited on the way out: a stalled source never answers `return()`.
+ */
+async function* idleGuarded(body: AsyncIterable<Uint8Array>, controller: AbortController, idleMs: number): AsyncGenerator<Uint8Array> {
+  const source = body[Symbol.asyncIterator]();
+  try {
+    for (;;) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const idle = new Promise<never>((_, reject) => { timer = setTimeout(() => { controller.abort(); reject(new RegistryClientError("timeout")); }, idleMs); });
+      let step: IteratorResult<Uint8Array>;
+      try {
+        step = await Promise.race([source.next(), idle]);
+      } catch (error) {
+        throw error instanceof RegistryClientError ? error : new RegistryClientError("unavailable");
+      } finally {
+        clearTimeout(timer);
+        void idle.catch(() => undefined);
+      }
+      if (step.done === true) return;
+      yield step.value;
+    }
+  } finally {
+    controller.abort();
+    void Promise.resolve(source.return?.()).catch(() => undefined);
+  }
+}
+
 /** `realm="https://auth.docker.io/token",service="registry.docker.io"` as a map. */
 function challengeOf(header: string | null, rule: CompanyImageRegistryRule): { realm: string; service?: string } | undefined {
   if (header === null || !/^Bearer\s/iu.test(header)) return undefined;
@@ -86,7 +118,10 @@ export interface RegistryClientOptions {
   repository: string;
   fetchImpl: RegistryFetch;
   lookup: AddressLookup;
+  /** The time for a reply's headers and for a whole manifest or token. Default 8 seconds. */
   timeoutMs?: number;
+  /** The most a blob's body may go without a byte. Default 30 seconds. */
+  idleMs?: number;
 }
 
 const REPOSITORY = /^[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*(?:\/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)*$/u;
@@ -96,6 +131,7 @@ export function createRegistryClient(options: RegistryClientOptions): RegistryCl
   const rule = companyImageRegistryRule(options.registry, options.extra);
   if (rule === undefined || !REPOSITORY.test(options.repository) || options.repository.length > 250) throw new RegistryClientError("not_allowed");
   const timeout = options.timeoutMs ?? REGISTRY_REQUEST_TIMEOUT_MS;
+  const idleMs = options.idleMs ?? REGISTRY_BLOB_IDLE_MS;
   const checkedHosts = new Map<string, Promise<boolean>>();
   const publicHost = (host: string): Promise<boolean> => {
     let known = checkedHosts.get(host);
@@ -104,13 +140,24 @@ export function createRegistryClient(options: RegistryClientOptions): RegistryCl
   };
   let token: string | undefined;
 
-  async function send(url: string, headers: Record<string, string>): Promise<RegistryReply> {
+  /**
+   * One request. The time for the HEADERS is `timeout` for every request. For a manifest or a token the same limit covers the body (the signal stays); for a BLOB (`stream`) the signal is ours and ends only on an idle
+   * stretch: the body is returned with an idle guard, so a slow but moving download is never cut off by the 8 seconds that a header deserves.
+   */
+  async function send(url: string, headers: Record<string, string>, stream = false): Promise<RegistryReply> {
     const host = plainHttpsHost(url);
     if (host === undefined || !(await publicHost(host))) throw new RegistryClientError("not_allowed");
+    const controller = new AbortController();
+    let headerTimer: ReturnType<typeof setTimeout> | undefined;
+    const late = new Promise<never>((_, reject) => { headerTimer = setTimeout(() => { controller.abort(); reject(new RegistryClientError("unavailable")); }, timeout); });
     try {
-      return await options.fetchImpl(url, { method: "GET", headers, redirect: "manual", signal: AbortSignal.timeout(timeout) });
-    } catch {
-      throw new RegistryClientError("unavailable");
+      const reply = await Promise.race([options.fetchImpl(url, { method: "GET", headers, redirect: "manual", signal: stream ? controller.signal : AbortSignal.any([controller.signal, AbortSignal.timeout(timeout)]) }), late]);
+      clearTimeout(headerTimer);
+      return stream && reply.body !== null ? { ...reply, body: idleGuarded(reply.body, controller, idleMs) } : reply;
+    } catch (error) {
+      clearTimeout(headerTimer);
+      void late.catch(() => undefined);
+      throw error instanceof RegistryClientError ? error : new RegistryClientError("unavailable");
     }
   }
 
@@ -131,15 +178,15 @@ export function createRegistryClient(options: RegistryClientOptions): RegistryCl
   }
 
   /** The API request, with the one token exchange a registry may ask for. A redirect from the API host is only followed for a blob. */
-  async function api(path: string, accept: string | undefined, blob: boolean): Promise<RegistryReply> {
+  async function api(path: string, accept: string | undefined, blob: boolean, stream = false): Promise<RegistryReply> {
     const url = `https://${rule!.apiHost}/v2/${options.repository}/${path}`;
     const headers = (): Record<string, string> => ({ ...(accept === undefined ? {} : { accept }), ...(token === undefined ? {} : { authorization: `Bearer ${token}` }) });
-    let reply = await send(url, headers());
+    let reply = await send(url, headers(), stream);
     if (reply.status === 401 && token === undefined) {
       const challenge = challengeOf(reply.headers.get("www-authenticate"), rule!);
       if (challenge === undefined) throw new RegistryClientError("unavailable");
       token = await fetchToken(challenge);
-      reply = await send(url, headers());
+      reply = await send(url, headers(), stream);
     }
     let hops = 0;
     while (reply.status >= 300 && reply.status < 400) {
@@ -150,8 +197,9 @@ export function createRegistryClient(options: RegistryClientOptions): RegistryCl
       try { next = new URL(location, url).toString(); } catch { throw new RegistryClientError("unavailable"); }
       const host = plainHttpsHost(next);
       // The suffix has a leading dot, so `evil-docker.com` is not `.docker.com`; the host itself is never its own suffix.
-      if (host === undefined || !rule!.blobHostSuffixes.some((suffix) => host.endsWith(suffix))) throw new RegistryClientError("not_allowed");
-      reply = await send(next, {});
+      // A built-in registry's blobs may come from its listed hosts only. A company's own registry may send them to any public https host (decision 93): `send` below still requires the name to resolve to public addresses only.
+      if (host === undefined || (rule!.blobAnyPublicHost !== true && !rule!.blobHostSuffixes.some((suffix) => host.endsWith(suffix)))) throw new RegistryClientError("not_allowed");
+      reply = await send(next, {}, stream);
     }
     if (reply.status === 404) throw new RegistryClientError("not_found");
     if (reply.status !== 200) throw new RegistryClientError("unavailable");
@@ -168,7 +216,7 @@ export function createRegistryClient(options: RegistryClientOptions): RegistryCl
     blob(digest, maxBytes) {
       if (!/^sha256:[a-f0-9]{64}$/u.test(digest)) throw new RegistryClientError("not_allowed");
       return (async function* () {
-        const reply = await api(`blobs/${digest}`, undefined, true);
+        const reply = await api(`blobs/${digest}`, undefined, true, true);
         let total = 0;
         if (reply.body === null) return;
         for await (const chunk of reply.body) {

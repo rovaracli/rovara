@@ -2,7 +2,7 @@
 // company's own registry list, the counters that clamp at zero, and what a plan and a worker login are given.
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { CompanyImageMirrorJobSchema, companyImageMirrorTag, companyImageRepositoryName, isSavedEnvRepositoryName, type CompanyImageMirrorJob } from "@agentx/contracts";
+import { COMPANY_IMAGE_MIRROR_ATTEMPTS_MAX, CompanyImageMirrorJobSchema, companyImageMirrorTag, companyImageRepositoryName, isCompanyImageRepositoryName, isSavedEnvRepositoryName, type CompanyImageMirrorJob } from "@agentx/contracts";
 import { copyApprovedImage, verifiedParts, MIRROR_PART_BYTES, type CopyPorts, type EcrWriter } from "../../packages/broker/src/test-env/company-image-mirror.js";
 import { claimMirror, deleteMirrorState, finishMirror, mirrorNeedsStart, readMirrorState } from "../../packages/broker/src/test-env/company-image-mirror-state.js";
 import { readCompanyImageMirrors } from "../../packages/broker/src/test-env/company-image-mirrors.js";
@@ -74,6 +74,9 @@ describe("verified upload parts", () => {
     expect(ecr.completed).toEqual([]);
   });
 });
+
+/** A registry that already holds the image's config blob. */
+class FakEcrWith extends FakeEcr { constructor(image: FakeImage) { super(); this.blobs.set(`sha256:${hex(image.config)}`, image.config); } }
 
 describe("copying an approved image", () => {
   const image = makeImage();
@@ -151,6 +154,33 @@ describe("copying an approved image", () => {
     expect(midway.ecr.images.size).toBe(0);
   });
 
+  it("stops a layer that is still streaming when the copy's time is up, not only between blobs", async () => {
+    let clock = NOW;
+    const reg = fakeRegistry({ repository: "library/postgres", images: [image] });
+    const base = reg.fetchImpl;
+    reg.fetchImpl = async (url, init) => {
+      const answer = await base(url, init);
+      if (!url.includes(`/blobs/sha256:${hex(image.layers[1]!)}`) || answer.body === null) return answer;
+      const source = answer.body;
+      return { ...answer, body: (async function* () { let first = true; for await (const chunk of source) { yield chunk; if (first) { first = false; clock = NOW + 999_999; } } })() };
+    };
+    const ecr = new FakeEcr();
+    const ports: CopyPorts = { registry: ({ registry, extra, repository }) => createRegistryClient({ registry, extra, repository, fetchImpl: reg.fetchImpl, lookup: fakeLookup(PUBLIC_HOSTS).lookup }), ecr, now: () => clock, deadlineMs: NOW + 1000 };
+    expect(await copyApprovedImage(ports, input(image))).toEqual({ ok: false, reason: "timeout" });
+    expect(ecr.completed).not.toContain(`sha256:${hex(image.layers[1]!)}`);
+    expect(ecr.images.size).toBe(0);
+  });
+
+  it("holds the config to its digest even when the repository already has that blob (the platform check reads this config)", async () => {
+    const ecr = new FakEcrWith(image);
+    const tampered = new TextEncoder().encode(JSON.stringify({ architecture: "arm64", os: "linux", salt: "swapped in transit" }));
+    const reg = fakeRegistry({ repository: "library/postgres", images: [image] });
+    reg.blobs.set(`sha256:${hex(image.config)}`, tampered);
+    const ports: CopyPorts = { registry: ({ registry, extra, repository }) => createRegistryClient({ registry, extra, repository, fetchImpl: reg.fetchImpl, lookup: fakeLookup(PUBLIC_HOSTS).lookup }), ecr, now: () => NOW, deadlineMs: NOW + 1000 };
+    expect(await copyApprovedImage(ports, input(image))).toEqual({ ok: false, reason: "digest_mismatch" });
+    expect(ecr.images.size).toBe(0);
+  });
+
   it("is not ok unless the registry holds the manifest by the approved digest afterwards", async () => {
     for (const readBack of [undefined, hex("another manifest")]) {
       const ecr = new FakeEcr();
@@ -180,11 +210,13 @@ describe("copying an approved image", () => {
 });
 
 describe("the mirror's names", () => {
-  it("makes one repository per company and image, in the saved-environment family, that no project's repository can be", () => {
+  it("makes one repository per company and image, under the saved environments' prefix with a last segment of its own, that no project's repository can be", () => {
     const a = companyImageRepositoryName({ env: "staging", orgId: TEST_ORG, imageId: "img_" + "1".repeat(20) });
     const b = companyImageRepositoryName({ env: "staging", orgId: TEST_ORG, imageId: "img_" + "2".repeat(20) });
     const other = companyImageRepositoryName({ env: "staging", orgId: "org_bbbbbbbbbbbbbbbbbbbb", imageId: "img_" + "1".repeat(20) });
-    expect(isSavedEnvRepositoryName(a)).toBe(true);
+    expect(isCompanyImageRepositoryName(a)).toBe(true);
+    expect(isSavedEnvRepositoryName(a)).toBe(false);
+    expect(a.split("/").at(-1)).toMatch(/^c[a-f0-9]{32}$/u);
     expect(new Set([a, b, other]).size).toBe(3);
     expect(a.split("/")[2]).toBe(b.split("/")[2]);
     expect(a.split("/")[2]).not.toBe(other.split("/")[2]);
@@ -228,6 +260,29 @@ describe("the mirror's state", () => {
     expect(mirrorNeedsStart(undefined, ids.digest, NOW)).toBe(true);
     expect(mirrorNeedsStart({ ...state, state: "ready" }, ids.digest, NOW + 1e9)).toBe(false);
     expect(mirrorNeedsStart({ ...state, state: "ready" }, sha("another digest"), NOW)).toBe(true);
+  });
+
+  it("keeps counting attempts without ever making the row unreadable: it stops at the cap and can still be claimed", async () => {
+    const t = table();
+    t.documentClient.set({ pk: `COMPANY_IMAGE_MIRROR#${TEST_ORG}`, sk: ids.imageId, entityType: "COMPANY_IMAGE_MIRROR", state: "failed", reason: "unavailable", digest: ids.digest, repository: ids.repository, attempts: COMPANY_IMAGE_MIRROR_ATTEMPTS_MAX, startedAt: "2020-01-01T00:00:00.000Z", updatedAt: "2020-01-01T00:00:00.000Z" });
+    expect(await claimMirror(t, { ...ids, nowMs: NOW })).toBe(true);
+    expect(await readMirrorState(t, TEST_ORG, ids.imageId)).toMatchObject({ state: "copying", attempts: COMPANY_IMAGE_MIRROR_ATTEMPTS_MAX });
+    const started = (await readMirrorState(t, TEST_ORG, ids.imageId))!.startedAt;
+    await finishMirror(t, { orgId: TEST_ORG, imageId: ids.imageId, startedAt: started, nowMs: NOW, ok: false, reason: "no_arm64" });
+    expect(await claimMirror(t, { ...ids, nowMs: NOW + 11 * 60_000 })).toBe(true);
+    expect((await readMirrorState(t, TEST_ORG, ids.imageId))!.attempts).toBe(COMPANY_IMAGE_MIRROR_ATTEMPTS_MAX);
+  });
+
+  it("tells a finisher that it no longer owns the row (revoked or replaced) instead of recording over it", async () => {
+    const t = table();
+    await claimMirror(t, { ...ids, nowMs: NOW });
+    const started = (await readMirrorState(t, TEST_ORG, ids.imageId))!.startedAt;
+    await deleteMirrorState(t, TEST_ORG, ids.imageId);
+    expect(await finishMirror(t, { orgId: TEST_ORG, imageId: ids.imageId, startedAt: started, nowMs: NOW, ok: true })).toBe(false);
+    expect(await readMirrorState(t, TEST_ORG, ids.imageId)).toBeUndefined();
+    await claimMirror(t, { ...ids, nowMs: NOW });
+    const own = (await readMirrorState(t, TEST_ORG, ids.imageId))!.startedAt;
+    expect(await finishMirror(t, { orgId: TEST_ORG, imageId: ids.imageId, startedAt: own, nowMs: NOW, ok: true })).toBe(true);
   });
 
   it("reads a damaged or foreign row as no state", async () => {
@@ -295,11 +350,11 @@ describe("the mirror function", () => {
     expect(await b.state()).toMatchObject({ state: "ready", digest: image.digest, repository });
     expect(b.aws.state.images.has(`sha256:${image.digest}`)).toBe(true);
     expect(b.aws.state.tags.get(companyImageMirrorTag(image.digest))).toBe(`sha256:${image.digest}`);
-    // Every session the function asked for names exactly this one repository and is of a saved-environment role: the push role, never a role of its own.
-    const pushes = b.aws.assumed.filter((request) => request.roleArn.endsWith("-img-push"));
-    expect(pushes).toHaveLength(1);
+    // One session, of the MIRROR's own role (never the saved environment push or manage role), naming exactly this one repository.
+    expect(b.aws.assumed).toHaveLength(1);
     for (const request of b.aws.assumed) {
-      expect(request.roleArn).toMatch(/-img-(push|manage)$/u);
+      expect(request.roleArn).toMatch(/\/agentx-staging-img-mirror$/u);
+      expect(request.roleArn).not.toMatch(/-img-(push|manage|pull)$/u);
       const resources = (JSON.parse(request.policy) as { Statement: Array<{ Resource: string }> }).Statement.map((statement) => statement.Resource).filter((resource) => resource !== "*");
       expect(resources).toEqual([`arn:aws:ecr:us-east-1:123456789012:repository/${repository}`]);
     }
@@ -343,8 +398,39 @@ describe("the mirror function", () => {
     expect(await runMirrorJob(b.dependencies, { action: "delete", orgId: TEST_ORG, imageId })).toBe("deleted");
     expect(b.aws.state.deleted).toBe(1);
     expect(await b.state()).toBeUndefined();
-    expect(b.aws.assumed.at(-1)!.roleArn).toMatch(/-img-manage$/u);
+    expect(b.aws.assumed.at(-1)!.roleArn).toMatch(/\/agentx-staging-img-mirror$/u);
     expect(await runMirrorJob(b.dependencies, { action: "delete", orgId: TEST_ORG, imageId })).toBe("deleted");
+  });
+
+  it("deletes what a copy made when the image was revoked while it ran, and records nothing; a copy that was replaced by a new approval is left alone", async () => {
+    const revoked = bench();
+    // The revoke removes the state row (the broker does it before it starts the delete) while the copy is mid-push: the copy's result cannot be recorded.
+    const revokeMidCopy = (b: ReturnType<typeof bench>) => ({ ...b.dependencies, copyPorts: (ecr: EcrWriter): CopyPorts => {
+      const base = b.dependencies.copyPorts(ecr);
+      return { ...base, ecr: { ...ecr, putImage: async (input) => { await ecr.putImage(input); await deleteMirrorState(b.dependencies.table, TEST_ORG, imageId); }, available: (digests) => ecr.available(digests), uploadBlob: (digest, parts) => ecr.uploadBlob(digest, parts), readBack: (digest) => ecr.readBack(digest) } };
+    } });
+    expect(await runMirrorJob(revokeMidCopy(revoked), copyJob())).toBe("revoked");
+    expect(await revoked.state()).toBeUndefined();
+    expect(revoked.aws.state.deleted).toBe(1);
+    expect(revoked.aws.state.exists).toBe(false);
+    // A copy that fails after the revoke cleans up too.
+    const failing = bench();
+    const failAfterRevoke = { ...failing.dependencies, copyPorts: (ecr: EcrWriter): CopyPorts => ({ ...failing.dependencies.copyPorts(ecr), ecr: { ...ecr, available: ecr.available.bind(ecr), uploadBlob: async (digest, parts) => { await ecr.uploadBlob(digest, parts); await deleteMirrorState(failing.dependencies.table, TEST_ORG, imageId); throw new Error("boom"); }, putImage: ecr.putImage.bind(ecr), readBack: ecr.readBack.bind(ecr) } }) };
+    expect(await runMirrorJob(failAfterRevoke, copyJob())).toBe("revoked");
+    expect(failing.aws.state.deleted).toBe(1);
+    // Revoked and approved again meanwhile: another copy owns the row, and this one deletes nothing.
+    const replaced = bench();
+    const replace = { ...replaced.dependencies, copyPorts: (ecr: EcrWriter): CopyPorts => {
+      const base = replaced.dependencies.copyPorts(ecr);
+      return { ...base, ecr: { ...ecr, available: ecr.available.bind(ecr), uploadBlob: ecr.uploadBlob.bind(ecr), readBack: ecr.readBack.bind(ecr), putImage: async (input) => {
+        await ecr.putImage(input);
+        await deleteMirrorState(replaced.dependencies.table, TEST_ORG, imageId);
+        await claimMirror(replaced.dependencies.table, { orgId: TEST_ORG, imageId, digest: image.digest, repository: companyImageRepositoryName({ env: "staging", orgId: TEST_ORG, imageId }), nowMs: NOW + 1000 });
+      } } };
+    } };
+    expect(await runMirrorJob(replace, copyJob())).toBe("skipped");
+    expect(replaced.aws.state.deleted).toBe(0);
+    expect((await replaced.state())?.state).toBe("copying");
   });
 
   it("the job schema carries ids, a digest and the company's registries, and nothing else", () => {
@@ -385,9 +471,12 @@ describe("the authority and the mirror", () => {
     const [waiting] = await a.store.list(TEST_ORG);
     expect(a.jobs).toEqual([]);
     const approved = await approveImage(a.deps, caller, { imageId: waiting!.imageId, expectedRevision: 1, expectedDigest: waiting!.digest });
+    a.db.set({ pk: `COMPANY_IMAGE_MIRROR#${TEST_ORG}`, sk: approved.imageId, state: "ready", digest: approved.digest });
     expect(a.jobs).toEqual([{ action: "copy", orgId: TEST_ORG, imageId: approved.imageId, cycle: approved.cycle, registry: "registry.example.com", repository: "acme/postgres", digest: approved.digest, extraRegistries: ["registry.example.com"] }]);
     await revokeImage(a.deps, caller, { imageId: approved.imageId, expectedRevision: approved.revision });
     expect(a.jobs.at(-1)).toEqual({ action: "delete", orgId: TEST_ORG, imageId: approved.imageId });
+    // The mirror's state row is forgotten at the revoke, before the delete job runs.
+    expect(a.db.get(`COMPANY_IMAGE_MIRROR#${TEST_ORG}`, approved.imageId)).toBeUndefined();
     // A job that cannot start does not undo the approval or the revoke.
     const flaky = authority();
     const deps = { ...flaky.deps, startMirror: async () => { throw new Error("lambda unavailable"); } };
@@ -541,7 +630,7 @@ describe("what a plan is given", () => {
     const own = row({ registry: "registry.example.com", digest: sha("own") });
     const builtIn = row();
     put(db, own); put(db, builtIn);
-    mirrorRow(db, own); mirrorRow(db, builtIn, { repository: "rovara-env/staging/o" + "a".repeat(32) + "/p" + "b".repeat(32) });
+    mirrorRow(db, own); mirrorRow(db, builtIn, { repository: "rovara-env/staging/o" + "a".repeat(32) + "/c" + "b".repeat(32) });
     expect((await readCompanyImagePlanInputs({ documentClient: db, tableName: "state" }, TEST_ORG, { env, start: undefined })).companyImages.map((value) => value.imageId)).toEqual([builtIn.imageId]);
     db.set({ pk: `ORG#${TEST_ORG}`, sk: "TESTIMAGE_REGISTRIES", revision: 1, hosts: ["registry.example.com"] });
     const inputs = await readCompanyImagePlanInputs({ documentClient: db, tableName: "state" }, TEST_ORG, { env, start: undefined });

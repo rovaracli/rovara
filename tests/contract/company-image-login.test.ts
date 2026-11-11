@@ -112,7 +112,7 @@ describe("the company image login", () => {
     await run((b, value) => b.put(value, { mirror: { state: "copying" } }));
     await run((b, value) => b.put(value, { mirror: { state: "failed", reason: "no_arm64" } }));
     await run((b, value) => b.put(value, { mirror: { digest: sha("a copy of another digest") } }));
-    await run((b, value) => b.put(value, { mirror: { repository: "rovara-env/staging/o" + "a".repeat(32) + "/p" + "b".repeat(32) } }));  // a state that names another repository
+    await run((b, value) => b.put(value, { mirror: { repository: "rovara-env/staging/o" + "a".repeat(32) + "/c" + "b".repeat(32) } }));  // a state that names another repository
     await run((b, value) => b.put(value, { mirror: { state: "ready", digest: "not a digest" } }));
     await run((b, value) => b.put(value), image({ registry: "registry.example.com" }));        // its registry is not on the company's list
   });

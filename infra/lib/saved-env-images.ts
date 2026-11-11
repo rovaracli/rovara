@@ -67,10 +67,10 @@ export interface SavedEnvImagesProps {
    */
   readonly registryScanning?: "basic" | "none";
   /**
-   * Other principals that may assume the push and manage roles besides the broker (the company image mirror function's role): they assume them with the same one-repository session policy the broker does. The pull
-   * role stays the broker's alone (the broker mints the worker's pull login).
+   * The company image mirror's own role (infra/lib/company-image-mirror.ts): the repository policy lets it read, write and delete in the repositories its IAM policy reaches (`o?/c?`, mirror repositories only).
+   * The push and manage roles stay the broker's alone.
    */
-  readonly extraAssumers?: readonly iam.IPrincipal[];
+  readonly mirrorRoleArn?: string;
 }
 
 export class SavedEnvImages extends Construct {
@@ -95,12 +95,11 @@ export class SavedEnvImages extends Construct {
     const repositories = savedEnvRepositoriesArn(scopeOf, env);
     const brokerPrincipal = new iam.ArnPrincipal(props.brokerRole.roleArn);
 
-    const extraAssumers = props.extraAssumers ?? [];
-    const sessionRole = (logicalId: string, roleName: string, description: string, actions: readonly string[], withToken: boolean, assumers: readonly iam.IPrincipal[] = []): iam.Role => {
+    const sessionRole = (logicalId: string, roleName: string, description: string, actions: readonly string[], withToken: boolean): iam.Role => {
       const role = new iam.Role(this, logicalId, {
         roleName,
         description,
-        assumedBy: assumers.length === 0 ? brokerPrincipal : new iam.CompositePrincipal(brokerPrincipal, ...assumers),
+        assumedBy: brokerPrincipal,
         // The longest session any of them is minted for is the push's 3,600 seconds (the chained-role maximum); the session policy and the duration the broker asks for narrow it.
         maxSessionDuration: Duration.seconds(SAVED_ENV_PUSH_SESSION_SECONDS),
       });
@@ -108,9 +107,9 @@ export class SavedEnvImages extends Construct {
       role.addToPolicy(new iam.PolicyStatement({ sid: "ThisEnvironmentsImages", actions: [...actions], resources: [repositories] }));
       return role;
     };
-    this.pushRole = sessionRole("PushRole", savedEnvPushRoleName(env), "Rovara saved environment images: the broker assumes this with a one-repository session policy to push an image", SAVED_ENV_PUSH_ACTIONS, true, extraAssumers);
+    this.pushRole = sessionRole("PushRole", savedEnvPushRoleName(env), "Rovara saved environment images: the broker assumes this with a one-repository session policy to push an image", SAVED_ENV_PUSH_ACTIONS, true);
     this.pullRole = sessionRole("PullRole", savedEnvPullRoleName(env), "Rovara saved environment images: the broker assumes this with a one-repository session policy to pull an image", SAVED_ENV_PULL_ACTIONS, true);
-    this.manageRole = sessionRole("ManageRole", savedEnvManageRoleName(env), "Rovara saved environment images: the broker assumes this with a one-repository session policy to list and delete images", SAVED_ENV_MANAGE_ACTIONS, false, extraAssumers);
+    this.manageRole = sessionRole("ManageRole", savedEnvManageRoleName(env), "Rovara saved environment images: the broker assumes this with a one-repository session policy to list and delete images", SAVED_ENV_MANAGE_ACTIONS, false);
 
     // The role ECR assumes to create a repository from the template. Only ECR may assume it; it may create repositories under the prefix and apply the policy, lifecycle and tags the template carries.
     this.createRole = new iam.Role(this, "CreateRole", {
@@ -187,7 +186,7 @@ export class SavedEnvImages extends Construct {
 
     // ---- the creation template
     // The roles' real ARNs (the push, pull and manage roles carry the environment's path, wherever the aspect puts them), so the policy names exactly the roles created here.
-    const policy = savedEnvRepositoryPolicy({ pushRoleArn: this.pushRole.roleArn, pullRoleArn: this.pullRole.roleArn, manageRoleArn: this.manageRole.roleArn });
+    const policy = savedEnvRepositoryPolicy({ pushRoleArn: this.pushRole.roleArn, pullRoleArn: this.pullRole.roleArn, manageRoleArn: this.manageRole.roleArn, ...(props.mirrorRoleArn === undefined ? {} : { mirrorRoleArn: props.mirrorRoleArn }) });
     this.template = new ecr.CfnRepositoryCreationTemplate(this, "CreationTemplate", {
       prefix,
       appliedFor: ["CREATE_ON_PUSH"],
