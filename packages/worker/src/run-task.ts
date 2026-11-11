@@ -73,8 +73,8 @@ import { saveEvidenceRaw } from "./verification/evidence-raw.js";
 import { CommandRecorder } from "./verification/recorder.js";
 import {
   createTaskUsageTelemetry,
-  usageForControlPlane, reviewUsageArtifactName,
-  type TaskUsageOutcome,
+  usageForControlPlane, reviewUsageArtifactName, spentNothing, statsSince,
+  type TaskUsageOutcome, type UsageStats,
 } from "./usage.js";
 import { assertWorkflowDependencyResumeTree, executeSerialWorkflowDependencies, type ExecuteSerialWorkflowDependenciesInput, type ExecuteSerialWorkflowDependenciesResult } from "./workflow-dependencies.js";
 import { WorkflowPartsHaltedError, executeParallelWorkflowDependencies, type ParallelPartContext } from "./parallel-parts.js";
@@ -831,6 +831,12 @@ async function runTask(
   } catch (error) {
     session.dispose();
     throw error;
+  }
+  // A reopened session's stats are the conversation's running total, earlier operations' included. This run's usage event is what it spent itself, so the stats it opened with are
+  // taken off (a retry of this operation reopens too, and reports only its own attempt). A session made new for the run starts at zero and has no baseline.
+  let usageBaseline: UsageStats | undefined;
+  if (registered) {
+    try { usageBaseline = session.getSessionStats(); } catch { usageBaseline = undefined; }
   }
   // K1 C5a: what this stage's session loaded, as references only; sent again at the end with anything loaded during the run.
   const reportLoadedKnowledge = async (): Promise<void> => {
@@ -1760,14 +1766,17 @@ async function runTask(
 
     let telemetryFailure = evidenceFailure;
     try {
-      const usage = createTaskUsageTelemetry(session.getSessionStats(), {
+      const spent = statsSince(session.getSessionStats(), usageBaseline);
+      const usage = createTaskUsageTelemetry(spent, {
         ...session.getModel(),
         ...(dependencies.model.cacheRetention === undefined
           ? {}
           : { cacheRetention: dependencies.model.cacheRetention }),
       }, outcome);
       const redactedUsage = redactCredentials(usage);
-      await emit("usage", usageForControlPlane(redactedUsage, dependencies.model));
+      // A run on a reopened session that made no model call (a review run's own session is not used: its reviewers have sessions of their own) has nothing to report. Without this it
+      // would send the whole conversation's running total again.
+      if (usageBaseline === undefined || !spentNothing(spent)) await emit("usage", usageForControlPlane(redactedUsage, dependencies.model));
       await artifactSink({
         name: "usage.json",
         mediaType: "application/json",
