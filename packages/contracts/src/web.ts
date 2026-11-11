@@ -181,3 +181,5 @@ export { SIGNED_OUT_REASONS, isSignedOutReason, type SignedOutReason } from "./s
 export * from "./task-status.js";
 export * from "./notification-prefs.js";
 export { FINISHED_AS, FinishedAsSchema, type FinishedAs } from "./session-views.js";
+// srv/needs-broker-ui-2 item 11: the merge rules a project screen reads (`GET /v1/app/projects/{p}/code-settings`).
+export { CodeSettingsSchema, CodeSettingsResponseSchema, CodeSettingsResponseReaderSchema, DEFAULT_CODE_SETTINGS, type CodeSettings, type CodeSettingsResponse, type CodeSettingsResponseRead } from "./rovara-code.js";
