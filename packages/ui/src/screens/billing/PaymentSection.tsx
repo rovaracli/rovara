@@ -27,7 +27,7 @@ export function AutoBillSection({ state }: { state: BillingState }) {
   {auto.enabled ? (confirm
    ? <div className="rv-tb-confirm"><p>{PAYMENT_WORDS.OFF_SURE}</p><div className="rv-tb-actions"><Button variant="danger" busy={write.busy} onClick={() => { void write.run({ action: "auto-bill", enabled: false }, "Auto-billing is off.").then(answer => { if (answer !== undefined) setConfirm(false); }); }}>{PAYMENT_WORDS.OFF_YES}</Button><Button variant="quiet" onClick={() => { setConfirm(false); }}>{PAYMENT_WORDS.CANCEL}</Button></div></div>
    : <div><Button onClick={() => { setConfirm(true); }}>{PAYMENT_WORDS.TURN_OFF}</Button></div>)
-   : auto.unavailableReason === "no_payment_method" ? <><div><Button variant="primary" busy={write.busy} onClick={() => { void write.run({ action: "payment-method-setup", returnPath: host.currentPath() }, ""); }}>{PAYMENT_WORDS.TURN_ON}</Button></div><p className="rv-muted">{PAYMENT_WORDS.NEEDS_CARD}</p></>
+   : auto.unavailableReason === "no_payment_method" ? <><div><Button variant="primary" busy={write.busy} onClick={() => { void write.run({ action: "payment-method-setup", returnPath: host.currentPath() }, ""); }}>{PAYMENT_WORDS.ADD}</Button></div><p className="rv-muted">{PAYMENT_WORDS.NEEDS_CARD}</p></>
    : !auto.available ? <><div><Button disabled>{PAYMENT_WORDS.TURN_ON}</Button></div><p className="rv-muted">{reason === "" ? "Not available right now." : reason}</p></>
    : <div><Button variant="primary" busy={write.busy} onClick={() => { void write.run({ action: "auto-bill", enabled: true }, "Auto-billing is on."); }}>{PAYMENT_WORDS.TURN_ON}</Button></div>}
   {write.view}

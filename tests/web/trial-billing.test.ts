@@ -271,7 +271,8 @@ describe("choosing at the end of the trial: each action, REAUTH_REQUIRED and ref
   const f = mount({ path: "/app/trial", answers: { [TRIAL]: ok(fx.ended(true, { options: fx.options({ autoBill: { available: false, unavailableReason: "no_payment_method" } }) })), [POST]: done(fx.billing(), { status: "needs_action", action: { kind: "redirect", url: hosted, expiresAt: "2026-11-11T13:00:00.000Z" } }) } });
   try {
    expect(await screen.findByText("You'll add a payment method on the billing provider's secure page first.")).toBeTruthy();
-   fireEvent.click(screen.getByRole("button", { name: "Turn on auto-billing" }));
+   expect(screen.queryByRole("button", { name: "Turn on auto-billing" })).toBeNull();
+   fireEvent.click(screen.getByRole("button", { name: "Add a payment method" }));
    await waitFor(() => { expect(f.host.openExternal).toHaveBeenCalledWith(hosted); });
    expect(lastPost(f)).toMatchObject({ action: "payment-method-setup", returnPath: "/app/live" });
    expect(Object.keys(lastPost(f)).sort()).toEqual(["action", "requestId", "returnPath"]);
@@ -282,7 +283,7 @@ describe("choosing at the end of the trial: each action, REAUTH_REQUIRED and ref
  it("a hosted page address that is not https is never opened", async () => {
   const f = mount({ path: "/app/trial", answers: { [TRIAL]: ok(fx.ended(true, { options: fx.options({ autoBill: { available: false, unavailableReason: "no_payment_method" } }) })), [POST]: done(fx.billing(), { status: "needs_action", action: { kind: "redirect", url: "http://pay.example/setup", expiresAt: "2026-11-11T13:00:00.000Z" } }) } });
   try {
-   fireEvent.click(await screen.findByRole("button", { name: "Turn on auto-billing" }));
+   fireEvent.click(await screen.findByRole("button", { name: "Add a payment method" }));
    await waitFor(() => { expect(posts(f)).toHaveLength(1); });
    expect(f.host.openExternal).not.toHaveBeenCalled();expect(screen.queryByRole("link", { name: "Open the secure page" })).toBeNull();
   } finally { f.close(); }
@@ -367,7 +368,7 @@ describe("Settings > Billing", () => {
   } finally { f.close(); }
   const g = open(fx.billing(), { [POST]: done(fx.billing(), { status: "needs_action", action: { kind: "redirect", url: hosted, expiresAt: "2026-11-11T13:00:00.000Z" } }) });
   try {
-   fireEvent.click(await screen.findByRole("button", { name: "Add a payment method" }));
+   fireEvent.click((await screen.findAllByRole("button", { name: "Add a payment method" }))[0]!);
    await waitFor(() => { expect(g.host.openExternal).toHaveBeenCalledWith(hosted); });
   } finally { g.close(); }
  });
@@ -393,7 +394,10 @@ describe("Settings > Billing", () => {
  it("auto-billing without a payment method goes to the hosted page; when billing isn't available the button is disabled with the reason", async () => {
   const f = open(fx.billing(), { [POST]: done(fx.billing(), { status: "needs_action", action: { kind: "redirect", url: "https://pay.example/s", expiresAt: "2026-11-11T13:00:00.000Z" } }) });
   try {
-   fireEvent.click(await screen.findByRole("button", { name: "Turn on auto-billing" }));
+   // With no payment method the Auto-billing section's button says what it does (it opens the provider's page), never "Turn on auto-billing".
+   const section = (await screen.findByRole("heading", { name: "Auto-billing" })).closest("section")!;
+   expect(within(section).queryByRole("button", { name: "Turn on auto-billing" })).toBeNull();
+   fireEvent.click(within(section).getByRole("button", { name: "Add a payment method" }));
    await waitFor(() => { expect(lastPost(f)).toMatchObject({ action: "payment-method-setup" }); });
   } finally { f.close(); }
   const g = open(fx.billing({ autoBill: { enabled: false, available: false, unavailableReason: "billing_not_available", monthlyCeilingUsd: null }, paymentMethod: fx.card() }));
@@ -544,6 +548,42 @@ describe("the banner", () => {
   try { const region = await screen.findByRole("region", { name: "Trial allowance" });expect(within(region).getByRole("link", { name: "Choose what happens next" })).toBeTruthy();expect(region.textContent).not.toContain("Ask an admin"); } finally { f.close(); }
   const g = banner(fx.ended(false));
   try { const region = await screen.findByRole("region", { name: "Trial allowance" });expect(region.textContent).toContain("Your trial allowance is used up");expect(region.textContent).toContain("Ask an admin to choose what happens next.");expect(within(region).getByRole("link", { name: "See details" }).getAttribute("href")).toBe("/app/trial"); } finally { g.close(); }
+ });
+ it("active, used up, monthly refresh: says it renews, never that someone must choose, and never says trial on a team plan", async () => {
+  const f = banner(fx.trial({ ...fx.usedUp(), plan: "team", you: { member: null, hitLimit: false, canChoose: true } }));
+  try {
+   const region = await screen.findByRole("region", { name: "Trial allowance" });
+   expect(region.textContent).toContain("Your company's AI model allowance is used up for this month");
+   expect(region.textContent).toContain("It renews on Dec 1, 2026.");
+   expect(region.textContent).not.toMatch(/chooses|choose what happens|owner or admin/iu);expect(region.textContent).not.toMatch(/trial/iu);
+   expect(region.getAttribute("data-kind")).toBe("used_up");
+   expect(within(region).getByRole("link", { name: "See details" }).getAttribute("href")).toBe("/app/trial");
+  } finally { f.close(); }
+  const g = banner(fx.usedUp());
+  try {
+   const region = await screen.findByRole("region", { name: "Trial allowance" });
+   expect(region.textContent).toContain("Your trial's AI model allowance is used up for this month");expect(region.textContent).toContain("It renews on Dec 1, 2026.");
+   expect(region.textContent).not.toMatch(/chooses|owner or admin|Ask an admin/iu);
+  } finally { g.close(); }
+  const both = banner(fx.trial({ plan: "team", allowances: [fx.models({ used: 500, left: 0, state: "used_up" }), fx.machine({ used: 20, left: 0, state: "used_up" })], you: { member: null, hitLimit: true, canChoose: false }, choices: null }));
+  try {
+   const region = await screen.findByRole("region", { name: "Trial allowance" });
+   expect(region.textContent).toContain("Your company's AI model and machine time allowances are used up for this month");expect(region.textContent).toContain("They renew on Dec 1, 2026.");
+  } finally { both.close(); }
+  const machineOnly = banner(fx.trial({ plan: "team", allowances: [fx.models(), fx.machine({ used: 20, left: 0, state: "used_up" })], you: { member: null, hitLimit: true, canChoose: false }, choices: null }));
+  try { const region = await screen.findByRole("region", { name: "Trial allowance" });expect(region.textContent).toContain("Your company's machine time allowance is used up for this month"); } finally { machineOnly.close(); }
+ });
+ it("active, used up, one-time allowance: says it does not renew, still no choose sentence", async () => {
+  const f = banner(fx.trial({ allowances: [fx.models({ refresh: "never", period: null, used: 50, granted: 50, left: 0, state: "used_up" })], you: { member: null, hitLimit: false, canChoose: true }, choices: null }));
+  try { const region = await screen.findByRole("region", { name: "Trial allowance" });expect(region.textContent).toContain("Your trial's AI model allowance is used up");expect(region.textContent).toContain("It does not renew.");expect(region.textContent).not.toMatch(/chooses/iu); } finally { f.close(); }
+ });
+ it("ended and stopped keep the sentence that an owner or admin chooses what happens next", async () => {
+  const f = banner(fx.ended(true));
+  try { const region = await screen.findByRole("region", { name: "Trial allowance" });expect(region.getAttribute("data-kind")).toBe("ended");expect(region.textContent).toContain("can't start until an owner or admin chooses what happens next."); } finally { f.close(); }
+  const g = banner(fx.stopped(true));
+  try { const region = await screen.findByRole("region", { name: "Trial allowance" });expect(region.getAttribute("data-kind")).toBe("stopped");expect(region.textContent).toContain("Your company chose to stop after the trial. Nothing is deleted."); } finally { g.close(); }
+  const h2 = banner(fx.ended(false));
+  try { const region = await screen.findByRole("region", { name: "Trial allowance" });expect(region.textContent).toContain("chooses what happens next");expect(region.textContent).toContain("Ask an admin to choose what happens next."); } finally { h2.close(); }
  });
  it("is quiet on the trial page and the Billing page, when all is well, and with the switch off (no read at all)", async () => {
   const f = banner(fx.ended(true), { path: "/app/trial" });

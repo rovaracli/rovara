@@ -21,6 +21,7 @@ export const CHOICES_WORDS = {
  STOP_SURE: "Stop work on Rovara-provided models? Nothing is deleted.",
  STOP_YES: "Yes, stop",
  CANCEL: "Cancel",
+ ADD_CARD: "Add a payment method",
  NEEDS_CARD: "You'll add a payment method on the billing provider's secure page first.",
  OPEN_MODELS: "Open AI models",
 } as const;
@@ -36,7 +37,7 @@ function OptionRow({ option, trial }: { option: Option; trial: TrialView }) {
    return <div className="rv-tb-confirm"><p>{CHOICES_WORDS.STOP_SURE}</p><div className="rv-tb-actions"><Button variant="danger" busy={write.busy} onClick={() => { void write.run({ action: "choose-trial-end", choice: "stop" }, "Done. Work on Rovara-provided models is stopped.").then(answer => { if (answer !== undefined) setConfirm(false); }); }}>{CHOICES_WORDS.STOP_YES}</Button><Button variant="quiet" onClick={() => { setConfirm(false); }}>{CHOICES_WORDS.CANCEL}</Button></div></div>;
   }
   if (option.id === "auto_bill") {
-   if (option.unavailableReason === "no_payment_method") return <><Button variant="primary" busy={write.busy} onClick={() => { void write.run({ action: "payment-method-setup", returnPath: host.currentPath() }, ""); }}>{choiceWords("auto_bill")}</Button><p className="rv-muted">{CHOICES_WORDS.NEEDS_CARD}</p></>;
+   if (option.unavailableReason === "no_payment_method") return <><Button variant="primary" busy={write.busy} onClick={() => { void write.run({ action: "payment-method-setup", returnPath: host.currentPath() }, ""); }}>{CHOICES_WORDS.ADD_CARD}</Button><p className="rv-muted">{CHOICES_WORDS.NEEDS_CARD}</p></>;
    if (!option.available) return <><Button disabled>{choiceWords("auto_bill")}</Button><p className="rv-muted">{reason}</p></>;
    return <Button variant="primary" busy={write.busy} onClick={() => { void write.run({ action: "choose-trial-end", choice: "auto_bill" }, "Done. Auto-billing is on."); }}>{choiceWords("auto_bill")}</Button>;
   }

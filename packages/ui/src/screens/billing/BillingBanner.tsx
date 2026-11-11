@@ -2,7 +2,7 @@
 import { Link, useLocation } from "react-router";
 import { useTrial } from "../../api/trial-billing.js";
 import { Usd } from "./format.js";
-import { allowanceName, BILLING_PAGE_PATH, bannerFor, hoursText, TRIAL_PATH, type BannerPlan } from "./trial-logic.js";
+import { allowanceName, BILLING_PAGE_PATH, bannerFor, hoursText, TRIAL_PATH, usedUpWords, type BannerPlan } from "./trial-logic.js";
 import "./trial-billing.css";
 
 export const BANNER_WORDS = {
@@ -20,7 +20,8 @@ function leftWords(plan: BannerPlan) {
 function content(plan: BannerPlan): { tone: "warning" | "danger" | "info"; title: string; body: React.ReactNode; to: string; action: string } {
  switch (plan.kind) {
   case "near_end": return { tone: "warning", title: BANNER_WORDS.NEAR_TITLE, body: leftWords(plan), to: TRIAL_PATH, action: BANNER_WORDS.NEAR_ACTION };
-  case "used_up": case "ended": return { tone: "danger", title: BANNER_WORDS.USED_TITLE, body: plan.chooser ? BANNER_WORDS.USED_BODY : <>{BANNER_WORDS.USED_BODY} {BANNER_WORDS.USED_OTHER}</>, to: TRIAL_PATH, action: plan.chooser ? BANNER_WORDS.NEAR_ACTION : BANNER_WORDS.DETAILS };
+  case "used_up": { const words = usedUpWords(plan.plan, plan.usedUp); return { tone: "danger", title: words.title, body: words.body, to: TRIAL_PATH, action: BANNER_WORDS.DETAILS }; }
+  case "ended": return { tone: "danger", title: BANNER_WORDS.USED_TITLE, body: plan.chooser ? BANNER_WORDS.USED_BODY : <>{BANNER_WORDS.USED_BODY} {BANNER_WORDS.USED_OTHER}</>, to: TRIAL_PATH, action: plan.chooser ? BANNER_WORDS.NEAR_ACTION : BANNER_WORDS.DETAILS };
   case "stopped": return { tone: "info", title: BANNER_WORDS.STOPPED_TITLE, body: BANNER_WORDS.STOPPED_BODY, to: TRIAL_PATH, action: plan.chooser ? BANNER_WORDS.STOPPED_ACTION : BANNER_WORDS.DETAILS };
   case "past_due": return { tone: "danger", title: BANNER_WORDS.PAST_TITLE, body: plan.chooser ? BANNER_WORDS.PAST_BODY : BANNER_WORDS.PAST_OTHER, to: plan.chooser ? BILLING_PAGE_PATH : TRIAL_PATH, action: plan.chooser ? BANNER_WORDS.PAST_ACTION : BANNER_WORDS.DETAILS };
   default: return { tone: "danger", title: BANNER_WORDS.SUSPENDED_TITLE, body: BANNER_WORDS.SUSPENDED_BODY, to: TRIAL_PATH, action: BANNER_WORDS.DETAILS };

@@ -57,7 +57,7 @@ export function phaseWords(phase: Phase, plan: string): { heading: string; text:
 }
 
 export type BannerKind = "near_end" | "used_up" | "ended" | "stopped" | "past_due" | "suspended";
-export interface BannerPlan { kind: BannerKind; chooser: boolean; lowAllowances: Allowance[] }
+export interface BannerPlan { kind: BannerKind; chooser: boolean; lowAllowances: Allowance[]; /** The plan the server named ("trial", "team"); anything else reads as no plan word. */ plan: string; /** The allowances that are used up, for the used-up banner. */ usedUp: Allowance[] }
 /** The worst state of any allowance. */
 export function worstState(allowances: readonly Allowance[]): "ok" | "low" | "used_up" {
  return allowances.some(item => item.state === "used_up") ? "used_up" : allowances.some(item => item.state === "low") ? "low" : "ok";
@@ -68,17 +68,38 @@ export function worstState(allowances: readonly Allowance[]): "ok" | "low" | "us
  */
 export function bannerFor(trial: TrialView): BannerPlan | undefined {
  const chooser = trial.you.canChoose, worst = worstState(trial.allowances), low = trial.allowances.filter(item => item.state === "low" || item.state === "used_up");
+ const usedUp = trial.allowances.filter(item => item.state === "used_up"), plan = trial.plan;
  switch (trial.phase) {
-  case "ended": return { kind: "ended", chooser, lowAllowances: low };
-  case "stopped": return { kind: "stopped", chooser, lowAllowances: low };
-  case "past_due": return { kind: "past_due", chooser, lowAllowances: [] };
-  case "suspended": return { kind: "suspended", chooser, lowAllowances: [] };
+  case "ended": return { kind: "ended", chooser, lowAllowances: low, plan, usedUp };
+  case "stopped": return { kind: "stopped", chooser, lowAllowances: low, plan, usedUp };
+  case "past_due": return { kind: "past_due", chooser, lowAllowances: [], plan, usedUp };
+  case "suspended": return { kind: "suspended", chooser, lowAllowances: [], plan, usedUp };
   case "active":
-   if (worst === "used_up" && (chooser || trial.you.hitLimit || trial.choices !== null)) return { kind: "used_up", chooser, lowAllowances: low };
-   if (worst === "low" && chooser) return { kind: "near_end", chooser, lowAllowances: low };
+   if (worst === "used_up" && (chooser || trial.you.hitLimit || trial.choices !== null)) return { kind: "used_up", chooser, lowAllowances: low, plan, usedUp };
+   if (worst === "low" && chooser) return { kind: "near_end", chooser, lowAllowances: low, plan, usedUp };
    return undefined;
   default: return undefined;
  }
+}
+
+/** The first day of the month after `period.month` ("2026-11" -> "Dec 1, 2026", UTC). Undefined when the period is missing or not a month. */
+export function renewalDay(period: Allowance["period"]): string | undefined {
+ const match = period === null || period === undefined ? null : /^(\d{4})-(0[1-9]|1[0-2])$/u.exec(period.month);
+ return match === null ? undefined : new Date(Date.UTC(Number(match[1]), Number(match[2]), 1)).toLocaleDateString("en-US", { timeZone: "UTC", dateStyle: "medium" });
+}
+const USED_UP_NAMES: Record<string, string> = { models: "AI model", machine: "machine time" };
+/**
+ * The used-up banner for a company that is still active. It is built from the allowances, never from the trial-end words: a monthly allowance renews, so nothing "ends" and nobody has to choose.
+ * The word "trial" appears only on the trial plan. A one-time allowance says it does not renew.
+ */
+export function usedUpWords(plan: string, usedUp: readonly Allowance[]): { title: string; body: string } {
+ const names = [...new Set(usedUp.map(item => Object.hasOwn(USED_UP_NAMES, item.kind) ? USED_UP_NAMES[item.kind]! : ""))].filter(name => name !== ""), many = names.length > 1;
+ const owner = plan === "trial" ? "Your trial's" : "Your company's", subject = `${owner} ${names.length === 0 ? "" : names.join(" and ") + " "}${many ? "allowances" : "allowance"}`, verb = many ? "are" : "is";
+ const monthly = usedUp.length > 0 && usedUp.every(item => item.refresh === "monthly");
+ if (!monthly) return { title: `${subject} ${verb} used up`, body: usedUp.some(item => item.refresh === "monthly") ? "Some of it renews every month; the rest does not renew." : `${many ? "They do" : "It does"} not renew.` };
+ const days = [...new Set(usedUp.map(item => renewalDay(item.period)))];
+ const when = days.length === 1 && days[0] !== undefined ? `on ${days[0]}` : "at the start of next month";
+ return { title: `${subject} ${verb} used up for this month`, body: `${many ? "They renew" : "It renews"} ${when}.` };
 }
 
 const BRANDS: Record<string, string> = { visa: "Visa", mastercard: "Mastercard", amex: "American Express" };
