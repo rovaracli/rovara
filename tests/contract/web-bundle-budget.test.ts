@@ -45,3 +45,12 @@ it("loads the Sources editing screen as a chunk of its own that no initial file 
  expect(readFileSync(join(directory, admin.file), "utf8")).toContain("rovara:project/");
  expect(readFileSync(join(directory, tab.file), "utf8")).not.toContain("rovara:project/");
 });
+it("loads the Insights screen as a chunk of its own that no initial file holds (switch rovara.insights)", () => {
+ const directory = "packages/web/dist/app", manifest = JSON.parse(readFileSync(join(directory, ".vite/manifest.json"), "utf8")) as Record<string, { file: string; isDynamicEntry?: boolean }>;
+ const key = Object.keys(manifest).find(name => /screens\/insights\/InsightsScreen\.(?:js|tsx)$/u.test(name));
+ expect(key, "the Insights screen has its own chunk").toBeDefined();
+ expect(manifest[key!]!.isDynamicEntry).toBe(true);
+ expect(initialJavaScriptFiles(directory)).not.toContain(manifest[key!]!.file);
+ expect(readFileSync(join(directory, manifest[key!]!.file), "utf8")).toContain("Who can see Insights");
+ for (const file of initialJavaScriptFiles(directory)) { const text = readFileSync(join(directory, file), "utf8");for (const marker of ["Who can see Insights", "You can see that it exists and its state", "Cost per shipped item"]) expect(text.includes(marker), file + " holds " + marker).toBe(false); }
+});

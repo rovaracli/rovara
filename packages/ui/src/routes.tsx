@@ -13,7 +13,7 @@ function Page({ title }: { title: string }) { return <section><h1 tabIndex={-1}>
 function LiveToWork() { const location = useLocation();return <Navigate replace to={{ pathname: paths.work, search: location.search, hash: location.hash }} />; }
 const liveScreen = async () => ({ Component: (await import("./screens/live/LiveScreen.js")).LiveScreen });
 /** `newNav` is the new-navigation switch (nav-flags.ts). Off, this is exactly the route table as it was: no Work, no Projects list, Live stays Live. */
-export function appRoutes(features: AppNav["features"], options: { newNav?: boolean } = {}): RouteObject[] {
+export function appRoutes(features: AppNav["features"], options: { newNav?: boolean; insights?: boolean } = {}): RouteObject[] {
  const newNav = options.newNav === true;
  const children: RouteObject[] = [
  { index: true, element: <HomeScreen /> }, ...(newNav ? [{ path: "live", element: <LiveToWork /> }, { path: "work", lazy: liveScreen }, { path: "projects", lazy: async () => ({ Component: (await import("./screens/project/ProjectsListScreen.js")).ProjectsListScreen }) }] : [{ path: "live", lazy: liveScreen }]),
@@ -26,6 +26,8 @@ export function appRoutes(features: AppNav["features"], options: { newNav?: bool
  // UX2 slice 2 item 5: your account page (how you're notified; the task emails' "change" and "stop" links open it).
  { path: "account", lazy: async () => ({ Component: (await import("./screens/account/AccountScreen.js")).AccountScreen }) },
  ];
+ // Insights (switch rovara.insights = v2): absent while the switch is off, direct URLs included. The screen itself asks the server who may see it.
+ if (options.insights === true) children.push({ path: "insights", lazy: async () => ({ Component: (await import("./screens/insights/InsightsScreen.js")).InsightsScreen }) });
  // Lane C: waiting is caller-scoped, independent of the company-admin navigation flag.
  children.push({ path: "admin/waiting", handle: { webOnly: true }, lazy: async () => ({ Component: (await import("./screens/admin/AdminLayout.js")).AdminLayout }), children: [{ index: true, lazy: async () => ({ Component: (await import("./screens/admin/waiting/WaitingScreen.js")).WaitingScreen }) }] });
  // Part B owns these screen implementations. Disabled routes are absent, including direct URLs.
