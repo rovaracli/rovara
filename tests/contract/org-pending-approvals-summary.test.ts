@@ -6,11 +6,14 @@ import { describe, expect, it } from "vitest";
 import { ORG_PENDING_APPROVALS_MAX, OrgPendingApprovalsSummaryReaderSchema, OrgPendingApprovalsSummarySchema, orgMemberKey } from "@agentx/cloud-contracts";
 import { approvalKey, type OrgId } from "@rovara-code/contracts";
 import {
-  approvalTaskEventKey, createPendingChange, createStepApproval, createWriteApprovalRecord, getAnyApproval, type ApprovalDependencies, type WriteApprovalRecord,
+  approvalTaskEventKey, createPendingChange, createStepApproval, createWriteApprovalRecord, getAnyApproval,  type ApprovalDependencies, type WriteApprovalRecord,
 } from "../../packages/broker/src/agents/approvals.js";
 import { approvalDecideKind, confirmTitleOf, changeTitleOf, STEP_APPROVAL_TITLE, WRITE_APPROVAL_TITLE } from "../../packages/broker/src/agents/approval-decide-kind.js";
+import { registerSessionShareApprovals } from "../../packages/broker/src/agent-sessions/shares.js";
+import { registerSessionTakeOverApprovals } from "../../packages/broker/src/agent-sessions/take-over.js";
+import { registerCardDecisionApprovals } from "../../packages/broker/src/aws/developer-routes/card-decide-grade.js";
 import { orgAdminApprovers } from "../../packages/broker/src/agents/changes.js";
-import { ORG_PENDING_SCAN_MAX, orgPendingApprovals } from "../../packages/broker/src/agents/org-pending-summary.js";
+import { ORG_PENDING_SCAN_MAX, orgPendingApprovals, summaryRowOf } from "../../packages/broker/src/agents/org-pending-summary.js";
 import type { OrgResolver } from "../../packages/broker/src/org/resolve.js";
 import { seedMembership } from "../support/developer-task-broker.js";
 import { ADA, BEN, CARL, DEB, ORG_B, person, setup } from "../support/spend-world.js";
@@ -57,10 +60,10 @@ async function world() {
     expect(await createWriteApprovalRecord({ ...deps, now: () => clock }, record, [event], 8)).toBe("created");
     return record;
   };
-  const step = async (orgId: OrgId = TEST_ORG) => createStepApproval({ ...deps, now: () => clock }, {
+  const step = async (orgId: OrgId = TEST_ORG) => { clock += 60_000; return createStepApproval({ ...deps, now: () => clock }, {
     orgId, subject: { kind: "agent_run", taskId: randomUUID(), stepId: "report" }, prompt: "Send the STEP-PROMPT report?", approvers: { kind: "ids", ids: [BEN.developerId] }, project: "payments",
     owner: { developerId: BEN.developerId, name: BEN.name }, expiresAt: new Date(clock + 30 * 86_400_000).toISOString(),
-  });
+  }); };
   const get = (who: typeof ADA, path = PATH) => t.dev(who, "GET", path);
   return { ...t, approvals: deps, change, write, step, get };
 }
@@ -131,6 +134,45 @@ describe("the company's pending approvals, at a glance", () => {
     expect(summary.total).toBe(ORG_PENDING_APPROVALS_MAX + 3);
     expect(summary.approvals).toHaveLength(ORG_PENDING_APPROVALS_MAX);
     expect(summary.approvals.map((entry) => entry.approvalId)).toEqual(made.slice(3).reverse());
+  });
+
+  it("lists and counts only approvals the caller could decide: a card decision, a company share and a take-over are only their own person's to confirm", async () => {
+    registerCardDecisionApprovals(); registerSessionShareApprovals(); registerSessionTakeOverApprovals();
+    const t = await world();
+    const subjects = [
+      { rule: "card_decision", subject: { kind: "card_decision", taskId: randomUUID(), cardId: "merge:pr1", contentVersion: "v1", returnPath: "/app/tasks/x" } },
+      { rule: "session_share_org", subject: { kind: "session_share_org", sessionId: "ses_99999999999999999999", level: "view" } },
+      { rule: "session_take_over", subject: { kind: "session_owner", sessionId: "ses_99999999999999998888", to: CARL.developerId, sessionRevision: 1 } },
+    ];
+    const own: string[] = [];
+    for (const { rule, subject } of subjects) {
+      const record = await createPendingChange({ ...t.approvals, now: () => Date.now() - 3_600_000 }, { orgId: TEST_ORG, requestId: randomUUID(), requestedBy: CARL.developerId, subject: subject as never, changes: ["Their own confirmation"], approvers: { kind: "rule", rule, candidates: [CARL.developerId] } });
+      own.push(record.approvalId);
+    }
+    const open = await t.change();
+    for (const who of [ADA, DEB]) {
+      const summary = OrgPendingApprovalsSummarySchema.parse(bodyOf(await t.get(who)));
+      expect(summary.total, who.name).toBe(1);
+      expect(summary.approvals.map((entry) => entry.approvalId), who.name).toEqual([open.approvalId]);
+      for (const id of own) expect(JSON.stringify(summary), id).not.toContain(id);
+      expect(summary.approvals.map((entry) => entry.subjectKind)).not.toContain("card_decision");
+    }
+  });
+
+  it("never fails the whole summary over one row: a title or a kind longer than the contract allows is trimmed or left off, and a row that is still invalid is dropped", async () => {
+    const base = { approvalId: "apr_aaaaaaaaaaaaaaaaaaaa", kind: "change" as const, createdAt: "2026-11-11T10:00:00.000Z", confirmUrl: "https://cell.example.com/v1/app/approve/apr_aaaaaaaaaaaaaaaaaaaa" };
+    const trimmed = summaryRowOf({ ...base, subjectKind: "k".repeat(61), title: "T".repeat(300) });
+    expect(trimmed?.title).toHaveLength(200);
+    expect(trimmed?.title.startsWith("TTTT")).toBe(true);
+    expect(trimmed).not.toHaveProperty("subjectKind");
+    expect(summaryRowOf({ ...base, subjectKind: "k".repeat(60), title: "T".repeat(200) })).toMatchObject({ subjectKind: "k".repeat(60), title: "T".repeat(200) });
+    // Nothing to show of a row whose title is empty: it is dropped, not an error.
+    expect(summaryRowOf({ ...base, title: "" })).toBeUndefined();
+    expect(summaryRowOf({ ...base, title: "Fine", confirmUrl: "not a url" })).toBeUndefined();
+    // And a whole answer holding a good row still comes back whole.
+    const t = await world();
+    const only = await t.change();
+    expect(OrgPendingApprovalsSummarySchema.parse(bodyOf(await t.get(ADA))).approvals.map((entry) => entry.approvalId)).toEqual([only.approvalId]);
   });
 
   it("refuses everyone who is not an org owner or admin, and says nothing of what waits", async () => {
