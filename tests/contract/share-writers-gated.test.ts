@@ -34,6 +34,14 @@ describe("the share writers that take no confirmation are reached only from revi
     expect(usersOf("saveShares")).toEqual(["broker/src/agents/access.ts", "broker/src/agents/changes.ts"]);
   });
 
+  it("the store writers underneath are reached only from the helpers above and the stores themselves", () => {
+    // `AgentStore.replaceShares`, `ChainStore.replaceShares` and `OwnedStore.replaceItemShares` write any share set with no check at all. A route that called
+    // one with an `org` principal would skip every name pinned above, so they are pinned too. (This guard is file-level: a new call inside a listed file still
+    // needs a reviewer.)
+    expect(usersOf("replaceShares")).toEqual(["broker/src/agents/access.ts", "broker/src/agents/store.ts", "broker/src/chains/access.ts", "broker/src/chains/store.ts"]);
+    expect(usersOf("replaceItemShares")).toEqual(["broker/src/agents/owned-store.ts", "broker/src/agents/store.ts", "broker/src/chains/store.ts"]);
+  });
+
   it("saveSharesOf and setChainShares are reached only through the chain share route and handler", () => {
     expect(usersOf("saveSharesOf")).toEqual(["broker/src/agents/access.ts", "broker/src/chains/access.ts"]);
     expect(usersOf("setChainShares")).toEqual(["broker/src/chains/access.ts", "broker/src/chains/routes.ts"]);
