@@ -4,7 +4,7 @@ import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-act
 import { developerTaskRouteDependencies } from "../../packages/broker/src/aws/developer-routes.js";
 import type { DeveloperCaller } from "../../packages/broker/src/aws/developer-routes.js";
 import { routeDeveloperTaskRequest } from "../../packages/broker/src/aws/developer-tasks.js";
-import { createDeveloperTaskBroker } from "../support/developer-task-broker.js";
+import { createDeveloperTaskBroker, seedMembership } from "../support/developer-task-broker.js";
 import { SLACK_CHANNEL, SLACK_TEAM } from "../support/slack-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
 
@@ -34,6 +34,8 @@ async function terminalPeopleTask() {
     people: people.map(({ slackUserId, role }) => ({ developerId: developerIdForSlackUser(slackUserId), slackUserId, name: slackUserId, role })) });
   for (const { slackUserId } of people) {
     const developerId = developerIdForSlackUser(slackUserId);
+    // A task person is a member of the company (owner decision 86).
+    seedMembership(h.db, developerId);
     const personId = randomUUID();
     const createdAt = new Date().toISOString();
     h.db.set({ pk: `DEVTASK#${taskId}`, sk: `PERSON#${personId}`, schemaVersion: 1, personId, developerId, slackUserId,

@@ -2,6 +2,7 @@ import { isDeepStrictEqual } from "node:util";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import {
   SlackTeamIdSchema,
+  TASK_PERSON_DEVELOPER_RECORD_PROJECTION,
   agentXError,
   orgMemberKey,
   orgRemovedKey,
@@ -16,6 +17,7 @@ import {
 } from "../developer/task-person-identity.js";
 import type { ProjectAuthorityReader, ProjectAuthorityWitness } from "../developer/task-project-access.js";
 import { isRemovedFromOrg } from "../org/member-removal/guards.js";
+import { explicitMemberRole, signInReaderFromRecords } from "../org/explicit-member.js";
 import { orgOf } from "../org/resolve.js";
 import { readProjectAuthority } from "../developer/task-project-access.js";
 import type { DeveloperTaskRecord } from "../developer/task-records.js";
@@ -23,9 +25,7 @@ import { effectiveTaskOwner, isTaskTakenOver, ownerActorIdOf, taskOwnerKey } fro
 import { META, type DeveloperRecord } from "../developer/store.js";
 import type { TaskAuthorityAdmission } from "./task-authority-admission.js";
 
-export const TASK_PERSON_DEVELOPER_RECORD_ATTRIBUTES = [
-  "pk", "sk", "developerId", "provider", "issuer", "subject", "slackUserId", "revoked", "mergedInto", "displayName",
-] as const;
+export const TASK_PERSON_DEVELOPER_RECORD_ATTRIBUTES = TASK_PERSON_DEVELOPER_RECORD_PROJECTION;
 
 export type TaskPersonDeveloperRecordProjection = { pk: string; sk: string } & Pick<DeveloperRecord,
   "developerId" | "provider" | "issuer" | "subject" | "slackUserId" | "revoked" | "mergedInto" | "displayName">;
@@ -77,6 +77,26 @@ function projectedDeveloperRecord(record: TaskPersonDeveloperRecordProjection | 
   } as unknown as DeveloperRecord;
 }
 
+/**
+ * A sign-in row read, bounded: the person's own, and the row of anyone an earlier row said they were merged into (so the membership check can follow a merge to the survivor, and no other
+ * row is read). Records the merge target it finds so the next read is allowed.
+ */
+function developerRecordReader(input: { admission: TaskAuthorityAdmission; ports: TaskPersonRuntimePorts; reachableIds: Set<string> }) {
+  return async (targetDeveloperId: string): Promise<DeveloperRecord | undefined> => {
+    if (!input.reachableIds.has(targetDeveloperId)) throw unavailable();
+    const record = await input.ports.readDeveloperRecord({
+      developerId: targetDeveloperId,
+      consistentRead: true,
+      projection: TASK_PERSON_DEVELOPER_RECORD_ATTRIBUTES,
+      abortSignal: input.admission.admitStateRead(),
+    });
+    input.admission.assertOpen();
+    const projected = projectedDeveloperRecord(record, targetDeveloperId);
+    if (typeof projected?.mergedInto === "string" && /^[a-f0-9]{64}$/.test(projected.mergedInto)) input.reachableIds.add(projected.mergedInto);
+    return projected;
+  };
+}
+
 function identityDocumentClient(input: {
   orgId: OrgId;
   taskId: string;
@@ -84,6 +104,8 @@ function identityDocumentClient(input: {
   stateTableName: string;
   admission: TaskAuthorityAdmission;
   ports: TaskPersonRuntimePorts;
+  /** The person's id and the people their sign-in rows say they were merged into so far: the ids whose member rows the membership check may read. */
+  reachableIds: ReadonlySet<string>;
 }): TaskPersonIdentityDependencies["documentClient"] {
   const linkedPersonIds = new Set<string>();
   return {
@@ -92,8 +114,9 @@ function identityDocumentClient(input: {
       const query = command.input;
       if (query.ConsistentRead !== true || query.TableName !== input.stateTableName) throw unavailable();
       const key = query.Key as { pk?: unknown; sk?: unknown } | undefined;
-      // The removal check reads the person's own org member row and tombstone, and nothing else outside the task.
-      const orgRecord = [orgMemberKey(input.orgId, input.developerId), orgRemovedKey(input.orgId, input.developerId)].find((allowed) => key?.pk === allowed.pk && key.sk === allowed.sk);
+      // The membership and removal checks read the member rows of the person and of the people they were merged into, and the person's own tombstone, and nothing else outside the task.
+      const orgRecord = [...[...input.reachableIds].map((id) => orgMemberKey(input.orgId, id)), orgRemovedKey(input.orgId, input.developerId)]
+        .find((allowed) => key?.pk === allowed.pk && key.sk === allowed.sk);
       if (orgRecord !== undefined) {
         const abortSignal = input.admission.admitStateRead();
         const item = await input.ports.readOrgRecord({ key: orgRecord, abortSignal });
@@ -133,6 +156,7 @@ function identityDependencies(input: {
   onProjectAuthority(witness: ProjectAuthorityWitness): void;
 }): TaskPersonIdentityDependencies {
   const { task, developerId, slackTeamId, admission, ports } = input;
+  const reachableIds = new Set<string>([developerId]);
   const readBindings = async (project: string): Promise<readonly string[]> => {
     admission.assertOpen();
     const result = await ports.projectAuthorityReader.bindings(input.orgId, slackTeamId, admission, admission.admitStateRead());
@@ -141,8 +165,9 @@ function identityDependencies(input: {
     return result.items.filter((binding) => binding.projectName === project).map((binding) => binding.channelId).sort();
   };
   return {
-    documentClient: identityDocumentClient({ orgId: input.orgId, taskId: task.taskId, developerId, stateTableName: input.stateTableName, admission, ports }),
+    documentClient: identityDocumentClient({ orgId: input.orgId, taskId: task.taskId, developerId, stateTableName: input.stateTableName, admission, ports, reachableIds }),
     tableName: input.stateTableName,
+    installOrgId: input.orgId,
     slackTeamId,
     now: () => input.now(),
     uuid: () => input.uuid(),
@@ -156,17 +181,7 @@ function identityDependencies(input: {
         && (measured.result.ok || (!measured.result.ok && measured.result.error === "ineligible"))) throw unavailable();
       return measured.result;
     },
-    developerRecord: async (targetDeveloperId) => {
-      if (targetDeveloperId !== developerId) throw unavailable();
-      const record = await ports.readDeveloperRecord({
-        developerId: targetDeveloperId,
-        consistentRead: true,
-        projection: TASK_PERSON_DEVELOPER_RECORD_ATTRIBUTES,
-        abortSignal: admission.admitStateRead(),
-      });
-      admission.assertOpen();
-      return projectedDeveloperRecord(record, targetDeveloperId);
-    },
+    developerRecord: developerRecordReader({ admission, ports, reachableIds }),
     projectChannelIds: readBindings,
     targetProjectAccess: async (subject: ProjectAccessSubject, project: string, freshMemberOf: readonly string[]) => {
       const result = await readProjectAuthority(ports.projectAuthorityReader, {
@@ -220,6 +235,9 @@ export async function stateAuthorityWitnessForDispatch(runtime: TaskPersonDispat
   return isTaskTakenOver(task) && ownerActorId === ownerActorIdOf(task) ? runtime.projectAuthorityWitnessForOwner(task) : undefined;
 }
 
+/** The install's Slack team id, or "" on an install with no Slack (a person with no Slack account needs none); anything else that is not a team id is refused. */
+const teamIdUsable = (slackTeamId: string): boolean => slackTeamId === "" || SlackTeamIdSchema.safeParse(slackTeamId).success;
+
 /** Creates a guard-local checker. Its injected ports expose only the bounded People read set. */
 export function createTaskPersonRuntime(input: {
   /** The install's single org: the org of a task that names none of its own. */
@@ -253,12 +271,20 @@ export function createTaskPersonRuntime(input: {
   };
   const projectAuthorityWitnessForOwner = async (task: DeveloperTaskRecord): Promise<TaskPersonStateAuthorityWitness | undefined> => {
     const { developerId } = effectiveTaskOwner(task);
-    if (!SlackTeamIdSchema.safeParse(input.slackTeamId).success) throw refused();
+    if (!teamIdUsable(input.slackTeamId)) throw refused();
     // A taker removed from the company has no project authority, though their grants live on until the removal's access step deletes them (member removal). Read first,
     // through the same two-key reads the Slack check makes, before any grant is looked at.
     const orgId = taskOrg(input.orgId, task);
-    const orgReads = { documentClient: identityDocumentClient({ orgId, taskId: task.taskId, developerId, stateTableName: input.stateTableName, admission: input.admission, ports: input.ports }), tableName: input.stateTableName };
+    const reachableIds = new Set<string>([developerId]);
+    const orgReads = { documentClient: identityDocumentClient({ orgId, taskId: task.taskId, developerId, stateTableName: input.stateTableName, admission: input.admission, ports: input.ports, reachableIds }), tableName: input.stateTableName };
     if (await isRemovedFromOrg(orgReads, orgId, developerId)) return undefined;
+    // And a taker must still be a member who may write (not an Auditor, with a grant left behind): the same rule as every task person check (org/explicit-member.ts).
+    try {
+      if (await explicitMemberRole({ ...orgReads, readSignIn: signInReaderFromRecords(developerRecordReader({ admission: input.admission, ports: input.ports, reachableIds })) }, orgId, developerId) === undefined) return undefined;
+    } catch (error) {
+      if (error instanceof Error && (error as Error & { code?: string }).code === "FORBIDDEN") return undefined;
+      throw unavailable();
+    }
     const result = await readProjectAuthority(input.ports.projectAuthorityReader, {
       orgId, project: task.project, developerId, teamId: input.slackTeamId, admission: input.admission,
     });
@@ -272,7 +298,7 @@ export function createTaskPersonRuntime(input: {
       witnesses.delete(witnessKey(task.taskId, developerId));
       input.admission.admitIdentity(developerId);
       input.admission.assertOpen();
-      if (!UUID.test(task.taskId) || !SlackTeamIdSchema.safeParse(input.slackTeamId).success) throw refused();
+      if (!UUID.test(task.taskId) || !teamIdUsable(input.slackTeamId)) throw refused();
       let projectWitness: ProjectAuthorityWitness | undefined;
       const dependencies = identityDependencies({
         orgId: taskOrg(input.orgId, task), task, developerId, stateTableName: input.stateTableName, slackTeamId: input.slackTeamId,

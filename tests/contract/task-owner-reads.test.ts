@@ -60,6 +60,7 @@ const ROWS: readonly Row[] = [
   ["attribution/links.ts", "dynamoAttributionLinkStore>deletePersonRows", "history", ".developerId"],
   ["developer/task-person-identity.ts", "resolveTaskPickerPerson", "history", ".developerId*2", ".provider*2", ".slackUserId*2"],
   ["developer/task-person-identity.ts", "registerTaskChannelPeople", "history", ".developerId*2", ".provider*2", ".slackUserId*2"],
+  ["developer/task-person-identity.ts", "registerTaskMembers", "history", ".developerId*2", ".provider*2", ".slackUserId*2"],
   ["developer/task-person-identity.ts", "checkTaskPersonIdentity", "history", ".developerId*3", ".provider*3", ".slackUserId*6", ".developerName"],
   ["developer/task-people.ts", "loadTask", "shape", ".developerId"],
   ["developer/task-people.ts", "taskRowCondition", "principal", ".developerId"],
@@ -231,7 +232,7 @@ const ROWS: readonly Row[] = [
   ["aws/workflow-e2e-artifacts.ts", "loadWorkflowE2EArtifact", "principal", ".ownerKey"],
   ["aws/workflow-e2e-artifacts.ts", "storeWorkflowE2EArtifacts", "principal", ".ownerKey"],
   // Member removal: the two org keys (member row, tombstone) the client may read are built from the checked person's id, as the task-partition keys are.
-  ["aws/task-person-runtime.ts", "identityDocumentClient>send", "other-record", ".developerId*5"],
+  ["aws/task-person-runtime.ts", "identityDocumentClient>send", "other-record", ".developerId*4"],
   ["aws/task-person-runtime.ts", "createTaskPersonRuntime>stateAuthorityWitnessForOwnerActor", "caller-actor", "taskOwnerKey()"],
   ["aws/plan-evidence-handler.ts", "runPlanEvidenceJob", "principal", ".ownerKey"],
   ["aws/unwaited-tasks.ts", "candidate", "principal", ".ownerKey*2"],
