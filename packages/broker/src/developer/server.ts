@@ -74,10 +74,8 @@ export interface DeveloperIdentityDependencies {
   onGithubSignIn?: (input: { orgId: OrgId; githubUserId: string; developerId: string }) => Promise<void>;
   /** Plan 6 Task 14: told after a person unlinked their GitHub sign-in, with the org they belong to, so the org stops reading their approvals on GitHub as theirs. Best effort. */
   onGithubUnlinked?: (input: { orgId: OrgId; developerId: string }) => Promise<void>;
-  /** Merges a duplicate member of the same person into the member their verified email names, on the duplicate's next sign-in (see resolveSignInDeveloper, rule 1b). Without it duplicates are left alone. */
+  /** Merges a duplicate member of the same person into the member their verified email names, on the duplicate's next sign-in (see resolveSignInDeveloper, rule 1b), only within one company. Without it duplicates are left alone. */
   mergeDuplicate?: ResolveSignInDeveloperDependencies["mergeDuplicate"];
-  /** Says whether the duplicate's own org is a disposable leftover of the first-sign-in race, which a merge may close; bound with `mergeDuplicate`. */
-  raceOrgBlocker?: ResolveSignInDeveloperDependencies["raceOrgBlocker"];
   /**
    * Plan 2, Task 8: tells an account's address when a new sign-in method was linked to it. `from` is the SES sender (empty: no notice is
    * sent) and `cellUrl` the page where the person removes a method. Absent in tests that do not send.
@@ -397,7 +395,7 @@ function createIssuerHandler(deps: DeveloperIdentityDependencies) {
   const decideFlow = deps.decide === undefined ? undefined : createDecideSignIn({
     deps: deps.decide, signIn: store, orgs: deps.orgs, endpoint, methods: () => enabledMethods(deps), methodLabel, provider,
     resolveDeveloper: (method, identity) => resolveSignInDeveloper({ store, orgs: deps.orgs, log: deps.log,
-      ...(deps.mergeDuplicate === undefined ? {} : { mergeDuplicate: deps.mergeDuplicate }), ...(deps.raceOrgBlocker === undefined ? {} : { raceOrgBlocker: deps.raceOrgBlocker }) }, { method, identity }),
+      ...(deps.mergeDuplicate === undefined ? {} : { mergeDuplicate: deps.mergeDuplicate }) }, { method, identity }),
     noticeDecideSignIn: async (to) => {
       try {
         await sendDecideSignInAddedNotice({ ses: deps.notice?.ses, from: deps.notice?.from, log: deps.log }, { to, cellUrl: deps.notice?.cellUrl ?? new URL(config.issuer).origin });
@@ -843,7 +841,7 @@ function createIssuerHandler(deps: DeveloperIdentityDependencies) {
       companySignIn = decided;
     }
     // One developer per person: a second sign-in route for the same verified email is linked to the first route's developer.
-    const resolved = await resolveSignInDeveloper({ store, orgs: deps.orgs, log: deps.log, ...(deps.mergeDuplicate === undefined ? {} : { mergeDuplicate: deps.mergeDuplicate }), ...(deps.raceOrgBlocker === undefined ? {} : { raceOrgBlocker: deps.raceOrgBlocker }) }, { method, identity });
+    const resolved = await resolveSignInDeveloper({ store, orgs: deps.orgs, log: deps.log, ...(deps.mergeDuplicate === undefined ? {} : { mergeDuplicate: deps.mergeDuplicate }) }, { method, identity });
     const { developerId, identityKey } = resolved;
     // The decision was made for a developer read before the link was written; a race that resolves to another developer gets no access from it.
     if (decidedFor !== undefined && developerId !== decidedFor) throw agentXError("CHANGE_STALE", "the sign-in changed while it was being decided; run it again");

@@ -283,8 +283,8 @@ export class DeveloperSignIn extends Construct {
     // Healing a duplicate member (mergeDuplicateMember) touches exactly these further keys, each with only the action it uses.
     // A member's project grants (`ORG#<id>#MEMBER#<developer>`): copied to the survivor (PutItem), listed (Query), then removed (DeleteItem).
     // The org's budget settings (`ORG#<id>#SETTINGS`): read, and written back with the duplicate's override moved (GetItem, PutItem).
-    // A race org (the leftover of two sign-ins of one person at once) is checked and closed: its whole partition and its project
-    // catalog are listed (Query); the closing itself is an Update on the org record, already covered above, never a delete of it.
+    // Since 0.5.15 a merge never leaves the survivor's company and never closes an org (IDENTITY-HEALING-CROSS-ORG); the Query grant on
+    // the bare org partition and the project catalog below was for the old race-org check and can be narrowed in a later infra change.
     // The duplicate's member row, in the bare org partition, and the developer's org pointer are deleted (DeleteItem). IAM leading keys
     // cannot tell the member row from the org record in that partition, so the DeleteItem grant reaches both; the code deletes only the
     // member row. A transaction's Delete is authorized as DeleteItem. No `ORG#*` wildcard, no scan, no other org-scoped row.
