@@ -81,7 +81,7 @@ function Images() {
  const state = read.data, waiting = state?.images.filter(image => image.status === "proposed") ?? [], approved = state?.images.filter(image => image.status === "approved") ?? [];
  return <section aria-busy={read.isFetching}>
   <PageHeader focusOnMount title={IMAGES_TEXT.TITLE} description={IMAGES_TEXT.NOTE} />
-  <p><Link to="/app/admin/how-we-work">{IMAGES_TEXT.BACK}</Link></p>
+  <p className="rv-admin-link-row"><Link to="/app/admin/how-we-work">{IMAGES_TEXT.BACK}</Link></p>
   {error !== undefined && <p role="alert"><VisibleText text={error.message} />{error.reauth && <> <Button onClick={() => { host.signIn(host.currentPath()); }}>{IMAGES_TEXT.SIGN_IN_AGAIN}</Button></>}</p>}
   <p role="status">{note ?? ""}</p>
   {read.isPending ? <Skeleton label="Loading approved test images" /> : notOn ? <p role="status">{IMAGES_TEXT.NOT_ON}</p> : state === undefined ? <div><p role="alert">{IMAGES_TEXT.LOAD_FAILED}</p><Button onClick={() => { void read.refetch(); }}>Try again</Button></div> : <>
@@ -117,6 +117,6 @@ export default function CompanyImagesRow() {
  return <section aria-label={IMAGES_TEXT.TITLE} className="rv-hww-company-card rv-hww-suggestions"><h2>{IMAGES_TEXT.TITLE}</h2>
   <p className="rv-muted">Approve a service image that is not in Rovara's own list, for test runs.</p>
   {waiting > 0 && <p role="status">{waiting === 1 ? "1 image is waiting for approval." : String(waiting) + " images are waiting for approval."}</p>}
-  <p><Link to="/app/admin/how-we-work/images">Open approved test images</Link></p>
+  <p className="rv-admin-link-row"><Link to="/app/admin/how-we-work/images">Open approved test images</Link></p>
  </section>;
 }
