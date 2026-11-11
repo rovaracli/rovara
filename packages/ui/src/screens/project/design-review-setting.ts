@@ -77,7 +77,7 @@ export function settingOf(draft: SettingDraft, groupsAvailable: boolean): { ok: 
 
 export const sameSetting = (a: DesignReviewSetting, b: DesignReviewSetting): boolean => JSON.stringify(a) === JSON.stringify(b);
 
-const markOf = (field: SettingField, setting: DesignReviewSetting, locked: ReadonlySet<SettingField>): Mark => {
+export const markOf = (field: SettingField, setting: DesignReviewSetting, locked: ReadonlySet<SettingField>): Mark => {
   if (locked.has(field)) return { source: "company", locked: true, lockedBy: "company" };
   return { source: JSON.stringify(setting[field]) === JSON.stringify(DESIGN_REVIEW_DEFAULT_SETTING[field]) ? "rovara" : "project", locked: false };
 };
