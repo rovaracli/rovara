@@ -28,6 +28,7 @@ import { homeFixture } from "../../web/support/fixtures.js";
 import { FIXTURE_ORG, FIXTURE_DEVELOPER, FIXTURE_SESSION } from "../../web/support/fixtures.js";
 import { scenario } from "./scenarios.js";
 import { workAnswer } from "./work-mock.js";
+import { setSpendingVariant, spendingAnswer } from "./spending-mock.js";
 import { howWeWorkMock, resetHowWeWork } from "./how-we-work-mock.js";
 import { lessonsMock, resetLessons, resetTaskLessons, setLessonsPaused, setRepoRetire, setDuplicateLesson, setPresetProposal, setSourceEditing, setTrialLessons, taskLessonsMock } from "./lessons-mock.js";
 import { intakeHomeCards, intakeMock, resetIntake, showTicketOnHome } from "./intake-mock.js";
@@ -86,6 +87,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
  if (url.pathname === "/__mock/live-state" && method === "POST" && current.live !== undefined) { let body = "";for await (const chunk of request) body += String(chunk);const input = JSON.parse(body) as { step: string; revision: number };current.live = current.live.map(tile => LiveTileSchema.parse({ ...tile, step: input.step, updatedAt: "2026-10-23T12:" + String(input.revision).padStart(2, "0") + ":00.000Z" }));current.changes = [{ type: "session.updated", sessionId: current.live[0]!.sessionId, revision: input.revision, at: "2026-10-23T12:00:00.000Z", sk: "live-" + input.revision }];json(200, { ok: true });return; }
  if (url.pathname === "/__mock/auth" && method === "POST") { let body = "";for await (const chunk of request) body += String(chunk);const state = JSON.parse(body) as { expired?: boolean; refused?: boolean };expired = state.expired === true;refusedSignIn = state.refused === true;json(200, { ok: true });return; }
  if (url.pathname === "/__mock/session-state" && method === "POST" && current.session !== undefined) { let body = "";for await (const chunk of request) body += String(chunk);const changes = JSON.parse(body) as Record<string, unknown>;current.session = SessionViewSchema.parse({ ...current.session, ...changes });json(200, { ok: true });return; }
+ if (url.pathname === "/__mock/spending" && method === "POST" && current.name === "admin") { setSpendingVariant(url.searchParams.get("variant"));json(200, { ok: true });return; }
  if (url.pathname === "/__mock/admin-fail-after-write" && method === "POST" && current.name === "admin") { adminFailAfterWrite = true;json(200, { ok: true });return; }
  if (url.pathname === "/__mock/admin-damage-invite" && method === "POST" && current.name === "admin") { adminDirectory.damageInvite();json(200, { ok: true });return; }
  if (url.pathname === "/__mock/admin-add-member" && method === "POST" && current.name === "admin") { let raw = "";for await (const chunk of request) { raw += String(chunk);if (raw.length > 4096) throw new Error("Mock body limit."); }const input = JSON.parse(raw) as { name?: unknown };if (typeof input.name !== "string") throw new Error("Invalid mock member.");adminDirectory.addMember(input.name, "admin");json(200, { ok: true });return; }
@@ -167,6 +169,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
   let body: unknown;if (method !== "GET") { let raw = "";for await (const chunk of request) { raw += String(chunk);if (raw.length > 16384) throw new Error("Mock body limit."); }body = JSON.parse(raw) as unknown; }
   const result = await adminDirectory.request(deps, webCaller, method, (url.pathname + url.search).replace("/v1/web/", "/v1/app/"), body, headers);json(200, typeof result === "object" && result !== null && !Array.isArray(result) ? { ...result, requestId: "mock-gateway-request" } : result);return;
  }
+ if (current.name === "admin" && method === "GET") { const spending = spendingAnswer(url, origin);if (spending !== undefined) { json(spending.status, spending.body);return; } }
  // Lane B: real read handlers; the scenario endpoint seeds only synthetic persisted rows.
  if (current.name === "admin" && method === "GET" && (url.pathname === "/v1/web/projects" || /^\/v1\/web\/projects\/[^/]+(?:\/members)?$/.test(url.pathname) || url.pathname === "/v1/web/agents" || /^\/v1\/web\/agents\/[^/]+\/versions$/.test(url.pathname) || url.pathname === "/v1/web/org/agent-guardrails")) {
   const result = await adminDirectory.request(deps, webCaller, method, (url.pathname + url.search).replace("/v1/web/", "/v1/app/"));json(200,result);return;
