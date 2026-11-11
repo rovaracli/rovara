@@ -144,8 +144,9 @@ instead: give it a one-line header comment when you next edit it.
 
 - Contracts are two packages (convergence W0-3). Names Rovara Code's contracts own come from `@rovara-code/contracts` (the vendored copy, read only:
   change it in Code first, then refresh the pin). Cloud's own are `@agentx/cloud-contracts`. A name has one owner: where Cloud still defines a name Code also
-  exports (Cloud is ahead), the file and the exact names are listed in `packages/cloud-contracts/owed-upstream.json` with the reason and a date (an entry older than
-  7 days fails), and `tests/contract/cloud-contracts-no-duplicate-names.test.ts` fails for any other duplicate.
+  exports, the file and the exact names are listed in `packages/cloud-contracts/owed-upstream.json` with a reason and one kind: `owedUntil` (Cloud is ahead; a Code
+  lane lands it; the entry fails after the date), `cloudOnly: true` (Cloud's own on purpose, never expires) or `migration: true` (a saved-data shape; never expires,
+  listed in DEFERRED-CHECKS). `tests/contract/cloud-contracts-no-duplicate-names.test.ts` fails for any other duplicate.
 - The Cloud barrel is `packages/cloud-contracts/src/index.ts`. Code that runs in the browser imports `@agentx/cloud-contracts/web`
   (`packages/cloud-contracts/src/web.ts`), which also re-exports the browser-safe names of Code's contracts (the build tree-shakes Code's Node-only modules
   out). Its own file list `packages/cloud-contracts/web-safe-files.json` is checked by `tests/contract/contracts-web-entry.test.ts`.
