@@ -165,6 +165,30 @@ describe("the docker wrapper the devcontainer CLI uses on an EC2 worker", () => 
     }
   });
 
+  it("refuses a docker option before the command, so `--context x run`, `-H host build` and the like cannot slip past the rewrite (the devcontainer CLI emits none)", () => {
+    for (const args of [["--context", "other", "run", "image"], ["-H", "tcp://elsewhere:2375", "build", "."], ["--host=unix:///x.sock", "run", "image"], ["--config", "/tmp/c", "create", "image"], ["-c", "x", "container", "run", "image"], ["--debug", "ps"], ["-v"], ["--help"]]) {
+      const run = wrappedRun(args);
+      expect(run.status, args.join(" ")).toBe(1);
+      expect(run.lines, `docker was run for ${args.join(" ")}`).toEqual([]);
+      expect(run.stderr).toContain("is not available on this worker");
+    }
+  });
+
+  it("refuses a build with a --network / --net of its own anywhere among its arguments, in every spelling and form, instead of relying on the added one coming first", () => {
+    for (const verb of [["build"], ["image", "build"], ["builder", "build"]]) {
+      for (const own of [["--network", "bridge"], ["--network=bridge"], ["--net", "host"], ["--net=host"], ["--network", "agentx-task"], ["--network=agentx-task"]]) {
+        for (const args of [[...verb, ...own, "."], [...verb, "-t", "x", "-f", "Dockerfile", ...own, "."], [...verb, "-t", "x", ".", ...own]]) {
+          const run = wrappedRun(args);
+          expect(run.status, args.join(" ")).toBe(1);
+          expect(run.lines, `docker was run for ${args.join(" ")}`).toEqual([]);
+          expect(run.stderr).toContain("a build with its own --net");
+        }
+      }
+    }
+    // Other options that merely mention a network are not touched.
+    expect(wrapped(["build", "--build-arg", "network=1", "--label", "net=2", "."])).toEqual(["build", "--network", "agentx-task", "--build-arg", "network=1", "--label", "net=2", "."]);
+  });
+
   it("passes every other command through unchanged", () => {
     for (const args of [["inspect", "--type", "container", "abc"], ["exec", "-i", "abc", "true"], ["ps", "-a"], ["container", "ls"], ["image", "ls"], ["builder", "prune"], ["network", "create", "x"], ["version"], []]) {
       expect(wrapped(args)).toEqual(args);

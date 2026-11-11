@@ -6,6 +6,9 @@
 # - `build` (also `image build` / `builder build`): `--network agentx-task` goes right after the verb, and DOCKER_BUILDKIT=0 is set, because the Dockerfile's RUN steps and a feature's install scripts run in
 #   build containers, which are on docker0 otherwise. Only the classic builder can put its build containers on a named network; BuildKit (`buildx build`, or `docker build` through it) accepts only default, host
 #   and none, so `buildx` is refused here and the devcontainer CLI is told `--buildkit never` (devcontainer.ts). A build that cannot use the network fails; it never runs unwalled.
+# Global flags before the verb (`--context x run`, `-H host build`, `--config dir`, `--host`, ...) are refused: the devcontainer CLI never emits them, and parsing past them would have to know every
+# flag that takes a value, while a refused one cannot slip a run or build past the rewrite (they can also point docker at another daemon). A build with a --network / --net of its own anywhere in its
+# arguments is refused, rather than relying on the one added here coming first (the classic builder takes the last).
 # The devcontainer CLI itself never passes --network; the worker refuses a `network` option in `runArgs` and `build.options` (devcontainer-policy.ts), and a started container that is not on the
 # network alone (every network it is attached to is checked) or that kept NET_RAW is removed.
 # The network name is TASK_SANDBOX_NETWORK in packages/worker/src/task-network.ts; a contract test keeps the two equal.
@@ -17,7 +20,19 @@ refuse() {
   exit 1
 }
 
+# Refuses a --network / --net option (either spelling, either form) among the arguments of a build.
+refuse_build_network() {
+  for argument in "$@"; do
+    case "$argument" in
+      --network | --network=* | --net | --net=*) refuse "a build with its own $argument" ;;
+    esac
+  done
+}
+
 case "${1:-}" in
+  -*)
+    refuse "a docker option ($1) before the command"
+    ;;
   run | create)
     verb=$1
     shift
@@ -25,6 +40,7 @@ case "${1:-}" in
     ;;
   build)
     shift
+    refuse_build_network "$@"
     exec env DOCKER_BUILDKIT=0 docker build --network "$network" "$@"
     ;;
   buildx)
@@ -43,6 +59,7 @@ case "${1:-}" in
     if [ "${2:-}" = build ]; then
       group=$1
       shift 2
+      refuse_build_network "$@"
       exec env DOCKER_BUILDKIT=0 docker "$group" build --network "$network" "$@"
     fi
     ;;
