@@ -1,5 +1,6 @@
 import { TaskStatusReaderSchema, budgetRaisers, taskStatusFromSession } from "@agentx/cloud-contracts/web";
-import { mayApproveHere, type ReadDecision } from "../../api/decisions.js";
+import { mayApproveHere, runLimitRaise, type ReadDecision } from "../../api/decisions.js";
+import { isMaintainerSeat, type DecideSeat } from "../../api/decide-seat.js";
 import type { ReadSession } from "./SessionHeader.js";
 import type { ReadTask } from "./workspace-types.js";
 
@@ -91,18 +92,21 @@ const WORKING: Readonly<Record<string, string>> = { understanding: "Reading the 
 const AUTOMATIC = new Set(["understanding", "planning", "reviewing_design", "building", "checking"]);
 
 /** The can-I-approve line (owner decision 40). Only a pending card of mine says it; with none, no line (the named blocker, e.g. a CODEOWNER, needs broker: P-58). */
-export function approveLine(cards: readonly ReadDecision[]): string | undefined {
+export function approveLine(cards: readonly ReadDecision[], seat?: DecideSeat): string | undefined {
  const card = cards[0]?.card;
  if (card === undefined) return undefined;
  const extra = cards.length > 1 ? " (" + String(cards.length) + " decisions)" : "";
+ // A maintainer (approval place): approve and ask for changes, never reject, and the run limit stays the owner's: a plan that would raise it cannot be approved here.
+ if (isMaintainerSeat(seat)) return runLimitRaise(card)?.raises === true ? "You can ask for changes as a maintainer · " + riskWords(card.risk) + " · the task owner decides the run limit" + extra
+  : (mayApproveHere(card) ? "✓ You can approve or ask for changes as a maintainer · " : "You can decide this on its card as a maintainer · ") + riskWords(card.risk) + extra;
  if (card.risk === "high") return "You can decide this on its card · " + riskWords("high") + ", needs a recent sign-in" + extra;
  if (mayApproveHere(card)) return "✓ You can approve · " + riskWords(card.risk) + extra;
  return "You can decide this on its card · " + riskWords(card.risk) + extra;
 }
 
-export interface LeadInput { session: ReadSession; task: ReadTask | undefined; status: LeadStatus; cards: readonly ReadDecision[] }
+export interface LeadInput { session: ReadSession; task: ReadTask | undefined; status: LeadStatus; cards: readonly ReadDecision[]; /** Approval place: the seat the viewer decides from, when the page read it. */ seat?: DecideSeat | undefined }
 
-export function taskLead({ session, task, status, cards }: LeadInput): Lead {
+export function taskLead({ session, task, status, cards, seat }: LeadInput): Lead {
  const state = plainState(status, task), owner = session.you.owner, card = cards[0]?.card;
  const mayAct = session.you.actions;
  let next = (owner ? status.next : status.nextOthers ?? status.next) ?? WORKING[status.state] ?? "";
@@ -126,7 +130,7 @@ export function taskLead({ session, task, status, cards }: LeadInput): Lead {
  if (state.label === "Changes requested" && why === undefined) why = "A reviewer asked for changes.";
  if (state.label === "Checks failed" && why === undefined) why = "Checks on the pull request failed.";
  if (next === "") next = state.label;
- return { state, next: sentence(next), who, why, action, approve: approveLine(cards) };
+ return { state, next: sentence(next), who, why, action, approve: approveLine(cards, seat) };
 }
 
 /** A raw worker word read as a plain state (the broker writes "Worker status: SUCCEEDED" into the task's events). Any other line, and a word this build does not know, is returned unchanged. */

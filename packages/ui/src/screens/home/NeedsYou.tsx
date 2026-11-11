@@ -6,6 +6,7 @@ import { useAppHost } from "../../host.js";
 import { HIGH_ON_CARD_KINDS, createDecisionsApi, isUnreviewedDesign, useDecisions, type PlanDecisionFields, type ReadDecision } from "../../api/decisions.js";
 import { DecisionCard, type DecisionCardActions } from "../../design/DecisionCard.js";
 import { createDesignReviewApi } from "../../api/design-review.js";
+import type { DecideSeat } from "../../api/decide-seat.js";
 import { ApiError } from "../../api/errors.js";
 import { Button } from "../../design/Button.js";
 import { VisibleText } from "../../design/VisibleText.js";
@@ -60,10 +61,10 @@ function useInlineApprove() {
  };
 }
 
-export function DecisionList({ decisions, label, extras, focus }: { decisions: readonly ReadDecision[]; label: string; /** More actions for a card (the task page adds Design first to its approve_plan card). */ extras?: ((decision: ReadDecision) => Partial<DecisionCardActions>) | undefined; /** The id of the card a link named (`?decision=`): it scrolls into view and is marked. */ focus?: string | undefined }) {
+export function DecisionList({ decisions, label, extras, focus, seat }: { decisions: readonly ReadDecision[]; label: string; /** Approval place: the seat the viewer decides these from (a maintainer is offered no Reject and no run-limit control). */ seat?: DecideSeat | undefined; /** More actions for a card (the task page adds Design first to its approve_plan card). */ extras?: ((decision: ReadDecision) => Partial<DecisionCardActions>) | undefined; /** The id of the card a link named (`?decision=`): it scrolls into view and is marked. */ focus?: string | undefined }) {
  const actionsFor = useDecisionActions();
  if (decisions.length === 0) return null;
- return <ol className="rv-decision-list" aria-label={label}>{decisions.map(decision => <li key={decision.card.id}><DecisionCard decision={decision} focused={focus === decision.card.id} actions={{ ...actionsFor(decision), ...extras?.(decision) }} /></li>)}</ol>;
+ return <ol className="rv-decision-list" aria-label={label}>{decisions.map(decision => <li key={decision.card.id}><DecisionCard decision={decision} focused={focus === decision.card.id} seat={seat} actions={{ ...actionsFor(decision), ...extras?.(decision) }} /></li>)}</ol>;
 }
 
 /** Home's "Needs you": the pending decisions as cards. Nothing shows while the server has none (or the cards are not switched on); a failed read is shown as an error. The older Home cards below still show. */
@@ -86,10 +87,10 @@ export function SingleDecision({ cardId }: { cardId: string }) {
 }
 
 /** The decisions that are about one task, on its page. */
-export function TaskDecisions({ taskId, design, questions }: { taskId: string; /** The Design first action for this task's plan card, when the task view offers it (`designActions.designFirst`), and whether the plan may need design. */ design?: { hint: boolean; onDesignFirst(): Promise<void> } | undefined; /** Slice 2: the design questions this task waits on, answered on their card. */ questions?: DecisionCardActions["questions"] }) {
+export function TaskDecisions({ taskId, design, questions, seat }: { taskId: string; /** Approval place: the seat the viewer decides this task from (the task page reads it for a viewer who is not the owner). */ seat?: DecideSeat | undefined; /** The Design first action for this task's plan card, when the task view offers it (`designActions.designFirst`), and whether the plan may need design. */ design?: { hint: boolean; onDesignFirst(): Promise<void> } | undefined; /** Slice 2: the design questions this task waits on, answered on their card. */ questions?: DecisionCardActions["questions"] }) {
  const decisions = useDecisions(), [params] = useSearchParams(), inlineApprove = useInlineApprove();
  if (decisions.isError) return <section aria-label="Decision for this task"><DecisionsError error={decisions.error} retry={() => { void decisions.refetch(); }} /></section>;
  const mine = (decisions.data ?? []).filter(decision => decision.card.status === "pending" && decision.card.taskId === taskId);
  if (mine.length === 0) return null;
- return <section aria-label="Decision for this task"><DecisionList decisions={mine} label="Decisions for this task" focus={params.get(DECISION_FOCUS_PARAM) ?? undefined} extras={decision => ({ ...inlineApprove(decision), ...(design === undefined ? {} : { design }), ...(questions === undefined ? {} : { questions }) })} /></section>;
+ return <section aria-label="Decision for this task"><DecisionList decisions={mine} label="Decisions for this task" seat={seat} focus={params.get(DECISION_FOCUS_PARAM) ?? undefined} extras={decision => ({ ...inlineApprove(decision), ...(design === undefined ? {} : { design }), ...(questions === undefined ? {} : { questions }) })} /></section>;
 }

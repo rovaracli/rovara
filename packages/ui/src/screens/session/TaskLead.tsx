@@ -4,6 +4,7 @@ import { VisibleText } from "../../design/VisibleText.js";
 import type { ReadSession } from "./SessionHeader.js";
 import { cardsFor, leadStatus, taskLead, type Lead } from "./task-plain-state.js";
 import { workspaceTask, type ReadTask } from "./workspace-types.js";
+import { useTaskSeat } from "./task-seat.js";
 
 /** Scrolls to an existing control or card of the page and puts focus on it (the pattern of Merge's "Go to the card"). The control keeps its own logic. */
 export function goTo(targetId: string): void {
@@ -34,6 +35,6 @@ export function TaskLeadView({ lead }: { lead: Lead }) {
 /** The task page's header block, from data the page already has: the session's status, the task view and the viewer's pending decision cards (the same read the cards below use). */
 export function TaskLead({ session }: { session: ReadSession }) {
  const decisions = useDecisions(), task: ReadTask | undefined = workspaceTask(session);
- const cards = cardsFor(decisions.data, task?.taskId);
- return <TaskLeadView lead={taskLead({ session, task, status: leadStatus(session), cards })} />;
+ const cards = cardsFor(decisions.data, task?.taskId), seat = useTaskSeat(session, task?.taskId);
+ return <TaskLeadView lead={taskLead({ session, task, status: leadStatus(session), cards, seat })} />;
 }

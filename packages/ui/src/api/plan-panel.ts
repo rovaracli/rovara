@@ -11,6 +11,7 @@ const list = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
 const obj = (value: unknown): Record<string, unknown> => (value !== null && typeof value === "object" ? value as Record<string, unknown> : {});
 
 import { isPanelDocument, type PanelDocument } from "../screens/session/panel-docs.js";
+import { readDecideSeat, type DecideSeat } from "./decide-seat.js";
 
 export type CommentTarget = { kind: "document" } | { kind: "claim" | "decision" | "check"; id: string };
 export interface PanelClaim { id: string; text: string; children: PanelClaim[] }
@@ -24,7 +25,7 @@ export interface PanelView {
  checks: Array<{ id: string; label: string }>;
  unverified: boolean;
  waiting: boolean;
- access: { canComment: boolean; canSuggest: boolean; canDecide: boolean; canAsk: boolean };
+ access: { canComment: boolean; canSuggest: boolean; canDecide: boolean; canAsk: boolean; /** Which seat the reader decides from (`decideAs`), when the server said; absent from an older server. */ seat?: DecideSeat };
 }
 export interface PanelComment {
  id: string; parentId?: string; document: string; version: number; target: CommentTarget;
@@ -64,7 +65,7 @@ export function readPanelView(value: unknown): PanelView {
   versions: list(view.versions).flatMap(raw => { const entry = obj(raw);return typeof entry.version === "number" ? [{ version: entry.version, current: entry.current === true, approved: entry.approved === true }] : []; }),
   checks: list(view.checks).flatMap(raw => { const check = obj(raw);return typeof check.id === "string" && typeof check.label === "string" ? [{ id: check.id, label: check.label }] : []; }),
   unverified: view.unverified === true, waiting: view.waiting === true,
-  access: { canComment: access.canComment === true, canSuggest: access.canSuggest === true, canDecide: access.canDecide === true, canAsk: access.canAsk === true },
+  access: { canComment: access.canComment === true, canSuggest: access.canSuggest === true, canDecide: access.canDecide === true, canAsk: access.canAsk === true, ...(readDecideSeat(access) === undefined ? {} : { seat: readDecideSeat(access)! }) },
  };
 }
 
