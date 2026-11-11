@@ -67,7 +67,7 @@ describe("v2 look switch", () => {
 });
 describe("Chip", () => {
  it("shows words and a decorative icon for the company lock and the outside change", () => {
-  const { container } = render(h("div", null, h(Chip, { kind: "company-lock" }, "Company lock"), h(Chip, { kind: "outside-change" }, "Changed outside Rovara"), h(Chip, null, "Project default")));
+  const { container } = render(h("div", null, h(Chip, { kind: "company-lock", children: "Company lock" }), h(Chip, { kind: "outside-change", children: "Changed outside Rovara" }), h(Chip, { children: "Project default" })));
   expect(screen.getByText("Company lock").className).toContain("rv-chip-company-lock");
   expect(screen.getByText("Changed outside Rovara").className).toContain("rv-chip-outside-change");
   expect(container.querySelectorAll("svg[aria-hidden='true']").length).toBe(2);
