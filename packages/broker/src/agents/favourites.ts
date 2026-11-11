@@ -86,7 +86,7 @@ async function usedByYou(deps: AgentRouteDependencies, caller: AgentCaller): Pro
     if (row.orgId !== caller.orgId || typeof row.sessionId !== "string") continue;
     let session: { Item?: { orgId?: unknown; agent?: { agentId?: unknown } } };
     try {
-      session = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: agentSessionKey(caller.orgId, row.sessionId as SessionId, "META"), ProjectionExpression: "#org, #agent", ExpressionAttributeNames: { "#org": "orgId", "#agent": "agent" } })) as typeof session;
+      session = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: agentSessionKey(caller.orgId, row.sessionId, "META"), ProjectionExpression: "#org, #agent", ExpressionAttributeNames: { "#org": "orgId", "#agent": "agent" } })) as typeof session;
     } catch {
       continue; // a session id that is not one (or a read that failed) suggests nothing
     }
@@ -125,7 +125,7 @@ async function myAgents(deps: AgentRouteDependencies, caller: AgentCaller, url: 
   };
   // The asked project's roster (the person needs a role on it: listRoster says not found otherwise); built-ins are on every roster.
   const roster = project === undefined ? undefined : await listRoster(deps, caller, project);
-  const onProject = roster === undefined ? undefined : new Set(roster.map((entry) => entry.agentId as string));
+  const onProject = roster === undefined ? undefined : new Set(roster.map((entry) => entry.agentId));
   for (const entry of roster ?? []) if (!entry.builtin) await suggest(entry.agentId, "project_roster", onProject);
   for (const id of await usedByYou(deps, caller)) await suggest(id, "used_by_you", onProject);
   for (const agent of can.values()) if (agent.builtin) await suggest(agent.agentId, "starter", onProject);

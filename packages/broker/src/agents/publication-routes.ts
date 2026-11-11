@@ -64,12 +64,12 @@ async function openRequestsOf(deps: AgentRouteDependencies, caller: AgentCaller)
   for (let page = 0; page < MAX_PAGES; page += 1) {
     const response = await deps.documentClient.send(new QueryCommand({
       TableName: deps.tableName, KeyConditionExpression: "pk = :pk AND sk > :since", ConsistentRead: true, Limit: PAGE,
-      ExpressionAttributeValues: { ":pk": agentPublicationsIndexKey(caller.orgId, since, "apr_00000000000000000000" as never).pk, ":since": canonicalInstant(since) },
+      ExpressionAttributeValues: { ":pk": agentPublicationsIndexKey(caller.orgId, since, "apr_00000000000000000000").pk, ":since": canonicalInstant(since) },
       ...(start === undefined ? {} : { ExclusiveStartKey: start }),
     })) as { Items?: Array<{ approvalId?: unknown; requestedBy?: unknown }>; LastEvaluatedKey?: Record<string, unknown> };
     for (const item of response.Items ?? []) {
       if (item.requestedBy !== caller.developerId || typeof item.approvalId !== "string") continue;
-      const record = await getApproval(deps, caller.orgId, item.approvalId as never);
+      const record = await getApproval(deps, caller.orgId, item.approvalId);
       if (record?.status === "PENDING" && Date.parse(record.expiresAt) > deps.now()) open += 1;
     }
     start = response.LastEvaluatedKey;
@@ -99,7 +99,8 @@ async function askToPublish(deps: AgentRouteDependencies, caller: AgentCaller, a
     if (!isPublicationRecord(earlier) || earlier.subject.agentId !== agentId || canonicalJson(earlier.subject.target) !== canonicalJson(target) || earlier.subject.version !== input.version || earlier.subject.note !== note) throw conflict();
     return waitingAnswer(deps, caller, earlier);
   }
-  const marked = await markRequest(deps, caller, "publish-request", agentId, { requestId: input.requestId, target, version: input.version, ...(note === undefined ? {} : { note }) }).catch((error: unknown) => {
+  const markBody: { requestId: string; target: PublishTarget; version: number; note?: string } = { requestId: input.requestId, target, version: input.version, ...(note === undefined ? {} : { note }) };
+  const marked = await markRequest(deps, caller, "publish-request", agentId, markBody).catch((error: unknown) => {
     if (error instanceof AgentXError && error.code === "CONFIG_INVALID") throw conflict();
     throw error;
   });
@@ -203,7 +204,7 @@ async function readRequests(deps: AgentRouteDependencies, caller: AgentCaller, p
     for (const item of response.Items ?? []) {
       last = String(item.sk);
       if (item.orgId !== caller.orgId || typeof item.approvalId !== "string") continue;
-      const record = await getApproval(deps, caller.orgId, item.approvalId as never);
+      const record = await getApproval(deps, caller.orgId, item.approvalId);
       if (!isPublicationRecord(record) || !await keep(record)) continue;
       requests.push(await publishRequestView(deps, caller, record));
       if (requests.length >= limit) return { requests, next: encodeCursor(last) };
@@ -222,7 +223,7 @@ async function listRequests(deps: AgentRouteDependencies, caller: AgentCaller, u
   if (mine !== null && mine !== "1") throw agentXError("CONFIG_INVALID", "mine: must be 1");
   const rawProject = url.searchParams.get("project");
   const project = rawProject === null ? undefined : parseProject(rawProject);
-  const pk = agentPublicationsIndexKey(caller.orgId, new Date(0).toISOString(), "apr_00000000000000000000" as never).pk;
+  const pk = agentPublicationsIndexKey(caller.orgId, new Date(0).toISOString(), "apr_00000000000000000000").pk;
   return readRequests(deps, caller, pk, undefined, decodeCursor(url.searchParams.get("cursor")), limitOf(url), async (record) => {
     if (state === "pending" && (record.status !== "PENDING" || Date.parse(record.expiresAt) <= deps.now())) return false;
     if (project !== undefined && (record.subject.target.kind !== "project" || record.subject.target.project !== project)) return false;

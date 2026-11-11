@@ -51,6 +51,7 @@ import { agentHasCompanyShare, orgAdmins, orgOwnerOrAdmin, requireWithinGuardrai
 import { lessSafeChanges } from "./less-safe.js";
 import { sameMember } from "./lifecycle.js";
 import { ownerCapCheck } from "./owner-cap-check.js";
+import type { SpendRequestDependencies } from "../spend/requests.js";
 import type { AgentRecord } from "./store.js";
 
 export const PUBLICATION_PROJECT_RULE = "agent_publication_project";
@@ -208,7 +209,7 @@ export async function publicationOf(deps: ApprovalDependencies, caller: AgentCal
   })) as { Items?: Array<{ approvalId?: unknown }> };
   for (const pointer of pointers.Items ?? []) {
     if (typeof pointer.approvalId !== "string") continue;
-    const record = await getApproval(deps, agent.orgId, pointer.approvalId as never);
+    const record = await getApproval(deps, agent.orgId, pointer.approvalId);
     if (!isPublicationRecord(record) || record.status !== "PENDING" || Date.parse(record.expiresAt) <= deps.now() || record.subject.agentId !== agent.agentId) continue;
     if (!await maySeeRequest(deps, caller, record)) continue;
     if (pending === null || record.createdAt > pending.requestedAt) pending = { requestId: record.subject.requestId, target: record.subject.target, requestedAt: record.createdAt };
@@ -246,7 +247,7 @@ export async function waitingFor(deps: ApprovalDependencies, orgId: OrgId, agent
   const response = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: agentPublicationKey(orgId, agentId, { pending: targetKeyOf(target) }), ConsistentRead: true })) as { Item?: { approvalId?: unknown } };
   const seen = typeof response.Item?.approvalId === "string" ? response.Item.approvalId : undefined;
   if (seen === undefined) return {};
-  const record = await getApproval(deps, orgId, seen as never);
+  const record = await getApproval(deps, orgId, seen);
   return record !== undefined && record.status === "PENDING" && Date.parse(record.expiresAt) > deps.now() ? { waiting: record, seen } : { seen };
 }
 
@@ -311,7 +312,8 @@ async function confirmPublication(deps: ApprovalDependencies, record: AnyApprova
     if (!isOrgAdmin(role) && await agentHasCompanyShare(deps, record.orgId, agent.agentId)) throw stale("The agent is shared with your company, so an organization owner or admin has to approve this. Ask again.");
     const owner = { kind: "project" as const, project };
     const { accountable: _before, ...kept } = agent; // eslint-disable-line @typescript-eslint/no-unused-vars -- the new owner decides it
-    const cap = await ownerCapCheck(deps, record.orgId, { kind: "agent", agentId: agent.agentId }, agent, { ...kept, owner, accountable });
+    // The cap reads only the store, the table and the owner counters; the approval's dependencies are the agent routes' own at run time (their extra fields are optional).
+    const cap = await ownerCapCheck(deps as unknown as SpendRequestDependencies, record.orgId, { kind: "agent", agentId: agent.agentId }, agent, { ...kept, owner, accountable });
     if ("over" in cap) throw agentXError("CONFIG_INVALID", `Moving ${shownText(agent.name, NAME_MAX)} to ${project} would take the agent budgets you answer for past your company's monthly cap. Ask an organization admin to raise the cap, then ask again.`);
     await deps.store.setOwner(record.orgId, agent.agentId, owner, by, accountable, undefined, { actor: { developerId: by, role }, manageSnapshot: agent, ownerCap: cap.ownerCap });
     if (subject.expectedOwner.kind === "member") await keepAuthorEditing(deps, record.orgId, by, agent.agentId, subject.expectedOwner.developerId, accountable.developerId);
