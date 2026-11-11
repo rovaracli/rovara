@@ -7,7 +7,7 @@ import { z } from "zod";
 import { useAppHost, type AppHost } from "../host.js";
 import { createApiClient } from "./client.js";
 
-// ---- LOCAL SCHEMAS (replace with `@agentx/contracts/web` once `packages/contracts/src/app-approval-window.ts` is on this base) ----
+// ---- LOCAL SCHEMAS (replace with `@agentx/cloud-contracts/web` once `packages/cloud-contracts/src/app-approval-window.ts` is on this base) ----
 // They match docs section 2 of briefs/approval-place-api.md exactly (ApprovalWindowStateSchema, ApprovalWindowBodySchema, ApprovalWindowAnswerSchema). Readers ignore unknown fields (forward-compatible); the body is strict.
 export const RECENT_SIGN_IN_DEFAULT_SECONDS = 86400;
 export const RECENT_SIGN_IN_MIN_SECONDS = 3600;
