@@ -415,10 +415,10 @@ describe("the named TEST proof-only installation gate", () => {
     // the sign-in function's two ConditionCheckItem statements gain `Null: { dynamodb:LeadingKeys: false }`. Checked first: with only those two lines undone, all five tests pass on the lane's pins. Legacy did not move.
     // 2026-11-11 (0.5.14, lane U2, Slack explicit membership): the named and foreign digests were retaken from the values the test reports, after one intended change: the `sm` entry of the broker's packed
     // AGENTX_SETTINGS (the SlackExplicitMembers parameter itself is taken out of the remainder like the other switches). The named-templates snapshot shows exactly that parameter and that entry. Legacy did not move.
-    // 2026-11-11, merge of integ/0514 into U3 (feat/0515-work-events-v3): the four named and foreign digests below are U3's, taken on top of integ/0514 370279076, whose own pins were already red there. The values integ/0514 reports WITHOUT U3
-    // (the notifier's infra file as integ has it) are named 113afeb8..., 5cec0a6d... and foreign 5c52999d..., 54d2d4fb...; the difference between those and these is exactly the U3 change in the next note. Legacy did not move.
-    // 2026-11-11, U3 work events: the named and foreign digests were retaken from the values the test reports, after ONE intended change: the DeveloperTaskNotifier gains the variable AGENTX_WORK_EVENTS ("on") and ONE write grant,
-    // dynamodb:PutItem on ORG#org_*#WORK_EVENTS#* only (the work events it writes from the stream's images). The named-templates snapshot shows exactly that variable and that statement. Legacy did not move.
+    // 2026-11-11 (0.5.15, lane company-images-worker-v3, merged at 029dc304b): the named and foreign digests were retaken from the values the test reports, after the lane's reviewed additions: the CompanyImageMirror function (own role, mirror state rows only), its img-mirror role (ECR on rovara-env/<env>/o*/c* only), the `cm` entry of AGENTX_NAMES and the mirror role in the saved environment repository policy. Legacy did not move.
+    // 2026-11-11, U3 work events (merged onto integ/0514 1593cf08e, whose own named and foreign pins are 113afeb8..., 5cec0a6d... and 5c52999d..., 54d2d4fb...): the named and foreign digests below are U3's, retaken from the values the test
+    // reports after ONE intended change: the DeveloperTaskNotifier gains the variable AGENTX_WORK_EVENTS ("on") and one write grant, dynamodb:PutItem on ORG#org_*#WORK_EVENTS#* only. The named-templates snapshot shows exactly that variable
+    // and that statement. Legacy did not move.
     const digestCases = [
       {
         label: "named",
