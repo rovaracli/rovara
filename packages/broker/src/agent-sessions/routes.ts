@@ -1,7 +1,8 @@
 // The session routes (Plan 5 Task 5): `/v1/app/sessions*` for the app, CLI and MCP, only. Shared `/s/` links belong to the web shell. Each maps to a function
 // that checks the caller's level first; the reads are in read.ts and the shares in shares.ts. A session the caller can't view is `NOT_FOUND` everywhere.
 import { sessionResponseForClient, taskResponseForClient } from "../rovara-code/task-view-compat.js";
-import { LIVE_PAGE_MAX, SessionIdSchema, agentXError, type AgentSessionRecord, type OrgId, type OrgRole, type SessionId } from "@agentx/contracts";
+import { LIVE_PAGE_MAX, SessionIdSchema, agentXError, type AgentSessionRecord, type OrgId, type SessionId } from "@rovara-code/contracts";
+import { type OrgRole } from "@agentx/cloud-contracts";
 import type { ApprovalCaller, ApprovalDependencies } from "../agents/approvals.js";
 import { listApprovalsFor, mayDecideApproval, shownText } from "../agents/approvals.js";
 import { mayDecideSpendRequest } from "../spend/requests.js";

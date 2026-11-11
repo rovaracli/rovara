@@ -7,8 +7,8 @@
 // The shared functions keep the switch as "may one person decide" (`enabled`, ON when never set); this module stores that value and shows it the other way round: `alwaysTwoPeople = !enabled`. A value that cannot be
 // read counts as "always two people" (fail closed: the stricter side).
 import { GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { orgMetaKey, type AuditEventInput } from "@agentx/contracts";
-import { auditEventId } from "@agentx/contracts";
+import { orgMetaKey, type AuditEventInput } from "@agentx/cloud-contracts";
+import { auditEventId } from "@agentx/cloud-contracts";
 import { secondPersonTier0Authority } from "../lessons/tier0-authority.js";
 import { approveSoleOwnerSwitch, setSoleOwnerSwitch, type SoleOwnerSwitchChange, type SoleOwnerSwitchDeps, type SoleOwnerSwitchStore, type Tier0Authority, type Tier0Failure, type Tier0Fence } from "../lessons/sole-owner-switch.js";
 import type { LessonAuditEvent, LessonAuditSink } from "../lessons/ports.js";

@@ -2,7 +2,8 @@
 // the worker's disk, and they answer with text the model reads as DATA: a leading line says so, every hit carries its trust tag and source, and nothing in a hit can
 // change the model's instructions, tools or limits. The audience is the task's: a shared task sees only project-wide rows, a private task sees what its owner sees.
 // Which stages are offered these tools, and the route that carries the call, are the K2 design's; this module is the whole behaviour behind the route.
-import { PastWorkQuerySchema, RecordSearchQuerySchema, type MemoryInput, type OrgId } from "@agentx/contracts";
+import { PastWorkQuerySchema, RecordSearchQuerySchema } from "@agentx/cloud-contracts";
+import { type MemoryInput, type OrgId } from "@rovara-code/contracts";
 import { pastWork, recordSearch, RECORD_QUERIES_PER_TASK_PER_HOUR, type RecordQueryDependencies } from "./query.js";
 import type { ReadAudience } from "./types.js";
 

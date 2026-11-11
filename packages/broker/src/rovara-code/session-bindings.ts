@@ -1,7 +1,7 @@
 // Rovara Code (Plan 6 Task 20): the outside places a session follows (its Slack thread and its Linear issue), read from the session's own `BINDING#<kind>` items. Every item is checked
 // to belong to the org asked about and to parse as the kind its key names, so a tampered item, another org's, or one that does not read is left out, never trusted.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { SessionBindingSchema, SessionIdSchema, sessionBindingKey, type OrgId, type SessionBinding } from "@agentx/contracts";
+import { SessionBindingSchema, SessionIdSchema, sessionBindingKey, type OrgId, type SessionBinding } from "@rovara-code/contracts";
 
 /** The kinds a session can be bound to, in the order they are reported (a ticket of any tracker last). */
 const BINDING_KINDS = ["slack_thread", "linear_issue", "tracker_item"] as const;

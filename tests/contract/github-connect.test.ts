@@ -8,10 +8,8 @@ import { join } from "node:path";
 import { Stack } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import {
-  GITHUB_INSTALLATION_TAKEN_MESSAGE, agentXError, errorStatus, githubConnectStateKey, githubInstallationEverBoundKey, githubInstallationKey, orgGithubInstallationKey,
-  orgMemberKey, orgMetaKey, trialGithubKey, type OrgId,
-} from "@agentx/contracts";
+import { GITHUB_INSTALLATION_TAKEN_MESSAGE, agentXError, errorStatus, type OrgId } from "@rovara-code/contracts";
+import { githubConnectStateKey, githubInstallationEverBoundKey, githubInstallationKey, orgGithubInstallationKey, orgMemberKey, orgMetaKey, trialGithubKey } from "@agentx/cloud-contracts";
 import { developerTokenKey, saveDeveloperEnvironment } from "../../packages/cli/src/developer/config.js";
 import { executeCli } from "../../packages/cli/src/main.js";
 import { InMemoryTokenStore } from "../../packages/cli/src/token-store.js";

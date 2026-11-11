@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
-import { editionPolicy, type GitCredential } from "@agentx/contracts";
+import { editionPolicy } from "@agentx/cloud-contracts";
+import { type GitCredential } from "@rovara-code/contracts";
 import { issueRepositoryGrant } from "../../packages/broker/src/aws/broker/admin-and-helpers.js";
 import { NO_HOST_MESSAGE, createPluginRegistry } from "../../packages/broker/src/plugins/registry.js";
 import { CREDENTIAL_REFUSED_MESSAGES, portCredentialResolver, workerWireCredential } from "../../packages/broker/src/aws/broker/credential-exchange.js";
@@ -11,7 +12,7 @@ import { RepositoryGrantService } from "../../packages/broker/src/repository-acc
 const NOW = Date.parse("2026-10-31T12:00:00.000Z");
 const URL_A = "https://github.com/acme/app.git";
 const REF = "github-app";
-const SCOPE = { system: "private-install" } as const;
+const SCOPE = { system: "install" } as const;
 const WORKSPACE = "11111111-1111-4111-8111-111111111111";
 const OPERATION = "22222222-2222-4222-8222-222222222222";
 const iso = (offsetMs: number) => new Date(NOW + offsetMs).toISOString();

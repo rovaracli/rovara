@@ -1,7 +1,8 @@
 import { SERVER_PAGE_ICON, serverPageCss } from "@agentx/design-tokens";
 import { withDecideIsolation } from "./confirm-page.js";
 import { AdminCreateUserCommand, AdminGetUserCommand } from "@aws-sdk/client-cognito-identity-provider";
-import { SAML_SIGN_IN_REFUSED_MESSAGE, SessionIdSchema, agentXError, normalizeEmail, type SignedOutReason } from "@agentx/contracts";
+import { SAML_SIGN_IN_REFUSED_MESSAGE, type SignedOutReason } from "@agentx/cloud-contracts";
+import { SessionIdSchema, agentXError, normalizeEmail } from "@rovara-code/contracts";
 import { APP_CSRF_HEADER, appCsrfMatches } from "./app-csrf.js";
 // packages/broker/src/developer/server.ts
 // Spec 025 FR-001 to FR-008: the control plane as the developers' sign-in server. Behind
@@ -10,63 +11,8 @@ import { APP_CSRF_HEADER, appCsrfMatches } from "./app-csrf.js";
 // admin-ended sessions and channel by name).
 // Nothing here logs or echoes a secret, a code, a token or a caught error's message.
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import {
-  AGENTX_CLI_CLIENT_ID,
-  ChannelClassRequestSchema,
-  ChannelListRequestSchema,
-  MemberChannelsRequestSchema,
-  ChannelInfoRequestSchema,
-  ChannelByNameRequestSchema,
-  ChannelMembersRequestSchema,
-  TaskPersonProofRequestSchema,
-  TaskChannelPeopleRequestSchema,
-  TaskPeopleDisplayReadRequestSchema,
-  ADMIN_API_VERSION,
-  DEVELOPER_API_VERSION,
-  EndDeveloperSessionsRequestSchema,
-  EraseDeveloperNameRequestSchema,
-  RealtimeTokenRequestSchema,
-  UnlinkIdentityRequestSchema,
-  StartIdentityLinkRequestSchema,
-  type UnlinkIdentityRequest,
-  type UnlinkIdentityResponse,
-  type StartIdentityLinkRequest,
-  type StartIdentityLinkResponse,
-  SlackAuthCheckRequestSchema,
-  SlackUserByEmailRequestSchema,
-  isLoopbackRedirectUri,
-  type AgentXConfigurationConfirm,
-  type ChannelByNameRequest,
-  type ChannelByNameResponse,
-  type ChannelClassRequest,
-  type ChannelClassResponse,
-  type ChannelListRequest,
-  type MemberChannelsRequest,
-  type ChannelListResponse,
-  type ChannelInfoRequest,
-  type ChannelInfoResponse,
-  type ChannelMembersRequest,
-  type ChannelMembersResponse,
-  type TaskPersonProofRequest,
-  type TaskPersonProofResponse,
-  type TaskChannelPeopleRequest,
-  type TaskChannelPeopleResponse,
-  type TaskPeopleDisplayReadRequest,
-  type TaskPeopleDisplayReadResponse,
-  type DeveloperSignInMethod,
-  type EditionPolicy,
-  type OrgId,
-  type EndDeveloperSessionsRequest,
-  type EraseDeveloperNameRequest,
-  type RealtimeTokenAnswer,
-  type RealtimeTokenRequest,
-  type EndDeveloperSessionsResponse,
-  type EraseDeveloperNameResponse,
-  type SlackAuthCheckRequest,
-  type SlackAuthCheckResponse,
-  type SlackUserByEmailRequest,
-  type SlackUserByEmailResponse,
-} from "@agentx/contracts";
+import { AGENTX_CLI_CLIENT_ID, ChannelClassRequestSchema, ChannelListRequestSchema, MemberChannelsRequestSchema, ChannelInfoRequestSchema, ChannelByNameRequestSchema, ChannelMembersRequestSchema, TaskPersonProofRequestSchema, TaskChannelPeopleRequestSchema, TaskPeopleDisplayReadRequestSchema, ADMIN_API_VERSION, DEVELOPER_API_VERSION, EndDeveloperSessionsRequestSchema, EraseDeveloperNameRequestSchema, UnlinkIdentityRequestSchema, StartIdentityLinkRequestSchema, type UnlinkIdentityRequest, type UnlinkIdentityResponse, type StartIdentityLinkRequest, type StartIdentityLinkResponse, SlackAuthCheckRequestSchema, SlackUserByEmailRequestSchema, isLoopbackRedirectUri, type AgentXConfigurationConfirm, type ChannelByNameRequest, type ChannelByNameResponse, type ChannelClassRequest, type ChannelClassResponse, type ChannelListRequest, type MemberChannelsRequest, type ChannelListResponse, type ChannelInfoRequest, type ChannelInfoResponse, type ChannelMembersRequest, type ChannelMembersResponse, type TaskPersonProofRequest, type TaskPersonProofResponse, type TaskChannelPeopleRequest, type TaskChannelPeopleResponse, type TaskPeopleDisplayReadRequest, type TaskPeopleDisplayReadResponse, type OrgId, type EndDeveloperSessionsRequest, type EraseDeveloperNameRequest, type EndDeveloperSessionsResponse, type EraseDeveloperNameResponse, type SlackAuthCheckRequest, type SlackAuthCheckResponse, type SlackUserByEmailRequest, type SlackUserByEmailResponse } from "@rovara-code/contracts";
+import { RealtimeTokenRequestSchema, type DeveloperSignInMethod, type EditionPolicy, type RealtimeTokenAnswer, type RealtimeTokenRequest } from "@agentx/cloud-contracts";
 import { adaptHttpApiEvent, ownerKeyForSubject, type HttpApiV2Event } from "../aws/lambda.js";
 import { SESSION_MAX_AGE_SECONDS } from "../aws/web-session.js";
 import { INVITE_TOKEN_PATTERN, inviteTokenHash } from "../org/invite-url.js";

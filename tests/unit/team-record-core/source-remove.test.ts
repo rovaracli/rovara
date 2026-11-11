@@ -3,7 +3,8 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { PutCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { developerOrgKey, orgMemberKey, orgMetaKey, projectMemberKey, projectMetaKey, recordFactKey, recordItemHeadKey, recordScopeHash, recordScopeMarkerKey, type OrgId } from "@agentx/contracts";
+import { developerOrgKey, orgMemberKey, orgMetaKey, recordFactKey, recordItemHeadKey, recordScopeHash, recordScopeMarkerKey } from "@agentx/cloud-contracts";
+import { projectMemberKey, projectMetaKey, type OrgId } from "@rovara-code/contracts";
 import { handleRecordRoute } from "../../../packages/broker/src/team-record/routes.js";
 import type { SourceWriteContext } from "../../../packages/broker/src/team-record/source-write.js";
 import { eraseProject } from "../../../packages/broker/src/team-record/erase.js";

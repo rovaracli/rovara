@@ -6,7 +6,7 @@
 // The email's local part is deliberately not used as the placeholder: "omar.diaz" is the person's real name in most companies, so it would show a name
 // the person never chose to share, and a personal address ("ravi1987") can identify someone outside the company.
 import { createHash } from "node:crypto";
-import { containsEmailAddress, emailSafeName, isPlaceholderDisplayName, isReservedDisplayName } from "@agentx/contracts";
+import { containsEmailAddress, emailSafeName, isPlaceholderDisplayName, isReservedDisplayName } from "@rovara-code/contracts";
 
 export { isPlaceholderDisplayName };
 

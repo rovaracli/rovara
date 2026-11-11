@@ -2,7 +2,7 @@
 // refresh wiring cannot change a turn that has nothing to refresh.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import type { ConnectorCatalog, SlackRequestMessage } from "../../packages/contracts/src/index.js";
+import type { ConnectorCatalog, SlackRequestMessage } from "@rovara-code/contracts";
 import { ControlPlaneApi } from "../../packages/orchestrator/src/control-plane-api.js";
 import { createOrchestratorRuntime } from "../../packages/orchestrator/src/orchestrator.js";
 import type { OrchestrationApi } from "../../packages/orchestrator/src/orchestration-tools.js";

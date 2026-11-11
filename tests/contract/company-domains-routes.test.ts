@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { COMPANY_DOMAIN_LOST_AFTER_DAYS, COMPANY_DOMAIN_MAX_PER_ORG, type OrgId } from "@agentx/contracts";
+import { COMPANY_DOMAIN_LOST_AFTER_DAYS, COMPANY_DOMAIN_MAX_PER_ORG } from "@agentx/cloud-contracts";
+import { type OrgId } from "@rovara-code/contracts";
 import { COMPANY_DOMAINS_PER_MINUTE, DOMAIN_REFUSAL_MESSAGES, routeCompanyDomains } from "../../packages/broker/src/aws/developer-routes/company-domains.js";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "../../packages/broker/src/aws/developer-routes/types.js";
 import type { AdaptedHttpRequest } from "../../packages/broker/src/aws/lambda.js";

@@ -2,7 +2,7 @@
 // Team record is on, read access to the record's table (infra grants it and sets TEAM_RECORD_TABLE_NAME there). Without that table name nothing is built (no lessons are delivered), so an install with the
 // Team record off does nothing here. It reads; it never writes.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { OrgIdSchema, memberGithubKey, type EvalFilesPayload, type LearnedContext, type LearnedRefs } from "@agentx/contracts";
+import { OrgIdSchema, memberGithubKey, type EvalFilesPayload, type LearnedContext, type LearnedRefs } from "@rovara-code/contracts";
 import { createAccessCheckPort } from "../team-record/access-port.js";
 import { tableTaskVisibilityPort } from "../team-record/live-audience-port.js";
 import type { TeamRecordTable } from "../team-record/types.js";

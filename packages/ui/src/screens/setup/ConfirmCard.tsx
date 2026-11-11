@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { setupItemsOf, type SetupAgentView, type SetupConfirmReply } from "@agentx/contracts/web";
+import { setupItemsOf, type SetupAgentView, type SetupConfirmReply } from "@agentx/cloud-contracts/web";
 import { useSetupAgentApi } from "../../api/setup-agent.js";
 import { ApiError } from "../../api/errors.js";
 import { Button } from "../../design/Button.js";

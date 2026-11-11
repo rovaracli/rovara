@@ -10,7 +10,7 @@ import { SFNClient } from "@aws-sdk/client-sfn";
 import { SNSClient } from "@aws-sdk/client-sns";
 import { SSMClient } from "@aws-sdk/client-ssm";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
-import { Ec2RuntimeBindingSchema, type Ec2RuntimeBinding } from "@agentx/contracts";
+import { Ec2RuntimeBindingSchema, type Ec2RuntimeBinding } from "@rovara-code/contracts";
 import { requiredEnvironment } from "./lambda.js";
 import { requalifyDrainCount } from "../e2e/requalify-hold.js";
 import { ec2RequalifyInstanceReader } from "./runtime-requalify.js";

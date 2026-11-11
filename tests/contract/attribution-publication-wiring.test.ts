@@ -2,7 +2,7 @@
 // (the commit and description are built from it there), and the audit event that records the opening relates the people it names. Through the real broker handlers.
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
-import { ActingAttributionSchema } from "../../packages/contracts/src/index.js";
+import { ActingAttributionSchema } from "@rovara-code/contracts";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { SLACK_CHANNEL, SLACK_TEAM, call, createBroker, ensureWorkspace, loadSlackBroker, markReady, registerSlackProject, serviceCall } from "../support/slack-broker.js";
 

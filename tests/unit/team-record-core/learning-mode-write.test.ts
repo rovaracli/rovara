@@ -2,7 +2,7 @@
 // a repeat answer the same (and a late repeat change nothing), the audit item, and the readers (`mode.ts`) seeing the new value.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { learningModeKey, type OrgId } from "@agentx/contracts";
+import { learningModeKey, type OrgId } from "@rovara-code/contracts";
 import { handleRecordRoute } from "../../../packages/broker/src/team-record/routes.js";
 import type { SourceWriteContext } from "../../../packages/broker/src/team-record/source-write.js";
 import { capturingAuditDeps } from "../../support/audit-capture.js";

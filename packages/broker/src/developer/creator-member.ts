@@ -4,7 +4,8 @@
 // then ends with outcome `creator_removed` and that message as its reason. "Removed" is the member record gone with the removal's
 // tombstone present (OrgStore writes it in the same transaction): a person with no member record and no tombstone never joined. Their workspaces are left to the idle reaper.
 import { GetCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { OrgIdSchema, agentXError, isSystemOwnerId, chainRunKey, orgMemberKey, orgMetaKey, orgRemovedKey, type OrgId } from "@agentx/contracts";
+import { OrgIdSchema, agentXError, isSystemOwnerId, chainRunKey, type OrgId } from "@rovara-code/contracts";
+import { orgMemberKey, orgMetaKey, orgRemovedKey } from "@agentx/cloud-contracts";
 import { paymentOfTask } from "../spend/payer.js";
 import { systemOwnerStands } from "./system-owner.js";
 import { hasTaskEndHandlers, onTaskEnded } from "../agents/task-end.js";

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { E2EDisplayAgentNavigationSchema, e2eAgentValueDigest, e2eAgentValueKeyId, e2eModelRouteRevision, type E2EModelReceipt } from "@agentx/contracts";
+import { E2EDisplayAgentNavigationSchema, e2eAgentValueDigest, e2eAgentValueKeyId, e2eModelRouteRevision, type E2EModelReceipt } from "@rovara-code/contracts";
 import { scriptedE2ERouteDefinition } from "../../packages/model-runtime/src/e2e-route-derive.js";
 import { agentCaseDirectoryName } from "../../packages/verifier/src/executor/evidence-paths.js";
 import { agentCaseDirectory, agentNavigationOf } from "../../packages/broker/src/e2e/application-agent-display.js";
@@ -146,7 +146,7 @@ describe("agentNavigationOf", () => {
 
 // Test 29, at the level of a ledger that typed values: a ledger whose `type` action has `valueLiteral: null` and a known `valueDigest`, a password as the typed value, and a seeded password
 // in the name of an element the page shows. Whatever the model typed, the display, the page, Slack and the stored copy hold none of it.
-import { E2EScenarioResultsSchema } from "@agentx/contracts";
+import { E2EScenarioResultsSchema } from "@rovara-code/contracts";
 import { renderE2EScenarioRowsHtml, renderE2EScenarioSlackBlocks } from "../../packages/broker/src/e2e-presentation.js";
 import { scrubScenarioResults } from "../../packages/broker/src/e2e/application-display.js";
 import { createWorkflowE2EDisplayObject } from "../../packages/broker/src/aws/workflow-e2e-notifier-projection.js";

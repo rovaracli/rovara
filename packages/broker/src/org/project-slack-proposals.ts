@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import { AgentXNameSchema, SlackTeamIdSchema, SlackChannelIdSchema, SlackChannelBindingSchema, agentXError, canonicalJson, orgSlackTeamKey, projectMetaKey, projectPk, slackBindingKey, slackTeamOrgKey, type OrgId } from "@agentx/contracts";
+import { AgentXNameSchema, SlackTeamIdSchema, SlackChannelIdSchema, SlackChannelBindingSchema, agentXError, canonicalJson, projectMetaKey, projectPk, slackBindingKey, type OrgId } from "@rovara-code/contracts";
+import { orgSlackTeamKey, slackTeamOrgKey } from "@agentx/cloud-contracts";
 import { auditPending, type AuditRuntime, type TransactItem } from "../audit/outbox.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditOccurrence, auditSlackChannelProposed, auditSlackChannelDecision } from "../audit/events.js";

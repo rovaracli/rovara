@@ -1,7 +1,7 @@
 import { expect, it } from "vitest";
 import { readStageModelEvidence } from "../../packages/broker/src/model-selection/evidence.js";
 import type { StoredModelSources } from "../../packages/broker/src/model-sources/store.js";
-import type { OrgId } from "../../packages/contracts/src/org.js";
+import type { OrgId } from "@rovara-code/contracts";
 const org="org_aaaaaaaaaaaaaaaaaaaa" as OrgId;
 const model={provider:"amazon-bedrock",modelId:"us.anthropic.claude-sonnet-4-6"};
 const stored=():StoredModelSources=>({sources:[],order:["rovara"],credentials:[],removing:[],revision:2});

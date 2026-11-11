@@ -9,7 +9,7 @@
 //           one SSM parameter at cold start (see `customTsaSettings` for its format);
 //   off     no requests at all: epochs are sealed without a token.
 import { X509Certificate, randomBytes } from "node:crypto";
-import { AUDIT_TSA_ENDPOINTS, AUDIT_TSA_SPACING_MS, AUDIT_TSA_TIMEOUT_MS, TIMESTAMP_SKEW_MS, buildTimeStampRequest, defaultAnchors, parseTimeStampResponse, timestampCoversRecord, verifyTimeStampToken, type TimestampProblem } from "@agentx/contracts";
+import { AUDIT_TSA_ENDPOINTS, AUDIT_TSA_SPACING_MS, AUDIT_TSA_TIMEOUT_MS, TIMESTAMP_SKEW_MS, buildTimeStampRequest, defaultAnchors, parseTimeStampResponse, timestampCoversRecord, verifyTimeStampToken, type TimestampProblem } from "@agentx/cloud-contracts";
 
 export type TsaProblem =
   | TimestampProblem

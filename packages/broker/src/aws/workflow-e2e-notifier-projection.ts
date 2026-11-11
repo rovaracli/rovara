@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import { E2EDisplayBaselineSchema, E2EDisplayBaselineV2Schema, E2EDisplayScenarioSchema, E2EDisplayScenarioV2Schema, E2ESharedViewSchema, E2EWorkflowDisplayRefSchema, type E2EScenarioResults, type E2EWorkflowDisplayRef } from "@agentx/contracts";
-import { canonicalJson } from "@agentx/contracts";
+import { E2EDisplayBaselineSchema, E2EDisplayBaselineV2Schema, E2EDisplayScenarioSchema, E2EDisplayScenarioV2Schema, E2ESharedViewSchema, E2EWorkflowDisplayRefSchema, type E2EScenarioResults, type E2EWorkflowDisplayRef } from "@rovara-code/contracts";
+import { canonicalJson } from "@rovara-code/contracts";
 import { scrubScenarioResults } from "../e2e/application-display.js";
 
 const refFields = {

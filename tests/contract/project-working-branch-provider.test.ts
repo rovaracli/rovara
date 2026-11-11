@@ -1,6 +1,8 @@
 import { generateKeyPairSync } from "node:crypto";
 import { expect, it, vi } from "vitest";
-import { AgentXError, githubInstallationKey, StoredProjectDefinitionSchema, developerOrgKey, orgMemberKey, orgMetaKey, orgProjectCatalogKey, projectRevisionKey, projectMetaKey, type OrgId } from "@agentx/contracts";
+import { AgentXError, orgProjectCatalogKey, projectRevisionKey, projectMetaKey, type OrgId } from "@rovara-code/contracts";
+import { StoredProjectDefinitionSchema } from "@agentx/cloud-contracts";
+import { githubInstallationKey, developerOrgKey, orgMemberKey, orgMetaKey } from "@agentx/cloud-contracts";
 import { GitHubAppCredentialProvider } from "../../packages/broker/src/github-app.js";
 import { installationBindingCheck } from "../../packages/broker/src/org/github-connection.js";
 import * as commands from "../../packages/broker/src/org/project-settings.js";
@@ -26,7 +28,7 @@ it("returns only pinned repository identity for the B12 connection checker",asyn
 for(const state of ["foreign","suspended","removed"] as const)it(`refuses persisted ${state} binding before minting`,async()=>{const f=fixture();if(state==="removed")f.db.delete(githubInstallationKey(11));else f.db.set({...githubInstallationKey(11),orgId:state==="foreign"?B:A,status:state==="suspended"?"suspended":"active"});expect((await f.call()).code).toBe("GITHUB_NOT_CONNECTED");expect(f.minted()).toEqual([]);});
 it("cannot use another company's active installation",async()=>{const f=fixture();expect((await f.call(branch,pin,{orgId:B})).code).toBe("GITHUB_NOT_CONNECTED");expect(f.minted()).toEqual([]);});
 it("requires an explicit binding policy even on private installs",async()=>{const f=fixture(false);expect((await f.call()).code).toBe("GITHUB_NOT_CONNECTED");expect(f.requests).toEqual([]);});
-for(const scope of [{system:"private-install"},{system:"webhook"},{orgId:A,system:"webhook"},{orgId:"bad"},{}])it(`refuses non-org scope ${JSON.stringify(scope)}`,async()=>{const f=fixture();expect((await f.call(branch,pin,scope)).code).toBe("CONFIG_INVALID");expect(f.requests).toEqual([]);});
+for(const scope of [{system:"install"},{system:"webhook"},{orgId:A,system:"webhook"},{orgId:"bad"},{}])it(`refuses non-org scope ${JSON.stringify(scope)}`,async()=>{const f=fixture();expect((await f.call(branch,pin,scope)).code).toBe("CONFIG_INVALID");expect(f.requests).toEqual([]);});
 for(const expected of [{},{installationId:11},{repositoryId:22},{installationId:0,repositoryId:22},{installationId:11,repositoryId:0},{installationId:11,repositoryId:1.1},{installationId:Infinity,repositoryId:22}])it(`refuses missing or invalid immutable pins ${JSON.stringify(expected)}`,async()=>{const f=fixture();expect((await f.call(branch,expected)).code).toBe("CONFIG_INVALID");expect(f.requests).toEqual([]);});
 for(const selected of ["HEAD","refs/heads/main","refs/tags/v1","-x","a..b","a//b","a.lock","a/.hidden","a@{1}","a b","main~1","$(id)","x;id","x\\y","a/",""])it(`refuses unsafe branch ${selected} before I/O`,async()=>{const f=fixture();expect((await f.call(selected)).code).toBe("CONFIG_INVALID");expect(f.requests).toEqual([]);});
 it("ignores cached installation and refuses a replacement before token mint",async()=>{const f=fixture();await f.provider.installationForRepository("acme","payments");f.requests.length=0;f.db.set({...githubInstallationKey(12),orgId:A,status:"active"});f.setInstallation(12);expect((await f.call()).code).toBe("GITHUB_NOT_CONNECTED");expect(f.minted()).toEqual([]);});

@@ -3,18 +3,8 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import {
-  CATALOG_FILE,
-  CATALOG_SIGNATURE_FILE,
-  PrepullListSchema,
-  ServiceCatalogSchema,
-  catalogPrepullList,
-  combinedSbomRef,
-  sha256HexOf,
-  verifyImageStatement,
-  type SignedImageStatement,
-} from "@agentx/contracts";
-import { loadSignedCatalogWithKeys } from "@agentx/contracts/testing";
+import { CATALOG_FILE, CATALOG_SIGNATURE_FILE, PrepullListSchema, ServiceCatalogSchema, catalogPrepullList, combinedSbomRef, sha256HexOf, verifyImageStatement, type SignedImageStatement } from "@rovara-code/contracts";
+import { loadSignedCatalogWithKeys } from "@agentx/cloud-contracts/testing";
 import {
   CatalogBuildError,
   DEFAULT_COMMAND_TIMEOUT_MS,

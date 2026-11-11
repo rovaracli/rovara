@@ -1,7 +1,7 @@
 // The ingest lane's sink contract (sources/ports.ts `RecordSinkPort`), implemented by the core: versions ordered by source time, a newer version replaces the older text,
 // sticky tombstones (items and places, with places covering the places under them), and the per-item lowest trust (`RecordHistoryPort`).
 import { describe, expect, it } from "vitest";
-import { recordScopeMarkerKey, scopeAndAncestors } from "@agentx/contracts";
+import { recordScopeMarkerKey, scopeAndAncestors } from "@agentx/cloud-contracts";
 import { createCaptureModePort, createRecordHistoryPort, createRecordSink, createSourceConfigPort } from "../../../packages/broker/src/team-record/sink.js";
 import { createTicketRecorder } from "../../../packages/broker/src/team-record/sources/tickets.js";
 import { createCodeHostTap } from "../../../packages/broker/src/team-record/sources/codehost.js";

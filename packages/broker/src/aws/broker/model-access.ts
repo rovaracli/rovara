@@ -1,7 +1,9 @@
 // Part of the broker (split out of ../broker.ts): write gate, model access (web and Slack), turn routing and budgets.
 
 import { sessionPageUrl } from "../../decisions/open-path.js";
-import { AgentXError, agentXError, type OperationRequester, type ProjectDefinition, SlackModelAccessRequestSchema, recipeDigest, type InvocationModelRoute, type ModelIdentifier, slackBindingPk, SLACK_BINDING_SK_PREFIX, type OrgId, PER_TASK_BUDGET_USD, chainRunKey, ROVARA_CODE_AGENT_ID, type AgentId, type Payer, type Place, DIAGNOSIS_LIGHT_BUDGET_USD, DIAGNOSIS_NO_PROVIDER_MESSAGE } from "@agentx/contracts";
+import { AgentXError, agentXError, type OperationRequester, SlackModelAccessRequestSchema, recipeDigest, type InvocationModelRoute, type ModelIdentifier, slackBindingPk, SLACK_BINDING_SK_PREFIX, type OrgId, chainRunKey, ROVARA_CODE_AGENT_ID, type AgentId, type Payer, type Place, DIAGNOSIS_LIGHT_BUDGET_USD, DIAGNOSIS_NO_PROVIDER_MESSAGE } from "@rovara-code/contracts";
+import { type ProjectDefinition } from "@agentx/cloud-contracts";
+import { PER_TASK_BUDGET_USD } from "@agentx/cloud-contracts";
 import { queryAllItems } from "../admin-reads.js";
 import { DynamoConnectorLedger, GITHUB_LEDGER, connectorLedgerKeys } from "../connector-ledger.js";
 import { callConnector } from "../connector-routes.js";
@@ -33,7 +35,7 @@ import { developerTaskRouteDependencies, type DeveloperCaller } from "../develop
 import { readCompanyStagePolicy } from "../../model-selection/policy-store.js";
 import { parseTurnModelPin } from "../../model-selection/turn-policy.js";
 import { ProcessModelRefusal } from "../../model-selection/process-refusal.js";
-import { canonicalModelName, forbiddenModelMatcher } from "@agentx/contracts";
+import { canonicalModelName, forbiddenModelMatcher } from "@rovara-code/contracts";
 import { readGuardrails } from "../../agents/guardrails.js";
 import type { DeveloperTaskActions, TransactItems } from "../developer-task-actions.js";
 import { ADMISSION_REFUSALS, agentStepNotes, systemTaskDispatchAccessFence, taskPageUrl } from "../developer-tasks.js";
@@ -52,7 +54,8 @@ import { releaseIfFinished } from "./terminal-and-github-events.js";
 import { askForPausedTask, blockEndedOperationKeys } from "./terminal-result.js";
 import { getSlackBinding, parseSlackHeaders, requireSlackServiceRole, sharedThread, sharedThreadOpen, slackRequesterProjectAccess } from "./workspace-preparation.js";
 import { viewerCannotStartTasksMessage } from "../../developer/project-roles.js";
-import { AuditEventInputSchema, addDesignUsd, auditEventId, canonicalJson } from "@agentx/contracts";
+import { AuditEventInputSchema, auditEventId } from "@agentx/cloud-contracts";
+import { addDesignUsd, canonicalJson } from "@rovara-code/contracts";
 import { TaskFundingProofSchema, actualCompanyFunding, fundingAuditItems, fundingRevisionCheck } from "../../org/task-stop-funding.js";
 import { type TransactItem, failedIndexes, isTransactionConflict } from "../../agents/table-writes.js";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
@@ -232,13 +235,15 @@ export function writeGateRuntime(dependencies: AwsBrokerDependencies, tasks: Dev
  * The commit-time check that a company sign-in (OIDC) task person is still the identity their proof named. The row is keyed by the person:
  * a sign-in writes no `developerId` attribute (store.ts getDeveloper), so only a row naming someone else fails it; a revoked or merged-away row fails too.
  */
-export function oidcTaskPersonIdentityCheck(tableName: string, identity: { developerId: string; issuer: string; subject: string; slackUserId: string; provider?: "oidc" | "saml" }) {
+export function oidcTaskPersonIdentityCheck(tableName: string, identity: { developerId: string; issuer: string; subject: string; slackUserId?: string; provider?: "oidc" | "saml" | "cloud" | "github" }) {
+  // A person with no Slack account (neutral identity) is held to everything else; one stored with a Slack id is held to that id too.
+  const slack = identity.slackUserId === undefined ? "" : " AND #identitySlack = :identitySlack";
   return { ConditionCheck: {
     TableName: tableName, Key: { pk: `DEVELOPER#${identity.developerId}`, sk: "META" },
-    ConditionExpression: "(attribute_not_exists(#identityId) OR #identityId = :identityId) AND #identityProvider = :identityProvider AND #identityIssuer = :identityIssuer AND #identitySubject = :identitySubject AND #identitySlack = :identitySlack AND #identityRevoked = :identityRevoked AND attribute_not_exists(#identityMerged)",
-    ExpressionAttributeNames: { "#identityId": "developerId", "#identityProvider": "provider", "#identityIssuer": "issuer", "#identitySubject": "subject", "#identitySlack": "slackUserId", "#identityRevoked": "revoked", "#identityMerged": "mergedInto" },
+    ConditionExpression: `(attribute_not_exists(#identityId) OR #identityId = :identityId) AND #identityProvider = :identityProvider AND #identityIssuer = :identityIssuer AND #identitySubject = :identitySubject${slack} AND #identityRevoked = :identityRevoked AND attribute_not_exists(#identityMerged)`,
+    ExpressionAttributeNames: { "#identityId": "developerId", "#identityProvider": "provider", "#identityIssuer": "issuer", "#identitySubject": "subject", ...(identity.slackUserId === undefined ? {} : { "#identitySlack": "slackUserId" }), "#identityRevoked": "revoked", "#identityMerged": "mergedInto" },
     ExpressionAttributeValues: { ":identityId": identity.developerId, ":identityProvider": identity.provider ?? "oidc", ":identityIssuer": identity.issuer,
-      ":identitySubject": identity.subject, ":identitySlack": identity.slackUserId, ":identityRevoked": false },
+      ":identitySubject": identity.subject, ...(identity.slackUserId === undefined ? {} : { ":identitySlack": identity.slackUserId }), ":identityRevoked": false },
   } };
 }
 
@@ -335,12 +340,12 @@ async function answerModelAccess(dependencies: AwsBrokerDependencies, request: A
           developer: dependencies.developer, now: Date.now, tasks: developerTaskActions(dependencies) },
         await ownerCallerOf(dependencies, task, "model-key-work-authority"), undefined, null);
         const checkPerson = peopleDependencies.checkTaskPerson;
-        const oidcProofs = new Map<string, { developerId: string; issuer: string; subject: string; slackUserId: string; provider: "oidc" | "saml" }>();
+        const oidcProofs = new Map<string, { developerId: string; issuer: string; subject: string; slackUserId?: string; provider: "oidc" | "saml" | "cloud" | "github" }>();
         const peopleFence = await systemTaskDispatchAccessFence({ ...peopleDependencies, checkTaskPerson: async (...input) => {
           if (checkPerson === undefined) throw agentXError("TASK_ACCESS_DENIED", "Task-person identity proof is unavailable.");
           const proof = await checkPerson(...input);
-          if (proof.eligible && proof.channelMember && proof.projectViewer !== true && (proof.identity.method === "oidc" || proof.identity.method === "saml")) {
-            const identity = { developerId: proof.identity.developerId, issuer: proof.identity.issuer, subject: proof.identity.subject, slackUserId: proof.identity.slackUserId, provider: proof.identity.method };
+          if (proof.eligible && proof.channelMember && proof.projectViewer !== true && proof.identity.method !== "slack") {
+            const identity = { developerId: proof.identity.developerId, issuer: proof.identity.issuer, subject: proof.identity.subject, ...(proof.identity.slackUserId === undefined ? {} : { slackUserId: proof.identity.slackUserId }), provider: proof.identity.method };
             const previous = oidcProofs.get(identity.developerId);
             if (previous !== undefined && canonicalJson(previous) !== canonicalJson(identity)) throw agentXError("TASK_ACCESS_DENIED", "Task-person identity changed during qualification.");
             oidcProofs.set(identity.developerId, identity);

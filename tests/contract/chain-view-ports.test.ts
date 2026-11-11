@@ -2,7 +2,7 @@
 // agent-step run waits on. A task of another org is nobody's; no proxy means no cost; the task view is Plan 3's, handed in.
 import { describe, expect, it } from "vitest";
 import { chainViewPortsFor } from "../../packages/broker/src/chains/view-ports.js";
-import { approvalKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { approvalKey } from "@rovara-code/contracts";
 import { taskAgentRunKey, taskKey } from "../../packages/broker/src/developer/task-records.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { ORG_A, ORG_B } from "../support/chain-run-world.js";

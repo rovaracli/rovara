@@ -3,10 +3,7 @@
 // so a change to the framing there cannot pass unnoticed.
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import {
-  PACKET_FRAME_TAGS, PACKET_DIGEST_VERSION, itemOf, neutralizePacketText, packetDigestOf, promptDigest, renderPacketDocument, renderPacketRequest, reviewerMessagesOf,
-  type PacketDelivery, type PacketDocument,
-} from "@agentx/contracts";
+import { PACKET_FRAME_TAGS, PACKET_DIGEST_VERSION, itemOf, neutralizePacketText, packetDigestOf, promptDigest, renderPacketDocument, renderPacketRequest, reviewerMessagesOf, type PacketDelivery, type PacketDocument } from "@rovara-code/contracts";
 import { ALL_DESIGN_REVIEW_PROMPTS, REVIEWER_PROMPTS, promptRecord } from "../../packages/broker/src/design-review/prompts/index.js";
 import * as brokerPacket from "../../packages/broker/src/design-review/packet.js";
 
@@ -124,7 +121,7 @@ describe("M5 (contracts): the packet digest binds the registered prompt by the o
 
 describe("one copy of the framing", () => {
   it("the broker's packet module re-exports the contracts' functions, it does not carry its own", async () => {
-    const contracts = await import("@agentx/contracts");
+    const contracts = await import("@rovara-code/contracts");
     for (const name of ["renderPacketDocument", "renderPacketRequest", "neutralizePacketText", "itemOf", "packetDigestOf", "reviewerMessagesOf"] as const) {
       expect(brokerPacket[name], name).toBe(contracts[name]);
     }

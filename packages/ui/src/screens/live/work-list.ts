@@ -1,4 +1,4 @@
-import { TASK_STATUS_WORDS, statusNeedsSomeone, taskStatusFromSession, type LiveFilterSchema } from "@agentx/contracts/web";
+import { TASK_STATUS_WORDS, statusNeedsSomeone, taskStatusFromSession, type LiveFilterSchema } from "@agentx/cloud-contracts/web";
 import type { ReadLiveTile } from "../../api/live.js";
 import type { ReadFinishedTile } from "../../api/work-list.js";
 import { plainState, type LeadStatus, type PlainState } from "../session/task-plain-state.js";

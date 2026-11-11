@@ -3,7 +3,8 @@
 // dispatch for a viewer's task starts, tasks without a People sidecar included. People with no grant keep the share design.
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { editionPolicy, orgBanKey, orgMemberKey, orgRemovedKey, projectMemberKey, sharedTaskKey, slackTeamOrgKey, type ProjectRole } from "../../packages/contracts/src/index.js";
+import { editionPolicy, orgBanKey, orgMemberKey, orgRemovedKey, slackTeamOrgKey } from "@agentx/cloud-contracts";
+import { projectMemberKey, sharedTaskKey, type ProjectRole } from "@rovara-code/contracts";
 import { guardTaskDispatch, resumeTaskDispatch } from "../../packages/broker/src/aws/task-dispatch-access.js";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { taskOwnerKey } from "../../packages/broker/src/developer/task-records.js";

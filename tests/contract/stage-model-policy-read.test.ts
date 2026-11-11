@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import { readModelSelectionPolicy,modelSelectionRevisionChecks } from "../../packages/broker/src/model-selection/policy-store.js";
-import type { OrgId } from "../../packages/contracts/src/org.js";
+import type { OrgId } from "@rovara-code/contracts";
 const org="org_aaaaaaaaaaaaaaaaaaaa" as OrgId;
 it("returns a virtual revision-zero policy only for an absent row, using one consistent Get",async()=>{
  let input:Record<string,unknown>|undefined;
@@ -20,7 +20,7 @@ it("refuses corrupt, misbound and unreadable policy rather than inheriting defau
 it("fences the exact company, source and guardrail revisions in one transaction",async()=>{
  const {mergeWorld}=await import("../support/rovara-code-merge-world.js");
  const {TransactWriteCommand}=await import("@aws-sdk/lib-dynamodb");
- const {modelSourcesKey,agentGuardrailsKey,orgSettingsKey}=await import("../../packages/contracts/src/index.js");
+ const { modelSourcesKey, agentGuardrailsKey } = await import("@rovara-code/contracts"), { orgSettingsKey } = await import("@agentx/cloud-contracts");
  const keys=[orgSettingsKey(org,"MODEL_SELECTION_POLICY"),modelSourcesKey(org),agentGuardrailsKey(org)];
  for(const revision of [0,3])for(const race of [-1,0,1,2]){
   const w=mergeWorld();

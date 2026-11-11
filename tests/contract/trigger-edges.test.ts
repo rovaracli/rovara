@@ -2,8 +2,8 @@ import { fixtureActor } from "../support/money-authority.js";
 // Plan 4 Task 18: what the first mutation pass found unpinned. Each test names the guard it holds: the store's conditions and indexes, the checks of `triggerProblems`, who may set,
 // move, delete and confirm a trigger, what binds a confirmation to the spec it was asked for, and who a trigger goes to when its owner leaves.
 import { afterEach, describe, expect, it } from "vitest";
-import { BUILTIN_TRIGGER_SUGGESTIONS, INDEX_EXPIRY_ATTRIBUTE } from "@agentx/contracts";
-import { TriggerSpecSchema } from "../../packages/contracts/src/agent-recipe.js";
+import { BUILTIN_TRIGGER_SUGGESTIONS, INDEX_EXPIRY_ATTRIBUTE } from "@rovara-code/contracts";
+import { TriggerSpecSchema } from "@rovara-code/contracts";
 import { getApprovalSubjectHandler, type ApprovalRecord } from "../../packages/broker/src/agents/approvals.js";
 import { recheckTriggersForTarget } from "../../packages/broker/src/triggers/lifecycle.js";
 import { onMemberRemoved } from "../../packages/broker/src/agents/lifecycle.js";

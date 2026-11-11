@@ -5,7 +5,7 @@
 // The button words are the shared table (`DECISION_LABELS`), the same as the web card's.
 // A pressed button carries only the card's id; the server re-checks everything (routes.ts), so a forged or stale press is refused there. Every word that came from a person, a plan or a repository
 // was already flattened by the projector; here it is also escaped for Slack (a mention, a link, a broadcast).
-import { DECISION_LABELS, formatRunLimitUsd, hideEmailAddresses, runLimitRaiseText, runLimitRaises, type DecisionCard, type DecisionTab } from "@agentx/contracts";
+import { DECISION_LABELS, formatRunLimitUsd, hideEmailAddresses, runLimitRaiseText, runLimitRaises, type DecisionCard, type DecisionTab } from "@rovara-code/contracts";
 
 export const DECISION_SLACK_APPROVE_ACTION = "rovara_decision_approve";
 export const DECISION_SLACK_REJECT_ACTION = "rovara_decision_reject";

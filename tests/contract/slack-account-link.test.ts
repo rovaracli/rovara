@@ -1,7 +1,7 @@
 // A signed-in web user links their Slack account (owner decision, 2026-11-05). The link is a verified identity link of the sign-in table (the same items sign-in and
 // the duplicate merge use), made by Sign in with Slack in link mode, bound to the web session that started it. A Slack mention then resolves to the web account's membership.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { OrgId } from "@agentx/contracts";
+import type { OrgId } from "@rovara-code/contracts";
 import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
 import { startAppIdentityLink, unlinkAppIdentity } from "../../packages/broker/src/aws/developer-routes/organization.js";
 import { webRouteAllowed } from "../../packages/broker/src/aws/web-auth.js";

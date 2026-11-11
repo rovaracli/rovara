@@ -1,13 +1,9 @@
 // A CodeHost over the in-memory model. It is a test double for everything that takes the port, and the reference the contract suite is written against:
 // a real adapter must answer what this one answers for the same state.
 import { createHmac, timingSafeEqual } from "node:crypto";
-import {
-  agentXError, CodeHostEventSchema, HostRateLimitError, HostScopeSchema, ChangeRequestUpdateSchema, ChangeRequestInputSchema,
-  type BranchPage, type ChangeRequestDetails, type ChangeRequestFeedback, type ChangeRequestFilesPage, type ChangeRequestInput, type ChangeRequestReconciled,
-  type ChangeRequestRef, type ChangeRequestStatus, type ChangeRequestUpdate, type CodeHost, type CodeHostCapabilities, type CodeHostEvent, type CodeHostEvents, type GitAccess,
-  type GitCredential, type HostAccount, type HostScope, type HostStanding, type MergeMethod, type MergeObservation, type MergeResult, type RawDelivery, type ReadBudget, type RepositoryIdentity,
-  type RepositoryRef,
-} from "@agentx/contracts";
+import { agentXError, type CodeOwnersRead, CodeHostEventSchema, HostRateLimitError, HostScopeSchema, ChangeRequestUpdateSchema, ChangeRequestInputSchema, type BranchPage, type ChangeRequestDetails, type ChangeRequestFeedback, type ChangeRequestFilesPage, type ChangeRequestInput, type ChangeRequestReconciled, type ChangeRequestRef, type ChangeRequestStatus, type ChangeRequestUpdate, type CodeHost, type CodeHostCapabilities, type CodeHostEvent, type CodeHostEvents, type GitAccess, type GitCredential, type HostAccount, type HostScope, type HostStanding, type MergeMethod, type MergeObservation, type MergeResult, type RawDelivery, type ReadBudget, type RepositoryIdentity, type RepositoryRef } from "@rovara-code/contracts";
+import { codeOwnersReadOf } from "../../rovara-code/code-owners.js";
+import { accountKindOfHostType } from "../code-host/neutral-words.js";
 import type { FakeChangeRequest, FakeHostModel } from "./model.js";
 
 export const FAKE_HOST_KIND = "fake";
@@ -79,7 +75,7 @@ export class FakeCodeHost implements CodeHost {
     this.spend(budget);
     const model = this.registered(repository);
     const account = model.accounts.get(person.login);
-    return (account === undefined ? { permission: "none" } : { permission: account.permission, accountType: account.accountType });
+    return (account === undefined ? { permission: "none" } : { permission: account.permission, ...(accountKindOfHostType(account.accountType) === undefined ? {} : { accountType: accountKindOfHostType(account.accountType)! }) });
   }
 
   async issueGitCredential(repository: RepositoryRef, access: GitAccess, scope: HostScope): Promise<GitCredential> {
@@ -143,11 +139,12 @@ export class FakeCodeHost implements CodeHost {
     return ({ branches: all.slice((page - 1) * size, page * size), page, mayHaveMore: all.length > page * size, omittedUnsupported: false });
   }
 
-  async codeOwners(repository: RepositoryRef, branch: string, scope: HostScope): Promise<string | undefined> {
+  async codeOwners(repository: RepositoryRef, branch: string, scope: HostScope): Promise<CodeOwnersRead | undefined> {
     this.checkScope(scope);
     const model = this.registered(repository);
     const files = model.revision(model.headOf(branch)).files;
-    return (files.get(".github/CODEOWNERS") ?? files.get("CODEOWNERS") ?? files.get("docs/CODEOWNERS"));
+    const text = files.get(".github/CODEOWNERS") ?? files.get("CODEOWNERS") ?? files.get("docs/CODEOWNERS");
+    return text === undefined ? undefined : codeOwnersReadOf(text);
   }
 
   async reconcileChangeRequest(input: ChangeRequestInput, scope: HostScope): Promise<ChangeRequestReconciled> {

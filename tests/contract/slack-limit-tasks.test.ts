@@ -1,6 +1,6 @@
 // tests/contract/slack-limit-tasks.test.ts
 // Spec 025 C16 (25b owner decision 10): a member whose AI-tool tasks fill the limit is told so.
-import { slackLimitPk } from "../../packages/contracts/src/org-scoped-keys.js";
+import { slackLimitPk } from "@rovara-code/contracts";
 import { TEST_ORG } from "../support/orgs.js";
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";

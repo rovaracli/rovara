@@ -5,7 +5,7 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ec2WorkerBootScript, type Ec2WorkerBootConfig } from "../../packages/contracts/src/session.js";
+import { ec2WorkerBootScript, type Ec2WorkerBootConfig } from "@rovara-code/contracts";
 import { parseBootFacts } from "../../packages/worker/src/test-services-report.js";
 import { testServicesAdvertisedFeatures } from "../../packages/worker/src/test-services-run.js";
 

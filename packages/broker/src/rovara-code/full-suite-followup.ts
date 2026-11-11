@@ -9,7 +9,7 @@
 //   - one that has waited longer than the run could take reads as expired, never as passed;
 //   - merge stays allowed while pending, on a MEDIUM card (Q3 option a), unless the company chose to block until it passes (option b); a failed follow-up is a HIGH card and merging needs the person to say so again.
 import { GetCommand, PutCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { INDEX_EXPIRY_ATTRIBUTE, agentXError, projectPk, type DecisionRisk, type EvidenceSelectionSchema, type OrgId } from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, agentXError, projectPk, type DecisionRisk, type EvidenceSelectionSchema, type OrgId } from "@rovara-code/contracts";
 import type { z } from "zod";
 import { inertLine } from "./inert-text.js";
 

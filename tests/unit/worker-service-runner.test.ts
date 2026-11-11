@@ -3,8 +3,8 @@
 // the lazy once-per-process worker-start sweep (L5), and Prove's ports filled from a runner (inert when Prove has no dependencies).
 import { readFileSync } from "node:fs";
 import { beforeEach, describe, expect, it } from "vitest";
-import { ServiceCatalogSchema, type CatalogEntry } from "../../packages/contracts/src/service-catalog.js";
-import { TestEnvironmentBodySchema, testEnvDigest, type TestEnvironmentBody } from "@agentx/contracts";
+import { ServiceCatalogSchema, type CatalogEntry } from "@rovara-code/contracts";
+import { TestEnvironmentBodySchema, testEnvDigest, type TestEnvironmentBody } from "@rovara-code/contracts";
 import { proveEnvironment, type ProvePorts } from "../../packages/worker/src/prove.js";
 import { HelperStartError, type HelperFiles, type HelperRequest } from "../../packages/worker/src/service-helpers.js";
 import {
@@ -165,7 +165,7 @@ describe("start and stop", () => {
   it("the runner never imports the sealed sandbox or the DNS helper: its imports are the launcher, the network, Docker and Prove's types", () => {
     const source = readFileSync(new URL("../../packages/worker/src/service-runner.ts", import.meta.url), "utf8");
     const imports = [...source.matchAll(/from "([^"]+)"/gu)].map((match) => match[1]);
-    expect(imports.sort()).toEqual(["./prove.js", "./run-network.js", "./service-helpers.js", "./setup-network.js", "./swebench/containers.js", "@agentx/contracts"]);
+    expect(imports.sort()).toEqual(["./prove.js", "./run-network.js", "./service-helpers.js", "./setup-network.js", "./swebench/containers.js", "@rovara-code/contracts"]);
   });
 });
 

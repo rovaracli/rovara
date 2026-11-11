@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { LESSON_TIER_REASONS } from "@agentx/contracts/web";
+import { LESSON_TIER_REASONS } from "@agentx/cloud-contracts/web";
 import { useLessonsApi, type LessonItem } from "../../../api/lessons.js";
 import { Banner } from "../../../design/Banner.js";
 import { Button } from "../../../design/Button.js";

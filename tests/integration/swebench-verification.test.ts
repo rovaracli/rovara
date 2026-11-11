@@ -9,7 +9,7 @@ import { promisify } from "node:util";
 import { fauxAssistantMessage, fauxToolCall, type FauxResponseStep } from "@earendil-works/pi-ai";
 import type { BashOperations } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it } from "vitest";
-import { agentxPreambleSha256, SwebenchRunResultSchema, type SwebenchRunnerConfig, type SwebenchRunResult } from "../../packages/contracts/src/index.js";
+import { agentxPreambleSha256, SwebenchRunResultSchema, type SwebenchRunnerConfig, type SwebenchRunResult } from "@rovara-code/contracts";
 import { createDefaultPiSessionAdapter, type PiSessionAdapter } from "../../packages/worker/src/pi-session.js";
 import { runSwebenchAgent } from "../../packages/worker/src/swebench/agent.js";
 import type { DockerCli } from "../../packages/worker/src/swebench/containers.js";

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { E2EApiMockFixture } from "../../packages/contracts/src/index.js";
+import type { E2EApiMockFixture } from "@rovara-code/contracts";
 import { MOCK_UNMOCKED_RESPONSE_DIGEST, mockRequestDigest, mockResponseDigest, type MockLedgerLine } from "../../packages/verifier/src/executor/mock-server.js";
 import { MOCK_LEDGER_WITHHELD, bindMockLedgers, parseMockLedger, withholdMockLedgerCredentials, type ParsedMockLedger } from "../../packages/verifier/src/host/mock-ledger.js";
 import { buildMockProofs } from "../../packages/verifier/src/host/mock-proofs.js";

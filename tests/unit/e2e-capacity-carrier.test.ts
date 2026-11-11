@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { canonicalJson } from "../../packages/contracts/src/canonical-json.js";
-import { e2eCaseIdFromIdentity, e2eUpstreamTestIdFromIdentity } from "../../packages/contracts/src/e2e-case-identity.js";
-import { aggregateE2EVerification, E2EExecutionPlanSchema, E2ERoundSchema, E2ERunBindingSchema, E2EQualifiedResultSchema } from "../../packages/contracts/src/e2e-node.js";
-import { buildE2ESharedView } from "../../packages/contracts/src/e2e-view-node.js";
+import { canonicalJson } from "@rovara-code/contracts";
+import { e2eCaseIdFromIdentity, e2eUpstreamTestIdFromIdentity } from "../../packages/cloud-contracts/src/e2e-case-identity.js";
+import { aggregateE2EVerification, E2EExecutionPlanSchema, E2ERoundSchema, E2ERunBindingSchema, E2EQualifiedResultSchema } from "@rovara-code/contracts";
+import { buildE2ESharedView } from "@rovara-code/contracts";
 
 const hash = (value: unknown) => createHash("sha256").update(canonicalJson(value)).digest("hex");
 const d = (char: string) => char.repeat(64);

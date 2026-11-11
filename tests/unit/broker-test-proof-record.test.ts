@@ -1,6 +1,6 @@
 // Track record: the structured read of the test proof for one candidate. A fault or a missing proof is "unavailable", never an empty list of verdicts.
 import { describe, expect, it } from "vitest";
-import type { TestProof } from "../../packages/contracts/src/index.js";
+import type { TestProof } from "@rovara-code/contracts";
 import { readTestProofForCandidate } from "../../packages/broker/src/developer/test-proof-lines.js";
 
 const DIGEST = "a".repeat(64);

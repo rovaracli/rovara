@@ -7,14 +7,7 @@
 // Replaces: serving a v1 set of an HTTP or AWS service by its old hash. A v1 entry of such a service kept no method and path, so it cannot be placed in a v2 set (the converter refuses it, nothing is
 // guessed) and is refused here; such a set is recorded again as v2. A SageMaker Runtime set, the only kind with a caller, converts exactly.
 // Fail closed and bounded as before: a set that is unreadable or does not hash to its pinned digest is not served; a body over 64 KiB is refused; the server listens on one address (loopback by default).
-import {
-  fixtureEntry,
-  fixtureSetDigest,
-  fixtureSetFromV1,
-  type FixtureEntry,
-  type ServiceMockUsage,
-  type TestEnvProdDeny,
-} from "@agentx/contracts";
+import { fixtureEntry, fixtureSetDigest, fixtureSetFromV1, type FixtureEntry, type ServiceMockUsage, type TestEnvProdDeny } from "@rovara-code/contracts";
 import { verifyAdditionSet } from "./additions.js";
 import { FakeServerRefused, startFakeServer } from "./fake-server.js";
 import { FixtureSetRefused, loadFixtureSet } from "./fixture-set.js";

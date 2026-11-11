@@ -2,16 +2,16 @@
 // version 1 task has none, and the verification report says which checks counted.
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
-import { DeveloperTaskViewSchema } from "../../packages/contracts/src/developer-tasks.js";
-import { mergeTrackingKey } from "../../packages/contracts/src/org-scoped-keys.js";
-import { mergeTrackingDecisionDigest } from "../../packages/contracts/src/rovara-code-node.js";
-import type { MergeTrackingItem } from "../../packages/contracts/src/rovara-code.js";
+import { DeveloperTaskViewSchema } from "../../packages/cloud-contracts/src/developer-tasks.js";
+import { mergeTrackingKey } from "@rovara-code/contracts";
+import { mergeTrackingDecisionDigest } from "../../packages/cloud-contracts/src/rovara-code-node.js";
+import type { MergeTrackingItem } from "../../packages/cloud-contracts/src/rovara-code.js";
 import { taskViewForClient } from "../../packages/broker/src/rovara-code/task-view-compat.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
-import { builtinSettingsKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { builtinSettingsKey } from "@rovara-code/contracts";
 import { MAYA, bearerFor, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
 import { loadSlackBroker } from "../support/slack-broker.js";
-import { createCandidateManifest } from "../../packages/contracts/src/task-workflow-node.js";
+import { createCandidateManifest } from "@rovara-code/contracts";
 import { TEST_ORG } from "../support/orgs.js";
 
 const now = "2026-10-25T12:00:00.000Z";

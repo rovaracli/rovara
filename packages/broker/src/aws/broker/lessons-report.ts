@@ -3,7 +3,7 @@
 //   - `learnedLoadReport`: the worker's account of which lessons reached its prompt (valid, moved, dropped as stale or unchecked). It is applied only to the manifest this operation recorded at
 //     dispatch (`operation.learnedLoad`), once per stage and round (`applyLoadReport`), and only for lessons that manifest names.
 //   - `loadedKnowledge`: the references of the rule files and skills a stage loaded (no text). Stored beside the task for the task page.
-import { learnedLoadReportOfProgress, loadedKnowledgeOfProgress } from "@agentx/contracts";
+import { learnedLoadReportOfProgress, loadedKnowledgeOfProgress } from "@rovara-code/contracts";
 import { getItem, type OperationRecord } from "../cancellation.js";
 import { recordLoadedKnowledgeFromProgress } from "../../developer/loaded-knowledge.js";
 import { taskKey, taskPointerKey, type DeveloperTaskPointerRecord } from "../../developer/task-records.js";

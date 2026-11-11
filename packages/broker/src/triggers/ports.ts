@@ -1,7 +1,7 @@
 // What the trigger code asks of the code that is not built yet (Plan 4 Tasks 19 and 26), and what the rest of the broker asks of the trigger code. Each is an interface with
 // a seam in the route dependencies: until the other task lands there is nothing behind it, and the trigger code says so (a schedule is stored as `pending`; a hook that can't
 // be read is a problem a trigger reports) rather than guessing.
-import type { OrgId, TriggerTarget } from "@agentx/contracts";
+import type { OrgId, TriggerTarget } from "@rovara-code/contracts";
 import type { ChainProblem } from "../chains/validate.js";
 
 /** What the approvers of an autonomous run's write ask of the trigger store: who created a trigger, now. */

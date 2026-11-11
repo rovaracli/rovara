@@ -1,6 +1,6 @@
 // Proof and test environment E7: the "full suite pending" follow-up (state, bounds, the pull request's line, the merge card's rule).
 import { describe, expect, it } from "vitest";
-import { agentXError } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
 import {
   FOLLOWUP_DAILY_CAP, FOLLOWUP_MAX_RUN_MS, followupLine, fullSuiteMergeGate, markFollowupRunning, needsFullSuiteFollowup, queueFullSuiteFollowup, readFollowup, recordFollowupResult, type FollowupDeps,
 } from "../../packages/broker/src/rovara-code/full-suite-followup.js";

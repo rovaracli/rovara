@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 import { addedText } from "../../../packages/broker/src/team-record/sources/common.js";
 import { assembleItem } from "../../../packages/broker/src/team-record/item-assembly.js";
-import { RecordEventSchema } from "@agentx/contracts";
+import { RecordEventSchema } from "@agentx/cloud-contracts";
 import { recordSearch } from "../../../packages/broker/src/team-record/query.js";
 import { ORG_A, addSource, caller, githubDraft, world } from "../../support/team-record-core.js";
 

@@ -3,7 +3,7 @@ import { providerKeyParameters } from "./model-keys.js";
 import { openRouterRoutingParameter } from "./openrouter.js";
 import { CfnParameter, Stack, type StackProps, aws_ssm as ssm } from "aws-cdk-lib";
 import type { Construct } from "constructs";
-import { BOOT_STAGE2_SHA256_PARAMETER, CATALOG_REGISTRY_ROOT, WORKER_SETTING_PARAMETERS } from "@agentx/contracts";
+import { BOOT_STAGE2_SHA256_PARAMETER, CATALOG_REGISTRY_ROOT, WORKER_SETTING_PARAMETERS } from "@rovara-code/contracts";
 import { type AgentXNaming, legacyNaming } from "./naming.js";
 
 export interface WorkerSettingsStackProps extends StackProps {

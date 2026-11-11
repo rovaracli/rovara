@@ -2,7 +2,7 @@
 // next turn in the thread must know what the resumed task did. Real Pi turns with the faux model.
 import { fauxAssistantMessage, fauxText, fauxToolCall, type Context } from "@earendil-works/pi-ai";
 import { describe, expect, it, vi } from "vitest";
-import type { ConnectorCatalog } from "../../packages/contracts/src/index.js";
+import type { ConnectorCatalog } from "@rovara-code/contracts";
 import type { OrchestrationApi } from "../../packages/orchestrator/src/orchestration-tools.js";
 import { HANDOFF_TOOL_REASON, createOrchestratorRuntime, runOrchestratorTurn } from "../../packages/orchestrator/src/orchestrator.js";
 import { createHostedSlackRuntime } from "../../packages/slack-service/src/runtime.js";

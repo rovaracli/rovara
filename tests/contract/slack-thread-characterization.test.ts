@@ -1,9 +1,9 @@
 // Pins the thread workspace behaviour that phase 14b must keep for threads that have compute.
-import { slackLimitPk } from "../../packages/contracts/src/org-scoped-keys.js";
+import { slackLimitPk } from "@rovara-code/contracts";
 import { TEST_ORG } from "../support/orgs.js";
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
-import { ConnectorCatalogSchema } from "../../packages/contracts/src/connectors-node.js";
+import { ConnectorCatalogSchema } from "@rovara-code/contracts";
 import {
   GITHUB_LIST_ISSUES, SLACK_CHANNEL, SLACK_TEAM, createBroker, ensureWorkspace, fakeGitHubMcp, finishOperation,
   loadSlackBroker, registerSlackProject, serviceCall,

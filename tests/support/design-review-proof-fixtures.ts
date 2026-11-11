@@ -1,7 +1,8 @@
 // Design review stage, DR12: the plan and workflow the Proof section tests read (the same shapes tests/contract/rovara-code-proof-table.test.ts uses), and a design document.
 import { randomUUID } from "node:crypto";
-import type { PlanDocument } from "../../packages/contracts/src/index.js";
-import { WorkflowSnapshotSchema, createCandidateManifest, createWorkflowSnapshot, type WorkflowSnapshot } from "../../packages/contracts/src/task-workflow-node.js";
+import type { PlanDocument } from "@rovara-code/contracts";
+import { WorkflowSnapshotSchema, createWorkflowSnapshot, type WorkflowSnapshot } from "../../packages/cloud-contracts/src/task-workflow-node.js";
+import { createCandidateManifest } from "@rovara-code/contracts";
 
 const TASK_ID = "8b579b4b-eaa7-4bf2-87bc-6da86b97c9e6";
 const OWNER_ID = "a".repeat(64);

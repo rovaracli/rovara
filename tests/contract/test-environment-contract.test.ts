@@ -1,7 +1,7 @@
 // Proof and evidence E1 (contract) and E10's report shape: the test environment's schema, its cross-field rules, revisions and digest, the less-safe fields and the approval card's risk, the proposal and the Prove report.
 import { describe, expect, it } from "vitest";
-import * as env from "../../packages/contracts/src/test-environment.js";
-import { DecisionCardSchema, decisionFriction } from "../../packages/contracts/src/decision-cards.js";
+import * as env from "@rovara-code/contracts";
+import { DecisionCardSchema, decisionFriction } from "@rovara-code/contracts";
 
 const sha = (letter: string) => letter.repeat(64);
 const cmd = (executable: string, args: string[] = []) => ({ cwd: "service", executable, args, timeoutSeconds: 600 });

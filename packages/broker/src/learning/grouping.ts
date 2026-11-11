@@ -15,10 +15,7 @@ import { prCaptureOff as effectivePrCaptureOff } from "./settings.js";
 // Counts and limits: corrections of the last 30 days, the newest 200; a suggestion holds 2 to 10 corrections from at least 2 tasks; the 21st open suggestion waits (its corrections stay free).
 import { createHash, randomUUID } from "node:crypto";
 import { QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  LEARNING_OPEN_SUGGESTIONS_MAX, LEARNING_SUGGESTION_SOURCES_MAX, LEARNING_SUGGESTION_SOURCES_MIN, LearningCorrectionSchema, LearningRuleSchema, LearningSuggestionSchema, agentXError,
-  projectLearningKey, type LearningCorrection, type LearningRule, type LearningSuggestion, type OrgId,
-} from "@agentx/contracts";
+import { LEARNING_OPEN_SUGGESTIONS_MAX, LEARNING_SUGGESTION_SOURCES_MAX, LEARNING_SUGGESTION_SOURCES_MIN, LearningCorrectionSchema, LearningRuleSchema, LearningSuggestionSchema, agentXError, projectLearningKey, type LearningCorrection, type LearningRule, type LearningSuggestion, type OrgId } from "@rovara-code/contracts";
 import { flushLearningEvents, learningEvents, memberActor, rememberedEvent, suggestedEvent, withdrawnEvent } from "./audit.js";
 import { metricMonth, metricUpdateItem, ensureMetricCurrent, type MetricCounters } from "./metric.js";
 import { visibility } from "./retention.js";

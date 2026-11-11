@@ -1,4 +1,4 @@
-import { AgentXError, agentXError, CSRF_STALE_MESSAGE } from "@agentx/contracts";
+import { AgentXError, agentXError, CSRF_STALE_MESSAGE } from "@rovara-code/contracts";
 import { APP_CSRF_HEADER, appCsrfMatches } from "../developer/app-csrf.js";
 import { authenticateDeveloperSessionId, type DeveloperCaller, type DeveloperRouteDependencies } from "./developer-routes.js";
 import type { AdaptedHttpRequest } from "./lambda.js";
@@ -28,6 +28,8 @@ export function webRouteAllowed(method: string, pathname: string): boolean {
  if (family === "script-tokens") return ((method === "GET" || method === "POST") && relative === "script-tokens") || (method === "DELETE" && /^script-tokens\/stk_[0-9a-z]{20}$/u.test(relative));
  // Trial and billing reads (srv/trial-reads): the trial view is read-only from a browser; the billing paths are under `org/` and their routes answer GET only.
  if (family === "trial") return read && relative === "trial";
+ // Insights (srv/insights-reads): the reads, exact shapes only (the grant is under `org/insights-access`, which the `org` family carries); the routes check who may.
+ if (family === "insights") return read && /^insights(?:\/(?:stuck|shipped|spend|flow))?$/u.test(relative);
  if (!(WEB_ROUTE_FAMILIES as readonly string[]).includes(family)) return false;
  // Lane B: legacy lifecycle writes remain on the token API for compatibility.
  // Cookie callers must use reviewed paths; legacy Slack writes remain held until B34 exposure ships.

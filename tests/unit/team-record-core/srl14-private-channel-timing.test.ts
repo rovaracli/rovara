@@ -3,7 +3,8 @@
 // cannot be read or throws. All four must make the same Slack/table calls in the same order, answer with the identical reply, and take the same time (a fixed floor, driven here by an injected clock and sleep).
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { developerOrgKey, orgMemberKey, orgMetaKey, projectMemberKey, projectMetaKey, slackTeamOrgKey } from "@agentx/contracts";
+import { developerOrgKey, orgMemberKey, orgMetaKey, slackTeamOrgKey } from "@agentx/cloud-contracts";
+import { projectMemberKey, projectMetaKey } from "@rovara-code/contracts";
 import { handleRecordRoute } from "../../../packages/broker/src/team-record/routes.js";
 import { SLACK_ADDS_PER_EDITOR_PER_MINUTE, SLACK_MEMBERSHIP_MARGIN_MS, SLACK_REFUSAL_FLOOR_MS, realRefusalFloor, type SourceWriteContext } from "../../../packages/broker/src/team-record/source-write.js";
 import type { SlackFacts } from "../../../packages/broker/src/team-record/source-places.js";

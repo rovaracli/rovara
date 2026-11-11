@@ -1,11 +1,11 @@
-import { slackBindingPk } from "../../packages/contracts/src/org-scoped-keys.js";
+import { slackBindingPk } from "@rovara-code/contracts";
 import { describe, expect, it, vi } from "vitest";
 import { createTaskAuthorityAdmission } from "../../packages/broker/src/aws/task-authority-admission.js";
 import { evaluateProjectAuthority, readProjectAuthority, type ProjectAuthorityReader } from "../../packages/broker/src/developer/task-project-access.js";
-import { DEFAULT_DEVELOPER_TASK_POLICY, developerTaskPolicy, type SlackChannelBinding } from "@agentx/contracts";
+import { DEFAULT_DEVELOPER_TASK_POLICY, developerTaskPolicy, type SlackChannelBinding } from "@rovara-code/contracts";
 import { TEST_ORG } from "../support/orgs.js";
-import { projectMemberKey, projectRevisionKey } from "../../packages/contracts/src/org-scoped-keys.js";
-import { orgMemberKey } from "../../packages/contracts/src/org-node.js";
+import { projectMemberKey, projectRevisionKey } from "@rovara-code/contracts";
+import { orgMemberKey } from "../../packages/cloud-contracts/src/org-node.js";
 
 const binding = (channelId: string, projectName = "payments-api"): SlackChannelBinding & { pk: string; sk: string } => ({
   pk: slackBindingPk(TEST_ORG, "T0BSHLLUGBD"), sk: `CHANNEL#${channelId}`,

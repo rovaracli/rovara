@@ -17,7 +17,7 @@ import {
   Aws, CfnOutput, Duration, RemovalPolicy, Stack, aws_ec2 as ec2, aws_ecs as ecs, aws_elasticloadbalancingv2 as elbv2, aws_iam as iam, aws_kms as kms, aws_logs as logs,
   aws_route53 as route53, aws_s3 as s3, aws_secretsmanager as secretsmanager, aws_servicediscovery as servicediscovery, custom_resources as cr,
 } from "aws-cdk-lib";
-import { PACKAGE_SERVER_ID_PREFIX } from "@agentx/contracts";
+import { PACKAGE_SERVER_ID_PREFIX } from "@rovara-code/contracts";
 import { Construct } from "constructs";
 import { endpointPolicyDocument, enterpriseHttpsEgress } from "./vpc-endpoints.js";
 

@@ -12,11 +12,12 @@ import { uninstallTicketUpdates } from "../../packages/broker/src/aws/broker/tic
 import { setChainShares } from "../../packages/broker/src/chains/access.js";
 import { STARTER_CHAIN_DEFINITION, type ChainRouteDependencies } from "../../packages/broker/src/chains/routes.js";
 import { taskKey, type DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
-import { BUILTIN_AGENTS, builtinDefaultPin, currentBuiltinVersion } from "../../packages/contracts/src/agent-templates.js";
-import { CHAIN_MAX_STEP_RUNS, CONTEXT_TITLE_MAX, HANDOFF_ITEM_MAX_BYTES, HANDOFF_MAX_BYTES, HANDOFF_MAX_ITEMS, type ChainDefinitionInput, type StepResult } from "../../packages/contracts/src/chains.js";
+import { BUILTIN_AGENTS, builtinDefaultPin, currentBuiltinVersion } from "@rovara-code/contracts";
+import { CHAIN_MAX_STEP_RUNS, CONTEXT_TITLE_MAX, HANDOFF_ITEM_MAX_BYTES, HANDOFF_MAX_BYTES, HANDOFF_MAX_ITEMS, type ChainDefinitionInput, type StepResult } from "@rovara-code/contracts";
 // The package the broker imports, not its source: an error must be an instance of the class the broker tests for.
-import { agentXError } from "@agentx/contracts";
-import { chainKey, chainRunKey, openChainRunKey, projectAiKey, projectMetaKey, runEventSk, stepSk } from "../../packages/contracts/src/org-scoped-keys.js";
+import { agentXError } from "@rovara-code/contracts";
+import { chainKey, chainRunKey, openChainRunKey, projectMetaKey, runEventSk, stepSk } from "@rovara-code/contracts";
+import { projectAiKey } from "../../packages/cloud-contracts/src/org-scoped-keys.js";
 import { INVESTIGATE_THEN_FIX } from "../support/chain-examples.js";
 import { ARJUN, CARL, DANA, MAX, ORG_A, ORG_B, PRIYA, START, STRANGER, VIV, callerOf, decisionBy, setupWorld, type ChainWorld } from "../support/chain-run-world.js";
 import { OMAR, createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";

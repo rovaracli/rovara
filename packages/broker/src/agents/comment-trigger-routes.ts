@@ -2,7 +2,7 @@
 // comment rule. Both are for an org owner or admin only (a maintainer who is not one gets 403), and both are reached with a person's token alone: an agent
 // operation capability (scope `agent-tools`) is not a developer token, so it never gets past authentication (401). `PUT` applies nothing: it records a
 // pending change that an org admin confirms on the confirmation page (`202 { confirmUrl }`).
-import { COMMENT_TRIGGER_COVERAGE_NOTE, CommentTriggerOptOutRequestSchema, CommentTriggerRepositorySchema, agentXError, projectArchivedMessage, type OrgId } from "@agentx/contracts";
+import { COMMENT_TRIGGER_COVERAGE_NOTE, CommentTriggerOptOutRequestSchema, CommentTriggerRepositorySchema, agentXError, projectArchivedMessage, type OrgId } from "@rovara-code/contracts";
 import type { AdaptedHttpRequest } from "../aws/lambda.js";
 import { StatusReply } from "../aws/status-reply.js";
 import { readProjectMeta } from "../developer/project-roles.js";

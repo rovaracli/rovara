@@ -1,7 +1,8 @@
 // Saved project images (SV wiring): the worker's half of a rebuild job. The build is given exactly the job's commits and the worker's OWN view of what else runs here and what is secret; its commands go through the
 // sandbox target; the push login and the result use the job's lease and the preparation's grant; a result is always posted.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { PrepareSavedEnvBuildSchema, TestEnvironmentBodySchema, savedEnvRepositoryName, testEnvDigest, type SavedEnvBuildResult, type WorkerInvocation } from "../../packages/contracts/src/index.js";
+import { PrepareSavedEnvBuildSchema, TestEnvironmentBodySchema, savedEnvRepositoryName, testEnvDigest, type SavedEnvBuildResult } from "@rovara-code/contracts";
+import { type WorkerInvocation } from "@agentx/cloud-contracts";
 import { forbiddenValuesOf, liveTaskSandboxes, rememberCredentials, runSavedEnvRebuild, workspaceBuildSandbox, type SavedEnvRebuildDependencies } from "../../packages/worker/src/saved-env/rebuild.js";
 import type { SavedEnvBuildInput, SavedEnvBuildPorts } from "../../packages/worker/src/saved-env/build.js";
 import type { DockerCli } from "../../packages/worker/src/swebench/containers.js";
@@ -127,6 +128,14 @@ describe("the broker calls", () => {
     expect(seen).toEqual([goodLogin, undefined]);
     expect(posted[0]).toMatchObject({ url: "https://cp.example.test/v1/internal/workspaces/11111111-1111-4111-8111-111111111111/operations/22222222-2222-4222-8222-222222222222/saved-env-push-login", headers: { "x-agentx-callback-capability": CAPABILITY } });
     expect(posted[0]!.body).toEqual({ jobId: "job-1", leaseToken: LEASE });
+  });
+
+  it("takes no login for a registry on the worker's own machine (W0-3 review H1)", async () => {
+    const seen: unknown[] = [];
+    const loopback = (registry: string) => new Response(JSON.stringify({ login: { ...goodLogin, registry, username: "rovara-local" } }), { status: 200 });
+    const { deps } = bench({ answers: [loopback("127.0.0.1:5000"), loopback("localhost:5001")], during: async (ports) => { seen.push(await ports.pushSession({ repository: REPOSITORY })); seen.push(await ports.pushSession({ repository: REPOSITORY })); } });
+    await runSavedEnvRebuild(deps);
+    expect(seen).toEqual([undefined, undefined]);
   });
 
   it("gets no login when the broker refuses or cannot be reached", async () => {

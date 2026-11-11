@@ -3,11 +3,12 @@
 // plain text for every reader, never HTML. Version 1 tasks show neither field, and a client that does not ask for the version 2 view never receives them.
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it, vi } from "vitest";
-import { VerificationReportSchema, redactText } from "../../packages/contracts/src/index.js";
-import { DeveloperTaskViewSchema } from "../../packages/contracts/src/developer-tasks.js";
-import { codingProgram } from "../../packages/contracts/src/agent-recipe-node.js";
-import { builtinRecipe } from "../../packages/contracts/src/agent-templates.js";
-import { WorkflowSnapshotSchema, blockWorkflow, createCandidateManifest, createWorkflowSnapshot, decideWorkflow, recordWorkflowVerification, returnWorkflowToImplementation, submitWorkflowArtifact, submitPlanCritique, submitWorkflowReview, type WorkflowProgram, type WorkflowSnapshot } from "../../packages/contracts/src/task-workflow-node.js";
+import { VerificationReportSchema, redactText } from "@rovara-code/contracts";
+import { DeveloperTaskViewSchema } from "../../packages/cloud-contracts/src/developer-tasks.js";
+import { codingProgram } from "@rovara-code/contracts";
+import { builtinRecipe } from "@rovara-code/contracts";
+import { WorkflowSnapshotSchema, blockWorkflow, createWorkflowSnapshot, decideWorkflow, recordWorkflowVerification, returnWorkflowToImplementation, submitWorkflowArtifact, submitPlanCritique, submitWorkflowReview, type WorkflowSnapshot } from "../../packages/cloud-contracts/src/task-workflow-node.js";
+import { createCandidateManifest, type WorkflowProgram } from "@rovara-code/contracts";
 import {
   IMPLEMENT_TEST_RULE, TEST_PATH_PATTERNS, isTestPath, verificationReport, withTestRule, workflowReviewRound,
 } from "../../packages/broker/src/rovara-code/verification-report.js";
@@ -20,10 +21,10 @@ import { MAYA, bearerFor, createSingleAnswerPlanBroker } from "../support/develo
 import { resumeAfterRunLimitApproval, startTaskWorkflowImplementationFromSystem } from "../../packages/broker/src/aws/developer-tasks.js";
 
 import { loadSlackBroker } from "../support/slack-broker.js";
-import { runLimitBlockText } from "../../packages/contracts/src/spend.js";
-import { taskGraphDigest } from "../../packages/contracts/src/workflow-dependencies-node.js";
-import { DEFAULT_AGENT_GUARDRAILS } from "../../packages/contracts/src/agent-guardrails.js";
-import { agentGuardrailsKey, builtinSettingsKey, orgProjectCatalogKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { runLimitBlockText } from "@rovara-code/contracts";
+import { taskGraphDigest } from "@rovara-code/contracts";
+import { DEFAULT_AGENT_GUARDRAILS } from "@rovara-code/contracts";
+import { agentGuardrailsKey, builtinSettingsKey, orgProjectCatalogKey } from "@rovara-code/contracts";
 import { FakeProjectMembers } from "../support/fake-project-members.js";
 import { planAnswer, planDocument, turnPlanIntoMarkdown } from "../support/plan-documents.js";
 import { TEST_ORG } from "../support/orgs.js";

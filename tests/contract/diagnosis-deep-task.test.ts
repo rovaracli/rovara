@@ -3,10 +3,8 @@
 // diagnosis read again. The unit tests of each piece are in diagnosis-deep.test.ts and diagnosis-worker.test.ts.
 import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  DEFAULT_PLANNING_LIMIT_USD, DIAGNOSIS_DEEP_PREAMBLE, DIAGNOSIS_DEEP_TITLE, ErrorRefSchema, WorkerInvocationSchema, diagnosisKey, orgGithubInstallationKey, githubInstallationKey,
-  ModelSourceSchema, modelSourcesKey, orgProjectCatalogKey, projectMetaKey, sourceAlias, projectRevisionKey, setupDraftKey, type DiagnosisRecord, type GithubInstallationRecord,
-} from "../../packages/contracts/src/index.js";
+import { DEFAULT_PLANNING_LIMIT_USD, DIAGNOSIS_DEEP_PREAMBLE, DIAGNOSIS_DEEP_TITLE, ErrorRefSchema, diagnosisKey, ModelSourceSchema, modelSourcesKey, orgProjectCatalogKey, projectMetaKey, sourceAlias, projectRevisionKey, setupDraftKey, type DiagnosisRecord } from "@rovara-code/contracts";
+import { WorkerInvocationSchema, orgGithubInstallationKey, githubInstallationKey, type GithubInstallationRecord } from "@agentx/cloud-contracts";
 import { SETUP_DRAFT_PREAMBLE } from "../../packages/broker/src/rovara-code/setup-draft.js";
 import { admitDiagnosis, settleDiagnosis } from "../../packages/broker/src/diagnosis/store.js";
 import { heldPreparationOptions } from "../../packages/broker/src/aws/developer-tasks/continue.js";

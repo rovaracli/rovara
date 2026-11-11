@@ -1,6 +1,6 @@
 import { Link, useSearchParams } from "react-router";
 import { SettingsNote } from "./SettingsNote.js";
-import { PROJECT_PERMISSIONS, type ProjectPermission } from "@agentx/contracts/web";
+import { PROJECT_PERMISSIONS, type ProjectPermission } from "@agentx/cloud-contracts/web";
 import { PageHeader } from "../../design/PageHeader.js";
 const permissionWords: Record<ProjectPermission, string> = { view: "View project work", start_tasks: "Start tasks", edit_settings: "Edit project settings", manage_members: "Manage project members", archive: "Archive and restore the project", setup_check: "Run setup checks", manage_agents: "Manage project agents", approve_spend: "Approve eligible spending requests", approve_writes: "Approve eligible write requests", view_spend: "View project spending" };
 export function RolesScreen() {

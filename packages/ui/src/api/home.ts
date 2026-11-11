@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { HomeResponseReaderSchema, HomeCardSchema, HomeCardIdSchema, HomeDismissResponseReaderSchema, SessionIdSchema, type HomeCardReaderSchema } from "@agentx/contracts/web";
+import { HomeResponseReaderSchema, HomeCardSchema, HomeCardIdSchema, HomeDismissResponseReaderSchema, SessionIdSchema, type HomeCardReaderSchema } from "@agentx/cloud-contracts/web";
 import { useAppHost, type AppHost } from "../host.js";
 import { createApiClient } from "./client.js";
 import { ApiError } from "./errors.js";

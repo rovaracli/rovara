@@ -1,6 +1,7 @@
 // The model picker and the company model policy read a forbidden model through every Bedrock geography, and fail closed on a prefix nobody listed.
 import { describe, expect, it } from "vitest";
-import { AgentGuardrailsSchema, AgentGuardrailsWriteSchema, DEFAULT_AGENT_GUARDRAILS, forbiddenModelMatcher, agentGuardrailsKey, developerOrgKey, orgMemberKey, orgMetaKey, type ModelIdentifier } from "@agentx/contracts";
+import { AgentGuardrailsSchema, AgentGuardrailsWriteSchema, DEFAULT_AGENT_GUARDRAILS, forbiddenModelMatcher, agentGuardrailsKey, type ModelIdentifier } from "@rovara-code/contracts";
+import { developerOrgKey, orgMemberKey, orgMetaKey } from "@agentx/cloud-contracts";
 import type { AwsBrokerInput } from "../../packages/broker/src/aws/broker.js";
 import { readGuardrails } from "../../packages/broker/src/agents/guardrails.js";
 import { getModels } from "../../packages/broker/src/agents/models-route.js";

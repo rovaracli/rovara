@@ -3,8 +3,8 @@
 import { describe, expect, it } from "vitest";
 import { clearOrgLearning, eraseLearningSubject, resumeOpenLearningWalks } from "../../packages/broker/src/learning/cleanup.js";
 import { WALK_INDEX_PK, WALK_INDEX_STALE_MS, runLearningWalk, clearProjectPartitionJob } from "../../packages/broker/src/learning/walk.js";
-import { learningWalkKey, projectLearningKey } from "../../packages/contracts/src/org-scoped-keys.js";
-import type { OrgId } from "../../packages/contracts/src/org.js";
+import { learningWalkKey, projectLearningKey } from "@rovara-code/contracts";
+import type { OrgId } from "@rovara-code/contracts";
 import { NOW_MS, ORG_B, PROJECT_CREATED, epochSeconds, iso, makeWorld, seedCorrection, seedItem, seedProject, type World } from "../support/learning-world.js";
 import { TEST_ORG } from "../support/orgs.js";
 

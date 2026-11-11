@@ -5,17 +5,10 @@ import { fixtureActor } from "../support/money-authority.js";
 // transaction that records the action, so the action and its audit item commit together or not at all.
 import { createHash, randomUUID } from "node:crypto";
 import { beforeAll, afterEach, describe, expect, it, vi } from "vitest";
-import {
-  AUDIT_FLUSH_DEADLINE_MS,
-  auditEventId,
-  auditPullRequestId,
-  budgetSyncedKey,
-  orgSettingsKey,
-  WORKFLOW_BLOCK_REASONS,
-  type AuditEventInput,
-} from "../../packages/contracts/src/index.js";
+import { AUDIT_FLUSH_DEADLINE_MS, auditEventId, auditPullRequestId, budgetSyncedKey, orgSettingsKey, WORKFLOW_BLOCK_REASONS, type AuditEventInput } from "@agentx/cloud-contracts";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { WorkflowSnapshotSchema, createCandidateManifest, createWorkflowSnapshot, type WorkflowSnapshot } from "../../packages/contracts/src/task-workflow-node.js";
+import { WorkflowSnapshotSchema, createWorkflowSnapshot, type WorkflowSnapshot } from "../../packages/cloud-contracts/src/task-workflow-node.js";
+import { createCandidateManifest } from "@rovara-code/contracts";
 import { githubWorkflowPullRequestKey, taskKey } from "../../packages/broker/src/developer/task-records.js";
 import { reconcileTaskPullRequestFeedback } from "../../packages/broker/src/aws/github-webhooks.js";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
@@ -31,7 +24,7 @@ import { fakeModelAccess } from "../support/fake-model-access.js";
 import { finishPlanningWithMarkdown } from "../support/plan-documents.js";
 import { TEST_ENV, TEST_ORG } from "../support/orgs.js";
 import { SLACK_CHANNEL, SLACK_TEAM, call, createBroker, ensureWorkspace, loadSlackBroker, markReady, registerSlackProject, serviceCall } from "../support/slack-broker.js";
-import { singleOrgIdForEnv } from "../../packages/contracts/src/index.js";
+import { singleOrgIdForEnv } from "@rovara-code/contracts";
 
 // The first import of the broker module transforms its whole dependency graph, which can pass vitest's 10 s hook default.
 beforeAll(loadSlackBroker, 60_000);

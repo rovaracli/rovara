@@ -4,11 +4,8 @@
 // an action the caller may take, and never carries a ticket. Every read is bounded; a source that throws or is slow is skipped and logged with fixed words, never with what it said.
 import { createHash } from "node:crypto";
 import { PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  HOME_CARDS_MAX, HOME_DISMISSIBLE_KINDS, HOME_DISMISS_DAYS, HOME_FAILURE_DAYS, HOME_NOT_DISMISSIBLE, HOME_REASON_MAX, HomeCardIdSchema, HomeCardSchema, INDEX_EXPIRY_ATTRIBUTE,
-  OrgRoleSchema, SessionIdSchema, TASK_STATUS_WORDS, TaskStatusSchema, agentSessionKey, budgetPauseNext, budgetScopeName, sessionTaskStatus, taskStatusText, agentXError, homeDismissedKey, mySessionsKey, openSpendRequestsKey, orgMemberKey, projectAllows, sessionLink,
-  type AgentSessionRecord, type HomeCard, type HomeCardKind, type HomeDismissResponse, type HomeResponse, type OrgRole,
-} from "@agentx/contracts";
+import { HOME_CARDS_MAX, HOME_FAILURE_DAYS, INDEX_EXPIRY_ATTRIBUTE, SessionIdSchema, TASK_STATUS_WORDS, TaskStatusSchema, agentSessionKey, budgetPauseNext, budgetScopeName, sessionTaskStatus, taskStatusText, agentXError, homeDismissedKey, mySessionsKey, projectAllows, sessionLink, type AgentSessionRecord } from "@rovara-code/contracts";
+import { HOME_DISMISSIBLE_KINDS, HOME_DISMISS_DAYS, HOME_NOT_DISMISSIBLE, HOME_REASON_MAX, HomeCardIdSchema, HomeCardSchema, OrgRoleSchema, openSpendRequestsKey, orgMemberKey, type HomeCard, type HomeCardKind, type HomeDismissResponse, type HomeResponse, type OrgRole } from "@agentx/cloud-contracts";
 import { changeTitleOf } from "../agents/approval-decide-kind.js";
 import type { ApprovalCaller, ApprovalDependencies } from "../agents/approvals.js";
 import { listApprovalsFor, mayDecideApproval, shownText } from "../agents/approvals.js";

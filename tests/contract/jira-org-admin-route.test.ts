@@ -3,7 +3,7 @@
 import { describe, expect, it } from "vitest";
 import { OrgConnectionStore, readConnectionSecret } from "../../packages/broker/src/connections/store.js";
 import { OrgSecrets } from "../../packages/broker/src/connections/org-secrets.js";
-import { connectionKey } from "@agentx/contracts";
+import { connectionKey } from "@rovara-code/contracts";
 import { MAYA, OMAR } from "../support/developer-task-broker.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { FAKE_CONNECTOR_ROLE_ARN, FakeOrgSecrets } from "../support/fake-org-secrets.js";

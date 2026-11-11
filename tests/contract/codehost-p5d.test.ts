@@ -3,8 +3,9 @@
 // sentence, and a step the port cannot express yet (left for P6) is refused on any host that is not GitHub with its own fixed sentence. Nothing is asked of GitHub for a record that names
 // another host.
 import { describe, expect, it, vi } from "vitest";
-import { editionPolicy } from "../../packages/contracts/src/index.js";
-import { createCandidateManifest, createWorkflowSnapshot } from "../../packages/contracts/src/index.js";
+import { editionPolicy } from "@agentx/cloud-contracts";
+import { createCandidateManifest } from "@rovara-code/contracts";
+import { createWorkflowSnapshot } from "@agentx/cloud-contracts";
 import { taskOwnerKey } from "../../packages/broker/src/developer/task-records.js";
 import { e2ePublicationContext } from "../../packages/broker/src/aws/developer-tasks/publication-context.js";
 import { answerWithCiChecks } from "../../packages/broker/src/aws/broker/plan-answers.js";

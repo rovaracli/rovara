@@ -2,7 +2,7 @@
 // Every write is sent once from the browser session (`retry: "never"`); the policy's 202 (turning it off waits for a different admin) is an answer of its own, so it is read with `sendAnswer`.
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { KnownFailingMarksAnswerReaderSchema, KnownFailingPolicyAnswerReaderSchema, KnownFailingPolicyBodySchema, KnownFailingPolicyStateReaderSchema, KnownFailingUndoAnswerReaderSchema, KnownFailingUndoBodySchema, ProjectOverviewProjectSchema, type KnownFailingUndoBody } from "@agentx/contracts/web";
+import { KnownFailingMarksAnswerReaderSchema, KnownFailingPolicyAnswerReaderSchema, KnownFailingPolicyBodySchema, KnownFailingPolicyStateReaderSchema, KnownFailingUndoAnswerReaderSchema, KnownFailingUndoBodySchema, ProjectOverviewProjectSchema, type KnownFailingUndoBody } from "@agentx/cloud-contracts/web";
 import { useAppHost, type AppHost } from "../host.js";
 import { createApiClient } from "./client.js";
 

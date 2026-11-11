@@ -1,18 +1,7 @@
 // "How we work" (H2): `GET` and `PUT /v1/app/projects/{p}/playbook`. Anyone who can see the project reads it; the PUT needs `edit_settings` (a maintainer), as the project's code
 // settings do, and the revision the caller read. The project is found through `projectFor`, so another org's project and one the caller has no role in answer the same 404.
-import {
-  ProjectPlaybookBodySchema,
-  agentXError,
-  featureEnabled,
-  projectAllows,
-  type AgentId,
-  type EditionPolicy,
-  type HowWeWorkView,
-  type OrgId,
-  type ProjectPlaybook,
-  type ProjectPlaybookResponse,
-  type ProjectRole,
-} from "@agentx/contracts";
+import { ProjectPlaybookBodySchema, agentXError, projectAllows, type AgentId, type HowWeWorkView, type OrgId, type ProjectPlaybook, type ProjectPlaybookResponse, type ProjectRole } from "@rovara-code/contracts";
+import { featureEnabled, type EditionPolicy } from "@agentx/cloud-contracts";
 import type { ApprovalDependencies } from "../agents/approvals.js";
 import { assertStoredVersionModelsResolvable, pointerModelGuards } from "../agents/changes.js";
 import type { AuditRuntime, TransactItem } from "../audit/outbox.js";

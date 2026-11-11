@@ -1,6 +1,6 @@
 import {expect,it} from "vitest";
 import {pinnedTaskModelApproval} from "../../packages/broker/src/model-selection/task-proof.js";
-import {EMPTY_RECIPE,recipeDigest} from "../../packages/contracts/src/index.js";
+import { EMPTY_RECIPE, recipeDigest } from "@rovara-code/contracts";
 import {processApprovalRecipeDigest} from "../../packages/broker/src/model-selection/approval-proof.js";
 const orgId="org_aaaaaaaaaaaaaaaaaaaa",agentId="agt_aaaaaaaaaaaaaaaaaaaa",project="private-project",registeredAt="2026-10-01T00:00:00.000Z";
 const model={provider:"anthropic",modelId:"claude-sonnet-4"};

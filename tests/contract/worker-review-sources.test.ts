@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
-import type { ContextToolCatalog } from "../../packages/contracts/src/index.js";
+import type { ContextToolCatalog } from "@rovara-code/contracts";
 import { createContextTools } from "../../packages/worker/src/context-sources/bridge.js";
 import { runWorkflowReviews } from "../../packages/worker/src/verification/review.js";
 import type { PiSessionAdapter, PiSessionInput } from "../../packages/worker/src/pi-session.js";

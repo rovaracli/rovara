@@ -8,7 +8,8 @@
 //   - REJECTING is the approver's refusal (a different admin; a repository proposal: any admin). CANCELLING is the proposer withdrawing their own. Neither needs a recent sign-in: a safety action stays easy.
 //   - A version is immutable and never rewritten; the head moves one number at a time. The approver pins the proposal's digest, so what they saw is what is approved.
 // Nothing here reads a host or writes a file: the repository side is `sync.ts`. Rule text is data: it is folded, screened for secrets and held to the limits on the way in (`rules.ts`) and is never run.
-import { COMPANY_RULES_NOTE_MAX, COMPANY_RULES_PROPOSAL_TTL_MS, OrgIdSchema, agentXError, redactText, type AuditEventInput, type OrgId } from "@agentx/contracts";
+import { COMPANY_RULES_NOTE_MAX, COMPANY_RULES_PROPOSAL_TTL_MS, type AuditEventInput } from "@agentx/cloud-contracts";
+import { OrgIdSchema, agentXError, redactText, type OrgId } from "@rovara-code/contracts";
 import { auditCompanyRules, auditOccurrence, type CompanyRulesAuditAction } from "../audit/events.js";
 import { foldedRuleText } from "../instructions/standing-block.js";
 import { decideSecondPersonApproval } from "../org/second-person-approval.js";

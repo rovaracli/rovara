@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
-import { SAML_CLOCK_SKEW_SECONDS, SAML_RESPONSE_MAX_BYTES, samlSeenKey } from "@agentx/contracts";
+import { SAML_CLOCK_SKEW_SECONDS, SAML_RESPONSE_MAX_BYTES, samlSeenKey } from "@agentx/cloud-contracts";
 import { claimAssertion, dynamoSamlReplayStore, samlAuthorizeUrl, verifySamlResponse, type SamlReplayStore, type VerifiedSamlAssertion } from "../../packages/broker/src/developer/saml.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { TEST_ORG } from "../support/orgs.js";

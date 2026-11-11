@@ -1,7 +1,7 @@
 import { useContext, useMemo, useState } from "react";
 import { QueryClientContext } from "@tanstack/react-query";
 import { Link } from "react-router";
-import { DECISION_FOCUS_PARAM } from "@agentx/contracts/web";
+import { DECISION_FOCUS_PARAM } from "@agentx/cloud-contracts/web";
 import { useAppHost } from "../../host.js";
 import { createDesignReviewApi } from "../../api/design-review.js";
 import { ApiError } from "../../api/errors.js";

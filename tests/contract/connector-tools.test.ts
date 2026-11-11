@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { ConnectorCallRequest, ConnectorCatalog } from "../../packages/contracts/src/index.js";
+import type { ConnectorCallRequest, ConnectorCatalog } from "@rovara-code/contracts";
 import { createConnectorTools } from "../../packages/orchestrator/src/connector-tools.js";
 import { capabilitiesManifest } from "../../packages/orchestrator/src/manifest.js";
 import { ORCHESTRATION_TOOL_NAMES, assertOrchestrationOnly } from "../../packages/orchestrator/src/orchestration-tools.js";

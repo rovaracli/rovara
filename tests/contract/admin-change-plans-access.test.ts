@@ -1,6 +1,6 @@
 // tests/contract/admin-change-plans-access.test.ts
 // Spec 025 E7 to E10, E19: stopping work, granting and revoking access, ending a sign-in, and the limits.
-import { slackLimitPk } from "../../packages/contracts/src/org-scoped-keys.js";
+import { slackLimitPk } from "@rovara-code/contracts";
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { planChange, stateHash, type PlanDependencies } from "../../packages/broker/src/aws/admin-change-plans.js";
@@ -9,8 +9,9 @@ import { emailIndexKey } from "../../packages/broker/src/developer/store.js";
 import { createAdminReadBroker } from "../support/admin-read-broker.js";
 import { MAYA } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
-import { orgSettingsKey, projectMemberKey } from "../../packages/contracts/src/org-scoped-keys.js";
-import { orgLimitKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { orgSettingsKey } from "../../packages/cloud-contracts/src/org-scoped-keys.js";
+import { projectMemberKey } from "@rovara-code/contracts";
+import { orgLimitKey } from "@rovara-code/contracts";
 
 const admin = { issuer: "https://identity.example.test", subject: "admin-subject", ownerKey: "", orgId: TEST_ORG, isAdministrator: true, claims: {} };
 async function harness() {

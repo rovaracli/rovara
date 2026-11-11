@@ -1,7 +1,8 @@
 import type {DeveloperTaskRecord} from "../../packages/broker/src/developer/task-records.js";
 import {beforeAll,expect,it} from "vitest";
 import {randomUUID} from "node:crypto";
-import {orgRemovedKey,orgBanKey,developerOrgKey,projectMemberKey,slackBindingKey} from "@agentx/contracts";
+import { orgRemovedKey, orgBanKey, developerOrgKey } from "@agentx/cloud-contracts";
+import { projectMemberKey, slackBindingKey } from "@rovara-code/contracts";
 import {developerIdForSlackUser} from "../../packages/broker/src/aws/admin-actions.js";
 import {readTurnActorChecks} from "../../packages/broker/src/model-selection/turn-authority.js";
 import {call,createAuditedSlackBroker,loadSlackBroker,registerSlackProject,ensureWorkspace,markReady,serviceCall,SLACK_TEAM,SLACK_CHANNEL} from "../support/slack-broker.js";

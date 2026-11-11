@@ -1,6 +1,6 @@
 // Test services, slice 1 T3 (design test-services.md 9.1, "exact words"): the Dependencies section of the approve card, in plain sentences. One line per dependency: what it is, what backs it, why Rovara thinks the project
 // needs it, and whether a second person must approve it. Built by the broker from the stored proposal, never from the asker's words; text that came from a repository (a path) goes through `shownLine` and the redactor.
-import { formatCommandLine, redactText, type TestEnvDependency } from "@agentx/contracts";
+import { formatCommandLine, redactText, type TestEnvDependency } from "@rovara-code/contracts";
 import { shownLine } from "../org/shown-line.js";
 import { SEED_COMMAND_DISPLAY_MAX, seedEnvWords } from "./refused-command.js";
 

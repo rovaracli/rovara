@@ -1,4 +1,4 @@
-import { AppMeResponseSchema, AppNavSchema, HomeResponseSchema, type AppMeResponse, type AppNav } from "@agentx/contracts/web";
+import { AppMeResponseSchema, AppNavSchema, HomeResponseSchema, type AppMeResponse, type AppNav } from "@agentx/cloud-contracts/web";
 export const FIXTURE_ORG = "org_aaaaaaaaaaaaaaaaaaaa", FIXTURE_DEVELOPER = "a".repeat(64), FIXTURE_SESSION = "11111111-1111-4111-8111-111111111111";
 export function navFixture(overrides: Partial<AppNav> = {}): AppNav {
  return AppNavSchema.parse({ me: { developerId: FIXTURE_DEVELOPER, name: "Priya", orgRole: "member" }, org: { name: "Acme" }, homeCount: 3, projects: [{ name: "payments", agents: [{ agentId: "agt_aaaaaaaaaaaaaaaaaaaa", name: "Payments expert", running: 1, needsYou: 1 }] }], shared: { agents: [], sessions: [] }, features: { localAgents: true, usage: false, admin: false, chains: false, notices: false, describe: false }, ...overrides });

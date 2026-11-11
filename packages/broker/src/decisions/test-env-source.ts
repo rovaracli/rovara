@@ -10,7 +10,7 @@
 // Nothing here decides anything about authority: a card is a projection, the performer calls the real function, and that function checks the caller's live authority again.
 import { createHash } from "node:crypto";
 import { QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { projectPk, testEnvApprovalRisk, testEnvDigest, testEnvIsProved, testEnvLessSafeChanges, type OrgId, type TestEnvironmentBody } from "@agentx/contracts";
+import { projectPk, testEnvApprovalRisk, testEnvDigest, testEnvIsProved, testEnvLessSafeChanges, type OrgId, type TestEnvironmentBody } from "@rovara-code/contracts";
 import { tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../developer/task-records.js";
 import { testEnvChangeLines } from "../org/test-env-diff.js";
 import { proposalNeedsFreshSignIn, proposalSeedTrust, readApprovedTestEnvironment, readProposal, readProposalSources, readTestEnvProveReport, type TestEnvDeps } from "../org/test-environment.js";

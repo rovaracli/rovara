@@ -1,4 +1,4 @@
-import { redactText } from "@agentx/contracts";
+import { redactText } from "@rovara-code/contracts";
 import type { TaskPeopleView } from "../developer/task-people.js";
 import { escapeHtml } from "./web-session.js";
 

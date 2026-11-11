@@ -10,11 +10,11 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createStepApproval, expireApprovals, registerApprovalSubjectHandler, registerApproverRule } from "../../packages/broker/src/agents/approvals.js";
 import { registerChainRunner } from "../../packages/broker/src/chains/index.js";
 import { ChainStore } from "../../packages/broker/src/chains/store.js";
-import { projectMemberKey } from "../../packages/contracts/src/org-scoped-keys.js";
-import { GATE_DEFAULT_TIMEOUT_HOURS, type ChainDefinitionInput } from "../../packages/contracts/src/chains.js";
-import { openChainRunKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { projectMemberKey } from "@rovara-code/contracts";
+import { GATE_DEFAULT_TIMEOUT_HOURS, type ChainDefinitionInput } from "@rovara-code/contracts";
+import { openChainRunKey } from "@rovara-code/contracts";
 import { createAgentXMcpServer, type ControlPlaneClient, type ToolContext } from "../../packages/mcp/src/index.js";
-import { agentXError } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
 import { INVESTIGATE_THEN_FIX } from "../support/chain-examples.js";
 import { ARJUN, CARL, CELL, DANA, MAX, ORG_A, PRIYA, STRANGER, VIV, callerOf, disposeGateWorlds, setupGateWorld, type GateWorld } from "../support/chain-gate-world.js";
 

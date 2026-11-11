@@ -6,9 +6,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import {
-  PROJECT_REVISION_SK_PREFIX, agentXError, projectRevisionKey, githubAuditKey, githubInstallationEverBoundKey, githubInstallationKey, orgGithubInstallationKey, projectPk, type GithubInstallationRecord, type OrgId,
-} from "@agentx/contracts";
+import { PROJECT_REVISION_SK_PREFIX, agentXError, projectRevisionKey, projectPk, type OrgId } from "@rovara-code/contracts";
+import { githubAuditKey, githubInstallationEverBoundKey, githubInstallationKey, orgGithubInstallationKey, type GithubInstallationRecord } from "@agentx/cloud-contracts";
 import { developerTokenKey, saveDeveloperEnvironment } from "../../packages/cli/src/developer/config.js";
 import { executeCli } from "../../packages/cli/src/main.js";
 import { InMemoryTokenStore } from "../../packages/cli/src/token-store.js";
@@ -806,10 +805,10 @@ describe("Task 16 fold-ins: the registration check asks GitHub afresh on cloud",
 
   it("a private install keeps the cached lookup: no extra GitHub call per check", async () => {
     const w = await world({ cloud: false });
-    await w.provider.checkRepository(reference, { system: "private-install" });
+    await w.provider.checkRepository(reference, { system: "install" });
     const lookups = () => w.github.requests.filter((request) => request.endsWith("/installation")).length;
     const before = lookups();
-    await w.provider.checkRepository(reference, { system: "private-install" });
+    await w.provider.checkRepository(reference, { system: "install" });
     expect(lookups()).toBe(before);
   });
 });

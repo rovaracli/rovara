@@ -7,13 +7,7 @@
 // the input, the effect, a token or an error's own text.
 import { randomUUID } from "node:crypto";
 import { GetCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  ADMIN_CHANGE_APPLYING_STALE_MS, ADMIN_CHANGE_EFFECT_MAX, ADMIN_CHANGE_ENDED, ADMIN_CHANGE_UNEXPECTED_MESSAGE, adminChangeFailedMessage, SlackChannelIdSchema, ADMIN_LIST_MAX, ADMIN_CHANGE_TTL_MS, AdminChangeOutcomeSchema, AdminChangePendingRecordSchema, AgentXError, AgentXErrorCodeSchema,
-  ApplyAdminChangeRequestSchema, ConfigChangeOutcomeRequestSchema, DeclineAdminChangeRequestSchema, RecordConfigChangeRequestSchema, SECRET_CONFIG_ERROR_MESSAGE, SECRET_CONFIG_KEYS, INDEX_EXPIRY_ATTRIBUTE, ProposeAdminChangeRequestSchema, SlackUserIdSchema,
-  adminChangeItemExpiresAt, adminChangeKey, adminChangeRequestKey, agentXError, outcomeOfStatus, redactSecrets, redactText,
-  type AdminChangeAuditRecord, type AdminChangeInput, type AdminChangePressEvent, type AdminChangeStatus, type AdminChangeView, type AdminMeResponse, type ConfirmationMethod,
-  type PendingChange, type RefusedAttemptReason,
-} from "@agentx/contracts";
+import { ADMIN_CHANGE_APPLYING_STALE_MS, ADMIN_CHANGE_EFFECT_MAX, ADMIN_CHANGE_ENDED, ADMIN_CHANGE_UNEXPECTED_MESSAGE, adminChangeFailedMessage, SlackChannelIdSchema, ADMIN_LIST_MAX, ADMIN_CHANGE_TTL_MS, AdminChangeOutcomeSchema, AdminChangePendingRecordSchema, AgentXError, AgentXErrorCodeSchema, ApplyAdminChangeRequestSchema, ConfigChangeOutcomeRequestSchema, DeclineAdminChangeRequestSchema, RecordConfigChangeRequestSchema, SECRET_CONFIG_ERROR_MESSAGE, SECRET_CONFIG_KEYS, INDEX_EXPIRY_ATTRIBUTE, ProposeAdminChangeRequestSchema, SlackUserIdSchema, adminChangeItemExpiresAt, adminChangeKey, adminChangeRequestKey, agentXError, outcomeOfStatus, redactSecrets, redactText, type AdminChangeAuditRecord, type AdminChangeInput, type AdminChangePressEvent, type AdminChangeStatus, type AdminChangeView, type AdminMeResponse, type ConfirmationMethod, type PendingChange, type RefusedAttemptReason } from "@rovara-code/contracts";
 import type { AuthenticatedIdentity } from "../auth.js";
 import { auditStepItem, listAudit, logChangeStep, proposalItem, readAudit, recordRefusedAttempt, writeProposal, type AuditStep, type AuditStore, type TransactItem } from "./admin-change-audit.js";
 import { planChange, stateHash, type ChangePlan, type PlanDependencies } from "./admin-change-plans.js";
@@ -37,7 +31,7 @@ export interface AdminChangeDependencies {
   newId: () => string;
   log: (entry: Record<string, unknown>) => void;
 }
-export type { PendingChange } from "@agentx/contracts";
+export type { PendingChange } from "@rovara-code/contracts";
 /** `unavailable`: nothing applied and the change is still pending, so the admin may press again. */
 export type PressOutcome = "applied" | "declined" | "refused" | "expired" | "not_pending" | "stale" | "failed" | "unavailable" | "not_found";
 type Answer = { status: number; body: unknown };

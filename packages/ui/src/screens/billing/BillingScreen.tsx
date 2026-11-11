@@ -38,7 +38,7 @@ export function BillingScreen() {
    {state.pastDue !== null && <div role="alert" className="rv-tb-alert"><p><strong>A payment of <MinorMoney minor={state.pastDue.amountMinor} currency={state.pastDue.currency} /> failed on {dayText(state.pastDue.since)}.</strong></p>
     {state.pastDue.retryAt !== null && <p>Rovara will try again on {dayText(state.pastDue.retryAt)}.</p>}{state.pastDue.workPausesAt !== null && <p>Work pauses on {dayText(state.pastDue.workPausesAt)} unless the payment goes through.</p>}</div>}
   </section>
-  {trial.data !== undefined && <><TrialCard trial={trial.data} /><TrialChoices trial={trial.data} admins={[]} /></>}
+  {trial.data !== undefined && <><TrialCard trial={trial.data} /><TrialChoices trial={trial.data} /></>}
   {!state.available && <p role="note" className="rv-tb-note">{BILLING_WORDS.NOT_AVAILABLE}</p>}
   {state.available && <><AutoBillSection state={state} /><PaymentMethodSection state={state} /></>}
   <LimitSection state={state} />

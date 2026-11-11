@@ -5,10 +5,8 @@ import { createHash, createHmac } from "node:crypto";
 import { Stack } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { beforeAll, describe, expect, it, vi } from "vitest";
-import {
-  GITHUB_INSTALL_NOTICE_OUTBOX_PK, GITHUB_INSTALL_REQUEST_TTL_MS, agentXError, githubAuditKey, githubDeliveryKey, githubInstallNoticeOutboxKey, githubInstallRequestKey, githubInstallRequestQueueKey, githubInstallationEverBoundKey,
-  githubInstallationKey, githubInstallRequestCopy, orgGithubInstallRequestKey, orgGithubInstallationKey, orgMemberKey, orgMetaKey, trialGithubKey, type OrgId,
-} from "@agentx/contracts";
+import { GITHUB_INSTALL_NOTICE_OUTBOX_PK, GITHUB_INSTALL_REQUEST_TTL_MS, githubAuditKey, githubDeliveryKey, githubInstallNoticeOutboxKey, githubInstallRequestKey, githubInstallRequestQueueKey, githubInstallationEverBoundKey, githubInstallationKey, githubInstallRequestCopy, orgGithubInstallRequestKey, orgGithubInstallationKey, orgMemberKey, orgMetaKey, trialGithubKey } from "@agentx/cloud-contracts";
+import { agentXError, type OrgId } from "@rovara-code/contracts";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { handleGithubWebhook } from "../../packages/broker/src/aws/github-webhooks.js";
 import { routeGithubInstall } from "../../packages/broker/src/aws/github-install-web.js";

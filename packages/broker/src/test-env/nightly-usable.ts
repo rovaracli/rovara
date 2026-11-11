@@ -2,7 +2,7 @@
 // are based on (the project's default branch; a project whose repositories do not agree has none). A stale baseline, one from another branch, one that did not fit (truncated) or one that cannot be read is not
 // used at all: its failures excuse nothing and no mark is offered from it. The same rule serves the automatic removal of marks (`known-failing-undo.ts`).
 import { QueryCommand } from "@aws-sdk/lib-dynamodb";
-import { PROJECT_REVISION_SK_PREFIX, projectPk, type NightlyBaseline, type OrgId } from "@agentx/contracts";
+import { PROJECT_REVISION_SK_PREFIX, projectPk, type NightlyBaseline, type OrgId } from "@rovara-code/contracts";
 import type { TestEnvDeps } from "../org/test-environment.js";
 import { failingSetIsWhole, readNightlyBaseline } from "./nightly.js";
 

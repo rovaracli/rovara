@@ -4,14 +4,14 @@
 // Layer 1 drives the route with a recording dispatcher. Layer 2 drives it with the real dispatch over the trigger world. Layer 3 reads what the code left in logs: ids and codes only.
 import { createHmac } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
-import { RUN_EVENT_KEY_MAX, RUN_START_TITLE_MAX, type ChainDefinitionInput } from "../../packages/contracts/src/chains.js";
-import { hookEventKey } from "../../packages/contracts/src/event-hooks.js";
+import { RUN_EVENT_KEY_MAX, RUN_START_TITLE_MAX, type ChainDefinitionInput } from "@rovara-code/contracts";
+import { hookEventKey } from "@rovara-code/contracts";
 import { dispatchTriggerEvent } from "../../packages/broker/src/triggers/dispatch.js";
 import type { HookDelivery } from "../../packages/broker/src/triggers/ingress.js";
 import { hookProviders } from "../../packages/broker/src/triggers/providers/index.js";
 import { pagerdutyProvider } from "../../packages/broker/src/triggers/providers/pagerduty.js";
 import { sentryProvider } from "../../packages/broker/src/triggers/providers/sentry.js";
-import type { HookRecord } from "@agentx/contracts";
+import type { HookRecord } from "@rovara-code/contracts";
 import { HOOK_1, HOOK_2, ORG_A, SECRET_1, SECRET_2, setupHookWorld, type HookWorld } from "../support/hook-fixtures.js";
 import { HOOK_A, disposeGateWorlds, setupTriggerWorld } from "../support/trigger-world.js";
 

@@ -2,7 +2,8 @@
 import { createHash } from "node:crypto";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import { AgentXError, errorStatus, OrgIdSchema, TaskStopCompanyPolicySchema, TaskStopEnrollmentStateSchema, agentXError, canonicalJson, developerOrgKey, orgMemberKey, orgMetaKey, orgSettingsKey } from "@agentx/contracts";
+import { AgentXError, errorStatus, OrgIdSchema, agentXError, canonicalJson } from "@rovara-code/contracts";
+import { TaskStopCompanyPolicySchema, TaskStopEnrollmentStateSchema, developerOrgKey, orgMemberKey, orgMetaKey, orgSettingsKey } from "@agentx/cloud-contracts";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "../aws/developer-routes.js";
 import { budgetActorChecks } from "../agents/budget-authority.js";
 import type { TransactItem } from "../agents/table-writes.js";

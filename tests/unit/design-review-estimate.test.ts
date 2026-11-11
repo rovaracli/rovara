@@ -1,7 +1,7 @@
 // Design review stage DR8: the estimate, the cost gate and the spend card source (design-review-stage.md 3.4 and 3.6). Money, so every edge is pinned: the estimate equals the second-review picker's
 // own function for one reviewer, "Cost unavailable" is never a number, a gate never runs on its own, and the card's choices are the ones the rules allow.
 import { describe, expect, it } from "vitest";
-import { DecisionCardSchema, type ModelIdentifier } from "@agentx/contracts";
+import { DecisionCardSchema, type ModelIdentifier } from "@rovara-code/contracts";
 import * as estimateModule from "../../packages/broker/src/design-review/estimate.js";
 import { PLANNER_REVISION_TOKENS, MERGE_TOKENS, REVIEWER_CACHE_READ_SHARE, ROLE_INPUT_FLOOR_TOKENS, ROLE_INPUT_TURN_FACTOR, ROLE_OUTPUT_TOKENS, estimateReviewerUsd, routeCaches, plannerRunsFor, estimateDesignReviewUsd as estimateWithPacket, designReviewKeyBudgets, gateDesignReviewCost, nextLowerTier, recordedReviewerCost, reviewersForRound, TIER_REVIEWERS, type DesignReviewEstimate, type DesignReviewEstimateInput, type PriceLookup } from "../../packages/broker/src/design-review/estimate.js";
 import { designSpendCardItem, designSpendChoicePath } from "../../packages/broker/src/design-review/spend-card.js";

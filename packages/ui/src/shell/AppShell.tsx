@@ -1,7 +1,7 @@
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { Outlet, useLocation } from "react-router";
 import { useQuery } from "@tanstack/react-query";
-import { AppNavReaderSchema } from "@agentx/contracts/web";
+import { AppNavReaderSchema } from "@agentx/cloud-contracts/web";
 import { createApiClient } from "../api/client.js";
 import { useAppHost } from "../host.js";
 import { Button } from "../design/Button.js";

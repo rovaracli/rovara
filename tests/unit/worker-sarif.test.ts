@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { EvidenceRawSchema, type CheckEntry, type ProjectCommand } from "../../packages/contracts/src/index.js";
+import { EvidenceRawSchema, type CheckEntry, type ProjectCommand } from "@rovara-code/contracts";
 import { collectEvidenceRaw, saveEvidenceRaw } from "../../packages/worker/src/verification/evidence-raw.js";
 import { SARIF_MAX_RESULTS, SARIF_REPORT_MAX_BYTES, findingsPart, newFindings, parseSarif, plainMessage, readsPrebuiltState, repositoryPathOf, sameFindings, sarifPathOf } from "../../packages/worker/src/verification/sarif.js";
 import { BASELINE_CAP_MS, MIN_BASELINE_BUDGET_MS, runBaselineScans, type BaselineScan } from "../../packages/worker/src/verification/sarif-baseline.js";

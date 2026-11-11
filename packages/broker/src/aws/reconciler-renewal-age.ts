@@ -1,5 +1,5 @@
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
-import { REQUALIFY_AGE_METRIC } from "@agentx/contracts";
+import { REQUALIFY_AGE_METRIC } from "@rovara-code/contracts";
 import { renewalAgeDays } from "./runtime-requalify-heartbeat.js";
 
 /**

@@ -1,11 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
-import { canonicalJson, createCandidateManifest,
-  e2eApplicationMetadataSourceRefs, e2ePolicyDigest,
-  e2eAppBuildManifestDigest, e2eRuntimeCapabilityDigest, e2eScenarioBundleDigest,
-  E2EApplicationLaunchTargetSchema, E2EApplicationPlanIntentSchema, E2ERoundSchema, E2ERunBindingSchema, E2ERegisteredRuntimeSchema,
-  E2ERuntimeCapabilityDescriptorSchema, projectE2EApplicationPortableSelection, proposeE2ESetup,
-  selectE2EApplicationExecutionPlan, type E2EPolicy, type E2EScenario, type E2ESourceSnapshot } from "../../packages/contracts/src/index.js";
+import { canonicalJson, createCandidateManifest, e2eApplicationMetadataSourceRefs, e2ePolicyDigest, e2eAppBuildManifestDigest, e2eRuntimeCapabilityDigest, e2eScenarioBundleDigest, E2EApplicationLaunchTargetSchema, E2EApplicationPlanIntentSchema, E2ERoundSchema, E2ERunBindingSchema, E2ERegisteredRuntimeSchema, E2ERuntimeCapabilityDescriptorSchema, projectE2EApplicationPortableSelection, proposeE2ESetup, selectE2EApplicationExecutionPlan, type E2EPolicy, type E2EScenario, type E2ESourceSnapshot } from "@rovara-code/contracts";
 import { inspectE2ERepository } from "../../packages/broker/src/e2e/discovery.js";
 import { deriveE2EApplicationApprovalBinding } from "../../packages/broker/src/e2e/application-plan-binding.js";
 import { deriveE2EFeaturePortableApprovalBinding } from "../../packages/broker/src/e2e/feature-plan-intent.js";

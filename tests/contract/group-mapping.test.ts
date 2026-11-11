@@ -1,11 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { dynamoGroupMappingStore, decideSignIn, evaluateGroupMapping, groupsOfClaim, readMappingForSignIn } from "../../packages/broker/src/developer/group-mapping.js";
-import { ENTERPRISE_SESSION_MAX_SECONDS, editionPolicy } from "../../packages/contracts/src/edition.js";
-import {
-  BREAK_GLASS_FRESH_AUTH_SECONDS, BREAK_GLASS_SESSION_MAX_SECONDS, GROUP_CLAIM_MAX_GROUPS, GROUP_CLAIM_NAMES, GROUP_MAPPING_MESSAGES, GROUP_MAPPING_REFUSALS, GroupMappingConfigSchema, MAPPED_ORG_ROLE_PRECEDENCE, MappableOrgRoleSchema, groupMappingKey,
-  type GroupMappingConfig,
-} from "../../packages/contracts/src/sso.js";
-import { OrgRoleSchema } from "../../packages/contracts/src/org.js";
+import { ENTERPRISE_SESSION_MAX_SECONDS, editionPolicy } from "../../packages/cloud-contracts/src/edition.js";
+import { BREAK_GLASS_FRESH_AUTH_SECONDS, BREAK_GLASS_SESSION_MAX_SECONDS, GROUP_CLAIM_MAX_GROUPS, GROUP_CLAIM_NAMES, GROUP_MAPPING_MESSAGES, GROUP_MAPPING_REFUSALS, GroupMappingConfigSchema, MAPPED_ORG_ROLE_PRECEDENCE, MappableOrgRoleSchema, groupMappingKey, type GroupMappingConfig } from "../../packages/cloud-contracts/src/sso.js";
+import { OrgRoleSchema } from "../../packages/cloud-contracts/src/org.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 
 const ORG = "org_aaaaaaaaaaaaaaaaaaaa" as const;

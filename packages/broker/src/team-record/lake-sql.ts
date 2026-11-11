@@ -5,7 +5,7 @@
 // (our own ids and hashes, never people's text), and anything else is refused. Identifiers (table and column names) come from the schema,
 // never from callers.
 import { createHash } from "node:crypto";
-import { LAKE_NAMESPACE, LAKE_TABLES, lakeTable, type LakeColumn, type LakeTable } from "@agentx/contracts";
+import { LAKE_NAMESPACE, LAKE_TABLES, lakeTable, type LakeColumn, type LakeTable } from "@agentx/cloud-contracts";
 import { assertSafeId } from "./shared-types.js";
 
 const TABLE_BUCKET = /^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/;

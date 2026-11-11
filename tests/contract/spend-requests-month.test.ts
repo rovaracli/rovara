@@ -12,13 +12,11 @@ import {
 } from "../../packages/broker/src/spend/requests.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
 import { effectiveLimits } from "../../packages/broker/src/spend/settings.js";
-import {
-  SPEND_RESUME_INSTRUCTIONS, builtinSettingsKey, orgSettingsKey, ownerBudgetKey, pausedTasksKey, suggestedMonthTopUpUsd, topUpKey,
-  type BudgetScope, type SpendRequestRecord,
-} from "@agentx/contracts";
+import { SPEND_RESUME_INSTRUCTIONS, orgSettingsKey, ownerBudgetKey, pausedTasksKey, suggestedMonthTopUpUsd, topUpKey, type BudgetScope, type SpendRequestRecord } from "@agentx/cloud-contracts";
+import { builtinSettingsKey } from "@rovara-code/contracts";
 import { DeleteCommand } from "@aws-sdk/lib-dynamodb";
-import { agentXError } from "@agentx/contracts";
-import { orgMemberKey, orgRemovedKey } from "../../packages/contracts/src/org-node.js";
+import { agentXError } from "@rovara-code/contracts";
+import { orgMemberKey, orgRemovedKey } from "../../packages/cloud-contracts/src/org-node.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { MAYA, OMAR } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";

@@ -4,7 +4,7 @@
 //    written first). Whatever those words were, they may sit in the text the author later edits, and nothing stored could say so.
 import { createHash } from "node:crypto";
 import { GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
-import { OrgIdSchema, teamRecordPk, type OrgId } from "@agentx/contracts";
+import { OrgIdSchema, teamRecordPk, type OrgId } from "@rovara-code/contracts";
 import { bySource } from "./store.js";
 import type { PriorEditsPort } from "./sources/ports.js";
 import type { TeamRecordTable } from "./types.js";

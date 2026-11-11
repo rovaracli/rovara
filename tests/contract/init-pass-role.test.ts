@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { DeleteRolePolicyCommand, GetRolePolicyCommand, PutRolePolicyCommand } from "@aws-sdk/client-iam";
 import { ListStacksCommand } from "@aws-sdk/client-cloudformation";
 import { describe, expect, it } from "vitest";
-import { environmentStackName } from "@agentx/contracts";
+import { environmentStackName } from "@rovara-code/contracts";
 import { deployEnvironment } from "../../packages/cli/src/deploy/deploy-environment.js";
 import {
   CDK_PASS_ROLE_POLICY_NAME, cdkDeployRoleName, ensureCdkPassRole, passRolePolicyDocument, removeCdkPassRole,
@@ -21,7 +21,7 @@ import type { DeployPart } from "../../packages/cli/src/deploy/parameters.js";
 import type { DeployRequest, StackDeployer, StackOutputs } from "../../packages/cli/src/deploy/deployer.js";
 import type { DeployAnswers } from "../../packages/cli/src/deploy/deploy-environment.js";
 import type { LoadedRelease } from "../../packages/cli/src/deploy/release.js";
-import type { ReleaseManifest } from "@agentx/contracts";
+import type { ReleaseManifest } from "@rovara-code/contracts";
 
 const ACCOUNT = "123456789012";
 const REGION = "us-east-1";

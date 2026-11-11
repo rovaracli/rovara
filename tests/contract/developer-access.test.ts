@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { ChannelMembersRequest, SlackChannelBinding } from "@agentx/contracts";
+import type { ChannelMembersRequest, SlackChannelBinding } from "@rovara-code/contracts";
 import { accessDeniedMessage, resolveDeveloperAccess } from "../../packages/broker/src/developer/access.js";
 
 const binding = (channelId: string, projectName: string): SlackChannelBinding => ({ teamId: "T0TEAM1", channelId, projectName, updatedAt: "2026-09-27T00:00:00.000Z" });

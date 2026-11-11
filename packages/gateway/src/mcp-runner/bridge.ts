@@ -21,7 +21,7 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { CallToolRequestSchema, CallToolResultSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { McpStdioProposalSchema, mcpSecretEnvNameProblem } from "@agentx/contracts";
+import { McpStdioProposalSchema, mcpSecretEnvNameProblem } from "@rovara-code/contracts";
 import { binOf } from "./bin.js";
 import { RootRefusedError, runsAsRoot } from "./identity.js";
 import { runnerTokenWellFormed } from "./token-scope.js";

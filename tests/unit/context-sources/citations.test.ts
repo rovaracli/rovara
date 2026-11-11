@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import type { Citation, WorkflowReviewFinding } from "@agentx/contracts";
+import type { Citation, WorkflowReviewFinding } from "@rovara-code/contracts";
 import {
   claimCitations, downgradeSourceOnlyFindings, dynamoCitationStore, fetchLiveFacts, recheckCitations, replayCitation, sourceCritiquePoints, type ReplayDependencies, type StoredCitation,
 } from "../../../packages/broker/src/context-sources/citations.js";

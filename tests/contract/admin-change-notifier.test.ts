@@ -1,7 +1,7 @@
 // tests/contract/admin-change-notifier.test.ts
 // Spec 025 E13: a change whose Slack step started gets one direct message with Confirm and Cancel;
 // when the change ends, the message is edited to say how. Only the notifier posts (D11).
-import { AdminChangePendingRecordSchema } from "@agentx/contracts";
+import { AdminChangePendingRecordSchema } from "@rovara-code/contracts";
 import { marshall } from "@aws-sdk/util-dynamodb";
 import { describe, expect, it, vi } from "vitest";
 import { ADMIN_CHANGE_EXPIRY_GRACE_MS, cachedSlackClient, createNotifierHandler, noticeDelaySeconds, type NotifierDependencies } from "../../packages/broker/src/aws/developer-task-notifier.js";

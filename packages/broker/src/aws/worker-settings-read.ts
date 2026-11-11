@@ -1,6 +1,6 @@
 // The worker settings an environment's workers run with, read from SSM (set by each release). Shared by the session steps (which launch a worker with them) and the broker (which reads the worker image from them to name the
 // base image of a saved project image): one reader, one set of rules.
-import { BOOT_STAGE2_SHA256_PARAMETER, MODEL_FALLBACK_NONE, MODEL_FALLBACK_PATTERN, MODEL_PROXY_URL_PARAMETER, WORKER_SETTING_PARAMETERS, getParametersInBatches, type SsmGetParametersAnswer } from "@agentx/contracts";
+import { BOOT_STAGE2_SHA256_PARAMETER, MODEL_FALLBACK_NONE, MODEL_FALLBACK_PATTERN, MODEL_PROXY_URL_PARAMETER, WORKER_SETTING_PARAMETERS, getParametersInBatches, type SsmGetParametersAnswer } from "@rovara-code/contracts";
 
 /** What a worker runs with besides its own workspace: set by each release in SSM. */
 export interface WorkerSettings {

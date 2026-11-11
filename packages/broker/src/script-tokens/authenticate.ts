@@ -5,7 +5,7 @@
 // the method turned off (or off and on again), the method unlinked from the account, a SAML cut-off, the edition's session cap. A token refused for a change in its creator's place
 // is revoked at once (review M3), so it never comes back.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { SCRIPT_TOKEN_CLIENT_NAME, SCRIPT_TOKEN_NOT_ALLOWED_MESSAGE, agentXError, singleOrgIdForEnv } from "@agentx/contracts";
+import { SCRIPT_TOKEN_CLIENT_NAME, SCRIPT_TOKEN_NOT_ALLOWED_MESSAGE, agentXError, singleOrgIdForEnv } from "@rovara-code/contracts";
 import { methodAllowedByEdition, sessionWithinEditionCap } from "../developer/edition-methods.js";
 import { readChosenName } from "../developer/chosen-name.js";
 import { safeDisplayName } from "../developer/person-name.js";

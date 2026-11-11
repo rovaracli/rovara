@@ -5,7 +5,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { INTENT_BLOCK_INFO_STRING, type ContextToolCatalog } from "../../packages/contracts/src/index.js";
+import { INTENT_BLOCK_INFO_STRING, type ContextToolCatalog } from "@rovara-code/contracts";
 import type { WorkerEvent } from "../../packages/worker/src/events.js";
 import type { PiSessionAdapter } from "../../packages/worker/src/pi-session.js";
 import { runTaskInvocation } from "../../packages/worker/src/run-task.js";

@@ -1,17 +1,6 @@
 import { GetSecretValueCommand, PutSecretValueCommand } from "@aws-sdk/client-secrets-manager";
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand, type DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
-import {
-  CONNECTOR_SECRET_PREFIX,
-  CredentialRecordSchema,
-  CredentialRegistrationSchema,
-  agentXError,
-  type CredentialListEntry,
-  type CredentialRecord,
-  type CredentialRegistration,
-  type ConnectionSecret,
-  type CredentialType,
-  type OrgConnection,
-} from "@agentx/contracts";
+import { CONNECTOR_SECRET_PREFIX, CredentialRecordSchema, CredentialRegistrationSchema, agentXError, type CredentialListEntry, type CredentialRecord, type CredentialRegistration, type ConnectionSecret, type CredentialType, type OrgConnection } from "@rovara-code/contracts";
 import {
   CredentialUnavailable,
   oauthClientCredentialsProvider,

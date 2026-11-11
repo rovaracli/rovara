@@ -6,8 +6,8 @@
 //   GET  /v1/app/tasks/{id}/people, POST .../people/role, POST .../people/take-ownership   the task's People, through the `/v1/dev` route itself (the functions Slack and the MCP tool use); a role change
 //        or a take-over is a pending change confirmed on its confirmation page, as from Slack
 // A held spec's choices already have their route (`spec-routes.ts`). Each function re-reads the task and checks the caller's live access itself; nothing here decides who may.
-import { agentXError } from "@agentx/contracts";
-import { LearningTaskPageBodySchema } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
+import { LearningTaskPageBodySchema } from "@rovara-code/contracts";
 import { listPageComments, reviseTaskWorkflowPlan, retryApplicationRoundOnPage, routeDeveloperTaskRequest } from "../developer-tasks.js";
 import { forgetTaskComment, rememberTaskComment } from "../../learning/capture-comment.js";
 import { PageRetryInputSchema } from "../task-web-api.js";

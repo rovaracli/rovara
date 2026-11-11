@@ -8,15 +8,13 @@ import { refreshSessionSummary } from "../../packages/broker/src/agent-sessions/
 import { getTaskDocumentView, taskPageStage } from "../../packages/broker/src/aws/developer-tasks.js";
 import { createTaskWeb } from "../../packages/broker/src/aws/task-web.js";
 import { workflowMessage } from "../../packages/broker/src/developer/workflow-messages.js";
-import { agentSessionKey, builtinSettingsKey, projectMemberKey } from "../../packages/contracts/src/org-scoped-keys.js";
-import {
-  NO_CHANGE_CHOICES_LINE, NO_CHANGE_CHOICES_NO_THREAD, NO_CHANGE_CHOICES_PAGE, NO_CHANGE_FINDINGS_TOTAL_MAX, NO_CHANGE_FOUND_HEADER, NO_CHANGE_NEEDED_LINE, NO_CHANGE_NO_CONCLUSION_LEAD, NO_CHANGE_OUTPUT_HIDDEN, NO_CODE_CHANGED_LEGACY_REASONS, NO_CODE_CHANGED_STEP, NO_CODE_CHANGED_REASON,
-  noChangeFindingsSize,
-} from "../../packages/contracts/src/no-change-findings.js";
-import { WORKFLOW_BLOCK_REASONS } from "../../packages/contracts/src/task-workflow.js";
-import { WORKFLOW_NO_CODE_CHANGE_MESSAGE, WorkflowSnapshotSchema } from "../../packages/contracts/src/task-workflow-node.js";
-import type { IntentAssessment } from "../../packages/contracts/src/rovara-code.js";
-import { UNDERSTAND_ARTIFACT_NAME } from "../../packages/contracts/src/index.js";
+import { agentSessionKey, builtinSettingsKey, projectMemberKey } from "@rovara-code/contracts";
+import { NO_CHANGE_CHOICES_LINE, NO_CHANGE_CHOICES_NO_THREAD, NO_CHANGE_CHOICES_PAGE, NO_CHANGE_FINDINGS_TOTAL_MAX, NO_CHANGE_FOUND_HEADER, NO_CHANGE_NEEDED_LINE, NO_CHANGE_NO_CONCLUSION_LEAD, NO_CHANGE_OUTPUT_HIDDEN, NO_CODE_CHANGED_LEGACY_REASONS, NO_CODE_CHANGED_STEP, NO_CODE_CHANGED_REASON, noChangeFindingsSize } from "@rovara-code/contracts";
+import { WORKFLOW_BLOCK_REASONS } from "../../packages/cloud-contracts/src/task-workflow.js";
+import { WORKFLOW_NO_CODE_CHANGE_MESSAGE } from "@rovara-code/contracts";
+import { WorkflowSnapshotSchema } from "../../packages/cloud-contracts/src/task-workflow-node.js";
+import type { IntentAssessment } from "@rovara-code/contracts";
+import { UNDERSTAND_ARTIFACT_NAME } from "@rovara-code/contracts";
 import { MAYA, createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import { fakeModelAccess } from "../support/fake-model-access.js";
 import { planAnswer, planDocument } from "../support/plan-documents.js";

@@ -3,7 +3,9 @@
 // An action with no contract name is either listed in BOOKKEEPING (counters, pauses, votes: it grants nothing, and is skipped for `emitAudit`) or unknown. Under `requireAudit` (the event grants something:
 // an approval, a go-live, a rollback, a promotion, a setting loosened) an action with no contract name THROWS, so the change is refused instead of passing with no ledger entry. A test holds that every
 // action of the library is either mapped or listed, so a new action cannot be added without a decision.
-import { auditEventId, OrgIdSchema, type AuditActor, type AuditEventInput } from "@agentx/contracts";
+import { auditEventId, type AuditEventInput } from "@agentx/cloud-contracts";
+import { OrgIdSchema } from "@rovara-code/contracts";
+import { type AuditActor } from "@agentx/cloud-contracts";
 import type { RecordAuditSink } from "../team-record/audit.js";
 import type { LessonAuditEvent, LessonAuditSink } from "./ports.js";
 import type { LessonAuditAction } from "./types.js";

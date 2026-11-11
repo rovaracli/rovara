@@ -2,7 +2,7 @@
 // fetches the issuer's discovery document when it is created, and the issuer is served by the same
 // API, so a fresh install could never create it. Every refusal is the same AUTH_REQUIRED, and the
 // token is never logged or repeated.
-import { agentXError, DEVELOPER_TOKEN_AUDIENCE } from "@agentx/contracts";
+import { agentXError, DEVELOPER_TOKEN_AUDIENCE } from "@rovara-code/contracts";
 import { decodeProtectedHeader, importJWK, jwtVerify, type CryptoKey, type JWTPayload, type KeyObject } from "jose";
 
 type VerifyKey = CryptoKey | KeyObject | Uint8Array;

@@ -1,7 +1,7 @@
 // Plan 6 Task 20: until Plan 9 closes Linear issues itself, Linear's own GitHub integration closes one when a pull request whose title or body says "Fixes <KEY>" merges. The key
 // comes only from the session's own Linear binding in the task's org; it is checked to be an issue key (never free text); and no model-written line can say a second one.
 import { describe, expect, it } from "vitest";
-import { sessionBindingKey, type SessionBinding } from "@agentx/contracts";
+import { sessionBindingKey, type SessionBinding } from "@rovara-code/contracts";
 import { inertLine } from "../../packages/broker/src/rovara-code/inert-text.js";
 import { breakLinearKeys, linearCloseLine, linearIssueKeyOf, linearIssueKeyOfTask, neutralizeLinearWords, parseLinearIssue, sealLinearText } from "../../packages/broker/src/rovara-code/linear-close.js";
 import { ORG_A, ORG_B, sessionWorld } from "../support/agent-session-world.js";

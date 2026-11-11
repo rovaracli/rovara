@@ -8,7 +8,7 @@
 // - the owner's Retry planning on a row an earlier release already stranded (`strandedPlanningRun`, `recoverStrandedPlanning`).
 // Nothing here adds an approval or starts an operation: the only change is RUNNING to BLOCKED, and for a VERIFY or REVIEW step the AUTOFIX row (DISPATCHEXHAUST) that has the policy look at the block.
 import { GetCommand, TransactWriteCommand, type DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
-import { WORKFLOW_BLOCK_REASONS, WorkflowSnapshotSchema, blockWorkflow, type WorkflowSnapshot } from "@agentx/contracts";
+import { WORKFLOW_BLOCK_REASONS, WorkflowSnapshotSchema, blockWorkflow, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { closeEndedCheck } from "../design-review/check-ends.js";
 import { taskKey, taskPointerKey, type DeveloperTaskRecord } from "../developer/task-records.js";
 import { workflowRunEndedReason } from "./outbox-failure.js";

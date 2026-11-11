@@ -3,19 +3,8 @@
 // which projects; it defaults to allowed, only an owner or admin changes it, a change names the revision it read, and a rule that can't be read refuses.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import {
-  DEVICES_LIMIT_MESSAGE,
-  INDEX_EXPIRY_ATTRIBUTE,
-  LOCAL_TOOLS,
-  agentRequestKey,
-  deviceCommandKey,
-  deviceKey,
-  memberDevicesKey,
-  orgSettingsKey,
-  type LocalAgentPolicy,
-  type OrgId,
-  type OrgRole,
-} from "@agentx/contracts";
+import { DEVICES_LIMIT_MESSAGE, deviceCommandKey, deviceKey, memberDevicesKey, orgSettingsKey, type LocalAgentPolicy, type OrgRole } from "@agentx/cloud-contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, LOCAL_TOOLS, agentRequestKey, type OrgId } from "@rovara-code/contracts";
 import type { DeveloperCaller } from "../../packages/broker/src/aws/developer-routes.js";
 import { checkLocalAgentAllowed, readLocalAgentPolicy, readLocalAgentPolicyWithRevision } from "../../packages/broker/src/devices/policy.js";
 import { isDeviceRoute, routeDeviceRequest, type DeviceRouteDependencies } from "../../packages/broker/src/devices/routes.js";

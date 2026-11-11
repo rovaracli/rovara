@@ -12,8 +12,8 @@ import {
   BlockedError, ITEMS, LISTEN_JS, embeddedResolverLines, PROBE_JS, RELAY_LISTENER_JS, SSM_CHUNK_CHARS, TSL_WORKSPACE, blockedLines, formatLine, hasDefaultRoute, labelArgsFrom, loadVerifiedCatalog, manifestFilesPort, parseProbeOutput, parseUids, postgresEntry, pullList, resolvePostgres, runLiveChecks, ssmCommands, unexpected,
   type EmbeddedResolverEvidence, type RunLayer,
 } from "../../scripts/linux-check-test-services-live.js";
-import { CATALOG_SIGNATURE_ALGORITHM, catalogSigningMessage, parseBundlePublicKey, sha256HexOf, type VerifiedCatalog } from "@agentx/contracts";
-import { loadSignedCatalogWithKeys } from "@agentx/contracts/testing";
+import { CATALOG_SIGNATURE_ALGORITHM, catalogSigningMessage, parseBundlePublicKey, sha256HexOf, type VerifiedCatalog } from "@rovara-code/contracts";
+import { loadSignedCatalogWithKeys } from "@agentx/cloud-contracts/testing";
 import { pinnedCatalog, sha, testSigner } from "../support/catalog-pinning.js";
 
 const REGISTRY = "944937319445.dkr.ecr.us-west-2.amazonaws.com";

@@ -1,10 +1,8 @@
 // Member removal (v1.1), task 1: the shape of S0, the one transaction that cuts a person off and records the removal. Pure: no reads, no clock. The caller (`start.ts`)
 // reads first and hands the plan what it saw; the plan decides which actions there are and what each one is conditional on, and says which refused action means what.
 // It never names one key twice (DynamoDB refuses that, and `FakeDynamoDb` too): the caller's, the successor's and the other owner's checks of one person are one action.
-import {
-  MEMBER_REMOVAL_EMAIL_CAP, developerOrgKey, githubMemberKey, memberGithubKey, memberRemovalQueueKey, memberRemovalRecordKey, orgBanKey, orgMemberKey, orgRemovedKey,
-  type OrgId, type OrgRole,
-} from "@agentx/contracts";
+import { MEMBER_REMOVAL_EMAIL_CAP, developerOrgKey, memberRemovalQueueKey, memberRemovalRecordKey, orgBanKey, orgMemberKey, orgRemovedKey, type OrgRole } from "@agentx/cloud-contracts";
+import { githubMemberKey, memberGithubKey, type OrgId } from "@rovara-code/contracts";
 import type { TransactItem } from "../../audit/outbox.js";
 
 type Item = Record<string, unknown>;

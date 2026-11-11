@@ -1,10 +1,7 @@
 // Setup wizard (E4): the test-environment routes of a project. Readers project the existing routes; the broker owns who may do what (a maintainer proposes, edits, proves, applies and approves; a less-safe change
 // needs a fresh sign-in and a second person), and this client only asks. The gateway puts its own `requestId` in every answer and the contracts are strict, so it is set aside and the rest is read exactly.
 import { useMemo } from "react";
-import {
-  ProjectOverviewProjectSchema, TestEnvApplyAnswerSchema, TestEnvApplyBodySchema, TestEnvApproveAnswerSchema, TestEnvApproveBodySchema, TestEnvCheckBodySchema, TestEnvEditBodySchema, TestEnvProveBodySchema, TestEnvSeedBodySchema,
-  TestEnvRequestApprovalAnswerSchema, TestEnvRequestApprovalBodySchema, TestEnvironmentStateSchema,
-} from "@agentx/contracts/web";
+import { ProjectOverviewProjectSchema, TestEnvApplyAnswerSchema, TestEnvApplyBodySchema, TestEnvApproveAnswerSchema, TestEnvApproveBodySchema, TestEnvCheckBodySchema, TestEnvEditBodySchema, TestEnvProveBodySchema, TestEnvSeedBodySchema, TestEnvRequestApprovalAnswerSchema, TestEnvRequestApprovalBodySchema, TestEnvironmentStateSchema } from "@agentx/cloud-contracts/web";
 import { useAppHost, type AppHost } from "../host.js";
 import { createApiClient } from "./client.js";
 

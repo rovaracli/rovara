@@ -13,7 +13,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQueries, useQuery, useQueryClient, type UseQueryResult } from "@tanstack/react-query";
 import { z } from "zod";
-import { AppProjectsResponseSchema, GithubInstallationsResponseReaderSchema, OrgSlackWorkspaceEvidenceResponseReaderSchema, type OrgServiceStatus } from "@agentx/contracts/web";
+import { AppProjectsResponseSchema, GithubInstallationsResponseReaderSchema, OrgSlackWorkspaceEvidenceResponseReaderSchema, type OrgServiceStatus } from "@agentx/cloud-contracts/web";
 import { useAppHost } from "../host.js";
 import { ApiError } from "./errors.js";
 import { createApiClient } from "./client.js";

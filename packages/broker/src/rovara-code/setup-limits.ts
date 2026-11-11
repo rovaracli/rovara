@@ -10,10 +10,7 @@
 import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import {
-  SETUP_AGENT_LIMIT_NAMES, SETUP_AGENT_LIMITS_DEFAULT, SETUP_AGENT_LIMITS_MAX, SetupAgentLimitSettingSchema, agentXError, canonicalJson, effectiveSetupAgentLimits, projectAllows, setupLimitsKey,
-  type OrgId, type ProjectRole, type SetupAgentLimitSetting, type SetupAgentLimits,
-} from "@agentx/contracts";
+import { SETUP_AGENT_LIMIT_NAMES, SETUP_AGENT_LIMITS_DEFAULT, SETUP_AGENT_LIMITS_MAX, SetupAgentLimitSettingSchema, agentXError, canonicalJson, effectiveSetupAgentLimits, projectAllows, setupLimitsKey, type OrgId, type ProjectRole, type SetupAgentLimitSetting, type SetupAgentLimits } from "@rovara-code/contracts";
 import { auditSetupLimitsChanged, auditOccurrence } from "../audit/events.js";
 import { auditPending, type AuditRuntime } from "../audit/outbox.js";
 import { flushAuditEvents } from "../audit/flush.js";

@@ -1,7 +1,8 @@
 // UX2 slice 2 item 5: the broker's wiring for task notifications (`notifications/attention.ts`), run by the five-minute session sweep. The email sender is the install's existing sign-in notice
 // sender (`githubConnectedNotice`: DEVELOPER_NOTICE_EMAIL_FROM, the same SES identity and the same ses:SendEmail grant as the identity notices); absent, no email is sent. Each recipient's read
 // access is the live session access check, with their org role read from their member record now.
-import { OrgRoleSchema, orgMemberKey, type AgentSessionRecord, type OrgId } from "@agentx/contracts";
+import { OrgRoleSchema, orgMemberKey } from "@agentx/cloud-contracts";
+import { type AgentSessionRecord, type OrgId } from "@rovara-code/contracts";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { DeveloperSignInStore } from "../../developer/store.js";
 import { sessionAccessFor } from "../../agent-sessions/access.js";

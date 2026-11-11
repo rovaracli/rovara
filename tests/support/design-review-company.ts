@@ -1,6 +1,7 @@
 // Design review (DR-FU4): the company's design review policy item (DESIGNREVIEW#LOCK) in a test table. A project runs design review only when `dr` is on AND the company allows it AND the project's own mode is not Off
 // (a project with no setting is Off), so a test that wants the stage to run for a project seeds the company once (`allowed`) and the project's playbook (`project`, mode Auto unless said).
-import { DESIGN_REVIEW_DEFAULT_SETTING, orgMetaKey, projectPlaybookKey } from "../../packages/contracts/src/index.js";
+import { DESIGN_REVIEW_DEFAULT_SETTING, projectPlaybookKey } from "@rovara-code/contracts";
+import { orgMetaKey } from "@agentx/cloud-contracts";
 import { DESIGN_REVIEW_LOCK_SK, type DesignReviewLock } from "../../packages/broker/src/design-review/lock.js";
 
 export interface CompanyPolicySeed {

@@ -1,6 +1,6 @@
 // The Sources tab for a person who may edit sources: the editors' view (GET /v1/app/projects/{p}/record/sources) and a cell that answers it and its writes. The view and every body the screen sends are
 // parsed by the contract's own strict schemas, as the route does.
-import { SourceWriteBodySchema, SourcesAdminViewSchema } from "@agentx/contracts/web";
+import { SourceWriteBodySchema, SourcesAdminViewSchema } from "@agentx/cloud-contracts/web";
 import type { ApiRequest, ApiResponse } from "../../../packages/ui/src/host.js";
 import { lessonsHost, ok, refusal } from "./lessons-fixture.js";
 

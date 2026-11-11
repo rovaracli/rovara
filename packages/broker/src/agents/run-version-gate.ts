@@ -5,7 +5,7 @@
 // `202 { status: "NEEDS_OWNER_APPROVAL", confirmUrl, changes }` and makes a change approval (`agent_run_version`) that holds exactly the run asked for. The owner
 // confirms it on the page with a fresh sign-in (no token decides); then the run starts once, as the person who asked, through the same start as any run. Declining
 // or letting it expire starts nothing. The start itself refuses a looser version that is not approved (roster.ts), so this is the only way to one.
-import { agentXError, isBuiltinAgentId, recipeDigest, type AgentId, type OrgId, type RunInput, type WorkOrigin } from "@agentx/contracts";
+import { agentXError, isBuiltinAgentId, recipeDigest, type AgentId, type OrgId, type RunInput, type WorkOrigin } from "@rovara-code/contracts";
 import { requireAgentAccess, type AgentCaller } from "./access.js";
 import { registerApprovalSubjectHandler, type AgentChangeSubject, type ApprovalDependencies, type ApprovalRecord } from "./approvals.js";
 import { agentApprovers, orgAdminApprovers, requireActiveForConfirmation, resolveRecipe, versionSafety, waitForPerson } from "./changes.js";

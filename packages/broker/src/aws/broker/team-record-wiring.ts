@@ -1,6 +1,6 @@
 // Part of the broker (split out of ../broker.ts): the Team record's call sites. Everything here is an optional chain on `dependencies.teamRecord`, which is `undefined` unless the install was deployed with the
 // record's switch on (`TEAM_RECORD_ENABLED=1`, team-record/runtime.ts). With it off no function in this file reads, writes, schedules or even builds a client: the handler's branches answer "off" and return.
-import { teamRecordOpsQueueName } from "@agentx/contracts";
+import { teamRecordOpsQueueName } from "@agentx/cloud-contracts";
 import { registerTaskEndHandler } from "../../agents/task-end.js";
 import { recordListenerOf, recordTaskEndHandler, registerRovaraRecordListener } from "../../lessons/record-events.js";
 import { registerHumanSendBackListener, sendBackToRecord, } from "../../lessons/send-back-events.js";

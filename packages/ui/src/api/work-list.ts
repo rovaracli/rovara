@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { useInfiniteQuery } from "@tanstack/react-query";
-import { SessionListReaderSchema } from "@agentx/contracts/web";
+import { SessionListReaderSchema } from "@agentx/cloud-contracts/web";
 import { useAppHost } from "../host.js";
 import { createApiClient } from "./client.js";
 import { mergeLiveTiles, useLive, type LiveFilter } from "./live.js";

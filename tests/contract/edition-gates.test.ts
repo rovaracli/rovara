@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { editionPolicy, ENTERPRISE_ONLY_MESSAGE, NOT_IN_THIS_EDITION_MESSAGE } from "@agentx/contracts";
+import { editionPolicy, ENTERPRISE_ONLY_MESSAGE, NOT_IN_THIS_EDITION_MESSAGE } from "@agentx/cloud-contracts";
 import { INSTALL_OPERATOR_ROUTES, requireStaffRouteAllowed } from "../../packages/broker/src/aws/broker/staff-routes.js";
 import { githubConnectionOf } from "../../packages/broker/src/aws/broker/dependency-wiring.js";
 import { enabledMethods } from "../../packages/broker/src/developer/server.js";
 import { trialAvailable } from "../../packages/broker/src/org/trial-availability.js";
-import { orgMetaKey } from "@agentx/contracts";
+import { orgMetaKey } from "@agentx/cloud-contracts";
 import { adminCall, createAdminBroker } from "../support/admin-broker.js";
 import { identityHarness, authorizeQuery, httpEvent } from "../support/developer-fakes.js";
 import { MAYA, createDeveloperTaskBroker } from "../support/developer-task-broker.js";

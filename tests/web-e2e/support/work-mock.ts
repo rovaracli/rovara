@@ -1,4 +1,4 @@
-import { LiveResponseSchema, SessionListSchema } from "@agentx/contracts/web";
+import { LiveResponseSchema, SessionListSchema } from "@agentx/cloud-contracts/web";
 import { liveFixture } from "../../web/support/live-fixture.js";
 import { finishedFixture } from "../../web/support/finished-fixture.js";
 // The Work list journey (`work` scenario): Live answers per filter (mine, team, needs_me, failed) and the ended-sessions list, with times set from the clock when the scenario starts so ages read the same on every run.

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { TransactWriteCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
-import { orgMetaKey, orgMemberKey, developerOrgKey, projectMetaKey, projectMemberKey, type OrgId } from "../../packages/contracts/src/index.js";
+import { orgMetaKey, orgMemberKey, developerOrgKey } from "@agentx/cloud-contracts";
+import { projectMetaKey, projectMemberKey, type OrgId } from "@rovara-code/contracts";
 import { readSecondPersonApprovalEvidence } from "../../packages/broker/src/org/second-person-evidence.js";
 import { decideSecondPersonApproval } from "../../packages/broker/src/org/second-person-approval.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";

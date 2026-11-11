@@ -1,7 +1,7 @@
 import { fixtureActor } from "../support/money-authority.js";
 // Plan 4 Task 4: the app's chain routes (`/v1/app/chains*`), through the broker's handler with two orgs. A publish or rollback that makes anything less
 // safe than what runs answers 202 with a confirmation link and changes nothing; deciding it is Plan 3's page (R66).
-import { projectMemberKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { projectMemberKey } from "@rovara-code/contracts";
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { approvalDecideKind } from "../../packages/broker/src/agents/approval-decide-kind.js";
@@ -12,14 +12,16 @@ import { ChainStore, chainDigest } from "../../packages/broker/src/chains/store.
 import { validateChainForPublish } from "../../packages/broker/src/chains/validate.js";
 import { DeveloperSignInStore } from "../../packages/broker/src/developer/store.js";
 import type { OrgResolver } from "../../packages/broker/src/org/resolve.js";
-import type { AgentId } from "../../packages/contracts/src/agent.js";
-import { BUILTIN_AGENTS, builtinDefaultPin, builtinRecipe, currentBuiltinVersion } from "../../packages/contracts/src/agent-templates.js";
-import { agentXError } from "../../packages/contracts/src/errors.js";
-import type { RecipeOverlay } from "../../packages/contracts/src/agent-recipe-node.js";
-import { DEFAULT_AGENT_GUARDRAILS } from "../../packages/contracts/src/agent-guardrails.js";
-import { ChainDefinitionSchema, type ChainDefinitionInput } from "../../packages/contracts/src/chains.js";
-import type { OrgId, OrgRole } from "../../packages/contracts/src/org.js";
-import { agentGuardrailsKey, approvalKey, orgProjectCatalogKey, ownerBudgetKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import type { AgentId } from "@rovara-code/contracts";
+import { BUILTIN_AGENTS, builtinDefaultPin, builtinRecipe, currentBuiltinVersion } from "@rovara-code/contracts";
+import { agentXError } from "@rovara-code/contracts";
+import type { RecipeOverlay } from "@rovara-code/contracts";
+import { DEFAULT_AGENT_GUARDRAILS } from "@rovara-code/contracts";
+import { ChainDefinitionSchema, type ChainDefinitionInput } from "@rovara-code/contracts";
+import type { OrgId } from "@rovara-code/contracts";
+import type { OrgRole } from "../../packages/cloud-contracts/src/org.js";
+import { agentGuardrailsKey, approvalKey, orgProjectCatalogKey } from "@rovara-code/contracts";
+import { ownerBudgetKey } from "../../packages/cloud-contracts/src/org-scoped-keys.js";
 import { MAYA, OMAR, createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { INVESTIGATE_THEN_FIX } from "../support/chain-examples.js";
@@ -116,7 +118,7 @@ async function setup(options: { widen?: boolean; audit?: boolean } = {}) {
   h.db.set({ ...orgProjectCatalogKey(TEST_ORG, "web"), entityType: "PROJECT_CATALOG", name: "web" });
   h.db.set({
     ...agentGuardrailsKey(TEST_ORG), entityType: "AGENT_GUARDRAILS", revision: 1, updatedBy: DANA.developerId, updatedAt: "2026-10-21T00:00:00.000Z",
-    guardrails: { ...(await import("../../packages/contracts/src/agent-guardrails.js")).DEFAULT_AGENT_GUARDRAILS, maxAutonomy: "run" },
+    guardrails: { ...(await import("@rovara-code/contracts")).DEFAULT_AGENT_GUARDRAILS, maxAutonomy: "run" },
   });
   members.grant(TEST_ORG, "web", MAX.developerId, "maintainer");
   // The write holds a new accountable maintainer to a real grant row in its own transaction, as the project roles read it.

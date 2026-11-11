@@ -4,7 +4,8 @@
 //   - the areas the design touches: Understand's reasons PLUS every design version's own §6 `touches` (the union only ever raises a risk: a code left out lowers nothing);
 //   - whether the caller signed in freshly (the session's own authentication time, not a body field).
 import { QueryCommand } from "@aws-sdk/lib-dynamodb";
-import { OrgRoleSchema, orgPk, readDesignMeta, type DesignReason, type EditionPolicy, type OrgId, type WorkflowSnapshot } from "@agentx/contracts";
+import { OrgRoleSchema, type EditionPolicy, type WorkflowSnapshot } from "@agentx/cloud-contracts";
+import { orgPk, readDesignMeta, type DesignReason, type OrgId } from "@rovara-code/contracts";
 import { loadWorkflowDocument } from "../developer/plan-artifacts.js";
 import { listProjectMembers, type ProjectMembersDependencies } from "../org/project-members.js";
 import { readApproverRoster } from "../org/second-person-evidence.js";

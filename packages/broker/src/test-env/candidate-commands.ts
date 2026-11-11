@@ -1,7 +1,7 @@
 // TE-2: the commands a test-environment proposal would add to a project's settings, and the lists a candidate check therefore runs. Pure, and used by both sides of the apply: the candidate check is prepared
 // from `candidateLists` (the settings' commands plus what the proposal adds), and the approval writes `commandsToApply` of the same proposal against the same settings. When the settings are the revision the
 // check ran against, the two are the same lists, so what is written is exactly what was proved.
-import { SETUP_TIMEOUT, TEST_TIMEOUT, agentXError, keepStoredOptions, type ProjectCommand, type TestEnvApplyAnswer, type TestEnvironmentBody } from "@agentx/contracts";
+import { SETUP_TIMEOUT, TEST_TIMEOUT, agentXError, keepStoredOptions, type ProjectCommand, type TestEnvApplyAnswer, type TestEnvironmentBody } from "@rovara-code/contracts";
 import { refusedCommand } from "./draft.js";
 import { PROVED_CHECK_KINDS } from "./prove-from-setup-check.js";
 

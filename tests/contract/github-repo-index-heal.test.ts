@@ -2,8 +2,9 @@
 // Two things keep it right: a repeat of a revision that is already stored writes the rows the project's LATEST revision holds (and only those), and an older revision registered
 // after a newer one never changes the rows the newer one holds.
 import { describe, expect, it } from "vitest";
-import { githubRepoProjectKey, orgProjectCatalogKey, projectRevisionKey } from "../../packages/contracts/src/index.js";
-import type { OrgId } from "../../packages/contracts/src/org.js";
+import { githubRepoProjectKey } from "@agentx/cloud-contracts";
+import { orgProjectCatalogKey, projectRevisionKey } from "@rovara-code/contracts";
+import type { OrgId } from "@rovara-code/contracts";
 import { MAYA, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
 import type { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { TEST_ORG } from "../support/orgs.js";

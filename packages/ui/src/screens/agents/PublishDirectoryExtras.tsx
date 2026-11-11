@@ -1,5 +1,5 @@
 import { Link } from "react-router";
-import { AgentIdSchema } from "@agentx/contracts/web";
+import { AgentIdSchema } from "@agentx/cloud-contracts/web";
 import { useMyAgents, usePublishRequests, type ReadAgentCard } from "../../api/agent-publish.js";
 import { paths } from "../../paths.js";
 import { VisibleText } from "../../design/VisibleText.js";

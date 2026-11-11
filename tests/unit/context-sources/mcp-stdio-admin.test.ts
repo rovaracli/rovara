@@ -2,7 +2,7 @@
 // the proposal's id, BEFORE the test (the test task reads them) and are taken away again when the test fails; they are never in an entry, a response, a log or an audit event; the sentences
 // an admin reads for a failed test come from fixed tables and never from the host; and the host is told, best effort, to start a server before a stage and to release it when it is turned off.
 import { describe, expect, it } from "vitest";
-import { MCP_INSTALL_FAILURES, MCP_PROBE_FAILURES, type McpInstallFailureCode } from "@agentx/contracts";
+import { MCP_INSTALL_FAILURES, MCP_PROBE_FAILURES, type McpInstallFailureCode } from "@rovara-code/contracts";
 import {
   McpProbeError, approveMcpServer, disableMcpServer, dynamoMcpServerStore, probeFailureSentence, proposeMcpServer, removeMcpServer, stdioSecretDocument, type McpHostControl, type McpProber, type McpServerDependencies, type McpServerSecrets,
 } from "../../../packages/broker/src/context-sources/mcp-servers.js";

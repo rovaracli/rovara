@@ -1,11 +1,12 @@
 // Rovara Code (staging 0.4.11, Bug G): a real broker handler with a Rovara Code task waiting for its merge, so the clients that press Merge (the CLI, the web app) run against the
 // real routes and the real `json()` wrapper. Maya (the requester) is signed in; Omar approved the pull request on GitHub. GitHub is a fake that reads and merges.
 import { createHash, randomUUID } from "node:crypto";
-import { createCandidateManifest, mergeTrackingDecisionDigest, mergeTrackingKey, orgMemberKey, type MergeTrackingItem } from "../../packages/contracts/src/index.js";
+import { createCandidateManifest, mergeTrackingKey } from "@rovara-code/contracts";
+import { mergeTrackingDecisionDigest, orgMemberKey, type MergeTrackingItem } from "@agentx/cloud-contracts";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
 import { DECIDE_COOKIE, DecideStore, csrfTokenFor } from "../../packages/broker/src/developer/decide-session.js";
 import { linkGithubMember } from "../../packages/broker/src/rovara-code/github-members.js";
-import { builtinSettingsKey, codeSettingsKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { builtinSettingsKey, codeSettingsKey } from "@rovara-code/contracts";
 import { githubWorkflowPullRequestKey } from "../../packages/broker/src/developer/task-records.js";
 import { DEV_ISSUER, MAYA, OMAR, bearerFor, createDeveloperTaskBroker } from "./developer-task-broker.js";
 import { markReady } from "./slack-broker.js";

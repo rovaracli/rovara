@@ -1,4 +1,4 @@
-import { DetailsGateSchema, type TurnDetails, type TurnDetailsCall } from "@agentx/contracts";
+import { DetailsGateSchema, type TurnDetails, type TurnDetailsCall } from "@rovara-code/contracts";
 
 export interface PlainText { type: "plain_text"; text: string }
 /** verbatim: Slack does not turn bare URLs, channel names or mentions in record text into links. */

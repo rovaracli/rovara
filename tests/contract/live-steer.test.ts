@@ -4,7 +4,8 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { KEY, TEXT, liveSteerWorld, type Item } from "../support/live-steer-world.js";
-import { LiveSteerPayloadSchema, WorkerInvocationSchema, liveSteerOperationId, sessionQueuedSteersKey } from "../../packages/contracts/src/index.js";
+import { LiveSteerPayloadSchema, liveSteerOperationId, sessionQueuedSteersKey } from "@rovara-code/contracts";
+import { WorkerInvocationSchema } from "@agentx/cloud-contracts";
 import { enqueueLiveSteer, livePersonLabel, liveSteerFromEnvironment } from "../../packages/broker/src/agent-sessions/live-steer.js";
 import { sendSessionMessage } from "../../packages/broker/src/agent-sessions/messages.js";
 import { taskKey } from "../../packages/broker/src/developer/task-records.js";

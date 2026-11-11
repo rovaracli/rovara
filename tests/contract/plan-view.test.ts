@@ -1,10 +1,8 @@
 // PLANVIEW (next milestone T4): what a coding plan's checks say in plain words (card, task page, full-plan route, Markdown copy),
 // the decision answers an Approve in Slack uses, and why an unreadable plan could not be read.
 import { describe, expect, it } from "vitest";
-import {
-  WorkflowSnapshotSchema, builtinFileCheckCommand, canonicalPlanJson, createWorkflowSnapshot, parsePlanDocument, planDocumentMarkdown, readCanonicalPlan,
-  type PlanDocument,
-} from "@agentx/contracts";
+import { WorkflowSnapshotSchema, createWorkflowSnapshot } from "@agentx/cloud-contracts";
+import { builtinFileCheckCommand, canonicalPlanJson, parsePlanDocument, planDocumentMarkdown, readCanonicalPlan, type PlanDocument } from "@rovara-code/contracts";
 import { shortenMarkdown } from "../../packages/broker/src/developer/plan-artifacts.js";
 import { PLAN_UNREADABLE_CATEGORIES, PLAN_UNREADABLE_SENTENCES, planCheckSummary, planUnreadableCategory } from "../../packages/broker/src/developer/plan-check-summary.js";
 import { plainBlockReason, structuredExtraLines, workflowMessage } from "../../packages/broker/src/developer/workflow-messages.js";

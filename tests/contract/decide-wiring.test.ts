@@ -5,10 +5,8 @@
 // here too. The presence machinery itself (tickets, the fresh sign-in, the session) is decide-presence.test.ts.
 import { createHash, randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
-import {
-  AgentXError, agentXError, approvalKey, orgMemberKey, orgProjectCatalogKey, projectMetaKey, projectRevisionKey,
-  type ConnectorResult, type GrantedTool, type OrgId, type OrgRole, type ToolFacts,
-} from "@agentx/contracts";
+import { AgentXError, agentXError, approvalKey, orgProjectCatalogKey, projectMetaKey, projectRevisionKey, type ConnectorResult, type GrantedTool, type OrgId, type ToolFacts } from "@rovara-code/contracts";
+import { orgMemberKey, type OrgRole } from "@agentx/cloud-contracts";
 import type { AgentCaller } from "../../packages/broker/src/agents/access.js";
 import { approvalDecideKind, requestIdFor } from "../../packages/broker/src/agents/approval-decide-kind.js";
 import { routeApprovalRequest } from "../../packages/broker/src/agents/approval-routes.js";

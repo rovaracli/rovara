@@ -4,12 +4,9 @@
 // the broker's start, key and Slack routes through the developer-task harness.
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
-import {
-  DEFAULT_MEMBER_MONTHLY_BUDGET_USD, PER_TASK_BUDGET_USD, PER_TEST_CAP_USD, TASK_BUDGET_EXCEEDED_PREFIX,
-  agentKey, errorStatus, modelKeyKey, orgMemberKey, orgMetaKey, orgRemovedKey, orgSettingsKey, pauseKey, scopeKey, spendCounterKey, topUpKey,
-  builtinRecipe, builtinDefaultPin, currentBuiltinVersion, BUILTIN_AGENTS, type ResolvedRecipe, type BudgetScope, type OrgId, type PauseScope,
-} from "@agentx/contracts";
-import { singleOrgIdForEnv } from "../../packages/contracts/src/org-node.js";
+import { DEFAULT_MEMBER_MONTHLY_BUDGET_USD, PER_TASK_BUDGET_USD, PER_TEST_CAP_USD, modelKeyKey, orgMemberKey, orgMetaKey, orgRemovedKey, orgSettingsKey, pauseKey, scopeKey, spendCounterKey, topUpKey, type BudgetScope, type PauseScope } from "@agentx/cloud-contracts";
+import { TASK_BUDGET_EXCEEDED_PREFIX, agentKey, errorStatus, builtinRecipe, builtinDefaultPin, currentBuiltinVersion, BUILTIN_AGENTS, type ResolvedRecipe, type OrgId } from "@rovara-code/contracts";
+import { singleOrgIdForEnv } from "@rovara-code/contracts";
 import { taskKey } from "../../packages/broker/src/developer/task-records.js";
 import { MINIMUM_REMAINING_USD, keyIdOf } from "../../packages/broker/src/org/budget.js";
 import { SCOPE_ERRORS, admitWork, mintOperationKey, type AdmitWorkInput, type MintOperationKeyInput } from "../../packages/broker/src/spend/admission.js";

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { PLAN_DRY_RUN_CLASSES, PlanQualityFindingSchema, type PlanDryRunClass, type PlanQualityFinding } from "@agentx/contracts";
+import { PLAN_DRY_RUN_CLASSES, PlanQualityFindingSchema, type PlanDryRunClass, type PlanQualityFinding } from "@rovara-code/contracts";
 import type { PlanDryRunOutcome } from "./plan-dry-run-results.js";
 import { notTriedOf, type PlanNotTriedClass } from "./plan-check-tried.js";
 import { planDryRunWarnings } from "./plan-dry-run-results.js";

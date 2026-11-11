@@ -5,7 +5,7 @@ import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { LEARNED_CONTEXT_FEATURE, type LearnedContext, type LearnedLesson } from "../../../packages/contracts/src/index.js";
+import { LEARNED_CONTEXT_FEATURE, type LearnedContext, type LearnedLesson } from "@rovara-code/contracts";
 import { WORKER_IMPLEMENTED_FEATURES } from "../../../packages/worker/src/implemented-features.js";
 import { createBaseFileReader, lessonStageOfMode, prepareLearnedContext, withLearnedBlock } from "../../../packages/worker/src/learned-run.js";
 import { codeCite } from "./lesson-helpers.js";

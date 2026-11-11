@@ -12,7 +12,8 @@
 // between a handler returning and the record being written.
 import { GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { isEvalRunMark } from "../lessons/eval-run.js";
-import { PER_TASK_BUDGET_USD, type OrgId, type PauseScope, type SessionBinding } from "@agentx/contracts";
+import { PER_TASK_BUDGET_USD, type PauseScope } from "@agentx/cloud-contracts";
+import { type OrgId, type SessionBinding } from "@rovara-code/contracts";
 import { taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
 import { sessionBindingsOf } from "../rovara-code/session-bindings.js";
 

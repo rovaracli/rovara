@@ -1,23 +1,6 @@
 // Spec 025 FR-007, FR-012 and FR-013 with the bot token. Every failure to reach Slack is
 // "unavailable": the caller fails closed for access and keeps sessions for refreshes (R18).
-import {
-  CHANNEL_MEMBERS_MAX_CHANNELS,
-  SlackTeamIdSchema,
-  SlackUserIdSchema,
-  cleanDisplayName,
-  redactAndCap,
-  type ChannelByNameResponse,
-  type ChannelClassResponse,
-  type ChannelListResponse,
-  type ChannelInfoResponse,
-  type ChannelMembersResponse,
-  type SlackAuthCheckResponse,
-  type TaskPersonProofResponse,
-  type TaskPersonProofRequest,
-  type TaskChannelPeopleResponse,
-  type TaskPeopleDisplayReadRequest,
-  type TaskPeopleDisplayReadResponse,
-} from "@agentx/contracts";
+import { CHANNEL_MEMBERS_MAX_CHANNELS, SlackTeamIdSchema, SlackUserIdSchema, cleanDisplayName, redactAndCap, type ChannelByNameResponse, type ChannelClassResponse, type ChannelListResponse, type ChannelInfoResponse, type ChannelMembersResponse, type SlackAuthCheckResponse, type TaskPersonProofResponse, type TaskPersonProofRequest, type TaskChannelPeopleResponse, type TaskPeopleDisplayReadRequest, type TaskPeopleDisplayReadResponse } from "@rovara-code/contracts";
 
 export type SlackUserStatus = "active" | "gone" | "unavailable";
 export interface SlackDirectory {

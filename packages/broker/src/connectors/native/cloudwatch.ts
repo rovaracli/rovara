@@ -16,7 +16,7 @@ import { randomInt } from "node:crypto";
 import { DescribeAlarmHistoryCommand, DescribeAlarmsCommand, GetMetricDataCommand } from "@aws-sdk/client-cloudwatch";
 import { DescribeLogGroupsCommand, GetQueryResultsCommand, StartQueryCommand, StopQueryCommand } from "@aws-sdk/client-cloudwatch-logs";
 import { GetCallerIdentityCommand, type AssumeRoleCommandInput } from "@aws-sdk/client-sts";
-import { AWS_REGIONS, agentXError, cloudwatchExternalId, cloudwatchRoleAccount, type OrgConnection, type OrgId } from "@agentx/contracts";
+import { AWS_REGIONS, agentXError, cloudwatchExternalId, cloudwatchRoleAccount, type OrgConnection, type OrgId } from "@rovara-code/contracts";
 import type { CheckResult } from "../../connections/store.js";
 import { NativeToolRefusal, type NativeRouting, type NativeTool } from "./runtime.js";
 

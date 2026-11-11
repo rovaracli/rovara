@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createAdminChangeBroker } from "../support/admin-change-broker.js";
 import { adminCall, createAdminBroker, type AdminHandler } from "../support/admin-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
-import { projectRevisionKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { projectRevisionKey } from "@rovara-code/contracts";
 
 beforeEach(() => { vi.spyOn(console, "log").mockImplementation(() => undefined); });
 afterEach(() => vi.restoreAllMocks());

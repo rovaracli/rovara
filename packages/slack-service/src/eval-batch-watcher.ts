@@ -21,13 +21,7 @@
 // Rulings 24 and 26: an ended batch Slack can never post for (a permanent error,
 // PERMANENT_SLACK_ERRORS) is dropped from the watcher's list, logged as an error. A running batch is
 // never dropped. After any other failure the batch is left alone for 10 minutes.
-import type {
-  EvalBatchModelSummary,
-  EvalBatchThreadResult,
-  EvalBatchWatchChange,
-  EvalBatchWatched,
-  EvalBatchWatchUpdateResult,
-} from "@agentx/contracts";
+import type { EvalBatchModelSummary, EvalBatchThreadResult, EvalBatchWatchChange, EvalBatchWatched, EvalBatchWatchUpdateResult } from "@rovara-code/contracts";
 import { batchStartMessage, modelLabel, usd } from "./eval-batch-command.js";
 import { escapeText } from "./slack-format.js";
 

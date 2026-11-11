@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
-import { E2EPolicySchema, E2E_DEFAULT_MODEL_ROUTE_ID, E2E_MODEL_ROUTE_DEFAULT_BUDGETS, e2eModelRouteRevision } from "@agentx/contracts";
+import { E2EPolicySchema, E2E_DEFAULT_MODEL_ROUTE_ID, E2E_MODEL_ROUTE_DEFAULT_BUDGETS, e2eModelRouteRevision } from "@rovara-code/contracts";
 import { DEFAULT_E2E_AGENT_MODELS } from "../../packages/model-runtime/src/config.js";
 import { E2E_BUDGET_EXHAUSTED_PREFIX, createGovernedE2EModelRoute } from "../../packages/model-runtime/src/e2e-route.js";
 import {

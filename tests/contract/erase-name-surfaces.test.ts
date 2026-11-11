@@ -5,9 +5,10 @@
 import { randomUUID } from "node:crypto";
 import { BatchGetCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { agentSessionKey, orgMemberKey, sessionEventId } from "../../packages/contracts/src/index.js";
+import { agentSessionKey, sessionEventId } from "@rovara-code/contracts";
+import { orgMemberKey } from "@agentx/cloud-contracts";
 import { taskKey } from "../../packages/broker/src/developer/task-records.js";
-import { orgFailureIndexKey, orgUsageIndexKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { orgFailureIndexKey, orgUsageIndexKey } from "@rovara-code/contracts";
 import { chosenOwnerNames, ownerNameOverlay } from "../../packages/broker/src/agent-sessions/owner-names.js";
 import { ensureTaskSession } from "../../packages/broker/src/agent-sessions/create.js";
 import { requireSessionLevel } from "../../packages/broker/src/agent-sessions/access.js";

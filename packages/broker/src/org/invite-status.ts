@@ -1,7 +1,8 @@
 // Canonical status for deliberate review/recovery; never infer a terminal state from directory absence.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import { AgentXError, AppOrgInviteStatusSchema, OrgInvitePublicIdSchema, OrgIdSchema, agentXError, developerOrgKey, orgInviteDirectoryKey, orgInviteKey, orgMemberKey, orgMetaKey, orgScoped } from "@agentx/contracts";
+import { AgentXError, OrgIdSchema, agentXError, orgScoped } from "@rovara-code/contracts";
+import { AppOrgInviteStatusSchema, OrgInvitePublicIdSchema, developerOrgKey, orgInviteDirectoryKey, orgInviteKey, orgMemberKey, orgMetaKey } from "@agentx/cloud-contracts";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "../aws/developer-routes.js";
 import { takeRateAt } from "../developer/page-comments.js";
 type Deps = Pick<DeveloperRouteDependencies, "documentClient" | "tableName" | "now">;

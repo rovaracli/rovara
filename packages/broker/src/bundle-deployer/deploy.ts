@@ -7,45 +7,8 @@
 // parameter either kept at its current value or taken from the approval. The caller never supplies a template, a stack, a parameter or a path.
 //
 // All outcomes are values, never thrown text: the only strings returned are fixed reasons and part names.
-import {
-  BUNDLE_PUBLIC_DEPLOYED_KINDS,
-  BUILT_MANIFEST_FILE,
-  BuiltManifestSchema,
-  SynthSettingsSchema,
-  accessTemplatesAgree,
-  canonicalJson,
-  editionBackupParameter,
-  editionRecordParameter,
-  redactedSynthSettings,
-  synthKitSha256,
-  synthSettingsParameter,
-  synthSettingsSha256,
-  BUNDLE_MANIFEST_FILE,
-  BUNDLE_SIGNATURE_FILE,
-  ApprovalRecordSchema,
-  BundleManifestSchema,
-  BundleSignatureSchema,
-  DEPLOYER_PARTS,
-  DEPLOY_LOCK_STALE_MS,
-  DeployerRequestSchema,
-  parseReleaseManifestIgnoringUnknownFields,
-  bundleApprovalKey,
-  approvedFileKey,
-  bundleTrustParameter,
-  deployLockParameter,
-  deployProgressParameter,
-  operatorAccessStateParameter,
-  deployingKey,
-  environmentSettingsPrefix,
-  environmentStackName,
-  installedBundleParameter,
-  renderTemplate,
-  restorePointParameter,
-  sha256OfBytes,
-  verifyBundleSignature,
-  type DeployerPart,
-  type DeployerResult,
-} from "@agentx/contracts";
+import { BUNDLE_PUBLIC_DEPLOYED_KINDS, BUILT_MANIFEST_FILE, BuiltManifestSchema, SynthSettingsSchema, accessTemplatesAgree, editionBackupParameter, editionRecordParameter, redactedSynthSettings, synthKitSha256, synthSettingsParameter, synthSettingsSha256, BUNDLE_MANIFEST_FILE, BUNDLE_SIGNATURE_FILE, ApprovalRecordSchema, BundleManifestSchema, BundleSignatureSchema, DEPLOYER_PARTS, DEPLOY_LOCK_STALE_MS, DeployerRequestSchema, bundleApprovalKey, approvedFileKey, bundleTrustParameter, deployLockParameter, deployProgressParameter, operatorAccessStateParameter, deployingKey, installedBundleParameter, restorePointParameter, sha256OfBytes, verifyBundleSignature, type DeployerPart, type DeployerResult } from "@agentx/cloud-contracts";
+import { canonicalJson, parseReleaseManifestIgnoringUnknownFields, environmentSettingsPrefix, environmentStackName, renderTemplate } from "@rovara-code/contracts";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 

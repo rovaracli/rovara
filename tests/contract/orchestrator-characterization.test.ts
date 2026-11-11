@@ -3,7 +3,7 @@
 import { randomUUID } from "node:crypto";
 import type { AgentSessionRuntime } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it, vi } from "vitest";
-import { agentXError, type ConnectorCatalog } from "../../packages/contracts/src/index.js";
+import { agentXError, type ConnectorCatalog } from "@rovara-code/contracts";
 import { createConnectorTools } from "../../packages/orchestrator/src/connector-tools.js";
 import { createOrchestratorRuntime, runOrchestratorTurn } from "../../packages/orchestrator/src/orchestrator.js";
 import { createOrchestrationTools, type OrchestrationApi } from "../../packages/orchestrator/src/orchestration-tools.js";

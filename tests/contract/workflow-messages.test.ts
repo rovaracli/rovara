@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, WORKFLOW_AUTO_REVIEW_FAILED_MESSAGE, WORKFLOW_BLOCK_REASONS, WORKFLOW_HISTORY_REWRITTEN_MESSAGE, WORKFLOW_PULL_REQUEST_UPDATE_CAUSES, WORKFLOW_REVIEW_FAILURE_REASONS, WORKFLOW_REVIEW_RESULT_INCOMPLETE_MESSAGE, WorkflowStageSchema, WorkflowStateSchema, WORKFLOW_AGENTX_ACTOR_ID, createCandidateManifest, createWorkflowSnapshot, WorkflowSnapshotSchema, WorkflowSnapshotViewSchema, workflowFindingFingerprint, type WorkflowSnapshot } from "@agentx/contracts";
+import { WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, WORKFLOW_AUTO_REVIEW_FAILED_MESSAGE, WORKFLOW_HISTORY_REWRITTEN_MESSAGE, WORKFLOW_PULL_REQUEST_UPDATE_CAUSES, WORKFLOW_REVIEW_FAILURE_REASONS, WORKFLOW_REVIEW_RESULT_INCOMPLETE_MESSAGE, WorkflowStageSchema, WorkflowStateSchema, WORKFLOW_AGENTX_ACTOR_ID, createCandidateManifest, workflowFindingFingerprint } from "@rovara-code/contracts";
+import { WORKFLOW_BLOCK_REASONS, createWorkflowSnapshot, WorkflowSnapshotSchema, WorkflowSnapshotViewSchema, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { WORKFLOW_ACTION_IDS, documentSummaryLines, slackSectionTexts, feedbackReviewFailedMessage, plainBlockReason, planReviewLink, workflowMessage, workflowMessageKey, workflowModalCopy } from "../../packages/broker/src/developer/workflow-messages.js";
 import { WORKFLOW_ACTION_IDS as INTERACTIVITY_ACTION_IDS } from "../../packages/broker/src/aws/slack-interactivity.js";
 import { StrictSlackWeb, visibleSlackText } from "../support/strict-slack.js";

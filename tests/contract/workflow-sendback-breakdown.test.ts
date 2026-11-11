@@ -4,10 +4,10 @@
 // which the worker protocol forbids to carry a breakdown, is not mistaken for a run that lost it.
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it, vi } from "vitest";
-import { createCandidateManifest } from "../../packages/contracts/src/task-workflow-node.js";
-import type { WorkflowSnapshot } from "../../packages/contracts/src/task-workflow-node.js";
-import { taskGraphDigest } from "../../packages/contracts/src/workflow-dependencies-node.js";
-import { builtinSettingsKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { createCandidateManifest } from "@rovara-code/contracts";
+import type { WorkflowSnapshot } from "../../packages/cloud-contracts/src/task-workflow-node.js";
+import { taskGraphDigest } from "@rovara-code/contracts";
+import { builtinSettingsKey } from "@rovara-code/contracts";
 import { executeSerialWorkflowDependencies } from "../../packages/worker/src/workflow-dependencies.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
 import { startTaskWorkflowImplementationFromSystem } from "../../packages/broker/src/aws/developer-tasks.js";

@@ -18,7 +18,7 @@
 // cited line (plus a margin), so a huge file costs little. Nothing here ever writes, and no text of a file is kept or returned: only the verdict. Whether a verdict is FINAL
 // (so it can be kept on the draft and not read again on every page load) is decided here too: a read that failed or ran out of time is not final; a citation that cannot be read
 // by design (no usable quote, a commit the reader cannot fetch, beyond the budget) is a final `unchecked`.
-import { FILE_PROVENANCE_KINDS, setupItemsOf, type Provenance, type SetupItem, type SetupProposal, type SetupVerification } from "@agentx/contracts";
+import { FILE_PROVENANCE_KINDS, setupItemsOf, type Provenance, type SetupItem, type SetupProposal, type SetupVerification } from "@rovara-code/contracts";
 import { githubFullNameOf } from "./setup-items.js";
 
 /** Reads a file at a commit in one of the project's repositories: undefined when the file is not there; throws when GitHub cannot answer. */

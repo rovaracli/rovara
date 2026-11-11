@@ -8,7 +8,7 @@ import { mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/pro
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { crc32 as zlibCrc32, deflateRawSync, inflateRawSync } from "node:zlib";
-import { evaluateMediaGate, evaluatePublicationGate, type MediaGateInput, type EvidenceEnvironment, type EvidenceRaw } from "../../packages/contracts/src/index.js";
+import { evaluateMediaGate, evaluatePublicationGate, type MediaGateInput, type EvidenceEnvironment, type EvidenceRaw } from "@rovara-code/contracts";
 import { MEDIA_DIR, MEDIA_LISTING_FILE, MEDIA_VIDEO_MAX_BYTES, MEDIA_TRACE_MAX_BYTES, admittedMediaPolicy, createMediaRecorder, finalizeMedia, mediaFileName } from "../../packages/verifier/src/executor/media.js";
 import { TRACE_BLANKED, scrubTraceLines, scrubTraceZip } from "../../packages/verifier/src/executor/trace-scrub.js";
 import { createCredentialRedactor } from "../../packages/verifier/src/executor/redact.js";

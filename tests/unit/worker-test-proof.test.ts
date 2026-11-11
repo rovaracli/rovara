@@ -4,7 +4,7 @@
 import { readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { TestProofSchema, type CheckEntry, type ProjectCommand } from "../../packages/contracts/src/index.js";
+import { TestProofSchema, type CheckEntry, type ProjectCommand } from "@rovara-code/contracts";
 import { CheckNotRunError, type CheckPlan, type CheckRunners } from "../../packages/worker/src/verification/checks.js";
 import { AgentFilesRestoreError, gitOriginalCode, ORIGINAL_CODE_REF } from "../../packages/worker/src/verification/original-code.js";
 import { runTestProof } from "../../packages/worker/src/verification/test-proof.js";

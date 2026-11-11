@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { expect, it, vi } from "vitest";
-import { githubInstallationKey, orgGithubInstallationKey, orgMemberKey, orgMetaKey, orgScoped, orgSlackTeamKey, slackTeamOrgKey } from "@agentx/contracts";
+import { githubInstallationKey, orgGithubInstallationKey, orgMemberKey, orgMetaKey, orgSlackTeamKey, slackTeamOrgKey } from "@agentx/cloud-contracts";
+import { orgScoped } from "@rovara-code/contracts";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { clearWorkingBranchSaveReceipts } from "../../packages/broker/src/org/project-working-branch-receipt-cleanup.js";
 import * as receiptCleanup from "../../packages/broker/src/org/project-working-branch-receipt-cleanup.js";

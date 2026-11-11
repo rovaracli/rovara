@@ -2,9 +2,8 @@
 // merged, `pressMerge` turns a press into one pending change that its presser decides on Plan 3's confirmation page, and the change's handler re-reads GitHub for every pull request
 // before it claims and merges them, in order, once.
 import { describe, expect, it } from "vitest";
-import {
-  MERGE_NOT_READY_MESSAGES as M, WORKFLOW_BLOCK_REASONS, MergeViewSchema, NeedsConfirmationReaderSchema, NeedsConfirmationSchema, agentXError, githubMemberKey, memberGithubKey, mergeTrackingKey, orgMemberKey,
-} from "../../packages/contracts/src/index.js";
+import { MERGE_NOT_READY_MESSAGES as M, WORKFLOW_BLOCK_REASONS, orgMemberKey } from "@agentx/cloud-contracts";
+import { MergeViewSchema, NeedsConfirmationReaderSchema, NeedsConfirmationSchema, agentXError, githubMemberKey, memberGithubKey, mergeTrackingKey } from "@rovara-code/contracts";
 import type { PullRequestReview } from "../../packages/broker/src/github-pull-status.js";
 import { getApprovalSubjectHandler, getAnyApproval, mayDecideApproval } from "../../packages/broker/src/agents/approvals.js";
 import { requesterGithubIds, requesterIds } from "../../packages/broker/src/rovara-code/approval.js";

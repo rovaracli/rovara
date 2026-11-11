@@ -5,7 +5,8 @@
 // What it can and cannot see: it asks DynamoDB for the one table by its fixed name (derived-names.ts), only while the control plane stack has no Team record yet. A table whose
 // stack is built (the stack has the TeamRecordEnabled parameter) is the record itself and is never reported. Account LIMITS (Lambda memory, ...) are NOT readable here: they are
 // not in any API this CLI may call; docs/runbooks/new-resource-size-vs-account-limit.md lists them and how to confirm each by hand.
-import { agentXError, environmentStackName, teamRecordTableName } from "@agentx/contracts";
+import { agentXError, environmentStackName } from "@rovara-code/contracts";
+import { teamRecordTableName } from "@agentx/cloud-contracts";
 import type { ParameterStore } from "../environments/parameter-store.js";
 import { embedderRepository } from "./parameters.js";
 import { TEAM_RECORD_PARAMETER, readTeamRecordRecord } from "./team-record-switch.js";

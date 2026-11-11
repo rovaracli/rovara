@@ -1,6 +1,7 @@
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import { AgentXError, AgentXNameSchema, OrgIdSchema, agentXError, orgMetaKey, orgProjectCatalogPk, projectPk } from "@agentx/contracts";
+import { AgentXError, AgentXNameSchema, OrgIdSchema, agentXError, orgProjectCatalogPk, projectPk } from "@rovara-code/contracts";
+import { orgMetaKey } from "@agentx/cloud-contracts";
 import type { TransactItem } from "../audit/outbox.js";
 interface Dependencies { documentClient: { send(command: unknown): Promise<unknown> }; tableName: string }
 type Row = Record<string, unknown>;

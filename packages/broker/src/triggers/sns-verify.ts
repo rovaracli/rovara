@@ -10,7 +10,7 @@
 // Nothing here logs and nothing throws: a message that can't be verified answers false.
 import { X509Certificate, verify } from "node:crypto";
 import { z } from "zod";
-import { SNS_CERT_CACHE_HOURS, SNS_CERT_FETCHES_PER_MINUTE, SNS_CERT_MAX_BYTES, SNS_FETCH_TIMEOUT_MS, SNS_REGION_PATTERN } from "@agentx/contracts";
+import { SNS_CERT_CACHE_HOURS, SNS_CERT_FETCHES_PER_MINUTE, SNS_CERT_MAX_BYTES, SNS_FETCH_TIMEOUT_MS, SNS_REGION_PATTERN } from "@rovara-code/contracts";
 import { vendorFetch } from "../connectors/native/vendor-fetch.js";
 
 const HOUR = 3_600_000;

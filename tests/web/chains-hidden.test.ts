@@ -4,7 +4,7 @@ import { expect, it } from "vitest";
 import { screen } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
-import { SessionViewReaderSchema } from "@agentx/contracts/web";
+import { SessionViewReaderSchema } from "@agentx/cloud-contracts/web";
 import { SessionScreen } from "../../packages/ui/src/screens/session/SessionScreen.js";
 import { AppHostProvider } from "../../packages/ui/src/host.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";

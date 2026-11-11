@@ -1,6 +1,6 @@
 // L3b fix round 1, S5: "What the agent loaded" is mounted behind the same switch as the lessons routes: not on an install with no lesson ports, not for a project whose learning is Off.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { OrgId } from "@agentx/contracts";
+import type { OrgId } from "@rovara-code/contracts";
 import { setLearnedLessonsGate } from "../../packages/broker/src/lessons/policy.js";
 
 const access = vi.hoisted(() => ({ project: "demo", deny: false }));

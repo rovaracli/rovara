@@ -1,0 +1,570 @@
+{
+  "comment": "Convergence W0-3 (R4, owner decision 94): Cloud's contracts export no name Rovara Code's contracts also export, EXCEPT the exact names listed here (per file). Every entry says why, in one of three kinds: `owedUntil` (Cloud is ahead of Code; a Code lane is landing the shape, and the entry fails CI after that date), `cloudOnly: true` (Cloud's own on purpose; never expires) or `migration: true` (a shape in saved data; adopting it is a data migration, so it never expires on its own and is listed in DEFERRED-CHECKS). tests/contract/cloud-contracts-no-duplicate-names.test.ts checks: a name both packages export must be listed under the file that defines it; a listed name must still be shadowed (take it off when Code catches up); an owed entry past owedUntil fails. Importers take a name both define from @agentx/cloud-contracts.",
+  "files": [
+    {
+      "file": "access-policies.ts",
+      "names": [
+        "BOUNDARY_SERVICES",
+        "PolicyScope",
+        "PolicyStatementJson",
+        "SERVICE_ROLE_SERVICES",
+        "defaultBoundaryArn",
+        "defaultBoundaryStatements",
+        "operatorRoleStatements",
+        "serviceRoleStatements"
+      ],
+      "cloudOnly": true,
+      "reason": "Cloud's deploy-role, boundary and operator policies (custom domain, ECR/Cognito/Resolver service-linked roles, team-record storage, CloudFront, AppSync) are AWS infrastructure that Code's reduced public cut does not and should not carry. Infra output must not change."
+    },
+    {
+      "file": "admin.ts",
+      "names": [
+        "AdminHealthResponse",
+        "AdminHealthResponseSchema",
+        "HEALTH_ALARM_CONDITIONAL_SUFFIXES",
+        "HEALTH_ALARM_SUFFIXES"
+      ],
+      "cloudOnly": true,
+      "reason": "The health alarm lists name Cloud's own CloudWatch alarms (the team-record and lessons alarms, conditional suffixes), and AdminHealthResponse carries Cloud's teamRecordCheck and slack/github rows; Code's plugins[] health rows (H3) are adopted by the wave 1 adapter, not by sharing this schema."
+    },
+    {
+      "file": "app-lessons-repo-file.ts",
+      "names": [
+        "LESSON_FILE_ACTIONS",
+        "LessonsRepoFileBody",
+        "LessonsRepoFileBodySchema",
+        "LessonsRepoFileRow",
+        "LessonsRepoFileRowReaderSchema",
+        "LessonsRepoFileRowSchema",
+        "LessonsRepoFileStatus",
+        "LessonsRepoFileStatusReaderSchema",
+        "LessonsRepoFileStatusSchema"
+      ],
+      "owedUntil": "2026-11-25",
+      "reason": "Decision 78 (retireConfirm, retire_confirm and retire_keep) is in Cloud only."
+    },
+    {
+      "file": "app-projects.ts",
+      "names": [
+        "AppProjectDetail",
+        "AppProjectDetailSchema",
+        "AppProjectSummary",
+        "AppProjectSummarySchema",
+        "AppProjectsResponse",
+        "AppProjectsResponseSchema",
+        "ProjectArchiveResponse",
+        "ProjectArchiveResponseSchema",
+        "ProjectSettingsResponse",
+        "ProjectSettingsResponseSchema",
+        "ProjectSetupCheckResponse",
+        "ProjectSetupCheckResponseSchema"
+      ],
+      "owedUntil": "2026-11-25",
+      "reason": "The project summary names the project's meta repository (`metaRepository`, additive, lane srv/needs-broker-ui batch 1), and the detail and every answer that carries the summary or the detail (list, archive, setup check, settings) follow it. Code's summary does not have the field yet, and a Code schema would strip it from the answer; the Code lane that adds it lets these entries go. Same text as Code's apart from that one field."
+    },
+    {
+      "file": "audit.ts",
+      "names": [
+        "AuditActor"
+      ],
+      "cloudOnly": true,
+      "reason": "AuditActor is the audit ledger's actor ({ kind: member | operator | system | github }), a stored record shape of Cloud's own ledger; Code's AuditSink port actor ({ type: person | agent | system }) is mapped by the wave 1 audit adapter."
+    },
+    {
+      "file": "catalog-trust.ts",
+      "names": [
+        "catalogTrustedKeyPems",
+        "loadSignedCatalog"
+      ],
+      "cloudOnly": true,
+      "reason": "Cloud's catalog trust adds the staging-only key list and the build flavor, which belong to Cloud's own build (Code carries only CATALOG_TRUSTED_SIGNING_KEYS)."
+    },
+    {
+      "file": "chain-session.ts",
+      "names": [
+        "ChainStepTaskView",
+        "ChainStepTaskViewReaderSchema",
+        "ChainStepTaskViewSchema"
+      ],
+      "owedUntil": "2026-11-25",
+      "reason": "Decision 70(c) workflow shapes (the re-run of the checks after a merge of the base, its daily allowance, the base-merged block and auto-fix codes) are in Cloud only. Two Code port lanes are building it (fix/code-base-merged-recheck, fix/code-owed-small).ChainStepTaskView holds a workflow snapshot view."
+    },
+    {
+      "file": "developer-tasks-node.ts",
+      "names": [
+        "DeveloperCloseResponse",
+        "DeveloperCloseResponseSchema",
+        "DeveloperPullRequestResponse",
+        "DeveloperPullRequestResponseSchema",
+        "DeveloperTaskListItem",
+        "DeveloperTaskListItemSchema",
+        "DeveloperTaskListResponseSchema",
+        "DeveloperTaskResponseSchema",
+        "DeveloperTaskView"
+      ],
+      "owedUntil": "2026-11-25",
+      "reason": "Decision 70(c) workflow shapes (the re-run of the checks after a merge of the base, its daily allowance, the base-merged block and auto-fix codes) are in Cloud only. Two Code port lanes are building it (fix/code-base-merged-recheck, fix/code-owed-small).Task view and list shapes hold the workflow snapshot view."
+    },
+    {
+      "file": "developer-tasks.ts",
+      "names": [
+        "DeveloperTaskClientView",
+        "DeveloperTaskClientViewSchema",
+        "DeveloperTaskViewSchema",
+        "knownTaskView"
+      ],
+      "owedUntil": "2026-11-25",
+      "reason": "Decision 70(c) workflow shapes (the re-run of the checks after a merge of the base, its daily allowance, the base-merged block and auto-fix codes) are in Cloud only. Two Code port lanes are building it (fix/code-base-merged-recheck, fix/code-owed-small).DeveloperTaskView holds the workflow snapshot view (and the merge tracking item, see rovara-code.ts)."
+    },
+    {
+      "file": "developer-web.ts",
+      "names": [
+        "AppMeResponse",
+        "AppMeResponseSchema",
+        "DeveloperSignInMethod",
+        "DeveloperSignInMethodSchema",
+        "LinkedIdentity",
+        "LinkedIdentitySchema"
+      ],
+      "cloudOnly": true,
+      "reason": "Cloud's sign-in provider list and linked identity are closed lists, and AppMeResponse carries the trial (D6: Cloud readers widen first, if ever)."
+    },
+    {
+      "file": "developer.ts",
+      "names": [
+        "DeveloperProjectsResponse",
+        "DeveloperProjectsResponseSchema",
+        "DeveloperSummary",
+        "DeveloperSummarySchema",
+        "DeveloperWorkspacesResponse",
+        "DeveloperWorkspacesResponseSchema",
+        "UnlinkIdentityAppResponse",
+        "UnlinkIdentityAppResponseSchema"
+      ],
+      "cloudOnly": true,
+      "reason": "DeveloperSummary and its neighbours hold Cloud's closed provider list and org role (D6, D10)."
+    },
+    {
+      "file": "evidence.ts",
+      "names": [
+        "EVIDENCE_DEPENDENCY_LABEL_WORDS",
+        "evidenceDependencyLabelWords"
+      ],
+      "owedUntil": "2026-11-25",
+      "reason": "EVIDENCE_DEPENDENCY_LABEL_WORDS: Cloud words the project image label 'real (company-approved image)' (company-approved extra images, switch pj); Code's wording is older."
+    },
+    {
+      "file": "lessons.ts",
+      "names": [
+        "Lesson",
+        "LessonCandidate",
+        "LessonCandidateSchema",
+        "LessonIdSchema",
+        "LessonProvenance",
+        "LessonProvenanceSchema",
+        "LessonSchema",
+        "ReflectorOutput",
+        "ReflectorOutputSchema"
+      ],
+      "cloudOnly": true,
+      "reason": "Lesson rows hold the audience, which holds Cloud's closed ACL source list: they follow team-record.ts."
+    },
+    {
+      "file": "live-interaction-errors.ts",
+      "names": [
+        "workflowBlockCode",
+        "workflowBlockErrorRef"
+      ],
+      "owedUntil": "2026-11-25",
+      "reason": "Decision 70(c) workflow shapes (the re-run of the checks after a merge of the base, its daily allowance, the base-merged block and auto-fix codes) are in Cloud only. Two Code port lanes are building it (fix/code-base-merged-recheck, fix/code-owed-small).Reads WORKFLOW_BLOCK_REASONS."
+    },
+    {
+      "file": "org-scoped-keys.ts",
+      "names": [
+        "OrgSettingName",
+        "orgSettingsKey"
+      ],
+      "cloudOnly": true,
+      "reason": "OrgSettingName and orgSettingsKey: Cloud holds more company setting names (budgets, spend policy, task stop, local agents) than Code's three."
+    },
+    {
+      "file": "org.ts",
+      "names": [
+        "OrgRole",
+        "OrgRoleSchema"
+      ],
+      "cloudOnly": true,
+      "reason": "OrgRoleSchema carries the Enterprise auditor role; Code's is owner, admin, member (D10)."
+    },
+    {
+      "file": "project-node.ts",
+      "names": [
+        "ProjectDefinition",
+        "ProjectDefinitionSchema",
+        "RepositoryDefinition",
+        "RepositoryDefinitionSchema",
+        "RepositoryHost",
+        "RepositoryHostSchema",
+        "ResolvedGitHubConnector",
+        "StoredProjectDefinition",
+        "StoredProjectDefinitionSchema",
+        "githubConnectorOf",
+        "repositoryHostOf",
+        "withRepositoryHost",
+        "workerProjectDefinition"
+      ],
+      "migration": true,
+      "reason": "ProjectDefinitionSchema refuses a saved repository host: the release before this one reads a project strictly, so writing a host would take a rollback dark (tests/contract/repository-host.test.ts). Code lifted that rule (C2 writes hosts) and adds externalChecks (C5) and the host provider; adoption is a migration with P2-EXTERNAL-CHECKS-CLOUD-ADOPTION."
+    },
+    {
+      "file": "protocol.ts",
+      "names": [
+        "WORKER_INVOCATION_FEATURES",
+        "WorkerInvocation",
+        "WorkerInvocationFeature",
+        "WorkerInvocationSchema"
+      ],
+      "owedUntil": "2026-11-25",
+      "reason": "WorkerInvocationSchema embeds the workflow shapes above, and WORKER_INVOCATION_FEATURES lists the company image feature task.testServices.companyImage.v1 (decision 65: a worker protocol change goes to the owner). Two Code port lanes are building it (fix/code-base-merged-recheck, fix/code-owed-small)."
+    },
+    {
+      "file": "qualification-launch.ts",
+      "names": [
+        "QualificationFacts",
+        "QualificationSettings",
+        "buildRunInstancesInput",
+        "renderQualificationUserData"
+      ],
+      "cloudOnly": true,
+      "reason": "bootStage2Sha256 (the worker's boot stage 2 hash check) belongs to Cloud's EC2 worker boot."
+    },
+    {
+      "file": "rovara-code-node.ts",
+      "names": [
+        "mergeTrackingDecisionDigest"
+      ],
+      "owedUntil": "2026-11-25",
+      "reason": "Decision 70(c) workflow shapes (the re-run of the checks after a merge of the base, its daily allowance, the base-merged block and auto-fix codes) are in Cloud only. Two Code port lanes are building it (fix/code-base-merged-recheck, fix/code-owed-small).mergeTrackingDecisionDigest is computed over the workflow's merge tracking item (see rovara-code.ts)."
+    },
+    {
+      "file": "rovara-code.ts",
+      "names": [
+        "MERGE_NOT_READY_MESSAGES",
+        "WorkflowBranchSync",
+        "WorkflowBranchSyncSchema",
+        "WorkflowFixPayload",
+        "WorkflowFixPayloadSchema"
+      ],
+      "owedUntil": "2026-11-25",
+      "reason": "MERGE_NOT_READY_MESSAGES has the behind-by-hand and base-merged lines (decision 70(c)); WorkflowFixPayload and WorkflowBranchSync carry Cloud's 40-hex commit id where Code's C4 takes any hash length. Two Code port lanes are building it (fix/code-base-merged-recheck, fix/code-owed-small)."
+    },
+    {
+      "file": "rovara-code.ts",
+      "names": [
+        "MergeTrackingItem",
+        "MergeTrackingItemSchema"
+      ],
+      "migration": true,
+      "reason": "MergeTrackingItem keeps approval.githubUserId in stored merge records; Code writes hostUserId. Adopting needs a dual read and a migration first (DEFERRED-CHECKS: CONVERGENCE-W0-3-CONTRACTS)."
+    },
+    {
+      "file": "saved-env-image.ts",
+      "names": [
+        "PrepareSavedEnv",
+        "PrepareSavedEnvSchema",
+        "SavedEnvRegistryAuth",
+        "SavedEnvRegistryAuthSchema",
+        "SavedEnvUse",
+        "SavedEnvUseSchema",
+        "savedEnvManageSessionPolicy",
+        "savedEnvPullSessionPolicy",
+        "savedEnvPushSessionPolicy",
+        "savedEnvRepositoryArn",
+        "savedEnvRepositoryPolicy",
+        "savedEnvScanSessionPolicy"
+      ],
+      "owedUntil": "2026-11-25",
+      "reason": "A company-approved image's mirror repository (`rovara-env/<env>/o<org>/c<image>`, company-images-worker, 0.5.15) is accepted beside a saved environment's repository: the repository name checks, the session policies, the repository policy (the mirror's own role) and the login, prepare and use shapes. Code's text only knows the saved environment's name. SavedEnvRegistryAuthSchema here is the hosted one (the cloud registry's host and the user AWS only), so the loopback registry of Code's laptop adapter is refused where Cloud reads a login. The other new names in this file (isCompanyImageRepositoryName, companyImageMirror*, COMPANY_IMAGE_MIRROR_ACTIONS, companyImageRepositoriesArn) are Cloud's only."
+    },
+    {
+      "file": "saved-env-key-files.ts",
+      "names": [
+        "SAVED_ENV_FIXED_KEY_GLOBS",
+        "environmentKeyFromRepositories",
+        "keyFilePaths"
+      ],
+      "migration": true,
+      "reason": "SAVED_ENV_FIXED_KEY_GLOBS lists the Brazil Config file; it is part of every saved environment's key, so changing it would rebuild every environment."
+    },
+    {
+      "file": "script-tokens.ts",
+      "names": [
+        "CreateScriptTokenBody",
+        "CreateScriptTokenBodySchema",
+        "CreatedScriptToken",
+        "CreatedScriptTokenReaderSchema",
+        "CreatedScriptTokenSchema",
+        "ReadScriptTokenView",
+        "RevokedScriptTokenReaderSchema",
+        "RevokedScriptTokenSchema",
+        "SCRIPT_TOKEN_PERMISSIONS",
+        "ScriptTokenList",
+        "ScriptTokenListReaderSchema",
+        "ScriptTokenListSchema",
+        "ScriptTokenPermission",
+        "ScriptTokenPermissionSchema",
+        "ScriptTokenView",
+        "ScriptTokenViewSchema"
+      ],
+      "owedUntil": "2026-11-25",
+      "reason": "The lessons permission (decision 46b) is in Cloud only."
+    },
+    {
+      "file": "service-catalog-images.ts",
+      "names": [
+        "checkBundleImages",
+        "resolveCatalogImage",
+        "resolveCatalogImages"
+      ],
+      "cloudOnly": true,
+      "reason": "The service catalog's run-time brand (service-catalog-brand.ts) is one module's state: Cloud's loadSignedCatalog (catalog-trust.ts: staging key, build flavor) registers a verified catalog in Cloud's copy, so the functions that read the brand are Cloud's copies too. They follow catalog-trust.ts."
+    },
+    {
+      "file": "service-catalog-verify.ts",
+      "names": [
+        "checkCatalogMirror",
+        "checkMirrorServesDigest"
+      ],
+      "cloudOnly": true,
+      "reason": "The service catalog's run-time brand (service-catalog-brand.ts) is one module's state: Cloud's loadSignedCatalog (catalog-trust.ts: staging key, build flavor) registers a verified catalog in Cloud's copy, so the functions that read the brand are Cloud's copies too. They follow catalog-trust.ts."
+    },
+    {
+      "file": "session-views.ts",
+      "names": [
+        "DeveloperTaskViewReaderSchema",
+        "SessionCloseResponseReaderSchema",
+        "SessionCloseResponseSchema",
+        "SessionResponseReaderSchema",
+        "SessionResponseSchema",
+        "SessionStepTaskResponseReaderSchema",
+        "SessionStepTaskResponseSchema",
+        "SessionView",
+        "SessionViewReaderSchema",
+        "SessionViewSchema"
+      ],
+      "owedUntil": "2026-11-25",
+      "reason": "Decision 70(c) workflow shapes (the re-run of the checks after a merge of the base, its daily allowance, the base-merged block and auto-fix codes) are in Cloud only. Two Code port lanes are building it (fix/code-base-merged-recheck, fix/code-owed-small).SessionView holds the task view and the chain step view."
+    },
+    {
+      "file": "session-views.ts",
+      "names": [
+        "SessionList",
+        "SessionListReaderSchema",
+        "SessionListSchema",
+        "SessionTile",
+        "SessionTileReaderSchema",
+        "SessionTileSchema"
+      ],
+      "owedUntil": "2026-11-25",
+      "reason": "The Finished list (srv/needs-broker-ui-2) puts `finishedAs` on an ended session's tile; Code's tile has no such field. Same text as Code's with that one field. Code needs the field (FINISHED_AS, finishedAs) before this entry can go."
+    },
+    {
+      "file": "setup-proposal.ts",
+      "names": [
+        "SetupApplyResponse",
+        "SetupApplyResponseSchema"
+      ],
+      "owedUntil": "2026-11-25",
+      "reason": "The setup apply answer carries the project detail, which names its meta repository in Cloud (see app-projects.ts). Same text as Code's with Cloud's detail."
+    },
+    {
+      "file": "task-response.ts",
+      "names": [
+        "TaskResponseReaderSchema",
+        "TaskResponseSchema"
+      ],
+      "owedUntil": "2026-11-25",
+      "reason": "Decision 70(c) workflow shapes (the re-run of the checks after a merge of the base, its daily allowance, the base-merged block and auto-fix codes) are in Cloud only. Two Code port lanes are building it (fix/code-base-merged-recheck, fix/code-owed-small).Holds the task view."
+    },
+    {
+      "file": "task-workflow-design-review.ts",
+      "names": [
+        "answerDesignQuestions",
+        "askDesignQuestions",
+        "closeDesignReview",
+        "closeParkedDesignReview",
+        "designReviewRetryOffer",
+        "enableDesignReview",
+        "holdDesignReviewForCost",
+        "lowerDesignReviewTier",
+        "parkDesignReview",
+        "raiseDesignReviewCap",
+        "reholdDesignReviewForCost",
+        "resolveDesignReview",
+        "resumeBlockedDesignReview",
+        "resumeParkedDesignReview",
+        "retryDesignReview",
+        "retryDesignReviewNotRun",
+        "skipDesignReview",
+        "startDesignReview",
+        "submitDesignReview"
+      ],
+      "owedUntil": "2026-11-25",
+      "reason": "Decision 70(c) workflow shapes (the re-run of the checks after a merge of the base, its daily allowance, the base-merged block and auto-fix codes) are in Cloud only. Two Code port lanes are building it (fix/code-base-merged-recheck, fix/code-owed-small).Design review transitions over the workflow snapshot."
+    },
+    {
+      "file": "task-workflow-node.ts",
+      "names": [
+        "WorkflowSnapshot",
+        "WorkflowSnapshotSchema",
+        "abandonWorkflowFix",
+        "answerIntentQuestions",
+        "answerWorkflowIntent",
+        "applyWorkflowFeedbackCheckChanges",
+        "blockWorkflow",
+        "blockWorkflowBranchSync",
+        "blockWorkflowCiFix",
+        "blockWorkflowPullRequestUpdate",
+        "closePlanCritique",
+        "collectWorkflowFeedbackBundles",
+        "completeWorkflowBuild",
+        "completeWorkflowFeedbackReview",
+        "createWorkflowSnapshot",
+        "decideWorkflow",
+        "decideWorkflowFeedbackFindings",
+        "endStuckUnderstand",
+        "endWorkflowBranchSync",
+        "endWorkflowCiFixUnrelated",
+        "feedbackCardCiFailures",
+        "keepWorkflowPullRequests",
+        "nextWorkflowPullRequestUpdate",
+        "observeWorkflowPullRequest",
+        "observeWorkflowPullRequestMergedWithFix",
+        "openReviewFindings",
+        "recordExpectedWorkflowPullRequests",
+        "recordIntentAssessment",
+        "recordWorkflowBranchSync",
+        "recordWorkflowFeedbackCiFailures",
+        "recordWorkflowPullRequestHeadTrees",
+        "recordWorkflowPullRequestUpdate",
+        "recordWorkflowSyncConflict",
+        "recordWorkflowVerification",
+        "registerWorkflowPullRequest",
+        "requestWorkflowFeedbackReview",
+        "resolveWorkflowReviewFindings",
+        "resumeWorkflowAfterNotRun",
+        "retryPlanCritique",
+        "retryWorkflowBranchSync",
+        "retryWorkflowCiFix",
+        "retryWorkflowFeedbackReview",
+        "returnWorkflowToImplementation",
+        "returnWorkflowToImplementationAutomatically",
+        "sendBackInstructions",
+        "sendBackProblems",
+        "skipPlanRevision",
+        "startWorkflowBranchSync",
+        "startWorkflowBranchSyncRun",
+        "startWorkflowFix",
+        "startWorkflowPlanAfterUnderstand",
+        "startWorkflowPullRequestUpdate",
+        "startWorkflowUnderstand",
+        "stopWorkflowFeedbackRound",
+        "stopWorkflowStepNotRun",
+        "submitPlanCritique",
+        "submitWorkflowArtifact",
+        "submitWorkflowReview",
+        "unblockWorkflowPublication",
+        "workflowAnswer",
+        "workflowAutoFixCounts",
+        "workflowAutomaticRetryDecision",
+        "workflowFindingAccepted",
+        "workflowFixRounds",
+        "workflowFixRoundsBegun",
+        "workflowFixRoundsLeft",
+        "workflowFollowsOnlyMerge",
+        "workflowKeepPullRequestsOffered",
+        "workflowPullRequestTrees",
+        "workflowPullRequestUpdateDue",
+        "workflowResolveFindingsOffered",
+        "workflowSendBackOffered"
+      ],
+      "owedUntil": "2026-11-25",
+      "reason": "Decision 70(c) workflow shapes (the re-run of the checks after a merge of the base, its daily allowance, the base-merged block and auto-fix codes) are in Cloud only. Two Code port lanes are building it (fix/code-base-merged-recheck, fix/code-owed-small).Also workflowSendBackOffered and the daily allowance; Code's observeWorkflowPullRequest takes CODE_HOST sources, which Cloud does not have yet."
+    },
+    {
+      "file": "task-workflow-revise.ts",
+      "names": [
+        "liveSteerCodingBlockReason",
+        "replanForChangedSpec",
+        "revisePlanWithLiveChange",
+        "workflowRedirectReviseOffered",
+        "workflowReviseOffered",
+        "workflowReviseShapeOk",
+        "workflowSpecReplanOffered"
+      ],
+      "owedUntil": "2026-11-25",
+      "reason": "Decision 70(c) workflow shapes (the re-run of the checks after a merge of the base, its daily allowance, the base-merged block and auto-fix codes) are in Cloud only. Two Code port lanes are building it (fix/code-base-merged-recheck, fix/code-owed-small).Revise offers over these shapes; Code's standard-sequence rule is adopted when the shapes meet."
+    },
+    {
+      "file": "task-workflow.ts",
+      "names": [
+        "WORKFLOW_BLOCK_REASONS",
+        "WorkflowSnapshotShapeSchema",
+        "WorkflowSnapshotViewSchema"
+      ],
+      "owedUntil": "2026-11-25",
+      "reason": "Decision 70(c) workflow shapes (the re-run of the checks after a merge of the base, its daily allowance, the base-merged block and auto-fix codes) are in Cloud only. Two Code port lanes are building it (fix/code-base-merged-recheck, fix/code-owed-small).WORKFLOW_BLOCK_REASONS carries the base-merged reasons; the snapshot view shape follows."
+    },
+    {
+      "file": "team-record.ts",
+      "names": [
+        "AclSnapshot",
+        "AclSnapshotSchema",
+        "Audience",
+        "AudienceSchema"
+      ],
+      "cloudOnly": true,
+      "reason": "AclSnapshotSchema keeps Cloud's closed source list (slack, github, linear, jira, mcp, rovara, codehost:<name>); Code's takes any id, which loosened team-record reads (W0-3 review H2)."
+    },
+    {
+      "file": "test-environment-wire.ts",
+      "names": [
+        "TaskDependencyPlan",
+        "TaskDependencyPlanSchema",
+        "TestEnvTaskPlan",
+        "TestEnvTaskPlanSchema"
+      ],
+      "owedUntil": "2026-11-25",
+      "reason": "Company-approved extra test-service images (switch pj): the plan dependency `backing: company`, its `company` block and the worker feature task.testServices.companyImage.v1 exist in Cloud only."
+    },
+    {
+      "file": "workflow-autofix.ts",
+      "names": [
+        "AUTO_FIX_ASK_REASONS",
+        "AUTO_FIX_BLOCK_CAUSES",
+        "AUTO_FIX_CODES",
+        "AUTO_FIX_CODE_CLASS",
+        "AUTO_FIX_ENVIRONMENT_CODES",
+        "AutoFixAskReason",
+        "AutoFixBlockCause",
+        "AutoFixBudget",
+        "AutoFixCode",
+        "AutoFixDecision",
+        "AutoFixFacts",
+        "autoFixAskCard",
+        "autoFixDecision",
+        "classifyBlockedWorkflow"
+      ],
+      "owedUntil": "2026-11-25",
+      "reason": "Decision 70(c) workflow shapes (the re-run of the checks after a merge of the base, its daily allowance, the base-merged block and auto-fix codes) are in Cloud only. Two Code port lanes are building it (fix/code-base-merged-recheck, fix/code-owed-small).The auto-fix codes (base-merged, autonomy-suggest, head-moved)."
+    },
+    {
+      "file": "workflow-publication-context.ts",
+      "names": [
+        "workflowPublicationContext"
+      ],
+      "owedUntil": "2026-11-25",
+      "reason": "Decision 70(c) workflow shapes (the re-run of the checks after a merge of the base, its daily allowance, the base-merged block and auto-fix codes) are in Cloud only. Two Code port lanes are building it (fix/code-base-merged-recheck, fix/code-owed-small).Reads the workflow snapshot."
+    }
+  ]
+}

@@ -16,7 +16,7 @@
 // `readVisible` (read-visible.ts) calls it, and every lesson read already goes through `readVisible` (tests/unit/lessons/read-paths.test.ts). A new path that hands a lesson to a person or to an
 // agent WITHOUT `readVisible` (the PR "Lessons used" list, publishing a lesson to a repository) must call `liveVisible` with the reader of that path (`undefined` for something everyone in the
 // project will read) and use only what it returns.
-import { OrgIdSchema } from "@agentx/contracts";
+import { OrgIdSchema } from "@rovara-code/contracts";
 import type { TaskVisibilityPort } from "../team-record/live-audience.js";
 import { audienceWithin, inAudience, lessonAudiencesOf, openToWholeProject, type LessonTaskAudience, type RosterMemo } from "./task-audience.js";
 import { projectRepoScopesOf } from "./project-repo-audience.js";

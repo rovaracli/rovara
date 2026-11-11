@@ -9,7 +9,7 @@
 import { useEffect, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { z } from "zod";
-import { AdminBudgetSettingsSchema, AppOrgMembersResponseReaderSchema } from "@agentx/contracts/web";
+import { AdminBudgetSettingsSchema, AppOrgMembersResponseReaderSchema } from "@agentx/cloud-contracts/web";
 import { isConfirmUrl } from "../text/links.js";
 import { useAppHost } from "../host.js";
 import { createApiClient, type Reader } from "./client.js";

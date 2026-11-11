@@ -2,7 +2,7 @@
 //   - `metaRepoRouteDependencies(dependencies)`: `createFromMeta` (POST /v1/app/projects with a `metaRepository`) and `metaConfig` (GET/POST /v1/app/projects/{name}/meta-config...).
 //   - `metaConfigQueueFor(dependencies)`: what the GitHub push handler calls to queue a config import.
 // Everything GitHub-facing goes through the org's own connection (`githubScope`), the same way project creation and settings do.
-import { META_CONFIG_MAX_BYTES, agentXError, type OrgId } from "@agentx/contracts";
+import { META_CONFIG_MAX_BYTES, agentXError, type OrgId } from "@rovara-code/contracts";
 import { requireRepositoryConnected } from "../../org/github-connection.js";
 import { createProjectFromMeta, type CreateFromMetaDependencies } from "../../org/create-from-meta.js";
 import { queueMetaConfigImport, type QueueDependencies } from "../../meta-repo/config-import.js";

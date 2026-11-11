@@ -1,6 +1,7 @@
 import {expect,it} from "vitest";
-import * as contracts from "@agentx/contracts";
-import {AgentXError,errorStatus,orgMemberKey,orgMetaKey,developerOrgKey,orgPk,orgSlackTeamKey,slackTeamOrgKey,projectMemberKey} from "@agentx/contracts";
+import { allContracts as contracts } from "../support/contracts-barrels.js";
+import { AgentXError, errorStatus, orgPk, projectMemberKey } from "@rovara-code/contracts";
+import { orgMemberKey, orgMetaKey, developerOrgKey, orgSlackTeamKey, slackTeamOrgKey } from "@agentx/cloud-contracts";
 import {GetCommand,QueryCommand} from "@aws-sdk/lib-dynamodb";
 import {routeDeveloperRequest,type DeveloperCaller,type DeveloperRouteDependencies} from "../../packages/broker/src/aws/developer-routes.js";
 import {webRouteAllowed} from "../../packages/broker/src/aws/web-auth.js";

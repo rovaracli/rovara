@@ -3,7 +3,7 @@
 // can't see is never counted. Bounded: at most LESSON_HOME_PROJECTS_MAX projects the person maintains, read at once inside Home's source time. Nothing is written. The reader is plugged in at
 // handler start where the team record and lessons are on (`setLessonsHomeReader`); without it the source makes no card.
 import { createHash } from "node:crypto";
-import { lessonsPauseLine, projectAllows, type OrgId } from "@agentx/contracts";
+import { lessonsPauseLine, projectAllows, type OrgId } from "@rovara-code/contracts";
 import { fit, quoted, registerHomeCardSource, type HomeCardSource, type HomeSourceCard } from "../agent-sessions/home.js";
 
 export const LESSON_HOME_PROJECTS_MAX = 10;

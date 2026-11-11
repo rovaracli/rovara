@@ -3,7 +3,7 @@
 // presser hears at once that it was received; every other button keeps today's handling.
 import { createHmac } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { isAdminChangePressEvent } from "../../packages/contracts/src/index.js";
+import { isAdminChangePressEvent } from "@rovara-code/contracts";
 import {
   ADMIN_CHANGE_CANCEL_RECEIVED_TEXT,
   ADMIN_CHANGE_RECEIVED_TEXT,

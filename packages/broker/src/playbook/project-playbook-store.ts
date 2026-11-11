@@ -1,26 +1,8 @@
 // "How we work" (H2): the project playbook document, read and written the way a project's code settings are (rovara-code/code-settings.ts): one item per org and project, a
 // revision the writer must have read, and the audit event in the same transaction as the write. A project with no document has the built-in default.
 import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  DEFAULT_PROJECT_PLAYBOOK,
-  DESIGN_REVIEW_DEFAULT_SETTING,
-  DESIGN_REVIEW_MODES,
-  DesignReviewSettingSchema,
-  PLAYBOOK_STALE_MESSAGE,
-  PROCESS_UNAVAILABLE_MESSAGE,
-  ProjectPlaybookSchema,
-  agentKey,
-  agentXError,
-  canonicalJson,
-  designReviewSettingOf,
-  projectPlaybookKey,
-  type AgentId,
-  type DefaultProcess,
-  type DesignReviewSetting,
-  type EditionPolicy,
-  type OrgId,
-  type ProjectPlaybook,
-} from "@agentx/contracts";
+import { DEFAULT_PROJECT_PLAYBOOK, DESIGN_REVIEW_DEFAULT_SETTING, DESIGN_REVIEW_MODES, DesignReviewSettingSchema, PLAYBOOK_STALE_MESSAGE, PROCESS_UNAVAILABLE_MESSAGE, ProjectPlaybookSchema, agentKey, agentXError, canonicalJson, designReviewSettingOf, projectPlaybookKey, type AgentId, type DefaultProcess, type DesignReviewSetting, type OrgId, type ProjectPlaybook } from "@rovara-code/contracts";
+import { type EditionPolicy } from "@agentx/cloud-contracts";
 import { auditOccurrence, auditPlaybookDefaultProcessChanged, auditPlaybookDesignReviewChanged } from "../audit/events.js";
 import { checkDesignReviewWrite, lockRevisionCheck, readDesignReviewLock } from "../design-review/lock.js";
 import { flushAuditEvents } from "../audit/flush.js";

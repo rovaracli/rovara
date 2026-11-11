@@ -6,14 +6,15 @@ import { taskKey, taskPointerKey, taskRecipeKey } from "../../packages/broker/sr
 import { operationKey } from "../../packages/broker/src/aws/cancellation.js";
 import { checkedTaskStopSnapshot } from "../../packages/broker/src/org/task-stop-window.js";
 import { spendRequestView, createSpendRequest, escalateOwnerRequests } from "../../packages/broker/src/spend/requests.js";
-import { AppNoteSchema } from "../../packages/contracts/src/task-workflow-node.js";
+import { AppNoteSchema } from "@rovara-code/contracts";
 import { SLACK_CHANNEL, SLACK_TEAM, call, orchestratorPrincipal } from "../support/slack-broker.js";
 import { startAgentRun } from "../../packages/broker/src/agents/runs.js";
 import { fixtureProject } from "../support/project-ai-source.js";
 import { randomUUID } from "node:crypto";
 import { expect, it } from "vitest";
 import { TransactWriteCommand, TransactGetCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
-import { topUpKey, defaultSpendPolicy, ownerBudgetKey, runCostKey, DEFAULT_AGENT_GUARDRAILS, ROVARA_CODE_AGENT_ID, agentGuardrailsKey, builtinSettingsKey, orgSettingsKey, orgScoped, projectAiKey, orgProjectCatalogKey, orgMemberKey, developerOrgKey, orgMetaKey, projectMetaKey, projectMemberKey, agentKey, projectRevisionKey, projectAgentKey } from "@agentx/contracts";
+import { topUpKey, defaultSpendPolicy, ownerBudgetKey, orgSettingsKey, projectAiKey, orgMemberKey, developerOrgKey, orgMetaKey } from "@agentx/cloud-contracts";
+import { runCostKey, DEFAULT_AGENT_GUARDRAILS, ROVARA_CODE_AGENT_ID, agentGuardrailsKey, builtinSettingsKey, orgScoped, orgProjectCatalogKey, projectMetaKey, projectMemberKey, agentKey, projectRevisionKey, projectAgentKey } from "@rovara-code/contracts";
 import { MAYA } from "../support/developer-task-broker.js";
 import { planAnswer, planDocument } from "../support/plan-documents.js";
 import { setup, PREPARED, CODING, TRIAGE, BEN, DEB, ADA } from "../support/spend-world.js";
@@ -2607,7 +2608,7 @@ async function ownSourceFundingFixture(mixed = false) {
  const { capturingAuditDeps } = await import("../support/audit-capture.js");const audit = capturingAuditDeps();const fundingNow = Date.now() - 1000;
  const f = await fixture(0, { agents: { modelSources: { launch: { kinds: ["bedrock"] } } }, extra: { audit: audit.audit, now: () => fundingNow } });
  audit.attach(f.t.db);audit.audit.documentClient = f.t.db as never;
- const { modelSourcesKey } = await import("@agentx/contracts");
+ const { modelSourcesKey } = await import("@rovara-code/contracts");
  const { bedrockClaudeModelIds } = await import("@agentx/model-runtime/catalog");
  const sourceId = "src_abcdefghijklmnopqrst", sourceKey = modelSourcesKey(TEST_ORG);
  f.t.db.set({ ...sourceKey, orgId: TEST_ORG, revision: 1,
@@ -2636,7 +2637,7 @@ it("funding C: a changed ChatGPT payer connection revision cannot inherit the ad
  let connectedAt = "2026-10-31T07:00:00Z";
  const f = await fixture(0, { extra: { chatgpt: { settings: async () => ({ enabled: true, preferredModel: "gpt-6.1-sol" }),
   view: async () => ({ connected: true, status: "connected", connectedAt, models: ["gpt-6.1-sol"] }) } } });
- const { modelSourcesKey } = await import("@agentx/contracts");
+ const { modelSourcesKey } = await import("@rovara-code/contracts");
  f.t.db.set({ ...modelSourcesKey(TEST_ORG), orgId: TEST_ORG, revision: 1, sources: [], order: ["personal-chatgpt"], credentials: [], removing: [] });
  const started = await f.start();expect(started.status, JSON.stringify(started.body)).toBe(200);
  const taskId = (started.body.task as { taskId: string }).taskId, task = f.t.meta(taskId), prepare = f.t.operations(String(task.workspaceId)).find(operation => operation.kind === "prepare")!;
@@ -2732,7 +2733,7 @@ it("funding C: an actual ChatGPT backup resolved to Rovara cannot inherit exempt
  const { capturingAuditDeps } = await import("../support/audit-capture.js"), audit = capturingAuditDeps();let connected = true;
  const f = await fixture(0, { extra: { audit: audit.audit, chatgpt: { settings: async () => ({ enabled: true, preferredModel: "gpt-6.1-sol" }), view: async () => ({ connected, status: "connected", connectedAt: "2026-10-31T07:00:00Z", models: ["gpt-6.1-sol"] }) } } });
  audit.attach(f.t.db);audit.audit.documentClient = f.t.db as never;
- const { modelSourcesKey } = await import("@agentx/contracts"), sourceKey = modelSourcesKey(TEST_ORG);
+ const { modelSourcesKey } = await import("@rovara-code/contracts"), sourceKey = modelSourcesKey(TEST_ORG);
  f.t.db.set({ ...sourceKey, orgId: TEST_ORG, revision: 1, sources: [], order: ["personal-chatgpt"], credentials: [], removing: [] });
  f.t.db.set({ ...orgSettingsKey(TEST_ORG, "MODEL_SELECTION_POLICY"), entityType: "MODEL_SELECTION_POLICY", orgId: TEST_ORG, version: 1, revision: 1, rankingVersion: "g3-v1", stepOverrides: { build: { model: { provider: "openai", modelId: "gpt-6.1-sol" }, fallbackModel: { provider: "amazon-bedrock", modelId: "us.anthropic.claude-sonnet-4-6" }, locked: false } } });
  const started = await f.start();expect(started.status, JSON.stringify(started.body)).toBe(200);
@@ -2809,7 +2810,7 @@ it("funding review: an exempt key receives only the remaining customer limit", a
 });
 
 it("enrollment cutover reports verified own-source funding as exempt, without changing the task", async () => {
- const { captureCompanyCutover } = await import("../../packages/broker/src/org/task-stop-cutover-review.js"), { BUILTIN_AGENT_IDS } = await import("@agentx/contracts");
+ const { captureCompanyCutover } = await import("../../packages/broker/src/org/task-stop-cutover-review.js"), { BUILTIN_AGENT_IDS } = await import("@rovara-code/contracts");
  const f = await ownSourceFundingFixture(), reply = await f.start();expect(reply.status).toBe(200);
  const taskId = (reply.body.task as { taskId: string }).taskId, before = f.t.meta(taskId), agents = f.t.deps();expect(agents.modelRouting).toBeDefined();
  for (const id of BUILTIN_AGENT_IDS) { const key = builtinSettingsKey(TEST_ORG, id);if (f.t.db.get(key) === undefined) f.t.db.set({ ...key, orgId: TEST_ORG, entityType: "BUILTIN_AGENT_SETTINGS", agentId: id, revision: 1, stopKind: "inherit" }); }
@@ -2828,7 +2829,7 @@ for (const state of ["ready", "enabled"] as const) it(`spend-request decider rec
 });
 
 for (const scenario of ["plain", "requested", "own-source", "spent", "zero", "own-source-zero"] as const) it(`cutover projection agrees with real Continue: ${scenario}`, async () => {
- const { BUILTIN_AGENT_IDS } = await import("@agentx/contracts");
+ const { BUILTIN_AGENT_IDS } = await import("@rovara-code/contracts");
  const { capturingAuditDeps } = await import("../support/audit-capture.js");
  const { reviewTaskStopEnrollment, writeTaskStopEnrollment } = await import("../../packages/broker/src/org/task-stop-enrollment.js");
  const f = scenario.startsWith("own-source") ? await ownSourceFundingFixture() : await fixture();

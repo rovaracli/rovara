@@ -5,15 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gunzipSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
-import {
-  AGENTX_BOOT_STAGE2_SHA256,
-  EC2_USER_DATA_MAX_BYTES,
-  Ec2WorkerBootConfigSchema,
-  ec2WorkerBootScript,
-  ec2WorkerUserData,
-  type Ec2WorkerBootConfig,
-} from "../../packages/contracts/src/session.js";
-import { SECRET_ARN_MAX_LENGTH } from "../../packages/contracts/src/model-providers.js";
+import { AGENTX_BOOT_STAGE2_SHA256, EC2_USER_DATA_MAX_BYTES, Ec2WorkerBootConfigSchema, ec2WorkerBootScript, ec2WorkerUserData, type Ec2WorkerBootConfig } from "@rovara-code/contracts";
+import { SECRET_ARN_MAX_LENGTH } from "@rovara-code/contracts";
 
 // A named environment's boot is two files (Task 10): boot.sh is user data (stage 1), boot-stage2.sh ships in the worker image. The user data
 // tests render boot.sh; the tests about what the boot does read both.

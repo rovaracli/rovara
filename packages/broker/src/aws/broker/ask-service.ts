@@ -11,7 +11,7 @@ import { sessionPageUrl } from "../../decisions/open-path.js";
 import { LambdaClient } from "@aws-sdk/client-lambda";
 import { GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { createHmac } from "node:crypto";
-import { AskModelAccessRequestSchema, AskRefSchema, agentXError, askRequestKey, isSystemOwnerId, liveInteractionFlagOn, type HookRecord, type OrgId } from "@agentx/contracts";
+import { AskModelAccessRequestSchema, AskRefSchema, agentXError, askRequestKey, isSystemOwnerId, liveInteractionFlagOn, type HookRecord, type OrgId } from "@rovara-code/contracts";
 import { handleLinearComment, type LinearCommentDependencies } from "../../rovara-code/linear-comments.js";
 import { settleLinearScrubs } from "../../agent-sessions/ask-linear-scrub.js";
 import { connectionWorkspaceKeys } from "../../connections/store.js";
@@ -57,7 +57,7 @@ async function peopleOf(dependencies: AwsBrokerDependencies, task: DeveloperTask
   for (const id of ids) { const name = chosen.get(id); if (name !== undefined) entry(id).names.add(name); else entry(id); }
   entry(task.developerId).names.add(task.developerName);
   if (task.slackUserId !== undefined) entry(task.developerId).handles.add(task.slackUserId);
-  for (const person of people?.people ?? []) { const found = entry(person.developerId); found.names.add(person.name); found.handles.add(person.slackUserId); }
+  for (const person of people?.people ?? []) { const found = entry(person.developerId); found.names.add(person.name); if (person.slackUserId !== undefined) found.handles.add(person.slackUserId); }
   return [...stored].map(([developerId, found]) => ({ developerId, names: [...found.names].filter((name) => name !== ""), handles: [...found.handles].filter((handle) => handle !== "") }));
 }
 

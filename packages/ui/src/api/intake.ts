@@ -1,7 +1,7 @@
 // Slice 5 "Outside tools": the project's waiting tickets, its watched tracker sources and its ticket updates settings (`/v1/app/projects/{project}/intake...`). Loaded only with the project's
 // tickets section (a lazy chunk) and by Home's Start / Not this one buttons.
 import { z } from "zod";
-import { IntakeWaitingListSchema, TicketUpdatesViewSchema, type IntakeChannelRef, type TicketUpdatesSettings } from "@agentx/contracts/web";
+import { IntakeWaitingListSchema, TicketUpdatesViewSchema, type IntakeChannelRef, type TicketUpdatesSettings } from "@agentx/cloud-contracts/web";
 import type { AppHost } from "../host.js";
 import { createApiClient } from "./client.js";
 

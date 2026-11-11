@@ -2,7 +2,7 @@
 // This says when it can move: the version the layer's RUNNING version builds on, against the version the company has adopted now. It is a read. The running version is compared, not the
 // draft, so the notice stays until the move is published (a draft moved by "Update" and left unpublished is still an update waiting). Moving the draft is the agent's `update-base`
 // route and publishing it is the ordinary publish, which asks a second person when the newer Rovara Code loosens what the less-safe rules cover.
-import { ROVARA_CODE_AGENT_ID, type AgentId, type OrgId } from "@agentx/contracts";
+import { ROVARA_CODE_AGENT_ID, type AgentId, type OrgId } from "@rovara-code/contracts";
 import type { AgentStore } from "../agents/store.js";
 
 export async function processUpdate(store: AgentStore, orgId: OrgId, agentId: AgentId, version: number): Promise<{ from: number; to: number } | undefined> {

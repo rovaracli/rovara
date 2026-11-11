@@ -2,7 +2,7 @@
 // A row is one rule in plain words, its value, and its ORIGIN. An origin is never guessed: it comes from a marker the broker sent (a source and a lock), a lock flag, or a plain comparison with the default the
 // contract names. A word this version does not know is "Origin unknown" (never a default). A read that gives a value only (lessons, learning, known failing tests, company rules) has no origin chip: only a lock
 // flag the server sent shows one. Every `locked: true` is shown as locked, whoever locked it. A source the page cannot read produces no rows at all (the panel lists it as "Not available yet").
-import { DESIGN_REVIEW_DEFAULT_SETTING, designReviewSettingOf, type KnownFailingPolicyState, type ProjectPlaybookResponse, type StageModelsResponse } from "@agentx/contracts/web";
+import { DESIGN_REVIEW_DEFAULT_SETTING, designReviewSettingOf, type KnownFailingPolicyState, type ProjectPlaybookResponse, type StageModelsResponse } from "@agentx/cloud-contracts/web";
 import type { LearningView } from "../../api/learning.js";
 import type { LessonsView } from "../../api/lessons.js";
 import type { CompanyRulesSummary } from "../../api/agreement.js";

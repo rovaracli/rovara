@@ -3,7 +3,7 @@
 // write nothing. Every author is an outsider (no Linear-to-member link): the Ask is rated by a hash of the author, and its context is the Linear tier's alone.
 import { createHmac, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { askRequestKey, type HookRecord, type OrgId } from "../../packages/contracts/src/index.js";
+import { askRequestKey, type HookRecord, type OrgId } from "@rovara-code/contracts";
 import { linearCommentIdFor } from "../../packages/broker/src/rovara-code/linear-write.js";
 import { askIdFor, completeAsk, prepareAskTurn, submitAsk, withoutMentions, LINEAR_TURN_INSTRUCTIONS, type AskDependencies } from "../../packages/broker/src/agent-sessions/ask.js";
 import { bindSessionSurface } from "../../packages/broker/src/agent-sessions/bindings.js";

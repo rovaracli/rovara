@@ -4,8 +4,8 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, type MockIn
 import { ASANA_MCP_ENDPOINT, ASANA_TOKEN_ENDPOINT, connectMcp } from "@agentx/gateway";
 import { asanaConnectorType } from "../../packages/broker/src/aws/asana-connector-type.js";
 import { githubConnectorType, type ConnectorType } from "../../packages/broker/src/aws/connector-types.js";
-import { ConnectorCatalogSchema } from "../../packages/contracts/src/connectors-node.js";
-import { SlackThreadWorkspaceResultSchema } from "../../packages/contracts/src/slack.js";
+import { ConnectorCatalogSchema } from "@rovara-code/contracts";
+import { SlackThreadWorkspaceResultSchema } from "@rovara-code/contracts";
 import { startFakeAsana, type FakeAsana } from "../support/fake-asana.js";
 import { memorySecretStore } from "../support/refresh-token-fakes.js";
 import { call, createAuditedSlackBroker as createBroker, ensureWorkspace, loadSlackBroker, markReady, orchestratorPrincipal, type Handler } from "../support/slack-broker.js";

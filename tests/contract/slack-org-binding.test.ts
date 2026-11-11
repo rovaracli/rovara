@@ -2,8 +2,9 @@
 // binding, the limit counters and the project all stay inside that org.
 import { createHmac, randomUUID } from "node:crypto";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { slackBindingKey, slackBindingPk, slackLimitPk, slackOrganizationLimitKey, slackMemberLimitKey } from "../../packages/contracts/src/org-scoped-keys.js";
-import { slackTeamOrgKey, singleOrgIdForEnv, type OrgId } from "../../packages/contracts/src/org-node.js";
+import { slackBindingKey, slackBindingPk, slackLimitPk, slackOrganizationLimitKey, slackMemberLimitKey } from "@rovara-code/contracts";
+import { slackTeamOrgKey } from "../../packages/cloud-contracts/src/org-node.js";
+import { singleOrgIdForEnv, type OrgId } from "@rovara-code/contracts";
 import { createSlackIngressHandler } from "../../packages/broker/src/aws/slack-ingress.js";
 import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
 import { resolveSlackOrg, resolveSlackOrgForInstall, type OrgResolver } from "../../packages/broker/src/org/resolve.js";

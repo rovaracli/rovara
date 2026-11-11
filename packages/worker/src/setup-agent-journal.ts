@@ -9,10 +9,7 @@
 //   - the first reason wins and is final; when two limits are met at once the order is money, time, attempts, hosts, so the same facts always give the same word.
 // A limit stop keeps everything learned: `finishStoppedRun` reads whatever proposal block the model had given (and what the folders show), and the journal lists the commands that worked.
 // Nothing here reads a command's output for meaning: the exit code, the time and the command's own words are all it looks at.
-import {
-  SETUP_AGENT_LIMITS_DEFAULT, SETUP_BLOCKED_HOSTS_MAX, SETUP_JOURNAL_MAX_ENTRIES, SETUP_JOURNAL_TAIL_BYTES, SETUP_HOST_WAIT_MAX_HOURS, SetupAgentLimitsSchema, SetupHostSchema, SetupJournalEntrySchema, SetupRunSummarySchema,
-  oneLineText, type SetupAgentLimits, type SetupJournalEntry, type SetupProposal, type SetupRunEndWord, type SetupRunSummary,
-} from "@agentx/contracts";
+import { SETUP_AGENT_LIMITS_DEFAULT, SETUP_BLOCKED_HOSTS_MAX, SETUP_JOURNAL_MAX_ENTRIES, SETUP_JOURNAL_TAIL_BYTES, SETUP_HOST_WAIT_MAX_HOURS, SetupAgentLimitsSchema, SetupHostSchema, SetupJournalEntrySchema, SetupRunSummarySchema, oneLineText, type SetupAgentLimits, type SetupJournalEntry, type SetupProposal, type SetupRunEndWord, type SetupRunSummary } from "@rovara-code/contracts";
 import type { SetupAgentHooks, SetupCommandDecision, SetupCommandRecord, TrackedFilesVerdict } from "./setup-agent.js";
 import { readSetupProposalAnswer, type SetupDraftRepository } from "./setup-draft.js";
 import type { SetupScan } from "./setup-scan.js";

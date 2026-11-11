@@ -1,7 +1,7 @@
 // S2 of the wire-lessons review: the audit sink must never pass an event that grants something without writing it. Every action of the library is either given a ledger name or listed as bookkeeping,
 // an unmapped action under `requireAudit` fails (so the change is refused), and the moved-citation and merge events reach the ledger.
 import { describe, expect, it } from "vitest";
-import { AuditEventInputSchema } from "../../../packages/contracts/src/index.js";
+import { AuditEventInputSchema } from "@agentx/cloud-contracts";
 import { BOOKKEEPING, LEDGERED, lessonAuditSink } from "../../../packages/broker/src/lessons/audit-sink.js";
 import { emitAudit, requireAudit } from "../../../packages/broker/src/lessons/policy.js";
 import { LESSON_AUDIT_ACTIONS, type LessonAuditAction } from "../../../packages/broker/src/lessons/types.js";

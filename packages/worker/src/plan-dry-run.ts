@@ -1,10 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { lstat, mkdir, rm, stat } from "node:fs/promises";
 import { dirname, join, resolve, sep } from "node:path";
-import {
-  PLAN_DRY_RUN_SCHEMA_VERSION, PLAN_DRY_RUN_TOTAL_BUDGET_MS, PlanDryRunReportSchema, builtinFileCheckOf, parsePlanDocument, planDryRunCommandSha256,
-  type PlanDryRunClass, type PlanDryRunReport, type PlanDryRunUnavailableReason,
-} from "@agentx/contracts";
+import { PLAN_DRY_RUN_SCHEMA_VERSION, PLAN_DRY_RUN_TOTAL_BUDGET_MS, PlanDryRunReportSchema, builtinFileCheckOf, parsePlanDocument, planDryRunCommandSha256, type PlanDryRunClass, type PlanDryRunReport, type PlanDryRunUnavailableReason } from "@rovara-code/contracts";
 import { ROVARA_CREATED_LABEL, ROVARA_RUN_LABEL, createProcessDockerCli, type DockerCli } from "@agentx/verifier";
 import { materializeBaseSource } from "./baseline-source-export.js";
 import type { CandidateRepositoryInput } from "./verification/candidate.js";

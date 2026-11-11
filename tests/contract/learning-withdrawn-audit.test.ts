@@ -2,7 +2,8 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import type { DeveloperCaller } from "../../packages/broker/src/aws/developer-routes.js";
-import { agentXError, orgMemberKey, orgProjectCatalogKey } from "../../packages/contracts/src/index.js";
+import { agentXError, orgProjectCatalogKey } from "@rovara-code/contracts";
+import { orgMemberKey } from "@agentx/cloud-contracts";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
 import { eraseLearningSubject } from "../../packages/broker/src/learning/cleanup.js";
 import { acceptSuggestion, dismissSuggestion } from "../../packages/broker/src/learning/decide.js";

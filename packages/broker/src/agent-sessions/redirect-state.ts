@@ -4,7 +4,7 @@
 //     task's items), and the list the sweep walks to close a redirect nobody finished;
 //   - the counters of the rates (5 redirects per task per hour, 3 per step attempt), conditional on the count that was read, so two requests cannot both take the last place.
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { INDEX_EXPIRY_ATTRIBUTE, REDIRECT_ITEM_TTL_SECONDS, RedirectRecordSchema, type OrgId, type RedirectRecord, type RedirectState } from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, REDIRECT_ITEM_TTL_SECONDS, RedirectRecordSchema, type OrgId, type RedirectRecord, type RedirectState } from "@rovara-code/contracts";
 import { failedIndexes, type Item, type TransactItem } from "../agents/table-writes.js";
 
 export interface RedirectStateDependencies {

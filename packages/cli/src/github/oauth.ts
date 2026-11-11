@@ -3,7 +3,7 @@
 // conversion; an App made before this plan has neither, and this command stores them. Only that App secret changes: the other
 // fields (the private key, the webhook secret) are kept as they are. The client secret is read hidden (or from stdin), is never
 // printed or logged, and is never put in an error.
-import { agentXError } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
 import { readEnvironmentSettings, type EnvironmentSettings } from "../environments/settings.js";
 import type { ParameterStore } from "../environments/parameter-store.js";
 import type { InitSecrets } from "../init/context.js";

@@ -1,4 +1,4 @@
-import { SessionIdSchema, SessionResponseReaderSchema, SessionCloseResponseReaderSchema, SessionFollowResponseReaderSchema, MergeDoneReaderSchema } from "@agentx/contracts/web";
+import { SessionIdSchema, SessionResponseReaderSchema, SessionCloseResponseReaderSchema, SessionFollowResponseReaderSchema, MergeDoneReaderSchema } from "@agentx/cloud-contracts/web";
 import type { AppHost } from "../host.js";
 import { createApiClient } from "./client.js";
 import { StartedCodeReader } from "./code.js";

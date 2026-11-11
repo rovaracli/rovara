@@ -2,7 +2,7 @@
 // fails, `tx` needs a per-project allow-list first. Covered: the setup proposal (sanitized draft), the approve card, the task plans (CHECKS and IMPLEMENT), the Prove report, the evidence pack, and the PR lines the evidence feeds
 // (the pull request body takes its testing lines from the pack and has no other test-services input).
 import { describe, expect, it } from "vitest";
-import { TestEnvironmentBodySchema, projectMetaKey, projectRevisionKey, type OrgId, type TestEnvDraft, type TestEnvironmentBody } from "@agentx/contracts";
+import { TestEnvironmentBodySchema, projectMetaKey, projectRevisionKey, type OrgId, type TestEnvDraft, type TestEnvironmentBody } from "@rovara-code/contracts";
 import { approveTestEnvItemsFor } from "../../packages/broker/src/decisions/test-env-source.js";
 import { approveTestEnvironment, proposeTestEnvironment, recordTestEnvProveReport, type TestEnvDeps } from "../../packages/broker/src/org/test-environment.js";
 import { buildEvidencePack } from "../../packages/broker/src/rovara-code/evidence-pack.js";

@@ -3,7 +3,7 @@
 // (same ids), which the intake drops.
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it, vi } from "vitest";
-import { hostRateLimitRetryAt, type ChangeRequestRef, type ChangeRequestStatus, type CodeHost, type CodeHostEvent, type ReadBudget } from "../../packages/contracts/src/index.js";
+import { hostRateLimitRetryAt, type ChangeRequestRef, type ChangeRequestStatus, type CodeHost, type CodeHostEvent, type ReadBudget } from "@rovara-code/contracts";
 import { runCodeHostPollPasses } from "../../packages/broker/src/aws/broker/code-host-poll.js";
 import { dynamoPollStore, pollTargetId } from "../../packages/broker/src/plugins/events/poll-store.js";
 import { CLOSED_POLL_INTERVAL_MS, DEFAULT_POLL_INTERVAL_MS, MAX_POLL_TARGETS, MAX_SEEN_FACTS, POLL_RETRY_MAX_MS, pollChanges, runPollPass, type PollTarget } from "../../packages/broker/src/plugins/events/poller.js";
@@ -15,14 +15,14 @@ import { createPluginRegistry } from "../../packages/broker/src/plugins/registry
 import { githubCodeHost } from "../../packages/broker/src/plugins/code-host/github/index.js";
 import { trackingRecoveryItem } from "../../packages/broker/src/aws/workflow-merge-recovery.js";
 import { linkedChangeRequestItem } from "../../packages/broker/src/rovara-code/linked-change-requests.js";
-import { editionPolicy } from "../../packages/contracts/src/index.js";
-import { TRACKING_HEARTBEAT_MINUTES } from "../../packages/contracts/src/rovara-code.js";
+import { editionPolicy } from "@agentx/cloud-contracts";
+import { TRACKING_HEARTBEAT_MINUTES } from "@rovara-code/contracts";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { NOW, TABLE, TASK_ID, world as trackingWorld } from "../support/rovara-code-tracking.js";
 
 const URL = "https://git.example.test/acme/api";
-const SCOPE = { system: "private-install" } as const;
+const SCOPE = { system: "install" } as const;
 const KIND = "fake";
 
 /** A fake host that polls: it spends `requestsPerRead` reads of the allowance each time it is asked for a status. */
@@ -68,7 +68,7 @@ const statusOf = (overrides: Partial<ChangeRequestStatus> = {}): ChangeRequestSt
   requestedReviewers: 0, reviews: [], ...overrides,
 });
 const TARGET: PollTarget = { id: "t", ref: { repository: { url: URL }, id: "1", url: `${URL}/pull/1` } };
-const review = (login: string, state: "APPROVED" | "CHANGES_REQUESTED", revision = "a".repeat(40)) => ({ reviewer: { login, hostUserId: "9" }, accountType: "User", state, revision, submittedAt: "2026-10-31T10:00:00.000Z" });
+const review = (login: string, state: "APPROVED" | "CHANGES_REQUESTED", revision = "a".repeat(40)) => ({ reviewer: { login, hostUserId: "9" }, accountType: "person" as const, state, revision, submittedAt: "2026-10-31T10:00:00.000Z" });
 const passing = (name: string) => ({ name, state: "completed" as const, conclusion: "success" as const, required: false, url: "" });
 
 describe("P6: what a poll finds becomes the events a webhook would have given", () => {

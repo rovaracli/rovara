@@ -4,7 +4,7 @@
 // different body or action, is IDEMPOTENCY_CONFLICT. A record past its expiry (the TTL can lag) is no record: the id is free again, and the
 // next write replaces it. Writing the record after the change, without a caller or without an expiry, is what this replaces.
 import { GetCommand, type TransactWriteCommandInput } from "@aws-sdk/lib-dynamodb";
-import { INDEX_EXPIRY_ATTRIBUTE, agentXError, type OrgKey } from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, agentXError, type OrgKey } from "@rovara-code/contracts";
 
 type Send = { send(command: unknown): Promise<unknown> };
 export type RequestTransactItem = NonNullable<TransactWriteCommandInput["TransactItems"]>[number];

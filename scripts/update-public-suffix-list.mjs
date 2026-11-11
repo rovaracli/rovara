@@ -1,4 +1,4 @@
-// Regenerates packages/contracts/src/public-suffix-rules.ts (the data public-suffix.ts matches against) from the Public Suffix List at one commit.
+// Regenerates public-suffix-rules.ts of Rovara Code's contracts (vendored since convergence W0-3: run this in Code, then refresh the pin) (the data public-suffix.ts matches against) from the Public Suffix List at one commit.
 //
 //   node scripts/update-public-suffix-list.mjs <commit-sha>
 //
@@ -65,5 +65,5 @@ for (const method of ["add", "delete", "clear"] as const) {
 export const PUBLIC_SUFFIX_LIST_COMMIT = ${JSON.stringify(commit)};
 export const PUBLIC_SUFFIX_RULES: ReadonlySet<string> = Object.freeze(rules);
 `;
-writeFileSync(fileURLToPath(new URL("../packages/contracts/src/public-suffix-rules.ts", import.meta.url)), module);
-console.log(`wrote packages/contracts/src/public-suffix-rules.ts: ${String(rules.size)} rules from ${commit}`);
+writeFileSync(fileURLToPath(new URL("../vendor/rovara-code/packages/contracts/src/public-suffix-rules.ts", import.meta.url)), module);
+console.log(`wrote vendor/rovara-code/packages/contracts/src/public-suffix-rules.ts: ${String(rules.size)} rules from ${commit}`);

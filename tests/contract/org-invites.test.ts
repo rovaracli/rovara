@@ -2,7 +2,7 @@
 // sign-in, and what the sign-in answers when the invite could not be used.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { orgInviteKey, orgInviteRequestKey } from "@agentx/contracts";
+import { orgInviteKey, orgInviteRequestKey } from "@agentx/cloud-contracts";
 import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
 import { createDeveloperApiConfiguration } from "../../packages/broker/src/aws/workflow-dependencies-configuration.js";
 import { sha256Hex } from "../../packages/broker/src/developer/tokens.js";

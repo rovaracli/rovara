@@ -3,8 +3,8 @@
 import { expect, it } from "vitest";
 import { screen, within } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
-import { SessionViewReaderSchema } from "@agentx/contracts/web";
-import { createCandidateManifest } from "@agentx/contracts";
+import { SessionViewReaderSchema } from "@agentx/cloud-contracts/web";
+import { createCandidateManifest } from "@rovara-code/contracts";
 import { workspaceFixture as fixture, workspaceWorkflow as workflow } from "./support/workspace-fixture.js";
 import { Workspace } from "../../packages/ui/src/screens/session/Workspace.js";
 import { AppHostProvider } from "../../packages/ui/src/host.js";

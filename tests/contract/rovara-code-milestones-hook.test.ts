@@ -2,9 +2,9 @@
 // the handlers Plan 9 registers hear it after the commit, and again from the dispatch sweep while one of them has not.
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { codeMilestoneKey, agentSessionKey } from "../../packages/contracts/src/org-scoped-keys.js";
-import { OrgIdSchema } from "../../packages/contracts/src/org.js";
-import type { CodeMilestone } from "../../packages/contracts/src/rovara-code.js";
+import { codeMilestoneKey, agentSessionKey } from "@rovara-code/contracts";
+import { OrgIdSchema } from "@rovara-code/contracts";
+import type { CodeMilestone } from "@rovara-code/contracts";
 import {
   CODE_MILESTONE_ATTEMPTS_MAX,
   CODE_MILESTONE_DUE_PK,

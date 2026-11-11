@@ -1,10 +1,7 @@
 // Design review stage, DR2 (designs-2026-10-30/design-review-stage.md 3.1): Understand's design check and the deterministic ON/OFF resolution. Pure code: no model decides the mode.
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
-import {
-  DESIGN_REASONS, DESIGN_REVIEW_DEFAULT_SETTING, INTENT_BLOCK_INFO_STRING, readIntentBlock,
-  type DesignReason, type DesignReviewSetting, type IntentAssessment,
-} from "../../packages/contracts/src/index.js";
+import { DESIGN_REASONS, DESIGN_REVIEW_DEFAULT_SETTING, INTENT_BLOCK_INFO_STRING, readIntentBlock, type DesignReason, type DesignReviewSetting, type IntentAssessment } from "@rovara-code/contracts";
 import {
   designClassificationLine, designReasonPhrase, resolveDesignMode, skipRefusalText, skipVerdict, type DesignModeDecision, type DesignModeInput,
 } from "../../packages/broker/src/design-review/mode.js";

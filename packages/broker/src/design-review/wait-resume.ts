@@ -4,7 +4,8 @@
 //
 // An ANSWER or a DECISION on a parked review needs no resume: `answerDesignQuestions` and the design card's approval accept a parked wait directly (the wait record is simply gone or ignored afterwards), after the same
 // eligibility checks their handlers make. This handler is for the "Resume" button, and for the person who wants it open again without deciding yet.
-import { WorkflowTransitionError, agentXError, designWaitOf, resumeParkedDesignReview, type DesignReason, type EditionPolicy, type WorkflowSnapshot } from "@agentx/contracts";
+import { WorkflowTransitionError, agentXError, designWaitOf, type DesignReason } from "@rovara-code/contracts";
+import { resumeParkedDesignReview, type EditionPolicy, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { taskKey } from "../developer/task-records.js";
 import type { DesignApproverDirectory } from "./approval.js";
 import type { EffectiveDesignReviewSetting } from "./effective-setting.js";

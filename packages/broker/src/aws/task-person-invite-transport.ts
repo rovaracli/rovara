@@ -1,10 +1,5 @@
 import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
-import {
-  TaskPersonInviteClaimRequestSchema,
-  TaskPersonInviteOutcomeSchema,
-  type TaskPersonInviteClaimRequest,
-  type TaskPersonInviteOutcome,
-} from "@agentx/contracts";
+import { TaskPersonInviteClaimRequestSchema, TaskPersonInviteOutcomeSchema, type TaskPersonInviteClaimRequest, type TaskPersonInviteOutcome } from "@rovara-code/contracts";
 
 export interface TaskPersonInviteInvokeReply { FunctionError?: string; Payload?: Uint8Array }
 export type TaskPersonInviteInvoker = (input: {

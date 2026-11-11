@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
-import { editionPolicy, singleOrgIdForEnv, slackTeamOrgKey } from "@agentx/contracts";
+import { editionPolicy, slackTeamOrgKey } from "@agentx/cloud-contracts";
+import { singleOrgIdForEnv } from "@rovara-code/contracts";
 import { stopSlackThreadTask } from "../../packages/broker/src/aws/broker/slack-workflow-events.js";
 import { answerSlackChatGpt } from "../../packages/broker/src/aws/slack-chatgpt.js";
 import { requireSlackAllowedByEdition } from "../../packages/broker/src/aws/broker/dependency-wiring.js";

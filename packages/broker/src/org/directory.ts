@@ -1,6 +1,7 @@
 // Company directory privacy and exact-email lookup (owner option A, 2026-10-26).
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { OrgMemberLookupBodySchema, OrgRoleSchema, agentXError, normalizeEmail, orgEmailKey, orgMemberKey, orgScoped, type OrgRole } from "@agentx/contracts";
+import { OrgMemberLookupBodySchema, OrgRoleSchema, orgEmailKey, orgMemberKey, type OrgRole } from "@agentx/cloud-contracts";
+import { agentXError, normalizeEmail, orgScoped } from "@rovara-code/contracts";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "../aws/developer-routes.js";
 import { DeveloperSignInStore } from "../developer/store.js";
 import { takeRateAt } from "../developer/page-comments.js";

@@ -7,10 +7,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import {
-  AllowedDomainSchema, DEFAULT_AGENT_ALLOW_DOMAINS, ProjectDefinitionSchema, egressDomainsKey, ProjectNetworkSchema, ProjectSettingsBodySchema, StoredProjectDefinitionSchema, githubInstallationKey, githubRepoProjectKey, orgGithubInstallationKey,
-  orgProjectCatalogKey, projectMemberKey, projectMetaKey, projectRevisionKey, workerProjectDefinition, type GithubInstallationRecord, type OrgId, type OrgRole,
-} from "../../packages/contracts/src/index.js";
+import { AllowedDomainSchema, DEFAULT_AGENT_ALLOW_DOMAINS, egressDomainsKey, ProjectNetworkSchema, ProjectSettingsBodySchema, orgProjectCatalogKey, projectMemberKey, projectMetaKey, projectRevisionKey, type OrgId } from "@rovara-code/contracts";
+import { ProjectDefinitionSchema, StoredProjectDefinitionSchema, workerProjectDefinition } from "@agentx/cloud-contracts";
+import { githubInstallationKey, githubRepoProjectKey, orgGithubInstallationKey, type GithubInstallationRecord, type OrgRole } from "@agentx/cloud-contracts";
 import { developerTokenKey, saveDeveloperEnvironment } from "../../packages/cli/src/developer/config.js";
 import { executeCli } from "../../packages/cli/src/main.js";
 import { InMemoryTokenStore } from "../../packages/cli/src/token-store.js";

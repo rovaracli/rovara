@@ -1,4 +1,4 @@
-// Enterprise foundations, task N3: verifies a signed release bundle (packages/contracts/src/bundle.ts) before `rovara upgrade --bundle` changes anything.
+// Enterprise foundations, task N3: verifies a signed release bundle (packages/cloud-contracts/src/bundle.ts) before `rovara upgrade --bundle` changes anything.
 // Order: signature over the exact bytes of bundle.json, the customer's approved bundle id (if given), the manifest's shape, the directory holds exactly the
 // listed files (no extra, no missing, no link), every file's size and SHA-256, and the release inside agrees with the bundle. Any failure is a refusal with
 // a fixed message; nothing is read from AWS and nothing is written here.
@@ -8,20 +8,8 @@ import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFil
 import { tmpdir } from "node:os";
 import { dirname, join, sep } from "node:path";
 import { pipeline } from "node:stream/promises";
-import {
-  BUNDLE_MANIFEST_FILE,
-  BUNDLE_MANIFEST_MAX_BYTES,
-  BUNDLE_MAX_FILES,
-  BUNDLE_SIGNATURE_FILE,
-  BUNDLE_SIGNATURE_MAX_BYTES,
-  BundleManifestSchema,
-  BundleSignatureSchema,
-  ReleaseManifestSchema,
-  agentXError,
-  sha256OfBytes,
-  verifyBundleSignature,
-  type BundleManifest,
-} from "@agentx/contracts";
+import { BUNDLE_MANIFEST_FILE, BUNDLE_MANIFEST_MAX_BYTES, BUNDLE_MAX_FILES, BUNDLE_SIGNATURE_FILE, BUNDLE_SIGNATURE_MAX_BYTES, BundleManifestSchema, BundleSignatureSchema, sha256OfBytes, verifyBundleSignature, type BundleManifest } from "@agentx/cloud-contracts";
+import { ReleaseManifestSchema, agentXError } from "@rovara-code/contracts";
 import { loadRelease, type LoadedRelease } from "../../deploy/release.js";
 
 export interface VerifiedBundle {

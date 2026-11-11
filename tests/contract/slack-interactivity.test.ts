@@ -1,21 +1,8 @@
 // tests/contract/slack-interactivity.test.ts
 import { createHash, createHmac, randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  CONFIRMATION_TTL_MS,
-  createWorkflowSnapshot,
-  createCandidateManifest,
-  openReviewFindings,
-  WorkflowSnapshotSchema,
-  submitWorkflowArtifact,
-  answeredConfirmationBlocks,
-  confirmationBlocks,
-  confirmationClickEventId,
-  type PendingConfirmation,
-  type TaskPeopleDisplayReadRequest,
-  type SlackRequestMessage,
-  type WorkflowSnapshot,
-} from "../../packages/contracts/src/index.js";
+import { CONFIRMATION_TTL_MS, createCandidateManifest, answeredConfirmationBlocks, confirmationBlocks, confirmationClickEventId, type PendingConfirmation, type TaskPeopleDisplayReadRequest, type SlackRequestMessage } from "@rovara-code/contracts";
+import { createWorkflowSnapshot, openReviewFindings, WorkflowSnapshotSchema, submitWorkflowArtifact, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import {
   UNKNOWN_BUTTON_TEXT,
   WORKFLOW_ACTION_IDS,
@@ -34,7 +21,7 @@ import {
 } from "../../packages/broker/src/aws/slack-interactivity.js";
 import { SlackWorkflowStartError, answerChosenRequest, answerRequestEventId, createDynamoWorkflowChoiceStore, workflowChoiceRefusal } from "../../packages/broker/src/aws/slack-workflow-choice.js";
 import { createAnswerQueue } from "../../packages/broker/src/aws/slack-ingress.js";
-import { workflowChoicePut } from "../../packages/contracts/src/index.js";
+import { workflowChoicePut } from "@rovara-code/contracts";
 import { PutCommand } from "@aws-sdk/lib-dynamodb";
 import type { SendMessageCommand } from "@aws-sdk/client-sqs";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";

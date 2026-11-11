@@ -8,10 +8,7 @@
 // Informational: a fault anywhere only means there is no pack for this code, and the pull request and the page say what they always said. Nothing here can change a verdict, block a publication or hold a callback
 // past its bound. Video, trace, screenshots and API samples are not gathered by this path (their capture lane is separate): the builder is given no media gate, so none is ever kept.
 import { PutObjectCommand } from "@aws-sdk/client-s3";
-import {
-  EVIDENCE_NOT_TESTED_MAX, EVIDENCE_RAW_ARTIFACT, EVIDENCE_RAW_MAX_BYTES, EvidencePackSchema, EvidenceRawSchema, evidenceIsFor,
-  type CheckEntry, type CheckKind, type EvidenceEnvironment, type EvidenceNotTested, type EvidencePack, type EvidenceRaw, type TestEnvProdDeny,
-} from "@agentx/contracts";
+import { EVIDENCE_NOT_TESTED_MAX, EVIDENCE_RAW_ARTIFACT, EVIDENCE_RAW_MAX_BYTES, EvidencePackSchema, EvidenceRawSchema, evidenceIsFor, type CheckEntry, type CheckKind, type EvidenceEnvironment, type EvidenceNotTested, type EvidencePack, type EvidenceRaw, type TestEnvProdDeny } from "@rovara-code/contracts";
 import type { TestProofActions } from "../developer/test-proof-lines.js";
 import { evidenceTagging, storeEvidenceArtifacts, type EvidenceArtifactStore } from "../aws/evidence-artifacts.js";
 import type { PinnedDependency } from "./dependency-evidence.js";

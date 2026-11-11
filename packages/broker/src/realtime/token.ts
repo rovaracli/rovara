@@ -3,22 +3,8 @@
 // sign-in token is never accepted by the authorizer and this token is never a sign-in), and says which org and person it is for and which project channels they had
 // a role on when it was made. The authorizer checks every subscription against it.
 import { decodeProtectedHeader, importJWK, jwtVerify } from "jose";
-import {
-  REALTIME_TOKEN_AUDIENCE,
-  REALTIME_TOKEN_ISSUER,
-  REALTIME_TOKEN_PROJECTS_MAX,
-  REALTIME_TOKEN_SECONDS,
-  RealtimeTokenClaimsSchema,
-  agentXError,
-  projectChannel,
-  projectSegment,
-  userChannel,
-  type OrgId,
-  type OrgRole,
-  type RealtimeTokenClaims,
-  type RealtimeTokenRequest,
-  type RealtimeTokenResponse,
-} from "@agentx/contracts";
+import { REALTIME_TOKEN_AUDIENCE, REALTIME_TOKEN_ISSUER, REALTIME_TOKEN_PROJECTS_MAX, RealtimeTokenClaimsSchema, projectChannel, projectSegment, userChannel, type OrgRole, type RealtimeTokenClaims, type RealtimeTokenRequest, type RealtimeTokenResponse } from "@agentx/cloud-contracts";
+import { REALTIME_TOKEN_SECONDS, agentXError, type OrgId } from "@rovara-code/contracts";
 import { randomUUID } from "node:crypto";
 import type { PublicSigningJwk, TokenSigner } from "../developer/tokens.js";
 

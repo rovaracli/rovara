@@ -10,7 +10,7 @@ import { GitHubAppCredentialProvider } from "../../packages/broker/src/github-ap
 const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
 const pem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
 const REPOSITORY = "https://github.com/PrepLabsAI/Sample-Project-A.git";
-const SCOPE = { system: "private-install" } as const;
+const SCOPE = { system: "install" } as const;
 
 function github(options: { probeStatuses?: Array<number | "throw">; readiness?: boolean; delaysMs?: number[] } = {}) {
   const probes: Array<{ url: string; headers: Record<string, string> }> = [];

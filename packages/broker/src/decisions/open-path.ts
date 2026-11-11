@@ -1,6 +1,6 @@
 // Where a decision card's "Open" goes for a task. The web app has no route for a task by its own id: a task is read on its session's page (`/app/sessions/:id`, `paths.session` in the UI),
 // so every card source that opens a task builds its link here, and `tests/web/decision-open-paths.test.ts` checks each one against the app's real routes (QA6-02: `/app/tasks/<uuid>` was "Not found").
-import { SessionIdSchema, decisionFocusPath } from "@agentx/contracts";
+import { SessionIdSchema, decisionFocusPath } from "@rovara-code/contracts";
 
 /** The page of a session in the web app. */
 export const sessionOpenPath = (sessionId: string): string => `/app/sessions/${sessionId}`;

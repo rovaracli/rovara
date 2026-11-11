@@ -1,13 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  E2ERuntimeCapabilityDescriptorSchema,
-  E2ERuntimeReadinessSchema,
-  E2ETargetSchema,
-  resolveE2ERuntimeReadiness,
-  toE2ERuntimeAvailability,
-  type E2ERuntimeCapabilityDescriptor,
-  type E2ERuntimeReadinessInput,
-} from "../../packages/contracts/src/index.js";
+import { E2ERuntimeCapabilityDescriptorSchema, E2ERuntimeReadinessSchema, E2ETargetSchema, resolveE2ERuntimeReadiness, toE2ERuntimeAvailability, type E2ERuntimeCapabilityDescriptor, type E2ERuntimeReadinessInput } from "@rovara-code/contracts";
 
 const digest = "a".repeat(64);
 type WebDescriptor = Extract<E2ERuntimeCapabilityDescriptor, { kind: "web" }>;

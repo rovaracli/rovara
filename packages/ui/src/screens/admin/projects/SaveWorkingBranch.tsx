@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { ProjectWorkingBranchSaveBodySchema, ProjectWorkingBranchSaveResultReaderSchema, type ProjectWorkingBranchPreview, type ProjectWorkingBranchSaveBody } from "@agentx/contracts/web";
+import { ProjectWorkingBranchSaveBodySchema, ProjectWorkingBranchSaveResultReaderSchema, type ProjectWorkingBranchPreview, type ProjectWorkingBranchSaveBody } from "@agentx/cloud-contracts/web";
 import { createApiClient } from "../../../api/client.js";
 import { ApiError } from "../../../api/errors.js";
 import { useAppHost } from "../../../host.js";

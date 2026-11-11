@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { BundleManifestSchema, BundleSignatureSchema, sha256OfBytes, verifyBundleSignature } from "@agentx/contracts";
+import { BundleManifestSchema, BundleSignatureSchema, sha256OfBytes, verifyBundleSignature } from "@agentx/cloud-contracts";
 import { LITELLM_SOURCE_IMAGE } from "../../infra/lib/bundle-images.js";
 import { buildBundle } from "../../scripts/release/bundle.js";
 import { IMAGES, builtBundle, fakeExporter, newTestKey, ociArchive, writeRelease, type BuiltBundle, RELEASE_LABELS } from "../support/bundle-fixture.js";

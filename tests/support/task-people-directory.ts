@@ -1,5 +1,5 @@
 // Slack's People directory for a test task: Maya (the owner) and the given people, all in the project's channel. Lets a test make someone a viewer through the People flow, as the old page's tests do.
-import { SLACK_OIDC_ISSUER, type TaskPeopleDisplayReadRequest, type TaskPersonProofRequest } from "@agentx/contracts";
+import { SLACK_OIDC_ISSUER, type TaskPeopleDisplayReadRequest, type TaskPersonProofRequest } from "@rovara-code/contracts";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import type { CheckTaskPerson } from "../../packages/broker/src/developer/task-people.js";
 import type { Developer } from "./developer-task-broker.js";

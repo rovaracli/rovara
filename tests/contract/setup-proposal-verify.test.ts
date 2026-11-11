@@ -1,7 +1,7 @@
 // Meta repo lane B, task B3: the broker re-reads every place a setup proposal says a value came from. A model can invent a quote, a file or a line; this is what stops the
 // page from showing an invented source as a checked one.
 import { describe, expect, it, vi } from "vitest";
-import { sanitizeSetupProposal, setupItemsOf, type SetupProposal } from "../../packages/contracts/src/index.js";
+import { sanitizeSetupProposal, setupItemsOf, type SetupProposal } from "@rovara-code/contracts";
 import { VERIFY_LINE_SLACK, VERIFY_QUOTE_MIN_CHARS, VERIFY_READS_MAX, citationHolds, verifyProposal, verifyProposalDetailed, type CitationFileReader } from "../../packages/broker/src/rovara-code/setup-proposal-verify.js";
 
 const COMMIT = "a".repeat(40);

@@ -2,7 +2,8 @@
 // APPROVED version 1, with its audit event, in one transaction. It is the only way a version is made without a second admin, so it is deliberately narrow: only for a company with NO version and nothing waiting (the transaction
 // is conditional on that), only version 1, never an overwrite, and the version says `source: "seed"` so the page shows "Rovara setup" and the history never passes it off as an admin's decision. The operator must say WHAT approved it
 // (`approvalRef`, e.g. "owner decision 85, 2026-11-11"): it is the version's note and nothing is claimed that the operator did not say. Running it again is refused (a version exists, or a proposal waits) and changes nothing. The script `scripts/seed-company-rules.ts` calls this; it is not an API route.
-import { COMPANY_RULES_NOTE_MAX, OrgIdSchema, agentXError, redactText, type OrgId } from "@agentx/contracts";
+import { COMPANY_RULES_NOTE_MAX } from "@agentx/cloud-contracts";
+import { OrgIdSchema, agentXError, redactText, type OrgId } from "@rovara-code/contracts";
 import { auditCompanyRules, auditOccurrence } from "../audit/events.js";
 import { foldedRuleText } from "../instructions/standing-block.js";
 import { normalizeRules, rulesDigest, type Rule } from "./rules.js";

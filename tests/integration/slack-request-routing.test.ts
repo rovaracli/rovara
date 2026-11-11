@@ -1,17 +1,7 @@
 // Task 21: smart routing for plain top-level @AgentX requests, from a signed Slack mention through the ingress and the
 // Slack service's routing to the chat queue or the suggestion card, with a scripted classifier answer per message.
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
-import {
-  WORKFLOW_PATH_ANSWER_ACTION,
-  WORKFLOW_PATH_FULL_ACTION,
-  WORKFLOW_PATH_QUICK_ACTION,
-  routeAttributes,
-  routedChoiceId,
-  workflowChoiceKey,
-  type RequestRouteKind,
-  type RequestRouteOutcome,
-  type SlackRequestMessage,
-} from "../../packages/contracts/src/index.js";
+import { WORKFLOW_PATH_ANSWER_ACTION, WORKFLOW_PATH_FULL_ACTION, WORKFLOW_PATH_QUICK_ACTION, routeAttributes, routedChoiceId, workflowChoiceKey, type RequestRouteKind, type RequestRouteOutcome, type SlackRequestMessage } from "@rovara-code/contracts";
 import { processGroup, type QueueClient } from "../../packages/slack-service/src/consumer.js";
 import { ROUTE_CARD_FAILED_TEXT, createChoiceOffer, routeSlackRequest } from "../../packages/slack-service/src/request-routing.js";
 import { createHostedRequestRouter } from "../../packages/slack-service/src/runtime.js";

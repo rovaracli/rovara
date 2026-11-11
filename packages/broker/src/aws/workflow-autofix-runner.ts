@@ -1,8 +1,6 @@
 import { GetCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  AgentXError, AUTO_FIX_DEFAULT_CAP_USD, BASE_MERGED_NEEDS_YOU_MILESTONE, BASE_MERGED_RETRY_REASON, WORKFLOW_AUTO_ACTION_LIMIT, autoFixAskCard, autoFixDecision, classifyBlockedWorkflow, wholeTaskSpendUsd, workflowAutoFixCounts, workflowAutoSpendRefusal,
-  type AutoFixAskReason, type AutoFixBlockCause, type WorkflowSnapshot, type AutoFixCode, type AutoFixDecision, type AutoFixFacts, type E2EScenarioResults, type GroupOriginalResult, type OriginalCodeResult, type WorkflowAutoSpend,
-} from "@agentx/contracts";
+import { AgentXError, AUTO_FIX_DEFAULT_CAP_USD, WORKFLOW_AUTO_ACTION_LIMIT, wholeTaskSpendUsd, workflowAutoSpendRefusal, type E2EScenarioResults, type GroupOriginalResult, type OriginalCodeResult, type WorkflowAutoSpend } from "@rovara-code/contracts";
+import { BASE_MERGED_NEEDS_YOU_MILESTONE, BASE_MERGED_RETRY_REASON, autoFixAskCard, autoFixDecision, classifyBlockedWorkflow, workflowAutoFixCounts, type AutoFixAskReason, type AutoFixBlockCause, type WorkflowSnapshot, type AutoFixCode, type AutoFixDecision, type AutoFixFacts } from "@agentx/cloud-contracts";
 import { AUTOFIX_ASK_GROUPS_MAX, AutoFixAskSchema, autoFixRetryReason, autoFixSendBackReason, type AutoFixAsk } from "../developer/autofix-messages.js";
 import { loadPlanSelfCheck } from "../developer/plan-self-check.js";
 import { taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";

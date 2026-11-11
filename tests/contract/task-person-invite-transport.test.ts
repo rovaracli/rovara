@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import type { TaskPersonInviteClaimRequest, TaskPersonInviteOutcome } from "../../packages/contracts/src/developer.js";
+import type { TaskPersonInviteClaimRequest, TaskPersonInviteOutcome } from "@rovara-code/contracts";
 import { taskPersonInviteThroughLambda, type TaskPersonInviteInvoker } from "../../packages/broker/src/aws/task-person-invite-transport.js";
 
 const request = (): TaskPersonInviteClaimRequest => ({ kind: "task-person-invite-claimed", taskId: "11111111-1111-4111-8111-111111111111",

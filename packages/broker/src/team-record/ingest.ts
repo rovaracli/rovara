@@ -4,19 +4,8 @@
 //   -> text hygiene (hidden characters, secrets, personal details, code) -> trust (never above the actor's) -> retention routing -> the strict row schema
 //   -> an idempotent write -> the vector (a failure leaves `embedPending`, never loses the row).
 // It stores no row for an outside source under retention A or B. It never logs text, a name or an error message.
-import {
-  OrgIdSchema,
-  agentXError,
-  aclUnitOfSource,
-  RecordEventSchema,
-  RecordProjectSchema,
-  minTrust,
-  recordEventKey,
-  type OrgId,
-  type RecordEvent,
-  type RetentionMode,
-  type TrustClass,
-} from "@agentx/contracts";
+import { OrgIdSchema, agentXError, RecordProjectSchema, minTrust, type OrgId, type TrustClass } from "@rovara-code/contracts";
+import { aclUnitOfSource, RecordEventSchema, recordEventKey, type RecordEvent, type RetentionMode } from "@agentx/cloud-contracts";
 import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { Aliases } from "../agents/table-writes.js";
 import { createHash } from "node:crypto";

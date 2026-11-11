@@ -165,7 +165,7 @@ jobs:
       - uses: actions/setup-node@v5
         with: { node-version-file: .node-version, cache: npm }
       - run: npm ci
-      # release:build imports workspace packages (e.g. @agentx/contracts) by their built dist/
+      # release:build imports workspace packages (e.g. @agentx/cloud-contracts) by their built dist/
       # output, which is gitignored: without this, a fresh checkout fails with
       # ERR_MODULE_NOT_FOUND before release:build even starts.
       - run: npm run build
@@ -202,7 +202,7 @@ jobs:
       - uses: actions/setup-node@v5
         with: { node-version-file: .node-version, cache: npm, registry-url: "https://registry.npmjs.org" }
       - run: npm ci
-      # release:pack-cli bundles packages/cli, which resolves @agentx/contracts through its built
+      # release:pack-cli bundles packages/cli, which resolves @agentx/cloud-contracts through its built
       # dist/ output (gitignored): without this, a fresh checkout fails with ERR_MODULE_NOT_FOUND.
       - run: npm run build
       # Trusted publishing (OIDC, no stored token) needs a newer npm than Node 22 ships.
@@ -261,7 +261,7 @@ jobs:
   #
   # `sign` is the ONLY job in the bundle path with id-token: write, and the only one that runs in the release-signing GitHub environment (required reviewers, version tags only), which the signing
   # role's trust policy requires: the images and npm jobs also hold id-token, but their tokens do not carry that environment. Its program comes from the tagged commit, never from the bundle job:
-  # it checks out only scripts/release and packages/contracts/src, installs ONLY scripts/release/signer (the KMS client, zod and the bundler; its own lockfile; `npm ci --ignore-scripts`, so no
+  # it checks out only scripts/release, packages/cloud-contracts/src and Rovara Code's contracts source (vendor/rovara-code/packages/contracts/src), installs ONLY scripts/release/signer (the KMS client, zod and the bundler; its own lockfile; `npm ci --ignore-scripts`, so no
   # dependency's install script runs), builds sign-bundle.ts from the checked-out source, and only then takes the AWS credentials. The program checks every file of the downloaded folder against
   # bundle.json again (and the kit against kit.json) and signs. docs/enterprise/bundle-signing.md. Actions here are pinned to commit SHAs.
   bundle:
@@ -323,12 +323,14 @@ jobs:
           persist-credentials: false
           sparse-checkout: |
             scripts/release
-            packages/contracts/src
+            packages/cloud-contracts/src
+            vendor/rovara-code/packages/contracts/src
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with: { node-version-file: .node-version }
       # Its own package and lockfile: the KMS client, zod and esbuild, nothing else, and no install script runs.
       - run: npm ci --ignore-scripts --no-audit --no-fund --prefix scripts/release/signer
-      - run: node scripts/release/signer/node_modules/esbuild/bin/esbuild scripts/release/sign-bundle.ts --bundle --platform=node --format=esm --target=node22 --alias:@agentx/contracts=./packages/contracts/src/index.ts --external:zod --external:@aws-sdk/client-kms --external:typescript --external:@rovara/audit-verifier --external:@aws-crypto/sha256-js --outfile=scripts/release/signer/dist/sign-bundle.mjs
+      # The build options are in scripts/release/signer/build.mjs (aliases, externals, and the one plugin that says Code's contract sources have no side effects); it needs only the esbuild just installed.
+      - run: node scripts/release/signer/build.mjs
       # Data only: the folder the bundle job made. Nothing in it is run.
       - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
         with: { name: bundle-unsigned, path: "${{ runner.temp }}/bundle" }

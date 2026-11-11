@@ -1,12 +1,8 @@
 // Read one existing ceiling. This does not migrate guardrails or authorize a paid start.
 import { createHash } from "node:crypto";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  AgentXError, agentXError, OrgIdSchema, AgentGuardrailsSchema,
-  TaskStopCeilingReadSchema, DEFAULT_MAX_PER_RUN_CEILING_USD,
-  agentGuardrailsKey, orgMemberKey, developerOrgKey, orgMetaKey,
-  type TaskStopCeilingRead,
-} from "@agentx/contracts";
+import { AgentXError, agentXError, OrgIdSchema, AgentGuardrailsSchema, agentGuardrailsKey } from "@rovara-code/contracts";
+import { TaskStopCeilingReadSchema, DEFAULT_MAX_PER_RUN_CEILING_USD, orgMemberKey, developerOrgKey, orgMetaKey, type TaskStopCeilingRead } from "@agentx/cloud-contracts";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "../aws/developer-routes.js";
 import { usdToWholeMicrodollars } from "./budget-amount.js";
 

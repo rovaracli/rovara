@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { expect, it } from "vitest";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { agentKey, chainKey, developerOrgKey, orgMemberKey, orgMetaKey, ownerBudgetKey } from "@agentx/contracts";
+import { agentKey, chainKey } from "@rovara-code/contracts";
+import { developerOrgKey, orgMemberKey, orgMetaKey, ownerBudgetKey } from "@agentx/cloud-contracts";
 import { ADA, BEN, DEB, TRIAGE, setup } from "../support/spend-world.js";
 import { ChainStore } from "../../packages/broker/src/chains/store.js";
 import { TEST_ORG } from "../support/orgs.js";

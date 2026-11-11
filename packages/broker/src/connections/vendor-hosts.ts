@@ -3,7 +3,7 @@
 // (`vendorHostOf`), and the credential registry pins the token to that host. A check for one of them is handed a fetch held to that origin
 // (`originHeldFetch`): it cannot be pointed anywhere else, and it never follows a redirect, which could lead to an address the check did not look at.
 // A Grafana address is typed by a person and is held another way (`mcpEndpointGuard`'s pinned fetch); CloudWatch speaks to AWS through its own client.
-import type { OrgConnection } from "@agentx/contracts";
+import type { OrgConnection } from "@rovara-code/contracts";
 
 /** The vendor host a connection's token is for, from its region or site; undefined where the address is not a fixed vendor's (Grafana, MCP, Jira) or there is no token (CloudWatch). */
 export function vendorHostOf(connection: OrgConnection): string | undefined {

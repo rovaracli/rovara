@@ -5,7 +5,7 @@
 //   - anyone else, and an automation, makes the ticket wait for a member to say "Start";
 //   - Rovara's own account starts nothing.
 // The issue's text rides on the event as untrusted data; the engine frames, redacts and cuts it.
-import { INTAKE_EVENT_TYPES, isBuiltinAgentId, isIntakeEventSpec, ROVARA_CODE_AGENT_ID, type IntakeTrackerChannel, type OrgId, type TriggerEvent } from "@agentx/contracts";
+import { INTAKE_EVENT_TYPES, isBuiltinAgentId, isIntakeEventSpec, ROVARA_CODE_AGENT_ID, type IntakeTrackerChannel, type OrgId, type TriggerEvent } from "@rovara-code/contracts";
 import type { IntakeCandidate, IntakeOutcome } from "../intake/engine.js";
 import type { TriggerRecord } from "./store.js";
 

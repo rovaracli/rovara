@@ -2,7 +2,7 @@
 // sign-in server links it to THIS account only (never a second company or trial) and refuses a GitHub account that already belongs to someone else.
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { AppMeResponseReaderSchema } from "@agentx/contracts/web";
+import { AppMeResponseReaderSchema } from "@agentx/cloud-contracts/web";
 import { useAppHost } from "../host.js";
 import { createApiClient } from "../api/client.js";
 import { ApiError } from "../api/errors.js";

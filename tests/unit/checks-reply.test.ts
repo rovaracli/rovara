@@ -1,8 +1,6 @@
 // Spec 051 Task 6 (FR-009): the exact text that leads a Slack reply.
 import { describe, expect, it } from "vitest";
-import {
-  AGENTX_PREAMBLE_VERSION, agentxPreambleSha256, checksReplyPrefix, type CheckEntry, type CheckReport,
-} from "@agentx/contracts";
+import { AGENTX_PREAMBLE_VERSION, agentxPreambleSha256, checksReplyPrefix, type CheckEntry, type CheckReport } from "@rovara-code/contracts";
 
 const entry = (overrides: Partial<CheckEntry>): CheckEntry => ({
   id: "readiness:0", label: "npm test", source: "project", before: "passed", after: "passed", class: "passing",

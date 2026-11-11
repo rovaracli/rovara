@@ -1,8 +1,8 @@
-import { slackBindingPk } from "../../packages/contracts/src/org-scoped-keys.js";
+import { slackBindingPk } from "@rovara-code/contracts";
 import { randomUUID } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it, vi } from "vitest";
-import { agentXError, type OrgId } from "../../packages/contracts/src/index.js";
+import { agentXError, type OrgId } from "@rovara-code/contracts";
 import type { Ec2OutboxRecord } from "../../packages/broker/src/aws/lambda.js";
 import { guardTaskDispatch, isTaskDispatchGuardRetryError, resumeTaskDispatch } from "../../packages/broker/src/aws/task-dispatch-access.js";
 import { createDispatcherHandler, markDeliveredCommand } from "../../packages/broker/src/aws/dispatcher.js";
@@ -14,8 +14,8 @@ import { taskOwnerKey } from "../../packages/broker/src/developer/task-records.j
 import type { ProjectAuthorityWitness } from "../../packages/broker/src/developer/task-project-access.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { TEST_ORG } from "../support/orgs.js";
-import { projectMemberKey, projectRevisionKey } from "../../packages/contracts/src/org-scoped-keys.js";
-import { orgMemberKey } from "../../packages/contracts/src/org-node.js";
+import { projectMemberKey, projectRevisionKey } from "@rovara-code/contracts";
+import { orgMemberKey } from "../../packages/cloud-contracts/src/org-node.js";
 
 const TASK_ID = "11111111-1111-4111-8111-111111111111";
 const WORKSPACE_ID = "22222222-2222-4222-8222-222222222222";

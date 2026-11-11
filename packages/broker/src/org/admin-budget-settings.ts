@@ -2,12 +2,8 @@ import { usdToWholeMicrodollars } from "./budget-amount.js";
 // Strict read projection. Do not call legacy ensureSynced/readBudgets here: a GET must
 // neither mutate the proxy nor turn corrupt persisted values into plausible defaults.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import {
- AgentXError, agentXError, AdminBudgetSettingsSchema, OrgIdSchema,
- DEFAULT_ORG_MONTHLY_BUDGET_USD, DEFAULT_MEMBER_MONTHLY_BUDGET_USD,
- orgSettingsKey, orgMemberKey, developerOrgKey, orgMetaKey,
- type AdminBudgetSettings,
-} from "@agentx/contracts";
+import { AgentXError, agentXError, OrgIdSchema } from "@rovara-code/contracts";
+import { AdminBudgetSettingsSchema, DEFAULT_ORG_MONTHLY_BUDGET_USD, DEFAULT_MEMBER_MONTHLY_BUDGET_USD, orgSettingsKey, orgMemberKey, developerOrgKey, orgMetaKey, type AdminBudgetSettings } from "@agentx/cloud-contracts";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "../aws/developer-routes.js";
 type Dependencies = Pick<DeveloperRouteDependencies, "documentClient" | "tableName" | "cloud" | "now">;
 type Key = { pk: string; sk: string };

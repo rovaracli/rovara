@@ -1,4 +1,4 @@
-import { MODEL_PROVIDERS } from "../../packages/contracts/src/model-providers.js";
+import { MODEL_PROVIDERS } from "@rovara-code/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { catalogModel } from "../../packages/model-runtime/src/catalog.js";
 import { DEFAULT_E2E_AGENT_MODELS, requireKeyedModel } from "../../packages/model-runtime/src/config.js";

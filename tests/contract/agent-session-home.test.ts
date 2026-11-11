@@ -5,10 +5,8 @@
 import type { AgentRouteDependencies } from "../../packages/broker/src/agents/routes.js";
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
-import {
-  HOME_CARDS_MAX, HOME_CARD_BUTTONS_MAX, HOME_CARD_KINDS, HOME_DISMISSIBLE_KINDS, HOME_DISMISS_DAYS, HOME_NOT_DISMISSIBLE, HOME_REASON_MAX, HomeCardReaderSchema, HomeCardSchema, HomeDismissResponseReaderSchema,
-  HomeDismissResponseSchema, HomeResponseReaderSchema, HomeResponseSchema, agentSessionKey, homeDismissedKey, mySessionsKey, openSpendRequestsKey, spendRequestKey, type HomeCard, type HomeResponse, type OrgId, type SessionStatus,
-} from "../../packages/contracts/src/index.js";
+import { HOME_CARDS_MAX, HOME_CARD_BUTTONS_MAX, agentSessionKey, homeDismissedKey, mySessionsKey, type OrgId, type SessionStatus } from "@rovara-code/contracts";
+import { HOME_CARD_KINDS, HOME_DISMISSIBLE_KINDS, HOME_DISMISS_DAYS, HOME_NOT_DISMISSIBLE, HOME_REASON_MAX, HomeCardReaderSchema, HomeCardSchema, HomeDismissResponseReaderSchema, HomeDismissResponseSchema, HomeResponseReaderSchema, HomeResponseSchema, openSpendRequestsKey, spendRequestKey, type HomeCard, type HomeResponse } from "@agentx/cloud-contracts";
 import { isAgentSessionRoute, routeAgentSessionRequest, type SessionRouteDependencies } from "../../packages/broker/src/agent-sessions/routes.js";
 import { registerHomeCardSource, type HomeCardSource } from "../../packages/broker/src/agent-sessions/home.js";
 import { createPendingChange, createWriteApprovalRecord, type ApprovalDependencies } from "../../packages/broker/src/agents/approvals.js";

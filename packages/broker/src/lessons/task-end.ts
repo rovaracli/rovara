@@ -8,7 +8,7 @@
 //  - Never in the way: the hook never throws and never delays an end beyond its own awaited work; a failure is a fixed log line and the task has ended all the same.
 //  - The task-side facts come from a `TaskSubjectSource` (intent, plan and review spans, trusts, links, the commits, the start fields). Where it gives nothing the hook does nothing.
 import { randomUUID } from "node:crypto";
-import { LESSONS_BROKER_MODEL_WAIT_SECONDS } from "@agentx/contracts";
+import { LESSONS_BROKER_MODEL_WAIT_SECONDS } from "@rovara-code/contracts";
 import { registerTaskEndHandler, type TaskEndHandler, type TaskEndOutcome } from "../agents/task-end.js";
 import { learningCaps, modeAllows, resolveLearning, type LearningSettingsReader } from "./policy.js";
 import { currentLearningAttempt, learningCallMayStart, withLearningAttempt } from "./learning-deadline.js";

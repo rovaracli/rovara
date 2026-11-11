@@ -6,7 +6,8 @@
 // Why there is no check before a pull request is marked ready (design section 8 names one): every Rovara push goes through a worker guard (`publish.ts` for the first push, `maintain-pull-request.ts#push` for every fix, update and
 // base-merge push), so no pull request Rovara pushes can contain a change to the file, and a merge made by hand on the code host cannot introduce one either. A mark-ready check would cost one unbudgeted `changedFiles` read in the
 // budgeted tracking pass for a case the push guard already closes.
-import { COMPANY_RULES_DEFAULT_FILE_PATH, LESSON_FILE_PATH, type ChangeRequestRef, type CodeHost, type HostScope } from "@agentx/contracts";
+import { COMPANY_RULES_DEFAULT_FILE_PATH } from "@agentx/cloud-contracts";
+import { LESSON_FILE_PATH, type ChangeRequestRef, type CodeHost, type HostScope } from "@rovara-code/contracts";
 import { changedPathsOf } from "./host-port.js";
 
 /** Whether a changed path is the lessons file, or something that would replace it: the file itself, or `.rovara` (the folder swapped for a file or a link), compared as NFC and without case (a checkout on a case-insensitive disk writes the same file). */

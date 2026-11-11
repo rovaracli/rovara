@@ -1,7 +1,7 @@
 // Second review by another AI company (SH34): what the broker keeps on the TASK RECORD about it, and the writes that keep it. Nothing here touches the workflow snapshot: a second review is an ADDED opinion, so
 // its operation's result never reaches `submitWorkflowReview`, `reviewCleared`, the latest-review-for-candidate lookup, the pull request's Reviews section or `requireCrossCompanyReview`. It lives beside the workflow
 // (as `reviewSameModel` does), keyed by the candidate it is about.
-import { redactText, type AcceptedFindingRef, SECOND_REVIEW_RESULT_KEY, SecondOpinionSchema, SecondReviewResultSchema, secondReviewDidNotRunLine, secondReviewedByLine, blockingFindings, type SecondOpinion, type SecondOpinionUnavailableReason, type SecondReviewChoice } from "@agentx/contracts";
+import { redactText, type AcceptedFindingRef, SECOND_REVIEW_RESULT_KEY, SecondOpinionSchema, SecondReviewResultSchema, secondReviewDidNotRunLine, secondReviewedByLine, blockingFindings, type SecondOpinion, type SecondOpinionUnavailableReason, type SecondReviewChoice } from "@rovara-code/contracts";
 import { z } from "zod";
 import { secondReviewEnabled } from "./second-review-switch.js";
 import { mergeWaitsForSecondReview, secondOpinionOf, secondOpinionPrLines, secondOpinionShownOn, secondOpinionUnavailable, secondReviewAcknowledgement, type SecondReviewPlan } from "./second-review.js";

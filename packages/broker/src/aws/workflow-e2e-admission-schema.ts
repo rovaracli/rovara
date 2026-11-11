@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { e2eAgentRouteNeedsModelChoice, type E2EWorkflowAdmissionRef } from "@agentx/contracts";
+import { e2eAgentRouteNeedsModelChoice, type E2EWorkflowAdmissionRef } from "@rovara-code/contracts";
 import { readObjectText } from "../developer/plan-artifacts.js";
 import { readAdmittedE2EModelRoute } from "../e2e/model-route-registry.js";
 

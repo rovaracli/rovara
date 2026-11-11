@@ -2,8 +2,8 @@
 // revision). A card is a projection; the performer calls the wizard's own approval, which re-checks the caller's authority, so a card never decides more than the wizard would.
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
-import { DecisionCardsViewSchema, testEnvDigest, type DecisionCard } from "../../packages/contracts/src/index.js";
-import { selectionNarrowed, teamRecordPk, testEnvLessSafeChanges } from "../../packages/contracts/src/index.js";
+import { DecisionCardsViewSchema, testEnvDigest, type DecisionCard } from "@rovara-code/contracts";
+import { selectionNarrowed, teamRecordPk, testEnvLessSafeChanges } from "@rovara-code/contracts";
 import { proposeTestEnvironment, recordTestEnvProveReport } from "../../packages/broker/src/org/test-environment.js";
 import { answerEnvChange, newestProposal, takesTheChange } from "../../packages/broker/src/decisions/test-env-source.js";
 import { MAYA, OMAR } from "../support/developer-task-broker.js";

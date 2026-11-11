@@ -1,5 +1,5 @@
 // Spec 025 Task 8: POST /v1/dev/tasks, the start of a developer task (FR-017 to FR-020, R8, R9, R12).
-import { slackLimitPk } from "../../packages/contracts/src/org-scoped-keys.js";
+import { slackLimitPk } from "@rovara-code/contracts";
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { NEXT_STEPS } from "../../packages/mcp/src/index.js";
@@ -7,7 +7,7 @@ import { MAYA, OMAR, createDeveloperTaskBroker, grantProject, registerRevision, 
 import { SLACK_CHANNEL, SLACK_TEAM, ensureWorkspace } from "../support/slack-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { readSplitParts } from "../support/split-source.js";
-import { orgLimitKey, projectMemberKey, projectPk } from "../../packages/contracts/src/org-scoped-keys.js";
+import { orgLimitKey, projectMemberKey, projectPk } from "@rovara-code/contracts";
 
 const start = (overrides: Record<string, unknown> = {}) => ({ requestId: randomUUID(), project: "payments", instructions: "Fix the flaky retry test", client: "claude-code", ...overrides });
 const workspaces = (db: { find(predicate: (item: Record<string, unknown>) => boolean): unknown[] }) => db.find((item) => item.entityType === "WORKSPACE");

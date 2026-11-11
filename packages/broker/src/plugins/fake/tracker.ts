@@ -1,10 +1,6 @@
 // A Tracker over an in-memory set of items. Writes are recorded so a test can see exactly what went out; reads give the text as stored (untrusted).
 import { createHmac, timingSafeEqual } from "node:crypto";
-import {
-  agentXError, HostScopeSchema, NeutralStatusSchema, TrackerEventSchema, TrackerItemRefSchema,
-  type ChangeRequestRef, type HostScope, type NeutralStatus, type RawDelivery, type Tracker, type TrackerCapabilities, type TrackerEvent, type TrackerEvents, type TrackerItem,
-  type TrackerItemRef, type UntrustedText,
-} from "@agentx/contracts";
+import { agentXError, HostScopeSchema, NeutralStatusSchema, TrackerEventSchema, TrackerItemRefSchema, type ChangeRequestRef, type HostScope, type NeutralStatus, type RawDelivery, type Tracker, type TrackerCapabilities, type TrackerEvent, type TrackerEvents, type TrackerItem, type TrackerItemRef, type UntrustedText } from "@rovara-code/contracts";
 
 export const FAKE_TRACKER_KIND = "fake-tracker";
 export const FAKE_TRACKER_SECRET = "fake-tracker-secret-not-a-real-secret";

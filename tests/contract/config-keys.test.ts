@@ -12,7 +12,7 @@ describe("config keys (FR-048)", () => {
       "models.orchestrator", "models.classifier", "models.worker", "models.e2eAgent", "models.fallback", "models.chatgpt.enabled", "models.chatgpt.preferredModel",
       "limits.workspacesPerMember", "limits.workspacesPerOrg", "limits.threadTurnsPerMinute",
       "slack.appPostedMessages", "alerts.address", "alerts.slowTurnMinutes",
-      "budget.monthlyUsd", "budget.scope", "audit.lock", "mcp.confirmElicitation", "rovaraCode.v2", "planSelfCheck.enabled", "autofix.enabled", "liveSteer.enabled", "liveRedirect.enabled", "liveAsk.enabled", "liveFix.enabled", "proofEvidence.enabled", "decisionCards.enabled", "testEnvironment.enabled", "teamRecord.enabled", "teamRecord.options", "teamRecord.embedderImage", "learnedLessons.enabled", "designReview.enabled", "savedEnv.enabled", "slack.explicitMembers", "scriptTokens.enabled", "standingInstructions.enabled", "secondReview.enabled", "setupRecipes.enabled", "nightlyHealth.enabled", "verifyResults.enabled", "setupAgent.enabled", "testServices.enabled", "testAccounts.enabled", "projectImages.enabled",
+      "budget.monthlyUsd", "budget.scope", "audit.lock", "mcp.confirmElicitation", "rovaraCode.v2", "planSelfCheck.enabled", "autofix.enabled", "liveSteer.enabled", "liveRedirect.enabled", "liveAsk.enabled", "liveFix.enabled", "proofEvidence.enabled", "decisionCards.enabled", "testEnvironment.enabled", "teamRecord.enabled", "teamRecord.options", "teamRecord.embedderImage", "learnedLessons.enabled", "designReview.enabled", "savedEnv.enabled", "slack.explicitMembers", "scriptTokens.enabled", "standingInstructions.enabled", "secondReview.enabled", "setupRecipes.enabled", "nightlyHealth.enabled", "verifyResults.enabled", "setupAgent.enabled", "testServices.enabled", "testAccounts.enabled", "projectImages.enabled", "workflowDependencies.enabled", "taskPeople.changesEnabled", "taskPeople.publicInvitations", "taskPeople.privateInvitations",
     ]);
   });
 
@@ -71,6 +71,24 @@ describe("config keys (FR-048)", () => {
     ["alerts.address", "not-an-address", "an email address"], ["limits.workspacesPerOrg", "1001", "a whole number from 1 to 1000"],
   ])("refuses %s = %j, saying what is allowed", (key, value, allowed) => {
     expect(() => configKey(key).parse(value)).toThrow(`${key} must be ${allowed}; nothing changed`);
+  });
+
+  it("routes the work breakdown and task people keys to their own stack parameters, off by default, true or false only", () => {
+    const cases = [
+      ["workflowDependencies.enabled", "WorkflowDependenciesEnabled"], ["taskPeople.changesEnabled", "TaskPeopleChangesEnabled"],
+      ["taskPeople.publicInvitations", "TaskPeoplePublicInvitationsEnabled"], ["taskPeople.privateInvitations", "TaskPeoplePrivateInvitationsEnabled"],
+    ] as const;
+    for (const [key, parameter] of cases) {
+      expect(configKey(key), key).toMatchObject({ target: { kind: "stack-parameter", part: "control-plane", parameter }, defaultValue: "false" });
+      expect(configKey(key).parse(" false "), key).toBe("false");
+      expect(() => configKey(key).parse("1"), key).toThrow(`${key} must be`);
+      expect(() => configKey(key).parse("yes"), key).toThrow(`${key} must be`);
+    }
+    expect(configKey("workflowDependencies.enabled").parse(" true ")).toBe("true");
+    expect(configKey("taskPeople.changesEnabled").parse("true")).toBe("true");
+    // Invitations are deferred (owner decision 86): the switches can be turned off, never on. See task-people-invitations-deferred.test.ts.
+    expect(() => configKey("taskPeople.publicInvitations").parse("true")).toThrow("taskPeople.publicInvitations must be false for now");
+    expect(() => configKey("taskPeople.privateInvitations").parse("true")).toThrow("taskPeople.privateInvitations must be false for now");
   });
 
   it("refuses an unknown key and points at config list", () => {

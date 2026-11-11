@@ -8,8 +8,8 @@ import type { Ec2OutboxRecord } from "../../packages/broker/src/aws/lambda.js";
 import { evalFilesFromRefs, learnedContextFromRefs, type DeliveryDeps } from "../../packages/broker/src/lessons/deliver.js";
 import { InMemorySnapshotStore, buildSnapshot } from "../../packages/broker/src/lessons/replay-snapshot-store.js";
 import { InMemoryLessonStore } from "../../packages/broker/src/lessons/store.js";
-import { EVAL_FILES_FEATURE, LEARNED_CONTEXT_FEATURE } from "../../packages/contracts/src/index.js";
-import type { WorkerInvocation } from "../../packages/contracts/src/protocol.js";
+import { EVAL_FILES_FEATURE, LEARNED_CONTEXT_FEATURE } from "@rovara-code/contracts";
+import type { WorkerInvocation } from "../../packages/cloud-contracts/src/protocol.js";
 import { Clock, KEY, PROJECT, WS, allSharedTasks, allowAllAccess, lessonRecord, seed, settings } from "../unit/lessons/lesson-helpers.js";
 
 const A = "les_aaaaaaaaaaaaaaaaaa01", B = "les_aaaaaaaaaaaaaaaaaa02";

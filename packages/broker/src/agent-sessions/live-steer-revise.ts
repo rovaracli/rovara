@@ -10,23 +10,9 @@
 // person's Retry starts a coding run (`requireMayGoOn`, the new cap window). The task's own helpers are handed in (`RevisePlanHost`), so this module never reaches into the task module.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import {
-  LIVE_STEER_REAPPROVAL_REASON,
-  LIVE_STEER_TEXT_MAX_CHARS,
-  WORKFLOW_BLOCK_REASONS,
-  WORKFLOW_REVISE_PLAN_DECISION_REASON,
-  WorkflowTransitionError,
-  agentXError,
-  redactText,
-  revisePlanWithLiveChange,
-  liveSteerCodingBlockReason,
-  workflowOwnerAuthorized,
-  workflowReviseOffered,
-  type DeveloperTaskView,
-  type WorkflowOwnerAuthority,
-  type WorkflowSnapshot,
-} from "@agentx/contracts";
-import type { OrgId, SessionId } from "@agentx/contracts";
+import { LIVE_STEER_REAPPROVAL_REASON, LIVE_STEER_TEXT_MAX_CHARS, WORKFLOW_REVISE_PLAN_DECISION_REASON, WorkflowTransitionError, agentXError, redactText, workflowOwnerAuthorized, type WorkflowOwnerAuthority } from "@rovara-code/contracts";
+import { WORKFLOW_BLOCK_REASONS, revisePlanWithLiveChange, liveSteerCodingBlockReason, workflowReviseOffered, type DeveloperTaskView, type WorkflowSnapshot } from "@agentx/cloud-contracts";
+import type { OrgId, SessionId } from "@rovara-code/contracts";
 import type { TransactItems } from "../aws/developer-task-actions.js";
 import { loadWorkflowDocument, type LoadedDocument } from "../developer/plan-artifacts.js";
 import { developerTaskIdentity, taskKey, tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../developer/task-records.js";

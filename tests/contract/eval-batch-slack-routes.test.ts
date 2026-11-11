@@ -2,10 +2,10 @@
 // (FR-002, FR-003); the batch watcher lists the batches it posts for, opens the thread of a batch
 // started from the CLI (Ruling 19) and records what it posted (restart idempotence). All behind the
 // Slack orchestrator role, never the admin claim.
-import { slackBindingPk } from "../../packages/contracts/src/org-scoped-keys.js";
+import { slackBindingPk } from "@rovara-code/contracts";
 import { TEST_ORG } from "../support/orgs.js";
 import { beforeAll, describe, expect, it, vi } from "vitest";
-import { slackThreadSubject } from "../../packages/contracts/src/index.js";
+import { slackThreadSubject } from "@rovara-code/contracts";
 import { finalizeBatch, withEvalBatches } from "../../packages/broker/src/aws/eval-batch.js";
 import { watchEvalBatchesOnce } from "../../packages/slack-service/src/eval-batch-watcher.js";
 import { createSignedServiceFetch } from "../../packages/slack-service/src/signing-fetch.js";

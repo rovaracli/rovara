@@ -1,6 +1,6 @@
 import {expect,it} from "vitest";
 import {frozenRecipeModelInputs,stageChoiceOf} from "../../packages/broker/src/model-selection/stage-inputs.js";
-import {builtinRecipe,recipeDigest,projectSelectionKey,projectRevisionKey} from "../../packages/contracts/src/index.js";
+import { builtinRecipe, recipeDigest, projectSelectionKey, projectRevisionKey } from "@rovara-code/contracts";
 import {prepareTaskModelPolicyPin} from "../../packages/broker/src/model-selection/task-pin.js";
 import {createDeveloperTaskBroker} from "../support/developer-task-broker.js";
 import {TEST_ORG} from "../support/orgs.js";

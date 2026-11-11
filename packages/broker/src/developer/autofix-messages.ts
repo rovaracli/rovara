@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { AUTO_FIX_ASK_REASONS, AUTO_FIX_CODES, autoFixAskCard, workflowAutoFixCounts, type AutoFixAskReason, type AutoFixCode, type WorkflowSnapshot } from "@agentx/contracts";
+import { AUTO_FIX_ASK_REASONS, AUTO_FIX_CODES, autoFixAskCard, workflowAutoFixCounts, type AutoFixAskReason, type AutoFixCode, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { verifyResultsEnabled } from "../verification/switch.js";
 import { E2E_OWNER_SENTENCES } from "../e2e/owner-sentences.js";
 

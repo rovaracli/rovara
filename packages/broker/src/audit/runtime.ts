@@ -5,7 +5,7 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { SQSClient } from "@aws-sdk/client-sqs";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
-import { AUDIT_SDK_REQUEST_TIMEOUT_MS } from "@agentx/contracts";
+import { AUDIT_SDK_REQUEST_TIMEOUT_MS } from "@agentx/cloud-contracts";
 import type { AuditRuntime } from "./outbox.js";
 
 export function auditRuntimeFromEnvironment(env: NodeJS.ProcessEnv, options: { component: string; now?: () => number }): AuditRuntime | undefined {

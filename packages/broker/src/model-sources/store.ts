@@ -3,26 +3,8 @@
 // read), the request item that makes the change repeatable (R18), and the change's audit item. The key itself is never here: it goes to the model
 // proxy's own credential store (ModelAccess.upsertSource) and `credentials` only says which sources have one.
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  AgentXError,
-  CLI_COMMAND_NAME,
-  INDEX_EXPIRY_ATTRIBUTE,
-  ModelSourceIdSchema,
-  ModelSourceSchema,
-  OrgIdSchema,
-  OrgModelSourcesSchema,
-  agentRequestKey,
-  canonicalJson,
-  customSourceLimitProblem,
-  endpointSecretRefProblem,
-  defaultModelSourceOrder,
-  modelSourceOrgProblem,
-  modelSourcesKey,
-  type AuditEventInput,
-  type ModelSource,
-  type OrgId,
-  type OrgModelSources,
-} from "@agentx/contracts";
+import { AgentXError, CLI_COMMAND_NAME, INDEX_EXPIRY_ATTRIBUTE, ModelSourceIdSchema, ModelSourceSchema, OrgIdSchema, OrgModelSourcesSchema, agentRequestKey, canonicalJson, customSourceLimitProblem, endpointSecretRefProblem, defaultModelSourceOrder, modelSourceOrgProblem, modelSourcesKey, type ModelSource, type OrgId, type OrgModelSources } from "@rovara-code/contracts";
+import { type AuditEventInput } from "@agentx/cloud-contracts";
 import { commit, coded, failedIndexes, NOT_EXISTS, withoutUndefined, type Item, type RequestMark, type TransactItem } from "../agents/table-writes.js";
 import { auditModelSourceOrderChanged, auditModelSourceRemoved, auditModelSourceSaved, auditOccurrence } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";

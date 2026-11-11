@@ -6,7 +6,7 @@
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it } from "vitest";
 import { checkChain, genesisHash, recordHash, type AuditRecordV1 } from "@rovara/audit-verifier";
-import { AuditEventInputSchema, auditEventId, type AuditEventInput } from "@agentx/contracts";
+import { AuditEventInputSchema, auditEventId, type AuditEventInput } from "@agentx/cloud-contracts";
 import { appendOne, AUDIT_APPEND_MAX_RETRIES, type AppenderDeps } from "../../packages/broker/src/audit/appender.js";
 import { processAuditBatch, type AuditSqsEvent } from "../../packages/broker/src/audit/appender-handler.js";
 import { auditProjectModelsChanged,auditProjectModelSelectionChanged } from "../../packages/broker/src/audit/events.js";

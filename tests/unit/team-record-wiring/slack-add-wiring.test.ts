@@ -1,7 +1,8 @@
 // Start from inside Slack (task 12), the broker's side of the wiring: the direct-invoke event the ingress sends, the Slack reads the broker hands the service (what a channel is, whether a person is in it), the answer where
 // the record is off, and one run over the REAL runtime (the real source route, the State table's company and Slack binding, the sign-in store's Slack link).
 import { describe, expect, it } from "vitest";
-import { developerOrgKey, orgMemberKey, orgMetaKey, orgProjectCatalogKey, projectMemberKey, projectMetaKey, slackTeamOrgKey } from "@agentx/contracts";
+import { developerOrgKey, orgMemberKey, orgMetaKey, slackTeamOrgKey } from "@agentx/cloud-contracts";
+import { orgProjectCatalogKey, projectMemberKey, projectMetaKey } from "@rovara-code/contracts";
 import { answerSlackAdd, isTeamRecordSlackAddEvent } from "../../../packages/broker/src/aws/broker/team-record-wiring.js";
 import { createTeamRecordRuntime, type TeamRecordRuntime } from "../../../packages/broker/src/team-record/runtime.js";
 import { LEARN_ADD_ACTION, type SlackAddAskInput, type SlackAddPorts, type SlackAddPressInput } from "../../../packages/broker/src/team-record/slack-add.js";

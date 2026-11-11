@@ -11,7 +11,8 @@
 // The card is single use by construction: it is bound to the approved revision the person looked at, and an approval moves that revision on.
 import { createHash } from "node:crypto";
 import { GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
-import { AuditProofSchema, agentXError, projectPk, type OrgId } from "@agentx/contracts";
+import { AuditProofSchema } from "@agentx/cloud-contracts";
+import { agentXError, projectPk, type OrgId } from "@rovara-code/contracts";
 import { approvalIdFor, createPendingChange, getApproval, mayDecideApproval, registerApprovalSubjectHandler, registerApproverRule, type ApprovalDependencies, type ApprovalRecord } from "../agents/approvals.js";
 import type { ApprovalCaller } from "../agents/approvals.js";
 import { confirmationStands, decideFromRecords, type LessSafeApproval } from "./test-environment.js";

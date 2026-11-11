@@ -4,8 +4,10 @@
 // the same facts gets a different one. Personal data (names, emails, logins, repository and project names, domains,
 // reasons) goes only in `details`, or in a name-keyed target `{ kind, name }`, which the appender pseudonymizes.
 import {createHash} from "node:crypto";
-import {ModelPolicyAuditFactsSchema,ModelFallbackAuditFactsSchema,type ModelIdentifier,type StageId,type ModelFallback} from "@agentx/contracts";
-import { auditEventId, type AuditAction, type AuditActor, type AuditDetailPart, type AuditEventInput, type AuditProof, type AuditTarget } from "@agentx/contracts";
+import { ModelPolicyAuditFactsSchema, ModelFallbackAuditFactsSchema } from "@agentx/cloud-contracts";
+import { type ModelIdentifier, type StageId, type ModelFallback } from "@rovara-code/contracts";
+import { auditEventId, type AuditAction, type AuditDetailPart, type AuditEventInput, type AuditProof, type AuditTarget } from "@agentx/cloud-contracts";
+import { type AuditActor } from "@agentx/cloud-contracts";
 
 export interface AuditBuilderBase {
   orgId: string;
@@ -1017,6 +1019,11 @@ export type CompanyRulesAuditAction = Extract<AuditAction, `company_rules.${stri
  */
 export function auditCompanyRules(input: AuditBuilderBase & { action: CompanyRulesAuditAction; facts: Record<string, Fact> }): AuditEventInput {
   return build(input.action, input, { kind: "org", id: input.orgId }, input.facts);
+}
+
+/** `occurrence`: `auditOccurrence(revision of the list, action)`. A company admin changed the company's extra registries. Facts: how many are listed now and the authority; the hosts go in `details` (subject `org`). */
+export function auditCompanyImageRegistriesChanged(input: AuditBuilderBase & { registryCount: number; authority: "fresh_sign_in" }): AuditEventInput {
+  return build("company_image.registries_changed", input, { kind: "org", id: input.orgId }, { registryCount: input.registryCount, authority: input.authority });
 }
 
 // Saved project images (SV wiring) ---------------------------------------------------------------------------

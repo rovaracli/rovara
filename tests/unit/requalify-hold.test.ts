@@ -1,14 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import {
-  E2EApplicationSelectionRecordSchema, WORKFLOW_APPLICATION_RUNTIME_RENEWED_PREFIX, WORKFLOW_APPLICATION_SELECTION_CHANGED_PREFIX, requalifyHoldKey as holdKeyOf, workflowApplicationRetryOffered,
-  type E2EApplicationSelectionRecord,
-} from "../../packages/contracts/src/index.js";
+import { E2EApplicationSelectionRecordSchema, WORKFLOW_APPLICATION_RUNTIME_RENEWED_PREFIX, WORKFLOW_APPLICATION_SELECTION_CHANGED_PREFIX, requalifyHoldKey as holdKeyOf, workflowApplicationRetryOffered, type E2EApplicationSelectionRecord } from "@rovara-code/contracts";
 import {
   ApplicationRuntimeRenewed, REQUALIFY_DEFERRED_MESSAGE, assertNoRequalifyHold, isRenewalOnlyChange, isRuntimeRenewedBlock,
   recycleDriftedWorker, rethrowAsDeferredIfHeld, replayPredatesRenewal, requalifyHoldFence, requalifyDrainCount, requalifyDrainStatus, requalifyHoldActive, requalifySetupWorkRow, requireRenewalOnlyReapproval, selectionChangedRefusal,
 } from "../../packages/broker/src/e2e/requalify-hold.js";
-import { E2E_REPLAY_REFUSALS } from "../../packages/contracts/src/index.js";
+import { E2E_REPLAY_REFUSALS } from "@rovara-code/contracts";
 import { E2E_OWNER_SENTENCES } from "../../packages/broker/src/e2e/owner-sentences.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { readSplitSource } from "../support/split-source.js";

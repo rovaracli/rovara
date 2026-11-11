@@ -1,23 +1,7 @@
 // The agent session store (Plan 5 Task 2): reads a session, finds the one a task belongs to, and writes events. Every key is built from
 // the org the caller checked; a session or task of another org reads as absent.
 import { GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  AgentSessionRecordSchema,
-  INDEX_EXPIRY_ATTRIBUTE,
-  SESSION_EVENT_TEXT_MAX,
-  SESSION_RETENTION_DAYS,
-  SessionEventSchema,
-  agentSessionKey,
-  agentXError,
-  redactText,
-  sessionEventSk,
-  sessionLegSk,
-  type AgentSessionRecord,
-  type OrgId,
-  type SessionEvent,
-  type SessionId,
-  type SessionLeg,
-} from "@agentx/contracts";
+import { AgentSessionRecordSchema, INDEX_EXPIRY_ATTRIBUTE, SESSION_EVENT_TEXT_MAX, SESSION_RETENTION_DAYS, SessionEventSchema, agentSessionKey, agentXError, redactText, sessionEventSk, sessionLegSk, type AgentSessionRecord, type OrgId, type SessionEvent, type SessionId, type SessionLeg } from "@rovara-code/contracts";
 import { NOT_EXISTS, errorName, strip, type Item, type TableInput, type TransactItem } from "../agents/table-writes.js";
 import { safeDisplayName } from "../developer/person-name.js";
 

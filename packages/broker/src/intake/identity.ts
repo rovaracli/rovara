@@ -4,7 +4,7 @@
 //
 // A Jira account id is unique per Atlassian site, and the links are kept per site (`jira:<host>`). The site is the host of the ticket's own link, which must be an Atlassian site (`*.atlassian.net`):
 // a link anywhere else names no site, so no member.
-import type { OrgId } from "@agentx/contracts";
+import type { OrgId } from "@rovara-code/contracts";
 import { developerOfTrackerAuthor } from "../team-record/identity-links.js";
 import type { TeamRecordTable } from "../team-record/types.js";
 

@@ -6,7 +6,7 @@
 import { randomUUID } from "node:crypto";
 import { DeleteCommand } from "@aws-sdk/lib-dynamodb";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
-import { orgMemberKey, orgRemovedKey } from "../../packages/contracts/src/org-node.js";
+import { orgMemberKey, orgRemovedKey } from "../../packages/cloud-contracts/src/org-node.js";
 import { registerTaskEndHandler, type TaskEndEvent, taskEndKey } from "../../packages/broker/src/agents/task-end.js";
 import { taskAgentRunKey } from "../../packages/broker/src/developer/task-records.js";
 import { operationEndDispatchItem } from "../../packages/broker/src/aws/broker-shared.js";

@@ -16,7 +16,7 @@ import { auditFramed } from "./search-index.js";
 import { createCipheriv, createDecipheriv, createHmac, randomBytes } from "node:crypto";
 import { DecryptCommand, GenerateDataKeyCommand, type KMSClient } from "@aws-sdk/client-kms";
 import { GetCommand, PutCommand, type DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
-import { auditCanonicalJson, detailCommit, type AuditDetailPart } from "@agentx/contracts";
+import { auditCanonicalJson, detailCommit, type AuditDetailPart } from "@agentx/cloud-contracts";
 
 export const AUDIT_KEY_CACHE_MS = 300_000;
 /** What a name-keyed target becomes once its org is shredded. */

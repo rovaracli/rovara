@@ -4,7 +4,7 @@ import { expect, it } from "vitest";
 import { screen, waitFor, fireEvent } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
-import { AppNavSchema, AppMeResponseSchema } from "@agentx/contracts/web";
+import { AppNavSchema, AppMeResponseSchema } from "@agentx/cloud-contracts/web";
 import { appRoutes } from "../../packages/ui/src/routes.js";
 import { AppHostProvider } from "../../packages/ui/src/host.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";

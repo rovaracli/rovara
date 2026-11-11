@@ -8,11 +8,7 @@
 //   DIAGNOSISRATE              the counters: light 10 an hour per person and 50 a day per project; deep 3 a day per person. (The company pays for its diagnoses, 2026-11-03; Rovara keeps no money counter for them.)
 import { createHash } from "node:crypto";
 import { DeleteCommand, GetCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  DIAGNOSIS_DEDUPE_SECONDS, DIAGNOSIS_RATE, DIAGNOSIS_REFUSALS, DIAGNOSIS_RETENTION_DAYS, DiagnosisFailureReasonSchema, DiagnosisRecordSchema, ErrorRefSchema, INDEX_EXPIRY_ATTRIBUTE,
-  agentXError, diagnosisByPersonKey, diagnosisByPersonPk, diagnosisKey, diagnosisOpenKey, diagnosisRateKey, errorRefKey,
-  type DiagnosisFailureReason, type DiagnosisRecord, type DiagnosisTier, type ErrorRef, type ModelIdentifier, type OrgId,
-} from "@agentx/contracts";
+import { DIAGNOSIS_DEDUPE_SECONDS, DIAGNOSIS_RATE, DIAGNOSIS_REFUSALS, DIAGNOSIS_RETENTION_DAYS, DiagnosisFailureReasonSchema, DiagnosisRecordSchema, ErrorRefSchema, INDEX_EXPIRY_ATTRIBUTE, agentXError, diagnosisByPersonKey, diagnosisByPersonPk, diagnosisKey, diagnosisOpenKey, diagnosisRateKey, errorRefKey, type DiagnosisFailureReason, type DiagnosisRecord, type DiagnosisTier, type ErrorRef, type ModelIdentifier, type OrgId } from "@rovara-code/contracts";
 
 type Client = { send(command: unknown): Promise<unknown> };
 type Item = Record<string, unknown>;

@@ -15,10 +15,8 @@ import { budgetDocumentFence } from "./budget-snapshot.js";
 // task still running for the duplicate fails closed at its next dispatch (the grant it is checked against has moved). There are no
 // customers yet, and only staging holds such records.
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  MEMBER_GRANT_SK_PREFIX, agentXError, developerOrgKey, memberGrantsPk, memberMergeQueueKey, orgMemberKey, orgMetaKey, orgPk, orgProjectCatalogPk, orgSettingsKey,
-  projectMemberKey, trialGithubKey, type OrgId, type OrgRole,
-} from "@agentx/contracts";
+import { MEMBER_GRANT_SK_PREFIX, agentXError, memberGrantsPk, orgPk, orgProjectCatalogPk, projectMemberKey, type OrgId } from "@rovara-code/contracts";
+import { developerOrgKey, memberMergeQueueKey, orgMemberKey, orgMetaKey, orgSettingsKey, trialGithubKey, type OrgRole } from "@agentx/cloud-contracts";
 import { ownerKeyForSubject } from "../aws/lambda.js";
 import { auditOccurrence } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";

@@ -2,7 +2,7 @@
 // aliases that keep an attribute name clear of DynamoDB's reserved words, how a cancelled transaction says which item refused, and the
 // request item (R18) that makes a write repeatable. Every multi-item write is one transaction, so a refused write leaves nothing behind.
 import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { INDEX_EXPIRY_ATTRIBUTE, agentRequestKey, agentXError, type AgentXErrorCode, type OrgId } from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, agentRequestKey, agentXError, type AgentXErrorCode, type OrgId } from "@rovara-code/contracts";
 
 /** How long a request item answers a repeat; the State table's TTL removes it after that, and a repeat later is a new request. */
 export const REQUEST_MEMORY_DAYS = 7;

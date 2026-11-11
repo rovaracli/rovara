@@ -1,7 +1,7 @@
 // "How we work" (H7): the rules a maintainer writes for a project's process layer are made inert on the server when the draft is saved: hidden characters are removed, the text is
 // trimmed, and one text is at most 4,000 characters. Ordinary agents keep what they write.
 import { describe, expect, it } from "vitest";
-import { ROVARA_CODE_AGENT_ID, type AgentId } from "../../packages/contracts/src/index.js";
+import { ROVARA_CODE_AGENT_ID, type AgentId } from "@rovara-code/contracts";
 import { RULE_TEXT_MAX, inertRuleText } from "../../packages/broker/src/playbook/inert-rule-text.js";
 import { postProjectProcess } from "../../packages/broker/src/playbook/process-layer.js";
 import type { ProjectPlaybookDependencies } from "../../packages/broker/src/playbook/routes.js";

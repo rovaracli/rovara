@@ -1,7 +1,8 @@
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { AdminBudgetSettingsSchema, AdminBudgetMicrodollarsSchema } from "@agentx/contracts/web";
+import { AdminBudgetSettingsSchema, AdminBudgetMicrodollarsSchema } from "@agentx/cloud-contracts/web";
 import { expect, it } from "vitest";
-import { AgentXError, errorStatus, orgMemberKey, orgMetaKey, developerOrgKey, orgSettingsKey } from "@agentx/contracts";
+import { AgentXError, errorStatus } from "@rovara-code/contracts";
+import { orgMemberKey, orgMetaKey, developerOrgKey, orgSettingsKey } from "@agentx/cloud-contracts";
 import { routeDeveloperRequest, type DeveloperCaller, type DeveloperRouteDependencies } from "../../packages/broker/src/aws/developer-routes.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 const A = "org_aaaaaaaaaaaaaaaaaaaa", B = "org_bbbbbbbbbbbbbbbbbbbb", who = "a".repeat(64), other = "b".repeat(64);

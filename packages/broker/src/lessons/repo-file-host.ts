@@ -1,6 +1,6 @@
 // Lessons in the repo, lane R2: the few host reads the publish pass and the erasure sweep share. A repository as the lessons code sees it is a `CodeHost` (the neutral port), a repository reference and a scope.
 import { randomBytes } from "node:crypto";
-import { LESSON_FILE_BRANCH_PREFIX, type ChangeRequestDetails, type CodeHost, type HostScope, type RepositoryIdentity, type RepositoryRef } from "@agentx/contracts";
+import { LESSON_FILE_BRANCH_PREFIX, type ChangeRequestDetails, type CodeHost, type HostScope, type RepositoryIdentity, type RepositoryRef } from "@rovara-code/contracts";
 import type { PrRow } from "./repo-file-state.js";
 
 /** One repository of a project, with the code host that serves it and the scope to call it in. Provider-neutral: the host is the `CodeHost` port. */

@@ -9,7 +9,7 @@
 // A blocked reason the auto-fix policy also names (for example `host_blocked`) joins the record of the auto-fix code (`host-blocked`), so a project has ONE card for one fault; a nightly cause has its own record.
 // Gated by `vx` (verification/switch.ts): with it off the port does nothing, as it did before this was hooked up.
 import { QueryCommand, TransactWriteCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
-import { projectPk, type OrgId } from "@agentx/contracts";
+import { projectPk, type OrgId } from "@rovara-code/contracts";
 import { RESULT_RULES } from "../verification/result.js";
 import { verifyResultsEnabled } from "../verification/switch.js";
 import type { TransactItem } from "../audit/outbox.js";

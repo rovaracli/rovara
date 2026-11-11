@@ -5,21 +5,7 @@
 //     redacted and cut to the limit. Never a secret, a token, the plan or anything of the workspace.
 //   - The origin is filled in here and nowhere else: the client sends only a request id and, optionally, a name. The request is repeatable (R18) like every Plan 3 write.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  INSTRUCTIONS_MAX_BYTES,
-  SessionMakeAgentBodySchema,
-  agentXError,
-  isBuiltinAgentId,
-  redactText,
-  AGENT_NAME_MAX,
-  MAKE_AGENT_NOT_COPIED_REASON,
-  type AgentId,
-  type AgentOrigin,
-  type AgentOwner,
-  type AgentSessionRecord,
-  type RecipeOverlay,
-  type SessionId,
-} from "@agentx/contracts";
+import { INSTRUCTIONS_MAX_BYTES, SessionMakeAgentBodySchema, agentXError, isBuiltinAgentId, redactText, AGENT_NAME_MAX, MAKE_AGENT_NOT_COPIED_REASON, type AgentId, type AgentOrigin, type AgentOwner, type AgentSessionRecord, type RecipeOverlay, type SessionId } from "@rovara-code/contracts";
 import { requireAccountable, requireAgentAccess, requireOwnerAllowed, type AgentCaller } from "../agents/access.js";
 import type { ApprovalDependencies } from "../agents/approvals.js";
 import { requireBaseEnabled } from "../agents/guardrails.js";

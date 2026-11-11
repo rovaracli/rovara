@@ -2,7 +2,7 @@
 // already approved through a recipe the project's setup used. A mark grants nothing.
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
-import { DecisionCardsViewSchema, projectPk, type DecisionCard, type TestEnvDraft } from "@agentx/contracts";
+import { DecisionCardsViewSchema, projectPk, type DecisionCard, type TestEnvDraft } from "@rovara-code/contracts";
 import { requestHostAsk } from "../../packages/broker/src/rovara-code/setup-host-ask.js";
 import { taskKey } from "../../packages/broker/src/developer/task-records.js";
 import { dynamoSetupLocksStore } from "../../packages/broker/src/rovara-code/setup-locks-store.js";

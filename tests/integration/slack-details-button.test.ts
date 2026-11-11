@@ -1,6 +1,6 @@
 // tests/integration/slack-details-button.test.ts
 import { describe, expect, it, vi } from "vitest";
-import { DETAILS_ACTION, splitSlackMessage, type SlackRequestMessage, type SlackThreadWorkspaceResult } from "../../packages/contracts/src/index.js";
+import { DETAILS_ACTION, splitSlackMessage, type SlackRequestMessage, type SlackThreadWorkspaceResult } from "@rovara-code/contracts";
 import { argumentsHash } from "../../packages/orchestrator/src/action-gate.js";
 import { createDynamoConfirmationStore } from "../../packages/slack-service/src/confirmation-store.js";
 import { processSlackRequest, type ProcessorDependencies, type TurnInput } from "../../packages/slack-service/src/processor.js";

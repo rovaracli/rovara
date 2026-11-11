@@ -1,7 +1,7 @@
 // Saved project images (SV wiring): the DynamoDB adapter of the registry's store. One row per project, written with the audit event in ONE transaction, fenced by the row's version; deleted projects are found
 // through the sparse due index until their registry deletion is final.
 import { describe, expect, it } from "vitest";
-import { WORKFLOW_DISPATCH_DUE_INDEX, orgPk, type OrgId, type SavedEnvManifest } from "@agentx/contracts";
+import { WORKFLOW_DISPATCH_DUE_INDEX, orgPk, type OrgId, type SavedEnvManifest } from "@rovara-code/contracts";
 import { SAVED_ENV_JOB_LEASE_MS, type SavedEnvAuditEntry, type SavedEnvImageRecord, type SavedEnvState } from "../../packages/broker/src/test-env/saved-env.js";
 import { SAVED_ENV_PURGE_PARTITION, dynamoSavedEnvStore } from "../../packages/broker/src/test-env/saved-env-store.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";

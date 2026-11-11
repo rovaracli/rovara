@@ -2,18 +2,15 @@
 // redacted, labelled), and the CI slot of merge tracking over a fake GitHub: a failing job starts one round with its log in the exact block, three rounds stop with the exact text,
 // `suggest` asks first, a failure that does not count starts nothing, and nothing a log says can change what the round may do.
 import { afterEach, describe, expect, it } from "vitest";
-import {
-  CI_BLOCK_BYTES_MAX, CI_FAILED_JOBS_MAX, CI_FIX_ROUNDS_MAX, CI_OUTPUT_BLOCK_HEADER, WorkflowSnapshotSchema, WorkflowTransitionError, blockWorkflowCiFix, ciFixAskMessage, ciFixStopMessage,
-  ciFixUnrelatedMessage, createCandidateManifest, createWorkflowSnapshot, endWorkflowCiFixUnrelated, isCiFixBlockReason, recordWorkflowPullRequestUpdate, retryWorkflowCiFix, startWorkflowFix,
-  workflowFixRoundsLeft, abandonWorkflowFix, blockWorkflowPullRequestUpdate, observeWorkflowPullRequest, observeWorkflowPullRequestMergedWithFix, workflowFollowsOnlyMerge, type WorkflowProgram, type WorkflowSnapshot,
-} from "@agentx/contracts";
-import { mergeTrackingKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { CI_BLOCK_BYTES_MAX, CI_FAILED_JOBS_MAX, CI_FIX_ROUNDS_MAX, CI_OUTPUT_BLOCK_HEADER, WorkflowTransitionError, ciFixAskMessage, ciFixStopMessage, ciFixUnrelatedMessage, createCandidateManifest, isCiFixBlockReason, type WorkflowProgram } from "@rovara-code/contracts";
+import { WorkflowSnapshotSchema, blockWorkflowCiFix, createWorkflowSnapshot, endWorkflowCiFixUnrelated, recordWorkflowPullRequestUpdate, retryWorkflowCiFix, startWorkflowFix, workflowFixRoundsLeft, abandonWorkflowFix, blockWorkflowPullRequestUpdate, observeWorkflowPullRequest, observeWorkflowPullRequestMergedWithFix, workflowFollowsOnlyMerge, type WorkflowSnapshot } from "@agentx/cloud-contracts";
+import { mergeTrackingKey } from "@rovara-code/contracts";
 import { GithubMergeRateLimitError } from "../../packages/broker/src/github-app.js";
 import { TrackingRequestCapError, registerMergeActionDecider, trackPullRequest, type MergeActionContext } from "../../packages/broker/src/rovara-code/merge-tracking.js";
 import {
   ciEvidenceKey, ciFixDecider, ciFixPrompt, ciFixPromptWithoutOutput, ciOutputBlock, cleanLog, collectCiEvidence, decideCiFix, firstLogLine, installCiFixDecider, taskAutonomy, readCiEvidence, uninstallCiFixDecider,
 } from "../../packages/broker/src/rovara-code/ci-fix.js";
-import { TRACKING_REQUESTS_BASE } from "../../packages/contracts/src/rovara-code.js";
+import { TRACKING_REQUESTS_BASE } from "@rovara-code/contracts";
 import type { GithubMergeReadBudget } from "../../packages/broker/src/aws/workflow-merge-recovery.js";
 import { HEAD_A, NOW, SESSION_ID, TABLE, TASK_ID, FakeGithub, status, world, type TrackingWorld } from "../support/rovara-code-tracking.js";
 import { TEST_ORG } from "../support/orgs.js";

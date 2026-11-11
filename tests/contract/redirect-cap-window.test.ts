@@ -3,7 +3,7 @@
 // to 25 is the positive control; the redirect's restarts, in every mode, leave it unset.
 import { createHash, randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { OWNER_REDIRECT_FEATURE, workspaceSessionKey } from "../../packages/contracts/src/index.js";
+import { OWNER_REDIRECT_FEATURE, workspaceSessionKey } from "@rovara-code/contracts";
 import type * as TaskWindow from "../../packages/broker/src/aws/developer-tasks/task-window.js";
 import { MAYA, createSingleAnswerPlanBroker } from "../support/developer-task-broker.js";
 import { finishPlanningWithMarkdown } from "../support/plan-documents.js";

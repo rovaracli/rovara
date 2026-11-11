@@ -2,7 +2,7 @@
 // It writes nothing and grants nothing. The authority around recipes (who proposes, who approves, the locks) is setup-recipes.ts (SH29); this file only reads what that approved, through the same store interface.
 //
 // Main branch only (ED-1): nothing here reads a repository, a branch or a SHA. The offers are chosen by company, project and status; WHICH offer fits is decided by the run, from the default-branch files it reads.
-import { OrgIdSchema, SETUP_RECIPE_OFFERS_MAX, SETUP_RECIPE_OFFERS_MAX_BYTES, SetupRecipeOfferSchema, parseSetupRecipeSource, type OrgId, type SetupRecipeOffer, type TestEnvValueSource } from "@agentx/contracts";
+import { OrgIdSchema, SETUP_RECIPE_OFFERS_MAX, SETUP_RECIPE_OFFERS_MAX_BYTES, SetupRecipeOfferSchema, parseSetupRecipeSource, type OrgId, type SetupRecipeOffer, type TestEnvValueSource } from "@rovara-code/contracts";
 import { SETUP_RECIPES_MAX_PER_ORG, recipeOfferedTo, type CompanyLocksReader, type SetupRecipeDeps, type StoredRecipe } from "./setup-recipes.js";
 
 /** The recipe rows, and the company locks as su-musts' store reads them (absent: no lock). */

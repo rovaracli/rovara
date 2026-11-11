@@ -2,12 +2,13 @@
 import { createHash, randomUUID } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { beforeAll, describe, expect, it } from "vitest";
-import { groundingScenarioIds, planQualityFinding, type PlanDocument, type WorkflowSnapshot } from "@agentx/contracts";
+import { groundingScenarioIds, planQualityFinding, type PlanDocument } from "@rovara-code/contracts";
+import { type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { createDeveloperTaskBroker, MAYA } from "../support/developer-task-broker.js";
 import { planAnswer, planDocument } from "../support/plan-documents.js";
 import { csvScenario, planFixture } from "../support/e2e-application-plan-fixtures.js";
 import { issueCapability } from "../../packages/broker/src/aws/cancellation.js";
-import { agentXError } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
 import { failOutboxOperation } from "../../packages/broker/src/aws/outbox-failure.js";
 import type { DurableOutboxRecord } from "../../packages/broker/src/aws/lambda.js";
 import type { finishPlanGrounding as FinishPlanGrounding, startPlanGroundingRound } from "../../packages/broker/src/aws/broker.js";

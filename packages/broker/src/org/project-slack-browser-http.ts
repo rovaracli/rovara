@@ -1,6 +1,6 @@
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import { OrgIdSchema, ReviewedSlackUnbindBodySchema, ReviewedSlackProposeBodySchema, ReviewedSlackApproveBodySchema, ProjectSlackProposalViewSchema, ReviewedSlackDecisionBodySchema, ProjectSlackDecisionSchema, agentXError, orgScoped, projectPk, type OrgId } from "@agentx/contracts";
+import { OrgIdSchema, ReviewedSlackUnbindBodySchema, ReviewedSlackProposeBodySchema, ReviewedSlackApproveBodySchema, ProjectSlackProposalViewSchema, ReviewedSlackDecisionBodySchema, ProjectSlackDecisionSchema, agentXError, orgScoped, projectPk, type OrgId } from "@rovara-code/contracts";
 import { takeRateAt } from "../developer/page-comments.js";
 import type { AuditRuntime } from "../audit/outbox.js";
 import type { SecondPersonEvidenceDependencies } from "./second-person-evidence.js";

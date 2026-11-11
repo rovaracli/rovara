@@ -9,9 +9,9 @@ import { CUT_SCOPE_PLACE, lessonPlaces, narrowestAudience, type Audience, type L
 import { repoOnlyScopes, tableProjectRepoScopes, viewedForLessons } from "../../../packages/broker/src/lessons/project-repo-audience.js";
 import { ORG_A, addSource, githubDraft, world } from "../../support/team-record-core.js";
 import { FakeDynamoDb } from "../../support/fake-dynamodb.js";
-import { projectRevisionKey } from "@agentx/contracts";
+import { projectRevisionKey } from "@rovara-code/contracts";
 import { draft, lessonRecord } from "./lesson-helpers.js";
-import { agentSessionKey } from "@agentx/contracts";
+import { agentSessionKey } from "@rovara-code/contracts";
 import { taskKey } from "../../../packages/broker/src/developer/task-records.js";
 import { LegacyTaskNoSessionError, resolveLessonTaskAudience, tableLessonAudiencePort, withLessonAudiences } from "../../../packages/broker/src/lessons/task-audience.js";
 import { createLessonLiveReader } from "../../../packages/broker/src/lessons/live-visibility.js";

@@ -4,7 +4,8 @@
 //
 // The store is a PORT: `FixtureReadPort` is the part of `FixtureStore` (test-env/fixture-store.ts) this lane reads. The adapters over S3 and DynamoDB (s3-fakes-store) make the real one; until it is wired
 // `AwsBrokerDependencies.fixtureStore` is absent and every fake is refused.
-import type { OrgId, TaskDependencyPlan, TestEnvDependency, TestEnvironmentBody } from "@agentx/contracts";
+import type { OrgId, TestEnvDependency, TestEnvironmentBody } from "@rovara-code/contracts";
+import type { TaskDependencyPlan } from "@agentx/cloud-contracts";
 import type { FixtureDenyFor, FixtureStore } from "./fixture-store.js";
 
 /** What this lane asks of the fixture store. */
@@ -41,6 +42,11 @@ export function fixtureDigestsOfEnvironment(body: Pick<TestEnvironmentBody, "dep
 /** The distinct fixture set digests a PLAN names (what a run is allowed to ask the broker to deliver). */
 export function fixtureDigestsOfPlan(plan: { dependencies?: readonly TaskDependencyPlan[] | undefined } | undefined): string[] {
   return [...new Set((plan?.dependencies ?? []).flatMap((dependency) => (dependency.backing === "fake" && dependency.fake !== undefined ? [dependency.fake.fixtureSetRef] : [])))];
+}
+
+/** The distinct ids of the company images a PLAN names (what a run is allowed to ask the broker for a pull login of). */
+export function companyImageIdsOfPlan(plan: { dependencies?: readonly TaskDependencyPlan[] | undefined } | undefined): string[] {
+  return [...new Set((plan?.dependencies ?? []).flatMap((dependency) => (dependency.backing === "company" && dependency.company !== undefined ? [dependency.company.imageId] : [])))];
 }
 
 /**

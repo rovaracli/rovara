@@ -1,9 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import {
-  E2EApplicationProjectContractSchema, canonicalJson, inspectE2ERepository, readE2EApplicationProjectContract,
-  type E2EApplicationProjectContract, type E2ESourceSnapshot,
-} from "@agentx/contracts";
+import { E2EApplicationProjectContractSchema, canonicalJson, inspectE2ERepository, readE2EApplicationProjectContract, type E2EApplicationProjectContract, type E2ESourceSnapshot } from "@rovara-code/contracts";
 import { planSyntheticAccountWrites, type E2EAccountRegistryEntry } from "../../packages/broker/src/e2e/application-account-registry.js";
 
 /** Fixtures for the synthetic account registry: contracts with chosen account profiles, and the registry the setup approval would have written for a source. */

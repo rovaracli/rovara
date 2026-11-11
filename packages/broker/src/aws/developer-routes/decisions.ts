@@ -20,7 +20,7 @@
 //   dependency, E2E plan, feedback, autofix, setting and test-environment decisions (their endpoints live in hot task files and stay page-decided). An unregistered kind is refused `unsupported`.
 import { recordsOf } from "../../test-env/fixture-lookup.js";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { agentXError, projectAllows } from "@agentx/contracts";
+import { agentXError, projectAllows } from "@rovara-code/contracts";
 import { taskKey, type DeveloperTaskRecord } from "../../developer/task-records.js";
 import { AgentSessionStore } from "../../agent-sessions/store.js";
 import { createDecisionPerformer, envChangeHandler, fixSetupHandler, mergeHandler, testEnvHandler, type KindHandler } from "../../decisions/performer.js";

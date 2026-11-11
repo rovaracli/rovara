@@ -1,8 +1,8 @@
 // Setup and test health KF-1: taking marks OFF the known-failing list. Undo (one maintainer, a live browser session, audited, no second person) and expiry (a usable, healthy nightly shows the test passing; audited as the system).
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { NightlyBaselineSchema, projectRevisionKey, type StoredNightlyHealth } from "@agentx/contracts";
-import { KnownFailingMarkViewSchema } from "../../packages/contracts/src/app-known-failing.js";
+import { NightlyBaselineSchema, projectRevisionKey, type StoredNightlyHealth } from "@rovara-code/contracts";
+import { KnownFailingMarkViewSchema } from "../../packages/cloud-contracts/src/app-known-failing.js";
 import { KnownFailingMarkSchema, KnownFailingTestId, KNOWN_FAILING_MAX, KNOWN_FAILING_FULL_MESSAGE, knownFailingKey, nextKnownFailing, readKnownFailingRow, type KnownFailingMark } from "../../packages/broker/src/test-env/known-failing.js";
 import { expireKnownFailing, knownFailingExpiryListener, nightShowsPassing, passingMarks, undoKnownFailing, type MarkRef } from "../../packages/broker/src/test-env/known-failing-undo.js";
 import { NIGHTLY_BASELINE_MAX_AGE_MS } from "../../packages/broker/src/test-env/nightly-usable.js";

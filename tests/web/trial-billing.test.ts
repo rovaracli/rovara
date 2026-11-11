@@ -1,16 +1,16 @@
 // @vitest-environment jsdom
-// Trial and billing screens (lane exp/trial-billing), against fixtures built from the API doc. The server is not built yet: every answer here is a fixture.
+// Trial and billing screens (lane exp/trial-billing), read through the server's contract (lane exp/trial-billing-contract). Every answer here is a fixture in the shape the real server sends.
 import { describe, it, expect } from "vitest";
 import { screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { createMemoryRouter, MemoryRouter, RouterProvider } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
-import { AppNavSchema } from "@agentx/contracts/web";
+import { AppNavSchema, BillingActionBodySchema, BillingAnswerReaderSchema, InvoiceListReaderSchema, BillingStateReaderSchema, TrialViewReaderSchema } from "@agentx/cloud-contracts/web";
+import { billingReturnPath, hostedPageUrl, navigatePath } from "../../packages/ui/src/api/trial-billing.js";
 import { appRoutes } from "../../packages/ui/src/routes.js";
 import { AppHostProvider, type ApiRequest, type ApiResponse } from "../../packages/ui/src/host.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { ThemeProvider } from "../../packages/ui/src/theme.js";
 import { BILLING_STORAGE_KEY, isBillingV2On } from "../../packages/ui/src/billing-flags.js";
-import { BillingActionBodySchema, BillingStateReaderSchema, TrialViewReaderSchema } from "../../packages/ui/src/api/trial-billing.js";
 import { allowanceName, bannerFor, heldPercent, hoursText, invoiceStatusWords, methodStatusWords, paymentMethodWords, phaseWords, refreshWords, stateWords, unavailableWords, usedPercent, worstState } from "../../packages/ui/src/screens/billing/trial-logic.js";
 import { TrialBanner } from "../../packages/ui/src/shell/TrialBanner.js";
 import { visibleSections } from "../../packages/ui/src/screens/admin/admin-sections.js";
@@ -30,7 +30,7 @@ function mount(options: { path: string; on?: boolean; role?: "owner" | "admin" |
  const role = options.role ?? "owner", me = fx.ADMIN_ID;
  const nav = AppNavSchema.parse({ me: { developerId: me, name: "Priya", orgRole: role }, org: { name: "Acme" }, homeCount: 0, projects: [], shared: { agents: [], sessions: [] }, features: { admin: true, localAgents: false, usage: false, chains: false, describe: false, notices: false } });
  const identity = { developer: { id: me, name: "Priya", orgRole: role }, org: { orgId, name: "Acme", plan: "team" }, identities: [] };
- const answers: Answers = { "/v1/app/org/members": ok(fx.members()), ...options.answers };
+ const answers: Answers = { ...options.answers };
  const f = fakeHost(async (r: ApiRequest) => {
   const path = r.path.split("?")[0]!;
   if (path === "/v1/app/me") return { status: 200, body: identity };
@@ -130,9 +130,9 @@ describe("trial phases and thresholds", () => {
  it("the banner: near the end only for people who can choose; used up, ended and stopped for everyone the server tells; nothing for ok, own key, billed or an unknown phase", () => {
   expect(bannerFor(parseTrial(fx.active()))).toBeUndefined();
   expect(bannerFor(parseTrial(fx.nearEnd()))?.kind).toBe("near_end");
-  expect(bannerFor(parseTrial({ ...fx.nearEnd(), you: { member: null, hitLimit: false, canChoose: false } }))).toBeUndefined();
+  expect(bannerFor(parseTrial({ ...fx.nearEnd(), you: fx.you({ member: null, hitLimit: false, canChoose: false }) }))).toBeUndefined();
   expect(bannerFor(parseTrial(fx.usedUp()))).toMatchObject({ kind: "used_up", chooser: false });
-  expect(bannerFor(parseTrial({ ...fx.usedUp(), you: { member: null, hitLimit: false, canChoose: false }, choices: null }))).toBeUndefined();
+  expect(bannerFor(parseTrial({ ...fx.usedUp(), you: fx.you({ member: null, hitLimit: false, canChoose: false }), choices: null }))).toBeUndefined();
   expect(bannerFor(parseTrial(fx.ended(true)))).toMatchObject({ kind: "ended", chooser: true });
   expect(bannerFor(parseTrial(fx.ended(false)))).toMatchObject({ kind: "ended", chooser: false });
   expect(bannerFor(parseTrial(fx.stopped(false)))?.kind).toBe("stopped");
@@ -188,19 +188,62 @@ describe("the trial page", () => {
    expect(screen.getByText("Keep working and be billed for usage, up to your monthly limit.")).toBeTruthy();
    expect(within(screen.getByRole("main")).queryAllByRole("button")).toHaveLength(0);
    expect(ask.closest("p")!.textContent).toContain("Only company owners and admins can choose.");
-   await waitFor(() => { expect(ask.closest("p")!.textContent).toContain("Priya, Maya"); });
+   expect(ask.closest("p")!.textContent).toContain("Owners and admins: Priya, Maya.");
    expect(ask.closest("p")!.textContent).not.toContain("Sam");
+   expect(calls(f, "GET", "/v1/app/org/members")).toHaveLength(0);
    expect(screen.queryByRole("link", { name: "Open Billing settings" })).toBeNull();
    expect(screen.getByText("You're seeing this because your work reached the allowance.")).toBeTruthy();
   } finally { f.close(); }
  });
- it("a member still gets Ask an admin when the names can't be read", async () => {
-  const f = mount({ path: "/app/trial", role: "member", answers: { [TRIAL]: ok(fx.ended(false)), "/v1/app/org/members": { status: 403, body: { error: { code: "FORBIDDEN", message: "no" } } } } });
+ it("a member still gets Ask an admin when the answer names no admin; the people list is never read", async () => {
+  const f = mount({ path: "/app/trial", role: "member", answers: { [TRIAL]: ok({ ...fx.ended(false), admins: [] }) } });
   try {
    const ask = await screen.findByText(/Ask an admin\./);
-   await waitFor(() => { expect(calls(f, "GET", "/v1/app/org/members")).toHaveLength(1); });
    expect(ask.closest("p")!.textContent).not.toContain("Owners and admins:");
+   expect(calls(f, "GET", "/v1/app/org/members")).toHaveLength(0);
   } finally { f.close(); }
+ });
+ it("personal limit used up (the company has room): the server's notice, Ask an admin and the names from `admins`, once; no members read", async () => {
+  const trial = fx.trial({ you: fx.you({ member: { limitUsd: 29, spentUsd: 29, committedUsd: 29 }, hitLimit: true, notice: fx.PERSONAL_NOTICE }), admins: fx.admins(), choices: { audience: "you", decided: null, options: fx.options() } });
+  const f = mount({ path: "/app/trial", role: "member", answers: { [TRIAL]: ok(trial) } });
+  try {
+   const notice = (await screen.findByText("Your personal limit is used up for this month.")).closest("section")!;
+   expect(within(notice).getByText(/Ask an admin\./).closest("p")!.textContent).toBe("Ask an admin. Only company owners and admins can choose. Owners and admins: Priya, Maya.");
+   expect(screen.getAllByText(/Ask an admin\./)).toHaveLength(1);
+   expect(within(screen.getByRole("main")).queryAllByRole("button")).toHaveLength(0);
+   expect(calls(f, "GET", "/v1/app/org/members")).toHaveLength(0);
+   expect(screen.queryByText("Allowance")).not.toBeNull();
+  } finally { f.close(); }
+  const g = mount({ path: "/app/trial", role: "member", answers: { [TRIAL]: ok(fx.trial({ you: fx.you({ member: { limitUsd: 29, spentUsd: 29, committedUsd: 29 }, hitLimit: true, notice: fx.PERSONAL_NOTICE }), admins: fx.admins() })) } });
+  try {
+   await screen.findByText("Your personal limit is used up for this month.");
+   expect(screen.getByText(/Ask an admin\./).closest("p")!.textContent).toContain("Owners and admins: Priya, Maya.");
+  } finally { g.close(); }
+  const h2 = mount({ path: "/app/trial", role: "owner", answers: { [TRIAL]: ok(fx.trial({ you: fx.you({ hitLimit: true, notice: fx.PERSONAL_NOTICE, canChoose: true }) })) } });
+  try {
+   await screen.findByText("Your personal limit is used up for this month.");
+   expect(screen.queryByText(/Ask an admin\./)).toBeNull();
+  } finally { h2.close(); }
+ });
+ it("no notice, no personal-limit section", async () => {
+  const f = mount({ path: "/app/trial", answers: { [TRIAL]: ok(fx.active()) } });
+  try { await screen.findByRole("heading", { name: "Allowance" });expect(screen.queryByRole("heading", { name: "Your personal limit" })).toBeNull(); } finally { f.close(); }
+ });
+ it("a non-cloud install: no machine meter and no locked phase; the page shows the models meter only", async () => {
+  const nonCloud = fx.trial({ allowances: [fx.models()] });
+  expect(parseTrial(nonCloud).allowances.map(item => item.kind)).toEqual(["models"]);
+  const f = mount({ path: "/app/trial", answers: { [TRIAL]: ok(nonCloud) } });
+  try {
+   const list = await screen.findByRole("list", { name: "Allowances" });
+   expect(within(list).getAllByRole("heading", { level: 3 }).map(node => node.textContent)).toEqual(["AI models"]);
+   expect(screen.queryByText("Machine time")).toBeNull();
+  } finally { f.close(); }
+  expect(bannerFor(parseTrial(nonCloud))).toBeUndefined();
+  const used = parseTrial(fx.trial({ allowances: [fx.models({ used: 500, left: 0, state: "used_up" })], you: fx.you({ canChoose: true }) }));
+  expect(bannerFor(used)?.kind).toBe("used_up");
+  const none = fx.trial({ allowances: [] });
+  const g = mount({ path: "/app/trial", answers: { [TRIAL]: ok(none) } });
+  try { expect(await screen.findByText("No allowance is set for this company.")).toBeTruthy(); } finally { g.close(); }
  });
  it("a choice already made is named, with who made it", async () => {
   const f = mount({ path: "/app/trial", answers: { [TRIAL]: ok(fx.stopped(true)) } });
@@ -227,7 +270,7 @@ describe("the trial page", () => {
 describe("choosing at the end of the trial: each action, REAUTH_REQUIRED and refusals", () => {
  const openOptions = () => fx.options({ stop: { available: true, unavailableReason: null }, autoBill: { available: true, unavailableReason: null } });
  it("own key: records the choice, then goes to AI models", async () => {
-  const f = mount({ path: "/app/trial", answers: { [TRIAL]: ok(fx.ended(true)), [POST]: done(fx.billing()) } });
+  const f = mount({ path: "/app/trial", answers: { [TRIAL]: ok(fx.ended(true)), [POST]: done(fx.billing(), { action: { kind: "navigate", href: "/app/admin/models" } }) } });
   try {
    fireEvent.click(await screen.findByRole("button", { name: "Connect your own AI key" }));
    await waitFor(() => { expect(f.router.state.location.pathname).toBe("/app/admin/models"); });
@@ -235,6 +278,19 @@ describe("choosing at the end of the trial: each action, REAUTH_REQUIRED and ref
    expect(Object.keys(body).sort()).toEqual(["action", "choice", "requestId"]);expect(body).toMatchObject({ action: "choose-trial-end", choice: "own_key" });
    expect(BillingActionBodySchema.safeParse(body).success).toBe(true);
   } finally { f.close(); }
+ });
+ it("own key: the answer's navigate wins; without one the choice's own next is used; a navigate that leaves the app is refused by the contract", async () => {
+  const go = async (answer: ApiResponse, options?: Record<string, unknown>[]) => {
+   const f = mount({ path: "/app/trial", answers: { [TRIAL]: ok(fx.ended(true, options === undefined ? {} : { options })), [POST]: answer } });
+   try {
+    fireEvent.click(await screen.findByRole("button", { name: "Connect your own AI key" }));
+    await waitFor(() => { expect(f.router.state.location.pathname).not.toBe("/app/trial"); });
+    return f.router.state.location.pathname;
+   } finally { f.close(); }
+  };
+  expect(await go(done(fx.billing(), { action: { kind: "navigate", href: "/app/admin/models/sources" } }))).toBe("/app/admin/models/sources");
+  expect(await go(done(fx.billing()))).toBe("/app/admin/models");
+  expect(BillingAnswerReaderSchema.safeParse({ status: "done", state: fx.billing(), action: { kind: "navigate", href: "https://evil.example/x" } }).success).toBe(false);
  });
  it("own key refused: the server's words, and a link to AI models anyway", async () => {
   const f = mount({ path: "/app/trial", answers: { [TRIAL]: ok(fx.ended(true)), [POST]: fx.refusal("CHANGE_STALE", "The trial moved on. Reload to see where it is now.") } });
@@ -279,6 +335,24 @@ describe("choosing at the end of the trial: each action, REAUTH_REQUIRED and ref
    expect(screen.getByRole("link", { name: "Open the secure page" }).getAttribute("href")).toBe(hosted);
    expect(document.querySelectorAll("input")).toHaveLength(0);
   } finally { f.close(); }
+ });
+ it("the old {setup} and {portal} answers are not read: nothing opens", async () => {
+  const f = mount({ path: "/app/trial", answers: { [TRIAL]: ok(fx.ended(true, { options: fx.options({ autoBill: { available: false, unavailableReason: "no_payment_method" } }) })), [POST]: done(fx.billing(), { status: "needs_action", setup: { url: "https://pay.example/setup/abc", expiresAt: "2026-11-11T13:00:00.000Z" }, portal: { url: "https://pay.example/p", expiresAt: "2026-11-11T13:00:00.000Z" } }) } });
+  try {
+   fireEvent.click(await screen.findByRole("button", { name: "Add a payment method" }));
+   await waitFor(() => { expect(posts(f)).toHaveLength(1); });
+   expect(f.host.openExternal).not.toHaveBeenCalled();
+  } finally { f.close(); }
+ });
+ it("the redirect envelope: https only; a navigate action opens nothing outside the app", () => {
+  const answer = (action: unknown) => BillingAnswerReaderSchema.parse({ status: "needs_action", state: fx.billing(), action });
+  expect(hostedPageUrl(answer({ kind: "redirect", url: "https://pay.example/a", expiresAt: "2026-11-11T13:00:00.000Z" }))).toBe("https://pay.example/a");
+  expect(BillingAnswerReaderSchema.safeParse({ status: "needs_action", state: fx.billing(), action: { kind: "redirect", url: "http://pay.example/a", expiresAt: "x" } }).success).toBe(false);
+  expect(hostedPageUrl(answer({ kind: "navigate", href: "/app/admin/models" }))).toBeUndefined();
+  expect(navigatePath(answer({ kind: "navigate", href: "/app/admin/models" }))).toBe("/app/admin/models");
+  expect(navigatePath(answer({ kind: "redirect", url: "https://pay.example/a", expiresAt: "2026-11-11T13:00:00.000Z" }))).toBeUndefined();
+  expect(hostedPageUrl(answer({ kind: "somethingnew", url: "https://pay.example/a" }))).toBeUndefined();
+  expect(hostedPageUrl(BillingAnswerReaderSchema.parse({ status: "done", state: fx.billing() }))).toBeUndefined();
  });
  it("a hosted page address that is not https is never opened", async () => {
   const f = mount({ path: "/app/trial", answers: { [TRIAL]: ok(fx.ended(true, { options: fx.options({ autoBill: { available: false, unavailableReason: "no_payment_method" } }) })), [POST]: done(fx.billing(), { status: "needs_action", action: { kind: "redirect", url: "http://pay.example/setup", expiresAt: "2026-11-11T13:00:00.000Z" } }) } });
@@ -360,7 +434,7 @@ describe("Settings > Billing", () => {
  });
  it("Change and Add ask the server for the hosted page and open it; the answer's own card text is never shown", async () => {
   const hosted = "https://pay.example/change/1";
-  const f = open(fx.billed(), { [POST]: done(fx.billed(), { status: "needs_action", setup: { url: hosted, expiresAt: "2026-11-11T13:00:00.000Z" } }) });
+  const f = open(fx.billed(), { [POST]: done(fx.billed(), { status: "needs_action", action: { kind: "redirect", url: hosted, expiresAt: "2026-11-11T13:00:00.000Z" } }) });
   try {
    fireEvent.click(await screen.findByRole("button", { name: "Change payment method" }));
    await waitFor(() => { expect(f.host.openExternal).toHaveBeenCalledWith(hosted); });
@@ -407,7 +481,7 @@ describe("Settings > Billing", () => {
   } finally { g.close(); }
  });
  it("remove (after asking), the billing contact and the provider portal each send their own action", async () => {
-  const f = open(fx.billed(), { [POST]: done(fx.billed(), { status: "needs_action", portal: { url: "https://portal.example/p", expiresAt: "2026-11-11T13:00:00.000Z" } }) });
+  const f = open(fx.billed(), { [POST]: done(fx.billed(), { status: "needs_action", action: { kind: "redirect", url: "https://portal.example/p", expiresAt: "2026-11-11T13:00:00.000Z" } }) });
   try {
    fireEvent.click(await screen.findByRole("button", { name: "Remove payment method" }));
    expect(posts(f)).toHaveLength(0);
@@ -467,6 +541,20 @@ describe("Settings > Billing", () => {
    expect(calls(f, "GET", INVOICES)).toHaveLength(0);
   } finally { f.close(); }
  });
+ it("not an owner or admin (403): Only company owners and admins can see billing., nothing else", async () => {
+  const f = open(fx.billed(), { [BILLING]: fx.refusal("FORBIDDEN", "Only owners and admins can do this.") });
+  try {
+   expect((await screen.findByRole("alert")).textContent).toBe("Only company owners and admins can see billing.");
+   expect(screen.queryByRole("heading", { name: "Payment method" })).toBeNull();expect(calls(f, "GET", INVOICES)).toHaveLength(0);
+  } finally { f.close(); }
+ });
+ it("a hosted-page return path is a plain path inside the app: a query is dropped, anything else goes back to Billing", () => {
+  expect(billingReturnPath("/app/admin/billing")).toBe("/app/admin/billing");
+  expect(billingReturnPath("/app/trial?x=1#top")).toBe("/app/trial");
+  expect(billingReturnPath("/somewhere")).toBe("/app/admin/billing");
+  expect(billingReturnPath("/app/../x")).toBe("/app/admin/billing");
+  for (const path of ["/app/trial", "/app/admin/billing", billingReturnPath("/other")]) expect(BillingActionBodySchema.safeParse({ action: "portal", requestId: crypto.randomUUID(), returnPath: path }).success).toBe(true);
+ });
  it("an unreadable answer refuses to show invented numbers, and a failed read can be retried", async () => {
   let n = 0;
   const f = open(fx.billed(), { [BILLING]: () => { n += 1;return n === 1 ? ok({ available: true, plan: "team" }) : ok(fx.billed()); } });
@@ -503,19 +591,23 @@ describe("invoices paging", () => {
    expect(screen.getByText("RV-2026-0012")).toBeTruthy();
   } finally { f.close(); }
  });
- it("none yet, a failed page keeps what is shown, and a link that is not https is not offered", async () => {
+ it("none yet, a failed page keeps what is shown, and a link that is not https is refused by the contract", async () => {
   const f = mount({ path: "/app/admin/billing", answers: { [BILLING]: ok(fx.billed()), [TRIAL]: ok(fx.active()), [INVOICES]: ok({ invoices: [] }) } });
   try { expect(await screen.findByText("No invoices yet.")).toBeTruthy(); } finally { f.close(); }
   let n = 0;
-  const bad = { ...fx.invoice(1), pdfUrl: "javascript:alert(1)", hostedUrl: "http://invoices.example/1" };
+  const bad = fx.invoice(1);
   const g = mount({ path: "/app/admin/billing", answers: { [BILLING]: ok(fx.billed()), [TRIAL]: ok(fx.active()), [INVOICES]: () => { n += 1;return n === 1 ? ok({ invoices: [bad], next: "c" }) : { status: 503, body: { error: { code: "RUNTIME_UNAVAILABLE", message: "x" } } }; } } });
   try {
-   const table = await screen.findByRole("table", { name: "Invoices" });
-   expect(within(table).queryByRole("link")).toBeNull();expect(within(table).getByText("None")).toBeTruthy();
+   await screen.findByRole("table", { name: "Invoices" });
    fireEvent.click(screen.getByRole("button", { name: "Show more invoices" }));
    expect((await screen.findAllByRole("alert", {}, { timeout: 8000 })).some(node => node.textContent === "Couldn't load invoices. Try again.")).toBe(true);
    expect(screen.getByText("RV-2026-0001")).toBeTruthy();
   } finally { g.close(); }
+ });
+ it("an invoice link that is not https makes the whole page unreadable: the contract never lets one through", async () => {
+  expect(InvoiceListReaderSchema.safeParse({ invoices: [fx.invoice(1, { hostedUrl: "http://invoices.example/1" })] }).success).toBe(false);
+  expect(InvoiceListReaderSchema.safeParse({ invoices: [fx.invoice(1, { pdfUrl: "javascript:alert(1)" })] }).success).toBe(false);
+  expect(InvoiceListReaderSchema.safeParse({ invoices: [fx.invoice(1)] }).success).toBe(true);
  });
  it("money: a non-dollar invoice is formatted by its currency, an unreadable one says so", async () => {
   const f = mount({ path: "/app/admin/billing", answers: { [BILLING]: ok(fx.billed()), [TRIAL]: ok(fx.active()), [INVOICES]: ok({ invoices: [fx.invoice(1, { currency: "EUR", totalMinor: 5000 })] }) } });
@@ -540,7 +632,7 @@ describe("the banner", () => {
   } finally { f.close(); }
  });
  it("near the end, a member sees nothing", async () => {
-  const f = banner({ ...fx.nearEnd(), you: { member: null, hitLimit: false, canChoose: false } });
+  const f = banner({ ...fx.nearEnd(), you: fx.you({ member: null, hitLimit: false, canChoose: false }) });
   try { await waitFor(() => { expect(calls({ request: f.request } as unknown as Mounted, "GET", TRIAL)).toHaveLength(1); });expect(screen.queryByRole("region", { name: "Trial allowance" })).toBeNull(); } finally { f.close(); }
  });
  it("ended: an owner is asked to choose; a member sees the same facts and Ask an admin", async () => {
@@ -550,7 +642,7 @@ describe("the banner", () => {
   try { const region = await screen.findByRole("region", { name: "Trial allowance" });expect(region.textContent).toContain("Your trial allowance is used up");expect(region.textContent).toContain("Ask an admin to choose what happens next.");expect(within(region).getByRole("link", { name: "See details" }).getAttribute("href")).toBe("/app/trial"); } finally { g.close(); }
  });
  it("active, used up, monthly refresh: says it renews, never that someone must choose, and never says trial on a team plan", async () => {
-  const f = banner(fx.trial({ ...fx.usedUp(), plan: "team", you: { member: null, hitLimit: false, canChoose: true } }));
+  const f = banner(fx.trial({ ...fx.usedUp(), plan: "team", you: fx.you({ member: null, hitLimit: false, canChoose: true }) }));
   try {
    const region = await screen.findByRole("region", { name: "Trial allowance" });
    expect(region.textContent).toContain("Your company's AI model allowance is used up for this month");
@@ -565,16 +657,16 @@ describe("the banner", () => {
    expect(region.textContent).toContain("Your trial's AI model allowance is used up for this month");expect(region.textContent).toContain("It renews on Dec 1, 2026.");
    expect(region.textContent).not.toMatch(/chooses|owner or admin|Ask an admin/iu);
   } finally { g.close(); }
-  const both = banner(fx.trial({ plan: "team", allowances: [fx.models({ used: 500, left: 0, state: "used_up" }), fx.machine({ used: 20, left: 0, state: "used_up" })], you: { member: null, hitLimit: true, canChoose: false }, choices: null }));
+  const both = banner(fx.trial({ plan: "team", allowances: [fx.models({ used: 500, left: 0, state: "used_up" }), fx.machine({ used: 20, left: 0, state: "used_up" })], you: fx.you({ member: null, hitLimit: true, canChoose: false }), choices: null }));
   try {
    const region = await screen.findByRole("region", { name: "Trial allowance" });
    expect(region.textContent).toContain("Your company's AI model and machine time allowances are used up for this month");expect(region.textContent).toContain("They renew on Dec 1, 2026.");
   } finally { both.close(); }
-  const machineOnly = banner(fx.trial({ plan: "team", allowances: [fx.models(), fx.machine({ used: 20, left: 0, state: "used_up" })], you: { member: null, hitLimit: true, canChoose: false }, choices: null }));
+  const machineOnly = banner(fx.trial({ plan: "team", allowances: [fx.models(), fx.machine({ used: 20, left: 0, state: "used_up" })], you: fx.you({ member: null, hitLimit: true, canChoose: false }), choices: null }));
   try { const region = await screen.findByRole("region", { name: "Trial allowance" });expect(region.textContent).toContain("Your company's machine time allowance is used up for this month"); } finally { machineOnly.close(); }
  });
  it("active, used up, one-time allowance: says it does not renew, still no choose sentence", async () => {
-  const f = banner(fx.trial({ allowances: [fx.models({ refresh: "never", period: null, used: 50, granted: 50, left: 0, state: "used_up" })], you: { member: null, hitLimit: false, canChoose: true }, choices: null }));
+  const f = banner(fx.trial({ allowances: [fx.models({ refresh: "never", period: null, used: 50, granted: 50, left: 0, state: "used_up" })], you: fx.you({ member: null, hitLimit: false, canChoose: true }), choices: null }));
   try { const region = await screen.findByRole("region", { name: "Trial allowance" });expect(region.textContent).toContain("Your trial's AI model allowance is used up");expect(region.textContent).toContain("It does not renew.");expect(region.textContent).not.toMatch(/chooses/iu); } finally { f.close(); }
  });
  it("ended and stopped keep the sentence that an owner or admin chooses what happens next", async () => {
@@ -596,7 +688,7 @@ describe("the banner", () => {
   try { await new Promise(resolve => setTimeout(resolve, 50));expect(off.request).not.toHaveBeenCalled();expect(off.container.querySelector("section")).toBeNull(); } finally { off.close(); }
  });
  it("past due: an admin is sent to Billing, a member is told to ask an admin", async () => {
-  const f = banner(fx.trial({ phase: "past_due", you: { member: null, hitLimit: false, canChoose: true } }));
+  const f = banner(fx.trial({ phase: "past_due", you: fx.you({ member: null, hitLimit: false, canChoose: true }) }));
   try { const region = await screen.findByRole("region", { name: "Trial allowance" });expect(within(region).getByRole("link", { name: "Open Billing" }).getAttribute("href")).toBe("/app/admin/billing"); } finally { f.close(); }
   const g = banner(fx.trial({ phase: "past_due" }));
   try { const region = await screen.findByRole("region", { name: "Trial allowance" });expect(region.textContent).toContain("Ask an admin to update the payment method.");expect(within(region).queryByRole("link", { name: "Open Billing" })).toBeNull(); } finally { g.close(); }

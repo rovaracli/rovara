@@ -15,7 +15,7 @@ import {
   type StuckCancelCandidate,
   type StuckCancelDependencies,
 } from "../../packages/broker/src/aws/stuck-cancels.js";
-import { agentXError } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 
 const NOW = new Date("2026-10-01T12:00:00.000Z");

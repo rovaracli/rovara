@@ -1,7 +1,7 @@
 // P6: the broker end of the poller. One pass for every registered host that polls (`events.mode === "poll"`): the same consumer as a webhook's events, the same reservations, and the
 // per-install read budget. No production host polls today (GitHub sends webhooks), so a pass is a no-op until an Enterprise adapter registers one; the pass itself is not wired to a schedule
 // here (see the report: "Wiring pending").
-import type { CodeHostEvent, HostScope, OrgId } from "@agentx/contracts";
+import type { CodeHostEvent, HostScope, OrgId } from "@rovara-code/contracts";
 import { dynamoPollStore, type PollRegistry } from "../../plugins/events/poll-store.js";
 import { runPollPass, type PollPassReport } from "../../plugins/events/poller.js";
 import { dynamoEventReservations, type EventReservations } from "../../plugins/events/reservations.js";

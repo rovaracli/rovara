@@ -20,7 +20,7 @@ worktree's `.superpowers/sdd/rovara-task-checklist.md` has both files joined.
   app imports. Changed-file gates miss these:
   - `tests/contract/task-owner-reads.test.ts`
   - `tests/contract/agent-lifecycle.test.ts`
-  - `tests/contract/contracts-web-entry.test.ts` (the `packages/contracts/web-safe-files.json` list)
+  - `tests/contract/contracts-web-entry.test.ts` (the `packages/cloud-contracts/web-safe-files.json` list)
 - **After you rename, move or delete a file or an exported function:** run `node scripts/codemap.ts` (about one
   second, no heavy.sh needed). It fails if `docs/architecture/code-map.md`, `AGENTS.md` or this file still names the
   old one; fix the doc in the same change. CI runs the same check as `tests/unit/codemap.test.ts`.
@@ -102,8 +102,8 @@ After a CI failure, re-run only the failed files and the tests around the fix.
 - Keep edits in shared entry files (`packages/broker/src/aws/broker.ts`, `developer-tasks.ts`, `developer-routes.ts`,
   the contracts barrel, `.github/workflows/ci.yml`, `eslint.config.js`) to small, one-line wiring. Put the code in the
   split modules (`docs/architecture/code-map.md` says which).
-- A new Lambda setting goes through the shared naming module (`packages/contracts/src/derived-names.ts`) or the packed
-  settings in `packages/contracts/src/broker-names.ts`. Keep `tests/contract/lambda-environment-size.test.ts` headroom.
+- A new Lambda setting goes through the shared naming module (`packages/cloud-contracts/src/derived-names.ts`) or the packed
+  settings in `packages/cloud-contracts/src/broker-names.ts`. Keep `tests/contract/lambda-environment-size.test.ts` headroom.
 - New fixture directories need an eslint ignore.
 
 ## 9. Never

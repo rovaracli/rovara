@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { orgMetaKey, type OrgRole } from "@agentx/contracts";
+import { orgMetaKey, type OrgRole } from "@agentx/cloud-contracts";
 import { MAYA, createDeveloperTaskBroker, seedMembership } from "../support/developer-task-broker.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
-import { RenameOrganizationBodySchema } from "../../packages/contracts/src/onboarding.js";
+import { RenameOrganizationBodySchema } from "@rovara-code/contracts";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { TEST_ORG } from "../support/orgs.js";
 async function setup(role: OrgRole = "owner") {

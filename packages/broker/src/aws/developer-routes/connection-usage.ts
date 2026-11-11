@@ -5,7 +5,7 @@
 //    names by id or label, else the only one of its type). Ticket updates and the team record use a tracker connection company-wide: the page words that itself.
 // Only the projects the viewer may see are named, and an archived project is left out. A project whose settings cannot be read is never guessed at: the answer
 // says `complete: false` and the page falls back to its careful wording. Reads only; nothing is written or logged.
-import { agentXError, defaultModelSourceOrder, type OrgId } from "@agentx/contracts";
+import { agentXError, defaultModelSourceOrder, type OrgId } from "@rovara-code/contracts";
 import { dynamoContextSourceStore } from "../../context-sources/store.js";
 import { sourceConnectionCandidates } from "../../triggers/intake-searches.js";
 import { listIntakeSources } from "../../intake/sources.js";

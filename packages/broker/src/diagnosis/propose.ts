@@ -11,10 +11,7 @@
 // container's repository now.
 // Where the ordinary route applies a change at once for a maintainer, so does the press, as the maintainer, under the revision just read; where it asks an administrator, it would ask here too (the
 // settings a diagnosis may name never need one). Each target has one path into its route; a target with none (the whole `playbook`, `connector` and `model_access`) cannot be proposed.
-import {
-  DIAGNOSIS_REFUSALS, DiagnosisProposeBodySchema, agentXError, diagnosisPathDenied, diagnosisPrefillAllowed, diagnosisRunbook, parseDiagnosisCitation,
-  type CodeSettings, type DiagnosisProposal, type OrgId, type ProjectSettingsBody,
-} from "@agentx/contracts";
+import { DIAGNOSIS_REFUSALS, DiagnosisProposeBodySchema, agentXError, diagnosisPathDenied, diagnosisPrefillAllowed, diagnosisRunbook, parseDiagnosisCitation, type CodeSettings, type DiagnosisProposal, type OrgId, type ProjectSettingsBody } from "@rovara-code/contracts";
 import { auditDiagnosisProposalRaised } from "../audit/events.js";
 import { auditActorOf } from "../audit/plan3-hooks.js";
 import type { DeveloperCaller } from "../aws/developer-routes.js";

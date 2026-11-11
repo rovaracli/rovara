@@ -9,10 +9,7 @@
 //   - A company admin can only WITHDRAW a verdict (the model then stops blocking at once), and cannot bring one back: a new verdict is written by staff.
 // Every write is one transaction with its audit event, so evidence never changes unaudited.
 import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  SecondReviewReplayRunSchema, SecondReviewVerdictSchema, secondReviewModelKey, secondReviewShadowPassed, secondReviewVerdictHolds, summarizeSecondReviewReplay,
-  type SecondReviewModelRef, type SecondReviewReplayRun, type SecondReviewReplaySummary, type SecondReviewVerdict,
-} from "@agentx/contracts";
+import { SecondReviewReplayRunSchema, SecondReviewVerdictSchema, secondReviewModelKey, secondReviewShadowPassed, secondReviewVerdictHolds, summarizeSecondReviewReplay, type SecondReviewModelRef, type SecondReviewReplayRun, type SecondReviewReplaySummary, type SecondReviewVerdict } from "@rovara-code/contracts";
 import { readTrackRecord } from "../rovara-code/second-review-track.js";
 import type { ModeAudit } from "./second-review-mode.js";
 import { secondReviewReplayKey, secondReviewVerdictKey, type SecondReviewSettings, type SettingsTable } from "./second-review-settings.js";

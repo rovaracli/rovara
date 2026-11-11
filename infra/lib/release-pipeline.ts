@@ -31,7 +31,9 @@ export const AGENTX_RELEASE_STACKS = [
 export const AGENTX_RELEASE_TRIGGER_PATHS = [
   "environments/**",
   "infra/**",
-  "packages/{audit-verifier,broker,cli,contracts,design-tokens,gateway,mcp,model-proxy,model-runtime,orchestrator,slack-service,ui,verifier,web,worker}/**",
+  "packages/{audit-verifier,broker,cli,cloud-contracts,design-tokens,gateway,mcp,model-proxy,model-runtime,orchestrator,slack-service,ui,verifier,web,worker}/**",
+  // The pinned copy of Rovara Code and the shims over it (convergence W0-3): the worker and Slack images are built from them.
+  "vendor/**",
   "upstream/e2e-0.20.0.tgz",
   "{package.json,package-lock.json,tsconfig.json,tsconfig.base.json,.dockerignore}",
 ] as const;

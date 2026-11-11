@@ -3,7 +3,7 @@
 // TTL (its template does not change), so there the reconciler deletes old days.
 // It looks 15 days back past the retention, so a run that failed or was skipped is caught up.
 import { DeleteCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
-import { ADMIN_INDEX_RETENTION_DAYS, orgFailureDayPk, orgUsageDayPk, type OrgId } from "@agentx/contracts";
+import { ADMIN_INDEX_RETENTION_DAYS, orgFailureDayPk, orgUsageDayPk, type OrgId } from "@rovara-code/contracts";
 
 type Client = { send(command: unknown): Promise<unknown> };
 export const INDEX_EXPIRY_DELETES_PER_RUN = 500;

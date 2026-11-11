@@ -6,7 +6,8 @@
 //     revision and digest the admin saw on the card, and the signed catalog must have a run profile for the image's family at that moment. Each approval is one transaction with its audit event.
 //   - REVOKING (or dismissing a waiting image) needs a live admin in a browser session; a safety action stays easy. It removes the row and is audited. A revoked image is served no more.
 // Nothing here returns a name, a digest or an error text of a registry: answers are ids, fixed words and the image the admin must read to approve it.
-import { OrgIdSchema, agentXError, type OrgId, type VerifiedCatalog } from "@agentx/contracts";
+import { COMPANY_IMAGE_EXTRA_REGISTRIES_MAX, companyImageExtraRegistry, companyImageRegistryRule, type CompanyImageMirrorJob } from "@agentx/cloud-contracts";
+import { OrgIdSchema, agentXError, type OrgId, type VerifiedCatalog } from "@rovara-code/contracts";
 import { randomBytes } from "node:crypto";
 import { isFreshSignIn } from "../developer/store.js";
 import {
@@ -25,14 +26,26 @@ export interface CompanyImageAuditEntry {
   image: string;
 }
 
+/** One change to the company's extra registry list: the list's new revision and size, and the one host added or removed (it goes in the event's `details`). */
+export interface CompanyImageRegistriesAuditEntry { orgId: OrgId; actor: string; at: string; revision: number; count: number; host: string; change: "added" | "removed" }
+
 /** The store. An adapter must commit the row, the live and waiting counters and the audit event in ONE transaction, conditional on the revision read (null: no row yet); `false` when the condition fails (the caller then says CHANGE_STALE). */
 export interface CompanyImageStore {
   get(orgId: OrgId, imageId: string): Promise<CompanyImage | undefined>;
   /** The company's live rows (waiting and approved). */
   list(orgId: OrgId): Promise<CompanyImage[]>;
   commit(next: CompanyImage, expectedRevision: number | null, entry: CompanyImageAuditEntry): Promise<boolean>;
+  /** The company's own list of extra registries an image may come from (the four built-in ones are always allowed), and its revision (0: never written). */
+  registries(orgId: OrgId): Promise<{ revision: number; hosts: string[] }>;
+  /** Replaces the list at the revision read, with the audit event in the same transaction; false when the revision moved. */
+  commitRegistries(orgId: OrgId, hosts: readonly string[], expectedRevision: number, entry: CompanyImageRegistriesAuditEntry): Promise<boolean>;
   /** Removes the row at the revision read (a revoke or a dismissal). */
   remove(current: CompanyImage, entry: CompanyImageAuditEntry): Promise<boolean>;
+  /**
+   * Forgets the mirror's state row of a revoked image. A copy that is still running finds its row gone when it tries to record its result, and then deletes what it made (a revoke while a copy runs must not leave the copy behind).
+   * Best effort, after the row is removed.
+   */
+  clearMirror?(orgId: OrgId, imageId: string): Promise<void>;
 }
 
 export interface CompanyImageCaller { orgId: OrgId; developerId: string; sessionId?: string | undefined }
@@ -42,6 +55,11 @@ export interface CompanyImageDeps {
   requireAdmin(caller: { orgId: OrgId; developerId: string }): Promise<void>;
   readSession(sessionId: string): Promise<{ authTime?: string; developerId: string; revokedAt?: string } | undefined>;
   resolveDigest: CompanyImageDigestResolver;
+  /**
+   * Starts the mirror job (copy an approved image into the install's registry, or delete a revoked image's copy). Absent: no mirror is installed, and an approved image is never served (the plan says it is
+   * still being copied). Best effort: a job that cannot be started leaves the image uncopied, and the next plan starts it again.
+   */
+  startMirror?: ((job: CompanyImageMirrorJob) => Promise<void>) | undefined;
   /** The release's signed catalog, or undefined when it could not be read. */
   catalog(): Promise<VerifiedCatalog | undefined>;
   edition: "public" | "enterprise";
@@ -59,7 +77,10 @@ export const COMPANY_IMAGE_WORDS = {
   covered: "Rovara's image list already has this kind of service at this version, so it needs no approval.",
   noCatalog: "Rovara's image list could not be read, so no image can be approved right now.",
   noProfile: "Rovara has no safe way to run this kind of service yet, so it cannot be approved. Rovara can approve images of the kinds in its own image list.",
-  noDigest: "Rovara could not look this image up in its registry, so nothing was proposed. Check the name and that the registry is public.",
+  noDigest: "Rovara could not look this image up in its registry, so nothing was proposed. Check the name, that the registry is public, and that the image has a linux/arm64 build (Rovara's workers run on arm64).",
+  registryNotAllowed: "That registry is not on your company's list. Rovara can read public images from Docker Hub, ghcr.io, quay.io and public.ecr.aws; a company admin can add another public registry first.",
+  registryInvalid: "That is not a registry host Rovara can use. Give a public DNS name such as registry.example.com, with no https://, port or path.",
+  tooManyRegistries: "The company has reached its limit of extra registries. Remove one first.",
   tooManyWaiting: "Too many images are waiting for approval. Approve or dismiss some first.",
   tooMany: "The company has reached its limit of approved and waiting images. Revoke one first.",
 } as const;
@@ -81,16 +102,19 @@ const entryOf = (action: CompanyImageAuditEntry["action"], authority: CompanyIma
 });
 
 /** The outcome of proposing one name. `covered` and `approved` need nothing more; `waiting` is on the admin's page. */
-export type ProposeOutcome = { status: "waiting" | "approved" | "covered"; imageId?: string } | { status: "refused"; reason: "not_a_reference" | "has_digest" | "no_tag" | "no_version" | "no_catalog" | "no_profile" | "no_digest" | "too_many" };
+export type ProposeOutcome = { status: "waiting" | "approved" | "covered"; imageId?: string } | { status: "refused"; reason: "not_a_reference" | "has_digest" | "no_tag" | "no_version" | "no_catalog" | "no_profile" | "no_digest" | "too_many" | "registry_not_allowed" };
 
 async function propose(deps: CompanyImageDeps, input: { orgId: OrgId; actor: string; reference: unknown; origin: CompanyImage["origin"]; authority: CompanyImageAuditEntry["authority"]; project?: string }): Promise<ProposeOutcome> {
   const read = readCompanyImage(input.reference);
   if (!read.ok) return { status: "refused", reason: read.reason };
+  // The registry must be on the company's list BEFORE anything is looked up: nothing is ever asked of a registry that is not allowed (the lookup checks again, by the host the list names).
+  const extra = (await deps.store.registries(input.orgId).catch(() => ({ revision: 0, hosts: [] as string[] }))).hosts;
+  if (companyImageRegistryRule(read.image.registry, extra) === undefined) return { status: "refused", reason: "registry_not_allowed" };
   const catalog = await Promise.resolve(deps.catalog()).catch(() => undefined);
   if (catalog === undefined) return { status: "refused", reason: "no_catalog" };
   // An image whose kind Rovara's list has no run profile for can never be served, so it is not worth an admin's attention.
   if (profileEntryOf(catalog, read.family, read.major, deps.edition) === undefined) return { status: "refused", reason: "no_profile" };
-  const digest = await Promise.resolve(deps.resolveDigest(read.image)).catch(() => undefined);
+  const digest = await Promise.resolve(deps.resolveDigest(read.image, extra)).catch(() => undefined);
   if (digest === undefined || !/^[a-f0-9]{64}$/u.test(digest)) return { status: "refused", reason: "no_digest" };
   const existing = await deps.store.list(input.orgId);
   const name = `${read.image.registry}/${read.image.repository}`;
@@ -114,7 +138,7 @@ async function propose(deps: CompanyImageDeps, input: { orgId: OrgId; actor: str
 }
 
 const REFUSAL_WORDS: Record<Extract<ProposeOutcome, { status: "refused" }>["reason"], string> = {
-  ...COMPANY_IMAGE_READ_WORDS, no_catalog: COMPANY_IMAGE_WORDS.noCatalog, no_profile: COMPANY_IMAGE_WORDS.noProfile, no_digest: COMPANY_IMAGE_WORDS.noDigest, too_many: COMPANY_IMAGE_WORDS.tooMany,
+  ...COMPANY_IMAGE_READ_WORDS, no_catalog: COMPANY_IMAGE_WORDS.noCatalog, no_profile: COMPANY_IMAGE_WORDS.noProfile, no_digest: COMPANY_IMAGE_WORDS.noDigest, too_many: COMPANY_IMAGE_WORDS.tooMany, registry_not_allowed: COMPANY_IMAGE_WORDS.registryNotAllowed,
 };
 
 /** An admin names an image. It waits for approval: nothing runs. A live admin is enough (no sign-in time: a proposal changes nothing that runs). */
@@ -155,9 +179,13 @@ export async function approveImage(deps: CompanyImageDeps, caller: CompanyImageC
   const catalog = await Promise.resolve(deps.catalog()).catch(() => undefined);
   if (catalog === undefined) throw invalid(COMPANY_IMAGE_WORDS.noCatalog);
   if (profileEntryOf(catalog, current.family, current.version, deps.edition) === undefined) throw invalid(COMPANY_IMAGE_WORDS.noProfile);
+  const extra = (await deps.store.registries(caller.orgId)).hosts;
+  if (companyImageRegistryRule(current.registry, extra) === undefined) throw invalid(COMPANY_IMAGE_WORDS.registryNotAllowed);
   const at = deps.now().toISOString();
   const next: CompanyImage = { ...current, status: "approved", revision: current.revision + 1, approvedBy: caller.developerId, approvedAt: at, updatedAt: at };
   if (!await deps.store.commit(next, current.revision, entryOf("company_image.approved", "fresh_sign_in", caller.developerId, next, at))) throw stale();
+  // The copy into the install's registry starts now. It is NOT part of the approval's transaction (it takes minutes): an image is served only once its copy is `ready`, so a job that does not start only delays it.
+  await deps.startMirror?.({ action: "copy", orgId: next.orgId, imageId: next.imageId, cycle: next.cycle, registry: next.registry, repository: next.repository, digest: next.digest, extraRegistries: extra }).catch(() => undefined);
   return next;
 }
 
@@ -169,6 +197,36 @@ export async function revokeImage(deps: CompanyImageDeps, caller: CompanyImageCa
   if (current.revision !== input.expectedRevision) throw stale();
   const at = deps.now().toISOString();
   if (!await deps.store.remove(current, entryOf("company_image.revoked", "live_admin", caller.developerId, { ...current, revision: current.revision + 1 }, at))) throw stale();
+  // A revoked image is served by no new plan (its row is gone). Its mirrored copy is deleted too, best effort: nothing can pull it without a login, and a login is minted only for an approved image.
+  // The state row goes first, so a copy still running finds it gone, deletes what it made and records nothing.
+  await Promise.resolve(deps.store.clearMirror?.(current.orgId, current.imageId)).catch(() => undefined);
+  await deps.startMirror?.({ action: "delete", orgId: current.orgId, imageId: current.imageId }).catch(() => undefined);
+}
+
+/** Adds a registry to the company's own list. A live admin from a live browser session with a sign-in in the last 10 minutes, like an approval; the change is audited in its own transaction. */
+export async function addRegistry(deps: CompanyImageDeps, caller: CompanyImageCaller, input: { host: unknown; expectedRevision: number }): Promise<{ revision: number; hosts: string[] }> {
+  await requireFreshAdmin(deps, caller);
+  const host = companyImageExtraRegistry(input.host);
+  if (host === undefined) throw invalid(COMPANY_IMAGE_WORDS.registryInvalid);
+  const current = await deps.store.registries(caller.orgId);
+  if (current.revision !== input.expectedRevision) throw stale();
+  if (current.hosts.includes(host)) return current;
+  if (current.hosts.length >= COMPANY_IMAGE_EXTRA_REGISTRIES_MAX) throw invalid(COMPANY_IMAGE_WORDS.tooManyRegistries);
+  const hosts = [...current.hosts, host];
+  if (!await deps.store.commitRegistries(caller.orgId, hosts, current.revision, { orgId: caller.orgId, actor: caller.developerId, at: deps.now().toISOString(), revision: current.revision + 1, count: hosts.length, host, change: "added" })) throw stale();
+  return { revision: current.revision + 1, hosts };
+}
+
+/** Removes a registry from the company's list (a live admin, fresh sign-in, audited). Images already approved from it are no longer served by new plans (a plan checks the registry is still on the list). */
+export async function removeRegistry(deps: CompanyImageDeps, caller: CompanyImageCaller, input: { host: unknown; expectedRevision: number }): Promise<{ revision: number; hosts: string[] }> {
+  await requireFreshAdmin(deps, caller);
+  const host = companyImageExtraRegistry(input.host);
+  const current = await deps.store.registries(caller.orgId);
+  if (host === undefined || !current.hosts.includes(host)) throw notFound();
+  if (current.revision !== input.expectedRevision) throw stale();
+  const hosts = current.hosts.filter((entry) => entry !== host);
+  if (!await deps.store.commitRegistries(caller.orgId, hosts, current.revision, { orgId: caller.orgId, actor: caller.developerId, at: deps.now().toISOString(), revision: current.revision + 1, count: hosts.length, host, change: "removed" })) throw stale();
+  return { revision: current.revision + 1, hosts };
 }
 
 /** The company's live images, for the admin's page and for planning a run. A live admin for the page; `readCompanyImages` below is for the broker's own planning. */

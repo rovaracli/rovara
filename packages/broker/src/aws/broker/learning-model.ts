@@ -18,7 +18,7 @@
 //      for money that may have been spent, and nothing leaks a month's cap.
 // `costUsd` of the answer is therefore an upper bound, the cap the key held.
 import { randomUUID } from "node:crypto";
-import { AgentXError, LESSONS_BROKER_MODEL_WAIT_SECONDS, OrgIdSchema, ROVARA_CODE_AGENT_ID, forbiddenModelMatcher, type ModelIdentifier, type OrgId } from "@agentx/contracts";
+import { AgentXError, LESSONS_BROKER_MODEL_WAIT_SECONDS, OrgIdSchema, ROVARA_CODE_AGENT_ID, forbiddenModelMatcher, type ModelIdentifier, type OrgId } from "@rovara-code/contracts";
 import { readGuardrails } from "../../agents/guardrails.js";
 import { currentLearningAttempt, learningCallMayStart, noteLearningFault } from "../../lessons/learning-deadline.js";
 import { gatedByLessonsSwitch } from "../../lessons/model-gate.js";

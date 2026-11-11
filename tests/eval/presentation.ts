@@ -1,4 +1,4 @@
-import type { ConnectorCatalog, ThreadConnector } from "../../packages/contracts/src/index.js";
+import type { ConnectorCatalog, ThreadConnector } from "@rovara-code/contracts";
 import { githubConnector, jiraConnector, linearConnector, presentCatalog, reviewTools, type Binder, type ScopeCatalog } from "../../packages/gateway/src/index.js";
 import { ORCHESTRATION_TOOL_NAMES, RECOVERY_TOOL_NAMES } from "../../packages/orchestrator/src/orchestration-tools.js";
 import type { EvalConnector, EvalProject, UpstreamTool } from "./case.js";

@@ -1,12 +1,7 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { canonicalJson } from "../../packages/contracts/src/canonical-json.js";
-import {
-  RuntimeInstallChallengeSchema,
-  RuntimeInstallationProposalSchema,
-  runtimeInstallChallengeDigest,
-  runtimeInstallationProposalSha256,
-} from "../../packages/contracts/src/runtime-installation.js";
+import { canonicalJson } from "@rovara-code/contracts";
+import { RuntimeInstallChallengeSchema, RuntimeInstallationProposalSchema, runtimeInstallChallengeDigest, runtimeInstallationProposalSha256 } from "@rovara-code/contracts";
 
 const sha = (value: string | Uint8Array) => createHash("sha256").update(value).digest("hex");
 const challenge = {

@@ -1,9 +1,7 @@
 // AUTOREQUALIFY tooling for test-deploy (AR-5): what the `requalify-infra` and `requalify-now` units are, how the check finds out whether the automatic renewal is installed,
 // and how it reports the last renewal. Pure code and read-only AWS reads; nothing here writes. The Lambda unit, the lift context and the step plans are named here so
 // scripts/test-deploy.ts only wires them in.
-import {
-  REQUALIFY_PROFILE_ID, REQUALIFY_TAGS, RequalifyLockSchema, RequalifyRunRecordSchema, RequalifyScheduleEnabledSchema, requalifyHoldKey, requalifyLockKey, requalifyRunKey, requalifyScheduleEnabledKey,
-} from "../packages/contracts/src/index.js";
+import { REQUALIFY_PROFILE_ID, REQUALIFY_TAGS, RequalifyLockSchema, RequalifyRunRecordSchema, RequalifyScheduleEnabledSchema, requalifyHoldKey, requalifyLockKey, requalifyRunKey, requalifyScheduleEnabledKey } from "@rovara-code/contracts";
 import { e2eModelCheckRunnerKey } from "../packages/broker/src/e2e/model-route-registry.js";
 import type { CheckTemplate, Finding } from "./test-deploy-check.js";
 import { REQUALIFY_SCHEDULE_CONTEXT_KEY, REQUALIFY_SCHEDULE_LOGICAL_ID, scheduleFindings, scheduleStateOf, type ScheduleFact } from "./test-deploy-requalify-schedule.js";

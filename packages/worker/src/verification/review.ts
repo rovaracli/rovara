@@ -1,38 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { createHash } from "node:crypto";
 import { isAbsolute } from "node:path";
-import {
-  WorkflowFeedbackBundleRefSchema,
-  WorkflowFeedbackBundleSchema,
-  WorkflowFeedbackFindingSchema,
-  WorkflowFeedbackReviewReportSchema,
-  WorkflowFeedbackTaskChecksSchema,
-  WorkflowReviewReportSchema,
-  createCandidateManifest,
-  feedbackReplacementCheckProblem,
-  redactText,
-  WORKFLOW_FEEDBACK_CHECK_CHANGES_MAX,
-  WORKFLOW_FEEDBACK_REVIEW_ANSWER_ARTIFACT,
-  type CandidateRepository,
-  type WorkflowFeedbackBundle,
-  type WorkflowFeedbackBundleRef,
-  type WorkflowFeedbackFinding,
-  type WorkflowFeedbackReviewReport,
-  type WorkflowFeedbackTaskChecks,
-  type WorkflowReviewChecks,
-  type WorkflowReviewPlan,
-  type SpecReviewInput,
-  type SpecReviewResult,
-  readSpecVerdicts,
-  unescapeMarkdown,
-  specReviewFindings,
-  type WorkflowReviewFeedback,
-  type WorkflowReviewFinding,
-} from "@agentx/contracts";
+import { WorkflowFeedbackBundleRefSchema, WorkflowFeedbackBundleSchema, WorkflowFeedbackFindingSchema, WorkflowFeedbackReviewReportSchema, WorkflowFeedbackTaskChecksSchema, WorkflowReviewReportSchema, createCandidateManifest, feedbackReplacementCheckProblem, redactText, WORKFLOW_FEEDBACK_CHECK_CHANGES_MAX, WORKFLOW_FEEDBACK_REVIEW_ANSWER_ARTIFACT, type CandidateRepository, type WorkflowFeedbackBundle, type WorkflowFeedbackBundleRef, type WorkflowFeedbackFinding, type WorkflowFeedbackReviewReport, type WorkflowFeedbackTaskChecks, type WorkflowReviewChecks, type WorkflowReviewPlan, type SpecReviewInput, type SpecReviewResult, readSpecVerdicts, unescapeMarkdown, specReviewFindings, type WorkflowReviewFeedback, type WorkflowReviewFinding } from "@rovara-code/contracts";
 import type { ArtifactSink } from "../artifacts.js";
 import { assistantText } from "./extension.js";
 import { readCandidateRepositories } from "./candidate.js";
-import { WORKFLOW_REVIEW_MODEL_FAILURE_PATTERN, nextSecondReviewModel, secondReviewModelKey, secondReviewTryOutcome, type SecondReviewContext, type SecondReviewResult, type SecondReviewTry, downgradeSourceOnlyFindings, parseWorkflowReviewerResponse, reviewerFocus, reviewJsonShape, unfence } from "@agentx/contracts";
+import { WORKFLOW_REVIEW_MODEL_FAILURE_PATTERN, nextSecondReviewModel, secondReviewModelKey, secondReviewTryOutcome, type SecondReviewContext, type SecondReviewResult, type SecondReviewTry, downgradeSourceOnlyFindings, parseWorkflowReviewerResponse, reviewerFocus, reviewJsonShape, unfence } from "@rovara-code/contracts";
 import { describeModelCallNote, sanitizeModelCallEvent } from "../model-call-monitor.js";
 import { candidateChanges, candidateDiff, type CandidateChange } from "./diff.js";
 import type { FileOpsTarget } from "../file-ops-exec.js";
@@ -40,7 +13,7 @@ import type { AgentSkillFile } from "../agent-step.js";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { assertFileToolsContained, createWorkspacePiSession, type PiSessionAdapter, type PiSessionHandle, type WorkspaceModelConfiguration } from "../pi-session.js";
 import { withIsolatedGit } from "../isolated-git.js";
-import type { LoadedKnowledgeManifest } from "@agentx/contracts";
+import type { LoadedKnowledgeManifest } from "@rovara-code/contracts";
 import { isRuleFilesUnverified } from "../repository-context.js";
 import { isTestPath } from "./test-paths.js";
 

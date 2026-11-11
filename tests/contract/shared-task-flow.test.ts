@@ -3,7 +3,8 @@
 // service's processor, against the broker in process. Fake Slack, fake worker, the fake table.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { CLOSED_SHARED_NOTICE, VIEW_ONLY_NOTICE, createWorkflowSnapshot, parseSlackThreadSubject, turnRecordKeys, type ChannelInfoRequest, type ChannelInfoResponse, type ChannelMembersRequest, type ChannelMembersResponse, type SlackRequestMessage, type TurnRecord } from "../../packages/contracts/src/index.js";
+import { CLOSED_SHARED_NOTICE, VIEW_ONLY_NOTICE, parseSlackThreadSubject, turnRecordKeys, type ChannelInfoRequest, type ChannelInfoResponse, type ChannelMembersRequest, type ChannelMembersResponse, type SlackRequestMessage, type TurnRecord } from "@rovara-code/contracts";
+import { createWorkflowSnapshot } from "@agentx/cloud-contracts";
 import { createNotifierHandler } from "../../packages/broker/src/aws/developer-task-notifier.js";
 import { STUCK_SETUP_MESSAGE, sweepStuckSetups } from "../../packages/broker/src/aws/stuck-setup.js";
 import type { Notice, StreamRecord } from "../../packages/broker/src/developer/notifications.js";

@@ -5,10 +5,8 @@ import type { AgentRouteDependencies } from "../../packages/broker/src/agents/ro
 import { randomUUID } from "node:crypto";
 import { BatchGetCommand, GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
-import {
-  LIVE_PAGE_MAX, LiveResponseReaderSchema, LiveResponseSchema, LiveTileReaderSchema, LiveTileSchema, SESSION_STATUS_WORDS, SESSION_STATUSES, agentSessionKey, liveSessionKey, livePresenceKey, orgMemberKey, projectMemberKey,
-  projectChannel, sharedSessionsKey, type LiveResponse, type OrgId, type SessionStatus,
-} from "../../packages/contracts/src/index.js";
+import { LIVE_PAGE_MAX, LiveResponseReaderSchema, LiveResponseSchema, LiveTileReaderSchema, LiveTileSchema, SESSION_STATUS_WORDS, SESSION_STATUSES, agentSessionKey, liveSessionKey, livePresenceKey, projectMemberKey, sharedSessionsKey, type LiveResponse, type OrgId, type SessionStatus } from "@rovara-code/contracts";
+import { orgMemberKey, projectChannel } from "@agentx/cloud-contracts";
 import { decidingOf, routeAgentSessionRequest } from "../../packages/broker/src/agent-sessions/routes.js";
 import { batchGetItems, liveSessions, type LiveDependencies } from "../../packages/broker/src/agent-sessions/live.js";
 import { recordPresence } from "../../packages/broker/src/agent-sessions/followers.js";

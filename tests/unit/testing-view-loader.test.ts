@@ -1,9 +1,8 @@
 // Setup and test health SH18/SH19: the loader behind the pull request's Testing section and the task page's result. Off unless vx is exactly "1" (and then it reads nothing for a version 1 task); a mark by a
 // maintainer counts as already failing; a blocked task shows an environment result only after Rovara stored its Fix setup ask; a failed follow-up full run shows no result.
 import { describe, expect, it } from "vitest";
-import {
-  EvidencePackSchema, WORKFLOW_BLOCK_REASONS, WorkflowSnapshotSchema, createCandidateManifest, createWorkflowSnapshot, type EvidencePack, type WorkflowSnapshot,
-} from "@agentx/contracts";
+import { EvidencePackSchema, createCandidateManifest, type EvidencePack } from "@rovara-code/contracts";
+import { WORKFLOW_BLOCK_REASONS, WorkflowSnapshotSchema, createWorkflowSnapshot, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { loadTestingView, type TestingViewDeps } from "../../packages/broker/src/aws/developer-tasks/testing-view.js";
 import type { AutoFixAsk } from "../../packages/broker/src/developer/autofix-messages.js";
 import type { DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";

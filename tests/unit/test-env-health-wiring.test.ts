@@ -1,6 +1,7 @@
 // Setup and test health SH28: the joints. Each is undefined or a no-op with the `nh` switch off, so the callers' flow is today's flow.
 import { describe, expect, it } from "vitest";
-import { AUTO_FIX_CODES, projectMetaKey, type AutoFixCode, type OrgId } from "@agentx/contracts";
+import { AUTO_FIX_CODES, type AutoFixCode } from "@agentx/cloud-contracts";
+import { projectMetaKey, type OrgId } from "@rovara-code/contracts";
 import { withTestingNotice } from "../../packages/broker/src/aws/developer-tasks/health-notice.js";
 import { blockedByEnvironmentHook, blockedReasonsOf, healthPortsOf, recordNightlyResultWithHealth, setupProvedHook } from "../../packages/broker/src/test-env/health-wiring.js";
 import { noteBlockedTask, readProjectHealth } from "../../packages/broker/src/test-env/health.js";

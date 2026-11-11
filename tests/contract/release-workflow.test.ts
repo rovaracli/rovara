@@ -193,12 +193,13 @@ describe("release workflow", () => {
     const checkout = sign.steps[0]!;
     expect(checkout.with?.["persist-credentials"]).toBe(false);
     expect(checkout.with?.ref).toBeUndefined();
-    expect(String(checkout.with?.["sparse-checkout"]).split("\n").filter((line) => line !== "").sort()).toEqual(["packages/contracts/src", "scripts/release"]);
+    expect(String(checkout.with?.["sparse-checkout"]).split("\n").filter((line) => line !== "").sort()).toEqual(["packages/cloud-contracts/src", "scripts/release", "vendor/rovara-code/packages/contracts/src"]);
     expect(sign.steps[1]!.with?.cache).toBeUndefined();
     expect(sign.steps[1]!.with?.["node-version-file"]).toBe(".node-version");
     expect(sign.steps[2]!.run).toBe("npm ci --ignore-scripts --no-audit --no-fund --prefix scripts/release/signer");
-    expect(sign.steps[3]!.run).toMatch(/^node scripts\/release\/signer\/node_modules\/esbuild\/bin\/esbuild scripts\/release\/sign-bundle\.ts --bundle /u);
-    expect(sign.steps[3]!.run).toContain("--outfile=scripts/release/signer/dist/sign-bundle.mjs");
+    // The build options (aliases, externals, the plugin that says Code's contract sources have no side effects, the outfile) are in scripts/release/signer/build.mjs, read by tests/contract/signer-package.test.ts.
+    expect(sign.steps[3]!.run).toBe("node scripts/release/signer/build.mjs");
+    expect(await readFile("scripts/release/signer/build.mjs", "utf8")).toContain('outfile: "scripts/release/signer/dist/sign-bundle.mjs"');
     expect(sign.steps[6]!.run).toBe('node scripts/release/signer/dist/sign-bundle.mjs --bundle "$RUNNER_TEMP/bundle" --kms-key "$KMS_KEY"');
     const download = sign.steps[4]!;
     expect(download.with?.name).toBe("bundle-unsigned");

@@ -11,7 +11,8 @@
 // (`allocateSlotBudgets`), so the proxy refuses a call past it, and the planner's key is held to what is left too (`plannerRunRoomUsd`). There is no separate stop function (B2-m5: `designReviewSpendStop` was never called and is removed);
 // `stopAtMeasuredUsd` on the applied choice is the cap the person saw, kept on the record.
 import { createHash } from "node:crypto";
-import { WorkflowTransitionError, agentXError, canonicalJson, lowerDesignReviewTier, raiseDesignReviewCap, skipDesignReview, type WorkflowSnapshot, type DesignReason, type DesignReviewTier, type EditionPolicy } from "@agentx/contracts";
+import { WorkflowTransitionError, agentXError, canonicalJson, type DesignReason, type DesignReviewTier } from "@rovara-code/contracts";
+import { lowerDesignReviewTier, raiseDesignReviewCap, skipDesignReview, type WorkflowSnapshot, type EditionPolicy } from "@agentx/cloud-contracts";
 import { DECISION_CHANGED_MESSAGE, DECISION_OPEN_FIRST_MESSAGE, DECISION_FULL_PAGE_MESSAGE, type DecisionCaller } from "../decisions/routes.js";
 import { projectDecisionCards, type DecisionItem } from "../decisions/project.js";
 import { DECISION_SPEND_LOW_MAX_USD, riskTierOf, type DecisionLocks } from "../decisions/risk-tier.js";

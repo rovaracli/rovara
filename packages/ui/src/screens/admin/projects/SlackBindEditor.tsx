@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ReviewedSlackProposeBodySchema } from "@agentx/contracts/web";
+import { ReviewedSlackProposeBodySchema } from "@agentx/cloud-contracts/web";
 import { useAppHost } from "../../../host.js";
 import { ApiError } from "../../../api/errors.js";
 import { createProjectSlackApi } from "../../../api/project-slack.js";

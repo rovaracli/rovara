@@ -15,33 +15,8 @@
 // a less-safe one also needs a second person, who confirms a card on the confirmation page (their fresh sign-in is recorded there) and whom `approveTestEnvironment` checks against the company's records. A DRAFT is
 // the sandbox tier with no services, accounts, preview, shared environment, video, traces or nightly run (a draft with more is refused when it is stored). A PROPOSAL on a project that already has an approved
 // environment also keeps what a person set there (tier, services, accounts, nightly run, production list), which can be less safe.
-import {
-  projectAllows,
-  TestEnvApplyBodySchema,
-  TestEnvApproveBodySchema,
-  TestEnvCheckBodySchema,
-  TestEnvEditBodySchema,
-  TestEnvSeedBodySchema,
-  TestEnvProposeBodySchema,
-  TestEnvProveBodySchema,
-  TestEnvRequestApprovalBodySchema,
-  TestEnvDependenciesSchema,
-  TestEnvironmentBodySchema,
-  EDITION_ENV_VAR,
-  agentXError,
-  testEnvApprovalRisk,
-  testEnvDigest,
-  testEnvIsProved,
-  testEnvLessSafeChanges,
-  testEnvSummaryOf,
-  type AgentXError,
-  type TestEnvDraft,
-  type TestEnvRefusal,
-  type TestEnvironment,
-  type TestEnvironmentBody,
-  type TestEnvironmentState,
-  type OrgId,
-} from "@agentx/contracts";
+import { projectAllows, TestEnvApplyBodySchema, TestEnvApproveBodySchema, TestEnvCheckBodySchema, TestEnvEditBodySchema, TestEnvSeedBodySchema, TestEnvProposeBodySchema, TestEnvProveBodySchema, TestEnvRequestApprovalBodySchema, TestEnvDependenciesSchema, TestEnvironmentBodySchema, agentXError, testEnvApprovalRisk, testEnvDigest, testEnvIsProved, testEnvLessSafeChanges, testEnvSummaryOf, type AgentXError, type TestEnvDraft, type TestEnvRefusal, type TestEnvironment, type TestEnvironmentBody, type TestEnvironmentState, type OrgId } from "@rovara-code/contracts";
+import { EDITION_ENV_VAR } from "@agentx/cloud-contracts";
 import { logDeveloperEvent } from "../../developer/log.js";
 import { confirmationReply } from "../../agent-sessions/shares.js";
 import { latestRevision } from "../../org/project-settings.js";

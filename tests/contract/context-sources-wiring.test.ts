@@ -1,7 +1,7 @@
 // ME-13 (wire lane C): the broker's own dependency builders hand the lane E routes to a real handler. The routes answer only where the install has a connection secrets role, the Sources settings
 // in both editions, the org's MCP servers in Enterprise only, and package-run servers stay off until the operator turns them on with a host.
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import type { OrgRole } from "../../packages/contracts/src/org-node.js";
+import type { OrgRole } from "../../packages/cloud-contracts/src/org-node.js";
 import { OrgSecrets } from "../../packages/broker/src/connections/org-secrets.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { MAYA, OMAR, createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";

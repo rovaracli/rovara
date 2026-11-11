@@ -4,13 +4,14 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { orgMemberKey, type OrgId } from "@agentx/contracts";
+import { orgMemberKey } from "@agentx/cloud-contracts";
+import { type OrgId } from "@rovara-code/contracts";
 import {
   approverOfPlan, attributionForPublication, auditLinkFor, eraseAttributionOfPerson, routeEditionDependencies,
 } from "../../packages/broker/src/wiring/enterprise-identity.js";
 import { installEditionPolicy } from "../../packages/broker/src/aws/broker/edition-wiring.js";
 import { dynamoAttributionLinkStore } from "../../packages/broker/src/attribution/links.js";
-import { rewriteAttributionBody } from "../../packages/contracts/src/index.js";
+import { rewriteAttributionBody } from "@rovara-code/contracts";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 
 const org = "org_aaaaaaaaaaaaaaaaaaaa" as OrgId;

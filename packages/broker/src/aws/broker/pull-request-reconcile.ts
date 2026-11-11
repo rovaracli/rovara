@@ -3,7 +3,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { PutCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { PutObjectCommand } from "@aws-sdk/client-s3";
-import { CheckReportSchema, LatestChecksSchema, PULL_REQUEST_BODY_MAX_CHARS, checksMakeDraft, checksSection, type StandingFailure, canonicalJson, workflowIsReviewOnly, blockWorkflow, WorkItemProgressV1Schema, WorkflowSnapshotSchema, taskGraphOrder, workflowDependencyAttemptTerminalProgress, UNDERSTAND_ARTIFACT_MAX_BYTES, UNDERSTAND_ARTIFACT_NAME, WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, type CheckEntry, type LatestChecks, agentXError, type WorkflowSnapshot, WORKFLOW_PLAN_MAX_BYTES, WORKFLOW_FEEDBACK_REVIEW_ANSWER_ARTIFACT, redactText, auditPullRequestId, codeRepositoriesOf, type CodeHost } from "@agentx/contracts";
+import { CheckReportSchema, LatestChecksSchema, PULL_REQUEST_BODY_MAX_CHARS, checksMakeDraft, checksSection, type StandingFailure, canonicalJson, workflowIsReviewOnly, WorkItemProgressV1Schema, taskGraphOrder, workflowDependencyAttemptTerminalProgress, UNDERSTAND_ARTIFACT_MAX_BYTES, UNDERSTAND_ARTIFACT_NAME, WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, type CheckEntry, type LatestChecks, agentXError, WORKFLOW_PLAN_MAX_BYTES, WORKFLOW_FEEDBACK_REVIEW_ANSWER_ARTIFACT, redactText, codeRepositoriesOf, type CodeHost } from "@rovara-code/contracts";
+import { blockWorkflow, WorkflowSnapshotSchema, type WorkflowSnapshot, auditPullRequestId } from "@agentx/cloud-contracts";
 import { auditPending, auditTransact, tryAuditEvent } from "../../audit/outbox.js";
 import { flushAuditEvents } from "../../audit/flush.js";
 import { auditPullRequestOpened } from "../../audit/events.js";

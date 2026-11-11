@@ -4,7 +4,8 @@
 // Authority: a live "can edit" on the session in the caller's own org (the owner has it), read on every request; a session of another org, or one the caller cannot see, is `NOT_FOUND`. The key is
 // checked to be an issue key. A session follows one Linear issue and an issue follows one session in the org (`bindSessionSurface` refuses the second); changing the issue is explicit (`replace`).
 // The binding, its timeline line and its audit record are one transaction. A binding is a routing hint only: it names no person and gives nobody a level on the session.
-import { agentXError, sessionEventId, type OrgId, type SessionBinding, type SessionId, type SessionView } from "@agentx/contracts";
+import { agentXError, sessionEventId, type OrgId, type SessionBinding, type SessionId } from "@rovara-code/contracts";
+import { type SessionView } from "@agentx/cloud-contracts";
 import { z } from "zod";
 import type { TransactItem } from "../agents/table-writes.js";
 import { bindSessionSurface, replaceSessionSurface, unbindSessionSurface } from "../agent-sessions/bindings.js";

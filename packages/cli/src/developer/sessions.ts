@@ -6,10 +6,7 @@
 // not an expired sign-in. It is printed as a link and exits 0, and it never goes near a fresh sign-in (`withFreshSignIn` is not used here).
 // Nothing in this file decides an approval (R66).
 import { randomUUID } from "node:crypto";
-import {
-  AGENTX_NAME_PATTERN, CLI_PACKAGE_NAME, INTENT_NOT_WAITING_MESSAGE, LEVEL_WORDS, LIVE_FILTERS, YOUR_CALL_WORDS, NeedsConfirmationReaderSchema, SESSION_LEVELS, SessionIdSchema, sessionTaskStatus, taskStatusText, TASK_VIEW_HEADER, TASK_VIEW_VERSION, agentXError, sessionLink,
-  type SessionLevel,
-} from "@agentx/contracts";
+import { AGENTX_NAME_PATTERN, CLI_PACKAGE_NAME, INTENT_NOT_WAITING_MESSAGE, LEVEL_WORDS, LIVE_FILTERS, YOUR_CALL_WORDS, NeedsConfirmationReaderSchema, SESSION_LEVELS, SessionIdSchema, sessionTaskStatus, taskStatusText, TASK_VIEW_HEADER, TASK_VIEW_VERSION, agentXError, sessionLink, type SessionLevel } from "@rovara-code/contracts";
 import { appRequest, clean, developerRef, list, result, seg, str, type AppResult } from "./agents.js";
 import type { DeveloperSessionDeps } from "./session.js";
 

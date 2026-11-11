@@ -1,6 +1,7 @@
 // v1.2 learning loop, B3: who is a member and who is an outsider (design 2.4, owner Q1). Read live from the company member record and the project grant; nothing else counts.
 import { describe, expect, it } from "vitest";
-import { githubMemberKey, orgMemberKey, projectMemberKey } from "../../packages/contracts/src/index.js";
+import { githubMemberKey, projectMemberKey } from "@rovara-code/contracts";
+import { orgMemberKey } from "@agentx/cloud-contracts";
 import { learningScopeOf, learningSalt, readStanding, readStandings } from "../../packages/broker/src/learning/standing.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { TEST_ORG } from "../support/orgs.js";

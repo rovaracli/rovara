@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import ts from "typescript";
 import { expect, it } from "vitest";
-import * as contracts from "@agentx/contracts";
+import { allContracts as contracts } from "../support/contracts-barrels.js";
 // Public runtime exports from published Plan 5 at 926b9003; a browser split must preserve every one.
 const canonical = {
   "agent-run": [
@@ -272,9 +272,9 @@ const canonical = {
 it.each(Object.entries(canonical))("keeps all published %s runtime exports", (_module, names) => { expect(names.filter(name => !(name in contracts))).toEqual([]); });
 
 it("keeps browser reader policy outside the canonical realtime module", async () => {
- const source = await readFile("packages/contracts/src/realtime.ts", "utf8");
+ const source = await readFile("packages/cloud-contracts/src/realtime.ts", "utf8");
  expect(ts.preProcessFile(source, true, true).importedFiles.map(file => file.fileName)).not.toContain("./session-views.js");
- const realtime = await import("../../packages/contracts/src/realtime.js");
+ const realtime = await import("../../packages/cloud-contracts/src/realtime.js");
  expect("RealtimeNoticeReaderSchema" in realtime).toBe(false);
  expect("realtimeChannel" in realtime).toBe(false);
  expect("channel" in realtime).toBe(true);

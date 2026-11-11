@@ -11,7 +11,8 @@
 //   - test services (slice 1): a proposal with DEPENDENCIES is proved only with the usage record the candidate check reported (the worker started them and ran the test checks sealed). The two steps `dependencies`
 //     ("start dependencies") and `dependency_usage` ("dependency usage check") are derived from that record by the broker; a check with no record proves nothing about them.
 // A report is never read from a worker for this: the worker's word is not asked, so it cannot be forged.
-import { TestEnvProveReportSchema, testServicesAwsUsageVerdict, testServicesFakeUsageVerdict, testServicesUnknownCallCount, type AppProjectSummary, type ProjectCommand, type TestEnvProveReport, type TestEnvRefusal, type TestEnvironmentBody, type TestServicesUsageRecord, testEnvDigest } from "@agentx/contracts";
+import { TestEnvProveReportSchema, testServicesAwsUsageVerdict, testServicesFakeUsageVerdict, testServicesUnknownCallCount, type ProjectCommand, type TestEnvProveReport, type TestEnvRefusal, type TestEnvironmentBody, type TestServicesUsageRecord, testEnvDigest } from "@rovara-code/contracts";
+import { type AppProjectSummary } from "@agentx/cloud-contracts";
 
 /** How old a passing setup check may be and still prove a proposal: the proposal's own life. */
 export const SETUP_CHECK_MAX_AGE_MS = 7 * 86_400_000;

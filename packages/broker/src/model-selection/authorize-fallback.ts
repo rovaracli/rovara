@@ -1,7 +1,8 @@
 // Server-only transaction preparation. The HTTP handler must first verify its operation capability.
 import {createHash} from "node:crypto";
 import {GetCommand,TransactWriteCommand} from "@aws-sdk/lib-dynamodb";
-import {TaskModelFallbackRequestSchema,TaskModelFallbackAuthorizationSchema,TaskModelPolicyBindingSchema,ModelSelectionSchema,OrgRoleSchema,STAGE_OPERATION_MAPPING,canonicalJson,agentXError,orgMemberKey,type OrgId,type InvocationModelRoute, isWriterOrgRole } from "@agentx/contracts";
+import { TaskModelFallbackRequestSchema, TaskModelFallbackAuthorizationSchema, TaskModelPolicyBindingSchema, ModelSelectionSchema, STAGE_OPERATION_MAPPING, canonicalJson, agentXError, type OrgId, type InvocationModelRoute } from "@rovara-code/contracts";
+import { OrgRoleSchema, orgMemberKey, isWriterOrgRole } from "@agentx/cloud-contracts";
 import {taskKey,taskPointerKey,taskRecipeKey,effectiveTaskOwner,ownerFenceOf,type DeveloperTaskRecord} from "../developer/task-records.js";
 import {type CallbackClaims,operationKey} from "../aws/cancellation.js";
 import {budgetActorChecks} from "../agents/budget-authority.js";

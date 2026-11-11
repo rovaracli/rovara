@@ -3,20 +3,8 @@
 // waits for an approval). Each starts a step only from the workflow at exactly the revision the redirect recorded, in the one transaction that moves the workflow, and throws, having started
 // nothing, otherwise. The instruction reaches the model framed and as untrusted data, in one place only: the worker's frame for a coding run, the nonce tag below for planning.
 import { randomUUID } from "node:crypto";
-import {
-  REDIRECT_REFUSAL_MESSAGES,
-  workflowSendBackOffered,
-  REDIRECT_RETRY_INSTRUCTIONS,
-  WORKFLOW_BLOCK_REASONS,
-  WORKFLOW_REDIRECT_SEND_BACK_REASON,
-  WorkflowTransitionError,
-  agentXError,
-  returnWorkflowToImplementation,
-  sendBackProblems,
-  type OwnerRedirectInvocation,
-  type RedirectRecord,
-  type WorkflowSnapshot,
-} from "@agentx/contracts";
+import { REDIRECT_REFUSAL_MESSAGES, REDIRECT_RETRY_INSTRUCTIONS, WORKFLOW_REDIRECT_SEND_BACK_REASON, WorkflowTransitionError, agentXError, type OwnerRedirectInvocation, type RedirectRecord } from "@rovara-code/contracts";
+import { workflowSendBackOffered, WORKFLOW_BLOCK_REASONS, returnWorkflowToImplementation, sendBackProblems, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { startRevisedPlan, type RevisedPlanStart } from "../../agent-sessions/live-steer-revise.js";
 import { aiToolTurn, developerTaskIdentity, taskKey } from "../../developer/task-records.js";
 import { requireNewWorkAllowed } from "../../developer/project-roles.js";

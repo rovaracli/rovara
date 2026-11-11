@@ -11,9 +11,8 @@
 //           { action: "sync-connect", repository, path?, branch? } / { action: "sync-disconnect" } / { action: "sync-now" }.
 // Answers are ids, counts, fixed words and the rules' own text; never an error text from a code host.
 import { z } from "zod";
-import {
-  COMPANY_RULES_BROWSER_MESSAGE, COMPANY_RULES_CURRENT_PATH, COMPANY_RULES_PATH, CompanyRulesBodySchema, agentXError, type CompanyRulesAnswer, type CompanyRulesCurrent, type CompanyRulesState,
-} from "@agentx/contracts";
+import { COMPANY_RULES_BROWSER_MESSAGE, COMPANY_RULES_CURRENT_PATH, COMPANY_RULES_PATH, CompanyRulesBodySchema, type CompanyRulesAnswer, type CompanyRulesCurrent, type CompanyRulesState } from "@agentx/cloud-contracts";
+import { agentXError } from "@rovara-code/contracts";
 import { logDeveloperEvent } from "../../developer/log.js";
 import { requireLiveCompanyAdmin } from "../../org/company-authority.js";
 import { adoptProposal, approvalHint, approveProposal, cancelProposal, proposeRules, rejectProposal, type CompanyRulesDeps } from "../../company-rules/service.js";

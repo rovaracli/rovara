@@ -1,7 +1,7 @@
 // Fix round 6 (Opus fifth re-check): what the agent sees from a tier-0 lesson is rendered from verified slots; deletions run from a durable intent; erasure is a
 // fence; one measured-outcome function; rollback keeps the tier floor. The reviewer's probes are used as tests.
 import { describe, expect, it } from "vitest";
-import { identifiersOf } from "../../../packages/contracts/src/index.js";
+import { identifiersOf } from "@rovara-code/contracts";
 import { approveLesson, type ApproveDeps } from "../../../packages/broker/src/lessons/approve.js";
 import { recordFeedback } from "../../../packages/broker/src/lessons/counters.js";
 import { lessonDeletionPort } from "../../../packages/broker/src/lessons/deletion.js";

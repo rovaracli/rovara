@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Routes, Route } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
-import { PROCESS_START_REFUSED_MESSAGE } from "@agentx/contracts/web";
+import { PROCESS_START_REFUSED_MESSAGE } from "@agentx/cloud-contracts/web";
 import { ProjectScreen } from "../../packages/ui/src/screens/project/ProjectScreen.js";
 import { createRunApi } from "../../packages/ui/src/api/runs.js";
 import { createCodeApi } from "../../packages/ui/src/api/code.js";

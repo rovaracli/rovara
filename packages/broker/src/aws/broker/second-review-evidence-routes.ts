@@ -6,7 +6,8 @@
 // `orgId` names the company on the hosted cloud (and must be a company that exists); on a single-company install it is that company, and a different one is refused. Nothing a caller sends is a pass: whether the
 // model holds is recomputed from the stored run and window whenever it is read. Behind `cr`: with it off the paths are not found.
 import { z } from "zod";
-import { agentXError, auditEventId, auditOperatorId, OrgIdSchema, SecondReviewModelRefSchema, type AuditEventInput, type OrgId } from "@agentx/contracts";
+import { agentXError, OrgIdSchema, SecondReviewModelRefSchema, type OrgId } from "@rovara-code/contracts";
+import { auditEventId, auditOperatorId, type AuditEventInput } from "@agentx/cloud-contracts";
 import { randomUUID } from "node:crypto";
 import type { AuthenticatedIdentity } from "../../auth.js";
 import { flushAuditEvents } from "../../audit/flush.js";

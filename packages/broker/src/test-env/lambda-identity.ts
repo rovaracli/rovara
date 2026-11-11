@@ -1,7 +1,7 @@
 // Test services, slice 1: the AWS account this broker is running in, from the Lambda's OWN invocation context (`invokedFunctionArn`), for the catalog's trust decision (contracts catalog-trust.ts). It is never read from a
 // setting, an environment variable or a request: the only writer is the Lambda handler, with the context the Lambda runtime gave it. Until the first invocation the account is unknown, and an unknown account trusts nothing
 // from the staging-only key list.
-import { accountIdOfArn } from "@agentx/contracts";
+import { accountIdOfArn } from "@rovara-code/contracts";
 
 let account: string | undefined;
 

@@ -6,7 +6,7 @@
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { createServer, type Server } from "node:http";
-import { McpStdioProposalSchema } from "@agentx/contracts";
+import { McpStdioProposalSchema } from "@rovara-code/contracts";
 import { CONFINE_LIMITS, DEFAULT_CONFINE_TOOLS, bootstrapEnvironment, confinedCommand, createBridge, runnerTokenWellFormed, RootRefusedError, type Bridge, type ConfineTools } from "@agentx/gateway";
 
 export interface ServeConfig {

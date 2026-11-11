@@ -1,7 +1,8 @@
 // Test support for the v1.2 learning loop (B3): a page task whose people have (or lack) the company and project records that make them a member or an outsider.
 import { randomUUID } from "node:crypto";
-import type { TaskComment } from "@agentx/contracts";
-import { developerOrgKey, orgMemberKey, projectMemberKey, projectMetaKey } from "../../packages/contracts/src/index.js";
+import type { TaskComment } from "@rovara-code/contracts";
+import { developerOrgKey, orgMemberKey } from "@agentx/cloud-contracts";
+import { projectMemberKey, projectMetaKey } from "@rovara-code/contracts";
 import type { DeveloperCaller } from "../../packages/broker/src/aws/developer-routes.js";
 import type { FakeDynamoDb } from "./fake-dynamodb.js";
 import { OMAR, PRIYA, SAM, pagePlan, pageTask, type PageTaskFixture } from "./page-tasks.js";

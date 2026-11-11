@@ -1,6 +1,6 @@
 // I-3: what the Slack close form says closing does, for a task with several pull requests in different states.
 import { describe, expect, it } from "vitest";
-import { WORKFLOW_BLOCK_REASONS, type WorkflowSnapshot } from "@agentx/contracts";
+import { WORKFLOW_BLOCK_REASONS, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { closeConfirmationText } from "../../packages/broker/src/aws/slack-interactivity.js";
 
 const pr = (repositoryId: string, number: number, state: string, candidateDigest = "a".repeat(64)) => ({ repositoryId, number, state, required: true, candidateDigest, url: `https://github.com/example/${repositoryId}/pull/${number}` });

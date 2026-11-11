@@ -4,9 +4,8 @@ import { readFileSync } from "node:fs";
 // the feature; nothing is ever woken, written or repeated.
 import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import {
-  PEEK_FEATURE, PEEK_NO_CALLBACK_CAPABILITY, WORKER_PING_FEATURES_FIELD, WorkerInvocationSchema, workspaceSessionKey, type PeekAnswer, type WorkerInvocation,
-} from "../../packages/contracts/src/index.js";
+import { PEEK_FEATURE, PEEK_NO_CALLBACK_CAPABILITY, WORKER_PING_FEATURES_FIELD, workspaceSessionKey, type PeekAnswer } from "@rovara-code/contracts";
+import { WorkerInvocationSchema, type WorkerInvocation } from "@agentx/cloud-contracts";
 import { createDispatcherHandler } from "../../packages/broker/src/aws/dispatcher.js";
 import { createPeekDispatch } from "../../packages/broker/src/agent-sessions/peek-dispatch.js";
 import { PEEK_TIMEOUT_MS, createPeekClient, lambdaPeekInvoker } from "../../packages/broker/src/agent-sessions/peek-client.js";

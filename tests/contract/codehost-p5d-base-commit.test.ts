@@ -2,7 +2,7 @@
 // `getBranchHead` answers for Rovara's own `agentx/<uuid>` branches only and refuses any other name ("branch name is invalid"), so reading `main` that way failed every branch-sync start on real
 // GitHub. The stand-ins below enforce the provider's two rules as github-app.ts states them (getBranchHead :1500, getDefaultBranchHead :1521), so the old call fails here.
 import { describe, expect, it, vi } from "vitest";
-import { GitBranchNameSchema, agentXError } from "@agentx/contracts";
+import { GitBranchNameSchema, agentXError } from "@rovara-code/contracts";
 import { currentBaseCommitOf } from "../../packages/broker/src/aws/broker/dispatch.js";
 import { NO_HOST_MESSAGE } from "../../packages/broker/src/plugins/registry.js";
 import { TEST_ORG } from "../support/orgs.js";

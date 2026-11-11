@@ -1,5 +1,6 @@
 import {expect,it} from "vitest";
-import {TaskModelFallbackRequestSchema,TaskModelPolicyBindingSchema,TaskModelFallbackAuthorizationSchema,WorkerInvocationSchema} from "../../packages/contracts/src/protocol.js";
+import { TaskModelFallbackRequestSchema, TaskModelPolicyBindingSchema, TaskModelFallbackAuthorizationSchema } from "@rovara-code/contracts";
+import { WorkerInvocationSchema } from "../../packages/cloud-contracts/src/protocol.js";
 const binding={version:1,stage:"build",companyRevision:3,recipeDigest:"a".repeat(64)};
 const invocation={protocolVersion:1,kind:"task",operationId:"11111111-1111-4111-8111-111111111111",workspaceId:"22222222-2222-4222-8222-222222222222",fence:1,projectRevision:1,callbackCapability:"c".repeat(40),payload:{conversationId:"33333333-3333-4333-8333-333333333333",prompt:"Fix a bug",conversationStarted:false,model:{provider:"amazon-bedrock",modelId:"us.anthropic.claude-sonnet-4-6"},modelPolicy:binding}};
 it("strictly binds a governed worker operation to stage, policy revision and frozen recipe",()=>{

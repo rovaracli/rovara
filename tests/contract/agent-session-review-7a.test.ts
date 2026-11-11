@@ -2,16 +2,8 @@
 // person only when a person is what it waits for; an unreadable source leaves the summary as it was; a late-found end files its work item where the drain
 // looks; one bad work item never stops the drain; a summary is validated before it is written and the chain and device facts are validated at the seam.
 import { describe, expect, it, vi } from "vitest";
-import {
-  SESSION_RETENTION_DAYS,
-  SessionSummarySchema,
-  agentSessionKey,
-  endedSessionWorkKey,
-  mySessionsKey,
-  scopeKey,
-  spendRequestKey,
-  spendRequestSlotKey,
-} from "../../packages/contracts/src/index.js";
+import { SESSION_RETENTION_DAYS, SessionSummarySchema, agentSessionKey, endedSessionWorkKey, mySessionsKey } from "@rovara-code/contracts";
+import { scopeKey, spendRequestKey, spendRequestSlotKey } from "@agentx/cloud-contracts";
 import { ENDED_DRAIN_CURSOR_KEY, drainEndedSessions } from "../../packages/broker/src/agent-sessions/sweep.js";
 import { ARJUN, ORG_A, ORG_B, PRIYA, T0 } from "../support/agent-session-world.js";
 import { iso, projectorWorld, workflow, type PW } from "../support/agent-session-projector-world.js";

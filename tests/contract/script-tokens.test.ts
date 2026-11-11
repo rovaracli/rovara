@@ -3,7 +3,8 @@
 // permissions (read, start), and only on the closed list of task routes: everything else (tokens, members, roles, settings, decisions) is refused. It is rate limited and audited.
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { SCRIPT_TOKEN_NOT_ALLOWED_MESSAGE, AuditEventInputSchema, developerOrgKey, editionPolicy, orgScriptTokensKey, scriptTokenKey, type OrgId } from "@agentx/contracts";
+import { SCRIPT_TOKEN_NOT_ALLOWED_MESSAGE, orgScriptTokensKey, scriptTokenKey, type OrgId } from "@rovara-code/contracts";
+import { AuditEventInputSchema, developerOrgKey, editionPolicy } from "@agentx/cloud-contracts";
 import { appCsrfTokenFor } from "../../packages/broker/src/developer/app-csrf.js";
 import { scriptTokenRoute } from "../../packages/broker/src/script-tokens/authenticate.js";
 import { hashScriptToken, parseScriptTokenHeader, scriptTokenMatches } from "../../packages/broker/src/script-tokens/token-format.js";

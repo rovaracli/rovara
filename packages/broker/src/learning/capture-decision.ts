@@ -19,7 +19,8 @@
 //
 // Capture never fails the send-back: `captureSendBackQuietly` catches everything and logs fixed words (never the text).
 import { createHash } from "node:crypto";
-import { LEARNING_PROJECT_WIDE, LearningStageSchema, type LearningStage, type LearningStanding, type OrgId, type TaskComment, type WorkflowSnapshot } from "@agentx/contracts";
+import { LEARNING_PROJECT_WIDE, LearningStageSchema, type LearningStage, type LearningStanding, type OrgId, type TaskComment } from "@rovara-code/contracts";
+import { type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { stepForOperation } from "../agents/dispatch.js";
 import { readTaskRecipe } from "../agents/runs.js";
 import type { DeveloperCaller } from "../aws/developer-routes.js";

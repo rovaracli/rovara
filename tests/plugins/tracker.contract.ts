@@ -1,10 +1,7 @@
 // The Tracker contract: reading an item, writing a comment, status and link through the write gate, and mapping signed deliveries to the neutral events
 // that can start a task. Item text is untrusted: an adapter returns it as data and never acts on it.
 import { expect } from "vitest";
-import {
-  TrackerCapabilitiesSchema, TrackerEventSchema, TrackerItemSchema,
-  type ChangeRequestRef, type HostScope, type NeutralStatus, type RawDelivery, type Tracker,
-} from "../../packages/contracts/src/index.js";
+import { TrackerCapabilitiesSchema, TrackerEventSchema, TrackerItemSchema, type ChangeRequestRef, type HostScope, type NeutralStatus, type RawDelivery, type Tracker } from "@rovara-code/contracts";
 import { rejection, type ContractCheck } from "./contract-kit.js";
 
 export interface TrackerWorld {

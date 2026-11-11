@@ -1,4 +1,4 @@
-import {agentXError,type OrgId,type ModelSelection,type StageId} from "@agentx/contracts";
+import { agentXError, type OrgId, type ModelSelection, type StageId } from "@rovara-code/contracts";
 import {routeStep} from "../agents/dispatch.js";
 import {effectiveSources,type RoutingDependencies} from "../model-sources/routing.js";
 /** Route the sole resolver's selected model; never accepts route fields from the worker. */
