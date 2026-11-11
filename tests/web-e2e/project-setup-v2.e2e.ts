@@ -56,6 +56,9 @@ test("switch on: the whole flow to a first task that actually starts, with one r
  const rows = page.getByRole("list", { name: "Repositories" }).getByRole("listitem");
  await expect(rows).toHaveCount(3);await expect(rows.nth(0)).toContainText("Not checked yet");await expect(rows.nth(2)).toContainText("Meta repo");
  await evidenceShot(page, { path: `${shots}/on-3-check-unchecked-1280.png`, fullPage: true });
+ // The project read names the meta repository, so the page shows the same rows after a reload (nothing is held in the page).
+ await page.reload();await expect(page.getByText("Step 3 of 6: Environment check")).toBeVisible();
+ await expect(rows).toHaveCount(3);await expect(rows.nth(0)).toContainText("Not checked yet");await expect(rows.nth(2)).toContainText("Meta repo");await expect(page.getByText(/Not confirmed yet/u)).toBeVisible();
  await page.getByRole("button", { name: "Retry the check for acme/checkout-api" }).click();
  // The first answer fails at the iOS repository: its row says the step, the cause and one recovery; the API repository is not marked ready on a guess.
  await expect(rows.nth(1)).toContainText("Needs action");await expect(rows.nth(1)).toContainText("pnpm install");await expect(rows.nth(1)).toContainText("Allowed websites");

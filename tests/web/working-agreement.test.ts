@@ -2,14 +2,15 @@
 // The Working agreement (exp/working-agreement): off by default (the project page and the task page are today's), and with the switch on every rule shows where it comes from. Each origin comes from what the broker sent,
 // a lock is explained by a "Why?" link, a change waiting for a second admin says so, and a source the page cannot read is listed as "Not available yet" instead of being guessed.
 import { describe, expect, it } from "vitest";
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { DESIGN_REVIEW_DEFAULT_SETTING, ProjectPlaybookResponseSchema, StageModelsResponseSchema } from "@agentx/cloud-contracts/web";
 import { AGREEMENT_STORAGE_KEY, isWorkingAgreementOn } from "../../packages/ui/src/screens/agreement/agreement-flags.js";
 import { ORIGIN_LABEL, T, type Origin } from "../../packages/ui/src/screens/agreement/agreement-text.js";
-import { brief, companyRulesRows, designReviewModeLock, designReviewRows, isLocked, knownFailingRows, layerRows, learningRows, lessonsRows, modelRows, originOfMark, taskRows, type AgreementRow } from "../../packages/ui/src/screens/agreement/agreement-rows.js";
-import { CompanyRulesSummaryReader } from "../../packages/ui/src/api/agreement.js";
+import { brief, companyRulesRows, mergeRulesRows, designReviewModeLock, designReviewRows, isLocked, knownFailingRows, layerRows, learningRows, lessonsRows, modelRows, originOfMark, taskRows, type AgreementRow } from "../../packages/ui/src/screens/agreement/agreement-rows.js";
+import { companyRulesSummaryOf, mergeRulesPath } from "../../packages/ui/src/api/agreement.js";
+import { currentFor, memberState, proposalFor } from "./support/company-rules-fixture.js";
 import { WorkingAgreementPanel } from "../../packages/ui/src/screens/agreement/WorkingAgreementPanel.js";
 import { ProjectScreen } from "../../packages/ui/src/screens/project/ProjectScreen.js";
 import { PipelineTab } from "../../packages/ui/src/screens/session/PipelineTab.js";
@@ -23,7 +24,7 @@ import { h } from "./support/h.js";
 import { howWeWorkHost } from "./support/how-we-work-fixture.js";
 import { howWeWorkView } from "./support/how-we-work-view.js";
 import { designReviewFixture, designTaskSession } from "./support/design-review-fixture.js";
-import { agreementBody, agreementHost, agreementNav, learning, models, playbook, policy, rules, type AgreementWorld, type Part } from "./support/agreement-fixture.js";
+import { agreementBody, agreementHost, agreementNav, codeSettings, learning, models, playbook, policy, rules, type AgreementWorld, type Part } from "./support/agreement-fixture.js";
 import { view as lessonsView } from "./support/lessons-fixture.js";
 import { effective, mid, stageEntry, stageModelsRaw, SONNET, OPUS } from "./support/stage-models-raw.js";
 import { Workspace } from "../../packages/ui/src/screens/session/Workspace.js";
@@ -194,14 +195,33 @@ describe("model, lessons, learning, known failing and company rule rows", () => 
   expect(companyRulesRows({ required: 0, preferred: 0, pending: false })[0]).toMatchObject({ value: "No company rules yet", origin: "none" });
   expect(isLocked(companyRulesRows({ required: 5, preferred: 0, pending: false })[0]!)).toBe(false);
  });
- it("the company rules reader takes the member answer (no proposal) as well as the admin one", () => {
-  const member = { enabled: true, limits: { maxRules: 30, maxRuleCharacters: 600, maxTotalCharacters: 12000 }, current: rules(1, 1).current };
-  expect(CompanyRulesSummaryReader.parse(member)).toEqual({ required: 1, preferred: 1, pending: false, version: 3 });
+ it("the company rules counts come from the contract's own answers: the member's `current` (no proposal) as well as the admin's state", () => {
+  expect(companyRulesSummaryOf(currentFor())).toMatchObject({ required: 7, preferred: 7, pending: false, version: 1 });
+  expect(companyRulesSummaryOf(memberState())).toMatchObject({ required: 7, preferred: 7, pending: false, version: 1 });
+  expect(companyRulesSummaryOf(rules(2, 1))).toEqual({ required: 2, preferred: 1, pending: false, version: 3 });
  });
- it("the company rules reader takes counts only, and refuses anything it cannot read", () => {
-  expect(CompanyRulesSummaryReader.parse(rules(2, 1))).toEqual({ required: 2, preferred: 1, pending: false, version: 3 });
-  expect(CompanyRulesSummaryReader.parse(rules(0, 0, { pending: { proposalId: "x" } }))).toEqual({ required: 0, preferred: 0, pending: true });
-  for (const bad of [null, "x", {}, { current: {} }, { current: { rules: [{ priority: "must" }] } }]) expect(() => CompanyRulesSummaryReader.parse(bad)).toThrow();
+ it("counts only: a waiting proposal is a flag, no rules is zero with no version", () => {
+  expect(companyRulesSummaryOf(rules(1, 0, { pending: proposalFor() }))).toEqual({ required: 1, preferred: 0, pending: true, version: 3 });
+  expect(companyRulesSummaryOf(rules(0, 0))).toEqual({ required: 0, preferred: 0, pending: false });
+ });
+ it("a rule whose priority this version cannot read refuses the read instead of leaving it out of the count", () => {
+  expect(() => companyRulesSummaryOf({ current: { version: 1, rules: [{ priority: "required" }, { priority: "unknown" }] } })).toThrow("Unreadable company rules");
+ });
+ it("merge rules: who Rovara asks, the self-approval exception and the merge method, each the project's choice, read only", () => {
+  const rows = mergeRulesRows(codeSettings().settings as never);
+  expect(rows.map(row => [row.id, row.title, row.value, row.origin])).toEqual([
+   ["merge:reviewers", "Reviewers Rovara asks", "acme/payments-leads, priya", "project-choice"],
+   ["merge:self-approval", "Self-approval exception", "Off: a pull request Rovara made for someone needs a different person's approval", "project-choice"],
+   ["merge:method", "Merge method", "Squash and merge", "project-choice"],
+  ]);
+  expect(rows.every(row => row.source === "merge" && !isLocked(row) && row.manage === undefined)).toBe(true);
+  const other = mergeRulesRows(codeSettings({ allowSelfApproval: true, mergeMethod: "merge", codeReviewers: [] }).settings as never);
+  expect(other.map(row => row.value)).toEqual(["No one is asked by name", "On: a person may approve a pull request Rovara made for them", "Merge commit"]);
+ });
+ it("merge rules nobody has saved (revision 0) are Rovara's defaults, not a project choice; a method this version does not know has no row", () => {
+  expect(new Set(mergeRulesRows(codeSettings({ revision: 0, codeReviewers: [] }).settings as never).map(row => row.origin))).toEqual(new Set(["rovara-default"]));
+  expect(mergeRulesRows(codeSettings({ mergeMethod: "rebase" }).settings as never).map(row => row.id)).toEqual(["merge:reviewers", "merge:self-approval"]);
+  expect(mergeRulesPath("payments")).toBe("/v1/app/projects/payments/code-settings");
  });
  it("task rows: a person's Design first or Skip is a task choice; Auto follows the project; the process comes from the agent", () => {
   expect(taskRows({ designReview: { decidedBy: "person" } })[0]).toMatchObject({ origin: "task-choice", value: "A person asked for design first" });
@@ -274,7 +294,7 @@ describe("the panel", () => {
   expect(within(row).getAllByRole("link", { name: "Company rules in Company settings" })[0]!.getAttribute("href")).toBe("/app/admin/company-rules");
  });
  it("says Waiting for a second admin on a protected change that is pending, and only there", async () => {
-  panel({ lessons: lessonsView({ preset: "regulated", presetLockedByCompany: false, presetProposal: { changeId: "chg_1", to: "standard", mine: false, soleOwner: false, expiresAt: 1 } }), policy: policy({ pendingLoosening: true }), learning: learning({ pendingProposal: { id: "prop_1" } }), rules: rules(1, 0, { pending: { proposalId: "p" } }) });await settled();
+  panel({ lessons: lessonsView({ preset: "regulated", presetLockedByCompany: false, presetProposal: { changeId: "chg_1", to: "standard", mine: false, soleOwner: false, expiresAt: 1 } }), policy: policy({ pendingLoosening: true }), learning: learning({ pendingProposal: { id: "prop_1" } }), rules: rules(1, 0, { pending: proposalFor() }) });await settled();
   expect(screen.getAllByText(T.PENDING)).toHaveLength(4);
   for (const title of ["Who approves lessons", "Marking a failing test as known", "Learn from pull request review comments", "Company rules"]) expect(within(rowOf(title)).getByText(T.PENDING)).toBeTruthy();
   expect(within(rowOf("Learning from work")).queryByText(T.PENDING)).toBeNull();
@@ -283,8 +303,8 @@ describe("the panel", () => {
   panel();await settled();
   expect(screen.queryByText(T.PENDING)).toBeNull();
  });
- it("lists a source that is not served as Not available yet, with no guessed rows, and always the merge and approval settings", async () => {
-  panel({ off: ["rules", "playbook", "models"] });await settled();
+ it("lists a source that is not served as Not available yet, with no guessed rows, and always the approval settings (the merge rules too, when their read is refused)", async () => {
+  panel({ off: ["rules", "playbook", "models", "merge"] });await settled();
   const missing = screen.getByRole("list", { name: T.SECTION_MISSING });
   for (const name of ["Company rules", "Design review", "AI models by step"]) expect(within(within(missing).getByText(name).closest("li") as HTMLElement).getByText(T.MISSING)).toBeTruthy();
   for (const name of [/^Merge rules/u, /^Approval settings/u]) expect(within(within(missing).getByText(name).closest("li") as HTMLElement).getByText(T.MISSING)).toBeTruthy();
@@ -293,6 +313,30 @@ describe("the panel", () => {
   expect(screen.queryByText(T.SECTION_MODELS, { selector: "h3" })).toBeNull();
   // The rest still shows.
   expect(screen.getByText("Who approves lessons")).toBeTruthy();
+ });
+ it("shows the merge rules from the project's code settings, each as a Project choice with no lock and no Why?", async () => {
+  const f = panel();await settled();
+  expect(f.calls()).toContain("GET /v1/app/projects/payments/code-settings");
+  const reviewers = rowOf("Reviewers Rovara asks");
+  expect(within(reviewers).getByText("acme/payments-leads, priya")).toBeTruthy();expect(within(reviewers).getByText("Project choice")).toBeTruthy();expect(within(reviewers).queryByText("Why?")).toBeNull();
+  expect(within(rowOf("Self-approval exception")).getByText(/^Off: /u)).toBeTruthy();
+  expect(within(rowOf("Merge method")).getByText("Squash and merge")).toBeTruthy();
+  // The merge rules are read now, so they are no longer listed as missing; the approval settings still are.
+  const missing = screen.getByRole("list", { name: T.SECTION_MISSING });
+  expect(within(missing).queryByText(/^Merge rules/u)).toBeNull();expect(within(missing).getByText(/^Approval settings/u)).toBeTruthy();
+ });
+ it("merge rules the viewer cannot read (404: no role in the project) are Not available yet, with no rows; a failed read says so and can be retried", async () => {
+  panel({ off: ["merge"] });await settled();
+  const missing = screen.getByRole("list", { name: T.SECTION_MISSING });
+  expect(within(within(missing).getByText(/^Merge rules/u).closest("li") as HTMLElement).getByText(T.MISSING)).toBeTruthy();
+  expect(screen.queryByText("Merge method")).toBeNull();expect(screen.queryByText("Reviewers Rovara asks")).toBeNull();
+  cleanup();
+  const broken = panel({ broken: ["merge"] });await settled();
+  const list = screen.getByRole("list", { name: T.SECTION_MISSING });
+  expect(within(within(list).getByText(/^Merge rules/u).closest("li") as HTMLElement).getByText(T.FAILED)).toBeTruthy();expect(screen.queryByText("Merge method")).toBeNull();
+  const before = broken.calls().filter(call => call.endsWith("/code-settings")).length;
+  fireEvent.click(within(within(list).getByText(/^Merge rules/u).closest("li") as HTMLElement).getByRole("button", { name: T.RETRY }));
+  await waitFor(() => expect(broken.calls().filter(call => call.endsWith("/code-settings")).length).toBeGreaterThan(before));
  });
  it("a design review stage the install does not have is also Not available yet", async () => {
   panel({ playbook: { playbook: { revision: 1, defaultProcess: { kind: "builtin" } } } });await settled();
@@ -307,7 +351,7 @@ describe("the panel", () => {
   await waitFor(() => expect(f.calls().filter(call => call.endsWith("known-failing-policy")).length).toBeGreaterThan(before));
  });
  it("with every source missing it still renders the heading and the lists of what is missing, and no row", async () => {
-  panel({ off: ["view", "playbook", "models", "lessons", "learning", "policy", "rules"] });await settled();
+  panel({ off: ["view", "playbook", "models", "lessons", "learning", "policy", "rules", "merge"] });await settled();
   expect(screen.getByRole("heading", { name: "Working agreement" })).toBeTruthy();
   expect(document.querySelectorAll(".rv-agree-row")).toHaveLength(0);
   expect(within(screen.getByRole("list", { name: T.SECTION_MISSING })).getAllByText(T.MISSING)).toHaveLength(9);

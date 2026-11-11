@@ -99,6 +99,8 @@ for (const screen of PAGES) {
 for (const width of [1280, 390] as const) {
  test(`switch on at ${String(width)}: /app/live goes to Work, old links keep working, Projects lists projects once`, async ({ page, context, request, baseURL }) => {
   await enter(page, context, request, baseURL, "live", { "rovara.nav": "v2" }, width);
+  // The navigation answer's own per-project `needsYou` (the Projects page uses it, not the sum of the agents' counts): the mock answer is given one for every project.
+  await page.route("**/v1/web/nav", async route => { const answer = await route.fetch(), body = await answer.json() as { projects: Array<Record<string, unknown>> };await route.fulfill({ response: answer, json: { ...body, projects: body.projects.map(project => ({ ...project, needsYou: 2 })) } }); });
   await page.goto("/app/live?filter=needs_me");await expect(page).toHaveURL(/\/app\/work\?filter=needs_me$/u);await expect(page.getByRole("heading", { name: "Work", exact: true, level: 1 })).toBeVisible();await expect(page.getByRole("heading", { name: "Live", exact: true, level: 1 })).toHaveCount(0);
   const current = width < 768 ? page.getByRole("navigation", { name: "Main destinations" }) : page.locator("aside").getByRole("navigation", { name: "Workspace" });
   await expect(current.getByRole("link", { name: "Work", exact: true })).toHaveAttribute("aria-current", "page");
@@ -106,6 +108,7 @@ for (const width of [1280, 390] as const) {
   await evidenceShot(page, { path: `${shots}/on-work-${String(width)}.png`, fullPage: false });
   await page.goto("/app/projects");await expect(page.getByRole("heading", { name: "Projects", exact: true, level: 1 })).toBeFocused();
   await expect(page.getByRole("main").getByRole("link")).toHaveCount(1);await expect(page.getByRole("main").getByRole("link", { name: /payments/u })).toBeVisible();
+  await expect(page.getByRole("main").getByRole("link", { name: /payments/u })).toContainText("2 need you");
   await expect(current.getByRole("link", { name: "Projects", exact: true })).toHaveAttribute("aria-current", "page");
   expect(await noSidewaysScroll(page)).toBe(true);await evidenceShot(page, { path: `${shots}/on-projects-${String(width)}.png`, fullPage: false });
   await checkA11y(page, { theme: "light" });await checkA11y(page, { theme: "dark" });

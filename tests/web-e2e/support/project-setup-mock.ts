@@ -12,7 +12,7 @@ export const PROJECT_SETUP_SESSION = "ses_cccccccccccccccccccc";
 export const PROJECT_SETUP_FAILURE = "setup: pnpm install - The build of acme/checkout-ios can't reach registry.example (403 Forbidden)";
 let asked: { scenario: unknown; checks: Check[]; agent: boolean; refuseStart: boolean; given: number } | undefined;
 const REPOSITORIES = GithubRepositoriesResponseSchema.parse({ repositories: ["checkout-api", "checkout-ios", "mobile-meta"].map((name, at) => ({ fullName: "acme/" + name, githubRepositoryId: 201 + at, private: true, defaultBranch: "main" })) });
-const detail = (name: string, repositories: string[], description: string, setup: Project["setup"]): Project => AppProjectDetailSchema.parse({ name, description, status: "active", latestRevision: 1, repositories: repositories.map(fullName => ({ fullName, defaultBranch: "main" })), myRole: "maintainer", setup, settings: { setupCommands: ["pnpm install"], testCommands: ["pnpm test"], devcontainer: null, allowedDomains: [] }, createdAt: "2026-11-01T12:00:00.000Z", createdBy: { developerId: "d".repeat(64), name: "Maya" } });
+const detail = (name: string, repositories: string[], description: string, setup: Project["setup"], meta?: { fullName: string; alsoCode: boolean }): Project => AppProjectDetailSchema.parse({ name, description, status: "active", latestRevision: 1, repositories: repositories.map(fullName => ({ fullName, defaultBranch: "main" })), ...(meta === undefined ? {} : { metaRepository: { fullName: meta.fullName, defaultBranch: "main", ...(meta.alsoCode ? { alsoCode: true } : {}) } }), myRole: "maintainer", setup, settings: { setupCommands: ["pnpm install"], testCommands: ["pnpm test"], devcontainer: null, allowedDomains: [] }, createdAt: "2026-11-01T12:00:00.000Z", createdBy: { developerId: "d".repeat(64), name: "Maya" } });
 export async function projectSetupMock({ url, method, body, json, record, scenario }: MockExchange & { scenario: unknown }, project: { get(): Project | undefined; set(value: Project | undefined): void }): Promise<boolean> {
  if (url.pathname === "/__mock/project-setup" && method === "POST") {
   const input = await body() as { checks?: unknown; agent?: unknown; refuseStart?: unknown; seed?: unknown };
@@ -25,8 +25,9 @@ export async function projectSetupMock({ url, method, body, json, record, scenar
  if (url.pathname === "/v1/web/github/repositories" && method === "GET") { json(200, REPOSITORIES);return true; }
  if (url.pathname === "/v1/web/projects" && method === "POST") {
   const input = CreateProjectFromMetaBodySchema.parse(await body());record(input);
-  const name = input.name ?? "mobile-checkout", repositories = input.codeRepositories ?? [input.metaRepository];
-  project.set(detail(name, repositories, input.description ?? "", { status: "unchecked" }));
+  // The project read names its meta repository (which is also listed in `repositories`), as the contract says, so the page can show it again after a reload.
+  const name = input.name ?? "mobile-checkout", code = input.codeRepositories ?? [], repositories = [...code, input.metaRepository];
+  project.set(detail(name, repositories, input.description ?? "", { status: "unchecked" }, { fullName: input.metaRepository, alsoCode: code.length === 0 }));
   json(201, CloudProjectCreatedResponseSchema.parse({ duplicate: false, project: { definition: { name }, registeredAt: "2026-11-01T12:00:00.000Z" } }));return true;
  }
  const current = project.get(), base = current === undefined ? undefined : "/v1/web/projects/" + current.name;

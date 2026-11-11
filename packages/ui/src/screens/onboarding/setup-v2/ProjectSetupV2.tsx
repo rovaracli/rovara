@@ -9,6 +9,7 @@ import { InviteStep } from "../steps/InviteStep.js";
 import { CompanyStatus } from "./CompanyStatus.js";
 import { NameStep } from "./NameStep.js";
 import { ReposStep, type ChosenRepos } from "./ReposStep.js";
+import type { MetaRepositoryRef } from "./repo-check.js";
 import { EnvironmentStep } from "./EnvironmentStep.js";
 import { FirstTaskStep } from "./FirstTaskStep.js";
 import "./project-setup.css";
@@ -42,7 +43,8 @@ export default function ProjectSetupV2(props: ProjectSetupV2Props) {
  const step: StepKey = projectName === undefined ? early : props.maintainerOnly ? "check" : requested ?? "check";
  const index = SETUP_V2_STEPS.findIndex(entry => entry.key === step);
  function go(key: StepKey, target = projectName) { const next = new URLSearchParams();if (target) next.set("project", target);next.set("step", key);setParams(next); }
- const meta = chosen?.metaRepository === "" ? undefined : chosen?.metaRepository;
+ // The project's own read names its meta repo, so the row survives a reload; the pick made in this session only stands in until the read says it.
+ const picked = chosen?.metaRepository === "" ? undefined : chosen?.metaRepository, meta: MetaRepositoryRef | undefined = project.data?.metaRepository ?? picked;
  let body;
  if (props.installationsState === "pending" && projectName === undefined) body = <Skeleton label="Checking your GitHub connection" />;
  else if (props.installationsState === "error" && projectName === undefined) body = <><p role="alert">Couldn't check your GitHub connection.</p><Button onClick={props.refreshInstallations}>Try again</Button></>;

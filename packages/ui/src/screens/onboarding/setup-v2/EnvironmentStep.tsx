@@ -7,7 +7,7 @@ import { useTestEnvironmentApi } from "../../../api/test-environment.js";
 import { ApiError } from "../../../api/errors.js";
 import { Button } from "../../../design/Button.js";
 import { VisibleText } from "../../../design/VisibleText.js";
-import { RECOVERY_LABEL, recoveryChoices, repoCheckModel, type Recovery, type RepoRow } from "./repo-check.js";
+import { RECOVERY_LABEL, codeRepositoriesOf, recoveryChoices, repoCheckModel, type MetaRepositoryRef, type Recovery, type RepoRow } from "./repo-check.js";
 import type { SetupFailure } from "../steps/setup-failure.js";
 
 // The full setup screen (commands, the test environment, proof) is the "Edit the setup" recovery, in its own chunk; the setup run is the "Fix with the setup agent" recovery.
@@ -22,11 +22,11 @@ function Failure({ failure }: { failure: SetupFailure }) {
  * Environment check per repository. The check itself is one check of the whole project (see repo-check.ts), so the rows share it: each says its own status, the failing step in plain words, and one recovery to press.
  * "Retry the check" runs the same existing check; "Fix with the setup agent" is offered only where the setup agent is on; "Edit the setup" opens the existing setup screen below.
  */
-export function EnvironmentStep({ project, metaRepository, onProject, refresh, onNext, nextLabel = "Continue to agents" }: { project: AppProjectDetail; metaRepository?: string | undefined; onProject: (project: AppProjectDetail) => void; refresh: () => void; onNext: () => void; nextLabel?: string }) {
+export function EnvironmentStep({ project, metaRepository, onProject, refresh, onNext, nextLabel = "Continue to agents" }: { project: AppProjectDetail; metaRepository?: MetaRepositoryRef | undefined; onProject: (project: AppProjectDetail) => void; refresh: () => void; onNext: () => void; nextLabel?: string }) {
  const api = useOnboardingApi(), agentApi = useSetupAgentApi(), envApi = useTestEnvironmentApi();
  const [busy, setBusy] = useState<Recovery>(), [error, setError] = useState<string>(), [panel, setPanel] = useState<"agent" | "edit">(), panelRef = useRef<HTMLDivElement>(null);
  // Reads that only add detail: with the test environment or the setup agent off, the server answers "not found" and the page simply offers less.
- const runs = useQuery({ queryKey: ["onboard", "setup-v2", "runs", project.name, project.setup.status], queryFn: () => envApi.read(project.name), retry: false, enabled: project.setup.status === "failed" && project.repositories.length > 1 });
+ const runs = useQuery({ queryKey: ["onboard", "setup-v2", "runs", project.name, project.setup.status], queryFn: () => envApi.read(project.name), retry: false, enabled: project.setup.status === "failed" && codeRepositoriesOf(project.repositories, metaRepository).length > 1 });
  const agent = useQuery({ queryKey: ["onboard", "setup-agent", project.name], queryFn: () => agentApi.read(project.name), retry: false });
  const agentAvailable = agent.data !== undefined && agent.data.companySetupOff !== true;
  const model = repoCheckModel({ repositories: project.repositories, setup: project.setup, runs: runs.data?.proposal?.runs, metaRepository });
