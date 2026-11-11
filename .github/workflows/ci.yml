@@ -519,7 +519,7 @@ jobs:
       - name: The build holds what the browser tests need
         run: node scripts/web-e2e-build-guard.ts
       - name: Archive the build outputs
-        run: tar -czf "$RUNNER_TEMP/web-e2e-build.tgz" packages/*/dist
+        run: tar -czf "$RUNNER_TEMP/web-e2e-build.tgz" packages/*/dist vendor/rovara-code/packages/*/dist
       - name: Upload the build for the browser legs
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
