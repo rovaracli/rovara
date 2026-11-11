@@ -14,6 +14,8 @@ import { MAYA, OMAR, type Developer } from "../support/developer-task-broker.js"
 import { setupWizardBench, type Bench } from "../support/setup-wizard-testenv.js";
 import { TEST_ORG } from "../support/orgs.js";
 
+const containing = (items: unknown[]): unknown => expect.arrayContaining(items);
+
 afterEach(() => { delete process.env.STANDING_INSTRUCTIONS_ENABLED; });
 const PATH = COMPANY_RULES_PATH;
 const FILE = ".rovara/company-rules.md";
@@ -284,7 +286,7 @@ describe("from the repository: an edit of the file is a proposal, never an appro
     // The repository edits: a rule is added there.
     repo.push(FILE, fileOf([...V1, "Added in the repository."], 1));
     await syncNow(t);
-    expect(await syncOf(t)).toMatchObject({ changedSide: "repo", diff: { entries: expect.arrayContaining([{ kind: "added", after: { text: "Added in the repository.", priority: "preferred" }, side: "repo" }]) } });
+    expect(await syncOf(t)).toMatchObject({ changedSide: "repo", diff: { entries: containing([{ kind: "added", after: { text: "Added in the repository.", priority: "preferred" }, side: "repo" }]) } });
     // The proposal is rejected, then Rovara approves its own new version while the file still holds the repository's edit.
     const pending = (await stateOf(t)).pending!;
     await post(t, { action: "reject", proposalId: pending.proposalId, expectedDigest: pending.digest }, MAYA);
@@ -301,7 +303,7 @@ describe("from the repository: an edit of the file is a proposal, never an appro
   it("only Rovara moved: the file still holds the last agreed version, so the side is Rovara", async () => {
     const { t } = await connectedAndMerged();
     await approvedVersion(t, [...V1, "Only in Rovara."], 1);
-    expect(await syncOf(t)).toMatchObject({ fileState: "differs", changedSide: "rovara", diff: { entries: expect.arrayContaining([{ kind: "removed", before: { text: "Only in Rovara.", priority: "preferred" }, side: "rovara" }]) } });
+    expect(await syncOf(t)).toMatchObject({ fileState: "differs", changedSide: "rovara", diff: { entries: containing([{ kind: "removed", before: { text: "Only in Rovara.", priority: "preferred" }, side: "rovara" }]) } });
   });
 
   it("an empty file in a company with no rules is nothing to import; in a company with rules it is a proposal to clear them", async () => {

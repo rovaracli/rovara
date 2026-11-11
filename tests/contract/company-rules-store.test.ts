@@ -16,6 +16,8 @@ import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { STANDING_INSTRUCTIONS_DRAFT } from "../support/company-rules-draft.js";
 
+const containing = (items: unknown[]): unknown => expect.arrayContaining(items);
+
 const rule = (text: string, priority: CompanyRule["priority"] = "required"): CompanyRule => ({ text, priority });
 const ADA = "a".repeat(64);
 const BEN = "b".repeat(64);
@@ -94,7 +96,7 @@ describe("which side changed", () => {
     // Only the repository moved.
     expect(diffWithSides(ancestor, file, ancestor).changedSide).toBe("repo");
     // Only Rovara moved (the file still holds the ancestor): Rovara added d, so the file lacks it.
-    expect(diffWithSides(current, ancestor, ancestor)).toMatchObject({ changedSide: "rovara", diff: { entries: expect.arrayContaining([{ kind: "removed", before: rule("d", "preferred"), side: "rovara" }]) } });
+    expect(diffWithSides(current, ancestor, ancestor)).toMatchObject({ changedSide: "rovara", diff: { entries: containing([{ kind: "removed", before: rule("d", "preferred"), side: "rovara" }]) } });
     // A reworded rule: the side that did not hold the old words made it.
     const reworded = diffWithSides(normalizeRules([rule("a, better"), rule("b"), rule("c", "preferred")]), ancestor, ancestor);
     expect(reworded.diff.entries[0]).toMatchObject({ kind: "changed", side: "rovara" });

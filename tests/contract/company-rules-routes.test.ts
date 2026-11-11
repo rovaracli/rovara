@@ -11,6 +11,8 @@ import { MAYA, OMAR, type Developer } from "../support/developer-task-broker.js"
 import { setupWizardBench, type Bench } from "../support/setup-wizard-testenv.js";
 import { TEST_ORG } from "../support/orgs.js";
 
+const containing = (items: unknown[]): unknown => expect.arrayContaining(items);
+
 afterEach(() => { delete process.env.STANDING_INSTRUCTIONS_ENABLED; });
 const on = () => { process.env.STANDING_INSTRUCTIONS_ENABLED = "1"; };
 const PATH = COMPANY_RULES_PATH;
@@ -182,7 +184,7 @@ describe("proposing", () => {
     const next = await propose(t, { rules: rules("a newer list") }, MAYA);
     expect(next.status, JSON.stringify(next.body)).toBe(202);
     expect(t.db.get({ pk: `ORG#${TEST_ORG}`, sk: `COMPANYRULES#P#${id}` })).toMatchObject({ state: "expired" });
-    expect(events(audit).map((e) => e.action)).toEqual(expect.arrayContaining(["company_rules.expired", "company_rules.proposed"]));
+    expect(events(audit).map((e) => e.action)).toEqual(containing(["company_rules.expired", "company_rules.proposed"]));
   });
 });
 
@@ -394,7 +396,7 @@ describe("an empty list, notes, the member read and the nav flag", () => {
     expect(pending.diff.summary).toEqual({ added: 0, removed: 2, changed: 0, unchanged: 0 });
     expect((await post(t, { action: "approve", proposalId: pending.proposalId, expectedDigest: pending.digest }, MAYA)).status).toBe(200);
     expect((await stateOf(t)).current).toMatchObject({ version: 2, ruleCount: 0, rules: [] });
-    const source = companyRulesSourceOver(dynamoCompanyRulesStore({ documentClient: t.db as never, tableName: "state" }));
+    const source = companyRulesSourceOver(dynamoCompanyRulesStore({ documentClient: t.db, tableName: "state" }));
     expect(await source.current(TEST_ORG)).toEqual({ version: "2", rules: [] });
     expect(await readCompanyInstructions(source, TEST_ORG)).toBeUndefined();
     expect((await propose(t, { baseVersion: 2, rules: [] })).status).toBe(400);
