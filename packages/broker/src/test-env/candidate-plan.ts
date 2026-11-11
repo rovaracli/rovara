@@ -4,7 +4,8 @@
 import { EDITION_ENV_VAR, agentXError, type OrgId, type TaskDependencyPlan, type TestEnvironmentBody } from "@agentx/contracts";
 import { DEPENDENCY_PLAN_REFUSAL_WORDS, taskDependencyPlansOf, type SeedFileHashes, type ServiceCatalogSource } from "./dependency-plan.js";
 import { refuseDependenciesWithDevcontainer } from "./devcontainer-check.js";
-import { testServicesEnabled } from "./test-services-switch.js";
+import { projectImagesEnabled, testServicesEnabled } from "./test-services-switch.js";
+import { readCompanyImages } from "../org/company-test-image-store.js";
 import { approvedFixturesOf, recordsOf, type FixtureStoreFactory } from "./fixture-lookup.js";
 
 export async function candidateDependencyPlan(
@@ -20,7 +21,9 @@ export async function candidateDependencyPlan(
   await refuseDependenciesWithDevcontainer(deps, scope.orgId, scope.project, proposal);
   const catalog = await Promise.resolve(deps.serviceCatalog?.()).catch(() => undefined);
   const fixtures = await approvedFixturesOf(recordsOf(deps.fixtureStore), scope.orgId, scope.project, proposal);
-  const planned = taskDependencyPlansOf({ body: proposal as TestEnvironmentBody, catalog, edition: env[EDITION_ENV_VAR] === "enterprise" ? "enterprise" : "public", projectId: scope.project, fixtures, ...(approvedSeedFiles === undefined ? {} : { approvedSeedFiles }) });
+  // Switch `pj`: the company's approved extra images, read only for a proposal that names one.
+  const companyImages = projectImagesEnabled(env) && (proposal.dependencies ?? []).some((dependency) => dependency.backing.kind === "project_image") ? await readCompanyImages(deps, scope.orgId) : undefined;
+  const planned = taskDependencyPlansOf({ body: proposal as TestEnvironmentBody, catalog, edition: env[EDITION_ENV_VAR] === "enterprise" ? "enterprise" : "public", projectId: scope.project, fixtures, ...(companyImages === undefined ? {} : { companyImages }), ...(approvedSeedFiles === undefined ? {} : { approvedSeedFiles }) });
   if (!planned.ok) throw agentXError("CONFIG_INVALID", DEPENDENCY_PLAN_REFUSAL_WORDS[planned.reason]);
   return planned.dependencies;
 }

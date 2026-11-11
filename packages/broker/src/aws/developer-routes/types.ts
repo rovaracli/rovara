@@ -1,5 +1,6 @@
 import type { RepoFileRuntime } from "../../lessons/repo-file-job.js";
 import type { ServiceCatalogSource } from "../../test-env/dependency-plan.js";
+import type { CompanyImageDigestResolver } from "../../test-env/company-image-resolver.js";
 import type { TeamRecordRuntime } from "../../team-record/runtime.js";
 import type { EvidenceErase } from "../../rovara-code/evidence-erase.js";
 import type { CreateProjectFromMetaBody, EditionPolicy } from "@agentx/contracts";
@@ -146,6 +147,8 @@ export interface DeveloperApiConfiguration {
 export interface DeveloperRouteDependencies {
   /** Test services (slice 1): the release's signed service image catalog (`serviceCatalogSourceOf`). The setup draft's dependency candidates become proposed dependencies only with it; without it none are proposed. */
   serviceCatalog?: ServiceCatalogSource;
+  /** Company-approved extra images (switch `pj`): the digest lookup of a tag. Absent: the registry API over global fetch (`registryDigestResolver`). A test gives a fake. */
+  companyImageResolver?: CompanyImageDigestResolver;
   /** SEED-RISK-1: the project's repositories as the code host gives them at their default branch's head, for the broker's own seed locks (`lockLookSeeds`). Absent: no seed command is locked, every one is HIGH. */
   seedRepoSources?: SeedRepoSources;
   /** Saved project images: the registry (store, sessions, ECR), only where the install's `sv` switch is on and it was installed. Without it the project's Environment panel routes do not exist. */

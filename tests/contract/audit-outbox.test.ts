@@ -859,6 +859,7 @@ describe("I4: the builders", () => {
     ["auditRecordTrackerPersonUnmapped", (occurrence) => builders.auditRecordTrackerPersonUnmapped({ ...base, occurrence, details, memberId: "dev_1", source: "linear" })],
     ["auditRecordTrackerAutolinkChanged", (occurrence) => builders.auditRecordTrackerAutolinkChanged({ ...base, occurrence, details, enabled: true })],
     ["auditSetupRecipeChange", (occurrence) => builders.auditSetupRecipeChange({ ...base, occurrence, details, action: "setup_recipe.approved", facts: { recipeId: "rcp_" + "1".repeat(20), revision: 2, bodyDigest: "a".repeat(64), authority: "fresh_sign_in" } })],
+    ["auditCompanyImageChange", (occurrence) => builders.auditCompanyImageChange({ ...base, occurrence, details, action: "company_image.approved", imageId: "img_" + "1".repeat(20), digest: "a".repeat(64), authority: "fresh_sign_in" })],
     ["auditSavedEnvChanged", (occurrence) => builders.auditSavedEnvChanged({ ...base, occurrence, details, projectName: "Secret Project", change: "build_recorded", cause: "no_image", digest: "sha256:" + "a".repeat(64) })],
     ["auditSavedEnvSettingChanged", (occurrence) => builders.auditSavedEnvSettingChanged({ ...base, occurrence, details, projectName: "Secret Project", enabled: true })],
     ["auditTestAccountChange", (occurrence) => builders.auditTestAccountChange({ ...base, occurrence, details, action: "test_account.approved", accountId: "ta-0000000000000001", facts: { digest: "a".repeat(64), approvalMode: "second_person", approvals: 2, expiresInDays: 90 } })],

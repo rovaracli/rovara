@@ -211,6 +211,8 @@ describe("the event catalog", () => {
       "test_account.added", "test_account.approved", "test_account.narrowed", "test_account.widened", "test_account.reenable_requested", "test_account.rotated", "test_account.suspended", "test_account.expired", "test_account.deleted", "test_account.deleting", "test_account.rotation_failed", "test_account.used",
       // script tokens (UX5b)
       "script_token.created", "script_token.revoked", "script_token.used",
+      // company-approved extra test-service images
+      "company_image.proposed", "company_image.approved", "company_image.revoked",
     ]);
     expect(new Set(AUDIT_ACTIONS).size).toBe(AUDIT_ACTIONS.length);
   });
