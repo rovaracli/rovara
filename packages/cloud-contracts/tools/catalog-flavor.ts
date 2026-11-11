@@ -1,8 +1,8 @@
 // The staging build path's one switch (test services slice 1), and the strip that makes a release build contain no staging key at all.
-//   npx tsx packages/contracts/tools/catalog-flavor.ts staging|release [--root <checkout>]
+//   npx tsx packages/cloud-contracts/tools/catalog-flavor.ts staging|release [--root <checkout>]
 // It rewrites TWO generated files of the contracts package, from the tree's own sources:
-//   packages/contracts/src/catalog-build-flavor.ts   the flavor line ("release" or "staging");
-//   packages/contracts/src/catalog-staging-keys.ts   the staging-only catalog signing keys: for a "staging" flavor the keys of environments/service-catalog/staging-signing-key.json (an array of
+//   packages/cloud-contracts/src/catalog-build-flavor.ts   the flavor line ("release" or "staging");
+//   packages/cloud-contracts/src/catalog-staging-keys.ts   the staging-only catalog signing keys: for a "staging" flavor the keys of environments/service-catalog/staging-signing-key.json (an array of
 //                                                    {keyId, publicKey, algorithm}; no file means none), for "release" the EMPTY list. Both files are committed as release and empty.
 // The worker Dockerfile runs it from its CATALOG_FLAVOR build argument, so the image's flavor is the argument and not whatever the checkout says; the staging release path (scripts/test-deploy.ts, the "ecr-push" step) passes
 // CATALOG_FLAVOR=staging and nothing else does. scripts/release/build.ts refuses a tree whose files or compiled output are not release and empty (`assertReleaseCatalogTree`).
@@ -10,8 +10,8 @@ import { readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-export const FLAVOR_FILE = "packages/contracts/src/catalog-build-flavor.ts";
-export const STAGING_KEYS_FILE = "packages/contracts/src/catalog-staging-keys.ts";
+export const FLAVOR_FILE = "packages/cloud-contracts/src/catalog-build-flavor.ts";
+export const STAGING_KEYS_FILE = "packages/cloud-contracts/src/catalog-staging-keys.ts";
 export const STAGING_KEY_DATA_FILE = "environments/service-catalog/staging-signing-key.json";
 const LINE = /^export const CATALOG_BUILD_FLAVOR: "release" \| "staging" = "(?:release|staging)";$/mu;
 const KEYS_LINE = /^export const CATALOG_STAGING_ONLY_SIGNING_KEYS: readonly CatalogSigningKey\[\] = [\s\S]*?;$/mu;

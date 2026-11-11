@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { CATALOG_STAGING_ACCOUNT_ID } from "@agentx/cloud-contracts";
 import { parseBundlePublicKey } from "@rovara-code/contracts";
 import { trustedKeyPemsFor } from "@agentx/cloud-contracts/testing";
-import { FLAVOR_FILE, STAGING_KEYS_FILE, STAGING_KEY_DATA_FILE, setCatalogFlavor } from "../../packages/contracts/tools/catalog-flavor.js";
+import { FLAVOR_FILE, STAGING_KEYS_FILE, STAGING_KEY_DATA_FILE, setCatalogFlavor } from "../../packages/cloud-contracts/tools/catalog-flavor.js";
 import { CATALOG_FLAVOR_TOOL, CATALOG_STAGING_BUILD_ACCOUNT, buildSource, catalogFlavorFor, type CommandRunner } from "../../packages/cli/src/deploy/cdk-engine.js";
 
 const roots: string[] = [];

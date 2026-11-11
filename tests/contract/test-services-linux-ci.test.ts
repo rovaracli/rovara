@@ -111,7 +111,7 @@ describe("the linux-runtime job runs the test services Linux checks", () => {
     const pattern = /grep -Eq '([^']+)'/u.exec(step.run!)![1]!;
     const regex = new RegExp(pattern, "u");
     for (const touched of [
-      "packages/worker/src/test-services-run.ts", "packages/worker/ec2/boot-stage2.sh", "packages/worker/ec2/boot.sh", "packages/contracts/src/service-catalog.ts", "packages/contracts/src/test-env-dependency.ts", "environments/base/Dockerfile", "environments/service-catalog/catalog.json",
+      "packages/worker/src/test-services-run.ts", "packages/worker/ec2/boot-stage2.sh", "packages/worker/ec2/boot.sh", "vendor/rovara-code/packages/contracts/src/service-catalog.ts", "vendor/rovara-code/packages/contracts/src/test-env-dependency.ts", "environments/base/Dockerfile", "environments/service-catalog/catalog.json",
       "infra/lib/worker-settings.ts", "infra/lib/ec2-workers.ts", "scripts/linux-check-test-services.sh", "scripts/linux-check-test-services-live.ts", "scripts/ci-test-services-linux.sh", ".github/workflows/ci.yml",
     ]) expect(regex.test(touched), touched).toBe(true);
     for (const untouched of ["packages/web/src/App.tsx", "packages/broker/src/org/test-environment.ts", "docs/guide.md", "tests/unit/x.test.ts", "environments/slack/Dockerfile"]) expect(regex.test(untouched), untouched).toBe(false);

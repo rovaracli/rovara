@@ -1,4 +1,4 @@
-// Enterprise foundations, task N3: verifies a signed release bundle (packages/contracts/src/bundle.ts) before `rovara upgrade --bundle` changes anything.
+// Enterprise foundations, task N3: verifies a signed release bundle (packages/cloud-contracts/src/bundle.ts) before `rovara upgrade --bundle` changes anything.
 // Order: signature over the exact bytes of bundle.json, the customer's approved bundle id (if given), the manifest's shape, the directory holds exactly the
 // listed files (no extra, no missing, no link), every file's size and SHA-256, and the release inside agrees with the bundle. Any failure is a refusal with
 // a fixed message; nothing is read from AWS and nothing is written here.

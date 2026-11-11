@@ -73,8 +73,10 @@ export * from "./org-slack-workspace-evidence.js";
 export { AUDIT_INDEX_PAGE_DEFAULT, AUDIT_INDEX_PAGE_MAX, AuditIndexedQuerySchema, AuditIndexedResultSchema, type AuditIndexedQuery, type AuditIndexedResult } from "./audit-search.js";
 
 export { TaskStopEditablePolicySchema, type TaskStopEditablePolicy, TaskStopPendingChangeSchema, TaskStopEditingContextSchema, TaskStopEditBodySchema, TaskStopDecisionBodySchema, TaskStopEditResultSchema, taskStopEditKind } from "./task-stop-editing.js";
+export * from "./service-catalog-images.js";
 export * from "./catalog-trust.js";
 export * from "./catalog-build-flavor.js";
+export * from "./service-catalog-verify.js";
 export * from "./team-record-storage.js";
 
 // Learning v2: the Team record and lessons (R1).

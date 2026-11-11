@@ -1,0 +1,150 @@
+{
+  "comment": "Convergence W0-3 (R4): Cloud's contracts export no name Rovara Code's contracts also export, EXCEPT the names defined in the files listed here. Each file is a place where Cloud is ahead of, or differs on purpose from, the pinned Code, so the shared change is owed to Code first (plan 3.1, upstream first). The two lists below are checked by tests/contract/cloud-contracts-no-duplicate-names.test.ts: a name both packages export must be defined in a listed file, and a listed file must still define one (when Code catches up, delete the file's duplicate names here and import them from Code). Importers take a name both define from @agentx/cloud-contracts. Do not add a file without the owner's controller seeing the reason.",
+  "files": [
+    {
+      "file": "access-policies.ts",
+      "since": "2026-11-11",
+      "reason": "Cloud's deploy-role, boundary and operator policies are far ahead of Code's reduced cut (custom domain, ECR/Cognito/Resolver service-linked roles, team-record storage, CloudFront, AppSync). Infra output must not change."
+    },
+    {
+      "file": "admin.ts",
+      "since": "2026-11-11",
+      "reason": "Health alarm lists (the team-record and lessons alarms, conditional suffixes) and teamRecordCheck; Code has the plugins[] health rows (H3) instead. Both shapes are wanted: owed upstream."
+    },
+    {
+      "file": "app-lessons-repo-file.ts",
+      "since": "2026-11-11",
+      "reason": "Decision 78 (retireConfirm, retire_confirm and retire_keep) is in Cloud only."
+    },
+    {
+      "file": "audit.ts",
+      "since": "2026-11-11",
+      "reason": "AuditActor: Cloud's ledger actor is { kind: member | operator | system | github }; Code's AuditSink port actor is { type: person | agent | system }. Same name, different shape and stored data; the audit adapter (wave 1) maps one to the other."
+    },
+    {
+      "file": "catalog-trust.ts",
+      "since": "2026-11-11",
+      "reason": "Cloud's catalog trust adds the staging-only key list and the build flavor (Code carries only CATALOG_TRUSTED_SIGNING_KEYS); the testing seam depends on it."
+    },
+    {
+      "file": "chain-session.ts",
+      "since": "2026-11-11",
+      "reason": "Depends on the decision 70(c) workflow shapes below (ChainStepTaskView holds a workflow snapshot view)."
+    },
+    {
+      "file": "developer-tasks-node.ts",
+      "since": "2026-11-11",
+      "reason": "Task view and list shapes hold the owed workflow snapshot view and merge tracking item."
+    },
+    {
+      "file": "developer-tasks.ts",
+      "since": "2026-11-11",
+      "reason": "DeveloperTaskView holds the owed merge tracking item (approval.githubUserId in stored rows) and workflow snapshot view."
+    },
+    {
+      "file": "developer-web.ts",
+      "since": "2026-11-11",
+      "reason": "Cloud's sign-in provider list and linked identity are closed (D6), and AppMeResponse carries the trial; Code's are open (I2). Cloud readers widen first."
+    },
+    {
+      "file": "developer.ts",
+      "since": "2026-11-11",
+      "reason": "DeveloperSummary and its neighbours hold Cloud's closed provider list and org role (D6, D10; P3-OPEN-ROLES-CLOUD-ADOPTION)."
+    },
+    {
+      "file": "live-interaction-errors.ts",
+      "since": "2026-11-11",
+      "reason": "Reads WORKFLOW_BLOCK_REASONS, which carries Cloud's base-merged reasons."
+    },
+    {
+      "file": "org-scoped-keys.ts",
+      "since": "2026-11-11",
+      "reason": "OrgSettingName and orgSettingsKey: Cloud holds more company setting names (budgets, spend policy, task stop, local agents) than Code's three."
+    },
+    {
+      "file": "org.ts",
+      "since": "2026-11-11",
+      "reason": "OrgRoleSchema carries the Enterprise auditor role; Code's is owner, admin, member (D10, P3-OPEN-ROLES-CLOUD-ADOPTION)."
+    },
+    {
+      "file": "protocol.ts",
+      "since": "2026-11-11",
+      "reason": "WorkerInvocationSchema embeds the owed workflow shapes (decision 65: any worker protocol change goes to the owner)."
+    },
+    {
+      "file": "qualification-launch.ts",
+      "since": "2026-11-11",
+      "reason": "bootStage2Sha256 (the worker boot stage 2 check) is in Cloud only."
+    },
+    {
+      "file": "rovara-code-node.ts",
+      "since": "2026-11-11",
+      "reason": "mergeTrackingDecisionDigest is computed over Cloud's merge tracking item."
+    },
+    {
+      "file": "rovara-code.ts",
+      "since": "2026-11-11",
+      "reason": "MergeTrackingItem keeps approval.githubUserId (stored rows; Code writes hostUserId), MERGE_NOT_READY_MESSAGES has the behind-by-hand and base-merged lines (decision 70(c)), and GitShaSchema is 40 hex where Code's commit id is any hash length (C4)."
+    },
+    {
+      "file": "saved-env-key-files.ts",
+      "since": "2026-11-11",
+      "reason": "SAVED_ENV_FIXED_KEY_GLOBS lists the Brazil Config file; it is part of a saved environment's key, so changing it would rebuild every environment."
+    },
+    {
+      "file": "script-tokens.ts",
+      "since": "2026-11-11",
+      "reason": "The lessons permission (decision 46b) is in Cloud only."
+    },
+    {
+      "file": "service-catalog-images.ts",
+      "since": "2026-11-11",
+      "reason": "The service catalog's run-time brand (service-catalog-brand.ts) is one module's state: Cloud's loadSignedCatalog (catalog-trust.ts: staging key, build flavor) registers a verified catalog in Cloud's copy, so the functions that read the brand must be Cloud's copies too. Code does not export its brand module or loadSignedCatalogWith, so Cloud cannot register in Code's; owed: Code exports a catalog loader that takes trust lists, then Cloud drops these copies."
+    },
+    {
+      "file": "service-catalog-verify.ts",
+      "since": "2026-11-11",
+      "reason": "The service catalog's run-time brand (service-catalog-brand.ts) is one module's state: Cloud's loadSignedCatalog (catalog-trust.ts: staging key, build flavor) registers a verified catalog in Cloud's copy, so the functions that read the brand must be Cloud's copies too. Code does not export its brand module or loadSignedCatalogWith, so Cloud cannot register in Code's; owed: Code exports a catalog loader that takes trust lists, then Cloud drops these copies."
+    },
+    {
+      "file": "session-views.ts",
+      "since": "2026-11-11",
+      "reason": "SessionView holds the owed task view and chain step view."
+    },
+    {
+      "file": "task-response.ts",
+      "since": "2026-11-11",
+      "reason": "Holds the owed task view."
+    },
+    {
+      "file": "task-workflow-design-review.ts",
+      "since": "2026-11-11",
+      "reason": "Transitions over the owed workflow snapshot."
+    },
+    {
+      "file": "task-workflow-node.ts",
+      "since": "2026-11-11",
+      "reason": "Decision 70(c) (the re-run of the checks after a merge of the base, its daily allowance, workflowSendBackOffered) is in Cloud only; Code's observeWorkflowPullRequest takes CODE_HOST sources, which Cloud does not have yet."
+    },
+    {
+      "file": "task-workflow-revise.ts",
+      "since": "2026-11-11",
+      "reason": "Revise offers over the owed workflow shapes; Code's standard-sequence rule is not adopted until the shapes meet."
+    },
+    {
+      "file": "task-workflow.ts",
+      "since": "2026-11-11",
+      "reason": "WORKFLOW_BLOCK_REASONS has Cloud's base-merged reasons; the snapshot view shape follows."
+    },
+    {
+      "file": "workflow-autofix.ts",
+      "since": "2026-11-11",
+      "reason": "Decision 70(c) auto-fix codes (base-merged, autonomy-suggest, head-moved) are in Cloud only."
+    },
+    {
+      "file": "workflow-publication-context.ts",
+      "since": "2026-11-11",
+      "reason": "Reads the owed workflow snapshot."
+    }
+  ]
+}

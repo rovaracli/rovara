@@ -7,7 +7,7 @@ import { PUBLIC_SUFFIX_LIST_COMMIT, PUBLIC_SUFFIX_RULES, registrableDomain } fro
 describe("the generated rules", () => {
   it("name the source commit, hold both sections, and cannot be changed at runtime", () => {
     expect(PUBLIC_SUFFIX_LIST_COMMIT).toMatch(/^[0-9a-f]{40}$/);
-    const source = readFileSync(new URL("../../packages/contracts/src/public-suffix-rules.ts", import.meta.url), "utf8");
+    const source = readFileSync(new URL("../../vendor/rovara-code/packages/contracts/src/public-suffix-rules.ts", import.meta.url), "utf8");
     expect(source).toContain(`Commit: ${PUBLIC_SUFFIX_LIST_COMMIT}`);
     // ICANN section, PRIVATE section, a wildcard rule and an exception rule.
     for (const rule of ["com", "co.uk", "github.io", "s3.amazonaws.com", "*.ck", "!www.ck"]) expect(PUBLIC_SUFFIX_RULES.has(rule), rule).toBe(true);

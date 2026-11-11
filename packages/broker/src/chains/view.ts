@@ -1,6 +1,6 @@
 // Plan 4 Task 10: what Plan 5's sessions read of a chain run. A run is one session (its id is the session's): `chainRunView` is the run with a section per step attempt,
 // `chainRunEvents` its append-only log, `chainStepTask` the chain-scoped read of a step's task, and `listChainRuns` the runs of a chain or a project. The shapes are
-// `packages/contracts/src/chain-session.ts`; everything written here is parsed with the strict schema first, so a field that is not in the contract can't reach a client.
+// `packages/cloud-contracts/src/chain-session.ts`; everything written here is parsed with the strict schema first, so a field that is not in the contract can't reach a client.
 //
 // Who reads a run: its starter, its owner, anyone with `view` on the chain and on its project, and org owners and admins; anyone else, and any other org, gets
 // `NOT_FOUND`, the same as for a run that does not exist. A step's task needs more: a project role with `start_tasks`, so a project viewer keeps the section's summary and

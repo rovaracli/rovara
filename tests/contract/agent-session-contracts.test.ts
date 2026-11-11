@@ -9,8 +9,8 @@ import { deviceCommandKey, deviceKey, memberDevicesKey, orgSettingsKey } from ".
 import { HomeCardReaderSchema, HomeCardSchema, HomeResponseReaderSchema, HomeResponseSchema } from "../../packages/cloud-contracts/src/home.js";
 import { OrgIdSchema } from "@rovara-code/contracts";
 import { NeedsConfirmationSchema, ProjectOverviewReaderSchema, ProjectOverviewSchema, SessionEventPageReaderSchema, SessionEventPageSchema, SessionEventReaderSchema, SessionTileReaderSchema, SessionTileSchema } from "@rovara-code/contracts";
-import { SessionViewReaderSchema, SessionViewSchema } from "../../packages/cloud-contracts/src/session-views.js";
-import * as contracts from "@rovara-code/contracts";
+import { SessionViewReaderSchema, SessionViewSchema } from "@agentx/cloud-contracts";
+import { allContracts as contracts } from "../support/contracts-barrels.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 
 const ORG_A = OrgIdSchema.parse("org_aaaaaaaaaaaaaaaaaaaa");

@@ -46,7 +46,10 @@ export async function observeInstalledRuntimeManifestForHost(platform: string, a
   };
 
   await addFile("package-lock.json");
-  await addTree("packages/contracts/dist");
+  await addTree("packages/cloud-contracts/dist");
+  // Rovara Code's contracts (convergence W0-3): the built files and the shims that name them, which the worker image carries beside Cloud's own.
+  await addTree("vendor/rovara-code/packages/contracts/dist");
+  await addTree("vendor/rovara-code-shims/contracts");
   await addTree("packages/verifier/dist");
   await addTree("packages/verifier/assets");
   await addTree("packages/worker/dist");

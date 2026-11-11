@@ -38,13 +38,13 @@ async function importGraph(entry: string): Promise<{ files: Set<string>; nodeImp
 
 describe("rovara-code.ts is browser-safe", () => {
   it("reaches no Node module through any import", async () => {
-    const { files, nodeImports } = await importGraph("packages/contracts/src/rovara-code.ts");
+    const { files, nodeImports } = await importGraph("packages/cloud-contracts/src/rovara-code.ts");
     expect(nodeImports).toEqual([]);
-    expect(files.has("packages/contracts/src/rovara-code.ts")).toBe(true);
+    expect(files.has("packages/cloud-contracts/src/rovara-code.ts")).toBe(true);
   });
 
   it("would notice a Node import (positive control: the Node sibling reaches node:crypto)", async () => {
-    const { nodeImports } = await importGraph("packages/contracts/src/rovara-code-node.ts");
+    const { nodeImports } = await importGraph("packages/cloud-contracts/src/rovara-code-node.ts");
     expect(nodeImports.some((entry) => entry.endsWith("node:crypto"))).toBe(true);
   });
 

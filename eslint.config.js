@@ -2,7 +2,7 @@ import eslint from "@eslint/js";
 import tseslint from "typescript-eslint";
 import reactHooks from "eslint-plugin-react-hooks";
 import { readFileSync } from "node:fs";
-const webSafeFiles = JSON.parse(readFileSync(new URL("./packages/contracts/web-safe-files.json", import.meta.url), "utf8"));
+const webSafeFiles = JSON.parse(readFileSync(new URL("./packages/cloud-contracts/web-safe-files.json", import.meta.url), "utf8"));
 // `npm run lint` (scripts/lint-shards.ts) lints in shards so the whole repository never sits in one heap. Each shard sets the TypeScript program that
 // supplies type information (one of tsconfig.lint/*.json; they own exactly the files tsconfig.lint.json owns), and the last shard also sets a file that lists the
 // files (and directories, with a trailing slash) the other shards already linted. Run by hand (an editor, `npx eslint file`) neither is set: the whole repository is one program, as before. Rules never change.
@@ -76,7 +76,7 @@ export default tseslint.config(
   {
     files: ["packages/ui/src/**/*.{ts,tsx}", "packages/web/src/**/*.{ts,tsx}"],
     ignores: ["packages/web/src/server/**"],
-    rules: { "no-restricted-imports": ["error", { paths: [{ name: "@agentx/contracts", message: "Use @agentx/contracts/web." }], patterns: ["**/packages/web/**", "@agentx/web"] }] },
+    rules: { "no-restricted-imports": ["error", { paths: [{ name: "@agentx/cloud-contracts", message: "Use @agentx/cloud-contracts/web." }, { name: "@rovara-code/contracts", message: "Use @agentx/cloud-contracts/web: it carries the browser-safe names of Rovara Code's contracts, and Code's barrel holds Node-only modules." }], patterns: ["**/packages/web/**", "@agentx/web"] }] },
   },
   {
     files: ["packages/ui/src/**/*.{ts,tsx}"],

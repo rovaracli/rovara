@@ -47,21 +47,19 @@ describe("the signer package", () => {
 describe("the signer program, built the way the sign job builds it", () => {
   it("imports nothing but node built-ins, zod and the KMS client: the three packages scripts/release/signer installs", async () => {
     const workflow = YAML.parse(await read(".github/workflows/release.yml")) as { jobs: Record<string, { steps: Array<{ run?: string }> }> };
-    const command = workflow.jobs.sign!.steps.map((step) => step.run ?? "").find((run) => run.includes("esbuild"))!;
-    const flags = command.split(/\s+/u).filter((token) => token.startsWith("--"));
-    const external = flags.filter((flag) => flag.startsWith("--external:")).map((flag) => flag.slice("--external:".length));
-    const alias = flags.filter((flag) => flag.startsWith("--alias:")).map((flag) => flag.slice("--alias:".length).split("="));
-    const result = await build({
-      entryPoints: ["scripts/release/sign-bundle.ts"], bundle: true, platform: "node", format: "esm", target: "node22", write: false, metafile: true,
-      external, alias: Object.fromEntries(alias as Array<[string, string]>), logLevel: "silent",
-    });
+    // The job builds with scripts/release/signer/build.mjs; the test builds with the same options in memory.
+    expect(workflow.jobs.sign!.steps.map((step) => step.run ?? "").filter((run) => run.includes("build.mjs"))).toEqual(["node scripts/release/signer/build.mjs"]);
+    const { signerBuildOptions } = await import("../../scripts/release/signer/build.mjs") as { signerBuildOptions: () => Record<string, unknown> };
+    const { outfile: _outfile, ...options } = signerBuildOptions();
+    void _outfile;
+    const result = await build({ ...options, write: false, metafile: true, logLevel: "silent" });
     const text = result.outputFiles[0]!.text;
     const bare = new Set<string>();
     for (const match of text.matchAll(/(?:from|import)\s*\(?\s*["']([^"']+)["']/gu)) if (!match[1]!.startsWith("node:")) bare.add(match[1]!);
     expect([...bare].sort()).toEqual(["@aws-sdk/client-kms", "zod"]);
-    // The source it was built from is the repository's: scripts/release and packages/contracts/src, the two folders the sign job checks out.
+    // The source it was built from is the repository's: scripts/release, packages/cloud-contracts/src and Rovara Code's contracts source (vendor/rovara-code/packages/contracts/src), the folders the sign job checks out.
     const inputs = Object.keys(result.metafile.inputs);
-    expect(inputs.filter((input) => !input.startsWith("scripts/release/") && !input.startsWith("packages/contracts/src/"))).toEqual([]);
+    expect(inputs.filter((input) => !input.startsWith("scripts/release/") && !input.startsWith("packages/cloud-contracts/src/") && !input.startsWith("vendor/rovara-code/packages/contracts/src/"))).toEqual([]);
     // It carries nothing that builds or exports a release.
     expect(text).not.toMatch(/bubblewrap|skopeo|synth-kit\.js|aws-cdk-lib/u);
   }, 60_000);

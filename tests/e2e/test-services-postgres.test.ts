@@ -392,7 +392,7 @@ describe("5. with tx off the worker and the broker are what they were (golden)",
 describe("6. Prove: the candidate check's record goes from the worker to the Prove report", () => {
   afterEach(() => { delete process.env.TEST_SERVICES_ENABLED; delete process.env.TEST_ENVIRONMENT_ENABLED; vi.unstubAllEnvs(); });
 
-  /** The release's catalog, signed by a TEST key and read through the broker's own source (signature check, minimum revision): `@agentx/contracts/testing` supplies the key, in test code only. */
+  /** The release's catalog, signed by a TEST key and read through the broker's own source (signature check, minimum revision): `@agentx/cloud-contracts/testing` supplies the key, in test code only. */
   async function signedSource() {
     const signer = testSigner();
     const catalogBytes = Buffer.from(`${JSON.stringify(pinnedCatalog(), null, 2)}\n`, "utf8");

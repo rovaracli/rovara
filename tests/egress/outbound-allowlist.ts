@@ -75,7 +75,7 @@ export const CATEGORY_TITLES: Readonly<Record<OutboundCategory, { title: string;
   },
 };
 
-const DEFAULT_ALLOW = ["packages/contracts/src/default-allow-domains.ts"];
+const DEFAULT_ALLOW = ["vendor/rovara-code/packages/contracts/src/default-allow-domains.ts"];
 
 export const HOST_RULES: readonly HostRule[] = [
   {
@@ -115,7 +115,7 @@ export const HOST_RULES: readonly HostRule[] = [
     hosts: ["repo.maven.apache.org"],
   },
   {
-    category: "agent-egress-default", why: "The npm registry: in the default list, the setup draft's default allowed domain, and the registry an install uses for package-run MCP servers when it sets rovaraMcpPublicNpm and names none.", files: [...DEFAULT_ALLOW, "packages/worker/src/setup-draft.ts", "packages/contracts/src/e2e-native-recipes.ts", "infra/lib/private-mcp.ts"],
+    category: "agent-egress-default", why: "The npm registry: in the default list, the setup draft's default allowed domain, and the registry an install uses for package-run MCP servers when it sets rovaraMcpPublicNpm and names none.", files: [...DEFAULT_ALLOW, "packages/worker/src/setup-draft.ts", "vendor/rovara-code/packages/contracts/src/e2e-native-recipes.ts", "infra/lib/private-mcp.ts"],
     hosts: ["registry.npmjs.org"],
   },
   {
@@ -137,7 +137,7 @@ export const HOST_RULES: readonly HostRule[] = [
     ],
   },
   {
-    category: "aws-service-principal", why: "The ECR service principal in the trust policy of the role ECR assumes to create a saved-environment repository from the creation template (an IAM principal, not a call); and, as the iam:AWSServiceName condition on the deploy role's one service-linked-role statement for ECR's creation-template role (a policy value, not a call).", files: ["infra/lib/saved-env-images.ts", "packages/contracts/src/access-policies.ts"],
+    category: "aws-service-principal", why: "The ECR service principal in the trust policy of the role ECR assumes to create a saved-environment repository from the creation template (an IAM principal, not a call); and, as the iam:AWSServiceName condition on the deploy role's one service-linked-role statement for ECR's creation-template role (a policy value, not a call).", files: ["infra/lib/saved-env-images.ts", "packages/cloud-contracts/src/access-policies.ts"],
     hosts: ["ecr.amazonaws.com"],
   },
   {
@@ -145,7 +145,7 @@ export const HOST_RULES: readonly HostRule[] = [
     hosts: ["codeartifact.amazonaws.com"],
   },
   {
-    category: "audit-timestamp", why: "The two public timestamp authorities the audit anchor asks by default.", files: ["packages/contracts/src/audit.ts", "packages/audit-verifier/src/trust-roots.ts"],
+    category: "audit-timestamp", why: "The two public timestamp authorities the audit anchor asks by default.", files: ["packages/cloud-contracts/src/audit.ts", "packages/audit-verifier/src/trust-roots.ts"],
     hosts: ["timestamp.digicert.com", "timestamp.sectigo.com"],
   },
   {

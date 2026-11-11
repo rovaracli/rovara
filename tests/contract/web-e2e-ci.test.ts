@@ -41,8 +41,8 @@ it("the build guard names what is missing from an unpacked build", () => {
  const root = mkdtempSync(join(tmpdir(), "e2e-build-")), put = (path: string) => { mkdirSync(join(root, path, ".."), { recursive: true });writeFileSync(join(root, path), "x") };
  for (const name of ["contracts", "web"]) { put(`packages/${name}/package.json`);put(`packages/${name}/tsconfig.json`) }
  put("packages/notes/README.md");
- expect(missingBuildOutputs(root)).toEqual(["packages/contracts/dist", "packages/web/dist", "packages/web/dist/app/index.html", "packages/contracts/dist/index.js"]);
- put("packages/contracts/dist/index.js");put("packages/web/dist/app/index.html");expect(missingBuildOutputs(root)).toEqual([]);
+ expect(missingBuildOutputs(root)).toEqual(["packages/cloud-contracts/dist", "packages/web/dist", "packages/web/dist/app/index.html", "packages/cloud-contracts/dist/index.js"]);
+ put("packages/cloud-contracts/dist/index.js");put("packages/web/dist/app/index.html");expect(missingBuildOutputs(root)).toEqual([]);
  const run = (target: string) => spawnSync("node", ["scripts/web-e2e-build-guard.ts", target], { encoding: "utf8" });
  expect(run(root)).toMatchObject({ status: 0 });const empty = mkdtempSync(join(tmpdir(), "e2e-build-"));mkdirSync(join(empty, "packages/web"), { recursive: true });writeFileSync(join(empty, "packages/web/tsconfig.json"), "{}");
  const failed = run(empty);expect(failed.status).toBe(1);expect(failed.stdout).toContain("::error::The web-e2e-build archive does not hold packages/web/dist.");

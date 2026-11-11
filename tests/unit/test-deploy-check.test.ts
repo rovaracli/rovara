@@ -1044,14 +1044,14 @@ describe("parseDeployedCodeKey", () => {
 describe("sourcePathsFor", () => {
   it("maps built workspace output to its source, drops node_modules for the lockfile, and keeps extra files", () => {
     expect(sourcePathsFor(
-      ["packages/broker/src/aws/dispatcher.ts", "packages/contracts/dist/session.js", "packages/contracts/dist/sub/x.js", "node_modules/zod/index.js", "node_modules/@aws-sdk/a/b.js"],
+      ["packages/broker/src/aws/dispatcher.ts", "packages/cloud-contracts/dist/session.js", "packages/cloud-contracts/dist/sub/x.js", "node_modules/zod/index.js", "node_modules/@aws-sdk/a/b.js"],
       ["packages/worker/ec2/boot.sh"],
     )).toEqual([
       "package-lock.json",
       "packages/broker/src/aws/dispatcher.ts",
-      "packages/contracts/package.json",
-      "packages/contracts/src/session.ts",
-      "packages/contracts/src/sub/x.ts",
+      "packages/cloud-contracts/package.json",
+      "vendor/rovara-code/packages/contracts/src/session.ts",
+      "packages/cloud-contracts/src/sub/x.ts",
       "packages/worker/ec2/boot.sh",
     ]);
   });

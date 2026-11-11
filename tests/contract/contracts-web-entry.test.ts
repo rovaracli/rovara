@@ -3,8 +3,10 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { brotliDecompressSync, gunzipSync } from "node:zlib";
 import { posix } from "node:path";
-import { CandidateManifestSchema as BrowserCandidate, workflowFindingFingerprint as browserFingerprint } from "@rovara-code/contracts";
-import { RelativeWorkspacePathSchema as BrowserPath } from "@rovara-code/contracts";
+// The browser-safe files of Rovara Code's contracts, read by path on purpose: this test compares them with the Node build of the same names that the package barrel exports. (Code has no
+// browser entry; the one Cloud ships, `@agentx/cloud-contracts/web`, re-exports Code's names through the barrel and the build tree-shakes the Node-only modules out.)
+import { CandidateManifestSchema as BrowserCandidate, workflowFindingFingerprint as browserFingerprint } from "../../vendor/rovara-code/packages/contracts/src/task-workflow.js";
+import { RelativeWorkspacePathSchema as BrowserPath } from "../../vendor/rovara-code/packages/contracts/src/project.js";
 import { CandidateManifestSchema as NodeCandidate, workflowFindingFingerprint as nodeFingerprint, RelativeWorkspacePathSchema as NodePath } from "@rovara-code/contracts";
 import { sha256Hex } from "../../packages/cloud-contracts/src/web-hash.js";
 import ts from "typescript";
@@ -29,8 +31,8 @@ async function graph(file: string, seen = new Set<string>()): Promise<Set<string
 }
 describe("browser contracts entry", () => {
   it("has an exact, entirely browser-safe import graph", async () => {
-    const manifest: unknown = JSON.parse(await readFile("packages/contracts/web-safe-files.json", "utf8"));
-    expect([...(await graph("packages/contracts/src/web.ts"))].sort()).toEqual(manifest);
+    const manifest: unknown = JSON.parse(await readFile("packages/cloud-contracts/web-safe-files.json", "utf8"));
+    expect([...(await graph("packages/cloud-contracts/src/web.ts"))].sort()).toEqual(manifest);
   });
   it("refuses a Node import added to a listed file", async () => {
     // Run bare, ESLint types the file with tsconfig.lint.json, the program over the whole repository (about 2,900 files; one eslint process over all of it needed
@@ -44,7 +46,7 @@ describe("browser contracts entry", () => {
     process.env.ROVARA_LINT_PROJECT = "./tsconfig.lint/pkg-contracts.json";
     process.env.TSESTREE_SINGLE_RUN = "false";
     try {
-      const results = await new ESLint().lintText('import { createHash } from "node:crypto"; export const hash = createHash;', { filePath: "packages/contracts/src/web.ts" });
+      const results = await new ESLint().lintText('import { createHash } from "node:crypto"; export const hash = createHash;', { filePath: "packages/cloud-contracts/src/web.ts" });
       // The messages are the assertion's own message, so a run that returns none of the rule's (a parse error, an ignored file) says why in its log.
       const messages = results.flatMap(result => result.messages);
       expect(messages.some(message => message.ruleId === "no-restricted-imports"), JSON.stringify(messages.map(message => ({ ruleId: message.ruleId, fatal: message.fatal, text: message.message.slice(0, 300) })))).toBe(true);
@@ -99,7 +101,7 @@ describe("browser contracts entry", () => {
 });
 
 it("shares one browser-safe principal key helper with Node storage", async () => {
- const browser = await import("@agentx/contracts/web"), node = await import("@agentx/contracts");
+ const browser = await import("@agentx/cloud-contracts/web"), node = await import("@rovara-code/contracts");
  expect(browser.principalKey).toBe(node.principalKey);
  for (const principal of [{ kind: "member", developerId: "a".repeat(64) }, { kind: "project", project: "payments" }, { kind: "org" }] as const) {
   expect(browser.principalKey(principal)).toBe(node.principalKey(principal));

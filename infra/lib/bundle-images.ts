@@ -1,5 +1,5 @@
 // Enterprise foundations, task N2: the container images an Enterprise install runs come from its own ECR, loaded from the signed release
-// bundle (packages/contracts/src/bundle.ts); nothing is pulled from a public registry at run time. Public installs are unchanged.
+// bundle (packages/cloud-contracts/src/bundle.ts); nothing is pulled from a public registry at run time. Public installs are unchanged.
 import { Aws, Fn } from "aws-cdk-lib";
 import { BUNDLE_IMAGE_REPOSITORY_PREFIX, BUNDLE_LITELLM_IMAGE_NAME } from "@agentx/cloud-contracts";
 

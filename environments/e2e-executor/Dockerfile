@@ -12,7 +12,7 @@ WORKDIR /opt/agentx
 COPY package.json package-lock.json tsconfig.json tsconfig.base.json ./
 COPY packages/model-runtime/package.json packages/model-runtime/package.json
 COPY packages/audit-verifier/package.json packages/audit-verifier/package.json
-COPY packages/contracts/package.json packages/contracts/package.json
+COPY packages/cloud-contracts/package.json packages/cloud-contracts/package.json
 COPY packages/verifier/package.json packages/verifier/package.json
 COPY packages/gateway/package.json packages/gateway/package.json
 COPY packages/mcp/package.json packages/mcp/package.json
@@ -26,12 +26,17 @@ COPY packages/ui/package.json packages/ui/package.json
 COPY packages/web/package.json packages/web/package.json
 COPY upstream/e2e-0.20.0.tgz upstream/e2e-0.20.0.tgz
 COPY infra/package.json infra/package.json
+# Rovara Code's contracts (convergence W0-3): the pinned copy under vendor/ and the @rovara-code/* workspace shims over it. npm ci links the shims (they are workspace members
+# in the lockfile); tsc -b builds Code's contracts through the project reference of packages/cloud-contracts.
+COPY vendor/rovara-code-shims vendor/rovara-code-shims
 RUN npm ci --ignore-scripts
 
 COPY packages/audit-verifier packages/audit-verifier
-COPY packages/contracts packages/contracts
+COPY packages/cloud-contracts packages/cloud-contracts
+COPY vendor/rovara-code/tsconfig.base.json vendor/rovara-code/tsconfig.base.json
+COPY vendor/rovara-code/packages/contracts vendor/rovara-code/packages/contracts
 COPY packages/verifier packages/verifier
-RUN npx tsc -b packages/contracts packages/verifier --pretty false
+RUN npx tsc -b packages/cloud-contracts packages/verifier --pretty false
 RUN npm prune --omit=dev --workspaces
 
 FROM public.ecr.aws/docker/library/node:22.23.2-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5
@@ -40,7 +45,9 @@ WORKDIR /opt/agentx
 COPY --from=build /opt/agentx/package-lock.json ./package-lock.json
 COPY --from=build /opt/agentx/node_modules ./node_modules
 COPY --from=build /opt/agentx/packages/audit-verifier ./packages/audit-verifier
-COPY --from=build /opt/agentx/packages/contracts ./packages/contracts
+COPY --from=build /opt/agentx/packages/cloud-contracts ./packages/cloud-contracts
+COPY --from=build /opt/agentx/vendor/rovara-code/packages/contracts ./vendor/rovara-code/packages/contracts
+COPY --from=build /opt/agentx/vendor/rovara-code-shims ./vendor/rovara-code-shims
 COPY --from=build /opt/agentx/packages/verifier ./packages/verifier
 
 # Chromium and the system libraries it needs, as root. `npm ci --ignore-scripts` ran no install script of

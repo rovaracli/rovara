@@ -48,7 +48,7 @@ function status(overrides: Partial<ChangeRequestStatus> = {}): ChangeRequestStat
     requiredChecks: [], targetHasRequiredChecks: false, headDefinesChecks: true, requestedReviewers: 0, reviews: [], ...overrides,
   };
 }
-const person = (state: "APPROVED" | "CHANGES_REQUESTED", id = "1", accountType = "User") => ({ reviewer: { login: `user${id}`, hostUserId: id }, accountType, state, revision: "a".repeat(40), submittedAt: T1 });
+const person = (state: "APPROVED" | "CHANGES_REQUESTED", id = "1", accountType = "person") => ({ reviewer: { login: `user${id}`, hostUserId: id }, accountType, state, revision: "a".repeat(40), submittedAt: T1 });
 const workflowOf = (prs: Array<{ number: number; state: string; repositoryId?: string; candidateDigest?: string }>) => ({
   pullRequests: prs.map((pr) => ({ repositoryId: pr.repositoryId ?? "web", number: pr.number, state: pr.state, candidateDigest: pr.candidateDigest ?? CANDIDATE })),
 }) as unknown as WorkflowSnapshot;

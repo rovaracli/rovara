@@ -1,4 +1,4 @@
-// Writes packages/contracts/src/e2e-agent-models.generated.ts: the models the AI browser-test agent's route may be pinned to (M1.4 Task 4.10, D-1), from the pinned pi catalog.
+// Writes e2e-agent-models.generated.ts of Rovara Code's contracts (since convergence W0-3 that file lives in Code, not in Cloud; run this in Code and refresh the pin; here it checks the pinned copy): the models the AI browser-test agent's route may be pinned to (M1.4 Task 4.10, D-1), from the pinned pi catalog.
 //
 //   npx tsx scripts/generate-e2e-agent-models.ts
 //
@@ -97,10 +97,10 @@ export function renderEligibleModelsSource(rows: readonly EligibleE2EAgentModel[
   ].join("\n");
 }
 
-export const GENERATED_FILE = new URL("../packages/contracts/src/e2e-agent-models.generated.ts", import.meta.url);
+export const GENERATED_FILE = new URL("../vendor/rovara-code/packages/contracts/src/e2e-agent-models.generated.ts", import.meta.url);
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const rows = catalogEligibilityRows();
   writeFileSync(GENERATED_FILE, renderEligibleModelsSource(rows));
-  console.log(`wrote ${rows.length} eligible models to packages/contracts/src/e2e-agent-models.generated.ts`);
+  console.log(`wrote ${rows.length} eligible models to vendor/rovara-code/packages/contracts/src/e2e-agent-models.generated.ts`);
 }

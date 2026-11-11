@@ -7,7 +7,7 @@
 //   - the image is the digest the broker recorded WITH THE OPERATION when it built the invocation (`savedEnvDigest`), never one the request names; an operation that was told no image gets no login;
 //   - the org and project come from the workspace, never from the request. The login is for that one repository, short lived, and is not logged: the line names the workspace, the operation, the digest, the repository and the expiry; the login itself is never in it.
 //   - a preparation asks at most `SAVED_ENV_LOGIN_MAX_PER_OPERATION` times (the worker asks once): a counter on the operation, added to with a condition, refuses the rest with FORBIDDEN.
-import { SavedEnvRegistryAuthSchema, agentXError, type SavedEnvRegistryAuth } from "@rovara-code/contracts";
+import { HostedSavedEnvRegistryAuthSchema, agentXError, type SavedEnvRegistryAuth } from "@rovara-code/contracts";
 
 export interface SavedEnvLoginContext {
   /** The `sv` switch on and the registry installed. */
@@ -41,7 +41,7 @@ export async function exchangeSavedEnvLoginCore(context: SavedEnvLoginContext, i
   if (operation.savedEnvDigest === undefined || operation.orgId === undefined) throw agentXError("FORBIDDEN", "saved environment login grant does not cover this request");
   if (!(await context.countLogin(input.workspaceId, input.operationId))) throw agentXError("FORBIDDEN", "saved environment login was already given for this preparation");
   const login = await context.login({ orgId: operation.orgId, projectName: operation.projectName, digest: operation.savedEnvDigest });
-  const parsed = SavedEnvRegistryAuthSchema.safeParse(login);
+  const parsed = HostedSavedEnvRegistryAuthSchema.safeParse(login);
   if (!parsed.success) throw agentXError("FORBIDDEN", "saved environment login is not available");
   (context.log ?? ((event) => { console.log(JSON.stringify({ component: "broker", ...event })); }))({ event: "saved_env.login_issued", workspaceId: input.workspaceId, operationId: input.operationId, digest: operation.savedEnvDigest, repository: parsed.data.repository, expiresAt: parsed.data.expiresAt });
   return { login: parsed.data };

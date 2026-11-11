@@ -1291,7 +1291,7 @@ function recordOutput(context: ApplyContext, id: string, values: Record<string, 
 }
 
 /** The staging build path's flavor switch (test services slice 1): the only code that sets the staging flavor, and it runs in this file alone. */
-export const CATALOG_FLAVOR_TOOL = "packages/contracts/tools/catalog-flavor.ts";
+export const CATALOG_FLAVOR_TOOL = "packages/cloud-contracts/tools/catalog-flavor.ts";
 
 /**
  * Builds the contracts dist and the Lambdas with the STAGING catalog flavor: the switch first (it writes the flavor and the staging-only key list into the working tree), then `npm run build`. A build that skips the

@@ -272,7 +272,7 @@ const canonical = {
 it.each(Object.entries(canonical))("keeps all published %s runtime exports", (_module, names) => { expect(names.filter(name => !(name in contracts))).toEqual([]); });
 
 it("keeps browser reader policy outside the canonical realtime module", async () => {
- const source = await readFile("packages/contracts/src/realtime.ts", "utf8");
+ const source = await readFile("packages/cloud-contracts/src/realtime.ts", "utf8");
  expect(ts.preProcessFile(source, true, true).importedFiles.map(file => file.fileName)).not.toContain("./session-views.js");
  const realtime = await import("../../packages/cloud-contracts/src/realtime.js");
  expect("RealtimeNoticeReaderSchema" in realtime).toBe(false);

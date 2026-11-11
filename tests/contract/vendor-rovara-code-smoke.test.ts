@@ -1,4 +1,6 @@
+import { existsSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import * as cloudNames from "@agentx/cloud-contracts";
 import { allContracts as cloudContracts } from "../support/contracts-barrels.js";
 import { estimateRun, planRunLimit } from "@rovara-code/broker/core/cost";
 import { DEFAULT_RUN_ESTIMATE_USD, ESTIMATE_MIN_SAMPLES, ROVARA_CODE_AGENT_ID, formatRunLimitUsd, type RunEstimate } from "@rovara-code/contracts";
@@ -25,11 +27,15 @@ describe("Cloud code importing the pinned copy of Rovara Code", () => {
     expect(formatRunLimitUsd(2.5)).toBe("$2.50");
   });
 
-  it("resolves Code's own @agentx/contracts inside the vendored files, not Cloud's package of that name", () => {
-    // Both packages export `parseAgentId`-style helpers under the same names; the same name must not be the same function.
+  it("resolves Code's own @agentx/contracts inside the vendored files, and Cloud has no package of that name any more", () => {
+    // W0-3 renamed Cloud's contracts to @agentx/cloud-contracts, so the name belongs to the vendored Code alone (vendor/node_modules links it). A root link of that name would put Cloud's
+    // workspace back in the way of Code's own imports.
+    expect(existsSync("node_modules/@agentx/contracts")).toBe(false);
+    expect(existsSync("node_modules/@agentx/cloud-contracts")).toBe(true);
+    // Where Cloud still defines a name Code also defines (the owed-upstream list), the two are different functions: Code's files ran against Code's.
     const shared = Object.keys(codeContracts).filter((name) => typeof (codeContracts as Record<string, unknown>)[name] === "function" && typeof (cloudContracts as Record<string, unknown>)[name] === "function");
     expect(shared.length).toBeGreaterThan(10);
-    const different = shared.filter((name) => (codeContracts as Record<string, unknown>)[name] !== (cloudContracts as Record<string, unknown>)[name]);
-    expect(different.length).toBe(shared.length);
+    const cloudDefined = Object.keys(cloudNames).filter((name) => typeof (cloudNames as Record<string, unknown>)[name] === "function" && typeof (codeContracts as Record<string, unknown>)[name] === "function");
+    expect(cloudDefined.filter((name) => (cloudNames as Record<string, unknown>)[name] === (codeContracts as Record<string, unknown>)[name])).toEqual([]);
   });
 });

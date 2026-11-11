@@ -66,7 +66,7 @@ const MAX_DISPATCH_ATTEMPTS = 5;
 // Matches MAX_RECEIVE_COUNT in packages/slack-service, which reports the final attempt in the thread.
 export const SLACK_MAX_RECEIVE_COUNT = 5;
 // What the ingress Lambda may read of a turn record for the Details view (spec 014 FR-024):
-// TURN_DETAILS_ATTRIBUTES in packages/contracts/src/slack-details.ts plus the table keys pk and sk
+// TURN_DETAILS_ATTRIBUTES in packages/cloud-contracts/src/slack-details.ts plus the table keys pk and sk
 // (required). The byTime index keys exportPk and exportSk are not needed by this policy and carry no
 // new data; they stay listed so a later projection that names them is not refused.
 // A contract test keeps the two lists equal.

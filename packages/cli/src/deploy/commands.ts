@@ -822,7 +822,7 @@ export async function prepareDeployment(input: {
       });
     } catch (error) {
       // The checkout is put back to the committed release flavor whatever fails after the build (the synth, the deployer): cleanup() is not returned yet.
-      await builtSource.restore().catch(() => input.stderr.write("the source checkout could not be put back to the release catalog flavor; run `npx tsx packages/contracts/tools/catalog-flavor.ts release` in it\n"));
+      await builtSource.restore().catch(() => input.stderr.write("the source checkout could not be put back to the release catalog flavor; run `npx tsx packages/cloud-contracts/tools/catalog-flavor.ts release` in it\n"));
       throw error;
     }
   } else {
@@ -851,7 +851,7 @@ export async function prepareDeployment(input: {
     async cleanup() {
       if (outputsDir !== undefined) await rm(outputsDir, { recursive: true, force: true });
       // The checkout goes back to the committed release flavor (the deploy has used the compiled output by now).
-      await builtSource?.restore().catch(() => input.stderr.write("the source checkout could not be put back to the release catalog flavor; run `npx tsx packages/contracts/tools/catalog-flavor.ts release` in it\n"));
+      await builtSource?.restore().catch(() => input.stderr.write("the source checkout could not be put back to the release catalog flavor; run `npx tsx packages/cloud-contracts/tools/catalog-flavor.ts release` in it\n"));
     },
   };
 }

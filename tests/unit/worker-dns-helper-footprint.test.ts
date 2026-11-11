@@ -29,9 +29,9 @@ describe("the DNS helpers load little enough for their 128 MB limit", () => {
   });
 
   it("the contracts entry loads only its two small modules, and they load only zod", async () => {
-    expect(importsOf(await readFile("packages/contracts/src/dns-helper.ts", "utf8")).sort()).toEqual(["./errors.js", "./setup-run.js"]);
-    for (const path of ["packages/contracts/src/errors.ts", "packages/contracts/src/setup-run.ts"]) expect(importsOf(await readFile(path, "utf8")), path).toEqual(["zod"]);
-    const manifest = JSON.parse(await readFile("packages/contracts/package.json", "utf8")) as { exports: Record<string, string> };
+    expect(importsOf(await readFile("vendor/rovara-code/packages/contracts/src/dns-helper.ts", "utf8")).sort()).toEqual(["./errors.js", "./setup-run.js"]);
+    for (const path of ["vendor/rovara-code/packages/contracts/src/errors.ts", "vendor/rovara-code/packages/contracts/src/setup-run.ts"]) expect(importsOf(await readFile(path, "utf8")), path).toEqual(["zod"]);
+    const manifest = JSON.parse(await readFile("packages/cloud-contracts/package.json", "utf8")) as { exports: Record<string, string> };
     expect(manifest.exports["./dns-helper"]).toBe("./dist/dns-helper.js");
   });
 

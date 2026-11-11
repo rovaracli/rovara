@@ -59,10 +59,10 @@ export async function assertReleaseCatalogTree(root: string): Promise<void> {
     }
     if (!pattern.test(text)) throw new Error(`release refused: ${file} ${what}`);
   };
-  await check("packages/contracts/src/catalog-build-flavor.ts", /CATALOG_BUILD_FLAVOR: "release" \| "staging" = "release";/u, "is not the release flavor; run packages/contracts/tools/catalog-flavor.ts release");
-  await check("packages/contracts/src/catalog-staging-keys.ts", /CATALOG_STAGING_ONLY_SIGNING_KEYS: readonly CatalogSigningKey\[\] = \[\];/u, "holds a staging-only catalog key; a release build contains none (packages/contracts/tools/catalog-flavor.ts release)");
-  await check("packages/contracts/dist/catalog-build-flavor.js", /CATALOG_BUILD_FLAVOR = "release";/u, "is compiled from another flavor; rebuild the packages");
-  await check("packages/contracts/dist/catalog-staging-keys.js", /CATALOG_STAGING_ONLY_SIGNING_KEYS = \[\];/u, "is compiled with a staging-only catalog key; rebuild the packages");
+  await check("packages/cloud-contracts/src/catalog-build-flavor.ts", /CATALOG_BUILD_FLAVOR: "release" \| "staging" = "release";/u, "is not the release flavor; run packages/cloud-contracts/tools/catalog-flavor.ts release");
+  await check("packages/cloud-contracts/src/catalog-staging-keys.ts", /CATALOG_STAGING_ONLY_SIGNING_KEYS: readonly CatalogSigningKey\[\] = \[\];/u, "holds a staging-only catalog key; a release build contains none (packages/cloud-contracts/tools/catalog-flavor.ts release)");
+  await check("packages/cloud-contracts/dist/catalog-build-flavor.js", /CATALOG_BUILD_FLAVOR = "release";/u, "is compiled from another flavor; rebuild the packages");
+  await check("packages/cloud-contracts/dist/catalog-staging-keys.js", /CATALOG_STAGING_ONLY_SIGNING_KEYS = \[\];/u, "is compiled with a staging-only catalog key; rebuild the packages");
 }
 
 /** Validates images against ImageDigest before any other work, so a bad reference fails fast. */
@@ -202,7 +202,7 @@ export async function buildRelease(input: BuildReleaseInput): Promise<ReleaseMan
   checkedNoAmbientCdkContext();
   // A public or Enterprise release is a RELEASE build: the staging-only catalog signing key (catalog-trust.ts) is honoured by a staging build alone, and a release build does not contain it. The tree and its compiled
   // output are checked, and so is the worker image the release names: Docker builds that from whatever tree it was given.
-  if (CATALOG_BUILD_FLAVOR !== "release") throw new Error("a release is built from a release flavor (packages/contracts/src/catalog-build-flavor.ts); this tree is a staging build");
+  if (CATALOG_BUILD_FLAVOR !== "release") throw new Error("a release is built from a release flavor (packages/cloud-contracts/src/catalog-build-flavor.ts); this tree is a staging build");
   await assertReleaseCatalogTree(input.catalogTreeRoot ?? REPO_ROOT);
   if (images.worker !== undefined) await assertReleaseFlavorImage("worker", images.worker, input.readImageLabels ?? skopeoLabelReader);
   await claimOutDir(input.out);

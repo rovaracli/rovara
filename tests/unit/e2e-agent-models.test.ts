@@ -6,7 +6,7 @@ import { catalogEligibilityRows, eligibilityRow, renderEligibleModelsSource } fr
 
 // M1.4 Task 4.10A, tests 3 to 5: which models the AI navigation route accepts, and the shape of the request each one gets, come from the pinned pi catalog.
 
-const GENERATED = new URL("../../packages/contracts/src/e2e-agent-models.generated.ts", import.meta.url);
+const GENERATED = new URL("../../vendor/rovara-code/packages/contracts/src/e2e-agent-models.generated.ts", import.meta.url);
 
 /** A catalog entry as pi lists it, with the fields eligibility reads. */
 const entry = (overrides: Record<string, unknown> = {}) => ({
