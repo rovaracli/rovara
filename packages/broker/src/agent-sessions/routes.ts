@@ -18,6 +18,7 @@ import { DeleteBodySchema, EditBodySchema, SendBodySchema, deleteSessionMessage,
 import { dismissHomeCard, homeCards, type HomeDependencies } from "./home.js";
 import { liveSessions, type LiveQuery } from "./live.js";
 import { projectOverview, type ProjectPageReader } from "./project-overview.js";
+import { listFinishedScope } from "./finished-scope.js";
 import { listSessions, sessionStepTask, sessionView, type SessionDeciding, type SessionListQuery, type SessionReadCaller, type SessionReadDependencies } from "./read.js";
 import type { ChainSteerReads } from "./steer.js";
 import { deleteSessionShare, listSessionShares, putSessionShare, registerSessionShareApprovals } from "./shares.js";
@@ -143,7 +144,7 @@ function queryOf(url: URL): SessionListQuery {
   if (limit !== undefined && !/^[0-9]{1,3}$/.test(limit)) throw agentXError("CONFIG_INVALID", "limit: must be a whole number from 1 to 100");
   return {
     owner: get("owner") as SessionListQuery["owner"], project: get("project"), shared: get("shared") as SessionListQuery["shared"],
-    status: get("status") as SessionListQuery["status"], cursor: get("cursor"), ...(limit === undefined ? {} : { limit: Number(limit) }),
+    status: get("status") as SessionListQuery["status"], scope: get("scope"), cursor: get("cursor"), ...(limit === undefined ? {} : { limit: Number(limit) }),
   };
 }
 
@@ -254,7 +255,8 @@ export async function routeAgentSessionRequest(deps: SessionRouteDependencies, c
   const method = request.method;
   if (rawId === undefined) {
     if (method !== "GET") throw notFound();
-    return listSessions(read, caller, queryOf(url));
+    const listed = queryOf(url);
+    return listed.scope === undefined ? listSessions(read, caller, listed) : listFinishedScope(read, caller, listed);
   }
   const id = SessionIdSchema.safeParse(rawId);
   // An id that can't be a session is no session: the same answer as one that isn't there.

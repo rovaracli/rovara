@@ -30,6 +30,9 @@ export const TASK_STATUS_WORDS: Record<TaskStatusState, string> = {
 export const TASK_STATUS_ENDED: readonly TaskStatusState[] = ["merged", "closed"];
 
 export const TASK_STATUS_REASON_MAX = 200;
+
+/** The reason a task that needed no code change reads Closed with: the one stored outcome that says "finished with no code" (`finishedAsOf` in the broker maps it; the status model writes it). */
+export const TASK_STATUS_ANSWERED_REASON = "Answered: no code change was needed";
 export const TASK_STATUS_NEXT_MAX = 400;
 
 const line = (max: number) => z.string().min(1).refine((value) => [...value].length <= max, `must be at most ${String(max)} characters`)

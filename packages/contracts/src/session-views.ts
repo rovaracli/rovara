@@ -177,6 +177,14 @@ export const SessionPresenceResponseSchema = z.object({ viewingNow: z.array(Sess
 
 export const SessionPresenceResponseReaderSchema = forwardReader(SessionPresenceResponseSchema);
 
+/**
+ * How a finished session ended, in the words a Finished list can show (UX): `merged` (its pull request was merged), `closed` (its owner closed it without finishing), `finished_no_code`
+ * (a question that needed no code change), and `finished` for everything else, including every outcome this build does not recognise. Mapped from stored outcomes only, never guessed.
+ */
+export const FINISHED_AS = ["merged", "closed", "finished_no_code", "finished"] as const;
+export const FinishedAsSchema = z.enum(FINISHED_AS);
+export type FinishedAs = z.infer<typeof FinishedAsSchema>;
+
 /** One session on the Live wall, a project page or a Home card: the header's short form. */
 export const SessionTileSchema = z
   .object({
@@ -194,6 +202,8 @@ export const SessionTileSchema = z
     createdAt: InstantSchema,
     updatedAt: InstantSchema,
     endedAt: InstantSchema.optional(),
+    /** Only on an ended session: how it ended (`FINISHED_AS`). Absent on an open one and on a tile an older server wrote. */
+    finishedAs: FinishedAsSchema.optional(),
   })
   .strict();
 

@@ -42,6 +42,7 @@ import { ownerNameOverlay, ownerNamedAt } from "./owner-names.js";
 import type { AuditRuntime } from "../audit/outbox.js";
 import type { ChainControl, SessionControlHost } from "./stop.js";
 import type { SessionTakeOverDependencies } from "./take-over.js";
+import { finishedAsOf } from "./finished-as.js";
 import { linearLinkOfBinding } from "../rovara-code/linear-close.js";
 
 /** Who reads: `DeveloperCaller` fits. */
@@ -333,6 +334,8 @@ export interface SessionListQuery {
   project?: string | undefined;
   shared?: "me" | undefined;
   status?: "open" | "ended" | undefined;
+  /** `team` or `company`, with `status=ended`: the Finished list over more than the caller's own work (`listFinishedScope`); none of owner, project or shared goes with it. */
+  scope?: string | undefined;
   cursor?: string | undefined;
   /** Rows per page: 1 to 100, default 50. */
   limit?: number | undefined;
@@ -350,7 +353,7 @@ function summaryFor(summary: AgentSessionRecord["summary"], mine: boolean): Agen
   return step === summary.step && peek === summary.peek ? summary : { ...summary, ...(step === undefined ? {} : { step }), ...(peek === undefined ? {} : { peek }) };
 }
 
-function tileOf(session: AgentSessionRecord, level: SessionTile["level"], owner: SessionTile["owner"], mine: boolean): SessionTile {
+export function tileOf(session: AgentSessionRecord, level: SessionTile["level"], owner: SessionTile["owner"], mine: boolean): SessionTile {
   return {
     contractVersion: AGENT_SESSION_CONTRACT_VERSION,
     sessionId: session.sessionId,
@@ -365,7 +368,7 @@ function tileOf(session: AgentSessionRecord, level: SessionTile["level"], owner:
     summary: summaryFor(session.summary, mine),
     createdAt: session.createdAt,
     updatedAt: session.updatedAt,
-    ...(session.endedAt === undefined ? {} : { endedAt: session.endedAt }),
+    ...(session.endedAt === undefined ? {} : { endedAt: session.endedAt, finishedAs: finishedAsOf(session) }),
   };
 }
 
@@ -423,6 +426,7 @@ export async function listSessions(deps: SessionReadDependencies, caller: Sessio
 }
 
 async function listSessionTiles(deps: SessionReadDependencies, caller: SessionReadCaller, query: SessionListQuery): Promise<SessionList> {
+  if (query.scope !== undefined) throw invalid("scope: use the finished list for team and company");
   const chosen = [query.owner !== undefined, query.project !== undefined, query.shared !== undefined].filter(Boolean).length;
   if (chosen !== 1) throw invalid("Choose one of owner, project or shared.");
   if (query.owner !== undefined && query.owner !== "me") throw invalid("owner: must be me");

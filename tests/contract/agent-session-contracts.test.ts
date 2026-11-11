@@ -486,7 +486,7 @@ describe("the view schemas", () => {
       "owner", "peek", "project", "retryOf", "revision", "sessionId", "startedBy", "status", "step", "title", "updatedAt", "viewingNow", "where", "you",
     ]);
     expect(Object.keys(SessionTileSchema.shape).sort()).toEqual([
-      "agent", "contractVersion", "createdAt", "endedAt", "kind", "level", "owner", "project", "revision", "sessionId", "summary", "title", "updatedAt", "where",
+      "agent", "contractVersion", "createdAt", "endedAt", "finishedAs", "kind", "level", "owner", "project", "revision", "sessionId", "summary", "title", "updatedAt", "where",
     ]);
     expect(Object.keys(SessionEventSchema.shape).sort()).toEqual(["actor", "at", "eventId", "messageId", "source", "text", "type"]);
   });

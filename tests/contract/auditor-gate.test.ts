@@ -48,6 +48,8 @@ const READ_ROUTES_NOT_ALLOWED: ReadonlyArray<[string, string]> = [
   ["GET", "/v1/app/projects/payments/lessons/digest"], ["GET", "/v1/app/projects/payments/lessons/les_abc12345/history"], ["GET", "/v1/app/projects/payments/lessons/"], ["GET", "/v1/app/projects/payments/lessons/sources/x"],
   // The company's preset and its waiting proposal are for the people who could decide it, never for the Auditor.
   ["GET", "/v1/app/org/lessons/preset"], ["GET", "/v1/app/org/lessons/preset/approve"],
+  // The company's pending approvals, a project's spend and its merge rules (the finished list's scopes ride on /v1/app/sessions, above): reads for the people who work with them, not the Auditor.
+  ["GET", "/v1/app/org/approvals/pending-summary"], ["GET", "/v1/app/projects/payments/spend"], ["GET", "/v1/app/projects/payments/code-settings"],
   ["GET", "/v1/app/projects/pay/ments/lessons"], ["GET", "/v1/app/projects/payments/Lessons"], ["GET", "/v1/app/tasks/11111111-1111-4111-8111-111111111111/lessons"], ["GET", "/v1/app/tasks/11111111-1111-4111-8111-111111111111/loaded-knowledge"],
 ];
 
