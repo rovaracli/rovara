@@ -204,11 +204,12 @@ function clockTime(iso: string, now: number): string {
  const day = (value: number) => new Date(value).toISOString().slice(0, 10), clock = new Date(time).toISOString().slice(11, 16);
  return `${day(time) === day(now) ? "" : `${new Date(time).toLocaleString("en-US", { timeZone: "UTC", month: "short", day: "numeric" })}, `}${clock} UTC`;
 }
-/** One plain sentence on whether Rovara used a backup model in the last 24 hours; model ids stay under Details. Nothing when no model-governed step has run (or the broker is older). */
+/** One plain sentence on whether Rovara used a backup model in the last 24 hours, with how many times when the broker counts it ("once", "3 times"); model ids stay under Details. Nothing when no model-governed step has run (or the broker is older). */
 export function fallbackLine(use: HealthModelUseObservation | undefined, now: number): string | undefined {
  if (use === undefined || !use.checked) return undefined;
+ const times = use.fallbackCount === undefined || use.fallbackCount < 1 ? "a backup model" : use.fallbackCount === 1 ? "a backup model once" : `a backup model ${String(use.fallbackCount)} times`;
  const reason = use.lastFallbackReason === undefined ? "" : ` (${Object.hasOwn(FALLBACK_WORDS, use.lastFallbackReason) ? FALLBACK_WORDS[use.lastFallbackReason] : "the main model could not be used"})`;
- if (use.usedFallback) return `Rovara used a backup model in the last ${String(use.windowHours)} hours${reason}${use.lastFallbackAt === undefined ? "" : `; last at ${clockTime(use.lastFallbackAt, now)}`}.`;
+ if (use.usedFallback) return `Rovara used ${times} in the last ${String(use.windowHours)} hours${reason}${use.lastFallbackAt === undefined ? "" : `; last at ${clockTime(use.lastFallbackAt, now)}`}.`;
  return `Rovara did not need a backup model in the last ${String(use.windowHours)} hours${use.lastFallbackAt === undefined ? "" : `; the last time was ${clockTime(use.lastFallbackAt, now)}`}.`;
 }
 export function modelRow(reads: Pick<ReadinessReads, "sources" | "observations" | "now">): ReadinessRow {
@@ -223,7 +224,7 @@ export function modelRow(reads: Pick<ReadinessReads, "sources" | "observations" 
  const seen = observe(reads.observations, "modelSource", reads.now);
  const use = reads.observations.state === "ok" ? reads.observations.data.modelUse : undefined, backup = fallbackLine(use, reads.now);
  const note = backup === undefined ? {} : { note: backup };
- if (use?.checked === true) details.push(`Main model last used: ${use.lastMainAt === undefined ? "never recorded" : stamp(use.lastMainAt) ?? "time not recorded"}`, `Backup model last used: ${use.lastFallbackAt === undefined ? "never recorded" : stamp(use.lastFallbackAt) ?? "time not recorded"}`);
+ if (use?.checked === true) details.push(`Main model last used: ${use.lastMainAt === undefined ? "never recorded" : stamp(use.lastMainAt) ?? "time not recorded"}`, `Backup model last used: ${use.lastFallbackAt === undefined ? "never recorded" : stamp(use.lastFallbackAt) ?? "time not recorded"}`, ...(use.fallbackCount === undefined ? [] : [`Backup model uses since the 24-hour window opened: ${String(use.fallbackCount)}`]));
  const plain = "The company's saved AI providers. No read shows whether the main model answered or a fallback was used";
  const broken0 = broken[0];
  if (broken0 !== undefined) return { ...base, status: "action", line: `${broken0.label} has no key saved, so Rovara can't use it.`, source: seen.kind === "unread" ? plain : "The company's saved AI providers, the last Check of an AI provider, and which model answered in the last 24 hours", checked: seen.kind === "unread" || seen.kind === "loading" ? "Check time not recorded" : seen.checked, ...(seen.checkedAt === undefined ? {} : { checkedAt: seen.checkedAt }), ...note, fix: { text: "Add its key, or remove the provider.", label: "Fix AI provider", to: `${CONNECTIONS_PATH}?open=ai-provider` }, details };
@@ -414,8 +415,8 @@ export function buildNeedsAdmin(reads: ReadinessReads, readiness: Readiness): Ne
  }
  // What waits for this admin comes before what waits for someone else.
  const ordered = [...items.filter(item => item.others !== true), ...items.filter(item => item.others === true)];
- // Any read that did not answer (refused, missing, failed or still going) is named: "nothing needs an admin" is never said over a read that gave no answer. Members never reach this list.
- const unanswered: string[] = READ_WORDS.filter(([key]) => (reads[key] as Read<unknown>).state !== "ok").map(([, words]) => words);
+ // The observations read can take seconds, so while it is still going its rows say "still checking" and it is not named here. Any other read that did not answer (refused, missing, failed or still going) is named: "nothing needs an admin" is never said over a read that gave no answer. Members never reach this list.
+ const unanswered: string[] = READ_WORDS.filter(([key]) => { const state = (reads[key] as Read<unknown>).state;return state !== "ok" && !(key === "observations" && state === "loading"); }).map(([, words]) => words);
  if (reads.lessons.some(item => item.read.state !== "ok")) unanswered.push("team record sources");
  return { items: ordered, unread: unanswered, ...(approvals === undefined ? {} : { approvals }) };
 }

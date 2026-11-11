@@ -73,7 +73,7 @@ export interface ReadinessReads {
  github: Read<ReadinessGithub>; githubRequests: Read<ReadinessRequests>; connections: Read<ReadinessConnection[]>; slack: Read<ReadinessSlack>; sources: Read<ReadinessSources>; projects: Read<ReadinessProject[]>;
  serviceStatus: Read<OrgServiceStatus>; /** When each health check last ran, from the broker (ages are the broker's, at its own read time). Refused for anyone but an owner or admin. */ observations: Read<OrgHealthObservationsResponse>; features: Read<ReadinessFeatures>; lessons: LessonsRead[]; lessonsSkipped: number;
  approvals: Read<ReadinessApprovals>; spend: Read<ReadinessSpendRequest[]>; preset: Read<LessonCompanyPreset>; designReview: Read<ReadinessDesignReview>;
- /** The clock (milliseconds), kept in state so render stays pure: set when the page opens, on every "Check again" and once a minute, so a tab left open ages its observations. */ now: number; /** True while any read is still going. */ busy: boolean; refetch(): void;
+ /** The clock (milliseconds), kept in state so render stays pure: set when the page opens, on every "Check again" and once a minute, so a tab left open ages its observations. */ now: number; /** True while any read except the observations is still going: the page and the overview wait for these only. */ busy: boolean; /** True while the observations read is going. It can take a few seconds when the broker refreshes Slack and GitHub, so nothing waits for it: the three rows it backs show "Checking" until it answers. */ observing: boolean; refetch(): void;
 }
 
 /**
@@ -107,7 +107,7 @@ export function useReadinessReads({ orgId, developerId, role, enabled }: Readine
  const names = useMemo(() => (projects.data ?? []).filter(project => project.status === "active").map(project => project.name), [projects.data]);
  const shown = names.slice(0, LESSONS_PROJECT_CAP);
  const lessonQueries = useQueries({ queries: shown.map(name => ({ ...options(`lessons:${name}`, () => lessonsApi.sources(name), projects.isSuccess)})) });
- const all = [github, githubRequests, connections, slack, sources, projects, serviceStatus, observations, approvals, spend, preset, designReview, ...lessonQueries];
+ const all = [github, githubRequests, connections, slack, sources, projects, serviceStatus, approvals, spend, preset, designReview, ...lessonQueries];
  return {
   github: toRead(github), githubRequests: toReadOf(githubRequests, value => value.requests), connections: toReadOf(connections, value => value.connections),
   slack: toRead(slack), sources: toRead(sources), projects: toRead(projects), serviceStatus: toRead(serviceStatus), observations: toRead(observations),
@@ -115,6 +115,6 @@ export function useReadinessReads({ orgId, developerId, role, enabled }: Readine
   lessons: shown.map((project, index) => ({ project, read: toRead(lessonQueries[index]! as UseQueryResult<LessonSources>) })), lessonsSkipped: Math.max(0, names.length - shown.length),
   approvals: toRead(approvals), spend: toReadOf(spend, value => value.spendRequests),
   preset: toRead(preset), designReview: toRead(designReview),
-  now, busy: all.some(query => query.isFetching), refetch() { setNow(Date.now());for (const query of all) void query.refetch({ cancelRefetch: false }); },
+  now, busy: all.some(query => query.isFetching), observing: observations.isFetching, refetch() { setNow(Date.now());for (const query of [...all, observations]) void query.refetch({ cancelRefetch: false }); },
  };
 }

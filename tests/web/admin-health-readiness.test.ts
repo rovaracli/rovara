@@ -35,7 +35,7 @@ function reads(over: Partial<ReadinessReads> = {}): ReadinessReads {
   sources: ok({ sources: [{ sourceId: "src_a", kind: "anthropic", label: "Company Anthropic key", hasCredential: true, models: [{ catalog: { provider: "anthropic", modelId: "claude-secret-model-1" } }] }] }),
   projects: ok([project("payments", "ready", { checkedAt: "2026-11-10T09:00:00.000Z" })]), serviceStatus: ok(service as never), observations: ok(observed()), features: ok({ localAgents: false, usage: true, chains: false, notices: false, describe: true, scriptTokens: false, decisionCards: false }),
   lessons: [{ project: "payments", read: ok({ sources: [{ kind: "slack", scope: "#dev", enabled: true, retention: "30d", health: "ok", audience: "project", updatedAt: "2026-11-10T00:00:00Z", paused: false }], otherPaused: 0 } as never) }], lessonsSkipped: 0,
-  approvals: ok({ total: 0, approvals: [] }), spend: ok([]), preset: ok({ preset: "standard" } as never), designReview: ok({ allowed: false, unreadable: false }), busy: false, now: NOW, refetch() {}, ...over,
+  approvals: ok({ total: 0, approvals: [] }), spend: ok([]), preset: ok({ preset: "standard" } as never), designReview: ok({ allowed: false, unreadable: false }), busy: false, observing: false, now: NOW, refetch() {}, ...over,
  };
 }
 
@@ -226,6 +226,16 @@ describe("health observations: when each check last ran", () => {
   expect(fallbackLine(use({ usedFallback: true, lastFallbackAt: "2026-11-10T20:30:00.000Z" }), NOW)).toBe("Rovara used a backup model in the last 24 hours; last at Nov 10, 20:30 UTC.");
   expect(fallbackLine(use({ usedFallback: true, lastFallbackAt: "2026-11-11T09:00:00.000Z", lastFallbackReason: "SOME_NEW_CODE" }), NOW)).toBe("Rovara used a backup model in the last 24 hours (the main model could not be used); last at 09:00 UTC.");
   expect(fallbackLine(use({}), NOW)).toBe("Rovara did not need a backup model in the last 24 hours.");
+  // The broker's count: once, many, none; a count that lags (absent or 0 while a fallback happened) is left out, never invented.
+  const base = { usedFallback: true, lastFallbackAt: "2026-11-11T14:05:00.000Z", lastFallbackReason: "DEFAULT_MODEL_UNAVAILABLE" };
+  expect(fallbackLine(use({ ...base, fallbackCount: 3 }), NOW)).toBe("Rovara used a backup model 3 times in the last 24 hours (the main model was unavailable); last at 14:05 UTC.");
+  expect(fallbackLine(use({ ...base, fallbackCount: 1 }), NOW)).toBe("Rovara used a backup model once in the last 24 hours (the main model was unavailable); last at 14:05 UTC.");
+  expect(fallbackLine(use({ ...base, fallbackCount: 12 }), NOW)).toMatch(/^Rovara used a backup model 12 times in the last 24 hours/);
+  expect(fallbackLine(use({ ...base, fallbackCount: 0 }), NOW)).toBe("Rovara used a backup model in the last 24 hours (the main model was unavailable); last at 14:05 UTC.");
+  expect(fallbackLine(use({ ...base }), NOW)).toBe("Rovara used a backup model in the last 24 hours (the main model was unavailable); last at 14:05 UTC.");
+  expect(fallbackLine(use({ fallbackCount: 0 }), NOW)).toBe("Rovara did not need a backup model in the last 24 hours.");
+  const counted = modelRow(reads({ observations: ok(observed({ modelSource: passed(600), modelUse: use({ ...base, fallbackCount: 3 }) })) }));
+  expect(counted.status).toBe("healthy");expect(counted.details.join(" ")).toMatch(/uses since the 24-hour window opened: 3/);
   expect(fallbackLine(use({ lastFallbackAt: "2026-11-03T09:10:00.000Z" }), NOW)).toBe("Rovara did not need a backup model in the last 24 hours; the last time was Nov 3, 09:10 UTC.");
  });
  it("What needs an admin picks up a failing observation with its fix link and 'Checked N ago'; the counts are the same list's", () => {
@@ -307,7 +317,7 @@ describe("What needs an admin", () => {
 
 const nav = (role: string) => AppNavSchema.parse({ me: { developerId: me, name: "Priya", orgRole: role }, org: { name: "Acme" }, homeCount: 0, projects: [], shared: { agents: [], sessions: [] }, features: { admin: true, localAgents: false, usage: true, chains: false, describe: true, notices: false } });
 const connectionsBody = { connections: [{ connectionId: "c1", type: "linear", label: "Linear (team)", hasCredential: true, updatedAt: "2026-11-01T00:00:00Z", lastCheck: { ok: false, at: "2026-11-10T12:00:00Z" } }] };
-type Answers = Record<string, ApiResponse>;
+type Answers = Record<string, ApiResponse | Promise<ApiResponse>>;
 const answers = (): Answers => ({
  "/v1/app/github/installations": { status: 200, body: { installations: [{ installationId: 1, accountLogin: "acme", accountType: "Organization", repositorySelection: "all", status: "active" }] } },
  "/v1/app/github/requests": { status: 200, body: { requests: [] } }, "/v1/app/connections": { status: 200, body: connectionsBody },
@@ -326,7 +336,7 @@ function mount(options: { on?: boolean; role?: string; path?: string; override?:
  const role = options.role ?? "owner", data = nav(role);
  const identity = { developer: { id: me, name: "Priya", orgRole: role }, org: { orgId, name: "Acme", plan: "team" }, identities: [] };
  const all = { ...answers(), ...options.override };
- const f = fakeHost(async (r: ApiRequest) => { const path = r.path.split("?")[0]!;if (path === "/v1/app/me") return { status: 200, body: identity };if (path === "/v1/app/nav") return { status: 200, body: data };return all[path] ?? { status: 404, body: { error: { code: "NOT_FOUND" } } }; });
+ const f = fakeHost(async (r: ApiRequest) => { const path = r.path.split("?")[0]!;if (path === "/v1/app/me") return { status: 200, body: identity };if (path === "/v1/app/nav") return { status: 200, body: data };return (await all[path]) ?? { status: 404, body: { error: { code: "NOT_FOUND" } } }; });
  f.storage.set("rovara.theme", "light");if (options.on !== false) f.storage.set(HEALTH_STORAGE_KEY, "v2");
  const query = createQueryClient();query.setQueryData(["nav"], data);
  const router = createMemoryRouter(appRoutes(data.features), { initialEntries: [options.path ?? "/app/admin/health"] });
@@ -385,6 +395,7 @@ describe("the Health page", () => {
 });
 
 describe("the Health page and overview with observations", () => {
+ const pendingObservations = () => { let release!: (value: ApiResponse) => void;const answer = new Promise<ApiResponse>(resolve => { release = resolve; });return { answer, release }; };
  // Times are relative to the real clock here: the screens read it themselves.
  const live = (over: Record<string, unknown>): Answers => ({ "/v1/app/org/health-observations": { status: 200, body: { orgId, readAt: new Date().toISOString(), ...over } } });
  const check = (secondsAgo: number, result = "ok") => ({ checked: true, checkedAt: new Date(Date.now() - secondsAgo * 1000).toISOString(), ageSeconds: secondsAgo, result });
@@ -452,6 +463,40 @@ describe("the Health page and overview with observations", () => {
    const g = mount({ path: "/app/admin", override });
    try { await screen.findByText(/Couldn't read: .*when each check last ran/, undefined, { timeout: 10000 }); } finally { g.close(); }
   }
+ });
+ it("Health: with the observations read still pending, every other row shows, the three rows it backs say Checking and the page notes them; then it fills in", async () => {
+  const { answer, release } = pendingObservations();
+  const f = mount({ override: { "/v1/app/org/health-observations": answer } });
+  try {
+   const list = await screen.findByRole("list", { name: "Readiness checks" });
+   await waitFor(() => expect(screen.getByRole("status").textContent).toMatch(/checks shown\..*3 still checking\./));
+   for (const title of ["Code host: GitHub", "Chat: Slack", "AI models"]) { const row = rowOf(list, title);expect(row.getAttribute("data-status"), title).toBe("checking");expect(within(row).getByText("Checking")).toBeTruthy(); }
+   expect(rowOf(list, "Tracker: Linear or Jira").getAttribute("data-status")).toBe("action");expect(rowOf(list, "Rovara service").getAttribute("data-status")).toBe("healthy");
+   expect(screen.getByText("3 still checking.")).toBeTruthy();
+   expect(screen.getByRole("group", { name: "Summary" }).textContent).toBe("Healthy2Action needed2Unknown23 still checking.");
+   // The pending read does not hold Check again's other rows: nothing says "Couldn't read" for it.
+   expect(screen.queryByRole("note")).toBeNull();
+   release(live({ github: check(300), slack: check(60), modelSource: { checked: false }, modelUse: { checked: false } })["/v1/app/org/health-observations"] as ApiResponse);
+   await waitFor(() => expect(rowOf(list, "Code host: GitHub").getAttribute("data-status")).toBe("healthy"));
+   expect(rowOf(list, "Chat: Slack").getAttribute("data-status")).toBe("healthy");expect(rowOf(list, "AI models").getAttribute("data-status")).toBe("unknown");
+   await waitFor(() => expect(screen.queryByText(/still checking/)).toBeNull());
+   expect(screen.getByRole("status").textContent).toMatch(/checks shown\. 4 healthy, 2 need action, 3 unknown\.$/);
+  } finally { f.close(); }
+ });
+ it("overview: the list and counts show while the observations read is pending, with 'N still checking' and no claim of 'nothing'; then they fill in", async () => {
+  const { answer, release } = pendingObservations();
+  const f = mount({ path: "/app/admin", override: { "/v1/app/org/health-observations": answer } });
+  try {
+   const section = (await screen.findByRole("heading", { name: "What needs an admin" })).closest("section")!;
+   await waitFor(() => expect(within(section).getByText("Tracker: Linear or Jira")).toBeTruthy());
+   expect(within(section).getByText(/3 still checking: more may be listed/)).toBeTruthy();expect(within(section).queryByText(/Nothing needs an admin right now/)).toBeNull();expect(section.textContent).not.toMatch(/Couldn't read/);
+   const glance = (await screen.findByRole("heading", { name: "Health at a glance" })).closest("section")!;
+   await waitFor(() => expect(glance.textContent).toMatch(/2 healthy · 2 action needed · 2 unknown · 3 still checking\./));
+   release(live({ github: check(300), slack: check(60, "failed"), modelSource: { checked: false } })["/v1/app/org/health-observations"] as ApiResponse);
+   await waitFor(() => expect(within(section).getByText("Chat: Slack")).toBeTruthy());
+   await waitFor(() => expect(glance.textContent).toMatch(/3 healthy · 3 action needed · 3 unknown\./));
+   expect(glance.textContent).not.toMatch(/still checking/);expect(section.textContent).not.toMatch(/still checking/);
+  } finally { f.close(); }
  });
  it("off: the observations read is never made", async () => {
   const f = mount({ on: false, path: "/app/admin" });

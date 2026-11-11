@@ -53,7 +53,7 @@ for (const look of [{ name: "look-off", store: {} }, { name: "look-v2", store: {
    await expect(row("Code host: GitHub")).toContainText("Healthy");await expect(row("Code host: GitHub")).toContainText("Checked 5 minutes ago");await expect(row("Code host: GitHub").locator("time")).toHaveAttribute("title", /UTC$/u);
    await expect(row("Chat: Slack")).toContainText("Action needed");await expect(row("Chat: Slack")).not.toContainText("Healthy");await expect(row("Chat: Slack")).toContainText(/Checked 2 minutes ago/);await expect(row("Chat: Slack").getByRole("link", { name: "Open Slack connection" })).toHaveAttribute("href", "/app/admin/connections?open=slack");
    await expect(row("Tracker: Linear or Jira")).toContainText("Action needed");await expect(row("Tracker: Linear or Jira").getByRole("link", { name: "Fix tracker connection" })).toHaveAttribute("href", "/app/admin/connections?open=linear");
-   await expect(row("AI models")).toContainText("Healthy");await expect(row("AI models")).toContainText(/Checked 15 minutes ago/);await expect(row("AI models")).toContainText(/Rovara used a backup model in the last 24 hours \(the main model was unavailable\); last at \d\d:\d\d UTC/u);await expect(row("AI models")).not.toContainText("claude-fixture-model-1", { useInnerText: true });
+   await expect(row("AI models")).toContainText("Healthy");await expect(row("AI models")).toContainText(/Checked 15 minutes ago/);await expect(row("AI models")).toContainText(/Rovara used a backup model 3 times in the last 24 hours \(the main model was unavailable\); last at \d\d:\d\d UTC/u);await expect(row("AI models")).not.toContainText("claude-fixture-model-1", { useInnerText: true });
    await expect(row("Test environment: payments")).toContainText("Action needed");await expect(row("Test environment: payments").getByRole("link", { name: "Fix test setup" })).toHaveAttribute("href", "/app/onboard?project=payments&step=setup");
    await expect(row("Test environment: web")).toContainText("Healthy");await expect(row("Team record")).toContainText("Healthy");await expect(row("Lessons and team record sources")).toContainText("Unknown");
    await expect(row("Turned-on features")).toContainText("Unknown");await expect(row("Rovara service")).toContainText("Healthy");
@@ -124,3 +124,28 @@ for (const status of [404, 403] as const) {
   await expect(page.locator(".rv-health-glance")).toContainText(/\d+ healthy · \d+ action needed · \d+ unknown/u);
  });
 }
+
+// The observations read can take seconds when the broker refreshes Slack and GitHub: the page and the overview must not wait for it.
+const SLOW_MS = 3000;
+const slowObservations = (page: Page) => page.route("**/v1/web/org/health-observations*", async route => { await new Promise(resolve => setTimeout(resolve, SLOW_MS));await route.continue(); });
+test("a slow observations read does not hold the Health page: other rows show, the three rows it backs say Checking, then they fill in", async ({ page, context, request, baseURL }) => {
+ await enter(page, context, request, baseURL, 1280, { "rovara.health": "v2" });await slowObservations(page);
+ await page.goto(HEALTH);
+ const row = (title: string) => page.locator(".rv-health-row").filter({ has: page.getByRole("heading", { name: title, exact: true }) });
+ await expect(page.getByRole("status").filter({ hasText: /checks shown\..*3 still checking\./u })).toBeVisible();
+ for (const title of ["Code host: GitHub", "Chat: Slack", "AI models"]) await expect(row(title)).toHaveAttribute("data-status", "checking");
+ await expect(row("Tracker: Linear or Jira")).toContainText("Action needed");await expect(row("Rovara service")).toContainText("Healthy");
+ await expect(page.getByRole("group", { name: "Summary" }).getByText("3 still checking.")).toBeVisible();
+ await expect(row("Code host: GitHub")).toHaveAttribute("data-status", "healthy", { timeout: 15_000 });
+ await expect(row("Chat: Slack")).toHaveAttribute("data-status", "action");await expect(row("AI models")).toHaveAttribute("data-status", "healthy");
+ await expect(page.getByText(/still checking/u)).toHaveCount(0);
+});
+test("a slow observations read does not hold the overview: What needs an admin and the counts show with 'still checking', then fill in", async ({ page, context, request, baseURL }) => {
+ await enter(page, context, request, baseURL, 1280, { "rovara.health": "v2" });await slowObservations(page);
+ await page.goto(OVERVIEW);
+ const needs = page.locator(".rv-health-needs");
+ await expect(needs.getByText("Tracker: Linear or Jira")).toBeVisible();await expect(needs.getByText(/3 still checking/u)).toBeVisible();await expect(needs.getByText(/Couldn't read/u)).toHaveCount(0);
+ await expect(page.locator(".rv-health-glance")).toContainText(/\d+ unknown · 3 still checking/u);
+ await expect(needs.getByText("Chat: Slack")).toBeVisible({ timeout: 15_000 });
+ await expect(page.locator(".rv-health-glance")).not.toContainText("still checking");await expect(needs.getByText(/still checking/u)).toHaveCount(0);
+});
