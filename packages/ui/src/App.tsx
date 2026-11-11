@@ -13,6 +13,7 @@ import { createApiClient } from "./api/client.js";
 import { createQueryClient } from "./api/query.js";
 import { appRoutes } from "./routes.js";
 import { isNewNavOn } from "./nav-flags.js";
+import { isBillingV2On } from "./billing-flags.js";
 import "./shell/shell.css";
 import "./look-v2.css";
 type Router = ComponentProps<typeof RouterProvider>["router"];
@@ -23,8 +24,8 @@ function Startup({ createRouter }: { createRouter: AppRouterFactory }) {
  const standalone = /^\/app\/(?:signup|welcome|signed-out)\/?(?:\?|$)/u.test(host.currentPath());
  const nav = useQuery({ queryKey: ["nav"], queryFn: () => api.get("/v1/app/nav", AppNavReaderSchema), enabled: !standalone });
  const features = nav.data?.features;
- const [newNav] = useState(() => isNewNavOn(host));
- const router = useMemo(() => standalone || features !== undefined ? createRouter(appRoutes(features ?? EMPTY_FEATURES, { newNav })) : undefined, [createRouter, features, newNav, standalone]);
+ const [newNav] = useState(() => isNewNavOn(host)), [billing] = useState(() => isBillingV2On(host));
+ const router = useMemo(() => standalone || features !== undefined ? createRouter(appRoutes(features ?? EMPTY_FEATURES, { newNav, billing })) : undefined, [createRouter, features, newNav, billing, standalone]);
  useEffect(() => () => { router?.dispose(); }, [router]);
  if (router !== undefined) return <RouterProvider router={router} />;
  if (nav.isPending) return <main className="rv-entry"><Skeleton label="Loading workspace" /></main>;

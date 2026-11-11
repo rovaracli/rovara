@@ -2,9 +2,9 @@
 import { useId, useState } from "react";
 import { NavLink } from "react-router";
 import { visibleSections } from "./admin-sections.js";
-export function AdminNav({ role, secondReviewOff, companyAdmin, compact }: { role: "owner" | "admin" | "member"; secondReviewOff: boolean; companyAdmin: boolean; compact: boolean }) {
+export function AdminNav({ role, secondReviewOff, companyAdmin, compact, billingOn = false }: { role: "owner" | "admin" | "member"; secondReviewOff: boolean; companyAdmin: boolean; compact: boolean; billingOn?: boolean }) {
   const [open, setOpen] = useState(false), list = useId();
-  const sections = companyAdmin ? visibleSections(role, secondReviewOff) : [];
+  const sections = companyAdmin ? visibleSections(role, secondReviewOff, billingOn) : [];
   const links = <>
     {companyAdmin && <NavLink to="/app/admin" end onClick={() => { setOpen(false); }}>Overview</NavLink>}
     {sections.map(section => <div key={section.id} role="group" aria-label={section.title} className="rv-admin-nav-group"><p className="rv-admin-nav-heading" aria-hidden="true">{section.title}</p>{section.items.map(item => <NavLink key={item.to} to={item.to} onClick={() => { setOpen(false); }}>{item.label}</NavLink>)}</div>)}
