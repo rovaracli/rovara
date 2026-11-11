@@ -126,9 +126,9 @@ main() {
   work=$(mktemp -d /var/tmp/tsl-work.XXXXXX) || return 1
   chmod 0755 "$work"
   cleanup_labelled
-  # agentx-task, the working sandbox's network (L2): on a worker the worker makes it, a bridge with the fixed rvbtask interface the boot firewall walls, when it starts its first task sandbox (packages/worker/src/task-network.ts ensureTaskNetwork). CI has no worker, so it is
+  # agentx-task, the working sandbox's network (L2): on a worker the worker makes it, a bridge with the fixed rvbtask interface the boot firewall walls and inter-container traffic off, when it starts its first task sandbox (packages/worker/src/task-network.ts ensureTaskNetwork). CI has no worker, so it is
   # made here with the same arguments, after the address pools are set, and stays for the checker's L2.egress-network.
-  docker network inspect agentx-task >/dev/null 2>&1 || docker network create --driver bridge --opt com.docker.network.bridge.name=rvbtask agentx-task >/dev/null || { log "could not create the agentx-task network"; return 1; }
+  docker network inspect agentx-task >/dev/null 2>&1 || docker network create --driver bridge --opt com.docker.network.bridge.name=rvbtask --opt com.docker.network.bridge.enable_icc=false agentx-task >/dev/null || { log "could not create the agentx-task network"; return 1; }
   # The capture starts before the probes and the driver, and stops after the checker: the whole round is inside it.
   if [[ "${TSL_EGRESS_CAPTURE:-}" == 1 ]]; then
     eg_prepare "$RUNNER_TEMP/egress" && eg_capture_start && eg_probes "$image_id" || { log "FAIL: the egress capture could not be set up"; return 1; }

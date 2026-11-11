@@ -13,11 +13,14 @@ import { runCollected, TIMEOUT_KILL_GRACE_MS } from "./collected-process.js";
 import {
   DOCKER_DATA_DIRECTORY,
   DEVCONTAINER_NETWORK_UNWALLED,
+  DEVCONTAINER_NET_RAW,
   DOCKER_DATA_VISIBLE,
   WORKER_STATE_VISIBLE,
   containerProblems,
   devcontainerConfigRefusal,
   parseJsonc,
+  dropsNetRaw,
+  walledNetworkProblem,
   hostPathResolver,
   type ContainerInspection,
 } from "./devcontainer-policy.js";
@@ -181,6 +184,8 @@ export interface DevcontainerChecks {
   remove(containerId: string): Promise<void>;
   /** Deletes volumes by name, once their container is gone; one already gone or still in use is left. */
   removeVolumes?(names: readonly string[]): Promise<void>;
+  /** The ids of the containers (running or stopped) the devcontainer CLI would reuse for this target: the ones carrying its `devcontainer.local_folder` label. */
+  listExisting?(target: DevcontainerTarget): Promise<string[]>;
 }
 
 /** The empty volume mounted over the workspace's Docker data folder in every dev container. */
@@ -242,12 +247,14 @@ export async function ensureDevcontainer(cli: DevcontainerCli, target: Devcontai
   let hidden = await hiddenWorkspaceDirectories(target.rootPath);
   // The network is made (or made again, when an earlier release's has no walled interface) before any container can join it.
   await cli.walledNetwork?.ensure();
+  // `devcontainer up` starts a stopped container it finds for the folder, and runs its start commands, before anything could check it: one that is not walled (an earlier release's, on docker0) is removed first.
+  if (walledNetwork !== undefined && cli.checks?.listExisting !== undefined) await removeUnwalledExisting(cli.checks, target, walledNetwork);
   const started = await start(hidden);
   if (cli.checks === undefined) return started;
   let { problems, volumes } = await startedContainerProblems(cli.checks, started.containerId, target, hidden, walledNetwork);
   let current = started;
-  if (problems.length > 0 && problems.every((problem) => problem === DOCKER_DATA_VISIBLE || problem === WORKER_STATE_VISIBLE || problem === DEVCONTAINER_NETWORK_UNWALLED)) {
-    // A container created before AgentX hid these folders, or before it was put on the walled network (a stopped one of an earlier release is on docker0): created again, with them hidden and on the network.
+  if (problems.length > 0 && problems.every((problem) => problem === DOCKER_DATA_VISIBLE || problem === WORKER_STATE_VISIBLE || problem === DEVCONTAINER_NETWORK_UNWALLED || problem === DEVCONTAINER_NET_RAW)) {
+    // A container created before AgentX hid these folders, or before it was walled (one of an earlier release, on docker0, with NET_RAW): created again, with them hidden and walled.
     await removeStartedContainer(cli.checks, current.containerId, volumes);
     hidden = await hiddenWorkspaceDirectories(target.rootPath);
     current = await start(hidden);
@@ -435,6 +442,22 @@ async function startedContainerProblems(
   return { problems, volumes };
 }
 
+/** Removes the containers `up` would reuse that are not walled (the network alone, no NET_RAW), with the mask volumes they were given, so `up` creates a walled one. */
+async function removeUnwalledExisting(containers: DevcontainerChecks, target: DevcontainerTarget, walledNetwork: string): Promise<void> {
+  for (const id of await containers.listExisting!(target)) {
+    let inspection: ContainerInspection;
+    try {
+      inspection = await containers.inspect(id);
+    } catch {
+      // Gone since the listing.
+      continue;
+    }
+    if (!walledNetworkProblem(inspection, walledNetwork) && dropsNetRaw(inspection)) continue;
+    const volumes = (inspection.Mounts ?? []).flatMap((mount) => (mount.Type === "volume" && mount.Name !== undefined && isMaskVolumeName(mount.Name) ? [mount.Name] : []));
+    await removeStartedContainer(containers, id, volumes);
+  }
+}
+
 async function removeStartedContainer(containers: DevcontainerChecks, containerId: string, volumes: readonly string[] = []): Promise<void> {
   try {
     await containers.remove(containerId);
@@ -462,11 +485,14 @@ export async function removeLeftoverMaskVolumes(docker: DockerCli = createDocker
 }
 
 async function startDevcontainer(cli: DevcontainerCli, target: DevcontainerTarget, hidden: readonly string[], frozenLockfile: boolean): Promise<DevcontainerUpResult> {
+  const walled = cli.walledNetwork !== undefined;
   const token = randomUUID().replace(/-/gu, "").slice(0, 12);
   const result = await cli.run([
     "up",
     ...targetArgs(target),
     ...(frozenLockfile ? ["--frozen-lockfile"] : []),
+    // On a walled worker builds use the classic builder, the only one whose build containers can join the walled network (docker-walled.sh).
+    ...(walled ? ["--buildkit", "never"] : []),
     "--mount", `type=bind,source=${target.rootPath},target=${target.rootPath}`,
     ...hidden.flatMap((path) => ["--mount", `type=volume,source=${maskVolume(path, token)},target=${path}`]),
     "--log-format", "json",
@@ -788,6 +814,10 @@ export function createDevcontainerCli(options: { dockerPath?: string; walled?: b
         const parsed: unknown = JSON.parse(stdout);
         if (!Array.isArray(parsed) || parsed.length !== 1 || parsed[0] === null || typeof parsed[0] !== "object") throw new Error("docker inspect did not describe one container");
         return parsed[0] as ContainerInspection;
+      },
+      async listExisting(target) {
+        const { stdout } = await execFile(docker, ["ps", "--all", "--quiet", "--no-trunc", "--filter", `label=devcontainer.local_folder=${target.workspaceFolder}`], { encoding: "utf8", timeout: DOCKER_CALL_TIMEOUT_MS });
+        return stdout.split("\n").map((line) => line.trim()).filter((line) => line !== "");
       },
       async remove(containerId) {
         await execFile(docker, ["rm", "--force", containerId], { encoding: "utf8", timeout: DOCKER_CALL_TIMEOUT_MS });

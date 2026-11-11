@@ -393,10 +393,10 @@ describe("scripts/ci-test-services-linux.sh", () => {
 
   it("makes the agentx-task network the way the worker's task sandbox does (a bridge with the walled rvbtask interface), before the driver runs and after the address pools, so L2 has its working network", () => {
     const worker = readFileSync(new URL("../../packages/worker/src/task-network.ts", import.meta.url), "utf8");
-    expect(worker).toContain('return ["network", "create", "--driver", "bridge", "--opt", `com.docker.network.bridge.name=${TASK_SANDBOX_BRIDGE}`, TASK_SANDBOX_NETWORK];');
+    expect(worker).toContain('return ["network", "create", "--driver", "bridge", "--opt", `com.docker.network.bridge.name=${TASK_SANDBOX_BRIDGE}`, "--opt", "com.docker.network.bridge.enable_icc=false", TASK_SANDBOX_NETWORK];');
     expect(worker).toContain('export const TASK_SANDBOX_NETWORK = "agentx-task";');
     expect(worker).toContain('export const TASK_SANDBOX_BRIDGE = "rvbtask";');
-    const create = scriptCode.indexOf("docker network create --driver bridge --opt com.docker.network.bridge.name=rvbtask agentx-task");
+    const create = scriptCode.indexOf("docker network create --driver bridge --opt com.docker.network.bridge.name=rvbtask --opt com.docker.network.bridge.enable_icc=false agentx-task");
     expect(create).toBeGreaterThan(scriptCode.indexOf("apply_rules \"$root\" || return 1"));
     expect(create).toBeLessThan(scriptCode.indexOf("tsl-live.mjs ci"));
     expect(scriptCode).not.toMatch(/network rm[^\n]*agentx-task/u);

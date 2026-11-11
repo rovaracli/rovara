@@ -3,7 +3,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { TASK_SANDBOX_BRIDGE, TASK_SANDBOX_NETWORK, taskNetworkCreateArgs } from "../../packages/worker/src/task-network.js";
+import { TASK_SANDBOX_BRIDGE, TASK_SANDBOX_NETWORK, isWalledTaskNetwork, taskNetworkCreateArgs } from "../../packages/worker/src/task-network.js";
 import { WALLED_DOCKER_PATH } from "../../packages/worker/src/devcontainer.js";
 
 // TASK-BRIDGE-UNWALLED: the task sandbox network (and the dev containers that join it) must be a bridge whose host interface the EC2 boot firewall matches. The firewall matches by interface
@@ -47,7 +47,16 @@ describe("the task sandbox bridge is walled by the boot firewall", () => {
     expect(TASK_SANDBOX_NETWORK).toBe("agentx-task");
     expect(TASK_SANDBOX_BRIDGE).toMatch(/^rvb[a-z0-9]+$/u);
     expect(TASK_SANDBOX_BRIDGE.length).toBeLessThanOrEqual(15);
-    expect(taskNetworkCreateArgs()).toEqual(["network", "create", "--driver", "bridge", "--opt", `com.docker.network.bridge.name=${TASK_SANDBOX_BRIDGE}`, TASK_SANDBOX_NETWORK]);
+    expect(taskNetworkCreateArgs()).toEqual(["network", "create", "--driver", "bridge", "--opt", `com.docker.network.bridge.name=${TASK_SANDBOX_BRIDGE}`, "--opt", "com.docker.network.bridge.enable_icc=false", TASK_SANDBOX_NETWORK]);
+  });
+
+  it("is one segment shared by every task's containers, so inter-container traffic is off (enable_icc=false), and what the worker accepts as that network says so", () => {
+    expect(taskNetworkCreateArgs().join(" ")).toContain("--opt com.docker.network.bridge.enable_icc=false");
+    const options = (given: Record<string, unknown>) => `bridge ${JSON.stringify(given)} false`;
+    expect(isWalledTaskNetwork(options({ "com.docker.network.bridge.name": "rvbtask", "com.docker.network.bridge.enable_icc": "false" }))).toBe(true);
+    expect(isWalledTaskNetwork(options({ "com.docker.network.bridge.name": "rvbtask" }))).toBe(false);
+    expect(isWalledTaskNetwork(options({ "com.docker.network.bridge.enable_icc": "false" }))).toBe(false);
+    expect(isWalledTaskNetwork(options({ "com.docker.network.bridge.name": "rvbtask", "com.docker.network.bridge.enable_icc": "true" }))).toBe(false);
   });
 
   it("applies the firewall in this test, so the checks below look at real rules", () => {
@@ -90,16 +99,20 @@ describe("the task sandbox bridge is walled by the boot firewall", () => {
 describe("the docker wrapper the devcontainer CLI uses on an EC2 worker", () => {
   const wrapper = new URL("../../packages/worker/ec2/docker-walled.sh", import.meta.url).pathname;
 
-  function wrapped(args: string[]): string[] {
+  /** Runs the wrapper over a fake `docker` that prints DOCKER_BUILDKIT=<value> and then its arguments, one per line. */
+  function wrappedRun(args: string[], environment: Record<string, string> = {}): { status: number | null; lines: string[]; stderr: string } {
     const directory = mkdtempSync(join(tmpdir(), "rovara-docker-walled-"));
     const bin = join(directory, "bin");
     mkdirSync(bin);
-    // A fake `docker` that prints its arguments, one per line.
-    writeFileSync(join(bin, "docker"), '#!/bin/sh\nfor a in "$@"; do printf "%s\\n" "$a"; done\n');
+    writeFileSync(join(bin, "docker"), '#!/bin/sh\nprintf "DOCKER_BUILDKIT=%s\\n" "${DOCKER_BUILDKIT:-unset}"\nfor a in "$@"; do printf "%s\\n" "$a"; done\n');
     chmodSync(join(bin, "docker"), 0o755);
-    const result = spawnSync(wrapper, args, { env: { PATH: `${bin}:/usr/bin:/bin` }, encoding: "utf8" });
-    expect(result.status, result.stderr).toBe(0);
-    return result.stdout.split("\n").slice(0, -1);
+    const result = spawnSync(wrapper, args, { env: { PATH: `${bin}:/usr/bin:/bin`, ...environment }, encoding: "utf8" });
+    return { status: result.status, lines: result.stdout.split("\n").slice(1, -1), stderr: result.stderr };
+  }
+  function wrapped(args: string[]): string[] {
+    const run = wrappedRun(args);
+    expect(run.status, run.stderr).toBe(0);
+    return run.lines;
   }
 
   it("is executable, valid sh, and at the path the worker looks for in the image (the whole packages/worker folder is copied into it)", () => {
@@ -113,16 +126,47 @@ describe("the docker wrapper the devcontainer CLI uses on an EC2 worker", () => 
     expect(read("packages/worker/ec2/docker-walled.sh")).toContain(`network=${TASK_SANDBOX_NETWORK}\n`);
   });
 
-  it("puts --network on docker run and docker create, before every other argument", () => {
+  it("puts --network and --cap-drop NET_RAW on docker run and docker create, before every other argument", () => {
+    const walled = ["--network", "agentx-task", "--cap-drop", "NET_RAW"];
     expect(wrapped(["run", "--sig-proxy=false", "-a", "STDOUT", "--mount", "type=bind,source=/w,target=/w", "image", "-c", "echo"]))
-      .toEqual(["run", "--network", "agentx-task", "--sig-proxy=false", "-a", "STDOUT", "--mount", "type=bind,source=/w,target=/w", "image", "-c", "echo"]);
-    expect(wrapped(["create", "--rm", "image"])).toEqual(["create", "--network", "agentx-task", "--rm", "image"]);
-    expect(wrapped(["container", "run", "-d", "image"])).toEqual(["container", "run", "--network", "agentx-task", "-d", "image"]);
-    expect(wrapped(["container", "create", "image"])).toEqual(["container", "create", "--network", "agentx-task", "image"]);
+      .toEqual(["run", ...walled, "--sig-proxy=false", "-a", "STDOUT", "--mount", "type=bind,source=/w,target=/w", "image", "-c", "echo"]);
+    expect(wrapped(["create", "--rm", "image"])).toEqual(["create", ...walled, "--rm", "image"]);
+    expect(wrapped(["container", "run", "-d", "image"])).toEqual(["container", "run", ...walled, "-d", "image"]);
+    expect(wrapped(["container", "create", "image"])).toEqual(["container", "create", ...walled, "image"]);
+  });
+
+  it("puts --network on every spelling of docker build, with the classic builder forced (DOCKER_BUILDKIT=0, whatever the worker's environment says), because build containers run the Dockerfile's RUN steps", () => {
+    for (const [args, expected] of [
+      [["build", "-f", "Dockerfile", "-t", "x", "."], ["build", "--network", "agentx-task", "-f", "Dockerfile", "-t", "x", "."]],
+      [["image", "build", "-t", "x", "."], ["image", "build", "--network", "agentx-task", "-t", "x", "."]],
+      [["builder", "build", "."], ["builder", "build", "--network", "agentx-task", "."]],
+    ] as const) {
+      for (const environment of [{}, { DOCKER_BUILDKIT: "1" }]) {
+        const run = wrappedRun([...args], environment);
+        expect(run.status, run.stderr).toBe(0);
+        expect(run.lines).toEqual(expected);
+      }
+    }
+    expect(read("packages/worker/ec2/docker-walled.sh")).toContain("DOCKER_BUILDKIT=0");
+    // The forced value is what the real docker sees.
+    const directory = mkdtempSync(join(tmpdir(), "rovara-docker-walled-env-"));
+    mkdirSync(join(directory, "bin"));
+    writeFileSync(join(directory, "bin", "docker"), '#!/bin/sh\nprintf "%s" "${DOCKER_BUILDKIT:-unset}"\n');
+    chmodSync(join(directory, "bin", "docker"), 0o755);
+    expect(spawnSync(wrapper, ["build", "."], { env: { PATH: `${join(directory, "bin")}:/usr/bin:/bin`, DOCKER_BUILDKIT: "1" }, encoding: "utf8" }).stdout).toBe("0");
+  });
+
+  it("refuses buildx, whose BuildKit builder cannot put build containers on a named network, instead of building on docker0", () => {
+    for (const args of [["buildx", "build", "."], ["buildx", "version"], ["buildx"]]) {
+      const run = wrappedRun(args);
+      expect(run.status, args.join(" ")).toBe(1);
+      expect(run.lines).toEqual([]);
+      expect(run.stderr).toContain("docker buildx is not available on this worker");
+    }
   });
 
   it("passes every other command through unchanged", () => {
-    for (const args of [["inspect", "--type", "container", "abc"], ["exec", "-i", "abc", "true"], ["build", "-t", "x", "."], ["ps", "-a"], ["container", "ls"], ["network", "create", "x"], ["version"], []]) {
+    for (const args of [["inspect", "--type", "container", "abc"], ["exec", "-i", "abc", "true"], ["ps", "-a"], ["container", "ls"], ["image", "ls"], ["builder", "prune"], ["network", "create", "x"], ["version"], []]) {
       expect(wrapped(args)).toEqual(args);
     }
   });

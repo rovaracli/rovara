@@ -24,7 +24,7 @@ const IMAGE = "123456789012.dkr.ecr.us-west-2.amazonaws.com/agentx-staging/worke
 const TASK = "0b9f6a1e-6c1e-4c53-9d0a-5d3a1d6f2c11";
 const EC2 = { AGENTX_WORKER_PROCESS_SCOPE: "container" };
 /** What `docker network inspect` prints for the task network as AgentX creates it: a bridge with the fixed interface name the boot firewall walls. */
-const WALLED_NETWORK = `bridge {"com.docker.network.bridge.name":"${TASK_SANDBOX_BRIDGE}"} false`;
+const WALLED_NETWORK = `bridge {"com.docker.network.bridge.enable_icc":"false","com.docker.network.bridge.name":"${TASK_SANDBOX_BRIDGE}"} false`;
 
 /** A fake Docker CLI that records every call and answers like a healthy daemon. */
 function fakeDocker(behaviour: { networkExists?: boolean; network?: string; stale?: string[]; failRun?: string; failExec?: boolean; failRm?: number } = {}) {
@@ -190,7 +190,7 @@ describe("starting and stopping a sandbox", () => {
     const missing = fakeDocker();
     await new TaskSandbox({ rootPath: root, taskId: TASK, docker: missing.docker, image: IMAGE }).start();
     // The fixed interface name is what the boot firewall's `rvb+` rules match; without it Docker names the bridge br-<hex> and no wall applies (TASK-BRIDGE-UNWALLED).
-    expect(missing.calls).toContainEqual(["network", "create", "--driver", "bridge", "--opt", "com.docker.network.bridge.name=rvbtask", TASK_SANDBOX_NETWORK]);
+    expect(missing.calls).toContainEqual(["network", "create", "--driver", "bridge", "--opt", "com.docker.network.bridge.name=rvbtask", "--opt", "com.docker.network.bridge.enable_icc=false", TASK_SANDBOX_NETWORK]);
     expect(TASK_SANDBOX_BRIDGE).toBe("rvbtask");
 
     const present = fakeDocker({ networkExists: true });
@@ -203,19 +203,59 @@ describe("starting and stopping a sandbox", () => {
     for (const network of [
       "overlay {} false",
       "bridge {\"com.docker.network.bridge.host_binding_ipv4\":\"0.0.0.0\"} false",
-      `bridge {"com.docker.network.bridge.name":"${TASK_SANDBOX_BRIDGE}"} true`,
-      // Made by an earlier release, without the bridge name (Docker's br-<hex>, which no firewall rule matches), or with another name: recreated.
+      `bridge {"com.docker.network.bridge.enable_icc":"false","com.docker.network.bridge.name":"${TASK_SANDBOX_BRIDGE}"} true`,
+      // Made by an earlier release, without the bridge name (Docker's br-<hex>, which no firewall rule matches), or with another name, or with inter-container traffic on: recreated.
       "bridge {} false",
       "bridge null false",
-      "bridge {\"com.docker.network.bridge.name\":\"docker0\"} false",
-      "bridge {\"com.docker.network.bridge.name\":\"rvbtaskx\"} false",
-      `bridge {"com.docker.network.bridge.name":"${TASK_SANDBOX_BRIDGE}","com.docker.network.bridge.enable_icc":"true"} false`,
+      "bridge {\"com.docker.network.bridge.name\":\"rvbtask\"} false",
+      "bridge {\"com.docker.network.bridge.enable_icc\":\"false\",\"com.docker.network.bridge.name\":\"docker0\"} false",
+      "bridge {\"com.docker.network.bridge.enable_icc\":\"false\",\"com.docker.network.bridge.name\":\"rvbtaskx\"} false",
+      `bridge {"com.docker.network.bridge.enable_icc":"true","com.docker.network.bridge.name":"${TASK_SANDBOX_BRIDGE}"} false`,
+      `bridge {"com.docker.network.bridge.enable_icc":false,"com.docker.network.bridge.name":"${TASK_SANDBOX_BRIDGE}"} false`,
+      "bridge not-json false",
     ]) {
       const fake = fakeDocker({ network });
       await new TaskSandbox({ rootPath: root, taskId: TASK, docker: fake.docker, image: IMAGE }).start();
       expect(fake.verbs("network").map((call) => call[1]), network).toEqual(["inspect", "rm", "create"]);
       expect(fake.verbs("network")[2]).toContain("com.docker.network.bridge.name=rvbtask");
+      expect(fake.verbs("network")[2]).toContain("com.docker.network.bridge.enable_icc=false");
     }
+  });
+
+  it("keeps a walled network that has options of a newer Docker besides the two it needs, instead of recreating it", async () => {
+    const root = await workspace();
+    for (const network of [
+      `bridge {"com.docker.network.bridge.enable_icc":"false","com.docker.network.bridge.name":"${TASK_SANDBOX_BRIDGE}","com.docker.network.bridge.gateway_mode_ipv4":"nat"} false`,
+      `bridge {"com.docker.network.bridge.name":"${TASK_SANDBOX_BRIDGE}","com.docker.network.bridge.enable_icc":"false","com.docker.network.driver.mtu":"1500"} false`,
+    ]) {
+      const fake = fakeDocker({ network });
+      await new TaskSandbox({ rootPath: root, taskId: TASK, docker: fake.docker, image: IMAGE }).start();
+      expect(fake.verbs("network").map((call) => call[1]), network).toEqual(["inspect"]);
+    }
+  });
+
+  it("when removing an unwalled network fails, looks again: a network a concurrent start made right is used, and one that is gone is made", async () => {
+    const root = await workspace();
+    const scripted = (inspections: string[]) => {
+      const calls: string[][] = [];
+      const docker: DockerCli = {
+        run: async (args) => {
+          calls.push([...args]);
+          if (args[0] === "network" && args[1] === "inspect") { const next = inspections.shift(); return next === undefined ? { exitCode: 1, stdout: "", stderr: "no such network" } : { exitCode: 0, stdout: next, stderr: "" }; }
+          if (args[0] === "network" && args[1] === "rm") return { exitCode: 1, stdout: "", stderr: "network agentx-task not found or has active endpoints" };
+          return { exitCode: 0, stdout: "", stderr: "" };
+        },
+      };
+      return { docker, verbs: () => calls.filter((args) => args[0] === "network").map((args) => args[1]) };
+    };
+    // Another start removed the old network and made the right one between our inspect and our rm.
+    const made = scripted(["bridge {} false", WALLED_NETWORK]);
+    await new TaskSandbox({ rootPath: root, taskId: TASK, docker: made.docker, image: IMAGE }).start();
+    expect(made.verbs()).toEqual(["inspect", "rm", "inspect"]);
+    // Another start removed it and has not made one yet: it is made here.
+    const gone = scripted(["bridge {} false"]);
+    await new TaskSandbox({ rootPath: root, taskId: TASK, docker: gone.docker, image: IMAGE }).start();
+    expect(gone.verbs()).toEqual(["inspect", "rm", "inspect", "create"]);
   });
 
   it("fails closed when a network that is not the walled bridge cannot be removed", async () => {
@@ -229,7 +269,7 @@ describe("starting and stopping a sandbox", () => {
         return { exitCode: 0, stdout: "", stderr: "" };
       },
     };
-    await expect(new TaskSandbox({ rootPath: root, taskId: TASK, docker, image: IMAGE }).start()).rejects.toThrow(/not the walled bridge \(rvbtask\) and could not be removed/u);
+    await expect(new TaskSandbox({ rootPath: root, taskId: TASK, docker, image: IMAGE }).start()).rejects.toThrow(/not the walled bridge \(rvbtask, no inter-container traffic\) and could not be removed/u);
     expect(calls.some((args) => args[0] === "run")).toBe(false);
   });
 

@@ -107,7 +107,7 @@ function fakeWorld(root: string) {
     docker: {
       async run(args) {
         timeline.push(`docker:${args[0]}`);
-        if (args[0] === "network" && args[1] === "inspect") return { exitCode: 0, stdout: 'bridge {"com.docker.network.bridge.name":"rvbtask"} false', stderr: "" };
+        if (args[0] === "network" && args[1] === "inspect") return { exitCode: 0, stdout: 'bridge {"com.docker.network.bridge.enable_icc":"false","com.docker.network.bridge.name":"rvbtask"} false', stderr: "" };
         return { exitCode: 0, stdout: "", stderr: "" };
       },
       async execBytes() { return { exitCode: 0, stdout: Buffer.from("{\"ok\":true,\"result\":{\"removed\":0}}\n"), stderr: "" }; },

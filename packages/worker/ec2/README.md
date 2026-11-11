@@ -67,5 +67,12 @@ cannot reach private ranges, link-local addresses, the host's own ports (includi
 `agentx-task` network made by an earlier release (Docker's own `br-<hex>` name, which no rule
 matches) is removed and made again. A project's devcontainer joins the same network: the worker
 runs the devcontainer CLI with `--docker-path` set to `ec2/docker-walled.sh`, which adds
-`--network agentx-task` to every `docker run` and `docker create`, and refuses a `runArgs` network.
+`--network agentx-task --cap-drop NET_RAW` to every `docker run` and `docker create`, and
+`--network agentx-task` to every `docker build` (with the classic builder forced, because BuildKit cannot
+put build containers on a named network; `buildx` is refused and the CLI is told `--buildkit never`), so
+the Dockerfile's RUN steps and a feature's install scripts are walled too. The worker refuses a `network`
+option in `runArgs` and `build.options`, removes a stopped devcontainer of an earlier release that is not
+walled before `devcontainer up` can start it, and removes a started one that is attached to any other
+network or kept NET_RAW. The network has inter-container traffic off (`enable_icc=false`): it is one
+segment shared by every task's containers, and this keeps them from connecting to each other.
 The default bridge (docker0) cannot be walled because the worker's own container is on it.

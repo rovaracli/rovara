@@ -746,7 +746,7 @@ describe("PR feedback review after publication moved HEAD", () => {
       async run(args) {
         calls.push([...args]);
         if (args[0] === "run") order.push("sandbox started");
-        if (args[0] === "network" && args[1] === "inspect") return { exitCode: 0, stdout: 'bridge {"com.docker.network.bridge.name":"rvbtask"} false', stderr: "" };
+        if (args[0] === "network" && args[1] === "inspect") return { exitCode: 0, stdout: 'bridge {"com.docker.network.bridge.enable_icc":"false","com.docker.network.bridge.name":"rvbtask"} false', stderr: "" };
         return { exitCode: 0, stdout: "", stderr: "" };
       },
       async execBytes() { return { exitCode: 0, stdout: Buffer.from('{"ok":true,"result":{"removed":0}}\n'), stderr: "" }; },
@@ -774,7 +774,7 @@ describe("PR feedback review after publication moved HEAD", () => {
     const docker: DockerCli = {
       async run(args) {
         calls.push([...args]);
-        if (args[0] === "network" && args[1] === "inspect") return { exitCode: 0, stdout: 'bridge {"com.docker.network.bridge.name":"rvbtask"} false', stderr: "" };
+        if (args[0] === "network" && args[1] === "inspect") return { exitCode: 0, stdout: 'bridge {"com.docker.network.bridge.enable_icc":"false","com.docker.network.bridge.name":"rvbtask"} false', stderr: "" };
         if (options.runFails === true && args[0] === "run") return { exitCode: 1, stdout: "", stderr: "cannot start" };
         return { exitCode: 0, stdout: "", stderr: "" };
       },

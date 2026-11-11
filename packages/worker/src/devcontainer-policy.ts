@@ -19,7 +19,9 @@ export const DOCKER_DATA_DIRECTORY = ".docker";
 /** The verifier's private runtime on an EC2 worker's workspace volume (boot.sh): the worker's, never the project's. */
 export const RUNTIME_BACKING_DIRECTORY = ".agentx-runtime";
 /** The container problem a dev container that is not on the walled network is reported as (the one problem that is cured by creating the container again, like the two masks below). */
-export const DEVCONTAINER_NETWORK_UNWALLED = "a network that the worker firewall does not wall (it must be the worker's task network)";
+export const DEVCONTAINER_NETWORK_UNWALLED = "a network that the worker firewall does not wall (it must be the worker's task network, and only that)";
+/** The problem a dev container that kept the capability to craft raw packets is reported as (the worker's docker wrapper drops it). */
+export const DEVCONTAINER_NET_RAW = "the NET_RAW capability (raw packets on the task network)";
 /** The container problem a missing mask over the Docker data folder is reported as. */
 export const DOCKER_DATA_VISIBLE = "the workspace's Docker data folder (.docker) visible inside it";
 /** The problem a missing mask over one of the worker's own folders of the workspace is reported as (workspace-state.ts). */
@@ -37,8 +39,9 @@ export interface DevcontainerPolicyContext {
   /** How a host path is resolved before it is checked (hostPathResolver), so a link out of the workspace counts. */
   resolvePath?: (path: string) => string;
   /**
-   * The walled network every dev container joins on an EC2 worker (task-network.ts). The worker puts `--network <name>` on the container's `docker run`, so a `runArgs` network of the repository's own
-   * would override it (the last `--network` wins): with this set, any `--network` / `--net` in `runArgs` is refused, whatever its value.
+   * The walled network every dev container joins on an EC2 worker (task-network.ts). The worker puts `--network <name>` on the container's `docker run` and `docker create`, so a `runArgs` network of the
+   * repository's own would attach the container to a second network as well (Docker 25 and later attach every `--network` given; older ones took the last), and in a `build.options` it would replace the
+   * walled network of the build's containers: with this set, any `--network` / `--net` in `runArgs` or `build.options` is refused, whatever its value.
    */
   walledNetwork?: string;
 }
@@ -99,7 +102,7 @@ export function devcontainerConfigRefusal(config: unknown, context: Devcontainer
   }
   if (build.options !== undefined) {
     if (!Array.isArray(build.options) || !build.options.every((arg) => typeof arg === "string")) return "build.options that are not a list of strings";
-    const reason = buildOptionsRefusal(build.options);
+    const reason = buildOptionsRefusal(build.options, context);
     if (reason !== undefined) return `build.options ${reason}`;
   }
   // A reference to the worker's own environment would copy its variables into the container; it is refused wherever it is.
@@ -153,7 +156,7 @@ const isBuildKitArgument = (name: string) => /^buildkit_/iu.test(name);
 const BUILD_REFUSED = new Set(["--output", "--iidfile", "--metadata-file", "--allow", "--security-opt", "--secret", "--ssh", "--build-context", "--cache-to", "--file", "--push"]);
 const BUILD_SHORT = new Map([["o", "--output"], ["f", "--file"]]);
 
-function buildOptionsRefusal(args: readonly string[]): string | undefined {
+function buildOptionsRefusal(args: readonly string[], context: DevcontainerPolicyContext): string | undefined {
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index]!;
     if (arg.startsWith("--")) {
@@ -172,6 +175,7 @@ function buildOptionsRefusal(args: readonly string[]): string | undefined {
       }
       if (name === "--network" || name === "--net") {
         const given = equals === -1 ? args[++index] ?? "" : arg.slice(equals + 1);
+        if (context.walledNetwork !== undefined) return `${name} (the containers of a dev container build on this worker join the ${context.walledNetwork} network)`;
         if (given === "host") return "--network=host";
         if (given.startsWith("container:")) return "--network=container:";
       }
@@ -383,8 +387,22 @@ export interface ContainerInspection {
     Devices?: readonly unknown[] | null;
     VolumesFrom?: readonly string[] | null;
     DeviceRequests?: readonly unknown[] | null;
+    CapDrop?: readonly string[] | null;
   };
+  /** The networks the container is attached to, by name. */
+  NetworkSettings?: { Networks?: Record<string, unknown> | null };
   Mounts?: ReadonlyArray<{ Type?: string; Name?: string; Source?: string; Destination?: string }> | null;
+}
+
+/** Whether a container was started without the NET_RAW capability (dropped by name, or with all of them). */
+export function dropsNetRaw(inspection: ContainerInspection): boolean {
+  return (inspection.HostConfig?.CapDrop ?? []).some((capability) => /^(?:CAP_)?(?:NET_RAW|ALL)$/iu.test(capability));
+}
+
+/** Whether a container is anywhere but on the walled network alone (its mode, and every network it is attached to: a second network would be a way round the wall). */
+export function walledNetworkProblem(inspection: ContainerInspection, walledNetwork: string): boolean {
+  const attached = Object.keys(inspection.NetworkSettings?.Networks ?? {});
+  return inspection.HostConfig?.NetworkMode !== walledNetwork || attached.length !== 1 || attached[0] !== walledNetwork;
 }
 
 /**
@@ -408,7 +426,8 @@ export function containerProblems(
     if (mode === "host") problems.push(`${flag}=host`);
     else if (containers && mode?.startsWith("container:") === true) problems.push(`${flag}=container:`);
   }
-  if (context.walledNetwork !== undefined && host.NetworkMode !== context.walledNetwork) problems.push(DEVCONTAINER_NETWORK_UNWALLED);
+  if (context.walledNetwork !== undefined && walledNetworkProblem(inspection, context.walledNetwork)) problems.push(DEVCONTAINER_NETWORK_UNWALLED);
+  if (context.walledNetwork !== undefined && !dropsNetRaw(inspection)) problems.push(DEVCONTAINER_NET_RAW);
   if (nonEmpty(host.Devices)) problems.push("--device");
   if (nonEmpty(host.DeviceRequests)) problems.push("--gpus");
   if (nonEmpty(host.VolumesFrom)) problems.push("--volumes-from");

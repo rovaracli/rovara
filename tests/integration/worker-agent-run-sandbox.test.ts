@@ -47,7 +47,7 @@ function fakeDocker(initial: Record<string, string>) {
   const docker: DockerCli = {
     async run(args) {
       runs.push([...args]);
-      if (args[0] === "network" && args[1] === "inspect") return { exitCode: 0, stdout: 'bridge {"com.docker.network.bridge.name":"rvbtask"} false', stderr: "" };
+      if (args[0] === "network" && args[1] === "inspect") return { exitCode: 0, stdout: 'bridge {"com.docker.network.bridge.enable_icc":"false","com.docker.network.bridge.name":"rvbtask"} false', stderr: "" };
       if (args[0] === "inspect") return { exitCode: 0, stdout: "[]", stderr: "" };
       return { exitCode: 0, stdout: "", stderr: "" };
     },
@@ -220,7 +220,7 @@ describe("an agent step in the task sandbox", () => {
 
   it("fails before the model runs when the worker cannot start the sandbox, and starts no session", async () => {
     const fake = fakeDocker({});
-    fake.docker.run = async (args) => (args[0] === "run" ? { exitCode: 1, stdout: "", stderr: "no daemon" } : { exitCode: 0, stdout: args[0] === "network" ? 'bridge {"com.docker.network.bridge.name":"rvbtask"} false' : "[]", stderr: "" });
+    fake.docker.run = async (args) => (args[0] === "run" ? { exitCode: 1, stdout: "", stderr: "no daemon" } : { exitCode: 0, stdout: args[0] === "network" ? 'bridge {"com.docker.network.bridge.enable_icc":"false","com.docker.network.bridge.name":"rvbtask"} false' : "[]", stderr: "" });
     const model = vi.fn(async () => fauxAssistantMessage("Never."));
     await expect(runStep([model], agentStep(), fake)).rejects.toThrow();
     expect(model).not.toHaveBeenCalled();
