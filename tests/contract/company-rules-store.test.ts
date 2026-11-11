@@ -1,8 +1,9 @@
 // Company rules (G-04): the parts under the routes. The rule list's checks and canonical form, the diff, the file's writer and reader (Rovara Code's format), the store's rows (versions immutable, one waiting proposal, the head moving one
 // number at a time), the Cloud source of the CompanyInstructionsSource port, and the operator's seed (the owner-approved 14 rules). The routes, the approval guards and the file sync have their own files.
 import { describe, expect, it } from "vitest";
-import { COMPANY_RULES_APP_LIMITS, COMPANY_RULE_LIMITS, CompanyRulesStateSchema, type CompanyRule } from "@agentx/contracts";
-import { diffRules, normalizeRules, readNumberedDraft, readRulesFile, renderRulesFile, rulesDigest } from "../../packages/broker/src/company-rules/rules.js";
+import { COMPANY_RULES_APP_LIMITS, COMPANY_RULE_LIMITS, CompanyRulesStateSchema, STANDING_INSTRUCTIONS_WORDING, type CompanyRule } from "@agentx/contracts";
+import * as web from "../../packages/contracts/src/web.js";
+import { diffRules, diffWithSides, normalizeRules, readNumberedDraft, readRulesFile, renderRulesFile, rulesDigest } from "../../packages/broker/src/company-rules/rules.js";
 import { companyRulesSourceOver } from "../../packages/broker/src/company-rules/source.js";
 import { seedCompanyRules } from "../../packages/broker/src/company-rules/seed.js";
 import { dynamoCompanyRulesStore, type ProposalRecord, type VersionRecord } from "../../packages/broker/src/company-rules/store.js";
@@ -21,6 +22,7 @@ const BEN = "b".repeat(64);
 
 describe("the app's limits are the contract's limits", () => {
   it("is one set of numbers", () => { expect(COMPANY_RULES_APP_LIMITS).toEqual(COMPANY_RULE_LIMITS); });
+  it("the browser entry exports the standing instructions' wording, the very text the broker builds the block from", () => { expect(web.STANDING_INSTRUCTIONS_WORDING).toEqual(STANDING_INSTRUCTIONS_WORDING); });
 });
 
 describe("checking and ordering the rules", () => {
@@ -77,6 +79,29 @@ describe("the diff", () => {
     expect(diff.entries.map((entry) => entry.kind)).toEqual(["same", "removed", "changed"]);
     expect(diffRules([], A).summary).toEqual({ added: 3, removed: 0, changed: 0, unchanged: 0 });
     expect(diffRules(A, A).summary).toEqual({ added: 0, removed: 0, changed: 0, unchanged: 3 });
+  });
+});
+
+describe("which side changed", () => {
+  const ancestor = normalizeRules([rule("a"), rule("b"), rule("c", "preferred")]);
+  it("marks each difference by the side that made it against the last point they agreed on, and the whole as one side or both", () => {
+    // Rovara added d; the repository removed b.
+    const current = normalizeRules([rule("a"), rule("b"), rule("c", "preferred"), rule("d", "preferred")]);
+    const file = normalizeRules([rule("a"), rule("c", "preferred")]);
+    const both = diffWithSides(current, file, ancestor);
+    expect(both.changedSide).toBe("both");
+    expect(both.diff.entries.filter((entry) => entry.kind !== "same").map((entry) => [entry.kind, (entry as { side?: string }).side])).toEqual([["removed", "repo"], ["removed", "rovara"]]);
+    // Only the repository moved.
+    expect(diffWithSides(ancestor, file, ancestor).changedSide).toBe("repo");
+    // Only Rovara moved (the file still holds the ancestor): Rovara added d, so the file lacks it.
+    expect(diffWithSides(current, ancestor, ancestor)).toMatchObject({ changedSide: "rovara", diff: { entries: expect.arrayContaining([{ kind: "removed", before: rule("d", "preferred"), side: "rovara" }]) } });
+    // A reworded rule: the side that did not hold the old words made it.
+    const reworded = diffWithSides(normalizeRules([rule("a, better"), rule("b"), rule("c", "preferred")]), ancestor, ancestor);
+    expect(reworded.diff.entries[0]).toMatchObject({ kind: "changed", side: "rovara" });
+    expect(diffWithSides(ancestor, normalizeRules([rule("a, theirs"), rule("b"), rule("c", "preferred")]), ancestor).diff.entries[0]).toMatchObject({ kind: "changed", side: "repo" });
+    // Nothing in common to compare with: both. Nothing different: none.
+    expect(diffWithSides(ancestor, file, undefined).changedSide).toBe("both");
+    expect(diffWithSides(ancestor, ancestor, ancestor).changedSide).toBeNull();
   });
 });
 

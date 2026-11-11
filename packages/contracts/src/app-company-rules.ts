@@ -12,6 +12,8 @@ export const COMPANY_RULES_APP_LIMITS = { maxRules: 30, maxRuleCharacters: 600, 
 /** The most characters of one rule's text the app may send (the server folds white space and then holds the rule to 600). */
 export const COMPANY_RULE_INPUT_MAX = 5_000;
 export const COMPANY_RULES_NOTE_MAX = 300;
+/** The read-only route every member may read: the version in force, nothing about proposals. */
+export const COMPANY_RULES_CURRENT_PATH = `${COMPANY_RULES_PATH}/current`;
 export const COMPANY_RULES_PROPOSAL_TTL_MS = 7 * 86_400_000;
 
 const Priority = z.enum(["required", "preferred"]);
@@ -25,13 +27,16 @@ export type CompanyRuleView = z.infer<typeof CompanyRuleViewSchema>;
 export const CompanyRulesPersonSchema = z.object({ id: z.string().regex(/^[a-f0-9]{64}$/u).nullable(), name: z.string().max(200), login: z.string().max(100).optional() }).strict();
 export type CompanyRulesPerson = z.infer<typeof CompanyRulesPersonSchema>;
 
+/** Which side a difference came from, against the last point where the file and Rovara agreed (`both`: both moved, or there is no such point). Only the file link's diff carries it. */
+export const COMPANY_RULES_SIDES = ["rovara", "repo", "both"] as const;
+const SideSchema = z.enum(COMPANY_RULES_SIDES);
 export const CompanyRulesDiffSchema = z.object({
   summary: z.object({ added: z.number().int().min(0), removed: z.number().int().min(0), changed: z.number().int().min(0), unchanged: z.number().int().min(0) }).strict(),
   entries: z.array(z.discriminatedUnion("kind", [
     z.object({ kind: z.literal("same"), after: CompanyRuleViewSchema }).strict(),
-    z.object({ kind: z.literal("added"), after: CompanyRuleViewSchema }).strict(),
-    z.object({ kind: z.literal("removed"), before: CompanyRuleViewSchema }).strict(),
-    z.object({ kind: z.literal("changed"), before: CompanyRuleViewSchema, after: CompanyRuleViewSchema }).strict(),
+    z.object({ kind: z.literal("added"), after: CompanyRuleViewSchema, side: SideSchema.optional() }).strict(),
+    z.object({ kind: z.literal("removed"), before: CompanyRuleViewSchema, side: SideSchema.optional() }).strict(),
+    z.object({ kind: z.literal("changed"), before: CompanyRuleViewSchema, after: CompanyRuleViewSchema, side: SideSchema.optional() }).strict(),
   ])).max(120),
 }).strict();
 export type CompanyRulesDiff = z.infer<typeof CompanyRulesDiffSchema>;
@@ -51,6 +56,8 @@ export const CompanyRulesVersionSchema = z.object({
   source: z.enum(COMPANY_RULES_SOURCES).optional(),
   approvalMode: z.enum(COMPANY_RULES_APPROVAL_MODES).optional(),
   baseVersion: z.number().int().min(0).optional(),
+  /** The proposer's note (admins only); for a version made from the repository, the fixed line saying which file and revision. Plain text. */
+  note: z.string().max(COMPANY_RULES_NOTE_MAX).nullable().optional(),
 }).strict();
 export type CompanyRulesVersion = z.infer<typeof CompanyRulesVersionSchema>;
 
@@ -109,11 +116,11 @@ const Summary = z.object({ added: z.number().int().min(0), removed: z.number().i
 export const CompanyRulesHistorySchema = z.object({
   entries: z.array(z.object({
     version: z.number().int().min(1), approvedAt: Iso, approvedBy: CompanyRulesPersonSchema, proposedBy: CompanyRulesPersonSchema,
-    source: z.enum(COMPANY_RULES_SOURCES), approvalMode: z.enum(COMPANY_RULES_APPROVAL_MODES), ruleCount: z.number().int().min(0), summary: Summary,
+    source: z.enum(COMPANY_RULES_SOURCES), approvalMode: z.enum(COMPANY_RULES_APPROVAL_MODES), ruleCount: z.number().int().min(0), summary: Summary, note: z.string().max(COMPANY_RULES_NOTE_MAX).nullable(),
   }).strict()).max(50),
   decided: z.array(z.object({
     proposalId: z.string().uuid(), state: z.enum(["rejected", "cancelled", "expired"]), source: z.enum(["rovara", "repo"]),
-    proposedBy: CompanyRulesPersonSchema, proposedAt: Iso, decidedAt: Iso, decidedBy: CompanyRulesPersonSchema.nullable(),
+    proposedBy: CompanyRulesPersonSchema, proposedAt: Iso, decidedAt: Iso, decidedBy: CompanyRulesPersonSchema.nullable(), note: z.string().max(COMPANY_RULES_NOTE_MAX).nullable(),
   }).strict()).max(20),
   nextBefore: z.number().int().min(1).nullable(),
 }).strict();
@@ -150,6 +157,8 @@ export const CompanyRulesSyncSchema = z.discriminatedUnion("connected", [
     problem: z.object({ code: z.enum(COMPANY_RULES_SYNC_PROBLEMS), text: z.string().max(400) }).strict().nullable(),
     fileRules: z.array(CompanyRuleViewSchema).max(COMPANY_RULES_APP_LIMITS.maxRules).nullable(),
     diff: CompanyRulesDiffSchema.nullable(),
+    /** Which side changed since the file and Rovara last agreed: null when there is no difference to show. The diff's entries carry the same per rule. */
+    changedSide: SideSchema.nullable(),
     pendingFromRepo: z.boolean(),
     writeBack: z.object({
       version: z.number().int().min(1),
@@ -169,8 +178,8 @@ const RepositoryName = z.string().min(3).max(200).regex(/^[A-Za-z0-9][A-Za-z0-9.
 export const CompanyRulesBodySchema = z.discriminatedUnion("action", [
   z.object({
     action: z.literal("propose"), requestId: z.string().uuid(), baseVersion: z.number().int().min(0).max(999_999_999),
-    /** Up to 200 are read so that the server, not the schema, says which limit a list is over (30 rules). */
-    rules: z.array(CompanyRuleViewSchema).min(1).max(200), note: z.string().max(COMPANY_RULES_NOTE_MAX).optional(),
+    /** An empty list is allowed (rules are optional: it clears them). Up to 200 are read so that the server, not the schema, says which limit a list is over (30 rules). */
+    rules: z.array(CompanyRuleViewSchema).max(200), note: z.string().max(COMPANY_RULES_NOTE_MAX).optional(),
   }).strict(),
   z.object({ action: z.literal("approve"), proposalId: ProposalId, expectedDigest: Digest, soleOwnerAcknowledged: z.literal(true).optional() }).strict(),
   z.object({ action: z.literal("reject"), proposalId: ProposalId, expectedDigest: Digest }).strict(),
@@ -188,3 +197,12 @@ export const CompanyRulesAnswerSchema = z.object({
 }).strict();
 export type CompanyRulesAnswer = z.infer<typeof CompanyRulesAnswerSchema>;
 export const CompanyRulesAnswerReaderSchema = forwardReader(CompanyRulesAnswerSchema);
+
+/** `GET /v1/app/org/company-rules/current`: what any member may read: the version in force (rules, version, time) and the limits. Nothing about proposals, people or the file link. */
+export const CompanyRulesCurrentSchema = z.object({
+  enabled: z.literal(true),
+  limits: z.object({ maxRules: z.number().int(), maxRuleCharacters: z.number().int(), maxTotalCharacters: z.number().int() }).strict(),
+  current: CompanyRulesVersionSchema.nullable(),
+}).strict();
+export type CompanyRulesCurrent = z.infer<typeof CompanyRulesCurrentSchema>;
+export const CompanyRulesCurrentReaderSchema = forwardReader(CompanyRulesCurrentSchema);

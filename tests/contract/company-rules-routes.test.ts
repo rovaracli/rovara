@@ -2,8 +2,9 @@
 // write, the history is kept, the Cloud source answers the newest approved version, and every change is audited with ids, counts and digests only. Behind `si`: off, every path is not found.
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
-import { COMPANY_RULES_PATH, CompanyRulesAnswerReaderSchema, CompanyRulesHistoryReaderSchema, CompanyRulesStateReaderSchema, type CompanyRulesState } from "@agentx/contracts";
+import { COMPANY_RULES_CURRENT_PATH, COMPANY_RULES_PATH, CompanyRulesAnswerReaderSchema, CompanyRulesCurrentReaderSchema, CompanyRulesHistoryReaderSchema, CompanyRulesStateReaderSchema, type CompanyRulesState } from "@agentx/contracts";
 import { companyRulesSourceOver } from "../../packages/broker/src/company-rules/source.js";
+import { readCompanyInstructions } from "../../packages/broker/src/instructions/company-source.js";
 import { dynamoCompanyRulesStore } from "../../packages/broker/src/company-rules/store.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { MAYA, OMAR, type Developer } from "../support/developer-task-broker.js";
@@ -130,7 +131,7 @@ describe("proposing", () => {
       expect(reply.status, name).toBe(400);
       expect(JSON.stringify(reply.body), name).toMatch(message);
     }
-    for (const body of [{ action: "propose", requestId: "nope", baseVersion: 0, rules: rules("x") }, { action: "propose", requestId: randomUUID(), baseVersion: 0, rules: [] }, { action: "propose", requestId: randomUUID(), baseVersion: 0, rules: rules("x"), extra: 1 }]) {
+    for (const body of [{ action: "propose", requestId: "nope", baseVersion: 0, rules: rules("x") }, { action: "propose", requestId: randomUUID(), baseVersion: 0, rules: rules("x"), extra: 1 }]) {
       expect((await post(t, body)).status).toBe(400);
     }
     expect(rows(t)).toEqual([]);
@@ -376,5 +377,72 @@ describe("history", () => {
     const { t } = await bench({ maya: "admin" });
     t.db.set({ pk: "ORG#org_zzzzzzzzzzzzzzzzzzzz", sk: "COMPANYRULES#HEAD", latestVersion: 1 });
     expect((await stateOf(t)).current).toBeNull();
+  });
+});
+
+describe("an empty list, notes, the member read and the nav flag", () => {
+  it("an admin may propose an empty list to clear the rules; approving it leaves a version with no rules, and a step then carries no company rules", async () => {
+    const { t } = await bench({ maya: "admin" });
+    const none = await propose(t, { rules: [] });
+    expect(none.status).toBe(400);
+    expect(JSON.stringify(none.body)).toContain("Nothing changed");
+    await approvedVersion(t);
+    const cleared = await propose(t, { baseVersion: 1, rules: [] });
+    expect(cleared.status, JSON.stringify(cleared.body)).toBe(202);
+    const pending = (await stateOf(t)).pending!;
+    expect(pending).toMatchObject({ ruleCount: 0, rules: [] });
+    expect(pending.diff.summary).toEqual({ added: 0, removed: 2, changed: 0, unchanged: 0 });
+    expect((await post(t, { action: "approve", proposalId: pending.proposalId, expectedDigest: pending.digest }, MAYA)).status).toBe(200);
+    expect((await stateOf(t)).current).toMatchObject({ version: 2, ruleCount: 0, rules: [] });
+    const source = companyRulesSourceOver(dynamoCompanyRulesStore({ documentClient: t.db as never, tableName: "state" }));
+    expect(await source.current(TEST_ORG)).toEqual({ version: "2", rules: [] });
+    expect(await readCompanyInstructions(source, TEST_ORG)).toBeUndefined();
+    expect((await propose(t, { baseVersion: 2, rules: [] })).status).toBe(400);
+  });
+
+  it("the proposal's note is on the version, the history entry and the decided proposal", async () => {
+    const { t } = await bench({ maya: "admin" });
+    expect((await propose(t, { note: "first set" })).status).toBe(202);
+    const first = (await stateOf(t)).pending!;
+    await post(t, { action: "approve", proposalId: first.proposalId, expectedDigest: first.digest }, MAYA);
+    await propose(t, { baseVersion: 1, rules: rules("only this"), note: "too many rules" });
+    const second = (await stateOf(t)).pending!;
+    await post(t, { action: "reject", proposalId: second.proposalId, expectedDigest: second.digest }, MAYA);
+    const history = CompanyRulesHistoryReaderSchema.parse((await get(t, OMAR, "/history")).body);
+    expect(history.entries.find((entry) => entry.version === 1)).toMatchObject({ note: "first set" });
+    expect(history.decided[0]).toMatchObject({ state: "rejected", note: "too many rules" });
+    expect(((await get(t, OMAR, "/versions/1")).body as { version: { note: string | null } }).version.note).toBe("first set");
+  });
+
+  it("every member reads the version in force on /current, with no people, no proposals and no history; a token may read; the Auditor and a closed switch may not", async () => {
+    const { t } = await bench({ maya: "admin" });
+    await approvedVersion(t);
+    await propose(t, { baseVersion: 1, rules: rules("a waiting change") });
+    await t.person(MAYA, "member");
+    const reply = await t.web(MAYA, "GET", COMPANY_RULES_CURRENT_PATH);
+    expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+    const body = CompanyRulesCurrentReaderSchema.parse(reply.body);
+    expect(body.current).toMatchObject({ version: 1, ruleCount: 2 });
+    expect(Object.keys(body).sort()).toEqual(["current", "enabled", "limits", "requestId"]);
+    expect(body.current).not.toHaveProperty("approvedBy");
+    expect(body.current).not.toHaveProperty("note");
+    expect(JSON.stringify(reply.body)).not.toContain("a waiting change");
+    expect((await t.dev(OMAR, "GET", COMPANY_RULES_CURRENT_PATH)).status).toBe(200);
+    delete process.env.STANDING_INSTRUCTIONS_ENABLED;
+    expect((await t.web(MAYA, "GET", COMPANY_RULES_CURRENT_PATH)).status).toBe(404);
+  });
+
+  it("the nav says companyRules only while si is on", async () => {
+    const { t } = await bench();
+    const on = await t.dev(OMAR, "GET", "/v1/app/nav");
+    expect(on.status, JSON.stringify(on.body)).toBe(200);
+    expect((on.body.features as Record<string, unknown>).companyRules).toBe(true);
+    // The nav is read once per broker for a short while, so the closed switch is read from another broker.
+    delete process.env.STANDING_INSTRUCTIONS_ENABLED;
+    const other = await bench();
+    delete process.env.STANDING_INSTRUCTIONS_ENABLED;
+    const off = await other.t.dev(OMAR, "GET", "/v1/app/nav");
+    expect(off.status).toBe(200);
+    expect((off.body.features as Record<string, unknown>)).not.toHaveProperty("companyRules");
   });
 });

@@ -279,6 +279,46 @@ describe("from the repository: an edit of the file is a proposal, never an appro
     expect(repo.pulls).toEqual([]);
   });
 
+  it("says which side changed: the repository, Rovara, or both, in the status and on each rule", async () => {
+    const { t, repo } = await connectedAndMerged();
+    // The repository edits: a rule is added there.
+    repo.push(FILE, fileOf([...V1, "Added in the repository."], 1));
+    await syncNow(t);
+    expect(await syncOf(t)).toMatchObject({ changedSide: "repo", diff: { entries: expect.arrayContaining([{ kind: "added", after: { text: "Added in the repository.", priority: "preferred" }, side: "repo" }]) } });
+    // The proposal is rejected, then Rovara approves its own new version while the file still holds the repository's edit.
+    const pending = (await stateOf(t)).pending!;
+    await post(t, { action: "reject", proposalId: pending.proposalId, expectedDigest: pending.digest }, MAYA);
+    repo.close(2);
+    await approvedVersion(t, [V1[0]!, V1[1]!, "Added in Rovara."], 1);
+    const mixed = await syncOf(t);
+    expect(mixed.connected && mixed.changedSide).toBe("both");
+    // Back to agreement: the diff and the side are gone.
+    repo.push(FILE, fileOf([V1[0]!, V1[1]!, "Added in Rovara."], 2));
+    await syncNow(t);
+    expect(await syncOf(t)).toMatchObject({ fileState: "match", changedSide: null });
+  });
+
+  it("only Rovara moved: the file still holds the last agreed version, so the side is Rovara", async () => {
+    const { t } = await connectedAndMerged();
+    await approvedVersion(t, [...V1, "Only in Rovara."], 1);
+    expect(await syncOf(t)).toMatchObject({ fileState: "differs", changedSide: "rovara", diff: { entries: expect.arrayContaining([{ kind: "removed", before: { text: "Only in Rovara.", priority: "preferred" }, side: "rovara" }]) } });
+  });
+
+  it("an empty file in a company with no rules is nothing to import; in a company with rules it is a proposal to clear them", async () => {
+    const empty = await bench(new FakeCompanyRepo({ [FILE]: renderRulesFile([], 0) }));
+    await connect(empty.t);
+    expect((await stateOf(empty.t)).pending).toBeNull();
+    expect((await stateOf(empty.t)).sync).toMatchObject({ status: "in_sync" });
+    const { t, repo } = await bench();
+    await approvedVersion(t, V1, 0);
+    await connect(t);
+    repo.merge(1);
+    await syncNow(t);
+    repo.push(FILE, renderRulesFile([], 1));
+    await syncNow(t);
+    expect((await stateOf(t)).pending).toMatchObject({ source: "repo", ruleCount: 0, diff: { summary: { removed: 2 } } });
+  });
+
   it("a file in a company that has no rules yet is offered as a first version, and a file Rovara cannot read is a problem, never a partial import", async () => {
     const repo = new FakeCompanyRepo({ [FILE]: fileOf(V1, 0) });
     const { t } = await bench(repo);

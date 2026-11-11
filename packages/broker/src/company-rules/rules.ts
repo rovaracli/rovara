@@ -84,6 +84,29 @@ export function diffRules(before: readonly Rule[], after: readonly Rule[]): Comp
   return { summary, entries };
 }
 
+type Side = "rovara" | "repo" | "both";
+
+/**
+ * The diff of Rovara's version in force (before) against the file (after), with each difference marked by the side that made it, against `ancestor`: the rules the two last agreed on. A rule the ancestor held and the file lost
+ * was removed in the repository; one the ancestor held and Rovara lost was removed in Rovara; and so on. With no ancestor (the two never agreed) every difference is `both`.
+ */
+export function diffWithSides(before: readonly Rule[], after: readonly Rule[], ancestor: readonly Rule[] | undefined): { diff: CompanyRulesDiff; changedSide: Side | null } {
+  const diff = diffRules(before, after);
+  const known = ancestor === undefined ? undefined : new Set(ancestor.map(keyOf));
+  const sideOf = (entry: CompanyRulesDiff["entries"][number]): Side | undefined => {
+    if (entry.kind === "same") return undefined;
+    if (known === undefined) return "both";
+    if (entry.kind === "added") return known.has(keyOf(entry.after)) ? "rovara" : "repo";
+    if (entry.kind === "removed") return known.has(keyOf(entry.before)) ? "repo" : "rovara";
+    const heldBefore = known.has(keyOf(entry.before)), heldAfter = known.has(keyOf(entry.after));
+    return heldBefore && !heldAfter ? "repo" : heldAfter && !heldBefore ? "rovara" : "both";
+  };
+  const entries = diff.entries.map((entry) => { const side = sideOf(entry); return side === undefined ? entry : { ...entry, side } as CompanyRulesDiff["entries"][number]; });
+  const sides = new Set(entries.flatMap((entry) => ("side" in entry && entry.side !== undefined ? [entry.side] : [])));
+  const changedSide: Side | null = sides.size === 0 ? null : sides.size === 1 && !sides.has("both") ? [...sides][0]! : "both";
+  return { diff: { summary: diff.summary, entries }, changedSide };
+}
+
 /** What a version (or the file) changed against the one before it: the counts only. */
 export const diffSummary = (before: readonly Rule[], after: readonly Rule[]): CompanyRulesDiff["summary"] => diffRules(before, after).summary;
 

@@ -43,6 +43,8 @@ export interface SyncRecord {
   fileDigest?: string; fileRules?: Rule[];
   /** The digest of the file's rules the last time a repo proposal was made from it, or a person decided about it: the same edit is never proposed twice. */
   handledFileDigest?: string;
+  /** The version's digest and rules the last time the file matched it: the point the two last agreed on, which says which side changed since. */
+  syncedDigest?: string; syncedRules?: Rule[];
   /** The version a write-back is owed for (waiting), or the pull request that carries it. */
   writeBack?: { version: number; state: WriteBackState; branch?: string; head?: string; number?: number; url?: string; updatedAt: string };
 }

@@ -11,7 +11,7 @@
 // Answers are ids, counts, fixed words and the rules' own text; never an error text from a code host.
 import { z } from "zod";
 import {
-  COMPANY_RULES_BROWSER_MESSAGE, COMPANY_RULES_PATH, CompanyRulesBodySchema, agentXError, type CompanyRulesAnswer, type CompanyRulesState,
+  COMPANY_RULES_BROWSER_MESSAGE, COMPANY_RULES_CURRENT_PATH, COMPANY_RULES_PATH, CompanyRulesBodySchema, agentXError, type CompanyRulesAnswer, type CompanyRulesCurrent, type CompanyRulesState,
 } from "@agentx/contracts";
 import { logDeveloperEvent } from "../../developer/log.js";
 import { requireLiveCompanyAdmin } from "../../org/company-authority.js";
@@ -64,6 +64,14 @@ async function namesOf(deps: DeveloperRouteDependencies, ids: readonly string[])
   if (wanted.length === 0) return new Map();
   const found = await signInStoreOf(deps).getDevelopers(wanted).catch(() => new Map<string, unknown>());
   return new Map(wanted.map((id) => [id, (found.get(id) as { displayName?: string } | undefined)?.displayName ?? "Unknown"] as const));
+}
+
+async function currentOf(service: CompanyRulesDeps, caller: DeveloperCaller) {
+  const head = await service.store.head(caller.orgId);
+  const current = head.latestVersion === 0 ? undefined : await service.store.version(caller.orgId, head.latestVersion);
+  // A head that names a version that cannot be read is never "no rules": the page says it could not read them.
+  if (head.latestVersion > 0 && current === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "The company rules could not be read. Try again.");
+  return { current: current === undefined ? null : versionView(current, false, new Map()), limits: limitsView() };
 }
 
 async function stateOf(deps: DeveloperRouteDependencies, caller: DeveloperCaller, service: CompanyRulesDeps): Promise<CompanyRulesState> {
@@ -141,6 +149,11 @@ export async function routeCompanyRules(deps: DeveloperRouteDependencies, caller
     if (caller.orgRole !== "owner" && caller.orgRole !== "admin" && caller.orgRole !== "member") throw agentXError("FORBIDDEN", "Company rules are not available to your role.");
     const service = serviceDepsOf(deps, caller);
     if (url.pathname === COMPANY_RULES_PATH) return new StatusReply(200, await stateOf(deps, caller, service));
+    // What any member may read: the version in force and the limits, and nothing about proposals, people or the file link.
+    if (url.pathname === COMPANY_RULES_CURRENT_PATH) {
+      const { current, limits } = await currentOf(service, caller);
+      return new StatusReply(200, { enabled: true, limits, current } satisfies CompanyRulesCurrent);
+    }
     if (!isAdmin(caller)) throw agentXError("FORBIDDEN", "Live company owner or admin access is required.");
     return readSub(deps, caller, service, url);
   }

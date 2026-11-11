@@ -175,13 +175,15 @@ export async function runSyncPass(deps: SyncDeps, orgId: OrgId): Promise<void> {
   let state: SyncRecord["fileState"] = seen.state;
   if (seen.rules !== undefined) {
     fileDigest = rulesDigest(seen.rules);
-    state = current !== undefined && fileDigest === current.digest ? "match" : "differs";
+    // A file with no rules in a company with no rules agrees with it (nothing to clear, nothing to import).
+    state = current === undefined ? (seen.rules.length === 0 ? "match" : "differs") : fileDigest === current.digest ? "match" : "differs";
   }
   let next: SyncRecord = { ...sync, lastCheckedAt: seen.checkedAt, fileState: state };
   delete next.problem; delete next.fileDigest; delete next.fileRules;
   if (seen.revision !== undefined) next.lastCheckedRevision = seen.revision;
   if (seen.problem !== undefined) next.problem = seen.problem;
   if (fileDigest !== undefined && seen.rules !== undefined) { next.fileDigest = fileDigest; next.fileRules = seen.rules; }
+  if (state === "match" && current !== undefined) { next.syncedDigest = current.digest; next.syncedRules = current.rules; }
   // A match ends what was owed: an open pull request has merged (or the file was fixed by hand); anything else owed is no longer.
   if (state === "match" && next.writeBack !== undefined) {
     if (next.writeBack.state === "open") next.writeBack = { ...next.writeBack, state: "merged", updatedAt: seen.checkedAt }; else delete next.writeBack;

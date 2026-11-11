@@ -92,6 +92,8 @@ export async function proposeRules(deps: CompanyRulesDeps, caller: CompanyRulesC
   }
   const head = await deps.store.head(caller.orgId);
   if (head.latestVersion !== input.baseVersion) throw stale(COMPANY_RULES_WORDS.moved);
+  // With no version yet, an empty list changes nothing (there are no rules to clear).
+  if (head.latestVersion === 0 && rules.length === 0) throw agentXError("CONFIG_INVALID", COMPANY_RULES_WORDS.nothing);
   if (head.latestVersion > 0) {
     const current = await deps.store.version(caller.orgId, head.latestVersion);
     if (current === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "The company rules could not be read. Try again.");

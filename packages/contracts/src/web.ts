@@ -164,6 +164,8 @@ export { JiraOrgAdminMutationBodySchema, JiraOrgAdminResultReaderSchema, type Ji
 export { TrackerPeopleReaderSchema, TrackerPeopleMutationBodySchema, TrackerPeopleResultReaderSchema, type TrackerPeople, type TrackerPeopleMutationBody } from "./tracker-people-web.js";
 export * from "./app-design-review-company.js";
 export * from "./app-company-rules.js";
+// The fixed wording of the standing instructions block: the Company rules page shows how the rules are put to the agent.
+export { STANDING_INSTRUCTIONS_WORDING } from "./standing-instructions.js";
 export * from "./app-known-failing.js";
 export * from "./app-saved-env.js";
 export * from "./app-second-review.js";

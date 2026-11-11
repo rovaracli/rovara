@@ -100,6 +100,7 @@
   "packages/contracts/src/stage-model-publish-refusal.ts",
   "packages/contracts/src/stage-model-shared.ts",
   "packages/contracts/src/stage-models.ts",
+  "packages/contracts/src/standing-instructions.ts",
   "packages/contracts/src/task-response.ts",
   "packages/contracts/src/task-status.ts",
   "packages/contracts/src/task-stop-agent.ts",
