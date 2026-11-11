@@ -82,13 +82,31 @@ describe("the Enterprise bundle carries the embedder image", () => {
 
 describe("the CLI names the embedder image from the release", () => {
   const target = { release: withEmbedder, env: "staging", account: "123456789012", region: "us-east-1" } as const;
-  it("through the account's image cache in a Public install, in this account and region", () => {
-    expect(embedderImageUri({ ...target, edition: undefined })).toBe(`123456789012.dkr.ecr.us-east-1.amazonaws.com/agentx-staging/agentx/agentx-embedder@sha256:${d("e")}`);
-    expect(embedderImageUri({ ...target, edition: "public" })).toContain("/agentx-staging/agentx/agentx-embedder@sha256:");
+  it("from the install's own rovara-bundle/<env>/embedder repository in a Public install too, with the release's digest, and NEVER through the pull-through cache (Lambda cannot pull from one)", () => {
+    for (const edition of [undefined, "public"] as const) {
+      const uri = embedderImageUri({ ...target, edition });
+      expect(uri, String(edition)).toBe(`123456789012.dkr.ecr.us-east-1.amazonaws.com/rovara-bundle/staging/embedder@sha256:${d("e")}`);
+      // the main guard: not under the environment's pull-through prefix (agentx-<env>/), and the digest is the release's, byte for byte
+      expect(uri).not.toContain("/agentx-staging/");
+      expect(uri.endsWith(`@${/@(sha256:[a-f0-9]{64})$/.exec(EMBEDDER)![1]}`)).toBe(true);
+    }
   });
   it("from the install's own rovara-bundle/<env>/embedder repository in an Enterprise install (the bundle loaded it there, digest preserved)", () => {
     expect(embedderImageUri({ ...target, edition: "enterprise" })).toBe(`123456789012.dkr.ecr.us-east-1.amazonaws.com/rovara-bundle/staging/embedder@sha256:${d("e")}`);
     expect(embedderImageUri({ ...target, edition: "enterprise", partition: "aws-cn", region: "cn-north-1" })).toMatch(/^123456789012\.dkr\.ecr\.cn-north-1\.amazonaws\.com\.cn\/rovara-bundle\/staging\/embedder@sha256:/);
+  });
+  it("refuses an --embedder-image, or a kept image, in a repository under this install's pull-through cache prefix, in plain words that name rovara-bundle/<env>/embedder (Lambda cannot pull from the cache)", () => {
+    const cached = `123456789012.dkr.ecr.us-east-1.amazonaws.com/agentx-staging/embedder@sha256:${d("a")}`;
+    const nested = `123456789012.dkr.ecr.us-east-1.amazonaws.com/agentx-staging/agentx/agentx-embedder@sha256:${d("a")}`;
+    for (const image of [cached, nested]) {
+      expect(() => embedderImageUri({ ...target, release: baseRelease, edition: undefined, override: image }), image).toThrow(/--embedder-image names the repository agentx-staging\/.*under this install's image cache \(agentx-staging\/\).*doesn't support pulling container images.*rovara-bundle\/staging\/embedder/s);
+      expect(() => embedderImageUri({ ...target, release: baseRelease, edition: "enterprise", deployed: image }), image).toThrow(/the embedder image the stack already runs names the repository agentx-staging\/.*rovara-bundle\/staging\/embedder/s);
+    }
+    // another environment's prefix, and the install's own rovara-bundle repository, are fine
+    const other = `123456789012.dkr.ecr.us-east-1.amazonaws.com/agentx-prod/embedder@sha256:${d("a")}`;
+    const bundle = `123456789012.dkr.ecr.us-east-1.amazonaws.com/rovara-bundle/staging/embedder@sha256:${d("a")}`;
+    expect(embedderImageUri({ ...target, release: baseRelease, edition: undefined, override: other })).toBe(other);
+    expect(embedderImageUri({ ...target, release: baseRelease, edition: undefined, override: bundle })).toBe(bundle);
   });
   it("refuses a release that carries none, with a message that says what is missing", () => {
     expect(() => embedderImageUri({ ...target, release: baseRelease, edition: undefined })).toThrow(/carries no embedder image, and the Team record needs one/);
@@ -100,7 +118,7 @@ describe("the CLI names the embedder image from the release", () => {
     // `none` is no image; a value that is not a digest-pinned image of the registry is not kept either
     for (const deployed of ["none", "", "embedder:latest", undefined]) expect(() => embedderImageUri({ ...target, release: baseRelease, edition: undefined, deployed }), String(deployed)).toThrow(/carries no embedder image.*stack runs none.*--embedder-image/s);
     // a release that names an image still wins over the running one (the upgrade moves the stack to the release's embedder)
-    expect(embedderImageUri({ ...target, edition: undefined, deployed: own })).toContain("/agentx-staging/agentx/agentx-embedder@sha256:");
+    expect(embedderImageUri({ ...target, edition: undefined, deployed: own })).toContain("/rovara-bundle/staging/embedder@sha256:");
   });
   it("R7: --embedder-image names the image for a release that has none, and wins over the release and the running image; it must be pinned by digest in this account and region", () => {
     expect(embedderImageUri({ ...target, release: baseRelease, edition: undefined, override: own })).toBe(own);

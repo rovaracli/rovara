@@ -1,13 +1,13 @@
 // Enterprise foundations, task N3: loads a verified bundle's images into the install's own ECR, digests preserved (skopeo copies every platform without
 // re-encoding), so the signed manifest's hash is the hash the task runs. The registry credential comes from ECR and is kept out of the displayed
 // command and out of any error text. Each image is checked in the registry by digest afterwards.
-import { BatchGetImageCommand, GetAuthorizationTokenCommand } from "@aws-sdk/client-ecr";
+import { BatchGetImageCommand } from "@aws-sdk/client-ecr";
 import { BUNDLE_IMAGE_REPOSITORY_PREFIX, agentXError } from "@agentx/contracts";
 import type { CommandRunner } from "../../deploy/cdk-engine.js";
 import type { VerifiedBundle } from "./verify.js";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { rm } from "node:fs/promises";
 import { join } from "node:path";
+import { openOwnRegistryAuth } from "./registry-auth.js";
 
 export interface LoadBundleImagesInput {
   bundle: VerifiedBundle;
@@ -32,17 +32,7 @@ const digestOf = (reference: string): string => /@(sha256:[a-f0-9]{64})$/.exec(r
 
 export async function loadBundleImages(input: LoadBundleImagesInput): Promise<void> {
   const { bundle, env, account, region, ecr, runner } = input;
-  const auth = ((await ecr.send(new GetAuthorizationTokenCommand({}))) as { authorizationData?: Array<{ authorizationToken?: string; proxyEndpoint?: string }> }).authorizationData?.[0];
-  if (auth?.authorizationToken === undefined || auth.proxyEndpoint === undefined) throw agentXError("CONFIG_INVALID", "ECR gave no registry credential; no image was loaded");
-  const password = Buffer.from(auth.authorizationToken, "base64").toString("utf8").replace(/^AWS:/, "");
-  const registry = auth.proxyEndpoint.replace(/^https:\/\//, "");
-  if (!/^[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com(?:\.cn)?$/.test(registry) || !registry.startsWith(`${account}.dkr.ecr.${region}.`)) {
-    throw agentXError("CONFIG_INVALID", "ECR named a registry other than this install's own account and region; no image was loaded");
-  }
-  // The credential goes to skopeo in a 0600 file in a 0700 directory, never on its command line where any local user could read it (review M2).
-  const authDir = await mkdtemp(join(tmpdir(), "rovara-registry-auth-"));
-  const authFile = join(authDir, "auth.json");
-  await writeFile(authFile, JSON.stringify({ auths: { [registry]: { auth: auth.authorizationToken } } }), { mode: 0o600 });
+  const { registry, authDir, authFile, password } = await openOwnRegistryAuth({ ecr, account, region });
   try {
   for (const image of bundle.manifest.images) {
     const repository = `${BUNDLE_IMAGE_REPOSITORY_PREFIX}/${env}/${image.name}`;

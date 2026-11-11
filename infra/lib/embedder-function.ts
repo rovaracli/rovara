@@ -4,8 +4,10 @@
 //
 // The image is built by environments/embedder (weights baked in at build time from pinned Hugging Face revisions, every file checked by sha256; every Python package installed by hash;
 // no network at run time) and is named to the stack as a private-ECR image PINNED BY DIGEST: the stack parameter `EmbedderImageUri`. The release names the image (release.json
-// `images.embedder`); the CLI passes it (packages/cli/src/deploy/parameters.ts): from the pull-through cache in a Public install, from the install's own `rovara-bundle/<env>/embedder`
-// repository in an Enterprise one (loaded from the signed bundle). A Team record with no embedder image is refused (decision 27: no keyword-only interim): the template carries a rule that
+// `images.embedder`); the CLI passes it (packages/cli/src/deploy/parameters.ts): in both editions from the install's own `rovara-bundle/<env>/embedder`
+// repository (the access stack creates it when the Team record is built): an Enterprise install's signed bundle is loaded there, and a Public install's deploy copies the release's public image
+// there, digest preserved (packages/cli/src/deploy/copy-embedder-image.ts). NEVER from a pull-through cache repository: Lambda cannot create a function from one (ECR user guide, pull through
+// cache, "Considerations": "AWS Lambda doesn't support pulling container images from Amazon ECR using a pull through cache rule."). A Team record with no embedder image is refused (decision 27: no keyword-only interim): the template carries a rule that
 // fails the stack operation with a message, and the CLI refuses earlier.
 //
 // NO NETWORK, ENFORCED: the function runs in a small VPC of its own (below) whose subnets have no route out (no internet gateway, no NAT, no endpoint), a security group with no

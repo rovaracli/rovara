@@ -5,7 +5,7 @@
 import { customDomainParameters, type CustomDomain } from "../environments/custom-domain.js";
 import type { Edition } from "@agentx/contracts";
 import { EMBEDDER_IMAGE, embedderImageHome } from "../config/keys.js";
-import { BUNDLE_IMAGE_REPOSITORY_PREFIX, CLOUD_PROJECT_FOUNDATION_PARAMETERS, CONTROL_PLANE_FOUNDATION_PARAMETERS, ImageDigest, MODEL_PROXY_FOUNDATION_PARAMETERS, KEYED_MODEL_PROVIDERS, KEYED_PROVIDER_IDS, environmentPullThroughPrefix, environmentStackName } from "@agentx/contracts";
+import { BUNDLE_IMAGE_REPOSITORY_PREFIX, environmentPullThroughPrefix, CLOUD_PROJECT_FOUNDATION_PARAMETERS, CONTROL_PLANE_FOUNDATION_PARAMETERS, ImageDigest, MODEL_PROXY_FOUNDATION_PARAMETERS, KEYED_MODEL_PROVIDERS, KEYED_PROVIDER_IDS, environmentStackName } from "@agentx/contracts";
 import type { ReleaseManifest, StackPart } from "@agentx/contracts";
 import { signInStackParameters, type StoredDeveloperSignIn } from "../signin/settings.js";
 
@@ -153,15 +153,32 @@ export function privateImageUri(publicRef: string, target: { account: string; re
   return `${target.account}.dkr.ecr.${target.region}.${hostSuffix}/${target.prefix}/${rest}`;
 }
 
-/** Repository name of the embedder image in an Enterprise install's own ECR (loaded from the signed bundle): `rovara-bundle/<env>/embedder`. */
-const enterpriseEmbedderRepository = (env: string): string => `${BUNDLE_IMAGE_REPOSITORY_PREFIX}/${env}/embedder`;
+/**
+ * Repository name of the embedder image in the install's own ECR, outside any pull-through prefix: `rovara-bundle/<env>/embedder`. An Enterprise install's bundle is loaded there; a Public
+ * install's deploy copies the release's public image there (deploy/copy-embedder-image.ts), digest preserved. Lambda cannot create a function from a pull-through cache repository (ECR user guide,
+ * pull through cache, "Considerations": "AWS Lambda doesn't support pulling container images from Amazon ECR using a pull through cache rule."), so the embedder never uses the cache prefix.
+ */
+export const embedderRepository = (env: string): string => `${BUNDLE_IMAGE_REPOSITORY_PREFIX}/${env}/embedder`;
+
+/**
+ * Refuses an embedder image whose repository sits under this install's pull-through cache prefix (`agentx-<env>/`). Lambda cannot create a function from there (ECR user guide, pull through cache,
+ * "Considerations": "AWS Lambda doesn't support pulling container images from Amazon ECR using a pull through cache rule."), and pushing into such a repository "is not a supported pattern". Only
+ * this install's own prefix is known here; a pull-through rule the account owner made under another prefix is not checked.
+ */
+function refuseCacheRepository(image: string, env: string, what: string): void {
+  const repository = /^[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com(?:\.cn)?\/(.+)@sha256:[a-f0-9]{64}$/u.exec(image)?.[1];
+  const prefix = `${environmentPullThroughPrefix(env)}/`;
+  if (repository === undefined || !repository.startsWith(prefix)) return;
+  throw new Error(`${what} names the repository ${repository}, which is under this install's image cache (${prefix}). Lambda cannot create a function from an image in a pull-through cache repository: AWS says "AWS Lambda doesn't support pulling container images from Amazon ECR using a pull through cache rule." Push the image into ${embedderRepository(env)} in this account (the access stack makes that repository) and name that image instead`);
+}
 
 /**
  * The control plane's EmbedderImageUri (the self-hosted embedder the Team record needs), in this order:
  *  1. `override` (`agentx upgrade --embedder-image`): a private ECR image pinned by digest in THIS install's account and region, for an upgrade from a source checkout or with image overrides, whose
  *     release names no embedder image;
- *  2. the release's own image: in an Enterprise install the image in the install's own `rovara-bundle/<env>/embedder` repository (`rovara upgrade --bundle` loaded it there, digest preserved),
- *     otherwise the release's public image through the account's pull-through cache, like the worker image. Always in this install's account and region;
+ *  2. the release's own image, in the install's own `rovara-bundle/<env>/embedder` repository, in this install's account and region, with the release's digest: an Enterprise install's bundle
+ *     (`rovara upgrade --bundle`) loaded it there, and in a Public install the deploy copies it there from the release's public image (deploy/copy-embedder-image.ts) before the control plane
+ *     is deployed. Never through the pull-through cache: Lambda cannot pull from one;
  *  3. `deployed`: the image the stack already runs (its EmbedderImageUri parameter, when it is not `none`; also what `agentx config set teamRecord.embedderImage` set by hand), so an upgrade
  *     that has no new image keeps the old one instead of being refused.
  * Throws when none of the three names an image: there is no Team record without one.
@@ -171,20 +188,20 @@ export function embedderImageUri(input: { release: ReleaseManifest; edition: Edi
     const home = embedderImageHome(input.override);
     if (!EMBEDDER_IMAGE.test(input.override) || home === undefined) throw new Error("--embedder-image must be a private ECR image pinned by digest (<account>.dkr.ecr.<region>.amazonaws.com/<repository>@sha256:<64 hex>)");
     if (home.account !== input.account || home.region !== input.region) throw new Error(`--embedder-image must be in this install's own registry (${input.account}.dkr.ecr.${input.region}.*)`);
+    refuseCacheRepository(input.override, input.env, "--embedder-image");
     return input.override;
   }
   const reference = input.release.images.embedder;
   if (reference === undefined) {
-    if (input.deployed !== undefined && input.deployed !== "" && input.deployed !== "none" && EMBEDDER_IMAGE.test(input.deployed)) return input.deployed;
+    if (input.deployed !== undefined && input.deployed !== "" && input.deployed !== "none" && EMBEDDER_IMAGE.test(input.deployed)) {
+      refuseCacheRepository(input.deployed, input.env, "the embedder image the stack already runs");
+      return input.deployed;
+    }
     throw new Error(`release ${input.release.version} carries no embedder image, and the Team record needs one (the self-hosted embedder), and the stack runs none; use a release that has it, or pass --embedder-image <image pinned by digest in your registry>`);
   }
-  const target = { account: input.account, region: input.region, prefix: environmentPullThroughPrefix(input.env), ...(input.partition === undefined ? {} : { partition: input.partition }) };
-  if (input.edition === "enterprise") {
-    const digest = /@(sha256:[a-f0-9]{64})$/.exec(reference)?.[1];
-    if (digest === undefined) throw new Error(`image ${reference} is not pinned to a digest`);
-    return `${input.account}.dkr.ecr.${input.region}.${ecrHostSuffix(input.partition ?? "aws")}/${enterpriseEmbedderRepository(input.env)}@${digest}`;
-  }
-  return privateImageUri(reference, target);
+  const digest = /@(sha256:[a-f0-9]{64})$/.exec(reference)?.[1];
+  if (digest === undefined) throw new Error(`image ${reference} is not pinned to a digest`);
+  return `${input.account}.dkr.ecr.${input.region}.${ecrHostSuffix(input.partition ?? "aws")}/${embedderRepository(input.env)}@${digest}`;
 }
 
 /** A stack output a later stack's parameters need is missing: typed, so upgrade --export can say what to do instead. */

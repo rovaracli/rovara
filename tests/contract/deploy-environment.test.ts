@@ -303,6 +303,42 @@ describe("deploy environment", () => {
     expect(events.indexOf("adopt")).toBe(events.indexOf("deploy foundation") - 1);
   });
 
+  it("runs afterAccess once, right after the access stack and before every other stack (the embedder image copy needs only the repository the access stack makes), and a throw stops the deploy before any other stack changes", async () => {
+    const events: string[] = [];
+    const scripted = fakeDeployer(scriptedOutputs());
+    const deployer: StackDeployer = { outputs: (name) => scripted.deployer.outputs(name), async deploy(request) { events.push(`deploy ${request.part}`); return scripted.deployer.deploy(request); } };
+    await deployEnvironment({
+      mode: "install", engine: "cdk", answers: baseAnswers(), release: fakeRelease(), deployer, store: new MemoryParameterStore(), secrets: memorySecrets(), holder: HOLDER,
+      afterAccess: async () => { events.push("copy"); },
+    });
+    expect(events.filter((event) => event === "copy")).toHaveLength(1);
+    expect(events.indexOf("deploy access")).toBe(events.indexOf("copy") - 1);
+    expect(events.indexOf("copy")).toBeLessThan(events.indexOf("deploy foundation"));
+    expect(events.indexOf("copy")).toBeLessThan(events.indexOf("deploy control-plane"));
+    // a refusal in the copy stops the deploy: only the access stack has deployed, so the environment is never split across releases
+    const stopped: string[] = [];
+    const again = fakeDeployer(scriptedOutputs());
+    const guarded: StackDeployer = { outputs: (name) => again.deployer.outputs(name), async deploy(request) { stopped.push(request.part); return again.deployer.deploy(request); } };
+    await expect(deployEnvironment({
+      mode: "install", engine: "cdk", answers: baseAnswers(), release: fakeRelease(), deployer: guarded, store: new MemoryParameterStore(), secrets: memorySecrets(), holder: HOLDER,
+      afterAccess: async () => { throw new Error("the copy refused"); },
+    })).rejects.toThrow("the copy refused");
+    expect(stopped).toEqual(["access"]);
+    // when the run does not deploy the access stack, it runs before the first stack that is deployed
+    const parted: string[] = [];
+    const upgradeStore = new MemoryParameterStore();
+    const upgradeSecrets = memorySecrets();
+    await deployEnvironment({ mode: "install", engine: "cdk", answers: baseAnswers(), release: fakeRelease(), deployer: fakeDeployer(scriptedOutputs()).deployer, store: upgradeStore, secrets: upgradeSecrets, holder: HOLDER });
+    const third = fakeDeployer(scriptedOutputs());
+    const partial: StackDeployer = { outputs: (name) => third.deployer.outputs(name), async deploy(request) { parted.push(`deploy ${request.part}`); return third.deployer.deploy(request); } };
+    await deployEnvironment({ mode: "upgrade", engine: "cdk", answers: baseAnswers(), release: fakeRelease(), deployer: partial, store: upgradeStore, secrets: upgradeSecrets, holder: HOLDER, deployedParameters: nothingDeployed, parts: ["control-plane"], afterAccess: async () => { parted.push("copy"); } });
+    expect(parted.slice(0, 2)).toEqual(["copy", "deploy control-plane"]);
+    // the templates engine never calls it
+    let called = false;
+    await deployEnvironment({ mode: "install", engine: "templates", answers: baseAnswers(), release: fakeRelease(), deployer: fakeDeployer(scriptedOutputs()).deployer, store: new MemoryParameterStore(), secrets: memorySecrets(), holder: HOLDER, afterAccess: async () => { called = true; } });
+    expect(called).toBe(false);
+  });
+
   it("puts the edition record back when the foundation deploy fails after the record was taken out of the way, and drops the backup when it completes (fix round 2)", async () => {
     const editions = new MemoryParameterStore();
     const record = "/agentx/staging/edition";

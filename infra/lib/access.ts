@@ -22,6 +22,12 @@ export interface AccessStackProps extends StackProps {
    */
   bundleImageRepositories?: readonly string[];
   /**
+   * Public installs: the embedder's ECR repository (`rovara-bundle/<env>/embedder`), OUTSIDE the pull-through prefix because Lambda cannot create a function from a pull-through cache repository.
+   * The deploy copies the release's embedder image into it (packages/cli/src/deploy/copy-embedder-image.ts). Always listed (record on or off) so withdrawing the Team record never drops a retained
+   * repository from the stack. Same settings as the bundle repositories. Its logical id is fixed and holds no environment name (the published templates are synthesized for a placeholder name).
+   */
+  embedderImageRepository?: string;
+  /**
    * Enterprise installs under a managed-VPC agreement (task N6): the standing Rovara operator role, its approval bucket, the alert on every use and the
    * customer's suspend switch. Absent: none of it exists (Public, and every Enterprise install that does not ask for it).
    */
@@ -97,6 +103,14 @@ export class AccessStack extends Stack {
       upstreamRegistryUrl: "public.ecr.aws",
     });
 
+    if (props.embedderImageRepository !== undefined) {
+      const repository = new ecr.CfnRepository(this, "EmbedderImageRepository", {
+        repositoryName: props.embedderImageRepository,
+        imageTagMutability: "IMMUTABLE",
+        imageScanningConfiguration: { scanOnPush: true },
+      });
+      repository.applyRemovalPolicy(RemovalPolicy.RETAIN);
+    }
     for (const repositoryName of bundleImageRepositories ?? []) {
       const repository = new ecr.CfnRepository(this, `BundleImage${repositoryName.replace(/[^A-Za-z0-9]/g, "")}`, {
         repositoryName,
