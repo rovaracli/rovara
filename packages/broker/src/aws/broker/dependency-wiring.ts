@@ -1043,6 +1043,17 @@ export function developerTaskActions(dependencies: AwsBrokerDependencies): Devel
   };
 }
 
+/** 0.5.15: the health route's own Slack and GitHub probes, for the health-observations read to run when an observation is stale. Where neither is set up the read reports what is stored. */
+export function healthObservationRouteDependencies(dependencies: AwsBrokerDependencies): Pick<DeveloperRouteDependencies, "healthObservations"> {
+ const probes = dependencies.adminReads?.health;
+ if (probes?.slackAuthCheck === undefined && probes?.githubInstallations === undefined) return {};
+ return { healthObservations: {
+  ...(probes.slackAuthCheck === undefined ? {} : { slackAuthCheck: probes.slackAuthCheck }),
+  ...(dependencies.developer?.slackTeamId === undefined ? {} : { slackTeamId: dependencies.developer.slackTeamId }),
+  ...(probes.githubInstallations === undefined ? {} : { githubInstallations: probes.githubInstallations }),
+ } };
+}
+
 /** Stored qualification status only; no probe or qualification service is exposed. */
 export function serviceStatusRouteDependencies(dependencies: AwsBrokerDependencies): Pick<DeveloperRouteDependencies, "serviceStatus"> {
  const runtimeCatalogId = dependencies.e2eFeatureRuntimeCatalogId, teamRecord = dependencies.teamRecord;

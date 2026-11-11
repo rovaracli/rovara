@@ -5,7 +5,7 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import { orgScoped, type OrgId } from "@rovara-code/contracts";
 import { developerOrgKey, orgMemberKey, orgMetaKey, orgSettingsKey, OrgHealthObservationsResponseSchema, OrgHealthObservationsReaderSchema } from "@agentx/cloud-contracts";
-import { readOrgHealthObservations, recordHealthCheck, recordModelUse } from "../../packages/broker/src/org/health-observations.js";
+import { HEALTH_WRITE_TIMEOUT_MS, readOrgHealthObservations, recordHealthCheck, recordModelUse } from "../../packages/broker/src/org/health-observations.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { createAdminBroker } from "../support/admin-broker.js";
 import { createAdminReadBroker } from "../support/admin-read-broker.js";
@@ -13,6 +13,7 @@ import { seedMembership, createDeveloperTaskBroker, type Developer } from "../su
 import { fakeModelAccess } from "../support/fake-model-access.js";
 import { createAuditedSlackBroker, ensureWorkspace, loadSlackBroker, markReady, registerSlackProject, serviceCall, call as slackCall, SLACK_CHANNEL, SLACK_TEAM } from "../support/slack-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
+import { webRouteAllowed } from "../../packages/broker/src/aws/web-auth.js";
 
 const A = TEST_ORG, B = "org_bbbbbbbbbbbbbbbbbbbb" as OrgId;
 const NOW = Date.parse("2026-11-11T12:00:00Z"), minutesAgo = (n: number) => new Date(NOW - n * 60_000).toISOString();
@@ -98,14 +99,14 @@ describe("reading the times", () => {
       github: { checked: true, checkedAt: new Date(NOW - 90_000).toISOString(), ageSeconds: 90, result: "failed" },
       modelSource: { checked: true, checkedAt: new Date(NOW - 3 * 3600_000).toISOString(), ageSeconds: 10_800, result: "unknown" },
       // The main model ran two minutes ago; the last fallback was 26 hours ago, outside the 24-hour window.
-      modelUse: { checked: true, windowHours: 24, usedMain: true, usedFallback: false, lastMainAt: minutesAgo(2), lastMainAgeSeconds: 120, lastFallbackAt: new Date(NOW - 26 * 3600_000).toISOString(), lastFallbackAgeSeconds: 93_600, lastFallbackReason: "DEFAULT_MODEL_UNAVAILABLE" },
+      modelUse: { checked: true, windowHours: 24, fallbackCount: 0, usedMain: true, usedFallback: false, lastMainAt: minutesAgo(2), lastMainAgeSeconds: 120, lastFallbackAt: new Date(NOW - 26 * 3600_000).toISOString(), lastFallbackAgeSeconds: 93_600, lastFallbackReason: "DEFAULT_MODEL_UNAVAILABLE" },
     });
   });
 
   it("says a fallback was used inside the window", async () => {
     const t = table();
     await recordModelUse({ ...t.writer, now: () => NOW - 3600_000 }, A, { kind: "fallback", reason: "CONFIGURED_FALLBACK" });
-    expect((await read(t, A, adminA)).modelUse).toEqual({ checked: true, windowHours: 24, usedMain: false, usedFallback: true, lastFallbackAt: new Date(NOW - 3600_000).toISOString(), lastFallbackAgeSeconds: 3600, lastFallbackReason: "CONFIGURED_FALLBACK" });
+    expect((await read(t, A, adminA)).modelUse).toEqual({ checked: true, windowHours: 24, fallbackCount: 1, usedMain: false, usedFallback: true, lastFallbackAt: new Date(NOW - 3600_000).toISOString(), lastFallbackAgeSeconds: 3600, lastFallbackReason: "CONFIGURED_FALLBACK" });
   });
 
   it("reads a damaged item as never checked, never as a time", async () => {
@@ -335,5 +336,246 @@ describe("the model that ran a step leaves its time", () => {
     const response = await slackCall(f.handler, { method: "POST", path, headers: { "x-agentx-callback-capability": invocation.callbackCapability }, body });
     expect(response.status, JSON.stringify(response.body)).toBe(200);
     expect(useRow(f.db)).toMatchObject({ lastFallbackAt: expect.any(String) as unknown, lastFallbackReason: "MODEL_CALL_REFUSED" });
+  });
+});
+
+// ---- bounded and cheap (review M1, L3, L4)
+
+/** Makes every health write (by its sort key) hang forever, or throw, on a table; every other command goes through. */
+function breakHealthWrites(db: FakeDynamoDb, mode: "hang" | "throw") {
+  const send = db.send.bind(db) as (command: unknown) => Promise<unknown>;
+  let attempts = 0;
+  (db as unknown as { send: (command: unknown) => Promise<unknown> }).send = (command: unknown) => {
+    const input = (command as { input: { Key?: { sk?: string }; Item?: { sk?: string } } }).input;
+    if (String(input.Key?.sk ?? input.Item?.sk ?? "").startsWith("HEALTH_")) {
+      attempts += 1;
+      return mode === "hang" ? new Promise(() => undefined) : Promise.reject(Object.assign(new Error("table detail"), { name: "InternalServerError" }));
+    }
+    return send(command);
+  };
+  return { attempts: () => attempts };
+}
+
+describe("a health write is bounded and cheap", () => {
+  it("gives up on a hung table after its time limit, and never throws", async () => {
+    const hung = { documentClient: { send: () => new Promise(() => undefined) }, tableName: "state", timeoutMs: 50 };
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const started = Date.now();
+    await recordHealthCheck(hung, A, "slack", "ok");
+    await recordModelUse(hung, A, { kind: "fallback", reason: "MODEL_CALL_REFUSED" });
+    await recordModelUse(hung, A, { kind: "main" });
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(log.mock.calls.map((entry) => String(entry[0])).join("\n")).toContain("HealthWriteTimeout");
+    log.mockRestore();
+  });
+
+  it("makes no table call at all for a main-model run less than a minute after this process's last one, per company", async () => {
+    const t = table();
+    let now = NOW, sends = 0;
+    const counted = { send: (command: unknown) => { sends += 1; return t.db.send(command as never); } };
+    const w = { documentClient: counted, tableName: "state", now: () => now };
+    await recordModelUse(w, A, { kind: "main" });
+    await recordModelUse(w, A, { kind: "main" });
+    now += 59_000; await recordModelUse(w, A, { kind: "main" });
+    expect(sends).toBe(1);
+    await recordModelUse(w, B, { kind: "main" });
+    expect(sends).toBe(2);
+    now += 2_000; await recordModelUse(w, A, { kind: "main" });
+    expect(sends).toBe(3);
+  });
+
+  it("only moves a fallback's time forward", async () => {
+    const t = table();
+    await recordModelUse({ ...t.writer, now: () => NOW }, A, { kind: "fallback", reason: "MODEL_CALL_REFUSED" });
+    await recordModelUse({ ...t.writer, now: () => NOW - 3600_000 }, A, { kind: "fallback", reason: "CONFIGURED_FALLBACK" });
+    expect(useRow(t.db)).toMatchObject({ lastFallbackAt: new Date(NOW).toISOString(), lastFallbackReason: "MODEL_CALL_REFUSED" });
+    await recordModelUse({ ...t.writer, now: () => NOW + 1000 }, A, { kind: "fallback", reason: "CONFIGURED_FALLBACK" });
+    expect(useRow(t.db)).toMatchObject({ lastFallbackReason: "CONFIGURED_FALLBACK" });
+  });
+
+  it("does not delay a task start beyond the time limit when the table hangs on health writes", async () => {
+    const f = await turnFixture();
+    const broken = breakHealthWrites(f.db, "hang");
+    const started = Date.now();
+    const result = await f.start();
+    const elapsed = Date.now() - started;
+    expect(result.status, JSON.stringify(result.body)).toBe(202);
+    expect(broken.attempts()).toBeGreaterThan(0);
+    expect(elapsed).toBeLessThan(HEALTH_WRITE_TIMEOUT_MS + 3500);
+    expect(useRow(f.db)).toBeUndefined();
+  }, 20_000);
+
+  it("does not change a task start's answer when a health write fails", async () => {
+    const f = await turnFixture({ unavailable: true });
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const broken = breakHealthWrites(f.db, "throw");
+    const result = await f.start();
+    expect(result.status, JSON.stringify(result.body)).toBe(202);
+    expect(result.body.operation).toMatchObject({ modelFallbacks: [{ reasonCode: "DEFAULT_MODEL_UNAVAILABLE" }] });
+    expect(broken.attempts()).toBeGreaterThan(0);
+    expect(log.mock.calls.map((entry) => String(entry[0])).join("\n")).not.toContain("table detail");
+    log.mockRestore();
+  });
+
+  for (const mode of ["throw", "hang"] as const) it(`does not change the health route's answer when its health writes ${mode}`, async () => {
+    const { db, admin } = await createAdminReadBroker({ brokerExtra: { adminReads: { health: { slackAuthCheck: async () => ({ ok: true as const, teamId: "T0BSHLLUGBD" }), githubInstallations: async () => 1 } } } });
+    const broken = breakHealthWrites(db, mode);
+    const started = Date.now();
+    const answer = await admin("GET", "/v1/admin/health");
+    expect(answer.status).toBe(200);
+    expect(answer.body).toMatchObject({ slack: { status: "ok" }, github: { status: "ok", detail: "installed on 1 account" } });
+    expect(broken.attempts()).toBe(2);
+    expect(Date.now() - started).toBeLessThan(HEALTH_WRITE_TIMEOUT_MS + 3500);
+  }, 20_000);
+
+  for (const mode of ["throw", "hang"] as const) it(`does not change a model source check's answer when its health write ${mode}s`, async () => {
+    const access = fakeModelAccess();
+    const h = await createDeveloperTaskBroker({ register: false, brokerExtra: { agents: { modelSources: { launch: { kinds: ["anthropic"] } } }, modelAccess: { access, proxyUrl: "https://proxy.example.com" } } });
+    h.db.set({ pk: `SESSION#${DANA.sessionId}`, sk: "META", sessionId: DANA.sessionId, developerId: DANA.developerId, amr: DANA.provider, startedAt: new Date(Date.now() - 60_000).toISOString(), endsAt: Math.floor(Date.now() / 1000) + 604_800 });
+    h.db.set({ pk: `DEVELOPER#${DANA.developerId}`, sk: "META", developerId: DANA.developerId, provider: DANA.provider, displayName: DANA.name, firstSignInAt: "x", lastSignInAt: "x", revoked: false });
+    await h.orgOf(DANA);
+    seedMembership(h.db, DANA.developerId, { orgId: A, role: "admin" });
+    const added = await h.dev(DANA, "POST", "/v1/app/org/model-sources", { requestId: randomUUID(), source: { kind: "anthropic", label: "Company Anthropic", models: [{ catalog: { provider: "anthropic", modelId: "claude-sonnet-4-5" } }] }, apiKey: "sk-ant-" + "x".repeat(30) });
+    const broken = breakHealthWrites(h.db, mode);
+    const started = Date.now();
+    const check = await h.dev(DANA, "POST", `/v1/app/org/model-sources/${added.body.sourceId as string}/check`);
+    expect(check.status).toBe(200);
+    expect(check.body).toMatchObject({ ok: true });
+    expect(broken.attempts()).toBe(1);
+    expect(Date.now() - started).toBeLessThan(HEALTH_WRITE_TIMEOUT_MS + 3500);
+  }, 20_000);
+});
+
+describe("the browser may make this one read and nothing else under org/health-observations", () => {
+  it("allows exactly GET", () => {
+    expect(webRouteAllowed("GET", "/v1/web/org/health-observations")).toBe(true);
+    for (const method of ["POST", "PUT", "DELETE", "PATCH"]) expect(webRouteAllowed(method, "/v1/web/org/health-observations"), method).toBe(false);
+    for (const path of ["org/health-observations/x", "org/health-observations/", "org/health-observations/slack"]) {
+      expect(webRouteAllowed("GET", `/v1/web/${path}`), path).toBe(false);
+    }
+  });
+});
+
+// ---- refreshing a stale Slack or GitHub observation when the page reads (and the fallback count)
+
+describe("the read checks stale Slack and GitHub observations again", () => {
+  const probes = (overrides: Record<string, unknown> = {}) => {
+    const calls = { slack: 0, github: 0 };
+    return { calls, probes: {
+      slackAuthCheck: async () => { calls.slack += 1; return { ok: true as const, teamId: "T1" }; }, slackTeamId: "T1",
+      githubInstallations: async () => { calls.github += 1; return 2; }, probeTimeoutMs: 100, writeTimeoutMs: 200, ...overrides,
+    } };
+  };
+  const readAt = (t: ReturnType<typeof table>, p: ReturnType<typeof probes>["probes"], now = NOW, org: OrgId = A, id = adminA) =>
+    readOrgHealthObservations({ ...t.deps, now: () => now, probes: p }, t.caller(org, id), { expectedOrgId: org });
+
+  it("runs each probe once when the observation was never made, stores the answer and returns it fresh", async () => {
+    const t = table(), p = probes();
+    const answer = await readAt(t, p.probes);
+    expect(p.calls).toEqual({ slack: 1, github: 1 });
+    expect(answer.slack).toEqual({ checked: true, checkedAt: new Date(NOW).toISOString(), ageSeconds: 0, result: "ok" });
+    expect(answer.github).toEqual({ checked: true, checkedAt: new Date(NOW).toISOString(), ageSeconds: 0, result: "ok" });
+    expect(t.db.get(orgSettingsKey(A, "HEALTH_SLACK_PROBE"))).toMatchObject({ orgId: A, checkedAt: new Date(NOW).toISOString(), result: "ok" });
+    expect(answer.modelSource).toEqual(NEVER);
+  });
+
+  it("runs the probe again when the stored observation is older than 15 minutes, and not when it is younger", async () => {
+    const t = table(), p = probes();
+    await recordHealthCheck({ ...t.writer, now: () => NOW - 14 * 60_000 }, A, "slack", "failed");
+    await recordHealthCheck({ ...t.writer, now: () => NOW - 16 * 60_000 }, A, "github", "failed");
+    const answer = await readAt(t, p.probes);
+    expect(p.calls).toEqual({ slack: 0, github: 1 });
+    expect(answer.slack).toMatchObject({ result: "failed", ageSeconds: 840 });
+    expect(answer.github).toMatchObject({ result: "ok", ageSeconds: 0 });
+    expect(t.db.get(orgSettingsKey(A, "HEALTH_GITHUB_CHECK"))).toMatchObject({ result: "ok" });
+  });
+
+  it("runs no probe when both are fresh, and none for a feature that is not set up", async () => {
+    const t = table(), p = probes();
+    await recordHealthCheck({ ...t.writer, now: () => NOW - 60_000 }, A, "slack", "ok");
+    await recordHealthCheck({ ...t.writer, now: () => NOW - 60_000 }, A, "github", "ok");
+    await readAt(t, p.probes);
+    expect(p.calls).toEqual({ slack: 0, github: 0 });
+    const bare = table();
+    expect((await readAt(bare, {})).slack).toEqual(NEVER);
+  });
+
+  it("runs one probe per company and feature for a burst of reads", async () => {
+    const t = table(), p = probes();
+    const answers = await Promise.all(Array.from({ length: 8 }, () => readAt(t, p.probes)));
+    expect(p.calls).toEqual({ slack: 1, github: 1 });
+    expect(answers.filter((answer) => answer.slack?.checked === true)).not.toHaveLength(0);
+    // The page load that follows, still in the period, finds the stored answer and runs nothing.
+    expect((await readAt(t, p.probes, NOW + 60_000)).slack).toMatchObject({ checked: true, ageSeconds: 60, result: "ok" });
+    expect(p.calls).toEqual({ slack: 1, github: 1 });
+  });
+
+  it("answers the old value when a probe is slow, and does not probe again inside the period", async () => {
+    const t = table(), p = probes({ slackAuthCheck: () => new Promise(() => undefined) });
+    await recordHealthCheck({ ...t.writer, now: () => NOW - 20 * 60_000 }, A, "slack", "failed");
+    const started = Date.now();
+    const answer = await readAt(t, p.probes);
+    expect(Date.now() - started).toBeLessThan(1500);
+    expect(answer.slack).toMatchObject({ checked: true, result: "failed", ageSeconds: 1200 });
+    expect(t.db.get(orgSettingsKey(A, "HEALTH_SLACK_PROBE"))).toMatchObject({ result: "failed", checkedAt: new Date(NOW - 20 * 60_000).toISOString() });
+    // A burst after the timeout, in the same period, kicks nothing else; after the period the probe is tried again.
+    let again = 0;
+    const second = { ...p.probes, slackAuthCheck: async () => { again += 1; return { ok: true as const, teamId: "T1" }; } };
+    await readAt(t, second, NOW + 5 * 60_000);
+    expect(again).toBe(0);
+    await readAt(t, second, NOW + 16 * 60_000);
+    expect(again).toBe(1);
+  });
+
+  it("records what a probe found: a wrong team or a refused token is failed, an unreachable Slack and a thrown probe are unknown, no installation is failed", async () => {
+    const results = async (overrides: Record<string, unknown>) => { const t = table(); const a = await readAt(t, probes(overrides).probes); return [a.slack, a.github].map((o) => (o as { result: string }).result); };
+    expect(await results({ slackAuthCheck: async () => ({ ok: true as const, teamId: "T2" }) })).toEqual(["failed", "ok"]);
+    expect(await results({ slackAuthCheck: async () => ({ ok: false as const, error: "token_revoked" }) })).toEqual(["failed", "ok"]);
+    expect(await results({ slackAuthCheck: async () => ({ ok: false as const, error: "slack_unavailable" }) })).toEqual(["unknown", "ok"]);
+    expect(await results({ slackAuthCheck: async () => { throw new Error("boom"); } })).toEqual(["unknown", "ok"]);
+    expect(await results({ githubInstallations: async () => 0 })).toEqual(["ok", "failed"]);
+  });
+
+  it("probes only for a live owner or admin, only the caller's company, and a refused read runs nothing", async () => {
+    const t = table(), p = probes();
+    await expect(readAt(t, p.probes, NOW, A, adminB)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(readOrgHealthObservations({ ...t.deps, probes: p.probes }, t.caller(A, adminA), { expectedOrgId: B })).rejects.toMatchObject({ code: "CHANGE_STALE" });
+    expect(p.calls).toEqual({ slack: 0, github: 0 });
+    await readAt(t, p.probes);
+    expect(t.db.find((item) => String(item.pk).includes(B) && String(item.sk).startsWith("HEALTH_"))).toEqual([]);
+    expect(t.db.get(orgSettingsKey(A, "HEALTH_SLACK_PROBE"))).toMatchObject({ orgId: A });
+  });
+});
+
+describe("the 24-hour fallback count", () => {
+  it("counts each fallback in the window and starts again at one after the window ends", async () => {
+    const t = table();
+    let now = NOW;
+    const w = { documentClient: t.db, tableName: "state", now: () => now };
+    const count = async () => ((await readOrgHealthObservations({ ...t.deps, now: () => now }, t.caller(A, adminA), { expectedOrgId: A })).modelUse as { fallbackCount?: number }).fallbackCount;
+    await recordModelUse(w, A, { kind: "fallback", reason: "MODEL_CALL_REFUSED" });
+    expect(await count()).toBe(1);
+    now += 3600_000; await recordModelUse(w, A, { kind: "fallback", reason: "MODEL_CALL_REFUSED" });
+    now += 3600_000; await recordModelUse(w, A, { kind: "fallback", reason: "CONFIGURED_FALLBACK" });
+    expect(await count()).toBe(3);
+    // 23 hours after the window opened, still the same window; a main-model run changes no count.
+    now = NOW + 23 * 3600_000; await recordModelUse(w, A, { kind: "main" });
+    expect(await count()).toBe(3);
+    // Past 24 hours the count reads zero until the next fallback, which opens a new window at one.
+    now = NOW + 25 * 3600_000;
+    expect(await count()).toBe(0);
+    await recordModelUse(w, A, { kind: "fallback", reason: "MODEL_CALL_REFUSED" });
+    expect(await count()).toBe(1);
+    now += 3600_000; await recordModelUse(w, A, { kind: "fallback", reason: "MODEL_CALL_REFUSED" });
+    expect(await count()).toBe(2);
+  });
+
+  it("keeps each company's count to itself, and reads a main-only company as zero", async () => {
+    const t = table();
+    await recordModelUse(t.writer, B, { kind: "fallback", reason: "MODEL_CALL_REFUSED" });
+    await recordModelUse(t.writer, A, { kind: "main" });
+    const a = await read(t, A, adminA), b = await read(t, B, adminB);
+    expect(a.modelUse).toMatchObject({ fallbackCount: 0, usedFallback: false });
+    expect(b.modelUse).toMatchObject({ fallbackCount: 1, usedFallback: true });
   });
 });

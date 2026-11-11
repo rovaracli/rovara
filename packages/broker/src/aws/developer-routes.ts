@@ -835,7 +835,7 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   // Lane C17: metadata-only Slack association evidence; scope comes only from the authenticated caller.
   if (request.method === "GET" && url.pathname === "/v1/app/org/service-status") return readOrgServiceStatus({ documentClient: deps.documentClient, tableName: deps.tableName, signInTableName: deps.developer.signInTableName, now: deps.now, ...deps.serviceStatus }, caller, { expectedOrgId: url.searchParams.get("expectedOrgId") });
   // 0.5.15: when each health check last ran for this company (a live owner or admin on a browser session; the company is the session's).
-  if (request.method === "GET" && url.pathname === ORG_HEALTH_OBSERVATIONS_PATH) return readOrgHealthObservations({ documentClient: deps.documentClient, tableName: deps.tableName, signInTableName: deps.developer.signInTableName, now: deps.now }, caller, { expectedOrgId: url.searchParams.get("expectedOrgId") });
+  if (request.method === "GET" && url.pathname === ORG_HEALTH_OBSERVATIONS_PATH) return readOrgHealthObservations({ documentClient: deps.documentClient, tableName: deps.tableName, signInTableName: deps.developer.signInTableName, now: deps.now, ...(deps.healthObservations === undefined ? {} : { probes: deps.healthObservations }) }, caller, { expectedOrgId: url.searchParams.get("expectedOrgId") });
   if (request.method === "GET" && url.pathname === "/v1/app/org/slack-workspace-evidence") {
     if (url.search !== "" || (request.body !== undefined && request.body.trim() !== "")) throw agentXError("CONFIG_INVALID", "Slack workspace evidence accepts no query parameters or body.");
     return readSlackWorkspaceEvidence(deps, caller);

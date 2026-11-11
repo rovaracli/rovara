@@ -6,6 +6,8 @@
 import { z } from "zod";
 import { ModelFallbackReasonCodeSchema, OrgIdSchema } from "@rovara-code/contracts";
 
+/** A page of this read answers every 15 minutes at most per company with a live probe: a Slack or GitHub observation older than this (or never made) is checked again by the read. */
+export const HEALTH_REFRESH_AFTER_SECONDS = 15 * 60;
 /** The window "used the main model" and "used a fallback" are answered for. */
 export const HEALTH_MODEL_USE_WINDOW_HOURS = 24;
 export const HEALTH_CHECK_RESULTS = ["ok", "failed", "unknown"] as const;
@@ -30,6 +32,8 @@ export const HealthModelUseObservationSchema = z.discriminatedUnion("checked", [
   z.object({ checked: z.literal(false) }).strict(),
   z.object({
     checked: z.literal(true), windowHours: z.literal(HEALTH_MODEL_USE_WINDOW_HOURS), usedMain: z.boolean(), usedFallback: z.boolean(),
+    /** Fallbacks counted since the 24-hour window opened (it opens at the first fallback and the next one after it ends starts a new count); 0 when none is open. */
+    fallbackCount: z.number().int().min(0).optional(),
     lastMainAt: Instant.optional(), lastMainAgeSeconds: Age.optional(),
     lastFallbackAt: Instant.optional(), lastFallbackAgeSeconds: Age.optional(), lastFallbackReason: ModelFallbackReasonCodeSchema.optional(),
   }).strict(),
