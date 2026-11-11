@@ -68,6 +68,10 @@ for (const screen of PAGES) {
      await expect(tabs.locator("[aria-current=page]")).toHaveCount(1);await expect(tabs.getByRole("link", { name: screen.name === "home" ? /^Home/u : "Agents" })).toHaveAttribute("aria-current", "page");
      // The page can scroll all the way past the bar: the main area keeps room for it.
      expect(await page.locator("main").evaluate(node => parseFloat(getComputedStyle(node).paddingBottom))).toBeGreaterThanOrEqual(56);
+     // The last thing on the page is not covered by the bar once scrolled to the end (with the v2 look on, its own padding rules must not remove the room).
+     await page.evaluate(() => { window.scrollTo(0, document.documentElement.scrollHeight); });
+     expect(await page.evaluate(() => { const last = document.querySelector("main")!.lastElementChild!, bar = document.querySelector(".rv-tabbar")!;return last.getBoundingClientRect().bottom <= bar.getBoundingClientRect().top; })).toBe(true);
+     await page.evaluate(() => { window.scrollTo(0, 0); });
      // The top Menu stays for everything else, and is still a 44px target.
      const menu = page.getByRole("button", { name: "Open workspace menu" });await expect(menu).toBeVisible();expect((await menu.boundingBox())!.height).toBeGreaterThanOrEqual(43.5);
     }

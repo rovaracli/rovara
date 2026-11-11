@@ -4,7 +4,7 @@ import type { ReadAppNav } from "@agentx/contracts/web";
 import { useAppHost } from "../host.js";
 import { paths } from "../paths.js";
 import { VisibleText } from "../design/VisibleText.js";
-import { currentDestination, destinationsFor, type Destination } from "./destinations.js";
+import { canOpenCompanySettings, currentDestination, destinationsFor, type Destination } from "./destinations.js";
 import { NavIcon } from "./nav-icons.js";
 /** The sidebar lists this many of the person's projects as plain links; the Projects page lists them all. */
 export const SIDEBAR_PROJECT_LIMIT = 8;
@@ -24,7 +24,7 @@ export function SidebarV2({ nav, onNavigate }: { nav: ReadAppNav; onNavigate?: (
  return <nav aria-label="Workspace" className="rv-sidebar-nav rv-sidebar-nav-v2"><div className="rv-sidebar-primary">{destinationsFor(nav).map(destination => <DestinationLink key={destination.id} destination={destination} current={current === destination.id} onNavigate={onNavigate} />)}</div>
  <section aria-labelledby={projectsHeading}><h2 id={projectsHeading}>My projects</h2>{shown.map(project => <NavLink key={project.name} to={paths.project(project.name)} onClick={onNavigate}><VisibleText text={project.name} /></NavLink>)}{hidden > 0 && <Link to={paths.projects} onClick={onNavigate}>{`See all ${String(nav.projects.length)} projects`}</Link>}{nav.projects.length === 0 && <p className="rv-nav-hint">Your projects appear here.</p>}</section>
  <section aria-labelledby={sharedHeading}><h2 id={sharedHeading}>Shared with me</h2>{nav.shared.agents.map(agent => <NavLink key={agent.agentId} to={paths.agent(agent.agentId)} onClick={onNavigate}><VisibleText text={agent.name} /></NavLink>)}{nav.shared.sessions.map(session => <NavLink key={session.sessionId} to={paths.session(session.sessionId)} onClick={onNavigate}><VisibleText text={session.title} /></NavLink>)}{nav.shared.agents.length + nav.shared.sessions.length === 0 && <p className="rv-nav-hint">Shared work appears here.</p>}</section>
- <div className="rv-sidebar-secondary">{host.kind === "web" && host.features.admin && <NavLink to="/app/admin/waiting" onClick={onNavigate}>Waiting for people</NavLink>}<NavLink to={paths.onboard} onClick={onNavigate}>Onboard a project</NavLink>{host.kind === "web" && nav.features.scriptTokens === true && <NavLink to="/app/settings/script-tokens" onClick={onNavigate}>Script tokens</NavLink>}{nav.features.usage && <NavLink to={paths.usage} onClick={onNavigate}>Usage</NavLink>}</div></nav>;
+ <div className="rv-sidebar-secondary">{host.kind === "web" && canOpenCompanySettings(nav) && <NavLink to="/app/admin/waiting" onClick={onNavigate}>Waiting for people</NavLink>}<NavLink to={paths.onboard} onClick={onNavigate}>Onboard a project</NavLink>{host.kind === "web" && nav.features.scriptTokens === true && <NavLink to="/app/settings/script-tokens" onClick={onNavigate}>Script tokens</NavLink>}{nav.features.usage && <NavLink to={paths.usage} onClick={onNavigate}>Usage</NavLink>}</div></nav>;
 }
 /** The phone's bottom tab bar: the same destinations, icon plus label, 44px targets (shell.css). Hidden above the phone line. */
 export function TabBar({ nav }: { nav: ReadAppNav }) {

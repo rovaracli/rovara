@@ -110,6 +110,18 @@ describe("switch on", () => {
   const f = shell("/app", { on: true, value: nav({ shared: { agents: [{ agentId: "agt_" + "7".repeat(20), name: "Shared helper" }], sessions: [] }, features: { ...features, usage: true, scriptTokens: true } }) });await screen.findByRole("heading", { name: "Home", level: 1 });
   for (const label of ["Shared helper", "Onboard a project", "Script tokens", "Usage"]) expect(sidebar().getByRole("link", { name: label })).toBeTruthy();f.close();
  });
+ it("shows Waiting for people only to owners and admins of an install with company settings, not to members or auditors", async () => {
+  for (const [role, admin, shown] of [["owner", true, true], ["admin", true, true], ["admin", false, false], ["member", true, false], ["member", false, false], ["auditor", true, false]] as const) {
+   const f = shell("/app", { on: true, value: withRole(role, { admin }) });await screen.findByRole("heading", { name: "Home", level: 1 });
+   // The test host says admin is on for everyone (as the browser host does), so only the person's role and the install's switch can hide the link.
+   expect(f.host.features.admin).toBe(true);
+   const link = sidebar().queryByRole("link", { name: "Waiting for people" });expect(link !== null, `${role} admin=${String(admin)}`).toBe(shown);if (link !== null) expect(link.getAttribute("href")).toBe("/app/admin/waiting");
+   f.close();
+  }
+ });
+ it("leaves the old sidebar's Waiting for people link as it was (switch off)", async () => {
+  const f = shell("/app", { value: withRole("member", { admin: true }) });await screen.findByRole("heading", { name: "Home", level: 1 });expect(sidebar().getByRole("link", { name: "Waiting for people" })).toBeTruthy();f.close();
+ });
  it("lists the same five destinations in the phone tab bar, in order, with the current one marked", async () => {
   const f = shell("/app/projects", { on: true });await screen.findByRole("heading", { name: "Projects", level: 1 });
   expect(names(tabBar())).toEqual(["Home3", "Work", "Projects", "Agents", "Settings"]);

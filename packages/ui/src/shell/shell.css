@@ -17,5 +17,6 @@
 .rv-tabbar a[aria-current=page]{color:var(--rv-accent-text);font-weight:600}
 .rv-tabbar .rv-nav-label{flex-direction:column;gap:2px}
 .rv-tabbar .rv-nav-count{position:absolute;top:4px;left:calc(50% + 6px);min-width:18px;height:18px;padding:0 5px;border-radius:9px;background:var(--rv-accent);color:var(--rv-on-accent);font-size:var(--rv-font-sm);line-height:18px;text-align:center}
-.rv-nav-v2 .rv-shell-main{padding-bottom:calc(56px + 28px + env(safe-area-inset-bottom))}
+:root .rv-app-shell.rv-nav-v2 .rv-shell-main{padding-bottom:calc(56px + 28px + env(safe-area-inset-bottom))}
+:root:has(.rv-tabbar) .rv-toast{bottom:calc(56px + 16px + env(safe-area-inset-bottom))}
 }
