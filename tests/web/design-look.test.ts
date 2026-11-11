@@ -129,12 +129,12 @@ describe("Density choice in the account dialog", () => {
   await userEvent.click(screen.getByRole("button", { name: "Open account menu" }));
   const group = await screen.findByRole("group", { name: "Density" });
   expect(group.querySelectorAll("input[type=radio]").length).toBe(2);
-  expect((screen.getByRole("radio", { name: "Comfortable" }) as HTMLInputElement).checked).toBe(true);
+  expect(screen.getByRole<HTMLInputElement>("radio", { name: "Comfortable" }).checked).toBe(true);
   expect(document.documentElement.getAttribute("data-density")).toBe("comfortable");
   await userEvent.click(screen.getByRole("radio", { name: "Compact" }));
   expect(f.host.storage.get(DENSITY_STORAGE_KEY)).toBe("compact");
   expect(document.documentElement.getAttribute("data-density")).toBe("compact");
-  expect((screen.getByRole("radio", { name: "Compact" }) as HTMLInputElement).checked).toBe(true);
+  expect(screen.getByRole<HTMLInputElement>("radio", { name: "Compact" }).checked).toBe(true);
   await userEvent.click(screen.getByRole("radio", { name: "Comfortable" }));
   expect(f.host.storage.get(DENSITY_STORAGE_KEY)).toBe("comfortable");
   expect(document.documentElement.getAttribute("data-density")).toBe("comfortable");

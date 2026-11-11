@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
 import { expect, it, vi } from "vitest";
 import { render, cleanup } from "@testing-library/react";
+import type * as DesignTokens from "@agentx/design-tokens";
 import { h } from "./support/h.js";
 // The v2 sheet is constant, so ThemeProvider must build the style text once (when the module loads), not on every render, with the look off or on.
 vi.mock("@agentx/design-tokens", async importOriginal => {
- const original = await importOriginal<typeof import("../../packages/design-tokens/src/index.js")>();
+ const original = await importOriginal<typeof DesignTokens>();
  return { ...original, tokensCss: vi.fn(original.tokensCss), lookV2Css: vi.fn(original.lookV2Css) };
 });
 it("builds the theme sheet once however often the provider renders", async () => {

@@ -31,7 +31,7 @@ for (const screen of SCREENS) {
     await page.emulateMedia({ colorScheme: look.colorScheme, reducedMotion: "reduce" });
     await page.addInitScript(store => { for (const [key, value] of Object.entries(store)) localStorage.setItem(key, value); }, look.store);
     await mockRealtime(page);
-    await page.setViewportSize({ width: width, height: 900 });await page.goto(screen.path);await expect(screen.ready(page)).toBeVisible();
+    await page.setViewportSize({ width: width, height: 900 });await page.goto(screen.path);await expect(screen.ready(page)).toBeVisible();await page.waitForLoadState("networkidle"); // later queries (for example the Home project line) must have landed before the picture
     const root = page.locator("html");
     if (look.name === "off") { await expect(root).not.toHaveAttribute("data-look", /.*/u); await expect(root).not.toHaveAttribute("data-density", /.*/u); } else { await expect(root).toHaveAttribute("data-look", "v2"); }
     if (look.name === "v2-compact") await expect(root).toHaveAttribute("data-density", "compact");
@@ -54,7 +54,7 @@ for (const screen of SCREENS) {
 // than Comfortable at both widths, and at phone width every control stays at least 44px tall in both densities (checked in the journey above for every screen and look).
 for (const screen of SCREENS.filter(entry => entry.name !== "task")) {
  for (const width of [1280, 390] as const) {
-  test(`${screen.name} at ${String(width)}: Compact is denser than Comfortable and controls stay reachable`, async ({ page, context, request, baseURL }) => {
+  test(`${screen.name} at ${String(width)}: Compact is denser than Comfortable and controls stay reachable`, async ({ context, request, baseURL }) => {
    const heights: Record<string, number> = {}, small: Record<string, string[]> = {};
    await request.post("/__mock/scenario", { data: { name: screen.scenario } });
    if ("before" in screen) await screen.before(request);
