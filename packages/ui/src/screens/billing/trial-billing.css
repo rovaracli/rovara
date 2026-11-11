@@ -1,0 +1,38 @@
+/* Trial page, trial banner and Settings > Billing (switch rovara.billing = v2). New file: nothing here is read while the switch is off. One column at every width; existing tokens only. */
+.rv-tb{display:grid;gap:var(--rv-space-5);min-width:0;max-width:76ch}
+.rv-tb>*{min-width:0}
+.rv-tb-card{display:grid;gap:var(--rv-space-4);align-content:start;min-width:0;padding:var(--rv-space-4);border:1px solid var(--rv-border);border-radius:var(--rv-radius-md);background:var(--rv-bg-raised)}
+.rv-tb-card h2,.rv-tb-card h3,.rv-tb-card p,.rv-tb-phase,.rv-tb-note{margin:0;overflow-wrap:anywhere}
+.rv-tb-card h2{font-size:var(--rv-font-md)}
+.rv-tb-card h3{font-size:var(--rv-font-base,1rem)}
+.rv-tb-allowances,.rv-tb-choices{list-style:none;margin:0;padding:0;display:grid;gap:var(--rv-space-4)}
+.rv-tb-allowance,.rv-tb-choice{display:grid;gap:var(--rv-space-3);min-width:0;padding-bottom:var(--rv-space-4);border-bottom:1px solid var(--rv-border)}
+.rv-tb-allowance:last-child,.rv-tb-choice:last-child{border-bottom:0;padding-bottom:0}
+.rv-tb-allowance-head{display:flex;flex-wrap:wrap;justify-content:space-between;gap:var(--rv-space-2)}
+.rv-tb-allowance-head h3{margin:0}
+.rv-tb-state{font-weight:600}
+.rv-tb-allowance[data-state=used_up] .rv-tb-state{color:var(--rv-danger)}
+.rv-tb-bar{display:flex;height:14px;border:1px solid var(--rv-border-strong);border-radius:var(--rv-radius-sm);background:var(--rv-bg-sunken);overflow:hidden}
+.rv-tb-bar-used{background:var(--rv-accent)}
+.rv-tb-bar-held{background:repeating-linear-gradient(45deg,var(--rv-status-needs-you) 0 4px,var(--rv-bg-raised) 4px 8px)}
+.rv-tb-figures,.rv-tb-facts{display:grid;gap:var(--rv-space-2);margin:0}
+.rv-tb-figures>div,.rv-tb-facts>div{display:grid;grid-template-columns:minmax(7rem,max-content) minmax(0,1fr);gap:var(--rv-space-3)}
+.rv-tb-figures dt,.rv-tb-facts dt{font-weight:600}
+.rv-tb-figures dd,.rv-tb-facts dd{margin:0;overflow-wrap:anywhere}
+.rv-tb-actions{display:flex;flex-wrap:wrap;gap:var(--rv-space-3)}
+.rv-tb-confirm,.rv-tb-form{display:grid;gap:var(--rv-space-3);min-width:0}
+.rv-tb-status:empty{margin:0}
+.rv-tb-alert{padding:var(--rv-space-3) var(--rv-space-4);border-left:3px solid var(--rv-danger);background:var(--rv-bg-sunken);display:grid;gap:var(--rv-space-2)}
+.rv-tb-alert p{margin:0;overflow-wrap:anywhere}
+.rv-tb-note{padding:var(--rv-space-3) var(--rv-space-4);border-left:3px solid var(--rv-accent);background:var(--rv-bg-sunken)}
+.rv-tb-links{display:flex;flex-wrap:wrap;gap:var(--rv-space-3)}
+.rv-tb a{display:inline-flex;align-items:center;min-height:44px}
+.rv-tb-banner{flex-wrap:wrap;margin-bottom:var(--rv-space-4)}
+.rv-tb-banner>div{min-width:0;flex:1 1 16rem}
+.rv-tb-banner p{margin:var(--rv-space-1) 0 0;overflow-wrap:anywhere}
+.rv-tb-banner a.rv-button{display:inline-flex;align-items:center;justify-content:center;min-height:44px;text-decoration:none}
+@media (max-width:640px){
+ .rv-tb-figures>div,.rv-tb-facts>div{grid-template-columns:minmax(0,1fr);gap:0}
+ .rv-tb-actions .rv-button{flex:1 1 40%}
+ .rv-tb-banner a.rv-button{flex:1 1 100%}
+}
