@@ -3,8 +3,7 @@
 // schema. This file covers the premise and the preparation's pull (login.ts and use.ts); the push build (build.ts), the rebuild (rebuild.ts) and the broker's session (saved-env-session.ts) have their loopback cases
 // beside their other refusals (worker-saved-env-build, worker-saved-env-rebuild, broker-saved-env-session).
 import { describe, expect, it } from "vitest";
-import { HostedSavedEnvRegistryAuthSchema, savedEnvRepositoryName } from "@rovara-code/contracts";
-import { SavedEnvRegistryAuthSchema } from "@agentx/cloud-contracts";
+import { HostedSavedEnvRegistryAuthSchema, SavedEnvRegistryAuthSchema, savedEnvRepositoryName } from "@rovara-code/contracts";
 import { createSavedEnvLoginProvider } from "../../packages/worker/src/saved-env/login.js";
 import { savedEnvMaterializer } from "../../packages/worker/src/saved-env/use.js";
 import type { DockerCli } from "../../packages/worker/src/swebench/containers.js";
