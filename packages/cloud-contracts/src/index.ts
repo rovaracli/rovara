@@ -98,6 +98,7 @@ export * from "./company-domains-web.js";
 export * from "./app-company-rules.js";
 export * from "./app-billing.js";
 export * from "./app-insights.js";
+export * from "./app-agent-publish.js";
 export * from "./company-image-mirror.js";
 export * from "./saved-env-image.js";
 export * from "./app-projects.js";
