@@ -3,10 +3,10 @@ import { useId, useState } from "react";
 import { NavLink } from "react-router";
 import { useNav } from "../../api/nav.js";
 import { visibleSections } from "./admin-sections.js";
-export function AdminNav({ role, secondReviewOff, companyAdmin, compact, billingOn = false }: { role: "owner" | "admin" | "member"; secondReviewOff: boolean; companyAdmin: boolean; compact: boolean; billingOn?: boolean }) {
+export function AdminNav({ role, secondReviewOff, companyAdmin, compact, billingOn = false, approvalWindowOff = false }: { role: "owner" | "admin" | "member"; secondReviewOff: boolean; companyAdmin: boolean; compact: boolean; billingOn?: boolean; approvalWindowOff?: boolean }) {
   const [open, setOpen] = useState(false), list = useId(), nav = useNav();
   // Company rules is listed only while the nav answer says its switch (`si`) is on.
-  const sections = companyAdmin ? visibleSections(role, secondReviewOff, billingOn, nav.data?.features.companyRules === true) : [];
+  const sections = companyAdmin ? visibleSections(role, secondReviewOff, billingOn, nav.data?.features.companyRules === true, approvalWindowOff) : [];
   const links = <>
     {companyAdmin && <NavLink to="/app/admin" end onClick={() => { setOpen(false); }}>Overview</NavLink>}
     {sections.map(section => <div key={section.id} role="group" aria-label={section.title} className="rv-admin-nav-group"><p className="rv-admin-nav-heading" aria-hidden="true">{section.title}</p>{section.items.map(item => <NavLink key={item.to} to={item.to} onClick={() => { setOpen(false); }}>{item.label}</NavLink>)}</div>)}

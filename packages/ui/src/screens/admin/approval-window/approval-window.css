@@ -1,0 +1,6 @@
+.rv-aw-card{margin-top:var(--rv-space-4)}
+.rv-aw-facts{display:flex;flex-wrap:wrap;gap:var(--rv-space-4) var(--rv-space-5);margin:0}
+.rv-aw-facts dt{color:var(--rv-text-muted)}.rv-aw-facts dd{margin:0;font-weight:600}
+.rv-aw-list{margin:0;padding-left:var(--rv-space-5);overflow-wrap:anywhere}
+.rv-aw-policy th[scope=row]{font-weight:600}
+.rv-aw-result{margin-top:var(--rv-space-3)}.rv-aw-result p{margin:var(--rv-space-2) 0;overflow-wrap:anywhere}
