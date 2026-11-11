@@ -3,7 +3,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   AgentXError, BROKER_SETTINGS, BillingActionBodySchema, BillingAnswerReaderSchema, BillingStateReaderSchema, BillingStateSchema, InvoiceListReaderSchema, InvoiceSchema, TrialViewReaderSchema, TrialViewSchema, type BillingState, type TrialView,
-  developerOrgKey, editionPolicy, errorStatus, machineTimeMonthKey, openComputeKey, orgMemberKey, orgMetaKey, scopeKey, spendCounterKey, workspaceSessionKey,
+  developerOrgKey, editionPolicy, errorStatus, machineTimeMonthKey, openComputeKey, orgMemberKey, orgMetaKey, orgSettingsKey, scopeKey, spendCounterKey, workspaceSessionKey,
 } from "@agentx/contracts";
 import { routeDeveloperRequest, type DeveloperCaller, type DeveloperRouteDependencies } from "../../packages/broker/src/aws/developer-routes.js";
 import { webRouteAllowed } from "../../packages/broker/src/aws/web-auth.js";
@@ -212,6 +212,17 @@ describe("company scoping: the company is the session's, never the request's", (
     f.db.set({ ...orgMetaKey(B), orgId: B, name: "Beta", plan: "team", trialUnlockedAt: 1 });
     expect((await f.call(BILLING + "?orgId=" + B)).body).toMatchObject({ plan: "trial", phase: "active" });
     expect((await f.call(BILLING, f.caller("owner", B, bPerson))).body).toMatchObject({ plan: "team", phase: "active" });
+  });
+
+  it("/org/billing shows the caller's own monthly limit, never another company's (and /trial grants the same limit)", async () => {
+    withBilling();
+    const f = fixture();
+    f.db.set({ ...orgSettingsKey(A, "BUDGET"), entityType: "ORG_BUDGET", memberOverrides: {}, orgMonthlyUsd: 123 });
+    f.db.set({ ...orgSettingsKey(B, "BUDGET"), entityType: "ORG_BUDGET", memberOverrides: {}, orgMonthlyUsd: 777 });
+    expect(bs(await f.call(BILLING)).autoBill.monthlyCeilingUsd).toBe(123);
+    expect(tv(await f.call(TRIAL)).allowances[0]).toMatchObject({ kind: "models", granted: 123 });
+    // Positive control: company B's own owner reads company B's limit.
+    expect(bs(await f.call(BILLING, f.caller("owner", B, bPerson))).autoBill.monthlyCeilingUsd).toBe(777);
   });
 
   it("an owner of company B cannot read company A's billing by having a stale company id in the session", async () => {
