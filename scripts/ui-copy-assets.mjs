@@ -8,6 +8,8 @@ for (const path of ["design/design.css", "look-v2.css", "shell/shell.css", "scre
  "screens/admin/waiting/waiting.css",
  // Spending page (switch rovara.spending = v2).
  "screens/admin/spending.css",
+ // Health and readiness (switch rovara.health = v2).
+ "screens/admin/health/health.css",
  // Lane C2: owned audit filter styles.
  "screens/admin/audit/audit.css",
  // Lane C12: owned Connections guidance styles.
