@@ -542,7 +542,8 @@ function taskPersonRuntimePorts(input: {
         TableName: input.stateTableName,
         Key: key,
         ConsistentRead: true,
-        ...projection(["pk", "sk"]),
+        // `role` too: the membership check reads a member row's role (a company Auditor is no task person).
+        ...projection(["pk", "sk", "role"]),
       }), { abortSignal });
       input.admission.assertOpen();
       return (response as { Item?: Record<string, unknown> }).Item;
@@ -609,7 +610,8 @@ const taskDispatchGuard = (record: DurableOutboxRecord, context?: { remainingTim
   const admission = createTaskAuthorityAdmission({ now: () => Date.now(), lambdaRemainingMs: context?.remainingTimeMs() ?? 60_000 });
   const proofArn = process.env.TASK_PERSON_PROOF_FUNCTION_ARN;
   const slackTeamId = process.env.SLACK_TEAM_ID ?? "";
-  const personRuntime = proofArn === undefined || proofArn.trim() === "" || !SlackTeamIdSchema.safeParse(slackTeamId).success ? undefined : createTaskPersonRuntime({
+  // An install with no Slack has no team id (it is "" there): the person check still runs for people with no Slack account. A team id that is set but is not one fails closed.
+  const personRuntime = proofArn === undefined || proofArn.trim() === "" || (slackTeamId !== "" && !SlackTeamIdSchema.safeParse(slackTeamId).success) ? undefined : createTaskPersonRuntime({
     orgId: installOrgIdFromEnvironment(),
     admission,
     ports: taskPersonRuntimePorts({

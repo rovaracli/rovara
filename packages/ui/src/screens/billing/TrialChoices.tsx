@@ -1,8 +1,8 @@
 // What happens when the allowance runs out. Everyone the server tells sees the same choices and facts. Only owners and admins (`you.canChoose`) get buttons; everyone else sees "Ask an admin", with the names of the
-// company's owners and admins when they can be read. The sentences about each option come from the server; a reason an option is unavailable is a fixed code that this page turns into words.
+// company's owners and admins that the same answer carries (`admins`). The sentences about each option come from the server; a reason an option is unavailable is a fixed code that this page turns into words.
 import { useState } from "react";
 import { Link, useNavigate } from "react-router";
-import type { ChoiceSet, TrialView } from "../../api/trial-billing.js";
+import { navigatePath, type ChoiceSet, type TrialView } from "../../api/trial-billing.js";
 import { safeAppPath } from "../../text/links.js";
 import { useAppHost } from "../../host.js";
 import { Button } from "../../design/Button.js";
@@ -42,16 +42,26 @@ function OptionRow({ option, trial }: { option: Option; trial: TrialView }) {
    return <Button variant="primary" busy={write.busy} onClick={() => { void write.run({ action: "choose-trial-end", choice: "auto_bill" }, "Done. Auto-billing is on."); }}>{choiceWords("auto_bill")}</Button>;
   }
   if (option.id === "own_key") {
-   const href = option.next !== undefined && safeAppPath(option.next.href) ? option.next.href : MODELS_PATH;
+   // The server names the page (`next`, and the answer's `navigate`); `next` is optional in the contract, so a safe fallback stays.
+   const href = option.next !== undefined && typeof option.next.href === "string" && safeAppPath(option.next.href) ? option.next.href : MODELS_PATH;
    if (!option.available) return <><Button disabled>{choiceWords("own_key")}</Button><p className="rv-muted">{reason}</p></>;
-   return <><Button busy={write.busy} onClick={() => { void write.run({ action: "choose-trial-end", choice: "own_key" }, "Done.").then(answer => { if (answer !== undefined) void navigate(href); }); }}>{choiceWords("own_key")}</Button>{write.failed && <p><Link to={href}>{CHOICES_WORDS.OPEN_MODELS}</Link></p>}</>;
+   return <><Button busy={write.busy} onClick={() => { void write.run({ action: "choose-trial-end", choice: "own_key" }, "Done.").then(answer => { if (answer !== undefined) void navigate(navigatePath(answer) ?? href); }); }}>{choiceWords("own_key")}</Button>{write.failed && <p><Link to={href}>{CHOICES_WORDS.OPEN_MODELS}</Link></p>}</>;
   }
   return null;
  })();
  return <li className="rv-tb-choice" data-option={option.id}><h3>{choiceWords(option.id)}</h3><p><VisibleText text={option.summary} /></p>{body}{write.view}</li>;
 }
 
-export function TrialChoices({ trial, admins }: { trial: TrialView; admins: readonly string[] }) {
+const askLine = (admins: TrialView["admins"]) => <p className="rv-tb-ask"><strong>{CHOICES_WORDS.ASK}</strong> {CHOICES_WORDS.ASK_WHY}{admins.length > 0 && <> Owners and admins: {admins.map((person, index) => <span key={`${person.id}-${String(index)}`}>{index > 0 && ", "}<VisibleText text={person.name} /></span>)}.</>}</p>;
+
+/** The caller's own monthly limit is used up (the company may still have room). The sentence is the server's; "Ask an admin" and the names come from the same answer (`admins`). Owners and admins can choose themselves, so they are not told to ask. */
+export function PersonalLimitNotice({ trial }: { trial: TrialView }) {
+ const notice = trial.you.notice;
+ if (notice === null) return null;
+ return <section className="rv-tb-card" aria-labelledby="tb-personal"><h2 id="tb-personal">Your personal limit</h2><p role="status"><VisibleText text={notice.text} /></p>{!trial.you.canChoose && askLine(trial.admins)}</section>;
+}
+
+export function TrialChoices({ trial }: { trial: TrialView }) {
  const choices = trial.choices;
  if (choices === null) return null;
  return <section className="rv-tb-card" aria-labelledby="tb-choices">
@@ -59,6 +69,6 @@ export function TrialChoices({ trial, admins }: { trial: TrialView; admins: read
   <p>{choices.audience === "you" ? CHOICES_WORDS.YOU : choices.audience === "admins" ? CHOICES_WORDS.ADMINS : ""}</p>
   {choices.decided !== null && <p role="status"><strong>Chosen: {decidedWords(choices.decided.choice)}.</strong> By <VisibleText text={choices.decided.by.name} /> on {dayText(choices.decided.at)}.</p>}
   <ul className="rv-tb-choices" aria-label="Choices">{choices.options.map(option => <OptionRow key={option.id} option={option} trial={trial} />)}</ul>
-  {!trial.you.canChoose && <p className="rv-tb-ask"><strong>{CHOICES_WORDS.ASK}</strong> {CHOICES_WORDS.ASK_WHY}{admins.length > 0 && <> Owners and admins: {admins.map((name, index) => <span key={`${name}-${String(index)}`}>{index > 0 && ", "}<VisibleText text={name} /></span>)}.</>}</p>}
+  {!trial.you.canChoose && trial.you.notice === null && askLine(trial.admins)}
  </section>;
 }

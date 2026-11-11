@@ -104,7 +104,8 @@ async function failingCheckTails(deps: AskReaderDependencies, task: DeveloperTas
 async function listedMembersBySlackId(deps: AskReaderDependencies, task: DeveloperTaskRecord): Promise<Map<string, string>> {
   try {
     const people = await loadTaskPeople(deps, task.taskId);
-    return new Map((people?.people ?? []).filter((person) => person.role !== "denied").map((person) => [person.slackUserId, person.developerId]));
+    // A person with no Slack account has no Slack reply to speak for, so they are not in a map keyed by Slack user id.
+    return new Map((people?.people ?? []).flatMap((person): Array<[string, string]> => person.role !== "denied" && person.slackUserId !== undefined ? [[person.slackUserId, person.developerId]] : []));
   } catch {
     return new Map();
   }

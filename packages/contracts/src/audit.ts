@@ -124,6 +124,9 @@ export const AUDIT_ACTIONS = [
   "member.removal_completed",
   "member.left",
   "member.renamed",
+  // Insights (decision 32): an admin gave a member the Insights viewer grant or took it away. The target is the member; the grant is a field on their record, never a role. No facts.
+  "insights_access.granted",
+  "insights_access.revoked",
   "org.closed",
   "org.renamed",
   "org.invite_created",
@@ -495,6 +498,8 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "member.removal_completed": MEMBER_REMOVAL_COMPLETED_FACTS,
   "member.left": ["role"],
   "member.renamed": [],
+  "insights_access.granted": [],
+  "insights_access.revoked": [],
   "org.closed": ["plan"],
   "org.renamed": [],
   "org.invite_created": ["role", "targeted"],

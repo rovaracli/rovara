@@ -5,6 +5,8 @@ import { describe, expect, it } from "vitest";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { ControlPlaneStack } from "../../infra/lib/control-plane.js";
 import { environmentNaming } from "../../infra/lib/naming.js";
+import { TASK_PERSON_DEVELOPER_RECORD_PROJECTION } from "../../packages/contracts/src/index.js";
+import { TASK_PERSON_DEVELOPER_RECORD_ATTRIBUTES } from "../../packages/broker/src/aws/task-person-runtime.js";
 import { hydrateBrokerEnvironment, type MutableEnvironment } from "../../packages/broker/src/aws/broker-environment.js";
 import { brokerNamesIn, brokerSettingsIn, takeBrokerNames, takeBrokerSettings } from "../support/broker-names-template.js";
 import { hasModelProxy, withoutModelProxy } from "../support/model-proxy-template.js";
@@ -24,6 +26,25 @@ function namedTemplate(env: string, account = "944937319445", region = "us-east-
     env: { account, region }, naming: environmentNaming(env),
   })).toJSON();
   return rendered as TemplateJson;
+}
+
+/** Evaluates a CloudFormation condition built from Fn::Or, Fn::And, Fn::Not, Fn::Equals, Ref (a parameter) and literals, for the parameter values given. */
+function evaluateCondition(node: unknown, values: Record<string, string>): boolean {
+  const value = (item: unknown): string | boolean => {
+    if (typeof item === "string") return item;
+    const record = item as Record<string, unknown>;
+    if (typeof record.Ref === "string") {
+      if (!(record.Ref in values)) throw new Error(`condition reads ${record.Ref}, which the test does not set`);
+      return values[record.Ref]!;
+    }
+    return evaluateCondition(item, values);
+  };
+  const record = node as Record<string, unknown[]>;
+  if (record["Fn::Equals"] !== undefined) return value(record["Fn::Equals"][0]) === value(record["Fn::Equals"][1]);
+  if (record["Fn::Or"] !== undefined) return record["Fn::Or"].some((item) => value(item) === true);
+  if (record["Fn::And"] !== undefined) return record["Fn::And"].every((item) => value(item) === true);
+  if (record["Fn::Not"] !== undefined) return value(record["Fn::Not"][0]) !== true;
+  throw new Error(`unsupported condition ${JSON.stringify(node)}`);
 }
 
 function proofEntries(template: TemplateJson) {
@@ -221,25 +242,19 @@ function developerSignInConditionCheckEntries(template: TemplateJson): Array<{ p
 }
 
 describe("the named TEST proof-only installation gate", () => {
-  it("declares a distinct default-OFF gate only for the approved named environment", () => {
-    const approved = namedTemplate("agentxlivetest123");
-    const foreign = namedTemplate("staging", "123456789012");
-    const wrongAccount = namedTemplate("agentxlivetest123", "123456789012");
+  it("declares a distinct default-OFF gate in every named environment, and none in the legacy deployment", () => {
+    const livetest = namedTemplate("agentxlivetest123");
+    const staging = namedTemplate("staging", "123456789012", "us-west-2");
+    const otherAccount = namedTemplate("agentxlivetest123", "123456789012");
     const legacy = Template.fromStack(new ControlPlaneStack(new App(), "Legacy")).toJSON() as TemplateJson;
 
-    expect(approved.Parameters?.TaskPersonProofEnabled).toMatchObject({
-      Type: "String",
-      Default: "false",
-      AllowedValues: ["true", "false"],
-    });
-    expect(proofEntries(approved).length).toBeGreaterThan(0);
-    expect(approved.Parameters?.TaskPeopleChangesEnabled).toMatchObject({ Default: "false" });
-    expect(approved.Parameters?.TaskPeoplePublicInvitationsEnabled).toMatchObject({ Default: "false" });
-    expect(approved.Parameters?.TaskPeoplePrivateInvitationsEnabled).toMatchObject({ Default: "false" });
-    expect(foreign.Parameters?.TaskPersonProofEnabled).toBeUndefined();
-    expect(proofEntries(foreign)).toHaveLength(0);
-    expect(wrongAccount.Parameters?.TaskPersonProofEnabled).toMatchObject({ Default: "false" });
-    expect(proofEntries(wrongAccount).length).toBeGreaterThan(0);
+    for (const [label, template] of [["livetest", livetest], ["staging", staging], ["other account", otherAccount]] as const) {
+      expect(template.Parameters?.TaskPersonProofEnabled, `${label} declares the gate`).toMatchObject({ Type: "String", Default: "false", AllowedValues: ["true", "false"] });
+      expect(proofEntries(template).length, `${label} has the proof resources`).toBeGreaterThan(0);
+      expect(template.Parameters?.TaskPeopleChangesEnabled, label).toMatchObject({ Default: "false" });
+      expect(template.Parameters?.TaskPeoplePublicInvitationsEnabled, label).toMatchObject({ Default: "false" });
+      expect(template.Parameters?.TaskPeoplePrivateInvitationsEnabled, label).toMatchObject({ Default: "false" });
+    }
     expect(legacy.Parameters?.TaskPersonProofEnabled).toBeUndefined();
     expect(proofEntries(legacy)).toHaveLength(0);
   });
@@ -252,16 +267,21 @@ describe("the named TEST proof-only installation gate", () => {
     expectRuntimeCatalogEnvironment(foreign, "agentx-staging");
     expectRuntimeCatalogEnvironment(legacy, "agentx-production");
 
+    // The legacy deployment has none of it. Every named environment (staging among them) has the proof, off until a switch is on: the dispatcher's three variables are there and empty
+    // while neither switch is "true" (the condition decides, see the truth table below).
+    expect(legacy.Parameters?.TaskPersonProofEnabled, "legacy has no proof-only parameter").toBeUndefined();
+    expect(proofEntries(legacy), "legacy has no proof-only resources").toHaveLength(0);
     for (const [label, template] of [["staging", foreign], ["legacy", legacy]] as const) {
-      expect(template.Parameters?.TaskPersonProofEnabled, `${label} has no proof-only parameter`).toBeUndefined();
-      expect(proofEntries(template), `${label} has no proof-only resources`).toHaveLength(0);
       const dispatchers = Object.entries(template.Resources ?? {}).filter(([id, resource]) => id.startsWith("Dispatcher") && resource.Type === "AWS::Lambda::Function");
       expect(dispatchers, `${label} has its ordinary Dispatcher`).toHaveLength(1);
       const variables = dispatchers[0]![1].Properties!.Environment as { Variables: Record<string, unknown> };
       for (const key of ["TASK_PERSON_PROOF_FUNCTION_ARN", "SLACK_TEAM_ID", "DEVELOPER_SIGNIN_TABLE_NAME"]) {
-        expect(variables.Variables, `${label} has no proof-only ${key}`).not.toHaveProperty(key);
+        if (label === "legacy") expect(variables.Variables, `legacy has no proof-only ${key}`).not.toHaveProperty(key);
+        else expect(JSON.stringify(variables.Variables[key]), `staging's ${key} is empty unless the proof is installed`).toContain("InstallTaskPersonProof");
       }
     }
+    expect(foreign.Parameters?.TaskPersonProofEnabled, "staging declares the gate").toMatchObject({ Default: "false" });
+    expect(proofEntries(foreign).length, "staging has the proof resources").toBeGreaterThan(0);
 
     for (const [label, template] of [["named", named], ["foreign", foreign]] as const) {
       expect(template.Parameters?.WorkflowDependenciesEnabled, `${label} preserves the default-OFF workflow gate`).toMatchObject({
@@ -395,18 +415,19 @@ describe("the named TEST proof-only installation gate", () => {
     // the sign-in function's two ConditionCheckItem statements gain `Null: { dynamodb:LeadingKeys: false }`. Checked first: with only those two lines undone, all five tests pass on the lane's pins. Legacy did not move.
     // 2026-11-11 (0.5.14, lane U2, Slack explicit membership): the named and foreign digests were retaken from the values the test reports, after one intended change: the `sm` entry of the broker's packed
     // AGENTX_SETTINGS (the SlackExplicitMembers parameter itself is taken out of the remainder like the other switches). The named-templates snapshot shows exactly that parameter and that entry. Legacy did not move.
+    // 2026-11-11 (0.5.15, lane company-images-worker-v3, merged at 029dc304b): the named and foreign digests were retaken from the values the test reports, after the lane's reviewed additions: the CompanyImageMirror function (own role, mirror state rows only), its img-mirror role (ECR on rovara-env/<env>/o*/c* only), the `cm` entry of AGENTX_NAMES and the mirror role in the saved environment repository policy. Legacy did not move.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "a13dea76690170c051327392fe03bfa91df7d9c20baaa27da060bc5dcde07b10",
-        withoutRoute: "939409dcdbc0d24e047f638c122fee35c659a708654a0e3b03acbe0007a895ca",
+        withRoute: "113afeb82b4c9eed000b0949074a74cb65c786070601a5431ec39df50d8607d4",
+        withoutRoute: "5cec0a6d5620433d3c662c933f5ce1693e9c29e81fd1f733d9d2eb3c3f7a5968",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "129299952a066b6fe003d7f07fbded7bb697adb6352d109c9f4d1b156661db68",
-        withoutRoute: "dcb62f29b25a906322ab4dd043a361fd211380dc166162a1c3d89a18c7bbfede",
+        withRoute: "5c52999d12ae3179bfae711c09a9cb03ddd41e994fcf6c1dea1134f2bd69280e",
+        withoutRoute: "54d2d4fbae27a93c4e11f249f535a7479232f72aff0b18604d7b9132f7d40976",
       },
       {
         label: "legacy",
@@ -445,24 +466,63 @@ describe("the named TEST proof-only installation gate", () => {
     }
   });
 
-  it("conditions the isolated proof resources on the switch, exact account and region", () => {
-    const approved = namedTemplate("agentxlivetest123");
-    const proofResources = proofEntries(approved);
-    const conditionId = Object.keys(approved.Conditions ?? {}).find((id) => id.includes("InstallTaskPersonProof"));
-    expect(conditionId).toBeDefined();
-    const condition = approved.Conditions?.[conditionId!];
-    expect(JSON.stringify(condition)).toContain("TaskPersonProofEnabled");
-    expect(JSON.stringify(condition)).toContain("944937319445");
-    expect(JSON.stringify(condition)).toContain("us-east-1");
-    expect(proofResources.map(([id]) => id)).toEqual(expect.arrayContaining([
-      expect.stringContaining("Role"), expect.stringContaining("Function"), expect.stringContaining("Version"),
-      expect.stringContaining("SecretReadPolicy"), expect.stringContaining("DispatcherPolicy"),
-    ]));
-    for (const [id, resource] of proofResources.filter(([, resource]) => resource.Type !== "AWS::CloudFormation::Condition")) {
-      if (id.includes("Role") || id.includes("Function") || id.includes("Version") || id.includes("Policy")) {
-        expect(resource.Condition).toBe(conditionId);
+  it("conditions the isolated proof resources on the people switch or the proof's own, and on nothing else (no account or region lock)", () => {
+    for (const template of [namedTemplate("agentxlivetest123"), namedTemplate("staging", "123456789012", "us-west-2")]) {
+      const proofResources = proofEntries(template);
+      const conditionId = Object.keys(template.Conditions ?? {}).find((id) => id.includes("InstallTaskPersonProof"));
+      expect(conditionId).toBeDefined();
+      const condition = template.Conditions?.[conditionId!];
+      expect(JSON.stringify(condition)).toContain("TaskPersonProofEnabled");
+      expect(JSON.stringify(condition)).toContain("TaskPeopleChangesEnabled");
+      expect(JSON.stringify(condition), "no account or region in the condition").not.toMatch(/AWS::AccountId|AWS::Region|944937319445|us-east-1/);
+      // The truth table, evaluated: installed when either is "true"; neither of the two invitation switches installs it (invitations are not built yet).
+      const installed = (values: Record<string, string>) => evaluateCondition(condition, values);
+      const off = { TaskPersonProofEnabled: "false", TaskPeopleChangesEnabled: "false", TaskPeoplePublicInvitationsEnabled: "false", TaskPeoplePrivateInvitationsEnabled: "false" };
+      expect(installed(off), "both off: nothing is installed").toBe(false);
+      expect(installed({ ...off, TaskPersonProofEnabled: "true" })).toBe(true);
+      expect(installed({ ...off, TaskPeopleChangesEnabled: "true" })).toBe(true);
+      expect(installed({ ...off, TaskPeoplePublicInvitationsEnabled: "true", TaskPeoplePrivateInvitationsEnabled: "true" }), "the invitation switches install nothing").toBe(false);
+      expect(proofResources.map(([id]) => id)).toEqual(expect.arrayContaining([
+        expect.stringContaining("Role"), expect.stringContaining("Function"), expect.stringContaining("Version"),
+        expect.stringContaining("SecretReadPolicy"), expect.stringContaining("DispatcherPolicy"),
+      ]));
+      for (const [id, resource] of proofResources.filter(([, resource]) => resource.Type !== "AWS::CloudFormation::Condition")) {
+        if (id.includes("Role") || id.includes("Function") || id.includes("Version") || id.includes("Policy")) {
+          expect(resource.Condition).toBe(conditionId);
+        }
       }
     }
+  });
+
+  it("gives a staging-shaped environment its own proof function, role and Slack secret read, and a generated role name; the live test environment keeps its fixed role name", () => {
+    const staging = namedTemplate("staging", "123456789012", "us-west-2");
+    const livetest = namedTemplate("agentxlivetest123");
+    const roleOf = (template: TemplateJson) => Object.entries(template.Resources ?? {}).find(([id, resource]) => id.includes("TaskPersonProofRole") && resource.Type === "AWS::IAM::Role")![1];
+    expect(roleOf(staging).Properties, "staging's proof role has a generated name (no fixed name, so no access stack change)").not.toHaveProperty("RoleName");
+    expect(roleOf(livetest).Properties!.RoleName, "the live test role is not renamed").toBe("agentxlivetest123-task-person-proof");
+    const proofFunction = Object.entries(staging.Resources ?? {}).find(([id, resource]) => id.includes("TaskPersonProofFunction") && resource.Type === "AWS::Lambda::Function")![1];
+    const variables = (proofFunction.Properties!.Environment as { Variables: Record<string, unknown> }).Variables;
+    expect(variables.AGENTX_ENV).toBe("staging");
+    expect(variables.AGENTX_ACCOUNT_ID).toEqual({ Ref: "AWS::AccountId" });
+    // The secret is this stack's own Slack secret, by reference, named in the one read statement.
+    expect(JSON.stringify(variables.SLACK_SECRET_ARN)).toContain("SlackSecret");
+    const secretPolicy = Object.entries(staging.Resources ?? {}).find(([id, resource]) => id.includes("TaskPersonProofSecretReadPolicy") && resource.Type === "AWS::IAM::Policy")![1];
+    expect((secretPolicy.Properties!.PolicyDocument as { Statement: Array<Record<string, unknown>> }).Statement).toEqual([
+      { Effect: "Allow", Action: ["secretsmanager:GetSecretValue"], Resource: [variables.SLACK_SECRET_ARN] },
+    ]);
+    expect(secretPolicy.Properties!.PolicyName).toBe("staging-task-person-proof-secret-read");
+
+    // The real app's staging control plane: the dispatcher is given the same three statements as the live test one (projected sign-in reads, the proof version's invoke), on its own role alone.
+    const app = appControlPlane("staging");
+    const dispatcherPolicy = Object.entries(app.Resources ?? {}).find(([id, resource]) => id.includes("TaskPersonProofDispatcherPolicy") && resource.Type === "AWS::IAM::Policy")![1];
+    const statements = (dispatcherPolicy.Properties!.PolicyDocument as { Statement: Array<Record<string, unknown>> }).Statement;
+    expect(statements).toHaveLength(3);
+    expect(JSON.stringify(statements.find((statement) => JSON.stringify(statement.Action).includes("dynamodb:GetItem") && statement.Effect === "Allow")?.Condition))
+      .toContain(JSON.stringify([...TASK_PERSON_DEVELOPER_RECORD_PROJECTION]));
+    expect(dispatcherPolicy.Properties!.Roles).toHaveLength(1);
+    expect(dispatcherPolicy.Properties!.PolicyName).toBe("staging-task-person-proof-dispatcher");
+    const invoke = statements.find((statement) => JSON.stringify(statement.Action).includes("lambda:InvokeFunction"));
+    expect(JSON.stringify(invoke?.Resource)).toContain("TaskPersonProofFunctionCurrentVersion");
   });
 
   it("keeps the proof function and role free of unrelated runtime permissions", () => {
@@ -477,7 +537,7 @@ describe("the named TEST proof-only installation gate", () => {
     expect(properties).not.toHaveProperty("VpcConfig");
     const variables = (properties.Environment as { Variables: Record<string, unknown> }).Variables;
     expect(variables).toMatchObject({ AGENTX_ENV: "agentxlivetest123" });
-    expect(Object.keys(variables).sort()).toEqual(["AGENTX_ENV", "SLACK_SECRET_ARN", "SLACK_TEAM_ID"]);
+    expect(Object.keys(variables).sort()).toEqual(["AGENTX_ACCOUNT_ID", "AGENTX_ENV", "SLACK_SECRET_ARN", "SLACK_TEAM_ID"]);
     const roleId = ((properties.Role as { "Fn::GetAtt": [string, string] })["Fn::GetAtt"])[0];
     expect(roleId).toContain("TaskPersonProofRole");
     const role = resources[roleId]!.Properties!;
@@ -519,10 +579,13 @@ describe("the named TEST proof-only installation gate", () => {
       Resource: [{ "Fn::GetAtt": [tableId, "Arn"] }],
       Condition: {
         "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["DEVELOPER#*"] },
-        "ForAllValues:StringEquals": { "dynamodb:Attributes": ["pk", "sk", "developerId", "provider", "issuer", "subject", "slackUserId", "revoked", "displayName"] },
+        "ForAllValues:StringEquals": { "dynamodb:Attributes": [...TASK_PERSON_DEVELOPER_RECORD_PROJECTION] },
         Null: { "dynamodb:LeadingKeys": "false", "dynamodb:Attributes": "false" },
       },
     });
+    // The attributes IAM allows are the ones the person runtime asks for, name for name: a name asked for and not allowed (`mergedInto` was) refuses every read of a sign-in row.
+    expect([...TASK_PERSON_DEVELOPER_RECORD_ATTRIBUTES].sort()).toEqual([...TASK_PERSON_DEVELOPER_RECORD_PROJECTION].sort());
+    expect(TASK_PERSON_DEVELOPER_RECORD_PROJECTION).toContain("mergedInto");
     const expectedProjectionDeny = {
       Sid: "DenyGetItemUnlessSpecificAttributes",
       Effect: "Deny",
