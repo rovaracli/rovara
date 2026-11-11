@@ -179,7 +179,8 @@ describe("deciding on the task page's card, end to end (OWNER DECISION 7)", () =
     const staleApprove = JSON.stringify({ taskId: e2e.taskId(), revision: workflow.revision, digest: workflow.artifacts.at(-1)!.sha256, decision: "APPROVE" });
     await e2e.click("agentx_workflow_approve", { messageTs: card.ts, staleValue: staleApprove });
     await e2e.settle();
-    expect(e2e.slack.ephemerals.some((entry) => /medium risk|in Rovara/i.test(entry.text))).toBe(true);
+    // U4: the legacy button's stand-in has no Rovara sign-in, so for a medium plan it is asked to link first (it was told to use the card); either way nothing is decided.
+    expect(e2e.slack.ephemerals.some((entry) => /medium risk|in Rovara|Link your account to Rovara/i.test(entry.text))).toBe(true);
     expect(e2e.workflow().decisions.filter((entry) => entry.decision === "APPROVE")).toHaveLength(0);
     expect(codingRuns(e2e)).toEqual([]);
     expect((await onCard(e2e, OWNER)).status).toBe(200);

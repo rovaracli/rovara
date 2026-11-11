@@ -203,6 +203,10 @@ export const AUDIT_ACTIONS = [
   "company.design_review_policy_proposed",
   "company.design_review_policy_changed",
   "company.change_applied_to_project",
+  // Approval place (U4, decision 83): a company admin changed the recent sign-in window for approvals outside Rovara, or a lengthening waits for a different admin; and a plan was decided by someone other than its owner or from a place outside the app.
+  "company.approval_window_proposed",
+  "company.approval_window_changed",
+  "approval.place_decided",
   // Proof and evidence (W4/W5): the approved test environment changed; a task reader downloaded a stored evidence artifact.
   "project.test_env_changed",
   // Test services, slice 3 (M1): a maintainer approved, rejected or withdrew a hand-written or recorded answer set (a fake) of a project.
@@ -556,6 +560,11 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "company.design_review_policy_proposed": ["field", "from", "to"],
   "company.design_review_policy_changed": ["field", "from", "to", "mode", "revision"],
   "company.change_applied_to_project": ["changeRevision", "settingCount"],
+  // Seconds, whole numbers. `mode` is `direct`, `second_person`, `sole_owner_exception` or `cancelled`.
+  "company.approval_window_proposed": ["from", "to"],
+  "company.approval_window_changed": ["from", "to", "mode", "revision"],
+  // `place` is browser, chat, tracker-comment, code-host-comment or tool; `risk` low, medium or high; `answer` approve, request_changes or reject; `role` owner, co-owner or maintainer. `windowSeconds` and `signInAgeSeconds` only for a medium approval from outside the app (the company's window and how old the person's last interactive Rovara sign-in was); never a name or text.
+  "approval.place_decided": ["place", "risk", "answer", "role", "windowSeconds", "signInAgeSeconds"],
   // `tier` is `sandbox`, `preview` or `shared`; `lessSafeCount` is how many less-safe fields the change turned on. `artifactKind` and `retentionClass` are the fixed words of the evidence contract.
   "project.test_env_changed": ["revision", "tier", "lessSafeCount"],
   // The set's digest only (64 hex): never a word of its content. The actor, the org and the project are the event's own.

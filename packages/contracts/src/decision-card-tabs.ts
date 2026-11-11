@@ -165,6 +165,16 @@ export const DecisionRequestChangesBodySchema = z.object({
 }).strict();
 export type DecisionRequestChangesBody = z.infer<typeof DecisionRequestChangesBodySchema>;
 
+/**
+ * `POST /v1/app/decisions/{kind}/{subject}/dismiss` (approval place, A-49): "Not now" from a chat. It hides nothing else and decides nothing: the card stays waiting, the person's dismissal is only remembered. It is never a rejection
+ * (a rejection needs a signed-in session). `shownDigest` is what the message showed: a changed card is refused as stale.
+ */
+export const DecisionDismissBodySchema = z.object({ requestId: z.string().uuid(), shownDigest: DecisionDigestSchema }).strict();
+export type DecisionDismissBody = z.infer<typeof DecisionDismissBodySchema>;
+/** What a dismissal answers: the card, and that it is still waiting. */
+export const DecisionDismissedSchema = z.object({ cardId: DecisionCardIdSchema, outcome: z.literal("dismissed") }).strict();
+export type DecisionDismissed = z.infer<typeof DecisionDismissedSchema>;
+
 /** What an approve or a reject answers when it was decided: the card, what was recorded and, on a card with tabs, which documents are still waiting. */
 export const DecisionAnsweredSchema = z
   .object({

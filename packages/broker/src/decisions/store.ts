@@ -27,18 +27,24 @@ export interface DecisionStore {
   recordDecision(record: DecisionRecord): Promise<void>;
   /** The decision this person recorded under this request id, so a retry after success gets the earlier answer. */
   findDecision(who: DecisionWho, requestId: string): Promise<DecisionRecord | undefined>;
+  /** Approval place (A-49): remembers that this person said "Not now" to what the digest names, from a chat. Decides nothing; once per request id. Absent in a store that does not keep it (the route then still answers, and remembers nothing). */
+  recordDismissal?(record: DismissalRecord): Promise<void>;
 }
+
+export interface DismissalRecord extends DecisionWho { cardId: string; digest: string; requestId: string; at: string }
 
 /** An opened-evidence record counts for this long. */
 export const DECISION_EVIDENCE_OPEN_TTL_MS = 3 * 86_400_000;
 const DECISION_RECORD_TTL_DAYS = 400;
 
-export function inMemoryDecisionStore(now: () => number = Date.now): DecisionStore & { decisions: DecisionRecord[] } {
+export function inMemoryDecisionStore(now: () => number = Date.now): DecisionStore & { decisions: DecisionRecord[]; dismissals: DismissalRecord[] } {
   const opened = new Map<string, { digest: string; at: string }>();
   const decisions: DecisionRecord[] = [];
+  const dismissals: DismissalRecord[] = [];
   const keyOf = (key: EvidenceOpenedKey) => `${key.orgId}|${key.developerId}|${key.cardId}|${key.tab ?? "-"}`;
   return {
-    decisions,
+    decisions, dismissals,
+    async recordDismissal(record) { if (!dismissals.some((existing) => existing.requestId === record.requestId && existing.developerId === record.developerId)) dismissals.push(record); },
     async recordEvidenceOpened(key, digest, at) { opened.set(keyOf(key), { digest, at }); },
     async evidenceOpenedAt(key, digest) {
       const found = opened.get(keyOf(key));
@@ -71,6 +77,17 @@ export function dynamoDecisionStore(deps: DynamoDecisionStoreDependencies): Deci
       const item = read.Item;
       if (item === undefined || item["digest"] !== digest || typeof item["openedAt"] !== "string") return undefined;
       return deps.now() - Date.parse(item["openedAt"]) < DECISION_EVIDENCE_OPEN_TTL_MS ? item["openedAt"] : undefined;
+    },
+    async recordDismissal(record) {
+      try {
+        await deps.documentClient.send(new PutCommand({
+          TableName: deps.tableName,
+          Item: { pk: partition(record), sk: `DISMISSED#${record.requestId}`, entityType: "DECISION_DISMISSAL", orgId: record.orgId, developerId: record.developerId, cardId: record.cardId, digest: record.digest, requestId: record.requestId, dismissedAt: record.at, [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(deps.now() / 1000) + Math.floor(DECISION_EVIDENCE_OPEN_TTL_MS / 1000) },
+          ConditionExpression: "attribute_not_exists(pk)",
+        }));
+      } catch (error) {
+        if (!(error instanceof Error && error.name === "ConditionalCheckFailedException")) throw error;
+      }
     },
     async findDecision(who, requestId) {
       const read = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: { pk: partition(who), sk: `DECIDED#${requestId}` }, ConsistentRead: true })) as { Item?: Record<string, unknown> };

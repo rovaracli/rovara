@@ -17,6 +17,7 @@ import { auditorAllowedByEdition } from "../../org/auditor.js";
 import type { EditionPolicy } from "@agentx/contracts";
 import { decisionCardsEnabled } from "../../proof/switch.js";
 import { orgStoreOf } from "./dependency-wiring.js";
+import { SLACK_DECISION_SESSION_ID } from "../../approval-place/evaluate.js";
 import type { AwsBrokerDependencies } from "./definitions.js";
 
 export interface SlackDecisionPressEvent {
@@ -98,7 +99,7 @@ export async function handleSlackDecisionPress(
       const row = member === undefined ? undefined : signedIn.get(member.developerId);
       if (member === undefined || row === undefined) return undefined;
       // The caller is the signed-in person with their live role. No browser session: the Slack press never carries one.
-      return { developerId: member.developerId, sessionId: "slack-decision", amr: "slack", name: safeDisplayName(row.displayName, member.developerId), orgId: member.orgId, orgRole: member.orgRole as DeveloperCaller["orgRole"], slackUserId: event.press.userId };
+      return { developerId: member.developerId, sessionId: SLACK_DECISION_SESSION_ID, amr: "slack", name: safeDisplayName(row.displayName, member.developerId), orgId: member.orgId, orgRole: member.orgRole as DeveloperCaller["orgRole"], slackUserId: event.press.userId };
     },
     async route(caller, request) {
       const cardDeps = (seams.cardDepsOf ?? decisionRouteDepsOf)(routeDependencies, caller, env);

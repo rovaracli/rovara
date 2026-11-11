@@ -558,6 +558,21 @@ export function auditCompanyDesignReviewPolicyProposed(input: AuditBuilderBase &
   return build("company.design_review_policy_proposed", input, { kind: "org", id: input.orgId }, { field: input.field, from: input.from, to: input.to });
 }
 
+/** `occurrence`: `auditOccurrence("approval_window", item revision)` for a change, the proposal's id for a cancel. `from` and `to` are the window in whole seconds. */
+export function auditCompanyApprovalWindowChanged(input: AuditBuilderBase & { from: number; to: number; mode: "direct" | "second_person" | "sole_owner_exception" | "cancelled"; revision: number }): AuditEventInput {
+  return build("company.approval_window_changed", input, { kind: "org", id: input.orgId }, { from: input.from, to: input.to, mode: input.mode, revision: input.revision });
+}
+
+/** `occurrence`: the proposal's id. A different admin has to approve a longer window. */
+export function auditCompanyApprovalWindowProposed(input: AuditBuilderBase & { from: number; to: number }): AuditEventInput {
+  return build("company.approval_window_proposed", input, { kind: "org", id: input.orgId }, { from: input.from, to: input.to });
+}
+
+/** `occurrence`: the decision's request id. One event for a plan decided by someone other than its owner, or approved from outside the app. Fixed words and whole numbers only. */
+export function auditApprovalPlaceDecided(input: AuditBuilderBase & { taskId: string; place: string; risk: string; answer: string; role: string; windowSeconds?: number; signInAgeSeconds?: number }): AuditEventInput {
+  return build("approval.place_decided", input, { kind: "task", id: input.taskId }, { place: input.place, risk: input.risk, answer: input.answer, role: input.role, windowSeconds: input.windowSeconds, signInAgeSeconds: input.signInAgeSeconds });
+}
+
 /** `occurrence`: `auditOccurrence(project, company document revision)`. One event per project the change reached; `settingCount` is the number of settings that changed for it. */
 export function auditCompanyChangeAppliedToProject(input: AuditBuilderBase & { projectName: string; changeRevision: number; settingCount: number }): AuditEventInput {
   return build("company.change_applied_to_project", input, { kind: "project", name: input.projectName }, { changeRevision: input.changeRevision, settingCount: input.settingCount });

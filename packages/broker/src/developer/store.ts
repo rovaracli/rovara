@@ -741,6 +741,22 @@ export class DeveloperSignInStore {
     return link === undefined || (link.unlinkedFrom !== undefined && link.developerId !== ownerKeyForSubject(SLACK_OIDC_ISSUER, slackUserId)) ? undefined : link.developerId;
   }
 
+  /**
+   * Approval place (U4, A-09): when the person last signed in INTERACTIVELY to Rovara by one of `methods`, as an ISO time, or undefined. It is the newest `lastSignInAt` of the developer's active identity links of those methods:
+   * a link's time is written at a completed sign-in (`touchIdentity`, or the link's own creation) and never by a refresh, so this is the person's sign-in and not a session that stayed alive. An unlinked identity does not count
+   * (`activeIdentityItems`); an unreadable time is skipped. Which methods count is the caller's rule (decision Q3: a Slack or GitHub sign-in is not a Rovara sign-in).
+   */
+  async lastInteractiveSignInAt(developerId: string, methods: readonly DeveloperSignInMethod[]): Promise<string | undefined> {
+    let newest: { at: number; iso: string } | undefined;
+    for (const link of await this.activeIdentityItems(developerId)) {
+      if (!methods.includes(link.provider)) continue;
+      const at = Date.parse(link.lastSignInAt);
+      if (!Number.isFinite(at)) continue;
+      if (newest === undefined || at > newest.at) newest = { at, iso: new Date(at).toISOString() };
+    }
+    return newest?.iso;
+  }
+
   /** The identities linked to a developer, oldest link first. Issuer and subject never leave the store. */
   async identitiesOf(developerId: string): Promise<LinkedIdentity[]> {
     return (await this.activeIdentityItems(developerId)).map((link) => ({
