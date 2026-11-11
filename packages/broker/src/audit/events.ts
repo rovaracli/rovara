@@ -1078,3 +1078,15 @@ export function auditScriptTokenRevoked(input: AuditBuilderBase & { tokenId: str
 export function auditScriptTokenUsed(input: AuditBuilderBase & { tokenId: string; day: string; permission: string }): AuditEventInput {
   return build("script_token.used", input, { kind: "script_token", id: input.tokenId }, { day: input.day, permission: input.permission });
 }
+
+// Agent publish requests (experience decision 24, owner decision 91) ---------------------------------------------------------------------
+
+export type AgentPublicationAuditAction = Extract<AuditAction, `agent_publication.${string}`>;
+
+/**
+ * `occurrence`: the request's approval id (a request is asked, decided and withdrawn once each), or for a request applied at once `auditOccurrence(agentId, requestId)`.
+ * The target is the agent. Facts are the approval id, the version, `targetKind` and fixed words: the target project's name is never a fact.
+ */
+export function auditAgentPublication(input: AuditBuilderBase & { action: AgentPublicationAuditAction; agentId: string; facts: Record<string, Fact> }): AuditEventInput {
+  return build(input.action, input, { kind: "agent", id: input.agentId }, input.facts);
+}

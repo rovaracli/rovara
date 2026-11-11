@@ -7,7 +7,7 @@ import { MERGE_INDEX_SK_PREFIX, PUSH_INDEX_ENTITY, PUSH_INDEX_SK_PREFIX } from "
 import { GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
 import { dropScopeClaim, SLACK_ADD_SK_PREFIX, SOURCE_OPTIONS_SK_PREFIX, SOURCE_REQUEST_SK_PREFIX, SOURCE_REVISION_SK_PREFIX, SOURCE_SCOPE_SK_PREFIX } from "./source-store.js";
 import { LESSON_SK_PREFIX, teamRecordPk, type OrgId } from "@rovara-code/contracts";
-import { RECORD_EVENT_SK_PREFIX, RECORD_FACT_SK_PREFIX, recordActorSourceHash, recordDeveloperHash } from "@agentx/cloud-contracts";
+import { RECORD_EVENT_SK_PREFIX, RECORD_FACT_SK_PREFIX, recordActorSourceHash, recordDeveloperHash, agentFavouritesKey } from "@agentx/cloud-contracts";
 import type { Item } from "../agents/table-writes.js";
 import { auditRecordErased } from "./audit.js";
 import { tableLakeDeleteQueue } from "./lake-queue.js";
@@ -242,6 +242,8 @@ const STEP_HANDLERS: Record<Exclude<EraseStep, "rows">, (context: EraseContext) 
     // Slack user id. They expire within hours, but an unkeyed hash of an enumerable id is personal data, so an erase still covers them. A failure here FAILS the config step on purpose (privacy over best
     // effort): the step is reported unfinished and the next run, and the delayed second pass, try again.
     await eraseRateItems(context.deps.table, context.orgId, context.who.developerId, context.ids);
+    // Their favourite agents (experience decision 23): one item whose key holds their developer id; it goes whole (the value is only agent ids, nobody else's).
+    if (context.who.developerId !== undefined) await deleteItem(context.deps.table, agentFavouritesKey(context.orgId, context.who.developerId));
     return known;
   },
   // Lessons: those that rest on the person are HARD-deleted whatever their code citations say, the person is scrubbed from the rest (authorship, approvals), and the id leaves every

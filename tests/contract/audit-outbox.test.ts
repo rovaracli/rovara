@@ -868,6 +868,8 @@ describe("I4: the builders", () => {
     ["auditScriptTokenCreated", (occurrence) => builders.auditScriptTokenCreated({ ...base, occurrence, details, tokenId: "stk_" + "1".repeat(20), days: 30, projects: 2, permissions: "read" })],
     ["auditScriptTokenRevoked", (occurrence) => builders.auditScriptTokenRevoked({ ...base, occurrence, details, tokenId: "stk_" + "1".repeat(20), by: "creator" })],
     ["auditScriptTokenUsed", (occurrence) => builders.auditScriptTokenUsed({ ...base, occurrence, details, tokenId: "stk_" + "1".repeat(20), day: "2026-11-07", permission: "read" })],
+    // Agent publication (srv/agent-publish): the approval id, version and target kind only; the target project's name is never a fact
+    ["auditAgentPublication", (occurrence) => builders.auditAgentPublication({ ...base, occurrence, details, action: "agent_publication.requested", agentId: "agt_1", facts: { approvalId: "apr_1", targetKind: "project", version: 2 } })],
   ];
 
   it("covers every builder the module exports (a new builder needs a case here)", () => {

@@ -6,8 +6,8 @@
 // member's role on the run's project), plus the member's LIVE org membership. The candidates stored on the record are never consulted (R68).
 // `decide` is `decideApproval` as that member, with the session's proof, under a request id derived from the session so a retry replays.
 import { createHash } from "node:crypto";
-import { ApprovalIdSchema, LEVEL_WORDS, ROVARA_CODE_AGENT_ID, agentXError, decisionTaskSessionOf, isBuiltinAgentId, stepOfLessSafeReason, trackRecordLines, type OrgId } from "@rovara-code/contracts";
-import { type AuditProof } from "@agentx/cloud-contracts";
+import { ApprovalIdSchema, LEVEL_WORDS, ROVARA_CODE_AGENT_ID, agentXError, decisionTaskSessionOf, isBuiltinAgentId, stepOfLessSafeReason, trackRecordLines, type OrgId, canonicalJson } from "@rovara-code/contracts";
+import { type AuditProof, AGENT_PUBLISH_NOTE_MAX } from "@agentx/cloud-contracts";
 import { AgentSessionStore } from "../agent-sessions/store.js";
 import { takeOverFacts } from "../agent-sessions/take-over.js";
 import type { ConfirmView, DecideInspection, DecideKind, DecideOutcome, DecideTarget } from "../developer/decide-kinds.js";
@@ -91,6 +91,7 @@ const TITLES: Record<string, string> = {
   known_failing: "Confirm marking tests as already failing",
   card_decision: "Confirm a high-risk decision on its card",
   agent_run_version: "Run an older version of an agent that is less safe than the one that runs now",
+  agent_publication: "Publish an agent to a project or the whole company",
 };
 
 /** What a pending change is called: the title of its page (Home shows it too). */
@@ -135,6 +136,15 @@ async function agentChangeFacts(deps: ApprovalDependencies, orgId: OrgId, subjec
     facts.push(fact("Version", subject.expectedCurrentVersion === undefined ? "Not recorded when this was asked" : subject.expectedCurrentVersion === 0 ? "No version published yet" : `Version ${String(subject.expectedCurrentVersion)} (running now${subject.versionDigest === undefined ? "" : `, digest ${prefix(subject.versionDigest)}`})`));
     const bound = live === undefined ? undefined : await currentVersionBinding(deps, live).catch(() => undefined);
     outOfDate = live !== undefined && ((live.sharesRevision ?? 0) !== subject.expectedSharesRevision || (bound !== undefined && (subject.expectedCurrentVersion !== bound.expectedCurrentVersion || subject.versionDigest !== bound.versionDigest)));
+  } else if (subject.kind === "agent_publication") {
+    // What was asked: the target, and the version the approver is deciding about (the one that ran when it was asked, by its digest).
+    facts.push(
+      fact("Publish to", subject.target.kind === "company" ? "Everyone in your company" : `The ${subject.target.project} project (it moves there; you answer for it)`),
+      fact("Version", `Version ${String(subject.version)} (digest ${prefix(subject.digest)})`),
+      ...(subject.note === undefined ? [] : [fact("Why", shownText(subject.note, 300))]),
+    );
+    const bound = live === undefined ? undefined : await deps.store.getVersion(orgId, agentId, subject.version).catch(() => undefined);
+    outOfDate = live !== undefined && (live.currentVersion !== subject.version || bound?.digest !== subject.digest || canonicalJson(live.owner) !== canonicalJson(subject.expectedOwner) || live.status === "archived");
   } else if (subject.kind === "agent_run_version") {
     facts.push(
       fact("Version", `Run version ${String(subject.version)} (digest ${prefix(subject.digest)}) instead of version ${String(subject.expectedCurrentVersion)}, which ${builtin ? "your company uses" : "runs now"}`),
@@ -257,7 +267,8 @@ async function viewOf(deps: ApprovalDependencies, record: AnyApprovalRecord): Pr
   if (subject.kind === "card_decision") facts.push(fact("Decision", "The high-risk card you pressed Approve on. It is decided on its card, back on the task page."));
   if (subject.kind === "playbook_default_process") facts.push(fact("Project", subject.project), fact("Process layer version it replaces", String(subject.layerVersion)), fact("Playbook revision it applies to", String(subject.expectedRevision)));
   facts.push(expires);
-  return { title: changeTitleOf(subject.kind), facts, paragraphs: await changesWithRecords(deps, record) };
+  // An agent publish request's decliner may say why (experience decision 24): the page offers the optional reason, which only Decline sends.
+  return { title: changeTitleOf(subject.kind), facts, paragraphs: await changesWithRecords(deps, record), ...(subject.kind === "agent_publication" ? { declineReason: { max: AGENT_PUBLISH_NOTE_MAX } } : {}) };
 }
 
 async function callerOf(deps: ApprovalDependencies, target: DecideTarget, proof?: AuditProof): Promise<AgentCaller | undefined> {
@@ -307,13 +318,14 @@ export function approvalDecideKind(deps: ApprovalDependencies): DecideKind {
     return { status: "open", view };
   }
 
-  async function decide(target: DecideTarget, decision: "approve" | "decline", proof: AuditProof): Promise<DecideOutcome> {
+  async function decide(target: DecideTarget, decision: "approve" | "decline", proof: AuditProof, extra?: { reason?: string }): Promise<DecideOutcome> {
     // Only the page's fresh sign-in decides (R66): a proof of any other kind is refused here, whatever called.
     if (proof.kind !== "fresh_sign_in") throw agentXError("FORBIDDEN", `Decisions are made on the confirmation page. ${OPEN_AGAIN}`);
     const id = ApprovalIdSchema.safeParse(target.approvalId);
     const caller = id.success ? await callerOf(deps, target, proof) : undefined;
     if (!id.success || caller === undefined) throw agentXError("NOT_FOUND", "approval not found");
-    const body = { requestId: requestIdFor(proof, target.approvalId), decision: decision === "approve" ? "APPROVE" : "DECLINE" };
+    // The reason goes only with a decline (the decide body refuses it on an approval); the decision then stores and audits it as the API route does.
+    const body = { requestId: requestIdFor(proof, target.approvalId), decision: decision === "approve" ? "APPROVE" : "DECLINE", ...(decision === "decline" && extra?.reason !== undefined ? { reason: extra.reason } : {}) };
     await decideApproval(deps, caller, id.data, body);
     return outcomeOf(await getAnyApproval(deps, target.orgId, id.data), decision);
   }

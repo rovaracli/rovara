@@ -399,6 +399,11 @@ export const AUDIT_ACTIONS = [
   "company_rules.written_back",
   "company_rules.sync_connected",
   "company_rules.sync_disconnected",
+  // Agent publish requests (experience decision 24, owner decision 91): ids, version numbers and fixed words only. The target project's name is never a fact.
+  "agent_publication.requested",
+  "agent_publication.approved",
+  "agent_publication.declined",
+  "agent_publication.withdrawn",
 ] as const;
 
 export const AuditActionSchema = z.enum(AUDIT_ACTIONS);
@@ -768,6 +773,12 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "company_rules.written_back": ["version", "revision", "state"],
   "company_rules.sync_connected": ["place"],
   "company_rules.sync_disconnected": ["place"],
+  // Agent publish requests: `targetKind` is project or company; `approvalId` is the request's approval; `explained` says whether the decliner wrote why (never the words). A maintainer's own
+  // project applied at once writes no request event: the owner move's own `agent.owner_changed` is its record.
+  "agent_publication.requested": ["approvalId", "targetKind", "version"],
+  "agent_publication.approved": ["approvalId", "targetKind", "version"],
+  "agent_publication.declined": ["approvalId", "targetKind", "version", "explained"],
+  "agent_publication.withdrawn": ["approvalId", "targetKind", "version"],
   "company_image.registries_changed": ["registryCount", "authority"],
 };
 

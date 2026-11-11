@@ -99,7 +99,7 @@ for (const screen of PAGES) {
 for (const width of [1280, 390] as const) {
  test(`switch on at ${String(width)}: /app/live goes to Work, old links keep working, Projects lists projects once`, async ({ page, context, request, baseURL }) => {
   await enter(page, context, request, baseURL, "live", { "rovara.nav": "v2" }, width);
-  await page.goto("/app/live?filter=needs_me");await expect(page).toHaveURL(/\/app\/work\?filter=needs_me$/u);await expect(page.getByRole("heading", { name: "Live", exact: true, level: 1 })).toBeVisible();
+  await page.goto("/app/live?filter=needs_me");await expect(page).toHaveURL(/\/app\/work\?filter=needs_me$/u);await expect(page.getByRole("heading", { name: "Work", exact: true, level: 1 })).toBeVisible();await expect(page.getByRole("heading", { name: "Live", exact: true, level: 1 })).toHaveCount(0);
   const current = width < 768 ? page.getByRole("navigation", { name: "Main destinations" }) : page.locator("aside").getByRole("navigation", { name: "Workspace" });
   await expect(current.getByRole("link", { name: "Work", exact: true })).toHaveAttribute("aria-current", "page");
   expect(await noSidewaysScroll(page)).toBe(true);

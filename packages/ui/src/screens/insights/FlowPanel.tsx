@@ -8,7 +8,11 @@ import { BarList, NotReady, Panel, Reading } from "./parts.js";
 
 const NOT_ENOUGH = "Not enough work yet";
 const range = (value: { median: number; p90: number } | undefined, enough: boolean): string => !enough || value === undefined ? NOT_ENOUGH : `${durationWords(value.median)} (slowest tenth ${durationWords(value.p90)})`;
-const rate = (value: { of: number } & Record<string, number> | undefined, key: string, enough: boolean): string => !enough || value === undefined ? NOT_ENOUGH : rateWords(value[key] ?? 0, value.of);
+const rate = (value: { of: number } & Record<string, unknown> | undefined, key: string, enough: boolean): string => {
+ if (!enough || value === undefined) return NOT_ENOUGH;
+ const part = value[key];
+ return rateWords(typeof part === "number" ? part : 0, value.of);
+};
 function Figures({ figures }: { figures: FlowFigures }) {
  const wait = figures.enough ? figures.waitByNextActor ?? [] : [];
  return <>
@@ -42,7 +46,8 @@ export function FlowPanel({ overview, person, project }: { overview: InsightsOve
     // A panel that is still collecting shows its honest line; figures appear only for a company that has enough work, so nothing is drawn as a zero.
     return <>
      {data.status !== "ready" && <NotReady status={data.status} collectingSince={data.collectingSince ?? panel.collectingSince} now={now} />}
-     {data.status === "unavailable" || data.status === "unknown" ? null : <>
+     {/* `company` is absent unless the figures are collected: check the status first, and never draw a block that is not there. */}
+     {data.status === "unavailable" || data.status === "unknown" || data.company === undefined ? null : <>
       <Figures figures={data.company} />
       {data.byProject.length > 0 && <DataTable caption="Flow health by project" columns={columns} rows={data.byProject} rowKey={row => row.project} />}
      </>}
