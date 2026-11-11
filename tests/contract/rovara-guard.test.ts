@@ -6,6 +6,10 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { ROVARA_GUARD_PY } from "../../packages/model-proxy/src/rovara-guard.js";
 import { litellmConfig } from "../../packages/model-proxy/src/litellm-config.js";
+import { ROVARA_GUARD_PACKED } from "../../packages/model-proxy/src/rovara-guard-packed.js";
+import { ROVARA_GUARD_ENV, litellmStartCommand } from "../../packages/model-proxy/src/start-command.js";
+import { deflateSync } from "node:zlib";
+import { existsSync } from "node:fs";
 
 // A missing python3 must show as skipped, never as green: the refusal checks below run the real Python hook.
 const hasPython = spawnSync("python3", ["-I", "-c", "pass"]).status === 0;
@@ -14,6 +18,31 @@ const itPython = it.skipIf(!hasPython);
 describe("rovara_guard.py", () => {
   it("is the module the spike verified, byte for byte (update both together when LiteLLM or Pi is bumped)", () => {
     expect(ROVARA_GUARD_PY).toBe(readFileSync(new URL("../../docs/learnings/model-sources-spike/rovara_guard.py", import.meta.url), "utf8"));
+  });
+
+  describe("as the proxy's container unpacks it from the task definition", () => {
+    // The Python of the container's start command, with the file it writes moved into a temporary folder.
+    const unpack = (packed: string) => {
+      const dir = mkdtempSync(join(tmpdir(), "rovara-guard-unpack-"));
+      const python = /python -c '([^']+)'/u.exec(litellmStartCommand(4000))![1]!.replace("/tmp/rovara_guard.py", join(dir, "rovara_guard.py"));
+      const result = spawnSync("python3", ["-I", "-c", python], { env: { [ROVARA_GUARD_ENV]: packed }, encoding: "utf8" });
+      return { result, file: join(dir, "rovara_guard.py") };
+    };
+
+    itPython("writes the guard, byte for byte the spike's file, when it hashes to the pinned value", () => {
+      const { result, file } = unpack(ROVARA_GUARD_PACKED);
+      expect(result.status, result.stderr).toBe(0);
+      expect(readFileSync(file, "utf8")).toBe(readFileSync(new URL("../../docs/learnings/model-sources-spike/rovara_guard.py", import.meta.url), "utf8"));
+    });
+
+    itPython("stops, writing nothing, for a guard with one byte changed, an empty value, or a value that is not packed text", () => {
+      const changed = deflateSync(Buffer.from(`${ROVARA_GUARD_PY}#`), { level: 9 }).toString("base64");
+      for (const packed of [changed, "", "not base64 or zlib"]) {
+        const { result, file } = unpack(packed);
+        expect({ packed: packed.slice(0, 12), status: result.status, written: existsSync(file) }).toEqual({ packed: packed.slice(0, 12), status: 1, written: false });
+      }
+      expect(unpack(changed).result.stderr).toContain("does not match its pinned SHA-256");
+    });
   });
 
   it("forces every httpx send to stop at a redirect, refuses to start if one would be followed, and allow-lists the three inference routes", () => {
