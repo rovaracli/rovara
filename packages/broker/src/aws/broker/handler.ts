@@ -182,6 +182,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           ...(dependencies.companyImageResolver === undefined ? {} : { companyImageResolver: dependencies.companyImageResolver }),
           // Company rules (G-04): how the file sync reaches a repository.
           ...companyRulesRouteDependencies(dependencies),
+          ...(dependencies.companyImageMirrorStart === undefined ? {} : { companyImageMirrorStart: dependencies.companyImageMirrorStart }),
           // Test services, slice 3: the fixture store for the hand-written answer set routes (only with `tx` on and the install's fixture key).
           ...fixtureStoreForRoutes(dependencies),
           sessionDiffFiles: dependencies.githubPullRequests.listPullRequestFiles === undefined ? undefined : (url, number, options, scope) => dependencies.githubPullRequests.listPullRequestFiles!(url, number, options, githubScope(dependencies, scope.orgId)),
@@ -803,7 +804,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       if (request.method === "POST" && url.pathname === "/v1/internal/context-tools/call") return json(await handleContextTools(dependencies, request, "call"), request.requestId);
       // Saved project images: the push login and result are callback actions only where the registry is installed; elsewhere those paths are not found, as any unknown path.
       const savedEnvOn = dependencies.savedEnvDeps !== undefined && savedEnvEnabled();
-      const callback = new RegExp(`^\\/v1\\/internal\\/workspaces\\/([0-9a-f-]+)\\/operations\\/([0-9a-f-]+)\\/(events|artifacts|result|candidate-export|candidate-build-source|baseline-source|e2e-admission|e2e-evidence|e2e-model-budget|feedback-bundles|feedback-approval|pull-request|pull-request-update|codebuild|chatgpt-token|chatgpt-status|model-fallback|setup-agent|nightly-result|fixture-set${savedEnvOn ? "|saved-env-push-login|saved-env-result" : ""})$`).exec(
+      const callback = new RegExp(`^\\/v1\\/internal\\/workspaces\\/([0-9a-f-]+)\\/operations\\/([0-9a-f-]+)\\/(events|artifacts|result|candidate-export|candidate-build-source|baseline-source|e2e-admission|e2e-evidence|e2e-model-budget|feedback-bundles|feedback-approval|pull-request|pull-request-update|codebuild|chatgpt-token|chatgpt-status|model-fallback|setup-agent|nightly-result|fixture-set|company-image-login${savedEnvOn ? "|saved-env-push-login|saved-env-result" : ""})$`).exec(
         url.pathname,
       );
       if (request.method === "POST" && callback?.[1] && callback[2] && callback[3]) {

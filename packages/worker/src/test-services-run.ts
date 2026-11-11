@@ -34,7 +34,7 @@ import { constants as fsConstants, readFileSync } from "node:fs";
 import { open, readFile, realpath, stat } from "node:fs/promises";
 import { resolve, sep } from "node:path";
 import {
-  CATALOG_REGISTRY_ROOT, PrepullListSchema, ServiceCatalogSchema, TEST_SERVICES_AWS_PLAN_FEATURE, TEST_SERVICES_FAKE_PLAN_FEATURE, TEST_SERVICES_FILE_SEED_FEATURE, TEST_SERVICES_PLAN_FEATURE, TEST_SERVICES_SEED_LOCK_FEATURE, TEST_SERVICES_USAGE_LIMITS, TEST_SERVICES_USAGE_RESULT_KEY, TestServicesUsageRecordSchema, agentXError, catalogEntryById, catalogRepositoryName,
+  CATALOG_REGISTRY_ROOT, PrepullListSchema, ServiceCatalogSchema, TEST_SERVICES_AWS_PLAN_FEATURE, TEST_SERVICES_COMPANY_IMAGE_PLAN_FEATURE, TEST_SERVICES_FAKE_PLAN_FEATURE, TEST_SERVICES_FILE_SEED_FEATURE, TEST_SERVICES_PLAN_FEATURE, TEST_SERVICES_SEED_LOCK_FEATURE, TEST_SERVICES_USAGE_LIMITS, TEST_SERVICES_USAGE_RESULT_KEY, TestServicesUsageRecordSchema, agentXError, catalogEntryById, catalogRepositoryName,
   type CatalogEdition, type CatalogEntry, type ServiceCatalog, type TaskAwsResource, type TaskDependencyPlan, type TestEnvTaskPlan, type TestServicesStartFailure, type TestServicesUsageRecord,
 } from "@agentx/contracts";
 import { TASK_SANDBOX_IMAGE_ENVIRONMENT, type TaskSandbox } from "./task-sandbox.js";
@@ -63,6 +63,7 @@ import { SeedError, createResetHooks, resetForNextCheck, seedRun, type ResetDepe
 import { SeedFileError, loadSeedFile, readSeedFile, seedFileDigest } from "./service-seed-file.js";
 import { seedLockHoldsInCheckout } from "./service-seed-lock.js";
 import { createFixtureDelivery, type FixtureDelivery, type FixtureSetCallback } from "./fixture-delivery.js";
+import { companyImageReference, pullCompanyImages, type CompanyImageLoginCallback, type CompanyImageTarget } from "./company-image-pull.js";
 import { fakeUsagePort, type FakeUsagePort } from "./fake-usage.js";
 import {
   createDockerServiceRunner, type SandboxAttachment, type ServiceRunner, type ServiceSession,
@@ -211,6 +212,8 @@ export const WORKER_IMAGE_ENVIRONMENT = "AGENTX_WORKER_IMAGE";
 /** The catalog the worker image ships, beside `dist/` (the same relative place from `src/` and from `dist/`). It is copied into the image at build time (environments/base/Dockerfile) from the release's committed catalog. */
 export const BAKED_CATALOG_URL = new URL("../service-catalog/catalog.json", import.meta.url);
 const BAKED_CATALOG_MAX_BYTES = 512 * 1024;
+/** The install's own registry host, in the form an ECR login has (the broker's `SavedEnvRegistryAuth`). */
+const ECR_REGISTRY_HOST = /^\d{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com(?:\.cn)?$/u;
 
 /**
  * The catalog that is PART OF THIS WORKER IMAGE (H4): the worker verifies no signature at run time and trusts no key. The image comes from the release pipeline, so its files (this catalog, with the digests it pins, and
@@ -297,6 +300,8 @@ interface Base {
   emulator?: EmulatorBase;
   /** Slice 3: this base is a fake server, serving the fixture set with this digest (the plan's pin). */
   fake?: { digest: string };
+  /** Switch `pj`: this base is a company-approved image, run from the install's own mirror of it (reference: registry, mirror repository and the approved digest). Its run profile is `entry`'s, exactly as for a catalog image. */
+  company?: { imageId: string; reference: string; repository: string };
 }
 
 /** What the plan's emulated entries add up to: their ids (each reports its own usage row), the AWS services they need, the region the code is told, and the infrastructure files that declare the resources. */
@@ -366,7 +371,7 @@ async function requireLocalImages(docker: DockerCli, config: Pick<TestServicesCo
     if (signal?.aborted === true) throw new TestServicesError("start_failed");
     // A fake runs from the worker's own image (the probe image), which is on this host by being the worker's: it has no catalog image to pull.
     if (base.fake !== undefined) continue;
-    const reference = `${config.registry}/${catalogRepositoryName(config.catalogEnv, base.plan.repository)}@sha256:${base.plan.digest}`;
+    const reference = base.company?.reference ?? `${config.registry}/${catalogRepositoryName(config.catalogEnv, base.plan.repository)}@sha256:${base.plan.digest}`;
     const present = await docker.run(["image", "inspect", "--format", "{{.Id}}", reference], { timeoutMs: DOCKER_CALL_TIMEOUT_MS, ...(signal === undefined ? {} : { signal }) }).catch(() => undefined);
     if (present === undefined || present.exitCode !== 0) for (const id of base.emulator?.ids ?? [base.plan.id]) missing.set(id, "pull_failed");
   }
@@ -379,7 +384,7 @@ const randomAlphanumeric = (length: number): string => randomBytes(length).toStr
  * The plan's dependencies against the worker's own signed catalog: the plan names an entry, a repository and a digest, and the catalog must say the same (family, backing, pinned digest, edition, not retired). Anything else
  * is `mismatch`: the broker's plan is never trusted to name an image. The user and the database come from the plan's config or fixed defaults, and must have the launcher's plain form.
  */
-function resolveDependencies(catalog: ServiceCatalog, dependencies: readonly TaskDependencyPlan[], config: Pick<TestServicesConfig, "edition">): Base[] {
+function resolveDependencies(catalog: ServiceCatalog, dependencies: readonly TaskDependencyPlan[], config: Pick<TestServicesConfig, "edition" | "registry" | "catalogEnv">): Base[] {
   const emulated = dependencies.filter((plan) => plan.backing === "emulated");
   const bases: Base[] = [];
   let group: Base | undefined;
@@ -391,10 +396,7 @@ function resolveDependencies(catalog: ServiceCatalog, dependencies: readonly Tas
       }
       continue;
     }
-    // Company-approved extra images (switch `pj`): this worker has no way to fetch or verify an image of a company's own (it starts only the digests baked into its image), so it refuses the plan BY NAME: a company image is
-    // told apart from a catalog plan with a wrong digest, and it is never started as one. The same "not available on this worker" sentence as a digest it does not pin.
-    if (plan.backing === "company") throw new TestServicesError("pull_failed", new Map([[plan.id, "pull_failed" as const]]));
-    bases.push(plan.backing === "fake" ? resolveFake(catalog, plan, config) : resolveLocal(catalog, plan, config));
+    bases.push(plan.backing === "fake" ? resolveFake(catalog, plan, config) : plan.backing === "company" ? resolveCompany(catalog, plan, config) : resolveLocal(catalog, plan, config));
   }
   return bases;
 }
@@ -479,6 +481,30 @@ function resolveEmulator(catalog: ServiceCatalog, emulated: readonly TaskDepende
   };
 }
 
+/**
+ * A company-approved image (switch `pj`) against the worker's own catalog and its own registry. The image itself is the broker's plan (the digest an admin approved, copied by the mirror into THIS install's registry); what
+ * the worker keeps for itself is everything that decides how it RUNS: the run profile is the signed catalog's entry for the image's kind (never the image's own), which must be a live real-software entry of the same family
+ * in this edition, for the profile repository the plan names; and the image is pulled only from a repository of this environment's own registry, at exactly the approved digest (`companyImageReference`). A plan that says
+ * anything else is `mismatch`: a company image is told apart from a catalog plan with a wrong digest, and is never started as one. A profile entry this worker image does not carry is the fixed `pull_failed`.
+ */
+function resolveCompany(catalog: ServiceCatalog, plan: TaskDependencyPlan, config: Pick<TestServicesConfig, "edition" | "registry" | "catalogEnv">): Base {
+  const entry = catalogEntryById(catalog, plan.catalogId);
+  if (entry === undefined) throw new TestServicesError("pull_failed", new Map([[plan.id, "pull_failed" as const]]));
+  const company = plan.company;
+  if (company === undefined || plan.digest === undefined || company.digest !== plan.digest || company.mirror.digest !== plan.digest) throw new TestServicesError("mismatch");
+  if (entry.backing !== "local" || entry.status === "retired" || entry.family !== plan.family || !entry.editions.includes(config.edition) || entry.image.repository !== plan.repository || entry.image.digest === undefined) throw new TestServicesError("mismatch");
+  const reference = companyImageReference({ registry: config.registry, catalogEnv: config.catalogEnv, repository: company.mirror.repository, digest: company.mirror.digest });
+  if (reference === undefined) throw new TestServicesError("mismatch");
+  const user = plan.config.user ?? DEFAULT_USER;
+  const database = plan.config.database ?? DEFAULT_DATABASE;
+  if (!HELPER_CREDENTIAL_PATTERNS.user.test(user) || !HELPER_CREDENTIAL_PATTERNS.database.test(database)) throw new TestServicesError("mismatch");
+  const aliases = plan.aliases.length > 0 ? [...plan.aliases] : [...entry.connect.defaultAliases];
+  const host = aliases[0];
+  const port = entry.run.ports[0];
+  if (host === undefined || port === undefined) throw new TestServicesError("mismatch");
+  return { plan, entry, aliases, host, port, user, database, resetDependency: { id: plan.id, seeds: plan.seeds, reset: plan.reset }, files: [], company: { imageId: company.imageId, reference, repository: company.mirror.repository } };
+}
+
 function resolveLocal(catalog: ServiceCatalog, plan: TaskDependencyPlan, config: Pick<TestServicesConfig, "edition">): Base {
   const entry = catalogEntryById(catalog, plan.catalogId);
   // A catalog id this worker image does not carry at all (the broker approved a newer catalog than the image): the same "not available on this worker" sentence as a digest it does not pin.
@@ -517,7 +543,7 @@ function materialize(base: Base, phase: "working" | "check", fixtures: ReadonlyM
   const credentials = { user: base.user, password: randomAlphanumeric(32), database: base.database };
   return {
     ...base,
-    request: { id: base.plan.id, name: base.plan.name, entry: base.entry, aliases: base.aliases, credentials, ...(base.files.length === 0 ? {} : { files: base.files }) },
+    request: { id: base.plan.id, name: base.plan.name, entry: base.entry, aliases: base.aliases, credentials, ...(base.files.length === 0 ? {} : { files: base.files }), ...(base.company === undefined ? {} : { image: base.company.reference }) },
     env: { id: base.plan.id, host: base.host, port: base.port, credentials, connect: { env: base.plan.connect, hostAliases: base.aliases } },
   };
 }
@@ -635,6 +661,8 @@ export interface StartTestServicesInput {
   signal?: AbortSignal;
   /** Slice 3: fetches the approved fixture set of a fake by digest, at the start of each phase that serves one (fixture-delivery.ts). Absent: a plan with a fake is refused (`fixtures`) before anything starts. */
   fixtureDelivery?: FixtureDelivery;
+  /** Switch `pj`: the run's `company-image-login` callback (callback-client.ts): the pull login of a mirrored company image. Absent: a plan with a company image not already on this host is refused (`pull_failed`). */
+  companyImageLogin?: CompanyImageLoginCallback | undefined;
 }
 
 const sha = (text: string): string => createHash("sha256").update(text).digest("hex");
@@ -719,6 +747,13 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
   // Before anything is made: the init files of each dependency, checked against the repositories' real folders.
   for (const base of bases) base.files = await initFilesOf(base.plan, root, input.repositoryPaths);
   // The worker NEVER pulls: root pulled the pinned digests at boot (boot-stage2.sh), and a digest that is not on this host now is the fixed pull_failed, before anything is made (the files above touch no Docker).
+  // ... except a company image: an admin approved it after boot, and the broker copied it into this install's own registry, so the worker pulls THAT copy now, by its approved digest, with a login the broker gives for that
+  // one repository (company-image-pull.ts). The source registry is never contacted. Anything that fails is the same fixed pull_failed as an image that is not here.
+  const companyTargets: CompanyImageTarget[] = bases.flatMap((base) => (base.company === undefined ? [] : [{ dependencyId: base.plan.id, imageId: base.company.imageId, reference: base.company.reference, repository: base.company.repository }]));
+  if (companyTargets.length > 0) {
+    const pullFailed = await pullCompanyImages({ docker, registry: config.registry, targets: companyTargets, login: input.companyImageLogin, tempParent: config.runDirectoryParent, signal: input.signal, ...(config.now === undefined ? {} : { now: config.now }) });
+    if (pullFailed.size > 0) throw new TestServicesError("pull_failed", new Map([...pullFailed].map((id) => [id, "pull_failed" as const])));
+  }
   await requireLocalImages(docker, config, bases, input.signal);
   const runId = `${input.operationId.replace(/[^A-Za-z0-9-]/gu, "-").slice(0, 48)}-${randomAlphanumeric(8)}`;
   const workspace = await setupWorkspaceKey(root);
@@ -1192,6 +1227,8 @@ export interface StartTaskTestServicesInput {
   cancellation?: Pick<WorkerCancellationController, "register"> | undefined;
   /** Slice 3: the run's `fixture-set` callback (callback-client.ts), for a plan with a fake. */
   fixtureSet?: FixtureSetCallback | undefined;
+  /** Switch `pj`: the run's `company-image-login` callback, for a plan with a company image. */
+  companyImageLogin?: CompanyImageLoginCallback | undefined;
 }
 
 /**
@@ -1217,6 +1254,7 @@ export async function startTaskTestServices(input: StartTaskTestServicesInput): 
       dependencies, operationId: input.operationId, rootPath: input.rootPath, repositoryPaths: input.repositoryPaths, sandbox: input.sandbox, hasDevcontainer: input.devcontainer,
       artifactSink: input.artifactSink, signal: stop.signal,
       ...(input.fixtureSet === undefined ? {} : { fixtureDelivery: createFixtureDelivery(input.fixtureSet) }),
+      ...(input.companyImageLogin === undefined ? {} : { companyImageLogin: input.companyImageLogin }),
       // A CHECKS run has no agent and no use for a working-phase Postgres: only the sealed rounds start services (H3).
       workingPhase: input.mode !== "CHECKS",
     });
@@ -1229,14 +1267,17 @@ export async function startTaskTestServices(input: StartTaskTestServicesInput): 
 }
 
 /** The features this worker adds to /ping for test services: the plan feature only when the worker has a test-services configuration (a worker without one would only refuse such a plan). */
-export function testServicesAdvertisedFeatures(environment: NodeJS.ProcessEnv = process.env, shipped: ShippedCatalogFiles = SHIPPED_CATALOG_FILES): Array<typeof TEST_SERVICES_PLAN_FEATURE | typeof TEST_SERVICES_AWS_PLAN_FEATURE | typeof TEST_SERVICES_FAKE_PLAN_FEATURE | typeof TEST_SERVICES_FILE_SEED_FEATURE | typeof TEST_SERVICES_SEED_LOCK_FEATURE> {
+export function testServicesAdvertisedFeatures(environment: NodeJS.ProcessEnv = process.env, shipped: ShippedCatalogFiles = SHIPPED_CATALOG_FILES): Array<typeof TEST_SERVICES_PLAN_FEATURE | typeof TEST_SERVICES_AWS_PLAN_FEATURE | typeof TEST_SERVICES_FAKE_PLAN_FEATURE | typeof TEST_SERVICES_FILE_SEED_FEATURE | typeof TEST_SERVICES_SEED_LOCK_FEATURE | typeof TEST_SERVICES_COMPANY_IMAGE_PLAN_FEATURE> {
   if (testServicesConfigFromEnvironment(environment, undefined, undefined) === undefined) return [];
   if (notPulledRepositories(environment) === "all") return [];
   // Slice 3: a worker whose image carries the catalog's fake server (a helper that runs from the worker's own image) can run a plan with a fake; it needs no image pulled.
   // TS-UX-1 item 9: every worker with test services loads a seed file (service-seed-file.ts). SEED-RISK-1: and checks a locked seed command's script before it runs it (service-seed-lock.ts).
-  const features: Array<typeof TEST_SERVICES_PLAN_FEATURE | typeof TEST_SERVICES_AWS_PLAN_FEATURE | typeof TEST_SERVICES_FAKE_PLAN_FEATURE | typeof TEST_SERVICES_FILE_SEED_FEATURE | typeof TEST_SERVICES_SEED_LOCK_FEATURE> = [TEST_SERVICES_PLAN_FEATURE, TEST_SERVICES_FILE_SEED_FEATURE, TEST_SERVICES_SEED_LOCK_FEATURE];
+  const features: Array<typeof TEST_SERVICES_PLAN_FEATURE | typeof TEST_SERVICES_AWS_PLAN_FEATURE | typeof TEST_SERVICES_FAKE_PLAN_FEATURE | typeof TEST_SERVICES_FILE_SEED_FEATURE | typeof TEST_SERVICES_SEED_LOCK_FEATURE | typeof TEST_SERVICES_COMPANY_IMAGE_PLAN_FEATURE> = [TEST_SERVICES_PLAN_FEATURE, TEST_SERVICES_FILE_SEED_FEATURE, TEST_SERVICES_SEED_LOCK_FEATURE];
   if (emulatorImagePrepulled(shipped, environment)) features.push(TEST_SERVICES_AWS_PLAN_FEATURE);
   if (fakeServerBaked(shipped)) features.push(TEST_SERVICES_FAKE_PLAN_FEATURE);
+  // Company-approved images (switch `pj`): offered only where the worker can really run them: it pulls from the install's own registry, so its registry must be an ECR registry host (the form the broker's logins have), and
+  // test services must be configured and not withheld (checked above). A worker with no such registry would only refuse the plan.
+  if (ECR_REGISTRY_HOST.test(environment[TEST_SERVICES_REGISTRY_ENVIRONMENT] ?? "")) features.push(TEST_SERVICES_COMPANY_IMAGE_PLAN_FEATURE);
   return features;
 }
 
@@ -1311,6 +1352,8 @@ export interface PrepareTestServices {
   onUsageRecord?(record: TestServicesUsageRecord): void | Promise<void>;
   /** Slice 3: the preparation's `fixture-set` callback, for a plan with a fake. */
   fixtureSet?: FixtureSetCallback;
+  /** Switch `pj`: the preparation's `company-image-login` callback, for a plan with a company image. */
+  companyImageLogin?: CompanyImageLoginCallback;
 }
 
 type ReadinessRunner = (command: Parameters<SeedPorts["runCommand"]>[0], index: number, rootPath: string) => Promise<CommandResult>;
@@ -1350,7 +1393,7 @@ export async function startPrepareTestServices(input: { options: PrepareTestServ
   let run: TestServicesRun;
   try {
     await input.sandbox.start();
-    run = await startTestServicesRun(config, { dependencies: options.dependencies, operationId: input.operationId, rootPath: input.rootPath, sandbox: input.sandbox, hasDevcontainer: false, repositoryPaths: input.repositoryPaths, signal: stop.signal, workingPhase: false, ...(options.fixtureSet === undefined ? {} : { fixtureDelivery: createFixtureDelivery(options.fixtureSet) }) });
+    run = await startTestServicesRun(config, { dependencies: options.dependencies, operationId: input.operationId, rootPath: input.rootPath, sandbox: input.sandbox, hasDevcontainer: false, repositoryPaths: input.repositoryPaths, signal: stop.signal, workingPhase: false, ...(options.fixtureSet === undefined ? {} : { fixtureDelivery: createFixtureDelivery(options.fixtureSet) }), ...(options.companyImageLogin === undefined ? {} : { companyImageLogin: options.companyImageLogin }) });
   } catch (error) {
     unregister?.();
     const failure = failureOf(error);

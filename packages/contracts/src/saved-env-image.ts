@@ -64,6 +64,19 @@ export function isSavedEnvRepositoryName(name: string): boolean {
   return REPOSITORY_NAME.test(name);
 }
 
+/**
+ * A company-approved image's mirror repository has the SAME prefix and org segment as a saved environment's, and its own last segment: `rovara-env/<env>/o<org hash>/c<image hash>` (company-image-mirror.ts). The two shapes
+ * are told apart by IAM: the mirror's own role reaches `o?{32}/c?{32}` only, and a project repository's `p<hex>` segment never matches a `/c`.
+ */
+const COMPANY_IMAGE_REPOSITORY_NAME = /^rovara-env\/[a-z][a-z0-9-]{0,19}\/o[a-f0-9]{32}\/c[a-f0-9]{32}$/u;
+export function isCompanyImageRepositoryName(name: string): boolean {
+  return COMPANY_IMAGE_REPOSITORY_NAME.test(name);
+}
+/** The IAM resource pattern of every mirror repository of an environment (`?` is exactly one character, so the two hashes are exactly 32 characters and nothing can sit between them). */
+export function companyImageRepositoriesArn(scope: SavedEnvAccountScope, env: string): string {
+  return `arn:${scope.partition}:ecr:${scope.region}:${scope.account}:repository/${savedEnvRepositoryPrefix(env)}/o${"?".repeat(32)}/c${"?".repeat(32)}`;
+}
+
 /** The fixed names of the three roles the broker assumes. Fixed, so the broker builds their ARNs from the environment alone and the deploy role can look them up before they exist. */
 /** What the names of the broker-assumed roles start with (the boundary names them with a trailing `*`). */
 export const savedEnvRolePrefix = (env: string): string => `agentx-${EnvName.parse(env)}-img-`;
@@ -72,12 +85,17 @@ export const savedEnvPullRoleName = (env: string): string => `agentx-${EnvName.p
 export const savedEnvManageRoleName = (env: string): string => `agentx-${EnvName.parse(env)}-img-manage`;
 /** The role ECR assumes to create a repository from the creation template. Fixed too, so Enterprise can name it in its own key policy BEFORE the install is deployed (the ARN is `arn:<partition>:iam::<account>:role/agentx/<env>/<this name>`). */
 export const savedEnvCreateRoleName = (env: string): string => `agentx-${EnvName.parse(env)}-img-create`;
+/**
+ * The role the company image mirror function assumes: push, read back and delete on mirror repositories (`o?/c?`) and nothing else. It is NOT the push or manage role: those reach every saved environment's repositories.
+ * Named `img-` like the other image roles, so the deploy boundary names all of them with the one `img-*` ARN (fixedNameRoleLookupStatement) and the boundary does not grow.
+ */
+export const companyImageMirrorRoleName = (env: string): string => `agentx-${EnvName.parse(env)}-img-mirror`;
 
 export interface SavedEnvAccountScope { partition: string; region: string; account: string }
 
 /** The ARN of one repository (or of `rovara-env/<env>/*` when given the prefix and a `*`). Refuses anything but a name this module makes, so a `*`, a `?` or a policy variable cannot get in. */
 export function savedEnvRepositoryArn(scope: SavedEnvAccountScope, repositoryName: string): string {
-  if (!isSavedEnvRepositoryName(repositoryName)) throw new Error("not a saved environment repository name");
+  if (!isSavedEnvRepositoryName(repositoryName) && !isCompanyImageRepositoryName(repositoryName)) throw new Error("not a saved environment or company image repository name");
   return `arn:${scope.partition}:ecr:${scope.region}:${scope.account}:repository/${repositoryName}`;
 }
 
@@ -114,6 +132,15 @@ export const savedEnvPushSessionPolicy = (scope: SavedEnvAccountScope, repositor
 export const savedEnvPullSessionPolicy = (scope: SavedEnvAccountScope, repositoryName: string): SessionPolicyJson => sessionPolicy(scope, repositoryName, SAVED_ENV_PULL_ACTIONS, "RegistryToken", "PullFromThisRepository", true);
 /** What a scan session may do: start a basic scan of ONE repository's images and read the findings. No token, no push, no pull. */
 export const savedEnvScanSessionPolicy = (scope: SavedEnvAccountScope, repositoryName: string): SessionPolicyJson => sessionPolicy(scope, repositoryName, ["ecr:StartImageScan", "ecr:DescribeImageScanFindings"], "", "ScanThisRepository", false);
+/** What the mirror's session may do: push, read back and delete in ONE mirror repository, and look at its settings (the template check). No registry token (the mirror uses the registry API, not a login), no scan, no other repository. */
+export const COMPANY_IMAGE_MIRROR_ACTIONS = [
+  "ecr:BatchCheckLayerAvailability", "ecr:InitiateLayerUpload", "ecr:UploadLayerPart", "ecr:CompleteLayerUpload", "ecr:PutImage", "ecr:BatchGetImage", "ecr:DescribeImages",
+  // Create-on-push, as for a saved environment's push.
+  "ecr:CreateRepository", "ecr:TagResource",
+  // The template check before and after the push, and the revoke's delete.
+  "ecr:DescribeRepositories", "ecr:GetRepositoryPolicy", "ecr:BatchDeleteImage", "ecr:DeleteRepository",
+] as const;
+export const companyImageMirrorSessionPolicy = (scope: SavedEnvAccountScope, repositoryName: string): SessionPolicyJson => sessionPolicy(scope, repositoryName, COMPANY_IMAGE_MIRROR_ACTIONS, "", "MirrorThisRepository", false);
 /** What a manage session may do: list, describe and delete the images of ONE repository, and delete the repository. No token, no push, no pull. */
 export const savedEnvManageSessionPolicy = (scope: SavedEnvAccountScope, repositoryName: string): SessionPolicyJson => sessionPolicy(scope, repositoryName, SAVED_ENV_MANAGE_ACTIONS, "", "ManageThisRepository", false);
 
@@ -122,25 +149,26 @@ export const savedEnvManageSessionPolicy = (scope: SavedEnvAccountScope, reposit
  * broad grant elsewhere in the account (the worker role's `ecr:BatchGetImage`, an administrator's) cannot read an image; the account's administrators keep the control actions (delete, lifecycle, policy).
  * Only the push role may write.
  */
-export function savedEnvRepositoryPolicy(input: { pushRoleArn: string; pullRoleArn: string; manageRoleArn: string }): { Version: "2012-10-17"; Statement: Array<Record<string, unknown>> } {
+export function savedEnvRepositoryPolicy(input: { pushRoleArn: string; pullRoleArn: string; manageRoleArn: string; /** The company image mirror's own role: it reads, writes and deletes in mirror repositories, and its IAM policy reaches no other. */ mirrorRoleArn?: string }): { Version: "2012-10-17"; Statement: Array<Record<string, unknown>> } {
+  const mirror = input.mirrorRoleArn === undefined ? [] : [input.mirrorRoleArn];
   return {
     Version: "2012-10-17",
     Statement: [
       {
         Sid: "OnlyTheRolesMayRead", Effect: "Deny", Principal: "*",
         Action: [...SAVED_ENV_PULL_ACTIONS, "ecr:BatchCheckLayerAvailability"],
-        Condition: { ArnNotEquals: { "aws:PrincipalArn": [input.pushRoleArn, input.pullRoleArn] } },
+        Condition: { ArnNotEquals: { "aws:PrincipalArn": [input.pushRoleArn, input.pullRoleArn, ...mirror] } },
       },
       {
         Sid: "OnlyThePushRoleMayWrite", Effect: "Deny", Principal: "*",
         Action: ["ecr:InitiateLayerUpload", "ecr:UploadLayerPart", "ecr:CompleteLayerUpload", "ecr:PutImage"],
-        Condition: { ArnNotEquals: { "aws:PrincipalArn": input.pushRoleArn } },
+        Condition: { ArnNotEquals: { "aws:PrincipalArn": mirror.length === 0 ? input.pushRoleArn : [input.pushRoleArn, ...mirror] } },
       },
       {
         // Deleting images and the repository is the manage role's; a lifecycle expiry is ECR's own action and is not an IAM principal's.
         Sid: "OnlyTheManageRoleMayDeleteImages", Effect: "Deny", Principal: "*",
         Action: ["ecr:BatchDeleteImage"],
-        Condition: { ArnNotEquals: { "aws:PrincipalArn": [input.manageRoleArn] } },
+        Condition: { ArnNotEquals: { "aws:PrincipalArn": [input.manageRoleArn, ...mirror] } },
       },
     ],
   };
@@ -173,7 +201,7 @@ const REGISTRY_HOST = /^\d{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com(?:\.cn)?$/u
 /** A registry login for ONE repository, short-lived. The worker uses it for one push or one pull and then forgets it. It is never logged and never in an image. */
 export const SavedEnvRegistryAuthSchema = z.object({
   registry: z.string().regex(REGISTRY_HOST, "an ECR registry host"),
-  repository: z.string().refine(isSavedEnvRepositoryName, "a saved environment repository name"),
+  repository: z.string().refine((name) => isSavedEnvRepositoryName(name) || isCompanyImageRepositoryName(name), "a saved environment or company image repository name"),
   username: z.literal("AWS"),
   password: z.string().min(16).max(8192),
   expiresAt: z.string().datetime(),
@@ -188,7 +216,7 @@ export const PREPARE_SAVED_ENV_FEATURE = "prepare.savedEnv.v1" as const;
  * queue, dead-letter queue), and a pull login must not be. The worker asks the broker for the login at pull time (`SAVED_ENV_LOGIN_PATH`), with the preparation's own grant, and never writes it down.
  */
 export const PrepareSavedEnvSchema = z.object({
-  repository: z.string().refine(isSavedEnvRepositoryName, "a saved environment repository name"),
+  repository: z.string().refine((name) => isSavedEnvRepositoryName(name) || isCompanyImageRepositoryName(name), "a saved environment or company image repository name"),
   digest: ImageDigestSchema,
   /** The test environment revision the image was built at. */
   testEnvRevision: z.number().int().min(1),
@@ -202,7 +230,7 @@ export const SAVED_ENV_LOGIN_PATH = "saved-env-login" as const;
 
 /** What a use works from: the invocation's reference and a login the worker just obtained. Never stored. */
 export const SavedEnvUseSchema = z.object({
-  repository: z.string().refine(isSavedEnvRepositoryName, "a saved environment repository name"),
+  repository: z.string().refine((name) => isSavedEnvRepositoryName(name) || isCompanyImageRepositoryName(name), "a saved environment or company image repository name"),
   digest: ImageDigestSchema,
   testEnvRevision: z.number().int().min(1),
   environmentKey: z.string().regex(/^[a-f0-9]{64}$/u),

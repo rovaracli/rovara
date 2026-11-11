@@ -37,7 +37,7 @@ import {
   type TestEnvironment,
   type TestEnvironmentBody,
   type TestEnvSeedTrust,
-  catalogEntryById, EDITION_ENV_VAR, type VerifiedCatalog,
+  catalogEntryById, EDITION_ENV_VAR, type CompanyImageMirrorJob, type VerifiedCatalog,
 } from "@agentx/contracts";
 import { auditOccurrence, auditProjectTestEnvChanged } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
@@ -73,6 +73,8 @@ export interface TestEnvDeps extends AuditDeps {
   env?: NodeJS.ProcessEnv;
   /** Slice 3: the install's fixture store (a factory over the production list). A fake is proposed and approved only for a set it says is approved for the company; without it none is. */
   fixtureStore?: FixtureStoreFactory | undefined;
+  /** Company images (`pj`): starts the copier for an approved image with no finished copy. Absent: the broker's own setting (`COMPANY_IMAGE_MIRROR_FUNCTION_NAME`), which an install without the mirror does not have. */
+  companyImageMirrorStart?: ((job: CompanyImageMirrorJob) => Promise<void>) | undefined;
 }
 
 /**

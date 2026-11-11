@@ -27,6 +27,9 @@ import {
   environmentRolePath,
   SavedEnvRegistryAuthSchema,
   savedEnvManageRoleName,
+  companyImageMirrorRoleName,
+  companyImageMirrorSessionPolicy,
+  isCompanyImageRepositoryName,
   savedEnvManageSessionPolicy,
   savedEnvPullRoleName,
   savedEnvPullSessionPolicy,
@@ -90,7 +93,7 @@ function repositoryOf(config: SavedEnvSessionConfig, orgId: string, projectId: s
   try { return savedEnvRepositoryName({ env: config.env, orgId, projectId }); } catch { return undefined; }
 }
 
-async function mint(
+async function mintRaw(
   config: SavedEnvSessionConfig, ports: SavedEnvSessionPorts, kind: "push" | "pull", roleName: string, policy: SessionPolicyJson, repository: string, durationSeconds: number,
 ): Promise<MintResult> {
   const text = JSON.stringify(policy);
@@ -115,11 +118,12 @@ function samePolicy(text: string | undefined, expected: unknown): boolean {
 }
 
 /** The repository policy the creation template gives every repository of this environment: built from the three fixed-name roles' ARNs, the same function the template uses. */
-export function expectedRepositoryPolicy(config: SavedEnvSessionConfig): ReturnType<typeof savedEnvRepositoryPolicy> {
+export function expectedRepositoryPolicy(config: SavedEnvSessionConfig, options: { withMirror?: boolean } = {}): ReturnType<typeof savedEnvRepositoryPolicy> {
   return savedEnvRepositoryPolicy({
     pushRoleArn: roleArnOf(config, savedEnvPushRoleName(config.env)),
     pullRoleArn: roleArnOf(config, savedEnvPullRoleName(config.env)),
     manageRoleArn: roleArnOf(config, savedEnvManageRoleName(config.env)),
+    ...(options.withMirror === false ? {} : { mirrorRoleArn: roleArnOf(config, companyImageMirrorRoleName(config.env)) }),
   });
 }
 
@@ -131,6 +135,12 @@ export async function mintManageSession(config: SavedEnvSessionConfig, ports: Sa
   if (!config.enabled) return { ok: false, reason: "disabled" };
   const repository = repositoryOf(config, input.orgId, input.projectId);
   if (repository === undefined) return { ok: false, reason: "bad_ids" };
+  return mintManageSessionFor(config, ports, repository);
+}
+
+/** The manage session for a repository NAMED by the caller (a company image's mirror, `companyImageRepositoryName`); the name must be a saved-environment-shaped one (the session policy builder refuses any other). */
+export async function mintManageSessionFor(config: SavedEnvSessionConfig, ports: SavedEnvSessionPorts, repository: string): Promise<ManageResult> {
+  if (!config.enabled) return { ok: false, reason: "disabled" };
   const policy = JSON.stringify(savedEnvManageSessionPolicy(config.scope, repository));
   if (policy.length >= 2_048) return { ok: false, reason: "unavailable" };
   try {
@@ -163,10 +173,26 @@ export async function mintScanSession(config: SavedEnvSessionConfig, ports: Save
 export async function verifyRepository(config: SavedEnvSessionConfig, ports: SavedEnvSessionPorts, input: { orgId: string; projectId: string }): Promise<{ ok: true; state: "matches" | "absent" } | { ok: false; reason: SessionRefusal }> {
   const manage = await mintManageSession(config, ports, input);
   if (!manage.ok) return manage;
+  return verifyManaged(config, ports, manage);
+}
+
+/** `verifyRepository` for a repository named by the caller. */
+export async function verifyRepositoryNamed(config: SavedEnvSessionConfig, ports: SavedEnvSessionPorts, repository: string): Promise<{ ok: true; state: "matches" | "absent" } | { ok: false; reason: SessionRefusal }> {
+  const manage = await mintManageSessionFor(config, ports, repository);
+  if (!manage.ok) return manage;
+  return verifyManaged(config, ports, manage);
+}
+
+export async function verifyManaged(config: SavedEnvSessionConfig, ports: SavedEnvSessionPorts, manage: { credentials: SessionCredentials; repository: string }): Promise<{ ok: true; state: "matches" | "absent" } | { ok: false; reason: SessionRefusal }> {
   let found: RepositoryDescription | "absent";
   try { found = await ports.inspectRepository(manage.credentials, manage.repository); } catch { return { ok: false, reason: "unavailable" }; }
   if (found === "absent") return { ok: true, state: "absent" };
-  const same = found.encryptionType === "KMS" && found.kmsKey === config.kmsKeyArn && found.imageTagMutability === "IMMUTABLE" && samePolicy(found.policyText, expectedRepositoryPolicy(config));
+  // A creation template applies only to repositories created AFTER it changes, and nothing rewrites the policy of an existing one. So a saved environment's (project's) repository made before the mirror role was added has
+  // the policy the template made then, without the mirror role, and it is exactly as good: the mirror role has no right there. It is accepted in either form. A mirror repository can only have been made by the template that
+  // names the mirror role, so it must have the policy WITH it (anything else is a repository someone else made first).
+  const policyIsRight = samePolicy(found.policyText, expectedRepositoryPolicy(config))
+    || (!isCompanyImageRepositoryName(manage.repository) && samePolicy(found.policyText, expectedRepositoryPolicy(config, { withMirror: false })));
+  const same = found.encryptionType === "KMS" && found.kmsKey === config.kmsKeyArn && found.imageTagMutability === "IMMUTABLE" && policyIsRight;
   return same ? { ok: true, state: "matches" } : { ok: false, reason: "unavailable" };
 }
 
@@ -184,7 +210,7 @@ export async function mintPushSession(config: SavedEnvSessionConfig, ports: Save
   if (!(await ports.proveHolds(input.orgId, input.projectId, current.digest))) return { ok: false, reason: "not_proved" };
   const verified = await verifyRepository(config, ports, input);
   if (!verified.ok) return verified;
-  return mint(config, ports, "push", savedEnvPushRoleName(config.env), savedEnvPushSessionPolicy(config.scope, repository), repository, SAVED_ENV_PUSH_SESSION_SECONDS);
+  return mintRaw(config, ports, "push", savedEnvPushRoleName(config.env), savedEnvPushSessionPolicy(config.scope, repository), repository, SAVED_ENV_PUSH_SESSION_SECONDS);
 }
 
 /** A pull login for the project's repository, for a task pinned to `approved`. Refused when that is no longer the project's newest approved revision (the image of another revision is not used), and when the repository is missing or is not the one the template made. */
@@ -196,5 +222,30 @@ export async function mintPullSession(config: SavedEnvSessionConfig, ports: Save
   if (current === undefined || current.revision !== input.approved.revision || current.digest !== input.approved.digest) return { ok: false, reason: "not_approved" };
   const verified = await verifyRepository(config, ports, input);
   if (!verified.ok || verified.state !== "matches") return { ok: false, reason: "unavailable" };
-  return mint(config, ports, "pull", savedEnvPullRoleName(config.env), savedEnvPullSessionPolicy(config.scope, repository), repository, SAVED_ENV_PULL_SESSION_SECONDS);
+  return mintRaw(config, ports, "pull", savedEnvPullRoleName(config.env), savedEnvPullSessionPolicy(config.scope, repository), repository, SAVED_ENV_PULL_SESSION_SECONDS);
+}
+
+/** A pull login for a repository named by the caller (a company image's mirror), for the seconds the worker's pull may take. The repository must be there and be the one the template made. */
+export async function mintPullSessionFor(config: SavedEnvSessionConfig, ports: SavedEnvSessionPorts, repository: string): Promise<MintResult> {
+  if (!config.enabled) return { ok: false, reason: "disabled" };
+  const verified = await verifyRepositoryNamed(config, ports, repository);
+  if (!verified.ok || verified.state !== "matches") return { ok: false, reason: "unavailable" };
+  return mintRaw(config, ports, "pull", savedEnvPullRoleName(config.env), savedEnvPullSessionPolicy(config.scope, repository), repository, SAVED_ENV_PULL_SESSION_SECONDS);
+}
+
+/**
+ * Credentials for the company image mirror's OWN role (`companyImageMirrorRoleName`), with a session policy that names ONE mirror repository. Not the push or manage role: those reach every saved environment's
+ * repositories, and the mirror function, which parses untrusted bytes from the internet, must not. The role's own IAM policy reaches `o?/c?` mirror repositories only. Used for the template check, the copy and the revoke's delete.
+ */
+export async function mintMirrorCredentials(config: SavedEnvSessionConfig, ports: SavedEnvSessionPorts, repository: string): Promise<{ ok: true; credentials: SessionCredentials } | { ok: false; reason: SessionRefusal }> {
+  if (!config.enabled) return { ok: false, reason: "disabled" };
+  try {
+    if (!isCompanyImageRepositoryName(repository)) return { ok: false, reason: "bad_ids" };
+    const policy = JSON.stringify(companyImageMirrorSessionPolicy(config.scope, repository));
+    if (policy.length >= 2_048) return { ok: false, reason: "unavailable" };
+    const assumed = await ports.assume({ roleArn: roleArnOf(config, companyImageMirrorRoleName(config.env)), sessionName: sessionName("mirror", ports.now()), policy, durationSeconds: SAVED_ENV_PUSH_SESSION_SECONDS });
+    return { ok: true, credentials: assumed.credentials };
+  } catch {
+    return { ok: false, reason: "unavailable" };
+  }
 }

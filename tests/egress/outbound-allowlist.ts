@@ -6,7 +6,7 @@
 
 export type OutboundCategory =
   | "customer-integration" | "model-provider" | "agent-egress-default" | "aws-service-principal" | "aws-endpoint" | "audit-timestamp" | "rovara-operated"
-  | "deploy-supply-chain" | "benchmark-tooling" | "provenance-text" | "detector-comparison" | "host-refusal-list" | "doc-link" | "reserved-example";
+  | "deploy-supply-chain" | "company-image-registry" | "benchmark-tooling" | "provenance-text" | "detector-comparison" | "host-refusal-list" | "doc-link" | "reserved-example";
 
 export interface HostRule {
   hosts: readonly string[];
@@ -48,6 +48,10 @@ export const CATEGORY_TITLES: Readonly<Record<OutboundCategory, { title: string;
   "deploy-supply-chain": {
     title: "Fetched when the install is built or deployed",
     enterprise: "Reached by the release pipeline, the installer or the CLI at build or deploy time, not by a running install. The release bundle (task N2) carries every image the install runs, so a sealed install pulls nothing from these at run time.",
+  },
+  "company-image-registry": {
+    title: "Registries company-approved test images are copied from",
+    enterprise: "The broker's lookup of an image tag and the company image mirror function's copy contact these registries, and a company's own extra registries (added by a company admin, kept per company), only when an admin names or approves an image, and only the host the allowlist names for each registry and its token service, after the name has resolved to public addresses only. A worker never contacts them: it pulls the copy from the install's own registry. An install whose control plane cannot reach the public internet cannot use images from these registries.",
   },
   "benchmark-tooling": {
     title: "Benchmark tooling",
@@ -102,13 +106,17 @@ export const HOST_RULES: readonly HostRule[] = [
     hosts: ["api.anthropic.com", "api.openai.com", "auth.openai.com", "chatgpt.com", "openrouter.ai"],
   },
   {
-    category: "agent-egress-default", why: "The default list of package, image and OS mirror hosts agent machines may resolve.", files: DEFAULT_ALLOW,
+    category: "agent-egress-default", why: "The default list of package, image and OS mirror hosts agent machines may resolve. (GitHub's, Docker Hub's token and API hosts are also the company image registry allowlist's, in the file named for it.)", files: [...DEFAULT_ALLOW, "packages/contracts/src/company-image-mirror.ts", "packages/broker/src/test-env/company-images.ts"],
     hosts: [
       "crates.io", "*.crates.io", "mcr.microsoft.com", "*.data.mcr.microsoft.com", "ghcr.io", "*.ghcr.io", "*.githubusercontent.com", "rubygems.org", "*.rubygems.org",
       "archive.ubuntu.com", "ports.ubuntu.com", "security.ubuntu.com", "deb.debian.org", "security.debian.org", "dl-cdn.alpinelinux.org", "auth.docker.io", "registry-1.docker.io",
       "production.cloudflare.docker.com", "production.cloudfront.docker.com", "docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com",
       "files.pythonhosted.org", "pypi.org", "proxy.golang.org", "sum.golang.org", "registry.yarnpkg.com", "repo1.maven.org",
     ],
+  },
+  {
+    category: "company-image-registry", why: "The registries a company-approved test image may come from (Docker Hub and Quay, beside GitHub's above and Amazon's public registry below), by name, and the other spellings of Docker Hub that are refused as not another registry.", files: ["packages/contracts/src/company-image-mirror.ts", "packages/broker/src/test-env/company-images.ts", "packages/ui/src/screens/admin/how-we-work/CompanyImagesScreen.tsx"],
+    hosts: ["docker.io", "index.docker.io", "registry.docker.io", "hub.docker.com", "quay.io"],
   },
   {
     category: "agent-egress-default", why: "Maven Central: in the default list, and the usual wrapper download host the environment detector compares a repository's wrapper properties with.", files: [...DEFAULT_ALLOW, "packages/worker/src/env-detect/java.ts"],
@@ -166,7 +174,7 @@ export const HOST_RULES: readonly HostRule[] = [
     hosts: ["token.actions.githubusercontent.com"],
   },
   {
-    category: "deploy-supply-chain", why: "The upstream registry of the image pull-through cache rule.", files: ["infra/lib/access.ts"],
+    category: "deploy-supply-chain", why: "The upstream registry of the image pull-through cache rule, and one of the registries a company-approved test image may be copied from (the allowlist names it).", files: ["infra/lib/access.ts", "packages/contracts/src/company-image-mirror.ts"],
     hosts: ["public.ecr.aws"],
   },
   {
@@ -268,6 +276,10 @@ export const DNS_LOOKUP_RULES: readonly DnsLookupRule[] = [
   {
     why: "Test accounts (switch `ta`, off by default): the test-account proxy of a sealed check round resolves the one name a CONNECT asks for, only if it is on that run's list of the customer's own test account hosts (at most 8), and refuses it when any answer is a private, loopback, link-local or metadata address. The proxy then connects to the address it checked, on port 443 only. Nothing else is asked, and nothing is sent to Rovara.",
     files: ["packages/worker/src/test-account-proxy.ts"],
+  },
+  {
+    why: "Company-approved test images (switch `pj`): the check that a registry's name (and its token service, and a blob host it redirects to) resolves to public addresses only, before the broker looks a tag up or the mirror function copies an image. A name that resolves to a private, loopback, link-local or metadata address, or to nothing, is refused, and nothing is sent to it.",
+    files: ["packages/broker/src/aws/company-image-mirror-handler.ts", "packages/broker/src/test-env/company-image-resolver.ts"],
   },
 ];
 
