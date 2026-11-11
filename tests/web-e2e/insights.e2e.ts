@@ -72,8 +72,9 @@ for (const look of [{ name: "look-off", store: {} }, { name: "look-v2", store: {
    const shipped = page.getByRole("region", { name: "Shipped outcomes" });await expect(shipped).toContainText("Collecting data since Nov 1, 2026");await expect(shipped.getByRole("link", { name: /acme\/api#412/ })).toBeVisible();
    const spend = page.getByRole("region", { name: "Spend vs outcomes" });await expect(spend.getByRole("table", { name: "Spending and outcomes by project" })).toContainText("Not recorded yet");await expect(spend.getByRole("table", { name: "Spending by person" })).toContainText("Maya Chen");
    await expect(page.getByRole("region", { name: "Flow health" })).toContainText("Not available yet.");
-   await expect(page.getByRole("region", { name: "Who can see Insights" })).toContainText("Maya Chen");
-   await expect(page.locator("main")).not.toContainText(/NaN|undefined|ses_[a-z0-9]{20}/u);
+   const access = page.getByRole("region", { name: "Who can see Insights" });await expect(access).toContainText("Maya Chen");await expect(access).toContainText("given access by Priya on Nov 10, 2026");await expect(access).toContainText("Sam Lee");await expect(access).toContainText("Granted Nov 9, 2026");
+   await expect(stuck.getByRole("link", { name: /Open task/ })).toHaveAttribute("href", /^\/app\/sessions\/ses_a{20}$/u);await expect(stuck.getByRole("link")).toHaveCount(1);
+   await expect(page.locator("main")).not.toContainText(/NaN|undefined|ses_[a-z0-9]{20}|itm_[a-z0-9]{32}/u);
    expect(await noSidewaysScroll(page)).toBe(true);
    if (phone) {
     expect(await smallTargets(page)).toEqual([]);

@@ -6,6 +6,8 @@ import { screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { AppHostProvider } from "../../packages/ui/src/host.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { NewAgentScreen } from "../../packages/ui/src/screens/builder/NewAgentScreen.js";
+import { LargerScreen } from "../../packages/ui/src/shell/LargerScreen.js";
+import { MemoryRouter } from "react-router";
 import { renderAgents } from "./support/agent-render.js";
 import { renderBuilder } from "./support/builder-render.js";
 import { renderUi } from "./support/render.js";
@@ -88,4 +90,29 @@ it("on a large screen Review update still updates the base and opens the builder
 it("a built-in's Adopt stays usable on a phone", async () => {
  const base = agentProfile(), builtin = agentProfile({ agent: { ...base.agent, agentId: "ticket-triage", builtin: true, owner: undefined, access: "manage", pinnedVersion: 1, latestVersion: 2 } });
  const f = renderAgents({ path: "/app/agents/ticket-triage", width: 390, profile: builtin });const adopt = await screen.findByRole<HTMLButtonElement>("button", { name: "Adopt v2" });expect(adopt.disabled).toBe(false);expect(screen.queryByText("Review updates on a larger screen.")).toBeNull();f.close();
+});
+
+it("the larger-screen block page: no back link unless a caller passes one, and the default markup is as it was", () => {
+ const plain = renderUi(h(MemoryRouter, { children: h(LargerScreen, { children: "content" }) }));
+ expect(plain.container.querySelector(".rv-large-screen-message")!.innerHTML).toBe('<h1 tabindex="-1">Open on a larger screen</h1><p>Open this on a larger screen to use it.</p><a href="/app" data-discover="true">Go to Home</a>');
+ plain.unmount();
+ const back = renderUi(h(MemoryRouter, { children: h(LargerScreen, { backTo: { href: "/app/agents/x", label: "Back to the agent's profile" }, children: "content" }) }));
+ const links = [...back.container.querySelectorAll(".rv-large-screen-message a")].map(link => [link.textContent, link.getAttribute("href")]);
+ expect(links).toEqual([["Back to the agent's profile", "/app/agents/x"], ["Go to Home", "/app"]]);
+ back.unmount();
+});
+it("with the new navigation on, the builder's block page links back to the agent's profile and New agent's to the directory; off, neither does", async () => {
+ for (const nav of [true, false]) {
+  const builder = renderBuilder({ storage: nav ? { "rovara.nav": "v2" } : {} });await waitFor(() => expect(builder.container.querySelector(".rv-large-screen-message")).not.toBeNull());
+  const back = builder.container.querySelector(".rv-large-screen-back a");
+  if (nav) { expect(back?.textContent).toBe("Back to the agent's profile");expect(back?.getAttribute("href")).toBe("/app/agents/" + AGENT_FIXTURE_ID); } else expect(back).toBeNull();
+  builder.close();
+  const f = fakeHost(async () => ({ status: 404, body: { error: { code: "NOT_FOUND", message: "Not found." } } }));if (nav) f.storage.set("rovara.nav", "v2");
+  const query = createQueryClient(), router = createMemoryRouter([{ path: "/app/agents/new", element: h(NewAgentScreen, {}) }], { initialEntries: ["/app/agents/new"] });
+  const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(RouterProvider, { router }) }) }));
+  const link = ui.container.querySelector(".rv-large-screen-back a");
+  if (nav) { expect(link?.textContent).toBe("Back to the agent directory");expect(link?.getAttribute("href")).toBe("/app/agents"); } else expect(link).toBeNull();
+  expect(ui.container.querySelector(".rv-large-screen-message a[href='/app']")?.textContent).toBe("Go to Home");
+  ui.unmount();router.dispose();query.clear();
+ }
 });

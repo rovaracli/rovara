@@ -15,6 +15,7 @@ import { VisibleText } from "../../design/VisibleText.js";
 import { HomeCard } from "./HomeCard.js";
 import { withoutDecided } from "./one-card.js";
 import { isNewHomeOn } from "./home-flags.js";
+import { workPlace } from "../../nav-flags.js";
 import type { ReadDecision } from "../../api/decisions.js";
 // Decision cards load after the first paint: they bring the cards, the tabs and their contracts, which no other first-page view needs.
 const NeedsYou = lazy(async () => ({ default: (await import("./NeedsYou.js")).NeedsYou }));
@@ -25,7 +26,7 @@ const HomeV2 = lazy(async () => ({ default: (await import("./HomeV2.js")).HomeV2
 import "./home.css";
 const DECISIONS_KEY = ["decisions"] as const;
 export function HomeScreen() {
- const host = useAppHost(), [newHome] = useState(() => isNewHomeOn(host)), query = useQueryClient(), home = useHome(), announce = useAnnounce(), previous = useRef<Array<{ cardId: string; title: string }> | undefined>(undefined);
+ const host = useAppHost(), place = workPlace(host), [newHome] = useState(() => isNewHomeOn(host)), query = useQueryClient(), home = useHome(), announce = useAnnounce(), previous = useRef<Array<{ cardId: string; title: string }> | undefined>(undefined);
  // The decision cards Needs you loaded, read from the cache (never fetched here, and no query options are set here, so Needs you's own read is untouched): an older card whose decision a pending card holds is not shown twice.
  // Only a read that succeeded and has no error since counts: a failed or stale-with-error read hides nothing (every older card shows).
  const decisions = useSyncExternalStore(useCallback((changed: () => void) => query.getQueryCache().subscribe(changed), [query]), () => {
@@ -48,7 +49,7 @@ export function HomeScreen() {
  <Suspense fallback={null}><NeedsYou /></Suspense>
  {home.isPending && <Skeleton label="Loading what needs you" />}
  {home.isError && <div className="rv-home-error" role="alert"><p><VisibleText text={home.error instanceof ApiError ? home.error.message : "Couldn't load what needs you. Try again."} /></p><Button onClick={() => { void home.refetch(); }}>Try again</Button></div>}
- {shown !== undefined && shown.length === 0 && total === 0 && needsYou === 0 && decisions?.some(decision => decision.card.status === "pending") !== true && <EmptyState title="Nothing needs you right now" description="Your team's work can keep moving. Find ongoing sessions in Live." action={<Link to="/app/live">See work in progress</Link>} />}
+ {shown !== undefined && shown.length === 0 && total === 0 && needsYou === 0 && decisions?.some(decision => decision.card.status === "pending") !== true && <EmptyState title="Nothing needs you right now" description={`Your team's work can keep moving. Find ongoing sessions in ${place.name}.`} action={<Link to={place.path}>See work in progress</Link>} />}
  {cards !== undefined && cards.length === 0 && total > 0 && <div><p>Items are temporarily unavailable.</p><Button onClick={() => { void home.refetch(); }}>Try again</Button></div>}
  {shown !== undefined && total > shown.length && <p className="rv-muted">Showing {shown.length} of {total}</p>}
  {shown !== undefined && shown.length > 0 && <ol className="rv-attention-list" aria-label="What needs you">{shown.map(card => <HomeCard key={card.cardId} card={card} />)}</ol>}

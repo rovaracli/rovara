@@ -30,8 +30,10 @@ describe("the share writers that take no confirmation are reached only from revi
     expect(usersOf("setShares")).toEqual(["broker/src/agents/access.ts"]);
   });
 
-  it("saveShares is called only by the agent share route's non-widening path and by the confirmed-share handler", () => {
-    expect(usersOf("saveShares")).toEqual(["broker/src/agents/access.ts", "broker/src/agents/changes.ts"]);
+  it("saveShares is called only by the agent share route's non-widening path, the confirmed-share handler and the confirmed publish request", () => {
+    // publication.ts (experience decision 24, owner decision 91): the company-wide share is written only by the `agent_publication` handler, after an org owner or admin
+    // approved the request on the page (`agent_publication_company` rule); the other call is the author's own `edit` share when an agent moves to a project.
+    expect(usersOf("saveShares")).toEqual(["broker/src/agents/access.ts", "broker/src/agents/changes.ts", "broker/src/agents/publication.ts"]);
   });
 
   it("the store writers underneath are reached only from the helpers above and the stores themselves", () => {
