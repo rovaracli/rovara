@@ -1,16 +1,20 @@
 // srv/needs-broker-ui-2 item 9: `GET /v1/app/org/approvals/pending-summary`, for an org owner or admin only (their role is read from the member record now, never from the token): how many approvals
 // of the company wait, and the newest page of them. Read-only: it decides nothing and writes nothing, and it does not use the approver lists (`APPROVER#` items) or any decide path.
 //
-// Where the approvals come from: the open index (`OPEN_APPROVALS`, written for every approval while it is open; the expiry sweep reads it). It is one partition for every company on the install, in
-// the order approvals expire, so a request reads at most `ORG_PENDING_SCAN_MAX` of its items and looks at a record only when the item names the CALLER'S company (the key and the item must both
-// say so); another company's items are skipped without being read. A record that is not PENDING, has expired, or belongs to another org is not counted. If the index is longer than the scan, the
-// answer says `truncated` and its `total` may be short.
+// Where the approvals come from (0.5.15): the company's OWN open index (`ORG#<org>#OPEN_APPROVALS`, an item per PENDING approval written and removed in the approval's own transactions, sorted by the time
+// it was asked). A request queries only the caller's partition, newest first, and reads at most `ORG_PENDING_SCAN_MAX` of its items: another company's approvals are never read or counted, and a busy
+// install no longer hides a company's newest items. A record that is not PENDING, has expired, or belongs to another org is not counted. If the partition is longer than the scan, the answer says
+// `truncated`, the 50 newest are still the company's newest, and `total` is a floor.
+//
+// The gap before the backfill: approvals that were open before 0.5.15 have no company item until the one-off backfill (`org-open-approvals-backfill.ts`, run by the settlement job) has read the
+// whole global index and set its marker. Until then a company's partition may be missing items, so the summary reads the old way: the global open index (`OPEN_APPROVALS`, one partition for every
+// company, in the order approvals expire), at most `ORG_PENDING_SCAN_MAX` items, looking at a record only when the item names the CALLER'S company (the key and the item must both say so).
 //
 // What each row says is what the approval's confirmation page says: its title (`confirmTitleOf`), the people it names by display name, the time it was asked and the page's bare link. Never a
 // subject, arguments, a digest or a diff.
-import { QueryCommand } from "@aws-sdk/lib-dynamodb";
-import { ORG_PENDING_APPROVALS_MAX, OrgPendingApprovalItemSchema, OrgPendingApprovalsSummarySchema, type OrgPendingApprovalItem, type OrgPendingApprovalsSummary } from "@agentx/cloud-contracts";
-import { agentXError } from "@rovara-code/contracts";
+import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
+import { ORG_OPEN_APPROVAL_SK, ORG_OPEN_APPROVALS_BACKFILL_KEY, ORG_PENDING_APPROVALS_MAX, orgOpenApprovalsPk, OrgPendingApprovalItemSchema, OrgPendingApprovalsSummarySchema, type OrgPendingApprovalItem, type OrgPendingApprovalsSummary } from "@agentx/cloud-contracts";
+import { agentXError, type OrgId } from "@rovara-code/contracts";
 import { orgRoleOf, type AgentCaller } from "./access.js";
 import { confirmTitleOf } from "./approval-decide-kind.js";
 import { withChosenOwners } from "./approval-routes.js";
@@ -51,25 +55,53 @@ export function summaryRowOf(fields: { approvalId: string; kind: OrgPendingAppro
   return parsed.success ? parsed.data : undefined;
 }
 
-export async function orgPendingApprovals(deps: ApprovalDependencies, caller: AgentCaller): Promise<OrgPendingApprovalsSummary> {
-  // The live role, from the member record: a token that still says "admin" for someone demoted gets nothing.
-  const role = await orgRoleOf(deps, caller.orgId, caller.developerId);
-  if (role !== "owner" && role !== "admin") throw agentXError("FORBIDDEN", ORG_PENDING_FORBIDDEN);
-  const { orgId } = caller;
+interface Wanted { wanted: string[]; truncated: boolean }
 
-  // The company's open items, in index order, each named once.
+/** True once the one-off backfill of the companies' open indexes has read the whole global index. */
+async function backfillDone(deps: ApprovalDependencies): Promise<boolean> {
+  const marker = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: ORG_OPEN_APPROVALS_BACKFILL_KEY, ConsistentRead: true })) as { Item?: { completedAt?: unknown } };
+  return typeof marker.Item?.completedAt === "string";
+}
+
+type Page = { Items?: Array<Record<string, unknown>>; LastEvaluatedKey?: Record<string, unknown> };
+
+/** The caller's company's partition only, newest first (the key and the item must both name the company and the approval). */
+async function scanOwnPartition(deps: ApprovalDependencies, orgId: OrgId): Promise<Wanted> {
   const wanted: string[] = [];
   const known = new Set<string>();
   let start: Record<string, unknown> | undefined;
   let read = 0;
-  let truncated = false;
-  scan: for (;;) {
+  for (;;) {
+    const page = await deps.documentClient.send(new QueryCommand({
+      TableName: deps.tableName, KeyConditionExpression: "pk = :pk", ExpressionAttributeValues: { ":pk": orgOpenApprovalsPk(orgId) }, ConsistentRead: true, ScanIndexForward: false, Limit: PAGE,
+      ...(start === undefined ? {} : { ExclusiveStartKey: start }),
+    })) as Page;
+    for (const item of page.Items ?? []) {
+      if (read >= ORG_PENDING_SCAN_MAX) return { wanted, truncated: true };
+      read += 1;
+      const parts = ORG_OPEN_APPROVAL_SK.exec(String(item["sk"]));
+      if (parts === null || item["orgId"] !== orgId || item["approvalId"] !== parts[2] || known.has(parts[2]!)) continue;
+      known.add(parts[2]!);
+      wanted.push(parts[2]!);
+    }
+    start = page.LastEvaluatedKey;
+    if (start === undefined) return { wanted, truncated: false };
+  }
+}
+
+/** The old read, for the gap before the backfill is done: the install-wide open index in the order approvals expire, skipping other companies' items without reading their records. */
+async function scanGlobalIndex(deps: ApprovalDependencies, orgId: OrgId): Promise<Wanted> {
+  const wanted: string[] = [];
+  const known = new Set<string>();
+  let start: Record<string, unknown> | undefined;
+  let read = 0;
+  for (;;) {
     const page = await deps.documentClient.send(new QueryCommand({
       TableName: deps.tableName, KeyConditionExpression: "pk = :pk", ExpressionAttributeValues: { ":pk": "OPEN_APPROVALS" }, ConsistentRead: true, Limit: PAGE,
       ...(start === undefined ? {} : { ExclusiveStartKey: start }),
-    })) as { Items?: Array<Record<string, unknown>>; LastEvaluatedKey?: Record<string, unknown> };
+    })) as Page;
     for (const item of page.Items ?? []) {
-      if (read >= ORG_PENDING_SCAN_MAX) { truncated = true; break scan; }
+      if (read >= ORG_PENDING_SCAN_MAX) return { wanted, truncated: true };
       read += 1;
       const parts = DUE_SK.exec(String(item["sk"]));
       if (parts === null || parts[2] !== orgId || item["orgId"] !== orgId || item["approvalId"] !== parts[3] || known.has(parts[3]!)) continue;
@@ -77,8 +109,19 @@ export async function orgPendingApprovals(deps: ApprovalDependencies, caller: Ag
       wanted.push(parts[3]!);
     }
     start = page.LastEvaluatedKey;
-    if (start === undefined) break;
+    if (start === undefined) return { wanted, truncated: false };
   }
+}
+
+export async function orgPendingApprovals(deps: ApprovalDependencies, caller: AgentCaller): Promise<OrgPendingApprovalsSummary> {
+  // The live role, from the member record: a token that still says "admin" for someone demoted gets nothing.
+  const role = await orgRoleOf(deps, caller.orgId, caller.developerId);
+  if (role !== "owner" && role !== "admin") throw agentXError("FORBIDDEN", ORG_PENDING_FORBIDDEN);
+  const { orgId } = caller;
+
+  // The company's open items, newest first from its own partition (or, before the backfill is done, in the global index's order), each named once.
+  const ownIndex = await backfillDone(deps);
+  const { wanted, truncated } = ownIndex ? await scanOwnPartition(deps, orgId) : await scanGlobalIndex(deps, orgId);
 
   // Their records: only PENDING ones that have not expired, are this company's, and the CALLER could decide now (`mayDecideApproval`, as the confirm page and the decide route ask): an approval whose
 // rule refuses an admin (a card decision, a session share with the company, a take-over: each only its own person confirms) is neither listed nor counted. An approval that names its people (a run's step or
