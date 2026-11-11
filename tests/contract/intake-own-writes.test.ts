@@ -3,9 +3,9 @@
 // that can't be matched is not taken for a member's act (it waits for Start); an actor the tracker cannot confirm is the same.
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
-import { agentXError, intakeItemIdOf, type CodeIntentRequest, type OrgId, type WorkspaceInstance } from "@agentx/contracts";
+import { agentXError, intakeItemIdOf, type CodeIntentRequest, type OrgId, type WorkspaceInstance } from "@rovara-code/contracts";
 import { CatalogCache } from "@agentx/gateway";
-import type { HookRecord } from "@agentx/contracts";
+import type { HookRecord } from "@rovara-code/contracts";
 import { jiraProvider } from "../../packages/broker/src/triggers/providers/jira.js";
 import { callConnector, discoverConnector, type ScopeDiscovery } from "../../packages/broker/src/aws/connector-routes.js";
 import type { ResolvedConnector } from "../../packages/broker/src/aws/connector-types.js";

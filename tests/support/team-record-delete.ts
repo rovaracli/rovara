@@ -1,6 +1,6 @@
 // Helpers for the delete and erase tests (lane "record", task D1): a fake lessons port, a recording lake queue and a seeded workspace.
 import { observeRowAccess } from "../../packages/broker/src/team-record/access.js";
-import { recordFactKey, type AuditEventInput, type RecordFact } from "@agentx/contracts";
+import { recordFactKey, type AuditEventInput, type RecordFact } from "@agentx/cloud-contracts";
 import { tableLakeDeleteQueue, type LakeDeleteQueue, type LakeDeleteTarget } from "../../packages/broker/src/team-record/lake-queue.js";
 import type { LessonDeletionPort, LessonForDeletion } from "../../packages/broker/src/team-record/lesson-fate.js";
 import type { PurgeDependencies } from "../../packages/broker/src/team-record/purge.js";

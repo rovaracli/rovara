@@ -1,5 +1,5 @@
 import type { z } from "zod";
-import { agentXError } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
 import { DeveloperSignInStore } from "../../developer/store.js";
 import type { DeveloperRouteDependencies } from "./types.js";
 

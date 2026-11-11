@@ -1,6 +1,6 @@
 // Part of the broker (split out of ../broker.ts): agent steps, the task operation parts, application selection, agent skills and tools.
 
-import { fixtureDigestsOfPlan } from "../../test-env/fixture-lookup.js";
+import { companyImageIdsOfPlan, fixtureDigestsOfPlan } from "../../test-env/fixture-lookup.js";
 import { fixtureStoreForRoutes } from "../../test-env/fixture-store-aws.js";
 import { prepareSecondReview } from "../../rovara-code/second-review-start.js";
 import { learnedContextForOperation } from "./lessons-dispatch.js";
@@ -13,11 +13,12 @@ import { taskStageReferenceChecks, taskStageReferences, scopedTaskOperations, ta
 import { prepareTurnModelFallback, prepareTaskModelFallback } from "../../model-selection/fallback-record.js";
 import type { StageModelResult } from "../../model-selection/resolver.js";
 import { loadPinnedTaskStage } from "../../model-selection/task-live.js";
-import { type TaskModelPolicyBinding, STAGE_OPERATION_MAPPING, sharedTaskKey, type SharedTaskRecord } from "@agentx/contracts";
+import { type TaskModelPolicyBinding, STAGE_OPERATION_MAPPING, sharedTaskKey, type SharedTaskRecord } from "@rovara-code/contracts";
 import { TurnAdmissionLimitError } from "../../model-selection/turn-admission.js";
 import { createHash, randomUUID } from "node:crypto";
 import { PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { E2ESetupProposalSchema, E2EPolicySchema, WEB_API_RUNTIME_PROFILE_ID, verifyE2ESetupProposal, canonicalJson, OPERATION_PROMPT_MAX_BYTES, agentXError, type OperationRequester, type ProjectCommand, type WorkflowFeedbackApprovalBinding, type WorkflowFixPayload, type OwnerRedirectInvocation, type WorkflowDependencyInvocation, type WorkflowReviewBase, type WorkflowReviewChecks, type WorkflowReviewPlan, type WorkflowReviewFeedback, type WorkflowReviewNote, type SlackThread, type WorkerInvocation, type WorkspaceInstance, ModelSelectionSchema, recipeDigest, recipeRunner, type ModelIdentifier, type ModelSelection, type ResolvedRecipe, type ResolvedStep, type AgentGuardrails, type OrgId, sameJsonContent, type E2ESourceSnapshot, type E2EWorkflowAdmissionRef, type E2ESetupProposal, type E2EPolicy, type PlanApprovalRef, type E2EApplicationPlanIntent, type E2EApplicationSelectionRecord, type E2ERuntimeAccountRef, type E2EApplicationAccountDefinition, readE2EApplicationProjectContract, e2eSyntheticAccountContractDigest, type E2ERegisteredRuntime, ResolvedRecipeSchema } from "@agentx/contracts";
+import { E2ESetupProposalSchema, E2EPolicySchema, WEB_API_RUNTIME_PROFILE_ID, verifyE2ESetupProposal, canonicalJson, OPERATION_PROMPT_MAX_BYTES, agentXError, type OperationRequester, type ProjectCommand, type WorkflowFeedbackApprovalBinding, type OwnerRedirectInvocation, type WorkflowDependencyInvocation, type WorkflowReviewBase, type WorkflowReviewChecks, type WorkflowReviewPlan, type WorkflowReviewFeedback, type WorkflowReviewNote, type SlackThread, type WorkspaceInstance, ModelSelectionSchema, recipeDigest, recipeRunner, type ModelIdentifier, type ModelSelection, type ResolvedRecipe, type ResolvedStep, type AgentGuardrails, type OrgId, sameJsonContent, type E2ESourceSnapshot, type E2EWorkflowAdmissionRef, type E2ESetupProposal, type E2EPolicy, type PlanApprovalRef, type E2EApplicationPlanIntent, type E2EApplicationSelectionRecord, type E2ERuntimeAccountRef, type E2EApplicationAccountDefinition, readE2EApplicationProjectContract, e2eSyntheticAccountContractDigest, type E2ERegisteredRuntime, ResolvedRecipeSchema } from "@rovara-code/contracts";
+import { type WorkflowFixPayload, type WorkerInvocation } from "@agentx/cloud-contracts";
 import { projectE2EBaselineWanted, readWorkflowE2EBaselineRecord } from "../workflow-e2e-baseline.js";
 import type { AuthenticatedIdentity } from "../../auth.js";
 import { queryAllItems } from "../admin-reads.js";
@@ -39,8 +40,8 @@ import { hashJson, isConditional, PLAN_PHASE_LIMITS, WORKFLOW_PREAMBLE, planChec
 import { buildFeatureE2EPlanningContext, isExactFeatureE2ESourceSnapshot } from "../../e2e/feature-plan-planning-context.js";
 import { offersApplicationE2EPlan } from "../../e2e/feature-plan-executable-kinds.js";
 import { evaluateApplicationPlanApproval, type ApplicationAccountsInput, type ApplicationRefusalScope } from "../../e2e/application-plan-approval.js";
-import { DIAGNOSIS_NO_PROVIDER_MESSAGE, canonicalModelName, forbiddenModelMatcher, metaRepositoryOf } from "@agentx/contracts";
-import type { SpecReviewInput, SpecWriteBinding } from "@agentx/contracts";
+import { DIAGNOSIS_NO_PROVIDER_MESSAGE, canonicalModelName, forbiddenModelMatcher, metaRepositoryOf } from "@rovara-code/contracts";
+import type { SpecReviewInput, SpecWriteBinding } from "@rovara-code/contracts";
 import { checkE2EAgentRouteCurrent } from "../../e2e/model-route-registry.js";
 import { developerIdForSlackUser } from "../admin-actions.js";
 import { chatGptOwner, chatGptTaskSelection } from "../../chatgpt/task-model.js";
@@ -74,7 +75,7 @@ import type { DesignReviewDispatch } from "../../design-review/round-ports.js";
 import { recordedOffersOf, setupRecipeOffersFor } from "../../org/setup-recipe-dispatch.js";
 import { testEnvImplementPlanFor, testEnvPlanFor } from "../../test-env/task-plan.js";
 import { isNightlyOperation, nightlyRunPayloadOf } from "../../test-env/nightly-run.js";
-import { DIAGNOSIS_DEEP_PREAMBLE } from "@agentx/contracts";
+import { DIAGNOSIS_DEEP_PREAMBLE } from "@rovara-code/contracts";
 import { object, parseBody, verifyCapability } from "./admin-and-helpers.js";
 import { stageHasContextSources } from "../../context-sources/enabled.js";
 import { prewarmStageServers } from "../../context-sources/prewarm-stage.js";
@@ -85,7 +86,7 @@ import { getDefaultWorkspace, requireLatestProject, requireMembership, requireOw
 import { creatorCheckOf, githubScope, githubScopeOf, modelSourceStoreOf, orgOfRecord, routingOf } from "./scope-helpers.js";
 import { githubLoginOfDeveloper } from "./thread-workspaces.js";
 import { connectorTypeContext } from "./workspace-routes.js";
-import { AuditEventInputSchema, auditEventId } from "@agentx/contracts";
+import { AuditEventInputSchema, auditEventId } from "@agentx/cloud-contracts";
 import { TaskFundingProofSchema } from "../../org/task-stop-funding.js";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { auditPendingItem } from "../../audit/outbox.js";
@@ -555,6 +556,9 @@ export async function taskOperationParts(
   // Test services (slice 3): the fixture sets the plan names are kept on the operation, so the `fixture-set` callback delivers those and no other set (and the capability has the action only then).
   const fixtureDigests = fixtureDigestsOfPlan(testEnvironment);
   if (fixtureDigests.length > 0) operation.fixtureSetDigests = fixtureDigests;
+  // Company-approved images (switch `pj`): the images the plan names are kept on the operation, so the `company-image-login` callback gives a login for those and no others.
+  const companyImageIds = companyImageIdsOfPlan(testEnvironment);
+  if (companyImageIds.length > 0) operation.companyImageIds = companyImageIds;
   // SH30 + SR-3 (switch `sp`): the company recipes a setup draft is offered, recorded on this operation (id and revision) so the run's reported recipe sources are intersected with what was sent. Nothing while `sp` is off.
   const recipeOffers = input.workflowMode === "SETUP_DRAFT" && !diagnosing && testEnvironmentEnabled() ? await setupRecipeOffersFor(dependencies, orgId, workspace.projectName) : [];
   if (recipeOffers.length > 0) operation.setupRecipeOffers = recordedOffersOf(recipeOffers);
@@ -582,6 +586,7 @@ export async function taskOperationParts(
       // NH-1: the nightly run's one action, granted only to the verification operation of a nightly task.
       nightlyResult: isNightlyOperation(task, input.workflowMode),
       fixtureDelivery: fixtureDigests.length > 0,
+      companyImageLogin: companyImageIds.length > 0,
     })),
     payload: {
       conversationId: input.conversationId,

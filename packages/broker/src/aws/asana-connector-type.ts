@@ -1,4 +1,4 @@
-import { AsanaConnectorSchema } from "@agentx/contracts";
+import { AsanaConnectorSchema } from "@rovara-code/contracts";
 import { ASANA_MCP_ENDPOINT, ASANA_TOKEN_ENDPOINT, asanaConnector, type AsanaProjectScope } from "@agentx/gateway";
 import { presetConnectorType } from "./connector-presets.js";
 

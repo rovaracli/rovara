@@ -7,7 +7,7 @@
 //
 // What this cannot check with the port as it is (stated, not hidden): that the commit is on the protected default branch, and the git blob hash of the file. The commit comes from the
 // lesson's citation, which reflect-time code already limits to the task's base or merged commit (the branch head is dropped there); the host answers by that exact commit id.
-import type { CodeHost, HostScope, RepositoryRef } from "@agentx/contracts";
+import type { CodeHost, HostScope, RepositoryRef } from "@rovara-code/contracts";
 import { LEX_MAX_BYTES, lexIdentifiers } from "./code-lexer.js";
 import type { CodeFacts } from "./ports.js";
 

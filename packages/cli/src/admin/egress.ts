@@ -1,7 +1,7 @@
 // `agentx admin egress pending | approve | reject` (Plan 2, Task 18): Rovara staff decide the domains projects (and, in Plan 3, model sources)
 // ask for. On Rovara Cloud a new domain reaches the DNS firewall only after staff approve it.
 import { randomUUID } from "node:crypto";
-import { EgressPendingResponseSchema, agentXError, formatEgressOwner, parseEgressOwnerText, type EgressOwner, type EgressPendingResponse } from "@agentx/contracts";
+import { EgressPendingResponseSchema, agentXError, formatEgressOwner, parseEgressOwnerText, type EgressOwner, type EgressPendingResponse } from "@rovara-code/contracts";
 import { sanitizeServerText } from "../auth.js";
 import { adminResponseBody } from "./http.js";
 

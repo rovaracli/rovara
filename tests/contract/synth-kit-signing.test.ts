@@ -6,7 +6,7 @@ import { existsSync, utimesSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { SynthKitManifestSchema, sha256OfBytes } from "@agentx/contracts";
+import { SynthKitManifestSchema, sha256OfBytes } from "@agentx/cloud-contracts";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildBundle } from "../../scripts/release/bundle.js";
 import { assertBuildIsClean, assertSourceIsRelease, gitSourceState, isExpectedIgnoredPath, releaseCommitOfCleanTree, type SourceState } from "../../scripts/release/source-state.js";
@@ -270,7 +270,7 @@ describe("the checkout a release and its kit are built from (build.ts, synth-kit
     expect(() => assertBuildIsClean({ head: () => "x", dirtyFiles: () => [], staleBuildOutputs: () => ["packages/a/dist/"] })).toThrow(/older than its source/);
     expect(() => assertBuildIsClean({ head: () => "x", dirtyFiles: () => [], unexpectedIgnoredFiles: () => [".env.local"] })).toThrow(/ignored file/);
     expect(() => assertBuildIsClean({ head: () => "x", dirtyFiles: () => [] })).not.toThrow();
-    for (const path of ["node_modules/", "packages/contracts/dist/", "packages/web/tsconfig.tsbuildinfo", ".release-synth/", "infra/cdk.out/", "docs/notes.md", ".agentx/state"]) expect(isExpectedIgnoredPath(path), path).toBe(true);
+    for (const path of ["node_modules/", "packages/cloud-contracts/dist/", "packages/web/tsconfig.tsbuildinfo", ".release-synth/", "infra/cdk.out/", "docs/notes.md", ".agentx/state"]) expect(isExpectedIgnoredPath(path), path).toBe(true);
     for (const path of ["packages/broker/src/local-override.ts", ".env", "scripts/release/hook.mjs", "infra/lib/local.ts"]) expect(isExpectedIgnoredPath(path), path).toBe(false);
   });
 });

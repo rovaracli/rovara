@@ -1,7 +1,7 @@
 // Lessons for local coding tools (decision 46b): the two switches and what they come to. The project's own ("local coding tools can fetch lessons": a maintainer) and the company's "lessons stay in Rovara" (an owner or
 // admin). The default is ON for a project under the Standard preset and OFF under Regulated, whatever the project chose; the company's switch turns it off for every project. Every change is audited BEFORE it is made (the
 // ledger records who and the new value; the stored item names no person), and every read here is live, never cached. The routes that call these (`routes.ts`) decide who may.
-import type { LocalToolsState } from "@agentx/contracts";
+import type { LocalToolsState } from "@agentx/cloud-contracts";
 import { requireAudit, resolveLearning, type LearningSettingsReader } from "./policy.js";
 import type { LessonAuditSink } from "./ports.js";
 import type { LocalToolsSettingsReader, LocalToolsSettingsStore } from "./local-tools.js";

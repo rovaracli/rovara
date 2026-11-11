@@ -1,3 +1,4 @@
+import { keepAuthorEditing } from "../agents/publication.js";
 import { nativeSnapshotConditions } from "../org/native-snapshot-conditions.js";
 import { OwnerFinancialTermsSchema, ownerFinancialChecks, assertOwnerCarriedSource, ownerApprovalTermsComplete } from "./owner-approval-terms.js";
 import { grantRoleOf } from "../developer/project-roles.js";
@@ -20,12 +21,8 @@ import { taskResponseForClient } from "../rovara-code/task-view-compat.js";
 import { createHash } from "node:crypto";
 import { DeleteCommand, GetCommand, QueryCommand, TransactGetCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import {
-  projectMemberKey, agentKey, chainKey, builtinSettingsKey, AgentIdSchema, AgentXError, ChainIdSchema, orgSettingsKey, PER_TASK_BUDGET_USD, SPEND_REQUEST_REASON_MAX, SPEND_REQUEST_TTL_DAYS, OWNER_ANSWER_HOURS, SpendRequestIdSchema, agentXError, isBuiltinAgentId, ROVARA_CODE_AGENT_ID,
-  newPrefixedId, openSpendRequestDueKey, openSpendRequestsKey, orgPk, ownerBudgetKey, pauseKey, pausedTasksKey, scopeKey, spendRequestKey, spendRequestSlotKey,
-  suggestedMonthTopUpUsd, suggestedTopUpUsd, topUpKey, INDEX_EXPIRY_ATTRIBUTE, developerOrgKey, orgMetaKey, orgMemberKey, isRunLimitBlockReason, RUN_LIMIT_ASK_COOLDOWN_MS, heldPlanStartKey, planRunLimitSubject, runLimitAskedKey, spendCounterKey,
-  AuditEventInputSchema, SpendingAdmissionReferenceSchema, type SpendingAdmissionReference, type AuditEventInput, type AuditProof, type BudgetScope, type OrgId, type OwnerCapChange, type PauseScope, type SpendApproverRole, type SpendRequestKind, type SpendRequestRecord,
-} from "@agentx/contracts";
+import { projectMemberKey, agentKey, chainKey, builtinSettingsKey, AgentIdSchema, AgentXError, ChainIdSchema, SpendRequestIdSchema, agentXError, isBuiltinAgentId, ROVARA_CODE_AGENT_ID, newPrefixedId, orgPk, INDEX_EXPIRY_ATTRIBUTE, isRunLimitBlockReason, planRunLimitSubject, SpendingAdmissionReferenceSchema, type SpendingAdmissionReference, type OrgId } from "@rovara-code/contracts";
+import { orgSettingsKey, PER_TASK_BUDGET_USD, SPEND_REQUEST_REASON_MAX, SPEND_REQUEST_TTL_DAYS, OWNER_ANSWER_HOURS, openSpendRequestDueKey, openSpendRequestsKey, ownerBudgetKey, pauseKey, pausedTasksKey, scopeKey, spendRequestKey, spendRequestSlotKey, suggestedMonthTopUpUsd, suggestedTopUpUsd, topUpKey, developerOrgKey, orgMetaKey, orgMemberKey, RUN_LIMIT_ASK_COOLDOWN_MS, heldPlanStartKey, runLimitAskedKey, spendCounterKey, AuditEventInputSchema, type AuditEventInput, type AuditProof, type BudgetScope, type OwnerCapChange, type PauseScope, type SpendApproverRole, type SpendRequestKind, type SpendRequestRecord } from "@agentx/cloud-contracts";
 import { orgRoleOf, requireAccountable, requireAgentAccess, requireAgentBudgetAllowed, requireOwnerAllowed, resolveSurvivor, type AgentCaller } from "../agents/access.js";
 import { requireChainAccess, requireChainAccountable, requireChainBudgetAllowed, requireChainOwnerAllowed } from "../chains/access.js";
 import { roleOnProject } from "../agents/roster.js";
@@ -1421,7 +1418,13 @@ async function recheckedChange(deps: SpendRequestDependencies, decider: AgentCal
   const accountableId = change.accountable === undefined ? undefined : await member(change.accountable.developerId);
   const owner = await (forChain ? requireChainOwnerAllowed(deps, decider, named, agent?.owner) : requireOwnerAllowed(deps, decider, named, agent?.owner));
   const accountable = accountableId === undefined ? undefined : owner.kind === "project" ? await accountableOf(owner.project, accountableId) : { developerId: accountableId };
-  return { op: "set_owner", owner, ...(accountable === undefined ? {} : { accountable }) };
+  // The author who keeps editing an agent a publish request moved is read as their survivor. One who has left keeps nothing, and the move still applies: their absence
+  // never ends the request (only the people the move itself names do, through `member`).
+  const keepEditing = forChain || change.keepEditing === undefined ? undefined : await (async () => {
+    const survivor = await resolveSurvivor(deps, record.orgId, change.keepEditing!.developerId);
+    return await orgRoleOf(deps, record.orgId, survivor) === undefined ? undefined : survivor;
+  })();
+  return { op: "set_owner", owner, ...(accountable === undefined ? {} : { accountable }), ...(keepEditing === undefined ? {} : { keepEditing: { developerId: keepEditing } }) };
 }
 
 /**
@@ -1499,7 +1502,12 @@ async function applyOwnerCap(deps: SpendRequestDependencies, record: SpendReques
         ...(change.budget.maxPerRunUsd === undefined || change.expectedMaxPerRunUsd === undefined ? {} : { expectedMaxPerRunUsd: change.expectedMaxPerRunUsd }), actor: decisionActor });
       return;
     }
-    case "set_owner": await deps.store.setOwner(record.orgId, agentId, change.owner, by, change.accountable, undefined, { overrideCap: options.overrideCap }); return;
+    case "set_owner": {
+      await deps.store.setOwner(record.orgId, agentId, change.owner, by, change.accountable, undefined, { overrideCap: options.overrideCap });
+      // A publish request's move held by the cap: its author keeps editing, as when the move applies at once (`publication-routes.ts`).
+      if (change.keepEditing !== undefined && change.accountable !== undefined) await keepAuthorEditing(deps, record.orgId, by, agentId, change.keepEditing.developerId, change.accountable.developerId);
+      return;
+    }
     case "set_accountable": await deps.store.setAccountable(record.orgId, agentId, change.accountable, by, undefined, { overrideCap: options.overrideCap }); return;
     case "unarchive": await deps.store.unarchive(record.orgId, agentId, by, undefined, options); return;
   }
@@ -2420,7 +2428,8 @@ function movedChange(change: OwnerCapChange | undefined, from: string, to: strin
     case "set_owner": {
       const owner = change.owner.kind === "member" && change.owner.developerId === from ? { kind: "member" as const, developerId: to } : change.owner;
       const accountable = change.accountable?.developerId === from ? { developerId: to } : change.accountable;
-      return owner === change.owner && accountable === change.accountable ? undefined : { op: "set_owner", owner, ...(accountable === undefined ? {} : { accountable }) };
+      const keepEditing = change.keepEditing?.developerId === from ? { developerId: to } : change.keepEditing;
+      return owner === change.owner && accountable === change.accountable && keepEditing === change.keepEditing ? undefined : { op: "set_owner", owner, ...(accountable === undefined ? {} : { accountable }), ...(keepEditing === undefined ? {} : { keepEditing }) };
     }
     case "set_accountable": return change.accountable.developerId === from ? { op: "set_accountable", accountable: { developerId: to } } : undefined;
     case "confirm_move": return change.owner === from ? { ...change, owner: to } : undefined;

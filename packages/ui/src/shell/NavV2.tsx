@@ -1,6 +1,6 @@
 import { useId } from "react";
 import { Link, NavLink, useLocation } from "react-router";
-import type { ReadAppNav } from "@agentx/contracts/web";
+import type { ReadAppNav } from "@agentx/cloud-contracts/web";
 import { useAppHost } from "../host.js";
 import { paths } from "../paths.js";
 import { VisibleText } from "../design/VisibleText.js";

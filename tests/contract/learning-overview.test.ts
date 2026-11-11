@@ -1,8 +1,8 @@
 // v1.2 learning loop, B7: the overview's maintainer-only `learning` block (design 6.2 and 6.4): this month's repeats and corrections, last month's share, repeats after each accepted rule.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ProjectOverviewSchema } from "../../packages/contracts/src/index.js";
+import { ProjectOverviewSchema } from "@rovara-code/contracts";
 import { projectOverview } from "../../packages/broker/src/agent-sessions/project-overview.js";
-import { orgLearningSettingsKey, projectLearningKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { orgLearningSettingsKey, projectLearningKey } from "@rovara-code/contracts";
 import { CELL, MAX, MIA, OLA, ORG_A, PRIYA, sessionWorld } from "../support/agent-session-world.js";
 
 afterEach(() => { vi.unstubAllEnvs(); });
@@ -135,7 +135,7 @@ describe("project overview, learning block: the company's master suggestions swi
     expect((await w.overview(MAX)).learning?.suggestions).toEqual({ state: "collecting", corrections: 0 });
     vi.stubEnv("LEARNING_SUGGESTIONS_DEFAULT", "on");
     expect((await w.overview(MAX)).learning?.suggestions).toEqual({ state: "on" });
-    const { ProjectOverviewLearningSchema } = await import("../../packages/contracts/src/index.js");
+    const { ProjectOverviewLearningSchema } = await import("@rovara-code/contracts");
     expect(ProjectOverviewLearningSchema.safeParse({ thisMonth: { repeats: 0, corrections: 0, enoughData: false }, repeatsAfterRule: [] }).success).toBe(true);
   });
 });

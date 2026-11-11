@@ -1,6 +1,7 @@
 // Read-only start preview uses the same canonical calculation as admission.
 import { expect, it } from "vitest";
-import { DEFAULT_AGENT_GUARDRAILS, ROVARA_CODE_AGENT_ID, agentGuardrailsKey, builtinSettingsKey, orgSettingsKey, orgScoped, modelSourcesKey, orgProjectCatalogKey, projectAiKey } from "@agentx/contracts";
+import { DEFAULT_AGENT_GUARDRAILS, ROVARA_CODE_AGENT_ID, agentGuardrailsKey, builtinSettingsKey, orgScoped, modelSourcesKey, orgProjectCatalogKey } from "@rovara-code/contracts";
+import { orgSettingsKey, projectAiKey } from "@agentx/cloud-contracts";
 import { MAYA } from "../support/developer-task-broker.js";
 import { setup } from "../support/spend-world.js";
 import { TEST_ORG } from "../support/orgs.js";

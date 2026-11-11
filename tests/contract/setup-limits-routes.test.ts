@@ -2,11 +2,11 @@
 // waits for a second admin, and a run started afterwards uses the smaller of the two.
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
-import { SETUP_AGENT_LIMITS_DEFAULT } from "../../packages/contracts/src/index.js";
+import { SETUP_AGENT_LIMITS_DEFAULT } from "@rovara-code/contracts";
 import { MAYA, OMAR } from "../support/developer-task-broker.js";
 import { NAME, setupWizardBench, type Bench } from "../support/setup-wizard-testenv.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
-import { setupLocksKey } from "../../packages/contracts/src/index.js";
+import { setupLocksKey } from "@rovara-code/contracts";
 import { TEST_ORG } from "../support/orgs.js";
 import { taskKey } from "../../packages/broker/src/developer/task-records.js";
 

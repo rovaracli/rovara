@@ -1,4 +1,4 @@
-import { StepSettingsSchema, STEP_TOOLS } from "@agentx/contracts/web";
+import { StepSettingsSchema, STEP_TOOLS } from "@agentx/cloud-contracts/web";
 import type { Step } from "./draft-state.js";
 import { ModelPicker,type Models } from "./ModelPicker.js";
 import { TextArea } from "../../design/TextArea.js";

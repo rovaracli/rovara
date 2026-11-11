@@ -4,15 +4,16 @@ import { fixtureActor, seedMaintainerGrant } from "../support/money-authority.js
 // requirements; the per-trigger and per-org limits; one run per event; and what the log may hold.
 import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { agentXError, spendCounterKey, triggerKey, type TriggerEvent } from "@agentx/contracts";
+import { agentXError, triggerKey, type TriggerEvent } from "@rovara-code/contracts";
+import { spendCounterKey } from "@agentx/cloud-contracts";
 import type * as RosterModule from "../../packages/broker/src/agents/roster.js";
 import { addToRoster, resolveAgentForAutonomousRun } from "../../packages/broker/src/agents/roster.js";
 import { monthOf } from "../../packages/broker/src/org/trial.js";
 import { dispatchTriggerEvent, rovaraActorIds, runOwnerFor, type TriggerDispatchDependencies } from "../../packages/broker/src/triggers/dispatch.js";
-import { connectionKey, connectionsKey } from "../../packages/contracts/src/connections.js";
-import { orgAutonomousKey, triggerRateKey } from "../../packages/contracts/src/org-scoped-keys.js";
-import type { RecipeOverlay } from "../../packages/contracts/src/agent-recipe-node.js";
-import type { ChainDefinitionInput } from "../../packages/contracts/src/chains.js";
+import { connectionKey, connectionsKey } from "@rovara-code/contracts";
+import { orgAutonomousKey, triggerRateKey } from "@rovara-code/contracts";
+import type { RecipeOverlay } from "@rovara-code/contracts";
+import type { ChainDefinitionInput } from "@rovara-code/contracts";
 import { DANA, HOOK_A, HOOK_A2, MAX, ORG_A, ORG_B, PRIYA, disposeGateWorlds, setupTriggerWorld, type TriggerWorld } from "../support/trigger-world.js";
 import type { WorldOptions } from "../support/chain-run-world.js";
 

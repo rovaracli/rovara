@@ -5,7 +5,7 @@
 //   POST (cap)          a maintainer sets the monthly cap on the project's automatic runs: { action: "set_automatic_runs_cap", cap, requestId }. Audited. The GET carries `automaticRuns` (runs, the line, the pause, the reminder).
 // Every answer is fixed words, a count, test ids and a day: no output and no message text.
 import { z } from "zod";
-import { MAX_AUTOMATIC_RUNS_PER_MONTH, agentXError, type OrgId } from "@agentx/contracts";
+import { MAX_AUTOMATIC_RUNS_PER_MONTH, agentXError, type OrgId } from "@rovara-code/contracts";
 import { resolveSurvivor } from "../../agents/access.js";
 import { setAutomaticRunsCap } from "../../automatic-runs/cap.js";
 import { automaticRunsView } from "../../automatic-runs/view.js";

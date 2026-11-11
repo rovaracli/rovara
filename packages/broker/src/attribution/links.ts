@@ -1,7 +1,7 @@
 // Enterprise foundations, I3 fix round 1: the only place a commit's reference leads to a person. A commit carries a random reference (`contracts/attribution.ts`); this row says who it
 // stood for. Erasing a person deletes their rows, after which every reference they ever had leads nowhere, in git history that cannot be rewritten. Nothing else keeps the link.
 import { DeleteCommand, GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { agentXError, orgScoped, type OrgId } from "@agentx/contracts";
+import { agentXError, orgScoped, type OrgId } from "@rovara-code/contracts";
 
 type DocumentClient = { send(command: unknown): Promise<unknown> };
 

@@ -1,5 +1,5 @@
 // Read-only branch HTTP boundary: throttle state is separate from project/configuration effects.
-import { AgentXNameSchema, ProjectWorkingBranchPageBodySchema, ProjectWorkingBranchPreviewBodySchema, ProjectWorkingBranchPreviewSchema, agentXError, orgScoped } from "@agentx/contracts";
+import { AgentXNameSchema, ProjectWorkingBranchPageBodySchema, ProjectWorkingBranchPreviewBodySchema, ProjectWorkingBranchPreviewSchema, agentXError, orgScoped } from "@rovara-code/contracts";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "../aws/developer-routes.js";
 import { takeRateAt } from "../developer/page-comments.js";
 import { readProjectLifecycleAuthority as authority } from "./reviewed-project-archive.js";

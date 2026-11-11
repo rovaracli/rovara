@@ -4,12 +4,13 @@
 //   GET /v1/app/spend-requests    the open spending requests the caller may decide now, and their own
 //   GET /v1/app/org/budget-settings  [owner or admin] the monthly base amounts
 //   GET /v1/app/org/members       the people, to turn a person's id into a name
+//   GET /v1/app/projects/{p}/spend  [`view_spend` on the project: a maintainer] one project's month: spent, committed and the limit when it has one. Totals only, no person rows (the project page's Spending tab, same switch).
 // The contracts package has no reader for the first three, so the readers are here. They keep only the fields the page shows; a figure that is not a finite, non-negative number
 // fails the whole read ("unreadable") instead of showing a plausible number.
 import { useEffect, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { z } from "zod";
-import { AdminBudgetSettingsSchema, AppOrgMembersResponseReaderSchema } from "@agentx/contracts/web";
+import { AdminBudgetSettingsSchema, AppOrgMembersResponseReaderSchema } from "@agentx/cloud-contracts/web";
 import { isConfirmUrl } from "../text/links.js";
 import { useAppHost } from "../host.js";
 import { createApiClient, type Reader } from "./client.js";
@@ -55,4 +56,18 @@ export function useSpendingReads({ orgId, developerId, role, enabled }: Spending
 /** A confirmation link the page may open: the app's own confirmation address, with no query. Anything else is not offered. */
 export function safeConfirmUrl(value: string | undefined, origin: string): string | undefined {
  return value !== undefined && !value.includes("?") && isConfirmUrl(value, origin) ? value : undefined;
+}
+
+/** One project's month, as `GET /v1/app/projects/{p}/spend` answers it: the same figures as the page above (committed is spent plus holds), with no per-person rows. The contracts package has no reader for it, so it is here. */
+export const ProjectSpendReaderSchema = z.object({ month, project: label, spentUsd: usd, committedUsd: usd, limitUsd: usd.optional() });
+export type ProjectSpend = z.infer<typeof ProjectSpendReaderSchema>;
+export const projectSpendPath = (project: string): string => "/v1/app/projects/" + encodeURIComponent(project) + "/spend";
+/**
+ * The Spending tab's one read. An answer about another project is refused (unreadable), never shown. `retry: false` because the api client already retries a read; `gcTime: 0` so no figure outlives the tab.
+ * A 403 (not a maintainer any more) or a 404 (no such project, or hidden) is shown by the tab as one plain sentence.
+ */
+export function useProjectSpend(project: string, enabled: boolean) {
+ const host = useAppHost(), api = useMemo(() => createApiClient(host), [host]);
+ const reader: Reader<ProjectSpend> = useMemo(() => ({ parse: (value: unknown) => { const read = ProjectSpendReaderSchema.parse(value);if (read.project !== project) throw new Error("project-mismatch");return read; } }), [project]);
+ return useQuery({ queryKey: ["project", project, "spend"], queryFn: () => api.get(projectSpendPath(project), reader), enabled, retry: false, gcTime: 0, staleTime: 0, refetchOnWindowFocus: false });
 }

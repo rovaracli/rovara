@@ -15,9 +15,7 @@
 // NOT in this module (listed in the lane report): the in-run fresh Prove (the confirm card's Prove is the broker's own, on a workspace it prepares anew), and the test-environment
 // merge of the agent's findings.
 import { resolve } from "node:path";
-import {
-  AgentXError, BUDGET_EXHAUSTED_FAILURE_MESSAGE, SetupRunSummarySchema, agentXError, effectiveSetupAgentLimits, type SetupAgentLimits, type SetupJournalEntry, type SetupProposal, type SetupRunSummary,
-} from "@agentx/contracts";
+import { AgentXError, BUDGET_EXHAUSTED_FAILURE_MESSAGE, SetupRunSummarySchema, agentXError, effectiveSetupAgentLimits, type SetupAgentLimits, type SetupJournalEntry, type SetupProposal, type SetupRunSummary } from "@rovara-code/contracts";
 import type { BashOperations } from "@earendil-works/pi-coding-agent";
 import { scanRepositories, type SetupScan } from "./setup-scan.js";
 import { trackedPathsOf, type TrackedPaths } from "./setup-citations.js";

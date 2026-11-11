@@ -12,7 +12,7 @@
 // expiry, because a 16 KiB-per-result, task-lifetime store needs no new bucket. The `ResultStore` port is the seam if a bucket is wanted later.
 import { createHash } from "node:crypto";
 import { DeleteCommand, PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
-import { INDEX_EXPIRY_ATTRIBUTE, isQuoteForbiddenSystem, stripHiddenCharacters, orgScoped, type Citation, type ContextSource, type OrgId, type QuoteVisibility } from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, isQuoteForbiddenSystem, stripHiddenCharacters, orgScoped, type Citation, type ContextSource, type OrgId, type QuoteVisibility } from "@rovara-code/contracts";
 import { registerTaskEndHandler } from "../agents/task-end.js";
 import type { ResultKeeper } from "./routes.js";
 

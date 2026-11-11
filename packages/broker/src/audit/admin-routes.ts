@@ -12,14 +12,9 @@
 //
 // The org comes from the path and nowhere else, and must be an org that exists: a mistyped id would otherwise start a chain
 // for an org that is not there, in a ledger that cannot be corrected. Nothing below builds an object key.
-import {
-  AUDIT_ERROR_MESSAGES,
-  OrgIdSchema,
-  agentXError,
-  auditOperatorId,
-  type AuditActor,
-  type OrgId,
-} from "@agentx/contracts";
+import { AUDIT_ERROR_MESSAGES, auditOperatorId } from "@agentx/cloud-contracts";
+import { OrgIdSchema, agentXError, type OrgId } from "@rovara-code/contracts";
+import { type AuditActor } from "@agentx/cloud-contracts";
 import { auditErasedMessage, eraseAuditSubject, isAuditSubjectId, type AuditEraseDeps } from "./erase.js";
 import { auditExportId, isAuditExportId, refuseShreddedExport, startAuditExport, type AuditExportClientDeps } from "./export.js";
 import { auditStaffRead } from "./events.js";

@@ -3,7 +3,8 @@
 import { App } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
-import { SynthSettingsSchema, evidenceRetentionSetting, synthContext } from "@agentx/contracts";
+import { SynthSettingsSchema, synthContext } from "@agentx/cloud-contracts";
+import { evidenceRetentionSetting } from "@rovara-code/contracts";
 import { ControlPlaneStack } from "../../infra/lib/control-plane.js";
 import { environmentNaming } from "../../infra/lib/naming.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";

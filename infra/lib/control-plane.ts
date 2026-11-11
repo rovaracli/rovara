@@ -8,6 +8,7 @@ import { mergeRoleStatementsOnSynth } from "./merge-role-statements.js";
 import { EgressAlarms } from "./egress-alarms.js";
 import { attachLessonsWorker, attachTeamRecord } from "./team-record-wiring.js";
 import { attachSavedEnvImages } from "./saved-env-images.js";
+import { CompanyImageMirror } from "./company-image-mirror.js";
 import { attachServiceCatalogImages } from "./service-catalog-images.js";
 import { attachProjectRegistries } from "./registry-wiring.js";
 import type { RegistryDomain } from "./registry-access.js";
@@ -47,7 +48,8 @@ import {
   aws_sqs as sqs,
 } from "aws-cdk-lib";
 import type { Construct } from "constructs";
-import { BROKER_SETTINGS, fixtureKeyAlias, SERVICE_CATALOG_REPOSITORIES, E2E_ARTIFACT_RETENTION_DAYS, EVIDENCE_RETENTION_DAYS, evidenceRetentionDays, evidenceRetentionSetting, E2E_ARTIFACT_RETENTION_TAG_KEY, E2E_ARTIFACT_RETENTION_TAG_VALUE, HEALTH_ALARM_SUFFIXES, chainScheduleGroupName, chainScheduleQueueName, chainScheduleRoleName, brokerRoleName, brokerManagedPolicyPath, modelAccessProbeRoleName, brokerManagedPolicyPrefix, connectorSecretsRoleName, testAccountSecretsRoleName, environmentE2eFeatureRuntimeCatalogId, environmentProjectSetupRuntimeCatalogId, INDEX_EXPIRY_ATTRIBUTE, WORKER_SETTING_PARAMETERS, WORKFLOW_DISPATCH_DUE_INDEX, WORKSPACE_PROJECT_INDEX, WORKSPACE_SESSION_STATE_INDEX } from "@agentx/contracts";
+import { BROKER_SETTINGS, fixtureKeyAlias, HEALTH_ALARM_SUFFIXES, chainScheduleQueueName, chainScheduleRoleName, brokerRoleName, brokerManagedPolicyPath, modelAccessProbeRoleName, brokerManagedPolicyPrefix, connectorSecretsRoleName, testAccountSecretsRoleName } from "@agentx/cloud-contracts";
+import { SERVICE_CATALOG_REPOSITORIES, E2E_ARTIFACT_RETENTION_DAYS, EVIDENCE_RETENTION_DAYS, evidenceRetentionDays, evidenceRetentionSetting, E2E_ARTIFACT_RETENTION_TAG_KEY, E2E_ARTIFACT_RETENTION_TAG_VALUE, chainScheduleGroupName, environmentE2eFeatureRuntimeCatalogId, environmentProjectSetupRuntimeCatalogId, INDEX_EXPIRY_ATTRIBUTE, WORKER_SETTING_PARAMETERS, WORKFLOW_DISPATCH_DUE_INDEX, WORKSPACE_PROJECT_INDEX, WORKSPACE_SESSION_STATE_INDEX } from "@rovara-code/contracts";
 import { type AgentXNaming, legacyNaming } from "./naming.js";
 import { grantEditionRecordRead } from "./edition-env.js";
 import { DeveloperSignIn, developerSignInParameters } from "./developer-signin.js";
@@ -60,12 +62,13 @@ import { BrokerNames, BrokerSettings } from "./broker-names.js";
 import { REQUALIFY_CONTEXT_KEY, REQUALIFY_DEFAULT_HOUR_UTC, RuntimeRequalify } from "./runtime-requalify.js";
 import { swebenchNames } from "./swebench-eval.js";
 import { SWEBENCH_DEPLOYMENT_MODE } from "./swebench-eval-definition.js";
+import { markCodeContractsPureCommand } from "./code-contracts-bundling.js";
 
 const MAX_DISPATCH_ATTEMPTS = 5;
 // Matches MAX_RECEIVE_COUNT in packages/slack-service, which reports the final attempt in the thread.
 export const SLACK_MAX_RECEIVE_COUNT = 5;
 // What the ingress Lambda may read of a turn record for the Details view (spec 014 FR-024):
-// TURN_DETAILS_ATTRIBUTES in packages/contracts/src/slack-details.ts plus the table keys pk and sk
+// TURN_DETAILS_ATTRIBUTES in packages/cloud-contracts/src/slack-details.ts plus the table keys pk and sk
 // (required). The byTime index keys exportPk and exportSk are not needed by this policy and carry no
 // new data; they stay listed so a later projection that names them is not refused.
 // A contract test keeps the two lists equal.
@@ -187,11 +190,12 @@ export class ControlPlaneStack extends Stack {
     });
     // Spec 025 phase 25a: declared on the stack itself so the names are exact; named environments only (R3).
     const signInParameters = naming.env === undefined ? undefined : developerSignInParameters(this);
-    const taskPersonProofEnabled = naming.env === "agentxlivetest123" ? new CfnParameter(this, "TaskPersonProofEnabled", {
+    // The task person proof workload (the dispatcher's person guard needs it): in every named environment. It is installed while this is "true" or while TaskPeopleChangesEnabled is.
+    const taskPersonProofEnabled = naming.env !== undefined ? new CfnParameter(this, "TaskPersonProofEnabled", {
       type: "String",
       default: "false",
       allowedValues: ["true", "false"],
-      description: "Install the dedicated task person proof workload in the approved named TEST environment",
+      description: "Install the dedicated task person proof workload on its own. It is installed anyway while TaskPeopleChangesEnabled is true; with both false nothing is created",
     }) : undefined;
 
     const state = new dynamodb.Table(this, "State", {
@@ -1174,7 +1178,15 @@ export class ControlPlaneStack extends Stack {
     // Team record (wire-team-record): the whole record, behind the switch `agentxTeamRecord=enabled` (off by default: this block does not run and nothing changes).
     const teamRecordResources = props?.teamRecord !== undefined && naming.env !== undefined ? attachTeamRecord(this, { env: naming.env, region: props.deploymentRegion ?? "us-east-1", context: props.teamRecord, broker, slackIngress, dispatcher, scheduleRole: githubRecoveryRole, alarms: { name: (suffix) => naming.alarmName(suffix), action: notifyOperator, metricsNamespace: naming.metricsNamespace }, ...(props.reservedConcurrency === false ? { reservedConcurrency: false } : {}) }) : undefined;
     // Saved environment images (SH22): the registry side (KMS, creation template, push/pull/manage roles). Nothing pushes until the broker's `sv` setting is on.
-    if (naming.env !== undefined) BrokerNames.of(broker).add("savedEnvKey", attachSavedEnvImages(this, { env: naming.env, brokerRole: broker.role!, cloudFormationRoleName: naming.cloudFormationRoleName, ...(props?.savedEnv?.kmsKeyArn === undefined ? {} : { kmsKeyArn: props.savedEnv.kmsKeyArn }), ...(props?.savedEnv?.registryScan === true ? { registryScanning: "basic" as const } : {}) }).kmsKeyId);
+    if (naming.env !== undefined) {
+      // Company-approved images (0.5.15, switch `pj`): the mirror function copies an approved image into a repository of this registry. Its own role (not the push or manage role) is the only one it assumes, and the template's repository policy names that role.
+      const companyImageMirror = new CompanyImageMirror(this, "CompanyImageMirror", { env: naming.env, account: this.account, region: this.region, partition: this.partition, state });
+      const savedEnvImages = attachSavedEnvImages(this, { env: naming.env, brokerRole: broker.role!, cloudFormationRoleName: naming.cloudFormationRoleName, mirrorRoleArn: companyImageMirror.role.roleArn, ...(props?.savedEnv?.kmsKeyArn === undefined ? {} : { kmsKeyArn: props.savedEnv.kmsKeyArn }), ...(props?.savedEnv?.registryScan === true ? { registryScanning: "basic" as const } : {}) });
+      BrokerNames.of(broker).add("savedEnvKey", savedEnvImages.kmsKeyId);
+      companyImageMirror.function.addEnvironment("SAVED_ENV_KMS_KEY_ARN", savedEnvImages.kmsKeyArn);
+      companyImageMirror.function.grantInvoke(broker);
+      BrokerNames.of(broker).add("companyImageMirrorFunction", companyImageMirror.function.functionName);
+    }
     // Test services (TS19): the catalog's image repositories and their key. NOT behind `TestServicesEnabled` (switch `tx`): the repositories have fixed names and are retained, so a condition would break turning the switch on, off and on again.
     if (naming.env !== undefined) attachServiceCatalogImages(this, { env: naming.env, repositories: SERVICE_CATALOG_REPOSITORIES });
     // N9 (INTG2): a project's private package registries, behind `rovaraCodeArtifactDomains` (off by default: this does not run and nothing changes).
@@ -1330,10 +1342,11 @@ export class ControlPlaneStack extends Stack {
       realtime.grantPublish(outboxPublisher);
       outboxPublisher.addEnvironment("REALTIME_HTTP_ENDPOINT", realtime.httpEndpoint);
       BrokerNames.of(broker).add("realtimeApi", realtime.dnsPrefix);
-      if (naming.env === "agentxlivetest123" && taskPersonProofEnabled !== undefined) {
+      if (taskPersonProofEnabled !== undefined) {
         new TaskPersonProof(this, "TaskPersonProof", {
           naming,
           enabled: taskPersonProofEnabled,
+          taskPeopleChangesEnabled: signInParameters.taskPeopleChangesEnabled,
           slackTeamId: signInParameters.slackTeamId,
           slackSecret,
           developerSignInTable: developerSignIn.table,
@@ -1398,6 +1411,8 @@ export class ControlPlaneStack extends Stack {
       brokerSettings.add("verifyResults", signInParameters.verifyResultsEnabled.valueAsString);
       // v1.2 learning loop: the install default of the company's master suggestions switch, a packed setting. Off unless the operator sets the parameter.
       brokerSettings.add("learningSuggestionsDefault", signInParameters.learningSuggestionsDefault.valueAsString);
+      // Lane U5 (runtime UI flags): the operator's override, a packed setting. `none` unless the operator sets the parameter.
+      brokerSettings.add("uiFlagsForceOff", signInParameters.uiFlagsForceOff.valueAsString);
       // Sign in with ChatGPT (#338): seals each developer's ChatGPT tokens in the State table. A
       // connection belongs to a signed-in developer, so it exists only where developer sign-in
       // does. Only the broker encrypts and decrypts with it, always under an encryption context
@@ -1862,16 +1877,15 @@ export function packagedFunction(
       minify: true,
       sourceMap: true,
       target: "node22",
-      ...(extraFiles.length === 0 && extraDirectories.length === 0 ? {} : {
-        commandHooks: {
-          beforeBundling: () => [],
+      commandHooks: {
+          beforeBundling: (inputDir: string) => [markCodeContractsPureCommand(inputDir)],
           beforeInstall: () => [],
           afterBundling: (_inputDir: string, outputDir: string) => {
+            if (extraFiles.length === 0 && extraDirectories.length === 0) return [];
             const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
             return [...extraFiles.map(([source, name]) => `cp ${quote(source)} ${quote(`${outputDir}/${name}`)}`), ...extraDirectories.map(([source, name]) => `cp -R ${quote(source)} ${quote(`${outputDir}/${name}`)}`)];
           },
-        },
-      }),
+      },
     },
   });
 }

@@ -1,6 +1,6 @@
 // The system's existing override cleanup must not restore stale company limits or regress the new revision.
 import { expect, it } from "vitest";
-import { orgSettingsKey } from "@agentx/contracts";
+import { orgSettingsKey } from "@agentx/cloud-contracts";
 import { writeBudgets } from "../../packages/broker/src/org/budget.js";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { mergeDuplicateMember } from "../../packages/broker/src/org/merge-members.js";

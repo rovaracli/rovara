@@ -2,7 +2,7 @@
 // UsePreviousTemplate and UsePreviousValue for every other parameter, so NoEcho values are never
 // sent again. It shows the parameter changes and the resource changes, and asks first.
 import { CreateChangeSetCommand, DeleteChangeSetCommand, DescribeChangeSetCommand, DescribeStacksCommand, ExecuteChangeSetCommand, type Change, type Stack } from "@aws-sdk/client-cloudformation";
-import { agentXError } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
 import { ADOPTED_STACK_NAMES } from "../environments/adopt.js";
 import { SIGN_IN_SINCE_PARAMETER_NAMES } from "../signin/settings.js";
 import { assertAuditLockNotLowered } from "./answer-schemas.js";
@@ -21,7 +21,7 @@ export interface ParameterUpdateInput {
 }
 
 /** Parameters only named environments' templates declare (spec 025 E16): the legacy deployment never has them, so no upgrade adds them. */
-const NAMED_ENVIRONMENT_ONLY_PARAMETERS: ReadonlySet<string> = new Set(["McpConfirmElicitation", "RovaraCodeV2Enabled", "PlanSelfCheckEnabled", "AutofixEnabled", "LiveSteerEnabled", "LiveRedirectEnabled", "LiveAskEnabled", "LiveFixEnabled", "ProofEvidenceEnabled", "DecisionCardsEnabled", "TestEnvironmentEnabled", "LearnedLessonsEnabled", "VerifyResultsEnabled", "SetupAgentEnabled", "TestServicesEnabled", "TestAccountsEnabled", "ProjectImagesEnabled", "SecondReviewEnabled", "SavedEnvEnabled", "ScriptTokensEnabled", "SlackExplicitMembers", "StandingInstructionsEnabled", "SetupRecipesEnabled", "NightlyHealthEnabled", "DesignReviewEnabled", "LearningSuggestionsDefault", "TeamRecordEnabled", "EmbedderImageUri"]);
+const NAMED_ENVIRONMENT_ONLY_PARAMETERS: ReadonlySet<string> = new Set(["McpConfirmElicitation", "TaskPeopleChangesEnabled", "TaskPeoplePublicInvitationsEnabled", "TaskPeoplePrivateInvitationsEnabled", "TaskPersonProofEnabled", "WorkflowDependenciesEnabled", "RovaraCodeV2Enabled", "PlanSelfCheckEnabled", "AutofixEnabled", "LiveSteerEnabled", "LiveRedirectEnabled", "LiveAskEnabled", "LiveFixEnabled", "ProofEvidenceEnabled", "DecisionCardsEnabled", "TestEnvironmentEnabled", "LearnedLessonsEnabled", "VerifyResultsEnabled", "SetupAgentEnabled", "TestServicesEnabled", "TestAccountsEnabled", "ProjectImagesEnabled", "SecondReviewEnabled", "SavedEnvEnabled", "ScriptTokensEnabled", "SlackExplicitMembers", "StandingInstructionsEnabled", "SetupRecipesEnabled", "NightlyHealthEnabled", "DesignReviewEnabled", "LearningSuggestionsDefault", "UiFlagsForceOff", "TeamRecordEnabled", "EmbedderImageUri"]);
 const LEGACY_STACK_NAMES: ReadonlySet<string> = new Set(Object.values(ADOPTED_STACK_NAMES));
 
 const NO_CHANGES = ["didn't contain changes", "No updates are to be performed"];

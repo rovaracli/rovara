@@ -2,7 +2,8 @@
 // approve the revised plan through the existing plan approval. These tests: what the stop records (the owner's message ids, bound to the blocked revision), the message's own mark, and the press
 // itself on the real broker (owner only, idempotent, fail closed, nothing about the message's text in a log, an event, a decision or the workflow).
 import { describe, expect, it } from "vitest";
-import { LIVE_STEER_REAPPROVAL_REASON, LIVE_STEER_REVISED_REASON, WORKFLOW_BLOCK_REASONS, WORKFLOW_LIVE_STEER_REAPPROVAL_MESSAGE, agentSessionKey } from "../../packages/contracts/src/index.js";
+import { LIVE_STEER_REAPPROVAL_REASON, LIVE_STEER_REVISED_REASON, WORKFLOW_LIVE_STEER_REAPPROVAL_MESSAGE, agentSessionKey } from "@rovara-code/contracts";
+import { WORKFLOW_BLOCK_REASONS } from "@agentx/cloud-contracts";
 import { settleLiveSteerReapproval } from "../../packages/broker/src/agent-sessions/live-steer-reapproval.js";
 import { deliverSteerLive, markSteerRevised } from "../../packages/broker/src/agent-sessions/steer.js";
 import { taskKey } from "../../packages/broker/src/developer/task-records.js";
@@ -45,14 +46,16 @@ describe("the message's own mark when its owner chose Revise the plan", () => {
 // The press, on the real broker: a Quick task whose approved plan is being coded, the owner's live message stops coding for re-approval, and the owner presses Revise the plan.
 import { createHash, randomUUID } from "node:crypto";
 import { vi } from "vitest";
-import { WORKFLOW_REVISE_PLAN_DECISION_REASON, createCandidateManifest, type WorkflowSnapshot } from "../../packages/contracts/src/index.js";
+import { WORKFLOW_REVISE_PLAN_DECISION_REASON, createCandidateManifest } from "@rovara-code/contracts";
+import { type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { developerTaskIdentity } from "../../packages/broker/src/developer/task-records.js";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { MAYA, OMAR, createSingleAnswerPlanBroker, grantProject, type Developer } from "../support/developer-task-broker.js";
 import { finishPlanningWithMarkdown } from "../support/plan-documents.js";
 import { SLACK_CHANNEL, SLACK_TEAM } from "../support/slack-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
-import { orgMemberKey, orgRemovedKey, projectMetaKey } from "../../packages/contracts/src/index.js";
+import { orgMemberKey, orgRemovedKey } from "@agentx/cloud-contracts";
+import { projectMetaKey } from "@rovara-code/contracts";
 import { SLACK_PROJECT_ARCHIVED } from "../../packages/broker/src/aws/slack-refusals.js";
 import { reviseTaskPlan, type RevisePlanHost } from "../../packages/broker/src/agent-sessions/live-steer-revise.js";
 import { REVISE_PLAN_REFUSALS } from "../../packages/broker/src/agent-sessions/live-steer-revise.js";

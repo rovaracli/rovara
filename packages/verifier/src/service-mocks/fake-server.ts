@@ -15,23 +15,7 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { isIP } from "node:net";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import {
-  FIXTURE_RESPONSE_HEADER_NAMES,
-  FixtureEntrySchema,
-  FixtureSetSchema,
-  SERVICE_MOCK_BODY_MAX_BYTES,
-  SERVICE_MOCK_NO_RECORDING_MESSAGE,
-  SERVICE_MOCK_UNMATCHED_STATUS,
-  canonicalJson,
-  e2eApiMockFixtureToFixtureSet,
-  fixtureRequestHash,
-  fixtureSetDigest,
-  type E2EApiMockFixture,
-  type FixtureEntry,
-  type FixtureSet,
-  type ServiceMockFault,
-  type ServiceMockUsage,
-} from "@agentx/contracts";
+import { FIXTURE_RESPONSE_HEADER_NAMES, FixtureEntrySchema, FixtureSetSchema, SERVICE_MOCK_BODY_MAX_BYTES, SERVICE_MOCK_NO_RECORDING_MESSAGE, SERVICE_MOCK_UNMATCHED_STATUS, canonicalJson, e2eApiMockFixtureToFixtureSet, fixtureRequestHash, fixtureSetDigest, type E2EApiMockFixture, type FixtureEntry, type FixtureSet, type ServiceMockFault, type ServiceMockUsage } from "@rovara-code/contracts";
 import { createSyntheticGenerator } from "../data-guard.js";
 import { callerAddress, clip, readBoundedBody, startCore, type CoreAnswer, type CoreRefusal, type CoreRequest, type CoreStrategy, type RunningCore } from "./fake-core.js";
 import { FixtureSetRefused, sagemakerEndpointOfPath } from "./fixture-set.js";

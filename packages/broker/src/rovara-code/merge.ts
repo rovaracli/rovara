@@ -12,32 +12,8 @@
 //   and only then claims each pull request on its tracking item and merges it, in repository order, with the checked head as `sha`.
 import { createHash } from "node:crypto";
 import { TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  MERGE_CLAIM_SECONDS,
-  MERGE_NOT_READY_MESSAGES as M,
-  MERGE_VIEW_MESSAGE_MAX,
-  MergePressBodySchema,
-  WORKFLOW_BLOCK_REASONS,
-  agentXError,
-  auditPullRequestId,
-  isBranchSyncBlockReason,
-  isCiFixBlockReason,
-  mergeTrackingKey,
-  sessionEventId,
-  type AuditProof,
-  type ChangeRequestStatus,
-  type CodeHost,
-  type CodeSettings,
-  type HostScope,
-  type MergeResult,
-  type MergeTrackingItem,
-  type MergeDone,
-  type MergeRisk,
-  type MergeView,
-  type NeedsConfirmation,
-  type OrgId,
-  type WorkflowSnapshot,
-} from "@agentx/contracts";
+import { MERGE_CLAIM_SECONDS, MERGE_VIEW_MESSAGE_MAX, MergePressBodySchema, agentXError, isBranchSyncBlockReason, isCiFixBlockReason, mergeTrackingKey, sessionEventId, type ChangeRequestStatus, type CodeHost, type CodeSettings, type HostScope, type MergeResult, type MergeDone, type MergeRisk, type MergeView, type NeedsConfirmation, type OrgId } from "@rovara-code/contracts";
+import { MERGE_NOT_READY_MESSAGES as M, WORKFLOW_BLOCK_REASONS, auditPullRequestId, type AuditProof, type MergeTrackingItem, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { auditOccurrence, auditPullRequestMergeRequested } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, tryAuditEvents } from "../audit/outbox.js";
@@ -60,6 +36,7 @@ import { codeMilestoneItems, deliverCodeMilestones } from "./milestones.js";
 import { PERMISSION_LOOKUPS_MAX, readBranch, readCi, readMergeTracking, tracksMerge } from "./merge-tracking.js";
 import { approvalReviewsOf, changeRequestRef, changedPathsOf, type ConsumerRepository, type RepositoryResolver } from "./host-port.js";
 import { leavesLessonsFileAlone } from "./lessons-file-guard.js";
+import { connectedCompanyRulesPath } from "../company-rules/connected-path.js";
 
 /** The rule a merge change names: only the person who pressed Merge decides it, while they can still press it. */
 export const MERGE_RULE = "pull_request_merge";
@@ -498,10 +475,13 @@ async function mergeableNow(
   });
   if (!readiness.ready) throw agentXError("MERGE_NOT_READY", readiness.message);
   // Owner decision 50.4: a task's pull request never changes the team's lessons file. Read fresh from the host, after the other readiness words, and failing closed on a list that is cut short or cannot be read.
+  // G-04: the same for the company rules file, at its default path and at the path this company connected (read from its file link while `si` is on; a link that cannot be read fails closed).
+  const companyRulesPath = await connectedCompanyRulesPath(deps, task.orgId);
   for (const [index, step] of plan.entries()) {
     if (facts[index]!.state !== "open") continue;
-    const lessonsFile = await leavesLessonsFileAlone(step.codeHost, changeRequestRef(step.url, step.entry.number), host.scope(task.orgId));
-    if (!lessonsFile.ok) throw agentXError("MERGE_NOT_READY", lessonsFile.reason === "touches" ? M.touchesLessonsFile : M.lessonsFileUnreadable);
+    const lessonsFile = await leavesLessonsFileAlone(step.codeHost, changeRequestRef(step.url, step.entry.number), host.scope(task.orgId), { companyRulesPath: companyRulesPath.path });
+    if (!lessonsFile.ok) throw agentXError("MERGE_NOT_READY", lessonsFile.reason === "touches" ? M.touchesLessonsFile : lessonsFile.reason === "touches_company_rules" ? M.touchesCompanyRulesFile : M.lessonsFileUnreadable);
+    if (!companyRulesPath.ok) throw agentXError("MERGE_NOT_READY", M.lessonsFileUnreadable);
   }
   return { plan: plan.filter((_, index) => facts[index]!.state !== "merged"), settings, alreadyMerged: false, mergedBefore, entries };
 }
@@ -516,13 +496,13 @@ async function codeOwnersOf(
   const { codeHost, url } = ctx.home;
   if (!codeHost.capabilities.codeOwners || codeHost.codeOwners === undefined) return { ok: true };
   try {
-    const text = await codeHost.codeOwners({ url }, ctx.baseBranch, ctx.scope);
-    if (text === undefined) return { ok: true };
+    const read = await codeHost.codeOwners({ url }, ctx.baseBranch, ctx.scope);
+    if (read === undefined) return { ok: true };
     const changed = await changedPathsOf(codeHost, changeRequestRef(url, ctx.number), ctx.scope);
     // A list cut short could hide a path a code owner owns.
     if (!changed.complete) return { ok: false, unreadable: true };
     return await codeOwnerVerdict({
-      codeOwnersText: text, paths: changed.paths, approverLogins: ctx.approval.approvers.map((approver) => approver.login),
+      codeOwnersRead: read, paths: changed.paths, approverLogins: ctx.approval.approvers.map((approver) => approver.login),
       teamMember: async (team, login) => (await ctx.home.isTeamMember?.(team, login, ctx.scope)) ?? "unknown",
     });
   } catch {

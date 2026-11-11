@@ -1,7 +1,8 @@
 // Integration of T4 (PLANVIEW) with T5 (PLANSELFCHECK): the card, the task page, the full-plan route and the unreadable-plan card show what the plan self-check stored
 // (T5's record contract): its findings and notes, the fixed "not checked" line when there is no usable record, and the direction of each check on the unchanged code.
 import { describe, expect, it } from "vitest";
-import { WorkflowSnapshotSchema, createWorkflowSnapshot, planQualityFinding, WORKFLOW_BLOCK_REASONS, type PlanDocument } from "@agentx/contracts";
+import { WorkflowSnapshotSchema, createWorkflowSnapshot, WORKFLOW_BLOCK_REASONS } from "@agentx/cloud-contracts";
+import { planQualityFinding, type PlanDocument } from "@rovara-code/contracts";
 import {
   NOT_CHECKED_SENTENCE, PlanSelfCheckRecordSchema, loadPlanSelfCheck, planSelfCheckKeyOf, readPlanSelfCheck,
 } from "../../packages/broker/src/developer/plan-self-check.js";

@@ -7,7 +7,7 @@ import { githubCodeHost, GITHUB_CODE_HOST_CAPABILITIES } from "../../packages/br
 import { replyTargetOf } from "../../packages/broker/src/plugins/code-host/github/mapping.js";
 import { FakeHostModel } from "../../packages/broker/src/plugins/fake/model.js";
 import type { CodeBuildGateway } from "../../packages/broker/src/codebuild.js";
-import { CodeHostCapabilitiesSchema, type CodeBuildCheckResult } from "../../packages/contracts/src/index.js";
+import { CodeHostCapabilitiesSchema, type CodeBuildCheckResult } from "@rovara-code/contracts";
 import { checkRunnerChecks, type CheckRunnerWorld } from "./check-runner.contract.js";
 import { codeHostChecks, type CodeHostWorld } from "./code-host.contract.js";
 import { runContract } from "./contract-kit.js";
@@ -122,7 +122,7 @@ describe("GitHub adapter specifics", () => {
 
   it("refuses to list branches under a system scope (the listing is org-scoped)", async () => {
     const world = githubCodeHostWorld();
-    await expect(world.host.listBranches(world.repository, 1, { system: "private-install" })).rejects.toBeDefined();
+    await expect(world.host.listBranches(world.repository, 1, { system: "install" })).rejects.toBeDefined();
   });
 
   it("checks reply text before anything, and sends only to a comment in a thread", () => {

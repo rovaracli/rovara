@@ -5,7 +5,7 @@ import { failingOnOriginalTests, fixSetupCauseOf, recordFixSetup, FIX_SETUP_MARK
 import { nightlyOptionsFor, usableNightlyFailing, type NightlyHeadReader } from "../../test-env/nightly-usable.js";
 import { alreadyFailingForResults } from "../../test-env/known-failing.js";
 import { newFailingCheckIds, workflowCheckKind } from "../../verification/result.js";
-import { E2E_PROJECT_CHECK_ID, type EvidencePack } from "@agentx/contracts";
+import { E2E_PROJECT_CHECK_ID, type EvidencePack } from "@rovara-code/contracts";
 import { verifyResultsEnabled } from "../../verification/switch.js";
 import type { AutofixDependencies } from "../workflow-autofix-runner.js";
 import { nightlyHeadReaderOf } from "./nightly-head.js";

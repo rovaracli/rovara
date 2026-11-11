@@ -3,7 +3,7 @@
 // the typed field stays as "Enter an ID instead" and is what the screen falls back to when the list cannot be read. The server still checks everything on save.
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, configure, screen, fireEvent, waitFor, within } from "@testing-library/react";
-import { SourceOptionsViewSchema } from "@agentx/contracts/web";
+import { SourceOptionsViewSchema } from "@agentx/cloud-contracts/web";
 import { adminView, flat } from "./support/sources-fixture.js";
 import { ok } from "./support/lessons-fixture.js";
 

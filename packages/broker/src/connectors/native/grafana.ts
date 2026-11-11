@@ -12,7 +12,7 @@
 //   check               GET  /api/health, then GET /api/user
 // Not confirmed in the documentation pages that were readable: the response shapes of the legacy dashboard, /api/ds/query and alertmanager routes (they are the
 // long-standing ones the plan names), and the provisioning alert-rule routes are marked deprecated there in favour of the App Platform ones.
-import { GrafanaConnectorSchema, type GrafanaConnectorConfig, type OrgConnection } from "@agentx/contracts";
+import { GrafanaConnectorSchema, type GrafanaConnectorConfig, type OrgConnection } from "@rovara-code/contracts";
 import { NativeCheckFailed, NativeToolRefusal, type NativeConnectorSpec, type NativeTool, type NativeToolContext } from "./runtime.js";
 import { VendorFetchError } from "./vendor-fetch.js";
 

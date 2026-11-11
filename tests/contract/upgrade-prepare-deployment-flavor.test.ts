@@ -1,7 +1,7 @@
 // Test services slice 1 follow-up (c): `prepareDeployment` (what `agentx upgrade --source <clone>` runs before it deploys) DRIVEN end to end with fakes, to prove the catalog flavor wiring by what happens to a real
 // throwaway checkout, not by reading the source text (upgrade-catalog-flavor.test.ts reads it too). The fakes: the identity port (the STS caller), the parameter store with a bootstrap record, and a command runner that
 //   - answers the git checks as a clean checkout at the release tag,
-//   - does what `npx tsx packages/contracts/tools/catalog-flavor.ts <flavor>` does to the checkout (the tool's own function rewrites the two generated files),
+//   - does what `npx tsx packages/cloud-contracts/tools/catalog-flavor.ts <flavor>` does to the checkout (the tool's own function rewrites the two generated files),
 //   - records, at `npm run build` and at `cdk synth`, which flavor and which staging key the tree holds, and
 //   - writes a minimal cloud assembly for the synth.
 // What stays unproven here (a real cdk synth, a real npm build, a real deploy) is staging's.
@@ -10,8 +10,9 @@ import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { CATALOG_STAGING_ACCOUNT_ID, parseBundlePublicKey } from "@agentx/contracts";
-import { FLAVOR_FILE, STAGING_KEYS_FILE, STAGING_KEY_DATA_FILE, setCatalogFlavor } from "../../packages/contracts/tools/catalog-flavor.js";
+import { CATALOG_STAGING_ACCOUNT_ID } from "@agentx/cloud-contracts";
+import { parseBundlePublicKey } from "@rovara-code/contracts";
+import { FLAVOR_FILE, STAGING_KEYS_FILE, STAGING_KEY_DATA_FILE, setCatalogFlavor } from "../../packages/cloud-contracts/tools/catalog-flavor.js";
 import { CATALOG_FLAVOR_TOOL, CDK_CONSTRUCT_IDS, cdkDiff, type CommandRunner } from "../../packages/cli/src/deploy/cdk-engine.js";
 import { writeTeamRecordRecord } from "../../packages/cli/src/deploy/team-record-switch.js";
 import { prepareDeployment } from "../../packages/cli/src/deploy/commands.js";

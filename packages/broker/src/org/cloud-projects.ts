@@ -1,20 +1,7 @@
 // Plan 2, Task 16: an owner or admin of a cloud org creates a project from a repository the org's own GitHub connection reaches (the
 // route checks that), and the project is built here, from the repository alone, the way `agentx project add` builds it.
-import {
-  CreateProjectBodySchema,
-  DEFAULT_ORCHESTRATOR_INSTRUCTIONS,
-  Ec2RuntimeBindingSchema,
-  ProjectDefinitionSchema,
-  SETUP_TIMEOUT,
-  TEST_TIMEOUT,
-  AgentXError,
-  agentXError,
-  agentxRepositoryName,
-  parseCommandLine,
-  type Ec2RuntimeBinding,
-  type ProjectCommand,
-  type ProjectDefinition,
-} from "@agentx/contracts";
+import { CreateProjectBodySchema, DEFAULT_ORCHESTRATOR_INSTRUCTIONS, Ec2RuntimeBindingSchema, SETUP_TIMEOUT, TEST_TIMEOUT, AgentXError, agentXError, agentxRepositoryName, parseCommandLine, type Ec2RuntimeBinding, type ProjectCommand } from "@rovara-code/contracts";
+import { ProjectDefinitionSchema, type ProjectDefinition } from "@agentx/cloud-contracts";
 
 /** Where a cloud org's projects run, and the credential their repositories use: the foundation's, the same for every org. */
 export interface CloudProjectDefaults {

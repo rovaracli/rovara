@@ -1,7 +1,7 @@
 // Test services TS3 (contract): FixtureSet v2, its request hash (method, path, identifying query, ignorePaths), its bounds, and the converters from v1 sets and from the E2E checker's GET fixtures.
 import { describe, expect, it } from "vitest";
-import { e2eApiMockFixtureToFixtureSet, type E2EApiMockFixture } from "../../packages/contracts/src/e2e-node.js";
-import * as mocks from "../../packages/contracts/src/service-mocks.js";
+import { e2eApiMockFixtureToFixtureSet, type E2EApiMockFixture } from "@rovara-code/contracts";
+import * as mocks from "@rovara-code/contracts";
 
 const dependency: mocks.FixtureSet["dependency"] = { id: "payments-api", family: "http:api.example-pay.com", protocol: "http_json", target: "api.example-pay.com" };
 const baseMatch: mocks.FixtureSet["match"] = { ignorePaths: ["/requestedAt"], query: ["customer"] };

@@ -1,7 +1,7 @@
 // Fix round 1: I1 who may approve, I2/I3 the obligation is never lost or left behind, C2 holds can always be left, M2 the link line, M4 bug or feature, and the owner-choice route.
 import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { SpecTargetSchema, type SpecFile, type SpecTarget } from "@agentx/contracts";
+import { SpecTargetSchema, type SpecFile, type SpecTarget } from "@rovara-code/contracts";
 import { readSpecPullRequestOf } from "../../packages/broker/src/aws/broker/spec-wiring.js";
 import { fullStatus, specTask, withSpecProject } from "../support/spec-project.js";
 import { specKindOf } from "../../packages/broker/src/aws/developer-tasks/spec-wiring.js";

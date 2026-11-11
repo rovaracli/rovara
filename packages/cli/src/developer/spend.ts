@@ -2,7 +2,7 @@
 // An amount is US dollars, or `none` to clear it. A change that goes past a cap someone else must raise answers (from Task 32) 202
 // { status: "NEEDS_ADMIN_APPROVAL", spendRequestId, message }; the broker's words and the request's id are printed and it is not a failure.
 import { randomUUID } from "node:crypto";
-import { agentXError } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
 import { appRequest, clean, list, result, seg, str, taskStatusLine, waitingText, type AppResult } from "./agents.js";
 import { jsonSafe } from "./audit.js";
 import type { DeveloperSessionDeps } from "./session.js";

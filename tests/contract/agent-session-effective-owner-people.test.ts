@@ -3,8 +3,8 @@
 // claim it), dispatch asks for a witness for the taker first, and with no Slack proof for them it rests on their project authority.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { projectMemberKey, projectRevisionKey, slackBindingKey } from "../../packages/contracts/src/org-scoped-keys.js";
-import { orgMemberKey, orgRemovedKey } from "../../packages/contracts/src/org-node.js";
+import { projectMemberKey, projectRevisionKey, slackBindingKey } from "@rovara-code/contracts";
+import { orgMemberKey, orgRemovedKey } from "../../packages/cloud-contracts/src/org-node.js";
 import type { DeveloperCaller } from "../../packages/broker/src/aws/developer-routes.js";
 import type { Ec2OutboxRecord } from "../../packages/broker/src/aws/lambda.js";
 import { createTaskAuthorityAdmission } from "../../packages/broker/src/aws/task-authority-admission.js";
@@ -297,6 +297,8 @@ describe("the taker's own entry in a People list", () => {
 
 function dispatch(options: { maxRole?: "developer" | "viewer" | undefined; maxOnSlack?: boolean; withSidecar?: boolean } = {}) {
   const h = people({ taken: options.maxOnSlack === true ? { slackUserId: S_MAX } : true, ...(options.maxOnSlack === undefined ? {} : { maxOnSlack: options.maxOnSlack }) });
+  // Everyone here is a member of the company who may write (owner decision 86: a task person is a Rovara member).
+  for (const developerId of [PRIYA, MAX, CASEY]) h.db.set({ ...orgMemberKey(TEST_ORG, developerId), entityType: "ORG_MEMBER", orgId: TEST_ORG, developerId, role: "member" });
   if (options.withSidecar !== false) h.seedSidecar();
   const operationId = randomUUID();
   const outbox: Ec2OutboxRecord = {
@@ -456,6 +458,7 @@ describe("dispatch of a task whose taker is on Slack and holds the project throu
   /** The production wiring end to end: the runtime's own identity check (Max has a task person record), the witness the dispatcher composes, and no grant for Max at all. */
   function slackWorld(options: { proof: boolean | "ineligible"; grant?: boolean }) {
     const h = people({ taken: false });
+    for (const developerId of [PRIYA, MAX_NATIVE]) h.db.set({ ...orgMemberKey(TEST_ORG, developerId), entityType: "ORG_MEMBER", orgId: TEST_ORG, developerId, role: "member" });
     const task: DeveloperTaskRecord = { ...h.task(), currentOwner: { developerId: MAX_NATIVE, name: "Max", provider: "slack", slackUserId: S_MAX, since: SINCE } };
     h.db.set(task as never);
     const personId = randomUUID();
@@ -513,6 +516,8 @@ describe("dispatch of a task whose taker is on Slack and holds the project throu
   it("refuses the Slack identity witness for a taker removed from the company, whatever Slack says (member removal)", async () => {
     const w = slackWorld({ proof: true });
     expect((w.task as unknown as { orgId?: unknown }).orgId).toBe(TEST_ORG);
+    // A removal deletes the member record and writes the tombstone.
+    w.db.delete(orgMemberKey(TEST_ORG, MAX_NATIVE));
     w.db.set({ ...orgRemovedKey(TEST_ORG, MAX_NATIVE), removedAt: "2026-10-30T10:00:00.000Z" });
     // With the tombstone the witness is refused, so the dispatch fails closed and is retried (the test above shows the same world ALLOWED without it). Nothing is posted.
     await expect(w.guard()).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
@@ -534,6 +539,7 @@ describe("dispatch of a task whose taker is on Slack and holds the project throu
 
   it("refuses a removed taker whose project grant is still there (the removal's access step has not run yet)", async () => {
     const w = slackWorld({ proof: "ineligible", grant: true });
+    w.db.delete(orgMemberKey(TEST_ORG, MAX_NATIVE));
     w.db.set({ ...orgRemovedKey(TEST_ORG, MAX_NATIVE), removedAt: "2026-10-30T10:00:00.000Z" });
     await expect(w.guard()).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
     expect(w.db.get(`OUTBOX#${w.outbox.id}`, "OUTBOX")?.status).toBe("QUEUED");
@@ -551,7 +557,7 @@ describe("dispatch of a task whose taker is on Slack and holds the project throu
     // A runtime whose project reads give the taker a grant of their own.
     const granted = createTaskPersonRuntime({
       orgId: TEST_ORG, admission: createTaskAuthorityAdmission({ now: () => START, lambdaRemainingMs: 20_000 }), stateTableName: "state", slackTeamId: TEAM, now: () => START, uuid: () => randomUUID(),
-      ports: { readTaskRecord: async () => undefined, readDeveloperRecord: async () => undefined, readOrgRecord: async () => undefined, taskPersonProof: async () => { throw new Error("unused"); },
+      ports: { readTaskRecord: async () => undefined, readDeveloperRecord: async () => undefined, readOrgRecord: async ({ key }) => String(key.sk).startsWith("MEMBER#") ? { ...key, role: "member" } : undefined, taskPersonProof: async () => { throw new Error("unused"); },
         projectAuthorityReader: {
           latestRevision: async () => ({ revision: { ...projectRevisionKey(TEST_ORG, "payments", 7), revision: 7, definition: { developerTasks: { enabled: true, channelMembersMayUse: false } } }, complete: true }),
           memberships: async () => ({ items: [grant] as never, complete: true }), bindings: async () => ({ items: [], complete: true }), orgMember: async () => ({ complete: true }),

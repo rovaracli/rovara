@@ -1,5 +1,5 @@
 // Spec 025 FR-031, D5, D6: whether a task is shared, where, and in which mode. No I/O.
-import { agentXError, type DeveloperTaskPolicy } from "@agentx/contracts";
+import { agentXError, type DeveloperTaskPolicy } from "@rovara-code/contracts";
 
 export interface BoundChannel { channelId: string; name?: string; isPrivate?: boolean }
 export interface ShareDecision {

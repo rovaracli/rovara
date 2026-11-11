@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it } from "vitest";
-import { ENVIRONMENT_PLACEHOLDER, renderTemplate, type ReleaseManifest } from "@agentx/contracts";
+import { ENVIRONMENT_PLACEHOLDER, renderTemplate, type ReleaseManifest } from "@rovara-code/contracts";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { OPERATOR_PARAMETERS, RETIRED_OPERATOR_PARAMETERS, SECRET_PARAMETERS, installOrder, privateImageUri, stackParameters, upgradeOrder, type DeployPart, type InstallAnswers } from "../../packages/cli/src/deploy/parameters.js";
 
@@ -240,7 +240,7 @@ describe("deploy parameters", () => {
     for (const [part, names] of Object.entries(OPERATOR_PARAMETERS)) {
       const declared = Object.keys(templates.get(part)?.Parameters ?? {});
       for (const name of names) {
-        if (name === "TaskPersonProofEnabled") continue; // Declared only in the owner-approved named TEST template.
+        if (name === "TaskPersonProofEnabled") continue; // Declared in every named environment's template, but not in the legacy one these templates may be.
         // Declared only where the install is synthesized with the Team record (`agentxTeamRecord=enabled`, infra/lib/team-record-wiring.ts attachTeamRecord); these templates are synthesized without it.
         // Its declaration with the record on is asserted in team-record-wiring-infrastructure.test.ts, and the upgrade keeps it only where the deployed stack and the new template both have it.
         if (name === "TeamRecordEnabled" || name === "EmbedderImageUri") { expect(declared, `${part} ${name} (only with the Team record)`).not.toContain(name); continue; }

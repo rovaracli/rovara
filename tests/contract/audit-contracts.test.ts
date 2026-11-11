@@ -1,51 +1,8 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { sha256Hex } from "@rovara/audit-verifier";
-import {
-  AUDIT_ACTIONS,
-  AUDIT_BACKSTOP_SEAL_AGE_MINUTES,
-  AUDIT_DETAILS_SHRED_AFTER_CLOSE_DAYS,
-  AUDIT_DETAIL_FIELDS_MAX,
-  AUDIT_DETAIL_FIELD_MAX_CHARS,
-  AUDIT_DETAIL_PARTS_MAX,
-  AUDIT_ERROR_MESSAGES,
-  AUDIT_EXPORT_MAX_RECORDS,
-  AUDIT_EXPORT_URL_SECONDS,
-  AUDIT_FACT_KEYS,
-  AUDIT_FACT_MAX_CHARS,
-  AUDIT_FILTER_SCAN_MAX,
-  AUDIT_FLUSH_DEADLINE_MS,
-  AUDIT_GOVERNANCE_RETENTION_DAYS,
-  AUDIT_INTAKE_MAX_RECEIVES,
-  AUDIT_LIMITS_COPY,
-  AUDIT_MAX_FACTS,
-  AUDIT_MAX_RECORDS_PER_ORG_EPOCH,
-  AUDIT_MAX_RELATED,
-  AUDIT_PENDING_FAIL_AFTER_DAYS,
-  AUDIT_PENDING_SHARDS,
-  AUDIT_PENDING_TTL_DAYS,
-  AUDIT_RETENTION_DAYS_DEFAULT,
-  AUDIT_RETENTION_DAYS_MIN_COMPLIANCE,
-  AUDIT_SDK_REQUEST_TIMEOUT_MS,
-  AUDIT_SEAL_INTERVAL_MINUTES,
-  AUDIT_TARGET_KINDS,
-  AUDIT_TRANSIENT_COPY_DAYS,
-  AUDIT_TSA_ENDPOINTS,
-  AUDIT_TSA_SPACING_MS,
-  AUDIT_TSA_TIMEOUT_MS,
-  AUDIT_VERSION_SWEEP_KEYS_PER_RUN,
-  AgentXErrorCodeSchema,
-  AuditActorSchema,
-  AuditDetailPartSchema,
-  AuditEventIdSchema,
-  AuditEventInputSchema,
-  AuditProofSchema,
-  AuditTargetSchema,
-  auditEventId,
-  auditOperatorId,
-  errorStatus,
-  type AuditAction,
-} from "../../packages/contracts/src/index.js";
+import { AUDIT_ACTIONS, AUDIT_BACKSTOP_SEAL_AGE_MINUTES, AUDIT_DETAILS_SHRED_AFTER_CLOSE_DAYS, AUDIT_DETAIL_FIELDS_MAX, AUDIT_DETAIL_FIELD_MAX_CHARS, AUDIT_DETAIL_PARTS_MAX, AUDIT_ERROR_MESSAGES, AUDIT_EXPORT_MAX_RECORDS, AUDIT_EXPORT_URL_SECONDS, AUDIT_FACT_KEYS, AUDIT_FACT_MAX_CHARS, AUDIT_FILTER_SCAN_MAX, AUDIT_FLUSH_DEADLINE_MS, AUDIT_GOVERNANCE_RETENTION_DAYS, AUDIT_INTAKE_MAX_RECEIVES, AUDIT_LIMITS_COPY, AUDIT_MAX_FACTS, AUDIT_MAX_RECORDS_PER_ORG_EPOCH, AUDIT_MAX_RELATED, AUDIT_PENDING_FAIL_AFTER_DAYS, AUDIT_PENDING_SHARDS, AUDIT_PENDING_TTL_DAYS, AUDIT_RETENTION_DAYS_DEFAULT, AUDIT_RETENTION_DAYS_MIN_COMPLIANCE, AUDIT_SDK_REQUEST_TIMEOUT_MS, AUDIT_SEAL_INTERVAL_MINUTES, AUDIT_TARGET_KINDS, AUDIT_TRANSIENT_COPY_DAYS, AUDIT_TSA_ENDPOINTS, AUDIT_TSA_SPACING_MS, AUDIT_TSA_TIMEOUT_MS, AUDIT_VERSION_SWEEP_KEYS_PER_RUN, AuditActorSchema, AuditDetailPartSchema, AuditEventIdSchema, AuditEventInputSchema, AuditProofSchema, AuditTargetSchema, auditEventId, auditOperatorId, type AuditAction } from "@agentx/cloud-contracts";
+import { AgentXErrorCodeSchema, errorStatus } from "@rovara-code/contracts";
 import { AUDIT_LIMITS_COPY as VERIFIER_LIMITS_COPY } from "../../packages/audit-verifier/src/index.js";
 
 const ORG = "org_0123456789abcdefghij";
@@ -132,6 +89,8 @@ describe("the event catalog", () => {
   "member.removal_completed",
   "member.left",
   "member.renamed",
+  "insights_access.granted",
+  "insights_access.revoked",
   "org.closed",
   "org.renamed",
   "org.invite_created",
@@ -177,8 +136,12 @@ describe("the event catalog", () => {
       // "How we work" playbook (H1)
       "project.models_changed", "project.checks_changed", "project.e2e_policy_changed", "project.model_selection_changed", "project.roster_changed",
       "process.published", "process.rolled_back", "playbook.default_process_changed", "playbook.design_review_changed", "company.design_review_policy_proposed", "company.design_review_policy_changed", "company.change_applied_to_project",
+      // Approval place (U4)
+      "company.approval_window_proposed", "company.approval_window_changed", "approval.place_decided",
       // Proof and evidence
       "project.test_env_changed", "project.fixture_set_approved", "project.fixture_set_rejected", "project.fixture_set_withdrawn", "project.test_health_setting_changed", "evidence.downloaded", "project.known_failing_marked", "project.known_failing_removed", "company.known_failing_policy_proposed", "company.known_failing_policy_changed", "company.known_failing_policy_refused", "company.second_review_choice_changed", "project.second_review_narrowed", "company.second_review_context_changed", "task.second_review_acknowledged", "task.design_sole_owner_exception", "company.second_review_mode_proposed", "company.second_review_mode_changed", "company.second_review_mode_refused", "company.second_review_mode_cancelled", "company.second_review_replay_recorded", "company.second_review_verdict_recorded", "company.second_review_verdict_withdrawn",
+      // Runtime UI flags (lane U5)
+      "company.ui_flags_changed",
       // Team record and lessons (learning v2, R1)
       "record.source_added", "record.source_changed", "record.source_removed", "record.tombstoned", "record.erased", "record.tracker_person_mapped", "record.tracker_person_unmapped", "record.tracker_autolink_changed", "lesson.mode_changed", "lesson.proposed",
       "lesson.activated", "lesson.approved", "lesson.edited", "lesson.rejected", "lesson.retired", "lesson.expired", "lesson.withdrawn", "lesson.refused",
@@ -212,7 +175,10 @@ describe("the event catalog", () => {
       // script tokens (UX5b)
       "script_token.created", "script_token.revoked", "script_token.used",
       // company-approved extra test-service images
-      "company_image.proposed", "company_image.approved", "company_image.revoked",
+      "company_image.proposed", "company_image.approved", "company_image.revoked", "company_image.registries_changed",
+      // company rules (G-04)
+      "company_rules.proposed", "company_rules.adopted", "company_rules.approved", "company_rules.rejected", "company_rules.cancelled", "company_rules.expired", "company_rules.repo_proposed", "company_rules.written_back", "company_rules.sync_connected", "company_rules.sync_disconnected",
+      "agent_publication.requested", "agent_publication.approved", "agent_publication.declined", "agent_publication.withdrawn",
     ]);
     expect(new Set(AUDIT_ACTIONS).size).toBe(AUDIT_ACTIONS.length);
   });
@@ -251,6 +217,9 @@ describe("the event catalog", () => {
     "company.design_review_policy_proposed": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["field", "from", "to"], sample: { field: "allowed", from: "off", to: "on" } },
     "company.design_review_policy_changed": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["field", "from", "to", "mode", "revision"], sample: { field: "allowed", from: "off", to: "on", mode: "second_person", revision: 2 } },
     "company.change_applied_to_project": { target: { kind: "project", name: "web" }, keys: ["changeRevision", "settingCount"], sample: { changeRevision: 5, settingCount: 2 } },
+    "company.approval_window_proposed": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["from", "to"], sample: { from: 14_400, to: 172_800 } },
+    "company.approval_window_changed": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["from", "to", "mode", "revision"], sample: { from: 14_400, to: 172_800, mode: "second_person", revision: 2 } },
+    "approval.place_decided": { target: { kind: "task", id: "11111111-1111-4111-8111-111111111111" }, keys: ["place", "risk", "answer", "role", "windowSeconds", "signInAgeSeconds"], sample: { place: "chat", risk: "medium", answer: "approve", role: "owner", windowSeconds: 86_400, signInAgeSeconds: 3_600 } },
     "project.test_env_changed": { target: { kind: "project", name: "web" }, keys: ["revision", "tier", "lessSafeCount"], sample: { revision: 2, tier: "sandbox", lessSafeCount: 0 } },
     "project.fixture_set_approved": { target: { kind: "project", name: "web" }, keys: ["digest"], sample: { digest: "a".repeat(64) } },
     "project.fixture_set_rejected": { target: { kind: "project", name: "web" }, keys: ["digest"], sample: { digest: "a".repeat(64) } },
@@ -268,10 +237,14 @@ describe("the event catalog", () => {
     "company.second_review_mode_refused": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["refusal"], sample: { refusal: "membership_changed_retry" } },
     "company.second_review_replay_recorded": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["runId", "cases", "passed"], sample: { runId: "run-1", cases: 50, passed: true } },
     "company.second_review_verdict_recorded": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["model", "runId", "days", "findings", "agreed"], sample: { model: "openrouter:openai/gpt-5.5", runId: "run-1", days: 14, findings: 40, agreed: 20 } },
+    "company.ui_flags_changed": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["revision", "turnedOn", "turnedOff", "previews"], sample: { revision: 3, turnedOn: "look+nav", turnedOff: "none", previews: "same" } },
     "company.second_review_verdict_withdrawn": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["model"], sample: { model: "openrouter:openai/gpt-5.5" } },
     "task.work_refused": { target: { kind: "task", id: "00000000-0000-4000-8000-000000000001" }, keys: ["path", "cause"], sample: { path: "ci_fix_round", cause: "no_project_access" } },
     "task.second_review_acknowledged": { target: { kind: "task", id: "00000000-0000-4000-8000-000000000001" }, keys: ["cause"], sample: { cause: "no-answer" } },
     "task.design_sole_owner_exception": { target: { kind: "task", id: "00000000-0000-4000-8000-000000000001" }, keys: ["tier", "openBlockers"], sample: { tier: "high", openBlockers: 0 } },
+    // Insights viewer grant (decision 32): the member is the target; no facts.
+    "insights_access.granted": { target: { kind: "member", id: "a".repeat(64) }, keys: [], sample: {} },
+    "insights_access.revoked": { target: { kind: "member", id: "a".repeat(64) }, keys: [], sample: {} },
     "project.second_review_narrowed": { target: { kind: "project", name: "web" }, keys: ["change", "count"], sample: { change: "choose", count: 1 } },
     "evidence.downloaded": { target: { kind: "task", id: "00000000-0000-4000-8000-000000000001" }, keys: ["artifactKind", "retentionClass"], sample: { artifactKind: "webm", retentionClass: "evidence-short" } },
     // v1.2 learning loop (B7, design 8): ids, counts, flags and fixed words; never a correction's or a rule's text.

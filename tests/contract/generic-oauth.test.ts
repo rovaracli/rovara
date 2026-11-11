@@ -1,7 +1,7 @@
 // Spec 055 phase 2: discovering a generic MCP server's sign-in (RFC 9728, RFC 8414), registering
 // AgentX as its client (RFC 7591), and `authorize --endpoint` registering a pinned credential.
 import { describe, expect, it, vi } from "vitest";
-import { CredentialRegistrationSchema } from "../../packages/contracts/src/index.js";
+import { CredentialRegistrationSchema } from "@rovara-code/contracts";
 import { authorizeCredential, GENERIC_REDIRECT_URI, type AuthorizeSecrets } from "../../packages/cli/src/admin/authorize.js";
 import { bearerChallenge, discoverOAuth, registerClient } from "../../packages/cli/src/admin/oauth-discovery.js";
 

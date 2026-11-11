@@ -1,5 +1,5 @@
 import {expect,it} from "vitest";
-import {auditOperatorId} from "@agentx/contracts";
+import { auditOperatorId } from "@agentx/cloud-contracts";
 import {auditModelPolicyChanged,auditModelPolicyLockSet,auditModelPolicyLockRemoved} from "../../packages/broker/src/audit/events.js";
 import {processAuditBatch} from "../../packages/broker/src/audit/appender-handler.js";
 import {appendEvent} from "../../packages/broker/src/audit/appender.js";

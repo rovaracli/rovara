@@ -5,7 +5,7 @@
 // The documentation gives no sample for `incident.triggered`; the fields read are the envelope's (`event.id`, `event_type`, `occurred_at`) and the shared incident schema's (`id`,
 // `html_url`, `title`, `urgency`, `service`). PagerDuty's sample code splits the header on a bare comma, which leaves a space on the second value; each value is trimmed here.
 import { z } from "zod";
-import type { HookRecord, TriggerEvent } from "@agentx/contracts";
+import type { HookRecord, TriggerEvent } from "@rovara-code/contracts";
 import { hmacHexEquals, type HookHeaders, type HookProvider, type Normalized } from "./types.js";
 import { headerOf, httpsLinkOn, isoOfText, titleOf, valuesOf } from "./shared.js";
 

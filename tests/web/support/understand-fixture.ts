@@ -1,4 +1,4 @@
-import { createWorkflowSnapshot } from "@agentx/contracts";
+import { createWorkflowSnapshot } from "@agentx/cloud-contracts";
 import { sessionFixture, taskFixture, sessionPerson } from "./session-fixture.js";
 
 const TASK = "11111111-1111-4111-8111-111111111111";

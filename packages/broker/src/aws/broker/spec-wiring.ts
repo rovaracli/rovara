@@ -3,7 +3,7 @@ import { taskKey, type DeveloperTaskRecord } from "../../developer/task-records.
 import { workflowDispatchItem } from "../broker-shared.js";
 import { randomUUID } from "node:crypto";
 import { PutCommand } from "@aws-sdk/lib-dynamodb";
-import { metaRepositoryOf, type SpecFile } from "@agentx/contracts";
+import { metaRepositoryOf, type SpecFile } from "@rovara-code/contracts";
 import { approvedPlanDigestOf } from "../../spec/plan.js";
 import { refreshSpecState, type SpecPullRequestFacts } from "../../spec/refresh.js";
 import { specPullRequestKey, type SpecState } from "../../spec/state.js";

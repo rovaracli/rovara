@@ -1,7 +1,8 @@
 // TESTPROOF: the pull request shows one or two lines about test-proof.json, only when it is bound to the task's current candidate.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { createCandidateManifest, createWorkflowSnapshot, WorkflowSnapshotSchema, type TestProof } from "../../packages/contracts/src/index.js";
+import { createCandidateManifest, type TestProof } from "@rovara-code/contracts";
+import { createWorkflowSnapshot, WorkflowSnapshotSchema } from "@agentx/cloud-contracts";
 import { loadTestProofLines, testProofPullRequestLines } from "../../packages/broker/src/developer/test-proof-lines.js";
 import { workflowPullRequestStatusLines } from "../../packages/broker/src/aws/developer-tasks.js";
 

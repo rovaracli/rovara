@@ -4,7 +4,8 @@
 // ambiguous call, and a failure stops the close (`closingAt` stays, and the next close resumes). Their expiries (180 and 365 days) are the backstop.
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import { AgentXError, BUILTIN_AGENT_IDS, OUTCOME_STAGES, OrgIdSchema, agentXError, orgMetaKey, orgProjectCatalogPk, orgScoped } from "@agentx/contracts";
+import { AgentXError, BUILTIN_AGENT_IDS, OUTCOME_STAGES, OrgIdSchema, agentXError, orgProjectCatalogPk, orgScoped } from "@rovara-code/contracts";
+import { orgMetaKey } from "@agentx/cloud-contracts";
 import type { TransactItem } from "../audit/outbox.js";
 import type { EstimatePath } from "../spend/estimate.js";
 

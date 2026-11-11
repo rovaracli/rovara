@@ -3,7 +3,7 @@ import { test, expect } from "./support/csp.js";
 import { mockRealtime } from "./support/realtime.js";
 import { checkA11y } from "./support/axe.js";
 import { evidenceShot } from "./support/screenshot.js";
-import { agentCard, approvalId, me, myAgents, other, publishRequest } from "../web/support/publish-data.js";
+import { agentCard, me, myAgents, other, publishRequest } from "../web/support/publish-data.js";
 // Agent publishing is off unless storage says so (`rovara.publish` = "v2"). Off, the directory, the profile and the builder are today's (none of the new requests is made). On: favourites and suggested agents, ask to publish
 // (a project and the whole company), the approver deciding as another person, my requests, and the Home agents row; at phone and desktop widths, in the old look and the v2 look, with axe in both themes. The server is
 // built in parallel, so every new route is answered here by page.route with fixtures shaped like the API doc. Pictures go to .test-build/web-e2e/agent-publish/ (ROVARA_PUBLISH_SHOTS changes the folder, for before/after comparisons).
@@ -43,12 +43,8 @@ async function serve(page: Page, world: World, options: { publication?: unknown 
   world.requests.push(created);
   return answer(route, { status: "NEEDS_CONFIRMATION", changes: ["Moves the agent"], request: created }, 202);
  });
- await page.route(/\/v1\/web\/approvals\/apr_[0-9a-z]{20}\/decide$/u, route => {
-  const body = route.request().postDataJSON() as { decision: string };world.decided.push(body);
-  const id = route.request().url().split("/").at(-2)!, found = world.requests.find(item => item.approvalId === id);
-  if (found !== undefined) { found.state = body.decision === "APPROVE" ? "approved" : "declined";found.decidedBy = other as never; }
-  return answer(route, { ok: true });
- });
+ // The screen must never post a decision (RULING Q10: the decide route refuses a script's request); every decision is made on the confirmation page. Any POST here is recorded and fails the test.
+ await page.route(/\/v1\/(?:web|app)\/approvals\/apr_[0-9a-z]{20}\/decide$/u, route => { world.decided.push({ url: route.request().url() });return answer(route, { error: { code: "FORBIDDEN", message: "not from a script" } }, 403); });
  await page.route(/\/v1\/web\/me\/agents\/favourites$/u, route => {
   const body = route.request().postDataJSON() as { agentIds: string[]; expectedRevision: number };
   world.favourites = body.agentIds.map(id => agentCard(id, id === AGENT ? "Payments Expert" : id === OTHER_AGENT ? "Release notes writer" : "Ticket triage", "favourite"));
@@ -157,31 +153,41 @@ test("ask, then approve as another person: the requester sees it waiting, the ad
  await evidenceShot(page, { path: `${shots}/requests-decide-1280.png`, fullPage: true });
  await checkA11y(page, { theme: "light" });await checkA11y(page, { theme: "dark" });
  await page.getByRole("button", { name: "Approve Payments Expert for payments" }).click();
- // One click posts nothing: the card asks first, and Cancel keeps it waiting.
- await expect(page.getByRole("group", { name: "Confirm approving Payments Expert" })).toBeVisible();expect(world.decided).toEqual([]);
- await page.getByRole("button", { name: "Cancel" }).click();await expect(page.getByRole("group", { name: "Confirm approving Payments Expert" })).toHaveCount(0);expect(world.decided).toEqual([]);
- await page.getByRole("button", { name: "Approve Payments Expert for payments" }).click();await page.getByRole("button", { name: "Yes, approve" }).click();
- await expect(page.getByText("Approved Payments Expert for the payments project.")).toBeVisible();
- expect(world.decided).toEqual([{ requestId: expect.stringMatching(/^[0-9a-f-]{36}$/) as unknown, decision: "APPROVE" }]);
- // Back as the requester: approved.
+ // One click goes nowhere: the card says it is confirmed on the next page, and Cancel keeps it waiting.
+ const confirm = page.getByRole("group", { name: "Confirm approving Payments Expert" });
+ await expect(confirm).toBeVisible();await expect(confirm.getByText(/You'll confirm on the next page/)).toBeVisible();
+ await page.getByRole("button", { name: "Cancel" }).click();await expect(confirm).toHaveCount(0);
+ await page.getByRole("button", { name: "Approve Payments Expert for payments" }).click();
+ // Continue opens the request's confirmation page, where the decision is made with a fresh sign-in; the screen itself posts nothing.
+ const [opened] = await Promise.all([context.waitForEvent("page"), page.getByRole("button", { name: "Continue to approve" }).click()]);
+ await opened.waitForURL(/\/v1\/app\/approve\/tkt_abc123$/u);
+ expect(new URL(opened.url()).pathname).toBe("/v1/app/approve/tkt_abc123");await opened.close();
+ expect(world.decided).toEqual([]);expect(world.seen.filter(line => line.includes("/decide"))).toEqual([]);
+ // The approver confirmed on that page (the server's part); back as the requester: approved.
+ world.requests[0]!.state = "approved";world.requests[0]!.decidedBy = other as never;
  world.viewer = "author";await page.goto("/app/agents/requests");
  await expect(page.getByRole("list", { name: "your requests" }).getByText("Approved", { exact: true }).first()).toBeVisible();await expect(page.getByText("Approved by Ada Admin")).toBeVisible();
  await evidenceShot(page, { path: `${shots}/requests-approved-1280.png`, fullPage: true });
 });
 for (const width of [360, 390] as const) {
- test(`the requests page at ${String(width)}: decide and my requests fit the phone, 44px targets, a refusal shows word for word, axe`, async ({ page, context, request, baseURL }) => {
+ test(`the requests page at ${String(width)}: deciding goes to the confirmation page, my requests fit the phone, 44px targets, axe`, async ({ page, context, request, baseURL }) => {
   const world = await enter(page, context, request, baseURL, width, { "rovara.publish": "v2" });world.viewer = "approver";
   world.requests.push(publishRequest(1, { agent: PAYMENTS, requestedBy: me }), publishRequest(2, { agent: PAYMENTS, requestedBy: me, target: { kind: "company" }, effect: "Shares Release notes writer with everyone in the company." }), publishRequest(3, { agent: PAYMENTS, requestedBy: me, state: "declined", decidedBy: other, declineReason: "Needs a budget first." }));
   await serve(page, world);
-  await page.route(new RegExp("/v1/web/approvals/" + approvalId(1) + "/decide$", "u"), route => answer(route, { error: { code: "FORBIDDEN", message: "Only a maintainer of payments can decide this." } }, 403));
   await page.goto("/app/agents/requests");await expect(page.getByRole("tab", { name: "To decide (2)" })).toBeVisible();
   expect(await noSidewaysScroll(page)).toBe(true);expect(await smallTargets(page)).toEqual([]);
-  await expect(page.getByRole("button", { name: /^Approve on the confirmation page/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Approve Payments Expert for Company" })).toBeVisible();
   await page.getByRole("button", { name: "Approve Payments Expert for payments" }).click();await expect(page.getByRole("group", { name: "Confirm approving Payments Expert" })).toBeVisible();
   expect(await noSidewaysScroll(page)).toBe(true);expect(await smallTargets(page)).toEqual([]);
-  await page.getByRole("button", { name: "Yes, approve" }).click();await expect(page.getByRole("alert")).toHaveText("Only a maintainer of payments can decide this.");
-  await page.getByRole("button", { name: "Decline Payments Expert for payments" }).click();await expect(page.getByRole("textbox", { name: /Why\?/ })).toBeVisible();
+  await page.getByRole("button", { name: "Cancel" }).click();
+  // Decline is confirmed on the next page too, where the reason is written: the card has no text box and posts nothing.
+  await page.getByRole("button", { name: "Decline Payments Expert for payments" }).click();
+  const declining = page.getByRole("group", { name: "Confirm declining Payments Expert" });
+  await expect(declining.getByText(/You'll confirm on the next page/)).toBeVisible();await expect(declining.getByRole("textbox")).toHaveCount(0);
   expect(await noSidewaysScroll(page)).toBe(true);expect(await smallTargets(page)).toEqual([]);
+  const [opened] = await Promise.all([context.waitForEvent("page"), declining.getByRole("button", { name: "Continue to decline" }).click()]);
+  await opened.waitForURL(/\/v1\/app\/approve\/tkt_abc123$/u);await opened.close();
+  expect(world.decided).toEqual([]);
   await evidenceShot(page, { path: `${shots}/requests-decide-${String(width)}.png`, fullPage: true });
   await checkA11y(page, { theme: "light" });await checkA11y(page, { theme: "dark" });
   await page.getByRole("tab", { name: "My requests" }).click();await expect(page.getByText("Declined by Ada Admin: Needs a budget first.")).toBeVisible();

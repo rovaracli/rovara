@@ -1,7 +1,7 @@
 // Learning v2 wiring (LS-3): the broker's `CitationVerifier` (ports.ts). It reads the cited file at the cited commit through the same bounded reader the code facts use (the code host's
 // `fileAtRevision`, never a working tree) and applies the one shared anchor rule (`locateCitation` in contracts, the same one the worker uses). Fail closed: a repository that is not one of the
 // project's, a commit that is not a full id, an unsafe path, a file over 1 MB, a read over 3 s, a host error all answer `unknown`, and the lesson is then not trusted as verified (never tier 0).
-import { locateCitation } from "@agentx/contracts";
+import { locateCitation } from "@rovara-code/contracts";
 import { CODE_FACTS_TIMEOUT_MS, type CodeFactsReader } from "./code-facts.js";
 import type { CitationVerifier } from "./ports.js";
 

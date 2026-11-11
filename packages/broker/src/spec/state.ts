@@ -1,7 +1,7 @@
 // K1 lane D, D2: one task's spec, as the broker keeps it. The state decides what the code pull request does: open together with a link to the spec pull request, wait for a person to approve the spec first
 // (`spec_first`), or be HELD when the spec could not be written or published. Everything here is a pure function of the state; the writes that store it are conditional on its revision (specStateItem), so two
 // writers cannot both move it.
-import { SpecFileSchema, SpecTargetSchema, canonicalJson, type SpecFile, type SpecKind, type SpecTarget } from "@agentx/contracts";
+import { SpecFileSchema, SpecTargetSchema, canonicalJson, type SpecFile, type SpecKind, type SpecTarget } from "@rovara-code/contracts";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 

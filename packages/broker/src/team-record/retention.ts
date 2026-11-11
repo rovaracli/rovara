@@ -8,7 +8,7 @@
 //
 // `hotExpiresAt` is when the row is due to leave the hot table; `indexExpiresAt` (the TTL attribute) is a grace period later so the archiver has time to copy it
 // first. The Public edition's Slack source is fixed at A or B: C and D are never offered for it (Slack's API terms).
-import { RECORD_HOT_DAYS, RECORD_RAW_TEXT_DAYS_C, type RecordSystem, type RetentionMode } from "@agentx/contracts";
+import { RECORD_HOT_DAYS, RECORD_RAW_TEXT_DAYS_C, type RecordSystem, type RetentionMode } from "@agentx/cloud-contracts";
 import type { Edition } from "./types.js";
 
 const DAY = 86_400;

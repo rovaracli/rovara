@@ -1,5 +1,5 @@
 // Shared fixtures for the context-source tests (lane E).
-import type { ContextSource, OrgId } from "@agentx/contracts";
+import type { ContextSource, OrgId } from "@rovara-code/contracts";
 import { toolSchemaHash, type DiscoveredTool, type SourceEnvironment } from "../../../packages/broker/src/context-sources/settings.js";
 
 export const ORG = "org_aaaaaaaaaaaaaaaaaaaa" as OrgId;
@@ -44,7 +44,7 @@ import type { ContextToolsDependencies, ContextToolsRun, ContextServerSession } 
 import { dynamoUsageStore } from "../../../packages/broker/src/context-sources/usage.js";
 import type { ContextItemSeen } from "../../../packages/broker/src/context-sources/team-record.js";
 import { FakeDynamoDb } from "../../support/fake-dynamodb.js";
-import type { Citation } from "@agentx/contracts";
+import type { Citation } from "@rovara-code/contracts";
 
 export type Answer = { isError?: boolean; content?: Array<{ type: string; text?: string }>; structuredContent?: unknown };
 

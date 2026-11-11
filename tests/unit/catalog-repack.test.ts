@@ -4,7 +4,7 @@ import { link, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { ServiceCatalogSchema } from "@agentx/contracts";
+import { ServiceCatalogSchema } from "@rovara-code/contracts";
 import { SourcesFileSchema, type CommandPort } from "../../scripts/catalog-build.js";
 import {
   OCI_INDEX_MEDIA_TYPE,

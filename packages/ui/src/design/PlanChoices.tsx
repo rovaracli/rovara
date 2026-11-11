@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { DecisionPlanChoices } from "@agentx/contracts/web";
+import type { DecisionPlanChoices } from "@agentx/cloud-contracts/web";
 import { VisibleText } from "./VisibleText.js";
 
 /** What a requirements or coding plan card sends with Approve (OWNER DECISION 7): only the fields the person set; the broker checks every one against the document. */

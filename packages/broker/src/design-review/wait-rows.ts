@@ -5,7 +5,8 @@
 //     change never overwrites a newer one). It holds no text and grants nothing: the sweep re-reads the task before it does anything.
 //   - the NOTIFY row (`DESIGN_WAIT_NOTIFY#<revision>#<step>`): one per reminder, park and close of one wait. Created with `attribute_not_exists(pk)`, so a step is sent once however often the sweep runs. It holds codes
 //     and the people to tell (Slack ids and display names the broker read), never model words; the notifier words it from fixed text.
-import { designWaitOf, type DesignWait, type WorkflowSnapshot } from "@agentx/contracts";
+import { designWaitOf, type DesignWait } from "@rovara-code/contracts";
+import { type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { nextDesignWaitDueAt, type DesignWaitNoticeStep } from "./wait-clock.js";
 import type { WaitAudienceCode } from "./wait-audience.js";
 

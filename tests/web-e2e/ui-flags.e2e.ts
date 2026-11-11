@@ -73,7 +73,7 @@ for (const colorScheme of ["light", "dark"] as const) {
    await enter(page, context, request, baseURL, width, { colorScheme });await adminRoutes(page, put);await page.goto("/app/admin/new-screens");
    await expect(page.getByRole("heading", { name: "New screens", level: 1 })).toBeVisible();
    const list = page.getByRole("list", { name: "New screens" });await expect(list.getByRole("listitem")).toHaveCount(6);
-   await expect(list).toContainText("On for everyone in");await expect(list).toContainText("Held back by your install's operator");await expect(page.getByText("Health page")).toHaveCount(0);
+   await expect(list).toContainText("On for everyone in");await expect(list).toContainText("Turned off by the Rovara operator");await expect(page.getByText("Health page")).toHaveCount(0);
    await expect(page.getByText(/Preview lets each person try a screen in their own browser first/)).toBeVisible();
    expect(await noSidewaysScroll(page)).toBe(true);
    if (phone) expect(await smallTargets(page)).toEqual([]);

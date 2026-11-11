@@ -8,7 +8,7 @@
 //                                                                             person's erase still takes them.
 // Answers are fixed words, ids and the names the tool showed.
 import { z } from "zod";
-import { agentXError } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
 import { logDeveloperEvent } from "../../developer/log.js";
 import { StatusReply } from "../status-reply.js";
 import type { AdaptedHttpRequest } from "../lambda.js";

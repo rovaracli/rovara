@@ -3,11 +3,12 @@ import {ModelApplyRefusalSchema} from "../model-selection/process-refusal.js";
 // registries of rules and subject handlers, creating a change, a step and a write approval, listing, who may decide, and the transaction helpers the decision, the
 // sweep and the movers share. `approvals.ts` re-exports it.
 import { resolveStoredName } from "../developer/name-resolver.js";
-import {ModelSelectionPolicyPutSchema,type ModelSelectionPolicyPut} from "@agentx/contracts";
+import { ModelSelectionPolicyPutSchema, type ModelSelectionPolicyPut } from "@rovara-code/contracts";
 import { createHash } from "node:crypto";
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import { AgentGuardrailsSchema, AgentIdSchema, ChainIdSchema, TriggerIdSchema, AgentPrincipalSchema, ApprovalIdSchema, ConnectorConfigSchema, RunInputSchema, WORK_ORIGINS, APPROVAL_EXECUTING_RETRY_MINUTES, CHANGE_APPROVAL_TTL_DAYS, INDEX_EXPIRY_ATTRIBUTE, OrgIdSchema, SessionIdSchema, SessionLevelSchema, agentXError, approvalKey, approverIndexKey, canonicalInstant, canonicalJson, capText, newPrefixedId, openApprovalKey, hideEmailAddresses, orgScoped, projectAllows, redactText, type AgentGuardrails, type AgentId, type ApprovalId, type AuditProof, type ConnectorConfig, type OrgId, type RunInput, type WorkOrigin, type SessionId, type SessionLevel } from "@agentx/contracts";
+import { AgentGuardrailsSchema, AgentIdSchema, ChainIdSchema, TriggerIdSchema, AgentPrincipalSchema, ApprovalIdSchema, ConnectorConfigSchema, RunInputSchema, WORK_ORIGINS, INDEX_EXPIRY_ATTRIBUTE, OrgIdSchema, SessionIdSchema, SessionLevelSchema, agentXError, approvalKey, approverIndexKey, canonicalInstant, canonicalJson, capText, newPrefixedId, openApprovalKey, hideEmailAddresses, orgScoped, projectAllows, redactText, type AgentGuardrails, type AgentId, type ApprovalId, type ConnectorConfig, type OrgId, type RunInput, type WorkOrigin, type SessionId, type SessionLevel, AgentOwnerSchema, type AgentOwner } from "@rovara-code/contracts";
+import { APPROVAL_EXECUTING_RETRY_MINUTES, CHANGE_APPROVAL_TTL_DAYS, type AuditProof, AgentPublishNoteSchema, PublishTargetSchema, type AuditEventInput, type PublishTarget } from "@agentx/cloud-contracts";
 import type { SessionTakeOverDependencies } from "../agent-sessions/take-over.js";
 import type { CodeMergeHost, PullRequestMergeSubject } from "../rovara-code/merge.js";
 import { isTaskTakenOver, tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../developer/task-records.js";
@@ -114,7 +115,7 @@ export type AgentChangeSubject =
   /** Move the org's pin of a built-in to `version`, while it is still `expectedPinnedVersion`. */
   | { kind: "builtin_adopt"; agentId: AgentId; version: number; digest: string; expectedPinnedVersion: number }
   /** Make `shares` the agent's share set (it includes a company-wide share), while it is still at `expectedSharesRevision`. */
-  | { kind: "agent_share"; agentId: AgentId; shares: AgentShare[]; expectedSharesRevision: number }
+  | { kind: "agent_share"; agentId: AgentId; shares: AgentShare[]; expectedSharesRevision: number; expectedCurrentVersion?: number; versionDigest?: string }
   /** Make `next` the company's agent guardrails, while they are still at `expectedRevision`. */
   | { kind: "guardrails"; next: AgentGuardrails; expectedRevision: number }
   | {kind:"model_selection_policy";body:ModelSelectionPolicyPut;sourcesRevision:number;guardrailsRevision:number}
@@ -123,7 +124,16 @@ export type AgentChangeSubject =
    * org's pin), which is less safe than it: only while the version that runs now and the recipe of `version` (`digest`) are still what was shown. Approving it
    * starts the run once, as the person who asked (`requestedBy`); declining or expiry starts nothing.
    */
-  | { kind: "agent_run_version"; agentId: AgentId; version: number; digest: string; expectedCurrentVersion: number; project: string; runRequestId: string; origin: WorkOrigin; input: RunInput };
+  | { kind: "agent_run_version"; agentId: AgentId; version: number; digest: string; expectedCurrentVersion: number; project: string; runRequestId: string; origin: WorkOrigin; input: RunInput }
+  /**
+   * Experience decision 24, owner decision 91: publish `agentId` to `target`. A project target moves ownership of the agent to the project (the person who approves is accountable; the
+   * author keeps edit access); the company target adds a company-wide share at `use`. Bound to what the approver saw: the published `version` and its recipe `digest`, the owner
+   * (`expectedOwner`) and the share set's revision. `requestId` is the requester's own id for the request (the withdraw route names it).
+   */
+  | AgentPublicationSubject;
+
+/** See `AgentChangeSubject`'s `agent_publication`. */
+export interface AgentPublicationSubject { kind: "agent_publication"; agentId: AgentId; target: PublishTarget; version: number; digest: string; requestId: string; note?: string; expectedOwner: AgentOwner; expectedSharesRevision: number }
 
 /**
  * Make `connector` the connector called `name` on `project`: a tool newly approved as `write` (Task 13). It applies only while the project is still
@@ -200,7 +210,7 @@ export type ChainChangeSubject =
   | { kind: "chain_publish"; chainId: string; draftRevision: number; digest: string; expectedCurrentVersion?: number; note?: string }
   | { kind: "chain_rollback"; chainId: string; version: number; digest: string; expectedCurrentVersion: number }
   /** Make `shares` the chain's share set (it includes a company-wide share, or a wider one than there is), while it is still at `expectedSharesRevision`. */
-  | { kind: "chain_share"; chainId: string; shares: AgentShare[]; expectedSharesRevision: number };
+  | { kind: "chain_share"; chainId: string; shares: AgentShare[]; expectedSharesRevision: number; expectedCurrentVersion?: number; versionDigest?: string };
 
 /**
  * Plan 4 Task 18: turning a trigger on is a person's decision (N6). The approval is bound to the digest of the spec the person was shown, so a trigger edited in between
@@ -267,6 +277,11 @@ interface DecidedFields {
   closedBy?: "system";
   closedReason?: string;
   closedAt?: string;
+  /** A change record whose decliner gave a reason (agent publish requests): plain text, at most 300 characters, shown to the person who asked. */
+  declineReason?: string;
+  /** Set when the person who asked withdrew a change record (it ends `EXPIRED`, never decided): who and when (`withdrawChange`). */
+  withdrawnBy?: string;
+  withdrawnAt?: string;
 }
 
 /** A step of a run that waits for a person (an `approval` step, or a chain gate). */
@@ -398,6 +413,17 @@ export async function runApprovalDecisionGuards(deps: ApprovalDependencies, call
   for (const guard of decisionGuards.values()) await guard(deps, caller, record, decision);
 }
 
+/**
+ * The audit events a decision of a change of this subject kind writes beside `approval.decided`, in the same claim transaction (agent publish requests write
+ * `agent_publication.approved` or `.declined`). Registered by subject kind; registering again replaces.
+ */
+export type DecisionAuditEvents = (record: ApprovalRecord, decision: { by: string; at: string; decision: "APPROVE" | "DECLINE"; proof?: AuditProof; reason?: string }) => AuditEventInput[];
+const decisionAudits = new Map<string, DecisionAuditEvents>();
+export function registerDecisionAuditEvents(kind: ChangeSubject["kind"], events: DecisionAuditEvents): void {
+  decisionAudits.set(kind, events);
+}
+export const getDecisionAuditEvents = (kind: string): DecisionAuditEvents | undefined => decisionAudits.get(kind);
+
 export const getApprovalGaveUpHandler = (kind: string): ApprovalSubjectHandler | undefined => gaveUp.get(kind);
 export const getApproverRule = (rule: string): ApproverRuleCheck | undefined => rules.get(rule);
 export const getApprovalSubjectHandler = (kind: string): ApprovalSubjectHandler | undefined => handlers.get(kind);
@@ -421,15 +447,19 @@ const ChangeSubjectSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("agent_rollback"), modelContext:z.object({companyRevision:z.number().int().min(0),sourcesRevision:z.number().int().min(0),registeredAt:z.string().datetime(),tupleDigest:Hex64.optional()}).strict().optional(), agentId: AgentIdSchema, version: z.number().int(), digest: Hex64, expectedCurrentVersion: z.number().int() }).strict(),
   z.object({ kind: z.literal("builtin_adopt"), agentId: AgentIdSchema, version: z.number().int(), digest: Hex64, expectedPinnedVersion: z.number().int() }).strict(),
   z.object({
-    kind: z.literal("agent_share"), agentId: AgentIdSchema, expectedSharesRevision: z.number().int(),
+    kind: z.literal("agent_share"), agentId: AgentIdSchema, expectedSharesRevision: z.number().int(), expectedCurrentVersion: z.number().int().min(0).optional(), versionDigest: Hex64.optional(),
     shares: z.array(z.object({ principal: AgentPrincipalSchema, level: z.enum(["view", "use", "edit"]) }).strict()),
+  }).strict(),
+  z.object({
+    kind: z.literal("agent_publication"), agentId: AgentIdSchema, target: PublishTargetSchema, version: z.number().int().min(1), digest: Hex64, requestId: z.string().uuid(),
+    note: AgentPublishNoteSchema.optional(), expectedOwner: AgentOwnerSchema, expectedSharesRevision: z.number().int().min(0),
   }).strict(),
   z.object({kind:z.literal("model_selection_policy"),body:ModelSelectionPolicyPutSchema,sourcesRevision:z.number().int().min(0),guardrailsRevision:z.number().int().min(0)}).strict(),
   z.object({ kind: z.literal("guardrails"), next: AgentGuardrailsSchema, expectedRevision: z.number().int().min(0) }).strict(),
   z.object({ kind: z.literal("chain_publish"), chainId: ChainIdSchema, draftRevision: z.number().int(), digest: Hex64, expectedCurrentVersion: z.number().int().optional(), note: z.string().optional() }).strict(),
   z.object({ kind: z.literal("chain_rollback"), chainId: ChainIdSchema, version: z.number().int(), digest: Hex64, expectedCurrentVersion: z.number().int() }).strict(),
   z.object({
-    kind: z.literal("chain_share"), chainId: ChainIdSchema, expectedSharesRevision: z.number().int(),
+    kind: z.literal("chain_share"), chainId: ChainIdSchema, expectedSharesRevision: z.number().int(), expectedCurrentVersion: z.number().int().min(0).optional(), versionDigest: Hex64.optional(),
     shares: z.array(z.object({ principal: AgentPrincipalSchema, level: z.enum(["view", "use", "edit"]) }).strict()),
   }).strict(),
   z.object({ kind: z.literal("session_share_org"), sessionId: SessionIdSchema, level: SessionLevelSchema }).strict(),
@@ -477,6 +507,9 @@ const DecidedShape = {
   closedBy: z.literal("system").optional(),
   closedReason: z.string().optional(),
   closedAt: z.string().optional(),
+  declineReason: z.string().max(1200).optional(),
+  withdrawnBy: z.string().optional(),
+  withdrawnAt: z.string().optional(),
 };
 const RunOwnerSchema = z.object({ developerId: z.string(), name: z.string() }).strict();
 /** What a stored change record must look like to be read; `passthrough`, so a field a later task adds is kept. */
@@ -612,8 +645,12 @@ export function approvalIdFor(orgId: OrgId, requestedBy: string, requestId: stri
  * registered is refused here (`CONFIG_INVALID`), so no record is made that no one could ever decide.
  */
 export async function createPendingChange(
-  deps: ApprovalStoreDependencies,
-  input: { orgId: OrgId; requestId: string; requestedBy: string; subject: ChangeSubject; changes: string[]; approvers: ApproverSpec; expiresAt?: string },
+  deps: ApprovalStoreDependencies & Pick<ApprovalDependencies, "audit">,
+  input: {
+    orgId: OrgId; requestId: string; requestedBy: string; subject: ChangeSubject; changes: string[]; approvers: ApproverSpec; expiresAt?: string;
+    /** Items written in the same transaction as the record (an index the subject keeps), built from the record; and audit events written with it. */
+    extra?: (record: ApprovalRecord) => { items: TransactItem[]; events: AuditEventInput[] };
+  },
 ): Promise<ApprovalRecord> {
   if (input.approvers.kind === "rule" && getApproverRule(input.approvers.rule) === undefined) {
     throw agentXError("CONFIG_INVALID", `no one can decide this: the rule "${input.approvers.rule}" is not registered`);
@@ -640,12 +677,15 @@ export async function createPendingChange(
   const put = (key: { pk: string; sk: string }, entityType: string, fields: Item) => ({
     Put: { TableName: deps.tableName, Item: { ...key, entityType, ...fields }, ConditionExpression: "attribute_not_exists(pk)" },
   });
+  const extra = input.extra?.(record) ?? { items: [], events: [] };
   try {
     await deps.documentClient.send(new TransactWriteCommand({
       TransactItems: [
         put(approvalKey(input.orgId, approvalId), "APPROVAL", record as unknown as Item),
         put(openApprovalKey(expiresAt, input.orgId, approvalId), "OPEN_APPROVAL", { orgId: input.orgId, approvalId }),
         ...listedPeople(input.approvers, input.requestedBy).map((developerId) => put(approverIndexKey(input.orgId, developerId, approvalId), "APPROVER_INDEX", { approvalId, expiresAt, [INDEX_EXPIRY_ATTRIBUTE]: indexExpiryOf(expiresAt) })),
+        ...extra.items,
+        ...extra.events.flatMap((event) => auditPending(deps, event)),
       ],
     }));
   } catch (error) {
@@ -654,6 +694,7 @@ export async function createPendingChange(
     if (raced === undefined) throw error;
     return raced;
   }
+  await flushAuditEvents(deps, extra.events);
   return record;
 }
 
@@ -702,12 +743,17 @@ export function shownPersonName(person: { developerId: string; name: string }, m
   return shownText(safeDisplayName(person.name, person.developerId), max);
 }
 
-const DecideBodySchema = z.object({ requestId: z.string().uuid(), decision: z.enum(["APPROVE", "DECLINE"]) }).strict();
+/** `reason` (agent publish requests, experience decision 24): the decliner's words for the person who asked; plain text up to 300 characters, and only with DECLINE. */
+const DecideBodySchema = z.object({ requestId: z.string().uuid(), decision: z.enum(["APPROVE", "DECLINE"]), reason: AgentPublishNoteSchema.optional() }).strict();
 export type DecideBody = z.infer<typeof DecideBodySchema>;
 
 export function parseDecideBody(body: unknown): DecideBody {
   const parsed = DecideBodySchema.safeParse(body);
-  if (parsed.success) return parsed.data;
+  if (parsed.success) {
+    if (parsed.data.reason !== undefined && parsed.data.decision !== "DECLINE") throw agentXError("CONFIG_INVALID", "reason: only a decline takes a reason");
+    const reason = parsed.data.reason?.trim();
+    return { requestId: parsed.data.requestId, decision: parsed.data.decision, ...(reason === undefined || reason === "" ? {} : { reason }) };
+  }
   const issue = parsed.error.issues[0];
   const path = issue === undefined || issue.path.length === 0 ? "body" : issue.path.join(".");
   throw agentXError("CONFIG_INVALID", `${path}: ${issue === undefined || issue.code === "unrecognized_keys" ? "has a field this route does not take" : issue.message}`);

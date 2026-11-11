@@ -1,7 +1,7 @@
 // Proof and evidence P4: what the evidence says about a pull request's RISK. The design's rule: a new HIGH or CRITICAL finding from a security scan sets the risk to high (risk.ts reads this signal). The
 // signal comes from the evidence pack only when the pack is for exactly this code, and only from checks of kind `security`: a linter's "error" is a finding, not a security finding, and never raises the level.
 // Findings are the broker-verified part of the pack (counts checked against the check's own outcome, data guard applied), and a worker can only ever raise the level this way, never lower it.
-import { evidenceIsFor, type CheckKind, type EvidencePack, type EvidenceRaw } from "@agentx/contracts";
+import { evidenceIsFor, type CheckKind, type EvidencePack, type EvidenceRaw } from "@rovara-code/contracts";
 
 /** What risk.ts reads: the number of new findings a security scan rated high or critical on this code. */
 export interface EvidenceRiskSignal {

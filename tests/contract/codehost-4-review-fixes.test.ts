@@ -2,10 +2,8 @@
 // offered for a pull request on another host (S1), one Linear issue is one session whichever door it came in by (S4), an ssh address is tied to its host keys and a wildcard host key is
 // refused (S6), and the worker holds the key material to the contract's rules (S7).
 import { describe, expect, it, vi } from "vitest";
-import {
-  GitCredentialSchema, SshCredentialMaterialSchema, WORKFLOW_BLOCK_REASONS, WorkflowSnapshotSchema, createCandidateManifest, createWorkflowSnapshot, sessionSurfaceKey, sshKnownHostsMatchAddress,
-  type OrgId, type WorkflowSnapshot,
-} from "@agentx/contracts";
+import { GitCredentialSchema, SshCredentialMaterialSchema, createCandidateManifest, sessionSurfaceKey, sshKnownHostsMatchAddress, type OrgId } from "@rovara-code/contracts";
+import { WORKFLOW_BLOCK_REASONS, WorkflowSnapshotSchema, createWorkflowSnapshot, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { reconcileTaskPullRequestFeedback, type ReconcileTaskPullRequestFeedbackInput } from "../../packages/broker/src/aws/github-webhooks.js";
 import { linkedChangeRequestItem } from "../../packages/broker/src/rovara-code/linked-change-requests.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";

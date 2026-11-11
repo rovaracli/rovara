@@ -5,7 +5,7 @@
 //            RECORDED here: the nightly job retires a confirmed set, the next weekly pull request proposes a kept one back).
 // Switching on or off is audited BEFORE it changes. Nothing here calls a host except `off` (closing Rovara's own pull request); the first pull request is opened by the next nightly pass, within a day.
 import { resolveLearning, modeAllows, requireAudit, type ResolvedLearning } from "./policy.js";
-import type { LessonsRepoFileBody, LessonsRepoFileRow, LessonsRepoFileStatus } from "@agentx/contracts";
+import type { LessonsRepoFileBody, LessonsRepoFileRow, LessonsRepoFileStatus } from "@agentx/cloud-contracts";
 import type { RepoFileRuntime } from "./repo-file-job.js";
 import { closeProjectPrs, sweepProject } from "./repo-file-sweep.js";
 import { watchRowOf, type RepoFileTarget } from "./repo-file-host.js";

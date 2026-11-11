@@ -5,11 +5,7 @@
 // Every write here is best effort: a failure is logged with a fixed code, counted on a metric and answered as "nothing written"; nothing in this file throws on a write, so it can never
 // block the flow it records. Only the broker calls it; nothing a worker or an agent sends reaches it. The rows hold ids, enums and timestamps only.
 import { GetCommand, PutCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  INDEX_EXPIRY_ATTRIBUTE, OUTCOME_ENOUGH_SAMPLES, OUTCOME_PENDING_KEPT_DAYS, OUTCOME_READ_CAP, OUTCOME_READ_PAGE, OUTCOME_SCORED_KEPT_DAYS, OUTCOME_WINDOW_DAYS,
-  OutcomeSampleSchema, OutcomeScoreSchema, outcomeSampleKey, outcomeScoredKey,
-  type OrgId, type OutcomeClaim, type OutcomeRate, type OutcomeSample, type OutcomeSampleKey, type OutcomeScore, type OutcomeStage,
-} from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, OUTCOME_ENOUGH_SAMPLES, OUTCOME_PENDING_KEPT_DAYS, OUTCOME_READ_CAP, OUTCOME_READ_PAGE, OUTCOME_SCORED_KEPT_DAYS, OUTCOME_WINDOW_DAYS, OutcomeSampleSchema, OutcomeScoreSchema, outcomeSampleKey, outcomeScoredKey, type OrgId, type OutcomeClaim, type OutcomeRate, type OutcomeSample, type OutcomeSampleKey, type OutcomeScore, type OutcomeStage } from "@rovara-code/contracts";
 import { NOT_EXISTS, errorName } from "../agents/table-writes.js";
 
 export interface OutcomeDependencies {

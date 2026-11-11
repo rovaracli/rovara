@@ -4,15 +4,12 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import {
-  E2E_EXECUTOR_COMPILED_ORIGIN, E2E_MODEL_SESSION_SYNC_MAX_VALUE_CHARS, E2E_MODEL_SESSION_SYNC_SLICE_CHARS, E2EModelChannelStepMarkerSchema, boundSessionValue, readE2EApplicationProjectContract,
-  type E2EModelChannelClient,
-} from "@agentx/contracts";
+import { E2E_EXECUTOR_COMPILED_ORIGIN, E2E_MODEL_SESSION_SYNC_MAX_VALUE_CHARS, E2E_MODEL_SESSION_SYNC_SLICE_CHARS, E2EModelChannelStepMarkerSchema, boundSessionValue, readE2EApplicationProjectContract, type E2EModelChannelClient } from "@rovara-code/contracts";
 import { createGovernedE2EModelRoute, createInMemoryE2EDayBudget, type E2EInvoke } from "../../packages/model-runtime/src/e2e-route.js";
 import { createExecutorSessionStore } from "../../packages/verifier/src/executor/accounts.js";
 import { beginMarkerSessionValues } from "../../packages/verifier/src/executor/begin-marker-values.js";
 import { createE2EAgentStepDriver } from "../../packages/verifier/src/executor/agent-step-driver.js";
-import { generateE2EAgentValueKey } from "../../packages/contracts/src/e2e-model-channel.js";
+import { generateE2EAgentValueKey } from "@rovara-code/contracts";
 import { createE2EAgentModelAdapter } from "../../packages/verifier/src/executor/agent-model-adapter.js";
 import { createCredentialRedactor } from "../../packages/verifier/src/executor/redact.js";
 import { createSessionSecretRegistry, registerStorageEntry } from "../../packages/verifier/src/executor/session-secret-registry.js";

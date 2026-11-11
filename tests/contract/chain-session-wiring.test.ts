@@ -3,9 +3,9 @@
 // The run's session is written with the run (Plan 5 Task 3).
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
-import { SessionViewSchema } from "../../packages/contracts/src/session-views.js";
-import { DEFAULT_AGENT_GUARDRAILS } from "../../packages/contracts/src/agent-guardrails.js";
-import { agentGuardrailsKey, agentSessionKey, orgProjectCatalogKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { SessionViewSchema } from "../../packages/cloud-contracts/src/session-views.js";
+import { DEFAULT_AGENT_GUARDRAILS } from "@rovara-code/contracts";
+import { agentGuardrailsKey, agentSessionKey, orgProjectCatalogKey } from "@rovara-code/contracts";
 import { MAYA, OMAR, createDeveloperTaskBroker, type Developer } from "../support/developer-task-broker.js";
 import { FakeProjectMembers } from "../support/fake-project-members.js";
 import { TEST_ORG } from "../support/orgs.js";

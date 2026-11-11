@@ -4,7 +4,7 @@ import { type prepareTurnModelFallback, type prepareTaskModelFallback, joinTaskM
 import { createHash, randomUUID } from "node:crypto";
 import { GetCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
-import { AgentXError, hostRateLimitRetryAt, WorkspaceClosePreflightResultSchema, agentXError, type CodeHost, type MergeObservation, type OperationStatus, type WorkspaceInstance, WorkflowFeedbackBundleSchema, type OrgId } from "@agentx/contracts";
+import { AgentXError, hostRateLimitRetryAt, WorkspaceClosePreflightResultSchema, agentXError, type CodeHost, type MergeObservation, type OperationStatus, type WorkspaceInstance, WorkflowFeedbackBundleSchema, type OrgId } from "@rovara-code/contracts";
 import type { AuthenticatedIdentity } from "../../auth.js";
 import { queryAllItems } from "../admin-reads.js";
 import { flushAuditEvents } from "../../audit/flush.js";
@@ -47,7 +47,7 @@ import { taskOperationParts } from "./task-operations.js";
 import { latestChecksItem } from "./terminal-result.js";
 import { handleSpecPullRequestEvent } from "./spec-wiring.js";
 import { type EndedPullRequestReader, outcomeDepsOf, scoreMergedCandidate } from "../../rovara-code/outcome-hooks.js";
-import { canonicalJson } from "@agentx/contracts";
+import { canonicalJson } from "@rovara-code/contracts";
 import { requireTaskStopWindowContext, withAdmittedTaskSource } from "../../org/task-stop-window.js";
 
 /**

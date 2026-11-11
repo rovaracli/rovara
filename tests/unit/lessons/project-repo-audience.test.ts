@@ -16,7 +16,7 @@ import type { Audience, Lesson } from "../../../packages/broker/src/lessons/type
 import { ORG_A, addSource, githubDraft, world } from "../../support/team-record-core.js";
 import { Audit, Clock, KEY, MemoryVectors, PROJECT, WS, draft, embedder, lessonRecord, seed, settings, wideAudience } from "./lesson-helpers.js";
 import { FakeDynamoDb } from "../../support/fake-dynamodb.js";
-import { projectRevisionKey } from "@agentx/contracts";
+import { projectRevisionKey } from "@rovara-code/contracts";
 
 const T1 = "2026-10-30T09:00:00.000Z";
 const REPO = "github:repo/9";

@@ -5,7 +5,7 @@ import { GetPublicKeyCommand, KMSClient } from "@aws-sdk/client-kms";
 import { GetParametersCommand, SSMClient } from "@aws-sdk/client-ssm";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import { MODEL_PROXY_URL_PARAMETER, WORKER_FEATURES_MAX, WORKER_FEATURE_MAX_CHARS, WORKER_PING_FEATURES_FIELD, agentXError, ec2WorkerUserData, getParametersInBatches } from "@agentx/contracts";
+import { MODEL_PROXY_URL_PARAMETER, WORKER_FEATURES_MAX, WORKER_FEATURE_MAX_CHARS, WORKER_PING_FEATURES_FIELD, agentXError, ec2WorkerUserData, getParametersInBatches } from "@rovara-code/contracts";
 import { requiredEnvironment } from "./lambda.js";
 import { testServicesEnabled } from "../test-env/test-services-switch.js";
 import { readWorkerSettings, type WorkerSettings } from "./worker-settings-read.js";

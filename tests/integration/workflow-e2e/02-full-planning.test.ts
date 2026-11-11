@@ -3,7 +3,7 @@
 // page (read only today, D5), cited code on the page, closing at plan review, and a tiny plan shown whole in Slack.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import type { PlanDocument } from "@agentx/contracts";
+import type { PlanDocument } from "@rovara-code/contracts";
 import { MAYA } from "../../support/developer-task-broker.js";
 import { CLOSED_REPLY } from "../../../packages/broker/src/developer/share-messages.js";
 import { planTiny, planWithDecisions } from "../../support/model-fixtures.js";

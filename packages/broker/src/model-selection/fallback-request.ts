@@ -1,7 +1,7 @@
 import {CRITIC_MODEL_ATTEMPTS_MAX,PlanCheckUnavailableError} from "../rovara-code/critic.js";
 import {criticFailures,reviewFailures} from "./task-failures.js";
 import {GetCommand} from "@aws-sdk/lib-dynamodb";
-import {TaskModelFallbackRequestSchema,TaskModelPolicyBindingSchema,canonicalJson,agentXError} from "@agentx/contracts";
+import { TaskModelFallbackRequestSchema, TaskModelPolicyBindingSchema, canonicalJson, agentXError } from "@rovara-code/contracts";
 import {readTaskRecipe} from "../agents/runs.js";
 import {queryAllItems} from "../aws/admin-reads.js";
 import {taskKey,type DeveloperTaskRecord} from "../developer/task-records.js";

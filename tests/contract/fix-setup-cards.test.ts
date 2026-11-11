@@ -3,7 +3,7 @@
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
-import { DecisionCardsViewSchema, type DecisionCard } from "../../packages/contracts/src/index.js";
+import { DecisionCardsViewSchema, type DecisionCard } from "@rovara-code/contracts";
 import { createDecisionPerformer, fixSetupHandler } from "../../packages/broker/src/decisions/performer.js";
 import { routeDecisionCards, type DecisionRouteDependencies } from "../../packages/broker/src/decisions/routes.js";
 import { dynamoDecisionStore } from "../../packages/broker/src/decisions/store.js";

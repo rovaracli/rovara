@@ -2,7 +2,7 @@
 // (`ownerKey`) and its object prefixes never change. These tests take over tasks by writing `currentOwner` directly, as Task 12b will.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { orgMemberKey, orgMetaKey, orgRemovedKey } from "@agentx/contracts";
+import { orgMemberKey, orgMetaKey, orgRemovedKey } from "@agentx/cloud-contracts";
 import { getTaskDocumentView, loadOwnedTask, ownerIndexRowOf, planWhyEntries, syncIndex } from "../../packages/broker/src/aws/developer-tasks.js";
 import { resolveTaskAccess } from "../../packages/broker/src/developer/task-access.js";
 import { requireCreatorStillMember } from "../../packages/broker/src/developer/creator-member.js";

@@ -1,5 +1,5 @@
 // Conditions for the existing project selection Put; no write, approval or audit emitter here.
-import {projectPlaybookKey,agentKey,builtinSettingsKey,builtinDefaultPin,isBuiltinAgentId,AgentIdSchema,agentXError,type ResolvedRecipe,type OrgId} from "@agentx/contracts";
+import { projectPlaybookKey, agentKey, builtinSettingsKey, builtinDefaultPin, isBuiltinAgentId, AgentIdSchema, agentXError, type ResolvedRecipe, type OrgId } from "@rovara-code/contracts";
 import type {StageModelSnapshot} from "./read.js";
 import type {TransactItem} from "../agents/table-writes.js";
 export function projectSelectionWriteCondition(snapshot:NonNullable<StageModelSnapshot["selectionSnapshot"]>){

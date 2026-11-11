@@ -1,13 +1,13 @@
 // Design review fix round 2 (Opus re-check, security): the pure parts of N7/M1 (confusable brackets), M6 (the task's own request thread), B2 (the planner-side citation check), the citation link and
 // the merge prompt that comes only from the registry. Each test fails on the code before the round.
 import { describe, expect, it } from "vitest";
-import { defuseFrameTags, frameTagNameAt, neutralizePacketText, renderPacketDocument, type PacketDocument } from "@agentx/contracts";
-import { CODE_CITATION_UNCHECKED, type ContextSource, type DesignCitation, type DesignResolutionDraft } from "@agentx/contracts";
+import { defuseFrameTags, frameTagNameAt, neutralizePacketText, renderPacketDocument, type PacketDocument } from "@rovara-code/contracts";
+import { CODE_CITATION_UNCHECKED, type ContextSource, type DesignCitation, type DesignResolutionDraft } from "@rovara-code/contracts";
 import { checkPlannerEvidence, citationProblem, codeCitationLinkPath, roundItemsOf, type CitablePacketItem } from "../../packages/broker/src/design-review/citations.js";
 import { citationText, designQuestionsItem } from "../../packages/broker/src/design-review/card-source.js";
 import { buildReviewerPacket, mcpItemReaderOf, type PacketReaders } from "../../packages/broker/src/design-review/packet.js";
 import { isOriginItem, packetMcpCall } from "../../packages/broker/src/design-review/mcp-allowlist.js";
-import { DesignReviewBindingSchema, promptDigest } from "@agentx/contracts";
+import { DesignReviewBindingSchema, promptDigest } from "@rovara-code/contracts";
 import { bindingMergePromptDigest, bindingMergeProblem, mergeBindingFor } from "../../packages/broker/src/design-review/merge-binding.js";
 import { MERGE_PROMPT } from "../../packages/broker/src/design-review/prompts/index.js";
 import { frameResult, neutralizeFrameTags } from "../../packages/broker/src/context-sources/present.js";

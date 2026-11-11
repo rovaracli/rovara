@@ -1,7 +1,7 @@
 // Where a nightly coverage map lives in the artifact bucket (NH-1): `nightly-maps/<company>/<project>/<digest>.json`. The company and project parts are hashes (a name could carry a character a key must not), so a project's maps are
 // one prefix and a company's are one prefix, which is what archiving a project and closing a company delete (rovara-code/evidence-erase.ts) and what the bucket's 30 day lifecycle rule matches (`nightly-maps/`).
 import { createHash } from "node:crypto";
-import { canonicalJson } from "@agentx/contracts";
+import { canonicalJson } from "@rovara-code/contracts";
 
 const sha = (value: unknown): string => createHash("sha256").update(canonicalJson(value)).digest("hex");
 export const NIGHTLY_MAPS_PREFIX = "nightly-maps/";

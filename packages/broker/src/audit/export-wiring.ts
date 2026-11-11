@@ -6,7 +6,7 @@
 import { InvokeCommand, type LambdaClient } from "@aws-sdk/client-lambda";
 import { GetObjectCommand, type S3Client } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
-import { agentXError, type OrgId } from "@agentx/contracts";
+import { agentXError, type OrgId } from "@rovara-code/contracts";
 import { AUDIT_EXPORT_PURGE_SOURCE } from "./erase.js";
 import type { AuditExportClientDeps, AuditExportEvent } from "./export.js";
 

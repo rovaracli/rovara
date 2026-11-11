@@ -1,7 +1,8 @@
 // Rovara Code (Plan 6 Task 20): the `merged` milestone. The save that moves a task to MERGED adds these items to its transaction, so the milestone exists exactly when the merge is
 // recorded, once, whichever path recorded it (a webhook, the merge sweep, or a pushed fix found merged). It lists every merged pull request and the session's bindings, which is what
 // Plan 9's handlers read to close the Linear issue (found again through `sessionForSurface`) and to post the Slack line. Handlers are told after the commit.
-import { SessionIdSchema, type CodeMilestone, type OrgId, type WorkflowSnapshot } from "@agentx/contracts";
+import { SessionIdSchema, type CodeMilestone, type OrgId } from "@rovara-code/contracts";
+import { type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import type { TransactItem } from "../agents/table-writes.js";
 import { mergedLines } from "./merged-lines.js";
 import { codeMilestoneItems } from "./milestones.js";

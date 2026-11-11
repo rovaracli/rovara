@@ -3,7 +3,8 @@
 // later never widens an old row). Everything here fails closed: a task whose visibility cannot be read (gone, another company's, an error, a timeout, past the per-request bound) shows NOTHING from its rows.
 //
 // This file is pure (no AWS); the State-table port is `live-audience-port.ts`. The one place that applies it is `acl.ts#filterVisible`, which every read of the record ends in.
-import type { Audience, OrgId } from "@agentx/contracts";
+import type { OrgId } from "@rovara-code/contracts";
+import type { Audience } from "@agentx/cloud-contracts";
 import type { TaskVisibility } from "./sources/rovara.js";
 import type { ReadAudience, RecordLog } from "./types.js";
 

@@ -1,4 +1,4 @@
-import { builtinFileCheckOf, canonicalJson, notChangingReference, redactText, type PlanDocument, type PlanQualityFinding } from "@agentx/contracts";
+import { builtinFileCheckOf, canonicalJson, notChangingReference, redactText, type PlanDocument, type PlanQualityFinding } from "@rovara-code/contracts";
 import { NOT_CHECKED_SENTENCE, type PlanSelfCheckView } from "./plan-self-check.js";
 import { NOT_TRIED_SENTENCES, NO_EXPECTATION_SUFFIX } from "./plan-check-tried.js";
 

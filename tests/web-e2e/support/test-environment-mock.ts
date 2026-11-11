@@ -1,5 +1,5 @@
 // The test-environment routes of the onboarding scenario (setup wizard E4): the answer for each phase of one journey, the way the broker words it. State lives for one scenario.
-import { AppProjectDetailSchema, TestEnvironmentBodySchema, TestEnvironmentStateSchema, TestEnvApproveAnswerSchema } from "@agentx/contracts/web";
+import { AppProjectDetailSchema, TestEnvironmentBodySchema, TestEnvironmentStateSchema, TestEnvApproveAnswerSchema } from "@agentx/cloud-contracts/web";
 import type { MockExchange } from "./how-we-work-mock.js";
 
 type Project = ReturnType<typeof AppProjectDetailSchema.parse>;

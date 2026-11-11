@@ -1,7 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  E2EApplicationProjectContractSchema, E2EExecutorAccountSchema, E2E_SEED_COMMAND_MAX_TIMEOUT_MS, createE2ESyntheticAccountDefinition, e2eSyntheticAccountContractDigest,
-} from "@agentx/contracts";
+import { E2EApplicationProjectContractSchema, E2EExecutorAccountSchema, E2E_SEED_COMMAND_MAX_TIMEOUT_MS, createE2ESyntheticAccountDefinition, e2eSyntheticAccountContractDigest } from "@rovara-code/contracts";
 import { planSyntheticAccountWrites, type E2EAccountRegistryEntry } from "../../packages/broker/src/e2e/application-account-registry.js";
 import { ORDERS_APPLICATION_ID, contractOf, ordersManifestWith, shaCanonicalOf } from "../support/e2e-account-registry-fixtures.js";
 

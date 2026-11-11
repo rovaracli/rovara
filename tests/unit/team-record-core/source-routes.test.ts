@@ -2,7 +2,8 @@
 // evidence every other less-safe approval uses); the audit outbox is the capture fake. One FakeDynamoDb holds the State table and the TeamRecord table (it ignores table names).
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { SourcesAdminViewSchema, developerOrgKey, orgMemberKey, orgMetaKey, projectMemberKey, projectMetaKey, teamRecordPk, type OrgId } from "@agentx/contracts";
+import { SourcesAdminViewSchema, developerOrgKey, orgMemberKey, orgMetaKey } from "@agentx/cloud-contracts";
+import { projectMemberKey, projectMetaKey, teamRecordPk, type OrgId } from "@rovara-code/contracts";
 import { handleRecordRoute } from "../../../packages/broker/src/team-record/routes.js";
 import { placeWidened, type SourceWriteContext } from "../../../packages/broker/src/team-record/source-write.js";
 import { erasePerson, eraseProject } from "../../../packages/broker/src/team-record/erase.js";
@@ -252,7 +253,7 @@ describe("the revision fence", () => {
 
   it("saving a source row for a closed place opens it again, in the same transaction", async () => {
     const h = harness();
-    const { recordScopeMarkerKey } = await import("@agentx/contracts");
+    const { recordScopeMarkerKey } = await import("@agentx/cloud-contracts");
     h.w.db.set({ ...recordScopeMarkerKey(ORG_A, "github:repo/9"), entityType: "TEAM_RECORD_SCOPE_CLOSED" });
     await post(h, WHO.owner, add());
     expect(h.w.db.get(recordScopeMarkerKey(ORG_A, "github:repo/9"))).toBeUndefined();

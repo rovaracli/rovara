@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import YAML from "yaml";
 import { updateRovaraCode } from "../../scripts/vendor/update-rovara-code.js";
-import { checkImports, packageOfSpecifier, trackedBuildOutput, verifyRovaraCode } from "../../scripts/vendor/verify-rovara-code.js";
+import { ancestryProblem, checkImports, packageOfSpecifier, trackedBuildOutput, verifyRovaraCode } from "../../scripts/vendor/verify-rovara-code.js";
 import {
   CODE_DIR, INCLUDE, PIN_FILE, PUBLIC_REPO_URL, SHIMMED_PACKAGES, SHIMS_DIR, blobId, defaultLayout, diffManifests, formatPin, localManifest, manifestDigest, parsePin, planShims, type Layout,
 } from "../../scripts/vendor/rovara-code-vendor.js";
@@ -367,5 +367,18 @@ describe("the manifest helpers", () => {
     expect(new Set(planned.filter((f) => f.path.endsWith("package.json")).map((f) => f.path.split("/")[0]))).toEqual(new Set(SHIMMED_PACKAGES));
     expect(planned.map((f) => f.path)).toContain("broker/core/cost.js");
     expect(planned.map((f) => f.path)).toContain("model-runtime/catalog.d.ts");
+  });
+});
+
+describe("the pinned sha is on code/next (W0-3 review L4)", () => {
+  const sha = "d".repeat(40);
+  it("accepts code/next itself and an ancestor of it", () => {
+    expect(ancestryProblem(sha, "identical")).toBeUndefined();
+    expect(ancestryProblem(sha, "ahead")).toBeUndefined();
+  });
+  it("refuses a commit that is not behind code/next, and an answer it could not get", () => {
+    expect(ancestryProblem(sha, "diverged")).toContain("not an ancestor of code/next");
+    expect(ancestryProblem(sha, "behind")).toContain("not an ancestor of code/next");
+    expect(ancestryProblem(sha, undefined)).toContain("could not ask GitHub");
   });
 });

@@ -1,4 +1,4 @@
-import { agentXError, type ConnectorCallRequest, type ConnectorCatalog, type ConnectorResult, type OrgId, type SlackRequester, type WorkspaceInstance } from "@agentx/contracts";
+import { agentXError, type ConnectorCallRequest, type ConnectorCatalog, type ConnectorResult, type OrgId, type SlackRequester, type WorkspaceInstance } from "@rovara-code/contracts";
 import {
   ConnectorNotConnected,
   discoverTools,

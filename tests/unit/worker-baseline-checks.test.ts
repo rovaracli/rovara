@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
-import type { E2EWorkflowAdmissionRef } from "@agentx/contracts";
+import type { E2EWorkflowAdmissionRef } from "@rovara-code/contracts";
 import { executeWorkflowE2EApplicationChecks } from "../../packages/worker/src/workflow-e2e-application-checks.js";
 import { buildApplicationExecutionAdmission, type ApplicationAdmissionInput } from "../../packages/broker/src/e2e/application-admission.js";
 import { evaluateApplicationPlanApproval } from "../../packages/broker/src/e2e/application-plan-approval.js";

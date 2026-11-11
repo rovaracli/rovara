@@ -4,7 +4,7 @@
 // What a frame must be to be kept: listed as a strip frame (`step` set, not dropped), for a case of the group, named for that case and step, base64 that decodes back to the same text, a JPEG of
 // exactly the listed size and digest, at most 512 KiB; at most six a case and one per step. Anything of another shape is ignored; nothing here throws for evidence it does not like.
 import { createHash } from "node:crypto";
-import { EVIDENCE_ARTIFACT_MAX_BYTES, EVIDENCE_ARTIFACT_RETENTION, EVIDENCE_STRIP_MAX, type ArtifactRef, type EvidenceRaw } from "@agentx/contracts";
+import { EVIDENCE_ARTIFACT_MAX_BYTES, EVIDENCE_ARTIFACT_RETENTION, EVIDENCE_STRIP_MAX, type ArtifactRef, type EvidenceRaw } from "@rovara-code/contracts";
 
 export interface StripFrame {
   /** The index of the declared step the frame was taken after. */

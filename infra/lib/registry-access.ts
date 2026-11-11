@@ -11,7 +11,7 @@
 //     domain. GetAuthorizationToken takes no scope-down parameter (the API has only domain, owner and duration), so this is the narrowest scope CodeArtifact offers: per install, not per run.
 //     Nothing else is allowed, so publish, delete and every other write is refused by the absence of an Allow. [verify in the test environment: a minted token can read and cannot publish]
 import { Token } from "aws-cdk-lib";
-import { OrgIdSchema, REGISTRY_TOKEN_SECONDS, singleOrgIdForEnv, type BoundRegistryDomain } from "@agentx/contracts";
+import { OrgIdSchema, REGISTRY_TOKEN_SECONDS, singleOrgIdForEnv, type BoundRegistryDomain } from "@rovara-code/contracts";
 
 export const CODEARTIFACT_DOMAINS_CONTEXT_KEY = "rovaraCodeArtifactDomains";
 /** One domain, the org that may use it, and the repositories of it that org's projects may read. */

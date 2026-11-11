@@ -5,7 +5,7 @@ import { generateKeyPairSync } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { GitHubAppCredentialProvider } from "../../packages/broker/src/github-app.js";
 import { reconcileTrackingTask, trackingRequestCap } from "../../packages/broker/src/rovara-code/merge-tracking.js";
-import { codeSettingsKey, mergeTrackingKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { codeSettingsKey, mergeTrackingKey } from "@rovara-code/contracts";
 import { HEAD_A, NOW, TASK_ID, world } from "../support/rovara-code-tracking.js";
 import { TEST_ORG } from "../support/orgs.js";
 

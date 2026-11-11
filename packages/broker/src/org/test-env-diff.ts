@@ -1,7 +1,7 @@
 // Setup wizard (E4): what a second person is shown when they confirm a test environment. A confirmation is only worth something if the person sees what they are confirming, so the card lists every value that
 // changes as `where: before -> after`, built by the broker from the stored proposal and the stored approved revision (never from the asker's words). Every value is one plain line: hidden characters are shown
 // as codes and a long value is cut. What matters most to a reviewer (where tests call out to, who they sign in as, when and how long they run) comes first.
-import { formatCommandLine, redactText, type TestEnvironmentBody } from "@agentx/contracts";
+import { formatCommandLine, redactText, type TestEnvironmentBody } from "@rovara-code/contracts";
 import { shownLine } from "./shown-line.js";
 
 /** The most change lines a card carries; the rest are counted. */

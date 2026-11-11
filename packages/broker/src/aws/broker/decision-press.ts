@@ -3,7 +3,7 @@
 // stand-in identity of a Slack user id), runs the press through the same card routes the web uses (so the evidence-first rule, the digest, the no-approve-on-high rule and the endpoint's own authority apply
 // unchanged), and answers one fixed sentence for the Lambda to say privately. A Slack press carries no browser session, so a merge from Slack never merges on a click: it answers the confirmation page.
 // With the cards switch off the answer is `enabled: false` and the Lambda says what it says for any button it does not know.
-import { SLACK_OIDC_ISSUER, agentXError } from "@agentx/contracts";
+import { SLACK_OIDC_ISSUER, agentXError } from "@rovara-code/contracts";
 import { DECISION_SLACK_TEXT, decisionSlackHandler, resolveSlackDecisionCaller, type SlackPersonLookups, type SlackPress } from "../../decisions/slack-actions.js";
 import { routeDecisionCards } from "../../decisions/routes.js";
 import { decisionRouteDepsOf } from "../developer-routes/decisions.js";
@@ -14,9 +14,10 @@ import { safeDisplayName } from "../../developer/person-name.js";
 import { endedByAdmin, startedBeforeMethodOn, type DeveloperRecord, type DeveloperSignInStore } from "../../developer/store.js";
 import { methodAllowedByEdition } from "../../developer/edition-methods.js";
 import { auditorAllowedByEdition } from "../../org/auditor.js";
-import type { EditionPolicy } from "@agentx/contracts";
+import type { EditionPolicy } from "@agentx/cloud-contracts";
 import { decisionCardsEnabled } from "../../proof/switch.js";
 import { orgStoreOf } from "./dependency-wiring.js";
+import { SLACK_DECISION_SESSION_ID } from "../../approval-place/evaluate.js";
 import type { AwsBrokerDependencies } from "./definitions.js";
 
 export interface SlackDecisionPressEvent {
@@ -98,7 +99,7 @@ export async function handleSlackDecisionPress(
       const row = member === undefined ? undefined : signedIn.get(member.developerId);
       if (member === undefined || row === undefined) return undefined;
       // The caller is the signed-in person with their live role. No browser session: the Slack press never carries one.
-      return { developerId: member.developerId, sessionId: "slack-decision", amr: "slack", name: safeDisplayName(row.displayName, member.developerId), orgId: member.orgId, orgRole: member.orgRole as DeveloperCaller["orgRole"], slackUserId: event.press.userId };
+      return { developerId: member.developerId, sessionId: SLACK_DECISION_SESSION_ID, amr: "slack", name: safeDisplayName(row.displayName, member.developerId), orgId: member.orgId, orgRole: member.orgRole as DeveloperCaller["orgRole"], slackUserId: event.press.userId };
     },
     async route(caller, request) {
       const cardDeps = (seams.cardDepsOf ?? decisionRouteDepsOf)(routeDependencies, caller, env);

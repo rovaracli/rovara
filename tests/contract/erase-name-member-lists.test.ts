@@ -2,7 +2,7 @@
 // (the audit ledger's tombstone only) or after (the name item's) must not show by name there, and a person removed from the company must not show by the name they chose.
 import { createHash, randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
-import { orgEmailKey, type OrgRole } from "@agentx/contracts";
+import { orgEmailKey, type OrgRole } from "@agentx/cloud-contracts";
 import { FORMER_MEMBER_NAME, chosenNameKey } from "../../packages/broker/src/developer/chosen-name.js";
 import { forgetResolvedNames } from "../../packages/broker/src/developer/name-resolver.js";
 import { OMAR, createSingleAnswerPlanBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";

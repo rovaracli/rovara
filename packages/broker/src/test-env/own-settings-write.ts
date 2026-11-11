@@ -3,7 +3,7 @@
 // The record: the settings revisions the write went from and to. A run of such writes in a row keeps the first `from`. A look based on a revision at or after `from` is not stale while the settings are still at `to`;
 // any other settings change (a person's save, a setup draft's apply) moves the revision past `to`, and the look is stale again, as before.
 import { GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
-import { projectPk, type OrgId } from "@agentx/contracts";
+import { projectPk, type OrgId } from "@rovara-code/contracts";
 
 type Send = { send(command: unknown): Promise<unknown> };
 const ownWriteKey = (orgId: OrgId, project: string) => ({ pk: projectPk(orgId, project), sk: "TESTENV#OWN_SETTINGS_WRITE" });

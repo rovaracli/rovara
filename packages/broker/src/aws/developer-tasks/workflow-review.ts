@@ -1,36 +1,7 @@
 import { specReviewGate } from "./spec-wiring.js";
 import { createHash, randomUUID } from "node:crypto";
-import {
-  UNDERSTAND_TIMEOUT_MINUTES,
-  UNDERSTAND_WATCHDOG_GRACE_MINUTES,
-  AgentXError,
-  ContinueDeveloperTaskRequestSchema,
-  agentXError,
-  type DeveloperTaskView,
-  type Operation,
-  type WorkflowSnapshot,
-  workflowIsReviewOnly,
-  workflowSelectedChecks,
-  type ProjectCommand,
-  type WorkflowReviewChecks,
-  type WorkflowReviewPlan,
-  type SpecReviewInput,
-  type WorkflowReviewFeedback,
-  type WorkflowFeedbackReviewReport,
-  WorkflowReviewFeedbackSchema,
-  WORKFLOW_REVIEW_FEEDBACK_MAX,
-  WorkflowFeedbackReviewReportSchema,
-  WorkflowTransitionError,
-  type WorkflowFeedbackApprovalBinding,
-  applyWorkflowFeedbackCheckChanges,
-  WORKFLOW_PLAN_MAX_BYTES,
-  workflowRequestId,
-  type WorkflowDecision,
-  sendBackProblems,
-  type WorkflowDependencyInvocation,
-  workflowReviewRoles,
-  abandonWorkflowFix,
-} from "@agentx/contracts";
+import { UNDERSTAND_TIMEOUT_MINUTES, UNDERSTAND_WATCHDOG_GRACE_MINUTES, AgentXError, ContinueDeveloperTaskRequestSchema, agentXError, type Operation, workflowIsReviewOnly, workflowSelectedChecks, type ProjectCommand, type WorkflowReviewChecks, type WorkflowReviewPlan, type SpecReviewInput, type WorkflowReviewFeedback, type WorkflowFeedbackReviewReport, WorkflowReviewFeedbackSchema, WORKFLOW_REVIEW_FEEDBACK_MAX, WorkflowFeedbackReviewReportSchema, WorkflowTransitionError, type WorkflowFeedbackApprovalBinding, WORKFLOW_PLAN_MAX_BYTES, workflowRequestId, type WorkflowDecision, type WorkflowDependencyInvocation, workflowReviewRoles } from "@rovara-code/contracts";
+import { type DeveloperTaskView, type WorkflowSnapshot, applyWorkflowFeedbackCheckChanges, sendBackProblems, abandonWorkflowFix } from "@agentx/cloud-contracts";
 import { workflowDependenciesAllowed } from "../../rovara-code/parallel-parts.js";
 import { aiToolTurn, developerTaskIdentity, partyOfTask, taskKey, type DeveloperTaskRecord } from "../../developer/task-records.js";
 import { isConditional } from "../broker-shared.js";

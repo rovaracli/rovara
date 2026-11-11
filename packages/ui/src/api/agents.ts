@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { AgentIdSchema, AgentScopeSchema, AgentMonthSchema, ProjectOverviewProjectSchema, AgentDirectoryResponseReaderSchema, AgentProfileResponseReaderSchema, AgentWriteResponseReaderSchema, AgentVersionsResponseReaderSchema, AgentSpendResponseReaderSchema, AgentSharesResponseReaderSchema, AgentSharesPutResponseReaderSchema, AgentOwnerPutBodySchema, AgentAccountablePutBodySchema, AgentAccountableResponseReaderSchema, AgentShareInputSchema, AgentAdoptResponseReaderSchema, AgentDraftResponseReaderSchema, AgentUpdateBaseResponseReaderSchema, AgentDiffResponseReaderSchema } from "@agentx/contracts/web";
+import { AgentIdSchema, AgentScopeSchema, AgentMonthSchema, ProjectOverviewProjectSchema, AgentDirectoryResponseReaderSchema, AgentProfileResponseReaderSchema, AgentWriteResponseReaderSchema, AgentVersionsResponseReaderSchema, AgentSpendResponseReaderSchema, AgentSharesResponseReaderSchema, AgentSharesPutResponseReaderSchema, AgentOwnerPutBodySchema, AgentAccountablePutBodySchema, AgentAccountableResponseReaderSchema, AgentShareInputSchema, AgentAdoptResponseReaderSchema, AgentDraftResponseReaderSchema, AgentUpdateBaseResponseReaderSchema, AgentDiffResponseReaderSchema } from "@agentx/cloud-contracts/web";
 import type { AppHost } from "../host.js";
 import { useAppHost } from "../host.js";
 import { ApiError } from "./errors.js";

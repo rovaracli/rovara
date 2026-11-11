@@ -1,7 +1,7 @@
 // `agentx admin budget set` (ruling R47): an operator of a private or single-org install sets the monthly AI limits of its one org,
 // which has none until they do. A cloud install's orgs set their own through the web app.
 import { randomUUID } from "node:crypto";
-import { agentXError } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
 import { adminResponseBody } from "./http.js";
 
 const MAX_BUDGET_USD = 1_000_000;

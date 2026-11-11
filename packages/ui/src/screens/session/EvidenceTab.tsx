@@ -1,4 +1,4 @@
-import { EVIDENCE_FALLBACK_REASON_WORDS, TESTING_REASON_TEXT, TESTING_RESULT_LABELS, TESTING_ROW_STATUS_LABELS, evidenceDependencyLabelWords, testingSummary } from "@agentx/contracts/web";
+import { EVIDENCE_FALLBACK_REASON_WORDS, TESTING_REASON_TEXT, TESTING_RESULT_LABELS, TESTING_ROW_STATUS_LABELS, evidenceDependencyLabelWords, testingSummary } from "@agentx/cloud-contracts/web";
 import { SecondReviewAck } from "./SecondReviewAck.js";
 import { useAppHost } from "../../host.js";
 import { DataTable } from "../../design/DataTable.js";

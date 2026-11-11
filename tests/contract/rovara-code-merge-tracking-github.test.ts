@@ -6,7 +6,7 @@ import { GitHubAppCredentialProvider, GithubMergeRateLimitError } from "../../pa
 const NOW = Date.parse("2026-10-25T12:00:00.000Z");
 const HEAD = "a".repeat(40);
 const REPO = "https://github.com/acme/payments.git";
-const SCOPE = { system: "private-install" } as const;
+const SCOPE = { system: "install" } as const;
 
 interface Fixture {
   pull?: Record<string, unknown>;

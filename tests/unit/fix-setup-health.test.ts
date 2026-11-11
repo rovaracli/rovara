@@ -128,7 +128,7 @@ describe("resolving", () => {
 });
 
 // M1 (Opus re-check): the health item expires after 60 days (or is replaced) and its own counter starts again at 1. The cards' highest-seen version must not strand it.
-import { NightlyBaselineSchema, projectPk, type StoredNightlyHealth } from "@agentx/contracts";
+import { NightlyBaselineSchema, projectPk, type StoredNightlyHealth } from "@rovara-code/contracts";
 import { applyNightlyRecorded, readProjectHealth, type HealthPorts } from "../../packages/broker/src/test-env/health.js";
 import { readHealthMark } from "../../packages/broker/src/test-env/fix-setup-health.js";
 import type { NightlyRecorded } from "../../packages/broker/src/test-env/nightly.js";

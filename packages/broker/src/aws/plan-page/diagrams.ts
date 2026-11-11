@@ -2,7 +2,7 @@
 // through Graphviz, call flows by AgentX's own drawing. Every drawing is cleaned and then checked against a short
 // allowlist before it goes into the page; anything else leaves only the text alternative.
 import { Graphviz } from "@hpcc-js/wasm-graphviz";
-import { planDiagramText, redactText, type PlanEvidenceInput } from "@agentx/contracts";
+import { planDiagramText, redactText, type PlanEvidenceInput } from "@rovara-code/contracts";
 import { escapeHtml } from "../web-session.js";
 
 export type DiagramEvidence = Extract<PlanEvidenceInput, { kind: "flow" | "schema" | "stateMachine" }>;

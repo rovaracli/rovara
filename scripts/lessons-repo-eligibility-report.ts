@@ -12,7 +12,7 @@
 import { pathToFileURL } from "node:url";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, ScanCommand } from "@aws-sdk/lib-dynamodb";
-import { teamRecordTableName } from "../packages/contracts/src/derived-names.js";
+import { teamRecordTableName } from "../packages/cloud-contracts/src/derived-names.js";
 import { repoEligibilityReport, type RepoEligibilityReport, type ReportInput } from "../packages/broker/src/lessons/repo-eligibility-report.js";
 import { z } from "zod";
 import { LessonProvenanceSchema, LessonSchema } from "../packages/broker/src/lessons/types.js";

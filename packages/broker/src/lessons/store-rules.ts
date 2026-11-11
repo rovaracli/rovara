@@ -1,6 +1,6 @@
 // Learning v2: the rules of the lesson store that do not depend on where the lessons are kept (design §4.2, §4.6). Both stores (`InMemoryLessonStore` and the DynamoDB one) call these,
 // so the fence, the usage bookkeeping and the rollback rules cannot drift apart. Pure: data in, data out.
-import { CHANGE_APPROVAL_TTL_DAYS } from "@agentx/contracts";
+import { CHANGE_APPROVAL_TTL_DAYS } from "@agentx/cloud-contracts";
 import { scrubLesson, stripAudienceIds } from "./scrub.js";
 import { LessonSchema, normId, peopleOf, recordIdsOf, type Lesson } from "./types.js";
 

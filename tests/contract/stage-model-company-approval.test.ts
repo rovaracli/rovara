@@ -1,5 +1,6 @@
 import {expect,it} from "vitest";
-import {modelSourcesKey,orgMemberKey,developerOrgKey,orgMetaKey,type OrgId} from "@agentx/contracts";
+import { modelSourcesKey, type OrgId } from "@rovara-code/contracts";
+import { orgMemberKey, developerOrgKey, orgMetaKey } from "@agentx/cloud-contracts";
 import {bedrockClaudeModelIds} from "@agentx/model-runtime/catalog";
 import {mergeWorld} from "../support/rovara-code-merge-world.js";
 import {capturingAuditDeps} from "../support/audit-capture.js";

@@ -12,25 +12,7 @@ import { budgetActorRefused } from "./budget-authority.js";
 // page. The handlers registered at the bottom are what confirming does: they re-check that what was shown is still what is there,
 // then apply exactly that.
 import { QueryCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  ApprovalIdSchema,
-  STAGE_EDIT_RULES,
-  EMPTY_RECIPE,
-  ROVARA_CODE_V2_FOR_NEW_ORGS,
-  agentXError,
-  atLeast,
-  canonicalJson,
-  canonicalModelName,
-  diffRecipes,
-  orgPk,
-  projectAllows,
-  recipeDigest,
-  type AgentGuardrails,
-  type AgentId,
-  type BaseRef,
-  type OrgId,
-  type ResolvedRecipe,
-} from "@agentx/contracts";
+import { ApprovalIdSchema, STAGE_EDIT_RULES, EMPTY_RECIPE, ROVARA_CODE_V2_FOR_NEW_ORGS, agentXError, atLeast, canonicalJson, canonicalModelName, diffRecipes, orgPk, projectAllows, recipeDigest, type AgentGuardrails, type AgentId, type BaseRef, type OrgId, type ResolvedRecipe } from "@rovara-code/contracts";
 import { agentAccess, checkShares, orgRoleOf, resolveSurvivor, saveShares, sharesAlreadyStored, type AgentCaller, type AgentShare } from "./access.js";
 import {
   getApproval,
@@ -91,7 +73,7 @@ async function runningNow(deps: ApprovalDependencies, agent: AgentRecord, fallba
 const skillDigestsOf = (recipe: ResolvedRecipe): Record<string, string> => Object.fromEntries(recipe.skills.map((skill) => [skill.skillId, skill.digest]));
 
 /** Refuses a recipe the company's guardrails forbid, by its first problem, `<path>: <message>`. */
-async function requireWithinGuardrails(deps: ApprovalDependencies, orgId: OrgId, recipe: ResolvedRecipe): Promise<void> {
+export async function requireWithinGuardrails(deps: ApprovalDependencies, orgId: OrgId, recipe: ResolvedRecipe): Promise<void> {
   const [first] = await validateRecipeForOrg(deps, orgId, recipe);
   if (first !== undefined) throw agentXError("CONFIG_INVALID", `${first.path}: ${first.message}`);
 }
@@ -244,6 +226,37 @@ export async function orgAdminApprovers(deps: ApprovalDependencies, orgId: OrgId
   return { kind: "rule", rule: "org_admin", candidates: await orgAdmins(deps, orgId) };
 }
 
+/** Whether the agent has a company-wide share stored now (read live: a share added or removed since a change was asked counts). */
+export async function agentHasCompanyShare(deps: ApprovalDependencies, orgId: OrgId, agentId: string): Promise<boolean> {
+  return (await deps.store.listShares(orgId, agentId)).some((share) => (share.principal as { kind?: unknown } | undefined)?.kind === "org");
+}
+
+/**
+ * What a company-wide share request is bound to besides the share set: the version that runs when it is asked (0 = none published yet) and its digest, so
+ * the person who confirms it decides about the agent they were shown. A version published in between makes the request stale; it has to be asked again.
+ */
+export async function currentVersionBinding(deps: ApprovalDependencies, agent: AgentRecord): Promise<{ expectedCurrentVersion: number; versionDigest?: string }> {
+  if (agent.currentVersion === undefined) return { expectedCurrentVersion: 0 };
+  const digest = (await deps.store.getVersion(agent.orgId, agent.agentId, agent.currentVersion))?.digest;
+  return { expectedCurrentVersion: agent.currentVersion, ...(digest === undefined ? {} : { versionDigest: digest }) };
+}
+
+/** Refuses applying a publish or rollback an author decided while the agent has since been shared with the whole company: only an org owner or admin may decide that (owner decision 92). */
+async function requireOwnerOrAdminWhileShared(deps: ApprovalDependencies, record: ApprovalRecord, agentId: AgentId, by: string): Promise<void> {
+  if (!await agentHasCompanyShare(deps, record.orgId, agentId)) return;
+  const role = await orgRoleOf(deps, record.orgId, by);
+  if (role === undefined || !isOrgAdmin(role)) throw stale("The agent was shared with your company after this was decided, so an organization owner or admin has to confirm it. Ask again.");
+}
+
+/**
+ * Who is asked to confirm a less-safe publish or rollback of this agent. While the company can use it (a stored company share), the people it
+ * runs for are the whole company, so only an org owner or admin decides (owner decision 92), as for the share itself; otherwise the agent's
+ * owner, a project's maintainers and the admins, as before.
+ */
+export async function publishApprovers(deps: ApprovalDependencies, agent: AgentRecord): Promise<ApproverSpec> {
+  return await agentHasCompanyShare(deps, agent.orgId, agent.agentId) ? companyShareApprovers(deps, agent.orgId) : agentApprovers(deps, agent, "agent_publish");
+}
+
 /**
  * Who is asked to confirm a company-wide share of an agent: the org's owners and admins only (decision 24). The agent's own member owner, and a
  * project's maintainers, are not listed: they ask, they don't decide. The rule is `agent_manager`, which `registerAgentApprovals` registers as the
@@ -349,7 +362,7 @@ export async function publishDraft(
     ...(agent.currentVersion === undefined ? {} : { expectedCurrentVersion: agent.currentVersion }),
     ...(input.note === undefined ? {} : { note: input.note }),
   };
-  return waitForPerson(deps, caller, input.requestId, subject, changes, await agentApprovers(deps, agent, "agent_publish"));
+  return waitForPerson(deps, caller, input.requestId, subject, changes, await publishApprovers(deps, agent));
 }
 
 /** Makes an earlier version current. A rollback is compared like a publish: one that makes anything less safe waits for the page. */
@@ -375,7 +388,7 @@ export async function rollbackAgent(
   }
   requireActiveForConfirmation(agent);
   const subject: AgentChangeSubject = { kind: "agent_rollback", agentId: agent.agentId, version: input.version, digest: recipeDigest(target), expectedCurrentVersion: agent.currentVersion,...(modelValidation===undefined?{}:{modelContext:modelValidation.modelContext}) };
-  return waitForPerson(deps, caller, input.requestId, subject, changes, await agentApprovers(deps, agent, "agent_publish"));
+  return waitForPerson(deps, caller, input.requestId, subject, changes, await publishApprovers(deps, agent));
 }
 
 /** Moves the org's pin of a built-in to one of its released versions; org owners and admins only (the route checks), and a less-safe one waits for an org admin on the page. */
@@ -419,7 +432,7 @@ export async function shareAgent(
   if (!widens) return { applied: true, value: await saveShares(deps, agent.orgId, caller.developerId, agent, shares, input.request) };
   requireActiveForConfirmation(agent);
   const can = { view: "see", use: "run", edit: "change" }[wantedCompany.level];
-  const subject: AgentChangeSubject = { kind: "agent_share", agentId: agent.agentId, shares, expectedSharesRevision: agent.sharesRevision ?? 0 };
+  const subject: AgentChangeSubject = { kind: "agent_share", agentId: agent.agentId, shares, expectedSharesRevision: agent.sharesRevision ?? 0, ...await currentVersionBinding(deps, agent) };
   return waitForPerson(deps, caller, input.requestId, subject, [`Shares ${agent.name} with everyone in your company, who can then ${can} it`], await companyShareApprovers(deps, agent.orgId));
 }
 
@@ -487,6 +500,7 @@ async function confirmPublish(deps: ApprovalDependencies, record: ApprovalRecord
   await requireWithinGuardrails(deps, record.orgId, draftRecipe);
   const modelValidation=await processModelRevisions(deps,{orgId:record.orgId,developerId:record.requestedBy,orgRole:"member"},agent,draft,draftRecipe,record.approvalId,undefined,by,subject.modelContext?.tupleDigest);
   if(modelValidation!==undefined && canonicalJson(modelValidation.modelContext)!==canonicalJson(subject.modelContext??null)) throw stale("The model policy, sources or project changed. Publish again.");
+  await requireOwnerOrAdminWhileShared(deps, record, subject.agentId, by);
   const published = await deps.store.publish({
     orgId: record.orgId, agentId: subject.agentId, expectedDraftRevision: subject.draftRevision, digest: subject.digest, by, expectedCurrentVersion: subject.expectedCurrentVersion ?? null,
     ...(modelValidation===undefined?{}:{modelRevisions:modelValidation.modelRevisions,modelAuthorityChecks:modelValidation.authorityChecks,...(modelValidation.proof===undefined?{}:{modelApproval:modelValidation.proof})}),
@@ -513,6 +527,7 @@ async function confirmRollback(deps: ApprovalDependencies, record: ApprovalRecor
   if(stored===undefined) throw stale("The process version is unavailable.");
   const modelValidation=await processModelRevisions(deps,{orgId:record.orgId,developerId:record.requestedBy,orgRole:"member"},agent,stored,target,undefined,stored.modelApproval,by);
   if(modelValidation!==undefined && (modelValidation.changes.length>0 || canonicalJson(modelValidation.modelContext)!==canonicalJson(subject.modelContext??null))) throw stale("The model policy, sources or project changed. Roll back again.");
+  await requireOwnerOrAdminWhileShared(deps, record, subject.agentId, by);
   await deps.store.rollback({ orgId: record.orgId, agentId: subject.agentId, version: subject.version, expectedCurrentVersion: subject.expectedCurrentVersion, by, safety: "less_safe",...(modelValidation===undefined?{}:{modelRevisions:modelValidation.modelRevisions,modelAuthorityChecks:modelValidation.authorityChecks}) });
   await deps.triggerHooks?.recheckTriggersForTarget(record.orgId, { kind: "agent", agentId: subject.agentId });
 }
@@ -541,6 +556,9 @@ async function confirmShare(deps: ApprovalDependencies, record: ApprovalRecord):
     if (await sharesAlreadyStored(deps, record.orgId, by, subject.agentId, subject.shares)) return;
     throw stale("Who this agent is shared with changed after this was asked. Share again.");
   }
+  // Bound to the version the person was shown: one published since (or a request asked before it was bound) is asked again, so the company never gets a version nobody saw.
+  const binding = await currentVersionBinding(deps, agent);
+  if (subject.expectedCurrentVersion !== binding.expectedCurrentVersion || subject.versionDigest !== binding.versionDigest) throw stale("The agent changed since this was asked. Share again.");
   await saveShares(deps, record.orgId, by, agent, subject.shares);
 }
 
@@ -559,6 +577,13 @@ async function confirmGuardrails(deps: ApprovalDependencies, record: ApprovalRec
   await deps.triggerHooks?.recheckBuiltinTriggers(record.orgId);
 }
 
+/** An org owner or admin, by the role they hold now (read from the member row, never from the session): a person demoted since they signed in can't decide (R68). */
+export const orgOwnerOrAdmin: ApproverRuleCheck = async (deps, record, caller) => {
+  if (caller.orgId !== record.orgId) return false;
+  const role = await orgRoleOf(deps, record.orgId, caller.developerId);
+  return role !== undefined && isOrgAdmin(role);
+};
+
 /** The owner, an accountable or managing maintainer of the owning project, or an org owner or admin: whoever holds `manage` on the agent now (R68). */
 async function managesAgent(deps: ApprovalDependencies, record: ApprovalRecord, caller: AgentCaller): Promise<boolean> {
   const agentId = (record.subject as { agentId?: unknown }).agentId;
@@ -574,15 +599,18 @@ async function managesAgent(deps: ApprovalDependencies, record: ApprovalRecord, 
  */
 export function registerAgentApprovals(): void {
   registerCompanyModelPolicyApprovals();
-  registerApproverRule("agent_publish", managesAgent);
+  // `agent_run_version` (running one older, looser version for one task) is left out of this on purpose (owner decision 92 reading, Opus review): it is one run on one
+  // project, asked for by the person it runs for; it changes nothing the rest of the company runs; autonomous starts can't use it; and the author could approve
+  // the same run before the agent was shared. Adding it needs the subject kind here, in `whoMayDecide`, and `publishApprovers` at run-version-gate.ts.
+  // A publish or rollback of an agent the whole company can use is decided by an org owner or admin, judged now: this also holds a request asked before the
+  // company share existed, and one asked under this rule before this was a rule (owner decision 92).
+  registerApproverRule("agent_publish", async (deps, record, caller) => {
+    const subject = record.subject as { kind?: unknown; agentId?: unknown };
+    if ((subject.kind === "agent_publish" || subject.kind === "agent_rollback") && typeof subject.agentId === "string" && record.orgId === caller.orgId && await agentHasCompanyShare(deps, record.orgId, subject.agentId)) return orgOwnerOrAdmin(deps, record, caller);
+    return managesAgent(deps, record as ApprovalRecord, caller);
+  });
   // The person who asked for a change to a project's process cannot confirm it while someone else could ("How we work", H4).
   registerApprovalDecisionGuard("process_self_confirm", processSelfConfirmGuard({ candidatesOf: async (deps, agent) => { const spec = await agentApprovers(deps, agent, "agent_publish"); return spec.kind === "rule" ? spec.candidates : spec.ids; }, mayDecide: managesAgent }));
-  // Read now, never from the caller's session: a person demoted since they signed in can't decide (R68).
-  const orgOwnerOrAdmin: ApproverRuleCheck = async (deps, record, caller) => {
-    if (caller.orgId !== record.orgId) return false;
-    const role = await orgRoleOf(deps, record.orgId, caller.developerId);
-    return role !== undefined && isOrgAdmin(role);
-  };
   registerApproverRule("org_admin", orgOwnerOrAdmin);
   // Sharing an agent company-wide needs an org owner or admin (owner decision 91, experience decision 24), never the agent's author or a project maintainer just because they manage it.
   registerApproverRule("agent_manager", orgOwnerOrAdmin);

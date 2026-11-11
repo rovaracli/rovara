@@ -2,7 +2,7 @@
 // approve is the project's own website change (second person, audit, egress plan) that only a live browser session can press. With the switch off nothing here reads or writes anything.
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
-import { DecisionCardsViewSchema, projectRevisionKey, projectPk, type DecisionCard } from "../../packages/contracts/src/index.js";
+import { DecisionCardsViewSchema, projectRevisionKey, projectPk, type DecisionCard } from "@rovara-code/contracts";
 import { hostAskSubjectId, requestHostAsk } from "../../packages/broker/src/rovara-code/setup-host-ask.js";
 import { taskKey } from "../../packages/broker/src/developer/task-records.js";
 import { MAYA, OMAR } from "../support/developer-task-broker.js";

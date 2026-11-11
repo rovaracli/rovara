@@ -1,8 +1,8 @@
-import { slackBindingPk } from "../../packages/contracts/src/org-scoped-keys.js";
+import { slackBindingPk } from "@rovara-code/contracts";
 import { realIdentityRow } from "../support/real-identity-row.js";
 import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { AgentXError, type ChannelInfoRequest, type ChannelMembersRequest, type ChannelMembersResponse, type TaskPersonProofRequest } from "@agentx/contracts";
+import { AgentXError, type ChannelInfoRequest, type ChannelMembersRequest, type ChannelMembersResponse, type TaskPersonProofRequest } from "@rovara-code/contracts";
 import { channelInfoThroughLambda, channelMembersThroughLambda, checkProjectAccess, developerKeysThroughLambda, developerSinceFromEnvironment, developerTaskRouteDependencies, taskPeopleDisplayReadThroughLambda, taskPersonProofThroughLambda, type DeveloperApiConfiguration, type DeveloperCaller } from "../../packages/broker/src/aws/developer-routes.js";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import type { DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
@@ -14,7 +14,7 @@ import { identityHarness, localSigner } from "../support/developer-fakes.js";
 import { seedMembership } from "../support/developer-task-broker.js";
 import type { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { TEST_ORG } from "../support/orgs.js";
-import { projectMemberKey, projectRevisionKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { projectMemberKey, projectRevisionKey } from "@rovara-code/contracts";
 
 const ISSUER = "https://abc123.execute-api.us-east-1.amazonaws.com/v1/auth";
 const developerId = "d".repeat(64);
@@ -604,6 +604,11 @@ describe("D2 task-person route dependencies", () => {
     project: "payments-api", share: { teamId: "T0TEAM1", channelId: "C0PAY0001" },
   } as DeveloperTaskRecord;
 
+  // The people of these cases are members of the company who may write: a Slack account, a channel or a sign-in row is not a membership (owner decision 86). Tests that need a non-member remove the row.
+  beforeEach(() => {
+    for (const id of [nativeDeveloperId, ownerKeyForSubject("https://identity.example.com", "subject-123"), developerIdForSlackUser("U0OTHER001")]) seedMembership(db, id, { orgId: TEST_ORG, role: "member" });
+  });
+
   it("propagates the exact default-off people configuration", () => {
     (config as DeveloperApiConfiguration & { taskPeopleConfiguration: { peopleChangesEnabled: boolean } }).taskPeopleConfiguration = { peopleChangesEnabled: false };
     const route = developerTaskRouteDependencies({ documentClient: db, tableName: "state", developer: config, now: () => T0 }, maya);
@@ -768,6 +773,7 @@ describe("D2 task-person route dependencies", () => {
     const secondNewSlackUserId = "U0NEW0002";
     const caller = { ...maya, developerId: nativeDeveloperId };
     let clock = T0;
+    for (const userId of [firstNewSlackUserId, secondNewSlackUserId]) seedMembership(db, developerIdForSlackUser(userId), { orgId: TEST_ORG, role: "member" });
     db.set(task as unknown as Record<string, unknown>);
     db.set({
       pk: `DEVTASK#${taskId}`, sk: "PEOPLE", schemaVersion: 1, revision: 1, orphaned: false,

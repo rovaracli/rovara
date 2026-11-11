@@ -9,7 +9,7 @@
       "path": "../packages/audit-verifier"
     },
     {
-      "path": "../packages/contracts"
+      "path": "../packages/cloud-contracts"
     },
     {
       "path": "../packages/verifier"

@@ -8,7 +8,7 @@
 //   AUDIT#<org> FILTER#v1#...    canonical metadata postings and contiguous coverage; retained after erase/shred
 //   AUDIT_ORGS  <org>             written once, with the org's first record
 import { TransactWriteCommand, GetCommand, type DynamoDBDocumentClient, type TransactWriteCommandInput } from "@aws-sdk/lib-dynamodb";
-import { genesisHash, recordHash, type AuditDetailPart, type AuditEventInput, type AuditRecordV1 } from "@agentx/contracts";
+import { genesisHash, recordHash, type AuditDetailPart, type AuditEventInput, type AuditRecordV1 } from "@agentx/cloud-contracts";
 import { AUDIT_INDEX_COVERAGE, auditIndexPostings } from "./search-index.js";
 import type { AuditKeyring } from "./keyring.js";
 

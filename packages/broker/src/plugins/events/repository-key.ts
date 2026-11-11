@@ -4,7 +4,7 @@
 //  - GitHub keeps its old spelling exactly (`owner/name`, lower case), so every row written before this exists under the same key and is read as before (no data migration);
 //  - any other kind is `<kind>:<address>`, the address the install registered, normalised (scheme and host in lower case, no query, fragment, trailing slash or `.git`).
 // A key is never taken from an event's body: the caller builds it from the address the project registered, or from the neutral event's repository address, and compares.
-import type { PluginKind } from "@agentx/contracts";
+import type { PluginKind } from "@rovara-code/contracts";
 import { parseGitHubRepository } from "../../github-app.js";
 
 /** The kind GitHub's repositories are filed under. */

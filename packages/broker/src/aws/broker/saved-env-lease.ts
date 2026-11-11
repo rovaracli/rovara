@@ -1,5 +1,5 @@
 // Saved project images (SV wiring): the three handlers over the stored records. The rules are in ../../test-env/saved-env-lease.ts; this file only reads the operation and its workspace.
-import { agentXError } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
 import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { operationKey, requireOperation } from "../cancellation.js";
 import { requireWorkspace } from "./records.js";

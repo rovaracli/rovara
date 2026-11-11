@@ -2,7 +2,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { expireLearningItems } from "../../packages/broker/src/learning/sweep.js";
 import { captureCorrection, type CaptureInput } from "../../packages/broker/src/learning/store.js";
-import { learningWalkKey, projectLearningKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { learningWalkKey, projectLearningKey } from "@rovara-code/contracts";
 import { indexSweepWanted } from "../../packages/broker/src/aws/index-expiry.js";
 import { DAY_MS, NOW_MS, ORG_B, PROJECT_CREATED, epochSeconds, iso, makeWorld, seedCorrection, seedItem, seedProject } from "../support/learning-world.js";
 import { TEST_ORG } from "../support/orgs.js";

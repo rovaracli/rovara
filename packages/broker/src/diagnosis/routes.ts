@@ -6,7 +6,7 @@
 //   POST /v1/app/diagnoses/{id}/propose       "Apply this change" for one settings change, through the ordinary route   (propose.ts)
 //
 // While the `fd` switch is off the dependencies are absent and every one of these is NOT_FOUND, as if it did not exist.
-import { agentXError } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
 import { StatusReply } from "../aws/status-reply.js";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 import { startDeepDiagnosis, type DeepDiagnosisPorts } from "./deep.js";

@@ -4,7 +4,7 @@ import {sealCursor,openCursor,cursorKeyOf} from "../agent-sessions/read.js";
 import {createHash} from "node:crypto";
 import {QueryCommand} from "@aws-sdk/lib-dynamodb";
 import {z} from "zod";
-import {ModelPolicyPreviewRequestSchema,ModelPolicyPreviewResponseSchema,canonicalJson,agentXError,orgProjectCatalogPk,orgScoped,type ModelSelectionPolicyResponse} from "@agentx/contracts";
+import { ModelPolicyPreviewRequestSchema, ModelPolicyPreviewResponseSchema, canonicalJson, agentXError, orgProjectCatalogPk, orgScoped, type ModelSelectionPolicyResponse } from "@rovara-code/contracts";
 import {requireCompanyModelPolicyAuthority} from "./company-read.js";
 import {readModelSelectionPolicy,type ModelPolicyReader} from "./policy-store.js";
 import {validateStageChoices,type StageModelSnapshot,type StageModelCaller} from "./read.js";

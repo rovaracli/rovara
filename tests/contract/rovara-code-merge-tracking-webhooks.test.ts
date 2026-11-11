@@ -3,7 +3,7 @@
 import { createHmac, randomUUID } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it, vi } from "vitest";
-import { githubInstallationKey } from "../../packages/contracts/src/org-node.js";
+import { githubInstallationKey } from "../../packages/cloud-contracts/src/org-node.js";
 import { handleGithubWebhook, receiveGithubWebhook, GithubWebhookRefusal, type HeadWebhookEvent } from "../../packages/broker/src/aws/github-webhooks.js";
 import { trackingRecoveryItem, mergeRecoveryItem } from "../../packages/broker/src/aws/workflow-merge-recovery.js";
 import { boundInstallationOrg, prHeadItems, resolveHeadEventTask, wakeFromHeadEvent, type HeadEventDependencies } from "../../packages/broker/src/rovara-code/tracking-events.js";

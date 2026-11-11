@@ -7,7 +7,7 @@
 //   - serves the packet the broker STORED for that slot, byte for byte, after checking it hashes to the digest the binding carries (it never rebuilds one);
 //   - answers the contract's delivery fields only, at most 2 MB, never cached, and refuses once the round is recorded on the task.
 // One capability can read every reviewer's slot; keeping reviewers apart is a property of the worker's code, proven only by the proxy's first-call record (DR-FU2).
-import { DesignReviewBindingSchema, PACKET_DELIVERY_BYTES_MAX, PacketDeliverySchema, agentXError, packetDigestOf, type DesignReviewBinding } from "@agentx/contracts";
+import { DesignReviewBindingSchema, PACKET_DELIVERY_BYTES_MAX, PacketDeliverySchema, agentXError, packetDigestOf, type DesignReviewBinding } from "@rovara-code/contracts";
 import { TERMINAL, getItem, requireOperation, type CallbackClaims, type OperationRecord } from "../cancellation.js";
 import { taskKey, taskPointerKey, type DeveloperTaskPointerRecord, type DeveloperTaskRecord } from "../../developer/task-records.js";
 import { readSlotPacket } from "../../design-review/packet-store.js";

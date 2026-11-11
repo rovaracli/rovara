@@ -5,7 +5,7 @@
 //           { action: "clear", expected: { provider, modelId } | null }
 // A model that is not served by a company-billed source or is forbidden is refused. The route answers `undefined` (not found) where the install has no lessons ports.
 import { z } from "zod";
-import { agentXError, forbiddenModelMatcher } from "@agentx/contracts";
+import { agentXError, forbiddenModelMatcher } from "@rovara-code/contracts";
 import { readGuardrails } from "../../agents/guardrails.js";
 import { allowedModels, readLessonsModel, setLessonsModel, type LessonsModelDeps } from "../../lessons/model-setting.js";
 import { StatusReply } from "../status-reply.js";

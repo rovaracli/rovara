@@ -5,7 +5,7 @@
 // Which recipes the project USED comes from the project's latest setup draft: the `recipe:<id>@<revision>` sources of its values, INTERSECTED with the offers the broker recorded on that draft's operation at
 // dispatch (SR-3: a worker's report is only a claim). `preApprovedRecipeHosts` then reads each used recipe again NOW (approved, same revision, same company, in scope, inside the locks, host not refused). Off (`sp`) or
 // on any read failure: no marks, and the ask is exactly what it was.
-import type { OrgId, TestEnvProdDeny } from "@agentx/contracts";
+import type { OrgId, TestEnvProdDeny } from "@rovara-code/contracts";
 import { readSetupDraftPointer } from "../rovara-code/setup-draft.js";
 import { refuseSetupHost } from "../rovara-code/setup-host-ask.js";
 import { setupRecipesEnabled } from "../rovara-code/setup-recipes-switch.js";

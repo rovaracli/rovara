@@ -6,7 +6,7 @@
 // A claim is NOT static-only when the plan self-check says so: `planQualityFindings` gives a `claim-static-only` finding for a claim proved only by checks that read files (`grep`, `cat`, `test`) and
 // by no check or scenario that runs the code. That finding is the plan's own notion; this module asks it and does not guess. (The finding names at most 32 claims and only leaf claims; a parent is
 // static-only when all its leaves are.)
-import { TestProofSchema, type PlanClaim, type PlanDocument, type TestProof } from "@agentx/contracts";
+import { TestProofSchema, type PlanClaim, type PlanDocument, type TestProof } from "@rovara-code/contracts";
 import { planQualityFindings } from "../developer/plan-quality.js";
 import { testProofPullRequestLines } from "../developer/test-proof-lines.js";
 import { inertLine } from "./inert-text.js";

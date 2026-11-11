@@ -6,13 +6,14 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { agentKey, chainKey, developerOrgKey, orgMemberKey, orgMetaKey, orgProjectCatalogKey, projectMemberKey, projectRevisionKey } from "@agentx/contracts";
+import { agentKey, chainKey, orgProjectCatalogKey, projectMemberKey, projectRevisionKey } from "@rovara-code/contracts";
+import { developerOrgKey, orgMemberKey, orgMetaKey } from "@agentx/cloud-contracts";
 import { ADA, BEN, CARL, DEB, TRIAGE, ORG_B, person, setup, type World } from "../support/spend-world.js";
 import { seedMembership, type Developer } from "../support/developer-task-broker.js";
 import { fixtureActor } from "../support/money-authority.js";
 import { ChainStore } from "../../packages/broker/src/chains/store.js";
 import { TriggerStore } from "../../packages/broker/src/triggers/store.js";
-import { TriggerSpecSchema } from "../../packages/contracts/src/agent-recipe.js";
+import { TriggerSpecSchema } from "@rovara-code/contracts";
 import { ARJUN, DANA, MAX, ORG_A, setupTriggerWorld } from "../support/trigger-world.js";
 import { TEST_ORG } from "../support/orgs.js";
 

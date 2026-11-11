@@ -4,7 +4,8 @@ import { createHash, generateKeyPairSync, sign as cryptoSign, type KeyObject } f
 import { AdminCreateUserCommand, AdminGetUserCommand } from "@aws-sdk/client-cognito-identity-provider";
 import { GetPublicKeyCommand, SignCommand } from "@aws-sdk/client-kms";
 import { SignJWT, UnsecuredJWT, createLocalJWKSet, type JWTHeaderParameters, type JWTVerifyGetKey } from "jose";
-import type { EditionPolicy, OrgId } from "@agentx/contracts";
+import type { EditionPolicy } from "@agentx/cloud-contracts";
+import type { OrgId } from "@rovara-code/contracts";
 import type { HttpApiV2Event } from "../../packages/broker/src/aws/lambda.js";
 import { githubSignInProvider, oidcSignInProvider, samlSignInProvider, slackSignInProvider } from "../../packages/broker/src/developer/providers.js";
 import { samlServiceProviderAddresses } from "../../packages/broker/src/developer/saml.js";

@@ -1,10 +1,6 @@
 import { GetCommand, QueryCommand, type DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { STALE_RUN_SWEEP_AGE_MS } from "@agentx/verifier";
-import {
-  INDEX_EXPIRY_ATTRIBUTE, REQUALIFY_PROFILE_ID, RequalifyHoldSchema, TERMINAL_OPERATION_STATUSES, WORKFLOW_APPLICATION_RUNTIME_RENEWED_PREFIX, WORKSPACE_SESSION_STATE_INDEX,
-  agentXError, canonicalJson, projectSetupExecutionKey, requalifyDrainProjection, requalifyHoldKey,
-  type E2EApplicationSelectionRecord, type E2ERegisteredRuntime, type RequalifyDrainRead,
-} from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, REQUALIFY_PROFILE_ID, RequalifyHoldSchema, TERMINAL_OPERATION_STATUSES, WORKFLOW_APPLICATION_RUNTIME_RENEWED_PREFIX, WORKSPACE_SESSION_STATE_INDEX, agentXError, canonicalJson, projectSetupExecutionKey, requalifyDrainProjection, requalifyHoldKey, type E2EApplicationSelectionRecord, type E2ERegisteredRuntime, type RequalifyDrainRead } from "@rovara-code/contracts";
 import type { SessionManager } from "../aws/sessions.js";
 import { isConditional } from "../aws/broker-shared.js";
 import { ApplicationDispatchRefusal, applicationSelectionStillCurrent } from "./application-dispatch-check.js";

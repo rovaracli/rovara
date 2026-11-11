@@ -10,7 +10,8 @@
 //   NOT changed: who may decide anything. decide-web stays one release as a redirect to the card (old links in Slack and email); its removal is for later.
 import { createHash } from "node:crypto";
 import { QueryCommand } from "@aws-sdk/lib-dynamodb";
-import { agentXError, openSpendRequestsKey } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
+import { openSpendRequestsKey } from "@agentx/cloud-contracts";
 import type { DecideKind, DecideKinds, DecideTarget, ConfirmView } from "../../developer/decide-kinds.js";
 import { kindPrefixOf } from "../../developer/decide-kinds.js";
 import { getAnyApproval, listApprovalsFor, type AnyApprovalRecord, type ApprovalDependencies } from "../../agents/approvals.js";

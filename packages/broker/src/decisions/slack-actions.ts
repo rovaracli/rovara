@@ -2,11 +2,11 @@
 // friction (evidence opened first for a medium card, no approve for a high one, the caller's own authority) applies to Slack exactly as to the web. A refusal is said to the person alone
 // (ephemeral), in fixed words; nothing from the refusal's own text is shown.
 import { createHash } from "node:crypto";
-import { DecisionCardIdSchema, DecisionDigestSchema } from "@agentx/contracts";
+import { DecisionCardIdSchema, DecisionDigestSchema } from "@rovara-code/contracts";
 import { DECISION_SLACK_ACTION_IDS, DECISION_SLACK_APPROVE_ACTION, DECISION_SLACK_OPEN_ACTION, DECISION_SLACK_REJECT_ACTION } from "./slack-card.js";
 import { decisionCardPath } from "./project.js";
 import type { StatusReply } from "../aws/status-reply.js";
-import { slackRunLimitRefusal } from "../aws/slack-refusals.js";
+import { slackApprovalPlaceRefusal, slackRiskPlaceRefusal, slackRunLimitRefusal } from "../aws/slack-refusals.js";
 import type { DecisionCaller, DecisionRequest } from "./routes.js";
 
 /** A stable v4-shaped request id from the card and the press's own timestamp, so Slack's retry of one press is one decision. */
@@ -23,14 +23,16 @@ export function pressToRequest(press: { actionId: string; value: string; actionT
   // An approve of a coding plan that raises the run limit carries the amount its message showed, as a third part: a plain amount, written the way `String` writes a number.
   const acknowledged = rest.length === 1 && press.actionId === DECISION_SLACK_APPROVE_ACTION ? Number(rest[0]) : undefined;
   if (!id.success || !digest.success || rest.length > 1 || (rest.length === 1 && (acknowledged === undefined || !Number.isFinite(acknowledged) || acknowledged < 0 || acknowledged > 100_000 || String(acknowledged) !== rest[0]))) return undefined;
-  if (press.actionId === DECISION_SLACK_APPROVE_ACTION) return { method: "POST", pathname: `${decisionCardPath(id.data)}/approve`, searchParams: new URLSearchParams(), body: { requestId: pressRequestId(id.data, press.actionTs), shownDigest: digest.data, ...(acknowledged === undefined ? {} : { acknowledgedRunLimitUsd: acknowledged }) } };
-  if (press.actionId === DECISION_SLACK_REJECT_ACTION) return { method: "POST", pathname: `${decisionCardPath(id.data)}/reject`, searchParams: new URLSearchParams(), body: { requestId: pressRequestId(id.data, press.actionTs), reason: "not_now" } };
+  if (press.actionId === DECISION_SLACK_APPROVE_ACTION) return { surface: "chat", method: "POST", pathname: `${decisionCardPath(id.data)}/approve`, searchParams: new URLSearchParams(), body: { requestId: pressRequestId(id.data, press.actionTs), shownDigest: digest.data, ...(acknowledged === undefined ? {} : { acknowledgedRunLimitUsd: acknowledged }) } };
+  // "Not now" in a chat is a dismissal, never a rejection (approval place, A-49): it goes to the dismiss route, which decides nothing. (The button keeps its old action id so messages already posted still work.)
+  if (press.actionId === DECISION_SLACK_REJECT_ACTION) return { surface: "chat", method: "POST", pathname: `${decisionCardPath(id.data)}/dismiss`, searchParams: new URLSearchParams(), body: { requestId: pressRequestId(id.data, press.actionTs), shownDigest: digest.data } };
   return undefined;
 }
 
 export const DECISION_SLACK_TEXT = Object.freeze({
   approved: "Approved.",
   rejected: "Noted. Not now.",
+  dismissed: "Noted. It stays waiting for you.",
   openFirst: "Open the evidence on the web first, then approve it there.",
   changed: "This changed since the message was posted. Open it on the web to see the current version.",
   openToDecide: "This one is decided on its card in Rovara. Use Open.",
@@ -47,7 +49,8 @@ export function refusalText(error: unknown): string {
   const message = typeof error === "object" && error !== null && "message" in error ? String((error).message) : "";
   if (code === "CHANGE_STALE") return message.includes("Open the evidence first") ? DECISION_SLACK_TEXT.openFirst : DECISION_SLACK_TEXT.changed;
   if (code === "NOT_FOUND") return DECISION_SLACK_TEXT.gone;
-  if (code === "FORBIDDEN") return DECISION_SLACK_TEXT.forbidden;
+  // Approval place (U4): a refusal that tells the person the way forward (sign in again, link, the card) is said as it is: fixed sentences and our own address, never a person's text.
+  if (code === "FORBIDDEN") return slackApprovalPlaceRefusal(message) ?? slackRiskPlaceRefusal(message) ?? DECISION_SLACK_TEXT.forbidden;
   // QA6-12b: a plan approval refused over its run limit (no amount, or one that is not what approving sets now) is said with the amounts: they are numbers in fixed sentences, never a person's or a model's words.
   if (code === "CONFIG_INVALID") return slackRunLimitRefusal(message) ?? DECISION_SLACK_TEXT.failed;
   return DECISION_SLACK_TEXT.failed;
@@ -76,6 +79,7 @@ export function pressAnswerText(press: SlackPress, reply: StatusReply | undefine
   if (reply.statusCode === 202 && body.outcome === "needs_confirmation" && typeof body.confirmUrl === "string") return `${DECISION_SLACK_TEXT.notDecided} ${body.confirmUrl}`;
   if (reply.statusCode === 200 && body.outcome === "approved") return DECISION_SLACK_TEXT.approved;
   if (reply.statusCode === 200 && body.outcome === "rejected") return DECISION_SLACK_TEXT.rejected;
+  if (reply.statusCode === 200 && body.outcome === "dismissed") return DECISION_SLACK_TEXT.dismissed;
   return DECISION_SLACK_TEXT.failed;
 }
 

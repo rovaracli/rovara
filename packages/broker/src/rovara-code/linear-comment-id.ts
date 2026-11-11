@@ -1,7 +1,7 @@
 // The id Rovara gives a Linear comment it is about to post (lane ask-linear). Pure and small on purpose: the Ask code names the id BEFORE the post is made (so a crash cannot leave a comment the Ask
 // does not know of), and must not load the Linear write client to do it.
 import { createHash } from "node:crypto";
-import type { OrgId } from "@agentx/contracts";
+import type { OrgId } from "@rovara-code/contracts";
 
 /** The id Linear is given for a comment: a version 4 UUID made from the org and the caller's stable key, so the same post always has the same id, in every process. Linear accepts the id the client chooses. */
 export function linearCommentIdFor(orgId: OrgId, commentKey: string): string {

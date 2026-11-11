@@ -1,6 +1,6 @@
 // C55 (staging 0.4.11): whatever Rovara writes on GitHub (a pull request's footer, a connector's footer) names a person by their display name, or by their linked GitHub login when
 // the display name is an email address (the sign-in provider falls back to the address when it has no name for someone), and never by an email address.
-import { withoutEmailAddresses } from "@agentx/contracts";
+import { withoutEmailAddresses } from "@rovara-code/contracts";
 import { isPlaceholderDisplayName } from "./person-name.js";
 
 /** What GitHub issues as a login: letters, digits and single hyphens, at most 39 characters. */

@@ -6,7 +6,7 @@ import { realpathSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { BUNDLE_SIGNATURE_FILE } from "@agentx/contracts";
+import { BUNDLE_SIGNATURE_FILE } from "@agentx/cloud-contracts";
 import { kmsBundleSigner, signManifestBytes, type BundleSigner } from "./bundle-signer.js";
 import { verifyPreparedBundle } from "./bundle-verify.js";
 

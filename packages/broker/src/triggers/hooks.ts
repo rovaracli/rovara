@@ -3,28 +3,7 @@
 // `HookSecretStore` (H9), in the org's own tagged secret, and appears nowhere else: not in the record, not in a request item, not in a log, and not in a later read.
 import { createHash, randomBytes } from "node:crypto";
 import { DeleteCommand, GetCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  HOOK_AUTHS,
-  HOOK_ROTATION_OVERLAP_HOURS,
-  HOOK_STATUSES,
-  HOOK_TENANT_SCHEMAS,
-  CreateHookBodySchema,
-  HookIdSchema,
-  HookSecretSchema,
-  HookSourceSchema,
-  OrgIdSchema,
-  RotateHookBodySchema,
-  agentXError,
-  canonicalJson,
-  hookDirectoryKey,
-  hookKey,
-  hookLookupKey,
-  type HookRecord,
-  type HookSecret,
-  type HookSource,
-  type OrgId,
-  type OrgKey,
-} from "@agentx/contracts";
+import { HOOK_AUTHS, HOOK_ROTATION_OVERLAP_HOURS, HOOK_STATUSES, HOOK_TENANT_SCHEMAS, CreateHookBodySchema, HookIdSchema, HookSecretSchema, HookSourceSchema, OrgIdSchema, RotateHookBodySchema, agentXError, canonicalJson, hookDirectoryKey, hookKey, hookLookupKey, type HookRecord, type HookSecret, type HookSource, type OrgId, type OrgKey } from "@rovara-code/contracts";
 import type { AgentCaller } from "../agents/access.js";
 import { shownText } from "../agents/approvals.js";
 import { jsonBody, parseBody, type AgentRouteDependencies } from "../agents/routes.js";

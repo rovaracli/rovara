@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
-import { formatUsdMicrodollars, taskStopEditKind, TaskStopCompanyPolicySchema, TaskStopProjectPolicySchema, type TaskStopEditablePolicy } from "@agentx/contracts/web";
+import { formatUsdMicrodollars, taskStopEditKind, TaskStopCompanyPolicySchema, TaskStopProjectPolicySchema, type TaskStopEditablePolicy } from "@agentx/cloud-contracts/web";
 import { useAppHost } from "../../host.js";
 import { createTaskStopEditingApi } from "../../api/task-stop-editing.js";
 import { Button } from "../../design/Button.js";

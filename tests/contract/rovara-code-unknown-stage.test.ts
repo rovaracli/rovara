@@ -3,14 +3,9 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { describe, expect, expectTypeOf, it } from "vitest";
-import {
-  DeveloperTaskResponseSchema,
-  knownTaskView,
-  type DeveloperTaskClientView,
-  type DeveloperTaskView,
-  type WorkflowStage,
-} from "../../packages/contracts/src/index.js";
-import { createWorkflowSnapshot } from "../../packages/contracts/src/task-workflow-node.js";
+import { DeveloperTaskResponseSchema, knownTaskView, type DeveloperTaskClientView, type DeveloperTaskView } from "@agentx/cloud-contracts";
+import { type WorkflowStage } from "@rovara-code/contracts";
+import { createWorkflowSnapshot } from "../../packages/cloud-contracts/src/task-workflow-node.js";
 import { createAgentXMcpServer, type ControlPlaneClient, type ToolContext } from "../../packages/mcp/src/index.js";
 import { routeAgentRequest } from "../../packages/broker/src/agents/routes.js";
 

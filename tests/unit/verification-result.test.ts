@@ -1,11 +1,7 @@
 // Setup and test health SH5: the broker's result classifier. Every row of design 4.1 and 4.2; "Code failed" wins; the worker's own words are never trusted.
 import { describe, expect, it } from "vitest";
-import {
-  AUTO_FIX_CODES, AUTO_FIX_ENVIRONMENT_CODES, AUTO_FIX_PERSON_GROUP_CODES, AUTO_FIX_TRANSIENT_GROUP_CODES, E2E_APPLICATION_SEND_BACK_CODES, EvidencePackSchema, TestingViewSchema, WORKFLOW_AGENTX_ACTOR_ID,
-  WORKFLOW_APPLICATION_EVIDENCE_INCOMPLETE_PREFIX, WORKFLOW_APPLICATION_ROUND_REFUSED_PREFIX, WORKFLOW_APPLICATION_RUNTIME_RENEWED_PREFIX, WORKFLOW_APPLICATION_SELECTION_CHANGED_PREFIX, WORKFLOW_HISTORY_REWRITTEN_MESSAGE, WORKFLOW_APPLICATION_RUNTIME_UNUSABLE_PREFIX,
-  WORKFLOW_BLOCK_REASONS, WorkflowDecisionRecordSchema, WorkflowSnapshotSchema, createCandidateManifest, createWorkflowSnapshot, wholeTaskSpendUsd,
-  type AutoFixBudget, type AutoFixFacts, type WorkflowDecision, type WorkflowSnapshot,
-} from "@agentx/contracts";
+import { AUTO_FIX_CODES, AUTO_FIX_ENVIRONMENT_CODES, WORKFLOW_BLOCK_REASONS, WorkflowSnapshotSchema, createWorkflowSnapshot, type AutoFixBudget, type AutoFixFacts, type WorkflowSnapshot } from "@agentx/cloud-contracts";
+import { AUTO_FIX_PERSON_GROUP_CODES, AUTO_FIX_TRANSIENT_GROUP_CODES, E2E_APPLICATION_SEND_BACK_CODES, EvidencePackSchema, TestingViewSchema, WORKFLOW_AGENTX_ACTOR_ID, WORKFLOW_APPLICATION_EVIDENCE_INCOMPLETE_PREFIX, WORKFLOW_APPLICATION_ROUND_REFUSED_PREFIX, WORKFLOW_APPLICATION_RUNTIME_RENEWED_PREFIX, WORKFLOW_APPLICATION_SELECTION_CHANGED_PREFIX, WORKFLOW_HISTORY_REWRITTEN_MESSAGE, WORKFLOW_APPLICATION_RUNTIME_UNUSABLE_PREFIX, WorkflowDecisionRecordSchema, createCandidateManifest, wholeTaskSpendUsd, type WorkflowDecision } from "@rovara-code/contracts";
 import { RESULT_RULES, classifyTestingResult, hasUnconfirmedFailingTest, newFailingCheckIds, readableFailingTests, workflowCheckKind, type ResultInput, type ResultOutcome } from "../../packages/broker/src/verification/result.js";
 
 const taskId = "8b579b4b-eaa7-4bf2-87bc-6da86b97c9e6";

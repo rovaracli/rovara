@@ -10,7 +10,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai";
-import { SLACK_OIDC_ISSUER, SlackPageCommentMessageSchema, slackThreadSubject, type ChannelMembersRequest, type ChannelMembersResponse, type PlanDocument, type TaskPeopleDisplayReadRequest, type TaskPersonProofRequest } from "@agentx/contracts";
+import { SLACK_OIDC_ISSUER, SlackPageCommentMessageSchema, slackThreadSubject, type ChannelMembersRequest, type ChannelMembersResponse, type PlanDocument, type TaskPeopleDisplayReadRequest, type TaskPersonProofRequest } from "@rovara-code/contracts";
 import { createWorkflowE2E, SLACK_MAYA, type WorkflowE2E } from "../../support/workflow-e2e.js";
 import { MAYA, OMAR, grantProject, type Developer } from "../../support/developer-task-broker.js";
 import { SLACK_CHANNEL, call, orchestratorPrincipal } from "../../support/slack-broker.js";

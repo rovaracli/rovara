@@ -1,7 +1,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { networkInterfaces } from "node:os";
 import { describe, expect, it } from "vitest";
-import { RuntimeInstallationProposalSchema, runtimeInstallChallengeDigest, runtimeInstallationProposalSha256, type RuntimeInstallChallenge } from "../../packages/contracts/src/runtime-installation.js";
+import { RuntimeInstallationProposalSchema, runtimeInstallChallengeDigest, runtimeInstallationProposalSha256, type RuntimeInstallChallenge } from "@rovara-code/contracts";
 import { issueRuntimeInstallChallenge, registerRuntimeInstallation, type RuntimeInstallationDependencies } from "../../packages/broker/src/aws/runtime-installation.js";
 import type { AuthenticatedIdentity } from "../../packages/broker/src/auth.js";
 import { proposalFor } from "../support/p0-runtime-proposal.js";

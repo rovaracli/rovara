@@ -2,7 +2,8 @@
 // followers again (a person who can no longer see it is dropped and their follow deleted), writes each person's feed items, and only then publishes. Nothing here
 // throws into the refresh: a notice is never a reason for a refresh to fail (`notifySessionChange` logs what escapes).
 import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
-import { SESSION_FOLLOWERS_MAX, agentSessionKey, orgMemberKey, projectMemberKey, type AgentSessionRecord } from "@agentx/contracts";
+import { SESSION_FOLLOWERS_MAX, agentSessionKey, projectMemberKey, type AgentSessionRecord } from "@rovara-code/contracts";
+import { orgMemberKey } from "@agentx/cloud-contracts";
 import { grantRoleOf } from "../developer/project-roles.js";
 import { NO_SLACK_PROJECT_MEMBERS, readSessionShares, readTaskPeople, effectiveOwnerOf, followerStanding, type SessionAccessDependencies } from "../agent-sessions/access.js";
 import { registerSessionNoticeSink, type NoticeSinkDependencies, type SessionChange, type SessionNoticeSink } from "../agent-sessions/notice-sink.js";

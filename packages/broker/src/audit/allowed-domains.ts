@@ -1,4 +1,4 @@
-import { auditEventId, type AuditEventInput } from "@agentx/contracts";
+import { auditEventId, type AuditEventInput } from "@agentx/cloud-contracts";
 import type { AuditBuilderBase } from "./events.js";
 export type AllowedDomainAuditAction = "proposed" | "rejected" | "cancelled" | "changed";
 export type AllowedDomainChangeMode = "initial" | "direct_narrowing" | "second_person" | "sole_owner_exception";

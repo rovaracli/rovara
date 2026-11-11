@@ -1,7 +1,7 @@
 // Review N4: where the controller keeps the day it first saw a bundle that no entry references. One small item per bundle in the probe-slot partition (`ORG#<org>#MCPSLOT`, `ORPHAN#<sha256>`),
 // which the controller's role may already read, write and delete. The registry's partition is never written.
 import { DeleteCommand, GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
-import { orgScoped, type OrgId } from "@agentx/contracts";
+import { orgScoped, type OrgId } from "@rovara-code/contracts";
 import type { BundleMarks } from "@agentx/gateway";
 
 type DocumentClient = { send(command: unknown): Promise<unknown> };

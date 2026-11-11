@@ -1,38 +1,7 @@
 // tests/contract/admin-change-contracts.test.ts
 // Spec 025 phase 25e, Task 1: the shapes of a change request, its pending record and its audit record.
 import { describe, expect, it } from "vitest";
-import {
-  ADMIN_API_VERSION,
-  ADMIN_CHANGE_REFUSED_ATTEMPTS_MAX,
-  ADMIN_CHANGE_RETENTION_DAYS,
-  ADMIN_CHANGE_TTL_MS,
-  AdminChangeAuditRecordSchema,
-  AdminChangeAuditRecordWireSchema,
-  AdminChangeClientSchema,
-  AdminChangeInputSchema,
-  AdminChangeKindSchema,
-  AdminChangePendingRecordSchema,
-  AdminChangeRequestRecordSchema,
-  AdminChangeResponseSchema,
-  AdminChangeResponseWireSchema,
-  AdminChangeViewSchema,
-  AdminChangeViewWireSchema,
-  AdminChangesResponseSchema,
-  AdminChangesResponseWireSchema,
-  AgentXConfigurationConfirmSchema,
-  ApplyAdminChangeRequestSchema,
-  DeclineAdminChangeRequestSchema,
-  INDEX_EXPIRY_ATTRIBUTE,
-  ProposeAdminChangeRequestSchema,
-  adminChangeAuditKeys,
-  adminChangeItemExpiresAt,
-  adminChangeKey,
-  adminChangeRequestKey,
-  agentXError,
-  isAdminChangePressEvent,
-  outcomeOfStatus,
-  type PendingChange,
-} from "../../packages/contracts/src/index.js";
+import { ADMIN_API_VERSION, ADMIN_CHANGE_REFUSED_ATTEMPTS_MAX, ADMIN_CHANGE_RETENTION_DAYS, ADMIN_CHANGE_TTL_MS, AdminChangeAuditRecordSchema, AdminChangeAuditRecordWireSchema, AdminChangeClientSchema, AdminChangeInputSchema, AdminChangeKindSchema, AdminChangePendingRecordSchema, AdminChangeRequestRecordSchema, AdminChangeResponseSchema, AdminChangeResponseWireSchema, AdminChangeViewSchema, AdminChangeViewWireSchema, AdminChangesResponseSchema, AdminChangesResponseWireSchema, AgentXConfigurationConfirmSchema, ApplyAdminChangeRequestSchema, DeclineAdminChangeRequestSchema, INDEX_EXPIRY_ATTRIBUTE, ProposeAdminChangeRequestSchema, adminChangeAuditKeys, adminChangeItemExpiresAt, adminChangeKey, adminChangeRequestKey, agentXError, isAdminChangePressEvent, outcomeOfStatus, type PendingChange } from "@rovara-code/contracts";
 
 const CHANGE = "55555555-5555-4555-8555-555555555555";
 const REQUEST = "66666666-6666-4666-8666-666666666666";

@@ -1,15 +1,5 @@
-import {
-  AgentXNameSchema,
-  SlackChannelBindingSchema,
-  developerTaskPolicy,
-  orgMemberKey,
-  projectMemberKey,
-  projectRevisionKey,
-  slackBindingKey,
-  type DeveloperTaskPolicy,
-  type OrgId,
-  type SlackChannelBinding,
-} from "@agentx/contracts";
+import { AgentXNameSchema, SlackChannelBindingSchema, developerTaskPolicy, projectMemberKey, projectRevisionKey, slackBindingKey, type DeveloperTaskPolicy, type OrgId, type SlackChannelBinding } from "@rovara-code/contracts";
+import { orgMemberKey } from "@agentx/cloud-contracts";
 import type { TaskAuthorityAdmission } from "../aws/task-authority-admission.js";
 
 export interface ProjectAuthorityRevision {
@@ -165,7 +155,9 @@ export async function readProjectAuthority(
     input.admission.assertOpen();
     if (!memberships.complete) return { kind: "unavailable" };
 
-    const bindings = await reader.bindings(input.orgId, input.teamId, input.admission, input.admission.admitStateRead());
+    // An install with no Slack (an empty team id) has no channel bindings to read, so no channel gives anyone access there: only a grant or an org owner or admin role does.
+    const bindings = input.teamId === "" ? { items: [] as readonly ProjectChannelBinding[], complete: true }
+      : await reader.bindings(input.orgId, input.teamId, input.admission, input.admission.admitStateRead());
     input.admission.assertOpen();
     if (!bindings.complete) return { kind: "unavailable" };
 

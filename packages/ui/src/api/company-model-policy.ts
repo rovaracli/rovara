@@ -4,7 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useAppHost, type AppHost } from "../host.js";
 import { createApiClient, type SoleOwnerConfirmation } from "./client.js";
 import { ApiError } from "./errors.js";
-import { ModelSelectionPolicyAppliedReaderSchema } from "@agentx/contracts/web";
+import { ModelSelectionPolicyAppliedReaderSchema } from "@agentx/cloud-contracts/web";
 import { CompanyPolicyReader, readCompanyPreview, type CompanyOverrides, type CompanyPolicy, type CompanyPreview } from "./stage-models.js";
 
 const unreadable = () => new ApiError(502, "INVALID_RESPONSE", "Rovara returned an unreadable response. Reload this page.");

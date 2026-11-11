@@ -1,5 +1,6 @@
 import {expect,it} from "vitest";
-import {developerOrgKey,orgMemberKey,orgMetaKey,type OrgId} from "@agentx/contracts";
+import { developerOrgKey, orgMemberKey, orgMetaKey } from "@agentx/cloud-contracts";
+import { type OrgId } from "@rovara-code/contracts";
 import {bedrockClaudeModelIds} from "@agentx/model-runtime/catalog";
 import {FakeDynamoDb} from "../support/fake-dynamodb.js";
 import {capturingAuditDeps} from "../support/audit-capture.js";

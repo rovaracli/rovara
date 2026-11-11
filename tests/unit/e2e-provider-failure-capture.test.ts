@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { E2EModelRouteDefinition } from "../../packages/contracts/src/e2e-model-channel.js";
+import type { E2EModelRouteDefinition } from "@rovara-code/contracts";
 import { createGovernedE2EModelRoute, createInMemoryE2EDayBudget, type E2EInvoke } from "../../packages/model-runtime/src/e2e-route.js";
 import { createE2EProviderInvoke } from "../../packages/model-runtime/src/e2e-provider-invoke.js";
 import { createE2EProviderInvokeForTesting } from "../../packages/model-runtime/src/e2e-provider-invoke-testing.js";

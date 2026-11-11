@@ -2,9 +2,8 @@
 // broker's own records faked: the refusals are pinned as hard as the grants, and each test names the wiring-free rule it proves (reason on an open blocker, requester and fresh sign-in on high, evidence first
 // on medium, who may raise the cap, run unpriced or skip, the digest the person saw).
 import { describe, expect, it } from "vitest";
-import {
-  DESIGN_REVIEW_DEFAULT_SETTING, DecisionApproveBodySchema, DecisionCardSchema, editionPolicy, type DecisionCard,
-} from "@agentx/contracts";
+import { DESIGN_REVIEW_DEFAULT_SETTING, DecisionApproveBodySchema, DecisionCardSchema, type DecisionCard } from "@rovara-code/contracts";
+import { editionPolicy } from "@agentx/cloud-contracts";
 import { cardOfItem, projectDecisionCards, type DecisionItem } from "../../packages/broker/src/decisions/project.js";
 import { inMemoryDecisionStore } from "../../packages/broker/src/decisions/store.js";
 import type { PerformOutcome } from "../../packages/broker/src/decisions/routes.js";

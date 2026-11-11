@@ -4,7 +4,7 @@
 // A PAUSED record (TEAM_RECORD_ACTIVE exactly "0") learns nothing: every message is answered (dropped, one fixed log line) rather than held, and a later switch-on is served by the nightly re-reflection and the next
 // task ends. Any other reason the dependencies cannot be built (a missing environment value, no table, no model path, no ledger) is a MISCONFIGURATION (re-check R5): the handler throws, so the Errors alarm fires and
 // the messages stay in the queue (then its dead-letter queue, which alarms too), never a quiet drop.
-import { LESSONS_WORKER_DEADLINE_SECONDS, OrgIdSchema } from "@agentx/contracts";
+import { LESSONS_WORKER_DEADLINE_SECONDS, OrgIdSchema } from "@rovara-code/contracts";
 import { keysOutcome } from "../../spend/ledger.js";
 import { dynamoReflectClaims } from "../../lessons/reflect-claims.js";
 import type { ReflectVisibility } from "../../lessons/reflect-queue.js";

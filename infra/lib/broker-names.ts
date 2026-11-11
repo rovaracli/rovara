@@ -1,6 +1,6 @@
 import { CfnParameter, Fn, Lazy, Stack, Token } from "aws-cdk-lib";
 import type { aws_lambda as lambda } from "aws-cdk-lib";
-import { BROKER_NAMES, BROKER_NAMES_VARIABLE, BROKER_SETTINGS, BROKER_SETTINGS_VARIABLE, BROKER_SETTING_VALUE, type BrokerNameKey, type BrokerSettingKey } from "@agentx/contracts";
+import { BROKER_NAMES, BROKER_NAMES_VARIABLE, BROKER_SETTINGS, BROKER_SETTINGS_VARIABLE, BROKER_SETTING_VALUE, type BrokerNameKey, type BrokerSettingKey } from "@agentx/cloud-contracts";
 
 /** A literal name: what the broker accepts as a name (broker-environment.ts), so a literal with a separator is refused when it is added. */
 const LITERAL_NAME = /^[A-Za-z0-9._-]{1,255}$/;

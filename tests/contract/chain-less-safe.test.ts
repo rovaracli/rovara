@@ -1,7 +1,7 @@
 // Plan 4 Task 4: what makes a new version of a chain less safe than the one that runs (human decision N6), and the gates every path to a step passes.
 import { describe, expect, it } from "vitest";
 import { chainLessSafeChanges, gatesOnEveryPath, type ChainLessSafeLookups } from "../../packages/broker/src/chains/less-safe.js";
-import { ChainDefinitionSchema, PinnedChainDefinitionSchema, type ChainDefinitionInput, type PinnedChainDefinition } from "../../packages/contracts/src/chains.js";
+import { ChainDefinitionSchema, PinnedChainDefinitionSchema, type ChainDefinitionInput, type PinnedChainDefinition } from "@rovara-code/contracts";
 import { INVESTIGATE_THEN_FIX } from "../support/chain-examples.js";
 
 /** The example with every agent pinned to version 1. */

@@ -1,12 +1,10 @@
 // Lessons in production, lane 1 (fix round 1): the learning pipeline's model runs on the COMPANY's own provider and the company pays; there is no Rovara-paid route. Its money goes through the product's ordinary key
 // lifecycle: the key's cap is RESERVED in the spend ledger (org, project and the Public learning month) before the call, the key is BLOCKED after it, and the sweep settles the proxy's own figure once the proxy
 // has flushed it. These tests drive the model on a fake table, a fake proxy that reports spend late, and the real mint, ledger and sweep.
-import { agentXError } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  DEFAULT_AGENT_GUARDRAILS, FINALIZE_DELAY_MS, LESSONS_BROKER_MODEL_WAIT_SECONDS, LESSONS_REFLECT_VISIBILITY_SECONDS, LESSONS_WORKER_DEADLINE_SECONDS, LESSONS_WORKER_TIMEOUT_SECONDS, KEY_EXPIRY_GRACE_MS, ModelSourceSchema, agentGuardrailsKey, editionPolicy, modelKeyKey, modelCounter, originCounter, scopeKey, sourceAlias, sourceCounter, spendCounterKey, spendOriginKind,
-  egressDomainsKey, type Edition, type ModelIdentifier, type ModelSource,
-} from "../../packages/contracts/src/index.js";
+import { DEFAULT_AGENT_GUARDRAILS, LESSONS_BROKER_MODEL_WAIT_SECONDS, LESSONS_REFLECT_VISIBILITY_SECONDS, LESSONS_WORKER_DEADLINE_SECONDS, LESSONS_WORKER_TIMEOUT_SECONDS, ModelSourceSchema, agentGuardrailsKey, sourceAlias, egressDomainsKey, type Edition, type ModelIdentifier, type ModelSource } from "@rovara-code/contracts";
+import { FINALIZE_DELAY_MS, KEY_EXPIRY_GRACE_MS, editionPolicy, modelKeyKey, modelCounter, originCounter, scopeKey, sourceCounter, spendCounterKey, spendOriginKind } from "@agentx/cloud-contracts";
 import { listPricesPerMillion } from "@agentx/model-runtime/catalog";
 import { endpointQualificationDigest } from "../../packages/broker/src/model-sources/endpoint-digest.js";
 import { learningReasoningEffort, learningEffortOfMap, reasonsByDefault, unfitForLearning } from "../../packages/broker/src/model-sources/diagnosis-provider.js";

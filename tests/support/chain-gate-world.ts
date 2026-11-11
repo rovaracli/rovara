@@ -2,7 +2,7 @@
 // real decide page (`routeDecidePage` over `approvalDecideKind`), decide tickets and sessions as the sign-in function writes them, and the approval routes. Nothing here
 // is Plan 4's code: the tests start runs, end tasks and decide on the page, and read the records through `world.run`, `world.attempts`, `world.events` and `world.approval`.
 import { createHash, randomUUID } from "node:crypto";
-import { agentXError } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
 import type { AgentCaller } from "../../packages/broker/src/agents/access.js";
 import { approvalDecideKind } from "../../packages/broker/src/agents/approval-decide-kind.js";
 import { routeApprovalRequest } from "../../packages/broker/src/agents/approval-routes.js";
@@ -12,12 +12,12 @@ import type { DecideKinds } from "../../packages/broker/src/developer/decide-kin
 import { DECIDE_COOKIE, DecideStore, csrfTokenFor, mintConfirmUrl, requireDecideSession, type DecideRequestContext } from "../../packages/broker/src/developer/decide-session.js";
 import { registerChainRunner } from "../../packages/broker/src/chains/index.js";
 import type { ChainRunRecord, ChainRunnerDependencies, StepAttemptRecord } from "../../packages/broker/src/chains/runner.js";
-import type { ChainDefinitionInput } from "../../packages/contracts/src/chains.js";
+import type { ChainDefinitionInput } from "@rovara-code/contracts";
 import { capturingAuditDeps, type AuditCapture } from "./audit-capture.js";
 import { INVESTIGATE_THEN_FIX } from "./chain-examples.js";
 import { ARJUN, CARL, DANA, MAX, NAMES, ORG_A, ORG_B, PRIYA, STRANGER, VIV, callerOf, setupWorld, type ChainWorld, type RunEventRow, type WorldOptions } from "./chain-run-world.js";
 import type { ChainRecord } from "../../packages/broker/src/chains/store.js";
-import type { OrgId } from "../../packages/contracts/src/org.js";
+import type { OrgId } from "@rovara-code/contracts";
 
 export { ARJUN, CARL, DANA, MAX, NAMES, ORG_A, ORG_B, PRIYA, STRANGER, VIV, callerOf };
 export const CELL = "https://cell.example.com";

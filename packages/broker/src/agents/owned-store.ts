@@ -3,20 +3,8 @@
 // `ChainStore` extend it, so the share, event and version code is the same code. Every multi-item write is one transaction.
 import { randomBytes } from "node:crypto";
 import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  agentKey,
-  agentVersionSk,
-  chainKey,
-  chainVersionSk,
-  principalChainSharesKey,
-  principalKey,
-  principalSharesKey,
-  type AgentPrincipal,
-  type AgentXErrorCode,
-  type AuditEventInput,
-  type OrgId,
-  type OrgKey,
-} from "@agentx/contracts";
+import { agentKey, agentVersionSk, chainKey, chainVersionSk, principalChainSharesKey, principalKey, principalSharesKey, type AgentPrincipal, type AgentXErrorCode, type OrgId, type OrgKey } from "@rovara-code/contracts";
+import { type AuditEventInput } from "@agentx/cloud-contracts";
 import { auditProcessRolledBack, auditRolledBack } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, tryAuditEvents, type AuditRuntime } from "../audit/outbox.js";

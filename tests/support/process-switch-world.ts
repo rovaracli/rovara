@@ -1,7 +1,8 @@
 // Shared by the follow-up F2 tests of the switch to the built-in and the archive of a process layer (process-switch-*.test.ts, process-archive-atomic.test.ts).
 import { randomUUID } from "node:crypto";
 import { expect } from "vitest";
-import { agentKey, agentXError, projectPlaybookKey, type AgentId, type OrgRole } from "../../packages/contracts/src/index.js";
+import { agentKey, agentXError, projectPlaybookKey, type AgentId } from "@rovara-code/contracts";
+import { type OrgRole } from "@agentx/cloud-contracts";
 import { publishDraft } from "../../packages/broker/src/agents/changes.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
 import { postProjectProcess } from "../../packages/broker/src/playbook/process-layer.js";

@@ -1,6 +1,6 @@
 // Decisions D4: Slack cards come from the same card view and follow its friction; a press goes through the same server routes as the web.
 import { describe, expect, it, vi } from "vitest";
-import type { DecisionCard } from "@agentx/contracts";
+import type { DecisionCard } from "@rovara-code/contracts";
 import { cardOfItem, projectDecisionCards, type DecisionItem, type ItemBase } from "../../packages/broker/src/decisions/project.js";
 import { slackCardMessage, DECISION_SLACK_APPROVE_ACTION, DECISION_SLACK_OPEN_ACTION, DECISION_SLACK_REJECT_ACTION } from "../../packages/broker/src/decisions/slack-card.js";
 import { DECISION_SLACK_TEXT, decisionSlackHandler, pressRequestId, pressToRequest, refusalText, resolveSlackDecisionCaller, type SlackPersonLookups } from "../../packages/broker/src/decisions/slack-actions.js";
@@ -86,7 +86,11 @@ describe("a press becomes the same request the web sends", () => {
     expect((approve?.body as { requestId: string }).requestId).toBe(pressRequestId("approve_plan:plan1", "1700000000.0001"));
     expect((approve?.body as { requestId: string }).requestId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-8[0-9a-f]{3}-[0-9a-f]{12}$/u);
     expect(pressRequestId("approve_plan:plan1", "1700000000.0002")).not.toBe(pressRequestId("approve_plan:plan1", "1700000000.0001"));
-    expect(pressToRequest({ actionId: DECISION_SLACK_REJECT_ACTION, value: `approve_plan:plan1|${DIGEST}`, actionTs: "1" })?.body).toMatchObject({ reason: "not_now" });
+    // Approval place (A-49): "Not now" in a chat is a dismissal, never a rejection: it goes to the dismiss route with the digest the message showed, and carries the chat surface the route needs.
+    const dismiss = pressToRequest({ actionId: DECISION_SLACK_REJECT_ACTION, value: `approve_plan:plan1|${DIGEST}`, actionTs: "1" });
+    expect(dismiss).toMatchObject({ surface: "chat", method: "POST", pathname: "/v1/app/decisions/approve_plan/plan1/dismiss", body: { shownDigest: DIGEST } });
+    expect(JSON.stringify(dismiss)).not.toContain("reject");
+    expect(approve?.surface).toBe("chat");
   });
   it("refuses a value that is not a card id and a link button", () => {
     expect(pressToRequest({ actionId: DECISION_SLACK_APPROVE_ACTION, value: `../../x|${DIGEST}`, actionTs: "1" })).toBeUndefined();
@@ -202,16 +206,20 @@ describe("QA6-12b: a Slack plan card that raises the run limit shows it and its 
     expect(elements[0]).toMatchObject({ action_id: DECISION_SLACK_APPROVE_ACTION, value: `approve_plan:plan1|${DIGEST}|12` });
     expect(elements[1]?.["value"]).toBe(`approve_plan:plan1|${DIGEST}`);
   });
-  it("p1-slack-decide-card: a medium or high plan card that raises the limit has NO Approve button; it links to the card and keeps the raise line as information", () => {
+  it("p1-slack-decide-card (U4 replaces 'medium has no Approve'): a MEDIUM plan card that raises the limit has Approve and carries the amount; a HIGH one has none, links to the card and keeps the raise line as information", () => {
     for (const untestedClaims of [1, 2]) {
       const risky = { ...card({ ...lowItem, untestedClaims, cost: { lowUsd: 1, highUsd: untestedClaims === 1 ? 3 : 500, minutes: { low: 1, high: 2 } } }), runLimit: { currentUsd: 2, proposedUsd: 12 } } as DecisionCard;
       expect(["medium", "high"]).toContain(risky.risk);
       const message = slackCardMessage(risky, { cardUrl: URL_, digest: DIGEST });
       const elements = elementsOf(message);
-      expect(elements.some((element) => element["action_id"] === DECISION_SLACK_APPROVE_ACTION)).toBe(false);
-      expect(elements.find((element) => element["action_id"] === DECISION_SLACK_OPEN_ACTION)).toMatchObject({ url: URL_ });
       expect(JSON.stringify(message.blocks)).toContain("This raises the run limit from $2 to $12.");
-      expect(JSON.stringify(message.blocks)).not.toContain("|12\"");
+      expect(elements.find((element) => element["action_id"] === DECISION_SLACK_OPEN_ACTION)).toMatchObject({ url: URL_ });
+      if (risky.risk === "medium") {
+        expect(elements.find((element) => element["action_id"] === DECISION_SLACK_APPROVE_ACTION)).toMatchObject({ value: `approve_plan:plan1|${DIGEST}|12` });
+      } else {
+        expect(elements.some((element) => element["action_id"] === DECISION_SLACK_APPROVE_ACTION)).toBe(false);
+        expect(JSON.stringify(message.blocks)).not.toContain("|12\"");
+      }
     }
   });
   it("a card that does not raise the limit is as before", () => {

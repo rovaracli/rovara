@@ -1,5 +1,5 @@
-import type { ProjectSetupExecution } from "@agentx/contracts";
-import { projectMemberKey, projectRevisionKey, projectSetupApprovalKey, projectSetupSessionKey, type OrgId, type ProjectSetupSession } from "@agentx/contracts";
+import type { ProjectSetupExecution } from "@rovara-code/contracts";
+import { projectMemberKey, projectRevisionKey, projectSetupApprovalKey, projectSetupSessionKey, type OrgId, type ProjectSetupSession } from "@rovara-code/contracts";
 import { projectSetupRuntimeKey, type ProjectSetupRuntimeRecord } from "./project-setup-runtime-catalog.js";
 
 type TerminalExecutionAuthority = Pick<ProjectSetupExecution,

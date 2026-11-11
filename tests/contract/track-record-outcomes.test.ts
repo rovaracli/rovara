@@ -1,9 +1,6 @@
 // Track record (v1.2 slice 1), the store: keys, idempotent samples, scoring held to `pending`, the scored copy, the rate read by score time, pagination and the cap.
 import { describe, expect, it } from "vitest";
-import {
-  OUTCOME_READ_CAP, OUTCOME_SCORED_KEPT_DAYS, OutcomeSampleSchema, outcomeSampleKey, outcomeScoredKey,
-  type OutcomeClaim, type OutcomeSample, type OutcomeStage,
-} from "../../packages/contracts/src/index.js";
+import { OUTCOME_READ_CAP, OUTCOME_SCORED_KEPT_DAYS, OutcomeSampleSchema, outcomeSampleKey, outcomeScoredKey, type OutcomeClaim, type OutcomeSample, type OutcomeStage } from "@rovara-code/contracts";
 import { readOutcomeRate, recordOutcomeSample, scoreOutcomeSample, type OutcomeDependencies } from "../../packages/broker/src/rovara-code/outcomes.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { TEST_ORG } from "../support/orgs.js";

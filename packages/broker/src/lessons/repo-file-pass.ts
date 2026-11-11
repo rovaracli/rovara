@@ -11,10 +11,7 @@
 //   - After 3 weekly pull requests in a row that nobody merged, additions and edits stop; removals still go out, in a smaller pull request.
 //   - A file the team deleted pauses the repository; a file that is a link, a folder, over 64 KB or unreadable is left alone, and the status says why. Nothing is retired on a failed read.
 import { createHash } from "node:crypto";
-import {
-  COMMIT_CONFLICT_MESSAGE, COMMIT_SYMLINK_MESSAGE, LESSON_FILE_MAX_BYTES, LESSON_FILE_PATH, LESSON_FILE_POINTER_PATHS,
-  type LessonFileProblem,
-} from "@agentx/contracts";
+import { COMMIT_CONFLICT_MESSAGE, COMMIT_SYMLINK_MESSAGE, LESSON_FILE_MAX_BYTES, LESSON_FILE_PATH, LESSON_FILE_POINTER_PATHS, type LessonFileProblem } from "@rovara-code/contracts";
 import { modeAllows, requireAudit, resolveLearning, type LearningSettingsReader } from "./policy.js";
 import type { LessonAuditSink } from "./ports.js";
 import { mentionsLessonsFile, pointerTargets, withPointer, type PointerPath } from "./repo-file-pointer.js";

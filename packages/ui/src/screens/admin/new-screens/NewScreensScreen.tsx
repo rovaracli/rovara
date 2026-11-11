@@ -21,6 +21,8 @@ const problem = (error: unknown): Problem => error instanceof ApiError
  ? { message: error.code === "CHANGE_STALE" || error.status === 409 ? STALE_WORDS : error.message, reauth: error.code === "REAUTH_REQUIRED", stale: error.code === "CHANGE_STALE" || error.status === 409 }
  : { message: "Rovara couldn't complete this. Try again shortly.", reauth: false, stale: false };
 const when = (value: string) => new Date(value).toLocaleString("en-US", { timeZone: "UTC", year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) + " UTC";
+/** The install's operator holds the screen off for every company: nobody here can change it, so the row has no control. */
+const FORCED_OFF_WORDS = "Turned off by the Rovara operator";
 const STATE_WORDS = { on: "On", preview: "Preview", off: "Off" } as const;
 
 export function NewScreensScreen() {
@@ -29,7 +31,7 @@ export function NewScreensScreen() {
 }
 
 function describe(row: UiFlagAdminRow, company: string): string {
- if (row.forcedOff) return "Held back by your install's operator. It stays off for everyone until they release it.";
+ if (row.forcedOff) return FORCED_OFF_WORDS;
  if (row.state === "on") return `On for everyone in ${company}.`;
  if (row.state === "preview") return "Off for the company. Anyone can try it in their own browser; it is not on for the company.";
  return "Off.";
@@ -74,10 +76,10 @@ function Flags({ orgId, developerId, company }: { orgId: string; developerId: st
    {read.data.changedAt !== undefined && <p className="rv-muted">Last changed {when(read.data.changedAt)}.</p>}
    {rows.length === 0 ? <p>No new screens are available to switch on yet.</p> : <ul className="rv-newscreens-list" aria-label="New screens">
     {rows.map(row => <li key={row.name} aria-label={row.label}>
-     <div className="rv-newscreens-head"><h2><VisibleText text={row.label} /></h2><strong className="rv-newscreens-state" data-state={row.state}>{STATE_WORDS[row.state]}</strong></div>
+     <div className="rv-newscreens-head"><h2><VisibleText text={row.label} /></h2><strong className="rv-newscreens-state" data-state={row.state === "unknown" ? "off" : row.state}>{STATE_WORDS[row.state === "unknown" ? "off" : row.state]}</strong></div>
      <p><VisibleText text={row.summary} /></p>
      <p className="rv-muted"><VisibleText text={describe(row, company)} /></p>
-     <Button variant={row.enabled ? "secondary" : "primary"} busy={busy === row.name} disabled={busy !== undefined || row.forcedOff} aria-label={`${row.enabled ? "Turn off" : "Turn on"} ${row.label} for the company`} onClick={() => { void toggle(row); }}>{row.enabled ? "Turn off for everyone" : "Turn on for everyone"}</Button>
+     {!row.forcedOff && <Button variant={row.enabled ? "secondary" : "primary"} busy={busy === row.name} disabled={busy !== undefined} aria-label={`${row.enabled ? "Turn off" : "Turn on"} ${row.label} for the company`} onClick={() => { void toggle(row); }}>{row.enabled ? "Turn off for everyone" : "Turn on for everyone"}</Button>}
     </li>)}
    </ul>}
   </>}

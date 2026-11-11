@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return -- the test edits retained frames whose shape the schemas under test judge */
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { canonicalJson } from "../../packages/contracts/src/index.js";
+import { canonicalJson } from "@rovara-code/contracts";
 import { E2EApplicationCollectionOracleSchema, E2EApplicationCollectionSchema, UNDECLARED_MOCK_CONSUMPTION_REASON, UNMOCKED_EXTERNAL_CALL_REASON,
   qualifyE2EApplicationCollection, requiredHostedMockSpecs, type E2EApplicationCollection } from "../../packages/verifier/src/application-result-adapter.js";
 import { buildScenarioRows } from "../../packages/broker/src/e2e/application-display.js";

@@ -1,6 +1,6 @@
 // LV-1 fix round 2: the test gaps the re-check named (R2: the digest's status filter, one reader across pages), the load record's task ids (R3) and the Lessons tab's bounds (R4: each list its own bound, one deadline).
 import { describe, expect, it } from "vitest";
-import { OrgIdSchema } from "../../../packages/contracts/src/index.js";
+import { OrgIdSchema } from "@rovara-code/contracts";
 import { buildWeeklyDigest } from "../../../packages/broker/src/lessons/digest.js";
 import { loadLessonsForStage, type LoadDeps, type LoadRequest } from "../../../packages/broker/src/lessons/load.js";
 import { readVisibleRanked } from "../../../packages/broker/src/lessons/read-visible.js";

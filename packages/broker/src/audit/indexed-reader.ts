@@ -2,7 +2,8 @@
 import { timingSafeEqual } from "node:crypto";
 import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import { AuditIndexedQuerySchema, AuditIndexedResultSchema, agentXError, auditCanonicalJson, recordHash, type AuditIndexedQuery, type AuditIndexedResult } from "@agentx/contracts";
+import { AuditIndexedQuerySchema, AuditIndexedResultSchema, auditCanonicalJson, recordHash, type AuditIndexedQuery, type AuditIndexedResult } from "@agentx/cloud-contracts";
+import { agentXError } from "@rovara-code/contracts";
 import type { AuditExportClientDeps } from "./export.js";
 import type { AuditOrgCaller } from "./routes.js";
 import { canReadAuditLog } from "../org/auditor.js";

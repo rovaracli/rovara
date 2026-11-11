@@ -5,10 +5,11 @@
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { CI_OUTPUT_BLOCK_HEADER, BRANCH_SYNC_UNSURE_MESSAGE, BRANCH_WORKFLOW_FILES_MESSAGE, branchSyncGiveUpMessage, branchConflictAskMessage, CONFLICT_PATHS_BLOCK_HEADER, EMPTY_RECIPE, BASE_MERGED_NEEDS_YOU_MILESTONE, BASE_MERGED_RECHECKING_MILESTONE, WORKFLOW_BLOCK_REASONS, WorkflowSnapshotSchema, branchConflictStopMessage, type ProjectCommand, type WorkflowProgram } from "@agentx/contracts";
+import { CI_OUTPUT_BLOCK_HEADER, BRANCH_SYNC_UNSURE_MESSAGE, BRANCH_WORKFLOW_FILES_MESSAGE, branchSyncGiveUpMessage, branchConflictAskMessage, CONFLICT_PATHS_BLOCK_HEADER, EMPTY_RECIPE, branchConflictStopMessage, type ProjectCommand, type WorkflowProgram } from "@rovara-code/contracts";
+import { BASE_MERGED_NEEDS_YOU_MILESTONE, BASE_MERGED_RECHECKING_MILESTONE, WORKFLOW_BLOCK_REASONS, WorkflowSnapshotSchema } from "@agentx/cloud-contracts";
 import { taskRecipeKey } from "../../../packages/broker/src/developer/task-records.js";
 import { TEST_ORG } from "../../support/orgs.js";
-import { mergeTrackingKey } from "../../../packages/contracts/src/org-scoped-keys.js";
+import { mergeTrackingKey } from "@rovara-code/contracts";
 import { E2E_CHECK, createWorkflowE2E, type WorkflowE2E } from "../../support/workflow-e2e.js";
 import { EDITS, FIXED, PLAN, TASK_LINK_RETRY, actionIds, atPlanReview, journeySuite, said } from "../../support/workflow-e2e-journeys.js";
 

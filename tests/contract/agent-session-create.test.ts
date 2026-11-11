@@ -8,31 +8,12 @@ import { AgentSessionStore } from "../../packages/broker/src/agent-sessions/stor
 import { createTaskSessionItems, sessionStarterFor } from "../../packages/broker/src/agent-sessions/create.js";
 import { readRunRequest, runRequestFingerprint, startAgentRun, type AgentRunRequest } from "../../packages/broker/src/agents/runs.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
-import { recipeDigest } from "../../packages/contracts/src/agent-recipe-node.js";
+import { recipeDigest } from "@rovara-code/contracts";
 import { resolveAgent } from "../../packages/broker/src/agents/store.js";
-import {
-  AgentSessionRecordSchema,
-  SESSION_EVENT_TEXT_MAX,
-  SESSION_TITLE_MAX,
-  SessionEventSchema,
-  sessionEventId,
-} from "../../packages/contracts/src/agent-sessions-node.js";
-import { DeveloperTaskViewSchema } from "../../packages/contracts/src/developer-tasks-node.js";
-import {
-  agentSessionKey,
-  liveSessionKey,
-  mySessionsKey,
-  openAgentSessionKey,
-  projectAgentKey,
-  projectMemberKey,
-  projectSessionsKey,
-  runRequestKey,
-  sessionEventSk,
-  sessionLegSk,
-  sessionBindingKey,
-  sessionSurfaceKey,
-} from "../../packages/contracts/src/org-scoped-keys.js";
-import type { OrgId } from "../../packages/contracts/src/org-node.js";
+import { AgentSessionRecordSchema, SESSION_EVENT_TEXT_MAX, SESSION_TITLE_MAX, SessionEventSchema, sessionEventId } from "@rovara-code/contracts";
+import { DeveloperTaskViewSchema } from "../../packages/cloud-contracts/src/developer-tasks-node.js";
+import { agentSessionKey, liveSessionKey, mySessionsKey, openAgentSessionKey, projectAgentKey, projectMemberKey, projectSessionsKey, runRequestKey, sessionEventSk, sessionLegSk, sessionBindingKey, sessionSurfaceKey } from "@rovara-code/contracts";
+import type { OrgId } from "@rovara-code/contracts";
 import { DEV_ISSUER, MAYA, createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { SLACK_CHANNEL, SLACK_TEAM, loadSlackBroker } from "../support/slack-broker.js";

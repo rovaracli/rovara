@@ -1,5 +1,5 @@
 import { useId, useMemo, useState } from "react";
-import { slackPlaceFieldText, type SourcePickerKind } from "@agentx/contracts/web";
+import { slackPlaceFieldText, type SourcePickerKind } from "@agentx/cloud-contracts/web";
 import { ApiError } from "../../../api/errors.js";
 import { useSourceOptions, type SourceOptionsPage } from "../../../api/record-source-options.js";
 import { Button } from "../../../design/Button.js";

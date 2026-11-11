@@ -9,7 +9,7 @@
 // The hosted zone is only ever written by these three records (and the validation record); nothing existing in it is read or changed here.
 import { Fn, Token, aws_apigatewayv2 as apigwv2, aws_certificatemanager as acm, aws_route53 as route53, CfnCondition, CfnOutput, CfnParameter, CfnRule, Stack } from "aws-cdk-lib";
 import { Construct } from "constructs";
-import { CUSTOM_DOMAIN_TAG } from "@agentx/contracts";
+import { CUSTOM_DOMAIN_TAG } from "@agentx/cloud-contracts";
 import { CUSTOM_DOMAIN_NAME_PATTERN, CUSTOM_DOMAIN_ZONE_PATTERN } from "./custom-domain-patterns.js";
 
 

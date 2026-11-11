@@ -2,7 +2,7 @@
 // less safe than the sandbox (a fresh browser sign-in, and a second person's confirmation card read back from the company's records). With the switch off none of it exists.
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
-import { TestEnvironmentStateSchema, projectMetaKey, redactText, teamRecordPk, testEnvDigest } from "../../packages/contracts/src/index.js";
+import { TestEnvironmentStateSchema, projectMetaKey, redactText, teamRecordPk, testEnvDigest } from "@rovara-code/contracts";
 import { testEnvChangeLines } from "../../packages/broker/src/org/test-env-diff.js";
 import { confirmationStands } from "../../packages/broker/src/org/test-environment.js";
 import { mayDecideApproval } from "../../packages/broker/src/agents/approvals.js";

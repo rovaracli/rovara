@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { MAYA } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
-import { orgMemberKey, orgRemovedKey } from "@agentx/contracts";
+import { orgMemberKey, orgRemovedKey } from "@agentx/cloud-contracts";
 import { taskIndexKey } from "../../packages/broker/src/developer/task-records.js";
 import { BEN, CARL, CODING, TRIAGE, setup, type World } from "../support/spend-world.js";
 

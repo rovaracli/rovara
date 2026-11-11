@@ -1,7 +1,7 @@
 import { useCallback, useState } from "react";
 import { useQuery,useQueryClient } from "@tanstack/react-query";
 import { Link, useParams,useSearchParams } from "react-router";
-import { AgentDraftViewSchema, RecipeOverlaySchema, ResolvedRecipeSchema, StepSpecSchema, StepSettingsSchema } from "@agentx/contracts/web";
+import { AgentDraftViewSchema, RecipeOverlaySchema, ResolvedRecipeSchema, StepSpecSchema, StepSettingsSchema } from "@agentx/cloud-contracts/web";
 import { useAgent,type ReadAgentProfile } from "../../api/agents.js";
 import { useBuilderApi,useDraft } from "../../api/builder.js";
 import { ApiError } from "../../api/errors.js";
@@ -12,6 +12,8 @@ import { Button } from "../../design/Button.js";
 import { Skeleton } from "../../design/Skeleton.js";
 import { VisibleText } from "../../design/VisibleText.js";
 import { LargerScreen } from "../../shell/LargerScreen.js";
+import { useAppHost } from "../../host.js";
+import { isNewNavOn } from "../../nav-flags.js";
 import { NotFound } from "../../shell/NotFound.js";
 import { useDraftState,type Overlay,type Step } from "./draft-state.js";
 import { StepsEditor } from "./StepsEditor.js";
@@ -26,7 +28,7 @@ import { paths } from "../../paths.js";
 import "./builder.css";
 type Resolved=ReturnType<typeof ResolvedRecipeSchema.parse>;
 function specs(recipe:Resolved|undefined):Step[]{return recipe?.steps.map(step=>{const{settings:_settings,...spec}=step;void _settings;return StepSpecSchema.parse(spec);})??[];}
-export function BuilderScreen(){const {id=""}=useParams();const profile=useAgent(id);return <LargerScreen>{profile.isPending?<Skeleton label="Loading workflow"/>:profile.isError||!profile.data||!agentAllows(profile.data.agent,"view")?<NotFound/>:profile.data.agent.builtin||!agentAllows(profile.data.agent,"edit")?<section className="rv-builder"><PageHeader title={profile.data.agent.name} description={profile.data.agent.description} focusOnMount/><VersionsPanel agent={profile.data.agent}/></section>:<DraftLoader key={id} id={id} name={profile.data.agent.name} profile={profile.data}/>}</LargerScreen>;}
+export function BuilderScreen(){const {id=""}=useParams();const profile=useAgent(id),host=useAppHost();return <LargerScreen {...(isNewNavOn(host)?{backTo:{href:paths.agent(id),label:"Back to the agent's profile"}}:{})}>{profile.isPending?<Skeleton label="Loading workflow"/>:profile.isError||!profile.data||!agentAllows(profile.data.agent,"view")?<NotFound/>:profile.data.agent.builtin||!agentAllows(profile.data.agent,"edit")?<section className="rv-builder"><PageHeader title={profile.data.agent.name} description={profile.data.agent.description} focusOnMount/><VersionsPanel agent={profile.data.agent}/></section>:<DraftLoader key={id} id={id} name={profile.data.agent.name} profile={profile.data}/>}</LargerScreen>;}
 function DraftLoader({id,name,profile}:{id:string;name:string;profile:ReadAgentProfile}){const read=useDraft(id),[reload,setReload]=useState(0);if(read.isPending)return <Skeleton label="Loading draft"/>;if(read.isError)return read.error instanceof ApiError&&(read.error.status===404||read.error.status===403)?<NotFound/>:<section><p role="alert"><VisibleText text={failureText(read.error,"Couldn't read the draft.")}/></p><Button onClick={()=>{void read.refetch();}}>Try again</Button></section>;const draft=AgentDraftViewSchema.safeParse(read.data.draft),resolved=ResolvedRecipeSchema.safeParse(read.data.resolved),base=ResolvedRecipeSchema.safeParse(read.data.base);if(!draft.success)return <p role="alert">This draft uses a newer format. Refresh before editing.</p>;return <BuilderEditor key={id+":"+reload} id={id} name={name} profile={profile} initial={draft.data} resolved={resolved.success?resolved.data:undefined} base={base.success?base.data:undefined} initialProblems={read.data.problems??[]} onReload={async()=>{const result=await read.refetch();if(!result.isError)setReload(value=>value+1);}}/>;}
 export function BuilderEditor({id,name,profile,initial,resolved,base,initialProblems,onReload}:{id:string;name:string;profile:ReadAgentProfile;initial:ReturnType<typeof AgentDraftViewSchema.parse>;resolved:Resolved|undefined;base:Resolved|undefined;initialProblems:Problem[];onReload:()=>Promise<void>}){
  const api=useBuilderApi(),query=useQueryClient(),[params]=useSearchParams(),[historyOpen,setHistoryOpen]=useState(()=>params.has("from")||params.has("to")||params.get("review")==="base"),[problems,setProblems]=useState(initialProblems),[server,setServer]=useState<string>(),[reloadError,setReloadError]=useState<string>(),[tab,setTab]=useState("steps"),[selected,setSelected]=useState<string|undefined>((initial.overlay.sequence??specs(resolved))[0]?.id);

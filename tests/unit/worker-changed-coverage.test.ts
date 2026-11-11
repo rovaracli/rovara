@@ -1,7 +1,7 @@
 // Setup and test health SH31: the Go cover-profile reader and the changed-line coverage it feeds (the evidence's `coverage` part). Fail closed: a profile it cannot read completely is "not measured" (undefined),
 // a line counts as covered when ANY block on it ran, and only lines the profile calls statements are counted.
 import { describe, expect, it } from "vitest";
-import { EVIDENCE_COVERAGE_FILES_MAX, EVIDENCE_UNCOVERED_LINES_MAX, EvidenceCoverageSchema } from "../../packages/contracts/src/evidence.js";
+import { EVIDENCE_COVERAGE_FILES_MAX, EVIDENCE_UNCOVERED_LINES_MAX, EvidenceCoverageSchema } from "@rovara-code/contracts";
 import { GO_COVER_PROFILE_MAX_BLOCKS, changedLineCoverage, looksLikeGoCoverProfile, parseGoCoverProfile } from "../../packages/worker/src/verification/changed-coverage.js";
 
 const MODULES = [{ path: "example.com/acme/match", dir: "." }];

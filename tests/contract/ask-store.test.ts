@@ -2,7 +2,7 @@
 // hard-deleted, the person's label in other people's answers becomes "@former-member", bounded and resumable, org-scoped).
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { ASK_RETENTION_DAYS, INDEX_EXPIRY_ATTRIBUTE, askByPersonKey, askMentionKey, sessionAskKey, type OrgId, type SessionId } from "../../packages/contracts/src/index.js";
+import { ASK_RETENTION_DAYS, INDEX_EXPIRY_ATTRIBUTE, askByPersonKey, askMentionKey, sessionAskKey, type OrgId, type SessionId } from "@rovara-code/contracts";
 import {
   ASK_MENTION_TAGS_MAX, ASK_SWEEP_LOOKBACK_DAYS, ASK_TTL_SECONDS, FORMER_MEMBER_MENTION, askPersonTag, askQuestionHash, eraseAskPerson, moveAsksOnMerge, readAskAsAsker, scrubAskText, sweepExpiredAsks, writeAsk, type AskWriteInput,
 } from "../../packages/broker/src/agent-sessions/ask-store.js";

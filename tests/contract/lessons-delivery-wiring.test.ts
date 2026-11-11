@@ -1,7 +1,7 @@
 // WL-6: the dispatcher's lesson reader over the real Dynamo lesson store (the in-memory DynamoDB): a stage queued with ids and versions gets its text from the store at delivery, an erased or
 // fenced person's lesson is not delivered, and an install with no Team record table builds nothing.
 import { describe, expect, it } from "vitest";
-import { memberGithubKey, type LearnedRefs } from "../../packages/contracts/src/index.js";
+import { memberGithubKey, type LearnedRefs } from "@rovara-code/contracts";
 import { createLessonDelivery } from "../../packages/broker/src/lessons/delivery-wiring.js";
 import { DynamoLessonStore } from "../../packages/broker/src/lessons/dynamo-store.js";
 import { KEY, PROJECT, WS, lessonRecord } from "../unit/lessons/lesson-helpers.js";

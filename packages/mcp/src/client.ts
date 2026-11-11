@@ -1,49 +1,10 @@
 // Spec 025 FR-027: the tools' view of the control plane. The stdio server gives it the signed-in
 // developer's session (packages/cli); the hosted endpoint will give it another.
-import { CLI_PACKAGE_NAME } from "@agentx/contracts";
+import { CLI_PACKAGE_NAME } from "@rovara-code/contracts";
 import { randomUUID } from "node:crypto";
-import {
-  AgentXConfigurationConfirmSchema,
-  AgentXError,
-  DeveloperCloseResponseSchema,
-  DeveloperProjectsResponseSchema,
-  DeveloperPullRequestResponseSchema,
-  DeveloperTaskListResponseSchema,
-  DeveloperTaskResponseSchema,
-  LocalLessonsResponseReaderSchema,
-  TASK_VIEW_HEADER,
-  TASK_VIEW_VERSION,
-  SessionListReaderSchema,
-  SessionMessageSchema,
-  SessionResponseReaderSchema,
-  TaskPeopleChangeResponseSchema,
-  NeedsConfirmationSchema,
-  TaskPeopleViewResponseSchema,
-  type AgentXConfigurationConfirm,
-  type ContinueDeveloperTaskRequest,
-  type DeveloperCloseResponse,
-  type DeveloperProjectsResponse,
-  type DeveloperPullRequestRequest,
-  type DeveloperPullRequestResponse,
-  type DeveloperTaskListItem,
-  type DeveloperTaskStatus,
-  type LocalLessonsBody,
-  type LocalLessonsRead,
-  type DeveloperTaskClientView,
-  type ShareDeveloperTaskRequest,
-  type RunInput,
-  type StartDeveloperTaskRequest,
-  type TaskPeopleChangeResult,
-  type TaskPeopleRoleRequest,
-  type TaskPeopleTakeOwnershipRequest,
-  type TaskPeopleView,
-  type WorkflowDecisionRequest,
-  type WorkflowFeedbackFindingsDecisionRequest,
-  type WorkflowFeedbackReviewRetryRequest,
-  type WorkflowPublishRetryRequest,
-  type WorkflowResolveFindingsInput,
-  forwardReader,
-} from "@agentx/contracts";
+import { AgentXConfigurationConfirmSchema, AgentXError, TASK_VIEW_HEADER, TASK_VIEW_VERSION, SessionListReaderSchema, SessionMessageSchema, TaskPeopleChangeResponseSchema, NeedsConfirmationSchema, TaskPeopleViewResponseSchema, type AgentXConfigurationConfirm, type ContinueDeveloperTaskRequest, type DeveloperPullRequestRequest, type DeveloperTaskStatus, type ShareDeveloperTaskRequest, type RunInput, type StartDeveloperTaskRequest, type TaskPeopleChangeResult, type TaskPeopleRoleRequest, type TaskPeopleTakeOwnershipRequest, type TaskPeopleView, type WorkflowDecisionRequest, type WorkflowFeedbackFindingsDecisionRequest, type WorkflowFeedbackReviewRetryRequest, type WorkflowPublishRetryRequest, type WorkflowResolveFindingsInput, forwardReader } from "@rovara-code/contracts";
+import { SessionResponseReaderSchema } from "@agentx/cloud-contracts";
+import { DeveloperCloseResponseSchema, DeveloperProjectsResponseSchema, DeveloperPullRequestResponseSchema, DeveloperTaskListResponseSchema, DeveloperTaskResponseSchema, LocalLessonsResponseReaderSchema, type DeveloperCloseResponse, type DeveloperProjectsResponse, type DeveloperPullRequestResponse, type DeveloperTaskListItem, type LocalLessonsBody, type LocalLessonsRead, type DeveloperTaskClientView } from "@agentx/cloud-contracts";
 import { z } from "zod";
 import { CLOSE_BUSY_STEP, NEXT_STEPS, SHARE_BUSY_STEP, START_BUSY_STEP, ToolError, isMeaningfulCode, plainText, signInStep, toolErrorFromResponse } from "./errors.js";
 

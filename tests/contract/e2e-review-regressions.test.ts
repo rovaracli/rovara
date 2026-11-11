@@ -1,11 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
-import { canonicalJson } from "../../packages/contracts/src/canonical-json.js";
-import { e2eCaseIdFromIdentity, e2eUpstreamTestIdFromIdentity } from "../../packages/contracts/src/e2e-case-identity.js";
-import {
-  E2EAssertionSchema, E2EExecutionPlanSchema, E2ERoundSchema, E2EScenarioSchema, E2EStepSchema,
-  aggregateE2EVerification, e2eExecutionPlanDigest, projectE2EVerification,
-} from "../../packages/contracts/src/e2e-node.js";
+import { canonicalJson } from "@rovara-code/contracts";
+import { e2eCaseIdFromIdentity, e2eUpstreamTestIdFromIdentity } from "../../packages/cloud-contracts/src/e2e-case-identity.js";
+import { E2EAssertionSchema, E2EExecutionPlanSchema, E2ERoundSchema, E2EScenarioSchema, E2EStepSchema, aggregateE2EVerification, e2eExecutionPlanDigest, projectE2EVerification } from "@rovara-code/contracts";
 
 const target1 = { targetId: "web-1", applicationId: "app-1", runtimeProfileId: "browser-v1", accountProfileId: "account-v1", kind: "web" as const, browser: "chromium" as const, viewport: { width: 1280, height: 800 } };
 const target2 = { ...target1, targetId: "web-2", applicationId: "app-2" };

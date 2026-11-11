@@ -3,14 +3,9 @@
 // Wiring (DR7): after `readDesignReview` of each reviewer's uploaded answer, call `filterReviewerCitations(raw, packetsByRole)` with `packetsByRole` made from each BuiltPacket's `items`, then merge what is left
 // (`mergeDesignFindings`), then add the findings of `own-findings.ts`. Record `droppedFindings` on the task so the card can say "N findings were not used: no citation matched what the reviewer was given".
 // For the planner's answer (resolve and question evidence) DR7 calls `checkPlannerEvidence` below, once per planner answer, and refuses the answer when it says `ok: false`.
-import {
-  checkResolveCitations, type CitablePacketItem, type DesignQuestion, type DesignResolutionDraft, type PinnedCommits, type ResolveCitationResult, type ReviewerPackets, type ReviewerRole,
-} from "@agentx/contracts";
+import { checkResolveCitations, type CitablePacketItem, type DesignQuestion, type DesignResolutionDraft, type PinnedCommits, type ResolveCitationResult, type ReviewerPackets, type ReviewerRole } from "@rovara-code/contracts";
 
-export {
-  CITATION_DROP_REASONS, CODE_CITATION_UNCHECKED, checkResolveCitations, citationProblem, codeCitationInPacket, codeCitationLinkPath, filterReviewerCitations,
-  type CitablePacketItem, type CitationDropReason, type CitationFilterResult, type DroppedCitation, type DroppedFinding, type PinnedCommits, type ResolveCitationResult, type ReviewerPackets,
-} from "@agentx/contracts";
+export { CITATION_DROP_REASONS, CODE_CITATION_UNCHECKED, checkResolveCitations, citationProblem, codeCitationInPacket, codeCitationLinkPath, filterReviewerCitations, type CitablePacketItem, type CitationDropReason, type CitationFilterResult, type DroppedCitation, type DroppedFinding, type PinnedCommits, type ResolveCitationResult, type ReviewerPackets } from "@rovara-code/contracts";
 
 /** Every item any reviewer of the round was given, each once (the planner reads the same design and sources). */
 export function roundItemsOf(packets: ReviewerPackets): CitablePacketItem[] {

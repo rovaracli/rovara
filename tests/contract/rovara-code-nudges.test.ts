@@ -2,8 +2,10 @@
 // the org: the first time 24 hours after the request, then every 48 hours, on weekdays in UTC, at most three times, through Home and Slack (the milestone hook) and never as a GitHub
 // comment. After the third reminder has had its window, the task's owner is told once. Everything rides the tracking pass; nothing here changes the workflow.
 import { afterEach, describe, expect, it } from "vitest";
-import { CODE_REVIEWERS_MAX, REVIEW_NUDGES_MAX, type MergeTrackingItem } from "../../packages/contracts/src/rovara-code.js";
-import { agentSessionKey, codeMilestoneKey, codeSettingsKey, githubMemberKey, mergeTrackingKey, mySessionsKey, orgMemberKey, reviewNudgeLedgerKey, reviewWaitKey } from "../../packages/contracts/src/index.js";
+import { CODE_REVIEWERS_MAX, REVIEW_NUDGES_MAX } from "@rovara-code/contracts";
+import { type MergeTrackingItem } from "../../packages/cloud-contracts/src/rovara-code.js";
+import { agentSessionKey, codeMilestoneKey, codeSettingsKey, githubMemberKey, mergeTrackingKey, mySessionsKey, reviewNudgeLedgerKey, reviewWaitKey } from "@rovara-code/contracts";
+import { orgMemberKey } from "@agentx/cloud-contracts";
 import { nextNudgeAt, nudgesDue, reviewWaitsOf, runReviewNudges } from "../../packages/broker/src/rovara-code/nudges.js";
 import { registerCodeMilestoneHandler } from "../../packages/broker/src/rovara-code/milestones.js";
 import { linkGithubMember, unlinkGithubMember } from "../../packages/broker/src/rovara-code/github-members.js";

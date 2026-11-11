@@ -20,13 +20,17 @@ import {
   acceptRunLimit, estimateRun, recordRunCost, suggestMaxPerRun, type EstimatePath, type RequestRunLimit,
 } from "../../packages/broker/src/spend/estimate.js";
 import { writeSpendPolicy } from "../../packages/broker/src/spend/settings.js";
-import { WorkflowDecisionRequestSchema, createWorkflowSnapshot, WorkflowSnapshotSchema, type WorkflowSnapshot } from "../../packages/contracts/src/task-workflow-node.js";
-import { recipeDigest, type RecipeOverlay } from "../../packages/contracts/src/agent-recipe-node.js";
-import type { AgentId } from "../../packages/contracts/src/agent-node.js";
-import type { OrgId, OrgRole } from "../../packages/contracts/src/org-node.js";
-import { agentRunsKey, projectAgentKey, projectAiKey, projectMemberKey, runCostKey } from "../../packages/contracts/src/org-scoped-keys.js";
-import { MAX_RUN_LIMIT_USD, defaultSpendPolicy, formatRunLimitUsd, runLimitBlockText, runLimitRaiseText, type RunEstimate } from "../../packages/contracts/src/spend.js";
-import type { ProjectRole } from "../../packages/contracts/src/app-projects.js";
+import { WorkflowDecisionRequestSchema } from "@rovara-code/contracts";
+import { createWorkflowSnapshot, WorkflowSnapshotSchema, type WorkflowSnapshot } from "../../packages/cloud-contracts/src/task-workflow-node.js";
+import { recipeDigest, type RecipeOverlay } from "@rovara-code/contracts";
+import type { AgentId } from "@rovara-code/contracts";
+import type { OrgId } from "@rovara-code/contracts";
+import type { OrgRole } from "../../packages/cloud-contracts/src/org-node.js";
+import { agentRunsKey, projectAgentKey, projectMemberKey, runCostKey } from "@rovara-code/contracts";
+import { projectAiKey } from "../../packages/cloud-contracts/src/org-scoped-keys.js";
+import { MAX_RUN_LIMIT_USD, formatRunLimitUsd, runLimitBlockText, runLimitRaiseText, type RunEstimate } from "@rovara-code/contracts";
+import { defaultSpendPolicy } from "../../packages/cloud-contracts/src/spend.js";
+import type { ProjectRole } from "@rovara-code/contracts";
 import { MAYA, OMAR, createSingleAnswerPlanBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { fakeModelAccess } from "../support/fake-model-access.js";

@@ -1,4 +1,4 @@
-import { agentXError } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
 import type { CallbackCapabilities } from "./callbacks.js";
 import type { OwnerScopedOutputStore } from "./events.js";
 import type { OperationStore } from "./operations.js";

@@ -5,7 +5,7 @@
 //   - `designQuestionsItem`: ONE `answer_question` card per round with up to three questions, each with what is unclear, short cited evidence, the options with consequences, and the recommendation with why.
 // Every line a model wrote (a finding's text, a question) is passed through `plainLine` by the projector; nothing here is executed or followed.
 import { createHash } from "node:crypto";
-import { CODE_CITATION_UNCHECKED, DESIGN_REVIEW_QUESTIONS_MAX, codeCitationInPacket, designFindingIsSourceOnly, designReviewDisagreements, type CitablePacketItem, type DesignCitation, type DesignFinding, type DesignQuestion, type DesignReason, type WorkflowDesignReview } from "@agentx/contracts";
+import { CODE_CITATION_UNCHECKED, DESIGN_REVIEW_QUESTIONS_MAX, codeCitationInPacket, designFindingIsSourceOnly, designReviewDisagreements, type CitablePacketItem, type DesignCitation, type DesignFinding, type DesignQuestion, type DesignReason, type WorkflowDesignReview } from "@rovara-code/contracts";
 import type { DecisionItem, ItemBase } from "../decisions/project.js";
 import { plainLine } from "../decisions/text.js";
 import { TIER_REVIEWERS, reviewersForRound } from "./estimate.js";

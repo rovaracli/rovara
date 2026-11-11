@@ -14,7 +14,8 @@
 // Every change commits in ONE transaction with its audit item and is conditional on the item's revision (`POLICY_STALE` otherwise); a refused write changes nothing. Answers are fixed words.
 import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { randomUUID } from "node:crypto";
-import { orgMetaKey, type EditionPolicy, type OrgId } from "@agentx/contracts";
+import { orgMetaKey, type EditionPolicy } from "@agentx/cloud-contracts";
+import { type OrgId } from "@rovara-code/contracts";
 import { auditCompanyDesignReviewPolicyChanged, auditCompanyDesignReviewPolicyProposed, auditOccurrence } from "../audit/events.js";
 import { SYSTEM_ACTOR } from "../audit/plan3-hooks.js";
 import { flushAuditEvents } from "../audit/flush.js";

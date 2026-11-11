@@ -3,7 +3,8 @@
 // index is only a lead: the installation's org, the task, the pull request recorded in its workflow, the link of that pull request to the task and the project's pinned
 // repository all have to agree before anything is woken.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { OrgIdSchema, TRACKING_REVIEW_COALESCE_SECONDS, githubInstallationKey, prHeadKey, type CodeHostEvent, type OrgId, type PluginKind } from "@agentx/contracts";
+import { OrgIdSchema, TRACKING_REVIEW_COALESCE_SECONDS, prHeadKey, type CodeHostEvent, type OrgId, type PluginKind } from "@rovara-code/contracts";
+import { githubInstallationKey } from "@agentx/cloud-contracts";
 import type { HeadWebhookEvent, PullRequestWebhookEvent } from "../aws/github-webhooks.js";
 import { wakeTrackingRow } from "../aws/workflow-merge-recovery.js";
 import { codeHostRepositoryKey } from "../plugins/events/repository-key.js";

@@ -4,7 +4,7 @@ import { realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { WEB_API_QUALIFICATION_APP_MANIFEST_PREFIX, WEB_API_QUALIFICATION_APP_TREE_DIGEST, webApiQualificationAppTreeDigest } from "../../packages/contracts/src/index.js";
+import { WEB_API_QUALIFICATION_APP_MANIFEST_PREFIX, WEB_API_QUALIFICATION_APP_TREE_DIGEST, webApiQualificationAppTreeDigest } from "@rovara-code/contracts";
 import { installedWebApiQualificationAppRoot, stageWebApiQualificationApp, verifyWebApiQualificationApp } from "../../packages/verifier/src/host/web-api-qualification-app.js";
 
 const repoRoot = join(import.meta.dirname, "../..");

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { E2E_DISPLAY_ASSERTION_KINDS, crossCheckE2EAgentLedgerReceipts, parseVerifiedE2EAgentActionLedger, type E2EDisplayAgentNavigation, type E2EModelReceipt } from "@agentx/contracts";
+import { E2E_DISPLAY_ASSERTION_KINDS, crossCheckE2EAgentLedgerReceipts, parseVerifiedE2EAgentActionLedger, type E2EDisplayAgentNavigation, type E2EModelReceipt } from "@rovara-code/contracts";
 import { displayText } from "./application-display.js";
 
 /**

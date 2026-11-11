@@ -4,11 +4,7 @@ import {
   StartBuildCommand,
   type Build,
 } from "@aws-sdk/client-codebuild";
-import {
-  CodeBuildCheckResultSchema,
-  agentXError,
-  type CodeBuildCheckResult,
-} from "@agentx/contracts";
+import { CodeBuildCheckResultSchema, agentXError, type CodeBuildCheckResult } from "@rovara-code/contracts";
 
 export interface CodeBuildGateway {
   start(input: {

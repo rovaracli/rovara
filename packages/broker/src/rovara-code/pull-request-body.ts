@@ -2,7 +2,8 @@
 // code is, between markers that Rovara rewrites after every fix or sync, and it ends with the line that says a person approves and a person merges. The description is public to the repository's
 // readers: every line that a model, a file name or a branch name wrote goes through `inertLine` (redacted, one line, no mention, link, image, cross-reference or hidden comment), every list is bounded,
 // and the whole body stays under the byte cap with its markers, risk and closing line intact so it can always be regenerated in place.
-import { attributionBodyLines, hideEmailAddresses, TESTING_RESULT_LABELS, type ActingAttribution, type RiskAssessment, type TestingView, type VerificationReport, type WorkflowSnapshot } from "@agentx/contracts";
+import { attributionBodyLines, hideEmailAddresses, TESTING_RESULT_LABELS, type ActingAttribution, type RiskAssessment, type TestingView, type VerificationReport } from "@rovara-code/contracts";
+import { type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { ROVARA_STATUS_END, ROVARA_STATUS_START } from "../developer/pull-request-feedback-section.js";
 import { inertLine } from "./inert-text.js";
 import { reviewModelLines } from "./review-model-lines.js";

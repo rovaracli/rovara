@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 import { outsideCardHandler, outsideEvidenceOpened } from "../../packages/broker/src/aws/developer-routes/outside-cards.js";
 import { DecideStore } from "../../packages/broker/src/developer/decide-session.js";
 import type { DecideInspection, DecideKind, DecideKinds } from "../../packages/broker/src/developer/decide-kinds.js";
-import type { AuditProof } from "@agentx/contracts";
+import type { AuditProof } from "@agentx/cloud-contracts";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { seedMembership } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";

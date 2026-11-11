@@ -10,7 +10,7 @@ import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { developerTokenKey, saveDeveloperEnvironment } from "../../packages/cli/src/developer/config.js";
 import { executeCli } from "../../packages/cli/src/main.js";
 import { InMemoryTokenStore } from "../../packages/cli/src/token-store.js";
-import { projectMemberKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { projectMemberKey } from "@rovara-code/contracts";
 import { DEV_ISSUER, MAYA, bearerFor, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
 import { loadSlackBroker } from "../support/slack-broker.js";
 import { TEST_ORG } from "../support/orgs.js";

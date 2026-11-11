@@ -11,6 +11,7 @@ import { SPEC_CHOICE_ROUTE, SPEC_PAGE_CHOICES, routeSpecChoice } from "./develop
 import { getInstallInfo } from "./developer-routes/install.js";
 import { isSsoRoute, routeSsoRequest } from "./developer-routes/sso.js";
 import { isCompanyDomainsRoute, routeCompanyDomains } from "./developer-routes/company-domains.js";
+import { UI_FLAGS_BROWSER_MESSAGE, UI_FLAGS_PATH, routeUiFlags } from "./developer-routes/ui-flags.js";
 import { specOwnerChoice } from "./developer-tasks/spec-wiring.js";
 import { taskPagePathFor } from "./developer-tasks/task-page.js";
 import { decisionCardsEnabled } from "../proof/switch.js";
@@ -19,7 +20,7 @@ import "../org/task-stop-editing.js";
 import "../org/service-status.js";
 import "../model-selection/company-prepare.js";
 import "../model-selection/company-approval.js";
-import "@agentx/contracts";
+import "@agentx/cloud-contracts";
 import "../model-selection/policy-preview.js";
 import "../model-selection/company-read.js";
 import "../model-selection/read.js";
@@ -127,7 +128,7 @@ import "./task-e2e-artifact.js";
 import { readOrgServiceStatus } from "../org/service-status.js";
 import { CompanySameModelPolicyRefusal } from "../model-selection/company-prepare.js";
 import { updateCompanyModelPolicy } from "../model-selection/company-approval.js";
-import { ModelSelectionPolicyAppliedSchema, ModelSelectionPolicyPendingSchema, ReviewDefaultNoticeBodySchema } from "@agentx/contracts";
+import { ModelSelectionPolicyAppliedSchema, ModelSelectionPolicyPendingSchema, ReviewDefaultNoticeBodySchema } from "@rovara-code/contracts";
 import { previewCompanyModelPolicy } from "../model-selection/policy-preview.js";
 import { requireCompanyModelPolicyAuthority, getCompanyModelSelectionPolicy } from "../model-selection/company-read.js";
 import { getStageModels } from "../model-selection/read.js";
@@ -150,11 +151,11 @@ import { readReviewedProjectArchiveAppPreview } from "../org/reviewed-project-ar
 import { revokeOrganizationInvite } from "../org/invite-revocation.js";
 import { logDeveloperEvent } from "../developer/log.js";
 import { listOrganizationInvites } from "../org/invite-directory.js";
-import { OrgMemberRoleChangeBodySchema } from "@agentx/contracts";
+import { OrgMemberRoleChangeBodySchema } from "@agentx/cloud-contracts";
 import { listOrganizationMembers, lookupOrganizationMember } from "../org/directory.js";
 import { getMemberRemoval, previewMemberRemoval, startMemberRemovalRoute } from "../org/member-removal/routes.js";
 import { taskResponseForClient } from "../rovara-code/task-view-compat.js";
-import { AgentXNameSchema, RenameOrganizationBodySchema, agentXError, projectAllows } from "@agentx/contracts";
+import { AgentXNameSchema, RenameOrganizationBodySchema, agentXError, projectAllows } from "@rovara-code/contracts";
 import { requireReviewedModelSourceWebWrite } from "../model-sources/routes.js";
 import { restoreProjectReviewedWithEffects, archiveProjectReviewedWithEffects } from "../org/project-archive.js";
 import { effectiveProjectRole, requireNewWorkAllowed } from "../developer/project-roles.js";
@@ -194,14 +195,18 @@ import { routeTestHealth } from "./developer-routes/test-health.js";
 import { KNOWN_FAILING_MARKS_BROWSER_MESSAGE, KNOWN_FAILING_MARKS_PATH, routeKnownFailingMarks } from "./developer-routes/known-failing-marks.js";
 import { verifyResultsEnabled } from "../verification/switch.js";
 import { DESIGN_REVIEW_COMPANY_BROWSER_MESSAGE, DESIGN_REVIEW_COMPANY_PATH, routeDesignReviewCompany } from "./developer-routes/design-review-company.js";
+import { APPROVAL_WINDOW_BROWSER_MESSAGE, APPROVAL_WINDOW_PATH, routeApprovalWindow } from "./developer-routes/approval-window.js";
 import { KNOWN_FAILING_POLICY_BROWSER_MESSAGE, KNOWN_FAILING_POLICY_PATH, routeKnownFailingPolicy } from "./developer-routes/known-failing-policy.js";
 import { SECOND_REVIEW_ACK_BROWSER_MESSAGE, acknowledgeSecondReview } from "./developer-tasks/second-review-ack.js";
 import { routeLearningModel } from "./developer-routes/learning-model.js";
 import { SECOND_REVIEW_BROWSER_MESSAGE, SECOND_REVIEW_PATH, routeSecondReview } from "./developer-routes/second-review.js";
+import { INSIGHTS_ACCESS_BROWSER_MESSAGE, INSIGHTS_ACCESS_PATH, routeInsightsFor } from "./developer-routes/insights.js";
 import { routeTrackerPeople } from "./developer-routes/tracker-people.js";
 import { routeJiraOrgAdmin } from "./developer-routes/jira-org-admin.js";
 import { SETUP_RECIPES_BROWSER_MESSAGE, isSetupRecipesPath, routeSetupRecipes } from "./developer-routes/setup-recipes.js";
+import { routeTrialBilling } from "./developer-routes/trial-billing.js";
 import { COMPANY_TEST_IMAGES_BROWSER_MESSAGE, companyTestImagesEnabled, isCompanyTestImagesPath, routeCompanyTestImages } from "./developer-routes/company-test-images.js";
+import { COMPANY_RULES_BROWSER_MESSAGE, companyRulesEnabled, isCompanyRulesPath, routeCompanyRules } from "./developer-routes/company-rules.js";
 import { setupRecipesEnabled } from "../rovara-code/setup-recipes-switch.js";
 import { SAVED_ENV_IMAGE_BROWSER_MESSAGE, isSavedEnvImagePath, routeSavedEnvImage } from "./developer-routes/saved-env-image.js";
 import { routeFixtures } from "./developer-routes/fixtures.js";
@@ -343,14 +348,19 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (url.pathname === LEARNING_SETTINGS_PATH && authenticated?.caller.browserSession !== true) {
     throw agentXError("FORBIDDEN", "Use a live browser session for learning changes.");
   }
+  // Runtime UI flags (lane U5): browser-only for both methods, refused before any read.
+  if (url.pathname === UI_FLAGS_PATH && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", UI_FLAGS_BROWSER_MESSAGE);
   // The one-time review-default notice (reading it and dismissing it) is browser-only, like the other company settings.
   if (url.pathname === REVIEW_DEFAULT_NOTICE_PATH && authenticated?.caller.browserSession !== true) {
     throw agentXError("FORBIDDEN", "Use a live browser session for this notice.");
   }
   // The company setting "always two people" for known-failing marks: changing it is browser-only (the read is open to members).
   if (url.pathname === KNOWN_FAILING_POLICY_PATH && request.method === "POST" && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", KNOWN_FAILING_POLICY_BROWSER_MESSAGE);
+  if (url.pathname === APPROVAL_WINDOW_PATH && decisionCardsEnabled() && request.method === "POST" && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", APPROVAL_WINDOW_BROWSER_MESSAGE);
   if (url.pathname === DESIGN_REVIEW_COMPANY_PATH && request.method === "POST" && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", DESIGN_REVIEW_COMPANY_BROWSER_MESSAGE);
   if (url.pathname === SECOND_REVIEW_PATH && request.method === "POST" && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", SECOND_REVIEW_BROWSER_MESSAGE);
+  // Insights: who may see it is changed from a live browser session only (the reads are open to a token by the same role rule).
+  if (url.pathname === INSIGHTS_ACCESS_PATH && request.method === "POST" && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", INSIGHTS_ACCESS_BROWSER_MESSAGE);
   if (/\/tasks\/[^/]+\/second-review-acknowledge$/u.test(url.pathname) && request.method === "POST" && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", SECOND_REVIEW_ACK_BROWSER_MESSAGE);
   // The project's known-failing marks (list and Undo) are browser-only for both methods, while vx is on (off: the path is not found, as any unknown path).
   if (KNOWN_FAILING_MARKS_PATH.test(url.pathname) && verifyResultsEnabled() && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", KNOWN_FAILING_MARKS_BROWSER_MESSAGE);
@@ -358,6 +368,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (isSetupRecipesPath(url.pathname) && setupRecipesEnabled() && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", SETUP_RECIPES_BROWSER_MESSAGE);
   // Company-approved extra test-service images (switches `tx` and `pj`): a token or the API can read, never change (off: the path is not found).
   if (isCompanyTestImagesPath(url.pathname) && companyTestImagesEnabled() && request.method === "POST" && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", COMPANY_TEST_IMAGES_BROWSER_MESSAGE);
+  // Company rules (G-04, switch `si`): a token or the API can read, never change (off: the path is not found).
+  if (isCompanyRulesPath(url.pathname) && companyRulesEnabled() && request.method === "POST" && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", COMPANY_RULES_BROWSER_MESSAGE);
   // The project's saved environment panel (switch `sv`): browser-only for reads and writes, whatever the method (off: the path is not found).
   if (isSavedEnvImagePath(url.pathname) && savedEnvEnabled() && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", SAVED_ENV_IMAGE_BROWSER_MESSAGE);
   // UX5b: script tokens are made, listed and revoked from a live browser session only (off: the path is not found).
@@ -494,6 +506,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (isSsoRoute(url.pathname)) return routeSsoRequest(deps, caller, request, url.pathname);
   // Company domain verification: the owner's domains page (owner only; every edition).
   if (isCompanyDomainsRoute(url.pathname)) return routeCompanyDomains(deps, caller, request, url.pathname);
+  // Runtime UI flags (lane U5): the owner's and admin's company screens.
+  if (url.pathname === UI_FLAGS_PATH) return routeUiFlags(deps, caller, request, url.pathname);
   if (request.method === "GET" && url.pathname === "/v1/app/me") {
     const me = await getAppMe(deps, caller);
     return authenticated === undefined ? me : { ...me, csrf: authenticated.csrf };
@@ -593,14 +607,20 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (testEnvReply !== undefined) return testEnvReply;
   const testHealthReply = await routeTestHealth(deps, caller, request, url);
   if (testHealthReply !== undefined) return testHealthReply;
+  const approvalWindowReply = await routeApprovalWindow(deps, caller, request, url);
+  if (approvalWindowReply !== undefined) return approvalWindowReply;
   const designReviewCompanyReply = await routeDesignReviewCompany(deps, caller, request, url);
   if (designReviewCompanyReply !== undefined) return designReviewCompanyReply;
   const knownFailingPolicyReply = await routeKnownFailingPolicy(deps, caller, request, url);
   if (knownFailingPolicyReply !== undefined) return knownFailingPolicyReply;
   const setupRecipesReply = await routeSetupRecipes(deps, caller, request, url);
   if (setupRecipesReply !== undefined) return setupRecipesReply;
+  const trialBillingReply = await routeTrialBilling(deps, caller, request, url);
+  if (trialBillingReply !== undefined) return trialBillingReply;
   const companyTestImagesReply = await routeCompanyTestImages(deps, caller, request, url);
   if (companyTestImagesReply !== undefined) return companyTestImagesReply;
+  const companyRulesReply = await routeCompanyRules(deps, caller, request, url);
+  if (companyRulesReply !== undefined) return companyRulesReply;
   const savedEnvImageReply = await routeSavedEnvImage(deps, caller, request, url);
   if (savedEnvImageReply !== undefined) return savedEnvImageReply;
   const fixturesReply = await routeFixtures(deps, caller, request, url);
@@ -614,6 +634,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (findingsReply !== undefined) return findingsReply;
   const secondReviewReply = await routeSecondReview(deps, caller, request, url);
   if (secondReviewReply !== undefined) return secondReviewReply;
+  const insightsReply = await routeInsightsFor(deps, caller, request, url);
+  if (insightsReply !== undefined) return insightsReply;
   const learningModelReply = await routeLearningModel(deps, caller, request, url);
   if (learningModelReply !== undefined) return learningModelReply;
   const trackerPeopleReply = await routeTrackerPeople(deps, caller, request, url);

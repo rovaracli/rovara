@@ -1,12 +1,13 @@
 // Enterprise foundations, I2 fix round 1: the Auditor writes nothing on EVERY surface, not only behind the HTTP dispatcher. Slack, the approval page, GitHub reviews, the task paths and the
 // dispatch guard each ask for the person's live company role and refuse one that is not a writer's. Every case fails when the check it names is removed.
 import { describe, expect, it } from "vitest";
-import { developerOrgKey, editionPolicy, orgMemberKey, projectMemberKey } from "@agentx/contracts";
+import { developerOrgKey, editionPolicy, orgMemberKey } from "@agentx/cloud-contracts";
+import { projectMemberKey } from "@rovara-code/contracts";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { liveWriterRole } from "../../packages/broker/src/org/live-role.js";
 import { requireWriterCaller } from "../../packages/broker/src/org/auditor.js";
 import { humanApprovalOf, linkedAmong, nonWritersAmong } from "../../packages/broker/src/rovara-code/approval.js";
-import { githubMemberKey, memberGithubKey } from "@agentx/contracts";
+import { githubMemberKey, memberGithubKey } from "@rovara-code/contracts";
 import { DECIDE_COOKIE, csrfTokenFor, requireDecideSession } from "../../packages/broker/src/developer/decide-session.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { SLACK_TEAM } from "../support/slack-broker.js";

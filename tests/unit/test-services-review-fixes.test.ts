@@ -2,7 +2,7 @@
 // catalog; a re-propose keeps what is approved; unreadable settings and a family mismatch are refused.
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { INDEX_EXPIRY_ATTRIBUTE, TestEnvironmentBodySchema, projectMetaKey, projectPk, projectRevisionKey, testEnvApprovalRisk, testEnvDigest, testEnvLessSafeChanges, type OrgId, type TestEnvironmentBody } from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, TestEnvironmentBodySchema, projectMetaKey, projectPk, projectRevisionKey, testEnvApprovalRisk, testEnvDigest, testEnvLessSafeChanges, type OrgId, type TestEnvironmentBody } from "@rovara-code/contracts";
 import { refuseUnsafeEdit } from "../../packages/broker/src/aws/developer-routes/test-environment-wizard.js";
 import { approveTestEnvironment, proposeTestEnvironment, recordTestEnvProveReport, type TestEnvDeps } from "../../packages/broker/src/org/test-environment.js";
 import { testEnvChangeLines } from "../../packages/broker/src/org/test-env-diff.js";

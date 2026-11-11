@@ -2,7 +2,8 @@
 // another task's thread through a stored person proof. A Slack person who never joined is not a removed person and is not refused.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { orgMemberKey, type TaskPersonProofRequest, type TaskPersonProofResponse } from "@agentx/contracts";
+import { orgMemberKey } from "@agentx/cloud-contracts";
+import { type TaskPersonProofRequest, type TaskPersonProofResponse } from "@rovara-code/contracts";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { resolveTaskPickerPerson, checkTaskPersonIdentity, type TaskPersonIdentityDependencies } from "../../packages/broker/src/developer/task-person-identity.js";
 import type { DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";

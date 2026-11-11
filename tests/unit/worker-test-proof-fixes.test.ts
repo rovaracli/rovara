@@ -5,7 +5,7 @@ import { mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { TestProofSchema, type CheckEntry, type ProjectCommand, type TestProof } from "../../packages/contracts/src/index.js";
+import { TestProofSchema, type CheckEntry, type ProjectCommand, type TestProof } from "@rovara-code/contracts";
 import type { CheckPlan, CheckRunners } from "../../packages/worker/src/verification/checks.js";
 import { gitOriginalCode } from "../../packages/worker/src/verification/original-code.js";
 import { runTestProof, serializeTestProof } from "../../packages/worker/src/verification/test-proof.js";

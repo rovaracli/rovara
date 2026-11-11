@@ -2,7 +2,7 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import type { Context } from "@earendil-works/pi-ai";
-import type { InvocationModelRoute } from "../../packages/contracts/src/index.js";
+import type { InvocationModelRoute } from "@rovara-code/contracts";
 import { ROUTE_PROVIDER, createConfiguredModelRuntime, createModelRuntimeWithFallback, routeUsageIdentity } from "../../packages/model-runtime/src/index.js";
 import { turnModelAccessSource, turnModelRoute } from "../../packages/slack-service/src/model-access.js";
 import { createOrchestratorRuntime } from "../../packages/orchestrator/src/orchestrator.js";

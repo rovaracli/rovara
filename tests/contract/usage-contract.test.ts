@@ -1,9 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  TaskUsageTelemetrySchema,
-  createTaskUsageTelemetry,
-  effectiveCacheRetention,
-} from "../../packages/contracts/src/usage.js";
+import { TaskUsageTelemetrySchema, createTaskUsageTelemetry, effectiveCacheRetention } from "@rovara-code/contracts";
 import * as worker from "../../packages/worker/src/usage.js";
 
 const stats = { tokens: { input: 10, output: 2, cacheRead: 8, cacheWrite: 1, total: 21 }, cost: 0.25 };

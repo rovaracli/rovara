@@ -4,26 +4,9 @@
 import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  BUILT_PARTS,
-  BuiltManifestSchema,
-  SYNTH_KIT_MANIFEST_FILE,
-  SYNTH_OUTPUT_FILE,
-  SynthKitManifestSchema,
-  SynthOutputSchema,
-  agentXError,
-  builtPackageFile,
-  builtTemplateFile,
-  canonicalJson,
-  sha256OfBytes,
-  synthContext,
-  synthKitSha256,
-  synthSettingsSha256,
-  type BuiltManifest,
-  type BuiltPart,
-  type SynthSettings,
-} from "@agentx/contracts";
-import { ENVIRONMENT_PLACEHOLDER } from "@agentx/contracts";
+import { BUILT_PARTS, BuiltManifestSchema, SYNTH_KIT_MANIFEST_FILE, SYNTH_OUTPUT_FILE, SynthKitManifestSchema, SynthOutputSchema, builtPackageFile, builtTemplateFile, sha256OfBytes, synthContext, synthKitSha256, synthSettingsSha256, type BuiltManifest, type BuiltPart, type SynthSettings } from "@agentx/cloud-contracts";
+import { agentXError, canonicalJson } from "@rovara-code/contracts";
+import { ENVIRONMENT_PLACEHOLDER } from "@rovara-code/contracts";
 import type { SynthRunner } from "./synth-run.js";
 import type { VerifiedBundle } from "./verify.js";
 

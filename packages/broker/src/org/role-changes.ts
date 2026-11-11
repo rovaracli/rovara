@@ -2,7 +2,8 @@ import { approvalCompanyChange } from "./approval-membership.js";
 // Reviewed console writes: authority, result receipt and audit commit together.
 import { createHash } from "node:crypto";
 import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { INDEX_EXPIRY_ATTRIBUTE, OrgMemberRoleChangeBodySchema, OrgIdSchema, OrgRoleSchema, agentXError, developerOrgKey, orgMemberKey, orgScoped, type OrgRole } from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, OrgIdSchema, agentXError, orgScoped } from "@rovara-code/contracts";
+import { OrgMemberRoleChangeBodySchema, OrgRoleSchema, developerOrgKey, orgMemberKey, type OrgRole } from "@agentx/cloud-contracts";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "../aws/developer-routes.js";
 import { auditMemberRoleChanged, auditOccurrence } from "../audit/events.js";
 import { auditPending, type TransactItem } from "../audit/outbox.js";

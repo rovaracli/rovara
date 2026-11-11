@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import { E2EApplicationBuildSourceManifestSchema, E2E_APPLICATION_BUILD_SOURCE_MANIFEST_MAX_BYTES, type CandidateManifest, type E2EApplicationBuildSourceRef,
-  type E2ESourceSnapshot } from "@agentx/contracts";
+import { E2EApplicationBuildSourceManifestSchema, E2E_APPLICATION_BUILD_SOURCE_MANIFEST_MAX_BYTES, type CandidateManifest, type E2EApplicationBuildSourceRef, type E2ESourceSnapshot } from "@rovara-code/contracts";
 import { validateE2EApplicationBuildSourceManifest } from "@agentx/verifier";
 
 /** Where the broker keeps the manifest a worker exported for a candidate, content addressed so a replay is the same object. */

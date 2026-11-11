@@ -1,11 +1,12 @@
 // Decision cards on Slack (Decisions D4): the same `DecisionCard` as Home, as Block Kit. One card, one message. The buttons follow the card's own friction, so Slack cannot be a way around it:
 //   low    Approve (one tap) and Not now, and "Open", a link to the card;
-//   medium NO approve button: "Show the evidence" is a link to the card on the web, where the evidence is opened and Approve is allowed; Not now stays one tap;
+//   medium a CODING PLAN has Approve too (approval place, U4: the message shows its evidence, and the server lets a linked person who signed in to Rovara within the company's window approve it, else it says to open the card); any other medium card has no
+//          approve button: "Show the evidence" is a link to the card on the web, where the evidence is opened and Approve is allowed. Not now is one tap on every card, and in a chat it is a dismissal, never a rejection;
 //   high   one link, "Open": the card (or the confirmation page and its fresh sign-in). No approve and no reject here.
 // The button words are the shared table (`DECISION_LABELS`), the same as the web card's.
 // A pressed button carries only the card's id; the server re-checks everything (routes.ts), so a forged or stale press is refused there. Every word that came from a person, a plan or a repository
 // was already flattened by the projector; here it is also escaped for Slack (a mention, a link, a broadcast).
-import { DECISION_LABELS, formatRunLimitUsd, hideEmailAddresses, runLimitRaiseText, runLimitRaises, type DecisionCard, type DecisionTab } from "@agentx/contracts";
+import { DECISION_LABELS, formatRunLimitUsd, hideEmailAddresses, runLimitRaiseText, runLimitRaises, type DecisionCard, type DecisionTab } from "@rovara-code/contracts";
 
 export const DECISION_SLACK_APPROVE_ACTION = "rovara_decision_approve";
 export const DECISION_SLACK_REJECT_ACTION = "rovara_decision_reject";
@@ -56,7 +57,7 @@ export function slackCardMessage(card: DecisionCard, input: { cardUrl: string; /
   const canReject = card.actions.some((action) => action.kind === "reject");
   if (card.risk === "high") {
     elements.push(button(DECISION_SLACK_OPEN_ACTION, DECISION_LABELS.open, { url: input.cardUrl, style: "primary", value: `${card.id}|${input.digest}` }));
-  } else if (card.risk === "low" && canApprove) {
+  } else if ((card.risk === "low" || (card.risk === "medium" && card.kind === "approve_plan")) && canApprove) {
     elements.push(button(DECISION_SLACK_APPROVE_ACTION, card.kind === "merge" ? DECISION_LABELS.merge : DECISION_LABELS.approve, { style: "primary", value: `${card.id}|${input.digest}${raise === undefined ? "" : `|${String(raise.proposedUsd)}`}` }));
     if (canReject) elements.push(button(DECISION_SLACK_REJECT_ACTION, DECISION_LABELS.notNow, { value: `${card.id}|${input.digest}` }));
     elements.push(button(DECISION_SLACK_OPEN_ACTION, DECISION_LABELS.open, { url: input.cardUrl, value: `${card.id}|${input.digest}` }));

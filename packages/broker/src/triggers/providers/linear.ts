@@ -3,7 +3,7 @@
 // Difference from the documentation, on purpose: Linear advises refusing a `webhookTimestamp` more than a minute old. Linear retries a failed delivery after a minute, an hour and six
 // hours, and a signed replay is already stopped by the event key (kept for 72 hours) and the 24-hour age window of ingress, so a retry is not refused for being late.
 import { z } from "zod";
-import type { HookRecord, TriggerEvent } from "@agentx/contracts";
+import type { HookRecord, TriggerEvent } from "@rovara-code/contracts";
 import { hmacHexEquals, type HookHeaders, type HookProvider, type Normalized } from "./types.js";
 import { headerOf, httpsLinkOn, isoOfMillis, titleOf, valuesOf } from "./shared.js";
 import { linearWorkspaceOfLink, parseLinearIssue } from "../../rovara-code/linear-close.js";

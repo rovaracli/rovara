@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { ChromiumSandboxAttestationSchema, evaluateChromiumSandbox } from "../../packages/contracts/src/index.js";
+import { ChromiumSandboxAttestationSchema, evaluateChromiumSandbox } from "@rovara-code/contracts";
 import { installedExecutorSeccompProfilePath } from "../../packages/verifier/src/host/executor-seccomp.js";
 import { docker } from "../support/linux-network-walls.js";
 import { EXECUTOR_IMAGE, removeProbeDirs, runProbe } from "../support/linux-runtime.js";

@@ -1,20 +1,6 @@
 import { describe, expect, it } from "vitest";
-import {
-  OperationSchema,
-  SlackChannelBindingSchema,
-  SlackRequesterSchema,
-  SlackTaskAnswerRequestSchema,
-  SlackThreadNoteAnsweredRequestSchema,
-  SlackThreadSchema,
-  SlackThreadWorkspaceResultSchema,
-  SlackWorkspaceCloseCompleteResultSchema,
-  SlackWorkspaceCloseStartResultSchema,
-  WorkspaceClosePreflightResultSchema,
-  WorkspaceInstanceSchema,
-  WorkerInvocationSchema,
-  parseSlackThreadSubject,
-  slackThreadSubject,
-} from "../../packages/contracts/src/index.js";
+import { OperationSchema, SlackChannelBindingSchema, SlackRequesterSchema, SlackTaskAnswerRequestSchema, SlackThreadNoteAnsweredRequestSchema, SlackThreadSchema, SlackThreadWorkspaceResultSchema, SlackWorkspaceCloseCompleteResultSchema, SlackWorkspaceCloseStartResultSchema, WorkspaceClosePreflightResultSchema, WorkspaceInstanceSchema, parseSlackThreadSubject, slackThreadSubject } from "@rovara-code/contracts";
+import { WorkerInvocationSchema } from "@agentx/cloud-contracts";
 
 const thread = { teamId: "T0BSHLLUGBD", channelId: "C0123456789", threadTs: "1695500000.123456" };
 

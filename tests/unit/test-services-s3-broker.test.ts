@@ -1,10 +1,8 @@
 // Test services, slice 3 (s3-fakes-run), broker side: a fake backing in the plan, only for an APPROVED fixture set of the task's own company; the fixture-set delivery callback and who may call it; the evidence label
 // and the unmatched count; and the Prove usage step. With tx off, or with no fake, everything reads as it did.
 import { describe, expect, it } from "vitest";
-import {
-  FixtureSetSchema, TestEnvTaskPlanSchema, TestEnvironmentBodySchema, fixtureEntry, fixtureSetDigest, TEST_SERVICES_FAKE_USAGE_WORDS, testEnvDigest,
-  type FixtureSet, type OrgId, type ProjectCommand, type TestEnvironment, type TestEnvironmentBody, type TestServicesUsageRecord, type VerifiedCatalog,
-} from "@agentx/contracts";
+import { FixtureSetSchema, TestEnvironmentBodySchema, fixtureEntry, fixtureSetDigest, TEST_SERVICES_FAKE_USAGE_WORDS, testEnvDigest, type FixtureSet, type OrgId, type ProjectCommand, type TestEnvironment, type TestEnvironmentBody, type TestServicesUsageRecord, type VerifiedCatalog } from "@rovara-code/contracts";
+import { TestEnvTaskPlanSchema } from "@agentx/cloud-contracts";
 import { DEPENDENCY_PLAN_REFUSAL_WORDS, TEST_SERVICES_MIN_CATALOG_REVISION, dependenciesStartableNow, taskDependencyPlansOf } from "../../packages/broker/src/test-env/dependency-plan.js";
 import { approvedFixturesOf, fixtureDigestsOfEnvironment, fixtureDigestsOfPlan, recordsOf, type FixtureStoreFactory } from "../../packages/broker/src/test-env/fixture-lookup.js";
 import { createFixtureStore, createMemoryFixturePorts, verifiedFixtureDecision, type FixtureDenyFor, type FixtureStore } from "../../packages/broker/src/test-env/fixture-store.js";
@@ -20,7 +18,7 @@ import { issueCapability } from "../../packages/broker/src/aws/cancellation.js";
 import { verifyCapability } from "../../packages/broker/src/aws/broker/admin-and-helpers.js";
 import { taskKey, taskPointerKey } from "../../packages/broker/src/developer/task-records.js";
 import { workspaceKey } from "../../packages/broker/src/aws/broker/admin-and-helpers.js";
-import { projectMetaKey, projectRevisionKey } from "@agentx/contracts";
+import { projectMetaKey, projectRevisionKey } from "@rovara-code/contracts";
 import { approveTestEnvironment, proposeTestEnvironment, recordTestEnvProveReport, type TestEnvDeps } from "../../packages/broker/src/org/test-environment.js";
 import { capturingAuditDeps, AUDIT_CAPTURE_TABLE } from "../support/audit-capture.js";
 import { pinnedCatalog, unpinnedCatalog, verifiedCatalog } from "../support/catalog-pinning.js";

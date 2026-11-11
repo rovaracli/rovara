@@ -14,7 +14,7 @@ import { S3Client } from "@aws-sdk/client-s3";
 import { DescribeExecutionCommand, SFNClient, StartExecutionCommand } from "@aws-sdk/client-sfn";
 import { GetParametersCommand, SSMClient } from "@aws-sdk/client-ssm";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
-import { getParametersInBatches } from "@agentx/contracts";
+import { getParametersInBatches } from "@rovara-code/contracts";
 import {
   activeBatchIds,
   finalizeBatch,

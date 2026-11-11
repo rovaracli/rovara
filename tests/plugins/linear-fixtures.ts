@@ -1,6 +1,6 @@
 // Linear fixtures for the P9 tests: a hook record, a signing secret that is not real, and a delivery signed exactly as `Linear-Signature` is.
 import { createHmac } from "node:crypto";
-import type { HookRecord, RawDelivery } from "@agentx/contracts";
+import type { HookRecord, RawDelivery } from "@rovara-code/contracts";
 
 export const LINEAR_ORG = "11111111-1111-4111-8111-111111111111";
 export const TEAM = "22222222-2222-4222-8222-222222222222";

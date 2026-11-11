@@ -1,4 +1,4 @@
-import { AgentXError } from "@agentx/contracts";
+import { AgentXError } from "@rovara-code/contracts";
 import { agentGitHubGuard, GuardRejection, type GuardInput } from "../../packages/gateway/src/index.js";
 import { describe, expect, it, vi } from "vitest";
 import {

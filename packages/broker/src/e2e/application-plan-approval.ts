@@ -1,10 +1,5 @@
 import { createHash } from "node:crypto";
-import {
-  E2EApplicationPlanIntentSchema, E2EApplicationSelectionRecordSchema, E2EPolicySchema, E2E_AGENT_UNAVAILABLE_REASONS, Ec2RuntimeBindingSchema, canonicalJson,
-  E2E_ANONYMOUS_ACCOUNT_PROFILE_ID, E2E_RUNTIME_EXPIRED_CODE, deriveE2ESyntheticRuntimeAccountRef, e2eAnonymousRuntimeAccountRef, E2EApplicationIdentityMissingError, e2eApplicationMetadataSourceRefs, e2eRuntimeKindMatchesTarget, inspectE2EApplicationRepository, isE2EQualifiedRuntimeProfileId, readE2EApplicationProjectContract,
-  withE2EAnonymousTargets, type E2EApplicationPlanIntent, type E2EApplicationProjectContract, type E2EApplicationSelectionRecord, type E2ERegisteredRuntime, type E2ERuntimeAccountRef, type E2ERuntimeAvailability,
-  type E2ESetupProposal, type E2ESourceSnapshot, type Ec2RuntimeBinding, type PlanApprovalRef,
-} from "@agentx/contracts";
+import { E2EApplicationPlanIntentSchema, E2EApplicationSelectionRecordSchema, E2EPolicySchema, E2E_AGENT_UNAVAILABLE_REASONS, Ec2RuntimeBindingSchema, canonicalJson, E2E_ANONYMOUS_ACCOUNT_PROFILE_ID, E2E_RUNTIME_EXPIRED_CODE, deriveE2ESyntheticRuntimeAccountRef, e2eAnonymousRuntimeAccountRef, E2EApplicationIdentityMissingError, e2eApplicationMetadataSourceRefs, e2eRuntimeKindMatchesTarget, inspectE2EApplicationRepository, isE2EQualifiedRuntimeProfileId, readE2EApplicationProjectContract, withE2EAnonymousTargets, type E2EApplicationPlanIntent, type E2EApplicationProjectContract, type E2EApplicationSelectionRecord, type E2ERegisteredRuntime, type E2ERuntimeAccountRef, type E2ERuntimeAvailability, type E2ESetupProposal, type E2ESourceSnapshot, type Ec2RuntimeBinding, type PlanApprovalRef } from "@rovara-code/contracts";
 import { deriveE2EApplicationFeatureExecutionSelection } from "./application-feature-plan-intent.js";
 import { E2EAccountRegistryError, latestAccountRef, type E2EAccountRegistryEntry } from "./application-account-registry.js";
 

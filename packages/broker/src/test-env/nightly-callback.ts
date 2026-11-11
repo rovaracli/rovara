@@ -10,7 +10,7 @@
 // Everything else (the lock the slot holds, the clock, the coverage map's digest, the classification and the project's health) is `recordNightlyResultWithHealth`'s own. With `nh` or the test environment
 // off, the route answers CALLBACK_FORBIDDEN and nothing is read.
 import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { NIGHTLY_RUN_PURPOSE, NightlyResultCallbackBodySchema, NightlyResultSchema, agentXError, type NightFailedReason, type OrgId } from "@agentx/contracts";
+import { NIGHTLY_RUN_PURPOSE, NightlyResultCallbackBodySchema, NightlyResultSchema, agentXError, type NightFailedReason, type OrgId } from "@rovara-code/contracts";
 import { taskKey, taskPointerKey, type DeveloperTaskPointerRecord, type DeveloperTaskRecord } from "../developer/task-records.js";
 import type { TestEnvDeps } from "../org/test-environment.js";
 import { healthWiringOn, recordNightlyResultWithHealth } from "./health-wiring.js";

@@ -1,7 +1,7 @@
 // Fix round (Opus review): the Audit Ledger records each admin change to a private MCP server and to a project's Sources, with the actor, the org and the target, and never a token.
 import { describe, expect, it } from "vitest";
-import type { AuditEventInput } from "@agentx/contracts";
-import { AUDIT_FACT_KEYS } from "@agentx/contracts";
+import type { AuditEventInput } from "@agentx/cloud-contracts";
+import { AUDIT_FACT_KEYS } from "@agentx/cloud-contracts";
 import { contextSourceAudit, mcpServerAudit } from "../../../packages/broker/src/context-sources/audit.js";
 import { approveMcpServer, disableMcpServer, dynamoMcpServerStore, proposeMcpServer, removeMcpServer, type McpServerDependencies, type McpServerSecrets } from "../../../packages/broker/src/context-sources/mcp-servers.js";
 import { confirmSourceChange, proposeSourceChange, rejectSourceChange, type SettingsDependencies } from "../../../packages/broker/src/context-sources/settings.js";

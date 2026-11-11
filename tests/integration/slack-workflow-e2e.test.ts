@@ -10,7 +10,7 @@ import { visibleSlackText } from "../support/strict-slack.js";
 import { feedbackCriticReply, feedbackMixedReply, feedbackOwnerDecisionReply, firstUserText, reviewerReply } from "../support/faux-scripts.js";
 import { fauxAssistantMessage, type FauxResponseStep } from "@earendil-works/pi-ai";
 import { planAnswer, planDocument } from "../support/plan-documents.js";
-import { VIEW_ONLY_NOTICE, type WorkflowOptionalCheck } from "../../packages/contracts/src/index.js";
+import { VIEW_ONLY_NOTICE, type WorkflowOptionalCheck } from "@rovara-code/contracts";
 import { TASK_ANSWER_FOOTER } from "../../packages/slack-service/src/task-question.js";
 import { workflowStartedNotice } from "../../packages/broker/src/aws/slack-workflow-choice.js";
 

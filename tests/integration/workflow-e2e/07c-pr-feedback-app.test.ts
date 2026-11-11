@@ -3,7 +3,7 @@
 // task; a stale digest reads "This review changed."; a body over 16 KB is refused; the answer is only the status and the next step. Approve starts the fix, as from Slack.
 import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { ChannelMembersRequest, ChannelMembersResponse } from "@agentx/contracts";
+import type { ChannelMembersRequest, ChannelMembersResponse } from "@rovara-code/contracts";
 import { createWorkflowE2E, SLACK_MAYA, type WorkflowE2E } from "../../support/workflow-e2e.js";
 import { MAYA, type Developer } from "../../support/developer-task-broker.js";
 import { SLACK_CHANNEL } from "../../support/slack-broker.js";

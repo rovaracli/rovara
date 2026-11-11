@@ -6,7 +6,7 @@
 //  - the metadata filter is only a coarse cut: the authoritative permission check runs on every hit (searchVisible);
 //  - an index belongs to one workspace (the caller builds it from the caller's org, never from a request body).
 import { createHash } from "node:crypto";
-import { NON_FILTERABLE_VECTOR_KEYS, VECTOR_DIMENSION_DEFAULT, retiredTeamRecordVectorIndexName, teamRecordVectorIndexName } from "@agentx/contracts";
+import { NON_FILTERABLE_VECTOR_KEYS, VECTOR_DIMENSION_DEFAULT, retiredTeamRecordVectorIndexName, teamRecordVectorIndexName } from "@agentx/cloud-contracts";
 import type { TrustClass } from "./shared-types.js";
 import { assertSafeId } from "./shared-types.js";
 

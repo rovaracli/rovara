@@ -1,5 +1,5 @@
 // Test support for the second review's evidence: a replay run that passes the bar, and a verdict that holds, written straight into the State table (the real writers are the admin-pool routes).
-import { secondReviewModelKey, type SecondReviewModelRef, type SecondReviewReplayCase, type SecondReviewReplayRun, type SecondReviewVerdict } from "../../packages/contracts/src/index.js";
+import { secondReviewModelKey, type SecondReviewModelRef, type SecondReviewReplayCase, type SecondReviewReplayRun, type SecondReviewVerdict } from "@rovara-code/contracts";
 import { secondReviewReplayKey, secondReviewVerdictKey } from "../../packages/broker/src/org/second-review-settings.js";
 import type { FakeDynamoDb } from "./fake-dynamodb.js";
 import { TEST_ORG } from "./orgs.js";
@@ -27,7 +27,7 @@ export function seedHoldingEvidence(db: FakeDynamoDb, model: SecondReviewModelRe
 
 import { createHash } from "node:crypto";
 import { trackRowKey } from "../../packages/broker/src/rovara-code/second-review-track.js";
-import type { SecondReviewTrackRow } from "../../packages/contracts/src/index.js";
+import type { SecondReviewTrackRow } from "@rovara-code/contracts";
 
 export const sha = (text: string): string => createHash("sha256").update(text).digest("hex");
 /** One track row (an answered second opinion) with `fixed` findings agreed, `wrong` wrong and `open` open, written straight into the State table. */

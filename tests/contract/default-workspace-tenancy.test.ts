@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { OrgIdSchema, defaultWorkspaceKey, projectMemberKey } from "@agentx/contracts";
+import { OrgIdSchema, defaultWorkspaceKey, projectMemberKey } from "@rovara-code/contracts";
 import { createDeveloperTaskBroker } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { call, issuer } from "../support/slack-broker.js";

@@ -7,22 +7,7 @@
 // Nothing in here reaches the network or the table: the environment (connections, servers, tool discovery) and the store are ports, so the rules are
 // testable and the broker supplies the real ones.
 import { createHash, randomUUID } from "node:crypto";
-import {
-  ContextSourceSchema,
-  ContextSourcesDocumentSchema,
-  CONTEXT_SOURCE_LIMITS,
-  DESTRUCTIVE_WORDS,
-  WRITE_VERBS,
-  agentXError,
-  canonicalJson,
-  isQuoteForbiddenSystem,
-  nameWords,
-  type ContextSource,
-  type McpServerStatus,
-  type ContextSourceServer,
-  type ContextSourcesDocument,
-  type OrgId,
-} from "@agentx/contracts";
+import { ContextSourceSchema, ContextSourcesDocumentSchema, CONTEXT_SOURCE_LIMITS, DESTRUCTIVE_WORDS, WRITE_VERBS, agentXError, canonicalJson, isQuoteForbiddenSystem, nameWords, type ContextSource, type McpServerStatus, type ContextSourceServer, type ContextSourcesDocument, type OrgId } from "@rovara-code/contracts";
 
 /** A tool as an MCP server lists it. Only what the rules read is typed. */
 export interface DiscoveredTool {

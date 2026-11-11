@@ -1,6 +1,6 @@
 // #342: what a task's thread is told when the task left its owner's ChatGPT plan for the install's
 // default model. Fixed words, the owner's mention and a link; never the plan's account or a token.
-import { CHATGPT_USAGE_URL } from "@agentx/contracts";
+import { CHATGPT_USAGE_URL } from "@rovara-code/contracts";
 
 export type ChatGptFallbackReason = "limit" | "revoked" | "model";
 

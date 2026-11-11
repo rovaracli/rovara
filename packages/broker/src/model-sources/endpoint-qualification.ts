@@ -8,7 +8,8 @@
 //      endpoint does not serve fails it. The server stores the digest of the settings that passed; any later change leaves the digest stale.
 // Anything missing, unreadable or stale is "not usable", never "usable".
 import { isIP } from "node:net";
-import { agentXError, featureEnabled, type EditionPolicy } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
+import { featureEnabled, type EditionPolicy } from "@agentx/cloud-contracts";
 import { isPublicAddress } from "@agentx/gateway";
 import { cidrBlockListOf, isNeverCalledAddress, parseInstallCidrs } from "../connections/private-endpoints.js";
 import { dnsResolveHost, type ResolveHost } from "../connections/endpoint-check.js";

@@ -12,10 +12,8 @@ import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
 import type { TransactItem } from "../audit/outbox.js";
 import { DESIGN_REVIEW_FAIL_CLOSED_SETTING, markEffective, type EffectiveDesignReviewSetting } from "./effective-setting.js";
-import {
-  DESIGN_REVIEW_CAP_MAX_USD, DESIGN_REVIEW_CAP_MIN_USD, DESIGN_REVIEW_DEFAULT_SETTING, DESIGN_REVIEW_TIERS, DesignReviewTierSchema, featureEnabled, orgMetaKey,
-  type DesignReviewSetting, type EditionPolicy,
-} from "@agentx/contracts";
+import { DESIGN_REVIEW_CAP_MAX_USD, DESIGN_REVIEW_CAP_MIN_USD, DESIGN_REVIEW_DEFAULT_SETTING, DESIGN_REVIEW_TIERS, DesignReviewTierSchema, type DesignReviewSetting } from "@rovara-code/contracts";
+import { featureEnabled, orgMetaKey, type EditionPolicy } from "@agentx/cloud-contracts";
 
 /** The lock the company set. Every field is optional: an absent field locks nothing. Strict, so a typo is not a silently ignored lock. */
 export const DesignReviewLockSchema = z.object({

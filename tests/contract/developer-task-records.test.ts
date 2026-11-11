@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AiToolTurnRecordSchema } from "../../packages/contracts/src/index.js";
+import { AiToolTurnRecordSchema } from "@rovara-code/contracts";
 import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
 import {
   aiToolTurn,

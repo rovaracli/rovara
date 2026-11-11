@@ -1,10 +1,11 @@
 // Enterprise foundations, task I3: the attribution is built from the broker's own records, read now. A person who has been erased or has left is never named.
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { AuditEventInputSchema } from "@agentx/contracts";
+import { AuditEventInputSchema } from "@agentx/cloud-contracts";
 import { auditPullRequestOpened } from "../../packages/broker/src/audit/events.js";
-import { erasedPersonKey, orgMemberKey, orgRemovedKey, type OrgId } from "@agentx/contracts";
-import { attributionBodyLines, attributionTrailers } from "../../packages/contracts/src/index.js";
+import { erasedPersonKey, orgMemberKey, orgRemovedKey } from "@agentx/cloud-contracts";
+import { type OrgId } from "@rovara-code/contracts";
+import { attributionBodyLines, attributionTrailers } from "@rovara-code/contracts";
 import { attributionNameOf, dynamoAttributionReader, resolveActingAttribution, type AttributionReader } from "../../packages/broker/src/attribution/resolve.js";
 import { dynamoAttributionLinkStore, type AttributionLink, type AttributionLinkStore } from "../../packages/broker/src/attribution/links.js";
 import { chosenNameKey } from "../../packages/broker/src/developer/chosen-name.js";

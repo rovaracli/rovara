@@ -9,23 +9,7 @@
 // The draft is stored under the project, keyed by the setup draft's task (a newer setup draft makes an older one stale), and expires with the proposal's own life.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import {
-  INDEX_EXPIRY_ATTRIBUTE,
-  SETUP_RECIPE_OFFERS_MAX,
-  SetupRecipeIdSchema,
-  parseSetupRecipeSource,
-  TEST_ENV_DRAFT_MAX_BYTES,
-  TEST_ENV_DRAFT_NONE_KEY,
-  TEST_ENV_DRAFT_RESULT_KEY,
-  TEST_ENV_ROUND_BUDGET_MIN,
-  TestEnvDraftSchema,
-  projectPk,
-  redactText,
-  testEnvLessSafeChanges,
-  type OrgId,
-  type TestEnvDraft,
-  type TestEnvironmentBody,
-} from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, SETUP_RECIPE_OFFERS_MAX, SetupRecipeIdSchema, parseSetupRecipeSource, TEST_ENV_DRAFT_MAX_BYTES, TEST_ENV_DRAFT_NONE_KEY, TEST_ENV_DRAFT_RESULT_KEY, TEST_ENV_ROUND_BUDGET_MIN, TestEnvDraftSchema, projectPk, redactText, testEnvLessSafeChanges, type OrgId, type TestEnvDraft, type TestEnvironmentBody } from "@rovara-code/contracts";
 import type { DeveloperTaskRecord } from "../developer/task-records.js";
 import type { TransactItem } from "../audit/outbox.js";
 import { TEST_ENV_PROPOSAL_TTL_MS } from "../org/test-environment.js";

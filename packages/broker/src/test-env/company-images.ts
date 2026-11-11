@@ -7,7 +7,7 @@
 //     connection variables). An image whose family has no such entry cannot be approved, so approving an image adds a digest, never a rule.
 //   - An approval is of one exact digest. Its id (`img_` and the first 20 hex of the sha256 of `registry/repository@sha256:<digest>`) names the digest too, so the same name at another digest is another image that needs its
 //     own approval, and the old approval never serves it (`digest_changed`).
-import { catalogEntryById, catalogPrepullList, OrgIdSchema, type CatalogEntry, type OrgId, type VerifiedCatalog } from "@agentx/contracts";
+import { catalogEntryById, catalogPrepullList, OrgIdSchema, type CatalogEntry, type OrgId, type VerifiedCatalog } from "@rovara-code/contracts";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 

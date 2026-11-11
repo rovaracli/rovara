@@ -1,6 +1,6 @@
 // Plan 2, Task 8 and 8b: the broker over a copy of the sign-in harness's tables, for the routes that call the sign-in function
 // (unlink a sign-in method, add one back). The function is the harness's own, as the Lambda invoke would be.
-import type { StartIdentityLinkRequest, UnlinkIdentityRequest } from "@agentx/contracts";
+import type { StartIdentityLinkRequest, UnlinkIdentityRequest } from "@rovara-code/contracts";
 import type { DeveloperApiConfiguration } from "../../packages/broker/src/aws/developer-routes.js";
 import { developerTokenVerifier } from "../../packages/broker/src/developer/verify-token.js";
 import { createAdminBroker } from "./admin-broker.js";

@@ -1,7 +1,8 @@
 // M43 controller: custom project-agent accountable only, real HTTP and native atomic commit.
 import { randomUUID } from "node:crypto";
 import { expect, it } from "vitest";
-import { agentKey, spendRequestKey, ownerBudgetKey, agentRequestKey, developerOrgKey, orgMemberKey, orgMetaKey, OrgIdSchema } from "@agentx/contracts";
+import { agentKey, agentRequestKey, OrgIdSchema } from "@rovara-code/contracts";
+import { spendRequestKey, ownerBudgetKey, developerOrgKey, orgMemberKey, orgMetaKey } from "@agentx/cloud-contracts";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { MAYA, OMAR } from "../support/developer-task-broker.js";
 import { ADA, BEN, CARL, DEB, TRIAGE, setup } from "../support/spend-world.js";

@@ -1,7 +1,7 @@
 // Multi-tenancy: the link an invite is shared as. The origin is the hosted Rovara web app's
 // (ROVARA_WEB_ORIGIN, default https://rovara.dev), where the person signs in with the invite attached.
 import { createHash } from "node:crypto";
-import { agentXError } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
 
 export const DEFAULT_ROVARA_WEB_ORIGIN = "https://rovara.dev";
 

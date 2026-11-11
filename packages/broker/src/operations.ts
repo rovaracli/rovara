@@ -1,12 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import {
-  agentXError,
-  OperationRequestSchema,
-  TERMINAL_OPERATION_STATUSES,
-  type Operation,
-  type OperationRequest,
-  type OperationStatus,
-} from "@agentx/contracts";
+import { agentXError, OperationRequestSchema, TERMINAL_OPERATION_STATUSES, type Operation, type OperationRequest, type OperationStatus } from "@rovara-code/contracts";
 import type { InMemoryRegistry } from "./registry.js";
 
 export interface OutboxRecord {

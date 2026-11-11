@@ -2,7 +2,7 @@
 // run out its time and for one that is already decided, even for an approver who could have decided it while it was open.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import type { BudgetScope } from "@agentx/contracts";
+import type { BudgetScope } from "@agentx/cloud-contracts";
 import { createSpendRequest, decideSpendRequest, mayDecideSpendRequest } from "../../packages/broker/src/spend/requests.js";
 import { effectiveLimits } from "../../packages/broker/src/spend/settings.js";
 import { MAYA } from "../support/developer-task-broker.js";

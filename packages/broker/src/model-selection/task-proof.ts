@@ -1,5 +1,5 @@
 // Runtime approval authority comes from the task snapshot, never a fresh agent version or caller flag.
-import {canonicalModelName,agentXError,type OrgId,type AgentId,type ResolvedRecipe,type StageId,type ModelIdentifier} from "@agentx/contracts";
+import { canonicalModelName, agentXError, type OrgId, type AgentId, type ResolvedRecipe, type StageId, type ModelIdentifier } from "@rovara-code/contracts";
 import {parseTaskModelPolicyPin} from "./task-pin.js";
 import {parseStageModelApprovalProof,processApprovalRecipeDigest} from "./approval-proof.js";
 export interface PinnedTaskModelApprovalInput {orgId:OrgId;project:string;registeredAt:string;agentId:AgentId;recipe:ResolvedRecipe;digest:string;pin:unknown;stage:StageId;model:ModelIdentifier;referenceModel:ModelIdentifier}

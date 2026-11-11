@@ -5,7 +5,7 @@
 //   3. gives the place back when the run was not started (a refusal or a fault), and records the start in the audit trail ("automatic: <job>", with the person who approved the setup it runs).
 // It never reads who approved the setup to decide whether the run happens: an approver who left changes nothing but a reminder on the project page (`reviewReminderOf`).
 import { createHash } from "node:crypto";
-import { INDEX_EXPIRY_ATTRIBUTE, agentXError, projectPk, systemOwnerIdOf, type AgentId, type AutomaticJob, type AutomaticRunPurpose, type NightlyRunWire, type OrgId, type RunInput, type WorkOrigin } from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, agentXError, projectPk, systemOwnerIdOf, type AgentId, type AutomaticJob, type AutomaticRunPurpose, type NightlyRunWire, type OrgId, type RunInput, type WorkOrigin } from "@rovara-code/contracts";
 import { auditAutomaticRunStarted, auditOccurrence } from "../audit/events.js";
 import { auditTransact, tryAuditEvent } from "../audit/outbox.js";
 import { readRunRequest, type AgentRunRequest, type AgentRunResult } from "../agents/runs.js";

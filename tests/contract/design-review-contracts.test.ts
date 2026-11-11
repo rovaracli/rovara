@@ -1,10 +1,7 @@
 // Design review stage, DR1 (designs-2026-10-30/design-review-stage.md 3.1 and 3.5): the stored shapes. Strict everywhere; old intents, playbooks and stage lists still parse.
 import { describe, expect, it } from "vitest";
-import {
-  DESIGN_REVIEW_DEFAULT_SETTING, DESIGN_REVIEW_HIGH_RISK_REASONS, LIGHT_CRITIC_PROMPT_ID, DESIGN_REVIEW_ROUNDS_MAX, DesignFindingSchema, FILES_READ_LABEL, INPUT_PROOFS, INPUT_PROOF_SENTENCES, inputProofSentence, DesignQuestionSchema, DesignReviewSettingSchema, IntentAssessmentSchema,
-  ProjectPlaybookBodySchema, ProjectPlaybookSchema, ReviewerRunSchema, STAGE_IDS, WorkflowDesignReviewSchema, designReviewSettingOf, isHighRiskDesign,
-} from "../../packages/contracts/src/index.js";
-import * as web from "../../packages/contracts/src/web.js";
+import { DESIGN_REVIEW_DEFAULT_SETTING, DESIGN_REVIEW_HIGH_RISK_REASONS, LIGHT_CRITIC_PROMPT_ID, DESIGN_REVIEW_ROUNDS_MAX, DesignFindingSchema, FILES_READ_LABEL, INPUT_PROOFS, INPUT_PROOF_SENTENCES, inputProofSentence, DesignQuestionSchema, DesignReviewSettingSchema, IntentAssessmentSchema, ProjectPlaybookBodySchema, ProjectPlaybookSchema, ReviewerRunSchema, STAGE_IDS, WorkflowDesignReviewSchema, designReviewSettingOf, isHighRiskDesign } from "@rovara-code/contracts";
+import * as web from "@agentx/cloud-contracts/web";
 
 const sha = "a".repeat(40);
 const digest = "b".repeat(64);

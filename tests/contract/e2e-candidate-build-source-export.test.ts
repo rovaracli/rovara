@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { canonicalJson } from "../../packages/contracts/src/index.js";
+import { canonicalJson } from "@rovara-code/contracts";
 import { issueCapability } from "../../packages/broker/src/aws/cancellation.js";
 import { candidateBuildSourceAdmissionReference, StoredCandidateBuildSourceSchema } from "../../packages/broker/src/aws/candidate-build-source.js";
 import { validateE2EApplicationBuildSourceManifest } from "../../packages/verifier/src/application-build-source.js";

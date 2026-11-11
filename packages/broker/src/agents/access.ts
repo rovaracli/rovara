@@ -4,29 +4,8 @@
 // as the survivor (Plan 2 Task 3) wherever an owner or a share names them.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import {
-  AGENT_ACCESS_LEVELS,
-  AgentPrincipalSchema,
-  BUILTIN_AGENT_IDS,
-  TRIAL_LIMITS_R49,
-  agentXError,
-  atLeast,
-  isBuiltinAgentId,
-  OrgRoleSchema,
-  orgMemberKey,
-  orgProjectCatalogKey,
-  principalKey,
-  projectAllows,
-  type AgentAccessLevel,
-  type AuditProof,
-  type AgentId,
-  type AgentOwner,
-  type AgentPrincipal,
-  type BuiltinAgentId,
-  type OrgId,
-  type OrgRole,
-  type ProjectRole,
-} from "@agentx/contracts";
+import { AGENT_ACCESS_LEVELS, AgentPrincipalSchema, BUILTIN_AGENT_IDS, agentXError, atLeast, isBuiltinAgentId, orgProjectCatalogKey, principalKey, projectAllows, type AgentAccessLevel, type AgentId, type AgentOwner, type AgentPrincipal, type BuiltinAgentId, type OrgId, type ProjectRole } from "@rovara-code/contracts";
+import { TRIAL_LIMITS_R49, OrgRoleSchema, orgMemberKey, type AuditProof, type OrgRole } from "@agentx/cloud-contracts";
 import type { AuditRuntime } from "../audit/outbox.js";
 import type { DeveloperSignInStore } from "../developer/store.js";
 import { readGuardrails } from "./guardrails.js";
@@ -391,6 +370,10 @@ async function withSurvivors(lookups: Lookups, shares: AgentShare[]): Promise<Ag
  * Makes `shares` the agent's whole share set, in one transaction with the share-index items and a `shared` event. The caller needs
  * `manage`; an unknown member or project is `CONFIG_INVALID`. A set that is already the agent's writes nothing. One save changes
  * at most 48 shares (a transaction's size), so replacing a full set of 50 takes two.
+ *
+ * NO CONFIRMATION: this applies any set, a company-wide share included, to a caller who holds `manage`. No route or tool may call it: a company-wide
+ * share goes through `shareAgent` and waits for an org owner or admin on the page (owner decisions 91, 92). `tests/contract/share-writers-gated.test.ts`
+ * fails when anything but this file refers to it.
  */
 export async function setShares(deps: AgentAccessDeps, caller: AgentCaller, agentId: AgentId, shares: AgentShare[]): Promise<AgentShare[]> {
   if (isBuiltinAgentId(agentId)) throw invalid("Built-in agents belong to the whole company and can't be shared.");

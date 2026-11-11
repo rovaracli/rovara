@@ -6,7 +6,7 @@ import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
 import { ControlPlaneStack } from "../../infra/lib/control-plane.js";
 import { environmentNaming } from "../../infra/lib/naming.js";
-import { HEALTH_ALARM_SUFFIXES } from "../../packages/contracts/src/admin.js";
+import { HEALTH_ALARM_SUFFIXES } from "../../packages/cloud-contracts/src/admin.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
 
 skipLambdaBundling();

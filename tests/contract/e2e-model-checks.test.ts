@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
-import { DRIVING_TEST_FIRST_CALL_CASE_ID, E2E_MODEL_CHECK_RESULT_SCHEMA, e2eModelRouteRevision, type E2EModelReceipt } from "@agentx/contracts";
+import { DRIVING_TEST_FIRST_CALL_CASE_ID, E2E_MODEL_CHECK_RESULT_SCHEMA, e2eModelRouteRevision, type E2EModelReceipt } from "@rovara-code/contracts";
 import { deriveE2EAgentRouteForModel, e2eAgentRouteDefinitionDigest, type E2EAgentInstallation } from "../../packages/model-runtime/src/e2e-route-derive.js";
 import {
   ModelCheckError, readCurrentTiers, readModelCheck, startModelCheck, untestedRouteSentence, validateModelCheckResult, type ExpectedModelCheck, type ModelCheckDependencies,

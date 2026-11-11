@@ -4,7 +4,7 @@
 //
 // The service never decides who may ask, what the turn may know or who pays: the broker built the context after reading the requester's right again, or refused (then the diagnosis is failed in
 // fixed words and nothing is retried in the background), and the broker mints the key. The context is never logged.
-import { DIAGNOSIS_ANSWER_MAX_CHARS, DIAGNOSIS_TURN_QUESTION, DiagnosisAnsweredRequestSchema, DiagnosisTurnResultSchema, type DiagnosisAnsweredRequest, type DiagnosisFailureReason, type DiagnosisQueueMessage, type DiagnosisRef, type DiagnosisTurnResult } from "@agentx/contracts";
+import { DIAGNOSIS_ANSWER_MAX_CHARS, DIAGNOSIS_TURN_QUESTION, DiagnosisAnsweredRequestSchema, DiagnosisTurnResultSchema, type DiagnosisAnsweredRequest, type DiagnosisFailureReason, type DiagnosisQueueMessage, type DiagnosisRef, type DiagnosisTurnResult } from "@rovara-code/contracts";
 import { NO_TEXT_RESPONSE } from "@agentx/orchestrator/orchestrator";
 import type { ServiceLog } from "./processor.js";
 

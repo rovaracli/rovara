@@ -6,7 +6,8 @@
 // The release puts `catalog.json` and `catalog.sig.json` beside the broker's code (the Lambda asset's `service-catalog/` folder). A missing file is a refusal, not a crash.
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { CATALOG_FILE, CATALOG_SIGNATURE_FILE, type loadSignedCatalog } from "@agentx/contracts";
+import { CATALOG_FILE, CATALOG_SIGNATURE_FILE } from "@rovara-code/contracts";
+import { type loadSignedCatalog } from "@agentx/cloud-contracts";
 import { serviceCatalogSourceOf, type ServiceCatalogSource } from "./dependency-plan.js";
 import { lambdaAccountId } from "./lambda-identity.js";
 import { testServicesEnabled } from "./test-services-switch.js";

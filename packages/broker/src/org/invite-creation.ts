@@ -2,7 +2,8 @@
 import { createHash } from "node:crypto";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import { AgentXError, InviteCreateReceiptSchema, ReviewedInviteCreateBodySchema, OrgIdSchema, agentXError, orgMemberKey, developerOrgKey, orgMetaKey, orgScoped } from "@agentx/contracts";
+import { AgentXError, OrgIdSchema, agentXError, orgScoped } from "@rovara-code/contracts";
+import { InviteCreateReceiptSchema, ReviewedInviteCreateBodySchema, orgMemberKey, developerOrgKey, orgMetaKey } from "@agentx/cloud-contracts";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "../aws/developer-routes.js";
 import { takeRateAt } from "../developer/page-comments.js";
 import { cloudJoinBase, inviteUrl } from "./invite-url.js";

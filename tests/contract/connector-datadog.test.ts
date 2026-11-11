@@ -3,8 +3,9 @@
 // faked; no test reaches a network.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { discoverTools, executeTool, type ConnectorDefinition, type Ledger } from "@agentx/gateway";
-import type { DATADOG_SITES} from "../../packages/contracts/src/index.js";
-import { DatadogScopeSchema, ProjectDefinitionSchema, type GrantedTool, type OrgId } from "../../packages/contracts/src/index.js";
+import type { DATADOG_SITES } from "@rovara-code/contracts";
+import { DatadogScopeSchema, type GrantedTool, type OrgId } from "@rovara-code/contracts";
+import { ProjectDefinitionSchema } from "@agentx/cloud-contracts";
 import { classifyWrite } from "../../packages/broker/src/agents/write-class.js";
 import { BUILT_IN_CONNECTOR_TYPES, resolveConnectors, type ResolvedConnector } from "../../packages/broker/src/aws/connector-types.js";
 import { datadogConnectionCheck, datadogConnectorType } from "../../packages/broker/src/aws/datadog-connector-type.js";

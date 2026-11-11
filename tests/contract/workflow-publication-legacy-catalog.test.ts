@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createCandidateManifest, orgProjectCatalogKey, WorkflowSnapshotSchema, type WorkflowSnapshot } from "@agentx/contracts";
+import { createCandidateManifest, orgProjectCatalogKey } from "@rovara-code/contracts";
+import { WorkflowSnapshotSchema, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { TEST_ORG } from "../support/orgs.js";
 import { developerTaskIdentity } from "../../packages/broker/src/developer/task-records.js";
 import { startTaskWorkflowPublicationFromSystem, taskPageUrl } from "../../packages/broker/src/aws/developer-tasks.js";

@@ -1,6 +1,6 @@
 // tests/contract/gateway-hints.test.ts
 import { describe, expect, it } from "vitest";
-import { itemPathProblems } from "../../packages/contracts/src/index.js";
+import { itemPathProblems } from "@rovara-code/contracts";
 import { asanaConnector, githubConnector, jiraConnector, linearBinder, linearConnector, presentCatalog, reviewTools, type CatalogTool } from "../../packages/gateway/src/index.js";
 import { vendorTools, vendorToolsWithAnnotations } from "../support/vendor-fixtures.js";
 

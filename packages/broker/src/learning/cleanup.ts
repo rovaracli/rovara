@@ -12,7 +12,7 @@
 //
 // Nothing here logs or returns text.
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { OrgIdSchema, agentKey, agentVersionSk, canonicalJson, learningWalkKey, projectLearningKey, type OrgId, type RecipeOverlay } from "@agentx/contracts";
+import { OrgIdSchema, agentKey, agentVersionSk, canonicalJson, learningWalkKey, projectLearningKey, type OrgId, type RecipeOverlay } from "@rovara-code/contracts";
 import { flushLearningEvents, learningEvents, withdrawnEvent } from "./audit.js";
 import { appendRuleToOverlay } from "./overlay.js";
 import { learningItemKind, sameProject } from "./retention.js";

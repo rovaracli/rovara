@@ -1,30 +1,8 @@
 import { logDeveloperEvent } from "../../developer/log.js";
 import type { z } from "zod";
 import { QueryCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  CHANNEL_MEMBERS_MAX_CHANNELS,
-  StoredProjectDefinitionSchema,
-  MEMBER_GRANT_SK_PREFIX,
-  PROJECT_REVISION_SK_PREFIX,
-  SLACK_BINDING_SK_PREFIX,
-  developerTaskPolicy,
-  memberGrantsPk,
-  orgProjectCatalogPk,
-  projectPk,
-  slackBindingPk,
-  type AppProjectSummary,
-  setupCheckErrorRef,
-  type AppProjectsResponse,
-  type ProjectRole,
-  type ChannelInfoResponse,
-  type ChannelMembersRequest,
-  type ChannelMembersResponse,
-  type DeveloperProjectsResponse,
-  type DeveloperTaskPolicy,
-  type OrgId,
-  type SlackChannelBinding,
-  SESSION_PROJECT_BINDINGS_MAX,
-} from "@agentx/contracts";
+import { StoredProjectDefinitionSchema, type AppProjectSummary, type AppProjectsResponse, type DeveloperProjectsResponse } from "@agentx/cloud-contracts";
+import { CHANNEL_MEMBERS_MAX_CHANNELS, MEMBER_GRANT_SK_PREFIX, PROJECT_REVISION_SK_PREFIX, SLACK_BINDING_SK_PREFIX, developerTaskPolicy, metaRepositoryOf, memberGrantsPk, orgProjectCatalogPk, projectPk, slackBindingPk, setupCheckErrorRef, type ProjectRole, type ChannelInfoResponse, type ChannelMembersRequest, type ChannelMembersResponse, type DeveloperTaskPolicy, type OrgId, type SlackChannelBinding, SESSION_PROJECT_BINDINGS_MAX } from "@rovara-code/contracts";
 import { resolveDeveloperAccess } from "../../developer/access.js";
 import { effectiveProjectRole, grantRoleOf, grantedByOf, readProjectMeta, type ProjectMetaItem } from "../../developer/project-roles.js";
 import { createProjectMembers, survivorOf, type ProjectMembers, type ProjectMembersDependencies } from "../../org/project-members.js";
@@ -278,6 +256,7 @@ export async function appProjectSummary(
   meta: ProjectMetaItem | undefined,
 ): Promise<AppProjectSummary> {
   const { definition } = record;
+  const metaRepository = metaRepositoryOf(definition);
   const setup = await setupStateOf(setupCheckDepsOf(deps), meta, definition);
   // Live interaction F1: what "Fix with agent" is about when the setup check failed or is outdated (fixed codes and the project's name only; the failed step's text is not copied).
   const setupRef = setupCheckErrorRef({ project: name, status: setup.status, at: setup.checkedAt ?? new Date(deps.now()).toISOString() });
@@ -287,6 +266,7 @@ export async function appProjectSummary(
     status: meta?.status ?? "active",
     latestRevision: definition.revision,
     repositories: definition.repositories.map((repository) => ({ name: repository.name, fullName: repositoryFullName(repository), defaultBranch: repository.defaultBranch })),
+    ...(metaRepository === undefined ? {} : { metaRepository: { name: metaRepository.name, fullName: repositoryFullName(metaRepository), defaultBranch: metaRepository.defaultBranch, ...(metaRepository.alsoCode === true ? { alsoCode: true } : {}) } }),
     myRole: role,
     setup: setupRef === undefined ? setup : { ...setup, errorRef: setupRef },
   };

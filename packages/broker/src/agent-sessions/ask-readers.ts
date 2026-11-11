@@ -6,7 +6,7 @@
 //   outsider  Slack thread replies by people who are not the task's owner, as untrusted data. (Team record rows and pull request comments are not wired yet: see the lane report.)
 //   diff      a peek of the working tree, else the pull request's diff (`ask-diff.ts`).
 import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
-import { LatestChecksSchema, SessionEventSchema, agentSessionKey, checkOutputTail, redactText, workflowSelectedChecks, type OrgId } from "@agentx/contracts";
+import { LatestChecksSchema, SessionEventSchema, agentSessionKey, checkOutputTail, redactText, workflowSelectedChecks, type OrgId } from "@rovara-code/contracts";
 import { effectiveTaskOwner, taskEvent, type DeveloperTaskRecord } from "../developer/task-records.js";
 import { personLabel, readWorkflowThreadNotes } from "../aws/developer-tasks/thread-notes.js";
 import type { AskContextReaders } from "./ask-context.js";
@@ -104,7 +104,8 @@ async function failingCheckTails(deps: AskReaderDependencies, task: DeveloperTas
 async function listedMembersBySlackId(deps: AskReaderDependencies, task: DeveloperTaskRecord): Promise<Map<string, string>> {
   try {
     const people = await loadTaskPeople(deps, task.taskId);
-    return new Map((people?.people ?? []).filter((person) => person.role !== "denied").map((person) => [person.slackUserId, person.developerId]));
+    // A person with no Slack account has no Slack reply to speak for, so they are not in a map keyed by Slack user id.
+    return new Map((people?.people ?? []).flatMap((person): Array<[string, string]> => person.role !== "denied" && person.slackUserId !== undefined ? [[person.slackUserId, person.developerId]] : []));
   } catch {
     return new Map();
   }

@@ -4,7 +4,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { Template } from "aws-cdk-lib/assertions";
 import { Stack } from "aws-cdk-lib";
 import { buildAgentXApp } from "../../infra/lib/app.js";
-import { HOOK_MAX_EVENTS_PER_DELIVERY, hookEventKey } from "../../packages/contracts/src/event-hooks.js";
+import { HOOK_MAX_EVENTS_PER_DELIVERY, hookEventKey } from "@rovara-code/contracts";
 import { HookIngressMemory } from "../../packages/broker/src/triggers/ingress.js";
 import { LINEAR_TENANT, ORG_A, SECRET_1, SECRET_2, iso, setupHookWorld, type HookWorld, type TestBody } from "../support/hook-fixtures.js";
 

@@ -1,7 +1,7 @@
 import { projectRoleLabel, projectSetupLabel } from "./labels.js";
 import { SettingsNote } from "../SettingsNote.js";
 import { Link, useSearchParams } from "react-router";
-import { AppProjectsResponseSchema } from "@agentx/contracts/web";
+import { AppProjectsResponseSchema } from "@agentx/cloud-contracts/web";
 import { DataTable } from "../../../design/DataTable.js";
 import { PageHeader } from "../../../design/PageHeader.js";
 import { VisibleText } from "../../../design/VisibleText.js";

@@ -7,11 +7,9 @@ import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 // The package the broker imports, not its source: the broker tests an error for that package's class.
-import { agentXError as packageError } from "@agentx/contracts";
-import {
-  orgSettingsKey, projectAiKey, githubInstallationKey, orgGithubInstallationKey, orgMetaKey, orgProjectCatalogKey, orgScoped, projectCreateRequestKey, projectMemberKey, projectMetaKey, projectRevisionKey,
-  type GithubInstallationRecord, type OrgId, type OrgRole,
-} from "../../packages/contracts/src/index.js";
+import { agentXError as packageError } from "@rovara-code/contracts";
+import { orgSettingsKey, projectAiKey, githubInstallationKey, orgGithubInstallationKey, orgMetaKey, projectCreateRequestKey, type GithubInstallationRecord, type OrgRole } from "@agentx/cloud-contracts";
+import { orgProjectCatalogKey, orgScoped, projectMemberKey, projectMetaKey, projectRevisionKey, type OrgId } from "@rovara-code/contracts";
 import { MAYA, OMAR, createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import { cloudProjectDefaultsFromEnvironment } from "../../packages/broker/src/org/cloud-projects.js";
 import { adminCall, createAdminBroker } from "../support/admin-broker.js";

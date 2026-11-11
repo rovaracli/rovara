@@ -1,6 +1,6 @@
 // Spec 025 FR-032, C8: what the notifier posts in a shared thread. Every value from a record is
 // escaped; free text from the worker is redacted and capped first. No em dashes.
-import { DEVELOPER_SHARE_SUMMARY_MAX, emailSafeName, hideEmailAddresses, redactAndCap, redactText } from "@agentx/contracts";
+import { DEVELOPER_SHARE_SUMMARY_MAX, emailSafeName, hideEmailAddresses, redactAndCap, redactText } from "@rovara-code/contracts";
 import { escapeSlack, fitEscaped } from "../aws/slack-details-view.js";
 
 export interface StartMessageInput {

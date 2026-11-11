@@ -3,9 +3,8 @@
 // them, the GitHub accounts of the people (linked to members), a fake GitHub that reads and merges, and Plan 3's confirmation page, so a test presses Merge and decides it the way
 // a person does.
 import { createHash, randomUUID } from "node:crypto";
-import {
-  developerOrgKey,orgMetaKey,projectRevisionKey, agentXError, mergeTrackingDecisionDigest, mergeTrackingKey, type CodeSettings, type MergeTrackingItem, type OrgId,
-} from "../../packages/contracts/src/index.js";
+import { developerOrgKey, orgMetaKey, mergeTrackingDecisionDigest, type MergeTrackingItem } from "@agentx/cloud-contracts";
+import { projectRevisionKey, agentXError, mergeTrackingKey, type CodeSettings, type OrgId } from "@rovara-code/contracts";
 import type { PullRequestStatus } from "../../packages/broker/src/github-pull-status.js";
 import { approvalDecideKind } from "../../packages/broker/src/agents/approval-decide-kind.js";
 import { getAnyApproval, type ApprovalDependencies } from "../../packages/broker/src/agents/approvals.js";
@@ -19,11 +18,11 @@ import type { SessionShareDependencies } from "../../packages/broker/src/agent-s
 import { linkGithubMember } from "../../packages/broker/src/rovara-code/github-members.js";
 import type { CodeMergeHost } from "../../packages/broker/src/rovara-code/merge.js";
 import { githubCodeHost } from "../../packages/broker/src/plugins/code-host/github/index.js";
-import type { CodeHost } from "../../packages/contracts/src/index.js";
+import type { CodeHost } from "@rovara-code/contracts";
 import { registerMergeApprovals } from "../../packages/broker/src/rovara-code/merge.js";
 import { registerCodeSettingsApprovals } from "../../packages/broker/src/rovara-code/code-settings.js";
 import type { MergePullRequestResult } from "../../packages/broker/src/github-app.js";
-import { codeSettingsKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { codeSettingsKey } from "@rovara-code/contracts";
 import { ARJUN, CELL, MAX, OLA, ORG_A, PRIYA, sessionWorld } from "./agent-session-world.js";
 import { capturingAuditDeps, type AuditCapture } from "./audit-capture.js";
 

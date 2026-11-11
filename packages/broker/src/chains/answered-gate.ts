@@ -6,7 +6,7 @@
 //   Stop (Decline):     the run ends `cancelled` (a person's decision, not a failure).
 //
 // Nothing a step reports can reach the approval record: the prompt is fixed words around the step's name.
-import type { PinnedChainDefinition } from "@agentx/contracts";
+import type { PinnedChainDefinition } from "@rovara-code/contracts";
 import { neutralText } from "./run-events.js";
 
 type PinnedStep = PinnedChainDefinition["steps"][number];

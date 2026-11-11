@@ -1,7 +1,8 @@
 // packages/broker/src/developer/identities.ts
 // Plan 2, Task 2: one developer per person, however they sign in. A sign-in identity (a provider's issuer and subject) is linked to a
 // developer; a second route to the same verified email is linked to the first route's developer instead of becoming a second member.
-import { normalizeEmail, type DeveloperSignInMethod, type OrgId } from "@agentx/contracts";
+import { normalizeEmail, type OrgId } from "@rovara-code/contracts";
+import { type DeveloperSignInMethod } from "@agentx/cloud-contracts";
 import { ownerKeyForSubject } from "../aws/lambda.js";
 import type { MergeDuplicateMemberInput, MergeDuplicateMemberResult } from "../org/merge-members.js";
 import type { OrgStore } from "../org/store.js";

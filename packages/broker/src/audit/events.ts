@@ -4,8 +4,10 @@
 // the same facts gets a different one. Personal data (names, emails, logins, repository and project names, domains,
 // reasons) goes only in `details`, or in a name-keyed target `{ kind, name }`, which the appender pseudonymizes.
 import {createHash} from "node:crypto";
-import {ModelPolicyAuditFactsSchema,ModelFallbackAuditFactsSchema,type ModelIdentifier,type StageId,type ModelFallback} from "@agentx/contracts";
-import { auditEventId, type AuditAction, type AuditActor, type AuditDetailPart, type AuditEventInput, type AuditProof, type AuditTarget } from "@agentx/contracts";
+import { ModelPolicyAuditFactsSchema, ModelFallbackAuditFactsSchema } from "@agentx/cloud-contracts";
+import { type ModelIdentifier, type StageId, type ModelFallback } from "@rovara-code/contracts";
+import { auditEventId, type AuditAction, type AuditDetailPart, type AuditEventInput, type AuditProof, type AuditTarget } from "@agentx/cloud-contracts";
+import { type AuditActor } from "@agentx/cloud-contracts";
 
 export interface AuditBuilderBase {
   orgId: string;
@@ -558,6 +560,21 @@ export function auditCompanyDesignReviewPolicyProposed(input: AuditBuilderBase &
   return build("company.design_review_policy_proposed", input, { kind: "org", id: input.orgId }, { field: input.field, from: input.from, to: input.to });
 }
 
+/** `occurrence`: `auditOccurrence("approval_window", item revision)` for a change, the proposal's id for a cancel. `from` and `to` are the window in whole seconds. */
+export function auditCompanyApprovalWindowChanged(input: AuditBuilderBase & { from: number; to: number; mode: "direct" | "second_person" | "sole_owner_exception" | "cancelled"; revision: number }): AuditEventInput {
+  return build("company.approval_window_changed", input, { kind: "org", id: input.orgId }, { from: input.from, to: input.to, mode: input.mode, revision: input.revision });
+}
+
+/** `occurrence`: the proposal's id. A different admin has to approve a longer window. */
+export function auditCompanyApprovalWindowProposed(input: AuditBuilderBase & { from: number; to: number }): AuditEventInput {
+  return build("company.approval_window_proposed", input, { kind: "org", id: input.orgId }, { from: input.from, to: input.to });
+}
+
+/** `occurrence`: the decision's request id. One event for a plan decided by someone other than its owner, or approved from outside the app. Fixed words and whole numbers only. */
+export function auditApprovalPlaceDecided(input: AuditBuilderBase & { taskId: string; place: string; risk: string; answer: string; role: string; windowSeconds?: number; signInAgeSeconds?: number }): AuditEventInput {
+  return build("approval.place_decided", input, { kind: "task", id: input.taskId }, { place: input.place, risk: input.risk, answer: input.answer, role: input.role, windowSeconds: input.windowSeconds, signInAgeSeconds: input.signInAgeSeconds });
+}
+
 /** `occurrence`: `auditOccurrence(project, company document revision)`. One event per project the change reached; `settingCount` is the number of settings that changed for it. */
 export function auditCompanyChangeAppliedToProject(input: AuditBuilderBase & { projectName: string; changeRevision: number; settingCount: number }): AuditEventInput {
   return build("company.change_applied_to_project", input, { kind: "project", name: input.projectName }, { changeRevision: input.changeRevision, settingCount: input.settingCount });
@@ -1007,6 +1024,23 @@ export function auditCompanyImageChange(input: AuditBuilderBase & { action: Comp
   return build(input.action, input, { kind: "org", id: input.orgId }, { imageId: input.imageId, digest: input.digest, authority: input.authority });
 }
 
+// Company rules (G-04, decisions 57 and 85) ---------------------------------------------------------------------------
+
+export type CompanyRulesAuditAction = Extract<AuditAction, `company_rules.${string}`>;
+
+/**
+ * `occurrence`: `auditOccurrence(proposalId or the connection's time, action)` (a proposal is decided once; a version number is never reused). The target is the company. Facts are ids, version numbers, counts, digests and fixed
+ * words only: the rules' text is never in an event (the immutable versions in the store are its record), and a repository's name goes in `details` (subject `org`), never in a fact.
+ */
+export function auditCompanyRules(input: AuditBuilderBase & { action: CompanyRulesAuditAction; facts: Record<string, Fact> }): AuditEventInput {
+  return build(input.action, input, { kind: "org", id: input.orgId }, input.facts);
+}
+
+/** `occurrence`: `auditOccurrence(revision of the list, action)`. A company admin changed the company's extra registries. Facts: how many are listed now and the authority; the hosts go in `details` (subject `org`). */
+export function auditCompanyImageRegistriesChanged(input: AuditBuilderBase & { registryCount: number; authority: "fresh_sign_in" }): AuditEventInput {
+  return build("company_image.registries_changed", input, { kind: "org", id: input.orgId }, { registryCount: input.registryCount, authority: input.authority });
+}
+
 // Saved project images (SV wiring) ---------------------------------------------------------------------------
 
 /** `occurrence`: `auditOccurrence(project, row version, change)`. The target is the project. Facts are fixed words, an image digest and a count: no repository name, command or secret. */
@@ -1058,4 +1092,28 @@ export function auditScriptTokenRevoked(input: AuditBuilderBase & { tokenId: str
 /** Written once a day per token, with its first request of the day (`permission` is what that request used). */
 export function auditScriptTokenUsed(input: AuditBuilderBase & { tokenId: string; day: string; permission: string }): AuditEventInput {
   return build("script_token.used", input, { kind: "script_token", id: input.tokenId }, { day: input.day, permission: input.permission });
+}
+
+// Runtime UI flags (lane U5) ---------------------------------------------------------------------------------------------
+
+/**
+ * `occurrence`: `auditOccurrence(org, revision)`: the new revision of the company's flags, so a replay of one write is one event. An owner or admin changed which screens are on for the company, or whether a person may preview one on their
+ * own device. `turnedOn` and `turnedOff` are flag names (a closed list of plain words) joined by `+`, or `none`; `previews` is `on`, `off` or `same`. The target is the company.
+ */
+export function auditCompanyUiFlagsChanged(input: AuditBuilderBase & { revision: number; turnedOn: readonly string[]; turnedOff: readonly string[]; previews: "on" | "off" | "same" }): AuditEventInput {
+  return build("company.ui_flags_changed", input, { kind: "org", id: input.orgId }, {
+    revision: input.revision, turnedOn: input.turnedOn.length === 0 ? "none" : input.turnedOn.join("+"), turnedOff: input.turnedOff.length === 0 ? "none" : input.turnedOff.join("+"), previews: input.previews,
+  });
+}
+
+// Agent publish requests (experience decision 24, owner decision 91) ---------------------------------------------------------------------
+
+export type AgentPublicationAuditAction = Extract<AuditAction, `agent_publication.${string}`>;
+
+/**
+ * `occurrence`: the request's approval id (a request is asked, decided and withdrawn once each), or for a request applied at once `auditOccurrence(agentId, requestId)`.
+ * The target is the agent. Facts are the approval id, the version, `targetKind` and fixed words: the target project's name is never a fact.
+ */
+export function auditAgentPublication(input: AuditBuilderBase & { action: AgentPublicationAuditAction; agentId: string; facts: Record<string, Fact> }): AuditEventInput {
+  return build(input.action, input, { kind: "agent", id: input.agentId }, input.facts);
 }

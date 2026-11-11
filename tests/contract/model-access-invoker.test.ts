@@ -1,5 +1,5 @@
 import { LambdaClient, type InvokeCommand, type InvokeCommandOutput } from "@aws-sdk/client-lambda";
-import { AgentXError } from "@agentx/contracts";
+import { AgentXError } from "@rovara-code/contracts";
 import { describe, expect, it } from "vitest";
 import { LearningNotForwarded, type ModelAccess } from "../../packages/broker/src/model-proxy/access.js";
 import { ModelProxyClient } from "../../packages/broker/src/model-proxy/client.js";

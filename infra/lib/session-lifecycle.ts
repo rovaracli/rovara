@@ -20,7 +20,7 @@ import {
   aws_stepfunctions as sfn,
 } from "aws-cdk-lib";
 import { Construct } from "constructs";
-import { BOOT_STAGE2_SHA256_PARAMETER, MODEL_PROXY_URL_PARAMETER, WORKER_SETTING_PARAMETERS } from "@agentx/contracts";
+import { BOOT_STAGE2_SHA256_PARAMETER, MODEL_PROXY_URL_PARAMETER, WORKER_SETTING_PARAMETERS } from "@rovara-code/contracts";
 import { BrokerNames } from "./broker-names.js";
 import { packagedFunction } from "./control-plane.js";
 import { EC2_WORKER_AMI_PARAMETER } from "./ec2-workers.js";

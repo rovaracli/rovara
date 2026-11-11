@@ -1,12 +1,12 @@
 // ENV-ROOM (owner decision 2026-10-24): a Lambda's environment is held to 4 KB, so a value the function can compute is not passed. The broker builds each of the
-// variables in DERIVED_BROKER_VARIABLES (packages/contracts/src/derived-names.ts) from the environment's name, the region and the account. The module is the one
+// variables in DERIVED_BROKER_VARIABLES (packages/cloud-contracts/src/derived-names.ts) from the environment's name, the region and the account. The module is the one
 // place a derived name is written: CDK names the resource with its functions, the broker reads the same functions. This holds the two together: for every derived
 // variable that is a role or a queue, the synthesized template has exactly one resource with that name (and, for a role, that path), and what the broker builds
 // is that resource's ARN or URL. A resource renamed in CDK without the module, or a variable added to the table for a name nothing creates, fails here.
 import { Stack } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
-import { DERIVED_BROKER_VARIABLES, auditIntakeQueueName, BROKER_NAMES_VARIABLE, BROKER_SETTINGS_VARIABLE } from "@agentx/contracts";
+import { DERIVED_BROKER_VARIABLES, auditIntakeQueueName, BROKER_NAMES_VARIABLE, BROKER_SETTINGS_VARIABLE } from "@agentx/cloud-contracts";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { hydrateBrokerEnvironment, type MutableEnvironment } from "../../packages/broker/src/aws/broker-environment.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";

@@ -3,7 +3,8 @@
 // and is kept up to date across rounds. The summaries come from a reviewer reading untrusted comments: each is redacted
 // and made inert for GitHub (no mention, link or cross-reference) before it is written.
 import { neutralizeLinearWords } from "../rovara-code/linear-close.js";
-import { PULL_REQUEST_BODY_MAX_CHARS, WORKFLOW_KEEP_PULL_REQUESTS_NOTE, WorkflowFeedbackReviewReportSchema, redactText, type WorkflowFeedbackReviewReport, type WorkflowSnapshot } from "@agentx/contracts";
+import { PULL_REQUEST_BODY_MAX_CHARS, WORKFLOW_KEEP_PULL_REQUESTS_NOTE, WorkflowFeedbackReviewReportSchema, redactText, type WorkflowFeedbackReviewReport } from "@rovara-code/contracts";
+import { type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { createHash } from "node:crypto";
 
 /** Around the description's lines about the checks and reviews of the code on the pull request (since this release). */

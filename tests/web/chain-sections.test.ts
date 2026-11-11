@@ -3,7 +3,7 @@ import { expect, it } from "vitest";
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryRouter, RouterProvider } from "react-router";
-import { SessionViewReaderSchema } from "@agentx/contracts/web";
+import { SessionViewReaderSchema } from "@agentx/cloud-contracts/web";
 import { AppHostProvider } from "../../packages/ui/src/host.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { Workspace } from "../../packages/ui/src/screens/session/Workspace.js";

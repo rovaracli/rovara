@@ -10,7 +10,7 @@
 // The merge step and the planner are priced by `estimateSecondReviewUsd`, the same function the second-review picker uses. Reviewers use `estimateReviewerUsd` below (their own measured turns, output and cache share).
 // NO PRICE MEANS "COST UNAVAILABLE": a model the catalog has no price for is never guessed at (How we work 5.3). The review then needs one tap from the requester (an `approve_spend` card, low risk).
 // Customer pays (owner 2026-11-03): this file only describes a cost; nothing here spends or mints a key.
-import { DESIGN_REVIEW_CAP_MAX_USD, DESIGN_REVIEW_ROUNDS_MAX, DESIGN_REVIEW_TIERS, addDesignUsd, designReviewCapRoom, type DesignReviewTier, type ModelIdentifier, type ReviewerRole } from "@agentx/contracts";
+import { DESIGN_REVIEW_CAP_MAX_USD, DESIGN_REVIEW_ROUNDS_MAX, DESIGN_REVIEW_TIERS, addDesignUsd, designReviewCapRoom, type DesignReviewTier, type ModelIdentifier, type ReviewerRole } from "@rovara-code/contracts";
 import { estimateSecondReviewUsd, type SecondReviewPrice } from "../rovara-code/second-review-picker.js";
 
 /** The reviewers each tier runs per round (3.4). Zoom-out and Critic B are priced in every round of Thorough: the estimate may be high, never low. */

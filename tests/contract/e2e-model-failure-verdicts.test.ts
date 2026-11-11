@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { e2eAgentValueKeyId, e2eModelRouteRevision, E2E_MODEL_FAILURE_CLASSES, type E2EModelFailure, type E2EModelReceipt, type E2EModelRouteDefinition } from "@agentx/contracts";
+import { e2eAgentValueKeyId, e2eModelRouteRevision, E2E_MODEL_FAILURE_CLASSES, type E2EModelFailure, type E2EModelReceipt, type E2EModelRouteDefinition } from "@rovara-code/contracts";
 import { scriptedE2ERouteDefinition } from "../../packages/model-runtime/src/e2e-route-derive.js";
 import { createGovernedE2EModelRoute, createInMemoryE2EDayBudget } from "../../packages/model-runtime/src/e2e-route.js";
 import { createE2EProviderInvoke } from "../../packages/model-runtime/src/e2e-provider-invoke.js";

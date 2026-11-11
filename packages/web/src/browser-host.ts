@@ -1,4 +1,4 @@
-import { AppMeResponseReaderSchema, RealtimeTokenResponseReaderSchema, SessionIdSchema } from "@agentx/contracts/web";
+import { AppMeResponseReaderSchema, RealtimeTokenResponseReaderSchema, SessionIdSchema } from "@agentx/cloud-contracts/web";
 import type { ApiRequest, ApiResponse, AppHost, RealtimeSocket } from "@agentx/ui";
 import { ApiError, COMPANY_HEADER, createApiClient, pageCompany, isCompanySwitcherOn, reloadIntoActiveCompany, SIGN_IN_REPEAT_GUARD_MS, withCompanyHeader } from "@agentx/ui";
 import { safeExternalUrl, isGithubInstallationUrl, isSlackLinkUrl, isGithubLinkUrl, joinLinkPath } from "../../ui/src/text/links.js";

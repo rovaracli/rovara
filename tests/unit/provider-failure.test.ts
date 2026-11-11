@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { E2E_MODEL_FAILURE_CLASSES, type E2EModelFailureClass } from "../../packages/contracts/src/e2e-model-channel.js";
-import type { ModelProvider } from "../../packages/contracts/src/model-providers.js";
+import { E2E_MODEL_FAILURE_CLASSES, type E2EModelFailureClass } from "@rovara-code/contracts";
+import type { ModelProvider } from "@rovara-code/contracts";
 import { classifyProviderFailure } from "../../packages/model-runtime/src/provider-failure.js";
 
 // M1.4 Task 4.10B, test 16 and 19: one assertion per cell of the plan's D-5 table, plus the precedence rules.

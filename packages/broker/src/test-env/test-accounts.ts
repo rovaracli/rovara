@@ -26,12 +26,8 @@
 // NOTHING IS REACHABLE WHILE `ta` IS OFF. Every function starts with `deps.enabled()`; when it is false the answer is the one an unknown path gets (NOT_FOUND "Not found"), before any store, secrets or session call.
 //
 // Not wired: no route, no table, no switch reader (TS36 pages and the DynamoDB adapter are wiring). `TestAccountStore` is an interface; the in-memory store in tests/support has none of the adapter's races (see its notes).
-import {
-  OrgIdSchema, TEST_ACCOUNT_EXPIRY_DAYS, TEST_ACCOUNT_LIMIT_DEFAULTS, agentXError, parseTestAccountSecretGrant, parseTestAccountSecretRef, restampApprovals, testAccountApprovalDigest,
-  testAccountApprovalsSatisfied, testAccountAwsEndpointHosts, testAccountExternalId, testAccountProdProblems, testAccountQualifyingApprovals, testAccountSchemaFor, testAccountSecretRef, testAccountWidened, checkTestAccountKeyShape,
-  isTestAccountUsableAt,
-  type AuditEventInput, type OrgId, type TestAccount, type TestAccountApproval, type TestAccountSecretGrant, type TestEnvProdDeny,
-} from "@agentx/contracts";
+import { OrgIdSchema, TEST_ACCOUNT_EXPIRY_DAYS, TEST_ACCOUNT_LIMIT_DEFAULTS, agentXError, parseTestAccountSecretGrant, parseTestAccountSecretRef, restampApprovals, testAccountApprovalDigest, testAccountApprovalsSatisfied, testAccountAwsEndpointHosts, testAccountExternalId, testAccountProdProblems, testAccountQualifyingApprovals, testAccountSchemaFor, testAccountSecretRef, testAccountWidened, checkTestAccountKeyShape, isTestAccountUsableAt, type OrgId, type TestAccount, type TestAccountApproval, type TestAccountSecretGrant, type TestEnvProdDeny } from "@rovara-code/contracts";
+import { type AuditEventInput } from "@agentx/cloud-contracts";
 import { createHash } from "node:crypto";
 import type { TransactItem } from "../audit/outbox.js";
 import { auditOccurrence, auditTestAccountChange, type AuditBuilderBase, type TestAccountAuditAction } from "../audit/events.js";

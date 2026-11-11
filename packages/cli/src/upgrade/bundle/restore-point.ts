@@ -1,6 +1,7 @@
 // Enterprise foundations, task N3: what an upgrade records before it changes anything, so a rollback knows where to go back to: the instant
 // (for a DynamoDB point-in-time restore), the version it left and the bundle id it left (null when that install never ran a bundle).
-import { InstalledBundleSchema, RestorePointSchema, agentXError, installedBundleParameter, restorePointParameter, type InstalledBundle, type RestorePoint } from "@agentx/contracts";
+import { InstalledBundleSchema, RestorePointSchema, installedBundleParameter, restorePointParameter, type InstalledBundle, type RestorePoint } from "@agentx/cloud-contracts";
+import { agentXError } from "@rovara-code/contracts";
 import { ParameterExistsError, type ParameterStore } from "../../environments/parameter-store.js";
 
 export { RestorePointSchema, installedBundleParameter, restorePointParameter, type InstalledBundle, type RestorePoint };

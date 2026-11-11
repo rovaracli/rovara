@@ -2,8 +2,8 @@
 // failure and usage index items older than 30 days.
 import { describe, expect, it, vi } from "vitest";
 import { expireIndexDays, indexSweepWanted, INDEX_EXPIRY_DELETES_PER_RUN } from "../../packages/broker/src/aws/index-expiry.js";
-import { orgScoped } from "../../packages/contracts/src/org-node.js";
-import { orgFailureDayPk } from "../../packages/contracts/src/org-scoped-keys.js";
+import { orgScoped } from "@rovara-code/contracts";
+import { orgFailureDayPk } from "@rovara-code/contracts";
 import { TEST_ORG } from "../support/orgs.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 

@@ -2,7 +2,7 @@
 // the owner's accepted risks and the merge; read back as counts for the settings page and the verdict's shadow window.
 import { marshall } from "@aws-sdk/util-dynamodb";
 import { describe, expect, it } from "vitest";
-import { SecondOpinionSchema, secondReviewModelKey, summarizeSecondReviewTrack, workflowFindingFingerprint, type SecondOpinion } from "../../packages/contracts/src/index.js";
+import { SecondOpinionSchema, secondReviewModelKey, summarizeSecondReviewTrack, workflowFindingFingerprint, type SecondOpinion } from "@rovara-code/contracts";
 import { applyTrackChange, fileHash, findingKey, indexSecondReviewTrack, readTrackRecord, TRACK_RECORD_DAYS, readTrackRows, trackChangeOf, trackRowKey, trackStoreOf, TRACK_RETENTION_DAYS, type TrackChange, type TrackStore } from "../../packages/broker/src/rovara-code/second-review-track.js";
 import { indexTogether, secondReviewTrackIndex } from "../../packages/broker/src/aws/outbox-publisher.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";

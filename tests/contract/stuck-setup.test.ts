@@ -1,6 +1,6 @@
 // tests/contract/stuck-setup.test.ts
 // Spec 025 FR-055, D21, C17, C18: a developer task's setup is failed 50 minutes after it started.
-import { slackLimitPk } from "../../packages/contracts/src/org-scoped-keys.js";
+import { slackLimitPk } from "@rovara-code/contracts";
 import { TEST_ORG } from "../support/orgs.js";
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";

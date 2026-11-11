@@ -3,7 +3,7 @@
 // layer as the project's process. An ordinary custom agent may still build on what it likes.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { ROVARA_CODE_AGENT_ID, agentKey, agentVersionSk, agentXError, recipeDigest, type AgentId } from "../../packages/contracts/src/index.js";
+import { ROVARA_CODE_AGENT_ID, agentKey, agentVersionSk, agentXError, recipeDigest, type AgentId } from "@rovara-code/contracts";
 import { getApproval, getApprovalSubjectHandler, type ApprovalRecord } from "../../packages/broker/src/agents/approvals.js";
 import { publishDraft, resolveRecipe, rollbackAgent } from "../../packages/broker/src/agents/changes.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";

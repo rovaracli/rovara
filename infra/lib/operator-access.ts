@@ -11,35 +11,10 @@
 // Enterprise only. Absent in Public: nothing here is created unless the install says `rovaraOperatorAccess=enabled|suspended` in its CDK context.
 import { Aws, CfnCondition, CfnOutput, CfnParameter, Duration, Fn, RemovalPolicy, Stack, Token, aws_events as events, aws_events_targets as targets, aws_iam as iam, aws_lambda as lambda, aws_lambda_nodejs as lambdaNodejs, aws_logs as logs, aws_s3 as s3, aws_sns as sns, aws_ssm as ssm } from "aws-cdk-lib";
 import { resolve } from "node:path";
+import { markCodeContractsPureCommand } from "./code-contracts-bundling.js";
 import { Construct } from "constructs";
-import {
-  APPROVED_BUNDLE_PREFIX,
-  OPERATOR_ACCESS_CONTEXT_KEY,
-  OPERATOR_ACCESS_STATES,
-  OPERATOR_APPROVERS_CONTEXT_KEY,
-  OPERATOR_SIGNING_KEYS_CONTEXT_KEY,
-  OPERATOR_EXTERNAL_ID_CONTEXT_KEY,
-  OPERATOR_LOG_GROUPS_CONTEXT_KEY,
-  OPERATOR_PRINCIPAL_CONTEXT_KEY,
-  APPROVAL_PREFIX,
-  DEPLOYER_PARTS,
-  DEPLOYING_PREFIX,
-  bundleDeployerFunctionName,
-  bundleDeployerRoleName,
-  bundleTrustParameter,
-  editionBackupParameter,
-  editionRecordParameter,
-  synthSettingsParameter,
-  deployLockParameter,
-  deployProgressParameter,
-  operatorAccessStateParameter,
-  environmentSettingsPrefix,
-  environmentStackName,
-  installedBundleParameter,
-  parseBundlePublicKey,
-  rovaraOperatorRoleName,
-  type OperatorAccessState,
-} from "@agentx/contracts";
+import { APPROVED_BUNDLE_PREFIX, OPERATOR_ACCESS_CONTEXT_KEY, OPERATOR_ACCESS_STATES, OPERATOR_APPROVERS_CONTEXT_KEY, OPERATOR_SIGNING_KEYS_CONTEXT_KEY, OPERATOR_EXTERNAL_ID_CONTEXT_KEY, OPERATOR_LOG_GROUPS_CONTEXT_KEY, OPERATOR_PRINCIPAL_CONTEXT_KEY, APPROVAL_PREFIX, DEPLOYER_PARTS, DEPLOYING_PREFIX, bundleDeployerFunctionName, bundleDeployerRoleName, bundleTrustParameter, editionBackupParameter, editionRecordParameter, synthSettingsParameter, deployLockParameter, deployProgressParameter, operatorAccessStateParameter, installedBundleParameter, rovaraOperatorRoleName, type OperatorAccessState } from "@agentx/cloud-contracts";
+import { environmentSettingsPrefix, environmentStackName, parseBundlePublicKey } from "@rovara-code/contracts";
 import type { AgentXNaming } from "./naming.js";
 
 export interface OperatorAccessSettings {
@@ -272,7 +247,7 @@ export class OperatorAccess extends Construct {
       memorySize: 2048,
       logGroup: deployerLogs,
       environment: { ROVARA_ENV: env, APPROVAL_BUCKET: bucketName, DEPLOY_ROLE_ARN: deployRoleArn, ALERT_TOPIC_ARN: this.alertTopic.topicArn, URL_SUFFIX: Aws.URL_SUFFIX },
-      bundling: { externalModules: [], minify: true, sourceMap: true, target: "node22" },
+      bundling: { externalModules: [], minify: true, sourceMap: true, target: "node22", commandHooks: { beforeBundling: (inputDir: string) => [markCodeContractsPureCommand(inputDir)], afterBundling: () => [], beforeInstall: () => [] } },
     });
     const deployerArn = this.deployer.functionArn;
     // A queued (asynchronous) call is dropped rather than retried or run late, so suspending cannot leave one waiting to start after it.

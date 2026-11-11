@@ -1,10 +1,8 @@
 // Setup and test health SH18: the Testing view (rows from the task's selected checks, the classifier's result) and the `## Testing` section of a pull request: fixed words, redacted and inert text, the shrink
 // levels that never drop the result or a blocked, failed, not-run or already-failing row, and the description with the view absent being exactly what it was.
 import { describe, expect, it } from "vitest";
-import {
-  EvidencePackSchema, TESTING_REASON_TEXT, TestingViewSchema, WORKFLOW_BLOCK_REASONS, WorkflowSnapshotSchema, createCandidateManifest, createWorkflowSnapshot, wholeTaskSpendUsd,
-  type AutoFixBudget, type TestingView, type WorkflowSnapshot,
-} from "@agentx/contracts";
+import { EvidencePackSchema, TESTING_REASON_TEXT, TestingViewSchema, createCandidateManifest, wholeTaskSpendUsd, type TestingView } from "@rovara-code/contracts";
+import { WORKFLOW_BLOCK_REASONS, WorkflowSnapshotSchema, createWorkflowSnapshot, type AutoFixBudget, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { testingSectionLines, testingViewOf, type TestingViewInput } from "../../packages/broker/src/rovara-code/testing-section.js";
 import { rovaraStatusLines, type PullRequestBodyContext } from "../../packages/broker/src/rovara-code/pull-request-body.js";
 

@@ -1,7 +1,7 @@
 // Design review stage, DR10: the broker's own functions behind the wait sweep's ports (`wait-sweep.ts`). Everything that reaches outside the design-review folder (the roster, the project's members, the sign-in table, the
 // model keys) is gathered here so the sweep itself reads no store by name and a test gives it fakes. `designWaitSweepOf` is the one call the recovery sweep makes, and it is a no-op until the `dr` switch is on for some project.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { DesignReviewBindingSchema, type OrgId } from "@agentx/contracts";
+import { DesignReviewBindingSchema, type OrgId } from "@rovara-code/contracts";
 import { queryAllItems } from "../aws/admin-reads.js";
 import type { AwsBrokerDependencies } from "../aws/broker/definitions.js";
 import { listProjectMembers } from "../org/project-members.js";

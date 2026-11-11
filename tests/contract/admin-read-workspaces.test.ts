@@ -5,7 +5,7 @@ import { createAdminReadBroker } from "../support/admin-read-broker.js";
 import { MAYA } from "../support/developer-task-broker.js";
 import { SLACK_CHANNEL, SLACK_TEAM, call, ensureWorkspace, orchestratorPrincipal } from "../support/slack-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
-import { orgSettingsKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { orgSettingsKey } from "../../packages/cloud-contracts/src/org-scoped-keys.js";
 
 describe("GET /v1/admin/workspaces (FR-030, A10)", () => {
   it("lists a Slack thread's and a developer task's workspaces with their owners, and the limits", async () => {

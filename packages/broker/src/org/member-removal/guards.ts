@@ -1,7 +1,8 @@
 // Member removal (v1.1), task 3: the checks that make authority that was cached or stored elsewhere (a Slack identity link, a stored task person, a decision judged earlier, a
 // realtime token) notice a removal. Each reads the member record live and consistently.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { agentXError, orgMemberKey, orgRemovedKey, type OrgId, type OrgRole } from "@agentx/contracts";
+import { agentXError, type OrgId } from "@rovara-code/contracts";
+import { orgMemberKey, orgRemovedKey, type OrgRole } from "@agentx/cloud-contracts";
 import { REMOVED_FROM_ORG_MESSAGE } from "../sign-in.js";
 
 export interface GuardDeps {

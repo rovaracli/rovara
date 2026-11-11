@@ -6,10 +6,8 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import {
-  PLAN_DRY_RUN_FEATURE, PlanDryRunReportSchema, WORKER_INVOCATION_FEATURES, builtinFileCheckCommand, planDryRunCommandSha256,
-  type PlanDryRunReport,
-} from "@agentx/contracts";
+import { PLAN_DRY_RUN_FEATURE, PlanDryRunReportSchema, builtinFileCheckCommand, planDryRunCommandSha256, type PlanDryRunReport } from "@rovara-code/contracts";
+import { WORKER_INVOCATION_FEATURES } from "@agentx/cloud-contracts";
 import type { DockerCli } from "@agentx/verifier";
 import { classifyDryRunExit, grepFileOperands, proposedChecksOfPlan, runPlanDryRun, type ProposedCheckToTry } from "../../packages/worker/src/plan-dry-run.js";
 import { materializeBaseSource } from "../../packages/worker/src/baseline-source-export.js";

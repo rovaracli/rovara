@@ -6,12 +6,12 @@
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { CatalogCache, connectMcp, type McpConnection } from "@agentx/gateway";
-import { EMPTY_RECIPE, type ResolvedRecipe, type ToolGrant } from "../../packages/contracts/src/agent-recipe-node.js";
-import { recipeDigest } from "../../packages/contracts/src/agent-recipe-node.js";
+import { EMPTY_RECIPE, type ResolvedRecipe, type ToolGrant } from "@rovara-code/contracts";
+import { recipeDigest } from "@rovara-code/contracts";
 import { validateRecipeForOrg } from "../../packages/broker/src/agents/guardrails.js";
 import { runGivesAgentTools } from "../../packages/broker/src/aws/broker/task-operations.js";
 import { applyAgentStep, givesAgentTools } from "../../packages/broker/src/agents/dispatch.js";
-import { DEFAULT_AGENT_GUARDRAILS as GUARDRAILS } from "../../packages/contracts/src/agent-guardrails.js";
+import { DEFAULT_AGENT_GUARDRAILS as GUARDRAILS } from "@rovara-code/contracts";
 import { nonTextFactProblems } from "../../packages/broker/src/agents/write-class.js";
 import {
   factsForCall, resolveToolGrants, stepToolPatterns, toolGrantProblems, toolFactsFor, type GrantConnector,
@@ -24,9 +24,10 @@ import { githubConnectorType } from "../../packages/broker/src/aws/connector-typ
 import { linearConnectorType } from "../../packages/broker/src/aws/linear-connector-type.js";
 import { callConnector, connectorCatalogKey, discoverConnector, type ScopeDiscovery } from "../../packages/broker/src/aws/connector-routes.js";
 import type { ResolvedConnector } from "../../packages/broker/src/aws/connector-types.js";
-import type { OrgId, WorkspaceInstance } from "../../packages/contracts/src/index.js";
-import { DEFAULT_AGENT_GUARDRAILS, agentGuardrailsKey, orgMemberKey, orgRemovedKey, projectMemberKey, projectRevisionKey } from "../../packages/contracts/src/index.js";
-import type { ConnectorCatalog, PresentedTool } from "../../packages/contracts/src/connectors-node.js";
+import type { OrgId, WorkspaceInstance } from "@rovara-code/contracts";
+import { DEFAULT_AGENT_GUARDRAILS, agentGuardrailsKey, projectMemberKey, projectRevisionKey } from "@rovara-code/contracts";
+import { orgMemberKey, orgRemovedKey } from "@agentx/cloud-contracts";
+import type { ConnectorCatalog, PresentedTool } from "@rovara-code/contracts";
 import { MAYA, OMAR, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
 import { CHARTERARC_TEAM_ID, linearViaFake, startFakeLinearMcp } from "../support/fake-linear-mcp.js";
 import { treeReader, workflow } from "../support/fake-repository.js";

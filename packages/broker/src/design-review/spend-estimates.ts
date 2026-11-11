@@ -2,9 +2,9 @@
 // (`estimateUsd`; none means "cost unavailable"). The lower tier's estimate is not stored, so it is worked out again with the SAME function the round start uses: the packet size the hold was worked out for is found
 // from the stored estimate (the estimate only goes up with the packet), and the next lower tier is priced at that size with the same models. Nothing is guessed: a model without a price, or an estimate that cannot be
 // matched, leaves the lower tier out, and the round start gates again when it runs anyway.
-import { DESIGN_REVIEW_ROUNDS_MAX, type ModelIdentifier, type WorkflowDesignReview } from "@agentx/contracts";
+import { DESIGN_REVIEW_ROUNDS_MAX, type ModelIdentifier, type WorkflowDesignReview } from "@rovara-code/contracts";
 import { TIER_REVIEWERS, estimateDesignReviewUsd, nextLowerTier, type DesignReviewEstimate, type PriceLookup } from "./estimate.js";
-import type { DesignReviewTier } from "@agentx/contracts";
+import type { DesignReviewTier } from "@rovara-code/contracts";
 
 export interface SpendEstimates { estimate: DesignReviewEstimate; lowerTier?: { tier: DesignReviewTier; estimate: DesignReviewEstimate } | undefined }
 

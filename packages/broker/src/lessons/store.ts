@@ -8,7 +8,7 @@
 import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import { applyWriteFence, planRollback, withUsageOf, type FenceView } from "./store-rules.js";
 import { LessonSchema, normId, normSource, type Lesson, type LessonStatus, type VOLATILE_FIELDS } from "./types.js";
-import type { LessonStage } from "@agentx/contracts";
+import type { LessonStage } from "@rovara-code/contracts";
 
 export interface ScopeKey { workspaceId: string; project: string }
 export type CommitResult = { ok: true; setVersion: number; /** Lessons a rollback brought back; each comes back needing a person. */ restored?: string[] } | { ok: false; reason: "conflict" | "erased" | "fenced" };

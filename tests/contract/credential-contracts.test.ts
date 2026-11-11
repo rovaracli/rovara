@@ -1,10 +1,6 @@
 import { describe, expect, it } from "vitest";
-import {
-  CredentialRegistrationSchema, OAuthClientCredentialsSecretSchema, StaticSecretSchema,
-} from "../../packages/contracts/src/credentials.js";
-import {
-  IN_HOUSE_TOOL_COUNT, approvedToolCount, presentedNameProblems, toolBudget,
-} from "../../packages/contracts/src/connectors-node.js";
+import { CredentialRegistrationSchema, OAuthClientCredentialsSecretSchema, StaticSecretSchema } from "@rovara-code/contracts";
+import { IN_HOUSE_TOOL_COUNT, approvedToolCount, presentedNameProblems, toolBudget } from "@rovara-code/contracts";
 
 describe("credential registration input", () => {
   it("accepts the two registrable types with a connector secret name", () => {

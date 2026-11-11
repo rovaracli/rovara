@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { ReviewedSlackUnbindBodySchema, ReviewedSlackApproveBodySchema, ProjectSlackTargetReaderSchema } from "@agentx/contracts/web";
+import { ReviewedSlackUnbindBodySchema, ReviewedSlackApproveBodySchema, ProjectSlackTargetReaderSchema } from "@agentx/cloud-contracts/web";
 const scopeSchema = z.object({ orgId: ReviewedSlackUnbindBodySchema.shape.expectedOrgId, developerId: z.string().regex(/^[a-f0-9]{64}$/), project: ProjectSlackTargetReaderSchema.shape.project }).strict();
 const unlinkSchema = z.object({ reviewedAt: z.string().datetime(), body: ReviewedSlackUnbindBodySchema }).strict();
 const bindSchema = z.discriminatedUnion("operation", [

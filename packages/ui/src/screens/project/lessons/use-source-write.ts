@@ -1,7 +1,7 @@
 // One source write from the Sources tab (add, change, remove): sends it once, reads the lists again after it (always after a stale answer), and keeps the fixed sentence of a failure. Nothing from the server's reply text reaches the screen.
 import { useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { SourceWriteBodySchema } from "@agentx/contracts/web";
+import { SourceWriteBodySchema } from "@agentx/cloud-contracts/web";
 import { ApiError } from "../../../api/errors.js";
 import { sourcesAdminKey, sourcesReadKey, writeSource, type SourceWriteResult } from "../../../api/record-sources.js";
 import { useAppHost } from "../../../host.js";

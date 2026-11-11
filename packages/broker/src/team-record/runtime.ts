@@ -12,7 +12,9 @@
 import { createHash, randomUUID } from "node:crypto";
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { STSClient } from "@aws-sdk/client-sts";
-import { OrgIdSchema, VECTOR_DIMENSION_DEFAULT, repositoryHostOf, githubMemberKey, teamRecordPk, memberGithubKey, orgMetaKey, TEAM_RECORD_ORG_DIRECTORY_PK, orgPk, orgProjectCatalogPk, teamRecordOrgDirectoryKey, type OrgId, type ProjectRole } from "@agentx/contracts";
+import { OrgIdSchema, githubMemberKey, teamRecordPk, memberGithubKey, orgPk, orgProjectCatalogPk, type OrgId, type ProjectRole } from "@rovara-code/contracts";
+import { repositoryHostOf } from "@agentx/cloud-contracts";
+import { VECTOR_DIMENSION_DEFAULT, orgMetaKey, TEAM_RECORD_ORG_DIRECTORY_PK, teamRecordOrgDirectoryKey } from "@agentx/cloud-contracts";
 import { companyIsOpen, readProjectRole, readStanding } from "../learning/standing.js";
 import { readProjectMeta } from "../developer/project-roles.js";
 import { latestRevision } from "../org/project-settings.js";

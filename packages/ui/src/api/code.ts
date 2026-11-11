@@ -1,4 +1,4 @@
-import { TaskStopStartPreviewSchema, PROCESS_START_REFUSED_MESSAGE, DESIGN_FIRST_UNAVAILABLE_MESSAGE, ProjectOverviewProjectSchema, SessionIdSchema, TaskResponseReaderSchema } from "@agentx/contracts/web";
+import { TaskStopStartPreviewSchema, PROCESS_START_REFUSED_MESSAGE, DESIGN_FIRST_UNAVAILABLE_MESSAGE, ProjectOverviewProjectSchema, SessionIdSchema, TaskResponseReaderSchema } from "@agentx/cloud-contracts/web";
 import type { AppHost } from "../host.js";
 import { createApiClient, type Reader, type SendResult } from "./client.js";
 import { withoutRequestId } from "./without-request-id.js";

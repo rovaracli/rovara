@@ -2,7 +2,7 @@
 // reads. A write is sent once from the browser session (`retry: "never"`).
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { LessonsRepoFileBodySchema, LessonsRepoFileRowReaderSchema, LessonsRepoFileStatusReaderSchema, ProjectOverviewProjectSchema, type LessonsRepoFileBody } from "@agentx/contracts/web";
+import { LessonsRepoFileBodySchema, LessonsRepoFileRowReaderSchema, LessonsRepoFileStatusReaderSchema, ProjectOverviewProjectSchema, type LessonsRepoFileBody } from "@agentx/cloud-contracts/web";
 import { useAppHost, type AppHost } from "../host.js";
 import { createApiClient } from "./client.js";
 

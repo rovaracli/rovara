@@ -1,4 +1,4 @@
-import { LinearConnectorSchema } from "@agentx/contracts";
+import { LinearConnectorSchema } from "@rovara-code/contracts";
 import { LINEAR_MCP_ENDPOINT, linearConnector, type LinearTeamScope } from "@agentx/gateway";
 import { presetConnectorType } from "./connector-presets.js";
 

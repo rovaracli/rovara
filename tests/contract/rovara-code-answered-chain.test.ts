@@ -7,8 +7,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { expireApprovals } from "../../packages/broker/src/agents/approvals.js";
 import { chainSessionSource } from "../../packages/broker/src/chains/session-seam.js";
 import { taskKey } from "../../packages/broker/src/developer/task-records.js";
-import { GATE_DEFAULT_TIMEOUT_HOURS, type ChainDefinitionInput } from "../../packages/contracts/src/chains.js";
-import type { IntentAssessment } from "../../packages/contracts/src/rovara-code.js";
+import { GATE_DEFAULT_TIMEOUT_HOURS, type ChainDefinitionInput } from "@rovara-code/contracts";
+import type { IntentAssessment } from "@rovara-code/contracts";
 import { ARJUN, MAX, ORG_A, PRIYA, STRANGER, VIV, callerOf, disposeGateWorlds, setupGateWorld, type GateWorld } from "../support/chain-gate-world.js";
 
 afterEach(() => disposeGateWorlds());

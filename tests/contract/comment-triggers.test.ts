@@ -6,19 +6,8 @@ import { createHash, createHmac, randomUUID } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { beforeAll, describe, expect, it, vi } from "vitest";
-import {
-  COMMENT_TRIGGER_COVERAGE_NOTE,
-  COMMENT_TRIGGER_STALE_TEXT,
-  agentGuardrailsKey,
-  commentSignal,
-  projectRevisionKey,
-  commentTriggerOptOutKey,
-  commentTriggerLapseNotice,
-  projectMetaKey,
-  type AuditEventInput,
-  type OrgId,
-  type OrgRole,
-} from "@agentx/contracts";
+import { COMMENT_TRIGGER_COVERAGE_NOTE, COMMENT_TRIGGER_STALE_TEXT, agentGuardrailsKey, commentSignal, projectRevisionKey, commentTriggerOptOutKey, commentTriggerLapseNotice, projectMetaKey, type OrgId } from "@rovara-code/contracts";
+import { type AuditEventInput, type OrgRole } from "@agentx/cloud-contracts";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
 import { getApprovalSubjectHandler, getApproverRule, type ApprovalDependencies, type ApprovalRecord } from "../../packages/broker/src/agents/approvals.js";
 import {
@@ -37,7 +26,7 @@ import { routeDecidePage } from "../../packages/broker/src/aws/decide-web.js";
 import { DECIDE_COOKIE, DecideStore, csrfTokenFor, type DecideRequestContext } from "../../packages/broker/src/developer/decide-session.js";
 import { DeveloperSignInStore } from "../../packages/broker/src/developer/store.js";
 import type { OrgResolver } from "../../packages/broker/src/org/resolve.js";
-import { DEFAULT_AGENT_GUARDRAILS } from "../../packages/contracts/src/agent-guardrails.js";
+import { DEFAULT_AGENT_GUARDRAILS } from "@rovara-code/contracts";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { OMAR, createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import { blobSha, treeReader, workflow } from "../support/fake-repository.js";

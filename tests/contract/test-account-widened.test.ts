@@ -1,7 +1,7 @@
 // Test services TS26 (DC-TS-2): `testAccountWidened(previous, next)` says whether a change to a test account needs fresh approvals. A pure narrowing (fewer hosts, actions, resources, variables or
 // projects, or lower limits) applies at once and re-stamps the approvals; anything else (and anything this function cannot prove is smaller) is a widening.
 import { describe, expect, it } from "vitest";
-import * as acc from "../../packages/contracts/src/test-account.js";
+import * as acc from "@rovara-code/contracts";
 
 const ORG = `org_${"a1b2c3d4e5".repeat(2)}`;
 const base = (over: Record<string, unknown> = {}) => ({

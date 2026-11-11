@@ -2,7 +2,7 @@
 // one, so a vendor name that ever resolved to a private address is refused when the check connects, token and all. The fetch is replaced here by a recording
 // one, so no network is reached; the global fetch throws.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { OrgId } from "../../packages/contracts/src/index.js";
+import type { OrgId } from "@rovara-code/contracts";
 import { datadogConnectionCheck } from "../../packages/broker/src/aws/datadog-connector-type.js";
 import { sentryConnectionCheck } from "../../packages/broker/src/aws/sentry-connector-type.js";
 import { OrgConnectionStore } from "../../packages/broker/src/connections/store.js";

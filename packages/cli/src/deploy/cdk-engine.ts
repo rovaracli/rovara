@@ -12,7 +12,8 @@
 import { teamRecordContextArguments, type TeamRecordOptions } from "./team-record-switch.js";
 import { readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { EDITION_CONTEXT_KEY, NEW_INSTALL_CONTEXT_KEY, agentXError, type Edition } from "@agentx/contracts";
+import { EDITION_CONTEXT_KEY, NEW_INSTALL_CONTEXT_KEY } from "@agentx/cloud-contracts";
+import { agentXError, type Edition } from "@rovara-code/contracts";
 import type { ParameterStore } from "../environments/parameter-store.js";
 import type { DeployRequest, StackDeployer, StackOutputs } from "./deployer.js";
 import { SECRET_PARAMETERS, type DeployPart } from "./parameters.js";
@@ -122,8 +123,8 @@ export async function assertSourceAtRelease(input: { runner: CommandRunner; sour
 
 export type CatalogFlavor = "release" | "staging";
 export interface BuiltSource { flavor: CatalogFlavor; restore(): Promise<void> }
-/** The tool that switches a checkout's catalog flavor (packages/contracts/tools/catalog-flavor.ts). */
-export const CATALOG_FLAVOR_TOOL = "packages/contracts/tools/catalog-flavor.ts";
+/** The tool that switches a checkout's catalog flavor (packages/cloud-contracts/tools/catalog-flavor.ts). */
+export const CATALOG_FLAVOR_TOOL = "packages/cloud-contracts/tools/catalog-flavor.ts";
 /** The one AWS account the staging flavor is built in. */
 export const CATALOG_STAGING_BUILD_ACCOUNT = "944937319445";
 

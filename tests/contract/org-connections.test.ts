@@ -15,14 +15,8 @@ import { CredentialUnavailable } from "@agentx/gateway";
 import { orgCredentialRegistry } from "../../packages/broker/src/connections/registry.js";
 import { HookSecretStore, OrgConnectionStore, connectionActorIds } from "../../packages/broker/src/connections/store.js";
 import { OrgSecrets, orgConnectorSecretName, orgHookSecretName, type SecretsClient } from "../../packages/broker/src/connections/org-secrets.js";
-import {
-  ConnectionSecretSchema,
-  OrgConnectionSchema,
-  connectionKey,
-  connectionsKey,
-  type OrgConnection,
-} from "../../packages/contracts/src/connections.js";
-import type { OrgId } from "../../packages/contracts/src/org-node.js";
+import { ConnectionSecretSchema, OrgConnectionSchema, connectionKey, connectionsKey, type OrgConnection } from "@rovara-code/contracts";
+import type { OrgId } from "@rovara-code/contracts";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { loadSlackBroker } from "../support/slack-broker.js";
 import { FAKE_CONNECTOR_ROLE_ARN, FakeOrgSecrets } from "../support/fake-org-secrets.js";

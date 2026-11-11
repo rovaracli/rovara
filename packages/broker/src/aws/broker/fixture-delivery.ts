@@ -12,7 +12,7 @@
 //   - the store (`deliver`) hands out a set only while it is APPROVED for that organisation AND the PROJECT of the task (or workspace) the operation belongs to (H1: a project's environment cannot name another project's set), its stored bytes still hash to the digest and it still passes the scan against the project\'s production list as it is NOW, and a withdrawn set stops here: the next phase gets nothing.
 // The reply is the digest, the address and its expiry, and nothing else. The address is not logged, kept or sent on by this module.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { FixtureSetCallbackReplySchema, FixtureSetCallbackRequestSchema, agentXError, type FixtureSetCallbackReply, type TestEnvProdDeny } from "@agentx/contracts";
+import { FixtureSetCallbackReplySchema, FixtureSetCallbackRequestSchema, agentXError, type FixtureSetCallbackReply, type TestEnvProdDeny } from "@rovara-code/contracts";
 import { taskKey, taskPointerKey, type DeveloperTaskPointerRecord, type DeveloperTaskRecord } from "../../developer/task-records.js";
 import { readApprovedTestEnvironment } from "../../org/test-environment.js";
 import type { FixtureStoreFactory } from "../../test-env/fixture-lookup.js";

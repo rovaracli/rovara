@@ -1,5 +1,5 @@
 // G3's single model-safety classifier; process/company/guardrail writers delegate here.
-import { EMPTY_RECIPE, ResolvedRecipeSchema, canonicalModelName, modelCompany, type AgentGuardrails, type ModelIdentifier, type ResolvedRecipe, type ResolvedStep, type StageId, type CompanyStageModelOverrideSchema } from "@agentx/contracts";
+import { EMPTY_RECIPE, ResolvedRecipeSchema, canonicalModelName, modelCompany, type AgentGuardrails, type ModelIdentifier, type ResolvedRecipe, type ResolvedStep, type StageId, type CompanyStageModelOverrideSchema } from "@rovara-code/contracts";
 import type { z } from "zod";
 import { criticCapabilityTier } from "../rovara-code/critic.js";
 type CompanyOverrides = Partial<Record<StageId, z.infer<typeof CompanyStageModelOverrideSchema>>>;

@@ -2,9 +2,9 @@
 // (GitHub: the account-to-member link of `rovara-code/github-members.ts`; Linear and Jira: the company's tracker links, `identity.ts`; another tracker: a resolver its adapter registers); the member is read live (sign-in, revocation,
 // membership), and so is their role on the project (`roleOnProject`, `requireNewWorkAllowed`). The start is `startCodeIntent` as that member, so the project role, the company's
 // rules, the payer and the budget are the ones that already exist; nothing here decides money or access.
-import { AgentXError, agentXError, type CodeIntentRequest, type OrgId } from "@agentx/contracts";
+import { AgentXError, agentXError, type CodeIntentRequest, type OrgId } from "@rovara-code/contracts";
 import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { agentSessionKey, SessionIdSchema } from "@agentx/contracts";
+import { agentSessionKey, SessionIdSchema } from "@rovara-code/contracts";
 import { sessionForSurface, unbindSessionSurface } from "../agent-sessions/bindings.js";
 import { isEnded } from "../agent-sessions/stop.js";
 import { roleOnProject } from "../agents/roster.js";

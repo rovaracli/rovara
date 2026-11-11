@@ -10,7 +10,7 @@
   },
   "dependencies": {
     "@agentx/ui": "0.1.0",
-    "@agentx/contracts": "0.1.0",
+    "@agentx/cloud-contracts": "0.1.0",
     "react": "19.3.0",
     "react-dom": "19.3.0",
     "get-nonce": "1.0.1",

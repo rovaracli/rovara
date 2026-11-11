@@ -1,9 +1,7 @@
 import { describe, expect, it } from "vitest";
-import {
-  OrgIdSchema, OrgRoleSchema, developerOrgKey, newOrgId, orgEmailKey, orgInviteKey, orgMemberKey,
-  orgMetaKey, orgPk, orgScoped, singleOrgIdForEnv, slackTeamOrgKey,
-} from "../../packages/contracts/src/org-node.js";
-import * as contracts from "../../packages/contracts/src/index.js";
+import { OrgIdSchema, orgPk, orgScoped, singleOrgIdForEnv } from "@rovara-code/contracts";
+import { OrgRoleSchema, developerOrgKey, newOrgId, orgEmailKey, orgInviteKey, orgMemberKey, orgMetaKey, slackTeamOrgKey } from "../../packages/cloud-contracts/src/org-node.js";
+import * as contracts from "@rovara-code/contracts";
 
 const ORG = "org_aaaaaaaaaaaaaaaaaaaa" as const;
 

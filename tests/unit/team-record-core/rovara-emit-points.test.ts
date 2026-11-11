@@ -4,8 +4,9 @@
 //  2. each hook point announces the right event with the actor (who may read it is decided when it is written: lessons/task-visibility.ts, tested apart), never throws into its caller and never holds it past the budget;
 //  3. the real runtime's emitter writes the rows: no `rovara:project/<p>` row means the default retention, a row means ITS retention and switch (never the audience: that is the task's visibility, whatever the row says), and a private task stays restricted.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { developerOrgKey, githubMemberKey } from "@agentx/contracts";
-import type { WorkflowSnapshot } from "../../../packages/contracts/src/index.js";
+import { developerOrgKey } from "@agentx/cloud-contracts";
+import { githubMemberKey } from "@rovara-code/contracts";
+import type { WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { hasTaskEndHandlers, onTaskEnded, registerTaskEndHandler } from "../../../packages/broker/src/agents/task-end.js";
 import { installTeamRecordEmitter, teamRecordEmitterInstalled, uninstallTeamRecordEmitter } from "../../../packages/broker/src/aws/broker/team-record-wiring.js";
 import { announceHumanSendBack } from "../../../packages/broker/src/lessons/send-back-events.js";

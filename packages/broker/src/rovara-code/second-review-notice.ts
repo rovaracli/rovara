@@ -11,7 +11,8 @@
 //     away; it does not close the problem. Fixed words only: the notice holds model names and reason words, never a model's output.
 import { createHash } from "node:crypto";
 import { GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { orgMetaKey, secondReviewModelKey, type SecondReviewModelRef } from "@agentx/contracts";
+import { orgMetaKey } from "@agentx/cloud-contracts";
+import { secondReviewModelKey, type SecondReviewModelRef } from "@rovara-code/contracts";
 import type { SettingsTable } from "../org/second-review-settings.js";
 import type { DecisionItem } from "../decisions/project.js";
 import type { SecondReviewPlan, SecondReviewSkipped, SecondReviewSkippedWhy } from "./second-review.js";

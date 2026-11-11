@@ -11,7 +11,7 @@ export async function prCaptureOff(deps:LearningDeps,scope:LearningScope):Promis
 import { randomUUID } from "node:crypto";
 import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import { AgentGuardrailsSchema, LearningSettingsSchema, LearningSettingsBodySchema, LearningProposalDecisionBodySchema, agentGuardrailsKey, agentXError, projectLearningKey, projectMetaKey, type OrgId, type LearningSettings } from "@agentx/contracts";
+import { AgentGuardrailsSchema, LearningSettingsSchema, LearningSettingsBodySchema, LearningProposalDecisionBodySchema, agentGuardrailsKey, agentXError, projectLearningKey, projectMetaKey, type OrgId, type LearningSettings } from "@rovara-code/contracts";
 import { learningScopeOf } from "./standing.js";
 import { readAllowedDomainActorConditions, readSecondPersonApprovalEvidence, type SecondPersonEvidenceDependencies } from "../org/second-person-evidence.js";
 import { decideSecondPersonApproval } from "../org/second-person-approval.js";

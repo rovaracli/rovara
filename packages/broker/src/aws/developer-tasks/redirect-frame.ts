@@ -1,5 +1,5 @@
 // Stop & redirect: the two small things a restart and a Retry that keeps the instruction both need, apart from the restarts so the retry paths can use them without a cycle (LR-2).
-import { REDIRECT_PLANNING_INTRO, workflowRequestId, type RedirectRecord } from "@agentx/contracts";
+import { REDIRECT_PLANNING_INTRO, workflowRequestId, type RedirectRecord } from "@rovara-code/contracts";
 import { inertReplyText } from "../../developer/prompt-text.js";
 import type { DeveloperTaskRecord } from "../../developer/task-records.js";
 import { promptTagId } from "./thread-notes.js";

@@ -2,12 +2,12 @@
 // records (FR-016, FR-021, FR-023, FR-037, R12, R16, R17, US1 scenarios 4 and 5).
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import {projectMemberKey} from "@agentx/contracts";
-import type { ChannelMembersRequest, ChannelMembersResponse } from "@agentx/contracts";
+import { projectMemberKey } from "@rovara-code/contracts";
+import type { ChannelMembersRequest, ChannelMembersResponse } from "@rovara-code/contracts";
 import { MAYA, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
 import { SLACK_CHANNEL, call } from "../support/slack-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
-import { projectPk, projectRevisionKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { projectPk, projectRevisionKey } from "@rovara-code/contracts";
 
 const said = (text: string) => ({ type: "progress", payload: { type: "message_end", message: { role: "assistant", content: [{ type: "text", text }] } } });
 

@@ -4,7 +4,7 @@ import { Match, Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
 import { ControlPlaneStack, TURN_DETAILS_READ_ATTRIBUTES } from "../../infra/lib/control-plane.js";
 import { SlackOrchestratorStack } from "../../infra/lib/slack-orchestrator.js";
-import { TURN_DETAILS_ATTRIBUTES } from "../../packages/contracts/src/index.js";
+import { TURN_DETAILS_ATTRIBUTES } from "@rovara-code/contracts";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
 
 skipLambdaBundling();

@@ -1,16 +1,8 @@
 // Spec 025 FR-030: the developer tools, written against ControlPlaneClient so the stdio server
 // now and the hosted endpoint later use the same definitions (FR-027). Descriptions are written
 // for the AI tool that reads them: when to use the tool, and what to do next.
-import {
-  DEFAULT_DEVELOPER_TASK_POLICY, DEVELOPER_EVENTS_DEFAULT, DEVELOPER_EVENTS_MAX, DEVELOPER_TASK_LIST_DEFAULT, DEVELOPER_TASK_LIST_MAX,
-  DEVELOPER_WAIT_MAX_SECONDS, DeveloperInstructionsSchema, DeveloperTaskStatusSchema, SHARED_BY_POLICY, VIEW_ONLY_BY_POLICY, WORKFLOW_BLOCK_REASONS, WORKFLOW_PUBLISH_CANDIDATE_CHANGED_MESSAGE, WORKFLOW_REVIEW_FAILURE_REASONS,
-  AUDIT_LIMITS_COPY, E2ESharedViewSchema, inertName, isBranchConflictAskReason, isBranchSyncBlockReason, isBranchSyncGiveUpReason, isCiFixBlockReason, knownTaskView, openReviewFindings, workflowIsReviewOnly, workflowKeepPullRequestsOffered, type DeveloperTaskClientView,
-  TaskPeopleRoleSchema, RUN_CONTEXT_KINDS, RUN_INPUT_TEXT_MAX_BYTES, ApprovalIdSchema, RunInputSchema, type RunInput, type StartAgentSelection,
-  INTENT_NOT_WAITING_MESSAGE, INTENT_QUESTIONS_MAX, SessionIdSchema, CRITIC_NOT_CHECKED_LINE, CRITIC_STOPPED_AT_LIMIT_LINE, CRITIC_STOPPED_AT_SPENDING_LIMIT_LINE, formatMinutes, type WorkflowCritique,
-  sessionTaskStatus, taskStatusNext, taskStatusText, formatRunLimitUsd, runLimitRaiseText,
-  LOCAL_LESSONS_AMBIGUOUS_LINE, LOCAL_LESSONS_NOT_FOUND_LINE, LOCAL_LESSONS_NO_PROJECT_LINE, LOCAL_LESSONS_STAGES, LOCAL_LESSONS_TASK_MAX, LOCAL_LESSONS_FILES_MAX, LOCAL_LESSONS_TOOL_DESCRIPTION, LOCAL_LESSONS_UNAVAILABLE_LINE,
-  lessonsAcrossProjects, withNotesLine, withoutCredentials, type LocalLessonsAsk, type LocalLessonsBody, type LocalLessonsRead,
-} from "@agentx/contracts";
+import { DEFAULT_DEVELOPER_TASK_POLICY, DEVELOPER_EVENTS_DEFAULT, DEVELOPER_EVENTS_MAX, DEVELOPER_TASK_LIST_DEFAULT, DEVELOPER_TASK_LIST_MAX, DEVELOPER_WAIT_MAX_SECONDS, DeveloperInstructionsSchema, DeveloperTaskStatusSchema, SHARED_BY_POLICY, VIEW_ONLY_BY_POLICY, WORKFLOW_PUBLISH_CANDIDATE_CHANGED_MESSAGE, WORKFLOW_REVIEW_FAILURE_REASONS, E2ESharedViewSchema, inertName, isBranchConflictAskReason, isBranchSyncBlockReason, isBranchSyncGiveUpReason, isCiFixBlockReason, workflowIsReviewOnly, TaskPeopleRoleSchema, RUN_CONTEXT_KINDS, RUN_INPUT_TEXT_MAX_BYTES, ApprovalIdSchema, RunInputSchema, type RunInput, type StartAgentSelection, INTENT_NOT_WAITING_MESSAGE, INTENT_QUESTIONS_MAX, SessionIdSchema, CRITIC_NOT_CHECKED_LINE, CRITIC_STOPPED_AT_LIMIT_LINE, CRITIC_STOPPED_AT_SPENDING_LIMIT_LINE, formatMinutes, type WorkflowCritique, sessionTaskStatus, taskStatusNext, taskStatusText, formatRunLimitUsd, runLimitRaiseText } from "@rovara-code/contracts";
+import { WORKFLOW_BLOCK_REASONS, AUDIT_LIMITS_COPY, knownTaskView, openReviewFindings, workflowKeepPullRequestsOffered, type DeveloperTaskClientView, LOCAL_LESSONS_AMBIGUOUS_LINE, LOCAL_LESSONS_NOT_FOUND_LINE, LOCAL_LESSONS_NO_PROJECT_LINE, LOCAL_LESSONS_STAGES, LOCAL_LESSONS_TASK_MAX, LOCAL_LESSONS_FILES_MAX, LOCAL_LESSONS_TOOL_DESCRIPTION, LOCAL_LESSONS_UNAVAILABLE_LINE, lessonsAcrossProjects, withNotesLine, withoutCredentials, type LocalLessonsAsk, type LocalLessonsBody, type LocalLessonsRead } from "@agentx/cloud-contracts";
 import { z } from "zod";
 import type { AdminControlPlaneClient } from "./admin-client.js";
 import type { ControlPlaneClient, SessionMessageRead, SessionViewRead } from "./client.js";

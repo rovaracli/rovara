@@ -5,10 +5,10 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
-import { canonicalJson } from "../../packages/contracts/src/canonical-json.js";
-import { E2EApiMockFixtureSchema } from "../../packages/contracts/src/e2e-node.js";
-import { E2EApplicationProjectContractSchema } from "../../packages/contracts/src/e2e-application-accounts.js";
-import { createE2EOpenApiFixtureDescriptor, validateE2EOpenApiFixtureResponse } from "../../packages/contracts/src/e2e-openapi-fixture.js";
+import { canonicalJson } from "@rovara-code/contracts";
+import { E2EApiMockFixtureSchema } from "@rovara-code/contracts";
+import { E2EApplicationProjectContractSchema } from "@rovara-code/contracts";
+import { createE2EOpenApiFixtureDescriptor, validateE2EOpenApiFixtureResponse } from "@rovara-code/contracts";
 import {
   FIXTURE_VARIANTS,
   parsePublishArguments,

@@ -1,5 +1,5 @@
 import {expect,it} from "vitest";
-import {AUDIT_ACTIONS,AuditEventInputSchema,auditEventId} from "../../packages/contracts/src/index.js";
+import { AUDIT_ACTIONS, AuditEventInputSchema, auditEventId } from "@agentx/cloud-contracts";
 const base={eventId:auditEventId("model_source.order_changed","test"),orgId:"org_aaaaaaaaaaaaaaaaaaaa",actor:{kind:"member" as const,id:"dev_1"},target:{kind:"project",name:"private-roadmap"},occurredAt:"2026-10-29T23:00:00.000Z"};
 it("registers all G3 actions before writers and accepts only fixed vocabulary and digests",()=>{
  for(const action of ["model_policy.changed","model_policy.lock_set","model_policy.lock_removed","model.fallback_used"]) expect(AUDIT_ACTIONS).toContain(action);

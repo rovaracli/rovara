@@ -2,8 +2,9 @@
 // There is one source: the review reports' recorded model and `reviewSameModelOf`; the view only passes the lines on.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { DeveloperTaskViewSchema } from "../../packages/contracts/src/developer-tasks.js";
-import { createCandidateManifest, type WorkflowSnapshot } from "../../packages/contracts/src/task-workflow-node.js";
+import { DeveloperTaskViewSchema } from "../../packages/cloud-contracts/src/developer-tasks.js";
+import { createCandidateManifest } from "@rovara-code/contracts";
+import { type WorkflowSnapshot } from "../../packages/cloud-contracts/src/task-workflow-node.js";
 import { REVIEW_SAME_MODEL_NOTE, reviewModelLines, reviewNoOtherCompanyLine } from "../../packages/broker/src/rovara-code/review-model-lines.js";
 import { MAYA, createSingleAnswerPlanBroker } from "../support/developer-task-broker.js";
 

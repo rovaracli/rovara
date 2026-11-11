@@ -10,11 +10,8 @@
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { auditTransact, type AuditRuntime } from "../audit/outbox.js";
 import { flushAuditEvents } from "../audit/flush.js";
-import {
-  agentXError, featureEnabled, isWriterOrgRole, requireFeature, BREAK_GLASS_FRESH_AUTH_SECONDS, BREAK_GLASS_SESSION_MAX_SECONDS, BROKEN_MAPPING_REFUSALS, BreakGlassOwnersSchema, GROUP_CLAIM_MAX_GROUPS, GROUP_MAPPING_MESSAGES, GROUP_NAME_MAX_CHARS, GroupMappingConfigSchema, MAPPED_ORG_ROLE_PRECEDENCE,
-  PROJECT_ROLE_PRECEDENCE, BREAK_GLASS_MAX_DAYS, BreakGlassRecordSchema, breakGlassKey, groupMappingKey,
-  type BreakGlassOwner, type BreakGlassRecord, type AuditEventInput, type EditionPolicy, type GroupMappingConfig, type GroupMappingEvaluation, type GroupMappingRefusal, type MappedAccess, type OrgId, type OrgRole, type SignInDecision,
-} from "@agentx/contracts";
+import { agentXError, type OrgId } from "@rovara-code/contracts";
+import { featureEnabled, isWriterOrgRole, requireFeature, BREAK_GLASS_FRESH_AUTH_SECONDS, BREAK_GLASS_SESSION_MAX_SECONDS, BROKEN_MAPPING_REFUSALS, BreakGlassOwnersSchema, GROUP_CLAIM_MAX_GROUPS, GROUP_MAPPING_MESSAGES, GROUP_NAME_MAX_CHARS, GroupMappingConfigSchema, MAPPED_ORG_ROLE_PRECEDENCE, PROJECT_ROLE_PRECEDENCE, BREAK_GLASS_MAX_DAYS, BreakGlassRecordSchema, breakGlassKey, groupMappingKey, type BreakGlassOwner, type BreakGlassRecord, type AuditEventInput, type EditionPolicy, type GroupMappingConfig, type GroupMappingEvaluation, type GroupMappingRefusal, type MappedAccess, type OrgRole, type SignInDecision } from "@agentx/cloud-contracts";
 
 /**
  * The groups a sign-in carries, from the configured claim. An array of strings is the groups; a single string is one group (never split on spaces or commas:

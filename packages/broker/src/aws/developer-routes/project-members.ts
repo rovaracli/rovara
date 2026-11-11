@@ -1,21 +1,6 @@
 import { logDeveloperEvent } from "../../developer/log.js";
 import { nameResolverOf, replacementNamesFrom } from "../../developer/name-resolver.js";
-import {
-  AgentXNameSchema,
-  agentXError,
-  projectAllows,
-  type ProjectMember,
-  type ProjectMemberChangeResponse,
-  type ProjectMemberRemoveResponse,
-  type ProjectSlackChannelRemoveResponse,
-  type ProjectSlackChannelResponse,
-  type ProjectMembersResponse,
-  type ProjectRole,
-  type OrgId,
-  PutProjectMemberBodySchema,
-  RemoveProjectSlackChannelBodySchema,
-  RemoveProjectMemberBodySchema,
-} from "@agentx/contracts";
+import { AgentXNameSchema, agentXError, projectAllows, type ProjectMember, type ProjectMemberChangeResponse, type ProjectMemberRemoveResponse, type ProjectSlackChannelRemoveResponse, type ProjectSlackChannelResponse, type ProjectMembersResponse, type ProjectRole, type OrgId, PutProjectMemberBodySchema, RemoveProjectSlackChannelBodySchema, RemoveProjectMemberBodySchema } from "@rovara-code/contracts";
 import { unbindProjectChannel, type ProjectSlackChannelDependencies } from "../../org/slack-binding.js";
 import { listProjectMembers, removeProjectMember, setProjectMember, survivorOf } from "../../org/project-members.js";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "./types.js";

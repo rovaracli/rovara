@@ -1,19 +1,7 @@
 // The records that bind one outside surface (a Slack thread, a Linear issue) to one session. Task 2 writes `bindingItems` for a task shared to a
 // Slack thread at its start; Task 20 adds the later binding (`bindSessionSurface`, the notifier's items), the lookup by surface and the checks.
 import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  SessionBindingSchema,
-  SessionIdSchema,
-  SlackThreadSchema,
-  agentSessionKey,
-  agentXError,
-  sessionBindingKey,
-  sessionSurfaceKey,
-  type AgentSessionRecord,
-  type OrgId,
-  type SessionBinding,
-  type SessionId,
-} from "@agentx/contracts";
+import { SessionBindingSchema, SessionIdSchema, SlackThreadSchema, agentSessionKey, agentXError, sessionBindingKey, sessionSurfaceKey, type AgentSessionRecord, type OrgId, type SessionBinding, type SessionId } from "@rovara-code/contracts";
 import { failedIndexes, isTransactionConflict, putNew, type Item, type TableInput, type TransactItem } from "../agents/table-writes.js";
 import { AgentSessionStore } from "./store.js";
 

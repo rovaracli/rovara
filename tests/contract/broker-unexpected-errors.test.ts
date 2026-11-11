@@ -7,7 +7,7 @@ import { AWS_TEMPORARY_MESSAGE, UNEXPECTED_REQUEST_MESSAGE } from "../../package
 import { adminCall, adminIssuer, createAdminBroker, type AdminHandler } from "../support/admin-broker.js";
 import type { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { TEST_ORG } from "../support/orgs.js";
-import { projectRevisionKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { projectRevisionKey } from "@rovara-code/contracts";
 
 const AWS_TEXT = "Rate exceeded for table agentx-state-secret-name";
 

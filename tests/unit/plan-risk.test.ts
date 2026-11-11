@@ -1,7 +1,7 @@
 // Decision journey slice 2 (review fixes): the coding plan card's facts are read from the plan, never assumed. A plan that names no file is "unread" (at least medium, no "0 files" chip); paths named
 // anywhere in its text count; a Markdown or unreadable plan is unread. Known limit: "a check proves this claim" is the plan's own assertion (the merge card is the backstop).
 import { describe, expect, it } from "vitest";
-import type { PlanDocument } from "@agentx/contracts";
+import type { PlanDocument } from "@rovara-code/contracts";
 import { planFactsOf, planRiskOf } from "../../packages/broker/src/decisions/plan-risk.js";
 import { cardOfItem, type DecisionItem } from "../../packages/broker/src/decisions/project.js";
 import { planDocument } from "../support/plan-documents.js";

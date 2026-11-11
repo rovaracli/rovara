@@ -2,7 +2,7 @@
 // adapter fails the check that guards the behaviour it breaks. Linear's real deliveries are signed exactly as `Linear-Signature` is; no real key, workspace or token is used.
 import { createHmac } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import type { OrgId, RawDelivery, Tracker } from "@agentx/contracts";
+import type { OrgId, RawDelivery, Tracker } from "@rovara-code/contracts";
 import { LINEAR_TRACKER_KIND, LINEAR_NO_READ_MESSAGE, linearTracker, type LinearIssueRead, type LinearStateType, type LinearTrackerAccess } from "../../packages/broker/src/plugins/tracker/linear/index.js";
 import { linearProvider } from "../../packages/broker/src/triggers/providers/linear.js";
 import { runContract } from "./contract-kit.js";

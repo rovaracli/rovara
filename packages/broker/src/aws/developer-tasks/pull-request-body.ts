@@ -1,13 +1,5 @@
-import {
-  attributionBodyLines,
-  workflowReviewsSawPartialDiff,
-  hideEmailAddresses,
-  redactText,
-  type WorkflowSnapshot,
-  workflowIsReviewOnly,
-  planSummaryLines,
-  workflowFindingAccepted,
-} from "@agentx/contracts";
+import { attributionBodyLines, workflowReviewsSawPartialDiff, hideEmailAddresses, redactText, workflowIsReviewOnly, planSummaryLines } from "@rovara-code/contracts";
+import { type WorkflowSnapshot, workflowFindingAccepted } from "@agentx/cloud-contracts";
 import { PULL_REQUEST_PARTIAL_REVIEW_LINE, PULL_REQUEST_STATUS_END, PULL_REQUEST_STATUS_START, ROVARA_STATUS_START } from "../../developer/pull-request-feedback-section.js";
 import type { DeveloperTaskRecord, OperationFacts } from "../../developer/task-records.js";
 import { loadWorkflowDocument, type LoadedDocument } from "../../developer/plan-artifacts.js";

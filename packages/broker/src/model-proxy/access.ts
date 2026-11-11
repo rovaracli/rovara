@@ -1,7 +1,7 @@
 // What the broker's callers see of the model proxy (ruling R28). ModelProxyClient talks to LiteLLM
 // directly and runs only inside the VPC-attached ModelAccessFunction; ModelAccessInvoker satisfies the
 // same interface from the broker Lambdas, which are not in the VPC and never hold the master key.
-import { AgentXError, errorStatus, type ModelSource, type OrgId } from "@agentx/contracts";
+import { AgentXError, errorStatus, type ModelSource, type OrgId } from "@rovara-code/contracts";
 
 /**
  * A learning call the in-VPC client refused BEFORE it sent anything to the proxy (the connection to it was refused, or the name did not resolve). Nothing can have reached the provider, so the caller may try the

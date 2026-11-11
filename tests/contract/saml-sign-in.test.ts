@@ -1,6 +1,6 @@
 import { decodeJwt } from "jose";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { ENTERPRISE_SESSION_MAX_SECONDS, GROUP_MAPPING_MESSAGES, SAML_SIGN_IN_REFUSED_MESSAGE, editionPolicy, orgMetaKey } from "@agentx/contracts";
+import { ENTERPRISE_SESSION_MAX_SECONDS, GROUP_MAPPING_MESSAGES, SAML_SIGN_IN_REFUSED_MESSAGE, editionPolicy, orgMetaKey } from "@agentx/cloud-contracts";
 import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
 import { methodAllowedByEdition } from "../../packages/broker/src/developer/edition-methods.js";
 import { createDeveloperIdentityHandler, enabledMethods } from "../../packages/broker/src/developer/server.js";

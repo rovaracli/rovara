@@ -1,25 +1,27 @@
 import { fixtureActor } from "../support/money-authority.js";
 // Plan 4 Task 4: the app's chain routes (`/v1/app/chains*`), through the broker's handler with two orgs. A publish or rollback that makes anything less
 // safe than what runs answers 202 with a confirmation link and changes nothing; deciding it is Plan 3's page (R66).
-import { projectMemberKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { projectMemberKey } from "@rovara-code/contracts";
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { approvalDecideKind } from "../../packages/broker/src/agents/approval-decide-kind.js";
-import { getApprovalSubjectHandler, getApproverRule, type ApprovalDependencies, type ApprovalRecord, type ApproverSpec } from "../../packages/broker/src/agents/approvals.js";
+import { decideApproval, getApprovalSubjectHandler, getApproverRule, type ApprovalDependencies, type ApprovalRecord, type ApproverSpec } from "../../packages/broker/src/agents/approvals.js";
 import { AgentStore, type BuiltinSource } from "../../packages/broker/src/agents/store.js";
 import { isChainRoute, STARTER_CHAIN_DEFINITION, type ChainRouteDependencies, type ChainTriggerHooks } from "../../packages/broker/src/chains/routes.js";
 import { ChainStore, chainDigest } from "../../packages/broker/src/chains/store.js";
 import { validateChainForPublish } from "../../packages/broker/src/chains/validate.js";
 import { DeveloperSignInStore } from "../../packages/broker/src/developer/store.js";
 import type { OrgResolver } from "../../packages/broker/src/org/resolve.js";
-import type { AgentId } from "../../packages/contracts/src/agent.js";
-import { BUILTIN_AGENTS, builtinDefaultPin, builtinRecipe, currentBuiltinVersion } from "../../packages/contracts/src/agent-templates.js";
-import { agentXError } from "../../packages/contracts/src/errors.js";
-import type { RecipeOverlay } from "../../packages/contracts/src/agent-recipe-node.js";
-import { DEFAULT_AGENT_GUARDRAILS } from "../../packages/contracts/src/agent-guardrails.js";
-import { ChainDefinitionSchema, type ChainDefinitionInput } from "../../packages/contracts/src/chains.js";
-import type { OrgId, OrgRole } from "../../packages/contracts/src/org.js";
-import { agentGuardrailsKey, approvalKey, orgProjectCatalogKey, ownerBudgetKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import type { AgentId } from "@rovara-code/contracts";
+import { BUILTIN_AGENTS, builtinDefaultPin, builtinRecipe, currentBuiltinVersion } from "@rovara-code/contracts";
+import { agentXError } from "@rovara-code/contracts";
+import type { RecipeOverlay } from "@rovara-code/contracts";
+import { DEFAULT_AGENT_GUARDRAILS } from "@rovara-code/contracts";
+import { ChainDefinitionSchema, type ChainDefinitionInput } from "@rovara-code/contracts";
+import type { OrgId } from "@rovara-code/contracts";
+import type { OrgRole } from "../../packages/cloud-contracts/src/org.js";
+import { agentGuardrailsKey, approvalKey, orgProjectCatalogKey } from "@rovara-code/contracts";
+import { ownerBudgetKey } from "../../packages/cloud-contracts/src/org-scoped-keys.js";
 import { MAYA, OMAR, createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { INVESTIGATE_THEN_FIX } from "../support/chain-examples.js";
@@ -35,6 +37,7 @@ const CARL = person("3", "Carl"); // contributor on web
 const EVE = person("4", "Eve"); // a member with no role anywhere
 const VIV = person("5", "Viv"); // viewer on web
 const ARJUN = person("6", "Arjun"); // a member
+const OWEN = person("7", "Owen"); // org owner
 const orgResolver: OrgResolver = async (subject) => (subject.developerId === OMAR.developerId ? ORG_B : TEST_ORG);
 const SAFE_OVERLAY: RecipeOverlay = { instructions: "x", sequence: [{ id: "work", name: "Work", kind: "agent", workspace: "none" }] };
 
@@ -115,7 +118,7 @@ async function setup(options: { widen?: boolean; audit?: boolean } = {}) {
   h.db.set({ ...orgProjectCatalogKey(TEST_ORG, "web"), entityType: "PROJECT_CATALOG", name: "web" });
   h.db.set({
     ...agentGuardrailsKey(TEST_ORG), entityType: "AGENT_GUARDRAILS", revision: 1, updatedBy: DANA.developerId, updatedAt: "2026-10-21T00:00:00.000Z",
-    guardrails: { ...(await import("../../packages/contracts/src/agent-guardrails.js")).DEFAULT_AGENT_GUARDRAILS, maxAutonomy: "run" },
+    guardrails: { ...(await import("@rovara-code/contracts")).DEFAULT_AGENT_GUARDRAILS, maxAutonomy: "run" },
   });
   members.grant(TEST_ORG, "web", MAX.developerId, "maintainer");
   // The write holds a new accountable maintainer to a real grant row in its own transaction, as the project roles read it.
@@ -1059,8 +1062,9 @@ describe("sharing a chain with the whole company waits for the page", () => {
     expect(asked.body).toMatchObject({ status: "NEEDS_CONFIRMATION", changes: [`Shares ${(await s.state(chainId)).name} with everyone in your company, who can then run it`] });
     expect(await s.chains.listShares(TEST_ORG, chainId)).toHaveLength(1);
     expect((await s.call(CARL, "GET", `/v1/app/chains/${chainId}`)).status).toBe(404);
-    expect(s.approvals()[0]).toMatchObject({ kind: "change", status: "PENDING", subject: { kind: "chain_share", chainId, expectedSharesRevision: 1 }, approvers: { kind: "rule", rule: "chain_publish" } });
-    expect(candidatesOf(s.approvals()[0]!).sort()).toEqual([DANA.developerId, MAYA.developerId].sort());
+    expect(s.approvals()[0]).toMatchObject({ kind: "change", status: "PENDING", subject: { kind: "chain_share", chainId, expectedSharesRevision: 1 }, approvers: { kind: "rule", rule: "chain_company_share" } });
+    // Owner decision 92: only the org's owners and admins are asked; the chain's own author is not.
+    expect(candidatesOf(s.approvals()[0]!)).toEqual([DANA.developerId]);
     // Once the company can see it, asking for more is a widening again.
     await s.chains.replaceShares({ orgId: TEST_ORG, chainId, upsert: [{ principal: { kind: "org" }, level: "view" }], remove: [], expectedSharesRevision: (await s.state(chainId)).sharesRevision ?? 0, by: DANA.developerId });
     const raise = await s.call(MAYA, "PUT", sharesPath(chainId), { shares: [member(EVE), company("edit")] });
@@ -1147,3 +1151,250 @@ describe("how the broker wires chains", () => {
   });
 });
 
+
+// Owner decision 92: only an org owner or admin confirms a company-wide chain share (as for an agent's). The chain's author and a project's maintainers ask; they
+// never decide, whatever the record's stored candidates say.
+describe("who may confirm a company-wide chain share (decision 92)", () => {
+  const COMPANY = { principal: { kind: "org" }, level: "use" };
+  const decide = (deps: ApprovalDependencies, who: Developer, orgRole: OrgRole, approvalId: string) =>
+    decideApproval(deps, { orgId: TEST_ORG, developerId: who.developerId, orgRole }, approvalId, { requestId: randomUUID(), decision: "APPROVE" });
+
+  it("refuses the non-admin author, and a maintainer who owns the project's chain; nothing is shared", async () => {
+    const s = await setup();
+    const mine = await s.create(MAYA);
+    expect((await s.call(MAYA, "PUT", `/v1/app/chains/${mine}/shares`, { shares: [COMPANY] })).status).toBe(202);
+    const web = (await s.call(MAX, "POST", "/v1/app/chains", { name: "Web chain", owner: { kind: "project", project: "web" }, accountable: { developerId: MAX.developerId } })).body.chain as { chainId: string };
+    expect((await s.call(MAX, "PUT", `/v1/app/chains/${web.chainId}/shares`, { shares: [COMPANY] })).status).toBe(202);
+    const [asked, webAsked] = s.approvals();
+    // Positive control: both hold manage on their chain, which is what the old rule accepted.
+    expect((await s.call(MAYA, "GET", `/v1/app/chains/${mine}`)).body.chain).toMatchObject({ access: "manage" });
+    expect((await s.call(MAX, "GET", `/v1/app/chains/${web.chainId}`)).body.chain).toMatchObject({ access: "manage" });
+    expect(await thrownMessage(decide(s.deps, MAYA, "member", asked!.approvalId))).toMatch(/^FORBIDDEN: /);
+    expect(await thrownMessage(decide(s.deps, MAX, "member", webAsked!.approvalId))).toMatch(/^FORBIDDEN: /);
+    expect(await thrownMessage(decide(s.deps, MAYA, "admin", asked!.approvalId))).toMatch(/^FORBIDDEN: /);
+    expect(await s.chains.listShares(TEST_ORG, mine)).toEqual([]);
+    expect(await s.chains.listShares(TEST_ORG, web.chainId)).toEqual([]);
+    expect(s.approvals().map((record) => record.status)).toEqual(["PENDING", "PENDING"]);
+  });
+
+  it("lets an org admin, an org owner and an admin who is the author confirm it", async () => {
+    const s = await setup();
+    seedMembership(s.db, OWEN.developerId, { orgId: TEST_ORG, role: "owner" });
+    const byAdmin = await s.create(MAYA);
+    const byOwner = await s.create(MAYA);
+    const own = await s.create(DANA);
+    for (const [asker, chainId] of [[MAYA, byAdmin], [MAYA, byOwner], [DANA, own]] as const) expect((await s.call(asker, "PUT", `/v1/app/chains/${chainId}/shares`, { shares: [COMPANY] })).status).toBe(202);
+    const idOf = (chainId: string) => s.approvals().find((record) => (record.subject as { chainId?: string }).chainId === chainId)!.approvalId;
+    expect((await decide(s.deps, DANA, "admin", idOf(byAdmin))).status).toBe("APPROVED_DONE");
+    expect((await decide(s.deps, OWEN, "owner", idOf(byOwner))).status).toBe("APPROVED_DONE");
+    expect((await decide(s.deps, DANA, "admin", idOf(own))).status).toBe("APPROVED_DONE");
+    for (const chainId of [byAdmin, byOwner, own]) expect((await s.chains.listShares(TEST_ORG, chainId)).map((share) => share.principal.kind)).toEqual(["org"]);
+  });
+
+  it("holds a request asked before this (rule chain_publish, the author among its candidates) to the same check, judged now", async () => {
+    const s = await setup();
+    const chainId = await s.create(MAYA);
+    expect((await s.call(MAYA, "PUT", `/v1/app/chains/${chainId}/shares`, { shares: [COMPANY] })).status).toBe(202);
+    const [fresh] = s.approvals();
+    // Rewritten as the previous code stored it: the chain_publish rule, with the author listed.
+    const key = approvalKey(TEST_ORG, fresh!.approvalId);
+    s.db.set({ ...s.db.get(key.pk, key.sk)!, approvers: { kind: "rule", rule: "chain_publish", candidates: [MAYA.developerId, DANA.developerId] } });
+    expect(candidatesOf(s.approvals()[0]!)).toContain(MAYA.developerId);
+    // The page names who may decide it, for this old record too.
+    expect(await approvalDecideKind(s.deps).inspect({ orgId: TEST_ORG, developerId: MAYA.developerId, approvalId: fresh!.approvalId })).toMatchObject({ status: "forbidden", who: "an organization owner or admin" });
+    expect(await thrownMessage(decide(s.deps, MAYA, "member", fresh!.approvalId))).toMatch(/^FORBIDDEN: /);
+    expect(await s.chains.listShares(TEST_ORG, chainId)).toEqual([]);
+    expect((await decide(s.deps, DANA, "admin", fresh!.approvalId)).status).toBe("APPROVED_DONE");
+    expect(await s.chains.listShares(TEST_ORG, chainId)).toHaveLength(1);
+  });
+
+  it("leaves a chain publish to whoever manages the chain, as before", async () => {
+    const s = await setup();
+    const rule = getApproverRule("chain_publish")!;
+    const chainId = await s.create(MAYA);
+    const record = { orgId: TEST_ORG, kind: "change", subject: { kind: "chain_publish", chainId } } as unknown as ApprovalRecord;
+    expect(await rule(s.deps, record, { orgId: TEST_ORG, developerId: MAYA.developerId, orgRole: "member" })).toBe(true);
+    expect(await rule(s.deps, record, { orgId: TEST_ORG, developerId: EVE.developerId, orgRole: "member" })).toBe(false);
+  });
+
+  it("says on the page that an owner or admin decides", async () => {
+    const s = await setup();
+    const chainId = await s.create(MAYA);
+    expect((await s.call(MAYA, "PUT", `/v1/app/chains/${chainId}/shares`, { shares: [COMPANY] })).status).toBe(202);
+    const inspected = await approvalDecideKind(s.deps).inspect({ orgId: TEST_ORG, developerId: MAYA.developerId, approvalId: s.approvals()[0]!.approvalId });
+    expect(inspected).toMatchObject({ status: "forbidden", who: "an organization owner or admin" });
+  });
+});
+
+// Opus review of decision 92: M1 (a company-share request is bound to the chain version it was asked about), M2 (a company-shared chain's less-safe publish or
+// rollback needs an owner or admin) and L1 (apply-time re-check).
+describe("company-shared chains: version binding and who decides a less-safe change (decision 92 review)", () => {
+  const COMPANY = { principal: { kind: "org" }, level: "use" } as const;
+  const LOOSER = variant({}, [], { limits: { maxRunUsd: 60 } });
+  const WITHOUT_GATE: ChainDefinitionInput = {
+    ...clone(INVESTIGATE_THEN_FIX),
+    steps: INVESTIGATE_THEN_FIX.steps.filter((step) => step.id !== "approve_fix").map((step) => (step.id === "investigate"
+      ? { ...step, next: { kind: "branch", default: "no_fix", choices: [{ id: "fix", description: "The cause is in our code and a code change fixes it", to: "fix" }, { id: "no_fix", description: "Not a code problem", to: "$end" }] } } as Step
+      : step)),
+  };
+  const decide = (deps: ApprovalDependencies, who: Developer, orgRole: OrgRole, approvalId: string) =>
+    decideApproval(deps, { orgId: TEST_ORG, developerId: who.developerId, orgRole }, approvalId, { requestId: randomUUID(), decision: "APPROVE" });
+  const factsOf = async (deps: ApprovalDependencies, who: Developer, approvalId: string) => {
+    const inspected = await approvalDecideKind(deps).inspect({ orgId: TEST_ORG, developerId: who.developerId, approvalId });
+    if (inspected.status !== "open") throw new Error(`expected an open page, got ${JSON.stringify(inspected)}`);
+    return Object.fromEntries(inspected.view.facts.map((fact) => [fact.label, fact.value]));
+  };
+  const share = (chains: ChainStore, chainId: string) =>
+    chains.replaceShares({ orgId: TEST_ORG, chainId, upsert: [COMPANY], remove: [], expectedSharesRevision: 0, by: DANA.developerId });
+
+  it("records the chain version and its digest, and shows them on the page", async () => {
+    const s = await setup();
+    const chainId = await s.create(MAYA);
+    await s.seed(chainId, INVESTIGATE_THEN_FIX);
+    expect((await s.call(MAYA, "PUT", `/v1/app/chains/${chainId}/shares`, { shares: [COMPANY] })).status).toBe(202);
+    const [record] = s.approvals();
+    expect(record!.subject).toMatchObject({ kind: "chain_share", expectedCurrentVersion: 1, versionDigest: expect.stringMatching(/^[0-9a-f]{64}$/) as string });
+    expect((await factsOf(s.deps, DANA, record!.approvalId))["Version"]).toMatch(/^Version 1 \(running now, digest [0-9a-f]{12}\)$/);
+  });
+
+  it("the probe: a looser version the author self-confirmed while the share waited makes the share stale, and nothing is shared", async () => {
+    const s = await setup();
+    const chainId = await s.create(MAYA);
+    await s.seed(chainId, INVESTIGATE_THEN_FIX);
+    expect((await s.call(MAYA, "PUT", `/v1/app/chains/${chainId}/shares`, { shares: [COMPANY] })).status).toBe(202);
+    const shareId = s.approvals()[0]!.approvalId;
+    expect((await s.putDraft(MAYA, chainId, LOOSER)).status).toBe(200);
+    expect((await s.publish(MAYA, chainId)).status).toBe(202);
+    const publishRecord = s.approvals().find((record) => record.subject.kind === "chain_publish")!;
+    expect((await decide(s.deps, MAYA, "member", publishRecord.approvalId)).status).toBe("APPROVED_DONE");
+    expect((await s.state(chainId)).currentVersion).toBe(2);
+    expect((await factsOf(s.deps, DANA, shareId))["Out of date"]).toMatch(/changed since this was asked/);
+    expect((await decide(s.deps, DANA, "admin", shareId)).status).toBe("APPROVED_FAILED");
+    expect(s.approvals().find((record) => record.approvalId === shareId)!.failure).toMatch(/The chain changed since this was asked\. Share again\./);
+    expect(await s.chains.listShares(TEST_ORG, chainId)).toEqual([]);
+    expect((await s.call(MAYA, "PUT", `/v1/app/chains/${chainId}/shares`, { shares: [COMPANY] })).status).toBe(202);
+    const again = s.approvals().find((record) => record.subject.kind === "chain_share" && record.approvalId !== shareId)!;
+    expect(again.subject).toMatchObject({ expectedCurrentVersion: 2 });
+    expect((await factsOf(s.deps, DANA, again.approvalId))["Version"]).toMatch(/^Version 2 /);
+    expect((await decide(s.deps, DANA, "admin", again.approvalId)).status).toBe("APPROVED_DONE");
+    expect(await s.chains.listShares(TEST_ORG, chainId)).toHaveLength(1);
+  });
+
+  it("unshare, approve a looser version, re-share: the re-share is bound to the looser version", async () => {
+    const s = await setup();
+    const chainId = await s.create(MAYA);
+    await s.seed(chainId, INVESTIGATE_THEN_FIX);
+    await share(s.chains, chainId);
+    expect((await s.call(MAYA, "PUT", `/v1/app/chains/${chainId}/shares`, { shares: [] })).status).toBe(200);
+    expect((await s.putDraft(MAYA, chainId, LOOSER)).status).toBe(200);
+    expect((await s.publish(MAYA, chainId)).status).toBe(202);
+    expect(s.approvals()[0]).toMatchObject({ approvers: { rule: "chain_publish" } });
+    expect((await decide(s.deps, MAYA, "member", s.approvals()[0]!.approvalId)).status).toBe("APPROVED_DONE");
+    expect((await s.call(MAYA, "PUT", `/v1/app/chains/${chainId}/shares`, { shares: [COMPANY] })).status).toBe(202);
+    const record = s.approvals().find((entry) => entry.subject.kind === "chain_share")!;
+    expect(record.subject).toMatchObject({ expectedCurrentVersion: 2 });
+    expect((await factsOf(s.deps, DANA, record.approvalId))["Version"]).toMatch(/^Version 2 \(running now/);
+    expect((await decide(s.deps, DANA, "admin", record.approvalId)).status).toBe("APPROVED_DONE");
+  });
+
+  it("a request stored before it was bound to a version is asked again, not applied", async () => {
+    const s = await setup();
+    const chainId = await s.create(MAYA);
+    await s.seed(chainId, INVESTIGATE_THEN_FIX);
+    expect((await s.call(MAYA, "PUT", `/v1/app/chains/${chainId}/shares`, { shares: [COMPANY] })).status).toBe(202);
+    const [record] = s.approvals();
+    const { expectedCurrentVersion: _a, versionDigest: _b, ...legacy } = record!.subject as Record<string, unknown>; // eslint-disable-line @typescript-eslint/no-unused-vars
+    const key = approvalKey(TEST_ORG, record!.approvalId);
+    s.db.set({ ...s.db.get(key.pk, key.sk)!, subject: legacy });
+    expect((await decide(s.deps, DANA, "admin", record!.approvalId)).status).toBe("APPROVED_FAILED");
+    expect(await s.chains.listShares(TEST_ORG, chainId)).toEqual([]);
+  });
+
+  it("a request whose recorded version digest is not the running version's is asked again, even at the same version number", async () => {
+    const s = await setup();
+    const chainId = await s.create(MAYA);
+    await s.seed(chainId, INVESTIGATE_THEN_FIX);
+    expect((await s.call(MAYA, "PUT", `/v1/app/chains/${chainId}/shares`, { shares: [COMPANY] })).status).toBe(202);
+    const [record] = s.approvals();
+    const key = approvalKey(TEST_ORG, record!.approvalId);
+    s.db.set({ ...s.db.get(key.pk, key.sk)!, subject: { ...record!.subject, versionDigest: "f".repeat(64) } });
+    expect((await decide(s.deps, DANA, "admin", record!.approvalId)).status).toBe("APPROVED_FAILED");
+    expect(await s.chains.listShares(TEST_ORG, chainId)).toEqual([]);
+  });
+
+  it("M2: a shared chain's less-safe publish is asked of owners and admins only; the author is refused and an admin confirms", async () => {
+    const s = await setup();
+    const chainId = await s.create(MAYA);
+    await s.seed(chainId, INVESTIGATE_THEN_FIX);
+    await share(s.chains, chainId);
+    expect((await s.putDraft(MAYA, chainId, LOOSER)).status).toBe(200);
+    expect((await s.publish(MAYA, chainId)).status).toBe(202);
+    const [record] = s.approvals();
+    expect(record).toMatchObject({ approvers: { rule: "chain_company_share" } });
+    expect(candidatesOf(record!)).toEqual([DANA.developerId]);
+    expect(await thrownMessage(decide(s.deps, MAYA, "member", record!.approvalId))).toMatch(/^FORBIDDEN: /);
+    expect((await s.state(chainId)).currentVersion).toBe(1);
+    expect((await decide(s.deps, DANA, "admin", record!.approvalId)).status).toBe("APPROVED_DONE");
+    expect((await s.state(chainId)).currentVersion).toBe(2);
+  });
+
+  it("M2: the same for a rollback to a looser version", async () => {
+    const s = await setup();
+    const chainId = await s.create(MAYA);
+    await s.seed(chainId, WITHOUT_GATE);
+    await s.seed(chainId, INVESTIGATE_THEN_FIX);
+    await share(s.chains, chainId);
+    expect((await s.call(MAYA, "POST", `/v1/app/chains/${chainId}/rollback`, { version: 1 })).status).toBe(202);
+    const [record] = s.approvals();
+    expect(record).toMatchObject({ subject: { kind: "chain_rollback" }, approvers: { rule: "chain_company_share" } });
+    expect(await thrownMessage(decide(s.deps, MAYA, "member", record!.approvalId))).toMatch(/^FORBIDDEN: /);
+    expect((await decide(s.deps, DANA, "admin", record!.approvalId)).status).toBe("APPROVED_DONE");
+    expect((await s.state(chainId)).currentVersion).toBe(1);
+  });
+
+  it("M2: an unshared chain keeps today's rules, and a request asked before the share existed is held to the owner-or-admin check, judged now", async () => {
+    const s = await setup();
+    const chainId = await s.create(MAYA);
+    await s.seed(chainId, INVESTIGATE_THEN_FIX);
+    expect((await s.putDraft(MAYA, chainId, LOOSER)).status).toBe(200);
+    expect((await s.publish(MAYA, chainId)).status).toBe(202);
+    const [record] = s.approvals();
+    expect(record).toMatchObject({ approvers: { rule: "chain_publish" } });
+    expect(candidatesOf(record!)).toContain(MAYA.developerId);
+    await share(s.chains, chainId);
+    // The page says who may decide it now, and the author can't.
+    expect(await approvalDecideKind(s.deps).inspect({ orgId: TEST_ORG, developerId: MAYA.developerId, approvalId: record!.approvalId })).toMatchObject({ status: "forbidden", who: "an organization owner or admin" });
+    expect(await thrownMessage(decide(s.deps, MAYA, "member", record!.approvalId))).toMatch(/^FORBIDDEN: /);
+    expect((await decide(s.deps, DANA, "admin", record!.approvalId)).status).toBe("APPROVED_DONE");
+    // Control: with no share the author decides her own, as before.
+    const other = await s.create(MAYA);
+    await s.seed(other, INVESTIGATE_THEN_FIX);
+    expect((await s.putDraft(MAYA, other, LOOSER)).status).toBe(200);
+    expect((await s.publish(MAYA, other)).status).toBe(202);
+    const mine = s.approvals().find((entry) => (entry.subject as { chainId?: string }).chainId === other)!;
+    expect((await decide(s.deps, MAYA, "member", mine.approvalId)).status).toBe("APPROVED_DONE");
+  });
+
+  it("L1: a publish or rollback an author decided is refused at apply time once the chain is shared, and applies when an admin decided it", async () => {
+    const s = await setup();
+    const chainId = await s.create(MAYA);
+    await s.seed(chainId, INVESTIGATE_THEN_FIX);
+    expect((await s.putDraft(MAYA, chainId, LOOSER)).status).toBe(200);
+    expect((await s.publish(MAYA, chainId)).status).toBe(202);
+    const record = s.approvals()[0]!;
+    await share(s.chains, chainId);
+    const handler = getApprovalSubjectHandler("chain_publish")!;
+    expect(await thrownMessage(handler(s.deps, { ...record, decidedBy: MAYA.developerId }))).toMatch(/shared with your company after this was decided/);
+    expect((await s.state(chainId)).currentVersion).toBe(1);
+    await handler(s.deps, { ...record, decidedBy: DANA.developerId });
+    expect((await s.state(chainId)).currentVersion).toBe(2);
+    await s.seed(chainId, INVESTIGATE_THEN_FIX);
+    expect((await s.call(MAYA, "POST", `/v1/app/chains/${chainId}/rollback`, { version: 2 })).status).toBe(202);
+    const rollback = s.approvals().find((entry) => entry.subject.kind === "chain_rollback")!;
+    const rollbackHandler = getApprovalSubjectHandler("chain_rollback")!;
+    expect(await thrownMessage(rollbackHandler(s.deps, { ...rollback, decidedBy: MAYA.developerId }))).toMatch(/shared with your company after this was decided/);
+    expect((await s.state(chainId)).currentVersion).toBe(3);
+    await rollbackHandler(s.deps, { ...rollback, decidedBy: DANA.developerId });
+    expect((await s.state(chainId)).currentVersion).toBe(2);
+  });
+});

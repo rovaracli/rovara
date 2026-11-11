@@ -5,10 +5,8 @@ import { createReadStream } from "node:fs";
 import { lstat, realpath } from "node:fs/promises";
 import path from "node:path";
 
-export {
-  SAVED_ENV_FIXED_KEY_GLOBS, SAVED_ENV_KEY_BUILD_OUTPUT_DIRS, SAVED_ENV_KEY_EXCLUDED_GLOBS, blobKeyHash, environmentKeyFromRepositories, isRegularBlobMode, keyFilePaths, stripJsonComments,
-  type EnvironmentKeyRequest, type EnvironmentKeyResult, type KeyRepository,
-} from "@agentx/contracts";
+export { SAVED_ENV_FIXED_KEY_GLOBS, environmentKeyFromRepositories, keyFilePaths } from "@agentx/cloud-contracts";
+export { SAVED_ENV_KEY_BUILD_OUTPUT_DIRS, SAVED_ENV_KEY_EXCLUDED_GLOBS, blobKeyHash, isRegularBlobMode, stripJsonComments, type EnvironmentKeyRequest, type EnvironmentKeyResult, type KeyRepository } from "@rovara-code/contracts";
 
 /** The most bytes of one key file that are hashed; a larger file is unreadable (a key file is a manifest, not data). */
 export const SAVED_ENV_KEY_FILE_MAX_BYTES = 64 * 1_048_576;

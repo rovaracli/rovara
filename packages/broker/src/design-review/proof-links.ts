@@ -3,7 +3,7 @@
 // A link is a `§3.N` subsection that EXISTS in that text as a heading and that mentions the requirement in its own prose (outside code fences). Nothing is guessed, filled in from a parent or
 // taken from a finding or a model: a claim no subsection names gets no link, and the row reads as it did before.
 import { createHash } from "node:crypto";
-import { nextFenceState } from "@agentx/contracts";
+import { nextFenceState } from "@rovara-code/contracts";
 
 /** A claim has at most this many design links on its row (the table is public and bounded). */
 export const PROOF_DESIGN_LINKS_PER_CLAIM_MAX = 3;

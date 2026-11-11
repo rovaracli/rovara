@@ -3,11 +3,10 @@
 // the request id is a receipt, the recorded grants are the exact delete list, and the tombstone has no expiry.
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it } from "vitest";
-import {
-  developerOrgKey, memberGrantsPk, memberRemovalQueueKey, orgBanKey, orgEmailKey, orgMemberKey, orgRemovedKey, orgSettingsKey, type OrgId,
-} from "@agentx/contracts";
-import { githubMemberKey, memberGithubKey, projectMemberKey } from "../../packages/contracts/src/org-scoped-keys.js";
-import { memberRemovalRecordKey, MEMBER_REMOVAL_EMAIL_CAP } from "../../packages/contracts/src/member-removal.js";
+import { developerOrgKey, memberRemovalQueueKey, orgBanKey, orgEmailKey, orgMemberKey, orgRemovedKey, orgSettingsKey } from "@agentx/cloud-contracts";
+import { memberGrantsPk, type OrgId } from "@rovara-code/contracts";
+import { githubMemberKey, memberGithubKey, projectMemberKey } from "@rovara-code/contracts";
+import { memberRemovalRecordKey, MEMBER_REMOVAL_EMAIL_CAP } from "../../packages/cloud-contracts/src/member-removal.js";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";

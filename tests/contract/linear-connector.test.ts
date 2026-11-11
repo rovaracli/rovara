@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { ConnectorsSchema, ProjectDefinitionSchema, StoredProjectDefinitionSchema } from "../../packages/contracts/src/index.js";
+import { ConnectorsSchema } from "@rovara-code/contracts";
+import { ProjectDefinitionSchema, StoredProjectDefinitionSchema } from "@agentx/cloud-contracts";
 import { BUILT_IN_CONNECTOR_TYPES, resolveConnectors } from "../../packages/broker/src/aws/connector-types.js";
 import { CredentialRegistry } from "../../packages/broker/src/aws/credentials.js";
 import { linearConnectorType } from "../../packages/broker/src/aws/linear-connector-type.js";

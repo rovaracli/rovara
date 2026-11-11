@@ -1,5 +1,5 @@
 import { Link } from "react-router";
-import { LEARNING_PROJECT_WIDE, type ProjectOverviewReaderSchema } from "@agentx/contracts/web";
+import { LEARNING_PROJECT_WIDE, type ProjectOverviewReaderSchema } from "@agentx/cloud-contracts/web";
 import { useHowWeWork } from "../../api/how-we-work.js";
 import { VisibleText } from "../../design/VisibleText.js";
 import { METRIC_TEXT as T, afterRuleText, lastMonthChange, percentOf, ruleRepeatsText, shareText, soFarText, stageLabel } from "./learning-text.js";

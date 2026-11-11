@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DRIVING_TEST_FIRST_CALL_CASE_ID, E2E_MODEL_CHECK_RESULT_SCHEMA, e2eModelRouteRevision } from "../../packages/contracts/src/index.js";
+import { DRIVING_TEST_FIRST_CALL_CASE_ID, E2E_MODEL_CHECK_RESULT_SCHEMA, e2eModelRouteRevision } from "@rovara-code/contracts";
 import { deriveE2EAgentRouteForModel, e2eAgentRouteDefinitionDigest } from "../../packages/model-runtime/src/e2e-route-derive.js";
 import { formatCanaryPlan, parseCanaryArgs, runModelCanary, type CanaryEffects, type CanaryFacts } from "../../scripts/test-model-canary.js";
 

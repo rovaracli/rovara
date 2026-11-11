@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
-import { redactText } from "../../packages/contracts/src/redaction.js";
+import { redactText } from "@rovara-code/contracts";
 import { redactSecrets } from "../../packages/broker/src/chains/handoff.js";
 import { scanTreeForSecrets } from "../../packages/worker/src/saved-env/secret-scan.js";
 import { mintScriptToken } from "../../packages/broker/src/script-tokens/token-format.js";

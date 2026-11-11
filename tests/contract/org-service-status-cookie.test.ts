@@ -1,5 +1,6 @@
 import { expect, it } from "vitest";
-import { WEB_API_RUNTIME_PROFILE_ID, orgMetaKey } from "@agentx/contracts";
+import { WEB_API_RUNTIME_PROFILE_ID } from "@rovara-code/contracts";
+import { orgMetaKey } from "@agentx/cloud-contracts";
 import { createAdminBroker } from "../support/admin-broker.js";
 import { seedMembership } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";

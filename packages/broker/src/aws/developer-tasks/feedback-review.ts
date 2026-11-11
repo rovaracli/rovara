@@ -1,20 +1,7 @@
 import { createHash } from "node:crypto";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  agentXError,
-  redactText,
-  type WorkflowSnapshot,
-  workflowSelectedChecks,
-  WorkflowFeedbackBundleSchema,
-  WorkflowFeedbackReviewReportSchema,
-  WorkflowTransitionError,
-  decideWorkflowFeedbackFindings,
-  feedbackCardCiFailures,
-  feedbackDecidedByText,
-  applyWorkflowFeedbackCheckChanges,
-  workflowFeedbackCheckChanges,
-  type WorkflowDependencyInvocation,
-} from "@agentx/contracts";
+import { agentXError, redactText, workflowSelectedChecks, WorkflowFeedbackBundleSchema, WorkflowFeedbackReviewReportSchema, WorkflowTransitionError, feedbackDecidedByText, workflowFeedbackCheckChanges, type WorkflowDependencyInvocation } from "@rovara-code/contracts";
+import { type WorkflowSnapshot, decideWorkflowFeedbackFindings, feedbackCardCiFailures, applyWorkflowFeedbackCheckChanges } from "@agentx/cloud-contracts";
 import { workflowDependenciesAllowed } from "../../rovara-code/parallel-parts.js";
 import { developerTaskIdentity, taskKey, type DeveloperTaskRecord } from "../../developer/task-records.js";
 import { isConditional } from "../broker-shared.js";

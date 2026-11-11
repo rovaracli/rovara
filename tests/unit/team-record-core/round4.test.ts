@@ -1,6 +1,6 @@
 // Fix round 4 (Opus recheck-3): N-5 busy places and many child places, N-6 per-span trust in retention B, the GSI3 projection, and the documented tie-break.
 import { describe, expect, it } from "vitest";
-import { TEAM_RECORD_GSI3, TEAM_RECORD_GSI3_ATTRIBUTES, recordPlaceIndexValue, recordScopeHash } from "@agentx/contracts";
+import { TEAM_RECORD_GSI3, TEAM_RECORD_GSI3_ATTRIBUTES, recordPlaceIndexValue, recordScopeHash } from "@agentx/cloud-contracts";
 import { runDeleteWorker } from "../../../packages/broker/src/team-record/delete-worker.js";
 import { recordSearch } from "../../../packages/broker/src/team-record/query.js";
 import { createRecordSink } from "../../../packages/broker/src/team-record/sink.js";

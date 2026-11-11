@@ -1,7 +1,8 @@
 // L3b wiring: the lessons routes on the developer routes. Off unless the install wired the lesson ports AND learning is on for the project; the Auditor reads and writes nothing else;
 // a write needs a live browser session; per-person rate rows; and "what the agent loaded" is reachable. Real dispatcher, real rate rows (a fake table), fake lesson ports.
 import { describe, expect, it } from "vitest";
-import { AgentXError, developerOrgKey, errorStatus, orgMemberKey, orgMetaKey, projectMetaKey, projectRevisionKey, type OrgId } from "@agentx/contracts";
+import { AgentXError, errorStatus, projectMetaKey, projectRevisionKey, type OrgId } from "@rovara-code/contracts";
+import { developerOrgKey, orgMemberKey, orgMetaKey } from "@agentx/cloud-contracts";
 import { routeDeveloperRequest, type DeveloperCaller, type DeveloperRouteDependencies } from "../../packages/broker/src/aws/developer-routes.js";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { InMemoryLessonStore } from "../../packages/broker/src/lessons/store.js";

@@ -1,4 +1,4 @@
-import { AgentXError, agentXError, CSRF_STALE_MESSAGE } from "@agentx/contracts";
+import { AgentXError, agentXError, CSRF_STALE_MESSAGE } from "@rovara-code/contracts";
 import { APP_CSRF_HEADER, appCsrfMatches } from "../developer/app-csrf.js";
 import { authenticateDeveloperSessionId, type DeveloperCaller, type DeveloperRouteDependencies } from "./developer-routes.js";
 import type { AdaptedHttpRequest } from "./lambda.js";
@@ -21,11 +21,15 @@ export function webRouteAllowed(method: string, pathname: string): boolean {
  if (family === "tasks" && method === "POST" && /^tasks\/[0-9a-f-]{36}\/workflow\/(?:review-findings|send-back)$/i.test(relative)) return true;
  if (family === "tasks") return (method === "POST" && /^tasks\/[0-9a-f-]{36}\/second-review-acknowledge$/i.test(relative)) || (method === "POST" && /^tasks\/[0-9a-f-]{36}\/continue-as-task$/i.test(relative)) || (read && /^tasks\/[0-9a-f-]{36}\/design-review\/approve$/i.test(relative)) || (method === "POST" && /^tasks\/[0-9a-f-]{36}\/design-review\/(?:first|skip|answers|retry|resume|approve|spend\/(?:lower-tier|raise-cap|run-unpriced|skip))$/i.test(relative)) || (read && /^tasks\/[0-9a-f-]{36}\/lessons$/.test(relative)) || (read && /^tasks\/[0-9a-f-]{36}\/loaded-knowledge(?:\/[A-Za-z0-9_-]{1,80}\/[a-z_]{1,20}(?:\.[A-Z]{1,10})?\/items\/\d{1,3}\/text)?$/.test(relative)) || (method === "POST" && /^tasks\/[0-9a-f-]{36}\/lessons\/[A-Za-z0-9_-]{4,64}\/feedback$/.test(relative));
  // WEB-1 (owner, 2026-11-02): the decision cards. Exact shapes only, mirroring PATH in decisions/routes.ts: read the list; press one card (approve, reject or note that its evidence was opened). Nothing else under decisions/ is reachable from a browser.
- if (family === "decisions") return (method === "GET" && relative === "decisions") || (method === "POST" && /^decisions\/[a-z_]+\/[A-Za-z0-9_-]{1,150}\/(?:approve|reject|evidence-opened|request-changes)$/u.test(relative));
+ if (family === "decisions") return (method === "GET" && relative === "decisions") || (method === "POST" && /^decisions\/[a-z_]+\/[A-Za-z0-9_-]{1,150}\/(?:approve|reject|evidence-opened|request-changes|dismiss)$/u.test(relative));
  // Fix with agent (switch `fd`): the browser may ask for a diagnosis and read one, and nothing else under diagnoses/ (the deep tier and "Apply this change" stay on the token API). Exact shapes, mirroring routes.ts in diagnosis/.
  if (family === "diagnoses") return (method === "POST" && relative === "diagnoses") || (method === "GET" && /^diagnoses\/dgn_[0-9a-z]{20}$/u.test(relative));
  // UX5b: the settings screen for script tokens. Exact shapes, mirroring script-tokens/routes.ts: list, make, revoke one.
  if (family === "script-tokens") return ((method === "GET" || method === "POST") && relative === "script-tokens") || (method === "DELETE" && /^script-tokens\/stk_[0-9a-z]{20}$/u.test(relative));
+ // Trial and billing reads (srv/trial-reads): the trial view is read-only from a browser; the billing paths are under `org/` and their routes answer GET only.
+ if (family === "trial") return read && relative === "trial";
+ // Insights (srv/insights-reads): the reads, exact shapes only (the grant is under `org/insights-access`, which the `org` family carries); the routes check who may.
+ if (family === "insights") return read && /^insights(?:\/(?:stuck|shipped|spend|flow))?$/u.test(relative);
  if (!(WEB_ROUTE_FAMILIES as readonly string[]).includes(family)) return false;
  // Lane B: legacy lifecycle writes remain on the token API for compatibility.
  // Cookie callers must use reviewed paths; legacy Slack writes remain held until B34 exposure ships.

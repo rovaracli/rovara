@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { agentXError } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
 import { emitConnectorMetric, observeConnectorRoute } from "../../packages/broker/src/aws/connector-metrics.js";
 
 const workspace = "0f0e0d0c-0b0a-4908-8706-050403020100";

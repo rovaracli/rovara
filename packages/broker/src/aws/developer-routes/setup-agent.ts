@@ -1,7 +1,7 @@
 // Setup agent routes (sh-setup-wire, SH14; design setup-test-health 3.4): `/v1/app/projects/{name}/setup-agent`, `.../stop`, `.../command` and `.../journal`. They exist only while the `su` switch is on and, with
 // it off, `routeSetupAgent` answers undefined at once and the path falls through as any unknown path does (nothing is read, nothing is written). Everything the routes decide is in
 // `rovara-code/setup-agent.ts` (start, stop, state), `setup-command.ts` (a person's command) and `setup-journal.ts`; this file builds their dependencies from the developer API's.
-import { agentXError, ROVARA_CODE_AGENT_ID, projectAllows, type Payer } from "@agentx/contracts";
+import { agentXError, ROVARA_CODE_AGENT_ID, projectAllows, type Payer } from "@rovara-code/contracts";
 import { resolveRunPayer, startAgentRun } from "../../agents/runs.js";
 import type { AdaptedHttpRequest } from "../lambda.js";
 import { StatusReply } from "../status-reply.js";

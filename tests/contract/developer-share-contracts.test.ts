@@ -3,28 +3,8 @@
 // answer written before 25c still parses.
 import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it } from "vitest";
-import {
-  AdminShareModeRequestSchema,
-  AgentXErrorCodeSchema,
-  AiToolTurnRecordSchema,
-  ChannelTurnSchema,
-  CLOSED_SHARED_NOTICE,
-  DEVELOPER_API_VERSION,
-  DeveloperTaskViewSchema,
-  SHARED_BY_POLICY,
-  ShareDeveloperTaskRequestSchema,
-  SharedTaskRecordSchema,
-  SlackThreadPrepareResultSchema,
-  SlackThreadWorkspaceResultSchema,
-  SlackWorkspaceCloseStartResultSchema,
-  TurnRecordSchema,
-  VIEW_ONLY_BY_POLICY,
-  VIEW_ONLY_NOTICE,
-  agentXError,
-  sharedNoticeClaim,
-  sharedNoticeKey,
-  sharedTaskKey,
-} from "../../packages/contracts/src/index.js";
+import { AdminShareModeRequestSchema, AgentXErrorCodeSchema, AiToolTurnRecordSchema, ChannelTurnSchema, CLOSED_SHARED_NOTICE, DEVELOPER_API_VERSION, SHARED_BY_POLICY, ShareDeveloperTaskRequestSchema, SharedTaskRecordSchema, SlackThreadPrepareResultSchema, SlackThreadWorkspaceResultSchema, SlackWorkspaceCloseStartResultSchema, TurnRecordSchema, VIEW_ONLY_BY_POLICY, VIEW_ONLY_NOTICE, agentXError, sharedNoticeClaim, sharedNoticeKey, sharedTaskKey } from "@rovara-code/contracts";
+import { DeveloperTaskViewSchema } from "@agentx/cloud-contracts";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 
 const TASK = "11111111-1111-4111-8111-111111111111";

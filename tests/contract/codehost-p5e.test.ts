@@ -3,13 +3,13 @@
 // fixed sentence, for a repository on any other host; a record that names a host this install has not registered is refused with the router's sentence. Nothing is asked of GitHub for it.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { editionPolicy } from "../../packages/contracts/src/index.js";
+import { editionPolicy } from "@agentx/cloud-contracts";
 import { rewriteDescriptionsOfTask, attributionErasureOf } from "../../packages/broker/src/aws/broker/attribution-erasure.js";
 import { metaRepositoryReaders } from "../../packages/broker/src/aws/broker/meta-repo-wiring.js";
 import { metaPrepareOf } from "../../packages/broker/src/aws/broker/workspace-preparation.js";
 import { NO_HOST_MESSAGE } from "../../packages/broker/src/plugins/registry.js";
 import { GITHUB_ONLY_MESSAGE } from "../../packages/broker/src/plugins/code-host/github-only.js";
-import { agentSessionKey, sanitizeSetupProposal, type SetupProposal } from "@agentx/contracts";
+import { agentSessionKey, sanitizeSetupProposal, type SetupProposal } from "@rovara-code/contracts";
 import { verificationOf } from "../../packages/broker/src/rovara-code/setup-draft.js";
 import { githubCodeHost } from "../../packages/broker/src/plugins/code-host/github/index.js";
 import { FakeCodeHost } from "../../packages/broker/src/plugins/fake/code-host.js";

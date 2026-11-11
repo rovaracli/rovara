@@ -1,6 +1,7 @@
 import type { TransactItem } from "../audit/outbox.js";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { agentXError, orgMetaKey, projectMetaKey, type OrgId, type OrgKey } from "@agentx/contracts";
+import { agentXError, projectMetaKey, type OrgId, type OrgKey } from "@rovara-code/contracts";
+import { orgMetaKey } from "@agentx/cloud-contracts";
 type Item = Record<string, unknown>;
 export interface ApprovalMembershipDependencies {
   documentClient: { send(command: unknown): Promise<unknown> };

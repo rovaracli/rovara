@@ -10,7 +10,7 @@
 //   - `lease`: the per-repository lease, so two passes never run at once.
 // Every write is conditional on the revision that was read (`put`), so a lost race is a plain "someone else wrote" and never an overwrite.
 import { z } from "zod";
-import { LESSON_FILE_PROBLEMS, LESSON_FILE_UNMERGED_LIMIT, type LessonFileProblem } from "@agentx/contracts";
+import { LESSON_FILE_PROBLEMS, LESSON_FILE_UNMERGED_LIMIT, type LessonFileProblem } from "@rovara-code/contracts";
 import type { ScopeKey } from "./store.js";
 
 export const MAX_RENDERED = 400;

@@ -6,11 +6,8 @@
 // to fifty cents; with fewer it is the default for the path. The run limit is the high end times the org's multiplier, never more than
 // `MAX_RUN_LIMIT_USD`. Plan 6 Task 7 builds on `estimateRun` and `RunEstimate`: keep both stable.
 import { QueryCommand, TransactWriteCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  DEFAULT_RUN_ESTIMATE_USD, ESTIMATE_HISTORY_SIZE, ESTIMATE_MIN_SAMPLES, INDEX_EXPIRY_ATTRIBUTE, MAX_RUN_LIMIT_USD, ROVARA_CODE_AGENT_ID, agentRunsKey, runCostKey, runLimitBlockText, runLimitWaitingText,
-  memberAcceptRunLimitUsd,
-  type AgentId, type OrgId, type OrgRole, type ProjectRole, type RunEstimate,
-} from "@agentx/contracts";
+import { DEFAULT_RUN_ESTIMATE_USD, ESTIMATE_HISTORY_SIZE, ESTIMATE_MIN_SAMPLES, INDEX_EXPIRY_ATTRIBUTE, MAX_RUN_LIMIT_USD, ROVARA_CODE_AGENT_ID, agentRunsKey, runCostKey, runLimitBlockText, runLimitWaitingText, type AgentId, type OrgId, type ProjectRole, type RunEstimate } from "@rovara-code/contracts";
+import { memberAcceptRunLimitUsd, type OrgRole } from "@agentx/cloud-contracts";
 import type { DeveloperTaskRecord } from "../developer/task-records.js";
 import { taskKey } from "../developer/task-records.js";
 import type { ModelAccess } from "../model-proxy/access.js";

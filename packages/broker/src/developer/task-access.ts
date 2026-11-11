@@ -1,13 +1,15 @@
 // Spec 061 slice 2: who may do what on a task page. Every check goes through resolveTaskAccess and the one role-to-action
 // table below, so roles (slice 3) change only these two places; callers never decide roles themselves.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { AgentXError, agentXError, emailSafeName, projectAllows, projectMemberKey, type OrgId, type OrgRole, type ProjectRole } from "@agentx/contracts";
+import { AgentXError, agentXError, emailSafeName, projectAllows, projectMemberKey, type OrgId, type ProjectRole } from "@rovara-code/contracts";
+import { type OrgRole } from "@agentx/cloud-contracts";
 import { effectiveProjectRole, requireNewWorkAllowed, viewerCannotStartTasksMessage } from "./project-roles.js";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 import type { DeveloperTaskRouteDependencies } from "../aws/developer-tasks.js";
 import { resolveStoredName } from "./name-resolver.js";
 import { resolveTaskPeopleAccess, type TaskRole } from "./task-people.js";
 import { resolveSessionAccess } from "../agent-sessions/access.js";
+import { decisionCardsEnabled } from "../proof/switch.js";
 import { AgentSessionStore } from "../agent-sessions/store.js";
 import { effectiveTaskOwner, isTaskOwner, ownerActorIdOf, taskKey, type DeveloperTaskRecord } from "./task-records.js";
 
@@ -19,6 +21,7 @@ export const TASK_ACTION_ROLES: Record<TaskAction, readonly TaskRole[]> = {
   peopleRead: ["owner", "commenter", "viewer"],
   comment: ["owner", "commenter"],
   suggest: ["commenter"],
+  // The owner and co-owners. A project maintainer who is not the owner decides a coding plan through `resolveTaskApprover` (approval place, owner decision Q7), not through this table: the seat is checked live, with the cards on, for plans only.
   decide: ["owner"],
   ask: ["owner", "commenter"],
   peopleManage: ["owner"],
@@ -141,6 +144,38 @@ export async function projectWorkAllowed(
     return true;
   } catch {
     return false;
+  }
+}
+
+/** The seat of a project maintainer who is not the task's owner and may decide its coding plan (approval place, owner decision Q7). */
+export interface TaskApproverSeat {
+  task: DeveloperTaskRecord;
+  role: "maintainer";
+  /** The People revision a write must fence, when the task has a People list. */
+  peopleRevision?: number;
+  ownerActorIds: readonly string[];
+}
+
+/**
+ * Whether the caller may decide this task's coding plan as a PROJECT MAINTAINER (a company owner or admin counts as a maintainer of every project). Every one of these holds, read live, or the answer is undefined (fail closed, and the caller then
+ * says what it said before, "no task here that you can see"): the decision cards are on (the rollout switch of the place rules); the task is in the caller's org and still open; the caller's project access is granted with the maintainer role;
+ * a project that cannot be asked, or where the caller is not a maintainer (a viewer, a contributor), gives none; and when the task's People list narrowed it, the caller is on it. The task's owner is never
+ * given this seat (the owner's own path comes first). Reading, commenting and the rest are unchanged: this opens one action.
+ */
+export async function resolveTaskApprover(deps: AccessDependencies, caller: DeveloperCaller, taskId: string): Promise<TaskApproverSeat | undefined> {
+  if (!decisionCardsEnabled() || !TASK_ID.test(taskId)) return undefined;
+  try {
+    const response = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: taskKey(taskId), ConsistentRead: true })) as { Item?: DeveloperTaskRecord };
+    const task = response.Item;
+    if (task === undefined || task.orgId !== caller.orgId || !taskOpen(task)) return undefined;
+    if (await isTaskOwner(task, caller.developerId, deps.resolveMember)) return undefined;
+    const access = await deps.checkAccess(task.project);
+    if (access.access !== "granted" || access.role !== "maintainer") return undefined;
+    // A People list that does not include the caller refuses them (it throws); no list means the task is open to the project.
+    const people = await resolveTaskPeopleAccess(deps, task, caller.developerId);
+    return { task, role: "maintainer", ownerActorIds: people?.ownerActorIds ?? [], ...(people === undefined ? {} : { peopleRevision: people.peopleRevision }) };
+  } catch {
+    return undefined;
   }
 }
 

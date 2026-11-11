@@ -1,7 +1,7 @@
 // The GitHub App credentials as the broker and the plan evidence job build them: one definition, from the same environment
 // (GITHUB_APP_CREDENTIAL_REF, GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY_SECRET_ARN) and the same secret.
 import { GetSecretValueCommand, type SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
-import { agentXError } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
 import { appIdFromSecret, GitHubAppCredentialProvider, type GitHubAppCredentialProviderOptions, isWebhookSecretMissing, privateKeyFromSecret, webhookSecretFromSecret } from "../github-app.js";
 import { requiredEnvironment } from "./lambda.js";
 

@@ -1,11 +1,6 @@
 // Service mocks (E8): the small JSON schema the recorder infers from recorded bodies, the check a request or response is held to, and the deterministic synthetic answer a `schema_synth` mock gives. The schema
 // subset is `ServiceMockJsonSchema` (contracts), bounded in depth and size. Pure; no I/O.
-import {
-  SERVICE_MOCK_SCHEMA_MAX_DEPTH,
-  SERVICE_MOCK_SCHEMA_MAX_NODES,
-  ServiceMockJsonSchemaSchema,
-  type ServiceMockJsonSchema,
-} from "@agentx/contracts";
+import { SERVICE_MOCK_SCHEMA_MAX_DEPTH, SERVICE_MOCK_SCHEMA_MAX_NODES, ServiceMockJsonSchemaSchema, type ServiceMockJsonSchema } from "@rovara-code/contracts";
 import type { SyntheticGenerator } from "../data-guard.js";
 
 type Type = ServiceMockJsonSchema["type"];

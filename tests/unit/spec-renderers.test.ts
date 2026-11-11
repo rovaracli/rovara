@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { SpecDraftSchema, SpecTargetSchema, earsLine, specDraftStatements, specLine, specMarkdown, specPathProblem, specSlug, type SpecDraft, type SpecTarget } from "@agentx/contracts";
+import { SpecDraftSchema, SpecTargetSchema, earsLine, specDraftStatements, specLine, specMarkdown, specPathProblem, specSlug, type SpecDraft, type SpecTarget } from "@rovara-code/contracts";
 import {
   assertRenderedSpec, KIRO_BUGFIX_SECTIONS, kiroRenderer, nextFolderNumber, registerSpecRenderer, rovaraRenderer, specFormats, specKitRenderer, specRendererFor, teamTemplateRenderer, unregisterSpecRenderer,
   type SpecRenderInput, type SpecRenderer,

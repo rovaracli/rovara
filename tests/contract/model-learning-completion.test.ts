@@ -1,6 +1,6 @@
 // Lessons in production, lane 1 (fix round 1): the `learningCompletion` operation of the ModelAccessFunction. The BROKER mints the key and reserves its cap in the spend ledger; the function makes ONE tool-less model
 // call with that key on the company's own route and answers the text. It does not mint, read spend or delete anything, so it cannot read a spend figure before the proxy has flushed it. No error carries the provider's words.
-import type { AgentXError } from "@agentx/contracts";
+import type { AgentXError } from "@rovara-code/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { InvokeCommandOutput } from "@aws-sdk/client-lambda";
 import { LearningNotForwarded } from "../../packages/broker/src/model-proxy/access.js";

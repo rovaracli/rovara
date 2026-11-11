@@ -7,7 +7,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { E2EApiMockFixtureSchema, canonicalJson, type E2EApiMockFixture } from "../../packages/contracts/src/index.js";
+import { E2EApiMockFixtureSchema, canonicalJson, type E2EApiMockFixture } from "@rovara-code/contracts";
 import { MOCK_LEDGER_MAX_LINES, MOCK_UNMOCKED_BODY, MOCK_UNMOCKED_STATUS, mockRequestDigest, mockResponseDigest, parseMockFixture, parseMockModeArguments, runMockMode, startMockServer, startSinkholeDns, type MockLedgerLine } from "../../packages/verifier/src/executor/mock-server.js";
 
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");

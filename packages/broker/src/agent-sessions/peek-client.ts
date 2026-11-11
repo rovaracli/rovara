@@ -4,14 +4,7 @@
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { InvokeCommand } from "@aws-sdk/client-lambda";
 import { randomUUID } from "node:crypto";
-import {
-  DISPATCHER_PEEK_EVENT_KIND,
-  DispatcherPeekReplySchema,
-  PEEK_NO_CALLBACK_CAPABILITY,
-  PEEK_PATCH_MAX_BYTES,
-  type DispatcherPeekEvent,
-  type PeekAnswer,
-} from "@agentx/contracts";
+import { DISPATCHER_PEEK_EVENT_KIND, DispatcherPeekReplySchema, PEEK_NO_CALLBACK_CAPABILITY, PEEK_PATCH_MAX_BYTES, type DispatcherPeekEvent, type PeekAnswer } from "@rovara-code/contracts";
 import { taskPointerKey, type DeveloperTaskRecord } from "../developer/task-records.js";
 
 /** A peek that has not answered in this long is given up (the dispatcher's own worker call is bounded at 10 s). */

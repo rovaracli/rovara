@@ -1,6 +1,7 @@
 import {expect,it} from "vitest";
 import {TransactWriteCommand} from "@aws-sdk/lib-dynamodb";
-import {agentGuardrailsKey,modelSourcesKey,developerOrgKey,orgMemberKey,orgMetaKey,type OrgId} from "@agentx/contracts";
+import { agentGuardrailsKey, modelSourcesKey, type OrgId } from "@rovara-code/contracts";
+import { developerOrgKey, orgMemberKey, orgMetaKey } from "@agentx/cloud-contracts";
 import {bedrockClaudeModelIds} from "@agentx/model-runtime/catalog";
 import {FakeDynamoDb} from "../support/fake-dynamodb.js";
 import {prepareCompanyModelPolicy} from "../../packages/broker/src/model-selection/company-prepare.js";

@@ -1,7 +1,7 @@
 import { Suspense, lazy, useId, useMemo } from "react";
 import { Link } from "react-router";
 import { useQuery } from "@tanstack/react-query";
-import type { ReadAppNav } from "@agentx/contracts/web";
+import type { ReadAppNav } from "@agentx/cloud-contracts/web";
 import { useAppHost } from "../../host.js";
 import { paths } from "../../paths.js";
 import { useAgents } from "../../api/agents.js";

@@ -1,6 +1,7 @@
 import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import { OrgIdSchema, SlackTeamIdSchema, OrgSlackWorkspaceEvidenceResponseSchema, SLACK_WORKSPACE_EVIDENCE_LIMIT, agentXError, orgMemberKey, developerOrgKey, orgMetaKey, orgPk, orgSlackTeamKey, slackTeamOrgKey } from "@agentx/contracts";
+import { OrgIdSchema, SlackTeamIdSchema, agentXError, orgPk } from "@rovara-code/contracts";
+import { OrgSlackWorkspaceEvidenceResponseSchema, SLACK_WORKSPACE_EVIDENCE_LIMIT, orgMemberKey, developerOrgKey, orgMetaKey, orgSlackTeamKey, slackTeamOrgKey } from "@agentx/cloud-contracts";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "../aws/developer-routes.js";
 type Deps = Pick<DeveloperRouteDependencies,"documentClient"|"tableName"|"orgs"|"now">;
 type Key = {pk:string;sk:string};

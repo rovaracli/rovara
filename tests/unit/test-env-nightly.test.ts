@@ -1,6 +1,6 @@
 // Proof and test environment E6: the nightly full baseline (schedule, fire decisions, recording a result, what the baseline feeds).
 import { describe, expect, it } from "vitest";
-import { agentXError, CoverageMapSchema, NIGHTLY_STEP_WORDS, NightlyBaselineSchema, NightlyResultSchema, StoredNightlyHealthSchema, TestEnvironmentBodySchema, projectMetaKey, projectRevisionKey, type CoverageMapData, type TestEnvironmentBody } from "@agentx/contracts";
+import { agentXError, CoverageMapSchema, NIGHTLY_STEP_WORDS, NightlyBaselineSchema, NightlyResultSchema, StoredNightlyHealthSchema, TestEnvironmentBodySchema, projectMetaKey, projectRevisionKey, type CoverageMapData, type TestEnvironmentBody } from "@rovara-code/contracts";
 import { nightlyHealthListener, readProjectHealth, type HealthPorts } from "../../packages/broker/src/test-env/health.js";
 import { NIGHTLY_ENVIRONMENT_CAUSES, NIGHTLY_HEALTH_STEPS, NIGHTLY_UNCLEAR_CAUSES } from "../../packages/broker/src/test-env/nightly-health.js";
 import { approveTestEnvironment, proposeTestEnvironment, recordTestEnvProveReport } from "../../packages/broker/src/org/test-environment.js";

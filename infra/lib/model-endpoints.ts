@@ -8,8 +8,8 @@
 // else; the broker never reads one. The grant exists only when the switch is on.
 import { ArnFormat, type Stack } from "aws-cdk-lib";
 import { aws_iam as iam } from "aws-cdk-lib";
-import type { Edition } from "@agentx/contracts";
-import { MODEL_ENDPOINT_SECRET_PREFIX } from "@agentx/contracts";
+import type { Edition } from "@rovara-code/contracts";
+import { MODEL_ENDPOINT_SECRET_PREFIX } from "@rovara-code/contracts";
 import { AGENTX_PRODUCTION_VPC_CIDR } from "./production-foundation.js";
 import { ipv4RangesOverlap } from "./private-mcp.js";
 import { parseEnterpriseEgressCidrs } from "./vpc-endpoints.js";

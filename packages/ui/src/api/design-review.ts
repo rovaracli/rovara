@@ -3,7 +3,7 @@
 // `POST /v1/app/tasks/{taskId}/design-review/spend/{choice}`. The setting uses the existing playbook routes (`GET` and `PUT /v1/app/projects/{p}/playbook`). Nothing here decides who may do what: the
 // broker re-checks the caller on every press, and the page only shows what the task view's `designActions` said.
 import { useMemo } from "react";
-import { DecisionDigestSchema, ProjectOverviewProjectSchema, ProjectPlaybookResponseReaderSchema, ProjectPlaybookResponseSchema, type DefaultProcess, type DesignReviewSetting, type ProjectPlaybookResponse } from "@agentx/contracts/web";
+import { DecisionDigestSchema, ProjectOverviewProjectSchema, ProjectPlaybookResponseReaderSchema, ProjectPlaybookResponseSchema, type DefaultProcess, type DesignReviewSetting, type ProjectPlaybookResponse } from "@agentx/cloud-contracts/web";
 import { useAppHost, type AppHost } from "../host.js";
 import { createApiClient, type SendResult } from "./client.js";
 import { ApiError } from "./errors.js";

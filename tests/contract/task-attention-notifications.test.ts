@@ -3,7 +3,7 @@
 // link on the configured origin, nothing else), and that a person who can no longer read the task is never told.
 import { describe, expect, it } from "vitest";
 import type { SendEmailCommand } from "@aws-sdk/client-sesv2";
-import { agentSessionKey, NOTIFY_BATCH_MINUTES, effectiveNotify, type AgentSessionRecord, type OrgId, type SessionSummary } from "../../packages/contracts/src/index.js";
+import { agentSessionKey, NOTIFY_BATCH_MINUTES, effectiveNotify, type AgentSessionRecord, type OrgId, type SessionSummary } from "@rovara-code/contracts";
 import { ATTENTION_CHANNEL_TRIES_MAX, ATTENTION_DM_PK, ATTENTION_RETRY_BASE_MS, attentionEmail, deliverAttention, queueAttention, writePrefs, type AttentionDeliveryDependencies } from "../../packages/broker/src/notifications/attention.js";
 import { deliverAttentionDm } from "../../packages/broker/src/aws/developer-task-notifier.js";
 import { noticesOf } from "../../packages/broker/src/developer/notifications.js";

@@ -1,4 +1,4 @@
-import { AdminBudgetSettingsSchema, OrgIdSchema, type AdminBudgetSettings } from "@agentx/contracts/web";
+import { AdminBudgetSettingsSchema, OrgIdSchema, type AdminBudgetSettings } from "@agentx/cloud-contracts/web";
 import type { AppHost, ApiResponse } from "../host.js";
 import { ApiError } from "./errors.js";
 import { withoutRequestId } from "./without-request-id.js";

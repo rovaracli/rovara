@@ -2,7 +2,7 @@
 // replies (as record-sources.ts does) and keeps only the fixed code. A write is sent once and never retried.
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { LearningModeViewSchema, ProjectOverviewProjectSchema, type LearningModeView, type LearningModeWriteBody } from "@agentx/contracts/web";
+import { LearningModeViewSchema, ProjectOverviewProjectSchema, type LearningModeView, type LearningModeWriteBody } from "@agentx/cloud-contracts/web";
 import { useAppHost, type AppHost } from "../host.js";
 import { ApiError } from "./errors.js";
 import { lessonsKey } from "./lessons.js";

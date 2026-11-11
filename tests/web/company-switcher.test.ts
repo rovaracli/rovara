@@ -5,7 +5,7 @@ import { screen, waitFor, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
-import { AppNavSchema } from "@agentx/contracts/web";
+import { AppNavSchema } from "@agentx/cloud-contracts/web";
 import { z } from "zod";
 import { AppHostProvider, useAppHost, type ApiRequest, type ApiResponse, type AppHost } from "../../packages/ui/src/host.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";

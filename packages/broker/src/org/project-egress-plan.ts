@@ -1,5 +1,5 @@
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { AllowedDomainSchema, DEFAULT_AGENT_ALLOW_DOMAINS, EgressDomainsItemSchema, EGRESS_SYNC_KEY, agentXError, egressDomainsKey, type EgressDomainEntry, type OrgId } from "@agentx/contracts";
+import { AllowedDomainSchema, DEFAULT_AGENT_ALLOW_DOMAINS, EgressDomainsItemSchema, EGRESS_SYNC_KEY, agentXError, egressDomainsKey, type EgressDomainEntry, type OrgId } from "@rovara-code/contracts";
 import type { TransactItem } from "../audit/outbox.js";
 interface Dependencies { documentClient: { send(command: unknown): Promise<unknown> }; tableName: string; cloud: boolean; now(): Date }
 /** Read and plan only. The caller commits these items WITH its revision,

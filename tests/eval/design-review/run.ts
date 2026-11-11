@@ -16,10 +16,7 @@
 //     took. That fills the pilot-metric placeholder with the real number; the stage score above does not depend on it.
 //   - `cases`: `DESIGN_REVIEW_EVAL_CASES` as the `design-review@1` task set, or a set harvested from a customer's own merged PRs with the defects labelled by their reviewers.
 // A model answer that cannot be read counts as `unreadable` for that reviewer (it contributes no findings, as in production); nothing here throws on a model's words.
-import {
-  DESIGN_REVIEW_TIERS, filterReviewerCitations, lightCriticWritesParaphrase, mergeDesignFindings, readDesignReview, reviewerMessagesOf,
-  type DesignFinding, type DesignReviewTier, type RawDesignFinding, type ReviewerRole,
-} from "../../../packages/contracts/src/index.js";
+import { DESIGN_REVIEW_TIERS, filterReviewerCitations, lightCriticWritesParaphrase, mergeDesignFindings, readDesignReview, reviewerMessagesOf, type DesignFinding, type DesignReviewTier, type RawDesignFinding, type ReviewerRole } from "@rovara-code/contracts";
 import { TIER_HAS_MERGE_MODEL, reviewersForRound } from "../../../packages/broker/src/design-review/estimate.js";
 import { ownDesignFindings, withOwnFindings } from "../../../packages/broker/src/design-review/own-findings.js";
 import { buildReviewerPacket, type PacketReaders } from "../../../packages/broker/src/design-review/packet.js";

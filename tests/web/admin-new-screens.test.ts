@@ -4,7 +4,7 @@ import { expect, it } from "vitest";
 import { screen, waitFor, fireEvent, within } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
-import { AppMeResponseSchema } from "@agentx/contracts/web";
+import { AppMeResponseSchema, UiFlagsAdminAnswerSchema, UiFlagsAdminAnswerReaderSchema } from "@agentx/cloud-contracts/web";
 import { appRoutes } from "../../packages/ui/src/routes.js";
 import { AppHostProvider, type ApiRequest, type ApiResponse } from "../../packages/ui/src/host.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
@@ -51,8 +51,10 @@ it("lists the wired switches with what each turns on, the company value and when
  expect(items[0]!.textContent).toContain("What New look turns on.");expect(items[0]!.textContent).toContain("On");expect(items[0]!.textContent).toContain("On for everyone in Acme.");
  expect(items[1]!.textContent).toContain("Preview");expect(items[1]!.textContent).toContain("Anyone can try it in their own browser");
  expect(items[2]!.textContent).toContain("Off.");
- expect(items[3]!.textContent).toContain("Held back by your install's operator");
- expect(within(items[3]!).getByRole("button")).toHaveProperty("disabled", true);
+ expect(items[3]!.textContent).toContain("Turned off by the Rovara operator");
+ expect(items[3]!.textContent).not.toContain("Held back");
+ expect(within(items[3]!).queryByRole("button")).toBeNull();
+ expect(within(items[0]!).getByRole("button")).toBeTruthy();
  expect(screen.queryByText("Health page")).toBeNull();
  expect(screen.getByText(/Last changed Nov 11, 2026, 12:00 PM UTC/)).toBeTruthy();
  expect(screen.getByText(/Preview lets each person try a screen in their own browser first/)).toBeTruthy();
@@ -125,4 +127,9 @@ it("an unreadable list says so and offers to try again", async () => {
  await screen.findByText("Couldn't load the new screens settings.");
  expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
  f.close();
+});
+
+it("the fixtures are shapes the server's contract accepts (forcedOff included), and the reader tolerates a flag or state a newer server adds", () => {
+ expect(UiFlagsAdminAnswerSchema.safeParse(answer()).success).toBe(true);
+ expect(UiFlagsAdminAnswerReaderSchema.safeParse(answer({ flags: [row("look", "New look"), row("brand-new", "Brand new", { state: "sparkly" })] })).success).toBe(true);
 });

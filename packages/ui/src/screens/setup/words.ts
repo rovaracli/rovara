@@ -1,5 +1,5 @@
 // The Setup screen's fixed words for a setup run. The server's own sentences (a failure, a refusal) are shown as they come; these are for what the page itself says.
-import type { SetupAgentView } from "@agentx/contracts/web";
+import type { SetupAgentView } from "@agentx/cloud-contracts/web";
 
 export const STOP_WORDS: Record<NonNullable<SetupAgentView["stop"]>, string> = {
   proposed: "Rovara finished and has a setup for you to look at.",

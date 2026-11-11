@@ -2,7 +2,7 @@
 // and for nobody else, whatever the body asks; nothing is started, cancelled or written. (The moves themselves are in agent-session-handoff.test.ts over Plan 6's seam.)
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
-import { agentSessionKey } from "../../packages/contracts/src/index.js";
+import { agentSessionKey } from "@rovara-code/contracts";
 import { MAYA, OMAR, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { loadSlackBroker } from "../support/slack-broker.js";

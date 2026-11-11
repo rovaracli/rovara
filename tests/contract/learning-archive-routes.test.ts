@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { ARCHIVE_INLINE_WRITES, clearArchivedProjectLearning, resumeOpenLearningWalks } from "../../packages/broker/src/learning/cleanup.js";
 import { WALK_INDEX_PK } from "../../packages/broker/src/learning/walk.js";
-import { projectLearningKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { projectLearningKey } from "@rovara-code/contracts";
 import { OMAR, createSingleAnswerPlanBroker, seedMembership } from "../support/developer-task-broker.js";
 import { PROJECT_CREATED, seedCorrection, seedItem } from "../support/learning-world.js";
 import { TEST_ORG } from "../support/orgs.js";

@@ -1,6 +1,6 @@
 // Builds the embedder clients from the broker's environment: the function's name is derived from the environment's name (contracts/derived-names.ts), the SDK is
 // loaded on first use. Lane lessons-prod (lane 5) takes `lessonEmbedderFrom` for the lessons' `Embedder` port (a short wait and a pause after a timeout, like the search client); the Team record uses `recordEmbedderClientFrom`.
-import { LESSON_EMBEDDER, TEAM_RECORD_EMBEDDER, type EmbedderModelSpec } from "@agentx/contracts";
+import { LESSON_EMBEDDER, TEAM_RECORD_EMBEDDER, type EmbedderModelSpec } from "@agentx/cloud-contracts";
 import { lambdaEmbedderInvoke, type SdkOptions } from "../team-record/aws-adapters.js";
 import { createEmbedderClient, type EmbedderCall, type EmbedderClient, type EmbedderKind } from "./client.js";
 

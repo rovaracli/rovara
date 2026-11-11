@@ -3,9 +3,10 @@
 // has not registered reads as "cannot say" (the round waits; nothing is paid, nothing is guessed).
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { WorkflowSnapshotSchema, createCandidateManifest, editionPolicy, startWorkflowFix, type WorkflowSnapshot } from "@agentx/contracts";
+import { WorkflowSnapshotSchema, editionPolicy, startWorkflowFix, type WorkflowSnapshot } from "@agentx/cloud-contracts";
+import { createCandidateManifest } from "@rovara-code/contracts";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
-import { builtinSettingsKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { builtinSettingsKey } from "@rovara-code/contracts";
 import { ciEvidenceItem, ciOutputBlock } from "../../packages/broker/src/rovara-code/ci-fix.js";
 import { workflowDispatchItem } from "../../packages/broker/src/aws/broker-shared.js";
 import { githubCodeHost } from "../../packages/broker/src/plugins/code-host/github/index.js";

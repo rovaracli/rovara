@@ -1,15 +1,16 @@
 // Rovara Code (Plan 6 Task 14): merge tracking from GitHub, with a fake GitHub. The task follows its pull requests through tracking items that are written only when
 // a decision-relevant fact changes; it marks a draft ready and asks for reviewers; it never merges.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mergeTrackingKey } from "../../packages/contracts/src/org-scoped-keys.js";
-import { TRACKING_REQUESTS_BASE, TRACKING_REQUESTS_PER_EXTRA_PR, type MergeTrackingItem } from "../../packages/contracts/src/rovara-code.js";
+import { mergeTrackingKey } from "@rovara-code/contracts";
+import { TRACKING_REQUESTS_BASE, TRACKING_REQUESTS_PER_EXTRA_PR } from "@rovara-code/contracts";
+import { type MergeTrackingItem } from "../../packages/cloud-contracts/src/rovara-code.js";
 import {
   PUSH_WAS_MINE_MESSAGE, SOMEONE_ELSE_PUSHED_MESSAGE, nextMergeAction, readCi, reconcileTrackingTask, registerMergeActionDecider, trackPullRequest, trackTask,
   trackingRequestCap, type MergeActionRequest,
 } from "../../packages/broker/src/rovara-code/merge-tracking.js";
 import { registerCodeMilestoneHandler } from "../../packages/broker/src/rovara-code/milestones.js";
-import { DEFAULT_CODE_SETTINGS } from "../../packages/contracts/src/rovara-code.js";
-import { codeSettingsKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { DEFAULT_CODE_SETTINGS } from "@rovara-code/contracts";
+import { codeSettingsKey } from "@rovara-code/contracts";
 import { GithubMergeRateLimitError } from "../../packages/broker/src/github-app.js";
 const FakeReady = (w: TrackingWorld) => async (_u: string, number: number) => { const current = w.github.statuses.get(number)!; w.github.statuses.set(number, { ...current, draft: false }); w.github.calls.push(`ready:${String(number)}`); return "ready" as const; };
 import { HEAD_A, HEAD_B, NOW, SESSION_ID, TASK_ID, sha, status, workflowOf, world, type TrackingWorld } from "../support/rovara-code-tracking.js";

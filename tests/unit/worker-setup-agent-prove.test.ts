@@ -3,10 +3,7 @@ import { mkdir, mkdtemp, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import {
-  SetupReplacementSchema, TestEnvironmentProposalSchema, formatCommandLine, parseCommandLine, setupReplacementText, testEnvDigest, testEnvIsProved,
-  type ProjectCommand, type SetupJournalEntry, type SetupProposal,
-} from "../../packages/contracts/src/index.js";
+import { SetupReplacementSchema, TestEnvironmentProposalSchema, formatCommandLine, parseCommandLine, setupReplacementText, testEnvDigest, testEnvIsProved, type ProjectCommand, type SetupJournalEntry, type SetupProposal } from "@rovara-code/contracts";
 import { buildEnvironmentDraft } from "../../packages/worker/src/env-detect/propose.js";
 import { emptyDetection, type Detection } from "../../packages/worker/src/env-detect/types.js";
 import { readSetupProposalAnswer } from "../../packages/worker/src/setup-draft.js";

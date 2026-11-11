@@ -3,7 +3,7 @@ import { chmodSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { WEB_API_AGENT_PROBE_GOAL, WEB_API_AGENT_PROBE_IDS, evaluateWebApiProbeObservation, type WebApiProbeObservation } from "../../packages/contracts/src/index.js";
+import { WEB_API_AGENT_PROBE_GOAL, WEB_API_AGENT_PROBE_IDS, evaluateWebApiProbeObservation, type WebApiProbeObservation } from "@rovara-code/contracts";
 import { scriptedE2ERouteDefinition } from "../../packages/model-runtime/src/e2e-route-derive.js";
 import { createDrivingNavigator } from "../../packages/verifier/src/host/model-driving-test.js";
 import { createDrivingTestLedger } from "../../packages/worker/src/e2e-model-check.js";

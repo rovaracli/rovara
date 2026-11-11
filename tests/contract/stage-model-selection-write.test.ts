@@ -2,7 +2,7 @@ import {expect,it} from "vitest";
 import {writeProjectModelSelection} from "../../packages/broker/src/model-selection/selection-write.js";
 import {mergeWorld} from "../support/rovara-code-merge-world.js";
 import {ORG_A,MAX,ARJUN} from "../support/agent-session-world.js";
-import {projectRevisionKey,projectSelectionKey,STAGE_IDS} from "../../packages/contracts/src/index.js";
+import { projectRevisionKey, projectSelectionKey, STAGE_IDS } from "@rovara-code/contracts";
 import {bedrockClaudeModelIds} from "../../packages/model-runtime/src/catalog.js";
 function fixture(){
  const w=mergeWorld(),ids=bedrockClaudeModelIds("us"),models=ids.slice(0,2).map(modelId=>({provider:"amazon-bedrock",modelId}));
@@ -25,7 +25,7 @@ it("refuses a contributor before writing selection or audit",async()=>{
 
 for(const race of ["role","sources"] as const)it(`rolls back selection and audit on a ${race} change at commit`,async()=>{
  const {w,input}=fixture();const {TransactWriteCommand}=await import("@aws-sdk/lib-dynamodb");
- const {projectMemberKey,modelSourcesKey}=await import("../../packages/contracts/src/index.js");
+ const { projectMemberKey, modelSourcesKey } = await import("@rovara-code/contracts");
  const deps={...w.deps,documentClient:{send:async(command:unknown)=>{
   if(command instanceof TransactWriteCommand){
    if(race==="role"){const key=projectMemberKey(ORG_A,MAX,"web");w.db.set({...w.db.get(key)!,role:"viewer",projectRole:"viewer"});}
@@ -43,7 +43,7 @@ it("does not emit another selection event for an identical retry",async()=>{
 });
 
 for(const role of ["owner","admin","maintainer","contributor","viewer"] as const)it(`shared selection writer enforces the live ${role} role`,async()=>{
- const {w,input}=fixture();const {orgMemberKey,developerOrgKey,projectMemberKey}=await import("../../packages/contracts/src/index.js");
+ const {w,input}=fixture();const { orgMemberKey, developerOrgKey } = await import("@agentx/cloud-contracts"), { projectMemberKey } = await import("@rovara-code/contracts");
  const orgRole=role==="owner"||role==="admin"?role:"member";
  for(const key of [orgMemberKey(ORG_A,MAX),developerOrgKey(MAX)])w.db.set({...w.db.get(key)!,role:orgRole});
  const grantKey=projectMemberKey(ORG_A,MAX,"web");w.db.set({...w.db.get(grantKey)!,role:role==="viewer"?"viewer":"developer",projectRole:role==="owner"||role==="admin"?"contributor":role});
@@ -53,7 +53,7 @@ for(const role of ["owner","admin","maintainer","contributor","viewer"] as const
  expect(w.audit.flushed().length).toBe(allowed?1:0);
 });
 it("refuses a person who has become an Auditor, even with a maintainer grant, at the role step and again at the authority step (I2 re-check)",async()=>{
- const {w,input}=fixture();const {orgMemberKey,developerOrgKey,projectMemberKey}=await import("../../packages/contracts/src/index.js");
+ const {w,input}=fixture();const { orgMemberKey, developerOrgKey } = await import("@agentx/cloud-contracts"), { projectMemberKey } = await import("@rovara-code/contracts");
  const {projectModelSelectionAuthorityChecks}=await import("../../packages/broker/src/model-selection/authority.js");
  for(const key of [orgMemberKey(ORG_A,MAX),developerOrgKey(MAX)])w.db.set({...w.db.get(key)!,role:"auditor"});
  const grantKey=projectMemberKey(ORG_A,MAX,"web");w.db.set({...w.db.get(grantKey)!,role:"developer",projectRole:"maintainer"});
@@ -109,7 +109,7 @@ it("preserves the committed receipt and pending audit during an intake outage",a
 });
 it("refuses a receipt mutation between replay read and its authority transaction",async()=>{
  const {w,input}=fixture();await writeProjectModelSelection(w.deps,input);
- const {agentRequestKey}=await import("../../packages/contracts/src/index.js");
+ const { agentRequestKey } = await import("@rovara-code/contracts");
  const {TransactWriteCommand}=await import("@aws-sdk/lib-dynamodb");
  const deps={...w.deps,documentClient:{send:async(command:unknown)=>{
   if(command instanceof TransactWriteCommand){const key=agentRequestKey(ORG_A,MAX,input.requestId);w.db.set({...w.db.get(key)!,fingerprint:"changed"});}
@@ -120,7 +120,7 @@ it("refuses a receipt mutation between replay read and its authority transaction
 });
 it("refuses a malformed stored receipt without overwriting the selection",async()=>{
  const {w,input}=fixture();await writeProjectModelSelection(w.deps,input);
- const {agentRequestKey}=await import("../../packages/contracts/src/index.js");
+ const { agentRequestKey } = await import("@rovara-code/contracts");
  const key=agentRequestKey(ORG_A,MAX,input.requestId);w.db.set({...w.db.get(key)!,result:{model:input.model,approved:true}});
  await expect(writeProjectModelSelection(w.deps,input)).rejects.toThrow("could not be verified");
  expect(w.audit.flushed()).toHaveLength(1);

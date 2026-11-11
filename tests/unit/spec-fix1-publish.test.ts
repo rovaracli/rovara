@@ -1,7 +1,7 @@
 // Fix round 1, C1: the BROKER builds the spec commit through GitHub; nothing of the builder's workspace is in it, and the broker checks the commit adds exactly the spec's files before a pull request opens.
 import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import type { SpecFile } from "@agentx/contracts";
+import type { SpecFile } from "@rovara-code/contracts";
 import { GitHubSpecError, githubSpecClient } from "../../packages/broker/src/spec/github-git-client.js";
 import { SpecPublishError, assertSpecPaths, gitBlobSha, publishSpec, type SpecGitClient, type SpecPullRequestOpener } from "../../packages/broker/src/spec/publish.js";
 

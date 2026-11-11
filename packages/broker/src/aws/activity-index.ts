@@ -5,25 +5,8 @@ import { slackThreadKey } from "./slack-thread-key.js";
 // Logs carry event names, IDs and error names only: an operation's error can quote anything.
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { unmarshall } from "@aws-sdk/util-dynamodb";
-import {
-  ADMIN_ERROR_TEXT_MAX,
-  AdminRequesterSchema,
-  FailureIndexRecordSchema,
-  INDEX_EXPIRY_ATTRIBUTE,
-  TaskUsageTelemetrySchema,
-  UsageIndexRecordSchema,
-  OrgIdSchema,
-  indexExpiresAt,
-  personalCounter,
-  spendCounterKey,
-  orgFailureIndexKey,
-  orgUsageIndexKey,
-  redactAndCap,
-  type AdminRequester,
-  type FailureIndexRecord,
-  type OrgId,
-  type UsageIndexRecord,
-} from "@agentx/contracts";
+import { ADMIN_ERROR_TEXT_MAX, AdminRequesterSchema, FailureIndexRecordSchema, INDEX_EXPIRY_ATTRIBUTE, TaskUsageTelemetrySchema, UsageIndexRecordSchema, OrgIdSchema, indexExpiresAt, orgFailureIndexKey, orgUsageIndexKey, redactAndCap, type AdminRequester, type FailureIndexRecord, type OrgId, type UsageIndexRecord } from "@rovara-code/contracts";
+import { personalCounter, spendCounterKey } from "@agentx/cloud-contracts";
 import { installOrgIdFromEnvironment, orgOf } from "../org/resolve.js";
 import { failureCategory, taskKey, taskPointerKey } from "../developer/task-records.js";
 import type { StreamRecord } from "../developer/notifications.js";

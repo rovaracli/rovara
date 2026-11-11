@@ -1,13 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
-import {
-  AgentXNameSchema,
-  WorkerInvocationSchema,
-  agentXError,
-  repositoryHostOf,
-  workerProjectDefinition,
-  type WorkerInvocation,
-  type WorkspaceInstance,
-} from "@agentx/contracts";
+import { AgentXNameSchema, agentXError, type WorkspaceInstance } from "@rovara-code/contracts";
+import { repositoryHostOf, workerProjectDefinition } from "@agentx/cloud-contracts";
+import { WorkerInvocationSchema, type WorkerInvocation } from "@agentx/cloud-contracts";
 import type { AuthenticatedIdentity } from "./auth.js";
 import type { ProjectMembership } from "./authorization.js";
 import { authorizeProjectAdministrator } from "./projects.js";

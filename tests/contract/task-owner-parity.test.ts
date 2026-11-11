@@ -1,23 +1,7 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import {
-  WORKFLOW_BLOCK_REASONS,
-  WorkflowSnapshotSchema,
-  WorkflowTransitionError,
-  createCandidateManifest,
-  createWorkflowSnapshot,
-  decideWorkflow,
-  decideWorkflowFeedbackFindings,
-  keepWorkflowPullRequests,
-  requestWorkflowFeedbackReview,
-  resolveWorkflowReviewFindings,
-  retryWorkflowFeedbackReview,
-  returnWorkflowToImplementation,
-  submitWorkflowArtifact,
-  workflowFindingFingerprint,
-  type WorkflowOwnerAuthority,
-  type WorkflowSnapshot,
-} from "../../packages/contracts/src/task-workflow-node.js";
+import { WORKFLOW_BLOCK_REASONS, WorkflowSnapshotSchema, createWorkflowSnapshot, decideWorkflow, decideWorkflowFeedbackFindings, keepWorkflowPullRequests, requestWorkflowFeedbackReview, resolveWorkflowReviewFindings, retryWorkflowFeedbackReview, returnWorkflowToImplementation, submitWorkflowArtifact, type WorkflowSnapshot } from "../../packages/cloud-contracts/src/task-workflow-node.js";
+import { WorkflowTransitionError, createCandidateManifest, workflowFindingFingerprint, type WorkflowOwnerAuthority } from "@rovara-code/contracts";
 
 const taskId = "8b579b4b-eaa7-4bf2-87bc-6da86b97c9e6";
 const creator = "a".repeat(64);

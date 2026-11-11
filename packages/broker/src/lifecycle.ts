@@ -1,4 +1,4 @@
-import { agentXError, type WorkspaceInstance } from "@agentx/contracts";
+import { agentXError, type WorkspaceInstance } from "@rovara-code/contracts";
 import type { AuthenticatedIdentity } from "./auth.js";
 import { type ProjectMembership } from "./authorization.js";
 import { authorizeProjectAdministrator } from "./projects.js";

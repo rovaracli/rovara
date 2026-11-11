@@ -9,7 +9,7 @@
 // An all-Cyrillic copy of a Latin name cannot be told from the real one by script alone; it is a different domain (a different punycode), so it is held to its own DNS and never matches the real one.
 import { isIP } from "node:net";
 import { domainToASCII, domainToUnicode } from "node:url";
-import { isPublicSuffix } from "@agentx/contracts";
+import { isPublicSuffix } from "@rovara-code/contracts";
 
 export type DomainRefusal = "not_a_name" | "ip_address" | "public_suffix" | "lookalike";
 export type NormalizedDomain = { ok: true; domain: string } | { ok: false; reason: DomainRefusal };

@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { DESIGN_REVIEW_CAP_MAX_USD, DESIGN_REVIEW_CAP_MIN_USD, DESIGN_REVIEW_TIERS, type DesignReviewCompanyLock, type DesignReviewCompanyState } from "@agentx/contracts/web";
+import { DESIGN_REVIEW_CAP_MAX_USD, DESIGN_REVIEW_CAP_MIN_USD, DESIGN_REVIEW_TIERS, type DesignReviewCompanyLock, type DesignReviewCompanyState } from "@agentx/cloud-contracts/web";
 import { ApiError } from "../../../api/errors.js";
 import { designReviewCompanyKey, useDesignReviewCompanyApi } from "../../../api/design-review-company.js";
 import { useAppHost } from "../../../host.js";

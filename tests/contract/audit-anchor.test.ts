@@ -24,7 +24,7 @@ import {
   type LockedObjectV1,
   type OrgSealV1,
 } from "@rovara/audit-verifier";
-import { AUDIT_BACKSTOP_SEAL_AGE_MINUTES, AUDIT_MAX_RECORDS_PER_ORG_EPOCH, auditCanonicalJson } from "@agentx/contracts";
+import { AUDIT_BACKSTOP_SEAL_AGE_MINUTES, AUDIT_MAX_RECORDS_PER_ORG_EPOCH, auditCanonicalJson } from "@agentx/cloud-contracts";
 import {
   AUDIT_EPOCH_SOURCE,
   auditS3ClientConfig,
