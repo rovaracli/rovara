@@ -24,6 +24,7 @@ import { rememberErasedAliases } from "../agent-sessions/ask-erased-aliases.js";
 import { readOwnChosenName } from "../developer/chosen-name.js";
 import type { ScopeCursor } from "./store.js";
 import { scrubFixtureDevelopers } from "../test-env/fixture-erase.js";
+import { eraseReviewPerson } from "../review-groups/erase.js";
 import { scrubConfigDeveloper, scrubTier0Developer, bySource, byActor, byActorSource, deleteItem, listSourceConfigs, queryPrefix, removeFromExclude, tombstoneItem } from "./store.js";
 
 export interface EraseBudget {
@@ -229,12 +230,15 @@ const STEP_HANDLERS: Record<Exclude<EraseStep, "rows">, (context: EraseContext) 
   async config(context) {
     // Every project of the org, like the lessons step: the ones passed, the project list, and those of the person's rows. Without a way to enumerate them it is not done.
     const { projects, known } = await projectsOf(context);
+    let reviewsLeft = false;
     for (const project of projects) {
       for (const config of await listSourceConfigs(context.deps.table, context.orgId, project)) {
         await removeFromExclude(context.deps.table, config, new Set(context.ids));
         if (context.who.developerId !== undefined) await scrubConfigDeveloper(context.deps.table, config, context.who.developerId);
       }
       if (context.who.developerId !== undefined) await scrubTier0Developer(context.deps.table, context.orgId, project, context.who.developerId);
+      // Review groups (owner decision 9): out of every group of the project, and every claim they hold goes back to its group.
+      if (context.who.developerId !== undefined && !await eraseReviewPerson(context.deps.table, context.orgId, project, context.who.developerId, context.at)) reviewsLeft = true;
     }
     // The company's own tier-0 floor and proposals live in the workspace's project-less partition.
     if (context.who.developerId !== undefined) await scrubTier0Developer(context.deps.table, context.orgId, undefined, context.who.developerId);
@@ -244,7 +248,7 @@ const STEP_HANDLERS: Record<Exclude<EraseStep, "rows">, (context: EraseContext) 
     await eraseRateItems(context.deps.table, context.orgId, context.who.developerId, context.ids);
     // Their favourite agents (experience decision 23): one item whose key holds their developer id; it goes whole (the value is only agent ids, nobody else's).
     if (context.who.developerId !== undefined) await deleteItem(context.deps.table, agentFavouritesKey(context.orgId, context.who.developerId));
-    return known;
+    return known && !reviewsLeft;
   },
   // Lessons: those that rest on the person are HARD-deleted whatever their code citations say, the person is scrubbed from the rest (authorship, approvals), and the id leaves every
   // audience snapshot. It covers every project of the org: the ones passed, the ones the project list names, and those of the person's rows; with none of the first two it is not done.

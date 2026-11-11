@@ -246,7 +246,7 @@ describe("a task's review: claim, release, reassign", () => {
     expect(JSON.stringify(event!.facts)).not.toContain(ALICE);
     expect(event!.actor).toEqual({ kind: "member", id: ALICE });
     expect(event!.details).toContainEqual({ subject: "org", fields: { holder: ALICE } });
-    expect(w.db.get(reviewClaimKey(ORG, TASK))).toMatchObject({ holder: ALICE, groupId, revision: 1, hostSync: "requested" });
+    expect(w.db.get(reviewClaimKey(ORG, "web", TASK))).toMatchObject({ holder: ALICE, groupId, revision: 1, hostSync: "requested" });
   });
 
   it("refuses a project member outside the group, a viewer, a company member with no project role and the Auditor", async () => {
@@ -255,7 +255,7 @@ describe("a task's review: claim, release, reassign", () => {
     expect(await err(claimAs(w, VERA, groupId))).toEqual({ code: "FORBIDDEN", message: W.notInGroup });
     for (const who of [MEMO, AUDI]) expect(await err(claimReview(w.deps, w.caller(who), TASK, { requestId: rid(), expectedRevision: 0, reviewKey: reviewKeyOf(w.tracking), groupId }))).toMatchObject({ code: "TASK_NOT_FOUND" });
     expect(w.asked).toEqual([]);
-    expect(w.db.get(reviewClaimKey(ORG, TASK))).toBeUndefined();
+    expect(w.db.get(reviewClaimKey(ORG, "web", TASK))).toBeUndefined();
   });
 
   it("a group member who was demoted to viewer can no longer claim, though the stored group still lists them", async () => {
@@ -294,12 +294,12 @@ describe("a task's review: claim, release, reassign", () => {
     w.deps = { ...w.deps, documentClient: { send: async (command: { constructor: { name: string } }) => {
       if (!raced && command.constructor.name === "TransactWriteCommand") {
         raced = true;
-        w.db.set({ ...reviewClaimKey(ORG, TASK), entityType: "REVIEW_CLAIM", orgId: ORG, taskId: TASK, project: "web", revision: 1, holder: BOB, groupId, claimedAt: new Date(START).toISOString(), hostSync: "requested" });
+        w.db.set({ ...reviewClaimKey(ORG, "web", TASK), entityType: "REVIEW_CLAIM", orgId: ORG, taskId: TASK, project: "web", revision: 1, holder: BOB, groupId, claimedAt: new Date(START).toISOString(), hostSync: "requested" });
       }
       return send(command as never);
     } } };
     expect(await err(claimReview(w.deps, w.caller(ALICE), TASK, { requestId: rid(), expectedRevision: view.revision, reviewKey: view.reviewKey, groupId }))).toEqual({ code: "CHANGE_STALE", message: W.stale });
-    expect(w.db.get(reviewClaimKey(ORG, TASK))).toMatchObject({ holder: BOB });
+    expect(w.db.get(reviewClaimKey(ORG, "web", TASK))).toMatchObject({ holder: BOB });
     expect(w.asked).toEqual([]);
   });
 
@@ -312,11 +312,11 @@ describe("a task's review: claim, release, reassign", () => {
     const send = w.db.send;
     let raced = false;
     w.deps = { ...w.deps, documentClient: { send: async (command: { constructor: { name: string } }) => {
-      if (!raced && command.constructor.name === "TransactWriteCommand") { raced = true; w.db.set({ ...w.db.get(reviewClaimKey(ORG, TASK))!, revision: 3, holder: ALICE, groupId, claimedAt: new Date(START).toISOString(), hostSync: "requested" }); }
+      if (!raced && command.constructor.name === "TransactWriteCommand") { raced = true; w.db.set({ ...w.db.get(reviewClaimKey(ORG, "web", TASK))!, revision: 3, holder: ALICE, groupId, claimedAt: new Date(START).toISOString(), hostSync: "requested" }); }
       return send(command as never);
     } } };
     expect(await err(claimReview(w.deps, w.caller(BOB), TASK, { requestId: rid(), expectedRevision: 2, reviewKey: view.reviewKey, groupId }))).toEqual({ code: "CHANGE_STALE", message: W.stale });
-    expect(w.db.get(reviewClaimKey(ORG, TASK))).toMatchObject({ holder: ALICE, revision: 3 });
+    expect(w.db.get(reviewClaimKey(ORG, "web", TASK))).toMatchObject({ holder: ALICE, revision: 3 });
   });
 
   it("a second member can't take a held claim; the holder claiming again changes nothing", async () => {
@@ -358,7 +358,7 @@ describe("a task's review: claim, release, reassign", () => {
     const { w, groupId } = await withGroup();
     w.logins.delete(ALICE);
     expect(await err(claimAs(w, ALICE, groupId))).toEqual({ code: "CONFIG_INVALID", message: W.linkGithub });
-    expect(w.db.get(reviewClaimKey(ORG, TASK))).toBeUndefined();
+    expect(w.db.get(reviewClaimKey(ORG, "web", TASK))).toBeUndefined();
   });
 
   it("the task's owner doesn't claim their own review unless the project allows self-approval", async () => {
@@ -405,7 +405,7 @@ describe("a task's review: claim, release, reassign", () => {
     w.projectRoles.set(BOB, "contributor");
     w.logins.delete(BOB);
     expect(await err(reassignAs(w, MAINT, groupId, BOB))).toEqual({ code: "CONFIG_INVALID", message: W.targetNoGithub });
-    expect(w.db.get(reviewClaimKey(ORG, TASK))).toBeUndefined();
+    expect(w.db.get(reviewClaimKey(ORG, "web", TASK))).toBeUndefined();
   });
 
   it("a removed person's claim returns to the group: taken out of the group, demoted, or gone from the company", async () => {
@@ -427,7 +427,7 @@ describe("a task's review: claim, release, reassign", () => {
     w.task = { ...w.task, orgId: OTHER_ORG };
     expect(await err(reviewOf(w, ALICE))).toMatchObject({ code: "TASK_NOT_FOUND" });
     expect(await err(claimAs(w, ALICE, groupId))).toMatchObject({ code: "TASK_NOT_FOUND" });
-    expect(reviewClaimKey(ORG, TASK).pk).not.toBe(reviewClaimKey(OTHER_ORG, TASK).pk);
+    expect(reviewClaimKey(ORG, "web", TASK).pk).not.toBe(reviewClaimKey(OTHER_ORG, "web", TASK).pk);
     expect(await err(getTaskReview(w.deps, w.caller(ALICE, OTHER_ORG), TASK))).toMatchObject({ code: "TASK_NOT_FOUND" });
   });
 

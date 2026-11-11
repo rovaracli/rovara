@@ -1,4 +1,4 @@
-// Review groups (owner decision 9, A-22, DN-5, S-23): who has claimed a task's waiting review. One item per task (`reviewClaimKey`), with a revision.
+// Review groups (owner decision 9, A-22, DN-5, S-23): who has claimed a task's waiting review. One item per task, under its project's partition (`reviewClaimKey`), with a revision.
 //
 //   GET  /v1/app/tasks/{t}/review                 anyone who can read the task.
 //   POST /v1/app/tasks/{t}/review/claim           an eligible member of one of the project's groups: they hold the review and become its requested reviewer on the code host.
@@ -76,8 +76,8 @@ interface StoredClaim {
 const isPerson = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9]{64}$/u.test(value);
 const HOST_SYNC = new Set<string>(["requested", "refused", "pending", "unavailable"]);
 
-async function readClaim(deps: Pick<ReviewClaimDeps, "documentClient" | "tableName">, orgId: OrgId, taskId: string): Promise<StoredClaim> {
-  const found = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: reviewClaimKey(orgId, taskId), ConsistentRead: true })) as { Item?: Record<string, unknown> };
+async function readClaim(deps: Pick<ReviewClaimDeps, "documentClient" | "tableName">, orgId: OrgId, project: string, taskId: string): Promise<StoredClaim> {
+  const found = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: reviewClaimKey(orgId, project, taskId), ConsistentRead: true })) as { Item?: Record<string, unknown> };
   const item = found.Item;
   if (item === undefined) return { exists: false, revision: 0 };
   const revision = item["revision"];
@@ -134,7 +134,7 @@ async function situation(deps: ReviewClaimDeps, caller: ReviewCaller, taskId: st
   if (task.orgId !== caller.orgId) throw agentXError("TASK_NOT_FOUND", "no task here that you can see");
   const stored = await readReviewGroups(deps, caller.orgId, task.project);
   if (stored === "unreadable") throw agentXError("CONFIG_INVALID", UNREADABLE_GROUPS);
-  const [claim, items, callerRole] = await Promise.all([readClaim(deps, caller.orgId, task.taskId), deps.readTracking(task.taskId, caller.orgId), deps.liveProjectRole(caller.orgId, task.project, caller.developerId)]);
+  const [claim, items, callerRole] = await Promise.all([readClaim(deps, caller.orgId, task.project, task.taskId), deps.readTracking(task.taskId, caller.orgId), deps.liveProjectRole(caller.orgId, task.project, caller.developerId)]);
   const roles = new Map<string, ProjectRole | undefined>([[caller.developerId, callerRole]]);
   if (claim.holder !== undefined && !roles.has(claim.holder)) roles.set(claim.holder, await deps.liveProjectRole(caller.orgId, task.project, claim.holder));
   return { task, ownerIds, groups: stored.groups, claim, waiting: waitingPullRequests(task, items), callerRole, roles, held: liveHolder(claim, stored.groups, roles) };
@@ -212,9 +212,9 @@ async function askHost(deps: ReviewClaimDeps, task: ReviewTask, waiting: readonl
 }
 
 /** Records what the code host said, only while the claim is still the one just written. */
-async function noteHostSync(deps: ReviewClaimDeps, orgId: OrgId, taskId: string, revision: number, holder: string, hostSync: ReviewHostSync): Promise<void> {
+async function noteHostSync(deps: ReviewClaimDeps, orgId: OrgId, project: string, taskId: string, revision: number, holder: string, hostSync: ReviewHostSync): Promise<void> {
   await deps.documentClient.send(new UpdateCommand({
-    TableName: deps.tableName, Key: reviewClaimKey(orgId, taskId), UpdateExpression: "SET hostSync = :sync",
+    TableName: deps.tableName, Key: reviewClaimKey(orgId, project, taskId), UpdateExpression: "SET hostSync = :sync",
     ConditionExpression: "#revision = :revision AND holder = :holder", ExpressionAttributeNames: { "#revision": "revision" },
     ExpressionAttributeValues: { ":sync": hostSync, ":revision": revision, ":holder": holder },
   })).catch((error: unknown) => { if (!isConditional(error)) throw error; });
@@ -231,7 +231,7 @@ async function writeClaim(deps: ReviewClaimDeps, caller: ReviewCaller, s: Situat
     taskId: s.task.taskId, change: change.change, revision, groupId: change.groupId, pullRequests: s.waiting.length, hostSync: change.holder === undefined ? "none" : "pending", holder: change.holder,
   })]);
   const item = {
-    ...reviewClaimKey(caller.orgId, s.task.taskId), entityType: "REVIEW_CLAIM", orgId: caller.orgId, taskId: s.task.taskId, project: s.task.project, revision,
+    ...reviewClaimKey(caller.orgId, s.task.project, s.task.taskId), entityType: "REVIEW_CLAIM", orgId: caller.orgId, taskId: s.task.taskId, project: s.task.project, revision,
     ...(change.holder === undefined ? {} : { holder: change.holder, groupId: change.groupId, claimedAt: at, hostSync: "pending", reviewKey: reviewKeyOf(s.waiting) }),
     lastAction: change.change, lastRequestId: change.requestId, lastRequestDigest: change.digest, updatedAt: at, updatedBy: caller.developerId,
   };
@@ -260,7 +260,7 @@ async function replay(deps: ReviewClaimDeps, caller: ReviewCaller, s: Situation,
     const login = await deps.githubLoginOf(caller.orgId, s.held.holder);
     if (login !== undefined) {
       const sync = await askHost(deps, s.task, s.waiting, login);
-      await noteHostSync(deps, caller.orgId, s.task.taskId, s.claim.revision, s.held.holder, sync);
+      await noteHostSync(deps, caller.orgId, s.task.project, s.task.taskId, s.claim.revision, s.held.holder, sync);
     }
   }
   return getTaskReview(deps, caller, s.task.taskId);
@@ -292,7 +292,7 @@ export async function claimReview(deps: ReviewClaimDeps, caller: ReviewCaller, t
   const login = await deps.githubLoginOf(caller.orgId, caller.developerId);
   if (login === undefined) throw agentXError("CONFIG_INVALID", W.linkGithub);
   const revision = await writeClaim(deps, caller, s, { change: "claimed", holder: caller.developerId, groupId: group.groupId, requestId: body.requestId, digest });
-  await noteHostSync(deps, caller.orgId, s.task.taskId, revision, caller.developerId, await askHost(deps, s.task, s.waiting, login));
+  await noteHostSync(deps, caller.orgId, s.task.project, s.task.taskId, revision, caller.developerId, await askHost(deps, s.task, s.waiting, login));
   return getTaskReview(deps, caller, taskId);
 }
 
@@ -326,6 +326,6 @@ export async function reassignReview(deps: ReviewClaimDeps, caller: ReviewCaller
   const login = await deps.githubLoginOf(caller.orgId, body.to);
   if (login === undefined) throw agentXError("CONFIG_INVALID", W.targetNoGithub);
   const revision = await writeClaim(deps, caller, s, { change: "reassigned", holder: body.to, groupId: group.groupId, requestId: body.requestId, digest });
-  await noteHostSync(deps, caller.orgId, s.task.taskId, revision, body.to, await askHost(deps, s.task, s.waiting, login));
+  await noteHostSync(deps, caller.orgId, s.task.project, s.task.taskId, revision, body.to, await askHost(deps, s.task, s.waiting, login));
   return getTaskReview(deps, caller, taskId);
 }
