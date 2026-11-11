@@ -11,14 +11,15 @@ import { AppHostProvider, type ApiRequest, type ApiResponse } from "../../packag
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { ThemeProvider } from "../../packages/ui/src/theme.js";
 import { CompanyRulesScreen } from "../../packages/ui/src/screens/admin/company-rules/CompanyRulesScreen.js";
+import { AccountScreen } from "../../packages/ui/src/screens/account/AccountScreen.js";
 import { fakeHost } from "./support/fake-host.js";
 import { renderUi } from "./support/render.js";
 import { expectNoAxeViolations } from "./support/axe.js";
 import { h } from "./support/h.js";
-import { ADA, DIGEST, DIGEST2, LIMITS, OMAR, PROPOSAL_ID, REPO, RULES_14, currentVersion, diffOf, historyFor, memberState, proposalFor, stateFor, syncFor, syncSummary, versionViewFor } from "./support/company-rules-fixture.js";
+import { ADA, currentFor, DIGEST, DIGEST2, LIMITS, OMAR, PROPOSAL_ID, REPO, RULES_14, currentVersion, diffOf, historyFor, memberState, proposalFor, stateFor, syncFor, syncSummary, versionViewFor } from "./support/company-rules-fixture.js";
 
 const PATH = "/v1/app/org/company-rules";
-const features = { localAgents: false, admin: true, usage: false, chains: false, describe: false, notices: false };
+const features = { localAgents: false, admin: true, usage: false, chains: false, describe: false, notices: false, companyRules: true as const };
 const notFound = { status: 404, body: { error: { code: "NOT_FOUND", message: "This item wasn't found, or you no longer have access." } } };
 const refusal = (status: number, code: string, message: string): ApiResponse => ({ status, body: { error: { code, message } } });
 const asButton = (node: HTMLElement): HTMLButtonElement => { if (!(node instanceof HTMLButtonElement)) throw new Error("not a button"); return node; };
@@ -191,7 +192,7 @@ it("reorders by keyboard-reachable buttons that keep focus, switches Required an
  f.close();
 });
 
-it("an empty list: no company rules yet is a valid state; the first proposal needs at least one rule and goes out against version 0", async () => {
+it("an empty list is allowed: with no company rules yet, the first proposal needs a rule to differ, and goes out against version 0", async () => {
  const waiting = stateFor({ current: currentVersion({ version: 1 }), pending: proposalFor({ proposedByYou: true }) });
  const f = mount({ state: stateFor({ current: null }), respond: async request => (request.method === "POST" ? accepted(waiting) : undefined) });
  await open();
@@ -199,14 +200,33 @@ it("an empty list: no company rules yet is a valid state; the first proposal nee
  fireEvent.click(screen.getByRole("button", { name: "Write the first rules" }));
  expect(screen.queryAllByRole("textbox", { name: /^Rule/u })).toHaveLength(0);
  expect(screen.getByText("Rules 0/30")).toBeTruthy();
- expect(screen.getByText("Add at least one rule to propose a change.")).toBeTruthy();
- expect(screen.getByText("With no company rules, agents get no company section.")).toBeTruthy();
+ expect(screen.queryByText(/Add at least one rule/u)).toBeNull();
+ expect(screen.getAllByText("No company rules: agents follow Rovara's rules and each project's How we work.").length).toBeGreaterThan(0);
+ // Empty against empty is nothing changed.
+ expect(screen.getAllByText("Nothing has changed yet.").length).toBeGreaterThan(0);
  expect(asButton(screen.getByRole("button", { name: "Propose this change" })).disabled).toBe(true);
  fireEvent.click(screen.getByRole("button", { name: "Add a Required rule" }));
  fireEvent.change(screen.getByLabelText("Rule 1"), { target: { value: "Never ship without a review." } });
  fireEvent.click(screen.getByRole("button", { name: "Propose this change" }));
  await waitFor(() => expect(posts(f)).toHaveLength(1));
  expect(posts(f)[0]!.body).toMatchObject({ action: "propose", baseVersion: 0, rules: [{ text: "Never ship without a review.", priority: "required" }] });
+ f.close();
+});
+
+it("an admin can propose clearing every rule: all deleted is a valid send of an empty list", async () => {
+ const f = mount({ respond: async request => (request.method === "POST" ? accepted(stateFor({ pending: proposalFor({ proposedByYou: true, rules: [], ruleCount: 0 }) })) : undefined) });
+ await startEditing();
+ for (let count = 14; count > 0; count--) fireEvent.click(screen.getByRole("button", { name: "Delete, rule 1" }));
+ expect(screen.getByText("Rules 0/30")).toBeTruthy();
+ expect(screen.getByText(/Proposing an empty list clears all company rules/u)).toBeTruthy();
+ expect(screen.getAllByText("No company rules: agents follow Rovara's rules and each project's How we work.").length).toBeGreaterThan(0);
+ const diff = screen.getByRole("group", { name: "Your changes against the current rules" });
+ expect(diff.textContent).toContain("0 added, 14 removed, 0 changed, 0 unchanged");
+ const submit = asButton(screen.getByRole("button", { name: "Propose this change" }));
+ expect(submit.disabled).toBe(false);
+ fireEvent.click(submit);
+ await waitFor(() => expect(posts(f)).toHaveLength(1));
+ expect(posts(f)[0]!.body).toMatchObject({ action: "propose", baseVersion: 1, rules: [] });
  f.close();
 });
 
@@ -415,6 +435,9 @@ it("the history lists each version with who proposed, who approved and when, the
  const two = (await within(history).findByRole("heading", { name: "Version 2" })).closest("li")!;
  expect(two.textContent).toContain("Approved Nov 12, 2026 UTC by Omar Owner. Proposed by Ada Admin. 14 rules.");
  expect(two.textContent).toContain("A second admin approved it.");
+ expect(two.textContent).toContain("Note: Shorter wording for rule 13");
+ expect(history.textContent).toContain("Note: Edit the scope rule");
+ expect(history.textContent).not.toContain("does not include notes");
  expect(two.textContent).toContain("0 added, 0 removed, 1 changed, 13 unchanged");
  const one = within(history).getByRole("heading", { name: "Version 1" }).closest("li")!;
  expect(one.textContent).toContain("by Rovara setup");
@@ -426,6 +449,7 @@ it("the history lists each version with who proposed, who approved and when, the
  const view = await within(history).findByRole("region", { name: "Version 2" });
  await within(view).findByRole("group", { name: "Changes in version 2" });
  expect(view.textContent).toContain("Changes from the version before");
+ expect(view.textContent).toContain("Note: Shorter wording for rule 13");
  expect(within(view).getByText("Changed")).toBeTruthy();
  expect(view.textContent).toContain("Prefer the cheapest model that can do the step well, and explain when a step needs more.");
  expect(f.request.mock.calls.some(([request]) => request.path === PATH + "/versions/2")).toBe(true);
@@ -515,14 +539,15 @@ for (const [status, words] of STATUSES) it(`repository file, connected, status $
 
 it("repository file that differs: shows the diff, says the file was edited when a proposal came from it, and shows a problem's fixed sentence", async () => {
  const edited = RULES_14.map((rule, index) => (index === 3 ? { ...rule, text: "Keep every change inside the task's scope." } : rule));
- const diff = diffOf(RULES_14.map((rule, index) => (index === 3 ? { kind: "changed" as const, before: rule, after: edited[index]! } : { kind: "same" as const, after: rule })));
+ const diff = diffOf(RULES_14.map((rule, index) => (index === 3 ? { kind: "changed" as const, before: rule, after: edited[index]!, side: "repo" as const } : { kind: "same" as const, after: rule })));
  const f = mount({ state: stateFor({ sync: syncSummary({ status: "file_differs" }), pending: proposalFor({ source: "repo", proposedBy: REPO, note: "Edit the scope rule" }) }),
-  sync: syncFor({ fileState: "differs", fileRules: edited, diff, pendingFromRepo: true, problem: { code: "no_write_access", text: "Rovara may not write to this repository, so it cannot send the approved rules to the file." } }) });
+  sync: syncFor({ fileState: "differs", fileRules: edited, diff, changedSide: "repo", pendingFromRepo: true, problem: { code: "no_write_access", text: "Rovara may not write to this repository, so it cannot send the approved rules to the file." } }) });
  const section = (await screen.findByRole("heading", { name: "Company repository file" })).closest("section")!;
  await within(section).findByText("How the file differs from Rovara");
- expect(section.textContent).toContain("The file was edited. Rovara turned the edit into a proposal above");
- expect(section.textContent).toContain("Removed means only Rovara has the rule. Added means only the file has it.");
  const group = within(section).getByRole("group", { name: "Rovara now compared with the file" });
+ expect(section.textContent).toContain("Since the file and Rovara last agreed, the file changed.");
+ expect(group.textContent).toContain("(changed in the file)");
+ expect(section.textContent).toContain("Removed means only Rovara has the rule. Added means only the file has it.");
  expect(group.textContent).toContain("0 added, 0 removed, 1 changed, 13 unchanged");
  expect(group.textContent).toContain("Keep every change inside the task's scope.");
  expect(section.textContent).toContain("Problem. Rovara may not write to this repository");
@@ -534,6 +559,23 @@ it("repository file that differs: shows the diff, says the file was edited when 
  f.close();
 });
 
+it("which side changed comes from the answer only: Rovara, both, or nothing said when there is no side", async () => {
+ for (const [side, sentence] of [["rovara", "Since the file and Rovara last agreed, Rovara changed."], ["both", "Both changed since they last agreed, or they have never agreed."]] as const) {
+  const diff = diffOf([{ kind: "removed" as const, before: RULES_14[0]!, side }]);
+  const f = mount({ state: stateFor({ sync: syncSummary({ status: "file_differs" }) }), sync: syncFor({ fileState: "differs", diff, changedSide: side }) });
+  const section = (await screen.findByRole("heading", { name: "Company repository file" })).closest("section")!;
+  await within(section).findByText("How the file differs from Rovara");
+  expect(section.textContent).toContain(sentence);
+  f.close();
+ }
+ const none = mount({ state: stateFor({ sync: syncSummary({ status: "file_differs" }) }), sync: syncFor({ fileState: "differs", diff: diffOf([{ kind: "removed" as const, before: RULES_14[0]! }]), changedSide: null, pendingFromRepo: true }) });
+ const section = (await screen.findByRole("heading", { name: "Company repository file" })).closest("section")!;
+ await within(section).findByText("How the file differs from Rovara");
+ expect(section.textContent).not.toContain("Since the file and Rovara last agreed");
+ expect(section.textContent).not.toContain("was edited");
+ none.close();
+});
+
 it("repository file: a write-back pull request is a link only when its address is https; Sync now sends one request; Disconnect asks first", async () => {
  const sync = syncFor({ writeBack: { version: 2, state: "open", pullRequest: { number: 12, url: "https://github.com/acme/company-meta/pull/12" }, updatedAt: "2026-11-12T05:30:00.000Z" }, fileState: "differs", diff: diffOf(RULES_14.slice(0, 2).map(after => ({ kind: "same" as const, after }))) });
  const f = mount({ state: stateFor({ sync: syncSummary({ status: "waiting_for_pull_request" }) }), sync, respond: async request => (request.method === "POST" ? accepted(request.body && (request.body as { action: string }).action === "sync-disconnect" ? stateFor({ sync: null }) : stateFor({ sync: syncSummary() }), "done") : undefined) });
@@ -542,7 +584,7 @@ it("repository file: a write-back pull request is a link only when its address i
  expect(link.getAttribute("href")).toBe("https://github.com/acme/company-meta/pull/12");
  expect(link.getAttribute("rel")).toContain("noopener");
  expect(section.textContent).toContain("Version 2 is open");
- expect(section.textContent).toContain("Rovara has a newer version. The file follows when the pull request is merged.");
+ expect(section.textContent).not.toContain("Since the file and Rovara last agreed");
  expect(within(section).getByRole("link", { name: /acme\/company-meta/u }).getAttribute("href")).toBe("https://github.com/acme/company-meta");
  fireEvent.click(within(section).getByRole("button", { name: "Sync now" }));
  await waitFor(() => expect(posts(f)).toHaveLength(1));
@@ -601,4 +643,64 @@ it("the overview lists Company rules with its blurb, in the group for how work r
  expect(DIGEST).not.toBe(DIGEST2);
  expect(LIMITS.maxRules).toBe(30);
  f.close();
+});
+
+it("the nav and the overview list Company rules only while the nav answer says the switch is on", async () => {
+ const off = AppNavSchema.parse({ me: { developerId: "a".repeat(64), name: "Omar", orgRole: "owner" }, org: { name: "Acme" }, homeCount: 0, projects: [], shared: { agents: [], sessions: [] }, features: { ...features, companyRules: undefined } });
+ const f = mount({ respond: async request => (request.path === "/v1/app/nav" ? { status: 200, body: off } : undefined) });
+ f.query.setQueryData(["nav"], off);
+ await open();
+ await screen.findByRole("navigation", { name: "Administration" });
+ expect(within(screen.getByRole("navigation", { name: "Administration" })).queryByRole("link", { name: "Company rules" })).toBeNull();
+ f.router.navigate("/app/admin").catch(() => undefined);
+ await screen.findByRole("heading", { name: "Company settings", level: 1 });
+ expect(screen.queryByRole("link", { name: "Review company rules" })).toBeNull();
+ expect(screen.getByRole("link", { name: "Review how we work" })).toBeTruthy();
+ f.close();
+});
+
+it("any member reads the company rules in force from the current route: no edit, no history, no other request", async () => {
+ const nav = AppNavSchema.parse({ me: { developerId: "a".repeat(64), name: "Mia", orgRole: "member" }, org: { name: "Acme" }, homeCount: 0, projects: [], shared: { agents: [], sessions: [] }, features });
+ const f = fakeHost(async request => (request.path === "/v1/app/org/company-rules/current" ? { status: 200, body: currentFor() } : request.path === "/v1/app/nav" ? { status: 200, body: nav } : notFound));
+ f.host.kind = "web";
+ const query = createQueryClient();query.setQueryData(["nav"], nav);
+ const router = createMemoryRouter(appRoutes(nav.features), { initialEntries: ["/app/settings/company-rules"] });
+ renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(ThemeProvider, { host: f.host, children: h(RouterProvider, { router }) }) }) }));
+ const current = (await screen.findByRole("heading", { name: "Current rules" })).closest("section")!;
+ expect(current.textContent).toContain("Version 1 on Nov 11, 2026 UTC.");
+ expect(within(current).getAllByRole("listitem")).toHaveLength(14);
+ expect(screen.getByText(/This page only shows the rules/u)).toBeTruthy();
+ expect(screen.queryByRole("button", { name: /Edit|Propose|Approve|Sync/u })).toBeNull();
+ expect(f.request.mock.calls.map(([request]) => request.path).filter(path => path.startsWith(PATH))).toEqual(["/v1/app/org/company-rules/current"]);
+ router.dispose();query.clear();
+});
+
+it("the current route says plainly when the switch is off, and the route is absent when the nav answer does not carry the flag", async () => {
+ const nav = AppNavSchema.parse({ me: { developerId: "a".repeat(64), name: "Mia", orgRole: "member" }, org: { name: "Acme" }, homeCount: 0, projects: [], shared: { agents: [], sessions: [] }, features });
+ const f = fakeHost(async request => (request.path === "/v1/app/nav" ? { status: 200, body: nav } : notFound));
+ f.host.kind = "web";
+ const query = createQueryClient();query.setQueryData(["nav"], nav);
+ const router = createMemoryRouter(appRoutes(nav.features), { initialEntries: ["/app/settings/company-rules"] });
+ renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(ThemeProvider, { host: f.host, children: h(RouterProvider, { router }) }) }) }));
+ expect(await screen.findByText("Company rules are switched off for this install, so none apply.")).toBeTruthy();
+ router.dispose();query.clear();
+ expect(appRoutes({ ...nav.features, companyRules: undefined }).length).toBeGreaterThan(0);
+ const without = createMemoryRouter(appRoutes({ ...nav.features, companyRules: undefined }), { initialEntries: ["/app/settings/company-rules"] });
+ expect(without.state.matches.at(-1)?.route.path).toBe("*");
+ without.dispose();
+});
+
+it("the account page links to the read-only rules only while the switch is on", async () => {
+ for (const on of [true, false]) {
+  const nav = AppNavSchema.parse({ me: { developerId: "a".repeat(64), name: "Mia", orgRole: "member" }, org: { name: "Acme" }, homeCount: 0, projects: [], shared: { agents: [], sessions: [] }, features: { ...features, companyRules: on ? true : undefined } });
+  const f = fakeHost(async request => (request.path === "/v1/app/nav" ? { status: 200, body: nav } : notFound));
+  f.host.kind = "web";
+  const query = createQueryClient();query.setQueryData(["nav"], nav);
+  const router = createMemoryRouter([{ path: "/app/account", element: h(AccountScreen) }], { initialEntries: ["/app/account"] });
+  const view = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(ThemeProvider, { host: f.host, children: h(RouterProvider, { router }) }) }) }));
+  await screen.findByRole("heading", { name: "Your account" });
+  if (on) expect((await screen.findByRole("link", { name: "Read the company rules" })).getAttribute("href")).toBe("/app/settings/company-rules");
+  else expect(screen.queryByRole("link", { name: "Read the company rules" })).toBeNull();
+  view.unmount();router.dispose();query.clear();
+ }
 });

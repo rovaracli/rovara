@@ -157,3 +157,29 @@ test("the settings menu lists Company rules and opens the page", async ({ page }
  await page.getByRole("navigation", { name: "Administration" }).getByRole("link", { name: "Company rules" }).click();
  await expect(page.getByRole("heading", { name: "Company rules", exact: true, level: 1 })).toBeFocused();
 });
+
+test("clearing every rule is a valid proposal, with the plain copy for no rules", async ({ page }) => {
+ await page.setViewportSize({ width: 1280, height: 900 });
+ const mock = await mockCompanyRules(page);
+ await open(page);
+ await page.getByRole("button", { name: "Edit the rules" }).click();
+ for (let count = 0; count < 14; count++) await page.getByRole("button", { name: "Delete, rule 1", exact: true }).click();
+ await expect(page.getByText("Rules 0/30")).toBeVisible();
+ await expect(page.getByText("No company rules: agents follow Rovara's rules and each project's How we work.").first()).toBeVisible();
+ await expect(page.getByRole("button", { name: "Propose this change" })).toBeEnabled();
+ await checkA11y(page, { theme: "light" });await checkA11y(page, { theme: "dark" });
+ await page.getByRole("button", { name: "Propose this change" }).click();
+ await expect(page.getByText("Proposed. It is waiting for a second admin.")).toBeVisible();
+ expect(mock.requests.find(row => row.action === "propose")?.body).toMatchObject({ action: "propose", rules: [] });
+});
+
+test("a member reads the rules in force on the read-only page, on a phone, with no way to change them", async ({ page }, testInfo) => {
+ await page.setViewportSize({ width: 390, height: 844 });
+ await mockCompanyRules(page, { member: true });
+ await page.goto("/app/settings/company-rules");
+ await expect(page.getByRole("heading", { name: "Company rules", exact: true, level: 1 })).toBeVisible();
+ await expect(page.getByRole("heading", { name: "Current rules" })).toBeVisible();
+ await expect(page.getByText(/This page only shows the rules/u)).toBeVisible();
+ await expect(page.getByRole("button", { name: /Edit|Propose|Approve/u })).toHaveCount(0);
+ await fitsThePhone(page);await checkA11y(page, { theme: "light" });await checkA11y(page, { theme: "dark" });await evidenceShot(page, { path: testInfo.outputPath("phone-member-current.png"), fullPage: true });
+});

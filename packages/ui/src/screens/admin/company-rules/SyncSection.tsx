@@ -50,8 +50,6 @@ function Connected({ state, onStatus }: { state: State; onStatus: (text: string)
  const problem = detail?.problem ?? null;
  const problemText = problem === null ? undefined : (problem.text !== "" ? problem.text : (COMPANY_RULES_SYNC_PROBLEM_TEXT as Record<string, string>)[problem.code]);
  const writeBack = detail?.writeBack ?? null;
- // Which side changed is only said when the answer says so: a repo proposal waiting means the file was edited; a pull request waiting or open means Rovara is ahead.
- const side = detail === undefined ? undefined : detail.pendingFromRepo ? T.DIFF_FILE_EDITED : writeBack !== null && (writeBack.state === "waiting" || writeBack.state === "open") ? T.DIFF_ROVARA_AHEAD : T.DIFF_UNKNOWN_SIDE;
  return <div className="rv-cr-sync" aria-busy={write.busy}>
   {summary !== null && <p><strong><VisibleText text={STATUS_WORDS[summary.status] ?? "Status unknown"} />.</strong> Connected to <VisibleText text={`${summary.repository}, file ${summary.path} on ${summary.branch}`} />.</p>}
   {read.isPending ? <Skeleton label="Loading the file's status" /> : detail === undefined ? <p role="alert">{read.error instanceof ApiError ? read.error.message : T.SYNC_LOAD_FAILED}</p> : <>
@@ -64,7 +62,7 @@ function Connected({ state, onStatus }: { state: State; onStatus: (text: string)
    <p>{FILE_STATE_WORDS[detail.fileState] ?? ""}</p>
    {problemText !== undefined && <div role="note" className="rv-cr-alert"><strong>{T.PROBLEM_HEADING}.</strong> <VisibleText text={problemText} /></div>}
    {writeBack !== null && <p><strong>{T.WRITE_BACK_HEADING}.</strong> Version {writeBack.version} is {WRITE_BACK_WORDS[writeBack.state] ?? "in progress"}{writeBack.pullRequest === null ? "" : <>: <Link href={writeBack.pullRequest.url}>{`pull request #${String(writeBack.pullRequest.number)}`}</Link></>}. Updated {formatWhen(writeBack.updatedAt)}.</p>}
-   {detail.diff !== null && detail.fileState === "differs" && <><h3>{T.DIFF_HEADING}</h3><p>{side}</p><p className="rv-muted">{T.DIFF_LEGEND}</p><DiffView diff={toDiff(detail.diff)} label="Rovara now compared with the file" /></>}
+   {detail.diff !== null && detail.fileState === "differs" && <><h3>{T.DIFF_HEADING}</h3>{detail.changedSide !== null && <p>{T.SIDE_SENTENCE[detail.changedSide] ?? ""}</p>}<p className="rv-muted">{T.DIFF_LEGEND}</p><DiffView diff={toDiff(detail.diff)} label="Rovara now compared with the file" /></>}
   </>}
   <div className="rv-cr-actions">
    <Button variant="primary" busy={write.busy} onClick={() => { void write.run(() => api.syncNow(), T.SYNCED); }}>{T.SYNC_NOW}</Button>

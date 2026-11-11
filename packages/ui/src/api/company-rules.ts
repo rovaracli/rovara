@@ -2,11 +2,11 @@
 // sends and reads, with the contract's schemas. Every write is sent once from the browser session (`retry: "never"`); a proposal answers 202 `needs_approval`, which is an answer of its own, read with `sendAnswer`.
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { COMPANY_RULES_PATH, CompanyRulesAnswerReaderSchema, CompanyRulesBodySchema, CompanyRulesHistoryReaderSchema, CompanyRulesStateReaderSchema, CompanyRulesSyncReaderSchema, CompanyRulesVersionReaderSchema, type CompanyRulesBody, type CompanyRuleView } from "@agentx/contracts/web";
+import { COMPANY_RULES_CURRENT_PATH, COMPANY_RULES_PATH, CompanyRulesAnswerReaderSchema, CompanyRulesCurrentReaderSchema, CompanyRulesBodySchema, CompanyRulesHistoryReaderSchema, CompanyRulesStateReaderSchema, CompanyRulesSyncReaderSchema, CompanyRulesVersionReaderSchema, type CompanyRulesBody, type CompanyRuleView } from "@agentx/contracts/web";
 import { useAppHost, type AppHost } from "../host.js";
 import { createApiClient } from "./client.js";
 
-export { COMPANY_RULES_PATH };
+export { COMPANY_RULES_PATH, COMPANY_RULES_CURRENT_PATH };
 const NEVER = { retry: "never" } as const;
 
 export function createCompanyRulesApi(host: AppHost) {
@@ -14,6 +14,8 @@ export function createCompanyRulesApi(host: AppHost) {
  const send = (body: CompanyRulesBody) => api.sendAnswer("POST", COMPANY_RULES_PATH, CompanyRulesBodySchema.parse(body), CompanyRulesAnswerReaderSchema, NEVER);
  return {
   state: () => api.get(COMPANY_RULES_PATH, CompanyRulesStateReaderSchema),
+  /** What any member may read: the version in force and the limits. */
+  current: () => api.get(COMPANY_RULES_CURRENT_PATH, CompanyRulesCurrentReaderSchema),
   /** Newest first; `before` is the `nextBefore` of the page before. Owners and admins only. */
   history: (before?: number) => api.get(COMPANY_RULES_PATH + "/history?limit=20" + (before === undefined ? "" : "&before=" + String(before)), CompanyRulesHistoryReaderSchema),
   version: (version: number) => api.get(COMPANY_RULES_PATH + "/versions/" + String(Math.trunc(version)), CompanyRulesVersionReaderSchema),
@@ -37,3 +39,6 @@ export function useCompanyRules() { const api = useCompanyRulesApi();return useQ
 export function useCompanyRulesHistory(enabled: boolean) { const api = useCompanyRulesApi();return useQuery({ queryKey: companyRulesHistoryKey, queryFn: () => api.history(), enabled, refetchOnWindowFocus: false, retry: false }); }
 export function useCompanyRulesVersion(version: number | undefined) { const api = useCompanyRulesApi();return useQuery({ queryKey: companyRulesVersionKey(version ?? 0), queryFn: () => api.version(version!), enabled: version !== undefined, refetchOnWindowFocus: false, retry: false }); }
 export function useCompanyRulesSync(enabled: boolean) { const api = useCompanyRulesApi();return useQuery({ queryKey: companyRulesSyncKey, queryFn: () => api.sync(), enabled, refetchOnWindowFocus: false, retry: false }); }
+/** Outside the admin cache (kept when administration access is dropped): a member's read-only view. */
+export const companyRulesCurrentKey = ["company-rules-current"] as const;
+export function useCompanyRulesCurrent() { const api = useCompanyRulesApi();return useQuery({ queryKey: companyRulesCurrentKey, queryFn: () => api.current(), refetchOnWindowFocus: false, retry: false }); }

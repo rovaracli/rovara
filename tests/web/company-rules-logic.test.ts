@@ -1,9 +1,9 @@
 // Company rules (lane exp/company-rules): the pure parts of the page, to the exact boundary: the limits and counts, the comparison of two lists, the preview of the block, and the wording copied from the contract.
 import { describe, expect, it } from "vitest";
 import { STANDING_INSTRUCTIONS_WORDING, COMPANY_RULE_LIMITS } from "@agentx/contracts";
-import { COMPANY_RULES_APP_LIMITS } from "@agentx/contracts/web";
+import { COMPANY_RULES_APP_LIMITS, STANDING_INSTRUCTIONS_WORDING as WEB_WORDING } from "@agentx/contracts/web";
 import { buildStandingInstructions } from "../../packages/broker/src/instructions/standing-block.js";
-import { BLOCK_WORDING, canMove, characterCount, checkRules, changeKind, diffRules, draftFrom, foldRuleText, moveRule, numbered, previewBlock, sameRules, setPriority, summaryWords, toDiff, toRule, addRule, deleteRule, type DraftRule } from "../../packages/ui/src/screens/admin/company-rules/rules-logic.js";
+import { canMove, characterCount, checkRules, changeKind, diffRules, draftFrom, foldRuleText, moveRule, numbered, previewBlock, sameRules, setPriority, summaryWords, toDiff, toRule, addRule, deleteRule, type DraftRule } from "../../packages/ui/src/screens/admin/company-rules/rules-logic.js";
 import { RULES_14 } from "./support/company-rules-fixture.js";
 
 const draft = (texts: string[], priority: DraftRule["priority"] = "required"): DraftRule[] => texts.map((text, index) => ({ id: "r" + String(index), text, priority }));
@@ -42,7 +42,7 @@ describe("limits and counts", () => {
  });
  it("an empty rule and an empty list are refused with their own sentences", () => {
   expect(checkRules(draft(["ok", "  \n "])).problems).toEqual(["Rule 2 is empty. Write it or delete it."]);
-  expect(checkRules([]).problems).toEqual(["Add at least one rule to propose a change."]);
+  expect(checkRules([]).problems).toEqual([]);
   expect(checkRules(draft(["x".repeat(30)]), { maxRules: 30, maxRuleCharacters: 20, maxTotalCharacters: 100 }).problems[0]).toContain("at most 20");
  });
  it("the 14 approved rules fit, with room", () => {
@@ -104,14 +104,13 @@ describe("the difference between two lists", () => {
   const diff = toDiff({ summary: { added: 0, removed: 0, changed: 0, unchanged: 1 }, entries: [{ kind: "same", after: { text: "x", priority: "unknown" } } as { kind: string }, { kind: "unknown", whatever: 1 } as { kind: string }] });
   expect(diff.entries).toEqual([{ kind: "same", after: { text: "x", priority: "preferred" } }]);
   expect(toRule({ text: "y", priority: "required" }).priority).toBe("required");
+  const withSide = toDiff({ summary: { added: 1, removed: 0, changed: 0, unchanged: 0 }, entries: [{ kind: "added", after: { text: "x", priority: "required" }, side: "repo" } as { kind: string }, { kind: "added", after: { text: "y", priority: "required" }, side: "elsewhere" } as { kind: string }] });
+  expect(withSide.entries.map(entry => ("side" in entry ? entry.side : undefined))).toEqual(["repo", undefined]);
  });
 });
 
 describe("the preview of the block", () => {
- it("copies the contract's wording", () => {
-  const { header, company, required, preferred, closingStart, closingEnd } = STANDING_INSTRUCTIONS_WORDING;
-  expect(BLOCK_WORDING).toEqual({ header, company, required, preferred, closingStart, closingEnd });
- });
+ it("uses the contract's wording from the web entry, the same text the broker uses", () => { expect(WEB_WORDING).toEqual(STANDING_INSTRUCTIONS_WORDING); });
  it("is the company part of the block the broker builds, word for word, apart from the closing code", () => {
   const built = buildStandingInstructions({ company: { version: "1", rules: RULES_14 } })!.text;
   const preview = previewBlock(RULES_14)!;

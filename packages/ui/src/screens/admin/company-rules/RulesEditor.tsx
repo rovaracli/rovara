@@ -80,6 +80,7 @@ export function RulesEditor({ state, onStatus }: { state: State; onStatus: (text
    <TextField label={T.NOTE_LABEL} hint={`${T.NOTE_HINT} ${String(Array.from(note).length)}/${String(COMPANY_RULES_NOTE_MAX)}.`} value={note} maxLength={COMPANY_RULES_NOTE_MAX} onChange={event => { setNote(event.target.value); }} />
    <div className="rv-cr-changes"><h3>{T.YOUR_CHANGES}</h3>{unchanged ? <p className="rv-muted">{T.NOTHING_CHANGED}</p> : <DiffView diff={changes} label="Your changes against the current rules" />}</div>
    <PreviewBlock rules={draft.filter(rule => foldRuleText(rule.text) !== "")} />
+   {draft.length === 0 && <p className="rv-muted">{T.EMPTY_DRAFT}</p>}
    <div role="status" aria-label="Why this can't be proposed yet">{problems.length > 0 && <ul className="rv-cr-problems">{problems.map(problem => <li key={problem} className={problem === T.NOTHING_CHANGED ? "rv-muted" : "rv-error"}><VisibleText text={problem} /></li>)}</ul>}</div>
    <div className="rv-cr-actions">
     <Button type="submit" variant="primary" busy={write.busy} disabled={blocked}>{T.SUBMIT}</Button>

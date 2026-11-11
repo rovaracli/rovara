@@ -2,7 +2,7 @@
 // the real routes, their audit and their limits are the broker's (and tested there). State lives for one test.
 import type { Page, Route } from "@playwright/test";
 import { CompanyRulesBodySchema, type CompanyRuleView } from "@agentx/contracts/web";
-import { ADA, DIGEST, DIGEST2, OMAR, PROPOSAL_ID, RULES_14, currentVersion, diffOf, historyFor, memberState, proposalFor, stateFor, syncFor, syncSummary, versionViewFor } from "../../web/support/company-rules-fixture.js";
+import { ADA, currentFor, DIGEST, DIGEST2, OMAR, PROPOSAL_ID, RULES_14, currentVersion, diffOf, historyFor, memberState, proposalFor, stateFor, syncFor, syncSummary, versionViewFor } from "../../web/support/company-rules-fixture.js";
 
 export type Viewer = "omar" | "ada";
 export interface CompanyRulesMock {
@@ -27,11 +27,17 @@ export function companyRulesState(mock: CompanyRulesMock) {
 
 export async function mockCompanyRules(page: Page, options: { off?: boolean; member?: boolean } = {}): Promise<CompanyRulesMock> {
  const mock: CompanyRulesMock = { viewer: "ada", version: 1, rules: RULES_14, pending: null, sync: false, requests: [] };
+ // The nav answer carries `features.companyRules` only while the switch is on; the stand-in says so unless the switch is off.
+ await page.route(/\/v1\/(?:app|web)\/nav$/u, async route => {
+  const response = await route.fetch(), body = await response.json() as { features?: Record<string, unknown> };
+  await route.fulfill({ response, json: { ...body, features: { ...body.features, ...(options.off === true ? {} : { companyRules: true }) } } });
+ });
  await page.route(/\/v1\/(?:app|web)\/org\/company-rules/u, async (route: Route) => {
   const request = route.request(), url = new URL(request.url()), json = (status: number, body: unknown) => route.fulfill({ status, contentType: "application/json", body: text(body) });
   if (options.off === true) return json(404, { error: { code: "NOT_FOUND", message: "This item wasn't found, or you no longer have access." } });
   if (request.method() === "GET") {
    mock.requests.push({ method: "GET" });
+   if (url.pathname.endsWith("/current")) return json(200, currentFor());
    if (url.pathname.endsWith("/history")) return json(200, historyFor());
    if (url.pathname.endsWith("/sync")) return json(200, mock.sync ? syncFor() : { connected: false });
    const version = /\/versions\/(\d+)$/u.exec(url.pathname);

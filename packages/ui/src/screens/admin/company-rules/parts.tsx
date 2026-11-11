@@ -18,7 +18,7 @@ const KIND_WORDS: Record<ChangeKind, string> = { added: "Added", removed: "Remov
 function DiffEntry({ entry }: { entry: CompanyRulesDiff["entries"][number] }) {
  const kind = changeKind(entry);
  return <li className={`rv-cr-diff-entry rv-cr-diff-${kind}`}>
-  <strong className="rv-cr-diff-kind">{KIND_WORDS[kind]}</strong>
+  <strong className="rv-cr-diff-kind">{KIND_WORDS[kind]}</strong>{entry.kind !== "same" && entry.side !== undefined && <span className="rv-muted"> ({T.SIDE_WORDS[entry.side]})</span>}
   {entry.kind === "added" && <p><span className="rv-muted">{PRIORITY_WORDS[entry.after.priority]}.</span> <VisibleText text={entry.after.text} /></p>}
   {entry.kind === "removed" && <p><span className="rv-muted">{PRIORITY_WORDS[entry.before.priority]}.</span> <VisibleText text={entry.before.text} /></p>}
   {entry.kind === "same" && <p><span className="rv-muted">{PRIORITY_WORDS[entry.after.priority]}.</span> <VisibleText text={entry.after.text} /></p>}

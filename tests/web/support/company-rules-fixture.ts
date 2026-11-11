@@ -1,5 +1,5 @@
 // Fixtures for Settings > Company rules: the owner-approved first 14 rules (7 Required, 7 Preferred) and builders for the state, the proposal, the history and the repository file, each checked against the contract's strict schemas.
-import { CompanyRulesStateSchema, CompanyRulesHistorySchema, CompanyRulesVersionViewSchema, CompanyRulesSyncSchema, type CompanyRuleView, type CompanyRulesState, type CompanyRulesDiff } from "@agentx/contracts/web";
+import { CompanyRulesStateSchema, CompanyRulesHistorySchema, CompanyRulesVersionViewSchema, CompanyRulesSyncSchema, CompanyRulesCurrentSchema, type CompanyRuleView, type CompanyRulesState, type CompanyRulesDiff } from "@agentx/contracts/web";
 
 const rule = (priority: CompanyRuleView["priority"], text: string): CompanyRuleView => ({ priority, text });
 export const RULES_14: CompanyRuleView[] = [
@@ -44,6 +44,10 @@ export function proposalFor(over: Record<string, unknown> = {}) {
 export function stateFor(over: Record<string, unknown> = {}): CompanyRulesState {
  return CompanyRulesStateSchema.parse({ enabled: true, viewer: { role: "owner", canPropose: true, canDecide: true }, limits: LIMITS, current: currentVersion(), pending: null, sync: null, ...over });
 }
+export function currentFor(over: Record<string, unknown> = {}) {
+ const { version, digest, rules, ruleCount, approvedAt } = currentVersion();
+ return CompanyRulesCurrentSchema.parse({ enabled: true, limits: LIMITS, current: { version, digest, rules, ruleCount, approvedAt }, ...over });
+}
 export function memberState(over: Record<string, unknown> = {}): CompanyRulesState {
  const { version, digest, rules, ruleCount, approvedAt } = currentVersion();
  return stateFor({ viewer: { role: "member", canPropose: false, canDecide: false }, current: { version, digest, rules, ruleCount, approvedAt }, pending: null, sync: null, ...over });
@@ -51,24 +55,24 @@ export function memberState(over: Record<string, unknown> = {}): CompanyRulesSta
 export function historyFor(over: Record<string, unknown> = {}) {
  return CompanyRulesHistorySchema.parse({
   entries: [
-   { version: 2, approvedAt: "2026-11-12T05:00:00.000Z", approvedBy: OMAR, proposedBy: ADA, source: "rovara", approvalMode: "second_person", ruleCount: 14, summary: { added: 0, removed: 0, changed: 1, unchanged: 13 } },
-   { version: 1, approvedAt: now, approvedBy: SETUP, proposedBy: SETUP, source: "seed", approvalMode: "seed", ruleCount: 14, summary: { added: 14, removed: 0, changed: 0, unchanged: 0 } },
+   { version: 2, approvedAt: "2026-11-12T05:00:00.000Z", approvedBy: OMAR, proposedBy: ADA, source: "rovara", approvalMode: "second_person", ruleCount: 14, summary: { added: 0, removed: 0, changed: 1, unchanged: 13 }, note: "Shorter wording for rule 13" },
+   { version: 1, approvedAt: now, approvedBy: SETUP, proposedBy: SETUP, source: "seed", approvalMode: "seed", ruleCount: 14, summary: { added: 14, removed: 0, changed: 0, unchanged: 0 }, note: null },
   ],
-  decided: [{ proposalId: "22222222-2222-4222-8222-222222222222", state: "rejected", source: "repo", proposedBy: REPO, proposedAt: "2026-11-11T07:00:00.000Z", decidedAt: "2026-11-11T08:00:00.000Z", decidedBy: ADA }],
+  decided: [{ proposalId: "22222222-2222-4222-8222-222222222222", state: "rejected", source: "repo", proposedBy: REPO, proposedAt: "2026-11-11T07:00:00.000Z", decidedAt: "2026-11-11T08:00:00.000Z", decidedBy: ADA, note: "Edit the scope rule" }],
   nextBefore: null, ...over,
  });
 }
 export function versionViewFor(version: number) {
  const changed = version === 2 ? RULES_14.map((entry, index) => index === 12 ? { text: "Prefer the cheapest model that can do the step well, and explain when a step needs more.", priority: entry.priority } : entry) : RULES_14;
  return CompanyRulesVersionViewSchema.parse({
-  version: currentVersion({ version, rules: changed, approvedBy: version === 2 ? OMAR : SETUP, proposedBy: version === 2 ? ADA : SETUP, source: version === 2 ? "rovara" : "seed", approvalMode: version === 2 ? "second_person" : "seed", baseVersion: version - 1 }),
+  version: currentVersion({ version, rules: changed, approvedBy: version === 2 ? OMAR : SETUP, proposedBy: version === 2 ? ADA : SETUP, source: version === 2 ? "rovara" : "seed", approvalMode: version === 2 ? "second_person" : "seed", baseVersion: version - 1, note: version === 2 ? "Shorter wording for rule 13" : null }),
   diffFromPrevious: version === 2 ? diffOf(RULES_14.map((entry, index) => index === 12 ? { kind: "changed" as const, before: entry, after: changed[index]! } : { kind: "same" as const, after: entry })) : diffOf(RULES_14.map(after => ({ kind: "added" as const, after }))),
  });
 }
 export function syncFor(over: Record<string, unknown> = {}) {
  return CompanyRulesSyncSchema.parse({
   connected: true, repository: { name: "acme/company-meta", url: "https://github.com/acme/company-meta" }, path: ".rovara/company-rules.md", branch: "main", connectedBy: OMAR, connectedAt: "2026-11-11T09:00:00.000Z",
-  lastCheckedAt: "2026-11-11T10:00:00.000Z", lastCheckedRevision: "e".repeat(40), fileState: "match", problem: null, fileRules: RULES_14, diff: diffOf(SAME_14), pendingFromRepo: false, writeBack: null, ...over,
+  lastCheckedAt: "2026-11-11T10:00:00.000Z", lastCheckedRevision: "e".repeat(40), fileState: "match", problem: null, fileRules: RULES_14, diff: diffOf(SAME_14), changedSide: null, pendingFromRepo: false, writeBack: null, ...over,
  });
 }
 export const syncSummary = (over: Record<string, unknown> = {}) => ({ connected: true, repository: "acme/company-meta", path: ".rovara/company-rules.md", branch: "main", status: "in_sync", lastCheckedAt: "2026-11-11T10:00:00.000Z", ...over });

@@ -17,6 +17,7 @@ function VersionView({ version, onClose }: { version: number; onClose: () => voi
  useEffect(() => { heading.current?.focus(); }, [version]);
  const body = read.isPending ? <Skeleton label="Loading this version" /> : read.data === undefined ? <p role="alert">{read.error instanceof ApiError ? read.error.message : T.VERSION_LOAD_FAILED}</p> : <>
   <p><VersionLine version={read.data.version} /></p>
+  {typeof read.data.version.note === "string" && read.data.version.note !== "" && <p><strong>{T.NOTE}:</strong> <VisibleText text={read.data.version.note} /></p>}
   <h4>{T.FROM_PREVIOUS}</h4><DiffView diff={toDiff(read.data.diffFromPrevious)} label={`Changes in version ${String(version)}`} />
   <h4>The rules in this version</h4><RulesList rules={toRules(read.data.version.rules)} label={`Version ${String(version)} rules`} />
  </>;
@@ -45,15 +46,16 @@ export function HistorySection({ enabled }: { enabled: boolean }) {
    {entries.length === 0 ? <p>{T.HISTORY_NONE}</p> : <ul className="rv-cr-history">{entries.map(entry => <li key={entry.version}>
     <h3>Version {entry.version}</h3>
     <p>Approved {formatDay(entry.approvedAt)} by <Person person={entry.approvedBy} />. Proposed by <Person person={entry.proposedBy} />. {entry.ruleCount} {entry.ruleCount === 1 ? "rule" : "rules"}.</p>
+    {entry.note !== null && <p><strong>{T.NOTE}:</strong> <VisibleText text={entry.note} /></p>}
     <p className="rv-muted">{(APPROVAL_WORDS as Record<string, string>)[entry.approvalMode] ?? ""} Source: {SOURCE_WORDS[entry.source] ?? "Rovara"}. {summaryWords(entry.summary)}.</p>
     <Button aria-label={`View version ${String(entry.version)}`} aria-expanded={open === entry.version} onClick={() => { setOpen(open === entry.version ? undefined : entry.version); }}>{T.VIEW}</Button>
     {open === entry.version && <VersionView version={entry.version} onClose={() => { setOpen(undefined); }} />}
    </li>)}</ul>}
    {last?.nextBefore !== null && last?.nextBefore !== undefined && <div><Button busy={loadingOlder} onClick={() => { void loadOlder(); }}>{T.HISTORY_OLDER}</Button></div>}
    {olderError !== undefined && <p role="alert"><VisibleText text={olderError} /></p>}
-   <p className="rv-muted">{T.NOTE_NOT_KEPT}</p>
    {first.data.decided.length > 0 && <><h3>{T.DECIDED_HEADING}</h3><ul className="rv-cr-history">{first.data.decided.map(item => <li key={item.proposalId}>
     <p><strong>{DECIDED_WORDS[item.state] ?? "Closed"}</strong> {formatWhen(item.decidedAt)}{item.decidedBy === null ? "" : " by "}{item.decidedBy !== null && <Person person={item.decidedBy} />}. Proposed by <Person person={item.proposedBy} /> on {formatDay(item.proposedAt)}. Source: {SOURCE_WORDS[item.source] ?? "Rovara"}.</p>
+   {item.note !== null && <p><strong>{T.NOTE}:</strong> <VisibleText text={item.note} /></p>}
    </li>)}</ul></>}
   </>}
  </section>;
