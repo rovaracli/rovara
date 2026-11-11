@@ -7,6 +7,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
 import { decideApproval, type ApprovalDependencies } from "../../packages/broker/src/agents/approvals.js";
 import { DeveloperSignInStore } from "../../packages/broker/src/developer/store.js";
+import { decideSpendRequest } from "../../packages/broker/src/spend/requests.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { DECIDE_COOKIE, DecideStore, csrfTokenFor } from "../../packages/broker/src/developer/decide-session.js";
 import { approvalKey, orgProjectCatalogKey, projectMemberKey } from "../../packages/contracts/src/org-scoped-keys.js";
@@ -85,13 +86,15 @@ async function world() {
     version: "2.0", rawPath: path, rawQueryString: "", headers, ...(body === undefined ? {} : { body }), requestContext: { requestId: randomUUID(), http: { method } },
   }) as { statusCode: number; headers: Record<string, string>; body: string };
   /** The confirmation page, as `who`, pressing `decision`. */
-  const onPage = async (who: Developer, approvalId: string, decision: "approve" | "decline" = "approve", agoSeconds = 30) => {
+  const onPage = async (who: Developer, approvalId: string, decision: "approve" | "decline" = "approve", agoSeconds = 30, fields: Record<string, string> = {}) => {
     const cookie = await session(who, approvalId, agoSeconds);
-    return raw("POST", `/v1/app/approve/${approvalId}`, { cookie: `${DECIDE_COOKIE}=${cookie}`, origin: CELL, "content-type": "application/x-www-form-urlencoded" }, new URLSearchParams({ decision, csrf: csrfTokenFor(cookie) }).toString());
+    return raw("POST", `/v1/app/approve/${approvalId}`, { cookie: `${DECIDE_COOKIE}=${cookie}`, origin: CELL, "content-type": "application/x-www-form-urlencoded" }, new URLSearchParams({ decision, csrf: csrfTokenFor(cookie), ...fields }).toString());
   };
+  /** The confirmation page itself, as `who` sees it. */
+  const pageFor = async (who: Developer, approvalId: string) => raw("GET", `/v1/app/approve/${approvalId}`, { cookie: `${DECIDE_COOKIE}=${await session(who, approvalId, 30)}` });
   const record = (approvalId: string) => h.db.get(approvalKey(TEST_ORG, approvalId).pk, approvalKey(TEST_ORG, approvalId).sk) as { status: string; failure?: string; declineReason?: string; withdrawnBy?: string };
   const requestOf = (reply: { body: Record<string, unknown> }) => AgentPublishRequestSchema.parse(reply.body.request);
-  return { ...h, store, members, call, publishedAgent, ask, onPage, record, requestOf };
+  return { ...h, store, members, call, publishedAgent, ask, onPage, pageFor, record, requestOf };
 }
 
 describe("asking to publish an agent", () => {
@@ -127,6 +130,21 @@ describe("asking to publish an agent", () => {
 
     const mayas = await w.publishedAgent(MAYA);
     expect((await w.ask(DANA, mayas, WEB)).status).toBe(200);
+    expect(await w.store.get(TEST_ORG, mayas)).toMatchObject({ owner: WEB, accountable: { developerId: DANA.developerId } });
+    expect(await w.store.listShares(TEST_ORG, mayas)).toEqual([expect.objectContaining({ principal: { kind: "member", developerId: MAYA.developerId }, level: "edit" })]);
+  });
+
+  it("an at-once move held by the owner cap keeps the author's edit access once an admin approves it", async () => {
+    const w = await world();
+    const mayas = await w.publishedAgent(MAYA);
+    expect((await w.call(MAYA, "PUT", `/v1/app/agents/${mayas}/budget`, { monthlyUsd: 50 })).status).toBe(200);
+    expect((await w.call(DANA, "PUT", "/v1/app/org/spend-policy", { ownerAgentBudgetCapUsd: 10 })).status).toBe(200);
+    const held = await w.ask(DANA, mayas, WEB);
+    expect(held.status, JSON.stringify(held.body)).toBe(202);
+    expect(held.body).toMatchObject({ status: "NEEDS_ADMIN_APPROVAL" });
+    expect(await w.store.get(TEST_ORG, mayas)).toMatchObject({ owner: { kind: "member", developerId: MAYA.developerId } });
+    const deps = { store: w.store, projectMembers: w.members, documentClient: w.db, tableName: "state", now: Date.now, confirmOrigin: CELL, signInStore: new DeveloperSignInStore({ documentClient: w.db, tableName: "signin", now: Date.now }) };
+    await decideSpendRequest(deps, { orgId: TEST_ORG, developerId: OWEN.developerId, orgRole: "owner" }, held.body.spendRequestId as string, { requestId: randomUUID(), decision: "APPROVE" });
     expect(await w.store.get(TEST_ORG, mayas)).toMatchObject({ owner: WEB, accountable: { developerId: DANA.developerId } });
     expect(await w.store.listShares(TEST_ORG, mayas)).toEqual([expect.objectContaining({ principal: { kind: "member", developerId: MAYA.developerId }, level: "edit" })]);
   });
@@ -260,6 +278,36 @@ describe("deciding a company request (decision 91: owners and admins only)", () 
     expect(capture.recordedBy("agent_publication.declined")).toMatchObject([{ target: { kind: "agent", id: agentId }, facts: { approvalId: request.approvalId, targetKind: "company", version: 1, explained: true } }]);
     const mine = await w.call(MAYA, "GET", `/v1/app/agents/${agentId}/publish-requests`);
     expect(mine.body.requests).toEqual([expect.objectContaining({ state: "declined", declineReason: "Please add a test step first." })]);
+  });
+});
+
+describe("the decline reason on the confirmation page", () => {
+  it("offers an optional reason, escapes what the requester wrote, stores a reason only with a decline, and caps its length", async () => {
+    const w = await world();
+    const agentId = await w.publishedAgent(MAYA);
+    const request = w.requestOf(await w.ask(MAYA, agentId, COMPANY, { note: "<b>ship</b> it" }));
+    const shown = await w.pageFor(DANA, request.approvalId);
+    expect(shown.statusCode, shown.body).toBe(200);
+    expect(shown.body).toContain('<textarea id="reason" name="reason" maxlength="300"');
+    expect(shown.body).toContain("&lt;b&gt;ship&lt;/b&gt; it");
+    expect(shown.body).not.toContain("<b>ship</b>");
+    // Too long: nothing is decided, and the request still waits.
+    const long = await w.onPage(DANA, request.approvalId, "decline", 30, { reason: "x".repeat(301) });
+    expect(long.statusCode, long.body).toBe(400);
+    expect(w.record(request.approvalId).status).toBe("PENDING");
+    const declined = await w.onPage(DANA, request.approvalId, "decline", 30, { reason: "  Please add <a test> step.\r\nThanks  " });
+    expect(declined.statusCode, declined.body).toBe(200);
+    expect(w.record(request.approvalId)).toMatchObject({ status: "DECLINED", declineReason: "Please add <a test> step. Thanks" });
+  });
+
+  it("ignores a reason sent with an approval", async () => {
+    const w = await world();
+    const agentId = await w.publishedAgent(MAYA);
+    const request = w.requestOf(await w.ask(MAYA, agentId, COMPANY));
+    const approved = await w.onPage(DANA, request.approvalId, "approve", 30, { reason: "looks fine" });
+    expect(approved.statusCode, approved.body).toBe(200);
+    expect(w.record(request.approvalId).status).toBe("APPROVED_DONE");
+    expect(w.record(request.approvalId).declineReason).toBeUndefined();
   });
 });
 

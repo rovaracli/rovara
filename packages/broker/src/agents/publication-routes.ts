@@ -129,7 +129,7 @@ async function askToPublish(deps: AgentRouteDependencies, caller: AgentCaller, a
     const owner = await requireOwnerAllowed(deps, caller, { kind: "project", project: target.project }, agent.owner);
     const accountable = await requireAccountable(deps, caller.orgId, target.project, caller.developerId);
     const { accountable: _before, ...kept } = agent; // eslint-disable-line @typescript-eslint/no-unused-vars -- the new owner decides it
-    const moved = await holdingOwnerCap(deps, caller, { kind: "agent", agentId }, agent, { ...kept, owner, accountable }, { op: "set_owner", owner, accountable }, marked.mark,
+    const moved = await holdingOwnerCap(deps, caller, { kind: "agent", agentId }, agent, { ...kept, owner, accountable }, { op: "set_owner", owner, accountable, ...(agent.owner.kind === "member" ? { keepEditing: { developerId: agent.owner.developerId } } : {}) }, marked.mark,
       (options) => deps.store.setOwner(caller.orgId, agentId, owner, caller.developerId, accountable, marked.mark, { ...options, actor: { developerId: caller.developerId, role: caller.orgRole }, manageSnapshot: agent }));
     if (moved instanceof StatusReply) return moved;
     if (agent.owner.kind === "member") await keepAuthorEditing(deps, caller.orgId, caller.developerId, agentId, agent.owner.developerId, accountable.developerId);

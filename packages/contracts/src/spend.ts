@@ -323,7 +323,11 @@ export const SPEND_RESUME_INSTRUCTIONS = "Your AI budget was raised. Continue wh
  */
 export type OwnerCapChange =
   | { op: "set_budget"; budget: { monthlyUsd?: number | null; maxPerRunUsd?: number | null }; /** Server-captured per-run value; null is confirmed absence. */ expectedMaxPerRunUsd?: number | null }
-  | { op: "set_owner"; owner: { kind: "member"; developerId: string } | { kind: "project"; project: string }; accountable?: { developerId: string } }
+  | {
+    op: "set_owner"; owner: { kind: "member"; developerId: string } | { kind: "project"; project: string }; accountable?: { developerId: string };
+    /** An agent publish request's at-once move (experience decision 24): its former member owner keeps an `edit` share once the move applies, as on the direct path. */
+    keepEditing?: { developerId: string };
+  }
   | { op: "set_accountable"; accountable: { developerId: string } }
   | { op: "unarchive" }
   | { op: "confirm_move"; owner: string; cause: "member_merged" | "member_removed" | "project_role_changed" };
