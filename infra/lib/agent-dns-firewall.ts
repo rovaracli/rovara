@@ -2,7 +2,7 @@ import { RemovalPolicy, aws_logs as logs, aws_route53resolver as resolver } from
 import { Construct } from "constructs";
 import { DEFAULT_AGENT_ALLOW_DOMAINS } from "@rovara-code/contracts";
 import {
-  BEDROCK_SOURCE_REGIONS, BROAD_DEFAULT_ALLOW_ENTRIES, HOSTED_AWS_HOSTS, NAMED_IN_PLACE_OF_BROAD_ENTRIES, hostedAgentAllowDomains, hostedAwsAllowDomains, narrowedDefaultAllowDomains,
+  BEDROCK_SOURCE_REGIONS, BROAD_ALLOWED_DOMAIN_MESSAGE, BROAD_DEFAULT_ALLOW_ENTRIES, HOSTED_AWS_HOSTS, NAMED_IN_PLACE_OF_BROAD_ENTRIES, hostedAgentAllowDomains, hostedAwsAllowDomains, isBroadAllowedDomain, narrowedDefaultAllowDomains,
 } from "@agentx/cloud-contracts";
 
 export { DEFAULT_AGENT_ALLOW_DOMAINS };
@@ -38,6 +38,8 @@ export function parseExtraAllowDomains(value: unknown, existing: readonly string
     if (entry.length > MAX_DOMAIN_LENGTH || !DOMAIN_PATTERN.test(entry)) {
       throw new Error(`${EGRESS_ALLOW_DOMAINS_CONTEXT_KEY} entry ${JSON.stringify(entry)} is not a domain name of at most ${MAX_DOMAIN_LENGTH} characters; use a name such as artifactory.example.com or *.example.com, without a scheme or path`);
     }
+    // One operator entry is cell-wide too: a wildcard over AWS or GitHub names would reopen what the default list closed.
+    if (isBroadAllowedDomain(entry)) throw new Error(`${EGRESS_ALLOW_DOMAINS_CONTEXT_KEY} entry ${JSON.stringify(entry)}: ${BROAD_ALLOWED_DOMAIN_MESSAGE}`);
     if (seen.has(entry.toLowerCase())) continue;
     seen.add(entry.toLowerCase());
     extra.push(entry);

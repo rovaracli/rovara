@@ -194,6 +194,14 @@ describe("agent DNS firewall (cloud installs)", () => {
     expect(allowDomains).toStrictEqual([...hostedAgentAllowDomains("us-east-1", ACCOUNT), "artifactory.acme.dev", "*.pkg.acme.dev"]);
   });
 
+  it("rejects an operator's extra wildcard over AWS or GitHub names, and takes an exact host of theirs", () => {
+    for (const entry of ["*.amazonaws.com", "*.github.com", "*.githubusercontent.com", "*.aws", "*.GitHub.com"]) {
+      expect(() => foundation({ agentxEnv: "staging", agentxCloud: true, agentxEgressAllowDomains: `artifactory.acme.dev, ${entry}` }), entry).toThrow(/agentxEgressAllowDomains entry/);
+    }
+    const { allowDomains } = ruleGroup(foundation({ agentxEnv: "staging", agentxCloud: true, agentxEgressAllowDomains: "dynamodb.eu-west-1.amazonaws.com, *.acme.dev" }));
+    expect(allowDomains.slice(-2)).toStrictEqual(["dynamodb.eu-west-1.amazonaws.com", "*.acme.dev"]);
+  });
+
   it("rejects an extra domain that is not a domain name", () => {
     expect(() => foundation({ agentxEnv: "staging", agentxCloud: true, agentxEgressAllowDomains: "https://artifactory.acme.dev/path" })).toThrow(/agentxEgressAllowDomains/);
   });

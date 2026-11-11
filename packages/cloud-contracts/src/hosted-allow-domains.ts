@@ -31,13 +31,13 @@ export function narrowedDefaultAllowDomains(base: readonly string[] = DEFAULT_AG
 
 /**
  * Commercial AWS regions a company AI source (a Bedrock role in the company's own account) may name. The source schema (`ModelSourceInputSchema`, vendor Code's model-sources.ts)
- * accepts any name shaped like a region, so no list can be its exact twin; this is the commercial regions that exist (Bedrock is in most), pinned, and
+ * accepts any name shaped like a region, so no list can be its exact twin; this is the commercial regions that exist (Bedrock is in most), pinned (the 34 regions of the AWS Regions page, 2026-11-11), and
  * tests/contract/hosted-allow-domains.test.ts proves each is accepted by that schema's region rule. GovCloud and China regions are not hosted here.
  */
 export const BEDROCK_SOURCE_REGIONS: readonly string[] = [
   "us-east-1", "us-east-2", "us-west-1", "us-west-2", "ca-central-1", "ca-west-1", "sa-east-1", "mx-central-1",
   "eu-west-1", "eu-west-2", "eu-west-3", "eu-central-1", "eu-central-2", "eu-north-1", "eu-south-1", "eu-south-2",
-  "ap-east-1", "ap-northeast-1", "ap-northeast-2", "ap-northeast-3", "ap-south-1", "ap-south-2", "ap-southeast-1", "ap-southeast-2", "ap-southeast-3", "ap-southeast-4", "ap-southeast-5", "ap-southeast-7",
+  "ap-east-1", "ap-east-2", "ap-northeast-1", "ap-northeast-2", "ap-northeast-3", "ap-south-1", "ap-south-2", "ap-southeast-1", "ap-southeast-2", "ap-southeast-3", "ap-southeast-4", "ap-southeast-5", "ap-southeast-6", "ap-southeast-7",
   "me-central-1", "me-south-1", "af-south-1", "il-central-1",
 ];
 
