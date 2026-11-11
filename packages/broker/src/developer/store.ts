@@ -43,6 +43,8 @@ export type JoinOutcome = "joined" | "ALREADY_IN_ORG" | "INVITE_WRONG_EMAIL" | "
 export interface JoinResultRecord {
   outcome: JoinOutcome; orgName: string; role: "admin" | "member"; currentOrgName?: string; invitedOrgName: string; maskedEmail?: string;
   inviterName: string; codeChallenge: string; expiresAt: number;
+  /** A-31: the project the join also gave a role in (the app lands there), or why the invite's project was left out (the company was joined all the same). */
+  projectName?: string; projectNote?: "project_archived" | "project_gone";
 }
 export const JOIN_RESULT_SECONDS = 600;
 /**

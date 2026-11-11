@@ -54,6 +54,10 @@ export interface SignInOrg {
    * (INVITE_WRONG_EMAIL), or it is unknown, expired, used or into a closed org (INVITE_INVALID).
    */
   inviteError?: "ALREADY_IN_ORG" | "INVITE_INVALID" | "INVITE_WRONG_EMAIL";
+  /** A-31: the invite also gave the person this project role (the app lands on the project). */
+  project?: { name: string; role: "maintainer" | "contributor" | "viewer" };
+  /** A-31: the invite named a project that was archived or removed since; the person joined the company only. */
+  projectNote?: "project_archived" | "project_gone";
 }
 
 /** What a join (`allowCreate: false`) answers when the invite did not put the person in an org: they have none, and nothing was created. */

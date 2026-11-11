@@ -323,6 +323,8 @@ import { SCRIPT_TOKENS_BROWSER_MESSAGE, isScriptTokensPath, routeScriptTokens } 
 import { auditScriptTokenTaskStart, authenticateScriptToken } from "../script-tokens/authenticate.js";
 import { isScriptTokenHeader } from "../script-tokens/token-format.js";
 import { scriptTokensEnabled } from "../script-tokens/switch.js";
+import { isProjectPeoplePath, routeProjectPeople } from "./developer-routes/project-people.js";
+import { PROJECT_PEOPLE_BROWSER_MESSAGE } from "@agentx/cloud-contracts";
 export { projectMembersOf, projectsWithPolicy } from "./developer-routes/project-list.js";
 export { checkProjectAccess } from "./developer-routes/project-access.js";
 export { agentRunStarterOf, codeIntentDependenciesOf, developerTaskRouteDependencies } from "./developer-routes/dependencies.js";
@@ -374,6 +376,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (isSavedEnvImagePath(url.pathname) && savedEnvEnabled() && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", SAVED_ENV_IMAGE_BROWSER_MESSAGE);
   // UX5b: script tokens are made, listed and revoked from a live browser session only (off: the path is not found).
   if (isScriptTokensPath(url.pathname) && scriptTokensEnabled() && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", SCRIPT_TOKENS_BROWSER_MESSAGE);
+  // A-32 (srv/project-people): the web's People tab, reads and writes, is browser-only (the CLI keeps `.../members`).
+  if (isProjectPeoplePath(url.pathname) && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", PROJECT_PEOPLE_BROWSER_MESSAGE);
   // B34 reviewed reads/unbind are cookie-only; existing token Slack routes remain separate.
   if (/^\/v1\/app\/projects\/[^/]+\/slack-channel\/(links|review|requests|unbind|proposals|decisions)(?:\/|$)/.test(url.pathname) && authenticated?.caller.browserSession !== true) {
     throw agentXError("FORBIDDEN", "Use a live browser session for Slack linking.");
@@ -524,6 +528,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (request.method === "POST" && projectSettingsUndo !== null) return undoToProvenSetup(deps, caller, projectSettingsUndo[1]!, jsonBody(request));
   const metaConfigRoute = /^\/v1\/app\/projects\/([^/]+)\/meta-config(?:\/(apply|dismiss|check))?$/.exec(url.pathname);
   if (metaConfigRoute !== null && (request.method === "GET" || request.method === "POST")) return projectMetaConfigRoute(deps, caller, metaConfigRoute[1]!, metaConfigRoute[2], request.method, request.method === "POST" ? jsonBody(request) : undefined);
+  const peopleAnswer = await routeProjectPeople(deps, caller, request.method, url.pathname, () => jsonBody(request));
+  if (peopleAnswer !== undefined) return peopleAnswer;
   const projectMembersRoute = /^\/v1\/app\/projects\/([^/]+)\/members(?:\/([a-f0-9]{64}))?$/.exec(url.pathname);
   if (projectMembersRoute !== null) {
     if (request.method === "GET" && projectMembersRoute[2] === undefined) return getProjectMembers(deps, caller, projectMembersRoute[1]!);

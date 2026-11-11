@@ -48,6 +48,10 @@ export interface OrgInviteRecord {
   revokedAt?: string;
   revokedBy?: string;
   revision?: number;
+  /** A-31: the project the person also joins, and their role in it. Absent on a company-only invite (and on every invite made before 0.5.14). */
+  project?: { name: string; role: "maintainer" | "contributor" | "viewer" };
+  /** A-31: who could make the project part: `admin` (an owner or admin) or `maintainer` (the project's own maintainer, whose authority is checked again at the join). */
+  projectInviter?: "admin" | "maintainer";
 }
 
 const ORG_ID_BODY_LENGTH = 20;

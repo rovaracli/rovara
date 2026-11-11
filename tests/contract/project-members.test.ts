@@ -387,6 +387,10 @@ describe("a maintainer sets roles", () => {
 
   it("lowers a maintainer to viewer, who then loses the ability to manage or start", async () => {
     const h = await team();
+    // srv/project-people: the project's last own maintainer cannot step down; once Kit maintains it too, Priya can.
+    expect((await put(h, PRIYA, PRIYA, "viewer")).status).toBe(400);
+    expect(grantOf(h.db, PRIYA)).toMatchObject({ projectRole: "maintainer" });
+    expect((await put(h, PRIYA, KIT, "maintainer")).status).toBe(200);
     expect((await put(h, PRIYA, PRIYA, "viewer")).status).toBe(200);
     expect(grantOf(h.db, PRIYA)).toMatchObject({ role: "viewer", projectRole: "viewer" });
     expect((await put(h, PRIYA, NEO, "viewer")).status).toBe(403);
@@ -665,8 +669,8 @@ describe("request ids (a replay answers the stored outcome)", () => {
     expect((await remove(h, PRIYA, NEO)).status).toBe(200);
     // A removal of someone with no grant still records its request.
     expect((await remove(h, PRIYA, NEO)).status).toBe(200);
-    // Grant/member check/request plus approval generation; removal/request plus generation; absent grant records only the request.
-    expect(sent).toEqual([{ name: "TransactWriteCommand", items: 4 }, { name: "TransactWriteCommand", items: 3 }, { name: "TransactWriteCommand", items: 1 }]);
+    // Grant/member check/request plus approval generation and the roster revision; removal/request plus generation and the revision; absent grant records only the request.
+    expect(sent).toEqual([{ name: "TransactWriteCommand", items: 5 }, { name: "TransactWriteCommand", items: 4 }, { name: "TransactWriteCommand", items: 1 }]);
     const stored = h.db.get({ pk: `ORG#${TEST_ORG}#PROJECT#payments`, sk: `MEMBER_REQUEST#${requestId}` });
     expect(stored).toMatchObject({ entityType: "PROJECT_MEMBER_REQUEST", action: "put", by: PRIYA.developerId, response: { developerId: NEO.developerId, role: "viewer" } });
     expect(stored!.indexExpiresAt).toBeGreaterThan(Date.now() / 1000 + 80_000);

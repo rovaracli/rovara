@@ -410,6 +410,11 @@ export const AUDIT_ACTIONS = [
   "agent_publication.approved",
   "agent_publication.declined",
   "agent_publication.withdrawn",
+  // A-31 (srv/project-people): an invite that also names a project and a role. Created (the inviter's kind: an owner or admin, or the project's maintainer), applied at the
+  // person's join, or skipped because the project was archived or removed since. The project is the name-keyed target, never a fact.
+  "project_member.invited",
+  "project_member.joined_by_invite",
+  "project_member.invite_skipped",
 ] as const;
 
 export const AuditActionSchema = z.enum(AUDIT_ACTIONS);
@@ -792,6 +797,9 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "agent_publication.approved": ["approvalId", "targetKind", "version"],
   "agent_publication.declined": ["approvalId", "targetKind", "version", "explained"],
   "agent_publication.withdrawn": ["approvalId", "targetKind", "version"],
+  "project_member.invited": ["role", "inviter"],
+  "project_member.joined_by_invite": ["role"],
+  "project_member.invite_skipped": ["role", "cause"],
   "company_image.registries_changed": ["registryCount", "authority"],
 };
 

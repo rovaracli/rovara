@@ -32,7 +32,7 @@ export { AppOrgInvitesResponseSchema, AppOrgInvitesResponseReaderSchema } from "
 export { OrgInvitePublicIdSchema, AppOrgInviteStatusSchema } from "./developer-web.js";
 
 // Lane A: safe reviewed invite creation receipts.
-export { ReviewedInviteCreateBodySchema, InviteCreateReceiptSchema, ReviewedInviteCreateResponseSchema, InviteEmailOutcomeSchema } from "./invite-creation.js";
+export { ReviewedInviteCreateBodySchema, InviteCreateReceiptSchema, ReviewedInviteCreateResponseSchema, InviteEmailOutcomeSchema, InviteProjectSchema, InviteProjectNoteSchema, INVITE_PROJECT_ROLES_FOR_MAINTAINERS, type InviteProject, type InviteProjectNote } from "./invite-creation.js";
 
 // Lane A: strict read-only monthly base budget settings.
 export { AdminBudgetMicrodollarsSchema, AdminMonthlyBaseLimitSchema, AdminBudgetSettingsSchema, type AdminBudgetSettings } from "./admin-budget.js";
@@ -72,6 +72,8 @@ export { PastWorkResponseSchema, RecordSearchResponseSchema, type PastWorkRespon
 
 export * from "./company-domains-web.js";
 export * from "./app-company-rules.js";
+// A-32 / A-33 (srv/project-people): the web's project people and code settings powers.
+export * from "./app-project-people.js";
 // Approval place (U4): approval-place.ts is a byte copy of Code's file (Code PR #451, public code/next a97b0bee9) that waits for the vendor pin to move: UPSTREAM OWED, see its header and
 // tests/contract/approval-place-upstream-copy.test.ts. app-approval-window.ts and decision-dismiss.ts are Cloud's (the latter owed upstream, see its header).
 export * from "./approval-place.js";

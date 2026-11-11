@@ -12,7 +12,7 @@
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { randomUUID } from "node:crypto";
 import { INDEX_EXPIRY_ATTRIBUTE, MEMBER_GRANT_SK_PREFIX, PROJECT_REVISION_SK_PREFIX, agentXError, memberGrantsPk, orgPk, orgProjectCatalogPk, projectMemberKey, projectMetaKey, projectPk, type OrgId, type OrgKey, type ProjectRole } from "@rovara-code/contracts";
-import { OrgRoleSchema, orgMemberKey, type AuditEventInput, type OrgRole } from "@agentx/cloud-contracts";
+import { OrgRoleSchema, PROJECT_LAST_MAINTAINER_MESSAGE, PROJECT_PEOPLE_STALE_MESSAGE, orgMemberKey, type AuditEventInput, type OrgRole } from "@agentx/cloud-contracts";
 import { auditOccurrence, auditProjectMemberChanged, auditProjectMemberRemoved } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, tryAuditEvent, type AuditRuntime } from "../audit/outbox.js";
@@ -93,6 +93,20 @@ async function projectExists(deps: { documentClient: Send; tableName: string }, 
 
 async function isArchived(deps: { documentClient: Send; tableName: string }, orgId: OrgId, project: string): Promise<boolean> {
   return (await getItem(deps, projectMetaKey(orgId, project)))?.status === "archived";
+}
+
+/** A-31: whether a project can take new people: `open`, `archived`, or `gone` (no registered revision in this org). */
+export async function projectOpenState(deps: { documentClient: Send; tableName: string }, orgId: OrgId, project: string): Promise<"open" | "archived" | "gone"> {
+  if (!await projectExists(deps, orgId, project)) return "gone";
+  return await isArchived(deps, orgId, project) ? "archived" : "open";
+}
+
+/** The condition that the project was not archived since it was read (a project with no META item has never been archived). */
+export function projectNotArchivedCheck(deps: { tableName: string }, orgId: OrgId, project: string): Item {
+  return { ConditionCheck: {
+    TableName: deps.tableName, Key: projectMetaKey(orgId, project),
+    ConditionExpression: "attribute_not_exists(#status) OR #status <> :archived", ExpressionAttributeNames: { "#status": "status" }, ExpressionAttributeValues: { ":archived": "archived" },
+  } };
 }
 
 /** An org's members and their org roles. */
@@ -224,7 +238,7 @@ function grantSnapshot(existing: Item): { condition: string; values: Item } {
  * them), conditioned on the role that was read. The operator's `administrator` row is never overwritten: the key is shared, so a grant would
  * replace it.
  */
-async function grantWrite(deps: ProjectMembersDependencies, input: { orgId: OrgId; project: string; developerId: string; role: ProjectRole; grantedBy: GrantedBy; now: () => Date }): Promise<{ write: Item; fromRole: ProjectRole | undefined }> {
+export async function grantWrite(deps: Pick<ProjectMembersDependencies, "documentClient" | "tableName">, input: { orgId: OrgId; project: string; developerId: string; role: ProjectRole; grantedBy: GrantedBy; now: () => Date }): Promise<{ write: Item; fromRole: ProjectRole | undefined }> {
   const { orgId, project, developerId, role } = input;
   const existing = await readGrant(deps, orgId, developerId, project);
   if (existing !== undefined && existing.role !== "developer" && existing.role !== "viewer") throw agentXError("CONFIG_INVALID", OPERATOR_ROW_MESSAGE(project));
@@ -260,6 +274,52 @@ async function revokeWrite(deps: ProjectMembersDependencies, orgId: OrgId, proje
     TableName: deps.tableName, Key: projectMemberKey(orgId, developerId, project),
     ConditionExpression: "attribute_exists(pk) AND #role = :seen AND " + grantSnapshot(existing).condition, ExpressionAttributeNames: { "#role": "role" }, ExpressionAttributeValues: { ":seen": existing.role, ...grantSnapshot(existing).values },
   } } };
+}
+
+// ---- the roster's revision and its last maintainer (A-32, srv/project-people) ----------------------------------------------------------
+
+/**
+ * The roster's revision: one item in the project's own partition, moved in the same transaction as every project-role change made here (the web's people routes, the CLI's
+ * member routes) and by an invite's accept (`OrgStore.acceptInvite`). A change is conditional on the revision it read, so two changes that each read the roster (to count its
+ * maintainers, or under the revision the web showed) cannot both commit. Holds no person id. The operator console's grants (`admin-actions.ts`) do not move it.
+ */
+export const projectPeopleRevisionKey = (orgId: OrgId, project: string): OrgKey => ({ pk: projectPk(orgId, project), sk: "PEOPLE_REVISION" });
+
+/** The roster's revision now: 0 before the first change. A stored value that is not a count is refused, never read as 0. */
+export async function readPeopleRevision(deps: { documentClient: Send; tableName: string }, orgId: OrgId, project: string): Promise<number> {
+  const item = await getItem(deps, projectPeopleRevisionKey(orgId, project));
+  if (item === undefined) return 0;
+  const revision = item.revision;
+  if (typeof revision !== "number" || !Number.isSafeInteger(revision) || revision < 0) throw agentXError("RUNTIME_UNAVAILABLE", "this project's people could not be read; try again");
+  return revision;
+}
+
+/** The write that moves the revision from `seen` to `seen + 1`, conditional on `seen` (absent counts as 0). */
+export function peopleRevisionBump(deps: { tableName: string }, orgId: OrgId, project: string, seen: number, at: string): Item {
+  return { Update: {
+    TableName: deps.tableName, Key: projectPeopleRevisionKey(orgId, project),
+    UpdateExpression: "SET #revision = :next, entityType = :entity, updatedAt = :at",
+    ConditionExpression: seen === 0 ? "attribute_not_exists(#revision)" : "#revision = :seen",
+    ExpressionAttributeNames: { "#revision": "revision" },
+    ExpressionAttributeValues: { ":next": seen + 1, ":entity": "PROJECT_PEOPLE_REVISION", ":at": at, ...(seen === 0 ? {} : { ":seen": seen }) },
+  } };
+}
+
+const PEOPLE_STALE = () => agentXError("CHANGE_STALE", PROJECT_PEOPLE_STALE_MESSAGE);
+
+/**
+ * The company members who maintain the project by a grant (an owner or admin maintains every project by their company role and is not counted: they are not the project's
+ * own maintainers). Read whether or not the project has a revision, so a store caller cannot skip the rule by naming a project the route would 404.
+ */
+async function grantedMaintainers(deps: ProjectMembersDependencies, orgId: OrgId, project: string): Promise<string[]> {
+  const rows = await mapLimit((await orgMembers(deps, orgId)).filter((member) => member.role === "member"), async (member) =>
+    grantRoleOf(await readGrant(deps, orgId, member.developerId, project)) === "maintainer" ? member.developerId : undefined);
+  return rows.filter((id): id is string => id !== undefined);
+}
+
+/** Refuses taking the project's last own maintainer away (a removal, or a lower role). The count is fenced by the revision bump in the same transaction. */
+async function refuseLastMaintainer(deps: ProjectMembersDependencies, orgId: OrgId, project: string, developerId: string): Promise<void> {
+  if ((await grantedMaintainers(deps, orgId, project)).every((id) => id === developerId)) throw agentXError("CONFIG_INVALID", PROJECT_LAST_MAINTAINER_MESSAGE);
 }
 
 /** Where a project's member requests are remembered: its own partition, beside META and the revisions, under a prefix nothing else reads. */
@@ -346,21 +406,26 @@ export async function setProjectMember(
   deps: ProjectMemberChangeDependencies,
   orgId: OrgId,
   project: string,
-  input: { requestId: string; developerId: string; role: ProjectRole; actor: { developerId: string } },
-): Promise<{ developerId: string; role: ProjectRole }> {
+  input: { requestId: string; developerId: string; role: ProjectRole; actor: { developerId: string }; /** The roster revision the caller read (the web); absent for the CLI's route. */ expectedRevision?: number },
+): Promise<{ developerId: string; role: ProjectRole; revision?: number }> {
   const expected = { action: "put" as const, target: input.developerId, role: input.role, by: input.actor.developerId };
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
     const replayed = await replayOf(deps, orgId, project, input.requestId, expected);
-    if (replayed !== undefined) return replayed as { developerId: string; role: ProjectRole };
+    if (replayed !== undefined) return replayed as { developerId: string; role: ProjectRole; revision?: number };
+    const revision = await readPeopleRevision(deps, orgId, project);
+    if (input.expectedRevision !== undefined && input.expectedRevision !== revision) throw PEOPLE_STALE();
     const developerId = await resolveTarget(deps, orgId, input.developerId);
-    const response = { developerId, role: input.role };
     const { write, fromRole } = await grantWrite(deps, { orgId, project, developerId, role: input.role, grantedBy: { developerId: input.actor.developerId }, now: deps.now });
+    const changed = fromRole !== input.role;
+    if (fromRole === "maintainer" && input.role !== "maintainer") await refuseLastMaintainer(deps, orgId, project, developerId);
+    const response = { developerId, role: input.role, revision: changed ? revision + 1 : revision };
     // A change to the role the person already has is no change: the request is remembered and nothing is recorded.
     const event = fromRole === input.role ? undefined : await tryAuditEvent(deps, () => auditProjectMemberChanged({
       orgId, actor: { kind: "member", id: input.actor.developerId }, occurredAt: deps.now().toISOString(), occurrence: auditOccurrence(input.requestId, project, developerId, input.role),
       projectName: project, memberId: developerId, ...(fromRole === undefined ? {} : { fromRole }), toRole: input.role,
     }));
-    if (await commitWithRequest(deps, [write, stillMember(deps, orgId, developerId), ...await approvalGrantChange(deps, orgId, project, fromRole === "maintainer" && input.role !== "maintainer"), requestWrite(deps, orgId, project, input.requestId, { ...expected, response })], event)) return response;
+    const bump = changed ? [peopleRevisionBump(deps, orgId, project, revision, deps.now().toISOString())] : [];
+    if (await commitWithRequest(deps, [write, stillMember(deps, orgId, developerId), ...await approvalGrantChange(deps, orgId, project, fromRole === "maintainer" && input.role !== "maintainer"), ...bump, requestWrite(deps, orgId, project, input.requestId, { ...expected, response })], event)) return response;
   }
   throw STALE();
 }
@@ -370,20 +435,23 @@ export async function removeProjectMember(
   deps: ProjectMemberChangeDependencies,
   orgId: OrgId,
   project: string,
-  input: { requestId: string; developerId: string; actor: { developerId: string } },
-): Promise<{ developerId: string; removed: boolean }> {
+  input: { requestId: string; developerId: string; actor: { developerId: string }; /** The roster revision the caller read (the web); absent for the CLI's route. */ expectedRevision?: number },
+): Promise<{ developerId: string; removed: boolean; revision?: number }> {
   const expected = { action: "remove" as const, target: input.developerId, by: input.actor.developerId };
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
     const replayed = await replayOf(deps, orgId, project, input.requestId, expected);
-    if (replayed !== undefined) return replayed as { developerId: string; removed: boolean };
+    if (replayed !== undefined) return replayed as { developerId: string; removed: boolean; revision?: number };
+    const revision = await readPeopleRevision(deps, orgId, project);
+    if (input.expectedRevision !== undefined && input.expectedRevision !== revision) throw PEOPLE_STALE();
     const developerId = await resolveTarget(deps, orgId, input.developerId);
     const revoke = await revokeWrite(deps, orgId, project, developerId);
-    const response = { developerId, removed: revoke !== undefined };
+    if (revoke?.role === "maintainer") await refuseLastMaintainer(deps, orgId, project, developerId);
+    const response = { developerId, removed: revoke !== undefined, revision: revoke === undefined ? revision : revision + 1 };
     const event = revoke?.role === undefined ? undefined : await tryAuditEvent(deps, () => auditProjectMemberRemoved({
       orgId, actor: { kind: "member", id: input.actor.developerId }, occurredAt: deps.now().toISOString(), occurrence: auditOccurrence(input.requestId, project, developerId),
       projectName: project, memberId: developerId, role: revoke.role!,
     }));
-    if (await commitWithRequest(deps, [...(revoke === undefined ? [] : [revoke.write, ...await approvalGrantChange(deps, orgId, project, revoke.role === "maintainer")]), requestWrite(deps, orgId, project, input.requestId, { ...expected, response })], event)) return response;
+    if (await commitWithRequest(deps, [...(revoke === undefined ? [] : [revoke.write, ...await approvalGrantChange(deps, orgId, project, revoke.role === "maintainer"), peopleRevisionBump(deps, orgId, project, revision, deps.now().toISOString())]), requestWrite(deps, orgId, project, input.requestId, { ...expected, response })], event)) return response;
   }
   throw STALE();
 }

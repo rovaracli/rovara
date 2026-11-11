@@ -9,6 +9,7 @@
   "packages/cloud-contracts/src/app-known-failing.ts",
   "packages/cloud-contracts/src/app-lessons-repo-file.ts",
   "packages/cloud-contracts/src/app-nav.ts",
+  "packages/cloud-contracts/src/app-project-people.ts",
   "packages/cloud-contracts/src/app-projects.ts",
   "packages/cloud-contracts/src/approval-place.ts",
   "packages/cloud-contracts/src/audit-search.ts",
