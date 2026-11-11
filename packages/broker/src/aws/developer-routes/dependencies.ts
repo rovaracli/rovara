@@ -469,11 +469,12 @@ export function developerTaskRouteDependencies(
     .map((binding) => binding.channelId)
     .sort();
   const identityDependencies = (admission?: TaskPeopleDisplayAdmission): TaskPersonIdentityDependencies => {
-    const slackTeamId = deps.developer.slackTeamId;
-    const taskPersonProof = admission?.proof.bind(admission) ?? deps.developer.taskPersonProof;
-    if (slackTeamId === undefined || taskPersonProof === undefined) throw agentXError("SLACK_UNAVAILABLE", "task person identity proof is unavailable");
+    // An install with no Slack has no team id (""): a person with no Slack account is checked without one; a person with a Slack account cannot be proved (the identity check says so).
+    const slackTeamId = deps.developer.slackTeamId ?? "";
+    const taskPersonProof = admission?.proof.bind(admission) ?? deps.developer.taskPersonProof
+      ?? (async (): Promise<never> => { throw agentXError("SLACK_UNAVAILABLE", "task person identity proof is unavailable"); });
     return {
-      documentClient: deps.documentClient, tableName: deps.tableName, slackTeamId, now: deps.now, uuid: randomUUID, taskPersonProof,
+      documentClient: deps.documentClient, tableName: deps.tableName, slackTeamId, installOrgId: caller.orgId, now: deps.now, uuid: randomUUID, taskPersonProof,
       developerRecord: async (targetDeveloperId) => {
         const response = await deps.documentClient.send(new GetCommand({ TableName: deps.developer.signInTableName, Key: { pk: `DEVELOPER#${targetDeveloperId}`, sk: META }, ConsistentRead: true })) as { Item?: DeveloperRecord };
         // The row is keyed by the person: a sign-in writes no `developerId` attribute (store.ts getDeveloper). A row naming someone else keeps its id, and is refused.
@@ -586,9 +587,11 @@ export function developerTaskRouteDependencies(
     ...(deps.developer.taskPeopleDisplayRead === undefined ? {} : {
       createTaskPeopleDisplayAdmission: () => taskPeopleDisplayAdmission({ now: deps.now, read: deps.developer.taskPeopleDisplayRead! }),
       listTaskPeople: async (task: DeveloperTaskRecord, admission: TaskPeopleDisplayAdmission) => {
-      const channels = [...new Set([...(await projectChannelIds(task.project)), ...(task.share === undefined ? [] : [task.share.channelId])])].sort();
+      // The Slack channels' people, only where there is a Slack (a team id); the members with no Slack account are offered either way.
+      const hasSlack = deps.developer.slackTeamId !== undefined;
+      const channels = hasSlack ? [...new Set([...(await projectChannelIds(task.project)), ...(task.share === undefined ? [] : [task.share.channelId])])].sort() : [];
       admission.assertOpen();
-      const answer = await admission.directory({ kind: "task-channel-people", channelIds: channels });
+      const answer = hasSlack ? await admission.directory({ kind: "task-channel-people", channelIds: channels }) : { ok: true as const, users: [] };
       if (!answer.ok) throw agentXError("SLACK_UNAVAILABLE", "the complete task People directory is unavailable");
       admission.assertOpen();
       const identities = await registerTaskChannelPeople(identityDependencies(admission), task, answer.users, () => admission.assertOpen());

@@ -2,9 +2,11 @@
 // person. A member with no Slack account is qualified on their membership and project access alone, never on a Slack proof, and the project's Slack channels give them nothing.
 import { describe, expect, it, vi } from "vitest";
 import { orgMemberKey, orgRemovedKey, type TaskPersonProofRequest, type TaskPersonProofResponse } from "@agentx/contracts";
+import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
 import {
   checkTaskPersonIdentity,
+  registerTaskChannelPeople,
   registerTaskMembers,
   resolveTaskPersonId,
   type ProjectAccessSubject,
@@ -38,7 +40,7 @@ const developer = (overrides: Partial<DeveloperRecord> & { developerId: string; 
 });
 const nia = (overrides: Partial<DeveloperRecord> = {}) => developer({ developerId: NIA, provider: "github", issuer: GITHUB, subject: "nia-12345", ...overrides });
 
-function harness(options: { records?: DeveloperRecord[]; access?: (subject: ProjectAccessSubject, project: string, memberOf: readonly string[]) => Promise<void | "viewer"> } = {}) {
+function harness(options: { records?: DeveloperRecord[]; members?: false; role?: string; noInstallOrg?: true; slackTeamId?: string; access?: (subject: ProjectAccessSubject, project: string, memberOf: readonly string[]) => Promise<void | "viewer"> } = {}) {
   const db = new FakeDynamoDb();
   db.set(task as unknown as Record<string, unknown>);
   const access = vi.fn(options.access ?? (async () => undefined));
@@ -46,9 +48,15 @@ function harness(options: { records?: DeveloperRecord[]; access?: (subject: Proj
     ok: true, user: { id: request.slackUserId, teamId: TEAM, name: "Someone" }, memberOf: ["C0PAY0001"],
   }));
   const records = new Map((options.records ?? [nia()]).map((record) => [record.developerId, record]));
+  // Each person of these cases is a live member of the company unless a test says otherwise (the member row is what makes them one).
+  if (options.members !== false) {
+    for (const developerId of new Set([...records.keys(), NIA, OLIVER, SLACKED])) {
+      db.set({ ...orgMemberKey(TEST_ORG, developerId), entityType: "ORG_MEMBER", orgId: TEST_ORG, developerId, role: options.role ?? "member", joinedAt: new Date(T0).toISOString() });
+    }
+  }
   const uuids = [PERSON_1, PERSON_2];
   const deps: TaskPersonIdentityDependencies = {
-    documentClient: db, tableName: "state", slackTeamId: TEAM, now: () => T0, uuid: () => uuids.shift() ?? PERSON_2,
+    documentClient: db, tableName: "state", slackTeamId: options.slackTeamId ?? TEAM, ...(options.noInstallOrg === true ? {} : { installOrgId: TEST_ORG }), now: () => T0, uuid: () => uuids.shift() ?? PERSON_2,
     taskPersonProof: proof, developerRecord: async (developerId) => records.get(developerId),
     projectChannelIds: async () => ["C0PAY0001"], targetProjectAccess: access,
   };
@@ -119,6 +127,7 @@ describe("a task person with no Slack account (owner decision 86)", () => {
 
   it("a person removed from the company is ineligible and the project is not even asked", async () => {
     const { db, deps, access } = harness();
+    db.delete(orgMemberKey(TEST_ORG, NIA));
     db.set({ ...orgRemovedKey(TEST_ORG, NIA), entityType: "ORG_REMOVED" });
 
     await expect(checkTaskPersonIdentity(deps, task, NIA)).resolves.toMatchObject({ eligible: false, channelMember: false });
@@ -232,5 +241,139 @@ describe("the key authority's identity check for a person with no Slack account"
     const slack = oidcTaskPersonIdentityCheck("signin", { developerId: NIA, issuer: GITHUB, subject: "nia-12345", provider: "github", slackUserId: "U0NIA0001" }).ConditionCheck;
     expect(slack.ConditionExpression).toContain("#identitySlack = :identitySlack");
     expect(slack.ExpressionAttributeValues).toMatchObject({ ":identitySlack": "U0NIA0001" });
+  });
+});
+
+// A Slack account, a channel or a project grant is not a membership (owner decision 86, and the Slack explicit-member rule): the person must be a live member of the company who may write.
+describe("a task person must be a live member of the company", () => {
+  const SLACK_USER = "U0CHAN0001";
+  const SLACK_NATIVE = developerIdForSlackUser(SLACK_USER);
+  const slackTask = { ...task, developerId: SLACK_NATIVE, provider: "slack", slackUserId: SLACK_USER, developerName: "Chan Member" } as DeveloperTaskRecord;
+  const slackHarness = (options: Parameters<typeof harness>[0] = {}) => {
+    const h = harness({ records: [], ...options });
+    h.db.set(slackTask as unknown as Record<string, unknown>);
+    return h;
+  };
+
+  it("a Slack person in a project channel who never joined the company is not eligible, and Slack is not even asked", async () => {
+    const { deps, proof, access } = slackHarness();   // no member row for them
+    await expect(checkTaskPersonIdentity(deps, slackTask, SLACK_NATIVE)).resolves.toMatchObject({ eligible: false, channelMember: false });
+    expect(proof).not.toHaveBeenCalled();
+    expect(access).not.toHaveBeenCalled();
+  });
+
+  it("positive control: the same Slack person with a member row is proved through Slack and eligible", async () => {
+    const { db, deps, proof } = slackHarness();
+    db.set({ ...orgMemberKey(TEST_ORG, SLACK_NATIVE), entityType: "ORG_MEMBER", orgId: TEST_ORG, developerId: SLACK_NATIVE, role: "member" });
+    await expect(checkTaskPersonIdentity(deps, slackTask, SLACK_NATIVE)).resolves.toMatchObject({ eligible: true, channelMember: true });
+    expect(proof).toHaveBeenCalledTimes(1);
+  });
+
+  it("a Slack identity merged into a member is that member: the survivor's record decides, a stale record under the old id does not", async () => {
+    const { db, deps } = slackHarness();
+    const survivor = "5".repeat(64);
+    const merged = developer({ developerId: SLACK_NATIVE, provider: "slack", issuer: "https://slack.com", subject: SLACK_USER, slackUserId: SLACK_USER, mergedInto: survivor });
+    deps.developerRecord = async (id) => id === SLACK_NATIVE ? merged : undefined;
+    // Only a stale record under the merged-away id: not a member.
+    db.set({ ...orgMemberKey(TEST_ORG, SLACK_NATIVE), entityType: "ORG_MEMBER", orgId: TEST_ORG, developerId: SLACK_NATIVE, role: "member" });
+    await expect(checkTaskPersonIdentity(deps, slackTask, SLACK_NATIVE)).resolves.toMatchObject({ eligible: false });
+    // The survivor is a member: eligible.
+    db.set({ ...orgMemberKey(TEST_ORG, survivor), entityType: "ORG_MEMBER", orgId: TEST_ORG, developerId: survivor, role: "member" });
+    await expect(checkTaskPersonIdentity(deps, slackTask, SLACK_NATIVE)).resolves.toMatchObject({ eligible: true });
+  });
+
+  it.each(["auditor", "reviewer"])("a company %s may not take part, on the Slack path or without Slack, whatever grant they hold", async (role) => {
+    const slack = slackHarness({ role });
+    slack.db.set({ ...orgMemberKey(TEST_ORG, SLACK_NATIVE), entityType: "ORG_MEMBER", orgId: TEST_ORG, developerId: SLACK_NATIVE, role });
+    await expect(checkTaskPersonIdentity(slack.deps, slackTask, SLACK_NATIVE)).resolves.toMatchObject({ eligible: false });
+    expect(slack.proof).not.toHaveBeenCalled();
+    const neutral = harness({ role });
+    await expect(checkTaskPersonIdentity(neutral.deps, task, NIA)).resolves.toMatchObject({ eligible: false });
+    expect(neutral.access, "the project is not asked about someone who may not write").not.toHaveBeenCalled();
+  });
+
+  it("an owner or an admin is a member who may write", async () => {
+    for (const role of ["owner", "admin"]) {
+      const { deps } = harness({ role });
+      await expect(checkTaskPersonIdentity(deps, task, NIA), role).resolves.toMatchObject({ eligible: true });
+    }
+  });
+
+  it("a person with a project grant and no member row (a stale grant) is not eligible without Slack either", async () => {
+    const { deps, access } = harness({ members: false });
+    await expect(checkTaskPersonIdentity(deps, task, NIA)).resolves.toMatchObject({ eligible: false, channelMember: false });
+    expect(access).not.toHaveBeenCalled();
+  });
+
+  it("a task from before orgs is held to the install's single org: a removed person is refused there, and with no org to ask the answer is unavailable, never a pass", async () => {
+    const preOrg = { ...task } as Record<string, unknown>;
+    delete preOrg.orgId;
+    const old = preOrg as unknown as DeveloperTaskRecord;
+    const removed = harness({ members: false });
+    removed.db.set(preOrg);
+    removed.db.set({ ...orgRemovedKey(TEST_ORG, NIA), entityType: "ORG_REMOVED" });
+    await expect(checkTaskPersonIdentity(removed.deps, old, NIA)).resolves.toMatchObject({ eligible: false });
+    const member = harness();
+    member.db.set(preOrg);
+    await expect(checkTaskPersonIdentity(member.deps, old, NIA)).resolves.toMatchObject({ eligible: true });
+    const noOrg = harness({ noInstallOrg: true });
+    noOrg.db.set(preOrg);
+    await expect(checkTaskPersonIdentity(noOrg.deps, old, NIA)).rejects.toMatchObject({ code: "SLACK_UNAVAILABLE" });
+  });
+
+  it("the Slack channel's people are offered only when they are members", async () => {
+    const { db, deps } = slackHarness();
+    const outsider = "U0OUTSIDE1", insider = "U0INSIDE01";
+    db.set({ ...orgMemberKey(TEST_ORG, developerIdForSlackUser(insider)), entityType: "ORG_MEMBER", orgId: TEST_ORG, developerId: developerIdForSlackUser(insider), role: "member" });
+    const registered = await registerTaskChannelPeople(deps, slackTask, [outsider, insider].map((id) => ({ id, teamId: TEAM, name: id, memberOf: ["C0PAY0001"] })));
+    expect(registered.map((identity) => identity.slackUserId)).toEqual([insider]);
+  });
+});
+
+// Owner decision 86 and M1: how a person is recognised.
+describe("who a task person is, however they reach the task", () => {
+  it("a task started in Slack, opened by its creator through a linked GitHub sign-in before any People list exists, is still the creator's (they keep a Slack sign-in row)", async () => {
+    const creatorSlack = "U0CREATOR1";
+    const creator = developerIdForSlackUser(creatorSlack);
+    const slackTask = { ...task, developerId: creator, provider: "slack", slackUserId: creatorSlack, developerName: "Sam Creator" } as DeveloperTaskRecord;
+    const row = developer({ developerId: creator, provider: "slack", issuer: "https://slack.com", subject: creatorSlack, slackUserId: creatorSlack, displayName: "Sam Creator" });
+    const { db, deps, proof } = harness({ records: [row] });
+    db.set(slackTask as unknown as Record<string, unknown>);
+    Reflect.set(deps, "trustedCaller", { orgId: TEST_ORG, orgRole: "member" as const, developerId: creator, sessionId: "s", amr: "github", name: "Sam Creator" });
+
+    await expect(checkTaskPersonIdentity(deps, slackTask, creator)).resolves.toMatchObject({ eligible: true, channelMember: true, identity: { developerId: creator, method: "slack", slackUserId: creatorSlack } });
+    expect(proof, "the Slack identity is proved through Slack, as for any Slack person").toHaveBeenCalledTimes(1);
+    // The same without the caller (the creator branch alone).
+    delete (deps as { trustedCaller?: unknown }).trustedCaller;
+    await expect(checkTaskPersonIdentity(deps, slackTask, creator)).resolves.toMatchObject({ eligible: true });
+  });
+
+  it("another Slack-native member opening the task through a linked GitHub sign-in is recognised as the Slack person their row says", async () => {
+    const otherSlack = "U0OTHER002";
+    const other = developerIdForSlackUser(otherSlack);
+    const row = developer({ developerId: other, provider: "slack", issuer: "https://slack.com", subject: otherSlack, slackUserId: otherSlack, displayName: "Other Member" });
+    const { deps } = harness({ records: [row] });
+    Reflect.set(deps, "trustedCaller", { orgId: TEST_ORG, orgRole: "member" as const, developerId: other, sessionId: "s", amr: "github", name: "x" });
+    await expect(checkTaskPersonIdentity(deps, task, other)).resolves.toMatchObject({ identity: { developerId: other, method: "slack" } });
+    // A Slack row that is not the person's (another Slack id) is refused.
+    const bad = harness({ records: [{ ...row, slackUserId: "U0SOMEONE9" }] });
+    Reflect.set(bad.deps, "trustedCaller", { orgId: TEST_ORG, orgRole: "member" as const, developerId: other, sessionId: "s", amr: "github", name: "x" });
+    await expect(checkTaskPersonIdentity(bad.deps, task, other)).rejects.toMatchObject(refusal);
+  });
+});
+
+// Decision 86 and M2: an install with no Slack (web or GitHub sign-in only) has no Slack team id.
+describe("an install with no Slack team", () => {
+  it("qualifies a person with no Slack account without a team id, never calls Slack, and reads no channel bindings", async () => {
+    const { deps, proof, access } = harness({ slackTeamId: "" });
+    await expect(checkTaskPersonIdentity(deps, task, NIA)).resolves.toMatchObject({ eligible: true, channelMember: true });
+    expect(proof).not.toHaveBeenCalled();
+    expect(access).toHaveBeenCalledWith({ developerId: NIA }, "payments-api", []);
+  });
+
+  it("cannot prove a person who has a Slack account without the team: unavailable, never eligible", async () => {
+    const { deps, proof } = harness({ slackTeamId: "", records: [nia({ slackUserId: "U0NIA0001" })] });
+    await expect(checkTaskPersonIdentity(deps, task, NIA)).rejects.toMatchObject({ code: "SLACK_UNAVAILABLE" });
+    expect(proof).not.toHaveBeenCalled();
   });
 });

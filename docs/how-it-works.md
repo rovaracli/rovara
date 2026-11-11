@@ -107,13 +107,17 @@ Not built yet:
 
 - Task people: role changes (who is on a task, take-over of an ownerless task) work behind the named-environment
   setting `TaskPeopleChangesEnabled` (`agentx config set taskPeople.changesEnabled true`), which defaults to `false`.
-  A task person is any Rovara member, however they sign in (web, GitHub, an identity provider or Slack); a member with
-  no Slack account is checked on their membership and project access alone. Turning it on also creates the task person
-  proof function, in the environment, that the dispatcher's person check needs. Automatic Slack invitations
-  (`TaskPeoplePublicInvitationsEnabled`, `TaskPeoplePrivateInvitationsEnabled`) are deferred: they need a Slack
-  reinstall with new scopes, the invite handler is wired nowhere, and both switches stay `false`. Slack's default app
-  manifest remains unchanged; the optional scope helper accepts separate choices for a future approved install or
-  reinstall flow.
+  A People list exists for a task that was shared into a Slack channel (as before), and a task person is a current
+  member of the company who may write (owner, admin or member; not an Auditor), however they sign in: web, GitHub, an
+  identity provider or Slack. A Slack account or a Slack channel alone is not a membership. A member with no Slack
+  account is checked on their membership and project access alone, with no Slack proof; a member whose account is
+  linked to Slack through their sign-in email is proved through Slack as well. (A company that never connects Slack has
+  no shared tasks, so no People lists yet: lists on tasks that are not shared are separate work.) Turning the setting
+  on also creates the task person proof function, in the environment, that the dispatcher's person check needs.
+  Automatic Slack invitations (`TaskPeoplePublicInvitationsEnabled`, `TaskPeoplePrivateInvitationsEnabled`) are
+  deferred: they need a Slack reinstall with new scopes, the invite handler is wired nowhere, and both switches stay
+  `false`. Slack's default app manifest remains unchanged; the optional scope helper accepts separate choices for a
+  future approved install or reinstall flow.
 - Admin tools for AI tools: reading Rovara's state (spec 025 phase 25d) and making confirmed
   changes (phase 25e).
 

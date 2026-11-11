@@ -604,6 +604,11 @@ describe("D2 task-person route dependencies", () => {
     project: "payments-api", share: { teamId: "T0TEAM1", channelId: "C0PAY0001" },
   } as DeveloperTaskRecord;
 
+  // The people of these cases are members of the company who may write: a Slack account, a channel or a sign-in row is not a membership (owner decision 86). Tests that need a non-member remove the row.
+  beforeEach(() => {
+    for (const id of [nativeDeveloperId, ownerKeyForSubject("https://identity.example.com", "subject-123"), developerIdForSlackUser("U0OTHER001")]) seedMembership(db, id, { orgId: TEST_ORG, role: "member" });
+  });
+
   it("propagates the exact default-off people configuration", () => {
     (config as DeveloperApiConfiguration & { taskPeopleConfiguration: { peopleChangesEnabled: boolean } }).taskPeopleConfiguration = { peopleChangesEnabled: false };
     const route = developerTaskRouteDependencies({ documentClient: db, tableName: "state", developer: config, now: () => T0 }, maya);
@@ -768,6 +773,7 @@ describe("D2 task-person route dependencies", () => {
     const secondNewSlackUserId = "U0NEW0002";
     const caller = { ...maya, developerId: nativeDeveloperId };
     let clock = T0;
+    for (const userId of [firstNewSlackUserId, secondNewSlackUserId]) seedMembership(db, developerIdForSlackUser(userId), { orgId: TEST_ORG, role: "member" });
     db.set(task as unknown as Record<string, unknown>);
     db.set({
       pk: `DEVTASK#${taskId}`, sk: "PEOPLE", schemaVersion: 1, revision: 1, orphaned: false,

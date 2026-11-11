@@ -8072,7 +8072,7 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
               "Fn::If": [
                 "TaskPersonProofInstallTaskPersonProofE63432B2",
                 {
-                  "Ref": "TaskPersonProofFunctionCurrentVersion5D5638F123a0043f7922fc117f5bb116eb36c129",
+                  "Ref": "TaskPersonProofFunctionCurrentVersion<code-hash>",
                 },
                 "",
               ],
@@ -16113,7 +16113,7 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
               "Effect": "Allow",
               "Resource": [
                 {
-                  "Ref": "TaskPersonProofFunctionCurrentVersion5D5638F123a0043f7922fc117f5bb116eb36c129",
+                  "Ref": "TaskPersonProofFunctionCurrentVersion<code-hash>",
                 },
               ],
             },
@@ -16174,7 +16174,7 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
       },
       "Type": "AWS::Lambda::Function",
     },
-    "TaskPersonProofFunctionCurrentVersion5D5638F123a0043f7922fc117f5bb116eb36c129": {
+    "TaskPersonProofFunctionCurrentVersion<code-hash>": {
       "Condition": "TaskPersonProofInstallTaskPersonProofE63432B2",
       "Metadata": {
         "aws:cdk:do-not-refactor": true,
