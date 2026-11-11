@@ -40,3 +40,11 @@ export const DeveloperWorkspacesResponseSchema = z.object({
   notices: z.array(z.enum(["slack_unavailable"])),
 });
 export type DeveloperWorkspacesResponse = z.infer<typeof DeveloperWorkspacesResponseSchema>;
+
+/**
+ * The attributes of a developer sign-in row (`DEVELOPER#<id>` / META) a task person check reads, by name. The person runtime asks for exactly these, and the dispatcher's
+ * IAM allows exactly these (infra/lib/task-person-proof.ts), so one list is both: a name in one and not the other would make every read refuse.
+ */
+export const TASK_PERSON_DEVELOPER_RECORD_PROJECTION = [
+  "pk", "sk", "developerId", "provider", "issuer", "subject", "slackUserId", "revoked", "mergedInto", "displayName",
+] as const;

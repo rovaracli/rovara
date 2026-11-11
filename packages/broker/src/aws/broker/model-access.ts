@@ -235,13 +235,15 @@ export function writeGateRuntime(dependencies: AwsBrokerDependencies, tasks: Dev
  * The commit-time check that a company sign-in (OIDC) task person is still the identity their proof named. The row is keyed by the person:
  * a sign-in writes no `developerId` attribute (store.ts getDeveloper), so only a row naming someone else fails it; a revoked or merged-away row fails too.
  */
-export function oidcTaskPersonIdentityCheck(tableName: string, identity: { developerId: string; issuer: string; subject: string; slackUserId: string; provider?: "oidc" | "saml" }) {
+export function oidcTaskPersonIdentityCheck(tableName: string, identity: { developerId: string; issuer: string; subject: string; slackUserId?: string; provider?: "oidc" | "saml" | "cloud" | "github" }) {
+  // A person with no Slack account (neutral identity) is held to everything else; one stored with a Slack id is held to that id too.
+  const slack = identity.slackUserId === undefined ? "" : " AND #identitySlack = :identitySlack";
   return { ConditionCheck: {
     TableName: tableName, Key: { pk: `DEVELOPER#${identity.developerId}`, sk: "META" },
-    ConditionExpression: "(attribute_not_exists(#identityId) OR #identityId = :identityId) AND #identityProvider = :identityProvider AND #identityIssuer = :identityIssuer AND #identitySubject = :identitySubject AND #identitySlack = :identitySlack AND #identityRevoked = :identityRevoked AND attribute_not_exists(#identityMerged)",
-    ExpressionAttributeNames: { "#identityId": "developerId", "#identityProvider": "provider", "#identityIssuer": "issuer", "#identitySubject": "subject", "#identitySlack": "slackUserId", "#identityRevoked": "revoked", "#identityMerged": "mergedInto" },
+    ConditionExpression: `(attribute_not_exists(#identityId) OR #identityId = :identityId) AND #identityProvider = :identityProvider AND #identityIssuer = :identityIssuer AND #identitySubject = :identitySubject${slack} AND #identityRevoked = :identityRevoked AND attribute_not_exists(#identityMerged)`,
+    ExpressionAttributeNames: { "#identityId": "developerId", "#identityProvider": "provider", "#identityIssuer": "issuer", "#identitySubject": "subject", ...(identity.slackUserId === undefined ? {} : { "#identitySlack": "slackUserId" }), "#identityRevoked": "revoked", "#identityMerged": "mergedInto" },
     ExpressionAttributeValues: { ":identityId": identity.developerId, ":identityProvider": identity.provider ?? "oidc", ":identityIssuer": identity.issuer,
-      ":identitySubject": identity.subject, ":identitySlack": identity.slackUserId, ":identityRevoked": false },
+      ":identitySubject": identity.subject, ...(identity.slackUserId === undefined ? {} : { ":identitySlack": identity.slackUserId }), ":identityRevoked": false },
   } };
 }
 
@@ -338,12 +340,12 @@ async function answerModelAccess(dependencies: AwsBrokerDependencies, request: A
           developer: dependencies.developer, now: Date.now, tasks: developerTaskActions(dependencies) },
         await ownerCallerOf(dependencies, task, "model-key-work-authority"), undefined, null);
         const checkPerson = peopleDependencies.checkTaskPerson;
-        const oidcProofs = new Map<string, { developerId: string; issuer: string; subject: string; slackUserId: string; provider: "oidc" | "saml" }>();
+        const oidcProofs = new Map<string, { developerId: string; issuer: string; subject: string; slackUserId?: string; provider: "oidc" | "saml" | "cloud" | "github" }>();
         const peopleFence = await systemTaskDispatchAccessFence({ ...peopleDependencies, checkTaskPerson: async (...input) => {
           if (checkPerson === undefined) throw agentXError("TASK_ACCESS_DENIED", "Task-person identity proof is unavailable.");
           const proof = await checkPerson(...input);
-          if (proof.eligible && proof.channelMember && proof.projectViewer !== true && (proof.identity.method === "oidc" || proof.identity.method === "saml")) {
-            const identity = { developerId: proof.identity.developerId, issuer: proof.identity.issuer, subject: proof.identity.subject, slackUserId: proof.identity.slackUserId, provider: proof.identity.method };
+          if (proof.eligible && proof.channelMember && proof.projectViewer !== true && proof.identity.method !== "slack") {
+            const identity = { developerId: proof.identity.developerId, issuer: proof.identity.issuer, subject: proof.identity.subject, ...(proof.identity.slackUserId === undefined ? {} : { slackUserId: proof.identity.slackUserId }), provider: proof.identity.method };
             const previous = oidcProofs.get(identity.developerId);
             if (previous !== undefined && canonicalJson(previous) !== canonicalJson(identity)) throw agentXError("TASK_ACCESS_DENIED", "Task-person identity changed during qualification.");
             oidcProofs.set(identity.developerId, identity);

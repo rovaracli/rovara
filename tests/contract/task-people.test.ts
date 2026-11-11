@@ -17,7 +17,7 @@ import type { DeveloperTaskRecord } from "../../packages/broker/src/developer/ta
 import { taskOwnerKey } from "../../packages/broker/src/developer/task-records.js";
 import { confirmTaskPeopleProposal, getTaskPeopleProposal, getTaskPeopleProposalMetadata, proposeTaskPeopleRole, submitSlackTaskPeopleRole } from "../../packages/broker/src/developer/task-people-effects.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
-import { createDeveloperTaskBroker } from "../support/developer-task-broker.js";
+import { createDeveloperTaskBroker, seedMembership } from "../support/developer-task-broker.js";
 import { SLACK_CHANNEL, SLACK_TEAM } from "../support/slack-broker.js";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { developerTaskRouteDependencies } from "../../packages/broker/src/aws/developer-routes.js";
@@ -65,6 +65,8 @@ async function peopleBroker() {
     },
   });
   const thread = { teamId: SLACK_TEAM, channelId: SLACK_CHANNEL, threadTs: "1695500000.000081" };
+  // The people of these cases are members of the company: a Slack account or a channel is not a membership (owner decision 86).
+  for (const userId of [creator, other]) seedMembership(h.db, developerIdForSlackUser(userId));
   const start = await h.handler({ source: "agentx.slack-ingress", action: "start-workflow", thread, userId: creator,
     instructions: "Local People acceptance fixture", workflowPath: "QUICK", requestId: randomUUID() });
   expect(start.statusCode).toBe(200);
@@ -91,6 +93,7 @@ describe("a project viewer on a task with a PEOPLE record (Plan 2, Task 21)", ()
     const fixture = await peopleBroker();
     const viewer = "U0VIEWER99";
     const caller = actor(developerIdForSlackUser(viewer), viewer, "Vera Viewer");
+    seedMembership(fixture.h.db, caller.developerId);
     const deps = (who: DeveloperCaller) => developerTaskRouteDependencies({ documentClient: fixture.h.db, tableName: "state", developer: fixture.h.brokerInput.developer, now: Date.now, tasks: fixture.h.actions } as never, who);
     const grant = (who: DeveloperCaller, role: "viewer" | "developer", projectRole?: string) => fixture.h.db.set({ ...projectMemberKey(TEST_ORG, who.developerId, "payments"), entityType: "MEMBERSHIP",
       ownerKey: who.developerId, projectName: "payments", grantId: randomUUID(), role, ...(projectRole === undefined ? {} : { projectRole }) });
@@ -428,6 +431,7 @@ describe("task people", () => {
         taskPeopleDisplayRead: async (request) => directory.taskPeopleDisplayRead(request),
       } });
       const thread = { teamId: SLACK_TEAM, channelId: SLACK_CHANNEL, threadTs: "1695500000.000081" };
+      for (const userId of [owner, peer]) seedMembership(h.db, developerIdForSlackUser(userId));
       const start = await h.handler({ source: "agentx.slack-ingress", action: "start-workflow", userId: owner, thread,
         workflowPath: "QUICK", instructions: "Complete People directory identity fixture", requestId: randomUUID() });
       expect(start.statusCode).toBe(200);
@@ -472,6 +476,7 @@ describe("task people", () => {
         teamId, channelId, threadTs: "1695500000.000001", mode: "view", sharedReason: "requested", sharedAt: new Date(START).toISOString(),
       } });
       db.set(record as unknown as Record<string, unknown>);
+      seedMembership(db, developerId);
       const people = { pk: `DEVTASK#${TASK_ID}`, sk: "PEOPLE", schemaVersion: 1, revision: 1, orphaned: false,
         people: [{ developerId, slackUserId: userId, name: "Maya", role: "owner" }] };
       db.set(people);
@@ -482,7 +487,7 @@ describe("task people", () => {
         if (url.pathname.endsWith("/users.info")) { proofCalls += 1; return Response.json({ ok: true, user: userInfo }); }
         return Response.json({ ok: true, members: [userId], response_metadata: { next_cursor: "" } });
       } });
-      const identityDeps = { documentClient: db, tableName: "state", slackTeamId: teamId, now: () => START, uuid: () => TASK_ID,
+      const identityDeps = { documentClient: db, tableName: "state", installOrgId: TEST_ORG, slackTeamId: teamId, now: () => START, uuid: () => TASK_ID,
         taskPersonProof: async (request: { slackUserId: string; channelIds: readonly string[] }) => directory.taskPersonProof(request.slackUserId, request.channelIds),
         developerRecord: async () => undefined, projectChannelIds: async () => [channelId], targetProjectAccess: async () => undefined };
       const deps: TaskPeopleDependencies = { documentClient: db, tableName: "state", now: () => START,
@@ -513,6 +518,7 @@ describe("task people", () => {
       const record = task({ developerId, slackUserId: userId, share: { teamId: TEAM, channelId: CHANNEL, threadTs: "1695500000.000001",
         mode: "view", sharedReason: "requested", sharedAt: new Date(START).toISOString() } });
       db.set(record as unknown as Record<string, unknown>);
+      seedMembership(db, developerId);
       const people = { pk: `DEVTASK#${TASK_ID}`, sk: "PEOPLE", schemaVersion: 1, revision: 1, orphaned: false,
         people: [{ developerId, slackUserId: userId, name: "Maya", role: "owner" }] };
       db.set(people);
@@ -522,7 +528,7 @@ describe("task people", () => {
           ? Response.json({ ok: true, user })
           : Response.json({ ok: true, members: [userId], response_metadata: { next_cursor: "" } });
       } });
-      const identityDeps = { documentClient: db, tableName: "state", slackTeamId: TEAM, now: () => START, uuid: () => TASK_ID,
+      const identityDeps = { documentClient: db, tableName: "state", installOrgId: TEST_ORG, slackTeamId: TEAM, now: () => START, uuid: () => TASK_ID,
         taskPersonProof: async (request: { slackUserId: string; channelIds: readonly string[] }) => directory.taskPersonProof(request.slackUserId, request.channelIds),
         developerRecord: async () => undefined, projectChannelIds: async () => [CHANNEL], targetProjectAccess: async () => undefined };
       const deps: TaskPeopleDependencies = { documentClient: db, tableName: "state", now: () => START,

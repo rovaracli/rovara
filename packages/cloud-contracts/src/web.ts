@@ -73,6 +73,7 @@ export { PastWorkResponseSchema, RecordSearchResponseSchema, type PastWorkRespon
 export * from "./company-domains-web.js";
 export * from "./app-company-rules.js";
 export * from "./app-billing.js";
+export * from "./app-insights.js";
 export { JiraOrgAdminMutationBodySchema, JiraOrgAdminResultReaderSchema, type JiraOrgAdminMutationBody } from "./jira-org-admin-web.js";
 export { TrackerPeopleReaderSchema, TrackerPeopleMutationBodySchema, TrackerPeopleResultReaderSchema, type TrackerPeople, type TrackerPeopleMutationBody } from "./tracker-people-web.js";
 export * from "./app-known-failing.js";

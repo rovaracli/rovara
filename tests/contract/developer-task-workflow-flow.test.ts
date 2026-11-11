@@ -1938,6 +1938,7 @@ describe("native developer task workflow", () => {
       developerExtra: { taskPeopleConfiguration: { peopleChangesEnabled: true },
         taskPersonProof: async (request) => ({ ok: true, user: { id: request.slackUserId, teamId: SLACK_TEAM, name: request.slackUserId }, memberOf: request.channelIds }) },
     });
+    seedMembership(harness.db, developerIdForSlackUser(ownerSlack));
     harness.db.set({ pk: `SESSION#${creator.sessionId}`, sk: "META", sessionId: creator.sessionId, developerId: creator.developerId,
       amr: "slack", slackUserId: creatorSlack, startedAt: new Date(Date.now() - 1_000).toISOString(), endsAt: Math.floor(Date.now() / 1_000) + 3_600 });
     harness.db.set({ pk: `DEVELOPER#${creator.developerId}`, sk: "META", developerId: creator.developerId, provider: "slack", issuer: "https://slack.com",

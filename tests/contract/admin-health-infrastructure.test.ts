@@ -141,6 +141,8 @@ describe("the health route's grants (A13)", () => {
       "packages/broker/src/aws/workflow-merge-recovery.ts",
       // The audit outbox's AUDIT_PENDING# items (Audit Ledger, Task 6) expire on it too; the drain only reads them.
       "packages/broker/src/audit/outbox.ts",
+      // Insights (srv/insights-reads): the viewer grant's request item (a fingerprint, never a person) is kept 7 days so a repeat of the same request is answered, then deleted by the TTL (access-grant.ts writes it).
+      "packages/broker/src/insights/access-grant.ts",
       // The GitHub connect state row (Plan 2, Task 12): single-use, minutes long, and deleted by the TTL a retention period after it lapses.
       // Plan 2, Tasks 13 to 15: the delivery ids and the notice outbox rows expire on it too.
       "packages/broker/src/org/github-connection.ts", "packages/broker/src/org/github-install-requests.ts",

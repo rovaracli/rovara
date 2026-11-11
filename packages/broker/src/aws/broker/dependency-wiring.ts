@@ -10,12 +10,12 @@ import { createWorkingBranchPageProvider, createWorkingBranchProvider } from "..
 import { createHmac, randomUUID } from "node:crypto";
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { GetObjectCommand } from "@aws-sdk/client-s3";
+import { type DeveloperTaskView, type ProjectDefinition, type OrgRole, featureEnabled, orgBanKey, orgMemberKey, orgRemovedKey, type WriterOrgRole } from "@agentx/cloud-contracts";
 import { AgentXError, CHANNEL_TURN_REQUEST_MAX, type CodeIntentResult, CONNECTOR_SECRET_PREFIX, ChannelTurnSchema, approvedToolCount, toolBudget, agentXError, type OperationStatus, type ChannelTurn, type TriggerEvent, redactAndCap, projectRevisionKey, type OrgId, type ChannelMembersRequest, type Payer } from "@rovara-code/contracts";
-import { type ProjectDefinition } from "@agentx/cloud-contracts";
-import { type DeveloperTaskView, type OrgRole, featureEnabled, orgBanKey, orgMemberKey, orgRemovedKey, type WriterOrgRole } from "@agentx/cloud-contracts";
-import { liveStoredRole, personWalk, survivorStanding } from "../../org/live-role.js";
+import { liveStoredRole, personWalk } from "../../org/live-role.js";
 import { requireWriterCaller, type WriterCaller } from "../../org/auditor.js";
 import { slackMemberRule, warnImplicitSlackMember } from "../../org/slack-explicit-members.js";
+import { explicitMemberStanding } from "../../org/explicit-member.js";
 import type { TransactItem } from "../../agents/table-writes.js";
 import { adminReader, queryAllItems, type AdminReadDependencies } from "../admin-reads.js";
 import { outcomeMetric } from "../admin-change-audit.js";
@@ -498,7 +498,8 @@ export async function slackRequesterStanding(dependencies: AwsBrokerDependencies
     const survivorOrg = await dependencies.orgResolver({ developerId: survivor });
     if (survivorOrg === undefined ? options.allowUnlinked !== true || resolved !== undefined : survivorOrg !== teamOrg) throw agentXError("FORBIDDEN", "this Slack member does not belong to the organization this Slack workspace is connected to");
   }
-  const seen = await survivorStanding(live, orgId, ids, options.allowReadOnly === true);
+  // The explicit-member rule is the one task people use too (org/explicit-member.ts): the survivor's member record, a writer's role unless the caller only reads. The walk is the one above.
+  const seen = await explicitMemberStanding({ documentClient: live.documentClient, tableName: live.tableName, readSignIn: async () => undefined }, orgId, developerId, { ids, readOnly: options.allowReadOnly === true });
   const refuse = () => agentXError("REMOVED_FROM_ORG", REMOVED_FROM_ORG_MESSAGE);
   const has = async (key: { pk: string; sk: string }) => await getItem(dependencies, key) !== undefined;
   // A Slack identity that was unlinked from a developer (the unlink also drops the merge) is judged by that developer's removal too: removal marks the survivor only, so a removed or banned

@@ -1,33 +1,51 @@
 import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { SLACK_OIDC_ISSUER, SlackChannelIdSchema, SlackUserIdSchema, TaskPersonProofRequestSchema, TaskPersonProofResponseSchema, agentXError, cleanDisplayName, emailSafeName, redactAndCap, type TaskPersonProofRequest, type TaskPersonProofResponse } from "@rovara-code/contracts";
+import { DeveloperSignInMethodSchema, type DeveloperSignInMethod } from "@agentx/cloud-contracts";
+import { SLACK_OIDC_ISSUER, SlackChannelIdSchema, SlackTeamIdSchema, SlackUserIdSchema, TaskPersonProofRequestSchema, TaskPersonProofResponseSchema, agentXError, type OrgId, cleanDisplayName, emailSafeName, redactAndCap, type TaskPersonProofRequest, type TaskPersonProofResponse } from "@rovara-code/contracts";
 import { developerIdForSlackUser } from "../aws/admin-actions.js";
 import { ownerKeyForSubject } from "../aws/lambda.js";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 import { isRemovedFromOrg } from "../org/member-removal/guards.js";
-import type { DeveloperTaskRecord } from "./task-records.js";
+import { explicitMemberRole, signInReaderFromRecords, type SignInReader } from "../org/explicit-member.js";
+import { UNNAMED_MEMBER, type DeveloperTaskRecord } from "./task-records.js";
 import type { DeveloperRecord } from "./store.js";
 
+/**
+ * A task person is a Rovara member, whichever way they sign in (owner decision 86, neutral identity A-13): the web, GitHub, an identity provider or Slack. They are keyed by the
+ * member's `developerId`. `slackUserId` is there only when the member's account is linked to a Slack person; a member with none has no Slack to ask about, and is qualified on
+ * their Rovara membership and project access alone (`qualifyNeutral`), never on a Slack proof.
+ */
 export interface TaskPersonIdentity {
   developerId: string;
-  slackUserId: string;
+  slackUserId?: string;
   name: string;
-  method: "slack" | "oidc" | "saml";
+  method: DeveloperSignInMethod;
   issuer: string;
   subject: string;
 }
+
+/** The name a person with no Slack account is shown under when no name is stored: the same words as an owner with no name. */
+const NO_SLACK_FALLBACK_NAME = UNNAMED_MEMBER;
 
 export type ProjectAccessSubject = Pick<DeveloperCaller, "developerId" | "slackUserId">;
 
 export interface TaskPersonIdentityDependencies {
   documentClient: { send(command: unknown): Promise<unknown> };
   tableName: string;
+  /** The install's Slack team, or "" on an install with no Slack: a person with no Slack account needs none, and a person with one cannot be proved without it. */
   slackTeamId: string;
+  /** The org of a task from before orgs (it names none): the install's single org, for the member and removal reads. */
+  installOrgId?: OrgId;
   now(): number;
   uuid(): string;
   /** Required fresh proof capability. An absent old Identity Lambda is a refusal, with no cached fallback. */
   taskPersonProof(request: TaskPersonProofRequest): Promise<TaskPersonProofResponse>;
   /** A strongly consistent, server-owned DeveloperRecord lookup from the sign-in table. */
   developerRecord(developerId: string): Promise<DeveloperRecord | undefined>;
+  /**
+   * One consistent read of the sign-in table, for the membership check's walk of merges and identity links (org/explicit-member.ts: the rule the Slack routes use). The broker gives its own
+   * (links included); the dispatcher gives none, and the walk then follows merges through `developerRecord` and finds no link.
+   */
+  readSignIn?: SignInReader;
   /** Current channels bound to the target project. */
   projectChannelIds(project: string): Promise<readonly string[]>;
   /** Existing project policy and grants, evaluated against only the supplied fresh membership. */
@@ -84,15 +102,21 @@ async function currentTask(deps: TaskPersonIdentityDependencies, taskId: string)
 }
 
 function parsedIdentity(item: Record<string, unknown>): TaskPersonIdentity | undefined {
-  if (!HEX64.test(String(item.developerId)) || !SlackUserIdSchema.safeParse(item.slackUserId).success || typeof item.name !== "string"
-    || !wellFormedName(item.name, String(item.slackUserId)) || (item.method !== "slack" && item.method !== "oidc" && item.method !== "saml")
+  // A row written before neutral identity always has a Slack id; a member with no Slack link has no such key at all (never a null or an empty one).
+  const hasSlack = Object.hasOwn(item, "slackUserId");
+  if (hasSlack && !SlackUserIdSchema.safeParse(item.slackUserId).success) return undefined;
+  const slackUserId = hasSlack ? (item.slackUserId as string) : undefined;
+  const fallback = slackUserId ?? NO_SLACK_FALLBACK_NAME;
+  const method = DeveloperSignInMethodSchema.safeParse(item.method);
+  if (!HEX64.test(String(item.developerId)) || typeof item.name !== "string"
+    || !wellFormedName(item.name, fallback) || !method.success || (method.data === "slack" && slackUserId === undefined)
     || typeof item.issuer !== "string" || item.issuer.length === 0 || item.issuer.length > 2048
     || typeof item.subject !== "string" || item.subject.length === 0 || item.subject.length > 512) return undefined;
   return {
     developerId: String(item.developerId),
-    slackUserId: String(item.slackUserId),
-    name: safeName(item.name, String(item.slackUserId)),
-    method: item.method,
+    ...(slackUserId === undefined ? {} : { slackUserId }),
+    name: safeName(item.name, fallback),
+    method: method.data,
     issuer: item.issuer,
     subject: item.subject,
   };
@@ -156,6 +180,24 @@ async function persistIdentity(
   }
 }
 
+/**
+ * Whether the person is a current member of the company that owns the task, who may write (owner, admin or member; not an Auditor): not removed, and a member record under them or the
+ * person they were merged into (org/explicit-member.ts). A task from before orgs names no org, so the install's single org is asked; with none to ask the answer is `unavailable`, never a
+ * pass. A failed read is `unavailable`.
+ */
+async function isLiveCompanyMember(deps: TaskPersonIdentityDependencies, task: DeveloperTaskRecord, developerId: string): Promise<boolean> {
+  const orgId = task.orgId ?? deps.installOrgId;
+  if (orgId === undefined) return unavailable();
+  try {
+    if (await isRemovedFromOrg(deps, orgId, developerId)) return false;
+    return await explicitMemberRole({ documentClient: deps.documentClient, tableName: deps.tableName, readSignIn: deps.readSignIn ?? signInReaderFromRecords((id) => deps.developerRecord(id)) }, orgId, developerId) !== undefined;
+  } catch (error) {
+    // A role that is not a writer's, or merges that cannot be followed to one person: not a member who may take part.
+    if (error instanceof Error && (error as Error & { code?: string }).code === "FORBIDDEN") return false;
+    return unavailable();
+  }
+}
+
 type Qualification = { eligible: true; channelMember: boolean; name: string; projectViewer?: true } | { eligible: false; channelMember: boolean };
 
 async function qualifyCurrent(
@@ -164,6 +206,11 @@ async function qualifyCurrent(
   subject: ProjectAccessSubject,
 ): Promise<Qualification> {
   if (typeof deps.taskPersonProof !== "function") return unavailable();
+  // A Slack account is not a membership: whoever is in a project's channel, the person must be a current member of the company (owner decision 86; U2's explicit-member rule). Read first, so a
+  // non-member costs no Slack call.
+  if (!await isLiveCompanyMember(deps, task, subject.developerId)) return { eligible: false, channelMember: false };
+  // A Slack person cannot be proved without the install's Slack team.
+  if (!SlackTeamIdSchema.safeParse(deps.slackTeamId).success) return unavailable();
   let channels: readonly string[];
   try {
     channels = await deps.projectChannelIds(task.project);
@@ -208,15 +255,70 @@ async function qualifyCurrent(
 async function qualify(
   deps: TaskPersonIdentityDependencies,
   task: DeveloperTaskRecord,
-  subject: ProjectAccessSubject,
+  subject: ProjectAccessSubject & { name?: string },
 ): Promise<{ name: string }> {
   let result: Qualification;
   try {
-    result = await qualifyCurrent(deps, task, subject);
+    // A person with no Slack account has nothing to ask Slack: their membership and project access are the whole question (owner decision 86).
+    result = subject.slackUserId === undefined
+      ? await qualifyNeutral(deps, task, subject, subject.name ?? NO_SLACK_FALLBACK_NAME)
+      : await qualifyCurrent(deps, task, subject);
   } catch {
     return refuse();
   }
   return result.eligible ? { name: result.name } : refuse();
+}
+
+/** A sign-in row's method when it is one a task person may have signed in with without Slack (any but Slack itself); undefined for a Slack row or one with an unknown method. */
+function signInMethodOf(record: DeveloperRecord): Exclude<DeveloperSignInMethod, "slack"> | undefined {
+  const method = DeveloperSignInMethodSchema.safeParse(record.provider);
+  return method.success && method.data !== "slack" ? method.data : undefined;
+}
+
+/**
+ * The task identity of a member who did not sign in with Slack, read from their own sign-in row (a consistent read). The row must be theirs (keyed by them, naming the identity the
+ * key is made of). The Slack id is taken only when the row has a well-formed one, so a person whose account is linked to Slack stays on the Slack path (a Slack proof, a channel),
+ * and one whose is not is neutral. Throws a refusal for a row that is missing or not theirs, `unavailable` when the table cannot be read.
+ */
+async function identityFromMemberRecord(deps: TaskPersonIdentityDependencies, developerId: string): Promise<TaskPersonIdentity> {
+  let record: DeveloperRecord | undefined;
+  try {
+    record = await deps.developerRecord(developerId);
+  } catch {
+    return unavailable();
+  }
+  // A member who signed in with Slack first keeps a Slack row after linking another sign-in: their task identity is the native Slack one (a Slack proof, a channel), as for a task they started.
+  if (record !== undefined && record.provider === "slack" && record.developerId === developerId && SlackUserIdSchema.safeParse(record.slackUserId).success
+    && developerIdForSlackUser(record.slackUserId!) === developerId) {
+    return nativeIdentity(record.slackUserId!, safeName(typeof record.displayName === "string" ? record.displayName : record.slackUserId!, record.slackUserId!));
+  }
+  const method = record === undefined ? undefined : signInMethodOf(record);
+  if (record === undefined || method === undefined || record.developerId !== developerId || typeof record.issuer !== "string" || typeof record.subject !== "string"
+    || ownerKeyForSubject(record.issuer, record.subject) !== developerId) return refuse();
+  const slackUserId = SlackUserIdSchema.safeParse(record.slackUserId).success ? record.slackUserId : undefined;
+  const fallback = slackUserId ?? NO_SLACK_FALLBACK_NAME;
+  return {
+    developerId, ...(slackUserId === undefined ? {} : { slackUserId }), name: safeName(typeof record.displayName === "string" ? record.displayName : fallback, fallback),
+    method, issuer: record.issuer, subject: record.subject,
+  };
+}
+
+/**
+ * Qualification of a task person with no Slack account (owner decision 86): there is nothing to ask Slack, so they are eligible when they are a current member with project access,
+ * and only then. Not removed from the company (the tombstone check every qualification makes), and the project's own rule says they may use it: an explicit grant or an org owner
+ * or admin role. The project's Slack channels give such a person nothing (no Slack id, no channel path), so this never admits someone who is not a member. They are not in the
+ * task's Slack channel and need not be: `channelMember` is true, as it is for a task with no Slack share, because the task's channel is no part of how they take part.
+ */
+async function qualifyNeutral(deps: TaskPersonIdentityDependencies, task: DeveloperTaskRecord, subject: ProjectAccessSubject, name: string): Promise<Qualification> {
+  if (!await isLiveCompanyMember(deps, task, subject.developerId)) return { eligible: false, channelMember: false };
+  let access: void | "viewer";
+  try {
+    access = await deps.targetProjectAccess({ developerId: subject.developerId }, task.project, []);
+  } catch (error) {
+    if (error instanceof Error && (error as Error & { code?: string }).code === "PROJECT_ACCESS_DENIED") return { eligible: false, channelMember: false };
+    return unavailable();
+  }
+  return { eligible: true, channelMember: true, name, ...(access === "viewer" ? { projectViewer: true as const } : {}) };
 }
 
 function nativeIdentity(slackUserId: string, name: string): TaskPersonIdentity {
@@ -272,6 +374,8 @@ export async function registerTaskChannelPeople(
     assertOpen?.();
     if (user.teamId !== deps.slackTeamId || !SlackUserIdSchema.safeParse(user.id).success) return unavailable();
     const identity = nativeIdentity(user.id, safeName(user.name, user.id));
+    // Being in the project's Slack channel does not make a Slack person a member of the company: a person with no live member record is not offered (owner decision 86).
+    if (!await isLiveCompanyMember(deps, stored, identity.developerId)) { assertOpen?.(); continue; }
     let accessError: unknown;
     try {
       await deps.targetProjectAccess({ developerId: identity.developerId, slackUserId: user.id }, stored.project, user.memberOf);
@@ -291,7 +395,8 @@ export async function registerTaskChannelPeople(
 
 async function storedIdentityStatus(deps: TaskPersonIdentityDependencies, identity: TaskPersonIdentity): Promise<"current" | "ineligible"> {
   if (identity.method === "slack") {
-    if (identity.issuer !== SLACK_OIDC_ISSUER || identity.subject !== identity.slackUserId || identity.developerId !== developerIdForSlackUser(identity.slackUserId)) return refuse();
+    if (identity.slackUserId === undefined || identity.issuer !== SLACK_OIDC_ISSUER || identity.subject !== identity.slackUserId
+      || identity.developerId !== developerIdForSlackUser(identity.slackUserId)) return refuse();
     return "current";
   }
   if (identity.issuer === SLACK_OIDC_ISSUER || identity.developerId !== ownerKeyForSubject(identity.issuer, identity.subject)) return refuse();
@@ -301,8 +406,9 @@ async function storedIdentityStatus(deps: TaskPersonIdentityDependencies, identi
   } catch {
     return unavailable();
   }
-  if (record === undefined || typeof record.revoked !== "boolean" || (record.provider !== "oidc" && record.provider !== "saml") || record.developerId !== identity.developerId
-    || record.issuer !== identity.issuer || record.subject !== identity.subject || record.slackUserId !== identity.slackUserId
+  // A person stored with a Slack id must still have that one. A person stored without one stays without one: linking Slack later does not change who they are on this task.
+  if (record === undefined || typeof record.revoked !== "boolean" || !signInMethodOf(record) || record.developerId !== identity.developerId
+    || record.issuer !== identity.issuer || record.subject !== identity.subject || (identity.slackUserId !== undefined && record.slackUserId !== identity.slackUserId)
     || ownerKeyForSubject(record.issuer, record.subject) !== record.developerId) return refuse();
   // A merged-away identity (its sign-in now belongs to the survivor) is no longer this task person, as a revoked one is not.
   return record.revoked || record.mergedInto !== undefined ? "ineligible" : "current";
@@ -337,34 +443,69 @@ export async function checkTaskPersonIdentity(
     if (caller?.developerId === developerId && caller.amr === "slack" && SlackUserIdSchema.safeParse(caller.slackUserId).success
       && developerIdForSlackUser(caller.slackUserId!) === developerId) {
       identity = nativeIdentity(caller.slackUserId!, safeName(caller.name, caller.slackUserId!));
-    } else if (developerId !== stored.developerId || !SlackUserIdSchema.safeParse(stored.slackUserId).success) {
-      return refuse();
-    } else if (stored.provider === "slack") {
-      if (developerId !== developerIdForSlackUser(stored.slackUserId!)) return refuse();
-      identity = nativeIdentity(stored.slackUserId!, safeName(stored.developerName, stored.slackUserId!));
-    } else {
-      let record: DeveloperRecord | undefined;
-      try {
-        record = await deps.developerRecord(developerId);
-      } catch {
-        return unavailable();
+    } else if (developerId === stored.developerId) {
+      // The task's creator, however they reach it now (a Slack task opened through a linked GitHub or web sign-in is still theirs): from the task or their own sign-in row.
+      if (stored.provider === "slack") {
+        if (!SlackUserIdSchema.safeParse(stored.slackUserId).success || developerId !== developerIdForSlackUser(stored.slackUserId!)) return refuse();
+        identity = nativeIdentity(stored.slackUserId!, safeName(stored.developerName, stored.slackUserId!));
+      } else {
+        identity = await identityFromMemberRecord(deps, developerId);
       }
-      if (record === undefined || (record.provider !== "oidc" && record.provider !== "saml") || record.developerId !== developerId || typeof record.issuer !== "string"
-        || typeof record.subject !== "string" || !SlackUserIdSchema.safeParse(record.slackUserId).success
-        || ownerKeyForSubject(record.issuer, record.subject) !== developerId) return refuse();
-      identity = {
-        developerId, slackUserId: record.slackUserId!, name: safeName(record.displayName, record.slackUserId!),
-        method: record.provider, issuer: record.issuer, subject: record.subject,
-      };
+    } else if (caller?.developerId === developerId && caller.amr !== "slack") {
+      // The route's own caller, a member who did not sign in with Slack: who they are is their own sign-in row, never anything the request says.
+      identity = await identityFromMemberRecord(deps, developerId);
+    } else {
+      return refuse();
     }
   }
   const status = await storedIdentityStatus(deps, identity);
-  const subject = { developerId, slackUserId: identity.slackUserId };
+  const subject = { developerId, ...(identity.slackUserId === undefined ? {} : { slackUserId: identity.slackUserId }) };
   if (status === "ineligible") return { subject, identity, eligible: false, channelMember: false };
-  const proof = await qualifyCurrent(deps, stored, subject);
+  const proof = identity.slackUserId === undefined
+    ? await qualifyNeutral(deps, stored, subject, identity.name)
+    : await qualifyCurrent(deps, stored, subject);
   return proof.eligible
     ? { subject, identity: { ...identity, name: proof.name }, eligible: true, channelMember: proof.channelMember, ...(proof.projectViewer === true ? { projectViewer: true as const } : {}) }
     : { subject, identity, eligible: false, channelMember: proof.channelMember };
+}
+
+/**
+ * Registers the members of a project who have no Slack account as task people, the way `registerTaskChannelPeople` registers the people of a Slack channel (owner decision 86): so the
+ * task's People list can offer every member of the project, not only the ones in its Slack channel. Each is read from their own sign-in row and must qualify now
+ * (`qualifyNeutral`); one who does not, or whose row is not usable, is left out, and an unreadable table is `unavailable`. A member with a linked Slack account is not registered
+ * here (they come through Slack, with a proof, or not at all), and neither is a revoked or merged-away one.
+ */
+export async function registerTaskMembers(
+  deps: TaskPersonIdentityDependencies,
+  task: DeveloperTaskRecord,
+  developerIds: readonly string[],
+  assertOpen?: () => void,
+): Promise<readonly TaskPersonIdentity[]> {
+  assertOpen?.();
+  const stored = await currentTask(deps, task.taskId);
+  assertOpen?.();
+  if (stored.project !== task.project || stored.developerId !== task.developerId || stored.provider !== task.provider || stored.slackUserId !== task.slackUserId) return refuse();
+  const identities: TaskPersonIdentity[] = [];
+  for (const developerId of new Set(developerIds)) {
+    assertOpen?.();
+    if (!HEX64.test(developerId)) continue;
+    let identity: TaskPersonIdentity;
+    try {
+      identity = await identityFromMemberRecord(deps, developerId);
+    } catch (error) {
+      if (error instanceof Error && (error as Error & { code?: string }).code === "PROJECT_ACCESS_DENIED") continue;
+      throw error;
+    }
+    if (identity.slackUserId !== undefined) continue;
+    // Revoked or merged away: not a person to offer.
+    if (await storedIdentityStatus(deps, identity) !== "current") continue;
+    const qualified = await qualifyNeutral(deps, stored, { developerId }, identity.name);
+    assertOpen?.();
+    if (!qualified.eligible) continue;
+    identities.push(await persistIdentity(deps, stored.taskId, { ...identity, name: qualified.name }, assertOpen));
+    assertOpen?.();
+  }
+  return identities;
 }
 
 export async function resolveTaskPersonId(
@@ -375,6 +516,6 @@ export async function resolveTaskPersonId(
   const task = await currentTask(deps, taskId);
   const identity = await registryByPerson(deps, taskId, personId);
   await verifyStoredIdentity(deps, identity);
-  await qualify(deps, task, { developerId: identity.developerId, slackUserId: identity.slackUserId });
+  await qualify(deps, task, identity);
   return identity;
 }

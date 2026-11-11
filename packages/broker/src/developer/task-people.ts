@@ -3,11 +3,12 @@ import { nameResolverOf, replacementNames } from "./name-resolver.js";
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { GetCommand, QueryCommand, TransactWriteCommand, type TransactWriteCommandInput } from "@aws-sdk/lib-dynamodb";
+import { DeveloperSignInMethodSchema } from "@agentx/cloud-contracts";
 import { AgentXError, SlackThreadSchema, SlackUserIdSchema, agentXError, cleanDisplayName, emailSafeName, redactAndCap, slackThreadUrl } from "@rovara-code/contracts";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 import type { ProjectAccessSubject, TaskPersonIdentity } from "./task-person-identity.js";
 import type { TaskPeopleDisplayAdmission } from "./task-people-display-budget.js";
-import { effectiveTaskOwner, isTaskTakenOver, ownerActorIdOf, ownerFenceOf, taskKey, taskOwnerKey, type DeveloperTaskRecord } from "./task-records.js";
+import { UNNAMED_MEMBER, effectiveTaskOwner, isTaskTakenOver, ownerActorIdOf, ownerFenceOf, taskKey, taskOwnerKey, type DeveloperTaskRecord } from "./task-records.js";
 
 export type TaskRole = "owner" | "commenter" | "viewer";
 export type StoredTaskRole = TaskRole | "denied";
@@ -16,7 +17,8 @@ export interface TaskPeople {
   schemaVersion: 1;
   revision: number;
   orphaned: boolean;
-  people: Array<{ developerId: string; slackUserId: string; name: string; role: StoredTaskRole }>;
+  /** `slackUserId` is there only for a person whose Rovara account is linked to a Slack person (neutral identity: a member who signed in another way and never linked Slack has none). */
+  people: Array<{ developerId: string; slackUserId?: string; name: string; role: StoredTaskRole }>;
 }
 
 export interface TaskPeopleConfiguration { peopleChangesEnabled: boolean }
@@ -96,15 +98,26 @@ const safeName = (value: string, fallback: string) => emailSafeName(redactAndCap
  */
 const wellFormedName = (value: string, fallback: string) => (cleanDisplayName(redactAndCap(value, 80).text) ?? fallback) === value;
 const shown = (value: string, fallback: string) => safeName(value, fallback);
+/** What a name falls back to: the person's Slack id when they have one, else the words an unnamed member is shown as. */
+const nameFallback = (slackUserId: string | undefined): string => slackUserId ?? UNNAMED_MEMBER;
+/** A people-list entry for a checked person: no `slackUserId` key at all when they have none (a stored row never holds an undefined). */
+const entryOf = (identity: Pick<TaskPersonIdentity, "developerId" | "slackUserId" | "name">, role: StoredTaskRole): PersonEntry => ({
+  developerId: identity.developerId, ...(identity.slackUserId === undefined ? {} : { slackUserId: identity.slackUserId }),
+  name: safeName(identity.name, nameFallback(identity.slackUserId)), role,
+});
+/** The keys of a stored row that has a fixed set and one that comes and goes (`slackUserId`): every fixed key, and the optional one only when the row holds it. */
+const exactKeysWithOptional = (value: Record<string, unknown>, required: readonly string[], optional: string) =>
+  exactKeys(value, Object.hasOwn(value, optional) ? [...required, optional] : required);
 const enabled = (deps: TaskPeopleDependencies) => deps.taskPeopleConfiguration?.peopleChangesEnabled === true;
 const open = (task: DeveloperTaskRecord) => task.closedAt === undefined && task.workflow?.stage !== "CLOSED" && task.workflow?.stage !== "MERGED";
 const conditional = (error: unknown) => error instanceof Error && (error.name === "ConditionalCheckFailedException" || error.name === "TransactionCanceledException");
 
 function validEntry(value: unknown): value is PersonEntry {
-  if (!isRecord(value) || !exactKeys(value, ["developerId", "slackUserId", "name", "role"])) return false;
+  if (!isRecord(value) || !exactKeysWithOptional(value, ["developerId", "name", "role"], "slackUserId")) return false;
+  const slackUserId = Object.hasOwn(value, "slackUserId") ? value.slackUserId : undefined;
   return typeof value.developerId === "string" && HEX64.test(value.developerId)
-    && SlackUserIdSchema.safeParse(value.slackUserId).success
-    && typeof value.name === "string" && wellFormedName(value.name, String(value.slackUserId))
+    && (!Object.hasOwn(value, "slackUserId") || SlackUserIdSchema.safeParse(slackUserId).success)
+    && typeof value.name === "string" && wellFormedName(value.name, nameFallback(slackUserId as string | undefined))
     && (value.role === "owner" || value.role === "commenter" || value.role === "viewer" || value.role === "denied");
 }
 
@@ -113,19 +126,22 @@ function parsePeople(value: unknown): TaskPeople | undefined {
     || typeof value.pk !== "string" || value.sk !== PEOPLE_SK || value.schemaVersion !== 1
     || !Number.isSafeInteger(value.revision) || Number(value.revision) < 1 || typeof value.orphaned !== "boolean"
     || !Array.isArray(value.people) || !value.people.every(validEntry)) return undefined;
-  const people = value.people.map((person) => ({ ...person, name: shown(person.name, person.slackUserId) }));
+  const people = value.people.map((person) => ({ ...person, name: shown(person.name, nameFallback(person.slackUserId)) }));
   if (new Set(people.map((person) => person.developerId)).size !== people.length) return undefined;
   return { schemaVersion: 1, revision: Number(value.revision), orphaned: value.orphaned, people };
 }
 
 function parseIdentity(value: Record<string, unknown>): TaskPersonIdentity | undefined {
-  if (!HEX64.test(String(value.developerId)) || !SlackUserIdSchema.safeParse(value.slackUserId).success
-    || typeof value.name !== "string" || !wellFormedName(value.name, String(value.slackUserId))
-    || (value.method !== "slack" && value.method !== "oidc" && value.method !== "saml") || typeof value.issuer !== "string" || value.issuer.length === 0 || value.issuer.length > 2048
+  const hasSlack = Object.hasOwn(value, "slackUserId");
+  if (hasSlack && !SlackUserIdSchema.safeParse(value.slackUserId).success) return undefined;
+  const slackUserId = hasSlack ? String(value.slackUserId) : undefined;
+  const method = DeveloperSignInMethodSchema.safeParse(value.method);
+  if (!HEX64.test(String(value.developerId)) || typeof value.name !== "string" || !wellFormedName(value.name, nameFallback(slackUserId))
+    || !method.success || (method.data === "slack" && slackUserId === undefined) || typeof value.issuer !== "string" || value.issuer.length === 0 || value.issuer.length > 2048
     || typeof value.subject !== "string" || value.subject.length === 0 || value.subject.length > 512) return undefined;
   return {
-    developerId: String(value.developerId), slackUserId: String(value.slackUserId), name: shown(value.name, String(value.slackUserId)),
-    method: value.method, issuer: value.issuer, subject: value.subject,
+    developerId: String(value.developerId), ...(slackUserId === undefined ? {} : { slackUserId }), name: shown(value.name, nameFallback(slackUserId)),
+    method: method.data, issuer: value.issuer, subject: value.subject,
   };
 }
 
@@ -186,7 +202,7 @@ async function personByDeveloper(deps: TaskPeopleDependencies, taskId: string, d
     || reverse.developerId !== developerId || typeof reverse.personId !== "string" || !UUID.test(reverse.personId)
     || typeof reverse.createdAt !== "string" || !Number.isFinite(Date.parse(reverse.createdAt))) return denied();
   const person = await get(deps, personKey(taskId, reverse.personId));
-  if (person === undefined || !exactKeys(person, ["pk", "sk", "schemaVersion", "personId", "developerId", "slackUserId", "name", "method", "issuer", "subject", "createdAt"])
+  if (person === undefined || !exactKeysWithOptional(person, ["pk", "sk", "schemaVersion", "personId", "developerId", "name", "method", "issuer", "subject", "createdAt"], "slackUserId")
     || person.pk !== taskPk(taskId) || person.sk !== personKey(taskId, reverse.personId).sk || person.schemaVersion !== 1
     || person.personId !== reverse.personId || person.createdAt !== reverse.createdAt) return denied();
   const identity = parseIdentity(person);
@@ -234,10 +250,11 @@ async function checkedFresh(deps: Pick<TaskPeopleDependencies, "checkTaskPerson"
   admission?.assertOpen();
   const identity = result.identity;
   if (result.subject.developerId !== developerId || result.subject.slackUserId !== identity.slackUserId
-    || identity.developerId !== developerId || !SlackUserIdSchema.safeParse(identity.slackUserId).success
-    || typeof identity.name !== "string" || !wellFormedName(identity.name, identity.slackUserId)
+    || identity.developerId !== developerId || (identity.slackUserId !== undefined && !SlackUserIdSchema.safeParse(identity.slackUserId).success)
+    || typeof identity.name !== "string" || !wellFormedName(identity.name, nameFallback(identity.slackUserId))
     || typeof result.eligible !== "boolean" || typeof result.channelMember !== "boolean") return denied();
-  admission?.noteNativeIdentity(identity.developerId, identity.slackUserId);
+  if (identity.slackUserId === undefined) admission?.admitIdentity(identity.developerId);
+  else admission?.noteNativeIdentity(identity.developerId, identity.slackUserId);
   return result;
 }
 
@@ -296,8 +313,8 @@ async function initialize(deps: TaskPeopleDependencies, task: DeveloperTaskRecor
   for (const { proof, role } of seeds) {
     const existing = await personByDeveloper(deps, task.taskId, proof.identity.developerId);
     if (existing !== undefined && !samePrincipal(existing.identity, proof.identity)) return denied();
-    const identity = { ...proof.identity, name: safeName(proof.identity.name, proof.identity.slackUserId) };
-    entries.push({ developerId: identity.developerId, slackUserId: identity.slackUserId, name: identity.name, role });
+    const identity = { ...proof.identity, name: safeName(proof.identity.name, nameFallback(proof.identity.slackUserId)) };
+    entries.push(entryOf(identity, role));
     if (existing === undefined) {
       const personId = randomUUID();
       const person: PersonRecord = { ...personKey(task.taskId, personId), schemaVersion: 1, personId, ...identity, createdAt };
@@ -357,7 +374,7 @@ async function reconcile(deps: TaskPeopleDependencies, task: DeveloperTaskRecord
         const mapping = await personByDeveloper(deps, task.taskId, taker.developerId);
         const proof = mapping === undefined ? undefined : await tryChecked(deps, task, taker.developerId, admission);
         if (mapping !== undefined && proof !== undefined && proof.eligible && proof.channelMember && proof.projectViewer !== true && samePrincipal(mapping.identity, proof.identity)) {
-          const entry: PersonEntry = { developerId: mapping.identity.developerId, slackUserId: mapping.identity.slackUserId, name: safeName(proof.identity.name, proof.identity.slackUserId), role: "owner" };
+          const entry: PersonEntry = entryOf({ ...mapping.identity, name: proof.identity.name }, "owner");
           if (at < 0) nextEntries.push(entry);
           else nextEntries[at] = entry;
         }
@@ -426,11 +443,14 @@ async function currentPeopleForCaller(
 function effectiveRoleFromProof(explicit: PersonEntry | undefined, proof: TaskPersonCheck): TaskRole | null {
   if (explicit?.role === "denied" || !proof.eligible) return null;
   if (explicit?.role === "owner") return proof.channelMember ? "owner" : null;
+  // The channel gives a role to people in it. A person with no Slack account is in none (`channelMember` is true for them only so that an entry of their own is honoured), so
+  // with no entry they get nothing from it: a member of the project who was never added to a Slack-shared task does not become its commenter.
+  const inChannel = proof.channelMember && proof.identity.slackUserId !== undefined;
   // A project viewer only views, whatever the owner granted and whatever the channel would give them. The cap never grants: outside the
   // task's channel, with no entry of their own, they read nothing, exactly as anyone else outside it.
-  if (proof.projectViewer === true) return explicit !== undefined || proof.channelMember ? "viewer" : null;
+  if (proof.projectViewer === true) return explicit !== undefined || inChannel ? "viewer" : null;
   if (explicit?.role === "commenter" || explicit?.role === "viewer") return explicit.role;
-  return proof.channelMember ? "commenter" : null;
+  return inChannel ? "commenter" : null;
 }
 
 async function effectiveRole(deps: TaskPeopleDependencies, task: DeveloperTaskRecord, people: TaskPeople, developerId: string,
@@ -453,7 +473,7 @@ async function viewOf(deps: TaskPeopleDependencies, task: DeveloperTaskRecord, p
     candidates.set(mapping.identity.developerId, { ...mapping, ...(explicit === undefined ? {} : { explicit }) });
   }
   const sameSlack = new Map<string, number>();
-  for (const candidate of candidates.values()) sameSlack.set(candidate.identity.slackUserId, (sameSlack.get(candidate.identity.slackUserId) ?? 0) + 1);
+  for (const candidate of candidates.values()) if (candidate.identity.slackUserId !== undefined) sameSlack.set(candidate.identity.slackUserId, (sameSlack.get(candidate.identity.slackUserId) ?? 0) + 1);
   const rendered: TaskPeopleView["people"] = [];
   // ERASE-NAME-2: the names the list shows were stored with the task; an erased person reads "A former member", a removed one never the name they chose.
   const replaced = await replacementNames(nameResolverOf(deps, task.orgId), candidates.keys());
@@ -465,12 +485,15 @@ async function viewOf(deps: TaskPeopleDependencies, task: DeveloperTaskRecord, p
       ? effectiveRoleFromProof(candidate.explicit, display)
       : await effectiveRole(deps, task, people, candidate.identity.developerId, admission);
     if (candidate.explicit === undefined && effective !== "commenter") continue;
-    const suffix = (sameSlack.get(candidate.identity.slackUserId) ?? 0) > 1 ? (candidate.identity.method === "slack" ? " (Slack identity)" : candidate.identity.method === "saml" ? " (SAML identity)" : " (OIDC identity)") : "";
+    const suffix = candidate.identity.slackUserId !== undefined && (sameSlack.get(candidate.identity.slackUserId) ?? 0) > 1
+      ? (candidate.identity.method === "slack" ? " (Slack identity)" : candidate.identity.method === "saml" ? " (SAML identity)" : candidate.identity.method === "github" ? " (GitHub identity)"
+        : candidate.identity.method === "cloud" ? " (Rovara sign-in)" : " (OIDC identity)")
+      : "";
     const baseName = replaced.get(candidate.identity.developerId) ?? candidate.explicit?.name ?? candidate.identity.name;
     const labeledName = suffix === "" ? baseName : `${redactAndCap(baseName, 80 - suffix.length).text}${suffix}`;
     rendered.push({
       personId: candidate.personId,
-      name: safeName(labeledName, candidate.identity.slackUserId),
+      name: safeName(labeledName, nameFallback(candidate.identity.slackUserId)),
       role, you: candidate.identity.developerId === caller.developerId, effectiveRole: effective,
     });
   }
@@ -806,17 +829,17 @@ export async function changeTaskPeople(
   if (!samePrincipal(mapping.identity, proof.identity) || (input.role !== "denied" && !proof.eligible)
     || (input.role === "owner" && !proof.channelMember)) return denied();
   const existing = people.people.find((person) => person.developerId === input.targetDeveloperId);
-  const beforeRole = existing?.role ?? (proof.eligible && proof.channelMember ? "commenter" : null);
+  const beforeRole = existing?.role ?? (proof.eligible && proof.channelMember && proof.identity.slackUserId !== undefined ? "commenter" : null);
   if (existing?.role === input.role) throw agentXError("CONFIG_INVALID", "that person already has this task role");
   if (existing?.role === "owner" && input.role !== "owner" && people.people.filter((person) => person.role === "owner").length === 1) {
     throw agentXError("CONFIG_INVALID", "a task must retain an effective owner");
   }
-  const entry: PersonEntry = { developerId: mapping.identity.developerId, slackUserId: mapping.identity.slackUserId, name: safeName(proof.identity.name, proof.identity.slackUserId), role: input.role };
+  const entry: PersonEntry = entryOf({ ...mapping.identity, name: proof.identity.name }, input.role);
   const nextEntries = existing === undefined ? [...people.people, entry] : people.people.map((person) => person.developerId === input.targetDeveloperId ? entry : person);
   const next: TaskPeople = { schemaVersion: 1, revision: people.revision + 1, orphaned: !nextEntries.some((person) => person.role === "owner"), people: nextEntries };
   preflight([{ Put: { TableName: deps.tableName, Item: { ...peopleKey(taskId), ...next } } }]);
   return commitMutation(deps, task, caller, people, next, input.requestId, "change", payload, beforeRole, input.role, input.targetDeveloperId,
-    !proof.channelMember && input.role !== "denied" ? { slackUserId: proof.identity.slackUserId, role: input.role } : undefined);
+    !proof.channelMember && input.role !== "denied" && proof.identity.slackUserId !== undefined ? { slackUserId: proof.identity.slackUserId, role: input.role } : undefined);
 }
 
 export async function takeTaskOwnership(
@@ -852,7 +875,7 @@ export async function takeTaskOwnership(
   const existing = people.people.find((person) => person.developerId === caller.developerId);
   if (existing?.role === "denied") return denied();
   const beforeRole = existing?.role ?? "commenter";
-  const owner: PersonEntry = { developerId: mapping.identity.developerId, slackUserId: mapping.identity.slackUserId, name: safeName(proof.identity.name, proof.identity.slackUserId), role: "owner" };
+  const owner: PersonEntry = entryOf({ ...mapping.identity, name: proof.identity.name }, "owner");
   const nextEntries = existing === undefined ? [...people.people, owner] : people.people.map((person) => person.developerId === caller.developerId ? owner : person);
   const next: TaskPeople = { schemaVersion: 1, revision: people.revision + 1, orphaned: false, people: nextEntries };
   return commitMutation(deps, task, caller, people, next, input.requestId, "takeOwnership", payload, beforeRole, "owner", caller.developerId);

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { orgMemberKey } from "@agentx/cloud-contracts";
 import { SLACK_OIDC_ISSUER, type TaskPersonProofRequest, type TaskPersonProofResponse } from "@rovara-code/contracts";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
@@ -48,6 +49,10 @@ function harness(options: {
 } = {}) {
   const db = new FakeDynamoDb();
   db.set(task as unknown as Record<string, unknown>);
+  // Every person of these cases is a member of the company (owner decision 86: a Slack account or a channel is not a membership); the tests that need a non-member remove the row.
+  for (const developerId of [MAYA_NATIVE, MAYA_EXTERNAL, developerIdForSlackUser("U0ACTOR001")]) {
+    db.set({ ...orgMemberKey(TEST_ORG, developerId), entityType: "ORG_MEMBER", orgId: TEST_ORG, developerId, role: "member", joinedAt: new Date(T0).toISOString() });
+  }
   const access = vi.fn(async (subject: ProjectAccessSubject, project: string, memberOf: readonly string[]) => {
     void [subject, project, memberOf];
   });
@@ -63,6 +68,7 @@ function harness(options: {
   const deps: TaskPersonIdentityDependencies = {
     documentClient: db,
     tableName: "state",
+    installOrgId: TEST_ORG,
     slackTeamId: TEAM,
     now: () => T0,
     uuid: options.uuid ?? (() => uuids.shift() ?? PERSON_2),

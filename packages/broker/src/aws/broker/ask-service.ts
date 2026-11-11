@@ -57,7 +57,7 @@ async function peopleOf(dependencies: AwsBrokerDependencies, task: DeveloperTask
   for (const id of ids) { const name = chosen.get(id); if (name !== undefined) entry(id).names.add(name); else entry(id); }
   entry(task.developerId).names.add(task.developerName);
   if (task.slackUserId !== undefined) entry(task.developerId).handles.add(task.slackUserId);
-  for (const person of people?.people ?? []) { const found = entry(person.developerId); found.names.add(person.name); found.handles.add(person.slackUserId); }
+  for (const person of people?.people ?? []) { const found = entry(person.developerId); found.names.add(person.name); if (person.slackUserId !== undefined) found.handles.add(person.slackUserId); }
   return [...stored].map(([developerId, found]) => ({ developerId, names: [...found.names].filter((name) => name !== ""), handles: [...found.handles].filter((handle) => handle !== "") }));
 }
 

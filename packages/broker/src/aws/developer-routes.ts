@@ -198,6 +198,7 @@ import { KNOWN_FAILING_POLICY_BROWSER_MESSAGE, KNOWN_FAILING_POLICY_PATH, routeK
 import { SECOND_REVIEW_ACK_BROWSER_MESSAGE, acknowledgeSecondReview } from "./developer-tasks/second-review-ack.js";
 import { routeLearningModel } from "./developer-routes/learning-model.js";
 import { SECOND_REVIEW_BROWSER_MESSAGE, SECOND_REVIEW_PATH, routeSecondReview } from "./developer-routes/second-review.js";
+import { INSIGHTS_ACCESS_BROWSER_MESSAGE, INSIGHTS_ACCESS_PATH, routeInsightsFor } from "./developer-routes/insights.js";
 import { routeTrackerPeople } from "./developer-routes/tracker-people.js";
 import { routeJiraOrgAdmin } from "./developer-routes/jira-org-admin.js";
 import { SETUP_RECIPES_BROWSER_MESSAGE, isSetupRecipesPath, routeSetupRecipes } from "./developer-routes/setup-recipes.js";
@@ -353,6 +354,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (url.pathname === KNOWN_FAILING_POLICY_PATH && request.method === "POST" && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", KNOWN_FAILING_POLICY_BROWSER_MESSAGE);
   if (url.pathname === DESIGN_REVIEW_COMPANY_PATH && request.method === "POST" && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", DESIGN_REVIEW_COMPANY_BROWSER_MESSAGE);
   if (url.pathname === SECOND_REVIEW_PATH && request.method === "POST" && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", SECOND_REVIEW_BROWSER_MESSAGE);
+  // Insights: who may see it is changed from a live browser session only (the reads are open to a token by the same role rule).
+  if (url.pathname === INSIGHTS_ACCESS_PATH && request.method === "POST" && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", INSIGHTS_ACCESS_BROWSER_MESSAGE);
   if (/\/tasks\/[^/]+\/second-review-acknowledge$/u.test(url.pathname) && request.method === "POST" && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", SECOND_REVIEW_ACK_BROWSER_MESSAGE);
   // The project's known-failing marks (list and Undo) are browser-only for both methods, while vx is on (off: the path is not found, as any unknown path).
   if (KNOWN_FAILING_MARKS_PATH.test(url.pathname) && verifyResultsEnabled() && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", KNOWN_FAILING_MARKS_BROWSER_MESSAGE);
@@ -622,6 +625,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (findingsReply !== undefined) return findingsReply;
   const secondReviewReply = await routeSecondReview(deps, caller, request, url);
   if (secondReviewReply !== undefined) return secondReviewReply;
+  const insightsReply = await routeInsightsFor(deps, caller, request, url);
+  if (insightsReply !== undefined) return insightsReply;
   const learningModelReply = await routeLearningModel(deps, caller, request, url);
   if (learningModelReply !== undefined) return learningModelReply;
   const trackerPeopleReply = await routeTrackerPeople(deps, caller, request, url);

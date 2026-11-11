@@ -63,7 +63,8 @@ describe("a company sign-in (OIDC) task person", () => {
     const ports = {
       readTaskRecord: vi.fn(async ({ sortKey }: { sortKey: string }) => sortKey === "META" ? task as unknown as Record<string, unknown> : undefined),
       readDeveloperRecord: vi.fn(async () => developerRecord as never),
-      readOrgRecord: vi.fn(async () => undefined),
+      // Nobody was removed, and everybody is a member who may write (a member row): owner decision 86.
+      readOrgRecord: vi.fn(async ({ key }: { key: { pk: string; sk: string } }) => String(key.sk).startsWith("MEMBER#") ? { ...key, role: "member" } : undefined),
       projectAuthorityReader: {
         latestRevision: vi.fn(async (_project: string, _admission: unknown, signal: AbortSignal) => ({ revision: { ...projectRevisionKey(TEST_ORG, "payments-api", 7), revision: 7, definition: {} }, complete: !signal.aborted })),
         memberships: vi.fn(async (_id: string, _admission: unknown, signal: AbortSignal) => ({ items: [], complete: !signal.aborted })),
