@@ -63,7 +63,7 @@ for (const [label, path, at] of [["Work", "work", "/app/work"], ["Home", undefin
   quiet();
   const routes = appRoutes(navFixture().features), app = routes.find(route => route.path === "/app")!;
   // The chunk fails as a browser reports it; the route table's guard turns it into the page error in the screen's place.
-  app.children = app.children!.map(child => (path === undefined ? child.index === true : child.path === path) ? guardLazy({ ...child, element: undefined, lazy: () => Promise.reject(new TypeError("Failed to fetch dynamically imported module: /app/assets/x.js")) } as RouteObject) : child);
+  app.children = app.children!.map(child => (path === undefined ? child.index === true : child.path === path) ? guardLazy({ ...child, element: undefined, lazy: () => Promise.reject(new TypeError("Failed to fetch dynamically imported module: /app/assets/x.js")) }) : child);
   const f = mount(routes, at);
   try {
    expect((await screen.findByRole("heading", { level: 1, name: "Rovara was updated. Reload to continue." })).textContent).toBe("Rovara was updated. Reload to continue.");
@@ -81,7 +81,7 @@ it("the route table guards every lazy screen under /app, the admin pages under t
  expect(spending.errorElement).toBeTruthy();
  // A guarded lazy never rejects: a failed import resolves to a component that shows the page error.
  const original = spending.lazy;expect(typeof original).toBe("function");
- const failing = guardLazy({ path: "x", lazy: () => Promise.reject(new TypeError("Importing a module script failed.")) } as RouteObject);
+ const failing = guardLazy({ path: "x", lazy: () => Promise.reject(new TypeError("Importing a module script failed.")) });
  const resolved = await (failing.lazy as () => Promise<{ Component?: unknown }>)();
  expect(typeof resolved.Component).toBe("function");
 });

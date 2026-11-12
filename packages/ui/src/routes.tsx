@@ -16,8 +16,8 @@ function LiveToWork() { const location = useLocation();return <Navigate replace 
  * with no old screen to fall back to, a crash or a chunk that cannot load must never blank the page or take the navigation (or the admin layout) with it.
  */
 function withScreenError(route: RouteObject): RouteObject {
- const guarded = guardLazy(route.errorElement === undefined ? { ...route, errorElement: <RouteError /> } as RouteObject : route);
- return guarded.children === undefined ? guarded : { ...guarded, children: guarded.children.map(withScreenError) } as RouteObject;
+ const guarded = guardLazy(route.errorElement === undefined ? { ...route, errorElement: <RouteError /> } : route);
+ return guarded.children === undefined ? guarded : { ...guarded, children: guarded.children.map(withScreenError) };
 }
 /**
  * The app's routes. Decision 125: the new navigation, Work, Insights and the other finished screens are always there; the options are the switches of screens still being finished (billing, publish).

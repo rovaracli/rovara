@@ -36,6 +36,6 @@ function ChunkError({ error }: { error: unknown }) { const host = useAppHost();r
 export function guardLazy(route: RouteObject): RouteObject {
  const load = route.lazy;
  if (typeof load !== "function") return route;
- return { ...route, lazy: async () => { try { return await load(); } catch (error) { return { Component: () => <ChunkError error={error} /> }; } } } as RouteObject;
+ return { ...route, lazy: async () => { try { return await load(); } catch (error) { return { Component: () => <ChunkError error={error} /> }; } } };
 }
 

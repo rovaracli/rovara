@@ -4,8 +4,10 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { fireEvent, screen } from "@testing-library/react";
 import { createMemoryRouter } from "react-router";
-vi.mock("../../packages/ui/src/theme.js", async original => ({ ...(await original<typeof import("../../packages/ui/src/theme.js")>()), ThemeProvider: () => { throw new Error("the theme could not start"); } }));
+vi.mock("../../packages/ui/src/theme.js", async original => ({ ...(await original<ThemeModule>()), ThemeProvider: () => { throw new Error("the theme could not start"); } }));
 import { App } from "../../packages/ui/src/App.js";
+import type * as Theme from "../../packages/ui/src/theme.js";
+type ThemeModule = typeof Theme;
 import { renderUi } from "./support/render.js";
 import { fakeHost } from "./support/fake-host.js";
 import { h } from "./support/h.js";
