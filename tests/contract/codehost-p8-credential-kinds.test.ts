@@ -198,7 +198,7 @@ describe("the exchange sends a kind only to a worker that takes it", () => {
 describe("broker.ts wiring (one line)", () => {
   it("builds the grant service with the host's credential kinds, so a grant names a kind that needs a worker feature", () => {
     const source = readFileSync(new URL("../../packages/broker/src/aws/broker.ts", import.meta.url), "utf8");
-    expect(source).toMatch(/new RepositoryGrantService\([\s\S]*?portCredentialResolver\([\s\S]*?\(hostKind\) => plugins\.codeHost\.forKind\(hostKind\)\.capabilities\.credentialKinds,\s*\);/);
+    expect(source).toMatch(/new RepositoryGrantService\([\s\S]*?portCredentialResolver\([\s\S]*?\(hostKind\) => plugins\.codeHost\.forKind\(hostKind\)\.capabilities\.credentialKinds,\s*(?:\/\/[^\n]*\n\s*\(\) => \(previousGrantKey[^\n]*\n\s*)?\);/);
   });
 });
 

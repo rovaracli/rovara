@@ -683,7 +683,7 @@ it again: it continues where it stopped. The steps below are the same work by ha
      aws kms schedule-key-deletion --key-id <key id> --pending-window-in-days 7 --region ${region}
      aws kms delete-alias --alias-name alias/agentx/${env}/workspaces --region ${region}
      \`\`\`
-   - **Every secret under \`agentx/${env}/\`**: \`callback-signing-key\` (created by \`agentx deploy\`,
+   - **Every secret under \`agentx/${env}/\`**: \`callback-signing-key\` and \`erasure-hash-key\` (created by \`agentx deploy\`,
      outside any stack), \`slack\`, and those \`agentx init\` stored (\`github-app\`, \`alert-endpoint\`,
      \`openrouter\`, \`anthropic\`, \`openai\`, \`developer-oidc\`, \`connectors/...\`). List them, then delete each one without a
      recovery window, so the names can be reused by a new install:

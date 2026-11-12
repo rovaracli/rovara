@@ -67,7 +67,9 @@ describe("what the broker reads is still there when it starts (final review C1)"
       hydrateBrokerEnvironment(started);
 
       it("has every variable it had before, once its names are put back (the sign-in function is reached by name, not by ARN)", () => {
-        const missing = BEFORE_C1.filter((name) => (started[name] ?? "") === "" && !["DEVELOPER_IDENTITY_FUNCTION_ARN"].includes(name)
+        // CALLBACK_SIGNING_KEY: 0.5.15 moved it to Secrets Manager (signing-key-secrets.ts); a named broker reads it from its secret and must not be given it.
+        expect(started.CALLBACK_SIGNING_KEY).toBeUndefined();
+        const missing = BEFORE_C1.filter((name) => (started[name] ?? "") === "" && !["DEVELOPER_IDENTITY_FUNCTION_ARN", "CALLBACK_SIGNING_KEY"].includes(name)
           // These are empty on an install that leaves the optional setting out, as before.
           && !["GITHUB_APP_ID", "DEVELOPER_NOTICE_EMAIL_FROM", "DEVELOPER_NOTICE_EMAIL_REGION", "DEVELOPER_OIDC_ISSUER", "SLACK_TEAM_ID", "DEVELOPER_GITHUB_CLIENT_ID"].includes(name));
         expect(missing).toEqual([]);

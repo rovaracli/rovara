@@ -585,7 +585,8 @@ describe("the tick with no batch active", () => {
 
   it("is what the scheduled handler runs, with the Lambda's environment", async () => {
     const { handler } = await import("../../packages/broker/src/aws/eval-batch-tick.js");
-    await expect(handler()).rejects.toThrow(/is required/);
+    // 0.5.15: with nothing set the callback signing key is refused first (no variable, no named environment to read its secret in).
+    await expect(handler()).rejects.toThrow(/is required|no signing key is configured/);
     vi.stubEnv("AWS_REGION", "us-east-1");
     vi.stubEnv("STATE_TABLE_NAME", "agentx-state");
     vi.stubEnv("ARTIFACT_BUCKET_NAME", "agentx-artifacts");

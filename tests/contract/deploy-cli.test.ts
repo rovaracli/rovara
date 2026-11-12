@@ -815,8 +815,10 @@ describe("agentx deploy", () => {
     );
 
     expect(code).toBe(0);
-    expect(secrets.creates).toHaveLength(1);
+    // The callback signing key, and (0.5.15) the erasure hash key seeded with the same value: neither value is ever printed.
+    expect(secrets.creates.map((entry) => entry.name)).toEqual(["agentx/staging/callback-signing-key", "agentx/staging/erasure-hash-key"]);
     const secretValue = secrets.creates[0]!.value;
+    expect(secrets.creates[1]!.value).toBe(secretValue);
     expect(secretValue.length).toBeGreaterThanOrEqual(32);
     const combined = io.out.join("") + io.err.join("");
     expect(combined).not.toContain(secretValue);
