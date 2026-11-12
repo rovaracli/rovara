@@ -4,7 +4,7 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { AgentXError, errorStatus, orgProjectCatalogKey, projectMemberKey, projectMetaKey, projectRevisionKey, type OrgId, type ProjectRole } from "@rovara-code/contracts";
-import { PROJECT_LAST_MAINTAINER_MESSAGE, PROJECT_PEOPLE_STALE_MESSAGE, ProjectPeopleViewSchema, developerOrgKey, orgBanKey, orgMemberKey, orgMetaKey, type OrgRole } from "@agentx/cloud-contracts";
+import { PROJECT_LAST_MAINTAINER_MESSAGE, PROJECT_PEOPLE_STALE_MESSAGE, type ProjectPeopleRole, ProjectPeopleViewReaderSchema, ProjectPeopleViewSchema, ProjectPersonChangeResponseReaderSchema, developerOrgKey, orgBanKey, orgMemberKey, orgMetaKey, type OrgRole } from "@agentx/cloud-contracts";
 import { routeDeveloperRequest, type DeveloperCaller, type DeveloperRouteDependencies } from "../../packages/broker/src/aws/developer-routes.js";
 import { StatusReply } from "../../packages/broker/src/aws/status-reply.js";
 import { routeProjectPeople } from "../../packages/broker/src/aws/developer-routes/project-people.js";
@@ -86,7 +86,7 @@ function fixture(options: { audit?: boolean } = {}) {
 type Fixture = ReturnType<typeof fixture>;
 
 const PEOPLE_PATH = "/v1/app/projects/payments/people";
-const put = (f: Fixture, who: Who, target: string, role: ProjectRole, expectedRevision: number, requestId = randomUUID()) => f.call(who, "PUT", `${PEOPLE_PATH}/${target}`, { requestId, role, expectedRevision });
+const put = (f: Fixture, who: Who, target: string, role: ProjectPeopleRole, expectedRevision: number, requestId = randomUUID()) => f.call(who, "PUT", `${PEOPLE_PATH}/${target}`, { requestId, role, expectedRevision });
 const del = (f: Fixture, who: Who, target: string, expectedRevision: number, requestId = randomUUID()) => f.call(who, "DELETE", `${PEOPLE_PATH}/${target}`, { requestId, expectedRevision });
 
 // ---- A-32: the People tab ------------------------------------------------------------------------------------------------------------------------------------------------
@@ -120,9 +120,9 @@ describe("the People routes check the browser session themselves too", () => {
 
 describe("who sees the People tab, and with which powers", () => {
   const expected: Record<Who, { status: number; viewer?: Record<string, unknown> }> = {
-    owner: { status: 200, viewer: { role: "maintainer", canManageMembers: true, assignableRoles: ["maintainer", "contributor", "viewer"], canInvite: true, invitableRoles: ["maintainer", "contributor", "viewer"], canEditCodeSettings: true, canConfirmSelfApproval: true } },
+    owner: { status: 200, viewer: { role: "maintainer", projectRole: "maintainer", canManageMembers: true, assignableRoles: ["maintainer", "contributor", "collaborator", "viewer"], canInvite: true, invitableRoles: ["maintainer", "contributor", "viewer"], canEditCodeSettings: true, canConfirmSelfApproval: true } },
     admin: { status: 200, viewer: { role: "maintainer", canManageMembers: true, canInvite: true, invitableRoles: ["maintainer", "contributor", "viewer"], canEditCodeSettings: true, canConfirmSelfApproval: true } },
-    maintainer: { status: 200, viewer: { role: "maintainer", canManageMembers: true, assignableRoles: ["maintainer", "contributor", "viewer"], canInvite: true, invitableRoles: ["contributor", "viewer"], canEditCodeSettings: true, canConfirmSelfApproval: false } },
+    maintainer: { status: 200, viewer: { role: "maintainer", projectRole: "maintainer", canManageMembers: true, assignableRoles: ["maintainer", "contributor", "collaborator", "viewer"], canInvite: true, invitableRoles: ["contributor", "viewer"], canEditCodeSettings: true, canConfirmSelfApproval: false } },
     contributor: { status: 200, viewer: { role: "contributor", canManageMembers: false, assignableRoles: [], canInvite: false, invitableRoles: [], canEditCodeSettings: false, canConfirmSelfApproval: false } },
     viewer: { status: 200, viewer: { role: "viewer", canManageMembers: false, assignableRoles: [], canInvite: false, invitableRoles: [], canEditCodeSettings: false, canConfirmSelfApproval: false } },
     otherMaintainer: { status: 404 }, member: { status: 404 }, auditor: { status: 403 },
@@ -157,7 +157,7 @@ describe("adding, changing and removing a person: the CLI's rules", () => {
       const answer = await put(f, who, MEMBER, "viewer", 0);
       expect(answer.status, JSON.stringify(answer)).toBe(putExpected[who]);
       if (putExpected[who] === 200) {
-        expect(answer.body).toEqual({ member: { developerId: MEMBER, role: "viewer" }, revision: 1 });
+        expect(answer.body).toEqual({ member: { developerId: MEMBER, role: "viewer", projectRole: "viewer" }, revision: 1 });
         expect(f.roleIn(MEMBER)).toBe("viewer");
         expect(f.capture.recordedBy("project_member.changed")).toEqual([expect.objectContaining({ actor: { kind: "member", id: PEOPLE[who].id }, target: { kind: "project", name: "payments" }, facts: { toRole: "viewer" } })]);
       } else {
@@ -177,7 +177,7 @@ describe("adding, changing and removing a person: the CLI's rules", () => {
 
   it("changes a role, and answers removed:false for a person with nothing to take away (an owner by company role)", async () => {
     const f = fixture();
-    expect((await put(f, "maintainer", CONTRIB, "viewer", 0)).body).toEqual({ member: { developerId: CONTRIB, role: "viewer" }, revision: 1 });
+    expect((await put(f, "maintainer", CONTRIB, "viewer", 0)).body).toEqual({ member: { developerId: CONTRIB, role: "viewer", projectRole: "viewer" }, revision: 1 });
     expect(f.capture.recordedBy("project_member.changed")).toEqual([expect.objectContaining({ facts: { fromRole: "contributor", toRole: "viewer" } })]);
     expect((await del(f, "maintainer", MEMBER, 1)).body).toEqual({ developerId: MEMBER, removed: false, revision: 1 });
     expect((await del(f, "maintainer", OWNER, 1))).toMatchObject({ status: 400, code: "CONFIG_INVALID" });
@@ -276,7 +276,7 @@ describe("the roster revision", () => {
 
   it("a change to the role a person already has moves nothing and records nothing", async () => {
     const f = fixture();
-    expect((await put(f, "maintainer", CONTRIB, "contributor", 0)).body).toEqual({ member: { developerId: CONTRIB, role: "contributor" }, revision: 0 });
+    expect((await put(f, "maintainer", CONTRIB, "contributor", 0)).body).toEqual({ member: { developerId: CONTRIB, role: "contributor", projectRole: "contributor" }, revision: 0 });
     expect(f.revision()).toBe(0);
     expect(f.capture.recordedBy("project_member.changed")).toEqual([]);
   });
@@ -287,7 +287,7 @@ describe("request ids", () => {
     const f = fixture();
     const requestId = randomUUID();
     const first = await put(f, "maintainer", MEMBER, "viewer", 0, requestId);
-    expect(first.body).toEqual({ member: { developerId: MEMBER, role: "viewer" }, revision: 1 });
+    expect(first.body).toEqual({ member: { developerId: MEMBER, role: "viewer", projectRole: "viewer" }, revision: 1 });
     const writes = f.db.transactions().length;
     // The replay carries the revision it was first sent with, now stale: still the stored answer, not a refusal.
     expect((await put(f, "maintainer", MEMBER, "viewer", 0, requestId)).body).toEqual(first.body);
@@ -295,6 +295,69 @@ describe("request ids", () => {
     expect(await put(f, "maintainer", MEMBER, "contributor", 1, requestId)).toMatchObject({ status: 409, code: "IDEMPOTENCY_CONFLICT" });
     expect(await put(f, "owner", MEMBER, "viewer", 1, requestId)).toMatchObject({ status: 409, code: "IDEMPOTENCY_CONFLICT" });
     expect(f.capture.recordedBy("project_member.changed")).toHaveLength(1);
+  });
+});
+
+// ---- Collaborator role (W11) on the People tab ------------------------------------------------------------------------------------------------------------------------------
+
+describe("the collaborator role on the People tab", () => {
+  const expected: Record<Who, number> = { owner: 200, admin: 200, maintainer: 200, contributor: 403, viewer: 403, otherMaintainer: 404, member: 404, auditor: 403 };
+  for (const who of Object.keys(PEOPLE) as Who[]) {
+    it(`${who} making a member a collaborator: ${String(expected[who])}`, async () => {
+      const f = fixture();
+      const answer = await put(f, who, MEMBER, "collaborator", 0);
+      expect(answer.status, JSON.stringify(answer)).toBe(expected[who]);
+      if (expected[who] !== 200) { expect(f.db.get(projectMemberKey(A, MEMBER, "payments"))).toBeUndefined(); expect(f.revision()).toBe(0); return; }
+      // The floor for older clients, the exact role beside it; the reader keeps both.
+      expect(answer.body).toEqual({ member: { developerId: MEMBER, role: "viewer", projectRole: "collaborator" }, revision: 1 });
+      expect(ProjectPersonChangeResponseReaderSchema.parse(answer.body).member).toMatchObject({ role: "viewer", projectRole: "collaborator" });
+      expect(f.db.get(projectMemberKey(A, MEMBER, "payments"))).toMatchObject({ role: "viewer", projectRole: "collaborator" });
+      const view = ProjectPeopleViewReaderSchema.parse((await f.call(who, "GET", PEOPLE_PATH)).body);
+      expect(view.members.find((m) => m.developerId === MEMBER)).toMatchObject({ role: "viewer", projectRole: "collaborator", source: "grant" });
+      expect(view.revision).toBe(1);
+      // The reader knows the exact role (it is not just passed through): collaborator is one of its four, a role it doesn't know reads as "unknown", and the floor stays three-valued.
+      const raw = (await f.call(who, "GET", PEOPLE_PATH)).body as { members: Array<Record<string, unknown>> };
+      const read = (projectRole: unknown, role: unknown = "viewer") => ProjectPeopleViewReaderSchema.parse({ ...raw, members: raw.members.map((m) => (m.developerId === MEMBER ? { ...m, role, projectRole } : m)) }).members.find((m) => m.developerId === MEMBER);
+      expect(read("collaborator")).toMatchObject({ role: "viewer", projectRole: "collaborator" });
+      expect(read("owner")).toMatchObject({ projectRole: "unknown" });
+      expect(read("collaborator", "collaborator")).toMatchObject({ role: "unknown" });
+    });
+  }
+
+  it("a collaborator sees the tab as a viewer, with its exact role beside the floor, and may give no role", async () => {
+    const f = fixture();
+    // A collaborator's grant row, as the store writes one: the coarse role is viewer, the exact role collaborator.
+    f.db.set({ ...projectMemberKey(A, MEMBER, "payments"), entityType: "MEMBERSHIP", ownerKey: MEMBER, grantId: randomUUID(), projectName: "payments", role: "viewer", projectRole: "collaborator", grantedBy: { developerId: OWNER }, grantedAt: "2026-10-05T00:00:00.000Z" });
+    const view = ProjectPeopleViewReaderSchema.parse((await f.call("member", "GET", PEOPLE_PATH)).body);
+    expect(view.viewer).toMatchObject({ role: "viewer", projectRole: "collaborator", canManageMembers: false, assignableRoles: [], canInvite: false, canEditCodeSettings: false });
+    expect(await put(f, "member", NEWBIE, "collaborator", 0)).toMatchObject({ status: 403 });
+    // Contributors and viewers carry their exact role too.
+    expect(ProjectPeopleViewReaderSchema.parse((await f.call("viewer", "GET", PEOPLE_PATH)).body).viewer).toMatchObject({ role: "viewer", projectRole: "viewer" });
+  });
+
+  it("a collaborator change is fenced by the roster revision", async () => {
+    const f = fixture();
+    expect((await put(f, "maintainer", CONTRIB, "viewer", 0)).status).toBe(200);
+    expect(await put(f, "owner", MEMBER, "collaborator", 0)).toMatchObject({ status: 409, code: "CHANGE_STALE", message: PROJECT_PEOPLE_STALE_MESSAGE });
+    expect(f.db.get(projectMemberKey(A, MEMBER, "payments"))).toBeUndefined();
+    expect((await put(f, "owner", MEMBER, "collaborator", 1)).body).toMatchObject({ revision: 2 });
+  });
+
+  it("a collaborator is not a maintainer: with one present, the last maintainer still can't be removed or made a collaborator", async () => {
+    const f = fixture();
+    expect((await put(f, "maintainer", MEMBER, "collaborator", 0)).status).toBe(200);
+    expect(await del(f, "owner", MAINT, 1)).toMatchObject({ status: 400, message: PROJECT_LAST_MAINTAINER_MESSAGE });
+    expect(await put(f, "owner", MAINT, "collaborator", 1)).toMatchObject({ status: 400, message: PROJECT_LAST_MAINTAINER_MESSAGE });
+    expect(f.roleIn(MAINT)).toBe("maintainer");
+    // Once someone else maintains it, the maintainer may become a collaborator.
+    expect((await put(f, "owner", MEMBER, "maintainer", 1)).status).toBe(200);
+    expect((await put(f, "owner", MAINT, "collaborator", 2)).body).toEqual({ member: { developerId: MAINT, role: "viewer", projectRole: "collaborator" }, revision: 3 });
+  });
+
+  it("refuses a role outside Cloud's four, writing nothing", async () => {
+    const f = fixture();
+    for (const role of ["owner", "admin", "developer", "Collaborator"]) expect(await f.call("maintainer", "PUT", `${PEOPLE_PATH}/${MEMBER}`, { requestId: randomUUID(), role, expectedRevision: 0 }), role).toMatchObject({ status: 400, code: "CONFIG_INVALID" });
+    expect(f.db.transactions().length).toBe(0);
   });
 });
 

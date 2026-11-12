@@ -4,9 +4,9 @@
 // admin), the same "only a company member" rule, the same request-id replay, audit and approval bookkeeping, and the one last-maintainer rule. Code settings keep their own
 // route (`PUT .../code-settings`); this read only tells the web which of those the viewer may change.
 import { agentXError, projectAllows, type ProjectRole } from "@rovara-code/contracts";
-import { PROJECT_PEOPLE_BROWSER_MESSAGE, PutProjectPersonBodySchema, projectRoleFloor, RemoveProjectPersonBodySchema, type ProjectPeopleView, type ProjectPeopleViewer, type ProjectPersonChangeResponse, type ProjectPersonRemoveResponse } from "@agentx/cloud-contracts";
+import { PROJECT_PEOPLE_BROWSER_MESSAGE, PutProjectPersonBodySchema, projectRoleFloor, RemoveProjectPersonBodySchema, type ProjectPeopleRole, type ProjectPeopleView, type ProjectPeopleViewer, type ProjectPersonChangeResponse, type ProjectPersonRemoveResponse } from "@agentx/cloud-contracts";
 import { logDeveloperEvent } from "../../developer/log.js";
-import { projectOpenState, readPeopleRevision, removeProjectMember, setProjectMember, type ProjectMemberChangeDependencies } from "../../org/project-members.js";
+import { projectMemberRoleOf, projectOpenState, readPeopleRevision, removeProjectMember, setProjectMember, type ProjectMemberChangeDependencies } from "../../org/project-members.js";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "./types.js";
 import { bodyError } from "./common.js";
 import { projectMembersDepsOf } from "./project-list.js";
@@ -16,18 +16,22 @@ const PEOPLE_PATH = /^\/v1\/app\/projects\/([^/]+)\/people(?:\/([a-f0-9]{64}))?$
 export const isProjectPeoplePath = (pathname: string): boolean => PEOPLE_PATH.test(pathname);
 
 const ALL_ROLES: readonly ProjectRole[] = ["maintainer", "contributor", "viewer"];
+/** Collaborator role (W11): whoever may manage people (a maintainer of the project, or a company owner or admin, who is one by company role) may give any of Cloud's four roles. Invites stay three. */
+const ASSIGNABLE_ROLES: readonly ProjectPeopleRole[] = ["maintainer", "contributor", "collaborator", "viewer"];
 const MAINTAINER_INVITE_ROLES: readonly ProjectRole[] = ["contributor", "viewer"];
 const MANAGE_MESSAGE = "only a project maintainer can change who is in a project";
 
 const isCompanyAdmin = (caller: Pick<DeveloperCaller, "orgRole">): boolean => caller.orgRole === "owner" || caller.orgRole === "admin";
 
 /** What the viewer may do here, from their live project role (read on this request) and their company role. */
-export function peopleViewerOf(caller: Pick<DeveloperCaller, "orgRole">, role: ProjectRole, open: boolean): ProjectPeopleViewer {
+export function peopleViewerOf(caller: Pick<DeveloperCaller, "orgRole">, role: ProjectRole, open: boolean, exact?: ProjectPeopleRole): ProjectPeopleViewer {
   const manage = projectAllows(role, "manage_members");
   const admin = isCompanyAdmin(caller);
   const canInvite = open && (admin || manage);
+  // Display only: every power above and below is judged on the floor `role`, never on the exact role.
+  const projectRole: ProjectPeopleRole = exact ?? role;
   return {
-    role, canManageMembers: manage, assignableRoles: manage ? [...ALL_ROLES] : [],
+    role, projectRole, canManageMembers: manage, assignableRoles: manage ? [...ASSIGNABLE_ROLES] : [],
     canInvite, invitableRoles: !canInvite ? [] : admin ? [...ALL_ROLES] : [...MAINTAINER_INVITE_ROLES],
     canEditCodeSettings: projectAllows(role, "edit_settings"), canConfirmSelfApproval: admin,
   };
@@ -45,7 +49,8 @@ async function getProjectPeople(deps: DeveloperRouteDependencies, caller: Develo
   const revision = await readPeopleRevision(deps, caller.orgId, name);
   const { members } = await readProjectMembers(deps, caller, name);
   const open = await projectOpenState(deps, caller.orgId, name) === "open";
-  return { project: name, members, revision, viewer: peopleViewerOf(caller, role, open) };
+  const exact = await projectMemberRoleOf(projectMembersDepsOf(deps), caller.orgId, name, caller);
+  return { project: name, members, revision, viewer: peopleViewerOf(caller, role, open, exact) };
 }
 
 async function putProjectPerson(deps: DeveloperRouteDependencies, caller: DeveloperCaller, rawName: string, developerId: string, body: unknown): Promise<ProjectPersonChangeResponse> {
@@ -60,8 +65,8 @@ async function putProjectPerson(deps: DeveloperRouteDependencies, caller: Develo
   logDeveloperEvent({ event: "developer.project_member_set", orgId: caller.orgId, project: name, role: member.role, via: "web" });
   await notifyProjectMemberChanged(deps, caller.orgId, name, member.developerId);
   // A replay of a request the CLI's route stored before 0.5.14 has no revision: the current one is the answer's.
-  // This body takes Code's three roles only, so the floor is the role itself (srv/collaborator: the store answers Cloud's four).
-  return { member: { developerId: member.developerId, role: projectRoleFloor(member.role) }, revision: member.revision ?? await readPeopleRevision(deps, caller.orgId, name) };
+  // `role` is the floor (a collaborator's is viewer) for clients that read only it; `projectRole` the exact role.
+  return { member: { developerId: member.developerId, role: projectRoleFloor(member.role), projectRole: member.role }, revision: member.revision ?? await readPeopleRevision(deps, caller.orgId, name) };
 }
 
 async function deleteProjectPerson(deps: DeveloperRouteDependencies, caller: DeveloperCaller, rawName: string, developerId: string, body: unknown): Promise<ProjectPersonRemoveResponse> {
