@@ -16,9 +16,9 @@ import { drainAuditPending } from "../../packages/broker/src/audit/drain.js";
 import { AUDIT_DETAIL_STORES } from "../../packages/broker/src/audit/erase.js";
 import { auditPending, auditPendingItem, type AuditDeps } from "../../packages/broker/src/audit/outbox.js";
 import {
-  CORE_AUDIT_EVENT_MAP, CloudAuditSinkError, auditRoomProblem, cloudActionOf, createCloudAuditSink, toCloudAuditEvent, unmappedCoreActions, type EventMapping,
+  AUDIT_SINK_GAPS, CORE_AUDIT_EVENT_MAP, CloudAuditSinkError, auditRoomProblem, cloudActionOf, createCloudAuditSink, toCloudAuditEvent, unmappedCoreActions, type EventMapping,
 } from "../../packages/broker/src/cloud/adapters/audit-sink/index.js";
-import { NOT_AUDIT_ACTIONS, lessonLibraryAuditActions, scanCoreAuditActions } from "../support/core-audit-actions.js";
+import { NOT_AUDIT_ACTIONS, lessonLibraryAuditActions, lessonLibraryEvents, scanCoreAuditActions } from "../support/core-audit-actions.js";
 import { FakeAuditSqs } from "../support/fake-audit-sqs.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 
@@ -39,12 +39,35 @@ async function coreActions(): Promise<{ all: string[]; scan: Awaited<ReturnType<
 describe("every audit event of Rovara Code's core maps to a Cloud ledger event", () => {
   it("finds the core's events, and the scan is not blind (it sees the known ones, and no template it cannot read)", async () => {
     const { all, scan } = await coreActions();
-    expect(scan.unresolvedTemplates).toEqual([]);
+    // Every non-literal `action:` (an identifier, a shorthand, a call, a template it cannot read) of an audit-shaped object is either resolved by an allowlisted builder or reported here.
+    expect(scan.unresolved).toEqual([]);
+    expect(Object.entries(scan.resolverHits).filter(([, hits]) => hits === 0).map(([name]) => name), "an allowlisted resolver nothing uses any more").toEqual([]);
+    // The three builders the review named are read as builders, not skipped: script tokens, second review and sessions.
+    for (const name of ["core/script-tokens/store.ts input.action", "core/second-review/mode.ts event.action", "core/sessions/control.ts audit.action"]) expect(scan.resolverHits[name], name).toBeGreaterThan(0);
     // Positive controls from every shape the scan reads: a plain literal, a conditional, a template of literals, the MCP and saved-env templates, and the lessons library.
     for (const known of ["task.started", "agent.archived", "agent.unarchived", "decision.approved", "decision.changes_requested", "mcp_server.task_started", "mcp_server.changed_needs_review", "saved_env.build_recorded", "saved_env.setting_changed", "lesson.approved", "script_token.used"]) {
       expect(all, known).toContain(known);
     }
     expect(all.length).toBeGreaterThan(80);
+  });
+
+  it("MUTATION PROOF: a new audit event whose action is an identifier, a shorthand, a call, a constant or a template is reported, not skipped", () => {
+    const sources = {
+      "core/x/new.ts": [
+        `export const a = (deps, action) => deps.audit.stage({ eventId: "e1", actor, action: action, subject, details });`,
+        `export const b = (deps, action) => deps.audit.record({ eventId: "e2", actor, action, subject });`,
+        `export const c = (deps) => deps.audit.stage({ eventId: "e3", actor, action: pick(deps), subject });`,
+        `export const d = (deps) => deps.audit.stage({ eventId: "e4", actor, action: ACTION_NAME, subject });`,
+        `export const e = (deps, kind) => deps.audit.stage({ eventId: "e5", actor, action: \`thing.\${kind}\`, subject });`,
+        `export const f = (deps) => deps.audit.stage({ eventId: "e6", actor, action: "thing.literal_one", subject });`,
+        `export const g = (deps) => deps.store.admit({ idempotencyKey: "k", action: pickAnything(deps) });`,
+      ].join("\n"),
+    };
+    const scan = scanCoreAuditActions(sources);
+    expect(scan.unresolved.map((line) => line.split(":")[0])).toEqual(["core/x/new.ts", "core/x/new.ts", "core/x/new.ts", "core/x/new.ts", "core/x/new.ts"]);
+    expect(scan.actions.has("thing.literal_one")).toBe(true);
+    // The same files, in a file the text 'audit' appears in or not, are read alike: the review's old filter skipped a file with no 'audit' in it.
+    expect(scanCoreAuditActions({ "core/y/quiet.ts": `export const z = (s) => s.stage({ eventId: "q", actor, action: someFunction(), subject });` }).unresolved).toHaveLength(1);
   });
 
   it("has a Cloud event for each, and every Cloud event is one the ledger knows", async () => {
@@ -101,6 +124,7 @@ const SUBJECT_TYPES: Readonly<Record<string, string>> = {
 const SECRET = ["sk", "live", "0123456789abcdef0123456789abcdef"].join("_");
 const EMAIL = ["pat", "example.com"].join("@");
 const PROJECT_NAME = "Secret Payments Project";
+const LESSON_PROJECT = "payments-web";
 const REPOSITORY = "acme/secret-repo";
 
 /** A core event for `action`: the subject its mapping needs, and details that hold what the core really sends plus things it must never leak (an email, a token, an unknown key). */
@@ -115,7 +139,7 @@ function sampleOf(action: string, mapping: EventMapping): AuditEvent {
     details: {
       project: PROJECT_NAME, repository: REPOSITORY, number: 7, label: "My server", sourceId: "src-1", changeId: "chg-1", requestId: "req-1",
       leakedEmail: EMAIL, leakedToken: SECRET, note: `contact ${EMAIL}`, token: SECRET,
-      mode: "window", seconds: 600, previous: { mode: "any-active", seconds: 0 },
+      mode: "window", seconds: 600, previous: { mode: "window", seconds: 300 },
       pin: { integrity: "sha512-x", lockfileHash: "a".repeat(64), bundleHash: "b".repeat(64), toolsHash: "c".repeat(64), destinationCount: 1, secretCount: 1, secretVersion: "v1", destinations: "api.example.com:443", secretNames: "TOKEN_A" },
       revision: 3, policyDigest: "d".repeat(64), previousDigest: "e".repeat(64),
       hasToken: true, addresses: "api.example.com", name: "pkg", reason: "done",
@@ -359,7 +383,9 @@ describe("facts carry no secret or email, and names go only where Cloud's rules 
     expect(bad({ project: PROJECT_NAME, workflow: true, path: EMAIL }).facts).toEqual({ workflow: true });
     expect(bad({ project: PROJECT_NAME, workflow: true, path: "p".repeat(AUDIT_FACT_MAX_CHARS + 1) }).facts).toEqual({ workflow: true });
     expect(bad({ project: PROJECT_NAME, workflow: true, path: "café" }).facts).toEqual({ workflow: true });
-    expect(bad({ project: PROJECT_NAME, workflow: 1.5, path: "build" }).facts).toEqual({ path: "build" });
+    expect(bad({ project: PROJECT_NAME, workflow: 1.5, path: "QUICK" }).facts).toEqual({ path: "QUICK" });
+    // A value outside the fixed words of the key is left out too (no implicit pull: a word that merely looks tidy is not enough).
+    expect(bad({ project: PROJECT_NAME, workflow: true, path: "pat-smith" }).facts).toEqual({ workflow: true });
   });
 
   it("the core's decision event reports the same facts Cloud's approval.decided carries, from the core's own words", () => {
@@ -367,6 +393,152 @@ describe("facts carry no secret or email, and names go only where Cloud's rules 
     if (!made.ok) throw new Error(made.refusal);
     expect(made.event).toMatchObject({ action: "approval.decided", target: { kind: "approval", id: "req-1" }, facts: { decision: "rejected", subjectKind: "plan", kind: "plan" } });
     expect(JSON.stringify(made.event)).not.toContain(SECRET);
+  });
+});
+
+// ---- 4b. no implicit facts ----------------------------------------------------------------------------------------------------------------------------------------------------------
+
+/** A free-text value a person could type into a branch, a title or a label: spaces, a slash, an `@`, capitals, non-ASCII. */
+// Printable ASCII on purpose, and no email shape: the ledger's own last-line guard (ASCII, 128 characters, no email) would drop a marker that breaks them and hide a missing check in the map.
+const MARKER = "Pat Smith fix-login/for jane";
+const MARKER_WORDS = ["Pat Smith", "fix-login", "jane"];
+
+/** Details with the marker under EVERY key a Cloud action may carry as a fact (and under the nested names the core uses), and under the names of the mapped sources. */
+function markedDetails(mapping: EventMapping): NonNullable<AuditEvent["details"]> {
+  const keys = [...AUDIT_FACT_KEYS[mapping.cloud], ...Object.keys(mapping.facts ?? {}), "branch", "target", "source", "type", "scope", "model", "operator", "cause", "kind", "mode", "name", "reason", "label", "project", "repository", "title", "message"];
+  const flat = Object.fromEntries(keys.map((key) => [key, MARKER]));
+  return { ...flat, previous: { ...flat }, pin: { ...flat } };
+}
+
+describe("a core detail never reaches a fact under an allowed key's name (no implicit facts)", () => {
+  it("for every mapped action: a free-text marker under every allowed fact key, and under the keys the mapping reads, is in no fact, related id, event id or id target", () => {
+    for (const [action, mapping] of Object.entries(CORE_AUDIT_EVENT_MAP)) {
+      const base = sampleOf(action, mapping);
+      const made = toCloudAuditEvent({ ...base, details: markedDetails(mapping) });
+      // A mapping with a required fact, or a target built from details, refuses the event when the marker fails its check: that is the fail-closed outcome.
+      if (!made.ok) { expect(["invalid_event", "bad_target"], action).toContain(made.refusal); continue; }
+      const visible = JSON.stringify([made.event.facts ?? {}, made.event.related ?? [], made.event.eventId, "id" in made.event.target ? made.event.target.id : null]);
+      for (const word of MARKER_WORDS) expect(visible, `${action}: ${word}`).not.toContain(word);
+    }
+  });
+
+  it("MUTATION M3: session.retried keeps no 'branch' from a core detail (the core sends none; a free-text branch name would otherwise land in the fact)", () => {
+    const made = toCloudAuditEvent({ ...sampleOf("session.retried", CORE_AUDIT_EVENT_MAP["session.retried"]!), details: { branch: "pat-smith/fix-login-for-jane", sessionKind: "task", label: "pat-smith/fix-login-for-jane" } });
+    if (!made.ok) throw new Error(made.refusal);
+    expect(made.event.facts).toBeUndefined();
+    expect(JSON.stringify(made.event)).not.toContain("pat-smith");
+  });
+
+  it("a mapping names only keys its Cloud action allows, and checks every fact it names", () => {
+    for (const [action, mapping] of Object.entries(CORE_AUDIT_EVENT_MAP)) {
+      for (const key of Object.keys(mapping.facts ?? {})) expect(AUDIT_FACT_KEYS[mapping.cloud], `${action}.${key}`).toContain(key);
+      for (const key of mapping.required ?? []) expect(Object.keys(mapping.facts ?? {}), `${action} requires ${key}`).toContain(key);
+    }
+  });
+
+  it("a refused or skipped event logs a fixed reason and the core's action name, never a value, and in skip mode adds no step", () => {
+    const logs: Array<Record<string, unknown>> = [];
+    const skipping = createCloudAuditSink({ store: () => new MemoryDocumentStore(), now: () => NOW, onInvalid: "skip", log: (entry) => logs.push(entry) });
+    const secretEvent: AuditEvent = { eventId: `evt-${SECRET}`, companyId: ORG, at: AT, actor: person, action: "nobody.mapped_this", subject: { type: "task", id: SECRET }, details: { note: SECRET, email: EMAIL } };
+    expect(skipping.stage(secretEvent)).toEqual([]);
+    expect(logs).toEqual([{ event: "audit.record_invalid", level: "error", reason: "unmapped_action", coreAction: "nobody.mapped_this" }]);
+    expect(JSON.stringify(logs)).not.toContain(SECRET);
+    const required = { ...sampleOf("model.policy.changed", CORE_AUDIT_EVENT_MAP["model.policy.changed"]!), details: { revision: 1 } };
+    expect(skipping.stage(required)).toEqual([]);
+    expect(logs.at(-1)).toMatchObject({ reason: "invalid_event" });
+  });
+
+  it("a value inside a key's own check is kept (the checks let real values through)", () => {
+    const retried = toCloudAuditEvent({ ...sampleOf("automatic_run.started", CORE_AUDIT_EVENT_MAP["automatic_run.started"]!), details: { job: "nightly", setupApprovedBy: "dev_9", runsThisMonth: 4, cap: 31, project: PROJECT_NAME } });
+    if (!retried.ok) throw new Error(retried.refusal);
+    expect(retried.event.facts).toEqual({ job: "nightly", setupApprovedBy: "dev_9", runsThisMonth: 4, cap: 31 });
+  });
+});
+
+describe("project-level lesson events, with the real vendored lessons sink", () => {
+  it("never put the project's name in the chain as an id: a name-keyed target, the name only in the org's details", async () => {
+    const projectLevel = await lessonLibraryEvents({ lessonId: undefined });
+    expect(projectLevel.length).toBeGreaterThan(20);
+    for (const core of projectLevel) {
+      // The vendored sink really does name the project in the subject's id: this is the shape the fix is for.
+      expect(core.subject?.id, core.action).toBe(LESSON_PROJECT);
+      const made = toCloudAuditEvent(core);
+      if (!made.ok) throw new Error(`${core.action}: ${made.refusal}`);
+      expect(made.event.target, core.action).toEqual({ kind: "lesson", name: LESSON_PROJECT });
+      const chainVisible = JSON.stringify({ ...made.event, target: "id" in made.event.target ? made.event.target : { kind: made.event.target.kind }, details: undefined });
+      expect(chainVisible, core.action).not.toContain(LESSON_PROJECT);
+      expect(made.event.details, core.action).toEqual([{ subject: "org", fields: { project: LESSON_PROJECT } }]);
+    }
+  });
+
+  it("a lesson's own event targets the lesson by its id", async () => {
+    const lessonLevel = await lessonLibraryEvents({ lessonId: "les_aaaa1111" });
+    for (const core of lessonLevel) {
+      const made = toCloudAuditEvent(core);
+      if (!made.ok) throw new Error(`${core.action}: ${made.refusal}`);
+      expect(made.event.target, core.action).toEqual({ kind: "lesson", id: "les_aaaa1111" });
+    }
+  });
+
+  it("MUTATION: a mapping that targets the subject's id for a project-level event puts the name in the chain, and this test sees it", async () => {
+    const [core] = await lessonLibraryEvents({ lessonId: undefined });
+    const naive = { ...CORE_AUDIT_EVENT_MAP, [core!.action]: { ...CORE_AUDIT_EVENT_MAP[core!.action]!, target: { id: "lesson" as const } } };
+    const made = toCloudAuditEvent(core!, naive);
+    if (!made.ok) throw new Error(made.refusal);
+    expect(JSON.stringify(made.event.target)).toContain(LESSON_PROJECT);
+  });
+});
+
+describe("one pull request, one id; one approval window setting, one action", () => {
+  const opened = (details: NonNullable<AuditEvent["details"]>) => toCloudAuditEvent({ ...sampleOf("pull_request.opened", CORE_AUDIT_EVENT_MAP["pull_request.opened"]!), details });
+  const requested = (details: NonNullable<AuditEvent["details"]>) => toCloudAuditEvent({ ...sampleOf("pull_request.merge_requested", CORE_AUDIT_EVENT_MAP["pull_request.merge_requested"]!), details });
+  const idOf = (result: ReturnType<typeof opened>): string => { if (!result.ok || !("id" in result.event.target)) throw new Error("no id"); return result.event.target.id; };
+
+  it("opened and merge_requested agree on the id when they name the repository the same way (the repository key), whatever its case", () => {
+    const a = opened({ repositoryKey: "Acme/Web", repository: "web", number: "7" });
+    const b = requested({ repository: "acme/web", number: 7, method: "squash", requestId: "req-1" });
+    expect(idOf(a)).toBe(idOf(b));
+    const orgDetails = (result: typeof a) => (result.ok ? result.event.details : undefined);
+    expect(orgDetails(a)).toEqual([{ subject: "org", fields: { repository: "acme/web" } }]);
+    expect(orgDetails(b)).toEqual(orgDetails(a));
+    expect(a.ok && a.event.facts).toEqual({ number: 7 });
+  });
+
+  it("until Code sends the key, opened names the repository by its id, and says so: the gap is listed, and its org detail is the string the id was made from", () => {
+    const a = opened({ repository: "web", number: 7 });
+    expect(a.ok && a.event.details).toEqual([{ subject: "org", fields: { repository: "web" } }]);
+    expect(AUDIT_SINK_GAPS.map((gap) => gap.id)).toContain("A7-G1-pull-request-repository-key");
+    expect(idOf(a)).not.toBe(idOf(requested({ repository: "acme/web", number: 7, method: "squash" })));
+  });
+
+  it("the merge method fact is one of the merge methods", () => {
+    const made = requested({ repository: "acme/web", number: 7, method: "pat-smith" });
+    expect(made.ok && made.event.facts).toEqual({ number: 7 });
+  });
+
+  it("the approval sign-in setting is Cloud's company.approval_window_changed: seconds before and after, a direct change", () => {
+    const made = toCloudAuditEvent({ ...sampleOf("setting.approval_sign_in_changed", CORE_AUDIT_EVENT_MAP["setting.approval_sign_in_changed"]!), details: { mode: "window", seconds: 7_200, revision: 4, previous: { mode: "window", seconds: 3_600, isDefault: false } } });
+    if (!made.ok) throw new Error(made.refusal);
+    expect(made.event).toMatchObject({ action: "company.approval_window_changed", target: { kind: "org", id: ORG }, facts: { from: 3_600, to: 7_200, mode: "direct", revision: 4 } });
+    expect(AUDIT_ACTIONS as readonly string[]).not.toContain("company.approval_sign_in_changed");
+  });
+
+  it("a change to or from 'trust any active company sign-in' is refused: Cloud's ledger has no seconds for it", () => {
+    const base = sampleOf("setting.approval_sign_in_changed", CORE_AUDIT_EVENT_MAP["setting.approval_sign_in_changed"]!);
+    expect(toCloudAuditEvent({ ...base, details: { mode: "any-active", revision: 5, previous: { mode: "window", seconds: 3_600 } } })).toEqual({ ok: false, refusal: "invalid_event" });
+    expect(toCloudAuditEvent({ ...base, details: { mode: "window", seconds: 600, revision: 5, previous: { mode: "any-active" } } })).toEqual({ ok: false, refusal: "invalid_event" });
+  });
+
+  it("script tokens carry their related record (the owner on a revoke, the task on a use), as Cloud's own writers do", () => {
+    const revoked = toCloudAuditEvent({ ...sampleOf("script_token.revoked", CORE_AUDIT_EVENT_MAP["script_token.revoked"]!), details: { tokenId: "tok_1", by: "admin", related: "dev_owner" } });
+    const used = toCloudAuditEvent({ ...sampleOf("script_token.used", CORE_AUDIT_EVENT_MAP["script_token.used"]!), details: { tokenId: "tok_1", day: "2026-11-11", permission: "start", related: "task-1" } });
+    expect(revoked.ok && revoked.event.related).toEqual(["dev_owner"]);
+    expect(used.ok && used.event).toMatchObject({ related: ["task-1"], facts: { day: "2026-11-11", permission: "start" } });
+  });
+
+  it("a decision targets the approval (the core's request id) and relates the task it is about", () => {
+    const made = toCloudAuditEvent({ ...sampleOf("decision.approved", CORE_AUDIT_EVENT_MAP["decision.approved"]!), subject: { type: "plan", id: "task-9" }, details: { kind: "plan", risk: "high" } });
+    expect(made.ok && made.event).toMatchObject({ action: "approval.decided", target: { kind: "approval", id: "req-1" }, related: ["task-9"], facts: { decision: "approved", kind: "plan", subjectKind: "plan" } });
   });
 });
 

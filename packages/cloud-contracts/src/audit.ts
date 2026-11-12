@@ -442,8 +442,6 @@ export const AUDIT_ACTIONS = [
   "chain.unarchived",
   "playbook.file_changed",
   "automation.run_ended",
-  // The approval sign-in setting (decision 62): the window of a recent sign-in, or trust in any active company sign-in. Written when an owner changes it directly in the core's settings.
-  "company.approval_sign_in_changed",
   // Lessons in the repository (R3): a person asked, in a pull request comment, for a lesson to be retired.
   "lesson.retire_requested",
 ] as const;
@@ -858,8 +856,6 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "chain.unarchived": [],
   "playbook.file_changed": ["revision", "filePresent"],
   "automation.run_ended": ["outcome", "origin"],
-  // `mode` is `window` or `any-active`; `seconds` is the window in whole seconds (0 for any-active); `from*` is the setting before the change.
-  "company.approval_sign_in_changed": ["mode", "seconds", "fromMode", "fromSeconds", "revision"],
   "lesson.retire_requested": ["pullRequest"],
 };
 

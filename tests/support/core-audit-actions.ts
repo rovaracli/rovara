@@ -23,6 +23,8 @@ export const NOT_AUDIT_ACTIONS: Readonly<Record<string, string>> = {
   "nightly.run": "Admission.admit for a nightly run (core/test-env/nightly-run.ts)",
   "automation.run": "Admission.admit for an automatic run (core/automation/run-seam.ts)",
   "task.start": "Admission stage for a task start (core/task-flow/start.ts)",
+  "learning.call": "Admission.admit for a lessons model call (local/app/lessons-model.ts)",
+  "machine.start": "Admission.admit for a worker machine start (core/task-flow/dispatch.ts)",
 };
 
 export interface CoreAuditScan {
@@ -32,8 +34,10 @@ export interface CoreAuditScan {
   readonly lessonLiterals: ReadonlySet<string>;
   /** Admission actions found (so `NOT_AUDIT_ACTIONS` can be checked for stale entries). */
   readonly excludedFound: ReadonlySet<string>;
-  /** Templates in an `action` property this file has no way to resolve. Must be empty. */
-  readonly unresolvedTemplates: readonly string[];
+  /** An `action:` of an audit-shaped object (or `{ action }`) this file cannot resolve and no allowlisted resolver covers. Must be empty. */
+  readonly unresolved: readonly string[];
+  /** How many times each allowlisted resolver was used (a resolver used zero times is stale). */
+  readonly resolverHits: Readonly<Record<string, number>>;
 }
 
 function sourceFiles(root: string): string[] {
@@ -111,40 +115,96 @@ const TEMPLATES: Readonly<Record<string, () => string[]>> = {
   "`saved_env.${entry.action}`": () => unionMembers(join(VENDOR, "broker/src/core/test-env/saved-env.ts"), "SavedEnvAuditEntry", "action").filter((action) => action !== "activity").map((action) => `saved_env.${action}`),
 };
 
-export function scanCoreAuditActions(): CoreAuditScan {
+/**
+ * `action:` values that are not a literal, each with the file it is in and why it is safe: a builder or relay that takes the action from its caller. Every call site of these builders passes an object with a
+ * literal `action` that the scan reads like any other (they have `actor`, `subject`, `details` or `person` beside it). Each entry must be used (a stale one fails the test).
+ */
+const RESOLVERS: ReadonlyArray<{ readonly file: string; readonly text: string; readonly why: string }> = [
+  { file: "core/script-tokens/store.ts", text: "input.action", why: "auditEvent(): every caller passes a literal action beside `actor` and `tokenId`" },
+  { file: "core/second-review/mode.ts", text: "event.action", why: "stagedAudit(): every caller passes an object with a literal (or conditional literal) `action` beside `subject` and `details`" },
+  { file: "core/sessions/control.ts", text: "audit.action", why: "commit(): every caller passes { action: <literal>, person }" },
+  { file: "context-sources/audit.ts", text: "event.action", why: "mcpServerAudit() and contextSourceAudit() relay the action `told` was called with, a literal at each call site in mcp-servers.ts and settings.ts" },
+];
+
+/**
+ * An object with an `action` is an audit event when it has an `eventId` (the port's `AuditEvent`), or when it is an argument of a call to one of the functions that record or stage an event (`stage`, `record`, the
+ * task flow's `stageAudit` / `recordAudit`, second review's `stagedAudit`, the test environment's `stageAuditEvent` / `recordAuditEvent`, `told`, the script tokens' `auditEvent`, the session control's `commit`).
+ * Not the file's text: a file with no word 'audit' in it is read the same.
+ */
+const AUDIT_CALLEES = new Set(["stage", "record", "stageAudit", "recordAudit", "stagedAudit", "stageAuditEvent", "recordAuditEvent", "told", "auditEvent", "commit", "commitOnce"]);
+
+/** Files that ARE audit sinks (they take an event and store it), not places that record one. */
+const SINK_IMPLEMENTATIONS: Readonly<Record<string, string>> = {
+  "audit-event.ts": "Code's local audit trail: checks and stores an event it is given",
+  "document-audit-sink.ts": "Code's default audit sink: stores the event it is given",
+  "sqlite-audit-log.ts": "Code's append-only audit copy: stores the event it is given",
+  "lessons/audit-sink.ts": "the lessons library's sink, run for real by lessonLibraryAuditActions()",
+  "lessons/approve.ts": "the lessons library's own events (LessonAuditEvent), mapped by its sink and run for real by lessonLibraryAuditActions()",
+};
+
+const calleeName = (call: ts.CallExpression): string => {
+  const expression = call.expression;
+  return ts.isPropertyAccessExpression(expression) ? expression.name.text : ts.isIdentifier(expression) ? expression.text : "";
+};
+
+function propertyName(property: ts.ObjectLiteralElementLike): string | undefined {
+  return ts.isPropertyAssignment(property) || ts.isShorthandPropertyAssignment(property) || ts.isMethodDeclaration(property) ? property.name.getText() : undefined;
+}
+
+/** `extraSources` (relative file name to source text) is scanned as if it were part of the core: a test uses it to show a new kind of `action:` is noticed. */
+export function scanCoreAuditActions(extraSources: Readonly<Record<string, string>> = {}): CoreAuditScan {
   const actions = new Set<string>();
   const lessonLiterals = new Set<string>();
   const excludedFound = new Set<string>();
-  const unresolvedTemplates: string[] = [];
-  const add = (action: string, file: string): void => {
+  const unresolved: string[] = [];
+  const resolverHits: Record<string, number> = Object.fromEntries(RESOLVERS.map((resolver) => [`${resolver.file} ${resolver.text}`, 0]));
+  const add = (action: string): void => {
     if (!SHAPE.test(action)) return;
     if (Object.hasOwn(NOT_AUDIT_ACTIONS, action)) excludedFound.add(action);
     else if (action.startsWith("lesson.")) lessonLiterals.add(action);
     else actions.add(action);
-    void file;
   };
-  for (const root of SOURCE_ROOTS) {
-    for (const file of sourceFiles(root)) {
-      const sf = parse(file);
-      if (!/audit/iu.test(sf.text)) continue;
+  const sources: Array<{ relative: string; sf: ts.SourceFile }> = [
+    ...SOURCE_ROOTS.flatMap((root) => sourceFiles(root).map((file) => ({ relative: file.slice(VENDOR.length).replace(/^[^/]+\/src\//u, ""), sf: parse(file) }))),
+    ...Object.entries(extraSources).map(([relative, text]) => ({ relative, sf: ts.createSourceFile(relative, text, ts.ScriptTarget.Latest, true) })),
+  ];
+  {
+    for (const { relative, sf } of sources) {
+      if (Object.hasOwn(SINK_IMPLEMENTATIONS, relative)) continue;
       const visit = (node: ts.Node): void => {
-        if (ts.isPropertyAssignment(node) && node.name.getText() === "action") {
-          const init = node.initializer;
-          const literals = literalsOf(init);
-          if (literals !== undefined) literals.forEach((literal) => add(literal, file));
-          else if (ts.isTemplateExpression(init)) {
-            const resolver = TEMPLATES[init.getText()];
-            if (resolver !== undefined) resolver().forEach((action) => add(action, file));
-            else {
-              // A template of literals only (`decision.${a ? "x" : "y"}`): every combination.
-              let combos: string[] | undefined = [init.head.text];
-              for (const span of init.templateSpans) {
-                const options = literalsOf(span.expression);
-                if (options === undefined || combos === undefined) { combos = undefined; break; }
-                combos = combos.flatMap((prefix) => options.map((option) => `${prefix}${option}${span.literal.text}`));
+        if (ts.isObjectLiteralExpression(node)) {
+          const names = node.properties.map(propertyName);
+          const argumentOfAuditCall = ts.isCallExpression(node.parent) && node.parent.arguments.includes(node) && AUDIT_CALLEES.has(calleeName(node.parent));
+          // Not every object with an `action` is an audit event: an admission request has an `idempotencyKey`. An audit event has an `eventId` or is the argument of a recording call (AUDIT_CALLEES).
+          const actionProperty = node.properties.find((property) => propertyName(property) === "action");
+          const admission = names.includes("idempotencyKey");
+          if (actionProperty !== undefined && (admission || argumentOfAuditCall || names.includes("eventId"))) {
+            const where = `${relative}:${String(sf.getLineAndCharacterOfPosition(actionProperty.getStart()).line + 1)}`;
+            if (admission) {
+              // An admission request (not an audit event): its literal action must be one `NOT_AUDIT_ACTIONS` names, so a new kind of request is looked at.
+              if (ts.isPropertyAssignment(actionProperty)) literalsOf(actionProperty.initializer)?.forEach(add);
+            } else if (ts.isShorthandPropertyAssignment(actionProperty)) unresolved.push(`${where}: shorthand { action }`);
+            else if (ts.isPropertyAssignment(actionProperty)) {
+              const init = actionProperty.initializer;
+              const literals = literalsOf(init);
+              const initText = init.getText().replace(/\s+/gu, " ");
+              if (literals !== undefined) literals.forEach(add);
+              else if (ts.isTemplateExpression(init) && TEMPLATES[init.getText()] !== undefined) TEMPLATES[init.getText()]!().forEach(add);
+              else if (ts.isTemplateExpression(init)) {
+                // A template of literals only (`decision.${a ? "x" : "y"}`): every combination.
+                let combos: string[] | undefined = [init.head.text];
+                for (const span of init.templateSpans) {
+                  const options = literalsOf(span.expression);
+                  if (options === undefined || combos === undefined) { combos = undefined; break; }
+                  combos = combos.flatMap((prefix) => options.map((option) => `${prefix}${option}${span.literal.text}`));
+                }
+                if (combos === undefined) unresolved.push(`${where}: ${initText.slice(0, 80)}`);
+                else combos.forEach(add);
+              } else {
+                const resolver = RESOLVERS.find((candidate) => relative === candidate.file && initText === candidate.text);
+                if (resolver === undefined) unresolved.push(`${where}: ${initText.slice(0, 80)}`);
+                else resolverHits[`${resolver.file} ${resolver.text}`] = (resolverHits[`${resolver.file} ${resolver.text}`] ?? 0) + 1;
               }
-              if (combos === undefined) unresolvedTemplates.push(`${file.slice(VENDOR.length)}: ${init.getText().slice(0, 80)}`);
-              else combos.forEach((action) => add(action, file));
             }
           }
         }
@@ -153,7 +213,7 @@ export function scanCoreAuditActions(): CoreAuditScan {
       visit(sf);
     }
   }
-  return { actions, lessonLiterals, excludedFound, unresolvedTemplates };
+  return { actions, lessonLiterals, excludedFound, unresolved, resolverHits };
 }
 
 /** The lessons library's own list of the actions it names, and the actions its audit sink actually records for them (it maps to the ledger's names). */
@@ -167,4 +227,18 @@ export async function lessonLibraryAuditActions(): Promise<{ named: readonly str
   const sink = sinkModule.lessonAuditSink({ stage: () => [], async record(event) { recorded.add(event.action); } }, () => Date.parse("2026-11-10T10:00:00.000Z"), "org_00000000000000000000");
   for (const action of sinkModule.LEDGERED) await sink.emit({ action, workspaceId: "ws", project: "web", facts: {} });
   return { named: typesModule.LESSON_AUDIT_ACTIONS, recorded };
+}
+
+/** The core events the lessons library really records for each action it names, for a lesson (`lessonId` set) or for the whole project (`lessonId` undefined: the library names the project in the subject's id). */
+export async function lessonLibraryEvents(options: { lessonId: string | undefined }): Promise<AuditEvent[]> {
+  const sinkModule = (await import("../../vendor/rovara-code/packages/broker/dist/lessons/audit-sink.js")) as unknown as {
+    lessonAuditSink(sink: { stage(event: AuditEvent): readonly never[]; record(event: AuditEvent): Promise<void> }, now: () => number, companyId: string): { emit(event: Record<string, unknown>, options?: { required?: boolean }): Promise<void> };
+    LEDGERED: readonly string[];
+  };
+  const recorded: AuditEvent[] = [];
+  const sink = sinkModule.lessonAuditSink({ stage: () => [], async record(event) { recorded.push(event); } }, () => Date.parse("2026-11-10T10:00:00.000Z"), "org_00000000000000000000");
+  for (const action of sinkModule.LEDGERED) {
+    await sink.emit({ action, workspaceId: "ws", project: "payments-web", ...(options.lessonId === undefined ? {} : { lessonId: options.lessonId }), actor: "a".repeat(64), facts: { tier: 1, count: 2, scope: "project", from: "one", to: "auto", mode: "second_person", type: "convention", cause: "person", reason: "refused", enabled: true } });
+  }
+  return recorded;
 }

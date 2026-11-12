@@ -6,15 +6,18 @@
 //
 // `record(event)` writes the same row on its own (a put, unconditional as Cloud's is: a repeat of one occurrence overwrites an identical row), for a caller with no transaction.
 //
-// An event this sink cannot make into a valid Cloud event (no entry in the map, a company or actor the ledger would refuse, a target it cannot name) is REFUSED by default: `stage` and `record` throw
-// `CloudAuditSinkError`, so the core's change is not made without its record (Code's own default sink does the same). `onInvalid: "skip"` instead mirrors `auditPending` in outbox.ts (log
-// `audit.record_invalid` with a code and no value, add nothing). Neither path ever logs a value of the event.
+// An event this sink cannot make into a valid Cloud event (no entry in the map, a company or actor the ledger would refuse, a target it cannot name, a required fact that failed its check) is, by default,
+// REFUSED: `stage` and `record` throw `CloudAuditSinkError`, so the core's change is not made without its record (Code's own default sink does the same). That default is for TESTS AND CI, where a gap must be loud.
+//
+// PRODUCTION: THE COMPOSITION ROOT (lanes S0 / S3) MUST PASS `onInvalid: "skip"`. It mirrors `auditPending` in outbox.ts, which every Cloud flow uses today: log `audit.record_invalid` (a fixed reason word and the
+// core's action name, never a value), add no step, and let the change go on. `audit.record_invalid` is already alarmed (`AUDIT_RECORD_FAILED_EVENTS`, infra/lib/audit-ledger.ts), so a dropped record is seen, and a
+// bad or unmapped event can never stop a real action in production (a refusal would turn an audit gap into an outage of task start, merge and approval). docs/architecture/cloud-adapter-conformance.md says the same.
 import { createHash } from "node:crypto";
 import { AuditEventInputSchema, auditEventId, AUDIT_FACT_KEYS, AUDIT_FACT_MAX_CHARS, AUDIT_MAX_RELATED, AUDIT_DETAIL_FIELDS_MAX, AUDIT_DETAIL_FIELD_MAX_CHARS, type AuditActor, type AuditDetailPart, type AuditEventInput, type AuditTarget } from "@agentx/cloud-contracts";
 import { DOCUMENT_STORE_LIMITS } from "@rovara-code/contracts";
 import type { AuditEvent, AuditSink, DocumentStore, JsonObject, StoredDocument, TransactItem } from "@rovara-code/contracts";
 import { auditPendingItem } from "../../../audit/outbox.js";
-import { CORE_AUDIT_EVENT_MAP, valueOf, type EventMapping, type MappingContext, type TargetRule } from "./event-map.js";
+import { CORE_AUDIT_EVENT_MAP, RELATED_ID, checkedFact, valueOf, type EventMapping, type MappingContext, type TargetRule } from "./event-map.js";
 
 /** Why an event could not be made into a Cloud event. Fixed words: the only thing a log or an error says. */
 export type CloudAuditRefusal = "unmapped_action" | "bad_actor" | "bad_time" | "bad_target" | "invalid_event";
@@ -32,7 +35,7 @@ export interface CloudAuditSinkOptions {
   /** Milliseconds. Sets the row's creation time and expiry; default `Date.now`. */
   now?: () => number;
   log?: (entry: Record<string, unknown>) => void;
-  /** `refuse` (default): throw. `skip`: log and add nothing, as Cloud's own `auditPending` does. */
+  /** `refuse` (default, for tests and CI): throw. `skip` (what the composition root passes in production): log `audit.record_invalid` and add nothing, as Cloud's own `auditPending` does. */
   onInvalid?: "refuse" | "skip";
   /** The core-to-Cloud map. Default: `CORE_AUDIT_EVENT_MAP`. Tests pass one with an entry added or dropped. */
   map?: Readonly<Record<string, EventMapping>>;
@@ -73,12 +76,13 @@ function targetOf(rule: TargetRule, context: MappingContext): AuditTarget | unde
   return { kind: rule.id, id: event.subject.id };
 }
 
+/** The facts the mapping names, each through its own value check and then the ledger's (printable ASCII, 128 characters, nothing email-shaped). Nothing else of the core's details is read. */
 function factsOf(mapping: EventMapping, context: MappingContext): Record<string, Fact> {
   const facts: Record<string, Fact> = {};
-  for (const key of AUDIT_FACT_KEYS[mapping.cloud]) {
-    const named = mapping.facts?.[key];
-    if (named === null) continue;
-    const value = factOf(valueOf(named ?? key, context));
+  const allowed = AUDIT_FACT_KEYS[mapping.cloud];
+  for (const [key, rule] of Object.entries(mapping.facts ?? {})) {
+    if (!allowed.includes(key)) continue;
+    const value = factOf(checkedFact(rule, context));
     if (value !== undefined) facts[key] = value;
   }
   return facts;
@@ -107,7 +111,8 @@ export function toCloudAuditEvent(event: AuditEvent, map: Readonly<Record<string
   const target = targetOf(mapping.target, context);
   if (target === undefined) return { ok: false, refusal: "bad_target" };
   const facts = factsOf(mapping, context);
-  const related = [...who.related, ...(mapping.related?.(context) ?? [])].filter((id): id is string => typeof id === "string" && id.length >= 1 && id.length <= 100).slice(0, AUDIT_MAX_RELATED);
+  if ((mapping.required ?? []).some((key) => facts[key] === undefined)) return { ok: false, refusal: "invalid_event" };
+  const related = [...who.related, ...(mapping.related?.(context) ?? [])].filter((id): id is string => typeof id === "string" && RELATED_ID.test(id)).slice(0, AUDIT_MAX_RELATED);
   const org = orgDetailsOf(mapping, context);
   // Same core id, same Cloud id: a retry of one occurrence is one record. A core id with a newline (which the ledger's id forbids) is hashed first.
   const occurrence = event.eventId.includes("\n") ? createHash("sha256").update(event.eventId).digest("hex") : event.eventId;
