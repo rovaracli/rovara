@@ -22,7 +22,7 @@ export const ADMIN_SECTIONS: readonly AdminSection[] = [
     { to: "/app/admin/company-rules", label: "Company rules", area: "company-rules", blurb: "The standing instructions every agent follows: Required and Preferred rules, changed with a second admin's approval.", action: "Review company rules", needsCompanyRules: true },
     { to: "/app/admin/how-we-work", label: "How we work", area: "how-we-work", blurb: "Company defaults for steps and models, design review and learning, and the locks projects can't change.", action: "Review how we work" },
     { to: "/app/admin/projects", label: "Projects", area: "projects", blurb: "Each project's repositories, people, Slack links and working branches.", action: "Review projects" },
-    { to: "/app/admin/new-screens", label: "New screens", area: "new-screens", blurb: "Turn the new screens on for the whole company, or let people try them in their own browser first.", action: "Open new screens" },
+    { to: "/app/admin/new-screens", label: "Old screens", area: "new-screens", blurb: "Troubleshooting: every new screen is on. Send one back to the old screen for the whole company if it gets in the way.", action: "Open old screens", ownerOnly: true },
     { to: "/app/admin/agents", label: "Agents", area: "agents", blurb: "Agent versions and the company's agent guardrails.", action: "Review agents" },
   ] },
   { id: "security", title: "Security and sign-in", items: [

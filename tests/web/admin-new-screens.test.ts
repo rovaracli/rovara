@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// Lane U5: Settings > New screens, where an owner or admin turns the new screens on for the whole company.
+// Lane U5, decision 116: Settings > Old screens, a troubleshooting page where an owner sends a new screen (on by default) back to the old one for the whole company, and turns it on again.
 import { expect, it } from "vitest";
 import { screen, waitFor, fireEvent, within } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
@@ -38,34 +38,53 @@ function mount(options: { role?: "owner" | "admin" | "member"; read?: unknown; p
 }
 const puts = (f: ReturnType<typeof mount>) => f.request.mock.calls.map(([request]) => request).filter(request => request.method === "PUT");
 
-it("is in the settings list under How work runs, once, and open to owners and admins", () => {
+it("is in the settings list under How work runs, once, as a troubleshooting page offered to owners only (decision 116: turning screens on is not a customer task)", () => {
  const item = ADMIN_SECTIONS.flatMap(section => section.items).filter(entry => entry.to === "/app/admin/new-screens");
- expect(item).toHaveLength(1);expect(item[0]!.label).toBe("New screens");
- for (const role of ["owner", "admin"] as const) expect(visibleSections(role, false).flatMap(section => section.items.map(entry => entry.label))).toContain("New screens");
+ expect(item).toHaveLength(1);expect(item[0]).toMatchObject({ label: "Old screens", ownerOnly: true });
+ expect(item[0]!.blurb).toMatch(/^Troubleshooting: every new screen is on\./u);
+ expect(visibleSections("owner", false).flatMap(section => section.items.map(entry => entry.label))).toContain("Old screens");
+ for (const role of ["admin", "member"] as const) expect(visibleSections(role, false).flatMap(section => section.items.map(entry => entry.to))).not.toContain("/app/admin/new-screens");
+ expect(ADMIN_SECTIONS.flatMap(section => section.items).map(entry => entry.label)).not.toContain("New screens");
+});
+
+it("a company on the defaults sees every finished screen as the new one, each with one button to send it back to the old screen", async () => {
+ const defaults = answer({ revision: 0, changedAt: undefined, flags: UI_FLAG_CATALOG.map(entry => row(entry.name, entry.label, { wired: entry.wired, enabled: entry.defaultOn, state: entry.defaultOn ? "on" : "off" })) });
+ const f = mount({ read: defaults });
+ await screen.findByRole("heading", { name: "Old screens", level: 1 });
+ const items = within(await screen.findByRole("list", { name: "New screens" })).getAllByRole("listitem");
+ expect(items.map(item => item.getAttribute("aria-label"))).toEqual(UI_FLAG_CATALOG.filter(entry => entry.wired).map(entry => entry.label));
+ for (const item of items) {
+  expect(item.textContent).toContain("New screen");expect(item.textContent).toContain("Everyone in Acme has the new screen.");
+  expect(within(item).getByRole("button").textContent).toBe(`Use the old screen instead of ${item.getAttribute("aria-label")!} for everyone`);
+ }
+ expect(screen.getByText(/^Troubleshooting\. Every new screen is on for everyone\./u)).toBeTruthy();
+ expect(puts(f)).toEqual([]);
+ await expectNoAxeViolations(document.body);
+ f.close();
 });
 
 it("lists the wired switches with what each turns on, the company value and when it last changed; an unwired one is not shown", async () => {
  const f = mount();
- await screen.findByRole("heading", { name: "New screens", level: 1 });
+ await screen.findByRole("heading", { name: "Old screens", level: 1 });
  const list = await screen.findByRole("list", { name: "New screens" });
  const items = within(list).getAllByRole("listitem");
  expect(items.map(item => item.getAttribute("aria-label"))).toEqual(["New look", "New navigation", "New Home", "Spending page", "Insights", "Continue in your own tool"]);
- expect(items[0]!.textContent).toContain("What New look turns on.");expect(items[0]!.textContent).toContain("On");expect(items[0]!.textContent).toContain("On for everyone in Acme.");
- expect(items[1]!.textContent).toContain("Preview");expect(items[1]!.textContent).toContain("Anyone can try it in their own browser");
- expect(items[2]!.textContent).toContain("Off.");
+ expect(items[0]!.textContent).toContain("What New look turns on.");expect(items[0]!.textContent).toContain("New screen");expect(items[0]!.textContent).toContain("Everyone in Acme has the new screen.");
+ expect(items[1]!.textContent).toContain("Old screen");expect(items[1]!.textContent).toContain("Anyone can try the new one in their own browser");
+ expect(items[2]!.textContent).toContain("Everyone in Acme has the old screen.");
  expect(items[3]!.textContent).toContain("Turned off by the Rovara operator");
  expect(items[3]!.textContent).not.toContain("Held back");
  // Insights is a wired switch the owner can press, like the others: its own row, off, with its button.
- expect(items[4]!.textContent).toContain("What Insights turns on.");expect(items[4]!.textContent).toContain("Off.");
- expect(within(items[4]!).getByRole("button", { name: "Turn on Insights for everyone" })).toBeTruthy();
+ expect(items[4]!.textContent).toContain("What Insights turns on.");expect(items[4]!.textContent).toContain("Everyone in Acme has the old screen.");
+ expect(within(items[4]!).getByRole("button", { name: "Turn Insights back on for everyone" })).toBeTruthy();
  // Decision 98: Continue in your own tool is a wired switch; Companies is not offered (the catalog marks it unwired until the broker answers /v1/app/companies).
- expect(items[5]!.textContent).toContain("Preview");expect(within(items[5]!).getByRole("button", { name: "Turn on Continue in your own tool for everyone" })).toBeTruthy();
+ expect(items[5]!.textContent).toContain("Old screen");expect(within(items[5]!).getByRole("button", { name: "Turn Continue in your own tool back on for everyone" })).toBeTruthy();
  expect(within(list).queryByRole("listitem", { name: "Companies" })).toBeNull();expect(screen.queryByRole("button", { name: /Companies/u })).toBeNull();expect(screen.queryByText("What Companies turns on.")).toBeNull();
  expect(within(items[3]!).queryByRole("button")).toBeNull();
  expect(within(items[0]!).getByRole("button")).toBeTruthy();
  expect(screen.queryByText("Health page")).toBeNull();
  expect(screen.getByText(/Last changed Nov 11, 2026, 12:00 PM UTC/)).toBeTruthy();
- expect(screen.getByText(/Preview lets each person try a screen in their own browser first/)).toBeTruthy();
+ expect(screen.getByText(/Preview lets each person try a new screen in their own browser/)).toBeTruthy();
  expect(puts(f)).toEqual([]);
  await expectNoAxeViolations(document.body);
  f.close();
@@ -74,15 +93,15 @@ it("lists the wired switches with what each turns on, the company value and when
 it("turning one on sends only that flag with the revision read, then shows the saved value and refreshes the navigation", async () => {
  const next = answer({ revision: 4, flags: [row("look", "New look", { enabled: true, state: "on" }), row("nav", "New navigation", { state: "preview" }), row("home", "New Home", { enabled: true, state: "on" })] });
  const f = mount({ put: () => ({ status: 200, body: next }) });
- fireEvent.click(await screen.findByRole("button", { name: "Turn on New Home for everyone" }));
+ fireEvent.click(await screen.findByRole("button", { name: "Turn New Home back on for everyone" }));
  await waitFor(() => { expect(puts(f)).toHaveLength(1); });
  expect(puts(f)[0]).toMatchObject({ method: "PUT", path: PATH, body: { expectedRevision: 3, flags: { home: true } }, retry: "never" });
  expect(Object.keys((puts(f)[0]!.body as { flags: object }).flags)).toEqual(["home"]);
  await screen.findByText(/Saved\. Takes effect when people next open or reload the app\./);
- expect(await screen.findByRole("button", { name: "Turn off New Home for everyone" })).toBeTruthy();
+ expect(await screen.findByRole("button", { name: "Use the old screen instead of New Home for everyone" })).toBeTruthy();
  await waitFor(() => { expect(f.query.getQueryState(["nav"])?.isInvalidated || f.request.mock.calls.filter(([r]) => r.path === "/v1/app/nav").length > 0).toBe(true); });
  // the next change carries the new revision
- fireEvent.click(screen.getByRole("button", { name: "Turn off New look for everyone" }));
+ fireEvent.click(screen.getByRole("button", { name: "Use the old screen instead of New look for everyone" }));
  await waitFor(() => { expect(puts(f)).toHaveLength(2); });
  expect(puts(f)[1]!.body).toEqual({ expectedRevision: 4, flags: { look: false } });
  f.close();
@@ -91,7 +110,7 @@ it("turning one on sends only that flag with the revision read, then shows the s
 for (const [name, label] of [["continue", "Continue in your own tool"]] as const) {
  it(`turning ${label} on sends only \`${name}\` with the revision read (decision 98)`, async () => {
   const f = mount();
-  fireEvent.click(await screen.findByRole("button", { name: `Turn on ${label} for everyone` }));
+  fireEvent.click(await screen.findByRole("button", { name: `Turn ${label} back on for everyone` }));
   await waitFor(() => { expect(puts(f)).toHaveLength(1); });
   expect(puts(f)[0]).toMatchObject({ method: "PUT", path: PATH, body: { expectedRevision: 3, flags: { [name]: true } }, retry: "never" });
   expect(Object.keys((puts(f)[0]!.body as { flags: object }).flags)).toEqual([name]);
@@ -117,19 +136,19 @@ it("the previews switch sends previews with the revision", async () => {
 
 it("a revision conflict says someone else changed this, and Reload reads the fresh state", async () => {
  const f = mount({ put: () => ({ status: 409, body: { error: { code: "CHANGE_STALE", message: "Someone else changed this. Reload and try again." } } }) });
- fireEvent.click(await screen.findByRole("button", { name: "Turn on New Home for everyone" }));
+ fireEvent.click(await screen.findByRole("button", { name: "Turn New Home back on for everyone" }));
  await screen.findByText("Someone else changed this; reload.");
  expect(screen.queryByText(/Saved\./)).toBeNull();
  f.request.mockImplementation(async request => ({ status: 200, body: request.path === PATH ? answer({ revision: 9, flags: [row("home", "New Home", { enabled: true, state: "on" })] }) : {} }));
  fireEvent.click(screen.getByRole("button", { name: "Reload" }));
- expect(await screen.findByRole("button", { name: "Turn off New Home for everyone" })).toBeTruthy();
+ expect(await screen.findByRole("button", { name: "Use the old screen instead of New Home for everyone" })).toBeTruthy();
  expect(screen.queryByText("Someone else changed this; reload.")).toBeNull();
  f.close();
 });
 
 it("REAUTH_REQUIRED shows the server's words and a Sign in again button", async () => {
  const f = mount({ put: () => ({ status: 403, body: { error: { code: "REAUTH_REQUIRED", message: "Sign in again to change company screens." } } }) });
- fireEvent.click(await screen.findByRole("button", { name: "Turn on New Home for everyone" }));
+ fireEvent.click(await screen.findByRole("button", { name: "Turn New Home back on for everyone" }));
  await screen.findByText("Sign in again to change company screens.");
  fireEvent.click(screen.getByRole("button", { name: "Sign in again" }));
  expect(f.host.signIn).toHaveBeenCalled();
@@ -140,7 +159,7 @@ it("REAUTH_REQUIRED shows the server's words and a Sign in again button", async 
 
 it("any other refusal is shown verbatim, as text", async () => {
  const f = mount({ put: () => ({ status: 503, body: { error: { code: "AUDIT_UNAVAILABLE", message: "No audit ledger <b>here</b>; the change was refused." } } }) });
- fireEvent.click(await screen.findByRole("button", { name: "Turn on New Home for everyone" }));
+ fireEvent.click(await screen.findByRole("button", { name: "Turn New Home back on for everyone" }));
  const alert = await screen.findByRole("alert");
  expect(alert.textContent).toContain("No audit ledger <b>here</b>; the change was refused.");
  expect(alert.querySelector("b")).toBeNull();
@@ -166,7 +185,7 @@ it("each switch's accessible name is its visible text (WCAG 2.5.3): no aria-labe
  const f = mount();
  const list = await screen.findByRole("list", { name: "New screens" });
  const buttons = within(list).getAllByRole("button");
- expect(buttons.map(button => button.textContent)).toEqual(["Turn off New look for everyone", "Turn on New navigation for everyone", "Turn on New Home for everyone", "Turn on Insights for everyone", "Turn on Continue in your own tool for everyone"]);
+ expect(buttons.map(button => button.textContent)).toEqual(["Use the old screen instead of New look for everyone", "Turn New navigation back on for everyone", "Turn New Home back on for everyone", "Turn Insights back on for everyone", "Turn Continue in your own tool back on for everyone"]);
  for (const button of buttons) {
   expect(button.hasAttribute("aria-label")).toBe(false);
   expect(screen.getByRole("button", { name: button.textContent })).toBe(button);
@@ -189,7 +208,7 @@ it("the previews button keeps one name and says its state with aria-pressed only
 
 it("Saved. is announced by one live region, not two", async () => {
  const f = mount();
- fireEvent.click(await screen.findByRole("button", { name: "Turn on New Home for everyone" }));
+ fireEvent.click(await screen.findByRole("button", { name: "Turn New Home back on for everyone" }));
  await screen.findByText(/Saved\. Takes effect/);
  // The shared announcer waits a second before it speaks: give it the time, then count the regions that carry the text.
  await new Promise(resolve => setTimeout(resolve, 1300));
@@ -201,7 +220,7 @@ it("Saved. is announced by one live region, not two", async () => {
 it("while a change is saving the control keeps focus, says it is disabled, and a second click sends nothing", async () => {
  let release: (response: ApiResponse) => void = () => undefined;
  const f = mount({ put: () => new Promise<ApiResponse>(resolve => { release = resolve; }) });
- const button = await screen.findByRole("button", { name: "Turn on New Home for everyone" });
+ const button = await screen.findByRole("button", { name: "Turn New Home back on for everyone" });
  button.focus();
  fireEvent.click(button);
  await waitFor(() => { expect(puts(f)).toHaveLength(1); });
@@ -210,11 +229,11 @@ it("while a change is saving the control keeps focus, says it is disabled, and a
  expect(document.activeElement).toBe(button);
  const previews = screen.getByRole("button", { name: "Allow previews" });
  expect(previews.getAttribute("aria-disabled")).toBe("true");expect((previews as HTMLButtonElement).disabled).toBe(false);
- fireEvent.click(button);fireEvent.click(previews);fireEvent.click(screen.getByRole("button", { name: "Turn off New look for everyone" }));
+ fireEvent.click(button);fireEvent.click(previews);fireEvent.click(screen.getByRole("button", { name: "Use the old screen instead of New look for everyone" }));
  expect(puts(f)).toHaveLength(1);
  release({ status: 200, body: answer({ revision: 4, flags: [row("look", "New look", { enabled: true, state: "on" }), row("nav", "New navigation", { state: "preview" }), row("home", "New Home", { enabled: true, state: "on" })] }) });
  await screen.findByText(/Saved\. Takes effect/);
- const after = await screen.findByRole("button", { name: "Turn off New Home for everyone" });
+ const after = await screen.findByRole("button", { name: "Use the old screen instead of New Home for everyone" });
  expect(after).toBe(button);expect(document.activeElement).toBe(button);
  expect(after.hasAttribute("aria-disabled")).toBe(false);
  f.close();
@@ -223,7 +242,7 @@ it("while a change is saving the control keeps focus, says it is disabled, and a
 it("while a change is saving the page shows Saving…: the clicked control is aria-busy, the page is busy, and all of it clears when the answer comes", async () => {
  let release: (response: ApiResponse) => void = () => undefined;
  const f = mount({ put: () => new Promise<ApiResponse>(resolve => { release = resolve; }) });
- const button = await screen.findByRole("button", { name: "Turn on New Home for everyone" });
+ const button = await screen.findByRole("button", { name: "Turn New Home back on for everyone" });
  const previews = screen.getByRole("button", { name: "Allow previews" });
  const page = button.closest("section")!;
  expect(page.getAttribute("aria-busy")).toBe("false");expect(button.hasAttribute("aria-busy")).toBe(false);expect(screen.getByRole("status").textContent).toBe("");
@@ -246,9 +265,9 @@ it("while a change is saving the page shows Saving…: the clicked control is ar
 it("a member is refused the page: the admin layout's refusal shows, the list is never read and no PUT is possible", async () => {
  const f = mount({ role: "member" });
  await screen.findByRole("heading", { name: "Administration unavailable" });
- expect(screen.queryByRole("heading", { name: "New screens", level: 1 })).toBeNull();
+ expect(screen.queryByRole("heading", { name: "Old screens", level: 1 })).toBeNull();
  expect(screen.queryByRole("list", { name: "New screens" })).toBeNull();
- expect(screen.queryByRole("button", { name: /Turn (on|off)|Allow previews/ })).toBeNull();
+ expect(screen.queryByRole("button", { name: /back on for everyone|Use the old screen|Allow previews/ })).toBeNull();
  await new Promise(resolve => setTimeout(resolve, 50));
  expect(f.request.mock.calls.filter(([request]) => request.path === PATH)).toEqual([]);
  expect(puts(f)).toEqual([]);
