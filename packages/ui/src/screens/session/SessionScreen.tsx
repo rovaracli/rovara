@@ -20,8 +20,9 @@ import { Skeleton } from "../../design/Skeleton.js";
 import { VisibleText, visibleText } from "../../design/VisibleText.js";
 import { SessionHeader, SessionDetails, type ReadSession } from "./SessionHeader.js";
 import { TaskLead } from "./TaskLead.js";
-import { PhoneWorkDetails } from "./EvidenceDetails.js";
+import { PhoneWorkDetails, useEvidenceMemory } from "./EvidenceDetails.js";
 import { useIsPhone } from "./use-phone.js";
+import { SlotContent, SlotPlace, useSlot } from "./stable-slot.js";
 import { MoneyBanners } from "./MoneyBanners.js";
 import { Conversation, type CommentDraft } from "./Conversation.js";
 import { Composer, type MessageInput, type ComposerDrafts } from "./Composer.js";
@@ -37,6 +38,7 @@ const ContinueInTool = lazy(() => import("./ContinueInTool.js"));
 export function SessionScreen() {
  const id = useParams().id ?? "", host = useAppHost(), query = useQueryClient(), api = useMemo(() => createSessionApi(host), [host]), read = useSession(id), visible = usePageVisible();
  const [open, setOpen] = useState(false), [connection, setConnection] = useState("connecting"), phone = useIsPhone();
+ const controlsSlot = useSlot(), designSlot = useSlot(), reviewSlot = useSlot(), workspaceSlot = useSlot(), evidenceMemory = useEvidenceMemory();
  const [editDrafts, setEditDrafts] = useState<Record<string, Record<string, CommentDraft>>>({});
  const [drafts, setDrafts] = useState<Record<string, ComposerDrafts>>({}), [sending, setSending] = useState(false), sendingRef = useRef(false);
  const [selection, setSelection] = useState<{ sessionId: string; anchor: SessionAnchorRef }>();
@@ -70,21 +72,32 @@ export function SessionScreen() {
  // Chains are hidden (the `chains` feature is off in every install): an old link to a chain run says so instead of showing its steps.
  if (session.body.kind === "chain" && nav?.features.chains !== true) return <Unavailable />;
  const offer = continueOffer(session);
- const controls = <SessionControls key={id} id={id} agent={agent} actions={session.you.actions} following={session.you.following} makeAgent responsive ask={session.you.live?.ask === true} share={{ orgName }} onChanged={() => query.invalidateQueries({ queryKey: ["live"] })} />;
+ const controlsContent = <SessionControls key={id} id={id} agent={agent} actions={session.you.actions} following={session.you.following} makeAgent responsive ask={session.you.live?.ask === true} share={{ orgName }} onChanged={() => query.invalidateQueries({ queryKey: ["live"] })} />;
  const conversation = <Dialog title={selected === undefined ? "Conversation" : selected.target === "change_file" ? "Discussion of this file" : selected.target === "step" ? "Discussion of this step" : "Discussion of this plan paragraph"} className="rv-conversation-tray" open={open} onOpenChange={setOpen} onCloseAutoFocus={event => { const source = sourceControl.current;if (source?.isConnected) { event.preventDefault();source.focus(); }sourceControl.current = undefined; }} trigger={<Button onClick={() => { setSelection(undefined);sourceControl.current = undefined; }}>Conversation</Button>}>
  {selected && <Button variant="quiet" onClick={() => setSelection(undefined)}>All conversation</Button>}
  {selected && currentPart === undefined ? <p>That part of this session is no longer available.</p> : <>
  {selected && currentPart?.revision !== selected.revision && <p className="rv-muted">This discussion refers to an earlier version.</p>}
  {timeline.loading ? <Skeleton label="Loading conversation" /> : timeline.error ? <p role="alert"><VisibleText text={timeline.error instanceof ApiError ? timeline.error.message : "Couldn't load the conversation. Close and reopen to try again."} /></p> : <Conversation editDrafts={editDrafts[id]} onEditDraftChange={(messageId, draft) => setEditDrafts(old => { const next = { ...old[id] };if (draft === undefined) delete next[messageId];else next[messageId] = draft;return { ...old, [id]: next }; })} agent={agent} messages={timeline.messages} events={timeline.events} meId={nav?.me.developerId} onEdit={session.you.actions.includes("comment") ? edit : undefined} onDelete={remove} onReload={async messageId => (await timeline.reloadMessages()).find(message => message.messageId === messageId)} />}{timeline.hasMore && <Button busy={timeline.loadingMore} onClick={() => { void timeline.loadMore(); }}>Load more conversation</Button>}<Composer autoFocus={selected !== undefined} agent={agent} actions={selected === undefined ? session.you.actions : session.you.actions.filter(action => action !== "steer")} onSend={send} sending={sending} drafts={drafts[draftKey] ?? { comment: "", steer: "" }} onDraftChange={(kind, text) => setDrafts(old => ({ ...old, [draftKey]: { ...old[draftKey] ?? { comment: "", steer: "" }, [kind]: text } }))} /></>}</Dialog>;
  const workActions = offer === undefined ? conversation : <div className="rv-session-work-actions">{conversation}<PartBoundary><Suspense fallback={null}><ContinueInTool offer={offer} /></Suspense></PartBoundary></div>;
- const designPanel = session.body.kind === "task" && typeof session.body.task === "object" && session.body.task !== null && "taskId" in session.body.task && typeof session.body.task.taskId === "string" ? <TaskDesignPanel session={session} taskId={session.body.task.taskId} /> : null;
- const reviewCard = isReviewGroupsOn(host) && session.body.kind === "task" && typeof session.body.task === "object" && session.body.task !== null && "taskId" in session.body.task && typeof session.body.task.taskId === "string" && "project" in session.body.task && typeof session.body.task.project === "string" ? <Suspense fallback={null}><TaskReviewCard taskId={session.body.task.taskId} project={session.body.task.project} /></Suspense> : null;
- const workspace = <Workspace session={session} onComment={discuss} designRetryAbove={session.body.kind === "task"} agreement={isWorkingAgreementOn(host)} />;
+ const designContent = session.body.kind === "task" && typeof session.body.task === "object" && session.body.task !== null && "taskId" in session.body.task && typeof session.body.task.taskId === "string" ? <TaskDesignPanel session={session} taskId={session.body.task.taskId} /> : null;
+ const reviewContent = isReviewGroupsOn(host) && session.body.kind === "task" && typeof session.body.task === "object" && session.body.task !== null && "taskId" in session.body.task && typeof session.body.task.taskId === "string" && "project" in session.body.task && typeof session.body.task.project === "string" ? <Suspense fallback={null}><TaskReviewCard taskId={session.body.task.taskId} project={session.body.task.project} /></Suspense> : null;
+ const workspaceContent = <Workspace session={session} onComment={discuss} designRetryAbove={session.body.kind === "task"} agreement={isWorkingAgreementOn(host)} />;
  const banners = <><MoneyBanners session={session} />{connection === "reconnecting" && <p className="rv-muted">Reconnecting. Showing the last update.</p>}</>;
+ // One tree for both layouts (DEFERRED TASK-PAGE-REMOUNT-ACROSS-480PX): crossing 480px changes only where each piece is drawn, never which pieces exist. The controls, design strip, review card and workspace
+ // are slots (see stable-slot.tsx): React draws each once, at a fixed place below, and the layout moves its node. Every child of the section and of the work block sits at the same position in both layouts
+ // (a `null` holds the place), so the header, the lead, the conversation tray and the slots' parents are kept as well. Only the layout (which place holds a piece, and the phone's disclosure) differs.
+ const controls = <SlotPlace slot={controlsSlot} />, designPanel = designContent === null ? null : <SlotPlace slot={designSlot} />, reviewCard = reviewContent === null ? null : <SlotPlace slot={reviewSlot} />, workspace = <SlotPlace slot={workspaceSlot} />;
  // The phone order of the task header (owner decision 40): the lead (its "can I approve?" line first), the decision, then the facts, then the work and its evidence collapsed. The DOM has this order, so a screen reader reads what the eye sees.
- if (phone) return <section ref={root} className="rv-session" data-lead="phone"><SessionHeader session={session} onAction={() => undefined} lead={<TaskLead session={session} />} detailsBelow />{banners}{designPanel}{reviewCard}<SessionDetails session={session} onAction={() => undefined} controls={controls} />
-  <div className="rv-session-work"><div className="rv-session-work-heading"><h2>Work</h2>{workActions}</div><PhoneWorkDetails session={session}>{workspace}</PhoneWorkDetails></div></section>;
- return <section ref={root} className="rv-session" data-lead="wide"><SessionHeader session={session} onAction={() => undefined} controls={controls} lead={<TaskLead session={session} />} />{banners}
- <div className="rv-session-work"><div className="rv-session-work-heading"><h2>Work</h2>{workActions}</div>{designPanel}{reviewCard}{workspace}
- </div></section>;
+ return <><section ref={root} className="rv-session" data-lead={phone ? "phone" : "wide"}>
+  <SessionHeader session={session} onAction={() => undefined} controls={phone ? undefined : controls} lead={<TaskLead session={session} />} detailsBelow={phone} />
+  {banners}
+  {phone ? designPanel : null}
+  {phone ? reviewCard : null}
+  {phone ? <SessionDetails session={session} onAction={() => undefined} controls={controls} /> : null}
+  <div className="rv-session-work"><div className="rv-session-work-heading"><h2>Work</h2>{workActions}</div>{phone ? null : designPanel}{phone ? null : reviewCard}{phone ? <PhoneWorkDetails session={session} memory={evidenceMemory}>{workspace}</PhoneWorkDetails> : workspace}</div>
+ </section>
+ <SlotContent slot={controlsSlot}>{controlsContent}</SlotContent>
+ {designContent === null ? null : <SlotContent slot={designSlot}>{designContent}</SlotContent>}
+ {reviewContent === null ? null : <SlotContent slot={reviewSlot}>{reviewContent}</SlotContent>}
+ <SlotContent slot={workspaceSlot}>{workspaceContent}</SlotContent></>;
 }

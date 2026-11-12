@@ -300,8 +300,13 @@ test("approve by exception: the task page lists the lessons a task loaded with t
  await expect(section).toContainText("On trial");
  await expect(section).toContainText("Stable");
  await evidenceShot(page, { path: ".test-build/web-e2e/lessons-thumbs-down.png", fullPage: true });
- // A full-page picture resizes the window through a width under 480px, which draws the task page afresh in its phone order and back (the one header since decision 125), so the closed section is opened again.
- const loaded = page.locator("details.rv-loaded-knowledge");if (!(await loaded.evaluate(node => (node as HTMLDetailsElement).open))) await loaded.locator(":scope > summary").click();
+ // Crossing the phone width and back (a rotated tablet, a dragged window, a full-page picture) changes the layout of the task page, not its state: the section stays open (DEFERRED TASK-PAGE-REMOUNT-ACROSS-480PX).
+ const wide = page.viewportSize()!;
+ await page.setViewportSize({ width: 390, height: 900 });
+ await expect(page.locator("section.rv-session")).toHaveAttribute("data-lead", "phone");
+ await page.setViewportSize(wide);
+ await expect(page.locator("section.rv-session")).toHaveAttribute("data-lead", "wide");
+ await expect(page.locator("details.rv-loaded-knowledge")).toHaveJSProperty("open", true);
  await expect(section.getByRole("button", { name: "Not helpful (thumbs down): Retries use withRetry" })).toBeVisible();
  await checkA11y(page, { theme: "light" });await checkA11y(page, { theme: "dark" });
  await page.getByRole("button", { name: "Not helpful (thumbs down): Retries use withRetry" }).click();
