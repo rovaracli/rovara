@@ -45,3 +45,8 @@ skipped in the report. There is no way to skip a whole port.
 Ports covered today: document-store, queue, outbox, object-storage, secret-store, worker-machines, scheduler, image-registry, admission, audit-sink, approvers, identity, metering, model-key-store,
 code-host, check-runner, tracker. `github-client-conformance.ts` is exempt (it tests Code's own GitHub client, not a port a Cloud adapter implements). A suite for a new port (the plan's K1 lane) is
 added to `ports.ts` (suite, harness type, vendored file name), `code-fakes.ts` (its positive control) and `pending-lanes.ts`.
+
+- `audit-sink` (lane A7 `cloud/audit-sink`): `packages/broker/src/cloud/adapters/audit-sink/`, harness `tests/conformance/adapters/audit-sink-cloud.ts` over Code's in-memory document store. `stage` returns one put of Cloud's own
+  audit outbox row (`AUDIT_PENDING#<shard>`, the item `audit/outbox.ts#auditPendingItem` writes, same 14-day expiry), so the core's change and its audit row commit together; Cloud's drain, appender and erasure rules apply
+  unchanged. `event-map.ts` maps each core audit action to a Cloud ledger action, target, facts and org details. `tests/unit/cloud-audit-sink.test.ts` reads the pinned core's source and fails when it records an action the map lacks
+  (a new Cloud action needs `AUDIT_ACTIONS`, `AUDIT_FACT_KEYS` and `tests/contract/audit-contracts.test.ts` too). Registered, not switched in: nothing calls it and Cloud's live audit path is unchanged.

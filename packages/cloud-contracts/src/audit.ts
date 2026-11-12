@@ -427,6 +427,25 @@ export const AUDIT_ACTIONS = [
   "project_member.invited",
   "project_member.joined_by_invite",
   "project_member.invite_skipped",
+  // Convergence lane A7 (cloud/audit-sink): events Rovara Code's core records that Cloud's own flows had no ledger event for. They are written only by the audit-sink adapter
+  // (packages/broker/src/cloud/adapters/audit-sink), from the core's events; ids, fixed words, flags and counts only. A project's name goes in the org's `details`, never in a fact.
+  "task.started",
+  "task.start_refused",
+  "task.closed",
+  "session.closed",
+  "session.message_sent",
+  "agent.created",
+  "agent.archived",
+  "agent.unarchived",
+  "chain.created",
+  "chain.archived",
+  "chain.unarchived",
+  "playbook.file_changed",
+  "automation.run_ended",
+  // The approval sign-in setting (decision 62): the window of a recent sign-in, or trust in any active company sign-in. Written when an owner changes it directly in the core's settings.
+  "company.approval_sign_in_changed",
+  // Lessons in the repository (R3): a person asked, in a pull request comment, for a lesson to be retired.
+  "lesson.retire_requested",
 ] as const;
 
 export const AuditActionSchema = z.enum(AUDIT_ACTIONS);
@@ -825,6 +844,23 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "project_member.joined_by_invite": ["role"],
   "project_member.invite_skipped": ["role", "cause"],
   "company_image.registries_changed": ["registryCount", "authority"],
+  // A7: the core's own events. `workflow` says whether the task runs as a workflow and `path` is the workflow's fixed path word; `code` is the refusal's fixed code; `outcome` and `origin` are fixed words.
+  "task.started": ["workflow", "path"],
+  "task.start_refused": ["code"],
+  "task.closed": [],
+  "session.closed": [],
+  "session.message_sent": [],
+  "agent.created": [],
+  "agent.archived": [],
+  "agent.unarchived": [],
+  "chain.created": [],
+  "chain.archived": [],
+  "chain.unarchived": [],
+  "playbook.file_changed": ["revision", "filePresent"],
+  "automation.run_ended": ["outcome", "origin"],
+  // `mode` is `window` or `any-active`; `seconds` is the window in whole seconds (0 for any-active); `from*` is the setting before the change.
+  "company.approval_sign_in_changed": ["mode", "seconds", "fromMode", "fromSeconds", "revision"],
+  "lesson.retire_requested": ["pullRequest"],
 };
 
 /** `op_` plus the first 24 hex of `sha256(issuer + "\n" + subject)`: a staff member's id in the chain, never their identity. */

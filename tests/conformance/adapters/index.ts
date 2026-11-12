@@ -9,5 +9,6 @@
 // A harness builds its adapter over a fake or local emulator of the AWS service (no live AWS in the test shards), and `dispose`s it. Never import a live client constructor with real
 // credentials here. The port's pending row in the test report (a todo) disappears once an adapter is registered for it.
 import type { CloudAdapterRegistration } from "../registry.js";
+import { cloudAuditSink } from "./audit-sink-cloud.js";
 
-export const CLOUD_ADAPTERS: readonly CloudAdapterRegistration[] = [];
+export const CLOUD_ADAPTERS: readonly CloudAdapterRegistration[] = [cloudAuditSink];
