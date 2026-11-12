@@ -437,8 +437,8 @@ describe("developer sign-in infrastructure (named environments)", () => {
       ["dynamodb:GetItem,dynamodb:PutItem", [`${ORG}#SETTINGS`]],
       // What every sign-in uses: the bare org partition (20 characters, an org ID's), the developer's org pointer, and the email and invite rows.
       ["dynamodb:GetItem,dynamodb:PutItem,dynamodb:UpdateItem", [ORG, "DEVELOPER_ORG#*", "ORG_EMAIL#*", "ORG_INVITE#*"]],
-      // Listing: a member's grants, a race org's whole partition, and its project catalog.
-      ["dynamodb:Query", [`${ORG}#MEMBER#*`, ORG, `${ORG}#PROJECT_CATALOG`]],
+      // Listing: a member's grants (moved by a same-company merge) and the bare org partition (OrgStore.hasSlackTeam). No project catalog since 0.5.15 (IDENTITY-HEALING-CROSS-ORG).
+      ["dynamodb:Query", [`${ORG}#MEMBER#*`, ORG]],
       // 0.5.11 (the notifier's): the same run-limit read of the newest costs of this project's runs, in one RUN_COST partition.
       ["dynamodb:Query", [`${ORG}#RUN_COST#*`]],
       // A member's grants copied to the survivor.
