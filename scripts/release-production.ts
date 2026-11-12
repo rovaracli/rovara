@@ -74,7 +74,7 @@ export const SLACK_ORCHESTRATOR_IMAGE_INPUTS = [
   "package-lock.json",
   "tsconfig.json",
   "tsconfig.base.json",
-  "packages/cloud-contracts/package.json",
+  "packages/cloud-contracts",
   "vendor/rovara-code/packages/contracts",
   "vendor/rovara-code/tsconfig.base.json",
   "vendor/rovara-code-shims",
