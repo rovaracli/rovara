@@ -517,7 +517,9 @@ export function createRunnerClient(options: RunnerClientOptions): RunnerClient {
       try {
         if (gate !== undefined) await gate;
         result = await runInvoke(frame);
-      } catch {
+      } catch (error) {
+        // The error's class only: its text may hold a path or a payload.
+        log({ event: "invoke_rejected", reason: `failed: ${error instanceof Error ? error.name : "unknown"}` });
         result = { type: "result", id: frame.id, status: "unavailable", reason: "protocol_error", detail: "the runner failed to run the call" };
       }
       inflightInvokes.delete(frame.id);
@@ -680,11 +682,14 @@ export function resultOf(id: string, outcome: InvokeOutcome): RunnerResultFrame 
   }
   const initLog = outcome.initLogTail ?? "";
   const logTail = `${initLog}${outcome.logTail}`;
+  // The front reads these as Go int64: a fraction (the agent reports 3.47 ms) makes the whole result unparseable there, so they are whole numbers.
+  const whole = (value: number | undefined): number | undefined => (value === undefined || !Number.isFinite(value) ? undefined : Math.max(0, Math.round(value)));
+  const initMs = whole(outcome.report?.initDurationMs ?? outcome.coldStartMs);
+  const billed = whole(outcome.report?.billedDurationMs);
+  const memory = whole(outcome.maxMemoryUsedBytes);
   const base: RunnerResultFrame = {
-    type: "result", id, status: "ok", durationMs: outcome.report?.durationMs ?? outcome.wallMs,
-    ...(outcome.report?.billedDurationMs === undefined ? {} : { billedDurationMs: outcome.report.billedDurationMs }),
-    ...((outcome.report?.initDurationMs ?? outcome.coldStartMs) === undefined ? {} : { initDurationMs: (outcome.report?.initDurationMs ?? outcome.coldStartMs)! }),
-    ...(outcome.maxMemoryUsedBytes === undefined ? {} : { maxMemoryUsed: outcome.maxMemoryUsedBytes }),
+    type: "result", id, status: "ok", durationMs: whole(outcome.report?.durationMs ?? outcome.wallMs) ?? 0,
+    ...(billed === undefined ? {} : { billedDurationMs: billed }), ...(initMs === undefined ? {} : { initDurationMs: initMs }), ...(memory === undefined ? {} : { maxMemoryUsed: memory }),
     ...(logTail === "" ? {} : { logTail }), ...(outcome.logsTruncated ? { logTruncated: true } : {}), ...(outcome.cold ? { cold: true } : {}), ...(outcome.memoryClamped ? { memoryClamped: true } : {}),
   };
   switch (outcome.kind) {

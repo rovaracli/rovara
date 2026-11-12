@@ -57,3 +57,6 @@ graph-state.lock
 /scratchpad/
 __pycache__/
 *.pyc
+
+# Built by the function runner live tests (scripts/function-runner-live)
+scripts/function-runner-live/.build/

@@ -145,7 +145,7 @@ describe("the runner link", () => {
 describe("the helper's environment", () => {
   it("gives the socket in /tmp and a disk-backed store with the front's default cap", () => {
     expect(runnerHelperEnv({ store: { kind: "disk" } })).toEqual(["ROVARA_AWS_RUNNER_SOCKET=/tmp/rovara-runner/runner.sock", "ROVARA_AWS_RUNNER_STORE_DIR=/rovara-runner-store", "ROVARA_AWS_RUNNER_STORE_MAX_BYTES=268435456"]);
-    expect(runnerStoreMount("/run/rovara/scratch/store-1")).toEqual(["-v", "/run/rovara/scratch/store-1:/rovara-runner-store:rw,nosuid,nodev,noexec"]);
+    expect(runnerStoreMount("/run/rovara/scratch/store-1")).toEqual(["-v", "/run/rovara/scratch/store-1:/rovara-runner-store:rw"]);
   });
 
   it("caps a store that lives in the 64 MiB tmpfs at 32 MiB, and refuses a larger one", () => {

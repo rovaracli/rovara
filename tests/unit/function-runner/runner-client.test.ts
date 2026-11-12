@@ -329,6 +329,15 @@ describe("invoke", () => {
     expect(Object.values(results).map((result) => result["type"])).toEqual(Array(8).fill("result"));
   });
 
+  it("sends whole numbers for every figure: the front reads them as int64, and a fraction would make the result unparseable", async () => {
+    const detail = { environmentId: "e", cold: false, wallMs: 3.9, memoryMb: 128, memoryClamped: false, logTail: "", logsTruncated: false, report: { durationMs: 3.47, billedDurationMs: 4.2, initDurationMs: 0.5 }, maxMemoryUsedBytes: 1_234_567.8 };
+    const ctx = await setup({ controller: { outcome: () => ({ kind: "response", payload: Buffer.from("{}"), ...detail }) } });
+    await register(ctx);
+    const result = await call(ctx, "resize");
+    expect(result).toMatchObject({ status: "ok", durationMs: 3, billedDurationMs: 4, initDurationMs: 1, maxMemoryUsed: 1_234_568 });
+    for (const field of ["durationMs", "billedDurationMs", "initDurationMs", "maxMemoryUsed"]) expect(Number.isInteger(result[field])).toBe(true);
+  });
+
   it("hands the controller the deadline, ARN, request id, trace id, client context and identity", async () => {
     const ctx = await setup();
     await register(ctx);

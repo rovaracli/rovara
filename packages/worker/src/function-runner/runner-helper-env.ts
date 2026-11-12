@@ -37,8 +37,8 @@ export function runnerHelperEnv(options: RunnerHelperEnvOptions): string[] {
   return [`ROVARA_AWS_RUNNER_SOCKET=${RUNNER_SOCKET_PATH}`, `ROVARA_AWS_RUNNER_STORE_DIR=${dir}`, `ROVARA_AWS_RUNNER_STORE_MAX_BYTES=${String(cap)}`];
 }
 
-/** The `docker run` arguments of the disk-backed store: `hostDir` is a folder the worker made for this helper (a checked absolute path, owned by the helper's user, mode 0700). Read-write, no exec, no setuid, no devices. */
+/** The `docker run` arguments of the disk-backed store: `hostDir` is a folder the worker made for this helper (a checked absolute path, owned by the helper's user, mode 0700). Read-write (`-v` takes no noexec or nosuid option; the helper runs as a non-root user with no capability and no-new-privileges, so the store cannot become a way to run code). */
 export function runnerStoreMount(hostDir: string): string[] {
   if (!/^\/[A-Za-z0-9._/-]{1,200}$/u.test(hostDir) || hostDir.includes("//") || hostDir.split("/").some((part) => part === ".." || part === ".")) throw new RangeError("a runner store path");
-  return ["-v", `${hostDir}:${RUNNER_STORE_MOUNT}:rw,nosuid,nodev,noexec`];
+  return ["-v", `${hostDir}:${RUNNER_STORE_MOUNT}:rw`];
 }

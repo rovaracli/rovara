@@ -90,6 +90,10 @@ export async function resolveNativeCode(code: MaterializedCode, options: { runti
   const verdict = classifyNative(after.files);
   const bytes = after.files.reduce((sum, file) => sum + file.size, 0);
   if (bytes > FUNCTION_CODE_LIMITS.maxExpandedBytes) throw new RegistrationRefusal(INVALID_PARAMETER, new FunctionCodeError("too_large").message);
-  if (!verdict.complete || verdict.arch === "x86_64" || verdict.arch === "mixed") throw new RegistrationRefusal(UNSUPPORTED, X86_ONLY);
+  if (!verdict.complete || verdict.arch === "x86_64" || verdict.arch === "mixed") {
+    // The first file that is still not arm64, by its path as the classifier cleaned it (control characters replaced, capped): it is the customer's own file name, shown in the customer's own function error.
+    const first = verdict.offenders[0];
+    throw new RegistrationRefusal(UNSUPPORTED, `${X86_ONLY}; after the swap ${String(verdict.offenderCount)} native file(s) are still not arm64${first === undefined ? "" : `, first: ${first.path} (${first.kind})`}`);
+  }
   return { native: verdict, swap: result.reports, swapped: true };
 }
