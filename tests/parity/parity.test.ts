@@ -9,6 +9,8 @@ import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { PARITY_AREAS } from "./areas.js";
 import { CloudEngine } from "./engines/cloud.js";
+import { DRIVER_GROUPS as CLOUD_GROUPS } from "./engines/cloud-drivers/index.js";
+import { DRIVER_GROUPS as CORE_GROUPS } from "./engines/core-drivers/index.js";
 import { CoreEngine } from "./engines/core.js";
 import { compareScenario, type ScenarioResult } from "./harness/compare.js";
 import { areaTable, markdownOf, writeReport } from "./harness/report.js";
@@ -20,11 +22,23 @@ const results: ScenarioResult[] = [];
 
 describe("the parity suite's own rules", () => {
   it("lists every scenario file, and every area has a scenario or is Cloud-only", async () => {
-    const files = (await readdir(join(import.meta.dirname, "scenarios"))).filter((name) => name.endsWith(".ts") && name !== "index.ts").map((name) => name.replace(/\.ts$/, "")).sort();
+    const files = (await readdir(join(import.meta.dirname, "scenarios"))).filter((name) => name.endsWith(".ts") && name !== "index.ts" && !name.startsWith("index-")).map((name) => name.replace(/\.ts$/, "")).sort();
     expect(SCENARIOS.map((scenario) => scenario.id).sort()).toEqual(files);
     for (const area of PARITY_AREAS) {
       if (area.cloudOnly !== undefined) continue;
       expect(SCENARIOS.some((scenario) => scenario.areas.includes(area.id)), `area ${String(area.id)} has no scenario`).toBe(true);
+    }
+  });
+
+  it("drives each step key from one lane's file only, on each engine", () => {
+    for (const groups of [CORE_GROUPS, CLOUD_GROUPS]) {
+      const owners = new Map<string, string>();
+      for (const [lane, drivers] of Object.entries(groups)) {
+        for (const key of Object.keys(drivers)) {
+          expect(owners.get(key), `${key} is driven by ${String(owners.get(key))} and ${lane}`).toBeUndefined();
+          owners.set(key, lane);
+        }
+      }
     }
   });
 

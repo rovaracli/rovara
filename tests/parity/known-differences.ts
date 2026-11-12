@@ -2,6 +2,13 @@
 // fails on a difference not listed here, and on a listed one that no longer shows. Removing an entry is the goal: each is fixed in Code (upstream first),
 // mapped by the composition root, or accepted by the owner as an intended change.
 import type { Facet } from "./harness/types.js";
+import { MERGE_DIFFERENCES } from "./known-differences/merge.js";
+import { PEOPLE_MONEY_DIFFERENCES } from "./known-differences/people-money.js";
+import { RESILIENCE_DIFFERENCES } from "./known-differences/resilience.js";
+import { FACETS_DIFFERENCES } from "./known-differences/facets.js";
+import { FEATURES_A_DIFFERENCES } from "./known-differences/features-a.js";
+import { FEATURES_B_DIFFERENCES } from "./known-differences/features-b.js";
+import { FEATURES_C_DIFFERENCES } from "./known-differences/features-c.js";
 
 export interface KnownDifference {
   /** A scenario id, or `*` for a difference every scenario that reaches it shows (the same cause). */
@@ -24,7 +31,7 @@ const LIMIT_AND_ARTIFACT_ROWS = [
   "WORKSPACE#<id> | ARTIFACT#<id>", "WORKSPACE#<id> | ARTIFACT#<id>#plan.md",
 ];
 
-export const KNOWN_DIFFERENCES: readonly KnownDifference[] = [
+const CORE_LANE_DIFFERENCES: readonly KnownDifference[] = [
   {
     scenario: "code-defaults-quick", facet: "transitions",
     cause: "Settings, not logic: Code's flow defaults run Understand first and the plan check (UNDERSTAND, PLAN_CRITIQUE stages); Cloud's Quick path runs neither. The composition root must map Cloud's settings (rovaraCodeV2, plan check, the task path) onto the core's flow options (understandFirst, planCheck, planSelfCheck) per company; with the mapping the other scenarios compare the same.",
@@ -60,4 +67,16 @@ export const KNOWN_DIFFERENCES: readonly KnownDifference[] = [
     cause: "Same bug as its transitions (the core leaves its PLAN dispatch row and writes its PLAN_FEEDBACK#<n> note row, Cloud keeps the note on the revised plan's run), plus the limit and artifact rows of every scenario.",
     owner: "Code upstream fix (see transitions); recheck the feedback row's family after it",
   },
+];
+
+/** Every known difference: the first lane's, then each lane's own file. */
+export const KNOWN_DIFFERENCES: readonly KnownDifference[] = [
+  ...CORE_LANE_DIFFERENCES,
+  ...MERGE_DIFFERENCES,
+  ...PEOPLE_MONEY_DIFFERENCES,
+  ...RESILIENCE_DIFFERENCES,
+  ...FACETS_DIFFERENCES,
+  ...FEATURES_A_DIFFERENCES,
+  ...FEATURES_B_DIFFERENCES,
+  ...FEATURES_C_DIFFERENCES,
 ];

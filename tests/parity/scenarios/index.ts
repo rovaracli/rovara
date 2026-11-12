@@ -1,4 +1,4 @@
-// Every scenario, one per file. A new scenario is a file here and a line in this list (tests/parity/parity.test.ts checks that every file is listed).
+// Every scenario, one per file. A new scenario is a file here and a line in this list, or a lane's file `<lane>-<what>.ts` listed in its `index-<lane>.ts` (tests/parity/parity.test.ts checks that every file is listed).
 
 import quickToPlanReview from "./quick-to-plan-review.js";
 import planChangesRequested from "./plan-changes-requested.js";
@@ -44,6 +44,13 @@ import planWithoutTestStatement from "./plan-without-test-statement.js";
 import codeDefaultsQuick from "./code-defaults-quick.js";
 import checkFailsBlocks from "./check-fails-blocks.js";
 import type { Scenario } from "../harness/types.js";
+import { MERGE_SCENARIOS } from "./index-merge.js";
+import { PEOPLE_MONEY_SCENARIOS } from "./index-people-money.js";
+import { RESILIENCE_SCENARIOS } from "./index-resilience.js";
+import { FACETS_SCENARIOS } from "./index-facets.js";
+import { FEATURES_A_SCENARIOS } from "./index-features-a.js";
+import { FEATURES_B_SCENARIOS } from "./index-features-b.js";
+import { FEATURES_C_SCENARIOS } from "./index-features-c.js";
 
 export const SCENARIOS: readonly Scenario[] = [
   quickToPlanReview,
@@ -89,4 +96,11 @@ export const SCENARIOS: readonly Scenario[] = [
   planWithoutTestStatement,
   codeDefaultsQuick,
   checkFailsBlocks,
+  ...MERGE_SCENARIOS,
+  ...PEOPLE_MONEY_SCENARIOS,
+  ...RESILIENCE_SCENARIOS,
+  ...FACETS_SCENARIOS,
+  ...FEATURES_A_SCENARIOS,
+  ...FEATURES_B_SCENARIOS,
+  ...FEATURES_C_SCENARIOS,
 ];
