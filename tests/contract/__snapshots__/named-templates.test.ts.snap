@@ -7156,6 +7156,26 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
               },
             },
             {
+              "Action": "dynamodb:GetItem",
+              "Condition": {
+                "ForAllValues:StringLike": {
+                  "dynamodb:LeadingKeys": [
+                    "SLACK_TEAM#*",
+                  ],
+                },
+                "Null": {
+                  "dynamodb:LeadingKeys": "false",
+                },
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "State1C20CC9A",
+                  "Arn",
+                ],
+              },
+            },
+            {
               "Action": "dynamodb:Query",
               "Condition": {
                 "ForAllValues:StringLike": {
