@@ -82,6 +82,8 @@ export * from "./app-project-people.js";
 // tests/contract/approval-place-upstream-copy.test.ts. app-approval-window.ts and decision-dismiss.ts are Cloud's (the latter owed upstream, see its header).
 export * from "./approval-place.js";
 export * from "./app-approval-window.js";
+// Internal addresses a company's tasks may reach (owner decision 123).
+export * from "./app-private-addresses.js";
 export * from "./decision-dismiss.js";
 export * from "./app-billing.js";
 export * from "./app-insights.js";

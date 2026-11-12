@@ -29,6 +29,7 @@ export const ADMIN_SECTIONS: readonly AdminSection[] = [
     { to: "/app/admin/domains", label: "Company domains", area: "domains", blurb: "Verify the email domains that count as your company's.", action: "Review company domains", ownerOnly: true },
     { to: "/app/admin/second-review", label: "Second opinion", area: "second-review", blurb: "Review outside second opinions on risky changes.", action: "Review second opinions", needsSecondReview: true },
     { to: "/app/admin/approval-window", label: "Recent sign-in window", area: "approval-window", blurb: "How recently a person must have signed in to approve medium-risk work from chat or comments, and where each risk level can be decided.", action: "Review the sign-in window", needsApprovalWindow: true },
+    { to: "/app/admin/private-addresses", label: "Internal addresses", area: "private-addresses", blurb: "The exact internal servers, such as a private package mirror, that tasks may reach through the sandbox wall.", action: "Review internal addresses" },
     { to: "/app/admin/audit", label: "Audit", area: "audit", blurb: "What happened, and who did it.", action: "Open the audit" },
     { to: "/app/admin/health", label: "Health", area: "health", blurb: "Review stored, shared runtime qualification. No active checks run here.", action: "Review Rovara service status" },
   ] },

@@ -455,6 +455,7 @@ No single test lists every broker read.
 | `outside-cards.ts` | Decision journey slice 3b: outside approvers decide on the card. |
 | `plan-cards.ts` | Decision journey slice 2: the requirements and the coding plan as decision cards, decided on the card (Approve, Request changes) through the ONE workflow decision Slack, MCP and the task page use (`decideTaskWorkflow`... |
 | `plan-panel.ts` | OWNER DECISION 18 (PLAN-PANEL-NOW): the task page reads, discusses and decides the plan in one place. |
+| `private-addresses.ts` | Internal addresses a company's tasks may reach (owner decision 123): `/v1/app/org/private-addresses`. |
 | `project-access.ts` | (No header comment.) Exports `checkProjectAccess`, `listWorkspaces`. |
 | `project-archive-setup.ts` | (No header comment.) Exports `archiveDepsOf`, `egressDepsOf`, `getAppProject`. |
 | `project-list.ts` | (No header comment.) Exports `queryAll`, `REVISION_READS_AT_ONCE`, `mapLimit`. |

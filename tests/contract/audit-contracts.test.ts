@@ -184,6 +184,7 @@ describe("the event catalog", () => {
       "review_groups.changed", "review.claim_changed",
       // A-31 (srv/project-people): an invite that names a project
       "project_member.invited", "project_member.joined_by_invite", "project_member.invite_skipped",
+      "company.private_addresses_proposed", "company.private_addresses_changed", "company.private_addresses_withdrawn",
     ]);
     expect(new Set(AUDIT_ACTIONS).size).toBe(AUDIT_ACTIONS.length);
   });

@@ -427,6 +427,10 @@ export const AUDIT_ACTIONS = [
   "project_member.invited",
   "project_member.joined_by_invite",
   "project_member.invite_skipped",
+  // Internal addresses a company's tasks may reach (owner decision 123): counts, the list's digest, the revision and fixed words only. The hosts and ports go in `details` (subject `org`), never in a fact.
+  "company.private_addresses_proposed",
+  "company.private_addresses_changed",
+  "company.private_addresses_withdrawn",
 ] as const;
 
 export const AuditActionSchema = z.enum(AUDIT_ACTIONS);
@@ -825,6 +829,9 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "project_member.joined_by_invite": ["role"],
   "project_member.invite_skipped": ["role", "cause"],
   "company_image.registries_changed": ["registryCount", "authority"],
+  "company.private_addresses_proposed": ["revision", "entryCount", "listDigest", "added", "removed"],
+  "company.private_addresses_changed": ["revision", "entryCount", "listDigest", "added", "removed", "mode"],
+  "company.private_addresses_withdrawn": ["entryCount", "listDigest", "by"],
 };
 
 /** `op_` plus the first 24 hex of `sha256(issuer + "\n" + subject)`: a staff member's id in the chain, never their identity. */

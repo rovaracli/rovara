@@ -97,6 +97,20 @@ describe("session steps", () => {
       expect(userData).not.toMatch(/^export \w*_SECRET_ARN=/m);
     });
 
+    // Owner decision 123: the workspace's company's approved internal addresses ride in a named environment's user data; a legacy launch never reads or carries them; a failed read fails the launch.
+    it("carries the workspace's internal address list only in a named environment, and a failed read fails the launch", async () => {
+      const asked: string[] = [];
+      const privateAddresses = async (id: string) => { asked.push(id); return ["10.20.0.15:443", "nexus.corp.example:8081"]; };
+      const { handler } = setup(undefined, { modelProxyRequired: true, privateAddresses }, named(proxyUrl));
+      expect(gunzipSync(Buffer.from((await launch(handler)).userData, "base64")).toString("utf8")).toContain("\nexport AGENTX_PRIVATE_ADDRESSES='10.20.0.15:443,nexus.corp.example:8081'\n");
+      expect(asked).toEqual([workspaceId]);
+      const legacy = setup(undefined, { privateAddresses });
+      expect(gunzipSync(Buffer.from((await launch(legacy.handler)).userData, "base64")).toString("utf8")).not.toContain("AGENTX_PRIVATE_ADDRESSES=");
+      expect(asked).toEqual([workspaceId]);
+      const failing = setup(undefined, { modelProxyRequired: true, privateAddresses: async () => { throw new Error("state table down"); } }, named(proxyUrl));
+      await expect(launch(failing.handler)).rejects.toThrow("state table down");
+    });
+
     // Task 25 Part B fix: the launcher switches on this, not on whether a proxy URL happens to be present.
     it("says explicitly that this is a named environment, and the legacy launch says nothing", async () => {
       const { handler } = setup(undefined, { modelProxyRequired: true }, named(proxyUrl));

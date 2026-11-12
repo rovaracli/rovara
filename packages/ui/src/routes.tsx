@@ -59,6 +59,7 @@ export function appRoutes(features: AppNav["features"], options: { newNav?: bool
  // Lane C2: read-only company audit.
  { path: "second-review", lazy: async () => ({ Component: (await import("./screens/admin/second-review/SecondReviewScreen.js")).SecondReviewScreen }) },
  { path: "approval-window", lazy: async () => ({ Component: (await import("./screens/admin/approval-window/ApprovalWindowScreen.js")).ApprovalWindowScreen }) },
+ { path: "private-addresses", lazy: async () => ({ Component: (await import("./screens/admin/private-addresses/PrivateAddressesScreen.js")).PrivateAddressesScreen }) },
  // Lane C2: read-only company audit.
  { path: "audit", lazy: async () => ({ Component: (await import("./screens/admin/audit/AuditScreen.js")).AuditScreen }) }, { path: "*", element: <NotFound /> }] });
  // Automations (chains and triggers) are behind the nav answer's `features.chains` (the server's WEB_FEATURES names `chains`). Off, an old link shows "This isn't available" with a link home, exactly as before. On, a chain has its page; any other address under them is not found (the catch-all below).

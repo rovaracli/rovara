@@ -1079,6 +1079,18 @@ export function auditCompanyImageRegistriesChanged(input: AuditBuilderBase & { r
   return build("company_image.registries_changed", input, { kind: "org", id: input.orgId }, { registryCount: input.registryCount, authority: input.authority });
 }
 
+// Internal addresses a company's tasks may reach (owner decision 123) ------------------------------------------------
+
+export type PrivateAddressesAuditAction = "company.private_addresses_proposed" | "company.private_addresses_changed" | "company.private_addresses_withdrawn";
+
+/**
+ * `occurrence`: `auditOccurrence(changeId or the new revision, action)`. The target is the company. Facts are the list's size, its digest, the revision, the counts added and removed, and fixed words; the hosts and ports
+ * themselves go in `details` (subject `org`), never in a fact.
+ */
+export function auditPrivateAddresses(input: AuditBuilderBase & { action: PrivateAddressesAuditAction; facts: Record<string, Fact> }): AuditEventInput {
+  return build(input.action, input, { kind: "org", id: input.orgId }, input.facts);
+}
+
 // Saved project images (SV wiring) ---------------------------------------------------------------------------
 
 /** `occurrence`: `auditOccurrence(project, row version, change)`. The target is the project. Facts are fixed words, an image digest and a count: no repository name, command or secret. */

@@ -5,10 +5,12 @@ import { GetPublicKeyCommand, KMSClient } from "@aws-sdk/client-kms";
 import { GetParametersCommand, SSMClient } from "@aws-sdk/client-ssm";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import { MODEL_PROXY_URL_PARAMETER, WORKER_FEATURES_MAX, WORKER_FEATURE_MAX_CHARS, WORKER_PING_FEATURES_FIELD, agentXError, ec2WorkerUserData, getParametersInBatches } from "@rovara-code/contracts";
+import { MODEL_PROXY_URL_PARAMETER, WORKER_FEATURES_MAX, WORKER_FEATURE_MAX_CHARS, WORKER_PING_FEATURES_FIELD, agentXError, getParametersInBatches } from "@rovara-code/contracts";
 import { requiredEnvironment } from "./lambda.js";
 import { testServicesEnabled } from "../test-env/test-services-switch.js";
 import { readWorkerSettings, type WorkerSettings } from "./worker-settings-read.js";
+import { launchPrivateAddresses, workerUserDataWithPrivateAddresses } from "./private-address-launch.js";
+import { privateAddressInstallOf } from "../org/private-address-install.js";
 
 export { readWorkerSettings, type WorkerSettings };
 import { SessionManager, computeMeteringFromEnvironment } from "./sessions.js";
@@ -64,6 +66,11 @@ export interface SessionStepsDependencies {
   logGroupName: string;
   /** GET on the worker's /ping; resolves to what it reported, rejects when unreachable. */
   ping: (url: string) => Promise<WorkerPing | undefined>;
+  /**
+   * Owner decision 123: the internal addresses the workspace's company approved, for a named environment's launch (private-address-launch.ts). Absent: none. A read that fails fails the launch (it is retried), so a
+   * worker never boots with a list it was not meant to have, nor silently without the one it was.
+   */
+  privateAddresses?: (workspaceId: string) => Promise<string[]>;
 }
 
 /** The body of the worker's /ping, or of a failed boot's report in its place. */
@@ -125,7 +132,11 @@ export function createSessionStepsHandler(dependencies: SessionStepsDependencies
     const step = SessionStepSchema.parse(event);
     switch (step.action) {
       case "launchConfiguration": {
-        const [settings, invokePublicKey] = await Promise.all([dependencies.workerSettings(), dependencies.invokePublicKey()]);
+        const [settings, invokePublicKey, privateAddresses] = await Promise.all([
+          dependencies.workerSettings(), dependencies.invokePublicKey(),
+          // Only a named environment's stage 2 applies the list; the legacy boot never reads it, so its launch never reads or carries one.
+          dependencies.modelProxyRequired && dependencies.privateAddresses !== undefined ? dependencies.privateAddresses(step.workspaceId) : Promise.resolve([]),
+        ]);
         if (dependencies.modelProxyRequired && !settings.modelProxyUrl) {
           throw new Error(`The model proxy URL is missing: this environment's workers have no provider keys or Bedrock access, and the SSM parameter ${MODEL_PROXY_URL_PARAMETER} is not set. Deploy the control plane's model proxy first.`);
         }
@@ -133,7 +144,7 @@ export function createSessionStepsHandler(dependencies: SessionStepsDependencies
         if (dependencies.modelProxyRequired && !settings.bootStage2Sha256) {
           throw agentXError("RUNTIME_UNAVAILABLE", "this control plane has no boot hash for its worker image; run agentx upgrade");
         }
-        const userData = ec2WorkerUserData({
+        const userData = workerUserDataWithPrivateAddresses({
           workspaceId: step.workspaceId,
           generation: step.generation,
           volumeId: step.volumeId,
@@ -157,7 +168,7 @@ export function createSessionStepsHandler(dependencies: SessionStepsDependencies
           // The boot pre-pulls the catalog images only when test services (`tx`) are on; nothing is told to a launch with them off.
           ...(dependencies.modelProxyRequired && dependencies.testServices === true ? { testServices: true as const } : {}),
           logGroupName: dependencies.logGroupName,
-        }, dependencies.bootScript(dependencies.modelProxyRequired ? "named" : "legacy"));
+        }, dependencies.bootScript(dependencies.modelProxyRequired ? "named" : "legacy"), privateAddresses);
         // Already base64 gzip, the form RunInstances takes (#229).
         return { userData };
       }
@@ -236,4 +247,5 @@ export const handler = createSessionStepsHandler({
   controlPlaneUrl: process.env.CONTROL_PLANE_URL ?? "",
   logGroupName: process.env.WORKER_LOG_GROUP_NAME ?? "",
   ping: (url) => pingWorker(url),
+  privateAddresses: (workspaceId) => launchPrivateAddresses({ documentClient: stateClient, tableName: stateTableName }, workspaceId, privateAddressInstallOf()),
 });
