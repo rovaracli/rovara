@@ -96,18 +96,67 @@ async function queryAll(table: TeamRecordTable, input: Record<string, unknown>, 
   }
 }
 
-/** A project's rows between two instants, newest first, up to `limit`. Rows that do not parse are left out. */
-export async function queryRecordEvents(table: TeamRecordTable, orgId: OrgId, project: string | undefined, options: { since?: string; until?: string; limit: number; nowSeconds?: number }): Promise<StoredEvent[]> {
+/** The most rows one window read gets, however large a `limit` is asked (the same cap the single query always had). */
+export const RECORD_WINDOW_ROWS_MAX = 500;
+
+/** What a window read did: the rows (parsed, newest first), how many items it read from the table, how many pages that took, and why it stopped. */
+export interface RecordEventWindow {
+  events: StoredEvent[];
+  rowsRead: number;
+  pages: number;
+  /** `limit`: the rows asked for were read; `end`: no older row is left; `deadline`: the time budget ran out first (the window is then the newest rows read so far). */
+  stopped: "limit" | "end" | "deadline";
+}
+
+/** `work` against a deadline: the answer, or `undefined` when `ms` run out first (the abandoned call is left to finish and its failure is ignored). */
+async function withinMs<T>(ms: number, work: Promise<T>): Promise<T | undefined> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<undefined>((resolve) => { timer = setTimeout(() => resolve(undefined), Math.max(1, ms)); });
+  work.catch(() => undefined);
+  try { return await Promise.race([work, late]); } finally { if (timer !== undefined) clearTimeout(timer); }
+}
+
+/**
+ * A project's rows between two instants, newest first: PAGED until `limit` items (at most `RECORD_WINDOW_ROWS_MAX`) are read, or no older row is left, or the time budget is spent. One DynamoDB Query stops
+ * at 1 MB of items whatever its `Limit` (lane K1: before, "400 rows" really meant "400 rows or 1 MB, whichever came first", so a run of long rows shrank the window); this follows `LastEvaluatedKey` until the rows are
+ * read. The budget is `deadlineAt` (an absolute time on `clock`, default `Date.now`): no page starts once it has passed (the FIRST page always starts), and a page still running at the deadline is given up on, so the
+ * caller answers from the newest rows read so far instead of waiting past its own deadline. Rows that do not parse are left out of `events` but count as read. Without `deadlineAt` there is no time limit (the row cap bounds the pages).
+ */
+export async function queryRecordEventWindow(table: TeamRecordTable, orgId: OrgId, project: string | undefined, options: { since?: string; until?: string; limit: number; nowSeconds?: number; deadlineAt?: number; clock?: () => number }): Promise<RecordEventWindow> {
   const lower = `${RECORD_EVENT_SK_PREFIX}${options.since === undefined ? "" : new Date(options.since).toISOString()}`;
   const upper = `${RECORD_EVENT_SK_PREFIX}${options.until === undefined ? "" : new Date(options.until).toISOString()}\uffff`;
-  const response = await table.documentClient.send(new QueryCommand({
-    TableName: table.tableName,
-    KeyConditionExpression: "pk = :pk AND sk BETWEEN :low AND :high",
-    ExpressionAttributeValues: { ":pk": teamRecordPk(orgId, project), ":low": lower, ":high": upper },
-    ScanIndexForward: false,
-    Limit: Math.min(options.limit, 500),
-  })) as { Items?: Item[] };
-  return (response.Items ?? []).map((item) => eventFromItem(item, options.nowSeconds)).filter((event): event is StoredEvent => event !== undefined);
+  const wanted = Math.min(options.limit, RECORD_WINDOW_ROWS_MAX);
+  const clock = options.clock ?? Date.now;
+  const items: Item[] = [];
+  let pages = 0;
+  let startKey: Record<string, unknown> | undefined;
+  const done = (stopped: RecordEventWindow["stopped"]): RecordEventWindow => ({
+    events: items.map((item) => eventFromItem(item, options.nowSeconds)).filter((event): event is StoredEvent => event !== undefined), rowsRead: items.length, pages, stopped,
+  });
+  for (;;) {
+    const remaining = wanted - items.length;
+    if (remaining <= 0) return done("limit");
+    if (pages > 0 && options.deadlineAt !== undefined && clock() >= options.deadlineAt) return done("deadline");
+    const request = table.documentClient.send(new QueryCommand({
+      TableName: table.tableName,
+      KeyConditionExpression: "pk = :pk AND sk BETWEEN :low AND :high",
+      ExpressionAttributeValues: { ":pk": teamRecordPk(orgId, project), ":low": lower, ":high": upper },
+      ScanIndexForward: false,
+      Limit: remaining,
+      ...(startKey === undefined ? {} : { ExclusiveStartKey: startKey }),
+    })) as Promise<{ Items?: Item[]; LastEvaluatedKey?: Record<string, unknown> }>;
+    const response = options.deadlineAt === undefined ? await request : await withinMs(options.deadlineAt - clock(), request);
+    if (response === undefined) return done("deadline");
+    pages += 1;
+    items.push(...(response.Items ?? []));
+    startKey = response.LastEvaluatedKey;
+    if (startKey === undefined) return done("end");
+  }
+}
+
+/** A project's rows between two instants, newest first, up to `limit`, read in pages (`queryRecordEventWindow`). Rows that do not parse are left out. */
+export async function queryRecordEvents(table: TeamRecordTable, orgId: OrgId, project: string | undefined, options: { since?: string; until?: string; limit: number; nowSeconds?: number; deadlineAt?: number; clock?: () => number }): Promise<StoredEvent[]> {
+  return (await queryRecordEventWindow(table, orgId, project, options)).events;
 }
 
 /** Every item (rows, derivation links) on one index value, including tombstoned ones: the delete worker needs them. Bounded by `maxItems`. */

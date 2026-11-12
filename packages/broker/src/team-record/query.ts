@@ -1,5 +1,5 @@
 // The query API of the Team record (design 4.10, task R9): the one place anything reads the record for a person or for a task's model context.
-//   recordSearch  search rows and facts: ALWAYS a blend (reciprocal rank fusion, DECISIONS 142) of the meaning results (the vector index) and the keyword results (BM25 over the newest rows); keyword alone when the vector path is missing or fails
+//   recordSearch  search rows and facts: ALWAYS a blend (reciprocal rank fusion, DECISIONS 142) of the meaning results (the vector index) and the keyword results (BM25 per best passage over the newest rows); keyword alone when the vector path is missing or fails
 //   pastWork      the Plan 9 `past_work` contract: earlier tasks, with the outcome and what was learned
 //   recordFacts   the distilled notes, newest first
 //   recordStats   a fixed statistics template over the lake, never caller SQL
@@ -19,17 +19,24 @@ import { createLiveAudienceReader, type TaskVisibilityPort } from "./live-audien
 import { assembleItem, itemKeyOf, isChangeRow, visibleItemRows } from "./item-assembly.js";
 import type { LearningModeReader } from "./mode.js";
 import type { SourceRouteDependencies } from "./source-write.js";
-import { getRecordEvent, getRecordFact, pendingHidesOf, queryRecordEvents, queryRecordFacts, type StoredEvent, type StoredFact } from "./store.js";
-import { bm25Scores, reciprocalRankFusion } from "./search-fusion.js";
+import { getRecordEvent, getRecordFact, pendingHidesOf, queryRecordEventWindow, queryRecordEvents, queryRecordFacts, type StoredEvent, type StoredFact } from "./store.js";
+import { bm25PassageScores, reciprocalRankFusion } from "./search-fusion.js";
 import type { LiveAclCheck, ReadAudience, RecordEmbedder, RecordLog, TeamRecordTable } from "./types.js";
 
 export const RECORD_QUERIES_PER_PERSON_PER_HOUR = 120;
 export const RECORD_QUERIES_PER_TASK_PER_HOUR = 60;
 /**
  * The newest rows the keyword side of every search reads (a bounded scan of the hot layer; DECISIONS 142 made it part of EVERY search, not only a fallback). v1 LIMIT: a row older than the newest
- * `KEYWORD_SCAN_ROWS` of the project is found by meaning only (and a row with no vector yet, or whose text expired, is then not found if it is also outside this window); a later version can add a real lexical index.
+ * `KEYWORD_SCAN_ROWS` of the project is found by meaning only (and a row with no vector yet, or whose text expired, is then not found if it is also outside this window); a later version can add a real lexical index (DECISIONS 145).
+ * The window is read in pages (lane K1; `queryRecordEventWindow`), so it is 400 rows unless the time budget below ends the read first: before, one DynamoDB Query stopped at 1 MB, which made it "400 rows or 1 MB".
+ * Each row is scored by its best passage (`bm25PassageScores`), so a fact late in a long text finds the row.
  */
 export const KEYWORD_SCAN_ROWS = 400;
+/**
+ * The most time the window read may take (lane K1): the same 3 s the search gives the embedder (`EMBEDDER_SEARCH_WAIT_MS`), so the keyword side never keeps a search waiting longer than the meaning side may, and far inside the
+ * broker's 30 s. A read that runs out of time answers with the newest rows it has (the window shrinks; it is logged as `record.keyword_window_cut`). Normal: 1 page for up to ~1 MB, so 400 rows of 8 KB take 3-4 pages.
+ */
+export const KEYWORD_READ_BUDGET_MS = 3_000;
 const VECTOR_OVERFETCH = 3;
 const FACT_SCAN = 200;
 const PAST_WORK_EVENT_SCAN = 400;
@@ -173,7 +180,16 @@ function hitOfFact(fact: RecordFact): RecordSearchHit {
 }
 
 /**
- * Search rows and facts. ALWAYS a blend (DECISIONS 142): the meaning results (embedder + vector index) and the keyword results (BM25 over the newest `KEYWORD_SCAN_ROWS` rows of the project and its facts) are
+ * What the keyword side scores of a row: its text (only while the text has not expired: the words of expired raw text are never scored, even when a night's text-expiry job has not removed them yet) and its structured
+ * fields. A row read through `eventFromItem` has already lost an expired text; the check here keeps that true for a row from any other reader.
+ */
+export function keywordDocumentOf(event: StoredEvent, nowSeconds: number): string {
+  const text = event.text !== undefined && (event.textExpiresAt === undefined || event.textExpiresAt > nowSeconds) ? event.text : "";
+  return `${text} ${JSON.stringify(event.structured ?? {})}`;
+}
+
+/**
+ * Search rows and facts. ALWAYS a blend (DECISIONS 142): the meaning results (embedder + vector index) and the keyword results (BM25 over the best passage of each of the newest `KEYWORD_SCAN_ROWS` rows of the project and of its facts) are
  * fused with reciprocal rank fusion (search-fusion.ts), so a row only one side found still shows up and a row both found ranks first. Both sides go through the same cuts (workspace, project, time, kinds, sources)
  * and the same permission filter (`filterVisible`), and a row the reader may not see holds no rank in either list. If the vector path is missing, fails or times out, the answer is the keyword list alone.
  */
@@ -218,13 +234,16 @@ export async function recordSearch(deps: RecordQueryDependencies, audience: Read
       return [];
     }
   };
-  // The keyword side: BM25 over the newest `KEYWORD_SCAN_ROWS` hot rows and the facts of the project (rows older than that window are found by meaning only). It reads the FULL kept text of a row, so a word that stands late in a text
-  // the embedder cut at 512 tokens (`embeddingTruncated`) still finds the row.
+  // The keyword side: BM25 over the best passage of each of the newest `KEYWORD_SCAN_ROWS` hot rows (read in pages, within `KEYWORD_READ_BUDGET_MS`) and of the facts of the project (rows older than that window are found by meaning only).
+  // It reads the FULL kept text of a row, so a word that stands late in a text the embedder cut at 512 tokens (`embeddingTruncated`) still finds the row.
   const keywordSide = async (): Promise<Candidate[]> => {
-    const events = await queryRecordEvents(deps.table, orgId, project, { limit: KEYWORD_SCAN_ROWS, nowSeconds });
+    const clock = deps.now ?? Date.now;
+    const read = await queryRecordEventWindow(deps.table, orgId, project, { limit: KEYWORD_SCAN_ROWS, nowSeconds, deadlineAt: clock() + KEYWORD_READ_BUDGET_MS, clock });
+    if (read.stopped === "deadline") deps.log?.("record.keyword_window_cut", { rows: read.rowsRead, pages: read.pages });
+    const events = read.events;
     const facts = await queryRecordFacts(deps.table, orgId, project, FACT_SCAN);
-    const documents = [...events.map((event) => `${event.text ?? ""} ${JSON.stringify(event.structured ?? {})}`), ...facts.map((fact) => fact.text)];
-    const scores = bm25Scores(request.query, documents);
+    const documents = [...events.map((event) => keywordDocumentOf(event, nowSeconds)), ...facts.map((fact) => fact.text)];
+    const scores = bm25PassageScores(request.query, documents);
     const all: Array<Candidate & { score: number }> = [...events.map((event) => ({ id: event.id, event })), ...facts.map((fact) => ({ id: fact.id, fact }))].map((candidate, index) => ({ ...candidate, score: scores[index] as number }));
     // best first; equal scores keep the newest-first order the rows were read in
     return all.filter((candidate) => candidate.score > 0).sort((left, right) => right.score - left.score);
@@ -324,7 +343,8 @@ export async function pastWork(deps: RecordQueryDependencies, audience: ReadAudi
   });
   const shownIds = new Set(shown.map((task) => task.taskId));
   // The outcome rows pass the same filter: a revert seen only in a private repository does not show in a shared answer.
-  const scanned = (await queryRecordEvents(deps.table, orgId, project, { limit: PAST_WORK_EVENT_SCAN, nowSeconds: nowSecondsOf(deps) }))
+  const clock = deps.now ?? Date.now;
+  const scanned = (await queryRecordEvents(deps.table, orgId, project, { limit: PAST_WORK_EVENT_SCAN, nowSeconds: nowSecondsOf(deps), deadlineAt: clock() + KEYWORD_READ_BUDGET_MS, clock }))
     .filter((event) => OUTCOME_KINDS.has(event.kind) && typeof event.structured?.taskId === "string" && shownIds.has(event.structured.taskId));
   const outcomeRows = (await filterVisible(scanned, effective, filters)).visible;
   const outcomes = new Map<string, { merged: boolean; sendBacks: number; reverted: boolean }>();
