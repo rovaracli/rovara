@@ -12,6 +12,8 @@ export function keyFamily(pk: string, sk: string): string {
     // The person: Cloud keys a developer by a hash of the sign-in, the local core by `local-owner` (D6/D11: open provider names).
     .replace(/\b(DEVELOPER|DEVELOPER_LIMIT|IDEMPOTENCY|MY_SESSIONS|TRIGGERS_BY_CREATOR)#(?:[0-9a-f]{16,64}|local-owner)\b/g, "$1#<person>")
     .replace(/#(?:[0-9a-f]{16,64}|local-owner)#/g, "#<person>#")
+    // A message a person sent to a task (the core's note row: `NOTE#msg_<random>`).
+    .replace(/\bmsg_[0-9a-z]{8,}\b/g, "msg_<id>")
     .replace(/\b[0-9a-f]{16,64}\b/g, "<hash>")
     .replace(/\d{4}-\d{2}-\d{2}T[\d:.]+Z/g, "<time>")
     // An hour bucket (a trigger's hourly allowance row: `TRIGGER_RATE#<trigger> | 2026-11-12T10`).

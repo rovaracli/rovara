@@ -28,6 +28,16 @@ export interface KnownDifference {
 
 const CORE_LANE_DIFFERENCES: readonly KnownDifference[] = [
   {
+    scenario: "*", facet: "rows", only: ["DEVTASK#<id> | RECIPE", "ORG#<org>#BUILTIN_AGENTS | rovara-code"],
+    cause: [
+      "Cloud's agent-session wiring (production starts every task with it: aws/broker.ts:653, aws/developer-tasks/start.ts createTaskSessionItems; the Cloud engine passes `agentSessions: true`)",
+      "writes the task's frozen recipe (DEVTASK#<task>/RECIPE, the recipe pin the task runs on) and the company's built-in agent catalogue row (ORG#<org>#BUILTIN_AGENTS/rovara-code). The core keeps the",
+      "task's program on its workflow and has no separate recipe row or per-company built-in catalogue: Cloud-only (decision 41, agents). Open: what Cloud's readers of the frozen recipe",
+      "(model pin, autonomy, the plan check) read for a core task is the root's autonomy and model seams (S0-Q2 UNMAPPED_SETTINGS), not a row.",
+    ].join(" "),
+    owner: "Agents on the core (X lane): the recipe pin as a core record, or readers that take the workflow's program; until then Cloud-only",
+  },
+  {
     scenario: "plan-changes-requested", facet: "transitions",
     cause: [
       "Core bug found by the suite: with Understand off (Cloud's Quick path; the composition root maps Cloud's settings to understandFirst=false), a plan sent back with \"request changes\" is never re-planned.",

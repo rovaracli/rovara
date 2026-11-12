@@ -37,6 +37,8 @@ export function baseOptions(scenario: Scenario): CloudOptions {
   const coding = scenario.steps.find((step): step is Extract<Step, { do: "coding.done" }> => step.do === "coding.done");
   const firstPlan: PlanSpec = plans[0] ?? { title: "Add greet(name)", claims: ["Add greet to greeting.ts.", "A test in greeting.test.ts proves greet(\"Maya\") returns Hello, Maya."] };
   return {
+    // Production gives every task a session at start (aws/broker.ts:653, aws/developer-tasks/start.ts createTaskSessionItems); the journey harness builds the agent-session wiring only when asked.
+    agentSessions: true,
     model: {
       plan: (latest) => planTextOf(notes.some((note) => latest.includes(note)) && plans[1] !== undefined ? plans[1] : firstPlan),
       edits: Object.entries(coding?.files ?? {}).map(([path, content]) => ({ path: `repo/demo/${path}`, content })),

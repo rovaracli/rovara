@@ -9,6 +9,12 @@ import { asMaya } from "./task-flow.js";
 type Driver = StepDriver<CloudContext, CloudOptions>;
 const DAY_MS = 86_400_000;
 
+/** The task's session: the one made at start and kept on the task record (aws/developer-tasks/start.ts), else the lazily made one. */
+const sessionOf = (ctx: CloudContext): string => {
+  const task = ctx.e2e.db.get({ pk: `DEVTASK#${ctx.e2e.taskId()}`, sk: "META" });
+  return typeof task?.sessionId === "string" ? task.sessionId : lazySessionId(ctx.e2e.taskId());
+};
+
 /** Every scheduled sweep the journey harness can run (dispatch recovery and the session reconciler, merge tracking, webhook recovery), then the notices. */
 async function runSchedules(ctx: CloudContext): Promise<void> {
   ctx.memo.lost = [...((ctx.memo.lost as string[] | undefined) ?? []), ...(await ctx.e2e.runRecovery()).lostOperations];
@@ -55,16 +61,13 @@ export const RESILIENCE_DRIVERS: Record<string, Driver> = {
     },
   },
   "session.message": {
-    // A person writes to the task from its page. On Cloud's path a Slack-started Quick task has NO agent session: one is made at start only for an agent run
-    // (`prepared`, aws/developer-tasks/start.ts), and lazily only for a task with `agent` and `origin` (agent-sessions/create.ts:296), which a Slack workflow
-    // task never gets, so the message is refused "session not found" even after the page is read. The core gives every task a session at start. Both answers are
-    // recorded as a `features` word (`session.message:accepted|refused:<status>`), so the difference is compared, not skipped.
-    options: () => ({ agentSessions: true }),
+    // A person writes to the task from its page. Production gives every task a session at start (aws/developer-tasks/start.ts createTaskSessionItems), so the
+    // message is accepted on both paths; both answers are recorded as a `features` word (`session.message:accepted|refused:<status>`).
     async run(ctx, step) {
       const text = (step as Extract<Step, { do: "session.message" }>).text;
       const opened = await asMaya(ctx, "GET", `/v1/dev/tasks/${ctx.e2e.taskId()}`);
       if (opened.statusCode !== 200) throw new Error(`Cloud refused the task page read (${String(opened.statusCode)})`);
-      const sent = await asMaya(ctx, "POST", `/v1/app/sessions/${lazySessionId(ctx.e2e.taskId())}/messages`, { requestId: randomUUID(), kind: "steer", text });
+      const sent = await asMaya(ctx, "POST", `/v1/app/sessions/${sessionOf(ctx)}/messages`, { requestId: randomUUID(), kind: "steer", text });
       ctx.extra.features.push(sent.statusCode < 400 ? "session.message:accepted" : `session.message:refused:${String(sent.statusCode)}`);
       if (process.env.PARITY_DEBUG === "1") console.log(JSON.stringify({ parity: "cloud.sessionMessage", status: sent.statusCode, body: sent.body.slice(0, 300) }));
       await ctx.e2e.settle();

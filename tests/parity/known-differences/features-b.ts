@@ -14,6 +14,15 @@ const LEDGER_GAP = [
 
 export const FEATURES_B_DIFFERENCES: readonly KnownDifference[] = [
   {
+    scenario: "realtime", facet: "features",
+    cause: [
+      "Both paths now tell an open page (each has the task's session: sessions:1). What they publish differs in vocabulary: Cloud's agent-session projector and notice sink publish `home.changed` and `session.updated`;",
+      "the core's realtime port publishes `attention.changed` when the task needs the person. The core's adapter here is the local composition's in-process publisher; lane A8's AppSync publisher is the Cloud adapter of the",
+      "point and is not registered by the root yet (cloud-modules.ts, WIRING), and it must carry the core's notice to the pages that listen for Cloud's two.",
+    ].join(" "),
+    owner: "S0 follow-up (WIRING): register A8's realtime publisher and map the core's notice onto the page's two notices",
+  },
+  {
     scenario: "audit-ledger", facet: "features",
     cause: [
       `Ordered ledger, Cloud: project.checks_changed, pull_request.opened; core (mapped by A7): task.started, approval.decided, pull_request.opened. ${LEDGER_GAP}`,
@@ -24,19 +33,6 @@ export const FEATURES_B_DIFFERENCES: readonly KnownDifference[] = [
       "switch so the ledger does not depend on the engine; else map the core's two actions to nothing in A7's event map.",
     ].join(" "),
     owner: "Intended: owner decision 143(a) keeps the core's task.started and own-plan approval audit entries in Cloud; nothing to change on either side",
-  },
-  {
-    scenario: "realtime", facet: "features",
-    cause: [
-      "Real gap on Cloud's side, the realtime face of R-SESSIONS (resilience lane): with the agent-session projector and Cloud's real notice sink run over every write of",
-      "the journey (features-b drivers), a Slack-started Quick task tells an open page NOTHING: the task has no agent session (`sessions:0`), so the projector",
-      "(agent-sessions/projector.ts:89 resolveTask) finds no `sessionId` on the task and refreshes nothing, and realtime/sink.ts never runs. The core gives every task a",
-      "session at start (`sessions:1`) and publishes `attention.changed` when it needs the person. With the switch, core tasks start telling open pages; Cloud tasks keep",
-      "not telling them. Proposed (Cloud, before the switch only if Cloud's path stays for some tasks): give Slack workflow tasks their session (workflow task `agent`/`origin`,",
-      "or a workflow branch in agent-sessions/create.ts lazyTaskSessionInput :296), so the projector and the sink run for them. Also: the core's realtime adapter here is the",
-      "local composition's in-process publisher; A8's AppSync publisher is the Cloud adapter of the point and is not registered by the root yet (cloud-modules.ts).",
-    ].join(" "),
-    owner: "Cloud agent-sessions (workflow task sessions) or accepted as fixed by the switch; S0 follow-up registers A8's realtime publisher",
   },
   {
     scenario: "slack-channel", facet: "features",
