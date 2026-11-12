@@ -1,7 +1,7 @@
-// Test services, slice 2: ONE task with a real Postgres AND an S3 bucket, an SQS queue and a DynamoDB table (Rovara local AWS), end to end, on a fake Docker CLI and a fake emulator control. Same chain as the slice-1 e2e
+// Test services, slice 2: ONE task with a real Postgres AND an S3 bucket, an SQS queue, a DynamoDB table and an SNS topic (Rovara local AWS), end to end, on a fake Docker CLI and a fake emulator control. Same chain as the slice-1 e2e
 // (test-services-postgres.test.ts), with the real modules of every lane:
 //
-//   a repository (compose file + CloudFormation template + pytest)  ->  the worker's detectors (compose + D7 IaC) put the dependencies in the draft  ->  the broker proposes Postgres (local) and S3, SQS and DynamoDB (emulated)
+//   a repository (compose file + CloudFormation template + pytest)  ->  the worker's detectors (compose + D7 IaC) put the dependencies in the draft  ->  the broker proposes Postgres (local) and S3, SQS, DynamoDB and SNS (emulated: decision 109, every service the detectors find is planned)
 //   ->  a person approves a revision  ->  the plans for coding (IMPLEMENT) and for the checks (CHECKS), pinned by digest  ->  the worker starts ONE emulator for the three, seeds it from the project's template through the
 //   control API, runs a sealed round on brand-new helpers and reads the request ledger  ->  the usage record  ->  the evidence pack  ->  the pull request line and the IAM line.
 //
@@ -75,8 +75,13 @@ Resources:
       TopicName: alerts
 `;
 const SEED: ProjectCommand = { cwd: PROJECT, executable: "seed-aws-data", args: [], timeoutSeconds: 60 };
-const PR_LINE = "Integration tests ran against: Postgres (real), S3, SQS and DynamoDB (Rovara local AWS).";
-const GOOD_LEDGER = ledgerOf({ s3: { PutObject: { calls: 3 }, GetObject: { calls: 2 } }, sqs: { SendMessage: { calls: 2 } }, dynamodb: { PutItem: { calls: 4 } } });
+// The proposal names only S3, SQS and DynamoDB by words (FAMILY_NAMES in broker/src/test-env/dependency-proposal.ts); every other AWS service shows its family id, so SNS reads "aws:sns" on the card, in the evidence and in the PR line.
+const SNS_NAME = "aws:sns";
+const PR_LINE = `Integration tests ran against: Postgres (real), S3, SQS, DynamoDB and ${SNS_NAME} (Rovara local AWS).`;
+const GOOD_LEDGER = ledgerOf({ s3: { PutObject: { calls: 3 }, GetObject: { calls: 2 } }, sqs: { SendMessage: { calls: 2 } }, dynamodb: { PutItem: { calls: 4 } }, sns: { Publish: { calls: 1 } } });
+// A service the project does not use and no detector finds (so no plan names it): the out-of-plan example. It has no AWS_ENDPOINT_URL_KINESIS variable in the sandbox (only planned services and names the repository sets get one), so the SDK reaches
+// it through the global AWS_ENDPOINT_URL, which is the emulator.
+const OUT_OF_PLAN = "kinesis";
 
 const roots: string[] = [];
 afterEach(async () => { forgetWorkerStartSweeps(); await Promise.all(roots.splice(0).map((dir) => rm(dir, { recursive: true, force: true }))); });
@@ -129,36 +134,37 @@ async function approvedProject(draft: TestEnvDraft, env: NodeJS.ProcessEnv = ON)
 }
 
 describe("1. the proposal: Postgres local, S3 SQS and DynamoDB emulated, from the real detectors", () => {
-  it("the detectors put Postgres and the three AWS services in the draft, with where they were seen; SNS is a candidate too", async () => {
+  it("the detectors put Postgres and the four AWS services (DynamoDB, S3, SNS, SQS) in the draft, with where they were seen", async () => {
     const draft = await detectedDraft();
     expect(TestEnvDraftSchema.safeParse(draft).success).toBe(true);
     expect(draft.dependencies?.map((item) => item.family).sort()).toEqual(["aws:dynamodb", "aws:s3", "aws:sns", "aws:sqs", "postgres"]);
     expect(draft.dependencies?.filter((item) => item.family.startsWith("aws:")).every((item) => item.evidence.every((entry) => entry.path === `${PROJECT}/template.yaml`))).toBe(true);
   });
 
-  it("the broker proposes Postgres as local and S3, SQS and DynamoDB as emulated (one alias, the template as the resource pointer); SNS is left out; the card says so plainly", async () => {
+  it("the broker proposes Postgres as local and S3, SQS, DynamoDB and SNS as emulated (one alias, the template as the resource pointer): every service the detectors find is planned (decision 109)", async () => {
     const draft = await detectedDraft();
     const sanitized = sanitizeTestEnvDraft(draft, { env: ON, propose: proposeContext })!;
     const proposed = sanitized.environment.dependencies ?? [];
-    expect(proposed.map((item) => [item.id, item.backing.kind])).toEqual(expect.arrayContaining([["postgres", "local"], ["aws-s3", "emulated"], ["aws-sqs", "emulated"], ["aws-dynamodb", "emulated"]]));
-    expect(proposed).toHaveLength(4);
+    expect(proposed.map((item) => [item.id, item.backing.kind])).toEqual(expect.arrayContaining([["postgres", "local"], ["aws-s3", "emulated"], ["aws-sqs", "emulated"], ["aws-dynamodb", "emulated"], ["aws-sns", "emulated"]]));
+    expect(proposed).toHaveLength(5);
     const emulated = proposed.filter((item) => item.backing.kind === "emulated");
-    expect(emulated.map((item) => item.connect.hostAliases.length).sort()).toEqual([0, 0, 1]);
+    expect(emulated.map((item) => item.connect.hostAliases.length).sort()).toEqual([0, 0, 0, 1]);
     for (const item of emulated) expect(item.backing).toMatchObject({ kind: "emulated", catalogId: "local-aws@r1", region: "us-east-1", resources: { provider: "cloudformation", path: `${PROJECT}/template.yaml` } });
-    expect(sanitized.notes.join(" ")).toMatch(/cannot start yet/u);
+    // Nothing found is left out any more: no "Rovara cannot start yet" note, and the card has one emulated line for each of the four services.
+    expect(sanitized.notes.join(" ")).not.toMatch(/cannot start yet/u);
     const lines = dependencyCardLines(proposed);
-    expect(lines.filter((line) => line.includes("Rovara local AWS"))).toHaveLength(3);
+    expect(lines.filter((line) => line.includes("Rovara local AWS"))).toHaveLength(4);
     expect(lines.filter((line) => line.includes(": runs ")).every((line) => line.includes("Found in"))).toBe(true);
     expect(lines.join("\n")).toContain("Not checked here: AWS permissions and exact AWS behaviour");
   });
 
-  it("the PR line follows the order of the approved environment: the detectors' own (alphabetical) order reads DynamoDB, S3 and SQS", async () => {
+  it("the PR line follows the order of the approved environment: the detectors' own (alphabetical) order reads DynamoDB, S3, SQS and SNS", async () => {
     const broker = await approvedProject(await detectedDraft());
     const checks = (await testEnvPlanFor(broker.deps, { orgId: ORG, project: PROJECT, taskId: TASK, readiness: broker.readiness }, ON))!;
     const bench = await workerBench();
     const { started, round } = await run(bench, checks, broker.readiness);
     const { lines } = await evidenceFor(broker, lastUsage(bench), round);
-    expect(lines.lines).toContain("Integration tests ran against: Postgres (real), DynamoDB, S3 and SQS (Rovara local AWS).");
+    expect(lines.lines).toContain(`Integration tests ran against: Postgres (real), DynamoDB, S3, SQS and ${SNS_NAME} (Rovara local AWS).`);
     await started.dispose();
     await bench.sandbox.dispose();
   });
@@ -175,15 +181,15 @@ describe("1. the proposal: Postgres local, S3 SQS and DynamoDB emulated, from th
 });
 
 describe("2. the task plan: IMPLEMENT and CHECKS carry the same pinned dependencies", () => {
-  it("pins Postgres and the three emulated entries by digest, the emulated ones with their services, region and the template pointer", async () => {
+  it("pins Postgres and the four emulated entries by digest, the emulated ones with their services, region and the template pointer", async () => {
     const broker = await approvedProject(await detectedDraft());
     const checks = (await testEnvPlanFor(broker.deps, { orgId: ORG, project: PROJECT, taskId: TASK, readiness: broker.readiness }, ON))!;
     const coding = (await testEnvImplementPlanFor(broker.deps, { orgId: ORG, project: PROJECT, taskId: TASK }, ON))!;
     for (const plan of [checks, coding]) {
       const byId = new Map((plan.dependencies ?? []).map((item) => [item.id, item]));
-      expect([...byId.keys()].sort()).toEqual(["aws-dynamodb", "aws-s3", "aws-sqs", "postgres"]);
+      expect([...byId.keys()].sort()).toEqual(["aws-dynamodb", "aws-s3", "aws-sns", "aws-sqs", "postgres"]);
       expect(byId.get("postgres")).toMatchObject({ catalogId: "postgres@16", backing: "local" });
-      for (const [id, service] of [["aws-s3", "s3"], ["aws-sqs", "sqs"], ["aws-dynamodb", "dynamodb"]] as const) {
+      for (const [id, service] of [["aws-s3", "s3"], ["aws-sqs", "sqs"], ["aws-dynamodb", "dynamodb"], ["aws-sns", "sns"]] as const) {
         expect(byId.get(id)).toMatchObject({ catalogId: "local-aws@r1", repository: "svc/local-aws", backing: "emulated", digest: digestOfId("local-aws@r1"), aws: { services: [service], region: "us-east-1", resources: { provider: "cloudformation", path: `${PROJECT}/template.yaml` } } });
       }
     }
@@ -255,7 +261,7 @@ const nothingLeft = async (bench: Bench): Promise<void> => {
 /** The draft with its dependencies in the order the design's PR line reads (the detectors list them alphabetically; the line follows the approved environment's order). */
 async function orderedDraft(): Promise<TestEnvDraft> {
   const draft = await detectedDraft();
-  const rank = ["postgres", "aws:s3", "aws:sqs", "aws:dynamodb"];
+  const rank = ["postgres", "aws:s3", "aws:sqs", "aws:dynamodb", "aws:sns"];
   draft.dependencies = [...(draft.dependencies ?? [])].sort((a, b) => rank.indexOf(a.family) - rank.indexOf(b.family));
   return draft;
 }
@@ -275,31 +281,32 @@ async function evidenceFor(broker: Broker, record: TestServicesUsageRecord, roun
 }
 
 describe("3. a task passes a check round against Postgres and Rovara local AWS, and the PR says so", () => {
-  it("IMPLEMENT: ONE emulator for the three, with the run contract; the template's resources are created through the control API before the project's seed; the working sandbox gets per-service endpoints", async () => {
+  it("IMPLEMENT: ONE emulator for the four, with the run contract; the template's resources are created through the control API before the project's seed; the working sandbox gets per-service endpoints", async () => {
     const { coding: approved } = await plans();
     // The project's own seed command on the first emulated entry (a maintainer adds it on the card): it must run AFTER the template's resources exist.
     const coding = { ...approved, dependencies: approved.dependencies!.map((item) => (item.id === "aws-s3" ? { ...item, seeds: [{ command: SEED }] } : item)) };
     const bench = await workerBench();
     const started = (await bench.start(coding, "IMPLEMENT"))!;
-    expect([...started.ids].sort()).toEqual(["aws-dynamodb", "aws-s3", "aws-sqs", "postgres"]);
+    expect([...started.ids].sort()).toEqual(["aws-dynamodb", "aws-s3", "aws-sns", "aws-sqs", "postgres"]);
     expect(bench.aws.emulatorEnv).toHaveLength(1);
     const file = bench.aws.emulatorEnv[0]!;
     expect(envOf(file, "ROVARA_AWS_BASE_URL")).toBe("http://aws:4566");
     const secrets = ["ROVARA_AWS_AUTH_PRESIGN_SECRET", "ROVARA_AWS_SERVICES_SQS_RECEIPT_HANDLE_SECRET", "ROVARA_AWS_CONTROL_TOKEN"].map((name) => envOf(file, name)!);
     expect(new Set(secrets).size).toBe(3);
-    // The services the plan does not name are switched off in the emulator.
-    expect(file).toContain("ROVARA_AWS_SERVICES_SNS_ENABLED=false");
-    // The seed call carries the emulator's own token and exactly the template's three resources (the topic is not seeded).
+    // Every planned service is named to the emulator (decision 109): SNS is planned now, so the old image's SNS switch is not written, and the services the plan does not name (Kinesis here) are recorded as out of the plan.
+    expect(envOf(file, "ROVARA_AWS_PLANNED_SERVICES")!.split(",").sort()).toEqual(["dynamodb", "s3", "sns", "sqs"]);
+    expect(file).not.toContain("ROVARA_AWS_SERVICES_SNS_ENABLED=false");
+    // The seed call carries the emulator's own token and exactly the template's four resources (the topic is seeded too: SNS is planned).
     const seed = bench.aws.controls.filter((call) => call.path === "/_rovara/seed");
     expect(seed).toHaveLength(1);
     expect(seed[0]!.token).toBe(envOf(file, "ROVARA_AWS_CONTROL_TOKEN"));
-    const document = JSON.parse(seed[0]!.body!) as { s3: { buckets: Array<{ name: string }> }; sqs: { queues: Array<{ name: string }> }; dynamodb: { tables: Array<{ request: { TableName: string } }> } };
-    expect([document.s3.buckets[0]!.name, document.sqs.queues[0]!.name, document.dynamodb.tables[0]!.request.TableName]).toEqual(["orders-archive", "order-events", "orders"]);
-    expect(JSON.stringify(document)).not.toContain("alerts");
-    // The sandbox sees S3, SQS and DynamoDB at the emulator and every other service and the global endpoint at the emulator too (it refuses what the plan did not ask for AND counts it); none of the three values.
+    const document = JSON.parse(seed[0]!.body!) as { s3: { buckets: Array<{ name: string }> }; sqs: { queues: Array<{ name: string }> }; dynamodb: { tables: Array<{ request: { TableName: string } }> }; sns: { topics: Array<{ name: string }> } };
+    expect([document.s3.buckets[0]!.name, document.sqs.queues[0]!.name, document.dynamodb.tables[0]!.request.TableName, document.sns.topics[0]!.name]).toEqual(["orders-archive", "order-events", "orders", "alerts"]);
+    // The sandbox sees S3, SQS, DynamoDB and SNS at the emulator, and every other service through the global endpoint at the emulator too (it records what the plan did not ask for as out of the plan AND counts it); none of the three values.
     const exec = bench.fake.execs.find((entry) => entry.envFile?.includes("AWS_ENDPOINT_URL_S3=") === true)!;
     for (const name of ["S3", "SQS", "DYNAMODB"]) expect(envOf(exec.envFile, `AWS_ENDPOINT_URL_${name}`)).toBe("http://aws:4566");
     expect(envOf(exec.envFile, "AWS_ENDPOINT_URL_SNS")).toBe("http://aws:4566");
+    expect(envOf(exec.envFile, `AWS_ENDPOINT_URL_${OUT_OF_PLAN.toUpperCase()}`)).toBeUndefined();
     expect(envOf(exec.envFile, "AWS_ENDPOINT_URL")).toBe("http://aws:4566");
     expect(exec.envFile).not.toContain("sinkhole");
     for (const secret of secrets) { expect(exec.envFile).not.toContain(secret); expect(bench.fake.calls.flat().join(" ")).not.toContain(secret); }
@@ -311,21 +318,21 @@ describe("3. a task passes a check round against Postgres and Rovara local AWS, 
     await nothingLeft(bench);
   });
 
-  it("CHECKS: the sealed round runs on a fresh emulator, the ledger says what the code called, and the evidence and the PR line say Postgres (real), S3, SQS and DynamoDB (Rovara local AWS), plus the IAM line", async () => {
+  it("CHECKS: the sealed round runs on a fresh emulator, the ledger says what the code called, and the evidence and the PR line say Postgres (real), S3, SQS, DynamoDB and SNS (Rovara local AWS), plus the IAM line", async () => {
     const { broker, checks } = await plans();
     const bench = await workerBench();
     const { started, round } = await run(bench, checks, broker.readiness);
     expect(round.entries.map((entry) => entry.after)).toEqual(broker.readiness.map(() => "passed"));
     const record = lastUsage(bench);
-    expect(record.dependencies.map((entry) => entry.id).sort()).toEqual(["aws-dynamodb", "aws-s3", "aws-sqs", "postgres"]);
+    expect(record.dependencies.map((entry) => entry.id).sort()).toEqual(["aws-dynamodb", "aws-s3", "aws-sns", "aws-sqs", "postgres"]);
     expect(record.dependencies.every((entry) => entry.started && entry.healthy)).toBe(true);
     expect(record.aws).toMatchObject({ ledger: "read", otherCalls: 0, otherUnsupported: 0, unsupportedOperations: [] });
-    expect(record.aws?.services.map((entry) => entry.service).sort()).toEqual(["dynamodb", "s3", "sqs"]);
+    expect(record.aws?.services.map((entry) => entry.service).sort()).toEqual(["dynamodb", "s3", "sns", "sqs"]);
     // The round's emulator has its own token, and the seed and the ledger read both used it.
     const token = envOf(bench.aws.emulatorEnv.at(-1), "ROVARA_AWS_CONTROL_TOKEN");
     expect(bench.aws.controls.filter((call) => call.path === "/_rovara/ledger/summary").map((call) => call.token)).toEqual([token]);
     const { pack, lines } = await evidenceFor(broker, record, round);
-    expect(pack.environment.dependencies).toEqual(expect.arrayContaining([expect.objectContaining({ name: "Postgres", label: "real" }), expect.objectContaining({ name: "S3", label: "rovara_local_aws" }), expect.objectContaining({ name: "SQS", label: "rovara_local_aws" }), expect.objectContaining({ name: "DynamoDB", label: "rovara_local_aws" })]));
+    expect(pack.environment.dependencies).toEqual(expect.arrayContaining([expect.objectContaining({ name: "Postgres", label: "real" }), expect.objectContaining({ name: "S3", label: "rovara_local_aws" }), expect.objectContaining({ name: "SQS", label: "rovara_local_aws" }), expect.objectContaining({ name: "DynamoDB", label: "rovara_local_aws" }), expect.objectContaining({ name: SNS_NAME, label: "rovara_local_aws" })]));
     expect(lines.lines).toContain(PR_LINE);
     expect(lines.notTested).toContain(`- ${AWS_PERMISSIONS_NOT_CHECKED}`);
     // A clean run is flagged for nothing else.
@@ -353,28 +360,29 @@ describe("3. a task passes a check round against Postgres and Rovara local AWS, 
 });
 
 describe("4. failure cases are flagged, never a quiet pass", () => {
-  it("an out-of-plan service call (SNS) made through the SDK's own endpoint variable reaches the emulator, is counted by its ledger, and is flagged: the record names it, the pack carries the aws-usage item and the PR says so", async () => {
+  it("an out-of-plan service call (Kinesis: not used by the project, not found by any detector) made through the SDK's global endpoint variable reaches the emulator, is counted by its ledger, and is flagged: the record names it, the pack carries the aws-usage item and the PR says so", async () => {
     const { broker, checks } = await plans();
-    // The fake emulator's ledger follows WHERE the sealed sandbox's SNS endpoint points: only a call that reaches the emulator (which has SNS switched off) is refused AND written to the ledger. A call to any other host is
-    // nobody's: a static sinkhole name is never looked up, so nothing counts it. This is what the SDK does with AWS_ENDPOINT_URL_SNS.
+    // The fake emulator's ledger follows WHERE the sealed sandbox's endpoint points: only a call that reaches the emulator (which records a service outside the plan as out of the plan) is written to its ledger. A call to any other
+    // host is nobody's: a static sinkhole name is never looked up, so nothing counts it. Kinesis is in no plan, so the sandbox has no AWS_ENDPOINT_URL_KINESIS: the SDK uses the global AWS_ENDPOINT_URL, which is the emulator.
     const holder: { bench?: Bench } = {};
-    const callsSns = (): boolean => {
-      const exec = holder.bench?.fake.execs.find((entry) => entry.envFile?.includes("AWS_ENDPOINT_URL_SNS=") === true);
-      return exec !== undefined && envOf(exec.envFile, "AWS_ENDPOINT_URL_SNS") === "http://aws:4566";
+    const sealedExecOf = (bench: Bench | undefined) => bench?.fake.execs.filter((entry) => entry.envFile?.includes("AWS_ENDPOINT_URL=") === true).at(-1);
+    const callsOutOfPlan = (): boolean => {
+      const exec = sealedExecOf(holder.bench);
+      return exec !== undefined && envOf(exec.envFile, `AWS_ENDPOINT_URL_${OUT_OF_PLAN.toUpperCase()}`) === undefined && envOf(exec.envFile, "AWS_ENDPOINT_URL") === "http://aws:4566";
     };
-    const bench = await workerBench({ aws: { ledger: () => ledgerOf({ s3: { PutObject: { calls: 3 } }, ...(callsSns() ? { sns: { Publish: { calls: 2, unsupported: 0, errors: 2 } } } : {}) }) } });
+    const bench = await workerBench({ aws: { ledger: () => ledgerOf({ s3: { PutObject: { calls: 3 } }, ...(callsOutOfPlan() ? { [OUT_OF_PLAN]: { PutRecord: { calls: 2, unsupported: 0, errors: 2 } } } : {}) }) } });
     holder.bench = bench;
     const { started, round } = await run(bench, checks, broker.readiness);
-    const sealedExec = bench.fake.execs.filter((entry) => entry.envFile?.includes("AWS_ENDPOINT_URL_SNS=") === true).at(-1)!;
-    expect(envOf(sealedExec.envFile, "AWS_ENDPOINT_URL_SNS")).toBe("http://aws:4566");
+    const sealedExec = sealedExecOf(bench)!;
     expect(envOf(sealedExec.envFile, "AWS_ENDPOINT_URL")).toBe("http://aws:4566");
-    expect(callsSns()).toBe(true);
+    expect(envOf(sealedExec.envFile, `AWS_ENDPOINT_URL_${OUT_OF_PLAN.toUpperCase()}`)).toBeUndefined();
+    expect(callsOutOfPlan()).toBe(true);
     const record = lastUsage(bench);
-    expect(record.aws?.services.map((entry) => entry.service)).toContain("sns");
+    expect(record.aws?.services.map((entry) => entry.service)).toContain(OUT_OF_PLAN);
     const { pack, lines } = await evidenceFor(broker, record, round);
     const item = pack.notTested.find((entry) => entry.id === AWS_USAGE_ITEM_ID);
     expect(item?.text).toContain("The code called AWS services that are not in the plan");
-    expect(item?.text).toContain("sns");
+    expect(item?.text).toContain(OUT_OF_PLAN);
     expect(lines.notTested.join("\n")).toContain("not in the plan");
     await started.dispose();
     await bench.sandbox.dispose();
@@ -533,7 +541,7 @@ describe("7. Prove: the candidate check's record (with the ledger) goes from the
     return serviceCatalogSourceOf({ read: async () => ({ catalogBytes, signatureBytes: Buffer.from(JSON.stringify(signature)) }), trust: { runningAccountId: undefined }, load: loaderTrusting(signer.publicKeyPem) });
   }
   const aws = (service: string, first: boolean) => ({
-    id: `aws-${service}`, name: { s3: "S3", sqs: "SQS", dynamodb: "DynamoDB" }[service]!, kind: service === "s3" ? "object_store" : service === "sqs" ? "queue" : "database", family: `aws:${service}`,
+    id: `aws-${service}`, name: { s3: "S3", sqs: "SQS", dynamodb: "DynamoDB", sns: "SNS" }[service]!, kind: service === "s3" ? "object_store" : service === "sqs" || service === "sns" ? "queue" : "database", family: `aws:${service}`,
     found: [{ path: "template.yaml", line: 3 }], usedBy: ["integration"],
     backing: { kind: "emulated", catalogId: "local-aws@r1", awsServices: [service], region: "us-east-1", resources: { provider: "cloudformation", path: `${PROJECT}/template.yaml` } },
     connect: { env: [], hostAliases: first ? ["aws"] : [] }, seeds: [], reset: "fresh_per_round",
@@ -548,14 +556,14 @@ describe("7. Prove: the candidate check's record (with the ledger) goes from the
     process.env.TEST_SERVICES_ENABLED = "1";
     let steps: Array<{ step: string; status: string }> = [];
     await withSwitch("1", async () => {
-      const environment = draftBody({ dependencies: [postgres, aws("s3", true), aws("sqs", false), aws("dynamodb", false)], repos: [{ repositoryId: "web", setupCommands: [wizardCommand("make", ["old-setup"], 900)], checks: [{ id: "unit", label: "Unit tests", command: wizardCommand("make", ["old-test"], 1800), kind: "test" }] }] });
+      const environment = draftBody({ dependencies: [postgres, aws("s3", true), aws("sqs", false), aws("dynamodb", false), aws("sns", false)], repos: [{ repositoryId: "web", setupCommands: [wizardCommand("make", ["old-setup"], 900)], checks: [{ id: "unit", label: "Unit tests", command: wizardCommand("make", ["old-test"], 1800), kind: "test" }] }] });
       const proposal = await proposeTestEnvironment({ documentClient: bench.db, tableName: "state", now: () => Date.now() }, { orgId: TEST_ORG, project: WIZARD_NAME, proposedBy: OMAR.developerId, role: "maintainer", body: environment });
       const started = await bench.dev(OMAR, "POST", `${WIZARD_ENV}/check`, { digest: proposal.digest, requestId: randomUUID() });
       expect(started.status, JSON.stringify(started.body)).toBe(202);
       const candidate = (bench.db.find((item) => item.entityType === "TEST_ENV_CANDIDATE_CHECK") as unknown as Array<{ workspaceId: string }>)[0]!;
       const outbox = bench.db.find((item) => item.entityType === "OUTBOX" && item.workspaceId === candidate.workspaceId)[0] as unknown as { invocation: { payload: { testServices: { dependencies: TaskDependencyPlan[] } } } };
       const sent = outbox.invocation.payload.testServices.dependencies;
-      expect(sent.map((entry) => entry.id)).toEqual(["postgres", "aws-s3", "aws-sqs", "aws-dynamodb"]);
+      expect(sent.map((entry) => entry.id)).toEqual(["postgres", "aws-s3", "aws-sqs", "aws-dynamodb", "aws-sns"]);
 
       // The worker half: the plan the broker sent, a catalog baked into the image, the fake Docker with the fake emulator, the sealed round for the test check, the ledger read at the end.
       const work = await workerBench({ aws: { ledger } });
@@ -587,8 +595,8 @@ describe("7. Prove: the candidate check's record (with the ledger) goes from the
     expect(steps).toEqual(expect.arrayContaining([expect.objectContaining({ step: "dependencies", status: "passed" }), expect.objectContaining({ step: "dependency_usage", status: "passed" })]));
   });
 
-  it("a call to a service outside the plan (SNS) fails 'dependency usage check'", async () => {
-    const steps = await prove(ledgerOf({ s3: { PutObject: { calls: 1 } }, sns: { Publish: { calls: 1 } } }));
+  it("a call to a service outside the plan (Kinesis) fails 'dependency usage check'", async () => {
+    const steps = await prove(ledgerOf({ s3: { PutObject: { calls: 1 } }, [OUT_OF_PLAN]: { PutRecord: { calls: 1 } } }));
     expect(steps).toEqual(expect.arrayContaining([expect.objectContaining({ step: "dependencies", status: "passed" }), expect.objectContaining({ step: "dependency_usage", status: "failed" })]));
   });
 

@@ -48,11 +48,12 @@ export function fakeLocalAws(fake: ReturnType<typeof fakeServicesDocker>, option
       if (path === "/_rovara/reset") return done(0);
       if (path === "/_rovara/seed") {
         if ((options.seedExit ?? 0) !== 0) return done(options.seedExit!);
-        const document = JSON.parse(body ?? "{}") as { s3?: { buckets: Array<{ name: string }> }; dynamodb?: { tables: Array<{ request: { TableName: string } }> }; sqs?: { queues: Array<{ name: string }> } };
+        const document = JSON.parse(body ?? "{}") as { s3?: { buckets: Array<{ name: string }> }; dynamodb?: { tables: Array<{ request: { TableName: string } }> }; sqs?: { queues: Array<{ name: string }> }; sns?: { topics: Array<{ name: string }> } };
         const steps = [
           ...(document.s3?.buckets ?? []).map((bucket) => ({ service: "s3", action: "CreateBucket", name: bucket.name, ok: true })),
           ...(document.dynamodb?.tables ?? []).map((table) => ({ service: "dynamodb", action: "CreateTable", name: table.request.TableName, ok: true })),
           ...(document.sqs?.queues ?? []).map((queue) => ({ service: "sqs", action: "CreateQueue", name: queue.name, ok: true })),
+          ...(document.sns?.topics ?? []).map((topic) => ({ service: "sns", action: "CreateTopic", name: topic.name, ok: true })),
         ];
         return done(0, options.seedAnswer?.(body ?? "") ?? JSON.stringify({ ok: true, failed: 0, steps }));
       }
