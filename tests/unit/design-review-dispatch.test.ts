@@ -71,12 +71,34 @@ describe("the readings of a task and its documents", () => {
     expect(pinsOf(undefined)).toEqual({});
   });
 
-  it("withholds every source of the tracker a task came from (the item is not recorded), and nothing for other origins", () => {
-    const sources = [{ sourceId: "lin", system: "linear" }, { sourceId: "jira1", system: "jira" }, { sourceId: "docs", system: "notion" }, { sourceId: "mystery" }];
-    expect(originOf("linear", sources)).toEqual([{ sourceId: "lin", itemRef: "" }, { sourceId: "mystery", itemRef: "" }]);
-    expect(originOf("jira", sources)).toEqual([{ sourceId: "jira1", itemRef: "" }, { sourceId: "mystery", itemRef: "" }]);
-    expect(originOf("app", sources)).toEqual([]);
-    expect(originOf(undefined, sources)).toEqual([]);
+  describe("the task's own request thread (originOf, the same rule as Rovara Code's originOfTicket)", () => {
+    const sources = [{ sourceId: "lin", system: "linear" }, { sourceId: "jira1", system: "jira" }, { sourceId: "gh", system: "github_issues" }, { sourceId: "docs", system: "notion" }, { sourceId: "sentry1", system: "sentry" }, { sourceId: "mystery" }];
+    const ids = (items: ReturnType<typeof originOf>) => items.map((item) => item.sourceId);
+
+    it("a known tracker withholds every source of that same system (and its other names) and every source with no system, and reads the rest", () => {
+      expect(originOf("linear", sources)).toEqual([{ sourceId: "lin", itemRef: "" }, { sourceId: "mystery", itemRef: "" }]);
+      expect(originOf("jira", sources)).toEqual([{ sourceId: "jira1", itemRef: "" }, { sourceId: "mystery", itemRef: "" }]);
+      expect(ids(originOf("github_issue", sources))).toEqual(["gh", "mystery"]);
+    });
+
+    it("a source with no system is withheld whatever the origin's tracker", () => {
+      for (const origin of ["linear", "jira", "github_issue", "tracker", undefined, "event"]) expect(ids(originOf(origin, [{ sourceId: "mystery" }]))).toEqual(["mystery"]);
+    });
+
+    it("an unknown origin fails closed: every source that is not a monitoring kind is withheld, never nothing", () => {
+      for (const origin of [undefined, "tracker", "shortcut", "event", "automatic"]) {
+        expect(ids(originOf(origin, sources))).toEqual(["lin", "jira1", "gh", "docs", "mystery"]);
+      }
+    });
+
+    it("a monitoring source is read for an unknown origin; a document or wiki source is not", () => {
+      expect(ids(originOf(undefined, [{ sourceId: "s", system: "sentry" }, { sourceId: "d", system: "Datadog" }, { sourceId: "g", system: "grafana" }]))).toEqual([]);
+      expect(ids(originOf(undefined, [{ sourceId: "w", system: "confluence" }, { sourceId: "drive", system: "gdrive" }]))).toEqual(["w", "drive"]);
+    });
+
+    it("a task no ticket started has no request thread to withhold", () => {
+      for (const origin of ["app", "cli", "mcp", "slack", "offer", "test_run", "schedule", "chain", "nightly"]) expect(originOf(origin, sources)).toEqual([]);
+    });
   });
 });
 
