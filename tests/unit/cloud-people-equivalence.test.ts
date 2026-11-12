@@ -1,6 +1,6 @@
 // Convergence A6 (`cloud/people`): the people adapters give the SAME answers as Cloud's code today. Three-way for every case of the matrix: the Approvers adapter's verdict, today's approval-place evaluation
-// (`evaluateApprovalPlace` with the caller each surface builds: the browser session, the decide-grade press, the Slack card press, a token), and the rule as the owner set it (decisions 62, U4, 97: low anywhere by a linked
-// person, medium in a browser or from Slack inside the company's window, high and every rejection only in a browser under the fresh sign-in, request changes from anywhere a linked person reaches; owner, co-owner and
+// (`evaluateApprovalPlace` with the caller each surface builds: the browser session, the decide-grade press, the Slack card press, a token), and the rule as the owner set it (decisions 62, U4, 97, 99: low anywhere by a
+// linked person, medium in a browser or from Slack inside the company's window, high only in a browser under the fresh sign-in, a rejection or a request for changes at any risk like a medium approval; owner, co-owner and
 // maintainer decide, a collaborator only a low product decision). Then each guard on its own: the Auditor, another company, a stale or spent or someone else's step-up, an unlinked Slack user, the second-person rule
 // with the sole-owner exception, and the identity adapter against the routes' own authentication.
 import { randomUUID } from "node:crypto";
@@ -28,9 +28,10 @@ const SIGN_INS = { recent: HOUR, stale: 30 * HOUR, none: undefined } as const;
 function ownerRule(c: { role: ApprovalDeciderRole; kind: ApprovalDecisionKind; place: ApprovalPlace; risk: ApprovalPlaceRisk; answer: string; fresh: boolean; recent: boolean }): boolean {
   const roleOk = c.role === "owner" || c.role === "co-owner" || c.role === "maintainer" || (c.role === "collaborator" && c.kind === "product" && c.risk === "low");
   if (!roleOk) return false;
-  if (c.answer === "request_changes") return true;
-  if (c.answer === "reject") return c.place === "browser" && c.fresh;
-  if (c.risk === "high") return c.place === "browser" && c.fresh;
+  // Decision 99: a rejection and a request for changes, at every risk, are judged like a medium approval (no fresh sign-in).
+  const likeMedium = c.answer === "reject" || c.answer === "request_changes";
+  if (!likeMedium && c.risk === "high") return c.place === "browser" && c.fresh;
+  if (likeMedium) return c.place === "browser" || (c.place === "chat" && c.recent);
   if (c.risk === "low") return true;
   if (c.place === "browser") return true;
   if (c.place === "tool") return false;
@@ -94,6 +95,26 @@ describe("the Approvers adapter answers as today's approval-place rule, for ever
       expect(allowed).toBeLessThan(ROLES.length * CLOUD_APPROVAL_METHODS.length * RISKS.length * ANSWERS.length * KINDS.length);
     }, 120_000);
   }
+
+  it("takes a rejection of a high plan and a request for changes from Slack just inside a shortened window, and refuses them just outside (decision 99)", async () => {
+    for (const [answer, risk] of [["reject", "high"], ["request_changes", "low"]] as const) {
+      for (const [ago, expected] of [[HOUR - 60_000, true], [HOUR + 60_000, false]] as const) {
+        const world = createPeopleWorld();
+        const who = world.people.member;
+        world.linkSlack(who);
+        world.setWindow(3600);
+        world.signedInAgo(who, ago);
+        const request = requestOf({ risk, outcome: answer });
+        const verdict = await approversFor(world, "maintainer").verify(request, proofOf(request, CHAT_SLACK_METHOD, world.slackPress(who)));
+        expect(verdict.approved, `${answer} ${String(ago)}`).toBe(expected);
+        expect(await today(world, CHAT_SLACK_METHOD, who, { role: "maintainer", kind: "plan", risk, answer })).toBe(expected);
+      }
+      // A tool never rejects or asks for changes: it gets the card's link.
+      const world = createPeopleWorld();
+      const request = requestOf({ risk, outcome: answer });
+      expect(await approversFor(world, "owner").verify(request, proofOf(request, API_TOKEN_METHOD, world.tokenOf(world.people.member)))).toEqual({ approved: false, reason: "tool_needs_app" });
+    }
+  });
 
   it("refuses a medium approval from Slack just outside a shortened window and takes it just inside", async () => {
     for (const [ago, expected] of [[HOUR - 60_000, true], [HOUR + 60_000, false]] as const) {
@@ -226,9 +247,10 @@ describe("each Cloud guard holds through the adapter", () => {
     expect(requirement).toMatchObject({ minApprovers: 2, selfApprovalAllowed: false });
   });
 
-  it("names browser-step-up as the only strong and reject method, offers every Cloud method for changes, and sets no sign-in rule of its own", async () => {
+  it("names browser-step-up as the only strong method, every method but a tool for rejecting and asking for changes (decision 99), and sets no sign-in rule of its own", async () => {
     const requirement = await approversFor(createPeopleWorld(), "owner").requirement(requestOf());
-    expect(requirement).toEqual({ methods: [...CLOUD_APPROVAL_METHODS], minApprovers: 1, selfApprovalAllowed: true, strongMethods: [BROWSER_STEP_UP_METHOD], rejectMethods: [BROWSER_STEP_UP_METHOD], changesMethods: [...CLOUD_APPROVAL_METHODS] });
+    const notTool = [BROWSER_SESSION_METHOD, BROWSER_STEP_UP_METHOD, CHAT_SLACK_METHOD];
+    expect(requirement).toEqual({ methods: [...CLOUD_APPROVAL_METHODS], minApprovers: 1, selfApprovalAllowed: true, strongMethods: [BROWSER_STEP_UP_METHOD], rejectMethods: notTool, changesMethods: notTool });
   });
 
   it("refuses a request whose risk is not known, and a kind with no Cloud rule", async () => {

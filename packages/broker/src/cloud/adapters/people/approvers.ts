@@ -1,19 +1,21 @@
 // Convergence A6 (`cloud/people`): Cloud's Approvers on Code's port. A wrapper over the rules Cloud enforces today, with NO rule of its own:
 //   - the place rule is `evaluateApprovalPlace` (approval-place/evaluate.ts -> `approvalPlaceDecision`): low anywhere by a linked person; medium in a signed-in browser, or from Slack by a linked person whose last interactive
-//     Rovara sign-in is inside the company's window; high only in a signed-in browser under the decide-grade sign-in; a rejection only in a signed-in browser under it; request changes from any place a linked person reaches;
+//     Rovara sign-in is inside the company's window; high only in a signed-in browser under the decide-grade sign-in; a rejection and a request for changes (owner decision 99) at any risk like a medium approval: a
+//     signed-in browser, or Slack by a linked person inside the company's window, never a tool (`tool_needs_app`), and no fresh sign-in;
 //   - who may decide (owner, co-owner, maintainer; a collaborator a low product decision; nobody else) is the same function's, given the decider's standing on the subject (`deciderRole`, the caller's own read);
 //   - the second-person rule by risk (`approvalByRisk`: how many people a tier needs, and a proposer approving their own work only through the sole-owner exception with its 24-hour cool-off) is `secondPersonOutcome`;
 //   - the Auditor (and any role that is not a writer's) never approves (`isWriterOrgRole`); a person of another company never approves (the proof's person is read live, the request's company compared).
 // The token of every method is checked by its issuer (`issuers.ts`), the functions the routes use; a person or account the proof only CLAIMS is never believed.
-// Not expressed here (owed upstream, `gaps.ts`): the company's sign-in window applies to MEDIUM approvals from outside places, which the port's `signIn` rule (high-risk and rejections) cannot say, so `signIn` is left
-// unset and the window is enforced inside `verify`; and the sole-owner exception, which the port's `selfApprovalAllowed` cannot say.
+// Not expressed here (owed upstream, `gaps.ts`): the company's sign-in window applies to MEDIUM approvals, rejections and requests for changes from outside places, which the port's `signIn` rule (high-risk and
+// rejections, every place) cannot say, so `signIn` is left unset and the window is enforced inside `verify` (G1); Code's core still drops `chat-*` methods from the reject set, so a Slack rejection the adapter
+// accepts is refused by core until that changes (G7); and the sole-owner exception, which the port's `selfApprovalAllowed` cannot say (G2).
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { approvalProofKey, companyScoped, type ApprovalProof, type ApprovalRequest, type ApprovalRequirement, type ApprovalVerdict, type Approvers, type Principal } from "@rovara-code/contracts";
 import { APPROVAL_DECISION_KINDS, isWriterOrgRole, type ApprovalDeciderRole, type ApprovalDecisionKind, type OrgRole } from "@agentx/cloud-contracts";
 import { evaluateApprovalPlace, type PlaceDependencies } from "../../../approval-place/evaluate.js";
 import { approversRequired, secondPersonOutcome, type ApprovalEligibility, type ApprovalLevels } from "../../../org/approval-by-risk.js";
 import { AUDITOR_REFUSED } from "../../../org/auditor.js";
-import { BROWSER_STEP_UP_METHOD, CLOUD_APPROVAL_METHODS, CLOUD_STRONG_METHODS, PLACE_OF_METHOD, isCloudApprovalMethod, type CloudApprovalMethod } from "./methods.js";
+import { BROWSER_STEP_UP_METHOD, CLOUD_APPROVAL_METHODS, CLOUD_REJECT_METHODS, CLOUD_STRONG_METHODS, PLACE_OF_METHOD, isCloudApprovalMethod, type CloudApprovalMethod } from "./methods.js";
 
 /** The person a proof's token stands for, as the issuer read it live: their id, session, sign-in method, company and role NOW, and (for a Slack press) the Slack user. */
 export interface CloudDecider {
@@ -80,8 +82,9 @@ export function createCloudApprovers(deps: CloudApproversDependencies): Approver
         // The task owner approves their own plan; where a second person is required the proposer is not one (the sole-owner exception is checked in `verify`, see gaps.ts).
         selfApprovalAllowed: facts === undefined,
         strongMethods: strong,
-        rejectMethods: strong,
-        changesMethods: methods,
+        // Decision 99: a rejection and a request for changes are taken like a medium approval, from every place but a tool.
+        rejectMethods: methods.filter((method) => CLOUD_REJECT_METHODS.includes(method)),
+        changesMethods: methods.filter((method) => CLOUD_REJECT_METHODS.includes(method)),
       };
     },
 

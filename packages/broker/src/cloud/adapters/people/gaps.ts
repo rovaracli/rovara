@@ -15,7 +15,7 @@ export const PEOPLE_PORT_GAPS: readonly PortGap[] = [
     id: "A6-G1-window-for-medium-outside",
     port: "approvers",
     owedUntil: "2026-11-25",
-    what: "ApprovalRequirement.signIn applies to high-risk approvals and rejections. Cloud's company window (decision 62, U4) applies to MEDIUM approvals from outside places (Slack, comments); high needs the decide-grade step-up instead. The port needs a per-risk or per-place sign-in rule.",
+    what: "ApprovalRequirement.signIn applies to high-risk approvals and rejections from every place. Cloud's company window (decisions 62, 99; U4) applies to MEDIUM approvals, rejections and requests for changes from outside places (Slack, comments), at every risk for the last two; a browser needs no window, and high approval needs the decide-grade step-up instead. The port needs a per-answer, per-place sign-in rule.",
     meanwhile: "signIn is left unset (no extra rule in core) and verify() enforces the window through evaluateApprovalPlace.",
   },
   {
@@ -45,6 +45,13 @@ export const PEOPLE_PORT_GAPS: readonly PortGap[] = [
     owedUntil: "2026-11-25",
     what: "Cloud never merges for a token and merges at once only for a browser session with its CSRF token (authenticateWebRequest). The port has no notion of the press's transport, so a merge gate in core cannot tell a browser press from an api-token one except by method name.",
     meanwhile: "Merges stay on Cloud's routes; the adapter names api-token and browser-session separately so a core merge policy can require browser-session.",
+  },
+  {
+    id: "A6-G7-chat-reject",
+    port: "approvers",
+    owedUntil: "2026-11-25",
+    what: "Owner decision 99 lets a linked person reject or ask for changes from Slack inside the company's window. Code's core drops every chat-* (and comment) method from the reject set whatever the plug-in names (core/decisions/strong-methods.ts isCommentMethod, strictMethodsFor), so core would refuse a Slack rejection Cloud accepts.",
+    meanwhile: "The adapter names chat-slack in rejectMethods and changesMethods and verify() takes a Slack rejection inside the window (evaluateApprovalPlace). Rejections from Slack stay on Cloud's own routes until Code's core lets a plug-in name a chat method for rejecting.",
   },
   {
     id: "A6-G6-interactive-sign-in-service",

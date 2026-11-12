@@ -4,7 +4,8 @@
 //   browser-step-up  the same session plus the decide-grade sign-in (an email code in the last 10 minutes, `isDecideGradeSession`)       -> place `browser`, fresh sign-in
 //   chat-slack       a decision card press in Slack by the linked, signed-in person behind it (`resolveSlackDecisionCaller`)               -> place `chat`
 //   api-token        a developer token (the CLI, an AI tool, the API: `authenticateDeveloper`)                                              -> place `tool`
-// `chat-slack` starts with Code's `chat-` prefix, so Code's core already treats it as a comment-like method that never approves high risk and never rejects (core/decisions/strong-methods.ts).
+// `chat-slack` starts with Code's `chat-` prefix, so Code's core treats it as a comment-like method that never approves high risk and never rejects (core/decisions/strong-methods.ts). Since owner decision 99 Cloud
+// lets Slack reject inside the company's window, so the adapter names it among the reject methods and core's drop is owed upstream (gaps.ts G7).
 // The comment places (`tracker-comment`, `code-host-comment`) have no feed in Cloud yet (approval-place/comment-decision.ts), so the adapter offers no comment method.
 import type { ApprovalPlace } from "@agentx/cloud-contracts";
 
@@ -17,8 +18,10 @@ export const API_TOKEN_METHOD = "api-token";
 export const CLOUD_APPROVAL_METHODS = [BROWSER_SESSION_METHOD, BROWSER_STEP_UP_METHOD, CHAT_SLACK_METHOD, API_TOKEN_METHOD] as const;
 export type CloudApprovalMethod = (typeof CLOUD_APPROVAL_METHODS)[number];
 
-/** The only method strong enough for a high-risk approval and for a rejection (today's rule: the card in a signed-in browser under the decide-grade sign-in). */
+/** The only method strong enough for a high-risk approval (the card in a signed-in browser under the decide-grade sign-in). */
 export const CLOUD_STRONG_METHODS: readonly CloudApprovalMethod[] = [BROWSER_STEP_UP_METHOD];
+/** The methods that may reject or ask for changes (owner decision 99: like a medium approval, so a signed-in browser or Slack inside the company's window; never a tool, which gets the card's link). */
+export const CLOUD_REJECT_METHODS: readonly CloudApprovalMethod[] = [BROWSER_SESSION_METHOD, BROWSER_STEP_UP_METHOD, CHAT_SLACK_METHOD];
 
 /** The approval-place `place` of each method. */
 export const PLACE_OF_METHOD: Readonly<Record<CloudApprovalMethod, ApprovalPlace>> = {
