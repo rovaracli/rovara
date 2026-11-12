@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { AppNavSchema, UI_FLAG_NAMES, orgMetaKey, orgUiFlagsKey } from "@agentx/cloud-contracts";
+import { AppNavSchema, UI_FLAG_NAMES, orgMetaKey, orgUiFlagsKey, uiFlagDefaultOn } from "@agentx/cloud-contracts";
 import { MAYA, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
 
@@ -13,27 +13,28 @@ async function setup() {
 }
 const navOf = (body: Record<string, unknown>) => { const copy = { ...body };delete copy.requestId;return AppNavSchema.parse(copy); };
 
-it("sends every flag off in the navigation answer for a company that never changed anything", async () => {
+it("sends every finished screen on (decision 116) and the rest off in the navigation answer for a company that never changed anything", async () => {
   const h = await setup();
   const response = await h.dev(MAYA, "GET", "/v1/app/nav");
   expect(response.status).toBe(200);
-  expect(navOf(response.body).uiFlags).toEqual(Object.fromEntries(UI_FLAG_NAMES.map((name) => [name, "off"])));
+  expect(navOf(response.body).uiFlags).toEqual(Object.fromEntries(UI_FLAG_NAMES.map((name) => [name, uiFlagDefaultOn(name) ? "on" : "off"])));
 });
 
 it("sends the company's states, fresh on every request (not held by the five second navigation cache)", async () => {
   const h = await setup();
-  expect(navOf((await h.dev(MAYA, "GET", "/v1/app/nav")).body).uiFlags?.home).toBe("off");
-  h.db.set({ ...orgUiFlagsKey(TEST_ORG), entityType: "UI_FLAGS", orgId: TEST_ORG, flags: { home: true }, previews: true, revision: 1, changedAt: "2026-11-11T09:00:00.000Z" });
-  const on = navOf((await h.dev(MAYA, "GET", "/v1/app/nav")).body).uiFlags;
-  expect(on?.home).toBe("on");expect(on?.look).toBe("preview");
+  expect(navOf((await h.dev(MAYA, "GET", "/v1/app/nav")).body).uiFlags?.home).toBe("on");
+  h.db.set({ ...orgUiFlagsKey(TEST_ORG), entityType: "UI_FLAGS", orgId: TEST_ORG, flags: { home: false, health: true }, previews: true, revision: 1, changedAt: "2026-11-11T09:00:00.000Z" });
+  const after = navOf((await h.dev(MAYA, "GET", "/v1/app/nav")).body).uiFlags;
+  expect(after?.home).toBe("preview");expect(after?.health).toBe("on");expect(after?.look).toBe("on");
 });
 
 it("applies the operator's override from the broker's environment, over the company's choice", async () => {
   const h = await setup();
   h.db.set({ ...orgUiFlagsKey(TEST_ORG), entityType: "UI_FLAGS", orgId: TEST_ORG, flags: { home: true, look: true }, previews: true, revision: 1, changedAt: "2026-11-11T09:00:00.000Z" });
-  vi.stubEnv("UI_FLAGS_FORCE_OFF", "home");
+  vi.stubEnv("UI_FLAGS_FORCE_OFF", "home-work");
   const flags = navOf((await h.dev(MAYA, "GET", "/v1/app/nav")).body).uiFlags;
-  expect(flags?.home).toBe("off");expect(flags?.look).toBe("on");
+  // `home` was pressed on and `work` is on by default: the override wins over both.
+  expect(flags?.home).toBe("off");expect(flags?.work).toBe("off");expect(flags?.look).toBe("on");expect(flags?.nav).toBe("on");
   vi.stubEnv("UI_FLAGS_FORCE_OFF", "all");
   expect(Object.values(navOf((await h.dev(MAYA, "GET", "/v1/app/nav")).body).uiFlags ?? {})).toEqual(UI_FLAG_NAMES.map(() => "off"));
 });

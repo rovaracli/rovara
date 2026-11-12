@@ -2,7 +2,8 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { lookV2Css, tokensCss } from "../../packages/design-tokens/src/index.js";
 import { readCssRules, resolveFallbacks, type CssRule } from "./support/css-rules.js";
-// "Look off = unchanged", pinned. The base sheets (as they were before the v2 look was added, commit ba3e33415) are kept in tests/web/fixtures/look-off-base/.
+// "Look off = unchanged", pinned. Since decision 116 the new look is ON by default; "off" is now a company that sent it back to the old screen, or the operator's override (UiFlagsForceOff), and this file
+// proves that path is still the old look exactly (tests/web/ui-flags-app.test.ts proves a forced-off answer leaves no `data-look`, even with the device key on). The base sheets (as they were before the v2 look was added, commit ba3e33415) are kept in tests/web/fixtures/look-off-base/.
 // Every token the v2 look introduced is read with `var(--rv-new-token, fallback)`; replacing each such wrapper by its fallback must give back the base values.
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
 const names = (css: string) => new Set([...css.matchAll(/(--rv-[a-z0-9-]+):/gu)].map(match => match[1]!));

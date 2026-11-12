@@ -15,6 +15,13 @@ import { useOptionalAppHost } from "./host.js";
  *   waiting            the app has asked for the navigation answer and it has not come yet, or the read failed (`holdUiFlagsUntilNav`, called by `App`): everything is off, the same as the server's rule for a failed read (fail closed).
  *                      The device switch does not decide until an answer arrives. A person whose device key is on may therefore see the default look for a moment on a cold load, then the new look.
  * Layout flags are read when a screen mounts (or once when the route table is built), so a change reaches a person on their next page load; the look follows the answer at once.
+ *
+ * Decision 116 (new screens on by default) lives in the SERVER's answer, not here: a broker that knows it sends `on` for every finished screen a company has not sent back to the old one, and `off` for one the operator
+ * forced off. This file deliberately keeps its three fallbacks off (or on the device switch), because each is a case where the operator's override cannot be known:
+ *   waiting        only the loading placeholder renders meanwhile (the route table and screens are built after the answer), so holding off never shows an old screen and then a new one; showing the default
+ *                  instead would flash a new look at an install whose operator forced it off.
+ *   no answer      a broker from before runtime flags (an upgrade or rollback window): it cannot apply the override and may lack a new screen's server half, so the device switch decides, as with that broker's own app.
+ *   a name absent  a broker from before that screen's flag existed: off, for the same reasons.
  */
 export interface UiFlagsStorageHost { storage: { get(key: string): string | undefined } }
 /** The value every per-device switch holds when it is on. */

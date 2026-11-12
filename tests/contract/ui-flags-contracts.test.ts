@@ -19,7 +19,7 @@ describe("the closed list of flag names", () => {
     expect(UiFlagsMapSchema.safeParse({ companyRules: "on" }).success).toBe(false);
   });
   it("answers parse their own schema", () => {
-    expect(UiFlagsAdminAnswerSchema.safeParse({ revision: 0, previews: false, flags: UI_FLAG_CATALOG.map((entry) => ({ ...entry, enabled: false, forcedOff: false, state: "off" })) }).success).toBe(true);
+    expect(UiFlagsAdminAnswerSchema.safeParse({ revision: 0, previews: false, flags: UI_FLAG_CATALOG.map((entry) => ({ name: entry.name, label: entry.label, summary: entry.summary, wired: entry.wired, enabled: false, forcedOff: false, state: "off" })) }).success).toBe(true);
   });
 });
 

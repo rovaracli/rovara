@@ -4,7 +4,8 @@ import { mockRealtime } from "./support/realtime.js";
 import { checkA11y } from "./support/axe.js";
 import { evidenceShot } from "./support/screenshot.js";
 import { FIXTURE_SESSION } from "../web/support/fixtures.js";
-// Runtime per-company UI flags (lane U5): the company's value from the nav answer turns a new screen on with no device key, and Settings > New screens changes it.
+// Runtime per-company UI flags (lane U5): the company's value from the nav answer turns a new screen on with no device key, and Settings > Old screens (decision 116: a troubleshooting page) changes it.
+// The default state of each screen (decision 116) is screens-default-on.e2e.ts.
 // Pictures go to .superpowers/sdd/exp-ui-flags/shots/ (set ROVARA_UIFLAGS_SHOTS to change the folder).
 const shots = process.env.ROVARA_UIFLAGS_SHOTS ?? ".superpowers/sdd/exp-ui-flags/shots";
 const NAMES = ["look", "nav", "home", "work", "spending", "leadingHeader", "health", "setup", "insights", "publish", "billing", "agreement", "companies", "continue"];
@@ -68,13 +69,13 @@ test("uiFlags.look = on shows the new look with no device key, and the company's
 for (const colorScheme of ["light", "dark"] as const) {
  for (const width of [360, 390, 1280] as const) {
   const phone = width < 768;
-  test(`Settings > New screens at ${String(width)}, ${colorScheme}: list, 44px targets, no sideways scroll, axe clean, visible focus`, async ({ page, context, request, baseURL }) => {
+  test(`Settings > Old screens at ${String(width)}, ${colorScheme}: list, 44px targets, no sideways scroll, axe clean, visible focus`, async ({ page, context, request, baseURL }) => {
    const put: unknown[] = [];
    await enter(page, context, request, baseURL, width, { colorScheme });await adminRoutes(page, put);await page.goto("/app/admin/new-screens");
-   await expect(page.getByRole("heading", { name: "New screens", level: 1 })).toBeVisible();
+   await expect(page.getByRole("heading", { name: "Old screens", level: 1 })).toBeVisible();
    const list = page.getByRole("list", { name: "New screens" });await expect(list.getByRole("listitem")).toHaveCount(6);
-   await expect(list).toContainText("On for everyone in");await expect(list).toContainText("Turned off by the Rovara operator");await expect(page.getByText("Health page")).toHaveCount(0);
-   await expect(page.getByText(/Preview lets each person try a screen in their own browser first/)).toBeVisible();
+   await expect(list).toContainText("has the new screen.");await expect(list).toContainText("Turned off by the Rovara operator");await expect(page.getByText("Health page")).toHaveCount(0);
+   await expect(page.getByText(/Preview lets each person try a new screen in their own browser/)).toBeVisible();
    expect(await noSidewaysScroll(page)).toBe(true);
    if (phone) expect(await smallTargets(page)).toEqual([]);
    expect(await focusVisible(page)).not.toBe("hidden");
@@ -85,17 +86,17 @@ for (const colorScheme of ["light", "dark"] as const) {
  }
 }
 
-test("turning a screen on sends one revision-fenced change; a conflict and a stale sign-in are shown, not repeated", async ({ page, context, request, baseURL }) => {
+test("turning a screen back on sends one revision-fenced change; a conflict and a stale sign-in are shown, not repeated", async ({ page, context, request, baseURL }) => {
  const put: unknown[] = [];
  await enter(page, context, request, baseURL, 390);await adminRoutes(page, put);await page.goto("/app/admin/new-screens");
- await page.getByRole("button", { name: "Turn on New Home for everyone" }).click();
+ await page.getByRole("button", { name: "Turn New Home back on for everyone" }).click();
  await expect(page.getByText(/Saved\. Takes effect when people next open or reload the app\./)).toBeVisible();
  expect(put).toEqual([{ expectedRevision: 3, flags: { home: true } }]);
- await expect(page.getByRole("button", { name: "Turn off New Home for everyone" })).toBeVisible();
+ await expect(page.getByRole("button", { name: "Use the old screen instead of New Home for everyone" })).toBeVisible();
  await evidenceShot(page, { path: `${shots}/new-screens-saved-390.png`, fullPage: true });
  for (const fail of [{ status: 409, code: "CHANGE_STALE", message: "Someone else changed this. Reload and try again.", shows: "Someone else changed this; reload.", button: "Reload" }, { status: 403, code: "REAUTH_REQUIRED", message: "Sign in again to change company screens.", shows: "Sign in again to change company screens.", button: "Sign in again" }]) {
   const next = await context.newPage();const calls: unknown[] = [];await mockRealtime(next);await next.setViewportSize({ width: 390, height: 900 });await adminRoutes(next, calls, fail);await next.goto("/app/admin/new-screens");
-  await next.getByRole("button", { name: "Turn on Work list for everyone" }).click();
+  await next.getByRole("button", { name: "Turn Work list back on for everyone" }).click();
   await expect(next.getByRole("alert")).toContainText(fail.shows);await expect(next.getByRole("button", { name: fail.button })).toBeVisible();
   expect(calls).toHaveLength(1);await checkA11y(next, { theme: "light" });
   await evidenceShot(next, { path: `${shots}/new-screens-${fail.code.toLowerCase()}-390.png`, fullPage: true });

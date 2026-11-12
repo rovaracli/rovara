@@ -1,10 +1,12 @@
-// Runtime per-company UI flags (lane U5, requirement P-52): the new screens, each behind one named flag that a company owner or admin turns on for the whole company in the app, with no stack deploy.
+// Runtime per-company UI flags (lane U5, requirement P-52): the new screens, each behind one named flag.
+// Decision 116 (NEW-SCREENS-ON-BY-DEFAULT): a finished screen is ON by default (`defaultOn` in the catalog). A company owner or admin may still send one back to the old screen for the whole company
+// (Settings > Old screens, a troubleshooting page), and the install's operator can send any back for every company. Customers are never expected to turn a screen on.
 // Browser-safe (the web app reads the names and the shapes). The closed list of flag names is the only place that says which flags exist: a name outside it is refused everywhere (the route, the store, the nav answer).
 //
 // WHAT A FLAG CAN BE, for one company, as the person's browser is told in the navigation answer (`uiFlags`):
-//   on       the screen is on for everyone in the company (the company's admin turned it on and the install's operator has not forced it off);
+//   on       the screen is on for everyone in the company (its default, or the company's admin turned it on, and the install's operator has not forced it off);
 //   preview  the screen is off for the company, but the company allows previews, so a person may turn it on for THIS DEVICE ONLY with the older per-device switch (a local storage key);
-//   off      off, and no device can turn it on: the default, a company that has not allowed previews, or a flag the install's operator forced off.
+//   off      off, and no device can turn it on: a screen that is not finished (default off), one the company sent back to the old screen without allowing previews, or a flag the install's operator forced off.
 // The operator's override (stack parameter UiFlagsForceOff, broker setting `uo`) forces flags off for every company on the install. It wins over a company's choice and over a preview.
 import { z } from "zod";
 import { forwardReader } from "@rovara-code/contracts";
@@ -13,8 +15,9 @@ import { forwardReader } from "@rovara-code/contracts";
  * The known flags, in the order the admin screen lists them. A new screen adds its name here (and to UI_FLAG_CATALOG) in the change that builds the screen; nothing else grows.
  * `leadingHeader` is the task page's header block (task-page-flags.ts). `insights` is wired (its screen reads the flag through `isInsightsOn`). `continue` (the task page's "Continue in your own tool", `isContinueInToolOn`)
  * is wired too (decision 98). `companies` (the company switcher) is read by `isCompanySwitcherOn` but is `wired: false` until the broker answers `/v1/app/companies`: an owner would otherwise press a switch that does nothing
- * (it stays off unless the server says on). Both were added after the first release of this list, so a broker or a browser that predates them reads them as off (see the readers below). `health`, `setup`, `publish`, `billing` and `agreement` are reserved for screens other lanes are building: the names are accepted,
- * stored and sent now, so those lanes only call their own `isXOn(host)`; `wired: false` in the catalog says no screen reads them yet.
+ * (it stays off unless the server says on). Both were added after the first release of this list, so a broker or a browser that predates them reads them as off (see the readers below). `health`, `setup`, `publish`, `billing` and `agreement` are for screens other lanes are still finishing: the names are accepted,
+ * stored and sent now, and each lane's own `isXOn(host)` already reads its flag (so the server's `off` holds the screen back, and only a company that allows previews lets a device try it); `wired: false` in the catalog
+ * says the screen is not offered in Settings and not on by default yet (decision 116: off until it is finished).
  */
 export const UI_FLAG_NAMES = ["look", "nav", "home", "work", "spending", "leadingHeader", "health", "setup", "insights", "publish", "billing", "agreement", "companies", "continue"] as const;
 export type UiFlagName = (typeof UI_FLAG_NAMES)[number];
@@ -28,23 +31,28 @@ export interface UiFlagCatalogEntry {
   readonly summary: string;
   /** False while no screen reads the flag yet (the admin screen may hide it). */
   readonly wired: boolean;
+  /**
+   * What a company that never chose gets (decision 116): true for a finished screen. Only a wired flag may be on by default (tests/contract/ui-flags-contracts.test.ts); a wired screen that is not ready yet says false here, explicitly.
+   * A company's stored choice (true or false, written only when an owner or admin pressed it) wins over this; the operator's override wins over both.
+   */
+  readonly defaultOn: boolean;
 }
 
 export const UI_FLAG_CATALOG: readonly UiFlagCatalogEntry[] = [
-  { name: "look", label: "New look", summary: "The redesigned colours, type and spacing across the app.", wired: true },
-  { name: "nav", label: "New navigation", summary: "The sidebar and phone tab bar with Home, Work, Projects, Agents and Settings.", wired: true },
-  { name: "home", label: "New Home", summary: "One list of what needs you, with a box to start something and your agents beside it.", wired: true },
-  { name: "work", label: "Work list", summary: "One list of everything in progress, in plain states, instead of today's Live page.", wired: true },
-  { name: "spending", label: "Spending page", summary: "Spending in one place for admins: what was used, what is committed and what is left.", wired: true },
-  { name: "leadingHeader", label: "Task page summary", summary: "A header on the task page that says the next step, who has it and why, above the details.", wired: true },
-  { name: "health", label: "Health page", summary: "A page that shows whether connections, models and environments work.", wired: false },
-  { name: "setup", label: "Project setup", summary: "The new guided project setup.", wired: false },
-  { name: "insights", label: "Insights", summary: "How work flows: waiting time, review time, failures and shipped outcomes.", wired: true },
-  { name: "publish", label: "Agent publishing", summary: "Draft, request and publish agents with versions.", wired: false },
-  { name: "billing", label: "Billing", summary: "Plan, trial and invoices.", wired: false },
-  { name: "agreement", label: "Company agreement", summary: "The company's agreement, with where each rule comes from.", wired: false },
-  { name: "companies", label: "Companies", summary: "Switch between the companies you belong to from the header, and follow a link into the right company.", wired: false },
-  { name: "continue", label: "Continue in your own tool", summary: "Pick a task up on your laptop in Claude Code, Codex or Cursor, with its branch and what happens when you push.", wired: true },
+  { name: "look", label: "New look", summary: "The redesigned colours, type and spacing across the app.", wired: true, defaultOn: true },
+  { name: "nav", label: "New navigation", summary: "The sidebar and phone tab bar with Home, Work, Projects, Agents and Settings.", wired: true, defaultOn: true },
+  { name: "home", label: "New Home", summary: "One list of what needs you, with a box to start something and your agents beside it.", wired: true, defaultOn: true },
+  { name: "work", label: "Work list", summary: "One list of everything in progress, in plain states, instead of today's Live page.", wired: true, defaultOn: true },
+  { name: "spending", label: "Spending page", summary: "Spending in one place for admins: what was used, what is committed and what is left.", wired: true, defaultOn: true },
+  { name: "leadingHeader", label: "Task page summary", summary: "A header on the task page that says the next step, who has it and why, above the details.", wired: true, defaultOn: true },
+  { name: "health", label: "Health page", summary: "A page that shows whether connections, models and environments work.", wired: false, defaultOn: false },
+  { name: "setup", label: "Project setup", summary: "The new guided project setup.", wired: false, defaultOn: false },
+  { name: "insights", label: "Insights", summary: "How work flows: waiting time, review time, failures and shipped outcomes.", wired: true, defaultOn: true },
+  { name: "publish", label: "Agent publishing", summary: "Draft, request and publish agents with versions.", wired: false, defaultOn: false },
+  { name: "billing", label: "Billing", summary: "Plan, trial and invoices.", wired: false, defaultOn: false },
+  { name: "agreement", label: "Company agreement", summary: "The company's agreement, with where each rule comes from.", wired: false, defaultOn: false },
+  { name: "companies", label: "Companies", summary: "Switch between the companies you belong to from the header, and follow a link into the right company.", wired: false, defaultOn: false },
+  { name: "continue", label: "Continue in your own tool", summary: "Pick a task up on your laptop in Claude Code, Codex or Cursor, with its branch and what happens when you push.", wired: true, defaultOn: true },
 ];
 
 export const UiFlagStateSchema = z.enum(["on", "preview", "off"]);
@@ -91,7 +99,11 @@ export const UiFlagsBodySchema = z.object({
 }).strict().refine((body) => body.previews !== undefined || (body.flags !== undefined && Object.keys(body.flags).length > 0), { message: "nothing to change", path: ["flags"] });
 export type UiFlagsBody = z.infer<typeof UiFlagsBodySchema>;
 
-/** The stored row (`ORG#<org>` / `UI_FLAGS`): the company's switches. A flag that is absent is off. */
+/**
+ * The stored row (`ORG#<org>` / `UI_FLAGS`): the company's switches. A name is written only when an owner or admin pressed its switch, so a stored value is a deliberate choice and wins over the default;
+ * a flag that is absent takes its catalog default (`defaultOn`, decision 116). Rows written before decision 116 read the same way: their `false` values were all pressed (an older admin screen only offered
+ * "Turn off" for a flag that was on), so they are kept as the company's choice of the old screen.
+ */
 export const UiFlagsRecordSchema = z.object({
   flags: z.record(z.string(), z.boolean()),
   previews: z.boolean(),
@@ -122,7 +134,17 @@ export function uiFlagsForcedOff(value: string | undefined): { names: ReadonlySe
   return { names, unreadable: false };
 }
 
-/** What a person gets for one flag: the company's switch, the company's preview permission and the operator's force-off, in one place. */
+const DEFAULT_ON: ReadonlySet<UiFlagName> = new Set(UI_FLAG_CATALOG.filter((entry) => entry.wired && entry.defaultOn).map((entry) => entry.name));
+/** A flag's default for a company that never chose (decision 116): on only for a wired, finished screen. */
+export function uiFlagDefaultOn(name: UiFlagName): boolean {
+  return DEFAULT_ON.has(name);
+}
+/** The company's effective switch for one flag: its stored choice when there is one, else the default. */
+export function uiFlagEnabled(name: UiFlagName, stored: boolean | undefined): boolean {
+  return stored ?? uiFlagDefaultOn(name);
+}
+
+/** What a person gets for one flag: the company's switch (`uiFlagEnabled`), the company's preview permission and the operator's force-off, in one place. */
 export function uiFlagState(input: { enabled: boolean; previews: boolean; forcedOff: boolean }): UiFlagState {
   if (input.forcedOff) return "off";
   if (input.enabled) return "on";

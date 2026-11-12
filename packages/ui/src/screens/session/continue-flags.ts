@@ -8,7 +8,7 @@ import { uiFlagOn } from "../../ui-flags.js";
  * calls `uiFlagOn` (ui-flags.ts) with the flag `continue`: the company's value from the navigation answer wins when it is on or off, and this device's key (`rovara.continue` = "v2") only decides when
  * the company allows previews or the server sends no answer. It is read ONCE, when the task page mounts (`useContinueInToolOn`, called by SessionScreen, which hands the value to TaskLead), so the panel and the
  * "Changed outside Rovara" chip always agree, and a change of the company's answer reaches a person when the task page next mounts.
- * Off (the default, any other value, unreadable storage) leaves the task page exactly as it was: no button, no chunk, no read.
+ * The server's answer is `on` by default (decision 116). Off (the server's off, or with no server answer a device key that is not "v2") leaves the task page exactly as it was: no button, no chunk, no read.
  */
 export const CONTINUE_STORAGE_KEY = "rovara.continue";
 export function isContinueInToolOn(host: LookStorageHost): boolean {

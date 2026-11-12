@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AuditEventInputSchema, UI_FLAG_CATALOG, UI_FLAG_NAMES, orgUiFlagsKey } from "@agentx/cloud-contracts";
+import { AuditEventInputSchema, UI_FLAG_CATALOG, UI_FLAG_NAMES, orgUiFlagsKey, uiFlagDefaultOn } from "@agentx/cloud-contracts";
 import { type OrgId } from "@rovara-code/contracts";
 import { UI_FLAGS_PER_MINUTE, routeUiFlags } from "../../packages/broker/src/aws/developer-routes/ui-flags.js";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "../../packages/broker/src/aws/developer-routes/types.js";
@@ -38,6 +38,8 @@ function world(options: { ledger?: boolean } = {}) {
 }
 
 const stateOf = (answer: Answer, name: string): Row => answer.flags.find((row) => row.name === name)!;
+/** Decision 116: what a company that never chose gets in the navigation answer (a finished screen on, the rest off). */
+const DEFAULTS = Object.fromEntries(UI_FLAG_NAMES.map((name) => [name, uiFlagDefaultOn(name) ? "on" : "off"]));
 
 describe("who may use the route", () => {
   it("refuses a member on both methods, and changes nothing", async () => {
@@ -77,7 +79,7 @@ describe("who may use the route", () => {
 });
 
 describe("GET", () => {
-  it("is everything off by default, with all the known flags in catalog order", async () => {
+  it("is every finished screen on by default (decision 116) and the rest off, with all the known flags in catalog order", async () => {
     const w = world();
     const owner = w.caller(ORG_A);
     const answer = await w.call(owner, "GET");
@@ -85,7 +87,8 @@ describe("GET", () => {
     expect(answer.changedAt).toBeUndefined();
     expect(answer.flags.map((row) => row.name)).toEqual([...UI_FLAG_NAMES]);
     expect(UI_FLAG_CATALOG.map((entry) => entry.name)).toEqual([...UI_FLAG_NAMES]);
-    for (const row of answer.flags) expect(row).toMatchObject({ enabled: false, forcedOff: false, state: "off" });
+    for (const row of answer.flags) expect(row, row.name).toMatchObject({ enabled: uiFlagDefaultOn(row.name as never), forcedOff: false, state: uiFlagDefaultOn(row.name as never) ? "on" : "off" });
+    expect(answer.flags.filter((row) => row.enabled).map((row) => row.name)).toEqual(["look", "nav", "home", "work", "spending", "leadingHeader", "insights", "continue"]);
   });
 });
 
@@ -106,25 +109,28 @@ describe("PUT", () => {
     expect(await w.call(owner, "PUT", body)).toMatchObject({ revision: 1 });
   });
 
-  it("turns flags on and off, merges what it names and keeps the rest, and writes one audit event per change", async () => {
+  it("sends screens back to the old one and on again, merges what it names and keeps the rest, stores only what was pressed, and writes one audit event per change", async () => {
     const w = world();
     const owner = w.caller(ORG_A);
     w.signIn(owner, 1);
-    const first = await w.call(owner, "PUT", { expectedRevision: 0, flags: { look: true, nav: true } });
+    const first = await w.call(owner, "PUT", { expectedRevision: 0, flags: { look: false, nav: false } });
     expect(first).toMatchObject({ revision: 1, previews: false });
-    expect(stateOf(first, "look")).toMatchObject({ enabled: true, state: "on" });
-    expect(stateOf(first, "home")).toMatchObject({ enabled: false, state: "off" });
-    const second = await w.call(owner, "PUT", { expectedRevision: 1, flags: { nav: false, home: true }, previews: true });
+    expect(stateOf(first, "look")).toMatchObject({ enabled: false, state: "off" });
+    expect(stateOf(first, "home")).toMatchObject({ enabled: true, state: "on" });
+    const second = await w.call(owner, "PUT", { expectedRevision: 1, flags: { nav: true, home: false }, previews: true });
     expect(second.revision).toBe(2);
-    expect(stateOf(second, "look")).toMatchObject({ enabled: true, state: "on" });
-    expect(stateOf(second, "nav")).toMatchObject({ enabled: false, state: "preview" });
-    expect(stateOf(second, "home")).toMatchObject({ enabled: true, state: "on" });
-    expect(stateOf(second, "work")).toMatchObject({ enabled: false, state: "preview" });
-    expect(w.stored(ORG_A)).toMatchObject({ revision: 2, previews: true, flags: { look: true, nav: false, home: true }, changedBy: owner.developerId });
+    expect(stateOf(second, "look")).toMatchObject({ enabled: false, state: "preview" });
+    expect(stateOf(second, "nav")).toMatchObject({ enabled: true, state: "on" });
+    expect(stateOf(second, "home")).toMatchObject({ enabled: false, state: "preview" });
+    expect(stateOf(second, "work")).toMatchObject({ enabled: true, state: "on" });
+    expect(stateOf(second, "health")).toMatchObject({ enabled: false, state: "preview" });
+    expect(w.stored(ORG_A)).toMatchObject({ revision: 2, previews: true, changedBy: owner.developerId });
+    // Only the pressed names: a default is never written into the row.
+    expect(w.stored(ORG_A)?.flags).toEqual({ look: false, nav: true, home: false });
     const events = w.capture.recordedBy("company.ui_flags_changed");
     expect(events).toHaveLength(2);
-    expect(events[0]).toMatchObject({ orgId: ORG_A, actor: { id: owner.developerId }, target: { kind: "org", id: ORG_A }, facts: { revision: 1, turnedOn: "look+nav", turnedOff: "none", previews: "same" } });
-    expect(events[1]).toMatchObject({ facts: { revision: 2, turnedOn: "home", turnedOff: "nav", previews: "on" } });
+    expect(events[0]).toMatchObject({ orgId: ORG_A, actor: { id: owner.developerId }, target: { kind: "org", id: ORG_A }, facts: { revision: 1, turnedOn: "none", turnedOff: "look+nav", previews: "same" } });
+    expect(events[1]).toMatchObject({ facts: { revision: 2, turnedOn: "nav", turnedOff: "home", previews: "on" } });
     for (const event of events) expect(AuditEventInputSchema.safeParse(event).success).toBe(true);
     expect(await w.call(owner, "GET")).toEqual(second);
   });
@@ -162,7 +168,8 @@ describe("PUT", () => {
     w.signIn(owner, 0);
     const answer = await w.call(owner, "PUT", { expectedRevision: 0, previews: true });
     expect(answer).toMatchObject({ revision: 1, previews: true });
-    expect(stateOf(answer, "look")).toMatchObject({ enabled: false, state: "preview" });
+    expect(stateOf(answer, "look")).toMatchObject({ enabled: true, state: "on" });
+    expect(stateOf(answer, "health")).toMatchObject({ enabled: false, state: "preview" });
   });
 
   it("is fenced by the revision: a stale write is CHANGE_STALE and changes nothing", async () => {
@@ -202,11 +209,11 @@ describe("PUT", () => {
     const w = world();
     const a = w.caller(ORG_A), b = w.caller(ORG_B);
     w.signIn(a, 0); w.signIn(b, 0);
-    await w.call(a, "PUT", { expectedRevision: 0, flags: { look: true }, previews: true });
+    await w.call(a, "PUT", { expectedRevision: 0, flags: { look: false }, previews: true });
     expect(await w.call(b, "GET")).toMatchObject({ revision: 0, previews: false });
-    expect(stateOf(await w.call(b, "GET"), "look")).toMatchObject({ enabled: false, state: "off" });
-    expect(await w.call(b, "PUT", { expectedRevision: 0, flags: { nav: true } })).toMatchObject({ revision: 1 });
-    expect(w.stored(ORG_A)).toMatchObject({ revision: 1, flags: { look: true } });
+    expect(stateOf(await w.call(b, "GET"), "look")).toMatchObject({ enabled: true, state: "on" });
+    expect(await w.call(b, "PUT", { expectedRevision: 0, flags: { nav: false } })).toMatchObject({ revision: 1 });
+    expect(w.stored(ORG_A)).toMatchObject({ revision: 1, flags: { look: false } });
     expect(w.stored(ORG_A)?.flags.nav).toBeUndefined();
     expect(w.capture.recordedBy("company.ui_flags_changed").map((event) => event.orgId)).toEqual([ORG_A, ORG_B]);
   });
@@ -232,11 +239,13 @@ describe("the operator's override", () => {
     const forced: Env = { UI_FLAGS_FORCE_OFF: "look-home" };
     const answer = await w.call(owner, "GET", undefined, forced);
     expect(stateOf(answer, "look")).toMatchObject({ enabled: true, forcedOff: true, state: "off" });
-    expect(stateOf(answer, "home")).toMatchObject({ enabled: false, forcedOff: true, state: "off" });
+    // `home` was never pressed: on by default, and the operator's hold still wins over that default.
+    expect(stateOf(answer, "home")).toMatchObject({ enabled: true, forcedOff: true, state: "off" });
     expect(stateOf(answer, "nav")).toMatchObject({ enabled: true, forcedOff: false, state: "on" });
-    expect(stateOf(answer, "work")).toMatchObject({ forcedOff: false, state: "preview" });
+    expect(stateOf(answer, "work")).toMatchObject({ enabled: true, forcedOff: false, state: "on" });
+    expect(stateOf(answer, "health")).toMatchObject({ enabled: false, forcedOff: false, state: "preview" });
     // The nav answer: the same states.
-    expect(await navUiFlags({ documentClient: w.db, tableName: "state", now: w.deps.now }, ORG_A, forced)).toMatchObject({ look: "off", home: "off", nav: "on", work: "preview" });
+    expect(await navUiFlags({ documentClient: w.db, tableName: "state", now: w.deps.now }, ORG_A, forced)).toMatchObject({ look: "off", home: "off", nav: "on", work: "on", health: "preview" });
     // A change while forced is stored (the company's wish) but changes nothing people get.
     const put = await w.call(owner, "PUT", { expectedRevision: 1, flags: { home: true } }, forced);
     expect(stateOf(put, "home")).toMatchObject({ enabled: true, state: "off" });
@@ -257,17 +266,18 @@ describe("the operator's override", () => {
 
 describe("the navigation answer's flags", () => {
   const table = (db: FakeDynamoDb) => ({ documentClient: db, tableName: "state", now: () => START }) as never;
-  it("is every flag off for a company that never changed anything, and carries the company's own states after a change", async () => {
+  it("is the defaults for a company that never changed anything (decision 116), and carries the company's own states after a change", async () => {
     const w = world();
-    expect(await navUiFlags(table(w.db), ORG_A, {})).toEqual(ALL_OFF);
+    expect(await navUiFlags(table(w.db), ORG_A, {})).toEqual(DEFAULTS);
     const owner = w.caller(ORG_A);
     w.signIn(owner, 0);
-    await w.call(owner, "PUT", { expectedRevision: 0, flags: { home: true }, previews: true });
+    await w.call(owner, "PUT", { expectedRevision: 0, flags: { home: false }, previews: true });
     const nav = await navUiFlags(table(w.db), ORG_A, {});
-    expect(nav.home).toBe("on");
-    expect(nav.look).toBe("preview");
+    expect(nav.home).toBe("preview");
+    expect(nav.look).toBe("on");
+    expect(nav.health).toBe("preview");
     expect(Object.keys(nav).sort()).toEqual([...UI_FLAG_NAMES].sort());
-    expect(await navUiFlags(table(w.db), ORG_B, {})).toEqual(ALL_OFF);
+    expect(await navUiFlags(table(w.db), ORG_B, {})).toEqual(DEFAULTS);
   });
 
   it("gives every flag off when the read fails, never an error and never a flag left on", async () => {
@@ -277,16 +287,18 @@ describe("the navigation answer's flags", () => {
     expect(await navUiFlags(broken, ORG_A, {})).toEqual(ALL_OFF);
   });
 
-  it("reads a stored row that does not read as off: unknown names, non-boolean values and a bad revision are ignored", () => {
+  it("reads what does not read as off (fail closed: it may have been a choice of the old screen): a known name's non-boolean value, a flags field that is not a map, a bad revision; unknown names are ignored", () => {
     expect(settingsFromItem(undefined)).toEqual({ flags: {}, previews: false, revision: 0 });
     const odd = settingsFromItem({ flags: { look: true, nav: "yes", unknownFlag: true, home: false }, previews: "true", revision: 3 });
-    expect(odd).toEqual({ flags: { look: true, home: false }, previews: false, revision: 3 });
-    expect(uiFlagsMapOf(odd, new Set()).look).toBe("on");
-    // A row whose revision does not read is unreadable as a whole: nothing in it is trusted.
+    expect(odd).toEqual({ flags: { look: true, nav: false, home: false }, previews: false, revision: 3 });
+    expect(uiFlagsMapOf(odd, new Set())).toMatchObject({ look: "on", nav: "off", home: "off", work: "on" });
+    // A row whose revision does not read is unreadable as a whole: nothing in it is trusted, and every flag is off.
     const unreadable = settingsFromItem({ flags: { look: true }, previews: true, revision: "3" });
-    expect(unreadable).toEqual({ flags: {}, previews: false, revision: 0, unreadableRevision: { value: "3" } });
+    expect(unreadable).toMatchObject({ previews: false, revision: 0, unreadable: true, unreadableRevision: { value: "3" } });
     expect(uiFlagsMapOf(unreadable, new Set())).toEqual(ALL_OFF);
-    expect(uiFlagsMapOf(settingsFromItem({ flags: "look", revision: 2 }), new Set()).look).toBe("off");
+    expect(uiFlagsMapOf(settingsFromItem({ flags: "look", revision: 2 }), new Set())).toEqual(ALL_OFF);
+    // A row with no flags field stored nothing: the defaults.
+    expect(uiFlagsMapOf(settingsFromItem({ previews: false, revision: 2 }), new Set())).toEqual(DEFAULTS);
   });
 });
 
@@ -304,12 +316,13 @@ describe("a stored row whose revision does not read", () => {
       expect(read, JSON.stringify(revision)).toMatchObject({ revision: 0, previews: false });
       for (const row of read.flags) expect(row, JSON.stringify(revision)).toMatchObject({ enabled: false, state: "off" });
       expect(await navUiFlags({ documentClient: w.db, tableName: "state", now: w.deps.now }, ORG_A, {})).toEqual(ALL_OFF);
-      // The next change replaces the row (a conditional write on what is stored) and the company is back in service.
-      const put = await w.call(owner, "PUT", { expectedRevision: 0, flags: { home: true } });
+      // The next change replaces the row (a conditional write on what is stored) and the company is back in service, on the defaults for every name it did not press.
+      const put = await w.call(owner, "PUT", { expectedRevision: 0, flags: { home: false } });
       expect(put, JSON.stringify(revision)).toMatchObject({ revision: 1, previews: false });
-      expect(stateOf(put, "home")).toMatchObject({ enabled: true, state: "on" });
-      expect(stateOf(put, "look")).toMatchObject({ enabled: false, state: "off" });
-      expect(w.stored(ORG_A)).toMatchObject({ revision: 1, flags: { home: true } });
+      expect(stateOf(put, "home")).toMatchObject({ enabled: false, state: "off" });
+      expect(stateOf(put, "look")).toMatchObject({ enabled: true, state: "on" });
+      expect(w.stored(ORG_A)).toMatchObject({ revision: 1 });
+      expect(w.stored(ORG_A)?.flags).toEqual({ home: false });
       expect(w.capture.recordedBy("company.ui_flags_changed")).toHaveLength(1);
       expect(await w.call(owner, "PUT", { expectedRevision: 1, flags: { nav: true } })).toMatchObject({ revision: 2 });
     }
@@ -350,13 +363,13 @@ describe("the company switcher and Continue in your own tool (decision 98: `comp
   const NEW = ["companies", "continue"] as const;
   const table = (db: FakeDynamoDb) => ({ documentClient: db, tableName: "state", now: () => START }) as never;
 
-  it("are off by default, in the admin answer (plain words; continue wired, companies not until its route exists) and in the navigation answer", async () => {
+  it("continue is on by default (wired, decision 116) and companies off (not until its route exists), in the admin answer (plain words) and in the navigation answer", async () => {
     const w = world();
     const answer = await w.call(w.caller(ORG_A), "GET");
     expect(stateOf(answer, "companies")).toMatchObject({ label: "Companies", wired: false, enabled: false, forcedOff: false, state: "off" });
-    expect(stateOf(answer, "continue")).toMatchObject({ label: "Continue in your own tool", wired: true, enabled: false, forcedOff: false, state: "off" });
+    expect(stateOf(answer, "continue")).toMatchObject({ label: "Continue in your own tool", wired: true, enabled: true, forcedOff: false, state: "on" });
     const nav = await navUiFlags(table(w.db), ORG_A, {});
-    expect(nav.companies).toBe("off");expect(nav.continue).toBe("off");
+    expect(nav.companies).toBe("off");expect(nav.continue).toBe("on");
   });
 
   for (const name of NEW) {
@@ -364,15 +377,17 @@ describe("the company switcher and Continue in your own tool (decision 98: `comp
       const w = world();
       const owner = w.caller(ORG_A), admin = w.caller(ORG_A, "admin");
       w.signIn(owner, 0); w.signIn(admin, 0);
-      const on = await w.call(owner, "PUT", { expectedRevision: 0, flags: { [name]: true } });
-      expect(stateOf(on, name)).toMatchObject({ enabled: true, state: "on" });
-      expect(w.stored(ORG_A)).toMatchObject({ revision: 1, flags: { [name]: true }, changedBy: owner.developerId });
-      expect((await navUiFlags(table(w.db), ORG_A, {}))[name]).toBe("on");
-      const off = await w.call(admin, "PUT", { expectedRevision: 1, flags: { [name]: false }, previews: true });
-      expect(stateOf(off, name)).toMatchObject({ enabled: false, state: "preview" });
-      expect((await navUiFlags(table(w.db), ORG_A, {}))[name]).toBe("preview");
+      // Away from its default, then back, so both directions are audited whatever the default is.
+      const def = uiFlagDefaultOn(name);
+      const away = await w.call(owner, "PUT", { expectedRevision: 0, flags: { [name]: !def } });
+      expect(stateOf(away, name)).toMatchObject({ enabled: !def, state: def ? "off" : "on" });
+      expect(w.stored(ORG_A)).toMatchObject({ revision: 1, flags: { [name]: !def }, changedBy: owner.developerId });
+      expect((await navUiFlags(table(w.db), ORG_A, {}))[name]).toBe(def ? "off" : "on");
+      const back = await w.call(admin, "PUT", { expectedRevision: 1, flags: { [name]: def }, previews: true });
+      expect(stateOf(back, name)).toMatchObject({ enabled: def, state: def ? "on" : "preview" });
+      expect((await navUiFlags(table(w.db), ORG_A, {}))[name]).toBe(def ? "on" : "preview");
       const events = w.capture.recordedBy("company.ui_flags_changed");
-      expect(events.map((event) => event.facts)).toMatchObject([{ revision: 1, turnedOn: name, turnedOff: "none", previews: "same" }, { revision: 2, turnedOn: "none", turnedOff: name, previews: "on" }]);
+      expect(events.map((event) => event.facts)).toMatchObject([{ revision: 1, turnedOn: def ? "none" : name, turnedOff: def ? name : "none", previews: "same" }, { revision: 2, turnedOn: def ? name : "none", turnedOff: def ? "none" : name, previews: "on" }]);
       expect(events.map((event) => event.actor.id)).toEqual([owner.developerId, admin.developerId]);
       for (const event of events) expect(AuditEventInputSchema.safeParse(event).success).toBe(true);
     });
@@ -395,8 +410,8 @@ describe("the company switcher and Continue in your own tool (decision 98: `comp
       await w.call(a, "PUT", { expectedRevision: 0, flags: { [name]: true } });
       await expect(w.call(a, "PUT", { expectedRevision: 0, flags: { [name]: false } })).rejects.toMatchObject({ code: "CHANGE_STALE" });
       expect(w.stored(ORG_A)).toMatchObject({ revision: 1, flags: { [name]: true } });
-      expect(stateOf(await w.call(b, "GET"), name)).toMatchObject({ enabled: false, state: "off" });
-      expect((await navUiFlags(table(w.db), ORG_B, {}))[name]).toBe("off");
+      expect(stateOf(await w.call(b, "GET"), name)).toMatchObject({ enabled: uiFlagDefaultOn(name), state: uiFlagDefaultOn(name) ? "on" : "off" });
+      expect((await navUiFlags(table(w.db), ORG_B, {}))[name]).toBe(uiFlagDefaultOn(name) ? "on" : "off");
       expect(w.stored(ORG_B)).toBeUndefined();
     });
 
@@ -410,26 +425,28 @@ describe("the company switcher and Continue in your own tool (decision 98: `comp
       const answer = await w.call(owner, "GET", undefined, forced);
       expect(stateOf(answer, name)).toMatchObject({ enabled: true, forcedOff: true, state: "off" });
       expect(stateOf(answer, other)).toMatchObject({ enabled: true, forcedOff: false, state: "on" });
-      expect(await navUiFlags(table(w.db), ORG_A, forced)).toMatchObject({ [name]: "off", [other]: "on", look: "preview" });
+      expect(await navUiFlags(table(w.db), ORG_A, forced)).toMatchObject({ [name]: "off", [other]: "on", look: "on", health: "preview" });
       expect(operatorForcedOff({ UI_FLAGS_FORCE_OFF: `look-${name}` })).toEqual(new Set(["look", name]));
     });
   }
 
-  it("audits every flag turned on at once within the fact length limit", async () => {
+  it("audits every flag changed at once within the fact length limit, against what was in force (the defaults included)", async () => {
     const w = world();
     const owner = w.caller(ORG_A);
     w.signIn(owner, 0);
     await w.call(owner, "PUT", { expectedRevision: 0, flags: Object.fromEntries(UI_FLAG_NAMES.map((name) => [name, true])) });
-    const [event] = w.capture.recordedBy("company.ui_flags_changed");
-    expect(event?.facts?.turnedOn).toBe(UI_FLAG_NAMES.join("+"));
-    expect(AuditEventInputSchema.safeParse(event).success).toBe(true);
+    await w.call(owner, "PUT", { expectedRevision: 1, flags: Object.fromEntries(UI_FLAG_NAMES.map((name) => [name, false])) });
+    const [on, off] = w.capture.recordedBy("company.ui_flags_changed");
+    expect(on?.facts?.turnedOn).toBe(UI_FLAG_NAMES.filter((name) => !uiFlagDefaultOn(name)).join("+"));
+    expect(off?.facts?.turnedOff).toBe(UI_FLAG_NAMES.join("+"));
+    for (const event of [on, off]) expect(AuditEventInputSchema.safeParse(event).success).toBe(true);
   });
 
-  it("reads a row an older broker wrote (no `companies` or `continue`) as both off, and keeps the row's other flags", async () => {
+  it("reads a row an older broker wrote (no `companies` or `continue`) with both at their defaults, and keeps the row's other flags", async () => {
     const w = world();
     w.db.set({ ...orgUiFlagsKey(ORG_A), entityType: "UI_FLAGS", orgId: ORG_A, flags: { look: true, insights: true }, previews: false, revision: 4, changedAt: "2026-11-11T09:00:00.000Z" });
     const nav = await navUiFlags(table(w.db), ORG_A, {});
-    expect(nav).toMatchObject({ look: "on", insights: "on", companies: "off", continue: "off" });
+    expect(nav).toMatchObject({ look: "on", insights: "on", companies: "off", continue: "on" });
     const owner = w.caller(ORG_A);
     w.signIn(owner, 0);
     await w.call(owner, "PUT", { expectedRevision: 4, flags: { continue: true } });

@@ -6,9 +6,10 @@ import type { UiFlagState } from "../../api/ui-flags.js";
  *
  * - `plainNotices` (default ON): copy only. Repeated model-fallback notices collapse into one plain line with the raw model ids behind a "Details"
  *   disclosure, and a raw worker word ("Worker status: SUCCEEDED") reads as a plain state. No data, order or control changes.
- * - `leadingHeader` (default OFF): a header block (plain state, next step, who, why, the one existing primary action), and on a phone the order
- *   "can I approve?" line, then the decision card, then the details and evidence collapsed. It adds derived content and moves controls, so it stays off
- *   until the owner has looked at it. Preview it on any install with `?lead=1` in the page address (`?lead=0` forces it off).
+ * - `leadingHeader` (device default OFF; the server's answer is `on` by default, decision 116): a header block (plain state, next step, who, why, the one existing primary action), and on a phone the order
+ *   "can I approve?" line, then the decision card, then the details and evidence collapsed. It adds derived content and moves controls. Since decision 116
+ *   (new screens on by default) the server sends it `on` unless the company sent it back or the operator forced it off; with no server answer (an older broker) `?lead=1` previews it
+ *   (`?lead=0` forces it off).
  *
  * Runtime per-company flag (lane U5): `leadingHeader` is a server flag (ui-flags.ts). Server `on` shows it to everyone in the company (`?lead=0` does not hide it); server `preview` lets `?lead=1` show it on this device;
  * server `off` hides it whatever the address says. With no server answer (an older broker) `?lead=` works as it did.
