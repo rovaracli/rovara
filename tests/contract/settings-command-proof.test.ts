@@ -544,14 +544,34 @@ describe("the message to the person whose saved commands failed (TE-4)", () => {
     const deps: NotifierDependencies = { documentClient: t.db, tableName: "state", enqueue: async (notices) => { queued.push(...notices); }, retryLater: async () => undefined,
       post: async (message: { channel: string; text: string }) => { posted.push(message); return { ts: "1.2", channel: "D1" }; }, now: () => Date.now(), log: () => undefined, deliveryFailed: () => undefined };
     const handler = createNotifierHandler(deps);
-    await handler({ Records: t.stream.take().map((record) => ({ ...record, eventSource: "aws:dynamodb" })) });
+    const replayed = t.stream.take().map((record) => ({ ...record, eventSource: "aws:dynamodb" }));
+    await handler({ Records: replayed });
     const proof = queued.filter((notice) => notice.kind === "settings_proof");
     expect(t.proofItem()?.saved?.slackUserId).toBe(maya.slackUserId);
     expect(proof).toHaveLength(1);
     const message = { eventSource: "aws:sqs", messageId: "m1", receiptHandle: "r1", body: JSON.stringify(proof[0]), attributes: { ApproximateReceiveCount: "1" } };
+    // The notice holds the words; the project's partition is neither read nor written by the delivery.
+    const touched: string[] = [];
+    const real = t.db.send.bind(t.db);
+    (t.db as unknown as { send: unknown }).send = async (sent: { constructor: { name: string }; input: { Key?: { pk?: string }; Item?: { pk?: string } } }) => {
+      touched.push(`${sent.constructor.name} ${sent.input.Key?.pk ?? sent.input.Item?.pk ?? ""}`);
+      return real(sent);
+    };
     await handler({ Records: [message] });
+    // The same notice again (a redelivery) and the same stream record again (a replay that makes a second, identical notice) send nothing more.
     await handler({ Records: [{ ...message, messageId: "m2" }] });
+    queued.length = 0;
+    await handler({ Records: replayed });
+    const again = queued.filter((notice) => notice.kind === "settings_proof");
+    expect(again).toHaveLength(1);
+    expect(again[0]!.id).toBe(proof[0]!.id);
+    await handler({ Records: [{ ...message, messageId: "m3", body: JSON.stringify(again[0]) }] });
     expect(posted).toHaveLength(1);
+    const mine = touched.filter((entry) => entry.includes(" NOTIFY_SETTINGS_PROOF#"));
+    expect(touched.filter((entry) => /\bPROJECT#/u.test(entry)), "the project's partition is not read or written").toEqual([]);
+    expect(mine.filter((entry) => entry.startsWith("GetCommand"))).toHaveLength(3);
+    expect(mine.filter((entry) => entry.startsWith("PutCommand"))).toHaveLength(1);
+    expect(mine).toHaveLength(4);
     expect(posted[0]!.text).toContain("npm test");
     expect(posted[0]!.text).toContain("web");
   });
@@ -560,7 +580,7 @@ describe("the message to the person whose saved commands failed (TE-4)", () => {
     const item = (saved: Record<string, unknown>) => ({ pk: `ORG#x#PROJECT#web`, sk: "SETTINGS_PROOF", entityType: "PROJECT_SETTINGS_PROOF", orgId: "x", project: "web", saved });
     const failed = { status: "failed", checkRequestId: "c1", noticeAt: "2026-11-02T10:00:00.000Z", slackUserId: "U1" };
     const at = "2026-11-02T10:00:00.000Z";
-    expect(noticesOf(item({ status: "checking", checkRequestId: "c1", slackUserId: "U1" }), item(failed), at, "e1")).toEqual([expect.objectContaining({ kind: "settings_proof", proofCheckId: "c1", proofItem: { pk: "ORG#x#PROJECT#web", sk: "SETTINGS_PROOF" } })]);
+    expect(noticesOf(item({ status: "checking", checkRequestId: "c1", slackUserId: "U1" }), item(failed), at, "e1")).toEqual([expect.objectContaining({ kind: "settings_proof", proofCheckId: "c1", proofProject: "web", proofSlackUserId: "U1" })]);
     expect(noticesOf(item(failed), item({ ...failed, notifiedAt: at }), at, "e2")).toEqual([]);
     // A held change that ends without being written is told too, once, as its own notice.
     const heldItem = (held: Record<string, unknown>) => ({ ...item({}), held });

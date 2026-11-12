@@ -12,6 +12,7 @@ import { chosenNameStatesOf, chosenNameWrite, readChosenName, readNameItems, wit
 import { placeholderDisplayName, readableDeveloper, safeDisplayName } from "./person-name.js";
 import { ownerKeyForSubject } from "../aws/lambda.js";
 import { pkceChallengeMatches, randomToken, sha256Hex } from "./tokens.js";
+import { traceFormerDevelopers } from "../org/former-developers.js";
 
 export interface AuthRequestRecord { id: string; clientRedirectUri: string; clientState: string; codeChallenge: string; nonce: string; method?: DeveloperSignInMethod; consumedAt?: string; expiresAt: number; browserReturnTo?: string;
   /** SHA-256 of the invite token in base64url. The raw token is never stored. */
@@ -543,6 +544,16 @@ export class DeveloperSignInStore {
     if (link !== undefined) return isActiveLink(link, identityKey) ? link.developerId : undefined;
     const record = await this.getDeveloper(identityKey);
     return record !== undefined && ownerKeyForSubject(record.issuer, record.subject) === identityKey ? identityKey : undefined;
+  }
+
+  /**
+   * Every developer this identity answers to by history: the developer its link says it was unlinked from (`unlinkedFrom`, kept for good, even after the identity signs in as its
+   * own developer), and from there each developer THAT one was unlinked from, merged into or linked into, through any chain. Empty for an identity that was never unlinked. A removal
+   * with a ban marks the developer the person was; an identity the person unlinked beforehand carries no mark of its own, so a sign-in asks this and checks the ban of each (a ban on any
+   * of them covers the identity). The walk is org/former-developers.ts; it fails closed (FORBIDDEN) past FORMER_DEVELOPER_LIMIT.
+   */
+  async formerDevelopersOf(identityKey: string): Promise<string[]> {
+    return traceFormerDevelopers((await this.getIdentityLink(identityKey))?.unlinkedFrom, async (key) => this.get<Record<string, unknown>>(key.pk));
   }
 
   /**

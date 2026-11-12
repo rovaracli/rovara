@@ -1,0 +1,36 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "RovaraAssumesWithExternalId",
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "<ROVARA_PRINCIPAL_ARN>"
+      },
+      "Action": "sts:AssumeRole",
+      "Condition": {
+        "StringEquals": {
+          "sts:ExternalId": "<EXTERNAL_ID>"
+        }
+      }
+    },
+    {
+      "Sid": "RovaraTagsTheSession",
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "<ROVARA_PRINCIPAL_ARN>"
+      },
+      "Action": "sts:TagSession",
+      "Condition": {
+        "ForAllValues:StringEquals": {
+          "aws:TagKeys": [
+            "rovara-run"
+          ]
+        },
+        "StringLike": {
+          "aws:RequestTag/rovara-run": "????????"
+        }
+      }
+    }
+  ]
+}

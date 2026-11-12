@@ -1,0 +1,337 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "Reads",
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:Describe*",
+        "dynamodb:Get*",
+        "dynamodb:List*",
+        "events:Describe*",
+        "events:Get*",
+        "events:List*",
+        "iam:Get*",
+        "iam:List*",
+        "kinesis:Describe*",
+        "kinesis:Get*",
+        "kinesis:List*",
+        "lambda:Get*",
+        "lambda:List*",
+        "logs:Describe*",
+        "logs:Get*",
+        "logs:List*",
+        "s3:Get*",
+        "s3:List*",
+        "secretsmanager:Describe*",
+        "secretsmanager:Get*",
+        "secretsmanager:List*",
+        "sns:Get*",
+        "sns:List*",
+        "sqs:Get*",
+        "sqs:List*",
+        "ssm:Describe*",
+        "ssm:Get*",
+        "ssm:List*",
+        "states:Describe*",
+        "states:Get*",
+        "states:List*",
+        "dynamodb:BatchGetItem",
+        "dynamodb:Query",
+        "dynamodb:Scan",
+        "logs:FilterLogEvents",
+        "sts:GetCallerIdentity",
+        "tag:Get*"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "ArnNotLike": {
+          "aws:PrincipalArn": [
+            "arn:*:iam::*:role/rv-*"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "Named",
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:*",
+        "events:*",
+        "kinesis:*",
+        "lambda:*",
+        "logs:*",
+        "secretsmanager:*",
+        "sns:*",
+        "sqs:*",
+        "ssm:*",
+        "states:*"
+      ],
+      "Resource": [
+        "arn:*:dynamodb:*:*:table/rv-${aws:PrincipalTag/rovara-run}-*",
+        "arn:*:events:*:*:event-bus/rv-${aws:PrincipalTag/rovara-run}-*",
+        "arn:*:events:*:*:rule/rv-${aws:PrincipalTag/rovara-run}-*/*",
+        "arn:*:kinesis:*:*:stream/rv-${aws:PrincipalTag/rovara-run}-*",
+        "arn:*:lambda:*:*:function:rv-${aws:PrincipalTag/rovara-run}-*",
+        "arn:*:logs:*:*:log-group:/aws/lambda/rv-${aws:PrincipalTag/rovara-run}-*",
+        "arn:*:logs:*:*:log-group:rv-${aws:PrincipalTag/rovara-run}-*",
+        "arn:*:secretsmanager:*:*:secret:rv-${aws:PrincipalTag/rovara-run}-*",
+        "arn:*:sns:*:*:rv-${aws:PrincipalTag/rovara-run}-*",
+        "arn:*:sqs:*:*:rv-${aws:PrincipalTag/rovara-run}-*",
+        "arn:*:ssm:*:*:parameter/rv-${aws:PrincipalTag/rovara-run}-*",
+        "arn:*:states:*:*:execution:rv-${aws:PrincipalTag/rovara-run}-*",
+        "arn:*:states:*:*:stateMachine:rv-${aws:PrincipalTag/rovara-run}-*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceAccount": "<ACCOUNT_ID>"
+        }
+      }
+    },
+    {
+      "Sid": "NamedS3",
+      "Effect": "Allow",
+      "Action": [
+        "s3:*"
+      ],
+      "Resource": [
+        "arn:*:s3:::rv-${aws:PrincipalTag/rovara-run}-*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "s3:ResourceAccount": "<ACCOUNT_ID>"
+        }
+      }
+    },
+    {
+      "Sid": "NamedIam",
+      "Effect": "Allow",
+      "Action": [
+        "iam:*"
+      ],
+      "Resource": [
+        "arn:*:iam::*:instance-profile/rv-${aws:PrincipalTag/rovara-run}-*",
+        "arn:*:iam::*:policy/rv-${aws:PrincipalTag/rovara-run}-*",
+        "arn:*:iam::*:role/rv-${aws:PrincipalTag/rovara-run}-*"
+      ]
+    },
+    {
+      "Sid": "Tagged",
+      "Effect": "Allow",
+      "Action": [
+        "lambda:DeleteEventSourceMapping",
+        "lambda:GetEventSourceMapping"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/rovara-run": "${aws:PrincipalTag/rovara-run}"
+        }
+      }
+    },
+    {
+      "Sid": "CreateByTag",
+      "Effect": "Allow",
+      "Action": [
+        "lambda:CreateEventSourceMapping"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestTag/rovara-run": "${aws:PrincipalTag/rovara-run}"
+        },
+        "ArnLike": {
+          "lambda:FunctionArn": "arn:*:lambda:*:*:function:rv-${aws:PrincipalTag/rovara-run}-*"
+        }
+      }
+    },
+    {
+      "Sid": "NoTag",
+      "Effect": "Deny",
+      "NotAction": [
+        "sts:GetCallerIdentity"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "Null": {
+          "aws:PrincipalTag/rovara-run": "true"
+        }
+      }
+    },
+    {
+      "Sid": "Forged",
+      "Effect": "Deny",
+      "Action": [
+        "*"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "ArnLike": {
+          "aws:PrincipalArn": [
+            "arn:*:iam::*:role/rv-*"
+          ]
+        },
+        "ArnNotLike": {
+          "aws:PrincipalArn": [
+            "arn:*:iam::*:role/rv-${aws:PrincipalTag/rovara-run}-*"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "Region",
+      "Effect": "Deny",
+      "NotAction": [
+        "iam:*",
+        "s3:GetBucketLocation",
+        "s3:ListAllMyBuckets",
+        "sts:GetCallerIdentity"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringNotEquals": {
+          "aws:RequestedRegion": "<REGION>"
+        }
+      }
+    },
+    {
+      "Sid": "TagKey",
+      "Effect": "Deny",
+      "Action": [
+        "*"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "ForAnyValue:StringEquals": {
+          "aws:TagKeys": "rovara-run"
+        },
+        "StringNotEquals": {
+          "aws:RequestTag/rovara-run": "${aws:PrincipalTag/rovara-run}"
+        }
+      }
+    },
+    {
+      "Sid": "Pool",
+      "Effect": "Deny",
+      "Action": [
+        "dynamodb:CreateTableReplica",
+        "dynamodb:UpdateGlobalTable*",
+        "lambda:PutFunctionConcurrency",
+        "lambda:PutProvisionedConcurrencyConfig",
+        "s3:PutBucketObjectLockConfiguration",
+        "s3:PutObjectLegalHold",
+        "s3:PutObjectRetention",
+        "secretsmanager:ReplicateSecretToRegions",
+        "ssm:CreateAssociation",
+        "ssm:SendCommand"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "RunRoles",
+      "Effect": "Deny",
+      "Action": [
+        "dynamodb:Create*",
+        "dynamodb:PutResourcePolicy",
+        "dynamodb:UpdateTable",
+        "events:Create*",
+        "events:PutPermission",
+        "iam:*",
+        "kinesis:Create*",
+        "kinesis:PutResourcePolicy",
+        "kinesis:Update*",
+        "lambda:*Permission",
+        "lambda:Create*",
+        "lambda:*FunctionUrlConfig",
+        "s3:CreateBucket",
+        "s3:PutBucket*",
+        "secretsmanager:Create*",
+        "secretsmanager:PutResourcePolicy",
+        "sns:AddPermission",
+        "sns:Create*",
+        "sns:SetTopicAttributes",
+        "sqs:AddPermission",
+        "sqs:Create*",
+        "sqs:SetQueueAttributes",
+        "ssm:Create*",
+        "ssm:*Permission",
+        "ssm:PutResourcePolicy",
+        "states:Create*"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "ArnLike": {
+          "aws:PrincipalArn": [
+            "arn:*:iam::*:role/rv-*"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "Secrets",
+      "Effect": "Deny",
+      "Action": [
+        "lambda:GetFunction*",
+        "lambda:GetLayerVersion*",
+        "lambda:ListFunctions",
+        "lambda:ListVersionsByFunction",
+        "secretsmanager:*GetSecretValue",
+        "ssm:GetParameter*",
+        "states:DescribeExecution",
+        "states:Get*"
+      ],
+      "NotResource": [
+        "arn:*:lambda:*:*:function:rv-${aws:PrincipalTag/rovara-run}-*",
+        "arn:*:secretsmanager:*:*:secret:rv-${aws:PrincipalTag/rovara-run}-*",
+        "arn:*:ssm:*:*:parameter/rv-${aws:PrincipalTag/rovara-run}-*",
+        "arn:*:states:*:*:execution:rv-${aws:PrincipalTag/rovara-run}-*"
+      ]
+    },
+    {
+      "Sid": "Targets",
+      "Effect": "Deny",
+      "Action": [
+        "events:PutTargets"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "ForAnyValue:ArnNotLike": {
+          "events:TargetArn": [
+            "arn:*:*:<REGION>:<ACCOUNT_ID>:rv-${aws:PrincipalTag/rovara-run}-*",
+            "arn:*:lambda:<REGION>:<ACCOUNT_ID>:function:rv-${aws:PrincipalTag/rovara-run}-*",
+            "arn:*:states:<REGION>:<ACCOUNT_ID>:stateMachine:rv-${aws:PrincipalTag/rovara-run}-*"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "NoTarget",
+      "Effect": "Deny",
+      "Action": [
+        "events:PutTargets"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "Null": {
+          "events:TargetArn": "true"
+        }
+      }
+    },
+    {
+      "Sid": "Subscribe",
+      "Effect": "Deny",
+      "Action": [
+        "sns:Subscribe"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "ArnNotLike": {
+          "sns:Endpoint": [
+            "arn:*:*:<REGION>:<ACCOUNT_ID>:rv-${aws:PrincipalTag/rovara-run}-*",
+            "arn:*:lambda:<REGION>:<ACCOUNT_ID>:function:rv-${aws:PrincipalTag/rovara-run}-*"
+          ]
+        }
+      }
+    }
+  ]
+}

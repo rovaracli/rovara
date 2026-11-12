@@ -178,6 +178,20 @@ export class DeveloperTaskNotifier extends Construct {
       resources: [props.state.tableArn],
       conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["ADMIN_CHANGE#*"] } },
     }));
+    // NOTIFY-DM-IAM: an attention DM (a person's batch of task notifications, and the Slack-member warning) waits in a NOTIFY_DM row. The notifier reads it, claims it (PENDING to SENDING), and marks it
+    // SENT or gives it back, by key: Get and Update on that one partition, no query, no write of a new row. Without this grant every such DM was refused (SlackDeliveryFailed fired on staging).
+    this.function.addToRolePolicy(new iam.PolicyStatement({
+      actions: ["dynamodb:GetItem", "dynamodb:UpdateItem"],
+      resources: [props.state.tableArn],
+      conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["NOTIFY_DM"] } },
+    }));
+    // TE-4: a project's settings-proof DM ("your saved setup commands failed their check") is told once. The words come from the stream record, so the notifier never touches the project's partition
+    // (ORG#<org>#PROJECT#<name>, which also holds the project's revisions and setup records). Its own once-marker is read and put under NOTIFY_SETTINGS_PROOF#<digest>: Get and Put, nothing else.
+    this.function.addToRolePolicy(new iam.PolicyStatement({
+      actions: ["dynamodb:GetItem", "dynamodb:PutItem"],
+      resources: [props.state.tableArn],
+      conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["NOTIFY_SETTINGS_PROOF#*"] } },
+    }));
     // C7: the State table's stream has two readers, the outbox publisher (control-plane.ts,
     // OutboxStreamMapping) and this notifier: the per-shard maximum AWS recommends. Later phases
     // (such as 25e's Slack Confirm DMs) add filters to an existing trigger, never a third reader.

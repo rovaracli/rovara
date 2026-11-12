@@ -1,0 +1,167 @@
+# The source of rovara-test-access.template.yaml. Do not deploy this file: the policies are filled in by scripts/test-access/build-artifacts.ts,
+# which writes the template next to it. Everything in the policies comes from one place (packages/cloud-contracts/src/test-access-policy.ts), so this
+# template, the Terraform module and the copy-paste policy text say the same thing.
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Rovara test access, template @@VERSION@@. Creates the IAM role Rovara assumes to run your tests in this account, a role that can only delete what a test run created,
+  and the limits both roles obey (a permissions boundary and policies). Rovara tells you the role was created through the custom resource at the end of this template.
+  Read the policies before you create the stack. Rovara never asks for access keys.
+Metadata:
+  RovaraTemplateVersion: "@@VERSION@@"
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Filled in by Rovara. Leave as they are.
+        Parameters:
+          - ExternalId
+          - ConnectToken
+          - RovaraPrincipal
+          - CallbackTopicArn
+    ParameterLabels:
+      ExternalId:
+        default: External id (proves the request comes from your Rovara connection)
+      ConnectToken:
+        default: One-time connect token (valid 30 minutes)
+      RovaraPrincipal:
+        default: The Rovara role allowed to use the test role
+      CallbackTopicArn:
+        default: Rovara's topic in this Region (the stack reports the role there)
+Parameters:
+  ExternalId:
+    Type: String
+    Description: The external id of this connection, made by Rovara. The test role can be assumed only by a caller that presents it.
+    AllowedPattern: "^rovara-org_[0-9a-z]{20}-conn_[0-9a-z]{20}$"
+    ConstraintDescription: Use the link from Rovara. The external id looks like rovara-org_...-conn_...
+  ConnectToken:
+    Type: String
+    NoEcho: true
+    Description: A one-time token that tells Rovara which connection this stack belongs to. It expires 30 minutes after Rovara made the link.
+    AllowedPattern: "^[A-Za-z0-9_-]{16,256}$"
+    ConstraintDescription: Use the link from Rovara.
+  RovaraPrincipal:
+    Type: String
+    Description: The ARN of the Rovara role that assumes the test role.
+    AllowedPattern: "^arn:aws:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]{1,512}$"
+    ConstraintDescription: Use the link from Rovara. This is an IAM role ARN.
+  CallbackTopicArn:
+    Type: String
+    Description: Rovara's SNS topic in this stack's Region. The custom resource sends the new role there. It must be in the same Region as the stack.
+    AllowedPattern: "^arn:aws:sns:[a-z0-9-]+:[0-9]{12}:[A-Za-z0-9_-]{1,256}$"
+    ConstraintDescription: Use the link from Rovara. This is an SNS topic ARN in the stack's Region.
+Resources:
+  # The whole fence. The test role, the cleanup role and every role a test run creates carry it, so a role a run creates is limited exactly as Rovara's own: it may
+  # change only resources named rv-<run id>-... (or already carrying the run tag), read nothing outside its run, and cannot be given to a service tests do not use.
+  # It requires the run tag, keeps to this Region, and cannot be taken off.
+  RovaraTestBoundary:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "rovara-test-boundary-${ExternalId}"
+      Description: Limits Rovara's test role and every role a test run creates. Rovara test access.
+      PolicyDocument: @@BOUNDARY@@
+
+  RovaraTestPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: What Rovara's test role may do, inside the boundary. Rovara test access.
+      PolicyDocument: @@ACCESS@@
+
+@@CLEANUP_POLICY@@
+  # Rovara assumes this role for a test run. It must present the external id, and it must tag the session with the run id (8 characters).
+  RovaraTestRole:
+    Type: AWS::IAM::Role
+    Properties:
+      # Named from the connection id (the last part of the external id), so Rovara can find the role from the account id when no callback arrives.
+      RoleName: !Join ["", ["rovara-test-", !Select [2, !Split ["-", !Ref ExternalId]]]]
+      Description: Assumed by Rovara to run tests in this account. Rovara test access.
+      MaxSessionDuration: 3600
+      PermissionsBoundary: !Ref RovaraTestBoundary
+      ManagedPolicyArns:
+        - !Ref RovaraTestPolicy
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: RovaraAssumesWithExternalId
+            Effect: Allow
+            Principal:
+              AWS: !Ref RovaraPrincipal
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                sts:ExternalId: !Ref ExternalId
+          - Sid: RovaraTagsTheSession
+            Effect: Allow
+            Principal:
+              AWS: !Ref RovaraPrincipal
+            Action: sts:TagSession
+            Condition:
+              ForAllValues:StringEquals:
+                aws:TagKeys:
+                  - rovara-run
+              StringLike:
+                aws:RequestTag/rovara-run: "????????"
+
+  # Rovara assumes this role to delete what a test run created. It can read and delete, nothing else.
+  RovaraTestCleanupRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Join ["", ["rovara-cleanup-", !Select [2, !Split ["-", !Ref ExternalId]]]]
+      Description: Assumed by Rovara to delete what a test run created. It cannot create or change anything. Rovara test access.
+      MaxSessionDuration: 3600
+      PermissionsBoundary: !Ref RovaraTestBoundary
+      ManagedPolicyArns:
+        - !Ref RovaraTestCleanupPolicy
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: RovaraAssumesWithExternalId
+            Effect: Allow
+            Principal:
+              AWS: !Ref RovaraPrincipal
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                sts:ExternalId: !Ref ExternalId
+          - Sid: RovaraTagsTheSession
+            Effect: Allow
+            Principal:
+              AWS: !Ref RovaraPrincipal
+            Action: sts:TagSession
+            Condition:
+              ForAllValues:StringEquals:
+                aws:TagKeys:
+                  - rovara-run
+              StringLike:
+                aws:RequestTag/rovara-run: "????????"
+
+  # Tells Rovara this stack exists, and which roles it made. CloudFormation publishes the request to Rovara's SNS topic (ServiceToken); Rovara checks the one-time
+  # token and answers CloudFormation. The role ARN and account id go to Rovara; nothing else leaves your account. No code of Rovara's runs in your account. When Rovara
+  # cannot be reached, creating the stack fails after 2 minutes and rolls back (create it again from Rovara). Deleting the stack tells Rovara the account is disconnected;
+  # if Rovara cannot be reached that step fails after 2 minutes, and you delete the stack again, choosing to retain RovaraCallback.
+  RovaraCallback:
+    Type: Custom::RovaraTestAccess
+    Properties:
+      ServiceToken: !Ref CallbackTopicArn
+      ServiceTimeout: "@@TIMEOUT@@"
+      RoleArn: !GetAtt RovaraTestRole.Arn
+      CleanupRoleArn: !GetAtt RovaraTestCleanupRole.Arn
+      AccountId: !Ref AWS::AccountId
+      Region: !Ref AWS::Region
+      ExternalId: !Ref ExternalId
+      ConnectToken: !Ref ConnectToken
+      TemplateVersion: "@@VERSION@@"
+Outputs:
+  RoleArn:
+    Description: The role Rovara assumes to run tests. If Rovara asks for it, this is the value.
+    Value: !GetAtt RovaraTestRole.Arn
+  CleanupRoleArn:
+    Description: The role Rovara assumes to delete what a test run created.
+    Value: !GetAtt RovaraTestCleanupRole.Arn
+  ExternalId:
+    Description: The external id of this connection.
+    Value: !Ref ExternalId
+  Region:
+    Description: The one Region Rovara may use in this account.
+    Value: !Ref AWS::Region
+  TemplateVersion:
+    Description: The version of this template.
+    Value: "@@VERSION@@"
