@@ -8,6 +8,10 @@
 //     The `model-provider` adapters for the proxy (litellm.ts) sign with a short-lived proxy key instead.
 // So `get(company, provider)` is the install's key for every company (the install pays, as today), and a company with its own source is served through the proxy, not this store.
 //
+// WHO MAY HOLD THIS: the broker and the model proxy only. A worker never gets a key from this store (it gets a short-lived proxy key for its task); nothing under packages/worker imports
+// this module or reads the `AGENTX_<PROVIDER>_SECRET_ARN` settings (tests/unit/cloud-adapters-models.test.ts checks it). Older direct-key paths outside this store (session-steps.ts,
+// runtime-requalify-steps.ts, swebench-settings.ts) still hand a secret ARN to some runs; they are not changed here.
+//
 // Rules kept: a key is a `SecretValue` (prints as `[secret]`); a value, a secret ARN and Secrets Manager's own words never reach an error or a log; a provider id that is not a plain id is
 // "no key" with no call made; the company id is checked (`org_` + 20) before anything is read.
 import { GetSecretValueCommand } from "@aws-sdk/client-secrets-manager";

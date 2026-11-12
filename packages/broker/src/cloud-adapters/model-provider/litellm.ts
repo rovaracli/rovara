@@ -1,5 +1,8 @@
 // Convergence lane A3 (Cloud adapter, private): Cloud's model proxy (LiteLLM) as a `model-provider` adapter on Code's port.
 //
+// PER TASK: an instance is built for one task (`task`: its company and task id), asks `taskKey` for that task's key only, and keeps its own "why no key" sentence, so one instance can never sign
+// task A's call with task B's key, or report B's problem for A. It is never put in the shared registry; the task flow builds it when the task's model call is routed.
+//
 // The proxy is where a company's own keys live (its AI sources) and where spend caps are enforced; a task never holds a provider key, it holds a short-lived proxy key minted for the task and
 // its developer (`ModelAccess.mintKey`, ruling R48: inference routes only). So this provider signs in with a bearer key that is that minted key (`taskKey()`, given by the composition root,
 // read when a call is made), and speaks the three formats on the exact inference paths the load balancer forwards (`INFERENCE_PATHS`): `/v1/messages`, `/v1/responses`, `/chat/completions`.
@@ -19,11 +22,19 @@ export const LITELLM_CHAT_CAPABILITIES: ModelFormatCapabilities = { forcedToolCh
 
 const pathOf = (transport: (typeof INFERENCE_PATHS)[number]["transport"]): string => INFERENCE_PATHS.find((entry) => entry.transport === transport)!.path;
 
+/** The one task (and its company and developer) a provider instance signs for. */
+export interface LiteLlmTaskContext {
+  companyId: string;
+  taskId: string;
+}
+
 export interface CloudLiteLlmOptions {
   /** The proxy's inference address (`https://host[:port]`). */
   address: string;
-  /** The short-lived proxy key of the task this call belongs to, read when the call is made. Undefined: no key (the proxy answers a fixed sentence). */
-  taskKey: () => Promise<SecretValue | undefined>;
+  /** The task this instance signs for. One instance per task: an instance never signs another task's call. */
+  task: LiteLlmTaskContext;
+  /** The short-lived proxy key minted for exactly this task (`ModelAccess.mintKey`), read when a call is made. Undefined: no key (the proxy answers a fixed sentence). */
+  taskKey: (task: Readonly<LiteLlmTaskContext>) => Promise<SecretValue | undefined>;
   kind?: string;
   defaultModel?: string;
   prices?: ModelProviderPrices;
@@ -32,6 +43,8 @@ export interface CloudLiteLlmOptions {
 export function cloudLiteLlmProvider(options: CloudLiteLlmOptions): ModelProviderAdapter {
   const kind = options.kind ?? LITELLM_PROVIDER_ID;
   if (!MODEL_PROVIDER_ID_PATTERN.test(kind)) throw new Error("the model proxy's provider id is a plain id");
+  if (!/^org_[0-9a-z]{20}$/u.test(options.task.companyId) || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u.test(options.task.taskId)) throw new Error("a model proxy provider is built for one company's task");
+  const task = Object.freeze({ companyId: options.task.companyId, taskId: options.task.taskId });
   let problem: string | undefined;
   return assertModelProvider({
     kind,
@@ -48,7 +61,7 @@ export function cloudLiteLlmProvider(options: CloudLiteLlmOptions): ModelProvide
     credentialProblem: () => problem,
     async credential() {
       try {
-        const key = await options.taskKey();
+        const key = await options.taskKey(task);
         problem = key === undefined ? "no model proxy key was minted for this task" : undefined;
         return key;
       } catch {
