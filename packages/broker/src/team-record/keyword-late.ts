@@ -8,13 +8,15 @@ import type { TeamRecordTable } from "./types.js";
 /** A row older than this when it is written gets a late marker, and a seal never takes rows newer than this: the margin that makes the tail and the sealed part meet with no gap (clock skew is far smaller). */
 export const KEYWORD_LATE_MS = 2 * 3_600_000;
 export const KWLATE_PREFIX = "KWLATE#";
-const LATE_MARKER_TTL_S = 30 * 86_400;
 
 export const lateMarkerKey = (orgId: OrgId, project: string | undefined, occurredAt: string, id: string): { pk: string; sk: string } => ({ pk: teamRecordPk(orgId, project), sk: `${KWLATE_PREFIX}${occurredAt}#${id}` });
 
-/** The item a late row's transaction writes beside the row (key and a TTL only: no text, no words). */
-export function lateMarkerItem(orgId: OrgId, project: string | undefined, occurredAt: string, id: string, nowMs: number): Item {
-  return { ...lateMarkerKey(orgId, project, occurredAt, id), entityType: "TEAM_RECORD_KWLATE", indexExpiresAt: Math.floor(nowMs / 1000) + LATE_MARKER_TTL_S };
+/**
+ * The item a late row's transaction writes beside the row: a key and an entity type, no text, no words, no person. It has no TTL on purpose (the table's TTL attribute is reserved for the items the health inventory names): the 15-minute pass
+ * deletes it when it has folded the row in or sealed past it, and a project or company erase deletes it with the rest of the index.
+ */
+export function lateMarkerItem(orgId: OrgId, project: string | undefined, occurredAt: string, id: string): Item {
+  return { ...lateMarkerKey(orgId, project, occurredAt, id), entityType: "TEAM_RECORD_KWLATE" };
 }
 
 /** Whether a row written at `nowMs` with this `occurredAt` needs a late marker. */

@@ -6,7 +6,7 @@ import { keywordDocumentOf } from "../../../packages/broker/src/team-record/keyw
 import { encodeSegment, SegmentReader } from "../../../packages/broker/src/team-record/keyword-index-segment.js";
 import { LivePart, SegmentPart, rankParts } from "../../../packages/broker/src/team-record/keyword-index-score.js";
 import { KEYWORD_LATE_MS, KWLATE_PREFIX } from "../../../packages/broker/src/team-record/keyword-late.js";
-import { SEGMENT_DOCS, SegmentCache, maintainProject, openKeywordIndex } from "../../../packages/broker/src/team-record/keyword-index.js";
+import { SEGMENT_DOCS, SegmentCache, maintainProject, markKeywordIndexRemoved, openKeywordIndex } from "../../../packages/broker/src/team-record/keyword-index.js";
 import { deterministicEventId, putRecordEvent } from "../../../packages/broker/src/team-record/store.js";
 import { GITHUB_SCOPE, ORG_A, ORG_B, addSource, caller, githubDraft, world, type World } from "../../support/team-record-core.js";
 import { DAY, HOUR, buildIndex, depsOf, eventsInTable, indexHoldsWord, manifestOf, rowOf, seedRows, segmentsOf } from "../../support/keyword-index.js";
@@ -215,6 +215,33 @@ describe("segments and the day: sealing, merging, the rest of the tail", () => {
   }, 120_000);
 });
 
+describe("a rebuild of a range that grew", () => {
+  it("is read and written a piece at a time: a range with three times SEGMENT_DOCS rows becomes several segments that tile it, and every row is findable", async () => {
+    const w = world();
+    await addSource(w, { source: "github", scope: GITHUB_SCOPE });
+    seedRows(w, Array.from({ length: 20 }, (_unused, i) => rowOf(w, i, { text: `seed row ${String(i)}`, at: w.clock.ms - 6 * DAY + i * 60_000 })));
+    await buildIndex(w);
+    const first = manifestOf(w)!.segments[0]!;
+    expect(manifestOf(w)!.segments).toHaveLength(1);
+    // a bulk import of old rows lands inside the sealed range (written directly, as a backfill the markers of which were lost would be); a removal mark makes the pass rebuild the segment
+    const count = 3 * SEGMENT_DOCS + 50;
+    seedRows(w, Array.from({ length: count }, (_unused, i) => rowOf(w, 1_000 + i, { text: i === count - 1 ? "bulklastword here" : `bulk row ${String(i)}`, at: w.clock.ms - 5 * DAY + i * 1_000 })));
+    expect(first.upTo >= new Date(w.clock.ms - 5 * DAY + count * 1_000).toISOString()).toBe(true);
+    await markKeywordIndexRemoved(depsOf(w), ORG_A, "web", [new Date(w.clock.ms - 6 * DAY).toISOString()]);
+    await maintainProject(depsOf(w), ORG_A, "web", { deadlineAt: w.clock.ms + 120_000 });
+    const manifest = manifestOf(w)!;
+    expect(manifest.segments.length).toBeGreaterThanOrEqual(4);
+    expect(manifest.segments.reduce((sum, entry) => sum + entry.docs, 0)).toBe(count + 20);
+    const upTos = manifest.segments.map((entry) => entry.upTo);
+    expect([...upTos].sort()).toEqual(upTos);                       // ranges tile in time order
+    expect(new Set(upTos).size).toBe(upTos.length);
+    expect(upTos.at(-1)).toBe(first.upTo);                           // and still end where the old segment did
+    expect(manifest.segments.every((entry) => entry.dirty === undefined)).toBe(true);
+    expect(ids((await recordSearch(searchDeps(w), person(), "web", { query: "bulklastword", limit: 5 })).hits)).toHaveLength(1);
+    expect(w.db.find((item) => String(item.sk).startsWith("KWIDX#S#")).length).toBe(manifest.segments.reduce((sum, entry) => sum + entry.chunks, 0)); // no chunk left behind
+  }, 300_000);
+});
+
 describe("per company, and the reader's right", () => {
   it("the segment cache is keyed by company, project and segment: the same project name and segment id of two companies are two entries", () => {
     expect(SegmentCache.key(ORG_A, "web", "s1")).not.toBe(SegmentCache.key(ORG_B, "web", "s1"));
@@ -297,7 +324,7 @@ describe("a row written through ingest, and a cold start", () => {
     expect(markers).toHaveLength(1);
     expect(markers[0]).toMatchObject({ pk: `WS#${ORG_A}#P#web`, entityType: "TEAM_RECORD_KWLATE" });
     expect(String(markers[0]!.sk)).toContain(old);
-    expect(Object.keys(markers[0]!).sort()).toEqual(["entityType", "indexExpiresAt", "pk", "sk"]);
+    expect(Object.keys(markers[0]!).sort()).toEqual(["entityType", "pk", "sk"]);
     // the row and its marker were one transaction
     expect(w.db.transactions().some((entry) => entry.length === 2 && entry.every((action) => (action as { Put?: unknown }).Put !== undefined))).toBe(true);
     expect(await w.sink.put(draft("old-1", old))).toMatchObject({ status: "duplicate" });

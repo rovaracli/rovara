@@ -70,7 +70,7 @@ export async function putRecordEvent(table: TeamRecordTable, event: RecordEvent,
   const parsed = RecordEventSchema.parse(event);
   try {
     if (options.nowMs !== undefined && isLateRow(parsed.occurredAt, options.nowMs)) {
-      return await putLateRecordEvent(table, eventItem(parsed), lateMarkerItem(parsed.workspaceId, parsed.project, parsed.occurredAt, parsed.id, options.nowMs));
+      return await putLateRecordEvent(table, eventItem(parsed), lateMarkerItem(parsed.workspaceId, parsed.project, parsed.occurredAt, parsed.id));
     }
     await table.documentClient.send(new PutCommand({ TableName: table.tableName, Item: eventItem(parsed), ConditionExpression: NOT_EXISTS }));
     return "stored";

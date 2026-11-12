@@ -53,8 +53,6 @@ export const ORPHAN_AFTER_MS = 2 * 60_000;
 /** Rows past their hot expiry by this long are gone from the table (archived, then the TTL): the nightly pass drops them from the index. */
 const HOT_GONE_AFTER_S = 8 * 86_400;
 const MAX_SEGMENTS = 1_200;
-/** The most rows one rebuild reads (a range this big means something is wrong: the pass logs it and leaves the range alone). */
-const REBUILD_ROWS_MAX = 40_000;
 
 export { KWLATE_PREFIX } from "./keyword-late.js";
 export const KWIDX_PREFIX = "KWIDX#";
@@ -291,22 +289,6 @@ const newSegmentId = (now: number): string => `${now.toString(36)}${randomBytes(
 
 const instantOfItem = (item: Item): string => rowOfSortKey(String(item.sk))?.occurredAt ?? "";
 
-/** Cuts a range's rows (oldest first) into pieces of about SEGMENT_DOCS rows, only between instants. The last piece ends at `rangeEnd`. */
-function cutPieces(items: readonly Item[], rangeEnd: string, nowSeconds: number): Array<{ upTo: string; docs: SegmentDocInput[] }> {
-  const pieces: Array<{ upTo: string; docs: SegmentDocInput[] }> = [];
-  let docs: SegmentDocInput[] = [];
-  let lastInstant = "";
-  for (const item of items) {
-    const instant = instantOfItem(item);
-    if (docs.length >= SEGMENT_DOCS && instant !== lastInstant) { pieces.push({ upTo: lastInstant, docs }); docs = []; }
-    lastInstant = instant;
-    const doc = docOfItem(item, nowSeconds);
-    if (doc !== undefined) docs.push(doc);
-  }
-  pieces.push({ upTo: rangeEnd, docs });
-  return pieces;
-}
-
 interface Written { entry: SegmentEntry }
 
 /** Encodes and stores one piece. The build intent was written before (see `withIntent`). */
@@ -344,24 +326,36 @@ const rangeOf = (manifest: Manifest, from: number, to: number): { after: string 
   after: from === 0 ? undefined : (manifest.segments[from - 1] as SegmentEntry).upTo, upTo: (manifest.segments[to] as SegmentEntry).upTo,
 });
 
-type Replaced = { status: "done"; manifest: Manifest } | { status: "conflict" } | { status: "deadline" } | { status: "too_large" };
+type Replaced = { status: "done"; manifest: Manifest } | { status: "conflict" } | { status: "deadline" };
 
 /**
- * Rebuilds segments `from..to` (adjacent) from the table into new segments (one, or more if the range grew), and switches the manifest. The new segments never carry a dirty mark: they were built from rows read AFTER
- * the marks they answer (a mark written later changes the manifest's version and fails this switch). The old segments' chunks are deleted at once; their ids stay in `retired` until that is done.
+ * Rebuilds segments `from..to` (adjacent) from the table into new segments (one, or more if the range grew), and switches the manifest. The range is read a piece at a time (about SEGMENT_DOCS rows, cut only between instants),
+ * so the memory is one piece however many rows a range holds. The new segments never carry a dirty mark: they were built from rows read AFTER the marks they answer (a mark written later changes the manifest's version and fails
+ * this switch). The old segments' chunks are deleted at once; their ids stay in `retired` until that is done.
  */
 async function replaceSegments(ctx: BuildContext, manifest: Manifest, from: number, to: number): Promise<Replaced> {
   const { after, upTo } = rangeOf(manifest, from, to);
   const nowSeconds = Math.floor(nowOf(ctx) / 1000);
-  const rows = await readRows(ctx, ctx.orgId, ctx.project, { ...(after === undefined ? {} : { after }), upTo, ascending: true, limit: REBUILD_ROWS_MAX });
-  if (rows.more) return { status: "too_large" };
-  const pieces = cutPieces(rows.items, upTo, nowSeconds);
-  const ids = pieces.map(() => newSegmentId(nowOf(ctx)));
-  const outcome = await withIntents(ctx, ids, async (): Promise<{ status: "written"; entries: SegmentEntry[] } | { status: "deadline" } | { status: "conflict" }> => {
-    const entries: SegmentEntry[] = [];
-    for (const [at, piece] of pieces.entries()) {
-      if (at > 0 && overDeadline(ctx)) { for (const id of ids) await deleteChunks(ctx, ctx.orgId, ctx.project, id); return { status: "deadline" }; }
-      entries.push((await writePiece(ctx, piece, ids[at] as string)).entry);
+  const pk = teamRecordPk(ctx.orgId, ctx.project);
+  const ids: string[] = [];
+  const entries: SegmentEntry[] = [];
+  const discard = async (): Promise<void> => {
+    for (const id of ids) await deleteChunks(ctx, ctx.orgId, ctx.project, id);
+    for (const id of ids) await tableDelete(ctx, { pk, sk: `${KWIDX_BUILD_PREFIX}${id}` });
+  };
+  try {
+    let cursor = after;
+    for (;;) {
+      if (entries.length > 0 && overDeadline(ctx)) { await discard(); return { status: "deadline" }; }
+      const rows = await readRows(ctx, ctx.orgId, ctx.project, { ...(cursor === undefined ? {} : { after: cursor }), upTo, ascending: true, limit: SEGMENT_DOCS });
+      const pieceEnd = rows.more ? instantOfItem(rows.items[rows.items.length - 1] as Item) : upTo;
+      const docs = rows.items.flatMap((item) => { const doc = docOfItem(item, nowSeconds); return doc === undefined ? [] : [doc]; });
+      const id = newSegmentId(nowOf(ctx));
+      ids.push(id);
+      await ctx.table.documentClient.send(new PutCommand({ TableName: ctx.table.tableName, Item: { pk, sk: `${KWIDX_BUILD_PREFIX}${id}`, entityType: "TEAM_RECORD_KWIDX_BUILD", segment: id, at: isoOf(nowOf(ctx)) } }));
+      entries.push((await writePiece(ctx, { upTo: pieceEnd, docs }, id)).entry);
+      if (!rows.more) break;
+      cursor = pieceEnd;
     }
     const replaced = manifest.segments.slice(from, to + 1);
     const next: Manifest = {
@@ -369,14 +363,14 @@ async function replaceSegments(ctx: BuildContext, manifest: Manifest, from: numb
       segments: [...manifest.segments.slice(0, from), ...entries, ...manifest.segments.slice(to + 1)],
       retired: [...new Set([...manifest.retired, ...replaced.map((entry) => entry.id)])],
     };
-    if (!(await writeManifest(ctx, ctx.orgId, ctx.project, next, manifest.version))) {
-      for (const id of ids) await deleteChunks(ctx, ctx.orgId, ctx.project, id);
-      return { status: "conflict" };
-    }
+    if (!(await writeManifest(ctx, ctx.orgId, ctx.project, next, manifest.version))) { await discard(); return { status: "conflict" }; }
     manifest = next;
-    return { status: "written", entries };
-  });
-  if (outcome.status !== "written") return outcome;
+  } catch (error) {
+    // The build failed (a write the table refused, say): its chunks and intents are removed now if the table lets us; if it does not, the intents stay and are how the next pass finds the chunks.
+    try { await discard(); } catch { /* the intents stay */ }
+    throw error;
+  }
+  for (const id of ids) await tableDelete(ctx, { pk, sk: `${KWIDX_BUILD_PREFIX}${id}` });
   return { status: "done", manifest: await dropRetired(ctx, manifest) };
 }
 
@@ -516,7 +510,6 @@ export async function maintainProject(deps: KeywordIndexDeps, orgId: OrgId, proj
     const replaced = await replaceSegments(ctx, manifest, at, at);
     if (replaced.status === "conflict") { result.more = true; break; }
     if (replaced.status === "deadline") { result.more = true; break; }
-    if (replaced.status === "too_large") { ctx.log?.("record.keyword_index_range_too_large", {}); break; }
     for (const built of replaced.manifest.segments) if (!manifest.segments.some((old) => old.id === built.id)) builtHere.add(built.id);
     manifest = replaced.manifest;
     for (const marker of inRange) { await tableDelete(ctx, { pk: teamRecordPk(orgId, project), sk: marker.sk }); foldedMarkers.add(marker.sk); }
@@ -760,7 +753,7 @@ async function rebuildDirty(ctx: BuildContext): Promise<Manifest | undefined> {
     if (dirty < 0) return read.manifest;
     if (overDeadline(ctx)) return read.manifest;
     const replaced = await replaceSegments(ctx, read.manifest, dirty, dirty);
-    if (replaced.status === "deadline" || replaced.status === "too_large") return read.manifest;
+    if (replaced.status === "deadline") return read.manifest;
     // a lost race (conflict) reads the manifest again: a mark written meanwhile is rebuilt on the next turn
   }
   return undefined;
