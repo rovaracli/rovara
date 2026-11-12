@@ -66,7 +66,7 @@ describe("the UI flag override", () => {
     // A finished screen's former name (decision 125) is refused with its reason: setting it would change nothing.
     for (const value of ["look", "look-nav", "health-insights", "continue"]) expect(() => entry.parse(value), value).toThrow(/can no longer be turned off/u);
     expect(entry.description).toContain("can no longer be turned off");
-    expect(entry.description).not.toMatch(/\(look, nav, home/u);
+    expect(entry.description).toContain("joined by a hyphen (health, setup, publish, billing, agreement, companies)");
     expect(OPERATOR_PARAMETERS["control-plane"]).toContain("UiFlagsForceOff");
   });
 });

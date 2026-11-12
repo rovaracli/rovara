@@ -121,7 +121,7 @@ test.describe("Work", () => {
  });
  test("old data: tiles without the optional fields an older broker leaves out still read as rows", async ({ page, context, request, baseURL }) => {
   await enter(page, context, request, baseURL, "work");
-  await page.route(/\/v1\/web\/live(\?|$)/u, reshape(body => ({ ...body, tiles: (body.tiles as Array<Record<string, unknown>>).map(tile => without(tile, "peek", "step", "needsYou", "viewingNow", "viewingNowCount", "approvalUrl", "agent", "project", "display")) })));
+  await page.route(/\/v1\/web\/live(\?|$)/u, reshape(body => ({ ...body, tiles: (body.tiles as Array<Record<string, unknown>>).map(tile => without(tile, "approvalUrl", "agent", "project")) })));
   await page.goto("/app/work");await notBlank(page);await shellIntact(page);
   await expect(page.locator(".rv-work-row").first()).toBeVisible();
  });
@@ -141,14 +141,16 @@ test.describe("Work", () => {
   await page.unroute(/\/v1\/web\/live(\?|$)/u);await alert.getByRole("button", { name: "Try again" }).click();
   await expect(page.locator(".rv-work-row").first()).toBeVisible();
  });
- test("a screen whose code cannot load (a release changed under the page): the error stays inside the shell with Reload, never a blank page", async ({ page, context, request, baseURL }) => {
+ test("a screen whose code cannot load (a release changed under the page): a page that says so with Reload, never a blank page; Reload recovers", async ({ page, context, request, baseURL }) => {
   await enter(page, context, request, baseURL, "work");
   await page.route(/\/app\/assets\/WorkListScreen[^/]*\.js$/u, route => route.abort());
   await page.goto("/app");await shellIntact(page);
   await page.locator("aside").getByRole("link", { name: "Work", exact: true }).click();
-  await expect(page.getByRole("heading", { level: 1, name: /Rovara was updated|Something went wrong/u })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Reload" })).toBeVisible();await shellIntact(page);await notBlank(page);
-  await page.locator("aside").getByRole("link", { name: /^Home/u }).click();await expect(page.getByRole("heading", { name: "Home", level: 1 })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 1, name: "Rovara was updated. Reload to continue." })).toBeVisible();await notBlank(page);
+  await evidenceShot(page, { path: `${shots}/work-chunk-failed-1280.png`, fullPage: true });
+  await page.unroute(/\/app\/assets\/WorkListScreen[^/]*\.js$/u);
+  await page.getByRole("button", { name: "Reload" }).click();
+  await expect(page.locator(".rv-work-row").first()).toBeVisible();await shellIntact(page);
  });
 });
 
@@ -197,9 +199,9 @@ test.describe("task page header", () => {
   await page.goto(TASK);await notBlank(page);await shellIntact(page);
   await expect(page.getByRole("region", { name: "Where this task stands" })).toBeVisible();
  });
- test("old data: a session without the status model or presence fields (an older broker) still gets the header block", async ({ page, context, request, baseURL }) => {
+ test("old data: a session without the status model, anchors, agent or project (an older broker) still gets the header block", async ({ page, context, request, baseURL }) => {
   await taskPage(page, context, request, baseURL);
-  await page.route(/\/v1\/web\/sessions\/ses_a{20}$/u, reshape(body => ({ ...body, session: without(body.session as Record<string, unknown>, "display", "viewingNow", "anchors", "lastRunFailed") })));
+  await page.route(/\/v1\/web\/sessions\/ses_a{20}$/u, reshape(body => ({ ...body, session: without(body.session as Record<string, unknown>, "display", "anchors", "retryOf", "errorRef", "agent", "project") })));
   await page.goto(TASK);await notBlank(page);await shellIntact(page);
   await expect(page.getByRole("region", { name: "Where this task stands" })).toBeVisible();
   await evidenceShot(page, { path: `${shots}/task-old-data-1280.png`, fullPage: true });
