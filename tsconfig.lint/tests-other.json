@@ -9,6 +9,7 @@
     "../tests/fixtures/**/*.ts",
     "../tests/linux/**/*.ts",
     "../tests/live/**/*.ts",
+    "../tests/parity/**/*.ts",
     "../tests/plugins/**/*.ts",
     "../tests/roles/**/*.ts",
     "../tests/staging/**/*.ts",
