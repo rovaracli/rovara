@@ -207,6 +207,17 @@ describe("the sink: the company, the person (explicit members) and the binding",
     expect(worked).toEqual([]);
   });
 
+  it("runs a message in the company ITS workspace is bound to, with that company's binding and project, when two companies bind the same channel id", async () => {
+    const seen: OrgId[] = [];
+    const { store, sink, worked } = world(async (orgId) => { seen.push(orgId); return DEVELOPER; });
+    await bind(store, A, TEAM, "web");
+    await bind(store, B, OTHER_TEAM, "api");
+    await sink.message(message("Ev0EEEEEEEE", OTHER_TEAM));
+    await sink.message(message("Ev0FFFFFFFF", TEAM));
+    expect(worked.map((item) => [item.orgId, item.projectName])).toEqual([[B, "api"], [A, "web"]]);
+    expect(seen).toEqual([B, A]);
+  });
+
   it("runs nothing for a workspace no company bound, and nothing for a space only ANOTHER company bound", async () => {
     const one = world(async () => DEVELOPER);
     await one.sink.message(message("Ev0CCCCCCCC", "T0UNBOUND9"));
