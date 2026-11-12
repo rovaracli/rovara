@@ -6,7 +6,7 @@ import { expect, it } from "vitest";
 import { screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { PROJECT_LAST_MAINTAINER_MESSAGE, PROJECT_PEOPLE_STALE_MESSAGE } from "@agentx/cloud-contracts/web";
 import { expectNoAxeViolations } from "./support/axe.js";
-import { ID, approvals, mountProject, peopleView, settings, type Answer } from "./support/people-fixture.js";
+import { ID, approvals, member, mountProject, peopleView, settings, type Answer } from "./support/people-fixture.js";
 
 // jsdom has no ResizeObserver, which the switch inside a form measures with.
 globalThis.ResizeObserver ??= class { observe(): void { /* none */ } unobserve(): void { /* none */ } disconnect(): void { /* none */ } };
@@ -39,6 +39,13 @@ it("switch on: the People tab shows each person's exact role, a collaborator as 
   expect(within(await row("Maya Chen")).getByText("Maintainer")).toBeTruthy();
   expect(within(await row("Lee Park")).getByText("Viewer")).toBeTruthy();
   expect(within(await row("Dana Admin")).getByText("Company owner or admin")).toBeTruthy();
+  f.close();
+});
+
+it("the viewer's own role is the exact one from the roster, so a collaborator is told Collaborator (the powers carry the viewer floor)", async () => {
+  const f = mountProject({ people: ok(peopleView({ members: [member(ID.maya, "Maya Chen", "collaborator")] }, { role: "viewer", canManageMembers: false, assignableRoles: [], canInvite: false, invitableRoles: [], canEditCodeSettings: false })) });
+  await row("Maya Chen");
+  expect(screen.getByText(/Your role here:/u).textContent).toBe("Everyone on this project and their role. Your role here: Collaborator.");
   f.close();
 });
 

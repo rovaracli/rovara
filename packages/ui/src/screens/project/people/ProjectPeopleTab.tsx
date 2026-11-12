@@ -4,6 +4,7 @@ import { DataTable } from "../../../design/DataTable.js";
 import { Skeleton } from "../../../design/Skeleton.js";
 import { VisibleText } from "../../../design/VisibleText.js";
 import { ApiError } from "../../../api/errors.js";
+import { useNav } from "../../../api/nav.js";
 import { useProjectPeople, type PeopleMember } from "../../../api/project-people.js";
 import { projectRoleLabel } from "../../admin/projects/labels.js";
 import { CollaboratorApprovalsSwitch } from "./CollaboratorApprovalsSwitch.js";
@@ -20,16 +21,18 @@ import "./people.css";
  * are a company owner or admin has no project role to change, so their row has no controls. Every write is under the roster's revision; a stale answer reloads it.
  */
 export function ProjectPeopleTab({ project }: { project: string }) {
- const read = useProjectPeople(project);
+ const read = useProjectPeople(project), nav = useNav();
  const [dialog, setDialog] = useState<{ kind: "change" | "remove"; member: PeopleMember } | { kind: "add" } | { kind: "invite" }>(), [notice, setNotice] = useState<string>();
  if (read.isPending) return <Skeleton label="Loading the project's people" />;
  if (read.isError) return <section className="rv-project-section"><p role="alert"><VisibleText text={read.error instanceof ApiError ? read.error.message : "Couldn't load this project's people."} /></p><Button onClick={() => { void read.refetch(); }}>Try again</Button></section>;
  const view = read.data, v = view.viewer, stale = read.isFetching && !read.isPending;
+ // The powers carry the three-role floor (a collaborator reads there as a viewer); the roster row of this person has the exact role.
+ const mine = view.members.find(person => person.developerId === nav.data?.me.developerId), myRole = mine?.projectRole ?? v.role;
  const open = (next: NonNullable<typeof dialog> | undefined) => { setDialog(next); };
  return <div className="rv-people">
   <section className="rv-project-section" aria-labelledby="rv-people-title">
    <h2 id="rv-people-title">People</h2>
-   <p className="rv-muted">Everyone on this project and their role. Your role here: <strong>{projectRoleLabel[v.role]}</strong>.</p>
+   <p className="rv-muted">Everyone on this project and their role. Your role here: <strong>{projectRoleLabel[myRole]}</strong>.</p>
    {(v.canManageMembers || v.canInvite) && <div className="rv-people-actions">
     {v.canManageMembers && <Button onClick={() => { open({ kind: "add" }); }}>Add a person</Button>}
     {v.canInvite && <Button onClick={() => { open({ kind: "invite" }); }}>Invite into this project</Button>}
