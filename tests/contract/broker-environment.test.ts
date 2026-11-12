@@ -44,7 +44,8 @@ const NAMES = {
   slackRequestDeadLetters: "agentx-staging-control-plane-SlackDeadLetterQueue8D1F2C3B-1A2B3C4D5E6F7",
   developerNoticeDeadLetters: "agentx-staging-control-plane-DeveloperTaskNotifierDeadLetters5A6B7C8D-1A2B3C4D5E6F7",
   developerNoticeStreamFailures: "agentx-staging-control-plane-DeveloperTaskNotifierStreamFailures9E8D7C6B-1A2B3C4D5E6F7",
-} as const satisfies Record<keyof typeof BROKER_NAMES, string>;
+// Every name an install without model proxy TLS passes; with TLS the control plane passes `modelProxyHost` (mh) in place of `modelProxy` (tests/contract/model-proxy-tls.test.ts).
+} as const satisfies Record<Exclude<keyof typeof BROKER_NAMES, "modelProxyHost">, string>;
 
 const bag = (names: Partial<Record<keyof typeof BROKER_NAMES, string>> = NAMES) =>
   JSON.stringify(Object.fromEntries(Object.entries(names).map(([key, value]) => [BROKER_NAMES[key as keyof typeof BROKER_NAMES].code, value])));
@@ -54,8 +55,10 @@ describe("the table of names", () => {
   it("has a distinct two-letter code and a distinct variable for each name", () => {
     const specs = Object.values(BROKER_NAMES);
     expect(new Set(specs.map((spec) => spec.code)).size).toBe(specs.length);
-    // One variable apiece, except the dead-letter queues, which are listed together for the health route.
-    const variables = specs.filter((spec) => spec.kind !== "deadLetterQueue").map((spec) => spec.variable);
+    // One variable apiece, except the dead-letter queues, which are listed together for the health route, and the model proxy's two forms (decision 110): the load balancer's
+    // name (`mp`, plain http) or, with TLS, its own DNS name (`mh`, https). The control plane passes exactly one of them.
+    const variables = specs.filter((spec) => spec.kind !== "deadLetterQueue" && spec !== BROKER_NAMES.modelProxyHost).map((spec) => spec.variable);
+    expect(BROKER_NAMES.modelProxyHost.variable).toBe(BROKER_NAMES.modelProxy.variable);
     expect(new Set(variables).size).toBe(variables.length);
     expect(new Set(specs.filter((spec) => spec.kind === "deadLetterQueue").map((spec) => spec.variable))).toEqual(new Set(["HEALTH_DEAD_LETTER_QUEUES"]));
     expect(new Set(specs.filter((spec) => spec.kind === "deadLetterQueue").map((spec) => spec.label)).size).toBe(4);

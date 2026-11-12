@@ -117,7 +117,9 @@ describe("the Enterprise edition's network", () => {
     for (const forbidden of ["*.amazonaws.com", "github.com", "registry.npmjs.org", "pypi.org", "api.anthropic.com", "api.openai.com", "openrouter.ai", "slack.com", "*.atlassian.net", "nodejs.org"]) {
       expect(allow.Domains, forbidden).not.toContain(forbidden);
     }
-    expect(allow.Domains).toEqual(expect.arrayContaining(["bedrock-runtime.us-east-1.amazonaws.com", "api.ecr.us-east-1.amazonaws.com", "*.dkr.ecr.us-east-1.amazonaws.com", "s3.us-east-1.amazonaws.com", "*.elb.us-east-1.amazonaws.com"]));
+    expect(allow.Domains).toEqual(expect.arrayContaining(["bedrock-runtime.us-east-1.amazonaws.com", "api.ecr.us-east-1.amazonaws.com", "*.dkr.ecr.us-east-1.amazonaws.com", "s3.us-east-1.amazonaws.com", "*.us-east-1.elb.amazonaws.com", "*.us-east-1.rds.amazonaws.com"]));
+    // ENTERPRISE-ELB-RDS-ALLOW-BUG: the NLB-only pattern is gone (the model proxy is an internal ALB).
+    expect(allow.Domains).not.toContain("*.elb.us-east-1.amazonaws.com");
     // The positive control: a hosted install still gets the public defaults.
     const cloud = foundation({ env: "staging", cloud: true });
     const cloudAllow = resourcesOf(cloud, "AWS::Route53Resolver::FirewallDomainList").map(([, list]) => list.Properties as { Name: string; Domains?: string[] }).find((list) => list.Name.endsWith("-allow"))!;
@@ -211,6 +213,8 @@ describe("the Enterprise edition's network", () => {
 describe("every other edition's network is unchanged", () => {
   // One deliberate difference from that commit (0.5.15, DEFAULT-ALLOW-LIST-EXFIL): the hosted cloud's DNS allow-list no longer carries *.amazonaws.com, *.aws, *.github.com or *.githubusercontent.com,
   // and names the install's own AWS hosts instead (tests/contract/agent-dns-firewall.test.ts pins the list). The fixture's cloud allow-list domains are the new list; nothing else changed.
+  // Re-pinned for the vendor pin bump (405e819fe, public Code 0e340c0e): Code's default list now carries the five GitHub download hosts itself, so they sit at Code's position in the
+  // cloud allow-list instead of being appended after it. Same set of names, new order; no other template moved.
   it("is the template the base commit fd7cd3c35 produced, for a hosted-cloud install, a named install and the legacy deployment, with or without the edition set to public", () => {
     for (const [name, base] of [["cloud", { env: "staging", cloud: true }], ["named", { env: "staging" }], ["legacy", {}]] as const) {
       expect(foundation(base).toJSON(), name).toEqual(BASE_TEMPLATES[name]);

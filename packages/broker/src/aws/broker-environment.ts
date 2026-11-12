@@ -81,6 +81,11 @@ function build(spec: BrokerNameSpec, value: string, env: MutableEnvironment): st
       return `https://${value}.appsync-api.${scope.region}.amazonaws.com${scope.partition === "aws-cn" ? ".cn" : ""}/event`;
     }
     case "modelProxyUrl": return `http://${value}.${elbHost(requiredScope(env, needed))}:${MODEL_PROXY_INFERENCE_PORT}`;
+    // MODEL-PROXY-TLS (decision 110): a DNS name the install owns. Only a name with a dot (NAME already refused slashes, spaces and the rest), never a bare label.
+    case "httpsHost": {
+      if (!value.includes(".") || value.startsWith(".") || value.endsWith(".")) throw new Error(`${needed} is not a DNS name`);
+      return `https://${value.toLowerCase()}`;
+    }
     case "apiIssuer": return `https://${value}.${apiHost(requiredScope(env, needed))}/v1/auth`;
     case "kmsKeyArn": {
       const scope = requiredScope(env, needed);
