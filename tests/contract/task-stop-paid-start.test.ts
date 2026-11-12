@@ -231,6 +231,8 @@ async function otherProjectAgent() {
   f.t.db.set({ ...f.t.db.get(revision)!, ...revision, entityType: "PROJECT", orgId: TEST_ORG });
   f.t.db.set({ ...orgProjectCatalogKey(TEST_ORG, project), entityType: "PROJECT_CATALOG", orgId: TEST_ORG, name: project, latestRevision: 1 });
   f.t.db.set({ ...grant, entityType: "MEMBERSHIP", ownerKey: MAYA.developerId, projectName: project, grantId: randomUUID(), role: "developer", projectRole: "maintainer" });
+  // A second maintainer of the project (srv/project-people's last-maintainer rule): the tests below lower Maya to viewer mid-start, which the rule refuses for a project's only maintainer.
+  f.t.db.set({ ...projectMemberKey(TEST_ORG, BEN.developerId, project), entityType: "MEMBERSHIP", ownerKey: BEN.developerId, projectName: project, grantId: randomUUID(), role: "developer", projectRole: "maintainer" });
   const agentId = await f.t.agentOf(CODING, { owner: { kind: "project", project }, accountable: ADA }), key = agentKey(TEST_ORG, agentId, "META");
   expect(f.t.db.get(key)).toMatchObject({ revision: 1, stopKind: "inherit" });
   return { ...f, grant, agentId, key, startOther: () => f.t.dev(MAYA, "POST", "/v1/dev/tasks", { ...f.request, agent: { agentId } }) };
