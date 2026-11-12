@@ -19,8 +19,10 @@ type schemaNode struct {
 	propOrder    []string
 	items        *schemaNode
 	enum         []any
+	enumSizes    []int // the JSON size of each enum value, counted when a reply is generated
 	hasConst     bool
 	constVal     any
+	constSize    int
 	min, max     *float64
 	exMin, exMax bool
 	minLen       int
@@ -142,9 +144,12 @@ func buildSchema(v any, depth int, count *int) (*schemaNode, error) {
 			return nil, errors.New("enum is a list of 1 to 1000 values")
 		}
 		n.enum = arr
+		for _, v := range arr {
+			n.enumSizes = append(n.enumSizes, jsonSize(v))
+		}
 	}
 	if c, ok := obj["const"]; ok {
-		n.hasConst, n.constVal = true, c
+		n.hasConst, n.constVal, n.constSize = true, c, jsonSize(c)
 	}
 	num := func(key string) (*float64, error) {
 		raw, ok := obj[key]
@@ -214,18 +219,37 @@ func buildSchema(v any, depth int, count *int) (*schemaNode, error) {
 	if f, ok := obj["format"]; ok {
 		s, _ := f.(string)
 		if !knownFormats[s] {
-			return nil, fmt.Errorf("format %v is not one of date-time, date, uuid, email, uri, ipv4", f)
+			return nil, fmt.Errorf("format %q is not one of date-time, date, uuid, email, uri, ipv4", s)
 		}
 		n.format = s
 	}
 	return n, nil
 }
 
-// generator makes values from a schema, from a seeded sequence and with a bound on how many values one reply may hold.
+// jsonSize is the size of a value as it is written in a reply (a value that cannot be written counts as large, so it is refused).
+func jsonSize(v any) int {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return MaxReply + 1
+	}
+	return len(b)
+}
+
+// generator makes values from a schema, from a seeded sequence, with a bound on how many values and on how many BYTES one reply may hold: every value is counted in the meter before it is
+// built, so a schema that fans out (minItems 100 at every level, strings of 10,000 characters) is refused as soon as it passes 6 MiB, not after the whole tree is in memory.
 type generator struct {
 	rng   *rand.Rand
 	nodes int
+	m     *meter
 }
+
+// Sizes of values as they are written; a number counts its worst case.
+const (
+	sizeNull   = 4
+	sizeBool   = 5
+	sizeInt    = 20
+	sizeNumber = 24
+)
 
 var words = []string{"alpha", "bravo", "cedar", "delta", "ember", "falcon", "garnet", "harbor", "iris", "juniper", "kestrel", "lumen", "maple", "nimbus", "onyx", "pebble", "quartz", "ridge", "sable", "tundra"}
 
@@ -238,10 +262,17 @@ func (g *generator) generate(n *schemaNode) (any, error) {
 		return g.generate(n.alts[g.rng.IntN(len(n.alts))])
 	}
 	if n.hasConst {
+		if err := g.m.add(n.constSize + 1); err != nil {
+			return nil, err
+		}
 		return n.constVal, nil
 	}
 	if len(n.enum) > 0 {
-		return n.enum[g.rng.IntN(len(n.enum))], nil
+		i := g.rng.IntN(len(n.enum))
+		if err := g.m.add(n.enumSizes[i] + 1); err != nil {
+			return nil, err
+		}
+		return n.enum[i], nil
 	}
 	t := ""
 	if len(n.types) > 0 {
@@ -261,10 +292,16 @@ func (g *generator) generate(n *schemaNode) (any, error) {
 	}
 	switch t {
 	case "null":
-		return nil, nil
+		return nil, g.m.add(sizeNull + 1)
 	case "boolean":
+		if err := g.m.add(sizeBool + 1); err != nil {
+			return nil, err
+		}
 		return g.rng.IntN(2) == 1, nil
 	case "integer":
+		if err := g.m.add(sizeInt + 1); err != nil {
+			return nil, err
+		}
 		lo, hi := int64(0), int64(1000)
 		if n.min != nil {
 			lo = int64(math.Ceil(*n.min))
@@ -293,6 +330,9 @@ func (g *generator) generate(n *schemaNode) (any, error) {
 		}
 		return lo + int64(g.rng.Uint64N(span)), nil
 	case "number":
+		if err := g.m.add(sizeNumber + 1); err != nil {
+			return nil, err
+		}
 		lo, hi := 0.0, 1.0
 		if n.min != nil {
 			lo = *n.min
@@ -312,7 +352,7 @@ func (g *generator) generate(n *schemaNode) (any, error) {
 		}
 		return math.Round(v*1e6) / 1e6, nil
 	case "string":
-		return g.str(n), nil
+		return g.str(n)
 	case "array":
 		count := n.minItems
 		if n.maxItems >= 0 {
@@ -325,10 +365,17 @@ func (g *generator) generate(n *schemaNode) (any, error) {
 		if n.maxItems < 0 && count == 0 {
 			count = 1
 		}
+		if err := g.m.add(2); err != nil {
+			return nil, err
+		}
 		out := make([]any, 0, count)
 		for i := 0; i < count; i++ {
 			if n.items == nil {
-				out = append(out, g.str(&schemaNode{maxLen: -1}))
+				v, err := g.str(&schemaNode{maxLen: -1})
+				if err != nil {
+					return nil, err
+				}
+				out = append(out, v)
 				continue
 			}
 			v, err := g.generate(n.items)
@@ -339,8 +386,14 @@ func (g *generator) generate(n *schemaNode) (any, error) {
 		}
 		return out, nil
 	case "object":
+		if err := g.m.add(2); err != nil {
+			return nil, err
+		}
 		out := map[string]any{}
 		for _, name := range n.propOrder {
+			if err := g.m.add(len(name) + 4); err != nil {
+				return nil, err
+			}
 			v, err := g.generate(n.props[name])
 			if err != nil {
 				return nil, err
@@ -352,7 +405,13 @@ func (g *generator) generate(n *schemaNode) (any, error) {
 	return nil, nil
 }
 
-func (g *generator) str(n *schemaNode) string {
+// str generates one string and counts its bytes BEFORE it is built.
+func (g *generator) str(n *schemaNode) (string, error) {
+	if n.format != "" {
+		if err := g.m.add(48); err != nil { // the longest format (a uri) is under 48 bytes with its quotes and comma
+			return "", err
+		}
+	}
 	switch n.format {
 	case "uuid":
 		b := make([]byte, 16)
@@ -361,25 +420,30 @@ func (g *generator) str(n *schemaNode) string {
 		}
 		b[6] = b[6]&0x0f | 0x40
 		b[8] = b[8]&0x3f | 0x80
-		return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+		return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16]), nil
 	case "date-time":
-		return fmt.Sprintf("2026-%02d-%02dT%02d:%02d:%02dZ", 1+g.rng.IntN(12), 1+g.rng.IntN(28), g.rng.IntN(24), g.rng.IntN(60), g.rng.IntN(60))
+		return fmt.Sprintf("2026-%02d-%02dT%02d:%02d:%02dZ", 1+g.rng.IntN(12), 1+g.rng.IntN(28), g.rng.IntN(24), g.rng.IntN(60), g.rng.IntN(60)), nil
 	case "date":
-		return fmt.Sprintf("2026-%02d-%02d", 1+g.rng.IntN(12), 1+g.rng.IntN(28))
+		return fmt.Sprintf("2026-%02d-%02d", 1+g.rng.IntN(12), 1+g.rng.IntN(28)), nil
 	case "email":
-		return fmt.Sprintf("%s.%s@example.com", words[g.rng.IntN(len(words))], words[g.rng.IntN(len(words))])
+		return fmt.Sprintf("%s.%s@example.com", words[g.rng.IntN(len(words))], words[g.rng.IntN(len(words))]), nil
 	case "uri":
-		return fmt.Sprintf("https://example.com/%s/%d", words[g.rng.IntN(len(words))], g.rng.IntN(10_000))
+		return fmt.Sprintf("https://example.com/%s/%d", words[g.rng.IntN(len(words))], g.rng.IntN(10_000)), nil
 	case "ipv4":
-		return fmt.Sprintf("192.0.2.%d", 1+g.rng.IntN(254))
+		return fmt.Sprintf("192.0.2.%d", 1+g.rng.IntN(254)), nil
 	}
-	var b strings.Builder
 	target := n.minLen
 	if n.maxLen >= 0 && n.maxLen > n.minLen {
 		target += g.rng.IntN(n.maxLen - n.minLen + 1)
 	} else if n.maxLen < 0 {
 		target += 5 + g.rng.IntN(10)
 	}
+	// the words overshoot the target by at most one word; the quotes and the comma are three more bytes
+	if err := g.m.add(target + 8 + 3); err != nil {
+		return "", err
+	}
+	var b strings.Builder
+	b.Grow(target + 8)
 	for b.Len() < target {
 		if b.Len() > 0 {
 			b.WriteByte(' ')
@@ -389,9 +453,9 @@ func (g *generator) str(n *schemaNode) string {
 	s := b.String()
 	if n.maxLen >= 0 && len(s) > n.maxLen {
 		s = strings.TrimRight(s[:n.maxLen], " ")
-		for len(s) < n.minLen {
-			s += "x"
+		if len(s) < n.minLen {
+			s += strings.Repeat("x", n.minLen-len(s))
 		}
 	}
-	return s
+	return s, nil
 }

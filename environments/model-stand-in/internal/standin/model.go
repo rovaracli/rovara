@@ -72,30 +72,69 @@ func (rm *runtimeModel) next() (failed bool, waitMS int) {
 
 func bad(msg string) *replyError { return &replyError{status: 400, msg: msg} }
 
+// errTooLarge is the refusal when a reply would pass 6 MiB (SageMaker's own limit): it is made as the reply is generated, before more is built, so a request or a schema cannot make
+// the process build a reply it would then have to refuse.
+func errTooLarge() *replyError {
+	return &replyError{status: 500, msg: "Rovara model stand-in: the reply would be too large (over 6 MiB)"}
+}
+
+// meter counts the bytes of a reply as it is generated. Every generator asks it before it builds the next piece: past the reply limit the answer is errTooLarge, and the bytes are
+// also reserved in the server's in-flight budget (the same one the request bodies use), so a few large replies at once are refused with 503 instead of taking the container's memory.
+type meter struct {
+	limit    int
+	used     int
+	reserve  func(n int64) bool // the server's budget; nil in unit tests of the generators
+	reserved int64              // what has been taken from the budget, released by the server when the request ends
+}
+
+const meterBlock = 64 << 10
+
+// add counts n more bytes of reply. Budget is taken in blocks, so a reply of many small values does not take the budget's lock for each.
+func (m *meter) add(n int) *replyError {
+	if n < 0 || m.used+n > m.limit {
+		return errTooLarge()
+	}
+	m.used += n
+	for m.reserve != nil && int64(m.used) > m.reserved {
+		if !m.reserve(meterBlock) {
+			return &replyError{status: 503, msg: "Rovara model stand-in: too many large requests at once"}
+		}
+		m.reserved += meterBlock
+	}
+	return nil
+}
+
+// room reports whether n more bytes could still fit (a cheap check before building something of known minimum size).
+func (m *meter) room(n int) bool { return n >= 0 && m.used+n <= m.limit }
+
 // answer is the model's reply to one request body: bytes and a content type, or an error.
-func (rm *runtimeModel) answer(body []byte) ([]byte, *replyError) {
+func (rm *runtimeModel) answer(body []byte, m *meter) ([]byte, *replyError) {
 	var out []byte
 	var err *replyError
 	switch rm.Kind {
 	case KindJSONEcho:
-		out, err = rm.jsonEcho(body)
+		out, err = rm.jsonEcho(body, m)
 	case KindFixed:
 		if rm.Body != nil {
 			out = []byte(*rm.Body)
 		} else {
 			out = rm.JSON
 		}
+		err = m.add(len(out))
 	case KindVector:
-		out, err = rm.vector(body)
+		out, err = rm.vector(body, m)
 	case KindLabel:
-		out, err = rm.label(body)
+		out, err = rm.label(body, m)
 	case KindCSV:
-		out, err = rm.csv(body)
+		out, err = rm.csv(body, m)
 	case KindSchema:
-		g := &generator{rng: rm.rngFor([]byte("schema"), body)}
+		g := &generator{rng: rm.rngFor([]byte("schema"), body), m: m}
 		v, gerr := g.generate(rm.schema)
 		if gerr != nil {
-			return nil, &replyError{status: 500, msg: "Rovara model stand-in: the generated reply would be too large"}
+			if re, ok := gerr.(*replyError); ok {
+				return nil, re
+			}
+			return nil, errTooLarge()
 		}
 		b, merr := json.Marshal(v)
 		if merr != nil {
@@ -112,10 +151,14 @@ func (rm *runtimeModel) answer(body []byte) ([]byte, *replyError) {
 	return out, nil
 }
 
-func (rm *runtimeModel) jsonEcho(body []byte) ([]byte, *replyError) {
+func (rm *runtimeModel) jsonEcho(body []byte, m *meter) ([]byte, *replyError) {
 	in := bytes.TrimSpace(body)
 	if len(in) == 0 || !json.Valid(in) {
 		return nil, bad("Rovara model stand-in: the request body is not JSON")
+	}
+	// The split copy of the body and the reply built from it are both counted.
+	if err := m.add(len(in)); err != nil {
+		return nil, err
 	}
 	// Raw values: only the top level is split, so a body of millions of numbers is not boxed one by one.
 	out := map[string]json.RawMessage{}
@@ -224,33 +267,49 @@ func (rm *runtimeModel) numbers(rng *rand.Rand, n int) []float64 {
 	return out
 }
 
-func (rm *runtimeModel) vector(body []byte) ([]byte, *replyError) {
+func (rm *runtimeModel) vector(body []byte, m *meter) ([]byte, *replyError) {
 	items, list, tooMany := instances(body, rm.InstancesKey, MaxElements/rm.Size)
 	if tooMany {
-		return nil, &replyError{status: 500, msg: "Rovara model stand-in: the reply would be too large"}
+		return nil, errTooLarge()
 	}
-	one := func(item []byte) any {
-		v := rm.numbers(rm.rngFor([]byte("vector"), item), rm.Size)
-		if rm.Scalar {
-			return v[0]
-		}
-		return v
+	var buf bytes.Buffer
+	head := `{` + strconv.Quote(rm.Key) + `:`
+	if err := m.add(len(head) + 2); err != nil {
+		return nil, err
 	}
-	var out any
+	buf.WriteString(head)
 	if list {
-		all := make([]any, len(items))
-		for i, item := range items {
-			all[i] = one(item)
+		buf.WriteByte('[')
+	}
+	for i, item := range items {
+		// at least two bytes for each number: refuse before the numbers of one instance are built
+		if !m.room(rm.Size * 2) {
+			return nil, errTooLarge()
 		}
-		out = all
-	} else {
-		out = one(items[0])
+		v := rm.numbers(rm.rngFor([]byte("vector"), item), rm.Size)
+		var enc []byte
+		var err error
+		if rm.Scalar {
+			enc, err = json.Marshal(v[0])
+		} else {
+			enc, err = json.Marshal(v)
+		}
+		if err != nil {
+			return nil, &replyError{status: 500, msg: "Rovara model stand-in: the reply could not be written"}
+		}
+		if cerr := m.add(len(enc) + 1); cerr != nil {
+			return nil, cerr
+		}
+		if i > 0 {
+			buf.WriteByte(',')
+		}
+		buf.Write(enc)
 	}
-	b, err := json.Marshal(map[string]any{rm.Key: out})
-	if err != nil {
-		return nil, &replyError{status: 500, msg: "Rovara model stand-in: the reply could not be written"}
+	if list {
+		buf.WriteByte(']')
 	}
-	return b, nil
+	buf.WriteByte('}')
+	return buf.Bytes(), nil
 }
 
 // pick is the label chosen for one instance, with every label's probability (the chosen one is the largest).
@@ -277,37 +336,47 @@ func (rm *runtimeModel) pick(item []byte) (string, float64, map[string]float64) 
 	return rm.Labels[idx], rm.round(weights[idx] / sum), probs
 }
 
-func (rm *runtimeModel) label(body []byte) ([]byte, *replyError) {
+func (rm *runtimeModel) label(body []byte, m *meter) ([]byte, *replyError) {
 	items, list, tooMany := instances(body, rm.InstancesKey, MaxElements/(len(rm.Labels)+2))
 	if tooMany {
-		return nil, &replyError{status: 500, msg: "Rovara model stand-in: the reply would be too large"}
+		return nil, errTooLarge()
 	}
-	one := func(item []byte) map[string]any {
+	one := func(item []byte) ([]byte, error) {
 		label, score, probs := rm.pick(item)
 		o := map[string]any{rm.LabelKey: label, rm.ScoreKey: score}
 		if rm.WithProbabilities {
 			o["probabilities"] = probs
 		}
-		return o
+		return json.Marshal(o)
 	}
-	var out any
+	var buf bytes.Buffer
 	if list {
-		all := make([]any, len(items))
-		for i, item := range items {
-			all[i] = one(item)
+		head := `{` + strconv.Quote(rm.Key) + `:[`
+		if err := m.add(len(head) + 2); err != nil {
+			return nil, err
 		}
-		out = map[string]any{rm.Key: all}
-	} else {
-		out = one(items[0])
+		buf.WriteString(head)
 	}
-	b, err := json.Marshal(out)
-	if err != nil {
-		return nil, &replyError{status: 500, msg: "Rovara model stand-in: the reply could not be written"}
+	for i, item := range items {
+		enc, err := one(item)
+		if err != nil {
+			return nil, &replyError{status: 500, msg: "Rovara model stand-in: the reply could not be written"}
+		}
+		if cerr := m.add(len(enc) + 1); cerr != nil {
+			return nil, cerr
+		}
+		if i > 0 {
+			buf.WriteByte(',')
+		}
+		buf.Write(enc)
 	}
-	return b, nil
+	if list {
+		buf.WriteString("]}")
+	}
+	return buf.Bytes(), nil
 }
 
-func (rm *runtimeModel) csv(body []byte) ([]byte, *replyError) {
+func (rm *runtimeModel) csv(body []byte, m *meter) ([]byte, *replyError) {
 	width := rm.Columns
 	if width == 0 {
 		width = 1
@@ -322,7 +391,17 @@ func (rm *runtimeModel) csv(body []byte) ([]byte, *replyError) {
 	if rm.Header != nil {
 		_ = w.Write(rm.Header)
 	}
-	first, rows := true, 0
+	first, rows, counted := true, 0, 0
+	// bytes written so far are counted after each row, so the reply is refused as soon as it passes the cap
+	count := func() *replyError {
+		w.Flush()
+		err := m.add(buf.Len() - counted)
+		counted = buf.Len()
+		return err
+	}
+	if err := count(); err != nil {
+		return nil, err
+	}
 	for {
 		row, err := r.Read()
 		if err == io.EOF {
@@ -337,7 +416,7 @@ func (rm *runtimeModel) csv(body []byte) ([]byte, *replyError) {
 		}
 		first = false
 		if rows++; rows > limit {
-			return nil, &replyError{status: 500, msg: "Rovara model stand-in: the reply would be too large"}
+			return nil, errTooLarge()
 		}
 		key, _ := json.Marshal(row)
 		rng := rm.rngFor([]byte("csv"), key)
@@ -350,6 +429,9 @@ func (rm *runtimeModel) csv(body []byte) ([]byte, *replyError) {
 			}
 		}
 		_ = w.Write(cells)
+		if err := count(); err != nil {
+			return nil, err
+		}
 	}
 	w.Flush()
 	if w.Error() != nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -139,8 +140,9 @@ func writeJSON(w http.ResponseWriter, status int, body string) {
 }
 
 func writeError(w http.ResponseWriter, status int, msg string) {
-	// msg is always one of this package's fixed sentences or the config's own error_message: never request bytes
-	writeJSON(w, status, `{"error":`+strconv.Quote(msg)+`}`)
+	// msg is always one of this package's fixed sentences or the config's own error_message: never request bytes. encoding/json writes valid JSON for any bytes (strconv.Quote does not).
+	b, _ := json.Marshal(map[string]string{"error": msg})
+	writeJSON(w, status, string(b))
 }
 
 func (s *Server) invoke(w http.ResponseWriter, r *http.Request, fixed string) {
@@ -185,22 +187,34 @@ func (s *Server) invoke(w http.ResponseWriter, r *http.Request, fixed string) {
 		finish(http.StatusRequestEntityTooLarge, "Rovara model stand-in: the request is larger than 6 MiB")
 		return
 	}
-	reserve := r.ContentLength
-	if reserve < 0 {
-		reserve = MaxBody
+	// The request body is held in the budget: a declared length is reserved up front (and a request that cannot fit is refused at once); a body with no length is reserved
+	// as it is actually read, so a slow or small chunked upload does not hold 6 MiB, and it has a shorter read deadline.
+	var held int64
+	defer func() { s.release(held) }()
+	var body []byte
+	var err error
+	if r.ContentLength >= 0 {
+		if !s.reserve(r.ContentLength) {
+			finish(http.StatusServiceUnavailable, "Rovara model stand-in: too many large requests at once")
+			return
+		}
+		held = r.ContentLength
+		body, err = io.ReadAll(http.MaxBytesReader(w, r.Body, MaxBody))
+	} else {
+		body, err = s.readUnknownLength(w, r, &held)
 	}
-	if !s.reserve(reserve) {
-		finish(http.StatusServiceUnavailable, "Rovara model stand-in: too many large requests at once")
-		return
-	}
-	defer s.release(reserve)
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxBody))
 	in = len(body)
 	if err != nil {
 		var tooBig *http.MaxBytesError
-		if errors.As(err, &tooBig) {
+		var netErr net.Error
+		switch {
+		case errors.As(err, &tooBig):
 			finish(http.StatusRequestEntityTooLarge, "Rovara model stand-in: the request is larger than 6 MiB")
-		} else {
+		case errors.Is(err, errBudget):
+			finish(http.StatusServiceUnavailable, "Rovara model stand-in: too many large requests at once")
+		case errors.As(err, &netErr) && netErr.Timeout():
+			finish(http.StatusRequestTimeout, "Rovara model stand-in: the request body was too slow")
+		default:
 			finish(http.StatusBadRequest, "Rovara model stand-in: the request could not be read")
 		}
 		return
@@ -234,7 +248,9 @@ func (s *Server) invoke(w http.ResponseWriter, r *http.Request, fixed string) {
 		finish(rm.ErrorStatus, rm.ErrorMessage)
 		return
 	}
-	reply, rerr := rm.answer(body)
+	m := &meter{limit: MaxReply, reserve: s.reserve}
+	defer func() { s.release(m.reserved) }()
+	reply, rerr := rm.answer(body, m)
 	if rerr != nil {
 		finish(rerr.status, rerr.msg)
 		return
@@ -276,6 +292,35 @@ func (s *Server) invoke(w http.ResponseWriter, r *http.Request, fixed string) {
 		}
 		if fl != nil {
 			fl.Flush()
+		}
+	}
+}
+
+// unknownLengthDeadline is how long a body with no declared length may take to arrive (a variable so a test can shorten it).
+var unknownLengthDeadline = 5 * time.Second
+
+var errBudget = errors.New("in-flight budget spent")
+
+// readUnknownLength reads a body that has no Content-Length, up to 6 MiB, taking each piece from the in-flight budget as it arrives (held counts what was taken).
+func (s *Server) readUnknownLength(w http.ResponseWriter, r *http.Request, held *int64) ([]byte, error) {
+	_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(unknownLengthDeadline)) // not supported by every writer (the tests' recorder): then only the server's own deadline applies
+	src := http.MaxBytesReader(w, r.Body, MaxBody)
+	var out []byte
+	buf := make([]byte, 32<<10)
+	for {
+		n, err := src.Read(buf)
+		if n > 0 {
+			if !s.reserve(int64(n)) {
+				return nil, errBudget
+			}
+			*held += int64(n)
+			out = append(out, buf[:n]...)
+		}
+		if err == io.EOF {
+			return out, nil
+		}
+		if err != nil {
+			return out, err
 		}
 	}
 }
