@@ -1,0 +1,8 @@
+# Reviewed allowlist for gitleaks (2026-11-12). Keep it tiny: one exact known-fake value per entry, with a reason.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Known fake test values"
+# Slack's documented example signing secret, used as a fixture in about 10 test and spec files.
+regexes = ['''8f742231b10e8888abcd99yyyzzz85a5''']
