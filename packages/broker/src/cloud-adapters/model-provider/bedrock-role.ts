@@ -86,35 +86,67 @@ export interface CompanyBedrockRoleSource {
 
 const SOURCE_ID = /^[a-z0-9][a-z0-9-]{0,9}$/u;
 
+/** A source that was not used, and why (a fixed sentence: no ARN). The company's other sources still serve. */
+export interface SkippedBedrockSource {
+  sourceId: string;
+  reason: string;
+}
+
+export interface CompanyBedrockProviderSet {
+  providers: ReadonlyMap<string, ModelProviderAdapter>;
+  skipped: readonly SkippedBedrockSource[];
+}
+
 /**
  * The per-company view of company Bedrock roles. `select(companyId, kind)` answers a provider only when that id is one of THAT company's sources; another company's id (or any id built for
- * another company) is undefined. Providers are built per company on first use and kept (so the AssumeRole session cache is per company and source).
+ * another company) is undefined.
+ *
+ * Live data: the company's source list is read on EVERY call, so a deleted or changed source stops being used at once. Only the built provider (and so its AssumeRole session) is kept, keyed
+ * by everything that defines it (company, source id, role ARN, region, default model, prices); a changed source gets a new provider and the old one is dropped. A source that cannot be used
+ * (a bad id, a duplicate id, a bad ARN or region) is skipped with a reason; it never takes the company's other sources down. A duplicate id is skipped in EVERY copy (neither is trusted).
  */
 export function companyBedrockProviders(options: { sts: RoleStsClient; sources: (orgId: OrgId) => Promise<readonly CompanyBedrockRoleSource[]>; now?: () => number }) {
-  const built = new Map<OrgId, Promise<ReadonlyMap<string, ModelProviderAdapter>>>();
-  const forCompany = (orgId: OrgId): Promise<ReadonlyMap<string, ModelProviderAdapter>> => {
-    if (!OrgIdSchema.safeParse(orgId).success) return Promise.reject(new Error("company Bedrock roles are looked up by company id"));
-    let entry = built.get(orgId);
-    if (entry === undefined) {
-      entry = options.sources(orgId).then((sources) => new Map(sources.map((source) => {
-        if (!SOURCE_ID.test(source.sourceId)) throw new Error("a company Bedrock source id is a short plain id");
-        const provider = cloudBedrockRoleProvider({
-          orgId, region: source.region, roleArn: source.roleArn, sts: options.sts, kind: `bedrock-${orgId.slice(4)}-${source.sourceId}`,
-          ...(source.defaultModel === undefined ? {} : { defaultModel: source.defaultModel }), ...(source.prices === undefined ? {} : { prices: source.prices }), ...(options.now === undefined ? {} : { now: options.now }),
-        });
-        return [provider.kind, provider] as const;
-      })));
-      entry.catch(() => built.delete(orgId));
-      built.set(orgId, entry);
+  const kept = new Map<string, ModelProviderAdapter>();
+  const keyOf = (orgId: OrgId, source: CompanyBedrockRoleSource): string =>
+    JSON.stringify([orgId, source.sourceId, source.roleArn, source.region, source.defaultModel ?? null, source.prices ?? null]);
+  const forCompany = async (orgId: OrgId): Promise<CompanyBedrockProviderSet> => {
+    if (!OrgIdSchema.safeParse(orgId).success) throw new Error("company Bedrock roles are looked up by company id");
+    const sources = await options.sources(orgId);
+    const counts = new Map<string, number>();
+    for (const source of sources) counts.set(source.sourceId, (counts.get(source.sourceId) ?? 0) + 1);
+    const providers = new Map<string, ModelProviderAdapter>();
+    const skipped: SkippedBedrockSource[] = [];
+    const live = new Set<string>();
+    for (const source of sources) {
+      const sourceId = String(source.sourceId).slice(0, 40);
+      if (!SOURCE_ID.test(source.sourceId)) { skipped.push({ sourceId, reason: "the source id is not a short plain id" }); continue; }
+      if ((counts.get(source.sourceId) ?? 0) > 1) { skipped.push({ sourceId, reason: "two sources of this company have this id" }); continue; }
+      const key = keyOf(orgId, source);
+      let provider = kept.get(key);
+      if (provider === undefined) {
+        try {
+          provider = cloudBedrockRoleProvider({
+            orgId, region: source.region, roleArn: source.roleArn, sts: options.sts, kind: `bedrock-${orgId.slice(4)}-${source.sourceId}`,
+            ...(source.defaultModel === undefined ? {} : { defaultModel: source.defaultModel }), ...(source.prices === undefined ? {} : { prices: source.prices }), ...(options.now === undefined ? {} : { now: options.now }),
+          });
+        } catch {
+          skipped.push({ sourceId, reason: "the source's role, region, model or prices are not valid" });
+          continue;
+        }
+        kept.set(key, provider);
+      }
+      live.add(key);
+      providers.set(provider.kind, provider);
     }
-    return entry;
+    // Providers of this company's sources that are gone or changed are dropped, so the cache holds only what is live.
+    const prefix = JSON.stringify([orgId]).slice(0, -1);
+    for (const key of kept.keys()) if (key.startsWith(`${prefix},`) && !live.has(key)) kept.delete(key);
+    return { providers, skipped };
   };
   return {
     forCompany,
     async select(orgId: OrgId, kind: string): Promise<ModelProviderAdapter | undefined> {
-      return (await forCompany(orgId)).get(kind);
+      return (await forCompany(orgId)).providers.get(kind);
     },
-    /** Drops a company's built providers (its sources changed). */
-    forget(orgId: OrgId): void { built.delete(orgId); },
   };
 }

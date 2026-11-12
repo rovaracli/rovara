@@ -130,8 +130,8 @@ describe("Cloud Bedrock role provider", () => {
     const { sts, calls } = scriptedSts((input) => ({ AccessKeyId: "AKIDEXAMPLE", SecretAccessKey: "sk", SessionToken: String(input.ExternalId), Expiration: new Date(Date.now() + 900_000) }));
     const sources = { [ORG]: [{ sourceId: "main", region: "us-west-2", roleArn: "arn:aws:iam::111111111111:role/a" }], [ORG_B]: [{ sourceId: "main", region: "us-east-1", roleArn: "arn:aws:iam::222222222222:role/b" }] } as Record<string, { sourceId: string; region: string; roleArn: string }[]>;
     const companies = companyBedrockProviders({ sts, sources: async (orgId) => sources[orgId] ?? [] });
-    const kindsA = [...(await companies.forCompany(ORG)).keys()];
-    const kindsB = [...(await companies.forCompany(ORG_B)).keys()];
+    const kindsA = [...(await companies.forCompany(ORG)).providers.keys()];
+    const kindsB = [...(await companies.forCompany(ORG_B)).providers.keys()];
     expect(kindsA).toEqual(["bedrock-aaaaaaaaaaaaaaaaaaaa-main"]);
     expect(kindsB).toEqual(["bedrock-bbbbbbbbbbbbbbbbbbbb-main"]);
     expect(await companies.select(ORG, kindsB[0]!)).toBeUndefined();
@@ -140,6 +140,48 @@ describe("Cloud Bedrock role provider", () => {
     expect((JSON.parse((await own!.credential!())!.reveal()) as { sessionToken: string }).sessionToken).toBe(bedrockExternalId(ORG));
     expect(calls).toEqual([expect.objectContaining({ RoleArn: "arn:aws:iam::111111111111:role/a", ExternalId: bedrockExternalId(ORG) })]);
     await expect(companies.select("not-a-company", kindsA[0]!)).rejects.toThrow();
+  });
+
+  it("reads the company's sources on every call: a deleted or changed source stops being used at once, an unchanged one keeps its session", async () => {
+    const { sts, calls } = scriptedSts((input) => ({ AccessKeyId: "AKIDEXAMPLE", SecretAccessKey: "sk", SessionToken: String(input.RoleArn), Expiration: new Date(Date.now() + 900_000) }));
+    let list = [{ sourceId: "main", region: "us-west-2", roleArn: "arn:aws:iam::111111111111:role/a" }, { sourceId: "second", region: "us-west-2", roleArn: "arn:aws:iam::111111111111:role/s" }];
+    const companies = companyBedrockProviders({ sts, sources: async () => list });
+    const main = "bedrock-aaaaaaaaaaaaaaaaaaaa-main";
+    const second = "bedrock-aaaaaaaaaaaaaaaaaaaa-second";
+    const first = await companies.select(ORG, main);
+    await first!.credential!();
+    expect(await companies.select(ORG, main)).toBe(first);
+    // The role of "main" changes and "second" is deleted: the next call uses the new role and no longer answers "second".
+    list = [{ sourceId: "main", region: "us-west-2", roleArn: "arn:aws:iam::111111111111:role/changed" }];
+    expect(await companies.select(ORG, second)).toBeUndefined();
+    const changed = await companies.select(ORG, main);
+    expect(changed).not.toBe(first);
+    expect((JSON.parse((await changed!.credential!())!.reveal()) as { sessionToken: string }).sessionToken).toBe("arn:aws:iam::111111111111:role/changed");
+    expect(calls.map((call) => call.RoleArn)).toEqual(["arn:aws:iam::111111111111:role/a", "arn:aws:iam::111111111111:role/changed"]);
+    // All sources gone: nothing is answered.
+    list = [];
+    expect(await companies.select(ORG, main)).toBeUndefined();
+  });
+
+  it("skips a duplicate id (every copy) and a bad source with a reason, and still serves the company's good sources", async () => {
+    const { sts } = scriptedSts(() => ({ AccessKeyId: "AKIDEXAMPLE", SecretAccessKey: "sk", SessionToken: "t", Expiration: new Date(Date.now() + 900_000) }));
+    const companies = companyBedrockProviders({ sts, sources: async () => [
+      { sourceId: "dup", region: "us-west-2", roleArn: "arn:aws:iam::111111111111:role/one" },
+      { sourceId: "dup", region: "us-west-2", roleArn: "arn:aws:iam::111111111111:role/two" },
+      { sourceId: "badrole", region: "us-west-2", roleArn: "arn:aws:iam::1:user/u" },
+      { sourceId: "Bad Id!", region: "us-west-2", roleArn: "arn:aws:iam::111111111111:role/x" },
+      { sourceId: "good", region: "us-west-2", roleArn: "arn:aws:iam::111111111111:role/good" },
+    ] });
+    const set = await companies.forCompany(ORG);
+    expect([...set.providers.keys()]).toEqual(["bedrock-aaaaaaaaaaaaaaaaaaaa-good"]);
+    expect(set.skipped).toEqual([
+      { sourceId: "dup", reason: "two sources of this company have this id" },
+      { sourceId: "dup", reason: "two sources of this company have this id" },
+      { sourceId: "badrole", reason: "the source's role, region, model or prices are not valid" },
+      { sourceId: "Bad Id!", reason: "the source id is not a short plain id" },
+    ]);
+    expect(JSON.stringify(set.skipped)).not.toContain("arn:");
+    expect(await companies.select(ORG, "bedrock-aaaaaaaaaaaaaaaaaaaa-dup")).toBeUndefined();
   });
 
   it("refuses the id amazon-bedrock, a bad ARN, region or company", () => {
@@ -217,7 +259,7 @@ describe("Cloud OpenRouter provider", () => {
   });
 });
 
-describe("install model keys stay in the broker and the proxy", () => {
+describe("the model key store is broker and proxy code", () => {
   function files(dir: string): string[] {
     return readdirSync(dir).flatMap((name) => {
       const path = join(dir, name);
@@ -225,10 +267,11 @@ describe("install model keys stay in the broker and the proxy", () => {
     });
   }
 
-  it("no worker file imports the model key store or reads the install key secret settings", () => {
+  // Narrow on purpose: older direct-key paths (the worker's e2e model check among them) still read install key secret ARNs; they are A3-OLD-DIRECT-KEY-PATHS, not this store.
+  it("is never imported by worker code", () => {
     const offenders = files("packages/worker/src").filter((path) => {
       const text = readFileSync(path, "utf8");
-      return text.includes("cloud-adapters") || text.includes("installModelKeyArns") || /AGENTX_(OPENROUTER|ANTHROPIC|OPENAI)_SECRET_ARN/u.test(text);
+      return text.includes("cloud-adapters") || text.includes("createCloudModelKeyStore") || text.includes("installModelKeyArns");
     });
     expect(offenders).toEqual([]);
   });
