@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+// The chain cases drive /v1/app/chains, which answers only while WEB_FEATURES names `chains` (chains/automations-gate.ts).
+import "../support/automations-on.js";
 import { expect, it } from "vitest";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { agentKey, chainKey } from "@rovara-code/contracts";

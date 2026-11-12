@@ -153,6 +153,27 @@ describe("resolveOrgOnSignIn", () => {
     expect(logs).toEqual([{ event: "signin.email_pointer_conflict", developerId: dev("c"), refused: true }]);
   });
 
+  it("rule 3: a method removed on purpose (separatedFrom) is not refused: it owns a new company of its own, and the pointer and the first company stay as they were", async () => {
+    const { state, orgs } = setup();
+    const first = await orgs.createOrgWithOwner({ name: "A", developerId: dev("a"), email: "maya@example.com" });
+    const logs: Array<Record<string, unknown>> = [];
+    const result = await resolveOrgOnSignIn({ orgs, log: (entry) => logs.push(entry) }, { ...cloudInput(dev("c"), { email: "maya@example.com" }), separatedFrom: dev("a") });
+    expect(logs).toEqual([{ event: "signin.email_pointer_conflict", developerId: dev("c"), refused: false, separated: true }]);
+    expect(result.role).toBe("owner");
+    expect(result.orgId).not.toBe(first);
+    expect(state.get(orgEmailKey("maya@example.com"))).toMatchObject({ developerId: dev("a"), orgId: first });
+    expect((await orgs.listMembers(first)).map((member) => member.developerId)).toEqual([dev("a")]);
+    expect((await orgs.listMembers(result.orgId)).map((member) => member.developerId)).toEqual([dev("c")]);
+  });
+
+  it("rule 3: separatedFrom does not lift the invitation-only rule", async () => {
+    const { orgs } = setup();
+    await orgs.createOrgWithOwner({ name: "A", developerId: dev("a"), email: "maya@example.com" });
+    await expect(resolveOrgOnSignIn({ orgs, newOrgsByInvitationOnly: true }, { ...cloudInput(dev("c"), { email: "maya@example.com" }), separatedFrom: dev("a") }))
+      .rejects.toMatchObject({ code: "CONFIG_INVALID" });
+    expect(await orgs.orgForDeveloper(dev("c"))).toBeUndefined();
+  });
+
   it("rule 3: two concurrent first sign-ins with the same email make one company; the loser is refused and holds no company", async () => {
     const { state, orgs } = setup();
     const logs: Array<Record<string, unknown>> = [];

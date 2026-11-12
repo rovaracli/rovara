@@ -226,11 +226,11 @@ describe("resolveSignInDeveloper", () => {
     await orgs.createOrgWithOwner({ name: "Priya's team", developerId: cloudId, email: "priya@acme.dev" });
     db.set({ ...signInIdentityKey(githubId), entityType: "IDENTITY_LINK", developerId: cloudId, provider: "github", issuer: GITHUB_ISSUER, subject: "4711", linkedAt: "2026-09-01T00:00:00.000Z", lastSignInAt: "2026-09-01T00:00:00.000Z", unlinkedFrom: cloudId, unlinkedAt: "2026-09-02T00:00:00.000Z" });
     expect(await store.developerForIdentity(githubId)).toBeUndefined();
-    expect(await resolveSignInDeveloper({ store, orgs }, { method: "github", identity: githubIdentity })).toEqual({ developerId: githubId, identityKey: githubId, link: "new-self" });
+    expect(await resolveSignInDeveloper({ store, orgs }, { method: "github", identity: githubIdentity })).toEqual({ developerId: githubId, identityKey: githubId, link: "new-self", separatedFrom: cloudId });
     expect(db.get(signInIdentityKey(githubId))).toMatchObject({ developerId: githubId, unlinkedFrom: cloudId, unlinkedAt: "2026-09-02T00:00:00.000Z" });
     expect(await store.developerForIdentity(githubId)).toBe(githubId);
-    // A later sign-in is an ordinary existing link.
-    expect((await resolveSignInDeveloper({ store, orgs }, { method: "github", identity: githubIdentity })).link).toBe("existing");
+    // A later sign-in is an ordinary existing link, still separated from the developer it left (so starting its own company is not refused as a race).
+    expect(await resolveSignInDeveloper({ store, orgs }, { method: "github", identity: githubIdentity })).toEqual({ developerId: githubId, identityKey: githubId, link: "existing", separatedFrom: cloudId });
   });
 });
 

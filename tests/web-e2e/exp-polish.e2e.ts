@@ -115,6 +115,8 @@ for (const target of [
    if (stop === undefined) continue;
    stops++;if (stop.under) hidden.push(stop.name);
   }
-  expect(stops, "the walk found controls in the page").toBeGreaterThan(10);expect(hidden).toEqual([]);
+  // Chromium and WebKit wrap focus from the end of the page back to its start, so the walk passes the page several times; Firefox leaves the page after its
+  // last control and Tab never brings focus back, so a short page (a settings page has six stops) is walked once. Five stops still prove the walk ran.
+  expect(stops, "the walk found controls in the page").toBeGreaterThanOrEqual(5);expect(hidden).toEqual([]);
  });
 }

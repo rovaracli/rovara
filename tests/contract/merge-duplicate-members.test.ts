@@ -296,7 +296,7 @@ describe("rule 1b of resolveSignInDeveloper", () => {
 
     // Its next sign-in is its own developer's, never merged back, and the record is a valid survivor/duplicate again.
     w.tick(1000);
-    expect(await resolveSignInDeveloper(w.deps, { method: "github", identity: githubIdentity })).toEqual({ developerId: D2, identityKey: D2, link: "new-self" });
+    expect(await resolveSignInDeveloper(w.deps, { method: "github", identity: githubIdentity })).toEqual({ developerId: D2, identityKey: D2, link: "new-self", separatedFrom: D1 });
     expect(await w.store.identitiesOf(D1)).toHaveLength(1);
     expect(await w.store.getDeveloper(D2)).not.toHaveProperty("mergedInto");
   });
