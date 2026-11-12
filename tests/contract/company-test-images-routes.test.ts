@@ -7,7 +7,7 @@ import { TaskDependencyPlanSchema, companyImageRepositoryName, type CompanyImage
 import { taskDependencyPlansOf } from "../../packages/broker/src/test-env/dependency-plan.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { MAYA, OMAR, type Developer } from "../support/developer-task-broker.js";
-import { pinnedCatalog, verifiedCatalog, sha } from "../support/catalog-pinning.js";
+import { pinnedCatalog, pinnedCatalogWithRunner, verifiedCatalog, sha } from "../support/catalog-pinning.js";
 import { draftBody, setupWizardBench, type Bench } from "../support/setup-wizard-testenv.js";
 import { TEST_ORG } from "../support/orgs.js";
 
@@ -22,11 +22,11 @@ function registry() {
   const asked: Array<{ registry: string; extra: readonly string[] | undefined }> = [];
   return { digests, asked, resolve: async (image: { registry: string; repository: string; tag: string }, extra?: readonly string[]) => { asked.push({ registry: image.registry, extra }); return digests.get(`${image.registry}/${image.repository}:${image.tag}`); } };
 }
-async function bench(options: { maya?: "admin" | "member" } = {}) {
+async function bench(options: { maya?: "admin" | "member"; catalog?: typeof catalog } = {}) {
   const audit = capturingAuditDeps();
   const lookup = registry();
   const jobs: CompanyImageMirrorJob[] = [];
-  const t = await setupWizardBench({ audit, brokerExtra: { serviceCatalog: async () => catalog, companyImageResolver: lookup.resolve, companyImageMirrorStart: async (job: CompanyImageMirrorJob) => { jobs.push(job); } } });
+  const t = await setupWizardBench({ audit, brokerExtra: { serviceCatalog: async () => options.catalog ?? catalog, companyImageResolver: lookup.resolve, companyImageMirrorStart: async (job: CompanyImageMirrorJob) => { jobs.push(job); } } });
   if (options.maya !== undefined) await t.person(MAYA, options.maya);
   return { t, audit, lookup, jobs };
 }
@@ -45,6 +45,16 @@ async function approvePostgres(t: Bench, image = "postgres:18"): Promise<Row> {
   expect(done.status, JSON.stringify(done.body)).toBe(200);
   return (await list(t)).images.find((row) => row.imageId === waiting.imageId)!;
 }
+
+describe("the function runner's images (slice 4) are never a company image kind", () => {
+  it("lists the services' families as the kinds a company image can be, and none of the runner's (nor one added later: the `lambda-` family is the runner's)", async () => {
+    on();
+    const { t } = await bench({ catalog: verifiedCatalog(pinnedCatalogWithRunner([{ id: "lambda-provided@al2023", family: "lambda-provided", repository: "svc/lambda-provided" }])) });
+    const { kinds } = await list(t);
+    expect(kinds).toEqual(expect.arrayContaining(["postgres", "mysql", "redis"]));
+    for (const runner of ["lambda-python", "lambda-nodejs", "function-agent", "lambda-provided"]) expect(kinds, runner).not.toContain(runner);
+  });
+});
 
 describe("behind tx and pj", () => {
   it("every path is not found unless both switches are exactly 1, and nothing is stored", async () => {
