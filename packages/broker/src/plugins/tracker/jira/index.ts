@@ -101,8 +101,9 @@ export function cloudJiraTracker(options: CloudJiraTrackerOptions): Tracker {
   };
 
   const read = async (orgId: OrgId, site: string, path: string): Promise<{ status: number; body: unknown }> => {
-    // Any connection of the site may read (the writes check `read_write` themselves); a service connection first, then by id, so the choice is the same every time.
-    const chosen = (await jiraConnections(orgId)).filter((record) => jiraSiteOf(record.siteUrl) === site)
+    // A connection made for automation reads: one of the site, with read access (read or read and write), that is not a person's own (a `personal` connection is that person's key and
+    // speaks for them, so an automated read never borrows it). A service connection first, then by id, so the choice is the same every time.
+    const chosen = (await jiraConnections(orgId)).filter((record) => jiraSiteOf(record.siteUrl) === site && record.identity !== "personal" && (record.access === "read" || record.access === "read_write"))
       .sort((left, right) => Number(right.identity === "service") - Number(left.identity === "service") || left.connectionId.localeCompare(right.connectionId))[0];
     if (chosen === undefined) throw agentXError("CONFIG_INVALID", JIRA_NO_SITE_MESSAGE);
     const secret = await readConnectionSecret(options.connections, orgId, chosen).catch(() => undefined);

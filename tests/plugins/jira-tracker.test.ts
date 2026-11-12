@@ -27,6 +27,21 @@ describe("the Cloud Jira tracker", () => {
     expect(site.requests.length).toBe(before);
   });
 
+  it("reads only through a connection made for automation: a person's own connection is never borrowed, even one that may write", async () => {
+    const site = new InMemoryJiraSite();
+    site.issues.set("PAY-6", { key: "PAY-6", summary: "s", description: "d", status: "open", labels: [], comments: [] });
+    const personalOnly = cloudJiraTracker({ connections: await jiraConnections("read_write", "personal"), fetch: site.fetch });
+    await expect(personalOnly.readItem(ref("PAY-6"), SCOPE)).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+    expect(site.requests).toEqual([]);
+    // A personal connection beside a service one with read access only: the read goes through the service connection's key.
+    const connections = await jiraConnections("read_write", "personal");
+    await new OrgConnectionStore(connections).put({ orgId: ORG, by: "dev-admin", connection: { connectionId: "con_jira0000000000000003", type: "jira", label: "Jira bot", access: "read", siteUrl: JIRA_SITE, identity: "service" }, secret: { email: "bot@acme.test", apiToken: ["bot", "fake"].join("-") } });
+    const authorizations: string[] = [];
+    const watched = (async (input: string | URL | Request, init?: RequestInit) => { authorizations.push(new Headers(init?.headers).get("authorization") ?? ""); return site.fetch(input, init); }) as typeof fetch;
+    expect(await cloudJiraTracker({ connections, fetch: watched }).readItem(ref("PAY-6"), SCOPE)).toMatchObject({ ref: { id: "PAY-6" } });
+    expect(authorizations).toEqual([`Basic ${Buffer.from(`bot@acme.test:${["bot", "fake"].join("-")}`).toString("base64")}`]);
+  });
+
   it("moves an item by the project's own status name, in any case, and says when there is no such status", async () => {
     const world = await jiraWorld();
     world.addItem("PAY-2", { status: "open" });

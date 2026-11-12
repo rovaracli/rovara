@@ -67,13 +67,13 @@ export class InMemoryJiraSite {
 const rec = (value: unknown): Record<string, unknown> => (value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {});
 
 /** The company's connection store over in-memory DynamoDB and secrets, holding one Jira connection to the site. */
-export async function jiraConnections(access: "read" | "read_write" = "read_write"): Promise<OrgConnectionDeps> {
+export async function jiraConnections(access: "read" | "read_write" = "read_write", identity: "service" | "personal" = "service"): Promise<OrgConnectionDeps> {
   const fake = new FakeOrgSecrets({ env: "staging", now: () => NOW });
   const secrets = new OrgSecrets({ env: "staging", roleArn: FAKE_CONNECTOR_ROLE_ARN, sts: fake.sts, secretsFor: fake.secretsFor, now: () => NOW });
   const deps: OrgConnectionDeps = { documentClient: new FakeDynamoDb(), tableName: "T", env: "staging", secrets, now: () => NOW };
   await new OrgConnectionStore(deps).put({
     orgId: ORG, by: "dev-admin",
-    connection: { connectionId: "con_jira0000000000000001", type: "jira", label: "Jira", access, siteUrl: JIRA_SITE },
+    connection: { connectionId: "con_jira0000000000000001", type: "jira", label: "Jira", access, siteUrl: JIRA_SITE, identity },
     // A token made at run time: never a real-looking key in a fixture.
     secret: { email: "rovara@acme.test", apiToken: ["not", "a", "real", "token"].join("-") },
   });

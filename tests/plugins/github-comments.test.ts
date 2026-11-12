@@ -34,6 +34,9 @@ describe("GitHub App code host: conversation comments", () => {
   it("posts only Rovara's fixed text, and says gone for a change request that is not there", async () => {
     const { world, ref } = await openWorld();
     expect(await world.host.postComment!(ref, "Started the retry.", world.scope)).toBe("posted");
+    // The token it asks for: write on pull requests (and the metadata every token carries), never on the repository's issues.
+    expect(world.api.tokens.at(-1)!.permissions).toEqual({ pull_requests: "write", metadata: "read" });
+    expect(world.api.tokens.at(-1)!.repositories).toEqual(["app"]);
     expect(world.model.getChangeRequest(ref.id).comments.map((comment) => comment.body)).toContain("Started the retry.");
     for (const text of ["", "x".repeat(201), "thanks @sam", "two\nlines"]) await expect(world.host.postComment!(ref, text, world.scope)).rejects.toMatchObject({ code: "CONFIG_INVALID" });
     expect(await world.host.postComment!({ ...ref, id: "999" }, "Started.", world.scope)).toBe("gone");

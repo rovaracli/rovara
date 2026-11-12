@@ -1061,7 +1061,9 @@ export class GitHubAppCredentialProvider {
     if (!Number.isSafeInteger(number) || number < 1 || text.length === 0 || text.length > 200 || /[\p{Cc}@]/u.test(text)) throw agentXError("CONFIG_INVALID", "the comment is not Rovara's fixed text");
     const provider = this.trackingProvider(budget);
     const repository = await provider.installed(parseGitHubRepository(repositoryUrl), scope);
-    const token = await provider.createInstallationToken(repository, { issues: "write", pull_requests: "write", metadata: "read" }, scope);
+    // `pull_requests: write` alone: GitHub's endpoint takes either `issues: write` or `pull_requests: write` ("Additional permissions" in its GitHub App permissions table), and a pull request's
+    // conversation needs no right over the repository's issues.
+    const token = await provider.createInstallationToken(repository, { pull_requests: "write", metadata: "read" }, scope);
     const answered = await provider.trackingJson(`https://api.github.com/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/issues/${String(number)}/comments`, token, { method: "POST", body: { body: text } });
     if (answered.status === 404 || answered.status === 410) return "gone";
     if (answered.status !== 201 && answered.status !== 200) throw agentXError("RUNTIME_UNAVAILABLE", `GitHub comment failed with HTTP ${answered.status}`);
