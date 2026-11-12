@@ -21,6 +21,8 @@ import { TASK_PAGE, TASK_PEOPLE_CONFIRMATION } from "../task-web.js";
 import { isBrowserPagePath, legacyHostRedirect } from "../../developer/legacy-host-redirect.js";
 import { withDecideIsolation } from "../../developer/confirm-page.js";
 import { authenticateWebRequest, webRouteAllowed } from "../web-auth.js";
+import { companySwitcherEnabled } from "../../org/companies/switch.js";
+import { withCompanyEcho } from "../../org/companies/echo.js";
 import { appCsrfTokenFor } from "../../developer/app-csrf.js";
 import { createHash } from "node:crypto";
 import { PutCommand } from "@aws-sdk/lib-dynamodb";
@@ -946,7 +948,8 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           url.pathname = "/v1/app/" + url.pathname.slice("/v1/web/".length);
         }
         const answer = await routeDeveloperRequest(routeDependencies, request, url, authenticated);
-        return developerReply(answer, request.requestId);
+        // Company memberships (switch `cw`): every browser answer names the company it was answered in (the request's), so a page never shows one company's answer under another's name.
+        return authenticated !== undefined && companySwitcherEnabled() ? withCompanyEcho(developerReply(answer, request.requestId), authenticated.caller.orgId) : developerReply(answer, request.requestId);
       }
 
       // Enterprise foundations E3: everything from here is the admin pool's; Rovara staff routes are off in the Enterprise edition (a closed list of operator routes is served).

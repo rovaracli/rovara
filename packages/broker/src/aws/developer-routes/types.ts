@@ -280,7 +280,7 @@ export interface DeveloperRouteDependencies {
 /** Who is asking about a project, and in which org: grants and revisions are read in that org only. */
 export type ProjectAccessCaller = ProjectAccessSubject & { orgId: OrgId; orgRole: OrgRole };
 
-export interface DeveloperCaller { developerId: string; sessionId: string; amr: DeveloperSignInMethod; name: string; slackUserId?: string; email?: string; orgId: OrgId; orgRole: OrgRole; /** True only for a caller the web boundary authenticated with a live browser session cookie and its CSRF token (`authenticateWebRequest`); never for a token. */ browserSession?: true;
+export interface DeveloperCaller { developerId: string; sessionId: string; amr: DeveloperSignInMethod; name: string; slackUserId?: string; email?: string; orgId: OrgId; orgRole: OrgRole; /** True only for a caller the web boundary authenticated with a live browser session cookie and its CSRF token (`authenticateWebRequest`); never for a token. */ browserSession?: true; /** Company memberships (switch `cw`): the session had chosen a company that is no longer a live membership, so this request is in the primary instead (org/companies/memberships.ts). */ activeCompanyLost?: true;
   /** Release 0.4.16: true once the person chose their own display name (`PUT /v1/app/me/name`). Set by the session read; absent on a caller built another way. */ nameChosen?: boolean;
   /** UX5b: set only for a caller a script token stands for (`script-tokens/authenticate.ts`), which reached a route on the token's closed list. Never with `browserSession`. */
   scriptToken?: { tokenId: string; name: string; permissions: readonly ("read" | "start" | "lessons")[]; projects: readonly string[] } }

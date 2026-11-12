@@ -13,6 +13,9 @@ import { getInstallInfo } from "./developer-routes/install.js";
 import { isSsoRoute, routeSsoRequest } from "./developer-routes/sso.js";
 import { isCompanyDomainsRoute, routeCompanyDomains } from "./developer-routes/company-domains.js";
 import { UI_FLAGS_BROWSER_MESSAGE, UI_FLAGS_PATH, routeUiFlags } from "./developer-routes/ui-flags.js";
+import { COMPANIES_PATH, routeCompanies } from "./developer-routes/companies.js";
+import { companySwitcherEnabled } from "../org/companies/switch.js";
+import { COMPANY_SWITCH_MACHINE_MESSAGE } from "@agentx/cloud-contracts";
 import { specOwnerChoice } from "./developer-tasks/spec-wiring.js";
 import { taskPagePathFor } from "./developer-tasks/task-page.js";
 import { decisionCardsEnabled } from "../proof/switch.js";
@@ -356,6 +359,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (url.pathname === LEARNING_SETTINGS_PATH && authenticated?.caller.browserSession !== true) {
     throw agentXError("FORBIDDEN", "Use a live browser session for learning changes.");
   }
+  // Company memberships (switch `cw`): switching the session's company is browser-only, refused before any read (off: the path is not found).
+  if (url.pathname === COMPANIES_PATH && request.method === "POST" && companySwitcherEnabled() && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", COMPANY_SWITCH_MACHINE_MESSAGE);
   // Runtime UI flags (lane U5): browser-only for both methods, refused before any read.
   if (url.pathname === UI_FLAGS_PATH && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", UI_FLAGS_BROWSER_MESSAGE);
   // Review groups (owner decision 9): changing a project's groups, and claiming, releasing or reassigning a review, are browser-only; refused before any read.
@@ -526,6 +531,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (isCompanyDomainsRoute(url.pathname)) return routeCompanyDomains(deps, caller, request, url.pathname);
   // Runtime UI flags (lane U5): the owner's and admin's company screens.
   if (url.pathname === UI_FLAGS_PATH) return routeUiFlags(deps, caller, request, url.pathname);
+  // Company memberships (switch `cw`): the caller's own companies and the browser session's switch.
+  if (url.pathname === COMPANIES_PATH) return routeCompanies(deps, caller, request, url.pathname);
   if (request.method === "GET" && url.pathname === "/v1/app/me") {
     const me = await getAppMe(deps, caller);
     return authenticated === undefined ? me : { ...me, csrf: authenticated.csrf };

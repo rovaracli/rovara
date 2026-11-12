@@ -233,6 +233,11 @@ export const BROKER_SETTINGS = {
   insights: { code: "in", variable: "INSIGHTS_ENABLED" },
   // Billing (lane srv/trial-reads, decision 91, switch `bl`): the owner and admin billing routes (`/v1/app/org/billing*`). The broker reads BILLING_ENABLED and it is on only when it is exactly "1"; off (absent, empty, anything else) every billing path answers not found. The infrastructure half (a stack parameter BillingEnabled, "0" by default, packed into AGENTX_SETTINGS; see the feature-switch recipe in docs/architecture/code-map.md) is NOT wired yet, so a deployed install reads it as off. Do not turn this on before the billing provider exists: the routes would answer `available: false`.
   billing: { code: "bl", variable: "BILLING_ENABLED" },
+  // Company memberships (lane srv/company-memberships, decision 91, switch `cw`): `/v1/app/companies` (the caller's memberships and the browser session's switch), the session's active company and the
+  // `x-rovara-company` header check. The broker reads COMPANY_SWITCHER_ENABLED and it is on only when it is exactly "1"; off (absent, empty, anything else) the route answers not found, a session's chosen company is ignored
+  // (everyone is in the company their sign-in pointer names, exactly as before) and the header is neither read nor echoed. The infrastructure half (a stack parameter, "0" by default, packed into AGENTX_SETTINGS; see the
+  // feature-switch recipe in docs/architecture/code-map.md) is NOT wired yet, so a deployed install reads it as off.
+  companySwitcher: { code: "cw", variable: "COMPANY_SWITCHER_ENABLED" },
 } as const satisfies Record<string, BrokerSettingSpec>;
 
 export type BrokerSettingKey = keyof typeof BROKER_SETTINGS;

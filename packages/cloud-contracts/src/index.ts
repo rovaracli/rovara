@@ -107,6 +107,7 @@ export * from "./approval-place.js";
 export * from "./app-approval-window.js";
 export * from "./decision-dismiss.js";
 export * from "./app-billing.js";
+export * from "./app-companies.js";
 export * from "./app-insights.js";
 export * from "./app-agent-publish.js";
 export * from "./company-image-mirror.js";
