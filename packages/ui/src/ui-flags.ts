@@ -28,6 +28,9 @@ export interface UiFlagsStore {
   /** True from `holdUiFlagsUntilNav` until the first navigation answer is applied (even one with no `uiFlags`). */
   waiting: () => boolean;
   hold: () => void;
+  /** True once `App` has told the store how this page starts (`startUiFlags`); nothing renders before that. */
+  started: () => boolean;
+  start: (wait: boolean) => void;
   subscribe: (listener: () => void) => () => void;
 }
 
@@ -43,13 +46,15 @@ function answerOf(raw: unknown): Answer | undefined {
 }
 
 function createStore(): UiFlagsStore {
-  let answer: Answer | undefined, waiting = false;
+  let answer: Answer | undefined, waiting = false, started = false;
   const listeners = new Set<() => void>();
   const tell = () => { for (const listener of [...listeners]) listener(); };
   return {
     get: () => answer,
     waiting: () => waiting,
     hold() { if (waiting || answer !== undefined) return;waiting = true;tell(); },
+    started: () => started,
+    start(wait) { if (started) return;started = true;if (wait && answer === undefined) waiting = true;tell(); },
     set(next) {
       const parsed = answerOf(next), wasWaiting = waiting;
       waiting = false;
@@ -108,7 +113,18 @@ export function useUiFlagServerState(name: UiFlagName): UiFlagState | undefined 
 }
 const noSubscribe = (): (() => void) => () => undefined;
 
-/** `App` calls it before its first render on a page that reads the navigation answer: until `applyNavUiFlags` runs (or for good, if the read fails) every flag is off, the look included. */
+/** `App` calls it from an effect, before it renders anything below it: `wait` is true on a page that reads the navigation answer, and then every flag is off (as `holdUiFlagsUntilNav`) until the answer comes; false on a page with no navigation read, which keeps the device keys. */
+export function startUiFlags(host: object, wait: boolean): void {
+  uiFlagsStoreOf(host).start(wait);
+}
+
+/** Whether `startUiFlags` has run for this host. `App` renders nothing until it has, so no screen reads a flag before the hold is in place. */
+export function useUiFlagsStarted(host: object): boolean {
+  const store = uiFlagsStoreOf(host);
+  return useSyncExternalStore(store.subscribe, store.started, () => false);
+}
+
+/** The hold on its own: until `applyNavUiFlags` runs (or for good, if the navigation read fails) every flag is off, the look included. `App` uses `startUiFlags`, which also decides whether to hold. */
 export function holdUiFlagsUntilNav(host: object): void {
   uiFlagsStoreOf(host).hold();
 }

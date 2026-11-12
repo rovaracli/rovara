@@ -61,18 +61,18 @@ function Flags({ orgId, developerId, company }: { orgId: string; developerId: st
  const togglePreviews = () => change("previews", current => ({ previews: !current.previews }));
  const rows = read.data?.flags.filter(row => row.wired && KNOWN.has(row.name)) ?? [];
 
- return <section aria-busy={read.isFetching}>
+ return <section aria-busy={read.isFetching || busy !== undefined}>
   <PageHeader focusOnMount title="New screens" description="Turn the new screens on for everyone in your company. Nothing is installed: people see the change when they next open or reload the app." /><SettingsNote area="new-screens" />
   {error !== undefined && <p role="alert" className="rv-newscreens-error"><VisibleText text={error.message} />{error.reauth && <> <Button onClick={() => { host.signIn(host.currentPath()); }}>Sign in again</Button></>}{error.stale && <> <Button onClick={() => { setError(undefined);void read.refetch(); }}>Reload</Button></>}</p>}
-  {/* The one place "Saved." is announced: a live region that is always in the page, so a screen reader hears the text when it appears. */}
-  <p role="status">{done && error === undefined ? `Saved. ${TAKES_EFFECT}` : ""}</p>
+  {/* The one place "Saving…" and "Saved." are announced: a live region that is always in the page, so a screen reader hears the text when it appears. */}
+  <p role="status">{busy !== undefined ? "Saving…" : done && error === undefined ? `Saved. ${TAKES_EFFECT}` : ""}</p>
   {read.isPending ? <Skeleton label="Loading new screens" /> : read.isError ? <div><p role="alert">Couldn't load the new screens settings.</p><Button onClick={() => { void read.refetch(); }}>Try again</Button></div> : <>
    <div className="rv-newscreens-previews">
     <h2>Previews</h2>
     <p>{read.data.previews ? "Previews are allowed. When a screen is off for the company, anyone can try it in their own browser first." : "Previews are not allowed. A screen that is off for the company stays off for everyone."}</p>
     <p className="rv-muted">Preview lets each person try a screen in their own browser first. It is not on for the company, and it changes nothing for anyone else.</p>
-    {/* A stable name with aria-pressed (not a name that flips). aria-disabled, not disabled, while a change is saving: the button keeps keyboard focus, and the click is ignored (`change` also refuses a second send). */}
-    <Button aria-pressed={read.data.previews} aria-disabled={busy !== undefined || undefined} onClick={() => { if (busy === undefined) void togglePreviews(); }}>Allow previews</Button>
+    {/* A stable name with aria-pressed (not a name that flips). aria-disabled, not disabled, while a change is saving (the button keeps keyboard focus, shows aria-busy and \"Saving…\" is announced in the status line), and the click is ignored (`change` also refuses a second send). */}
+    <Button aria-pressed={read.data.previews} aria-busy={busy === "previews" || undefined} aria-disabled={busy !== undefined || undefined} onClick={() => { if (busy === undefined) void togglePreviews(); }}>Allow previews</Button>
    </div>
    {read.data.changedAt !== undefined && <p className="rv-muted">Last changed {when(read.data.changedAt)}.</p>}
    {rows.length === 0 ? <p>No new screens are available to switch on yet.</p> : <ul className="rv-newscreens-list" aria-label="New screens">
@@ -80,7 +80,7 @@ function Flags({ orgId, developerId, company }: { orgId: string; developerId: st
      <div className="rv-newscreens-head"><h2><VisibleText text={row.label} /></h2><strong className="rv-newscreens-state" data-state={row.state === "unknown" ? "off" : row.state}>{STATE_WORDS[row.state === "unknown" ? "off" : row.state]}</strong></div>
      <p><VisibleText text={row.summary} /></p>
      <p className="rv-muted"><VisibleText text={describe(row, company)} /></p>
-     {!row.forcedOff && <Button variant={row.enabled ? "secondary" : "primary"} aria-disabled={busy !== undefined || undefined} onClick={() => { if (busy === undefined) void toggle(row); }}>{row.enabled ? "Turn off" : "Turn on"} <VisibleText text={row.label} /> for everyone</Button>}
+     {!row.forcedOff && <Button variant={row.enabled ? "secondary" : "primary"} aria-busy={busy === row.name || undefined} aria-disabled={busy !== undefined || undefined} onClick={() => { if (busy === undefined) void toggle(row); }}>{row.enabled ? "Turn off" : "Turn on"} <VisibleText text={row.label} /> for everyone</Button>}
     </li>)}
    </ul>}
   </>}

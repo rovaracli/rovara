@@ -194,6 +194,29 @@ it("while a change is saving the control keeps focus, says it is disabled, and a
  f.close();
 });
 
+it("while a change is saving the page shows Saving…: the clicked control is aria-busy, the page is busy, and all of it clears when the answer comes", async () => {
+ let release: (response: ApiResponse) => void = () => undefined;
+ const f = mount({ put: () => new Promise<ApiResponse>(resolve => { release = resolve; }) });
+ const button = await screen.findByRole("button", { name: "Turn on New Home for everyone" });
+ const previews = screen.getByRole("button", { name: "Allow previews" });
+ const page = button.closest("section")!;
+ expect(page.getAttribute("aria-busy")).toBe("false");expect(button.hasAttribute("aria-busy")).toBe(false);expect(screen.getByRole("status").textContent).toBe("");
+ fireEvent.click(button);
+ await waitFor(() => { expect(screen.getByRole("status").textContent).toBe("Saving…"); });
+ expect(button.getAttribute("aria-busy")).toBe("true");expect(previews.hasAttribute("aria-busy")).toBe(false);expect(page.getAttribute("aria-busy")).toBe("true");
+ expect((button as HTMLButtonElement).disabled).toBe(false);
+ release({ status: 200, body: answer({ revision: 4 }) });
+ await screen.findByText(/Saved\. Takes effect/);
+ expect(screen.getByRole("status").textContent).not.toContain("Saving");expect(button.hasAttribute("aria-busy")).toBe(false);expect(page.getAttribute("aria-busy")).toBe("false");
+ // The previews switch shows the same state on its own button.
+ fireEvent.click(previews);
+ await waitFor(() => { expect(previews.getAttribute("aria-busy")).toBe("true"); });
+ expect(button.hasAttribute("aria-busy")).toBe(false);
+ release({ status: 200, body: answer({ revision: 5, previews: true }) });
+ await waitFor(() => { expect(previews.hasAttribute("aria-busy")).toBe(false); });
+ f.close();
+});
+
 it("a member is refused the page: the admin layout's refusal shows, the list is never read and no PUT is possible", async () => {
  const f = mount({ role: "member" });
  await screen.findByRole("heading", { name: "Administration unavailable" });

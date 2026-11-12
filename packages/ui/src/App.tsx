@@ -16,7 +16,7 @@ import { isNewNavOn } from "./nav-flags.js";
 import { isInsightsOn } from "./screens/insights/insights-flags.js";
 import { isBillingV2On } from "./billing-flags.js";
 import { isAgentPublishOn } from "./screens/agents/publish-flags.js";
-import { applyNavUiFlags, holdUiFlagsUntilNav, syncUiFlags } from "./ui-flags.js";
+import { applyNavUiFlags, startUiFlags, syncUiFlags, useUiFlagsStarted } from "./ui-flags.js";
 import "./shell/shell.css";
 import "./look-v2.css";
 type Router = ComponentProps<typeof RouterProvider>["router"];
@@ -40,10 +40,14 @@ function Routed({ createRouter, nav, standalone }: { createRouter: AppRouterFact
  return router === undefined ? null : <RouterProvider router={router} />;
 }
 export function App({ host, createRouter }: { host: AppHost; createRouter: AppRouterFactory }) {
+ const [query] = useState(createQueryClient);
  // Fail closed: until the navigation answer arrives (or when it fails) every new screen and the new look are off, whatever this device's keys say. Pages that make no navigation read keep the device keys.
- const [query] = useState(() => { if (!isStandalone(host)) holdUiFlagsUntilNav(host);return createQueryClient(); });
+ // The hold is a write to the host's store, so it runs in an effect, not in a render initializer. Nothing below renders until it has run (`held`), so no screen reads a flag before the hold is in place.
+ const held = useUiFlagsStarted(host);
+ useEffect(() => { startUiFlags(host, !isStandalone(host)); }, [host]);
  useEffect(() => () => query.clear(), [query]);
  // Lane U5: the company's runtime UI flags ride the navigation answer; keep the host's flag store equal to the newest one.
  useEffect(() => syncUiFlags(query.getQueryCache(), host), [query, host]);
+ if (!held) return null;
  return <AppHostProvider host={host}><QueryClientProvider client={query}><ThemeProvider host={host}><Announcer><ErrorBoundary reload={() => host.navigate(host.currentPath())}><Startup createRouter={createRouter} /></ErrorBoundary></Announcer></ThemeProvider></QueryClientProvider></AppHostProvider>;
 }
