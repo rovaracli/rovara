@@ -61,10 +61,11 @@ describe("the switch is off by default and changes nothing", () => {
     expect(Object.keys(resources).filter((id) => /TeamRecord/.test(id))).toStrictEqual([]);
     expect(Object.values(resources).filter((resource) => resource.Type === "AWS::DynamoDB::Table" && String(JSON.stringify(resource.Properties)).includes("team-record"))).toStrictEqual([]);
     const settings = brokerSettingsIn(functionVariables(plain, /^Broker[0-9A-F]{8}$/));
-    for (const key of ["teamRecord", "teamRecordActive", "teamRecordLake"] as const) expect(Object.keys(settings), key).not.toContain(key);
+    for (const key of ["teamRecord", "teamRecordActive", "teamRecordLake", "teamRecordKeywordIndex"] as const) expect(Object.keys(settings), key).not.toContain(key);
     expect(Object.keys(brokerNamesIn(functionVariables(plain, /^Broker[0-9A-F]{8}$/)))).not.toContain("teamRecordVectorsRole");
     expect(functionVariables(plain, /^SlackIngress[0-9A-F]{8}$/)).not.toHaveProperty("TEAM_RECORD_ENABLED");
     expect((plain.toJSON() as { Parameters?: Record<string, unknown> }).Parameters).not.toHaveProperty("TeamRecordEnabled");
+    expect((plain.toJSON() as { Parameters?: Record<string, unknown> }).Parameters).not.toHaveProperty("TeamRecordKeywordIndex");
     expect(JSON.stringify(plain.toJSON())).not.toMatch(/s3vectors|s3tables|team-record/i);
   }, 180_000);
 
@@ -145,6 +146,10 @@ describe("the switch on: Public cloud", () => {
     expect(settings.teamRecord).toBe("1");
     expect(settings.teamRecordActive).toEqual({ Ref: "TeamRecordEnabled" });
     expect((on.toJSON() as { Parameters?: Record<string, unknown> }).Parameters?.TeamRecordEnabled).toMatchObject({ Type: "String", Default: "1", AllowedValues: ["0", "1"] });
+    // 0.5.16 (DECISIONS 145): the keyword index's kill switch is a packed setting (`tw`) of the stack parameter TeamRecordKeywordIndex, ON by default (decision 116).
+    expect(settings.teamRecordKeywordIndex).toEqual({ Ref: "TeamRecordKeywordIndex" });
+    expect((on.toJSON() as { Parameters?: Record<string, unknown> }).Parameters?.TeamRecordKeywordIndex).toMatchObject({ Type: "String", Default: "1", AllowedValues: ["0", "1"] });
+    expect(BROKER_SETTINGS.teamRecordKeywordIndex).toEqual({ code: "tw", variable: "TEAM_RECORD_KEYWORD_INDEX" });
     // ENV-ROOM: there is no embedding model setting any more (the self-hosted embedder is fixed; its function name is derived), and the record's dead-letter queue has a fixed name the broker derives.
     expect(Object.keys(BROKER_SETTINGS)).not.toContain("teamRecordEmbeddingModel");
     expect(variables).not.toHaveProperty("EMBEDDER_FUNCTION_NAME");
@@ -628,6 +633,11 @@ describe("the team record sweep alarms (switch on)", () => {
     { suffix: "TeamRecordEraseSweepFailed", event: "record.erase_sweep_failed", metric: "TeamRecordEraseSweepFailed" },
     { suffix: "TeamRecordTombstoneFailed", event: "record.tombstone_failed", metric: "TeamRecordTombstoneFailed" },
     { suffix: "TeamRecordRepoCheckNoTime", event: "record.github_repo_check_no_time", metric: "TeamRecordGithubRepoCheckNoTime" },
+    // 0.5.16 (DECISIONS 145, the keyword index): the overdue removal, the failed gate and the failed maintenance, each a fixed line.
+    { suffix: "TeamRecordKeywordIndexOverdue", event: "record.keyword_index_overdue", metric: "TeamRecordKeywordIndexOverdue" },
+    { suffix: "TeamRecordKeywordIndexGateFailed", event: "record.keyword_index_gate_failed", metric: "TeamRecordKeywordIndexGateFailed" },
+    { suffix: "TeamRecordKeywordIndexFailed", event: "record.keyword_index_failed", metric: "TeamRecordKeywordIndexFailed" },
+    { suffix: "TeamRecordKeywordIndexJobFailed", event: "record.keyword_index_job_failed", metric: "TeamRecordKeywordIndexJobFailed" },
   ] as const;
   const on = controlPlane({ ...PUBLIC, agentxTeamRecord: "enabled" });
   const resources = resourcesOf(on);

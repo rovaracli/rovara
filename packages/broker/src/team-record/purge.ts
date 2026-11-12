@@ -72,6 +72,8 @@ export interface PurgeResult {
   blocked: number;
   /** Of the blocked rows, how many wait only for the keyword index to be rebuilt without them (lane K3). Absent: none. */
   indexWaiting?: number;
+  /** Of those, how many were in a project whose index gate failed with an error (lane K3; it is logged and alarmed as `record.keyword_index_gate_failed`). Absent: none. */
+  indexGateFailed?: number;
 }
 
 export const emptyPurge = (): PurgeResult => ({ rows: 0, facts: 0, redistilled: 0, vectors: 0, lessonsWithdrawn: 0, lessonsKept: 0, blocked: 0 });
@@ -79,6 +81,7 @@ export const addPurge = (into: PurgeResult, from: PurgeResult): PurgeResult => (
   rows: into.rows + from.rows, facts: into.facts + from.facts, redistilled: into.redistilled + from.redistilled, vectors: into.vectors + from.vectors,
   lessonsWithdrawn: into.lessonsWithdrawn + from.lessonsWithdrawn, lessonsKept: into.lessonsKept + from.lessonsKept, blocked: into.blocked + from.blocked,
   ...((into.indexWaiting ?? 0) + (from.indexWaiting ?? 0) > 0 ? { indexWaiting: (into.indexWaiting ?? 0) + (from.indexWaiting ?? 0) } : {}),
+  ...((into.indexGateFailed ?? 0) + (from.indexGateFailed ?? 0) > 0 ? { indexGateFailed: (into.indexGateFailed ?? 0) + (from.indexGateFailed ?? 0) } : {}),
 });
 
 const VECTOR_BATCH = 500;
@@ -214,6 +217,8 @@ export async function purgeItems(deps: PurgeDependencies, orgId: OrgId, items: r
   // now (within `keywordGateMs`) and names the rows whose words are out. A row it does not name stays, counted as waiting; the 15-minute job rebuilds what is left and the next run deletes the row. A whole-project erase
   // (`indexHandled`) deletes the project's index items itself, first.
   const gate = rows.length === 0 || options.indexHandled === true ? undefined : await removalGate({ table: deps.table, ...(deps.now === undefined ? {} : { now: deps.now }), ...(deps.log === undefined ? {} : { log: deps.log }) }, orgId, rows, { budgetMs: deps.keywordGateMs ?? 5_000 });
+
+  if (gate !== undefined && gate.failed > 0) result.indexGateFailed = gate.failed;
 
   // 4. Vectors, then the rows and facts whose vectors are gone.
   const vectorKeys = [...rows.map((row) => eventKey(row.id as string)), ...[...plans.values()].map((plan) => factVectorKey(plan.factId))];

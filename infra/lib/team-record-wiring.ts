@@ -103,6 +103,15 @@ export const TEAM_RECORD_SWEEP_ALARMS = [
     description: "The second pass of an erasure failed, so an erase may not be final yet (the sweep items stay and the next run tries again). Check the broker logs for record.erase_sweep_failed." },
   { id: "TombstoneFailed", suffix: "TeamRecordTombstoneFailed", event: "record.tombstone_failed", metric: "TeamRecordTombstoneFailed",
     description: "A GitHub delete (a repository or a comment) could not be removed from the team record. Check the broker logs for record.tombstone_failed; the hourly redelivery asks GitHub for it again." },
+  // 0.5.16 (DECISIONS 145, lanes K2/K3, review round): the keyword index's own fixed lines. The 15-minute job and the delete worker run the index, so each line is counted by a metric filter on the broker's log group like the sweeps above.
+  { id: "KeywordIndexOverdue", suffix: "TeamRecordKeywordIndexOverdue", event: "record.keyword_index_overdue", metric: "TeamRecordKeywordIndexOverdue",
+    description: "A removal or an erase has waited over an hour for the keyword index to be rebuilt without its rows (a segment still marked dirty, or a request the delete worker holds for it). The rows stay hidden and are deleted when the rebuild is done. Check the broker logs for record.keyword_index_overdue, record.keyword_index_gate_failed and record.keyword_index_failed." },
+  { id: "KeywordIndexGateFailed", suffix: "TeamRecordKeywordIndexGateFailed", event: "record.keyword_index_gate_failed", metric: "TeamRecordKeywordIndexGateFailed",
+    description: "The keyword index's removal gate failed with an error (not just a rebuild still to come), so rows it covers are not deleted yet. Erases and source removals wait. Check the broker logs for record.keyword_index_gate_failed; the next hourly run tries again." },
+  { id: "KeywordIndexFailed", suffix: "TeamRecordKeywordIndexFailed", event: "record.keyword_index_failed", metric: "TeamRecordKeywordIndexFailed",
+    description: "The keyword index's maintenance failed for a project (a build, a seal, a merge or a rebuild raised an error). Search falls back to the newest-rows window for that project until it is repaired. Check the broker logs for record.keyword_index_failed." },
+  { id: "KeywordIndexJobFailed", suffix: "TeamRecordKeywordIndexJobFailed", event: "record.keyword_index_job_failed", metric: "TeamRecordKeywordIndexJobFailed",
+    description: "The keyword index's maintenance job failed as a whole (it could not list the workspaces or their projects). Nothing was built or rebuilt in that run. Check the broker logs for record.keyword_index_job_failed." },
   { id: "RepoCheckNoTime", suffix: "TeamRecordRepoCheckNoTime", event: "record.github_repo_check_no_time", metric: "TeamRecordGithubRepoCheckNoTime", repeats: 3,
     description: "The team record's repository check found no time left in the hourly job for three runs in a row, so deleted or unshared repositories are not being noticed. Check the broker logs for record.github_repo_check_no_time and the hourly job's other work." },
 ] as const;
@@ -157,6 +166,9 @@ export function attachTeamRecord(stack: Stack, props: TeamRecordWiringProps): Te
   const enabled = new CfnParameter(stack, "TeamRecordEnabled", { type: "String", default: "1", allowedValues: ["0", "1"], description: "1: the Team record is on; 0: paused, nothing new is captured, read or learned, while erasure, removals and expiry keep running on the stored record (agentx config set teamRecord.enabled 1)" });
   settings.add("teamRecord", "1");
   settings.add("teamRecordActive", enabled.valueAsString);
+  // The keyword index's kill switch (lanes K2/K3, DECISIONS 145), ON by default (decision 116): 0 stops its building and makes the search read the newest-rows window only; the removal gate and the rebuild of what a removal marked keep running.
+  const keywordIndex = new CfnParameter(stack, "TeamRecordKeywordIndex", { type: "String", default: "1", allowedValues: ["0", "1"], description: "1: the Team record's keyword index is on (search ranks every recent row by its words); 0: it is switched off, search reads only the newest rows and nothing new is indexed, while removals still clear the index (agentx config set teamRecord.keywordIndex 0)" });
+  settings.add("teamRecordKeywordIndex", keywordIndex.valueAsString);
   settings.add("teamRecordLake", storage.lake === undefined ? "0" : "1");
   if (storage.vectors.dataRole !== undefined) BrokerNames.of(broker).add("teamRecordVectorsRole", storage.vectors.dataRole.roleName);
   // The customer's key (Enterprise) must be in this account and region: the broker builds its ARN from the key id, the region and the account.

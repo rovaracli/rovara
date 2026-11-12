@@ -48,10 +48,19 @@ export const LATE_MAX = 500;
 export const KEYWORD_CANDIDATES = 100;
 export const KEYWORD_RRF_TOP = 30;
 export const CHUNK_BYTES = 300_000;
+/** A segment build reads rows until SEGMENT_DOCS rows OR about this many bytes of text and structured fields (a page of 8 KB rows is 4 MB, so it can overshoot by a page): the memory of one build, tokens included, stays far inside the broker's 512 MB. */
+export const SEGMENT_BYTES = 16 * 1_048_576;
+/** More rows than this at ONE instant cannot be cut into segments (a segment covers whole instants): the build fails closed and logs, and the project is searched by the window. */
+export const SAME_INSTANT_MAX_ROWS = 10_000;
+/** A search opens the index only when its segments are no bigger than this together (the process's cache is 150 MB): over it, the window answers. */
+export const SEARCH_INDEX_MAX_BYTES = 100 * 1_048_576;
 /** A build intent this old belongs to a build that died: its chunks are deleted. */
 export const ORPHAN_AFTER_MS = 2 * 60_000;
-/** Rows past their hot expiry by this long are gone from the table (archived, then the TTL): the nightly pass drops them from the index. */
-const HOT_GONE_AFTER_S = 8 * 86_400;
+/**
+ * A row past its hot expiry is dropped from the index: the archiver takes it that night and the TTL removes it ARCHIVE_GRACE_DAYS (7) later, and a person erase after the TTL could no longer find the row to rebuild its segment. So
+ * a build leaves out every row whose `hotExpiresAt` has passed (an archived row, with `archivedAt`, too), and the nightly pass (which runs after the archiver) rebuilds each segment that holds one: the words are gone within a
+ * night of the hot expiry, a week before the TTL.
+ */
 const MAX_SEGMENTS = 1_200;
 
 export { KWLATE_PREFIX } from "./keyword-late.js";
@@ -76,7 +85,9 @@ const SegmentEntrySchema = z.object({
   textExpiresMin: z.number().int().min(0).optional(),
   hotExpiresMin: z.number().int().min(0).optional(),
   builtAt: z.string().datetime(),
-  dirty: z.object({ since: z.string().datetime(), reason: z.enum(["removal", "expiry"]) }).strict().optional(),
+  /** About how many bytes of row text and fields the segment was built from (a merge keeps the sum under SEGMENT_BYTES). */
+  srcBytes: z.number().int().min(0).optional(),
+  dirty: z.object({ since: z.string().datetime(), reason: z.enum(["removal", "expiry", "damaged"]) }).strict().optional(),
 }).strict();
 const ManifestSchema = z.object({
   version: z.number().int().min(1),
@@ -88,7 +99,7 @@ const ManifestSchema = z.object({
 export type SegmentEntry = z.infer<typeof SegmentEntrySchema>;
 export type Manifest = z.infer<typeof ManifestSchema>;
 
-type ManifestRead = { status: "none" } | { status: "bad" } | { status: "ok"; manifest: Manifest };
+export type ManifestRead = { status: "none" } | { status: "bad" } | { status: "ok"; manifest: Manifest };
 
 export interface KeywordIndexDeps {
   table: TeamRecordTable;
@@ -169,29 +180,31 @@ export function rowOfSortKey(sk: string): { occurredAt: string; id: string } | u
  * One project's rows in a range of time, read with strongly consistent reads (an erase rebuild must see a tombstone that was just written), page by page. `after` is exclusive, `upTo` inclusive (instants). `limit` is soft:
  * once it is reached the read goes on only to the end of the instant it stopped in, so a range is never cut between two rows of the same instant. `more` says rows are left after the last one returned.
  */
-async function readRows(deps: KeywordIndexDeps, orgId: OrgId, project: string, range: { after?: string; upTo?: string; ascending: boolean; limit: number }): Promise<{ items: Item[]; more: boolean }> {
-  const low = range.after === undefined ? RECORD_EVENT_SK_PREFIX : `${RECORD_EVENT_SK_PREFIX}${range.after}#￿`;
-  const high = range.upTo === undefined ? `${RECORD_EVENT_SK_PREFIX}￿` : `${RECORD_EVENT_SK_PREFIX}${range.upTo}#￿`;
+async function readRows(deps: KeywordIndexDeps, orgId: OrgId, project: string, range: { after?: string; upTo?: string; ascending: boolean; limit: number; maxBytes?: number }): Promise<{ items: Item[]; more: boolean; bytes: number }> {
+  const low = range.after === undefined ? RECORD_EVENT_SK_PREFIX : `${RECORD_EVENT_SK_PREFIX}${range.after}#\uffff`;
+  const high = range.upTo === undefined ? `${RECORD_EVENT_SK_PREFIX}\uffff` : `${RECORD_EVENT_SK_PREFIX}${range.upTo}#\uffff`;
   const items: Item[] = [];
+  let bytes = 0;
   let startKey: Record<string, unknown> | undefined;
   for (;;) {
     const response = await deps.table.documentClient.send(new QueryCommand({
       TableName: deps.table.tableName, KeyConditionExpression: "pk = :pk AND sk BETWEEN :low AND :high",
       ExpressionAttributeValues: { ":pk": teamRecordPk(orgId, project), ":low": low, ":high": high },
-      ScanIndexForward: range.ascending, ConsistentRead: true, Limit: 500,
+      ScanIndexForward: range.ascending, ConsistentRead: true, Limit: 200,
       ...(startKey === undefined ? {} : { ExclusiveStartKey: startKey }),
     })) as { Items?: Item[]; LastEvaluatedKey?: Record<string, unknown> };
-    items.push(...(response.Items ?? []));
+    for (const item of response.Items ?? []) { items.push(item); bytes += (typeof item.text === "string" ? item.text.length : 0) + 400; }
     startKey = response.LastEvaluatedKey;
-    if (startKey === undefined) return { items, more: false };
-    if (items.length >= range.limit) {
+    if (startKey === undefined) return { items, more: false, bytes };
+    if (items.length >= range.limit || (range.maxBytes !== undefined && bytes >= range.maxBytes)) {
       // cut at an instant boundary: keep whole instants only
       const instantOf = (item: Item): string | undefined => rowOfSortKey(String(item.sk))?.occurredAt;
       const last = instantOf(items[items.length - 1] as Item);
       let cut = items.length;
       while (cut > 0 && instantOf(items[cut - 1] as Item) === last) cut -= 1;
-      if (cut > 0) return { items: items.slice(0, cut), more: true };
-      // every row so far is in one instant: read on until it changes
+      if (cut > 0) { const kept = items.slice(0, cut); return { items: kept, more: true, bytes: kept.reduce((sum, item) => sum + (typeof item.text === "string" ? item.text.length : 0) + 400, 0) }; }
+      // every row so far is in one instant: read on until it changes, but not without end
+      if (items.length > SAME_INSTANT_MAX_ROWS) throw new Error("keyword index: too many rows at one instant");
     }
   }
 }
@@ -200,7 +213,7 @@ async function readRows(deps: KeywordIndexDeps, orgId: OrgId, project: string, r
 function docOfItem(item: Item, nowSeconds: number): SegmentDocInput | undefined {
   if (item.tombstone !== undefined || item.archivedAt !== undefined) return undefined;
   const event = eventFromItem(item, nowSeconds);
-  if (event === undefined || event.hotExpiresAt + HOT_GONE_AFTER_S <= nowSeconds) return undefined;
+  if (event === undefined || event.hotExpiresAt <= nowSeconds) return undefined;
   const expiring = event.text !== undefined && event.textExpiresAt !== undefined;
   return {
     id: event.id, occurredAtMs: Date.parse(event.occurredAt), kind: event.kind, source: event.source, restricted: event.audience.kind === "restricted", hotExpiresAt: event.hotExpiresAt,
@@ -248,6 +261,11 @@ async function deleteChunks(deps: KeywordIndexDeps, orgId: OrgId, project: strin
   (deps.cache ?? defaultSegmentCache).delete(SegmentCache.key(orgId, project, segment));
 }
 
+/** A segment the manifest lists whose chunks are missing or the wrong size: the search marks it dirty (the next pass rebuilds it from the rows) and answers from the window meanwhile. */
+export class DamagedSegmentError extends Error {
+  constructor(readonly segment: string) { super("keyword index: a segment is damaged"); this.name = "DamagedSegmentError"; }
+}
+
 async function loadSegment(deps: KeywordIndexDeps, orgId: OrgId, project: string, entry: SegmentEntry): Promise<SegmentReader> {
   const cache = deps.cache ?? defaultSegmentCache;
   const key = SegmentCache.key(orgId, project, entry.id);
@@ -267,9 +285,9 @@ async function loadSegment(deps: KeywordIndexDeps, orgId: OrgId, project: string
     keys = next;
   }
   const ordered = Array.from({ length: entry.chunks }, (_unused, n) => parts.get(n));
-  if (ordered.some((part) => part === undefined)) throw new Error("keyword index: a chunk is missing");
+  if (ordered.some((part) => part === undefined)) throw new DamagedSegmentError(entry.id);
   const bytes = Buffer.concat(ordered as Uint8Array[]);
-  if (bytes.length !== entry.bytes) throw new Error("keyword index: a segment has the wrong size");
+  if (bytes.length !== entry.bytes) throw new DamagedSegmentError(entry.id);
   const reader = new SegmentReader(bytes);
   cache.set(key, reader);
   return reader;
@@ -277,7 +295,7 @@ async function loadSegment(deps: KeywordIndexDeps, orgId: OrgId, project: string
 
 // ---- the build
 
-interface BuildContext extends KeywordIndexDeps {
+export interface BuildContext extends KeywordIndexDeps {
   orgId: OrgId;
   project: string;
   /** Epoch ms after which no new step starts. */
@@ -292,12 +310,12 @@ const instantOfItem = (item: Item): string => rowOfSortKey(String(item.sk))?.occ
 interface Written { entry: SegmentEntry }
 
 /** Encodes and stores one piece. The build intent was written before (see `withIntent`). */
-async function writePiece(ctx: BuildContext, piece: { upTo: string; docs: SegmentDocInput[] }, id: string): Promise<Written> {
+async function writePiece(ctx: BuildContext, piece: { upTo: string; docs: SegmentDocInput[]; srcBytes: number }, id: string): Promise<Written> {
   const encoded = encodeSegment(piece.docs);
   const chunks = await putChunks(ctx, ctx.orgId, ctx.project, id, encoded.bytes);
   return {
     entry: {
-      id, upTo: piece.upTo, docs: encoded.docs, bytes: encoded.bytes.length, chunks, builtAt: isoOf(nowOf(ctx)),
+      id, upTo: piece.upTo, docs: encoded.docs, bytes: encoded.bytes.length, chunks, builtAt: isoOf(nowOf(ctx)), srcBytes: piece.srcBytes,
       ...(encoded.textExpiresMin === undefined ? {} : { textExpiresMin: encoded.textExpiresMin }), ...(encoded.hotExpiresMin === undefined ? {} : { hotExpiresMin: encoded.hotExpiresMin }),
     },
   };
@@ -326,14 +344,14 @@ const rangeOf = (manifest: Manifest, from: number, to: number): { after: string 
   after: from === 0 ? undefined : (manifest.segments[from - 1] as SegmentEntry).upTo, upTo: (manifest.segments[to] as SegmentEntry).upTo,
 });
 
-type Replaced = { status: "done"; manifest: Manifest } | { status: "conflict" } | { status: "deadline" };
+export type Replaced = { status: "done"; manifest: Manifest } | { status: "conflict" } | { status: "deadline" };
 
 /**
  * Rebuilds segments `from..to` (adjacent) from the table into new segments (one, or more if the range grew), and switches the manifest. The range is read a piece at a time (about SEGMENT_DOCS rows, cut only between instants),
  * so the memory is one piece however many rows a range holds. The new segments never carry a dirty mark: they were built from rows read AFTER the marks they answer (a mark written later changes the manifest's version and fails
  * this switch). The old segments' chunks are deleted at once; their ids stay in `retired` until that is done.
  */
-async function replaceSegments(ctx: BuildContext, manifest: Manifest, from: number, to: number): Promise<Replaced> {
+export async function replaceSegments(ctx: BuildContext, manifest: Manifest, from: number, to: number): Promise<Replaced> {
   const { after, upTo } = rangeOf(manifest, from, to);
   const nowSeconds = Math.floor(nowOf(ctx) / 1000);
   const pk = teamRecordPk(ctx.orgId, ctx.project);
@@ -346,14 +364,14 @@ async function replaceSegments(ctx: BuildContext, manifest: Manifest, from: numb
   try {
     let cursor = after;
     for (;;) {
-      if (entries.length > 0 && overDeadline(ctx)) { await discard(); return { status: "deadline" }; }
-      const rows = await readRows(ctx, ctx.orgId, ctx.project, { ...(cursor === undefined ? {} : { after: cursor }), upTo, ascending: true, limit: SEGMENT_DOCS });
+      if (overDeadline(ctx)) { await discard(); return { status: "deadline" }; }
+      const rows = await readRows(ctx, ctx.orgId, ctx.project, { ...(cursor === undefined ? {} : { after: cursor }), upTo, ascending: true, limit: SEGMENT_DOCS, maxBytes: SEGMENT_BYTES });
       const pieceEnd = rows.more ? instantOfItem(rows.items[rows.items.length - 1] as Item) : upTo;
       const docs = rows.items.flatMap((item) => { const doc = docOfItem(item, nowSeconds); return doc === undefined ? [] : [doc]; });
       const id = newSegmentId(nowOf(ctx));
       ids.push(id);
       await ctx.table.documentClient.send(new PutCommand({ TableName: ctx.table.tableName, Item: { pk, sk: `${KWIDX_BUILD_PREFIX}${id}`, entityType: "TEAM_RECORD_KWIDX_BUILD", segment: id, at: isoOf(nowOf(ctx)) } }));
-      entries.push((await writePiece(ctx, { upTo: pieceEnd, docs }, id)).entry);
+      entries.push((await writePiece(ctx, { upTo: pieceEnd, docs, srcBytes: rows.bytes }, id)).entry);
       if (!rows.more) break;
       cursor = pieceEnd;
     }
@@ -398,9 +416,15 @@ async function cleanOrphans(ctx: BuildContext): Promise<number> {
   const response = await ctx.table.documentClient.send(new QueryCommand({
     TableName: ctx.table.tableName, KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)", ExpressionAttributeValues: { ":pk": pk, ":prefix": KWIDX_BUILD_PREFIX }, ConsistentRead: true,
   })) as { Items?: Item[] };
+  if ((response.Items ?? []).length === 0) return 0;
+  const read = await readManifest(ctx, ctx.orgId, ctx.project);
+  // A segment the manifest lists is live: its build switched the manifest, and only the delete of its intent was lost. Its chunks are never an orphan's; only the intent goes.
+  const live = new Set(read.status === "ok" ? read.manifest.segments.map((entry) => entry.id) : []);
   for (const item of response.Items ?? []) {
     const at = typeof item.at === "string" ? Date.parse(item.at) : 0;
     if (typeof item.segment !== "string") { await tableDelete(ctx, { pk, sk: String(item.sk) }); continue; }
+    if (live.has(item.segment)) { await tableDelete(ctx, { pk, sk: String(item.sk) }); continue; }
+    if (read.status !== "ok") { left += 1; continue; }   // no manifest to tell a live segment from an orphan: leave it (a manifest that does not parse is reset by the next pass)
     if (nowOf(ctx) - at < ORPHAN_AFTER_MS) { left += 1; continue; }
     await deleteChunks(ctx, ctx.orgId, ctx.project, item.segment);
     await tableDelete(ctx, { pk, sk: String(item.sk) });
@@ -469,15 +493,25 @@ async function ensureManifest(ctx: BuildContext): Promise<Manifest | undefined> 
  * One maintenance pass over one project (the 15-minute job; the nightly job passes `expiry`): rebuild dirty segments, fold late rows into their segments, rebuild segments whose text or hot rows have expired (nightly only), seal
  * the tail, merge small neighbours, and clean up what died. Bounded by `deadlineAt`; it does the most urgent work first (removals), and stops cleanly between steps.
  */
-export async function maintainProject(deps: KeywordIndexDeps, orgId: OrgId, project: string, options: { deadlineAt: number; expiry?: boolean }): Promise<MaintainResult> {
+export async function maintainProject(deps: KeywordIndexDeps, orgId: OrgId, project: string, options: { deadlineAt: number; expiry?: boolean; build?: boolean }): Promise<MaintainResult> {
   const ctx: BuildContext = { ...deps, orgId, project, deadlineAt: options.deadlineAt };
   const result = emptyMaintain();
-  let manifest = await ensureManifest(ctx);
+  // `build: false` is the kill switch (the broker setting): no first build, no seal, no merge, no folding of late rows. What only removes words still runs: the rebuild of segments a removal marked dirty, of expired ones (nightly), the clean-up of
+  // what died, and the reset of a manifest that does not parse. A project with no index is left without one.
+  const build = options.build !== false;
+  let manifest: Manifest | undefined;
+  if (build) manifest = await ensureManifest(ctx);
+  else {
+    const read = await readManifest(ctx, orgId, project);
+    if (read.status === "bad") { ctx.log?.("record.keyword_index_reset", {}); await resetIndex(ctx); return result; }
+    manifest = read.status === "ok" ? read.manifest : undefined;
+    if (manifest === undefined) return result;
+  }
   if (manifest === undefined) { result.more = true; return result; }
   await cleanOrphans(ctx);
   manifest = await dropRetired(ctx, manifest);
   const nowSeconds = Math.floor(nowOf(ctx) / 1000);
-  const late = await listLateMarkers(ctx, orgId, project, LATE_MAX);
+  const late = build ? await listLateMarkers(ctx, orgId, project, LATE_MAX) : { markers: [] as LateMarker[], more: false };
   if (late.more) result.more = true;
 
   // 1. Rebuild: dirty segments (a removal waits on these), then the ones a late row falls in, then (nightly) expired ones. A segment built in this pass is not taken again.
@@ -493,7 +527,7 @@ export async function maintainProject(deps: KeywordIndexDeps, orgId: OrgId, proj
       if (covering >= 0 && !builtHere.has((current.segments[covering] as SegmentEntry).id)) return (current.segments[covering] as SegmentEntry).id;
     }
     if (options.expiry === true) {
-      return current.segments.find((entry) => !builtHere.has(entry.id) && ((entry.textExpiresMin !== undefined && entry.textExpiresMin <= nowSeconds) || (entry.hotExpiresMin !== undefined && entry.hotExpiresMin + HOT_GONE_AFTER_S <= nowSeconds)))?.id;
+      return current.segments.find((entry) => !builtHere.has(entry.id) && ((entry.textExpiresMin !== undefined && entry.textExpiresMin <= nowSeconds) || (entry.hotExpiresMin !== undefined && entry.hotExpiresMin <= nowSeconds)))?.id;
     }
     return undefined;
   };
@@ -520,7 +554,7 @@ export async function maintainProject(deps: KeywordIndexDeps, orgId: OrgId, proj
   for (const entry of manifest.segments) if (entry.dirty !== undefined && nowOf(ctx) - Date.parse(entry.dirty.since) > 3_600_000) result.overdue += 1;
 
   // 2. Seal the tail (and, while the first build is not finished, keep sealing oldest first).
-  for (let guard = 0; guard < 200 && !overDeadline(ctx); guard += 1) {
+  for (let guard = 0; build && guard < 200 && !overDeadline(ctx); guard += 1) {
     const sealed = await sealTail(ctx, manifest, markerList, foldedMarkers);
     if (sealed.status === "none") break;
     if (sealed.status === "conflict") { result.more = true; break; }
@@ -528,15 +562,15 @@ export async function maintainProject(deps: KeywordIndexDeps, orgId: OrgId, proj
     result.sealed += 1;
     if (!sealed.more) break;
   }
-  if (overDeadline(ctx) && manifest.coverage === "building") result.more = true;
+  if (build && overDeadline(ctx) && manifest.coverage === "building") result.more = true;
 
   // 3. Merge one pair of small neighbours.
-  if (!overDeadline(ctx)) {
+  if (build && !overDeadline(ctx)) {
     let best: number | undefined;
     for (let at = 0; at + 1 < manifest.segments.length; at += 1) {
       const left = manifest.segments[at] as SegmentEntry;
       const right = manifest.segments[at + 1] as SegmentEntry;
-      if (left.dirty !== undefined || right.dirty !== undefined || left.docs + right.docs > SEGMENT_DOCS) continue;
+      if (left.dirty !== undefined || right.dirty !== undefined || left.docs + right.docs > SEGMENT_DOCS || (left.srcBytes ?? 0) + (right.srcBytes ?? 0) > SEGMENT_BYTES) continue;
       if (best === undefined || left.docs + right.docs < (manifest.segments[best] as SegmentEntry).docs + (manifest.segments[best + 1] as SegmentEntry).docs) best = at;
     }
     if (best !== undefined) {
@@ -556,7 +590,7 @@ async function sealTail(ctx: BuildContext, manifest: Manifest, markers: readonly
   const cutoff = isoOf(nowOf(ctx) - KEYWORD_LATE_MS);
   const watermark = watermarkOf(manifest);
   if (watermark >= cutoff) return { status: "none" };
-  const rows = await readRows(ctx, ctx.orgId, ctx.project, { ...(watermark === "" ? {} : { after: watermark }), upTo: cutoff, ascending: true, limit: SEGMENT_DOCS });
+  const rows = await readRows(ctx, ctx.orgId, ctx.project, { ...(watermark === "" ? {} : { after: watermark }), upTo: cutoff, ascending: true, limit: SEGMENT_DOCS, maxBytes: SEGMENT_BYTES });
   const first = rows.items[0] === undefined ? undefined : instantOfItem(rows.items[0]);
   const building = manifest.coverage === "building";
   const due = building || rows.more || rows.items.length >= SEAL_TRIGGER_ROWS || (first !== undefined && nowOf(ctx) - Date.parse(first) >= SEAL_MAX_AGE_MS);
@@ -576,7 +610,7 @@ async function sealTail(ctx: BuildContext, manifest: Manifest, markers: readonly
   } else {
     id = newSegmentId(nowOf(ctx));
     const written = await withIntents(ctx, [id], async () => {
-      const piece = await writePiece(ctx, { upTo, docs }, id as string);
+      const piece = await writePiece(ctx, { upTo, docs, srcBytes: rows.bytes }, id as string);
       next = { ...manifest, version: manifest.version + 1, coverage, updatedAt: isoOf(nowOf(ctx)), segments: [...manifest.segments, piece.entry] };
       if (!(await writeManifest(ctx, ctx.orgId, ctx.project, next, manifest.version))) { await deleteChunks(ctx, ctx.orgId, ctx.project, id as string); return false; }
       return true;
@@ -598,11 +632,17 @@ export interface KeywordIndexJobDeps extends KeywordIndexDeps {
 
 export interface KeywordJobSummary extends MaintainResult { orgs: number; projects: number; failed: number }
 
+/** The time one project's pass may run to: the share of what is left of the run that is its turn, and never past the run's own end. */
+export function passDeadline(now: number, startedAt: number, runMs: number, stillToServe: number): number {
+  const remaining = startedAt + runMs - now;
+  return now + Math.min(remaining / Math.max(1, stillToServe), remaining);
+}
+
 /**
  * The maintenance job over every workspace and project, inside `runMs`. Each project gets a pass bounded by what is left of the run, shared out by the number still waiting. The start moves with the clock so a project at the
  * end of the list is not always the one that is cut off. A failure in one project never stops the others (a fixed log line, no text).
  */
-export async function runKeywordIndexJob(deps: KeywordIndexJobDeps, startedAt: number, runMs: number, options: { expiry?: boolean } = {}): Promise<KeywordJobSummary> {
+export async function runKeywordIndexJob(deps: KeywordIndexJobDeps, startedAt: number, runMs: number, options: { expiry?: boolean; build?: boolean } = {}): Promise<KeywordJobSummary> {
   const now = deps.now ?? Date.now;
   const summary: KeywordJobSummary = { ...emptyMaintain(), orgs: 0, projects: 0, failed: 0 };
   const orgs = (await deps.orgs()).sort();
@@ -616,9 +656,8 @@ export async function runKeywordIndexJob(deps: KeywordIndexJobDeps, startedAt: n
   for (const [at, target] of ordered.entries()) {
     const remaining = startedAt + runMs - now();
     if (remaining < 500) { summary.more = true; break; }
-    const share = remaining / (ordered.length - at);
     try {
-      const done = await maintainProject(deps, target.orgId, target.project, { deadlineAt: now() + Math.max(share, Math.min(remaining, 2_000)), ...(options.expiry === true ? { expiry: true } : {}) });
+      const done = await maintainProject(deps, target.orgId, target.project, { deadlineAt: passDeadline(now(), startedAt, runMs, ordered.length - at), ...(options.expiry === true ? { expiry: true } : {}), ...(options.build === false ? { build: false } : {}) });
       summary.projects += 1;
       for (const key of ["rebuilt", "folded", "sealed", "merged", "expired", "overdue"] as const) summary[key] += done[key];
       summary.building = summary.building || done.building;
@@ -656,6 +695,17 @@ export async function eraseKeywordIndexItems(deps: KeywordIndexDeps, orgId: OrgI
     } while (startKey !== undefined);
   }
   return { deleted, more: false };
+}
+
+/** Marks one segment dirty because its chunks cannot be read (a search found them missing). Conditional on the manifest's version, a few tries. */
+async function markDamaged(ctx: BuildContext, segment: string): Promise<void> {
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const read = await readManifest(ctx, ctx.orgId, ctx.project);
+    if (read.status !== "ok" || !read.manifest.segments.some((entry) => entry.id === segment)) return;
+    const since = isoOf(nowOf(ctx));
+    const next: Manifest = { ...read.manifest, version: read.manifest.version + 1, updatedAt: since, segments: read.manifest.segments.map((entry) => (entry.id === segment && entry.dirty === undefined ? { ...entry, dirty: { since, reason: "damaged" as const } } : entry)) };
+    if (await writeManifest(ctx, ctx.orgId, ctx.project, next, read.manifest.version)) return;
+  }
 }
 
 // ---- removal (K3)
@@ -704,6 +754,8 @@ export interface RemovalGate {
   ready: Set<string>;
   /** How many rows must wait. */
   waiting: number;
+  /** Of those, how many are in a project whose gate FAILED (an error, not just a rebuild still to come): counted and logged, never swallowed (`record.keyword_index_gate_failed`). */
+  failed: number;
 }
 
 /**
@@ -714,7 +766,10 @@ export interface RemovalGate {
 export async function removalGate(deps: KeywordIndexDeps, orgId: OrgId, rows: readonly Item[], options: { budgetMs: number }): Promise<RemovalGate> {
   const ready = new Set<string>();
   let waiting = 0;
+  let failed = 0;
   const byProject = new Map<string, ReturnType<typeof removedRows>>();
+  // A row with no project lives in the company's own partition (`_workspace`), which no index covers: nothing to rebuild, so it is ready.
+  for (const row of rows) if (typeof row.pk === "string" && typeof row.sk === "string" && projectOfPk(row.pk) === undefined) ready.add(`${row.pk}|${row.sk}`);
   for (const row of removedRows(rows)) byProject.set(row.project, [...(byProject.get(row.project) ?? []), row]);
   const deadlineAt = nowOf(deps) + options.budgetMs;
   for (const [project, group] of byProject) {
@@ -737,11 +792,12 @@ export async function removalGate(deps: KeywordIndexDeps, orgId: OrgId, rows: re
         if (clean && !dirty) ready.add(`${row.pk}|${row.sk}`);
       }
     } catch {
-      deps.log?.("record.keyword_index_gate_failed", {});
+      failed += group.filter((row) => !ready.has(`${row.pk}|${row.sk}`)).length;
+      deps.log?.("record.keyword_index_gate_failed", { rows: group.length });
     }
     waiting += group.filter((row) => !ready.has(`${row.pk}|${row.sk}`)).length;
   }
-  return { ready, waiting };
+  return { ready, waiting, failed };
 }
 
 /** Rebuilds the dirty segments of a project, most urgent first, until none is left, the budget is spent or a rebuild loses a race. Returns the manifest as it stands. */
@@ -778,6 +834,7 @@ export async function openKeywordIndex(deps: KeywordIndexDeps, orgId: OrgId, pro
   const read = await readManifest(deps, orgId, project);
   if (read.status !== "ok" || read.manifest.coverage !== "complete") return undefined;
   const { manifest } = read;
+  if (manifest.segments.reduce((sum, entry) => sum + entry.bytes, 0) > SEARCH_INDEX_MAX_BYTES) { deps.log?.("record.keyword_index_too_large", {}); return undefined; }
   const watermark = watermarkOf(manifest);
   // the tail: rows after the watermark, newest first, bounded
   const tail = await readRows(deps, orgId, project, { ...(watermark === "" ? {} : { after: watermark }), ascending: false, limit: TAIL_MAX_ROWS });
@@ -786,7 +843,17 @@ export async function openKeywordIndex(deps: KeywordIndexDeps, orgId: OrgId, pro
   if (late.more) return undefined;
   // the segments, a few at a time
   const readers: SegmentReader[] = [];
-  for (let at = 0; at < manifest.segments.length; at += 6) readers.push(...await Promise.all(manifest.segments.slice(at, at + 6).map((entry) => loadSegment(deps, orgId, project, entry))));
+  try {
+    for (let at = 0; at < manifest.segments.length; at += 6) readers.push(...await Promise.all(manifest.segments.slice(at, at + 6).map((entry) => loadSegment(deps, orgId, project, entry))));
+  } catch (error) {
+    // A listed segment that cannot be read whole: it is marked dirty (the next pass, or a removal's gate, rebuilds it from the rows) and this search uses the window.
+    if (error instanceof DamagedSegmentError) {
+      deps.log?.("record.keyword_index_damaged", {});
+      await markDamaged({ ...deps, orgId, project, deadlineAt: Number.POSITIVE_INFINITY }, error.segment).catch(() => undefined);
+      return undefined;
+    }
+    throw error;
+  }
   // late rows inside a sealed range are read live, unless a rebuild has folded them in already
   const lateKeys = late.markers.filter((marker) => marker.occurredAt <= watermark).flatMap((marker) => {
     const covering = segmentIndexCovering(manifest, marker.occurredAt);

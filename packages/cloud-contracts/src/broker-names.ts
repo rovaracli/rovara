@@ -184,6 +184,9 @@ export const BROKER_SETTINGS = {
   // UX-4b review fix 1: the record paused (stack parameter TeamRecordEnabled = 0, `agentx config set teamRecord.enabled 0`). Present only with the record built. "0" is paused: nothing new is captured,
   // read, searched or learned, while person and project erasure, source removals, Slack deletes, expiry and the archiver keep running on the retained data. Anything else (absent, "1") is active.
   teamRecordActive: { code: "tz", variable: "TEAM_RECORD_ACTIVE" },
+  // The Team record's keyword index kill switch (lanes K2/K3, DECISIONS 145; stack parameter TeamRecordKeywordIndex, "1" by default per decision 116, `agentx config set teamRecord.keywordIndex 0`). Present only with the record built. Off ONLY when exactly "0":
+  // the search then reads the window of the newest rows only, and the maintenance builds nothing; the removal gate, the rebuild of segments a removal marked dirty and the expiry pass keep running (team-record/runtime.ts `keywordIndexIsOn`).
+  teamRecordKeywordIndex: { code: "tw", variable: "TEAM_RECORD_KEYWORD_INDEX" },
   // (2026-11-08: code `te`, the Bedrock embedding model id, is retired: the Team record embeds with the self-hosted embedder, DECISIONS 27, and the model is TEAM_RECORD_EMBEDDER in team-record-storage.ts. Do not reuse the code.)
   teamRecordLake: { code: "tl", variable: "TEAM_RECORD_LAKE_ENABLED" },
   // Proof and evidence (wire-proof): the evidence of a task's checks is gathered, kept and shown (the PR's evidence lines and link, the task page's Evidence tab, the download route). Stack parameter ProofEvidenceEnabled, "0" by default: the broker reads it as PROOF_EVIDENCE_ENABLED, and it is on only when it is exactly "1". Packed setting, not a Lambda variable (ENV-ROOM).

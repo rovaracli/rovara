@@ -1,6 +1,7 @@
 // Part of the broker (split out of ../broker.ts): the Team record's call sites. Everything here is an optional chain on `dependencies.teamRecord`, which is `undefined` unless the install was deployed with the
 // record's switch on (`TEAM_RECORD_ENABLED=1`, team-record/runtime.ts). With it off no function in this file reads, writes, schedules or even builds a client: the handler's branches answer "off" and return.
 import { teamRecordOpsQueueName } from "@agentx/cloud-contracts";
+import { OrgIdSchema } from "@rovara-code/contracts";
 import { registerTaskEndHandler } from "../../agents/task-end.js";
 import { recordListenerOf, recordTaskEndHandler, registerRovaraRecordListener } from "../../lessons/record-events.js";
 import { registerHumanSendBackListener, sendBackToRecord, } from "../../lessons/send-back-events.js";
@@ -20,9 +21,9 @@ import type { AwsBrokerDependencies } from "./definitions.js";
 export type HasTeamRecord = { teamRecord?: AwsBrokerDependencies["teamRecord"] | undefined };
 
 export const TEAM_RECORD_JOB_SOURCE = "agentx.team-record";
-const JOBS = new Set(["hourly", "nightly", "reembed"]);
+const JOBS = new Set(["hourly", "nightly", "reembed", "keyword-index-clear"]);
 
-export function isTeamRecordJobEvent(event: unknown): event is { source: typeof TEAM_RECORD_JOB_SOURCE; job: "hourly" | "nightly" | "reembed" } {
+export function isTeamRecordJobEvent(event: unknown): event is { source: typeof TEAM_RECORD_JOB_SOURCE; job: "hourly" | "nightly" | "reembed" | "keyword-index-clear"; orgId?: string } {
   return event !== null && typeof event === "object" && !("requestContext" in event)
     && (event as { source?: unknown }).source === TEAM_RECORD_JOB_SOURCE && JOBS.has((event as { job?: unknown }).job as string);
 }
@@ -60,8 +61,15 @@ export async function answerSlackAdd(dependencies: HasTeamRecord & { developer?:
 export type TeamRecordJobAnswer = { skipped: true; reason: "off" } | { skipped?: undefined; job: string; summary: TeamRecordJobSummary };
 
 /** A scheduled job. Answers `skipped` and does nothing where the record is off. */
-export async function runTeamRecordJob(dependencies: HasTeamRecord, event: { job: "hourly" | "nightly" | "reembed" }): Promise<TeamRecordJobAnswer> {
+export async function runTeamRecordJob(dependencies: HasTeamRecord, event: { job: "hourly" | "nightly" | "reembed" | "keyword-index-clear"; orgId?: string }): Promise<TeamRecordJobAnswer> {
   if (dependencies.teamRecord === undefined) return { skipped: true, reason: "off" };
+  if (event.job === "keyword-index-clear") {
+    // An operator's one-shot (a direct invoke of the broker with `{ source: "agentx.team-record", job: "keyword-index-clear", orgId }`): every keyword-index item of one company is deleted. Never scheduled.
+    const orgId = OrgIdSchema.safeParse(event.orgId);
+    if (!orgId.success) throw new Error("keyword-index-clear needs an orgId");
+    const cleared = await dependencies.teamRecord.jobs.clearKeywordIndex(orgId.data);
+    return { job: event.job, summary: { orgs: 1, skippedOrgs: 0, details: { deleted: cleared.deleted, more: cleared.more ? 1 : 0 } } };
+  }
   return { job: event.job, summary: await dependencies.teamRecord.jobs.run(event.job) };
 }
 

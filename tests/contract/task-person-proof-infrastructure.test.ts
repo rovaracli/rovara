@@ -450,6 +450,10 @@ describe("the named TEST proof-only installation gate", () => {
     // change coming in from 0.5.14 (4a5ec452f): the DeveloperSignIn function gains dynamodb:GetItem on the State table for the leading key SLACK_TEAM#* only, with the Null guard (the Slack link callback reads the
     // workspace owner; 0.5.14 is installed on staging with it, and an install of 0.5.15 without it would remove the live grant). Checked first: with infra/lib/developer-signin.ts and the named snapshot put back to
     // integ/0515's, all three tests (this one, named-templates, legacy-templates) pass on integ's own pins. The named snapshot shows exactly that one statement added. Legacy did not move.
+    // 2026-11-12 (0.5.16, keyword index review round, fix/0516-record-keyword-index): infra/lib/team-record-wiring.ts gains four metric filters and alarms (TeamRecordKeywordIndex{Overdue,GateFailed,Failed,JobFailed}) and the stack parameter
+    // TeamRecordKeywordIndex with its packed setting `tw`. All of it exists only with the Team record built, which none of the templates this test pins builds, so NO digest moved: checked first (the infra file put back to the branch's
+    // previous version) and again with the change: this test, named-templates and legacy-templates pass on the same pins both times. The committed list of the resources the record switch adds
+    // (tests/fixtures/team-record-switch-resources.json) shows exactly the eight new ids. Legacy did not move.
     const digestCases = [
       {
         label: "named",

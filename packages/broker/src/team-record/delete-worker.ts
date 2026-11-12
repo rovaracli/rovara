@@ -43,6 +43,8 @@ export interface DeleteRunSummary extends PurgeResult {
   /** Lane K3: rows that wait only for the keyword index to be rebuilt without them, and how many requests that have waited for that over an hour (the alarm: `record.keyword_index_overdue`, and the backlog line below). */
   indexWaiting: number;
   indexOverdue: number;
+  /** Rows whose index gate failed with an error this run (also logged by the gate as `record.keyword_index_gate_failed`). */
+  indexGateFailed: number;
   /** TR-E2b: 1 when the second-pass step itself failed this run (the next run tries it again); 0 otherwise. The hourly job's details carry it. */
   sweepFailed: number;
 }
@@ -67,7 +69,7 @@ async function itemsOf(deps: DeleteWorkerDependencies, orgId: OrgId, work: Scope
 export async function runDeleteWorker(deps: DeleteWorkerDependencies, orgId: OrgId, budget: DeleteBudget = DEFAULT_DELETE_BUDGET): Promise<DeleteRunSummary> {
   const now = deps.now ?? Date.now;
   const started = now();
-  const summary: DeleteRunSummary = { ...emptyPurge(), requests: 0, finished: 0, stillHidden: 0, backlog: false, oldestAgeSeconds: 0, sweepFailed: 0, indexWaiting: 0, indexOverdue: 0 };
+  const summary: DeleteRunSummary = { ...emptyPurge(), requests: 0, finished: 0, stillHidden: 0, backlog: false, oldestAgeSeconds: 0, sweepFailed: 0, indexWaiting: 0, indexOverdue: 0, indexGateFailed: 0 };
   // The second pass of erasures that reported complete (due ones only): an erase is final only after it.
   // A failure here must not stop the rest of the run, and must not pass unseen: a fixed-code log and a count (the sweep items stay, so the next run tries again).
   try { summary.erasureSweeps = await runErasureSweeps(deps, orgId, now()); } catch {
@@ -87,6 +89,7 @@ export async function runDeleteWorker(deps: DeleteWorkerDependencies, orgId: Org
     const key = recordDeleteQueueKey(orgId, entry.at, entry.requestId);
     // A request that waits for the keyword index (a segment still to be rebuilt without its rows) for over an hour is overdue: counted here and on the backlog line.
     const noteIndexWait = (purged: PurgeResult): void => {
+      summary.indexGateFailed += purged.indexGateFailed ?? 0;
       if ((purged.indexWaiting ?? 0) === 0) return;
       summary.indexWaiting += purged.indexWaiting ?? 0;
       if (Math.floor(now() / 1000) - entry.queuedAtSeconds > DELETE_BACKLOG_SECONDS) summary.indexOverdue += 1;
