@@ -75,8 +75,8 @@ describe("the broker's production health probes (A13)", () => {
       return found!.filter((alarm) => alarm.state === "MISSING").map((alarm) => alarm.name.slice("agentx-live25d-".length));
     };
 
-    it("names the lessons worker's three and the record's six, and nothing else", () => {
-      expect(record).toEqual(["LessonsReflectDeadLetters", "LessonsWorkerErrors", "LessonsWorkerThrottles", "TeamRecordEraseSweepFailed", "TeamRecordRedeliveryStateConflict", "TeamRecordRepoCheckNoTime", "TeamRecordRepoCheckRefused", "TeamRecordSweepProblem", "TeamRecordTombstoneFailed"]);
+    it("names the lessons worker's three and the record's ten, and nothing else", () => {
+      expect(record).toEqual(["LessonsReflectDeadLetters", "LessonsWorkerErrors", "LessonsWorkerThrottles", "TeamRecordEraseSweepFailed", "TeamRecordKeywordIndexFailed", "TeamRecordKeywordIndexGateFailed", "TeamRecordKeywordIndexJobFailed", "TeamRecordKeywordIndexOverdue", "TeamRecordRedeliveryStateConflict", "TeamRecordRepoCheckNoTime", "TeamRecordRepoCheckRefused", "TeamRecordSweepProblem", "TeamRecordTombstoneFailed"]);
       expect(otherConditional).toEqual(["BedrockThrottling", "ClassifierThrottling", "RuntimeRequalifyAgeUnreadable", "RuntimeRequalifyMachineFailures", "RuntimeRequalifyStale", "RuntimeRequalifyStepErrors"]);
     });
 
@@ -88,7 +88,7 @@ describe("the broker's production health probes (A13)", () => {
       }
     });
 
-    it("with the record ON, each of the nine is reported MISSING when CloudWatch does not return it", async () => {
+    it("with the record ON, each of the thirteen is reported MISSING when CloudWatch does not return it", async () => {
       const missing = await missingNames(true);
       for (const suffix of record) expect(missing, suffix).toContain(suffix);
       // The Bedrock-only and automatic-renewal alarms stay conditional.

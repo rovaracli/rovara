@@ -11,6 +11,7 @@ import { RECORD_EVENT_SK_PREFIX, RECORD_FACT_SK_PREFIX, recordActorSourceHash, r
 import type { Item } from "../agents/table-writes.js";
 import { auditRecordErased } from "./audit.js";
 import { tableLakeDeleteQueue } from "./lake-queue.js";
+import { KWIDX_PREFIX, KWLATE_PREFIX, eraseKeywordIndexItems } from "./keyword-index.js";
 import { addPurge, emptyPurge, purgeItems, type PurgeDependencies, type PurgeResult } from "./purge.js";
 import { markAccessErased, placeOfUnit, removePersonFromUnit, unitsOfPerson } from "./access.js";
 import { identitySystem, markPersonErased } from "./erased.js";
@@ -411,9 +412,10 @@ async function scrubAccessUnits(deps: PurgeDependencies, orgId: OrgId, ids: read
 
 /** Everything that lives in a project's partition besides rows, derivation links, facts and source settings: the learning lane's lessons, skills, manifests, snapshots and settings, and the source write route's request items. */
 const LEARNING_PREFIXES = [LESSON_SK_PREFIX, "SKILL#", "LOAD#", "EVALLOAD#", "SNAPSHOT#", "LESSONSET", "MODE", SOURCE_REQUEST_SK_PREFIX, SOURCE_REVISION_SK_PREFIX] as const;
-const ALL_PREFIXES = ["SOURCE#", RECORD_EVENT_SK_PREFIX, "DERIV#", RECORD_FACT_SK_PREFIX, ...LEARNING_PREFIXES] as const;
+/** The keyword index (`KWIDX#`) and its late markers (`KWLATE#`) are in every project's partition too, but they are NOT in `LEARNING_PREFIXES`: a chunk is 300 KB, so `eraseKeywordIndexItems` removes them reading keys only. They count for "complete". */
+const ALL_PREFIXES = ["SOURCE#", RECORD_EVENT_SK_PREFIX, "DERIV#", RECORD_FACT_SK_PREFIX, ...LEARNING_PREFIXES, KWIDX_PREFIX, KWLATE_PREFIX] as const;
 /** The workspace's own items: the delete queue, rate counters, failure counters (`OPSFAIL#`) and levels (`OPSLEVEL#`), deleted-at-source markers and the company mode lock. (`LAKEDEL#` stays until the lake job has run.) `EDITED#` marks were the freeze-on-edit rule's (replaced by per-editor rows): nothing writes or reads them any more, and a company erase still removes any left over. */
-const WORKSPACE_PREFIXES = ["DELQ#", "RATE#", "DELETED#", "MODE_LOCK", "VECBUCKET", "ITEM#", "SCOPEDEL#", "ACCESS#", "ACCESSP#", "ERASED#", "ERASESWEEP#", "ERASEPROG#", "TRLINK#", "TRLINKDEV#", "TRUNMATCHED#", "TRUNMAP#", "TRSYNC#", "TRREQ#", "PRIOREDIT#", PUSH_INDEX_SK_PREFIX, MERGE_INDEX_SK_PREFIX, "TRAUTOLINK", "SKIPPED#", "EDITED#", SOURCE_SCOPE_SK_PREFIX, SOURCE_OPTIONS_SK_PREFIX, SLACK_ADD_SK_PREFIX, OPS_FAILURE_SK_PREFIX, OPS_LEVEL_SK_PREFIX] as const;
+const WORKSPACE_PREFIXES = ["DELQ#", "RATE#", "DELETED#", "MODE_LOCK", "VECBUCKET", "ITEM#", "SCOPEDEL#", "ACCESS#", "ACCESSP#", "ERASED#", "ERASESWEEP#", "ERASEPROG#", "TRLINK#", "TRLINKDEV#", "TRUNMATCHED#", "TRUNMAP#", "TRSYNC#", "TRREQ#", "PRIOREDIT#", PUSH_INDEX_SK_PREFIX, MERGE_INDEX_SK_PREFIX, "TRAUTOLINK", "SKIPPED#", "EDITED#", SOURCE_SCOPE_SK_PREFIX, SOURCE_OPTIONS_SK_PREFIX, SLACK_ADD_SK_PREFIX, OPS_FAILURE_SK_PREFIX, OPS_LEVEL_SK_PREFIX, KWIDX_PREFIX, KWLATE_PREFIX] as const;
 
 /**
  * A project is archived or a workspace closed: the project's partition is emptied. Its source rows go first, so no tap writes into it again; then rows and facts
@@ -448,6 +450,13 @@ export async function eraseProject(deps: PurgeDependencies, orgId: OrgId, projec
     for (const item of sessions.items) if (item.project === project && typeof item.sk === "string") await deleteItem(deps.table, { pk: teamRecordPk(orgId), sk: item.sk });
   }
 
+  // 1c. The project's keyword index (lane K3) goes BEFORE its rows: no search reads it again once the project is archived or closed, and the rows' purge below need not wait for a rebuild without them. Keys only are read.
+  if (left > 0) {
+    const index = await eraseKeywordIndexItems({ table: deps.table, ...(deps.now === undefined ? {} : { now: deps.now }) }, orgId, project, Math.max(left, 1));
+    left -= index.deleted;
+    result.other += index.deleted;
+  }
+
   // 2. The lake: the whole project is queued before any hot row goes.
   if (project !== undefined) await queue.enqueue(orgId, [{ kind: "project", project }]);
 
@@ -456,7 +465,7 @@ export async function eraseProject(deps: PurgeDependencies, orgId: OrgId, projec
     if (left <= 0) break;
     const found = await take(prefix);
     left -= found.items.length;
-    const purged = await purgeItems(wiping, orgId, found.items);
+    const purged = await purgeItems(wiping, orgId, found.items, { indexHandled: true });
     Object.assign(result, addPurge(result, purged), { other: result.other });
   }
   if (left > 0) {

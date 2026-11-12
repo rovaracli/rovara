@@ -242,7 +242,7 @@ describe("deploy parameters", () => {
         if (name === "TaskPersonProofEnabled") continue; // Declared in every named environment's template, but not in the legacy one these templates may be.
         // Declared only where the install is synthesized with the Team record (`agentxTeamRecord=enabled`, infra/lib/team-record-wiring.ts attachTeamRecord); these templates are synthesized without it.
         // Its declaration with the record on is asserted in team-record-wiring-infrastructure.test.ts, and the upgrade keeps it only where the deployed stack and the new template both have it.
-        if (name === "TeamRecordEnabled" || name === "EmbedderImageUri") { expect(declared, `${part} ${name} (only with the Team record)`).not.toContain(name); continue; }
+        if (name === "TeamRecordEnabled" || name === "TeamRecordKeywordIndex" || name === "EmbedderImageUri") { expect(declared, `${part} ${name} (only with the Team record)`).not.toContain(name); continue; }
         // A parameter a release removed stays listed for one release so the upgrade can report it dropped; it is the only kind the template may omit.
         if ((RETIRED_OPERATOR_PARAMETERS[part as keyof typeof RETIRED_OPERATOR_PARAMETERS] ?? []).includes(name)) { expect(declared, `${part} ${name} (retired)`).not.toContain(name); continue; }
         expect(declared, `${part} ${name}`).toContain(name);

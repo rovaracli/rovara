@@ -38,7 +38,8 @@ import { listSourceConfigs, listWorkspace, markSourceFailing, oldestQueuedKey } 
 import { resolveTaskVisibility } from "../lessons/task-visibility.js";
 import { createEmbedder } from "./embed.js";
 import { lessonEmbedderFrom, recordEmbedderClientFrom, recordJobEmbedderClientFrom, recordSearchEmbedderClientFrom, EMBEDDER_JOB_WAIT_MS, type LessonEmbedder } from "../embedder/wiring.js";
-import { REEMBED_RUN_MS, dropReembedState, reembedRun, sweepReembedStateRun } from "./reembed.js";
+import { REEMBED_RUN_MS, dropReembedState, listDirectoryOrgs, listErasingOrgs, reembedRun, sweepReembedStateRun } from "./reembed.js";
+import { eraseKeywordIndexItems, runKeywordIndexJob, type KeywordIndexJobDeps } from "./keyword-index.js";
 import { runWithEmbedDeadline, withEmbedDeadline } from "./embed-deadline.js";
 import { eraseProject, eraseWorkspace, erasePerson, type EraseBudget } from "./erase.js";
 import { tableHotArchiveSource, ensureWorkspaceVectorBucket, tableHotStatsSource } from "./hot-source.js";
@@ -89,6 +90,12 @@ export const teamRecordIsOn = (env: Record<string, string | undefined>): boolean
  * answer TEAM_RECORD_PAUSED, except a source removal, which deletes), the agent's record tools, and learning (the mode reads Off, so nothing is captured or loaded; lessons are not built).
  */
 export const teamRecordIsPaused = (env: Record<string, string | undefined>): boolean => env.TEAM_RECORD_ACTIVE === "0";
+/**
+ * The keyword index's kill switch (lanes K2/K3; stack parameter TeamRecordKeywordIndex, "1" by default, `agentx config set teamRecord.keywordIndex 0`; packed broker setting `tw`, read as TEAM_RECORD_KEYWORD_INDEX). Off ONLY when exactly "0",
+ * so an install without the setting has the index (decision 116). Off: the search uses the window only, and the maintenance builds nothing (no first build, seal, merge or fold of late rows). What removes words keeps running: the rebuild of
+ * segments a removal marked dirty, the nightly drop of expired text, and above all the removal gate (a row is still deleted only after its segment was rebuilt without it, for every project that still has index items).
+ */
+export const keywordIndexIsOn = (env: Record<string, string | undefined>): boolean => env.TEAM_RECORD_KEYWORD_INDEX !== "0";
 const PAUSED_REPLY = { status: 503, body: { code: "TEAM_RECORD_PAUSED", message: "The team record is paused in this installation." } } as const;
 /** Whether a request may run while the record is paused: a source removal (it deletes data), and nothing else. */
 function allowedWhilePaused(method: string, path: string, write: { body(): unknown } | undefined): boolean {
@@ -123,6 +130,8 @@ export interface TeamRecordRuntimeInput {
   /** Tests: the repository check's share of one company (default 4 s) and the hourly job's whole budget (default 24 s). */
   repoCheckOrgMs?: number;
   jobBudgetMs?: number;
+  /** Lanes K2/K3: `false` switches the keyword index's maintenance off (the search then always reads the window; tests). Default on. */
+  keywordIndex?: false;
   /**
    * SRL-5a: the GitHub App's view of an installation (the repositories it reaches, and one repository by id). Every hour each recorded repository is checked to still be held by its installation, so
    * rows from a repository GitHub deleted or transferred without a webhook we saw are removed. Absent: no check (an install without a GitHub App).
@@ -248,6 +257,11 @@ export interface TeamRecordRuntime {
   jobs: {
     run(job: TeamRecordJobName): Promise<TeamRecordJobSummary>;
     /**
+     * The one-shot clear of the keyword index (lane K3): deletes every index item (`KWIDX#`) and late marker (`KWLATE#`) of one company, every project. For an install that switched the index off (`teamRecord.keywordIndex 0`) and wants
+     * the words gone, or to rebuild from nothing. Bounded (20,000 items); `more` says to run it again. Run with the setting off: while it is on the next 15-minute pass builds the index again.
+     */
+    clearKeywordIndex(orgId: OrgId): Promise<{ deleted: number; more: boolean }>;
+    /**
      * Lessons in production (lane 2): other work for the same schedules. `work` runs once per company inside the hourly or the nightly run, after the record's own work, with the company's projects and what is
      * left of its time; its counts join the run's summary, and a failure is counted and never stops the others (or the record's own work). Returns the function that takes it away again.
      */
@@ -282,6 +296,10 @@ const MAX_ORGS_PER_RUN = 500;
 /** One scheduled run's whole budget: inside the broker function's 30 s timeout with room for the answer. */
 export const JOB_BUDGET_MS = 24_000;
 const PER_ORG_MS = 8_000;
+/** The share of the 15-minute run the keyword index's maintenance may take before the re-embed work (lanes K2/K3). The re-embed run keeps its own deadline from the job's start. */
+const KEYWORD_JOB_MS = 5_000;
+/** The most items one `clearKeywordIndex` run deletes. */
+const KEYWORD_CLEAR_MAX_ITEMS = 20_000;
 /** How long a failed delete of the retired (Titan-era) vector index waits before it is tried again in the same workspace. */
 const OLD_INDEX_RETRY_MS = 15 * 60_000;
 /** The most the dead-letter sweep may take of one hourly run, so the orgs keep most of the budget. */
@@ -322,6 +340,8 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
   const state = { documentClient: input.documentClient, tableName: input.stateTableName };
   const edition = readEdition(env);
   const paused = teamRecordIsPaused(env);
+  /** Read at each use, not once: the kill switch of the keyword index. */
+  const keywordIndexOn = (): boolean => keywordIndexIsOn(env);
   // Paused: every project reads as Off, so the taps capture nothing and no lesson is made or loaded (erasure and removals do not read the mode).
   const modes: LearningModeReader = paused ? { effectiveMode: async () => "off" } : tableModeReader(table);
   const region = env.AWS_REGION;
@@ -719,6 +739,7 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
     const stats: StatsDeps | undefined = lakeNow === undefined ? undefined : { lake: lakeNow, tableBucket, hot };
     return {
       table, modes, ...searchEmbedderDeps, now, log,
+      ...(keywordIndexOn() ? {} : { keywordIndex: false as const }),
       limiter: dynamoRateLimiter(table, now),
       // SRL-4: rows about a Rovara task are also checked against the task's live visibility (State table), so narrowing a task hides its old rows.
       taskVisibility: tableTaskVisibilityPort({ documentClient: input.documentClient, tableName: state.tableName, now }),
@@ -1187,18 +1208,51 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
   }
   /** True while the company is closing or closed (read fresh): the re-embed job leaves it alone (N5). */
   const companyIsClosing = async (orgId: OrgId): Promise<boolean> => (await whyClosed(orgId, undefined, true)) === "company_closed";
+  /** The keyword index's maintenance over the workspaces (or one: `only`), for `runMs`; its counts go into the job's details. A failure never stops the job it runs in (a fixed log line). */
+  async function keywordIndexJob(startedAt: number, runMs: number, expiry: boolean, only?: OrgId): Promise<Record<string, number>> {
+    if (input.keywordIndex === false) return {};
+    const build = keywordIndexOn();
+    try {
+      const erasing = await listErasingOrgs(table);
+      const deps: KeywordIndexJobDeps = {
+        table, now, log, projects: projectsOf, projectOpen: async (orgId, project) => (await whyClosed(orgId, project, true)) === undefined,
+        orgs: async () => (only === undefined ? (await listDirectoryOrgs(table)).filter((orgId) => !erasing.has(orgId)) : erasing.has(only) ? [] : [only]),
+      };
+      const done = await runKeywordIndexJob(deps, startedAt, runMs, { expiry, build });
+      return { kwProjects: done.projects, kwRebuilt: done.rebuilt, kwFolded: done.folded, kwSealed: done.sealed, kwMerged: done.merged, kwExpired: done.expired, kwOverdue: done.overdue, kwBuilding: done.building ? 1 : 0, kwFailed: done.failed };
+    } catch {
+      log("record.keyword_index_job_failed", {});
+      return { kwFailed: 1 };
+    }
+  }
   const jobs: TeamRecordRuntime["jobs"] = {
+    async clearKeywordIndex(orgId) {
+      let deleted = 0;
+      let more = false;
+      for (const project of [...await projectsOf(orgId), undefined]) {
+        const done = await eraseKeywordIndexItems({ table, now, log }, orgId, project, KEYWORD_CLEAR_MAX_ITEMS - deleted);
+        deleted += done.deleted;
+        if (done.more) { more = true; break; }
+      }
+      log("record.keyword_index_cleared", { deleted, more });
+      return { deleted, more };
+    },
     extend(job, work) {
       extensions[job].push(work);
       return () => { const at = extensions[job].indexOf(work); if (at >= 0) extensions[job].splice(at, 1); };
     },
     async run(job) {
       if (job === "reembed") {
-        // Maintenance of stored rows' vectors. Paused (or no embedder in this install): nothing to do. Strict about nothing else: a workspace whose index cannot be opened is skipped this run.
-        if (paused || jobEmbedder === undefined) return { orgs: 0, skippedOrgs: 0, details: { skipped: 1 } };
-        // R2 and R3: one deadline for the whole run, measured from here; the least recently served workspace first, each with a share of what is left, each with a cursor (reembed.ts).
         const startedAt = now();
-        return reembedRun({ table, embedder: jobEmbedder, vectorsFor: (orgId) => indexFor(orgId), isClosing: companyIsClosing, now, log }, startedAt, { maxRows: 100, maxScanned: 1_000, callMs: EMBEDDER_JOB_WAIT_MS, warmCallMs: 5_000 }, REEMBED_RUN_MS);
+        // Lanes K2/K3: the keyword index's maintenance (rebuild what a removal marked, fold late rows, seal the tail, build a project's index the first time) runs FIRST, inside its own small share of the 15-minute run, so a
+        // removal waits at most one run for its rebuild. It runs even when the record is paused or there is no embedder: a removal still has to leave the index.
+        const keyword = await keywordIndexJob(startedAt, KEYWORD_JOB_MS, false);
+        // Maintenance of stored rows' vectors. Paused (or no embedder in this install): nothing to do. Strict about nothing else: a workspace whose index cannot be opened is skipped this run.
+        if (paused || jobEmbedder === undefined) return { orgs: 0, skippedOrgs: 0, details: { skipped: 1, ...keyword } };
+        // R2 and R3: one deadline for the whole run, measured from the job's start (the keyword share included); the least recently served workspace first, each with a share of what is left, each with a cursor (reembed.ts).
+        const embedded = await reembedRun({ table, embedder: jobEmbedder, vectorsFor: (orgId) => indexFor(orgId), isClosing: companyIsClosing, now, log }, startedAt, { maxRows: 100, maxScanned: 1_000, callMs: EMBEDDER_JOB_WAIT_MS, warmCallMs: 5_000 }, REEMBED_RUN_MS);
+        Object.assign(embedded.details, keyword);
+        return embedded;
       }
       if (job === "hourly") {
         // TRW-5 S1: text that reached the dead-letter queue anyway is deleted from it, first, so an org's slow work cannot starve it.
@@ -1247,11 +1301,14 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
         const lakeNow = lakeClient();
         // Lessons in production: the nightly re-reflection of reverted tasks runs with the expiry (it only sends ids to a queue), before the archive's longer work.
         const extra = await runExtensions("nightly", orgId, Math.max(1_000, budgetMs / 4));
-        if (lakeNow === undefined || vectors === undefined) return { expired: Object.values(expired).filter((value): value is number => typeof value === "number").reduce((total, value) => total + value, 0), ...extra };
-        const archived = await runArchive({
+        const expiredCount = Object.values(expired).filter((value): value is number => typeof value === "number").reduce((total, value) => total + value, 0);
+        const archived = lakeNow === undefined || vectors === undefined ? undefined : await runArchive({
           source: tableHotArchiveSource(table, { projects: projectsOf }, lakeQueue, now), lake: lakeNow, tableBucket, vectors, lakeDeletes: lakeQueue, edition,
         }, { workspaceId: orgId, budget: { maxRows: 500, maxMs: Math.max(1_000, budgetMs / 2) } });
-        return { expired: Object.values(expired).filter((value): value is number => typeof value === "number").reduce((total, value) => total + value, 0), archived: archived.archived, ...extra };
+        // Lanes K2/K3: AFTER the expiry and the archiver, the keyword index drops the words of raw text that has expired and of rows that are past their hot expiry (archived: gone from the index the night they are, a week before the TTL
+        // removes them), rebuilding only the segments that hold one.
+        Object.assign(extra, await keywordIndexJob(now(), Math.max(1_000, budgetMs / 3), true, orgId));
+        return { expired: expiredCount, ...(archived === undefined ? {} : { archived: archived.archived }), ...extra };
       });
     },
   };

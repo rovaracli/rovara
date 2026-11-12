@@ -34,8 +34,18 @@ export function passageRanges(count: number, size: number = PASSAGE_TOKENS): Arr
   }
 }
 
+/** The query words the keyword side counts: the distinct tokens of the query, two characters or more, at most 12 (the rule the whole-row and the passage scorer and the keyword index share). */
+export function keywordNeedles(query: string): string[] {
+  return [...new Set(keywordTokens(query))].filter((word) => word.length >= 2).slice(0, 12);
+}
+
+/** BM25's k1 and b, and the score of one passage with `frequency` hits of a word of weight `idf` (the formula the passage scorer and the keyword index share, written once so they cannot drift). */
+export function bm25Term(idf: number, frequency: number, length: number, average: number): number {
+  return idf * (frequency * 2.2) / (frequency + 1.2 * (0.25 + 0.75 * length / average));
+}
+
 function scoreByPassage(query: string, documents: readonly string[], size: number): number[] {
-  const needles = [...new Set(keywordTokens(query))].filter((word) => word.length >= 2).slice(0, 12);
+  const needles = keywordNeedles(query);
   if (needles.length === 0 || documents.length === 0) return documents.map(() => 0);
   const wanted = new Set(needles);
   // Only the query's words are counted inside a passage; the length of every passage is kept for the average.
@@ -63,7 +73,7 @@ function scoreByPassage(query: string, documents: readonly string[], size: numbe
     let score = 0;
     for (const word of needles) {
       const frequency = entry.counts.get(word);
-      if (frequency !== undefined) score += (idf.get(word) as number) * (frequency * 2.2) / (frequency + 1.2 * (0.25 + 0.75 * entry.length / average));
+      if (frequency !== undefined) score += bm25Term(idf.get(word) as number, frequency, entry.length, average);
     }
     if (score > (best[entry.owner] as number)) best[entry.owner] = score;
   }

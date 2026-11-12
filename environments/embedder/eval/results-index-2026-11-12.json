@@ -1,0 +1,710 @@
+{
+  "vector_topk": 30,
+  "window": 400,
+  "passage_tokens": 80,
+  "runs": [
+    {
+      "rows": 490,
+      "queries": 55,
+      "window": 400,
+      "systems": {
+        "bge-small": {
+          "all": {
+            "hit5": 0.745,
+            "mrr": 0.708,
+            "recall5": 0.377
+          },
+          "short rows": {
+            "hit5": 0.884,
+            "mrr": 0.838,
+            "recall5": 0.413
+          },
+          "long, fact late": {
+            "hit5": 0.0,
+            "mrr": 0.051,
+            "recall5": 0.0
+          },
+          "long, fact early": {
+            "hit5": 0.75,
+            "mrr": 0.625,
+            "recall5": 0.75
+          }
+        },
+        "bm25-whole (window 400, 0.5.15)": {
+          "all": {
+            "hit5": 0.709,
+            "mrr": 0.676,
+            "recall5": 0.336
+          },
+          "short rows": {
+            "hit5": 0.814,
+            "mrr": 0.773,
+            "recall5": 0.337
+          },
+          "long, fact late": {
+            "hit5": 0.25,
+            "mrr": 0.226,
+            "recall5": 0.25
+          },
+          "long, fact early": {
+            "hit5": 0.5,
+            "mrr": 0.528,
+            "recall5": 0.5
+          }
+        },
+        "blend-whole (window 400, 0.5.15)": {
+          "all": {
+            "hit5": 0.8,
+            "mrr": 0.72,
+            "recall5": 0.414
+          },
+          "short rows": {
+            "hit5": 0.884,
+            "mrr": 0.806,
+            "recall5": 0.39
+          },
+          "long, fact late": {
+            "hit5": 0.375,
+            "mrr": 0.244,
+            "recall5": 0.375
+          },
+          "long, fact early": {
+            "hit5": 0.75,
+            "mrr": 0.75,
+            "recall5": 0.75
+          }
+        },
+        "bm25-passage (window 400, K1)": {
+          "all": {
+            "hit5": 0.836,
+            "mrr": 0.766,
+            "recall5": 0.441
+          },
+          "short rows": {
+            "hit5": 0.837,
+            "mrr": 0.786,
+            "recall5": 0.331
+          },
+          "long, fact late": {
+            "hit5": 0.875,
+            "mrr": 0.667,
+            "recall5": 0.875
+          },
+          "long, fact early": {
+            "hit5": 0.75,
+            "mrr": 0.75,
+            "recall5": 0.75
+          }
+        },
+        "blend-passage (window 400, K1)": {
+          "all": {
+            "hit5": 0.818,
+            "mrr": 0.744,
+            "recall5": 0.432
+          },
+          "short rows": {
+            "hit5": 0.884,
+            "mrr": 0.815,
+            "recall5": 0.39
+          },
+          "long, fact late": {
+            "hit5": 0.5,
+            "mrr": 0.355,
+            "recall5": 0.5
+          },
+          "long, fact early": {
+            "hit5": 0.75,
+            "mrr": 0.75,
+            "recall5": 0.75
+          }
+        },
+        "bm25-passage (full, oracle)": {
+          "all": {
+            "hit5": 0.982,
+            "mrr": 0.888,
+            "recall5": 0.545
+          },
+          "short rows": {
+            "hit5": 0.977,
+            "mrr": 0.917,
+            "recall5": 0.419
+          },
+          "long, fact late": {
+            "hit5": 1.0,
+            "mrr": 0.76,
+            "recall5": 1.0
+          },
+          "long, fact early": {
+            "hit5": 1.0,
+            "mrr": 0.833,
+            "recall5": 1.0
+          }
+        },
+        "blend-passage-kwtop30 (full, oracle)": {
+          "all": {
+            "hit5": 0.891,
+            "mrr": 0.838,
+            "recall5": 0.518
+          },
+          "short rows": {
+            "hit5": 0.93,
+            "mrr": 0.902,
+            "recall5": 0.453
+          },
+          "long, fact late": {
+            "hit5": 0.75,
+            "mrr": 0.524,
+            "recall5": 0.75
+          },
+          "long, fact early": {
+            "hit5": 0.75,
+            "mrr": 0.775,
+            "recall5": 0.75
+          }
+        },
+        "bm25-index (production)": {
+          "all": {
+            "hit5": 0.982,
+            "mrr": 0.888,
+            "recall5": 0.545
+          },
+          "short rows": {
+            "hit5": 0.977,
+            "mrr": 0.917,
+            "recall5": 0.419
+          },
+          "long, fact late": {
+            "hit5": 1.0,
+            "mrr": 0.76,
+            "recall5": 1.0
+          },
+          "long, fact early": {
+            "hit5": 1.0,
+            "mrr": 0.833,
+            "recall5": 1.0
+          }
+        },
+        "blend-index (production recordSearch)": {
+          "all": {
+            "hit5": 0.891,
+            "mrr": 0.838,
+            "recall5": 0.518
+          },
+          "short rows": {
+            "hit5": 0.93,
+            "mrr": 0.902,
+            "recall5": 0.453
+          },
+          "long, fact late": {
+            "hit5": 0.75,
+            "mrr": 0.524,
+            "recall5": 0.75
+          },
+          "long, fact early": {
+            "hit5": 0.75,
+            "mrr": 0.775,
+            "recall5": 0.75
+          }
+        }
+      },
+      "runner_seconds": 17.2,
+      "top10_scores_equal": 55,
+      "top10_same_set_or_equal_scores": 55,
+      "index": {
+        "buildMs": 27,
+        "coldLoadMs": 9,
+        "lateRows": 2,
+        "shape": {
+          "segments": 1,
+          "docs": 459,
+          "tail": 29,
+          "late": 2
+        },
+        "segments": [
+          {
+            "docs": 459,
+            "bytes": 66457,
+            "chunks": 1
+          }
+        ]
+      }
+    },
+    {
+      "rows": 5140,
+      "queries": 55,
+      "window": 400,
+      "systems": {
+        "bge-small": {
+          "all": {
+            "hit5": 0.691,
+            "mrr": 0.676,
+            "recall5": 0.305
+          },
+          "short rows": {
+            "hit5": 0.837,
+            "mrr": 0.816,
+            "recall5": 0.343
+          },
+          "long, fact late": {
+            "hit5": 0.0,
+            "mrr": 0.004,
+            "recall5": 0.0
+          },
+          "long, fact early": {
+            "hit5": 0.5,
+            "mrr": 0.523,
+            "recall5": 0.5
+          }
+        },
+        "bm25-whole (window 400, 0.5.15)": {
+          "all": {
+            "hit5": 0.236,
+            "mrr": 0.218,
+            "recall5": 0.059
+          },
+          "short rows": {
+            "hit5": 0.302,
+            "mrr": 0.276,
+            "recall5": 0.076
+          },
+          "long, fact late": {
+            "hit5": 0.0,
+            "mrr": 0.018,
+            "recall5": 0.0
+          },
+          "long, fact early": {
+            "hit5": 0.0,
+            "mrr": 0.0,
+            "recall5": 0.0
+          }
+        },
+        "blend-whole (window 400, 0.5.15)": {
+          "all": {
+            "hit5": 0.709,
+            "mrr": 0.48,
+            "recall5": 0.286
+          },
+          "short rows": {
+            "hit5": 0.86,
+            "mrr": 0.59,
+            "recall5": 0.32
+          },
+          "long, fact late": {
+            "hit5": 0.0,
+            "mrr": 0.011,
+            "recall5": 0.0
+          },
+          "long, fact early": {
+            "hit5": 0.5,
+            "mrr": 0.228,
+            "recall5": 0.5
+          }
+        },
+        "bm25-passage (window 400, K1)": {
+          "all": {
+            "hit5": 0.255,
+            "mrr": 0.234,
+            "recall5": 0.077
+          },
+          "short rows": {
+            "hit5": 0.302,
+            "mrr": 0.276,
+            "recall5": 0.076
+          },
+          "long, fact late": {
+            "hit5": 0.125,
+            "mrr": 0.125,
+            "recall5": 0.125
+          },
+          "long, fact early": {
+            "hit5": 0.0,
+            "mrr": 0.0,
+            "recall5": 0.0
+          }
+        },
+        "blend-passage (window 400, K1)": {
+          "all": {
+            "hit5": 0.727,
+            "mrr": 0.482,
+            "recall5": 0.305
+          },
+          "short rows": {
+            "hit5": 0.86,
+            "mrr": 0.589,
+            "recall5": 0.32
+          },
+          "long, fact late": {
+            "hit5": 0.125,
+            "mrr": 0.033,
+            "recall5": 0.125
+          },
+          "long, fact early": {
+            "hit5": 0.5,
+            "mrr": 0.228,
+            "recall5": 0.5
+          }
+        },
+        "bm25-passage (full, oracle)": {
+          "all": {
+            "hit5": 0.945,
+            "mrr": 0.853,
+            "recall5": 0.527
+          },
+          "short rows": {
+            "hit5": 0.953,
+            "mrr": 0.886,
+            "recall5": 0.419
+          },
+          "long, fact late": {
+            "hit5": 0.875,
+            "mrr": 0.75,
+            "recall5": 0.875
+          },
+          "long, fact early": {
+            "hit5": 1.0,
+            "mrr": 0.708,
+            "recall5": 1.0
+          }
+        },
+        "blend-passage-kwtop30 (full, oracle)": {
+          "all": {
+            "hit5": 0.909,
+            "mrr": 0.8,
+            "recall5": 0.527
+          },
+          "short rows": {
+            "hit5": 0.93,
+            "mrr": 0.878,
+            "recall5": 0.442
+          },
+          "long, fact late": {
+            "hit5": 0.75,
+            "mrr": 0.379,
+            "recall5": 0.75
+          },
+          "long, fact early": {
+            "hit5": 1.0,
+            "mrr": 0.8,
+            "recall5": 1.0
+          }
+        },
+        "bm25-index (production)": {
+          "all": {
+            "hit5": 0.945,
+            "mrr": 0.853,
+            "recall5": 0.527
+          },
+          "short rows": {
+            "hit5": 0.953,
+            "mrr": 0.886,
+            "recall5": 0.419
+          },
+          "long, fact late": {
+            "hit5": 0.875,
+            "mrr": 0.75,
+            "recall5": 0.875
+          },
+          "long, fact early": {
+            "hit5": 1.0,
+            "mrr": 0.708,
+            "recall5": 1.0
+          }
+        },
+        "blend-index (production recordSearch)": {
+          "all": {
+            "hit5": 0.909,
+            "mrr": 0.8,
+            "recall5": 0.527
+          },
+          "short rows": {
+            "hit5": 0.93,
+            "mrr": 0.878,
+            "recall5": 0.442
+          },
+          "long, fact late": {
+            "hit5": 0.75,
+            "mrr": 0.379,
+            "recall5": 0.75
+          },
+          "long, fact early": {
+            "hit5": 1.0,
+            "mrr": 0.8,
+            "recall5": 1.0
+          }
+        }
+      },
+      "runner_seconds": 310.0,
+      "top10_scores_equal": 55,
+      "top10_same_set_or_equal_scores": 55,
+      "index": {
+        "buildMs": 463,
+        "coldLoadMs": 52,
+        "lateRows": 143,
+        "shape": {
+          "segments": 2,
+          "docs": 4968,
+          "tail": 29,
+          "late": 143
+        },
+        "segments": [
+          {
+            "docs": 3999,
+            "bytes": 327147,
+            "chunks": 2
+          },
+          {
+            "docs": 969,
+            "bytes": 83844,
+            "chunks": 1
+          }
+        ]
+      }
+    },
+    {
+      "rows": 20140,
+      "queries": 55,
+      "window": 400,
+      "systems": {
+        "bge-small": {
+          "all": {
+            "hit5": 0.691,
+            "mrr": 0.668,
+            "recall5": 0.3
+          },
+          "short rows": {
+            "hit5": 0.837,
+            "mrr": 0.808,
+            "recall5": 0.337
+          },
+          "long, fact late": {
+            "hit5": 0.0,
+            "mrr": 0.0,
+            "recall5": 0.0
+          },
+          "long, fact early": {
+            "hit5": 0.5,
+            "mrr": 0.5,
+            "recall5": 0.5
+          }
+        },
+        "bm25-whole (window 400, 0.5.15)": {
+          "all": {
+            "hit5": 0.018,
+            "mrr": 0.018,
+            "recall5": 0.005
+          },
+          "short rows": {
+            "hit5": 0.023,
+            "mrr": 0.023,
+            "recall5": 0.006
+          },
+          "long, fact late": {
+            "hit5": 0.0,
+            "mrr": 0.0,
+            "recall5": 0.0
+          },
+          "long, fact early": {
+            "hit5": 0.0,
+            "mrr": 0.0,
+            "recall5": 0.0
+          }
+        },
+        "blend-whole (window 400, 0.5.15)": {
+          "all": {
+            "hit5": 0.673,
+            "mrr": 0.542,
+            "recall5": 0.291
+          },
+          "short rows": {
+            "hit5": 0.814,
+            "mrr": 0.658,
+            "recall5": 0.326
+          },
+          "long, fact late": {
+            "hit5": 0.0,
+            "mrr": 0.0,
+            "recall5": 0.0
+          },
+          "long, fact early": {
+            "hit5": 0.5,
+            "mrr": 0.375,
+            "recall5": 0.5
+          }
+        },
+        "bm25-passage (window 400, K1)": {
+          "all": {
+            "hit5": 0.018,
+            "mrr": 0.018,
+            "recall5": 0.005
+          },
+          "short rows": {
+            "hit5": 0.023,
+            "mrr": 0.023,
+            "recall5": 0.006
+          },
+          "long, fact late": {
+            "hit5": 0.0,
+            "mrr": 0.0,
+            "recall5": 0.0
+          },
+          "long, fact early": {
+            "hit5": 0.0,
+            "mrr": 0.0,
+            "recall5": 0.0
+          }
+        },
+        "blend-passage (window 400, K1)": {
+          "all": {
+            "hit5": 0.673,
+            "mrr": 0.542,
+            "recall5": 0.291
+          },
+          "short rows": {
+            "hit5": 0.814,
+            "mrr": 0.658,
+            "recall5": 0.326
+          },
+          "long, fact late": {
+            "hit5": 0.0,
+            "mrr": 0.0,
+            "recall5": 0.0
+          },
+          "long, fact early": {
+            "hit5": 0.5,
+            "mrr": 0.375,
+            "recall5": 0.5
+          }
+        },
+        "bm25-passage (full, oracle)": {
+          "all": {
+            "hit5": 0.945,
+            "mrr": 0.859,
+            "recall5": 0.532
+          },
+          "short rows": {
+            "hit5": 0.953,
+            "mrr": 0.886,
+            "recall5": 0.424
+          },
+          "long, fact late": {
+            "hit5": 0.875,
+            "mrr": 0.799,
+            "recall5": 0.875
+          },
+          "long, fact early": {
+            "hit5": 1.0,
+            "mrr": 0.688,
+            "recall5": 1.0
+          }
+        },
+        "blend-passage-kwtop30 (full, oracle)": {
+          "all": {
+            "hit5": 0.873,
+            "mrr": 0.769,
+            "recall5": 0.5
+          },
+          "short rows": {
+            "hit5": 0.907,
+            "mrr": 0.858,
+            "recall5": 0.43
+          },
+          "long, fact late": {
+            "hit5": 0.75,
+            "mrr": 0.379,
+            "recall5": 0.75
+          },
+          "long, fact early": {
+            "hit5": 0.75,
+            "mrr": 0.598,
+            "recall5": 0.75
+          }
+        },
+        "bm25-index (production)": {
+          "all": {
+            "hit5": 0.945,
+            "mrr": 0.859,
+            "recall5": 0.532
+          },
+          "short rows": {
+            "hit5": 0.953,
+            "mrr": 0.886,
+            "recall5": 0.424
+          },
+          "long, fact late": {
+            "hit5": 0.875,
+            "mrr": 0.799,
+            "recall5": 0.875
+          },
+          "long, fact early": {
+            "hit5": 1.0,
+            "mrr": 0.688,
+            "recall5": 1.0
+          }
+        },
+        "blend-index (production recordSearch)": {
+          "all": {
+            "hit5": 0.873,
+            "mrr": 0.769,
+            "recall5": 0.5
+          },
+          "short rows": {
+            "hit5": 0.907,
+            "mrr": 0.858,
+            "recall5": 0.43
+          },
+          "long, fact late": {
+            "hit5": 0.75,
+            "mrr": 0.379,
+            "recall5": 0.75
+          },
+          "long, fact early": {
+            "hit5": 0.75,
+            "mrr": 0.598,
+            "recall5": 0.75
+          }
+        }
+      },
+      "runner_seconds": 18.8,
+      "top10_scores_equal": 55,
+      "top10_same_set_or_equal_scores": 55,
+      "index": {
+        "buildMs": 6754,
+        "coldLoadMs": 195,
+        "lateRows": 290,
+        "shape": {
+          "segments": 5,
+          "docs": 19821,
+          "tail": 29,
+          "late": 290
+        },
+        "segments": [
+          {
+            "docs": 3999,
+            "bytes": 310095,
+            "chunks": 2
+          },
+          {
+            "docs": 3999,
+            "bytes": 309257,
+            "chunks": 2
+          },
+          {
+            "docs": 3999,
+            "bytes": 312862,
+            "chunks": 2
+          },
+          {
+            "docs": 3999,
+            "bytes": 307152,
+            "chunks": 2
+          },
+          {
+            "docs": 3825,
+            "bytes": 296257,
+            "chunks": 1
+          }
+        ]
+      }
+    }
+  ]
+}
