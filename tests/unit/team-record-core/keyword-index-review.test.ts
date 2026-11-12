@@ -140,6 +140,21 @@ describe("review: a segment the manifest lists is never taken for an orphan, and
   });
 });
 
+describe("review: coverage", () => {
+  it("a project whose first build is not finished is not searched through the index even when its tail is short (the window answers)", async () => {
+    const w = world();
+    await addSource(w, { source: "github", scope: GITHUB_SCOPE });
+    seedRows(w, Array.from({ length: 30 }, (_unused, i) => rowOf(w, i, { text: `row ${String(i)} zzcoverword`, at: w.clock.ms - 3 * DAY + i * 60_000 })));
+    await buildIndex(w);
+    expect(await openKeywordIndex(depsOf(w), ORG_A, "web", NOW(w))).toBeDefined();
+    const item = w.db.get({ pk: teamRecordPk(ORG_A, "web"), sk: "KWIDX#M" })!;
+    w.db.set({ ...item, coverage: "building" });
+    expect(await openKeywordIndex(depsOf(w), ORG_A, "web", NOW(w))).toBeUndefined();
+    expect((await ids(w, "zzcoverword")).length).toBeGreaterThan(0);
+    expect(logged(w, "record.keyword_index")).toBe(false);
+  });
+});
+
 describe("review: the limits of a build and a search", () => {
   it("a build stops at SEGMENT_BYTES of text, not only at SEGMENT_DOCS rows, and a merge does not put the pieces back together", async () => {
     const w = world();
@@ -157,6 +172,23 @@ describe("review: the limits of a build and a search", () => {
     // a pass that has nothing to do really has nothing: no merge undoes the byte cut
     const again = await maintainProject(depsOf(w), ORG_A, "web", { deadlineAt: w.clock.ms + 60_000 });
     expect(again).toMatchObject({ merged: 0, sealed: 0, rebuilt: 0 });
+  }, 300_000);
+
+  it("a rebuild of a range that grew is cut by bytes too, not only by rows", async () => {
+    const w = world();
+    await addSource(w, { source: "github", scope: GITHUB_SCOPE });
+    seedRows(w, Array.from({ length: 10 }, (_unused, i) => rowOf(w, i, { text: `seed row ${String(i)}`, at: w.clock.ms - 6 * DAY + i * 60_000 })));
+    await buildIndex(w);
+    expect(manifestOf(w)!.segments).toHaveLength(1);
+    const filler = "billing retry queue consumer ".repeat(280);
+    const count = Math.ceil((SEGMENT_BYTES * 1.6) / 8_400);
+    seedRows(w, Array.from({ length: count }, (_unused, i) => rowOf(w, 1_000 + i, { text: `${filler} marker${String(i)}`, at: w.clock.ms - 5 * DAY + i * 1_000 })));
+    await markKeywordIndexRemoved(depsOf(w), ORG_A, "web", [new Date(w.clock.ms - 6 * DAY).toISOString()]);
+    await maintainProject(depsOf(w), ORG_A, "web", { deadlineAt: w.clock.ms + 120_000 });
+    const manifest = manifestOf(w)!;
+    expect(manifest.segments.length).toBeGreaterThanOrEqual(2);
+    expect(manifest.segments.reduce((sum, entry) => sum + entry.docs, 0)).toBe(count + 10);
+    expect(Math.max(...manifest.segments.map((entry) => entry.srcBytes ?? 0))).toBeLessThan(SEGMENT_BYTES + 300 * 8_400);
   }, 300_000);
 
   it("more rows at one instant than SAME_INSTANT_MAX_ROWS cannot be cut into segments: the pass fails closed and the project is searched by the window", async () => {
@@ -302,6 +334,24 @@ describe("review: gaps the mutations found", () => {
     expect(blocked.waiting).toBe(1);
     const free = await removalGate(depsOf(w), ORG_A, [row], { budgetMs: 30_000 });
     expect(free.ready.size).toBe(1);
+  });
+
+  it("the gate waits for a build under way (a fresh intent) and takes a dead one's chunks once it is old", async () => {
+    const w = world();
+    await addSource(w, { source: "github", scope: GITHUB_SCOPE });
+    seedRows(w, [rowOf(w, 1, { text: "intent zzintent", at: w.clock.ms - 3 * DAY }), rowOf(w, 2, { text: "other", at: w.clock.ms - 3 * DAY + 60_000 })]);
+    await buildIndex(w);
+    const row = w.db.find((item) => item.entityType === "TEAM_RECORD_EVENT" && typeof item.text === "string" && item.text.includes("zzintent"))[0]!;
+    const pk = teamRecordPk(ORG_A, "web");
+    w.db.set({ pk, sk: "KWIDX#B#deadbuild01", entityType: "TEAM_RECORD_KWIDX_BUILD", segment: "deadbuild01", at: new Date(w.clock.ms).toISOString() });
+    w.db.set({ pk, sk: "KWIDX#S#deadbuild01#00000", entityType: "TEAM_RECORD_KWIDX_CHUNK", segment: "deadbuild01", n: 0, data: new Uint8Array([1, 2, 3]) });
+    const young = await removalGate(depsOf(w), ORG_A, [row], { budgetMs: 30_000 });
+    expect(young.ready.size).toBe(0);                                  // a build may be under way: wait
+    w.clock.ms += 3 * 60_000;
+    const old = await removalGate(depsOf(w), ORG_A, [row], { budgetMs: 30_000 });
+    expect(old.ready.size).toBe(1);
+    expect(w.db.get({ pk, sk: "KWIDX#S#deadbuild01#00000" })).toBeUndefined();
+    expect(w.db.get({ pk, sk: "KWIDX#B#deadbuild01" })).toBeUndefined();
   });
 
   it("a tail longer than TAIL_MAX_ROWS is not searched through the index: the window answers", async () => {
