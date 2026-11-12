@@ -217,7 +217,7 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
     ...(edition === undefined ? {} : { edition }),
     ...(parseInternetEgress(enterpriseInternetEgressContext) === undefined ? {} : { internetEgress: parseInternetEgress(enterpriseInternetEgressContext)! }),
     ...(enterpriseEgressCidrsContext === undefined ? {} : { enterpriseEgressCidrs: enterpriseCidrs }),
-    ...(modelProxyTls === undefined ? {} : { modelProxyTlsName: modelProxyTls.name }),
+    ...(modelProxyTls === undefined ? {} : { modelProxyTlsName: modelProxyTls.name, modelProxyLegacyHttp: modelProxyTls.legacyHttp }),
     ...(mcpHostProps === undefined ? {} : { stdioMcpAllowDomains: mcpHostAllowDomains({ controllerDnsNamespace: mcpHostProps.controllerDnsNamespace, npmRegistry: mcpHostProps.npmRegistry, region: deploymentRegion ?? "us-east-1" }) }),
     ...(naming.env === undefined ? {} : { stackName: naming.stackName("foundation") }),
   });

@@ -4,6 +4,7 @@
 // `DeployCliDependencies` (main.ts's `CliDependencies.deploy`), the same seam the `env` commands use
 // (`CliDependencies.environments`), so tests exercise the real wiring against fakes, never AWS.
 import { readTeamRecordSwitch } from "./team-record-switch.js";
+import { readModelProxyTlsSetting } from "./model-proxy-tls.js";
 import { enforceTeamRecordPreflight, type TeamRecordProbe } from "./team-record-preflight.js";
 import { dynamoTeamRecordProbe } from "./team-record-probe.js";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
@@ -787,6 +788,10 @@ export async function prepareDeployment(input: {
   const resolveEdition = () => resolveDeployEdition({ store, env: input.env, engine: input.engine, cloud: input.cloud === true, requested: input.edition });
   let edition: Edition | undefined;
 
+  // MODEL-PROXY-TLS: the recorded HTTPS setting is synthesized on every cdk deploy (the upgrade's checks before this: upgrade/run.ts, deploy/model-proxy-tls.ts).
+  const modelProxyTls = await readModelProxyTlsSetting(store, input.env);
+  if (modelProxyTls !== undefined && input.engine !== "cdk") throw agentXError("CONFIG_INVALID", `${input.env} records a model proxy TLS setting, which only the cdk engine (agentx upgrade --source) can deploy; the prebuilt templates would put the proxy back on plain http. Nothing was deployed`);
+
   let deployer: StackDeployer;
   let cdkOutputsDir: string | undefined;
   let builtSource: BuiltSource | undefined;
@@ -828,6 +833,7 @@ export async function prepareDeployment(input: {
       const cloud = {
         ...(input.cloud === true ? { cloud: true } : {}), ...(input.reservedConcurrency === false ? { reservedConcurrency: false as const } : {}),
         ...(edition === undefined ? {} : { edition }), ...(input.newInstall === true ? { newInstall: true } : {}), ...(teamRecord === undefined ? {} : { teamRecord }),
+        ...(modelProxyTls === undefined ? {} : { modelProxyTls }),
         releaseVersion: release.manifest.version,
       };
       declaredParameters = await synthDeclaredParameters({ runner, source, env: input.env, region, identityMode: input.identityMode, ...cloud });

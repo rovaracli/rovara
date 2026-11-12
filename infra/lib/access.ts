@@ -40,7 +40,7 @@ export interface AccessStackProps extends StackProps {
   cloud?: boolean;
   /**
    * MODEL-PROXY-TLS (decision 110): the model proxy's HTTPS name and certificate source. The deploy role then gets, in a managed policy of its own, exactly what building the
-   * certificate, the private zone and the alias record needs (infra/lib/model-proxy-tls.ts). Absent: no such policy.
+   * certificate and the alias record need (infra/lib/model-proxy-tls.ts). Absent: no such policy.
    */
   modelProxyTls?: ModelProxyTls;
 }
@@ -217,7 +217,7 @@ export class AccessStack extends Stack {
     if (props.modelProxyTls !== undefined) {
       // Its own managed policy (6,144 characters of room), attached to the deploy role only: the role's inline policies stay as they were.
       new iam.CfnManagedPolicy(this, "ModelProxyTlsDeployPolicy", {
-        description: `Lets the ${env} deploy role build the model proxy HTTPS certificate, private zone and alias record`,
+        description: `Lets the ${env} deploy role build the model proxy HTTPS certificate and alias record`,
         roles: [serviceRole.ref],
         policyDocument: { Version: "2012-10-17", Statement: modelProxyTlsDeployStatements({ env, partition: Aws.PARTITION, region: Aws.REGION, account: this.account }, props.modelProxyTls) },
       });

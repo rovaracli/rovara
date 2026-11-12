@@ -90,7 +90,7 @@ export interface ModelProxyProps {
   bundledImages?: boolean;
   /**
    * MODEL-PROXY-TLS (decision 110): serve HTTPS under the install's own DNS name (infra/lib/model-proxy-tls.ts). Absent: the plain-http listeners, as before.
-   * Present: HTTPS listeners on 443 (inference) and 8443 (management), a private hosted zone for the name, and every URL `https://`. The plain-http listeners stay only with `legacyHttp`.
+   * Present: HTTPS listeners on 443 (inference) and 8443 (management), a public alias record for the name in the install's zone (decision 127), and every URL `https://`. The plain-http listeners stay only with `legacyHttp`.
    */
   tls?: ModelProxyTls;
 }
@@ -422,7 +422,7 @@ export class ModelProxy extends Construct {
       // The certificate: one the company brought, or a public ACM certificate for the name, validated by DNS in the public zone (CloudFormation writes the validation
       // record and waits until it is issued; ACM renews it by itself while the record stays). Tagged with the environment: the deploy role's grants require it.
       let certificateArn = tls.certificateArn;
-      if (tls.zoneId !== undefined) {
+      if (certificateArn === undefined) {
         const certificate = new acm.CfnCertificate(this, "TlsCertificate", {
           domainName: tls.name,
           validationMethod: "DNS",
@@ -433,24 +433,18 @@ export class ModelProxy extends Construct {
       }
       const sslPolicy = MODEL_PROXY_TLS_POLICY;
       const tlsListener = new elbv2.CfnListener(this, "TlsListener", {
-        loadBalancerArn: loadBalancer.ref, protocol: "HTTPS", port: MODEL_PROXY_TLS_PORT, sslPolicy, certificates: [{ certificateArn: certificateArn! }], defaultActions: [forbidden],
+        loadBalancerArn: loadBalancer.ref, protocol: "HTTPS", port: MODEL_PROXY_TLS_PORT, sslPolicy, certificates: [{ certificateArn }], defaultActions: [forbidden],
       });
       const tlsRule = inferenceRule("TlsInferenceRoutes", tlsListener.ref);
       const tlsManagementListener = new elbv2.CfnListener(this, "TlsManagementListener", {
-        loadBalancerArn: loadBalancer.ref, protocol: "HTTPS", port: MODEL_PROXY_TLS_MANAGEMENT_PORT, sslPolicy, certificates: [{ certificateArn: certificateArn! }],
+        loadBalancerArn: loadBalancer.ref, protocol: "HTTPS", port: MODEL_PROXY_TLS_MANAGEMENT_PORT, sslPolicy, certificates: [{ certificateArn }],
         defaultActions: [{ type: "forward", targetGroupArn: targetGroup.ref }],
       });
       listeners.push(tlsListener, tlsManagementListener);
-      // Split horizon: a PRIVATE zone of exactly the proxy's name, in this VPC only, so the name resolves to the internal load balancer inside the VPC and nothing else
-      // of the company's domain is shadowed. Outside the VPC the name does not resolve at all.
-      const zone = new route53.CfnHostedZone(this, "TlsPrivateZone", {
-        name: tls.name,
-        vpcs: [{ vpcId: props.vpcId, vpcRegion: stack.region }],
-        hostedZoneConfig: { comment: "AgentX model proxy name inside the install VPC" },
-        hostedZoneTags: tags.map(({ key, value }) => ({ key, value })),
-      });
+      // Decision 127 (amends 110): a PUBLIC alias record in the install's own zone. The internal load balancer's own name already resolves publicly to its private addresses,
+      // so the record reveals nothing new; from outside the VPC the addresses are unreachable.
       const record = new route53.CfnRecordSet(this, "TlsAliasRecord", {
-        hostedZoneId: zone.attrId,
+        hostedZoneId: tls.zoneId,
         name: tls.name,
         type: "A",
         aliasTarget: { dnsName: loadBalancer.attrDnsName, hostedZoneId: loadBalancer.attrCanonicalHostedZoneId, evaluateTargetHealth: false },

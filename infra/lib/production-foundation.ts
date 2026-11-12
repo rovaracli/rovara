@@ -69,6 +69,8 @@ export interface ProductionFoundationStackProps extends StackProps {
   stdioMcpAllowDomains?: readonly string[];
   /** MODEL-PROXY-TLS (decision 110): the model proxy's own DNS name, which every caller in the VPC now resolves, so it is on the DNS firewall's allow list. Absent: not listed. */
   modelProxyTlsName?: string;
+  /** With `modelProxyTlsName`: the legacy plain-http listeners are kept this release, so callers may still resolve the load balancer's own name. */
+  modelProxyLegacyHttp?: boolean;
 }
 
 export function defaultProductionAvailabilityZoneIds(
@@ -289,18 +291,20 @@ export class ProductionFoundationStack extends Stack {
 
     // Cloud and Enterprise installs: agent machines (and the proxy, orchestrator and other tasks in this VPC) resolve only an allowlist.
     if ((props.cloud === true || enterprise) && naming.env !== undefined) {
+      // L2: with model proxy TLS on and the legacy listeners gone, the Enterprise list drops the load balancer wildcard.
+      const enterpriseList = (stdioMcp: boolean) => enterpriseAllowDomains(props.deploymentRegion, { stdioMcp, modelProxyElb: props.modelProxyTlsName === undefined || props.modelProxyLegacyHttp === true });
       const dnsFirewall = new AgentDnsFirewall(this, "AgentDnsFirewall", {
         env: naming.env,
         vpcId: vpc.ref,
         // An Enterprise install starts from its own endpoint names; the public defaults are not on its list.
         // A Public install starts from the default list without its broad entries plus its own regional AWS hosts (DEFAULT-ALLOW-LIST-EXFIL, 0.5.15).
-        baseAllowDomains: enterprise ? enterpriseAllowDomains(props.deploymentRegion, { stdioMcp: props.stdioMcpAllowDomains !== undefined }) : hostedAgentAllowDomains(props.deploymentRegion, Aws.ACCOUNT_ID),
+        baseAllowDomains: enterprise ? enterpriseList(props.stdioMcpAllowDomains !== undefined) : hostedAgentAllowDomains(props.deploymentRegion, Aws.ACCOUNT_ID),
         extraAllowDomains: [
-          // The model proxy's https name (decision 110): workers, the orchestrator and the model access function resolve it (to the private zone's alias record).
+          // The model proxy's https name (decision 110): workers, the orchestrator and the model access function resolve it (the public alias record, decision 127).
           ...(props.modelProxyTlsName === undefined ? [] : [props.modelProxyTlsName]),
           // The names an install with package-run servers needs (the ECS name is already in its base list).
-          ...(enterprise ? (props.stdioMcpAllowDomains ?? []).filter((name) => !enterpriseAllowDomains(props.deploymentRegion, { stdioMcp: true }).includes(name)) : []),
-          ...parseExtraAllowDomains(this.node.tryGetContext(EGRESS_ALLOW_DOMAINS_CONTEXT_KEY), enterprise ? enterpriseAllowDomains(props.deploymentRegion, { stdioMcp: props.stdioMcpAllowDomains !== undefined }) : hostedAgentAllowDomains(props.deploymentRegion, Aws.ACCOUNT_ID)),
+          ...(enterprise ? (props.stdioMcpAllowDomains ?? []).filter((name) => !enterpriseList(true).includes(name)) : []),
+          ...parseExtraAllowDomains(this.node.tryGetContext(EGRESS_ALLOW_DOMAINS_CONTEXT_KEY), enterprise ? enterpriseList(props.stdioMcpAllowDomains !== undefined) : hostedAgentAllowDomains(props.deploymentRegion, Aws.ACCOUNT_ID)),
         ],
       });
       // The control plane's broker keeps this list equal to the approved egress domains (it takes the id as a parameter, like the VPC's).

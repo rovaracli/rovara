@@ -51,11 +51,11 @@ describe("the TLS settings (CDK context)", () => {
     expect(() => parse({ [K.legacyHttp]: "keep" })).toThrow(K.name);
   });
 
-  it("takes a name with exactly one certificate source", () => {
+  it("takes a name with its public zone (always: the alias record goes there) and, optionally, a brought certificate", () => {
     expect(parse({ [K.name]: NAME, [K.zoneId]: ZONE })).toEqual({ name: NAME, zoneId: ZONE, legacyHttp: false });
-    expect(parse({ [K.name]: NAME, [K.certificateArn]: BROUGHT, [K.legacyHttp]: "keep" })).toEqual({ name: NAME, certificateArn: BROUGHT, legacyHttp: true });
-    expect(() => parse({ [K.name]: NAME })).toThrow("exactly one");
-    expect(() => parse({ [K.name]: NAME, [K.zoneId]: ZONE, [K.certificateArn]: BROUGHT })).toThrow("exactly one");
+    expect(parse({ [K.name]: NAME, [K.zoneId]: ZONE, [K.certificateArn]: BROUGHT, [K.legacyHttp]: "keep" })).toEqual({ name: NAME, zoneId: ZONE, certificateArn: BROUGHT, legacyHttp: true });
+    expect(() => parse({ [K.name]: NAME })).toThrow(K.zoneId);
+    expect(() => parse({ [K.name]: NAME, [K.certificateArn]: BROUGHT })).toThrow(K.zoneId);
   });
 
   it("refuses names that are not the install's own, bad zones, certificates from another region and unknown switch values", () => {
@@ -63,7 +63,7 @@ describe("the TLS settings (CDK context)", () => {
       expect(() => parse({ [K.name]: bad, [K.zoneId]: ZONE }), bad).toThrow(K.name);
     }
     expect(() => parse({ [K.name]: NAME, [K.zoneId]: "not-a-zone" })).toThrow(K.zoneId);
-    expect(() => parse({ [K.name]: NAME, [K.certificateArn]: BROUGHT.replace(REGION, "eu-west-1") })).toThrow("install's region");
+    expect(() => parse({ [K.name]: NAME, [K.zoneId]: ZONE, [K.certificateArn]: BROUGHT.replace(REGION, "eu-west-1") })).toThrow("install's region");
     expect(() => parse({ [K.name]: NAME, [K.zoneId]: ZONE, [K.legacyHttp]: "yes" })).toThrow(K.legacyHttp);
     expect(() => parseModelProxyTlsContext({ get: (key) => ({ [K.name]: NAME, [K.zoneId]: ZONE } as Record<string, unknown>)[key], env: undefined, region: REGION })).toThrow("named environment");
   });
@@ -105,13 +105,11 @@ describe("with TLS (a certificate made in the install's public zone, no legacy l
     expect(certificates[0]![1].Properties.Tags).toContainEqual({ Key: "agentx:env", Value: "staging" });
   });
 
-  it("resolves the name only inside the VPC: a private zone of exactly that name with an alias A record to the load balancer", () => {
-    const zones = proxyOfType(controlPlane, "AWS::Route53::HostedZone");
-    expect(zones).toHaveLength(1);
-    expect(zones[0]![1].Properties).toMatchObject({ Name: NAME, VPCs: [{ VPCId: { Ref: "VpcId" }, VPCRegion: { Ref: "AWS::Region" } }] });
+  it("decision 127: a PUBLIC alias A record in the install's own zone, and no hosted zone of its own", () => {
+    expect(ofType(controlPlane, "AWS::Route53::HostedZone")).toHaveLength(0);
     const records = proxyOfType(controlPlane, "AWS::Route53::RecordSet");
     expect(records).toHaveLength(1);
-    expect(records[0]![1].Properties).toMatchObject({ Name: NAME, Type: "A", HostedZoneId: { "Fn::GetAtt": [zones[0]![0], "Id"] } });
+    expect(records[0]![1].Properties).toMatchObject({ Name: NAME, Type: "A", HostedZoneId: ZONE });
     expect(JSON.stringify(records[0]![1].Properties.AliasTarget)).toContain("CanonicalHostedZoneID");
   });
 
@@ -157,7 +155,7 @@ describe("with TLS (a certificate made in the install's public zone, no legacy l
     expect(lists.some((domains) => domains?.includes(NAME))).toBe(true);
   });
 
-  it("gives the deploy role a managed policy of its own for the certificate, the private zone and the records", () => {
+  it("gives the deploy role a managed policy of its own for the certificate and the two records, all on the one zone", () => {
     const access = all.AgentXAccess!;
     const policies = ofType(access, "AWS::IAM::ManagedPolicy").filter(([id]) => id.startsWith("ModelProxyTlsDeployPolicy"));
     expect(policies).toHaveLength(1);
@@ -166,13 +164,45 @@ describe("with TLS (a certificate made in the install's public zone, no legacy l
     expect(text).toContain("acm:RequestCertificate");
     expect(text).toContain(`hostedzone/${ZONE}`);
     expect(text.replace(/\s/gu, "").length).toBeLessThan(6_144);
+    // No hosted zone creation, deletion or VPC association, and no grant on any zone but this one.
+    for (const action of ["route53:CreateHostedZone", "route53:DeleteHostedZone", "route53:AssociateVPCWithHostedZone", "route53:DisassociateVPCFromHostedZone"]) expect(text).not.toContain(action);
+    expect(text).not.toContain("hostedzone/*");
+  });
+});
+
+describe("the deploy role's record grants (decision 127)", () => {
+  const scope = { env: "staging", partition: "aws", region: REGION, account: "123456789012" };
+  const made = modelProxyTlsDeployStatements(scope, { name: NAME, zoneId: ZONE, legacyHttp: false });
+  const records = made.filter((statement) => statement.Action.includes("route53:ChangeResourceRecordSets"));
+
+  it("pins every record change to the one zone, with name, type and action conditions that a request cannot leave out", () => {
+    expect(records.map((statement) => statement.Sid).sort()).toEqual(["ModelProxyTlsAliasRecord", "ModelProxyTlsValidationRecord"]);
+    for (const statement of records) {
+      expect(statement.Resource).toBe(`arn:aws:route53:::hostedzone/${ZONE}`);
+      expect(statement.Condition!.Null).toEqual({ "route53:ChangeResourceRecordSetsNormalizedRecordNames": "false", "route53:ChangeResourceRecordSetsRecordTypes": "false", "route53:ChangeResourceRecordSetsActions": "false" });
+      expect(statement.Condition!["ForAllValues:StringEquals"]!["route53:ChangeResourceRecordSetsActions"]).toEqual(["CREATE", "UPSERT", "DELETE"]);
+    }
+    const alias = records.find((statement) => statement.Sid === "ModelProxyTlsAliasRecord")!;
+    expect(alias.Condition!["ForAllValues:StringEquals"]).toMatchObject({ "route53:ChangeResourceRecordSetsNormalizedRecordNames": [NAME], "route53:ChangeResourceRecordSetsRecordTypes": ["A"] });
+    const validation = records.find((statement) => statement.Sid === "ModelProxyTlsValidationRecord")!;
+    expect(validation.Condition!["ForAllValues:StringLike"]).toEqual({ "route53:ChangeResourceRecordSetsNormalizedRecordNames": [`_*.${NAME}`] });
+    expect(validation.Condition!["ForAllValues:StringEquals"]!["route53:ChangeResourceRecordSetsRecordTypes"]).toEqual(["CNAME"]);
+    // Every other Route 53 grant is a read: on the zone, the change ids, or ListHostedZones.
+    const others = made.filter((statement) => statement.Action.some((action) => action.startsWith("route53:")) && !records.includes(statement));
+    expect(others.flatMap((statement) => statement.Action).sort()).toEqual(["route53:GetChange", "route53:GetHostedZone", "route53:ListHostedZones", "route53:ListResourceRecordSets"]);
+  });
+
+  it("with a brought certificate there is no validation record grant", () => {
+    const brought = modelProxyTlsDeployStatements(scope, { name: NAME, zoneId: ZONE, certificateArn: BROUGHT, legacyHttp: false });
+    expect(brought.map((statement) => statement.Sid)).not.toContain("ModelProxyTlsValidationRecord");
+    expect(brought.map((statement) => statement.Sid)).toContain("ModelProxyTlsAliasRecord");
   });
 });
 
 describe("with TLS and a brought certificate, keeping the legacy listeners for one release", () => {
   let all: Record<string, Json>;
   beforeAll(() => {
-    all = stacks({ ...BASE, [MODEL_PROXY_TLS_CONTEXT_KEYS.name]: NAME, [MODEL_PROXY_TLS_CONTEXT_KEYS.certificateArn]: BROUGHT, [MODEL_PROXY_TLS_CONTEXT_KEYS.legacyHttp]: "keep" });
+    all = stacks({ ...BASE, [MODEL_PROXY_TLS_CONTEXT_KEYS.name]: NAME, [MODEL_PROXY_TLS_CONTEXT_KEYS.zoneId]: ZONE, [MODEL_PROXY_TLS_CONTEXT_KEYS.certificateArn]: BROUGHT, [MODEL_PROXY_TLS_CONTEXT_KEYS.legacyHttp]: "keep" });
   }, 400_000);
 
   it("runs the HTTPS listeners beside the old plain-http ones, which keep their logical ids, and makes no certificate", () => {
@@ -190,7 +220,7 @@ describe("with TLS and a brought certificate, keeping the legacy listeners for o
   });
 
   it("grants the deploy role only DescribeCertificate on the brought certificate, no certificate request", () => {
-    const statements = modelProxyTlsDeployStatements({ env: "staging", partition: "aws", region: REGION, account: "123456789012" }, { name: NAME, certificateArn: BROUGHT, legacyHttp: true });
+    const statements = modelProxyTlsDeployStatements({ env: "staging", partition: "aws", region: REGION, account: "123456789012" }, { name: NAME, zoneId: ZONE, certificateArn: BROUGHT, legacyHttp: true });
     const actions = statements.flatMap((statement) => statement.Action);
     expect(actions).not.toContain("acm:RequestCertificate");
     expect(statements.find((statement) => statement.Sid === "ModelProxyTlsBroughtCertificate")).toMatchObject({ Action: ["acm:DescribeCertificate"], Resource: BROUGHT });
@@ -214,6 +244,26 @@ describe("the A3 rule: Code's model provider address check (no private-address e
     expect(modelProviderAddressProblem(`http://${NAME}`)).toMatch(/https/u);
     expect(modelProviderAddressProblem("http://10.42.1.20:4000")).toMatch(/https/u);
   });
+});
+
+describe("L2: an Enterprise install drops the load balancer wildcard once only HTTPS is served", () => {
+  const ENTERPRISE = { agentxEnv: "ent", agentxRegion: REGION, rovaraEdition: "enterprise", rovaraEnterpriseEgressCidrs: "10.99.0.0/16", agentxAuditTsa: "off" };
+  const allowList = (context: Record<string, unknown>) => {
+    const app = buildAgentXApp(context);
+    const foundation = app.node.children.find((child): child is Stack => Stack.isStack(child) && child.node.id === "AgentXProductionFoundation")!;
+    const json = Template.fromStack(foundation).toJSON() as Json;
+    return ofType(json, "AWS::Route53Resolver::FirewallDomainList").map(([, resource]) => resource.Properties.Domains as string[] | undefined).find((domains) => domains?.includes(`*.${REGION}.rds.amazonaws.com`))!;
+  };
+  const tls = { [MODEL_PROXY_TLS_CONTEXT_KEYS.name]: NAME, [MODEL_PROXY_TLS_CONTEXT_KEYS.zoneId]: ZONE };
+
+  it("keeps it without TLS and while the legacy listeners are kept; drops it after", () => {
+    expect(allowList(ENTERPRISE)).toContain(`*.${REGION}.elb.amazonaws.com`);
+    expect(allowList({ ...ENTERPRISE, ...tls, [MODEL_PROXY_TLS_CONTEXT_KEYS.legacyHttp]: "keep" })).toContain(`*.${REGION}.elb.amazonaws.com`);
+    const after = allowList({ ...ENTERPRISE, ...tls });
+    expect(after).not.toContain(`*.${REGION}.elb.amazonaws.com`);
+    expect(after).toContain(NAME);
+    expect(enterpriseAllowDomains(REGION, { modelProxyElb: false })).not.toContain(`*.${REGION}.elb.amazonaws.com`);
+  }, 400_000);
 });
 
 describe("ENTERPRISE-ELB-RDS-ALLOW-BUG", () => {

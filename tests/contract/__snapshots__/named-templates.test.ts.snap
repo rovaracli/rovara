@@ -2677,6 +2677,7 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                 {
                   "Action": [
                     "ec2:DescribeAddresses",
+                    "ec2:DescribeInstances",
                   ],
                   "Condition": {
                     "StringEquals": {

@@ -1,18 +1,19 @@
-// MODEL-PROXY-TLS (decision 110): the model proxy's internal load balancer serves HTTPS under a DNS name the install owns, so every caller reaches it with https://<name>.
-// Design and costs: docs/architecture/model-proxy-tls.md.
+// MODEL-PROXY-TLS (decision 110, amended by decision 127): the model proxy's internal load balancer serves HTTPS under a DNS name the install owns, so every caller reaches it with
+// https://<name>. Design and costs: docs/architecture/model-proxy-tls.md.
 //
 // The settings arrive as CDK context (`-c name=value`), read once in infra/lib/app.ts, because three stacks need them at synth: the foundation (the DNS firewall must let the
-// name resolve), the control plane (certificate, private zone, listeners, URLs) and the Slack orchestrator (its security group rules), and the access stack grants the deploy
+// name resolve), the control plane (certificate, alias record, listeners, URLs) and the Slack orchestrator (its security group rules), and the access stack grants the deploy
 // role exactly what building them needs.
 //
 //   rovaraModelProxyTlsName            the proxy's DNS name, for example model-proxy.staging.rovara.dev. Unset: today's plain-http proxy, unchanged.
-//   rovaraModelProxyTlsZoneId          the PUBLIC Route 53 hosted zone (in this account) that holds the name's parent domain: CloudFormation requests a public ACM certificate for
-//                                      the name and writes its DNS validation record there. Free; ACM renews it by itself while the record stays.
-//   rovaraModelProxyTlsCertificateArn  instead of the zone: an ISSUED ACM certificate in this region that covers the name (a company whose DNS is not in this account).
-//   rovaraModelProxyLegacyHttp         `keep`: also keep the old plain-http listeners (4000, 4001) for ONE release, so tasks that started before the upgrade finish. Unset or `off`: none.
+//   rovaraModelProxyTlsZoneId          REQUIRED with the name: the install's existing PUBLIC Route 53 hosted zone (in this account) of the name's parent domain. The name's alias A
+//                                      record to the internal load balancer goes there, and (without a brought certificate) the certificate's DNS validation record too.
+//   rovaraModelProxyTlsCertificateArn  optional: an ISSUED ACM certificate in this region that covers the name, used instead of requesting one (free; ACM renews it by itself while
+//                                      the validation record stays).
+//   rovaraModelProxyLegacyHttp         `keep`: also keep the old plain-http listeners (4000, 4001) for ONE release, so workers launched before the upgrade finish. Unset or `off`: none.
 //
-// The name resolves inside the VPC only: a private hosted zone of exactly that name (so nothing else of the domain is shadowed) holds an alias record to the load balancer.
-// Every wrong value stops the synth, naming its setting.
+// Decision 127 (amends 110): the alias record is PUBLIC, in the install's own zone, not in a private hosted zone. The internal load balancer's own name already resolves publicly to its
+// private addresses, so the record reveals nothing new, and the deploy role needs no hosted zone creation or deletion. Every wrong value stops the synth, naming its setting.
 /** ACM refuses a first domain name longer than 64 characters. */
 const DNS_NAME_MAX_ACM = 64;
 
@@ -36,9 +37,9 @@ export const MODEL_PROXY_TLS_POLICY = "ELBSecurityPolicy-TLS13-1-2-Res-2021-06";
 export interface ModelProxyTls {
   /** The proxy's DNS name, lower case. */
   name: string;
-  /** The public hosted zone CloudFormation validates a new certificate in. Exactly one of this and `certificateArn`. */
-  zoneId?: string;
-  /** An issued certificate the company brought. Exactly one of this and `zoneId`. */
+  /** The public hosted zone the alias record (and a new certificate's validation record) goes in. */
+  zoneId: string;
+  /** An issued certificate the company brought; absent, one is requested and validated in `zoneId`. */
   certificateArn?: string;
   /** Keep the old plain-http listeners (and their security group rules) for one release. */
   legacyHttp: boolean;
@@ -70,8 +71,8 @@ export function parseModelProxyTlsContext(input: { get: (key: string) => unknown
   if (typeof name !== "string" || name.length > DNS_NAME_MAX_ACM || !DNS_NAME.test(name) || AWS_OWN_NAME.test(name)) {
     throw new Error(`${keys.name} must be a lower-case DNS name of your own of at most ${DNS_NAME_MAX_ACM} characters, such as model-proxy.example.com (not an amazonaws.com name, a wildcard or an address)`);
   }
-  if (isSet(zoneId) === isSet(certificateArn)) throw new Error(`${keys.name} needs exactly one of ${keys.zoneId} (a public hosted zone in this account; the certificate is made for you) and ${keys.certificateArn} (an issued certificate you bring)`);
-  if (isSet(zoneId) && (typeof zoneId !== "string" || !HOSTED_ZONE_ID.test(zoneId))) throw new Error(`${keys.zoneId} must be a Route 53 hosted zone id such as Z0123456789ABCDEFGHIJ`);
+  if (!isSet(zoneId)) throw new Error(`${keys.name} needs ${keys.zoneId}: the public hosted zone in this account that the name's alias record goes in`);
+  if (typeof zoneId !== "string" || !HOSTED_ZONE_ID.test(zoneId)) throw new Error(`${keys.zoneId} must be a Route 53 hosted zone id such as Z0123456789ABCDEFGHIJ`);
   if (isSet(certificateArn)) {
     const match = typeof certificateArn === "string" ? ACM_CERTIFICATE_ARN.exec(certificateArn) : null;
     if (match === null) throw new Error(`${keys.certificateArn} must be the ARN of an ACM certificate (arn:aws:acm:<region>:<account>:certificate/<id>)`);
@@ -80,7 +81,7 @@ export function parseModelProxyTlsContext(input: { get: (key: string) => unknown
   if (isSet(legacyHttp) && legacyHttp !== "keep" && legacyHttp !== "off") throw new Error(`${keys.legacyHttp} must be keep (one release with the old plain-http listeners beside HTTPS) or off`);
   return {
     name,
-    ...(isSet(zoneId) ? { zoneId: zoneId as string } : {}),
+    zoneId,
     ...(isSet(certificateArn) ? { certificateArn: certificateArn as string } : {}),
     legacyHttp: legacyHttp === "keep",
   };
@@ -100,22 +101,35 @@ export interface TlsDeployStatement {
   Condition?: Record<string, Record<string, string | string[]>>;
 }
 
+/** The record actions CloudFormation sends for a record it creates, updates and deletes. */
+const RECORD_ACTIONS = ["CREATE", "UPSERT", "DELETE"];
+
 /**
  * What the deploy (CloudFormation service) role needs to build the TLS pieces, and nothing else in Certificate Manager or Route 53. It goes in a managed policy of its own on that
- * role (infra/lib/access.ts), only when the TLS name is set, so the role's inline policy (capped at 10,240 characters) does not grow.
- *  - a new certificate (`zoneId`): RequestCertificate for the one name, tagged as this environment's; then only certificates carrying this environment's tag; the validation
- *    record (`_<hash>.<name>`, CNAME) in the public zone, and that zone's reads;
- *  - a brought certificate: DescribeCertificate on that one certificate;
- *  - the private zone: CreateHostedZone and AssociateVPCWithHostedZone take no zone ARN (the zone does not exist yet), so they are on "*". The zone's life after that (read, tag,
- *    delete, comment, disassociate) is on any hosted zone ARN, because Route 53 has no tag conditions for zones. AWS refuses DeleteHostedZone for a zone that holds any record
- *    besides its SOA and NS, so the reach is: empty zones in this account. Records: the alias record only, A, the exact name, in any zone (the private zone's id is not known first).
+ * role (infra/lib/access.ts), only when the TLS name is set, so the role's inline policy (capped at 10,240 characters) does not grow. Every Route 53 grant is on the ONE public zone:
+ *  - the alias A record named exactly `<name>`;
+ *  - a new certificate (no brought ARN): RequestCertificate for the one name, tagged as this environment's; then only certificates carrying this environment's tag; the validation
+ *    record (`_<hash>.<name>`, CNAME);
+ *  - a brought certificate: DescribeCertificate on that one certificate.
+ * Each record grant names the record (normalized: lower case, no trailing dot), its type and the change actions, and a request that leaves any of them out is refused (Null false).
  */
 export function modelProxyTlsDeployStatements(scope: { env: string; partition: string; region: string; account: string }, tls: ModelProxyTls): TlsDeployStatement[] {
-  const zones = `arn:${scope.partition}:route53:::hostedzone/*`;
+  const zone = `arn:${scope.partition}:route53:::hostedzone/${tls.zoneId}`;
+  const recordGrant = (sid: string, names: string[], types: string[], like: boolean): TlsDeployStatement => ({
+    Sid: sid, Effect: "Allow", Action: ["route53:ChangeResourceRecordSets"], Resource: zone,
+    Condition: {
+      // One object per operator: an exact name sits beside the types and actions, a wildcard name in a StringLike of its own.
+      ...(like ? { "ForAllValues:StringLike": { "route53:ChangeResourceRecordSetsNormalizedRecordNames": names } } : {}),
+      "ForAllValues:StringEquals": {
+        ...(like ? {} : { "route53:ChangeResourceRecordSetsNormalizedRecordNames": names }),
+        "route53:ChangeResourceRecordSetsRecordTypes": types, "route53:ChangeResourceRecordSetsActions": RECORD_ACTIONS,
+      },
+      Null: { "route53:ChangeResourceRecordSetsNormalizedRecordNames": "false", "route53:ChangeResourceRecordSetsRecordTypes": "false", "route53:ChangeResourceRecordSetsActions": "false" },
+    },
+  });
   const statements: TlsDeployStatement[] = [];
-  if (tls.zoneId !== undefined) {
+  if (tls.certificateArn === undefined) {
     const certificates = `arn:${scope.partition}:acm:${scope.region}:${scope.account}:certificate/*`;
-    const publicZone = `arn:${scope.partition}:route53:::hostedzone/${tls.zoneId}`;
     statements.push(
       {
         Sid: "ModelProxyTlsCertificateRequest", Effect: "Allow", Action: ["acm:RequestCertificate"], Resource: "*",
@@ -130,33 +144,15 @@ export function modelProxyTlsDeployStatements(scope: { env: string; partition: s
         Sid: "ModelProxyTlsCertificates", Effect: "Allow", Action: ["acm:DescribeCertificate", "acm:DeleteCertificate", "acm:RemoveTagsFromCertificate", "acm:ListTagsForCertificate"], Resource: certificates,
         Condition: { StringEquals: { "aws:ResourceTag/agentx:env": scope.env } },
       },
-      {
-        Sid: "ModelProxyTlsValidationRecord", Effect: "Allow", Action: ["route53:ChangeResourceRecordSets"], Resource: publicZone,
-        Condition: {
-          "ForAllValues:StringLike": { "route53:ChangeResourceRecordSetsNormalizedRecordNames": [`_*.${tls.name}`] },
-          "ForAllValues:StringEquals": { "route53:ChangeResourceRecordSetsRecordTypes": ["CNAME"] },
-          Null: { "route53:ChangeResourceRecordSetsNormalizedRecordNames": "false", "route53:ChangeResourceRecordSetsRecordTypes": "false" },
-        },
-      },
-      { Sid: "ModelProxyTlsPublicZoneReads", Effect: "Allow", Action: ["route53:GetHostedZone", "route53:ListResourceRecordSets"], Resource: publicZone },
+      recordGrant("ModelProxyTlsValidationRecord", [`_*.${tls.name}`], ["CNAME"], true),
     );
-  } else if (tls.certificateArn !== undefined) {
+  } else {
     statements.push({ Sid: "ModelProxyTlsBroughtCertificate", Effect: "Allow", Action: ["acm:DescribeCertificate"], Resource: tls.certificateArn });
   }
   statements.push(
-    { Sid: "ModelProxyTlsPrivateZoneCreate", Effect: "Allow", Action: ["route53:CreateHostedZone", "route53:AssociateVPCWithHostedZone"], Resource: "*" },
-    {
-      Sid: "ModelProxyTlsPrivateZones", Effect: "Allow", Resource: zones,
-      Action: ["route53:GetHostedZone", "route53:DeleteHostedZone", "route53:ListResourceRecordSets", "route53:ChangeTagsForResource", "route53:ListTagsForResource", "route53:UpdateHostedZoneComment", "route53:DisassociateVPCFromHostedZone"],
-    },
-    {
-      Sid: "ModelProxyTlsAliasRecord", Effect: "Allow", Action: ["route53:ChangeResourceRecordSets"], Resource: zones,
-      Condition: {
-        "ForAllValues:StringEquals": { "route53:ChangeResourceRecordSetsNormalizedRecordNames": [tls.name], "route53:ChangeResourceRecordSetsRecordTypes": ["A"] },
-        Null: { "route53:ChangeResourceRecordSetsNormalizedRecordNames": "false", "route53:ChangeResourceRecordSetsRecordTypes": "false" },
-      },
-    },
-    { Sid: "ModelProxyTlsZoneList", Effect: "Allow", Action: ["route53:ListHostedZones", "route53:ListHostedZonesByName"], Resource: "*" },
+    recordGrant("ModelProxyTlsAliasRecord", [tls.name], ["A"], false),
+    { Sid: "ModelProxyTlsZoneReads", Effect: "Allow", Action: ["route53:GetHostedZone", "route53:ListResourceRecordSets"], Resource: zone },
+    { Sid: "ModelProxyTlsZoneList", Effect: "Allow", Action: ["route53:ListHostedZones"], Resource: "*" },
     { Sid: "ModelProxyTlsChanges", Effect: "Allow", Action: ["route53:GetChange"], Resource: `arn:${scope.partition}:route53:::change/*` },
   );
   return statements;

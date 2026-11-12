@@ -13,7 +13,7 @@ export type { ModelRole } from "../init/prerequisites.js";
 export type ConfigTarget =
   /** `also`: the same value goes to these stacks' parameters too, one after the other (models.fallback: the runtime and the Slack stack both need it). */
   | { kind: "stack-parameter"; part: DeployPart; parameter: string; also?: ReadonlyArray<{ part: DeployPart; parameter: string }> }
-  | { kind: "settings"; field: "alertAddress" | "teamRecordOptions" }
+  | { kind: "settings"; field: "alertAddress" | "teamRecordOptions" | "modelProxyTls" }
   | { kind: "control-plane-setting"; field: "perPerson" | "perOrganization"; installDefault: { part: DeployPart; parameter: string } }
   // #343: Sign in with ChatGPT's settings, held by the control plane alone (no stack parameter).
   | { kind: "chatgpt-setting"; field: "enabled" | "preferredModel" };
@@ -158,6 +158,7 @@ export const CONFIG_KEYS: readonly ConfigKey[] = [
   { key: "testEnvironment.enabled", description: "1: the project test environment is on (Rovara proposes it from the default branch, a maintainer proves and approves it, and tasks use it; turn on only after the worker image that carries task.testEnvDetect.v1 and task.testEnvironment.v1 is deployed); 0: nothing about test environments changes", target: parameter("control-plane", "TestEnvironmentEnabled"), defaultValue: "0", parse: oneOf("testEnvironment.enabled", ["0", "1"]) },
   { key: "teamRecord.enabled", description: "1: the Team record is on (sources a project learns from, lessons and search; the first time, this records the choice and the next agentx upgrade builds its storage, which every later upgrade keeps); 0: paused, nothing is read or recorded and the stored record is kept", target: parameter("control-plane", "TeamRecordEnabled"), defaultValue: "0", teamRecord: true, parse: oneOf("teamRecord.enabled", ["0", "1"]) },
   { key: "teamRecord.options", description: "the Team record's storage options, confirmed before it is built and passed to every upgrade: default (Rovara's), or kmsKeyArn=<arn>;lake=true|false;athenaUsers=<arn,arn>;enterpriseWorkspaceId=<id> (Enterprise needs enterpriseWorkspaceId); refused once the record is built", target: { kind: "settings", field: "teamRecordOptions" }, parse: (value) => value.trim() },
+  { key: "modelProxy.tls", description: "the model proxy's HTTPS name (decisions 110 and 127), recorded and passed to every upgrade: name=<dns name>;zoneId=<public hosted zone id>[;certificateArn=<arn>][;legacyHttp=keep|off], or off. keep runs the old plain-http listeners beside HTTPS for one release; the next upgrade builds what is recorded", target: { kind: "settings", field: "modelProxyTls" }, parse: (value) => value.trim() },
   { key: "teamRecord.embedderImage", description: "the self-hosted embedder image the Team record embeds with (environments/embedder): a private ECR image in this account and region pinned by digest (<account>.dkr.ecr.<region>.amazonaws.com/<repository>@sha256:<digest>), (the release names it and agentx upgrade passes it; an upgrade to a release that names none keeps this one; an upgrade to a release that does replaces it); needs the Team record built", target: parameter("control-plane", "EmbedderImageUri"), defaultValue: "none", parse: embedderImage("teamRecord.embedderImage") },
   { key: "learnedLessons.enabled", description: "1: approved lessons are loaded into an agent's prompt as advice (needs the Team record; turn on only after the worker image that carries task.learnedContext.v1 is deployed); 0: no lesson is loaded or sent to an agent, even where the Team record is on", target: parameter("control-plane", "LearnedLessonsEnabled"), defaultValue: "0", parse: oneOf("learnedLessons.enabled", ["0", "1"]) },
   { key: "designReview.enabled", description: "1: fresh-context reviewers check the design of a Full task before a person approves it, but only where a company admin has allowed it and the project's mode is not Off (both are set in How we work); 0: no task has a design review, and a review already under way ends at its next step as not run", target: parameter("control-plane", "DesignReviewEnabled"), defaultValue: "0", parse: oneOf("designReview.enabled", ["0", "1"]) },
@@ -192,7 +193,7 @@ export function whereText(target: ConfigTarget, env: string): string {
     case "stack-parameter":
       return `stack parameter ${target.parameter} on ${[target, ...(target.also ?? [])].map((each) => environmentStackName(env, each.part)).join(" and ")}`;
     case "settings":
-      return target.field === "teamRecordOptions" ? `SSM ${environmentSettingsPrefix(env)}team-record (options)` : `SSM ${environmentSettingsPrefix(env)}settings (${target.field})`;
+      return target.field === "teamRecordOptions" ? `SSM ${environmentSettingsPrefix(env)}team-record (options)` : target.field === "modelProxyTls" ? `SSM ${environmentSettingsPrefix(env)}model-proxy-tls` : `SSM ${environmentSettingsPrefix(env)}settings (${target.field})`;
     case "control-plane-setting":
       return `control-plane setting WORKSPACE_LIMITS.${target.field} (install-time default ${target.installDefault.parameter})`;
     case "chatgpt-setting":

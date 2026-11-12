@@ -926,7 +926,7 @@ export function operatorRoleStatements(scope: PolicyScope): PolicyStatementJson[
     },
     // The Elastic IP check counts the region's allocated addresses. ec2:DescribeAddresses has no
     // resource-level permissions, so "*" is its only Resource; it reads, and changes nothing.
-    { Sid: "Addresses", Effect: "Allow", Action: ["ec2:DescribeAddresses"], Resource: "*", Condition: { StringEquals: { "aws:RequestedRegion": region } } },
+    { Sid: "Addresses", Effect: "Allow", Action: ["ec2:DescribeAddresses", "ec2:DescribeInstances"], Resource: "*", Condition: { StringEquals: { "aws:RequestedRegion": region } } },
     ...sesChecks(scope),
     { Sid: "Identity", Effect: "Allow", Action: ["sts:GetCallerIdentity"], Resource: "*" },
     {

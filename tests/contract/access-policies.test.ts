@@ -325,11 +325,11 @@ describe("operator role policy", () => {
     ]);
   });
 
-  it("may count the region's Elastic IPs, and do nothing else with them, so the address check runs on an operator resume", () => {
+  it("may count the region's Elastic IPs and list its instances, and do nothing else with them (the address check on an operator resume; the model proxy TLS L1 check reads worker launch times)", () => {
     const addresses = operatorRoleStatements(scope).find((s) => s.Sid === "Addresses")!;
     // ec2:DescribeAddresses has no resource-level permissions, so "*" is the only Resource it takes.
     // The region condition keeps it to the environment's own region.
-    expect(addresses).toEqual({ Sid: "Addresses", Effect: "Allow", Action: ["ec2:DescribeAddresses"], Resource: "*", Condition: { StringEquals: { "aws:RequestedRegion": "us-east-1" } } });
+    expect(addresses).toEqual({ Sid: "Addresses", Effect: "Allow", Action: ["ec2:DescribeAddresses", "ec2:DescribeInstances"], Resource: "*", Condition: { StringEquals: { "aws:RequestedRegion": "us-east-1" } } });
   });
 });
 

@@ -1,4 +1,4 @@
-# Model proxy TLS (decision 110, MODEL-PROXY-TLS)
+# Model proxy TLS (decision 110, amended by decision 127)
 
 Cloud's model proxy (LiteLLM on ECS Fargate, `infra/lib/model-proxy.ts`) sits behind an internal Application Load Balancer. Until 0.5.15 its
 callers used plain http inside the VPC: `http://internal-…<region>.elb.amazonaws.com:4000` for inference (workers, the Slack orchestrator, the
@@ -11,82 +11,144 @@ exception), and so will the A3 LiteLLM adapter. The proxy therefore has to serve
 
 | Option | What it is | Monthly cost | Work and risk |
 |---|---|---|---|
-| **(a) Public ACM certificate, split-horizon name** (chosen) | A public ACM certificate for a name under a domain the install owns (for example `model-proxy.staging.rovara.dev`), validated by DNS in that domain's public zone. A private hosted zone of exactly that name, attached to the install VPC, holds an alias record to the internal load balancer. | Certificate: $0 (ACM public certificates are free, and ACM renews them). Private zone: $0.50. Alias queries to an ELB: $0. **About $0.50 a month.** | Small. CloudFormation requests and validates the certificate itself. Needs a public zone in the account (or a certificate the company brings). Every client already trusts the Amazon root CA, so nothing changes on workers or in containers. |
-| (b) ACM Private CA | A private CA issuing the proxy's certificate. | About $400 a month per CA (general-purpose mode), plus per-certificate fees. | Not acceptable for this: it costs more than the whole proxy, and every client would still need the private CA installed. |
-| (c) Self-signed or install-owned CA imported into ACM | Rovara makes a CA and a server key, imports the certificate into ACM, and every client trusts the CA explicitly (`NODE_EXTRA_CA_CERTS` or a pinned CA). | About $0.40 a month for the Secrets Manager secret. | Large. CloudFormation cannot import a certificate, so it needs a custom resource that generates keys, stores the CA key in Secrets Manager and re-imports before expiry (imported certificates do not renew). Every client (worker host, task containers, the orchestrator, the model access function, the A3 adapter) must be given the CA. A missed rotation stops every model call. |
+| **(a) Public ACM certificate, public alias record** (chosen) | A public ACM certificate for a name under a domain the install owns (staging: `model-proxy.staging.rovara.dev`, decision 126), validated by DNS in that domain's public zone, plus an alias A record in the same zone pointing to the internal load balancer. | **$0.** ACM public certificates are free and renew themselves; one more record in an existing zone costs nothing; alias queries to an ELB are free. | Small. CloudFormation requests and validates the certificate. Needs the domain's public zone in the install's account. Every client already trusts the Amazon root CA, so nothing changes on workers or in containers. |
+| (b) ACM Private CA | A private CA issuing the proxy's certificate. | About $400 a month per CA (general-purpose mode), plus per-certificate fees. | Not acceptable: it costs more than the whole proxy, and every client would still need the private CA installed. |
+| (c) Self-signed or install-owned CA imported into ACM | Rovara makes a CA and a server key, imports the certificate into ACM, and every client trusts the CA explicitly (`NODE_EXTRA_CA_CERTS` or a pinned CA). | About $0.40 a month for the Secrets Manager secret. | Large. CloudFormation cannot import a certificate, so it needs a custom resource that generates keys, keeps the CA key in Secrets Manager and re-imports before expiry (imported certificates do not renew). Every client needs the CA. A missed rotation stops every model call. |
 
-**Recommendation: (a).** It is the cheapest secure option, the certificate renews itself, and no client needs a new trust anchor. When a company's
-DNS is not in the install's account, the same design takes an issued ACM certificate the company brings (`rovaraModelProxyTlsCertificateArn`), for
-example one they validated in their own DNS.
+**Chosen: (a).** It is the cheapest secure option, the certificate renews itself, and no client needs a new trust anchor. A company can bring an
+issued ACM certificate (`certificateArn`) instead of having one requested; the alias record still goes in its zone.
 
-Simpler variant not built (owner question): put the alias record in the **public** zone instead of a private one. The internal load balancer's own
-name already resolves publicly to its private addresses, so a public record reveals nothing new, and the deploy role would need no
-`CreateHostedZone`/`DeleteHostedZone`. Decision 110 names a private zone, so that is what is built.
+**Decision 127 (amends 110): public record, not a private zone.** The first build put the name in a private hosted zone attached to the VPC. The
+owner chose the public record instead. The internal load balancer's own name already resolves publicly to its private addresses, so a public
+record reveals nothing new (the addresses cannot be reached from outside the VPC). It also costs nothing, and the deploy role needs no
+`CreateHostedZone`, `DeleteHostedZone` or VPC association, and no grant on any zone but the install's own.
 
 ## What is built
 
-Settings (CDK context, read once in `infra/lib/app.ts`; parsing and checks in `infra/lib/model-proxy-tls.ts`):
+The settings are CDK context, read once in `infra/lib/app.ts` and checked in `infra/lib/model-proxy-tls.ts`:
 
 | Context key | Meaning |
 |---|---|
 | `rovaraModelProxyTlsName` | The proxy's DNS name, lower case, at most 64 characters, not an `amazonaws.com` name. Unset: the plain-http proxy exactly as before (templates unchanged). |
-| `rovaraModelProxyTlsZoneId` | The public hosted zone (in this account) of the name's parent domain. CloudFormation requests the certificate and writes the `_<hash>.<name>` validation record there. |
-| `rovaraModelProxyTlsCertificateArn` | Instead of the zone: an issued certificate in the install's region that covers the name. Exactly one of the two. |
+| `rovaraModelProxyTlsZoneId` | Required with the name: the install's public hosted zone (in this account) of the name's parent domain. The alias record goes there, and the validation record of a requested certificate. |
+| `rovaraModelProxyTlsCertificateArn` | Optional: an issued certificate in the install's region that covers the name, used instead of requesting one. |
 | `rovaraModelProxyLegacyHttp` | `keep`: also keep the old plain-http listeners for one release (see rollout). Unset or `off`: none. |
+
+The install does not pass these by hand. It records them (`agentx --env <env> config set modelProxy.tls "name=…;zoneId=…[;certificateArn=…][;legacyHttp=keep|off]"`,
+kept in SSM at `/agentx/<env>/model-proxy-tls`, `packages/cli/src/deploy/model-proxy-tls.ts`), and every cdk command (`agentx upgrade`, its diff and
+its parameter synth) passes them back, the way the Team record's switch works. Only an install deployed from source (the cdk engine) can
+record it. The prebuilt templates would put the proxy back on plain http, so the CLI refuses that combination.
 
 With the name set:
 
-- **Listeners.** HTTPS on 443 (inference: the same R48 rules, a 403 by default and POST to the inference paths only) and HTTPS on 8443
+- **Listeners.** HTTPS on 443 (inference, with the same R48 rules: a 403 by default, and POST to the inference paths only) and HTTPS on 8443
   (management, every path). Both use `ELBSecurityPolicy-TLS13-1-2-Res-2021-06` (TLS 1.3 and 1.2, forward-secret AEAD ciphers only). The load
-  balancer still talks plain http to the LiteLLM tasks on 4000, inside the VPC, between two security groups that admit only each other (TLS
-  ends at the load balancer).
+  balancer still talks plain http to the LiteLLM tasks on 4000. That hop stays inside the VPC, between two security groups that admit only each
+  other: TLS ends at the load balancer.
 - **No plain-http path.** Without `keep`, the HTTP listeners on 4000 and 4001 and their security group rules are gone.
-- **Name.** A private hosted zone named exactly the proxy's name (so nothing else of the company's domain is shadowed inside the VPC), with an
-  alias A record to the load balancer. Outside the VPC the name does not resolve.
-- **URLs.** Workers (the `model-proxy-url` SSM parameter), the broker (`AGENTX_NAMES` code `mh`, built into `https://<name>`; `mp` is no longer
-  passed), the model access function (`https://<name>:8443`) and the Slack orchestrator (the `ModelProxyUrl` output it is deployed with) all get
-  https. The SSM parameter, the model access function and the broker depend on the listeners and the record, so nobody is handed the new URL
-  before it answers.
+- **Name.** An alias A record `<name>` in the public zone, pointing to the internal load balancer.
+- **URLs.** Every caller gets https:
+  - workers, through the `model-proxy-url` SSM parameter;
+  - the broker, through `AGENTX_NAMES` code `mh`, which it builds into `https://<name>` (`mp` is no longer passed);
+  - the model access function, at `https://<name>:8443`;
+  - the Slack orchestrator, through the `ModelProxyUrl` output it is deployed with.
+
+  The SSM parameter, the model access function and the broker depend on the listeners and the record, so nobody is handed the new URL before it
+  answers.
 - **Security groups.** Same groups, same scope: the load balancer admits 443 from the client groups (workers, orchestrator) and 8443 from the
-  model access function only. Group descriptions are left as they were on purpose: a changed description replaces a group.
-- **DNS firewall.** The name is on the install's allow list (cloud and Enterprise). ENTERPRISE-ELB-RDS-ALLOW-BUG is fixed in the same change:
-  the Enterprise list allowed `*.elb.<region>.amazonaws.com`, which matches Network Load Balancer names only; an internal ALB is
-  `internal-…<region>.elb.amazonaws.com`, so it is now `*.<region>.elb.amazonaws.com`, plus the missing Aurora name `*.<region>.rds.amazonaws.com`.
-- **Deploy role.** A managed policy of its own (`ModelProxyTlsDeployPolicy`, under 6,144 characters) on the CloudFormation service role, only when
-  the name is set, so the role's inline policy (capped at 10,240) does not grow. It allows: requesting a certificate for exactly the name, tagged
-  with the environment, and managing only certificates with that tag; the validation CNAME (`_*.<name>`) in the public zone only; creating a
-  hosted zone and associating it with a VPC; reading, tagging, deleting and disassociating hosted zones (Route 53 has no tag conditions for zones;
-  AWS refuses to delete a zone holding records, so the reach is empty zones); A records named exactly `<name>`. With a brought certificate:
-  `acm:DescribeCertificate` on that certificate only.
+  model access function only. Group descriptions are left as they were on purpose, because a changed description replaces a group.
+- **DNS firewall.** The name is on the install's allow list (cloud and Enterprise).
+  - ENTERPRISE-ELB-RDS-ALLOW-BUG is fixed in the same change. The Enterprise list allowed `*.elb.<region>.amazonaws.com`, which matches Network
+    Load Balancer names only. An internal ALB is named `internal-…<region>.elb.amazonaws.com`, so the entry is now
+    `*.<region>.elb.amazonaws.com`, and the missing Aurora name `*.<region>.rds.amazonaws.com` is added.
+  - L2: once TLS is on and the legacy listeners are off, nothing resolves a load balancer's name any more, so the Enterprise list drops
+    `*.<region>.elb.amazonaws.com`.
+- **Deploy role.** A managed policy of its own (`ModelProxyTlsDeployPolicy`, well under 6,144 characters) is attached to the CloudFormation service
+  role, only when the name is set, so the role's inline policy (capped at 10,240) does not grow.
+  - Every Route 53 write is `ChangeResourceRecordSets` on `hostedzone/<zoneId>` only. Its conditions name the record, the type and the action
+    (`CREATE`, `UPSERT`, `DELETE`), each `ForAllValues` with a `Null: false` guard so a request cannot leave one out:
+    - the alias record, `<name>`, type A;
+    - the validation record, `_*.<name>`, type CNAME (only when the certificate is requested).
+  - The only other Route 53 grants are reads: `GetHostedZone` and `ListResourceRecordSets` on that zone, `GetChange`, and `ListHostedZones`.
+  - Certificate Manager: a request for exactly the name, tagged with the environment; afterwards only certificates carrying that tag. With a
+    brought certificate, only `acm:DescribeCertificate` on that one ARN.
+- **Operator role.** It gains `ec2:DescribeInstances` (region-scoped, read only) for the L1 check below.
+
+## Checks before every upgrade (`packages/cli/src/upgrade/run.ts`)
+
+Before anything is prepared or deployed, `agentx upgrade` runs these checks (`assertModelProxyTlsDeploy`):
+
+- **M1, no silent removal.** If the control plane's `ModelProxyUrl` output is `https://` and no TLS setting is recorded, the upgrade is refused.
+  `--allow-tls-removal` overrides it. This catches an upgrade from a CLI or a machine that never recorded the setting, and the prebuilt-templates
+  engine.
+- **L1, no early legacy removal.** Workers keep the proxy address they were given at launch, and a worker lives up to 14 days
+  (`SESSION_MAX_LIFETIME_MS`). If the recorded setting has the legacy listeners off, the upgrade is refused while any of the install's pending or
+  running worker instances launched before the https address was published. The publish time is the `model-proxy-url` parameter's
+  `LastModifiedDate`, taken while that parameter holds `https://<name>`. If it does not hold that yet, every running worker counts.
+  `--allow-legacy-http-removal` overrides it. The workers are read only when the legacy listeners are about to go.
+- **L3, a domain ACM can validate.** ACM's DNS validation can otherwise hang for up to 72 hours. Before a certificate is first requested (no brought
+  certificate, and the name is not yet served), the public DNS is checked: the closest delegated domain above the name must be served by Route 53
+  name servers (`*.awsdns-*`), and the closest CAA record set at or above the name, if there is one, must allow `amazon.com`, `amazontrust.com`,
+  `awstrust.com` or `amazonaws.com`. A lookup that fails for any other reason refuses too.
 
 ## Rollout (staging first)
 
-Tasks that started before the upgrade hold the old `http://…:4000` address for their whole run. To not break them:
+**Step 1.** Record the setting with `keep`, then upgrade:
 
-1. Upgrade with the name, the zone (or certificate) and `rovaraModelProxyLegacyHttp=keep`. The stack creates the certificate (CloudFormation
-   waits a few minutes for DNS validation), the private zone and record, and the HTTPS listeners; keeps the HTTP ones; and switches every URL
-   to https. New tasks use https; running tasks finish on http.
-2. When no task that started before step 1 is still running (the longest task timeout), upgrade again without `keep`. That removes the two
-   HTTP listeners, the HTTP listener rule and the 4000/4001 security group rules. Nothing is replaced.
+```sh
+agentx --env staging config set modelProxy.tls "name=model-proxy.staging.rovara.dev;zoneId=Z08286002FKUL2VBSO3MO;legacyHttp=keep"
+agentx --env staging upgrade --source <checkout> ...
+```
 
-A fresh install sets the name from the start and never has HTTP listeners.
+The synth then gets:
 
-What the staging upgrade creates or changes (step 1):
+```
+-c rovaraModelProxyTlsName=model-proxy.staging.rovara.dev -c rovaraModelProxyTlsZoneId=Z08286002FKUL2VBSO3MO -c rovaraModelProxyLegacyHttp=keep
+```
 
-- created: `ModelProxyTlsCertificate` (ACM, plus its validation CNAME in the public zone), `ModelProxyTlsPrivateZone`, `ModelProxyTlsAliasRecord`,
-  `ModelProxyTlsListener`, `ModelProxyTlsInferenceRoutes`, `ModelProxyTlsManagementListener`, the 443 and 8443 security group rules (control
-  plane and Slack stacks), `ModelProxyTlsDeployPolicy` (access stack);
-- changed in place: the `model-proxy-url` parameter, the broker's and the model access function's environment, the `ModelProxyUrl` output (and
-  so the orchestrator's task definition, a normal ECS rolling deploy), the foundation's DNS firewall allow list;
-- replaced: nothing. The load balancer, its security group, the target group and the service are unchanged.
+What step 1 does to the stacks:
 
-The access stack must be deployed first (it carries the new grants), as on every upgrade.
+- **Created:**
+  - `ModelProxyTlsCertificate` (ACM). Its validation CNAME is written in `rovara.dev`, and CloudFormation waits a few minutes for validation.
+  - `ModelProxyTlsAliasRecord` (A `model-proxy.staging.rovara.dev`, in `rovara.dev`).
+  - `ModelProxyTlsListener`, `ModelProxyTlsInferenceRoutes` and `ModelProxyTlsManagementListener`.
+  - The 443 and 8443 security group rules (control plane and Slack stacks).
+  - `ModelProxyTlsDeployPolicy` (access stack).
+- **Changed in place:**
+  - the `model-proxy-url` parameter;
+  - the broker's and the model access function's environment;
+  - the `ModelProxyUrl` output, and so the orchestrator's task definition (a normal ECS rolling deploy);
+  - the foundation's DNS firewall allow list;
+  - the operator role (`ec2:DescribeInstances`).
+- **Replaced:** nothing. The load balancer, its security group, the target group and the service are unchanged. The old HTTP listeners keep their
+  logical ids.
+
+New tasks use https. Workers that were already running finish on http.
+
+**Step 2.** Wait until no worker instance launched before step 1 is still running (at most 14 days; the CLI checks EC2 launch times against the
+publish time and refuses until then). Then record `legacyHttp=off` and upgrade again:
+
+```sh
+agentx --env staging config set modelProxy.tls "name=model-proxy.staging.rovara.dev;zoneId=Z08286002FKUL2VBSO3MO;legacyHttp=off"
+agentx --env staging upgrade --source <checkout> ...
+```
+
+The synth then gets:
+
+```
+-c rovaraModelProxyTlsName=model-proxy.staging.rovara.dev -c rovaraModelProxyTlsZoneId=Z08286002FKUL2VBSO3MO -c rovaraModelProxyLegacyHttp=off
+```
+
+That removes the two HTTP listeners, the HTTP listener rule and the 4000/4001 security group rules, and (Enterprise) the load balancer wildcard
+from the DNS list. Nothing is replaced.
+
+A fresh install records the setting without `keep` from the start and never has HTTP listeners. Deploy the access stack first, as on every
+upgrade: it carries the new grants.
 
 ## Open items
 
-- **Where the setting is kept.** The context has to be passed on every `agentx upgrade`; an upgrade without it synthesizes the plain-http proxy
-  again. Before production this should become a recorded install setting (like the Team record's switch, `team-record-switch.ts`) that the CLI
-  passes back on every cdk command. Until then the staging upgrade passes the `-c` values itself.
-- **Which domain.** Staging's account holds the public zone `rovara.dev` (`Z08286002FKUL2VBSO3MO`); a name such as
-  `model-proxy.staging.rovara.dev` works. The production and customer names are the owner's choice.
-- TLS between the load balancer and the LiteLLM tasks (end to end) is not built; the hop stays inside the VPC between two locked groups.
+- `agentx upgrade --export` and the Enterprise approve-then-deploy bundle path (`build-at-approval.ts`) do not yet carry the recorded setting or
+  run the checks. Enterprise installs need that before they turn TLS on.
+- `agentx deploy` (the answers-file path) passes the recorded setting to the synth, but does not run the M1, L1 and L3 checks. Only
+  `agentx upgrade` runs them.
+- TLS between the load balancer and the LiteLLM tasks (end to end) is not built.
