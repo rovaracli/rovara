@@ -35,6 +35,21 @@ function fakeClient(script: { get?: unknown; create?: unknown }): SecretsManager
 const NAME = callbackSigningKeySecretName("staging");
 
 describe("secretsManagerValueStore", () => {
+  it("tells a replaced secret (AWSPREVIOUS, or more than one version) from its metadata alone, with DescribeSecret only (0.5.15 L3)", async () => {
+    const describing = (reply: unknown) => ({
+      async send(command: { constructor: { name: string } }) {
+        if (command.constructor.name !== "DescribeSecretCommand") throw new Error(`unscripted call ${command.constructor.name}`);
+        if (reply instanceof Error) throw reply;
+        return reply;
+      },
+    }) as unknown as SecretsManagerClient;
+    await expect(secretsManagerValueStore(describing({ VersionIdsToStages: { a: ["AWSCURRENT"] } })).replaced!(NAME)).resolves.toBe(false);
+    await expect(secretsManagerValueStore(describing({ VersionIdsToStages: { a: ["AWSCURRENT"], b: ["AWSPREVIOUS"] } })).replaced!(NAME)).resolves.toBe(true);
+    await expect(secretsManagerValueStore(describing({ VersionIdsToStages: { a: ["AWSCURRENT"], b: [] } })).replaced!(NAME)).resolves.toBe(true);
+    await expect(secretsManagerValueStore(describing(awsError("ResourceNotFoundException"))).replaced!(NAME)).resolves.toBeUndefined();
+    await expect(secretsManagerValueStore(describing(awsError("AccessDeniedException"))).replaced!(NAME)).rejects.toThrow("AccessDeniedException");
+  });
+
   it("returns undefined when the secret does not exist", async () => {
     const store = secretsManagerValueStore(fakeClient({ get: awsError("ResourceNotFoundException") }));
     await expect(store.get(NAME)).resolves.toBeUndefined();
