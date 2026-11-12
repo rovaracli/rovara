@@ -125,7 +125,7 @@ describe("Suite 16b: Recheck of a head pushed outside Rovara", () => {
   });
 
   it("16b.2 a head that moves while the checks run makes the result stale, not passing: nothing of it is recorded, the task is back on its earlier checked code, and the new head reads as changed outside", async () => {
-    const armed: { push?: () => void; e2e?: WorkflowE2E } = {};
+    const armed: { push?: (() => void) | undefined; e2e?: WorkflowE2E } = {};
     const SEEN = "2026-11-11T13:00:00.000Z";
     const { e2e, pullRequest } = await waitingForMerge({ checkResult: () => {
       // While the re-check's checks run, someone pushes again (the push lands before the result is recorded), and GitHub was seen again meanwhile (the pull request's observedAt moves on).

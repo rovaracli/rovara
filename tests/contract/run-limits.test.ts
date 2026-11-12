@@ -929,7 +929,7 @@ describe("approving the plan", () => {
       const before = t.meta(taskId) as unknown as { budgetUsd?: number; runEstimate: { runLimitUsd: number } };
       const cardOf = async () => {
         const list = await web(MAYA, "GET", "/v1/app/decisions");
-        const card = ((list.body.cards ?? []) as Array<{ id: string; kind: string; risk: string; actions: Array<{ kind: string; label: string; href: string }>; runLimit?: { currentUsd?: number; proposedUsd: number } }>).find((candidate) => candidate.kind === "approve_plan");
+        const card = ((list.body.cards ?? []) as Array<{ id: string; kind: string; risk: string; actions: Array<{ kind: string; label: string; href: string }>; runLimit?: { currentUsd?: number; proposedUsd: number }; rejectReasons?: string[] }>).find((candidate) => candidate.kind === "approve_plan");
         return card === undefined ? undefined : { card, digest: (list.body.digests as Record<string, string>)[card.id]! };
       };
       const shown = await cardOf();
