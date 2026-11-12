@@ -8,6 +8,7 @@ import { useAppHost } from "../../../host.js";
 import { Button } from "../../../design/Button.js";
 import { TextArea } from "../../../design/TextArea.js";
 import { VisibleText } from "../../../design/VisibleText.js";
+import { AwsServicePicker } from "./AwsServicePicker.js";
 import { ShareRecipePanel } from "../../admin/how-we-work/ShareRecipePanel.js";
 
 /** The second person's card, on this screen (TS-UX-1 item 1): the decision cards' own card and Approve, with the email-code sign-in. Loaded only when a card waits for this viewer. */
@@ -117,6 +118,7 @@ export function TestEnvironmentSection({ project, canEditSettings, setupStatus, 
       onRefresh={() => { void act("refresh", () => api.read(project), take); }}
       onEdit={() => setEditing(JSON.stringify(proposal.environment, null, 2))}
       onSeed={(dependencyId, commands) => act("seed", () => api.setSeed(project, proposal.digest, dependencyId, commands), take)}
+      onServices={(dependencyId, services) => act("services", () => api.edit(project, withAwsServices(proposal.environment, dependencyId, services)), take)}
       signIn={error?.reauth === true ? error.message : undefined} onSignIn={() => host.signIn(host.currentPath())}
     />}
     {proposal !== undefined && editing !== undefined && <div className="rv-proposal-card">
@@ -186,7 +188,7 @@ function backingWords(dependency: Dependency): string {
  * The services the tests use, one plain row each (TS-UX-1 item 4): what it is, what starts it, the connection variables Rovara gives the tests (names only), the names it is reached by, and its test data. A seed
  * command is edited in its field; a seed FILE is shown as the file it loads.
  */
-function DependencyRows({ dependencies, seeds, busy, canEdit, onSeed }: { dependencies: readonly Dependency[]; seeds: Proposal["dependencySeeds"]; busy: boolean; canEdit: boolean; onSeed: (dependencyId: string, commands: string[]) => Promise<void> }) {
+function DependencyRows({ dependencies, seeds, busy, canEdit, onSeed, onServices }: { dependencies: readonly Dependency[]; seeds: Proposal["dependencySeeds"]; busy: boolean; canEdit: boolean; onSeed: (dependencyId: string, commands: string[]) => Promise<void>; onServices: (dependencyId: string, services: string[]) => Promise<void> }) {
   if (dependencies.length === 0) return null;
   return <><h4>Services the tests use</h4><ul aria-label="Services the tests use">{dependencies.map((dependency) => {
     const files = dependency.seeds.flatMap((seed) => ("fixturePath" in seed ? [seed.fixturePath] : []));
@@ -195,6 +197,8 @@ function DependencyRows({ dependencies, seeds, busy, canEdit, onSeed }: { depend
       <p><strong><VisibleText text={dependency.name} /></strong> ({dependency.kind}), <VisibleText text={backingWords(dependency)} /></p>
       {dependency.connect.env.length > 0 && <p className="rv-proposal-meta">Connection variables the tests get: {dependency.connect.env.map((entry, at) => <span key={entry.name}>{at > 0 ? ", " : ""}<code><VisibleText text={entry.name} /></code></span>)}</p>}
       {dependency.connect.hostAliases.length > 0 && <p className="rv-proposal-meta">Reached at: {dependency.connect.hostAliases.map((alias, at) => <span key={alias}>{at > 0 ? ", " : ""}<code><VisibleText text={alias} /></code></span>)}</p>}
+      {canEdit && dependency.backing.kind === "emulated" && dependency.family.startsWith("aws:") && <details><summary>AWS services ({dependency.backing.awsServices.length})</summary>
+        <AwsServicePicker selected={dependency.backing.awsServices} required={dependency.family.slice(4)} busy={busy} onSave={(services) => { void onServices(dependency.id, services); }} /></details>}
       {files.length > 0 && <p className="rv-proposal-meta">Test data loaded from {files.map((file, at) => <span key={file}>{at > 0 ? ", " : ""}<code><VisibleText text={file} /></code></span>)} (SQL the test database's own client runs inside the sealed test database, as a role with no superuser rights; it cannot reach the network or your secrets)</p>}
       {field !== undefined && (canEdit ? <SeedField key={`${field.id}:${field.commands.join("\n")}`} dependency={field} busy={busy} onSave={onSeed} /> : field.commands.length > 0 && <p className="rv-proposal-meta">Test data commands: {field.commands.map((line, at) => <span key={at}>{at > 0 ? ", " : ""}<code><VisibleText text={line} /></code></span>)}</p>)}
     </li>;
@@ -259,7 +263,7 @@ function SafetyNote({ proposal }: { proposal: Proposal }) {
 function ProposalView(props: {
   proposal: Proposal; approvedRevision: number; busy: string | undefined; applied: TestEnvApplyAnswer | undefined; pendingServices: readonly PendingService[]; canEdit: boolean;
   onCheck: () => void; onApprove: () => void; onAsk: () => void; onRefresh: () => void; onEdit: () => void;
-  onSeed: (dependencyId: string, commands: string[]) => Promise<void>; signIn: string | undefined; onSignIn: () => void;
+  onSeed: (dependencyId: string, commands: string[]) => Promise<void>; onServices: (dependencyId: string, services: string[]) => Promise<void>; signIn: string | undefined; onSignIn: () => void;
 }) {
   const { proposal, busy } = props;
   const approval = proposal.approval;
@@ -280,7 +284,7 @@ function ProposalView(props: {
         {sourceOf(proposal, `repos[${String(index)}].checks[${String(at)}]`) !== undefined && <span className="rv-proposal-meta"> <VisibleText text={sourceWords(sourceOf(proposal, `repos[${String(index)}].checks[${String(at)}]`)!)} /></span>}
       </li>)}</ul>
     </div>)}
-    <DependencyRows dependencies={proposal.environment.dependencies ?? []} seeds={proposal.dependencySeeds} busy={busy === "seed"} canEdit={props.canEdit} onSeed={props.onSeed} />
+    <DependencyRows dependencies={proposal.environment.dependencies ?? []} seeds={proposal.dependencySeeds} busy={busy === "seed" || busy === "services"} canEdit={props.canEdit} onSeed={props.onSeed} onServices={props.onServices} />
     <PendingServices services={props.pendingServices} />
     <NightlyLine nightly={proposal.environment.nightly} />
     {proposal.valueSources.length === 0 && proposal.source === "edited" && <p className="rv-proposal-meta">Edited by a maintainer, so no value has a source file.</p>}
@@ -322,6 +326,11 @@ function ProposalView(props: {
     {props.signIn !== undefined && <p role="alert"><VisibleText text={props.signIn} /> <Button onClick={props.onSignIn}>Sign in again</Button></p>}
     {props.canEdit && <details><summary>Advanced</summary><p className="rv-proposal-meta">The whole environment as JSON, for what the fields above don't cover.</p><Button variant="quiet" onClick={props.onEdit}>Edit as JSON</Button></details>}
   </div>;
+}
+
+/** The environment with one emulated dependency's AWS services replaced (the rest is left as it was); the server checks the whole environment again when it is saved as an edit. */
+function withAwsServices(environment: Proposal["environment"], dependencyId: string, services: readonly string[]): Proposal["environment"] {
+  return { ...environment, dependencies: (environment.dependencies ?? []).map((dependency) => (dependency.id === dependencyId && dependency.backing.kind === "emulated" ? { ...dependency, backing: { ...dependency.backing, awsServices: [...services] } } : dependency)) };
 }
 
 /** The lines of the field as commands: trimmed, with the empty ones left out. */

@@ -161,10 +161,12 @@ describe("Rovara local AWS entry", () => {
   it("lets the chooser pick the supported, function and model-endpoint tiers but not the available one", () => {
     for (const service of ["s3", "dynamodb", "sqs", "sns", "sts", "secretsmanager", "ssm", "kms", "events", "lambda", "sagemaker-runtime"]) expect(cat.emulatorChoosable(emulator, service), service).toBe(true);
     for (const service of ["kinesis", "stepfunctions", "apigateway", "cognito-idp", "logs", "dynamodbstreams"]) expect(cat.emulatorChoosable(emulator, service), service).toBe(false);
+    // Every other service of the generated table is `available` (decision 109: a person's explicit choice is backed, the chooser never picks it); a service the table does not know has no tier.
     for (const service of ["ec2", "bedrock", "ecr", "codeartifact", "rds"]) {
-      expect(cat.emulatorServiceTier(emulator, service), service).toBeUndefined();
+      expect(cat.emulatorServiceTier(emulator, service), service).toBe("available");
       expect(cat.emulatorChoosable(emulator, service), service).toBe(false);
     }
+    for (const service of ["nosuchservice", "constructor"]) expect(cat.emulatorServiceTier(emulator, service), service).toBeUndefined();
     expect(cat.emulatorServiceTier(emulator, "lambda")).toBe("functions");
     expect(cat.emulatorServiceTier(emulator, "kinesis")).toBe("available");
   });
