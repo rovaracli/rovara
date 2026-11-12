@@ -75,8 +75,8 @@ Resources:
       TopicName: alerts
 `;
 const SEED: ProjectCommand = { cwd: PROJECT, executable: "seed-aws-data", args: [], timeoutSeconds: 60 };
-// The proposal names only S3, SQS and DynamoDB by words (FAMILY_NAMES in broker/src/test-env/dependency-proposal.ts); every other AWS service shows its family id, so SNS reads "aws:sns" on the card, in the evidence and in the PR line.
-const SNS_NAME = "aws:sns";
+// Every AWS service is named by words, not by its family id: S3, SQS and DynamoDB by FAMILY_NAMES, the others by the display-name table (cloud-contracts aws-service-display-names.ts), so SNS reads "SNS" on the card, in the evidence and in the PR line.
+const SNS_NAME = "SNS";
 const PR_LINE = `Integration tests ran against: Postgres (real), S3, SQS, DynamoDB and ${SNS_NAME} (Rovara local AWS).`;
 const GOOD_LEDGER = ledgerOf({ s3: { PutObject: { calls: 3 }, GetObject: { calls: 2 } }, sqs: { SendMessage: { calls: 2 } }, dynamodb: { PutItem: { calls: 4 } }, sns: { Publish: { calls: 1 } } });
 // A service the project does not use and no detector finds (so no plan names it): the out-of-plan example. It has no AWS_ENDPOINT_URL_KINESIS variable in the sandbox (only planned services and names the repository sets get one), so the SDK reaches
