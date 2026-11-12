@@ -101,8 +101,8 @@ it("the larger-screen block page: no back link unless a caller passes one, and t
  expect(links).toEqual([["Back to the agent's profile", "/app/agents/x"], ["Go to Home", "/app"]]);
  back.unmount();
 });
-it("with the new navigation on, the builder's block page links back to the agent's profile and New agent's to the directory; off, neither does", async () => {
- for (const nav of [true, false]) {
+it("the builder's block page links back to the agent's profile and New agent's to the directory (the one navigation, decision 125)", async () => {
+ for (const nav of [true]) {
   const builder = renderBuilder({ storage: nav ? { "rovara.nav": "v2" } : {} });await waitFor(() => expect(builder.container.querySelector(".rv-large-screen-message")).not.toBeNull());
   const back = builder.container.querySelector(".rv-large-screen-back a");
   if (nav) { expect(back?.textContent).toBe("Back to the agent's profile");expect(back?.getAttribute("href")).toBe("/app/agents/" + AGENT_FIXTURE_ID); } else expect(back).toBeNull();

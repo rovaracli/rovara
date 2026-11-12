@@ -96,7 +96,7 @@ function Panel({ offer }: { offer: ContinueOffer }) {
 }
 
 /**
- * "Continue in your own tool" (switch `rovara.continue`, continue-flags.ts): a button on the task page that opens a sheet with the install command for Claude Code, Codex or Cursor, the prompt that loads this
+ * "Continue in your own tool" (always offered since decision 125, to a reader who may work on the task): a button on the task page that opens a sheet with the install command for Claude Code, Codex or Cursor, the prompt that loads this
  * task, the branch (when the task view has one) and what happens when the person pushes. This whole module is a lazy chunk. The sheet is a modal dialog: focus stays inside it, Escape closes it and focus returns to the button.
  */
 export default function ContinueInTool({ offer }: { offer: ContinueOffer }) {

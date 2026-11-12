@@ -1,8 +1,8 @@
+import { paths } from "../../paths.js";
 import { useMemo, useRef, useState } from "react";
 import { Link } from "react-router";
 import { ANSWER_SOURCES_MAX, SessionIdSchema, answerSourceLine, plainAnswerText } from "@agentx/cloud-contracts/web";
 import { useAppHost } from "../../host.js";
-import { workPlace } from "../../nav-flags.js";
 import { createSessionActions } from "../../api/session-actions.js";
 import { ApiError } from "../../api/errors.js";
 import { Button } from "../../design/Button.js";
@@ -36,7 +36,7 @@ export function answeredOf(task: ReadTask | undefined) {
  * hides the button from people who can only read, and from a session that runs on a Mac now.
  */
 export function AnsweredSection({ session, task }: { session: ReadSession; task: ReadTask }) {
- const host = useAppHost(), place = workPlace(host), api = useMemo(() => createSessionActions(host), [host]);
+ const host = useAppHost(), api = useMemo(() => createSessionActions(host), [host]);
  const [busy, setBusy] = useState(false), [accepted, setAccepted] = useState(false), [noSession, setNoSession] = useState(false), [error, setError] = useState<string>();
  const sending = useRef(false), requestId = useRef<string>(undefined);
  const answer = answeredOf(task);
@@ -63,7 +63,7 @@ export function AnsweredSection({ session, task }: { session: ReadSession; task:
   {mayAsk && <>
    <p className="rv-muted">{MORE_WORDS}</p>
    {error && <p role="alert"><VisibleText text={error} /></p>}
-   {noSession && <p role="status">The change was accepted. <Link to={place.path}>Open {place.name}</Link> to find its session.</p>}
+   {noSession && <p role="status">The change was accepted. <Link to={paths.work}>Open Work</Link> to find its session.</p>}
    <div className="rv-actions"><Button variant="primary" busy={busy} disabled={accepted} onClick={() => { void start(); }}>Make a change anyway</Button></div>
   </>}
  </section>;

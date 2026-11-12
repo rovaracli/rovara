@@ -6,9 +6,9 @@ test.beforeEach(async ({ context, request, baseURL }) => {
  await request.post("/__mock/scenario", { data: { name: "shell" } });
  await context.addCookies([{ name: "__Host-agentx_review_session", value: fixtureSession, url: baseURL!, secure: true, httpOnly: true, sameSite: "Strict" }]);
 });
-test("signs in and returns to Live without violating CSP", async ({ page, context }) => {
+test("signs in and returns to the page asked for (an old /app/live link lands on Work) without violating CSP", async ({ page, context }) => {
  await context.clearCookies();await page.goto("/app/live");await expect(page.getByRole("heading", { name: "Sign in to the mock cell" })).toBeVisible();
- await page.getByRole("button", { name: "Sign in" }).click();await expect(page).toHaveURL(/\/app\/live$/u);await expect(page.getByRole("heading", { name: "Live", exact: true })).toBeVisible();
+ await page.getByRole("button", { name: "Sign in" }).click();await expect(page).toHaveURL(/\/app\/work$/u);await expect(page.getByRole("heading", { name: "Work", exact: true, level: 1 })).toBeVisible();
 });
 test("serves the exact nonced cell CSP, supports keyboard navigation, and opens the account dialog", async ({ page }) => {
  const response = await page.goto("/app");await expect(page.getByRole("heading", { name: "Home", exact: true })).toBeVisible();

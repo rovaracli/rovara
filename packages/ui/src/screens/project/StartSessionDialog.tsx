@@ -1,8 +1,8 @@
+import { paths } from "../../paths.js";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { Link } from "react-router";
 import { SessionIdSchema } from "@agentx/cloud-contracts/web";
 import { useAppHost } from "../../host.js";
-import { workPlace } from "../../nav-flags.js";
 import { createRunApi } from "../../api/runs.js";
 import { ApiError } from "../../api/errors.js";
 import type { SendResult } from "../../api/client.js";
@@ -10,7 +10,7 @@ import { ConfirmInBrowser } from "../../confirm/ConfirmInBrowser.js";
 import { Button } from "../../design/Button.js";
 import { VisibleText } from "../../design/VisibleText.js";
 export function StartSessionDialog({ project, agent, onBack, onBusyChange, backLabel = "Choose another agent" }: { project: string; agent: { agentId: string; name: string; description: string }; onBack: () => void; onBusyChange: (busy: boolean) => void; backLabel?: string }) {
- const host = useAppHost(), place = workPlace(host), api = useMemo(() => createRunApi(host), [host]), field = useId(), textarea = useRef<HTMLTextAreaElement>(null);
+ const host = useAppHost(), api = useMemo(() => createRunApi(host), [host]), field = useId(), textarea = useRef<HTMLTextAreaElement>(null);
  const [text, setText] = useState(""), [busy, setBusy] = useState(false), [accepted, setAccepted] = useState(false), [error, setError] = useState<string>(), [pending, setPending] = useState<Exclude<SendResult<unknown>, { kind: "done" }>>();
  const sending = useRef(false), intent = useRef<{ text: string; requestId: string } | undefined>(undefined);
  useEffect(() => { textarea.current?.focus(); }, []);
@@ -28,5 +28,5 @@ export function StartSessionDialog({ project, agent, onBack, onBusyChange, backL
   } catch (failure) { setError(failure instanceof ApiError ? failure.message : "Couldn't start this session. Try again."); }
   finally { sending.current = false;setBusy(false);onBusyChange(false); }
  }
- return <form onSubmit={event => { event.preventDefault();void start(); }}><p className="rv-muted"><VisibleText text={agent.description} /></p><div className="rv-field"><label htmlFor={field}>What should <VisibleText text={agent.name} /> do?</label><textarea ref={textarea} id={field} className="rv-input rv-project-problem" required maxLength={4000} value={text} onChange={event => setText(event.target.value)} disabled={busy || accepted || pending !== undefined} aria-describedby={field + "-count"} /><p id={field + "-count"} className="rv-muted">{text.length} / 4000</p></div><div className="rv-actions"><Button disabled={busy || accepted || pending !== undefined} onClick={onBack}>{backLabel}</Button><Button type="submit" variant="primary" busy={busy} disabled={accepted || pending !== undefined || !text.trim() || text.length > 4000}>Start session</Button></div>{error && <p role="alert"><VisibleText text={error} /></p>}{accepted && <p role="status">Work was accepted. <Link to={place.path}>Open {place.name}</Link> to find its session.</p>}{pending && <ConfirmInBrowser result={pending} subjectKey={["project", project, "overview"]} isApplied={() => false} />}</form>;
+ return <form onSubmit={event => { event.preventDefault();void start(); }}><p className="rv-muted"><VisibleText text={agent.description} /></p><div className="rv-field"><label htmlFor={field}>What should <VisibleText text={agent.name} /> do?</label><textarea ref={textarea} id={field} className="rv-input rv-project-problem" required maxLength={4000} value={text} onChange={event => setText(event.target.value)} disabled={busy || accepted || pending !== undefined} aria-describedby={field + "-count"} /><p id={field + "-count"} className="rv-muted">{text.length} / 4000</p></div><div className="rv-actions"><Button disabled={busy || accepted || pending !== undefined} onClick={onBack}>{backLabel}</Button><Button type="submit" variant="primary" busy={busy} disabled={accepted || pending !== undefined || !text.trim() || text.length > 4000}>Start session</Button></div>{error && <p role="alert"><VisibleText text={error} /></p>}{accepted && <p role="status">Work was accepted. <Link to={paths.work}>Open Work</Link> to find its session.</p>}{pending && <ConfirmInBrowser result={pending} subjectKey={["project", project, "overview"]} isApplied={() => false} />}</form>;
 }

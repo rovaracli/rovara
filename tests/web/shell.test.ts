@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { expect, it, vi } from "vitest";
-import { screen, fireEvent, waitFor } from "@testing-library/react";
+import { screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { createMemoryRouter, MemoryRouter, RouterProvider } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
@@ -26,11 +26,16 @@ function shell(path = "/app", theme: "light" | "dark" = "light", value: AppNav =
  const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(ThemeProvider, { host: f.host, children: h(RouterProvider, { router }) }) }) }));
  return { ...ui, ...f, query, router, close: () => { ui.unmount();router.dispose();query.clear(); } };
 }
-it("renders an ordered readable sidebar with waiting counts and status words", async () => {
+it("renders the one navigation (decision 125): the destinations in order with the needs-you count, and the person's projects", async () => {
  const f = shell();await screen.findByRole("heading", { name: "Home", level: 1 });
- expect(screen.getByRole("link", { name: "Home, 3 waiting" })).toBeTruthy();expect(screen.getByText("1 running")).toBeTruthy();expect(screen.getByText("1 needs you")).toBeTruthy();
- const links = [...screen.getByRole("navigation", { name: "Workspace" }).querySelectorAll("a")].map(link => link.textContent);
- expect(links.indexOf("Live")).toBeGreaterThan(links.findIndex(text => text?.startsWith("Home")));expect(screen.queryByRole("link", { name: "Usage" })).toBeNull();expect(screen.queryByRole("link", { name: "Admin" })).toBeNull();f.close();
+ const sidebar = screen.getAllByRole("navigation", { name: "Workspace" })[0]!;
+ expect(sidebar.closest(".rv-app-shell")?.classList.contains("rv-nav-v2")).toBe(true);
+ expect(screen.getAllByRole("link", { name: "Home, 3 need you" }).length).toBeGreaterThan(0);
+ const links = [...sidebar.querySelectorAll(".rv-sidebar-primary a")].map(link => link.textContent?.replace(/\d+$/u, ""));
+ expect(links).toEqual(["Home", "Work", "Projects", "Agents", "Settings"]);
+ expect(screen.getAllByRole("link", { name: "payments" }).length).toBeGreaterThan(0);
+ expect(screen.queryByRole("link", { name: "Live" })).toBeNull();expect(screen.queryByRole("link", { name: "Usage" })).toBeNull();expect(screen.queryByRole("link", { name: "Admin" })).toBeNull();
+ expect(screen.getByRole("navigation", { name: "Main destinations" })).toBeTruthy();f.close();
 });
 it("omits disabled routes and shows the exact not-found copy", async () => {
  const f = shell("/app/usage");expect(await screen.findByText("We couldn't find that. It may not exist, or it hasn't been shared with you.")).toBeTruthy();f.close();
@@ -48,7 +53,7 @@ it("does not call an API for signup or signed out routes", async () => {
  for (const path of ["/app/signup", "/app/signed-out"]) { const f = shell(path);await screen.findByRole("heading", { level: 1 });expect(f.request).not.toHaveBeenCalled();expect(screen.queryByRole("navigation", { name: "Workspace" })).toBeNull();f.close(); }
 });
 it("focuses the new heading on a route change", async () => {
- const f = shell();await screen.findByRole("heading", { name: "Home" });fireEvent.click(screen.getByRole("link", { name: "Live" }));await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Live" })));f.close();
+ const f = shell();await screen.findByRole("heading", { name: "Home" });fireEvent.click(within(screen.getAllByRole("navigation", { name: "Workspace" })[0]!).getByRole("link", { name: "Work" }));await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Work", level: 1 })));f.close();
 });
 it("follows a project link in the sidebar from an agent page whose profile tray is open", async () => {
  // Opened from the directory, an agent's profile is a tray over the page. It must not take the click meant for the sidebar (it used to close itself and go back instead).

@@ -15,7 +15,6 @@ import { AppShell } from "../../packages/ui/src/shell/AppShell.js";
 import { COMPANIES_STORAGE_KEY, isCompanyHeaderOn, isCompanySwitcherOn } from "../../packages/ui/src/company-flags.js";
 import { CompaniesAnswerReaderSchema, CompaniesReaderSchema, linkCompany, withoutLinkCompany } from "../../packages/ui/src/api/companies.js";
 import { COMPANY_HEADER, reloadIntoActiveCompany, withCompanyHeader } from "../../packages/ui/src/api/company-context.js";
-import { NAV_STORAGE_KEY } from "../../packages/ui/src/nav-flags.js";
 import { applyNavUiFlags, holdUiFlagsUntilNav } from "../../packages/ui/src/ui-flags.js";
 import { renderUi } from "./support/render.js";
 import { expectNoAxeViolations } from "./support/axe.js";
@@ -63,7 +62,6 @@ function shell(options: Options = {}) {
  const s = options.server ?? server(), f = fakeHost(s.handler), query = options.query ?? createQueryClient();
  f.host.storage.set("rovara.theme", "light");
  if (options.on !== false) f.host.storage.set(COMPANIES_STORAGE_KEY, "v2");
- if (options.nav2 === true) f.host.storage.set(NAV_STORAGE_KEY, "v2");
  // The company's runtime flag, as the navigation answer would carry it (App applies it before the shell mounts).
  if (options.companyFlag !== undefined) applyNavUiFlags(f.host, { uiFlags: { companies: options.companyFlag } });
  const router = createMemoryRouter([{ path: "/app", element: createElement(AppShell), children: [{ index: true, element: createElement(Data) }, { path: "other", element: createElement("h1", { tabIndex: -1 }, "Other page") }] }], { initialEntries: [options.path ?? "/app"] });
@@ -193,7 +191,7 @@ describe("several companies: the header menu", () => {
   expect(document.activeElement).toBe(trigger);f.close();
  });
  it("has no accessibility violations, closed and open, with the old shell and the new navigation", async () => {
-  for (const nav2 of [false, true]) {
+  for (const nav2 of [true]) {
    const f = shell({ nav2 }), user = userEvent.setup();
    await user.click(await screen.findByRole("button", { name: /switch company/iu }));await screen.findByRole("menu");
    await expectNoAxeViolations(document.body);f.close();
@@ -266,7 +264,7 @@ describe("refusals show the server's sentence word for word", () => {
  }
 });
 describe("the phone's Menu", () => {
- for (const nav2 of [false, true]) it("lists the companies with roles, marks the current one, and switches (" + (nav2 ? "new navigation" : "old shell") + ")", async () => {
+ for (const nav2 of [true]) it("lists the companies with roles, marks the current one, and switches (" + (nav2 ? "the navigation" : "") + ")", async () => {
   const f = shell({ nav2 }), user = userEvent.setup();
   await screen.findByText("Acme data");await user.click(screen.getByRole("button", { name: "Open workspace menu" }));
   const dialog = await screen.findByRole("dialog", { name: "Workspace" }), section = await within(dialog).findByRole("heading", { name: "Company" });

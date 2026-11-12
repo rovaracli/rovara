@@ -87,7 +87,7 @@ test("switch on: the whole flow to a first task that actually starts, with one r
  expect(sent).toHaveLength(1);expect(sent[0]!.body?.input?.text).toContain("Map how checkout-api and checkout-ios");
 });
 
-for (const look of [{ name: "look-off", store: {} }, { name: "look-v2", store: { "rovara.look": "v2" } }] as const) {
+for (const look of [{ name: "look-v2", store: {} }] as const) {
  for (const width of [360, 390, 1280] as const) {
   const phone = width < 768;
   test(`switch on, ${look.name} at ${String(width)}: a failing repository with its recovery${phone ? ", stacked, 44px targets" : ""}, no sideways scroll, axe, focus`, async ({ page, context, request, baseURL }) => {

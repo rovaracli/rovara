@@ -59,7 +59,7 @@ test("switch on but the server refuses: no entry, and the page says why", async 
  expect(await noSidewaysScroll(page)).toBe(true);
 });
 
-for (const look of [{ name: "look-off", store: {} }, { name: "look-v2", store: { "rovara.look": "v2" } }] as const) {
+for (const look of [{ name: "look-v2", store: {} }] as const) {
  for (const width of [360, 390, 1280] as const) {
   const phone = width < 768;
   test(`switch on, owner, ${look.name} at ${String(width)}: four panels, ${phone ? "one column, 44px targets, " : ""}no sideways scroll, axe clean, visible focus`, async ({ page, context, request, baseURL }) => {
@@ -105,6 +105,6 @@ test("switch on at 390, maintainer: the project filter, no company totals, no pe
  await expect(page.getByRole("region", { name: "Spend vs outcomes" }).getByRole("table", { name: "Spending by person" })).toHaveCount(0);
  await expect(page.getByRole("region", { name: "Who can see Insights" })).toHaveCount(0);
  expect(await noSidewaysScroll(page)).toBe(true);
- await evidenceShot(page, { path: `${shots}/insights-maintainer-look-off-390.png`, fullPage: true });
+ await evidenceShot(page, { path: `${shots}/insights-maintainer-390.png`, fullPage: true });
  await checkA11y(page, { theme: "light" });
 });

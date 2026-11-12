@@ -15,14 +15,13 @@ export const ADMIN_SECTIONS: readonly AdminSection[] = [
     { to: "/app/admin/models/sources", label: "AI models", area: "models", blurb: "Which AI provider Rovara tries first, and the models it can use.", action: "Review AI models" },
   ] },
   { id: "money", title: "Money and limits", items: [
-    { to: "/app/admin/money/budgets", label: "Spending", area: "money", blurb: "View company and default-member monthly base budgets (read only), with explicit coverage.", action: "Review monthly base budgets" },
+    { to: "/app/admin/money/budgets", label: "Spending", area: "money", blurb: "What the company spent this month, what is held for work in progress, and what is left.", action: "Review spending" },
     { to: "/app/admin/billing", label: "Billing", area: "billing", blurb: "The trial allowance, auto-billing, the payment method and invoices.", action: "Open billing", needsBilling: true },
   ] },
   { id: "work", title: "How work runs", items: [
     { to: "/app/admin/company-rules", label: "Company rules", area: "company-rules", blurb: "The standing instructions every agent follows: Required and Preferred rules, changed with a second admin's approval.", action: "Review company rules", needsCompanyRules: true },
     { to: "/app/admin/how-we-work", label: "How we work", area: "how-we-work", blurb: "Company defaults for steps and models, design review and learning, and the locks projects can't change.", action: "Review how we work" },
     { to: "/app/admin/projects", label: "Projects", area: "projects", blurb: "Each project's repositories, people, Slack links and working branches.", action: "Review projects" },
-    { to: "/app/admin/new-screens", label: "Old screens", area: "new-screens", blurb: "Troubleshooting: every new screen is on. Send one back to the old screen for the whole company if it gets in the way.", action: "Open old screens", ownerOnly: true },
     { to: "/app/admin/agents", label: "Agents", area: "agents", blurb: "Agent versions and the company's agent guardrails.", action: "Review agents" },
   ] },
   { id: "security", title: "Security and sign-in", items: [

@@ -5,9 +5,9 @@ import { checkA11y } from "./support/axe.js";
 import { evidenceShot } from "./support/screenshot.js";
 import { FIXTURE_SESSION } from "../web/support/fixtures.js";
 // Lane exp/polish: the small follow-ups. Pictures go to .test-build/web-e2e/polish/ (ROVARA_POLISH_SHOTS changes the folder).
-//  - "Work" not "Live" while the new navigation (`rovara.nav` = "v2") is on; "Live" exactly as today while it is off.
-//  - The project page's Spending tab (`rovara.spending` = "v2"): a maintainer's view of that project's spent, held and left.
-//  - The phone tab bar (new navigation): nothing of a page sits under it and a toast sits above it.
+//  - "Work", never "Live" (decision 125: the one navigation).
+//  - The project page's Spending tab: a maintainer's view of that project's spent, held and left.
+//  - The phone tab bar: nothing of a page sits under it and a toast sits above it.
 const shots = process.env.ROVARA_POLISH_SHOTS ?? ".test-build/web-e2e/polish";
 async function enter(page: Page, context: BrowserContext, request: APIRequestContext, baseURL: string | undefined, width: number, scenario: string, store: Record<string, string>, colorScheme: "light" | "dark" = "light") {
  await request.post("/__mock/scenario", { data: { name: scenario } });
@@ -17,42 +17,31 @@ async function enter(page: Page, context: BrowserContext, request: APIRequestCon
  await mockRealtime(page);await page.setViewportSize({ width, height: 900 });
 }
 const noSidewaysScroll = (page: Page) => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth && document.body.scrollWidth <= innerWidth);
-const NAV = { "rovara.nav": "v2" };
+const NAV: Record<string, string> = {};
 
 // ---- Work, not Live
 for (const width of [1280, 390] as const) {
- for (const nav of [true, false]) {
-  test(`${nav ? "new navigation on" : "navigation off"} at ${String(width)}: Home's empty state and the task list page say ${nav ? "Work" : "Live"}`, async ({ page, context, request, baseURL }) => {
-   await enter(page, context, request, baseURL, width, "home", nav ? NAV : {});
-   await request.post("/__mock/home-v2", { data: { mode: "empty" } });
-   await page.goto("/app");
-   const empty = page.getByText("Nothing needs you right now");await expect(empty).toBeVisible();
-   const word = nav ? "Work" : "Live", other = nav ? "Live" : "Work";
-   await expect(page.getByText("Find ongoing sessions in " + word + ".")).toBeVisible();await expect(page.getByText("Find ongoing sessions in " + other + ".")).toHaveCount(0);
-   await expect(page.getByRole("link", { name: "See work in progress" })).toHaveAttribute("href", nav ? "/app/work" : "/app/live");
-   await evidenceShot(page, { path: `${shots}/home-empty-${nav ? "nav" : "off"}-${String(width)}.png`, fullPage: true });
-   // The page itself: with the navigation on, /app/live is Work (and the work-list switch is off, so today's list shows under the new name).
-   await request.post("/__mock/scenario", { data: { name: "live" } });
-   await page.goto(nav ? "/app/live" : "/app/live");
-   await expect(page.getByRole("heading", { name: word, level: 1 })).toBeVisible();await expect(page.getByRole("heading", { name: other, level: 1 })).toHaveCount(0);
-   await expect(page.getByRole("tablist", { name: word + " filters" })).toBeVisible();
-   if (nav) expect(new URL(page.url()).pathname).toBe("/app/work");
-   expect(await noSidewaysScroll(page)).toBe(true);
-  });
- }
+ test(`at ${String(width)}: Home's empty state and the task list page say Work, never Live (decision 125)`, async ({ page, context, request, baseURL }) => {
+  await enter(page, context, request, baseURL, width, "home", {});
+  await request.post("/__mock/home-v2", { data: { mode: "empty" } });
+  await page.goto("/app");
+  await expect(page.getByText("Nothing needs you right now.")).toBeVisible();
+  for (const link of await page.getByRole("link", { name: "See all in Work" }).all()) await expect(link).toHaveAttribute("href", "/app/work");
+  await expect(page.locator("main")).not.toContainText(/\bLive\b/u);
+  await evidenceShot(page, { path: `${shots}/home-empty-${String(width)}.png`, fullPage: true });
+  await request.post("/__mock/scenario", { data: { name: "live" } });
+  await page.goto("/app/live");
+  await expect(page.getByRole("heading", { name: "Work", level: 1 })).toBeVisible();await expect(page.getByRole("heading", { name: "Live", level: 1 })).toHaveCount(0);
+  expect(new URL(page.url()).pathname).toBe("/app/work");
+  expect(await noSidewaysScroll(page)).toBe(true);
+ });
 }
 
 // ---- The project page's Spending tab
 async function openSpendingTab(page: Page) { await page.getByRole("tab", { name: "Spending" }).click();await expect(page.getByRole("tab", { name: "Spending", selected: true })).toBeVisible(); }
 for (const width of [1280, 390] as const) {
- test(`switch off at ${String(width)}: the project page has no Spending tab and reads nothing of it`, async ({ page, context, request, baseURL }) => {
-  const reads: string[] = [];page.on("request", asked => { if (/\/projects\/payments\/spend/u.test(asked.url())) reads.push(asked.url()); });
-  await enter(page, context, request, baseURL, width, "project", {});await page.goto("/app/projects/payments?tab=spending");
-  await expect(page.getByRole("heading", { name: "payments", level: 1 })).toBeVisible();await expect(page.getByRole("tab", { name: "Overview", selected: true })).toBeVisible();
-  await expect(page.getByRole("tab", { name: "Spending" })).toHaveCount(0);await page.waitForLoadState("networkidle");expect(reads).toEqual([]);
- });
- test(`switch on at ${String(width)}: a maintainer sees spent, held and left; totals only; axe clean in both themes`, async ({ page, context, request, baseURL }) => {
-  await enter(page, context, request, baseURL, width, "project", { "rovara.spending": "v2" });await request.post("/__mock/project-spend?variant=ok");await page.goto("/app/projects/payments");
+ test(`at ${String(width)}: a maintainer sees spent, held and left; totals only; axe clean in both themes`, async ({ page, context, request, baseURL }) => {
+  await enter(page, context, request, baseURL, width, "project", {});await request.post("/__mock/project-spend?variant=ok");await page.goto("/app/projects/payments");
   await expect(page.getByRole("heading", { name: "payments", level: 1 })).toBeVisible();await openSpendingTab(page);
   await expect(page.getByRole("heading", { name: "Spending, November 2026" })).toBeVisible();
   const figure = (name: string) => page.getByText(name, { exact: true }).locator("xpath=following-sibling::dd");
@@ -65,7 +54,7 @@ for (const width of [1280, 390] as const) {
  });
 }
 test("the Spending tab with no limit, over the limit, and refused", async ({ page, context, request, baseURL }) => {
- await enter(page, context, request, baseURL, 390, "project", { "rovara.spending": "v2" });
+ await enter(page, context, request, baseURL, 390, "project", {});
  await request.post("/__mock/project-spend?variant=nolimit");await page.goto("/app/projects/payments?tab=spending");
  await expect(page.getByText("No limit set")).toBeVisible();await expect(page.getByText(/No allowance is set for this project/)).toBeVisible();
  await request.post("/__mock/project-spend?variant=over");await page.reload();
@@ -101,7 +90,7 @@ async function belowTabBar(page: Page) {
 }
 for (const target of [
  { name: "the task page", scenario: "workspace", path: "/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa", ready: (page: Page) => expect(page.getByRole("tab", { name: "Pipeline" })).toBeVisible() },
- { name: "the task page with its lead header", scenario: "workspace", path: "/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa?lead=1", ready: (page: Page) => expect(page.getByRole("region", { name: "Where this task stands" })).toBeVisible() },
+ { name: "the task page with its lead header", scenario: "workspace", path: "/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa", ready: (page: Page) => expect(page.getByRole("region", { name: "Where this task stands" })).toBeVisible() },
  { name: "a settings page", scenario: "admin", path: "/app/admin/money/budgets", ready: (page: Page) => expect(page.getByRole("heading", { name: /budget|spending/i, level: 1 })).toBeVisible() },
  { name: "the project page", scenario: "project", path: "/app/projects/payments", ready: (page: Page) => expect(page.getByRole("heading", { name: "payments", level: 1 })).toBeVisible() },
 ] as const) {
@@ -118,7 +107,7 @@ for (const target of [
  { name: "a settings page", scenario: "admin", path: "/app/admin/money/budgets", ready: (page: Page) => expect(page.getByRole("table", { name: "Spending requests waiting" })).toBeVisible() },
 ] as const) {
  test(`new navigation on a phone, ${target.name}: keyboard focus never ends under the tab bar`, async ({ page, context, request, baseURL }) => {
-  await enter(page, context, request, baseURL, 390, target.scenario, { ...NAV, ...(target.scenario === "admin" ? { "rovara.spending": "v2" } : {}) });await page.goto(target.path);await target.ready(page);await page.waitForLoadState("networkidle");
+  await enter(page, context, request, baseURL, 390, target.scenario, { ...NAV, ...(target.scenario === "admin" ? {} : {}) });await page.goto(target.path);await target.ready(page);await page.waitForLoadState("networkidle");
   const hidden: string[] = [];let stops = 0;
   for (let step = 0; step < 150; step++) {
    await page.keyboard.press("Tab");

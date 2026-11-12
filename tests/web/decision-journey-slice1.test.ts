@@ -38,7 +38,7 @@ const homeCards = [
 ];
 
 function home(decisions: { status: number; body: unknown }) {
- const f = fakeHost(async request => request.path === "/v1/app/home" ? { status: 200, body: { cards: homeCards, total: homeCards.length } } : request.path === "/v1/app/decisions" ? decisions : { status: 200, body: { notices: [], next: "settled" } });
+ const f = fakeHost(async request => request.path === "/v1/app/home" ? { status: 200, body: { cards: homeCards, total: homeCards.length } } : request.path === "/v1/app/decisions" ? decisions : request.path.startsWith("/v1/app/live") ? { status: 200, body: { tiles: [] } } : request.path.startsWith("/v1/app/sessions") ? { status: 200, body: { sessions: [] } } : request.path.startsWith("/v1/app/agents") ? { status: 200, body: { agents: [] } } : { status: 200, body: { notices: [], next: "settled" } });
  const query = createQueryClient();
  const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { children: h(Announcer, { children: h(HomeScreen, {}) }) }) }) }));
  return { ...f, close() { ui.unmount();query.clear(); } };
@@ -60,15 +60,15 @@ function taskPage(items: DecisionItem[], search = "", answer?: (path: string, me
 
 it("S1b: Home leaves out the older plan and own pull request cards whose decision a pending card holds, and keeps every other card", async () => {
  const f = home({ status: 200, body: viewOf([designItem, mergeItem]) });
- // The decision cards are the one place: one card for the design and one for the merge.
- const needsYou = await screen.findByRole("list", { name: "Decisions waiting for you" });
- expect(within(needsYou).getAllByRole("article")).toHaveLength(2);
- const older = await screen.findByRole("list", { name: "What needs you" });
- await waitFor(() => expect(within(older).getAllByRole("heading", { level: 2 }).map(heading => heading.textContent)).toEqual(["Someone else's change", "Another task", "Retry failed payments"]));
- // The failure card is the one "Retry failed payments" left; the header counts what is shown.
- expect(within(older).getByText("It failed")).toBeTruthy();
- expect(within(older).queryByText("Your plan is ready to review")).toBeNull();
- expect(within(older).queryByText("Your pull request is ready for review")).toBeNull();
+ // Home's one list (decision 125: the only Home): the decision rows (one for the design, one for the merge), then the older cards their decisions do not hold.
+ const list = await screen.findByRole("list", { name: "What needs you" });
+ const rows = (kinds: readonly string[]) => [...list.querySelectorAll<HTMLElement>(".rv-hv2-row")].filter(row => kinds.includes(row.dataset.cardKind ?? ""));
+ await waitFor(() => expect(rows(["approve_design", "merge"])).toHaveLength(2));
+ await waitFor(() => expect(rows(["plan", "pull_request", "failure"]).map(row => row.querySelector("h3")?.textContent)).toEqual(["Someone else's change", "Another task", "Retry failed payments"]));
+ // The failure card is the one "Retry failed payments" left.
+ expect(rows(["failure"])).toHaveLength(1);
+ expect(within(list).queryByText("Your plan is ready to review")).toBeNull();
+ expect(within(list).queryByText("Your pull request is ready for review")).toBeNull();
  // UX2 slice 2: ONE count, the older cards shown and the pending decision cards (2 + 3).
  expect(screen.getByText("5 things need you")).toBeTruthy();
  f.close();
@@ -101,9 +101,10 @@ it("S1b: the rule itself: only the kinds a card replaces, only for the card's ow
 
 it("S1a: Home's merge card opens its card on the task page, and the task page marks that card and has no link back to itself", async () => {
  const f = home({ status: 200, body: viewOf([mergeItem]) });
- const needsYou = await screen.findByRole("list", { name: "Decisions waiting for you" });
- expect(within(needsYou).getByRole("link", { name: "Open" }).getAttribute("href")).toBe(SESSION_PATH + "?decision=merge%3Apr1");
- expect(within(needsYou).getByRole("button", { name: "Merge" })).toBeTruthy();
+ // Home (decision 125) lists the decision as a row whose one action opens its card; the merge itself is pressed on the card.
+ const needsYou = await screen.findByRole("list", { name: "What needs you" });
+ await waitFor(() => expect(within(needsYou).getByRole("link", { name: /^Open: /u }).getAttribute("href")).toBe(SESSION_PATH + "?decision=merge%3Apr1"));
+ expect(within(needsYou).queryByRole("button", { name: "Merge" })).toBeNull();
  f.close();
  const page = taskPage([mergeItem], "?decision=merge%3Apr1");
  const card = await screen.findByRole("article", { name: "Retry failed payments" });

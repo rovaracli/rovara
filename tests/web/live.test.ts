@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
+// The session tile (the project page and an agent's profile list running work with it). Decision 125 deleted the Live page it was first built for: /app/live redirects to Work (tests/web/work-list.test.ts, tests/web/nav-v2.test.ts).
 import { afterEach, expect, it, vi } from "vitest";
 import { screen, fireEvent, waitFor, act } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
-import { LiveScreen } from "../../packages/ui/src/screens/live/LiveScreen.js";
 import { SessionTile } from "../../packages/ui/src/screens/live/SessionTile.js";
 import { acceptLivePage } from "../../packages/ui/src/api/live.js";
 import { createSessionActions } from "../../packages/ui/src/api/session-actions.js";
@@ -30,7 +30,7 @@ function setup(options: { tile?: ReturnType<typeof liveFixture>; path?: string; 
  return options.send ? options.send(request) : { status: 200, body: { following: true } };
  });
  const query = createQueryClient(), changed = vi.fn(async () => undefined);
- const router = createMemoryRouter([{ path: "/app/live", element: options.screen ? h(LiveScreen, {}) : h(SessionTile, { tile: options.tile ?? liveFixture(), onChanged: changed }) }], { initialEntries: [options.path ?? "/app/live"] });
+ const router = createMemoryRouter([{ path: "/app/live", element: h(SessionTile, { tile: options.tile ?? liveFixture(), onChanged: changed }) }], { initialEntries: [options.path ?? "/app/live"] });
  const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(Announcer, { children: h(RouterProvider, { router }) }) }) }), { theme: options.theme ?? "light" });
  return { ...f, ...ui, query, router, changed, answer(next: typeof tiles, nextStatus = 200) { tiles = next;status = nextStatus; }, owned() { owner = true; }, close() { ui.unmount();router.dispose();query.clear(); } };
 }
@@ -52,9 +52,6 @@ it("keeps takeover pending until a real read says the caller owns it", async () 
 it("renders a plain-text peek, actual cost, people and offline location", () => {
  const f = setup({ tile: { ...liveFixture({ where: { kind: "mac", label: "Priya's MacBook", offline: true }, viewingNowCount: 7 }), peek: "\u001b[31mBuilding safely\u001b[0m" } });expect(screen.getByText("Building safely")).toBeTruthy();expect(f.container.textContent).not.toContain("[31m");expect(screen.getByText("$1.20")).toBeTruthy();expect(screen.getByText("on Priya's MacBook")).toBeTruthy();expect(screen.getByText("offline")).toBeTruthy();expect(screen.getByText("+6")).toBeTruthy();f.close();
 });
-it("takes filters and project from the URL and writes changes back", async () => {
- const f = setup({ screen: true, path: "/app/live?filter=needs_me&project=payments" });await screen.findByRole("heading", { name: "Fix duplicate refunds" });expect(screen.getByRole("tab", { name: "Needs me" }).getAttribute("aria-selected")).toBe("true");expect(f.request.mock.calls.some(([request]) => request.path === "/v1/app/live?filter=needs_me&project=payments")).toBe(true);fireEvent.mouseDown(screen.getByRole("tab", { name: "Team" }), { button: 0, ctrlKey: false });await waitFor(() => expect(f.router.state.location.search).toContain("filter=team"));expect(screen.getByText("Sessions on projects you're part of")).toBeTruthy();f.close();
-});
 it("coalesces twenty session notices into one Live refetch after 500ms", async () => {
  vi.useFakeTimers();const query = createQueryClient(), invalidate = vi.spyOn(query, "invalidateQueries").mockResolvedValue(undefined), apply = createNoticeInvalidator(query);
  for (let revision = 1; revision <= 20; revision++) apply.notice({ type: "session.updated", sessionId: SESSION_FIXTURE_ID, revision });
@@ -64,12 +61,6 @@ it("coalesces twenty session notices into one Live refetch after 500ms", async (
 it("keeps a newer tile when an older answer arrives and honors actual removals", () => {
  const newer = liveFixture({ step: "Building", updatedAt: "2026-10-23T12:02:00.000Z" }), older = liveFixture({ step: "Planning", updatedAt: "2026-10-23T12:01:00.000Z" });expect(acceptLivePage({ tiles: [newer] }, { tiles: [older] }).tiles[0]?.step).toBe("Building");expect(acceptLivePage({ tiles: [newer] }, { tiles: [] }).tiles).toEqual([]);
 });
-it("announces a tile leaving Live only after a successful refreshed list", async () => {
- const f = setup({ screen: true });await screen.findByRole("heading", { name: "Fix duplicate refunds" });f.answer([]);await f.query.invalidateQueries({ queryKey: ["live"] });await waitFor(() => expect(screen.queryByRole("heading", { name: "Fix duplicate refunds" })).toBeNull());await waitFor(() => expect(f.container.querySelector('[aria-live="polite"]')?.textContent).toContain("Fix duplicate refunds left Live"), { timeout: 2500 });f.close();
-});
-it("hides cached tiles and controls after a refused refresh", async () => {
- const f = setup({ screen: true });await screen.findByRole("heading", { name: "Fix duplicate refunds" });f.answer([], 403);await f.query.invalidateQueries({ queryKey: ["live"] });await screen.findByText("Your access ended.");expect(screen.queryByRole("button", { name: "Follow" })).toBeNull();expect(screen.queryByRole("heading", { name: "Fix duplicate refunds" })).toBeNull();f.close();
-});
 it("sends canonical control routes with fresh request IDs and refuses an invalid session id", async () => {
  const f = fakeHost(async request => ({ status: 200, body: request.path.endsWith("/follow") ? { following: request.method === "POST" } : { session: sessionFixture() } })), api = createSessionActions(f.host);
  await api.follow(SESSION_FIXTURE_ID);await api.unfollow(SESSION_FIXTURE_ID);await api.stop(SESSION_FIXTURE_ID);await api.retry(SESSION_FIXTURE_ID);await api.takeOver(SESSION_FIXTURE_ID);
@@ -78,18 +69,6 @@ it("sends canonical control routes with fresh request IDs and refuses an invalid
 });
 for (const theme of ["light", "dark"] as const) it("has accessible permitted session controls in " + theme, async () => { const f = setup({ tile: liveFixture({ actions: ["watch", "take_over", "stop", "retry"] }), theme });await expectNoAxeViolations(f.container);f.close(); });
 
-it("loads the opaque next cursor and keeps the newest copy of a repeated tile", async () => {
- const newer = liveFixture({ updatedAt: "2026-10-23T12:02:00.000Z", step: "Building" }), other = liveFixture({ sessionId: "ses_bbbbbbbbbbbbbbbbbbbb", title: "Review checkout" });
- const f = setup({ screen: true, liveRead: async request => ({ status: 200, body: request.path.includes("cursor=") ? { tiles: [liveFixture(), other] } : { tiles: [newer], next: "next:page" } }) });
- fireEvent.click(await screen.findByRole("button", { name: "Load more sessions" }));await screen.findByRole("heading", { name: "Review checkout" });expect(screen.getAllByRole("heading", { name: "Fix duplicate refunds" })).toHaveLength(1);expect(screen.getByText("Building")).toBeTruthy();expect(screen.queryByText("Planning")).toBeTruthy();expect(f.request.mock.calls.some(([request]) => request.path === "/v1/app/live?filter=all&cursor=next%3Apage")).toBe(true);expect(screen.queryByRole("button", { name: "Load more sessions" })).toBeNull();f.close();
-});
-it("compares an arriving response with the current cache rather than the request's old snapshot", async () => {
- let reads = 0, answer: ((value: ApiResponse) => void) | undefined;
- const f = setup({ screen: true, liveRead: async () => ++reads === 1 ? { status: 200, body: { tiles: [liveFixture()] } } : new Promise<ApiResponse>(resolve => { answer = resolve; }) });
- await screen.findByText("Planning");const refreshing = f.query.invalidateQueries({ queryKey: ["live"] });await waitFor(() => expect(reads).toBe(2));
- await act(() => f.query.setQueryData(["live", "all", undefined], { pages: [{ tiles: [liveFixture({ step: "Building", updatedAt: "2026-10-23T12:02:00.000Z" })] }], pageParams: [undefined] }));
- answer?.({ status: 200, body: { tiles: [liveFixture()] } });await refreshing;await screen.findByText("Building");expect(screen.queryByText("Planning")).toBeNull();f.close();
-});
 it("does not run a queued Live invalidation after its screen closes", async () => {
  vi.useFakeTimers();const query = createQueryClient(), invalidate = vi.spyOn(query, "invalidateQueries").mockResolvedValue(undefined), apply = createNoticeInvalidator(query);apply.notice({ type: "session.updated", sessionId: SESSION_FIXTURE_ID, revision: 1 });apply.stop();invalidate.mockClear();await vi.advanceTimersByTimeAsync(1000);apply.notice({ type: "home.changed", revision: 1 });expect(invalidate).not.toHaveBeenCalled();query.clear();
 });
@@ -103,20 +82,4 @@ it("retries once and opens the actual returned session rather than assuming the 
 it("offers no action without a capability and uses DELETE for Following", async () => {
  const none = setup({ tile: liveFixture({ actions: [] }) });for (const name of ["Follow", "Take over", "Stop", "Retry"]) expect(screen.queryByRole("button", { name })).toBeNull();none.close();
  const f = setup({ tile: liveFixture({ following: true }) });fireEvent.click(screen.getByRole("button", { name: "Following" }));await waitFor(() => expect(f.changed).toHaveBeenCalledTimes(1));expect(f.request.mock.calls[0]?.[0]).toMatchObject({ method: "DELETE", path: "/v1/app/sessions/" + SESSION_FIXTURE_ID + "/follow" });f.close();
-});
-it("does not send an invalid project identifier from a tampered filter URL", async () => {
- const f = setup({ screen: true, path: "/app/live?project=..%2Foutside" });await screen.findByRole("heading", { name: "Fix duplicate refunds" });expect(f.request.mock.calls.filter(([request]) => request.path.startsWith("/v1/app/live")).every(([request]) => !request.path.includes("project="))).toBe(true);f.close();
-});
-
-it("with the new navigation on, the page and its announcement say Work; off they say Live", async () => {
- for (const nav of [true, false]) {
-  const word = nav ? "Work" : "Live";
-  const h2 = fakeHost(async request => request.path.startsWith("/v1/app/live") ? { status: 200, body: { tiles: [liveFixture()] } } : request.path === "/v1/app/nav" ? { status: 200, body: navFixture() } : { status: 200, body: { notices: [], next: "settled" } });
-  if (nav) h2.storage.set("rovara.nav", "v2");
-  const query = createQueryClient(), router = createMemoryRouter([{ path: "/app/live", element: h(LiveScreen, {}) }], { initialEntries: ["/app/live"] });
-  const ui = renderUi(h(AppHostProvider, { host: h2.host, children: h(QueryClientProvider, { client: query, children: h(Announcer, { children: h(RouterProvider, { router }) }) }) }));
-  expect(await screen.findByRole("heading", { name: word, level: 1 })).toBeTruthy();expect(screen.queryByRole("heading", { name: nav ? "Live" : "Work", level: 1 })).toBeNull();
-  expect(screen.getByRole("tablist", { name: word + " filters" })).toBeTruthy();
-  ui.unmount();router.dispose();query.clear();
- }
 });

@@ -21,10 +21,10 @@ import { StatePill } from "./StatePill.js";
 import { continueRows, decisionSession, decisionState, finishedRows, needsYouSessions, pickAgents, type HomeRow } from "./home-rows.js";
 // The start box is the existing one (outcome first); it loads after the first paint like on today's Home.
 const HomeStart = lazy(async () => ({ default: (await import("./HomeStart.js")).HomeStart }));
-// Favourites and suggested agents (exp/agent-publish): loaded only where its own switch (`rovara.publish`) is on, on top of this Home's switch.
+// Favourites and suggested agents (exp/agent-publish): loaded only where its own switch (`rovara.publish`) is on.
 const HomeAgentsRow = lazy(() => import("./HomeAgentsRow.js"));
 
-const WORK_LINK = paths.live, NO_CARDS: readonly ReadHomeCard[] = [];
+const WORK_LINK = paths.work, NO_CARDS: readonly ReadHomeCard[] = [];
 
 function Failed({ error, fallback, retry }: { error: unknown; fallback: string; retry: () => void }) {
  return <div className="rv-hv2-failed" role="alert"><p><VisibleText text={error instanceof ApiError ? error.message : fallback} /></p><Button onClick={retry}>Try again</Button></div>;
@@ -65,7 +65,7 @@ export interface HomeV2Props {
 }
 
 /**
- * The new Home (experience lane exp/home, behind `isNewHomeOn`). One list, in this order (decision D1): Needs you, then Start something beside a row of agents (D23), then Continue, then
+ * Home (experience lane exp/home; the only Home since decision 125). One list, in this order (decision D1): Needs you, then Start something beside a row of agents (D23), then Continue, then
  * Finished recently. Everything comes from reads the app already makes; each section says plainly when it is empty and never points to "Live" by name (the place is Work).
  */
 export function HomeV2({ home, shown, total, needsYou, unavailable }: HomeV2Props) {

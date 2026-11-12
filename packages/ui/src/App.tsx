@@ -12,8 +12,6 @@ import { PageError, ErrorBoundary } from "./shell/ErrorBoundary.js";
 import { createApiClient } from "./api/client.js";
 import { createQueryClient } from "./api/query.js";
 import { appRoutes } from "./routes.js";
-import { isNewNavOn } from "./nav-flags.js";
-import { isInsightsOn } from "./screens/insights/insights-flags.js";
 import { isBillingV2On } from "./billing-flags.js";
 import { isAgentPublishOn } from "./screens/agents/publish-flags.js";
 import { applyNavUiFlags, startUiFlags, syncUiFlags, useUiFlagsStarted } from "./ui-flags.js";
@@ -34,7 +32,7 @@ function Startup({ createRouter }: { createRouter: AppRouterFactory }) {
 /** Mounted once the navigation answer is in (or on a page that has none). The layout switches are read ONCE, here, after the company's runtime flags (in the answer, ui-flags.ts) are in the host's store, so the route table never changes under a person mid-task. */
 function Routed({ createRouter, nav, standalone }: { createRouter: AppRouterFactory; nav: ReadAppNav | undefined; standalone: boolean }) {
  const host = useAppHost(), features = nav?.features;
- const [options] = useState(() => { applyNavUiFlags(host, nav);return { newNav: isNewNavOn(host), insights: isInsightsOn(host), billing: isBillingV2On(host), publish: isAgentPublishOn(host) }; });
+ const [options] = useState(() => { applyNavUiFlags(host, nav);return { billing: isBillingV2On(host), publish: isAgentPublishOn(host) }; });
  const router = useMemo(() => standalone || features !== undefined ? createRouter(appRoutes(features ?? EMPTY_FEATURES, options)) : undefined, [createRouter, features, options, standalone]);
  useEffect(() => () => { router?.dispose(); }, [router]);
  return router === undefined ? null : <RouterProvider router={router} />;
