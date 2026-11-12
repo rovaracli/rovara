@@ -37,7 +37,9 @@ for (const path of ["design/design.css", "look-v2.css", "shell/shell.css", "scre
   // Recent sign-in window page (lane exp/approval-window; its own lazy chunk).
   "screens/admin/approval-window/approval-window.css",
   // Continue in your own tool: the task page's sheet (switch rovara.continue = v2; its own lazy chunk).
-  "screens/session/continue-in-tool.css"]) {
+  "screens/session/continue-in-tool.css",
+  // Automations (chains and triggers; the `chains` feature; their own lazy chunks).
+  "screens/automations/automations.css"]) {
  const source = new URL(`../packages/ui/src/${path}`, import.meta.url);
  const destination = new URL(`../packages/ui/dist/${path}`, import.meta.url);
  await mkdir(fileURLToPath(new URL(".", destination)), { recursive: true });

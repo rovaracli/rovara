@@ -61,8 +61,9 @@ export function appRoutes(features: AppNav["features"], options: { newNav?: bool
  { path: "approval-window", lazy: async () => ({ Component: (await import("./screens/admin/approval-window/ApprovalWindowScreen.js")).ApprovalWindowScreen }) },
  // Lane C2: read-only company audit.
  { path: "audit", lazy: async () => ({ Component: (await import("./screens/admin/audit/AuditScreen.js")).AuditScreen }) }, { path: "*", element: <NotFound /> }] });
- // Chains and triggers are hidden: an old link shows "This isn't available" with a link home, not an error. Their code and data stay.
- children.push({ path: "chains/*", element: <Unavailable /> }, { path: "triggers/*", element: <Unavailable /> });
+ // Automations (chains and triggers) are behind the nav answer's `features.chains` (the server's WEB_FEATURES names `chains`). Off, an old link shows "This isn't available" with a link home, exactly as before. On, a chain has its page; any other address under them is not found (the catch-all below).
+ if (features.chains === true) children.push({ path: "chains/:id", lazy: async () => ({ Component: (await import("./screens/automations/ChainScreen.js")).ChainScreen }) });
+ else children.push({ path: "chains/*", element: <Unavailable /> }, { path: "triggers/*", element: <Unavailable /> });
  if (features.describe) children.push({ path: "describe", element: <Page title="Describe an agent" /> });
  children.push({ path: "*", element: <NotFound /> });
  return [{ path: "/s/:id", element: <OldSessionAddress />, errorElement: <RouteError /> }, { path: "/app/signup", lazy: async () => ({ Component: (await import("./screens/onboarding/SignupScreen.js")).SignupScreen }), errorElement: <RouteError /> }, { path: "/app/welcome", lazy: async () => ({ Component: (await import("./screens/onboarding/WelcomeScreen.js")).WelcomeScreen }), errorElement: <RouteError /> }, { path: "/app/signed-out", lazy: async () => ({ Component: (await import("./screens/signed-out/SignedOutScreen.js")).SignedOutRoute }), errorElement: <RouteError /> }, { path: "/app", element: <AppShell />, errorElement: <RouteError />, children }, { path: "*", element: <NotFound /> }];

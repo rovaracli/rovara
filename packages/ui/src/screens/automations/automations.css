@@ -1,0 +1,11 @@
+.rv-auto{min-width:0}.rv-auto-title{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:var(--rv-space-3);margin-bottom:var(--rv-space-4)}.rv-auto-title>h2{margin:0}
+.rv-auto-list{list-style:none;padding:0;margin:0}.rv-auto-row{min-width:0;padding:var(--rv-space-4) 0;border-bottom:1px solid var(--rv-border)}.rv-auto-row:first-child{padding-top:0}
+.rv-auto-row-head{display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:var(--rv-space-3)}.rv-auto-row-head>div{min-width:0;overflow-wrap:anywhere}.rv-auto-row p{margin:var(--rv-space-2) 0 0;overflow-wrap:anywhere}
+.rv-auto-controls,.rv-auto .rv-actions{display:flex;flex-wrap:wrap;gap:var(--rv-space-3);margin-top:var(--rv-space-3)}
+.rv-auto-controls .rv-button,.rv-auto .rv-actions .rv-button{min-height:44px}
+.rv-auto-note{margin:var(--rv-space-3) 0;padding:var(--rv-space-3) var(--rv-space-4);border:1px solid var(--rv-border);border-radius:var(--rv-radius-sm);background:var(--rv-bg-sunken)}.rv-auto-note p{margin:var(--rv-space-1) 0}.rv-auto-note ul{margin:var(--rv-space-2) 0;padding-left:var(--rv-space-5)}.rv-auto-problem{border-color:var(--rv-danger,var(--rv-border-strong))}
+.rv-auto-activity{list-style:none;padding:0;margin:var(--rv-space-3) 0 0}.rv-auto-activity li{padding:var(--rv-space-2) 0;overflow-wrap:anywhere}
+.rv-auto-facts{display:grid;grid-template-columns:minmax(0,1fr);gap:var(--rv-space-3);margin:0 0 var(--rv-space-4)}.rv-auto-facts>div{display:grid;grid-template-columns:minmax(120px,1fr) minmax(0,3fr);gap:var(--rv-space-3)}.rv-auto-facts dt{color:var(--rv-text-muted)}.rv-auto-facts dd{margin:0;overflow-wrap:anywhere}.rv-auto-facts ul{margin:0;padding-left:var(--rv-space-5)}
+.rv-auto-form{display:grid;gap:var(--rv-space-4);max-width:560px;margin:var(--rv-space-4) 0}
+.rv-auto-code{font-family:var(--rv-font-mono,ui-monospace,monospace);font-size:var(--rv-font-sm);max-width:100%;overflow:auto;white-space:pre}pre.rv-auto-code{padding:var(--rv-space-3);border:1px solid var(--rv-border);border-radius:var(--rv-radius-sm);background:var(--rv-bg-sunken)}
+@media(max-width:767px){.rv-auto-facts>div{grid-template-columns:minmax(0,1fr);gap:var(--rv-space-1)}}
