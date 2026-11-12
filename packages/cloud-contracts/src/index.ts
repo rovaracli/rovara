@@ -75,6 +75,9 @@ export * from "./evidence.js";
 // Lane C17: bounded company Slack stored-evidence read, browser-safe metadata only.
 export * from "./org-slack-workspace-evidence.js";
 
+// 0.5.15: when each health check last ran for a company (Cloud only; the Health page says "checked 5 minutes ago").
+export * from "./org-health-observations.js";
+
 export { AUDIT_INDEX_PAGE_DEFAULT, AUDIT_INDEX_PAGE_MAX, AuditIndexedQuerySchema, AuditIndexedResultSchema, type AuditIndexedQuery, type AuditIndexedResult } from "./audit-search.js";
 
 export { TaskStopEditablePolicySchema, type TaskStopEditablePolicy, TaskStopPendingChangeSchema, TaskStopEditingContextSchema, TaskStopEditBodySchema, TaskStopDecisionBodySchema, TaskStopEditResultSchema, taskStopEditKind } from "./task-stop-editing.js";

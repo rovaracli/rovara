@@ -4,6 +4,7 @@
 import { ADMIN_API_VERSION, DEVELOPER_API_VERSION, MISSING_ALARM_STATE, type AdminHealthCheck, type OrgId, type SlackAuthCheckResponse } from "@rovara-code/contracts";
 import { type AdminHealthResponse } from "@agentx/cloud-contracts";
 import type { AuthenticatedIdentity } from "../auth.js";
+import { recordHealthCheck, type HealthCheckFeature } from "../org/health-observations.js";
 import { requireOrgId } from "../org/resolve.js";
 import { opsFailuresCheck, type OpsFailures } from "../team-record/ops-failures.js";
 import { adminProjects, projectWorkspaceRows, readFailures, type AdminReadDependencies } from "./admin-reads.js";
@@ -113,6 +114,12 @@ export async function adminHealth(deps: AdminReadDependencies, identity: Authent
       return failed("the GitHub App", ms, error);
     }
   };
+  /** 0.5.15: a probe that ran (answered, failed or timed out) leaves its time and result for the Health page. One that is not set up ran nothing and leaves none. */
+  const observed = async (feature: HealthCheckFeature, ran: boolean, answer: Promise<AdminHealthCheck>): Promise<AdminHealthCheck> => {
+    const check = await answer;
+    if (ran && identity.orgId !== undefined) await recordHealthCheck(deps, requireOrgId(identity.orgId), feature, check.status === "ok" || check.status === "failed" ? check.status : "unknown");
+    return check;
+  };
   const teamRecordPart = async (): Promise<Pick<AdminHealthResponse, "teamRecordCheck">> => {
     if (probes.teamRecordFailures === undefined) return {};
     try {
@@ -137,7 +144,7 @@ export async function adminHealth(deps: AdminReadDependencies, identity: Authent
     };
   };
 
-  const [alarms, deadLetterQueues, slack, github, state, teamRecord] = await Promise.all([alarmsPart(), queuesPart(), slackPart(), githubPart(), statePart(), teamRecordPart()]);
+  const [alarms, deadLetterQueues, slack, github, state, teamRecord] = await Promise.all([alarmsPart(), queuesPart(), observed("slack", probes.slackAuthCheck !== undefined, slackPart()), observed("github", probes.githubInstallations !== undefined, githubPart()), statePart(), teamRecordPart()]);
   return {
     version: { developerApi: DEVELOPER_API_VERSION, adminApi: ADMIN_API_VERSION, ...(probes.release === undefined ? {} : { release: probes.release }) },
     ...alarms, ...deadLetterQueues, slack, github, ...state, ...teamRecord,

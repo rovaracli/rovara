@@ -25,6 +25,7 @@
   "packages/cloud-contracts/src/member-removal-web.ts",
   "packages/cloud-contracts/src/needs-confirmation.ts",
   "packages/cloud-contracts/src/org-budget.ts",
+  "packages/cloud-contracts/src/org-health-observations.ts",
   "packages/cloud-contracts/src/org-pending-approvals.ts",
   "packages/cloud-contracts/src/org-slack-workspace-evidence.ts",
   "packages/cloud-contracts/src/org.ts",

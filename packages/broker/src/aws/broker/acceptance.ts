@@ -28,6 +28,7 @@ import { adoptLegacyPullRequest, publicationProject, requireAdministrator, requi
 import { creatorCheckOf, githubScopeOf } from "./scope-helpers.js";
 import { changeRequestRef, hostOfRepository, pullRequestDetailsOf, requireGithubHost } from "./repository-hosts.js";
 import { taskOperationParts } from "./task-operations.js";
+import { recordModelUse } from "../../org/health-observations.js";
 import type { DesignReviewDispatch } from "../../design-review/round-ports.js";
 import { latestChecksItem, recordTerminalResult } from "./terminal-result.js";
 import { withdrawParkedDelivery } from "../parked-stop.js";
@@ -84,7 +85,7 @@ export async function acceptTask(
     throw agentXError(workspace.status === "BUSY" ? "WORKSPACE_BUSY" : "WORKSPACE_NOT_READY", `workspace is ${workspace.status}`);
   }
   const now = new Date().toISOString();
-  const { operation, outbox, fence,fallback,modelChecks,turnAudit } = await taskOperationParts(dependencies, workspace, {
+  const { operation, outbox, fence,fallback,modelChecks,turnAudit,modelUse } = await taskOperationParts(dependencies, workspace, {
     requestId: request.requestId,
     conversationId: request.conversationId,
     prompt: request.prompt,
@@ -178,6 +179,7 @@ export async function acceptTask(
   }
   if(fallback?.event!==undefined)await flushAuditEvents(dependencies,[fallback.event]);
   if(turnAudit!==undefined)await flushAuditEvents(dependencies,[turnAudit.event]);
+  if(modelUse!==undefined)await recordModelUse(dependencies,modelUse.orgId,modelUse.use);
   return { operation: publicOperation(operation), duplicate: false };
 }
 

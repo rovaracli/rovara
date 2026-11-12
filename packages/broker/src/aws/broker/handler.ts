@@ -98,7 +98,7 @@ import { designReviewPortsOf } from "../../design-review/wiring.js";
 import { answerSlackAdd, applyTeamRecordRemoval, drainTeamRecordQueue, installTeamRecordEmitter, isTeamRecordJobEvent, isTeamRecordQueueEvent, isTeamRecordRemovalEvent, isTeamRecordSlackAddEvent, isTeamRecordSlackEvent, recordSlackForward, runTeamRecordJob } from "./team-record-wiring.js";
 import { installLessons, recordAndLessonRouteDependencies } from "./lessons-wiring.js";
 import { companyRulesRouteDependencies, installCompanyRules, installCompanyRulesJob } from "./company-rules-wiring.js";
-import { requireSlackAllowedByEdition, removalDepsOf, slackTeamOrg, adminChangeDependencies, adminReadDependencies, agentRouteDependencies, brokerDependencies, chainRunnerDependenciesOf, developerDisplayName, developerTaskActions, eventDispatchOf, githubConnectRoute, githubConnectionOf, installChainRunner, installOwnWriteRecorder, intakePollDependenciesFrom, orgStoreOf, repositoriesGateRoute, repositoryGateOf, serviceStatusRouteDependencies, workingBranchPagesRoute, workingBranchPreviewRoute } from "./dependency-wiring.js";
+import { requireSlackAllowedByEdition, removalDepsOf, slackTeamOrg, adminChangeDependencies, adminReadDependencies, agentRouteDependencies, brokerDependencies, chainRunnerDependenciesOf, developerDisplayName, developerTaskActions, eventDispatchOf, githubConnectRoute, githubConnectionOf, installChainRunner, installOwnWriteRecorder, intakePollDependenciesFrom, orgStoreOf, repositoriesGateRoute, repositoryGateOf, serviceStatusRouteDependencies, healthObservationRouteDependencies, workingBranchPagesRoute, workingBranchPreviewRoute } from "./dependency-wiring.js";
 import { runWokenTrackingPass, trackingPassDependencies } from "./e2e-rounds.js";
 import { handleProjectSetupCallback, handleProjectSetupEvidenceChunk, handleProjectSetupEvidenceFinalize, handleProjectSetupEvidenceInit, handleProjectSetupExecutionRead } from "./evidence-and-setup.js";
 import { handleModelAccess, handleSlackModelAccess } from "./model-access.js";
@@ -209,6 +209,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           ...repositoriesGateRoute(dependencies),
           ...workingBranchPagesRoute(dependencies),
           ...serviceStatusRouteDependencies(dependencies),
+          ...healthObservationRouteDependencies(dependencies),
           ...workingBranchPreviewRoute(dependencies),
           projectAllowedDomains: {
             registerApproved: async (actor, value, proof) => registerProjectFor(dependencies, actor, value, { creatorMembership: "none", appliedDomainProposal: proof }),

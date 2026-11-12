@@ -19,7 +19,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import { catalogModel } from "@agentx/model-runtime/catalog";
 import { AgentXError, BEDROCK_NOT_TESTED_NOTE, CUSTOM_SOURCE_KINDS, TRANSPORTS_AT_LAUNCH, type CustomSourceKind, EGRESS_SYNC_KEY, EgressSyncMarkerSchema, MODEL_SOURCES_NEED_PROXY, MODEL_SOURCE_STILL_APPLYING, ModelSourceIdSchema, ModelSourceKindSchema, agentXError, bedrockExternalId, bedrockTrustPolicy, canonicalJson, customSourceLimitProblem, egressPendingWarning, egressRejectedWarning, endpointForbiddenModelProblem, endpointSecretRefProblem, isAllowedDomain, modelSourceInputSchema, sourceKindProblem, type EgressDomainsItem, type ModelIdentifier, type ModelSource, type ModelSourceInput, type OrgId, type SourceLaunch } from "@rovara-code/contracts";
-import { featureEnabled, requireFeature, type EditionPolicy } from "@agentx/cloud-contracts";
+import { featureEnabled, requireFeature, type EditionPolicy, type HealthCheckResult } from "@agentx/cloud-contracts";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import type { AgentCaller } from "../agents/access.js";
 import type { AgentRouteDependencies } from "../agents/routes.js";
@@ -29,6 +29,7 @@ import { StatusReply } from "../aws/status-reply.js";
 import { readGuardrails } from "../agents/guardrails.js";
 import type { ModelAccess } from "../model-proxy/access.js";
 import { putEgressDomains, readEgressDomains, type EgressDomainsDependencies } from "../org/egress-domains.js";
+import { recordHealthCheck, type HealthObservationWriter } from "../org/health-observations.js";
 import { endpointQualificationDigest, endpointQualified } from "./endpoint-qualification.js";
 import { ReviewedSourceOrderBodySchema } from "./reviewed-order.js";
 import { finishRemovals, releaseSource, viaProxy } from "./release.js";
@@ -57,6 +58,8 @@ export interface ModelSourceRouteDependencies {
   bedrockTrustPrincipals?: readonly string[];
   /** Whether Pi's catalog knows a model. Default: `catalogModel(model) !== undefined`. */
   isKnownCatalog?: (model: ModelIdentifier) => boolean;
+  /** 0.5.15: where a check leaves its time and result for the admin Health page. Absent: a check leaves none. */
+  healthTimes?: HealthObservationWriter;
 }
 
 type Deps = AgentRouteDependencies & { modelSources: ModelSourceRouteDependencies };
@@ -499,14 +502,29 @@ async function checkSource(deps: Deps, caller: AgentCaller, rawId: string): Prom
   const source = ModelSourceIdSchema.safeParse(rawId).success ? current.sources.find((candidate) => candidate.sourceId === rawId) : undefined;
   if (source === undefined) throw agentXError("NOT_FOUND", MISSING);
   requireAvailable(deps, source.kind, source.kind === "endpoint" ? source.api : undefined);
-  if (source.kind !== "endpoint") return runCheck(deps, caller, source);
+  if (source.kind !== "endpoint") return observedCheck(deps, caller, source);
   // R1: a check of an endpoint that ends in ANY error (a lookup that failed, a health call the proxy refused, a proxy that is down) leaves no qualification behind, the same as
   // a check that refused. The error is still the check's answer; if clearing fails too, the original error stands (the record is cleared first, which is what routing reads).
   try {
-    return await runCheck(deps, caller, source);
+    return await observedCheck(deps, caller, source);
   } catch (error) {
     try { await unqualify(deps, caller, source.sourceId); } catch { /* the check's own error is the answer */ }
     throw error;
+  }
+}
+
+/**
+ * 0.5.15: a check that finished leaves its time and result (ok, failed, or unknown when it could not tell: it raced a change, or threw) for the company's Health page.
+ * Writing it never changes the check's answer.
+ */
+async function observedCheck(deps: Deps, caller: AgentCaller, source: Source): Promise<Record<string, unknown>> {
+  let result: HealthCheckResult = "unknown";
+  try {
+    const answer = await runCheck(deps, caller, source);
+    result = answer.ok === true ? "ok" : answer.message === CHECK_RACED ? "unknown" : "failed";
+    return answer;
+  } finally {
+    if (deps.modelSources.healthTimes !== undefined) await recordHealthCheck(deps.modelSources.healthTimes, caller.orgId, "model_source", result);
   }
 }
 
