@@ -60,7 +60,7 @@ describe("the worker's test services settings", () => {
   });
   it("is written for a named environment only, only after root pulled the catalog images, and a failure is not fatal to the boot", () => {
     const main = fn("stage2_main");
-    expect(main).toMatch(/if \[\[ \$\{AGENTX_ENVIRONMENT_KIND:-\} == named \]\]; then\n\s+if pull_catalog_images "\$region"; then\n\s+write_test_services_environment \|\| log /u);
+    expect(main).toMatch(/if \[\[ \$\{AGENTX_ENVIRONMENT_KIND:-\} == named \]\]; then\n\s+install_function_runner_runsc \|\| true\n\s+if pull_catalog_images "\$region"; then\n\s+write_test_services_environment \|\| log /u);
     expect(main).toContain("test services are not offered on this worker");
     expect(main.indexOf("write_worker_environment")).toBeLessThan(main.indexOf("write_test_services_environment"));
   });

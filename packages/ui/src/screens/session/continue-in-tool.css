@@ -1,4 +1,4 @@
-/* "Continue in your own tool" (switch rovara.continue). New file: nothing here is read while the switch is off. */
+/* "Continue in your own tool": the task page's sheet (its own lazy chunk). */
 .rv-continue{width:min(640px,calc(100vw - 32px))}
 .rv-continue-body{display:grid;gap:var(--rv-space-5);min-width:0}
 .rv-continue-body h3,.rv-continue-body p{margin:0}

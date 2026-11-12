@@ -1,4 +1,4 @@
-/* Spending page (switch rovara.spending = v2). New file: nothing here is read while the switch is off. Single column, wrapping text, 44px targets. */
+/* Spending page (Settings > Spending). Single column, wrapping text, 44px targets. */
 .rv-spending{max-width:76ch}
 .rv-spend-block{margin-block:var(--rv-density-gap,var(--rv-space-6))}
 .rv-spend-block h2{margin-bottom:var(--rv-space-3)}

@@ -6,9 +6,9 @@ for (const path of ["design/design.css", "look-v2.css", "shell/shell.css", "scre
  "screens/admin/projects/project-slack.css",
  // Lane C: owned waiting-queue filter styles.
  "screens/admin/waiting/waiting.css",
- // Insights (switch rovara.insights = v2; its own lazy chunk).
+ // Insights (its own lazy chunk).
  "screens/insights/insights.css",
- // Spending page (switch rovara.spending = v2).
+ // Spending page (Settings > Spending).
  "screens/admin/spending.css",
  // Health and readiness (switch rovara.health = v2).
  "screens/admin/health/health.css",
@@ -38,7 +38,7 @@ for (const path of ["design/design.css", "look-v2.css", "shell/shell.css", "scre
  "screens/session/plan-panel.css",
  // Recent sign-in window page (lane exp/approval-window; its own lazy chunk).
  "screens/admin/approval-window/approval-window.css",
- // Continue in your own tool: the task page's sheet (switch rovara.continue = v2; its own lazy chunk).
+ // Continue in your own tool: the task page's sheet (its own lazy chunk).
  "screens/session/continue-in-tool.css",
  // Automations (chains and triggers; the `chains` feature; their own lazy chunks).
  "screens/automations/automations.css",

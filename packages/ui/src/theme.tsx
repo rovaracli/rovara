@@ -17,6 +17,8 @@ export function ThemeProvider({ host, children }: { host: ThemeStorageHost; chil
  function setPreference(value: ThemePreference) { setState(value);try { host.storage.set("rovara.theme", value); } catch { /* A blocked store does not prevent changing appearance. */ } }
  function setDensity(value: Density) { setDensityState(value);try { host.storage.set(DENSITY_STORAGE_KEY, value); } catch { /* A blocked store does not prevent changing density. */ } }
  // The base tokens are shared with the broker's own pages; the v2 sheet (scoped to data-look="v2") goes after them so its rules win at equal specificity.
- return <Context.Provider value={{ preference, setPreference, density, setDensity }}><style nonce={getNonce()}>{THEME_CSS}</style>{children}</Context.Provider>;
+ return <Context.Provider value={{ preference, setPreference, density, setDensity }}><ThemeSheet />{children}</Context.Provider>;
 }
+/** The token sheet on its own, with the page's nonce: ThemeProvider writes it, and App's error page writes it itself so it is styled even when ThemeProvider is what failed. `extra` is appended. */
+export function ThemeSheet({ extra = "" }: { extra?: string }) { return <style nonce={getNonce()}>{THEME_CSS + extra}</style>; }
 export function useTheme() { return useContext(Context); }

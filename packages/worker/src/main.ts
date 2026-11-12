@@ -37,6 +37,7 @@ import { savedEnvOptionsOf } from "./saved-env/use.js";
 import { createDockerCli } from "./swebench/containers.js";
 import { assertWorkerScratchReady, checkWorkerScratch, workerBootFailureOf } from "./worker-scratch.js";
 import { collectTestServicesUsage, testServicesAdvertisedFeatures, testServicesAtWorkerBoot } from "./test-services-run.js";
+import { functionRunnerAdvertisedFeatures } from "./function-runner-ready.js";
 import { createApplicationChecksFeatureMonitor, createWorkflowE2EApplicationRuntime } from "./workflow-e2e-application-runtime.js";
 
 const rootPath = process.env.AGENTX_WORKSPACE_ROOT ?? "/mnt/workspace";
@@ -99,7 +100,7 @@ const cancellationController = new WorkerCancellationController();
 const state = createWorkerServerState(
   journal,
   {
-    invocationFeatures: [...projectSetupRuntime.invocationFeatures, ...testServicesAdvertisedFeatures()],
+    invocationFeatures: [...projectSetupRuntime.invocationFeatures, ...testServicesAdvertisedFeatures(), ...functionRunnerAdvertisedFeatures(testServicesAdvertisedFeatures())],
     invocationFeatureDiagnostics: { ...projectSetupRuntime.invocationFeatureDiagnostics, "worker.scratch": workerScratch },
     // Application CHECKS are listed on /ping only while this worker can run them, from the last background check (never a Docker call per ping).
     ...applicationChecks.executor,
