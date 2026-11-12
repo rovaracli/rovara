@@ -1,25 +1,31 @@
 #!/bin/bash
 # Slice 2 operator check, scripted so it is not done by eye: is the `image-result` artifact the one the emulator image workflow really built, from the code we expect?
 #
-#   scripts/verify-local-aws-run.sh <RUN_ID> <EXPECTED_HEAD_SHA> <ARTIFACT_DIR> [<REPOSITORY>]
+#   scripts/verify-local-aws-run.sh <RUN_ID> <EXPECTED_HEAD_SHA> <ARTIFACT_DIR> [<REPOSITORY> [<PRIVATE_SOURCE_SHA>]]
 #
 # REPOSITORY is one of two literals (anything else is refused): `PrepLabsAI/rovara-local-aws` (the default: the private fork, the old path) or `rovaracli/rovara-local-aws` (the public CI-only copy the AWS Emulator engine image is built in,
-# because Actions cannot run on private repositories; owner decision, like decision 33 for Rovara-cloud). Its `main` is a no-history snapshot commit of the private branch `rovara/front` (src/ and .superpowers/ removed), so its sha differs
-# from the private branch's: EXPECTED_HEAD_SHA is the PUBLIC snapshot sha. Before snapshotting, scripts/verify-local-aws-snapshot.sh proves the snapshot tree is the private commit's tree minus those two folders.
+# because Actions cannot run on private repositories; owner decision, like decision 33 for Rovara-cloud). Every snapshot there is a parentless commit of the private branch `rovara/front` (src/ and .superpowers/ removed), so it cannot
+# fast-forward `main` and is pushed to its own branch `snapshot/<first 12 hex of the private rovara/front sha>`. For that repository PRIVATE_SOURCE_SHA (the full 40-character private commit, the `privateSourceSha` of the sources entry's
+# provenance) is REQUIRED and the run's branch must be exactly `snapshot/` plus its first 12 hex characters; EXPECTED_HEAD_SHA is the PUBLIC snapshot sha. Before snapshotting, scripts/verify-local-aws-snapshot.sh proves the snapshot
+# is parentless and its tree is the private commit's tree minus those two folders.
 #
 # It fails (non-zero, one reason on stderr) unless ALL of these hold:
 #   1. the run (gh run view, in REPOSITORY) is on an allowed branch of that repository, at exactly EXPECTED_HEAD_SHA, of the workflow named `image`, and its conclusion is `success`. Allowed: `main` or `rovara/main` in
-#      PrepLabsAI/rovara-local-aws; exactly `main` in rovaracli/rovara-local-aws. The pairs are literals in this script: no variable or argument adds a branch, and the full 40-character sha is the real pin;
+#      PrepLabsAI/rovara-local-aws (and no private sha is given); in rovaracli/rovara-local-aws exactly `snapshot/<first 12 hex of PRIVATE_SOURCE_SHA>` and never `main`. No variable adds a branch, and the full 40-character sha is the real pin;
 #   2. <ARTIFACT_DIR>/index.digest is one line `sha256:<64 hex>`;
 #   3. the run's own log has the line `index digest: <that digest>` (the workflow prints it from the same file it uploads), so the artifact and the run agree.
 # Nothing here trusts the artifact for the first check, and a missing field, an empty answer or a failing gh is a failure. `gh` may be replaced with GH=... (tests).
 set -u
 export LC_ALL=C
 RUN_ID="${1:-}"; SHA="${2:-}"; DIR="${3:-}"
-REPO="${4:-PrepLabsAI/rovara-local-aws}"
+REPO="${4:-PrepLabsAI/rovara-local-aws}"; PRIVATE_SHA="${5:-}"
 case "$REPO" in
-  PrepLabsAI/rovara-local-aws) ALLOWED_BRANCHES="main rovara/main" ;;
-  rovaracli/rovara-local-aws) ALLOWED_BRANCHES="main" ;;
+  PrepLabsAI/rovara-local-aws)
+    [[ -z "$PRIVATE_SHA" ]] || { echo "REFUSED: a private source sha is for the public repository only." >&2; exit 1; }
+    ALLOWED_BRANCHES="main rovara/main" ;;
+  rovaracli/rovara-local-aws)
+    [[ "$PRIVATE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "REFUSED: the public repository needs the private rovara/front sha (full 40 characters) as the fifth argument." >&2; exit 1; }
+    ALLOWED_BRANCHES="snapshot/${PRIVATE_SHA:0:12}" ;;
   *) echo "REFUSED: the repository is PrepLabsAI/rovara-local-aws or rovaracli/rovara-local-aws." >&2; exit 1 ;;
 esac
 GH="${GH:-gh}"

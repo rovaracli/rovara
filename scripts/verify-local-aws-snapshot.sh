@@ -3,7 +3,7 @@
 #
 #   scripts/verify-local-aws-snapshot.sh <PRIVATE_CHECKOUT> <PRIVATE_SHA> <PUBLIC_CHECKOUT> <PUBLIC_SHA>
 #
-# PRIVATE_CHECKOUT is a clone of PrepLabsAI/rovara-local-aws that holds PRIVATE_SHA (a commit of `rovara/front`); PUBLIC_CHECKOUT is a clone of rovaracli/rovara-local-aws that holds PUBLIC_SHA (its `main`, one no-history
+# PRIVATE_CHECKOUT is a clone of PrepLabsAI/rovara-local-aws that holds PRIVATE_SHA (a commit of `rovara/front`); PUBLIC_CHECKOUT is a clone of rovaracli/rovara-local-aws that holds PUBLIC_SHA (its `snapshot/<12 hex>` branch, one no-history
 # snapshot commit). It fails (non-zero, one reason on stderr) unless ALL of these hold:
 #   1. both shas are full 40-character commit ids that exist in their checkout;
 #   2. the public commit has no parent (a snapshot, no history);
