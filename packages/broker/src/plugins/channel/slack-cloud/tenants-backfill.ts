@@ -11,7 +11,8 @@ export const TENANT_BACKFILL_MARK = "a8-slack-tenants";
 
 const BINDING_PK = /^ORG#(org_[0-9a-z]{20})#SLACK_BINDING#(T[A-Z0-9]{2,31})$/u;
 
-type Row = { pk?: unknown; sk?: unknown };
+/** A stored row as a scan or a query returns it. */
+type Row = Record<string, unknown>;
 
 /** Which (company, workspace) pairs hold at least one binding row, from the rows a scan found. Rows that are not bindings, or whose key does not read, are skipped and counted. */
 export function tenantsOfBindingRows(rows: Iterable<Row>): { pairs: Array<{ orgId: OrgId; teamId: string }>; skipped: number } {
@@ -40,12 +41,26 @@ export async function backfillSlackTenants(store: DocumentStore, rows: Iterable<
   return counts;
 }
 
-/** Reverse: deletes the rows the forward step wrote (marked). A row Code's bind wrote (no mark) is never touched. */
-export async function undoBackfillSlackTenants(store: DocumentStore, rows: Iterable<Row>): Promise<{ deleted: number; kept: number }> {
-  const { pairs } = tenantsOfBindingRows(rows);
+const TENANT_PK = /^ORG#(org_[0-9a-z]{20})#CHANNEL_TENANTS$/u;
+const TENANT_SK = /^slack\/(T[A-Z0-9]{2,31})$/u;
+
+/** The tenant rows the forward step wrote, from the tenant rows a scan found: key and mark both read. A row of Code's own bind (no mark), or of another channel, is not one of them. */
+export function markedTenantRows(rows: Iterable<Row>): Array<{ orgId: OrgId; teamId: string }> {
+  const found: Array<{ orgId: OrgId; teamId: string }> = [];
+  for (const row of rows) {
+    if (typeof row["pk"] !== "string" || typeof row["sk"] !== "string" || row["backfilledBy"] !== TENANT_BACKFILL_MARK) continue;
+    const org = TENANT_PK.exec(row["pk"])?.[1];
+    const team = TENANT_SK.exec(row["sk"])?.[1];
+    if (org !== undefined && team !== undefined) found.push({ orgId: org, teamId: team });
+  }
+  return found;
+}
+
+/** Reverse: deletes the tenant rows that carry the mark (give it the `CHANNEL_TENANTS` rows a scan found). The delete is conditional on the mark, so a row that lost it since the scan is kept. */
+export async function undoBackfillSlackTenants(store: DocumentStore, tenantRows: Iterable<Row>): Promise<{ deleted: number; kept: number }> {
   let deleted = 0;
   let kept = 0;
-  for (const { orgId, teamId } of pairs) {
+  for (const { orgId, teamId } of markedTenantRows(tenantRows)) {
     const result = await store.delete({ key: tenantRowKey(orgId, teamId), condition: when.eq("backfilledBy", TENANT_BACKFILL_MARK) });
     if (result.applied) deleted += 1; else kept += 1;
   }

@@ -220,8 +220,13 @@ describe("the sink: the company, the person (explicit members) and the binding",
 
   it("runs nothing for a workspace no company bound, and nothing for a space only ANOTHER company bound", async () => {
     const one = world(async () => DEVELOPER);
+    // Company A has a binding for this very channel id, but a workspace no company bound is nobody's: nothing runs (a fallback to a first company would run it).
+    await bind(one.store, A, "T0UNBOUND9");
+    await bind(one.store, A, TEAM);
     await one.sink.message(message("Ev0CCCCCCCC", "T0UNBOUND9"));
     expect(one.worked).toEqual([]);
+    await one.sink.message(message("Ev0CCCCCCCD", TEAM));
+    expect(one.worked).toHaveLength(1);
     const two = world(async () => DEVELOPER);
     await bind(two.store, B, TEAM);
     await two.sink.message(message());
@@ -266,7 +271,7 @@ describe("registering changes nothing", () => {
     expect(registry.names("channel")).toEqual(["slack"]);
     expect(tokenReads).toBe(0);
     expect(slack.calls).toEqual([]);
-    expect(adapter.start).toBeUndefined();
+    expect("start" in adapter).toBe(false);
     expect(adapter.stepUp).toEqual(["plan_approval", "admin"]);
   });
 });

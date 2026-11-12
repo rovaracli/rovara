@@ -3,9 +3,9 @@
 import { describe, expect, it } from "vitest";
 import { MemoryDocumentStore } from "@rovara-code/broker/ports";
 import { bindChannelSpace, listAllChannelBindings, listChannelBindings, readChannelBinding } from "@rovara-code/broker/core/channel";
-import { channelBindingKey, orgChannelBindingKey, orgChannelBindingPartition, readChannelBindingItem, slackBindingKey, slackBindingPk, type OrgId } from "@rovara-code/contracts";
+import { channelBindingKey, orgChannelBindingKey, orgChannelBindingPartition, orgScoped, queryAll, readChannelBindingItem, slackBindingKey, slackBindingPk, type OrgId } from "@rovara-code/contracts";
 import { slackBindingItem } from "../../packages/broker/src/org/slack-binding.js";
-import { TENANT_BACKFILL_MARK, backfillSlackTenants, tenantRowKey, tenantsOfBindingRows, undoBackfillSlackTenants } from "../../packages/broker/src/plugins/channel/slack-cloud/index.js";
+import { TENANT_BACKFILL_MARK, backfillSlackTenants, markedTenantRows, tenantRowKey, tenantsOfBindingRows, undoBackfillSlackTenants } from "../../packages/broker/src/plugins/channel/slack-cloud/index.js";
 
 const A = "org_aaaaaaaaaaaaaaaaaaaa" as OrgId;
 const B = "org_bbbbbbbbbbbbbbbbbbbb" as OrgId;
@@ -17,6 +17,10 @@ const ref = (channel = CHANNEL, tenant = TEAM) => ({ channel: "slack", tenant, s
 /** A binding row exactly as Cloud's bind writes it today, including the attributes an old row carries. */
 const todaysRow = (orgId: OrgId, teamId = TEAM, channelId = CHANNEL, projectName = "web") =>
   ({ ...slackBindingItem(orgId, { teamId, channelId, projectName, updatedAt: "2026-11-01T00:00:00.000Z" }, "d".repeat(64)), projectRevision: 4 });
+
+/** The `CHANNEL_TENANTS` rows of both test companies, as a scan of the table would find them. */
+const tenantRows = async (store: MemoryDocumentStore): Promise<Array<Record<string, unknown>>> =>
+  (await Promise.all([A, B].map((orgId) => queryAll(store, { pk: orgScoped(orgId, "CHANNEL_TENANTS") })))).flat();
 
 async function storeWith(...rows: Array<Record<string, unknown>>): Promise<MemoryDocumentStore> {
   const store = new MemoryDocumentStore();
@@ -110,7 +114,8 @@ describe("the tenant-row backfill and its reverse (not run on a table by this la
     expect(before).toBeDefined();
     expect(await backfillSlackTenants(store, rows())).toEqual({ written: 2, alreadyThere: 1, skipped: 0 });
     expect(await store.get(tenantRowKey(A, TEAM))).toEqual(before);
-    expect(await undoBackfillSlackTenants(store, rows())).toEqual({ deleted: 2, kept: 1 });
+    // The unmarked row is not one the forward step wrote, so the reverse does not even list it.
+    expect(await undoBackfillSlackTenants(store, await tenantRows(store))).toEqual({ deleted: 2, kept: 0 });
     expect(await store.get(tenantRowKey(A, TEAM))).toEqual(before);
   });
 
@@ -119,10 +124,32 @@ describe("the tenant-row backfill and its reverse (not run on a table by this la
     const keys = async () => (await Promise.all([A, B].map(async (orgId) => store.get(tenantRowKey(orgId, TEAM))))).map((row) => row !== undefined);
     await backfillSlackTenants(store, rows());
     expect(await keys()).toEqual([true, true]);
-    expect(await undoBackfillSlackTenants(store, rows())).toEqual({ deleted: 3, kept: 0 });
+    expect(await undoBackfillSlackTenants(store, await tenantRows(store))).toEqual({ deleted: 3, kept: 0 });
     expect(await keys()).toEqual([false, false]);
     expect(await store.get(tenantRowKey(A, OTHER_TEAM))).toBeUndefined();
     expect(await listChannelBindings({ store, orgId: A }, "slack", TEAM)).toHaveLength(2);
+  });
+
+  it("finds the rows to undo from the tenant rows, so a binding unbound between the two steps leaves no marked row behind", async () => {
+    const store = await storeWith(...rows());
+    await backfillSlackTenants(store, rows());
+    // The owner unbinds every channel of company A in workspace T0BBBBBBB between the forward step and the reverse.
+    await store.delete({ key: slackBindingKey(A, OTHER_TEAM, "C0DDDDDDD") });
+    expect(await listChannelBindings({ store, orgId: A }, "slack", OTHER_TEAM)).toEqual([]);
+    expect(await undoBackfillSlackTenants(store, await tenantRows(store))).toEqual({ deleted: 3, kept: 0 });
+    expect(await tenantRows(store)).toEqual([]);
+  });
+
+  it("keeps a row that has no mark, one that has another mark, and one whose key is not a Slack tenant row, and keeps a row that lost its mark after the scan", async () => {
+    const store = await storeWith(...rows());
+    await store.put({ item: { ...tenantRowKey(A, TEAM), entityType: "CHANNEL_TENANT", channel: "slack", tenant: TEAM } });
+    await store.put({ item: { ...tenantRowKey(B, TEAM), entityType: "CHANNEL_TENANT", channel: "slack", tenant: TEAM, backfilledBy: "another-run" } });
+    const scanned = await tenantRows(store);
+    expect(markedTenantRows([...scanned, { pk: orgScoped(A, "CHANNEL_TENANTS"), sk: "teams/T0AAAAAAA", backfilledBy: TENANT_BACKFILL_MARK }, { pk: `ORG#${A}#OTHER`, sk: "slack/T0AAAAAAA", backfilledBy: TENANT_BACKFILL_MARK }])).toEqual([]);
+    // A row marked at scan time that lost its mark before the delete is kept (the delete is conditional on the mark).
+    const stale = [{ ...tenantRowKey(A, TEAM), backfilledBy: TENANT_BACKFILL_MARK }];
+    expect(await undoBackfillSlackTenants(store, stale)).toEqual({ deleted: 0, kept: 1 });
+    expect(await store.get(tenantRowKey(A, TEAM))).toBeDefined();
   });
 
   it("skips rows that are not bindings, and takes the company and workspace from the key text only", () => {
