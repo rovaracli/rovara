@@ -73,6 +73,29 @@ export async function coreOperationEvents(deps: RowDeps, workspaceId: string, op
   return rows.filter((row) => row["entityType"] === "OPERATION_EVENT" && typeof row["sequence"] === "number").map(asCloudEvent);
 }
 
+/** At most this many pages of one operation's core events are read for its usage records (the bound Cloud's own usage read has). */
+export const CORE_USAGE_PAGES_MAX = 40;
+
+/**
+ * The usage records among a core operation's events (the payloads, in the shape Cloud's usage readers parse), or undefined when they cannot all be read (more pages than the
+ * bound): spend that is not known is never counted as zero. The filter is the same as Cloud's own (`type = usage`).
+ */
+export async function coreUsagePayloads(deps: RowDeps, workspaceId: string, operationId: string): Promise<Array<{ payload?: unknown }> | undefined> {
+  const found: Array<{ payload?: unknown }> = [];
+  let start: Record<string, unknown> | undefined;
+  for (let page = 0; page < CORE_USAGE_PAGES_MAX; page += 1) {
+    const response = await deps.documentClient.send(new QueryCommand({
+      TableName: deps.tableName, KeyConditionExpression: "pk = :pk AND begins_with(sk, :event)", FilterExpression: "#type = :usage",
+      ExpressionAttributeNames: { "#type": "type" }, ExpressionAttributeValues: { ":pk": `WORKSPACE#${workspaceId}`, ":event": coreEventPrefix(operationId), ":usage": "usage" },
+      ConsistentRead: true, ...(start === undefined ? {} : { ExclusiveStartKey: start }),
+    })) as { Items?: Row[]; LastEvaluatedKey?: Record<string, unknown> };
+    for (const item of response.Items ?? []) if (item["entityType"] === "OPERATION_EVENT") found.push({ payload: item["payload"] });
+    start = response.LastEvaluatedKey;
+    if (start === undefined) return found;
+  }
+  return undefined;
+}
+
 // ---- D20: the end of a core task ----
 
 /** What the core's `taskEnded` seam tells (vendor core/task-flow/close.ts finishClose). */

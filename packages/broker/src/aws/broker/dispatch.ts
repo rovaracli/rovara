@@ -1,5 +1,6 @@
 // Part of the broker (split out of ../broker.ts): agent run, workflow and autofix dispatch.
 
+import { coreUsagePayloads } from "../../cloud/rows/core-rows.js";
 import { runOutsideRecheckDispatch } from "./outside-recheck.js";
 import { nightlyHeadDependencies } from "./nightly-head.js";
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
@@ -550,9 +551,19 @@ const AUTOFIX_USAGE_PAGES_MAX = 40;
  * Every usage record of one operation, added up: a review run records one per reviewer (code and security), a coding run one. Undefined when the events cannot all be read (more pages than
  * the bound, or a read that failed): spend that is not known is never counted as zero.
  */
-export async function autofixOperationUsage(dependencies: AwsBrokerDependencies, operationId: string): Promise<{ total: number; records: number } | undefined> {
+export async function autofixOperationUsage(dependencies: AwsBrokerDependencies, operationId: string, workspaceId?: string): Promise<{ total: number; records: number } | undefined> {
   let total = 0;
   let records = 0;
+  const add = (items: ReadonlyArray<{ payload?: unknown }>): boolean => {
+    for (const item of items) {
+      const usage = AutofixUsageCostSchema.safeParse(item.payload);
+      records += 1;
+      // A usage record with no cost (an unpriced model) counts as one more round's estimate, never as free; one that cannot be read makes the whole spend unknown.
+      if (!usage.success) return false;
+      total += usage.data.costUsd !== null ? usage.data.costUsd : AUTOFIX_ROUND_ESTIMATE_USD;
+    }
+    return true;
+  };
   let start: Record<string, unknown> | undefined;
   for (let page = 0; page < AUTOFIX_USAGE_PAGES_MAX; page += 1) {
     const response = await dependencies.documentClient.send(new QueryCommand({
@@ -560,15 +571,14 @@ export async function autofixOperationUsage(dependencies: AwsBrokerDependencies,
       ExpressionAttributeNames: { "#type": "type" }, ExpressionAttributeValues: { ":pk": `OPERATION#${operationId}`, ":event": "EVENT#", ":usage": "usage" },
       ConsistentRead: true, ...(start === undefined ? {} : { ExclusiveStartKey: start }),
     })) as { Items?: Array<{ payload?: unknown }>; LastEvaluatedKey?: Record<string, unknown> };
-    for (const item of response.Items ?? []) {
-      const usage = AutofixUsageCostSchema.safeParse(item.payload);
-      records += 1;
-      // A usage record with no cost (an unpriced model) counts as one more round's estimate, never as free; one that cannot be read makes the whole spend unknown.
-      if (!usage.success) return undefined;
-      total += usage.data.costUsd !== null ? usage.data.costUsd : AUTOFIX_ROUND_ESTIMATE_USD;
-    }
+    if (!add(response.Items ?? [])) return undefined;
     start = response.LastEvaluatedKey;
-    if (start === undefined) return { total, records };
+    if (start === undefined) {
+      if (records > 0 || workspaceId === undefined) return { total, records };
+      // An operation of a core task keeps its events under its workspace (D18): looked for only where Cloud's own partition has no usage record.
+      const core = await coreUsagePayloads(dependencies, workspaceId, operationId);
+      return core === undefined || !add(core) ? undefined : { total, records };
+    }
   }
   return undefined;
 }
@@ -580,7 +590,7 @@ export async function autofixTaskSpendUsd(dependencies: AwsBrokerDependencies, t
     let total = 0;
     for (const operation of operations) {
       if (operation.workflowMode === "CHECKS") continue;
-      const usage = await autofixOperationUsage(dependencies, operation.id);
+      const usage = await autofixOperationUsage(dependencies, operation.id, task.workspaceId);
       if (usage === undefined) return undefined;
       total += usage.records === 0 ? AUTOFIX_ROUND_ESTIMATE_USD : usage.total;
     }
@@ -597,7 +607,7 @@ export async function replayCopySpendUsd(dependencies: AwsBrokerDependencies, ta
   try {
     let total = 0;
     for (const operation of (await developerTaskActions(dependencies).operations(task.workspaceId)).filter((candidate) => candidate.kind === "task")) {
-      const usage = await autofixOperationUsage(dependencies, operation.id);
+      const usage = await autofixOperationUsage(dependencies, operation.id, task.workspaceId);
       if (usage === undefined) { total = Number.NaN; break; }
       // A finished model run with no usage record counts as one round's estimate (never as free); a run still going, and a checks run, count what they have recorded.
       total += usage.records === 0 && operation.workflowMode !== "CHECKS" && (TERMINAL_OPERATION_STATUSES as ReadonlySet<string>).has(operation.status) ? AUTOFIX_ROUND_ESTIMATE_USD : usage.total;
