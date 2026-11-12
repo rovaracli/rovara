@@ -1,6 +1,7 @@
 // Plan 4 Task 21: GitHub's events reach triggers through the one webhook the App already has. The signature is checked by the existing verifier; after it, an event that can start work
 // is mapped (only through the org's own installation, the repositories that installation holds and the projects whose latest revision pins both) and handed to Task 20's dispatch. Nothing
 // here starts work by itself: these tests read what dispatch did. The loop guard, the replay guard and the org boundaries are the points a reviewer looks at first.
+import "../support/automations-on.js";
 import { createHmac, randomUUID } from "node:crypto";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { TriggerEvent } from "@rovara-code/contracts";

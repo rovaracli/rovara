@@ -218,6 +218,8 @@ import { StatusReply } from "./status-reply.js";
 import { getModels } from "../agents/models-route.js";
 import { isAgentRoute, routeAgentRequest } from "../agents/routes.js";
 import { isChainRoute, routeChainRequest } from "../chains/routes.js";
+import { automationsAccess } from "../chains/automations-gate.js";
+import { isProjectAutomationsRoute, routeProjectAutomations } from "../chains/project-automations.js";
 import { isAgentSessionRoute, routeAgentSessionRequest } from "../agent-sessions/routes.js";
 import { isDiagnosisPath, routeDiagnosisRequest } from "../diagnosis/routes.js";
 import { isDeviceRoute, routeDeviceRequest } from "../devices/routes.js";
@@ -473,11 +475,14 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
     return routeAgentRequest({ ...deps.agents, startRun: (_agentCaller, input) => startAppRun(deps, caller, input) }, caller, request, url);
   }
   // Plan 4's chains (`/v1/app/chains*`, `/v1/app/chain-runs*`), beside Plan 3's agents.
-  if (isChainRoute(url.pathname)) {
+  if (isChainRoute(url.pathname) || isProjectAutomationsRoute(url.pathname)) {
+    // srv/automations: off unless WEB_FEATURES names `chains` (automations-gate.ts); off answers as an unknown path, but for the paths that stop an automation.
+    const automations = automationsAccess(request.method, url.pathname);
     const chainDeps = chainRouteDependenciesFor(deps, caller);
     if (chainDeps === undefined) throw agentXError("NOT_FOUND", "chains are not set up in this deployment");
     // Rovara Code (Plan 6): a step's task is read like any task, so a client without `x-agentx-task-view: 2` gets the version 1 projection of it.
-    return taskResponseForClient(await routeChainRequest(chainDeps, caller, request, url), request.headers);
+    if (isProjectAutomationsRoute(url.pathname)) return routeProjectAutomations(chainDeps, caller, request, url);
+    return taskResponseForClient(await routeChainRequest(chainDeps, caller, request, url, { safetyOnly: automations === "safety_only" }), request.headers);
   }
   // Plan 5, Task 5: `/v1/app/sessions*`.
   if (request.method === "GET" && url.pathname === "/v1/app/nav") return getAppNavigation(deps, caller);

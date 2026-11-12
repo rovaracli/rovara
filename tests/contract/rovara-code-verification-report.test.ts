@@ -1,6 +1,7 @@
 // Plan 6 Task 12: what a version 2 task shows after its checks and reviews: what passed, what failed, what could not be checked, which tests were added, and
 // which review round is being fixed. The report is built from the worker's recorded results (untrusted output): bounded, schema-validated and redacted, and it is
 // plain text for every reader, never HTML. Version 1 tasks show neither field, and a client that does not ask for the version 2 view never receives them.
+import "../support/automations-on.js";
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { VerificationReportSchema, redactText } from "@rovara-code/contracts";

@@ -3,6 +3,7 @@
 // queue and answers. M-1: the no-overlap check is a claim on the trigger's revision, not a best-effort pointer. M-2: an agent task with no end record stops blocking the trigger
 // after the plan's longest run. M-3: a late claim is given back when a cap skips the slot. M-4: a dead letter that keeps failing is parked after a few tries, and the queue's age is
 // alarmed. M-5: a schedule that could not be deleted with its trigger is logged.
+import "../support/automations-on.js";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { agentXError, orgAutonomousKey, triggerRateKey } from "@rovara-code/contracts";
 import { taskKey } from "../../packages/broker/src/developer/task-records.js";

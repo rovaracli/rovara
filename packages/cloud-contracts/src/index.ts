@@ -129,3 +129,5 @@ export { DeveloperTaskViewReaderSchema, SessionCloseResponseReaderSchema, Sessio
 export * from "./finished-as.js";
 export * from "./org-pending-approvals.js";
 export * from "./continue-loop.js";
+
+export * from "./app-automations.js";

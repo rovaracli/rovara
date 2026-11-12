@@ -3,6 +3,7 @@
   "packages/cloud-contracts/src/agent-web-views.ts",
   "packages/cloud-contracts/src/app-agent-publish.ts",
   "packages/cloud-contracts/src/app-approval-window.ts",
+  "packages/cloud-contracts/src/app-automations.ts",
   "packages/cloud-contracts/src/app-billing.ts",
   "packages/cloud-contracts/src/app-company-rules.ts",
   "packages/cloud-contracts/src/app-insights.ts",

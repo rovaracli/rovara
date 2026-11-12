@@ -1,5 +1,6 @@
 // Plan 4 Task 10: the run view through the real broker. A run started on the app route is read back through `/v1/app/chain-runs/*` with Plan 3's real task layer behind the
 // view's ports: the task view of the first step, as a reader of the run is shown it, and nothing to someone who does not read the run.
+import "../support/automations-on.js";
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 import { ChainRunViewSchema } from "@rovara-code/contracts";
