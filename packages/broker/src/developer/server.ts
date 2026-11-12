@@ -781,22 +781,27 @@ function createIssuerHandler(deps: DeveloperIdentityDependencies) {
    * that accepting would take is not refused here: it is one that exists, is not revoked, used or expired, is for this org, and (when written for an address) for this verified
    * address, as resolveOrgOnSignIn judges it. Anything else, a forged or other-org invite included, leaves the person refused.
    */
-  async function bannedWithoutInvite(identity: ProviderIdentity, developerId: string, inviteTokenHash: string | undefined): Promise<boolean> {
-    if (deps.singleOrgId === undefined || !await deps.orgs.isBanned(deps.singleOrgId, developerId)) return false;
+  async function bannedWithoutInvite(identity: ProviderIdentity, developerId: string, inviteTokenHash: string | undefined, formerDeveloperIds: readonly string[] = []): Promise<boolean> {
+    if (deps.singleOrgId === undefined) return false;
+    // The ban of the developer, or of any developer this identity was unlinked from: unlinking before a removal must not leave a way back in (resolveOrgOnSignIn judges the same set).
+    let banned = false;
+    for (const id of [developerId, ...formerDeveloperIds]) banned ||= await deps.orgs.isBanned(deps.singleOrgId, id);
+    if (!banned) return false;
     if (inviteTokenHash === undefined) return true;
     const invite = await deps.orgs.describeInviteByHash(inviteTokenHash);
     const forThem = invite?.email === undefined || (identity.emailVerified === true && identity.email !== undefined && sameEmail(invite.email, identity.email));
     return !(invite !== undefined && invite.state === "open" && invite.orgId === deps.singleOrgId && forThem);
   }
 
-  async function decideCompanySignInFor(method: DeveloperSignInMethod, identity: ProviderIdentity, developerId: string, occurrence: string, inviteTokenHash?: string): Promise<CompanySignIn> {
+  async function decideCompanySignInFor(method: DeveloperSignInMethod, identity: ProviderIdentity, developerId: string, occurrence: string, inviteTokenHash?: string, formerDeveloperIds: readonly string[] = []): Promise<CompanySignIn> {
     const current = await deps.orgs.orgForDeveloper(developerId);
     const audit = deps.audit === undefined ? {} : { audit: deps.audit };
     const outcome = await decideCompanySignIn({
       policy: deps.editionPolicy!, stores: deps.sso, method, orgId: deps.singleOrgId, identity, developerId, currentRole: current?.role, occurrence,
       auditAvailable: deps.audit !== undefined, nowMs: deps.now(),
       // A banned person is refused here, before an allowance or an "allowed" record is made for them; resolveOrgOnSignIn refuses the same person later for the other methods.
-      banned: await bannedWithoutInvite(identity, developerId, inviteTokenHash),
+      // A person who already has an org is judged by their own ban only (rule 1 of resolveOrgOnSignIn keeps them); the developers an identity was unlinked from count for one with none.
+      banned: await bannedWithoutInvite(identity, developerId, inviteTokenHash, current === undefined ? formerDeveloperIds : []),
     });
     if (outcome.allow && outcome.breakGlass) {
       await recordAuditEventDurably(audit, outcome.event);
@@ -833,6 +838,8 @@ function createIssuerHandler(deps: DeveloperIdentityDependencies) {
       return client({ error: "access_denied", error_description: `${result.reason}${hint}` });
     }
     const identity = result.identity;
+    // On a single-org install, the developers this identity was unlinked from (through any chain): a ban on one of them covers it (see resolveOrgOnSignIn `formerDeveloperIds`).
+    const formerDeveloperIds = deps.singleOrgId === undefined ? [] : await store.formerDevelopersOf(ownerKeyForSubject(identity.issuer, identity.subject));
     // Enterprise foundations I1: where the edition has company group sign-in, the person's groups decide whether they come in, as what, and for how long.
     // This is before anything else is written or looked up about them: the identity link and any merge, the Slack lookup, the developer record, the org, a session or a code.
     // The developer a company sign-in resolves to is read, not written: its identity's link if it has one, else its own key (a merge or a join of another route is for the cloud and GitHub methods).
@@ -844,7 +851,7 @@ function createIssuerHandler(deps: DeveloperIdentityDependencies) {
       const decisionId = link !== undefined && (link.unlinkedFrom === undefined || link.developerId === key) ? link.developerId : key;
       decidedFor = decisionId;
       const developerId = decisionId;
-      const decided = await decideCompanySignInFor(method, identity, decisionId, request.id, request.inviteTokenHash);
+      const decided = await decideCompanySignInFor(method, identity, decisionId, request.id, request.inviteTokenHash, formerDeveloperIds);
       if (!decided.allow) {
         deps.log({ event: "signin.refused", method, reason: decided.reason, developerId });
         // A person the mapping no longer lets in loses their Slack access too (Enterprise foundations I-6).
@@ -901,7 +908,8 @@ function createIssuerHandler(deps: DeveloperIdentityDependencies) {
     const orgDependencies = { orgs: deps.orgs, ...(deps.singleOrgId === undefined ? {} : { singleOrgId: deps.singleOrgId }), singleOrgName: config.env, log: deps.log,
       ...(deps.onOrgJoined === undefined ? {} : { onOrgJoined: deps.onOrgJoined }), ...(deps.newOrgsByInvitationOnly === true ? { newOrgsByInvitationOnly: true } : {}) };
     const orgInput = { method, developerId, displayName: identity.displayName, ...(identity.email === undefined ? {} : { email: identity.email }), emailVerified: identity.emailVerified === true,
-      ...(request.inviteTokenHash === undefined ? {} : { inviteTokenHash: request.inviteTokenHash }), ...(resolved.separatedFrom === undefined ? {} : { separatedFrom: resolved.separatedFrom }) };
+      ...(request.inviteTokenHash === undefined ? {} : { inviteTokenHash: request.inviteTokenHash }), ...(resolved.separatedFrom === undefined ? {} : { separatedFrom: resolved.separatedFrom }),
+      ...(formerDeveloperIds.length === 0 ? {} : { formerDeveloperIds }) };
     let org: SignInOrg | SignInNoOrg;
     // UX1 (OWNER DECISION 5): a browser sign-in creates a company only when the person chose "Create a company". For the cloud and GitHub methods
     // `allowCreate: false` skips only that (rule 3); a person who already has a company, or brings an invite, is unaffected.

@@ -50,6 +50,13 @@ export interface ResolveOrgOnSignInInput {
    * refused, it would be stuck, since the account it left may not add it back once it is its own developer (RELINK_OWN_ACCOUNT).
    */
   separatedFrom?: string;
+  /**
+   * On an install with a single org: every developer this sign-in's identity was ever unlinked from, through any chain (`DeveloperSignInStore.formerDevelopersOf`). A removal with a ban
+   * marks only the developer the person was, so an identity the person unlinked BEFORE the removal would otherwise sign in as a new developer the ban does not name. A ban on the
+   * developer or on any of these refuses the sign-in (REMOVED_FROM_ORG), in rule 3 and rule 4. Not consulted when the install has no single org (a multi-company cloud install: a separated
+   * identity there starts its own company, as `separatedFrom` says), and never consulted for a person who already has an org (rule 1) or brings a usable invite (rule 2).
+   */
+  formerDeveloperIds?: readonly string[];
 }
 
 export interface SignInOrg {
@@ -179,8 +186,17 @@ async function resolveOrg(deps: ResolveOrgOnSignInDependencies, input: ResolveOr
     return { noOrg: true, ...(inviteError === undefined || inviteError === "ALREADY_IN_ORG" ? { inviteError: "INVITE_INVALID" as const } : { inviteError }) };
   }
 
+  /** Removed from this install's org with a ban, as the developer or as any developer this sign-in's identity was unlinked from: not back by signing in again. An invite (rule 2) still works and clears the ban. */
+  const refuseIfBanned = async (singleOrgId: OrgId): Promise<void> => {
+    for (const id of [input.developerId, ...(input.formerDeveloperIds ?? [])]) {
+      if (await orgs.isBanned(singleOrgId, id)) throw agentXError("REMOVED_FROM_ORG", REMOVED_FROM_ORG_MESSAGE);
+    }
+  };
+
   // Rule 3: a cloud sign-in with nowhere to go starts an org of its own, unless new companies are by invitation only: then nothing is created (no org, no budget rows).
   if (cloud) {
+    // On a single-org install the ban also covers a company of its own (the install has one company, and the person was removed from it). A multi-company install has no single org: nothing here.
+    if (deps.singleOrgId !== undefined) await refuseIfBanned(deps.singleOrgId);
     if (deps.newOrgsByInvitationOnly === true) throw agentXError("CONFIG_INVALID", INVITATION_ONLY_MESSAGE);
     try {
       const orgId = await indexing((email) => orgs.createOrgWithOwner({
@@ -198,8 +214,7 @@ async function resolveOrg(deps: ResolveOrgOnSignInDependencies, input: ResolveOr
 
   // Rule 4: a Slack or company sign-in joins the install's single org.
   if (deps.singleOrgId === undefined) throw agentXError("CONFIG_INVALID", NO_ORG_ON_INSTALL_MESSAGE);
-  // Removed from this install's org with a ban: not back by signing in again. An invite (above) still works and clears the ban.
-  if (await orgs.isBanned(deps.singleOrgId, input.developerId)) throw agentXError("REMOVED_FROM_ORG", REMOVED_FROM_ORG_MESSAGE);
+  await refuseIfBanned(deps.singleOrgId);
   // No email pointer here: the email index links one person's cloud identities, and a Slack or company
   // sign-in joins by identity alone.
   await orgs.ensureOrg(deps.singleOrgId, deps.singleOrgName ?? "default");
