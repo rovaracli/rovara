@@ -433,6 +433,8 @@ describe("developer sign-in infrastructure (named environments)", () => {
       ["dynamodb:GetItem", [`${ORG}#BAN`]],
       // 0.5.11 (the notifier's, not DeveloperIdentity's): a coding plan with no stored estimate has its run limit worked out as the decision does, which reads the org's spend policy by key.
       ["dynamodb:GetItem", [`${ORG}#SETTINGS`]],
+      // 0.5.15 (the notifier's): the owner-stopped DM checks the person can still take the task over: their company membership row (the bare org partition) and their project grant (the member's grants partition), read by key only.
+      ["dynamodb:GetItem", [ORG, `${ORG}#MEMBER#*`]],
       // The org's budget settings, read and written back.
       ["dynamodb:GetItem,dynamodb:PutItem", [`${ORG}#SETTINGS`]],
       // What every sign-in uses: the bare org partition (20 characters, an org ID's), the developer's org pointer, and the email and invite rows.
@@ -619,7 +621,7 @@ describe("the developer task notifier (spec 025 phase 25c, named environments)",
     expect(actionsOf(reads[0]!).sort()).toEqual(["dynamodb:GetItem", "dynamodb:Query"]);
     const keysOf = (statement: Statement) => leadingKeysOf(statement);
     const writes = dynamo.filter((statement) => allows(statement, "dynamodb:PutItem") || allows(statement, "dynamodb:UpdateItem"));
-    expect(writes).toHaveLength(6);
+    expect(writes).toHaveLength(8);
     // The task and its notice markers are put and updated; a shared thread record is only put;
     // an admin change (spec 025 E13) is only read and updated, never put; a ChatGPT fallback's notice
     // marker (#342) is only put; a session's binding to the thread (Plan 5 Task 20) is only put, in an org's own keys.
@@ -631,6 +633,10 @@ describe("the developer task notifier (spec 025 phase 25c, named environments)",
       { actions: ["dynamodb:PutItem"], keys: ["ORG#org_????????????????????#SESSION_BINDING#*", "ORG#org_????????????????????#SESSION_SURFACE"] },
       // U3 work events: put only, in the company's own work-event partitions.
       { actions: ["dynamodb:PutItem"], keys: ["ORG#org_????????????????????#WORK_EVENTS#*"] },
+      // NOTIFY-DM-IAM: an attention DM's row (the one NOTIFY_DM partition) is read and updated (claimed, marked sent), never put.
+      { actions: ["dynamodb:GetItem", "dynamodb:UpdateItem"], keys: ["NOTIFY_DM"] },
+      // TE-4: the settings-proof DM's own once-marker (get, put), never the project's partition.
+      { actions: ["dynamodb:GetItem", "dynamodb:PutItem"], keys: ["NOTIFY_SETTINGS_PROOF#*"] },
     ]));
   });
 

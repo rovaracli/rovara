@@ -98,3 +98,14 @@ port that has no Code suite yet (company-instructions) is checked against the po
 
 Registered so far: code-host (GitHub App), check-runner (GitHub Actions, CodeBuild), tracker (Linear, Jira), all lane A9. The GitHub adapters run through Cloud's real `GitHubAppCredentialProvider`
 against Code's vendored fixture of GitHub's API (`tests/conformance/adapters/github-app-world.ts`).
+## The audit sink (lane A7)
+
+- `audit-sink` (lane A7 `cloud/audit-sink`): `packages/broker/src/cloud/adapters/audit-sink/`, harness `tests/conformance/adapters/audit-sink-cloud.ts` over Code's in-memory document store. `stage` returns one put of Cloud's own
+  audit outbox row (`AUDIT_PENDING#<shard>`, the item `audit/outbox.ts#auditPendingItem` writes, same 14-day expiry), so the core's change and its audit row commit together; Cloud's drain, appender and erasure rules apply
+  unchanged. `event-map.ts` maps each core audit action to a Cloud ledger action, target, facts and org details. `tests/unit/cloud-audit-sink.test.ts` reads the pinned core's source and fails when it records an action the map lacks
+  (a new Cloud action needs `AUDIT_ACTIONS`, `AUDIT_FACT_KEYS` and `tests/contract/audit-contracts.test.ts` too). Registered, not switched in: nothing calls it and Cloud's live audit path is unchanged.
+  **Production wiring (lanes S0 / S3): pass `onInvalid: "skip"`** to `createCloudAuditSink`. The default (`refuse`) throws on an event the ledger cannot take, which is right for tests and CI and wrong for a live
+  Lambda: it would turn an audit gap into a failed task start, merge or approval. `skip` logs `audit.record_invalid` (already alarmed, `AUDIT_RECORD_FAILED_EVENTS`) and lets the change go on, exactly as Cloud's own
+  `auditPending` does. Facts are never implicit: a core detail reaches a fact only through a named source with a value check in `event-map.ts`. What the core cannot say yet is in `gaps.ts` (owed upstream, dated).
+  **Laptop-only core events:** `LAPTOP_ONLY_CORE_EVENTS` (`event-map.ts`) lists core audit events that only `rovara up` records (the owner's test-service image list, `test_services.image_approved` / `image_removed`). They have no Cloud ledger
+  event. The scan still lists them, so the "every core event is accounted for" check stays strict; in Cloud the sink refuses one and logs `audit.record_invalid` with `reason: "laptop_only"` and `fault: "wiring"` (already alarmed), and writes no row.

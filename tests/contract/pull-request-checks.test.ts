@@ -405,10 +405,15 @@ describe("the workspace's latest checks (spec 051, Ruling T)", () => {
     const sent: string[] = [];
     const original = h.db.send;
     h.db.send = async (command) => {
-      sent.push(command.constructor.name);
+      // The company's health observations (org/health-observations.ts, 0.5.15) are best-effort single-item writes of their own, outside any task transaction,
+      // on the company's settings partition: not a write of the checks, so they are left out here.
+      const key = (command as { input?: { Key?: { pk?: unknown; sk?: unknown } } }).input?.Key;
+      const healthObservation = typeof key?.pk === "string" && key.pk.endsWith("#SETTINGS") && typeof key.sk === "string" && key.sk.startsWith("HEALTH_");
+      if (!healthObservation) sent.push(command.constructor.name);
       return original(command);
     };
     await completeTask(h, report());
+    expect(latestChecksOf(h)).toMatchObject({ report: { status: "verified" } });
     expect(sent.filter((name) => name === "UpdateCommand")).toHaveLength(0);
   });
 });

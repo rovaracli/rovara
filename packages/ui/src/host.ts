@@ -24,6 +24,8 @@ export interface AppHost {
  copyText?(text: string): Promise<void>;
  openSocket(url: string, protocols: string[]): RealtimeSocket;
  openExternal(this: void, url: string): void;navigate(url: string): void;saveFile(name: string, data: Blob): void;
+ /** Reloads the page as it is, whatever its address holds (an error page's Reload). Optional: without it, `reloadPage` navigates to the current address instead. */
+ reload?(this: void): void;
  signIn(this: void, returnPath: string, options?: { automatic?: boolean; /** UX1: the person chose "Create a company"; only then does a new person's sign-in create one. */ createCompany?: boolean }): void;signOut(this: void): Promise<void>;
  storage: { get(key: string): string | undefined;set(key: string, value: string): void; /** Optional: a host that can list and remove its keys lets a company switch clear per-company drafts. */ remove?(key: string): void; keys?(): string[] };
  features: { admin: boolean };
@@ -33,3 +35,12 @@ export function AppHostProvider({ host, children }: { host: AppHost; children: R
 /** The host, or undefined outside a provider (a hook that must not throw, such as the flag readers). */
 export function useOptionalAppHost(): AppHost | undefined { return useContext(Context); }
 export function useAppHost(): AppHost { const host = useContext(Context);if (host === undefined) throw new Error("Rovara's host is unavailable.");return host; }
+/**
+ * An error page's Reload: the page again, exactly as it is. `navigate` refuses an address it would not link to (a query with `+`, `:` or `,`), which would leave a Reload that does nothing, so the host's own
+ * reload is used; a host without one navigates to the current address, and if that is refused, to its path without the query.
+ */
+export function reloadPage(host: Pick<AppHost, "reload" | "navigate" | "currentPath">): void {
+ if (host.reload !== undefined) { host.reload();return; }
+ const path = host.currentPath();
+ try { host.navigate(path); } catch { host.navigate(path.split(/[?#]/u, 1)[0]!); }
+}

@@ -265,7 +265,7 @@ describe("the app, built as `rovara deploy` builds it", () => {
 
 describe("the broker's added environment (fix round)", () => {
   it("accepts only the private MCP variables and refuses any other name, a reserved one above all", () => {
-    expect([...BROKER_ENVIRONMENT_KEYS]).toEqual(["ROVARA_PRIVATE_MCP_CIDRS", "ROVARA_VPC_CIDRS", "ROVARA_CUSTOM_MODEL_ENDPOINTS", "ROVARA_MODEL_ENDPOINT_CIDRS"]);
+    expect([...BROKER_ENVIRONMENT_KEYS]).toEqual(["ROVARA_PRIVATE_MCP_CIDRS", "ROVARA_VPC_CIDRS", "ROVARA_CUSTOM_MODEL_ENDPOINTS", "ROVARA_MODEL_ENDPOINT_CIDRS", "ROVARA_PRIVATE_ADDRESS_CIDRS", "ROVARA_PRIVATE_ADDRESS_PORTS"]); // the two internal address settings were added by the 0.5.15 allow-list lane; this list was not updated then
     expect(checkedBrokerEnvironment({ ROVARA_PRIVATE_MCP_CIDRS: "10.1.0.0/16", ROVARA_VPC_CIDRS: "10.42.0.0/16" })).toEqual({ ROVARA_PRIVATE_MCP_CIDRS: "10.1.0.0/16", ROVARA_VPC_CIDRS: "10.42.0.0/16" });
     expect(checkedBrokerEnvironment(undefined)).toEqual({});
     for (const name of ["CALLBACK_SIGNING_KEY", "STATE_TABLE_NAME", "OIDC_ISSUER", "ROVARA_EDITION", "ROVARA_STDIO_MCP_SERVERS", "MCP_HOST_URL"]) {

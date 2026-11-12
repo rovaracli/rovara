@@ -47,16 +47,20 @@ function statementsOfRole(template: CfnTemplate, roleLogicalId: string): Stateme
 
 const globToRegExp = (glob: string): RegExp => new RegExp(`^${glob.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".")}$`);
 
+const ITEM_ACTION = /^dynamodb:(\*|get\*|put\*|update\*|delete\*|batch\*|getitem|putitem|updateitem|deleteitem|query|scan|batchgetitem|batchwriteitem|conditioncheckitem)$/;
+
 /** Whether the role's statements let it perform `action` on a State-table item whose partition key is `key`. A DynamoDB statement without a LeadingKeys condition allows every key. */
 function roleAllowsKey(statements: readonly Statement[], action: string | undefined, key: string): boolean {
   return statements.some((statement) => {
     if (statement.Effect !== "Allow") return false;
-    const actions = list(statement.Action).filter((candidate) => candidate.toLowerCase().startsWith("dynamodb:"));
+    // Only item-level actions count: a stream-read grant (GetRecords and the like) has no key condition, and letting it pass for "any action" hid the notifier's missing NOTIFY_DM grant.
+    const actions = list(statement.Action).filter((candidate) => ITEM_ACTION.test(candidate.toLowerCase()));
     if (actions.length === 0) return false;
     if (action !== undefined && !actions.some((candidate) => globToRegExp(candidate.toLowerCase()).test(`dynamodb:${action}`.toLowerCase()))) return false;
     const condition = statement.Condition;
     if (condition === undefined) return true;
-    const conditionKeys = Object.keys(condition);
+    // `Null` on the leading key only refuses an absent key (the style of the newer grants); it widens nothing.
+    const conditionKeys = Object.keys(condition).filter((kind) => kind !== "Null");
     // Only the LeadingKeys form this repository writes is understood; any other condition is not read as an allowance (fails closed).
     if (conditionKeys.length !== 1 || conditionKeys[0] !== "ForAllValues:StringLike") return false;
     const patterns = list(condition["ForAllValues:StringLike"]?.["dynamodb:LeadingKeys"]);

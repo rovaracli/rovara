@@ -74,3 +74,23 @@ export function verifiedCatalog(catalog: ServiceCatalog): VerifiedCatalog {
 export function loaderTrusting(...trustedKeys: string[]) {
   return (input: { catalogBytes: Uint8Array; signatureBytes: Uint8Array }) => loadSignedCatalogWithKeys({ catalogBytes: input.catalogBytes, signatureBytes: input.signatureBytes, trustedKeys });
 }
+
+/**
+ * Slice 4: a pinned copy of the data file PLUS the function runner's entries (`function-runner-entries.json`, pinned here with test digests), and `extra` further runner-family entries a later revision might add (each a copy of
+ * the python entry under another id, family and repository). `pinRunner` false leaves them unpinned.
+ */
+export function pinnedCatalogWithRunner(extra: ReadonlyArray<{ id: string; family: string; repository: string }> = [], pinRunner = true): ServiceCatalog {
+  const base = pinnedCatalog() as unknown as { entries: Array<Record<string, unknown>> };
+  const added = (JSON.parse(readFileSync("environments/service-catalog/function-runner-entries.json", "utf8")) as { entries: Array<Record<string, unknown>> }).entries;
+  const python = added.find((entry) => entry["id"] === "lambda-python@3.12") as Record<string, unknown>;
+  for (const more of extra) added.push({ ...structuredClone(python), id: more.id, family: more.family, image: { ...(python["image"] as object), repository: more.repository } });
+  for (const entry of added) {
+    const id = entry["id"] as string;
+    if (pinRunner) {
+      (entry["image"] as { digest?: string }).digest = digestOfId(id);
+      entry["sbomRef"] = sha(`sbom:${id}`);
+      entry["scan"] = { scannedAt: "2026-11-12T00:00:00.000Z", criticalOpen: 0, highOpen: 0 };
+    }
+  }
+  return ServiceCatalogSchema.parse({ ...base, entries: [...base.entries, ...added] });
+}

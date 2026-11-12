@@ -908,6 +908,8 @@ describe("I4: the builders", () => {
     ["auditAgentPublication", (occurrence) => builders.auditAgentPublication({ ...base, occurrence, details, action: "agent_publication.requested", agentId: "agt_1", facts: { approvalId: "apr_1", targetKind: "project", version: 2 } })],
     // Review groups (srv/review-groups): counts, a group id and fixed words; the project is a name-keyed target and the holder is in details only
     ["auditReviewGroupsChanged", (occurrence) => builders.auditReviewGroupsChanged({ ...base, occurrence, details, projectName: "Secret Project", revision: 2, groups: 1, members: 3, added: 1, removed: 0 })],
+    // Internal addresses (owner decision 123): counts, the revision, the list's digest and fixed words; the hosts are in details only
+    ["auditPrivateAddresses", (occurrence) => builders.auditPrivateAddresses({ ...base, occurrence, details, action: "company.private_addresses_changed", facts: { revision: 2, entryCount: 1, listDigest: "a".repeat(64), added: 1, removed: 0, mode: "second_person" } })],
     ["auditReviewClaimChanged", (occurrence) => builders.auditReviewClaimChanged({ ...base, occurrence, details, taskId: "11111111-1111-4111-8111-111111111111", change: "claimed", revision: 1, groupId: "rgp_0123456789abcdef", pullRequests: 1, hostSync: "pending", holder: "b".repeat(64) })],
   ];
 

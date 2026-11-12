@@ -47,6 +47,8 @@ type TransactItem = NonNullable<ConstructorParameters<typeof TransactWriteComman
 /** An invite as the join page shows it (OrgStore.describeInvite). */
 export interface InviteDescription {
   orgId: OrgId; orgName: string; role: "admin" | "member"; createdBy: string; email?: string; state: "open" | "expired" | "used";
+  /** Set when a project maintainer made the invite: it never lifts a ban (A-31), so a banned person does not count it as a way back. */
+  projectInviter?: "maintainer";
 }
 
 /**
@@ -407,6 +409,7 @@ export class OrgStore {
     return {
       orgId: invite.orgId, orgName: org.name, role: invite.role, createdBy: invite.createdBy,
       ...(typeof invite.email === "string" ? { email: invite.email } : {}), state,
+      ...(invite.projectInviter === "maintainer" ? { projectInviter: "maintainer" as const } : {}),
     };
   }
 
@@ -416,7 +419,9 @@ export class OrgStore {
    * archived or removed since joins the company only and says why (`projectNote`). A project invite a maintainer made counts only while that person still maintains the
    * project (or has become an owner or admin): otherwise it is INVITE_INVALID, as a revoked one is.
    */
-  async acceptInvite(input: { tokenHash: string; developerId: string; email?: string; /** The sign-in's verified email: an email-targeted invite joins only that address (ruling R7, checked here as well as by the sign-in). */ verifiedEmail?: string }): Promise<{ orgId: OrgId; role: OrgRole; project?: InviteProject; projectNote?: InviteProjectNote }> {
+  async acceptInvite(input: { tokenHash: string; developerId: string; email?: string; /** The sign-in's verified email: an email-targeted invite joins only that address (ruling R7, checked here as well as by the sign-in). */ verifiedEmail?: string;
+    /** The developers this sign-in's identity was unlinked from (see resolveOrgOnSignIn). Read only for a project maintainer's invite, which must not lift the ban of any of them. */
+    formerDevelopers?: () => Promise<readonly string[]> }): Promise<{ orgId: OrgId; role: OrgRole; project?: InviteProject; projectNote?: InviteProjectNote }> {
     const inviteKey = this.inviteKeyOf(input.tokenHash);
     if (inviteKey === undefined) throw inviteInvalid();
     for (let attempt = 0; attempt < ACCEPT_ATTEMPTS; attempt += 1) {
@@ -433,6 +438,10 @@ export class OrgStore {
       }));
       // One transaction: the invite is marked accepted only if the developer joins, and joins only if
       // the invite is still live, so a refusal on either side leaves the other untouched.
+      // A maintainer's invite never lifts a ban: it is refused while the person, or any developer their identity was unlinked from, is banned.
+      const formerBanChecks: TransactItem[] = invite.projectInviter !== "maintainer" || input.formerDevelopers === undefined ? []
+        : [...new Set(await input.formerDevelopers())].filter((id) => id !== input.developerId)
+          .map((id) => ({ ConditionCheck: { TableName: this.input.tableName, Key: orgBanKey(orgId, id), ConditionExpression: "attribute_not_exists(pk)" } }));
       const head: TransactItem[] = [
         {
           Update: {
@@ -451,6 +460,8 @@ export class OrgStore {
           : { Delete: { TableName: this.input.tableName, Key: orgBanKey(orgId, input.developerId) } },
       ];
       const banAt = head.length - 1;
+      head.push(...formerBanChecks);
+      const banTo = head.length;
       // A-31: the project's items sit after the membership's, so the positions `refuse` reads for the invite and the membership do not move.
       const projectFrom = head.length, projectTo = projectFrom + plan.items.length;
       const items: TransactItem[] = [
@@ -471,7 +482,7 @@ export class OrgStore {
         await this.transact(items, (failed) => {
           if (failed.has(0)) return inviteInvalid();
           if (failed.has(items.length - 1)) return coded("INVITE_INVALID", "that organization has closed");
-          if (failed.has(banAt)) return inviteInvalid();
+          if ([...failed].some((index) => index >= banAt && index < banTo)) return inviteInvalid();
           if (failed.has(1) || failed.has(2) || failed.has(3)) return alreadyInOrg();
           // The project, its roster or the inviter's standing changed under the join: read it all again.
           if ([...failed].some((index) => index >= projectFrom && index < projectTo)) { projectMoved = true; return coded("CHANGE_STALE", ACCEPT_STALE_MESSAGE); }

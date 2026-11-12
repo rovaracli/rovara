@@ -6,7 +6,7 @@ import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-sec
 import { SendMessageCommand, SQSClient } from "@aws-sdk/client-sqs";
 import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
 import { ADMIN_CHANGE_CANCEL_ACTION, ADMIN_CHANGE_CONFIRM_ACTION, CONFIRM_APPROVE_ACTION, CONFIRM_CANCEL_ACTION, SlackChannelIdSchema, SlackMessageTimestampSchema, SlackRequestMessageSchema, SlackTeamIdSchema, SlackThreadSchema, SlackUserIdSchema, TaskPeopleViewSchema, WORKFLOW_RESOLVE_FINDINGS_MAX, workflowPublicationRetryable, workflowSelectedChecks, formatRunLimitUsd, runLimitRaiseText, workflowReadmitsApplicationRound, answeredConfirmationBlocks, confirmationClickEventId, confirmationKey, pendingConfirmationFromItem, queuedBehindAttributes, slackThreadSubject, type AdminChangePressEvent, type PendingConfirmation, type SlackRequestMessage, type SlackThread, type TaskPeopleView, type WorkflowCheck, type WorkflowCheckPolicy, type WorkflowOpenFinding } from "@rovara-code/contracts";
-import { WorkflowSnapshotSchema, openReviewFindings, WORKFLOW_BLOCK_REASONS, workflowKeepPullRequestsOffered, workflowResolveFindingsOffered, workflowSendBackOffered, PER_TASK_BUDGET_USD, workflowReviseOffered, type WorkflowSnapshot } from "@agentx/cloud-contracts";
+import { WorkflowSnapshotSchema, openReviewFindings, WORKFLOW_BLOCK_REASONS, WORKFLOW_STOP_ACTION, workflowKeepPullRequestsOffered, workflowResolveFindingsOffered, workflowSendBackOffered, PER_TASK_BUDGET_USD, workflowReviseOffered, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { requiredEnvironment, type HttpApiV2Event } from "./lambda.js";
 import {
   SLACK_TASK_THREADS_OFF_NOTICE, createAnswerQueue, parseSlackSecrets, threadPendingCounter, validSignature, type SlackIngressLog, type SlackSecrets,
@@ -36,7 +36,7 @@ import {
   type HandedOffChatGptFinish,
 } from "./slack-chatgpt.js";
 import { chatPostEphemeral } from "./slack-web.js";
-import { PROJECT_TASKS_DISABLED_TEXT, WORKFLOW_APPROVAL_OUT_OF_DATE, WORKFLOW_BUTTON_OUT_OF_DATE } from "../developer/workflow-actions.js";
+import { PROJECT_TASKS_DISABLED_TEXT, STOP_WHILE_PUBLISHING_TEXT, WORKFLOW_APPROVAL_OUT_OF_DATE, WORKFLOW_BUTTON_OUT_OF_DATE } from "../developer/workflow-actions.js";
 import { FEEDBACK_REVIEW_RETRY_ACTION, WORKFLOW_ACTION_IDS, answeredWorkflowCard, cleanLine, slackText, workflowModalCopy } from "../developer/workflow-messages.js";
 import { isTaskTakenOver, tryEffectiveTaskOwner, type TaskOwnerSource } from "../developer/task-records.js";
 
@@ -990,6 +990,8 @@ function closeRefusedView(message: string): Record<string, unknown> {
 }
 
 const STALE_WORKFLOW_BUTTON = WORKFLOW_BUTTON_OUT_OF_DATE;
+/** Decision 134: said when Stop is pressed on a request that started Quick on its own. */
+export const QUICK_AUTO_START_STOPPING_TEXT = "Stopping this task. Nothing it planned or wrote will be kept.";
 
 /** Said in place of the close when an approved fix started after the owner opened the close form. */
 const CLOSE_AFTER_FIX_STARTED = "An approved fix started after you opened this, and closing now would discard it. Close this form and press Close task again if you still want to close.";
@@ -1399,6 +1401,22 @@ export function workflowSlackHandlers(deps: {
         // The card already reads "Starting this on ..." with no buttons (the choice took it before handing the start
         // over); the start marks it answered, and a start that fails puts the question back with its buttons.
         await acknowledged(action, workflowPath === "FULL" ? "Starting this on Full." : "Starting this on Quick.");
+        return;
+      }
+      if (action.actionId === WORKFLOW_STOP_ACTION) {
+        // Decision 134: Stop on a request that started Quick on its own closes that task (its owner only, from its own
+        // thread), discarding whatever it planned or wrote, while no pull request is open yet. One press, no form.
+        let taskId: unknown;
+        try { taskId = asRecord(JSON.parse(action.value)).taskId; } catch { taskId = undefined; }
+        if (typeof taskId !== "string" || !CHANGE_ID.test(taskId)) throw new WorkflowInteractionRefusal(STALE_WORKFLOW_BUTTON);
+        // Publication cannot be cancelled: once the pull request is being opened (or is open), Stop says so plainly.
+        const stage = asRecord(asRecord(await deps.loadTask(taskId)).workflow).stage;
+        if (stage === "PULL_REQUEST" || stage === "WAIT_FOR_MERGE") throw new WorkflowInteractionRefusal(STOP_WHILE_PUBLISHING_TEXT);
+        await currentOwnedWorkflow({ ...action, taskId }, "stop this task", (current) => current.state !== "COMPLETE");
+        if (deps.close === undefined) throw new Error("closing tasks is not configured");
+        await deps.close({ taskId, userId: action.userId, thread: action.thread, requestId: slackActionRequestId(action), stop: true });
+        // Said privately: the close is handed over, and the thread hears "closed" once the workspace is released.
+        await acknowledged(action, QUICK_AUTO_START_STOPPING_TEXT);
         return;
       }
       if (action.actionId === "agentx_workflow_retry_checks") {

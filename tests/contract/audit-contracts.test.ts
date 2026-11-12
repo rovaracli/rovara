@@ -173,6 +173,8 @@ describe("the event catalog", () => {
       "saved_env.changed", "saved_env.setting_changed",
       // customer test accounts (TS26)
       "test_account.added", "test_account.approved", "test_account.narrowed", "test_account.widened", "test_account.reenable_requested", "test_account.rotated", "test_account.suspended", "test_account.expired", "test_account.deleted", "test_account.deleting", "test_account.rotation_failed", "test_account.used",
+      // customer test AWS account connections (TA2)
+      "test_access.connection_started", "test_access.connection_reported", "test_access.connection_confirmed", "test_access.connection_tested", "test_access.connection_ended",
       // script tokens (UX5b)
       "script_token.created", "script_token.revoked", "script_token.used",
       // company-approved extra test-service images
@@ -184,6 +186,10 @@ describe("the event catalog", () => {
       "review_groups.changed", "review.claim_changed",
       // A-31 (srv/project-people): an invite that names a project
       "project_member.invited", "project_member.joined_by_invite", "project_member.invite_skipped",
+      "company.private_addresses_proposed", "company.private_addresses_changed", "company.private_addresses_withdrawn",
+      // A7 (cloud/audit-sink): events only the core's audit-sink adapter writes
+      "task.started", "task.start_refused", "task.closed", "session.closed", "session.message_sent", "agent.created", "agent.archived", "agent.unarchived",
+      "chain.created", "chain.archived", "chain.unarchived", "playbook.file_changed", "automation.run_ended", "company.approval_sign_in_changed", "lesson.retire_requested",
     ]);
     expect(new Set(AUDIT_ACTIONS).size).toBe(AUDIT_ACTIONS.length);
   });

@@ -1,0 +1,34 @@
+# cfn-guard rules for Rovara's own per-Region callback topic (the CDK stack in infra/lib/test-access-callback.ts, checked on its synthesized template).
+# The topic must take publishes from any account (a customer's account is not known when the topic is made), so the rules keep that one wildcard as narrow as it can be:
+# only sns:Publish, only over TLS, and nothing else is open to the world.
+
+let topics = Resources.*[ Type == "AWS::SNS::Topic" ]
+let topic_policies = Resources.*[ Type == "AWS::SNS::TopicPolicy" ]
+
+rule one_topic_with_a_policy {
+    %topics !empty
+    %topic_policies !empty
+}
+
+rule wildcard_principal_may_only_publish when %topic_policies !empty {
+    %topic_policies {
+        Properties.PolicyDocument.Statement[ Effect == "Allow" Principal.AWS == "*" ] {
+            Action == "sns:Publish"
+            Condition.Bool."aws:SecureTransport" == "true"
+        }
+    }
+}
+
+rule nothing_is_open_to_the_world_but_publish when %topic_policies !empty {
+    %topic_policies {
+        Properties.PolicyDocument.Statement[ Effect == "Allow" Principal == "*" ] empty
+    }
+}
+
+rule policy_denies_plain_http when %topic_policies !empty {
+    %topic_policies {
+        Properties.PolicyDocument.Statement[ Effect == "Deny" ] {
+            Condition.Bool."aws:SecureTransport" == "false"
+        }
+    }
+}

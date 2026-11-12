@@ -44,6 +44,20 @@ export interface ResolveOrgOnSignInInput {
    * install's single org are both skipped, and the result is `{ noOrg: true }`. Absent or true: rules 1 to 4 as always.
    */
   allowCreate?: boolean;
+  /**
+   * The sign-in method was removed from the account that holds the email's pointer, on purpose, and now signs in on its own (Plan 2, Task 8b): it becomes
+   * its own developer and starts its own company without the pointer, as before. Not a race between two first sign-ins, so rule 3 does not refuse it:
+   * refused, it would be stuck, since the account it left may not add it back once it is its own developer (RELINK_OWN_ACCOUNT).
+   */
+  separatedFrom?: string;
+  /**
+   * On an install with a single org: every developer this sign-in's identity was ever unlinked from, through any chain (`DeveloperSignInStore.formerDevelopersOf`). A removal with a ban
+   * marks only the developer the person was, so an identity the person unlinked BEFORE the removal would otherwise sign in as a new developer the ban does not name. A ban on the
+   * developer or on any of these refuses the sign-in (REMOVED_FROM_ORG), in rule 3 and rule 4; a project maintainer's invite (rule 2) is refused for the same reason, since it never lifts
+   * a ban (A-31). Not given when the install has no single org (a multi-company cloud install: a separated identity there starts its own company, as `separatedFrom` says).
+   * A function, called only when the answer is needed: never for a person who already has an org (rule 1), so a chain that cannot be read never locks a member out.
+   */
+  formerDevelopers?: () => Promise<readonly string[]>;
 }
 
 export interface SignInOrg {
@@ -121,15 +135,17 @@ async function resolveOrg(deps: ResolveOrgOnSignInDependencies, input: ResolveOr
    * without the pointer: the person joins the company that invited them and the pointer stays with the first. Starting a company
    * (`refuseConflict` true) is refused instead with CHANGE_STALE: a second company for the same email would be a separate company
    * that nothing heals any more (IDENTITY-HEALING-CROSS-ORG). The loser is left with no company, so it can be linked to the first
-   * route later (SLACK-LINK-1 links only a developer with no company).
+   * route later (SLACK-LINK-1 links only a developer with no company). A method removed from the pointer's account on purpose (`separatedFrom`)
+   * is not a race and is not refused: it starts its own company without the pointer.
    */
   const indexing = async <T>(attempt: (email: string | undefined) => Promise<T>, refuseConflict: boolean): Promise<T> => {
     try {
       return await attempt(cloud ? indexedEmail : undefined);
     } catch (error) {
       if (!cloud || indexedEmail === undefined || codeOf(error) !== "ALREADY_IN_ORG" || await winnerOfRace() !== undefined) throw error;
-      (deps.log ?? (() => undefined))({ event: "signin.email_pointer_conflict", developerId: input.developerId, ...(refuseConflict ? { refused: true } : {}) });
-      if (refuseConflict) throw agentXError("CHANGE_STALE", ALREADY_SIGNED_UP_MESSAGE);
+      const refused = refuseConflict && input.separatedFrom === undefined;
+      (deps.log ?? (() => undefined))({ event: "signin.email_pointer_conflict", developerId: input.developerId, ...(refused ? { refused: true } : {}), ...(refuseConflict && !refused ? { refused: false, separated: true } : {}) });
+      if (refused) throw agentXError("CHANGE_STALE", ALREADY_SIGNED_UP_MESSAGE);
       return attempt(undefined);
     }
   };
@@ -153,7 +169,7 @@ async function resolveOrg(deps: ResolveOrgOnSignInDependencies, input: ResolveOr
       try {
         const tokenHash = input.inviteTokenHash;
         // The email is indexed only for the cloud methods, whose sign-in routes it links.
-        return await indexing((email) => orgs.acceptInvite({ tokenHash, developerId: input.developerId, ...(email === undefined ? {} : { email }), ...(verifiedEmail === undefined ? {} : { verifiedEmail }) }), false);
+        return await indexing((email) => orgs.acceptInvite({ tokenHash, developerId: input.developerId, ...(email === undefined ? {} : { email }), ...(verifiedEmail === undefined ? {} : { verifiedEmail }), ...(input.formerDevelopers === undefined ? {} : { formerDevelopers: input.formerDevelopers }) }), false);
       } catch (error) {
         if (codeOf(error) === "INVITE_INVALID") inviteError = "INVITE_INVALID";
         else if (codeOf(error) === "INVITE_WRONG_EMAIL") inviteError = "INVITE_WRONG_EMAIL";
@@ -171,8 +187,16 @@ async function resolveOrg(deps: ResolveOrgOnSignInDependencies, input: ResolveOr
     return { noOrg: true, ...(inviteError === undefined || inviteError === "ALREADY_IN_ORG" ? { inviteError: "INVITE_INVALID" as const } : { inviteError }) };
   }
 
+  /** Removed from this install's org with a ban, as the developer or as any developer this sign-in's identity was unlinked from: not back by signing in again. An invite (rule 2) still works and clears the ban. */
+  const refuseIfBanned = async (singleOrgId: OrgId): Promise<void> => {
+    const ids = [input.developerId, ...(input.formerDevelopers === undefined ? [] : await input.formerDevelopers())];
+    if ((await Promise.all(ids.map((id) => orgs.isBanned(singleOrgId, id)))).some(Boolean)) throw agentXError("REMOVED_FROM_ORG", REMOVED_FROM_ORG_MESSAGE);
+  };
+
   // Rule 3: a cloud sign-in with nowhere to go starts an org of its own, unless new companies are by invitation only: then nothing is created (no org, no budget rows).
   if (cloud) {
+    // On a single-org install the ban also covers a company of its own (the install has one company, and the person was removed from it). A multi-company install has no single org: nothing here.
+    if (deps.singleOrgId !== undefined) await refuseIfBanned(deps.singleOrgId);
     if (deps.newOrgsByInvitationOnly === true) throw agentXError("CONFIG_INVALID", INVITATION_ONLY_MESSAGE);
     try {
       const orgId = await indexing((email) => orgs.createOrgWithOwner({
@@ -190,8 +214,7 @@ async function resolveOrg(deps: ResolveOrgOnSignInDependencies, input: ResolveOr
 
   // Rule 4: a Slack or company sign-in joins the install's single org.
   if (deps.singleOrgId === undefined) throw agentXError("CONFIG_INVALID", NO_ORG_ON_INSTALL_MESSAGE);
-  // Removed from this install's org with a ban: not back by signing in again. An invite (above) still works and clears the ban.
-  if (await orgs.isBanned(deps.singleOrgId, input.developerId)) throw agentXError("REMOVED_FROM_ORG", REMOVED_FROM_ORG_MESSAGE);
+  await refuseIfBanned(deps.singleOrgId);
   // No email pointer here: the email index links one person's cloud identities, and a Slack or company
   // sign-in joins by identity alone.
   await orgs.ensureOrg(deps.singleOrgId, deps.singleOrgName ?? "default");

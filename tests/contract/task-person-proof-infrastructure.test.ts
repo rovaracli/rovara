@@ -434,18 +434,30 @@ describe("the named TEST proof-only installation gate", () => {
     // 2026-11-12 (0.5.15 train/0515-adapters, lane A2 adapters/a2-sqs-cloud fcf6c3bb9): the named and foreign digests were retaken from the values the test reports, after ONE intended change: the
     // DISABLED OutboxRelayBackstopSchedule (AWS::Scheduler::Schedule on the recovery schedules' role, named environments only). Checked first: with only that block switched off, all
     // pins and the named and legacy snapshots pass unchanged, and infra/ differs from integ/0515 2f072966f only by that block. Legacy did not move.
+    // 2026-11-12 (0.5.15, fix/0515-allowlist-review, merged with integ/0515 0c8c0fbbc): the named and foreign digests were retaken from the values the test reports, after the internal address lane's intended infra changes
+    // (its worker settings reaper alarm reading a metric-math expression of Lambda errors plus the reaper's own SessionsPrivateAddressRecycleErrors count, and the internal address resources it adds to named environments).
+    // Checked first: with infra/lib's eight changed files (app, control-plane, ec2-workers, private-mcp, production-foundation, session-lifecycle, vpc-endpoints, private-addresses) put back to integ/0515's, all three tests (this one, named-templates, legacy-templates) pass on integ's own pins. Legacy did not move.
+    // 2026-11-12 (0.5.15, fix/0515-notify-dm-iam, merged with integ/0515 63368e31f): the named and foreign digests were retaken from the values the test reports, after TWO intended statements on the developer
+    // task notifier's role: GetItem + UpdateItem on the State table for the leading key NOTIFY_DM only (attention DMs and the Slack-member warning were refused; SlackDeliveryFailed fired on staging), and
+    // GetItem + PutItem for the leading key NOTIFY_SETTINGS_PROOF#* only (the settings-proof DM's own once-marker; the project's partition is not granted). Checked first: with infra/lib/developer-task-notifier.ts
+    // put back to integ/0515's and the named snapshot at integ's, all three tests (this one, named-templates, legacy-templates) pass on integ's own pins. The named snapshot shows exactly those two statements
+    // added. Legacy did not move.
+    // 2026-11-12 (0.5.15, fix/0515-notifier-iam-2, on integ/0515 387e4dc96): the named and foreign digests were retaken from the values the test reports, after THREE intended changes to the developer task
+    // notifier's role: a GetItem-only statement for the leading keys ORG#org_* and ORG#org_*#MEMBER#* (the owner-stopped DM reads a person's membership and project grant, and was refused), and the Null
+    // guard on the two statements added at 387e4dc96 (NOTIFY_DM, NOTIFY_SETTINGS_PROOF#*). Checked first: with infra/lib/developer-task-notifier.ts put back to integ/0515's, all three tests (this one,
+    // named-templates, legacy-templates) pass on integ's own pins. The named snapshot shows exactly the one statement added and the two Null guards. Legacy did not move.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "d16d4c6c47365f312ef61de64b0d37d81d4cd421823186b088f9666870c17478",
-        withoutRoute: "68653783ed88a2dcab5868b857f4252c12001004eb1aa64d99c381fa5d6a933f",
+        withRoute: "9cefca6c3892a014ef4de2d3922c7eb8415bda987a5dc257f68a5175de03e3f3",
+        withoutRoute: "36dcbf77fde7fa76392fa5edd38f70278ad13a077148713fb8eccfeec96c68f1",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "c04f5ef2c6c61905f44bf16af5ed32c5e2e7d6b65fba0f60a774ab8fe9a50ce2",
-        withoutRoute: "da5b2b6ef7952d769bd5359512a4cb4145c3713635f332eacde866871b73be18",
+        withRoute: "20f20fb6bcef9031d0dbb589766837ef76f76596d1d63f533634d8e8b7ddb995",
+        withoutRoute: "dfff40ed4e8053f65a7249c251567c28ac246bca82f0028bbb9b7499f8cfdf2a",
       },
       {
         label: "legacy",

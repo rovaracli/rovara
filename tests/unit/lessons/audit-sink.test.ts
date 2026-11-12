@@ -39,6 +39,24 @@ describe("the audit sink decides every action of the library", () => {
   });
 });
 
+describe("a project-level event never puts the project's name in the chain as an id", () => {
+  it("a lesson event targets the lesson id; an event with no lesson targets the project by NAME (pseudonymized by the appender), for every ledgered action", async () => {
+    const withLesson = sink();
+    await withLesson.sink.emit(event("lesson.approved", { tier: 1, count: 2 }));
+    expect((withLesson.written[0] as { target: unknown }).target).toEqual({ kind: "lesson", id: "les_aaaa1111" });
+    for (const action of LEDGERED) {
+      const s = sink();
+      const { lessonId: _lesson, ...projectLevel } = event(action, { tier: 1, count: 2, scope: "project", from: "one", to: "auto", mode: "second_person", type: "convention", cause: "person", reason: "refused" });
+      void _lesson;
+      await s.sink.emit(projectLevel);
+      const written = s.written[0] as { target: Record<string, unknown>; facts?: unknown; eventId: string };
+      expect(written.target, action).toEqual({ kind: "lesson", name: PROJECT });
+      expect(AuditEventInputSchema.safeParse(written).success, action).toBe(true);
+      expect(JSON.stringify([written.eventId, written.facts]), action).not.toContain(PROJECT);
+    }
+  });
+});
+
 describe("an action with no ledger name under requireAudit fails closed", () => {
   it("returns false and writes nothing, for every bookkeeping action", async () => {
     for (const action of BOOKKEEPING) {

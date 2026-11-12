@@ -80,6 +80,8 @@ export const CATEGORY_TITLES: Readonly<Record<OutboundCategory, { title: string;
 };
 
 const DEFAULT_ALLOW = ["vendor/rovara-code/packages/contracts/src/default-allow-domains.ts"];
+/** The vendored Code's owner image list (image references an owner lists for a public-edition install). */
+const OWNER_IMAGE_LIST = "vendor/rovara-code/packages/contracts/src/owner-image-list.ts";
 
 export const HOST_RULES: readonly HostRule[] = [
   {
@@ -106,7 +108,7 @@ export const HOST_RULES: readonly HostRule[] = [
     hosts: ["api.anthropic.com", "api.openai.com", "auth.openai.com", "chatgpt.com", "openrouter.ai"],
   },
   {
-    category: "agent-egress-default", why: "The default list of package, image and OS mirror hosts agent machines may resolve, and the GitHub hosts a ghcr.io image's blobs (pkg-containers.githubusercontent.com) and build tools' read-only downloads (raw, objects, release-assets, codeload) come from, each by exact name, and the evaluation dataset files the benchmark fetches from raw.githubusercontent.com. The wildcard over GitHub's content hosts (*.githubusercontent.com) is named in the hosted list's code only as an entry the install refuses (DEFAULT-ALLOW-LIST-EXFIL, 0.5.15). (GitHub's, Docker Hub's token and API hosts are also the company image registry allowlist's, in the file named for it.)", files: [...DEFAULT_ALLOW, "infra/lib/agent-dns-firewall.ts", "packages/cloud-contracts/src/hosted-allow-domains.ts", "packages/worker/src/swebench/", "packages/cloud-contracts/src/company-image-mirror.ts", "packages/broker/src/test-env/company-images.ts"],
+    category: "agent-egress-default", why: "The default list of package, image and OS mirror hosts agent machines may resolve, and the GitHub hosts a ghcr.io image's blobs (pkg-containers.githubusercontent.com) and build tools' read-only downloads (raw, objects, release-assets, codeload) come from, each by exact name, and the evaluation dataset files the benchmark fetches from raw.githubusercontent.com. The wildcard over GitHub's content hosts (*.githubusercontent.com) is named in the hosted list's code only as an entry the install refuses (DEFAULT-ALLOW-LIST-EXFIL, 0.5.15). (GitHub's, Docker Hub's token and API hosts are also the company image registry allowlist's, in the file named for it.) (Docker Hub's registry host is also one of the spellings the vendored Code's owner image list reads as docker.io, in the file named for it.) (PyPI's two hosts are also where a worker reads wheel listings and wheels for the slice 4 function runner's arm64 wheel swap, in the file named for it; only when the runner is on, which nothing does in 0.5.15. A sealed Enterprise install must point that at its package mirror first.)", files: [...DEFAULT_ALLOW, "packages/worker/src/function-runner/wheel-index.ts", "infra/lib/agent-dns-firewall.ts", "packages/cloud-contracts/src/hosted-allow-domains.ts", "packages/worker/src/swebench/", "packages/cloud-contracts/src/company-image-mirror.ts", "packages/broker/src/test-env/company-images.ts", OWNER_IMAGE_LIST],
     hosts: [
       "crates.io", "*.crates.io", "mcr.microsoft.com", "*.data.mcr.microsoft.com", "ghcr.io", "*.ghcr.io", "*.githubusercontent.com", "pkg-containers.githubusercontent.com", "raw.githubusercontent.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com", "codeload.github.com", "rubygems.org", "*.rubygems.org",
       "archive.ubuntu.com", "ports.ubuntu.com", "security.ubuntu.com", "deb.debian.org", "security.debian.org", "dl-cdn.alpinelinux.org", "auth.docker.io", "registry-1.docker.io",
@@ -115,7 +117,7 @@ export const HOST_RULES: readonly HostRule[] = [
     ],
   },
   {
-    category: "company-image-registry", why: "The registries a company-approved test image may come from (Docker Hub and Quay, beside GitHub's above and Amazon's public registry below), by name, and the other spellings of Docker Hub that are refused as not another registry.", files: ["packages/cloud-contracts/src/company-image-mirror.ts", "packages/broker/src/test-env/company-images.ts", "packages/ui/src/screens/admin/how-we-work/CompanyImagesScreen.tsx"],
+    category: "company-image-registry", why: "The registries a company-approved test image may come from (Docker Hub and Quay, beside GitHub's above and Amazon's public registry below), by name, and the other spellings of Docker Hub that are refused as not another registry; and, in the vendored Code's owner image list, Docker Hub's default registry name and the spellings it reads as that name when it parses an image reference (text it compares when it reads a name, never a call).", files: ["packages/cloud-contracts/src/company-image-mirror.ts", "packages/broker/src/test-env/company-images.ts", "packages/ui/src/screens/admin/how-we-work/CompanyImagesScreen.tsx", OWNER_IMAGE_LIST],
     hosts: ["docker.io", "index.docker.io", "registry.docker.io", "hub.docker.com", "quay.io"],
   },
   {
@@ -139,10 +141,14 @@ export const HOST_RULES: readonly HostRule[] = [
     hosts: [
       "apigateway.amazonaws.com", "cloudformation.amazonaws.com", "codebuild.amazonaws.com", "delivery.logs.amazonaws.com", "ec2.amazonaws.com", "ecs-tasks.amazonaws.com",
       "ecs.amazonaws.com", "elasticloadbalancing.amazonaws.com", "email.cognito-idp.amazonaws.com", "events.amazonaws.com", "lambda.amazonaws.com", "rds.amazonaws.com",
-      "route53resolver.amazonaws.com", "s3.amazonaws.com", "scheduler.amazonaws.com", "states.amazonaws.com", "vpc-flow-logs.amazonaws.com",
+      "route53resolver.amazonaws.com", "s3.amazonaws.com", "scheduler.amazonaws.com", "sns.amazonaws.com", "states.amazonaws.com", "vpc-flow-logs.amazonaws.com",
       // Team record edition: the KMS key policy statements the install emits for the customer's key (infra/lib/team-record-edition.ts).
       "maintenance.s3tables.amazonaws.com", "s3tables.amazonaws.com", "indexing.s3vectors.amazonaws.com", "s3vectors.amazonaws.com",
     ],
+  },
+  {
+    category: "aws-endpoint", why: "Customer test AWS account (switch `ta`, off by default; lanes TA1 and TA2): IAM's one global endpoint name, in the host list the account signer may reach for a connected account (the regional endpoints of the planned services are built from the Region and are not written out); and the address of AWS's Service Authorization Reference named as the source of a generated table of actions (a provenance string; the table is made by a developer script, and nothing at run time reads it).", files: ["packages/broker/src/test-access/session.ts", "packages/cloud-contracts/src/generated/test-access-scoping.ts"],
+    hosts: ["iam.amazonaws.com", "servicereference.us-east-1.amazonaws.com"],
   },
   {
     category: "aws-service-principal", why: "The ECR service principal in the trust policy of the role ECR assumes to create a saved-environment repository from the creation template (an IAM principal, not a call); and, as the iam:AWSServiceName condition on the deploy role's one service-linked-role statement for ECR's creation-template role (a policy value, not a call).", files: ["infra/lib/saved-env-images.ts", "packages/cloud-contracts/src/access-policies.ts"],
@@ -186,7 +192,7 @@ export const HOST_RULES: readonly HostRule[] = [
     hosts: ["services.gradle.org"],
   },
   {
-    category: "host-refusal-list", why: "The suffixes the setup agent's host ask refuses outright, so no card is made for them and a run cannot get them approved.", files: ["packages/broker/src/rovara-code/setup-host-ask.ts"],
+    category: "host-refusal-list", why: "The suffixes the setup agent's host ask refuses outright, so no card is made for them and a run cannot get them approved. (storage.googleapis.com is also, separately, the host of the pinned, dated gVisor release a worker downloads at boot, by exact URL and sha512, when the slice 4 function runner is on, in the file named for it; the runner is off in 0.5.15, and a sealed Enterprise install must bundle gVisor before turning it on. Agent sandboxes still may not reach it.)", files: ["packages/broker/src/rovara-code/setup-host-ask.ts", "packages/cloud-contracts/src/function-runner-catalog.ts"],
     hosts: ["0bin.net", "anonfiles.com", "appspot.com", "azurestaticapps.net", "azurewebsites.net", "backblazeb2.com", "beeceptor.com", "bitbucket.io", "blob.core.windows.net", "burpcollaborator.net", "canarytokens.com", "ceye.io", "cloudfront.net", "ddns.net", "digitaloceanspaces.com", "dnslog.cn", "dpaste.com", "dpaste.org", "duckdns.org", "file.io", "firebaseapp.com", "firebasestorage.googleapis.com", "fly.dev", "github.io", "gitlab.io", "glitch.me", "gofile.io", "hastebin.com", "herokuapp.com", "hookbin.com", "hopto.org", "ipfs.io", "ix.io", "localtest.me", "localtunnel.me", "lvh.me", "mockbin.org", "myftp.org", "netlify.app", "ngrok-free.app", "ngrok-free.dev", "ngrok.app", "ngrok.com", "ngrok.dev", "ngrok.io", "nip.io", "no-ip.com", "no-ip.org", "oast.me", "oast.online", "oast.site", "oastify.com", "onrender.com", "pagekite.me", "pages.dev", "pastebin.com", "pinggy.io", "pipedream.net", "portmap.io", "r2.cloudflarestorage.com", "r2.dev", "rbndr.us", "rentry.co", "repl.co", "replit.dev", "requestbin.com", "requestbin.net", "requestcatcher.com", "requestrepo.com", "serveo.net", "sslip.io", "storage.googleapis.com", "sytes.net", "t.co", "termbin.com", "tinyurl.com", "traefik.me", "trycloudflare.com", "ts.net", "tunnelmole.net", "vcap.me", "vercel.app", "wasabisys.com", "web.app", "webhook.site", "wetransfer.com", "workers.dev", "xip.io", "zapto.org", "zrok.io"],
   },
   {
@@ -201,10 +207,17 @@ export const HOST_RULES: readonly HostRule[] = [
       "acme.atlassian.net",
       // The example Grafana address in the Connections page's "Add monitoring" field hint (packages/ui/src/screens/admin/connections/AddMonitoring.tsx, P1 connections UX). Text for a person to read; the page sends nothing to it.
       "grafana.acme.dev",
-      "abc123.execute-api.us-west-2.amazonaws.com", "host.example.test", "builds.example.test", "nativeexport.app",
+      "abc123.execute-api.us-west-2.amazonaws.com", "host.example.test", "builds.example.test", "files.example.test", "nativeexport.app",
       // The example registry address in the private-MCP install setting's error message (infra/lib/private-mcp.ts); example.net is reserved and cannot resolve.
       "registry.corp.example.net",
+      // Placeholders: the registry host an owner-list install gives the worker (vendor/rovara-code/packages/contracts/src/owner-image-list.ts, OWNER_LIST_REGISTRY), and the
+      // pull request page of a re-check whose remote is not https (packages/worker/src/maintain-pull-request.ts, a test's local remote). .invalid resolves nowhere.
+      "owner-list.invalid", "pull-request.invalid",
     ],
+  },
+  {
+    category: "reserved-example", why: "The CAA issuer names that let Amazon (ACM) issue a certificate, which the model proxy TLS check compares with a domain's CAA records before it asks ACM for the first certificate. Names in a DNS record, never contacted.", files: ["packages/cli/src/deploy/model-proxy-tls.ts"],
+    hosts: ["amazon.com", "amazontrust.com", "awstrust.com"],
   },
   {
     category: "reserved-example", why: "XML namespace, claim-type and algorithm identifiers the SAML sign-in compares with (W3C XML signature and encryption, WS-Federation claim types). They look like URLs but are names, never fetched.", files: ["packages/broker/src/developer/saml.ts", "packages/broker/src/developer/providers.ts"],
@@ -280,6 +293,10 @@ export const DNS_LOOKUP_RULES: readonly DnsLookupRule[] = [
   {
     why: "Company-approved test images (switch `pj`): the check that a registry's name (and its token service, and a blob host it redirects to) resolves to public addresses only, before the broker looks a tag up or the mirror function copies an image. A name that resolves to a private, loopback, link-local or metadata address, or to nothing, is refused, and nothing is sent to it.",
     files: ["packages/broker/src/aws/company-image-mirror-handler.ts", "packages/broker/src/test-env/company-image-resolver.ts"],
+  },
+  {
+    why: "Model proxy TLS (the install's `modelProxy.tls` setting): before the CLI first asks ACM for the model proxy's certificate, it reads in public DNS the NS records of the domains above the name the install chose (is the closest one delegated to Route 53?) and the CAA records at or above it (may Amazon issue?). Run on the operator's machine by the upgrade command, only for a name not yet served; a lookup that fails refuses the deploy. Nothing is sent to Rovara.",
+    files: ["packages/cli/src/deploy/model-proxy-tls-aws.ts"],
   },
 ];
 

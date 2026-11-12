@@ -28,6 +28,8 @@ export interface ResolvedSignInDeveloper {
   /** The identity's own key, `ownerKeyForSubject(issuer, subject)`: what the session records, for unlinking. */
   identityKey: string;
   link: SignInLink;
+  /** The developer this identity was removed from (its link's `unlinkedFrom`), when it now signs in as its own developer. */
+  separatedFrom?: string;
 }
 
 /**
@@ -60,7 +62,7 @@ export async function resolveSignInDeveloper(
         const survivor = await healDuplicate(deps, method, identity, identityKey);
         if (survivor !== undefined) return { developerId: survivor, identityKey, link: "new-linked" };
       }
-      return { developerId: existing.developerId, identityKey, link: "existing" };
+      return { developerId: existing.developerId, identityKey, link: "existing", ...(existing.unlinkedFrom === undefined ? {} : { separatedFrom: existing.unlinkedFrom }) };
     }
   } else {
     const survivor = await healDuplicate(deps, method, identity, identityKey);
@@ -75,7 +77,9 @@ export async function resolveSignInDeveloper(
     ...(identity.login === undefined ? {} : { login: identity.login }),
   });
   if (linked.developerId !== developerId) return { developerId: linked.developerId, identityKey, link: "existing" };
-  return { developerId, identityKey, link: linked.created ? (target === undefined ? "new-self" : "new-linked") : "existing" };
+  // A removed identity (a tombstone pointing at the developer it left) links to its own key here: it was separated on purpose.
+  const separated = existing?.unlinkedFrom !== undefined && developerId === identityKey ? { separatedFrom: existing.unlinkedFrom } : {};
+  return { developerId, identityKey, link: linked.created ? (target === undefined ? "new-self" : "new-linked") : "existing", ...separated };
 }
 
 /** Rule 2: the other developer a verified email names, when this identity may join them. */

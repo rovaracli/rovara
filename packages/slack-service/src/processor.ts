@@ -1,4 +1,4 @@
-import { SLACK_NOT_A_MEMBER_NOTICE } from "@agentx/cloud-contracts";
+import { SLACK_NOT_A_MEMBER_NOTICE, type QuickAutoStartRequest, type QuickAutoStartResult } from "@agentx/cloud-contracts";
 import { CLOSED_SHARED_NOTICE, VIEW_ONLY_NOTICE, checksReplyPrefix, detailsButtonValue, detailsReplyBlocks, slackThreadSubject, splitSlackMessage, WorkspaceClosePreflightResultSchema, type SlackRequestMessage, type SlackThread, type SlackCommentAnsweredRequest, type SlackThreadNoteAnsweredRequest, type SlackThreadPrepareResult, type SlackThreadWorkspaceResult, type SlackWorkspaceCloseCompleteResult, type SlackWorkspaceCloseStartResult, type ThreadConnector, type ActionPolicy, type PendingConfirmation, type TurnObservation, type CheckReport, type TurnRecord, type ModelIdentifier, type ProjectModelOptions, parseEvalBatchCommand, parseSwebenchCommand } from "@rovara-code/contracts";
 import type { WorkerAccess } from "@agentx/orchestrator";
 import type { GateSession } from "@agentx/orchestrator/action-gate";
@@ -37,6 +37,8 @@ export interface ThreadServiceApi {
   createConversation(workspaceId: string): Promise<string>;
   /** A task thread's read-only view for answering a question (workspace mode `task-answer`); nothing is prepared or run on it. */
   taskAnswerWorkspace?(requestId: string, taskId: string, commentId?: string, noteTs?: string): Promise<SlackThreadWorkspaceResult>;
+  /** Decision 134: starts Quick on a clear small change (the broker checks the text first); absent where the control plane cannot. */
+  startQuickFromIntake?(input: QuickAutoStartRequest): Promise<QuickAutoStartResult>;
   /** Marks a saved task-thread note answered, so the planner's next step skips it. */
   markThreadNoteAnswered?(input: SlackThreadNoteAnsweredRequest): Promise<void>;
   /** Spec 061 slice 2: AgentX's answer to a task page comment, or that it could not answer. */

@@ -1,10 +1,14 @@
 import { useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { SessionIdSchema } from "@agentx/cloud-contracts/web";
-import { useAppHost } from "../../host.js";
+import { reloadPage, useAppHost } from "../../host.js";
 import { paths } from "../../paths.js";
 import { createHomeApi, homeAction, type HomeAction, type ReadHomeCard } from "../../api/home.js";
 import { ApiError } from "../../api/errors.js";
+import { isChunkLoadError } from "../../shell/ErrorBoundary.js";
+
+/** What a card says when the code an action loads (the intake client, the session reader) is gone because the app was updated under the page. */
+export const UPDATED_MESSAGE = "Rovara was updated. Reload to continue.";
 
 /**
  * The actions of one older Home card and the code that runs them: the validated buttons (`homeAction`), and what pressing one does (open a page, retry, dismiss, start or drop a waiting ticket),
@@ -12,13 +16,13 @@ import { ApiError } from "../../api/errors.js";
  */
 export function useHomeCardActions(card: ReadHomeCard) {
  const host = useAppHost(), api = useMemo(() => createHomeApi(host), [host]), query = useQueryClient();
- const [busy, setBusy] = useState(false), [error, setError] = useState<string>(), sending = useRef(false);
+ const [busy, setBusy] = useState(false), [error, setError] = useState<string>(), [stale, setStale] = useState(false), sending = useRef(false);
  const actions = card.buttons.flatMap(button => { const action = homeAction(card, button, host.origin);return action === undefined ? [] : [action]; });
  async function run(action: HomeAction) {
   if (sending.current) return;
   if (action.kind === "external" || action.kind === "confirm") { host.openExternal(action.href);return; }
   if (action.kind !== "dismiss" && action.kind !== "retry" && action.kind !== "ticket_start" && action.kind !== "ticket_dismiss") return;
-  sending.current = true;setBusy(true);setError(undefined);
+  sending.current = true;setBusy(true);setError(undefined);setStale(false);
   try {
    if (action.kind === "ticket_start" || action.kind === "ticket_dismiss") {
     // A waiting ticket's Start or Not this one: the intake client loads only when one is pressed.
@@ -39,8 +43,11 @@ export function useHomeCardActions(card: ReadHomeCard) {
     await query.invalidateQueries({ queryKey: ["home"] });host.navigate("/app/sessions/" + SessionIdSchema.parse(result.value.session.sessionId));return;
    }
    await query.invalidateQueries({ queryKey: ["home"] });
-  } catch (failure) { setError(failure instanceof ApiError ? failure.message : "Couldn't complete this action. Try again."); }
+  } catch (failure) {
+   // An action whose code cannot load is not a failed action to try again: the app was updated, and only a reload fetches the new code.
+   if (isChunkLoadError(failure)) { setError(UPDATED_MESSAGE);setStale(true); } else setError(failure instanceof ApiError ? failure.message : "Couldn't complete this action. Try again.");
+  }
   finally { sending.current = false;setBusy(false); }
  }
- return { actions, busy, error, run };
+ return { actions, busy, error, run, reload: stale ? () => { reloadPage(host); } : undefined };
 }

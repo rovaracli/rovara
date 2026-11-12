@@ -325,6 +325,18 @@ describe("the proposal from detector candidates", () => {
     expect(taskDependencyPlansOf({ body: environment, catalog: catalog(), edition: "public" }).ok).toBe(true);
   });
 
+  it("names every other AWS service the way a person says it, never by its raw id (SNS, Secrets Manager, Lambda), and the PR line reads those names", () => {
+    const proposal = proposeDependencies([candidate("aws:s3"), candidate("aws:sns"), candidate("aws:secretsmanager"), candidate("aws:lambda")], context());
+    expect(proposal.dependencies.map((entry) => [entry.id, entry.name])).toEqual([["aws-s3", "S3"], ["aws-sns", "SNS"], ["aws-secretsmanager", "Secrets Manager"], ["aws-lambda", "Lambda"]]);
+    for (const entry of proposal.dependencies) expect(entry.name).not.toMatch(/^aws:/u);
+    const lines = dependencyCardLines(proposal.dependencies).join("\n");
+    expect(lines).toContain("SNS: runs against Rovara local AWS.");
+    expect(lines).toContain("Secrets Manager: runs against Rovara local AWS.");
+    expect(lines).not.toContain("aws:");
+    const dependencies = proposal.dependencies.map((entry) => ({ name: entry.name, label: "rovara_local_aws" as const, backing: "emulated" as const }));
+    expect(packDependencyLines({ environment: { dependencies } } as never, 0).lines).toEqual(["Integration tests ran against: S3, SNS, Secrets Manager and Lambda (Rovara local AWS)."]);
+  });
+
   it("proposes the first emulated one with the helper's name wherever it stands in the list", () => {
     const proposal = proposeDependencies([candidate("aws:sqs"), candidate("postgres"), candidate("aws:s3")], context());
     expect(proposal.dependencies.map((entry) => [entry.id, entry.connect.hostAliases.length])).toEqual([["aws-sqs", 1], ["postgres", 1], ["aws-s3", 0]]);

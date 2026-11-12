@@ -172,16 +172,22 @@ export async function recordWorkflowThreadNote(
      * reply answer Understand's questions, and the answer is recorded under THIS person. Without it a reply is a note, whoever sent it.
      */
     answerBy?: { developerId: string; name: string };
+    /** Decision 134: the ingress read the reply as small talk ("thanks", "ok"). */
+    smallTalk?: boolean;
   },
   /** `answers: false` once the reply was found not to be an answer (the task stopped waiting), so it is saved as the note it is. */
   options: { answers?: false; /** Saved already answered (a project viewer's question when the Ask switch is on): the next step skips it, so it can never be read as input; no timeline event is written for it. */ preAnswered?: true } = {},
-): Promise<{ outcome: "captured" | "duplicate" | "refused" }> {
+): Promise<{ outcome: "captured" | "duplicate" | "refused" | "small_talk" }> {
   const thread = SlackThreadSchema.parse(input.thread);
   const task = await get<DeveloperTaskRecord>(deps, taskKey(input.taskId));
   if (task === undefined || task.closedAt !== undefined || task.workflow === undefined
     || task.share?.teamId !== thread.teamId || task.share.channelId !== thread.channelId || task.share.threadTs !== thread.threadTs) {
     return { outcome: "refused" };
   }
+  // Decision 134: small talk is not saved, unless the task waits on this person (a plan to approve, a question, a
+  // blocked step): then a short "ok" or "yes" is their answer, and it goes to the task like any reply.
+  const waitsOnThem = (input.peopleAccess?.isOwner ?? tryEffectiveTaskOwner(task)?.slackUserId === input.userId) || input.answerBy !== undefined;
+  if (input.smallTalk === true && !(waitsOnThem && (task.workflow.state === "WAITING" || task.workflow.state === "BLOCKED"))) return { outcome: "small_talk" };
   const trimmed = input.text.trim();
   // Plan 6 Task 5: the reply of a person who may answer, while the task waits for answers, is the answer, not a note.
   if (options.answers !== false && input.answerBy !== undefined && openQuestions(task.workflow).length > 0) {
