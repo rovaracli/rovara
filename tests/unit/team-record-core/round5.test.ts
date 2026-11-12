@@ -73,7 +73,8 @@ describe("N-8 the queue item says 'children not queued yet' from its first write
     const w = world();
     await manyChildren(w, 600);
     let writes = 0;
-    w.db.injectFault({ command: "PutCommand", match: (input) => (input.Item as { entityType?: string }).entityType === "TEAM_RECORD_SCOPE_WORK" && ++writes === 2, error: { name: "InternalServerError" } });
+    // The queue item is written with the workspace's directory row, in one transaction.
+    w.db.injectFault({ command: "TransactWriteCommand", match: (input) => ((input.TransactItems ?? []) as Array<{ Put?: { Item?: { entityType?: string } } }>).some((entry) => entry.Put?.Item?.entityType === "TEAM_RECORD_SCOPE_WORK") && ++writes === 2, error: { name: "InternalServerError" } });
     await expect(createRecordSink(w.deps, { budget: { maxItems: 500, maxMs: 8_000 } }).tombstone({ workspaceId: ORG_A, system: "T1", scope: "slack:T1", cause: "source_deleted" })).rejects.toThrow();
     expect((await listScopeWork(w.table, ORG_A, 10))[0]!.childPending).toBe(true);
     const d = deleteDeps(w);
