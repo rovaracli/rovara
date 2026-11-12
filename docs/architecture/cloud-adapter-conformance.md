@@ -45,3 +45,7 @@ skipped in the report. There is no way to skip a whole port.
 Ports covered today: document-store, queue, outbox, object-storage, secret-store, worker-machines, scheduler, image-registry, admission, audit-sink, approvers, identity, metering, model-key-store,
 code-host, check-runner, tracker. `github-client-conformance.ts` is exempt (it tests Code's own GitHub client, not a port a Cloud adapter implements). A suite for a new port (the plan's K1 lane) is
 added to `ports.ts` (suite, harness type, vendored file name), `code-fakes.ts` (its positive control) and `pending-lanes.ts`.
+
+## Queue and outbox (lane A2): owed after the pin carries `packages/aws-adapters`
+
+Cloud's queue is Code's public SQS adapter (`@rovara/aws-adapters/sqs`), not a second copy, so the `queue` and `outbox` rows of `pending-lanes.ts` stay `todo` until the vendor `INCLUDE` list carries `packages/aws-adapters` and the pin is at a sha that has it. Then, register the two adapters as above: `queue` over the in-memory SQS double (`vendor/rovara-code/tests/support/ports/sqs-harness.ts`, both modes) and `outbox` over Cloud's DynamoDB store and that queue. Until then only Cloud's side is here: `packages/broker/src/cloud-adapters/queue/outbox-relay-wiring.ts` (the off switch and the install's one org) and the DISABLED `OutboxRelayBackstopSchedule` in `infra/lib/control-plane.ts`. Nothing installs the relay, so no message takes the new path (wave 1 is "no traffic").

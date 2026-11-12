@@ -1262,6 +1262,23 @@ export class ControlPlaneStack extends Stack {
         retryPolicy: { maximumRetryAttempts: 2, maximumEventAgeInSeconds: 300 },
       },
     });
+    // Convergence A2 (no traffic): the backstop of the outbox relay that runs from the State table's stream reader. It relays every pending outbox row
+    // whose stream record was missed. It is DISABLED: nothing stages company-scoped outbox rows yet, and the broker answers this source with "not wired"
+    // until the relay is built in (S0). Turning it on is a state change here plus the wiring; it needs no new grant (the broker already reads and writes
+    // the State table, and the relay's queues are the ones it already uses). Named environments only, on the same role as the recovery schedules above.
+    if (naming.env !== undefined) {
+      new scheduler.CfnSchedule(this, "OutboxRelayBackstopSchedule", {
+        flexibleTimeWindow: { mode: "OFF" },
+        scheduleExpression: "rate(1 minute)",
+        state: "DISABLED",
+        target: {
+          arn: broker.functionArn,
+          roleArn: workflowDispatchRecoveryRole.roleArn,
+          input: JSON.stringify({ source: "agentx.outbox-relay-backstop" }),
+          retryPolicy: { maximumRetryAttempts: 2, maximumEventAgeInSeconds: 300 },
+        },
+      });
+    }
     const defaultStage = new apigwv2.CfnStage(this, "DefaultStage", {
       apiId: api.ref,
       stageName: "$default",
