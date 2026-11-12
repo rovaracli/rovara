@@ -139,7 +139,7 @@ export function taskLead({ session, task, status, cards, seat, now }: LeadInput)
  const outside = outsideRows.length === 0 ? undefined : { label: CHANGED_OUTSIDE, lines: pushedByLines(outsideRows, now ?? Date.now()) };
  if (state.label === CHANGED_OUTSIDE) {
   why = OUTSIDE_WHY;
-  next = task?.continueLoop?.canRecheck === true ? "Look at the new code, then press Recheck" : "Check the new code yourself before it merges";
+  next = outsideRows.some(row => row.rechecking === true) ? "Rovara is re-checking the new code" : task?.continueLoop?.canRecheck === true ? "Look at the new code, then press Recheck" : "Check the new code yourself before it merges";
  }
  if (next === "") next = state.label;
  return { state, outside, next: sentence(next), who, why, action, approve: approveLine(cards, seat) };

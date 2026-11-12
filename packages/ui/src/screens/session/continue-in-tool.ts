@@ -20,11 +20,20 @@ export const LESSONS_TOOL = "rovara_lessons";
 export const NO_BRANCH_YET = "The branch appears once Rovara opens the pull request.";
 /** A repository with no branch yet, for a reader who may publish one. */
 export const NO_BRANCH_PUBLISH = "No branch yet. Rovara makes it at the commit it started from: no code is pushed and no pull request is opened.";
-export const PUSH_EXPLAINER = "When you push to the task's branch, your commits show up on its pull request. Rovara doesn't re-run its checks on pushes made outside it yet, so mention the change to your reviewer.";
+/** What a push to a branch that has a pull request does. Said only for a pull request's branch: a branch made by "Publish working branch" has no pull request to show commits on. */
+const PUSH_ON_PULL_REQUEST = "When you push to the task's branch, your commits show up on its pull request. ";
+const NOT_RERUN = "Rovara doesn't re-run its checks on pushes made outside it yet, so mention the change to your reviewer.";
+const WILL_MARK = "Rovara will mark the work '" + CHANGED_OUTSIDE + "'; press Recheck when you're ready.";
+export const PUSH_EXPLAINER = PUSH_ON_PULL_REQUEST + NOT_RERUN;
 /** Where the server offers Recheck (`canRecheck`), the push explanation says what Rovara does instead. Until then PUSH_EXPLAINER stays: the page never promises a re-check the server cannot start. */
-export const PUSH_EXPLAINER_RECHECK = "When you push to the task's branch, your commits show up on its pull request. Rovara will mark the work '" + CHANGED_OUTSIDE + "'; press Recheck when you're ready.";
-export const pushExplainer = (loop: ContinueLoop | undefined): string => loop?.canRecheck === true ? PUSH_EXPLAINER_RECHECK : PUSH_EXPLAINER;
-/** What Recheck says when the server cannot start a re-check yet and gave no sentence of its own. */
+export const PUSH_EXPLAINER_RECHECK = PUSH_ON_PULL_REQUEST + WILL_MARK;
+/** With a published branch listed (`hasPublished`), the pull-request sentence is left out: the server's own note beside the branch says where Rovara's pull request will come from. */
+export function pushExplainer(loop: ContinueLoop | undefined, hasPublished = false): string {
+ const recheck = loop?.canRecheck === true;
+ if (hasPublished) return recheck ? WILL_MARK : NOT_RERUN;
+ return recheck ? PUSH_EXPLAINER_RECHECK : PUSH_EXPLAINER;
+}
+/** What Recheck says only when the server's 503 has no readable sentence of its own (its own is OUTSIDE_RECHECK_WORKER_MISSING). */
 export const RECHECK_UNAVAILABLE = "Recheck isn't available yet";
 
 /** A branch name that is safe to put into a sentence and a prompt: plain git-ref characters only. Anything else is treated as unknown. */
@@ -43,7 +52,7 @@ export interface ContinueOffer {
  pullRequests: readonly { repository: string; number: number; url: string }[];
  /** The task view's `continueLoop` (a server from 0.5.15 sends it), or undefined for an older one: then the panel reads as it did before it. */
  loop: ContinueLoop | undefined;
- /** The repositories the task has: those with a pull request or a branch, and those Rovara prepared (the task view's review base). They are the names Publish working branch is sent with. */
+ /** The repositories the task view names: those with a pull request, a branch, or a branch to publish (`publishable`). Publish working branch is offered only for the `publishable` ones. */
  repositories: readonly string[];
 }
 
@@ -74,7 +83,7 @@ export function continueOffer(session: ReadSession): ContinueOffer | undefined {
  const loop = task?.continueLoop;
  // The new field is the branch before there is a pull request too; the run's own branch is the fallback for a server that does not send it.
  const loopBranch = loop === undefined ? undefined : uniqueBranch(loop.branches);
- const names = [...(loop?.branches ?? []).map(entry => entry.repository), ...pullRequests.map(pr => pr.repository), ...(task?.workflow?.reviewBase ?? []).map(entry => entry.repositoryId)];
+ const names = [...(loop?.branches ?? []).map(entry => entry.repository), ...pullRequests.map(pr => pr.repository), ...(loop?.publishable ?? []).map(entry => entry.repository)];
  const repositories = [...new Set(names)].slice(0, 32);
  return { sessionId: session.sessionId, taskId, title: session.title, project: session.project, branch: loopBranch ?? branch, pullRequests, loop, repositories };
 }

@@ -21,7 +21,6 @@ async function enter(page: Page, context: BrowserContext, request: Parameters<Pa
   const response = await route.fetch(), body = await response.json() as { session: { body: { task: Record<string, unknown> } } };
   const task = body.session.body.task;
   task["continueLoop"] = loop();delete task["pullRequests"];
-  task["workflow"] = { ...(task["workflow"] as Record<string, unknown>), reviewBase: [{ repositoryId: "demo", baseCommitSha: BASE }] };
   await route.fulfill({ response, json: body });
  });
  await mockRealtime(page);await page.setViewportSize({ width, height: 900 });
@@ -34,7 +33,7 @@ for (const width of [390, 1280] as const) {
  const phone = width < 768;
  test(`publish working branch at ${String(width)}: the button, the branch after it, the prompt, axe`, async ({ page, context, request, baseURL }) => {
   let published = false;const sent: unknown[] = [];
-  await enter(page, context, request, baseURL, width, () => loopOf({ canPublishBranch: !published, branches: published ? [{ repository: "demo", branch: BRANCH, source: "published", headSha: BASE }] : [] }));
+  await enter(page, context, request, baseURL, width, () => loopOf({ canPublishBranch: !published, publishable: published ? [] : [{ repository: "demo", baseSha: BASE }], branches: published ? [{ repository: "demo", branch: BRANCH, source: "published", headSha: BASE }] : [] }));
   await page.route("**/v1/web/tasks/" + TASK + "/continue/publish-branch", async route => { sent.push(route.request().postDataJSON());published = true;await route.fulfill({ json: { repository: "demo", branch: BRANCH, commit: BASE, created: true } }); });
   await page.goto(PAGE);
   const sheet = await open(page);
@@ -73,7 +72,7 @@ for (const width of [390, 1280] as const) {
   const row = { repository: "demo", number: 7, headSha: HEAD, canRecheck: true };
   await enter(page, context, request, baseURL, width, () => loopOf({ label: "Changed outside Rovara · checks needed", canRecheck: true, outside: [row] }));
   const sent: unknown[] = [];
-  await page.route("**/v1/web/tasks/" + TASK + "/continue/recheck", async route => { sent.push(route.request().postDataJSON());await route.fulfill({ status: 503, json: { error: { code: "RUNTIME_UNAVAILABLE", message: "Re-checking isn't available on this install yet." } } }); });
+  await page.route("**/v1/web/tasks/" + TASK + "/continue/recheck", async route => { sent.push(route.request().postDataJSON());await route.fulfill({ status: 503, json: { error: { code: "RUNTIME_UNAVAILABLE", message: "This install's workers can't re-check outside changes yet." } } }); });
   await page.goto(PAGE);
   const sheet = await open(page);
   await expect(sheet.getByText("Last pushed by someone outside Rovara")).toBeVisible();
@@ -82,7 +81,7 @@ for (const width of [390, 1280] as const) {
   await expect(recheck).toBeVisible();
   if (phone) expect(await tooSmall(sheet)).toEqual([]);
   await recheck.click();
-  await expect(sheet.getByRole("alert")).toHaveText("Re-checking isn't available on this install yet.");
+  await expect(sheet.getByRole("alert")).toHaveText("This install's workers can't re-check outside changes yet.");
   await expect(recheck).toBeDisabled();
   expect(sent).toEqual([{ requestId: expect.stringMatching(/^[0-9a-f-]{36}$/u), repository: "demo", number: 7, headSha: HEAD }]);
   expect(await noSidewaysScroll(page)).toBe(true);

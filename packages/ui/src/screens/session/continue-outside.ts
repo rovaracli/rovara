@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { CHANGED_OUTSIDE_LABEL } from "@agentx/cloud-contracts/web";
 import type { ReadTask } from "./workspace-types.js";
 /**
@@ -30,3 +31,14 @@ export function pushedByWords(row: OutsideRow, now: number, withPlace: boolean):
  return (withPlace ? row.repository + (row.number === undefined ? "" : " #" + String(row.number)) + ": " : "") + "Last pushed by " + who;
 }
 export const pushedByLines = (rows: readonly OutsideRow[], now: number): string[] => rows.map(row => pushedByWords(row, now, rows.length > 1));
+
+/** The current time, read again every `everyMs` while `enabled` (the interval is cleared on unmount), so "just now" and "5m ago" age on a page that stays open. Off, it never starts a timer. */
+export function useNow(enabled: boolean, everyMs = 30_000): number {
+ const [now, setNow] = useState(() => Date.now());
+ useEffect(() => {
+  if (!enabled) return undefined;
+  const timer = setInterval(() => setNow(Date.now()), everyMs);
+  return () => { clearInterval(timer); };
+ }, [enabled, everyMs]);
+ return now;
+}

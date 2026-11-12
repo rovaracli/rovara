@@ -6,6 +6,7 @@ import { Dialog } from "../../design/Dialog.js";
 import { VisibleText } from "../../design/VisibleText.js";
 import { VisuallyHidden } from "../../design/VisuallyHidden.js";
 import { CLI_PACKAGE, TOOLS, installCommand, lessonsLine, loadPrompt, NO_BRANCH_PUBLISH, NO_BRANCH_YET, pushExplainer, uniqueBranch, LOAD_TOOLS, type ContinueOffer, type LoopBranch, type ToolKind } from "./continue-in-tool.js";
+import { PUBLISHED_BRANCH_NOTE } from "@agentx/cloud-contracts/web";
 import { OutsideChanges, PublishBranch } from "./ContinueLoopParts.js";
 import "./continue-in-tool.css";
 
@@ -40,6 +41,12 @@ function PullRequestLinks({ pullRequests }: { pullRequests: PullRequests }) {
  return <>{pullRequests.map((pr, index) => <span key={pr.url}>{index > 0 && ", "}{/^https:\/\//u.test(pr.url) ? <a href={pr.url} target="_blank" rel="noopener noreferrer"><VisibleText text={pr.repository + " #" + String(pr.number)} /></a> : <VisibleText text={pr.repository + " #" + String(pr.number)} />}</span>)}</>;
 }
 
+/** The server's own sentence beside a published branch (`publishedBranchNote`), word for word. A branch published a moment ago, before the task view is read again, carries the same sentence from the contracts. */
+function PublishedNote({ loop, entry }: { loop: NonNullable<ContinueOffer["loop"]>; entry: LoopBranch }) {
+ const listed = loop.branches.includes(entry), note = listed ? loop.publishedBranchNote : PUBLISHED_BRANCH_NOTE;
+ return note === undefined ? null : <span className="rv-continue-note rv-continue-block"><VisibleText text={note} /></span>;
+}
+
 /** The branch row. A server without the continue loop (no `continueLoop` in the task view) reads as it always did. With it, each repository shows its branch, or Publish working branch where the reader may make one. */
 function BranchFact({ offer, branches, onPublished }: { offer: ContinueOffer; branches: readonly LoopBranch[]; onPublished: (branch: LoopBranch) => void }) {
  const loop = offer.loop;
@@ -50,8 +57,8 @@ function BranchFact({ offer, branches, onPublished }: { offer: ContinueOffer; br
  return <ul className="rv-continue-branches">{repositories.map(repository => {
   const entry = branches.find(item => item.repository === repository), requests = offer.pullRequests.filter(pr => pr.repository === repository);
   return <li key={repository}>{many && <><VisibleText text={repository} />{": "}</>}
-   {entry !== undefined ? <><code><VisibleText text={entry.branch} /></code>{" "}{entry.source === "published" ? "(made by Rovara, no pull request yet)" : <>(pull request <PullRequestLinks pullRequests={requests.length > 0 ? requests : entry.pullRequest === undefined ? [] : [{ repository, number: entry.pullRequest.number, url: entry.pullRequest.url }]} />)</>}</>
-    : loop.canPublishBranch ? <><span className="rv-continue-note">{NO_BRANCH_PUBLISH}</span> <PublishBranch offer={offer} repository={repository} labelled={many} onPublished={onPublished} /></>
+   {entry !== undefined ? <><code><VisibleText text={entry.branch} /></code>{" "}{entry.source === "published" ? <>(made by Rovara, no pull request yet)<PublishedNote loop={loop} entry={entry} /></> : <>(pull request <PullRequestLinks pullRequests={requests.length > 0 ? requests : entry.pullRequest === undefined ? [] : [{ repository, number: entry.pullRequest.number, url: entry.pullRequest.url }]} />)</>}</>
+    : loop.canPublishBranch && (loop.publishable ?? []).some(item => item.repository === repository) ? <><span className="rv-continue-note">{NO_BRANCH_PUBLISH}</span> <PublishBranch offer={offer} repository={repository} labelled={many} onPublished={onPublished} /></>
     : requests.length > 0 ? <>Rovara opened <PullRequestLinks pullRequests={requests} />. Its page names the branch.</> : NO_BRANCH_YET}</li>;
  })}</ul>;
 }
@@ -83,7 +90,7 @@ function Panel({ offer }: { offer: ContinueOffer }) {
    <pre className="rv-continue-code rv-continue-prompt" tabIndex={0} aria-label="Prompt to paste into your tool"><code>{prompt}</code></pre>
    <CopyButton text={prompt} label="Copy prompt" what="prompt" />
   </section>
-  <section aria-label="When you push"><h3>When you push</h3><p>{pushExplainer(offer.loop)}</p><OutsideChanges offer={offer} loop={offer.loop} /></section>
+  <section aria-label="When you push"><h3>When you push</h3><p>{pushExplainer(offer.loop, branches.some(entry => entry.source === "published"))}</p><OutsideChanges offer={offer} loop={offer.loop} /></section>
   {offer.project !== undefined && <Lessons project={offer.project} />}
  </div>;
 }

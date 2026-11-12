@@ -29,3 +29,5 @@
 .rv-continue-outside{display:grid;gap:var(--rv-space-3)}
 .rv-continue-outside .rv-chip{white-space:normal;overflow-wrap:anywhere}
 @media(max-width:480px){.rv-continue-action{width:100%}}
+.rv-continue-block{display:block;flex-basis:100%}
+.rv-continue-action[aria-disabled=true]{opacity:.6;cursor:not-allowed}
