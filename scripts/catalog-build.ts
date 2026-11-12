@@ -38,12 +38,14 @@ import { promisify } from "node:util";
 import { z } from "zod";
 import { CATALOG_FILE, CATALOG_MAX_BYTES, CATALOG_SIGNATURE_ALGORITHM, CATALOG_SIGNATURE_FILE, CatalogIdSchema, CATALOG_PLATFORMS, CatalogRegistryHostSchema, PrepullListSchema, ServiceCatalogSchema, catalogPrepullList, catalogRepositoryName, catalogSigningMessage, combinedSbomRef, imageStatementMessage, parseBundlePublicKey, sha256HexOf, verifyCatalogSignature, verifyImageStatement, type CatalogEntry, type CatalogSignature, type ImageChildStatement, type ServiceCatalog, type SignedImageStatement } from "@rovara-code/contracts";
 import { kmsBundleSigner, type BundleSigner } from "./release/bundle.js";
+import { FUNCTION_RUNNER_PREPULL_FILE, functionRunnerPrepullList, withoutFunctionRunner } from "@agentx/cloud-contracts";
 
 const execFileAsync = promisify(execFile);
 
 export const SBOM_MAX_BYTES = 64 * 1024 * 1024;
 export const DEFAULT_CATALOG_DIR = "environments/service-catalog";
 export const DEFAULT_PREPULL_FILE = "packages/worker/service-catalog/prepull.json";
+export const DEFAULT_FUNCTION_RUNNER_PREPULL_FILE = FUNCTION_RUNNER_PREPULL_FILE;
 export const EVIDENCE_DIR = "evidence";
 
 // ---- the sources file
@@ -154,6 +156,8 @@ export interface CatalogBuildOutput {
   readonly catalogBytes: Buffer;
   readonly signatureBytes: Buffer;
   readonly prepullBytes: Buffer;
+  /** Slice 4: the function runner's pinned images (Lambda base images, the agent), kept OUT of `prepullBytes` (the services pre-pull) and read by the boot's own runner step. Empty until the runner entries are pinned. */
+  readonly functionRunnerPrepullBytes: Buffer;
   /** Files under the evidence folder, by path relative to it. */
   readonly evidence: ReadonlyArray<{ path: string; bytes: Buffer }>;
 }
@@ -395,8 +399,10 @@ export async function buildPinnedCatalog(input: { catalog: unknown; sources: unk
   };
   const own = verifyCatalogSignature({ catalogBytes, signature, trustedKeys: [ports.signer.publicKeyPem] });
   if (!own.ok) throw new CatalogBuildError([{ id: "*", code: "unsigned", message: `the signer's signature does not verify against its own public key: ${own.reason}` }]);
-  const prepull = PrepullListSchema.parse(catalogPrepullList(pinned));
-  return { catalog: pinned, catalogBytes, signatureBytes: jsonBytes(signature), prepullBytes: jsonBytes(prepull), evidence };
+  // The vendored `catalogPrepullList` holds EVERY pinned local entry, which would put four Lambda base images in the services pre-pull: they go in their own list (function-runner-catalog.ts).
+  const prepull = withoutFunctionRunner(PrepullListSchema.parse(catalogPrepullList(pinned)));
+  const runnerPrepull = functionRunnerPrepullList(pinned);
+  return { catalog: pinned, catalogBytes, signatureBytes: jsonBytes(signature), prepullBytes: jsonBytes(prepull), functionRunnerPrepullBytes: jsonBytes(runnerPrepull), evidence };
 }
 
 // ---- writing
@@ -422,7 +428,7 @@ export function assertOutsideRepo(directory: string, repoRoot: string = REPO_ROO
  * Writes a build: evidence first (into `evidenceDir`, laid out as `<evidenceDir>/<entry folder>/...`, outside the repository), then the pre-pull list, then the signature and then the catalog (the file everything else vouches for) last.
  * Nothing is written when `output` is not complete or `evidenceDir` is inside the repository.
  */
-export async function writeCatalogBuild(output: CatalogBuildOutput, where: { catalogDir: string; prepullFile: string; evidenceDir: string }): Promise<void> {
+export async function writeCatalogBuild(output: CatalogBuildOutput, where: { catalogDir: string; prepullFile: string; evidenceDir: string; functionRunnerPrepullFile?: string }): Promise<void> {
   const catalogDir = resolve(where.catalogDir);
   const evidenceDir = resolve(where.evidenceDir);
   assertOutsideRepo(evidenceDir);
@@ -432,6 +438,7 @@ export async function writeCatalogBuild(output: CatalogBuildOutput, where: { cat
   }
   for (const item of output.evidence) await writeAtomic(join(evidenceDir, item.path.slice(`${EVIDENCE_DIR}/`.length)), item.bytes);
   await writeAtomic(resolve(where.prepullFile), output.prepullBytes);
+  if (where.functionRunnerPrepullFile !== undefined) await writeAtomic(resolve(where.functionRunnerPrepullFile), output.functionRunnerPrepullBytes);
   await writeAtomic(join(catalogDir, CATALOG_SIGNATURE_FILE), output.signatureBytes);
   await writeAtomic(join(catalogDir, CATALOG_FILE), output.catalogBytes);
 }
@@ -729,7 +736,7 @@ export function ecrScanPort(input: { client: EcrLike; commands: Pick<EcrCommands
 // ---- command line
 
 function usage(): string {
-  return `Usage: tsx scripts/catalog-build.ts --sources <file> --env <environment> --registry <host> --kms-key <key id or ARN> [--entries <id,id,...>] --evidence-dir <folder outside the repository> [--catalog-dir ${DEFAULT_CATALOG_DIR}] [--prepull-file ${DEFAULT_PREPULL_FILE}] [--command-timeout-seconds ${String(DEFAULT_COMMAND_TIMEOUT_MS / 1000)}] [--copy-timeout-seconds ${String(DEFAULT_COPY_TIMEOUT_MS / 1000)}]
+  return `Usage: tsx scripts/catalog-build.ts --sources <file> --env <environment> --registry <host> --kms-key <key id or ARN> [--entries <id,id,...>] --evidence-dir <folder outside the repository> [--catalog-dir ${DEFAULT_CATALOG_DIR}] [--prepull-file ${DEFAULT_PREPULL_FILE}] [--function-runner-prepull-file ${DEFAULT_FUNCTION_RUNNER_PREPULL_FILE}] [--command-timeout-seconds ${String(DEFAULT_COMMAND_TIMEOUT_MS / 1000)}] [--copy-timeout-seconds ${String(DEFAULT_COPY_TIMEOUT_MS / 1000)}]
 Run by an operator with the pipeline's own AWS credentials. It mirrors each catalog image by digest into <host>/rovara-catalog/<environment>/..., records an SBOM and a scan for EACH PLATFORM, signs, and writes the
 pinned catalog.json, catalog.sig.json and the worker pre-pull list into the repository, and the per-image evidence (SBOMs, scans, signed statements) into --evidence-dir, which is required and must be outside the repository. Nothing is written if any image is refused (a platform with a critical finding refuses the image). Needs skopeo and syft on PATH.
 The sources file maps each catalog id to a digest reference (host/path@sha256:...), or, for the emulator only, to a Rovara-built layout:
@@ -769,6 +776,7 @@ async function main(argv: string[]): Promise<void> {
   const entryIds = parseEntryIds(values("--entries")[0]);
   const catalogDir = resolve(values("--catalog-dir")[0] ?? DEFAULT_CATALOG_DIR);
   const prepullFile = resolve(values("--prepull-file")[0] ?? DEFAULT_PREPULL_FILE);
+  const functionRunnerPrepullFile = resolve(values("--function-runner-prepull-file")[0] ?? DEFAULT_FUNCTION_RUNNER_PREPULL_FILE);
   if (values("--evidence-dir").length !== 1 || values("--evidence-dir")[0] === "") throw new Error("--evidence-dir is required (once): a folder outside the repository for the SBOMs, scans and statements");
   const evidenceDir = resolve(values("--evidence-dir")[0] as string);
   assertOutsideRepo(evidenceDir);
@@ -802,7 +810,7 @@ async function main(argv: string[]): Promise<void> {
         signer,
       },
     });
-    await writeCatalogBuild(output, { catalogDir, prepullFile, evidenceDir });
+    await writeCatalogBuild(output, { catalogDir, prepullFile, evidenceDir, functionRunnerPrepullFile });
     process.stdout.write(`pinned catalog revision ${String(output.catalog.revision)}: ${String(output.catalog.entries.filter((entry) => entry.image.digest !== undefined).length)} images\n`);
   } finally {
     await rm(authDir, { recursive: true, force: true });

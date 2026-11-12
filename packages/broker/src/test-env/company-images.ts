@@ -9,6 +9,7 @@
 //     own approval, and the old approval never serves it (`digest_changed`).
 import { catalogEntryById, catalogPrepullList, OrgIdSchema, type CatalogEntry, type OrgId, type VerifiedCatalog } from "@rovara-code/contracts";
 import { createHash } from "node:crypto";
+import { isFunctionRunnerCatalogId } from "@agentx/cloud-contracts";
 import { z } from "zod";
 
 // ---- reading a reference
@@ -131,7 +132,7 @@ export const COMPANY_IMAGES_MAX_WAITING = 20;
  */
 export function profileEntryOf(catalog: VerifiedCatalog, family: string, major: string, edition: "public" | "enterprise"): CatalogEntry | undefined {
   let ready: Set<string>;
-  try { ready = new Set(catalogPrepullList(catalog).images.map((image) => image.id)); } catch { return undefined; }
+  try { ready = new Set(catalogPrepullList(catalog).images.filter((image) => !isFunctionRunnerCatalogId(image.id)).map((image) => image.id)); } catch { return undefined; }
   const live = catalog.entries.filter((entry) => entry.backing === "local" && entry.family === family && entry.status !== "retired" && entry.image.digest !== undefined && entry.editions.includes(edition) && ready.has(entry.id));
   if (!catalog.pinned || live.length === 0) return undefined;
   const sameMajor = live.filter((entry) => entry.version === major || entry.version.startsWith(`${major}.`));
@@ -178,7 +179,7 @@ export function serviceImageServed(input: { catalog: VerifiedCatalog | undefined
     if ("catalogId" in request) {
       const entry = catalogEntryById(catalog, request.catalogId);
       if (entry === undefined || entry.status === "retired" || entry.image.digest === undefined || !catalog.pinned || !entry.editions.includes(input.edition)) return refused("not_in_catalog");
-      if (!catalogPrepullList(catalog).images.some((image) => image.id === entry.id)) return refused("not_in_catalog");
+      if (isFunctionRunnerCatalogId(entry.id) || !catalogPrepullList(catalog).images.some((image) => image.id === entry.id)) return refused("not_in_catalog");
       return { ok: true, source: "catalog", catalogId: entry.id, digest: entry.image.digest };
     }
     const live = input.approved.filter((image) => image.status === "approved");

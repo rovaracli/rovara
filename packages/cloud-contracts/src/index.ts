@@ -82,6 +82,8 @@ export { AUDIT_INDEX_PAGE_DEFAULT, AUDIT_INDEX_PAGE_MAX, AuditIndexedQuerySchema
 
 export { TaskStopEditablePolicySchema, type TaskStopEditablePolicy, TaskStopPendingChangeSchema, TaskStopEditingContextSchema, TaskStopEditBodySchema, TaskStopDecisionBodySchema, TaskStopEditResultSchema, taskStopEditKind } from "./task-stop-editing.js";
 export * from "./service-catalog-images.js";
+export * from "./function-runner-catalog.js";
+export * from "./function-runner-usage.js";
 export * from "./catalog-trust.js";
 export * from "./catalog-build-flavor.js";
 export * from "./service-catalog-verify.js";
