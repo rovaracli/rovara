@@ -11,7 +11,7 @@ const SHA = "a".repeat(40);
 const DIGEST = `sha256:${"b".repeat(64)}`;
 const META = { headBranch: "main", headSha: SHA, workflowName: "image", conclusion: "success" };
 
-function run(options: { meta?: Record<string, unknown> | string; log?: string; digestFile?: string; args?: string[]; env?: Record<string, string> }) {
+function run(options: { meta?: Record<string, unknown> | string; log?: string; digestFile?: string; args?: string[]; env?: Record<string, string>; repo?: string }) {
   const directory = mkdtempSync(join(tmpdir(), "la-run-"));
   const meta = options.meta ?? META;
   const log = options.log ?? `build\nindex digest: ${DIGEST}\ndone\n`;
@@ -31,7 +31,7 @@ function run(options: { meta?: Record<string, unknown> | string; log?: string; d
     "esac",
   ].join("\n"));
   chmodSync(gh, 0o755);
-  const result = spawnSync("/bin/bash", [SCRIPT, ...(options.args ?? ["123456", SHA, directory])], { encoding: "utf8", env: { PATH: process.env["PATH"] ?? "", GH: gh, ...(options.env ?? {}) } });
+  const result = spawnSync("/bin/bash", [SCRIPT, ...(options.args ?? ["123456", SHA, directory, ...(options.repo === undefined ? [] : [options.repo])])], { encoding: "utf8", env: { PATH: process.env["PATH"] ?? "", GH: gh, ...(options.env ?? {}) } });
   const calls = (() => { try { return readFileSync(join(directory, "gh.log"), "utf8"); } catch { return ""; } })();
   return { status: result.status, out: result.stdout, err: result.stderr, calls };
 }
@@ -59,20 +59,33 @@ describe("verify-local-aws-run.sh", () => {
       expect(run({ meta: partial }).status, key).toBe(1);
     }
   });
-  it("accepts the AWS Emulator engine's branch only when it is named by LOCAL_AWS_RUN_BRANCH, as ONE exact branch, and the sha is still the pin", () => {
-    const front = { ...META, headBranch: "rovara/front" };
-    expect(run({ meta: front }).status).toBe(1);
-    const accepted = run({ meta: front, env: { LOCAL_AWS_RUN_BRANCH: "rovara/front" } });
-    expect(accepted.status, accepted.err).toBe(0);
-    // main and rovara/main stay accepted, any other branch and a different head of the named branch do not
-    expect(run({ meta: { ...META, headBranch: "rovara/main" }, env: { LOCAL_AWS_RUN_BRANCH: "rovara/front" } }).status).toBe(0);
-    expect(run({ meta: { ...META, headBranch: "rovara/image-6" }, env: { LOCAL_AWS_RUN_BRANCH: "rovara/front" } }).status).toBe(1);
-    expect(run({ meta: { ...front, headSha: "c".repeat(40) }, env: { LOCAL_AWS_RUN_BRANCH: "rovara/front" } }).status).toBe(1);
-    // the variable is one exact rovara/<name>: a pattern, another prefix or a list is refused before gh is asked
-    for (const bad of ["rovara/*", "feature/x", "rovara/front,main", "main", "rovara/", "../front"]) {
-      const result = run({ meta: front, env: { LOCAL_AWS_RUN_BRANCH: bad } });
-      expect(result.status, bad).toBe(1);
-      expect(result.calls, bad).toBe("");
+  it("takes the public CI-only copy rovaracli/rovara-local-aws as a source: exactly its `main`, at the public snapshot sha, and the gh calls go to that repository", () => {
+    const PUBLIC = "rovaracli/rovara-local-aws";
+    const ok = run({ meta: META, repo: PUBLIC });
+    expect(ok.status, ok.err).toBe(0);
+    expect(ok.out).toContain(PUBLIC);
+    expect(ok.calls).toContain(`run view 123456 -R ${PUBLIC} --json headBranch,headSha,workflowName,conclusion`);
+    expect(ok.calls).toContain(`run view 123456 -R ${PUBLIC} --log`);
+    expect(ok.calls).not.toContain("PrepLabsAI");
+    // there, only `main`: the private fork's other branch and any feature branch are refused, and so is another sha
+    for (const branch of ["rovara/main", "rovara/front", "master", "main2", "feature/x"]) expect(run({ meta: { ...META, headBranch: branch }, repo: PUBLIC }).status, branch).toBe(1);
+    expect(run({ meta: { ...META, headSha: "c".repeat(40) }, repo: PUBLIC }).status).toBe(1);
+    expect(run({ meta: { ...META, workflowName: "arm-probe" }, repo: PUBLIC }).status).toBe(1);
+    expect(run({ meta: { ...META, conclusion: "failure" }, repo: PUBLIC }).status).toBe(1);
+  });
+  it("keeps the private fork as the default and its two branches; rovara/front there is no longer accepted (its Actions cannot run), and no variable adds a branch or a repository", () => {
+    expect(run({ meta: { ...META, headBranch: "rovara/front" } }).status).toBe(1);
+    expect(run({ meta: { ...META, headBranch: "rovara/main" } }).status).toBe(0);
+    expect(run({ meta: META }).calls).toContain("-R PrepLabsAI/rovara-local-aws");
+    expect(run({ meta: { ...META, headBranch: "rovara/other" }, env: { LOCAL_AWS_RUN_BRANCH: "rovara/other" } }).status).toBe(1);
+    expect(run({ meta: META, env: { LOCAL_AWS_REPO: "rovaracli/rovara-local-aws" } }).calls).toContain("-R PrepLabsAI/rovara-local-aws");
+  });
+  it("refuses any other repository, before gh is asked: another owner, another name, a look-alike, a path", () => {
+    for (const repo of ["rovaracli/rovara", "PrepLabsAI/Rovara-cloud", "rovaracli/rovara-local-aws2", "evil/rovara-local-aws", "rovaracli/rovara-local-aws/x", "ROVARACLI/rovara-local-aws", "rovaracli/rovara-local-aws "]) {
+      const result = run({ meta: META, repo });
+      expect(result.status, repo).toBe(1);
+      expect(result.err, repo).toContain("REFUSED");
+      expect(result.calls, repo).toBe("");
     }
   });
   it("refuses a failing gh, an answer that is not JSON, and a log that cannot be read", () => {

@@ -33,7 +33,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { constants as fsConstants, readFileSync } from "node:fs";
 import { open, readFile, realpath, stat } from "node:fs/promises";
 import { resolve, sep } from "node:path";
-import { TEST_SERVICES_COMPANY_IMAGE_PLAN_FEATURE, type TaskDependencyPlan, type TestEnvTaskPlan } from "@agentx/cloud-contracts";
+import { TEST_SERVICES_COMPANY_IMAGE_PLAN_FEATURE, placeholderDigestProblem, type TaskDependencyPlan, type TestEnvTaskPlan } from "@agentx/cloud-contracts";
 import { CATALOG_REGISTRY_ROOT, PrepullListSchema, ServiceCatalogSchema, TEST_SERVICES_AWS_PLAN_FEATURE, TEST_SERVICES_FAKE_PLAN_FEATURE, TEST_SERVICES_FILE_SEED_FEATURE, TEST_SERVICES_PLAN_FEATURE, TEST_SERVICES_SEED_LOCK_FEATURE, TEST_SERVICES_USAGE_LIMITS, TEST_SERVICES_USAGE_RESULT_KEY, TestServicesUsageRecordSchema, agentXError, catalogEntryById, catalogRepositoryName, type CatalogEdition, type CatalogEntry, type ServiceCatalog, type TaskAwsResource, type TestServicesStartFailure, type TestServicesUsageRecord } from "@rovara-code/contracts";
 import { TASK_SANDBOX_IMAGE_ENVIRONMENT, type TaskSandbox } from "./task-sandbox.js";
 import { SANDBOX_TARGET, executionFor } from "./execution-target.js";
@@ -223,7 +223,10 @@ export async function loadBakedCatalog(file: URL | string = BAKED_CATALOG_URL): 
   try {
     const text = await readFile(file, "utf8");
     if (Buffer.byteLength(text) > BAKED_CATALOG_MAX_BYTES) throw new Error("too large");
-    return ServiceCatalogSchema.parse(JSON.parse(text));
+    const catalog = ServiceCatalogSchema.parse(JSON.parse(text));
+    // An image that was never pinned (the all-zero placeholder of a release branch) is the fixed `catalog` error, not a pull that fails later.
+    if (placeholderDigestProblem(catalog) !== undefined) throw new Error("placeholder digest");
+    return catalog;
   } catch {
     throw new TestServicesError("catalog");
   }
