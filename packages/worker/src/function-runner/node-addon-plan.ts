@@ -15,6 +15,8 @@ export interface NodeSwapStep {
   readonly fetch: { readonly name: string; readonly version: string };
   /** The x86_64 variant folder to remove once the arm64 one is in place. */
   readonly drop: string;
+  /** The same folder, raw: the path an action must use (`drop` is made safe to show and may differ for a name with control characters). */
+  readonly dropPath: string;
 }
 
 export interface NodePackagePlan {
@@ -128,7 +130,7 @@ export function planNodeAddons(files: readonly PackageFileInput[]): NodePlan {
     // 2. An installed package lists the arm64 variant of this x64 variant.
     const twinName = arm64Twin(manifest.name);
     if (twinName !== undefined && NPM_NAME.test(twinName) && manifest.version !== "" && (listedBy.get(twinName)?.length ?? 0) > 0 && !byPath.has(`${arm64Twin(found.root) ?? "\0"}/package.json`)) {
-      packages.push({ ...base, status: "swap-planned", detail: "listed-arm64-variant", fallback: "none", step: { fetch: { name: twinName, version: manifest.version }, drop: displayPath(found.root) } });
+      packages.push({ ...base, status: "swap-planned", detail: "listed-arm64-variant", fallback: "none", step: { fetch: { name: twinName, version: manifest.version }, drop: displayPath(found.root), dropPath: found.root } });
       continue;
     }
     if (twinName !== undefined && (listedBy.get(twinName)?.length ?? 0) > 0 && byPath.has(`${arm64Twin(found.root) ?? "\0"}/package.json`)) {

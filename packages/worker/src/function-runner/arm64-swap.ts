@@ -6,6 +6,10 @@
 // Trust: the package is the customer's, the wheel is from the index; a METADATA/RECORD/WHEEL file in either is hostile text. Names and versions are validated before they
 // go to the index; RECORD paths that leave the package folder are ignored; a wheel that would overwrite a file it does not own, ship a symlink, list a file it lacks, or
 // disagree with its own RECORD is refused. Every reason in a report is a fixed code, never text from a file.
+//
+// WRITING THE EDITS. `edits` are paths relative to the package root, from a RECORD and a wheel (hostile text). The swap refuses an add whose path, or any folder above it, is a link, a
+// folder or a file it does not own (give it `SwapOptions.nonFiles`, which `directoryInputs` returns). Whoever applies the edits to the disk MUST still use `writeBeneath` and
+// `removeBeneath` (no-follow-write.ts), which look at every component with lstat and open the file with O_EXCL | O_NOFOLLOW, never a plain `writeFile(join(root, path))`.
 import { createHash } from "node:crypto";
 import {
   classifyNative, displayPath, headOf, readSmallText, type NativeClassification, type PackageFileInput,
@@ -14,7 +18,7 @@ import { inspectHeader } from "./elf.js";
 import { WheelIndexError, sha256Hex, type IndexFile, type WheelIndex } from "./wheel-index.js";
 import {
   compareFit, isProjectName, isVersionText, lambdaGlibc, normalizeProjectName, normalizeVersion, parseMetadataHeaders, parseRecord, parseWheelFile,
-  parseWheelFilename, pythonTagVersion, expandTags, wheelFit, type SwapTarget, type WheelFit,
+  parseWheelFilename, wheelFit, type SwapTarget, type WheelFit,
 } from "./wheel-meta.js";
 import { ZipError, openZip, type ZipEntry } from "./zip-read.js";
 
@@ -29,8 +33,15 @@ export type SwapStatus =
   | "unplannable";
 
 export interface SwapOptions {
-  /** The function's CPython. Default: read from the wheel tags of the package's own native wheels. */
+  /**
+   * The function's CPython, from its configured Runtime (`pythonOfRuntime("python3.12")`). It is NEVER read from the customer's wheel tags: the package is the customer's text, and the
+   * runtime is what will run it. Without it every distribution is "unplannable".
+   */
   readonly python?: { readonly major: number; readonly minor: number };
+  /** The function's Runtime name ("python3.12"): the same as `python`, parsed. `python` wins when both are given. */
+  readonly runtime?: string;
+  /** Folders, links and special files of the package, by package-relative path (`directoryInputs(...).nonFiles`). Without it only regular files are known. */
+  readonly nonFiles?: ReadonlyMap<string, "dir" | "symlink" | "other">;
   /** The glibc of the Lambda image. Default: lambdaGlibc(python.minor). */
   readonly glibc?: readonly [number, number];
   /** Largest wheel downloaded. Default 300 MiB. */
@@ -92,7 +103,6 @@ interface Distribution {
   /** Resolved package-relative paths its RECORD lists that exist in the package. */
   readonly owned: readonly string[];
   readonly fromTags: readonly string[];
-  readonly pythonTag: { readonly major: number; readonly minor: number } | undefined;
   readonly problem: string | undefined;
 }
 
@@ -115,12 +125,10 @@ function resolveRecordPath(root: string, raw: string): string | undefined {
   return parts.length > floor ? parts.join("/") : undefined;
 }
 
-function pythonFromTags(tags: readonly string[]): { major: number; minor: number } | undefined {
-  for (const tag of tags) for (const triple of expandTags(tag)) {
-    const py = pythonTagVersion(triple.python);
-    if (py !== undefined && py.kind === "cp" && py.version.length === 2 && triple.abi === triple.python && triple.platform !== "any") return { major: py.version[0]!, minor: py.version[1]! };
-  }
-  return undefined;
+/** The CPython of a Lambda Runtime name ("python3.12"); undefined for any other runtime or an odd name. */
+export function pythonOfRuntime(runtime: string): { major: number; minor: number } | undefined {
+  const m = /^python(\d)\.(\d{1,2})$/u.exec(runtime);
+  return m === null ? undefined : { major: Number(m[1]), minor: Number(m[2]) };
 }
 
 function inventory(files: readonly PackageFileInput[], index: ReadonlyMap<string, PackageFileInput>): Distribution[] {
@@ -153,7 +161,7 @@ function inventory(files: readonly PackageFileInput[], index: ReadonlyMap<string
         if (resolved !== undefined && index.has(resolved)) owned.push(resolved);
       }
     }
-    out.push({ distInfo, root, name, version, owned, fromTags: tags, pythonTag: pythonFromTags(tags), problem });
+    out.push({ distInfo, root, name, version, owned, fromTags: tags, problem });
   }
   return out;
 }
@@ -173,6 +181,16 @@ const isSdistFor = (filename: string, name: string, version: string): boolean =>
   }
   return false;
 };
+
+/** True when `path`, or a folder above it, is a link or a special file in the package. */
+function throughLink(path: string, nonFiles: ReadonlyMap<string, "dir" | "symlink" | "other"> | undefined): boolean {
+  if (nonFiles === undefined) return false;
+  for (let at = path; at !== ""; at = dirName(at)) {
+    const kind = nonFiles.get(at);
+    if (kind === "symlink" || kind === "other") return true;
+  }
+  return false;
+}
 
 const buildNumber = (build: string | undefined): number => (build === undefined ? -1 : Number.parseInt(build, 10));
 
@@ -209,13 +227,16 @@ function chooseWheel(listing: readonly IndexFile[], dist: Distribution, target: 
     if (fit === undefined) continue;
     const build = buildNumber(parsed.build);
     if (best === undefined) { best = { file, fit, build }; continue; }
+    // A yanked release is never preferred: any wheel that is not yanked and fits beats every yanked one, whatever the fit.
     const byFit = compareFit(fit, best.fit);
-    const better = byFit !== 0 ? byFit > 0 : file.yanked !== best.file.yanked ? !file.yanked : build > best.build;
+    const better = file.yanked !== best.file.yanked ? !file.yanked : byFit !== 0 ? byFit > 0 : build > best.build;
     if (better) best = { file, fit, build };
   }
   if (best === undefined) throw new Refusal("no-arm64-wheel", "no-compatible-tag");
   return best;
 }
+
+const RECORD_EXEMPT = (info: string, name: string): boolean => name === `${info}/RECORD` || name === `${info}/RECORD.jws` || name === `${info}/RECORD.p7s`;
 
 interface Verified { readonly adds: { path: string; data: Uint8Array; executable: boolean }[] }
 
@@ -238,9 +259,9 @@ function verifyAndExtract(bytes: Uint8Array, dist: Distribution): Verified {
   if (normalizeProjectName(headers.get("name") ?? "") !== normalizeProjectName(dist.name) || normalizeVersion(headers.get("version") ?? "") !== normalizeVersion(dist.version)) throw new Refusal("unsafe", "wheel-metadata-mismatch");
   if (record.size > RECORD_BYTES) throw new Refusal("unsafe", "wheel-record-too-large");
   const rows = parseRecord(new TextDecoder().decode(record.read()));
-  const listed = new Set<string>();
+  /** Members whose bytes matched a sha256 in RECORD. */
+  const verified = new Set<string>();
   for (const row of rows) {
-    listed.add(row.path);
     const entry = byName.get(row.path);
     if (row.hash === "") continue;
     const m = /^sha256=([A-Za-z0-9_-]+)$/u.exec(row.hash);
@@ -248,12 +269,15 @@ function verifyAndExtract(bytes: Uint8Array, dist: Distribution): Verified {
     if (m === null) throw new Refusal("hash-mismatch", "record-hash-algorithm");
     const digest = createHash("sha256").update(entry.read()).digest("base64url");
     if (digest !== m[1]) throw new Refusal("hash-mismatch", "record");
+    verified.add(row.path);
   }
   const adds: Verified["adds"] = [];
   const seen = new Set<string>();
   for (const entry of entries) {
     const dest = destination(entry.name);
     if (dest === undefined) continue;
+    // Every installed member must be listed in RECORD with a sha256 that matched (PEP 376/427: only RECORD and its signatures are exempt), so no file rides along unchecked.
+    if (!verified.has(entry.name) && !RECORD_EXEMPT(info, entry.name)) throw new Refusal("unsafe", byName.has(entry.name) && rows.some((row) => row.path === entry.name) ? "record-hash-missing" : "member-not-in-record");
     if (seen.has(dest)) throw new Refusal("unsafe", "wheel-duplicate-destination");
     seen.add(dest);
     adds.push({ path: dest, data: entry.read(), executable: (entry.mode & 0o111) !== 0 });
@@ -275,7 +299,11 @@ export async function swapToArm64(files: readonly PackageFileInput[], index: Whe
   for (const dist of dists) for (const path of new Set(dist.owned)) ownerCount.set(path, (ownerCount.get(path) ?? 0) + 1);
   const ownedAnywhere = new Set(ownerCount.keys());
 
-  const sharedPython = options.python ?? dists.map((dist) => dist.pythonTag).find((tag) => tag !== undefined);
+  const sharedPython = options.python ?? (options.runtime === undefined ? undefined : pythonOfRuntime(options.runtime));
+  const nonFiles = options.nonFiles;
+  /** Every folder that holds a regular file of the package. */
+  const fileDirs = new Set<string>();
+  for (const path of byPath.keys()) for (let parent = dirName(path); parent !== "" && !fileDirs.has(parent); parent = dirName(parent)) fileDirs.add(parent);
   const reports: PackageSwapReport[] = [];
   const remove = new Set<string>();
   const added = new Map<string, AddedFile>();
@@ -326,9 +354,17 @@ export async function swapToArm64(files: readonly PackageFileInput[], index: Whe
       const droppedSet = new Set(dropped);
       const adds: AddedFile[] = [];
       let total = 0;
+      for (const path of dropped) if (throughLink(path, nonFiles)) throw new Refusal("unsafe", "path-through-link");
+      const addPaths = new Set(verified.adds.map((add) => joinPath(dist.root, add.path)));
       for (const add of verified.adds) {
         const path = joinPath(dist.root, add.path);
         if ((byPath.has(path) && !droppedSet.has(path)) || (added.has(path) && !droppedSet.has(path))) throw new Refusal("unsafe", "would-overwrite");
+        // Links and folders count too: an add must not land on one, nor below a link, nor below a file (this package's, an earlier swap's, or another add of this wheel).
+        if (nonFiles?.has(path) === true || fileDirs.has(path)) throw new Refusal("unsafe", "would-overwrite");
+        if (throughLink(path, nonFiles)) throw new Refusal("unsafe", "path-through-link");
+        for (let parent = dirName(path); parent !== ""; parent = dirName(parent)) {
+          if ((byPath.has(parent) && !droppedSet.has(parent)) || added.has(parent) || addPaths.has(parent)) throw new Refusal("unsafe", "would-overwrite");
+        }
         total += add.data.length;
         adds.push({ path, data: add.data, executable: add.executable });
       }

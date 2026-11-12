@@ -75,6 +75,10 @@ export interface WheelSpec {
   /** Replaces the hash of one RECORD row (a tampered wheel). */
   badHashFor?: string;
   metadataName?: string;
+  /** Members left out of RECORD (they are still in the zip). */
+  recordOmit?: readonly string[];
+  /** Members listed in RECORD with an empty hash. */
+  recordEmptyHash?: readonly string[];
 }
 
 /** A wheel as a zip with a correct dist-info (METADATA, WHEEL, RECORD). */
@@ -85,9 +89,9 @@ export function wheel(spec: WheelSpec): Uint8Array {
     [`${info}/METADATA`]: `Metadata-Version: 2.1\nName: ${spec.metadataName ?? spec.name}\nVersion: ${spec.version}\n\nlong description\n`,
     [`${info}/WHEEL`]: `Wheel-Version: 1.0\nGenerator: test\nRoot-Is-Purelib: ${spec.purelib === true ? "true" : "false"}\n${spec.tags.map((tag) => `Tag: ${tag}\n`).join("")}`,
   };
-  const rows = Object.entries(all).map(([path, data]) => {
+  const rows = Object.entries(all).filter(([path]) => spec.recordOmit?.includes(path) !== true).map(([path, data]) => {
     const bytes = typeof data === "string" ? text(data) : data;
-    const hash = path === spec.badHashFor ? "sha256=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" : `sha256=${sha256b64(bytes)}`;
+    const hash = spec.recordEmptyHash?.includes(path) === true ? "" : path === spec.badHashFor ? "sha256=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" : `sha256=${sha256b64(bytes)}`;
     return `${path},${hash},${bytes.length}`;
   });
   rows.push(`${info}/RECORD,,`);

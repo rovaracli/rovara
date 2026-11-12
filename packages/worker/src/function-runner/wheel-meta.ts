@@ -189,7 +189,8 @@ export function wheelFit(wheel: WheelFilename, target: SwapTarget): WheelFit | u
     else if (plat.family === "manylinux") {
       if (plat.glibc === undefined || !geVersion(target.glibc, plat.glibc)) continue;
       platScore = 10 + plat.glibc[0] * 100 + plat.glibc[1];
-    } else if (plat.family === "linux") platScore = 5;
+    }
+    // A plain `linux_aarch64` wheel promises nothing about the C library (pip itself refuses to build one for upload): not installed.
     else continue;
     const fit: WheelFit = { score: [pure ? 0 : 1, pyScore * 1000 + minor, platScore], pure };
     if (best === undefined || compareFit(fit, best) > 0) best = fit;

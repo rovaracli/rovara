@@ -7,10 +7,12 @@
 //
 // Order of writing: folders and files first (each file created with O_EXCL after the old entry, if any, was removed with lstat semantics, so a link on disk is never followed), links LAST. Nothing is ever written after a link exists, so a
 // link can never redirect a write. Files get a fixed mode (0644, or 0755 with an execute bit in the entry's Unix mode), folders 0755, chmod'd explicitly so the process umask does not matter. Nothing here starts a process or reads the network.
-import { lstat, mkdir, open, chmod, rm, symlink } from "node:fs/promises";
-import { join, relative, isAbsolute } from "node:path";
+import { chmod, lstat, mkdir, open, rm, symlink } from "node:fs/promises";
+import { isAbsolute, join, relative, sep } from "node:path";
 import { createInflateRaw, crc32 } from "node:zlib";
 import { FunctionCodeError, type FunctionCodeLimits } from "./code-errors.js";
+import { LinkTree } from "./link-tree.js";
+import { writeFully } from "./no-follow-write.js";
 import { inspectFunctionZip, type ZipEntryPlan } from "./zip-judge.js";
 
 export type UnpackMode = "fresh" | "overlay";
@@ -18,6 +20,8 @@ export type UnpackMode = "fresh" | "overlay";
 export interface UnpackOptions {
   mode?: UnpackMode;
   signal?: AbortSignal;
+  /** The plan `inspectFunctionZip` made of THIS zip when it was received: the store judges a zip once and unpacks it as often as functions use it. Without it the zip is judged here. */
+  plan?: readonly ZipEntryPlan[];
 }
 
 export interface UnpackResult {
@@ -32,7 +36,7 @@ export interface UnpackResult {
  */
 export async function unpackFunctionCode(zip: Buffer, targetDir: string, limits: FunctionCodeLimits, options: UnpackOptions = {}): Promise<UnpackResult> {
   const mode = options.mode ?? "fresh";
-  const entries = inspectFunctionZip(zip, limits);
+  const entries = options.plan ?? inspectFunctionZip(zip, limits);
   if (mode === "fresh") {
     try {
       await mkdir(targetDir, { mode: 0o755 });
@@ -45,7 +49,11 @@ export async function unpackFunctionCode(zip: Buffer, targetDir: string, limits:
     if (info === undefined || !info.isDirectory()) throw new FunctionCodeError("write_failed");
   }
   try {
-    return await writeAll(zip, entries, targetDir, mode, options.signal);
+    const result = await writeAll(zip, entries, targetDir, mode, options.signal);
+    // A later layer can turn an earlier layer's link into an escape (a folder it pointed through became a link). Whatever the plans said, the finished folder is read back from the
+    // disk (readdir and readlink) and every link in it must still end inside it.
+    if (mode === "overlay") (await LinkTree.fromDisk(targetDir)).checkLinks({ strict: false });
+    return result;
   } catch (error) {
     if (mode === "fresh") await rm(targetDir, { recursive: true, force: true }).catch(() => undefined);
     if (error instanceof FunctionCodeError) throw error;
@@ -60,7 +68,8 @@ async function writeAll(zip: Buffer, entries: readonly ZipEntryPlan[], targetDir
   const insideTarget = (parts: readonly string[]): string => {
     const destination = join(targetDir, ...parts);
     const rel = relative(targetDir, destination);
-    if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) throw new FunctionCodeError("unsafe_entry");
+    // Only a whole `..` segment is an escape: `..data` is a name (Kubernetes-style folders are called that).
+    if (rel === "" || rel.split(sep)[0] === ".." || isAbsolute(rel)) throw new FunctionCodeError("unsafe_entry");
     return destination;
   };
   const ensureDir = async (parts: readonly string[]): Promise<void> => {
@@ -123,7 +132,7 @@ async function writeEntry(zip: Buffer, entry: ZipEntryPlan, destination: string)
     let written = 0;
     let crc = 0;
     if (entry.method === 0) {
-      await handle.write(source);
+      await writeFully(handle, source);
       written = source.length;
       crc = crc32(source);
     } else {
@@ -136,7 +145,7 @@ async function writeEntry(zip: Buffer, entry: ZipEntryPlan, destination: string)
           // An entry that inflates past what it declared is a bomb, however small the zip.
           if (written > entry.uncompressedSize) throw new FunctionCodeError("too_large");
           crc = crc32(chunk, crc);
-          await handle.write(chunk);
+          await writeFully(handle, chunk);
         }
       } catch (error) {
         inflate.destroy();
@@ -151,4 +160,3 @@ async function writeEntry(zip: Buffer, entry: ZipEntryPlan, destination: string)
     await handle.close();
   }
 }
-

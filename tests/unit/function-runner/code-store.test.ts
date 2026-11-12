@@ -1,14 +1,15 @@
 // Slice 4, lane W2: the worker's function code store (packages/worker/src/function-runner/code-store.ts). Content-addressed per run, size and digest enforced on the stream, whole-zip refusal, atomic publication, budgets, layer order
-// (later layers win), the native-code hook, and cleanup at run end.
+// (later layers win), lane X1's native-code classifier (injected, and the real one), and cleanup at run end.
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { FUNCTION_CODE_LIMITS, FunctionCodeError, type FunctionCodeProblem } from "../../../packages/worker/src/function-runner/code-errors.js";
-import { FunctionCodeStore, LAMBDA_LAYER_ROOT, LAMBDA_TASK_ROOT, type RunCode } from "../../../packages/worker/src/function-runner/code-store.js";
-import { NATIVE_CLASSIFIER_IS_STUB, classifyNative, type ClassifiableFile } from "../../../packages/worker/src/function-runner/native-classify.js";
+import { ENTRY_OVERHEAD_BYTES, FunctionCodeStore, type RunCode } from "../../../packages/worker/src/function-runner/code-store.js";
+import type { NativeClassification, PackageFileInput } from "../../../packages/worker/src/function-runner/native-classify.js";
 import { chunksOf, type PackageAnnouncement } from "../../../packages/worker/src/function-runner/package-stream.js";
+import { ARM, X86 } from "../../support/x86-package-fixtures.js";
 import { buildZip, linkEntry, type TestZipEntry } from "../../support/zip-builder.js";
 
 const roots: string[] = [];
@@ -192,8 +193,9 @@ describe("materializing a function with layers", () => {
   }
 
   it("unpacks the function into task and the layers, in order and later winning, into opt", async () => {
-    const seen: ClassifiableFile[][] = [];
-    const classify = vi.fn((list: readonly ClassifiableFile[]) => { seen.push([...list]); return Promise.resolve({ native: true, arch: "arm64" as const }); });
+    const seen: PackageFileInput[][] = [];
+    const verdict = { native: true, arch: "arm64", offenders: [], offenderCount: 0, counts: { arm64: 1, x86_64: 0, other: 0 }, wheels: [], nodeAddons: [], complete: true } satisfies NativeClassification;
+    const classify = vi.fn((list: readonly PackageFileInput[]) => { seen.push([...list]); return Promise.resolve(verdict); });
     const { root, run } = await setup({ classify });
     const { fnZip } = await loaded(run);
     const code = await run.materialize("fn-a:1", { packageSha256: sha(fnZip), layerSha256s: [sha(layerOne), sha(layerTwo)] });
@@ -206,26 +208,38 @@ describe("materializing a function with layers", () => {
     expect(lstatSync(join(code.optDir, "bin", "tool")).mode & 0o777).toBe(0o755);
     // The tree sits under the run's folder in a numbered folder, never under a name from the package or the key.
     expect(code.taskDir).toBe(join(root, "runs", "run-1", "trees", "0", "task"));
-    // The classifier saw the final regular files with the Lambda paths, once, and their first bytes are readable.
+    // The classifier saw the final regular files (prefixed task/ and opt/, links left out), once, and their first bytes are readable.
     expect(classify).toHaveBeenCalledTimes(1);
     const names = seen[0]!.map((file) => file.path).sort();
-    expect(names).toContain(`${LAMBDA_TASK_ROOT}/app.py`);
-    expect(names).toContain(`${LAMBDA_LAYER_ROOT}/lib/libx.so.1`);
-    expect(names).not.toContain(`${LAMBDA_LAYER_ROOT}/lib/libx.so`);
+    expect(names).toContain("task/app.py");
+    expect(names).toContain("opt/lib/libx.so.1");
+    expect(names).not.toContain("opt/lib/libx.so");
     const so = seen[0]!.find((file) => file.path.endsWith("_native.so"))!;
-    expect((await so.head(4)).toString("latin1")).toBe("\u007fELF");
-    expect(code.native).toEqual({ native: true, arch: "arm64" });
+    expect(Buffer.from(so.head!).toString("latin1").startsWith("\u007fELF")).toBe(true);
+    expect(code.native).toBe(verdict);
+    expect(code.needsArchAction).toBe(false);
     expect(code.files).toBe(names.length);
-    expect(run.usedBytes()).toBe(fnZip.length + layerOne.length + layerTwo.length + code.expandedBytes);
+    // The zips, the unpacked bytes, and 4 KiB for each of the 12 entries (3 + 5 + 4) the three packages hold: folders, links and empty files cost the disk something too.
+    expect(run.usedBytes()).toBe(fnZip.length + layerOne.length + layerTwo.length + code.expandedBytes + 12 * ENTRY_OVERHEAD_BYTES);
   });
 
-  it("applies the stub classifier by default: nothing is native, and it says it is a stub", async () => {
+  it("uses lane X1's classifier by default and surfaces x86_64 and mixed on the stored code, not arm64 or pure", async () => {
     const { run } = await setup();
-    const { fnZip } = await loaded(run);
-    const code = await run.materialize("k", { packageSha256: sha(fnZip), layerSha256s: [sha(layerOne)] });
-    expect(code.native).toEqual({ native: false, arch: "none" });
-    expect(NATIVE_CLASSIFIER_IS_STUB).toBe(true);
-    expect(await classifyNative([])).toEqual({ native: false, arch: "none" });
+    const fnZip = buildZip(fn);
+    const pure = buildZip([{ name: "python/pure.py", data: "x = 1\n" }]);
+    const arm = buildZip([{ name: "python/a/_m.so", data: Buffer.from(ARM()) }]);
+    const x86 = buildZip([{ name: "python/b/_m.so", data: Buffer.from(X86()) }]);
+    for (const [name, zip] of Object.entries({ fnZip, pure, arm, x86 })) await run.receive(announce(zip, name === "fnZip" ? "function" : "layer"), chunksOf(zip));
+    const cases: Array<[string, string[], string, boolean]> = [["pure", [sha(pure)], "none", false], ["arm", [sha(arm)], "arm64", false], ["x86", [sha(x86)], "x86_64", true], ["mixed", [sha(arm), sha(x86)], "mixed", true]];
+    for (const [key, layers, arch, action] of cases) {
+      const code = await run.materialize(key, { packageSha256: sha(fnZip), layerSha256s: layers });
+      expect({ key, arch: code.native.arch, needs: code.needsArchAction }).toEqual({ key, arch, needs: action });
+      expect(code.native.native).toBe(arch !== "none");
+      expect(code.native.complete).toBe(true);
+    }
+    // The offender is named by its path in the packed tree.
+    const hit = await run.materialize("again", { packageSha256: sha(fnZip), layerSha256s: [sha(x86)] });
+    expect(hit.native.offenders.map((offender) => offender.path)).toEqual(["opt/python/b/_m.so"]);
   });
 
   it("makes an empty opt for a function with no layer, and the layer order is the request's, not the arrival's", async () => {

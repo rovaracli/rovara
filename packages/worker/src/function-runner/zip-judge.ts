@@ -7,7 +7,8 @@
 //   - any entry whose name is not a plain relative path: `..` or `.` segments, an empty segment, a leading slash, a drive letter, a backslash, a control or formatting character (a bidi override), a NUL, a name or depth past the caps;
 //   - any entry that is not a regular file, a folder or a RELATIVE LINK INSIDE THE PACKAGE: a device, a pipe, a socket, a setuid or setgid bit, a Windows reparse point. (A zip cannot hold a hard link; the tar judge of the container-image lane refuses them.)
 //   - a link whose target is absolute, empty, odd (control characters, a backslash, a drive letter), too long, or that leaves the package: the target is followed through the package's OTHER links too (`a -> b/..` with `b -> deep/sub` does
-//     not stay where the words say), a `..` past the package root is an escape, and a chain of links longer than `maxLinkHops` is a loop. A link to a file that is not in the package (dangling) is allowed if it stays inside;
+//     not stay where the words say), a `..` past the package root is an escape, and a chain of links longer than `maxLinkHops` is a loop. A link to a file that is not in the package (dangling) is allowed if it stays inside.
+//     The follow is memoised and has a step budget (link-tree.ts), so thousands of links cannot cost more than a fixed amount of CPU. This judges ONE zip; a function's layers are judged again together, in order (code-store.ts);
 //   - an entry written through a link or through a file (`l/x` where `l` is a link): a file or folder always sits in real folders, so nothing is ever created through a link;
 //   - two entries with one name, or a file and a folder with one name;
 //   - more entries than the cap, more expanded bytes than the cap (the sum of the declared sizes is checked before anything is inflated, and each entry's real size must equal its declared size);
@@ -16,6 +17,7 @@
 // The refusal is one fixed sentence per reason; an entry's name is never in it.
 import { crc32, inflateRawSync } from "node:zlib";
 import { FUNCTION_CODE_LIMITS, FunctionCodeError, type FunctionCodeLimits } from "./code-errors.js";
+import { LinkTree } from "./link-tree.js";
 
 const SIG_EOCD = 0x06054b50;
 const SIG_ZIP64_LOCATOR = 0x07064b50;
@@ -194,9 +196,8 @@ export function inspectFunctionZip(zip: Buffer, limits: FunctionCodeLimits): Zip
     entry.target = linkTargetOf(zip, entry);
     targets.set(entry.path, entry.target);
   }
-  for (const entry of entries) {
-    if (entry.kind === "symlink") followInsidePackage(entry.path, kinds, targets);
-  }
+  // Where each link really ends is decided on the whole tree at once (memoised and bounded: link-tree.ts), not link by link in words.
+  if (targets.size > 0) LinkTree.fromPlan(entries).checkLinks();
   return entries;
 }
 
@@ -224,39 +225,4 @@ function linkTargetOf(zip: Buffer, entry: ZipEntryPlan): string {
   // A path segment past the file name limit can never name anything.
   if (text.split("/").some((segment) => Buffer.byteLength(segment) > FUNCTION_CODE_LIMITS.maxSegmentBytes)) throw new FunctionCodeError("unsafe_link");
   return text;
-}
-
-function segmentsOf(target: string): string[] {
-  return target.split("/");
-}
-
-/**
- * Follows a link's target through the package as it will be on disk: the folder the link sits in, then each segment of the target, expanding any other link met on the way (in place, relative to the folder it sits in). A `..` at the
- * package root is an escape, more than `maxLinkHops` expansions is a loop, and a path that goes through a file is no path. A segment the package does not hold is followed by its words (a dangling link is allowed if it stays inside).
- * Plain lexical normalising would be wrong: with `d -> sub/deep`, the target `d/../..` is not where its words seem to say.
- */
-function followInsidePackage(linkPath: string, kinds: ReadonlyMap<string, ZipEntryKind>, targets: ReadonlyMap<string, string>): void {
-  const stack = linkPath.split("/").slice(0, -1);
-  let pending = segmentsOf(targets.get(linkPath)!);
-  let hops = 0;
-  while (pending.length > 0) {
-    const segment = pending.shift()!;
-    if (segment === "" || segment === ".") continue;
-    if (segment === "..") {
-      if (stack.length === 0) throw new FunctionCodeError("unsafe_link");
-      stack.pop();
-      continue;
-    }
-    stack.push(segment);
-    const here = stack.join("/");
-    const kind = kinds.get(here);
-    if (kind === "symlink") {
-      hops += 1;
-      if (hops > FUNCTION_CODE_LIMITS.maxLinkHops) throw new FunctionCodeError("unsafe_link");
-      stack.pop();
-      pending = [...segmentsOf(targets.get(here)!), ...pending];
-    } else if (kind === "file" && pending.some((rest) => rest !== "" && rest !== ".")) {
-      throw new FunctionCodeError("unsafe_link");
-    }
-  }
 }

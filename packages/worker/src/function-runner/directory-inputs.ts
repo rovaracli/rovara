@@ -18,6 +18,11 @@ export interface DirectoryInputs {
   readonly truncated: boolean;
   /** Links and special files that were left out. */
   readonly skipped: number;
+  /**
+   * Everything in the folder that is NOT a regular file, by package-relative path: folders, symbolic links and special files. The arm64 swap needs it (`SwapOptions.nonFiles`): a file it adds
+   * must not land on a link or a folder, or below a link (arm64-swap.ts).
+   */
+  readonly nonFiles: ReadonlyMap<string, "dir" | "symlink" | "other">;
 }
 
 /** Reads at most `length` bytes at `offset` of a regular file without following a final symbolic link. Returns an empty array on any failure. */
@@ -42,6 +47,7 @@ export function directoryInputs(root: string, options: DirectoryInputOptions = {
   const files: PackageFileInput[] = [];
   let truncated = false;
   let skipped = 0;
+  const nonFiles = new Map<string, "dir" | "symlink" | "other">();
   const walk = (relative: string, depth: number): void => {
     if (truncated) return;
     let names: string[];
@@ -55,6 +61,7 @@ export function directoryInputs(root: string, options: DirectoryInputOptions = {
       let stat;
       try { stat = lstatSync(absolute); } catch { skipped += 1; continue; }
       if (stat.isDirectory()) {
+        nonFiles.set(rel, "dir");
         if (depth + 1 > maxDepth) { skipped += 1; continue; }
         walk(rel, depth + 1);
       } else if (stat.isFile()) {
@@ -65,9 +72,9 @@ export function directoryInputs(root: string, options: DirectoryInputOptions = {
           head: boundedRead(absolute, 0, ELF_HEAD_BYTES),
           read: (offset, length) => boundedRead(absolute, offset, Math.min(length, 16 * 1024 * 1024)),
         });
-      } else skipped += 1;
+      } else { skipped += 1; nonFiles.set(rel, stat.isSymbolicLink() ? "symlink" : "other"); }
     }
   };
   walk("", 0);
-  return { files, truncated, skipped };
+  return { files, truncated, skipped, nonFiles };
 }

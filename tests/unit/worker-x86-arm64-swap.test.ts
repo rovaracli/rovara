@@ -1,6 +1,9 @@
 // Slice 4 X2: the arm64 wheel swap (planner, verification, re-classification), the PEP 691 index client and the Node addon plan. The index is a fake; no network.
 import { describe, expect, it } from "vitest";
-import { swapToArm64 } from "../../packages/worker/src/function-runner/arm64-swap.js";
+import { swapToArm64 as swapRaw, type SwapOptions } from "../../packages/worker/src/function-runner/arm64-swap.js";
+
+/** The function's Runtime is python3.12 unless a test says otherwise: the swap never reads the Python version from the customer's own wheels. */
+const swapToArm64 = (files: Parameters<typeof swapRaw>[0], index: Parameters<typeof swapRaw>[1], options: SwapOptions = {}): ReturnType<typeof swapRaw> => swapRaw(files, index, { python: { major: 3, minor: 12 }, ...options });
 import { classifyNative, type PackageFileInput } from "../../packages/worker/src/function-runner/native-classify.js";
 import { planNodeAddons, arm64Twin } from "../../packages/worker/src/function-runner/node-addon-plan.js";
 import { FakeWheelIndex, WheelIndexError, createPypiJsonIndex, sha256Hex } from "../../packages/worker/src/function-runner/wheel-index.js";
@@ -224,12 +227,13 @@ describe("swapToArm64", () => {
       expect((await swapToArm64(mismatch, index)).reports[0]).toMatchObject({ status: "unplannable", detail: "metadata-mismatch" });
       expect(index.listCalls).toEqual([]);
     });
-    it("needs a Python version when the tags do not give one", async () => {
+    it("needs the function's Runtime for the Python version: wheel tags in the package are never believed", async () => {
       const index = new FakeWheelIndex();
       index.add("cryptography", "cryptography-50.0.2-cp311-abi3-manylinux_2_28_aarch64.whl", wheel({ name: "cryptography", version: "50.0.2", tags: ["cp311-abi3-manylinux_2_28_aarch64"], files: { "cryptography/_rust.abi3.so": ARM() } }));
       const pkg = installed({ name: "cryptography", version: "50.0.2", tags: ["cp311-abi3-manylinux_2_17_x86_64"], files: { "cryptography/_rust.abi3.so": X86() } });
-      expect((await swapToArm64(pkg, index)).reports[0]).toMatchObject({ status: "unplannable", detail: "python-version-unknown" });
-      const ok = await swapToArm64(pkg, index, { python: { major: 3, minor: 12 } });
+      expect((await swapRaw(pkg, index)).reports[0]).toMatchObject({ status: "unplannable", detail: "python-version-unknown" });
+      expect((await swapRaw(pkg, index, { runtime: "nodejs22.x" })).reports[0]).toMatchObject({ status: "unplannable", detail: "python-version-unknown" });
+      const ok = await swapRaw(pkg, index, { runtime: "python3.12" });
       expect(ok.reports[0]).toMatchObject({ status: "swapped" });
     });
   });
@@ -362,7 +366,7 @@ describe("planNodeAddons", () => {
     ]);
     expect(plan.packages).toEqual([expect.objectContaining({
       name: "@napi-rs/canvas-linux-x64-gnu", status: "swap-planned", fallback: "none",
-      step: { fetch: { name: "@napi-rs/canvas-linux-arm64-gnu", version: "0.1.5" }, drop: "node_modules/@napi-rs/canvas-linux-x64-gnu" },
+      step: { fetch: { name: "@napi-rs/canvas-linux-arm64-gnu", version: "0.1.5" }, drop: "node_modules/@napi-rs/canvas-linux-x64-gnu", dropPath: "node_modules/@napi-rs/canvas-linux-x64-gnu" },
     })]);
   });
   it("sends everything else to qemu: unlisted variants, first-party addons, odd manifests", () => {

@@ -4,6 +4,8 @@
 // a clean arm64 or x86_64 file, so a doubtful package is never called pure. Lane W2 calls `classifyNative`.
 import { ELF_HEAD_BYTES, inspectHeader, type ElfInfo } from "./elf.js";
 import { expandTags, parsePlatformTag, parseWheelFile } from "./wheel-meta.js";
+import { openZip, type ZipLimits } from "./zip-read.js";
+import { gunzipSync } from "node:zlib";
 
 /** One file of a package. `head` is its first bytes (ELF_HEAD_BYTES is enough); `read` is a bounded synchronous reader for the few text files (WHEEL, METADATA, package.json) that need more. */
 export interface PackageFileInput {
@@ -132,6 +134,90 @@ function nodeFramework(path: string): NodeAddonFramework {
  * Classifies the native code in a package. Synchronous and bounded: it looks at ELF_HEAD_BYTES of each file and at one WHEEL file per Python distribution.
  * The shape `{ native, arch }` is what lane W2's `classifyNative` hook consumes; the other fields extend it.
  */
+/** Archives looked into: zips by name, and plain or gzip tars. Others that cannot be opened here (xz, bzip2, 7z, rar) make the package incomplete. */
+const ZIP_NAME = /\.(?:whl|egg|pyz|jar|war|zip)$/iu;
+const TAR_NAME = /\.(?:tar|tar\.gz|tgz)$/iu;
+const CLOSED_ARCHIVE_NAME = /\.(?:tar\.xz|txz|tar\.bz2|tbz2?|7z|rar)$/iu;
+/** The largest archive read whole (the folder reader's own cap), what one archive may expand to, and what all nested archives of a package may expand to. */
+const NESTED_MAX_ARCHIVE = 16 * 1024 * 1024;
+const NESTED_ZIP_LIMITS: ZipLimits = { maxEntries: 20_000, maxEntryBytes: 16 * 1024 * 1024, maxTotalBytes: 64 * 1024 * 1024 };
+const NESTED_TOTAL_BYTES = 128 * 1024 * 1024;
+const NESTED_MAX_MEMBERS = 50_000;
+const NESTED_MAX_DEPTH = 2;
+const MEMBER_KEEP_BYTES = 16 * 1024;
+
+/** A member of a nested archive as classifier input: its path is `archive!/member`, its head and the first bytes (enough for a WHEEL file) are copied so the archive's buffer can go. */
+function memberInput(archivePath: string, name: string, data: Uint8Array): PackageFileInput {
+  const kept = data.slice(0, MEMBER_KEEP_BYTES);
+  return { path: `${archivePath}!/${name}`, size: data.length, head: kept.subarray(0, ELF_HEAD_BYTES), read: (offset, length) => kept.subarray(Math.min(offset, kept.length), Math.min(offset + length, kept.length)) };
+}
+
+const asciiField = (block: Uint8Array, from: number, to: number): string => {
+  let end = from;
+  while (end < to && block[end] !== 0) end += 1;
+  return new TextDecoder("latin1").decode(block.subarray(from, end));
+};
+
+/** Regular files of a plain tar, or undefined when it cannot be read with confidence (truncated, a size in base-256, too many members). */
+function tarMembers(bytes: Uint8Array): { name: string; data: Uint8Array }[] | undefined {
+  const out: { name: string; data: Uint8Array }[] = [];
+  let at = 0;
+  let longName: string | undefined;
+  while (at + 512 <= bytes.length) {
+    const block = bytes.subarray(at, at + 512);
+    if (block.every((byte) => byte === 0)) return out;
+    if ((block[124]! & 0x80) !== 0) return undefined;
+    const size = Number.parseInt(asciiField(block, 124, 136).trim() || "0", 8);
+    const type = String.fromCharCode(block[156]!);
+    if (!Number.isSafeInteger(size) || size < 0 || at + 512 + size > bytes.length) return undefined;
+    const data = bytes.subarray(at + 512, at + 512 + size);
+    at += 512 + Math.ceil(size / 512) * 512;
+    if (type === "L") { longName = asciiField(data, 0, data.length); continue; }
+    if (type === "x" || type === "g") continue;
+    const prefix = asciiField(block, 345, 500);
+    const name = longName ?? (prefix === "" ? asciiField(block, 0, 100) : `${prefix}/${asciiField(block, 0, 100)}`);
+    longName = undefined;
+    if (type !== "0" && type !== "\0") continue;
+    if (out.length >= NESTED_MAX_MEMBERS) return undefined;
+    out.push({ name, data });
+  }
+  return out;
+}
+
+/**
+ * Looks inside one nested archive. Returns its regular-file members as inputs (the classifier then treats them like any file), or undefined when the archive could not be looked into:
+ * too big to read whole, unreadable, over the entry or byte bounds. The caller then marks the package incomplete, never pure.
+ */
+function openNested(file: PackageFileInput, budget: { bytes: number }): PackageFileInput[] | undefined {
+  const size = saneSize(file.size);
+  if (size === null || size > NESTED_MAX_ARCHIVE) return undefined;
+  const raw = readFileBytes(file, 0, size);
+  if (raw === undefined || raw.length !== size) return undefined;
+  try {
+    const members: PackageFileInput[] = [];
+    if (ZIP_NAME.test(file.path)) {
+      for (const entry of openZip(raw, NESTED_ZIP_LIMITS)) {
+        if (entry.symlink) continue;
+        budget.bytes -= entry.size;
+        if (budget.bytes < 0 || members.length >= NESTED_MAX_MEMBERS) return undefined;
+        members.push(memberInput(file.path, entry.name, entry.read()));
+      }
+    } else {
+      const tar = /\.(?:tar\.gz|tgz)$/iu.test(file.path) ? gunzipSync(raw, { maxOutputLength: NESTED_TOTAL_BYTES }) : raw;
+      const listed = tarMembers(tar);
+      if (listed === undefined) return undefined;
+      for (const entry of listed) {
+        budget.bytes -= entry.data.length;
+        if (budget.bytes < 0) return undefined;
+        members.push(memberInput(file.path, entry.name, entry.data));
+      }
+    }
+    return members;
+  } catch {
+    return undefined;
+  }
+}
+
 export function classifyNative(files: readonly PackageFileInput[], options: ClassifyOptions = {}): NativeClassification {
   const maxFiles = options.maxFiles ?? 500_000;
   const maxOffenders = options.maxOffenders ?? 100;
@@ -144,17 +230,27 @@ export function classifyNative(files: readonly PackageFileInput[], options: Clas
   const families = new Set<string>();
   let unknownNative = false;
   let nativeFiles = 0;
-  const complete = files.length <= maxFiles;
+  let complete = files.length <= maxFiles;
   const limit = Math.min(files.length, maxFiles);
+  // Archives inside the package (a wheel kept as a file, a jar, a zipapp, a tarball) are opened and their members classified like any file, with bounds; one that cannot be opened
+  // makes the package incomplete (so never "pure") rather than being skipped.
+  const queue: PackageFileInput[] = files.slice(0, limit);
+  const nestedBudget = { bytes: NESTED_TOTAL_BYTES };
 
   const offend = (offender: NativeOffender): void => {
     offenderCount += 1;
     if (offenders.length < maxOffenders) offenders.push(offender);
   };
 
-  for (let i = 0; i < limit; i += 1) {
-    const file = files[i]!;
+  for (let i = 0; i < queue.length; i += 1) {
+    const file = queue[i]!;
     const path = typeof file.path === "string" ? file.path : "";
+    if (ZIP_NAME.test(path) || TAR_NAME.test(path) || CLOSED_ARCHIVE_NAME.test(path)) {
+      const depth = path.split("!/").length - 1;
+      const members = CLOSED_ARCHIVE_NAME.test(path) || depth >= NESTED_MAX_DEPTH ? undefined : openNested(file, nestedBudget);
+      if (members === undefined || queue.length + members.length > limit + NESTED_MAX_MEMBERS) complete = false;
+      else for (const member of members) queue.push(member);
+    }
     const shown = displayPath(path);
     const nameNative = NATIVE_NAME.test(path);
     const isNode = path.toLowerCase().endsWith(".node");

@@ -18,13 +18,14 @@
 //   - CLEANUP AT RUN END. `RunCode.close()` stops what is in flight, waits for it, removes the run's folder and gives its space back. It is safe to call twice.
 // This module starts no process and reads no network; the pipe transport (a later lane) feeds `PackageReceiver.receive`.
 import { createHash, randomBytes } from "node:crypto";
-import { constants } from "node:fs";
-import { mkdir, open, readdir, readFile, rename, rm, lstat, chmod } from "node:fs/promises";
+import { mkdir, open, readdir, readFile, rename, rm, chmod } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { DEFAULT_CODE_LIMITS, FUNCTION_CODE_LIMITS, FunctionCodeError } from "./code-errors.js";
-import { classifyNative, type ClassifiableFile, type ClassifyNative, type NativeClassification } from "./native-classify.js";
+import { directoryInputs } from "./directory-inputs.js";
+import { classifyNative, type NativeClassification, type PackageFileInput } from "./native-classify.js";
 import type { PackageAnnouncement, PackageBytes, PackageReceiver, ReceiveOptions, StoredPackage } from "./package-stream.js";
-import { inspectFunctionZip } from "./zip-judge.js";
+import { LinkTree } from "./link-tree.js";
+import { inspectFunctionZip, type ZipEntryPlan } from "./zip-judge.js";
 import { unpackFunctionCode } from "./zip-unpack.js";
 
 /** Where Lambda puts a function's code and its layers. The sandbox lane mounts `taskDir` and `optDir` read-only at these paths. */
@@ -33,7 +34,16 @@ export const LAMBDA_LAYER_ROOT = "/opt";
 
 const RUN_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/u;
 const SHA256 = /^[a-f0-9]{64}$/u;
+/**
+ * What every entry (file, folder, link, even an empty one) costs the disk budget on top of its bytes: an inode and a directory block. A folder with nothing in it takes 4 KiB on ext4, so
+ * 60,000 empty folders are 234 MiB the byte count never shows.
+ */
+export const ENTRY_OVERHEAD_BYTES = 4096;
+
 const KEY_HIDDEN = /[\p{Cc}\p{Cf}\u2028\u2029]/u;
+
+/** The shape of lane X1's `classifyNative` (its options argument is not used here); a sync or async function. */
+export type ClassifyFiles = (files: readonly PackageFileInput[]) => NativeClassification | Promise<NativeClassification>;
 
 export interface CodeStoreOptions {
   /** An absolute folder the worker owns. */
@@ -44,12 +54,16 @@ export interface CodeStoreOptions {
   maxRunBytes?: number;
   /** Functions with an unpacked tree in one run. Default 200 (design section 8.5). */
   maxFunctionsPerRun?: number;
+  /** Entries (files, folders, links) of the unpacked trees a run holds at once. Default 500,000. */
+  maxTreeEntriesPerRun?: number;
+  /** Entries of the judged plans a run keeps for the zips it received. Default 1,000,000 (about 150 MB of memory). */
+  maxStoredEntriesPerRun?: number;
   /** Zips held in memory and unpacked at the same time. Default 2. */
   maxConcurrentUnpacks?: number;
   /** The wall-clock limit of one package's stream. Default 120 s. */
   receiveTimeoutMs?: number;
-  /** The native-code classifier (lane X1). Default: the stub. */
-  classify?: ClassifyNative;
+  /** The native-code classifier (lane X1's `classifyNative`, the default). An injection seam for tests. */
+  classify?: ClassifyFiles;
 }
 
 export interface MaterializeRequest {
@@ -68,7 +82,13 @@ export interface MaterializedCode {
   files: number;
   /** Bytes of regular files on disk in both folders. */
   expandedBytes: number;
+  /**
+   * Lane X1's verdict over the final files of both folders (paths are prefixed `task/` and `opt/`). Read `native.arch`: "x86_64" or "mixed" means the runner must
+   * choose the arm64 wheel swap (`arm64-swap.ts#swapToArm64`) or the emulated path; `native.complete === false` or any offender means do not call it pure.
+   */
   native: NativeClassification;
+  /** True when `native.arch` is "x86_64" or "mixed": the package cannot run on an arm64 worker as it is. */
+  needsArchAction: boolean;
 }
 
 /** One run's code. Everything the front sends for a run goes through its `receive`. */
@@ -144,11 +164,14 @@ interface BlobRecord {
   expandedBytes: number;
   kind: PackageAnnouncement["kind"];
   lease: Lease;
+  /** The plan the judge made when the zip arrived: unpacking uses it as it is, so a zip is judged once however many functions use it. */
+  plan: readonly ZipEntryPlan[];
 }
 
 interface TreeRecord {
   dir: string;
   lease: Lease;
+  entries: number;
 }
 
 export class FunctionCodeStore {
@@ -156,7 +179,7 @@ export class FunctionCodeStore {
   private readonly ledger: Ledger;
   private readonly runs = new Map<string, RunCodeImpl>();
   private readonly gate: Semaphore;
-  readonly settings: Required<Omit<CodeStoreOptions, "root" | "classify">> & { classify: ClassifyNative };
+  readonly settings: Required<Omit<CodeStoreOptions, "root" | "classify">> & { classify: ClassifyFiles };
 
   constructor(options: CodeStoreOptions) {
     if (!isAbsolute(options.root)) throw new FunctionCodeError("bad_request");
@@ -164,6 +187,8 @@ export class FunctionCodeStore {
       diskBudgetBytes: options.diskBudgetBytes ?? 8 * 1024 ** 3,
       maxRunBytes: options.maxRunBytes ?? 2 * 1024 ** 3,
       maxFunctionsPerRun: options.maxFunctionsPerRun ?? 200,
+      maxTreeEntriesPerRun: options.maxTreeEntriesPerRun ?? 500_000,
+      maxStoredEntriesPerRun: options.maxStoredEntriesPerRun ?? 1_000_000,
       maxConcurrentUnpacks: options.maxConcurrentUnpacks ?? 2,
       receiveTimeoutMs: options.receiveTimeoutMs ?? 120_000,
       classify: options.classify ?? classifyNative,
@@ -175,26 +200,62 @@ export class FunctionCodeStore {
 
   /** At worker start: no run survives a restart, so everything under `runs/` is stale. Returns how many run folders were removed. */
   async sweepStale(): Promise<number> {
-    await mkdir(this.runsDir, { recursive: true, mode: 0o700 });
-    const names = await readdir(this.runsDir);
-    for (const name of names) await rm(join(this.runsDir, name), { recursive: true, force: true });
-    return names.length;
+    try {
+      await mkdir(this.runsDir, { recursive: true, mode: 0o700 });
+      const names = await readdir(this.runsDir);
+      for (const name of names) await rm(join(this.runsDir, name), { recursive: true, force: true });
+      return names.length;
+    } catch {
+      throw new FunctionCodeError("write_failed");
+    }
   }
 
-  /** The run's code area, created on first use. The same open run gives the same object. */
+  private readonly opening = new Map<string, Promise<RunCodeImpl>>();
+  private readonly closing = new Map<string, Promise<void>>();
+
+  /**
+   * The run's code area, created on first use. The same open run gives the same object. Two calls at once for one id make one run, and a call for an id whose run is still closing waits for
+   * the close to finish first (the close removes the run's folder; a new run must not be built in it meanwhile).
+   */
   async openRun(runId: string): Promise<RunCode> {
     if (!RUN_ID.test(runId)) throw new FunctionCodeError("bad_request");
-    const open = this.runs.get(runId);
-    if (open !== undefined && !open.isClosed) return open;
-    await mkdir(this.runsDir, { recursive: true, mode: 0o700 });
+    for (;;) {
+      const open = this.runs.get(runId);
+      if (open !== undefined && !open.isClosed) return open;
+      const pending = this.opening.get(runId);
+      if (pending !== undefined) return pending;
+      const closing = this.closing.get(runId);
+      if (closing !== undefined) { await closing.catch(() => undefined); continue; }
+      const made = this.createRun(runId).finally(() => { this.opening.delete(runId); });
+      this.opening.set(runId, made);
+      return made;
+    }
+  }
+
+  private async createRun(runId: string): Promise<RunCodeImpl> {
     const dir = join(this.runsDir, runId);
-    // A leftover folder of the same id would be stale (a crash before the sweep): start clean.
-    await rm(dir, { recursive: true, force: true });
-    await mkdir(dir, { mode: 0o700 });
-    for (const sub of ["incoming", "blobs", "trees"]) await mkdir(join(dir, sub), { mode: 0o700 });
+    try {
+      await mkdir(this.runsDir, { recursive: true, mode: 0o700 });
+      // A leftover folder of the same id would be stale (a crash before the sweep): start clean.
+      await rm(dir, { recursive: true, force: true });
+      await mkdir(dir, { mode: 0o700 });
+      for (const sub of ["incoming", "blobs", "trees"]) await mkdir(join(dir, sub), { mode: 0o700 });
+    } catch {
+      throw new FunctionCodeError("write_failed");
+    }
     const run = new RunCodeImpl(this, runId, dir, new Ledger(this.settings.maxRunBytes, this.ledger));
     this.runs.set(runId, run);
     return run;
+  }
+
+  /** @internal Registers a run's close so a new run of the same id waits for it. */
+  trackClose(runId: string, run: RunCodeImpl, closing: Promise<void>): Promise<void> {
+    const tracked = closing.finally(() => {
+      if (this.closing.get(runId) === tracked) this.closing.delete(runId);
+      if (this.runs.get(runId) === run) this.runs.delete(runId);
+    });
+    this.closing.set(runId, tracked);
+    return tracked;
   }
 
   usage(): { usedBytes: number; limitBytes: number; openRuns: number } {
@@ -216,6 +277,10 @@ class RunCodeImpl implements RunCode {
   /** Keys whose tree is being built, so two calls for one key cannot both start. */
   private readonly building = new Set<string>();
   private counter = 0;
+  private closePromise: Promise<void> | undefined;
+  /** Entries of the unpacked trees held or being built, and of the plans kept. */
+  private treeEntries = 0;
+  private storedEntries = 0;
 
   constructor(private readonly store: FunctionCodeStore, readonly runId: string, private readonly dir: string, private readonly ledger: Ledger) {}
 
@@ -259,14 +324,16 @@ class RunCodeImpl implements RunCode {
       const judged = await this.store.gated(async () => {
         this.assertOpen();
         const zip = await readFile(part);
-        const entries = inspectFunctionZip(zip, DEFAULT_CODE_LIMITS);
-        return { entries: entries.length, expandedBytes: entries.reduce((sum, entry) => sum + entry.uncompressedSize, 0) };
+        const plan = inspectFunctionZip(zip, DEFAULT_CODE_LIMITS);
+        return { plan, entries: plan.length, expandedBytes: plan.reduce((sum, entry) => sum + entry.uncompressedSize, 0) };
       });
       this.assertOpen();
       const existing = this.blobs.get(sha256);
       if (existing !== undefined) return { kind, sha256, sizeBytes: existing.sizeBytes, entries: existing.entries, expandedBytes: existing.expandedBytes, deduped: true };
+      if (this.storedEntries + judged.entries > this.store.settings.maxStoredEntriesPerRun) throw new FunctionCodeError("budget");
       await rename(part, join(this.dir, "blobs", `${sha256}.zip`));
-      this.blobs.set(sha256, { sizeBytes, entries: judged.entries, expandedBytes: judged.expandedBytes, kind, lease });
+      this.blobs.set(sha256, { sizeBytes, entries: judged.entries, expandedBytes: judged.expandedBytes, kind, lease, plan: judged.plan });
+      this.storedEntries += judged.entries;
       kept = true;
       return { kind, sha256, sizeBytes, entries: judged.entries, expandedBytes: judged.expandedBytes, deduped: false };
     } finally {
@@ -330,13 +397,25 @@ class RunCodeImpl implements RunCode {
     // Reserve the key and a slot at once.
     this.building.add(key);
     const build = join(this.dir, "trees", `.build-${randomBytes(12).toString("hex")}`);
+    const records = shas.map((sha) => this.blobs.get(sha)!);
+    const entryCount = records.reduce((sum, record) => sum + record.entries, 0);
     let lease: Lease | undefined;
     let published: string | undefined;
+    let reservedEntries = false;
     try {
-      // The declared unpacked size of the function and its layers together must fit Lambda's limit; reserve that much room before writing.
-      const declared = shas.reduce((sum, sha) => sum + this.blobs.get(sha)!.expandedBytes, 0);
+      // The declared unpacked size of the function and its layers together must fit Lambda's limit, and every entry costs its overhead on top of its bytes; reserve that much room before writing.
+      const declared = records.reduce((sum, record) => sum + record.expandedBytes, 0);
       if (declared > FUNCTION_CODE_LIMITS.maxExpandedBytes) throw new FunctionCodeError("too_large");
-      lease = this.ledger.take(declared);
+      if (this.treeEntries + entryCount > this.store.settings.maxTreeEntriesPerRun) throw new FunctionCodeError("budget");
+      lease = this.ledger.take(declared + entryCount * ENTRY_OVERHEAD_BYTES);
+      this.treeEntries += entryCount;
+      reservedEntries = true;
+      // The layers together, before anything is written: each layer is laid over the earlier ones the way the unpacker will, and every link in the result must still end inside /opt.
+      const merged = new LinkTree();
+      for (const record of records.slice(1)) {
+        merged.applyPlan(record.plan);
+        merged.checkLinks({ strict: false });
+      }
       const result = await this.store.gated(async () => {
         this.assertOpen();
         await mkdir(build, { mode: 0o700 });
@@ -345,29 +424,29 @@ class RunCodeImpl implements RunCode {
         let remaining: number = FUNCTION_CODE_LIMITS.maxExpandedBytes;
         const unpack = async (sha: string, target: string, mode: "fresh" | "overlay"): Promise<void> => {
           const zip = await readFile(join(this.dir, "blobs", `${sha}.zip`));
-          const done = await unpackFunctionCode(zip, target, { maxEntries: DEFAULT_CODE_LIMITS.maxEntries, maxExpandedBytes: remaining }, { mode, signal: this.stop.signal });
+          const done = await unpackFunctionCode(zip, target, { maxEntries: DEFAULT_CODE_LIMITS.maxEntries, maxExpandedBytes: remaining }, { mode, signal: this.stop.signal, plan: this.blobs.get(sha)!.plan });
           remaining -= done.expandedBytes;
           this.assertOpen();
         };
         await unpack(request.packageSha256, taskDir, "fresh");
         if (request.layerSha256s.length === 0) await mkdir(optDir, { mode: 0o755 });
+        // Each overlay reads the folder back from the disk when it is done and refuses a link that no longer ends inside it (zip-unpack.ts).
         for (const [index, sha] of request.layerSha256s.entries()) await unpack(sha, optDir, index === 0 ? "fresh" : "overlay");
         await chmod(optDir, 0o755);
         // Published under its final name before it is listed, so the paths the classifier is given stay valid.
         const finalDir = join(this.dir, "trees", String(this.counter));
         this.counter += 1;
         await rename(build, finalDir);
-        const task = await listFiles(join(finalDir, "task"), LAMBDA_TASK_ROOT);
-        const opt = await listFiles(join(finalDir, "opt"), LAMBDA_LAYER_ROOT);
-        return { finalDir, files: [...task.files, ...opt.files], bytes: task.bytes + opt.bytes };
+        published = finalDir;
+        return { finalDir, ...packageInputs(join(finalDir, "task"), join(finalDir, "opt")) };
       });
-      lease.settle(result.bytes);
-      published = result.finalDir;
+      lease.settle(result.bytes + entryCount * ENTRY_OVERHEAD_BYTES);
       const native = await this.store.settings.classify(result.files);
       this.assertOpen();
-      this.trees.set(key, { dir: result.finalDir, lease });
+      this.trees.set(key, { dir: result.finalDir, lease, entries: entryCount });
       lease = undefined;
-      return { key, taskDir: join(result.finalDir, "task"), optDir: join(result.finalDir, "opt"), files: result.files.length, expandedBytes: result.bytes, native };
+      reservedEntries = false;
+      return { key, taskDir: join(result.finalDir, "task"), optDir: join(result.finalDir, "opt"), files: result.files.length, expandedBytes: result.bytes, native, needsArchAction: native.arch === "x86_64" || native.arch === "mixed" };
     } catch (error) {
       await rm(build, { recursive: true, force: true }).catch(() => undefined);
       if (published !== undefined) await rm(published, { recursive: true, force: true }).catch(() => undefined);
@@ -376,6 +455,7 @@ class RunCodeImpl implements RunCode {
     } finally {
       this.building.delete(key);
       lease?.free();
+      if (reservedEntries) this.treeEntries -= entryCount;
     }
   }
 
@@ -383,61 +463,67 @@ class RunCodeImpl implements RunCode {
     const tree = this.trees.get(key);
     if (tree === undefined) return;
     this.trees.delete(key);
-    await rm(tree.dir, { recursive: true, force: true });
-    tree.lease.free();
+    // The space is given back whatever the removal does: a folder that cannot be removed is reported (a fixed sentence, never the host path), not kept on the books.
+    try {
+      await rm(tree.dir, { recursive: true, force: true });
+    } catch {
+      throw new FunctionCodeError("write_failed");
+    } finally {
+      tree.lease.free();
+      this.treeEntries -= tree.entries;
+    }
   }
 
   async dropPackage(sha256: string): Promise<void> {
     const blob = this.blobs.get(sha256);
     if (blob === undefined) return;
     this.blobs.delete(sha256);
-    await rm(join(this.dir, "blobs", `${sha256}.zip`), { force: true });
-    blob.lease.free();
+    try {
+      await rm(join(this.dir, "blobs", `${sha256}.zip`), { force: true });
+    } catch {
+      throw new FunctionCodeError("write_failed");
+    } finally {
+      blob.lease.free();
+      this.storedEntries -= blob.entries;
+    }
   }
 
-  async close(): Promise<void> {
-    if (!this.closed) {
+  close(): Promise<void> {
+    if (this.closePromise === undefined) {
       this.closed = true;
       this.stop.abort();
+      this.closePromise = this.store.trackClose(this.runId, this, this.closeNow());
     }
+    return this.closePromise;
+  }
+
+  private async closeNow(): Promise<void> {
     // What is in flight sees the stop, cleans its own scratch and settles; only then is the folder removed.
     while (this.inflight.size > 0) await Promise.allSettled([...this.inflight]);
-    await rm(this.dir, { recursive: true, force: true });
-    for (const blob of this.blobs.values()) blob.lease.free();
-    for (const tree of this.trees.values()) tree.lease.free();
-    this.blobs.clear();
-    this.trees.clear();
+    try {
+      await rm(this.dir, { recursive: true, force: true });
+    } catch {
+      throw new FunctionCodeError("write_failed");
+    } finally {
+      for (const blob of this.blobs.values()) blob.lease.free();
+      for (const tree of this.trees.values()) tree.lease.free();
+      this.blobs.clear();
+      this.trees.clear();
+    }
   }
 }
 
-/** The regular files below `dir`, never following a link, with their real sizes. `base` is the Lambda path the folder is mounted at (display text for the classifier). */
-async function listFiles(dir: string, base: string): Promise<{ files: ClassifiableFile[]; bytes: number }> {
-  const files: ClassifiableFile[] = [];
+/** The regular files of both folders as classifier input (never following a link), with their real sizes. A folder too big for the walk is refused rather than half classified. */
+function packageInputs(taskDir: string, optDir: string): { files: PackageFileInput[]; bytes: number } {
+  const files: PackageFileInput[] = [];
   let bytes = 0;
-  const pending: Array<{ abs: string; rel: string }> = [{ abs: dir, rel: "" }];
-  while (pending.length > 0) {
-    const here = pending.pop()!;
-    for (const entry of await readdir(here.abs, { withFileTypes: true })) {
-      const rel = here.rel === "" ? entry.name : `${here.rel}/${entry.name}`;
-      const abs = join(here.abs, entry.name);
-      if (entry.isDirectory()) pending.push({ abs, rel });
-      else if (entry.isFile()) {
-        const info = await lstat(abs);
-        bytes += info.size;
-        files.push({ path: `${base}/${rel}`, size: info.size, executable: (info.mode & 0o100) !== 0, head: (count) => readHead(abs, count) });
-      }
+  for (const [prefix, dir] of [["task", taskDir], ["opt", optDir]] as const) {
+    const walked = directoryInputs(dir);
+    if (walked.truncated) throw new FunctionCodeError("too_many_entries");
+    for (const file of walked.files) {
+      bytes += file.size;
+      files.push({ ...file, path: `${prefix}/${file.path}` });
     }
   }
   return { files, bytes };
-}
-
-async function readHead(path: string, count: number): Promise<Buffer> {
-  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
-  try {
-    const buffer = Buffer.alloc(Math.max(0, Math.min(count, 1024 * 1024)));
-    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
-    return buffer.subarray(0, bytesRead);
-  } finally {
-    await handle.close();
-  }
 }
