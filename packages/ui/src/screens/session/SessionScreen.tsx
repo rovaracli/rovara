@@ -20,7 +20,7 @@ import { Skeleton } from "../../design/Skeleton.js";
 import { VisibleText, visibleText } from "../../design/VisibleText.js";
 import { SessionHeader, SessionDetails, type ReadSession } from "./SessionHeader.js";
 import { TaskLead } from "./TaskLead.js";
-import { EvidenceDetails } from "./EvidenceDetails.js";
+import { PhoneWorkDetails } from "./EvidenceDetails.js";
 import { useIsPhone } from "./use-phone.js";
 import { MoneyBanners } from "./MoneyBanners.js";
 import { Conversation, type CommentDraft } from "./Conversation.js";
@@ -83,7 +83,7 @@ export function SessionScreen() {
  const banners = <><MoneyBanners session={session} />{connection === "reconnecting" && <p className="rv-muted">Reconnecting. Showing the last update.</p>}</>;
  // The phone order of the task header (owner decision 40): the lead (its "can I approve?" line first), the decision, then the facts, then the work and its evidence collapsed. The DOM has this order, so a screen reader reads what the eye sees.
  if (phone) return <section ref={root} className="rv-session" data-lead="phone"><SessionHeader session={session} onAction={() => undefined} lead={<TaskLead session={session} />} detailsBelow />{banners}{designPanel}{reviewCard}<SessionDetails session={session} onAction={() => undefined} controls={controls} />
-  <div className="rv-session-work"><div className="rv-session-work-heading"><h2>Work</h2>{workActions}</div><EvidenceDetails>{workspace}</EvidenceDetails></div></section>;
+  <div className="rv-session-work"><div className="rv-session-work-heading"><h2>Work</h2>{workActions}</div><PhoneWorkDetails session={session}>{workspace}</PhoneWorkDetails></div></section>;
  return <section ref={root} className="rv-session" data-lead="wide"><SessionHeader session={session} onAction={() => undefined} controls={controls} lead={<TaskLead session={session} />} />{banners}
  <div className="rv-session-work"><div className="rv-session-work-heading"><h2>Work</h2>{workActions}</div>{designPanel}{reviewCard}{workspace}
  </div></section>;

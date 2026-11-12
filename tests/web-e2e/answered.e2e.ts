@@ -48,3 +48,14 @@ test("shows a viewer the answer and no button, and an ordinary task nothing new"
  await expect(page.getByText("Building").first()).toBeVisible();
  await expect(page.getByRole("region", { name: "Rovara's answer" })).toHaveCount(0);
 });
+
+test("on a phone, an Answered task's answer stays behind the closed work details until the reader opens them", async ({ page, context, request, baseURL }) => {
+ await request.post("/__mock/scenario", { data: { name: "workspace" } });
+ await request.post("/__mock/session-state", { data: { ...answeredSession(), sessionId: id } });
+ await sign(context, baseURL!);await mockRealtime(page);await page.setViewportSize({ width: 390, height: 800 });await page.goto("/app/sessions/" + id);
+ const details = page.locator("details.rv-session-evidence"), region = page.getByRole("region", { name: "Rovara's answer" });
+ await expect(page.getByRole("region", { name: "Where this task stands" })).toBeVisible();
+ await expect(details).toHaveJSProperty("open", false);await expect(region).toBeHidden();
+ await details.locator(":scope > summary").click();
+ await expect(details).toHaveJSProperty("open", true);await expect(region).toBeVisible();
+});

@@ -23,6 +23,10 @@ export function openQuestionsOf(task: ReadTask | undefined): Open | undefined {
  if (workflow === undefined || workflow.definitionVersion !== "1.1.0" || workflow.stage !== "UNDERSTAND" || workflow.state !== "WAITING" || asked?.kind !== "questions" || workflow.intent === undefined) return undefined;
  return { round: workflow.intent.rounds, revision: workflow.revision, questions: asked.questions };
 }
+/** The element id of the questions section (the phone order scrolls to it when it opens the work details by itself). */
+export const QUESTIONS_SECTION_ID = "task-questions";
+/** Whether this reader may answer the questions here: a person who may use the session, on a task that runs in Cloud (a task on a Mac is answered there). */
+export const mayAnswerQuestions = (session: ReadSession): boolean => (session.you.level === "use" || session.you.level === "edit") && session.where.kind === "cloud";
 const countWords = (count: number): string => count === 1 ? "1 question" : String(count) + " questions";
 
 /**
@@ -35,8 +39,8 @@ export function UnderstandQuestions({ session, task }: { session: ReadSession; t
  const shown = notice !== undefined && (open === undefined || notice.round === open.round) ? notice : undefined;
  const note = shown && <p role="status" className="rv-answer-note"><VisibleText text={shown.text} /></p>;
  if (open === undefined) return note ?? null;
- const onMac = session.where.kind !== "cloud", mayAnswer = (session.you.level === "use" || session.you.level === "edit") && !onMac;
- return <section aria-label="Questions from Rovara" className="rv-questions">
+ const onMac = session.where.kind !== "cloud", mayAnswer = mayAnswerQuestions(session);
+ return <section id={QUESTIONS_SECTION_ID} aria-label="Questions from Rovara" className="rv-questions">
   <h3>Rovara has {countWords(open.questions.length)} before it plans this</h3>
   {note}
   {mayAnswer ? <QuestionForm key={open.round + ":" + open.revision} session={session} open={open} onNotice={text => setNotice({ round: open.round, text })} /> : <>

@@ -39,11 +39,16 @@ export function TaskLeadView({ lead }: { lead: Lead }) {
  </section>;
 }
 
-/** The task page's header block, from data the page already has: the session's status, the task view and the viewer's pending decision cards (the same read the cards below use). */
-export function TaskLead({ session }: { session: ReadSession }) {
+/** The lead for this session, from data the page already has: the session's status, the task view and the viewer's pending decision cards (the same read the cards below use). */
+export function useLead(session: ReadSession): Lead {
  const decisions = useDecisions(), task: ReadTask | undefined = workspaceTask(session);
  const cards = cardsFor(decisions.data, task?.taskId), seat = useTaskSeat(session, task?.taskId);
  // "Last pushed by ... 5m ago" ages while the page stays open (a timer runs only while a head changed outside Rovara is shown).
  const now = useNow(outsideRowsOf(task?.continueLoop).length > 0);
- return <TaskLeadView lead={taskLead({ session, task, status: leadStatus(session), cards, seat, now })} />;
+ return taskLead({ session, task, status: leadStatus(session), cards, seat, now });
+}
+
+/** The task page's header block. */
+export function TaskLead({ session }: { session: ReadSession }) {
+ return <TaskLeadView lead={useLead(session)} />;
 }
