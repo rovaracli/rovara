@@ -8,7 +8,7 @@ describe("the closed list of flag names", () => {
     expect(new Set(UI_FLAG_NAMES).size).toBe(UI_FLAG_NAMES.length);
     expect(UI_FLAG_CATALOG.map((entry) => entry.name)).toEqual([...UI_FLAG_NAMES]);
     for (const entry of UI_FLAG_CATALOG) { expect(entry.label.length).toBeGreaterThan(0);expect(entry.summary.length).toBeGreaterThan(0); }
-    expect(UI_FLAG_CATALOG.filter((entry) => entry.wired).map((entry) => entry.name)).toEqual(["look", "nav", "home", "work", "spending", "leadingHeader"]);
+    expect(UI_FLAG_CATALOG.filter((entry) => entry.wired).map((entry) => entry.name)).toEqual(["look", "nav", "home", "work", "spending", "leadingHeader", "insights"]);
   });
   it("is the same list in the browser entry", () => { expect(web.UI_FLAG_NAMES).toEqual(UI_FLAG_NAMES); });
   it("refuses unknown names in the body and in the nav map", () => {

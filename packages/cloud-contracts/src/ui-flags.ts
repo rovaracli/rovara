@@ -11,7 +11,7 @@ import { forwardReader } from "@rovara-code/contracts";
 
 /**
  * The known flags, in the order the admin screen lists them. A new screen adds its name here (and to UI_FLAG_CATALOG) in the change that builds the screen; nothing else grows.
- * `leadingHeader` is the task page's header block (task-page-flags.ts). `health`, `setup`, `insights`, `publish`, `billing` and `agreement` are reserved for screens other lanes are building: the names are accepted,
+ * `leadingHeader` is the task page's header block (task-page-flags.ts). `insights` is wired (its screen reads the flag through `isInsightsOn`); `health`, `setup`, `publish`, `billing` and `agreement` are reserved for screens other lanes are building: the names are accepted,
  * stored and sent now, so those lanes only call their own `isXOn(host)`; `wired: false` in the catalog says no screen reads them yet.
  */
 export const UI_FLAG_NAMES = ["look", "nav", "home", "work", "spending", "leadingHeader", "health", "setup", "insights", "publish", "billing", "agreement"] as const;
@@ -37,7 +37,7 @@ export const UI_FLAG_CATALOG: readonly UiFlagCatalogEntry[] = [
   { name: "leadingHeader", label: "Task page summary", summary: "A header on the task page that says the next step, who has it and why, above the details.", wired: true },
   { name: "health", label: "Health page", summary: "A page that shows whether connections, models and environments work.", wired: false },
   { name: "setup", label: "Project setup", summary: "The new guided project setup.", wired: false },
-  { name: "insights", label: "Insights", summary: "How work flows: waiting time, review time, failures and shipped outcomes.", wired: false },
+  { name: "insights", label: "Insights", summary: "How work flows: waiting time, review time, failures and shipped outcomes.", wired: true },
   { name: "publish", label: "Agent publishing", summary: "Draft, request and publish agents with versions.", wired: false },
   { name: "billing", label: "Billing", summary: "Plan, trial and invoices.", wired: false },
   { name: "agreement", label: "Company agreement", summary: "The company's agreement, with where each rule comes from.", wired: false },
