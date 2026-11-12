@@ -11,9 +11,14 @@
 import type { CloudAdapterRegistration } from "../registry.js";
 import { cloudAdmission } from "./admission-cloud.js";
 import { cloudApprovers } from "./approvers-cloud.js";
+import { codeBuildCheckRunnerAdapter } from "./check-runner-codebuild.js";
+import { githubActionsCheckRunnerAdapter } from "./check-runner-github-actions.js";
+import { githubAppCodeHost } from "./code-host-github-app.js";
 import { cloudIdentity } from "./identity-cloud.js";
 import { cloudMetering } from "./metering-cloud.js";
 import { cachedSecretsManagerModelKeyStore, secretsManagerModelKeyStore } from "./model-key-store-secrets-manager.js";
+import { jiraTrackerAdapter } from "./tracker-jira.js";
+import { linearTrackerAdapter } from "./tracker-linear.js";
 
 export const CLOUD_ADAPTERS: readonly CloudAdapterRegistration[] = [
   secretsManagerModelKeyStore,
@@ -22,4 +27,6 @@ export const CLOUD_ADAPTERS: readonly CloudAdapterRegistration[] = [
   cloudMetering,
   cloudApprovers,
   cloudIdentity,
+  // Lane A9 cloud/hosts-trackers
+  githubAppCodeHost, githubActionsCheckRunnerAdapter, codeBuildCheckRunnerAdapter, linearTrackerAdapter, jiraTrackerAdapter,
 ];

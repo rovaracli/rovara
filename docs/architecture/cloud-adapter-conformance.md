@@ -90,3 +90,11 @@ The email (SES) and realtime (cloud events) adapters wait for the pin to carry C
 - `approvers` and `identity` (lane A6 `cloud/people`): `packages/broker/src/cloud/adapters/people/`, harnesses in `tests/conformance/adapters/approvers-cloud.ts` and `identity-cloud.ts` over the in-memory DynamoDB fake
   (`tests/support/cloud-people-world.ts`). They wrap Cloud's approval-place rule, decide-grade step-up, Slack press resolution, second-person rule and the routes' authentication with no rule of their own;
   `tests/unit/cloud-people-equivalence.test.ts` checks them against today's code case by case. What the ports cannot say yet is in `gaps.ts` (owed upstream, dated).
+
+## When a port lacks something an adapter needs
+
+Never edit `vendor/`. Add an entry to `tests/conformance/owed-upstream.json` (port, member, lane, `owedUntil`, reason); `tests/conformance/owed-upstream.test.ts` fails an entry past its date. A Cloud adapter on a
+port that has no Code suite yet (company-instructions) is checked against the port's documented rules in `tests/conformance/cloud-ports-without-suite.test.ts` until Code ships one.
+
+Registered so far: code-host (GitHub App), check-runner (GitHub Actions, CodeBuild), tracker (Linear, Jira), all lane A9. The GitHub adapters run through Cloud's real `GitHubAppCredentialProvider`
+against Code's vendored fixture of GitHub's API (`tests/conformance/adapters/github-app-world.ts`).

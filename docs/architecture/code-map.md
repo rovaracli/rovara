@@ -177,6 +177,12 @@ Lane A5 (money): `packages/broker/src/cloud-adapters/money/admission.ts#CloudAdm
 and `packages/broker/src/cloud-adapters/money/metering.ts#CloudMetering` (one `METER_ENTRY#` row per entry, `METER#<month>` totals in millionths). Inert until S0; what S0 must do
 first is in [cloud-adapter-conformance.md](cloud-adapter-conformance.md), "The money adapters".
 
+Registered (lane A9, hosts and trackers): the GitHub App code host (`packages/broker/src/plugins/code-host/github`, now with the conversation `comments` / `postComment`), the CodeBuild and GitHub Actions
+check runners (`plugins/check-runner/*`), the Linear tracker (`plugins/tracker/linear`) and the Jira tracker (`plugins/tracker/jira`, new: reads through the company's Jira connection, writes through
+`ticket-updates/trackers.ts`). The company-instructions store (`company-rules/source.ts`) is typed as Code's port and checked by `tests/conformance/cloud-ports-without-suite.test.ts` (Code has no suite
+for it yet). What a Code port still lacks for Cloud is listed in `tests/conformance/owed-upstream.json` (each with an `owedUntil`, checked by `owed-upstream.test.ts`). None of these adapters is used
+by traffic yet; the composition root (lane S0) switches them.
+
 ## How to add common things
 
 Each recipe lists the files to touch in order and the tests that fail if you forget one. When in doubt, read the
