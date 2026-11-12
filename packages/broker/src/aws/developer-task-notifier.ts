@@ -16,6 +16,7 @@ import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-sec
 import { GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { ChangeMessageVisibilityCommand, SQSClient, SendMessageBatchCommand } from "@aws-sdk/client-sqs";
 import { DynamoDBDocumentClient, GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { ATTENTION_DM_MAX_AGE_MS } from "../notifications/attention-dm-limits.js";
 import { INDEX_EXPIRY_ATTRIBUTE, NUDGE_WINDOW_MS, sameJsonContent, AdminChangePendingRecordSchema, planClaimCount, planSummaryLines, PullRequestResultSchema, SHARE_DELIVERY_WINDOW_MS, WorkflowFeedbackReviewReportSchema, adminChangeKey, describeWorkflowCheckChanges, redactText, workflowCheckCommandText, workflowFeedbackCheckChanges, indexExpiresAt, lastAssistantResponse, sharedTaskKey, WORKFLOW_PUBLISH_CANDIDATE_CHANGED_MESSAGE, workflowPublicationRetryable, taskGraphDigest, type PendingChange, type PlanClaim, type PlanDocument, type WorkflowArtifact, type WorkflowCheck, type WorkflowCanvasLineage } from "@rovara-code/contracts";
 import { WORKFLOW_BLOCK_REASONS, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { adminChangeExpiredMessage, adminChangeMessage, adminChangeOutcomeMessage } from "../developer/change-messages.js";
@@ -1612,6 +1613,9 @@ export async function deliverAttentionDm(deps: NotifierDependencies, notice: Not
   const key = { pk: "NOTIFY_DM", sk };
   const row = await getItem<Record<string, unknown>>(deps, key);
   if (row === undefined || row.entityType !== "TASK_ATTENTION_DM") return "invalid";
+  // The broker's sweep marked a message older than a day MISSED instead of sending it; one that is still PENDING past that age (a sweep that has not run yet) is not sent either.
+  if (row.status === "MISSED") return "missed";
+  if (row.status === "PENDING" && deps.now() - Date.parse(String(row.at)) >= ATTENTION_DM_MAX_AGE_MS) return "stale";
   // Review N3: a claim that was never finished (the process died between the claim and the post) expires like the other DM kinds' claims: it is marked UNKNOWN and never posted again.
   if (row.status === "SENDING") {
     if (typeof row.claimUntil === "number" && row.claimUntil >= deps.now()) return "claimed";
@@ -1916,7 +1920,7 @@ const failureReasonCode = (reason: string): string => (/^[A-Za-z0-9_.-]{1,64}$/.
  * visible after the fact and not only in the logs. "new": this call made the record; "known": an earlier call did; "unrecorded": it could not be written (logged, never thrown).
  */
 async function recordDeliveryFailure(deps: NotifierDependencies, notice: Notice, reason: string, abandoned: boolean): Promise<"new" | "known" | "unrecorded"> {
-  if (notice.taskId === undefined) return "unrecorded";
+  if (notice.taskId === undefined) return notice.kind === "attention_dm" && notice.attentionKey !== undefined ? recordAttentionDmFailure(deps, notice.attentionKey, reason, abandoned) : "unrecorded";
   const key = { pk: `DEVTASK#${notice.taskId}`, sk: `NOTICE_FAILED#${notice.id}` };
   const at = new Date(deps.now()).toISOString();
   try {
@@ -1934,6 +1938,45 @@ async function recordDeliveryFailure(deps: NotifierDependencies, notice: Notice,
     return created ? "new" : "known";
   } catch (error) {
     deps.log({ event: "developer_notifier.failure_record_failed", noticeId: notice.id, error: errorName(error) });
+    return "unrecorded";
+  }
+}
+
+/**
+ * An attention direct message has no task, so its durable failure record is the message's own row (`NOTIFY_DM`, keyed by the notice's `attentionKey`; the notifier already holds Get and Update on that key and nothing
+ * else): when it first failed, the last time and how often, and a fixed reason. The row stays PENDING, so the broker's sweep (`attention-dm-sweep.ts`) puts it in front of the notifier again while it is under a day old;
+ * Health counts it. "new": this call made the record; "known": an earlier call did; "unrecorded": it could not be written (logged, never thrown).
+ */
+async function recordAttentionDmFailure(deps: NotifierDependencies, attentionKey: string, reason: string, abandoned: boolean): Promise<"new" | "known" | "unrecorded"> {
+  const key = { pk: "NOTIFY_DM", sk: attentionKey };
+  const at = new Date(deps.now()).toISOString();
+  const names = { "#status": "status" };
+  const pending = { ":pending": "PENDING" };
+  try {
+    let created = true;
+    try {
+      await deps.documentClient.send(new UpdateCommand({ TableName: deps.tableName, Key: key, ExpressionAttributeNames: names,
+        UpdateExpression: "SET deliveryFailedAt = :at, lastFailedAt = :at, failureReason = :reason, failureCount = :one",
+        ConditionExpression: "attribute_exists(pk) AND entityType = :kind AND #status = :pending AND attribute_not_exists(deliveryFailedAt)",
+        ExpressionAttributeValues: { ":at": at, ":reason": failureReasonCode(reason), ":one": 1, ":kind": "TASK_ATTENTION_DM", ...pending } }));
+    } catch (error) {
+      if (!isConditional(error)) throw error;
+      created = false;
+    }
+    if (!created || abandoned) {
+      // Not the first failure (or a give-up): the latest time, reason and count; only while the row is still waiting to be sent.
+      try {
+        await deps.documentClient.send(new UpdateCommand({ TableName: deps.tableName, Key: key, ExpressionAttributeNames: names,
+          UpdateExpression: `SET lastFailedAt = :at, failureReason = :reason${abandoned ? ", abandonedAt = :at" : ""} ADD failureCount :bump`,
+          ConditionExpression: "attribute_exists(pk) AND entityType = :kind AND #status = :pending AND attribute_exists(deliveryFailedAt)",
+          ExpressionAttributeValues: { ":at": at, ":reason": failureReasonCode(reason), ":bump": created ? 0 : 1, ":kind": "TASK_ATTENTION_DM", ...pending } }));
+      } catch (error) {
+        if (!isConditional(error)) throw error;
+      }
+    }
+    return created ? "new" : "known";
+  } catch (error) {
+    deps.log({ event: "developer_notifier.failure_record_failed", kind: "attention_dm", error: errorName(error) });
     return "unrecorded";
   }
 }

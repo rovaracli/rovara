@@ -6,6 +6,7 @@ import { type AdminHealthResponse } from "@agentx/cloud-contracts";
 import type { AuthenticatedIdentity } from "../auth.js";
 import { recordHealthCheck, type HealthCheckFeature } from "../org/health-observations.js";
 import { requireOrgId } from "../org/resolve.js";
+import { attentionDmCheck, readAttentionDmProblems } from "../notifications/attention-dm-sweep.js";
 import { opsFailuresCheck, type OpsFailures } from "../team-record/ops-failures.js";
 import { adminProjects, projectWorkspaceRows, readFailures, type AdminReadDependencies } from "./admin-reads.js";
 
@@ -128,6 +129,15 @@ export async function adminHealth(deps: AdminReadDependencies, identity: Authent
       return { teamRecordCheck: failed("the team record's delete and erase failures", ms, error) };
     }
   };
+  // Attention messages (Slack direct messages about tasks) that did not reach the person: stranded after the notifier gave up, or too old to send. Present only when there is something to say, or the read failed.
+  const attentionDmPart = async (): Promise<Pick<AdminHealthResponse, "attentionDmCheck">> => {
+    try {
+      const check = attentionDmCheck(await within(ms, () => readAttentionDmProblems({ documentClient: deps.documentClient, tableName: deps.tableName, now: () => now }, requireOrgId(identity.orgId))));
+      return check === undefined ? {} : { attentionDmCheck: check };
+    } catch (error) {
+      return { attentionDmCheck: failed("the attention messages", ms, error) };
+    }
+  };
   const statePart = async (): Promise<Pick<AdminHealthResponse, "workerModes" | "workspaces" | "workspacesTruncated">> => {
     const projects = await adminProjects(deps, identity);
     const modes = new Set(projects.map((project) => project.latest.runtimeBinding.deploymentMode));
@@ -144,9 +154,9 @@ export async function adminHealth(deps: AdminReadDependencies, identity: Authent
     };
   };
 
-  const [alarms, deadLetterQueues, slack, github, state, teamRecord] = await Promise.all([alarmsPart(), queuesPart(), observed("slack", probes.slackAuthCheck !== undefined, slackPart()), observed("github", probes.githubInstallations !== undefined, githubPart()), statePart(), teamRecordPart()]);
+  const [alarms, deadLetterQueues, slack, github, state, teamRecord, attentionDm] = await Promise.all([alarmsPart(), queuesPart(), observed("slack", probes.slackAuthCheck !== undefined, slackPart()), observed("github", probes.githubInstallations !== undefined, githubPart()), statePart(), teamRecordPart(), attentionDmPart()]);
   return {
     version: { developerApi: DEVELOPER_API_VERSION, adminApi: ADMIN_API_VERSION, ...(probes.release === undefined ? {} : { release: probes.release }) },
-    ...alarms, ...deadLetterQueues, slack, github, ...state, ...teamRecord,
+    ...alarms, ...deadLetterQueues, slack, github, ...state, ...teamRecord, ...attentionDm,
   };
 }
