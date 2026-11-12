@@ -424,18 +424,21 @@ describe("the named TEST proof-only installation gate", () => {
     // 2026-11-11 (fix/0514-integ-red, on integ 70e9fa947): the named and foreign digests were retaken after two intended changes. The company image mirror Lambda has the fixed name agentx-<env>-company-image-mirror and
     // the broker derives it (derived-names.ts), so the `cm` entry leaves AGENTX_NAMES (the broker's environment was 58 bytes short of its 400 headroom with the record on). The access stack's boundary names the image roles
     // exactly again (no img-* ARN) and the mirror role too. The named-templates snapshot shows exactly those. Legacy did not move.
+    // 2026-11-12 (fix/0514-slack-link-iam, 4a5ec452f): the named and foreign digests were retaken from the values the test reports, after ONE intended change: the sign-in function gains
+    // dynamodb:GetItem on the State table for LeadingKeys SLACK_TEAM#* only (the Slack link callback reads the workspace owner). Checked first: with only that statement undone, all six tests pass on
+    // the previous pins. Legacy did not move.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "4d4d2c31b9c8496eb6fc9fb23dcf14e02e85af240821806e9a8756bca6f72c57",
-        withoutRoute: "985c1b1de0468de4e6447e0bfb2552ad6d297f4e35ef92d34d065cb0f448a9e7",
+        withRoute: "86b5760383bdd91b4a0d18bdbd031a43dcf15cb635cd1bf23356dc86909d746f",
+        withoutRoute: "cc7602bee7e4fd22d22d0150160dd1aec63d98b936f754f55c5f48b293019c03",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "effa1eb4c805883c39f06e8b182d51ede6aaa522b4209723d0d6ed9faf17de8e",
-        withoutRoute: "6ab12772c0b32f4d0bd91505841a0d766984913d6e0cb2eceb334d0dfedc21ca",
+        withRoute: "c09e43edb0f46275bd6362c550708bd1a6218e2d58c41089ca83ecafa569d18f",
+        withoutRoute: "49657033444cbbd7c3babb5590a379a2cc56594228f858c047006d861e58286b",
       },
       {
         label: "legacy",
