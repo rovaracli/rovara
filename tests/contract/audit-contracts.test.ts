@@ -181,6 +181,8 @@ describe("the event catalog", () => {
       "agent_publication.requested", "agent_publication.approved", "agent_publication.declined", "agent_publication.withdrawn",
       // review groups (owner decision 9)
       "review_groups.changed", "review.claim_changed",
+      // A-31 (srv/project-people): an invite that names a project
+      "project_member.invited", "project_member.joined_by_invite", "project_member.invite_skipped",
     ]);
     expect(new Set(AUDIT_ACTIONS).size).toBe(AUDIT_ACTIONS.length);
   });
@@ -324,6 +326,14 @@ describe("the event catalog", () => {
     expect(AUDIT_FACT_KEYS["spend_policy.changed"]).toEqual(["field", "from", "to"]);
     expect(AUDIT_FACT_KEYS["trigger.disabled"]).toEqual(["cause", "source", "type", "targetKind"]);
     expect(AUDIT_FACT_KEYS["audit.read"]).toEqual(["fromSeq", "toSeq", "count", "via"]);
+    // A-31: fixed words only; the project is the name-keyed target.
+    expect(AUDIT_FACT_KEYS["project_member.invited"]).toEqual(["role", "inviter"]);
+    expect(AUDIT_FACT_KEYS["project_member.joined_by_invite"]).toEqual(["role"]);
+    expect(AUDIT_FACT_KEYS["project_member.invite_skipped"]).toEqual(["role", "cause"]);
+    for (const [action, facts] of [["project_member.invited", { role: "contributor", inviter: "maintainer" }], ["project_member.joined_by_invite", { role: "viewer" }], ["project_member.invite_skipped", { role: "viewer", cause: "project_archived" }]] as const) {
+      expect(AuditEventInputSchema.safeParse(event({ eventId: auditEventId(action, "occ"), action, target: { kind: "project", name: "payments" }, related: ["a".repeat(64)], facts })).success, action).toBe(true);
+    }
+    expect(AuditEventInputSchema.safeParse(event({ eventId: auditEventId("project_member.invited", "occ"), action: "project_member.invited", target: { kind: "project", name: "payments" }, facts: { role: "viewer", projectName: "payments" } })).success).toBe(false);
   });
 });
 

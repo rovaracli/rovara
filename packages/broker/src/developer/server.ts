@@ -204,6 +204,17 @@ function toClient(redirectUri: string, params: Record<string, string>): HttpResu
   return redirect(url.toString());
 }
 
+/**
+ * A-31: where a person who joined lands: the welcome page, told the project the invite also made them a member of (`project`), or why it did not (`projectNote`).
+ * The name is a project name (letters, digits and dashes), encoded all the same.
+ */
+export const joinedQuery = (result: { projectName?: string; projectNote?: string }): string => {
+  const query = new URLSearchParams({ joined: "1" });
+  if (result.projectName !== undefined) query.set("project", result.projectName);
+  if (result.projectNote !== undefined) query.set("projectNote", result.projectNote);
+  return query.toString();
+};
+
 const expired = () => page(400, "This sign-in link has expired", ["Run agentx login again."]);
 /** One answer for every code failure (unknown, used, expired, wrong verifier, wrong redirect URI). */
 const INVALID_CODE = ["invalid_grant", "the sign-in code is invalid, used or expired; run agentx login again"] as const;
@@ -584,9 +595,10 @@ function createIssuerHandler(deps: DeveloperIdentityDependencies) {
       return await completeSignIn(method, request, code);
     } catch (error) {
       deps.log({ event: "signin.join_error", method, error: errorName(error) });
-      return error instanceof ProviderUnavailableError || error instanceof ProviderNotConfiguredError
-        ? joinUnavailable()
-        : page(500, "Sign-in failed", ["Something went wrong on the Rovara server. Open the invite link again."]);
+      if (error instanceof ProviderUnavailableError || error instanceof ProviderNotConfiguredError) return joinUnavailable();
+      // A-31 review L1: the invite's project (or the account) changed while the join ran; nothing was written and the invite is unused.
+      if (isCode(error, "CHANGE_STALE")) return page(409, "Open the invite link again", ["Something changed while you were joining, so nothing was changed. Open the invite link again to finish joining."]);
+      return page(500, "Sign-in failed", ["Something went wrong on the Rovara server. Open the invite link again."]);
     }
   }
 
@@ -604,6 +616,9 @@ function createIssuerHandler(deps: DeveloperIdentityDependencies) {
       ...(described?.email === undefined ? {} : { maskedEmail: maskEmail(described.email) }),
       inviterName: described === undefined ? "Someone" : await inviterNameOf(described.createdBy),
       codeChallenge: request.codeChallenge,
+      // A-31: only a join that happened carries its project (or why the project was left out).
+      ...(outcome === "joined" && org.orgId !== undefined && org.project !== undefined ? { projectName: org.project.name } : {}),
+      ...(outcome === "joined" && org.orgId !== undefined && org.projectNote !== undefined ? { projectNote: org.projectNote } : {}),
     });
     deps.log({ event: "signin.join_completed", method, outcome });
     return outcome;
@@ -618,7 +633,7 @@ function createIssuerHandler(deps: DeveloperIdentityDependencies) {
     if (result === undefined || verifier === undefined || !pkceChallengeMatches(verifier, result.codeChallenge)) return render(otherBrowserPage());
     // UX1: a person who joined lands in the app at once, on this same origin, where the join's sign-in cookie was set (the join cookie is spent).
     if (result.outcome === "joined") {
-      return { ...redirect(`${new URL(config.issuer).origin}/app/welcome?joined=1`), cookies: [`${JOIN_PKCE_COOKIE}=; Secure; HttpOnly; SameSite=Lax; Path=/; Max-Age=0`] };
+      return { ...redirect(`${new URL(config.issuer).origin}/app/welcome?${joinedQuery(result)}`), cookies: [`${JOIN_PKCE_COOKIE}=; Secure; HttpOnly; SameSite=Lax; Path=/; Max-Age=0`] };
     }
     return render(joinDonePage(result, new URL(config.issuer).origin));
   }

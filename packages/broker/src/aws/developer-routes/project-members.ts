@@ -26,6 +26,11 @@ const ROLE_ORDER: Record<ProjectRole, number> = { maintainer: 0, contributor: 1,
  */
 export async function getProjectMembers(deps: DeveloperRouteDependencies, caller: DeveloperCaller, rawName: string): Promise<ProjectMembersResponse> {
   const { name } = await projectRoleForRoute(deps, caller, rawName);
+  return readProjectMembers(deps, caller, name);
+}
+
+/** The roster of a project the caller was already found to see (`projectRoleForRoute`): the members route's and the web people route's one read. */
+export async function readProjectMembers(deps: DeveloperRouteDependencies, caller: DeveloperCaller, name: string): Promise<ProjectMembersResponse> {
   const merge = projectMembersDepsOf(deps);
   // Who added a person is shown as the developer they have since been merged into, if any.
   const rows = (await listProjectMembers(merge, caller.orgId, name)).map(async (row) => (row.grantedBy !== undefined && "developerId" in row.grantedBy
@@ -64,7 +69,7 @@ async function buildProjectMembersResponse(deps: DeveloperRouteDependencies, org
 }
 
 /** Tells the agents platform a person's project role changed; what it fails with is logged, never raised (the change stands). */
-async function notifyProjectMemberChanged(deps: DeveloperRouteDependencies, orgId: OrgId, project: string, developerId: string): Promise<void> {
+export async function notifyProjectMemberChanged(deps: DeveloperRouteDependencies, orgId: OrgId, project: string, developerId: string): Promise<void> {
   if (deps.projectMemberChanged === undefined) return;
   try {
     await deps.projectMemberChanged(orgId, project, developerId);
@@ -90,7 +95,8 @@ export async function putProjectMember(deps: DeveloperRouteDependencies, caller:
   });
   logDeveloperEvent({ event: "developer.project_member_set", orgId: caller.orgId, project: name, role: member.role });
   await notifyProjectMemberChanged(deps, caller.orgId, name, member.developerId);
-  return { member };
+  // The roster's revision is the web's (`project-people.ts`); this route's answer keeps its shape.
+  return { member: { developerId: member.developerId, role: member.role } };
 }
 
 /** `DELETE /v1/app/projects/{name}/members/{developerId}`: the same people may take a person's grant away. `removed` is false when they had none. */
@@ -104,7 +110,7 @@ export async function deleteProjectMember(deps: DeveloperRouteDependencies, call
   });
   logDeveloperEvent({ event: "developer.project_member_removed", orgId: caller.orgId, project: name, removed: String(removed.removed) });
   await notifyProjectMemberChanged(deps, caller.orgId, name, removed.developerId);
-  return removed;
+  return { developerId: removed.developerId, removed: removed.removed };
 }
 
 const SLACK_BIND_ROLE_MESSAGE = "only an organization owner or admin can bind a Slack channel to a project";

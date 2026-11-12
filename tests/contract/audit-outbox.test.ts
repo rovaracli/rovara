@@ -85,6 +85,27 @@ it("delivers the M47 system policy seed through the transactional outbox without
     facts: { source: "bootstrap", mode: "rovara_estimate", revision: 1, ceilingMicrousd: 100_000_000 } });
 });
 
+it("delivers the A-31 project invite events (invited, joined by invite, skipped) through the transactional outbox without changing their facts", async () => {
+  const h = harness();
+  const base = { orgId: ORG, actor: { kind: "member" as const, id: "a".repeat(64) }, occurredAt: "2026-10-20T11:59:00.000Z", projectName: "payments" };
+  const events = [
+    builders.auditProjectMemberInvited({ ...base, occurrence: auditOccurrence("invite-project", ORG, "11111111-1111-4111-8111-111111111111"), inviteId: "11111111-1111-4111-8111-111111111111", role: "contributor", inviter: "maintainer" }),
+    builders.auditProjectMemberJoinedByInvite({ ...base, occurrence: "token-hash-1", memberId: "b".repeat(64), role: "contributor", related: ["a".repeat(64)] }),
+    builders.auditProjectMemberInviteSkipped({ ...base, occurrence: "token-hash-2", memberId: "c".repeat(64), role: "viewer", cause: "project_archived" }),
+  ];
+  for (const event of events) expect(AuditEventInputSchema.safeParse(event).success, event.action).toBe(true);
+  await h.documentClient.send(new TransactWriteCommand({ TransactItems: [{ Put: { TableName: "state", Item: { pk: "INVITE#1", sk: "META", done: true } } }, ...events.flatMap((event) => auditPending(h.deps, event))] }));
+  expect(pendingItems(h.db).map((item) => item.event).sort((left, right) => left.action.localeCompare(right.action))).toEqual([...events].sort((left, right) => left.action.localeCompare(right.action)));
+  expect(events.map((event) => [event.action, event.target, event.facts])).toEqual([
+    ["project_member.invited", { kind: "project", name: "payments" }, { role: "contributor", inviter: "maintainer" }],
+    ["project_member.joined_by_invite", { kind: "project", name: "payments" }, { role: "contributor" }],
+    ["project_member.invite_skipped", { kind: "project", name: "payments" }, { role: "viewer", cause: "project_archived" }],
+  ]);
+  await flushAuditEvents(h.deps, events);
+  expect(pendingItems(h.db)).toEqual([]);
+  expect(h.sqs.queue.map((message) => AuditEventInputSchema.parse(JSON.parse(message.body)).action).sort()).toEqual(["project_member.invite_skipped", "project_member.invited", "project_member.joined_by_invite"]);
+});
+
 describe("the pending item", () => {
   it("is one unconditional Put of the plan's shape, in the shard of the event id", () => {
     const h = harness();
@@ -699,6 +720,9 @@ describe("I4: the builders", () => {
     ["auditMemberRemovalCompleted", (occurrence) => builders.auditMemberRemovalCompleted({ ...base, occurrence, details, memberId: "dev_2", outcome: "done", wasRole: "member", counts: { approvalsMoved: 1, grantsRemoved: 2, signInEnded: true, countsComplete: true } })],
     ["auditProjectMemberChanged", (occurrence) => builders.auditProjectMemberChanged({ ...base, occurrence, details, projectName: "Secret Project", memberId: "dev_2", fromRole: "viewer", toRole: "editor" })],
     ["auditProjectMemberRemoved", (occurrence) => builders.auditProjectMemberRemoved({ ...base, occurrence, details, projectName: "Secret Project", memberId: "dev_2", role: "viewer" })],
+    ["auditProjectMemberInvited", (occurrence) => builders.auditProjectMemberInvited({ ...base, occurrence, details, projectName: "Secret Project", inviteId: "11111111-1111-4111-8111-111111111111", role: "contributor", inviter: "maintainer" })],
+    ["auditProjectMemberJoinedByInvite", (occurrence) => builders.auditProjectMemberJoinedByInvite({ ...base, occurrence, details, projectName: "Secret Project", memberId: "dev_2", role: "viewer" })],
+    ["auditProjectMemberInviteSkipped", (occurrence) => builders.auditProjectMemberInviteSkipped({ ...base, occurrence, details, projectName: "Secret Project", memberId: "dev_2", role: "viewer", cause: "project_gone" })],
     ["auditIdentityLinked", (occurrence) => builders.auditIdentityLinked({ ...base, occurrence, details, memberId: "dev_2", provider: "github" })],
     ["auditIdentityUnlinked", (occurrence) => builders.auditIdentityUnlinked({ ...base, occurrence, details, memberId: "dev_2", provider: "github" })],
     ["auditOrgClosed", (occurrence) => builders.auditOrgClosed({ ...base, occurrence, details, plan: "team" })],

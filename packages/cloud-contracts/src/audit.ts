@@ -416,6 +416,11 @@ export const AUDIT_ACTIONS = [
   // Review groups (owner decision 9): a project's groups changed; a task's review was claimed, released or reassigned. Ids, counts and fixed words only; the holder is in details.
   "review_groups.changed",
   "review.claim_changed",
+  // A-31 (srv/project-people): an invite that also names a project and a role. Created (the inviter's kind: an owner or admin, or the project's maintainer), applied at the
+  // person's join, or skipped because the project was archived or removed since. The project is the name-keyed target, never a fact.
+  "project_member.invited",
+  "project_member.joined_by_invite",
+  "project_member.invite_skipped",
 ] as const;
 
 export const AuditActionSchema = z.enum(AUDIT_ACTIONS);
@@ -802,6 +807,9 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "agent_publication.withdrawn": ["approvalId", "targetKind", "version"],
   "review_groups.changed": ["revision", "groups", "members", "added", "removed"],
   "review.claim_changed": ["change", "revision", "groupId", "pullRequests", "hostSync"],
+  "project_member.invited": ["role", "inviter"],
+  "project_member.joined_by_invite": ["role"],
+  "project_member.invite_skipped": ["role", "cause"],
   "company_image.registries_changed": ["registryCount", "authority"],
 };
 

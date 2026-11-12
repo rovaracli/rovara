@@ -259,6 +259,24 @@ export function auditOrgInviteCreated(input: AuditBuilderBase & { inviteId: stri
   return build("org.invite_created", input, { kind: "invite", id: input.inviteId }, { role: input.role, targeted: input.targeted });
 }
 
+/**
+ * A-31: an invite also names a project and a role. `occurrence`: `auditOccurrence("invite-project", orgId, inviteId)`. Written in the invite's own transaction, beside
+ * `org.invite_created`; `inviter` is `admin` (an owner or admin) or `maintainer` (the project's own maintainer).
+ */
+export function auditProjectMemberInvited(input: AuditBuilderBase & { projectName: string; inviteId: string; role: string; inviter: "admin" | "maintainer" }): AuditEventInput {
+  return build("project_member.invited", { ...input, related: [input.inviteId, ...(input.related ?? [])] }, { kind: "project", name: input.projectName }, { role: input.role, inviter: input.inviter });
+}
+
+/** A-31: the invite's project role given at the person's join, in the join's own transaction. `occurrence`: the invite's token hash (one join per invite). */
+export function auditProjectMemberJoinedByInvite(input: AuditBuilderBase & { projectName: string; memberId: string; role: string }): AuditEventInput {
+  return build("project_member.joined_by_invite", { ...input, related: [input.memberId, ...(input.related ?? [])] }, { kind: "project", name: input.projectName }, { role: input.role });
+}
+
+/** A-31: the person joined the company but not the invite's project, which was archived or removed since. `occurrence`: the invite's token hash. */
+export function auditProjectMemberInviteSkipped(input: AuditBuilderBase & { projectName: string; memberId: string; role: string; cause: "project_archived" | "project_gone" }): AuditEventInput {
+  return build("project_member.invite_skipped", { ...input, related: [input.memberId, ...(input.related ?? [])] }, { kind: "project", name: input.projectName }, { role: input.role, cause: input.cause });
+}
+
 /** A person chose their own display name (release 0.4.16). `occurrence`: `auditOccurrence(developerId, time of the change)`. The name never enters the record. */
 export function auditMemberRenamed(input: AuditBuilderBase & { memberId: string }): AuditEventInput {
   return build("member.renamed", input, { kind: "member", id: input.memberId }, {});
