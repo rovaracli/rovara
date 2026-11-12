@@ -109,9 +109,25 @@ function mcpControllerEventTypes(): string[] {
   return out;
 }
 
+/** The string literals passed as the first argument of calls to `callee` in one vendored file (`audit("image_approved", image)`): what a templated action built from the argument can be. */
+function callSiteLiterals(file: string, callee: string): string[] {
+  const out: string[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === callee) {
+      const first = node.arguments[0];
+      if (first !== undefined && (ts.isStringLiteral(first) || ts.isNoSubstitutionTemplateLiteral(first))) out.push(first.text);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(parse(file));
+  return out;
+}
+
 /** How each known template becomes actions, by the template's source text. */
 const TEMPLATES: Readonly<Record<string, () => string[]>> = {
   "`mcp_server.${event.type}`": () => mcpControllerEventTypes().map((type) => `mcp_server.${type}`),
+  // local/test-services-owner-list.ts: `audit(action, image)` builds `test_services.${action}`; its call sites pass "image_approved" and "image_removed".
+  "`test_services.${action}`": () => callSiteLiterals(join(VENDOR, "broker/src/local/test-services-owner-list.ts"), "audit").map((action) => `test_services.${action}`),
   "`saved_env.${entry.action}`": () => unionMembers(join(VENDOR, "broker/src/core/test-env/saved-env.ts"), "SavedEnvAuditEntry", "action").filter((action) => action !== "activity").map((action) => `saved_env.${action}`),
 };
 

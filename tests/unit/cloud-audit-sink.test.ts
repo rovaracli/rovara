@@ -4,6 +4,7 @@
 //  3. the row never pushes a transaction past the document store's limits (100 steps, 4 MiB);
 //  4. facts carry no secret or email, and names appear only where Cloud's rules put them (a name-keyed target, the org's sealed details);
 //  5. the row is Cloud's own outbox row (same key, shape and 14-day expiry), so Cloud's drain, appender and erasure rules apply unchanged.
+import { createHash } from "node:crypto";
 import { TransactWriteCommand, type DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it } from "vitest";
 import {
@@ -45,7 +46,7 @@ describe("every audit event of Rovara Code's core maps to a Cloud ledger event",
     // The three builders the review named are read as builders, not skipped: script tokens, second review and sessions.
     for (const name of ["core/script-tokens/store.ts input.action", "core/second-review/mode.ts event.action", "core/sessions/control.ts audit.action"]) expect(scan.resolverHits[name], name).toBeGreaterThan(0);
     // Positive controls from every shape the scan reads: a plain literal, a conditional, a template of literals, the MCP and saved-env templates, and the lessons library.
-    for (const known of ["task.started", "agent.archived", "agent.unarchived", "decision.approved", "decision.changes_requested", "mcp_server.task_started", "mcp_server.changed_needs_review", "saved_env.build_recorded", "saved_env.setting_changed", "lesson.approved", "script_token.used"]) {
+    for (const known of ["task.started", "agent.archived", "agent.unarchived", "decision.approved", "decision.changes_requested", "mcp_server.task_started", "mcp_server.changed_needs_review", "saved_env.build_recorded", "saved_env.setting_changed", "lesson.approved", "script_token.used", "test_services.image_approved", "test_services.image_removed", "lesson.local_tools_switched", "lesson.repo_file_retire_decided"]) {
       expect(all, known).toContain(known);
     }
     expect(all.length).toBeGreaterThan(80);
@@ -142,6 +143,7 @@ function sampleOf(action: string, mapping: EventMapping): AuditEvent {
       mode: "window", seconds: 600, previous: { mode: "window", seconds: 300 },
       pin: { integrity: "sha512-x", lockfileHash: "a".repeat(64), bundleHash: "b".repeat(64), toolsHash: "c".repeat(64), destinationCount: 1, secretCount: 1, secretVersion: "v1", destinations: "api.example.com:443", secretNames: "TOKEN_A" },
       revision: 3, policyDigest: "d".repeat(64), previousDigest: "e".repeat(64),
+      reference: `docker.io/library/postgres@sha256:${"a".repeat(64)}`, requested: "postgres:16", verdict: "keep", missing: 2, enabled: true, scope: "project",
       hasToken: true, addresses: "api.example.com", name: "pkg", reason: "done",
     },
   };
@@ -405,7 +407,7 @@ const MARKER_WORDS = ["Pat Smith", "fix-login", "jane"];
 
 /** Details with the marker under EVERY key a Cloud action may carry as a fact (and under the nested names the core uses), and under the names of the mapped sources. */
 function markedDetails(mapping: EventMapping): NonNullable<AuditEvent["details"]> {
-  const keys = [...AUDIT_FACT_KEYS[mapping.cloud], ...Object.keys(mapping.facts ?? {}), ...(mapping.alternate === undefined ? [] : [...AUDIT_FACT_KEYS[mapping.alternate.mapping.cloud], ...Object.keys(mapping.alternate.mapping.facts ?? {})]), "branch", "target", "source", "type", "scope", "model", "operator", "cause", "kind", "mode", "name", "reason", "label", "project", "repository", "title", "message"];
+  const keys = [...AUDIT_FACT_KEYS[mapping.cloud], ...Object.keys(mapping.facts ?? {}), ...(mapping.alternate === undefined ? [] : [...AUDIT_FACT_KEYS[mapping.alternate.mapping.cloud], ...Object.keys(mapping.alternate.mapping.facts ?? {})]), "branch", "target", "source", "type", "scope", "model", "operator", "cause", "kind", "mode", "name", "reason", "label", "project", "repository", "title", "message", "reference", "requested"];
   const flat = Object.fromEntries(keys.map((key) => [key, MARKER]));
   return { ...flat, previous: { ...flat }, pin: { ...flat } };
 }
@@ -496,6 +498,41 @@ describe("project-level lesson events, with the real vendored lessons sink", () 
     const made = toCloudAuditEvent(core!, naive);
     if (!made.ok) throw new Error(made.refusal);
     expect(JSON.stringify(made.event.target)).toContain(LESSON_PROJECT);
+  });
+});
+
+describe("the owner's test-service images and the two lessons settings", () => {
+  const REFERENCE = `docker.io/library/postgres@sha256:${"b".repeat(64)}`;
+  const imageEvent = (action: string, details: NonNullable<AuditEvent["details"]>): AuditEvent => ({ eventId: `test_services.${action}.x.1`, companyId: ORG, at: AT, actor: { type: "person", id: "owner" }, action: `test_services.${action}`, details });
+
+  it("image_approved and image_removed are company_image.approved and company_image.revoked, with Cloud's image id and digest and the name only in the org's details", () => {
+    const approved = toCloudAuditEvent(imageEvent("image_approved", { reference: REFERENCE, requested: "postgres:16" }));
+    const removed = toCloudAuditEvent(imageEvent("image_removed", { reference: REFERENCE, requested: "postgres:16" }));
+    const imageId = `img_${createHash("sha256").update(REFERENCE, "utf8").digest("hex").slice(0, 20)}`;
+    expect(approved.ok && approved.event).toMatchObject({ action: "company_image.approved", target: { kind: "org", id: ORG }, facts: { imageId, digest: "b".repeat(64) }, details: [{ subject: "org", fields: { image: "postgres:16" } }] });
+    expect(removed.ok && removed.event).toMatchObject({ action: "company_image.revoked", facts: { imageId, digest: "b".repeat(64) } });
+    expect(JSON.stringify([approved.ok && approved.event.facts, approved.ok && approved.event.target])).not.toContain("postgres");
+  });
+
+  it("an image reference that is not pinned to a digest is refused, not recorded with no id", () => {
+    for (const reference of ["docker.io/library/postgres:16", `postgres@sha256:${"c".repeat(63)}`, MARKER]) {
+      expect(toCloudAuditEvent(imageEvent("image_approved", { reference, requested: "postgres:16" })), reference).toEqual({ ok: false, refusal: "invalid_event" });
+    }
+  });
+
+  it("lesson.local_tools_switched and lesson.repo_file_retire_decided keep their Cloud names, with a project or company scope, a verdict word and a count", async () => {
+    const events = [...(await lessonLibraryEvents({ lessonId: undefined })), ...(await lessonLibraryEvents({ lessonId: "les_aaaa1111" }))].filter((core) => ["lesson.local_tools_switched", "lesson.repo_file_retire_decided"].includes(core.action));
+    expect(events).toHaveLength(4);
+    for (const core of events) {
+      const made = toCloudAuditEvent(core);
+      if (!made.ok) throw new Error(`${core.action}: ${made.refusal}`);
+      expect(made.event.action).toBe(core.action);
+      expect(AuditEventInputSchema.safeParse(made.event).success).toBe(true);
+    }
+    const direct = (action: string, facts: NonNullable<AuditEvent["details"]>) => toCloudAuditEvent({ eventId: "e", companyId: ORG, at: AT, actor: person, action, subject: { type: "lesson", id: "_workspace" }, details: { project: "_workspace", ...facts } });
+    expect(direct("lesson.local_tools_switched", { scope: "company", enabled: false })).toMatchObject({ ok: true, event: { target: { kind: "lesson", name: "_workspace" }, facts: { scope: "company", enabled: false } } });
+    expect(direct("lesson.repo_file_retire_decided", { verdict: "retire", missing: 4 })).toMatchObject({ ok: true, event: { facts: { verdict: "retire", missing: 4 } } });
+    expect(direct("lesson.repo_file_retire_decided", { verdict: "pat smith", missing: 4 })).toMatchObject({ ok: true, event: { facts: { missing: 4 } } });
   });
 });
 

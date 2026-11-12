@@ -12,6 +12,7 @@
 //  - Cloud's own fact rules still apply on top (safe integers, printable ASCII, at most 128 characters, nothing email-shaped; `AuditEventInputSchema`).
 //  - Names (a project, a repository, a server's label, a source id) go only in the org's details, or in a name-keyed target. Never in a fact, a related id or an id target.
 //  - An action with no entry here is refused by the sink (see `sink.ts`); tests/unit/cloud-audit-sink.test.ts fails when the pinned core emits an action this table lacks.
+import { createHash } from "node:crypto";
 import { auditPullRequestId, type AuditAction, type AuditTarget, type AuditTargetKind } from "@agentx/cloud-contracts";
 import type { AuditEvent, JsonObject, JsonValue } from "@rovara-code/contracts";
 
@@ -172,6 +173,22 @@ const pullRequestTarget = ({ details }: MappingContext): AuditTarget | undefined
 };
 const pullRequestOrg = { repository: ({ details }: MappingContext): string | undefined => repositoryOf(details) } as const;
 
+/**
+ * The owner's test-service image list (the core's `test_services.image_approved` / `image_removed`) is the company image list of Cloud's ledger (`company_image.approved` / `company_image.revoked`): an
+ * approval of one exact digest. The core's `reference` is the pinned reference `registry/repository@sha256:<64 hex>`; Cloud's image id is `img_` and the first 20 hex of the sha256 of that same text
+ * (test-env/company-images.ts), and its digest fact is the 64 hex. The image's own name (`requested`) goes in the org's sealed details, never a fact. The core has no authority word to give, so none is recorded.
+ */
+const PINNED_IMAGE = /^([^@\s]{1,200})@sha256:([0-9a-f]{64})$/u;
+const imageIdOf = ({ details }: MappingContext): string | undefined => {
+  const reference = text(details["reference"]);
+  return reference !== undefined && PINNED_IMAGE.test(reference) ? `img_${createHash("sha256").update(reference, "utf8").digest("hex").slice(0, 20)}` : undefined;
+};
+const imageDigestOf = ({ details }: MappingContext): string | undefined => PINNED_IMAGE.exec(text(details["reference"]) ?? "")?.[2];
+const COMPANY_IMAGE = (cloud: AuditAction): EventMapping => same(cloud, { org: true }, {
+  facts: { imageId: fact(imageIdOf, { pattern: /^img_[0-9a-f]{20}$/u }), digest: fact(imageDigestOf, HEX64) },
+  required: ["imageId", "digest"], org: { image: "requested" },
+});
+
 // ---- the rows ------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 const MCP_ORG = { label: "label" } as const;
@@ -312,6 +329,10 @@ export const CORE_AUDIT_EVENT_MAP: Readonly<Record<string, EventMapping>> = {
   })])),
   "saved_env.setting_changed": same("saved_env.setting_changed", { name: "project" }, { facts: { enabled: flag("enabled") } }),
 
+  // Test-service images (the owner's list): Cloud's company image approval and revocation.
+  "test_services.image_approved": COMPANY_IMAGE("company_image.approved"),
+  "test_services.image_removed": COMPANY_IMAGE("company_image.revoked"),
+
   // Script tokens. The token's owner (on a revoke) and the task a token started (on a use) are related records, as Cloud's own writers record them.
   "script_token.created": same("script_token.created", { id: "script_token" }, { facts: { days: count("days"), projects: count("projects"), permissions: fact("permissions", { pattern: /^[a-z_]{1,24}(,[a-z_]{1,24}){0,4}$/u }) } }),
   "script_token.revoked": same("script_token.revoked", { id: "script_token" }, { facts: { by: oneOf("by", ...SCRIPT_TOKEN_REVOKERS) }, related: ({ details }) => [text(get(details, "related"))] }),
@@ -345,6 +366,8 @@ export const CORE_AUDIT_EVENT_MAP: Readonly<Record<string, EventMapping>> = {
   "lesson.replay_started": lesson("lesson.replay_started", { operator: fact("operator", OPERATOR), memory: oneOf("memory", "off", "snapshot"), snapshotLessons: count("snapshotLessons"), maxCents: count("maxCents"), sourceTask: fact("sourceTask", ID) }),
   "lesson.repo_file_pr_closed": lesson("lesson.repo_file_pr_closed", { cause: word("cause"), pullRequest: count("pullRequest") }),
   "lesson.repo_file_pr_opened": lesson("lesson.repo_file_pr_opened", { removals: count("removals"), edits: count("edits"), adds: count("adds") }),
+  "lesson.local_tools_switched": lesson("lesson.local_tools_switched", { scope: oneOf("scope", "project", "company"), enabled: flag("enabled") }),
+  "lesson.repo_file_retire_decided": lesson("lesson.repo_file_retire_decided", { verdict: oneOf("verdict", "retire", "keep"), missing: count("missing") }),
   "lesson.repo_file_switched": lesson("lesson.repo_file_switched", { enabled: flag("enabled") }),
   "lesson.retire_requested": lesson("lesson.retire_requested", { pullRequest: count("pullRequest") }),
   "lesson.retired": lesson("lesson.retired", { cause: word("cause"), tier: TIER }),
