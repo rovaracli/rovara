@@ -16,6 +16,7 @@ export const NO_EDIT_NOTE = "Only a project maintainer, or a company owner or ad
 export const LAST_MAINTAINER_HINT = "A project needs at least one maintainer.";
 export const WAITING_FOR_ADMIN = "Waiting for an admin";
 export const WAITING_FOR_ADMIN_BODY = "Turning on self-approval needs a company owner or admin to confirm it. Nothing changes until one does.";
+export const OTHERS_SAVED = "Your other changes were saved."
 export const MAINTAINER_EMAIL_NOTE = "A maintainer's invite goes to one colleague's email address. Only a company owner or admin can make a shareable link.";
 export const emailOutcomeWords = (outcome: "sent" | "not_set_up" | "failed" | "limited" | undefined): string => outcome === "sent" ? "Invite created and emailed." : outcome === "failed" ? "Invite created, but the email couldn't be sent. Copy the link and send it yourself." : outcome === "not_set_up" ? "Invite created. Email isn't set up here, so copy the link and send it yourself." : outcome === "limited" ? "Invite created, but it wasn't emailed: this address already got an invite email today, or the company reached today's email limit. Copy the link and send it yourself." : "Invite created.";
 

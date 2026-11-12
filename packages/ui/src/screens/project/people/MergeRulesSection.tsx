@@ -11,7 +11,7 @@ import { VisibleText } from "../../../design/VisibleText.js";
 import { isConfirmUrl } from "../../../text/links.js";
 import { ApiError } from "../../../api/errors.js";
 import { codeSettingsKey, useCodeSettings, useProjectPeopleApi } from "../../../api/project-people.js";
-import { WAITING_FOR_ADMIN, WAITING_FOR_ADMIN_BODY, parseReviewers } from "./people-text.js";
+import { OTHERS_SAVED, WAITING_FOR_ADMIN, WAITING_FOR_ADMIN_BODY, parseReviewers } from "./people-text.js";
 import { failureText, useRequestId } from "./people-write.js";
 
 const METHOD_WORDS: Readonly<Record<string, string>> = { squash: "Squash and merge", merge: "Merge commit" };
@@ -23,7 +23,7 @@ export const STALE_SETTINGS_MESSAGE = "Someone changed these settings. Reload an
  * project reads them; the server's `viewer.canEditCodeSettings` decides who may change them. Turning self-approval ON answers 202: it waits for a company owner or admin ("Waiting for an admin"), and nothing changes until one confirms.
  */
 export function MergeRulesSection({ project, canEdit, canConfirm }: { project: string; canEdit: boolean; canConfirm: boolean }) {
- const read = useCodeSettings(project, true), [open, setOpen] = useState(false), [waiting, setWaiting] = useState<string | undefined | false>(false);
+ const read = useCodeSettings(project, true), [open, setOpen] = useState(false), [waiting, setWaiting] = useState<{ confirmUrl: string | undefined; others: boolean } | false>(false);
  const host = useAppHost();
  return <section className="rv-project-section rv-people-merge" aria-labelledby="rv-people-merge-title">
   <h2 id="rv-people-merge-title">Merge rules</h2>
@@ -34,17 +34,17 @@ export function MergeRulesSection({ project, canEdit, canConfirm }: { project: s
      <div><dt>Self-approval</dt><dd>{read.data.allowSelfApproval ? "On: a person may approve a pull request Rovara made for them" : "Off: a pull request Rovara made for someone needs a different person's approval"}</dd></div>
      <div><dt>Merge method</dt><dd>{METHOD_WORDS[read.data.mergeMethod] ?? read.data.mergeMethod}</dd></div>
     </dl>
-    {waiting !== false && <div role="status" className="rv-people-waiting"><p><strong>{WAITING_FOR_ADMIN}</strong></p><p>{WAITING_FOR_ADMIN_BODY}</p>{canConfirm && waiting !== undefined && <Button onClick={() => { host.openExternal(waiting); }}>Open the confirmation</Button>}</div>}
+    {waiting !== false && <div role="status" className="rv-people-waiting"><p><strong>{WAITING_FOR_ADMIN}</strong></p><p>{WAITING_FOR_ADMIN_BODY}{waiting.others ? " " + OTHERS_SAVED : ""}</p>{canConfirm && waiting.confirmUrl !== undefined && <Button onClick={() => { host.openExternal(waiting.confirmUrl!); }}>Open the confirmation</Button>}</div>}
     {canEdit ? <div className="rv-people-actions"><Button onClick={() => { setOpen(true); }}>Change merge rules</Button></div> : <p className="rv-muted">Only a project maintainer can change these.</p>}
-    {open && <MergeRulesDialog project={project} settings={read.data} canConfirm={canConfirm} onOpenChange={setOpen} onWaiting={url => { setWaiting(url ?? undefined); }} />}
+    {open && <MergeRulesDialog project={project} settings={read.data} canConfirm={canConfirm} onOpenChange={setOpen} onWaiting={(url, others) => { setWaiting({ confirmUrl: url ?? undefined, others }); }} />}
    </>}
  </section>;
 }
 
-function MergeRulesDialog({ project, settings, canConfirm, onOpenChange, onWaiting }: { project: string; settings: Settings; canConfirm: boolean; onOpenChange: (open: boolean) => void; onWaiting: (confirmUrl: string | null) => void }) {
+function MergeRulesDialog({ project, settings, canConfirm, onOpenChange, onWaiting }: { project: string; settings: Settings; canConfirm: boolean; onOpenChange: (open: boolean) => void; onWaiting: (confirmUrl: string | null, others: boolean) => void }) {
  const api = useProjectPeopleApi(), query = useQueryClient(), host = useAppHost(), id = useRequestId();
  const [method, setMethod] = useState<string>(settings.mergeMethod === "unknown" ? "" : settings.mergeMethod), [self, setSelf] = useState(settings.allowSelfApproval), [reviewers, setReviewers] = useState(settings.codeReviewers.join("\n"));
- const [busy, setBusy] = useState(false), [error, setError] = useState<string>(), [pending, setPending] = useState<{ confirmUrl?: string }>();
+ const [busy, setBusy] = useState(false), [error, setError] = useState<string>(), [pending, setPending] = useState<{ confirmUrl?: string; others: boolean }>();
  const edit = <T,>(set: (value: T) => void) => (value: T) => { id.reset();set(value); };
  async function save() {
   if (busy) return;
@@ -60,7 +60,7 @@ function MergeRulesDialog({ project, settings, canConfirm, onOpenChange, onWaiti
    await query.invalidateQueries({ queryKey: codeSettingsKey(project) });
    if (result.kind === "done") { onOpenChange(false);return; }
    const url = result.kind === "needs_confirmation" && result.confirmUrl !== undefined && isConfirmUrl(result.confirmUrl, host.origin) ? result.confirmUrl : undefined;
-   setPending(url === undefined ? {} : { confirmUrl: url });onWaiting(url ?? null);
+   const others = body.mergeMethod !== undefined || body.codeReviewers !== undefined;setPending(url === undefined ? { others } : { confirmUrl: url, others });onWaiting(url ?? null, others);
   } catch (failure) {
    id.settle(failure);
    const stale = failure instanceof ApiError && (failure.message === STALE_SETTINGS_MESSAGE || failure.status === 409);
@@ -76,7 +76,7 @@ function MergeRulesDialog({ project, settings, canConfirm, onOpenChange, onWaiti
    {error !== undefined && <p role="alert"><VisibleText text={error} /></p>}
    <div className="rv-people-actions"><Button type="submit" variant="primary" busy={busy}>Save</Button><Button disabled={busy} onClick={() => { onOpenChange(false); }}>Cancel</Button></div>
   </form> : <div className="rv-people-form" role="status">
-   <p><strong>{WAITING_FOR_ADMIN}</strong></p><p>{WAITING_FOR_ADMIN_BODY}</p>
+   <p><strong>{WAITING_FOR_ADMIN}</strong></p><p>{WAITING_FOR_ADMIN_BODY}{pending.others ? " " + OTHERS_SAVED : ""}</p>
    {canConfirm && pending.confirmUrl !== undefined && <Button variant="primary" onClick={() => { host.openExternal(pending.confirmUrl!); }}>Open the confirmation</Button>}
    <div className="rv-people-actions"><Button onClick={() => { onOpenChange(false); }}>Close</Button></div>
   </div>}
