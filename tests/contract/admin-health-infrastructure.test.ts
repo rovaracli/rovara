@@ -189,6 +189,8 @@ describe("the health route's grants (A13)", () => {
       "packages/broker/src/agent-sessions/take-over.ts", "packages/broker/src/agent-sessions/stop.ts", "packages/broker/src/agent-sessions/retry.ts",
       // Plan 5, Task 15: a dismissed Home card is kept 30 days, then deleted by the TTL (home.ts writes it and ignores one past its time).
       "packages/broker/src/agent-sessions/home.ts",
+      // 2026-11-12: the shared dismissal reader moved out of home.ts; it reads the same 30-day dismissal rows and ignores one past its time.
+      "packages/broker/src/agent-sessions/failure-dismissals.ts",
       // Live interaction R2-R4: a redirect's record, its open marker and the redirect message expire on it (redirect-state.ts, redirect.ts), like a session's own items.
       "packages/broker/src/agent-sessions/redirect-state.ts", "packages/broker/src/agent-sessions/redirect.ts",
       // Live interaction A3/A5: an Ask's records, its one-at-a-time lock and rate rows (ask.ts), the daily Ask count (ask-audit.ts) and the erased-person alias items,
