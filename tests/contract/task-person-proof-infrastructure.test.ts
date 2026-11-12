@@ -437,18 +437,23 @@ describe("the named TEST proof-only installation gate", () => {
     // 2026-11-12 (0.5.15, fix/0515-allowlist-review, merged with integ/0515 0c8c0fbbc): the named and foreign digests were retaken from the values the test reports, after the internal address lane's intended infra changes
     // (its worker settings reaper alarm reading a metric-math expression of Lambda errors plus the reaper's own SessionsPrivateAddressRecycleErrors count, and the internal address resources it adds to named environments).
     // Checked first: with infra/lib's eight changed files (app, control-plane, ec2-workers, private-mcp, production-foundation, session-lifecycle, vpc-endpoints, private-addresses) put back to integ/0515's, all three tests (this one, named-templates, legacy-templates) pass on integ's own pins. Legacy did not move.
+    // 2026-11-12 (0.5.15, fix/0515-notify-dm-iam, merged with integ/0515 63368e31f): the named and foreign digests were retaken from the values the test reports, after TWO intended statements on the developer
+    // task notifier's role: GetItem + UpdateItem on the State table for the leading key NOTIFY_DM only (attention DMs and the Slack-member warning were refused; SlackDeliveryFailed fired on staging), and
+    // GetItem + PutItem for the leading key NOTIFY_SETTINGS_PROOF#* only (the settings-proof DM's own once-marker; the project's partition is not granted). Checked first: with infra/lib/developer-task-notifier.ts
+    // put back to integ/0515's and the named snapshot at integ's, all three tests (this one, named-templates, legacy-templates) pass on integ's own pins. The named snapshot shows exactly those two statements
+    // added. Legacy did not move.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "15e3225a98f9f935ef2d527a1cff124f9a1e4569419c7d3731366eefab332a8e",
-        withoutRoute: "b405d8b681bcc5132d97771e1f616adc69b2dd0822262d1379c39c6d536a9884",
+        withRoute: "488be04a1e6f6aa411ea70910f81facab33c8a37172e87738e22f6ebebe03038",
+        withoutRoute: "8e4c7612bcf482c53de692df54fccaf996e579119433e03e858f33d8fb2ea84c",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "bf6f9daaf454e54f4f111b8c4a7b2948858a7d2b0933257c8bf6fa6c38ab46b5",
-        withoutRoute: "c65482248d33b3d562601ebc9645499d4cb9251f668b58deaf37428e47b13c74",
+        withRoute: "c3a99a4db5b6095330466948360a71d7e9e6324e24e2fe3a2f34a9cd451eade8",
+        withoutRoute: "e2c9a3c54784f15f2a881efe0db040057d6b791f9ef7549eb92903b28b323f5b",
       },
       {
         label: "legacy",

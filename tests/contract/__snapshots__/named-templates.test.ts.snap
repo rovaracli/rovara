@@ -8037,6 +8037,26 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
             },
             {
               "Action": [
+                "dynamodb:GetItem",
+                "dynamodb:PutItem",
+              ],
+              "Condition": {
+                "ForAllValues:StringLike": {
+                  "dynamodb:LeadingKeys": [
+                    "NOTIFY_SETTINGS_PROOF#*",
+                  ],
+                },
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "State1C20CC9A",
+                  "Arn",
+                ],
+              },
+            },
+            {
+              "Action": [
                 "sqs:SendMessage",
                 "sqs:GetQueueAttributes",
                 "sqs:GetQueueUrl",
