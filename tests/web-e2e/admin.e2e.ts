@@ -91,7 +91,7 @@ test("reviews a missing creation receipt before opening a new form without reloa
 });
 test("opens Settings > Spending (the Spending page, decision 125) from the overview through the real cookie route without money writes",async({page,request})=>{
  await request.post("/__mock/spending?variant=owner");
- await page.goto("/app/admin");await expect(page.getByText("What the company spent this month, what is held for work in progress, and what is left.")).toBeVisible();await page.getByRole("link",{name:"Review spending"}).click();
+ await page.goto("/app/admin");await expect(page.getByText("What the company spent this month, what is held for work in progress, and what is left.")).toBeVisible();await page.getByRole("link",{name:"Review this month's spend"}).click();
  await expect(page.getByRole("heading",{name:"Spending",exact:true,level:1})).toBeVisible();await expect(page.getByRole("heading",{name:/This month/u})).toBeVisible();await expect(page.getByRole("table",{name:"Monthly base budgets"})).toHaveCount(0);
  await checkA11y(page,{theme:"light"});await checkA11y(page,{theme:"dark"});
  const calls=await(await request.get("/__mock/requests")).json() as Array<{method:string;path:string}>;expect(calls.filter(call=>call.method!=="GET"&&/budget|spend/u.test(call.path))).toEqual([]);

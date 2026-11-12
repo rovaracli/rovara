@@ -14,8 +14,8 @@ test("serves the exact nonced cell CSP, supports keyboard navigation, and opens 
  const response = await page.goto("/app");await expect(page.getByRole("heading", { name: "Home", exact: true })).toBeVisible();
  const nonce = await page.locator('meta[name="csp-nonce"]').getAttribute("content");
  expect(response?.headers()["content-security-policy"]).toBe(`default-src 'none'; script-src 'self'; style-src 'self' 'nonce-${nonce}'; style-src-attr 'unsafe-hashes' 'sha256-3oFxofzq3N//6J8H86e9ul4WT2OkJrtonB66gn/TLJw='; img-src 'self' data:; font-src 'self'; connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; require-trusted-types-for 'script'; trusted-types 'none'`);
- for (const [name, heading] of [["Live", "Live"], ["payments", "payments"], ["Home, 3 waiting", "Home"]] as const) {
- const link = page.getByRole("link", { name, exact: true });await link.focus();await page.keyboard.press("Enter");await expect(page.getByRole("heading", { name: heading, exact: true })).toBeFocused();
+ for (const [name, heading] of [["Work", "Work"], ["payments", "payments"], ["Home, 3 need you", "Home"]] as const) {
+ const link = page.locator("aside").getByRole("link", { name, exact: true });await link.focus();await page.keyboard.press("Enter");await expect(page.getByRole("heading", { name: heading, exact: true })).toBeFocused();
  }
  await page.getByRole("button", { name: "Open account menu" }).click();await expect(page.getByRole("dialog", { name: "Your account" })).toBeVisible();await page.getByRole("button", { name: "Close dialog" }).click();await expect(page.getByRole("dialog")).toHaveCount(0);
 });

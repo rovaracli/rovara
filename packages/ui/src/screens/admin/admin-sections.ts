@@ -15,7 +15,7 @@ export const ADMIN_SECTIONS: readonly AdminSection[] = [
     { to: "/app/admin/models/sources", label: "AI models", area: "models", blurb: "Which AI provider Rovara tries first, and the models it can use.", action: "Review AI models" },
   ] },
   { id: "money", title: "Money and limits", items: [
-    { to: "/app/admin/money/budgets", label: "Spending", area: "money", blurb: "What the company spent this month, what is held for work in progress, and what is left.", action: "Review spending" },
+    { to: "/app/admin/money/budgets", label: "Spending", area: "money", blurb: "What the company spent this month, what is held for work in progress, and what is left.", action: "Review this month's spend" },
     { to: "/app/admin/billing", label: "Billing", area: "billing", blurb: "The trial allowance, auto-billing, the payment method and invoices.", action: "Open billing", needsBilling: true },
   ] },
   { id: "work", title: "How work runs", items: [

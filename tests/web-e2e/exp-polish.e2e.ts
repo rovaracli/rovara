@@ -89,7 +89,7 @@ async function belowTabBar(page: Page) {
  });
 }
 for (const target of [
- { name: "the task page", scenario: "workspace", path: "/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa", ready: (page: Page) => expect(page.getByRole("tab", { name: "Pipeline" })).toBeVisible() },
+ { name: "the task page", scenario: "workspace", path: "/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa", ready: (page: Page) => expect(page.getByRole("region", { name: "Where this task stands" })).toBeVisible() },
  { name: "the task page with its lead header", scenario: "workspace", path: "/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa", ready: (page: Page) => expect(page.getByRole("region", { name: "Where this task stands" })).toBeVisible() },
  { name: "a settings page", scenario: "admin", path: "/app/admin/money/budgets", ready: (page: Page) => expect(page.getByRole("heading", { name: /budget|spending/i, level: 1 })).toBeVisible() },
  { name: "the project page", scenario: "project", path: "/app/projects/payments", ready: (page: Page) => expect(page.getByRole("heading", { name: "payments", level: 1 })).toBeVisible() },

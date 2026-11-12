@@ -38,7 +38,7 @@ for (const look of [{ name: "look-v2", store: {} }] as const) {
    await expect(page.locator(".rv-hv2-row .rv-button-primary")).toHaveCount(3);expect(await page.getByRole("list", { name: "What needs you" }).locator(".rv-hv2-row").evaluateAll(rows => rows.map(row => row.querySelectorAll(".rv-button-primary").length))).toEqual([1, 1, 1]);
    await expect(page.getByRole("list", { name: "Work to continue" }).getByRole("listitem")).toHaveCount(5);await expect(page.getByRole("list", { name: "Recently finished work" }).getByRole("listitem")).toHaveCount(5);
    await expect(page.getByRole("list", { name: "Agents" }).getByRole("listitem")).toHaveCount(4);
-   await expect(page.getByRole("link", { name: "See all in Work" })).toHaveCount(2);await expect(page.getByRole("link", { name: "See all in Work" }).first()).toHaveAttribute("href", "/app/live");
+   await expect(page.getByRole("link", { name: "See all in Work" })).toHaveCount(2);await expect(page.getByRole("link", { name: "See all in Work" }).first()).toHaveAttribute("href", "/app/work");
    // No raw code and no model id reaches the page.
    const text = (await page.locator("main").textContent()) ?? "";
    expect(text).not.toMatch(/needs_person|needs_you|approve_design|succeeded|gpt-|claude-|\bLive\b/u);
