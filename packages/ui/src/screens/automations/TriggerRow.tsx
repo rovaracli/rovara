@@ -52,7 +52,7 @@ export function TriggerRow({ trigger, chainId, canEdit, onChanged, showTarget = 
   const remove = () => run("delete", async () => { await api.deleteTrigger(chainId!, trigger.triggerId);setAsking(false);return { kind: "done", text: "The trigger is deleted." }; });
   return <li className="rv-auto-row">
     <div className="rv-auto-row-head">
-      <div><strong><VisibleText text={specWords(trigger.spec)} /></strong>{showTarget && trigger.target.kind === "chain" && <span className="rv-muted"> starts <Link to={"/app/chains/" + encodeURIComponent(trigger.target.chainId)}><VisibleText text={trigger.targetName ?? "a chain you can't see"} /></Link></span>}{showTarget && trigger.target.kind === "agent" && <span className="rv-muted"> starts <VisibleText text={trigger.targetName ?? "an agent"} /></span>}</div>
+      <div><strong><VisibleText text={specWords(trigger.spec)} /></strong>{showTarget && trigger.target.kind === "chain" && trigger.target.chainId !== undefined && <span className="rv-muted"> starts <Link to={"/app/chains/" + encodeURIComponent(trigger.target.chainId)}><VisibleText text={trigger.targetName ?? "a chain you can't see"} /></Link></span>}{showTarget && trigger.target.kind !== "chain" && <span className="rv-muted"> starts <VisibleText text={trigger.targetName ?? "an agent"} /></span>}</div>
       <StatusDot status={STATE_DOT[state.kind]} words={state.words} />
     </div>
     {state.reason !== undefined && <p className="rv-muted">Why: <VisibleText text={state.reason} /></p>}

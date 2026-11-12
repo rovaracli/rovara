@@ -24,7 +24,7 @@ export async function automationsMock({ url, method, body, json, record, scenari
   if (asked === undefined || asked.scenario !== scenario) return false;
   const state = asked;
   if (method === "GET" && url.pathname === "/v1/web/projects/payments/automations") {
-    json(200, projectAutomations({ canEdit: state.mode === "edit", triggers: state.triggers.map(trigger => ({ ...trigger, targetName: "Refund triage" })) as never }));return true;
+    json(200, projectAutomations({ canEdit: state.mode === "edit", triggers: state.triggers.map(trigger => ({ ...trigger, targetName: "Refund triage" })) }));return true;
   }
   if (method === "GET" && url.pathname === "/v1/web/chain-runs") { json(200, runList());return true; }
   if (method === "GET" && url.pathname === `/v1/web/chains/${CHAIN_ID}`) { json(200, { chain: chainOf({ access: state.mode === "edit" ? "manage" : "view" }) });return true; }

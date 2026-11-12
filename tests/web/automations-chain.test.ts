@@ -128,7 +128,7 @@ it("a stale draft is refused in the server's words and the latest can be reloade
   fireEvent.click(screen.getByRole("button", { name: "Save draft" }));
   expect((await screen.findByRole("alert")).textContent).toBe("Someone else changed this draft. Reload it and try again.");
   fireEvent.click(screen.getByRole("button", { name: "Reload the latest draft" }));
-  await waitFor(() => expect((screen.getByLabelText("Draft design (JSON)") as HTMLTextAreaElement).value).toBe(JSON.stringify(DESIGN, null, 2)));
+  await waitFor(() => expect((screen.getByLabelText<HTMLTextAreaElement>("Draft design (JSON)")).value).toBe(JSON.stringify(DESIGN, null, 2)));
   f.close();
 });
 

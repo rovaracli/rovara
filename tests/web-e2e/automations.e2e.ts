@@ -1,5 +1,6 @@
 // exp/automations: the project's Automations tab against the mock cell (mocked API): the list, then pausing and resuming a trigger, at a phone's width (390) and a desktop's (1280), in both themes.
-import { test, expect, type Page, type BrowserContext, type APIRequestContext } from "@playwright/test";
+import type { Page, BrowserContext, APIRequestContext } from "@playwright/test";
+import { test, expect } from "./support/csp.js";
 import { mockRealtime } from "./support/realtime.js";
 import { checkA11y } from "./support/axe.js";
 import { evidenceShot } from "./support/screenshot.js";

@@ -1,16 +1,30 @@
-// exp/automations: the web app's calls for automations (chains and their triggers). Readers come from `@agentx/cloud-contracts/web` (app-automations.ts) wherever one exists.
-// A few answers have no browser reader there yet (a chain's versions, its draft, its shares, a chain run list); those are read here with small local schemas that ignore fields
-// they don't know. Every write carries a fresh requestId, so a retry is the same request. A 202 comes back as `needs_confirmation` / `needs_admin_approval` (client.ts#send).
+// exp/automations: the web app's calls for automations (chains and their triggers). Every answer is read here with a small local schema that ignores what it doesn't know and keeps the few fields
+// the screens show, shaped by the broker's contract (`packages/cloud-contracts/src/app-automations.ts`; tests/web/automations-*.test.ts build their fixtures with that contract, so a drift fails there).
+// They are local on purpose: the contract's readers pull the trigger and chain schemas into a chunk the first page also loads, which would grow the initial JavaScript for screens nobody opens by default.
+// Every write carries a fresh requestId, so a retry is the same request. A 202 comes back as `needs_confirmation` / `needs_admin_approval` (client.ts#send).
 import { useMemo } from "react";
 import { z } from "zod";
-import {
-  AutomationChainResponseReaderSchema, AutomationChainWriteResponseReaderSchema, AutomationDeletedResponseReaderSchema, AutomationTriggerActivityResponseReaderSchema,
-  AutomationTriggerListResponseReaderSchema, AutomationTriggerWriteResponseReaderSchema, ProjectAutomationsResponseReaderSchema, ProjectPeopleViewReaderSchema,
-} from "@agentx/cloud-contracts/web";
 import { useAppHost, type AppHost } from "../host.js";
 import { createApiClient, type Reader, type SendResult } from "./client.js";
 
 const Iso = z.string();
+const Owner = z.object({ kind: z.string(), project: z.string().optional(), developerId: z.string().optional() });
+const Chain = z.object({
+  chainId: z.string(), name: z.string(), description: z.string(), owner: Owner, accountable: z.object({ developerId: z.string() }).optional(), currentVersion: z.number().int().optional(), latestVersion: z.number().int().optional(),
+  draftRevision: z.number().int().optional(), status: z.string(), monthlyBudgetUsd: z.number().optional(), openRuns: z.number().int().default(0), access: z.string(),
+});
+const Trigger = z.object({
+  triggerId: z.string(), target: z.object({ kind: z.string(), chainId: z.string().optional(), agentId: z.string().optional() }), project: z.string(), spec: z.object({ kind: z.string() }).passthrough(), hookId: z.string().optional(), enabled: z.boolean(),
+  disabledReason: z.string().optional(), maxRunsPerHour: z.number().int(), scheduleStatus: z.string().optional(), lastFiredAt: Iso.optional(), lastRunId: z.string().optional(), lastTaskId: z.string().optional(), targetName: z.string().optional(),
+});
+const ProjectAutomationsReader = z.object({ project: z.string(), canEdit: z.boolean(), chains: z.array(Chain), triggers: z.array(Trigger) });
+const ChainReader = z.object({ chain: Chain, current: z.object({ version: z.number().int(), definition: z.unknown() }).optional() });
+const ChainWriteReader = z.object({ chain: Chain });
+const TriggerReader = z.object({ trigger: Trigger });
+const TriggersReader = z.object({ triggers: z.array(Trigger) });
+const DeletedReader = z.object({ deleted: z.literal(true) });
+const ActivityReader = z.object({ activity: z.array(z.object({ at: Iso, eventKey: z.string(), outcome: z.string(), runId: z.string().optional(), taskId: z.string().optional(), reason: z.string().optional() })) });
+const PeopleReader = z.object({ members: z.array(z.object({ developerId: z.string(), name: z.string(), role: z.string() })) });
 const VersionRow = z.object({ version: z.number().int(), digest: z.string().optional(), publishedBy: z.string().optional(), publishedAt: Iso, note: z.string().optional(), current: z.boolean() });
 export const ChainVersionsReader = z.object({ versions: z.array(VersionRow) });
 export type ChainVersionRow = z.infer<typeof VersionRow>;
@@ -44,35 +58,34 @@ export function newTriggerId(): string {
   }
 }
 
-/** What the readers answer: a forward reader keeps a variant this build doesn't know as `kind: "unknown"`, so screens never assume the three they know. */
-export type TriggerRead = z.output<typeof AutomationTriggerWriteResponseReaderSchema>["trigger"];
-export type ChainRead = z.output<typeof AutomationChainResponseReaderSchema>["chain"];
-export type ProjectTriggerRead = z.output<typeof ProjectAutomationsResponseReaderSchema>["triggers"][number];
+export type TriggerRead = z.infer<typeof Trigger>;
+export type ChainRead = z.infer<typeof Chain>;
+export type ProjectTriggerRead = TriggerRead;
 export interface TriggerPutInput { project: string; spec: unknown; enabled?: boolean; maxRunsPerHour?: number; hookId?: string }
 
 export function createAutomationsApi(host: AppHost) {
   const api = createApiClient(host), chain = (id: string) => "/v1/app/chains/" + segment(id), trigger = (chainId: string, triggerId: string) => chain(chainId) + "/triggers/" + segment(triggerId);
   const send = <T>(method: "POST" | "PUT" | "DELETE", path: string, body: Record<string, unknown>, reader: Reader<T>): Promise<SendResult<T>> => api.send(method, path, { requestId: fresh(), ...body }, reader);
   return {
-    project: (project: string) => api.get("/v1/app/projects/" + segment(project) + "/automations", ProjectAutomationsResponseReaderSchema),
-    people: (project: string) => api.get("/v1/app/projects/" + segment(project) + "/people", ProjectPeopleViewReaderSchema),
-    chain: (id: string) => api.get(chain(id), AutomationChainResponseReaderSchema),
+    project: (project: string) => api.get("/v1/app/projects/" + segment(project) + "/automations", ProjectAutomationsReader),
+    people: (project: string) => api.get("/v1/app/projects/" + segment(project) + "/people", PeopleReader),
+    chain: (id: string) => api.get(chain(id), ChainReader),
     versions: (id: string) => api.get(chain(id) + "/versions", ChainVersionsReader),
     draft: (id: string) => api.get(chain(id) + "/draft", ChainDraftReader),
     shares: (id: string) => api.get(chain(id) + "/shares", ChainSharesReader),
-    triggers: (id: string) => api.get(chain(id) + "/triggers", AutomationTriggerListResponseReaderSchema),
-    activity: (chainId: string, triggerId: string) => api.get(trigger(chainId, triggerId) + "/activity", AutomationTriggerActivityResponseReaderSchema),
+    triggers: (id: string) => api.get(chain(id) + "/triggers", TriggersReader),
+    activity: (chainId: string, triggerId: string) => api.get(trigger(chainId, triggerId) + "/activity", ActivityReader),
     runs: (scope: { chain: string } | { project: string }) => api.get("/v1/app/chain-runs?" + ("chain" in scope ? "chain=" + segment(scope.chain) : "project=" + segment(scope.project)), ChainRunsReader),
     saveDraft: (id: string, expectedRevision: number, definition: unknown) => send("PUT", chain(id) + "/draft", { expectedRevision, definition }, DraftSaved),
     publish: (id: string, expectedDraftRevision: number, note?: string) => send("POST", chain(id) + "/publish", { expectedDraftRevision, ...(note === undefined || note.trim() === "" ? {} : { note: note.trim() }) }, PublishedReader),
     rollback: (id: string, version: number) => send("POST", chain(id) + "/rollback", { version }, ChainChanged),
-    createChain: (project: string, name: string) => send("POST", "/v1/app/chains", { name, owner: { kind: "project", project } }, AutomationChainWriteResponseReaderSchema),
-    archive: (id: string) => send("POST", chain(id) + "/archive", {}, AutomationChainWriteResponseReaderSchema),
-    unarchive: (id: string) => send("POST", chain(id) + "/unarchive", {}, AutomationChainWriteResponseReaderSchema),
+    createChain: (project: string, name: string) => send("POST", "/v1/app/chains", { name, owner: { kind: "project", project } }, ChainWriteReader),
+    archive: (id: string) => send("POST", chain(id) + "/archive", {}, ChainWriteReader),
+    unarchive: (id: string) => send("POST", chain(id) + "/unarchive", {}, ChainWriteReader),
     setBudget: (id: string, monthlyUsd: number | null) => send("PUT", chain(id) + "/budget", { monthlyUsd }, ChainChanged),
     setAccountable: (id: string, developerId: string) => send("PUT", chain(id) + "/accountable", { accountable: { developerId } }, AccountableReader),
-    putTrigger: (chainId: string, triggerId: string, input: TriggerPutInput) => send("PUT", trigger(chainId, triggerId), { ...input }, AutomationTriggerWriteResponseReaderSchema),
-    deleteTrigger: (chainId: string, triggerId: string) => send("DELETE", trigger(chainId, triggerId), {}, AutomationDeletedResponseReaderSchema),
+    putTrigger: (chainId: string, triggerId: string, input: TriggerPutInput) => send("PUT", trigger(chainId, triggerId), { ...input }, TriggerReader),
+    deleteTrigger: (chainId: string, triggerId: string) => send("DELETE", trigger(chainId, triggerId), {}, DeletedReader),
   };
 }
 export type AutomationsApi = ReturnType<typeof createAutomationsApi>;

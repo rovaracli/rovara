@@ -36,11 +36,11 @@ export function specOf(form: Initial, existing: TriggerRead | undefined): Spec {
   const old = existing?.spec as { kind: string; source?: string; type?: string; filter?: Record<string, string[]>; schedule?: { kind: string; days?: string[] } } | undefined;
   if (form.kind === "event") {
     const keep = old?.kind === "event" && old.source === form.source && old.type === form.type && old.filter !== undefined;
-    return { kind: "event", source: form.source, type: form.type, ...(keep ? { filter: old.filter } : {}) } as Spec;
+    return { kind: "event", source: form.source, type: form.type, ...(keep ? { filter: old.filter } : {}) };
   }
   const keepDays = old?.kind === "schedule" && old.schedule?.kind === "daily" && form.frequency === "daily" && old.schedule.days !== undefined;
   const schedule = form.frequency === "interval" ? { kind: "interval", minutes: Number(form.minutes) } : form.frequency === "weekly" ? { kind: "weekly", at: form.at, day: form.day } : { kind: "daily", at: form.at, ...(keepDays ? { days: old.schedule!.days } : {}) };
-  return { kind: "schedule", schedule, timezone: form.timezone.trim(), missed: form.missed } as Spec;
+  return { kind: "schedule", schedule, timezone: form.timezone.trim(), missed: form.missed };
 }
 
 export function TriggerDialog({ chainId, project: projectProp, trigger, open, onOpenChange, onSaved }: { chainId: string; project: string | undefined; trigger?: TriggerRead | undefined; open: boolean; onOpenChange: (open: boolean) => void; onSaved: (note: Note) => void }) {
