@@ -18,6 +18,8 @@ for (const path of ["design/design.css", "look-v2.css", "shell/shell.css", "scre
  "screens/agreement/agreement.css",
  // Review groups section and the task page review card (switch rovara.reviews = v2; their lazy chunks).
  "screens/reviews/reviews.css",
+ // Settings > Internal addresses (owner decision 123).
+ "screens/admin/private-addresses/private-addresses.css",
  // Lane C2: owned audit filter styles.
  "screens/admin/audit/audit.css",
  // Lane C12: owned Connections guidance styles.

@@ -1079,6 +1079,18 @@ export function auditCompanyImageRegistriesChanged(input: AuditBuilderBase & { r
   return build("company_image.registries_changed", input, { kind: "org", id: input.orgId }, { registryCount: input.registryCount, authority: input.authority });
 }
 
+// Internal addresses a company's tasks may reach (owner decision 123) ------------------------------------------------
+
+export type PrivateAddressesAuditAction = "company.private_addresses_proposed" | "company.private_addresses_changed" | "company.private_addresses_withdrawn";
+
+/**
+ * `occurrence`: `auditOccurrence(changeId or the new revision, action)`. The target is the company. Facts are the list's size, its digest, the revision, the counts added and removed, and fixed words; the hosts and ports
+ * themselves go in `details` (subject `org`), never in a fact.
+ */
+export function auditPrivateAddresses(input: AuditBuilderBase & { action: PrivateAddressesAuditAction; facts: Record<string, Fact> }): AuditEventInput {
+  return build(input.action, input, { kind: "org", id: input.orgId }, input.facts);
+}
+
 // Saved project images (SV wiring) ---------------------------------------------------------------------------
 
 /** `occurrence`: `auditOccurrence(project, row version, change)`. The target is the project. Facts are fixed words, an image digest and a count: no repository name, command or secret. */
@@ -1102,6 +1114,18 @@ export type TestAccountAuditAction = "test_account.added" | "test_account.approv
  */
 export function auditTestAccountChange(input: AuditBuilderBase & { action: TestAccountAuditAction; accountId: string; facts: Record<string, Fact> }): AuditEventInput {
   return build(input.action, input, { kind: "test_account", id: input.accountId }, input.facts);
+}
+
+// Customer test AWS account connections (lane TA2) ---------------------------------------------------------------
+
+export type TestAccessAuditAction = "test_access.connection_started" | "test_access.connection_reported" | "test_access.connection_confirmed" | "test_access.connection_tested" | "test_access.connection_ended";
+
+/**
+ * `occurrence`: `auditOccurrence(connectionId, action, ...)` with whatever makes the event the one (a version of the connection). The target is the connection. Facts are Regions, counts and fixed words only: the account id, the
+ * role, the alias and the project go in `details` (subject `org`), and a token or an external id is never in an event.
+ */
+export function auditTestAccessChange(input: AuditBuilderBase & { action: TestAccessAuditAction; connectionId: string; facts: Record<string, Fact> }): AuditEventInput {
+  return build(input.action, input, { kind: "test_account", id: input.connectionId }, input.facts);
 }
 
 /**

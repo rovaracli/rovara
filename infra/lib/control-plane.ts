@@ -3,6 +3,7 @@ import { CustomDomain } from "./custom-domain.js";
 import { connectorSecretsPolicyStatements, connectorSecretsTrustPolicy } from "./connector-secrets-policy.js";
 import { testAccountSecretsPolicyStatements, testAccountSecretsTrustPolicy } from "./test-account-secrets-policy.js";
 import { checkedBrokerEnvironment } from "./private-mcp.js";
+import { PRIVATE_ADDRESS_LAUNCH_ENVIRONMENT } from "./private-addresses.js";
 import { grantProviderKeySecrets } from "./model-keys.js";
 import { mergeRoleStatementsOnSynth } from "./merge-role-statements.js";
 import { EgressAlarms } from "./egress-alarms.js";
@@ -1732,6 +1733,11 @@ export class ControlPlaneStack extends Stack {
       });
     }
     sessions.steps.addEnvironment("CONTROL_PLANE_URL", api.attrApiEndpoint);
+    // Review L3: a worker launch checks the company's internal address list against the same install settings as the route (reserved and routed ranges, open ports). Named environments only; an install that sets none gets none.
+    if (naming.env !== undefined) {
+      const launchSettings = checkedBrokerEnvironment(props?.brokerEnvironment);
+      for (const name of PRIVATE_ADDRESS_LAUNCH_ENVIRONMENT) if (launchSettings[name] !== undefined) sessions.steps.addEnvironment(name, launchSettings[name]);
+    }
     sessions.connectDispatcher(dispatcher);
     sessions.connectBroker(broker);
 

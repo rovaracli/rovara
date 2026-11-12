@@ -375,6 +375,56 @@ describe("a Slack requester who is not a current writer of the team's org is ref
     }
   });
 
+  describe("the removal walk follows the whole chain behind an unlinked Slack identity (the same walk as the sign-in's)", () => {
+    const MID = "5".repeat(64), BANNED = "7".repeat(64), MERGED_INTO = "9".repeat(64);
+    const prepareCode = async (h: Harness) => (await serviceCall(h.handler, thread, GUEST, "POST", "/v1/service/threads/workspace/prepare", { requestId: randomUUID() })).body.error as { code?: string } | undefined;
+    const tombstone = (h: Harness, id: string, from: string) =>
+      h.db.set({ pk: `SIGNIN_IDENTITY#${id}`, sk: "META", identityKey: id, developerId: from, provider: "slack", linkedAt: "2026-10-01T00:00:00.000Z", lastSignInAt: "2026-10-01T00:00:00.000Z", unlinkedFrom: from, unlinkedAt: "2026-10-20T00:00:00.000Z" });
+    const ban = (h: Harness, id: string) => h.db.set({ ...orgBanKey(TEST_ORG, id), orgId: TEST_ORG, developerId: id });
+
+    it("1 hop: refused when the developer it was unlinked from is banned (REMOVED_FROM_ORG)", async () => {
+      const h = await withKit();
+      ban(h, BANNED);
+      unlinkedFrom(h, BANNED);
+      expect(await prepareCode(h)).toMatchObject({ code: "REMOVED_FROM_ORG" });
+    });
+
+    it("2 hops: S unlinked from MID, MID unlinked from a banned developer, is refused with 403 REMOVED_FROM_ORG on every route", async () => {
+      const h = await withKit();
+      ban(h, BANNED);
+      unlinkedFrom(h, MID);
+      tombstone(h, MID, BANNED);
+      const refused = await serviceCall(h.handler, thread, GUEST, "POST", "/v1/service/threads/workspace/prepare", { requestId: randomUUID() });
+      expect(refused.status, JSON.stringify(refused.body)).toBe(403);
+      expect(refused.body.error).toMatchObject({ code: "REMOVED_FROM_ORG" });
+      await refusedOnEveryRoute(h, GUEST);
+    });
+
+    it("2 hops, control: nobody in the chain is banned, so the Slack identity is served as before", async () => {
+      const h = await withKit();
+      unlinkedFrom(h, MID);
+      tombstone(h, MID, BANNED);
+      expect((await prepareCode(h))?.code).not.toBe("REMOVED_FROM_ORG");
+      expect((await prepareCode(h))?.code).not.toBe("FORBIDDEN");
+    });
+
+    it("the developer it was unlinked from was merged into a banned one: refused", async () => {
+      const h = await withKit();
+      ban(h, MERGED_INTO);
+      unlinkedFrom(h, MID);
+      h.db.set({ pk: `DEVELOPER#${MID}`, sk: "META", developerId: MID, mergedInto: MERGED_INTO });
+      expect(await prepareCode(h)).toMatchObject({ code: "REMOVED_FROM_ORG" });
+    });
+
+    it("the developer it was unlinked from is linked into a banned one now: refused", async () => {
+      const h = await withKit();
+      ban(h, MERGED_INTO);
+      unlinkedFrom(h, MID);
+      h.db.set({ pk: `SIGNIN_IDENTITY#${MID}`, sk: "META", identityKey: MID, developerId: MERGED_INTO, provider: "slack", linkedAt: "2026-10-21T00:00:00.000Z", lastSignInAt: "2026-10-21T00:00:00.000Z" });
+      expect(await prepareCode(h)).toMatchObject({ code: "REMOVED_FROM_ORG" });
+    });
+  });
+
   it("control: a Slack identity unlinked from a developer who is still a member is an unlinked requester, served as before", async () => {
     const SURVIVOR = "7".repeat(64);
     const h = await withKit();

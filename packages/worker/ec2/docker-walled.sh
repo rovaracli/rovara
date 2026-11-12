@@ -15,6 +15,26 @@
 set -u
 network=agentx-task
 
+# Owner decision 123: the internal names the host's wall pinned at this worker's start (AGENTX_PRIVATE_ADDRESS_HOSTS, `name=address` pairs, comma separated; boot-stage2.sh `rovara-private-allow`) become `--add-host` entries
+# of every container and build, so a dev container's lookups agree with the wall. A value that is not in that one written form gives none (the wall still decides what is reachable).
+hosts=""
+case "${AGENTX_PRIVATE_ADDRESS_HOSTS:-}" in
+  "" | *[!a-z0-9.,=-]*) ;;
+  *)
+    old_ifs=$IFS
+    IFS=,
+    for pair in $AGENTX_PRIVATE_ADDRESS_HOSTS; do
+      name=${pair%%=*} address=${pair#*=}
+      case "$name:$address" in
+        *=* | :* | *: | *[!0-9.]) hosts=""; break ;;
+      esac
+      case "$address" in *[!0-9.]* | "") hosts=""; break ;; esac
+      hosts="$hosts --add-host $name:$address"
+    done
+    IFS=$old_ifs
+    ;;
+esac
+
 refuse() {
   printf 'docker-walled: %s is not available on this worker: its build and run containers must stay on the %s network\n' "$1" "$network" >&2
   exit 1
@@ -36,12 +56,14 @@ case "${1:-}" in
   run | create)
     verb=$1
     shift
-    exec docker "$verb" --network "$network" --cap-drop NET_RAW "$@"
+    # shellcheck disable=SC2086
+    exec docker "$verb" --network "$network" --cap-drop NET_RAW $hosts "$@"
     ;;
   build)
     shift
     refuse_build_network "$@"
-    exec env DOCKER_BUILDKIT=0 docker build --network "$network" "$@"
+    # shellcheck disable=SC2086
+    exec env DOCKER_BUILDKIT=0 docker build --network "$network" $hosts "$@"
     ;;
   buildx)
     refuse "docker buildx"
@@ -51,7 +73,8 @@ case "${1:-}" in
       run | create)
         verb=$2
         shift 2
-        exec docker container "$verb" --network "$network" --cap-drop NET_RAW "$@"
+        # shellcheck disable=SC2086
+        exec docker container "$verb" --network "$network" --cap-drop NET_RAW $hosts "$@"
         ;;
     esac
     ;;
@@ -60,7 +83,8 @@ case "${1:-}" in
       group=$1
       shift 2
       refuse_build_network "$@"
-      exec env DOCKER_BUILDKIT=0 docker "$group" build --network "$network" "$@"
+      # shellcheck disable=SC2086
+      exec env DOCKER_BUILDKIT=0 docker "$group" build --network "$network" $hosts "$@"
     fi
     ;;
 esac

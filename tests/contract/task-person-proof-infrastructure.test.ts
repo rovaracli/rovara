@@ -434,18 +434,21 @@ describe("the named TEST proof-only installation gate", () => {
     // 2026-11-12 (0.5.15 train/0515-adapters, lane A2 adapters/a2-sqs-cloud fcf6c3bb9): the named and foreign digests were retaken from the values the test reports, after ONE intended change: the
     // DISABLED OutboxRelayBackstopSchedule (AWS::Scheduler::Schedule on the recovery schedules' role, named environments only). Checked first: with only that block switched off, all
     // pins and the named and legacy snapshots pass unchanged, and infra/ differs from integ/0515 2f072966f only by that block. Legacy did not move.
+    // 2026-11-12 (0.5.15, fix/0515-allowlist-review, merged with integ/0515 0c8c0fbbc): the named and foreign digests were retaken from the values the test reports, after the internal address lane's intended infra changes
+    // (its worker settings reaper alarm reading a metric-math expression of Lambda errors plus the reaper's own SessionsPrivateAddressRecycleErrors count, and the internal address resources it adds to named environments).
+    // Checked first: with infra/lib's eight changed files (app, control-plane, ec2-workers, private-mcp, production-foundation, session-lifecycle, vpc-endpoints, private-addresses) put back to integ/0515's, all three tests (this one, named-templates, legacy-templates) pass on integ's own pins. Legacy did not move.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "d16d4c6c47365f312ef61de64b0d37d81d4cd421823186b088f9666870c17478",
-        withoutRoute: "68653783ed88a2dcab5868b857f4252c12001004eb1aa64d99c381fa5d6a933f",
+        withRoute: "15e3225a98f9f935ef2d527a1cff124f9a1e4569419c7d3731366eefab332a8e",
+        withoutRoute: "b405d8b681bcc5132d97771e1f616adc69b2dd0822262d1379c39c6d536a9884",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "c04f5ef2c6c61905f44bf16af5ed32c5e2e7d6b65fba0f60a774ab8fe9a50ce2",
-        withoutRoute: "da5b2b6ef7952d769bd5359512a4cb4145c3713635f332eacde866871b73be18",
+        withRoute: "bf6f9daaf454e54f4f111b8c4a7b2948858a7d2b0933257c8bf6fa6c38ab46b5",
+        withoutRoute: "c65482248d33b3d562601ebc9645499d4cb9251f668b58deaf37428e47b13c74",
       },
       {
         label: "legacy",

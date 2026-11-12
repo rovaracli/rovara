@@ -32,6 +32,11 @@ export interface Ec2WorkerFoundationProps {
    * endpoints) and the ranges the customer approved. Absent: the HTTPS egress to the whole internet every other install has, unchanged.
    */
   privateEgressCidrs?: readonly string[];
+  /**
+   * Owner decision 123 (review H1): extra TCP ports workers may open toward the install's routed private ranges (never its own VPC), for a company's approved internal addresses. Enterprise only, from
+   * `rovaraPrivateAddressPorts` (private-addresses.ts). Absent: the group is exactly as before.
+   */
+  privateAddressEgress?: { cidrs: readonly string[]; ports: readonly number[] };
 }
 
 /**
@@ -63,7 +68,10 @@ export class Ec2WorkerFoundation extends Construct {
     this.workerSecurityGroup = new ec2.CfnSecurityGroup(this, "WorkerSecurityGroup", {
       groupDescription: `AgentX EC2 workers: port ${EC2_WORKER_PORT} from the dispatcher and session manager only, HTTPS egress`,
       groupName: names.workerSecurityGroupName,
-      securityGroupEgress: egressRules(props.privateEgressCidrs, "HTTPS to ECR, Bedrock, CloudWatch, the control plane, package repositories and Git providers"),
+      securityGroupEgress: [
+        ...egressRules(props.privateEgressCidrs, "HTTPS to ECR, Bedrock, CloudWatch, the control plane, package repositories and Git providers"),
+        ...(props.privateAddressEgress?.ports ?? []).flatMap((port) => (props.privateAddressEgress?.cidrs ?? []).map((cidr): ec2.CfnSecurityGroup.EgressProperty => ({ ipProtocol: "tcp", fromPort: port, toPort: port, cidrIp: cidr, description: `Approved internal addresses: port ${String(port)} to ${cidr}` }))),
+      ],
       tags: tags(names.workerSecurityGroupName),
       vpcId: props.vpcId,
     });
@@ -227,5 +235,6 @@ function httpsEgress(description: string): ec2.CfnSecurityGroup.EgressProperty {
 function egressRules(privateCidrs: readonly string[] | undefined, description: string): ec2.CfnSecurityGroup.EgressProperty[] {
   if (privateCidrs === undefined) return [httpsEgress(description)];
   if (privateCidrs.some((cidr) => cidr === "0.0.0.0/0" || cidr.endsWith("/0"))) throw new Error("an Enterprise install's security groups never allow the whole internet");
-  return privateCidrs.map((cidr) => ({ ipProtocol: "tcp", fromPort: 443, toPort: 443, cidrIp: cidr, description: `HTTPS to ${cidr} only` }));
+  // Each range once: a repeated one (a routed range equal to the install's own) would be a duplicate rule, which CloudFormation refuses.
+  return [...new Set(privateCidrs)].map((cidr) => ({ ipProtocol: "tcp", fromPort: 443, toPort: 443, cidrIp: cidr, description: `HTTPS to ${cidr} only` }));
 }

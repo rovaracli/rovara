@@ -11,6 +11,7 @@ import { fileOpsExec, type FileOpsTarget } from "./file-ops-exec.js";
 import type { CommandResult } from "./readiness.js";
 import { hiddenWorkspaceDirectories } from "./workspace-state.js";
 import { TASK_SANDBOX_NETWORK, ensureTaskNetwork, isEc2WorkerRuntime } from "./task-network.js";
+import { privateAddressHostArgs } from "./private-address-hosts.js";
 import { createDockerCli, taskContainerExec, type DockerCli } from "./swebench/containers.js";
 
 /**
@@ -179,6 +180,8 @@ export interface TaskSandboxRunInput {
    * own, with the DNS watch's helper container on it (setup-network.ts). The network is made and removed by the caller; the sandbox does not create it. Absent: the task network, as every sandbox.
    */
   network?: { name: string; ip: string };
+  /** Where the worker's settings are read from (AGENTX_PRIVATE_ADDRESS_HOSTS); tests pass their own. Default: this process's environment. */
+  environment?: NodeJS.ProcessEnv;
 }
 
 /** The most DNS servers a sandbox is given (a resolver uses at most three). */
@@ -208,6 +211,8 @@ export function taskSandboxRunArgs(input: TaskSandboxRunInput): string[] {
     "--network", input.network?.name ?? TASK_SANDBOX_NETWORK,
     ...(input.network === undefined ? [] : ["--ip", input.network.ip]),
     ...dnsArgs(input.dns),
+    // Owner decision 123: the internal names the host's wall pinned, so a lookup in the sandbox agrees with it (private-address-hosts.ts).
+    ...privateAddressHostArgs(input.environment ?? process.env),
     "--user", TASK_SANDBOX_USER,
     // A sandbox shares the instance with the worker: a runaway command (or a file-tool search) must not take every core or process.
     ...(sandboxCpuLimit(input.hostCpus ?? availableParallelism()) === undefined ? [] : ["--cpus", sandboxCpuLimit(input.hostCpus ?? availableParallelism())!]),

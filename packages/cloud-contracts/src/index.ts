@@ -109,6 +109,9 @@ export * from "./app-project-people.js";
 // tests/contract/approval-place-upstream-copy.test.ts. app-approval-window.ts and decision-dismiss.ts are Cloud's (the latter owed upstream, see its header).
 export * from "./approval-place.js";
 export * from "./app-approval-window.js";
+// Internal addresses a company's tasks may reach (owner decision 123).
+export * from "./app-private-addresses.js";
+export * from "./private-address-digest.js";
 export * from "./decision-dismiss.js";
 export * from "./app-billing.js";
 export * from "./app-companies.js";
@@ -139,3 +142,7 @@ export * from "./continue-loop.js";
 
 export * from "./app-automations.js";
 export * from "./app-review-groups.js";
+
+export * from "./test-access-connect.js";
+export * from "./test-access-policy.js";
+export * from "./test-access-scoping.js";
