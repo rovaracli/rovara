@@ -6,6 +6,7 @@ import { providerSecretArn } from "../deploy/answer-schemas.js";
 import { githubAppSecretName, parseAppSecret } from "../init/github-app.js";
 import { checkAlertWebhook } from "../init/answers.js";
 import { slackSecretName } from "../init/slack-app.js";
+import { erasureHashKeySecretName } from "../deploy/signing-key.js";
 import { check, type DoctorCheck, type DoctorContext } from "./checks.js";
 
 /** `fix` is for a missing secret; `shapeFix`, when set, for one that exists with the wrong shape. */
@@ -44,6 +45,13 @@ export async function secretChecks(context: DoctorContext): Promise<DoctorCheck[
       fix: `run agentx --env ${env} upgrade: it makes a new key and redeploys the control plane with it`,
       // Upgrade keeps any key that exists (callbackSigningKey), so a short one must go first.
       shapeFix: `with admin credentials, delete it (aws secretsmanager delete-secret --secret-id agentx/${env}/callback-signing-key --force-delete-without-recovery --region ${settings.region}), then run agentx --env ${env} upgrade: it makes a new key and redeploys the control plane with it`,
+    },
+    {
+      // 0.5.15: the key erased people's names and aliases (and Ask question hashes) are hashed with. Its value must never change: never delete or replace it.
+      name: erasureHashKeySecretName(env),
+      shape: (value) => (Buffer.byteLength(value, "utf8") >= 32 ? undefined : "is shorter than the 32 bytes the control plane needs"),
+      fix: `run agentx --env ${env} upgrade: it creates the key from the callback signing key, and refuses if that key has changed since (then restore the erasure key, or run the re-hash plan in docs/runbooks/rotate-callback-signing-key.md)`,
+      shapeFix: `do not replace it with a new value: stored hashes need the exact value they were made with. Put back the value it held (an earlier version of the secret), or run the re-hash plan in docs/runbooks/rotate-callback-signing-key.md`,
     },
     {
       name: slackSecretName(env),

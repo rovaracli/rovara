@@ -65,7 +65,8 @@ export { TaskStopEditablePolicySchema, type TaskStopEditablePolicy, TaskStopPend
 // Proof and evidence (W4/W5): browser-safe schemas for the evidence view, decision cards and the test environment.
 export * from "./evidence.js";
 export * from "./app-lessons-repo-file.js";
-export * from "./lessons-local-tools.js";
+// Lessons for local coding tools (decision 46b): Code's own file since the vendor pin 0e340c0e, re-exported for the pages that show the setting.
+export { LOCAL_LESSONS_STAGES, LocalLessonsStageSchema, LOCAL_LESSONS_TASK_MAX, LOCAL_LESSONS_FILES_MAX, LOCAL_LESSONS_REMOTE_MAX, LocalLessonsBodySchema, type LocalLessonsBody, LOCAL_LESSONS_OFF_REASONS, LocalLessonSchema, LocalLessonsResponseSchema, type LocalLessonsResponse, LocalLessonsResponseReaderSchema, type LocalLessonsRead, LOCAL_LESSONS_UNAVAILABLE_LINE, LOCAL_LESSONS_NOT_FOUND_LINE, LOCAL_LESSONS_NO_PROJECT_LINE, LOCAL_LESSONS_AMBIGUOUS_LINE, LOCAL_LESSONS_PROJECTS_MAX, LOCAL_LESSONS_REPO_FILE, LOCAL_LESSONS_TOOL_DESCRIPTION, LOCAL_LESSONS_NOTES_LINE, withNotesLine, withoutCredentials, LocalToolsProjectBodySchema, LocalToolsCompanyBodySchema, LocalToolsStateSchema, LocalToolsStateReaderSchema, type LocalToolsState, LocalToolsCompanyStateSchema, LocalToolsCompanyStateReaderSchema, type LocalLessonsAsk, type LocalLessonsAcross, lessonsAcrossProjects } from "@rovara-code/contracts";
 // Team record source rows (learning v2): the Sources tab editor's bodies and views.
 export * from "./team-record-sources.js";
 // UX-4b: the project's learning mode, read and set on the project page.
@@ -83,6 +84,7 @@ export * from "./approval-place.js";
 export * from "./app-approval-window.js";
 export * from "./decision-dismiss.js";
 export * from "./app-billing.js";
+export * from "./app-companies.js";
 export * from "./app-insights.js";
 export * from "./app-agent-publish.js";
 export { JiraOrgAdminMutationBodySchema, JiraOrgAdminResultReaderSchema, type JiraOrgAdminMutationBody } from "./jira-org-admin-web.js";
@@ -114,3 +116,5 @@ export * from "./app-review-groups.js";
 export * from "./product-decisions.js";
 // Cloud's FOUR project roles (maintainer, contributor, collaborator, viewer), under `Cloud` names beside Code's three-valued ones (exp/project-people). Code's names above stay as they were, so every screen that is not about collaborators keeps reading the three-role "floor"; the People tab, the role labels and the Roles screen read these.
 export { projectRoleFloor, PROJECT_ROLE_ORDER, ProjectRoleSchema as CloudProjectRoleSchema, PROJECT_PERMISSIONS as CLOUD_PROJECT_PERMISSIONS, ProjectMemberSchema as CloudProjectMemberSchema, ProjectMembersResponseSchema as CloudProjectMembersResponseSchema, ProjectMemberChangeResponseSchema as CloudProjectMemberChangeResponseSchema, projectAllows as cloudProjectAllows, type ProjectRole as CloudProjectRole, type ProjectPermission as CloudProjectPermission, type ProjectMember as CloudProjectMember } from "./project-roles.js";
+// The AWS services Rovara local AWS serves (the generated table of Code's contracts), for the test-environment service picker: each service's fidelity score and whether a seed handler creates its resources.
+export { AWS_EMULATOR_SERVICES, AWS_EMULATOR_ENGINE_VERSION, AWS_PLAN_SERVICES_MAX, TEST_ENV_DEPENDENCY_LIMITS, awsFidelityPercent, awsSeededKinds, normaliseAwsServiceKey } from "@rovara-code/contracts";

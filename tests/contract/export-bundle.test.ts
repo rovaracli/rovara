@@ -333,7 +333,8 @@ describe("writeExportBundle", () => {
     };
 
     const controlPlane = await paramsOf("control-plane");
-    expect(controlPlane.CallbackSigningKey).toBe("{{secret:agentx/staging/callback-signing-key}}");
+    // 0.5.15: the callback signing key is in Secrets Manager and the template declares no parameter for it, so the file has none (CloudFormation refuses an undeclared one).
+    expect(controlPlane).not.toHaveProperty("CallbackSigningKey");
     expect(controlPlane.OidcIssuer).toBe("{{output:identity.Issuer}}");
     expect(controlPlane.OidcAudience).toBe("{{output:identity.Audience}}");
     expect(controlPlane).not.toHaveProperty("GitHubAppAccount");
@@ -358,7 +359,7 @@ describe("writeExportBundle", () => {
     expect(access.PermissionsBoundaryArn).toBe("");
     expect(access.OperatorPrincipalArn).toBe("");
 
-    // No file anywhere in the bundle contains a real (non-marker) CallbackSigningKey value, and no
+    // No file anywhere in the bundle names a CallbackSigningKey parameter at all, and no
     // text file contains a 40+ character run that looks like a generated key: base64url-random
     // text mixes upper case, lower case AND digits within any long span with overwhelming
     // probability, unlike this bundle's own long identifiers, which are either a pure-hex sha256
@@ -367,7 +368,7 @@ describe("writeExportBundle", () => {
     for (const relativePath of await allFiles(dir)) {
       if (relativePath.endsWith(".zip")) continue;
       const text = await readFile(join(dir, relativePath), "utf8");
-      expect(text).not.toMatch(/"ParameterKey"\s*:\s*"CallbackSigningKey"\s*,\s*"ParameterValue"\s*:\s*"(?!{{secret:)/);
+      expect(text).not.toMatch(/"ParameterKey"\s*:\s*"CallbackSigningKey"/);
       const runs = text.match(suspiciousKeyRun) ?? [];
       const generatedLooking = runs.filter((run) => /[A-Z]/.test(run) && /[a-z]/.test(run) && /[0-9]/.test(run));
       expect(generatedLooking).toEqual([]);

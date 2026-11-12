@@ -9,7 +9,8 @@ import { approvalGrantChange } from "../../org/approval-membership.js";
 import { createHash, randomUUID } from "node:crypto";
 import { GetCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { PutObjectCommand } from "@aws-sdk/client-s3";
-import { AgentXError, E2EPolicySchema, E2EScenarioBundleSchema, e2eScenarioBundleDigest, E2ERunBindingSchema, E2ERoundSchema, selectE2EExecutionPlan, verifyE2ESourceSnapshot, AGENTX_PROTOCOL_VERSION, canonicalJson, githubNotConnectedMessage, approvedToolCount, presentedNameProblems, toolBudget, TOOL_LIMIT, TOOL_WARNING_THRESHOLD, legacyProjectFields, agentXError, projectNameTakenMessage, type RegistrationPreflight, orgProjectCatalogKey, projectMetaKey, projectSetupApprovalKey, orgScoped, projectRevisionKey, type OrgId, INDEX_EXPIRY_ATTRIBUTE, sameJsonContent, type E2ESourceSnapshot, ProjectSetupExecutionSchema, ProjectSetupOperationSchema, ProjectSetupSessionSchema, projectSetupExecutionKey, projectSetupOperationKey, projectSetupSessionKey } from "@rovara-code/contracts";
+import { AgentXError, E2EPolicySchema, E2EScenarioBundleSchema, e2eScenarioBundleDigest, E2ERunBindingSchema, E2ERoundSchema, selectE2EExecutionPlan, verifyE2ESourceSnapshot, AGENTX_PROTOCOL_VERSION, canonicalJson, githubNotConnectedMessage, approvedToolCount, presentedNameProblems, legacyProjectFields, agentXError, projectNameTakenMessage, type RegistrationPreflight, orgProjectCatalogKey, projectMetaKey, projectSetupApprovalKey, orgScoped, projectRevisionKey, type OrgId, INDEX_EXPIRY_ATTRIBUTE, sameJsonContent, type E2ESourceSnapshot, ProjectSetupExecutionSchema, ProjectSetupOperationSchema, ProjectSetupSessionSchema, projectSetupExecutionKey, projectSetupOperationKey, projectSetupSessionKey } from "@rovara-code/contracts";
+import { CLOUD_TOOL_LIMIT, CLOUD_TOOL_WARNING_THRESHOLD, cloudToolBudget } from "./tool-budget.js";
 import { ProjectDefinitionSchema, type ProjectDefinition } from "@agentx/cloud-contracts";
 import { type AuditActor } from "@agentx/cloud-contracts";
 import { githubRepoProjectKey, orgMetaKey, projectCreateRequestKey, type AuditEventInput, auditOperatorId, WorkerInvocationSchema } from "@agentx/cloud-contracts";
@@ -90,7 +91,7 @@ const TAKEOVER_REASON_MAX = 500;
 
 /** Registration's refusals and preflight, for a new revision; registerProject and a change plan share them. */
 export async function registrationChecks(dependencies: AwsBrokerDependencies, identity: RegistrationActor, definition: ProjectDefinition, wantsPreflight: boolean, credentialsChecked?: readonly string[]): Promise<PreflightOutcome | undefined> {
-  const budget = toolBudget(approvedToolCount(definition));
+  const budget = cloudToolBudget(approvedToolCount(definition));
   const context = connectorTypeContext(dependencies, identity.orgId, async () => githubScope(dependencies, identity.orgId));
   const connectors = () => resolveConnectors(definition, context, dependencies.connectorTypes);
   const nameProblems = presentedNameProblems(definition);
@@ -208,13 +209,13 @@ export async function registerProjectFor(
       }
     }
   }
-  const budget = toolBudget(approvedToolCount(definition));
+  const budget = cloudToolBudget(approvedToolCount(definition));
   const connectors = () => resolveConnectors(definition, connectorTypeContext(dependencies, orgId, async () => githubScope(dependencies, actor.orgId)), dependencies.connectorTypes);
   const respond = (project: Omit<RegisteredProjectRecord, "pk" | "sk">, duplicate: boolean, preflight: PreflightOutcome | undefined) => {
     const warnings = registrationWarnings(budget.warning, preflight);
     return {
       project, duplicate,
-      tools: { maximum: budget.maximum, warnAbove: TOOL_WARNING_THRESHOLD, limit: TOOL_LIMIT },
+      tools: { maximum: budget.maximum, warnAbove: CLOUD_TOOL_WARNING_THRESHOLD, limit: CLOUD_TOOL_LIMIT },
       ...(warnings.length ? { warnings } : {}), ...(preflight ? { preflight: preflight.report } : {}),
       ...(setupApprovalBinding?.decision === "approve" ? { setupRuntime: setupExecutionCreated ? "QUEUED" : "UNAVAILABLE" } : {}),
       ...(ownershipTakenOver ? { ownershipTakenOver: true } : {}),

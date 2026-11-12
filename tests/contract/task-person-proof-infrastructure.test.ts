@@ -428,18 +428,24 @@ describe("the named TEST proof-only installation gate", () => {
     // 2026-11-11 (0.5.15, feat/0515-identity-healing-one-company): the named and foreign digests were retaken after ONE intended change: the DeveloperSignIn function's Query grant
     // loses ORG#org_*#PROJECT_CATALOG (the old race-org check, gone with IDENTITY-HEALING-CROSS-ORG). Restoring that one key gives back the previous pins. The named-templates snapshot
     // shows exactly that one line removed. Legacy did not move.
+    // 2026-11-12 (0.5.15, signing key to Secrets Manager 1706c80a7 + drop CallbackSigningKey 7d8721bb6): the named and foreign digests were retaken from the values the test reports, after
+    // the two reviewed infra changes: CALLBACK_SIGNING_KEY leaves the broker, EvalBatchTick and reconciler env; GetSecretValue on the two signing secrets; the named CallbackSigningKey parameter removed.
+    // Checked first: at dc211668e (before both) all six tests pass on the previous pins, and infra/ differs from dc211668e only by those two lanes. Legacy did not move.
+    // 2026-11-12 (0.5.15 train/0515-adapters, lane A2 adapters/a2-sqs-cloud fcf6c3bb9): the named and foreign digests were retaken from the values the test reports, after ONE intended change: the
+    // DISABLED OutboxRelayBackstopSchedule (AWS::Scheduler::Schedule on the recovery schedules' role, named environments only). Checked first: with only that block switched off, all
+    // pins and the named and legacy snapshots pass unchanged, and infra/ differs from integ/0515 2f072966f only by that block. Legacy did not move.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "a72c23b9edeb1a7773561a5f15fa7046039480ef465fea8f4060258988f6f1ad",
-        withoutRoute: "49a25764882ab668ddcf58c39fa7112e30b512c46108fb4ddeb8e3c892868716",
+        withRoute: "d16d4c6c47365f312ef61de64b0d37d81d4cd421823186b088f9666870c17478",
+        withoutRoute: "68653783ed88a2dcab5868b857f4252c12001004eb1aa64d99c381fa5d6a933f",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "288ec2a44cc82be83a069033207340ebc8d733f6af5113be99e2999ddfc72f57",
-        withoutRoute: "565f46a320976b4fcb93dc44ea18dfd94f44f86609b7e68f8680edb8c6200821",
+        withRoute: "c04f5ef2c6c61905f44bf16af5ed32c5e2e7d6b65fba0f60a774ab8fe9a50ce2",
+        withoutRoute: "da5b2b6ef7952d769bd5359512a4cb4145c3713635f332eacde866871b73be18",
       },
       {
         label: "legacy",

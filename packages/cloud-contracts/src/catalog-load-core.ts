@@ -2,6 +2,7 @@
 // `@agentx/contracts/testing`.
 import { CATALOG_MAX_BYTES, CATALOG_SIGNATURE_MAX_BYTES, type CatalogSignature, CatalogSignatureSchema, ServiceCatalogSchema, type VerifiedCatalog, verifyCatalogSignature } from "@rovara-code/contracts";
 import { registerVerifiedCatalog } from "./service-catalog-brand.js";
+import { placeholderDigestProblem } from "./service-catalog-images.js";
 
 export type LoadedCatalog = { ok: true; catalog: VerifiedCatalog; keyId: string } | { ok: false; reason: string };
 
@@ -22,6 +23,8 @@ export function loadSignedCatalogWith(input: { catalogBytes: Uint8Array; signatu
   if (!checked.ok) return { ok: false, reason: checked.reason };
   try {
     const catalog = ServiceCatalogSchema.parse(JSON.parse(Buffer.from(input.catalogBytes).toString("utf8")));
+    // A signed catalog that still pins the all-zero placeholder digest is never verified: nothing can start from it, and it must not look like a catalog that merely failed to pull.
+    if (placeholderDigestProblem(catalog) !== undefined) return { ok: false, reason: "the catalog pins an all-zero placeholder digest" };
     // The one place a catalog is marked verified (at run time, in a private registry, and frozen): the signature held over these exact bytes and the schema parsed them.
     return { ok: true, catalog: registerVerifiedCatalog(catalog), keyId: checked.keyId };
   } catch {

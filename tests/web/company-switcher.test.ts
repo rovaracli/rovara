@@ -12,10 +12,10 @@ import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { createApiClient } from "../../packages/ui/src/api/client.js";
 import { ThemeProvider } from "../../packages/ui/src/theme.js";
 import { AppShell } from "../../packages/ui/src/shell/AppShell.js";
-import { COMPANIES_STORAGE_KEY, isCompanySwitcherOn } from "../../packages/ui/src/company-flags.js";
+import { COMPANIES_STORAGE_KEY, isCompanyHeaderOn, isCompanySwitcherOn } from "../../packages/ui/src/company-flags.js";
 import { CompaniesAnswerReaderSchema, CompaniesReaderSchema, linkCompany, withoutLinkCompany } from "../../packages/ui/src/api/companies.js";
 import { COMPANY_HEADER, reloadIntoActiveCompany, withCompanyHeader } from "../../packages/ui/src/api/company-context.js";
-import { NAV_STORAGE_KEY } from "../../packages/ui/src/nav-flags.js";
+import { applyNavUiFlags, holdUiFlagsUntilNav } from "../../packages/ui/src/ui-flags.js";
 import { renderUi } from "./support/render.js";
 import { expectNoAxeViolations } from "./support/axe.js";
 import { fakeHost } from "./support/fake-host.js";
@@ -57,19 +57,20 @@ function Data() {
  const read = useQuery({ queryKey: ["data"], queryFn: () => api.get("/v1/app/test-data", answer) });
  return createElement("section", null, createElement("h1", { tabIndex: -1 }, "Home"), createElement("p", { "data-testid": "data" }, read.data?.text ?? (read.isError ? "Couldn't load" : "Loading")));
 }
-interface Options { on?: boolean; nav2?: boolean; path?: string; query?: QueryClient; server?: ReturnType<typeof server>; seedNav?: string }
+interface Options { on?: boolean; nav2?: boolean; path?: string; query?: QueryClient; server?: ReturnType<typeof server>; seedNav?: string; companyFlag?: "on" | "preview" | "off" }
 function shell(options: Options = {}) {
  const s = options.server ?? server(), f = fakeHost(s.handler), query = options.query ?? createQueryClient();
  f.host.storage.set("rovara.theme", "light");
  if (options.on !== false) f.host.storage.set(COMPANIES_STORAGE_KEY, "v2");
- if (options.nav2 === true) f.host.storage.set(NAV_STORAGE_KEY, "v2");
+ // The company's runtime flag, as the navigation answer would carry it (App applies it before the shell mounts).
+ if (options.companyFlag !== undefined) applyNavUiFlags(f.host, { uiFlags: { companies: options.companyFlag } });
  const router = createMemoryRouter([{ path: "/app", element: createElement(AppShell), children: [{ index: true, element: createElement(Data) }, { path: "other", element: createElement("h1", { tabIndex: -1 }, "Other page") }] }], { initialEntries: [options.path ?? "/app"] });
  const navigate = vi.fn<(url: string) => void>();f.host.navigate = navigate;connect(f.host);
  const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(ThemeProvider, { host: f.host, children: h(RouterProvider, { router }) }) }) }));
  return { ...ui, ...f, navigate, server: s, query, router, close: () => { ui.unmount();router.dispose();query.clear(); } };
 }
-/** What the browser host does: the one transport names the page's company while the device switch is on. */
-const connect = (host: AppHost) => { host.transport = withCompanyHeader(host.transport, { isOn: () => isCompanySwitcherOn(host), onStale: () => { reloadIntoActiveCompany(host); } }); };
+/** What the browser host does: the one transport names the page's company while the switch is on (company-flags.ts `isCompanyHeaderOn`). */
+const connect = (host: AppHost) => { host.transport = withCompanyHeader(host.transport, { isOn: () => isCompanyHeaderOn(host), onStale: () => { reloadIntoActiveCompany(host); } }); };
 const companyCalls = (calls: ApiRequest[]) => calls.filter(call => call.path === "/v1/app/companies");
 describe("the device switch", () => {
  const host = (value?: string) => ({ storage: { get: () => value, set: () => undefined } });
@@ -79,6 +80,39 @@ describe("the device switch", () => {
   expect(isCompanySwitcherOn(host("v2"))).toBe(true);
  });
  it("is off when the store throws", () => { expect(isCompanySwitcherOn({ storage: { get: () => { throw new Error("blocked"); }, set: () => undefined } })).toBe(false); });
+});
+describe("the company's companies flag (decision 98): server on / preview / off, with and without the device key", () => {
+ for (const [flag, device, shown] of [["on", true, true], ["on", false, true], ["preview", true, true], ["preview", false, false], ["off", true, false], ["off", false, false]] as const) {
+  it(`server ${flag}, device key ${device ? "v2" : "unset"}: ${shown ? "the header switcher and the company header" : "today's header, no companies read, no company header"}`, async () => {
+   const f = shell({ on: device, companyFlag: flag });
+   try {
+    await screen.findByText("Acme data");
+    if (shown) {
+     expect(await screen.findByRole("button", { name: /Acme.*switch company/iu })).toBeTruthy();
+     expect(f.server.calls.find(call => call.path === "/v1/app/test-data")?.headers?.[COMPANY_HEADER]).toBe(A);
+    } else {
+     expect(companyCalls(f.server.calls)).toHaveLength(0);
+     for (const call of f.server.calls) expect(call.headers?.[COMPANY_HEADER], call.path).toBeUndefined();
+     expect(document.querySelector(".rv-shell-org")?.outerHTML).toBe('<span class="rv-shell-org">Acme</span>');
+     expect(document.querySelector(".rv-company-button, .rv-company-list, .rv-company-gate")).toBeNull();
+    }
+   } finally { f.close(); }
+  });
+ }
+ it("an answer that does not name the flag (an older broker that sends uiFlags without it) is off, even with the device key", async () => {
+  const f = shell({ on: true });applyNavUiFlags(f.host, { uiFlags: { look: "on" } });
+  expect(isCompanySwitcherOn(f.host)).toBe(false);f.close();
+  const g = fakeHost();g.host.storage.set(COMPANIES_STORAGE_KEY, "v2");applyNavUiFlags(g.host, { features: {} });
+  // No uiFlags at all (a broker from before runtime flags): the device key decides, as before.
+  expect(isCompanySwitcherOn(g.host)).toBe(true);
+ });
+ it("the transport's switch: the answer decides once it is in; while the app waits, the device key decides (the navigation read is company-specific)", () => {
+  const make = (device: boolean) => { const g = fakeHost();if (device) g.host.storage.set(COMPANIES_STORAGE_KEY, "v2");return g.host; };
+  for (const [flag, device, on] of [["on", false, true], ["preview", true, true], ["preview", false, false], ["off", true, false]] as const) { const host = make(device);applyNavUiFlags(host, { uiFlags: { companies: flag } });expect(isCompanyHeaderOn(host), `${flag} ${String(device)}`).toBe(on);expect(isCompanySwitcherOn(host)).toBe(on); }
+  const waiting = make(true);holdUiFlagsUntilNav(waiting);expect(isCompanySwitcherOn(waiting)).toBe(false);expect(isCompanyHeaderOn(waiting)).toBe(true);
+  const waitingOff = make(false);holdUiFlagsUntilNav(waitingOff);expect(isCompanyHeaderOn(waitingOff)).toBe(false);
+  expect(isCompanyHeaderOn({ storage: { get: () => { throw new Error("blocked"); }, set: () => undefined } })).toBe(false);
+ });
 });
 describe("the local schemas", () => {
  it("read the document's shapes, and refuse what it does not allow", () => {
@@ -157,7 +191,7 @@ describe("several companies: the header menu", () => {
   expect(document.activeElement).toBe(trigger);f.close();
  });
  it("has no accessibility violations, closed and open, with the old shell and the new navigation", async () => {
-  for (const nav2 of [false, true]) {
+  for (const nav2 of [true]) {
    const f = shell({ nav2 }), user = userEvent.setup();
    await user.click(await screen.findByRole("button", { name: /switch company/iu }));await screen.findByRole("menu");
    await expectNoAxeViolations(document.body);f.close();
@@ -230,7 +264,7 @@ describe("refusals show the server's sentence word for word", () => {
  }
 });
 describe("the phone's Menu", () => {
- for (const nav2 of [false, true]) it("lists the companies with roles, marks the current one, and switches (" + (nav2 ? "new navigation" : "old shell") + ")", async () => {
+ for (const nav2 of [true]) it("lists the companies with roles, marks the current one, and switches (" + (nav2 ? "the navigation" : "") + ")", async () => {
   const f = shell({ nav2 }), user = userEvent.setup();
   await screen.findByText("Acme data");await user.click(screen.getByRole("button", { name: "Open workspace menu" }));
   const dialog = await screen.findByRole("dialog", { name: "Workspace" }), section = await within(dialog).findByRole("heading", { name: "Company" });

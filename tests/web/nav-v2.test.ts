@@ -8,7 +8,6 @@ import { appRoutes } from "../../packages/ui/src/routes.js";
 import { AppHostProvider } from "../../packages/ui/src/host.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { ThemeProvider } from "../../packages/ui/src/theme.js";
-import { NAV_STORAGE_KEY, isNewNavOn } from "../../packages/ui/src/nav-flags.js";
 import { currentDestination, destinationsFor } from "../../packages/ui/src/shell/destinations.js";
 import { SIDEBAR_PROJECT_LIMIT } from "../../packages/ui/src/shell/NavV2.js";
 import { renderUi } from "./support/render.js";
@@ -24,23 +23,14 @@ const nav = (overrides: Record<string, unknown> = {}): AppNav => AppNavSchema.pa
 const withRole = (orgRole: string, extra: Partial<AppNav["features"]> = {}) => nav({ me: { ...base.me, orgRole }, features: { ...features, ...extra } });
 function shell(path: string, options: { on?: boolean; value?: AppNav; theme?: "light" | "dark" } = {}) {
  const value = options.value ?? nav(), f = fakeHost(async () => ({ status: 200, body: value })), query = createQueryClient();query.setQueryData(["nav"], value);
- f.host.storage.set("rovara.theme", options.theme ?? "light");if (options.on === true) f.host.storage.set(NAV_STORAGE_KEY, "v2");
- const router = createMemoryRouter(appRoutes(value.features, { newNav: isNewNavOn(f.host) }), { initialEntries: [path] });
+ f.host.storage.set("rovara.theme", options.theme ?? "light");
+ const router = createMemoryRouter(appRoutes(value.features), { initialEntries: [path] });
  const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(ThemeProvider, { host: f.host, children: h(RouterProvider, { router }) }) }) }));
  return { ...ui, ...f, query, router, close: () => { ui.unmount();router.dispose();query.clear(); } };
 }
 const sidebar = () => within(screen.getByRole("navigation", { name: "Workspace" }));
 const tabBar = () => within(screen.getByRole("navigation", { name: "Main destinations" }));
 const names = (scope: { getAllByRole(role: string): HTMLElement[] }) => scope.getAllByRole("link").map(link => link.textContent);
-describe("the switch", () => {
- const host = (value?: string) => ({ storage: { get: () => value, set: () => undefined } });
- it("is off unless the device key is exactly v2", () => {
-  expect(NAV_STORAGE_KEY).toBe("rovara.nav");
-  expect(isNewNavOn(host())).toBe(false);for (const value of ["", "v1", "V2", "true", "1", "v2 "]) expect(isNewNavOn(host(value))).toBe(false);
-  expect(isNewNavOn(host("v2"))).toBe(true);
- });
- it("is off when the store throws", () => { expect(isNewNavOn({ storage: { get: () => { throw new Error("blocked"); }, set: () => undefined } })).toBe(false); });
-});
 describe("destinations", () => {
  const ids = (value: AppNav) => destinationsFor(value).map(destination => destination.id);
  it("are Home, Work, Projects, Agents, Settings for every role, and never Insights", () => {
@@ -57,30 +47,27 @@ describe("destinations", () => {
   for (const [path, id] of cases) expect(currentDestination(path), path).toBe(id);
  });
 });
-describe("switch off", () => {
- it("renders today's shell: Live, repeated agents, Agent directory, no tab bar, no new classes", async () => {
+describe("the old navigation is gone (decision 125)", () => {
+ it("the shell is always the new one: no Live, no repeated agents, no Agent directory, and the tab bar is there", async () => {
   const f = shell("/app");await screen.findByRole("heading", { name: "Home", level: 1 });
-  const links = names(sidebar());expect(links).toContain("Live");expect(links).toContain("Agent directory");expect(links).not.toContain("Work");
-  expect(screen.getAllByRole("link", { name: /Payments expert/u }).length).toBeGreaterThan(0);
-  expect(screen.queryByRole("navigation", { name: "Main destinations" })).toBeNull();expect(document.querySelector(".rv-tabbar, .rv-nav-v2, .rv-sidebar-nav-v2")).toBeNull();
-  expect(document.querySelector(".rv-app-shell")?.className).toBe("rv-app-shell");f.close();
- });
- it("keeps /app/live as Live, with no Work or Projects list route", async () => {
-  const f = shell("/app/live?filter=needs_me");await screen.findByRole("heading", { name: "Live", level: 1 });expect(f.router.state.location.pathname).toBe("/app/live");expect(f.router.state.location.search).toBe("?filter=needs_me");f.close();
-  for (const path of ["/app/work", "/app/projects"]) { const g = shell(path);expect(await screen.findByText("We couldn't find that. It may not exist, or it hasn't been shared with you.")).toBeTruthy();expect(g.router.state.location.pathname).toBe(path);g.close(); }
- });
- it("has the same top-level route paths as before, plus nothing", () => {
-  const paths = (routes: ReturnType<typeof appRoutes>) => routes.flatMap(route => route.children ?? []).map(route => route.path ?? "(index)");
-  const off = paths(appRoutes(features)), explicitOff = paths(appRoutes(features, { newNav: false }));
-  expect(explicitOff).toEqual(off);expect(off).toContain("live");expect(off).not.toContain("work");expect(off).not.toContain("projects");
+  const links = names(sidebar());expect(links).not.toContain("Live");expect(links).not.toContain("Agent directory");expect(links).toContain("Work");
+  expect(screen.getByRole("navigation", { name: "Main destinations" })).toBeTruthy();
+  expect(document.querySelector(".rv-app-shell")?.className).toBe("rv-app-shell rv-nav-v2");f.close();
  });
  it("still sends an old /s/<id> link to the task page, and opens /app/sessions/<id>", async () => {
   const f = shell("/s/ses_aaaaaaaaaaaaaaaaaaaa?x=1#plan");await waitFor(() => expect(f.router.state.location.pathname).toBe("/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa"));expect(f.router.state.location.search).toBe("?x=1");expect(f.router.state.location.hash).toBe("#plan");f.close();
  });
+ it("the route table has Work, Projects and the /app/live redirect, and no screen route for Live", () => {
+  const routes = appRoutes(features).flatMap(route => route.children ?? []);
+  expect(routes.map(route => route.path ?? "(index)")).toEqual(expect.arrayContaining(["live", "work", "projects", "projects/:name", "insights"]));
+  expect(routes.find(route => route.path === "live")?.lazy, "live is a redirect, not a screen").toBeUndefined();
+  // Every screen has its own error element, so a crash keeps the navigation (tests/web/error-boundary.test.ts).
+  for (const route of routes) expect(route.errorElement, route.path ?? "(index)").toBeTruthy();
+ });
 });
-describe("switch on", () => {
+describe("the navigation", () => {
  it("lists Home, Work, Projects, Agents, Settings once each, in that order, in the sidebar", async () => {
-  const f = shell("/app", { on: true });await screen.findByRole("heading", { name: "Home", level: 1 });
+  const f = shell("/app");await screen.findByRole("heading", { name: "Home", level: 1 });
   const links = sidebar().getAllByRole("link");
   expect(links.slice(0, 5).map(link => link.textContent)).toEqual(["Home3", "Work", "Projects", "Agents", "Settings"]);
   expect(links.slice(0, 5).map(link => link.getAttribute("href"))).toEqual(["/app", "/app/work", "/app/projects", "/app/agents", "/app/account"]);
@@ -89,13 +76,13 @@ describe("switch on", () => {
   expect(document.querySelector(".rv-app-shell")?.className).toBe("rv-app-shell rv-nav-v2");f.close();
  });
  it("names Home with the needs-you count, and says nothing when nothing needs the person", async () => {
-  const f = shell("/app", { on: true });await screen.findByRole("heading", { name: "Home", level: 1 });
+  const f = shell("/app");await screen.findByRole("heading", { name: "Home", level: 1 });
   expect(sidebar().getByRole("link", { name: "Home, 3 need you" })).toBeTruthy();expect(tabBar().getByRole("link", { name: "Home, 3 need you" })).toBeTruthy();f.close();
-  const one = shell("/app", { on: true, value: nav({ homeCount: 1 }) });await screen.findByRole("heading", { name: "Home", level: 1 });expect(sidebar().getByRole("link", { name: "Home, 1 needs you" })).toBeTruthy();one.close();
-  const none = shell("/app", { on: true, value: nav({ homeCount: 0 }) });await screen.findByRole("heading", { name: "Home", level: 1 });expect(sidebar().getByRole("link", { name: "Home" })).toBeTruthy();expect(document.querySelectorAll(".rv-nav-count")).toHaveLength(0);none.close();
+  const one = shell("/app", { value: nav({ homeCount: 1 }) });await screen.findByRole("heading", { name: "Home", level: 1 });expect(sidebar().getByRole("link", { name: "Home, 1 needs you" })).toBeTruthy();one.close();
+  const none = shell("/app", { value: nav({ homeCount: 0 }) });await screen.findByRole("heading", { name: "Home", level: 1 });expect(sidebar().getByRole("link", { name: "Home" })).toBeTruthy();expect(document.querySelectorAll(".rv-nav-count")).toHaveLength(0);none.close();
  });
  it("shows each project once as a plain link with no agents under it", async () => {
-  const f = shell("/app", { on: true });await screen.findByRole("heading", { name: "Home", level: 1 });
+  const f = shell("/app");await screen.findByRole("heading", { name: "Home", level: 1 });
   expect(sidebar().getByRole("link", { name: "payments" }).getAttribute("href")).toBe("/app/projects/payments");expect(sidebar().getByRole("link", { name: "search" })).toBeTruthy();
   // Positive control: the answer does carry agents, and the old sidebar would have linked them.
   expect(nav().projects.flatMap(project => project.agents)).toHaveLength(3);
@@ -105,45 +92,42 @@ describe("switch on", () => {
  });
  it("caps the project links and points to the Projects page for the rest", async () => {
   const projects = Array.from({ length: 12 }, (_, index) => ({ name: "project-" + String(index + 1), agents: [] }));
-  const f = shell("/app", { on: true, value: nav({ projects }) });await screen.findByRole("heading", { name: "Home", level: 1 });
+  const f = shell("/app", { value: nav({ projects }) });await screen.findByRole("heading", { name: "Home", level: 1 });
   expect(sidebar().getAllByRole("link", { name: /^project-/u })).toHaveLength(SIDEBAR_PROJECT_LIMIT);expect(sidebar().getByRole("link", { name: "See all 12 projects" }).getAttribute("href")).toBe("/app/projects");f.close();
  });
  it("keeps shared work and the tools that have no destination yet", async () => {
-  const f = shell("/app", { on: true, value: nav({ shared: { agents: [{ agentId: "agt_" + "7".repeat(20), name: "Shared helper" }], sessions: [] }, features: { ...features, usage: true, scriptTokens: true } }) });await screen.findByRole("heading", { name: "Home", level: 1 });
+  const f = shell("/app", { value: nav({ shared: { agents: [{ agentId: "agt_" + "7".repeat(20), name: "Shared helper" }], sessions: [] }, features: { ...features, usage: true, scriptTokens: true } }) });await screen.findByRole("heading", { name: "Home", level: 1 });
   for (const label of ["Shared helper", "Onboard a project", "Script tokens", "Usage"]) expect(sidebar().getByRole("link", { name: label })).toBeTruthy();f.close();
  });
  it("shows Waiting for people only to owners and admins of an install with company settings, not to members or auditors", async () => {
   for (const [role, admin, shown] of [["owner", true, true], ["admin", true, true], ["admin", false, false], ["member", true, false], ["member", false, false], ["auditor", true, false]] as const) {
-   const f = shell("/app", { on: true, value: withRole(role, { admin }) });await screen.findByRole("heading", { name: "Home", level: 1 });
+   const f = shell("/app", { value: withRole(role, { admin }) });await screen.findByRole("heading", { name: "Home", level: 1 });
    // The test host says admin is on for everyone (as the browser host does), so only the person's role and the install's switch can hide the link.
    expect(f.host.features.admin).toBe(true);
    const link = sidebar().queryByRole("link", { name: "Waiting for people" });expect(link !== null, `${role} admin=${String(admin)}`).toBe(shown);if (link !== null) expect(link.getAttribute("href")).toBe("/app/admin/waiting");
    f.close();
   }
  });
- it("leaves the old sidebar's Waiting for people link as it was (switch off)", async () => {
-  const f = shell("/app", { value: withRole("member", { admin: true }) });await screen.findByRole("heading", { name: "Home", level: 1 });expect(sidebar().getByRole("link", { name: "Waiting for people" })).toBeTruthy();f.close();
- });
  it("lists the same five destinations in the phone tab bar, in order, with the current one marked", async () => {
-  const f = shell("/app/projects", { on: true });await screen.findByRole("heading", { name: "Projects", level: 1 });
+  const f = shell("/app/projects");await screen.findByRole("heading", { name: "Projects", level: 1 });
   expect(names(tabBar())).toEqual(["Home3", "Work", "Projects", "Agents", "Settings"]);
   expect(tabBar().getAllByRole("link").filter(link => link.getAttribute("aria-current") === "page").map(link => link.textContent)).toEqual(["Projects"]);
   expect(sidebar().getAllByRole("link").filter(link => link.getAttribute("aria-current") === "page").map(link => link.textContent)).toEqual(["Projects", "payments", "search"].slice(0, 1));
   f.close();
  });
  it("marks Work current on a work item, and the project link current on its own page", async () => {
-  const w = shell("/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa", { on: true });await waitFor(() => expect(tabBar().getByRole("link", { name: "Work" }).getAttribute("aria-current")).toBe("page"));w.close();
-  const p = shell("/app/projects/payments", { on: true });await waitFor(() => expect(sidebar().getByRole("link", { name: "payments" }).getAttribute("aria-current")).toBe("page"));expect(tabBar().getByRole("link", { name: "Projects" }).getAttribute("aria-current")).toBe("page");p.close();
+  const w = shell("/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa");await waitFor(() => expect(tabBar().getByRole("link", { name: "Work" }).getAttribute("aria-current")).toBe("page"));w.close();
+  const p = shell("/app/projects/payments");await waitFor(() => expect(sidebar().getByRole("link", { name: "payments" }).getAttribute("aria-current")).toBe("page"));expect(tabBar().getByRole("link", { name: "Projects" }).getAttribute("aria-current")).toBe("page");p.close();
  });
  it("has a first-in-order skip link to the main landmark, and focuses the new page's heading on a move", async () => {
-  const f = shell("/app", { on: true });await screen.findByRole("heading", { name: "Home", level: 1 });
+  const f = shell("/app");await screen.findByRole("heading", { name: "Home", level: 1 });
   const skip = screen.getByRole("link", { name: "Skip to main content" });expect(skip.getAttribute("href")).toBe("#main");expect(document.querySelector("main")?.id).toBe("main");
   const order = [...document.querySelectorAll<HTMLElement>("a, button")];expect(order[0]).toBe(skip);
   const landmarks = [...document.querySelectorAll(".rv-app-shell > header, .rv-app-shell > aside, .rv-app-shell > main, .rv-app-shell nav")].filter(node => node.tagName === "MAIN" || !node.closest("main")).map(node => node.tagName + (node.getAttribute("aria-label") ?? ""));expect(landmarks).toEqual(["HEADER", "ASIDE", "NAVWorkspace", "MAIN", "NAVMain destinations"]);
   fireEvent.click(sidebar().getByRole("link", { name: "Projects" }));await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Projects", level: 1 })));f.close();
  });
  it("opens Work from the sidebar and keeps the Menu working", async () => {
-  const f = shell("/app", { on: true });await screen.findByRole("heading", { name: "Home", level: 1 });
+  const f = shell("/app");await screen.findByRole("heading", { name: "Home", level: 1 });
   fireEvent.click(sidebar().getByRole("link", { name: "Work" }));await waitFor(() => expect(f.router.state.location.pathname).toBe("/app/work"));await screen.findByRole("heading", { name: "Work", level: 1 });
   const menu = screen.getByRole("button", { name: "Open workspace menu" });fireEvent.click(menu);const dialog = await screen.findByRole("dialog", { name: "Workspace" });
   expect(within(dialog).getAllByRole("link").slice(0, 5).map(link => link.textContent)).toEqual(["Home3", "Work", "Projects", "Agents", "Settings"]);
@@ -151,39 +135,35 @@ describe("switch on", () => {
  });
  it("sends /app/live to /app/work, keeping the filters and the hash", async () => {
   for (const [from, to, search, hash] of [["/app/live", "/app/work", "", ""], ["/app/live?filter=needs_me&project=payments", "/app/work", "?filter=needs_me&project=payments", ""], ["/app/live?filter=team#top", "/app/work", "?filter=team", "#top"]] as const) {
-   const f = shell(from, { on: true });await waitFor(() => expect(f.router.state.location.pathname).toBe(to));expect(f.router.state.location.search).toBe(search);expect(f.router.state.location.hash).toBe(hash);await screen.findByRole("heading", { name: "Work", level: 1 });f.close();
+   const f = shell(from);await waitFor(() => expect(f.router.state.location.pathname).toBe(to));expect(f.router.state.location.search).toBe(search);expect(f.router.state.location.hash).toBe(hash);await screen.findByRole("heading", { name: "Work", level: 1 });f.close();
   }
  });
- it("renders today's list at /app/work, titled Work", async () => {
-  const f = shell("/app/work?filter=needs_me", { on: true });expect(await screen.findByRole("heading", { name: "Work", level: 1 })).toBeTruthy();expect(f.router.state.location.pathname).toBe("/app/work");expect(f.request.mock.calls.some(([request]) => request.path === "/v1/app/live?filter=needs_me")).toBe(true);f.close();
+ it("renders the Work list at /app/work", async () => {
+  const f = shell("/app/work?filter=needs_me");expect(await screen.findByRole("heading", { name: "Work", level: 1 })).toBeTruthy();expect(f.router.state.location.pathname).toBe("/app/work");expect(f.request.mock.calls.some(([request]) => request.path === "/v1/app/live?filter=needs_me")).toBe(true);f.close();
  });
  it("keeps every old address working: /s/<id>, /app/sessions/<id>, /app/agents, project pages, chains and unknown pages", async () => {
-  const s = shell("/s/ses_aaaaaaaaaaaaaaaaaaaa?x=1#plan", { on: true });await waitFor(() => expect(s.router.state.location.pathname).toBe("/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa"));expect(s.router.state.location.search).toBe("?x=1");expect(s.router.state.location.hash).toBe("#plan");s.close();
-  const t = shell("/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa", { on: true });await waitFor(() => expect(t.router.state.location.pathname).toBe("/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa"));// The session page is a lazy route: the shell appears once its chunk has loaded, which is slow on a cold run, so wait for it.
+  const s = shell("/s/ses_aaaaaaaaaaaaaaaaaaaa?x=1#plan");await waitFor(() => expect(s.router.state.location.pathname).toBe("/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa"));expect(s.router.state.location.search).toBe("?x=1");expect(s.router.state.location.hash).toBe("#plan");s.close();
+  const t = shell("/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa");await waitFor(() => expect(t.router.state.location.pathname).toBe("/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa"));// The session page is a lazy route: the shell appears once its chunk has loaded, which is slow on a cold run, so wait for it.
   expect(await screen.findByRole("link", { name: "Skip to main content" })).toBeTruthy();t.close();
-  const c = shell("/app/chains", { on: true });await screen.findByRole("heading", { name: "This isn't available", level: 1 });expect(c.router.state.location.pathname).toBe("/app/chains");c.close();
-  const p = shell("/app/projects/payments", { on: true });await waitFor(() => expect(sidebar().getByRole("link", { name: "payments" }).getAttribute("aria-current")).toBe("page"));expect(p.router.state.location.pathname).toBe("/app/projects/payments");p.close();
-  const u = shell("/app/usage", { on: true });expect(await screen.findByText("We couldn't find that. It may not exist, or it hasn't been shared with you.")).toBeTruthy();u.close();
+  const c = shell("/app/chains");await screen.findByRole("heading", { name: "This isn't available", level: 1 });expect(c.router.state.location.pathname).toBe("/app/chains");c.close();
+  const p = shell("/app/projects/payments");await waitFor(() => expect(sidebar().getByRole("link", { name: "payments" }).getAttribute("aria-current")).toBe("page"));expect(p.router.state.location.pathname).toBe("/app/projects/payments");p.close();
+  const u = shell("/app/usage");expect(await screen.findByText("We couldn't find that. It may not exist, or it hasn't been shared with you.")).toBeTruthy();u.close();
  });
  it("lists the projects once on the Projects page, with what needs the person, and no agents", async () => {
-  const f = shell("/app/projects", { on: true });await screen.findByRole("heading", { name: "Projects", level: 1 });
+  const f = shell("/app/projects");await screen.findByRole("heading", { name: "Projects", level: 1 });
   const main = within(screen.getByRole("main"));expect(main.getAllByRole("link").map(link => link.getAttribute("href"))).toEqual(["/app/projects/payments", "/app/projects/search"]);
   expect(main.getByRole("link", { name: /payments/u }).textContent).toContain("1 needs you");expect(main.getByRole("link", { name: /payments/u }).textContent).toContain("3 running");
   expect(main.getByRole("link", { name: /search/u }).textContent).toBe("search");expect(main.queryByText(/Payments expert|Refund helper/u)).toBeNull();f.close();
-  const empty = shell("/app/projects", { on: true, value: nav({ projects: [] }) });expect(await screen.findByRole("heading", { name: "No projects yet" })).toBeTruthy();expect(within(screen.getByRole("main")).getByRole("link", { name: "Onboard a project" }).getAttribute("href")).toBe("/app/onboard");empty.close();
+  const empty = shell("/app/projects", { value: nav({ projects: [] }) });expect(await screen.findByRole("heading", { name: "No projects yet" })).toBeTruthy();expect(within(screen.getByRole("main")).getByRole("link", { name: "Onboard a project" }).getAttribute("href")).toBe("/app/onboard");empty.close();
  });
  it("on the Projects page the answer's own per-project needsYou is used, not the sum of the agents' counts; absent, the sum is used as before", async () => {
   const projects = [{ name: "payments", needsYou: 4, agents: [agent(1, "Payments expert", 1, 1), agent(2, "Refund helper", 2, 0)] }, { name: "search", needsYou: 0, agents: [agent(1, "Payments expert", 0, 2)] }, { name: "ledger", agents: [agent(3, "Ledger helper", 0, 2)] }];
-  const f = shell("/app/projects", { on: true, value: nav({ projects }) });await screen.findByRole("heading", { name: "Projects", level: 1 });
+  const f = shell("/app/projects", { value: nav({ projects }) });await screen.findByRole("heading", { name: "Projects", level: 1 });
   const main = within(screen.getByRole("main")), text = (name: RegExp) => main.getByRole("link", { name }).textContent;
   expect(text(/payments/u)).toContain("4 need you");expect(text(/payments/u)).not.toContain("1 needs you");expect(text(/payments/u)).toContain("3 running");
   // A count of 0 from the server is an answer: nothing needs the person here, whatever the agents' rows add up to.
   expect(text(/search/u)).toBe("search");
   expect(text(/ledger/u)).toContain("2 need you");f.close();
  });
- for (const theme of ["light", "dark"] as const) it("has no automated accessibility violations in " + theme, async () => { const f = shell("/app", { on: true, theme });await screen.findByRole("heading", { name: "Home" });await expectNoAxeViolations(f.container);f.close(); });
- it("adds the new routes only with the switch on", () => {
-  const paths = (routes: ReturnType<typeof appRoutes>) => routes.flatMap(route => route.children ?? []).map(route => route.path ?? "(index)");
-  const on = paths(appRoutes(features, { newNav: true }));expect(on).toEqual(expect.arrayContaining(["live", "work", "projects", "projects/:name"]));
- });
+ for (const theme of ["light", "dark"] as const) it("has no automated accessibility violations in " + theme, async () => { const f = shell("/app", { theme });await screen.findByRole("heading", { name: "Home" });await expectNoAxeViolations(f.container);f.close(); });
 });

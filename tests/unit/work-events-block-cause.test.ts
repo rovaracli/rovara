@@ -1,6 +1,7 @@
 // Work events (U3): a block's text becomes a closed cause code, so a failure rate counts failures and not owner stops, cancels and budget pauses.
 import { describe, expect, it } from "vitest";
-import { WORKFLOW_BLOCK_REASONS, WORK_EVENT_BLOCK_CAUSES, workEventCauseIsFailure } from "@agentx/cloud-contracts";
+import { WORKFLOW_BLOCK_REASONS } from "@agentx/cloud-contracts";
+import { WORK_EVENT_BLOCK_CAUSES, workEventCauseIsFailure } from "@rovara-code/contracts";
 import { BUDGET_EXHAUSTED_FAILURE_MESSAGE, RUN_LIMIT_BLOCK_PREFIX, WORKFLOW_NOT_RUN_PREFIX, WORKFLOW_APPLICATION_RUNTIME_RENEWED_PREFIX, ciFixUnrelatedMessage, BRANCH_WORKFLOW_FILES_MESSAGE } from "@rovara-code/contracts";
 import { BLOCK_CAUSE_BY_KEY, blockCauseOf } from "../../packages/broker/src/work-events/block-cause.js";
 import { stoppedStepReason } from "../../packages/broker/src/aws/workflow-cancel-reconcile.js";

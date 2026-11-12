@@ -11,7 +11,8 @@ import { createHmac, randomUUID } from "node:crypto";
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { GetObjectCommand } from "@aws-sdk/client-s3";
 import { type DeveloperTaskView, type ProjectDefinition, type OrgRole, featureEnabled, orgBanKey, orgMemberKey, orgRemovedKey, type WriterOrgRole } from "@agentx/cloud-contracts";
-import { AgentXError, CHANNEL_TURN_REQUEST_MAX, type CodeIntentResult, CONNECTOR_SECRET_PREFIX, ChannelTurnSchema, approvedToolCount, toolBudget, agentXError, type OperationStatus, type ChannelTurn, type TriggerEvent, redactAndCap, projectRevisionKey, type OrgId, type ChannelMembersRequest, type Payer } from "@rovara-code/contracts";
+import { AgentXError, CHANNEL_TURN_REQUEST_MAX, type CodeIntentResult, CONNECTOR_SECRET_PREFIX, ChannelTurnSchema, approvedToolCount, agentXError, type OperationStatus, type ChannelTurn, type TriggerEvent, redactAndCap, projectRevisionKey, type OrgId, type ChannelMembersRequest, type Payer } from "@rovara-code/contracts";
+import { cloudToolBudget } from "./tool-budget.js";
 import { liveStoredRole, personWalk } from "../../org/live-role.js";
 import { requireWriterCaller, type WriterCaller } from "../../org/auditor.js";
 import { slackMemberRule, warnImplicitSlackMember } from "../../org/slack-explicit-members.js";
@@ -851,7 +852,7 @@ function adminChangeHandlers(dependencies: AwsBrokerDependencies): AdminChangeHa
       // C8: the vendor preflight runs here, at planning, and never again at apply: neither in the
       // apply's re-plan (preflight: false, final review M1) nor in its registration.
       const preflight = await registrationChecks(dependencies, { orgId: requireOrgId(identity.orgId), ownerKey: identity.ownerKey }, definition, options?.preflight !== false);
-      return { definition, warnings: registrationWarnings(toolBudget(approvedToolCount(definition)).warning, preflight) };
+      return { definition, warnings: registrationWarnings(cloudToolBudget(approvedToolCount(definition)).warning, preflight) };
     },
     registerRevision: async (identity, definition, runtimeBinding) => {
       // E6, FR-015: the applier must still administer the project; registerProject itself checks only the claim.

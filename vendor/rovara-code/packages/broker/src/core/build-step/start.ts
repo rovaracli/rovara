@@ -3,8 +3,8 @@
 // the candidate, so a recovered or repeated row is the first one's duplicate.
 import { createHash } from "node:crypto";
 import {
-  AgentXError, EVIDENCE_CAPTURE_FEATURE, abandonWorkflowFix, blockWorkflow, sendBackProblems, workflowIsReviewOnly, workflowRequestId, workflowReviewRoles, workflowSelectedChecks, workflowVerificationPosition,
-  type JsonValue, type ProjectCommand, type ProjectDefinition, type WorkflowDependencyInvocation, type WorkflowReviewChecks, type WorkflowSnapshot,
+  AgentXError, EVIDENCE_CAPTURE_FEATURE, WORKFLOW_BLOCK_REASONS, abandonWorkflowFix, blockWorkflow, isBaseMergedRetry, sendBackProblems, workflowIsReviewOnly, workflowRequestId, workflowReviewRoles, workflowSelectedChecks, workflowVerificationPosition,
+  WORKFLOW_PLAN_MAX_BYTES, ownerPlanInstructions, type JsonValue, type ProjectCommand, type ProjectDefinition, type WorkflowApprovedPlan, type WorkflowDependencyInvocation, type WorkflowReviewChecks, type WorkflowSnapshot,
 } from "@agentx/contracts";
 import { readCiEvidence, ciFixPrompt, ciFixPromptWithoutOutput } from "../ci-fix/ci-fix.js";
 import { conflictFixPrompt } from "../branch-sync/branch-sync.js";
@@ -18,6 +18,7 @@ import { acceptStep, acceptStepWithNotes, commitWorkflow, readWorkspace, type St
 import { iso, log, newId } from "../task-flow/support.js";
 import { firstGraphInvocation, restartedGraphInvocation, resumeGraphInvocation, workflowWithCurrentGraphOperation } from "../work-breakdown/invocation.js";
 import { codeHostForRecord } from "../../plugins/routing.js";
+import { shortenMarkdown } from "../../developer/plan-document-reader.js";
 import { approvedCodingPlan, reviewPlanOf } from "./plan-input.js";
 import {
   AUTOMATIC_REVIEW_NOTE, AUTOMATIC_REVIEW_ONLY_NOTE, NO_PUBLISH_NOTE, implementPrompt, ownerConstraintsSection, promptTagId, reviewCheckCommand, reviewPrompt, selectedCheckCommands,
@@ -115,6 +116,7 @@ export async function startImplementation(deps: TaskFlowDeps, row: RowRef): Prom
   const next: WorkflowSnapshot = { ...workflow, revision: workflow.revision + 1, state: "RUNNING", updatedAt: receivedAt };
   const found2 = sendBackProblems(workflow);
   let prompt: string;
+  let approvedPlan: WorkflowApprovedPlan | undefined;
   if (workflow.fixSource === "ci" && found2.length === 0) {
     // The first run of a fix for failing CI is told what CI said, kept when the round started; the coder has the plan in its conversation.
     const block = await readCiEvidence(deps.store, task.taskId, deps.companyId, workflow.revision);
@@ -124,6 +126,8 @@ export async function startImplementation(deps: TaskFlowDeps, row: RowRef): Prom
     prompt = conflictFixPrompt({ paths: workflow.fixProblems ?? [], notes: NO_PUBLISH_NOTE });
   } else {
     const plan = await approvedCodingPlan(deps.artifacts, workflow);
+    // The plan as structured data for the worker's conversation compaction: the worker never reads it back out of the prompt, which can hold a teammate's words.
+    approvedPlan = { markdown: shortenMarkdown(plan.text, WORKFLOW_PLAN_MAX_BYTES), sha256: plan.sha256, ownerInstructions: ownerPlanInstructions(workflow) };
     prompt = found2.length === 0
       ? implementPrompt(plan)
       : sendBackPrompt({ problems: sendBackProblemsPromptSection(found2, promptTagId(task, requestId)), plan, constraints: ownerConstraintsSection(workflow, plan), ownerNote: lastOwnerWords(workflow) });
@@ -162,6 +166,7 @@ export async function startImplementation(deps: TaskFlowDeps, row: RowRef): Prom
     ...baseOf(task, workflow),
     ...(workflow.fixSource === undefined ? {} : { workflowFix: { source: workflow.fixSource, ...(startFrom === undefined ? {} : { startFrom }) } }),
     ...(graph === undefined ? {} : { workflowDependencies: graph.invocation }),
+    ...(approvedPlan === undefined ? {} : { workflowApprovedPlan: approvedPlan }),
   });
   const accepted = await acceptStepWithNotes(deps, {
     task, workspace, requestId, prompt: withTestRule(prompt, next), workflowMode: "IMPLEMENT",
@@ -239,6 +244,25 @@ async function testPlanFor(deps: TaskFlowDeps, task: TaskRecord, mode: "IMPLEMEN
 
 // ---- reviews
 
+/**
+ * Whether the task is at the reviews of a merged base's automatic re-run (decision 70(c)): the newest decision is Rovara's re-run after a merge of the base, for the candidate now at REVIEW, which an open pull
+ * request holds. The reviews that follow are paid work of a round Rovara decided itself.
+ */
+export function isBaseMergedRecheckRound(workflow: WorkflowSnapshot): boolean {
+  const candidate = workflow.candidate;
+  const last = workflow.decisions.at(-1);
+  return workflow.stage === "REVIEW" && workflow.state === "WAITING" && workflow.fixSource === undefined && candidate !== undefined && last !== undefined && isBaseMergedRetry(last)
+    && last.auto?.candidateDigest === candidate.digest
+    && (workflow.pullRequests ?? []).some((pullRequest) => (pullRequest.state === "OPEN" || pullRequest.state === "UNKNOWN") && pullRequest.candidateDigest === candidate.digest);
+}
+
+/** Whether how far Rovara may act on its own was lowered to `suggest` (a setting that cannot be read reads as `suggest`). An install with no autonomy seam never stops the reviews. */
+async function autonomyLowered(deps: TaskFlowDeps, task: TaskRecord): Promise<boolean> {
+  if (deps.autonomy === undefined) return false;
+  const found = await deps.autonomy(task).catch(() => ({ autonomy: "suggest" as const }));
+  return found.autonomy === "suggest";
+}
+
 function reviewChecksOf(workflow: WorkflowSnapshot): WorkflowReviewChecks | undefined {
   const verification = workflow.verification;
   if (verification === undefined) return undefined;
@@ -264,6 +288,12 @@ export async function startReview(deps: TaskFlowDeps, row: RowRef, options: { re
   if (found === "waiting") return "WAITING";
   const { task, workspace } = found;
   const { workflow } = task;
+  // Decision 70(c): the reviews after Rovara's own re-run of a merged base's checks are paid work of a round Rovara decided itself: how far it may act is read again, and if it was lowered to `suggest` since, the
+  // round stops here, cleanly, before any review is paid for. The owner's Retry (retry: true) is their own go-ahead.
+  if (options.retry !== true && isBaseMergedRecheckRound(workflow) && await autonomyLowered(deps, task)) {
+    await commitWorkflow(deps, task, blockWorkflow(workflow, WORKFLOW_BLOCK_REASONS.recheckAutonomyLowered, iso(deps)), [resolveRowItem(deps, task.taskId, row.workflowRevision)]);
+    return "STALE";
+  }
   const candidate = workflow.candidate;
   const verification = workflow.verification;
   if (candidate === undefined || verification === undefined || verification.candidateDigest !== candidate.digest

@@ -6,8 +6,9 @@
 //  - `branchHead` reads Rovara's own working branches only (`agentx/<uuid>`): the provider refuses any other name.
 //  - `listBranches` is org-scoped and needs the installation binding (cloud installs); a system scope is refused.
 //  - `reply` posts Rovara's own fixed text only (200 characters, one line, no mention).
+//  - `comments` / `postComment` (convergence lane A9, Code's L12 seam): the pull request's conversation, fetch only, and one comment of Rovara's fixed text. Registered, not used by traffic yet.
 //  - `events.normalise` (task P6, `events.ts`) exists only when the adapter is given the install's webhook secret; without one it verifies nothing and offers no normaliser.
-import { agentXError, type CodeOwnersRead, ChangeRequestInputSchema, ChangeRequestUpdateSchema, CommitFilesInputSchema, HostScopeSchema, type BranchPage, type CommitFilesInput, type CommitFilesResult, type PathKind, type ChangeRequestDetails, type ChangeRequestFeedback, type ChangeRequestFilesPage, type ChangeRequestInput, type ChangeRequestReconciled, type ChangeRequestRef, type ChangeRequestStatus, type ChangeRequestUpdate, type CodeHost, type CodeHostCapabilities, type GitAccess, type GitCredential, type HostAccount, type HostScope, type HostStanding, type MergeMethod, type MergeObservation, type MergeResult, type ReadBudget, type RepositoryIdentity, type RepositoryRef } from "@rovara-code/contracts";
+import { agentXError, type CodeOwnersRead, ChangeRequestInputSchema, ChangeRequestUpdateSchema, CommitFilesInputSchema, HostScopeSchema, type BranchPage, type CommitFilesInput, type CommitFilesResult, type PathKind, type ChangeRequestDetails, type ChangeRequestFeedback, type ChangeRequestFilesPage, type ChangeRequestInput, type ChangeRequestReconciled, type ChangeRequestRef, type ChangeRequestStatus, type ChangeRequestUpdate, type CodeHost, type HostCommentsPage, type CodeHostCapabilities, type GitAccess, type GitCredential, type HostAccount, type HostScope, type HostStanding, type MergeMethod, type MergeObservation, type MergeResult, type ReadBudget, type RepositoryIdentity, type RepositoryRef } from "@rovara-code/contracts";
 import { parseGitHubRepository, type GitHubAppCredentialProvider } from "../../../github-app.js";
 import { codeOwnersReadOf } from "../../../rovara-code/code-owners.js";
 import { accountKindOfHostType } from "../neutral-words.js";
@@ -32,7 +33,9 @@ export type GitHubCodeHostProvider = Pick<GitHubAppCredentialProvider,
   | "getRepositoryIdentity" | "checkRepository" | "getRepositoryStanding" | "resolveWithExpiry" | "getFileAtCommit" | "getPathKindAtCommit" | "getCommitTree" | "getBranchHead" | "listWorkingBranches"
   | "getCommitParents" | "getDefaultBranchHead" | "getPullRequestMergeObservation" | "commitFilesToBranch" | "deleteLessonsBranch" | "findLessonsPullRequest"
   | "installationForRepository" | "readCodeOwners" | "reconcilePullRequest" | "getPullRequest" | "updatePullRequest" | "getPullRequestStatus" | "listPullRequestFiles"
-  | "getPullRequestFeedback" | "replyToReviewThread" | "markPullRequestReady" | "requestReviewers" | "mergePullRequest">;
+  | "getPullRequestFeedback" | "replyToReviewThread" | "markPullRequestReady" | "requestReviewers" | "mergePullRequest">
+  // Convergence lane A9: the conversation comments (Code's L12 seam). Optional, so a partial provider of a harness has no `comments` / `postComment`.
+  & Partial<Pick<GitHubAppCredentialProvider, "listPullRequestComments" | "postPullRequestComment">>;
 
 export interface GitHubCodeHostOptions {
   /** The credential reference the provider was configured with; a repository registered under another one is refused by the provider. */
@@ -189,6 +192,25 @@ export function githubCodeHost(provider: GitHubCodeHostProvider, options: GitHub
       if (target.kind === "none") return "gone";
       return provider.replyToReviewThread(ref.repository.url, number, target.id, body, checked, budget);
     },
+
+    // Convergence lane A9 (Code's L12, decision 66): fetch only. The place of each comment is what GitHub reported, not what was asked: the core compares it with the request's thread.
+    ...(typeof provider.listPullRequestComments !== "function" ? {} : {
+      async comments(ref: ChangeRequestRef, commentOptions: { since?: string; page?: number }, scope: HostScope, budget?: ReadBudget): Promise<HostCommentsPage> {
+        const listed = await provider.listPullRequestComments!(ref.repository.url, pullRequestNumber(ref), commentOptions, checkedScope(scope), budget);
+        return {
+          comments: listed.comments.map((comment) => ({
+            id: comment.id, ref: refOf(comment.onRepositoryUrl, comment.number, ""), author: { login: comment.authorLogin, ...(comment.authorId === undefined ? {} : { hostUserId: comment.authorId }), isBot: comment.isBot },
+            body: comment.body, createdAt: comment.createdAt, updatedAt: comment.updatedAt,
+          })),
+          ...(listed.nextPage === undefined ? {} : { nextPage: listed.nextPage }),
+        };
+      },
+    }),
+    ...(typeof provider.postPullRequestComment !== "function" ? {} : {
+      async postComment(ref: ChangeRequestRef, text: string, scope: HostScope, budget?: ReadBudget): Promise<"posted" | "gone"> {
+        return provider.postPullRequestComment!(ref.repository.url, pullRequestNumber(ref), text, checkedScope(scope), budget);
+      },
+    }),
 
     async markReady(ref: ChangeRequestRef, scope: HostScope, budget?: ReadBudget): Promise<"ready" | "already_ready"> {
       return provider.markPullRequestReady(ref.repository.url, pullRequestNumber(ref), checkedScope(scope), budget);

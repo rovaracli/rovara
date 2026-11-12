@@ -3,7 +3,7 @@ import { test, expect } from "./support/csp.js";
 import { mockRealtime } from "./support/realtime.js";
 import { checkA11y } from "./support/axe.js";
 import { evidenceShot } from "./support/screenshot.js";
-// "Continue in your own tool" (switch `rovara.continue` = "v2"): off, the task page has no button and never requests the panel's chunk or the lessons setting; on, at desktop and phone widths, the sheet shows the
+// "Continue in your own tool" (always on since decision 125): at desktop and phone widths, the sheet shows the
 // install command per tool, the prompt, the branch (or when it appears), what a push does and the lessons line; copy says Copied; focus stays in the sheet; Escape closes it; every control is 44px tall on a phone;
 // axe finds nothing in both themes. Pictures go to .test-build/web-e2e/continue/ (ROVARA_CONTINUE_SHOTS changes the folder, for before/after comparisons).
 const shots = process.env.ROVARA_CONTINUE_SHOTS ?? ".test-build/web-e2e/continue", cookie = "11111111-1111-4111-8111-111111111111", PAGE = "/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa";
@@ -21,21 +21,19 @@ async function enter(page: Page, context: BrowserContext, request: Parameters<Pa
  await mockRealtime(page);await page.setViewportSize({ width, height: 900 });
 }
 const noSidewaysScroll = (page: Page) => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth && document.body.scrollWidth <= innerWidth);
-for (const width of [1280, 390] as const) {
- test(`switch off at ${String(width)}: today's task page, none of the panel`, async ({ page, context, request, baseURL }) => {
-  const asked: string[] = [];page.on("request", item => { if (/ContinueInTool-|local-tools/u.test(item.url())) asked.push(item.url()); });
-  await enter(page, context, request, baseURL, width, {});await page.goto(PAGE);
-  await expect(page.getByRole("button", { name: "Conversation" })).toBeVisible();await page.waitForLoadState("networkidle");
-  await expect(page.getByRole("button", { name: /Continue in your own tool/u })).toHaveCount(0);
-  expect(asked, "the panel's chunk, its sheet and its reads are not requested while the switch is off").toEqual([]);
-  expect(await noSidewaysScroll(page)).toBe(true);
-  await evidenceShot(page, { path: `${shots}/off-${String(width)}.png`, fullPage: true });
+// Decision 125: Continue in your own tool is always on. An older broker's answer that still names `continue` off, or a leftover device key, changes nothing.
+for (const [flag, store] of [["off", {}], ["off", { "rovara.continue": "off" }], ["absent", {}]] as const) {
+ test(`an older broker's continue flag ${flag}${Object.keys(store).length > 0 ? " with a leftover device key" : ""}: the button is there`, async ({ page, context, request, baseURL }) => {
+  await enter(page, context, request, baseURL, 1280, store);
+  if (flag !== "absent") await page.route("**/v1/web/nav*", async route => { const response = await route.fetch();const body = await response.json() as Record<string, unknown>;await route.fulfill({ response, json: { ...body, uiFlags: { continue: flag } } }); });
+  await page.goto(PAGE);await expect(page.getByRole("button", { name: "Conversation" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Continue in your own tool" })).toBeVisible();
  });
 }
 for (const width of [360, 390, 1280] as const) {
  const phone = width < 768;
- test(`switch on at ${String(width)}: the sheet, copy, focus, Escape, ${phone ? "44px targets, " : ""}no sideways scroll, axe`, async ({ page, context, request, baseURL }) => {
-  await enter(page, context, request, baseURL, width, { "rovara.continue": "v2" });await page.goto(PAGE);
+ test(`at ${String(width)}: the sheet, copy, focus, Escape, ${phone ? "44px targets, " : ""}no sideways scroll, axe`, async ({ page, context, request, baseURL }) => {
+  await enter(page, context, request, baseURL, width, {});await page.goto(PAGE);
   const button = page.getByRole("button", { name: "Continue in your own tool" });
   await expect(button).toBeVisible();await expect(page.getByRole("button", { name: "Conversation" })).toBeVisible();
   expect(await noSidewaysScroll(page)).toBe(true);

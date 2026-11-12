@@ -8,7 +8,7 @@ import { builtinModules } from "node:module";
 import { existsSync, lstatSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import {
-  CODE_DIR, CODE_SCOPE, DEFAULT_REF, PIN_FILE, SHIMS_DIR, defaultLayout, describeDiff, diffManifests, fetchSha, git, localManifest, manifestDigest, parsePin,
+  CODE_DIR, DEFAULT_REF, inCodeScope, PIN_FILE, SHIMS_DIR, defaultLayout, describeDiff, diffManifests, fetchSha, git, localManifest, manifestDigest, parsePin,
   planLinks, planShims, readLinks, readPlanned, remoteManifest, type Layout,
 } from "./rovara-code-vendor.ts";
 
@@ -27,7 +27,7 @@ export function checkDependencies(layout: Layout): string[] {
     const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as { dependencies?: Record<string, string> };
     const lookup = [join(packagesDir, name, "node_modules"), join(packagesDir, "node_modules"), join(layout.root, CODE_DIR, "node_modules"), join(layout.root, "vendor/node_modules"), join(layout.root, "node_modules")];
     for (const [dep, wanted] of Object.entries(manifest.dependencies ?? {})) {
-      if (dep.startsWith(`${CODE_SCOPE}/`) || wanted.startsWith("file:")) continue;
+      if (inCodeScope(dep) || wanted.startsWith("file:")) continue;
       const found = lookup.map((dir) => join(dir, dep, "package.json")).find((path) => existsSync(path));
       const have = found === undefined ? undefined : (JSON.parse(readFileSync(found, "utf8")) as { version?: string }).version;
       if (have !== wanted) problems.push(`Code's ${name} wants ${dep}@${wanted} but it resolves to ${have ?? "nothing"} from vendor/ (see THIRD_PARTY_LINKS in scripts/vendor/rovara-code-vendor.ts)`);
@@ -55,7 +55,7 @@ export function packageOfSpecifier(specifier: string): string | undefined {
 }
 
 /**
- * Code's source may import only the vendored `@agentx/*` packages (the ones vendor/node_modules links) and the third-party packages its own package.json declares.
+ * Code's source may import only the vendored `@agentx/*` and `@rovara/*` packages (the ones vendor/node_modules links) and the third-party packages its own package.json declares.
  * An `@agentx/<name>` that Cloud also publishes but vendor/ does not link (orchestrator, mcp, ...) would resolve to Cloud's package without a word, and an undeclared
  * package would resolve by hoisting luck. Build output (dist, node_modules) is not scanned.
  */
@@ -63,7 +63,7 @@ export function checkImports(layout: Layout): string[] {
   const problems: string[] = [];
   const packagesDir = join(layout.root, CODE_DIR, "packages");
   if (!existsSync(packagesDir)) return problems;
-  const linked = new Set(planLinks(layout.root, layout.thirdPartyLinks).map((link) => link.name).filter((name) => name.startsWith(`${CODE_SCOPE}/`)));
+  const linked = new Set(planLinks(layout.root, layout.thirdPartyLinks).map((link) => link.name).filter(inCodeScope));
   for (const name of readdirSync(packagesDir).sort()) {
     const manifestPath = join(packagesDir, name, "package.json");
     if (!existsSync(manifestPath)) continue;
@@ -82,7 +82,7 @@ export function checkImports(layout: Layout): string[] {
           for (const match of text.matchAll(IMPORT_SPECIFIER)) {
             const pkg = packageOfSpecifier(match[1] ?? match[2] ?? match[3] ?? match[4] ?? "");
             if (pkg === undefined) continue;
-            const ok = pkg.startsWith(`${CODE_SCOPE}/`) ? linked.has(pkg) : declared.has(pkg);
+            const ok = inCodeScope(pkg) ? linked.has(pkg) : declared.has(pkg);
             if (!ok) (bad.get(pkg) ?? bad.set(pkg, new Set()).get(pkg)!).add(`${rel === "" ? "" : `${rel}/`}${entry}`);
           }
         }
@@ -90,7 +90,7 @@ export function checkImports(layout: Layout): string[] {
     };
     walk(join(packagesDir, name), "");
     for (const [pkg, files] of bad) {
-      const why = pkg.startsWith(`${CODE_SCOPE}/`) ? "is not one of the vendored packages that vendor/node_modules links, so it would resolve to Cloud's package of that name" : "is not a dependency Code's package.json declares";
+      const why = inCodeScope(pkg) ? "is not one of the vendored packages that vendor/node_modules links, so it would resolve to Cloud's package of that name" : "is not a dependency Code's package.json declares";
       problems.push(`Code's ${name} imports ${pkg} (${[...files].slice(0, 3).join(", ")}${files.size > 3 ? ", ..." : ""}), which ${why}`);
     }
   }

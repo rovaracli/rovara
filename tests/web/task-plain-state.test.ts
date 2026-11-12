@@ -1,7 +1,6 @@
 // Experience lane, task page: the plain-state mapping, the next step / who / why summary, the can-I-approve line, the worker-word rewrite and the flag function. All pure.
-import { afterEach, expect, it } from "vitest";
+import { expect, it } from "vitest";
 import { PLAIN_STATE_LABELS, approveLine, cardsFor, leadStatus, plainEventText, plainState, taskLead } from "../../packages/ui/src/screens/session/task-plain-state.js";
-import { TASK_PAGE_DEFAULTS, forceTaskPageFlags, taskPageFlags } from "../../packages/ui/src/screens/session/task-page-flags.js";
 import { collapseFallbacks } from "../../packages/ui/src/screens/session/model-fallbacks.js";
 import { sessionFixture } from "./support/session-fixture.js";
 import { workspaceFixture } from "./support/workspace-fixture.js";
@@ -11,7 +10,6 @@ const TASK_ID = "11111111-1111-4111-8111-111111111111";
 const decision = (over: Record<string, unknown> = {}, actions: string[] = ["approve", "open"]): ReadDecision => ({ digest: "d", tabs: undefined, details: [], card: { id: "approve_plan:" + TASK_ID, kind: "approve_plan", taskId: TASK_ID, project: "payments", title: "Approve the plan", question: "Approve this plan?", recommended: { action: "approve", why: "the plan matches the request" }, next: { text: "Builds it" }, evidence: [], risk: "medium", riskReasons: [], friction: { expandEvidenceFirst: true, freshSignIn: false, secondPerson: false }, actions: actions.map(kind => ({ kind, label: kind, href: "/v1/app/decisions/x", method: kind === "open" ? "GET" : "POST" })), rejectReasons: [], status: "pending", createdAt: "2026-10-23T12:00:00.000Z", ...over } as never });
 const taskSession = (display: unknown, extra: Record<string, unknown> = {}, you: Record<string, unknown> = {}) => { const base = workspaceFixture({ display } as never); return { ...base, ...extra, you: { ...base.you, ...you } } as typeof base; };
 
-afterEach(() => forceTaskPageFlags(undefined));
 
 it("maps every state of the status model to one plain state, none of them a raw word", () => {
  const raw = { understanding: "Understanding", planning: "Planning", reviewing_design: "Planning", building: "Building", checking: "Checking", needs_you: "Needs a decision", paused_budget: "Paused: needs budget", ready_to_merge: "Ready to merge", merged: "Merged", closed: "Closed", failed: "Failed", finished_run: "Finished" };
@@ -89,14 +87,6 @@ it("rewrites the raw worker word to a plain state and leaves every other line al
  expect(plainEventText("Worker status: SOMETHING_NEW")).toBe("Worker status: SOMETHING_NEW");
  expect(plainEventText("Started Read")).toBe("Started Read");
  expect(plainEventText("The Worker status: SUCCEEDED line")).toBe("The Worker status: SUCCEEDED line");
-});
-it("the flag function: plain notices on and the leading header off by default; ?lead=1 turns the header on, ?lead=0 off; tests can force", () => {
- expect(TASK_PAGE_DEFAULTS).toEqual({ plainNotices: true, leadingHeader: false });
- expect(taskPageFlags("")).toEqual({ plainNotices: true, leadingHeader: false });
- expect(taskPageFlags("?lead=1").leadingHeader).toBe(true);
- expect(taskPageFlags("?x=1&lead=0").leadingHeader).toBe(false);
- forceTaskPageFlags({ leadingHeader: true, plainNotices: false });
- expect(taskPageFlags("?lead=0")).toEqual({ plainNotices: false, leadingHeader: true });
 });
 
 const opus = "amazon-bedrock/us.anthropic.claude-opus-5-5", haiku = "amazon-bedrock/us.anthropic.claude-haiku-4-5", sonnet = "amazon-bedrock/us.anthropic.claude-sonnet-4-6";

@@ -1,4 +1,5 @@
 import { installOrgIdFromEnvironment } from "../org/resolve.js";
+import { callbackSigningKeyConfigured, resolveKey, type KeyOrSource } from "./signing-key-secrets.js";
 import { OrgIdSchema } from "@rovara-code/contracts";
 import { resolveSlackThreadKey } from "./slack-thread-key.js";
 // Issue 173: the reconciler backstop. Issue 167 cancels a Slack worker task when its turn gives up
@@ -69,7 +70,8 @@ export interface UnwaitedTaskSweepDependencies {
   /** The Slack threads table, read for the thread's activeTurn. */
   threadsTableName: string;
   /** Signs the cancel operation's worker callbacks, as the broker does. */
-  callbackSigningKey: string;
+  /** The callback signing key, or where it is read from when a cancel is queued (0.5.15, signing-key-secrets.ts). */
+  callbackSigningKey: KeyOrSource;
   postNote(thread: SlackThreadPlace, text: string): Promise<void>;
   log: (entry: Record<string, unknown>) => void;
 }
@@ -175,7 +177,7 @@ export async function sweepUnwaitedTasks(
       // The cancel route's own path. onlyLive: a result, a member's stop or a new worker event that
       // lands first wins.
       answer = await requestCancellation({
-        documentClient: dependencies.client as never, tableName: dependencies.tableName, callbackSigningKey: dependencies.callbackSigningKey,
+        documentClient: dependencies.client as never, tableName: dependencies.tableName, callbackSigningKey: await resolveKey(dependencies.callbackSigningKey),
       }, workspace, operationId, {}, () => [], { onlyLive: true, eventSequence: found.eventSequence });
     } catch (error) {
       // The error's name only: a message could carry stored data. Still live, so retried next run.
@@ -199,6 +201,7 @@ export async function sweepUnwaitedTasks(
   return result;
 }
 
+// CALLBACK_SIGNING_KEY: set when the function has a callback signing key, the legacy variable or (0.5.15) a named environment's secret (callbackSigningKeyConfigured).
 const BACKSTOP_SETTINGS = ["SLACK_THREADS_TABLE_NAME", "SLACK_SECRET_ARN", "CALLBACK_SIGNING_KEY"] as const;
 
 /**
@@ -207,7 +210,7 @@ const BACKSTOP_SETTINGS = ["SLACK_THREADS_TABLE_NAME", "SLACK_SECRET_ARN", "CALL
  * the reconciler logs by the missing names.
  */
 export function unwaitedTaskBackstopConfiguration(env: NodeJS.ProcessEnv): { state: "on" | "off" } | { state: "partial"; missing: string[] } {
-  const missing = BACKSTOP_SETTINGS.filter((name) => !env[name]);
+  const missing = BACKSTOP_SETTINGS.filter((name) => (name === "CALLBACK_SIGNING_KEY" ? !callbackSigningKeyConfigured(env) : !env[name]));
   if (missing.length === 0) return { state: "on" };
   if (missing.length === BACKSTOP_SETTINGS.length) return { state: "off" };
   return { state: "partial", missing };

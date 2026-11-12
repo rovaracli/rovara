@@ -13,6 +13,9 @@ import { getInstallInfo } from "./developer-routes/install.js";
 import { isSsoRoute, routeSsoRequest } from "./developer-routes/sso.js";
 import { isCompanyDomainsRoute, routeCompanyDomains } from "./developer-routes/company-domains.js";
 import { UI_FLAGS_BROWSER_MESSAGE, UI_FLAGS_PATH, routeUiFlags } from "./developer-routes/ui-flags.js";
+import { COMPANIES_PATH, routeCompanies } from "./developer-routes/companies.js";
+import { companySwitcherEnabled } from "../org/companies/switch.js";
+import { COMPANY_SWITCH_MACHINE_MESSAGE } from "@agentx/cloud-contracts";
 import { specOwnerChoice } from "./developer-tasks/spec-wiring.js";
 import { taskPagePathFor } from "./developer-tasks/task-page.js";
 import { decisionCardsEnabled } from "../proof/switch.js";
@@ -154,7 +157,7 @@ import { readReviewedProjectArchiveAppPreview } from "../org/reviewed-project-ar
 import { revokeOrganizationInvite } from "../org/invite-revocation.js";
 import { logDeveloperEvent } from "../developer/log.js";
 import { listOrganizationInvites } from "../org/invite-directory.js";
-import { OrgMemberRoleChangeBodySchema, ORG_HEALTH_OBSERVATIONS_PATH } from "@agentx/cloud-contracts";
+import { OrgMemberRoleChangeBodySchema, ORG_HEALTH_OBSERVATIONS_PATH, isWriterOrgRole } from "@agentx/cloud-contracts";
 import { listOrganizationMembers, lookupOrganizationMember } from "../org/directory.js";
 import { getMemberRemoval, previewMemberRemoval, startMemberRemovalRoute } from "../org/member-removal/routes.js";
 import { taskResponseForClient } from "../rovara-code/task-view-compat.js";
@@ -356,6 +359,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (url.pathname === LEARNING_SETTINGS_PATH && authenticated?.caller.browserSession !== true) {
     throw agentXError("FORBIDDEN", "Use a live browser session for learning changes.");
   }
+  // Company memberships (switch `cw`): switching the session's company is browser-only, refused before any read (off: the path is not found).
+  if (url.pathname === COMPANIES_PATH && request.method === "POST" && companySwitcherEnabled() && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", COMPANY_SWITCH_MACHINE_MESSAGE);
   // Runtime UI flags (lane U5): browser-only for both methods, refused before any read.
   if (url.pathname === UI_FLAGS_PATH && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", UI_FLAGS_BROWSER_MESSAGE);
   // Review groups (owner decision 9): changing a project's groups, and claiming, releasing or reassigning a review, are browser-only; refused before any read.
@@ -401,7 +406,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   // I2: the task and review pages are not for the Auditor, which reads the audit log and nothing else; a session that holds that role is signed out of them.
   const authenticatePersonSession = async (sessionId: string) => {
     const who = await authenticateSession(sessionId);
-    return who?.orgRole === "auditor" ? undefined : who;
+    // P3-OPEN-ROLES-CLOUD-ADOPTION: a positive list, so a role that is not a writer's is signed out of them too.
+    return who === undefined || !isWriterOrgRole(who.orgRole) ? undefined : who;
   };
   // The audit page (Task 13): a read-only view for the org's owners, admins and Auditors; the org is the session's own.
   if (isAuditViewPath(url.pathname)) {
@@ -526,6 +532,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (isCompanyDomainsRoute(url.pathname)) return routeCompanyDomains(deps, caller, request, url.pathname);
   // Runtime UI flags (lane U5): the owner's and admin's company screens.
   if (url.pathname === UI_FLAGS_PATH) return routeUiFlags(deps, caller, request, url.pathname);
+  // Company memberships (switch `cw`): the caller's own companies and the browser session's switch.
+  if (url.pathname === COMPANIES_PATH) return routeCompanies(deps, caller, request, url.pathname);
   if (request.method === "GET" && url.pathname === "/v1/app/me") {
     const me = await getAppMe(deps, caller);
     return authenticated === undefined ? me : { ...me, csrf: authenticated.csrf };

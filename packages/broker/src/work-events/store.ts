@@ -2,7 +2,7 @@
 // The shape, key and retention rule are the contract's (`@agentx/cloud-contracts` work-event.ts, copied from Code: UPSTREAM OWED, see briefs/work-events.md). The rows follow Code's `core/work-events`, which Cloud
 // will import instead of this file once Code has it and the vendor pin includes it.
 import { PutCommand, QueryCommand, type TransactWriteCommandInput } from "@aws-sdk/lib-dynamodb";
-import { WorkEventInstantSchema, WorkEventSchema, workEventExpiresAt, workEventKey, workEventMonths, workEventPartitions, type WorkEvent, type WorkEventInput, type WorkEventKind } from "@agentx/cloud-contracts";
+import { WorkEventInstantSchema, WorkEventSchema, workEventExpiresAt, workEventKey, workEventMonths, workEventPartitions, type WorkEvent, type WorkEventInput, type WorkEventKind } from "@rovara-code/contracts";
 import { INDEX_EXPIRY_ATTRIBUTE, type OrgId } from "@rovara-code/contracts";
 
 export type TransactItems = NonNullable<TransactWriteCommandInput["TransactItems"]>;

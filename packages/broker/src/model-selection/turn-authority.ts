@@ -1,7 +1,7 @@
 // Shared current-person commit fences for ordinary project coding turns.
 import {taskKey,taskPointerKey,effectiveTaskOwner,ownerFenceOf,type DeveloperTaskRecord} from "../developer/task-records.js";
 import {GetCommand} from "@aws-sdk/lib-dynamodb";
-import { OrgRoleSchema, orgMemberKey, developerOrgKey, orgMetaKey, orgRemovedKey, orgBanKey, slackTeamOrgKey } from "@agentx/cloud-contracts";
+import { OrgRoleSchema, isWriterOrgRole, orgMemberKey, developerOrgKey, orgMetaKey, orgRemovedKey, orgBanKey, slackTeamOrgKey } from "@agentx/cloud-contracts";
 import { agentXError, projectMemberKey, slackBindingKey, type OrgId } from "@rovara-code/contracts";
 import {developerIdForSlackUser} from "../aws/admin-actions.js";
 import {budgetActorChecks} from "../agents/budget-authority.js";
@@ -29,7 +29,7 @@ export async function readTurnActorChecks(deps:Deps,input:{orgId:OrgId;project:s
   checks.push({ConditionCheck:{TableName:deps.tableName,Key:orgMetaKey(input.orgId),ConditionExpression:"orgId = :org AND attribute_not_exists(closingAt) AND attribute_not_exists(closedAt)",ExpressionAttributeValues:{":org":input.orgId}}});
   orgRole="member";
  } else {
-  if(role.data==="auditor")throw refused();
+  if(!isWriterOrgRole(role.data))throw refused();
   orgRole=role.data;checks.push(...budgetActorChecks(deps.tableName,input.orgId,{developerId:input.developerId,role:role.data}));}
  const person=await deps.signInStore?.getDeveloper(input.developerId);
  if(person!==undefined) {

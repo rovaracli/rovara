@@ -1546,7 +1546,8 @@ describe("the production wiring of the person erase (LA-5)", () => {
   it("the broker gives the runtime the alias key derived from its signing key and the person's names, and builds the runtime in one place only", () => {
     const source = readFileSync(new URL("../../../packages/broker/src/aws/broker.ts", import.meta.url), "utf8");
     const call = /createTeamRecordRuntime\(\{[^\n]*\}\);/u.exec(source)?.[0] ?? "";
-    expect(call).toContain('askAliasKey: askAliasHashKey(requiredEnvironment("CALLBACK_SIGNING_KEY"))');
+    // 0.5.15: the alias key comes from the erasure hash key (the same value the signing key had, in its own secret; signing-key-secrets.ts).
+    expect(call).toContain("askAliasKey: askAliasHashKey(keys.erasure)");
     expect(call).toContain("namesOf:");
     // No other production file builds the runtime (a second construction would have to wire the key too).
     const root = new URL("../../../packages/", import.meta.url);

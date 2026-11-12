@@ -1,7 +1,7 @@
 // Runtime per-company UI flags (lane U5, requirement P-52): the owner's and admin's "Company screens" routes.
 //
 //   GET /v1/app/org/ui-flags    the company's flags: each with its own switch, the install operator's hold and what people get; the preview permission; the revision
-//   PUT /v1/app/org/ui-flags    { expectedRevision, flags?: { <name>: boolean }, previews?: boolean }    changes only what is named
+//   PUT /v1/app/org/ui-flags    { expectedRevision, flags?: { <name>: boolean | null }, previews?: boolean }    changes only what is named (null: back to the default)
 //
 // An owner or admin of the company only (a member learns the flags from the navigation answer, `uiFlags`), from a live browser session only (a token, the CLI or Slack never read or change them). A change needs a sign-in within the
 // last ten minutes (REAUTH_REQUIRED) and the audit ledger (`company.ui_flags_changed`, in the same transaction as the change). A flag name outside the closed list is refused. Nothing the caller sent is repeated in a refusal.

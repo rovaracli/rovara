@@ -106,7 +106,7 @@ describe("the repository lookups of publishing, maintaining and reconciling use 
   const count = (text: string) => source.split(text).length - 1;
   it.each([
     ["acceptance.ts pull request", "codeRepositoriesOf(project.definition).find((candidate) => candidate.name === request.repository)", 2],
-    ["workflow-items.ts pull request update (feedback read)", "codeRepositoriesOf(project.definition).find((entry) => entry.name === maintenance.repository)", 2],
+    ["workflow-items.ts pull request update (feedback read)", "codeRepositoriesOf(project.definition).find((entry) => entry.name === maintenance.repository)", 3],
     ["workflow-items.ts changed pull request", "codeRepositoriesOf(project.definition).find((entry) => entry.name === pullRequest.repositoryId)", 1],
     ["workflow-items.ts published pull request", "codeRepositoriesOf(project.definition).find((entry) => entry.name === published.data.repository)", 1],
     ["pull-request-reconcile.ts work breakdown base", "codeRepositoriesOf(project.definition).find((entry) => entry.name === invocation.graph.items[0]?.repository)", 1],

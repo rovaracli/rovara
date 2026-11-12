@@ -1,7 +1,7 @@
 // FR-048: agentx config's fixed, documented keys. Each maps to exactly one place: a stack parameter,
 // an SSM value (the environment settings) or a control-plane setting. docs/day-two.md lists the
 // same table.
-import { UI_FLAG_NAMES, UI_FLAGS_FORCE_OFF_ALL, UI_FLAGS_FORCE_OFF_NONE, UiFlagNameSchema } from "@agentx/cloud-contracts";
+import { UI_FLAG_NAMES, UI_FLAGS_FORCE_OFF_ALL, UI_FLAGS_FORCE_OFF_NONE, UiFlagNameSchema, isRemovedUiFlagName } from "@agentx/cloud-contracts";
 import { CHATGPT_DEFAULT_PREFERRED_MODEL, ChatGptModelIdSchema, MODEL_FALLBACK_NONE, MODEL_FALLBACK_PATTERN, agentXError, environmentSettingsPrefix, environmentStackName } from "@rovara-code/contracts";
 import { catalogModel } from "@agentx/model-runtime/catalog";
 import { AlertEmailSchema, MAX_BUDGET_USD } from "../deploy/answer-schemas.js";
@@ -13,7 +13,7 @@ export type { ModelRole } from "../init/prerequisites.js";
 export type ConfigTarget =
   /** `also`: the same value goes to these stacks' parameters too, one after the other (models.fallback: the runtime and the Slack stack both need it). */
   | { kind: "stack-parameter"; part: DeployPart; parameter: string; also?: ReadonlyArray<{ part: DeployPart; parameter: string }> }
-  | { kind: "settings"; field: "alertAddress" | "teamRecordOptions" }
+  | { kind: "settings"; field: "alertAddress" | "teamRecordOptions" | "modelProxyTls" }
   | { kind: "control-plane-setting"; field: "perPerson" | "perOrganization"; installDefault: { part: DeployPart; parameter: string } }
   // #343: Sign in with ChatGPT's settings, held by the control plane alone (no stack parameter).
   | { kind: "chatgpt-setting"; field: "enabled" | "preferredModel" };
@@ -46,11 +46,17 @@ const wholeNumber = (key: string, min: number, max: number) => (value: string): 
   return String(Number(trimmed));
 };
 
-/** `none`, `all`, or known screen names joined by a hyphen. Unlike the broker (which fails closed on a mistake), the command refuses it before anything changes. */
+/**
+ * `none`, `all`, or known screen names joined by a hyphen. Unlike the broker (which fails closed on a mistake), the command refuses it before anything changes. A finished screen's former name (decision 125,
+ * REMOVED_UI_FLAG_NAMES) is refused with its own reason: the broker would ignore it, so setting it would change nothing. (An install whose stored value still names one keeps working: an upgrade keeps the value
+ * without reading it, and the broker skips those names.)
+ */
 const uiFlagsForceOffValue = (key: string) => (value: string): string => {
   const trimmed = value.trim();
   if (trimmed === UI_FLAGS_FORCE_OFF_NONE || trimmed === UI_FLAGS_FORCE_OFF_ALL) return trimmed;
   const parts = trimmed.split("-");
+  const removed = parts.filter((part) => isRemovedUiFlagName(part));
+  if (removed.length > 0) return refuse(key, `none, all, or screen names (${UI_FLAG_NAMES.join(", ")}) joined by a hyphen; ${removed.join(", ")} can no longer be turned off (the old screen was removed)`);
   return parts.every((part) => UiFlagNameSchema.safeParse(part).success) && trimmed.length <= 64 ? trimmed : refuse(key, `none, all, or screen names (${UI_FLAG_NAMES.join(", ")}) joined by a hyphen, at most 64 characters`);
 };
 
@@ -158,12 +164,13 @@ export const CONFIG_KEYS: readonly ConfigKey[] = [
   { key: "testEnvironment.enabled", description: "1: the project test environment is on (Rovara proposes it from the default branch, a maintainer proves and approves it, and tasks use it; turn on only after the worker image that carries task.testEnvDetect.v1 and task.testEnvironment.v1 is deployed); 0: nothing about test environments changes", target: parameter("control-plane", "TestEnvironmentEnabled"), defaultValue: "0", parse: oneOf("testEnvironment.enabled", ["0", "1"]) },
   { key: "teamRecord.enabled", description: "1: the Team record is on (sources a project learns from, lessons and search; the first time, this records the choice and the next agentx upgrade builds its storage, which every later upgrade keeps); 0: paused, nothing is read or recorded and the stored record is kept", target: parameter("control-plane", "TeamRecordEnabled"), defaultValue: "0", teamRecord: true, parse: oneOf("teamRecord.enabled", ["0", "1"]) },
   { key: "teamRecord.options", description: "the Team record's storage options, confirmed before it is built and passed to every upgrade: default (Rovara's), or kmsKeyArn=<arn>;lake=true|false;athenaUsers=<arn,arn>;enterpriseWorkspaceId=<id> (Enterprise needs enterpriseWorkspaceId); refused once the record is built", target: { kind: "settings", field: "teamRecordOptions" }, parse: (value) => value.trim() },
+  { key: "modelProxy.tls", description: "the model proxy's HTTPS name (decisions 110 and 127), recorded and passed to every upgrade: name=<dns name>;zoneId=<public hosted zone id>[;certificateArn=<arn>][;legacyHttp=keep|off], or off. keep runs the old plain-http listeners beside HTTPS for one release; the next upgrade builds what is recorded", target: { kind: "settings", field: "modelProxyTls" }, parse: (value) => value.trim() },
   { key: "teamRecord.embedderImage", description: "the self-hosted embedder image the Team record embeds with (environments/embedder): a private ECR image in this account and region pinned by digest (<account>.dkr.ecr.<region>.amazonaws.com/<repository>@sha256:<digest>), (the release names it and agentx upgrade passes it; an upgrade to a release that names none keeps this one; an upgrade to a release that does replaces it); needs the Team record built", target: parameter("control-plane", "EmbedderImageUri"), defaultValue: "none", parse: embedderImage("teamRecord.embedderImage") },
   { key: "learnedLessons.enabled", description: "1: approved lessons are loaded into an agent's prompt as advice (needs the Team record; turn on only after the worker image that carries task.learnedContext.v1 is deployed); 0: no lesson is loaded or sent to an agent, even where the Team record is on", target: parameter("control-plane", "LearnedLessonsEnabled"), defaultValue: "0", parse: oneOf("learnedLessons.enabled", ["0", "1"]) },
   { key: "designReview.enabled", description: "1: fresh-context reviewers check the design of a Full task before a person approves it, but only where a company admin has allowed it and the project's mode is not Off (both are set in How we work); 0: no task has a design review, and a review already under way ends at its next step as not run", target: parameter("control-plane", "DesignReviewEnabled"), defaultValue: "0", parse: oneOf("designReview.enabled", ["0", "1"]) },
   { key: "savedEnv.enabled", description: "1: a project's proven setup can be built into a saved image and used by tasks (turn on only after the registry roles and the worker image are deployed); 0: nothing is built, pushed, pulled or sent to a worker", target: parameter("control-plane", "SavedEnvEnabled"), defaultValue: "0", parse: oneOf("savedEnv.enabled", ["0", "1"]) },
   { key: "slack.explicitMembers", description: "1: a Slack person who is not an explicit, current member of the company (not removed, not banned) is not served in Slack and is told to ask an admin to add them or to link their account (new installs default to 1); warn: today's access is kept and each such person gets one direct message that a membership will soon be needed; 0: today's behaviour, a Slack person with no membership is served as an implicit member (the rollback)", target: parameter("control-plane", "SlackExplicitMembers"), defaultValue: "1", parse: oneOf("slack.explicitMembers", ["0", "1", "warn"]) },
-  { key: "ui.forceOff", description: "screens to hold back for every company on this install, whatever a company chose in the app: none, all, or screen names joined by a hyphen (look, nav, home, work, spending, leadingHeader, health, setup, insights, publish, billing, agreement); a name that is not one of these turns every screen off", target: parameter("control-plane", "UiFlagsForceOff"), defaultValue: "none", parse: uiFlagsForceOffValue("ui.forceOff") },
+  { key: "ui.forceOff", description: "screens still being finished to hold back for every company on this install (wins over whatever a company chose in the app): none, all, or screen names joined by a hyphen (health, setup, publish, billing, agreement, companies); the finished screens (look, nav, home, work, spending, leadingHeader, insights, continue) have no old screen left and can no longer be turned off; any other name turns every remaining screen off", target: parameter("control-plane", "UiFlagsForceOff"), defaultValue: "none", parse: uiFlagsForceOffValue("ui.forceOff") },
   { key: "scriptTokens.enabled", description: "1: people can make script tokens in the app settings so their scripts and CI can read and start their own tasks; 0: no token can be made and every script token is refused", target: parameter("control-plane", "ScriptTokensEnabled"), defaultValue: "0", parse: oneOf("scriptTokens.enabled", ["0", "1"]) },
   { key: "standingInstructions.enabled", description: "1: the project's How we work reaches every step in the system prompt, in one block with the company's rules and the precedence wording (turn on only after the worker image that carries task.standingInstructions.v1 is deployed); 0: How we work stays in the user message", target: parameter("control-plane", "StandingInstructionsEnabled"), defaultValue: "0", parse: oneOf("standingInstructions.enabled", ["0", "1"]) },
   { key: "secondReview.enabled", description: "1: an added second review of a task's code by a model of a different AI company is on (a project or company chooses shadow, where it never blocks, or on; turn on only after the worker image that runs it is deployed); 0: no second review is planned, run or shown", target: parameter("control-plane", "SecondReviewEnabled"), defaultValue: "0", parse: oneOf("secondReview.enabled", ["0", "1"]) },
@@ -192,7 +199,7 @@ export function whereText(target: ConfigTarget, env: string): string {
     case "stack-parameter":
       return `stack parameter ${target.parameter} on ${[target, ...(target.also ?? [])].map((each) => environmentStackName(env, each.part)).join(" and ")}`;
     case "settings":
-      return target.field === "teamRecordOptions" ? `SSM ${environmentSettingsPrefix(env)}team-record (options)` : `SSM ${environmentSettingsPrefix(env)}settings (${target.field})`;
+      return target.field === "teamRecordOptions" ? `SSM ${environmentSettingsPrefix(env)}team-record (options)` : target.field === "modelProxyTls" ? `SSM ${environmentSettingsPrefix(env)}model-proxy-tls` : `SSM ${environmentSettingsPrefix(env)}settings (${target.field})`;
     case "control-plane-setting":
       return `control-plane setting WORKSPACE_LIMITS.${target.field} (install-time default ${target.installDefault.parameter})`;
     case "chatgpt-setting":

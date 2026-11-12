@@ -291,7 +291,8 @@ async function turnFixture(extra: { locked?: boolean; unavailable?: boolean } = 
   h.db.set({ pk: `DEVELOPER#${actor}`, sk: "META", developerId: actor, provider: "slack", revoked: false });
   const ids = bedrockClaudeModelIds("us");
   const primary = extra.unavailable === true ? { provider: "openai", modelId: "gpt-6.1-sol", label: "Primary" } : { provider: "amazon-bedrock", modelId: ids[0]!, label: "Primary" };
-  await registerSlackProject(h.handler, { models: { default: primary, approved: [...(extra.unavailable === true ? [primary] : []), ...ids.map((modelId, index) => ({ provider: "amazon-bedrock", modelId, label: `Model ${index}` }))] } });
+  // At most 16 approved models, and the Pi 1.5.2 catalog lists 16 Bedrock Claude models: 15 of them plus the primary fit.
+  await registerSlackProject(h.handler, { models: { default: primary, approved: [...(extra.unavailable === true ? [primary] : []), ...ids.slice(0, 15).map((modelId, index) => ({ provider: "amazon-bedrock", modelId, label: `Model ${index}` }))] } });
   const thread = `${SLACK_TEAM}/${SLACK_CHANNEL}/1695500000.00000${extra.unavailable === true ? 3 : 4}`, user = "U0123456789";
   const workspace = await ensureWorkspace(h.handler, thread, user), workspaceId = String(workspace.body.workspaceId);
   markReady(h.db, workspaceId);

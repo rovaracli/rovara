@@ -1,6 +1,6 @@
 import { AppMeResponseReaderSchema, RealtimeTokenResponseReaderSchema, SessionIdSchema } from "@agentx/cloud-contracts/web";
 import type { ApiRequest, ApiResponse, AppHost, RealtimeSocket } from "@agentx/ui";
-import { ApiError, COMPANY_HEADER, createApiClient, pageCompany, isCompanySwitcherOn, reloadIntoActiveCompany, SIGN_IN_REPEAT_GUARD_MS, withCompanyHeader } from "@agentx/ui";
+import { ApiError, COMPANY_HEADER, createApiClient, pageCompany, isCompanyHeaderOn, reloadIntoActiveCompany, SIGN_IN_REPEAT_GUARD_MS, withCompanyHeader } from "@agentx/ui";
 import { safeExternalUrl, isGithubInstallationUrl, isSlackLinkUrl, isGithubLinkUrl, joinLinkPath } from "../../ui/src/text/links.js";
 export interface BrowserWindow {
  // Lane A: optional on hosts without clipboard support; never falls back to storage.
@@ -32,7 +32,7 @@ export function createBrowserHost(win: BrowserWindow): AppHost {
   return company === null ? { status: response.status, body } : { status: response.status, body, company };
  }
  async function refresh(): Promise<void> {
-  refreshing ??= (async () => { const company = isCompanySwitcherOn({ storage: host.storage }) ? pageCompany(transport) : undefined, response = await fetchJson("/v1/web/me", { method: "GET", headers: company === undefined ? { accept: "application/json" } : { accept: "application/json", [COMPANY_HEADER]: company } });if (response.status !== 200) throw new ApiError(response.status, "AUTH_REQUIRED", "Sign in to continue.");const me = AppMeResponseReaderSchema.safeParse(response.body);if (!me.success || me.data.csrf === undefined) throw new ApiError(401, "AUTH_REQUIRED", "Sign in to continue.");csrf = me.data.csrf; })().finally(() => { refreshing = undefined; });
+  refreshing ??= (async () => { const company = isCompanyHeaderOn(host) ? pageCompany(transport) : undefined, response = await fetchJson("/v1/web/me", { method: "GET", headers: company === undefined ? { accept: "application/json" } : { accept: "application/json", [COMPANY_HEADER]: company } });if (response.status !== 200) throw new ApiError(response.status, "AUTH_REQUIRED", "Sign in to continue.");const me = AppMeResponseReaderSchema.safeParse(response.body);if (!me.success || me.data.csrf === undefined) throw new ApiError(401, "AUTH_REQUIRED", "Sign in to continue.");csrf = me.data.csrf; })().finally(() => { refreshing = undefined; });
   return refreshing;
  }
  const rawTransport = { async request(input: ApiRequest): Promise<ApiResponse> {
@@ -46,8 +46,9 @@ export function createBrowserHost(win: BrowserWindow): AppHost {
   if (input.method === "GET" && input.path === "/v1/app/me" && response.status === 200) { const me = AppMeResponseReaderSchema.safeParse(response.body);if (me.success) csrf = me.data.csrf; }
   return response;
  } };
- // The company switcher (rovara.companies = "v2" on this device): every request names the page's company, on this one transport. Off, requests pass through untouched.
- const transport = withCompanyHeader(rawTransport, { isOn: () => isCompanySwitcherOn({ storage: host.storage }), onStale: () => { reloadIntoActiveCompany(host); } });
+ // The company switcher (the company flag `companies`, company-flags.ts `isCompanyHeaderOn`): every request names the page's company, on this one transport. Off, requests pass through untouched.
+ // The host itself is passed (not a copy of its storage) so the switch reads this host's runtime flags from the navigation answer.
+ const transport = withCompanyHeader(rawTransport, { isOn: () => isCompanyHeaderOn(host), onStale: () => { reloadIntoActiveCompany(host); } });
  const host: AppHost = {
   // Lane A: copy only on explicit UI invocation; sanitize platform failures.
   async copyText(text) { try { if (win.navigator?.clipboard === undefined) throw new Error("Unavailable");await win.navigator.clipboard.writeText(text); } catch { throw new Error("Copying is unavailable. Try a browser that supports secure clipboard access."); } },

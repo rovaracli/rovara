@@ -14,11 +14,25 @@ const withSecrets = (values: Record<string, string>) => doctorContext({ services
 const text = (value: unknown) => JSON.stringify(value);
 
 describe("doctor: secrets (FR-050)", () => {
-  it("passes the three secrets every environment has", async () => {
+  it("passes the four secrets every environment has", async () => {
     const checks = await secretChecks(doctorContext());
     expect(checks.map((entry) => [entry.name, entry.status])).toEqual([
-      ["agentx/staging/callback-signing-key", "ok"], ["agentx/staging/slack", "ok"], ["agentx/staging/github-app", "ok"],
+      ["agentx/staging/callback-signing-key", "ok"], ["agentx/staging/erasure-hash-key", "ok"], ["agentx/staging/slack", "ok"], ["agentx/staging/github-app", "ok"],
     ]);
+  });
+
+  it("fails a missing or short erasure hash key, pointing to restore or re-hash, never a new value, and never shows a value (0.5.15)", async () => {
+    const missing = { ...SECRETS };
+    delete (missing as Record<string, string>)["agentx/staging/erasure-hash-key"];
+    const gone = (await secretChecks(withSecrets(missing))).find((entry) => entry.name === "agentx/staging/erasure-hash-key")!;
+    expect(gone).toMatchObject({ status: "fail", detail: "does not exist" });
+    expect(gone.fix).toContain("agentx --env staging upgrade");
+    expect(gone.fix).toContain("restore the erasure key, or run the re-hash plan");
+    const short = (await secretChecks(withSecrets({ ...SECRETS, "agentx/staging/erasure-hash-key": "short-erasure-VALUE" }))).find((entry) => entry.name === "agentx/staging/erasure-hash-key")!;
+    expect(short).toMatchObject({ status: "fail", detail: "is shorter than the 32 bytes the control plane needs" });
+    expect(short.fix).toContain("do not replace it with a new value");
+    expect(short.fix).not.toContain("delete-secret");
+    expect(text(short)).not.toContain("short-erasure-VALUE");
   });
 
   it("fails a missing secret with a fix, and a malformed one without showing its value", async () => {

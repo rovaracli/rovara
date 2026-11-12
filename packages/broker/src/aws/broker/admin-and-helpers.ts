@@ -1,5 +1,6 @@
 // Part of the broker (split out of ../broker.ts): SWE-bench routes, admin task reads, keys, request parsing helpers and event hooks.
 
+import { callbackVerificationKeys } from "../signing-key-secrets.js";
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
 import { CandidateManifestSchema, WEB_API_RUNTIME_PROFILE_ID, canonicalJson, SlackChannelIdSchema, SlackTeamIdSchema, agentXError, unhandledDeploymentMode, workspaceProjectIndexAttributes, type WorkspaceInstance, modelKey, orgProjectCatalogKey, projectMemberKey, type OrgId, cloudwatchRoleAccount, codeRepositoriesOf, parseWorkerCredentialKindsHeader, WORKER_CREDENTIAL_KINDS_HEADER } from "@rovara-code/contracts";
@@ -61,6 +62,7 @@ export function swebenchDependencies(dependencies: AwsBrokerDependencies): EvalB
     tableName: dependencies.tableName,
     artifactBucketName: dependencies.artifactBucketName,
     callbackSigningKey: dependencies.callbackSigningKey,
+    ...(dependencies.callbackPreviousKey === undefined ? {} : { callbackPreviousKey: dependencies.callbackPreviousKey }),
     ...swebench,
   });
 }
@@ -646,9 +648,13 @@ export function verifyCapability(
 ): CallbackClaims {
   const [body, signature, extra] = token.split(".");
   if (!body || !signature || extra) throw agentXError("CALLBACK_FORBIDDEN", "invalid callback capability");
-  const expected = createHmac("sha256", dependencies.callbackSigningKey).update(body).digest();
   const actual = Buffer.from(signature, "base64url");
-  if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) {
+  // Current key first, then the previous one while it is inside its rotation window (signing-key-secrets.ts).
+  const matches = callbackVerificationKeys(dependencies).some((key) => {
+    const expected = createHmac("sha256", key).update(body).digest();
+    return expected.length === actual.length && timingSafeEqual(expected, actual);
+  });
+  if (!matches) {
     throw agentXError("CALLBACK_FORBIDDEN", "invalid callback signature");
   }
   const claims = JSON.parse(Buffer.from(body, "base64url").toString("utf8")) as CallbackClaims;

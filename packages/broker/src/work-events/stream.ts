@@ -7,7 +7,8 @@
 // Never fails the notifier's batch: a write that fails three times is logged (`work_event.write_failed`: the stream record's id and the event's kind and id, no content) and the batch goes on, so a fault here can
 // never hold up a notice. Replay: see `briefs/work-events.md` ("Replay").
 import { unmarshall } from "@aws-sdk/util-dynamodb";
-import { WorkflowSnapshotSchema, type WorkEventInput } from "@agentx/cloud-contracts";
+import { WorkflowSnapshotSchema } from "@agentx/cloud-contracts";
+import { type WorkEventInput } from "@rovara-code/contracts";
 import { isEvalRunMark } from "../lessons/eval-run.js";
 import type { StreamRecord } from "../developer/notifications.js";
 import { workEventsOfTransition } from "./transition.js";

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 // Approval place (U4), the UI side: a project maintainer (or a company owner or admin) who decides someone else's coding plan is offered Reject like the owner (owner decision 99) but never a run-limit tick or an Approve that would raise
 // the limit, is told the owner will hear about it, and keeps Approve and Request changes. The owner, and a server that sends no `decideAs`, see the page exactly as before. A refusal is shown as the server said it.
-import { afterEach, expect, it } from "vitest";
+import { expect, it } from "vitest";
 import { screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, createMemoryRouter, RouterProvider } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
@@ -12,7 +12,6 @@ import { approveLine } from "../../packages/ui/src/screens/session/task-plain-st
 import { readDecisions } from "../../packages/ui/src/api/decisions.js";
 import { readPanelView } from "../../packages/ui/src/api/plan-panel.js";
 import { MAINTAINER_RUN_LIMIT_WORDS, isMaintainerSeat, maintainerNote, readDecideSeat } from "../../packages/ui/src/api/decide-seat.js";
-import { forceTaskPageFlags } from "../../packages/ui/src/screens/session/task-page-flags.js";
 import { AppHostProvider } from "../../packages/ui/src/host.js";
 import { Announcer } from "../../packages/ui/src/design/Announcer.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
@@ -25,7 +24,6 @@ import { expectNoAxeViolations } from "./support/axe.js";
 import { SESSION_FIXTURE_ID, sessionPerson } from "./support/session-fixture.js";
 import { designTaskSession } from "./support/design-review-fixture.js";
 
-afterEach(() => { forceTaskPageFlags(undefined); });
 const TASK = "11111111-1111-4111-8111-111111111111";
 const SESSION_PATH = "/app/sessions/" + SESSION_FIXTURE_ID;
 const MAYA = { developerId: "b".repeat(64), name: "Maya Chen" };
@@ -55,7 +53,6 @@ function taskPage(options: { owner: boolean; seat?: Seat; items?: DecisionItem[]
   if (request.method === "POST" && request.path.endsWith("/evidence-opened")) return { status: 200, body: { cardId: request.path.split("/").slice(-3, -1).join(":"), opened: true, recorded: true } };
   return { status: 200, body: { session } };
  });
- if (options.flags === true) forceTaskPageFlags({ leadingHeader: true });
  const query = createQueryClient();
  query.setQueryData(["nav"], { org: { name: "Acme" }, features: { decisionCards: true } });
  const router = createMemoryRouter([{ path: "/app/sessions/:id", element: h(SessionScreen, {}) }], { initialEntries: [options.at ?? SESSION_PATH] });

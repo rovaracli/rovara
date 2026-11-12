@@ -22,7 +22,7 @@ runDocumentStoreConformance("sqlite", { async create() { /* a fresh empty store 
 
 One registry holds every adapter, by **plug-in point** and name (`createAdapterRegistry`). The points are `code-host`, `tracker`,
 `check-runner`, `channel`, `worker-machines`, `storage`, `queue`, `monitoring`, `learning`, `team-record-source`, `identity`,
-`build-system`, and the policy seams `admission`, `audit-sink`, `approvers`, `metering` and `model-keys`, `secrets` (below), `object-storage` (provisional, below), `model-provider` (below), `company-instructions` (read-only company rules, below) and `outbound-events` (signed events out, below), `image-registry` (a project's saved environment image, below) and `scheduler` (when something is due, below). A point holds either many
+`build-system`, and the policy seams `admission`, `audit-sink`, `approvers`, `metering` and `model-keys`, `secrets` (below), `object-storage` (provisional, below), `model-provider` (below), `company-instructions` (read-only company rules, below) and `outbound-events` (signed events out, below), `image-registry` (a project's saved environment image, below), `scheduler` (when something is due, below), `realtime` (a hint to open pages that something changed, below) and `email` (one plain notice to one address, below). A point holds either many
 adapters by name (every code host) or one (the store, the queue, each policy seam).
 
 It is the registry Pratik's channel adapters (spec 062 phase 3) use, with the `channel` point. An out-of-process adapter that an
@@ -71,7 +71,13 @@ simply has no comment commands. Whether a comment is a command, fresh, edited, o
 `vectors(company)` (where a lesson's vector is kept; the default is beside the lessons in the document store). With neither, lessons are compared on code-aware keywords and cited paths, so a laptop needs no network and no model download. The lessons themselves
 live in the `storage` point (`DocumentLessonStore`, the keys of `lesson-keys.ts`, the same rows a hosted install keeps), their model calls go through the install's model, their spend through `admission` and `metering`, their audit through `audit-sink`
 (`lesson.*` actions; `rovara up` registers the document audit sink, so approvals, including the sole-owner exception, and retire requests are kept) and their approvals through `approvers` (`kind: "lesson"`, bound to the lesson's text and version). Code registers `local` (keywords) as the default; `ROVARA_LESSONS_EMBEDDER=local` makes it also give a hashing embedder
-that runs in the process (it finds shared words and word forms, not meaning). The point's cardinality is many; the first adapter that is not `local` is used. The lessons switch and the gate the library asks before a learning call are process-wide (one install per process), not per project or per company.
+that runs in the process (it finds shared words and word forms, not meaning), and `ROVARA_LESSONS_EMBEDDER=http://127.0.0.1:<port>/v1` with `ROVARA_LESSONS_EMBEDDER_MODEL` a small open model (bge-small class, decision 23) served on this machine by any embedding server with the common `/embeddings` route; only a loopback address is accepted (`createLoopbackEmbedder` in `lessons/local-embedder.ts`). The point's cardinality is many; the first adapter that is not `local` is used. The lessons switch and the gate the library asks before a learning call are process-wide (one install per process), not per project or per company.
+
+The interface is the hosted product's own lessons seam, name for name (`LessonEmbedder`, `LessonVectors`, `StoredLessonVector`, `EmbedderCall`), so the hosted embedder service and its vector store are meant to sit behind it
+without changing the TeamRecord rows they keep (not yet run against them). Lane K1 added the checks: `tests/support/ports/learning-conformance.ts` has one suite for an embedder (`runLessonEmbedderConformance`: a spec, a fixed
+dimension, finite numbers, `embedMany` in order and equal to `embed`, deterministic) and one for vector storage (`runLessonVectorsConformance`: one vector per lesson, a new spec replaces the old one,
+nothing for another spec, idempotent `remove`, companies and projects apart, many ids in one call). Code's hashing embedder and `documentLessonVectors` pass them, as do the fakes
+(`createFixedLessonEmbedder`, `createMemoryLessonVectors`, `createMemoryLearningAdapter` in `packages/broker/src/ports/learning.ts`).
 
 ## Company scope
 
@@ -105,6 +111,29 @@ the company from each call (`ModelKeyStore`, `IdentityProvider`, the outbox, `Wo
   `not` of it is true. Text is ordered by Unicode code point (UTF-8 byte order). Updating an absent item creates it.
 - `document-semantics.ts` holds the rules as plain functions; the fake and a SQLite adapter can use them, a DynamoDB adapter
   translates and is held to the same answers by the suite.
+
+**DynamoDB adapter (lane A1, `packages/aws-adapters`, `@rovara/aws-adapters`; public under owner decision 72 O2; opt-in, never Code's default).**
+`DynamoDocumentStore` keeps the hosted State table's layout unchanged, so no data moves: table keys `pk`/`sk` (text) are the port's key, a
+document's attributes are the item's attributes in the form the hosted broker's document client writes (`S`, `N`, `BOOL`, `NULL`, `L`, `M`),
+and the adapter adds no attribute of its own. `STATE_TABLE_INDEXES` names the table's four indexes; `outbox-pending` is listed apart as
+planned (adding it is a hosted deployment change, not made here). Conditions and updates become placeholder-only expressions (`add` is
+`SET p = if_not_exists(p, 0) + n`); single reads and table queries are strongly consistent; a lost transaction race is retried (4 attempts,
+a new client token each) and then `conflict`. By default it refuses to write a number past 2^53 - 1 (`invalid_request`), because the hosted
+broker's document client reads one as a BigInt or throws; `cloudReadableNumbers: false` allows the port's full range (the conformance suite
+runs that way, since it pins `1e125`). The change feed (`DynamoStreamChangeFeed`) adds no stream reader: the host's existing reader passes each
+batch of stream records to `deliver`, which hands it to the consumers declared for that process, retries a failing handler 3 times, then calls
+`onPoison`; a time-to-live removal is `cause: "expired"`. The checkpoint is the event source mapping's and is shared by the reader's consumers,
+so `deliver` refuses a batch (the mapping hands it over again) while any declared consumer is not subscribed, or when one stops during it.
+
+Rulings (controller review of lane A1, 2026-11-11):
+- **Sets and binary values stay refused on read until the D3 migration** (decision 60). A `get` throws `UnrepresentableValueError`; a query
+  page or `getMany` leaves the row out and reports its key (`onUnreadable`). Before Cloud cuts over to this store, a one-off scan must prove
+  the State table holds no `SS`, `NS`, `BS` or `B` attribute.
+- **The port's size cap stays 400 KiB of compact JSON.** DynamoDB measures size its own way (about 3 bytes per one-digit number in a list,
+  3 bytes per empty map), so it may refuse some documents under the cap, such as number-dense lists. Such a refusal is `invalid_request`
+  (a conformance case pins this for every store). The plug-in `@rovara/aws-adapters/dynamodb`
+(settings `tableName`, `region`, `endpoint`, `indexes`, `ttlAttribute`) builds the store without a feed. The suite runs against
+`tests/support/ports/dynamodb-fake.ts`, an in-memory DynamoDB that parses the real expressions; it is not yet run against DynamoDB Local.
 
 ## Queue and outbox
 
@@ -216,7 +245,7 @@ Each has a Code default (`policy-defaults.ts`) and a suite in `policy-conformanc
 
 **An `Admission` adapter declares `enforcesCost`.** `enforcesCost?: boolean` on the `Admission` interface says whether the adapter refuses or holds back a request whose `estimate.cost` is more than its remaining allowance. Rovara starts work with no one present (triggers, schedules, chain steps) only where the registered admission declares `enforcesCost: true`: only an explicit `true` counts, a missing value means `false`, and the adapter's name is never looked at (`admissionEnforcesCost` in `core/automation/run-seam.ts` is the one rule). An adapter that ignores the estimate (an allow-list, a logger, a rate limiter) leaves it unset or `false`. Code's default allow-all declares `false` explicitly, and the conformance suite (`runAdmissionConformance`) requires every adapter to declare it, and an adapter that declares `true` to refuse a request over its allowance. This is an additive change to a plug-in interface (decision 79): existing adapters keep working and are simply treated as not enforcing until they declare it; the owner decides it alone (decision 63), and the plug-in author is told.
 
-**A reserving `Admission` adapter needs a reservation lifetime.** Some callers ask for an allowance, keep its `reservationId` on a record they write next, and give it back when that record's work ends (the second review does: it asks at the review step's start and releases when the operation ends; a diagnosis and an Ask ask for a `model.call` before their model call and settle it with what the call used as soon as the provider may have been paid, giving it back only when nothing was sent). Every path that ends normally gives it back, and a restart is safe because the id is on the stored record. A crash between `admit` and the write of that record leaves a hold nothing can find: each start asks under a key of its own, so a retry does not reuse it. An adapter that really holds money must therefore expire a reservation by itself (a time to live, or its own sweep). Code's default holds nothing.
+**A reserving `Admission` adapter needs a reservation lifetime.** Some callers ask for an allowance, keep its `reservationId` on a record they write next, and give it back when that record's work ends (the second review does: it asks at the review step's start and releases when the operation ends; a design review round asks for its reviewers' ceilings before it is stored, keeps the id on the round's allocation and releases it when the round ends. The rule for a hold that covers model calls made through the proxy: RELEASE it when the work ends, never settle it with the spend, because the proxy already books each call through `Metering` and a settle would charge it twice; a diagnosis and an Ask ask for a `model.call` before their model call and settle it with what the call used as soon as the provider may have been paid, giving it back only when nothing was sent). Every path that ends normally gives it back, and a restart is safe because the id is on the stored record. A crash between `admit` and the write of that record leaves a hold nothing can find: each start asks under a key of its own, so a retry does not reuse it. An adapter that really holds money must therefore expire a reservation by itself (a time to live, or its own sweep). Code's default holds nothing.
 
 **Approvals are bound.** An `ApprovalRequest` carries `requestId`, `revision`, `artifactDigest`, the project and an optional expiry. An
 `ApprovalProof` names the request, revision and digest it approves and carries a `token` that the method's issuer checks (the identity
@@ -254,12 +283,37 @@ The file is outside every repository on purpose: a repository's writers cannot e
 The core builds the rules into the step's system prompt (`core/instructions`): the dispatch reads them at every step, so a step started after the file changed carries the newest, puts them first (Required, then Preferred), then the project's How we work (`docs/how-we-work.md`),
 and refuses the step with a sentence when the file is over the limits, cannot be read, or the whole block is over the worker's limit. A worker that does not list `task.standingInstructions.v1` is refused the step, never sent it without the block.
 
-### Team-record sources: the unknown-source rule (lane P6, item T1)
+### Team-record sources (lane K1; the unknown-source rule is lane P6, item T1)
 
-The `team-record-source` point is still a name only; its interface is defined when the team record moves to the plug-in. The rule it must keep is already shared (`record-trust.ts`): a source id that nothing registered is never read as
-"everyone in the project". `audienceForSource(row, knownSources)` keeps the audience a registered source declared. For ANY unregistered source it returns `unknownSourceAudience` (restricted to the project's maintainers,
+**A new interface: the owner decides it alone (decision 63).** `team-record-source` (`packages/contracts/src/ports/record-source.ts`, many adapters) is where an outside system's events become team record
+rows. The record itself (where rows are kept, how long, vectors, erasure) stays the hosted product's (decision 41); Code defines both sides of the seam so a source is written once:
+
+- **`TeamRecordSource`**, the adapter: `source` (the id its rows and permission snapshots carry: `chat`, `codehost:<name>`), `capabilities` (`delivery`: `push` and/or `poll`; `existence`; where its
+  permission snapshots come from: `item`, `place` or `none`; the retentions it can honour, `A` live only, `B` process then drop, `C` raw text 30 days, `D` full history) and up to three ways in: `receive(payload, sink)`
+  for one delivery the host's route already verified, `poll({ workspaceId, scope, cursor, limit, deadline }, sink)` for a page of changes, and `exists({ workspaceId, system, nativeIds })` (an item deleted at its source
+  is deleted everywhere; `forbidden` is never read as `missing`). Each answers counts (`written`, `duplicates`, `refused`, `failed`), never text; a write the sink threw on is `failed`, so the host delivers again.
+- **`RecordSink`**, the host's write side, handed to the source on every call: `put(draft)`, `tombstone({ sourceIds | scope, cause })`, `changePrincipals`, `replaceScopeAudience`, and optionally `distillTransient` (retention B
+  text, in memory only) and `ensureAccessSeed`. Its contract makes arrival order, repeats and deletes safe:
+  - `put` is idempotent on company, source, system, item and version (`recordIdempotencyKey`); versions are ordered by `versionAt ?? occurredAt`, never by arrival; a per-editor change row (`sourceRef.order`) replaces nothing.
+  - An item tombstone hides at once and is sticky: a put that arrives after the delete is refused.
+  - A scope tombstone with cause `source_deleted` or `excluded` hides the place and every place under it (`recordScopeCovers`: `chat:T1` covers `chat:T1/C9`, not `chat:T10`) and CLOSES them: every later put there is refused,
+    so a deleted channel or repository never fills again from a late retry or a backfill. `person_erased` and `project_archived` hide without closing. A draft's place is its restricted snapshot's scope, else its `scope` (`recordDraftScope`).
+  - A sink repairs rather than refuses: the stored trust is lowered to the lowest of the draft's, its actor's, its pieces' and its quoted authors', and to at most `system` for outside text with no actor (`recordStoredTrust`); no text is kept under retention A or B (the row is stored without it,
+    or not stored); links are trimmed to the first 20 valid http(s) links of at most 2,048 characters (`recordLinks`). It refuses only what is not a draft (`recordDraftRefusal`).
+- **`RecordDraft`** keeps the hosted record's field names (`workspaceId` is the company id) and is written out as an interface, so the hosted taps' closed source and kind lists are assignable to it. `RecordDraftSchema`
+  checks the shape. A SOURCE is held to more (`recordSourceDraftProblem`, used by the source suite): no text under retention A, a restricted snapshot that names its own source, and a row trust no higher than its actor's or a piece's.
+  Text under B is allowed: the source hands it to `distillTransient`.
+- Who a source's account is, the source's settings and the capture switch are the adapter's own dependencies, given when it is made (the host's people and settings), not part of the seam.
+- **Code registers no source and keeps no record** (owner decision 102: no local team record in Code for now): `createRefusingRecordSink()` answers every write "this install keeps no team record". The fakes are `createMemoryRecordSink()` (keeps the whole contract) and
+  `createFakeRecordSource()` (scripted deliveries and polls), in `packages/broker/src/ports/record-source.ts`. `tests/support/ports/record-source-conformance.ts` holds two suites: `runRecordSinkConformance` (for any
+  sink) and `runRecordSourceConformance` (for any source, fed recorded deliveries; optionally made with settings it cannot read, when it must record nothing). The sink suite records with a `RecordSample` the harness
+  supplies (a source, a row kind, a source instance and how a place is named) and calls the harness's `setup(workspaceId, scope)` before the first write in each place, so a sink that refuses unknown sources or places
+  without settings writes its own settings first. Code's fakes use `CHAT_SAMPLE`. The hosted sink is meant to pass the suite over a test table; that has not been run yet.
+
+The rule the point keeps is shared (`record-trust.ts`): a source id that nothing registered is never read as "everyone in the project". `audienceForSource(row, knownSources)` keeps the audience a registered source declared;
+`knownRecordSources(registry, builtIn)` gives the `source` ids of the registered adapters plus the recorders built in and the reserved ids (`rovara`); two adapters claiming one id, or an adapter claiming a built-in or reserved id, is refused
+(`PluginRegistryError` `already_registered`), because its rows would be believed as another system's. For ANY unregistered source it returns `unknownSourceAudience` (restricted to the project's maintainers,
 `MAINTAINERS_GROUP`) and ignores what the source declared, even a restricted audience: a declared ACL can name any `acl.source` (so its principals would be read as another system's accounts), a broad group or any principal ids.
-`knownSources` is the ids of the registered `team-record-source` adapters and of the recorders built in.
 
 ## Model key store
 
@@ -309,6 +363,13 @@ and asks the point; it does not write its own reader.
   config-loaded plug-in. It sees every reference asked, and so can answer, and so choose, every model key and the GitHub token; it is trusted as much as the broker itself. Task input and project files cannot name a reference.
   Install a `secrets` plug-in only from a source you trust as you would trust the broker.
 - A conformance suite for every adapter is `tests/support/ports/secret-store-conformance.ts`.
+- **AWS Secrets Manager (convergence lane A3, owner decision 72 O2).** Opt-in: `{ "point": "secrets", "name": "aws-secrets-manager", "module": "@agentx/broker/plugins/secrets-aws", "settings": { "region",
+  one AWS identity, "namePrefix": "rovara/", "companyPaths"? } }` (`createSecretsManagerSecretStore` in `@rovara/aws-adapters/secrets-manager`; the module is `packages/broker/src/plugins/secrets/aws-secrets-manager/`, which shows the adapter's fixed sentences as `LocalSecretError`). Its reference kind is `{ "awsSecret": "<name under the prefix>" }`:
+  the secret read is `namePrefix` + the value (the hosted product's names, such as `agentx/<env>/org-connectors/<company>/<id>`, read as they are), and the value is checked first (plain parts, no `.` or `..`),
+  so no reference reaches outside the prefix. A value whose first part is one of `companyPaths` names a company's own secret and is read only when its second part is the call's company. A hosted (many-company) setup MUST set `namePrefix` to its environment's path and `companyPaths` (`org-connectors`, `org-hooks`); without `companyPaths` any name under the prefix is read for any company. `clientFor(companyId)`
+  lets a deployment sign each company's reads with a session that reaches only that company's secrets (IAM is the second fence). Missing, scheduled for deletion or empty is `undefined`; a refusal, a KMS
+  decryption failure, a binary secret or an outage is a fixed sentence that quotes neither the name nor the value. Read on every call. It knows no `{ env }` or `{ key }`, so with it
+  configured the model keys and the GitHub token must be named as `{ "awsSecret" }` sources where they are read. Suite: `tests/unit/aws-secrets-manager.test.ts`.
 
 ## Monitoring (the `monitoring` point)
 
@@ -323,6 +384,9 @@ Schema for each read-only tool) and `check(input)`. **This is a new interface (d
 - An adapter does not save a connection, approve a tool or widen what a tool may do: adding a connection and approving a tool are the owner's acts on a page (decision 66). Whatever a tool returns is data; the
   core frames it as untrusted text before a model sees it.
 - `connectionChecksFromRegistry(registry)` answers the connection store's checks from whatever adapters the registry holds; a kind with no adapter is "not available on this install".
+- Lane K1: `tests/support/ports/monitoring-conformance.ts` is the conformance suite (read-only, a plug-in name for its kind, unique tool names with closed arguments, ok only when the vendor says so, a refusal as
+  `{ ok: false }` that never quotes the secret, never ok when the vendor cannot be reached, no vendor call when a secret-taking kind has none, and no fetch but the one it is given). The fake
+  (`createFakeMonitoringAdapter`) and Code's Sentry adapter pass it; a hosted install's own adapters (its cloud's alarms, its context sources) run it too.
 
 ### Connection secrets
 
@@ -339,7 +403,7 @@ The `object-storage` point (one adapter) is where files live that are too big or
 worker's results. It is lane L7b's `EvidenceBlobStore` promoted to the registry: `ObjectStorage` in `packages/contracts/src/ports/object-storage.ts`
 has `put`, `get` (with a size cap; an object over it is `undefined`, never cut), `stat`, `delete` and `deletePrefix`. Keys are paths of letters, digits and
 `. _ = : @ + , ~ -` (`isValidObjectKey`), at most 1024 characters and at most 128 per part (the evidence erase's plain-id rule), no `.` or `..` part, so no adapter can turn a key into a place outside its store. An
-object carries a content type, a few small text facts and a retention class (the caller's word, such as `evidence-std`; the adapter maps it to days).
+object carries a content type, a few small text facts (at most 32 and 2 KB in all, `OBJECT_METADATA_LIMITS`: S3's own limit) and a retention class (the caller's word, such as `evidence-std`; the adapter maps it to days).
 - **Immutable by default (L9-wire review).** A `put` on a key that holds an object refuses with `ObjectConflictError` and changes nothing; of two writers racing for a key exactly one wins (a
   conditional write in the document adapter, a hard link in the folder adapter). `put(..., { overwrite: true })` replaces on purpose. The proof evidence callers that rewrite a key
   pass it: `storeEvidenceArtifacts` (the key is the content's SHA-256, so a retried capture rewrites the same bytes) and `keepEvidence` (one pack per task and candidate digest, rewritten by a re-check).
@@ -352,8 +416,17 @@ object carries a content type, a few small text facts and a retention class (the
   adapters above run it in `tests/unit/ports-object-storage.test.ts`.
 - **Proof code.** `EvidenceBlobStore`, `EvidenceBlobMeta` and `EvidenceObjectTooBigError` stay as names over the port, so the proof code needs no change; the
   wiring lane takes the store from `registry.require("object-storage")`.
-- **Not here (decision 51).** The S3 adapter is Cloud's, with its lifecycle rule for retention; a signed download address (lane L8); a sweep of expired files in
-  the folder adapter (an expired object is reported absent and removed when it is next read).
+- **S3 (convergence lane A3, owner decision 72 O2: the generic AWS adapters are public).** Opt-in: `{ "point": "object-storage", "name": "s3", "module": "@agentx/broker/plugins/object-storage-s3",
+  "settings": { "bucket", "region", one of "profile" / "roleArn" / "allowAmbientAwsCredentials": true, "maxObjectMiB"?, "expectedBucketOwner"? } }` (`S3ObjectStorage` in the public AWS adapters package `@rovara/aws-adapters/s3`, `packages/aws-adapters`; the module that gives it an AWS identity is `packages/broker/src/plugins/object-storage/s3/`). It keeps the hosted
+  product's layout so no data moves: the key as given (no prefix), the metadata as S3 user metadata (`x-amz-meta-*`), and a retention class as an object tag only when the settings map it (`"retentionTags": { "<class>": { "key", "value" } }`): the
+  adapter names no tag itself, so no object can carry an expiry tag by accident; the hosted deployment passes its own map (`evidence-short`, `evidence-std` and `e2e-screenshot` to its tag), so its
+  objects carry the tags they carry today. How long a tagged class is kept is the BUCKET's lifecycle rules; a class the map does not name is untagged and kept until deleted, and the adapter never sets a lifetime itself. Write once is `If-None-Match: *`; an object whose lifecycle expiry
+  (`x-amz-expiration`) has passed reads as gone and is replaced only by its ETag (`If-Match`), so one writer wins there too. S3 lower-cases metadata names and keeps at most 2 KB, so this adapter
+  refuses upper-case names, non-ASCII values and more than 2 KB (`ObjectMetaError`) instead of storing something that reads back different. `presignGet(key, { contentType, disposition,
+  expiresInSeconds })` (not part of the port) signs a GET for one key with the content type forced and the disposition `inline` only for a picture or video type (`S3_INLINE_CONTENT_TYPES`), else always `attachment`, 60 seconds by default and 300 at most; the deployment passes the signer
+  (`getSignedUrl` of `@aws-sdk/s3-request-presigner`, which Code does not depend on). Errors never carry S3's words. It passes the suite over a faithful S3 stand-in (`tests/support/ports/aws-fakes.ts`)
+  in `tests/unit/aws-object-storage-s3.test.ts`.
+- **Not here (decision 51).** A sweep of expired files in the folder adapter (an expired object is reported absent and removed when it is next read).
 
 ## Local model proxy (lane L9a, PROVISIONAL: owner decision 58, until Pratik agrees)
 
@@ -649,7 +722,7 @@ and the build step reads it against the contracts' schemas and the task's own re
 - **Publishing** (`startPublication`, `openPullRequest`, `recordPublished`): the worker pushes the checked tree; the code host, not the worker, says what the branch holds (its head, its tree, that it
   stands on the pinned base); the draft is opened through `reconcileChangeRequest`; its own head is read again and one that is not the checked code is closed and recorded nowhere. The result is
   linked back to the task (the neutral link row), the head indexed, merge tracking enrolled and `openBranchWriters` called.
-- **A merge of the base is a new candidate** (owner decision b): the host shows the right parents, not what the merge's tree holds, so the checks run again on the workspace (a CHECKS run whose code must be the code recorded), then the reviews; only then does the task wait for the merge again, and merge tracking marks a pull request ready only while it waits with nothing being changed or checked (`wantsReady`). A merge from a run that did not succeed is not recorded. The update callback records a head as Rovara's only after the host shows the reviewed tree (a fix) or the recorded head and base commit as parents (a merge); a later refusal puts the record back.
+- **A merge of the base is a new candidate** (decision 67b, and 70(c) for what follows): the host shows the right parents, not what the merge's tree holds, so the task is blocked at VERIFY with `WORKFLOW_BLOCK_REASONS.baseMergedRecheck` (the earlier checks, reviews and accepted findings are dropped) and the checks run again, then the reviews; only then does the task wait for the merge again, and merge tracking marks a pull request ready only while it waits with nothing being changed or checked (`wantsReady`). **The re-run is automatic** where Rovara may act: an AUTOFIX row with cause `base-merged` is written with the block when automatic fixing is on and the task needs no browser or API checks (a task that does is not synced: its merged code has no source export, so the branch stays behind and the person updates it, `MERGE_NOT_READY_MESSAGES.behindByHand`). The look reads the autonomy again through `TaskFlowDeps.autonomy` (`suggest`, an unreadable setting or no seam asks the owner; `rovara up` answers `prepare`, as merge tracking does), asks if a person pushed since the merge (`head-moved`; an unreadable head asks too), and starts the re-run only inside three allowances: one automatic retry per candidate, three per task per rolling 24 hours (their own count, not the task's six lifetime actions: `BASE_MERGED_RETRIES_PER_DAY`), and the company's per-ten-minutes allowance, which is an `Admission` decision (`autofix.base-merged`, keyed by task, candidate and ten-minute window; the core keeps no counter, so Code's allow-all has none and Cloud's adapter holds five). A refusal makes the row wait a minute plus up to two with no attempt counted. The reviews after the re-run read the autonomy once more (lowered to `suggest`: blocked with `recheckAutonomyLowered` before anything paid starts; the owner's Retry reviews is their go-ahead). A merge the host shows with exactly `[recorded head, asked base commit]` as parents is recorded whatever the run's status (leaving Rovara's own merge unrecorded would read it as someone else's push for good); a merge the host does not show is not. The update callback records a head as Rovara's only after the host shows the reviewed tree (a fix) or the recorded head and base commit as parents (a merge); a later refusal puts the record back (Cloud keeps a fix's head and adopts it from its next webhook; Code has no landed-fix adoption, so it keeps the rollback).
 - **One automatic retry** applies where it does in Cloud: a blocked VERIFY or REVIEW whose run was lost or whose start was tried until its budget ran out (the AUTOFIX row carries the cause). A coding run, a publication or a push that is lost blocks for the owner's Retry, as in Cloud. Retry works for a blocked coding run, checks, reviews, publication and the push of a fix (the block "pull request update failed").
 - **Open pull requests** (`maintain.ts`): the reviewed fix is appended as exactly the reviewed tree onto the recorded head; the base branch is merged in on merge tracking's request. A head that
   moved (a person's push) is never overwritten. Both are `maintain` operations with the `pull-request-update` callback.
@@ -690,7 +763,7 @@ Cloud's own files keep only what is Cloud's (its adapters, its policies, its dat
 
 ## What is not here
 
-- **Artifact (object) storage** now has a provisional port (`object-storage`, above). Cloud's S3 adapter is not in Code.
+- **Artifact (object) storage** now has a provisional port (`object-storage`, above), with an opt-in S3 adapter (lane A3).
 - **Snapshot reads** (`TransactGet`, 10 uses in Cloud). `getMany` is not a snapshot; use `transact` with `check` steps.
 - **Scan** (2 uses). Use `query` on a partition or an index. **Projections** (16 uses) are not offered; read the document.
 - **Sets with `contains`, list append with `size`, `attribute_type`, binary attributes.** Cloud's limit and budget code uses them
@@ -699,8 +772,7 @@ Cloud's own files keep only what is Cloud's (its adapters, its policies, its dat
   instead of a list length, base64 text instead of bytes. That changes the stored format, so it needs a one-time data migration in Cloud. Owner decision 60 settles it (item S2; this replaces
   "a decision for both owners"): **the document store stays small.** Sets and list append are NOT added to the port or to SQLite. Cloud's budget, limit and session code moves to one row per item
   (a marker row per charged task, a counter row) with a one-time migration on the Cloud side. L6a's workspace limits already use that pattern.
-- **Realtime push and email notices.** Each is a provider dependency of the core today and has no port yet (object storage has a provisional one, secrets have the `secrets` point above, and
-  the `scheduler` and `image-registry` points are below). The relay "from a timer" is the caller's timer.
+- **Realtime push and email notices** now have ports (`realtime` and `email`, lane K1, below), as do timers (`scheduler`) and the saved environment registry (`image-registry`). The outbox relay "from a timer" is still the caller's timer.
 - **Sign-in flows.** `IdentityProvider` answers who a credential is; begin/complete/sign-out, authentication freshness and member
   listing for single sign-on are interface additions for the lane that needs them.
 - A SQLite adapter must use UTF-8 text with BINARY collation for the code-point order and refuse lone surrogates in keys.
@@ -768,3 +840,30 @@ Cloud can switch to this code with no data move.
   recorded as not applied, with the reason); a coding or verification run is told the plan of the pinned revision and the worker features it needs (a worker that lacks one is refused the run, never sent it without).
 - **Switches** are environment variables read by leaf modules (`switch.ts`): `ROVARA_TEST_ENVIRONMENT` (on unless `0`), `ROVARA_TEST_SERVICES`, `ROVARA_TEST_ACCOUNTS`, `ROVARA_PROJECT_IMAGES`,
   `ROVARA_SAVED_ENVIRONMENTS` and `ROVARA_NIGHTLY_HEALTH` (each on only when exactly `1`).
+
+## Realtime (lane K1, a new interface: the owner decides it alone, decision 63)
+
+The `realtime` point (one adapter, `packages/contracts/src/ports/realtime.ts`) tells an open page that something it shows changed, so it reads again. A notice is a HINT, never the data: a dotted `type` and at most
+16 fields, each an id-shaped token, a finite number or a boolean, at most 1 KiB (`isRealtimeNotice`). The port refuses free text, but an id-shaped token can carry anything, so keeping titles, people's words and secrets out of a notice is the core's job. A page that missed one still finds the change when it next reads (a host that
+keeps a catch-up feed writes it in its own store before it publishes; that feed is core logic, not this port), so a lost, late or repeated push does no harm.
+
+- `publish({ companyId, entries, deadline })` sends each entry to one audience: everyone watching a session (`{ kind: "session", sessionId }`), a project (`{ kind: "project", project }`) or one person
+  (`{ kind: "person", personId }`). It **never throws**: an entry that is not a notice or an audience, past the 200-entry batch, past the deadline or lost by the transport is counted in `failed`; it answers `{ sent, failed }`.
+- Who hears a change (the owner, the people a decision waits on, followers) is decided in the core before `publish`; who may LISTEN to an audience is the adapter's own sign-in check where listeners are outside the process.
+- **Code's default is `in-process`** (`createInProcessRealtime`, `packages/broker/src/ports/realtime.ts`): the install's own pages `listen(companyId, listener, audience?)` in the same process; with no listener a publish
+  reaches nobody, so registering it changes nothing for an install whose pages do not listen. It is also the fake (`published()`, `setDown`). The hosted adapter (not built yet) is meant to post to its cloud events service with its own
+  channel names for the three audiences, so nothing it stores or signs would change. `tests/support/ports/realtime-conformance.ts` is the suite.
+
+## Email (lane K1, a new interface: the owner decides it alone, decision 63)
+
+The `email` point (one adapter, `packages/contracts/src/ports/email.ts`) sends one plain notice to one address. The core writes every word; the adapter only sends. The sender's address, its sign-in and its limits are the
+adapter's settings, set by the owner: a call never names a sender.
+
+- `send({ companyId, purpose, to, subject, text, html?, unsubscribeUrl?, deadline? })` resolves when the transport took the message. It throws `EmailError`: `refused` (never retried) for what `emailRefusal` refuses (not one
+  plain address, a subject that is not one short line, an empty or over-long body, an unsubscribe link that is not plain https, a purpose that is not one word), `unavailable` (retry later) for a transport that is down or past
+  the deadline. Errors are fixed sentences, never the address or the subject.
+- `html` is an optional second form; an adapter without `capabilities.html` sends the text alone. `unsubscribeUrl` becomes the mail client's own unsubscribe offer where `capabilities.unsubscribeHeader` allows; the text carries the same link.
+- `capabilities.available` says whether the adapter can send at all; the core decides before it offers email and falls back to another channel when it is false. The unsubscribe link is sent as the parsed link's `href`
+  (`emailUnsubscribeHref`), never the raw text; the recipient and the link get the same control-character check as the subject.
+- **Code's default is `none`, and Code ships no other email adapter** (owner decision 101) (`createUnavailableEmailSender`, `available: false`): every send is `unavailable`, so a person's email choice reads as not set up and notices go through the channel adapters, as before. The fake is
+  `createFakeEmailSender` (`packages/broker/src/ports/email.ts`). The hosted adapter (not built yet) is meant to be its cloud email service with today's sender address and grant. `tests/support/ports/email-conformance.ts` is the suite.

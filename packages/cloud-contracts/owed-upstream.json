@@ -63,6 +63,39 @@
       "reason": "The project summary names the project's meta repository (`metaRepository`, additive, lane srv/needs-broker-ui batch 1), and the detail and every answer that carries the summary or the detail (list, archive, setup check, settings) follow it. Code's summary does not have the field yet, and a Code schema would strip it from the answer; the Code lane that adds it lets these entries go. Same text as Code's apart from that one field."
     },
     {
+      "file": "approval-place.ts",
+      "names": [
+        "APPROVAL_DECIDER_ROLES",
+        "APPROVAL_DECISION_KINDS",
+        "APPROVAL_PLACES",
+        "APPROVAL_PLACE_ANSWERS",
+        "APPROVAL_PLACE_RISKS",
+        "ApprovalDeciderRole",
+        "ApprovalDecisionKind",
+        "ApprovalPlace",
+        "ApprovalPlaceAnswer",
+        "ApprovalPlaceInput",
+        "ApprovalPlaceNeed",
+        "ApprovalPlaceReason",
+        "ApprovalPlaceRisk",
+        "ApprovalPlaceVerdict",
+        "DEFAULT_RECENT_SIGN_IN_SETTING",
+        "RECENT_SIGN_IN_DEFAULT_SECONDS",
+        "RECENT_SIGN_IN_MAX_SECONDS",
+        "RECENT_SIGN_IN_MIN_SECONDS",
+        "RECENT_SIGN_IN_SKEW_SECONDS",
+        "RecentSignInChangeCheck",
+        "RecentSignInChangeKind",
+        "RecentSignInSetting",
+        "RecentSignInSettingSchema",
+        "approvalPlaceDecision",
+        "checkRecentSignInChange",
+        "isOutsideApprovalPlace"
+      ],
+      "owedUntil": "2026-11-25",
+      "reason": "Cloud's approval-place.ts is the byte copy of Code lane commit 062f50bbf (decision 99: a rejection and a request for changes are judged like a medium approval). Public code/next at the pin 0e340c0e has the older file (PR #451, a reject is browser-only), so the copy stays until that lane lands in public code/next and the pin moves (tests/contract/approval-place-upstream-copy.test.ts)."
+    },
+    {
       "file": "audit.ts",
       "names": [
         "AuditActor"
@@ -259,6 +292,14 @@
       "reason": "bootStage2Sha256 (the worker's boot stage 2 hash check) belongs to Cloud's EC2 worker boot."
     },
     {
+      "file": "realtime.ts",
+      "names": [
+        "RealtimeNotice"
+      ],
+      "cloudOnly": true,
+      "reason": "Cloud's RealtimeNotice is the closed union of the events API's wire notices (session.updated, session.event, home.changed, device.command), inferred from RealtimeNoticeSchema; Code's RealtimeNotice (ports/realtime.ts) is the port's open type-and-ids shape. Same name, different things; a Cloud realtime adapter maps one to the other."
+    },
+    {
       "file": "rovara-code-node.ts",
       "names": [
         "mergeTrackingDecisionDigest"
@@ -441,6 +482,7 @@
         "answerIntentQuestions",
         "answerWorkflowIntent",
         "applyWorkflowFeedbackCheckChanges",
+        "baseMergedRetriesToday",
         "blockWorkflow",
         "blockWorkflowBranchSync",
         "blockWorkflowCiFix",
@@ -456,6 +498,8 @@
         "endWorkflowBranchSync",
         "endWorkflowCiFixUnrelated",
         "feedbackCardCiFailures",
+        "holdWorkflowCandidateOnPullRequests",
+        "isBaseMergedRetry",
         "keepWorkflowPullRequests",
         "nextWorkflowPullRequestUpdate",
         "observeWorkflowPullRequest",

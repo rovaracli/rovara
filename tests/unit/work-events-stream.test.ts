@@ -2,7 +2,8 @@
 import { randomUUID } from "node:crypto";
 import { marshall } from "@aws-sdk/util-dynamodb";
 import { describe, expect, it } from "vitest";
-import { WORKFLOW_BLOCK_REASONS, WorkEventSchema, WorkflowSnapshotSchema, blockWorkflow, createWorkflowSnapshot, decideWorkflow, submitWorkflowArtifact, workEventExpiresAt, workEventShard, workEventPartitions, type WorkEvent, type WorkflowSnapshot } from "@agentx/cloud-contracts";
+import { WORKFLOW_BLOCK_REASONS, WorkflowSnapshotSchema, blockWorkflow, createWorkflowSnapshot, decideWorkflow, submitWorkflowArtifact, type WorkflowSnapshot } from "@agentx/cloud-contracts";
+import { WorkEventSchema, workEventExpiresAt, workEventShard, workEventPartitions, type WorkEvent } from "@rovara-code/contracts";
 import { BUDGET_EXHAUSTED_FAILURE_MESSAGE, INDEX_EXPIRY_ATTRIBUTE, createCandidateManifest } from "@rovara-code/contracts";
 import { WORK_EVENT_WRITE_ATTEMPTS, workEventsOfStream, writeWorkEventsOfStream, type WorkEventStreamDeps } from "../../packages/broker/src/work-events/stream.js";
 import { listWorkEvents } from "../../packages/broker/src/work-events/store.js";

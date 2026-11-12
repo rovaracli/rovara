@@ -8,11 +8,11 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { DEFAULT_CLI_PACKAGE_NAME } from "@rovara-code/contracts";
 import type { SessionView } from "@agentx/cloud-contracts/web";
 import { SessionScreen } from "../../packages/ui/src/screens/session/SessionScreen.js";
-import { CONTINUE_STORAGE_KEY, isContinueInToolOn } from "../../packages/ui/src/screens/session/continue-flags.js";
 import { CLI_PACKAGE, continueOffer, installCommand, lessonsLine, loadPrompt, NO_BRANCH_YET, PUSH_EXPLAINER } from "../../packages/ui/src/screens/session/continue-in-tool.js";
 import { AppHostProvider } from "../../packages/ui/src/host.js";
 import { Announcer } from "../../packages/ui/src/design/Announcer.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
+import { applyNavUiFlags } from "../../packages/ui/src/ui-flags.js";
 import { renderUi } from "./support/render.js";
 import { h } from "./support/h.js";
 import { fakeHost } from "./support/fake-host.js";
@@ -23,7 +23,7 @@ import { SESSION_FIXTURE_ID } from "./support/session-fixture.js";
 afterEach(() => { vi.unstubAllGlobals();vi.useRealTimers(); });
 const TASK = "11111111-1111-4111-8111-111111111111";
 type Lessons = { enabled: boolean; reason?: string; preset: string; companyStays: boolean } | "missing";
-function setup(session: SessionView, options: { on?: boolean; lessons?: Lessons; copyText?: (text: string) => Promise<void> } = {}) {
+function setup(session: SessionView, options: { on?: boolean; server?: "on" | "preview" | "off"; lessons?: Lessons; copyText?: (text: string) => Promise<void> } = {}) {
  const f = fakeHost(async request => {
   const path = request.path.split("?", 1)[0]!;
   if (path.endsWith("/lessons/local-tools")) return options.lessons === undefined || options.lessons === "missing" ? { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } } : { status: 200, body: options.lessons };
@@ -32,7 +32,9 @@ function setup(session: SessionView, options: { on?: boolean; lessons?: Lessons;
   if (path.endsWith("/presence")) return { status: 200, body: { viewingNow: session.viewingNow } };
   return { status: 200, body: { session } };
  });
- if (options.on !== false) f.storage.set(CONTINUE_STORAGE_KEY, "v2");
+ if (options.on === true) f.storage.set("rovara.continue", "v2");
+ // An older broker's answer that still names the removed `continue` flag (decision 125: ignored).
+ if (options.server !== undefined) applyNavUiFlags(f.host, { uiFlags: { continue: options.server } });
  if (options.copyText !== undefined) f.host.copyText = options.copyText;
  const query = createQueryClient(), router = createMemoryRouter([{ path: "/app/sessions/:id", element: h(SessionScreen, {}) }], { initialEntries: ["/app/sessions/" + SESSION_FIXTURE_ID] });
  const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(Announcer, { children: h(RouterProvider, { router }) }) }) }));
@@ -47,23 +49,17 @@ it("keeps the command in step with the published CLI package name", () => {
  expect(installCommand("codex")).toBe("npx @preplabsai/rovara-code mcp install --client codex");
  expect(installCommand("cursor")).toBe("npx @preplabsai/rovara-code mcp install --client cursor");
 });
-it("reads the switch from device storage only: off unless it says v2", () => {
- const store = new Map<string, string>(), host = { storage: { get: (key: string) => store.get(key), set: (key: string, value: string) => { store.set(key, value); } } };
- expect(isContinueInToolOn(host)).toBe(false);
- for (const value of ["", "v1", "true", "V2", "1"]) { store.set(CONTINUE_STORAGE_KEY, value);expect(isContinueInToolOn(host)).toBe(false); }
- store.set(CONTINUE_STORAGE_KEY, "v2");expect(isContinueInToolOn(host)).toBe(true);
- expect(isContinueInToolOn({ storage: { get: () => { throw new Error("blocked"); }, set: () => undefined } })).toBe(false);
+it("is always offered (decision 125): a leftover device key or an older broker's answer for `continue` changes nothing", async () => {
+ for (const [server, device] of [["off", false], ["off", true], ["preview", false], [undefined, false]] as const) {
+  const f = setup(base(), { ...(server === undefined ? {} : { server }), on: device, lessons: { enabled: true, preset: "standard", companyStays: false } });
+  try {
+   await screen.findByRole("heading", { name: "Fix duplicate refunds" });
+   const dialog = await open();
+   expect(within(dialog).getByLabelText("Install command for Claude Code").textContent).toBe("npx @preplabsai/rovara-code mcp install --client claude-code");
+  } finally { f.close(); }
+ }
 });
-
-it("switch off: no button, no panel, and no read of the lessons setting", async () => {
- const f = setup(base(), { on: false, lessons: { enabled: true, preset: "standard", companyStays: false } });
- await screen.findByRole("heading", { name: "Fix duplicate refunds" });await screen.findByRole("button", { name: "Conversation" });
- expect(screen.queryByRole("button", { name: /Continue in your own tool/u })).toBeNull();
- expect(f.container.querySelector(".rv-session-work-actions")).toBeNull();
- expect(f.request.mock.calls.some(([request]) => request.path.includes("local-tools"))).toBe(false);
- f.close();
-});
-it("switch on: the button sits beside Conversation, and nothing is read until it is opened", async () => {
+it("the button sits beside Conversation, and nothing is read until it is opened", async () => {
  const f = setup(base(), { lessons: { enabled: true, preset: "standard", companyStays: false } });
  const button = await screen.findByRole("button", { name: "Continue in your own tool" });
  expect(button.parentElement?.className).toBe("rv-session-work-actions");

@@ -286,7 +286,7 @@ describe("agentx signin cloud", () => {
       const outputs = { access: stacks[environmentStackName("staging", "access")]!, foundation: stacks[environmentStackName("staging", "foundation")]!, identity: stacks[environmentStackName("staging", "identity")]!, "control-plane": stacks[environmentStackName("staging", "control-plane")]! };
       const parameters = stackParameters("control-plane", {
         env: "staging", region: settings.region, account: settings.account, release: {} as ReleaseManifest, models: settings.models, identity: { mode: "cognito" },
-        github: { appId: "1", privateKeySecretArn: arnOf("agentx/staging/github-app") }, callbackSigningKey: "k".repeat(40),
+        github: { appId: "1", privateKeySecretArn: arnOf("agentx/staging/github-app") },
         ...(settings.cloud === true ? { cloud: true as const } : {}), ...(settings.cloudSignIn === undefined ? {} : { cloudSignIn: settings.cloudSignIn }),
       }, outputs, { packages: false });
       expect(parameters).toMatchObject({ GitHubClientId: github.githubClientId, GitHubClientSecretArn: GITHUB_ARN });

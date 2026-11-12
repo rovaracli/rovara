@@ -49,11 +49,9 @@ Use this when you want CDK's own diffs. It deploys the same release.
    `--release <dir>` still works with the cdk engine. It must hold the release of the checkout's
    tag, or `init` stops before the plan.
 
-**The one difference in secret handling.** The CDK CLI takes the callback signing key only as a
-`cdk deploy --parameters` argument. So while that command runs, the key is visible in your own
-computer's process list. `agentx` never prints it: it shows `<redacted>` in the command, in errors
-and in the output. The templates engine passes the key to CloudFormation without it ever being on
-a command line.
+**Secrets on the command line.** Since 0.5.15 neither engine passes the callback signing key to
+CloudFormation: it stays in Secrets Manager (`agentx/<env>/callback-signing-key`) and the stacks do not
+take it as a parameter, so it is never in your computer's process list.
 
 An environment keeps its engine. Upgrades of a cdk environment need `--source` and admin
 credentials (see [docs/day-two.md](day-two.md)). An `agentx` built from source upgrades to the

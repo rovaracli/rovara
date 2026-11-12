@@ -21,6 +21,7 @@ import { createDefaultPiSessionAdapter } from "./pi-session.js";
 import { chatGptTokenSource } from "./chatgpt-token.js";
 import { agentSkillsSource } from "./agent-step.js";
 import { brokerContextCall, contextToolsCatalogSource } from "./context-sources/bridge.js";
+import { piMcpEnabled } from "./context-sources/pi-mcp.js";
 import { designReviewBindingOf, designReviewDependencies, operationModelProxy } from "./design-review-sessions.js";
 import { createDefaultProjectSetupExecutor, createReadinessGatedProjectSetupRuntime } from "./project-setup-executor.js";
 import { postProjectSetupTerminalResult } from "./project-setup-callback.js";
@@ -54,6 +55,8 @@ const buildSystems = installBuildSystemProfiles();
 if (buildSystems.length > 0) console.log(JSON.stringify({ component: "worker", event: "build-systems.installed", names: buildSystems.map((profile) => profile.name) }));
 // Pi installs no package for the worker (R56): a settings file's `packages` would otherwise make it run `npmCommand` here.
 process.env.PI_OFFLINE = "1";
+// Pi reports install telemetry and attributes provider requests to itself unless told not to (Pi 1.3+); the worker sends neither.
+process.env.PI_TELEMETRY = "0";
 // N9: a preparation that crashed may have left a package registry's config (and its token) in the workspace; it is removed before any task runs.
 await removeLeftoverRegistryConfigs(rootPath).catch(() => 0);
 // R56: where a project without a devcontainer runs its commands comes from the environment (always the task sandbox on EC2),
@@ -183,6 +186,8 @@ const state = createWorkerServerState(
           contextSources: {
             catalog: contextToolsCatalogSource({ brokerUrl: controlPlaneUrl, capability: invocation.callbackCapability, onDiagnostic: (message) => console.log(JSON.stringify({ component: "worker", event: "context_sources", message })) }),
             call: brokerContextCall({ brokerUrl: controlPlaneUrl, capability: invocation.callbackCapability }),
+            // Pi's own MCP client, with the one server the egress gateway serves; ROVARA_PI_MCP=0 goes back to the worker's own tools for one release.
+            ...(piMcpEnabled(process.env) ? { mcp: { brokerUrl: controlPlaneUrl, capability: invocation.callbackCapability } } : {}),
           },
           ...(invocation.payload.workflowE2EAdmission === undefined ? {} : {
             workflowE2EEvidenceRoot: requiredEnvironment("CONTAINED_FOUNDATION_EVIDENCE_DIR"),

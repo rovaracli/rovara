@@ -6,6 +6,7 @@ import {
   EC2Client,
   TerminateInstancesCommand,
 } from "@aws-sdk/client-ec2";
+import { callbackKeySource } from "./signing-key-secrets.js";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DescribeExecutionCommand, SFNClient, StartExecutionCommand } from "@aws-sdk/client-sfn";
 import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
@@ -530,7 +531,7 @@ const tag = (tags: Array<{ Key?: string | undefined; Value?: string | undefined 
  * environment's reconciler holds that key (#173), so the legacy one logs and counts it instead.
  */
 function stuckCancelSweep(): NonNullable<ReconcilerDependencies["sweepStuckCancels"]> {
-  const retryCancel = stuckCancelRetrier(process.env, { client: documentClient, tableName });
+  const retryCancel = stuckCancelRetrier(process.env, { client: documentClient, tableName }, async () => (await callbackKey()).current);
   // Issue 202: a Slack thread whose workspace a failed cancel held is told it is free again, where
   // the reconciler holds the Slack secret (#173's backstop, named environments).
   const postNote = backstop.state === "on" ? slackThreadPoster() : undefined;
@@ -548,7 +549,7 @@ function stuckCancelSweep(): NonNullable<ReconcilerDependencies["sweepStuckCance
  */
 function unwaitedTaskSweep(): NonNullable<ReconcilerDependencies["sweepUnwaitedTasks"]> {
   const threadsTableName = requiredEnvironment("SLACK_THREADS_TABLE_NAME");
-  const callbackSigningKey = requiredEnvironment("CALLBACK_SIGNING_KEY");
+  const callbackSigningKey = async () => (await callbackKey()).current;
   const postNote = slackThreadPoster();
   const log = (entry: Record<string, unknown>) => console.log(JSON.stringify({ component: "session-reconciler", ...entry }));
   return (workspaceIds, now) => sweepUnwaitedTasks({
@@ -560,6 +561,9 @@ function unwaitedTaskSweep(): NonNullable<ReconcilerDependencies["sweepUnwaitedT
     log,
   }, workspaceIds, now);
 }
+
+// 0.5.15: the callback signing key the retried and backstop cancels are signed with: the legacy variable, or the named environment's secret, read once when first needed (signing-key-secrets.ts).
+const callbackKey = callbackKeySource(process.env, () => new SecretsManagerClient(awsClientConfiguration));
 
 let threadPoster: ((thread: SlackThreadPlace, text: string) => Promise<void>) | undefined;
 

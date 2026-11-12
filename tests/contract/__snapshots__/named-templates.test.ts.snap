@@ -3200,12 +3200,6 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
       "Description": "tag: costs tagged agentx:env for this environment (the tag must be activated in Billing); account: the whole account",
       "Type": "String",
     },
-    "CallbackSigningKey": {
-      "Description": "Random secret used to scope and authenticate worker callbacks",
-      "MinLength": 32,
-      "NoEcho": true,
-      "Type": "String",
-    },
     "DecisionCardsEnabled": {
       "AllowedValues": [
         "0",
@@ -4193,9 +4187,6 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                 ],
               ],
             },
-            "CALLBACK_SIGNING_KEY": {
-              "Ref": "CallbackSigningKey",
-            },
             "DEVELOPER_OIDC_ISSUER": {
               "Ref": "DeveloperOidcIssuer",
             },
@@ -4450,6 +4441,46 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
               "Resource": [
                 {
                   "Ref": "GitHubAppPrivateKeySecretArn",
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition",
+                      },
+                      ":secretsmanager:",
+                      {
+                        "Ref": "AWS::Region",
+                      },
+                      ":",
+                      {
+                        "Ref": "AWS::AccountId",
+                      },
+                      ":secret:agentx/staging/callback-signing-key-??????",
+                    ],
+                  ],
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition",
+                      },
+                      ":secretsmanager:",
+                      {
+                        "Ref": "AWS::Region",
+                      },
+                      ":",
+                      {
+                        "Ref": "AWS::AccountId",
+                      },
+                      ":secret:agentx/staging/erasure-hash-key-??????",
+                    ],
+                  ],
                 },
                 {
                   "Fn::Join": [
@@ -8766,11 +8797,9 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
         },
         "Environment": {
           "Variables": {
+            "AGENTX_ENV": "staging",
             "ARTIFACT_BUCKET_NAME": {
               "Ref": "Artifacts82DD59A1",
-            },
-            "CALLBACK_SIGNING_KEY": {
-              "Ref": "CallbackSigningKey",
             },
             "STATE_TABLE_NAME": {
               "Ref": "State1C20CC9A",
@@ -8956,6 +8985,31 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
               ],
               "Effect": "Allow",
               "Resource": "*",
+            },
+            {
+              "Action": "secretsmanager:GetSecretValue",
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:",
+                    {
+                      "Ref": "AWS::Partition",
+                    },
+                    ":secretsmanager:",
+                    {
+                      "Ref": "AWS::Region",
+                    },
+                    ":",
+                    {
+                      "Ref": "AWS::AccountId",
+                    },
+                    ":secret:agentx/staging/callback-signing-key-??????",
+                  ],
+                ],
+              },
+              "Sid": "ReadCallbackSigningKey",
             },
             {
               "Action": [
@@ -10402,6 +10456,35 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
         ],
       },
       "Type": "AWS::IAM::Policy",
+    },
+    "OutboxRelayBackstopSchedule": {
+      "Properties": {
+        "FlexibleTimeWindow": {
+          "Mode": "OFF",
+        },
+        "ScheduleExpression": "rate(1 minute)",
+        "State": "DISABLED",
+        "Target": {
+          "Arn": {
+            "Fn::GetAtt": [
+              "BrokerE1355FD6",
+              "Arn",
+            ],
+          },
+          "Input": "{"source":"agentx.outbox-relay-backstop"}",
+          "RetryPolicy": {
+            "MaximumEventAgeInSeconds": 300,
+            "MaximumRetryAttempts": 2,
+          },
+          "RoleArn": {
+            "Fn::GetAtt": [
+              "WorkflowDispatchRecoveryRole3D444D9C",
+              "Arn",
+            ],
+          },
+        },
+      },
+      "Type": "AWS::Scheduler::Schedule",
     },
     "OutboxStreamMappingBE739F11": {
       "Properties": {
@@ -14560,6 +14643,31 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                 ],
               },
               "Sid": "QuarantineOwnVolumes",
+            },
+            {
+              "Action": "secretsmanager:GetSecretValue",
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:",
+                    {
+                      "Ref": "AWS::Partition",
+                    },
+                    ":secretsmanager:",
+                    {
+                      "Ref": "AWS::Region",
+                    },
+                    ":",
+                    {
+                      "Ref": "AWS::AccountId",
+                    },
+                    ":secret:agentx/staging/callback-signing-key-??????",
+                  ],
+                ],
+              },
+              "Sid": "ReadCallbackSigningKey",
             },
           ],
           "Version": "2012-10-17",

@@ -4,7 +4,7 @@ import { mockRealtime } from "./support/realtime.js";
 import { checkA11y } from "./support/axe.js";
 import { evidenceShot } from "./support/screenshot.js";
 import { FIXTURE_SESSION } from "../web/support/fixtures.js";
-// The Work list (switch `rovara.work` = "v2"): off, the route shows today's Live list; on, the four views with plain states, age and next actor. Pictures go to .test-build/web-e2e/work-list/
+// The Work list (the only list of work since decision 125; /app/live redirects to it): the four views with plain states, age and next actor. Pictures go to .test-build/web-e2e/work-list/
 // (ROVARA_WORK_SHOTS changes the folder, for before/after comparisons: the "off" pictures of this branch and of its base must be byte-identical).
 const shots = process.env.ROVARA_WORK_SHOTS ?? ".test-build/web-e2e/work-list";
 async function enter(page: Page, context: BrowserContext, request: APIRequestContext, baseURL: string | undefined, width: number, store: Record<string, string>, colorScheme: "light" | "dark" = "light") {
@@ -24,21 +24,12 @@ async function focusVisible(page: Page) {
 const TITLES = { retry: "Add retry to the payout job", plan: "Review the plan for duplicate refunds", export: "Speed up the invoice export", ledger: "Try the new ledger query", team: "Check refund idempotency", merged: "Fix the rounding bug in tax totals", twice: "Why were customers refunded twice?" };
 const rowOf = (page: Page, title: string) => page.locator(".rv-work-row", { has: page.getByRole("heading", { name: title, exact: true }) });
 
-for (const width of [1280, 390] as const) {
- test(`switch off at ${String(width)}: today's Live list, no Work views, picture for the base comparison`, async ({ page, context, request, baseURL }) => {
-  await enter(page, context, request, baseURL, width, {});await page.goto("/app/live");
-  await expect(page.getByRole("heading", { name: "Live", level: 1 })).toBeVisible();await expect(page.getByRole("heading", { name: TITLES.export })).toBeVisible();
-  await expect(page.getByRole("tab", { name: "Needs me" })).toBeVisible();await expect(page.getByRole("tab", { name: "Finished" })).toHaveCount(0);await expect(page.locator(".rv-work-row")).toHaveCount(0);
-  expect(await noSidewaysScroll(page)).toBe(true);
-  await evidenceShot(page, { path: `${shots}/off-${String(width)}.png`, fullPage: true });
- });
-}
 
-for (const look of [{ name: "look-off", store: {} }, { name: "look-v2", store: { "rovara.look": "v2" } }] as const) {
+for (const look of [{ name: "look-v2", store: {} }] as const) {
  for (const width of [360, 390, 1280] as const) {
   const phone = width < 768;
-  test(`switch on, ${look.name} at ${String(width)}: rows read plainly, ${phone ? "stack, 44px targets, " : ""}no sideways scroll, axe clean, visible focus`, async ({ page, context, request, baseURL }) => {
-   await enter(page, context, request, baseURL, width, { ...look.store, "rovara.work": "v2" });await page.goto("/app/live");
+  test(`${look.name} at ${String(width)}: rows read plainly, ${phone ? "stack, 44px targets, " : ""}no sideways scroll, axe clean, visible focus`, async ({ page, context, request, baseURL }) => {
+   await enter(page, context, request, baseURL, width, { ...look.store });await page.goto("/app/live");
    await expect(page.getByRole("heading", { name: "Work", level: 1 })).toBeVisible();await expect(page.getByRole("heading", { name: TITLES.export })).toBeVisible();
    if (look.name === "look-v2") await expect(page.locator("html")).toHaveAttribute("data-look", "v2");
    await expect(page.getByRole("tab")).toHaveText(["Mine", "Team", "Needs attention", "Finished"]);
@@ -65,8 +56,8 @@ for (const look of [{ name: "look-off", store: {} }, { name: "look-v2", store: {
  }
 }
 
-test("switch on at 390: Team, Needs attention and Finished, and the project filter", async ({ page, context, request, baseURL }) => {
- await enter(page, context, request, baseURL, 390, { "rovara.work": "v2" });await page.goto("/app/live");
+test("at 390: Team, Needs attention and Finished, and the project filter", async ({ page, context, request, baseURL }) => {
+ await enter(page, context, request, baseURL, 390, {});await page.goto("/app/live");
  await expect(page.getByRole("heading", { name: TITLES.export })).toBeVisible();
  await page.getByRole("tab", { name: "Team" }).click();await expect(page).toHaveURL(/view=team/u);await expect(page.locator(".rv-work-title")).toHaveText([TITLES.team]);await expect(rowOf(page, TITLES.team)).toContainText("Checking");await expect(page.getByText("Work on projects you're part of")).toBeVisible();
  await page.getByRole("tab", { name: "Needs attention" }).click();await expect(page.locator(".rv-work-title")).toHaveText([TITLES.plan, TITLES.retry]);expect(await noSidewaysScroll(page)).toBe(true);await evidenceShot(page, { path: `${shots}/attention-390.png`, fullPage: true });

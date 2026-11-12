@@ -1,6 +1,6 @@
 /*
- * Density for screen sections, v2 look only. Every rule starts with :root[data-look="v2"], so while the new look is off none of this matches anything and every
- * screen keeps the paddings, gaps and heights in its own sheet (tests/web/look-off-unchanged.test.ts and a test below it pin that).
+ * Density for screen sections. Every rule starts with :root[data-look="v2"], which ThemeProvider always sets (decision 125: the v2 look is the only look), so these rules
+ * win over the paddings, gaps and heights in each screen's own sheet.
  * The tokens come from packages/design-tokens/src/look.ts and change with data-density (Comfortable or Compact):
  *   --rv-density-gap   space between sections and between cards (24px / 20px)
  *   --rv-density-card  padding inside a card (20px / 16px)
@@ -19,16 +19,14 @@
 }
 
 /* Home: needs-you cards, attention rows, start box. */
-:root[data-look="v2"] .rv-needs-you,:root[data-look="v2"] .rv-home-start{margin-bottom:var(--rv-density-gap)}
+:root[data-look="v2"] .rv-home-start{margin-bottom:var(--rv-density-gap)}
 :root[data-look="v2"] .rv-decision-list{gap:var(--rv-density-gap)}
-:root[data-look="v2"] .rv-attention-row{padding-block:var(--rv-density-gap)}
-:root[data-look="v2"] .rv-attention-row article{gap:var(--rv-density-gap)}
 :root[data-look="v2"] .rv-home-error{margin-bottom:var(--rv-density-gap)}
 /* The new Home (behind rovara.home): its rhythm follows the density. */
 :root[data-look="v2"] .rv-hv2-section,:root[data-look="v2"] .rv-hv2-start-grid{margin-bottom:var(--rv-density-gap)}
 :root[data-look="v2"] .rv-hv2-list,:root[data-look="v2"] .rv-hv2-start-grid{gap:var(--rv-density-gap)}
 :root[data-look="v2"] .rv-hv2-link,:root[data-look="v2"] .rv-hv2-main h3 a,:root[data-look="v2"] .rv-hv2-agent{min-height:var(--rv-control-size)}
-:root[data-look="v2"] .rv-attention-open,:root[data-look="v2"] .rv-decision-open,:root[data-look="v2"] .rv-decision-panel summary,:root[data-look="v2"] .rv-decision-reject summary{min-height:var(--rv-control-size)}
+:root[data-look="v2"] .rv-decision-open,:root[data-look="v2"] .rv-decision-panel summary,:root[data-look="v2"] .rv-decision-reject summary{min-height:var(--rv-control-size)}
 
 /* Live / work list. */
 :root[data-look="v2"] .rv-live-toolbar{margin-bottom:var(--rv-density-gap);gap:var(--rv-density-row-y) var(--rv-density-gap)}

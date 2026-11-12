@@ -83,6 +83,8 @@ export class RepositoryGrantService {
     ) => Promise<RepositoryCredential>,
     /** The credential kinds a code host can hand out (its capabilities), by the kind the repository's record names. Absent: no grant names kinds. */
     private readonly credentialKindsOf?: (hostKind: string) => readonly string[] | undefined,
+    /** The grant key derived from the previous callback signing key, only while it is inside its rotation window (signing-key-secrets.ts): verifies grants, never issues them. */
+    private readonly previousSigningKey?: () => Buffer | undefined,
   ) {
     if (signingKey.byteLength < 32) throw new Error("repository grant signing key must be at least 32 bytes");
   }
@@ -175,9 +177,13 @@ export class RepositoryGrantService {
   private verify(grant: string): RepositoryGrantClaims {
     const [payload, signature, extra] = grant.split(".");
     if (!payload || !signature || extra) throw agentXError("FORBIDDEN", "invalid repository grant");
-    const expected = Buffer.from(this.sign(payload), "base64url");
     const received = Buffer.from(signature, "base64url");
-    if (expected.byteLength !== received.byteLength || !timingSafeEqual(expected, received)) {
+    const previous = this.previousSigningKey?.();
+    const matches = [this.signingKey, ...(previous === undefined ? [] : [previous])].some((key) => {
+      const expected = Buffer.from(this.sign(payload, key), "base64url");
+      return expected.byteLength === received.byteLength && timingSafeEqual(expected, received);
+    });
+    if (!matches) {
       throw agentXError("FORBIDDEN", "invalid repository grant signature");
     }
     let claims: RepositoryGrantClaims;
@@ -196,8 +202,8 @@ export class RepositoryGrantService {
     return claims;
   }
 
-  private sign(payload: string): string {
-    return createHmac("sha256", this.signingKey).update(payload).digest("base64url");
+  private sign(payload: string, key: Buffer = this.signingKey): string {
+    return createHmac("sha256", key).update(payload).digest("base64url");
   }
 }
 

@@ -65,7 +65,8 @@ function controlPlane(values: Record<string, unknown>) {
   const statements = Object.values(resources)
     .filter((resource) => (resource.Type === "AWS::IAM::Policy" || resource.Type === "AWS::IAM::ManagedPolicy") && (resource.Properties.Roles ?? []).some((role) => role.Ref === roleId))
     .flatMap((resource) => resource.Properties.PolicyDocument!.Statement);
-  const broker = functions.find(([, fn]) => fn.Properties.Environment?.Variables?.CALLBACK_SIGNING_KEY !== undefined)!;
+  // The broker by its logical id (0.5.15: no Lambda carries CALLBACK_SIGNING_KEY any more in a named environment).
+  const broker = functions.find(([id]) => /^Broker[0-9A-F]{8}$/u.test(id))!;
   const groups = Object.entries(resources).filter(([, resource]) => resource.Type === "AWS::EC2::SecurityGroup") as Array<[string, { Properties: { SecurityGroupEgress?: Array<{ CidrIp?: string; FromPort?: number }> } }]>;
   const groupsReaching = (cidr: string) => groups.filter(([, group]) => (group.Properties.SecurityGroupEgress ?? []).some((rule) => rule.CidrIp === cidr && rule.FromPort === 443)).map(([id]) => id);
   return { statements, brokerEnvironment: broker[1].Properties.Environment?.Variables ?? {}, accessEnvironment: access[1].Properties.Environment?.Variables ?? {}, groupsReaching };

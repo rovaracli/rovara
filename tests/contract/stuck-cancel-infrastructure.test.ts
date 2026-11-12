@@ -43,7 +43,10 @@ describe("the stuck-cancel retry's infrastructure (#195)", () => {
   it("never names the broker to the named reconciler, and signs the retried cancel with #173's key", () => {
     const { environment } = reconciler(named);
     expect(environment).not.toHaveProperty("BROKER_FUNCTION_NAME");
-    expect(environment).toMatchObject({ CALLBACK_SIGNING_KEY: { Ref: "CallbackSigningKey" } });
+    // 0.5.15: the key is read from its secret (the reconciler builds the name from AGENTX_ENV), never passed as a variable.
+    expect(environment).not.toHaveProperty("CALLBACK_SIGNING_KEY");
+    expect(environment).toMatchObject({ AGENTX_ENV: "staging" });
+    expect(reconciler(named).statements).toContainEqual({ Sid: "ReadCallbackSigningKey", Effect: "Allow", Action: "secretsmanager:GetSecretValue", Resource: { "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, ":secretsmanager:", { Ref: "AWS::Region" }, ":", { Ref: "AWS::AccountId" }, ":secret:agentx/staging/callback-signing-key-??????"]] } });
   });
 
   it("alarms the operator on any stuck cancel retried or ended, or any failure to do so", () => {

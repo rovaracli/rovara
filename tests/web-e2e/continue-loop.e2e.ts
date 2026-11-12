@@ -14,7 +14,6 @@ async function enter(page: Page, context: BrowserContext, request: Parameters<Pa
  await request.post("/__mock/scenario", { data: { name: "workspace" } });
  await context.addCookies([{ name: "__Host-agentx_review_session", value: cookie, url: baseURL!, secure: true, httpOnly: true, sameSite: "Strict" }]);
  await page.emulateMedia({ reducedMotion: "reduce" });
- await page.addInitScript(() => { localStorage.setItem("rovara.continue", "v2"); });
  await page.route("**/v1/web/projects/payments/lessons/local-tools", route => route.fulfill({ status: 404, json: { error: { code: "NOT_FOUND", message: "route not found" } } }));
  // The task view carries the continue loop, and no pull request, as a 0.5.15 server sends it before the work is published.
  await page.route(/\/v1\/web\/sessions\/ses_aaaaaaaaaaaaaaaaaaaa(\?.*)?$/u, async route => {

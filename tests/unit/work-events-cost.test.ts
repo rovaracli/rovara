@@ -1,6 +1,7 @@
 // Work events (U3): `cost_settled` rides in the spend settlement's own conditional transaction: one event per amount counted, none for a settle that adds nothing or loses its race, and nothing that can throw into the money path.
 import { describe, expect, it, vi } from "vitest";
-import { modelKeyKey, workEventExpiresAt } from "@agentx/cloud-contracts";
+import { modelKeyKey } from "@agentx/cloud-contracts";
+import { workEventExpiresAt } from "@rovara-code/contracts";
 import { INDEX_EXPIRY_ATTRIBUTE } from "@rovara-code/contracts";
 import { registerKey, settleKey, type KeyInput, type LedgerDependencies } from "../../packages/broker/src/spend/ledger.js";
 import { mintTagsFor } from "../../packages/broker/src/spend/payer.js";

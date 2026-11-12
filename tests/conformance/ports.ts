@@ -95,4 +95,11 @@ export const SUITE_FILE: Readonly<Record<PortName, string>> = {
 /** Vendored suite files that are not a port a Cloud adapter implements, with the reason. */
 export const EXEMPT_SUITES: Readonly<Record<string, string>> = {
   "github-client-conformance.ts": "Checks Code's own GitHub REST client against a fixture server. Cloud's code host adapter (A9) is the `code-host` suite above; the client suite belongs to the GitHub plug-in Cloud will adopt, not to a Cloud adapter.",
+  // Brought by the pin bump to 0e340c0e (chore/0515-vendor-pin-bump), which only makes the suites available: wiring each to a port (with Code's fakes as the positive control) is the
+  // follow-up of the lanes that build or register the Cloud adapter (S0 and its lanes). Owed: DEFERRED-CHECKS VENDOR-PIN-0515-NEW-SUITES. Move each to SUITE_FILE when it is wired.
+  "email-conformance.ts": "New with the pin 0e340c0e (Code's email port). Not wired yet: the Cloud email (SES) adapter lane wires it. Owed: VENDOR-PIN-0515-NEW-SUITES.",
+  "learning-conformance.ts": "New with the pin 0e340c0e (Code's learning port). Not wired yet: the lane that puts Cloud's team record behind the port wires it. Owed: VENDOR-PIN-0515-NEW-SUITES.",
+  "monitoring-conformance.ts": "New with the pin 0e340c0e (Code's monitoring port). Not wired yet: the Cloud monitoring (CloudWatch) adapter lane wires it. Owed: VENDOR-PIN-0515-NEW-SUITES.",
+  "realtime-conformance.ts": "New with the pin 0e340c0e (Code's realtime port). Not wired yet: the Cloud realtime (AppSync events) adapter lane wires it. Owed: VENDOR-PIN-0515-NEW-SUITES.",
+  "record-source-conformance.ts": "New with the pin 0e340c0e (Code's record-source port). Not wired yet: the lane that puts Cloud's team record sources behind the port wires it. Owed: VENDOR-PIN-0515-NEW-SUITES.",
 };

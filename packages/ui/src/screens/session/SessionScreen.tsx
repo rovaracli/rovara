@@ -7,7 +7,6 @@ import { ApiError } from "../../api/errors.js";
 import { useAppHost } from "../../host.js";
 import { isWorkingAgreementOn } from "../agreement/agreement-flags.js";
 import { isReviewGroupsOn } from "../../review-flags.js";
-import { isContinueInToolOn } from "./continue-flags.js";
 import { continueOffer } from "./continue-in-tool.js";
 import { PRESENCE_HEARTBEAT_SECONDS } from "../../constants.js";
 import { createRealtimeClient } from "../../realtime/client.js";
@@ -20,7 +19,6 @@ import { Skeleton } from "../../design/Skeleton.js";
 import { VisibleText, visibleText } from "../../design/VisibleText.js";
 import { SessionHeader, SessionDetails, type ReadSession } from "./SessionHeader.js";
 import { TaskLead } from "./TaskLead.js";
-import { useTaskPageFlags } from "./task-page-flags.js";
 import { EvidenceDetails } from "./EvidenceDetails.js";
 import { useIsPhone } from "./use-phone.js";
 import { MoneyBanners } from "./MoneyBanners.js";
@@ -33,11 +31,11 @@ import { usePageVisible } from "./presence.js";
 // The review card (switch `rovara.reviews` = "v2", off by default): its own chunk, requested only while the switch is on and the page is a task.
 const TaskReviewCard = lazy(async () => ({ default: (await import("../reviews/TaskReviewCard.js")).TaskReviewCard }));
 import "./session.css";
-// "Continue in your own tool" (switch `rovara.continue`): its own chunk, fetched only when the switch is on and this reader may work on the task.
+// "Continue in your own tool": its own chunk, fetched only when this reader may work on the task.
 const ContinueInTool = lazy(() => import("./ContinueInTool.js"));
 export function SessionScreen() {
  const id = useParams().id ?? "", host = useAppHost(), query = useQueryClient(), api = useMemo(() => createSessionApi(host), [host]), read = useSession(id), visible = usePageVisible();
- const [open, setOpen] = useState(false), [connection, setConnection] = useState("connecting"), phone = useIsPhone(), flags = useTaskPageFlags();
+ const [open, setOpen] = useState(false), [connection, setConnection] = useState("connecting"), phone = useIsPhone();
  const [editDrafts, setEditDrafts] = useState<Record<string, Record<string, CommentDraft>>>({});
  const [drafts, setDrafts] = useState<Record<string, ComposerDrafts>>({}), [sending, setSending] = useState(false), sendingRef = useRef(false);
  const [selection, setSelection] = useState<{ sessionId: string; anchor: SessionAnchorRef }>();
@@ -70,8 +68,7 @@ export function SessionScreen() {
  const agent = session.agent?.name ?? "The agent", nav = query.getQueryData<ReadAppNav>(["nav"]), orgName = nav?.org.name ?? "your company";
  // Chains are hidden (the `chains` feature is off in every install): an old link to a chain run says so instead of showing its steps.
  if (session.body.kind === "chain" && nav?.features.chains !== true) return <Unavailable />;
- const lead = flags.leadingHeader, phoneOrder = lead && phone;
- const offer = isContinueInToolOn(host) ? continueOffer(session) : undefined;
+ const offer = continueOffer(session);
  const controls = <SessionControls key={id} id={id} agent={agent} actions={session.you.actions} following={session.you.following} makeAgent responsive ask={session.you.live?.ask === true} share={{ orgName }} onChanged={() => query.invalidateQueries({ queryKey: ["live"] })} />;
  const conversation = <Dialog title={selected === undefined ? "Conversation" : selected.target === "change_file" ? "Discussion of this file" : selected.target === "step" ? "Discussion of this step" : "Discussion of this plan paragraph"} className="rv-conversation-tray" open={open} onOpenChange={setOpen} onCloseAutoFocus={event => { const source = sourceControl.current;if (source?.isConnected) { event.preventDefault();source.focus(); }sourceControl.current = undefined; }} trigger={<Button onClick={() => { setSelection(undefined);sourceControl.current = undefined; }}>Conversation</Button>}>
  {selected && <Button variant="quiet" onClick={() => setSelection(undefined)}>All conversation</Button>}
@@ -83,10 +80,10 @@ export function SessionScreen() {
  const reviewCard = isReviewGroupsOn(host) && session.body.kind === "task" && typeof session.body.task === "object" && session.body.task !== null && "taskId" in session.body.task && typeof session.body.task.taskId === "string" && "project" in session.body.task && typeof session.body.task.project === "string" ? <Suspense fallback={null}><TaskReviewCard taskId={session.body.task.taskId} project={session.body.task.project} /></Suspense> : null;
  const workspace = <Workspace session={session} onComment={discuss} designRetryAbove={session.body.kind === "task"} agreement={isWorkingAgreementOn(host)} />;
  const banners = <><MoneyBanners session={session} />{connection === "reconnecting" && <p className="rv-muted">Reconnecting. Showing the last update.</p>}</>;
- // The phone order of the leading header (owner decision 40): the lead (its "can I approve?" line first), the decision, then the facts, then the work and its evidence collapsed. The DOM has this order, so a screen reader reads what the eye sees.
- if (phoneOrder) return <section ref={root} className="rv-session" data-lead="phone"><SessionHeader session={session} onAction={() => undefined} lead={<TaskLead session={session} />} detailsBelow />{banners}{designPanel}{reviewCard}<SessionDetails session={session} onAction={() => undefined} controls={controls} />
+ // The phone order of the task header (owner decision 40): the lead (its "can I approve?" line first), the decision, then the facts, then the work and its evidence collapsed. The DOM has this order, so a screen reader reads what the eye sees.
+ if (phone) return <section ref={root} className="rv-session" data-lead="phone"><SessionHeader session={session} onAction={() => undefined} lead={<TaskLead session={session} />} detailsBelow />{banners}{designPanel}{reviewCard}<SessionDetails session={session} onAction={() => undefined} controls={controls} />
   <div className="rv-session-work"><div className="rv-session-work-heading"><h2>Work</h2>{workActions}</div><EvidenceDetails>{workspace}</EvidenceDetails></div></section>;
- return <section ref={root} className="rv-session" {...(lead ? { "data-lead": "wide" } : {})}><SessionHeader session={session} onAction={() => undefined} controls={controls} {...(lead ? { lead: <TaskLead session={session} /> } : {})} />{banners}
+ return <section ref={root} className="rv-session" data-lead="wide"><SessionHeader session={session} onAction={() => undefined} controls={controls} lead={<TaskLead session={session} />} />{banners}
  <div className="rv-session-work"><div className="rv-session-work-heading"><h2>Work</h2>{workActions}</div>{designPanel}{reviewCard}{workspace}
  </div></section>;
 }

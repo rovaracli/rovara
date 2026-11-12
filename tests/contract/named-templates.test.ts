@@ -91,7 +91,9 @@ function withoutUnwaitedTaskBackstop(template: unknown): unknown {
   expect(threadsId).toBeDefined();
   expect(slackSecretId).toBeDefined();
   expect(topicId).toBeDefined();
-  const added = { SLACK_THREADS_TABLE_NAME: { Ref: threadsId }, SLACK_SECRET_ARN: { Ref: slackSecretId }, CALLBACK_SIGNING_KEY: { Ref: "CallbackSigningKey" } };
+  // 0.5.15 signing-key lane: the callback signing key is no longer a variable (the reconciler reads its secret; its ReadCallbackSigningKey grant is in the snapshot).
+  expect(variables).not.toHaveProperty("CALLBACK_SIGNING_KEY");
+  const added = { SLACK_THREADS_TABLE_NAME: { Ref: threadsId }, SLACK_SECRET_ARN: { Ref: slackSecretId } };
   expect(Object.fromEntries(Object.keys(added).map((name) => [name, variables[name]]))).toStrictEqual(added);
   for (const name of Object.keys(added)) delete variables[name];
   const roleId = (reconciler.Properties.Role as { "Fn::GetAtt": [string, string] })["Fn::GetAtt"][0];
@@ -262,6 +264,12 @@ function withoutTaskPeopleControls(template: unknown): unknown {
 // sts:GetCallerIdentity and servicequotas:GetServiceQuota moved into the Services statement, iam:PassRole into IamRoles (the service role's own PassRole stays a statement), the two Denies on "*" became one,
 // iam:SetDefaultPolicyVersion left DenyPolicyManagement (iam:*PolicyVersion* matches it), and the instance profile actions became iam:*InstanceProfile. tests/contract/default-boundary-equivalence.test.ts proves the same
 // (action, resource) pairs are permitted and refused as v0.5.2's boundary did. The service role's policy and every other stack's snapshot are unchanged.
+// 2026-11-11 (feat/0515-signing-key-secret): the agentx-staging-control-plane snapshot was re-recorded for the signing-key move only: CALLBACK_SIGNING_KEY left the broker's and the
+// eval batch tick's variables (the tick gained AGENTX_ENV, to build the secret's name), and three GetSecretValue grants were added on the two key secrets by name (the broker: both;
+// the tick and the reconciler: ReadCallbackSigningKey, the callback signing key alone). The CallbackSigningKey parameter stayed declared (NoEcho, unused) for that one release.
+// 2026-11-12 (chore/0515-drop-callback-key-param, decision 123 folds the next release into 0.5.15): the CallbackSigningKey parameter is dropped from the named control-plane snapshot (nothing else
+// moved), and the CLI stops passing it (tests/contract/callback-key-param-upgrade.test.ts). The legacy install's snapshot is not touched: its frozen template keeps the parameter and its variable.
+// No other snapshot moved.
 describe("named environment templates", () => {
   const stacks = buildAgentXApp({ agentxEnv: "staging" }).node.children.filter((child): child is Stack => Stack.isStack(child));
   for (const stack of stacks) {

@@ -273,7 +273,12 @@ export interface AwsBrokerDependencies {
   issuer: string;
   adminClaim: string;
   adminValues: readonly string[];
+  /** The callback signing key's current value: every token is issued with it (signing-key-secrets.ts). */
   callbackSigningKey: string;
+  /** The previous callback signing key, only while it is inside its window after a rotation (signing-key-secrets.ts previousKeyOf); verifies tokens, never issues them. Absent: none. */
+  callbackPreviousKey?: () => string | undefined;
+  /** The erasure hash key (stored hashes: erased names and aliases, Ask question hashes). Absent (test harnesses): the callback signing key, the one value both were before 0.5.15. */
+  erasureHashKey?: string;
   repositoryGrants: RepositoryGrantService;
   githubPullRequests: Pick<GitHubAppCredentialProvider, "reconcilePullRequest" | "getPullRequest" | "updatePullRequest" | "verifyWebhookRepository"> & Partial<Pick<GitHubAppCredentialProvider, "listTreeAtCommit" | "readWorkingBranchRepository" | "readWorkingBranch" | "createWorkingBranchPreviewSession" | "listWorkingBranches" | "installationForRepository" | "listInstallationRepositories" | "appSlug" | "oauthClient" | "installation" | "organizationMembership" | "authorStanding" | "getRepositoryIdentity" | "listPullRequestFiles" | "getPullRequestStatus" | "getRepositoryPermission" | "readCodeOwners" | "listChangedPaths" | "isTeamMember" | "mergePullRequest" | "getRepositoryStanding" | "replyToReviewThread" | "markPullRequestReady" | "requestReviewers" | "getJobLogTail" | "getPullRequestChangedFiles" | "getPullRequestFeedback" | "getPullRequestMergeObservation" | "getCommitTree" | "getCommitParents" | "getBranchHead" | "getDefaultBranchHead" | "getFileAtCommit" | "getAgentPullRequestHead" | "agentRepositoryReader" | "listAgentRepositoryLabels" | "createAgentInstallationToken" | "commentOnIssue">>;
   /** Trusted server-side source capture for setup discovery and exact-commit E2E planning context. */

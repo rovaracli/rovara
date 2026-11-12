@@ -16,6 +16,7 @@ import {
   skopeoMirrorPort,
   writeCatalogBuild,
   type BuiltLayout,
+  type BuiltSource,
   type CatalogBuildPorts,
   type CommandPort,
   type SourcesFile,
@@ -48,8 +49,10 @@ interface LayoutOptions {
   javaSbom?: "missing" | { text: string };
   /** What the artifact's scan-java-arm64.json holds: a grype result with these severities (default one medium), or "missing", or the text of a file that is not a result. */
   javaScan?: { severities: string[] } | "missing" | { text: string };
+  /** The generic form (`libraryScan` + `librarySbom`): when set, the files are written (the Java files are written too, and unused unless the source names them). */
+  library?: { sbom?: "spdx" | "cyclonedx" | { text: string }; scan?: { severities: string[] } | { text: string } };
 }
-interface MadeLayout { root: string; layout: string; digestFile: string; javaScanFile: string; javaSbomFile: string; digest: string; indexBytes: Buffer; children: Array<{ platform: string; digest: string }> }
+interface MadeLayout { root: string; layout: string; digestFile: string; javaScanFile: string; javaSbomFile: string; libraryScanFile: string; librarySbomFile: string; digest: string; indexBytes: Buffer; children: Array<{ platform: string; digest: string }> }
 /** Writes what the workflow's `image-result` artifact holds: oci/ (oci-layout, index.json, blobs/sha256/...) and index.digest. */
 async function makeLayout(options: LayoutOptions = {}): Promise<MadeLayout> {
   const root = await temporary();
@@ -87,7 +90,20 @@ async function makeLayout(options: LayoutOptions = {}): Promise<MadeLayout> {
   if (sbom !== "missing") await writeFile(javaSbomFile, sbom.text);
   const java = options.javaScan ?? { severities: ["Medium"] };
   if (java !== "missing") await writeFile(javaScanFile, "text" in java ? java.text : JSON.stringify({ matches: java.severities.map((severity) => ({ vulnerability: { id: "CVE-2026-0001", severity }, artifact: { name: "io.quarkus:quarkus-core", version: "3.1.0", purl: "pkg:maven/io.quarkus/quarkus-core@3.1.0" } })), descriptor: { name: "grype", version: "0.90.0" } }));
-  return { root, layout, digestFile, javaScanFile, javaSbomFile, digest, indexBytes, children };
+  const libraryScanFile = join(root, "scan-library-arm64.json");
+  const librarySbomFile = join(root, "sbom-arm64", "sbom.spdx.json");
+  const crate = { name: "tokio", versionInfo: "1.45.0", externalRefs: [{ referenceType: "purl", referenceLocator: "pkg:cargo/tokio@1.45.0" }] };
+  const goModule = { name: "github.com/aws/aws-sdk-go-v2", versionInfo: "v1.36.0", externalRefs: [{ referenceType: "purl", referenceLocator: "pkg:golang/github.com/aws/aws-sdk-go-v2@v1.36.0" }] };
+  if (options.library !== undefined) {
+    const kind = options.library.sbom ?? "spdx";
+    const sbomText = typeof kind === "object" ? kind.text : kind === "spdx"
+      ? JSON.stringify({ spdxVersion: "SPDX-2.3", packages: [crate, goModule] })
+      : JSON.stringify({ bomFormat: "CycloneDX", specVersion: "1.6", components: [{ name: "tokio", version: "1.45.0", purl: "pkg:cargo/tokio@1.45.0" }] });
+    await writeFile(librarySbomFile, sbomText);
+    const scan = options.library.scan ?? { severities: ["Medium"] };
+    await writeFile(libraryScanFile, "text" in scan ? scan.text : JSON.stringify({ matches: scan.severities.map((severity) => ({ vulnerability: { id: "GHSA-0000", severity }, artifact: { name: "tokio", version: "1.45.0", purl: "pkg:cargo/tokio@1.45.0" } })), descriptor: { name: "grype", version: "0.90.0" } }));
+  }
+  return { root, layout, digestFile, javaScanFile, javaSbomFile, libraryScanFile, librarySbomFile, digest, indexBytes, children };
 }
 const sourceOf = (made: MadeLayout): SourcesFile => ({ schemaVersion: 1, sources: { [ID]: { kind: "rovara-built", layout: made.layout, digestFile: made.digestFile, javaScan: made.javaScanFile, javaSbom: made.javaSbomFile } } });
 
@@ -275,11 +291,11 @@ describe("the scan of the Java libraries inside the native binary (the image sca
     const made = await makeLayout({ javaScan: { severities: ["High", "high", "Medium", "Low", "Negligible", "Unknown"] } });
     const result = await read(made);
     expect(result.javaScan).toMatchObject({ criticalOpen: 0, highOpen: 2 });
-    expect(result.javaScan.sha256).toBe(sha256HexOf(result.javaScan.bytes));
+    expect(result.javaScan!.sha256).toBe(sha256HexOf(result.javaScan!.bytes));
   });
   it("counts a critical finding, and a finding whose severity it cannot read, as critical", async () => {
-    expect((await read(await makeLayout({ javaScan: { severities: ["Critical"] } }))).javaScan.criticalOpen).toBe(1);
-    expect((await read(await makeLayout({ javaScan: { text: JSON.stringify({ descriptor: { name: "grype" }, matches: [{ vulnerability: {}, artifact: { name: "nested", version: "1.0" } }, { artifact: { name: "nested", version: "1.0" } }, { vulnerability: { severity: "Catastrophic" }, artifact: { name: "nested", version: "1.0" } }] }) } }))).javaScan.criticalOpen).toBe(3);
+    expect((await read(await makeLayout({ javaScan: { severities: ["Critical"] } }))).javaScan!.criticalOpen).toBe(1);
+    expect((await read(await makeLayout({ javaScan: { text: JSON.stringify({ descriptor: { name: "grype" }, matches: [{ vulnerability: {}, artifact: { name: "nested", version: "1.0" } }, { artifact: { name: "nested", version: "1.0" } }, { vulnerability: { severity: "Catastrophic" }, artifact: { name: "nested", version: "1.0" } }] }) } }))).javaScan!.criticalOpen).toBe(3);
   });
   it("pass: a clean scan (no matches at all) pins, records the highs, and puts the file's hash and counts in the signed statement and the file in the evidence", async () => {
     const made = await makeLayout({ javaScan: { severities: ["High", "High", "Low"] } });
@@ -330,6 +346,94 @@ describe("the scan of the Java libraries inside the native binary (the image sca
   });
 });
 
+describe("the generic library scan (libraryScan + librarySbom): the Go and Rust engine of catalog revision 4", () => {
+  const librarySource = (made: MadeLayout): SourcesFile => ({ schemaVersion: 1, sources: { [ID]: { kind: "rovara-built", layout: made.layout, digestFile: made.digestFile, libraryScan: made.libraryScanFile, librarySbom: made.librarySbomFile } } });
+  const readLibrary = (made: MadeLayout) => readBuiltSource({ baseDir: made.root })({ kind: "rovara-built", layout: made.layout, digestFile: made.digestFile, libraryScan: made.libraryScanFile, librarySbom: made.librarySbomFile });
+  it("is exactly one pair: the generic pair or the Java pair; neither, a half, both, and the old waiver key are refused", () => {
+    const base = { kind: "rovara-built", layout: "oci", digestFile: "index.digest" };
+    const java = { javaScan: "j.json", javaSbom: "j.cdx.json" };
+    const library = { libraryScan: "l.json", librarySbom: "l.spdx.json" };
+    expect(BuiltSourceSchema.safeParse({ ...base, ...library }).success).toBe(true);
+    expect(BuiltSourceSchema.safeParse({ ...base, ...java }).success).toBe(true);
+    for (const bad of [base, { ...base, libraryScan: "l.json" }, { ...base, librarySbom: "l.spdx.json" }, { ...base, ...java, ...library }, { ...base, javaScan: "j.json", ...library }, { ...base, embeddedLibraryScan: "not_applicable" }, { ...base, ...java, embeddedLibraryScan: "not_applicable" }]) {
+      expect(BuiltSourceSchema.safeParse(bad).success, JSON.stringify(bad)).toBe(false);
+    }
+  });
+  it("reads an SPDX SBOM (syft) and a grype report over it, counting highs and keeping both files' hashes; the Java field stays absent", async () => {
+    const made = await makeLayout({ library: { scan: { severities: ["High", "Medium", "High"] } } });
+    const result = await readLibrary(made);
+    expect(result).not.toHaveProperty("javaScan");
+    expect(result.libraryScan).toMatchObject({ criticalOpen: 0, highOpen: 2, sha256: sha256HexOf(await readFile(made.libraryScanFile)), sbomSha256: sha256HexOf(await readFile(made.librarySbomFile)) });
+  });
+  it("also reads a CycloneDX SBOM, and finds a Go module by name and version when the finding has no purl", async () => {
+    const cyclone = await readLibrary(await makeLayout({ library: { sbom: "cyclonedx" } }));
+    expect(cyclone.libraryScan).toMatchObject({ criticalOpen: 0, highOpen: 0 });
+    const byName = await readLibrary(await makeLayout({ library: { scan: { text: JSON.stringify({ descriptor: { name: "grype" }, matches: [{ vulnerability: { severity: "High" }, artifact: { name: "github.com/aws/aws-sdk-go-v2", version: "v1.36.0" } }] }) } } }));
+    expect(byName.libraryScan).toMatchObject({ highOpen: 1 });
+  });
+  it("holds the generic form to the same checks: not grype's, a finding for a package that is not in the SBOM, a missing or malformed SBOM or scan, and a critical (or unreadable severity) finding", async () => {
+    await expect(readLibrary(await makeLayout({ library: { scan: { text: JSON.stringify({ matches: [], descriptor: { name: "trivy" } }) } } }))).rejects.toThrow(/library scan file is not a grype result/u);
+    await expect(readLibrary(await makeLayout({ library: { scan: { text: JSON.stringify({ descriptor: { name: "grype" }, matches: [{ vulnerability: { severity: "Low" }, artifact: { name: "openssl", version: "3.0.0" } }] }) } } }))).rejects.toThrow(/not in the SBOM/u);
+    await expect(readLibrary(await makeLayout({ library: { sbom: { text: "not json" } } }))).rejects.toThrow(/library SBOM is not JSON/u);
+    await expect(readLibrary(await makeLayout({ library: { sbom: { text: JSON.stringify({ spdxVersion: "SPDX-2.3", packages: [] }) } } }))).rejects.toThrow(/library SBOM has no packages/u);
+    await expect(readLibrary(await makeLayout({ library: { sbom: { text: JSON.stringify({ bomFormat: "other" }) } } }))).rejects.toThrow(/not an SPDX JSON or CycloneDX/u);
+    await expect(readLibrary(await makeLayout())).rejects.toThrow(/library scan file is missing/u);
+    expect((await readLibrary(await makeLayout({ library: { scan: { severities: ["Critical"] } } }))).libraryScan!.criticalOpen).toBe(1);
+    expect((await readLibrary(await makeLayout({ library: { scan: { text: JSON.stringify({ descriptor: { name: "grype" }, matches: [{ vulnerability: {}, artifact: { name: "tokio", version: "1.45.0" } }] }) } } }))).libraryScan!.criticalOpen).toBe(1);
+  });
+  it("the Java form stays Java-only: an SPDX list is not a CycloneDX list for it", async () => {
+    const made = await makeLayout({ library: {} });
+    await expect(readBuiltSource({ baseDir: made.root })({ kind: "rovara-built", layout: made.layout, digestFile: made.digestFile, javaScan: made.libraryScanFile, javaSbom: made.librarySbomFile })).rejects.toThrow(/Java dependency list is not a CycloneDX document/u);
+  });
+  it("pins the image: highs add to the entry's, the statement records the scan files' hashes and counts, the image SBOM and scan are still taken per platform, and the evidence holds library-scan.json and library-sbom.json", async () => {
+    const made = await makeLayout({ library: { scan: { severities: ["High", "High"] } } });
+    const { ports, calls } = fakePorts({}, made);
+    const output = await buildBuilt(ports, librarySource(made));
+    expect(calls.sbom).toEqual([`${ID} linux/arm64`]);
+    expect(calls.scan).toEqual([`${ID} linux/arm64`]);
+    const pinned = ServiceCatalogSchema.parse(JSON.parse(output.catalogBytes.toString("utf8"))).entries.find((entry) => entry.id === ID)!;
+    expect(pinned.image.digest).toBe(made.digest);
+    expect(pinned.scan?.highOpen).toBe(2);
+    const signed = JSON.parse(output.evidence.find((item) => item.path.endsWith("statement.json"))!.bytes.toString("utf8")) as SignedImageStatement;
+    expect(signed.statement.javaScan).toEqual({ sha256: sha256HexOf(await readFile(made.libraryScanFile)), sbomSha256: sha256HexOf(await readFile(made.librarySbomFile)), criticalOpen: 0, highOpen: 2 });
+    expect(output.evidence.map((item) => item.path).filter((path) => /(?:java|library)-/u.test(path)).sort()).toEqual(["evidence/local-aws-r1/library-sbom.json", "evidence/local-aws-r1/library-scan.json"]);
+    const out = await temporary();
+    await writeCatalogBuild(output, { catalogDir: join(out, "catalog"), prepullFile: join(out, "prepull.json"), evidenceDir: join(out, "evidence") });
+    expect(sha256HexOf(await readFile(join(out, "evidence/local-aws-r1/library-scan.json")))).toBe(sha256HexOf(await readFile(made.libraryScanFile)));
+  });
+  it("takes the provenance of a public-snapshot build (the private source sha and the public snapshot sha), keeps it as evidence/<id>/provenance.json, and refuses a malformed one", async () => {
+    const privateSourceSha = "1".repeat(40);
+    const publicSnapshotSha = "2".repeat(40);
+    const made = await makeLayout({ library: {} });
+    const source = librarySource(made);
+    const withProvenance = { schemaVersion: 1 as const, sources: { [ID]: { ...(source.sources[ID] as BuiltSource), provenance: { privateSourceSha, publicSnapshotSha } } } };
+    const output = await buildBuilt(fakePorts({}, made).ports, withProvenance);
+    const item = output.evidence.find((candidate) => candidate.path === "evidence/local-aws-r1/provenance.json");
+    expect(JSON.parse(item!.bytes.toString("utf8"))).toEqual({ repository: "rovaracli/rovara-local-aws", privateSourceSha, publicSnapshotSha });
+    // no provenance given (the old private-fork path): no such file
+    expect((await buildBuilt(fakePorts({}, made).ports, source)).evidence.some((candidate) => candidate.path.endsWith("provenance.json"))).toBe(false);
+    const base = { kind: "rovara-built", layout: "oci", digestFile: "index.digest", libraryScan: "l.json", librarySbom: "l.spdx.json" };
+    for (const bad of [{ privateSourceSha }, { privateSourceSha, publicSnapshotSha: "abc" }, { privateSourceSha, publicSnapshotSha: "G".repeat(40) }, { privateSourceSha, publicSnapshotSha, extra: 1 }]) {
+      expect(BuiltSourceSchema.safeParse({ ...base, provenance: bad }).success, JSON.stringify(bad)).toBe(false);
+    }
+    expect(BuiltSourceSchema.safeParse({ ...base, provenance: { privateSourceSha, publicSnapshotSha } }).success).toBe(true);
+  });
+  it("a critical finding refuses BEFORE anything is pushed, and a missing scan file refuses (no scan is not a clean scan)", async () => {
+    const critical = await makeLayout({ library: { scan: { severities: ["High", "Critical"] } } });
+    const first = fakePorts({}, critical);
+    expect(await refusalsOf(buildBuilt(first.ports, librarySource(critical)))).toEqual([{ id: ID, code: "scan_critical" }]);
+    expect(first.calls.mirror).toEqual([]);
+    const missing = await makeLayout();
+    const second = fakePorts({}, missing);
+    expect(await refusalsOf(buildBuilt(second.ports, librarySource(missing)))).toEqual([{ id: ID, code: "built_source_invalid" }]);
+    expect(second.calls.mirror).toEqual([]);
+  });
+  it("the old Java form is unchanged: a missing scan file still refuses", async () => {
+    const made = await makeLayout({ javaScan: "missing" });
+    expect(await refusalsOf(buildBuilt(fakePorts({}, made).ports, sourceOf(made)))).toEqual([{ id: ID, code: "built_source_invalid" }]);
+  });
+});
+
 describe("writing a Rovara-built build", () => {
   it("writes the Java scan beside the statement in the entry's evidence folder, byte for byte", async () => {
     const made = await makeLayout({ javaScan: { severities: ["Low"] } });
@@ -368,7 +472,7 @@ describe("binding the Java scan to the image's dependency list", () => {
   it("finds a package by purl, by name and version, by group:name and in nested components", async () => {
     const finding = (artifact: Record<string, unknown>) => JSON.stringify({ descriptor: { name: "grype" }, matches: [{ vulnerability: { severity: "High" }, artifact }] });
     for (const artifact of [{ purl: "pkg:maven/io.quarkus/quarkus-core@3.1.0" }, { name: "jackson-core", version: "2.17.0" }, { name: "com.fasterxml.jackson.core:jackson-core", version: "2.17.0" }, { name: "nested", version: "1.0" }]) {
-      expect((await read(await makeLayout({ javaScan: { text: finding(artifact) } }))).javaScan.highOpen, JSON.stringify(artifact)).toBe(1);
+      expect((await read(await makeLayout({ javaScan: { text: finding(artifact) } }))).javaScan!.highOpen, JSON.stringify(artifact)).toBe(1);
     }
   });
   it("refuses a missing, malformed, empty or non-CycloneDX dependency list", async () => {

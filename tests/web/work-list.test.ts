@@ -3,8 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
-import { LiveScreen } from "../../packages/ui/src/screens/live/LiveScreen.js";
-import { isWorkListOn, WORK_STORAGE_KEY } from "../../packages/ui/src/screens/live/work-list-flags.js";
+import { WorkListScreen } from "../../packages/ui/src/screens/live/WorkListScreen.js";
 import { FINISHED_AS_WORDS, WORK_VIEWS, finishedState, formatAge, liveFiltersFor, liveStatus, nextActor, rowFromFinished, rowFromLive, sortFinished, sortRows, workViewFor, type WorkRow } from "../../packages/ui/src/screens/live/work-list.js";
 import { AppHostProvider, type ApiRequest, type ApiResponse } from "../../packages/ui/src/host.js";
 import { Announcer } from "../../packages/ui/src/design/Announcer.js";
@@ -20,15 +19,6 @@ afterEach(() => { vi.useRealTimers(); });
 const NOW = Date.parse("2026-10-23T15:00:00.000Z"), HOUR = 3_600_000;
 const ago = (ms: number) => new Date(NOW - ms).toISOString();
 const SESSION_B = "ses_bbbbbbbbbbbbbbbbbbbb", SESSION_C = "ses_cccccccccccccccccccc";
-
-describe("the switch", () => {
- const host = (value: string | undefined) => ({ storage: { get: () => value, set: () => undefined } });
- it("is off unless the device key says v2", () => {
-  expect(WORK_STORAGE_KEY).toBe("rovara.work");
-  expect(isWorkListOn(host(undefined))).toBe(false);expect(isWorkListOn(host("v1"))).toBe(false);expect(isWorkListOn(host("true"))).toBe(false);expect(isWorkListOn(host("v2"))).toBe(true);
- });
- it("is off when storage is blocked", () => { expect(isWorkListOn({ storage: { get() { throw new Error("blocked"); }, set: () => undefined } })).toBe(false); });
-});
 
 describe("the views", () => {
  it("are Mine, Team, Needs attention and Finished, each reading today's data", () => {
@@ -141,15 +131,14 @@ describe("the order", () => {
 });
 
 type Tile = ReturnType<typeof liveFixture>;
-function setup(options: { work?: boolean; path?: string; byFilter?: Record<string, Tile[]>; failFilter?: string; ended?: ReturnType<typeof finishedFixture>[]; cut?: boolean; theme?: "light" | "dark" } = {}) {
+function setup(options: { path?: string; byFilter?: Record<string, Tile[]>; failFilter?: string; ended?: ReturnType<typeof finishedFixture>[]; cut?: boolean; theme?: "light" | "dark" } = {}) {
  const f = fakeHost(async (request: ApiRequest): Promise<ApiResponse> => {
   if (request.path.startsWith("/v1/app/live")) { const filter = new URL(request.path, "https://x.example").searchParams.get("filter") ?? "all";if (filter === options.failFilter) return { status: 403, body: { error: { code: "FORBIDDEN", message: "Your access ended." } } };return { status: 200, body: { tiles: options.byFilter?.[filter] ?? [] } }; }
   if (request.path.startsWith("/v1/app/sessions?")) return { status: 200, body: { sessions: options.ended ?? [], ...(options.cut === true ? { projectsCut: true } : {}) } };
   if (request.path === "/v1/app/nav") return { status: 200, body: navFixture() };
   return { status: 200, body: { notices: [], next: "settled" } };
  });
- if (options.work !== false) f.storage.set("rovara.work", "v2");
- const query = createQueryClient(), router = createMemoryRouter([{ path: "/app/live", element: h(LiveScreen, {}) }], { initialEntries: [options.path ?? "/app/live"] });
+ const query = createQueryClient(), router = createMemoryRouter([{ path: "/app/live", element: h(WorkListScreen, {}) }], { initialEntries: [options.path ?? "/app/live"] });
  const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(Announcer, { children: h(RouterProvider, { router }) }) }) }), { theme: options.theme ?? "light" });
  const calls = () => f.request.mock.calls.map(([request]) => request.path);
  return { ...f, ...ui, query, router, calls, close() { ui.unmount();router.dispose();query.clear(); } };
@@ -157,11 +146,7 @@ function setup(options: { work?: boolean; path?: string; byFilter?: Record<strin
 const tile = (overrides: Partial<Tile>) => liveFixture({ updatedAt: new Date(Date.now() - 3 * HOUR - 60_000).toISOString(), ...overrides });
 
 describe("the screen", () => {
- it("is today's list with the switch off: Live heading, five filters, no Work views", async () => {
-  const f = setup({ work: false, byFilter: { all: [tile({})] } });await screen.findByRole("heading", { name: "Fix duplicate refunds" });
-  expect(screen.getByRole("heading", { name: "Live", level: 1 })).toBeTruthy();expect(screen.getByRole("tab", { name: "Needs me" })).toBeTruthy();expect(screen.getByRole("tab", { name: "Failed" })).toBeTruthy();expect(screen.queryByRole("tab", { name: "Finished" })).toBeNull();expect(f.container.querySelector(".rv-work-row")).toBeNull();f.close();
- });
- it("shows the four views and a project filter with the switch on", async () => {
+ it("shows the four views and a project filter (the only list since decision 125)", async () => {
   const f = setup({ byFilter: { mine: [tile({})] } });await screen.findByRole("heading", { name: "Fix duplicate refunds" });
   expect(screen.getByRole("heading", { name: "Work", level: 1 })).toBeTruthy();expect(screen.getAllByRole("tab").map(item => item.textContent)).toEqual(["Mine", "Team", "Needs attention", "Finished"]);
   expect(screen.getByRole("tab", { name: "Mine" }).getAttribute("aria-selected")).toBe("true");expect(screen.getByRole("combobox", { name: "Project" })).toBeTruthy();expect(f.calls()).toContain("/v1/app/live?filter=mine");f.close();
