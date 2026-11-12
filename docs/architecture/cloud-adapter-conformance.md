@@ -84,3 +84,9 @@ unchanged, and registering it posts nothing and reads no token. It sends with to
 The keys are the ones Cloud writes today (`ORG#<company>#SLACK_BINDING#<team>`); the only addition is the `ORG#<company>#CHANNEL_TENANTS` row Code lists bindings by, with a backfill and its reverse in `tenants-backfill.ts` (not run; owner gate G-DATA).
 `tests/unit/cloud-slack-channel.test.ts` (characterization of today's behaviour, the adapter, the sink) and `tests/unit/cloud-slack-channel-keys.test.ts` (keys, isolation, backfill and reverse) are the checks.
 The email (SES) and realtime (cloud events) adapters wait for the pin to carry Code's K1 ports (`email`, `realtime`): the pin bump also moves `pi-ai` to 1.5.2 in the worker and model-runtime, which is the controller's call.
+
+## Registered adapters
+
+- `approvers` and `identity` (lane A6 `cloud/people`): `packages/broker/src/cloud/adapters/people/`, harnesses in `tests/conformance/adapters/approvers-cloud.ts` and `identity-cloud.ts` over the in-memory DynamoDB fake
+  (`tests/support/cloud-people-world.ts`). They wrap Cloud's approval-place rule, decide-grade step-up, Slack press resolution, second-person rule and the routes' authentication with no rule of their own;
+  `tests/unit/cloud-people-equivalence.test.ts` checks them against today's code case by case. What the ports cannot say yet is in `gaps.ts` (owed upstream, dated).

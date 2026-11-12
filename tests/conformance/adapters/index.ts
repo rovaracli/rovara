@@ -10,6 +10,8 @@
 // credentials here. The port's pending row in the test report (a todo) disappears once an adapter is registered for it.
 import type { CloudAdapterRegistration } from "../registry.js";
 import { cloudAdmission } from "./admission-cloud.js";
+import { cloudApprovers } from "./approvers-cloud.js";
+import { cloudIdentity } from "./identity-cloud.js";
 import { cloudMetering } from "./metering-cloud.js";
 import { cachedSecretsManagerModelKeyStore, secretsManagerModelKeyStore } from "./model-key-store-secrets-manager.js";
 
@@ -18,4 +20,6 @@ export const CLOUD_ADAPTERS: readonly CloudAdapterRegistration[] = [
   cachedSecretsManagerModelKeyStore,
   cloudAdmission,
   cloudMetering,
+  cloudApprovers,
+  cloudIdentity,
 ];

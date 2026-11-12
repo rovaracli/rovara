@@ -14,7 +14,7 @@ import { budgetDocumentFence } from "./budget-snapshot.js";
 // task still running for the duplicate fails closed at its next dispatch (the grant it is checked against has moved). There are no
 // customers yet, and only staging holds such records.
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { MEMBER_GRANT_SK_PREFIX, agentXError, memberGrantsPk, projectMemberKey, type OrgId } from "@rovara-code/contracts";
+import { MEMBER_GRANT_SK_PREFIX, agentXError, ownRoleEntry, memberGrantsPk, projectMemberKey, type OrgId } from "@rovara-code/contracts";
 import { developerOrgKey, memberMergeQueueKey, orgMemberKey, orgSettingsKey, type OrgRole } from "@agentx/cloud-contracts";
 import { ownerKeyForSubject } from "../aws/lambda.js";
 import { auditOccurrence } from "../audit/events.js";
@@ -58,6 +58,13 @@ export interface MergeDuplicateMemberResult {
 type Item = Record<string, unknown>;
 type Deps = MergeDuplicateMemberDependencies;
 const ROLE_RANK: Record<OrgRole, number> = { owner: 3, admin: 2, member: 1, auditor: 0 };
+/**
+ * The role the survivor keeps after a merge in the same company: the duplicate's when it ranks higher, else the survivor's. P3-OPEN-ROLES-CLOUD-ADOPTION: the table is read by its own keys only (`ownRoleEntry`), so a name it
+ * does not list (or `constructor`) ranks below every listed role and never wins.
+ */
+export function mergedRole<R extends string>(sameOrg: boolean, duplicateRole: R, survivorRole: R): R {
+  return sameOrg && (ownRoleEntry(ROLE_RANK, duplicateRole) ?? -1) > (ownRoleEntry(ROLE_RANK, survivorRole) ?? -1) ? duplicateRole : survivorRole;
+}
 const invalid = (message: string) => agentXError("CONFIG_INVALID", message);
 const errorName = (error: unknown) => (error instanceof Error ? error.name : undefined);
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -94,7 +101,7 @@ export async function mergeDuplicateMember(deps: Deps, input: MergeDuplicateMemb
 
   const grantsMoved = await moveGrants(deps, orgId, survivorId, duplicateId);
   const overrideMoved = await moveBudgetOverride(deps, orgId, survivorId, duplicateId);
-  const role = ROLE_RANK[duplicate.role] > ROLE_RANK[survivor.role] ? duplicate.role : survivor.role;
+  const role = mergedRole(true, duplicate.role, survivor.role);
   const at = new Date(deps.now()).toISOString();
   try {
     await retire(deps, input, { duplicateRole: duplicate.role, survivorRole: survivor.role, role, at, record, ...(link === undefined ? {} : { link }) });
