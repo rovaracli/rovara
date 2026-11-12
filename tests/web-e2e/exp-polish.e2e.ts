@@ -66,11 +66,16 @@ test("the Spending tab with no limit, over the limit, and refused", async ({ pag
 });
 
 // ---- The phone tab bar
+/** WebKit scrolls a focused control into view a few frames after focus() or Tab, not at once: wait until the scroll position has held still for 4 reads, 50 ms apart (at most 3 s), before measuring. */
+async function settled(page: Page) {
+ let last = -1, still = 0;
+ for (let read = 0; read < 60 && still < 4; read++) { const now = await page.evaluate(() => window.scrollY);still = now === last ? still + 1 : 0;last = now;await page.waitForTimeout(50); }
+}
 /** Everything the tab bar could hide: the end of the page, the last control after focus, any other fixed or sticky box in its band, and a toast. */
 async function belowTabBar(page: Page) {
  await expect(page.locator(".rv-tabbar")).toBeVisible();await page.waitForLoadState("networkidle");
  await page.evaluate(() => { window.scrollTo(0, document.documentElement.scrollHeight); });
- return page.evaluate(() => {
+ const problems: string[] = await page.evaluate(() => {
   const bar = document.querySelector(".rv-tabbar")!.getBoundingClientRect(), problems: string[] = [];
   const last = document.querySelector("main")!.lastElementChild!;if (last.getBoundingClientRect().bottom > bar.top) problems.push("the end of the page is under the tab bar");
   // Any other fixed or sticky box that reaches into the bar's band (modal overlays only exist while open, and sit above the bar by design).
@@ -78,15 +83,24 @@ async function belowTabBar(page: Page) {
    const style = getComputedStyle(node);if ((style.position !== "fixed" && style.position !== "sticky") || node.closest(".rv-tabbar") !== null || style.display === "none" || style.visibility === "hidden") continue;
    const box = node.getBoundingClientRect();if (box.width > 0 && box.height > 0 && box.bottom > bar.top + 0.5 && box.top < bar.bottom) problems.push("fixed or sticky box in the bar's band: " + node.tagName + "." + node.className);
   }
-  // The last control of the page, focused, ends above the bar (scroll padding keeps it clear).
-  const controls = [...document.querySelectorAll<HTMLElement>("main a[href], main button:not([disabled]), main input:not([type=hidden]):not([disabled]), main select, main textarea, main summary, main [role=tab]")].filter(node => { const box = node.getBoundingClientRect();return box.width > 0 && box.height > 0 && node.checkVisibility({ contentVisibilityAuto: true, visibilityProperty: true }); });
-  const control = controls[controls.length - 1];if (control === undefined) problems.push("no control found");
-  else { window.scrollTo(0, 0);control.focus();const box = control.getBoundingClientRect();if (box.bottom > bar.top + 0.5) problems.push("the last control is under the tab bar after focus: " + control.tagName + " " + (control.textContent ?? "").slice(0, 30)); }
   // A toast (fixed at the bottom right) sits above the bar.
   const toast = document.createElement("div");toast.className = "rv-toast";toast.setAttribute("role", "status");toast.textContent = "Saved";document.body.append(toast);
   const toastBox = toast.getBoundingClientRect();if (toastBox.bottom > bar.top + 0.5) problems.push("the toast is under the tab bar");toast.remove();
   return problems;
  });
+ // The last control of the page, focused, ends above the bar (scroll padding keeps it clear).
+ const found = await page.evaluate(() => {
+  const controls = [...document.querySelectorAll<HTMLElement>("main a[href], main button:not([disabled]), main input:not([type=hidden]):not([disabled]), main select, main textarea, main summary, main [role=tab]")].filter(node => { const box = node.getBoundingClientRect();return box.width > 0 && box.height > 0 && node.checkVisibility({ contentVisibilityAuto: true, visibilityProperty: true }); });
+  const control = controls[controls.length - 1];if (control === undefined) return false;
+  window.scrollTo(0, 0);control.focus();return true;
+ });
+ if (!found) problems.push("no control found");
+ else {
+  await settled(page);
+  const under = await page.evaluate(() => { const control = document.activeElement as HTMLElement, bar = document.querySelector(".rv-tabbar")!.getBoundingClientRect();return control.getBoundingClientRect().bottom > bar.top + 0.5 ? control.tagName + " " + (control.textContent ?? "").slice(0, 30) : undefined; });
+  if (under !== undefined) problems.push("the last control is under the tab bar after focus: " + under);
+ }
+ return problems;
 }
 for (const target of [
  { name: "the task page", scenario: "workspace", path: "/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa", ready: (page: Page) => expect(page.getByRole("region", { name: "Where this task stands" })).toBeVisible() },
@@ -103,20 +117,21 @@ for (const target of [
 
 // Tabbing down a long page: whatever takes keyboard focus is never left under the tab bar (WCAG 2.4.11), because the page keeps room for the bar when it scrolls a focused control into view.
 for (const target of [
- { name: "the project page", scenario: "project", path: "/app/projects/payments", ready: (page: Page) => expect(page.getByRole("heading", { name: "payments", level: 1 })).toBeVisible() },
- { name: "a settings page", scenario: "admin", path: "/app/admin/money/budgets", ready: (page: Page) => expect(page.getByRole("table", { name: "Spending requests waiting" })).toBeVisible() },
+ { name: "the project page", scenario: "project", path: "/app/projects/payments", min: 10, ready: (page: Page) => expect(page.getByRole("heading", { name: "payments", level: 1 })).toBeVisible() },
+ { name: "a settings page", scenario: "admin", path: "/app/admin/money/budgets", min: 5, ready: (page: Page) => expect(page.getByRole("table", { name: "Spending requests waiting" })).toBeVisible() },
 ] as const) {
  test(`new navigation on a phone, ${target.name}: keyboard focus never ends under the tab bar`, async ({ page, context, request, baseURL }) => {
   await enter(page, context, request, baseURL, 390, target.scenario, { ...NAV, ...(target.scenario === "admin" ? {} : {}) });await page.goto(target.path);await target.ready(page);await page.waitForLoadState("networkidle");
-  const hidden: string[] = [];let stops = 0;
+  const hidden: string[] = [], seen = new Set<string>();
   for (let step = 0; step < 150; step++) {
    await page.keyboard.press("Tab");
-   const stop = await page.evaluate(() => { const node = document.activeElement as HTMLElement | null, bar = document.querySelector(".rv-tabbar")!.getBoundingClientRect();if (node === null || node === document.body || node.closest(".rv-tabbar") !== null || node.closest("header") !== null) return undefined;const box = node.getBoundingClientRect();/* a tall scroll region counts as clear when its top 20px are above the bar */return { name: node.tagName + " " + (node.textContent ?? "").slice(0, 30), under: Math.min(box.bottom, bar.top) - Math.max(box.top, 0) < Math.min(box.height, 20) }; });
+   const stop = await page.evaluate(async () => { /* WebKit scrolls the focused control into view a few frames after Tab: wait for the scroll to hold still for 3 frames (at most 60) */await new Promise<void>(resolve => { let last = -1, still = 0, frames = 0;const tick = () => { frames++;still = window.scrollY === last ? still + 1 : 0;last = window.scrollY;if (still >= 3 || frames >= 60) resolve();else requestAnimationFrame(tick); };requestAnimationFrame(tick); });const node = document.activeElement as HTMLElement | null, bar = document.querySelector(".rv-tabbar")!.getBoundingClientRect();if (node === null || node === document.body || node.closest(".rv-tabbar") !== null || node.closest("header") !== null) return undefined;const box = node.getBoundingClientRect();/* a tall scroll region counts as clear when its top 20px are above the bar */return { name: node.tagName + " " + (node.textContent ?? "").slice(0, 30), at: Math.round(box.top + window.scrollY), under: Math.min(box.bottom, bar.top) - Math.max(box.top, 0) < Math.min(box.height, 20) }; });
    if (stop === undefined) continue;
-   stops++;if (stop.under) hidden.push(stop.name);
+   seen.add(stop.name + "@" + String(stop.at));if (stop.under) hidden.push(stop.name);
   }
-  // Chromium and WebKit wrap focus from the end of the page back to its start, so the walk passes the page several times; Firefox leaves the page after its
-  // last control and Tab never brings focus back, so a short page (a settings page has six stops) is walked once. Five stops still prove the walk ran.
-  expect(stops, "the walk found controls in the page").toBeGreaterThanOrEqual(5);expect(hidden).toEqual([]);
+  // Distinct controls, not Tab presses: Chromium wraps round to the top of the page and Firefox stays on the tab bar, so the count of presses says nothing about the page.
+  // WebKit's Tab key skips links and buttons unless the system is set to tab to them (macOS Safari's default), so there the walk only has to find something.
+  const webkit = page.context().browser()?.browserType().name() === "webkit";
+  expect(seen.size, "the walk found the controls in the page").toBeGreaterThanOrEqual(webkit ? 1 : target.min);expect(hidden).toEqual([]);
  });
 }

@@ -446,18 +446,22 @@ describe("the named TEST proof-only installation gate", () => {
     // notifier's role: a GetItem-only statement for the leading keys ORG#org_* and ORG#org_*#MEMBER#* (the owner-stopped DM reads a person's membership and project grant, and was refused), and the Null
     // guard on the two statements added at 387e4dc96 (NOTIFY_DM, NOTIFY_SETTINGS_PROOF#*). Checked first: with infra/lib/developer-task-notifier.ts put back to integ/0515's, all three tests (this one,
     // named-templates, legacy-templates) pass on integ's own pins. The named snapshot shows exactly the one statement added and the two Null guards. Legacy did not move.
+    // 2026-11-12 (0.5.15, fix/0515-merge-v0514, merging the v0.5.14 release 64bef8bf8 into integ/0515 878448587): the named and foreign digests were retaken from the values the test reports, after ONE intended
+    // change coming in from 0.5.14 (4a5ec452f): the DeveloperSignIn function gains dynamodb:GetItem on the State table for the leading key SLACK_TEAM#* only, with the Null guard (the Slack link callback reads the
+    // workspace owner; 0.5.14 is installed on staging with it, and an install of 0.5.15 without it would remove the live grant). Checked first: with infra/lib/developer-signin.ts and the named snapshot put back to
+    // integ/0515's, all three tests (this one, named-templates, legacy-templates) pass on integ's own pins. The named snapshot shows exactly that one statement added. Legacy did not move.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "9cefca6c3892a014ef4de2d3922c7eb8415bda987a5dc257f68a5175de03e3f3",
-        withoutRoute: "36dcbf77fde7fa76392fa5edd38f70278ad13a077148713fb8eccfeec96c68f1",
+        withRoute: "876d05468942b5654a2c4464dc2f57967ee137e320588c3f586c33e635610179",
+        withoutRoute: "dd7a8952b232cb93c7c66a4256721ae67377a87464ac9307c3379ea468c97d33",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "20f20fb6bcef9031d0dbb589766837ef76f76596d1d63f533634d8e8b7ddb995",
-        withoutRoute: "dfff40ed4e8053f65a7249c251567c28ac246bca82f0028bbb9b7499f8cfdf2a",
+        withRoute: "b78fff34584a4becb845ebeaee90030a83c11536e0d8467ea5fa24ec1e46a104",
+        withoutRoute: "b05b7d04387318269a6272e161f176fb612635cf2eb02983aba4fa2769ee1dd6",
       },
       {
         label: "legacy",
