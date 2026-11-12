@@ -17,6 +17,7 @@ import { areaTable, markdownOf, writeReport } from "./harness/report.js";
 import { StagingTargetRefused, createStagingEngine } from "./harness/staging-target.js";
 import { KNOWN_DIFFERENCES } from "./known-differences.js";
 import { SCENARIOS } from "./scenarios/index.js";
+import { SWITCH_BLOCKERS } from "./switch-blockers.js";
 
 const results: ScenarioResult[] = [];
 
@@ -40,6 +41,12 @@ describe("the parity suite's own rules", () => {
           owners.set(key, lane);
         }
       }
+    }
+  });
+
+  it("names only known differences that exist in its switch blockers", () => {
+    for (const blocker of SWITCH_BLOCKERS) {
+      for (const shown of blocker.shownBy) expect(KNOWN_DIFFERENCES.some((entry) => entry.scenario === shown.scenario && entry.facet === shown.facet), `${blocker.id}: ${shown.scenario} ${shown.facet}`).toBe(true);
     }
   });
 

@@ -10,6 +10,7 @@ import { FEATURES_A_DRIVERS } from "./features-a.js";
 import { FEATURES_B_DRIVERS } from "./features-b.js";
 import { FEATURES_C_DRIVERS } from "./features-c.js";
 import { FEATURES_D_DRIVERS } from "./features-d.js";
+import { UNDERSTAND_DRIVERS } from "./understand.js";
 
 export const DRIVER_GROUPS: Readonly<Record<string, Readonly<Record<string, StepDriver<CloudContext, CloudOptions>>>>> = {
   "task-flow": TASK_FLOW_DRIVERS,
@@ -21,6 +22,7 @@ export const DRIVER_GROUPS: Readonly<Record<string, Readonly<Record<string, Step
   "features-b": FEATURES_B_DRIVERS,
   "features-c": FEATURES_C_DRIVERS,
   "features-d": FEATURES_D_DRIVERS,
+  understand: UNDERSTAND_DRIVERS,
 };
 
 export const CLOUD_DRIVERS: Readonly<Record<string, StepDriver<CloudContext, CloudOptions>>> = Object.assign({}, ...Object.values(DRIVER_GROUPS)) as Record<string, StepDriver<CloudContext, CloudOptions>>;

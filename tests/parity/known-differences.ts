@@ -10,6 +10,7 @@ import { FEATURES_A_DIFFERENCES } from "./known-differences/features-a.js";
 import { FEATURES_B_DIFFERENCES } from "./known-differences/features-b.js";
 import { FEATURES_C_DIFFERENCES } from "./known-differences/features-c.js";
 import { FEATURES_D_DIFFERENCES } from "./known-differences/features-d.js";
+import { UNDERSTAND_DIFFERENCES } from "./known-differences/understand.js";
 
 export interface KnownDifference {
   /** A scenario id, or `*` for a difference every scenario that reaches it shows (the same cause). */
@@ -86,4 +87,5 @@ export const KNOWN_DIFFERENCES: readonly KnownDifference[] = [
   ...FEATURES_B_DIFFERENCES,
   ...FEATURES_C_DIFFERENCES,
   ...FEATURES_D_DIFFERENCES,
+  ...UNDERSTAND_DIFFERENCES,
 ];

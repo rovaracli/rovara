@@ -62,7 +62,7 @@ export const FEATURES_B_DIFFERENCES: readonly KnownDifference[] = [
       "postApprovalCard in the stage machine's plan-review step); the owner decides whether `plan_approval` stays a step-up kind for Slack on the core, since decision 99",
       "lets Cloud's Slack approve inside the window today.",
     ].join(" "),
-    owner: "Code upstream (approval cards to chats) + owner decision (Slack plan approval vs step-up) + S0 root wiring of the Slack sink",
+    owner: "Owner decision 144: low- and medium-risk plans are approved in the Slack thread; a high-risk plan needs the web app with a fresh sign-in, and its card links there. TO-DOs: (Code, S0-144-code) the stage machine's plan-review step calls postApprovalCard, with buttons by risk (high risk: a link to the web app, no buttons); (root, S0-144-root) A8's CloudSlackChannel step-up list by risk (plan_approval step-up only for high risk) instead of always; plus the S0 root wiring of the Slack sink. Cloud's own Slack follows 144 too (today decision 99 allows any risk inside the window)",
   },
   {
     scenario: "slack-channel", facet: "transitions",

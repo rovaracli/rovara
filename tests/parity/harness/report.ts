@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PARITY_AREAS } from "../areas.js";
 import type { ScenarioResult } from "./compare.js";
+import { SWITCH_BLOCKERS } from "../switch-blockers.js";
 
 export interface AreaRow {
   id: number;
@@ -51,9 +52,47 @@ export function markdownOf(rows: readonly AreaRow[], results: readonly ScenarioR
   return `${lines.join("\n")}\n`;
 }
 
+/** The facets that differ for an area, across its scenarios. */
+function differingFacets(results: readonly ScenarioResult[], area: number): string[] {
+  return [...new Set(results.filter((result) => result.scenario.areas.includes(area)).flatMap((result) => result.facets.filter((facet) => facet.outcome === "different").map((facet) => facet.facet)))].sort();
+}
+
+/**
+ * The one-page summary for the owner: each area in one line (same, different on which facets, or why there is nothing to compare), then what must be done
+ * before the combined switch, with who does it. The full table (parity.md) and the known differences hold the detail.
+ */
+export function summaryOf(rows: readonly AreaRow[], results: readonly ScenarioResult[]): string {
+  const count = (outcome: AreaRow["outcome"]) => rows.filter((row) => row.outcome === outcome).length;
+  const line = (row: AreaRow): string => {
+    if (row.outcome === "not covered") return `| ${row.id} | ${row.name} | nothing to compare | ${(row.notes[0] ?? "").replace(/^Cloud-only: /, "").replace(/\|/g, "/").slice(0, 160)} |`;
+    const differ = differingFacets(results, row.id);
+    const alwaysSame = row.sameFacets.filter((facet) => !differ.includes(facet));
+    return `| ${row.id} | ${row.name} | ${row.outcome} | ${row.outcome === "same" ? `same on ${row.sameFacets.join(", ")}` : `differs on ${differ.join(", ")}${alwaysSame.length === 0 ? "" : `; same on ${alwaysSame.join(", ")}`}`} |`;
+  };
+  return [
+    "# Cloud on the shared engine: parity summary",
+    "",
+    `Every Cloud area was run through Cloud's own path and through the shared engine (Rovara Code's core with Cloud's adapters), and the outcomes compared. ${String(count("same"))} areas are the same, ${String(count("different"))} differ somewhere, ${String(count("not covered"))} are Cloud-only (nothing to compare). Every difference is listed with its cause and owner in the full report.`,
+    "",
+    "## Areas",
+    "",
+    "| # | Area | Outcome | Detail |",
+    "|---|---|---|---|",
+    ...rows.map(line),
+    "",
+    "## Before the combined switch",
+    "",
+    "| | What | Who | Side |",
+    "|---|---|---|---|",
+    ...SWITCH_BLOCKERS.map((blocker) => `| ${blocker.id} | ${blocker.what} | ${blocker.owner} | ${blocker.side} |`),
+    "",
+  ].join("\n");
+}
+
 export async function writeReport(rows: readonly AreaRow[], results: readonly ScenarioResult[], directory = process.env.PARITY_REPORT_DIR ?? join(tmpdir(), "rovara-parity")): Promise<string> {
   await mkdir(directory, { recursive: true });
   await writeFile(join(directory, "parity.md"), markdownOf(rows, results));
+  await writeFile(join(directory, "summary.md"), summaryOf(rows, results));
   await writeFile(join(directory, "parity.json"), `${JSON.stringify({ rows, results: results.map((result) => ({ id: result.scenario.id, outcome: result.outcome, notCovered: result.notCovered, facets: result.facets })) }, null, 2)}\n`);
   return directory;
 }
