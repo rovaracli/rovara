@@ -1,7 +1,7 @@
 // UX3: the map of company settings. One list drives both the navigation and the overview, so every setting has one home and nothing is listed twice.
 // Pages that change nothing (health, audit, agents) sit under the group they belong to. Who may open a page is decided by the page and the server, not here.
 import type { SettingsAreaId } from "./settings-text.js";
-export interface AdminLinkItem { to: string; label: string; area: SettingsAreaId; blurb: string; action: string; end?: true; ownerOnly?: true; needsSecondReview?: true; needsBilling?: true; needsCompanyRules?: true; needsApprovalWindow?: true }
+export interface AdminLinkItem { to: string; label: string; area: SettingsAreaId; blurb: string; action: string; end?: true; ownerOnly?: true; needsSecondReview?: true; needsBilling?: true; needsCompanyRules?: true; needsApprovalWindow?: true; needsPrivateAddresses?: true }
 export interface AdminSection { id: string; title: string; items: readonly AdminLinkItem[] }
 export const ADMIN_SECTIONS: readonly AdminSection[] = [
   { id: "people", title: "People and access", items: [
@@ -28,11 +28,12 @@ export const ADMIN_SECTIONS: readonly AdminSection[] = [
     { to: "/app/admin/domains", label: "Company domains", area: "domains", blurb: "Verify the email domains that count as your company's.", action: "Review company domains", ownerOnly: true },
     { to: "/app/admin/second-review", label: "Second opinion", area: "second-review", blurb: "Review outside second opinions on risky changes.", action: "Review second opinions", needsSecondReview: true },
     { to: "/app/admin/approval-window", label: "Recent sign-in window", area: "approval-window", blurb: "How recently a person must have signed in to approve medium-risk work from chat or comments, and where each risk level can be decided.", action: "Review the sign-in window", needsApprovalWindow: true },
+    { to: "/app/admin/private-addresses", label: "Internal addresses", area: "private-addresses", blurb: "The exact internal servers, such as a private package mirror, that tasks may reach through the sandbox wall.", action: "Review internal addresses", needsPrivateAddresses: true },
     { to: "/app/admin/audit", label: "Audit", area: "audit", blurb: "What happened, and who did it.", action: "Open the audit" },
     { to: "/app/admin/health", label: "Health", area: "health", blurb: "Review stored, shared runtime qualification. No active checks run here.", action: "Review Rovara service status" },
   ] },
 ];
-/** The items a viewer is offered: the owner-only page only to an owner, the second opinion page only while it exists on this install, the Billing page only while the device's billing switch is on, Company rules only while the nav answer says its switch (`si`) is on, the recent sign-in window page only while the server has it on. */
-export function visibleSections(role: "owner" | "admin" | "member", secondReviewOff: boolean, billingOn = false, companyRulesOn = false, approvalWindowOff = false): AdminSection[] {
-  return ADMIN_SECTIONS.map(section => ({ ...section, items: section.items.filter(item => !(item.ownerOnly === true && role !== "owner") && !(item.needsSecondReview === true && secondReviewOff) && !(item.needsBilling === true && !billingOn) && !(item.needsCompanyRules === true && !companyRulesOn) && !(item.needsApprovalWindow === true && approvalWindowOff)) })).filter(section => section.items.length > 0);
+/** The items a viewer is offered: the owner-only page only to an owner, the second opinion page only while it exists on this install, the Billing page only while the device's billing switch is on, Company rules only while the nav answer says its switch (`si`) is on, the recent sign-in window page only while the server has it on, and internal addresses only on an install that routes to a private network. */
+export function visibleSections(role: "owner" | "admin" | "member", secondReviewOff: boolean, billingOn = false, companyRulesOn = false, approvalWindowOff = false, privateAddressesOff = false): AdminSection[] {
+  return ADMIN_SECTIONS.map(section => ({ ...section, items: section.items.filter(item => !(item.ownerOnly === true && role !== "owner") && !(item.needsSecondReview === true && secondReviewOff) && !(item.needsBilling === true && !billingOn) && !(item.needsCompanyRules === true && !companyRulesOn) && !(item.needsApprovalWindow === true && approvalWindowOff) && !(item.needsPrivateAddresses === true && privateAddressesOff)) })).filter(section => section.items.length > 0);
 }

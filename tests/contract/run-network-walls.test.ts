@@ -76,7 +76,13 @@ describe("the run network adds no firewall rule", () => {
     it(`${name}: no rule lets an rvi bridge through, and none names the run network's address range, labels or names`, () => {
       const rules = scripts[name].split("\n").filter((line) => /\b(?:iptables|ip6tables|nft)\b/u.test(line) && !line.trim().startsWith("#"));
       for (const line of rules.filter(mentionsRvi)) expect(line, line).not.toMatch(/-j (?:RETURN|ACCEPT)/u);
-      expect(scripts[name]).not.toContain(`${RUN_NETWORK_FIRST_OCTETS}.`);
+      // Owner decision 123: the internal-address step names the run networks' range once, in the list of ranges it NEVER opens (its RETURN guards); nowhere else may it appear.
+      const step = /cat >\/usr\/local\/libexec\/rovara-private-allow <<'PRIVATEALLOW'\n[\s\S]*?\nPRIVATEALLOW\n/u.exec(scripts[name])?.[0] ?? "";
+      if (name === "boot-stage2.sh") {
+        expect(step.length).toBeGreaterThan(1000);
+        expect(step.split("\n").filter((line) => line.includes(`${RUN_NETWORK_FIRST_OCTETS}.`))).toEqual([expect.stringMatching(/^readonly WORKER="[0-9./ ]+"$/u)]);
+      }
+      expect(scripts[name].replace(step, "")).not.toContain(`${RUN_NETWORK_FIRST_OCTETS}.`);
       expect(scripts[name]).not.toMatch(/rovara-svc|rovara\.run-network|run-network/u);
     });
   }
@@ -184,7 +190,7 @@ esac
     expect(at("withhold_test_services_for_ipv6")).toBeGreaterThan(at("wall_ipv6_into_host"));
     expect(at("withhold_test_services_for_ipv6")).toBeLessThan(at("write_worker_unit"));
     // Pulling the catalog images and writing the test services settings is not fatal; the metadata block and the run-network walls are (a failed IPv6 drop withholds test services instead).
-    expect(main).toMatch(/if \[\[ \$\{AGENTX_ENVIRONMENT_KIND:-\} == named \]\]; then\n\s+if pull_catalog_images "\$region"; then\n\s+write_test_services_environment \|\| log [^\n]*\n\s+else\n\s+log [^\n]*\n\s+fi\n\s+set_docker_address_pools \|\| fail [^\n]*\n\s+metadata_blocked \|\| fail "the metadata block is missing after the Docker restart"\n\s+wall_between_run_networks \|\| fail [^\n]*\n\s+wall_ipv6_into_host \|\| withhold_test_services_for_ipv6 "\$\{IPV6_WALL_REASON:-ip6tables-unusable\}" \|\| fail [^\n]*\n\s+install_run_walls_unit \|\| fail [^\n]*\n\s+write_test_services_boot_facts \|\| log [^\n]*\n\s+fi/u);
+    expect(main).toMatch(/if \[\[ \$\{AGENTX_ENVIRONMENT_KIND:-\} == named \]\]; then\n\s+if pull_catalog_images "\$region"; then\n\s+write_test_services_environment \|\| log [^\n]*\n\s+else\n\s+log [^\n]*\n\s+fi\n\s+set_docker_address_pools \|\| fail [^\n]*\n\s+metadata_blocked \|\| fail "the metadata block is missing after the Docker restart"\n\s+wall_between_run_networks \|\| fail [^\n]*\n\s+wall_ipv6_into_host \|\| withhold_test_services_for_ipv6 "\$\{IPV6_WALL_REASON:-ip6tables-unusable\}" \|\| fail [^\n]*\n\s+install_run_walls_unit \|\| fail [^\n]*\n\s+write_test_services_boot_facts \|\| log [^\n]*\n\s+write_private_addresses \|\| log [^\n]*\n\s+fi/u);
   });
 
   // TS-SEAL-2: the IPv6 INPUT drop for the run bridges, run for real against fake iptables and ip6tables that keep their rules in files.

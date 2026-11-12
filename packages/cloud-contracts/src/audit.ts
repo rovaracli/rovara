@@ -427,6 +427,10 @@ export const AUDIT_ACTIONS = [
   "project_member.invited",
   "project_member.joined_by_invite",
   "project_member.invite_skipped",
+  // Internal addresses a company's tasks may reach (owner decision 123): counts, the list's digest, the revision and fixed words only. The hosts and ports go in `details` (subject `org`), never in a fact.
+  "company.private_addresses_proposed",
+  "company.private_addresses_changed",
+  "company.private_addresses_withdrawn",
   // Convergence lane A7 (cloud/audit-sink): events Rovara Code's core records that Cloud's own flows had no ledger event for. They are written only by the audit-sink adapter
   // (packages/broker/src/cloud/adapters/audit-sink), from the core's events; ids, fixed words, flags and counts only. A project's name goes in the org's `details`, never in a fact.
   "task.started",
@@ -845,6 +849,9 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "project_member.joined_by_invite": ["role"],
   "project_member.invite_skipped": ["role", "cause"],
   "company_image.registries_changed": ["registryCount", "authority"],
+  "company.private_addresses_proposed": ["revision", "entryCount", "listDigest", "added", "removed"],
+  "company.private_addresses_changed": ["revision", "entryCount", "listDigest", "added", "removed", "mode"],
+  "company.private_addresses_withdrawn": ["entryCount", "listDigest", "by"],
   // A7: the core's own events. `workflow` says whether the task runs as a workflow and `path` is the workflow's fixed path word; `code` is the refusal's fixed code; `outcome` and `origin` are fixed words.
   "task.started": ["workflow", "path"],
   "task.start_refused": ["code"],

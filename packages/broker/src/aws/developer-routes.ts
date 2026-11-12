@@ -204,6 +204,7 @@ import { DESIGN_REVIEW_COMPANY_BROWSER_MESSAGE, DESIGN_REVIEW_COMPANY_PATH, rout
 import { APPROVAL_WINDOW_BROWSER_MESSAGE, APPROVAL_WINDOW_PATH, routeApprovalWindow } from "./developer-routes/approval-window.js";
 import { REVIEW_GROUPS_BROWSER_MESSAGE, isReviewGroupsWrite, routeReviewGroups } from "../review-groups/routes.js";
 import { KNOWN_FAILING_POLICY_BROWSER_MESSAGE, KNOWN_FAILING_POLICY_PATH, routeKnownFailingPolicy } from "./developer-routes/known-failing-policy.js";
+import { PRIVATE_ADDRESSES_BROWSER_MESSAGE, PRIVATE_ADDRESSES_PATH, routePrivateAddresses } from "./developer-routes/private-addresses.js";
 import { SECOND_REVIEW_ACK_BROWSER_MESSAGE, acknowledgeSecondReview } from "./developer-tasks/second-review-ack.js";
 import { routeLearningModel } from "./developer-routes/learning-model.js";
 import { SECOND_REVIEW_BROWSER_MESSAGE, SECOND_REVIEW_PATH, routeSecondReview } from "./developer-routes/second-review.js";
@@ -371,6 +372,7 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   }
   // The company setting "always two people" for known-failing marks: changing it is browser-only (the read is open to members).
   if (url.pathname === KNOWN_FAILING_POLICY_PATH && request.method === "POST" && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", KNOWN_FAILING_POLICY_BROWSER_MESSAGE);
+  if (url.pathname === PRIVATE_ADDRESSES_PATH && request.method === "POST" && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", PRIVATE_ADDRESSES_BROWSER_MESSAGE);
   if (url.pathname === APPROVAL_WINDOW_PATH && decisionCardsEnabled() && request.method === "POST" && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", APPROVAL_WINDOW_BROWSER_MESSAGE);
   if (url.pathname === DESIGN_REVIEW_COMPANY_PATH && request.method === "POST" && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", DESIGN_REVIEW_COMPANY_BROWSER_MESSAGE);
   if (url.pathname === SECOND_REVIEW_PATH && request.method === "POST" && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", SECOND_REVIEW_BROWSER_MESSAGE);
@@ -645,6 +647,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (designReviewCompanyReply !== undefined) return designReviewCompanyReply;
   const knownFailingPolicyReply = await routeKnownFailingPolicy(deps, caller, request, url);
   if (knownFailingPolicyReply !== undefined) return knownFailingPolicyReply;
+  const privateAddressesReply = await routePrivateAddresses(deps, caller, request, url);
+  if (privateAddressesReply !== undefined) return privateAddressesReply;
   const setupRecipesReply = await routeSetupRecipes(deps, caller, request, url);
   if (setupRecipesReply !== undefined) return setupRecipesReply;
   const trialBillingReply = await routeTrialBilling(deps, caller, request, url);
