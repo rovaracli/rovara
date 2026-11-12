@@ -173,6 +173,8 @@ describe("the event catalog", () => {
       "saved_env.changed", "saved_env.setting_changed",
       // customer test accounts (TS26)
       "test_account.added", "test_account.approved", "test_account.narrowed", "test_account.widened", "test_account.reenable_requested", "test_account.rotated", "test_account.suspended", "test_account.expired", "test_account.deleted", "test_account.deleting", "test_account.rotation_failed", "test_account.used",
+      // customer test AWS account connections (TA2)
+      "test_access.connection_started", "test_access.connection_reported", "test_access.connection_confirmed", "test_access.connection_tested", "test_access.connection_ended",
       // script tokens (UX5b)
       "script_token.created", "script_token.revoked", "script_token.used",
       // company-approved extra test-service images

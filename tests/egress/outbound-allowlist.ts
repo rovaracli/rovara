@@ -141,10 +141,14 @@ export const HOST_RULES: readonly HostRule[] = [
     hosts: [
       "apigateway.amazonaws.com", "cloudformation.amazonaws.com", "codebuild.amazonaws.com", "delivery.logs.amazonaws.com", "ec2.amazonaws.com", "ecs-tasks.amazonaws.com",
       "ecs.amazonaws.com", "elasticloadbalancing.amazonaws.com", "email.cognito-idp.amazonaws.com", "events.amazonaws.com", "lambda.amazonaws.com", "rds.amazonaws.com",
-      "route53resolver.amazonaws.com", "s3.amazonaws.com", "scheduler.amazonaws.com", "states.amazonaws.com", "vpc-flow-logs.amazonaws.com",
+      "route53resolver.amazonaws.com", "s3.amazonaws.com", "scheduler.amazonaws.com", "sns.amazonaws.com", "states.amazonaws.com", "vpc-flow-logs.amazonaws.com",
       // Team record edition: the KMS key policy statements the install emits for the customer's key (infra/lib/team-record-edition.ts).
       "maintenance.s3tables.amazonaws.com", "s3tables.amazonaws.com", "indexing.s3vectors.amazonaws.com", "s3vectors.amazonaws.com",
     ],
+  },
+  {
+    category: "aws-endpoint", why: "Customer test AWS account (switch `ta`, off by default; lanes TA1 and TA2): IAM's one global endpoint name, in the host list the account signer may reach for a connected account (the regional endpoints of the planned services are built from the Region and are not written out); and the address of AWS's Service Authorization Reference named as the source of a generated table of actions (a provenance string; the table is made by a developer script, and nothing at run time reads it).", files: ["packages/broker/src/test-access/session.ts", "packages/cloud-contracts/src/generated/test-access-scoping.ts"],
+    hosts: ["iam.amazonaws.com", "servicereference.us-east-1.amazonaws.com"],
   },
   {
     category: "aws-service-principal", why: "The ECR service principal in the trust policy of the role ECR assumes to create a saved-environment repository from the creation template (an IAM principal, not a call); and, as the iam:AWSServiceName condition on the deploy role's one service-linked-role statement for ECR's creation-template role (a policy value, not a call).", files: ["infra/lib/saved-env-images.ts", "packages/cloud-contracts/src/access-policies.ts"],

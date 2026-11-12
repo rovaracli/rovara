@@ -393,6 +393,12 @@ export const AUDIT_ACTIONS = [
   "test_account.deleting",
   "test_account.rotation_failed",
   "test_account.used",
+  // Customer test AWS account connections (lane TA2, switch `ta`): the target is the connection (a `test_account` target). Ids, Regions, counts and fixed words only; an account id, a role ARN and an alias go in `details`, never in a fact.
+  "test_access.connection_started",
+  "test_access.connection_reported",
+  "test_access.connection_confirmed",
+  "test_access.connection_tested",
+  "test_access.connection_ended",
   // Script tokens (UX5b, switch `pt`): ids, counts and fixed words only. A token, its hash and its name never go in a fact.
   "script_token.created",
   "script_token.revoked",
@@ -819,6 +825,13 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "test_account.deleting": ["kind", "cause"],
   "test_account.rotation_failed": ["cause"],
   "test_account.used": ["day", "rounds", "connections", "bytes"],
+  // Connections. `region` is the Region the link was made for; `via` is how the account reported (`callback` or `account_id`); `templateVersion` the template the stack runs; `outcome` is `passed` or `needs_attention` with `failed` checks;
+  // `cause` is a fixed word (`deleted_stack`, `disconnected`, `suspended`, `expired`, `poll_timeout`).
+  "test_access.connection_started": ["region"],
+  "test_access.connection_reported": ["via", "templateVersion"],
+  "test_access.connection_confirmed": ["via"],
+  "test_access.connection_tested": ["outcome", "failed"],
+  "test_access.connection_ended": ["cause"],
   "script_token.created": ["days", "projects", "permissions"],
   "script_token.revoked": ["by"],
   "script_token.used": ["day", "permission"],

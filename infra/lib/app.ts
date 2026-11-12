@@ -28,6 +28,7 @@ import { RetainExceptOnCreate } from "./retention.js";
 import { EnvironmentRolePath } from "./role-path.js";
 import { SlackOrchestratorStack } from "./slack-orchestrator.js";
 import { SwebenchEvalStack, swebenchNames } from "./swebench-eval.js";
+import { TestAccessCallbackStack, parseTestAccessContext, testAccessStackName } from "./test-access-callback.js";
 import { WorkerSettingsStack } from "./worker-settings.js";
 
 export function buildAgentXApp(context: Record<string, unknown> = {}): App {
@@ -288,6 +289,13 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
       naming,
       stackName: swebenchNames(naming).stackName,
     });
+  }
+  // Customer test account (lane TA1): one callback topic per Region, only when asked for (hosted cloud only); no release deploys it. See test-access-callback.ts.
+  const testAccess = parseTestAccessContext({ get: (key) => app.node.tryGetContext(key) as unknown, homeRegion: deploymentRegion ?? "us-east-1", cloud: agentxCloud });
+  if (testAccess !== undefined) {
+    for (const region of testAccess.regions) {
+      new TestAccessCallbackStack(app, `AgentXTestAccess-${region}`, { description: "Rovara customer test account: the SNS topic a customer's test-access stack reports to", naming, settings: testAccess, region, stackName: testAccessStackName(naming, region) });
+    }
   }
   if (naming.env !== undefined) {
     Tags.of(app).add("agentx:env", naming.env);

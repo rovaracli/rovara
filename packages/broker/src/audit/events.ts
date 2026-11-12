@@ -1116,6 +1116,18 @@ export function auditTestAccountChange(input: AuditBuilderBase & { action: TestA
   return build(input.action, input, { kind: "test_account", id: input.accountId }, input.facts);
 }
 
+// Customer test AWS account connections (lane TA2) ---------------------------------------------------------------
+
+export type TestAccessAuditAction = "test_access.connection_started" | "test_access.connection_reported" | "test_access.connection_confirmed" | "test_access.connection_tested" | "test_access.connection_ended";
+
+/**
+ * `occurrence`: `auditOccurrence(connectionId, action, ...)` with whatever makes the event the one (a version of the connection). The target is the connection. Facts are Regions, counts and fixed words only: the account id, the
+ * role, the alias and the project go in `details` (subject `org`), and a token or an external id is never in an event.
+ */
+export function auditTestAccessChange(input: AuditBuilderBase & { action: TestAccessAuditAction; connectionId: string; facts: Record<string, Fact> }): AuditEventInput {
+  return build(input.action, input, { kind: "test_account", id: input.connectionId }, input.facts);
+}
+
 /**
  * S2 (send-back gate): work a task would have started was refused because the person it runs as lost their place. The target is the task; `path` and `cause` are fixed words
  * (see `AUDIT_FACT_KEYS`). `occurrence` is the task and the step it was refused at, so a retried refusal is the same event. Never a name, a message or a project's name.

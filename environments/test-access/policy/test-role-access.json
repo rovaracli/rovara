@@ -1,0 +1,78 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AllowTestServices",
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:*",
+        "events:*",
+        "iam:*",
+        "kinesis:*",
+        "lambda:*",
+        "logs:*",
+        "s3:*",
+        "secretsmanager:*",
+        "sns:*",
+        "sqs:*",
+        "ssm:*",
+        "states:*",
+        "sts:GetCallerIdentity",
+        "tag:GetResources",
+        "tag:GetTagKeys",
+        "tag:GetTagValues"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "Boundary",
+      "Effect": "Deny",
+      "Action": [
+        "iam:CreateRole",
+        "iam:PutRolePermissionsBoundary"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringNotEquals": {
+          "iam:PermissionsBoundary": "arn:aws:iam::<ACCOUNT_ID>:policy/rovara-test-boundary-<EXTERNAL_ID>"
+        }
+      }
+    },
+    {
+      "Sid": "NoPath",
+      "Effect": "Deny",
+      "Action": [
+        "iam:CreateRole"
+      ],
+      "Resource": [
+        "arn:*:iam::*:role/*/*"
+      ]
+    },
+    {
+      "Sid": "Pass",
+      "Effect": "Deny",
+      "Action": [
+        "iam:PassRole"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringNotEquals": {
+          "iam:PassedToService": [
+            "events.amazonaws.com",
+            "lambda.amazonaws.com",
+            "states.amazonaws.com"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "KeepBoundary",
+      "Effect": "Deny",
+      "Action": [
+        "iam:DeleteRolePermissionsBoundary",
+        "iam:UpdateAssumeRolePolicy"
+      ],
+      "Resource": "*"
+    }
+  ]
+}
