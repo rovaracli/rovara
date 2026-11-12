@@ -12,8 +12,12 @@ import { REPO_ENDPOINT_NAMES_MAX } from "./service-env.js";
 export const REPO_ENDPOINT_NAMES_LIMIT_MS = 10_000;
 const ENDPOINT_VARIABLE = /^AWS_ENDPOINT_URL_[A-Z0-9_]{2,60}$/u;
 
-/** The endpoint variable names the repositories' settings set, sorted and unique. Never throws. */
-export async function repoAwsEndpointNames(input: { repositoryPaths: readonly string[]; guard?: GuardOptions }): Promise<string[]> {
+/** What the reading could not do (Cloud only): names past the limit are not redirected (`notRedirected` of them), and a repository that could not be read in time or at all (`unread`) added none. Counts only, never a name. */
+export interface RepoEndpointNamesNote { notRedirected: number; unread: number }
+
+/** The endpoint variable names the repositories' settings set, sorted and unique. Never throws. `onNote` hears of names dropped past the limit and of repositories that could not be read. */
+export async function repoAwsEndpointNames(input: { repositoryPaths: readonly string[]; guard?: GuardOptions; onNote?: (note: RepoEndpointNamesNote) => void }): Promise<string[]> {
+  let unread = 0;
   const names = new Set<string>();
   for (const directory of input.repositoryPaths) {
     try {
@@ -21,10 +25,15 @@ export async function repoAwsEndpointNames(input: { repositoryPaths: readonly st
       if (paths.length === 0) continue;
       const { reader } = boundedReader(paths, (path) => readRepositoryFile(directory, path));
       const detection = await runDetectorsGuarded(reader, ".", { timeoutMs: REPO_ENDPOINT_NAMES_LIMIT_MS, ...input.guard, only: ["env"] });
+      // The guard answers a pass that ran out of time with an empty detection and this note: such a repository gave no names, which is said, not hidden.
+      if (detection.notes.some((note) => note.includes("took too long"))) unread += 1;
       for (const candidate of detection.dependencies ?? []) for (const name of candidate.hints.envNames ?? []) if (ENDPOINT_VARIABLE.test(name)) names.add(name);
     } catch {
       // A repository that cannot be read adds no names.
+      unread += 1;
     }
   }
-  return [...names].sort().slice(0, REPO_ENDPOINT_NAMES_MAX);
+  const sorted = [...names].sort();
+  if (sorted.length > REPO_ENDPOINT_NAMES_MAX || unread > 0) input.onNote?.({ notRedirected: Math.max(0, sorted.length - REPO_ENDPOINT_NAMES_MAX), unread });
+  return sorted.slice(0, REPO_ENDPOINT_NAMES_MAX);
 }

@@ -247,6 +247,9 @@ async function readAwsUsage(port: EmulatorLedgerPort, redactor: ServiceRedactor,
   }
 }
 
+/** The most slots of the record's unsupported-operation list the front's markers may take: more than the distinct kinds one run has, and fewer than all 30, so the program's own operations keep room too. */
+const FRONT_MARKER_SLOTS = 20;
+
 /**
  * The front's markers (test-services-front-markers.ts) taken out of the ledger: each known one becomes a fixed word with its exact call count, and its calls leave the service's own counts, so a function the engine could
  * not run is not also "calls to Lambda", and the services the front records unchecked things under (`cloudformation-unchecked`, `targets-unchecked`) vanish as services. A name the tables do not list is not a marker.
@@ -326,9 +329,16 @@ export function reduceAwsUsage(rawLedger: EmulatorLedger, redactor: ServiceRedac
     otherUnsupported += Math.max(0, clamp(service.unsupported, max) - namedHere);
   }
   // What the front recorded without a request (heavy functions, engine limits, unchecked templates and targets) is written as its fixed word, apart from the services' own counts (`takeFrontMarkers`).
-  for (const marker of markers.values()) named.set(`${marker.service}\0${marker.operation}`, { ...marker, count: (named.get(`${marker.service}\0${marker.operation}`)?.count ?? 0) + marker.count });
-  const rankedOps = [...named.values()].map((row) => ({ bucket: bucketCount(row.count), name: `${row.service}\0${row.operation}`, row })).sort(byBucketThenName);
-  for (const { row } of rankedOps.slice(TEST_SERVICES_AWS_USAGE_LIMITS.unsupportedOperations)) otherUnsupported += row.count;
+  // They rank apart from the program's own unsupported operations and take their slots first (at most `FRONT_MARKER_SLOTS` of the record's 30), so code that calls 30 or more different unsupported operations can never push a
+  // "was not run locally" or "not checked" marker into a bare count; the program's own operations then fill the slots left.
+  const slotsMax = TEST_SERVICES_AWS_USAGE_LIMITS.unsupportedOperations;
+  const rankedMarkers = [...markers.values()].map((row) => ({ bucket: bucketCount(row.count), name: `${row.service}\0${row.operation}`, row })).sort(byBucketThenName);
+  const keptMarkers = rankedMarkers.slice(0, FRONT_MARKER_SLOTS);
+  for (const { row } of rankedMarkers.slice(FRONT_MARKER_SLOTS)) otherUnsupported += row.count;
+  const rankedOwn = [...named.values()].map((row) => ({ bucket: bucketCount(row.count), name: `${row.service}\0${row.operation}`, row })).sort(byBucketThenName);
+  const keptOwn = rankedOwn.slice(0, slotsMax - keptMarkers.length);
+  for (const { row } of rankedOwn.slice(slotsMax - keptMarkers.length)) otherUnsupported += row.count;
+  const rankedOps = [...keptMarkers, ...keptOwn];
   return {
     ledger: "read",
     // `outOfPlan` only in a wide record (see `awsWide`), and only when the emulator counted some: never more than the calls, which the same bucketing keeps in order.
@@ -337,7 +347,7 @@ export function reduceAwsUsage(rawLedger: EmulatorLedger, redactor: ServiceRedac
       const outOfPlan = wide ? Math.min(clamp(service.outOfPlan, max), calls) : 0;
       return { service: service.service, calls: bucketCount(calls), unsupported: bucketCount(clamp(service.unsupported, max)), ...(outOfPlan > 0 ? { outOfPlan: bucketCount(outOfPlan) } : {}) };
     }).filter((row) => row.calls >= 1),
-    unsupportedOperations: rankedOps.slice(0, TEST_SERVICES_AWS_USAGE_LIMITS.unsupportedOperations).map(({ bucket, row }) => ({ service: row.service, operation: row.operation, count: bucket })),
+    unsupportedOperations: rankedOps.map(({ bucket, row }) => ({ service: row.service, operation: row.operation, count: bucket })),
     otherCalls: bucketCount(Math.min(otherCalls, max)),
     otherUnsupported: bucketCount(Math.min(otherUnsupported, max)),
   };

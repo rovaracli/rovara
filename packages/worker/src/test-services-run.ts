@@ -57,7 +57,7 @@ import {
 import { EmulatorControlError, type EmulatorControlTarget } from "./emulator-control.js";
 import { emulatorLedgerPort, type EmulatorLedgerPort } from "./emulator-ledger.js";
 import { EmulatorSeedError, readAwsResourcesFromIac, seedEmulator } from "./service-seed-aws.js";
-import { repoAwsEndpointNames } from "./repo-aws-endpoints.js";
+import { repoAwsEndpointNames, type RepoEndpointNamesNote } from "./repo-aws-endpoints.js";
 import { SeedError, createResetHooks, resetForNextCheck, seedRun, type ResetDependency, type SeedPorts } from "./service-reset.js";
 import { SeedFileError, loadSeedFile, readSeedFile, seedFileDigest } from "./service-seed-file.js";
 import { seedLockHoldsInCheckout } from "./service-seed-lock.js";
@@ -777,7 +777,9 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
   const emulatorBase = bases.find((base) => base.emulator !== undefined);
   // The endpoint variables the repositories' own settings set, as the working phase starts: pointed at the emulator too, so no value of the repository sends a service elsewhere (service-env.ts). Only a run with an
   // emulator needs them. Each sealed round reads them again.
-  const repoEndpointNames = emulatorBase === undefined ? [] : await repoAwsEndpointNames({ repositoryPaths: input.repositoryPaths });
+  // A repository's names past the limit, or a repository that could not be read, are said in one log line with counts (never a name): those variables are not pointed at the emulator, though the global endpoint and the sealed network still hold.
+  const noteEndpointNames = (note: RepoEndpointNamesNote): void => log({ event: "test_services.repo_endpoint_names_limited", notRedirected: note.notRedirected, unreadRepositories: note.unread });
+  const repoEndpointNames = emulatorBase === undefined ? [] : await repoAwsEndpointNames({ repositoryPaths: input.repositoryPaths, onNote: noteEndpointNames });
   const secrets: string[] = [];
   const pendingStarts = new Set<Promise<ServiceSession>>();
   let workSession: ServiceSession | undefined;
@@ -998,7 +1000,7 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
     }
     const resolved = materializeAll(current, "check", fixtures);
     // The names are read again for each round: the agent may have edited a `.env` or a settings file since the last one, and a round's variables must name what the code it checks reads.
-    const environment = environmentFor("check", resolved, emulatorBase === undefined ? [] : await repoAwsEndpointNames({ repositoryPaths: input.repositoryPaths }));
+    const environment = environmentFor("check", resolved, emulatorBase === undefined ? [] : await repoAwsEndpointNames({ repositoryPaths: input.repositoryPaths, onNote: noteEndpointNames }));
     secrets.push(...helperSecretValues(resolved.map((item) => item.request)), ...environment.secretValues);
     redactor = createServiceRedactor(secrets);
     const roundRedactor = redactor;
@@ -1290,7 +1292,7 @@ export function testServicesAdvertisedFeatures(environment: NodeJS.ProcessEnv = 
   // Slice 3: a worker whose image carries the catalog's fake server (a helper that runs from the worker's own image) can run a plan with a fake; it needs no image pulled.
   // TS-UX-1 item 9: every worker with test services loads a seed file (service-seed-file.ts). SEED-RISK-1: and checks a locked seed command's script before it runs it (service-seed-lock.ts).
   const features: Array<typeof TEST_SERVICES_PLAN_FEATURE | typeof TEST_SERVICES_AWS_PLAN_FEATURE | typeof TEST_SERVICES_AWS_ALL_SERVICES_FEATURE | typeof TEST_SERVICES_FAKE_PLAN_FEATURE | typeof TEST_SERVICES_FILE_SEED_FEATURE | typeof TEST_SERVICES_SEED_LOCK_FEATURE | typeof TEST_SERVICES_COMPANY_IMAGE_PLAN_FEATURE> = [TEST_SERVICES_PLAN_FEATURE, TEST_SERVICES_FILE_SEED_FEATURE, TEST_SERVICES_SEED_LOCK_FEATURE];
-  // Only a worker whose emulator image IS the table's engine takes a plan naming any service of the table (`resolveEmulator`); the broker adds the feature to a plan that needs it (`featuresForTestPlan`).
+  // Only a worker whose emulator image IS the table's engine takes a plan naming any service of the table (`resolveEmulator`); the broker refuses to send a plan that needs the feature to a worker that does not list it (`packages/broker/src/aws/ec2-delivery.ts`, the all-services gate).
   if (emulatorImagePrepulled(shipped, environment)) features.push(TEST_SERVICES_AWS_PLAN_FEATURE);
   if (emulatorServesAllServices(shipped, environment)) features.push(TEST_SERVICES_AWS_ALL_SERVICES_FEATURE);
   if (fakeServerBaked(shipped)) features.push(TEST_SERVICES_FAKE_PLAN_FEATURE);

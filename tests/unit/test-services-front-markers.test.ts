@@ -1,7 +1,7 @@
 // Test services, wide AWS plans (decisions 109 and 115): what the front records without seeing a request (heavy Lambda functions, engine limits, templates and targets it could not read) travels from the emulator's ledger
 // through the worker's usage record to the broker's evidence in FIXED words: the worker writes a known marker as an upper camel case word (the record's operation-name rule), the broker words it ("Lambda function was not
 // run locally (native code); the function runner is not available yet", "ran longer than the local limit", "not checked: <reason>"), and the verdict is asked of the record without the markers.
-import { TestServicesAwsUsageSchema, TestServicesUsageRecordSchema, awsEmulatorEvidenceLine } from "@rovara-code/contracts";
+import { TEST_SERVICES_AWS_USAGE_LIMITS, TestServicesAwsUsageSchema, TestServicesUsageRecordSchema, awsEmulatorEvidenceLine } from "@rovara-code/contracts";
 import { describe, expect, it } from "vitest";
 import { FRONT_CLOUDFORMATION_REASONS, FRONT_HEAVY_FUNCTION_REASONS, FRONT_LIMIT_KINDS, FRONT_TARGET_REASONS, FRONT_TARGET_SOURCES, describeFrontMarker, frontMarkerOfLedger, frontMarkerOfWord, frontMarkerWord } from "@agentx/cloud-contracts";
 import { AwsOperationNameSchema } from "@rovara-code/contracts";
@@ -44,7 +44,12 @@ describe("the front's marker names", () => {
     expect(frontMarkerOfLedger("targets-unchecked", "stepfunctions:brand-new")).toEqual({ kind: "targets_unchecked", source: "stepfunctions", reason: "other" });
     expect(frontMarkerOfLedger("targets-unchecked", "no-colon-at-all")).toEqual({ kind: "targets_unchecked", source: "other", reason: "other" });
     expect(frontMarkerOfLedger("cloudformation-unchecked", "cloudformation:weird")).toEqual({ kind: "cloudformation_unchecked", reason: "other" });
-    expect(frontMarkerOfLedger("lambda", "lambda-limit:5s")).toBeUndefined();
+    // An engine limit the tables do not list (lambda-limit:60s) is still a limit, as `other`; a cloudformation-unchecked operation with no prefix is the `other` reason, never dropped.
+    expect(frontMarkerOfLedger("lambda", "lambda-limit:60s")).toEqual({ kind: "lambda_limit", limit: "other" });
+    expect(frontMarkerWord(frontMarkerOfLedger("lambda", "lambda-limit:60s")!)).toBe("LambdaLimitOther");
+    expect(frontMarkerOfLedger("cloudformation-unchecked", "nested")).toEqual({ kind: "cloudformation_unchecked", reason: "other" });
+    expect(frontMarkerOfWord("lambda", "LambdaLimitOther")).toEqual({ kind: "lambda_limit", limit: "other" });
+    expect(describeFrontMarker({ kind: "lambda_limit", limit: "other" })).toEqual({ id: "lambda-limit-other", text: "Lambda function ran longer than the engine's local limit", reason: "not tested locally" });
     expect(frontMarkerOfLedger("lambda", "Invoke")).toBeUndefined();
     expect(frontMarkerOfLedger("s3", "heavy-function:image")).toBeUndefined();
     expect(frontMarkerOfWord("lambda", "Invoke")).toBeUndefined();
@@ -92,6 +97,22 @@ describe("the worker's usage record", () => {
     expect(aws.unsupportedOperations.map((row) => row.operation).sort()).toEqual(["CreateEventSourceMapping", "HeavyFunctionImage"]);
     const merged = mergeAwsUsage(aws, aws, true)!;
     expect(merged.unsupportedOperations.find((row) => row.operation === "HeavyFunctionImage")?.count).toBe(2);
+  });
+  it("never lets code that calls many different unsupported operations crowd a marker out of the record", () => {
+    // 30 distinct unsupported operations of the program, each called often, plus one heavy function and one unlisted limit: the markers keep their slots, the program's own operations fill the rest, the overflow is counted.
+    const own = Object.fromEntries(Array.from({ length: 30 }, (_unused, index): [string, [number, number]] => [`CustomOp${String.fromCharCode(65 + (index % 26))}${String(index)}`, [500, 500]]));
+    const aws = reduceAwsUsage(ledgerOf(service("sns", 15000, 15000, own), service("lambda", 4, 1, { "heavy-function:native-code": [1, 1], "lambda-limit:60s": [3, 0] })), redactor, { wide: true });
+    const words = aws.unsupportedOperations.filter((row) => row.service === "lambda").map((row) => row.operation).sort();
+    expect(words).toEqual(["HeavyFunctionNativeCode", "LambdaLimitOther"]);
+    expect(aws.unsupportedOperations).toHaveLength(TEST_SERVICES_AWS_USAGE_LIMITS.unsupportedOperations);
+    expect(aws.otherUnsupported).toBeGreaterThan(0);
+    expect(TestServicesAwsUsageSchema.parse(aws)).toEqual(aws);
+    // Even every distinct marker at once cannot take more than the marker slots, and the program's own operations keep room.
+    const manyMarkers = ledgerOf(service("targets-unchecked", 40, 0, Object.fromEntries(FRONT_TARGET_SOURCES.flatMap((source) => FRONT_TARGET_REASONS.map((reason): [string, [number, number]] => [`${source}:${reason}`, [1, 0]]))), 40), service("sns", 2, 2, { CustomOpA: [2, 2] }));
+    const crowded = reduceAwsUsage(manyMarkers, redactor, { wide: true });
+    expect(crowded.unsupportedOperations.some((row) => row.operation === "CustomOpA")).toBe(true);
+    expect(crowded.unsupportedOperations.filter((row) => row.service === "targets-unchecked")).toHaveLength(20);
+    expect(crowded.otherUnsupported).toBeGreaterThan(0);
   });
   it("is unchanged for a ledger with no marker", () => {
     expect(reduceAwsUsage(ledgerOf(service("s3", 2, 0, { PutObject: [2, 0] })), redactor, { wide: true })).toEqual({ ledger: "read", services: [{ service: "s3", calls: 2, unsupported: 0 }], unsupportedOperations: [], otherCalls: 0, otherUnsupported: 0 });

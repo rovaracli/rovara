@@ -25,7 +25,7 @@ export const FRONT_TARGET_REASONS = ["resource", "dynamic", "arn", "intrinsic", 
 
 export type FrontMarker =
   | { kind: "heavy_function"; reason: (typeof FRONT_HEAVY_FUNCTION_REASONS)[number] | "other" }
-  | { kind: "lambda_limit"; limit: (typeof FRONT_LIMIT_KINDS)[number] }
+  | { kind: "lambda_limit"; limit: (typeof FRONT_LIMIT_KINDS)[number] | "other" }
   | { kind: "cloudformation_unchecked"; reason: (typeof FRONT_CLOUDFORMATION_REASONS)[number] | "other" }
   | { kind: "targets_unchecked"; source: (typeof FRONT_TARGET_SOURCES)[number] | "other"; reason: (typeof FRONT_TARGET_REASONS)[number] | "other" };
 
@@ -40,10 +40,12 @@ export function frontMarkerOfLedger(service: string, operation: string): FrontMa
   }
   if (service === "lambda" && operation.startsWith("lambda-limit:")) {
     const limit = operation.slice("lambda-limit:".length);
-    return listed(FRONT_LIMIT_KINDS, limit) ? { kind: "lambda_limit", limit } : undefined;
+    // A limit the tables do not list (a new engine cut-off) is still an engine limit: it is worded as such, never dropped.
+    return { kind: "lambda_limit", limit: listed(FRONT_LIMIT_KINDS, limit) ? limit : "other" };
   }
-  if (service === FRONT_CLOUDFORMATION_UNCHECKED_SERVICE && operation.startsWith("cloudformation:")) {
-    const reason = operation.slice("cloudformation:".length);
+  if (service === FRONT_CLOUDFORMATION_UNCHECKED_SERVICE) {
+    // Anything the front records under this service is something it could not check; an operation without the `cloudformation:` prefix, or with a reason the tables do not list, is the `other` reason.
+    const reason = operation.startsWith("cloudformation:") ? operation.slice("cloudformation:".length) : "";
     return { kind: "cloudformation_unchecked", reason: listed(FRONT_CLOUDFORMATION_REASONS, reason) ? reason : "other" };
   }
   if (service === FRONT_TARGETS_UNCHECKED_SERVICE) {
@@ -69,7 +71,7 @@ export function frontMarkerWord(marker: FrontMarker): string {
 
 const ALL_MARKERS: readonly FrontMarker[] = [
   ...[...FRONT_HEAVY_FUNCTION_REASONS, "other" as const].map((reason): FrontMarker => ({ kind: "heavy_function", reason })),
-  ...FRONT_LIMIT_KINDS.map((limit): FrontMarker => ({ kind: "lambda_limit", limit })),
+  ...[...FRONT_LIMIT_KINDS, "other" as const].map((limit): FrontMarker => ({ kind: "lambda_limit", limit })),
   ...[...FRONT_CLOUDFORMATION_REASONS, "other" as const].map((reason): FrontMarker => ({ kind: "cloudformation_unchecked", reason })),
   ...[...FRONT_TARGET_SOURCES, "other" as const].flatMap((source) => [...FRONT_TARGET_REASONS, "other" as const].map((reason): FrontMarker => ({ kind: "targets_unchecked", source, reason }))),
 ];
@@ -112,7 +114,7 @@ export function describeFrontMarker(marker: FrontMarker): FrontMarkerWords {
     case "heavy_function":
       return { id: `lambda-heavy-${marker.reason}`, text: `Lambda function was not run locally (${HEAVY_FUNCTION_WORDS[marker.reason]})`, reason: "the function runner is not available yet" };
     case "lambda_limit":
-      return { id: `lambda-limit-${marker.limit}`, text: marker.limit === "30s" ? "Lambda function ran longer than the local limit (30 s)" : "Lambda function ran longer than the local limit (10 s under Step Functions)", reason: "not tested locally" };
+      return { id: `lambda-limit-${marker.limit}`, text: marker.limit === "30s" ? "Lambda function ran longer than the local limit (30 s)" : marker.limit === "sfn-10s" ? "Lambda function ran longer than the local limit (10 s under Step Functions)" : "Lambda function ran longer than the engine's local limit", reason: "not tested locally" };
     case "cloudformation_unchecked":
       return { id: `not-checked-cloudformation-${marker.reason}`, text: "Resources a CloudFormation template creates", reason: `not checked: ${CLOUDFORMATION_REASON_WORDS[marker.reason]}` };
     case "targets_unchecked":

@@ -1,6 +1,6 @@
 // Rovara local AWS's env file for a wide plan: the planned services as one list (`ROVARA_AWS_PLANNED_SERVICES`, canonical keys), and, for one more release, the old fork's per-service switches exactly as before so the
 // image that is shipped today keeps working. Also the worker's advertised features and the engine pin on the catalog entry.
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -129,5 +129,29 @@ describe("the endpoint variables a repository's own settings set", () => {
     await writeFile(join(dir, ".env"), "AWS_ENDPOINT_URL_SNS=http://localhost:4566\nAWS_ENDPOINT_URL_SECRETS_MANAGER=http://localhost:4566\nDATABASE_URL=postgres://u:p@h/db\nAWS_ENDPOINT_URL=http://localhost:4566\n");
     const names = await repoAwsEndpointNames({ repositoryPaths: [dir, join(dir, "does-not-exist")] });
     expect(names).toEqual(["AWS_ENDPOINT_URL_SECRETS_MANAGER", "AWS_ENDPOINT_URL_SNS"]);
+  });
+  it("says, with counts and no name, when names past the limit are not redirected or a repository could not be read", async () => {
+    dir = await mkdtemp(join(tmpdir(), "repo-endpoints-"));
+    const notes: Array<{ notRedirected: number; unread: number }> = [];
+    // Nothing to say for a short list.
+    await writeFile(join(dir, ".env"), "AWS_ENDPOINT_URL_SNS=http://localhost:4566\n");
+    await repoAwsEndpointNames({ repositoryPaths: [dir], onNote: (note) => notes.push(note) });
+    expect(notes).toEqual([]);
+    // The env reader keeps at most 64 names of one repository, so three repositories of 64 give 192 names: 64 past the limit.
+    const repositories = await Promise.all([0, 1, 2].map(async (repository) => {
+      const folder = join(dir!, `repo${String(repository)}`);
+      await mkdir(folder);
+      await writeFile(join(folder, ".env"), `${Array.from({ length: 64 }, (_unused, index) => `AWS_ENDPOINT_URL_R${String(repository)}X${String(index).padStart(3, "0")}=http://localhost:4566`).join("\n")}\n`);
+      return folder;
+    }));
+    const names = await repoAwsEndpointNames({ repositoryPaths: repositories, onNote: (note) => notes.push(note) });
+    expect(names).toHaveLength(REPO_ENDPOINT_NAMES_MAX);
+    expect(notes).toEqual([{ notRedirected: 64, unread: 0 }]);
+    // A pass that ran out of time gives no names for its repository, and is counted (the thread cannot start and finish in one millisecond).
+    notes.length = 0;
+    const timedOut = await repoAwsEndpointNames({ repositoryPaths: [repositories[0]!], guard: { timeoutMs: 1 }, onNote: (note) => notes.push(note) });
+    expect(timedOut).toEqual([]);
+    expect(notes).toEqual([{ notRedirected: 0, unread: 1 }]);
+    expect(JSON.stringify(notes)).not.toContain("AWS_ENDPOINT_URL");
   });
 });
