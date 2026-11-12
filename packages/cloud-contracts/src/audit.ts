@@ -413,6 +413,9 @@ export const AUDIT_ACTIONS = [
   "agent_publication.approved",
   "agent_publication.declined",
   "agent_publication.withdrawn",
+  // Review groups (owner decision 9): a project's groups changed; a task's review was claimed, released or reassigned. Ids, counts and fixed words only; the holder is in details.
+  "review_groups.changed",
+  "review.claim_changed",
 ] as const;
 
 export const AuditActionSchema = z.enum(AUDIT_ACTIONS);
@@ -797,6 +800,8 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "agent_publication.approved": ["approvalId", "targetKind", "version"],
   "agent_publication.declined": ["approvalId", "targetKind", "version", "explained"],
   "agent_publication.withdrawn": ["approvalId", "targetKind", "version"],
+  "review_groups.changed": ["revision", "groups", "members", "added", "removed"],
+  "review.claim_changed": ["change", "revision", "groupId", "pullRequests", "hostSync"],
   "company_image.registries_changed": ["registryCount", "authority"],
 };
 

@@ -93,6 +93,24 @@ export function projectAiKey(orgId: OrgId, project: string): OrgKey {
   return { pk: orgScoped(orgId, `PROJECT_AI#${project}`), sk: "SETTINGS" };
 }
 
+/** Review groups (owner decision 9): a project's named groups of reviewers, one document per project (`review-groups/groups.ts`). */
+export function reviewGroupsKey(orgId: OrgId, project: string): OrgKey {
+  if (project === "" || project.includes("#") || /[\p{Cc}\p{Cf}]/u.test(project)) throw new RangeError("a project name can't be part of a key");
+  return { pk: orgScoped(orgId, `REVIEW_GROUPS#${project}`), sk: "META" };
+}
+
+/** The partition of a project's review claims: one item per task, so a person's erase finds every claim they hold project by project (`review-groups/erase.ts`). */
+export function reviewClaimsPk(orgId: OrgId, project: string): string {
+  if (project === "" || project.includes("#") || /[\p{Cc}\p{Cf}]/u.test(project)) throw new RangeError("a project name can't be part of a key");
+  return orgScoped(orgId, `REVIEW_CLAIMS#${project}`);
+}
+
+/** Who claimed a task's waiting review (`review-groups/claims.ts`), under its project's partition, kept with its revision so a stale claim, release or reassign is refused. */
+export function reviewClaimKey(orgId: OrgId, project: string, taskId: string): OrgKey {
+  if (!/^[0-9a-f-]{36}$/u.test(taskId)) throw new RangeError("a task id can't be part of a key");
+  return { pk: reviewClaimsPk(orgId, project), sk: `TASK#${taskId}` };
+}
+
 /** What an admin added to one scope's limit for one UTC month (`month` is `YYYY-MM`): an item holding `amountUsd`, changed with ADD. */
 export function topUpKey(orgId: OrgId, month: string, scope: BudgetScope): OrgKey {
   return { pk: orgScoped(orgId, `TOPUP#${month}`), sk: scopeKey(scope) };

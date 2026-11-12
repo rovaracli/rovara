@@ -1127,3 +1127,23 @@ export type AgentPublicationAuditAction = Extract<AuditAction, `agent_publicatio
 export function auditAgentPublication(input: AuditBuilderBase & { action: AgentPublicationAuditAction; agentId: string; facts: Record<string, Fact> }): AuditEventInput {
   return build(input.action, input, { kind: "agent", id: input.agentId }, input.facts);
 }
+
+// Review groups (owner decision 9) ------------------------------------------------------------------------------------------
+
+/**
+ * `occurrence`: `auditOccurrence(project, new revision)`. A project's review groups are one document that commits once per revision. Counts only: how many groups and people there
+ * are now, and how many people were added to or removed from a group by this change. The project is a name-keyed target; who is in a group is never a fact.
+ */
+export function auditReviewGroupsChanged(input: AuditBuilderBase & { projectName: string; revision: number; groups: number; members: number; added: number; removed: number }): AuditEventInput {
+  return build("review_groups.changed", input, { kind: "project", name: input.projectName }, { revision: input.revision, groups: input.groups, members: input.members, added: input.added, removed: input.removed });
+}
+
+/**
+ * `occurrence`: `auditOccurrence(taskId, new claim revision)`. A task's waiting review was claimed, released or reassigned (`change`), through the group `groupId`, over `pullRequests`
+ * pull requests; `hostSync` says whether the code host was asked to list the holder. The holder (a member id) is in the org's details only.
+ */
+export function auditReviewClaimChanged(input: AuditBuilderBase & { taskId: string; change: "claimed" | "released" | "reassigned"; revision: number; groupId: string; pullRequests: number; hostSync: string; holder?: string | undefined }): AuditEventInput {
+  const details = input.holder === undefined ? input.details : [...(input.details ?? []), { subject: "org" as const, fields: { holder: input.holder } }];
+  return build("review.claim_changed", { ...input, ...(details === undefined ? {} : { details }) }, { kind: "task", id: input.taskId },
+    { change: input.change, revision: input.revision, groupId: input.groupId, pullRequests: input.pullRequests, hostSync: input.hostSync });
+}
