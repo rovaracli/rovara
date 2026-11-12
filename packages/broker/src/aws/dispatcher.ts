@@ -28,11 +28,14 @@ import { createTaskPersonRuntime, stateAuthorityWitnessForDispatch, type TaskPer
 import { taskPersonProofThroughLambda } from "./task-person-proof-transport.js";
 import { createLiveSteerDispatch } from "../agent-sessions/live-steer-dispatch.js";
 import { createPeekDispatch } from "../agent-sessions/peek-dispatch.js";
+import type { CoreDispatchHost } from "./worker-machines/core-dispatch-host.js";
 
 const DEFAULT_MAX_DISPATCH_ATTEMPTS = 5;
 
 interface SqsRecord {
   messageId: string;
+  /** SQS's handle of this delivery (the core dispatch host changes a record's visibility with it). */
+  receiptHandle?: string;
   body: string;
   /** Set by Lambda for a record that came from a queue: `aws:sqs`, and the queue's ARN. A direct invoke can say anything, so the dispatcher checks both. */
   eventSource?: string;
@@ -278,6 +281,11 @@ export function createDispatcherHandler(dependencies: {
   peek?: ReturnType<typeof createPeekDispatch>;
   maxAttempts?: number;
   /**
+   * Convergence lane A4: the host of Rovara Code's `runDispatchOnce` (worker-machines/core-dispatch-host.ts). With its switch on it takes the batch's core dispatch messages and
+   * this path skips exactly those; off, or absent (the production entry wires none yet), it takes nothing and the batch is handled as before.
+   */
+  coreDispatch?: CoreDispatchHost;
+  /**
    * The dispatch queue's ARN. When it is given, an event that is not a peek is taken only if it is a batch whose every record says it came from `aws:sqs` and from this queue; anything else (the broker may
    * invoke this function directly, for a peek) is refused (S2). The production entry always passes it, empty when the environment has none, which matches nothing.
    *
@@ -329,10 +337,14 @@ export function createDispatcherHandler(dependencies: {
     const batchItemFailures: Array<{ itemIdentifier: string }> = [];
     const records = event.Records ?? [];
     const remainingTimeMs = () => context?.getRemainingTimeInMillis() ?? 60_000;
+    // Each record goes one way only: the core's dispatch messages to the core's consumer (when its switch is on), every other record down this path.
+    const coreTaken = dependencies.coreDispatch?.take(records) ?? new Set<string>();
+    if (coreTaken.size > 0) batchItemFailures.push(...(await dependencies.coreDispatch!.handle(records, coreTaken)).failures.map((itemIdentifier) => ({ itemIdentifier })));
     for (let index = 0; index < records.length; index += 1) {
       const message = records[index]!;
+      if (coreTaken.has(message.messageId)) continue;
       if (remainingTimeMs() <= 2_000) {
-        for (const unstarted of records.slice(index)) batchItemFailures.push({ itemIdentifier: unstarted.messageId });
+        for (const unstarted of records.slice(index)) if (!coreTaken.has(unstarted.messageId)) batchItemFailures.push({ itemIdentifier: unstarted.messageId });
         break;
       }
       let record: DurableOutboxRecord | undefined;
