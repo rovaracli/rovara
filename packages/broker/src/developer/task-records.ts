@@ -88,7 +88,12 @@ export interface DeveloperTaskRecord {
   canvasCloseoutRetry?: { requestId: string; workflowRevision: number; manifestDigest?: string; actorId: string; requestedAt: string; dispatchAttempt: number };
   createdAt: string;
   updatedAt: string;
-  closedAt?: string;
+closedAt?: string;
+  /**
+   * Decision 134: the requester pressed Stop on a request that started Quick on its own. Remembered until the task can
+   * close (setup finished, or the running step was cancelled); then the broker closes it with this press's request ID.
+   */
+  stopRequest?: { userId: string; requestId: string; at: string };
   /** Design review (DR11): the person typed `design first:` in the request. Read once, by the Understand step's mode resolution (design-review/understand-mode.ts). */
   designFirst?: { by: string; at: string };
   /**

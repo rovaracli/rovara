@@ -33,6 +33,7 @@ import { object, workspaceKey } from "./admin-and-helpers.js";
 import type { AwsBrokerDependencies } from "./definitions.js";
 import { agentRouteDependencies, developerTaskActions } from "./dependency-wiring.js";
 import { dispatchWorkflowContinuation, finishGroundingForOperation, isNonCandidateRound } from "./e2e-rounds.js";
+import { closeStoppedTask } from "./slack-workflow-events.js";
 import { writeAllPlannerReplies, type PlannerReplies } from "./plan-answers.js";
 import { settleRecordedPullRequest } from "./pull-request-reconcile.js";
 import { requireWorkspace } from "./records.js";
@@ -534,6 +535,8 @@ export async function recordTerminalResult(
   const runStop = budgetStoppedRun && taskPointer !== undefined ? await agentRunStopAsk(dependencies, taskPointer.taskId, operation.id) : "not_run";
   if (runStop !== "not_run") stop.asked = true;
   if (runStop === "ask" && taskPointer !== undefined) await askForPausedTask(dependencies, taskPointer.taskId, operation);
+  // Decision 134: a remembered Stop closes the task once setup is done and nothing runs, before any next step starts.
+  if (taskPointer !== undefined && recordedStatus === terminalStatus) await closeStoppedTask(dependencies, taskPointer.taskId);
   // Gap 6: start any step this result made due (its dispatch row committed above); a lost start is the sweep's.
   if (taskPointer !== undefined) await dispatchWorkflowContinuation(dependencies, taskPointer.taskId);
   // Plan 6 Task 5: the milestones this result wrote (Understand's questions) are told to the registered handlers now; a handler that was not told is told again by the sweep.

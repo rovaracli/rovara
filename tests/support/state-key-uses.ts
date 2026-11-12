@@ -11,7 +11,7 @@
 export type ItemAction = "GetItem" | "PutItem" | "UpdateItem" | "DeleteItem" | "Query" | "ConditionCheckItem";
 
 export interface KeyUse { prefix: string; action: ItemAction; line: number }
-export interface Unresolved { expression: string; action: ItemAction; line: number }
+export interface Unresolved { expression: string; action: ItemAction | "?"; line: number }
 
 export interface Builders {
   /** Imported or local functions that return `{ pk, sk }` (or an update/put input whose Key is one): name to the prefixes they build. */
@@ -141,9 +141,17 @@ export interface ScanOptions {
    * that holds an item read back from the table (the entry names the function and the variable; the test says which query produced it).
    */
   members?: Record<string, string[]>;
+  /** Commands the file sends that are not about the State table at all (S3, SQS, Secrets Manager), by class name. Any other `send(` argument fails the scan. */
+  nonTableCommands?: readonly string[];
+  /** Spreads inside a TransactItems list that come from another file's function, by function name, each with the reason it is covered (the test lists the grants by hand). Any other spread fails the scan. */
+  allowedSpreads?: Record<string, string>;
 }
 
-export function scanStateKeyUses(source: string, options: ScanOptions): { uses: KeyUse[]; unresolved: Unresolved[] } {
+/** The DynamoDB commands the scanner reads. The ones below it are recognised on purpose: it cannot read their keys, so a file that uses one fails the scan until the scanner is taught. */
+const READ_COMMANDS = new Set(["GetCommand", "UpdateCommand", "DeleteCommand", "PutCommand", "QueryCommand", "TransactWriteCommand"]);
+const UNREADABLE_COMMANDS = new Set(["BatchGetCommand", "BatchWriteCommand", "TransactGetCommand", "ScanCommand", "ExecuteStatementCommand", "BatchExecuteStatementCommand", "ExecuteTransactionCommand"]);
+
+export function scanStateKeyUses(source: string, options: ScanOptions): { uses: KeyUse[]; unresolved: Unresolved[]; sites: number } {
   const ranges = functionRanges(source);
   const rangeAt = (index: number): FunctionRange | undefined => ranges.filter((range) => range.start <= index && index < range.end).at(-1);
   const localBuilders: Builders = { ...options.builders };
@@ -172,13 +180,23 @@ export function scanStateKeyUses(source: string, options: ScanOptions): { uses: 
       }
       return resolveExpression(source.slice(from, end), from, depth + 1);
     }
-    const index = range.params.indexOf(name);
-    if (index < 0) return undefined;
+    let owner = range.name;
+    let index = range.params.indexOf(name);
+    let ownerStart = range.start;
+    if (index < 0) {
+      // A parameter of a nested arrow function declared earlier in the same function: `const read = async (key) => ...`.
+      const nested = [...body.matchAll(/(?:const|let)\s+(\w+)\s*=\s*(?:async\s*)?\(([^)]*)\)\s*(?::[^=]+)?=>/g)]
+        .filter((candidate) => splitTop(candidate[2]!).some((param) => /^[.\w]+/.exec(param.replace(/^\.\.\./, ""))?.[0] === name)).at(-1);
+      if (nested === undefined) return undefined;
+      owner = nested[1]!;
+      ownerStart = range.start + nested.index;
+      index = splitTop(nested[2]!).findIndex((param) => /^[.\w]+/.exec(param.replace(/^\.\.\./, ""))?.[0] === name);
+    }
     const found = new Set<string>();
     let callers = 0;
-    for (const call of source.matchAll(new RegExp(`(?<!function\\s)\\b${range.name}\\s*(?:<[^>(]*>)?\\(`, "g"))) {
+    for (const call of source.matchAll(new RegExp(`(?<!function\\s)\\b${owner}\\s*(?:<[^>(]*>)?\\(`, "g"))) {
       const open = call.index + call[0].length - 1;
-      if (open === range.start || source.slice(Math.max(0, call.index - 9), call.index) === "function ") continue;
+      if (open === ownerStart || source.slice(Math.max(0, call.index - 9), call.index) === "function ") continue;
       const close = closeOf(source, open);
       if (close < 0) continue;
       const argument = splitTop(source.slice(open + 1, close))[index];
@@ -233,8 +251,10 @@ export function scanStateKeyUses(source: string, options: ScanOptions): { uses: 
 
   const uses: KeyUse[] = [];
   const unresolved: Unresolved[] = [];
+  let sites = 0;
   const record = (action: ItemAction, expression: string | undefined, at: number, resolver: "key" | "pk" = "key") => {
     const line = lineOf(source, at);
+    sites++;
     const prefixes = expression === undefined ? undefined : resolver === "pk" ? resolvePk(expression, at, 0) : resolveExpression(expression, at, 0);
     if (prefixes === undefined || prefixes.length === 0) { unresolved.push({ expression: (expression ?? "(no key)").replace(/\s+/g, " ").slice(0, 120), action, line }); return; }
     for (const prefix of prefixes) uses.push({ prefix, action, line });
@@ -260,6 +280,19 @@ export function scanStateKeyUses(source: string, options: ScanOptions): { uses: 
     record("GetItem", splitTop(source.slice(open + 1, close))[1], match.index);
   }
 
+  // Every `.send(...)` is accounted for: a DynamoDB command the scanner reads (below), a listed command that is not about the State table, or a failure.
+  for (const match of source.matchAll(/\.send\s*\(/g)) {
+    const open = match.index + match[0].length - 1;
+    const close = closeOf(source, open);
+    const argument = close < 0 ? "" : source.slice(open + 1, close).trim();
+    const command = /^new\s+(\w+)\s*[(<]/.exec(argument)?.[1];
+    const line = lineOf(source, match.index);
+    if (command !== undefined && UNREADABLE_COMMANDS.has(command)) { sites++; unresolved.push({ expression: `${command}: recognised, but the scanner cannot read its keys: teach it before using it`, action: "?", line }); continue; }
+    if (command !== undefined && (READ_COMMANDS.has(command) || options.nonTableCommands?.includes(command) === true)) continue;
+    sites++;
+    unresolved.push({ expression: `send(${argument.replace(/\s+/g, " ").slice(0, 80)}): not a recognised command`, action: "?", line });
+  }
+
   const COMMANDS: Record<string, ItemAction> = { GetCommand: "GetItem", UpdateCommand: "UpdateItem", DeleteCommand: "DeleteItem", PutCommand: "PutItem", QueryCommand: "Query" };
   for (const match of source.matchAll(/new\s+(Get|Update|Delete|Put|Query)Command\s*\(/g)) {
     if (wrapper !== undefined && match.index >= wrapper.start && match.index < wrapper.end) continue;
@@ -283,7 +316,13 @@ export function scanStateKeyUses(source: string, options: ScanOptions): { uses: 
     const items = objectEntries(source.slice(open + 1, close).trim()).props.get("TransactItems");
     if (items === undefined || !items.startsWith("[")) { record("PutItem", undefined, match.index); continue; }
     for (const element of splitTop(inner(items))) {
-      if (element.startsWith("...")) continue; // another file's items: listed by the test by hand
+      if (element.startsWith("...")) {
+        // Another file's items: allowed only when the test names the function and says why its keys are covered.
+        const helper = /^\.\.\.(\w+)/.exec(element)?.[1];
+        sites++;
+        if (helper === undefined || options.allowedSpreads?.[helper] === undefined) unresolved.push({ expression: `TransactItems spread ${element.replace(/\s+/g, " ").slice(0, 80)}: not allow-listed`, action: "?", line: lineOf(source, match.index) });
+        continue;
+      }
       const { props } = objectEntries(element);
       for (const [member, action] of Object.entries(MEMBERS)) {
         const body = props.get(member);
@@ -293,5 +332,5 @@ export function scanStateKeyUses(source: string, options: ScanOptions): { uses: 
       }
     }
   }
-  return { uses, unresolved };
+  return { uses, unresolved, sites };
 }

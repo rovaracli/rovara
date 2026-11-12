@@ -13,8 +13,8 @@ import {
 import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import { SendMessageCommand, SQSClient } from "@aws-sdk/client-sqs";
 import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
-import { SLACK_NOT_A_MEMBER_NOTICE } from "@agentx/cloud-contracts";
-import { AgentXError, CLOSED_SHARED_NOTICE, routeAttributes, SharedTaskRecordSchema, SlackChannelBindingSchema, SlackChannelIdSchema, SlackMessageTimestampSchema, SlackRequestMessageSchema, SlackTeamIdSchema, SlackUserIdSchema, TASK_NOTE_SAVED_TEXT, VIEW_ONLY_NOTICE, isStopCommand, parseConfirmationReply, queuedBehindAttributes, sharedNoticeClaim, sharedTaskKey, slackBindingKey, slackRequestText, slackThreadSubject, taskQuestionAttributes, type OrgId, type SlackChannelBinding, type SlackRequestMessage, type SlackThread, type TaskQuestionRoute } from "@rovara-code/contracts";
+import { SLACK_NOT_A_MEMBER_NOTICE, smallTalkOf, smallTalkReply } from "@agentx/cloud-contracts";
+import { AgentXError, CLOSED_SHARED_NOTICE, routeAttributes, routedChoiceId, SharedTaskRecordSchema, SlackChannelBindingSchema, SlackChannelIdSchema, SlackMessageTimestampSchema, SlackRequestMessageSchema, SlackTeamIdSchema, SlackUserIdSchema, TASK_NOTE_SAVED_TEXT, VIEW_ONLY_NOTICE, isStopCommand, parseConfirmationReply, queuedBehindAttributes, sharedNoticeClaim, sharedTaskKey, slackBindingKey, slackRequestText, slackThreadSubject, taskQuestionAttributes, type OrgId, type SlackChannelBinding, type SlackRequestMessage, type SlackThread, type TaskQuestionRoute } from "@rovara-code/contracts";
 import { resolveSlackOrg } from "../org/resolve.js";
 import { OrgStore } from "../org/store.js";
 import { requiredEnvironment, type HttpApiV2Event } from "./lambda.js";
@@ -97,6 +97,12 @@ export interface SlackIngressDependencies {
    * Absent: such a request asks Quick or Full here (`requestWorkflowChoice`), as before.
    */
   routeRequest?: (message: SlackRequestMessage, messageGroupId: string, taskQuestion?: TaskQuestionRoute) => Promise<void>;
+  /**
+   * Decision 134: the broker's own record of a routed request (its thread, sender and text, from this verified Slack
+   * event), keyed by its choice ID. A quick start takes the text and the requester from it, never from the Slack
+   * service. Best effort: without it, a clear small change gets the card with Start.
+   */
+  recordIntake?: (input: SlackIntakeRecordInput) => Promise<void>;
   /** Task 21: the requester's typed `answer` to a waiting choice: its request goes to the chat agent instead. Absent: `answer` is not read. */
   answerWorkflowChoice?: (input: { thread: SlackThread; userId: string }) => Promise<WorkflowChoiceOutcome>;
   /**
@@ -119,7 +125,7 @@ export interface SlackIngressDependencies {
    * the task's next step. "refused" is an expected answer (the task closed, or its note limit is reached); a
    * throw means the reply could not be saved, and Slack retries it. Absent: such replies are not read.
    */
-  recordThreadNote?: (input: { taskId: string; thread: SlackThread; userId: string; messageTs: string; eventId: string; text: string }) => Promise<{ outcome: "captured" | "duplicate" | "refused"; askOnly?: true }>;
+  recordThreadNote?: (input: { taskId: string; thread: SlackThread; userId: string; messageTs: string; eventId: string; text: string; smallTalk?: true }) => Promise<{ outcome: ThreadNoteOutcome; askOnly?: true }>;
   /**
    * QA6-06: claims the hourly "not linked" notice for a channel (`team/channel`); true for at most one caller per channel per hour. Absent: a mention in an unlinked channel is ignored without a word, as before.
    */
@@ -294,6 +300,18 @@ export async function captureFeedbackNoteThroughBroker(
   return { captured: body.captured };
 }
 
+/** Decision 134: a routed request as the ingress received it from Slack, for the broker's intake record. */
+export interface SlackIntakeRecordInput { choiceId: string; thread: SlackThread; userId: string; text: string }
+
+/** Writes the broker's intake record of a routed request; anything but a 200 answer throws. */
+export async function recordIntakeThroughBroker(invoke: (event: Record<string, unknown>) => Promise<BrokerReply>, input: SlackIntakeRecordInput): Promise<void> {
+  const reply = await invoke({ source: "agentx.slack-ingress", action: "intake-record", ...input });
+  if (reply.statusCode !== 200) throw new Error("broker intake record failed");
+}
+
+/** What the broker did with a task-thread reply; `small_talk` (decision 134): not saved, the reply is small talk. */
+export type ThreadNoteOutcome = "captured" | "duplicate" | "refused" | "small_talk";
+
 /**
  * Gap 2: records a reply in a Slack-started task's own open thread through the broker's `thread-note` event, with
  * `invoke` delivering the event and returning the broker's answer. A 4xx answer is an expected refusal; a 5xx
@@ -301,14 +319,14 @@ export async function captureFeedbackNoteThroughBroker(
  */
 export async function recordThreadNoteThroughBroker(
   invoke: (event: Record<string, unknown>) => Promise<BrokerReply>,
-  input: { taskId: string; thread: SlackThread; userId: string; messageTs: string; eventId: string; text: string },
-): Promise<{ outcome: "captured" | "duplicate" | "refused"; askOnly?: true }> {
+  input: { taskId: string; thread: SlackThread; userId: string; messageTs: string; eventId: string; text: string; smallTalk?: true },
+): Promise<{ outcome: ThreadNoteOutcome; askOnly?: true }> {
   const reply = await invoke({ source: "agentx.slack-ingress", action: "thread-note", ...input });
   const status = reply.statusCode ?? 500;
   if (status >= 400 && status < 500) return { outcome: "refused" };
   if (status !== 200) throw new Error("broker thread note failed");
   const body = asRecord(JSON.parse(reply.body ?? "{}"));
-  if (body.outcome !== "captured" && body.outcome !== "duplicate" && body.outcome !== "refused") throw new Error("broker thread note failed");
+  if (body.outcome !== "captured" && body.outcome !== "duplicate" && body.outcome !== "refused" && body.outcome !== "small_talk") throw new Error("broker thread note failed");
   return { outcome: body.outcome, ...(body.askOnly === true ? { askOnly: true as const } : {}) };
 }
 
@@ -612,6 +630,13 @@ async function queueRequest(
   const ahead = pending - 1;
   const groupId = createHash("sha256").update(subject).digest("hex");
   try {
+    if (routed && dependencies.recordIntake !== undefined) {
+      try {
+        await dependencies.recordIntake({ choiceId: routedChoiceId(message.eventId), thread: message.thread, userId: message.userId, text: message.text });
+      } catch (error) {
+        log("intake.record_failed", { eventId: message.eventId, errorName: errorName(error) });
+      }
+    }
     await (routed ? dependencies.routeRequest!(message, groupId) : dependencies.enqueue(message, groupId, Math.max(ahead, 0)));
   } catch {
     // Undo all records so Slack's retry of this event is processed as new.
@@ -737,21 +762,37 @@ async function workflowThreadReply(
     }
   }
   if (replyText.length === 0) return ignore(log, "empty_thread_reply", { eventId });
+  // Smart intake: "thanks", "great", "ok" in a task's thread is small talk, unless the task is waiting on this person (a
+  // plan to approve, a question, a blocked step), when a short reply is their answer. The broker decides which, from the
+  // task; small talk gets the fixed reply, with no model call, and is never saved as a task note.
+  const smallTalk = smallTalkOf(replyText, { acknowledgements: true });
+  // Slack also delivers an @AgentX reply as a plain message; its app_mention copy is the one handled.
+  if (smallTalk !== undefined && mention.kind === "message" && mention.botUserId !== undefined && mention.text.includes(`<@${mention.botUserId}>`)) {
+    return ignore(log, "small_talk_mention_copy", { eventId });
+  }
   if (dependencies.recordThreadNote === undefined) {
     // Never an ordinary coding request: the task moves on only through its owner's buttons.
     log("workflow_thread.reply_not_run", { eventId });
     return respond(200, { ok: true });
   }
-  let outcome: "captured" | "duplicate" | "refused";
+  let outcome: ThreadNoteOutcome;
   let askOnly: boolean;
   try {
-    ({ outcome, askOnly = false } = await dependencies.recordThreadNote({ taskId, thread, userId: mention.userId, messageTs: mention.messageTs, eventId, text: replyText }));
+    ({ outcome, askOnly = false } = await dependencies.recordThreadNote({ taskId, thread, userId: mention.userId, messageTs: mention.messageTs, eventId, text: replyText,
+      ...(smallTalk === undefined ? {} : { smallTalk: true as const }) }));
   } catch (error) {
     await releaseQuietly(dependencies, log, eventId, "thread_note.release_failed");
     log("thread_note.failed", { eventId, errorName: errorName(error) });
     return respond(500, { error: "reply could not be saved" });
   }
   // Never the reply's text.
+  if (outcome === "small_talk" && smallTalk !== undefined) {
+    log("thread_note.small_talk", { eventId, taskId, kind: smallTalk });
+    // A mention is answered in the thread; a plain reply only privately, so the thread is not filled with acknowledgements.
+    if (mention.kind === "mention") await post(dependencies, log, thread, smallTalkReply(smallTalk, "task"), "small_talk.reply_failed");
+    else await ephemeral(dependencies, log, thread, mention.userId, smallTalkReply(smallTalk, "task"));
+    return respond(200, { ok: true });
+  }
   log("thread_note.recorded", { eventId, taskId, outcome, kind: mention.kind });
   // Only a mention asked AgentX something, so only a mention is answered, and only its sender sees it. A
   // duplicate here is the plain-message copy of this same mention, saved first.
@@ -1412,8 +1453,11 @@ function createAwsSlackIngressHandler() {
       async startWorkflow(input: SlackWorkflowStartInput) {
         await invokeWorkflow(input);
       },
-      async recordThreadNote(input: { taskId: string; thread: SlackThread; userId: string; messageTs: string; eventId: string; text: string }) {
+      async recordThreadNote(input: { taskId: string; thread: SlackThread; userId: string; messageTs: string; eventId: string; text: string; smallTalk?: true }) {
         return recordThreadNoteThroughBroker(invokeBroker, input);
+      },
+      async recordIntake(input: SlackIntakeRecordInput) {
+        await recordIntakeThroughBroker(invokeBroker, input);
       },
       async chatgpt(input: { command: ChatGptSlackCommand; teamId: string; userId: string }) {
         return invokeBroker({ source: "agentx.slack-ingress", action: "chatgpt-command", ...input });

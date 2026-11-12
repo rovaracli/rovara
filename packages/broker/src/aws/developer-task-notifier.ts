@@ -26,7 +26,7 @@ import { SELF_CHECK_NOT_APPLICABLE, loadPlanSelfCheck, planRevisionsUsed, type P
 import { designWaitArms, readStream, type Notice, type StreamRecord } from "../developer/notifications.js";
 import { designWaitArmOf, designWaitNotifyKey } from "../design-review/wait-rows.js";
 import { designWaitWords } from "../design-review/wait-words.js";
-import { CANCELLED_REPLY, CLOSED_REPLY, READY_REPLY, endedReply, modeReply, pullRequestReply, setupFailedReply, startMessage } from "../developer/share-messages.js";
+import { CANCELLED_REPLY, CLOSED_REPLY, READY_REPLY, STOPPED_REPLY, endedReply, modeReply, pullRequestReply, setupFailedReply, startMessage } from "../developer/share-messages.js";
 import { reviewSameModelOf } from "../rovara-code/review-model-lines.js";
 import { answeredWorkflowCard, cleanLine, documentSummaryLines, feedbackReviewFailedMessage, pageDocumentLink, planReviewLink, slackSectionTexts, slackText, workflowDocumentType, workflowMessage, workflowMessageKey, type WorkflowMessageContext } from "../developer/workflow-messages.js";
 import { AUTOFIX_CARD_HOLD_MS, AutoFixAskSchema, autoFixCardLines, fixSetupWording } from "../developer/autofix-messages.js";
@@ -109,10 +109,11 @@ async function deliverSettingsProof(deps: NotifierDependencies, notice: Notice):
   if (proofCheckId === undefined || project === undefined || slackUserId === undefined || !SLACK_USER_ID.test(slackUserId)) return "invalid";
   const marker = settingsProofMarker(notice.id);
   if ((await getItem<NoticeMarker>(deps, marker))?.deliveredAt !== undefined) return "delivered";
-  const reason = proofReason?.slice(0, 400);
+  // The reason is a check's own output (a command's last lines): escaped for Slack, so a `<http://x|click>` in it is shown as text and never becomes a link or a mention.
+  const reason = proofReason === undefined ? undefined : slackText(proofReason.slice(0, 400));
   const text = notice.proofPart === "held"
-    ? `The setup change you sent for \`${project}\` was not saved${reason === undefined ? "" : `: ${reason}`}. The project keeps the commands it had.`
-    : `The setup commands you saved for \`${project}\` did not pass the check on a fresh machine${reason === undefined ? "" : `: ${reason}`}. Open the project's setup in Rovara to go back to the last proven setup.`;
+    ? `The setup change you sent for \`${slackText(project)}\` was not saved${reason === undefined ? "" : `: ${reason}`}. The project keeps the commands it had.`
+    : `The setup commands you saved for \`${slackText(project)}\` did not pass the check on a fresh machine${reason === undefined ? "" : `: ${reason}`}. Open the project's setup in Rovara to go back to the last proven setup.`;
   await deps.post({ channel: slackUserId, text });
   // The message was sent; if this write fails a repeat of the delivery may send it once more, which only repeats the words.
   await putMarker(deps, marker);
@@ -1133,7 +1134,8 @@ async function replyText(deps: NotifierDependencies, task: DeveloperTaskRecord &
     : getItem<{ id: string; kind: string; status: string; error?: string; result?: unknown }>(deps, { pk: `WORKSPACE#${notice.workspaceId}`, sk: `OPERATION#${notice.operationId}` }));
   const said = (text: string | undefined): Reply | undefined => (text === undefined ? undefined : { text });
   switch (notice.kind) {
-    case "ready": return said(READY_REPLY);
+    // Decision 134: a task its owner stopped during setup closes instead of running; the thread hears that, not "running".
+    case "ready": return said(task.stopRequest === undefined ? READY_REPLY : STOPPED_REPLY);
     case "cancelled": return said(CANCELLED_REPLY);
     case "closed": return said(CLOSED_REPLY);
     // A change a later one replaced is not said: the later notice says the current mode.
