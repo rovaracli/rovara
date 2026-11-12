@@ -30,8 +30,23 @@ export interface FakeSandboxHostOptions {
   failRm?: (name: string) => boolean;
   /** Called for each `docker kill`; true makes it hang until `releaseHung()`. */
   hangKill?: (name: string) => boolean;
-  /** Called for each control command; returns an exit-code override. */
   idOf?: (name: string) => string;
+  /** What `docker network inspect` knows. Default: one internal network, rovara-svc-0123456789ab, 10.20.30.0/24. */
+  networks?: Record<string, { internal: boolean; subnet: string }>;
+}
+
+/** The files the controller writes: scratch folders and environment files, kept in memory. `written` keeps every environment file ever written (they are deleted once the sandbox is up). */
+export function fakeSandboxFiles() {
+  const dirs = new Set<string>();
+  const files = new Map<string, string>();
+  const written: Array<{ path: string; content: string }> = [];
+  return {
+    dirs, files, written,
+    makeScratchDir: (path: string): Promise<void> => { dirs.add(path); return Promise.resolve(); },
+    removeScratchDir: (path: string): Promise<void> => { dirs.delete(path); return Promise.resolve(); },
+    writeEnvFile: (path: string, content: string): Promise<void> => { files.set(path, content); written.push({ path, content }); return Promise.resolve(); },
+    removeEnvFile: (path: string): Promise<void> => { files.delete(path); return Promise.resolve(); },
+  };
 }
 
 /** The real agent's first two frames: hello, then ready once the runtime polls. */
@@ -117,6 +132,12 @@ export function fakeSandboxHost(options: FakeSandboxHostOptions = {}) {
       const name = args.at(-1)!;
       const container = containers.get(name);
       const missing = { exitCode: 1, stdout: "", stderr: `Error response from daemon: No such container: ${name}` };
+      if (args[0] === "network" && args[1] === "inspect") {
+        const known = options.networks ?? { "rovara-svc-0123456789ab": { internal: true, subnet: "10.20.30.0/24" } };
+        const network = known[name];
+        if (network === undefined) return { exitCode: 1, stdout: "", stderr: `Error: No such network: ${name}` };
+        return { exitCode: 0, stdout: `${String(network.internal)} ${network.subnet} \n`, stderr: "" };
+      }
       if (args[0] === "kill") {
         if (options.hangKill?.(name) === true) await new Promise<void>((resolve) => { hung.push(resolve); });
         if (container === undefined) return missing;

@@ -16,13 +16,13 @@
 // Logs from this module are fixed shapes only (`SandboxLogEvent`): never a function name, a payload, a variable or docker's own text.
 
 import { randomUUID, createHash } from "node:crypto";
-import { mkdir, rm, chmod } from "node:fs/promises";
+import { chown, chmod, mkdir, rm, writeFile } from "node:fs/promises";
 import { lengthPrefixedJsonCodec, MAX_FRAME_BYTES, MAX_PAYLOAD_BYTES, REQUEST_ID, type AgentCodec, type ResultFrame } from "./codec.js";
 import type { SandboxLauncher } from "./launcher.js";
 import { SandboxSession } from "./session.js";
 import {
   controlArgProblems, functionCpus, inspectIdArgs, inspectStateArgs, killArgs, removeArgs, sandboxContainerName, sandboxRunArgs, SandboxSpecError,
-  ENV_MAX_TOTAL, ENV_MAX_VALUE, ENV_NAME, SANDBOX_TMPFS_MAX_MIB, type RunLabel, type SandboxNetwork, type SandboxScratch, type SandboxSpec,
+  DEFAULT_SANDBOX_ADDRESS_RANGE, ENV_MAX_TOTAL, ENV_MAX_VALUE, ENV_NAME, SANDBOX_TMPFS_MAX_MIB, environmentFileContent, networkInspectArgs, servicesNetworkProblems, type AddressRange, type RunLabel, type SandboxNetwork, type SandboxScratch, type SandboxSpec,
 } from "./sandbox-spec.js";
 
 /** The one docker call this module needs: structurally the worker's `DockerCli.run`. */
@@ -60,8 +60,8 @@ export interface FunctionConfig {
   maxConcurrency: number;
 }
 
-/** Where `/tmp` lives. `tmpfs` is size-capped but counts as the container's memory; `host-dir` gives each environment a folder under `baseDir` (disk-backed; its size cap is the host's to enforce). */
-export type ScratchPolicy = { kind: "tmpfs" } | { kind: "host-dir"; baseDir: string };
+/** Where `/tmp` lives. `host-dir` (the default) gives each environment a folder of its own on the worker's disk, so /tmp is not charged to the function's memory; `tmpfs` is size-capped but counts as the container's memory. */
+export type ScratchKind = "host-dir" | "tmpfs";
 
 export interface SandboxLogEvent {
   event: "cold_start" | "warm_hit" | "throttled" | "evicted" | "idle_reaped" | "stopped" | "stop_unconfirmed" | "stop_superseded" | "timeout" | "crash" | "init_error" | "start_failed" | "protocol_error" | "retired";
@@ -77,7 +77,18 @@ export interface SandboxControllerOptions {
   /** The run's labels, on every sandbox, so the worker-start sweep can find them. */
   labels: readonly RunLabel[];
   codec?: AgentCodec;
-  scratch?: ScratchPolicy;
+  /** The run's scratch folder on the worker. Under it the controller makes `tmp/<id>` (each sandbox's /tmp, when `scratchKind` is host-dir) and `env/<id>.env` (the environment file, mode 0600, deleted once the sandbox is up). */
+  scratchBaseDir: string;
+  /** Default host-dir. */
+  scratchKind?: ScratchKind;
+  /** How long a new sandbox may take to report its runtime ready, before the first invoke is sent. The agent's own limit is 10 s. */
+  initTimeoutMs?: number;
+  /** The part of a services network's subnet function sandboxes may take (host octet). Default .64 to .127. */
+  addressRange?: AddressRange;
+  /** Size of the log the agent returns per invoke. */
+  logBytes?: number;
+  writeEnvFile?: (path: string, content: string) => Promise<void>;
+  removeEnvFile?: (path: string) => Promise<void>;
   /** Lambda allows executing files in /tmp, so the tmpfs does by default. */
   tmpExec?: boolean;
   idleTimeoutMs?: number;
@@ -98,6 +109,7 @@ export interface SandboxControllerOptions {
   log?: (event: SandboxLogEvent) => void;
   now?: () => number;
   newEnvironmentId?: () => string;
+  /** Makes the leaf folder `path` for one sandbox's /tmp (its parents too, mode 0700). */
   makeScratchDir?: (path: string) => Promise<void>;
   removeScratchDir?: (path: string) => Promise<void>;
   /** Starts the reaper's timer (default true). Tests call `reap` themselves. */
@@ -194,6 +206,8 @@ interface Environment {
   cancelled: boolean;
   /** The scratch folder made for this environment, removed at finalize. */
   scratchDir: string | undefined;
+  /** The environment file, until it is deleted. */
+  envFile: string | undefined;
   containerId: string | undefined;
   attempt: Promise<boolean> | undefined;
   attemptStartedMs: number | undefined;
@@ -232,7 +246,7 @@ export function validateFunctionConfig(key: FunctionKey, config: FunctionConfig)
   let total = 0;
   for (const name of names) {
     const value = config.environment[name]!;
-    if (!ENV_NAME.test(name) || RESERVED_ENVIRONMENT_NAMES.has(name) || typeof value !== "string" || value.length > ENV_MAX_VALUE || value.includes("\0")) bad("environment entry");
+    if (!ENV_NAME.test(name) || RESERVED_ENVIRONMENT_NAMES.has(name) || typeof value !== "string" || value.length > ENV_MAX_VALUE || /[\0\r\n]/u.test(value)) bad("environment entry");
     total += name.length + value.length;
   }
   if (total > Math.min(ENV_MAX_TOTAL, FUNCTION_ENV_MAX_TOTAL)) bad("environment size");
@@ -273,9 +287,27 @@ export function createSandboxController(options: SandboxControllerOptions): Sand
   const dockerCallMs = options.dockerCallMs ?? 60_000;
   const minCpus = options.minCpus ?? 0.5;
   const maxCpus = options.maxCpus ?? 2;
-  const scratchPolicy: ScratchPolicy = options.scratch ?? { kind: "tmpfs" };
+  const scratchKind: ScratchKind = options.scratchKind ?? "host-dir";
+  const initTimeoutMs = options.initTimeoutMs ?? 15_000;
+  const addressRange = options.addressRange ?? DEFAULT_SANDBOX_ADDRESS_RANGE;
   const newId = options.newEnvironmentId ?? ((): string => randomUUID());
-  const makeScratchDir = options.makeScratchDir ?? (async (path: string): Promise<void> => { await mkdir(path, { recursive: true, mode: 0o1777 }); await chmod(path, 0o1777); });
+  const SANDBOX_UID = 993;
+  // Parents are 0700 (nobody but the worker walks into them). The leaf is the sandbox's own: owned by its uid and 0700; where the worker may not chown, it is 0777 inside the 0700 parents instead.
+  const makeScratchDir = options.makeScratchDir ?? (async (path: string): Promise<void> => {
+    await mkdir(path.slice(0, path.lastIndexOf("/")), { recursive: true, mode: 0o700 });
+    await mkdir(path, { mode: 0o700 });
+    try {
+      await chown(path, SANDBOX_UID, SANDBOX_UID);
+      await chmod(path, 0o700);
+    } catch {
+      await chmod(path, 0o777);
+    }
+  });
+  const writeEnvFile = options.writeEnvFile ?? (async (path: string, content: string): Promise<void> => {
+    await mkdir(path.slice(0, path.lastIndexOf("/")), { recursive: true, mode: 0o700 });
+    await writeFile(path, content, { mode: 0o600, flag: "wx" });
+  });
+  const removeEnvFile = options.removeEnvFile ?? (async (path: string): Promise<void> => { await rm(path, { force: true }); });
   const removeScratchDir = options.removeScratchDir ?? (async (path: string): Promise<void> => { await rm(path, { recursive: true, force: true }); });
   const log = (event: SandboxLogEvent): void => { try { options.log?.(event); } catch { /* a log sink must not change what the controller does */ } };
 
@@ -293,6 +325,21 @@ export function createSandboxController(options: SandboxControllerOptions): Sand
     if (controlArgProblems(args).length > 0) return { ok: false, notFound: false, stdout: "" };
     const result = await docker.run(args, { timeoutMs: dockerCallMs }).catch((error: unknown) => ({ exitCode: -1, stdout: "", stderr: error instanceof Error ? error.message : String(error) }));
     return { ok: result.exitCode === 0, notFound: NOT_FOUND.test(result.stderr), stdout: typeof result.stdout === "string" ? result.stdout : result.stdout.toString("utf8") };
+  }
+
+  async function dropEnvFile(env: Environment): Promise<void> {
+    const path = env.envFile;
+    env.envFile = undefined;
+    if (path !== undefined) await removeEnvFile(path).catch(() => undefined);
+  }
+
+  // ---- the services network: internal, and an address inside the range set aside for sandboxes
+
+  async function networkProblems(network: SandboxNetwork): Promise<string[]> {
+    if (network.mode === "none") return [];
+    const result = await docker.run(networkInspectArgs(network.name), { timeoutMs: dockerCallMs }).catch(() => undefined);
+    if (result === undefined || result.exitCode !== 0) return ["the network could not be inspected"];
+    return servicesNetworkProblems(typeof result.stdout === "string" ? result.stdout : result.stdout.toString("utf8"), network.ip, addressRange);
   }
 
   // ---- ending an environment
@@ -336,6 +383,7 @@ export function createSandboxController(options: SandboxControllerOptions): Sand
         log({ event: "stop_unconfirmed", environmentId: env.id });
         return false;
       }
+      await dropEnvFile(env);
       if (env.scratchDir !== undefined) await removeScratchDir(env.scratchDir).catch(() => undefined);
       finalize(env);
       log({ event: "stopped", environmentId: env.id });
@@ -396,20 +444,23 @@ export function createSandboxController(options: SandboxControllerOptions): Sand
   async function startContainer(env: Environment, memoryMb: number): Promise<void> {
     const { config } = env.pool;
     let scratch: SandboxScratch;
-    if (scratchPolicy.kind === "host-dir") {
-      env.scratchDir = `${scratchPolicy.baseDir}/${env.id}`;
+    if (scratchKind === "host-dir") {
+      env.scratchDir = `${options.scratchBaseDir}/tmp/${env.id}`;
       await makeScratchDir(env.scratchDir);
       scratch = { kind: "host-dir", hostPath: env.scratchDir };
     } else {
       scratch = { kind: "tmpfs", sizeMb: Math.min(SANDBOX_TMPFS_MAX_MIB, config.ephemeralMb) };
     }
+    const envFile = `${options.scratchBaseDir}/env/${env.id}.env`;
     const spec: SandboxSpec = {
-      environmentId: env.id, image: config.image, agentHostPath: config.agentHostPath, ...(config.agentArgs === undefined ? {} : { agentArgs: config.agentArgs }),
+      envFile, environmentId: env.id, image: config.image, agentHostPath: config.agentHostPath, ...(config.agentArgs === undefined ? {} : { agentArgs: config.agentArgs }),
       codeHostPath: config.codeHostPath, ...(config.layersHostPath === undefined ? {} : { layersHostPath: config.layersHostPath }), ...(config.extraMounts === undefined ? {} : { extraMounts: config.extraMounts }),
       environment: environmentFor(env, memoryMb), memoryMb, cpus: functionCpus(memoryMb, minCpus, maxCpus), scratch, tmpExec: options.tmpExec ?? true, network: config.network, labels: options.labels,
     };
     // Built from the typed spec and re-checked against the allow-list inside `sandboxRunArgs`: unsound arguments never reach the launcher.
     const args = sandboxRunArgs(spec);
+    env.envFile = envFile;
+    await writeEnvFile(envFile, environmentFileContent(spec));
     const session = new SandboxSession(launcher.start(args), {
       codec, maxFrameBytes: options.maxFrameBytes ?? MAX_FRAME_BYTES, now,
       // A runtime that died while idle makes the environment useless (the agent would restart it, with this sandbox's /tmp kept): remove it.
@@ -448,7 +499,7 @@ export function createSandboxController(options: SandboxControllerOptions): Sand
 
   // ---- invoke
 
-  function detail(env: Environment, cold: boolean, startedMs: number, result?: ResultFrame): Detail {
+  function detail(env: Environment, cold: boolean, startedMs: number, result?: Pick<ResultFrame, "logTail" | "logTruncated" | "durationMs" | "billedDurationMs" | "initDurationMs">): Detail {
     const session = env.session;
     const report: InvokeReport = {
       ...(result?.durationMs === undefined ? {} : { durationMs: result.durationMs }), ...(result?.billedDurationMs === undefined ? {} : { billedDurationMs: result.billedDurationMs }),
@@ -503,7 +554,7 @@ export function createSandboxController(options: SandboxControllerOptions): Sand
       cold = true;
       const need = Math.min(pool.config.memoryMb, options.memoryBudgetMiB);
       const id = newId();
-      env = { id, container: sandboxContainerName(id), pool, phase: "reserving", reservedMiB: 0, memoryMb: need, session: undefined, lastUsedMs: now(), createdMs: now(), cancelled: false, scratchDir: undefined, containerId: undefined, attempt: undefined, attemptStartedMs: undefined, hash: pool.hash };
+      env = { id, container: sandboxContainerName(id), pool, phase: "reserving", reservedMiB: 0, memoryMb: need, session: undefined, lastUsedMs: now(), createdMs: now(), cancelled: false, scratchDir: undefined, envFile: undefined, containerId: undefined, attempt: undefined, attemptStartedMs: undefined, hash: pool.hash };
       pool.envs.add(env);
       environments.set(id, env);
       const room = await makeRoom(need);
@@ -521,10 +572,46 @@ export function createSandboxController(options: SandboxControllerOptions): Sand
       }
       env.reservedMiB = need;
       try {
+        // The network is looked at again at every start: it may have been replaced since register.
+        if ((await networkProblems(pool.config.network)).length > 0) { await ensureGone(env); return startFailure(pool, "network"); }
         await startContainer(env, need);
       } catch (error) {
         await ensureGone(env);
         return startFailure(pool, error instanceof SandboxSpecError ? "spec" : "launch");
+      }
+      if (env.cancelled) { await ensureGone(env); return { kind: "unavailable", reason: "stopped" }; }
+      // The first invoke is sent only once the runtime says it is ready: the agent's own start (up to its 10 s init timeout) is not charged to the function's Timeout.
+      const startup = await env.session!.whenReady(initTimeoutMs);
+      await dropEnvFile(env);
+      switch (startup.kind) {
+        case "ready":
+          break;
+        case "init_error": {
+          bump(pool, "initErrors");
+          log({ event: "init_error", environmentId: env.id });
+          const frame = startup.frame;
+          const base = detail(env, true, startedMs, { ...(frame.logTail === undefined ? {} : { logTail: frame.logTail }), ...(frame.initDurationMs === undefined ? {} : { initDurationMs: frame.initDurationMs }) });
+          await ensureGone(env);
+          return { kind: "init_error", errorType: frame.errorType ?? "Runtime.InitError", errorMessage: frame.errorMessage ?? "", payload: Buffer.from(frame.payload ?? "", "base64"), ...base };
+        }
+        case "exit": {
+          // Docker's own failures (the runtime is not registered, the image is missing) exit 125 to 127 before the agent says anything. The agent's `fatal` text is only a hint for the message: what happened is decided by the exit and by docker.
+          const text = !startup.sawFrames && startup.exit.code !== null && startup.exit.code >= 125 && startup.exit.code <= 127 ? env.session!.stderrTail() : (startup.fatal ?? env.session!.stderrTail());
+          const oom = await oomKilled(env);
+          await ensureGone(env);
+          if (oom) { bump(pool, "crashes"); bump(pool, "ooms"); return { kind: "crash", exitCode: startup.exit.code, signal: startup.exit.signal, oomKilled: true, errorType: "Runtime.OutOfMemory", errorMessage: "The sandbox ran out of memory while starting", ...detail(env, true, startedMs) }; }
+          return startFailure(pool, "start", text);
+        }
+        case "timeout":
+          await ensureGone(env);
+          return startFailure(pool, "init_timeout", "the runtime did not become ready in time");
+        case "protocol_error":
+          log({ event: "protocol_error", environmentId: env.id, reason: startup.reason });
+          await ensureGone(env);
+          return { kind: "unavailable", reason: "protocol_error" };
+        case "stopped":
+          await ensureGone(env);
+          return { kind: "unavailable", reason: "stopped" };
       }
       if (env.cancelled) { await ensureGone(env); return { kind: "unavailable", reason: "stopped" }; }
       env.phase = "busy";
@@ -534,7 +621,7 @@ export function createSandboxController(options: SandboxControllerOptions): Sand
     const live = env;
     const timeoutMs = request.timeoutMs ?? pool.config.timeoutSeconds * 1000;
     const raw = await live.session!.invoke({
-      requestId: request.requestId, payload: payload.toString("base64"), timeoutMs, backstopMs, functionVersion: pool.key.version, memorySizeMb: live.memoryMb,
+      requestId: request.requestId, payload: payload.toString("base64"), timeoutMs, backstopMs, logBytes: options.logBytes ?? 65_536, functionVersion: pool.key.version, memorySizeMb: live.memoryMb,
       ...(pool.config.functionArn === undefined && request.invokedFunctionArn === undefined ? {} : { functionArn: request.invokedFunctionArn ?? pool.config.functionArn! }),
       ...(request.traceId === undefined ? {} : { traceId: request.traceId }),
       ...(request.clientContext === undefined ? {} : { clientContext: request.clientContext }),
@@ -558,7 +645,7 @@ export function createSandboxController(options: SandboxControllerOptions): Sand
           case "rejected":
             // The runtime stays warm after its own error, and after a refusal that ran nothing.
             if (live.phase === "busy") {
-              if (pool.closing || live.hash !== pool.hash || live.cancelled || closed) void ensureGone(live);
+              if (pool.closing || live.hash !== pool.hash || live.cancelled || closed || live.session!.dead) void ensureGone(live);
               else live.phase = "idle";
             }
             if (result.status === "ok") return { kind: "response", payload: answer, ...base };
@@ -596,16 +683,7 @@ export function createSandboxController(options: SandboxControllerOptions): Sand
       }
       case "exit": {
         const base = detail(live, cold, startedMs);
-        // Docker's own failures (the runtime is not registered, the image is missing) exit 125 to 127 before the agent says anything.
-        if (!raw.sawFrames && raw.exit.code !== null && raw.exit.code >= 125 && raw.exit.code <= 127) {
-          const text = live.session!.stderrTail();
-          await ensureGone(live);
-          return startFailure(pool, "docker", text);
-        }
-        if (raw.fatal !== undefined && raw.exit.code !== null && raw.exit.code !== 137) {
-          await ensureGone(live);
-          return startFailure(pool, "agent", raw.fatal);
-        }
+        // What happened is decided by the exit and by docker's own record, never by what the agent said: a function can write frames onto the agent's stdout, `fatal` included.
         const oom = await oomKilled(live);
         await ensureGone(live);
         bump(pool, "crashes");
@@ -630,6 +708,15 @@ export function createSandboxController(options: SandboxControllerOptions): Sand
   async function register(key: FunctionKey, config: FunctionConfig): Promise<void> {
     validateFunctionConfig(key, config);
     if (closed) throw new RangeError("the sandbox controller is closed");
+    if (config.network.mode === "services") {
+      let problems: string[];
+      try {
+        problems = await networkProblems(config.network);
+      } catch {
+        problems = ["network name"];
+      }
+      if (problems.length > 0) throw new RangeError("not a valid function configuration: network");
+    }
     const id = poolId(key);
     const hash = configHash(config);
     const existing = pools.get(id);

@@ -12,9 +12,9 @@
 //   /tmp                                a size-capped tmpfs or a host directory the caller made (`SandboxScratch`)
 //   read-only mounts                    code at /var/task, layers at /opt, the agent at /rovara/agent, optional extra files under /rovara/
 //   --entrypoint /rovara/agent IMAGE <agent args>
-// What reaches an argument: the function's environment as `-e NAME=VALUE` (lane A1's agent takes its environment from the sandbox's own: _HANDLER, AWS_LAMBDA_*, the function's variables), each name and value checked, each
-// value one argv token after `-e` so it can never read as a flag (a worker-host `ps` shows the values: they are the run's test credentials, never a real secret; `--env-file` cannot carry a newline and docker's pass-through
-// `-e NAME` would let a variable such as LD_PRELOAD or DOCKER_HOST act on the docker client, so neither is used). Never a payload. The container name is a hash; paths and image refs are checked character by character.
+// The function's environment (lane A1's agent takes its environment from the sandbox's own: _HANDLER, AWS_LAMBDA_*, the function's variables) travels in a 0600 `--env-file` the controller writes under the run's scratch folder and deletes
+// once the sandbox is up, never as `-e NAME=VALUE`, which any process on the worker host could read from `ps`. The file format has no escaping, so a value with a newline, carriage return or NUL is refused. What reaches an argument
+// is the path of that file, a hashed container name, checked paths and image refs, and nothing the function owns: no payload, no function name.
 // Host paths are checked as text only (no `:` or `,`, which split mount specs); that they are the caller's own directories, not symlinks into elsewhere, is the code store's job (lane W2).
 
 import { createHash } from "node:crypto";
@@ -59,6 +59,8 @@ export interface SandboxSpec {
   agentArgs?: readonly string[];
   /** The sandbox's whole environment: the reserved variables the controller adds plus the function's own. */
   environment: Readonly<Record<string, string>>;
+  /** Where the controller wrote the environment file (mode 0600). The sandbox reads it once, at start. */
+  envFile: string;
   codeHostPath: string;
   layersHostPath?: string;
   /** Extra read-only files under /rovara/ (for example the pinned qemu for an x86 function). */
@@ -116,7 +118,7 @@ export function validateSandboxSpec(spec: SandboxSpec): void {
   const fail = (reason: string): never => { throw new SandboxSpecError(reason); };
   if (!ENV_ID.test(spec.environmentId)) fail("environment id");
   if (!validImageReference(spec.image)) fail("image reference");
-  for (const [what, path] of [["agent path", spec.agentHostPath], ["code path", spec.codeHostPath], ...(spec.layersHostPath === undefined ? [] : [["layers path", spec.layersHostPath]])] as Array<[string, string]>) if (!validPath(path)) fail(what);
+  for (const [what, path] of [["env file path", spec.envFile], ["agent path", spec.agentHostPath], ["code path", spec.codeHostPath], ...(spec.layersHostPath === undefined ? [] : [["layers path", spec.layersHostPath]])] as Array<[string, string]>) if (!validPath(path)) fail(what);
   for (const arg of spec.agentArgs ?? []) if (!AGENT_ARG.test(arg)) fail("agent argument");
   if ((spec.agentArgs ?? []).length > 32) fail("agent argument count");
   const extras = spec.extraMounts ?? [];
@@ -147,13 +149,18 @@ export function validateSandboxSpec(spec: SandboxSpec): void {
   let total = 0;
   for (const name of names) {
     const value = spec.environment[name];
-    if (!ENV_NAME.test(name) || typeof value !== "string" || value.length > ENV_MAX_VALUE || value.includes("\0")) fail("environment entry");
+    if (!ENV_NAME.test(name) || typeof value !== "string" || value.length > ENV_MAX_VALUE || /[\0\r\n]/u.test(value)) fail("environment entry");
     total += name.length + value!.length;
   }
   if (total > ENV_MAX_TOTAL) fail("environment size");
 }
 
-const environmentArgs = (spec: SandboxSpec): string[] => Object.keys(spec.environment).sort().map((name) => `${name}=${spec.environment[name]!}`);
+/** The text of the sandbox's environment file: one NAME=VALUE per line, names sorted. */
+export const environmentFileContent = (spec: Pick<SandboxSpec, "environment">): string => `${Object.keys(spec.environment).sort().map((name) => `${name}=${spec.environment[name]!}`).join("\n")}\n`;
+
+/** Mount options of a host-dir /tmp. `nosuid,nodev` cannot be asked of Docker for a bind mount (`-v` and `--mount` reject them, checked on Docker 29), and gVisor does not show them for a bind volume either; setuid files and device nodes are inert
+ * anyway under --cap-drop ALL, no-new-privileges, the uid 993 owned leaf and the devices gVisor does not expose. */
+export const SCRATCH_MOUNT_OPTIONS = "rw";
 
 interface Volumes { code: string; layers?: string; agent: string; extras: string[]; hosts?: string; resolv?: string; scratchDir?: string }
 
@@ -164,7 +171,7 @@ function expectedVolumes(spec: SandboxSpec): string[] {
     extras: (spec.extraMounts ?? []).map((mount) => `${mount.hostPath}:${mount.containerPath}:ro`),
     ...(spec.layersHostPath === undefined ? {} : { layers: `${spec.layersHostPath}:/opt:ro` }),
     ...(spec.network.mode === "services" ? { hosts: `${spec.network.hostsFile}:/etc/hosts:ro`, resolv: `${spec.network.resolvConf}:/etc/resolv.conf:ro` } : {}),
-    ...(spec.scratch.kind === "host-dir" ? { scratchDir: `${spec.scratch.hostPath}:/tmp:rw` } : {}),
+    ...(spec.scratch.kind === "host-dir" ? { scratchDir: `${spec.scratch.hostPath}:/tmp:${SCRATCH_MOUNT_OPTIONS}` } : {}),
   };
   return [volumes.code, ...(volumes.layers === undefined ? [] : [volumes.layers]), volumes.agent, ...volumes.extras, ...(volumes.hosts === undefined ? [] : [volumes.hosts, volumes.resolv!]), ...(volumes.scratchDir === undefined ? [] : [volumes.scratchDir])];
 }
@@ -182,7 +189,7 @@ export function sandboxRunArgs(spec: SandboxSpec): string[] {
     "--user", SANDBOX_USER, "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--read-only",
     "--memory", memory, "--memory-swap", memory, "--cpus", cpuText(spec.cpus), "--pids-limit", SANDBOX_PIDS, "--ulimit", `nofile=${SANDBOX_NOFILE}`,
     "--log-driver", "none",
-    ...environmentArgs(spec).flatMap((entry) => ["-e", entry]),
+    "--env-file", spec.envFile,
     ...(spec.scratch.kind === "tmpfs" ? ["--tmpfs", `/tmp:${tmpfsOptions(spec, spec.scratch.sizeMb)}`] : []),
     ...expectedVolumes(spec).flatMap((volume) => ["--volume", volume]),
     "--workdir", "/var/task", "--entrypoint", AGENT_CONTAINER_PATH, spec.image, ...(spec.agentArgs ?? []),
@@ -192,7 +199,7 @@ export function sandboxRunArgs(spec: SandboxSpec): string[] {
   return args;
 }
 
-const VALUE_FLAGS: ReadonlySet<string> = new Set(["-e", "--name", "--hostname", "--runtime", "--label", "--network", "--ip", "--user", "--cap-drop", "--security-opt", "--memory", "--memory-swap", "--cpus", "--pids-limit", "--ulimit", "--log-driver", "--tmpfs", "--volume", "--workdir", "--entrypoint"]);
+const VALUE_FLAGS: ReadonlySet<string> = new Set(["--env-file", "--name", "--hostname", "--runtime", "--label", "--network", "--ip", "--user", "--cap-drop", "--security-opt", "--memory", "--memory-swap", "--cpus", "--pids-limit", "--ulimit", "--log-driver", "--tmpfs", "--volume", "--workdir", "--entrypoint"]);
 const BOOLEAN_FLAGS: ReadonlySet<string> = new Set(["-i", "--read-only"]);
 const FORBIDDEN: ReadonlyMap<string, string> = new Map([
   ["--publish", "publishes a port"], ["-p", "publishes a port"], ["--publish-all", "publishes ports"], ["-P", "publishes ports"], ["--expose", "exposes a port"], ["--net", "names a network"], ["--link", "links a container"],
@@ -200,7 +207,7 @@ const FORBIDDEN: ReadonlyMap<string, string> = new Map([
   ["--device", "adds a device"], ["--pid", "shares a process namespace"], ["--ipc", "shares an IPC namespace"], ["--uts", "shares a UTS namespace"], ["--userns", "changes the user namespace"], ["--network-alias", "gives the sandbox an alias"],
   ["--mac-address", "sets a MAC address"], ["--ip6", "sets an IPv6 address"], ["--sysctl", "sets a kernel parameter"], ["--cgroupns", "changes the cgroup namespace"], ["-v", "adds a mount"], ["--mount", "adds a mount"],
   ["--volumes-from", "takes another container's mounts"], ["--group-add", "adds a group"], ["--cgroup-parent", "changes the cgroup"], ["--gpus", "adds a GPU"], ["--env", "sets an environment variable another way"],
-  ["--env-file", "sets environment variables"], ["--rm", "removes itself"], ["--detach", "detaches"], ["-d", "detaches"], ["-t", "allocates a terminal"], ["--tty", "allocates a terminal"], ["--oom-kill-disable", "turns off the memory limit"],
+  ["-e", "sets an environment variable on the command line"], ["--rm", "removes itself"], ["--detach", "detaches"], ["-d", "detaches"], ["-t", "allocates a terminal"], ["--tty", "allocates a terminal"], ["--oom-kill-disable", "turns off the memory limit"],
   ["--init", "starts an init"], ["--security-opt=seccomp=unconfined", "turns off seccomp"], ["--interactive", "spells -i another way"], ["--pull", "is not --pull=never"],
 ]);
 const LIMIT = /^[0-9]+m$/u;
@@ -294,17 +301,13 @@ export function sandboxArgProblems(args: readonly string[], expected: SandboxSpe
   const volumes = of("--volume");
   const wanted = expectedVolumes(expected);
   if (volumes.length !== wanted.length || !wanted.every((volume) => volumes.filter((found) => found === volume).length === 1)) problems.push("does not hold exactly the expected mounts");
-  if (volumes.some((volume) => volume.split(":").length < 2 || volume.split(":").length > 3 || volume.includes(","))) problems.push("has a mount that is not one plain path pair");
-  if (volumes.some((volume) => !volume.endsWith(":ro") && volume !== `${expected.scratch.kind === "host-dir" ? expected.scratch.hostPath : "\0"}:/tmp:rw`)) problems.push("has a writable mount that is not the scratch folder");
-  const wantedEnvironment = environmentArgs(expected);
-  const givenEnvironment = of("-e");
-  if (givenEnvironment.length !== wantedEnvironment.length || !wantedEnvironment.every((entry, index) => givenEnvironment[index] === entry) || givenEnvironment.some((entry) => !entry.includes("="))) problems.push("does not hold exactly the function's environment as -e NAME=VALUE");
+  if (volumes.some((volume) => volume.split(":").length < 2 || volume.split(":").length > 3 || volume.split(":").slice(0, 2).some((part) => part.includes(",")))) problems.push("has a mount that is not one plain path pair");
+  if (volumes.some((volume) => !volume.endsWith(":ro") && volume !== `${expected.scratch.kind === "host-dir" ? expected.scratch.hostPath : "\0"}:/tmp:${SCRATCH_MOUNT_OPTIONS}`)) problems.push("has a writable mount that is not the scratch folder");
+  exactly("--env-file", expected.envFile, "does not read exactly the environment file of its environment");
   const labels = of("--label");
   const wantedLabels = [...expected.labels.map((label) => `${label.key}=${label.value}`), `${FUNCTION_LABEL}=${expected.environmentId}`];
   if (labels.length !== wantedLabels.length || !wantedLabels.every((label) => labels.filter((found) => found === label).length === 1)) problems.push("carries a label that is not the run's or the environment's, or one twice");
-  // The function's own values may name any path (a pid file under /var/run); every other argument may not name a docker socket.
-  const envEntries = new Set(of("-e"));
-  if (before.some((arg) => !envEntries.has(arg) && FORBIDDEN_TEXT.some((part) => arg.includes(part)))) problems.push("names a docker socket path");
+  if (before.some((arg) => FORBIDDEN_TEXT.some((part) => arg.includes(part)))) problems.push("names a docker socket path");
   return problems;
 }
 
@@ -326,4 +329,38 @@ export function controlArgProblems(args: readonly string[]): string[] {
   if (!isSandboxContainerName(name)) return ["does not name a function sandbox"];
   const known = [killArgs(name), removeArgs(name), inspectStateArgs(name), inspectIdArgs(name)];
   return known.some((candidate) => candidate.length === args.length && candidate.every((arg, index) => arg === args[index])) ? [] : ["is not a fixed sandbox command"];
+}
+
+// ---- the services network (M2): only an internal network, and an address inside the part of its subnet set aside for function sandboxes
+
+export const networkInspectArgs = (name: string): string[] => {
+  if (!NETWORK_NAME.test(name) || name === "host" || name === "bridge" || name === "none" || name.startsWith("container")) throw new SandboxSpecError("network name");
+  return ["network", "inspect", "--format", "{{json .Internal}} {{range .IPAM.Config}}{{.Subnet}} {{end}}", name];
+};
+
+export interface AddressRange { first: number; last: number }
+/** Function sandboxes take .64 to .127 of the run's /24 (design section 3). */
+export const DEFAULT_SANDBOX_ADDRESS_RANGE: AddressRange = { first: 64, last: 127 };
+
+const ipv4ToInt = (ip: string): number => ip.split(".").reduce((sum, part) => sum * 256 + Number(part), 0);
+
+/** What is wrong with the network `docker network inspect` described, for a sandbox at `ip`. Empty when sound. `output` is the command's stdout. */
+export function servicesNetworkProblems(output: string, ip: string, range: AddressRange = DEFAULT_SANDBOX_ADDRESS_RANGE): string[] {
+  const parts = output.trim().split(/\s+/u);
+  if (parts[0] !== "true") return ["the network is not internal"];
+  if (isIP(ip) !== 4) return ["the address is not IPv4"];
+  const subnets = parts.slice(1).filter((part) => /^\d{1,3}(?:\.\d{1,3}){3}\/\d{1,2}$/u.test(part));
+  const address = ipv4ToInt(ip);
+  const inside = subnets.some((subnet) => {
+    const [base, bits] = subnet.split("/") as [string, string];
+    const prefix = Number(bits);
+    if (isIP(base) !== 4 || prefix < 16 || prefix > 30) return false;
+    const size = 2 ** (32 - prefix);
+    const start = Math.floor(ipv4ToInt(base) / size) * size;
+    return address >= start && address < start + size;
+  });
+  if (!inside) return ["the address is not in the network's subnet"];
+  const host = address % 256;
+  if (host < range.first || host > range.last) return ["the address is outside the range set aside for function sandboxes"];
+  return [];
 }

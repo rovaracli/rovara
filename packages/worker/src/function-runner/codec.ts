@@ -69,7 +69,7 @@ export class CodecError extends Error {
 }
 
 export interface FrameDecoder {
-  /** Feeds bytes; returns the known frames now complete (a frame of an unknown `type` is skipped, as the agent skips unknown worker frames). Throws CodecError on a bad length, oversized or malformed frame: the stream is then unusable. */
+  /** Feeds bytes; returns the frames now complete. Throws CodecError on a bad length, an oversized or malformed frame, or a type this version does not know: the stream is then unusable and the sandbox must be ended. */
   push(chunk: Buffer): AgentFrame[];
 }
 
@@ -79,49 +79,87 @@ export interface AgentCodec {
   createDecoder(options?: { maxFrameBytes?: number }): FrameDecoder;
 }
 
+// ---- field limits. A function can write frames straight onto the agent's stdout, so every field is untrusted: types are checked, text is cleaned and capped, base64 is checked and its decoded size capped.
+export const MAX_ERROR_TYPE_CHARS = 256;
+export const MAX_ERROR_MESSAGE_CHARS = 4_096;
+export const MAX_LOG_TAIL_CHARS = 256 * 1024;
+export const MAX_SHORT_TEXT_CHARS = 512;
+const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/u;
+const CONTROL = /[\p{Cc}\p{Cf}]/gu;
+const CONTROL_EXCEPT_LINES = /[^\P{Cc}\n\t]|\p{Cf}/gu;
+
 const isString = (value: unknown): value is string => typeof value === "string";
-const isNumber = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
-const optional = (value: unknown, check: (v: unknown) => boolean): boolean => value === undefined || value === null || check(value);
-/** Copies the listed optional fields, dropping null and undefined; false when one has the wrong type. */
-function pick(frame: Record<string, unknown>, strings: readonly string[], numbers: readonly string[], booleans: readonly string[] = []): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  for (const [names, check] of [[strings, isString], [numbers, isNumber], [booleans, (v: unknown) => typeof v === "boolean"]] as const) {
-    for (const name of names) {
-      const value = frame[name];
-      if (!optional(value, check)) throw new CodecError("bad_frame");
-      if (value !== undefined && value !== null) out[name] = value;
-    }
-  }
-  return out;
+const isCount = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1e12;
+const isInt = (value: unknown): value is number => typeof value === "number" && Number.isInteger(value) && Math.abs(value) < 1e9;
+const isBool = (value: unknown): value is boolean => typeof value === "boolean";
+const absent = (value: unknown): boolean => value === undefined || value === null;
+
+/** One-line text: control and format characters become spaces, then it is cut to `max` UTF-16 units. */
+export const cleanLine = (text: string, max: number): string => (text.length > max * 2 ? text.slice(0, max * 2) : text).replace(CONTROL, " ").slice(0, max);
+/** Log text: newlines and tabs stay; other control and format characters become spaces. */
+export const cleanLog = (text: string, max: number): string => text.slice(-max).replace(CONTROL_EXCEPT_LINES, " ");
+
+/** Base64 whose decoded size is within the Lambda payload limit. Checked on length first, so a huge hostile string costs one comparison. */
+function payloadOf(value: unknown): string | undefined {
+  if (absent(value)) return undefined;
+  if (!isString(value) || value.length > Math.ceil((MAX_PAYLOAD_BYTES * 4) / 3) + 4 || value.length % 4 !== 0 || !BASE64.test(value)) throw new CodecError("bad_frame");
+  const padding = value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0;
+  if ((value.length / 4) * 3 - padding > MAX_PAYLOAD_BYTES) throw new CodecError("bad_frame");
+  return value;
 }
 
-/** Checks one decoded object against the agent frames above. Returns undefined for a type this version does not know. */
-export function parseAgentFrame(value: unknown): AgentFrame | undefined {
+function text(frame: Record<string, unknown>, name: string, max: number, log = false): string | undefined {
+  const value = frame[name];
+  if (absent(value)) return undefined;
+  if (!isString(value)) throw new CodecError("bad_frame");
+  return log ? cleanLog(value, max) : cleanLine(value, max);
+}
+function num(frame: Record<string, unknown>, name: string, check: (v: unknown) => boolean = isCount): number | undefined {
+  const value = frame[name];
+  if (absent(value)) return undefined;
+  if (!check(value)) throw new CodecError("bad_frame");
+  return value as number;
+}
+const defined = (fields: Record<string, unknown>): object => Object.fromEntries(Object.entries(fields).filter(([, value]) => value !== undefined));
+
+/** Checks and cleans one decoded object against the agent frames above. Throws CodecError for anything else, including a type this version does not know. */
+export function parseAgentFrame(value: unknown): AgentFrame {
   if (value === null || typeof value !== "object" || Array.isArray(value)) throw new CodecError("bad_frame");
   const frame = value as Record<string, unknown>;
   switch (frame["type"]) {
     case "hello":
       if (!isString(frame["proto"])) throw new CodecError("bad_frame");
-      return { type: "hello", proto: frame["proto"], ...pick(frame, ["agent", "version"], []) };
+      return { type: "hello", proto: cleanLine(frame["proto"], 64), ...defined({ agent: text(frame, "agent", 64), version: text(frame, "version", 64) }) };
     case "ready":
-      return { type: "ready", ...pick(frame, ["logTail"], ["initDurationMs"]) };
+      return { type: "ready", ...defined({ logTail: text(frame, "logTail", MAX_LOG_TAIL_CHARS, true), initDurationMs: num(frame, "initDurationMs") }) };
     case "init_error":
-      return { type: "init_error", ...pick(frame, ["reason", "errorType", "errorMessage", "payload", "logTail"], ["initDurationMs"]) };
+      return {
+        type: "init_error",
+        ...defined({
+          reason: text(frame, "reason", 64), errorType: text(frame, "errorType", MAX_ERROR_TYPE_CHARS), errorMessage: text(frame, "errorMessage", MAX_ERROR_MESSAGE_CHARS), payload: payloadOf(frame["payload"]),
+          logTail: text(frame, "logTail", MAX_LOG_TAIL_CHARS, true), initDurationMs: num(frame, "initDurationMs"),
+        }),
+      };
     case "runtime_exit":
-      return { type: "runtime_exit", ...pick(frame, ["signal", "message", "logTail"], ["exitCode"]) };
+      return { type: "runtime_exit", ...defined({ signal: text(frame, "signal", 64), message: text(frame, "message", MAX_SHORT_TEXT_CHARS), logTail: text(frame, "logTail", MAX_LOG_TAIL_CHARS, true), exitCode: num(frame, "exitCode", isInt) }) };
     case "fatal":
       if (!isString(frame["message"])) throw new CodecError("bad_frame");
-      return { type: "fatal", message: frame["message"] };
+      return { type: "fatal", message: cleanLine(frame["message"], MAX_SHORT_TEXT_CHARS) };
     case "result": {
-      if (!isString(frame["requestId"]) || !isString(frame["status"]) || !STATUSES.includes(frame["status"])) throw new CodecError("bad_frame");
+      if (!isString(frame["requestId"]) || !REQUEST_ID.test(frame["requestId"]) || !isString(frame["status"]) || !STATUSES.includes(frame["status"])) throw new CodecError("bad_frame");
+      const logTruncated = frame["logTruncated"];
+      if (!absent(logTruncated) && !isBool(logTruncated)) throw new CodecError("bad_frame");
       return {
         type: "result", requestId: frame["requestId"], status: frame["status"] as ResultStatus,
-        ...pick(frame, ["payload", "errorType", "errorMessage", "logTail"], ["durationMs", "billedDurationMs", "initDurationMs", "maxMemoryUsed"], ["logTruncated"]),
+        ...defined({
+          payload: payloadOf(frame["payload"]), errorType: text(frame, "errorType", MAX_ERROR_TYPE_CHARS), errorMessage: text(frame, "errorMessage", MAX_ERROR_MESSAGE_CHARS), logTail: text(frame, "logTail", MAX_LOG_TAIL_CHARS, true),
+          logTruncated: absent(logTruncated) ? undefined : (logTruncated), durationMs: num(frame, "durationMs"), billedDurationMs: num(frame, "billedDurationMs"), initDurationMs: num(frame, "initDurationMs"), maxMemoryUsed: num(frame, "maxMemoryUsed"),
+        }),
       };
     }
     default:
-      if (!isString(frame["type"])) throw new CodecError("bad_frame");
-      return undefined;
+      // A type this version does not know is a protocol violation, not something to skip: a hostile function can write to the agent's stdout.
+      throw new CodecError("bad_frame");
   }
 }
 
@@ -135,27 +173,41 @@ export const lengthPrefixedJsonCodec: AgentCodec = {
   },
   createDecoder(options = {}) {
     const maxFrameBytes = Math.min(MAX_FRAME_BYTES, options.maxFrameBytes ?? MAX_FRAME_BYTES);
-    let pending: Buffer = Buffer.alloc(0);
+    // Chunks are kept in a list with a running length and joined ONCE per complete frame: re-joining the whole buffer on every chunk is quadratic (a 16 MiB frame in 64 KiB chunks cost 600 ms of event-loop time).
+    let chunks: Buffer[] = [];
+    let total = 0;
+    const header = (): number | undefined => {
+      if (total < 4) return undefined;
+      const bytes = Buffer.alloc(4);
+      let filled = 0;
+      for (const chunk of chunks) {
+        filled += chunk.copy(bytes, filled, 0, Math.min(chunk.length, 4 - filled));
+        if (filled === 4) break;
+      }
+      return bytes.readUInt32BE(0);
+    };
     return {
       push(chunk) {
-        pending = pending.length === 0 ? chunk : Buffer.concat([pending, chunk]);
+        if (chunk.length > 0) { chunks.push(chunk); total += chunk.length; }
         const frames: AgentFrame[] = [];
         for (;;) {
-          if (pending.length < 4) break;
-          const length = pending.readUInt32BE(0);
+          const length = header();
+          if (length === undefined) break;
           // Refuse on the header alone: a hostile length must never make the controller wait for, or buffer, that many bytes.
           if (length > maxFrameBytes) throw new CodecError("frame_too_large");
           if (length < MIN_FRAME_BYTES) throw new CodecError("bad_length");
-          if (pending.length < 4 + length) break;
+          if (total < 4 + length) break;
+          const joined = chunks.length === 1 ? chunks[0]! : Buffer.concat(chunks, total);
           let parsed: unknown;
           try {
-            parsed = JSON.parse(pending.subarray(4, 4 + length).toString("utf8"));
+            parsed = JSON.parse(joined.subarray(4, 4 + length).toString("utf8"));
           } catch {
             throw new CodecError("bad_json");
           }
-          pending = pending.subarray(4 + length);
-          const known = parseAgentFrame(parsed);
-          if (known !== undefined) frames.push(known);
+          const rest = joined.subarray(4 + length);
+          chunks = rest.length === 0 ? [] : [rest];
+          total = rest.length;
+          frames.push(parseAgentFrame(parsed));
         }
         return frames;
       },

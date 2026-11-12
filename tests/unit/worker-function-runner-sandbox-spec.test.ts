@@ -1,8 +1,8 @@
 // Slice 4, lane W1: the docker argument list of a function sandbox and its allow-list re-check, and the agent frame codec. Hostile inputs must never reach an argument as a flag.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { CodecError, lengthPrefixedJsonCodec } from "../../packages/worker/src/function-runner/codec.js";
 import {
-  controlArgProblems, inspectIdArgs, killArgs, removeArgs, sandboxArgProblems, sandboxContainerName, sandboxRunArgs, SandboxSpecError, validImageReference, type SandboxSpec,
+  controlArgProblems, environmentFileContent, networkInspectArgs, servicesNetworkProblems, inspectIdArgs, killArgs, removeArgs, sandboxArgProblems, sandboxContainerName, sandboxRunArgs, SandboxSpecError, validImageReference, type SandboxSpec,
 } from "../../packages/worker/src/function-runner/sandbox-spec.js";
 
 const DIGEST = `sha256:${"a".repeat(64)}`;
@@ -13,6 +13,7 @@ const base = (): SandboxSpec => ({
   codeHostPath: "/run/rovara/code/abc",
   layersHostPath: "/run/rovara/layers/def",
   environment: { STAGE: "test", _HANDLER: "app.handler" },
+  envFile: "/run/rovara/scratch/env/e1.env",
   memoryMb: 512, cpus: 0.5,
   scratch: { kind: "tmpfs", sizeMb: 512 }, tmpExec: true,
   network: { mode: "none" },
@@ -35,12 +36,14 @@ describe("sandboxRunArgs", () => {
     expect(valueOf(args, "--pids-limit")).toEqual(["256"]);
     expect(valueOf(args, "--log-driver")).toEqual(["none"]);
     expect(valueOf(args, "--entrypoint")).toEqual(["/rovara/agent"]);
-    expect(valueOf(args, "-e")).toEqual(["STAGE=test", "_HANDLER=app.handler"].sort());
+    expect(valueOf(args, "--env-file")).toEqual(["/run/rovara/scratch/env/e1.env"]);
+    expect(args).not.toContain("-e");
+    expect(args.join(" ")).not.toContain("STAGE");
     expect(valueOf(args, "--tmpfs")).toEqual(["/tmp:rw,exec,nosuid,nodev,mode=1777,size=512m,uid=993,gid=993"]);
     expect(valueOf(args, "--volume")).toEqual(["/run/rovara/code/abc:/var/task:ro", "/run/rovara/layers/def:/opt:ro", "/opt/rovara/runner/agent:/rovara/agent:ro"]);
     expect(args).toContain("--read-only");
     expect(args).toContain("--pull=never");
-    for (const forbidden of ["--detach", "-d", "--rm", "--env", "--env-file", "--privileged", "--init", "-v", "--publish", "-p"]) expect(args).not.toContain(forbidden);
+    for (const forbidden of ["--detach", "-d", "--rm", "--env", "--privileged", "--init", "-v", "--publish", "-p"]) expect(args).not.toContain(forbidden);
     expect(args.at(-1)).toBe(base().image);
     expect(sandboxArgProblems(args, base())).toEqual([]);
     expect(valueOf(args, "--name")).toEqual([sandboxContainerName(base().environmentId)]);
@@ -73,7 +76,7 @@ describe("the allow-list re-check refuses every added or changed flag", () => {
   const good = (): string[] => sandboxRunArgs(base());
   const inject = (flags: string[]): string[] => { const args = good(); args.splice(2, 0, ...flags); return args; };
   const cases: Array<[string, string[]]> = [
-    ["extra env", inject(["-e", "TOKEN=x"])], ["env swapped for a flag", inject(["-e", "--privileged"])], ["--env long form", inject(["--env", "A=b"])],
+    ["extra env", inject(["-e", "TOKEN=x"])], ["env swapped for a flag", inject(["-e", "--privileged"])], ["--env long form", inject(["--env", "A=b"])], ["second env file", inject(["--env-file", "/etc/shadow"])],
     ["privileged", inject(["--privileged"])], ["cap-add", inject(["--cap-add", "SYS_ADMIN"])], ["short volume", inject(["-v", "/:/host"])], ["env joined", inject(["-eTOKEN=x"])],
     ["env-file", inject(["--env-file=/etc/shadow"])], ["publish", inject(["-p8080:80"])], ["host network", inject(["--net=host"])], ["pid host", inject(["--pid=host"])], ["device", inject(["--device", "/dev/kvm"])],
     ["mount", inject(["--mount", "type=bind,src=/,dst=/host"])], ["detach", inject(["--detach"])], ["rm", inject(["--rm"])], ["tty", inject(["-t"])], ["extra runtime", inject(["--runtime", "runc"])],
@@ -130,6 +133,7 @@ describe("hostile inputs cannot become flags", () => {
       throwsSpec({ agentHostPath: path });
       throwsSpec({ layersHostPath: path });
       throwsSpec({ scratch: { kind: "host-dir", hostPath: path } });
+      throwsSpec({ envFile: path });
     }
   });
 
@@ -144,27 +148,20 @@ describe("hostile inputs cannot become flags", () => {
     expect(() => sandboxRunArgs({ ...base(), agentArgs: ["--", "/var/lang/bin/python3.12"] })).not.toThrow();
   });
 
-  it("keeps the function's environment as one -e token each, whatever its text", () => {
-    const environment = { EVIL: "x\n--cap-add=ALL\n-e FOO=bar", FLAG: "--privileged", SOCK: "/var/run/app.pid", BIG: "y".repeat(8_192), EMPTY: "", UNI: "\u202e\u{1F600}", EQ: "a=b=c" };
+  it("renders the environment as one NAME=VALUE line each, and takes no part of it into the arguments", () => {
+    const environment = { FLAG: "--privileged", SOCK: "/var/run/app.pid", BIG: "y".repeat(8_192), EMPTY: "", UNI: "\u202e\u{1F600}", EQ: "a=b=c", ARGS: "-v /:/host --cap-add=ALL" };
     const spec = { ...base(), environment };
     const args = sandboxRunArgs(spec);
-    expect(valueOf(args, "-e")).toEqual(Object.keys(environment).sort().map((name) => `${name}=${environment[name as keyof typeof environment]}`));
-    // Every token that carries hostile text is the one right after an -e.
-    args.forEach((arg, index) => { if (arg.includes("--cap-add") || arg === "FLAG=--privileged") expect(args[index - 1]).toBe("-e"); });
-    expect(args.filter((arg) => arg === "--privileged" || arg === "--cap-add=ALL")).toEqual([]);
+    expect(environmentFileContent(spec)).toBe(`${Object.keys(environment).sort().map((name) => `${name}=${environment[name as keyof typeof environment]}`).join("\n")}\n`);
+    expect(args.filter((arg) => arg.includes("privileged") || arg.includes("cap-add") || arg.includes("yyyy") || arg.includes("app.pid") || arg.includes("/:/host"))).toEqual([]);
     expect(sandboxArgProblems(args, spec)).toEqual([]);
-    // The same list does not pass for a spec with other variables, or with one missing.
-    expect(sandboxArgProblems(args, { ...spec, environment: { ...environment, EXTRA: "1" } })).not.toEqual([]);
-    expect(sandboxArgProblems(args, { ...spec, environment: { FLAG: "--privileged" } })).not.toEqual([]);
-    const reordered = [...args];
-    const first = reordered.indexOf("-e");
-    [reordered[first + 1], reordered[first + 3]] = [reordered[first + 3]!, reordered[first + 1]!];
-    expect(sandboxArgProblems(reordered, spec)).not.toEqual([]);
+    // Another env file path is not this spec's.
+    expect(sandboxArgProblems(args, { ...spec, envFile: "/run/rovara/scratch/env/other.env" })).not.toEqual([]);
   });
 
   it("refuses odd variable names and values and too much environment", () => {
     for (const name of ["", "A B", "-x", "A=B", "1A", "A-B", "A\nB", "a".repeat(129), "--privileged", "A\u0000"]) throwsSpec({ environment: { [name]: "v" } });
-    for (const value of ["v\0w", "v".repeat(8_193)]) throwsSpec({ environment: { A: value } });
+    for (const value of ["v\0w", "a\nB=c", "a\r", "v".repeat(8_193)]) throwsSpec({ environment: { A: value } });
     throwsSpec({ environment: Object.fromEntries(Array.from({ length: 301 }, (_v, index) => [`K${String(index)}`, "v"])) });
     throwsSpec({ environment: Object.fromEntries(Array.from({ length: 12 }, (_v, index) => [`K${String(index)}`, "v".repeat(8_000)])) });
   });
@@ -187,6 +184,27 @@ describe("hostile inputs cannot become flags", () => {
     } catch (error) {
       expect((error as Error).message).not.toContain("secret-marker");
     }
+  });
+});
+
+describe("the services network (M2)", () => {
+  it("accepts an internal network and an address in .64 to .127 of its subnet", () => {
+    for (const ip of ["10.20.30.64", "10.20.30.100", "10.20.30.127"]) expect(servicesNetworkProblems("true 10.20.30.0/24 \n", ip)).toEqual([]);
+  });
+  it("refuses a network that is not internal, an address outside the subnet, and one outside the sandbox range", () => {
+    expect(servicesNetworkProblems("false 10.20.30.0/24 ", "10.20.30.70")).not.toEqual([]);
+    expect(servicesNetworkProblems("", "10.20.30.70")).not.toEqual([]);
+    expect(servicesNetworkProblems("<no value> 10.20.30.0/24", "10.20.30.70")).not.toEqual([]);
+    expect(servicesNetworkProblems("true 10.20.30.0/24 ", "10.20.31.70")).not.toEqual([]);
+    expect(servicesNetworkProblems("true 10.20.30.0/24 ", "192.168.1.70")).not.toEqual([]);
+    for (const ip of ["10.20.30.1", "10.20.30.2", "10.20.30.63", "10.20.30.128", "10.20.30.255", "10.20.30.0"]) expect(servicesNetworkProblems("true 10.20.30.0/24 ", ip), ip).not.toEqual([]);
+    expect(servicesNetworkProblems("true 10.20.30.0/24 ", "10.20.30.70 ")).not.toEqual([]);
+    expect(servicesNetworkProblems("true 0.0.0.0/0 ", "10.20.30.70")).not.toEqual([]);
+    expect(servicesNetworkProblems("true", "10.20.30.70")).not.toEqual([]);
+  });
+  it("builds the inspect command only for a plain network name", () => {
+    expect(networkInspectArgs("rovara-svc-0123456789ab").slice(0, 2)).toEqual(["network", "inspect"]);
+    for (const name of ["host", "bridge", "none", "container:abc", "--all", "a b", ""]) expect(() => networkInspectArgs(name)).toThrow(SandboxSpecError);
   });
 });
 
@@ -221,9 +239,54 @@ describe("the agent codec (agent/1, runner/agent/PROTOCOL.md)", () => {
     expect(() => lengthPrefixedJsonCodec.encode({ type: "invoke", requestId: "r", payload: "A".repeat(17 * 1024 * 1024), timeoutMs: 1 })).toThrow(RangeError);
   });
 
-  it("skips a frame of a type it does not know, and treats null fields as absent", () => {
-    const seen = decoder().push(Buffer.concat([frame({ type: "future-thing", x: 1 }), frame({ type: "ready", initDurationMs: null })]));
-    expect(seen).toEqual([{ type: "ready" }]);
+  it("treats null fields as absent, and a frame of a type it does not know as a protocol error (H2)", () => {
+    expect(decoder().push(frame({ type: "ready", initDurationMs: null }))).toEqual([{ type: "ready" }]);
+    expect(() => decoder().push(frame({ type: "future-thing", x: 1 }))).toThrow(CodecError);
+    expect(() => decoder().push(frame({ type: "invoke", requestId: "r", payload: "", timeoutMs: 1 }))).toThrow(CodecError);
+  });
+
+  it("joins a big frame once, not on every chunk (H2)", () => {
+    const body = Buffer.from(JSON.stringify({ type: "result", requestId: "r1", status: "ok", payload: Buffer.alloc(6_000_000, 7).toString("base64") }));
+    const header = Buffer.alloc(4);
+    header.writeUInt32BE(body.length);
+    const bytes = Buffer.concat([header, body]);
+    const spy = vi.spyOn(Buffer, "concat");
+    try {
+      const d = decoder();
+      const seen = [];
+      for (let at = 0; at < bytes.length; at += 65_536) seen.push(...d.push(bytes.subarray(at, at + 65_536)));
+      expect(seen).toHaveLength(1);
+      // Only the single join of the complete frame (the 4-byte header peek copies, it does not concat).
+      expect(spy.mock.calls.length).toBeLessThanOrEqual(1);
+    } finally { spy.mockRestore(); }
+  });
+
+  it("decodes many small frames from one chunk without copying the rest each time", () => {
+    const many = Buffer.concat(Array.from({ length: 500 }, () => frame({ type: "runtime_exit", exitCode: 1 })));
+    const spy = vi.spyOn(Buffer, "concat");
+    try {
+      expect(decoder().push(many)).toHaveLength(500);
+      expect(spy.mock.calls.length).toBe(0);
+    } finally { spy.mockRestore(); }
+  });
+
+  it("caps and cleans the text of a result, and refuses a payload that is not base64 or is over Lambda's limit (L1)", () => {
+    const [clean] = decoder().push(frame({ type: "result", requestId: "r1", status: "function_error", errorType: `Er\u202eror\n${"x".repeat(1_000)}`, errorMessage: `m\u0000${"y".repeat(10_000)}`, logTail: `line1\nline2\t\u001b[31m${"z".repeat(400_000)}`, payload: "e30=" }));
+    const result = clean as Extract<typeof clean, { type: "result" }>;
+    expect(result.errorType!.length).toBeLessThanOrEqual(256);
+    expect(result.errorType).not.toMatch(/[\p{Cc}\p{Cf}]/u);
+    expect(result.errorMessage!.length).toBeLessThanOrEqual(4_096);
+    expect(result.errorMessage).not.toContain("\u0000");
+    expect(result.logTail!.length).toBeLessThanOrEqual(256 * 1024);
+    expect(result.logTail).not.toContain("\u001b");
+    const lines = decoder().push(frame({ type: "result", requestId: "r1", status: "ok", logTail: "a\nb\tc" }));
+    expect((lines[0] as { logTail: string }).logTail).toBe("a\nb\tc");
+    for (const payload of ["not base64!", "e30", "====", "e30=\n", Buffer.alloc(6_291_557).toString("base64"), "A".repeat(9_000_000)]) {
+      expect(() => decoder().push(frame({ type: "result", requestId: "r1", status: "ok", payload })), payload.slice(0, 12)).toThrow(CodecError);
+    }
+    expect(decoder().push(frame({ type: "result", requestId: "r1", status: "ok", payload: Buffer.alloc(6_291_556, 1).toString("base64") }))).toHaveLength(1);
+    for (const requestId of ["", "a b", "r".repeat(129), "r\n1"]) expect(() => decoder().push(frame({ type: "result", requestId, status: "ok" }))).toThrow(CodecError);
+    for (const field of ["durationMs", "billedDurationMs", "maxMemoryUsed"]) for (const bad of [-1, 1e15, "3"]) expect(() => decoder().push(frame({ type: "result", requestId: "r1", status: "ok", [field]: bad }))).toThrow(CodecError);
   });
 
   it("refuses a hostile length from the header alone, without waiting for the body", () => {

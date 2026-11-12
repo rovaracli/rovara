@@ -1,9 +1,12 @@
 // Slice 4, lane W1: the worker's sandbox controller against a fake Docker and a fake agent (tests/support/fake-sandbox-docker.ts). Pools, warm reuse, concurrency, the memory budget and eviction, deadlines, crashes,
 // the stop barrier, and the reaper (including the fix for the parked branch's stuck-stop leak).
+import { mkdtemp, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { createSandboxController, type FunctionConfig, type FunctionKey, type SandboxController, type SandboxControllerOptions, type SandboxLogEvent } from "../../packages/worker/src/function-runner/controller.js";
 import { sandboxArgProblems, type SandboxSpec } from "../../packages/worker/src/function-runner/sandbox-spec.js";
-import { echoAgent, fakeSandboxHost, resultFor, type AgentBehavior, type FakeSandboxHostOptions } from "../support/fake-sandbox-docker.js";
+import { echoAgent, fakeSandboxFiles, fakeSandboxHost, resultFor, type AgentBehavior, type FakeSandboxHostOptions } from "../support/fake-sandbox-docker.js";
 const b64 = (text: string): string => Buffer.from(text).toString("base64");
 
 const KEY: FunctionKey = { functionName: "resize", version: "1" };
@@ -16,14 +19,15 @@ const config = (change: Partial<FunctionConfig> = {}): FunctionConfig => ({
 let counter = 0;
 function setup(host: FakeSandboxHostOptions = {}, controller: Partial<SandboxControllerOptions> = {}) {
   const fake = fakeSandboxHost(host);
+  const fs = fakeSandboxFiles();
   const events: SandboxLogEvent[] = [];
   const clock = { now: 1_000_000 };
   const runner: SandboxController = createSandboxController({
     docker: fake.docker, launcher: fake.launcher, memoryBudgetMiB: 1_024, labels: [{ key: "rovara.run", value: "run-1" }], autoReap: false, backstopMs: 30,
-    log: (event) => events.push(event), now: () => clock.now,
+    log: (event) => events.push(event), now: () => clock.now, scratchBaseDir: "/run/rovara/scratch", initTimeoutMs: 400, ...fs,
     newEnvironmentId: () => `env-${String((counter += 1)).padStart(6, "0")}`, ...controller,
   });
-  return { ...fake, runner, events, clock };
+  return { ...fake, runner, events, clock, fs };
 }
 const call = (runner: SandboxController, requestId = "r1", payload = "{\"n\":1}", extra: { key?: FunctionKey; timeoutMs?: number } = {}) => runner.invoke({ key: extra.key ?? KEY, requestId, payload, ...(extra.timeoutMs === undefined ? {} : { timeoutMs: extra.timeoutMs }) });
 /** An agent that never answers an invoke. */
@@ -33,7 +37,7 @@ const wait = (ms: number): Promise<void> => new Promise((resolve) => { setTimeou
 
 describe("warm reuse and cold starts", () => {
   it("starts one sandbox with the function's environment, invokes it, and reuses it warm", async () => {
-    const { runner, runArgs, everStarted, events } = setup();
+    const { runner, runArgs, everStarted, events, fs } = setup();
     await runner.register(KEY, config());
     const first = await call(runner, "r1", "{\"a\":1}");
     expect(first).toMatchObject({ kind: "response", cold: true, memoryMb: 128, memoryClamped: false, initLogTail: "init output\n", report: { durationMs: 3, billedDurationMs: 3 }, maxMemoryUsedBytes: 20_000_000 });
@@ -47,7 +51,12 @@ describe("warm reuse and cold starts", () => {
     // No init frame: the agent takes its environment from the sandbox.
     expect(everStarted[0]!.frames.map((frame) => frame.type)).toEqual(["invoke", "invoke"]);
     expect(everStarted[0]!.frames[0]).toMatchObject({ type: "invoke", requestId: "r1", payload: b64("{\"a\":1}"), timeoutMs: 3000, functionVersion: "1", memorySizeMb: 128 });
-    const environment = valuesOf(runArgs[0]!, "-e");
+    // The environment travels in a 0600 file, never in the arguments, and the file is gone once the sandbox is up.
+    expect(runArgs[0]!.some((arg) => arg.includes("STAGE") || arg.includes("AWS_LAMBDA_FUNCTION_NAME"))).toBe(false);
+    expect(valuesOf(runArgs[0]!, "--env-file")).toEqual([fs.written[0]!.path]);
+    expect(fs.files.size).toBe(0);
+    expect(fs.written[0]!.path).toMatch(/^\/run\/rovara\/scratch\/env\/env-\d{6}\.env$/u);
+    const environment = fs.written[0]!.content.trim().split("\n");
     for (const entry of ["STAGE=test", "_HANDLER=app.handler", "AWS_LAMBDA_FUNCTION_NAME=resize", "AWS_LAMBDA_FUNCTION_VERSION=1", "AWS_LAMBDA_FUNCTION_MEMORY_SIZE=128", "AWS_REGION=us-east-1", "AWS_DEFAULT_REGION=us-east-1", "AWS_EXECUTION_ENV=AWS_Lambda_python3.12", "AWS_LAMBDA_LOG_GROUP_NAME=/aws/lambda/resize", "AWS_LAMBDA_INITIALIZATION_TYPE=on-demand", "LAMBDA_TASK_ROOT=/var/task", "LAMBDA_RUNTIME_DIR=/var/runtime", "TZ=:UTC"]) expect(environment).toContain(entry);
     expect(environment.find((entry) => entry.startsWith("AWS_LAMBDA_LOG_STREAM_NAME="))).toMatch(/^AWS_LAMBDA_LOG_STREAM_NAME=\d{4}\/\d{2}\/\d{2}\/\[1\][a-z0-9]{1,32}$/u);
     expect(first.kind === "response" && second.kind === "response" && first.environmentId === second.environmentId).toBe(true);
@@ -67,15 +76,16 @@ describe("warm reuse and cold starts", () => {
   });
 
   it("builds every launched argv from the typed spec and passes the allow-list", async () => {
-    const { runner, runArgs } = setup();
+    const { runner, runArgs, fs } = setup();
     await runner.register(KEY, config());
     await call(runner);
     const args = runArgs[0]!;
     const environmentId = args.find((arg) => arg.startsWith("rovara.function="))!.split("=")[1]!;
     const spec: SandboxSpec = {
       environmentId, image: config().image, agentHostPath: config().agentHostPath, codeHostPath: config().codeHostPath, layersHostPath: config().layersHostPath!,
-      environment: Object.fromEntries(valuesOf(args, "-e").map((entry) => [entry.slice(0, entry.indexOf("=")), entry.slice(entry.indexOf("=") + 1)])),
-      memoryMb: 128, cpus: 0.5, scratch: { kind: "tmpfs", sizeMb: 512 }, tmpExec: true, network: { mode: "none" }, labels: [{ key: "rovara.run", value: "run-1" }],
+      envFile: valuesOf(args, "--env-file")[0]!,
+      environment: Object.fromEntries(fs.written[0]!.content.trim().split("\n").map((entry) => [entry.slice(0, entry.indexOf("=")), entry.slice(entry.indexOf("=") + 1)])),
+      memoryMb: 128, cpus: 0.5, scratch: { kind: "host-dir", hostPath: `/run/rovara/scratch/tmp/${environmentId}` }, tmpExec: true, network: { mode: "none" }, labels: [{ key: "rovara.run", value: "run-1" }],
     };
     expect(args.slice(0, 2)).toEqual(["run", "-i"]);
     expect(sandboxArgProblems(args, spec)).toEqual([]);
@@ -151,14 +161,37 @@ describe("warm reuse and cold starts", () => {
     expect(outcome).toMatchObject({ kind: "response", logTail: "tail\n", logsTruncated: true });
   });
 
-  it("takes the cold start from the agent's ready frame; with no ready it is the first answer", async () => {
-    const quiet = setup({ startup: (container) => container.emit({ type: "hello", proto: "agent/1" }) });
-    await quiet.runner.register(KEY, config());
-    const outcome = await call(quiet.runner);
+  it("sends the first invoke only after the runtime is ready: a slow start is not charged to a short Timeout (M1)", async () => {
+    const slow = setup({ startup: (container) => { container.emit({ type: "hello", proto: "agent/1" }); setTimeout(() => container.emit({ type: "ready", initDurationMs: 250 }), 250); } }, { backstopMs: 30, initTimeoutMs: 2_000, now: Date.now });
+    await slow.runner.register(KEY, config());
+    const started = Date.now();
+    const outcome = await call(slow.runner, "r1", "{}", { timeoutMs: 60 });
+    expect(Date.now() - started).toBeGreaterThanOrEqual(240);
     expect(outcome).toMatchObject({ kind: "response", cold: true });
-    expect(outcome.kind === "response" && outcome.initLogTail).toBeUndefined();
-    expect(outcome.kind === "response" && typeof outcome.coldStartMs).toBe("number");
-    expect(quiet.runner.metrics().total.coldStarts).toBe(1);
+    // No invoke frame was sent before ready, and the cold start covers the wait.
+    expect(slow.everStarted[0]!.frames.map((frame) => frame.type)).toEqual(["invoke"]);
+    expect(outcome.kind === "response" && outcome.coldStartMs).toBeGreaterThanOrEqual(240);
+  });
+
+  it("a runtime that never becomes ready is a start failure after the init deadline, not a function timeout", async () => {
+    const { runner, containers, everStarted } = setup({ startup: (container) => container.emit({ type: "hello", proto: "agent/1" }) }, { initTimeoutMs: 60 });
+    await runner.register(KEY, config());
+    const out = await call(runner, "r1", "{}", { timeoutMs: 20 });
+    expect(out).toMatchObject({ kind: "unavailable", reason: "start_failed" });
+    expect(everStarted[0]!.frames).toEqual([]);
+    expect(containers.size).toBe(0);
+    expect(runner.stats().reservedMiB).toBe(0);
+  });
+
+  it("an init_error before any invoke is reported as an init error with the runtime's document, and the sandbox goes", async () => {
+    const { runner, containers, everStarted } = setup({ startup: (container) => { container.emit({ type: "hello", proto: "agent/1" }); container.emit({ type: "init_error", reason: "exited", errorType: "Runtime.ImportModuleError", errorMessage: "No module named x", payload: Buffer.from("{\"e\":1}").toString("base64"), logTail: "boom\n" }); } });
+    await runner.register(KEY, config());
+    const out = await call(runner);
+    expect(out).toMatchObject({ kind: "init_error", errorType: "Runtime.ImportModuleError", errorMessage: "No module named x", logTail: "boom\n", cold: true });
+    expect(out.kind === "init_error" && out.payload.toString()).toBe("{\"e\":1}");
+    expect(everStarted[0]!.frames).toEqual([]);
+    expect(containers.size).toBe(0);
+    expect(runner.metrics().total.initErrors).toBe(1);
   });
 
   it("reads the cgroup peak memory host-side when given a reader, else uses the agent's figure", async () => {
@@ -205,6 +238,7 @@ describe("concurrency", () => {
     const b = call(runner, "r2", "2", { timeoutMs: 80 });
     const c = await call(runner, "r3", "3", { timeoutMs: 80 });
     expect(c).toEqual({ kind: "throttled", reason: "concurrency" });
+    await wait(10);
     expect(everStarted).toHaveLength(2);
     expect((await a).kind).toBe("timeout");
     expect((await b).kind).toBe("timeout");
@@ -285,7 +319,7 @@ describe("the memory budget", () => {
     let slow = false;
     const fake = fakeSandboxHost({ hangKill: () => slow });
     const events: SandboxLogEvent[] = [];
-    const runner = createSandboxController({ docker: fake.docker, launcher: fake.launcher, memoryBudgetMiB: 150, labels: [], autoReap: false, backstopMs: 30, log: (e) => events.push(e), newEnvironmentId: () => `env-${String((counter += 1)).padStart(6, "0")}` });
+    const runner = createSandboxController({ docker: fake.docker, launcher: fake.launcher, memoryBudgetMiB: 150, labels: [], autoReap: false, backstopMs: 30, scratchBaseDir: "/run/rovara/scratch", ...fakeSandboxFiles(), log: (e) => events.push(e), newEnvironmentId: () => `env-${String((counter += 1)).padStart(6, "0")}` });
     const A: FunctionKey = { functionName: "a", version: "1" };
     const B: FunctionKey = { functionName: "b", version: "1" };
     await runner.register(A, config());
@@ -384,16 +418,17 @@ describe("deadlines and crashes", () => {
     expect(other.containers.size).toBe(0);
   });
 
-  it("ignores results for another request id", async () => {
+  it("a result for another request id is a protocol violation, and the sandbox goes", async () => {
     const stray: AgentBehavior = (frame, container) => {
       if (frame.type !== "invoke") return;
       container.emit(resultFor({ ...frame, requestId: "someone-else" }, { payload: b64("no") }));
       container.emit(resultFor(frame, { payload: b64("yes") }));
     };
-    const { runner } = setup({ agent: stray });
+    const { runner, containers } = setup({ agent: stray });
     await runner.register(KEY, config());
-    const out = await call(runner);
-    expect(out.kind === "response" && out.payload.toString()).toBe("yes");
+    expect(await call(runner)).toEqual({ kind: "unavailable", reason: "protocol_error" });
+    expect(containers.size).toBe(0);
+    expect(runner.stats().reservedMiB).toBe(0);
   });
 
   it("refuses an agent that speaks another protocol", async () => {
@@ -404,7 +439,7 @@ describe("deadlines and crashes", () => {
   });
 
   it("reports the agent's last words when it dies at start", async () => {
-    const { runner } = setup({ startup: (container) => { container.emit({ type: "fatal", message: "listen tcp 127.0.0.1:9001: address in use\u0007" }); setTimeout(() => container.die(2), 5); }, agent: silent });
+    const { runner } = setup({ startup: (container) => { container.emit({ type: "hello", proto: "agent/1" }); container.emit({ type: "fatal", message: "listen tcp 127.0.0.1:9001: address in use\u0007" }); setTimeout(() => container.die(2), 5); }, agent: silent });
     await runner.register(KEY, config());
     const out = await call(runner);
     expect(out).toMatchObject({ kind: "unavailable", reason: "start_failed" });
@@ -415,22 +450,41 @@ describe("deadlines and crashes", () => {
 });
 
 describe("hostile function data stays out of the docker arguments", () => {
-  it("keeps names and environment values with newlines, flags and huge text to one -e token each, and out of every control command", async () => {
-    const { runner, runArgs, controlCalls } = setup();
+  it("keeps hostile names and environment values in the 0600 environment file, out of every argument and control command (L2)", async () => {
+    const { runner, runArgs, controlCalls, fs } = setup();
     const key: FunctionKey = { functionName: "--privileged -v /:/host", version: "$LATEST" };
-    const environment = { EVIL: "x\n--cap-add=ALL\n-e FOO=bar", FLAG: "--privileged", BIG: "y".repeat(8_000), "ODD_NAME_1": "\u202e", PIDFILE: "/var/run/app.pid" };
+    const environment = { FLAG: "--privileged", ARGS: "-v /:/host --cap-add=ALL", BIG: "y".repeat(8_000), "ODD_NAME_1": "\u202e", PIDFILE: "/var/run/app.pid" };
     await runner.register(key, config({ environment }));
     expect((await call(runner, "r1", "{}", { key })).kind).toBe("response");
     const args = runArgs[0]!;
-    args.forEach((arg, index) => {
-      if (arg.includes("--cap-add") || arg.includes("--privileged") || arg.includes("yyyy") || arg.includes("/var/run/app.pid")) expect(args[index - 1], arg.slice(0, 40)).toBe("-e");
-    });
-    expect(args.filter((arg) => arg === "--privileged" || arg.startsWith("--cap-add"))).toEqual([]);
-    expect(valuesOf(args, "-e")).toContain(`EVIL=${environment.EVIL}`);
-    expect(valuesOf(args, "-e")).toContain(`AWS_LAMBDA_FUNCTION_NAME=${key.functionName}`);
+    expect(args.filter((arg) => arg.includes("privileged") || arg.includes("--cap-add") || arg.includes("yyyy") || arg.includes("/var/run/app.pid") || arg.includes("/:/host"))).toEqual([]);
+    expect(args).not.toContain("-e");
     expect(args.some((arg, index) => args[index - 1] === "-v")).toBe(false);
+    const content = fs.written[0]!.content;
+    expect(content).toContain("ARGS=-v /:/host --cap-add=ALL\n");
+    expect(content).toContain(`AWS_LAMBDA_FUNCTION_NAME=${key.functionName}\n`);
+    // One line per variable: no value can start another.
+    expect(content.split("\n").filter(Boolean).every((line) => /^[A-Za-z_][A-Za-z0-9_]*=/u.test(line))).toBe(true);
     await runner.stopAll();
     for (const control of controlCalls) { expect(control.join(" ")).not.toContain("privileged"); expect(control.at(-1)).toMatch(/^rovara-fn-[0-9a-f]{16}$/u); }
+  });
+
+  it("refuses an environment value with a newline, a carriage return or NUL: the file format has no escaping (L2)", async () => {
+    const { runner } = setup();
+    for (const value of ["a\nB=c", "a\r", "a\0"]) await expect(runner.register(KEY, config({ environment: { EVIL: value } })), JSON.stringify(value)).rejects.toThrow(RangeError);
+  });
+
+  it("deletes the environment file once the sandbox is up, and also when the start fails", async () => {
+    const ok = setup();
+    await ok.runner.register(KEY, config());
+    await call(ok.runner);
+    expect(ok.fs.files.size).toBe(0);
+    expect(ok.fs.written).toHaveLength(1);
+    const bad = setup({ failRun: "docker: boom" });
+    await bad.runner.register(KEY, config());
+    expect((await call(bad.runner)).kind).toBe("unavailable");
+    expect(bad.fs.files.size).toBe(0);
+    expect(bad.fs.written).toHaveLength(1);
   });
 
   it("refuses a function that sets a reserved variable, as AWS does", async () => {
@@ -545,7 +599,7 @@ describe("the reaper", () => {
     let kills = 0;
     const removedScratch: string[] = [];
     const { runner, containers, clock, releaseHung } = setup({ hangKill: () => { kills += 1; return kills === 1; } }, {
-      stuckStopMs: 30_000, scratch: { kind: "host-dir", baseDir: "/run/rovara/scratch" }, makeScratchDir: () => Promise.resolve(), removeScratchDir: (path) => { removedScratch.push(path); return Promise.resolve(); },
+      stuckStopMs: 30_000, makeScratchDir: () => Promise.resolve(), removeScratchDir: (path) => { removedScratch.push(path); return Promise.resolve(); },
     });
     await runner.register(KEY, config());
     await call(runner);
@@ -561,7 +615,8 @@ describe("the reaper", () => {
     expect(kills).toBe(2);
     expect(runner.stats()).toMatchObject({ environments: 0, stopping: 0, reservedMiB: 0 });
     expect(containers.size).toBe(0);
-    expect(removedScratch).toEqual(["/run/rovara/scratch/env-" + removedScratch[0]!.split("env-")[1]!]);
+    expect(removedScratch).toHaveLength(1);
+    expect(removedScratch[0]).toMatch(/^\/run\/rovara\/scratch\/tmp\/env-\d{6}$/u);
     releaseHung();
     expect(await stopping).toBe(true);
     expect(runner.stats().reservedMiB).toBe(0);
@@ -592,5 +647,162 @@ describe("the reaper", () => {
     await runner.reap();
     expect(containers.size).toBe(0);
     expect(runner.stats().reservedMiB).toBe(0);
+  });
+});
+
+describe("what the agent's stdout may carry (H2: a function can write frames onto it)", () => {
+  const frameBytes = (value: unknown): Buffer => { const body = Buffer.from(JSON.stringify(value)); const header = Buffer.alloc(4); header.writeUInt32BE(body.length); return Buffer.concat([header, body]); };
+  const goesAway = async (name: string, behavior: AgentBehavior, check: (out: Awaited<ReturnType<typeof call>>) => void = (out) => expect(out).toEqual({ kind: "unavailable", reason: "protocol_error" })): Promise<void> => {
+    const { runner, containers } = setup({ agent: behavior });
+    await runner.register(KEY, config());
+    check(await call(runner));
+    await wait(5);
+    expect(containers.size, name).toBe(0);
+    expect(runner.stats().reservedMiB, name).toBe(0);
+  };
+
+  it("kills the sandbox on a frame of an unknown type, a hello in the middle, or a command frame", async () => {
+    await goesAway("unknown type", (frame, container) => { if (frame.type === "invoke") container.emit({ type: "totally-new" } as never); });
+    await goesAway("hello again", (frame, container) => { if (frame.type === "invoke") container.emit({ type: "hello", proto: "agent/1" }); });
+    await goesAway("invoke from the agent", (frame, container) => { if (frame.type === "invoke") container.emit({ type: "invoke", requestId: "x", payload: "", timeoutMs: 1 } as never); });
+  });
+
+  it("kills the sandbox on anything but runtime_exit while idle, and on a first frame that is not hello", async () => {
+    for (const forged of [{ type: "result", requestId: "r1", status: "ok", payload: "" }, { type: "ready" }, { type: "fatal", message: "x" }, { type: "init_error" }, { type: "hello", proto: "agent/1" }]) {
+      const { runner, containers, everStarted } = setup();
+      await runner.register(KEY, config());
+      await call(runner, "r1");
+      everStarted[0]!.emit(forged as never);
+      await wait(15);
+      expect(containers.size, JSON.stringify(forged)).toBe(0);
+      expect(runner.stats().reservedMiB).toBe(0);
+    }
+    const late = setup({ startup: (container) => container.emit({ type: "ready" }) });
+    await late.runner.register(KEY, config());
+    expect(await call(late.runner)).toEqual({ kind: "unavailable", reason: "protocol_error" });
+    expect(late.containers.size).toBe(0);
+  });
+
+  it("kills the sandbox that floods its stdout while idle, before decoding it", async () => {
+    const { runner, containers, everStarted } = setup();
+    await runner.register(KEY, config());
+    await call(runner, "r1");
+    // 200 tiny but valid frames of the one type idle allows: over the idle byte cap.
+    everStarted[0]!.emitRaw(Buffer.concat(Array.from({ length: 5_000 }, () => frameBytes({ type: "runtime_exit", exitCode: 1, message: "x".repeat(20) }))));
+    await wait(15);
+    expect(containers.size).toBe(0);
+    expect(runner.stats().reservedMiB).toBe(0);
+  });
+
+  it("kills the sandbox that sends more than a few extra frames in one invoke, or more bytes than one invoke may carry", async () => {
+    await goesAway("many extra", (frame, container) => { if (frame.type === "invoke") for (let i = 0; i < 20; i += 1) container.emit({ type: "ready" }); });
+    const { runner, containers } = setup({ agent: (frame, container) => { if (frame.type === "invoke") container.emitRaw(Buffer.concat(Array.from({ length: 40 }, () => frameBytes({ type: "result", requestId: "other", status: "ok", payload: "A".repeat(64 * 1024) })))); } }, { maxFrameBytes: 128 * 1024 });
+    await runner.register(KEY, config());
+    expect(await call(runner)).toEqual({ kind: "unavailable", reason: "protocol_error" });
+    await wait(5);
+    expect(containers.size).toBe(0);
+  });
+
+  it("a forged fatal frame does not change how a crash is classified (L6): docker's record decides", async () => {
+    for (const oom of [false, true]) {
+      const agent: AgentBehavior = (frame, container) => { if (frame.type === "invoke") { container.emit({ type: "fatal", message: "listen tcp: address in use" }); setTimeout(() => container.die(oom ? 137 : 2, { oom }), 3); } };
+      const { runner } = setup({ agent });
+      await runner.register(KEY, config());
+      const out = await call(runner);
+      expect(out, String(oom)).toMatchObject({ kind: "crash", oomKilled: oom, errorType: oom ? "Runtime.OutOfMemory" : "Runtime.ExitError" });
+    }
+  });
+
+  it("accepts the frames a real invoke may carry: a runtime_exit and a ready around its result", async () => {
+    const restart: AgentBehavior = (frame, container) => {
+      if (frame.type !== "invoke") return;
+      container.emit({ type: "runtime_exit", exitCode: 1, message: "died" });
+      container.emit({ type: "ready", initDurationMs: 9 });
+      container.emit(resultFor(frame, { initDurationMs: 9 }));
+    };
+    const { runner, containers } = setup({ agent: restart });
+    await runner.register(KEY, config());
+    expect(await call(runner)).toMatchObject({ kind: "response" });
+    // The runtime restarted under it (its /tmp is half used): the sandbox is not kept.
+    await wait(5);
+    expect(runner.stats()).toMatchObject({ idle: 0, reservedMiB: 0 });
+    expect(containers.size).toBe(0);
+    expect(await call(runner, "r2")).toMatchObject({ cold: true });
+  });
+});
+
+describe("the services network (M2)", () => {
+  const services = (ip = "10.20.30.70") => ({ mode: "services" as const, name: "rovara-svc-0123456789ab", ip, hostsFile: "/run/rovara/e/hosts", resolvConf: "/run/rovara/e/resolv.conf" });
+
+  it("registers and starts on an internal network, at an address in .64 to .127 of its subnet", async () => {
+    const { runner, runArgs } = setup();
+    await runner.register(KEY, config({ network: services() }));
+    expect(await call(runner)).toMatchObject({ kind: "response" });
+    expect(valuesOf(runArgs[0]!, "--network")).toEqual(["rovara-svc-0123456789ab"]);
+    expect(valuesOf(runArgs[0]!, "--ip")).toEqual(["10.20.30.70"]);
+  });
+
+  it("refuses at register: a network that is not internal, unknown, outside range, or whose subnet does not hold the address", async () => {
+    const { runner } = setup({ networks: { "rovara-svc-0123456789ab": { internal: true, subnet: "10.20.30.0/24" }, "rovara-svc-open": { internal: false, subnet: "10.20.31.0/24" } } });
+    await expect(runner.register(KEY, config({ network: { ...services("10.20.31.70"), name: "rovara-svc-open" } }))).rejects.toThrow(RangeError);
+    await expect(runner.register(KEY, config({ network: { ...services(), name: "rovara-svc-missing" } }))).rejects.toThrow(RangeError);
+    for (const ip of ["10.20.30.2", "10.20.30.200", "10.20.31.70", "10.20.30.63"]) await expect(runner.register(KEY, config({ network: services(ip) })), ip).rejects.toThrow(RangeError);
+    for (const name of ["host", "bridge", "none", "--privileged", "container:x"]) await expect(runner.register(KEY, config({ network: { ...services(), name } })), name).rejects.toThrow(RangeError);
+  });
+
+  it("checks again at every cold start: a network replaced since register is not used", async () => {
+    const networks: Record<string, { internal: boolean; subnet: string }> = { "rovara-svc-0123456789ab": { internal: true, subnet: "10.20.30.0/24" } };
+    const { runner, runArgs, containers } = setup({ networks });
+    await runner.register(KEY, config({ network: services() }));
+    networks["rovara-svc-0123456789ab"] = { internal: false, subnet: "10.20.30.0/24" };
+    expect(await call(runner)).toMatchObject({ kind: "unavailable", reason: "start_failed" });
+    expect(runArgs).toHaveLength(0);
+    expect(containers.size).toBe(0);
+    expect(runner.stats().reservedMiB).toBe(0);
+  });
+});
+
+describe("the sandbox's /tmp and scratch folders (L3, L4)", () => {
+  it("defaults to a disk-backed folder per sandbox, not a tmpfs that counts as memory", async () => {
+    const { runner, runArgs, fs } = setup();
+    await runner.register(KEY, config());
+    await call(runner);
+    const args = runArgs[0]!;
+    expect(args).not.toContain("--tmpfs");
+    const id = args.find((arg) => arg.startsWith("rovara.function="))!.split("=")[1]!;
+    expect(valuesOf(args, "--volume")).toContain(`/run/rovara/scratch/tmp/${id}:/tmp:rw`);
+    expect(fs.dirs.has(`/run/rovara/scratch/tmp/${id}`)).toBe(true);
+    await runner.stopAll();
+    expect(fs.dirs.size).toBe(0);
+  });
+
+  it("can still be told to use a size-capped tmpfs", async () => {
+    const { runner, runArgs, fs } = setup({}, { scratchKind: "tmpfs" });
+    await runner.register(KEY, config({ ephemeralMb: 300 }));
+    await call(runner);
+    expect(valuesOf(runArgs[0]!, "--tmpfs")).toEqual(["/tmp:rw,exec,nosuid,nodev,mode=1777,size=300m,uid=993,gid=993"]);
+    expect(fs.dirs.size).toBe(0);
+  });
+
+  it("makes parents 0700 and the leaf 0700 owned by the sandbox's uid, or 0777 inside the 0700 parents when it may not chown (real folders)", async () => {
+    const base = await mkdtemp(join(tmpdir(), "w1-scratch-"));
+    try {
+      const fake = fakeSandboxHost();
+      const events: SandboxLogEvent[] = [];
+      const runner = createSandboxController({ docker: fake.docker, launcher: fake.launcher, memoryBudgetMiB: 512, labels: [], autoReap: false, scratchBaseDir: `${base}/run`, log: (event) => events.push(event), newEnvironmentId: () => "env-real01" });
+      await runner.register(KEY, config());
+      expect((await call(runner)).kind).toBe("response");
+      const mode = async (path: string): Promise<number> => (await stat(path)).mode & 0o7777;
+      expect(await mode(`${base}/run`)).toBe(0o700);
+      expect(await mode(`${base}/run/tmp`)).toBe(0o700);
+      expect(await mode(`${base}/run/env`)).toBe(0o700);
+      const leaf = await stat(`${base}/run/tmp/env-real01`);
+      expect([0o700, 0o777]).toContain(leaf.mode & 0o7777);
+      if ((leaf.mode & 0o7777) === 0o700) expect(leaf.uid).toBe(993);
+      // The environment file was written 0600 and is gone now.
+      await expect(stat(`${base}/run/env/env-real01.env`)).rejects.toThrow();
+      await runner.stopAll();
+      await expect(stat(`${base}/run/tmp/env-real01`)).rejects.toThrow();
+    } finally { await rm(base, { recursive: true, force: true }); }
   });
 });

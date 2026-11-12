@@ -40,7 +40,8 @@ def probe():
     result["connect_internet"] = can(connect)
     result["dns"] = can(lambda: socket.gethostbyname("example.com"))
     result["caps"] = [line.strip() for line in open("/proc/self/status") if line.startswith(("CapEff", "CapBnd", "NoNewPrivs"))]
-    result["mounts"] = {m[1]: "%s,%s" % (m[2], m[3][:40]) for m in (line.split() for line in open("/proc/mounts")) if m[1] in ("/", "/tmp", "/var/task", "/opt", "/rovara/agent")}
+    result["mounts"] = {m[1]: "%s,%s" % (m[2], m[3]) for m in (line.split() for line in open("/proc/mounts")) if m[1] in ("/", "/tmp", "/var/task", "/opt", "/rovara/agent")}
+    result["tmpMount"] = result["mounts"].get("/tmp")
     result["processes"] = len([p for p in os.listdir("/proc") if p.isdigit()])
     result["route"] = open("/proc/net/route").read().strip().splitlines()[1:]
     result["env"] = {k: v for k, v in os.environ.items() if k.startswith(("AWS_LAMBDA_", "AWS_REGION", "_HANDLER", "STAGE", "NEWLINE", "TZ", "AGENT_"))}
@@ -70,6 +71,16 @@ def handler(event, context):
             return {"ok": False, "errno": e.errno}
     if op == "exit":
         os._exit(event.get("code", 3))
+    if op == "forge":
+        import json
+        import struct
+        try:
+            body = json.dumps({"type": "totally-new"}).encode()
+            with open("/proc/1/fd/1", "wb", buffering=0) as out:
+                out.write(struct.pack(">I", len(body)) + body)
+            return {"forged": True}
+        except Exception as e:  # noqa: BLE001
+            return {"forged": False, "error": "%s:%s" % (type(e).__name__, getattr(e, "errno", ""))}
     if op == "raise":
         raise ValueError("raised on purpose")
     if op == "probe":
