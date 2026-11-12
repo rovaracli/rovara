@@ -1,0 +1,149 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AllowTestServices",
+      "Effect": "Allow",
+      "Action": [
+        "apigateway:*",
+        "dynamodb:*",
+        "events:*",
+        "iam:*",
+        "kinesis:*",
+        "kms:*",
+        "lambda:*",
+        "logs:*",
+        "s3:*",
+        "secretsmanager:*",
+        "sns:*",
+        "sqs:*",
+        "ssm:*",
+        "states:*",
+        "sts:GetCallerIdentity",
+        "tag:GetResources",
+        "tag:GetTagKeys",
+        "tag:GetTagValues"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "DenyWithoutRunTag",
+      "Effect": "Deny",
+      "NotAction": [
+        "sts:GetCallerIdentity"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "Null": {
+          "aws:PrincipalTag/rovara-run": "true"
+        }
+      }
+    },
+    {
+      "Sid": "DenyOtherRegions",
+      "Effect": "Deny",
+      "NotAction": [
+        "iam:*",
+        "s3:GetBucketLocation",
+        "s3:ListAllMyBuckets",
+        "sts:GetCallerIdentity"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringNotEquals": {
+          "aws:RequestedRegion": "${region}"
+        }
+      }
+    },
+    {
+      "Sid": "DenyRunTagChange",
+      "Effect": "Deny",
+      "Action": [
+        "*"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "ForAnyValue:StringEquals": {
+          "aws:TagKeys": "rovara-run"
+        },
+        "StringNotEquals": {
+          "aws:RequestTag/rovara-run": "$${aws:PrincipalTag/rovara-run}"
+        }
+      }
+    },
+    {
+      "Sid": "DenyIamOutsideRunNames",
+      "Effect": "Deny",
+      "Action": [
+        "iam:AcceptDelegationRequest",
+        "iam:Add*",
+        "iam:AssociateDelegationRequest",
+        "iam:Attach*",
+        "iam:ChangePassword",
+        "iam:Create*",
+        "iam:DeactivateMFADevice",
+        "iam:Delete*",
+        "iam:Detach*",
+        "iam:Disable*",
+        "iam:Enable*",
+        "iam:PassRole",
+        "iam:Put*",
+        "iam:RejectDelegationRequest",
+        "iam:Remove*",
+        "iam:ResetServiceSpecificCredential",
+        "iam:ResyncMFADevice",
+        "iam:SendDelegationToken",
+        "iam:Set*",
+        "iam:Tag*",
+        "iam:Untag*",
+        "iam:Update*",
+        "iam:UploadCloudFrontPublicKey",
+        "iam:UploadSSHPublicKey",
+        "iam:UploadServerCertificate",
+        "iam:UploadSigningCertificate"
+      ],
+      "NotResource": [
+        "arn:${partition}:iam::${account_id}:instance-profile/rv-$${aws:PrincipalTag/rovara-run}-*",
+        "arn:${partition}:iam::${account_id}:policy/rv-$${aws:PrincipalTag/rovara-run}-*",
+        "arn:${partition}:iam::${account_id}:role/rv-$${aws:PrincipalTag/rovara-run}-*"
+      ]
+    },
+    {
+      "Sid": "DenyRoleWithoutBoundary",
+      "Effect": "Deny",
+      "Action": [
+        "iam:CreateRole",
+        "iam:PutRolePermissionsBoundary"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringNotEquals": {
+          "iam:PermissionsBoundary": "arn:${partition}:iam::${account_id}:policy/rovara-test-boundary-${external_id}"
+        }
+      }
+    },
+    {
+      "Sid": "DenyBoundaryRemoval",
+      "Effect": "Deny",
+      "Action": [
+        "iam:DeleteRolePermissionsBoundary",
+        "iam:DeleteUserPermissionsBoundary",
+        "iam:PutUserPermissionsBoundary"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "DenyLongLivedKeys",
+      "Effect": "Deny",
+      "Action": [
+        "iam:CreateAccessKey",
+        "iam:CreateLoginProfile",
+        "iam:CreateServiceSpecificCredential",
+        "iam:CreateUser",
+        "iam:UpdateLoginProfile",
+        "iam:UploadSSHPublicKey"
+      ],
+      "Resource": "*"
+    }
+  ]
+}

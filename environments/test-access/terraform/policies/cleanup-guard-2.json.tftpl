@@ -1,0 +1,64 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DenyChangesOutsideRunNames2",
+      "Effect": "Deny",
+      "Action": [
+        "events:DeletePartnerEventSource",
+        "lambda:DeleteLayerVersion",
+        "s3:DeleteAccessPoint",
+        "s3:DeleteAccessPointForObjectLambda",
+        "s3:DeleteBucket",
+        "s3:DeleteBucketMetadataTableConfiguration",
+        "s3:DeleteBucketWebsite",
+        "s3:DeleteObject",
+        "s3:DeleteObjectAnnotation",
+        "s3:DeleteObjectVersion",
+        "s3:DeleteObjectVersionAnnotation",
+        "ssm:DeleteResourceDataSync"
+      ],
+      "NotResource": [
+        "arn:${partition}:apigateway:${region}:${account_id}:/domainnames/rv-$${aws:PrincipalTag/rovara-run}-*/routingrules/*",
+        "arn:${partition}:dynamodb::${account_id}:global-table/rv-$${aws:PrincipalTag/rovara-run}-*",
+        "arn:${partition}:dynamodb:${region}:${account_id}:table/rv-$${aws:PrincipalTag/rovara-run}-*",
+        "arn:${partition}:dynamodb:${region}:${account_id}:table/rv-$${aws:PrincipalTag/rovara-run}-*/backup/*",
+        "arn:${partition}:dynamodb:${region}:${account_id}:table/rv-$${aws:PrincipalTag/rovara-run}-*/stream/*",
+        "arn:${partition}:events:${region}::event-source/rv-$${aws:PrincipalTag/rovara-run}-*",
+        "arn:${partition}:events:${region}:${account_id}:api-destination/rv-$${aws:PrincipalTag/rovara-run}-*",
+        "arn:${partition}:events:${region}:${account_id}:archive/rv-$${aws:PrincipalTag/rovara-run}-*",
+        "arn:${partition}:events:${region}:${account_id}:connection/rv-$${aws:PrincipalTag/rovara-run}-*",
+        "arn:${partition}:events:${region}:${account_id}:endpoint/rv-$${aws:PrincipalTag/rovara-run}-*",
+        "arn:${partition}:events:${region}:${account_id}:event-bus/rv-$${aws:PrincipalTag/rovara-run}-*",
+        "arn:${partition}:events:${region}:${account_id}:replay/rv-$${aws:PrincipalTag/rovara-run}-*",
+        "arn:${partition}:kinesis:${region}:${account_id}:stream/rv-$${aws:PrincipalTag/rovara-run}-*",
+        "arn:${partition}:lambda:${region}:${account_id}:function:rv-$${aws:PrincipalTag/rovara-run}-*",
+        "arn:${partition}:lambda:${region}:${account_id}:layer:rv-$${aws:PrincipalTag/rovara-run}-*",
+        "arn:${partition}:lambda:${region}:${account_id}:layer:rv-$${aws:PrincipalTag/rovara-run}-*:*",
+        "arn:${partition}:lambda:${region}:${account_id}:microvm-image:rv-$${aws:PrincipalTag/rovara-run}-*",
+        "arn:${partition}:lambda:${region}:${account_id}:web-function/rv-$${aws:PrincipalTag/rovara-run}-*",
+        "arn:${partition}:logs:${region}:${account_id}:log-group:rv-$${aws:PrincipalTag/rovara-run}-*",
+        "arn:${partition}:logs:${region}:${account_id}:log-group:rv-$${aws:PrincipalTag/rovara-run}-*:log-stream:*",
+        "arn:${partition}:s3-object-lambda:${region}:${account_id}:accesspoint/rv-$${aws:PrincipalTag/rovara-run}-*",
+        "arn:${partition}:s3:::rv-$${aws:PrincipalTag/rovara-run}-*",
+        "arn:${partition}:s3:::rv-$${aws:PrincipalTag/rovara-run}-*/*",
+        "arn:${partition}:s3:${region}:${account_id}:accesspoint/rv-$${aws:PrincipalTag/rovara-run}-*",
+        "arn:${partition}:s3:${region}:${account_id}:accesspoint/rv-$${aws:PrincipalTag/rovara-run}-*/object/*",
+        "arn:${partition}:sns:${region}:${account_id}:rv-$${aws:PrincipalTag/rovara-run}-*",
+        "arn:${partition}:sqs:${region}:${account_id}:rv-$${aws:PrincipalTag/rovara-run}-*",
+        "arn:${partition}:ssm:${region}:${account_id}:resource-data-sync/rv-$${aws:PrincipalTag/rovara-run}-*",
+        "arn:${partition}:states:${region}:${account_id}:activity:rv-$${aws:PrincipalTag/rovara-run}-*",
+        "arn:${partition}:states:${region}:${account_id}:mapRun:rv-$${aws:PrincipalTag/rovara-run}-*/*:*",
+        "arn:${partition}:states:${region}:${account_id}:stateMachine:rv-$${aws:PrincipalTag/rovara-run}-*"
+      ]
+    },
+    {
+      "Sid": "DenyChangesNamedLikeReads1",
+      "Effect": "Deny",
+      "Action": [
+        "states:GetActivityTask"
+      ],
+      "Resource": "*"
+    }
+  ]
+}

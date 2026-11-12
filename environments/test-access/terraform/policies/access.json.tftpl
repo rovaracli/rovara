@@ -1,0 +1,30 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AllowTestServices",
+      "Effect": "Allow",
+      "Action": [
+        "apigateway:*",
+        "dynamodb:*",
+        "events:*",
+        "iam:*",
+        "kinesis:*",
+        "kms:*",
+        "lambda:*",
+        "logs:*",
+        "s3:*",
+        "secretsmanager:*",
+        "sns:*",
+        "sqs:*",
+        "ssm:*",
+        "states:*",
+        "sts:GetCallerIdentity",
+        "tag:GetResources",
+        "tag:GetTagKeys",
+        "tag:GetTagValues"
+      ],
+      "Resource": "*"
+    }
+  ]
+}

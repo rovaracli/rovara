@@ -1,0 +1,113 @@
+# cfn-guard rules for the customer's template (environments/test-access/cloudformation/rovara-test-access.template.yaml).
+# What a customer's security review looks for, as checks that fail the build:
+#   - the trust policy asks for the external id, names Rovara's role (never a wildcard) and the run tag keys only
+#   - every role carries the permissions boundary
+#   - no long-lived keys, no IAM users
+#   - nothing grants every action on every resource
+#   - the callback goes to the topic the parameter names
+# Run: ~/.local/share/rovara-tools/cfn-guard-3.2.1/cfn-guard validate -r <this file> -d <template> (scripts/test-access/check-templates.sh does it, with cfn-lint).
+
+let roles = Resources.*[ Type == "AWS::IAM::Role" ]
+let policies = Resources.*[ Type == "AWS::IAM::ManagedPolicy" ]
+let key_resources = Resources.*[ Type in ["AWS::IAM::AccessKey", "AWS::IAM::User", "AWS::IAM::LoginProfile", "AWS::IAM::UserToGroupAddition", "AWS::IAM::ServiceSpecificCredential"] ]
+
+rule no_long_lived_keys {
+    %key_resources empty
+}
+
+rule roles_exist {
+    %roles !empty
+}
+
+rule assume_role_requires_external_id when %roles !empty {
+    %roles {
+        Properties.AssumeRolePolicyDocument.Statement[ Action == "sts:AssumeRole" ] {
+            Condition.StringEquals."sts:ExternalId" exists
+            Condition.StringEquals."sts:ExternalId" == { "Ref": "ExternalId" }
+        }
+    }
+}
+
+rule trust_policy_has_only_the_two_actions when %roles !empty {
+    %roles {
+        Properties.AssumeRolePolicyDocument.Statement[*] {
+            Effect == "Allow"
+            Action in ["sts:AssumeRole", "sts:TagSession"]
+        }
+    }
+}
+
+rule trust_principal_is_the_rovara_parameter when %roles !empty {
+    %roles {
+        Properties.AssumeRolePolicyDocument.Statement[*] {
+            Principal.AWS == { "Ref": "RovaraPrincipal" }
+        }
+    }
+}
+
+rule trust_has_no_wildcard_principal when %roles !empty {
+    %roles {
+        Properties.AssumeRolePolicyDocument.Statement[*] {
+            Principal !is_string
+            Principal.AWS !is_list
+            when Principal.AWS is_string {
+                Principal.AWS != "*"
+            }
+            Principal.Service not exists
+            Principal.Federated not exists
+        }
+    }
+}
+
+rule tag_session_only_with_the_run_tag when %roles !empty {
+    %roles {
+        Properties.AssumeRolePolicyDocument.Statement[ Action == "sts:TagSession" ] {
+            Condition."ForAllValues:StringEquals"."aws:TagKeys"[*] == "rovara-run"
+            Condition.StringLike."aws:RequestTag/rovara-run" exists
+        }
+    }
+}
+
+rule every_role_has_the_boundary when %roles !empty {
+    %roles {
+        Properties.PermissionsBoundary exists
+    }
+}
+
+rule roles_have_no_inline_admin when %roles !empty {
+    %roles {
+        Properties.Policies not exists
+        Properties.ManagedPolicyArns !empty
+    }
+}
+
+rule no_allow_everything when %policies !empty {
+    %policies {
+        Properties.PolicyDocument.Statement[ Effect == "Allow" ] {
+            Action !is_string
+            Action[*] != "*"
+            Resource == "*"
+        }
+    }
+}
+
+rule the_boundary_requires_the_run_tag {
+    Resources.RovaraTestBoundary.Properties.PolicyDocument.Statement[ Sid == "DenyWithoutRunTag" ] !empty
+    Resources.RovaraTestBoundary.Properties.PolicyDocument.Statement[ Sid == "DenyWithoutRunTag" ] {
+        Effect == "Deny"
+        Condition.Null."aws:PrincipalTag/rovara-run" == "true"
+    }
+}
+
+rule callback_goes_to_the_topic_parameter {
+    Resources.*[ Type == "Custom::RovaraTestAccess" ] {
+        Properties.ServiceToken == { "Ref": "CallbackTopicArn" }
+        Properties.ServiceTimeout exists
+    }
+}
+
+rule external_id_is_checked_by_pattern {
+    Parameters.ExternalId.AllowedPattern exists
+    Parameters.RovaraPrincipal.AllowedPattern exists
+    Parameters.ConnectToken.NoEcho == true
+}
