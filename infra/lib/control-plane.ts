@@ -1401,6 +1401,8 @@ export class ControlPlaneStack extends Stack {
       brokerSettings.add("designReview", signInParameters.designReviewEnabled.valueAsString);
       // Nightly health (SH28): a packed setting. Off ("0") unless the operator sets the parameter to "1".
       brokerSettings.add("nightlyHealth", signInParameters.nightlyHealthEnabled.valueAsString);
+      // Insights (srv/insights-reads): a packed setting. Off ("0") unless the operator sets the parameter to "1".
+      brokerSettings.add("insights", signInParameters.insightsEnabled.valueAsString);
       // The dispatcher honours the same switch when it builds a queued stage's lessons at delivery (WL-6): off, no queued, parked or retried stage gets lessons. A plain variable (its environment is small).
       dispatcher.addEnvironment(BROKER_SETTINGS.learnedLessons.variable, signInParameters.learnedLessonsEnabled.valueAsString);
       // Saved project images: the dispatcher hands a rebuild job's lease to the worker when it delivers (aws/dispatcher.ts `createSavedEnvBuildLease`), and only while the same switch is on. A plain variable (its environment is small).

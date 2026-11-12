@@ -34,6 +34,7 @@ import { scenario } from "./scenarios.js";
 import { workAnswer } from "./work-mock.js";
 import { setSpendingVariant, spendingAnswer } from "./spending-mock.js";
 import { projectSpendAnswer, setProjectSpendVariant } from "./project-spend-mock.js";
+import { automationsAsk, automationsMock } from "./automations-mock.js";
 import { healthAnswer, resetHealth, setHealthVariant } from "./health-mock.js";
 import { howWeWorkMock, resetHowWeWork } from "./how-we-work-mock.js";
 import { lessonsMock, resetLessons, resetTaskLessons, setLessonsPaused, setRepoRetire, setDuplicateLesson, setPresetProposal, setSourceEditing, setTrialLessons, taskLessonsMock } from "./lessons-mock.js";
@@ -97,6 +98,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
  if (url.pathname === "/__mock/session-state" && method === "POST" && current.session !== undefined) { let body = "";for await (const chunk of request) body += String(chunk);const changes = JSON.parse(body) as Record<string, unknown>;current.session = SessionViewSchema.parse({ ...current.session, ...changes });json(200, { ok: true });return; }
  if (url.pathname === "/__mock/health" && method === "POST" && current.name === "admin") { setHealthVariant(url.searchParams.get("variant"));json(200, { ok: true });return; }
  if (url.pathname === "/__mock/spending" && method === "POST" && current.name === "admin") { setSpendingVariant(url.searchParams.get("variant"));json(200, { ok: true });return; }
+ if (current.name === "project" && await automationsAsk({ url, method, json, scenario: current, body: async () => { let text = "";for await (const chunk of request) text += String(chunk);return text === "" ? {} : JSON.parse(text) as unknown; } })) return;
  if (url.pathname === "/__mock/project-spend" && method === "POST" && current.name === "project") { setProjectSpendVariant(url.searchParams.get("variant"));json(200, { ok: true });return; }
  if (url.pathname === "/__mock/admin-fail-after-write" && method === "POST" && current.name === "admin") { adminFailAfterWrite = true;json(200, { ok: true });return; }
  if (url.pathname === "/__mock/admin-damage-invite" && method === "POST" && current.name === "admin") { adminDirectory.damageInvite();json(200, { ok: true });return; }
@@ -185,6 +187,8 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
  }
  if (current.name === "admin" && method === "GET") { const spending = spendingAnswer(url, origin);if (spending !== undefined) { json(spending.status, spending.body);return; } }
  if (current.name === "project" && method === "GET") { const spend = projectSpendAnswer(url);if (spend !== undefined) { json(spend.status, spend.body);return; } }
+ // exp/automations: the Automations tab's reads and the trigger writes, only once a journey asked (and the navigation answer then names `chains`).
+ if (current.name === "project" && await automationsMock({ url, method, json, scenario: current, record: value => { evidence.body = value; }, body: async () => { let text = "";for await (const chunk of request) text += String(chunk);return text === "" ? {} : JSON.parse(text) as unknown; } })) return;
  // Lane B: real read handlers; the scenario endpoint seeds only synthetic persisted rows.
  if (current.name === "admin" && method === "GET" && (url.pathname === "/v1/web/projects" || /^\/v1\/web\/projects\/[^/]+(?:\/members)?$/.test(url.pathname) || url.pathname === "/v1/web/agents" || /^\/v1\/web\/agents\/[^/]+\/versions$/.test(url.pathname) || url.pathname === "/v1/web/org/agent-guardrails")) {
   const result = await adminDirectory.request(deps, webCaller, method, (url.pathname + url.search).replace("/v1/web/", "/v1/app/"));json(200,result);return;

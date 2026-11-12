@@ -71,12 +71,63 @@ describe("the readings of a task and its documents", () => {
     expect(pinsOf(undefined)).toEqual({});
   });
 
-  it("withholds every source of the tracker a task came from (the item is not recorded), and nothing for other origins", () => {
-    const sources = [{ sourceId: "lin", system: "linear" }, { sourceId: "jira1", system: "jira" }, { sourceId: "docs", system: "notion" }, { sourceId: "mystery" }];
-    expect(originOf("linear", sources)).toEqual([{ sourceId: "lin", itemRef: "" }, { sourceId: "mystery", itemRef: "" }]);
-    expect(originOf("jira", sources)).toEqual([{ sourceId: "jira1", itemRef: "" }, { sourceId: "mystery", itemRef: "" }]);
-    expect(originOf("app", sources)).toEqual([]);
-    expect(originOf(undefined, sources)).toEqual([]);
+  describe("the task's own request thread (originOf, the same rule as Rovara Code's originOfTicket)", () => {
+    const sources = [{ sourceId: "lin", system: "linear" }, { sourceId: "jira1", system: "jira" }, { sourceId: "gh", system: "github_issues" }, { sourceId: "docs", system: "notion" }, { sourceId: "sentry1", system: "sentry" }, { sourceId: "mystery" }];
+    const ids = (items: ReturnType<typeof originOf>) => items.map((item) => item.sourceId);
+
+    it("a known tracker withholds every source of that same system (and its other names) and every source with no system, and reads the rest", () => {
+      expect(originOf("linear", sources)).toEqual([{ sourceId: "lin", itemRef: "" }, { sourceId: "mystery", itemRef: "" }]);
+      expect(originOf("jira", sources)).toEqual([{ sourceId: "jira1", itemRef: "" }, { sourceId: "mystery", itemRef: "" }]);
+      expect(ids(originOf("github_issue", sources))).toEqual(["gh", "mystery"]);
+    });
+
+    it("a source with no system is withheld whatever the origin's tracker", () => {
+      for (const origin of ["linear", "jira", "github_issue", "tracker", undefined, "event"]) expect(ids(originOf(origin, [{ sourceId: "mystery" }]))).toEqual(["mystery"]);
+    });
+
+    it("an unknown origin fails closed: every source that is not a monitoring kind is withheld, never nothing", () => {
+      for (const origin of [undefined, "tracker", "shortcut", "event"]) {
+        expect(ids(originOf(origin, sources))).toEqual(["lin", "jira1", "gh", "docs", "mystery"]);
+      }
+    });
+
+    it("a monitoring source is read for an unknown origin; a document or wiki source is not", () => {
+      expect(ids(originOf(undefined, [{ sourceId: "s", system: "sentry" }, { sourceId: "d", system: "Datadog" }, { sourceId: "g", system: "grafana" }]))).toEqual([]);
+      expect(ids(originOf(undefined, [{ sourceId: "w", system: "confluence" }, { sourceId: "drive", system: "gdrive" }]))).toEqual(["w", "drive"]);
+    });
+
+    it("a task no ticket started has no request thread to withhold (the project's own automatic jobs included)", () => {
+      for (const origin of ["app", "cli", "mcp", "slack", "offer", "test_run", "schedule", "chain", "nightly", "automatic"]) expect(originOf(origin, sources)).toEqual([]);
+    });
+
+    describe("an event task names the source that started it", () => {
+      const eventSources = [{ sourceId: "lin", system: "linear" }, { sourceId: "jira1", system: "jira" }, { sourceId: "gh", system: "github" }, { sourceId: "gh2", system: "github_issues" }, { sourceId: "docs", system: "notion" }, { sourceId: "wiki", system: "confluence" }, { sourceId: "sentry1", system: "sentry" }, { sourceId: "dd", system: "datadog" }, { sourceId: "mystery" }];
+      const closed = ["lin", "jira1", "gh", "gh2", "docs", "wiki", "mystery"];
+
+      it("a github, linear or jira event gets that tracker's rule: the system and its aliases withheld, the no-system source withheld, everything else read", () => {
+        expect(ids(originOf("event", eventSources, "github"))).toEqual(["gh", "gh2", "mystery"]);
+        expect(ids(originOf("event", eventSources, "linear"))).toEqual(["lin", "mystery"]);
+        expect(ids(originOf("event", eventSources, "Jira"))).toEqual(["jira1", "mystery"]);
+      });
+
+      it("a monitoring event (sentry, datadog, grafana, cloudwatch) withholds only that same system and the sources with no system", () => {
+        expect(ids(originOf("event", eventSources, "sentry"))).toEqual(["sentry1", "mystery"]);
+        expect(ids(originOf("event", eventSources, "datadog"))).toEqual(["dd", "mystery"]);
+        expect(ids(originOf("event", [{ sourceId: "g", system: "grafana" }, { sourceId: "cw", system: "cloudwatch" }, { sourceId: "docs", system: "notion" }], "cloudwatch"))).toEqual(["cw"]);
+        expect(ids(originOf("event", [{ sourceId: "g", system: "Grafana" }, { sourceId: "docs", system: "notion" }], "grafana"))).toEqual(["g"]);
+      });
+
+      it("a pagerduty or vercel event, a source Rovara has never heard of, and an event with no source stay fail-closed: documents and wikis are withheld", () => {
+        for (const source of ["pagerduty", "vercel", "newtracker", undefined]) expect(ids(originOf("event", eventSources, source))).toEqual(closed);
+        expect(ids(originOf("event", eventSources, ""))).toEqual(closed);
+      });
+
+      it("the source is read only for the event origin", () => {
+        expect(ids(originOf("tracker", eventSources, "sentry"))).toEqual(closed);
+        expect(originOf("app", eventSources, "github")).toEqual([]);
+        expect(ids(originOf(undefined, eventSources, "sentry"))).toEqual(closed);
+      });
+    });
   });
 });
 

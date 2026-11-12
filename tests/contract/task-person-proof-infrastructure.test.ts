@@ -130,6 +130,7 @@ function parentRemainderDigest(template: TemplateJson): string {
   // Company setup recipes (SH30): one switch, a parameter and a packed setting.
   delete remainder.Parameters?.SetupRecipesEnabled;
   delete remainder.Parameters?.NightlyHealthEnabled;
+  delete remainder.Parameters?.InsightsEnabled;
   // Four test results: its own switch, a parameter and a packed setting, no part of the proof-only addition.
   delete remainder.Parameters?.VerifyResultsEnabled;
   // Setup agent (sh-setup-wire): its own switch, a parameter and a packed setting, no part of the proof-only addition.
@@ -175,7 +176,7 @@ function parentRemainderDigest(template: TemplateJson): string {
   for (const [id] of workflowDependencyEnvironmentEntries(remainder)) {
     const brokerVariables = resources[id]!.Properties!.Environment as { Variables: Record<string, unknown> };
     // The flag is in the broker's settings in a named environment (ENV-ROOM: AGENTX_SETTINGS), and its own variable in the legacy one (which has none).
-    if (brokerVariables.Variables.AGENTX_SETTINGS !== undefined) takeBrokerSettings(brokerVariables.Variables, ["workflowDependencies", "rovaraCodeV2", "planSelfCheck", "autofix", "liveSteer", "liveRedirect", "liveAsk", "liveFix", "proofEvidence", "decisionCards", "testEnvironment", "learnedLessons", "verifyResults", "setupAgent", "testServices", "testAccounts", "projectImages", "secondReview", "setupRecipes", "nightlyHealth", "learningSuggestionsDefault", "uiFlagsForceOff"]);
+    if (brokerVariables.Variables.AGENTX_SETTINGS !== undefined) takeBrokerSettings(brokerVariables.Variables, ["workflowDependencies", "rovaraCodeV2", "planSelfCheck", "autofix", "liveSteer", "liveRedirect", "liveAsk", "liveFix", "proofEvidence", "decisionCards", "testEnvironment", "learnedLessons", "verifyResults", "setupAgent", "testServices", "testAccounts", "projectImages", "secondReview", "setupRecipes", "nightlyHealth", "insights", "learningSuggestionsDefault", "uiFlagsForceOff"]);
     delete brokerVariables.Variables.AGENTX_WORKFLOW_DEPENDENCIES_ENABLED;
     delete brokerVariables.Variables.AGENTX_PROJECT_SETUP_RUNTIME_CATALOG_ID;
     delete brokerVariables.Variables.AGENTX_E2E_FEATURE_RUNTIME_CATALOG_ID;

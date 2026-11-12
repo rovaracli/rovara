@@ -1,0 +1,28 @@
+/* Review groups (lane exp/review-groups, switch rovara.reviews). Every rule below needs an element only the two review screens render, so with the switch off none of it applies. This sheet is loaded by their lazy chunks only. */
+.rv-review-groups,.rv-review-card{min-width:0;margin:var(--rv-space-6) 0}
+.rv-review-groups>h2{font-size:var(--rv-font-lg);margin-bottom:var(--rv-space-4)}
+.rv-review-groups p,.rv-review-card p{margin:var(--rv-space-2) 0;overflow-wrap:anywhere}
+.rv-review-note{border-left:3px solid var(--rv-border-strong);padding:var(--rv-space-2) var(--rv-space-4);max-width:76ch;min-width:0}
+.rv-review-group-list,.rv-review-members,.rv-review-prs{list-style:none;padding:0;margin:0}
+.rv-review-group-list{display:grid;gap:var(--rv-space-4);margin:var(--rv-space-4) 0}
+.rv-review-group-list>li{padding:var(--rv-space-3) 0;border-bottom:1px solid var(--rv-border);min-width:0}
+.rv-review-group-list h3{font-size:var(--rv-font-md);margin:0 0 var(--rv-space-2);overflow-wrap:anywhere}
+.rv-review-members li{padding:var(--rv-space-1) 0;overflow-wrap:anywhere;min-width:0}
+.rv-review-members li[data-eligible="no"],.rv-review-gone{color:var(--rv-text-muted)}
+.rv-review-members li[data-eligible="no"]>span:first-child,.rv-review-members li[data-eligible="no"]{font-style:italic}
+.rv-review-editor{display:grid;gap:var(--rv-space-4);max-width:36rem;min-width:0;margin-top:var(--rv-space-4)}
+.rv-review-edit-group{display:grid;gap:var(--rv-space-3);min-width:0;margin:0;padding:var(--rv-space-4);border:1px solid var(--rv-border);border-radius:var(--rv-radius-sm)}
+.rv-review-edit-group legend{padding:0 var(--rv-space-2);font-weight:600}
+.rv-review-edit-group .rv-review-members li{display:flex;align-items:center;justify-content:space-between;gap:var(--rv-space-3);flex-wrap:wrap}
+.rv-review-edit-group .rv-field,.rv-review-edit-group select,.rv-review-edit-group input{min-width:0;max-width:100%}
+.rv-review-actions{display:flex;flex-wrap:wrap;gap:var(--rv-space-3);align-items:center;margin:var(--rv-space-4) 0}
+.rv-review-card{padding:var(--rv-space-5);border:1px solid var(--rv-border);border-radius:var(--rv-radius-sm);background:var(--rv-bg-raised)}
+.rv-review-card>h2{font-size:var(--rv-font-md);margin:0 0 var(--rv-space-2)}
+.rv-review-card>h2:focus{outline:2px solid var(--rv-focus);outline-offset:2px}
+.rv-review-aged{display:inline-flex;align-items:center;min-height:22px;padding:0 var(--rv-space-2);border:1px solid var(--rv-border-strong);border-radius:var(--rv-radius-sm);font-size:var(--rv-font-sm);font-weight:600}
+.rv-review-aged::before{content:"\23F1";margin-right:var(--rv-space-1)}
+.rv-review-prs li{display:inline-block;margin-right:var(--rv-space-3);overflow-wrap:anywhere}
+.rv-review-claim{display:grid;gap:var(--rv-space-1);margin:var(--rv-space-3) 0}
+.rv-review-sync-words{font-weight:600}
+.rv-review-returned{border-left:3px solid var(--rv-border-strong);padding:var(--rv-space-2) var(--rv-space-4)}
+@media(max-width:767px){.rv-review-card{padding:var(--rv-space-4)}.rv-review-actions>.rv-button{flex:1 1 auto}.rv-review-edit-group{padding:var(--rv-space-3)}}
