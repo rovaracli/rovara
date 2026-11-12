@@ -14,13 +14,19 @@ import { createApiClient, type SendResult } from "./client.js";
 import { ApiError } from "./errors.js";
 
 const NEVER = { retry: "never" } as const;
+/** A role as the server sent it: one of Cloud's four, or `unknown` for any other (a role a newer server adds), so one odd row never makes the whole roster unreadable. */
+const roleOrUnknown = z.union([CloudProjectRoleSchema, z.string().transform((): "unknown" => "unknown")]);
+type RoleOrUnknown = z.output<typeof roleOrUnknown>;
+/** The roles a picker may offer: the known four only, whatever the server lists. */
+const knownRoles = (list: readonly RoleOrUnknown[]): CloudProjectRole[] => list.filter((role): role is CloudProjectRole => role !== "unknown");
 export const peopleViewerReader = z.looseObject({
-  role: CloudProjectRoleSchema, /** The exact role, when the server says it (`role` is the three-role floor). */ projectRole: CloudProjectRoleSchema.optional(), canManageMembers: z.boolean(), assignableRoles: z.array(CloudProjectRoleSchema), canInvite: z.boolean(), invitableRoles: z.array(CloudProjectRoleSchema), canEditCodeSettings: z.boolean(), canConfirmSelfApproval: z.boolean(),
+  role: roleOrUnknown, /** The exact role, when the server says it (`role` is the three-role floor). */ projectRole: roleOrUnknown.optional(), canManageMembers: z.boolean(), assignableRoles: z.array(roleOrUnknown).transform(knownRoles), canInvite: z.boolean(), invitableRoles: z.array(roleOrUnknown).transform(knownRoles), canEditCodeSettings: z.boolean(), canConfirmSelfApproval: z.boolean(),
 });
-export const peopleViewReader = z.looseObject({ project: z.string(), members: z.array(CloudProjectMemberSchema), revision: z.number().int().nonnegative(), viewer: peopleViewerReader });
+const memberReader = z.looseObject({ developerId: z.string(), name: z.string(), email: z.string().optional(), role: z.string(), projectRole: roleOrUnknown.optional(), source: z.string(), grantedBy: z.looseObject({ developerId: z.string(), name: z.string() }).optional() });
+export const peopleViewReader = z.looseObject({ project: z.string(), members: z.array(memberReader), revision: z.number().int().nonnegative(), viewer: peopleViewerReader });
 export type PeopleView = z.output<typeof peopleViewReader>;
 export type PeopleMember = PeopleView["members"][number];
-const changeReader = z.looseObject({ member: z.looseObject({ developerId: z.string(), role: CloudProjectRoleSchema }), revision: z.number().int().nonnegative() });
+const changeReader = z.looseObject({ member: z.looseObject({ developerId: z.string(), role: z.string() }), revision: z.number().int().nonnegative() });
 const removeReader = z.looseObject({ developerId: z.string(), removed: z.boolean(), revision: z.number().int().nonnegative() });
 
 export const peoplePath = (project: string): string => "/v1/app/projects/" + encodeURIComponent(ProjectOverviewProjectSchema.shape.name.parse(project)) + "/people";

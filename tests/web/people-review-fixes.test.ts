@@ -84,3 +84,43 @@ it("a row the page cannot change says who sets it", () => {
   expect(fixedRowWords("org_role")).toBe("Set by their company role");
   expect(fixedRowWords("channel")).toBe("Set by the project's Slack channel");
 });
+
+it("a role this version does not know is shown as Other role and never offered: not in Change role, Add or Invite, even when the server lists it", async () => {
+  const { projectRoleLabel, roleWords } = await import("../../packages/ui/src/screens/admin/projects/labels.js");
+  expect(projectRoleLabel.unknown).toBe("Other role");
+  expect(roleWords("auditor-of-the-future")).toBe("Other role");
+  expect(roleWords(undefined)).toBe("Other role");
+  expect(roleWords("collaborator")).toBe("Collaborator");
+  const odd = { ...member(ID.lee, "Lee Park", "viewer"), projectRole: "future-role", role: "future-role" };
+  const f = mountProject({ orgRole: "member", people: ok(peopleView({ members: [member(ID.maya, "Maya Chen", "maintainer"), member(ID.noor, "Noor Haddad", "maintainer"), odd] }, { assignableRoles: ["maintainer", "future-role", "unknown", "contributor", "viewer"], invitableRoles: ["contributor", "future-role", "unknown", "viewer"] })) });
+  expect(within(await row("Lee Park")).getByText("Other role")).toBeTruthy();
+  const labels = (select: HTMLSelectElement) => [...select.options].filter(option => option.value !== "").map(option => option.textContent);
+  fireEvent.click(await screen.findByRole("button", { name: "Change role for Lee Park" }));
+  const change = await screen.findByLabelText<HTMLSelectElement>("Role", { exact: true });
+  expect(labels(change)).toEqual(["Maintainer", "Contributor", "Viewer"]);
+  expect([...change.options].map(option => option.value)).not.toContain("unknown");
+  fireEvent.change(change, { target: { value: "contributor" } });
+  expect(screen.getByRole<HTMLButtonElement>("button", { name: "Save role" }).disabled).toBe(false);
+  fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  await waitFor(() => { expect(screen.queryByRole("dialog")).toBeNull(); });
+  fireEvent.click(screen.getByRole("button", { name: "Add a person" }));
+  expect(labels(await screen.findByLabelText<HTMLSelectElement>("Role", { exact: true }))).toEqual(["Maintainer", "Contributor", "Viewer"]);
+  fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  await waitFor(() => { expect(screen.queryByRole("dialog")).toBeNull(); });
+  fireEvent.click(screen.getByRole("button", { name: "Invite into this project" }));
+  const invite = await screen.findByLabelText<HTMLSelectElement>("Project role");
+  expect(labels(invite)).toEqual(["Contributor", "Viewer"]);
+  expect([...invite.options].map(option => option.value)).not.toContain("unknown");
+  f.close();
+});
+
+it("an unknown role in the viewer's own powers is read, not fatal, and reads as Other role", async () => {
+  const f = mountProject({ people: ok(peopleView({ members: [member(ID.maya, "Maya Chen", "maintainer")] }, { role: "mystery", canManageMembers: false, assignableRoles: [], canInvite: false, invitableRoles: [], canEditCodeSettings: false })) });
+  await row("Maya Chen");
+  expect(screen.getByText(/Your role here:/u).textContent).toMatch(/Your role here: Maintainer\./u);
+  f.close();
+  const g = mountProject({ people: ok(peopleView({ members: [] }, { role: "mystery", canManageMembers: false, assignableRoles: [], canInvite: false, invitableRoles: [], canEditCodeSettings: false })) });
+  await screen.findByText("No one has a role on this project yet.");
+  expect(screen.getByText(/Your role here:/u).textContent).toMatch(/Your role here: Other role\./u);
+  g.close();
+});

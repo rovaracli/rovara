@@ -5,7 +5,7 @@ import { Button } from "../../../design/Button.js";
 import { Dialog } from "../../../design/Dialog.js";
 import { Select } from "../../../design/Select.js";
 import { VisibleText } from "../../../design/VisibleText.js";
-import { isStale, peopleKey, useCompanyMembers, useProjectPeopleApi, type PeopleMember } from "../../../api/project-people.js";
+import { ROLE_CHOICES, isStale, peopleKey, useCompanyMembers, useProjectPeopleApi, type PeopleMember } from "../../../api/project-people.js";
 import { projectRoleLabel } from "../../admin/projects/labels.js";
 import { StaleNotice } from "./StaleNotice.js";
 import { ADD_UNAVAILABLE, PROJECT_PEOPLE_STALE_MESSAGE, ROLE_HELP } from "./people-text.js";
@@ -18,7 +18,8 @@ type Props = Common & ({ mode: "change"; member: PeopleMember } | { mode: "add";
 /** Change one person's role, or add a company member with a role. Both are the same write (`PUT .../people/{id}`) under the revision captured at open; the server's refusal (last maintainer, stale) is shown as it came, and a stale answer keeps the draft. */
 export function PersonRoleDialog(props: Props) {
  const { project, revision, roles, open, onOpenChange, onDone, onCloseAutoFocus } = props, api = useProjectPeopleApi(), query = useQueryClient(), id = useRequestId();
- const current = props.mode === "change" ? props.member.projectRole ?? props.member.role : undefined;
+ // The person's role as one of the four known ones; a role this version does not know is shown as "Other role" elsewhere and is never an option here.
+ const current = props.mode === "change" ? ROLE_CHOICES.find(value => value === (props.member.projectRole ?? props.member.role)) : undefined;
  const [role, setRole] = useState<string>(current ?? roles[roles.length - 1] ?? "viewer"), [who, setWho] = useState<string>(""), [busy, setBusy] = useState(false), [error, setError] = useState<string>(), [stale, setStale] = useState(false);
  const companyMembers = useCompanyMembers(open && props.mode === "add");
  const onProject = new Set(props.mode === "add" ? props.people.map(person => person.developerId) : []);

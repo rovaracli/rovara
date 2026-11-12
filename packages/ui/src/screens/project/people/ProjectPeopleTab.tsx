@@ -7,7 +7,7 @@ import { VisibleText } from "../../../design/VisibleText.js";
 import { ApiError } from "../../../api/errors.js";
 import { useNav } from "../../../api/nav.js";
 import { useProjectPeople, type PeopleMember } from "../../../api/project-people.js";
-import { projectRoleLabel } from "../../admin/projects/labels.js";
+import { projectRoleLabel, roleWords } from "../../admin/projects/labels.js";
 import { CollaboratorApprovalsSwitch } from "./CollaboratorApprovalsSwitch.js";
 import { InviteToProjectDialog } from "./InviteToProjectDialog.js";
 import { MergeRulesSection } from "./MergeRulesSection.js";
@@ -41,7 +41,7 @@ export function ProjectPeopleTab({ project }: { project: string }) {
  return <div className="rv-people">
   <section className="rv-project-section" aria-labelledby="rv-people-title">
    <h2 id="rv-people-title" tabIndex={-1}>People</h2>
-   <p className="rv-muted">Everyone on this project and their role. Your role here: <strong>{projectRoleLabel[myRole]}</strong>.</p>
+   <p className="rv-muted">Everyone on this project and their role. Your role here: <strong>{roleWords(myRole)}</strong>.</p>
    {(v.canManageMembers || v.canInvite) && <div className="rv-people-actions">
     {v.canManageMembers && <Button onClick={event => { open(event.currentTarget, { kind: "add" }); }}>Add a person</Button>}
     {v.canInvite && <Button onClick={event => { open(event.currentTarget, { kind: "invite" }); }}>Invite into this project</Button>}
@@ -50,7 +50,7 @@ export function ProjectPeopleTab({ project }: { project: string }) {
    {notice !== undefined && <p role="status">{notice}</p>}
    {view.members.length === 0 ? <p>No one has a role on this project yet.</p> : <DataTable caption="People on this project" rows={view.members} rowKey={member => member.developerId} columns={[
     { key: "name", title: "Person", render: member => <VisibleText text={member.name} /> },
-    { key: "role", title: "Role", render: member => projectRoleLabel[member.projectRole ?? member.role] },
+    { key: "role", title: "Role", render: member => roleWords(member.projectRole ?? member.role) },
     { key: "source", title: "How they're on it", render: member => sourceWords(member.source) },
     ...(v.canManageMembers ? [{ key: "actions", title: "Actions", render: (member: PeopleMember) => member.source === "grant"
      ? (() => { const lastOne = grantMaintainers.length === 1 && grantMaintainers[0]!.developerId === member.developerId, hint = "rv-people-last-" + member.developerId.slice(0, 8);
