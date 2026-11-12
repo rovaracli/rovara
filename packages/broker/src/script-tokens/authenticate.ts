@@ -6,6 +6,7 @@
 // is revoked at once (review M3), so it never comes back.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { SCRIPT_TOKEN_CLIENT_NAME, SCRIPT_TOKEN_NOT_ALLOWED_MESSAGE, agentXError, singleOrgIdForEnv } from "@rovara-code/contracts";
+import { isWriterOrgRole } from "@agentx/cloud-contracts";
 import { methodAllowedByEdition, sessionWithinEditionCap } from "../developer/edition-methods.js";
 import { readChosenName } from "../developer/chosen-name.js";
 import { safeDisplayName } from "../developer/person-name.js";
@@ -98,7 +99,7 @@ type CreatorCheck = { ok: true; creator: Pick<DeveloperRecord, "displayName" | "
  */
 async function creatorStillHolds(deps: DeveloperRouteDependencies, record: ScriptTokenRecord): Promise<CreatorCheck> {
   const membership = await deps.orgs?.orgForDeveloper(record.developerId);
-  if (membership === undefined || membership.orgId !== record.orgId || membership.role !== record.createdRole || membership.role === "auditor") return { ok: false, permanent: true };
+  if (membership === undefined || membership.orgId !== record.orgId || membership.role !== record.createdRole || !isWriterOrgRole(membership.role)) return { ok: false, permanent: true };
   if (deps.developer.methods[record.amr] !== true || !methodAllowedByEdition(deps.editionPolicy, record.amr)) return { ok: false, permanent: false };
   // The method was turned off and on again after the token was made: every session from before is over, and so is the token.
   if (startedBeforeMethodOn(record.createdAt, deps.developer.since?.[record.amr])) return { ok: false, permanent: true };

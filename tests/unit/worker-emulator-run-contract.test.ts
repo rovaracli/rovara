@@ -7,7 +7,7 @@ import { runNetworkAddresses, runNetworkBridge, runNetworkHelperIp, runNetworkLa
 import {
   EMULATOR_CONTROL_PATHS, HelperStartError, controlRequestArgs, newLocalAwsCredentials, startHelpers, type HelperFiles, type HelperRequest,
 } from "../../packages/worker/src/service-helpers.js";
-import { ServiceEnvError, buildServiceEnvironment, createServiceRedactor, helperSecretValues, unbackedAwsServices, withServiceEnvFile } from "../../packages/worker/src/service-env.js";
+import { ServiceEnvError, buildServiceEnvironment, createServiceRedactor, helperSecretValues, withServiceEnvFile } from "../../packages/worker/src/service-env.js";
 import type { DockerCli } from "../../packages/worker/src/swebench/containers.js";
 
 const RUN = "11111111-1111-4111-8111-111111111111";
@@ -201,25 +201,24 @@ describe("helperSecretValues and the redactor cover all three", () => {
   });
 });
 
-describe("what the sandboxes are given (TS15): per-service endpoints, the emulator (which refuses and counts) for the rest, and none of the three values", () => {
+describe("what the sandboxes are given (TS15, wide plans): endpoints for the planned services, the global endpoint at the emulator for the rest, and none of the three values", () => {
   const sinkholeUrl = "http://sinkhole";
   const build = (sandbox: "working" | "check", c = newLocalAwsCredentials()) => ({
     c,
     environment: buildServiceEnvironment({
       sandbox, sinkholeUrl, dependencies: [], neverValues: helperSecretValues([{ credentials: c }]),
-      aws: { alias: "aws", port: 4566, region: "us-east-1", emulatedServices: ["s3", "sqs", "dynamodb"], unbackedServices: unbackedAwsServices(["s3", "sqs", "dynamodb"]) },
+      aws: { alias: "aws", port: 4566, region: "us-east-1", emulatedServices: ["s3", "sqs", "dynamodb"] },
     }),
   });
   for (const sandbox of ["working", "check"] as const) {
-    it(`the ${sandbox} sandbox: S3, SQS and DynamoDB point at the emulator, every other AWS service and the global endpoint at the emulator too`, () => {
+    it(`the ${sandbox} sandbox: S3, SQS and DynamoDB point at the emulator, and so does the global endpoint (a service nobody named gets no variable of its own)`, () => {
       const { environment } = build(sandbox);
       const map = new Map(environment.entries);
       expect(map.get("AWS_ENDPOINT_URL_S3")).toBe("http://aws:4566");
       expect(map.get("AWS_ENDPOINT_URL_SQS")).toBe("http://aws:4566");
       expect(map.get("AWS_ENDPOINT_URL_DYNAMODB")).toBe("http://aws:4566");
-      const others = [...map].filter(([name]) => name.startsWith("AWS_ENDPOINT_URL_") && !["S3", "SQS", "DYNAMODB"].includes(name.slice("AWS_ENDPOINT_URL_".length)));
-      expect(others.length).toBeGreaterThanOrEqual(10);
-      for (const [name, value] of others) expect(value, name).toBe("http://aws:4566");
+      // The other ~430 services get no variable: a call to one reaches the emulator through the global endpoint, where its ledger counts it as outside the plan.
+      expect([...map].filter(([name]) => name.startsWith("AWS_ENDPOINT_URL_")).map(([name]) => name).sort()).toEqual(["AWS_ENDPOINT_URL_DYNAMODB", "AWS_ENDPOINT_URL_S3", "AWS_ENDPOINT_URL_SQS"]);
       // The global endpoint is the emulator in both sandboxes: a call to a service nobody named is refused by the emulator and written to its ledger (a sinkhole host is never looked up, so nothing would count it).
       expect(map.get("AWS_ENDPOINT_URL")).toBe("http://aws:4566");
       expect(JSON.stringify([...map])).not.toContain("sinkhole");
@@ -240,15 +239,6 @@ describe("what the sandboxes are given (TS15): per-service endpoints, the emulat
         dependencies: [{ id: "db", host: "db", port: 5432, credentials: { user: "rovara", password: leaked, database: "app" }, connect: { env: [{ name: "DATABASE_URL", template: "postgres://{user}:{password}@{host}:{port}/{db}" }], hostAliases: ["db"] } }],
       })).toThrow(ServiceEnvError);
     }
-  });
-  it("unbackedAwsServices is every known AWS service but the emulated ones, and refuses a service the table does not know", () => {
-    const unbacked = unbackedAwsServices(["s3", "sqs", "dynamodb"]);
-    expect(unbacked).not.toContain("s3");
-    expect(unbacked).not.toContain("sqs");
-    expect(unbacked).not.toContain("dynamodb");
-    expect(unbacked).toContain("sns");
-    expect(unbacked).toContain("lambda");
-    expect(() => unbackedAwsServices(["s3", "not-a-service"])).toThrow(ServiceEnvError);
   });
   it("the env file a sandbox command gets holds only these variables: written 0600, passed as --env-file, and removed", async () => {
     const { c, environment } = build("check");

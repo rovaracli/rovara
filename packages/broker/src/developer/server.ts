@@ -901,7 +901,7 @@ function createIssuerHandler(deps: DeveloperIdentityDependencies) {
     const orgDependencies = { orgs: deps.orgs, ...(deps.singleOrgId === undefined ? {} : { singleOrgId: deps.singleOrgId }), singleOrgName: config.env, log: deps.log,
       ...(deps.onOrgJoined === undefined ? {} : { onOrgJoined: deps.onOrgJoined }), ...(deps.newOrgsByInvitationOnly === true ? { newOrgsByInvitationOnly: true } : {}) };
     const orgInput = { method, developerId, displayName: identity.displayName, ...(identity.email === undefined ? {} : { email: identity.email }), emailVerified: identity.emailVerified === true,
-      ...(request.inviteTokenHash === undefined ? {} : { inviteTokenHash: request.inviteTokenHash }) };
+      ...(request.inviteTokenHash === undefined ? {} : { inviteTokenHash: request.inviteTokenHash }), ...(resolved.separatedFrom === undefined ? {} : { separatedFrom: resolved.separatedFrom }) };
     let org: SignInOrg | SignInNoOrg;
     // UX1 (OWNER DECISION 5): a browser sign-in creates a company only when the person chose "Create a company". For the cloud and GitHub methods
     // `allowCreate: false` skips only that (rule 3); a person who already has a company, or brings an invite, is unaffected.

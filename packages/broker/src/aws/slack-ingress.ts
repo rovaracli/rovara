@@ -171,7 +171,7 @@ interface HttpResponse {
   body: string;
 }
 
-interface Mention {
+export interface Mention {
   /** An app_mention, or (gap 2) a plain message posted in a thread. */
   kind: "mention" | "message";
   eventId: string;
@@ -1043,7 +1043,7 @@ async function offerToRecord(tap: (payload: unknown) => Promise<unknown>, payloa
   return outcome;
 }
 
-function parseMention(payload: Record<string, unknown>): Mention | { reason: string } {
+export function parseMention(payload: Record<string, unknown>): Mention | { reason: string } {
   const event = asRecord(payload.event);
   // Gap 2: a plain message is read only as a thread reply: posted, also sent to the channel, or posted with
   // files (only its text is read); never an edit, a deletion, or any other subtype.

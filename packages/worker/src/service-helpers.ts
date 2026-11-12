@@ -24,7 +24,10 @@
 // fixed sentence; Docker's own words are never repeated. Everything started is removed.
 import { createHash, randomBytes } from "node:crypto";
 import { isCompanyImageRepositoryName } from "@agentx/cloud-contracts";
-import { CATALOG_FIXED_ARGS, CatalogEntrySchema, FIXTURE_SET_MAX_BYTES, TEST_ENV_RESERVED_ALIASES, TestEnvDependencyIdSchema, agentXError, catalogFixedArgv, catalogIdName, type CatalogEntry } from "@rovara-code/contracts";
+import {
+  AWS_PLAN_SERVICES_MAX, CATALOG_FIXED_ARGS, CatalogEntrySchema, FIXTURE_SET_MAX_BYTES, TEST_ENV_RESERVED_ALIASES, TestEnvDependencyIdSchema, agentXError, catalogFixedArgv, catalogIdName, normaliseAwsServiceKey,
+  type CatalogEntry,
+} from "@rovara-code/contracts";
 import { DOCKER_CALL_TIMEOUT_MS } from "./setup-network.js";
 import { sweepServicesNetworks, type ServicesNetwork } from "./run-network.js";
 import type { DockerCli } from "./swebench/containers.js";
@@ -62,6 +65,12 @@ const PASSWORD = /^[A-Za-z0-9]{8,64}$/u;
 const EMULATOR_SECRET = /^[A-Za-z0-9]{16,64}$/u;
 /** The plain forms a per-run user, database and password must have, so none can break out of an env file, a URL or an option. The env channel (service-env.ts) uses the same. */
 export const HELPER_CREDENTIAL_PATTERNS = { user: USER, database: DATABASE, password: PASSWORD, controlToken: PASSWORD, emulatorSecret: EMULATOR_SECRET } as const;
+/** The model stand-in (lane SM3, catalog `model-stand-in@r1`, design beyond-emulator-sagemaker-shim.md mode (b)): its one config file, written by the worker and mounted read-only where the image's default command reads it. */
+export const MODEL_STAND_IN_CONFIG_NAME = "model-stand-in.json";
+export const MODEL_STAND_IN_CONFIG_TARGET = "/rovara/model-stand-in.json";
+/** One address the front may forward SageMaker invokes to: `http://<a stand-in's alias>:<one of its ports>`, nothing else (the front dials only the addresses it is given, and refuses loopback and link-local ones). */
+const SAGEMAKER_HELPER_URL = /^http:\/\/([a-z][a-z0-9-]{0,30}[a-z0-9]):([1-9][0-9]{0,4})$/u;
+const MAX_SAGEMAKER_HELPERS = 16;
 const FILE_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/u;
 const RESERVED_FILE_NAMES = ["env", "conf"];
 const MOUNT_TARGET = /^\/[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+){0,8}$/u;
@@ -131,8 +140,10 @@ export interface HelperRequest {
   /** The AWS region of the emulator. Default us-east-1. */
   region?: string;
   /**
-   * Rovara local AWS only: the AWS services the run asked for (`s3`, `sqs`, `dynamodb`). Every OTHER service the emulator can serve is switched off in its env file (`ROVARA_AWS_SERVICES_<NAME>_ENABLED=false`, the fork's
-   * per-service switch, enforced by its `ServiceEnabledFilter`), so a call outside the plan is refused by the emulator itself and shows in the ledger. That only happens if the code's call REACHES the emulator: the worker points every non-plan `AWS_ENDPOINT_URL_<SERVICE>` and the global `AWS_ENDPOINT_URL` at it (service-env.ts), not at a sinkhole. The fork's ledger filter must run before the disable filter (fork: LedgerFilter priority). Absent: every service stays on (the development default).
+   * Rovara local AWS only: the AWS services the run asked for (keys of the emulator's table: `s3`, `sns`, `secrets-manager`, ...). They go to the emulator as `ROVARA_AWS_PLANNED_SERVICES=<csv of keys>`: the front serves every
+   * service but records a call to one outside the list as out of the plan in its ledger, which is how the broker flags it. THE OLD IMAGE (the fork, shipped until the front replaces it): the fork has no such variable and switches
+   * its own services off one by one, so for ONE MORE RELEASE the env file also holds `ROVARA_AWS_SERVICES_<NAME>_ENABLED=false` for every fork key the plan does not need (`LOCAL_AWS_FORK_KEYS_OF`), exactly as before. Remove
+   * that list when the front is the shipped image. Absent: every service stays on (the development default).
    */
   awsServices?: readonly string[];
   files?: readonly HelperFile[];
@@ -146,6 +157,12 @@ export interface HelperRequest {
    * worker fetched and checked against the plan's digest (fixture-delivery.ts); the launcher puts it in a read-only file of the run's directory, and the fake checks the digest again before it serves.
    */
   fake?: FakeHelperRequest;
+  /**
+   * Rovara local AWS only: the model stand-ins the front forwards SageMaker Runtime invokes to (`ROVARA_AWS_SAGEMAKER_HELPER`, a comma separated list in the emulator's env file; the first is the default). Each is
+   * `http://<alias>:<port>` of a `model-stand-in` request of the SAME run and one of that entry's ports; anything else refuses the request. Start the stand-ins first (`dependsOn`): the front also resolves a name that is not
+   * in DNS yet at its first call. Absent: the front has no stand-in, and an endpoint backed by one is answered "no model stand-in is configured".
+   */
+  sagemakerHelpers?: readonly string[];
 }
 
 export interface FakeHelperRequest {
@@ -222,8 +239,37 @@ function need(value: string | undefined, pattern: RegExp): string {
   return value;
 }
 
-/** The services the fork can switch on or off (`rovara-aws.services.<key>.enabled`, from its application.yml), by key. */
+/** The services the fork can switch on or off (`rovara-aws.services.<key>.enabled`, from its application.yml), by key. Only the OLD image reads them (see `HelperRequest.awsServices`). */
 export const LOCAL_AWS_SERVICE_KEYS: readonly string[] = ["ssm", "sqs", "s3", "dynamodb", "sns", "lambda", "apigateway", "apigatewayv2", "iam", "eventbridge", "eventbridgev2", "cloudwatchlogs", "secretsmanager", "kinesis", "kms", "cognito", "stepfunctions", "sagemaker"];
+
+/** The fork's switches that a service of the table needs on, by key of the table. A service the fork does not serve needs none (the old image refuses a plan for it anyway). */
+export const LOCAL_AWS_FORK_KEYS_OF: Readonly<Record<string, readonly string[]>> = {
+  s3: ["s3"], sqs: ["sqs"], dynamodb: ["dynamodb"], "dynamodb-streams": ["dynamodb"], sns: ["sns"], sts: ["iam"], iam: ["iam"], ssm: ["ssm"], kms: ["kms"], "secrets-manager": ["secretsmanager"], eventbridge: ["eventbridge", "eventbridgev2"],
+  lambda: ["lambda"], "api-gateway": ["apigateway"], apigatewayv2: ["apigatewayv2"], "cloudwatch-logs": ["cloudwatchlogs"], kinesis: ["kinesis"], "cognito-identity-provider": ["cognito"], sfn: ["stepfunctions"],
+  "sagemaker-runtime": ["sagemaker"], sagemaker: ["sagemaker"],
+};
+
+/** The env file lines of Rovara local AWS (the run contract above, then the planned services and, for the old image, its switches). Pure. */
+export function localAwsEnvLines(input: { credentials: HelperCredentials; address: string; region: string; aliases: readonly string[]; port: number; awsServices?: readonly string[] | undefined }): string[] {
+  const { credentials, address, region, aliases, port, awsServices } = input;
+    const presign = need(credentials.password, EMULATOR_SECRET);
+    const control = need(credentials.controlToken, EMULATOR_SECRET);
+    const receipt = need(credentials.sqsReceiptSecret, EMULATOR_SECRET);
+    if (new Set([presign, control, receipt]).size !== 3) throw new RangeError("control token");
+    const alias = aliases[0] ?? "aws";
+    // Every service is a key of the table (a legacy spelling is read as its key), listed once, at most as many as a plan may name.
+    const planned = awsServices?.map((service) => normaliseAwsServiceKey(service));
+    if (planned !== undefined && (planned.length === 0 || planned.length > AWS_PLAN_SERVICES_MAX || new Set(planned).size !== planned.length || planned.some((service) => service === undefined))) throw new RangeError("aws services");
+    const plannedKeys = planned as string[] | undefined;
+    // The old image's switches (see `HelperRequest.awsServices`): off for every fork key no planned service needs. The same lines as before for a plan of s3, sqs and dynamodb.
+    const forkKeysNeeded = plannedKeys === undefined ? undefined : new Set(plannedKeys.flatMap((service) => (Object.hasOwn(LOCAL_AWS_FORK_KEYS_OF, service) ? LOCAL_AWS_FORK_KEYS_OF[service]! : [])));
+    const switchedOff = forkKeysNeeded === undefined ? [] : LOCAL_AWS_SERVICE_KEYS.filter((key) => !forkKeysNeeded.has(key)).map((key) => `ROVARA_AWS_SERVICES_${key.toUpperCase()}_ENABLED=false`);
+    const plannedLine = plannedKeys === undefined ? [] : [`ROVARA_AWS_PLANNED_SERVICES=${plannedKeys.join(",")}`];
+  return [
+      `QUARKUS_HTTP_HOST=${address}`, `ROVARA_AWS_BASE_URL=http://${alias}:${String(port)}`, `ROVARA_AWS_AUTH_PRESIGN_SECRET=${presign}`, `ROVARA_AWS_SERVICES_SQS_RECEIPT_HANDLE_SECRET=${receipt}`,
+      `ROVARA_AWS_CONTROL_TOKEN=${control}`, `ROVARA_AWS_DEFAULT_REGION=${region}`, `ROVARA_AWS_HOSTNAME=${alias}`, ...plannedLine, ...switchedOff,
+  ];
+}
 
 /** The families a helper may be, and the one way each takes its per-run credentials. A family not listed here is refused: whatever its image does with no setup is not decided by this launcher. */
 const FAMILY_RULES: Record<string, FamilyRule> = {
@@ -236,20 +282,10 @@ const FAMILY_RULES: Record<string, FamilyRule> = {
   // Rovara local AWS (the fork's run contract, rovara-local-aws README "Run contract"): with a control token the emulator refuses to start unless it is given its run address, the URL the code reaches it at and two signing secrets.
   // QUARKUS_HTTP_HOST is the run address (never a wildcard); ROVARA_AWS_BASE_URL is `http://<first alias>:<port>`, so presigned URLs and queue URLs name something the other containers resolve; the presign secret is `password`.
   // Three secrets, three jobs, all different: a control token that equalled a signing secret would let anyone holding a presigned URL or a receipt handle drive the control API. All three go only into the 0600 env file.
-  "local-aws": { prepare: ({ credentials, address, region, aliases, port, awsServices }) => {
-    const presign = need(credentials.password, EMULATOR_SECRET);
-    const control = need(credentials.controlToken, EMULATOR_SECRET);
-    const receipt = need(credentials.sqsReceiptSecret, EMULATOR_SECRET);
-    if (new Set([presign, control, receipt]).size !== 3) throw new RangeError("control token");
-    const alias = aliases[0] ?? "aws";
-    if (awsServices !== undefined && (awsServices.length === 0 || new Set(awsServices).size !== awsServices.length || awsServices.some((service) => !LOCAL_AWS_SERVICE_KEYS.includes(service)))) throw new RangeError("aws services");
-    const switchedOff = awsServices === undefined ? [] : LOCAL_AWS_SERVICE_KEYS.filter((key) => !awsServices.includes(key)).map((key) => `ROVARA_AWS_SERVICES_${key.toUpperCase()}_ENABLED=false`);
-    return { env: [
-      `QUARKUS_HTTP_HOST=${address}`, `ROVARA_AWS_BASE_URL=http://${alias}:${String(port)}`, `ROVARA_AWS_AUTH_PRESIGN_SECRET=${presign}`, `ROVARA_AWS_SERVICES_SQS_RECEIPT_HANDLE_SECRET=${receipt}`,
-      `ROVARA_AWS_CONTROL_TOKEN=${control}`, `ROVARA_AWS_DEFAULT_REGION=${region}`, `ROVARA_AWS_HOSTNAME=${alias}`, ...switchedOff,
-    ] };
-  } },
+  "local-aws": { prepare: (input) => ({ env: localAwsEnvLines(input) }) },
   "fake-server": { prepare: () => ({ env: [] }) },
+  // The model stand-in reads no environment: everything it does comes from its config file (checked in planHelpers: exactly one file, at the fixed name and target).
+  "model-stand-in": { prepare: () => ({ env: [] }) },
 };
 
 /** The fixed commands of the `command` health checks, by catalog check id. A cache's client is named after the entry (Valkey's own, or Redis's). */
@@ -347,11 +383,22 @@ function planHelpers(net: ServicesNetwork, input: StartHelpersInput): Plan[] {
         const segments = file.to.split("/");
         if (!MOUNT_TARGET.test(file.to) || segments.includes("..") || FORBIDDEN_MOUNT_ROOTS.some((root) => file.to === `/${root}` || file.to.startsWith(`/${root}/`)) || file.to.endsWith(".sock")) throw new RangeError("file");
       }
+      if (entry.family === "model-stand-in" && !(files.length === 1 && files[0]!.name === MODEL_STAND_IN_CONFIG_NAME && files[0]!.to === MODEL_STAND_IN_CONFIG_TARGET)) throw new RangeError("stand-in config");
+      if (request.sagemakerHelpers !== undefined && entry.family !== "local-aws") throw new RangeError("sagemaker helpers");
       plans.push({ request, index, entry, name: plainName(request.name), address, aliases, prepared, files, image: fake !== undefined ? input.probeImage : request.image !== undefined ? companyImageOf(request.image, input.registry) : `${input.registry}/${entry.image.repository}@sha256:${entry.image.digest}`, ...(fake === undefined ? {} : { program: fake.program }) });
     } catch (error) {
       if (error instanceof HelperStartError) throw error;
       throw refused(request);
     }
+  }
+  // The emulator's list of model stand-ins: each address must be an alias and port of a stand-in this run starts, so the front is never pointed anywhere else.
+  const standInTargets = new Set(plans.filter((plan) => plan.entry.family === "model-stand-in").flatMap((plan) => plan.aliases.flatMap((alias) => plan.entry.run.ports.map((port) => `${alias}:${String(port)}`))));
+  for (const plan of plans) {
+    const urls = plan.request.sagemakerHelpers;
+    if (urls === undefined) continue;
+    const targets = urls.map((url) => SAGEMAKER_HELPER_URL.exec(url));
+    if (urls.length < 1 || urls.length > MAX_SAGEMAKER_HELPERS || new Set(urls).size !== urls.length || targets.some((match) => match === null || Number(match[2]) > 65_535 || !standInTargets.has(`${match[1]!}:${match[2]!}`))) throw refused(plan.request);
+    plan.prepared.env.push(`ROVARA_AWS_SAGEMAKER_HELPER=${urls.join(",")}`);
   }
   for (const plan of plans) {
     for (const dependency of plan.request.dependsOn ?? []) if (!ids.has(dependency) || dependency === plan.request.id) throw refused(plan.request);

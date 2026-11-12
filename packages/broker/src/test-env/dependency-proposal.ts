@@ -5,14 +5,15 @@
 // files and lines the detector cited; no text from the repository is copied (a name is a fixed word for a known family, a variable name comes from the catalog's own templates). What cannot be backed yet is counted in one
 // fixed note, never described. A person still approves the proposal on a card; nothing here approves anything.
 import { RelativeWorkspacePathSchema, TestEnvDependenciesSchema, TestEnvDependencySchema, type TestEnvDependency, type TestEnvDependencyCandidate, type VerifiedCatalog } from "@rovara-code/contracts";
+import { awsFamilyDisplayName } from "@agentx/cloud-contracts";
 import { chooseBacking, effectiveAllowedBackings } from "./backing-choice.js";
-import { EMULATED_TASK_SERVICES } from "./dependency-plan.js";
+import { isEmulatedTaskService } from "./dependency-plan.js";
 
 export const DEPENDENCIES_NOT_PROPOSED_NOTE = "Some dependencies were found that Rovara cannot start yet. They are not part of the proposal.";
 export const DEPENDENCIES_NO_CATALOG_NOTE = "Dependencies were found, but Rovara's image list could not be read, so none are proposed.";
 export const DEPENDENCIES_LEFT_OUT_NOTE = "The dependencies found could not be proposed together, so none are proposed.";
 
-/** What people see for the families Rovara knows; any other family shows its id (which passed the family pattern). */
+/** What people see for the families Rovara knows (the AWS ones through the table of service names, `awsFamilyDisplayName`; the three below keep their names); any other family shows its id (which passed the family pattern). */
 const FAMILY_NAMES: Readonly<Record<string, string>> = {
   "aws:s3": "S3", "aws:sqs": "SQS", "aws:dynamodb": "DynamoDB", postgres: "Postgres", mysql: "MySQL", mariadb: "MariaDB", mongodb: "MongoDB", redis: "Redis", memcached: "Memcached", rabbitmq: "RabbitMQ", kafka: "Kafka", elasticsearch: "Elasticsearch", opensearch: "OpenSearch", smtp: "Mail catcher",
 };
@@ -70,9 +71,9 @@ export function proposeDependencies(candidates: readonly TestEnvDependencyCandid
 function proposeOne(candidate: TestEnvDependencyCandidate, catalog: VerifiedCatalog, context: DependencyProposalContext): TestEnvDependency | undefined {
   const id = idOfFamily(candidate.family);
   if (id === undefined) return undefined;
-  // Tests that fake it themselves, and anything the chooser would back with something else, are not proposed: only real software from the catalog, and Rovara local AWS for S3, SQS and DynamoDB.
+  // Tests that fake it themselves, and anything the chooser would back with something else, are not proposed: only real software from the catalog, and Rovara local AWS for the services the catalog entry puts in a chooser tier.
   if (candidate.hints.fakedByTests === true) return undefined;
-  if (candidate.family.startsWith("aws:") && !EMULATED_TASK_SERVICES.includes(candidate.family.slice(4))) return undefined;
+  if (candidate.family.startsWith("aws:") && !isEmulatedTaskService(candidate.family.slice(4))) return undefined;
   let catalogId: string | undefined;
   let backingKind: "local" | "emulated" | undefined;
   for (const place of ["task_check", "working"] as const) {
@@ -87,7 +88,7 @@ function proposeOne(candidate: TestEnvDependencyCandidate, catalog: VerifiedCata
   const entry = catalog.entries.find((item) => item.id === catalogId);
   if (entry === undefined || catalogId === undefined) return undefined;
   const found = candidate.evidence.slice(0, 8).map((item) => ({ path: item.path, line: item.line }));
-  const base = { id, name: FAMILY_NAMES[candidate.family] ?? candidate.family, kind: candidate.kind, family: candidate.family, found, usedBy: ["integration"], seeds: [], reset: "fresh_per_round" };
+  const base = { id, name: FAMILY_NAMES[candidate.family] ?? awsFamilyDisplayName(candidate.family) ?? candidate.family, kind: candidate.kind, family: candidate.family, found, usedBy: ["integration"], seeds: [], reset: "fresh_per_round" };
   // Rovara local AWS: the region variables are Rovara's to set (the contract reserves `AWS_REGION`), so only the helper's name is carried here, by the first emulated dependency (see `proposeDependencies`).
   const connect = { env: backingKind === "emulated" ? [] : Object.entries(entry.connect.templates).map(([name, template]) => ({ name, template })), hostAliases: [...entry.connect.defaultAliases] };
   if (backingKind === "emulated") {

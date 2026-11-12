@@ -641,6 +641,49 @@ describe("ec2-ebs delivery", () => {
       await expect(delivery({ workerFeatures: async () => ["task.workflowMode", "task.testEnvironment.v1", "task.testServices.v1"] }).deliver(coding, coding.invocation)).rejects.toThrow(/out of date|upgrade/iu);
     });
 
+    it("sends a wide AWS plan (any service beyond s3, sqs and dynamodb, a legacy spelling read as its key) only to a worker that lists task.testServices.aws.allServices.v1 (decision 109)", async () => {
+      const aws = (service: string) => ({ id: `aws-${service}`, name: service, kind: "cloud_api", family: `aws:${service}`, backing: "emulated", catalogId: "local-aws@r1", repository: "svc/local-aws", digest: "c".repeat(64), config: {}, aliases: ["aws"], connect: [], seeds: [], reset: "fresh_per_round", aws: { services: [service], region: "us-east-1" } });
+      const planWith = (dependencies: unknown[]) => ({ revision: 1, digest: "d".repeat(64), roundBudgetMin: 30, selection: { method: "full", alwaysRun: [], fullSuiteOn: [] }, checks: [{ id: "unit", kind: "test" }], dependencies });
+      const narrowWorker = ["task.workflowMode", "task.workflowChecks", "task.readiness", "task.testEnvironment.v1", "task.testServices.v1", "task.testServices.aws.v1"];
+      const readiness = [{ cwd: "repo/demo", executable: "npm", args: ["test"], timeoutSeconds: 30 }];
+      for (const service of ["sns", "lambda", "secrets-manager", "secretsmanager"]) {
+        const wide = taskRecord({ workflowMode: "CHECKS", readiness, testEnvironment: planWith([aws(service)]) });
+        const older = delivery({ workerFeatures: async () => narrowWorker });
+        await expect(older.deliver(wide, wide.invocation), service).rejects.toThrow(/out of date|upgrade/iu);
+        expect(older.post, service).not.toHaveBeenCalled();
+        const capable = delivery({ workerFeatures: async () => [...narrowWorker, "task.testServices.aws.allServices.v1"] });
+        expect(await capable.deliver(wide, wide.invocation), service).toBe("DELIVERED");
+      }
+      // Positive control: a plan of only s3, sqs and dynamodb still goes to the narrow worker; so does a wide one's narrow sibling.
+      const narrow = taskRecord({ workflowMode: "CHECKS", readiness, testEnvironment: planWith([aws("s3"), aws("sqs"), aws("dynamodb")]) });
+      expect(await delivery({ workerFeatures: async () => narrowWorker }).deliver(narrow, narrow.invocation)).toBe("DELIVERED");
+      // A plan that lists a narrow service first and a wide one second is wide, and so is a coding run's plan and a preparation's.
+      const mixed = taskRecord({ workflowMode: "IMPLEMENT", testEnvironment: planWith([aws("s3"), aws("kinesis")]) });
+      await expect(delivery({ workerFeatures: async () => [...narrowWorker, "task.workflowMode"] }).deliver(mixed, mixed.invocation)).rejects.toThrow(/out of date|upgrade/iu);
+    });
+
+    it("refuses a plan that asks for the function runner (aws.functions) to a worker that does not list task.testServices.functions.v2, and sends it to one that does (slice 4)", async () => {
+      const s3 = (functions?: { runner: string }) => ({ id: "aws-s3", name: "S3", kind: "object_store", family: "aws:s3", backing: "emulated", catalogId: "local-aws@r1", repository: "svc/local-aws", digest: "c".repeat(64), config: {}, aliases: ["aws"], connect: [], seeds: [], reset: "fresh_per_round", aws: { services: ["s3"], region: "us-east-1", ...(functions === undefined ? {} : { functions }) } });
+      const planWith = (dependencies: unknown[]) => ({ revision: 1, digest: "d".repeat(64), roundBudgetMin: 30, selection: { method: "full", alwaysRun: [], fullSuiteOn: [] }, checks: [{ id: "unit", kind: "test" }], dependencies });
+      const base = ["task.workflowMode", "task.workflowChecks", "task.readiness", "task.testEnvironment.v1", "task.testServices.v1", "task.testServices.aws.v1"];
+      const readiness = [{ cwd: "repo/demo", executable: "npm", args: ["test"], timeoutSeconds: 30 }];
+      for (const runner of ["auto", "all"]) {
+        const record = taskRecord({ workflowMode: "CHECKS", readiness, testEnvironment: planWith([s3({ runner })]) });
+        // A worker with the emulator but no runner (every worker today, and one whose boot did not install gVisor) is refused, and nothing is dropped or sent.
+        const older = delivery({ workerFeatures: async () => base });
+        await expect(older.deliver(record, record.invocation)).rejects.toThrow(/out of date|upgrade/iu);
+        expect(older.post).not.toHaveBeenCalled();
+        const capable = delivery({ workerFeatures: async () => [...base, "task.testServices.functions.v2"] });
+        expect(await capable.deliver(record, record.invocation)).toBe("DELIVERED");
+        expect(((postedPayload(capable.post).testEnvironment as { dependencies: Array<{ aws: { functions?: { runner: string } } }> }).dependencies[0]!.aws.functions)).toEqual({ runner });
+      }
+      // A plan that does not ask for the runner still goes to a worker that has only the emulator, and a coding run is judged the same way.
+      const plain = taskRecord({ workflowMode: "CHECKS", readiness, testEnvironment: planWith([s3()]) });
+      expect(await delivery({ workerFeatures: async () => base }).deliver(plain, plain.invocation)).toBe("DELIVERED");
+      const coding = taskRecord({ workflowMode: "IMPLEMENT", testEnvironment: planWith([s3({ runner: "all" })]) });
+      await expect(delivery({ workerFeatures: async () => ["task.workflowMode", "task.testEnvironment.v1", "task.testServices.v1", "task.testServices.aws.v1"] }).deliver(coding, coding.invocation)).rejects.toThrow(/out of date|upgrade/iu);
+    });
+
     it("covers a coding (IMPLEMENT) run too: its plan with dependencies is refused to a worker without task.testServices.v1, and sent to one that has it", async () => {
       const dependency = { id: "postgres", name: "Postgres", kind: "database", family: "postgres", backing: "local", catalogId: "postgres@16", repository: "svc/postgres", digest: "b".repeat(64), config: {}, aliases: ["postgres"], connect: [{ name: "DATABASE_URL", template: "postgres://{user}:{password}@{host}:{port}/{db}" }], seeds: [], reset: "fresh_per_round" };
       const plan = { revision: 1, digest: "d".repeat(64), roundBudgetMin: 30, selection: { method: "full", alwaysRun: [], fullSuiteOn: [] }, checks: [{ id: "unit", kind: "test" }], dependencies: [dependency] };

@@ -8,7 +8,7 @@ export interface BrowserWindow {
  innerWidth?: number;
  addEventListener?: (type: "resize", listener: () => void) => void;
  removeEventListener?: (type: "resize", listener: () => void) => void;
- location: Pick<Location, "origin" | "pathname" | "search" | "assign">;
+ location: Pick<Location, "origin" | "pathname" | "search" | "assign"> & Partial<Pick<Location, "reload">>;
  fetch: typeof fetch;localStorage: Pick<Storage, "getItem" | "setItem"> & Partial<Pick<Storage, "removeItem" | "key" | "length">>;sessionStorage: Pick<Storage, "getItem" | "setItem">;
  document: Pick<Document, "createElement" | "body" | "title">;URL: Pick<typeof URL, "createObjectURL" | "revokeObjectURL">;WebSocket: typeof WebSocket;
  open(url: string, target: string, features: string): unknown;
@@ -59,6 +59,8 @@ export function createBrowserHost(win: BrowserWindow): AppHost {
    const socket = new win.WebSocket(url, protocols);
    return { onOpen: listener => { socket.addEventListener("open", listener);return () => socket.removeEventListener("open", listener); }, onMessage: listener => { const receive = (event: MessageEvent<unknown>) => listener(event.data);socket.addEventListener("message", receive);return () => socket.removeEventListener("message", receive); }, onClose: listener => { socket.addEventListener("close", listener);return () => socket.removeEventListener("close", listener); }, onError: listener => { socket.addEventListener("error", listener);return () => socket.removeEventListener("error", listener); }, send: data => socket.send(data), close: () => socket.close() };
   },
+  // An error page's Reload: the browser's own reload, whatever the address holds (navigate refuses some queries).
+  reload() { if (win.location.reload !== undefined) win.location.reload();else win.location.assign(win.location.pathname + win.location.search); },
   openExternal(url) { const safe = safeExternalUrl(url);if (safe !== undefined) win.open(safe, "_blank", "noopener,noreferrer"); },
   navigate(url) { if (isGithubInstallationUrl(url) || isSlackLinkUrl(url, win.location.origin) || isGithubLinkUrl(url, win.location.origin)) { win.location.assign(url);return; }const join = joinLinkPath(url);if (join !== undefined && join === url) { win.location.assign(join);return; }const safe = returnPath(url);if (safe !== url) throw new Error("Invalid app destination.");win.location.assign(safe); },
   saveFile(name, data) { const url = win.URL.createObjectURL(data), link = win.document.createElement("a");try { link.href = url;link.download = name;win.document.body.appendChild(link);link.click(); } finally { link.remove();win.URL.revokeObjectURL(url); } },

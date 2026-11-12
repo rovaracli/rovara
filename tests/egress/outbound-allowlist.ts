@@ -80,6 +80,8 @@ export const CATEGORY_TITLES: Readonly<Record<OutboundCategory, { title: string;
 };
 
 const DEFAULT_ALLOW = ["vendor/rovara-code/packages/contracts/src/default-allow-domains.ts"];
+/** The vendored Code's owner image list (image references an owner lists for a public-edition install). */
+const OWNER_IMAGE_LIST = "vendor/rovara-code/packages/contracts/src/owner-image-list.ts";
 
 export const HOST_RULES: readonly HostRule[] = [
   {
@@ -106,7 +108,7 @@ export const HOST_RULES: readonly HostRule[] = [
     hosts: ["api.anthropic.com", "api.openai.com", "auth.openai.com", "chatgpt.com", "openrouter.ai"],
   },
   {
-    category: "agent-egress-default", why: "The default list of package, image and OS mirror hosts agent machines may resolve, and the GitHub hosts a ghcr.io image's blobs (pkg-containers.githubusercontent.com) and build tools' read-only downloads (raw, objects, release-assets, codeload) come from, each by exact name, and the evaluation dataset files the benchmark fetches from raw.githubusercontent.com. The wildcard over GitHub's content hosts (*.githubusercontent.com) is named in the hosted list's code only as an entry the install refuses (DEFAULT-ALLOW-LIST-EXFIL, 0.5.15). (GitHub's, Docker Hub's token and API hosts are also the company image registry allowlist's, in the file named for it.)", files: [...DEFAULT_ALLOW, "infra/lib/agent-dns-firewall.ts", "packages/cloud-contracts/src/hosted-allow-domains.ts", "packages/worker/src/swebench/", "packages/cloud-contracts/src/company-image-mirror.ts", "packages/broker/src/test-env/company-images.ts"],
+    category: "agent-egress-default", why: "The default list of package, image and OS mirror hosts agent machines may resolve, and the GitHub hosts a ghcr.io image's blobs (pkg-containers.githubusercontent.com) and build tools' read-only downloads (raw, objects, release-assets, codeload) come from, each by exact name, and the evaluation dataset files the benchmark fetches from raw.githubusercontent.com. The wildcard over GitHub's content hosts (*.githubusercontent.com) is named in the hosted list's code only as an entry the install refuses (DEFAULT-ALLOW-LIST-EXFIL, 0.5.15). (GitHub's, Docker Hub's token and API hosts are also the company image registry allowlist's, in the file named for it.) (Docker Hub's registry host is also one of the spellings the vendored Code's owner image list reads as docker.io, in the file named for it.)", files: [...DEFAULT_ALLOW, "infra/lib/agent-dns-firewall.ts", "packages/cloud-contracts/src/hosted-allow-domains.ts", "packages/worker/src/swebench/", "packages/cloud-contracts/src/company-image-mirror.ts", "packages/broker/src/test-env/company-images.ts", OWNER_IMAGE_LIST],
     hosts: [
       "crates.io", "*.crates.io", "mcr.microsoft.com", "*.data.mcr.microsoft.com", "ghcr.io", "*.ghcr.io", "*.githubusercontent.com", "pkg-containers.githubusercontent.com", "raw.githubusercontent.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com", "codeload.github.com", "rubygems.org", "*.rubygems.org",
       "archive.ubuntu.com", "ports.ubuntu.com", "security.ubuntu.com", "deb.debian.org", "security.debian.org", "dl-cdn.alpinelinux.org", "auth.docker.io", "registry-1.docker.io",
@@ -115,7 +117,7 @@ export const HOST_RULES: readonly HostRule[] = [
     ],
   },
   {
-    category: "company-image-registry", why: "The registries a company-approved test image may come from (Docker Hub and Quay, beside GitHub's above and Amazon's public registry below), by name, and the other spellings of Docker Hub that are refused as not another registry.", files: ["packages/cloud-contracts/src/company-image-mirror.ts", "packages/broker/src/test-env/company-images.ts", "packages/ui/src/screens/admin/how-we-work/CompanyImagesScreen.tsx"],
+    category: "company-image-registry", why: "The registries a company-approved test image may come from (Docker Hub and Quay, beside GitHub's above and Amazon's public registry below), by name, and the other spellings of Docker Hub that are refused as not another registry; and, in the vendored Code's owner image list, Docker Hub's default registry name and the spellings it reads as that name when it parses an image reference (text it compares when it reads a name, never a call).", files: ["packages/cloud-contracts/src/company-image-mirror.ts", "packages/broker/src/test-env/company-images.ts", "packages/ui/src/screens/admin/how-we-work/CompanyImagesScreen.tsx", OWNER_IMAGE_LIST],
     hosts: ["docker.io", "index.docker.io", "registry.docker.io", "hub.docker.com", "quay.io"],
   },
   {
@@ -204,7 +206,14 @@ export const HOST_RULES: readonly HostRule[] = [
       "abc123.execute-api.us-west-2.amazonaws.com", "host.example.test", "builds.example.test", "nativeexport.app",
       // The example registry address in the private-MCP install setting's error message (infra/lib/private-mcp.ts); example.net is reserved and cannot resolve.
       "registry.corp.example.net",
+      // Placeholders: the registry host an owner-list install gives the worker (vendor/rovara-code/packages/contracts/src/owner-image-list.ts, OWNER_LIST_REGISTRY), and the
+      // pull request page of a re-check whose remote is not https (packages/worker/src/maintain-pull-request.ts, a test's local remote). .invalid resolves nowhere.
+      "owner-list.invalid", "pull-request.invalid",
     ],
+  },
+  {
+    category: "reserved-example", why: "The CAA issuer names that let Amazon (ACM) issue a certificate, which the model proxy TLS check compares with a domain's CAA records before it asks ACM for the first certificate. Names in a DNS record, never contacted.", files: ["packages/cli/src/deploy/model-proxy-tls.ts"],
+    hosts: ["amazon.com", "amazontrust.com", "awstrust.com"],
   },
   {
     category: "reserved-example", why: "XML namespace, claim-type and algorithm identifiers the SAML sign-in compares with (W3C XML signature and encryption, WS-Federation claim types). They look like URLs but are names, never fetched.", files: ["packages/broker/src/developer/saml.ts", "packages/broker/src/developer/providers.ts"],
@@ -280,6 +289,10 @@ export const DNS_LOOKUP_RULES: readonly DnsLookupRule[] = [
   {
     why: "Company-approved test images (switch `pj`): the check that a registry's name (and its token service, and a blob host it redirects to) resolves to public addresses only, before the broker looks a tag up or the mirror function copies an image. A name that resolves to a private, loopback, link-local or metadata address, or to nothing, is refused, and nothing is sent to it.",
     files: ["packages/broker/src/aws/company-image-mirror-handler.ts", "packages/broker/src/test-env/company-image-resolver.ts"],
+  },
+  {
+    why: "Model proxy TLS (the install's `modelProxy.tls` setting): before the CLI first asks ACM for the model proxy's certificate, it reads in public DNS the NS records of the domains above the name the install chose (is the closest one delegated to Route 53?) and the CAA records at or above it (may Amazon issue?). Run on the operator's machine by the upgrade command, only for a name not yet served; a lookup that fails refuses the deploy. Nothing is sent to Rovara.",
+    files: ["packages/cli/src/deploy/model-proxy-tls-aws.ts"],
   },
 ];
 

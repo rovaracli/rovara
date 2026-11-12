@@ -186,7 +186,8 @@ describe("the working phase", () => {
     expect(exec.args).toContain(h.sandbox.name);
     const env = new Map(exec.envFile!.trim().split("\n").map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]));
     for (const name of ["S3", "SQS", "DYNAMODB"]) expect(env.get(`AWS_ENDPOINT_URL_${name}`)).toBe("http://aws:4566");
-    for (const name of ["SNS", "STS", "LAMBDA", "KMS", "SSM", "SECRETS_MANAGER", "EVENTBRIDGE"]) expect(env.get(`AWS_ENDPOINT_URL_${name}`), name).toBe("http://aws:4566");
+    // A service the plan does not name gets no variable of its own: a call to it reaches the emulator through the global endpoint, where its ledger counts it as outside the plan.
+    for (const name of ["SNS", "STS", "LAMBDA", "KMS", "SSM", "SECRETS_MANAGER", "EVENTBRIDGE"]) expect(env.get(`AWS_ENDPOINT_URL_${name}`), name).toBeUndefined();
     expect(env.get("AWS_ENDPOINT_URL")).toBe("http://aws:4566");
     expect(env.get("AWS_REGION")).toBe("us-east-1");
     expect(env.get("AWS_DEFAULT_REGION")).toBe("us-east-1");
@@ -207,7 +208,7 @@ describe("the working phase", () => {
     expect(envValue(exec.envFile!, "AWS_REGION")).toBe("eu-west-2");
     expect(envValue(exec.envFile!, "AWS_DEFAULT_REGION")).toBe("eu-west-2");
     expect(envValue(exec.envFile!, "AWS_ENDPOINT_URL_S3")).toBe("http://aws:4566");
-    expect(envValue(exec.envFile!, "AWS_ENDPOINT_URL_STS")).toBe("http://aws:4566");
+    expect(envValue(exec.envFile!, "AWS_ENDPOINT_URL")).toBe("http://aws:4566");
     await run.dispose();
     await h.sandbox.dispose();
   });
@@ -392,11 +393,10 @@ describe("fail closed", () => {
     await bad(async (root) => { await writeFile(join(root, "app", "template.yaml"), TEMPLATE.replace("orders-archive", "Orders_Archive")); return "app/template.yaml"; });
     await bad(async (root) => { await writeFile(join(root, "app", "template.yaml"), TEMPLATE.replace("      KeySchema:\n        - { AttributeName: orderId, KeyType: HASH }\n", "")); return "app/template.yaml"; });
   });
-  it("refuses, before anything is made, a plan whose emulated services are not s3, sqs or dynamodb, or whose region is not a plain region", async () => {
+  it("refuses, before anything is made, a plan whose emulated services the table does not know, or whose region is not a plain region", async () => {
     const cases: Array<[string, Raw[]]> = [
-      ["sns", [emulated("s3", { aliases: ["aws"] }, { services: ["s3", "sns"] })]],
-      ["lambda", [emulated("s3", { aliases: ["aws"] }, { services: ["s3", "lambda"] })]],
-      ["sns family", [emulated("sns", { aliases: ["aws"] })]],
+      ["a service the table does not know", [emulated("s3", { aliases: ["aws"] }, { services: ["s3", "nosuchservice"] })]],
+      ["a family the table does not know", [emulated("nosuchservice", { aliases: ["aws"] })]],
       ["inherited name", [emulated("s3", { aliases: ["aws"] }, { services: ["s3", "constructor"] })]],
       ["region with a space", [emulated("s3", { aliases: ["aws"] }, { region: "us east 1" })]],
       ["upper-case region", [emulated("s3", { aliases: ["aws"] }, { region: "US-EAST-1" })]],
@@ -459,7 +459,7 @@ describe("the /ping feature", () => {
   };
   const listed = (shipped: ServiceCatalog) => catalogPrepullList(shipped);
   it("is advertised only with a test-services configuration AND a pinned local-aws image that root pre-pulls", async () => {
-    expect(testServicesAdvertisedFeatures(env, await files(listed, true))).toEqual(["task.testServices.v1", "task.testServices.fileSeed.v1", "task.testServices.seedLock.v1", "task.testServices.aws.v1", "task.testServices.companyImage.v1"]);
+    expect(testServicesAdvertisedFeatures(env, await files(listed, true))).toEqual(["task.testServices.v1", "task.testServices.fileSeed.v1", "task.testServices.seedLock.v1", "task.testServices.aws.v1", "task.testServices.aws.allServices.v1", "task.testServices.companyImage.v1"]);
     // no configuration: nothing
     expect(testServicesAdvertisedFeatures({}, await files(listed, true))).toEqual([]);
     // not pinned in the shipped catalog, not in the pre-pull list, a different digest, an empty list: slice 1 only
@@ -471,10 +471,10 @@ describe("the /ping feature", () => {
   it("per image: root's note of a repository that did not pre-pull takes only that image out (local-aws gone: slice 1's feature stays; postgres gone: both stay); a malformed or too long note withholds everything (fail closed)", async () => {
     const shipped = await files(listed, true);
     expect(testServicesAdvertisedFeatures({ ...env, AGENTX_TEST_SERVICES_NOT_PULLED: "svc/local-aws" }, shipped)).toEqual(["task.testServices.v1", "task.testServices.fileSeed.v1", "task.testServices.seedLock.v1", "task.testServices.companyImage.v1"]);
-    expect(testServicesAdvertisedFeatures({ ...env, AGENTX_TEST_SERVICES_NOT_PULLED: "svc/postgres,svc/mysql" }, shipped)).toEqual(["task.testServices.v1", "task.testServices.fileSeed.v1", "task.testServices.seedLock.v1", "task.testServices.aws.v1", "task.testServices.companyImage.v1"]);
+    expect(testServicesAdvertisedFeatures({ ...env, AGENTX_TEST_SERVICES_NOT_PULLED: "svc/postgres,svc/mysql" }, shipped)).toEqual(["task.testServices.v1", "task.testServices.fileSeed.v1", "task.testServices.seedLock.v1", "task.testServices.aws.v1", "task.testServices.aws.allServices.v1", "task.testServices.companyImage.v1"]);
     expect(testServicesAdvertisedFeatures({ ...env, AGENTX_TEST_SERVICES_NOT_PULLED: "svc/postgres,svc/local-aws" }, shipped)).toEqual(["task.testServices.v1", "task.testServices.fileSeed.v1", "task.testServices.seedLock.v1", "task.testServices.companyImage.v1"]);
     // Fail closed: `all`, a malformed value and a list past 16 names withhold EVERY test-services feature (an empty value or none means nothing is missing).
-    expect(testServicesAdvertisedFeatures({ ...env, AGENTX_TEST_SERVICES_NOT_PULLED: "" }, shipped)).toEqual(["task.testServices.v1", "task.testServices.fileSeed.v1", "task.testServices.seedLock.v1", "task.testServices.aws.v1", "task.testServices.companyImage.v1"]);
+    expect(testServicesAdvertisedFeatures({ ...env, AGENTX_TEST_SERVICES_NOT_PULLED: "" }, shipped)).toEqual(["task.testServices.v1", "task.testServices.fileSeed.v1", "task.testServices.seedLock.v1", "task.testServices.aws.v1", "task.testServices.aws.allServices.v1", "task.testServices.companyImage.v1"]);
     const tooMany = Array.from({ length: 17 }, (_, index) => `svc/image${String(index)}`).join(",");
     for (const bad of ["all", "svc/LOCAL-AWS", "local-aws", "svc/local-aws;", "svc/a,", tooMany]) {
       expect(testServicesAdvertisedFeatures({ ...env, AGENTX_TEST_SERVICES_NOT_PULLED: bad }, shipped), bad).toEqual([]);
@@ -485,7 +485,7 @@ describe("the /ping feature", () => {
   });
   it("the withhold boot-stage2.sh writes when the IPv6 wall fails (AGENTX_TEST_SERVICES_NOT_PULLED=all, the last such line in worker.env) yields no task.testServices.* feature, with a complete configuration that otherwise offers both", async () => {
     const shipped = await files(listed, true);
-    expect(testServicesAdvertisedFeatures(env, shipped)).toEqual(["task.testServices.v1", "task.testServices.fileSeed.v1", "task.testServices.seedLock.v1", "task.testServices.aws.v1", "task.testServices.companyImage.v1"]);
+    expect(testServicesAdvertisedFeatures(env, shipped)).toEqual(["task.testServices.v1", "task.testServices.fileSeed.v1", "task.testServices.seedLock.v1", "task.testServices.aws.v1", "task.testServices.aws.allServices.v1", "task.testServices.companyImage.v1"]);
     const withheld = testServicesAdvertisedFeatures({ ...env, AGENTX_TEST_SERVICES_NOT_PULLED: "all" }, shipped);
     expect(withheld).toEqual([]);
     expect(withheld.filter((feature) => feature.startsWith("task.testServices"))).toEqual([]);
@@ -496,7 +496,7 @@ describe("the /ping feature", () => {
     expect(emulatorImagePrepulled(shipped)).toBe(true);
     await rm(join(shipped.catalog, ".."), { recursive: true, force: true });
     expect(emulatorImagePrepulled(shipped)).toBe(true);
-    expect(testServicesAdvertisedFeatures(env, shipped)).toEqual(["task.testServices.v1", "task.testServices.fileSeed.v1", "task.testServices.seedLock.v1", "task.testServices.aws.v1", "task.testServices.companyImage.v1"]);
+    expect(testServicesAdvertisedFeatures(env, shipped)).toEqual(["task.testServices.v1", "task.testServices.fileSeed.v1", "task.testServices.seedLock.v1", "task.testServices.aws.v1", "task.testServices.aws.allServices.v1", "task.testServices.companyImage.v1"]);
     forgetEmulatorImageCache();
     expect(emulatorImagePrepulled(shipped)).toBe(false);
   });

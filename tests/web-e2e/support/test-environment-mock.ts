@@ -6,35 +6,46 @@ type Project = ReturnType<typeof AppProjectDetailSchema.parse>;
 const DIGEST = "a".repeat(64);
 let phase: "ready" | "proposed" | "proved" | "approved" = "ready";
 let checked = false;
-export function resetTestEnvironment(): void { phase = "ready"; checked = false; }
+let awsServices = ["s3"];
+export function resetTestEnvironment(): void { phase = "ready"; checked = false; awsServices = ["s3"]; }
 
 const command = (executable: string, args: string[], timeoutSeconds: number) => ({ cwd: "repo/payments", executable, args, timeoutSeconds });
-const ENVIRONMENT = TestEnvironmentBodySchema.parse({
+const environment = () => TestEnvironmentBodySchema.parse({
   tier: "sandbox",
   repos: [{ repositoryId: "payments", setupCommands: [command("npm", ["ci"], 900)], checks: [{ id: "unit", label: "Unit tests", command: command("npm", ["test"], 1800), kind: "test", selectArgs: ["{tests}"] }] }],
   roundBudgetMin: 30, selection: { method: "coverage_map", alwaysRun: [], fullSuiteOn: [] }, nightly: { enabled: false, cronUtc: "0 6 * * *", branch: "main" },
   services: [], data: { seeds: [], generator: "faker_seeded", seed: 1 }, accounts: [], prodDeny: { accountIds: [], hosts: [], arnPrefixes: [] }, capture: { screenshots: "failed", video: false, traces: false },
+  // One emulated AWS dependency: the AWS service picker (decision 109) is under it for a maintainer.
+  dependencies: [{ id: "aws-s3", name: "S3", kind: "cloud_api", family: "aws:s3", found: [{ path: "template.yaml", line: 4 }], usedBy: ["unit"], backing: { kind: "emulated", catalogId: "local-aws@r1", awsServices, region: "us-east-1" },
+    connect: { env: [], hostAliases: ["aws"] }, seeds: [], reset: "fresh_per_round" }],
 });
 const SUMMARY = { tier: "sandbox", repositories: [{ repositoryId: "payments", setupCommands: 1, checks: [{ id: "unit", label: "Unit tests", kind: "test", selectArgs: ["{tests}"] }] }], selectionMethod: "coverage_map", roundBudgetMin: 30, nightly: { enabled: false, cronUtc: "0 6 * * *", branch: "main" }, services: 0 };
 const state = () => TestEnvironmentStateSchema.parse({
   ...(phase === "approved" ? { approved: { revision: 1, approvedAt: "2026-11-01T12:00:00.000Z", digest: DIGEST, summary: SUMMARY } } : {}),
   draft: { status: "ready", notes: ["Found a package.json."], questions: [], pendingServices: [] },
   ...(phase === "ready" || phase === "approved" ? {} : { proposal: {
-    digest: DIGEST, source: "setup", risk: "medium", lessSafe: [], summary: SUMMARY, environment: ENVIRONMENT,
+    digest: DIGEST, source: "setup", risk: "medium", lessSafe: [], summary: SUMMARY, environment: environment(),
     runs: [{ repositoryId: "payments", setup: ["npm ci"], checks: [{ id: "unit", label: "Unit tests", kind: "test", command: "npm test", selectArgs: ["{tests}"] }] }],
     valueSources: [{ field: "repos[0].setupCommands[0]", source: { path: "package.json", line: 4 } }, { field: "repos[0].checks[0]", source: "detector:node" }],
+    dependencySeeds: [{ id: "aws-s3", name: "S3", commands: [] }],
     proved: phase === "proved", proveSteps: phase === "proved" ? [{ step: "setup", status: "passed" }, { step: "full_suite", status: "passed" }] : [], needs: { freshSignIn: false, secondPerson: false },
     approval: { status: "none" }, commandsNotInSettings: 2, check: { status: checked ? "ready" : "unchecked" },
   } }),
 });
 
 /** Answers the test-environment routes of the `payments` onboarding project; false when the request is not one of them. */
-export async function testEnvironmentMock({ url, method, json, record }: MockExchange, project: { get(): Project; set(value: Project): void }): Promise<boolean> {
+export async function testEnvironmentMock({ url, method, body, json, record }: MockExchange, project: { get(): Project; set(value: Project): void }): Promise<boolean> {
   const base = "/v1/web/projects/payments/test-environment";
   if (!url.pathname.startsWith(base)) return false;
   const action = url.pathname.slice(base.length);
   if (action === "" && method === "GET") { json(200, state()); return true; }
   if (method !== "POST") return false;
+  // A maintainer's edit (the AWS service picker): the whole environment; the mock keeps the services of its one emulated dependency.
+  if (action === "/edit") {
+    const sent = (await body()) as { environment?: { dependencies?: Array<{ backing?: { awsServices?: string[] } }> } };
+    awsServices = sent.environment?.dependencies?.[0]?.backing?.awsServices ?? awsServices;
+    record({ awsServices }); json(200, state()); return true;
+  }
   if (action === "/propose") { phase = "proposed"; json(200, state()); return true; }
   // TE-2: the proposal's own check runs first, on a fresh workspace, with nothing added to the project's settings.
   // TS-UX-1 item 2: one "Check it works" press proposes (no digest) and checks; a passed check reads as proved, with no Prove press.

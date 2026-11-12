@@ -250,6 +250,27 @@ describe("unlinking a sign-in method", () => {
     expect((await brokerCall(h, "GET", "/v1/app/me", cloud.token)).status).toBe(200);
   });
 
+  it("the separated identity inherits nothing: its own new company as owner, the email pointer and the first company untouched, no item of the first company names it", async () => {
+    const h = identityHarness({ cloud: {}, oidcUsers: [priya], github: { users: [octo] } });
+    const cloud = await signIn(h, "cloud", priya.sub);
+    const firstOrg = String(cloud.claims.org);
+    await signIn(h, "github", "4711");
+    h.tick(1000);
+    expect((await brokerCall(h, "DELETE", "/v1/app/me/identities/github", cloud.token)).status).toBe(200);
+    const pointerBefore = structuredClone(h.state.find((item) => item.entityType === "ORG_EMAIL")[0]);
+    h.tick(1000);
+    const again = await signIn(h, "github", "4711");
+    expect(again.claims).toMatchObject({ sub: githubId, amr: "github", org_role: "owner" });
+    expect(again.claims.org).not.toBe(firstOrg);
+    // The pointer still names the first account; the separated identity's company holds no email pointer.
+    const pointers = h.state.find((item) => item.entityType === "ORG_EMAIL");
+    expect(pointers).toEqual([pointerBefore]);
+    expect(pointers[0]).toMatchObject({ developerId: cloudId, orgId: firstOrg });
+    // Nothing in the first company names the separated developer (membership, grants, approvals, overrides).
+    expect(h.state.find((item) => String(item.pk).includes(firstOrg) && JSON.stringify(item).includes(githubId))).toEqual([]);
+    expect(h.logs).toContainEqual({ event: "signin.email_pointer_conflict", developerId: githubId, refused: false, separated: true });
+  });
+
   it("a sign-in code issued before the unlink cannot start a session after it", async () => {
     const h = identityHarness({ cloud: {}, oidcUsers: [priya], github: { users: [octo] } });
     const cloud = await signIn(h, "cloud", priya.sub);

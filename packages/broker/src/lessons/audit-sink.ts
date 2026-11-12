@@ -97,9 +97,12 @@ export function lessonAuditSink(write: RecordAuditSink, now: () => number, outbo
     // One event per occurrence: the time and a process counter keep two approvals of one lesson apart.
     counter += 1;
     const lessonId = event.lessonId ?? `${event.project}`;
+    // A project-level event (a repository switch, a preset, a rollback) names no lesson: its target is the project, and a project's name is personal data, so it is a name-keyed target (the appender pseudonymizes it
+    // and the name is sealed in the org's details), never an id the chain would hold in clear and never erase.
+    const target: AuditEventInput["target"] = event.lessonId === undefined ? { kind: "lesson", name: event.project.slice(0, 200) } : { kind: "lesson", id: lessonId.slice(0, 100) };
     return {
       eventId: auditEventId(mapped.action, lessonId, at, String(counter), event.actor ?? "system"), orgId: org.data, action: mapped.action, actor: actorOf(event.actor),
-      target: { kind: "lesson", id: lessonId.slice(0, 100) }, occurredAt: at, facts: mapped.facts(event),
+      target, occurredAt: at, facts: mapped.facts(event),
     };
   };
   return {
