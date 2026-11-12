@@ -71,6 +71,24 @@ for (const look of LOOKS) for (const nav of ["old", "new"] as const) {
   await evidenceShot(page, { path: `${shots}/after-switch-${look.name}-${nav}.png`, fullPage: false });
  });
 }
+// Decision 98: the company's runtime flag `companies` rides the navigation answer. On shows the switcher with no device key; off gives today's header even with the key, and no company is named after the answer.
+for (const [flag, store, shown] of [["on", {}, true], ["off", { "rovara.companies": "v2" }, false]] as const) {
+ test(`the company's companies flag ${flag}${shown ? " with no device key" : " with the device key"}: ${shown ? "the switcher" : "today's header"}`, async ({ page, context, request, baseURL }) => {
+  await enter(page, { context, request, baseURL }, store, 1280);
+  const mock = await mockCompanies(page, { uiFlags: { companies: flag } });
+  await page.goto("/app");await homeReady(page, "Acme");
+  if (shown) {
+   await expect(page.getByRole("button", { name: /Acme.*switch company/u })).toBeVisible();
+   const home = mock.requests().filter(apiRequest => apiRequest.url().includes("/v1/web/home"));expect(await home.at(-1)!.headerValue("x-rovara-company")).toBe(ORG_A);
+  } else {
+   await page.waitForLoadState("networkidle");
+   await expect(page.locator("header .rv-company-button, .rv-company-list, .rv-company-gate")).toHaveCount(0);
+   expect(await page.locator(".rv-shell-org").evaluate(node => node.outerHTML)).toBe('<span class="rv-shell-org">Acme</span>');
+   const home = mock.requests().filter(apiRequest => apiRequest.url().includes("/v1/web/home"));expect(home.length).toBeGreaterThan(0);
+   for (const apiRequest of home) expect(await apiRequest.headerValue("x-rovara-company"), apiRequest.url()).toBeNull();
+  }
+ });
+}
 test("a link for another company asks first, and Stay and Switch both work", async ({ page, context, request, baseURL }) => {
  await enter(page, { context, request, baseURL }, { "rovara.companies": "v2" }, 1280);
  const mock = await mockCompanies(page);

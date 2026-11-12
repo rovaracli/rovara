@@ -14,7 +14,7 @@ import { h } from "./support/h.js";
 import { navFixture } from "./support/fixtures.js";
 configure({ asyncUtilTimeout: 10_000 });vi.setConfig({ testTimeout: 30_000 });
 afterEach(() => { document.documentElement.removeAttribute("data-look");document.documentElement.removeAttribute("data-density"); });
-const flags = (states: Record<string, string>) => ({ uiFlags: { look: "off", nav: "off", home: "off", work: "off", spending: "off", leadingHeader: "off", health: "off", setup: "off", insights: "off", publish: "off", billing: "off", agreement: "off", ...states } });
+const flags = (states: Record<string, string>) => ({ uiFlags: { look: "off", nav: "off", home: "off", work: "off", spending: "off", leadingHeader: "off", health: "off", setup: "off", insights: "off", publish: "off", billing: "off", agreement: "off", companies: "off", continue: "off", ...states } });
 function mount(extra: Record<string, unknown>, storage: Record<string, string> = {}) {
  const f = fakeHost(async () => ({ status: 200, body: { ...navFixture(), ...extra } }));
  f.host.currentPath = () => "/app";

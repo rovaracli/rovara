@@ -13,6 +13,7 @@ import { CLI_PACKAGE, continueOffer, installCommand, lessonsLine, loadPrompt, NO
 import { AppHostProvider } from "../../packages/ui/src/host.js";
 import { Announcer } from "../../packages/ui/src/design/Announcer.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
+import { applyNavUiFlags } from "../../packages/ui/src/ui-flags.js";
 import { renderUi } from "./support/render.js";
 import { h } from "./support/h.js";
 import { fakeHost } from "./support/fake-host.js";
@@ -23,7 +24,7 @@ import { SESSION_FIXTURE_ID } from "./support/session-fixture.js";
 afterEach(() => { vi.unstubAllGlobals();vi.useRealTimers(); });
 const TASK = "11111111-1111-4111-8111-111111111111";
 type Lessons = { enabled: boolean; reason?: string; preset: string; companyStays: boolean } | "missing";
-function setup(session: SessionView, options: { on?: boolean; lessons?: Lessons; copyText?: (text: string) => Promise<void> } = {}) {
+function setup(session: SessionView, options: { on?: boolean; server?: "on" | "preview" | "off"; lessons?: Lessons; copyText?: (text: string) => Promise<void> } = {}) {
  const f = fakeHost(async request => {
   const path = request.path.split("?", 1)[0]!;
   if (path.endsWith("/lessons/local-tools")) return options.lessons === undefined || options.lessons === "missing" ? { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } } : { status: 200, body: options.lessons };
@@ -33,6 +34,8 @@ function setup(session: SessionView, options: { on?: boolean; lessons?: Lessons;
   return { status: 200, body: { session } };
  });
  if (options.on !== false) f.storage.set(CONTINUE_STORAGE_KEY, "v2");
+ // The company's runtime flag, as the navigation answer carries it (decision 98).
+ if (options.server !== undefined) applyNavUiFlags(f.host, { uiFlags: { continue: options.server } });
  if (options.copyText !== undefined) f.host.copyText = options.copyText;
  const query = createQueryClient(), router = createMemoryRouter([{ path: "/app/sessions/:id", element: h(SessionScreen, {}) }], { initialEntries: ["/app/sessions/" + SESSION_FIXTURE_ID] });
  const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(Announcer, { children: h(RouterProvider, { router }) }) }) }));
@@ -47,12 +50,39 @@ it("keeps the command in step with the published CLI package name", () => {
  expect(installCommand("codex")).toBe("npx @preplabsai/rovara-code mcp install --client codex");
  expect(installCommand("cursor")).toBe("npx @preplabsai/rovara-code mcp install --client cursor");
 });
-it("reads the switch from device storage only: off unless it says v2", () => {
+it("with no server answer, reads the device key: off unless it says v2", () => {
  const store = new Map<string, string>(), host = { storage: { get: (key: string) => store.get(key), set: (key: string, value: string) => { store.set(key, value); } } };
  expect(isContinueInToolOn(host)).toBe(false);
  for (const value of ["", "v1", "true", "V2", "1"]) { store.set(CONTINUE_STORAGE_KEY, value);expect(isContinueInToolOn(host)).toBe(false); }
  store.set(CONTINUE_STORAGE_KEY, "v2");expect(isContinueInToolOn(host)).toBe(true);
  expect(isContinueInToolOn({ storage: { get: () => { throw new Error("blocked"); }, set: () => undefined } })).toBe(false);
+});
+
+/** Proves an absence: every lazy import has landed and a few macrotask turns have passed, so the button and its chunk had their chance to appear. */
+const turn = () => new Promise<void>(resolve => { setTimeout(resolve, 0); });
+const settle = () => act(async () => { for (let round = 0; round < 10; round += 1) { await vi.dynamicImportSettled();await turn(); } });
+for (const [server, device, shown] of [["on", true, true], ["on", false, true], ["preview", true, true], ["preview", false, false], ["off", true, false], ["off", false, false]] as const) {
+ it(`the company's continue flag: server ${server}, device key ${device ? "v2" : "unset"}: ${shown ? "the button and the panel" : "no button, no panel, no lessons read"}`, async () => {
+  const f = setup(base(), { server, on: device, lessons: { enabled: true, preset: "standard", companyStays: false } });
+  try {
+   await screen.findByRole("heading", { name: "Fix duplicate refunds" });await screen.findByRole("button", { name: "Conversation" });
+   if (shown) {
+    const dialog = await open();
+    expect(within(dialog).getByLabelText("Install command for Claude Code").textContent).toBe("npx @preplabsai/rovara-code mcp install --client claude-code");
+   } else {
+    await settle();
+    expect(screen.queryByRole("button", { name: /Continue in your own tool/u })).toBeNull();
+    expect(f.container.querySelector(".rv-session-work-actions")).toBeNull();
+    expect(f.request.mock.calls.some(([request]) => request.path.includes("local-tools"))).toBe(false);
+   }
+  } finally { f.close(); }
+ });
+}
+it("an answer that does not name the flag (an older broker's uiFlags) is off, even with the device key", () => {
+ const store = new Map<string, string>([[CONTINUE_STORAGE_KEY, "v2"]]), host = { storage: { get: (key: string) => store.get(key), set: (key: string, value: string) => { store.set(key, value); } } };
+ expect(isContinueInToolOn(host)).toBe(true);
+ applyNavUiFlags(host, { uiFlags: { look: "on", insights: "on" } });expect(isContinueInToolOn(host)).toBe(false);
+ applyNavUiFlags(host, { uiFlags: { continue: "on" } });store.clear();expect(isContinueInToolOn(host)).toBe(true);
 });
 
 it("switch off: no button, no panel, and no read of the lessons setting", async () => {
