@@ -1,10 +1,10 @@
 // The hot store of the Team record: reads and writes of the `TeamRecord` table (design 4.2). Every key comes from the builders in contracts (workspace and project in
 // the partition); every row read back is parsed with its strict schema and one that does not parse is dropped, never shown. Writes are idempotent.
 import { createHash } from "node:crypto";
-import { DeleteCommand, GetCommand, PutCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { INDEX_EXPIRY_ATTRIBUTE, teamRecordPk, type OrgId } from "@rovara-code/contracts";
-import { RecordEventSchema, RecordFactSchema, SourceConfigSchema, TEAM_RECORD_GSI1, TEAM_RECORD_GSI2, TEAM_RECORD_GSI3, TEAM_RECORD_GSI4, TEAM_RECORD_GSI5, RECORD_DELETE_QUEUE_SK_PREFIX, RECORD_EVENT_SK_PREFIX, RECORD_FACT_SK_PREFIX, RECORD_SOURCE_SK_PREFIX, recordActorIndexValue, recordActorSourceIndexValue, recordTextDueIndexValue, recordDeleteQueueKey, recordDerivationKey, recordEventKey, recordFactKey, recordPlaceIndexValue, recordScopeIndexValue, recordSourceConfigIndexValue, recordSourceIndexValue, recordSourceKey, teamRecordSourceHash, type RecordEvent, type RecordFact, type RecordSystem, type SourceConfig } from "@agentx/cloud-contracts";
-import { Aliases, NOT_EXISTS, errorName, withoutUndefined, type Item } from "../agents/table-writes.js";
+import { RecordEventSchema, RecordFactSchema, SourceConfigSchema, TEAM_RECORD_GSI1, TEAM_RECORD_GSI2, TEAM_RECORD_GSI3, TEAM_RECORD_GSI4, TEAM_RECORD_GSI5, RECORD_DELETE_QUEUE_SK_PREFIX, RECORD_EVENT_SK_PREFIX, RECORD_FACT_SK_PREFIX, RECORD_SOURCE_SK_PREFIX, recordActorIndexValue, recordActorSourceIndexValue, recordTextDueIndexValue, recordDeleteQueueKey, recordDerivationKey, recordEventKey, recordFactKey, recordPlaceIndexValue, recordScopeIndexValue, recordSourceConfigIndexValue, recordSourceIndexValue, recordSourceKey, teamRecordOrgDirectoryKey, teamRecordSourceHash, type RecordEvent, type RecordFact, type RecordSystem, type SourceConfig } from "@agentx/cloud-contracts";
+import { Aliases, NOT_EXISTS, errorName, withoutUndefined, type Item, type TransactItem } from "../agents/table-writes.js";
 import { recordHeadIndexValue, reopenScope } from "./item-head.js";
 import { retentionRefusal } from "./retention.js";
 import type { Edition, PendingHides, TeamRecordTable } from "./types.js";
@@ -354,13 +354,42 @@ export interface ScopeWork {
   queuedAtSeconds: number;
 }
 
-/** A queue item as it is stored: `putScopeWork` writes it, and a transaction that must queue work with its own change (`source-remove.ts`) puts exactly this. */
-export function scopeWorkItem(orgId: OrgId, work: ScopeWork): Item {
+/**
+ * The queue item itself, as it is stored. Not exported: a producer that wrote this alone would leave its workspace out of the directory the scheduled jobs walk (`TEAM_RECORD_ORGS`, `eachOrg` in runtime.ts),
+ * so the delete worker would never reach the item (the 0.5.15 staging find: a source removed in a workspace with no earlier record write sat unprocessed). Producers use `scopeWorkItems` or `putScopeWork`.
+ */
+function queueItem(orgId: OrgId, work: ScopeWork): Item {
   return withoutUndefined({ ...recordDeleteQueueKey(orgId, work.at, work.requestId), entityType: "TEAM_RECORD_SCOPE_WORK", ...work });
 }
 
+/**
+ * Lists the workspace in the directory the hourly jobs walk, as a transaction item: an UPDATE that only fills what is missing, so it is idempotent, never fails on an existing row and never rewrites its time.
+ * The same row `listOrg` (runtime.ts) writes on a record write.
+ */
+export function orgDirectoryListing(table: TeamRecordTable, orgId: OrgId, at: string): TransactItem {
+  const aliases = new Aliases();
+  return {
+    Update: {
+      TableName: table.tableName,
+      Key: teamRecordOrgDirectoryKey(orgId),
+      UpdateExpression: `SET ${aliases.name("entityType")} = if_not_exists(${aliases.name("entityType")}, ${aliases.value("TEAM_RECORD_ORG")}), ${aliases.name("orgId")} = if_not_exists(${aliases.name("orgId")}, ${aliases.value(orgId)}), ${aliases.name("at")} = if_not_exists(${aliases.name("at")}, ${aliases.value(at)})`,
+      ExpressionAttributeNames: aliases.names,
+      ExpressionAttributeValues: aliases.values,
+    },
+  };
+}
+
+/**
+ * A queue item for the delete worker, with the workspace's directory row: what a transaction that must queue work with its own change (`source-write.ts`) puts. The two always travel together: queued work
+ * is only ever finished by the hourly job, and the job reaches a workspace only through the directory.
+ */
+export function scopeWorkItems(table: TeamRecordTable, orgId: OrgId, work: ScopeWork): TransactItem[] {
+  return [orgDirectoryListing(table, orgId, work.at), { Put: { TableName: table.tableName, Item: queueItem(orgId, work) } }];
+}
+
+/** Writes (or rewrites) a queue item, listing the workspace in the same transaction. */
 export async function putScopeWork(table: TeamRecordTable, orgId: OrgId, work: ScopeWork): Promise<void> {
-  await table.documentClient.send(new PutCommand({ TableName: table.tableName, Item: scopeWorkItem(orgId, work) }));
+  await table.documentClient.send(new TransactWriteCommand({ TransactItems: scopeWorkItems(table, orgId, work) }));
 }
 
 export function scopeWorkFromItem(item: Item): (ScopeWork & { pk: string; sk: string }) | undefined {

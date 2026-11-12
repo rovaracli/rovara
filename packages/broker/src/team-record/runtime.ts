@@ -34,7 +34,7 @@ import type { RecordAuditSink } from "./audit.js";
 import { callRecordTool, recordToolsFor, type RecordToolContext } from "./agent-tools.js";
 import { runDeleteWorker, type DeleteBudget } from "./delete-worker.js";
 import { defaultRetention, readEdition, type TeamRecordEdition } from "./edition.js";
-import { listSourceConfigs, markSourceFailing } from "./store.js";
+import { listScopeWork, listSourceConfigs, markSourceFailing } from "./store.js";
 import { resolveTaskVisibility } from "../lessons/task-visibility.js";
 import { createEmbedder } from "./embed.js";
 import { lessonEmbedderFrom, recordEmbedderClientFrom, recordJobEmbedderClientFrom, recordSearchEmbedderClientFrom, EMBEDDER_JOB_WAIT_MS, type LessonEmbedder } from "../embedder/wiring.js";
@@ -869,6 +869,9 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
         await runLakeDeletes({ queue: lakeQueue, lake: lakeNow, tableBucket }, { workspaceId: orgId, budget: { maxStatements: 5, maxMs: Math.max(1_000, lakeMs) } });
         if ((await lakeQueue.listPending(orgId, 1)).length > 0) return false;
       }
+      // The directory row is the only way the hourly job (and so the delete worker) reaches this company. A delete still queued for it (a removal that raced the erase) keeps the job, and with it the row, until the worker has
+      // finished it: the company leaves the directory only when nothing is pending. The worker runs before this step in every hourly run, so the next run finds the queue empty.
+      if ((await listScopeWork(table, orgId, 1)).length > 0) return false;
       await dropJob(job.sk);
       await clearStamps(orgId);
       if ((await jobsOf(orgId)).length === 0) {

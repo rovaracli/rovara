@@ -14,7 +14,7 @@ import { tableLakeDeleteQueue } from "./lake-queue.js";
 import { addPurge, emptyPurge, purgeItems, type PurgeDependencies, type PurgeResult } from "./purge.js";
 import { markAccessErased, placeOfUnit, removePersonFromUnit, unitsOfPerson } from "./access.js";
 import { identitySystem, markPersonErased } from "./erased.js";
-import { OPS_FAILURE_SK_PREFIX, recordOpsFailure } from "./ops-failures.js";
+import { OPS_FAILURE_SK_PREFIX, OPS_LEVEL_SK_PREFIX, recordOpsFailure } from "./ops-failures.js";
 import { PERSON_RATE_KINDS, personRatePrefix, pickerPersonHash, slackAddRatePrefix } from "./query.js";
 import { changeScopePrincipals } from "./scope-work.js";
 import { REQUIRED_ERASE_STEPS, type EraseStep } from "./person-fields.js";
@@ -412,8 +412,8 @@ async function scrubAccessUnits(deps: PurgeDependencies, orgId: OrgId, ids: read
 /** Everything that lives in a project's partition besides rows, derivation links, facts and source settings: the learning lane's lessons, skills, manifests, snapshots and settings, and the source write route's request items. */
 const LEARNING_PREFIXES = [LESSON_SK_PREFIX, "SKILL#", "LOAD#", "EVALLOAD#", "SNAPSHOT#", "LESSONSET", "MODE", SOURCE_REQUEST_SK_PREFIX, SOURCE_REVISION_SK_PREFIX] as const;
 const ALL_PREFIXES = ["SOURCE#", RECORD_EVENT_SK_PREFIX, "DERIV#", RECORD_FACT_SK_PREFIX, ...LEARNING_PREFIXES] as const;
-/** The workspace's own items: the delete queue, rate counters, failure counters (`OPSFAIL#`), deleted-at-source markers and the company mode lock. (`LAKEDEL#` stays until the lake job has run.) `EDITED#` marks were the freeze-on-edit rule's (replaced by per-editor rows): nothing writes or reads them any more, and a company erase still removes any left over. */
-const WORKSPACE_PREFIXES = ["DELQ#", "RATE#", "DELETED#", "MODE_LOCK", "VECBUCKET", "ITEM#", "SCOPEDEL#", "ACCESS#", "ACCESSP#", "ERASED#", "ERASESWEEP#", "ERASEPROG#", "TRLINK#", "TRLINKDEV#", "TRUNMATCHED#", "TRUNMAP#", "TRSYNC#", "TRREQ#", "PRIOREDIT#", PUSH_INDEX_SK_PREFIX, MERGE_INDEX_SK_PREFIX, "TRAUTOLINK", "SKIPPED#", "EDITED#", SOURCE_SCOPE_SK_PREFIX, SOURCE_OPTIONS_SK_PREFIX, SLACK_ADD_SK_PREFIX, OPS_FAILURE_SK_PREFIX] as const;
+/** The workspace's own items: the delete queue, rate counters, failure counters (`OPSFAIL#`) and levels (`OPSLEVEL#`), deleted-at-source markers and the company mode lock. (`LAKEDEL#` stays until the lake job has run.) `EDITED#` marks were the freeze-on-edit rule's (replaced by per-editor rows): nothing writes or reads them any more, and a company erase still removes any left over. */
+const WORKSPACE_PREFIXES = ["DELQ#", "RATE#", "DELETED#", "MODE_LOCK", "VECBUCKET", "ITEM#", "SCOPEDEL#", "ACCESS#", "ACCESSP#", "ERASED#", "ERASESWEEP#", "ERASEPROG#", "TRLINK#", "TRLINKDEV#", "TRUNMATCHED#", "TRUNMAP#", "TRSYNC#", "TRREQ#", "PRIOREDIT#", PUSH_INDEX_SK_PREFIX, MERGE_INDEX_SK_PREFIX, "TRAUTOLINK", "SKIPPED#", "EDITED#", SOURCE_SCOPE_SK_PREFIX, SOURCE_OPTIONS_SK_PREFIX, SLACK_ADD_SK_PREFIX, OPS_FAILURE_SK_PREFIX, OPS_LEVEL_SK_PREFIX] as const;
 
 /**
  * A project is archived or a workspace closed: the project's partition is emptied. Its source rows go first, so no tap writes into it again; then rows and facts

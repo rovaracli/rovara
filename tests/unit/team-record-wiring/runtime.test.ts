@@ -13,7 +13,7 @@ import { lessonSimilarityFor } from "../../../packages/broker/src/aws/broker/les
 import { createTeamRecordRuntime, teamRecordIsOn, type TeamRecordRuntime } from "../../../packages/broker/src/team-record/runtime.js";
 import { ERASE_SWEEP_DELAY_MS } from "../../../packages/broker/src/team-record/erase.js";
 import { identitySystem } from "../../../packages/broker/src/team-record/erased.js";
-import { putSourceConfig } from "../../../packages/broker/src/team-record/store.js";
+import { putScopeWork, putSourceConfig } from "../../../packages/broker/src/team-record/store.js";
 import { askAliasHashKey, readErasedAliases, scrubWithAliasHashes } from "../../../packages/broker/src/agent-sessions/ask-erased-aliases.js";
 import { SdkUnavailableError } from "../../../packages/broker/src/team-record/aws-adapters.js";
 import { FakeDynamoDb } from "../../support/fake-dynamodb.js";
@@ -2062,5 +2062,96 @@ describe("the re-embed job (review H1 and M3)", () => {
       expect(await runtime.jobs.run("reembed")).toMatchObject({ orgs: 0, details: { skipped: 1 } });
       expect(aws.embedBodies).toHaveLength(0);
     }
+  });
+});
+
+describe("a source removal in a workspace that never wrote to the record is finished by the hourly job (0.5.15 staging find)", () => {
+  const ENT = { ...ON, ROVARA_EDITION: "enterprise" } as const;
+  const caller = { orgId: ORG_A, developerId: "d".repeat(64), projectRole: "maintainer" as const };
+  const removeBody = (scope: string, source: string) => ({ action: "remove", requestId: "11111111-1111-4111-8111-111111111111", source, scope, expectedRevision: 0 });
+  const directory = (db: FakeDynamoDb) => db.find((item) => item.pk === "TEAM_RECORD_ORGS" && item.sk === ORG_A);
+  const queued = (db: FakeDynamoDb) => db.find((item) => item.entityType === "TEAM_RECORD_SCOPE_WORK");
+
+  it("a GitHub source (children, hidden while pending): the removal lists the workspace, one hourly run clears the queue, and the place is closed", async () => {
+    const db = dbOf();
+    const runtime = build(db, ENT);
+    expect((await runtime.jobs.run("hourly")).orgs).toBe(0);
+    await addSource(db, "enterprise", { orgId: ORG_A, source: "github", scope: "github:repo/9", retention: "C" });
+    expect(directory(db)).toStrictEqual([]);
+    // The best-effort inline close fails, so the queue item (which hides the place) stays until the hourly job has run for this workspace.
+    const send = db.send.bind(db);
+    db.send = async (command: Parameters<typeof send>[0]) => {
+      if ((command as { constructor: { name: string } }).constructor.name === "PutCommand" && ((command as { input: { Item?: { entityType?: string } } }).input.Item?.entityType === "TEAM_RECORD_SCOPE_CLOSED")) throw new Error("dynamodb unavailable");
+      return send(command);
+    };
+    const reply = await runtime.routes({ method: "POST", path: "/v1/app/projects/web/record/sources", query: {}, caller, write: { orgRole: "owner", browserSession: true, body: () => removeBody("github:repo/9", "github") } });
+    db.send = send;
+    expect(reply).toMatchObject({ status: 200, body: { status: "removed" } });
+    expect(directory(db)).toHaveLength(1);
+    expect(queued(db)).toHaveLength(1);
+    expect((await runtime.jobs.run("hourly")).orgs).toBe(1);
+    expect(queued(db)).toStrictEqual([]);
+    expect(db.find((item) => item.entityType === "TEAM_RECORD_SCOPE_CLOSED")).toHaveLength(1);
+  });
+
+  it("the Rovara row (free text only) is listed and finished by one hourly run too", async () => {
+    const db = dbOf();
+    const runtime = build(db, ENT);
+    await addSource(db, "enterprise", { orgId: ORG_A, source: "rovara", scope: "rovara:project/web", retention: "C" });
+    const send = db.send.bind(db);
+    db.send = async (command: Parameters<typeof send>[0]) => {
+      const names = Object.values((command as { input?: { ExpressionAttributeNames?: Record<string, string> } }).input?.ExpressionAttributeNames ?? {});
+      if ((command as { constructor: { name: string } }).constructor.name === "UpdateCommand" && names.includes("tombstone")) throw new Error("dynamodb unavailable");
+      return send(command);
+    };
+    const reply = await runtime.routes({ method: "POST", path: "/v1/app/projects/web/record/sources", query: {}, caller, write: { orgRole: "owner", browserSession: true, body: () => removeBody("rovara:project/web", "rovara") } });
+    db.send = send;
+    expect(reply).toMatchObject({ status: 200, body: { status: "removed" } });
+    expect(directory(db)).toHaveLength(1);
+    expect((await runtime.jobs.run("hourly")).orgs).toBe(1);
+    expect(queued(db)).toStrictEqual([]);
+  });
+});
+
+describe("a company's erase keeps the company in the directory while a delete is still queued for it", () => {
+  const directory = (db: FakeDynamoDb) => db.find((item) => item.pk === "TEAM_RECORD_ORGS" && item.sk === ORG_A);
+  const jobs = (db: FakeDynamoDb) => db.find((item) => item.entityType === "TEAM_RECORD_ERASE_JOB");
+  const queued = (db: FakeDynamoDb) => db.find((item) => item.entityType === "TEAM_RECORD_SCOPE_WORK");
+
+  it("a delete queued after the erase's hot pass (a removal that raced it) is finished by the worker first; only then does the job end and the company leave the directory", async () => {
+    const db = dbOf();
+    const clock = { at: T0 };
+    const aws = fakeAws();
+    const runtime = build(db, { ...ON, ROVARA_EDITION: "enterprise" }, { sdk: aws.sdk, sts: aws.sts, now: () => clock.at });
+    db.set({ ...orgProjectCatalogKey(ORG_A, "web"), entityType: "PROJECT_CATALOG", name: "web" });
+    await addSource(db, "enterprise", { orgId: ORG_A, source: "github", scope: "github:repo/9", retention: "C" });
+    await runtime.sink.put(githubDraft({ retention: "C", audience: { kind: "project" }, scope: "github:repo/9", text: `${MARKER} history` }));
+    db.set({ ...orgMetaKey(ORG_A), orgId: ORG_A, closingAt: "2026-10-30T11:00:00.000Z" });
+    await runtime.erase.workspace(ORG_A);
+    clock.at += SETTLE_PASS_MS;
+    // A removal that raced the erase: its queue item lands right after the erase's hot pass has finished (the moment the job moves on to its lake phase), where no pass of the erase clears it any more.
+    const send = db.send.bind(db);
+    let raced = false;
+    db.send = async (command: Parameters<typeof send>[0]) => {
+      const result = await send(command);
+      const item = (command as { input?: { Item?: { entityType?: string; job?: { phase?: string } } } }).input?.Item;
+      if (!raced && item?.entityType === "TEAM_RECORD_ERASE_JOB" && item.job?.phase === "lake") {
+        raced = true;
+        await putScopeWork({ documentClient: db, tableName: "TeamRecord" }, ORG_A, { type: "tombstone", system: "github", scope: "github:repo/9", cause: "excluded", hidePending: true, childPending: true, hidden: 0, requestId: "22222222-2222-4222-8222-222222222222", at: new Date(clock.at).toISOString(), queuedAtSeconds: Math.floor(clock.at / 1000) });
+      }
+      return result;
+    };
+    await runtime.jobs.run("hourly");
+    db.send = send;
+    expect(raced).toBe(true);
+    // The queue holds a delete for this company, so the erase job (and the company's directory row, the worker's only way in) stays.
+    expect(queued(db)).toHaveLength(1);
+    expect(jobs(db)).toHaveLength(1);
+    expect(directory(db)).toHaveLength(1);
+    // The next run: the worker finishes the item and then the job ends and the company leaves the directory.
+    await runtime.jobs.run("hourly");
+    expect(queued(db)).toStrictEqual([]);
+    expect(jobs(db)).toStrictEqual([]);
+    expect(directory(db)).toStrictEqual([]);
   });
 });

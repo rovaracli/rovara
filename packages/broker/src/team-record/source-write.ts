@@ -31,7 +31,7 @@ import { personRateKey, type RecordQueryDependencies } from "./query.js";
 import type { RecordRouteReply, RecordRouteRequest } from "./routes.js";
 import { rovaraScope } from "./sources/rovara.js";
 import { claimDrop, claimPut, readRevisionFloor, readScopeClaim, readSourceRequest, readSourceRow, requestPut, revisionFloorCheck, revisionFloorPut } from "./source-store.js";
-import { listScopeWork, listSourceConfigs, putScopeWork, scopeWorkItem, sourceRowItem, type ScopeWork } from "./store.js";
+import { listScopeWork, listSourceConfigs, putScopeWork, scopeWorkItems, sourceRowItem, type ScopeWork } from "./store.js";
 
 /** What the route needs from the install. */
 export interface SourceRouteDependencies {
@@ -619,7 +619,7 @@ async function saveRemove(run: Run, body: Extract<SourceWriteBody, { action: "re
     rowDelete(run, current, was),
     claimDrop(table, run.orgId, run.project, body.source, body.scope),
     revisionFloorPut(table, run.orgId, run.project, body.source, body.scope, was, at),
-    { Put: { TableName: table.tableName, Item: scopeWorkItem(run.orgId, work) } },
+    ...scopeWorkItems(table, run.orgId, work),
     requestItem(run, body.requestId, hash, reply),
     ...auditItems(run, events, false),
   ];
@@ -629,7 +629,7 @@ async function saveRemove(run: Run, body: Extract<SourceWriteBody, { action: "re
     throw stale();
   }
   await flush(run, events);
-  // Best effort, and only an acceleration: the queued work above already hides the place from every read and makes the worker finish the job.
+  // Best effort, and only an acceleration: the queued work above already hides the place from every read, and (it lists the workspace in the directory the hourly job walks, in the same transaction) makes the worker finish the job.
   if (textOnly) {
     try {
       const result = await tombstoneRows({ table, now: run.now }, run.orgId, { system: body.source, scope: body.scope, cause: "excluded", textOnly: true }, DEFAULT_WORK_BUDGET);
