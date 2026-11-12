@@ -18,7 +18,7 @@ import { h } from "./support/h.js";
 import { navFixture } from "./support/fixtures.js";
 
 const row = (name: string, label: string, over: Record<string, unknown> = {}) => ({ name, label, summary: `What ${label} turns on.`, wired: true, enabled: false, forcedOff: false, state: "off", ...over });
-const answer = (over: Record<string, unknown> = {}) => ({ revision: 3, previews: false, changedAt: "2026-11-11T12:00:00.000Z", flags: [row("look", "New look", { enabled: true, state: "on" }), row("nav", "New navigation", { state: "preview" }), row("home", "New Home"), row("spending", "Spending page", { enabled: true, forcedOff: true }), row("health", "Health page", { wired: false })], ...over });
+const answer = (over: Record<string, unknown> = {}) => ({ revision: 3, previews: false, changedAt: "2026-11-11T12:00:00.000Z", flags: [row("look", "New look", { enabled: true, state: "on" }), row("nav", "New navigation", { state: "preview" }), row("home", "New Home"), row("spending", "Spending page", { enabled: true, forcedOff: true }), row("insights", "Insights"), row("health", "Health page", { wired: false })], ...over });
 const PATH = "/v1/app/org/ui-flags";
 function mount(options: { role?: "owner" | "admin" | "member"; read?: unknown; put?: (request: ApiRequest) => ApiResponse | Promise<ApiResponse> } = {}) {
  const role = options.role ?? "owner";
@@ -47,12 +47,15 @@ it("lists the wired switches with what each turns on, the company value and when
  await screen.findByRole("heading", { name: "New screens", level: 1 });
  const list = await screen.findByRole("list", { name: "New screens" });
  const items = within(list).getAllByRole("listitem");
- expect(items.map(item => item.getAttribute("aria-label"))).toEqual(["New look", "New navigation", "New Home", "Spending page"]);
+ expect(items.map(item => item.getAttribute("aria-label"))).toEqual(["New look", "New navigation", "New Home", "Spending page", "Insights"]);
  expect(items[0]!.textContent).toContain("What New look turns on.");expect(items[0]!.textContent).toContain("On");expect(items[0]!.textContent).toContain("On for everyone in Acme.");
  expect(items[1]!.textContent).toContain("Preview");expect(items[1]!.textContent).toContain("Anyone can try it in their own browser");
  expect(items[2]!.textContent).toContain("Off.");
  expect(items[3]!.textContent).toContain("Turned off by the Rovara operator");
  expect(items[3]!.textContent).not.toContain("Held back");
+ // Insights is a wired switch the owner can press, like the others: its own row, off, with its button.
+ expect(items[4]!.textContent).toContain("What Insights turns on.");expect(items[4]!.textContent).toContain("Off.");
+ expect(within(items[4]!).getByRole("button", { name: "Turn on Insights for everyone" })).toBeTruthy();
  expect(within(items[3]!).queryByRole("button")).toBeNull();
  expect(within(items[0]!).getByRole("button")).toBeTruthy();
  expect(screen.queryByText("Health page")).toBeNull();
@@ -140,7 +143,7 @@ it("each switch's accessible name is its visible text (WCAG 2.5.3): no aria-labe
  const f = mount();
  const list = await screen.findByRole("list", { name: "New screens" });
  const buttons = within(list).getAllByRole("button");
- expect(buttons.map(button => button.textContent)).toEqual(["Turn off New look for everyone", "Turn on New navigation for everyone", "Turn on New Home for everyone"]);
+ expect(buttons.map(button => button.textContent)).toEqual(["Turn off New look for everyone", "Turn on New navigation for everyone", "Turn on New Home for everyone", "Turn on Insights for everyone"]);
  for (const button of buttons) {
   expect(button.hasAttribute("aria-label")).toBe(false);
   expect(screen.getByRole("button", { name: button.textContent })).toBe(button);

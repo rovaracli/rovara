@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi } from "vitest";
-import { screen, fireEvent, waitFor, within } from "@testing-library/react";
+import { act, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { AppNavSchema, type AppNav } from "@agentx/cloud-contracts/web";
@@ -8,6 +8,7 @@ import { appRoutes } from "../../packages/ui/src/routes.js";
 import { AppHostProvider, type ApiRequest, type ApiResponse } from "../../packages/ui/src/host.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { ThemeProvider } from "../../packages/ui/src/theme.js";
+import { applyNavUiFlags } from "../../packages/ui/src/ui-flags.js";
 import { isInsightsOn, INSIGHTS_STORAGE_KEY } from "../../packages/ui/src/screens/insights/insights-flags.js";
 import { ageWords, barPercent, durationWords, nextActorWords, notCoveredWords, notReadyWords, rateWords, recentMonths } from "../../packages/ui/src/screens/insights/insights-format.js";
 import { InsightsOverviewReaderSchema, InsightsSpendReaderSchema, InsightsStuckReaderSchema } from "@agentx/cloud-contracts/web";
@@ -52,7 +53,7 @@ function defaults(role: string, o: Parameters<typeof overview>[0]): Answers {
  return { "/v1/app/insights": { status: 200, body: overview({ role, ...o }) }, "/v1/app/insights/stuck": { status: 200, body: stuck() }, "/v1/app/insights/shipped": { status: 200, body: shippedAnswer }, "/v1/app/insights/spend": { status: 200, body: spendAnswer() }, "/v1/app/insights/flow": { status: 200, body: flowAnswer },
   "/v1/app/org/insights-access": { status: 200, body: accessList([{ id: MAYA, name: "Maya Chen" }]) }, "/v1/app/org/members": { status: 200, body: members } };
 }
-function mount(options: { on?: boolean; role?: string; path?: string; newNav?: boolean; answers?: Answers; overview?: Parameters<typeof overview>[0]; theme?: "light" | "dark" } = {}) {
+function mount(options: { server?: "on" | "preview" | "off"; on?: boolean; role?: string; path?: string; newNav?: boolean; answers?: Answers; overview?: Parameters<typeof overview>[0]; theme?: "light" | "dark" } = {}) {
  const role = options.role ?? "owner", value = nav(role), answers = { ...defaults(role, options.overview ?? {}), ...options.answers };
  const f = fakeHost(async (r: ApiRequest) => {
   const path = r.path.split("?")[0]!;
@@ -61,7 +62,7 @@ function mount(options: { on?: boolean; role?: string; path?: string; newNav?: b
   if (answer === undefined) return { status: 404, body: { error: { code: "NOT_FOUND", message: "Not found." } } };
   return typeof answer === "function" ? answer(r) : answer;
  });
- f.storage.set("rovara.theme", options.theme ?? "light");if (options.on !== false) f.storage.set(INSIGHTS_STORAGE_KEY, "v2");if (options.newNav === true) f.storage.set("rovara.nav", "v2");
+ f.storage.set("rovara.theme", options.theme ?? "light");if (options.on !== false) f.storage.set(INSIGHTS_STORAGE_KEY, "v2");if (options.server !== undefined) applyNavUiFlags(f.host, { uiFlags: { nav: options.newNav === true ? "on" : "off", insights: options.server } });if (options.newNav === true) f.storage.set("rovara.nav", "v2");
  const query = createQueryClient();query.setQueryData(["nav"], value);
  const router = createMemoryRouter(appRoutes(value.features, { newNav: options.newNav === true, insights: isInsightsOn(f.host) }), { initialEntries: [options.path ?? "/app/insights"] });
  const view = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(ThemeProvider, { host: f.host, children: h(RouterProvider, { router }) }) }) }));
@@ -69,6 +70,10 @@ function mount(options: { on?: boolean; role?: string; path?: string; newNav?: b
 }
 const calls = (f: ReturnType<typeof mount>, path: string, method = "GET") => f.request.mock.calls.map(([r]) => r).filter(r => r.path.split("?")[0] === path && r.method === method);
 const insightsCalls = (f: ReturnType<typeof mount>) => f.request.mock.calls.map(([r]) => r.path).filter(path => path.startsWith("/v1/app/insights") || path.startsWith("/v1/app/org/insights-access"));
+/** Proves an absence: every lazy import has landed and a few macrotask turns have passed, so the screen had its chance to appear and to read. */
+const turn = () => new Promise<void>(resolve => { setTimeout(resolve, 0); });
+const settle = (query: { isFetching(): number }) => act(async () => { for (let round = 0; round < 10; round += 1) { await vi.dynamicImportSettled();await turn(); } while (query.isFetching() > 0) await turn(); });
+const sidebarLink = () => within(screen.getByRole("navigation", { name: "Workspace" })).queryByRole("link", { name: "Insights" });
 const panel = async (name: string) => within(await screen.findByRole("region", { name }));
 
 describe("the switch", () => {
@@ -89,6 +94,50 @@ describe("the switch", () => {
    expect(screen.queryByRole("heading", { name: "Insights" })).toBeNull();
    expect(insightsCalls(f)).toEqual([]);
   } finally { f.close(); }
+ });
+});
+
+describe("the company's insights flag (server on / preview / off, with and without the device key)", () => {
+ for (const [server, device, shown] of [["on", true, true], ["on", false, true], ["preview", true, true], ["preview", false, false], ["off", true, false], ["off", false, false]] as const) {
+  it(`server ${server}, device key ${device ? "v2" : "unset"}: ${shown ? "the screen opens and the entry shows" : "no route, no entry, no Insights request"}`, async () => {
+   const f = mount({ server, on: device, newNav: true, path: "/app/insights" });
+   try {
+    if (shown) {
+     await screen.findByRole("heading", { name: "Stuck work" });
+     await waitFor(() => { expect(sidebarLink()).toBeTruthy(); });
+    } else {
+     await screen.findByText(/We couldn't find that\./);
+     await settle(f.query);
+     expect(screen.queryByRole("heading", { name: "Insights" })).toBeNull();
+     expect(sidebarLink()).toBeNull();
+     expect(insightsCalls(f)).toEqual([]);
+    }
+   } finally { f.close(); }
+  });
+ }
+ it("server on: the switch function says yes whatever the device key holds, and server off says no even with the key", () => {
+  const host = (value: string | undefined) => ({ storage: { get: () => value } });
+  const on = host(undefined), off = host("v2");
+  applyNavUiFlags(on, { uiFlags: { insights: "on" } });applyNavUiFlags(off, { uiFlags: { insights: "off" } });
+  expect(isInsightsOn(on)).toBe(true);expect(isInsightsOn(off)).toBe(false);
+ });
+ it("server on but the broker's own Insights switch off (404): a calm notice, no nav entry, no error and no panel read", async () => {
+  const gone: ApiResponse = { status: 404, body: { error: { code: "NOT_FOUND", message: "Not found." } } };
+  const f = mount({ server: "on", on: false, answers: { "/v1/app/insights": gone } });
+  try {
+   const notice = await screen.findByText(/Insights isn't turned on for your company yet/);
+   expect(notice.getAttribute("role")).toBe("status");
+   expect(screen.queryByRole("alert")).toBeNull();
+   await settle(f.query);
+   expect(insightsCalls(f)).toEqual(["/v1/app/insights"]);
+  } finally { f.close(); }
+  const g = mount({ server: "on", on: false, newNav: true, path: "/app/work", answers: { "/v1/app/insights": gone } });
+  try {
+   await waitFor(() => { expect(calls(g, "/v1/app/insights").length).toBe(1); });
+   await settle(g.query);
+   expect(sidebarLink()).toBeNull();
+   expect(insightsCalls(g)).toEqual(["/v1/app/insights"]);
+  } finally { g.close(); }
  });
 });
 
