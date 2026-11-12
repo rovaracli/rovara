@@ -67,8 +67,8 @@ const pinnedEntry = (id: string) => withEntry(id, (entry) => {
 
 describe("the shipped data file", () => {
   const shipped = cat.ServiceCatalogSchema.parse(shippedRaw());
-  it("is the pinned revision 3: exactly postgres@16 and local-aws@r1 are pinned", () => {
-    expect(shipped).toMatchObject({ schemaVersion: 1, revision: 3, pinned: true });
+  it("is the pinned revision 5 (the AWS Emulator engine for local-aws@r1): exactly postgres@16 and local-aws@r1 are pinned", () => {
+    expect(shipped).toMatchObject({ schemaVersion: 1, revision: 5, pinned: true });
     expect(shipped.entries.filter((entry) => entry.image.digest !== undefined).map((entry) => entry.id).sort()).toEqual(["local-aws@r1", "postgres@16"]);
   });
   it("pins each of those two wholly (a digest, an SBOM hash and a scan with no critical finding) and every other entry not at all", () => {
@@ -112,7 +112,7 @@ describe("the v1 data file (as an unpinned fixture)", () => {
     expect(size("mysql@8")).toMatchObject({ memMiB: 768, cpus: 1 });
     expect(size("valkey@8")).toMatchObject({ memMiB: 128, cpus: 0.5 });
     expect(size("rabbitmq@3")).toMatchObject({ memMiB: 256, cpus: 0.5 });
-    expect(size("local-aws@r1")).toMatchObject({ memMiB: 384, cpus: 1 });
+    expect(size("local-aws@r1")).toMatchObject({ memMiB: 512, cpus: 1 });
     expect(size("fake-server@r1")).toMatchObject({ memMiB: 512, cpus: 0.5 });
     expect(size("test-account-proxy@r1")).toMatchObject({ memMiB: 64, cpus: 0.25 });
     expect(size("dns-helper@r1")).toMatchObject({ memMiB: 128, cpus: 0.5 });
@@ -161,10 +161,12 @@ describe("Rovara local AWS entry", () => {
   it("lets the chooser pick the supported, function and model-endpoint tiers but not the available one", () => {
     for (const service of ["s3", "dynamodb", "sqs", "sns", "sts", "secretsmanager", "ssm", "kms", "events", "lambda", "sagemaker-runtime"]) expect(cat.emulatorChoosable(emulator, service), service).toBe(true);
     for (const service of ["kinesis", "stepfunctions", "apigateway", "cognito-idp", "logs", "dynamodbstreams"]) expect(cat.emulatorChoosable(emulator, service), service).toBe(false);
+    // Every other service of the generated table is `available` (decision 109: a person's explicit choice is backed, the chooser never picks it); a service the table does not know has no tier.
     for (const service of ["ec2", "bedrock", "ecr", "codeartifact", "rds"]) {
-      expect(cat.emulatorServiceTier(emulator, service), service).toBeUndefined();
+      expect(cat.emulatorServiceTier(emulator, service), service).toBe("available");
       expect(cat.emulatorChoosable(emulator, service), service).toBe(false);
     }
+    for (const service of ["nosuchservice", "constructor"]) expect(cat.emulatorServiceTier(emulator, service), service).toBeUndefined();
     expect(cat.emulatorServiceTier(emulator, "lambda")).toBe("functions");
     expect(cat.emulatorServiceTier(emulator, "kinesis")).toBe("available");
   });

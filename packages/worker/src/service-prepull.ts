@@ -10,6 +10,7 @@
 //
 // Wiring pending: the caller (the worker's start, after the service runner exists) gives the registry host and a `pull` that runs `docker pull <reference>`; nothing calls this yet.
 import { readFile } from "node:fs/promises";
+import { placeholderDigestProblem } from "@agentx/cloud-contracts";
 import { PREPULL_MAX_IMAGES, PrepullListSchema, catalogImageReference, catalogRepositoryName, type PrepullList } from "@rovara-code/contracts";
 
 /** The list shipped in the worker image, beside `dist/` (the same relative place from `src/` and from `dist/`). */
@@ -28,7 +29,11 @@ export async function loadPrepullList(file: URL | string = PREPULL_LIST_URL): Pr
     throw error;
   }
   if (Buffer.byteLength(text) > PREPULL_LIST_MAX_BYTES) throw new Error("the service pre-pull list is too large");
-  return PrepullListSchema.parse(JSON.parse(text));
+  const list = PrepullListSchema.parse(JSON.parse(text));
+  // A bad release is seen, not skipped: a list that still holds the all-zero placeholder digest throws like any invalid list.
+  const placeholder = placeholderDigestProblem(list);
+  if (placeholder !== undefined) throw new Error(`the service pre-pull list is invalid: ${placeholder}`);
+  return list;
 }
 
 /** The digest references of a list in the order they are pulled. `registry` is the install's registry host; `env` the named environment. */

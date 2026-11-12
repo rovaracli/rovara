@@ -12,7 +12,7 @@ import { agentXError, decisionFocusPath, decisionTaskSessionOf } from "@rovara-c
 import { type AuditProof } from "@agentx/cloud-contracts";
 import { approvalDecideKind } from "../../agents/approval-decide-kind.js";
 import { createPendingChange, getAnyApproval, registerApprovalSubjectHandler, registerApproverRule, type ApprovalDependencies } from "../../agents/approvals.js";
-import { DECIDE_SECONDS, DecideStore, decideProofOf } from "../../developer/decide-session.js";
+import { DECIDE_SECONDS, DecideStore, decideProofOf, type DecideSession } from "../../developer/decide-session.js";
 import { DECIDE_SIGN_IN_REASON } from "./outside-cards.js";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "./types.js";
 
@@ -36,6 +36,15 @@ function requestIdOf(developerId: string, card: CardDecideTarget, attempt: strin
 
 /** The card being decided: its id and the version of it that was shown, the task, and its page (where the decide sign-in comes back to). */
 export interface CardDecideTarget { cardId: string; taskId: string; contentVersion: string; openPath: string }
+
+/**
+ * Whether a decide session is the decide-grade sign-in of this person: theirs, in their org, by email code, unused, unexpired and at most `DECIDE_SECONDS` old. Read only: the press claims the session.
+ * The one rule for the card press here and the Approvers adapter's `browser-step-up` method (convergence A6, `cloud/adapters/people`), so the two cannot disagree.
+ */
+export function isDecideGradeSession(session: DecideSession | undefined, who: { orgId: string; developerId: string }, nowSeconds: number): session is DecideSession {
+  return session !== undefined && session.orgId === who.orgId && session.developerId === who.developerId && session.method === "email_code" && session.usedAt === undefined
+    && session.expiresAt > nowSeconds && nowSeconds - session.signedInAt <= DECIDE_SECONDS;
+}
 
 /** REAUTH_REQUIRED with the reason `decide_sign_in` and, when one was made, the decide sign-in that comes back to this card. */
 export function decideSignInRequired(signInUrl?: string): Error {
@@ -68,8 +77,7 @@ export async function withCardDecideGrade<T>(deps: DeveloperRouteDependencies, w
   const store = new DecideStore({ documentClient: deps.documentClient, tableName: deps.developer.signInTableName, now: () => deps.now() });
   const nowSeconds = Math.floor(deps.now() / 1000);
   const session = cookie === undefined || cookie.length < 32 || cookie.length > 128 ? undefined : await store.getSession(cookie);
-  const fresh = session !== undefined && session.orgId === who.orgId && session.developerId === who.developerId && session.method === "email_code" && session.usedAt === undefined
-    && session.expiresAt > nowSeconds && nowSeconds - session.signedInAt <= DECIDE_SECONDS;
+  const fresh = isDecideGradeSession(session, who, nowSeconds);
   const record = fresh && /^apr_[0-9a-z]{20}$/u.test(session.approvalId) ? await getAnyApproval(agents, who.orgId, session.approvalId) : undefined;
   const bound = record?.kind === "change" && record.status === "PENDING" && Date.parse(record.expiresAt) > deps.now() && record.requestedBy === who.developerId && record.subject.kind === "card_decision"
     && record.subject.cardId === card.cardId && record.subject.contentVersion === card.contentVersion && record.subject.taskId === card.taskId;

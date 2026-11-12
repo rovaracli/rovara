@@ -1,6 +1,8 @@
 // Controller M30: existing operator credentials stay authoritative; no org membership is fabricated.
 import { randomUUID } from "node:crypto";
 import { beforeAll, expect, it } from "vitest";
+// The chain case drives /v1/app/chains, which answers only while WEB_FEATURES names `chains` (chains/automations-gate.ts).
+import "../support/automations-on.js";
 import { orgSettingsKey, orgMemberKey } from "@agentx/cloud-contracts";
 import { singleOrgIdForEnv } from "@rovara-code/contracts";
 import { setOrgBudget } from "../../packages/cli/src/admin/budget.js";

@@ -4,7 +4,7 @@
 import { createHash } from "node:crypto";
 import { GetCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import { CreateScriptTokenBodySchema, OrgRoleSchema, ScriptTokenPermissionSchema, type AuditEventInput, type CreatedScriptToken, type DeveloperSignInMethod, type OrgRole, type ScriptTokenPermission, type ScriptTokenView } from "@agentx/cloud-contracts";
+import { CreateScriptTokenBodySchema, OrgRoleSchema, isWriterOrgRole, ScriptTokenPermissionSchema, type AuditEventInput, type CreatedScriptToken, type DeveloperSignInMethod, type OrgRole, type ScriptTokenPermission, type ScriptTokenView } from "@agentx/cloud-contracts";
 import { INDEX_EXPIRY_ATTRIBUTE, OrgIdSchema, SCRIPT_TOKEN_DEFAULT_DAYS, SCRIPT_TOKEN_MAX_DAYS, SCRIPT_TOKENS_LIMIT_MESSAGE, SCRIPT_TOKENS_PER_PERSON_MAX, SCRIPT_TOKEN_PROJECTS_MAX, ScriptTokenIdSchema, ScriptTokenNameSchema, agentXError, canonicalJson, newPrefixedId, orgScriptTokensKey, scriptTokenKey, type OrgId } from "@rovara-code/contracts";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, type AuditDeps } from "../audit/outbox.js";
@@ -154,7 +154,8 @@ const liveCount = (records: ScriptTokenRecord[], nowMs: number) => records.filte
  * is stored; two requests can pass the count together, so the list is read again after the write and a request that finds more takes its own token back and is refused.
  */
 export async function createScriptToken(deps: ScriptTokenDependencies, caller: ScriptTokenCaller, body: unknown, checkProject: (project: string) => Promise<void>, options: { lifetimeCapSeconds?: number } = {}): Promise<CreatedScriptToken> {
-  if (caller.orgRole === "auditor") throw agentXError("FORBIDDEN", "An Auditor can't make script tokens.");
+  // P3-OPEN-ROLES-CLOUD-ADOPTION: a positive list; only a writer makes a token.
+  if (!isWriterOrgRole(caller.orgRole)) throw agentXError("FORBIDDEN", caller.orgRole === "auditor" ? "An Auditor can't make script tokens." : "Your company role can't make script tokens.");
   const parsed = CreateScriptTokenBodySchema.safeParse(body);
   if (!parsed.success) throw invalidBody(parsed.error.issues[0]);
   const input = parsed.data;
