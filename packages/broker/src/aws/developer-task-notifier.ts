@@ -101,34 +101,21 @@ class PeopleDeliveryRetry extends Error {
 
 /**
  * TE-4: tells the person who saved setup commands in a browser that they failed their check on a fresh machine, or the person who sent a change with an API key that it was not saved, with the reason (already a redacted
- * one-liner), once. The page has the banner and the Undo button; this is the message that sends them there. Read from the stored item, never from the notice. A person with no linked Slack was never given a notice.
+ * one-liner), once. The page has the banner and the Undo button; this is the message that sends them there. The words come from the notice, which was made from the stream's new image of the project's proof item: the
+ * notifier does not read or write that item (it is in the project's partition). Told once by its own marker, under NOTIFY_SETTINGS_PROOF#. A person with no linked Slack was never given a notice.
  */
 async function deliverSettingsProof(deps: NotifierDependencies, notice: Notice): Promise<string> {
-  if (notice.proofItem === undefined || notice.proofCheckId === undefined) return "invalid";
-  const part = notice.proofPart === "held" ? "held" : "saved";
-  const key = notice.proofItem;
-  type Part = { checkRequestId?: unknown; status?: unknown; slackUserId?: unknown; reason?: unknown; notifiedAt?: unknown; noticeAt?: unknown };
-  const row = await getItem<{ entityType?: unknown; project?: unknown; saved?: Part; held?: Part }>(deps, key);
-  const stored = row?.[part];
-  if (row?.entityType !== "PROJECT_SETTINGS_PROOF" || stored === undefined || stored.checkRequestId !== notice.proofCheckId || typeof stored.slackUserId !== "string" || typeof row.project !== "string"
-    || typeof stored.noticeAt !== "string" || (part === "saved" && stored.status !== "failed") || (part === "held" && !["failed", "stale", "refused", "not_started"].includes(String(stored.status)))) return "stale";
-  if (stored.notifiedAt !== undefined) return "delivered";
-  const reason = typeof stored.reason === "string" ? stored.reason.slice(0, 400) : undefined;
-  const text = part === "saved"
-    ? `The setup commands you saved for \`${row.project}\` did not pass the check on a fresh machine${reason === undefined ? "" : `: ${reason}`}. Open the project's setup in Rovara to go back to the last proven setup.`
-    : `The setup change you sent for \`${row.project}\` was not saved${reason === undefined ? "" : `: ${reason}`}. The project keeps the commands it had.`;
-  await deps.post({ channel: stored.slackUserId, text });
-  try {
-    await deps.documentClient.send(new UpdateCommand({
-      TableName: deps.tableName, Key: key, UpdateExpression: "SET #part.notifiedAt = :at",
-      ConditionExpression: "#part.checkRequestId = :id AND attribute_not_exists(#part.notifiedAt)",
-      ExpressionAttributeNames: { "#part": part },
-      ExpressionAttributeValues: { ":at": new Date(deps.now()).toISOString(), ":id": notice.proofCheckId },
-    }));
-  } catch (error) {
-    // The message was sent; a repeat of the delivery finds the mark missing and may send it once more, which only repeats the words.
-    if (!isConditional(error)) throw error;
-  }
+  const { proofCheckId, proofProject: project, proofSlackUserId: slackUserId, proofReason } = notice;
+  if (proofCheckId === undefined || project === undefined || slackUserId === undefined || !SLACK_USER_ID.test(slackUserId)) return "invalid";
+  const marker = settingsProofMarker(notice.id);
+  if ((await getItem<NoticeMarker>(deps, marker))?.deliveredAt !== undefined) return "delivered";
+  const reason = proofReason?.slice(0, 400);
+  const text = notice.proofPart === "held"
+    ? `The setup change you sent for \`${project}\` was not saved${reason === undefined ? "" : `: ${reason}`}. The project keeps the commands it had.`
+    : `The setup commands you saved for \`${project}\` did not pass the check on a fresh machine${reason === undefined ? "" : `: ${reason}`}. Open the project's setup in Rovara to go back to the last proven setup.`;
+  await deps.post({ channel: slackUserId, text });
+  // The message was sent; if this write fails a repeat of the delivery may send it once more, which only repeats the words.
+  await putMarker(deps, marker);
   return "sent";
 }
 
@@ -445,6 +432,8 @@ function parseNotice(body: string): Notice | undefined {
         && (value.expectedWorkflowRevision === undefined || Number.isSafeInteger(value.expectedWorkflowRevision) && value.expectedWorkflowRevision > 0))
       && (value.kind !== "owner_stopped_dm" || (typeof value.ownerStopKey === "string" && value.ownerStopKey.startsWith("OWNER_STOP_NOTIFY#") && value.ownerStopKey.length <= 400))
       && (value.kind !== "attention_dm" || (typeof value.attentionKey === "string" && value.attentionKey.length > 0 && value.attentionKey.length <= 300))
+      && (value.kind !== "settings_proof" || (typeof value.proofCheckId === "string" && typeof value.proofProject === "string" && value.proofProject !== "" && typeof value.proofSlackUserId === "string" && SLACK_USER_ID.test(value.proofSlackUserId)
+        && (value.proofReason === undefined || typeof value.proofReason === "string")))
       && (value.workflowRevision === undefined || Number.isSafeInteger(value.workflowRevision) && value.workflowRevision > 0)
       && (value.kind !== "design_wait" || (value.workflowRevision !== undefined && (value.designWaitStep === "24h" || value.designWaitStep === "72h" || value.designWaitStep === "parked" || value.designWaitStep === "closed")))
       ? value as Notice
@@ -477,6 +466,9 @@ async function putMarker(deps: NotifierDependencies, marker: { pk: string; sk: s
 }
 
 const noticeMarker = (taskId: string, noticeId: string) => ({ pk: `DEVTASK#${taskId}`, sk: `NOTICE#${noticeId}` });
+
+/** TE-4: the once-marker of a settings-proof message, in the notifier's own partition family (the project's partition is never touched). */
+const settingsProofMarker = (noticeId: string) => ({ pk: `NOTIFY_SETTINGS_PROOF#${createHash("sha256").update(noticeId).digest("hex")}`, sk: "META" });
 
 /** A workflow notice's revision; notices queued before it was carried name it only at the end of their ID. */
 function noticeWorkflowRevision(notice: Notice): number | undefined {
