@@ -8,6 +8,11 @@ import { modelWords } from "../features-b-support/models.js";
 import { realtimeWords } from "../features-b-support/realtime.js";
 import { logWords, outcome } from "../features-b-support/outcomes.js";
 import { runTokenScript } from "../features-b-support/tokens-script.js";
+import { runCloudIntake } from "../features-b-support/intake.js";
+import { streamRecordOf } from "../features-b-support/stream.js";
+import { projectSessions } from "../../../../packages/broker/src/agent-sessions/projector.js";
+import { registerSessionNoticeSink } from "../../../../packages/broker/src/agent-sessions/notice-sink.js";
+import { installRealtimeSink } from "../../../../packages/broker/src/realtime/sink.js";
 
 type Driver = StepDriver<CloudContext, CloudOptions>;
 
@@ -49,7 +54,7 @@ const scriptTokens: Driver = {
         return ((task?.workflow as { decisions?: Array<{ decision: string }> } | undefined)?.decisions ?? []).map((decision) => decision.decision);
       },
     }, { start: "33333333-3333-4333-8333-333333333333", decide: "44444444-4444-4444-8444-444444444444", cancel: "55555555-5555-4555-8555-555555555555" }));
-    ctx.extra.audit.push(...words);
+    ctx.extra.features.push(...words);
     await logWords("cloud", ctx.scenario.id, words);
   },
 };
@@ -58,7 +63,7 @@ const auditLedger: Driver = {
   async run(ctx) {
     // Cloud's audit outbox as the broker wrote it, in order: what was handed to the ledger, then what is still pending.
     const words = ledgerWords([...ctx.audit.flushed(), ...ctx.audit.pending()].map((event) => event.action));
-    ctx.extra.audit.push(...words);
+    ctx.extra.features.push(...words);
     await logWords("cloud", ctx.scenario.id, words);
   },
 };
@@ -66,48 +71,89 @@ const auditLedger: Driver = {
 const modelSelection: Driver = {
   async run(ctx) {
     const words = modelWords(ctx.e2e.invocations);
-    ctx.extra.audit.push(...words);
+    ctx.extra.features.push(...words);
     await logWords("cloud", ctx.scenario.id, words);
   },
 };
 
 const realtime: Driver = {
-  // Cloud tells an open page from its agent sessions: a session summary change runs the notice sink (agent-sessions/summary.ts, realtime/sink.ts), which
-  // writes each person's CHANGE_NOTICE feed rows and publishes. The journey harness runs no agent-session projector (no AGENT_SESSION rows are written),
-  // so it would report "nothing told" for a reason that is the harness's, not Cloud's. Comparing it needs the projector on the harness's stream
-  // (tests/support/agent-session-projector-world.ts) in cloud-context.ts (a shared file).
-  supports: () => ({ unsupported: "the journey harness runs no agent-session projector, so Cloud's notice sink (realtime/sink.ts) never runs; needs the projector wired into cloud-context.ts" }),
+  // Cloud tells an open page from its agent sessions: the projector (the DynamoDB stream's reader) refreshes a session's summary when its task, workspace or
+  // operations change, and the summary change runs the notice sink (realtime/sink.ts), which writes each person's CHANGE_NOTICE feed rows and then publishes.
+  // The journey harness runs neither, so this driver puts them on its stream: every table write is kept as a stream record (prepare), and the projector
+  // runs over them with Cloud's real sink installed (no events API: the feed rows are exactly what would be published).
+  async prepare(ctx) {
+    const records: Array<Record<string, unknown>> = [];
+    ctx.memo.realtimeRecords = records;
+    ctx.e2e.db.onWrite((change) => { records.push(streamRecordOf(change)); });
+  },
   async run(ctx) {
+    const records = (ctx.memo.realtimeRecords ?? []) as Array<Record<string, unknown>>;
+    installRealtimeSink({});
+    let result: Awaited<ReturnType<typeof projectSessions>>;
+    try {
+      result = await projectSessions(records, { documentClient: ctx.e2e.db, tableName: "state", now: () => Date.now(), log: () => undefined }, { deadline: Date.now() + 60_000 });
+    } finally {
+      registerSessionNoticeSink(undefined);
+    }
     const notices = ctx.e2e.db.find((item) => item.entityType === "CHANGE_NOTICE").map((item) => String((item.notice as { type?: unknown } | undefined)?.type));
-    const words = realtimeWords(notices);
-    ctx.extra.audit.push(...words);
+    const sessions = ctx.e2e.db.find((item) => String(item.pk).includes("#AGENT_SESSION#") && item.sk === "META").length;
+    if (process.env.PARITY_DEBUG === "1") console.log(JSON.stringify({ parity: "cloud.realtime", records: records.length, result }));
+    const words = [...realtimeWords(notices), outcome("realtime", `sessions:${String(sessions)}`)];
+    ctx.extra.features.push(...words);
     await logWords("cloud", ctx.scenario.id, words);
   },
 };
 
 const outboundEvents: Driver = {
   async run(ctx) {
-    // Cloud has no outbound events feature (convergence plan section 1, row 43: Slack and milestone hooks are inline); there is nothing to send to.
-    const words = [outcome("outbound", "adapters:0")];
-    ctx.extra.audit.push(...words);
+    // Cloud has no outbound events feature (convergence plan section 1, row 43: Slack and milestone hooks are inline); nothing is ever sent.
+    const words = [outcome("outbound", "events:0")];
+    ctx.extra.features.push(...words);
     await logWords("cloud", ctx.scenario.id, words);
   },
 };
 
-const slackChannel: Driver = {
-  // Cloud's own path IS the Slack channel: the start, the cards and the replies of every scenario go through it (slack-ingress, the interactivity handler,
-  // the notifier). The scenario's start already drove it; this step reads nothing more.
-  run: async () => undefined,
+const slackStart: Driver = {
+  // Cloud's own path IS the Slack channel: a signed mention through slack-ingress starts the task in the bound channel's project.
+  async run(ctx) {
+    const answered = await ctx.e2e.mention("quick: Add a greet(name) function");
+    await ctx.e2e.settle();
+    const started = ctx.e2e.db.find((item) => String(item.pk).startsWith("DEVTASK#") && item.sk === "META").length;
+    const words = [outcome("slack", `start:${answered === 200 && started === 1 ? "task_started" : `refused_${String(answered)}`}`)];
+    ctx.extra.features.push(...words);
+    await logWords("cloud", ctx.scenario.id, words);
+  },
+};
+
+const slackApprove: Driver = {
+  // The plan card in the Slack thread carries Approve; pressing it decides the plan (decision 99: Slack may decide inside the sign-in window).
+  async run(ctx) {
+    const card = ctx.e2e.slack.posts.some((post) => JSON.stringify(post.blocks ?? []).includes("agentx_workflow_approve"));
+    if (!card) { ctx.extra.features.push(outcome("slack", "approve:no_card")); return; }
+    await ctx.e2e.click("agentx_workflow_approve");
+    await ctx.e2e.settle();
+    const decided = (ctx.e2e.workflow().decisions ?? []).some((decision) => decision.decision === "APPROVE");
+    const words = [outcome("slack", "approve:card_offered"), outcome("slack", `approve:${decided ? "decided" : "not_decided"}`)];
+    ctx.extra.features.push(...words);
+    await logWords("cloud", ctx.scenario.id, words);
+  },
 };
 
 const trackerIntake: Driver = {
-  supports: () => ({ unsupported: "Cloud's tracker intake runs in its own harness (tests/support/linear-broker.ts, tracker-connector.ts) with a Linear connector; the workflow journey harness the Cloud engine uses has none" }),
-  run: () => Promise.reject(new Error("unsupported")),
+  // Cloud's intake engine and poll (intake/engine.ts, triggers/poll-intake.ts), the same decisions the core makes, over Cloud's own store rows. The journey
+  // harness builds no intake wiring (intake/wiring.ts needs the broker's start and ticket-update services), so the ports are the poll test's: a member is
+  // found through the org's linked accounts (none here, as on the core engine, whose install has no linked tracker account), `start` and `started` record.
+  async run(ctx) {
+    const words = await runCloudIntake();
+    ctx.extra.features.push(...words);
+    await logWords("cloud", ctx.scenario.id, words);
+  },
 };
 
 export const FEATURES_B_DRIVERS: Record<string, Driver> = {
   "feature:outbound-events": outboundEvents,
-  "feature:slack-channel": slackChannel,
+  "feature:slack-start": slackStart,
+  "feature:slack-approve": slackApprove,
   "feature:tracker-intake": trackerIntake,
   "feature:realtime": realtime,
   "feature:model-selection": modelSelection,

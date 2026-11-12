@@ -2,7 +2,10 @@
 // same pieces Code's own tests use (Code tests/support/automation-world.ts, rebuilt here on the vendored modules): an admission that can refuse, a
 // recording starter for the unattended door, the automation switch, and a recording store so the rows facet sees what the runner wrote.
 import { INDEX_EXPIRY_ATTRIBUTE, type Admission, type AuditSink, type DocumentStore, type OrgId, type TransactItem } from "@rovara-code/contracts";
-import { MemoryDocumentStore, localOwnerPrincipal } from "@rovara-code/broker/ports";
+import { MemoryDocumentStore, createLocalOwnerApprovers, localOwnerPrincipal } from "@rovara-code/broker/ports";
+import { TriggerStore } from "../../../../vendor/rovara-code/packages/broker/src/core/triggers/store.js";
+import { createTrigger, enableTrigger, triggerEnableRequest } from "../../../../vendor/rovara-code/packages/broker/src/core/triggers/lifecycle.js";
+import { dispatchTriggerEvent, type TriggerDispatchDeps } from "../../../../vendor/rovara-code/packages/broker/src/core/triggers/dispatch.js";
 import { AgentStore, resolveAgent } from "../../../../vendor/rovara-code/packages/broker/src/core/agents/store.js";
 import { validateRecipeForCompany } from "../../../../vendor/rovara-code/packages/broker/src/core/agents/guardrails.js";
 import type { ProjectRules } from "../../../../vendor/rovara-code/packages/broker/src/core/agents/rules.js";
@@ -12,7 +15,7 @@ import { ChainStore } from "../../../../vendor/rovara-code/packages/broker/src/c
 import { onStepEnded, readChainRun, readStepAttempts, startChainRun, type ChainRunnerDeps } from "../../../../vendor/rovara-code/packages/broker/src/core/chains/runner.js";
 import { validateChainForPublish } from "../../../../vendor/rovara-code/packages/broker/src/core/chains/validate.js";
 import { keyFamily } from "../../harness/normalize.js";
-import { CUSTOM_OVERLAY, START_INPUT, TWO_BUILTIN_STEPS, oneStepOn, runWord, type FlowName, type FlowObservation } from "./flows.js";
+import { CUSTOM_OVERLAY, START_INPUT, TRIGGER_EVENT, TRIGGER_SPEC, TWO_BUILTIN_STEPS, dispatchWord, oneStepOn, runWord, type FlowName, type FlowObservation } from "./flows.js";
 
 const COMPANY = "org_00000000000000000000" as OrgId;
 const OWNER = localOwnerPrincipal();
@@ -145,6 +148,18 @@ export async function runCodeFlow(flow: FlowName): Promise<FlowObservation> {
       const [first, second] = await Promise.all([start(chainId, runId), start(chainId, runId)]);
       seen.spend.push(first.runId === second.runId ? "same_run" : "two_runs");
       await look(first.runId);
+      break;
+    }
+    case "chains-trigger-twice": {
+      // Code's trigger engine (vendored core/triggers): the trigger made by the owner, turned on with the owner's proof, then the same event twice.
+      const triggers = new TriggerStore({ ...table, newId: () => `ctr_${idBody()}` });
+      const approvers = createLocalOwnerApprovers({ verifySession: (token) => token.startsWith("owner-page:") });
+      const requirements = { roster, chains, unattendedCap: () => undefined };
+      const dispatch: TriggerDispatchDeps = { ...table, companyId: COMPANY, automation: unattended.automation, audit: auditSink, approvers, triggers, requirements, chainRuns: deps, unattended, owner: { developerId: OWNER.personId }, log: () => undefined };
+      const trigger = await createTrigger(dispatch, { orgId: COMPANY, target: { kind: "agent", agentId: "code-reviewer" }, project: PROJECT, spec: TRIGGER_SPEC, by: OWNER.personId });
+      const request = await triggerEnableRequest(dispatch, trigger);
+      await enableTrigger(dispatch, COMPANY, trigger.triggerId, { proofId: "proof-1", method: "local-session", requestId: request.requestId, revision: request.revision, artifactDigest: request.artifactDigest, token: "owner-page:session" });
+      for (let delivery = 0; delivery < 2; delivery += 1) seen.transitions.push(dispatchWord(await dispatchTriggerEvent(dispatch, COMPANY, TRIGGER_EVENT as never)));
       break;
     }
     case "chains-switch-off": {

@@ -3,7 +3,7 @@
 // (packages/broker/src/cloud/app/cloud-modules.ts). Nothing here touches AWS.
 import { createLocalOwnerApprovers, createLocalOwnerIdentity, createMemoryModelKeyStore, FakeWorkerMachines, MemoryDocumentStore, MemoryQueueService, type FakeWorkerMachinesOptions } from "@rovara-code/broker/ports";
 import { TASK_FLOW_INDEXES } from "@rovara-code/broker/core/task-flow";
-import { IMPLICIT_COMPANY_ID, WORKER_INVOCATION_FEATURES, type Admission, type AuditEvent, type AuditSink, type DocumentStore, type ObjectStorage, type QueueService, type SecretStore, type TransactItem } from "@rovara-code/contracts";
+import { IMPLICIT_COMPANY_ID, WORKER_INVOCATION_FEATURES, type Admission, type AuditEvent, type AuditSink, type DocumentStore, type ObjectStorage, type OutboundEvent, type QueueService, type SecretStore, type TransactItem } from "@rovara-code/contracts";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,6 +11,7 @@ import { FolderObjectStorage } from "@rovara-code/local-adapters";
 import { FakeHostModel } from "../../vendor/rovara-code/packages/broker/src/plugins/fake/model.js";
 import { FakeCodeHost } from "../../vendor/rovara-code/packages/broker/src/plugins/fake/code-host.js";
 import { FakeCheckRunner } from "../../vendor/rovara-code/packages/broker/src/plugins/fake/check-runner.js";
+import { FAKE_TRACKER_KIND, FakeTracker } from "../../vendor/rovara-code/packages/broker/src/plugins/fake/tracker.js";
 import { createCloudAdmission, createCloudMetering } from "../../packages/broker/src/cloud-adapters/money/index.js";
 import { createCloudAuditSink } from "../../packages/broker/src/cloud/adapters/audit-sink/index.js";
 import { CORE_ADMISSION_ACTIONS } from "../../packages/broker/src/cloud/app/cloud-modules.js";
@@ -28,6 +29,10 @@ export interface FakeWorld {
   audit: AuditEvent[];
   /** Admission outcomes, in order (`admitted:task.start`, `refused:task.start:<code>`). */
   spend: string[];
+  /** What a recording `outbound-events` adapter was handed (only with `recordOutbound`). */
+  outbound: OutboundEvent[];
+  /** Code's fake tracker, registered as a `tracker` adapter (only with `tracker`). */
+  tracker?: FakeTracker;
   /** How many times a module's `create` ran (an off app must leave this at 0). */
   created: string[];
   modules: CloudAdapterModule[];
@@ -83,6 +88,10 @@ export interface FakeWorldOptions {
   audit?: "cloud" | "stand-in";
   /** The company's monthly money limit (undefined: none). */
   companyLimitUsd?: number;
+  /** Register a recording `outbound-events` adapter that keeps every event it is handed (`world.outbound`). Default: none, as cloud-modules.ts registers none. */
+  recordOutbound?: boolean;
+  /** Register Code's fake tracker (`world.tracker`) as the `tracker` adapter `fake-tracker`. Default: none. */
+  tracker?: boolean;
   /** Leave these points out (to test the registry's refusal). */
   without?: readonly string[];
   /** Register Code's default for these points (`isDefault`), to test the never-default rule. */
@@ -102,6 +111,8 @@ export function createFakeWorld(options: FakeWorldOptions = {}): FakeWorld {
   const issue = host.issueGitCredential.bind(host);
   host.issueGitCredential = async (repository, access, scope) => ({ ...(await issue(repository, access, scope)), expiresAt: new Date(Date.now() + 50 * 60_000).toISOString() });
   const audit: AuditEvent[] = [];
+  const outbound: OutboundEvent[] = [];
+  const tracker = options.tracker === true ? new FakeTracker() : undefined;
   const spend: string[] = [];
   const created: string[] = [];
   const secrets: SecretStore = { async read() { return undefined; } };
@@ -120,6 +131,8 @@ export function createFakeWorld(options: FakeWorldOptions = {}): FakeWorld {
     cloudAdapter({ point: "check-runner", name: "fake-checks", lane: "A9", create: () => ({ kind: "fake-checks", create: () => new FakeCheckRunner(hostModel) }) }),
     cloudAdapter({ point: "model-keys", name: "secrets-manager", lane: "A3", create: () => createMemoryModelKeyStore({}) }),
     cloudAdapter({ point: "secrets", name: "secrets-manager", lane: "A3", create: () => secrets }),
+    ...(options.recordOutbound === true ? [cloudAdapter({ point: "outbound-events", name: "recording", lane: "parity", create: () => ({ deliver: async (event: OutboundEvent) => { outbound.push(event); } }) })] : []),
+    ...(tracker === undefined ? [] : [cloudAdapter({ point: "tracker", name: FAKE_TRACKER_KIND, lane: "A9", create: () => tracker })]),
   ];
   const modules = all
     .filter((module) => !(options.without ?? []).includes(module.point))
@@ -128,7 +141,7 @@ export function createFakeWorld(options: FakeWorldOptions = {}): FakeWorld {
       return wrapped;
     });
   return {
-    clock, store, queues, machines, host, hostModel, audit, spend, created, modules,
+    clock, store, queues, machines, host, hostModel, audit, spend, outbound, ...(tracker === undefined ? {} : { tracker }), created, modules,
     context: () => ({ installCompanyId: FAKE_COMPANY, now, env: {}, clients: {}, log: () => undefined }),
   };
 }

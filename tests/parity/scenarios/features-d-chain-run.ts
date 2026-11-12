@@ -7,7 +7,7 @@ export default defineScenario({
   areas: [16],
   kind: "happy",
   // The runner's own rows (chain runs, step attempts) are outside the shared task-record families the rows facet compares; see known-differences/features-d.ts.
-  facets: ["transitions", "spend", "decisions", "codeHost"],
+  facets: ["transitions", "spend", "decisions", "codeHost", "rows"],
   steps: [
     { do: "feature", name: "chains" },
   ],

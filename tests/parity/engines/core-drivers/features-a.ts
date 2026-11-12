@@ -1,5 +1,10 @@
 // Core drivers: Second review, design review, e2e, parallel parts, lessons (areas 8, 9, 10, 11, 14).
 //
+// second-review, design-review, e2e, lessons: compared at the feature's decisions (features-a-support/decision.ts): the same cases through the core's copy here
+// and Cloud's copy in the Cloud driver, one features word per case. Neither journey reaches these features end to end on fakes yet (Cloud's journey harness
+// has no second-review model record, design-review reviewer script, e2e browser or team record; the core's local runtime needs provider keys and the
+// learning port), so the comparison holds the two copies of the logic the switch moves to the same answers.
+//
 // parallel-parts (area 11): the same Full task as Cloud's journey. The fake worker answers each phase's plan (the coding plan carries the three-part
 // graph), the owner approves each on the local pages, and the coding run reports the parts' checkpoints the way the real worker does (A and B start
 // before either finishes, C starts on the tree both were merged into) through the REAL events callback, then its result on the integrated tree. The
@@ -8,12 +13,63 @@ import { UNDERSTAND_ARTIFACT_NAME, createCandidateManifest, type WorkerInvocatio
 import type { FakeWorldOptions } from "../../../support/cloud-core-fakes.js";
 import { checkReport, type CoreContext } from "../core-context.js";
 import type { StepDriver } from "../drivers.js";
-import { PART_A, PART_B, PART_C, PART_FILES, partsPlan } from "../features-a-support/parts.js";
+import { PART_A, PART_B, PART_C, PART_FILES, partsPlan, partsWords } from "../features-a-support/parts.js";
 import { TASK_FLOW_DRIVERS } from "./task-flow.js";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { FolderObjectStorage } from "@rovara-code/local-adapters";
+import { acceptSecondReport, admitSecondReview, againstModels, effectiveMode, planSecondReview, secondOpinionOf, secondOpinionShownOn, secondReviewAcknowledgement, secondReviewAlreadyRan, secondReviewPicker, secondReviewUnavailableDecision, verdictHoldsFor } from "@rovara-code/broker/core/second-review";
+import { resolveDesignMode as coreResolveDesignMode } from "../../../../vendor/rovara-code/packages/broker/src/core/design-review/mode.js";
+import { markEffective as coreMarkEffective } from "../../../../vendor/rovara-code/packages/broker/src/core/design-review/effective-setting.js";
+import { estimateDesignReviewUsd as coreEstimateDesignReviewUsd, gateDesignReviewCost as coreGateDesignReviewCost, reviewersForRound as coreReviewersForRound } from "../../../../vendor/rovara-code/packages/broker/src/core/design-review/estimate.js";
+import { requirementsMissingFromDesign as coreRequirementsMissingFromDesign } from "../../../../vendor/rovara-code/packages/broker/src/core/design-review/own-findings.js";
+import { nextDesignWaitDueAt as coreNextDesignWaitDueAt } from "../../../../vendor/rovara-code/packages/broker/src/core/design-review/wait-clock.js";
+import { lockViolations as coreLockViolations } from "../../../../vendor/rovara-code/packages/broker/src/core/design-review/lock.js";
+import { reviewCoverage as coreReviewCoverage } from "../../../../vendor/rovara-code/packages/broker/src/core/design-review/risk.js";
+import { blockerReasonLine as coreBlockerReasonLine } from "../../../../vendor/rovara-code/packages/broker/src/core/design-review/approval.js";
+import { verifyWorkflowE2EEvidence as coreVerifyEvidence } from "../../../../vendor/rovara-code/packages/broker/src/core/e2e/verification.js";
+import { classifyTier as coreClassifyTier } from "../../../../vendor/rovara-code/packages/broker/src/lessons/tier.js";
+import { approvedForUse as coreApprovedForUse, wilsonLower as coreWilsonLower } from "../../../../vendor/rovara-code/packages/broker/src/lessons/load.js";
+import { trialIsStable as coreTrialIsStable, namesAPerson as coreNamesAPerson } from "../../../../vendor/rovara-code/packages/broker/src/lessons/trial.js";
+import { lessonValue as coreLessonValue } from "../../../../vendor/rovara-code/packages/broker/src/lessons/value.js";
+import { looksLikeCorrection as coreLooksLikeCorrection } from "../../../../vendor/rovara-code/packages/broker/src/lessons/correction-filter.js";
+import { polarity as corePolarity, oppositePolarity as coreOppositePolarity, hasEscalationWords as coreHasEscalationWords } from "../../../../vendor/rovara-code/packages/broker/src/lessons/guards.js";
+import { cleanLessonLine as coreCleanLessonLine, parseLessonsFile as coreParseLessonsFile } from "../../../../vendor/rovara-code/packages/broker/src/lessons/repo-file-format.js";
+import { renderLesson as coreRenderLesson } from "../../../../vendor/rovara-code/packages/broker/src/lessons/repo-file-plan.js";
+import { minTrust as coreMinTrust, narrowestAudience as coreNarrowestAudience } from "../../../../vendor/rovara-code/packages/broker/src/lessons/types.js";
+import { DEFAULT_APPROVAL_POLICY as CORE_DEFAULT_APPROVAL_POLICY } from "../../../../vendor/rovara-code/packages/broker/src/lessons/policy.js";
+import { decisionWords, type DecisionCase, type DecisionImplementations } from "../features-a-support/decision.js";
+import { SECOND_REVIEW_CASES } from "../features-a-support/cases-second-review.js";
+import { DESIGN_REVIEW_CASES } from "../features-a-support/cases-design-review.js";
+import { E2E_CASES } from "../features-a-support/cases-e2e.js";
+import { LESSONS_CASES } from "../features-a-support/cases-lessons.js";
 
 type Driver = StepDriver<CoreContext, FakeWorldOptions>;
 
-const unsupported = (why: string): Driver => ({ supports: () => ({ unsupported: why }), run: () => Promise.reject(new Error(why)) });
+/** A feature compared at its decisions: the same cases through the core's copy, one features word each, prefixed with the feature. */
+function decisionDriver(feature: string, cases: readonly DecisionCase[], implementations: DecisionImplementations, helpers: Record<string, unknown> = {}): Driver {
+  return {
+    async run(ctx) {
+      ctx.extra.features.push(...(await decisionWords(implementations, cases, { engine: "core", helpers })).map((word) => `${feature}:${word}`));
+    },
+  };
+}
+
+const CORE_SECOND_REVIEW: DecisionImplementations = { planSecondReview, acceptSecondReport, secondOpinionOf, secondReviewUnavailableDecision, secondReviewAcknowledgement, secondOpinionShownOn, admitSecondReview, againstModels, secondReviewAlreadyRan, effectiveMode, verdictHoldsFor, secondReviewPicker };
+const CORE_DESIGN_REVIEW: DecisionImplementations = {
+  // The resolver reads a setting marked effective by its own copy's `markEffective` (Cloud's driver does the same with Cloud's).
+  resolveDesignMode: (input: { setting: Parameters<typeof coreMarkEffective>[0] }) => coreResolveDesignMode({ ...input, setting: coreMarkEffective(input.setting) } as never),
+  estimateDesignReviewUsd: coreEstimateDesignReviewUsd, gateDesignReviewCost: coreGateDesignReviewCost, reviewersForRound: coreReviewersForRound,
+  requirementsMissingFromDesign: coreRequirementsMissingFromDesign, nextDesignWaitDueAt: coreNextDesignWaitDueAt, lockViolations: coreLockViolations,
+  reviewCoverage: coreReviewCoverage, blockerReasonLine: coreBlockerReasonLine,
+};
+const CORE_LESSONS: DecisionImplementations = {
+  classifyTier: coreClassifyTier, approvedForUse: coreApprovedForUse, trialIsStable: coreTrialIsStable, lessonValue: coreLessonValue, wilsonLower: coreWilsonLower,
+  looksLikeCorrection: coreLooksLikeCorrection, polarity: corePolarity, oppositePolarity: coreOppositePolarity, hasEscalationWords: coreHasEscalationWords,
+  namesAPerson: coreNamesAPerson, cleanLessonLine: coreCleanLessonLine, parseLessonsFile: coreParseLessonsFile, renderLesson: coreRenderLesson,
+  minTrust: coreMinTrust, narrowestAudience: coreNarrowestAudience,
+};
 
 const phaseOf = (job: WorkerInvocation): "requirements" | "design" | "plan" => {
   const phase = (job.payload as { workflowPhase?: string }).workflowPhase;
@@ -94,13 +150,41 @@ export const FEATURES_A_DRIVERS: Record<string, Driver> = {
         };
         await ctx.callback(coding, "result", { status: "SUCCEEDED", result: { conversationId: "conversation", checks: checkReport("passed"), workflowCandidateRepositories: ctx.candidate(), workflowCheckCandidateRepositories: ctx.candidate(), workflowDependenciesResult } });
       }
+      // The parts' checkpoints as the workflow kept them (the features facet: same words as Cloud's driver records).
+      const progress = ((await ctx.readTask())?.workflow as { workflowDependenciesProgress?: Array<{ itemId: string; state: string }> } | undefined)?.workflowDependenciesProgress ?? [];
+      ctx.extra.features.push(...partsWords(progress));
       // Then the reviews and the publication, as on any task.
       await TASK_FLOW_DRIVERS.reviews!.run(ctx, { do: "reviews", outcome: "pass" }, undefined);
       await TASK_FLOW_DRIVERS.published!.run(ctx, { do: "published" }, undefined);
     },
   },
-  "feature:second-review": unsupported("the core's second review (core/second-review, local app `secondReview.apply`) offers a second reviewer only among models the install holds keys for, and the parity core context starts the local runtime with an empty environment (no provider keys): every opinion is `unavailable`. Needs core-context to accept an environment (shared change)"),
-  "feature:design-review": unsupported("the core's design review (core/design-review) needs the switch `ROVARA_DESIGN_REVIEW` in the runtime's environment, design-review sources and reviewer jobs answered with mockups; the parity core context takes no environment (shared change), and Cloud's side has no driver either"),
-  "feature:e2e": unsupported("the core's application checks (core/e2e) need the e2e local authority, a candidate export upload and round results the fake worker would have to forge with verified evidence; with no Cloud driver to compare against it is left for the lane that builds Cloud's"),
-  "feature:lessons": unsupported("the core's lessons (local app `lessons`, ROVARA_LESSONS) capture from the code host and need the learning port; Cloud's lessons need its team record. Neither engine has a driver; the comparison needs the learning adapter (X2) wired on Cloud's side first"),
+  "feature:second-review": decisionDriver("second-review", SECOND_REVIEW_CASES, CORE_SECOND_REVIEW),
+  "feature:design-review": decisionDriver("design-review", DESIGN_REVIEW_CASES, CORE_DESIGN_REVIEW),
+  "feature:e2e": {
+    async run(ctx) {
+      const root = await mkdtemp(join(tmpdir(), "parity-e2e-objects-"));
+      try {
+        const objects = new FolderObjectStorage({ root: join(root, "store"), maxObjectBytes: 1_000_000 });
+        const deps = {
+          objects,
+          state: new Proxy({}, { get: () => { throw new Error("the parity e2e case reached the state store"); } }),
+          authority: new Proxy({}, { get: () => { throw new Error("the parity e2e case reached the e2e authority"); } }),
+          readTask: () => Promise.resolve(undefined),
+        } as unknown as Parameters<typeof coreVerifyEvidence>[0];
+        const putObject = async (key: string, text: string) => { await objects.put(key, new TextEncoder().encode(text), { contentType: "application/json", metadata: {}, retention: "evidence-std" }); };
+        const implementations: DecisionImplementations = {
+          verifyWorkflowE2EEvidence: async (...args: unknown[]) => {
+            const diagnostic: Record<string, unknown> = {};
+            const [operation, task, candidate, projection] = args as [never, never, never, never];
+            const verdict = await coreVerifyEvidence(deps, operation, task, candidate, projection, diagnostic);
+            return { verdict, ...diagnostic };
+          },
+        };
+        ctx.extra.features.push(...(await decisionWords(implementations, E2E_CASES, { engine: "core", helpers: { putObject } })).map((word) => `e2e:${word}`));
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  },
+  "feature:lessons": decisionDriver("lessons", LESSONS_CASES, CORE_LESSONS, { policy: CORE_DEFAULT_APPROVAL_POLICY }),
 };

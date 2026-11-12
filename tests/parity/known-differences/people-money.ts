@@ -13,8 +13,8 @@ const ADMISSION_UNOBSERVED_ON_CLOUD = [
 ].join(" ");
 
 export const PEOPLE_MONEY_DIFFERENCES: readonly KnownDifference[] = [
-  { scenario: "spend-limit-hit", facet: "spend", cause: REFUSAL_WORDS, owner: "Owner (product words): pick one refusal text; then A5's CloudAdmission or Cloud's budget.ts follows it" },
-  { scenario: "people-money-spend-room-short", facet: "spend", cause: REFUSAL_WORDS, owner: "Owner (product words), as spend-limit-hit" },
+  { scenario: "spend-limit-hit", facet: "spend", cause: REFUSAL_WORDS, owner: "Owner decision 143(d): Cloud's current words stay; ROOT TO-DO (S0-143d): map the core's and A5's refusal codes onto Cloud's words (org/budget.ts:349) before the switch" },
+  { scenario: "people-money-spend-room-short", facet: "spend", cause: REFUSAL_WORDS, owner: "Owner decision 143(d): Cloud's current words stay; ROOT TO-DO (S0-143d): map the core's and A5's refusal codes onto Cloud's words (org/budget.ts:349) before the switch" },
   {
     scenario: "people-money-spend-full-path", facet: "spend",
     cause: [

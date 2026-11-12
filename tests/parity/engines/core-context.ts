@@ -9,7 +9,7 @@
 // The worker is scripted per step, as Code's own tests do (local-up-flow.test.ts): each job the core dispatches is answered through the REAL callback
 // listener with the capability the flow issued. The clock is the process clock plus an offset a driver moves (decision timeouts, tracking polls).
 import { request as httpRequest } from "node:http";
-import { mkdir, mkdtemp, readFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startLocalRuntime, type LocalRuntime } from "@rovara-code/broker/local";
@@ -18,6 +18,8 @@ import { writeNotifyPrefs } from "@rovara-code/broker/core/notify";
 import { developerIdOf } from "@rovara-code/broker/core/sessions";
 import { IMPLICIT_COMPANY_ID, UNDERSTAND_ARTIFACT_NAME, type AdapterRegistry, type DocumentStore, type TransactItem, type WorkerInvocation } from "@rovara-code/contracts";
 import { cloudRetentionStore } from "../../../packages/broker/src/cloud/app/retention.js";
+import { cloudApprovalIssuers, createCloudApprovers } from "../../../packages/broker/src/cloud/adapters/people/index.js";
+import { PEOPLE_ORG, createPeopleWorld, type PeopleWorld } from "../../support/cloud-people-world.js";
 import { createFakeWorld, type FakeWorld, type FakeWorldOptions } from "../../support/cloud-core-fakes.js";
 import { planAnswer, planDocument } from "../../support/plan-documents.js";
 import { keyFamily } from "../harness/normalize.js";
@@ -131,6 +133,10 @@ export const PARITY_CONVERSATION = { channel: PARITY_CHANNEL, tenant: "T0PARITY"
 
 export interface CoreContext {
   scenario: Scenario;
+  /** The company the core runs as (Code's implicit company, or the people world's when `PARITY_CORE_PEOPLE` is on). */
+  companyId: string;
+  /** Cloud's people world when `PARITY_CORE_PEOPLE` is on. */
+  people?: PeopleWorld;
   /** The chat adapter: what the core delivered (`channel.delivered`). */
   channel: FakeChannelAdapter;
   world: FakeWorld;
@@ -164,6 +170,14 @@ export interface CoreContextOptions {
   world?: FakeWorldOptions;
 }
 
+/**
+ * Opt-in (a driver's options give `coreEnvironment: { [PARITY_CORE_PEOPLE]: "cloud" }`): the core decides with Cloud's people. The runtime's company is the people
+ * world's (tests/support/cloud-people-world.ts) and A6's Cloud approvers replace Code's local approvers, so the core's decision gate judges an owner, a maintainer,
+ * an Auditor or a person of another company by Cloud's rules (browser, decide-grade step-up, Slack press, token). Code's local identity stays (the owner's own API
+ * session), as the composition root's identity adapter is a separate point. The variable never reaches product behaviour: the runtime ignores it.
+ */
+export const PARITY_CORE_PEOPLE = "PARITY_CORE_PEOPLE";
+
 export async function createCoreContext(scenario: Scenario, root: string, options: CoreContextOptions = {}): Promise<CoreContext> {
   const world = createFakeWorld(options.world);
   const recorder: Recorder = { states: [], decisions: [], keys: new Set(), notices: [] };
@@ -172,6 +186,9 @@ export async function createCoreContext(scenario: Scenario, root: string, option
   const stateDirectory = join(root, "state");
   await mkdir(stateDirectory, { recursive: true, mode: 0o700 });
   const context = world.context();
+  const people = options.world?.coreEnvironment?.[PARITY_CORE_PEOPLE] === "cloud" ? createPeopleWorld() : undefined;
+  const companyId: string = people === undefined ? IMPLICIT_COMPANY_ID : PEOPLE_ORG;
+  if (people !== undefined) await writeFile(join(stateDirectory, "config.json"), JSON.stringify({ version: 1, plugins: [], companyId }), { mode: 0o600 });
   const registerAdapters = (registry: AdapterRegistry): void => {
     for (const module of world.modules) {
       if (module.point === "worker-machines") continue; // given to the runtime as `machines`
@@ -183,6 +200,16 @@ export async function createCoreContext(scenario: Scenario, root: string, option
       registry.register(module.point, module.name, adapter as never);
     }
     registry.register("channel", PARITY_CHANNEL, channel);
+    if (people !== undefined) {
+      // Who stands where on the task: the people world's owner stands for the task's owner, its maintainer for a project maintainer; anybody else has no standing.
+      // (The composition root reads this live from Cloud's task and project records; here the stand-ins are fixed.)
+      const standing = (developerId: string) => (developerId === people.people.owner.developerId ? "owner" : developerId === people.people.maintainer.developerId ? "maintainer" : "none");
+      registry.register("approvers", "cloud", createCloudApprovers({
+        issuers: cloudApprovalIssuers({ routes: people.routes, slackLookups: people.slackLookups }),
+        deciderRole: async (_request, decider) => standing(decider.developerId),
+        place: { documentClient: people.db, tableName: "state", signInTableName: "signin", now: people.now },
+      }));
+    }
   };
   const clock = { offsetMs: 0, now: () => new Date(Date.now() + clock.offsetMs), advance: (ms: number) => { clock.offsetMs += ms; } };
   const opened: string[] = [];
@@ -193,7 +220,7 @@ export async function createCoreContext(scenario: Scenario, root: string, option
   });
   const token = (await readFile(runtime.sessionTokenPath, "utf8")).trim();
   // The owner is told in that chat (their notice settings name its conversation), as a Cloud member is told in Slack.
-  await writeNotifyPrefs({ store: runtime.registry.require("storage"), now: () => clock.now() }, IMPLICIT_COMPANY_ID, developerIdOf(localOwnerPrincipal()), { targets: [{ channel: PARITY_CHANNEL, conversation: PARITY_CONVERSATION }], channel: "slack" });
+  await writeNotifyPrefs({ store: runtime.registry.require("storage"), now: () => clock.now() }, companyId, developerIdOf(localOwnerPrincipal({ companyId: companyId })), { targets: [{ channel: PARITY_CHANNEL, conversation: PARITY_CONVERSATION }], channel: "slack" });
   const store = runtime.registry.require("storage");
   const model = world.hostModel;
   const base = model.headOf("main");
@@ -211,7 +238,7 @@ export async function createCoreContext(scenario: Scenario, root: string, option
     outgoing.end(text);
   });
   const ctx: CoreContext = {
-    scenario, world, runtime, store, recorder, clock, opened, channel,
+    scenario, companyId, ...(people === undefined ? {} : { people }), world, runtime, store, recorder, clock, opened, channel,
     task: { taskId: "", workspaceId: "", base, commit: base, tree: model.revision(base).tree },
     extra: { messages: [], spend: [], audit: [], codeHost: [], features: [] },
     // The project's check is the same one Cloud's journey project has (node --version), so a plan needs to propose none.

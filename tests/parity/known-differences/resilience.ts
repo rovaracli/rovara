@@ -12,7 +12,24 @@ const LOST_RUN_CAUSE = [
   "`causeOfEnd` (run-lost: one automatic retry for VERIFY/REVIEW, a block with retry for the rest). Blocks the combined switch (a lost EC2 worker would hang a core task).",
 ].join(" ");
 
+const SESSIONS_CAUSE = [
+  "Cloud gap (R-SESSIONS): a Slack-started workflow task has no agent session on Cloud's path, so a person's message to it is refused 404 \"session not found\", even after",
+  "the task page is read; the core accepts it (it gives every task a session at start, in the start's own transaction). Cloud makes a session at start only for an agent",
+  "run (`prepared` in packages/broker/src/aws/developer-tasks/start.ts) and lazily only for a task that has `agent` and `origin`",
+  "(packages/broker/src/agent-sessions/create.ts:296, `lazyTaskSessionInput`); a Slack workflow task has neither. With the combined switch on, core tasks could be",
+  "messaged and Cloud tasks could not, so who can steer a task would depend on its engine. Proposed fix (Cloud): give workflow tasks their session as the core does, either",
+  "by writing `agent` and `origin` on a workflow task at start (aws/developer-tasks/workflow-starts.ts) or by a workflow-task branch in `lazyTaskSessionInput`.",
+].join(" ");
+
 export const RESILIENCE_DIFFERENCES: readonly KnownDifference[] = [
+  { scenario: "session-message-mid-run", facet: "features", cause: SESSIONS_CAUSE, owner: "Cloud fix before the combined switch (sessions for workflow tasks), or the owner accepts it until DEL" },
+  {
+    scenario: "session-message-mid-run", facet: "rows",
+    // No `only` list yet: the core's NOTE row carries a random message id (`msg_...`) that harness/normalize.ts does not mask; once it does (asked of its owner),
+    // this entry gets `only: [MESSAGE_BUCKET, NOTE#<msg>, RECIPE, BUILTIN_AGENTS rows]` plus the limit and artifact rows.
+    cause: "Expected values: core DEVTASK#<id> | MESSAGE_BUCKET and DEVTASK#<id> | NOTE#msg_<id>; Cloud DEVTASK#<id> | RECIPE and ORG#<org>#BUILTIN_AGENTS | rovara-code; plus the limit and artifact rows of every scenario. Follows from R-SESSIONS: the core keeps the accepted message (its NOTE row and the task's message bucket); Cloud refused it and keeps none. Cloud's RECIPE and BUILTIN_AGENTS rows are the agent sessions wiring the harness turns on for this step (`agentSessions`), Cloud's own catalogue, not a task record.",
+    owner: "As its features",
+  },
   { scenario: "worker-lost", facet: "transitions", cause: LOST_RUN_CAUSE, owner: "Code upstream: lost-run watchdog in the core's recovery sweep (then a vendor pin bump); S0 schedules it" },
   {
     scenario: "worker-lost", facet: "rows",

@@ -17,7 +17,7 @@ export const FACETS_DIFFERENCES: readonly KnownDifference[] = [
       "(2) ready (core only): the core tells the person a pull request is ready to merge (attention kind `ready`); Cloud's thread posts no such message (its PR post already says to approve and press Merge).",
       "Once Slack is the core's channel adapter (H1, A8), Cloud users lose the narration and the PR posts, and get a new \"ready\" notice.",
     ].join(" "),
-    owner: "Owner decision: is the thread narration part of Slack on the channel point? If yes, Code upstream: progress channel events from the stage machine and a pr_opened attention kind (core/notify/attention.ts attentionKindOf)",
+    owner: "Owner decision 143(b): Slack threads get key milestones only (plan ready, PR opened, done) plus every needs-you notice, replacing today's narration. Intended once done; ROOT TO-DO (S0-143b): the core sends the three milestones to the thread (Code upstream: progress channel events from the stage machine and a pr_opened attention kind (core/notify/attention.ts attentionKindOf)",
   },
   {
     scenario: "*", facet: "spend", only: [...ADMITTED, "refused:learning.call:admission_action_unknown"],
@@ -44,7 +44,7 @@ export const FACETS_DIFFERENCES: readonly KnownDifference[] = [
       "core action for it. With the switch on, merges disappear from the audit ledger. Fix (Code upstream): stage a `pull_request.merged` AuditEvent (subject change_request, details number + repository)",
       "in mergedStateItems' transaction; then map it in packages/broker/src/cloud/adapters/audit-sink/event-map.ts to Cloud's pull_request.merged (fact number).",
     ].join(" "),
-    owner: "(1) intended (A7); (2) Code upstream (core/merge/merged.ts) + A7 event map",
+    owner: "(1) intended: owner decision 143(a) keeps the core's task.started and own-plan approval entries in Cloud (fuller trail); (2) Code upstream (core/merge/merged.ts) + A7 event map",
   },
   // Scenario-specific facet differences. Most are the messages / audit side of a transitions difference another entry explains: where the core stops or asks
   // again, it tells the person differently. They change with that difference.

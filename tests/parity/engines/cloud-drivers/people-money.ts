@@ -16,6 +16,9 @@ import { E2E_CHECK, SLACK_MAYA } from "../../../support/workflow-e2e.js";
 import { asMaya } from "./task-flow.js";
 import type { CloudContext, CloudOptions } from "../cloud-context.js";
 import type { StepDriver } from "../drivers.js";
+import { cloudMatrix } from "../people-money-support/approvals.js";
+import { cloudErase } from "../people-money-support/erasure.js";
+import type { Step } from "../../harness/types.js";
 import { cloudSpendItems, monthNow, spendStepOf } from "../people-money-support/spend.js";
 
 type Driver = StepDriver<CloudContext, CloudOptions>;
@@ -95,11 +98,20 @@ export const PEOPLE_MONEY_DRIVERS: Record<string, Driver> = {
   // Drivable on Cloud's path (a teammate or a second person pressing Approve in Slack; the person erase walk, rovara-code/evidence-erase.ts), but the core
   // engine cannot drive either step (core-drivers/people-money.ts says why in full), so the Cloud half is not written yet: it would never be compared.
   "approval.needed": {
-    supports: () => ({ unsupported: "not compared until the core engine can present a second person: its local composition has one owner and A6's approvers are not registrable there (core-drivers/people-money.ts)" }),
-    run: () => Promise.reject(new Error("unsupported")),
+    // Cloud's one workflow decision (`decideTaskWorkflow`, decision cards on) for the same high-risk plan and the same people and places as the core's matrix
+    // (people-money-support/approvals.ts). It runs on Cloud's developer task broker: the Slack journey harness has no browser decide-grade surface.
+    async run(ctx, step) {
+      const matrix = await cloudMatrix((step as Extract<Step, { do: "approval.needed" }>).answer);
+      ctx.extra.features.push(...matrix.words);
+      if (process.env.PARITY_DEBUG === "1") console.log(JSON.stringify({ parity: "cloud.approvals", words: matrix.words, reasons: matrix.reasons }));
+    },
   },
   "person.erase": {
-    supports: () => ({ unsupported: "not compared: Code's core has no person erasure (decision 41; its per-workspace erase needs an S0 adapter that is not written, core-drivers/people-money.ts)" }),
-    run: () => Promise.reject(new Error("unsupported")),
+    async run(ctx) {
+      const task = ctx.e2e.db.get(`DEVTASK#${ctx.e2e.taskId()}`, "META") as Record<string, unknown> | undefined;
+      if (task === undefined || typeof task.ownerKey !== "string" || typeof task.workspaceId !== "string" || typeof task.developerId !== "string" || typeof task.orgId !== "string") throw new Error("the Cloud task has no owner key, workspace, person or company to erase");
+      const words = await cloudErase({ s3: ctx.e2e.s3, db: ctx.e2e.db, orgId: task.orgId, developerId: task.developerId, own: { ownerKey: task.ownerKey, workspaceId: task.workspaceId, taskId: ctx.e2e.taskId() } });
+      ctx.extra.features.push(...words);
+    },
   },
 };

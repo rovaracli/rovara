@@ -6,6 +6,8 @@ import { bearerFor } from "../../../support/developer-task-broker.js";
 import { SLACK_MAYA } from "../../../support/workflow-e2e.js";
 import type { CloudContext, CloudOptions } from "../cloud-context.js";
 import type { StepDriver } from "../drivers.js";
+import { devcontainerWords } from "../features-c-support/devcontainer.js";
+import { cloudDiagnosisWords } from "../features-c-support/diagnosis.js";
 import { FEATURE_PROBES, note, outcomeWord, parse } from "../features-c-support/probes.js";
 
 type Driver = StepDriver<CloudContext, CloudOptions>;
@@ -18,7 +20,6 @@ const SWITCHES: Readonly<Record<string, Readonly<Record<string, string>>>> = {
   "saved-env": { TEST_ENVIRONMENT_ENABLED: "1", SAVED_ENV_ENABLED: "1" },
   "test-services": { TEST_ENVIRONMENT_ENABLED: "1" },
   "setup-agent": { SETUP_AGENT_ENABLED: "1" },
-  diagnosis: { LIVE_FIX_ENABLED: "1" },
 };
 
 const probe = (feature: string): Driver => ({
@@ -56,14 +57,13 @@ export const FEATURES_C_DRIVERS: Record<string, Driver> = {
   "feature:test-services": probe("test-services"),
   "feature:setup-agent": probe("setup-agent"),
   "feature:playbook": probe("playbook"),
-  "feature:diagnosis": {
-    supports: () => ({ unsupported: "the journey harness builds the broker without diagnosis dependencies: with LIVE_FIX_ENABLED=1 every /v1/app/diagnoses path still answers 404 \"route not found\" (developer-routes.ts routeDiagnosisRequest gets undefined deps), so a 404 on both sides would compare the same for the wrong reason. Needs the harness to take diagnosis dependencies (tests/support/diagnosis-world.ts has them)" }),
-    run: () => Promise.resolve(),
-  },
+  // Area 32 at the service level (features-c-support/diagnosis.ts): Cloud's light diagnosis on the shared failed task (the journey harness has no
+  // diagnosis dependencies, so its routes answer 404 whatever the switch says).
+  "feature:diagnosis": { async run(ctx) { for (const word of await cloudDiagnosisWords()) note(ctx.extra, "cloud", word); } },
   "feature:connections": probe("connections"),
+  // Area 30 at the worker level (features-c-support/devcontainer.ts): this engine's side of the worker on the shared fixtures.
   "feature:devcontainer": {
-    supports: () => ({ unsupported: "devcontainers are found and built by the worker (env-detect), not the broker; compared at the worker level, not by this broker suite" }),
-    run: () => Promise.resolve(),
+    run(ctx) { for (const word of devcontainerWords("cloud")) note(ctx.extra, "cloud", word); return Promise.resolve(); },
   },
   "feature:mcp-tools": {
     async run(ctx) {

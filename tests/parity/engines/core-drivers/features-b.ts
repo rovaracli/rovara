@@ -9,6 +9,8 @@ import { modelWords } from "../features-b-support/models.js";
 import { realtimeWords } from "../features-b-support/realtime.js";
 import { logWords, outcome } from "../features-b-support/outcomes.js";
 import { runTokenScript } from "../features-b-support/tokens-script.js";
+import { runCoreIntake } from "../features-b-support/core-intake.js";
+import { slackApproveOnCore, slackStartOnCore } from "../features-b-support/core-slack.js";
 
 type Driver = StepDriver<CoreContext, FakeWorldOptions>;
 
@@ -23,7 +25,7 @@ const scriptTokens: Driver = {
         return ((task?.workflow as { decisions?: Array<{ decision: string }> } | undefined)?.decisions ?? []).map((decision) => decision.decision);
       },
     }, { start: "33333333-3333-4333-8333-333333333333", decide: "44444444-4444-4444-8444-444444444444", cancel: "55555555-5555-4555-8555-555555555555" });
-    ctx.extra.audit.push(...words);
+    ctx.extra.features.push(...words);
     await logWords("core", ctx.scenario.id, words);
   },
 };
@@ -31,7 +33,7 @@ const scriptTokens: Driver = {
 const auditLedger: Driver = {
   async run(ctx) {
     const words = ledgerWords(coreLedgerOrder(ctx.world.audit));
-    ctx.extra.audit.push(...words);
+    ctx.extra.features.push(...words);
     await logWords("core", ctx.scenario.id, words);
   },
 };
@@ -50,7 +52,7 @@ const modelSelection: Driver = {
   },
   async run(ctx) {
     const words = modelWords(handed.get(ctx.scenario.id) ?? []);
-    ctx.extra.audit.push(...words);
+    ctx.extra.features.push(...words);
     await logWords("core", ctx.scenario.id, words);
   },
 };
@@ -60,37 +62,62 @@ const realtime: Driver = {
     // The registered `realtime` adapter; the in-process one keeps what it sent (`published`). Another adapter has no record to read: refused below.
     const publisher = ctx.runtime.registry.require("realtime") as { published?: () => Array<{ notice: { type: string } }> };
     if (typeof publisher.published !== "function") throw new Error(`the core's realtime adapter (${ctx.runtime.registry.names("realtime").join(", ")}) keeps no record of what it sent`);
-    const words = realtimeWords(publisher.published().map((heard) => heard.notice.type));
-    ctx.extra.audit.push(...words);
+    // The task's agent sessions, from the rows the core wrote (one META row per session).
+    const sessions = [...ctx.recorder.keys].filter((key) => /#AGENT_SESSION#<ses> \| META$/u.test(key)).length;
+    const words = [...realtimeWords(publisher.published().map((heard) => heard.notice.type)), outcome("realtime", `sessions:${String(sessions)}`)];
+    ctx.extra.features.push(...words);
     await logWords("core", ctx.scenario.id, words);
   },
 };
 
 const outboundEvents: Driver = {
+  // A recording `outbound-events` adapter is registered for this scenario (the composition root registers none), so what the core WOULD send through the
+  // point is what is compared, not only that nothing is registered.
+  options: () => ({ recordOutbound: true }),
   async run(ctx) {
-    // The core publishes each event to every `outbound-events` adapter the registry holds (ports/outbound-events.ts publishOutboundEvent). The composition
-    // root's module list (cloud-modules.ts) registers none, and neither does the local composition: the switch sends no outbound event, as Cloud's path does not.
-    const names = ctx.runtime.registry.names("outbound-events");
-    const words = [outcome("outbound", `adapters:${String(names.length)}`)];
-    ctx.extra.audit.push(...words);
+    await ctx.runtime.tick();
+    const words = [outcome("outbound", `events:${String(ctx.world.outbound.length)}`), ...ctx.world.outbound.map((event) => outcome("outbound", `type:${event.type}`))];
+    ctx.extra.features.push(...words);
     await logWords("core", ctx.scenario.id, words);
   },
 };
 
-/** Steps the core cannot drive yet, each with exactly what is missing. */
-const notYet = (why: string): Driver => ({ supports: () => ({ unsupported: why }), run: () => Promise.reject(new Error(why)) });
+const trackerIntake: Driver = {
+  options: () => ({ tracker: true }),
+  async run(ctx) {
+    const words = await runCoreIntake(ctx);
+    ctx.extra.features.push(...words);
+    await logWords("core", ctx.scenario.id, words);
+  },
+};
+
+const slackStart: Driver = {
+  // The settings the `start` driver maps (it is not in this scenario: the Slack message starts the task).
+  async prepare(ctx) {
+    ctx.runtime.app.flow.deps.understandFirst = false;
+    ctx.runtime.app.flow.deps.planCheck = false;
+    ctx.runtime.app.flow.deps.autofix = { enabled: false };
+  },
+  async run(ctx) {
+    const words = await slackStartOnCore(ctx);
+    ctx.extra.features.push(...words);
+    await logWords("core", ctx.scenario.id, words);
+  },
+};
+
+const slackApprove: Driver = {
+  async run(ctx) {
+    const words = slackApproveOnCore(ctx);
+    ctx.extra.features.push(...words);
+    await logWords("core", ctx.scenario.id, words);
+  },
+};
 
 export const FEATURES_B_DRIVERS: Record<string, Driver> = {
   "feature:outbound-events": outboundEvents,
-  "feature:tracker-intake": notYet([
-    "the core's intake reads tickets through the registry's `tracker` adapters (core/intake), and the core engine's registry has none: a recording tracker module (Code's FakeTracker,",
-    "or A9's Linear/Jira adapters over fakes) must be added to tests/support/cloud-core-fakes.ts (facets lane file); the registry is sealed before a driver runs",
-  ].join(" ")),
-  "feature:slack-channel": notYet([
-    "a Slack message cannot reach the core: (1) no Cloud code wires inboundFromQueuedSlackRequest (plugins/channel/slack-cloud/wiring.ts:54) into createCloudSlackSink;",
-    "(2) the sink's ChannelWork (start a task, decide a card on the core) is not built for Cloud: Code's own is local/app/chat.ts, inside the unexported local composition (S0-Q1);",
-    "(3) the CHANNEL_TENANTS backfill has not run and Cloud's bind does not write the row (slack-switch.ts readiness). Outbound Slack notices are compared by the messages facet",
-  ].join(" ")),
+  "feature:tracker-intake": trackerIntake,
+  "feature:slack-start": slackStart,
+  "feature:slack-approve": slackApprove,
   "feature:realtime": realtime,
   "feature:model-selection": modelSelection,
   "feature:script-tokens": scriptTokens,

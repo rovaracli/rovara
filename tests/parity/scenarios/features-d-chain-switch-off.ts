@@ -6,7 +6,7 @@ export default defineScenario({
   title: "A chain run started with automations switched off",
   areas: [16],
   kind: "edge",
-  facets: ["transitions", "spend", "decisions", "codeHost"],
+  facets: ["transitions", "spend", "decisions", "codeHost", "rows"],
   steps: [
     { do: "feature", name: "chains-switch-off" },
   ],

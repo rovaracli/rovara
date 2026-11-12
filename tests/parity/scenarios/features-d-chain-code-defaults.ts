@@ -6,7 +6,7 @@ export default defineScenario({
   title: "A chain with a writing built-in agent, on the core's default project rules",
   areas: [16],
   kind: "edge",
-  facets: ["transitions", "spend", "decisions", "codeHost"],
+  facets: ["transitions", "spend", "decisions", "codeHost", "rows"],
   steps: [
     { do: "feature", name: "chains-code-defaults" },
   ],

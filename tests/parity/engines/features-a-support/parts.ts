@@ -32,3 +32,17 @@ export const PART_FILES: Readonly<Record<string, Record<string, string>>> = {
 
 /** The part order both engines are expected to report: A and B start together, C only after both are built. */
 export const PART_TITLES: Readonly<Record<string, string>> = { [PART_A]: "A", [PART_B]: "B", [PART_C]: "C" };
+
+/**
+ * The parts' checkpoints as features words. Parts built side by side finish in either order (the real worker runs them at the same time), so the words are
+ * each part's own sequence, by part, plus the one ordering the plan fixes: the part that needs both starts only after both are implemented.
+ */
+export function partsWords(progress: ReadonlyArray<{ itemId: string; state: string }>): string[] {
+  const part = (itemId: string) => itemId.slice(0, 1);
+  const byPart = new Map<string, string[]>();
+  for (const entry of progress) byPart.set(part(entry.itemId), [...(byPart.get(part(entry.itemId)) ?? []), entry.state]);
+  const index = (itemId: string, state: string) => progress.findIndex((entry) => entry.itemId === itemId && entry.state === state);
+  const cStarted = index(PART_C, "STARTED");
+  const ordered = cStarted >= 0 && [PART_A, PART_B].every((itemId) => { const done = index(itemId, "IMPLEMENTED"); return done >= 0 && done < cStarted; });
+  return [...[...byPart.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([name, states]) => `parts:${name}:${states.join(">")}`), `parts:C-after-A-and-B=${String(ordered)}`];
+}

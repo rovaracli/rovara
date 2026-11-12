@@ -9,8 +9,6 @@ export const FEATURE_PROBES: Readonly<Record<string, readonly { method: "GET" | 
   "test-services": [{ method: "GET", path: "/v1/app/projects/payments/test-environment" }],
   "setup-agent": [{ method: "GET", path: "/v1/app/projects/payments/setup-agent" }],
   playbook: [{ method: "GET", path: "/v1/app/projects/payments/playbook" }],
-  // The company list (Cloud) and one diagnosis by id (both hosted and laptop routes read one); the id is unknown, so the answer is the refusal.
-  diagnosis: [{ method: "GET", path: "/v1/app/diagnoses" }, { method: "GET", path: "/v1/app/diagnoses/dgn_00000000000000000000" }],
   // Cloud serves the company's connections at /v1/app/connections, the core at /v1/dev/connections: both paths are asked on both sides.
   connections: [{ method: "GET", path: "/v1/app/connections" }, { method: "GET", path: "/v1/dev/connections" }],
 };

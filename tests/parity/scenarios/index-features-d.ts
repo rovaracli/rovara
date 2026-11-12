@@ -6,5 +6,6 @@ import chainRun from "./features-d-chain-run.js";
 import chainStartTwice from "./features-d-chain-start-twice.js";
 import chainSwitchOff from "./features-d-chain-switch-off.js";
 import customAgent from "./features-d-custom-agent.js";
+import triggerTwice from "./features-d-trigger-twice.js";
 
-export const FEATURES_D_SCENARIOS: readonly Scenario[] = [chainRun, customAgent, chainAdmissionRefused, chainStartTwice, chainSwitchOff, chainCodeDefaults];
+export const FEATURES_D_SCENARIOS: readonly Scenario[] = [chainRun, customAgent, chainAdmissionRefused, chainStartTwice, chainSwitchOff, chainCodeDefaults, triggerTwice];

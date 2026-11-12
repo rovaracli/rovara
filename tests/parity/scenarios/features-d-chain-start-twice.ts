@@ -6,7 +6,7 @@ export default defineScenario({
   title: "The same chain run started twice at the same moment: one run, one first step",
   areas: [16],
   kind: "race",
-  facets: ["transitions", "spend", "decisions", "codeHost"],
+  facets: ["transitions", "spend", "decisions", "codeHost", "rows"],
   steps: [
     { do: "feature", name: "chains-start-twice" },
   ],

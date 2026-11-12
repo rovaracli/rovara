@@ -1,13 +1,15 @@
 import { defineScenario } from "../harness/types.js";
 
-// A feature scenario: its steps are the feature's own (`feature`), which an engine drives once its driver is written.
+// Compared at the feature's decisions (tests/parity/engines/features-a-support/decision.ts and cases-lessons.ts): the same cases through Cloud's copy and the
+// core's copy, one features word per case. Only the features facet is compared: the scenario starts no task, so the other facets would be empty on both
+// sides and read "same" for no reason.
 export default defineScenario({
   id: "lessons",
-  title: "A lesson is captured, approved and loaded into a later task",
+  title: "Lessons: tiers, approval for use, trials, value, capture words, the repository lessons file and the audience folds, on the same lessons",
   areas: [14],
   kind: "happy",
+  facets: ["features"],
   steps: [
-    { do: "start", request: "Add a greet(name) function", path: "QUICK" },
     { do: "feature", name: "lessons" },
   ],
 });

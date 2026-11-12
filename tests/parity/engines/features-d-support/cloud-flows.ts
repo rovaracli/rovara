@@ -5,10 +5,29 @@ import { agentXError, type ChainDefinitionInput } from "@rovara-code/contracts";
 import { onStepTaskEnded, readChainRun, readStepAttempts, startChainRun } from "../../../../packages/broker/src/chains/runner.js";
 import { automationsEnabled } from "../../../../packages/broker/src/chains/automations-gate.js";
 import { DANA, ORG_A, PRIYA, callerOf, setupWorld, type ChainWorld } from "../../../support/chain-run-world.js";
+import { setupTriggerWorld } from "../../../support/trigger-world.js";
+import { dispatchTriggerEvent, type TriggerDispatchDependencies } from "../../../../packages/broker/src/triggers/dispatch.js";
 import { keyFamily } from "../../harness/normalize.js";
-import { CUSTOM_OVERLAY, START_INPUT, TWO_BUILTIN_STEPS, oneStepOn, runWord, type FlowName, type FlowObservation } from "./flows.js";
+import { CUSTOM_OVERLAY, START_INPUT, TRIGGER_EVENT, TWO_BUILTIN_STEPS, dispatchWord, oneStepOn, runWord, type FlowName, type FlowObservation } from "./flows.js";
+
+/** A trigger on a GitHub event, the event delivered twice (Cloud's trigger engine: packages/broker/src/triggers/dispatch.ts over tests/support/trigger-world.ts). */
+async function triggerTwice(): Promise<FlowObservation> {
+  const seen: FlowObservation = { transitions: [], spend: [], rows: [] };
+  const v = setupTriggerWorld();
+  v.db.onWrite((change) => {
+    const item = change.after ?? change.before;
+    if (item !== undefined) seen.rows.push(keyFamily(String(item.pk), String(item.sk)));
+  });
+  await v.builtinBudget("code-reviewer");
+  await v.seed({ target: { kind: "agent", agentId: "code-reviewer" }, createdBy: DANA });
+  const deps = v.routeDeps as unknown as TriggerDispatchDependencies;
+  for (let delivery = 0; delivery < 2; delivery += 1) seen.transitions.push(dispatchWord(await dispatchTriggerEvent(deps, ORG_A, TRIGGER_EVENT as never)));
+  for (const request of v.starts) seen.spend.push(`start:${request.agent.agentId}`);
+  return seen;
+}
 
 export async function runCloudFlow(flow: FlowName): Promise<FlowObservation> {
+  if (flow === "chains-trigger-twice") return await triggerTwice();
   const world: ChainWorld = setupWorld();
   const seen: FlowObservation = { transitions: [], spend: [], rows: [] };
   world.db.onWrite((change) => {

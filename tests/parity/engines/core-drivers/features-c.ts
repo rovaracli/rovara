@@ -3,6 +3,8 @@
 import type { FakeWorldOptions } from "../../../support/cloud-core-fakes.js";
 import type { CoreContext } from "../core-context.js";
 import type { StepDriver } from "../drivers.js";
+import { devcontainerWords } from "../features-c-support/devcontainer.js";
+import { codeDiagnosisWords } from "../features-c-support/diagnosis.js";
 import { FEATURE_PROBES, note, outcomeWord } from "../features-c-support/probes.js";
 
 type Driver = StepDriver<CoreContext, FakeWorldOptions>;
@@ -25,11 +27,12 @@ export const FEATURES_C_DRIVERS: Record<string, Driver> = {
   "feature:test-services": probe("test-services"),
   "feature:setup-agent": probe("setup-agent"),
   "feature:playbook": probe("playbook"),
-  "feature:diagnosis": probe("diagnosis"),
+  // Area 32 at the service level (features-c-support/diagnosis.ts): the core's diagnosis service on the shared failed task.
+  "feature:diagnosis": { async run(ctx) { for (const word of await codeDiagnosisWords()) note(ctx.extra, "core", word); } },
   "feature:connections": probe("connections"),
+  // Area 30 at the worker level (features-c-support/devcontainer.ts): this engine's side of the worker on the shared fixtures.
   "feature:devcontainer": {
-    supports: () => ({ unsupported: "devcontainers are found and built by the worker (env-detect); the broker sends no devcontainer field, the core engine's worker is scripted, and Code's local socket guard refuses devcontainers (L4B-NO-DEVCONTAINERS-LOCAL). Compare the worker packages instead (Cloud's worker vs the vendored Code worker)" }),
-    run: () => Promise.resolve(),
+    run(ctx) { for (const word of devcontainerWords("code")) note(ctx.extra, "core", word); return Promise.resolve(); },
   },
   "feature:mcp-tools": {
     async run(ctx) {

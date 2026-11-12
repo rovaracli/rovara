@@ -8,6 +8,10 @@ import { IMPLICIT_COMPANY_ID } from "@rovara-code/contracts";
 import type { FakeWorldOptions } from "../../../support/cloud-core-fakes.js";
 import type { CoreContext } from "../core-context.js";
 import type { StepDriver } from "../drivers.js";
+import { PARITY_CORE_PEOPLE } from "../core-context.js";
+import { coreMatrix } from "../people-money-support/approvals.js";
+import { coreErase } from "../people-money-support/erasure.js";
+import type { Step } from "../../harness/types.js";
 import { coreCounterItem, effectiveLimitOf, monthNow, spendStepOf } from "../people-money-support/spend.js";
 
 type Driver = StepDriver<CoreContext, FakeWorldOptions>;
@@ -84,19 +88,21 @@ export const PEOPLE_MONEY_DRIVERS: Record<string, Driver> = {
   "feature:start-api:payments": startApi("payments"),
   "feature:start-api:billing": startApi("billing"),
   "approval.needed": {
-    supports: () => ({ unsupported: [
-      "the core engine runs Code's local composition, whose only person is its local owner (one approver, who may approve their own request: decision 45.3), so a second person cannot exist there.",
-      "Cloud's people adapters (A6 createCloudIdentityProvider/createCloudApprovers) need a Cloud people world in the SAME company as the core's tasks (the local owner's company is IMPLICIT_COMPANY_ID, the people world's is TEST_ORG) and a decide surface that presents A6 credentials (the local pages present only local-session proofs).",
-      "Shared change: core-context registers A6 identity and approvers from tests/support/cloud-people-world.ts when a driver asks, runs the core's tasks as that company, and decides through the core's DecisionGate with A6 credentials.",
-    ].join(" ") }),
-    run: () => Promise.reject(new Error("unsupported")),
+    // The core decides with Cloud's people: A6's approvers on the approvers point, the people world's company (core-context PARITY_CORE_PEOPLE).
+    options: () => ({ coreEnvironment: { [PARITY_CORE_PEOPLE]: "cloud" } }),
+    async run(ctx, step) {
+      const answer = (step as Extract<Step, { do: "approval.needed" }>).answer;
+      const matrix = await coreMatrix(ctx, answer);
+      ctx.extra.features.push(...matrix.words);
+      if (process.env.PARITY_DEBUG === "1") console.log(JSON.stringify({ parity: "core.approvals", words: matrix.words, reasons: matrix.reasons }));
+    },
   },
   "person.erase": {
-    supports: () => ({ unsupported: [
-      "Code's core has no person erasure: the walks by person, project and company are left in Cloud on purpose (vendor core/proof/evidence-erase.ts:6-7, decision 41). Its counterpart is per workspace and per task",
-      "(eraseWorkspaceEvidence, eraseTaskEvidence), which the composition root must call for each workspace of the erased person; that adapter is not written (S0 gap).",
-      "The part both sides share is a duplicated pure function: evidencePrefixesOf is identical in vendor core/proof/evidence-erase.ts:13 and packages/broker/src/rovara-code/evidence-erase.ts:22 (a copy for the deletion lane).",
-    ].join(" ") }),
-    run: () => Promise.reject(new Error("unsupported")),
+    async run(ctx) {
+      const task = await ctx.readTask();
+      if (task === undefined || typeof task.ownerKey !== "string" || typeof task.workspaceId !== "string" || typeof task.developerId !== "string") throw new Error("the core task has no owner key, workspace or person to erase");
+      const words = await coreErase({ store: ctx.store, objects: ctx.runtime.registry.require("object-storage"), companyId: ctx.companyId, developerId: task.developerId, own: { ownerKey: task.ownerKey, workspaceId: task.workspaceId, taskId: ctx.task.taskId } });
+      ctx.extra.features.push(...words);
+    },
   },
 };

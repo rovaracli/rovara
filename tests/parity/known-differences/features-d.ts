@@ -3,10 +3,9 @@ import type { KnownDifference } from "../known-differences.js";
 
 /** Chain and agent rows one runner writes and the other does not (features-d-support flows; see the `*` entry). */
 const CHAIN_ROW_FAMILIES = [
-  // Cloud only: a chain run is also an agent session; built-in agents get a per-company record; chains and agents keep an event history; a project roster.
-  "OPEN_AGENT_SESSIONS | <org>#<crn>", "ORG#<org>#AGENT_SESSION#<crn> | EVENT#<time>#<evt>", "ORG#<org>#AGENT_SESSION#<crn> | LEG#<n>", "ORG#<org>#AGENT_SESSION#<crn> | META",
-  "ORG#<org>#LIVE_SESSIONS | <crn>", "ORG#<org>#MY_SESSIONS#<person> | <time>#<crn>", "ORG#<org>#PROJECT_SESSIONS#web | <time>#<crn>",
+  // Cloud only: per-company built-in agent records, and an event history on chains and agents (EVENT#<time>#<n>-<suffix>).
   "ORG#<org>#BUILTIN_AGENTS | code-reviewer", "ORG#<org>#BUILTIN_AGENTS | root-cause-analyst",
+  "ORG#<org>#CHAIN#<chn> | EVENT#<time>#<n>-<hash>", "ORG#<org>#AGENT#<agt> | EVENT#<time>#<n>-<hash>", "ORG#<org>#AGENT#code-reviewer | EVENT#<time>#<n>-<hash>",
   // Core only: the pointer from a step's task to its run (Code's runner says it is Code-only: Cloud finds the run from its task record), and the
   // unattended door's open-run row.
   "ORG#<org>#CHAIN_STEP_TASK#task-1 | META", "ORG#<org>#CHAIN_STEP_TASK#task-2 | META", "ORG#<org>#UNATTENDED_RUN_OPEN | <id>",
@@ -36,7 +35,7 @@ export const FEATURES_D_DIFFERENCES: readonly KnownDifference[] = [
       "trigger engine starts. Cloud's comment says it must not, so the root should report the switch as on for the trigger and schedule paths while the",
       "routes stay hidden. That is a deliberate mapping, not Code's default.",
     ].join(" "),
-    owner: "S0-Q2 settings mapping (cloud/app): bind the core's automation switch to Cloud's `chains` web feature, with an owner decision on the trigger engine",
+    owner: "Owner decision 143(c): turning automations off also stops runs a trigger already started, cancelled at a safe point, nothing half-done merged. The core's refusal at the door matches it for new starts; ROOT TO-DO (S0-143c): bind the core's automation switch to Cloud's `chains` feature and cancel running runs at a safe point when it turns off (Cloud's chains/automations-gate.ts changes to match)",
   },
   {
     scenario: "features-d-chain-switch-off", facet: "spend",
@@ -54,20 +53,24 @@ export const FEATURES_D_DIFFERENCES: readonly KnownDifference[] = [
     owner: "S0-Q2 settings mapping: cloud/app passes ProjectRules.allowConnectorWrites = true for Cloud's chains and agents",
   },
   {
+    scenario: "features-d-chain-code-defaults", facet: "rows",
+    cause: "The same project-rules default as its transitions: the core refuses the run before it is created, so it writes no CHAIN_RUN, CHAIN_RUNS, CHAIN_RUNS_P or OPEN_CHAIN_RUNS rows; Cloud runs the chain and writes them (plus its own BUILTIN_AGENTS and event-history rows).",
+    owner: "S0-Q2 (as its transitions)",
+  },
+  {
     scenario: "features-d-chain-code-defaults", facet: "spend",
     cause: "The same project-rules default as its transitions: the core refuses the start (refused:CHAIN_UNAVAILABLE); Cloud starts both steps.",
     owner: "S0-Q2 (as its transitions)",
   },
   {
-    // Recorded for completeness. The rows facet compares only the shared task-record families (harness/normalize.ts SHARED_FAMILIES), so the chain
-    // scenarios leave rows out (each lists its facets) and this entry explains nothing today. If chain families join SHARED_FAMILIES, exactly these are
-    // the expected differences.
+    // The chain and agent families are in the rows facet (harness/normalize.ts SHARED_FAMILIES), masked to <chn>/<agt>/<crn>; every chain
+    // scenario compares rows, and these are exactly the rows one runner writes and the other does not.
     scenario: "*", facet: "rows", only: CHAIN_ROW_FAMILIES,
     cause: [
       "The chain and agent key layout is shared (CHAIN, CHAIN_RUN META/STEP/EVENT, CHAIN_RUNS, CHAIN_RUNS_P, OPEN_CHAIN_RUNS, AGENT META/DRAFT/VERSION,",
       "AGENT_DIRECTORY, AGENT_NAME are written by both). Cloud also makes each chain run an agent session (AGENT_SESSION#<crn>, LIVE_SESSIONS,",
-      "MY_SESSIONS, PROJECT_SESSIONS, OPEN_AGENT_SESSIONS), keeps per-company built-in agent records (BUILTIN_AGENTS), keeps an event history on",
-      "chains and agents (CHAIN#/AGENT# EVENT#), and keeps a project roster row (PROJECT_AGENTS#<project>). The core writes a step-task pointer",
+      "MY_SESSIONS, PROJECT_SESSIONS, OPEN_AGENT_SESSIONS: the session families are not in the rows facet yet), keeps per-company built-in agent",
+      "records (BUILTIN_AGENTS), and keeps an event history on chains and agents (CHAIN#/AGENT# EVENT#). The core writes a step-task pointer",
       "(CHAIN_STEP_TASK#<task>, Code-only by design: vendor core/chains/runner.ts stepTaskKey) and the unattended door's UNATTENDED_RUN_OPEN row.",
       "Readers before writers: Cloud's session list, roster and chain history pages must not depend on rows the core does not write.",
       "Otherwise Code needs those rows upstream: the chain run as a session (Code's P5 sessions), the roster.",

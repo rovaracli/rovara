@@ -8,13 +8,17 @@ export function keyFamily(pk: string, sk: string): string {
   const id = (text: string): string => text
     .replace(/org_[0-9a-z]{20}/g, "<org>")
     .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g, "<id>")
-    .replace(/\b(ses|evt|crn|rq)_[0-9a-z]{8,}\b/g, "<$1>")
+    .replace(/\b(ses|evt|crn|rq|chn|agt|ctr)_[0-9a-z]{8,}\b/g, "<$1>")
     // The person: Cloud keys a developer by a hash of the sign-in, the local core by `local-owner` (D6/D11: open provider names).
-    .replace(/\b(DEVELOPER|DEVELOPER_LIMIT|IDEMPOTENCY|MY_SESSIONS)#(?:[0-9a-f]{16,64}|local-owner)\b/g, "$1#<person>")
+    .replace(/\b(DEVELOPER|DEVELOPER_LIMIT|IDEMPOTENCY|MY_SESSIONS|TRIGGERS_BY_CREATOR)#(?:[0-9a-f]{16,64}|local-owner)\b/g, "$1#<person>")
     .replace(/#(?:[0-9a-f]{16,64}|local-owner)#/g, "#<person>#")
     .replace(/\b[0-9a-f]{16,64}\b/g, "<hash>")
     .replace(/\d{4}-\d{2}-\d{2}T[\d:.]+Z/g, "<time>")
-    .replace(/#\d+\b/g, "#<n>");
+    // An hour bucket (a trigger's hourly allowance row: `TRIGGER_RATE#<trigger> | 2026-11-12T10`).
+    .replace(/\b\d{4}-\d{2}-\d{2}T\d{2}\b/g, "<hour>")
+    .replace(/#\d+\b/g, "#<n>")
+    // A chain or agent event's sort key ends in a short random suffix after its sequence (`EVENT#<time>#<n>-1700e4`).
+    .replace(/#<n>-[0-9a-f]{4,12}\b/g, "#<n>-<hash>");
   let p = id(pk);
   // D1: dispatch rows. Cloud: WORKFLOW_DISPATCH; core: ORG#<c>#WORKFLOW_DISPATCH. Same rows.
   if (p === "ORG#<org>#WORKFLOW_DISPATCH") p = "WORKFLOW_DISPATCH";
@@ -41,7 +45,15 @@ export function auditName(name: string): string {
  * index, the limits, the outbox). Rows outside them are each path's own (Cloud's Slack thread and notices, the core's session projection) and are not
  * compared: comparing them would only say the two products are different products.
  */
-const SHARED_FAMILIES = /^(DEVTASK#|WORKSPACE#|WORKFLOW_DISPATCH |IDEMPOTENCY#|DEVELOPER#|DEVELOPER_LIMIT#|ORG#<org>#DEVELOPER_LIMIT#|ORG#<org>#SLACK_LIMIT#|OUTBOX#)/;
+const SHARED_FAMILIES = new RegExp([
+  "^(DEVTASK#|WORKSPACE#|WORKFLOW_DISPATCH |IDEMPOTENCY#|DEVELOPER#|DEVELOPER_LIMIT#|ORG#<org>#DEVELOPER_LIMIT#|ORG#<org>#SLACK_LIMIT#|OUTBOX#",
+  // Chains, triggers, automatic runs and custom agents (areas 16, 17): the key layout both runners are meant to share (CHAIN, CHAINS, CHAIN_NAME,
+  // CHAIN_RUN, CHAIN_RUNS, CHAIN_RUNS_P, CHAIN_STEP_TASK, OPEN_CHAIN_RUNS, AGENT, AGENT_DIRECTORY, AGENT_NAME), plus each runner's own rows next to
+  // them (Cloud's BUILTIN_AGENTS, the core's UNATTENDED_RUN_OPEN), so a row only one writes shows. A chain run's agent session (Cloud's
+  // AGENT_SESSION#<crn>) stays with the session families, which no scenario compares yet (a Slack-started Cloud task has none).
+  "|ORG#<org>#CHAIN|OPEN_CHAIN_RUNS |ORG#<org>#AGENT#|ORG#<org>#AGENT_DIRECTORY|ORG#<org>#AGENT_NAME|ORG#<org>#BUILTIN_AGENTS |ORG#<org>#UNATTENDED_RUN_OPEN |ORG#<org>#TRIGGER",
+  ")",
+].join(""));
 
 export function sharedRows(rows: readonly string[]): string[] {
   // Cloud's notifier keeps its sent-notice marks on the task's partition (`DEVTASK#<id> | NOTICE#...`): Cloud's own notices, compared on the messages facet.

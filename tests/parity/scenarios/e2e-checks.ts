@@ -1,13 +1,15 @@
 import { defineScenario } from "../harness/types.js";
 
-// A feature scenario: its steps are the feature's own (`feature`), which an engine drives once its driver is written.
+// Compared at the feature's decisions (tests/parity/engines/features-a-support/decision.ts and cases-e2e.ts): the same cases through Cloud's copy and the
+// core's copy, one features word per case. Only the features facet is compared: the scenario starts no task, so the other facets would be empty on both
+// sides and read "same" for no reason.
 export default defineScenario({
   id: "e2e-checks",
-  title: "Browser and API checks run on the built app",
+  title: "E2E checks: what the verifier concludes from a CHECKS operation's admission and evidence, on the same records and stored objects",
   areas: [10],
   kind: "happy",
+  facets: ["features"],
   steps: [
-    { do: "start", request: "Add a greet(name) function", path: "QUICK" },
     { do: "feature", name: "e2e" },
   ],
 });

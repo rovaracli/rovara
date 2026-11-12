@@ -1,14 +1,15 @@
 import { defineScenario } from "../harness/types.js";
 
-// Features-C lane: a task is planned, then the feature's surface is asked on both engines (engines/features-c-support/probes.ts).
+// Area 32, Fix with agent, at the SERVICE level (engines/features-c-support/diagnosis.ts): the journey harness builds Cloud's broker with no diagnosis
+// dependencies and the core engine has no model key, so each product's own diagnosis service runs on the same failed task: no provider, a start, the
+// same request again, and an error that is no longer the one shown. Only the features facet is compared (no task runs through the engines).
 export default defineScenario({
   id: "diagnosis",
-  title: "Fix with agent: the company's diagnoses are listed after a task plans",
+  title: "Fix with agent on a failed task: no provider, a start, a repeat, a stale error",
   areas: [32],
-  kind: "happy",
+  kind: "edge",
+  facets: ["features"],
   steps: [
-    { do: "start", request: "Add a greet(name) function", path: "QUICK" },
-    { do: "plan.proposed", plan: { title: "Add greet(name)", claims: ["Add greet to greeting.ts.", "A test in greeting.test.ts proves greet(\"Maya\") returns Hello, Maya."] } },
     { do: "feature", name: "diagnosis" },
   ],
 });

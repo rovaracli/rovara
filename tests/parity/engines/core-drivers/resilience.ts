@@ -62,7 +62,7 @@ export const RESILIENCE_DRIVERS: Record<string, Driver> = {
       const sessionId = typeof task?.sessionId === "string" ? task.sessionId : undefined;
       if (sessionId === undefined) throw new Error("the core task has no session to message");
       const sent = await ctx.api(`/v1/app/sessions/${sessionId}/messages`, { method: "POST", body: { requestId: "33333333-3333-4333-8333-333333333333", kind: "steer", text } });
-      if (sent.status >= 400) throw new Error(`the core refused the session message (${String(sent.status)}): ${JSON.stringify(sent.body).slice(0, 200)}`);
+      ctx.extra.features.push(sent.status < 400 ? "session.message:accepted" : `session.message:refused:${String(sent.status)}`);
       if (process.env.PARITY_DEBUG === "1") console.log(JSON.stringify({ parity: "core.sessionMessage", status: sent.status, body: JSON.stringify(sent.body).slice(0, 300) }));
       await ctx.runtime.tick();
     },

@@ -20,6 +20,11 @@ export const FEATURES_A_DIFFERENCES: readonly KnownDifference[] = [
     owner: "S0-Q2 (settings mapping); disappears once the parallel-parts Code fix lands and the variant is retired",
   },
   {
+    scenario: "parallel-parts", facet: "features",
+    cause: "Consequence of the parallel-parts transitions bug: the core never reaches the coding run, so it records none of the parts' checkpoints Cloud's worker reports (A and B started side by side, then C on both). With Understand on (features-a-parallel-parts-understand) the checkpoints compare the same, in the same order.",
+    owner: "Code upstream (as the transitions entry)",
+  },
+  {
     scenario: "parallel-parts", facet: "decisions",
     cause: "Consequence of the parallel-parts transitions bug: the core never reaches the design and coding plans, so only the requirements approval is recorded (Cloud records three).",
     owner: "Code upstream (as the transitions entry)",

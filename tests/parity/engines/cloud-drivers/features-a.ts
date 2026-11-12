@@ -4,11 +4,42 @@
 // version 2 task (definition 1.1.0) before its plans are approved, three approvals, the real worker building A and B side by side and C on both, the
 // project's readiness check run on the integrated tree, one pull request.
 //
-// The other four features have no driver on Cloud's path yet; each `supports` says what is missing.
+// second-review, design-review, e2e, lessons: compared at the feature's decisions (features-a-support/decision.ts), the same cases through Cloud's copy here
+// and the core's copy in the core driver. The journey harness reaches none of them end to end (no second-review model record, design-review reviewer
+// script, e2e browser or team record), so the comparison holds the two copies of the logic the switch moves to the same answers.
 import type { WorkflowE2E } from "../../../support/workflow-e2e.js";
 import type { CloudContext, CloudOptions } from "../cloud-context.js";
 import type { StepDriver } from "../drivers.js";
-import { PART_FILES, partsPlan } from "../features-a-support/parts.js";
+import { PART_FILES, partsPlan, partsWords } from "../features-a-support/parts.js";
+import { memoryS3 } from "../../../support/developer-task-broker.js";
+import { acceptSecondReport, admitSecondReview, againstModels, planSecondReview, secondOpinionOf, secondOpinionShownOn, secondReviewAcknowledgement, secondReviewAlreadyRan, secondReviewUnavailableDecision } from "../../../../packages/broker/src/rovara-code/second-review.js";
+import { secondReviewPicker } from "../../../../packages/broker/src/rovara-code/second-review-picker.js";
+import { effectiveMode } from "../../../../packages/broker/src/org/second-review-mode.js";
+import { verdictHoldsFor } from "../../../../packages/broker/src/org/second-review-evidence.js";
+import { resolveDesignMode } from "../../../../packages/broker/src/design-review/mode.js";
+import { markEffective } from "../../../../packages/broker/src/design-review/effective-setting.js";
+import { estimateDesignReviewUsd, gateDesignReviewCost, reviewersForRound } from "../../../../packages/broker/src/design-review/estimate.js";
+import { requirementsMissingFromDesign } from "../../../../packages/broker/src/design-review/own-findings.js";
+import { nextDesignWaitDueAt } from "../../../../packages/broker/src/design-review/wait-clock.js";
+import { lockViolations } from "../../../../packages/broker/src/design-review/lock.js";
+import { reviewCoverage } from "../../../../packages/broker/src/design-review/risk.js";
+import { blockerReasonLine } from "../../../../packages/broker/src/design-review/approval.js";
+import { verifyWorkflowE2EEvidence as cloudVerifyEvidence } from "../../../../packages/broker/src/aws/broker/workflow-e2e-verification.js";
+import { classifyTier } from "../../../../packages/broker/src/lessons/tier.js";
+import { approvedForUse, wilsonLower } from "../../../../packages/broker/src/lessons/load.js";
+import { trialIsStable, namesAPerson } from "../../../../packages/broker/src/lessons/trial.js";
+import { lessonValue } from "../../../../packages/broker/src/lessons/value.js";
+import { looksLikeCorrection } from "../../../../packages/broker/src/lessons/correction-filter.js";
+import { polarity, oppositePolarity, hasEscalationWords } from "../../../../packages/broker/src/lessons/guards.js";
+import { cleanLessonLine, parseLessonsFile } from "../../../../packages/broker/src/lessons/repo-file-format.js";
+import { renderLesson } from "../../../../packages/broker/src/lessons/repo-file-plan.js";
+import { minTrust, narrowestAudience } from "../../../../packages/broker/src/lessons/types.js";
+import { DEFAULT_APPROVAL_POLICY as CLOUD_DEFAULT_APPROVAL_POLICY } from "../../../../packages/broker/src/lessons/policy.js";
+import { decisionWords, type DecisionCase, type DecisionImplementations } from "../features-a-support/decision.js";
+import { SECOND_REVIEW_CASES } from "../features-a-support/cases-second-review.js";
+import { DESIGN_REVIEW_CASES } from "../features-a-support/cases-design-review.js";
+import { E2E_CASES } from "../features-a-support/cases-e2e.js";
+import { LESSONS_CASES } from "../features-a-support/cases-lessons.js";
 import type { Step } from "../../harness/types.js";
 
 type Driver = StepDriver<CloudContext, CloudOptions>;
@@ -24,7 +55,25 @@ function itemEdits(latest: string): Array<{ path: string; content: string }> {
   return Object.entries(part ?? {}).map(([file, content]) => ({ path: where(file), content }));
 }
 
-const unsupported = (why: string): Driver => ({ supports: () => ({ unsupported: why }), run: () => Promise.reject(new Error(why)) });
+/** A feature compared at its decisions: the same cases through Cloud's copy, one features word each, prefixed with the feature. */
+function decisionDriver(feature: string, cases: readonly DecisionCase[], implementations: DecisionImplementations, helpers: Record<string, unknown> = {}): Driver {
+  return {
+    async run(ctx) {
+      ctx.extra.features.push(...(await decisionWords(implementations, cases, { engine: "cloud", helpers })).map((word) => `${feature}:${word}`));
+    },
+  };
+}
+
+const CLOUD_SECOND_REVIEW: DecisionImplementations = { planSecondReview, acceptSecondReport, secondOpinionOf, secondReviewUnavailableDecision, secondReviewAcknowledgement, secondOpinionShownOn, admitSecondReview, againstModels, secondReviewAlreadyRan, effectiveMode, verdictHoldsFor, secondReviewPicker };
+const CLOUD_DESIGN_REVIEW: DecisionImplementations = {
+  // The resolver reads a setting marked effective by its own copy's `markEffective` (the core's driver does the same with the core's).
+  resolveDesignMode: (input: { setting: Parameters<typeof markEffective>[0] }) => resolveDesignMode({ ...input, setting: markEffective(input.setting) } as never),
+  estimateDesignReviewUsd, gateDesignReviewCost, reviewersForRound, requirementsMissingFromDesign, nextDesignWaitDueAt, lockViolations, reviewCoverage, blockerReasonLine,
+};
+const CLOUD_LESSONS: DecisionImplementations = {
+  classifyTier, approvedForUse, trialIsStable, lessonValue, wilsonLower, looksLikeCorrection, polarity, oppositePolarity, hasEscalationWords, namesAPerson, cleanLessonLine,
+  parseLessonsFile, renderLesson, minTrust, narrowestAudience,
+};
 
 export const FEATURES_A_DRIVERS: Record<string, Driver> = {
   "feature:parallel-parts": {
@@ -53,12 +102,30 @@ export const FEATURES_A_DRIVERS: Record<string, Driver> = {
       }
       const progress = ((e2e.workflow() as unknown as { workflowDependenciesProgress?: Array<{ itemId: string; state: string }> }).workflowDependenciesProgress ?? []);
       ctx.memo.partsProgress = progress.map((entry) => `${entry.itemId.slice(0, 1)}:${entry.state}`);
+      // The parts' checkpoints in the features facet (the core's driver records the same words from its workflow).
+      ctx.extra.features.push(...partsWords(progress));
     },
   },
-  "feature:second-review": unsupported("Cloud's second review (switch `cr`, packages/broker/src/rovara-code/second-review*.ts) is not reachable through the journey harness: it needs a company setting, a second model of another AI company the faux model answers as that company, and the model proxy's call record; no journey suite drives it today"),
-  "feature:design-review": unsupported("Cloud's design review (switch `dr`, packages/broker/src/design-review/) runs fresh-context reviewer runs on the worker with mockups and a cost hold; the journey harness has no design-review program or reviewer script (its suites use tests/support/design-review-world.ts, not the journey)"),
-  "feature:e2e": unsupported("Cloud's application checks (packages/broker/src/e2e/, workflow-e2e-*.ts) need an E2E-capable worker run with a candidate export, accounts and a browser; the journey harness's `e2ePolicy` option only exercises publication admission, not the rounds"),
-  "feature:lessons": unsupported("Cloud's lessons need the team record (switches `tn`, `ll`), the embedder and lesson approvals (tests/support/learning-world.ts); the journey harness has no team record, so no lesson can be captured, approved or loaded through it"),
+  "feature:second-review": decisionDriver("second-review", SECOND_REVIEW_CASES, CLOUD_SECOND_REVIEW),
+  "feature:design-review": decisionDriver("design-review", DESIGN_REVIEW_CASES, CLOUD_DESIGN_REVIEW),
+  "feature:e2e": {
+    async run(ctx) {
+      // Cloud's verifier reads the admission and evidence from the artifact bucket through its S3 client: the in-memory S3 of the journey suites.
+      const s3 = memoryS3();
+      const dependencies = { s3, artifactBucketName: "parity-artifacts" } as unknown as Parameters<typeof cloudVerifyEvidence>[0];
+      const putObject = (key: string, text: string) => { s3.objects.set(key, text); return Promise.resolve(); };
+      const implementations: DecisionImplementations = {
+        verifyWorkflowE2EEvidence: async (...args: unknown[]) => {
+          const diagnostic: Record<string, unknown> = {};
+          const [operation, task, candidate, projection] = args as [never, never, never, never];
+          const verdict = await cloudVerifyEvidence(dependencies, operation, task, candidate, projection, diagnostic);
+          return { verdict, ...diagnostic };
+        },
+      };
+      ctx.extra.features.push(...(await decisionWords(implementations, E2E_CASES, { engine: "cloud", helpers: { putObject } })).map((word) => `e2e:${word}`));
+    },
+  },
+  "feature:lessons": decisionDriver("lessons", LESSONS_CASES, CLOUD_LESSONS, { policy: CLOUD_DEFAULT_APPROVAL_POLICY }),
 };
 
 export type { Step };
