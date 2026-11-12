@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import { agentXError } from "@rovara-code/contracts";
 import { approvalKey, approverIndexKey, chainKey, chainRunKey, openApprovalKey, openChainRunKey, stepSk } from "@rovara-code/contracts";
+import { orgOpenApprovalKey } from "@agentx/cloud-contracts";
 import type { ChainDefinitionInput } from "@rovara-code/contracts";
 import { decideApproval, expireApprovals, registerApprovalSubjectHandler } from "../../packages/broker/src/agents/approvals.js";
 import { routeChainRequest } from "../../packages/broker/src/chains/routes.js";
@@ -955,6 +956,7 @@ describe("cancelling a run", () => {
     expect(closed.status).toBe("EXPIRED");
     expect(closed).toMatchObject({ closedBy: "system", closedReason: "The run was cancelled." });
     expect(w.db.get(openApprovalKey(record.expiresAt, ORG_A, approvalId))).toBeUndefined();
+    expect(w.db.get(orgOpenApprovalKey(ORG_A, record.createdAt, approvalId)), "the company's open index item goes in the same transaction").toBeUndefined();
     for (const developerId of listed) expect(w.db.get(approverIndexKey(ORG_A, developerId, approvalId)), developerId).toBeUndefined();
     expect(w.attempts(run.runId)[1]).toMatchObject({ status: "cancelled" });
     const before = startedAgain(w);
@@ -1121,6 +1123,7 @@ describe("closeStepApproval", () => {
     expect(record).toMatchObject({ status: "EXPIRED", closedReason: "The run was cancelled.", closedBy: "system", handlerDone: true });
     expect(record.decidedBy).toBeUndefined();
     expect(w.db.get(openApprovalKey(before.expiresAt, ORG_A, approvalId))).toBeUndefined();
+    expect(w.db.get(orgOpenApprovalKey(ORG_A, before.createdAt, approvalId))).toBeUndefined();
     for (const developerId of (before.approvers as unknown as { candidates: string[] }).candidates) expect(w.db.get(approverIndexKey(ORG_A, developerId, approvalId))).toBeUndefined();
     // The run itself is not touched: closing an approval is not ending a run.
     expect(w.run(run.runId)).toMatchObject({ status: "waiting" });
