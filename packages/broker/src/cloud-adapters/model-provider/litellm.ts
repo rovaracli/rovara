@@ -10,8 +10,9 @@
 // Capabilities are claimed conservatively: LiteLLM forwards each format to the source's own provider and translates when the source speaks another, so only what survives a translation is
 // claimed (no forced tool choice: an OpenAI-compatible source behind it can drop it silently).
 //
-// The address must pass Code's address rule (https, or this computer). Cloud's inference listener today is plain http on an internal load balancer (infra/lib/model-proxy.ts), which that rule
-// refuses: an owner choice (a TLS listener, or a port rule for a private address) before this adapter can be wired. Until then it is built and tested against an https address only.
+// The address must be https for anything that is not this computer (Code's address rule, kept as it is: owner decision 110, MODEL-PROXY-TLS). There is NO exception for a private address.
+// Cloud's inference listener is plain http on an internal load balancer today (infra/lib/model-proxy.ts); decision 110 gives it a TLS listener in its own lane (MODEL-PROXY-TLS-LANE: ACM
+// certificate, private-zone name, listener). This adapter is wired only after that lands, with the https name.
 import { INFERENCE_PATHS, MODEL_PROVIDER_ID_PATTERN, assertModelProvider, type ModelFormatCapabilities, type ModelProviderAdapter, type ModelProviderPrices, type SecretValue } from "@rovara-code/contracts";
 
 export const LITELLM_PROVIDER_ID = "rovara-model-proxy";

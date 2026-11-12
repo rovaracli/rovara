@@ -137,7 +137,7 @@ describe("Cloud Bedrock role provider", () => {
     expect(await companies.select(ORG, kindsB[0]!)).toBeUndefined();
     expect(await companies.select(ORG_B, kindsA[0]!)).toBeUndefined();
     const own = await companies.select(ORG, kindsA[0]!);
-    expect(JSON.parse((await own!.credential!())!.reveal()).sessionToken).toBe(bedrockExternalId(ORG));
+    expect((JSON.parse((await own!.credential!())!.reveal()) as { sessionToken: string }).sessionToken).toBe(bedrockExternalId(ORG));
     expect(calls).toEqual([expect.objectContaining({ RoleArn: "arn:aws:iam::111111111111:role/a", ExternalId: bedrockExternalId(ORG) })]);
     await expect(companies.select("not-a-company", kindsA[0]!)).rejects.toThrow();
   });
@@ -191,8 +191,12 @@ describe("Cloud model proxy (LiteLLM) provider", () => {
     expect(() => cloudLiteLlmProvider({ address: "https://models.example.test", task: { companyId: "nope", taskId: "t" }, taskKey })).toThrow();
   });
 
-  it("is refused on today's plain-http internal listener by Code's address rule (an owner choice before wiring)", () => {
-    expect(() => cloudLiteLlmProvider({ address: "http://internal-rovara-proxy-1.us-west-2.elb.amazonaws.com:4000", task: TASK_A, taskKey: async () => undefined })).toThrow(ModelProviderError);
+  it("requires https for any address that is not this computer, with no private-address exception (decision 110)", () => {
+    for (const address of ["http://internal-rovara-proxy-1.us-west-2.elb.amazonaws.com:4000", "http://10.0.3.7:4000", "http://192.168.1.20:4000", "http://172.16.0.5", "http://proxy.rovara.internal:4000"]) {
+      expect(() => cloudLiteLlmProvider({ address, task: TASK_A, taskKey: async () => undefined }), address).toThrow(ModelProviderError);
+    }
+    expect(() => cloudLiteLlmProvider({ address: "https://proxy.rovara.internal:4000", task: TASK_A, taskKey: async () => undefined })).not.toThrow();
+    expect(() => cloudLiteLlmProvider({ address: "http://127.0.0.1:4000", task: TASK_A, taskKey: async () => undefined })).not.toThrow();
   });
 });
 
