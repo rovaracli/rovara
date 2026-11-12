@@ -1,4 +1,5 @@
 import { AskAnsweredRequestSchema, DiagnosisAnsweredRequestSchema, DiagnosisRefSchema, DiagnosisTurnResultSchema, AskTurnRequestSchema, AskTurnResultSchema, EvalBatchSlackStartRequestSchema, EvalBatchSlackStartResultSchema, EvalBatchThreadResultSchema, EvalBatchWatchDropRequestSchema, EvalBatchWatchDropResultSchema, EvalBatchWatchListSchema, EvalBatchWatchUpdateRequestSchema, EvalBatchWatchUpdateResultSchema, type SlackThread, SlackCommentAnsweredRequestSchema, SlackThreadNoteAnsweredRequestSchema, SlackThreadNoteAnsweredResultSchema, SlackThreadPrepareResultSchema, SlackThreadWorkspaceResultSchema, SlackWorkspaceCloseCompleteResultSchema, SlackWorkspaceCloseStartResultSchema, ProjectModelOptionsSchema, ProjectModelSelectionRequestSchema, SwebenchRunSchema, SwebenchStartRequestSchema, SwebenchStartResultSchema, taskResultChecks } from "@rovara-code/contracts";
+import { QuickAutoStartRequestSchema, QuickAutoStartResultSchema } from "@agentx/cloud-contracts";
 import { ControlPlaneApi } from "@agentx/orchestrator/control-plane-api";
 import { pollOperation } from "@agentx/orchestrator/event-client";
 import type { ThreadServiceApi } from "./processor.js";
@@ -72,6 +73,10 @@ export function createThreadApi(options: { controlPlaneUrl: string; signedFetch:
     async markCommentAnswered(input) {
       const body = SlackCommentAnsweredRequestSchema.parse(input);
       await servicePost("/v1/tasks/comments/answered", body, "writing the comment answer failed");
+    },
+    async startQuickFromIntake(input) {
+      const body = QuickAutoStartRequestSchema.parse(input);
+      return QuickAutoStartResultSchema.parse(await servicePost("/v1/workflows/quick-start", body, "starting the quick change failed"));
     },
     async markThreadNoteAnswered(input) {
       const body = SlackThreadNoteAnsweredRequestSchema.parse(input);

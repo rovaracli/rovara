@@ -134,3 +134,4 @@ export * from "./continue-loop.js";
 
 export * from "./app-automations.js";
 export * from "./app-review-groups.js";
+export * from "./smart-intake.js";

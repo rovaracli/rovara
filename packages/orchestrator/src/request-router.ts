@@ -3,10 +3,8 @@
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { createModelRuntimeWithFallback, type ModelProxyOptions } from "@agentx/model-runtime";
 import { parseRequestRoute, requestRouterPrompt, type RequestRouteKind, type RequestRouteOutcome } from "@rovara-code/contracts";
-import { SMART_INTAKE_ROUTER_SYSTEM_PROMPT } from "./smart-intake.js";
-
-// Smart intake (bridge until the vendored Code pin carries it): small talk is answered before the router is asked.
-export { SMALL_TALK_MAX_CHARS, SMART_INTAKE_ROUTER_SYSTEM_PROMPT, smallTalkOf, smallTalkReply, type SmallTalkKind } from "./smart-intake.js";
+// Smart intake (a bridge in cloud-contracts until the vendored Code pin carries it): the router's new instruction.
+import { SMART_INTAKE_ROUTER_SYSTEM_PROMPT } from "@agentx/cloud-contracts";
 import { ClassifierError, ClassifierTimeoutError, completeBeforeDeadline, usableClassifierTimeout } from "./action-classifier.js";
 
 /** The router's sorting and how it went. Anything but a usable answer is `unclear`; never the model's reason. */

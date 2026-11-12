@@ -8,6 +8,9 @@ import { liveWriterRole } from "../../org/live-role.js";
 import type { SlackWorkflowRevisePlanEvent } from "../../agent-sessions/live-steer-revise.js";
 import { createHash } from "node:crypto";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
+import { QuickAutoStartRequestSchema, type QuickAutoStartResult } from "@agentx/cloud-contracts";
+import type { AuthenticatedIdentity } from "../../auth.js";
+import { quickAutoStartRefusal } from "../../decisions/quick-auto-start.js";
 import { AgentXError, RUN_INPUT_TEXT_MAX_BYTES, sharedTaskKey, SLACK_THREAD_OWNER_ISSUER, SlackMessageTimestampSchema, SlackRequesterSchema, SlackThreadSchema, agentXError, slackThreadSubject, type SlackThread, type OrgId, WORKFLOW_RESOLVE_FINDINGS_MAX, type E2EApplicationPlanIntent } from "@rovara-code/contracts";
 import { projectE2EBaselineWanted, requestWorkflowE2EBaselineRound } from "../workflow-e2e-baseline.js";
 import { DeveloperSignInStore, type DeveloperRecord } from "../../developer/store.js";
@@ -130,6 +133,8 @@ export interface SlackWorkflowCloseEvent {
   userId: string;
   thread: SlackThread;
   requestId: string;
+  /** Decision 134: the Stop button of a request that started Quick on its own: a running step is cancelled before the close. */
+  stop?: true;
 }
 
 export interface SlackWorkflowReviewRetryEvent {
@@ -523,8 +528,28 @@ export async function sendSlackWorkflowBack(dependencies: AwsBrokerDependencies,
  * otherwise an approved fix that was never pushed refused the close, and the thread, told "I'll post here when it's
  * closed", heard nothing more.
  */
+/** How long Stop waits for a cancelled step to free the workspace before it closes the task, and how often it looks. */
+const STOP_CANCEL_WAIT_MS = 12_000;
+const STOP_CANCEL_POLL_MS = 400;
+
 export async function closeSlackWorkflowTask(dependencies: AwsBrokerDependencies, tasks: DeveloperTaskActions, event: SlackWorkflowCloseEvent) {
   const { taskId, requestId, caller, developer } = await ownedSlackWorkflowTask(dependencies, event, "close this task");
+  if (event.stop === true) {
+    // Decision 134: Stop. A workspace still setting up has changed nothing yet and cannot be closed: the press is
+    // refused as busy and can be repeated. A running step (planning, say) is cancelled first, then the task closes.
+    const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(taskId));
+    if (task === undefined) throw agentXError("TASK_NOT_FOUND", "no task here that you can see");
+    let workspace = await requireWorkspace(dependencies, task.workspaceId);
+    if (workspace.status === "PREPARING") throw agentXError("TASK_BUSY", "the task is still setting up; press Stop again in a moment");
+    if (workspace.activeOperationId !== undefined) {
+      const requester = SlackRequesterSchema.parse({ teamId: event.thread.teamId, userId: event.userId });
+      await cancelRunningTask(dependencies, workspace, { requestedBy: requester });
+      for (let waited = 0; waited < STOP_CANCEL_WAIT_MS && workspace.activeOperationId !== undefined; waited += STOP_CANCEL_POLL_MS) {
+        await new Promise((resolve) => setTimeout(resolve, STOP_CANCEL_POLL_MS));
+        workspace = await requireWorkspace(dependencies, task.workspaceId);
+      }
+    }
+  }
   const routeDeps = slackWorkflowRouteDependencies(dependencies, tasks, developer, caller);
   const body = JSON.stringify({ requestId, discard_unpublished: true });
   const path = `/v1/dev/tasks/${taskId}/close`;
@@ -940,4 +965,30 @@ export async function stopSlackThreadTask(dependencies: AwsBrokerDependencies, e
   const workspace = await requireWorkspace(dependencies, record.workspaceId);
   if (workspace.ownerKey !== ownerKey || (workspace.orgId ?? installOrgId(dependencies)) !== orgId) throw agentXError("FORBIDDEN", "workspace does not belong to this thread");
   return cancelRunningTask(dependencies, workspace, { requestedBy: requester });
+}
+
+/**
+ * Decision 134: the Slack service's ask to start Quick on a routed request its classifier read as a clear small change.
+ * Only a new request's own thread (no task there yet), only text the broker's check finds clear and not high risk; the
+ * start is the same as the requester's Start press (same member, explicit-member rule, project, limits and admission),
+ * and its plan comes first. Anything else answers `started: false`, and the Slack service posts the card with Start.
+ */
+export async function startQuickFromIntake(dependencies: AwsBrokerDependencies, tasks: DeveloperTaskActions, identity: AuthenticatedIdentity, body: unknown): Promise<QuickAutoStartResult> {
+  const slack = identity.slack;
+  if (slack === undefined) throw agentXError("FORBIDDEN", "only a Slack thread may start a quick change");
+  const parsed = QuickAutoStartRequestSchema.safeParse(body);
+  if (!parsed.success) throw agentXError("CONFIG_INVALID", "a quick start needs requestId and instructions");
+  if (identity.sharedTask !== undefined) return { started: false, reason: "thread_busy" };
+  const refusal = quickAutoStartRefusal(parsed.data.instructions);
+  if (refusal !== undefined) return { started: false, reason: refusal };
+  try {
+    const started = await startSlackWorkflow(dependencies, tasks, {
+      source: "agentx.slack-ingress", action: "start-workflow", thread: slack.thread, userId: slack.requester.userId,
+      instructions: parsed.data.instructions, workflowPath: "QUICK", requestId: parsed.data.requestId,
+    });
+    return { started: true, taskId: started.task.taskId };
+  } catch (error) {
+    if (error instanceof AgentXError) return { started: false, reason: "start_refused", code: error.code };
+    throw error;
+  }
 }

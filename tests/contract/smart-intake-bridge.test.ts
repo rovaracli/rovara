@@ -4,7 +4,8 @@
 // tests/contract/request-intake.test.ts, so the bridge behaves as the Code module does.
 import { fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
-import { createModelRequestRouter, SMART_INTAKE_ROUTER_SYSTEM_PROMPT as REQUEST_ROUTER_SYSTEM_PROMPT, SMALL_TALK_MAX_CHARS, smallTalkOf, smallTalkReply, type SmallTalkKind } from "../../packages/orchestrator/src/request-router.js";
+import { SMART_INTAKE_ROUTER_SYSTEM_PROMPT as REQUEST_ROUTER_SYSTEM_PROMPT, SMALL_TALK_MAX_CHARS, smallTalkOf, smallTalkReply, type SmallTalkKind } from "../../packages/cloud-contracts/src/index.js";
+import { createModelRequestRouter } from "../../packages/orchestrator/src/request-router.js";
 import { FAUX_MODEL, fauxModelRuntime } from "../support/faux-model.js";
 
 /** Words user-facing copy never uses (global constraints). */
@@ -81,6 +82,25 @@ describe("the classifier's instruction", () => {
     expect(REQUEST_ROUTER_SYSTEM_PROMPT).toMatch(/question[^\n]*a greeting, thanks, small talk/);
     expect(REQUEST_ROUTER_SYSTEM_PROMPT).toContain("Answer unclear only when the person may want a code change");
     expect(REQUEST_ROUTER_SYSTEM_PROMPT).toContain("When in doubt between question and unclear, answer question");
+  });
+});
+
+describe("small talk in a task's thread (decision 134)", () => {
+  it("also reads a bare acknowledgement as small talk there, and only there", () => {
+    for (const text of ["ok", "great", "Got it!", "sounds good", "lgtm", "ok 👍"]) {
+      expect(smallTalkOf(text, { acknowledgements: true }), text).toBe("ack");
+      expect(smallTalkOf(text), text).toBeUndefined();
+    }
+    expect(smallTalkOf("thanks", { acknowledgements: true })).toBe("thanks");
+    for (const text of ["thanks, but also fix the second typo", "ok, now add a test", "great, rename it to getUser", "looks good so far"]) {
+      expect(smallTalkOf(text, { acknowledgements: true }), text).toBeUndefined();
+    }
+  });
+
+  it("says in a task's thread that the reply was not added to the task", () => {
+    expect(smallTalkReply("thanks", "task")).toMatch(/^You're welcome! I didn't add that to the task\./);
+    expect(smallTalkReply("ack", "task")).toMatch(/^Got it! I didn't add that to the task\./);
+    expect(smallTalkReply("greeting", "task")).toMatch(/^Hi!/);
   });
 });
 

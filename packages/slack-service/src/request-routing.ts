@@ -4,7 +4,8 @@
 // presses a button there, which the Slack ingress Lambda answers.
 import { DeleteCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { routedChoiceId, slackThreadSubject, suggestionCardMessage, workflowChoiceKey, workflowChoicePut, workflowChoiceQuestionUpdate, type RequestSuggestion, type SlackRequestMessage, type SlackThread } from "@rovara-code/contracts";
-import { smallTalkOf, smallTalkReply, type RequestRoute, type RequestRouter } from "@agentx/orchestrator/request-router";
+import { quickAutoStartedMessage, smallTalkOf, smallTalkReply, type QuickAutoStartResult } from "@agentx/cloud-contracts";
+import type { RequestRoute, RequestRouter } from "@agentx/orchestrator/request-router";
 import type { ServiceLog } from "./processor.js";
 
 /** Said when the card could not be posted, so the requester is not left in silence. */
@@ -23,8 +24,14 @@ export interface RequestRoutingDependencies {
   route?: RequestRouter;
   /** Saves the request for its requester's choice and posts its card. */
   offer(input: ChoiceOffer): Promise<void>;
-  /** Posts a plain line in the thread: the small-talk reply, or the card-failed notice when the card could not be saved or posted. */
-  notify(thread: SlackThread, text: string): Promise<void>;
+  /** Posts in the thread: the small-talk reply, the auto-started notice (with its Stop button), or the card-failed notice. */
+  notify(thread: SlackThread, text: string, blocks?: Array<Record<string, unknown>>): Promise<void>;
+  /**
+   * Decision 134: asks the broker to start Quick on a request the classifier read as a clear small change. The broker
+   * checks the text itself and starts it as the requester's Start press would; `started: false` (or a throw) means the
+   * card with Start is posted instead. Absent: every change gets the card.
+   */
+  autoStart?(input: { message: SlackRequestMessage; requestId: string }): Promise<QuickAutoStartResult>;
   /** Answers the request as the chat agent does any chat request. */
   answer(message: SlackRequestMessage): Promise<void>;
   /** Tells the thread's queued-request count that this request is done (the chat agent's path does so itself). */
@@ -65,6 +72,24 @@ export async function routeSlackRequest(message: SlackRequestMessage, deps: Requ
   if (route.kind === "question") {
     await deps.answer(message);
     return;
+  }
+  // Decision 134: only a usable "small change" answer is tried on its own; unclear, large, or any classifier failure never is.
+  if (route.kind === "small_change" && route.outcome === "ok" && deps.autoStart !== undefined) {
+    let result: QuickAutoStartResult | undefined;
+    try {
+      result = await deps.autoStart({ message, requestId: choiceId });
+    } catch (error) {
+      deps.log("route.auto_start_failed", { eventId: message.eventId, choiceId, errorName: errorName(error) });
+    }
+    if (result?.started === true) {
+      deps.log("route.auto_started", { eventId: message.eventId, choiceId, taskId: result.taskId });
+      const started = quickAutoStartedMessage({ requesterId: message.userId, taskId: result.taskId });
+      await deps.notify(message.thread, started.text, started.blocks)
+        .catch((error: unknown) => deps.log("route.auto_started_notice_failed", { eventId: message.eventId, errorName: errorName(error) }));
+      await finishQuietly(message, deps);
+      return;
+    }
+    if (result !== undefined) deps.log("route.auto_start_skipped", { eventId: message.eventId, choiceId, reason: result.reason, ...(result.code === undefined ? {} : { code: result.code }) });
   }
   try {
     await deps.offer({ thread: message.thread, userId: message.userId, instructions: message.text, choiceId, suggestion: route.kind });
