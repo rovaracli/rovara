@@ -16,15 +16,16 @@ import { isNewNavOn } from "./nav-flags.js";
 import { isInsightsOn } from "./screens/insights/insights-flags.js";
 import { isBillingV2On } from "./billing-flags.js";
 import { isAgentPublishOn } from "./screens/agents/publish-flags.js";
-import { applyNavUiFlags, syncUiFlags } from "./ui-flags.js";
+import { applyNavUiFlags, startUiFlags, syncUiFlags, useUiFlagsStarted } from "./ui-flags.js";
 import "./shell/shell.css";
 import "./look-v2.css";
 type Router = ComponentProps<typeof RouterProvider>["router"];
 export type AppRouterFactory = (routes: RouteObject[]) => Router;
 const EMPTY_FEATURES: AppNav["features"] = { localAgents: false, usage: false, admin: false, chains: false, notices: false, describe: false };
+const isStandalone = (host: AppHost) => /^\/app\/(?:signup|welcome|signed-out)\/?(?:\?|$)/u.test(host.currentPath());
 function Startup({ createRouter }: { createRouter: AppRouterFactory }) {
  const host = useAppHost(), api = useMemo(() => createApiClient(host), [host]);
- const standalone = /^\/app\/(?:signup|welcome|signed-out)\/?(?:\?|$)/u.test(host.currentPath());
+ const standalone = isStandalone(host);
  const nav = useQuery({ queryKey: ["nav"], queryFn: () => api.get("/v1/app/nav", AppNavReaderSchema), enabled: !standalone });
  if (standalone || nav.data !== undefined) return <Routed createRouter={createRouter} nav={nav.data} standalone={standalone} />;
  if (nav.isPending) return <main className="rv-entry"><Skeleton label="Loading workspace" /></main>;
@@ -40,8 +41,13 @@ function Routed({ createRouter, nav, standalone }: { createRouter: AppRouterFact
 }
 export function App({ host, createRouter }: { host: AppHost; createRouter: AppRouterFactory }) {
  const [query] = useState(createQueryClient);
+ // Fail closed: until the navigation answer arrives (or when it fails) every new screen and the new look are off, whatever this device's keys say. Pages that make no navigation read keep the device keys.
+ // The hold is a write to the host's store, so it runs in an effect, not in a render initializer. Nothing below renders until it has run (`held`), so no screen reads a flag before the hold is in place.
+ const held = useUiFlagsStarted(host);
+ useEffect(() => { startUiFlags(host, !isStandalone(host)); }, [host]);
  useEffect(() => () => query.clear(), [query]);
  // Lane U5: the company's runtime UI flags ride the navigation answer; keep the host's flag store equal to the newest one.
  useEffect(() => syncUiFlags(query.getQueryCache(), host), [query, host]);
+ if (!held) return null;
  return <AppHostProvider host={host}><QueryClientProvider client={query}><ThemeProvider host={host}><Announcer><ErrorBoundary reload={() => host.navigate(host.currentPath())}><Startup createRouter={createRouter} /></ErrorBoundary></Announcer></ThemeProvider></QueryClientProvider></AppHostProvider>;
 }
