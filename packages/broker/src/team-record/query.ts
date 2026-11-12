@@ -1,5 +1,5 @@
 // The query API of the Team record (design 4.10, task R9): the one place anything reads the record for a person or for a task's model context.
-//   recordSearch  search rows and facts, by meaning when a vector index is there and by keyword over the newest rows when it is not
+//   recordSearch  search rows and facts: ALWAYS a blend (reciprocal rank fusion, DECISIONS 142) of the meaning results (the vector index) and the keyword results (BM25 over the newest rows); keyword alone when the vector path is missing or fails
 //   pastWork      the Plan 9 `past_work` contract: earlier tasks, with the outcome and what was learned
 //   recordFacts   the distilled notes, newest first
 //   recordStats   a fixed statistics template over the lake, never caller SQL
@@ -20,11 +20,15 @@ import { assembleItem, itemKeyOf, isChangeRow, visibleItemRows } from "./item-as
 import type { LearningModeReader } from "./mode.js";
 import type { SourceRouteDependencies } from "./source-write.js";
 import { getRecordEvent, getRecordFact, pendingHidesOf, queryRecordEvents, queryRecordFacts, type StoredEvent, type StoredFact } from "./store.js";
+import { bm25Scores, reciprocalRankFusion } from "./search-fusion.js";
 import type { LiveAclCheck, ReadAudience, RecordEmbedder, RecordLog, TeamRecordTable } from "./types.js";
 
 export const RECORD_QUERIES_PER_PERSON_PER_HOUR = 120;
 export const RECORD_QUERIES_PER_TASK_PER_HOUR = 60;
-/** The newest rows a keyword search reads when there is no vector index (a bounded scan of the hot layer). */
+/**
+ * The newest rows the keyword side of every search reads (a bounded scan of the hot layer; DECISIONS 142 made it part of EVERY search, not only a fallback). v1 LIMIT: a row older than the newest
+ * `KEYWORD_SCAN_ROWS` of the project is found by meaning only (and a row with no vector yet, or whose text expired, is then not found if it is also outside this window); a later version can add a real lexical index.
+ */
 export const KEYWORD_SCAN_ROWS = 400;
 const VECTOR_OVERFETCH = 3;
 const FACT_SCAN = 200;
@@ -176,7 +180,11 @@ function matches(query: string, haystack: string): number {
   return needles.filter((word) => lower.includes(word)).length / needles.length;
 }
 
-/** Search rows and facts. By meaning when the index and the embedder are there; if they fail, or are not there, by keyword over the newest rows. */
+/**
+ * Search rows and facts. ALWAYS a blend (DECISIONS 142): the meaning results (embedder + vector index) and the keyword results (BM25 over the newest `KEYWORD_SCAN_ROWS` rows of the project and its facts) are
+ * fused with reciprocal rank fusion (search-fusion.ts), so a row only one side found still shows up and a row both found ranks first. Both sides go through the same cuts (workspace, project, time, kinds, sources)
+ * and the same permission filter (`filterVisible`), and a row the reader may not see holds no rank in either list. If the vector path is missing, fails or times out, the answer is the keyword list alone.
+ */
 export async function recordSearch(deps: RecordQueryDependencies, audience: ReadAudience, project: string, request: Omit<RecordSearchQuery, "limit"> & { limit?: number }, options: QueryOptions = {}): Promise<RecordSearchResponse> {
   const limit = Math.min(request.limit ?? 10, RECORD_SEARCH_LIMIT_MAX);
   if ((await guard(deps, audience, project, options, "search")) === "off") return { hits: [], someHidden: false };
@@ -186,64 +194,66 @@ export async function recordSearch(deps: RecordQueryDependencies, audience: Read
   const until = request.until === undefined ? undefined : Date.parse(request.until);
   const inWindow = (at: string): boolean => (since === undefined || Date.parse(at) >= since) && (until === undefined || Date.parse(at) <= until);
 
-  type Candidate = { score: number; event?: StoredEvent; fact?: StoredFact };
+  type Candidate = { id: string; event?: StoredEvent; fact?: StoredFact };
   const nowSeconds = nowSecondsOf(deps);
-  let candidates: Candidate[] | undefined;
-  if (deps.embedder !== undefined && deps.vectorSearch !== undefined) {
+  const idOf = (candidate: Candidate): string => (candidate.event?.id ?? candidate.fact?.id) as string;
+
+  // The meaning side. A failure or a timeout (the embedder, the index) leaves this list empty: the answer is then the keyword list alone, as it always was when the vector path was down.
+  const meaning = async (): Promise<Candidate[]> => {
+    if (deps.embedder === undefined || deps.vectorSearch === undefined) return [];
     try {
       const vector = await deps.embedder.embed(request.query, "query");
       const ranked = await deps.vectorSearch.query({
         vector, topK: limit * VECTOR_OVERFETCH,
         filter: { project, ...(audience.kind === "shared" ? { audienceKinds: ["project" as const] } : {}) },
       });
-      candidates = [];
+      const found: Candidate[] = [];
       for (const hit of ranked) {
         if (hit.metadata.project !== project) continue;
-        const score = 1 - hit.distance;
         if (hit.key.startsWith("event:")) {
           const ref = parseEventVectorRef(hit.metadata.ref);
           if (ref === undefined) continue;
           const event = await getRecordEvent(deps.table, orgId, project, ref.occurredAt, ref.id, nowSeconds);
-          if (event !== undefined) candidates.push({ score, event });
+          if (event !== undefined) found.push({ id: event.id, event });
         } else if (hit.key.startsWith("fact:")) {
           const fact = await getRecordFact(deps.table, orgId, project, hit.key.slice("fact:".length));
-          if (fact !== undefined) candidates.push({ score, fact });
+          if (fact !== undefined) found.push({ id: fact.id, fact });
         }
       }
+      return found;
     } catch {
       deps.log?.("record.search_vector_failed", {});
-      candidates = undefined;
+      return [];
     }
-  }
-  if (candidates === undefined || candidates.length < limit) {
-    // Keyword over the newest hot rows and the facts (design 4.11: the embedding or the index is unavailable). Also when the vector search came back with fewer than `limit` hits: rows that
-    // have no vector yet (written while the embedder was away, or made with an earlier embedding model and not re-embedded yet) are still found. Vector hits keep the better rank: when there
-    // are vector hits, every keyword hit is ranked strictly BELOW the weakest of them (a vector score is 1 - distance and can be low, so scaling the keyword score is not enough).
-    const fromVectors = candidates ?? [];
-    const seen = new Set(fromVectors.map((candidate) => candidate.event?.id ?? candidate.fact?.id));
-    const weight = candidates === undefined ? 1 : 0.5;
-    const offset = fromVectors.length === 0 ? 0 : Math.min(...fromVectors.map((candidate) => candidate.score)) - 1;
-    const keyword: Candidate[] = [];
-    for (const event of await queryRecordEvents(deps.table, orgId, project, { limit: KEYWORD_SCAN_ROWS, nowSeconds })) {
-      const score = matches(request.query, `${event.text ?? ""} ${JSON.stringify(event.structured ?? {})}`);
-      if (score > 0 && !seen.has(event.id)) keyword.push({ score: offset + score * weight, event });
-    }
-    for (const fact of await queryRecordFacts(deps.table, orgId, project, FACT_SCAN)) {
-      const score = matches(request.query, fact.text);
-      if (score > 0 && !seen.has(fact.id)) keyword.push({ score: offset + score * weight, fact });
-    }
-    candidates = [...fromVectors, ...keyword];
-  }
+  };
+  // The keyword side: BM25 over the newest `KEYWORD_SCAN_ROWS` hot rows and the facts of the project (rows older than that window are found by meaning only). It reads the FULL kept text of a row, so a word that stands late in a text
+  // the embedder cut at 512 tokens (`embeddingTruncated`) still finds the row.
+  const keywordSide = async (): Promise<Candidate[]> => {
+    const events = await queryRecordEvents(deps.table, orgId, project, { limit: KEYWORD_SCAN_ROWS, nowSeconds });
+    const facts = await queryRecordFacts(deps.table, orgId, project, FACT_SCAN);
+    const documents = [...events.map((event) => `${event.text ?? ""} ${JSON.stringify(event.structured ?? {})}`), ...facts.map((fact) => fact.text)];
+    const scores = bm25Scores(request.query, documents);
+    const all: Array<Candidate & { score: number }> = [...events.map((event) => ({ id: event.id, event })), ...facts.map((fact) => ({ id: fact.id, fact }))].map((candidate, index) => ({ ...candidate, score: scores[index] as number }));
+    // best first; equal scores keep the newest-first order the rows were read in
+    return all.filter((candidate) => candidate.score > 0).sort((left, right) => right.score - left.score);
+  };
+  const [byMeaning, byKeyword] = await Promise.all([meaning(), keywordSide()]);
 
-  const wanted = candidates
-    .filter((candidate) => {
-      if (candidate.event !== undefined) {
-        return candidate.event.workspaceId === orgId && inWindow(candidate.event.occurredAt) && (request.kinds === undefined || request.kinds.includes(candidate.event.kind))
-          && (request.sources === undefined || request.sources.includes(candidate.event.source));
-      }
-      return candidate.fact !== undefined && candidate.fact.workspaceId === orgId && inWindow(candidate.fact.createdAt) && request.kinds === undefined && request.sources === undefined;
-    })
-    .sort((left, right) => right.score - left.score);
+  // The same structural cut on both sides (this workspace, the time window, the kinds and sources asked for); visibility is checked below, on the union.
+  const inScope = (candidate: Candidate): boolean => {
+    if (candidate.event !== undefined) {
+      return candidate.event.workspaceId === orgId && inWindow(candidate.event.occurredAt) && (request.kinds === undefined || request.kinds.includes(candidate.event.kind))
+        && (request.sources === undefined || request.sources.includes(candidate.event.source));
+    }
+    return candidate.fact !== undefined && candidate.fact.workspaceId === orgId && inWindow(candidate.fact.createdAt) && request.kinds === undefined && request.sources === undefined;
+  };
+  const meaningList = byMeaning.filter(inScope);
+  const keywordList = byKeyword.filter(inScope);
+  const byId = new Map<string, Candidate>();
+  for (const candidate of [...meaningList, ...keywordList]) if (!byId.has(idOf(candidate))) byId.set(idOf(candidate), candidate);
+  /** The blend of the two lists, best first (reciprocal rank fusion): a row in both lists ranks above a row in one. */
+  const fuse = (keep: (candidate: Candidate) => boolean): Candidate[] => reciprocalRankFusion([meaningList.filter(keep).map(idOf), keywordList.filter(keep).map(idOf)]).map(({ id }) => byId.get(id) as Candidate);
+  const wanted = fuse(() => true);
 
   const checkedEvents = await filterVisible(wanted.flatMap((candidate) => (candidate.event === undefined ? [] : [candidate.event])), audience, filters);
   const checkedFacts = await filterVisible(wanted.flatMap((candidate) => (candidate.fact === undefined ? [] : [candidate.fact])), audience, filters);
@@ -256,9 +266,12 @@ export async function recordSearch(deps: RecordQueryDependencies, audience: Read
   // "Some results are hidden" is a flag, never a count, looks at the best matches only, and is false for a shared task: an exact count of matching private rows lets a
   // viewer probe whether a private discussion exists.
   const someHidden = audience.kind === "caller" && topEvents.withheld + topFacts.withheld > 0;
+  // The order of what is shown is the blend of the two lists as the READER sees them: a row hidden from the reader holds no rank in either list (it could not move a visible row up or down).
+  const visibleIds = new Set([...okEvents, ...okFacts].map((row) => row.id));
+  const ordered = fuse((candidate) => visibleIds.has(idOf(candidate)));
   const hits: RecordSearchHit[] = [];
   const shownItems = new Set<string>();
-  for (const candidate of wanted) {
+  for (const candidate of ordered) {
     if (hits.length >= limit) break;
     if (candidate.event !== undefined && okEvents.has(candidate.event)) {
       if (isChangeRow(candidate.event)) {

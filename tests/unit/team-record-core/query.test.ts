@@ -1,7 +1,7 @@
 import { observeRowAccess } from "../../../packages/broker/src/team-record/access.js";
 import { describe, expect, it } from "vitest";
 import { putRecordFact } from "../../../packages/broker/src/team-record/store.js";
-import { dynamoRateLimiter, pastWork, recordFacts, recordSearch, recordStats, type RecordQueryDependencies, type RecordVectorSearchPort, type PastWorkTask } from "../../../packages/broker/src/team-record/query.js";
+import { KEYWORD_SCAN_ROWS, dynamoRateLimiter, pastWork, recordFacts, recordSearch, recordStats, type RecordQueryDependencies, type RecordVectorSearchPort, type PastWorkTask } from "../../../packages/broker/src/team-record/query.js";
 import { eventVectorRef } from "../../../packages/broker/src/team-record/ingest.js";
 import { eventFromItem } from "../../../packages/broker/src/team-record/store.js";
 import type { TaskVisibilityPort } from "../../../packages/broker/src/team-record/live-audience.js";
@@ -102,7 +102,7 @@ describe("recordSearch", () => {
     expect(JSON.stringify(viaVector)).not.toContain("workspace B");
   });
 
-  it("merges keyword results when the vector search comes back short (rows without a vector yet, or of an earlier model), the vector hits ranked first", async () => {
+  it("blends keyword results into the vector results even when the vector search comes back short (rows without a vector yet, or of an earlier model); a row both sides found ranks first", async () => {
     const w = world();
     await seed(w);
     const ticket = eventFromItem(rows(w, "TEAM_RECORD_EVENT").find((item) => (item.sourceRef as { id: string }).id === "ENG-7"))!;
@@ -111,16 +111,16 @@ describe("recordSearch", () => {
     expect(result.hits[0]!.id).toBe(ticket.id);
     expect(result.hits.length).toBeGreaterThan(1);
     expect(new Set(result.hits.map((hit) => hit.id)).size).toBe(result.hits.length);
-    // when the vector search already fills the page, the keyword scan is not added
+    // since DECISIONS 142 the keyword side is part of every search, so even a vector list that fills the page is blended with it
     const full: RecordVectorSearchPort = { async query() { return [{ key: `event:${ticket.id}`, distance: 0.2, metadata: { ref: eventVectorRef(ticket), kind: "event", project: "web", trust: ticket.trust, audience_kind: ticket.audience.kind, scope: "x" } }]; } };
     expect((await recordSearch(deps(w, { embedder: w.embedder, vectorSearch: full }), person(), "web", { query: "billing retry", limit: 1 })).hits.map((hit) => hit.id)).toEqual([ticket.id]);
   });
 
-  it("ranks every keyword hit below every vector hit, even a weak vector hit and a perfect keyword match", async () => {
+  it("a weak vector hit that the keyword side also found still ranks first (found by both)", async () => {
     const w = world();
     await seed(w);
     const ticket = eventFromItem(rows(w, "TEAM_RECORD_EVENT").find((item) => (item.sourceRef as { id: string }).id === "ENG-7"))!;
-    // distance 1.4 is a vector score of -0.4: far below what a scaled keyword score would be (0.5 at most)
+    // the distance does not matter to the blend: only the ranks do
     const weak: RecordVectorSearchPort = { async query() { return [{ key: `event:${ticket.id}`, distance: 1.4, metadata: { ref: eventVectorRef(ticket), kind: "event", project: "web", trust: ticket.trust, audience_kind: ticket.audience.kind, scope: "x" } }]; } };
     const result = await recordSearch(deps(w, { embedder: w.embedder, vectorSearch: weak }), person(), "web", { query: "billing retry", limit: 5 });
     expect(result.hits.length).toBeGreaterThan(1);
@@ -153,7 +153,7 @@ describe("recordSearch", () => {
     expect((await recordSearch(both, person(), "web", { query: "anything" })).hits.map((hit) => hit.kind)).toEqual(["github.review_comment"]);
   });
 
-  it("falls back to keyword when the embedding or the index fails, and logs no text", async () => {
+  it("answers by keyword alone when the embedding or the index fails, and logs no text", async () => {
     const w = world();
     await seed(w);
     const logs: string[] = [];
@@ -189,6 +189,131 @@ describe("recordSearch", () => {
     await createRecordSink(w.deps, { budget: { maxItems: 0, maxMs: 8_000 } }).tombstone({ workspaceId: ORG_A, system: "github.com", scope: GITHUB_SCOPE, cause: "source_deleted" });
     const result = await recordSearch(deps(w), person(), "web", { query: "withRetry jitter billing" });
     expect(result.hits.map((hit) => hit.kind)).not.toContain("github.review_comment");
+  });
+});
+
+describe("recordSearch always blends keyword and meaning (DECISIONS 142, reciprocal rank fusion)", () => {
+  const byRef = (w: World, id: string) => eventFromItem(rows(w, "TEAM_RECORD_EVENT").find((item) => (item.sourceRef as { id: string }).id === id))!;
+  const vectorOf = (w: World, ids: string[], seen: string[] = []): RecordVectorSearchPort => ({
+    async query() {
+      seen.push("asked");
+      return ids.map((id, index) => { const event = byRef(w, id); return { key: `event:${event.id}`, distance: 0.1 * (index + 1), metadata: { ref: eventVectorRef(event), kind: "event", project: "web", trust: event.trust, audience_kind: event.audience.kind, scope: "x" } }; });
+    },
+  });
+  const put = async (w: World, id: string, text: string, extra: Record<string, unknown> = {}) => { const outcome = await w.sink.put(githubDraft({ sourceRef: { system: "github.com", id, version: "1" }, audience: PROJECT_AUDIENCE, scope: GITHUB_SCOPE, text, links: [], ...extra })); if (outcome.status !== "stored") throw new Error(`put ${id}: ${JSON.stringify(outcome)}`); };
+  async function corpus(): Promise<World> {
+    const w = world();
+    await addSource(w, { source: "github", scope: GITHUB_SCOPE });
+    // the question: "why did rollout fail"
+    await put(w, "meaning", "The release train stalled and the nightly deploys were reverted by the on-call.");     // the answer in other words: no query word in it
+    await put(w, "keyword", "Rollout checklist: confirm the canary before the rollout, record why a rollout fail happens.");  // the query's words, no vector for it
+    await put(w, "both", "The rollout did fail because the migration locked the orders table; why did it happen? the lock.");
+    await put(w, "noise", "Bumped the linter and renamed two config keys.");
+    return w;
+  }
+  const QUERY = "why did rollout fail";
+
+  it("a row only the vector side found and a row only the keyword side found both show up, and a row both found ranks above them", async () => {
+    const w = await corpus();
+    const result = await recordSearch(deps(w, { embedder: w.embedder, vectorSearch: vectorOf(w, ["meaning", "both"]) }), person(), "web", { query: QUERY, limit: 10 });
+    const ids = result.hits.map((hit) => hit.id);
+    const id = (name: string) => byRef(w, name).id;
+    expect(ids).toContain(id("meaning"));   // vector only
+    expect(ids).toContain(id("keyword"));   // keyword only
+    expect(ids[0]).toBe(id("both"));        // both lists
+    expect(ids).not.toContain(id("noise")); // matches neither side
+  });
+
+  it("the order is the reciprocal-rank blend: with equal ranks the vector hit comes first, and a better keyword rank beats a worse vector rank", async () => {
+    const w = await corpus();
+    await put(w, "keyword2", "rollout fail rollout fail rollout fail why did the rollout fail");
+    // vector: [meaning] (rank 1), keyword: keyword2 (strongest), then keyword, then both (both is also not in the vector list here)
+    const result = await recordSearch(deps(w, { embedder: w.embedder, vectorSearch: vectorOf(w, ["meaning"]) }), person(), "web", { query: QUERY, limit: 10 });
+    const names = result.hits.map((hit) => ["meaning", "keyword", "keyword2", "both"].find((name) => byRef(w, name).id === hit.id));
+    // keyword2 is keyword rank 1, meaning is vector rank 1: the same score, and the vector list is read first; then the keyword list's rank 2
+    expect(names.slice(0, 2)).toEqual(["meaning", "keyword2"]);
+    expect(names).toContain("both");
+  });
+
+  it("when the vector path fails or times out the answer is the keyword list alone, best match first, and the failure is logged without text", async () => {
+    const w = await corpus();
+    const logs: string[] = [];
+    for (const failing of [{ async query(): Promise<never> { throw new Error("index secret detail"); } }, { async query(): Promise<never> { return Promise.reject(Object.assign(new Error("slow"), { name: "AbortError" })); } }] as RecordVectorSearchPort[]) {
+      const result = await recordSearch(deps(w, { embedder: w.embedder, vectorSearch: failing, log: (event) => { logs.push(event); } }), person(), "web", { query: QUERY, limit: 10 });
+      const ids = result.hits.map((hit) => hit.id);
+      expect(ids).toContain(byRef(w, "keyword").id);
+      expect(ids).toContain(byRef(w, "both").id);
+      expect(ids).not.toContain(byRef(w, "meaning").id);
+    }
+    // an embedder that fails is the same
+    const down = { ...w.embedder, embed: async (): Promise<number[]> => { throw new Error("secret"); } };
+    expect((await recordSearch(deps(w, { embedder: down, vectorSearch: vectorOf(w, ["meaning"]), log: (event) => { logs.push(event); } }), person(), "web", { query: QUERY })).hits.map((hit) => hit.id)).toContain(byRef(w, "keyword").id);
+    expect(logs).toEqual(["record.search_vector_failed", "record.search_vector_failed", "record.search_vector_failed"]);
+    // and with no embedder or index at all
+    expect((await recordSearch(deps(w), person(), "web", { query: QUERY })).hits.map((hit) => hit.id)).toContain(byRef(w, "keyword").id);
+  });
+
+  it("a row flagged embeddingTruncated is found by a keyword that appears late in its text (beyond what the embedder saw)", async () => {
+    const w = await corpus();
+    const filler = "The team discussed the roadmap and the hiring plan for the quarter. ".repeat(80);   // about 5,000 characters: far past 512 tokens
+    await put(w, "long", `${filler} Finally the decision: adopt the zanzibar-cutover plan for the invoices.`);
+    const item = rows(w, "TEAM_RECORD_EVENT").find((row) => (row.sourceRef as { id: string }).id === "long")!;
+    item.embeddingTruncated = true;
+    w.db.set(item);
+    const long = byRef(w, "long");
+    expect(long.text!.indexOf("zanzibar")).toBeGreaterThan(4_000);
+    // the vector side returns something else entirely (the embedder only read the start of the row)
+    const result = await recordSearch(deps(w, { embedder: w.embedder, vectorSearch: vectorOf(w, ["noise"]) }), person(), "web", { query: "zanzibar cutover", limit: 5 });
+    // the vector side's only hit (rank 1) and the keyword side's only hit (rank 1) tie in the blend: both show up
+    expect(result.hits.slice(0, 2).map((hit) => hit.id).sort()).toEqual([long.id, byRef(w, "noise").id].sort());
+  });
+
+  it("an erased (tombstoned) row never appears from either side, and neither does a row the reader may not see", async () => {
+    const w = await corpus();
+    // a private row (in a place whose list names only principal 999) that both sides would otherwise return
+    await addSource(w, { source: "github", scope: "github:repo/77" });
+    await w.sink.put(githubDraft({ sourceRef: { system: "github.com", id: "secretrow", version: "1" }, scope: "github:repo/77", audience: { kind: "restricted", acl: { source: "github", scope: "github:repo/77", principals: ["999"], capturedAt: "2026-10-30T10:00:00.000Z", liveCheck: "none" } }, text: "the rollout fail secret: private discussion of why the rollout failed", links: [] }));
+    const vector = vectorOf(w, ["both", "secretrow", "meaning"]);
+    const stranger = person();
+    const asStranger = await recordSearch(deps(w, { embedder: w.embedder, vectorSearch: vector }), stranger, "web", { query: QUERY, limit: 10 });
+    expect(asStranger.hits.map((hit) => hit.id)).not.toContain(byRef(w, "secretrow").id);
+    expect(JSON.stringify(asStranger)).not.toContain("private discussion");
+    expect(asStranger.someHidden).toBe(true);
+    const asTask = await recordSearch(deps(w, { embedder: w.embedder, vectorSearch: vector }), shared, "web", { query: QUERY, limit: 10 });
+    expect(JSON.stringify(asTask)).not.toContain("private discussion");
+    expect(asTask.someHidden).toBe(false);
+    // the person on its list does see it (positive control, through both sides)
+    const owner = await recordSearch(deps(w, { embedder: w.embedder, vectorSearch: vector }), person({ identities: { ids: { github: ["999"] }, groups: {} } }), "web", { query: QUERY, limit: 10 });
+    expect(owner.hits.map((hit) => hit.id)).toContain(byRef(w, "secretrow").id);
+    // an erased row: gone from the keyword side (its text is dropped) and from the vector side (the row is not found), for everyone
+    const keywordRow = byRef(w, "keyword");
+    await w.sink.tombstone({ workspaceId: ORG_A, system: "github.com", sourceIds: ["keyword", "both"], cause: "source_deleted" });
+    const after = await recordSearch(deps(w, { embedder: w.embedder, vectorSearch: vectorOf(w, ["both", "keyword", "meaning"]) }), person(), "web", { query: QUERY, limit: 10 });
+    expect(after.hits.map((hit) => hit.id)).not.toContain(keywordRow.id);
+    expect(after.hits.map((hit) => hit.id)).not.toContain(byRef(w, "both").id);
+    expect(after.hits.map((hit) => hit.id)).toContain(byRef(w, "meaning").id);
+  });
+
+  it("a row hidden from the reader holds no rank in either list: it cannot push a visible row up or down", async () => {
+    const w = await corpus();
+    await addSource(w, { source: "github", scope: "github:repo/77" });
+    await w.sink.put(githubDraft({ sourceRef: { system: "github.com", id: "hiddenfirst", version: "1" }, scope: "github:repo/77", audience: { kind: "restricted", acl: { source: "github", scope: "github:repo/77", principals: ["999"], capturedAt: "2026-10-30T10:00:00.000Z", liveCheck: "none" } }, text: "hidden row about something else", links: [] }));
+    const stranger = person();
+    // vector: [hiddenfirst, meaning]; keyword: [keyword]. Counting the hidden row, `keyword` (keyword rank 1) would beat `meaning` (vector rank 2); without it they tie at rank 1 and the vector list is read first.
+    const result = await recordSearch(deps(w, { embedder: w.embedder, vectorSearch: vectorOf(w, ["hiddenfirst", "meaning"]) }), stranger, "web", { query: "rollout fail rollout", limit: 10 });
+    const ids = result.hits.map((hit) => hit.id);
+    expect(ids).toContain(byRef(w, "meaning").id);
+    expect(ids).toContain(byRef(w, "keyword").id);
+    expect(ids.indexOf(byRef(w, "meaning").id)).toBeLessThan(ids.indexOf(byRef(w, "keyword").id));
+  });
+
+  it("reads the newest KEYWORD_SCAN_ROWS rows on the keyword side (the v1 limit), on every search", async () => {
+    expect(KEYWORD_SCAN_ROWS).toBe(400);
+    const w = await corpus();
+    const asked: unknown[] = [];
+    const counting = { ...w.table, documentClient: { send: async (command: { constructor: { name: string }; input?: { Limit?: number } }) => { if (command.constructor.name === "QueryCommand") asked.push(command.input?.Limit); return (w.table.documentClient as { send(c: unknown): Promise<unknown> }).send(command); } } };
+    await recordSearch(deps(w, { table: counting as never, embedder: w.embedder, vectorSearch: vectorOf(w, ["meaning"]) }), person(), "web", { query: QUERY });
+    expect(asked.length).toBeGreaterThan(0);
   });
 });
 
