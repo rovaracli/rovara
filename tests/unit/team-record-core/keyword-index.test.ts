@@ -216,6 +216,17 @@ describe("segments and the day: sealing, merging, the rest of the tail", () => {
 });
 
 describe("per company, and the reader's right", () => {
+  it("the segment cache is keyed by company, project and segment: the same project name and segment id of two companies are two entries", () => {
+    expect(SegmentCache.key(ORG_A, "web", "s1")).not.toBe(SegmentCache.key(ORG_B, "web", "s1"));
+    expect(SegmentCache.key(ORG_A, "web", "s1")).not.toBe(SegmentCache.key(ORG_A, "api", "s1"));
+    const cache = new SegmentCache();
+    const reader = new SegmentReader(encodeSegment([]).bytes);
+    cache.set(SegmentCache.key(ORG_A, "web", "s1"), reader);
+    expect(cache.get(SegmentCache.key(ORG_B, "web", "s1"))).toBeUndefined();
+    expect(cache.get(SegmentCache.key(ORG_A, "web", "s1"))).toBe(reader);
+  });
+
+
   it("two companies with a project of the same name and the same words never see each other's rows, and every index key starts with its own company", async () => {
     const w = world();
     await addSource(w, { source: "github", scope: GITHUB_SCOPE });

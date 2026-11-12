@@ -278,6 +278,8 @@ describe("K3: project archive and company erase remove every index item", () => 
     // a late marker and a stray build intent too
     await putRecordEvent(w.table, rowOf(w, 300, { text: "late one", at: w.clock.ms - 4 * DAY }), { nowMs: w.clock.ms });
     w.db.set({ pk: teamRecordPk(ORG_A, "web"), sk: "KWIDX#B#strayintent", entityType: "TEAM_RECORD_KWIDX_BUILD", segment: "strayintent", at: new Date(w.clock.ms).toISOString() });
+    // and one stray item in the company's own (project-less) partition, which no project erase is about: the workspace prefixes remove it too
+    w.db.set({ pk: teamRecordPk(ORG_A), sk: "KWIDX#M", entityType: "TEAM_RECORD_KWIDX_MANIFEST" });
     expect(indexItems(w, ORG_A).length).toBeGreaterThan(4);
     expect(indexItems(w, ORG_B).length).toBeGreaterThan(1);
     const keptB = indexItems(w, ORG_B).length;
@@ -341,5 +343,25 @@ describe("K3: expiry", () => {
     await maintainProject(depsOf(onlyExpiring), ORG_A, "web", { deadlineAt: onlyExpiring.clock.ms + 30_000, expiry: true });
     expect(indexHoldsWord(onlyExpiring, "quartzsolo")).toBe(false);
     expect(HOUR).toBe(3_600_000);
+  });
+
+  it("a row that left the hot table (archived, then removed by the TTL) leaves the index in the nightly pass, not before", async () => {
+    const w = world();
+    await addSource(w, { source: "github", scope: GITHUB_SCOPE });
+    const leaving = rowOf(w, 1, { text: "an archivedword row", hotExpiresAt: Math.floor(w.clock.ms / 1000) + 86_400, at: w.clock.ms - 80 * DAY });
+    seedRows(w, [leaving, ...Array.from({ length: 20 }, (_unused, i) => rowOf(w, 10 + i, { text: `filler ${String(i)}`, at: w.clock.ms - 79 * DAY + i * 60_000 }))]);
+    await buildIndex(w);
+    expect(indexHoldsWord(w, "archivedword")).toBe(true);
+    // ten days later the table no longer has the row (the archiver and the TTL took it)
+    w.clock.ms += 10 * DAY;
+    const item = w.db.find((entry) => entry.id === leaving.id)[0]!;
+    w.db.delete({ pk: item.pk as string, sk: item.sk as string });
+    expect(await searchIds(w, "archivedword")).toEqual([]);          // the reload finds nothing: never returned
+    expect(indexHoldsWord(w, "archivedword")).toBe(true);
+    await maintainProject(depsOf(w), ORG_A, "web", { deadlineAt: w.clock.ms + 30_000 });
+    expect(indexHoldsWord(w, "archivedword")).toBe(true);            // the 15-minute job leaves it for the night
+    const night = await maintainProject(depsOf(w), ORG_A, "web", { deadlineAt: w.clock.ms + 30_000, expiry: true });
+    expect(night.expired).toBeGreaterThan(0);
+    expect(indexHoldsWord(w, "archivedword")).toBe(false);
   });
 });
