@@ -5,6 +5,7 @@
 import { randomBytes } from "node:crypto";
 import { CreateSecretCommand, GetSecretValueCommand, type SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import { agentXError } from "@rovara-code/contracts";
+import { callbackSigningKeySecretName as derivedCallbackSigningKeySecretName, erasureHashKeySecretName as derivedErasureHashKeySecretName } from "@agentx/cloud-contracts";
 
 /** The number of random bytes in a freshly created callback signing key (before base64url encoding).
  * Exported so callers that must bound a buffer against "the longest secret we ever redact"
@@ -71,7 +72,12 @@ export function secretsManagerValueStore(client: SecretsManagerClient): SecretVa
 
 /** `agentx/<env>/callback-signing-key`, exactly as the control-plane stack's operator guide names it. */
 export function callbackSigningKeySecretName(env: string): string {
-  return `agentx/${env}/callback-signing-key`;
+  return derivedCallbackSigningKeySecretName(env);
+}
+
+/** `agentx/<env>/erasure-hash-key`: the key erased people's names and aliases (and Ask question hashes) are hashed with (0.5.15). */
+export function erasureHashKeySecretName(env: string): string {
+  return derivedErasureHashKeySecretName(env);
 }
 
 /**
@@ -93,5 +99,27 @@ export async function callbackSigningKey(store: SecretValueStore, env: string): 
     const winner = await store.get(name);
     if (winner === undefined) throw error;
     return winner;
+  }
+}
+
+/**
+ * 0.5.15 signing-key lane: makes sure the environment's erasure hash key exists, creating it the first time with the value of the callback signing key
+ * the caller already holds (`callbackSigningKey` above), so every hash stored before the split still matches. Never overwrites: an existing erasure key
+ * is kept whatever it holds (it is never rotated by a deploy; a later rotation of the callback signing key must not change it). Race-safe like
+ * `callbackSigningKey`: a create that loses to another caller keeps the winner's value. Never logs, prints or returns either value.
+ *
+ * This runs in the deploy before any stack, so the control plane's functions (which read the secret at cold start and refuse to serve without it) never
+ * start without it. CloudFormation never holds or manages the value, so no stack update or deletion can regenerate, overwrite or delete it.
+ */
+export async function ensureErasureHashKey(store: SecretValueStore, env: string, currentCallbackSigningKey: string): Promise<"created" | "kept"> {
+  const name = erasureHashKeySecretName(env);
+  if (currentCallbackSigningKey.length < 32) throw agentXError("CONFIG_INVALID", "the callback signing key is too short to seed the erasure hash key");
+  if ((await store.get(name)) !== undefined) return "kept";
+  try {
+    await store.create(name, currentCallbackSigningKey);
+    return "created";
+  } catch (error) {
+    if (!(error instanceof SecretAlreadyExistsError)) throw error;
+    return "kept";
   }
 }

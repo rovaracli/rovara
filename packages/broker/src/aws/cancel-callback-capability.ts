@@ -24,13 +24,17 @@ function decode(value: string): Buffer {
 }
 
 /** Authenticates only cancel-result authority. The broker separately binds it to stored state. */
-export function verifyCancelCallbackCapability(root: string, token: string, action: string) {
+/** `root`: one key, or the keys a token may verify with (current first, then the previous one inside its rotation window; signing-key-secrets.ts). */
+export function verifyCancelCallbackCapability(root: string | readonly string[], token: string, action: string) {
   if (token.length > 8192 || action !== "result") throw cancelCallbackForbidden();
   const [prefix, body, signature, extra] = token.split(".");
   if (prefix !== "cancel-v1" || !body || !signature || extra !== undefined) throw cancelCallbackForbidden();
   const actual = decode(signature);
-  const expected = createHmac("sha256", deriveCancelCallbackKey(root)).update(`cancel-v1.${body}`).digest();
-  if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) throw cancelCallbackForbidden();
+  const matches = (typeof root === "string" ? [root] : root).some((candidate) => {
+    const expected = createHmac("sha256", deriveCancelCallbackKey(candidate)).update(`cancel-v1.${body}`).digest();
+    return actual.length === expected.length && timingSafeEqual(actual, expected);
+  });
+  if (!matches) throw cancelCallbackForbidden();
   const bytes = decode(body);
   let value: unknown;
   try {

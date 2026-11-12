@@ -7,6 +7,7 @@
 // The service names an Ask by its org, session and id; it can name only an Ask the broker queued itself, and everything that decides what the turn may know or cost (the audience, the asker, the
 // task) comes from the broker's own record of that Ask, never from the request. The switch is OFF by default: with it off (`LIVE_ASK_ENABLED` not exactly "1") nothing is built, every route
 // answers NOT_FOUND, and a queued Ask cannot exist.
+import { erasureKeyOf } from "../signing-key-secrets.js";
 import { sessionPageUrl } from "../../decisions/open-path.js";
 import { LambdaClient } from "@aws-sdk/client-lambda";
 import { GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
@@ -43,7 +44,7 @@ import type { AwsBrokerDependencies } from "./definitions.js";
 /** The label the Ask record carries when the service does not say which model answered. */
 const DEFAULT_MODEL_LABEL = "chat-runtime";
 
-/** The hash key for stored questions: derived from the broker's signing key under its own label (an install secret; nothing in code, never logged). */
+/** The hash key for stored questions: derived from the erasure hash key (stored hashes; 0.5.15, the old signing key's value) under its own label (an install secret; nothing in code, never logged). */
 const questionHashKeyOf = (callbackSigningKey: string): string => createHmac("sha256", callbackSigningKey).update("agentx:ask-question-hash:v1").digest("hex");
 
 /** The people an Ask may name, with the names they are known by (display names; handles are logins, emails and Slack ids). Best effort: an unreadable list gives the asker alone. */
@@ -112,11 +113,11 @@ export function askDependenciesFor(dependencies: AwsBrokerDependencies, access: 
     actions,
     readers: askReadersOf(dependencies, actions, env),
     store: (orgId: OrgId) => ({
-      ...table, questionHashKey: questionHashKeyOf(dependencies.callbackSigningKey),
+      ...table, questionHashKey: questionHashKeyOf(erasureKeyOf(dependencies)),
       isErased: (developerId: string) => isErasedActor(table, orgId, "rovara", { sourceId: developerId, developerId }),
       // The erased people are known by their label tag alone; their names and handles are kept as keyed hashes and scrubbed by hashing the text's own tokens.
       erasedPeople: async () => (await readErasedAliases(table, orgId, now())).map((entry) => ({ developerId: `erased:${entry.tag}`, tag: entry.tag, names: [], handles: [] })),
-      scrubErased: async (text: string) => scrubWithAliasHashes(text, await readErasedAliases(table, orgId, now()), askAliasHashKey(dependencies.callbackSigningKey)),
+      scrubErased: async (text: string) => scrubWithAliasHashes(text, await readErasedAliases(table, orgId, now()), askAliasHashKey(erasureKeyOf(dependencies))),
     }),
     audit: { ...table, ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }) },
     people: (task, askerId) => peopleOf(dependencies, task, askerId),

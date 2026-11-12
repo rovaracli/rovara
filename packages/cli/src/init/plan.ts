@@ -5,7 +5,7 @@
 import { keyedProviderSecretName, KEYED_MODEL_PROVIDERS, defaultBoundaryName, environmentCloudFormationRoleName, environmentOperatorRoleName, environmentRolePath, environmentStackName } from "@rovara-code/contracts";
 import type { DirectProvider } from "../deploy/answer-schemas.js";
 import { installOrder } from "../deploy/parameters.js";
-import { callbackSigningKeySecretName } from "../deploy/signing-key.js";
+import { callbackSigningKeySecretName, erasureHashKeySecretName } from "../deploy/signing-key.js";
 import { openRouterSecretName } from "./answers.js";
 import { count, estimateMonthlyCost, modelName, money, notCounted, PRICES_CHECKED, STATED_USAGE, type CostEstimate } from "./cost.js";
 import type { InitAnswers } from "./install-state.js";
@@ -24,7 +24,7 @@ export function installPlanText(answers: InitAnswers, estimate: CostEstimate, no
   const stacks = installOrder(answers.identity.mode).map((part) => environmentStackName(env, part));
   const boundary = answers.permissionsBoundaryArn ?? defaultBoundaryName(env);
   const secrets = [
-    callbackSigningKeySecretName(env), `agentx/${env}/github-app`, `agentx/${env}/slack`,
+    callbackSigningKeySecretName(env), erasureHashKeySecretName(env), `agentx/${env}/github-app`, `agentx/${env}/slack`,
     ...(answers.alert.kind === "webhook" ? [answers.alert.secretName] : []),
     ...(extras.storesOpenRouterKey === true ? [openRouterSecretName(env)] : []),
     ...(extras.storesProviderKeys ?? []).map((provider) => keyedProviderSecretName(env, provider)),

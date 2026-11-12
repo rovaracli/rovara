@@ -55,18 +55,24 @@ describe("the unwaited task backstop's infrastructure (#173)", () => {
     }]);
   });
 
-  it("lets the named reconciler read the Slack secret alone, for the bot token, and nothing else", () => {
+  it("lets the named reconciler read the Slack secret, for the bot token, and the callback signing key's secret (0.5.15), and nothing else", () => {
     const { statements } = reconciler(named);
     const secrets = statements.filter((statement) => actionsOf([statement]).some((action) => action.startsWith("secretsmanager:")));
-    expect(secrets).toEqual([{ Sid: "PostUnwaitedTaskNote", Effect: "Allow", Action: "secretsmanager:GetSecretValue", Resource: { Ref: slackSecretId(named) } }]);
+    expect(secrets).toEqual([
+      { Sid: "ReadCallbackSigningKey", Effect: "Allow", Action: "secretsmanager:GetSecretValue", Resource: { "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, ":secretsmanager:", { Ref: "AWS::Region" }, ":", { Ref: "AWS::AccountId" }, ":secret:agentx/staging/callback-signing-key-??????"]] } },
+      { Sid: "PostUnwaitedTaskNote", Effect: "Allow", Action: "secretsmanager:GetSecretValue", Resource: { Ref: slackSecretId(named) } },
+    ]);
+    // Never the erasure hash key: the reconciler hashes nothing.
+    expect(JSON.stringify(secrets)).not.toContain("erasure-hash-key");
   });
 
-  it("names the threads table, the Slack secret and the callback signing key to the named reconciler", () => {
+  it("names the threads table and the Slack secret to the named reconciler, and never the callback signing key (0.5.15: read from its secret)", () => {
     expect(reconciler(named).environment).toMatchObject({
       SLACK_THREADS_TABLE_NAME: { Ref: threadsTableId(named) },
       SLACK_SECRET_ARN: { Ref: slackSecretId(named) },
-      CALLBACK_SIGNING_KEY: { Ref: "CallbackSigningKey" },
+      AGENTX_ENV: "staging",
     });
+    expect(reconciler(named).environment).not.toHaveProperty("CALLBACK_SIGNING_KEY");
   });
 
   it("alarms the operator when cancels or the backstop's reads keep failing on two runs in a row", () => {

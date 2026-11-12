@@ -1,5 +1,6 @@
 // Part of the broker (split out of ../broker.ts): worker callbacks, workflow candidate export, build source and baseline source.
 
+import { callbackVerificationKeys } from "../signing-key-secrets.js";
 import { authorizeTurnModelFallback } from "../../model-selection/turn-fallback.js";
 import { resolveAndAuthorizeTaskFallback } from "../../model-selection/fallback-request.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -56,7 +57,7 @@ export async function handleCallback(
   // #201 Release A: accept the child format before any reconciler starts issuing it. The key
   // family is selected by the envelope, never by unverified claims or signature fallback.
   const cancelClaims = token.startsWith("cancel-v1.")
-    ? verifyCancelCallbackCapability(dependencies.callbackSigningKey, token, action)
+    ? verifyCancelCallbackCapability(callbackVerificationKeys(dependencies), token, action)
     : undefined;
   const claims = cancelClaims ?? verifyCapability(dependencies, token, action as CallbackClaims["actions"][number]);
   if (claims.workspaceId !== workspaceId || claims.operationId !== operationId) {

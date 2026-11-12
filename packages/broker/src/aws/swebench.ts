@@ -1,4 +1,5 @@
 import { auditPendingItem } from "../audit/outbox.js";
+import { callbackVerificationKeys } from "./signing-key-secrets.js";
 import { AuditEventInputSchema, auditEventId } from "@agentx/cloud-contracts";
 import type { TransactItem } from "../agents/table-writes.js";
 import { captureTaskStopEvalAdmission } from "../org/task-stop-admission.js";
@@ -36,6 +37,8 @@ export interface SwebenchDependencies {
   tableName: string;
   artifactBucketName: string;
   callbackSigningKey: string;
+  /** The previous callback signing key, only inside its rotation window (signing-key-secrets.ts): verifies eval capabilities, never issues them. */
+  callbackPreviousKey?: () => string | undefined;
   deployment: () => Promise<SwebenchDeployment | undefined>;
   /** Starts a run's execution; the ARN it returns is recorded on the run, so the tick can find a dead execution (Ruling 13). */
   startExecution: (input: { stateMachineArn: string; name: string; input: string }) => Promise<{ executionArn?: string | undefined } | void>;
@@ -868,12 +871,15 @@ export function issueSwebenchCapability(dependencies: Pick<SwebenchDependencies,
   return `${body}.${createHmac("sha256", capabilityKey(dependencies.callbackSigningKey)).update(body).digest("base64url")}`;
 }
 
-function verifySwebenchCapability(dependencies: Pick<SwebenchDependencies, "callbackSigningKey" | "now">, token: string | undefined, runId: string): void {
+function verifySwebenchCapability(dependencies: Pick<SwebenchDependencies, "callbackSigningKey" | "callbackPreviousKey" | "now">, token: string | undefined, runId: string): void {
   const [body, signature, extra] = (token ?? "").split(".");
   if (!body || !signature || extra !== undefined) throw agentXError("CALLBACK_FORBIDDEN", "invalid eval capability");
-  const expected = createHmac("sha256", capabilityKey(dependencies.callbackSigningKey)).update(body).digest();
   const actual = Buffer.from(signature, "base64url");
-  if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) throw agentXError("CALLBACK_FORBIDDEN", "invalid eval capability signature");
+  const matches = callbackVerificationKeys(dependencies).some((key) => {
+    const expected = createHmac("sha256", capabilityKey(key)).update(body).digest();
+    return expected.length === actual.length && timingSafeEqual(expected, actual);
+  });
+  if (!matches) throw agentXError("CALLBACK_FORBIDDEN", "invalid eval capability signature");
   const claims = SwebenchCapabilityClaimsSchema.safeParse(JSON.parse(Buffer.from(body, "base64url").toString("utf8")));
   if (!claims.success || claims.data.runId !== runId || claims.data.expiresAt <= Math.floor(now(dependencies).getTime() / 1_000)) {
     throw agentXError("CALLBACK_FORBIDDEN", "eval capability does not allow this run");

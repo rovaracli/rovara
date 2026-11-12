@@ -12,7 +12,7 @@ import { assertAuditLockNotLowered, CLOUD_NEEDS_CDK_MESSAGE } from "./answer-sch
 import { assertModelsServedByProxy } from "./proxy-models.js";
 import { installOrder, isRetiredParameter, OPERATOR_PARAMETERS, SECRET_PARAMETERS, stackParameters, upgradeOrder, type DeployPart, type InstallAnswers, type StackOutputs } from "./parameters.js";
 import type { LoadedRelease } from "./release.js";
-import { callbackSigningKey, type SecretValueStore } from "./signing-key.js";
+import { callbackSigningKey, ensureErasureHashKey, type SecretValueStore } from "./signing-key.js";
 import { readStoredDeveloperSignIn, SIGN_IN_PARAMETER_NAMES } from "../signin/settings.js";
 
 export type { SecretValueStore } from "./signing-key.js";
@@ -283,6 +283,8 @@ export async function deployEnvironment(input: DeployEnvironmentInput): Promise<
     }
 
     const key = await callbackSigningKey(secrets, env);
+    // 0.5.15: the erasure hash key, split from the callback signing key with the same value the first time (never overwritten), before any stack deploys.
+    await ensureErasureHashKey(secrets, env, key);
 
     // Extra defense-in-depth, not itself the F24 "only the keys the template declares" fix (that is
     // `withDeclaredSignIn`/`templateParameterNames` below): assertDeployAllowed above already

@@ -357,6 +357,7 @@ import { linearWriteOf } from "../rovara-code/linear-write.js";
 import { companyDomainsPort } from "../org/company-domains/port.js";
 import { deadLetterUrlOf, opsQueueUrlOf, sqsDeadLetters, sqsOpsQueue } from "../team-record/ops-queue.js";
 import { askAliasHashKey } from "../agent-sessions/ask-erased-aliases.js";
+import { callbackKeySource, erasureKeySource, handlerAfterKeys, legacySigningKeys, previousKeyOf, type CallbackKeyRing } from "./signing-key-secrets.js";
 import { createEvidenceErase } from "../rovara-code/evidence-erase.js";
 import { personErasureStep } from "./broker/evidence-wiring.js";
 import { nameEraserOf } from "../developer/erase-name.js";
@@ -421,15 +422,20 @@ const editionPolicy = installEditionPolicy(process.env, cloudOrgResolver !== und
 const registryTokens = registryTokenSource(awsClientConfiguration);
 // Enterprise foundations P4: GitHub is the first code host and check runner plug-in; the router is what consumers move to (tasks P5a-e).
 const plugins = createBrokerPlugins({ provider: githubCredentials, credentialRef: requiredEnvironment("GITHUB_APP_CREDENTIAL_REF"), codeBuild, webhookSecret: github.webhookSecret, ...(editionPolicy === undefined ? {} : { policy: editionPolicy }) });
-const repositoryGrantSigningKey = createHmac("sha256", requiredEnvironment("CALLBACK_SIGNING_KEY"))
-  .update("agentx:repository-grants:v3")
-  .digest();
+// 0.5.15 signing-key lane: everything from here to the handler needs the keys, so it is built by this function once they are read (signing-key-secrets.ts):
+// at module load for the legacy install (its CALLBACK_SIGNING_KEY variable), on the first request for a named environment (its two secrets). Not re-indented, to keep the diff small.
+function buildBrokerInput(keys: { callback: CallbackKeyRing; erasure: string }): AwsBrokerInput {
+const grantKeyOf = (callbackKey: string): Buffer => createHmac("sha256", callbackKey).update("agentx:repository-grants:v3").digest();
+const repositoryGrantSigningKey = grantKeyOf(keys.callback.current);
+const previousGrantKey = keys.callback.previous === undefined ? undefined : grantKeyOf(keys.callback.previous.value);
 const repositoryGrants = new RepositoryGrantService(
   repositoryGrantSigningKey,
   // Enterprise foundations N-3: the credential comes from the repository's code host and must pass workerGitCredentialUsable before a worker gets it.
   portCredentialResolver({ codeHost: plugins.codeHost, credentialRef: requiredEnvironment("GITHUB_APP_CREDENTIAL_REF") }),
   // P8: the credential kinds the repository's host can hand out, written into each grant only when one needs a worker feature (an ssh key), so the dispatcher can refuse an older worker early.
   (hostKind) => plugins.codeHost.forKind(hostKind).capabilities.credentialKinds,
+  // Rotation: a grant signed with the previous key verifies only while that key is inside its window.
+  () => (previousGrantKey !== undefined && previousKeyOf(keys.callback) !== undefined ? previousGrantKey : undefined),
 );
 
 const lambdaClient = new LambdaClient(awsClientConfiguration);
@@ -450,7 +456,7 @@ function developerConfiguration(inviteTaskPerson?: DeveloperApiConfiguration["in
     slackAuthCheck: slackAuthCheckThroughLambda((payload) => lambdaClient.send(new InvokeCommand({ FunctionName: functionName, Payload: payload }))),
     endDeveloperSessions: endDeveloperSessionsThroughLambda((payload) => lambdaClient.send(new InvokeCommand({ FunctionName: functionName, Payload: payload }))),
     eraseDeveloperName: eraseDeveloperNameThroughLambda((payload) => lambdaClient.send(new InvokeCommand({ FunctionName: functionName, Payload: payload }))),
-    erasedNameKey: askAliasHashKey(requiredEnvironment("CALLBACK_SIGNING_KEY")),
+    erasedNameKey: askAliasHashKey(keys.erasure),
     unlinkIdentity: unlinkIdentityThroughLambda((payload) => lambdaClient.send(new InvokeCommand({ FunctionName: functionName, Payload: payload }))),
     startIdentityLink: startIdentityLinkThroughLambda((payload) => lambdaClient.send(new InvokeCommand({ FunctionName: functionName, Payload: payload }))),
     channelByName: channelByNameThroughLambda((payload) => lambdaClient.send(new InvokeCommand({ FunctionName: functionName, Payload: payload }))),
@@ -550,7 +556,7 @@ const auditLedger: AuditExportClientDeps | undefined = auditLedgerTable === unde
 const personNameEraser = nameEraserOf({ documentClient, stateTable: requiredEnvironment("STATE_TABLE_NAME"), ...(developer?.eraseDeveloperName === undefined ? {} : { eraseSignInName: developer.eraseDeveloperName }), now: Date.now });
 const recordOpsQueueUrl = opsQueueUrlOf(process.env);
 const recordDeadLetterUrl = deadLetterUrlOf(process.env);
-const teamRecord = createTeamRecordRuntime({ env: process.env, documentClient, captureAdapters: [githubCaptureAdapter({ provider: githubCredentials, codeHost: plugins.codeHost.forKind("github"), cloud: cloudOrgResolver !== undefined })], ...(developer === undefined ? {} : { ...slackLinksOf(new DeveloperSignInStore({ documentClient, tableName: developer.signInTableName, nameTableName: requiredEnvironment("STATE_TABLE_NAME"), now: Date.now })) , namesOf: async (developerId: string) => { const [record, chosen] = await Promise.all([new DeveloperSignInStore({ documentClient, tableName: developer.signInTableName, now: Date.now }).getDeveloper(developerId), readOwnChosenName(documentClient, requiredEnvironment("STATE_TABLE_NAME"), developerId)]); return [...(record === undefined ? [] : [record.displayName]), ...(chosen === undefined ? [] : [chosen])]; } }), askAliasKey: askAliasHashKey(requiredEnvironment("CALLBACK_SIGNING_KEY")), nameErasure: personNameEraser, ...(recordOpsQueueUrl === undefined ? {} : { opsQueue: sqsOpsQueue(sqs, recordOpsQueueUrl) }), ...(recordDeadLetterUrl === undefined ? {} : { deadLetters: sqsDeadLetters(sqs, recordDeadLetterUrl) }), ...(process.env.AWS_LAMBDA_FUNCTION_NAME === undefined ? {} : { removalFallback: removalFallbackThroughLambda((request) => lambdaClient.send(new InvokeCommand({ FunctionName: process.env.AWS_LAMBDA_FUNCTION_NAME!, ...request }))) }), githubAppReady: () => github.ready(), githubDeliveries: { list: (page) => githubCredentials.listWebhookDeliveries(page), redeliver: (id, signal) => githubCredentials.redeliverWebhookDelivery(id, signal) }, githubRepositories: { open: (installationId, workspaceId, signal) => githubCredentials.installationRepositoryView(installationId, cloudOrgResolver === undefined ? { system: "install" } : { orgId: OrgIdSchema.parse(workspaceId) }, signal) }, stateTableName: requiredEnvironment("STATE_TABLE_NAME"), verifiedDomains: companyDomainsPort({ documentClient, tableName: requiredEnvironment("STATE_TABLE_NAME") }), ...(orgConnections === undefined ? {} : { trackers: connectedTrackersOf({ deps: orgConnections }) }), ...(recordAuditSinkOf(audit, documentClient) === undefined ? {} : { audit: recordAuditSinkOf(audit, documentClient)! }), log: (entry) => console.log(JSON.stringify({ ...entry })) });
+const teamRecord = createTeamRecordRuntime({ env: process.env, documentClient, captureAdapters: [githubCaptureAdapter({ provider: githubCredentials, codeHost: plugins.codeHost.forKind("github"), cloud: cloudOrgResolver !== undefined })], ...(developer === undefined ? {} : { ...slackLinksOf(new DeveloperSignInStore({ documentClient, tableName: developer.signInTableName, nameTableName: requiredEnvironment("STATE_TABLE_NAME"), now: Date.now })) , namesOf: async (developerId: string) => { const [record, chosen] = await Promise.all([new DeveloperSignInStore({ documentClient, tableName: developer.signInTableName, now: Date.now }).getDeveloper(developerId), readOwnChosenName(documentClient, requiredEnvironment("STATE_TABLE_NAME"), developerId)]); return [...(record === undefined ? [] : [record.displayName]), ...(chosen === undefined ? [] : [chosen])]; } }), askAliasKey: askAliasHashKey(keys.erasure), nameErasure: personNameEraser, ...(recordOpsQueueUrl === undefined ? {} : { opsQueue: sqsOpsQueue(sqs, recordOpsQueueUrl) }), ...(recordDeadLetterUrl === undefined ? {} : { deadLetters: sqsDeadLetters(sqs, recordDeadLetterUrl) }), ...(process.env.AWS_LAMBDA_FUNCTION_NAME === undefined ? {} : { removalFallback: removalFallbackThroughLambda((request) => lambdaClient.send(new InvokeCommand({ FunctionName: process.env.AWS_LAMBDA_FUNCTION_NAME!, ...request }))) }), githubAppReady: () => github.ready(), githubDeliveries: { list: (page) => githubCredentials.listWebhookDeliveries(page), redeliver: (id, signal) => githubCredentials.redeliverWebhookDelivery(id, signal) }, githubRepositories: { open: (installationId, workspaceId, signal) => githubCredentials.installationRepositoryView(installationId, cloudOrgResolver === undefined ? { system: "install" } : { orgId: OrgIdSchema.parse(workspaceId) }, signal) }, stateTableName: requiredEnvironment("STATE_TABLE_NAME"), verifiedDomains: companyDomainsPort({ documentClient, tableName: requiredEnvironment("STATE_TABLE_NAME") }), ...(orgConnections === undefined ? {} : { trackers: connectedTrackersOf({ deps: orgConnections }) }), ...(recordAuditSinkOf(audit, documentClient) === undefined ? {} : { audit: recordAuditSinkOf(audit, documentClient)! }), log: (entry) => console.log(JSON.stringify({ ...entry })) });
 
 // Proof and evidence (wire-proof fix round 1): a person's erase also deletes the stored evidence of the tasks they created or own (not behind the proof switch).
 const personEvidenceErase = createEvidenceErase({ s3, artifactBucketName: requiredEnvironment("ARTIFACT_BUCKET_NAME"), documentClient, tableName: requiredEnvironment("STATE_TABLE_NAME") });
@@ -597,7 +603,9 @@ const brokerInput: AwsBrokerInput = {
   issuer: requiredEnvironment("OIDC_ISSUER"),
   adminClaim: process.env.ADMIN_CLAIM ?? "cognito:groups",
   adminValues: JSON.parse(process.env.ADMIN_VALUES ?? "[\"agentx-admin\"]") as string[],
-  callbackSigningKey: requiredEnvironment("CALLBACK_SIGNING_KEY"),
+  callbackSigningKey: keys.callback.current,
+  callbackPreviousKey: () => previousKeyOf(keys.callback),
+  erasureHashKey: keys.erasure,
   repositoryGrants,
   githubPullRequests: githubCredentials,
   // Saved project images: the base image the project's commands run in is the worker image, named by its digest from the worker settings (aws/broker/saved-env-real.ts). Without a settings prefix, or with an image that is a tag, there is none and no key.
@@ -741,4 +749,14 @@ const brokerInput: AwsBrokerInput = {
       }
     : {}),
 };
-export const handler = createAwsBrokerHandler(brokerInput);
+return brokerInput;
+}
+// The legacy install has its key now; a named environment reads its two secrets on the first request (the broker role may read exactly those two).
+const legacyKeys = legacySigningKeys(process.env);
+export const handler = legacyKeys !== undefined
+  ? createAwsBrokerHandler(buildBrokerInput(legacyKeys))
+  : handlerAfterKeys(async () => {
+    const callback = callbackKeySource(process.env, () => secretsManager);
+    const erasure = erasureKeySource(process.env, () => secretsManager);
+    return { callback: await callback(), erasure: await erasure() };
+  }, (keys) => createAwsBrokerHandler(buildBrokerInput(keys)));

@@ -240,7 +240,9 @@ describe("deploy environment", () => {
     const upgrade = fakeDeployer(scriptedOutputs());
     await deployEnvironment({ mode: "upgrade", engine: "templates", answers: baseAnswers(), release: fakeRelease(), deployer: upgrade.deployer, store, secrets, holder: HOLDER, deployedParameters: nothingDeployed });
 
-    expect(secrets.creates).toHaveLength(1);
+    // The callback signing key, then (0.5.15) the erasure hash key seeded with the same value; neither is created again by the upgrade.
+    expect(secrets.creates.map((entry) => entry.name)).toEqual([`agentx/${ENV}/callback-signing-key`, `agentx/${ENV}/erasure-hash-key`]);
+    expect(secrets.creates[1]!.value).toBe(secrets.creates[0]!.value);
     const firstKey = install.requests.find((request) => request.part === "control-plane")!.parameters.CallbackSigningKey;
     const secondKey = upgrade.requests.find((request) => request.part === "control-plane")!.parameters.CallbackSigningKey;
     expect(firstKey).toBeDefined();

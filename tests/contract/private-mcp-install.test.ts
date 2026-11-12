@@ -235,9 +235,10 @@ describe("T12: the release flag for package-run servers", () => {
 function brokerEnvironment(context: Record<string, unknown>): Record<string, unknown> {
   const app = buildAgentXApp(context);
   const stack = app.node.children.find((child): child is Stack => Stack.isStack(child) && child.node.id === "AgentXControlPlane")!;
-  const functions = Object.values(Template.fromStack(stack).findResources("AWS::Lambda::Function")) as Array<{ Properties: { Environment?: { Variables?: Record<string, unknown> } } }>;
-  const broker = functions.find((fn) => fn.Properties.Environment?.Variables?.CALLBACK_SIGNING_KEY !== undefined);
-  return broker?.Properties.Environment?.Variables ?? {};
+  const functions = Object.entries(Template.fromStack(stack).findResources("AWS::Lambda::Function")) as Array<[string, { Properties: { Environment?: { Variables?: Record<string, unknown> } } }]>;
+  // The broker by its logical id (0.5.15: no Lambda carries CALLBACK_SIGNING_KEY any more in a named environment).
+  const broker = functions.find(([id]) => /^Broker[0-9A-F]{8}$/u.test(id));
+  return broker?.[1].Properties.Environment?.Variables ?? {};
 }
 const ENTERPRISE = { agentxEnv: "ent", rovaraEdition: "enterprise", rovaraEnterpriseEgressCidrs: "10.0.0.0/16", agentxAuditTsa: "off" } as const;
 

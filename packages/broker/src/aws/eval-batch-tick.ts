@@ -8,6 +8,8 @@
 // The schedule is always on rather than switched on with a batch: an idle tick costs three small
 // DynamoDB reads, nothing has to remember to switch it off, and a leaked slot is repaired even
 // when no batch runs.
+import { SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
+import { callbackKeySource } from "./signing-key-secrets.js";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { EC2Client, TerminateInstancesCommand } from "@aws-sdk/client-ec2";
 import { S3Client } from "@aws-sdk/client-s3";
@@ -91,7 +93,7 @@ function log(event: string, fields: Record<string, unknown>): void {
 let production: EvalBatchDependencies | undefined;
 
 /** The broker's eval dependencies, as broker.ts builds them, from this Lambda's environment. */
-function productionDependencies(): EvalBatchDependencies {
+function productionDependencies(callbackSigningKey: string): EvalBatchDependencies {
   if (production !== undefined) return production;
   const awsClientConfiguration = process.env.AWS_REGION === undefined ? {} : { region: process.env.AWS_REGION };
   const ssm = new SSMClient(awsClientConfiguration);
@@ -103,7 +105,7 @@ function productionDependencies(): EvalBatchDependencies {
     s3: new S3Client(awsClientConfiguration),
     tableName: requiredEnvironment("STATE_TABLE_NAME"),
     artifactBucketName: requiredEnvironment("ARTIFACT_BUCKET_NAME"),
-    callbackSigningKey: requiredEnvironment("CALLBACK_SIGNING_KEY"),
+    callbackSigningKey,
     deployment: () => swebenchDeploymentFromParameters(settingsPrefix, async (names) => {
       const response = await getParametersInBatches(names, (batch) => ssm.send(new GetParametersCommand({ Names: batch })));
       return new Map((response.Parameters ?? []).flatMap((parameter) => parameter.Name && parameter.Value ? [[parameter.Name, parameter.Value] as const] : []));
@@ -133,6 +135,9 @@ function productionDependencies(): EvalBatchDependencies {
   return production;
 }
 
+// 0.5.15: the callback signing key (it signs the runs' eval capabilities), from the legacy variable or the named environment's secret, read once (signing-key-secrets.ts).
+const callbackKey = callbackKeySource(process.env, () => new SecretsManagerClient(process.env.AWS_REGION === undefined ? {} : { region: process.env.AWS_REGION }));
+
 export async function handler(): Promise<EvalBatchTickReport> {
-  return runEvalBatchTick(productionDependencies());
+  return runEvalBatchTick(productionDependencies((await callbackKey()).current));
 }
