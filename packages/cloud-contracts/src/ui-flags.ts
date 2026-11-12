@@ -11,8 +11,9 @@ import { forwardReader } from "@rovara-code/contracts";
 
 /**
  * The known flags, in the order the admin screen lists them. A new screen adds its name here (and to UI_FLAG_CATALOG) in the change that builds the screen; nothing else grows.
- * `leadingHeader` is the task page's header block (task-page-flags.ts). `insights` is wired (its screen reads the flag through `isInsightsOn`). `companies` (the company switcher, `isCompanySwitcherOn`) and `continue` (the task page's
- * "Continue in your own tool", `isContinueInToolOn`) are wired too (decision 98); both were added after the first release of this list, so a broker or a browser that predates them reads them as off (see the readers below). `health`, `setup`, `publish`, `billing` and `agreement` are reserved for screens other lanes are building: the names are accepted,
+ * `leadingHeader` is the task page's header block (task-page-flags.ts). `insights` is wired (its screen reads the flag through `isInsightsOn`). `continue` (the task page's "Continue in your own tool", `isContinueInToolOn`)
+ * is wired too (decision 98). `companies` (the company switcher) is read by `isCompanySwitcherOn` but is `wired: false` until the broker answers `/v1/app/companies`: an owner would otherwise press a switch that does nothing
+ * (it stays off unless the server says on). Both were added after the first release of this list, so a broker or a browser that predates them reads them as off (see the readers below). `health`, `setup`, `publish`, `billing` and `agreement` are reserved for screens other lanes are building: the names are accepted,
  * stored and sent now, so those lanes only call their own `isXOn(host)`; `wired: false` in the catalog says no screen reads them yet.
  */
 export const UI_FLAG_NAMES = ["look", "nav", "home", "work", "spending", "leadingHeader", "health", "setup", "insights", "publish", "billing", "agreement", "companies", "continue"] as const;
@@ -42,7 +43,7 @@ export const UI_FLAG_CATALOG: readonly UiFlagCatalogEntry[] = [
   { name: "publish", label: "Agent publishing", summary: "Draft, request and publish agents with versions.", wired: false },
   { name: "billing", label: "Billing", summary: "Plan, trial and invoices.", wired: false },
   { name: "agreement", label: "Company agreement", summary: "The company's agreement, with where each rule comes from.", wired: false },
-  { name: "companies", label: "Companies", summary: "Switch between the companies you belong to from the header, and follow a link into the right company.", wired: true },
+  { name: "companies", label: "Companies", summary: "Switch between the companies you belong to from the header, and follow a link into the right company.", wired: false },
   { name: "continue", label: "Continue in your own tool", summary: "Pick a task up on your laptop in Claude Code, Codex or Cursor, with its branch and what happens when you push.", wired: true },
 ];
 

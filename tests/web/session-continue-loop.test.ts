@@ -61,7 +61,7 @@ function setup(source: SessionView | (() => SessionView), options: Options = {})
  if (options.lead === true) forceTaskPageFlags({ leadingHeader: true });
  const query = createQueryClient(), router = createMemoryRouter([{ path: "/app/sessions/:id", element: h(SessionScreen, {}) }], { initialEntries: ["/app/sessions/" + SESSION_FIXTURE_ID] });
  const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(Announcer, { children: h(RouterProvider, { router }) }) }) }));
- return { ...f, ...ui, reads: () => reads, calls: (path: string) => f.request.mock.calls.map(([request]) => request).filter(request => request.path === path), close() { ui.unmount();router.dispose();query.clear(); } };
+ return { ...f, ...ui, query, reads: () => reads, calls: (path: string) => f.request.mock.calls.map(([request]) => request).filter(request => request.path === path), close() { ui.unmount();router.dispose();query.clear(); } };
 }
 const open = async () => { await userEvent.click(await screen.findByRole("button", { name: "Continue in your own tool" }));return screen.findByRole("dialog", { name: "Continue in your own tool" }); };
 const prompt = (dialog: HTMLElement) => within(dialog).getByLabelText("Prompt to paste into your tool").textContent;
@@ -198,6 +198,33 @@ for (const [server, device, shown] of [["on", true, true], ["on", false, true], 
    if (shown) { expect(within(lead).getByText(CHANGED_OUTSIDE_LABEL)).toBeTruthy();expect(within(lead).getByText("Last pushed by octocat 5m ago")).toBeTruthy(); }
    else { expect(within(lead).getAllByText("Ready to merge").length).toBeGreaterThan(0);expect(lead.textContent).not.toContain(CHANGED_OUTSIDE_LABEL);expect(lead.querySelector(".rv-chip")).toBeNull(); }
   } finally { f.close(); }
+ });
+}
+for (const [first, later] of [["off", "on"], ["on", "off"]] as const) {
+ it(`the panel and the chip read the continue flag once, when the page mounts: server ${first} then ${later} keeps both ${first === "on" ? "shown" : "hidden"} until the page mounts again`, async () => {
+  const view = () => session(loopOf({ label: CHANGED_OUTSIDE_LABEL, outside: [outsideRow()] }), { display: { state: "ready_to_merge" } });
+  const both = async (shown: boolean) => {
+   const lead = await screen.findByRole("region", { name: "Where this task stands" });
+   expect(screen.queryByRole("button", { name: "Continue in your own tool" }) !== null, "panel").toBe(shown);
+   expect(lead.textContent?.includes(CHANGED_OUTSIDE_LABEL), "chip").toBe(shown);
+  };
+  const f = setup(view, { lead: true, on: false, server: first });
+  await screen.findByRole("region", { name: "Where this task stands" });
+  if (first === "on") await screen.findByRole("button", { name: "Continue in your own tool" });
+  await both(first === "on");
+  // A later navigation answer flips the company's flag; the task page re-renders (the session is read again) but keeps what it read at mount.
+  const before = f.reads();
+  await act(async () => { applyNavUiFlags(f.host, { uiFlags: { continue: later } });await f.query.invalidateQueries({ queryKey: ["session"] }); });
+  await waitFor(() => { expect(f.reads()).toBeGreaterThan(before); });
+  await act(async () => { await vi.dynamicImportSettled(); });
+  await both(first === "on");
+  f.close();
+  // Mounted again with the new answer: both follow it, together.
+  const g = setup(view, { lead: true, on: false, server: later });
+  await screen.findByRole("region", { name: "Where this task stands" });
+  if (later === "on") await screen.findByRole("button", { name: "Continue in your own tool" });
+  await both(later === "on");
+  g.close();
  });
 }
 it("the lead's Last pushed by ages while the page stays open", async () => {
