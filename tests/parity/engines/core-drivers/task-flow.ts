@@ -21,7 +21,10 @@ export const TASK_FLOW_DRIVERS: Record<string, Driver> = {
         ctx.runtime.app.flow.deps.planCheck = false;
       }
       // Cloud's automatic fix switch (`af`) maps onto the core's autofix option, set as the Cloud engine sets it for a scenario with a failing check or review findings.
-      if (scenario.steps.some((step) => (step.do === "checks" && step.outcome === "fail") || (step.do === "reviews" && step.outcome === "findings"))) ctx.runtime.app.flow.deps.autofix = { enabled: true, capUsd: 5, roundEstimateUsd: 1 };
+      // Cloud's `af` is off by default and Code's autofix is on by default (core/build-step/autofix.ts reads `enabled !== false`), so every other
+      // scenario runs the core with it off, as Cloud runs (S0-Q2). `feature: autofix-on` (merge lane) turns it on for its scenario.
+      const autofixOn = scenario.steps.some((step) => (step.do === "checks" && step.outcome === "fail") || (step.do === "reviews" && step.outcome === "findings") || (step.do === "feature" && step.name === "autofix-on"));
+      ctx.runtime.app.flow.deps.autofix = autofixOn ? { enabled: true, capUsd: 5, roundEstimateUsd: 1 } : { enabled: false };
     },
     async run(ctx, step) {
       const start = as(step, "start");

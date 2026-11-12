@@ -76,6 +76,8 @@ function folderObjects(): ObjectStorage {
 
 export interface FakeWorldOptions {
   machines?: FakeWorkerMachinesOptions;
+  /** The parity suite's core engine only: the environment the core's runtime starts with (a feature's switch, a provider key). Not read by the world itself. */
+  coreEnvironment?: NodeJS.ProcessEnv;
   admission?: Admission;
   /** `stand-in`: the simplified audit sink instead of A7's Cloud audit sink. Default: A7's. */
   audit?: "cloud" | "stand-in";

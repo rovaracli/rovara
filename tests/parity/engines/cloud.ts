@@ -31,6 +31,7 @@ export class CloudEngine implements ParityEngine {
       transitions: ctx.states, decisions: ctx.decisions, rows: [...ctx.keys],
       // Messages: each post in the task's thread as a kind (facets-support/messages.ts). Audit: Cloud's audit actions, queued or still pending.
       messages: [...ctx.e2e.slack.posts.map((post) => cloudPostKind(post.text)), ...ctx.extra.messages],
+      features: [...ctx.extra.features],
       codeHost: [...ctx.e2e.github.pullRequests.map((pull) => (pull.state === "merged" ? "merged_pr" : pull.draft === false ? "open_pr" : "open_draft_pr")), ...ctx.extra.codeHost],
       spend: [...ctx.spend, ...ctx.extra.spend], audit: [...scenarioAudit(ctx), ...ctx.extra.audit],
     };

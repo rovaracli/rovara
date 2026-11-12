@@ -39,7 +39,7 @@ export type Step =
 export type StepKind = Step["do"];
 
 /** The facets compared. Each engine says which it can observe; a facet one side cannot see is "not covered" for that scenario. */
-export const FACETS = ["transitions", "decisions", "rows", "messages", "codeHost", "spend", "audit"] as const;
+export const FACETS = ["transitions", "decisions", "rows", "messages", "codeHost", "spend", "audit", "features"] as const;
 export type Facet = (typeof FACETS)[number];
 
 export interface Scenario {
@@ -62,6 +62,8 @@ export function defineScenario(scenario: Scenario): Scenario {
 
 /** What an engine saw, normalized (normalize.ts) before comparing. */
 export interface Observation {
+  /** What a feature's own driver records about its outcome, in words both engines share (a route's answer, a part's checkpoint, a second opinion's verdict). In driver order. */
+  features: string[];
   /** `stage/state` after each step (a step that changes nothing repeats the last). */
   transitions: string[];
   /** The decisions recorded on the workflow, in order (`APPROVE`, `REQUEST_CHANGES`, ...). */

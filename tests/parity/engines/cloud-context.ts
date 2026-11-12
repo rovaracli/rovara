@@ -25,7 +25,7 @@ export interface CloudContext {
   states: string[];
   keys: Set<string>;
   decisions: string[];
-  extra: { messages: string[]; spend: string[]; audit: string[]; codeHost: string[] };
+  extra: { messages: string[]; spend: string[]; audit: string[]; codeHost: string[]; features: string[] };
   /** Free state a driver keeps between its steps. */
   memo: Record<string, unknown>;
 }
@@ -48,7 +48,7 @@ export async function createCloudContext(scenario: Scenario, options: CloudOptio
   // The Audit Ledger is on, as on a deployed install (the journey harness's default is a legacy install with no ledger). A driver may give its own capture.
   const audit = options.audit ?? capturingAuditDeps();
   const e2e = await createWorkflowE2E({ ...options, audit });
-  const ctx: CloudContext = { scenario, e2e, audit, auditSetup: audit.flushed().length + audit.pending().length, spend: [], states: [], keys: new Set(), decisions: [], extra: { messages: [], spend: [], audit: [], codeHost: [] }, memo: {} };
+  const ctx: CloudContext = { scenario, e2e, audit, auditSetup: audit.flushed().length + audit.pending().length, spend: [], states: [], keys: new Set(), decisions: [], extra: { messages: [], spend: [], audit: [], codeHost: [], features: [] }, memo: {} };
   e2e.db.onWrite((change) => {
     const item = change.after ?? change.before;
     if (item === undefined) return;

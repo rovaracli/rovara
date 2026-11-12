@@ -15,7 +15,8 @@ async function sources(directory: string): Promise<string[]> {
 describe("the Cloud adapter modules", () => {
   it("admit every action the core asks Admission about, or leave it out with a reason", async () => {
     const asked = new Set<string>();
-    for (const file of await sources(join(import.meta.dirname, "../../vendor/rovara-code/packages/broker/src/core"))) {
+    // Every admission caller in the vendored broker, not only core/: the local composition's lessons model asks too (`learning.call`).
+    for (const file of await sources(join(import.meta.dirname, "../../vendor/rovara-code/packages/broker/src"))) {
       const text = await readFile(file, "utf8");
       for (const match of text.matchAll(/(?:admission\.admit|admission\.stage|\badmit)\(\s*(?:deps,\s*)?\{[^}]*?action:\s*"([a-z_.-]+)"/g)) asked.add(match[1]!);
       if (text.includes("BASE_MERGED_ADMISSION_ACTION")) asked.add("autofix.base-merged");

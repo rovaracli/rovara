@@ -34,6 +34,9 @@ export const CORE_ADMISSION_ACTIONS: Readonly<Record<string, CloudActionRule>> =
   "nightly.run": { kind: "room", minimumUsd: CLOUD_ROOM_MINIMUM_USD },
   // A model call the core makes itself (Ask, the second review, the design review, a diagnosis): held at its estimate, its worst case when unknown.
   "model.call": { kind: "hold", unknownCostUsd: 2 },
+  // The lessons model's own calls (reflect on a finished task; local/app/lessons-model.ts asks `learning.call`): held like any model call. Found by the
+  // parity suite: without a rule it failed closed and no lesson was reflected after a merge.
+  "learning.call": { kind: "hold", unknownCostUsd: 2 },
 };
 
 /** The State table's indexes the core reads (the dispatch due index, the workspace index and the outbox's planned index). */

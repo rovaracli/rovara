@@ -52,6 +52,7 @@ export class CoreEngine implements ParityEngine {
       transitions: ctx.recorder.states, decisions: [...ctx.recorder.decisions], rows: [...ctx.recorder.keys],
       // Messages: the attention kinds the core queued for the person (facets-support/messages.ts). Audit: each core event as the Cloud audit action A7's sink records.
       messages: [...ctx.recorder.notices, ...ctx.extra.messages], spend: [...ctx.world.spend, ...ctx.extra.spend], audit: [...ctx.world.audit.map(coreAuditWord), ...ctx.extra.audit],
+      features: [...ctx.extra.features],
       codeHost: [...ctx.world.hostModel.changeRequests.map((entry) => (entry.state === "merged" ? "merged_pr" : entry.draft ? "open_draft_pr" : "open_pr")), ...ctx.extra.codeHost],
     };
   }

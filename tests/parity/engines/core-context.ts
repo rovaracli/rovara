@@ -143,7 +143,7 @@ export interface CoreContext {
   opened: string[];
   task: { taskId: string; workspaceId: string; base: string; commit: string; tree: string; codingJob?: WorkerInvocation; skipNext?: boolean; pending?: WorkerInvocation };
   /** What drivers saw that a facet reports (messages, extra audit or spend words). */
-  extra: { messages: string[]; spend: string[]; audit: string[]; codeHost: string[] };
+  extra: { messages: string[]; spend: string[]; audit: string[]; codeHost: string[]; features: string[] };
   api(path: string, init?: { method?: string; body?: unknown }): Promise<{ status: number; body: Record<string, unknown> }>;
   callback(job: WorkerInvocation, action: string, body: unknown): Promise<{ status: number; body: Record<string, unknown> }>;
   /** Raw callback answer (no refusal check), for a driver that expects a refusal. */
@@ -187,7 +187,7 @@ export async function createCoreContext(scenario: Scenario, root: string, option
   const clock = { offsetMs: 0, now: () => new Date(Date.now() + clock.offsetMs), advance: (ms: number) => { clock.offsetMs += ms; } };
   const opened: string[] = [];
   const runtime = await startLocalRuntime({
-    stateDirectory, cwd: join(root, "project"), environment: {}, gh: async () => undefined, workerImage: "worker:test", version: "9.9.9", machines: world.machines, timers: false,
+    stateDirectory, cwd: join(root, "project"), environment: { ...options.world?.coreEnvironment }, gh: async () => undefined, workerImage: "worker:test", version: "9.9.9", machines: world.machines, timers: false,
     docker: { run: async () => ({ exitCode: 1, stdout: "", stderr: "docker is not available in the parity suite" }) },
     registerAdapters, openBrowser: async (url) => { opened.push(url); }, storage: "memory", now: () => clock.now(),
   });
@@ -213,7 +213,7 @@ export async function createCoreContext(scenario: Scenario, root: string, option
   const ctx: CoreContext = {
     scenario, world, runtime, store, recorder, clock, opened, channel,
     task: { taskId: "", workspaceId: "", base, commit: base, tree: model.revision(base).tree },
-    extra: { messages: [], spend: [], audit: [], codeHost: [] },
+    extra: { messages: [], spend: [], audit: [], codeHost: [], features: [] },
     // The project's check is the same one Cloud's journey project has (node --version), so a plan needs to propose none.
     project: { name: "payments", revision: 1, setup: [], readiness: [{ cwd: "repo/demo", executable: "node", args: ["--version"], timeoutSeconds: 30 }], orchestratorInstructions: "Delegate work.", repositories: [{ name: "demo", url: model.url, path: "repo/demo", defaultBranch: "main", credentialRef: "host-app" }] },
     async api(path, init = {}) {

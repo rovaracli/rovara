@@ -57,6 +57,7 @@ export function normalize(observation: Observation): Observation {
     messages: kindCounts(observation.messages),
     codeHost: [...observation.codeHost],
     spend: [...observation.spend],
+    features: [...observation.features],
     audit: sortedUnique(observation.audit.map(auditName)),
   };
 }
