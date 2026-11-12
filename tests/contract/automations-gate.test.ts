@@ -49,6 +49,10 @@ describe("the automations switch", () => {
     expect(automationsEnabled({ WEB_FEATURES: "Chains" })).toBe(false);
     expect(automationsEnabled({ WEB_FEATURES: "chains" })).toBe(true);
     expect(automationsEnabled({ WEB_FEATURES: "admin, chains ,usage" })).toBe(true);
+    // The stack joins the names with `-` (a packed value cannot hold a comma): `admin-chains` is the list every cloud install has (owner decision 149).
+    expect(automationsEnabled({ WEB_FEATURES: "admin-chains" })).toBe(true);
+    expect(automationsEnabled({ WEB_FEATURES: "admin-chainsx" })).toBe(false);
+    expect(automationsEnabled({ WEB_FEATURES: "admin-usage" })).toBe(false);
   });
 
   for (const features of [undefined, "", "admin", "admin,usage,notices"]) {

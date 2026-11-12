@@ -1,6 +1,8 @@
 // Plan 4 Task 16: the broker role's grant to assume a customer's role for the CloudWatch connector, and the permissions boundary that must also allow it.
 // The grant is exact: one action, a role in another account only, and only with an external id that names a Rovara org. It exists on the hosted cloud
 // (named environment with agentxCloud) and nowhere else, and lives in the broker's orchestration managed policy (the group an sts action falls in).
+import { webFeatureNames } from "@agentx/cloud-contracts";
+import { automationsEnabled } from "../../packages/broker/src/chains/automations-gate.js";
 import { App } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
@@ -82,16 +84,30 @@ describe("the broker's grant to assume a customer's CloudWatch role", () => {
     }
   });
 
-  it("turns on the company admin console in the web app for a cloud environment only, and no placeholder page", () => {
+  it("turns on the company admin console and automations in the web app for a cloud environment only, and no placeholder page", () => {
     const variablesOf = (template: Template) => Object.entries(template.findResources("AWS::Lambda::Function") as Record<string, { Properties: { Environment?: { Variables?: Record<string, unknown> } } }>)
       .find(([id]) => /^Broker[0-9A-F]{8}$/.test(id))![1].Properties.Environment?.Variables;
     // WEB_FEATURES is one of the broker's packed settings (ENV-ROOM), never a variable of its own in a named environment.
     expect(variablesOf(cloud)?.["WEB_FEATURES"]).toBeUndefined();
-    expect(brokerSettingsIn(variablesOf(cloud) as Parameters<typeof brokerSettingsIn>[0]).webFeatures).toBe("admin");
+    // Owner decision 149: automations (`chains`) are on by default, beside the admin console; the placeholder pages (usage, describe) stay off.
+    expect(brokerSettingsIn(variablesOf(cloud) as Parameters<typeof brokerSettingsIn>[0]).webFeatures).toBe("admin-chains");
     for (const template of [stack({ cloud: false }), Template.fromStack(new ControlPlaneStack(new App(), "WebFeaturesLegacy"))]) {
       expect(brokerSettingsIn(variablesOf(template) as Parameters<typeof brokerSettingsIn>[0]).webFeatures).toBeUndefined();
       expect(variablesOf(template)?.["WEB_FEATURES"]).toBeUndefined();
     }
+  });
+
+  it("a fresh cloud install and an existing one with no explicit value both have automations on (owner decision 149)", () => {
+    const featuresOf = (template: Template) => brokerSettingsIn(Object.entries(template.findResources("AWS::Lambda::Function") as Record<string, { Properties: { Environment?: { Variables?: Record<string, unknown> } } }>)
+      .find(([id]) => /^Broker[0-9A-F]{8}$/.test(id))![1].Properties.Environment?.Variables).webFeatures;
+    // The list is a constant of the stack: a new install and an upgrade synthesize the same value, and the engine's own reader (the one the routes and the sweep use) reads it as on.
+    const fresh = featuresOf(stack({ cloud: true }));
+    const upgraded = featuresOf(stack({ cloud: true }));
+    expect(fresh).toBe(upgraded);
+    expect(automationsEnabled({ WEB_FEATURES: fresh })).toBe(true);
+    expect(webFeatureNames(fresh)).toEqual(["admin", "chains"]);
+    // The off state is still the stack's absence of the list: a legacy or non-cloud install never had the console or automations.
+    expect(automationsEnabled({ WEB_FEATURES: featuresOf(stack({ cloud: false })) })).toBe(false);
   });
 
   it("does not exist on a named environment without the cloud, nor on the legacy install", () => {

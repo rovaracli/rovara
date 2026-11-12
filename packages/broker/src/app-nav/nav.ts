@@ -1,4 +1,4 @@
-import { AppNavSchema, type AppNav, type OrgRole, type OrgRecord } from "@agentx/cloud-contracts";
+import { AppNavSchema, webFeatureNames, type AppNav, type OrgRole, type OrgRecord } from "@agentx/cloud-contracts";
 import { agentXError, type OrgId } from "@rovara-code/contracts";
 import { safeDisplayName } from "../developer/person-name.js";
 import { scriptTokensEnabled } from "../script-tokens/switch.js";
@@ -37,7 +37,7 @@ export function appNav(deps: AppNavDependencies, caller: NavCaller): Promise<App
  const [projects, live, home, sharedAgents, sharedSessions, org] = await Promise.all([sources.projects(caller), sources.live(caller), sources.home(caller), sources.sharedAgents(caller), sources.sharedSessions(caller), sources.org(caller)]);
  const names = [...new Set(projects.map(project => project.name))].sort().slice(0, 50);
  const rosters = await sources.rosters(caller, names);
- const features = new Set(deps.webFeatures.split(",").map(value => value.trim()));
+ const features = new Set(webFeatureNames(deps.webFeatures));
  return AppNavSchema.parse({
  me: { developerId: caller.developerId, name: safeDisplayName(caller.name, caller.developerId), orgRole: caller.orgRole, ...(caller.nameChosen === undefined ? {} : { nameChosen: caller.nameChosen }) },
  org: { name: org.name, ...(deps.hideTrial === true || orgTrial(org) === undefined ? {} : { trial: orgTrial(org) }) },

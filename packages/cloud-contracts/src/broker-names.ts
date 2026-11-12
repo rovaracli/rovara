@@ -142,6 +142,12 @@ export const BROKER_SETTINGS_VARIABLE = "AGENTX_SETTINGS";
 /** What a setting's value may be: letters, digits and `. _ : -`, at most 64 characters, or empty. */
 export const BROKER_SETTING_VALUE = /^[A-Za-z0-9._:-]{0,64}$/;
 
+/**
+ * The names in WEB_FEATURES (`wf`). The list was comma separated; a packed value cannot hold a comma (`BROKER_SETTING_VALUE`), so the stack joins the names with `-`
+ * (`admin-chains`, as UI_FLAGS_FORCE_OFF does), and a list set by hand may still use commas. No feature name has a hyphen. Spaces around a name are ignored; empty is none.
+ */
+export const webFeatureNames = (raw: string | undefined): string[] => (raw ?? "").split(/[,-]/u).map((name) => name.trim()).filter((name) => name !== "");
+
 export interface BrokerSettingSpec {
   /** The key in AGENTX_SETTINGS: two letters. */
   readonly code: string;
