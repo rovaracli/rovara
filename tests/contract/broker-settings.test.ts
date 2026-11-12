@@ -155,7 +155,7 @@ describe("the control plane wires each setting and name to what it came from", (
       githubAppCredentialRef: { Ref: "GitHubAppCredentialRef" },
       githubAppId: { Ref: "GitHubAppId" },
       developerGithubClientId: { Ref: "GitHubClientId" },
-      webFeatures: "admin",
+      webFeatures: "admin-chains",
       // 0.5.7: the optional custom domain's name ("" when none), passed through as the stack parameter.
       customDomain: { Ref: "CustomDomainName" },
     });

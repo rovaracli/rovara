@@ -166,6 +166,7 @@ function mount(element: ReturnType<typeof h>, options: { agent?: boolean; start?
   if (request.path.endsWith("/setup-agent") && request.method === "GET") return options.agent === true ? { status: 200, body: { status: "none", basedOnRevision: 2, limits: LIMITS } } : NOT_FOUND;
   if (request.path.endsWith("/setup-agent") && request.method === "POST") return { status: 200, body: { status: "running", basedOnRevision: 2, limits: LIMITS } };
   if (request.path.endsWith("/test-environment")) return NOT_FOUND;
+  if (request.path.endsWith("/branch-check")) return { status: 200, body: { revision: 2, blocked: false, repositories: [{ repository: "checkout-api", fullName: "acme/checkout-api", branch: "main", state: "has_files", alternatives: [], searchedAll: true, continued: false }] } };
   if (request.path.endsWith("/setup-check")) return { status: 202, body: { project: options.checked ?? detail({ status: "checking" }) } };
   if (request.path.endsWith("/code")) return options.start?.(request) ?? NOT_FOUND;
   if (/\/overview$/u.test(request.path)) { const base = projectFixture();return { status: 200, body: { ...base, you: { ...base.you, canStartWork: options.canStart !== false } } }; }

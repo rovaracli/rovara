@@ -3,7 +3,7 @@ import { restoreFixStart } from "./fix-start.js";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { WORKFLOW_LIVE_STEER_REAPPROVAL_MESSAGE, WORKFLOW_SETUP_CHANGED_FILES_MESSAGE, AGENTX_PREAMBLE_VERSION, PLAN_DOCUMENT_INFO_STRING, TEST_PROOF_ARTIFACT, UNDERSTAND_ARTIFACT_NAME, WORKFLOW_NO_CODE_CHANGE_MESSAGE, WORKFLOW_PLAN_MAX_BYTES, WorkItemProgressV1Schema, WorkflowDependencyResultSchema, agentXError, agentxPreambleSha256, createCandidateManifest, parseAgentClaim, groundingScenarioIds, parsePlanDocument, asksForPlanParts, planAnswerMissingParts, redactText, reportStatus, taskGraphDigest, taskGraphOrder, validateTaskGraph, type CheckReport, type SpecDraft, type SpecReviewResult, type SetupProposal, type SetupRunSummary, type PlanDocumentKind, type CandidateRepository, type WorkItemProgressV1, type WorkflowDependencyResult, type WorkflowFeedbackReviewReport, type WorkflowReviewReport, type E2EModelDayBudgetRequest, type E2EWorkflowAdmissionRef, AgentXError, BUDGET_EXHAUSTED_FAILURE_MESSAGE } from "@rovara-code/contracts";
 import { WorkerInvocationSchema, type WorkerInvocation } from "@agentx/cloud-contracts";
-import { readSetupProposalAnswer, setupProposalInstructions, setupProposalRetryPrompt } from "./setup-draft.js";
+import { emptyRepositoriesError, emptyRepositoriesOf, nothingToSetUpError, readSetupProposalAnswer, setupProposalInstructions, setupProposalRetryPrompt } from "./setup-draft.js";
 import { testEnvDraftResult } from "./test-env-detect.js";
 import { applyTestEnvironmentPlan } from "./verification/test-env-plan.js";
 import { DIAGNOSIS_RETRY_PROMPT, cutDiagnosisAnswer, diagnosisInstructions, holdsJsonObject } from "./diagnosis.js";
@@ -1336,6 +1336,11 @@ async function runTask(
           options: { signal: verificationStop.signal },
         });
       } else if (workflowDependencies === undefined) {
+        // A setup draft of a project whose repositories hold no files fails here, before the model is asked anything: there is nothing to read, so nothing is spent, and the broker tells the person which branch is empty.
+        if (settingUpDraft && !diagnosing) {
+          const empty = await emptyRepositoriesOf(canonicalRoot, manifest.repositories, manifest.meta);
+          if (empty !== undefined) { monitor.stop(); throw agentXError("OPERATION_INTERRUPTED", emptyRepositoriesError(empty)); }
+        }
         await promptAndSettle(diagnosing ? `${invocation.payload.prompt}\n\n${diagnosisInstructions(manifest.repositories)}` : settingUpDraft ? `${invocation.payload.prompt}\n\n${setupProposalInstructions(manifest.repositories, { metaRepo: invocation.payload.setupMetaRepo })}` : specBinding !== undefined ? `${invocation.payload.prompt}\n\n${specWriteInstructions(specBinding)}` : taskPrompt);
       } else {
         const graph = workflowDependencies.graph;
@@ -1455,6 +1460,9 @@ async function runTask(
           read = await readSetupProposalAnswer(finalText ?? "", reading);
         }
         monitor.stop();
+        // The model said there is nothing to set up (and why) and the folders held nothing either: the person is told its reason, not that Rovara "stopped".
+        const nothing = nothingToSetUpError(read, finalText ?? "");
+        if (nothing !== undefined) throw agentXError("OPERATION_INTERRUPTED", nothing);
         if (!read.ok) throw agentXError("OPERATION_INTERRUPTED", "the setup draft run produced no readable proposal");
         outcome = "SUCCEEDED";
         await emit("result", { status: "SUCCEEDED", conversationId, workflowMode: "SETUP_DRAFT" });

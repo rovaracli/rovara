@@ -496,6 +496,18 @@ describe("plan, pull request and failure cards", () => {
     ]);
   });
 
+  it("offers Retry on an ended failure only where a retry starts a run: a task with no run to start again (a setup draft) gets Open and Dismiss (0.5.16)", async () => {
+    const w = world();
+    const session = w.failed({ title: "Draft the setup", agent: false });
+    const [card] = (await w.home(PRIYA)).cards;
+    expect(card!.buttons.map((button) => button.label)).toEqual(["Open session", "Dismiss"]);
+    // Positive control: the same failure with an agent run keeps its Retry.
+    const withRun = w.failed({ title: "Triage" });
+    const cards = (await w.home(PRIYA)).cards;
+    expect(cards.find((entry) => entry.cardId === `failure:${withRun.sessionId}`)!.buttons.map((button) => button.label)).toEqual(["Open session", "Retry", "Dismiss"]);
+    expect(cards.find((entry) => entry.cardId === `failure:${session.sessionId}`)).toBeDefined();
+  });
+
   it("cuts what failed to 120 characters", async () => {
     const w = world();
     w.failed({ step: `Failed: ${"x".repeat(150)}` });
@@ -610,6 +622,22 @@ describe("dismissing", () => {
     expect(await w.ids(PRIYA)).toEqual([`failure:${second.sessionId}`]);
     expect((await w.home(PRIYA)).total).toBe(1);
     expect(w.dismissed(PRIYA, `failure:${first.sessionId}`)).toMatchObject({ entityType: "HOME_DISMISSED", orgId: ORG_A, developerId: PRIYA, cardId: `failure:${first.sessionId}`, indexExpiresAt: Math.floor(T0 / 1000) + 30 * 86_400 });
+  });
+
+  it("takes an ended failure out of Home's cards and count when it is dismissed the way the Work list does (the card's own link, with the happening that ended), and not a later failure of it (0.5.16)", async () => {
+    const w = world();
+    const failure = w.failed({ minute: 1 });
+    w.failed({ minute: 2 });
+    expect((await w.home(PRIYA)).total).toBe(2);
+    const endedAt = (w.db.get(agentSessionKey(ORG_A, failure.sessionId, "META")) as Item)["endedAt"] as string;
+    const cardId = `failure:${failure.sessionId}`;
+    await w.call("POST", `/v1/app/home/cards/${encodeURIComponent(cardId)}/dismiss?occurrence=${encodeURIComponent(`ended:${endedAt}`)}`, PRIYA);
+    expect((await w.home(PRIYA)).total).toBe(1);
+    expect(w.dismissed(PRIYA, cardId)).toMatchObject({ occurrence: `ended:${endedAt}` });
+    // The session fails again (a new end): the dismissal was of the earlier happening, so the card is back.
+    const meta = w.db.get(agentSessionKey(ORG_A, failure.sessionId, "META")) as Item;
+    w.db.set({ ...meta, endedAt: new Date(Date.parse(endedAt) + 60_000).toISOString() });
+    expect((await w.home(PRIYA)).total).toBe(2);
   });
 
   it("is idempotent: a repeat answers the same and writes nothing, the first dismissal stands", async () => {

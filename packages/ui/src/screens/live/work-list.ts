@@ -1,4 +1,4 @@
-import { TASK_STATUS_WORDS, type FinishedAs, statusNeedsSomeone, taskStatusFromSession, type LiveFilterSchema } from "@agentx/cloud-contracts/web";
+import { TASK_STATUS_WORDS, type FinishedAs, taskStatusFromSession, type LiveFilterSchema } from "@agentx/cloud-contracts/web";
 import type { ReadLiveTile } from "../../api/live.js";
 import type { ReadFinishedTile } from "../../api/work-list.js";
 import { plainState, type LeadStatus, type PlainState } from "../session/task-plain-state.js";
@@ -41,7 +41,8 @@ export function liveStatus(tile: Pick<ReadLiveTile, "status" | "statusWords" | "
 
 /** States where Rovara itself is working, so Rovara is who acts next. Same five as the task page's automatic states (task-plain-state.ts keeps its set private). */
 const AUTOMATIC = new Set(["understanding", "planning", "reviewing_design", "building", "checking"]);
-const MAY_RETRY = new Set(["failed", "finished_run", "needs_you"]);
+/** States where a person who may close the task is who acts next (a run that finished and waits for its owner's word). Retry is not a reason: whether someone must act is the server's `needsYou`. */
+const MAY_CLOSE = new Set(["failed", "finished_run", "needs_you"]);
 
 export interface WorkRow {
  sessionId: string;
@@ -62,6 +63,8 @@ export interface WorkRow {
  place: { text: string; offline: boolean } | undefined;
  /** Present only on a live row: the controls and the approval link a tile carries. */
  live: Pick<ReadLiveTile, "actions" | "following" | "approvalUrl"> | undefined;
+ /** Only on a live row of a session that has ended (a failed one in Needs attention): it offers Open and Dismiss, and none of the controls an open session has. `dismiss` is present when the owner may dismiss it. */
+ ended: { endedAt: string; canDismiss: boolean } | undefined;
 }
 
 const ageOf = (iso: string | undefined, now: number): { ms: number; text: string } | undefined => {
@@ -69,11 +72,12 @@ const ageOf = (iso: string | undefined, now: number): { ms: number; text: string
  return Number.isFinite(at) ? { ms: Math.max(0, now - at), text: formatAge(now - at) } : undefined;
 };
 
-/** Who acts next, from the tile and nothing else. A decision waiting on me is mine; Rovara's own working states are Rovara's (never on a session running on someone's own machine, which Rovara does not run); a stopped, failed or finished run is mine only when I am offered Retry or Close. Everything else is not known. */
-export function nextActor(tile: Pick<ReadLiveTile, "needsYou" | "kind" | "actions">, state: string): string | undefined {
+/** Who acts next, from the tile and nothing else. A decision waiting on me (`needsYou`) is mine; Rovara's own working states are Rovara's (never on a session running on someone's own machine, which Rovara does not run); a stopped, failed or finished run is mine only when I am offered Close. An ended session has no next step. Everything else is not known. Being offered Retry says nothing about who must act. */
+export function nextActor(tile: Pick<ReadLiveTile, "needsYou" | "kind" | "actions"> & { endedAt?: string | undefined }, state: string): string | undefined {
+ if (tile.endedAt !== undefined) return undefined;
  if (tile.needsYou) return "You";
  if (AUTOMATIC.has(state)) return tile.kind === "local" ? undefined : "Rovara";
- if (MAY_RETRY.has(state) && (tile.actions.includes("retry") || tile.actions.includes("close"))) return "You";
+ if (MAY_CLOSE.has(state) && tile.actions.includes("close")) return "You";
  return undefined;
 }
 
@@ -84,15 +88,19 @@ function placeOf(where: { kind: string; label?: unknown; offline?: unknown }): W
 }
 
 export function rowFromLive(tile: ReadLiveTile, now: number): WorkRow {
- const status = liveStatus(tile), state = plainState(status, undefined), age = ageOf(tile.updatedAt, now);
- // Marked only where this viewer can do something about it: a decision waiting on them, or work that needs someone and they are offered Retry, Close or Approve (a teammate's failed task they cannot touch is not).
- const attention = tile.needsYou || (statusNeedsSomeone(status) && (tile.actions.includes("retry") || tile.actions.includes("close") || tile.approvalUrl !== undefined));
+ const status = liveStatus(tile), age = ageOf(tile.updatedAt, now), plain = plainState(status, undefined);
+ // An ended failed session says so: it is over, and what is left to do is open it or dismiss it.
+ const ended = tile.endedAt === undefined ? undefined : { endedAt: tile.endedAt, canDismiss: tile.canDismiss === true };
+ const state = ended !== undefined && status.state === "failed" ? { ...plain, label: plain.label + " (ended)" } : plain;
+ // Marked only where this viewer is the one to act: a decision waiting on them (`needsYou`), a failure they may dismiss (`canDismiss`: theirs, ended, still in Needs attention), or a decision they may approve. Being offered Retry or Close is not a reason (a teammate's failed task they can touch is not theirs to act on).
+ const attention = tile.needsYou || ended?.canDismiss === true || tile.approvalUrl !== undefined;
  return {
   sessionId: tile.sessionId, title: tile.title, project: tile.project, agent: tile.agent?.name, state, attention,
   age: age === undefined ? undefined : age.text === "<1 min" ? "updated just now" : "updated " + age.text + " ago",
   ageMs: age?.ms ?? 0, since: age === undefined ? undefined : tile.updatedAt, next: nextActor(tile, status.state),
   place: placeOf(tile.where),
   live: { actions: tile.actions, following: tile.following, approvalUrl: tile.approvalUrl },
+  ended,
  };
 }
 
@@ -116,7 +124,7 @@ export function rowFromFinished(tile: ReadFinishedTile, now: number): WorkRow {
  return {
   sessionId: tile.sessionId, title: tile.title, project: tile.project, agent: tile.agent?.name, state: finishedState(tile.finishedAs, plainState(status, undefined)), attention: false,
   age: age === undefined ? undefined : age.text === "<1 min" ? "finished just now" : "finished " + age.text + " ago", ageMs: age?.ms ?? 0, since: age === undefined ? undefined : endedAt,
-  next: undefined, place: placeOf({ kind: tile.where.kind, label: tile.where.kind === "mac" ? tile.where.label : undefined }), live: undefined,
+  next: undefined, place: placeOf({ kind: tile.where.kind, label: tile.where.kind === "mac" ? tile.where.label : undefined }), live: undefined, ended: undefined,
  };
 }
 

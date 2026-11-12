@@ -121,6 +121,8 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
  if (await homeV2Mock({ url, method, json, scenario: current, record: () => undefined, body: async () => { let text = "";for await (const chunk of request) text += String(chunk);return JSON.parse(text) as unknown; } })) return;
  const evidence: { method: string; path: string; body?: unknown } = { method, path: url.pathname };requests.push(evidence);
  if (current.name === "onboarding" && await projectSetupMock({ url, method, json, scenario: current, record: value => { evidence.body = value; }, body: async () => { let text = "";for await (const chunk of request) text += String(chunk);return text === "" ? {} : JSON.parse(text) as unknown; } }, { get: () => onboardingProject, set: value => { onboardingProject = value; } })) return;
+ // 0.5.16: the default-branch check answers "nothing to ask" (no code repository to name) for every journey that does not play it, so the setup step opens as it always did. default-branch-check.e2e.ts plays it in the onboarding scenario.
+ if (method === "GET" && /^\/v1\/web\/projects\/[^/]+\/branch-check$/u.test(url.pathname)) { json(200, { revision: 1, blocked: false, repositories: [] });return; }
  if(url.pathname.startsWith("/review/"+TASK_PAGE_FIXTURE_ID+"/task")){
  let body:string|undefined;if(method==="POST"){body="";for await(const chunk of request)body+=String(chunk);evidence.body=JSON.parse(body) as unknown;}
  const result=await taskPage.web({method,path:url.pathname,headers,requestId:"mock-task-page",...(body===undefined?{}:{body})},url);response.writeHead(result.statusCode,result.headers);response.end(result.body);return;
@@ -324,6 +326,8 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
  if (url.pathname === "/v1/web/org/members" && method === "GET") { json(200, AppOrgMembersResponseSchema.parse({ members: [{ developerId: FIXTURE_DEVELOPER, name: "Priya", role: "member", identities: ["cloud"], joinedAt: "2026-10-23T12:00:00.000Z" }, { developerId: "b".repeat(64), name: "Arjun", role: "member", identities: ["cloud"], joinedAt: "2026-10-23T12:00:00.000Z" }] }));return; }
  if (url.pathname === "/v1/web/projects" && method === "GET") { json(200, { projects: [] });return; }
  }
+ // Home's dismissal of a failure, as the Work list's Dismiss sends it: the failed session leaves the lists the way the broker leaves it out of Needs attention.
+ if (current.work !== undefined && method === "POST" && /^\/v1\/web\/home\/cards\/[^/]+\/dismiss$/.test(url.pathname)) { const cardId = decodeURIComponent(url.pathname.split("/")[5]!);for (const key of ["mine", "team", "needs_me", "failed"] as const) current.work[key] = current.work[key].filter(tile => "failure:" + tile.sessionId !== cardId);json(200, { cardId, dismissed: true });return; }
  if (current.work !== undefined && (url.pathname === "/v1/web/live" || url.pathname === "/v1/web/sessions") && method === "GET") { json(200, workAnswer(current.work, url));return; }
  if (url.pathname === "/v1/web/live" && method === "GET") { json(200, LiveResponseSchema.parse({ tiles: (current.live ?? []).filter(tile => (url.searchParams.get("filter") !== "needs_me" || tile.needsYou) && (!url.searchParams.has("project") || tile.project === url.searchParams.get("project"))) }));return; }
  if (url.pathname === "/v1/web/home") { json(200, current.name === "project" ? homeFixture({ cards: [...homeSuggestionCards(), ...intakeHomeCards(origin)] as never }) : current.home);return; }

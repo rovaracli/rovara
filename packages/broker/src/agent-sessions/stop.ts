@@ -6,7 +6,7 @@
 // item (so a repeat answers the stored outcome), the session's `stopped` event and the audit item.
 import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import { ENDED_SESSION_STATUSES, INDEX_EXPIRY_ATTRIBUTE, SESSION_ENDED_MESSAGE, agentSessionKey, agentXError, cleanSessionName, sessionEventId, type AgentSessionRecord, type CodeIntentResult, type OrgId } from "@rovara-code/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, SESSION_ENDED_MESSAGE, agentSessionKey, agentXError, cleanSessionName, sessionEventId, type AgentSessionRecord, type CodeIntentResult, type OrgId } from "@rovara-code/contracts";
 import { type SessionView, type SessionCloseResponseSchema } from "@agentx/cloud-contracts";
 import { LOCAL_STOPS_PER_HOUR, LOCAL_STOP_RATE_MESSAGE, type DeveloperTaskView } from "@agentx/cloud-contracts";
 import type { AgentRunRequest, AgentRunResult } from "../agents/runs.js";
@@ -18,7 +18,7 @@ import { auditActorOf } from "../audit/plan3-hooks.js";
 import { taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
 import { MAC_NOT_AVAILABLE_MESSAGE, commandableDevice } from "../devices/local-facts.js";
 import { LOCAL_HOUR_MS, announceDeviceCommand, deviceCommandItems, limitStep } from "../devices/local-sessions.js";
-import { requireSessionLevel, type ChainSessionActor, type SessionAccess } from "./access.js";
+import { requireSessionLevel, sessionHasEnded, type ChainSessionActor, type SessionAccess } from "./access.js";
 import { sessionView, type SessionReadCaller, type SessionReadDependencies } from "./read.js";
 import { tell } from "./take-over.js";
 import { refreshSessionSummary } from "./summary.js";
@@ -129,7 +129,7 @@ export function controlRequestItem(deps: Pick<SessionReadDependencies, "tableNam
   };
 }
 
-export const isEnded = (session: AgentSessionRecord): boolean => session.endedAt !== undefined || (ENDED_SESSION_STATUSES as readonly string[]).includes(session.summary.status);
+export const isEnded = (session: AgentSessionRecord): boolean => sessionHasEnded(session);
 
 /** A task of the session's own org, or undefined. */
 export async function taskOfSession(deps: SessionReadDependencies, session: AgentSessionRecord): Promise<DeveloperTaskRecord | undefined> {

@@ -593,6 +593,37 @@ describe("what the first round of mutation showed was not yet pinned", () => {
     expect(w.calls.workflow).toEqual([]);
   });
 
+  it("refuses an ended session that kept no run to start again with its own code and words naming the way on, and starts nothing (0.5.16)", async () => {
+    const w = world();
+    const { sessionId, taskId } = w.agentRun("FAILED");
+    // The run's record is gone (or was never kept): the session is an agent task with nothing to start from.
+    w.db.delete(taskAgentRunKey(taskId));
+    expect(await code(w.retry(MAX, sessionId))).toEqual({ code: "SESSION_ENDED", message: "This task has ended and has no run to retry. Start a new task." });
+    expect(w.calls.start).toEqual([]);
+    // Positive control: the same refusal for a session that has NOT ended keeps the older words, and a session with its run still retries.
+    const open = w.agentRun("FAILED");
+    w.db.delete(taskAgentRunKey(open.taskId));
+    w.patchSession(open.sessionId, { endedAt: undefined, summary: { ...(w.meta(open.sessionId).summary as Item), status: "running" } });
+    expect(await code(w.retry(MAX, open.sessionId))).toEqual({ code: "CONFIG_INVALID", message: NOTHING });
+    const kept = w.agentRun("FAILED");
+    await w.retry(MAX, kept.sessionId);
+    expect(w.calls.start).toHaveLength(1);
+  });
+
+  it("tells a setup draft's session to draft the setup again from the project's page, whatever state it is in, and starts nothing (0.5.16)", async () => {
+    const w = world();
+    const { sessionId, taskId } = w.seedSession();
+    w.patchTask(taskId, { purpose: "setup_draft", client: "Rovara" });
+    w.patchSession(sessionId, { endedAt: "2026-10-22T08:30:00.000Z", summary: { ...(w.meta(sessionId).summary as Item), status: "failed" } });
+    expect(await code(w.retry(MAX, sessionId))).toEqual({ code: "CONFIG_INVALID", message: "Draft the setup again from the project's page." });
+    expect(w.calls.start).toEqual([]);
+    expect(w.calls.workflow).toEqual([]);
+    // Positive control: the same session without the purpose gets the plain-task words, so the refusal above is the purpose's.
+    const plain = w.seedSession();
+    w.patchSession(plain.sessionId, { endedAt: "2026-10-22T08:30:00.000Z", summary: { ...(w.meta(plain.sessionId).summary as Item), status: "failed" } });
+    expect((await code(w.retry(MAX, plain.sessionId)))?.message).not.toBe("Draft the setup again from the project's page.");
+  });
+
   it("reads a session as ended by its end time alone, or by its ending status alone", async () => {
     const w = world();
     const byTime = w.blocked();

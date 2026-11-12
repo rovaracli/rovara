@@ -10,6 +10,7 @@ import { TextArea } from "../../../design/TextArea.js";
 import { TextField } from "../../../design/TextField.js";
 import { VisibleText } from "../../../design/VisibleText.js";
 import { DEFAULT_RUN_ESTIMATE_USD } from "@agentx/cloud-contracts/web";
+import { DefaultBranchGate } from "./DefaultBranchGate.js";
 import { ProposalReview } from "./ProposalReview.js";
 import { setupFailureOf } from "./setup-failure.js";
 /** UX-4b: what asking costs, before the press: a draft is a paid run limited like a Quick task, paid by the same rules as any task. */
@@ -23,7 +24,14 @@ const SetupRunSection = lazy(() => import("../../setup/SetupRunSection.js"));
 const SettingsProofSection = lazy(() => import("./SettingsProofSection.js"));
 /** How often the check of a draft's commands is asked after, and how long this page waits for it before it says to press again (the broker fails a stalled check at 50 minutes). */
 const CHECK_POLL_MS=10_000,CHECK_WAIT_MS=60*60_000;
-export function SetupStep({project,onProject,onNext,refresh,nextLabel="Continue to agents"}:{project:AppProjectDetail;onProject:(project:AppProjectDetail)=>void;onNext:()=>void;refresh:()=>void;nextLabel?:string}){
+type SetupStepProps={project:AppProjectDetail;onProject:(project:AppProjectDetail)=>void;onNext:()=>void;refresh:()=>void;nextLabel?:string};
+/** 0.5.16: the default branch is checked on GitHub before any of this (the draft, the setup run, the commands) is shown; see DefaultBranchGate. */
+export function SetupStep(props:SetupStepProps){
+ // A branch chosen in the gate is a new revision of the project: the form starts again from it (any other revision change leaves the form pinned to the one it was opened on, as it always has).
+ const [branchChanges,setBranchChanges]=useState(0);
+ return <DefaultBranchGate project={props.project} onProject={value=>{setBranchChanges(count=>count+1);props.onProject(value);}}><SetupStepBody key={branchChanges} {...props}/></DefaultBranchGate>;
+}
+export function SetupStepBody({project,onProject,onNext,refresh,nextLabel="Continue to agents"}:SetupStepProps){
  const api=useOnboardingApi(),[revision,setRevision]=useState(project.latestRevision),[setup,setSetup]=useState(project.settings.setupCommands.join("\n")),[tests,setTests]=useState(project.settings.testCommands.join("\n")),[repository,setRepository]=useState(project.settings.devcontainer?.repository??""),[config,setConfig]=useState(project.settings.devcontainer?.configPath??""),[busy,setBusy]=useState(false),[error,setError]=useState<string>(),[intent,setIntent]=useState(()=>crypto.randomUUID());
  const [sent,setSent]=useState<string>(),queryClient=useQueryClient(),checking=project.setup.status==="checking",host=useAppHost(),[pendingUrl,setPendingUrl]=useState<string>();
  // Rovara proposes (Task 18b): the draft runs on a machine of its own; this page asks, then reads the answer until it is ready or failed.

@@ -1,4 +1,5 @@
 import { createHash, createSign } from "node:crypto";
+import { BRANCH_INSPECTED_MAX, BRANCH_SUGGESTIONS_MAX } from "@agentx/cloud-contracts";
 import { commitFilesOn, deleteBranchOn, type CommitFilesRequest } from "./github-commit-files.js";
 import { COMPANY_RULES_BRANCH_PATTERN } from "./company-rules/path.js";
 import { GitBranchNameSchema, HostRateLimitError, LESSON_FILE_BRANCH_PATTERN, OrgIdSchema, PULL_REQUEST_BODY_MAX_CHARS, agentXError, createCandidateManifest, githubNotConnectedMessage, isSafeE2ESourcePath, redactText, type AgentXError, type E2ESourceSnapshot, type OrgId } from "@rovara-code/contracts";
@@ -321,6 +322,16 @@ export interface AgentRepositoryReader {
 export interface AgentRepositoryLabel { id: number; nodeId: string; name: string }
 
 const AGENT_READ_TIMEOUT_MS = 8_000;
+/** Git's empty tree: the tree of a commit that holds no file (what an "Initial commit" with nothing in it points at). */
+export const GIT_EMPTY_TREE_SHA = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+/** The default-branch check's reads (see `probeBranches`): each one bounded, and the list one page of this many names. */
+const BRANCH_PROBE_TIMEOUT_MS = 6_000;
+const BRANCH_LIST_MAX = 100;
+/** One branch as the check read it: whether its tree is empty and when its newest commit was made. */
+export interface BranchProbeEntry { name: string; empty: boolean; lastCommitAt?: string }
+/** `branch` is undefined when the repository has no such branch. `others` are the branches that have files, newest commit first. */
+export interface RepositoryBranchProbe { branch: BranchProbeEntry | undefined; others: BranchProbeEntry[]; searchedAll: boolean }
+
 /** GitHub lists at most this many entries of a directory in one answer, so a listing this long may be cut short. */
 const DIRECTORY_LISTING_LIMIT = 1_000;
 const AGENT_LABEL_PAGES = 10;
@@ -1790,6 +1801,40 @@ export class GitHubAppCredentialProvider {
       throw agentXError("RUNTIME_UNAVAILABLE", "GitHub returned an invalid branch reference");
     }
     return target.sha;
+  }
+
+  /**
+   * 0.5.16, the default-branch check: does `branch` hold files, and when it does not, which other branches do. Read through the org's own installation (the same token path every repository read takes:
+   * `installed` refuses a repository another company's installation holds, with GITHUB_NOT_CONNECTED), with `contents: read` and nothing more. A branch is empty when its commit's tree is
+   * git's empty tree. The other branches come from the first 100 of the repository's list (alphabetical, as GitHub gives it); only the first `BRANCH_INSPECTED_MAX` are looked into, one read each, and
+   * `searchedAll` says whether that was every branch. Anything GitHub cannot answer throws RUNTIME_UNAVAILABLE; a repository with no branch at all answers `branch: undefined` and no others.
+   */
+  async probeBranches(repositoryUrl: string, branch: string, scope: GitHubTokenScope): Promise<RepositoryBranchProbe> {
+    if (!GitBranchNameSchema.safeParse(branch).success) throw agentXError("CONFIG_INVALID", "branch name is invalid");
+    const repository = await this.installed(parseGitHubRepository(repositoryUrl), scope);
+    const token = await this.readTokenFor(repository, scope);
+    const base = `https://api.github.com/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}`;
+    const get = (path: string): Promise<Response> => this.fetchImplementation(`${base}${path}`, { headers: githubHeaders(token), signal: AbortSignal.timeout(BRANCH_PROBE_TIMEOUT_MS), redirect: "error" });
+    const entry = async (name: string): Promise<BranchProbeEntry | undefined> => {
+      const response = await get(`/branches/${name.split("/").map(encodeURIComponent).join("/")}`);
+      if (response.status === 404) { await response.body?.cancel(); return undefined; }
+      if (!response.ok) { await response.body?.cancel(); throw agentXError("RUNTIME_UNAVAILABLE", `GitHub branch lookup failed with HTTP ${response.status}`); }
+      const value = feedbackRecord(await response.json());
+      const commit = feedbackRecord(value.commit), inner = feedbackRecord(commit.commit), tree = feedbackRecord(inner.tree), committer = feedbackRecord(inner.committer);
+      if (typeof tree.sha !== "string" || !/^[a-f0-9]{40}$/u.test(tree.sha)) throw agentXError("RUNTIME_UNAVAILABLE", "GitHub returned an invalid branch response");
+      return { name, empty: tree.sha === GIT_EMPTY_TREE_SHA, ...(typeof committer.date === "string" ? { lastCommitAt: committer.date } : {}) };
+    };
+    const head = await entry(branch);
+    if (head !== undefined && !head.empty) return { branch: head, others: [], searchedAll: true };
+    const listed = await get(`/branches?per_page=${String(BRANCH_LIST_MAX)}`);
+    if (!listed.ok) { await listed.body?.cancel(); throw agentXError("RUNTIME_UNAVAILABLE", `GitHub branch list failed with HTTP ${listed.status}`); }
+    const rows: unknown = await listed.json();
+    if (!Array.isArray(rows) || rows.length > BRANCH_LIST_MAX) throw agentXError("RUNTIME_UNAVAILABLE", "GitHub returned an invalid branch list");
+    const names = rows.map((row) => feedbackRecord(row).name).filter((name): name is string => typeof name === "string" && name !== branch && name !== "HEAD" && !name.startsWith("refs/") && GitBranchNameSchema.safeParse(name).success);
+    const inspected = await Promise.all(names.slice(0, BRANCH_INSPECTED_MAX).map(entry));
+    const others = inspected.filter((found): found is BranchProbeEntry => found !== undefined && !found.empty)
+      .sort((a, b) => (b.lastCommitAt ?? "").localeCompare(a.lastCommitAt ?? "") || a.name.localeCompare(b.name)).slice(0, BRANCH_SUGGESTIONS_MAX);
+    return { branch: head, others, searchedAll: rows.length < BRANCH_LIST_MAX && names.length <= BRANCH_INSPECTED_MAX };
   }
 
   /** GitHub's immutable tree object identifies code content independently of publication commit metadata. */

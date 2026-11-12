@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { SessionWhereSchema, LIVE_PAGE_MAX, AGENT_SESSION_CONTRACT_VERSION, AGENTX_NAME_PATTERN, ChainRunViewSchema, CountSchema, ErrorRefSchema, forwardReader, InstantSchema, LocalToolSchema, PRESENCE_VIEWERS_MAX, SESSION_ACTIONS, SESSION_ANCHORS_MAX, SESSION_KINDS, SESSION_LEGS_MAX, SESSION_LEVELS, SESSION_MODES, SessionActionSchema, SessionAgentSchema, SessionAnchorRefSchema, SessionIdSchema, SessionLegSchema, SessionOwnerSchema, SessionStartedBySchema, SessionSummarySchema, SessionWhereViewSchema, TaskStatusSchema } from "@rovara-code/contracts";
+import { LiveTileSchema as CodeLiveTileSchema, SessionWhereSchema, LIVE_PAGE_MAX, AGENT_SESSION_CONTRACT_VERSION, AGENTX_NAME_PATTERN, ChainRunViewSchema, CountSchema, ErrorRefSchema, forwardReader, InstantSchema, LocalToolSchema, PRESENCE_VIEWERS_MAX, SESSION_ACTIONS, SESSION_ANCHORS_MAX, SESSION_KINDS, SESSION_LEGS_MAX, SESSION_LEVELS, SESSION_MODES, SessionActionSchema, SessionAgentSchema, SessionAnchorRefSchema, SessionIdSchema, SessionLegSchema, SessionOwnerSchema, SessionStartedBySchema, SessionSummarySchema, SessionWhereViewSchema, TaskStatusSchema } from "@rovara-code/contracts";
 import { DeveloperTaskViewSchema } from "./developer-tasks.js";
 import { FinishedAsSchema } from "./finished-as.js";
 
@@ -149,3 +149,25 @@ export const SessionListSchema = z.object({
 export type SessionList = z.infer<typeof SessionListSchema>;
 
 export const SessionListReaderSchema = forwardReader(SessionListSchema);
+
+// ---- the Live wall's tile, with whether the session ended and whether its owner may dismiss it (this lane, 0.5.16): Code's tile plus two optional fields. Owed upstream: see owed-upstream.json.
+
+/**
+ * One session on the Live wall (Code's tile) and two facts the Work list needs about an ENDED session: `endedAt` (when it ended; absent on an open one, so a row can say "Failed (ended)" and never offer what
+ * only an open session takes), and `canDismiss` (an ended failed session its owner may dismiss: the same dismissal Home's failure card keeps, so it leaves Needs attention and Home's count together).
+ */
+export const LiveTileSchema = CodeLiveTileSchema.extend({
+  endedAt: InstantSchema.optional(),
+  canDismiss: z.literal(true).optional(),
+});
+
+export type LiveTile = z.infer<typeof LiveTileSchema>;
+
+export const LiveTileReaderSchema = forwardReader(LiveTileSchema);
+
+/** `GET /v1/app/live?filter=&project=&cursor=`: one page of tiles, newest session first; `next` is opaque, passed back as `cursor`. */
+export const LiveResponseSchema = z.object({ tiles: z.array(LiveTileSchema).max(LIVE_PAGE_MAX), next: z.string().min(1).max(200).optional() }).strict();
+
+export type LiveResponse = z.infer<typeof LiveResponseSchema>;
+
+export const LiveResponseReaderSchema = forwardReader(LiveResponseSchema);

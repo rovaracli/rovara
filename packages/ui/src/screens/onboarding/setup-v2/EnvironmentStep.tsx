@@ -8,10 +8,11 @@ import { ApiError } from "../../../api/errors.js";
 import { Button } from "../../../design/Button.js";
 import { VisibleText } from "../../../design/VisibleText.js";
 import { RECOVERY_LABEL, codeRepositoriesOf, recoveryChoices, repoCheckModel, type MetaRepositoryRef, type Recovery, type RepoRow } from "./repo-check.js";
+import { DefaultBranchGate } from "../steps/DefaultBranchGate.js";
 import type { SetupFailure } from "../steps/setup-failure.js";
 
 // The full setup screen (commands, the test environment, proof) is the "Edit the setup" recovery, in its own chunk; the setup run is the "Fix with the setup agent" recovery.
-const SetupStep = lazy(async () => ({ default: (await import("../steps/SetupStep.js")).SetupStep }));
+const SetupStep = lazy(async () => ({ default: (await import("../steps/SetupStep.js")).SetupStepBody }));
 const SetupRunSection = lazy(() => import("../../setup/SetupRunSection.js"));
 
 function Failure({ failure }: { failure: SetupFailure }) {
@@ -22,7 +23,10 @@ function Failure({ failure }: { failure: SetupFailure }) {
  * Environment check per repository. The check itself is one check of the whole project (see repo-check.ts), so the rows share it: each says its own status, the failing step in plain words, and one recovery to press.
  * "Retry the check" runs the same existing check; "Fix with the setup agent" is offered only where the setup agent is on; "Edit the setup" opens the existing setup screen below.
  */
-export function EnvironmentStep({ project, metaRepository, onProject, refresh, onNext, nextLabel = "Continue to agents" }: { project: AppProjectDetail; metaRepository?: MetaRepositoryRef | undefined; onProject: (project: AppProjectDetail) => void; refresh: () => void; onNext: () => void; nextLabel?: string }) {
+type EnvironmentStepProps = { project: AppProjectDetail; metaRepository?: MetaRepositoryRef | undefined; onProject: (project: AppProjectDetail) => void; refresh: () => void; onNext: () => void; nextLabel?: string };
+/** 0.5.16: the default branch is checked on GitHub before the environment check, the setup agent or the editor are offered; see DefaultBranchGate. */
+export function EnvironmentStep(props: EnvironmentStepProps) { return <DefaultBranchGate project={props.project} onProject={props.onProject}><EnvironmentStepBody {...props} /></DefaultBranchGate>; }
+function EnvironmentStepBody({ project, metaRepository, onProject, refresh, onNext, nextLabel = "Continue to agents" }: EnvironmentStepProps) {
  const api = useOnboardingApi(), agentApi = useSetupAgentApi(), envApi = useTestEnvironmentApi();
  const [busy, setBusy] = useState<Recovery>(), [error, setError] = useState<string>(), [panel, setPanel] = useState<"agent" | "edit">(), panelRef = useRef<HTMLDivElement>(null);
  // Reads that only add detail: with the test environment or the setup agent off, the server answers "not found" and the page simply offers less.

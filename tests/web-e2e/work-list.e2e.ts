@@ -21,7 +21,7 @@ async function focusVisible(page: Page) {
  await page.keyboard.press("Tab");await page.keyboard.press("Tab");await page.keyboard.press("Tab");
  return page.evaluate(() => { const node = document.activeElement;if (node === null || node === document.body) return "none";const style = getComputedStyle(node);return style.outlineStyle !== "none" && parseFloat(style.outlineWidth) >= 2 ? "visible" : "hidden"; });
 }
-const TITLES = { retry: "Add retry to the payout job", plan: "Review the plan for duplicate refunds", export: "Speed up the invoice export", ledger: "Try the new ledger query", team: "Check refund idempotency", merged: "Fix the rounding bug in tax totals", twice: "Why were customers refunded twice?" };
+const TITLES = { draft: "Draft the setup for rovara-orchestrator", retry: "Add retry to the payout job", plan: "Review the plan for duplicate refunds", export: "Speed up the invoice export", ledger: "Try the new ledger query", team: "Check refund idempotency", merged: "Fix the rounding bug in tax totals", twice: "Why were customers refunded twice?" };
 const rowOf = (page: Page, title: string) => page.locator(".rv-work-row", { has: page.getByRole("heading", { name: title, exact: true }) });
 
 
@@ -60,7 +60,7 @@ test("at 390: Team, Needs attention and Finished, and the project filter", async
  await enter(page, context, request, baseURL, 390, {});await page.goto("/app/live");
  await expect(page.getByRole("heading", { name: TITLES.export })).toBeVisible();
  await page.getByRole("tab", { name: "Team" }).click();await expect(page).toHaveURL(/view=team/u);await expect(page.locator(".rv-work-title")).toHaveText([TITLES.team]);await expect(rowOf(page, TITLES.team)).toContainText("Checking");await expect(page.getByText("Work on projects you're part of")).toBeVisible();
- await page.getByRole("tab", { name: "Needs attention" }).click();await expect(page.locator(".rv-work-title")).toHaveText([TITLES.plan, TITLES.retry]);expect(await noSidewaysScroll(page)).toBe(true);await evidenceShot(page, { path: `${shots}/attention-390.png`, fullPage: true });
+ await page.getByRole("tab", { name: "Needs attention" }).click();await expect(page.locator(".rv-work-title")).toHaveText([TITLES.draft, TITLES.plan, TITLES.retry]);expect(await noSidewaysScroll(page)).toBe(true);await evidenceShot(page, { path: `${shots}/attention-390.png`, fullPage: true });
  const scoped = page.waitForRequest(asked => /\/v1\/web\/sessions\?/u.test(asked.url()) && asked.url().includes("scope=company") && asked.url().includes("status=ended"));
  await page.getByRole("tab", { name: "Finished" }).click();await scoped;await expect(page.locator(".rv-work-title")).toHaveText([TITLES.merged, TITLES.twice]);
  // How each ended (`finishedAs`), and the note that the company-wide list leaves some projects out.
@@ -72,3 +72,30 @@ test("at 390: Team, Needs attention and Finished, and the project filter", async
  // An old Live link still lands on the right view.
  await page.goto("/app/live?filter=needs_me");await expect(page.getByRole("tab", { name: "Needs attention" })).toHaveAttribute("aria-selected", "true");
 });
+
+for (const width of [390, 1280] as const) {
+ test(`at ${String(width)}: an ended failed session reads Failed (ended) with Open and Dismiss, offers no Stop or Retry, and is accessible`, async ({ page, context, request, baseURL }) => {
+  // Two axe runs and a full-page picture are slow in WebKit at a phone width.
+  test.setTimeout(90_000);
+  await enter(page, context, request, baseURL, width, {});await page.goto("/app/live?view=attention");
+  const ended = rowOf(page, TITLES.draft);await expect(ended).toBeVisible();
+  await expect(ended).toContainText("Failed (ended)");await expect(ended).not.toContainText("Next:");await expect(ended).toHaveAttribute("data-attention", "true");
+  await expect(ended.getByRole("button")).toHaveText(["Open", "Dismiss"]);
+  for (const name of ["Stop", "Retry", "Follow", "Take over"]) await expect(ended.getByRole("button", { name, exact: true })).toHaveCount(0);
+  // An open failed row still has its own controls (positive control): Retry is the owner's there.
+  await expect(rowOf(page, TITLES.retry).getByRole("button", { name: "Retry", exact: true })).toBeVisible();await expect(rowOf(page, TITLES.retry)).toContainText("Next: You");
+  expect(await noSidewaysScroll(page)).toBe(true);
+  // The Project select is a native control whose height macOS WebKit reports differently (a known, existing difference in the tests above); this test is about the rows' own buttons.
+  if (width < 768) expect((await smallTargets(page)).filter(target => !target.startsWith("SELECT"))).toEqual([]);
+  await evidenceShot(page, { path: `${shots}/attention-ended-${String(width)}.png`, fullPage: true });
+  await checkA11y(page, { theme: "light" });await checkA11y(page, { theme: "dark" });
+ });
+ test(`at ${String(width)}: dismissing an ended failed session sends Home's dismissal for the happening that ended, and the row leaves Needs attention`, async ({ page, context, request, baseURL }) => {
+  await enter(page, context, request, baseURL, width, {});await page.goto("/app/live?view=attention");
+  const ended = rowOf(page, TITLES.draft);await expect(ended).toBeVisible();
+  const dismissed = page.waitForRequest(asked => asked.method() === "POST" && asked.url().includes("/v1/web/home/cards/failure%3A") && asked.url().includes("occurrence=ended%3A"));
+  // By keyboard: macOS WebKit at a phone width scrolls the page on a button's mousedown, so the pointer's mouseup lands elsewhere and no click happens (it does for every button in this list, not only this one).
+  await ended.getByRole("button", { name: "Dismiss", exact: true }).focus();await page.keyboard.press("Enter");await dismissed;
+  await expect(page.locator(".rv-work-title")).toHaveText([TITLES.plan, TITLES.retry]);await expect(rowOf(page, TITLES.draft)).toHaveCount(0);
+ });
+}

@@ -19,6 +19,7 @@ import type { SessionRecord } from "../../developer/store.js";
 import { confirmSetupAgent, type SetupConfirmDependencies } from "../../rovara-code/setup-confirm.js";
 import { listHostAsks } from "../../rovara-code/setup-host-ask.js";
 import { readSetupJournal } from "../../rovara-code/setup-journal.js";
+import { branchGateOf } from "./branch-check.js";
 import { signInStoreOf } from "./common.js";
 import { agentRunStarterOf, developerTaskRouteDependencies } from "./dependencies.js";
 import { projectRoleForRoute } from "./project-members.js";
@@ -86,6 +87,7 @@ export function setupAgentDepsOf(deps: DeveloperRouteDependencies, env: NodeJS.P
     limitSettings: limitSettingsOf(setupLimitsDepsOf(deps)),
     requireFreshSignIn: async (who) => { await requireFreshSignIn(deps, who); },
     modelAccessConfigured: deps.modelAccess !== undefined,
+    branchGate: branchGateOf(deps),
     // F5: "stopped by <person>" shows the name the company knows.
     stopperName: async (_orgId, developerId) => (await signInStoreOf(deps).getDevelopers([developerId])).get(developerId)?.displayName,
     ...(deps.setupCitationReader === undefined ? {} : { readFile: deps.setupCitationReader }),

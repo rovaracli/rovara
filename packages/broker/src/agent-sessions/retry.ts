@@ -20,7 +20,7 @@ import { auditSessionRetried } from "../audit/events.js";
 import { auditPending, tryAuditEvents } from "../audit/outbox.js";
 import { auditActorOf } from "../audit/plan3-hooks.js";
 import { taskAgentRunKey, taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
-import { requireSessionLevel, type SessionAccess } from "./access.js";
+import { SETUP_DRAFT_RETRY_WORDS, requireSessionLevel, type SessionAccess } from "./access.js";
 import type { SessionReadDependencies } from "./read.js";
 import { AgentSessionStore, sessionEventItem } from "./store.js";
 import {
@@ -30,6 +30,9 @@ import {
 
 export const NOTHING_TO_RETRY = "There's nothing to retry right now.";
 export const RETRY_ON_MAC = "Retry it on your Mac.";
+/** An ended session with no run to retry again (its run was never kept, or it was a plain task): the person is told a new task is the way on. */
+export const ENDED_NOTHING_TO_RETRY = "This task has ended and has no run to retry. Start a new task.";
+export { SETUP_DRAFT_RETRY_WORDS };
 /** A workflow task that ended failed (its workspace setup failed: the workflow never started) is not retried; a retry would start no new workspace. */
 export const FAILED_TASK_NEEDS_NEW_TASK = "This task failed and has ended, so it can't be retried. Start a new task; if its setup failed, fix the project's setup or test command first.";
 const ALREADY_RETRIED = "This session was already retried.";
@@ -121,6 +124,8 @@ export async function retrySession(deps: SessionReadDependencies, caller: Contro
 
   const task = await taskOfSession(deps, session);
   if (task === undefined) throw agentXError("NOT_FOUND", "session not found");
+  // A setup draft has no run to start again: a new draft is asked for from the project's page.
+  if (task.purpose === "setup_draft") throw agentXError("CONFIG_INVALID", SETUP_DRAFT_RETRY_WORDS);
   if (task.workflow !== undefined) return retryWorkflow(deps, caller, access, task, input.requestId);
   if (task.agent !== undefined) return retryRun(deps, caller, access, task, input.requestId);
   // A plain (CLI) task is continued by its owner where it started it.
@@ -197,9 +202,10 @@ async function workflowMovedOn(deps: SessionReadDependencies, session: AgentSess
 // ---- a new run
 
 /** What a failed or cancelled agent-step run is retried from: its input, as the run kept it. */
-async function inputOfRun(deps: SessionReadDependencies, task: DeveloperTaskRecord) {
+async function inputOfRun(deps: SessionReadDependencies, task: DeveloperTaskRecord, session: AgentSessionRecord) {
   const item = await getItem(deps, taskAgentRunKey(task.taskId));
-  if (item === undefined) throw agentXError("CONFIG_INVALID", NOTHING_TO_RETRY);
+  // An ended session that kept no run says so in words that name the way on, with its own code (a person was offered Stop or Retry for it once and met "nothing to retry").
+  if (item === undefined) throw isEnded(session) ? agentXError("SESSION_ENDED", ENDED_NOTHING_TO_RETRY) : agentXError("CONFIG_INVALID", NOTHING_TO_RETRY);
   const run = AgentRunStateSchema.safeParse(strip(item));
   if (!run.success) throw agentXError("RUNTIME_UNAVAILABLE", NOT_READABLE);
   return run.data;
@@ -208,7 +214,7 @@ async function inputOfRun(deps: SessionReadDependencies, task: DeveloperTaskReco
 async function retryRun(deps: SessionReadDependencies, caller: ControlCaller, access: SessionAccess, task: DeveloperTaskRecord, requestId: string): Promise<{ session: SessionView }> {
   const { session } = access;
   if (task.agent === undefined) throw agentXError("CONFIG_INVALID", NOTHING_TO_RETRY);
-  const run = await inputOfRun(deps, task);
+  const run = await inputOfRun(deps, task, session);
   if (run.state !== "FAILED" && run.state !== "CANCELLED") throw agentXError("CONFIG_INVALID", NOTHING_TO_RETRY);
   if (deps.control === undefined) throw agentXError("RUNTIME_UNAVAILABLE", NOT_AVAILABLE);
 

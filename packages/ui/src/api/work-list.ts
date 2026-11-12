@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import { useInfiniteQuery } from "@tanstack/react-query";
-import { SessionListReaderSchema } from "@agentx/cloud-contracts/web";
-import { useAppHost } from "../host.js";
+import { HomeDismissResponseReaderSchema, SessionListReaderSchema } from "@agentx/cloud-contracts/web";
+import { useAppHost, type AppHost } from "../host.js";
 import { createApiClient } from "./client.js";
 import { mergeLiveTiles, useLive, type LiveFilter } from "./live.js";
 export type ReadFinishedPage = ReturnType<typeof SessionListReaderSchema.parse>;
@@ -45,5 +45,19 @@ export function useWorkList(filters: readonly LiveFilter[], finishedOn: boolean,
   live, finished: done, projectsCut, ready, isPending: !ready && failed === undefined, isError: !ready && failed !== undefined, partial: ready && failed !== undefined, error: failed?.error,
   hasNextPage: loaded.some(query => query.hasNextPage), isFetchingNextPage: queries.some(query => query.isFetchingNextPage),
   refetch: () => Promise.all(queries.map(query => query.refetch())), fetchNextPage: () => Promise.all(loaded.filter(query => query.hasNextPage).map(query => query.fetchNextPage())),
+ };
+}
+
+/**
+ * What a row of the Work list can do that is not Live's own controls. `dismissFailed` is Home's dismissal of a session's failure (`failure:<sessionId>`, the happening that ended at `endedAt`): the same stored dismissal,
+ * so the row leaves Needs attention and Home's count together and a session that fails again comes back. It is a plain POST with no body.
+ */
+export function createWorkActions(host: AppHost) {
+ const api = createApiClient(host);
+ return {
+  dismissFailed(sessionId: string, endedAt: string) {
+   const card = encodeURIComponent("failure:" + sessionId), occurrence = encodeURIComponent("ended:" + endedAt);
+   return api.send("POST", "/v1/app/home/cards/" + card + "/dismiss?occurrence=" + occurrence, undefined, HomeDismissResponseReaderSchema);
+  },
  };
 }

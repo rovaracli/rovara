@@ -1075,3 +1075,10 @@ export function serviceStatusRouteDependencies(dependencies: AwsBrokerDependenci
 export function installOwnWriteRecorder(dependencies: Pick<AwsBrokerDependencies, "documentClient" | "tableName">): void {
   registerOwnWriteRecorder((orgId, note) => noteOwnWrite({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }, orgId, note, (event, fields) => console.log(JSON.stringify({ component: "broker", event, ...fields }))));
 }
+
+/** 0.5.16, the default-branch check: GitHub's view of a repository's branches, read through the asking org's own installation (the same scope every repository read takes). Absent where GitHub cannot be asked. */
+export function branchProbeRoute(dependencies: AwsBrokerDependencies): Pick<DeveloperRouteDependencies, "branchProbe"> {
+  const app = dependencies.githubPullRequests;
+  if (app.probeBranches === undefined) return {};
+  return { branchProbe: (orgId, repositoryUrl, branch) => app.probeBranches!(repositoryUrl, branch, githubScope(dependencies, orgId)) };
+}

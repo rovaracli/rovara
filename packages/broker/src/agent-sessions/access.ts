@@ -443,11 +443,30 @@ const BLOCKED_STATUSES: readonly SessionStatus[] = ["needs_person", "paused"];
 /** The hidden switch for offering "handoff" in a session's actions. Off: nothing finished leads a person into the Mac move. */
 export const OFFER_HANDOFF = false as boolean;
 
+/** What a failed setup draft says is next, and what Retry answers for it: a setup draft is never retried; a new draft is asked for from the project's page. */
+export const SETUP_DRAFT_RETRY_WORDS = "Draft the setup again from the project's page.";
+
+/** Whether a session has ended: it has an end time, or its status is one only an end reaches. The one rule Stop, Retry and the actions every list offers share. */
+export const sessionHasEnded = (session: Pick<AgentSessionRecord, "endedAt" | "summary">): boolean => session.endedAt !== undefined || (ENDED_SESSION_STATUSES as readonly string[]).includes(session.summary.status);
+
+/**
+ * Whether a retry of an ENDED session starts anything: a failed or cancelled agent-step run, or a chain run, in the cloud. A task's workflow that ended is never retried (its workspace is gone: a new task is the
+ * way on), a plain (CLI) task is continued where it started and a session on a Mac is retried there, so none of those is offered a Retry that can only answer an error (`retryRun`, `retryChain`).
+ */
+export function endedRetryStartsRun(session: Pick<AgentSessionRecord, "subject" | "kind" | "where">, task: { agent?: unknown } | undefined): boolean {
+  if (session.kind === "local" || session.where.kind !== "cloud") return false;
+  return session.subject.kind === "chain" || task?.agent !== undefined;
+}
+
 /**
  * What the person may do, for the session's header: `view` watches and comments, `use` also steers, `edit` also stops, takes over (not the owner: they already own it) and shares, and retries a session that failed or was
  * cancelled, or whose workflow is blocked (`state` is the session's summary now). Handing off is the owner's.
+ * An ENDED session (`state.ended`) cannot be stopped, steered or taken over: those can only answer SESSION_ENDED. It keeps watch, comment and share, and Retry only where a retry starts a run (`state.retryStartsRun`,
+ * from `endedRetryStartsRun`; absent reads as no).
  */
 export function sessionActionsFor(access: Pick<SessionAccess, "level" | "owner" | "orgAdmin"> & { projectRole?: ProjectRole | undefined; memberRole?: MemberRole | undefined }, state: { status: SessionStatus; workflowBlocked?: true | undefined; closable?: true | undefined; /** The task was closed by its owner: nothing can be steered, stopped, retried, taken over, handed off or closed again (it can still be watched, commented on and, at edit level, shared). */ closed?: true | undefined;
+  /** The session has ended (`sessionHasEnded`): no Stop, steering or Take over. */ ended?: true | undefined;
+  /** With `ended`: a retry of it would start a run (`endedRetryStartsRun`). Without it an ended session offers no Retry. */ retryStartsRun?: boolean | undefined;
   /** UX2 slice 2 item 6: the summary's status in the one status model. Merged or Closed reads as closed here too: Stop, Retry and steering are not offered where they don't apply. */ display?: unknown }): SessionAction[] {
   if (access.level === "none") return [];
   const shown = TaskStatusSchema.safeParse(state.display);
@@ -458,16 +477,18 @@ export function sessionActionsFor(access: Pick<SessionAccess, "level" | "owner" 
   const viewerActions: SessionAction[] = memberMay(access, "view", { comment: true }) ? ["watch", "comment"] : ["watch"];
   if (state.closed === true) return !access.owner && access.projectRole === "viewer" ? viewerActions : ["watch", "comment", ...(atLeast(access.level, "edit") ? ["share" as const] : [])];
   if (!access.owner && access.projectRole === "viewer") return viewerActions;
+  const ended = state.ended === true;
   const actions: SessionAction[] = ["watch", "comment"];
-  if (atLeast(access.level, "use")) actions.push("steer");
+  if (!ended && atLeast(access.level, "use")) actions.push("steer");
   if (atLeast(access.level, "edit")) {
-    actions.push("stop");
-    if (RETRYABLE.includes(state.status) || (state.workflowBlocked === true && BLOCKED_STATUSES.includes(state.status))) actions.push("retry");
-    // QA6-11: taking over means becoming the owner, so the owner is never offered it.
-    if (!access.owner) actions.push("take_over");
+    if (!ended) actions.push("stop");
+    const retryable = ended ? state.retryStartsRun === true && RETRYABLE.includes(state.status) : RETRYABLE.includes(state.status) || (state.workflowBlocked === true && BLOCKED_STATUSES.includes(state.status));
+    if (retryable) actions.push("retry");
+    // QA6-11: taking over means becoming the owner, so the owner is never offered it. An ended session has nothing left to take over.
+    if (!access.owner && !ended) actions.push("take_over");
     actions.push("share");
   }
-  if (access.orgAdmin && !actions.includes("stop")) actions.push("stop");
+  if (access.orgAdmin && !ended && !actions.includes("stop")) actions.push("stop");
   // Moving a session between a Mac and the cloud is unfinished (the move answers RUNTIME_UNAVAILABLE and no client pairs a Mac), so it is not offered (owner decision 14, 2026-11-07). The route and the action name stay.
   if (access.owner && OFFER_HANDOFF) actions.push("handoff");
   // Close is the task owner's (the route checks that on the task), and only where it has a task to close.

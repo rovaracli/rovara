@@ -10,7 +10,7 @@ import { orgSettingsKey, projectAiKey, WorkerInvocationSchema, githubInstallatio
 import { orgScoped, builtinSettingsKey, ROVARA_CODE_AGENT_ID, agentGuardrailsKey, DEFAULT_AGENT_GUARDRAILS, AGENT_WORKER_OUTDATED, DEFAULT_PLANNING_LIMIT_USD, SetupDraftResponseReaderSchema, SetupDraftResponseSchema, egressDomainsKey, orgProjectCatalogKey, projectMemberKey, projectMetaKey, projectRevisionKey, redactText, setupDraftKey, setupItemsOf, type SetupProposal } from "@rovara-code/contracts";
 import { SetupApplyResponseSchema } from "@agentx/cloud-contracts";
 import { WORKER_INVOCATION_FEATURES } from "@agentx/cloud-contracts";
-import { DRAFT_PROPOSE_WORDS, SETUP_APPLY_WORDS, SETUP_DRAFT_BUSY, SETUP_DRAFT_FAILURES, SETUP_DRAFT_NONE_TO_APPLY, SETUP_DRAFT_OLD, SETUP_DRAFT_PULL_REQUEST_ONCE, derivedRequestId, registerBuiltinSetupAppliers } from "../../packages/broker/src/rovara-code/setup-draft.js";
+import { DRAFT_PROPOSE_WORDS, SETUP_APPLY_WORDS, SETUP_DRAFT_BUSY, SETUP_DRAFT_FAILURES, SETUP_DRAFT_NONE_TO_APPLY, SETUP_DRAFT_OLD, SETUP_DRAFT_PULL_REQUEST_ONCE, SETUP_DRAFT_EMPTY_REPO_MARKER, SETUP_DRAFT_NOTHING_MARKER, derivedRequestId, emptyRepoWords, nothingToSetUpWords, registerBuiltinSetupAppliers, specificDraftFailure } from "../../packages/broker/src/rovara-code/setup-draft.js";
 import { DRAFT_CHECK_WORDS } from "../../packages/broker/src/rovara-code/setup-draft-check.js";
 import { SETUP_ITEM_WORDS, itemDigest, registerSetupItemApplier, unregisterSetupItemApplier } from "../../packages/broker/src/rovara-code/setup-items.js";
 import { createEc2Delivery } from "../../packages/broker/src/aws/ec2-delivery.js";
@@ -459,6 +459,51 @@ describe("the draft's result", () => {
       // A failed draft does not block the next one.
       expect((await t.ask()).status, label).toBe(202);
     }
+  });
+
+  it("a project whose repository has no files ends the draft in words that name the empty branch and a branch with code, and carry only names (0.5.16)", async () => {
+    const t = await setup();
+    await t.ask();
+    const run = await t.prepared();
+    await t.finish(run.workspaceId, run.own.id, "FAILED", { error: `OPERATION_INTERRUPTED: ${SETUP_DRAFT_EMPTY_REPO_MARKER} ${JSON.stringify({ branch: "main", other: "feature/rovara-orchestrator" })}` });
+    const answer = view(await t.read());
+    expect(answer).toMatchObject({ status: "failed", failure: "The repository's default branch (main) has no files. Push code to it, or set the project's default branch to one with code (for example feature/rovara-orchestrator)." });
+    expect(t.task().setupDraftResult).toEqual({ status: "failed", failure: answer.failure });
+    expect(t.task().agentRunEnd).toMatchObject({ state: "FAILED" });
+    expect(answer.failure).not.toBe(SETUP_DRAFT_FAILURES.stopped);
+  });
+
+  it("words for an empty repository leave out a branch the worker did not see, never trust the worker's text, and fall back to the fixed words when the detail cannot be read (0.5.16)", () => {
+    expect(emptyRepoWords(JSON.stringify({ branch: "main" }))).toBe("The repository's default branch (main) has no files. Push code to it, or set the project's default branch to one with code.");
+    expect(emptyRepoWords("not json")).toBe(SETUP_DRAFT_FAILURES.empty_repo);
+    expect(emptyRepoWords(JSON.stringify({ other: "dev" }))).toBe(SETUP_DRAFT_FAILURES.empty_repo);
+    expect(SETUP_DRAFT_FAILURES.empty_repo).toBe("The repository's default branch has no files. Push code to it, or set the project's default branch to one with code.");
+    // A branch name is plain text, one line and capped: control and format characters become spaces.
+    const words = emptyRepoWords(JSON.stringify({ branch: `ma\u0000in\u202e${"x".repeat(200)}`, other: 7 }));
+    expect(words).not.toMatch(/[\p{Cc}\p{Cf}]/u);
+    expect(words.length).toBeLessThan(260);
+    expect(words).toContain("(ma in ");
+  });
+
+  it("a draft the model answered with nothing to set up and notes saying why ends in words that carry the notes, cleaned and cut (0.5.16)", async () => {
+    const t = await setup();
+    await t.ask();
+    const run = await t.prepared();
+    await t.finish(run.workspaceId, run.own.id, "FAILED", { error: `OPERATION_INTERRUPTED: ${SETUP_DRAFT_NOTHING_MARKER} The default branch only has an initial commit; the code is on the dev branch. ${PLANTED_TOKEN}` });
+    const answer = view(await t.read());
+    expect(answer.status).toBe("failed");
+    expect(answer.failure).toMatch(/^Rovara found nothing to set up: The default branch only has an initial commit; the code is on the dev branch\./u);
+    expect(JSON.stringify(answer)).not.toContain(PLANTED_TOKEN);
+    expect(answer.failure!.length).toBeLessThanOrEqual(300);
+    // Notes that are empty after cleaning say what an unknown failure says.
+    expect(nothingToSetUpWords(" \u0000 ")).toBe(SETUP_DRAFT_FAILURES.stopped);
+    expect([...nothingToSetUpWords("y".repeat(900))].length).toBeLessThanOrEqual(300);
+  });
+
+  it("reads a failure for the two markers only: any other error text keeps the fixed words (0.5.16)", () => {
+    expect(specificDraftFailure(undefined)).toBeUndefined();
+    expect(specificDraftFailure("OPERATION_INTERRUPTED: the setup draft run produced no readable proposal")).toBeUndefined();
+    expect(specificDraftFailure(`OPERATION_INTERRUPTED: ${SETUP_DRAFT_EMPTY_REPO_MARKER} {"branch":"main"}`)).toMatch(/main/u);
   });
 
   it("a draft cancelled while it runs ends as failed (stopped), not as drafting for an hour", async () => {
