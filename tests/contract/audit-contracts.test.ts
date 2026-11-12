@@ -168,6 +168,7 @@ describe("the event catalog", () => {
       "setup_recipe.proposed", "setup_recipe.created", "setup_recipe.approved", "setup_recipe.revoked", "setup_recipe.scope_changed",
       // TE-4: going back to the last proved setup
       "project.setup_restored", "automatic_run.started", "project.automatic_runs_cap_changed", "automatic_runs.paused", "automatic_run.ended",
+      "project.collaborator_approvals_changed", "product_decision.raised", "product_decision.answered", "product_decision.approved",
       // saved project images
       "saved_env.changed", "saved_env.setting_changed",
       // customer test accounts (TS26)
@@ -266,6 +267,10 @@ describe("the event catalog", () => {
     "automatic_run.started": { target: { kind: "project", name: "web" }, keys: ["job", "setupApprovedBy", "runsThisMonth", "cap"], sample: { job: "nightly", setupApprovedBy: "none", runsThisMonth: 3, cap: 100 } },
     "project.automatic_runs_cap_changed": { target: { kind: "project", name: "web" }, keys: ["fromCap", "toCap"], sample: { fromCap: 100, toCap: 200 } },
     "automatic_run.ended": { target: { kind: "project", name: "web" }, keys: ["job", "cause"], sample: { job: "nightly", cause: "too_old" } },
+    "project.collaborator_approvals_changed": { target: { kind: "project", name: "web" }, keys: ["enabled", "revision"], sample: { enabled: false, revision: 2 } },
+    "product_decision.raised": { target: { kind: "task", id: "11111111-1111-4111-8111-111111111111" }, keys: ["decisionId", "risk", "options"], sample: { decisionId: "pdq_abcdefghijklmnopqrstuvwx", risk: "low", options: 2 } },
+    "product_decision.answered": { target: { kind: "task", id: "11111111-1111-4111-8111-111111111111" }, keys: ["decisionId", "risk", "revision"], sample: { decisionId: "pdq_abcdefghijklmnopqrstuvwx", risk: "low", revision: 2 } },
+    "product_decision.approved": { target: { kind: "task", id: "11111111-1111-4111-8111-111111111111" }, keys: ["decisionId", "risk", "role", "optionId", "revision", "class"], sample: { decisionId: "pdq_abcdefghijklmnopqrstuvwx", risk: "low", role: "collaborator", optionId: "a", revision: 3, class: "product" } },
     "automatic_runs.paused": { target: { kind: "project", name: "web" }, keys: ["month", "cap"], sample: { month: "2026-11", cap: 100 } },
     "project.setup_restored": { target: { kind: "project", name: "web" }, keys: ["revision", "fromRevision", "provenRevision"], sample: { revision: 3, fromRevision: 2, provenRevision: 1 } },
     "saved_env.changed": { target: { kind: "project", name: "web" }, keys: ["change", "cause", "digest", "count"], sample: { change: "images_deleted", cause: "walk", count: 2 } },

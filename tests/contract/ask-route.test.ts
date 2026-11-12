@@ -4,7 +4,7 @@
 import { randomUUID } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { ASK_RATE, ASK_TURN_RULES, AskStatusSchema, askRequestKey, askLockKey, sessionAskKey, sessionRateKey, askCountKey, type OrgId } from "@rovara-code/contracts";
+import { ASK_RATE, ASK_TURN_RULES, AskStatusSchema, askRequestKey, askLockKey, projectMemberKey, sessionAskKey, sessionRateKey, askCountKey, type OrgId } from "@rovara-code/contracts";
 import {
   ASK_BUSY_TEXT, ASK_RATE_TEXT, RATE_RACE_ATTEMPTS, askIdFor, takeSlackAskRates, askStatusFor, completeAsk, prepareAskTurn, submitAsk, type AskDependencies,
 } from "../../packages/broker/src/agent-sessions/ask.js";
@@ -87,6 +87,9 @@ describe("the switch and who may ask", () => {
     const t = setup();
     await t.ask(ARJUN);
     t.w.db.delete({ ...t.w.db.find((item) => String(item.sk).startsWith("SHARE#MEMBER#" + ARJUN))[0]! } as never);
+    // Decision 104: a contributor on the project keeps the live Ask with only `view`, so losing the share alone is no longer losing the Ask; he leaves the project too.
+    t.w.db.delete({ pk: projectMemberKey(ORG_A, ARJUN, "web").pk, sk: projectMemberKey(ORG_A, ARJUN, "web").sk } as never);
+    t.w.members.revoke(ORG_A, "web", ARJUN);
     await expect(t.ask(ARJUN)).rejects.toSatisfy((error: { code?: string }) => ["SESSION_LEVEL_REQUIRED", "NOT_FOUND"].includes(String(error.code)));
   });
 
@@ -249,6 +252,9 @@ describe("the service routes", () => {
     const t = setup();
     const { ref } = await queued(t, ARJUN);
     t.w.db.delete({ ...t.w.db.find((item) => String(item.sk) === `SHARE#MEMBER#${ARJUN}`)[0]! } as never);
+    // Decision 104: a contributor on the project keeps the live Ask with only `view`, so losing the share alone is no longer losing the Ask; he leaves the project too.
+    t.w.db.delete({ pk: projectMemberKey(ORG_A, ARJUN, "web").pk, sk: projectMemberKey(ORG_A, ARJUN, "web").sk } as never);
+    t.w.members.revoke(ORG_A, "web", ARJUN);
     await expect(prepareAskTurn(t.deps, ref)).rejects.toMatchObject({ code: "FORBIDDEN" });
     const erased = setup();
     const e = await queued(erased);

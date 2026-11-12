@@ -827,6 +827,26 @@ export function auditProjectAutomaticRunsCapChanged(input: AuditBuilderBase & { 
   return build("project.automatic_runs_cap_changed", input, { kind: "project", name: input.projectName }, { fromCap: input.fromCap, toCap: input.toCap });
 }
 
+/** `occurrence`: `auditOccurrence(project, "collaborator_approvals", request id)`. A maintainer (or a company owner or admin) turned collaborators' low-risk product approvals on or off (decision 36). */
+export function auditProjectCollaboratorApprovalsChanged(input: AuditBuilderBase & { projectName: string; enabled: boolean; revision: number }): AuditEventInput {
+  return build("project.collaborator_approvals_changed", input, { kind: "project", name: input.projectName }, { enabled: input.enabled, revision: input.revision });
+}
+
+/** `occurrence`: `auditOccurrence("product_decision", decisionId)`. A task raised a product decision. The question and its options' words are never facts. */
+export function auditProductDecisionRaised(input: AuditBuilderBase & { taskId: string; decisionId: string; risk: string; options: number }): AuditEventInput {
+  return build("product_decision.raised", input, { kind: "task", id: input.taskId }, { decisionId: input.decisionId, risk: input.risk, options: input.options });
+}
+
+/** `occurrence`: `auditOccurrence("product_decision", decisionId, request id)`. Someone answered a product decision (a note; it settles nothing). The answer's text is never a fact. */
+export function auditProductDecisionAnswered(input: AuditBuilderBase & { taskId: string; decisionId: string; risk: string; revision: number }): AuditEventInput {
+  return build("product_decision.answered", input, { kind: "task", id: input.taskId }, { decisionId: input.decisionId, risk: input.risk, revision: input.revision });
+}
+
+/** `occurrence`: `auditOccurrence("product_decision", decisionId, request id)`. A product decision was approved. `class` is always `product`: it never counts as a code approval. */
+export function auditProductDecisionApproved(input: AuditBuilderBase & { taskId: string; decisionId: string; risk: string; role: string; optionId: string; revision: number }): AuditEventInput {
+  return build("product_decision.approved", input, { kind: "task", id: input.taskId }, { decisionId: input.decisionId, risk: input.risk, role: input.role, optionId: input.optionId, revision: input.revision, class: "product" });
+}
+
 /** `occurrence`: `auditOccurrence(project, month)`: once for a month. The cap was reached, so the project's automatic runs are paused until the month ends or a maintainer raises the cap. */
 export function auditAutomaticRunsPaused(input: AuditBuilderBase & { projectName: string; month: string; cap: number }): AuditEventInput {
   return build("automatic_runs.paused", input, { kind: "project", name: input.projectName }, { month: input.month, cap: input.cap });

@@ -1,5 +1,7 @@
 // Cloud's own text of the project summary and the answers that carry it (convergence W0-3, r8): the summary names the project's meta repository. Owed upstream: see owed-upstream.json.
 import { z } from "zod";
+import { ProjectRoleSchema as CloudProjectRoleSchema } from "./project-roles.js";
+import { CollaboratorApprovalsSettingSchema } from "./product-decisions.js";
 import { AppProjectDomainStatusSchema, ErrorRefSchema, ProjectRoleSchema, ProjectSetupStatusSchema, ProjectStatusSchema, SettingsHeldSchema, SettingsProofSchema } from "@rovara-code/contracts";
 
 
@@ -15,6 +17,8 @@ export const AppProjectSummarySchema = z.object({
    */
   metaRepository: z.object({ name: z.string().optional(), fullName: z.string(), defaultBranch: z.string(), alsoCode: z.boolean().optional() }).optional(),
   myRole: ProjectRoleSchema,
+  /** Collaborator role (W11): the caller's exact project role. `myRole` stays Code's three roles (a collaborator reads there as `viewer`, its floor) so today's pages keep parsing. */
+  myProjectRole: CloudProjectRoleSchema.optional(),
   setup: z.object({
     status: ProjectSetupStatusSchema,
     checkedRevision: z.number().int().positive().optional(),
@@ -39,6 +43,8 @@ export const AppProjectDetailSchema = AppProjectSummarySchema.extend({
   createdBy: z.object({ developerId: z.string(), name: z.string() }),
   /** TE-4: whether the commands in the settings are proved. Absent where setup checks are not set up. */
   settingsProof: SettingsProofSchema.optional(),
+  /** Decision 36: whether collaborators may approve LOW-risk product decisions here (on by default), and whether the reader may change it. Absent from an older control plane. */
+  collaboratorApprovals: CollaboratorApprovalsSettingSchema.optional(),
 });
 export type AppProjectDetail = z.infer<typeof AppProjectDetailSchema>;
 

@@ -267,7 +267,7 @@ describe("the roster revision", () => {
     expect(await put(f, "owner", MEMBER, "contributor", 0)).toMatchObject({ status: 409, code: "CHANGE_STALE", message: PROJECT_PEOPLE_STALE_MESSAGE });
     expect(f.roleIn(MEMBER)).toBe("viewer");
     // A CLI change moves it too.
-    expect((await f.call("owner", "PUT", `/v1/app/projects/payments/members/${MEMBER}`, { requestId: randomUUID(), role: "contributor" })).body).toEqual({ member: { developerId: MEMBER, role: "contributor" } });
+    expect((await f.call("owner", "PUT", `/v1/app/projects/payments/members/${MEMBER}`, { requestId: randomUUID(), role: "contributor" })).body).toEqual({ member: { developerId: MEMBER, role: "contributor", projectRole: "contributor" } });
     expect(f.revision()).toBe(2);
     expect(await del(f, "maintainer", MEMBER, 1)).toMatchObject({ status: 409, code: "CHANGE_STALE" });
     expect((await f.call("maintainer", "GET", PEOPLE_PATH)).body.revision).toBe(2);

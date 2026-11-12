@@ -12,7 +12,7 @@ import { isConditional } from "../aws/broker-shared.js";
 import { plainName } from "../aws/task-web.js";
 import { safeDisplayName } from "./person-name.js";
 import { loadWorkflowDocument, type LoadedDocument } from "./plan-artifacts.js";
-import { can, taskOpen, type TaskAccess } from "./task-access.js";
+import { can, mayComment, taskOpen, type TaskAccess } from "./task-access.js";
 import { taskAccessFence } from "./task-people.js";
 import { plannerRepliesKey, taskKey, tryEffectiveTaskOwner, type DeveloperTaskRecord } from "./task-records.js";
 
@@ -329,7 +329,7 @@ export async function createTaskComment(
   input: { requestId: string; document: CommentDocument; version: number; target: CommentTarget; parentId?: string; text: string; ask: boolean },
 ): Promise<{ comment: TaskComment; duplicate: boolean }> {
   const { task, caller } = actor;
-  if (!can(actor.role, "comment")) throw pageRefusal("not_allowed");
+  if (!mayComment(actor)) throw pageRefusal("not_allowed");
   const commentId = pageCommentId(caller.developerId, input.requestId);
   const existing = await getComment(deps, task.taskId, commentId);
   if (existing !== undefined) return { comment: existing, duplicate: true };
@@ -402,7 +402,7 @@ export async function createTaskComment(
 
 /** The author's own comment, still theirs to change: not sent with a decision, not deleted, and at the revision they saw. */
 async function changeableComment(deps: CommentDependencies, actor: PageActor, commentId: string, rev: number): Promise<TaskComment> {
-  if (!can(actor.role, "comment")) throw pageRefusal("not_allowed");
+  if (!mayComment(actor)) throw pageRefusal("not_allowed");
   if (!taskOpen(actor.task)) throw pageRefusal("closed");
   const comment = await getComment(deps, actor.task.taskId, commentId);
   if (comment === undefined) throw pageRefusal("not_here");

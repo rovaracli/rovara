@@ -77,7 +77,8 @@ export async function evaluateApprovalPlace(deps: PlaceDependencies, question: P
   const verdict = approvalPlaceDecision({
     kind: question.kind, risk: question.risk, answer: question.answer, place: question.place,
     decider: { role: question.role, linked, authTime },
-    // An unreadable stored window is enforced as its 1-hour minimum (`readApprovalWindow`); the project switch for collaborators has no Cloud role to apply to yet.
+    // An unreadable stored window is enforced as its 1-hour minimum (`readApprovalWindow`). Plan decisions never have a collaborator seat (the seat is the owner or a maintainer), so the project switch is
+    // not read here; product decisions read it live (`product-decisions/store.ts`).
     settings: { recentSignIn: { seconds: window?.seconds ?? 86_400 }, collaboratorApprovals: true },
     freshSignIn: question.freshSignIn, nowMs,
   });

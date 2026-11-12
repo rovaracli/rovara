@@ -4,7 +4,7 @@
 // admin), the same "only a company member" rule, the same request-id replay, audit and approval bookkeeping, and the one last-maintainer rule. Code settings keep their own
 // route (`PUT .../code-settings`); this read only tells the web which of those the viewer may change.
 import { agentXError, projectAllows, type ProjectRole } from "@rovara-code/contracts";
-import { PROJECT_PEOPLE_BROWSER_MESSAGE, PutProjectPersonBodySchema, RemoveProjectPersonBodySchema, type ProjectPeopleView, type ProjectPeopleViewer, type ProjectPersonChangeResponse, type ProjectPersonRemoveResponse } from "@agentx/cloud-contracts";
+import { PROJECT_PEOPLE_BROWSER_MESSAGE, PutProjectPersonBodySchema, projectRoleFloor, RemoveProjectPersonBodySchema, type ProjectPeopleView, type ProjectPeopleViewer, type ProjectPersonChangeResponse, type ProjectPersonRemoveResponse } from "@agentx/cloud-contracts";
 import { logDeveloperEvent } from "../../developer/log.js";
 import { projectOpenState, readPeopleRevision, removeProjectMember, setProjectMember, type ProjectMemberChangeDependencies } from "../../org/project-members.js";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "./types.js";
@@ -60,7 +60,8 @@ async function putProjectPerson(deps: DeveloperRouteDependencies, caller: Develo
   logDeveloperEvent({ event: "developer.project_member_set", orgId: caller.orgId, project: name, role: member.role, via: "web" });
   await notifyProjectMemberChanged(deps, caller.orgId, name, member.developerId);
   // A replay of a request the CLI's route stored before 0.5.14 has no revision: the current one is the answer's.
-  return { member: { developerId: member.developerId, role: member.role }, revision: member.revision ?? await readPeopleRevision(deps, caller.orgId, name) };
+  // This body takes Code's three roles only, so the floor is the role itself (srv/collaborator: the store answers Cloud's four).
+  return { member: { developerId: member.developerId, role: projectRoleFloor(member.role) }, revision: member.revision ?? await readPeopleRevision(deps, caller.orgId, name) };
 }
 
 async function deleteProjectPerson(deps: DeveloperRouteDependencies, caller: DeveloperCaller, rawName: string, developerId: string, body: unknown): Promise<ProjectPersonRemoveResponse> {

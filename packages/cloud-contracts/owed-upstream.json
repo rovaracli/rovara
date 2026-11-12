@@ -217,6 +217,26 @@
       "reason": "ProjectDefinitionSchema refuses a saved repository host: the release before this one reads a project strictly, so writing a host would take a rollback dark (tests/contract/repository-host.test.ts). Code lifted that rule (C2 writes hosts) and adds externalChecks (C5) and the host provider; adoption is a migration with P2-EXTERNAL-CHECKS-CLOUD-ADOPTION."
     },
     {
+      "file": "project-roles.ts",
+      "names": [
+        "PROJECT_PERMISSIONS",
+        "ProjectMember",
+        "ProjectMemberChangeResponse",
+        "ProjectMemberChangeResponseSchema",
+        "ProjectMemberSchema",
+        "ProjectMembersResponse",
+        "ProjectMembersResponseSchema",
+        "ProjectPermission",
+        "ProjectRole",
+        "ProjectRoleSchema",
+        "PutProjectMemberBody",
+        "PutProjectMemberBodySchema",
+        "projectAllows"
+      ],
+      "owedUntil": "2026-11-25",
+      "reason": "Collaborator project role (W11, A-23/A-26, owner answer Q8): Code's ProjectRoleSchema is maintainer, contributor, viewer. Cloud adds `collaborator` and two permissions (answer_questions, approve_product_decisions), and the people routes must name a collaborator. Everything outside collaborator paths keeps Code's three roles with the collaborator's floor (viewer, projectRoleFloor); the collaborator row equals the viewer row on every Code permission (tests/contract/collaborator-role.test.ts). A Code lane adds the role, then this entry goes."
+    },
+    {
       "file": "protocol.ts",
       "names": [
         "WORKER_INVOCATION_FEATURES",

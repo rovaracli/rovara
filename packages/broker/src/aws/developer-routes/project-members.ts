@@ -1,6 +1,7 @@
 import { logDeveloperEvent } from "../../developer/log.js";
 import { nameResolverOf, replacementNamesFrom } from "../../developer/name-resolver.js";
-import { AgentXNameSchema, agentXError, projectAllows, type ProjectMember, type ProjectMemberChangeResponse, type ProjectMemberRemoveResponse, type ProjectSlackChannelRemoveResponse, type ProjectSlackChannelResponse, type ProjectMembersResponse, type ProjectRole, type OrgId, PutProjectMemberBodySchema, RemoveProjectSlackChannelBodySchema, RemoveProjectMemberBodySchema } from "@rovara-code/contracts";
+import { AgentXNameSchema, agentXError, projectAllows, type ProjectMemberRemoveResponse, type ProjectSlackChannelRemoveResponse, type ProjectSlackChannelResponse, type ProjectRole, type OrgId, RemoveProjectSlackChannelBodySchema, RemoveProjectMemberBodySchema } from "@rovara-code/contracts";
+import { PROJECT_ROLE_ORDER, PutProjectMemberBodySchema, projectRoleFloor, type ProjectMember, type ProjectMemberChangeResponse, type ProjectMembersResponse } from "@agentx/cloud-contracts";
 import { unbindProjectChannel, type ProjectSlackChannelDependencies } from "../../org/slack-binding.js";
 import { listProjectMembers, removeProjectMember, setProjectMember, survivorOf } from "../../org/project-members.js";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "./types.js";
@@ -18,7 +19,6 @@ export async function projectRoleForRoute(deps: DeveloperRouteDependencies, call
   return { name, role };
 }
 
-const ROLE_ORDER: Record<ProjectRole, number> = { maintainer: 0, contributor: 1, viewer: 2 };
 
 /**
  * `GET /v1/app/projects/{name}/members`: everyone with a role in the project and where it comes from, for anyone who can see the project.
@@ -59,12 +59,12 @@ async function buildProjectMembersResponse(deps: DeveloperRouteDependencies, org
     const card = cards.get(row.developerId)!;
     const by = row.grantedBy;
     return {
-      developerId: row.developerId, name: card.name, ...(card.email === undefined ? {} : { email: card.email }), role: row.role, source: row.source,
+      developerId: row.developerId, name: card.name, ...(card.email === undefined ? {} : { email: card.email }), role: row.role, projectRole: row.memberRole, source: row.source,
       // The operator console's grants have no person to name.
       ...(row.source !== "grant" || by === undefined || !("developerId" in by) ? {} : { grantedBy: { developerId: by.developerId, name: cards.get(by.developerId)?.name ?? "Unknown" } }),
     };
   });
-  members.sort((left, right) => ROLE_ORDER[left.role] - ROLE_ORDER[right.role] || left.name.localeCompare(right.name) || left.developerId.localeCompare(right.developerId));
+  members.sort((left, right) => PROJECT_ROLE_ORDER[left.projectRole ?? left.role] - PROJECT_ROLE_ORDER[right.projectRole ?? right.role] || left.name.localeCompare(right.name) || left.developerId.localeCompare(right.developerId));
   return { members };
 }
 
@@ -96,7 +96,8 @@ export async function putProjectMember(deps: DeveloperRouteDependencies, caller:
   logDeveloperEvent({ event: "developer.project_member_set", orgId: caller.orgId, project: name, role: member.role });
   await notifyProjectMemberChanged(deps, caller.orgId, name, member.developerId);
   // The roster's revision is the web's (`project-people.ts`); this route's answer keeps its shape.
-  return { member: { developerId: member.developerId, role: member.role } };
+  // `role` stays Code's three roles (a collaborator's floor is viewer) for clients that read only it; `projectRole` is the exact role.
+  return { member: { developerId: member.developerId, role: projectRoleFloor(member.role), projectRole: member.role } };
 }
 
 /** `DELETE /v1/app/projects/{name}/members/{developerId}`: the same people may take a person's grant away. `removed` is false when they had none. */

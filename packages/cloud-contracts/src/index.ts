@@ -113,6 +113,9 @@ export * from "./company-image-mirror.js";
 export * from "./hosted-allow-domains.js";
 export * from "./saved-env-image.js";
 export * from "./app-projects.js";
+// Collaborator role (W11): the project-role shadow (owed upstream, see its header) and product decisions (Cloud-only).
+export * from "./project-roles.js";
+export * from "./product-decisions.js";
 export * from "./setup-proposal.js";
 
 export * from "./task-stop-enrollment.js";
