@@ -34,7 +34,9 @@ describe("a repair that cannot finish fails closed", () => {
     const real = (w.db as unknown as { send: (c: unknown) => Promise<unknown> }).send;
     (w.db as unknown as { send: (c: unknown) => Promise<unknown> }).send = async (command: unknown) => {
       const result = await real(command);
-      const item = (command as { input?: { Item?: { entityType?: string; pk?: string; sk?: string } } }).input?.Item;
+      // a row older than the keyword index's late margin is stored in a transaction with its late marker: the row is the first Put of it
+      const input = (command as { input?: { Item?: { entityType?: string; pk?: string; sk?: string }; TransactItems?: Array<{ Put?: { Item?: { entityType?: string; pk?: string; sk?: string } } }> } }).input;
+      const item = input?.Item ?? input?.TransactItems?.[0]?.Put?.Item;
       if (item?.entityType === "TEAM_RECORD_EVENT" && item.pk !== undefined && item.sk !== undefined) {
         // right after the row is stored: its audience is damaged and its list's person is erased
         const stored = w.db.get({ pk: item.pk, sk: item.sk }) as Record<string, unknown>;

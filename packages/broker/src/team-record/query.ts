@@ -20,6 +20,8 @@ import { assembleItem, itemKeyOf, isChangeRow, visibleItemRows } from "./item-as
 import type { LearningModeReader } from "./mode.js";
 import type { SourceRouteDependencies } from "./source-write.js";
 import { getRecordEvent, getRecordFact, pendingHidesOf, queryRecordEventWindow, queryRecordEvents, queryRecordFacts, type StoredEvent, type StoredFact } from "./store.js";
+import { keywordDocumentOf } from "./keyword-document.js";
+import { KEYWORD_CANDIDATES, KEYWORD_RRF_TOP, openKeywordIndex, type SegmentCache } from "./keyword-index.js";
 import { bm25PassageScores, reciprocalRankFusion } from "./search-fusion.js";
 import type { LiveAclCheck, ReadAudience, RecordEmbedder, RecordLog, TeamRecordTable } from "./types.js";
 
@@ -99,6 +101,8 @@ export interface RecordQueryDependencies {
   /** The titles of the lessons learned from a task, each with the audience of the lesson (a lesson from a private channel is restricted). */
   lessonsOfTask?(orgId: OrgId, project: string, taskId: string): Promise<Array<{ title: string; audience: Audience; /** The places the lesson was learned from; each is checked at read time. */ scopes: string[]; /** Of those, the ones whose own access record the lesson requires. */ restrictedScopes: string[] }>>;
   stats?: StatsPort;
+  /** The keyword index (lanes K2/K3): `false` turns it off (the keyword side then always reads the window). `cache`: the segments this process has read (default: the process's own). */
+  keywordIndex?: false | { cache?: SegmentCache };
   /** TRW-4: how many rows were skipped for want of a linked author, per source, for a project (counts only). Shown to the project's maintainers. */
   skipped?: { read(orgId: OrgId, project: string): Promise<Record<string, number>> };
   /** The source write route's dependencies (`source-write.ts`). Absent: the route answers only reads, as before. */
@@ -179,14 +183,7 @@ function hitOfFact(fact: RecordFact): RecordSearchHit {
   };
 }
 
-/**
- * What the keyword side scores of a row: its text (only while the text has not expired: the words of expired raw text are never scored, even when a night's text-expiry job has not removed them yet) and its structured
- * fields. A row read through `eventFromItem` has already lost an expired text; the check here keeps that true for a row from any other reader.
- */
-export function keywordDocumentOf(event: StoredEvent, nowSeconds: number): string {
-  const text = event.text !== undefined && (event.textExpiresAt === undefined || event.textExpiresAt > nowSeconds) ? event.text : "";
-  return `${text} ${JSON.stringify(event.structured ?? {})}`;
-}
+export { keywordDocumentOf } from "./keyword-document.js";
 
 /**
  * Search rows and facts. ALWAYS a blend (DECISIONS 142): the meaning results (embedder + vector index) and the keyword results (BM25 over the best passage of each of the newest `KEYWORD_SCAN_ROWS` rows of the project and of its facts) are
@@ -234,19 +231,43 @@ export async function recordSearch(deps: RecordQueryDependencies, audience: Read
       return [];
     }
   };
-  // The keyword side: BM25 over the best passage of each of the newest `KEYWORD_SCAN_ROWS` hot rows (read in pages, within `KEYWORD_READ_BUDGET_MS`) and of the facts of the project (rows older than that window are found by meaning only).
-  // It reads the FULL kept text of a row, so a word that stands late in a text the embedder cut at 512 tokens (`embeddingTruncated`) still finds the row.
+  // The keyword side. With a complete keyword index (K2) it ranks EVERY hot row of the project by BM25 over the best passage (statistics over all of them), from the sealed segments, the live tail, late rows and the facts, and reloads
+  // the best rows from the table. Until the project's index is complete (or if it cannot answer: too long a tail, a segment it cannot read) it falls back to the window of lane K1: BM25 over the best passage of each of the newest
+  // `KEYWORD_SCAN_ROWS` hot rows (read in pages, within `KEYWORD_READ_BUDGET_MS`) and of the facts (rows older than that window are then found by meaning only). Either way it reads the FULL kept text of a row, so a word that
+  // stands late in a text the embedder cut at 512 tokens (`embeddingTruncated`) still finds the row, and either way the rows go through the same cuts and `filterVisible` below.
   const keywordSide = async (): Promise<Candidate[]> => {
+    const facts = await queryRecordFacts(deps.table, orgId, project, FACT_SCAN);
+    const indexed = await keywordFromIndex(facts);
+    if (indexed !== undefined) return indexed;
     const clock = deps.now ?? Date.now;
     const read = await queryRecordEventWindow(deps.table, orgId, project, { limit: KEYWORD_SCAN_ROWS, nowSeconds, deadlineAt: clock() + KEYWORD_READ_BUDGET_MS, clock });
     if (read.stopped === "deadline") deps.log?.("record.keyword_window_cut", { rows: read.rowsRead, pages: read.pages });
     const events = read.events;
-    const facts = await queryRecordFacts(deps.table, orgId, project, FACT_SCAN);
     const documents = [...events.map((event) => keywordDocumentOf(event, nowSeconds)), ...facts.map((fact) => fact.text)];
     const scores = bm25PassageScores(request.query, documents);
     const all: Array<Candidate & { score: number }> = [...events.map((event) => ({ id: event.id, event })), ...facts.map((fact) => ({ id: fact.id, fact }))].map((candidate, index) => ({ ...candidate, score: scores[index] as number }));
     // best first; equal scores keep the newest-first order the rows were read in
     return all.filter((candidate) => candidate.score > 0).sort((left, right) => right.score - left.score);
+  };
+  const keywordFromIndex = async (facts: StoredFact[]): Promise<Candidate[] | undefined> => {
+    if (deps.keywordIndex === false) return undefined;
+    // The same cuts the vector side and `inScope` apply, taken from what the index knows of a row without reading it. A shared reader (an agent) can only ever see project rows, so restricted ones are cut here too, which keeps them
+    // from using up the places of the candidate list; the reader's real right to every row is checked on the reloaded row below.
+    const accept = (meta: { ms: number; kind: string; source: string; restricted: boolean; isFact: boolean }): boolean => {
+      if ((since !== undefined && meta.ms < since) || (until !== undefined && meta.ms > until)) return false;
+      if (meta.isFact) return request.kinds === undefined && request.sources === undefined;
+      return (request.kinds === undefined || request.kinds.includes(meta.kind as never)) && (request.sources === undefined || request.sources.includes(meta.source)) && (audience.kind !== "shared" || !meta.restricted);
+    };
+    try {
+      const view = await openKeywordIndex({ table: deps.table, ...(deps.now === undefined ? {} : { now: deps.now }), ...(deps.log === undefined ? {} : { log: deps.log }), ...(deps.keywordIndex?.cache === undefined ? {} : { cache: deps.keywordIndex.cache }) }, orgId, project, nowSeconds);
+      if (view === undefined) return undefined;
+      const hits = await view.rank(request.query, { facts, accept, top: KEYWORD_CANDIDATES, nowSeconds });
+      deps.log?.("record.keyword_index", { ...view.shape, hits: hits.length });
+      return hits.map((hit): Candidate => (hit.event !== undefined ? { id: hit.event.id, event: hit.event } : { id: (hit.fact as StoredFact).id, fact: hit.fact as StoredFact }));
+    } catch {
+      deps.log?.("record.keyword_index_unavailable", {});
+      return undefined;
+    }
   };
   const [byMeaning, byKeyword] = await Promise.all([meaning(), keywordSide()]);
 
@@ -262,12 +283,18 @@ export async function recordSearch(deps: RecordQueryDependencies, audience: Read
   const keywordList = byKeyword.filter(inScope);
   const byId = new Map<string, Candidate>();
   for (const candidate of [...meaningList, ...keywordList]) if (!byId.has(idOf(candidate))) byId.set(idOf(candidate), candidate);
-  /** The blend of the two lists, best first (reciprocal rank fusion): a row in both lists ranks above a row in one. */
-  const fuse = (keep: (candidate: Candidate) => boolean): Candidate[] => reciprocalRankFusion([meaningList.filter(keep).map(idOf), keywordList.filter(keep).map(idOf)]).map(({ id }) => byId.get(id) as Candidate);
+  /**
+   * The blend of the two lists, best first (reciprocal rank fusion): a row in both lists ranks above a row in one. The keyword list is cut to its best `KEYWORD_RRF_TOP` (30, the size of the meaning list) BEFORE the fusion: the eval
+   * (environments/embedder/eval, `blend-passage-kwtop30`) found that the keyword ranks past that only add noise to a fused score. The cut is made on the list as the reader sees it (`keep`), so rows the reader may not see hold no place in it.
+   */
+  const fuse = (keep: (candidate: Candidate) => boolean): Candidate[] => reciprocalRankFusion([meaningList.filter(keep).map(idOf), keywordList.filter(keep).slice(0, KEYWORD_RRF_TOP).map(idOf)]).map(({ id }) => byId.get(id) as Candidate);
   const wanted = fuse(() => true);
+  // The rows whose right to be seen is checked: the meaning list and the best KEYWORD_CANDIDATES of the keyword list (the best 30 the reader may see are chosen from these).
+  // (the first candidate of an id, the one `byId` and so `fuse` hand back, so the objects `filterVisible` returns are the ones the loop below looks for)
+  const toCheck = [...new Set([...meaningList, ...keywordList.slice(0, KEYWORD_CANDIDATES)].map((candidate) => byId.get(idOf(candidate)) as Candidate))];
 
-  const checkedEvents = await filterVisible(wanted.flatMap((candidate) => (candidate.event === undefined ? [] : [candidate.event])), audience, filters);
-  const checkedFacts = await filterVisible(wanted.flatMap((candidate) => (candidate.fact === undefined ? [] : [candidate.fact])), audience, filters);
+  const checkedEvents = await filterVisible(toCheck.flatMap((candidate) => (candidate.event === undefined ? [] : [candidate.event])), audience, filters);
+  const checkedFacts = await filterVisible(toCheck.flatMap((candidate) => (candidate.fact === undefined ? [] : [candidate.fact])), audience, filters);
   // Only rows the AUDIENCE hid count towards the flag. A deleted row, or one in a place being changed, is hidden from everyone and says nothing about the reader.
   const top = wanted.slice(0, limit * VECTOR_OVERFETCH);
   const topEvents = await filterVisible(top.flatMap((candidate) => (candidate.event === undefined ? [] : [candidate.event])), audience, filters);

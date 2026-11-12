@@ -287,7 +287,7 @@ async function runIngest(deps: IngestDependencies, draft: RecordDraft, admit: bo
 
   // 7. The idempotent write; then the older version it replaces (text, vector and notes) is hidden and queued for removal. If this version's row was already there
   // (a redelivery of a version that is now the head again), nothing is replaced: there is nothing newer to make way for.
-  const result = await putRecordEvent(deps.table, event);
+  const result = await putRecordEvent(deps.table, event, { nowMs: (deps.now ?? Date.now)() });
   // 7a. The erase race (TR-E1): the markers were read BEFORE the row was written (twice: here and in the access record), and an erase can finish in between, so a row can be stored
   // naming a person who is erased by now, with no index item for the erase's passes to find it by. The markers are read once more AFTER the write. Either the erase's marker was
   // written before this read (seen here, and the id is taken out of the stored row), or after it, and then the row and the access index it was written with already existed when the

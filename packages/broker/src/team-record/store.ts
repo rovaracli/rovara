@@ -6,6 +6,7 @@ import { INDEX_EXPIRY_ATTRIBUTE, teamRecordPk, type OrgId } from "@rovara-code/c
 import { RecordEventSchema, RecordFactSchema, SourceConfigSchema, TEAM_RECORD_GSI1, TEAM_RECORD_GSI2, TEAM_RECORD_GSI3, TEAM_RECORD_GSI4, TEAM_RECORD_GSI5, RECORD_DELETE_QUEUE_SK_PREFIX, RECORD_EVENT_SK_PREFIX, RECORD_FACT_SK_PREFIX, RECORD_SOURCE_SK_PREFIX, recordActorIndexValue, recordActorSourceIndexValue, recordTextDueIndexValue, recordDeleteQueueKey, recordDerivationKey, recordEventKey, recordFactKey, recordPlaceIndexValue, recordScopeIndexValue, recordSourceConfigIndexValue, recordSourceIndexValue, recordSourceKey, teamRecordOrgDirectoryKey, teamRecordSourceHash, type RecordEvent, type RecordFact, type RecordSystem, type SourceConfig } from "@agentx/cloud-contracts";
 import { Aliases, NOT_EXISTS, errorName, withoutUndefined, type Item } from "../agents/table-writes.js";
 import { recordHeadIndexValue, reopenScope } from "./item-head.js";
+import { isLateRow, lateMarkerItem, putLateRecordEvent } from "./keyword-late.js";
 import { retentionRefusal } from "./retention.js";
 import type { Edition, PendingHides, TeamRecordTable } from "./types.js";
 
@@ -61,10 +62,16 @@ export function eventFromItem(item: Item | undefined, nowSeconds: number = Math.
 
 export type PutResult = "stored" | "duplicate";
 
-/** Writes a row once. A second write of the same item version is a no-op. */
-export async function putRecordEvent(table: TeamRecordTable, event: RecordEvent): Promise<PutResult> {
+/**
+ * Writes a row once. A second write of the same item version is a no-op. With `nowMs` (the writer's clock), a row whose `occurredAt` is older than the keyword index's late margin is written together with a late marker in ONE
+ * transaction (keyword-late.ts), so a row can never be stored without the marker that makes the index read it live until a rebuild folds it in.
+ */
+export async function putRecordEvent(table: TeamRecordTable, event: RecordEvent, options: { nowMs?: number } = {}): Promise<PutResult> {
   const parsed = RecordEventSchema.parse(event);
   try {
+    if (options.nowMs !== undefined && isLateRow(parsed.occurredAt, options.nowMs)) {
+      return await putLateRecordEvent(table, eventItem(parsed), lateMarkerItem(parsed.workspaceId, parsed.project, parsed.occurredAt, parsed.id, options.nowMs));
+    }
     await table.documentClient.send(new PutCommand({ TableName: table.tableName, Item: eventItem(parsed), ConditionExpression: NOT_EXISTS }));
     return "stored";
   } catch (error) {

@@ -34,6 +34,7 @@ const RECORD_STORAGE_MODULES: Record<string, string> = {
   "team-record/tracker-directory.ts": "the tracker people directory",
   "team-record/tracker-autolink.ts": "automatic tracker links",
   "team-record/runtime.ts": "the runtime's own job state, org directory and project sweeps",
+  "team-record/keyword-index.ts": "the keyword index (lanes K2/K3, DECISIONS 145): its manifest, chunks, build intents and late markers (`KWIDX#`, `KWLATE#`, words only, no text), and the rows it builds from and reloads; the project and company erase remove every item of it (erase.ts), and a row is deleted only after its segment was rebuilt without it (purge.ts)",
 };
 /** Files outside `team-record/` that read the TeamRecord table because lessons and approvals are kept in it. */
 const OUTSIDE_STORAGE_MODULES: Record<string, string> = {

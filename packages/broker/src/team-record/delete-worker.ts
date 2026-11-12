@@ -40,6 +40,9 @@ export interface DeleteRunSummary extends PurgeResult {
   oldestAgeSeconds: number;
   /** Second passes of completed erasures: how many ran and how many became final. */
   erasureSweeps?: { ran: number; final: number };
+  /** Lane K3: rows that wait only for the keyword index to be rebuilt without them, and how many requests that have waited for that over an hour (the alarm: `record.keyword_index_overdue`, and the backlog line below). */
+  indexWaiting: number;
+  indexOverdue: number;
   /** TR-E2b: 1 when the second-pass step itself failed this run (the next run tries it again); 0 otherwise. The hourly job's details carry it. */
   sweepFailed: number;
 }
@@ -64,7 +67,7 @@ async function itemsOf(deps: DeleteWorkerDependencies, orgId: OrgId, work: Scope
 export async function runDeleteWorker(deps: DeleteWorkerDependencies, orgId: OrgId, budget: DeleteBudget = DEFAULT_DELETE_BUDGET): Promise<DeleteRunSummary> {
   const now = deps.now ?? Date.now;
   const started = now();
-  const summary: DeleteRunSummary = { ...emptyPurge(), requests: 0, finished: 0, stillHidden: 0, backlog: false, oldestAgeSeconds: 0, sweepFailed: 0 };
+  const summary: DeleteRunSummary = { ...emptyPurge(), requests: 0, finished: 0, stillHidden: 0, backlog: false, oldestAgeSeconds: 0, sweepFailed: 0, indexWaiting: 0, indexOverdue: 0 };
   // The second pass of erasures that reported complete (due ones only): an erase is final only after it.
   // A failure here must not stop the rest of the run, and must not pass unseen: a fixed-code log and a count (the sweep items stay, so the next run tries again).
   try { summary.erasureSweeps = await runErasureSweeps(deps, orgId, now()); } catch {
@@ -82,6 +85,12 @@ export async function runDeleteWorker(deps: DeleteWorkerDependencies, orgId: Org
     summary.requests += 1;
     const remaining: WorkBudget = { maxItems: budget.maxItems, maxMs: Math.max(1, budget.maxMs - (now() - started)) };
     const key = recordDeleteQueueKey(orgId, entry.at, entry.requestId);
+    // A request that waits for the keyword index (a segment still to be rebuilt without its rows) for over an hour is overdue: counted here and on the backlog line.
+    const noteIndexWait = (purged: PurgeResult): void => {
+      if ((purged.indexWaiting ?? 0) === 0) return;
+      summary.indexWaiting += purged.indexWaiting ?? 0;
+      if (Math.floor(now() / 1000) - entry.queuedAtSeconds > DELETE_BACKLOG_SECONDS) summary.indexOverdue += 1;
+    };
 
     if (entry.type === "principals" || entry.type === "audience") {
       const done = entry.type === "principals"
@@ -110,7 +119,7 @@ export async function runDeleteWorker(deps: DeleteWorkerDependencies, orgId: Org
       }
       const purged = await purgeItems(deps, orgId, [...rows, ...links]);
       summary.rows += purged.rows; summary.facts += purged.facts; summary.redistilled += purged.redistilled; summary.vectors += purged.vectors;
-      summary.lessonsWithdrawn += purged.lessonsWithdrawn; summary.lessonsKept += purged.lessonsKept; summary.blocked += purged.blocked;
+      summary.lessonsWithdrawn += purged.lessonsWithdrawn; summary.lessonsKept += purged.lessonsKept; summary.blocked += purged.blocked; noteIndexWait(purged);
       if (purged.blocked === 0) { await deleteItem(deps.table, key); summary.finished += 1; } else summary.stillHidden += 1;
       continue;
     }
@@ -175,7 +184,7 @@ export async function runDeleteWorker(deps: DeleteWorkerDependencies, orgId: Org
     } else found = await itemsOf(deps, orgId, entry, remaining);
     const purged = await purgeItems(deps, orgId, found.items);
     summary.rows += purged.rows; summary.facts += purged.facts; summary.redistilled += purged.redistilled; summary.vectors += purged.vectors;
-    summary.lessonsWithdrawn += purged.lessonsWithdrawn; summary.lessonsKept += purged.lessonsKept; summary.blocked += purged.blocked;
+    summary.lessonsWithdrawn += purged.lessonsWithdrawn; summary.lessonsKept += purged.lessonsKept; summary.blocked += purged.blocked; noteIndexWait(purged);
     // The deleted place keeps no member list (the place stays closed, so nothing reads it again): its entries go a few thousand a run, and the request stays until they are gone.
     const scopeDeleted = entry.scope !== undefined && entry.textOnly !== true && (entry.cause === "source_deleted" || entry.cause === "excluded");
     // TR-E5: the item heads of a deleted place go with it (the index finds a head by its place; a row's own head is found by the row's source item). A head holds a hash and a time, no text,
@@ -203,7 +212,8 @@ export async function runDeleteWorker(deps: DeleteWorkerDependencies, orgId: Org
     }
   }
   summary.backlog = summary.oldestAgeSeconds > DELETE_BACKLOG_SECONDS;
-  if (summary.backlog) deps.log?.("record.delete_backlog", { requests: summary.requests, oldestAgeSeconds: summary.oldestAgeSeconds });
+  if (summary.indexOverdue > 0) deps.log?.("record.keyword_index_overdue", { requests: summary.indexOverdue, rows: summary.indexWaiting });
+  if (summary.backlog) deps.log?.("record.delete_backlog", { requests: summary.requests, oldestAgeSeconds: summary.oldestAgeSeconds, ...(summary.indexWaiting > 0 ? { indexWaiting: summary.indexWaiting, indexOverdue: summary.indexOverdue } : {}) });
   return summary;
 }
 

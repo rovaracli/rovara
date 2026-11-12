@@ -515,10 +515,10 @@ export class FakeDynamoDb {
     }
     // Compute every result first so one oversize item refuses the whole transaction (`apply` is pure).
     const nexts = actions.map((action) => action.kind === "ConditionCheck" ? undefined : action.apply(this.items.get(action.key)));
-    if (nexts.some((next) => next !== undefined && Buffer.byteLength(JSON.stringify(next), "utf8") > DYNAMODB_ITEM_MAX_BYTES)) {
+    if (nexts.some((next) => next !== undefined && itemBytes(next) > DYNAMODB_ITEM_MAX_BYTES)) {
       throw Object.assign(new Error("Item size has exceeded the maximum allowed size"), { name: "ValidationException" });
     }
-    if (enforceTransactionSize && nexts.reduce((total, next) => total + (next === undefined ? 0 : Buffer.byteLength(JSON.stringify(next), "utf8")), 0) > DYNAMODB_TRANSACTION_MAX_BYTES) {
+    if (enforceTransactionSize && nexts.reduce((total, next) => total + (next === undefined ? 0 : itemBytes(next)), 0) > DYNAMODB_TRANSACTION_MAX_BYTES) {
       throw Object.assign(new Error("Transaction request is too large: the aggregate size of the items in the transaction cannot exceed 4MB"), { name: "ValidationException" });
     }
     for (const [index, action] of actions.entries()) {
@@ -573,6 +573,13 @@ export function reorderMaps(value: unknown, seed: number = DEFAULT_MAP_ORDER_SEE
   // rotated by one, so a read never shows a map of two or more attributes in the order it was written.
   if (ordered.length > 1 && ordered.every(([key], index) => key === given[index])) ordered.push(ordered.shift()!);
   return Object.fromEntries(ordered);
+}
+
+/** An item's size as DynamoDB counts it, near enough: its JSON, with a binary attribute (a `Uint8Array`, the keyword index's chunks) counted at its own length and not as the JSON of an object of numbers. */
+function itemBytes(item: unknown): number {
+  let binary = 0;
+  const json = JSON.stringify(item, (_key, value: unknown) => { if (value instanceof Uint8Array) { binary += value.byteLength; return ""; } return value; });
+  return Buffer.byteLength(json, "utf8") + binary;
 }
 
 /** FNV-1a over the seed and the attribute name. */

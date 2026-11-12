@@ -38,7 +38,8 @@ import { listSourceConfigs, listWorkspace, markSourceFailing, oldestQueuedKey } 
 import { resolveTaskVisibility } from "../lessons/task-visibility.js";
 import { createEmbedder } from "./embed.js";
 import { lessonEmbedderFrom, recordEmbedderClientFrom, recordJobEmbedderClientFrom, recordSearchEmbedderClientFrom, EMBEDDER_JOB_WAIT_MS, type LessonEmbedder } from "../embedder/wiring.js";
-import { REEMBED_RUN_MS, dropReembedState, reembedRun, sweepReembedStateRun } from "./reembed.js";
+import { REEMBED_RUN_MS, dropReembedState, listDirectoryOrgs, listErasingOrgs, reembedRun, sweepReembedStateRun } from "./reembed.js";
+import { runKeywordIndexJob, type KeywordIndexJobDeps } from "./keyword-index.js";
 import { runWithEmbedDeadline, withEmbedDeadline } from "./embed-deadline.js";
 import { eraseProject, eraseWorkspace, erasePerson, type EraseBudget } from "./erase.js";
 import { tableHotArchiveSource, ensureWorkspaceVectorBucket, tableHotStatsSource } from "./hot-source.js";
@@ -123,6 +124,8 @@ export interface TeamRecordRuntimeInput {
   /** Tests: the repository check's share of one company (default 4 s) and the hourly job's whole budget (default 24 s). */
   repoCheckOrgMs?: number;
   jobBudgetMs?: number;
+  /** Lanes K2/K3: `false` switches the keyword index's maintenance off (the search then always reads the window; tests). Default on. */
+  keywordIndex?: false;
   /**
    * SRL-5a: the GitHub App's view of an installation (the repositories it reaches, and one repository by id). Every hour each recorded repository is checked to still be held by its installation, so
    * rows from a repository GitHub deleted or transferred without a webhook we saw are removed. Absent: no check (an install without a GitHub App).
@@ -282,6 +285,8 @@ const MAX_ORGS_PER_RUN = 500;
 /** One scheduled run's whole budget: inside the broker function's 30 s timeout with room for the answer. */
 export const JOB_BUDGET_MS = 24_000;
 const PER_ORG_MS = 8_000;
+/** The share of the 15-minute run the keyword index's maintenance may take before the re-embed work (lanes K2/K3). The re-embed run keeps its own deadline from the job's start. */
+const KEYWORD_JOB_MS = 5_000;
 /** How long a failed delete of the retired (Titan-era) vector index waits before it is tried again in the same workspace. */
 const OLD_INDEX_RETRY_MS = 15 * 60_000;
 /** The most the dead-letter sweep may take of one hourly run, so the orgs keep most of the budget. */
@@ -1187,6 +1192,22 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
   }
   /** True while the company is closing or closed (read fresh): the re-embed job leaves it alone (N5). */
   const companyIsClosing = async (orgId: OrgId): Promise<boolean> => (await whyClosed(orgId, undefined, true)) === "company_closed";
+  /** The keyword index's maintenance over the workspaces (or one: `only`), for `runMs`; its counts go into the job's details. A failure never stops the job it runs in (a fixed log line). */
+  async function keywordIndexJob(startedAt: number, runMs: number, expiry: boolean, only?: OrgId): Promise<Record<string, number>> {
+    if (input.keywordIndex === false) return {};
+    try {
+      const erasing = await listErasingOrgs(table);
+      const deps: KeywordIndexJobDeps = {
+        table, now, log, projects: projectsOf, projectOpen: async (orgId, project) => (await whyClosed(orgId, project, true)) === undefined,
+        orgs: async () => (only === undefined ? (await listDirectoryOrgs(table)).filter((orgId) => !erasing.has(orgId)) : erasing.has(only) ? [] : [only]),
+      };
+      const done = await runKeywordIndexJob(deps, startedAt, runMs, { expiry });
+      return { kwProjects: done.projects, kwRebuilt: done.rebuilt, kwFolded: done.folded, kwSealed: done.sealed, kwMerged: done.merged, kwExpired: done.expired, kwOverdue: done.overdue, kwBuilding: done.building ? 1 : 0, kwFailed: done.failed };
+    } catch {
+      log("record.keyword_index_job_failed", {});
+      return { kwFailed: 1 };
+    }
+  }
   const jobs: TeamRecordRuntime["jobs"] = {
     extend(job, work) {
       extensions[job].push(work);
@@ -1194,11 +1215,16 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
     },
     async run(job) {
       if (job === "reembed") {
-        // Maintenance of stored rows' vectors. Paused (or no embedder in this install): nothing to do. Strict about nothing else: a workspace whose index cannot be opened is skipped this run.
-        if (paused || jobEmbedder === undefined) return { orgs: 0, skippedOrgs: 0, details: { skipped: 1 } };
-        // R2 and R3: one deadline for the whole run, measured from here; the least recently served workspace first, each with a share of what is left, each with a cursor (reembed.ts).
         const startedAt = now();
-        return reembedRun({ table, embedder: jobEmbedder, vectorsFor: (orgId) => indexFor(orgId), isClosing: companyIsClosing, now, log }, startedAt, { maxRows: 100, maxScanned: 1_000, callMs: EMBEDDER_JOB_WAIT_MS, warmCallMs: 5_000 }, REEMBED_RUN_MS);
+        // Lanes K2/K3: the keyword index's maintenance (rebuild what a removal marked, fold late rows, seal the tail, build a project's index the first time) runs FIRST, inside its own small share of the 15-minute run, so a
+        // removal waits at most one run for its rebuild. It runs even when the record is paused or there is no embedder: a removal still has to leave the index.
+        const keyword = await keywordIndexJob(startedAt, KEYWORD_JOB_MS, false);
+        // Maintenance of stored rows' vectors. Paused (or no embedder in this install): nothing to do. Strict about nothing else: a workspace whose index cannot be opened is skipped this run.
+        if (paused || jobEmbedder === undefined) return { orgs: 0, skippedOrgs: 0, details: { skipped: 1, ...keyword } };
+        // R2 and R3: one deadline for the whole run, measured from the job's start (the keyword share included); the least recently served workspace first, each with a share of what is left, each with a cursor (reembed.ts).
+        const embedded = await reembedRun({ table, embedder: jobEmbedder, vectorsFor: (orgId) => indexFor(orgId), isClosing: companyIsClosing, now, log }, startedAt, { maxRows: 100, maxScanned: 1_000, callMs: EMBEDDER_JOB_WAIT_MS, warmCallMs: 5_000 }, REEMBED_RUN_MS);
+        Object.assign(embedded.details, keyword);
+        return embedded;
       }
       if (job === "hourly") {
         // TRW-5 S1: text that reached the dead-letter queue anyway is deleted from it, first, so an org's slow work cannot starve it.
@@ -1247,6 +1273,8 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
         const lakeNow = lakeClient();
         // Lessons in production: the nightly re-reflection of reverted tasks runs with the expiry (it only sends ids to a queue), before the archive's longer work.
         const extra = await runExtensions("nightly", orgId, Math.max(1_000, budgetMs / 4));
+        // Lanes K2/K3: after the expiry, the keyword index drops the words of raw text that has expired and of rows that left the hot table (a segment is rebuilt only when one of its rows has).
+        Object.assign(extra, await keywordIndexJob(now(), Math.max(1_000, budgetMs / 3), true, orgId));
         if (lakeNow === undefined || vectors === undefined) return { expired: Object.values(expired).filter((value): value is number => typeof value === "number").reduce((total, value) => total + value, 0), ...extra };
         const archived = await runArchive({
           source: tableHotArchiveSource(table, { projects: projectsOf }, lakeQueue, now), lake: lakeNow, tableBucket, vectors, lakeDeletes: lakeQueue, edition,

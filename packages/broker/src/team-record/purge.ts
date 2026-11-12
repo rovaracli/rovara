@@ -12,6 +12,7 @@ import { recordDerivationKey, recordFactKey, teamRecordSourceHash } from "@agent
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import type { Item } from "../agents/table-writes.js";
 import { auditLessonWithdrawn, type RecordAuditSink } from "./audit.js";
+import { removalGate } from "./keyword-index.js";
 import { tableLakeDeleteQueue, type LakeDeleteQueue, type LakeDeleteTarget } from "./lake-queue.js";
 import { lessonFate, type LessonDeletionPort } from "./lesson-fate.js";
 import { wasDeletedAtSource, projectOfPk } from "./scope-work.js";
@@ -56,6 +57,8 @@ export interface PurgeDependencies {
   names?: { erase(developerId: string): Promise<void> } | undefined;
   now?: (() => number) | undefined;
   log?: RecordLog | undefined;
+  /** How long one `purgeItems` call may spend rebuilding keyword-index segments without the rows it is about to delete (default 5 s; lane K3). */
+  keywordGateMs?: number | undefined;
 }
 
 export interface PurgeResult {
@@ -67,12 +70,15 @@ export interface PurgeResult {
   lessonsKept: number;
   /** Items left in place because a step they need could not run. The caller leaves its queue item for the next run. */
   blocked: number;
+  /** Of the blocked rows, how many wait only for the keyword index to be rebuilt without them (lane K3). Absent: none. */
+  indexWaiting?: number;
 }
 
 export const emptyPurge = (): PurgeResult => ({ rows: 0, facts: 0, redistilled: 0, vectors: 0, lessonsWithdrawn: 0, lessonsKept: 0, blocked: 0 });
 export const addPurge = (into: PurgeResult, from: PurgeResult): PurgeResult => ({
   rows: into.rows + from.rows, facts: into.facts + from.facts, redistilled: into.redistilled + from.redistilled, vectors: into.vectors + from.vectors,
   lessonsWithdrawn: into.lessonsWithdrawn + from.lessonsWithdrawn, lessonsKept: into.lessonsKept + from.lessonsKept, blocked: into.blocked + from.blocked,
+  ...((into.indexWaiting ?? 0) + (from.indexWaiting ?? 0) > 0 ? { indexWaiting: (into.indexWaiting ?? 0) + (from.indexWaiting ?? 0) } : {}),
 });
 
 const VECTOR_BATCH = 500;
@@ -148,7 +154,7 @@ async function planFact(deps: PurgeDependencies, orgId: OrgId, link: Item): Prom
  * Deletes the given items (record rows and derivation links, as an index query returns them) and everything derived from them. Each row is hidden already by its
  * tombstone; this removes it for good. Returns what it removed and how many items it had to leave (blocked).
  */
-export async function purgeItems(deps: PurgeDependencies, orgId: OrgId, items: readonly Item[], options: { lessonsSettled?: boolean } = {}): Promise<PurgeResult> {
+export async function purgeItems(deps: PurgeDependencies, orgId: OrgId, items: readonly Item[], options: { lessonsSettled?: boolean; indexHandled?: boolean } = {}): Promise<PurgeResult> {
   const result = emptyPurge();
   const rows = items.filter((item) => item.entityType === "TEAM_RECORD_EVENT" && typeof item.id === "string" && typeof item.pk === "string" && typeof item.sk === "string");
   const links = items.filter((item) => item.entityType === "TEAM_RECORD_DERIVATION" && typeof item.pk === "string" && typeof item.sk === "string");
@@ -204,6 +210,11 @@ export async function purgeItems(deps: PurgeDependencies, orgId: OrgId, items: r
     }
   }
 
+  // 3b. The keyword index (lane K3): a row's words leave the index BEFORE the row goes, the same rule as the vector. `removalGate` hides any row not hidden yet, marks the segments that cover the rows dirty, rebuilds them
+  // now (within `keywordGateMs`) and names the rows whose words are out. A row it does not name stays, counted as waiting; the 15-minute job rebuilds what is left and the next run deletes the row. A whole-project erase
+  // (`indexHandled`) deletes the project's index items itself, first.
+  const gate = rows.length === 0 || options.indexHandled === true ? undefined : await removalGate({ table: deps.table, ...(deps.now === undefined ? {} : { now: deps.now }), ...(deps.log === undefined ? {} : { log: deps.log }) }, orgId, rows, { budgetMs: deps.keywordGateMs ?? 5_000 });
+
   // 4. Vectors, then the rows and facts whose vectors are gone.
   const vectorKeys = [...rows.map((row) => eventKey(row.id as string)), ...[...plans.values()].map((plan) => factVectorKey(plan.factId))];
   const vectors = await deleteVectors(deps, vectorKeys);
@@ -211,6 +222,7 @@ export async function purgeItems(deps: PurgeDependencies, orgId: OrgId, items: r
   
   for (const row of rows) {
     if (!vectors.gone.has(eventKey(row.id as string))) { result.blocked += 1; continue; }
+    if (gate !== undefined && !gate.ready.has(`${row.pk as string}|${row.sk as string}`)) { result.blocked += 1; result.indexWaiting = (result.indexWaiting ?? 0) + 1; continue; }
     await deleteItem(deps.table, { pk: row.pk as string, sk: row.sk as string });
     result.rows += 1;
   }
@@ -237,6 +249,6 @@ export async function purgeItems(deps: PurgeDependencies, orgId: OrgId, items: r
     if (!exists || settledLinks.has(link.factId as string)) await deleteItem(deps.table, { pk: link.pk as string, sk: link.sk as string });
   }
 
-  if (result.blocked > 0) deps.log?.("record.purge_blocked", { blocked: result.blocked });
+  if (result.blocked > 0) deps.log?.("record.purge_blocked", { blocked: result.blocked, ...(result.indexWaiting === undefined ? {} : { indexWaiting: result.indexWaiting }) });
   return result;
 }
