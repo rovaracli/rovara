@@ -1,20 +1,12 @@
 // Known differences found by the spend limits, approvals, erasure, multi-project companies drivers. Same rules as known-differences.ts.
 import type { KnownDifference } from "../known-differences.js";
 
-const REFUSAL_WORDS = [
-  "Words a person reads, from each side's own refusal: Cloud's admitWork says \"Your company's monthly AI budget is used up. Ask an admin to raise it.\" (packages/broker/src/org/budget.ts:349);",
-  "the core's start, refused by lane A5's CloudAdmission, says \"... has too little left for this ($X of $Y left). Try again when running work finishes, or ask an admin to raise it.\"",
-  "(packages/broker/src/cloud-adapters/money/admission.ts:249). The code the surface branches on (ORG_BUDGET_EXCEEDED) and the admission's own code (org_budget_exceeded) are the same.",
-].join(" ");
-
 const ADMISSION_UNOBSERVED_ON_CLOUD = [
   "Observation, not behaviour: the core's spend facet lists each Admission decision (the fake world records lane A5's CloudAdmission: admitted:task.start, admitted:machine.start); Cloud's journey harness",
   "has no model proxy (createWorkflowE2E has no modelAccess option), so Cloud's start admission (admitWork) does not run for an admitted start and leaves no word. Cloud's admitWork writes nothing when it admits.",
 ].join(" ");
 
 export const PEOPLE_MONEY_DIFFERENCES: readonly KnownDifference[] = [
-  { scenario: "spend-limit-hit", facet: "spend", cause: REFUSAL_WORDS, owner: "Owner decision 143(d): Cloud's current words stay; ROOT TO-DO (S0-143d): map the core's and A5's refusal codes onto Cloud's words (org/budget.ts:349) before the switch" },
-  { scenario: "people-money-spend-room-short", facet: "spend", cause: REFUSAL_WORDS, owner: "Owner decision 143(d): Cloud's current words stay; ROOT TO-DO (S0-143d): map the core's and A5's refusal codes onto Cloud's words (org/budget.ts:349) before the switch" },
   {
     scenario: "people-money-spend-full-path", facet: "spend",
     cause: [

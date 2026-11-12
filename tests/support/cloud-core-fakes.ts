@@ -15,6 +15,7 @@ import { FAKE_TRACKER_KIND, FakeTracker } from "../../vendor/rovara-code/package
 import { createCloudAdmission, createCloudMetering } from "../../packages/broker/src/cloud-adapters/money/index.js";
 import { createCloudAuditSink } from "../../packages/broker/src/cloud/adapters/audit-sink/index.js";
 import { CORE_ADMISSION_ACTIONS } from "../../packages/broker/src/cloud/app/cloud-modules.js";
+import { cloudRefusalWords } from "../../packages/broker/src/cloud/app/refusal-words.js";
 import { cloudAdapter, type CloudAdapterContext, type CloudAdapterModule } from "../../packages/broker/src/cloud/app/registry.js";
 
 export const FAKE_COMPANY = "org_s0parity00000000000a" as const;
@@ -121,7 +122,7 @@ export function createFakeWorld(options: FakeWorldOptions = {}): FakeWorld {
     cloudAdapter({ point: "queue", name: "sqs", lane: "A2", create: () => queues }),
     cloudAdapter({ point: "worker-machines", name: "ec2", lane: "A4", create: () => machines }),
     // Lane A5's real adapters, over the same store, with the actions the composition root admits (cloud-modules.ts) and a company limit the scenario sets.
-    cloudAdapter({ point: "admission", name: "cloud", lane: "A5", create: () => options.admission ?? recordingAdmission(createCloudAdmission({ store, levels: async () => [{ scope: "ORG", kind: "org", limitUsd: options.companyLimitUsd }], actions: CORE_ADMISSION_ACTIONS, now: () => clock.now }), spend) }),
+    cloudAdapter({ point: "admission", name: "cloud", lane: "A5", create: () => options.admission ?? recordingAdmission(createCloudAdmission({ store, levels: async () => [{ scope: "ORG", kind: "org", limitUsd: options.companyLimitUsd }], actions: CORE_ADMISSION_ACTIONS, words: cloudRefusalWords, now: () => clock.now }), spend) }),
     cloudAdapter({ point: "metering", name: "cloud", lane: "A5", create: () => createCloudMetering({ store, prices: { currency: "USD", models: {} } }) }),
     cloudAdapter({ point: "audit-sink", name: "cloud", lane: "A7", create: () => (options.audit === "stand-in" ? recordingAudit(audit) : cloudAudit(audit, store, () => clock.now)) }),
     cloudAdapter({ point: "approvers", name: "cloud", lane: "A6", create: () => createLocalOwnerApprovers({ now }) }),

@@ -18,6 +18,7 @@ import { createCloudModelKeyStore, type CloudModelKeyStoreOptions } from "../../
 import { createCloudApprovers, createCloudIdentityProvider, type CloudApproversDependencies, type CloudPeopleDependencies } from "../adapters/people/index.js";
 import { githubCodeHost } from "../../plugins/code-host/github/index.js";
 import { cloudAdmissionLevels, type LevelSources } from "./money.js";
+import { cloudRefusalWords } from "./refusal-words.js";
 import { cloudAdapter, type CloudAdapterModule } from "./registry.js";
 
 /** A held room check before a spending action, in dollars (the A5 conformance value; Cloud's own `admitWork` minimum is the open question A5-S0-Q4). */
@@ -65,7 +66,7 @@ export function cloudAdapterModules(deps: CloudModuleDeps): CloudAdapterModule[]
     }),
     cloudAdapter({
       point: "admission", name: "cloud", lane: "A5",
-      create: (_context, registry) => createCloudAdmission({ store: registry.require("storage"), levels: cloudAdmissionLevels(deps.levels), actions: CORE_ADMISSION_ACTIONS }),
+      create: (_context, registry) => createCloudAdmission({ store: registry.require("storage"), levels: cloudAdmissionLevels(deps.levels), actions: CORE_ADMISSION_ACTIONS, words: cloudRefusalWords }),
     }),
     cloudAdapter({ point: "metering", name: "cloud", lane: "A5", create: (_context, registry) => createCloudMetering({ store: registry.require("storage"), prices: deps.prices }) }),
     cloudAdapter({ point: "identity", name: "cloud", lane: "A6", create: () => createCloudIdentityProvider(deps.people) }),
