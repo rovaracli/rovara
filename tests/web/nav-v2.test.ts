@@ -172,6 +172,15 @@ describe("switch on", () => {
   expect(main.getByRole("link", { name: /search/u }).textContent).toBe("search");expect(main.queryByText(/Payments expert|Refund helper/u)).toBeNull();f.close();
   const empty = shell("/app/projects", { on: true, value: nav({ projects: [] }) });expect(await screen.findByRole("heading", { name: "No projects yet" })).toBeTruthy();expect(within(screen.getByRole("main")).getByRole("link", { name: "Onboard a project" }).getAttribute("href")).toBe("/app/onboard");empty.close();
  });
+ it("on the Projects page the answer's own per-project needsYou is used, not the sum of the agents' counts; absent, the sum is used as before", async () => {
+  const projects = [{ name: "payments", needsYou: 4, agents: [agent(1, "Payments expert", 1, 1), agent(2, "Refund helper", 2, 0)] }, { name: "search", needsYou: 0, agents: [agent(1, "Payments expert", 0, 2)] }, { name: "ledger", agents: [agent(3, "Ledger helper", 0, 2)] }];
+  const f = shell("/app/projects", { on: true, value: nav({ projects }) });await screen.findByRole("heading", { name: "Projects", level: 1 });
+  const main = within(screen.getByRole("main")), text = (name: RegExp) => main.getByRole("link", { name }).textContent;
+  expect(text(/payments/u)).toContain("4 need you");expect(text(/payments/u)).not.toContain("1 needs you");expect(text(/payments/u)).toContain("3 running");
+  // A count of 0 from the server is an answer: nothing needs the person here, whatever the agents' rows add up to.
+  expect(text(/search/u)).toBe("search");
+  expect(text(/ledger/u)).toContain("2 need you");f.close();
+ });
  for (const theme of ["light", "dark"] as const) it("has no automated accessibility violations in " + theme, async () => { const f = shell("/app", { on: true, theme });await screen.findByRole("heading", { name: "Home" });await expectNoAxeViolations(f.container);f.close(); });
  it("adds the new routes only with the switch on", () => {
   const paths = (routes: ReturnType<typeof appRoutes>) => routes.flatMap(route => route.children ?? []).map(route => route.path ?? "(index)");

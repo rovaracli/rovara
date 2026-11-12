@@ -35,7 +35,7 @@ for (const width of [1280, 390] as const) {
   await page.goto(OVERVIEW);await expect(page.getByRole("heading", { name: "Company settings" })).toBeVisible();await page.waitForLoadState("networkidle");
   await expect(page.getByRole("heading", { name: "What needs an admin" })).toHaveCount(0);
   const calls = await (await request.get("/__mock/requests")).json() as Array<{ path: string }>;
-  expect(calls.filter(call => /\/v1\/web\/(approvals|spend-requests|connections|org\/lessons\/preset|org\/design-review)$/u.test(call.path))).toEqual([]);
+  expect(calls.filter(call => /\/v1\/web\/(org\/approvals\/pending-summary|spend-requests|connections|org\/lessons\/preset|org\/design-review)$/u.test(call.path))).toEqual([]);
   expect(await noSidewaysScroll(page)).toBe(true);
   await evidenceShot(page, { path: `${shots}/off-overview-${String(width)}.png`, fullPage: true });
  });
@@ -73,7 +73,7 @@ for (const look of [{ name: "look-off", store: {} }, { name: "look-v2", store: {
   test(`Overview, switch on, ${look.name} at ${String(width)}: What needs an admin with where to fix each item; ${phone ? "44px targets, " : ""}no sideways scroll, axe clean`, async ({ page, context, request, baseURL }) => {
    await enter(page, context, request, baseURL, width, { ...look.store, "rovara.health": "v2" });await page.goto(OVERVIEW);
    const needs = page.locator(".rv-health-needs");await expect(needs.getByRole("heading", { name: "What needs an admin" })).toBeVisible();
-   await expect(needs.getByText("Protected change to confirm")).toBeVisible();await expect(needs.getByText("Spending request: More monthly budget")).toBeVisible();await expect(needs.getByText("Company rule proposal")).toBeVisible();
+   await expect(needs.getByText("Raise the company's agent spending guardrail")).toBeVisible();await expect(needs.getByText("Create an issue in Linear")).toBeVisible();await expect(needs.getByText(/Asked by Maya/u)).toBeVisible();await expect(needs.getByText("3 approvals are waiting in the company. The list may be incomplete.")).toBeVisible();await expect(needs.getByRole("button", { name: "Open to review" }).first()).toBeVisible();await expect(needs.getByText("Spending request: More monthly budget")).toBeVisible();await expect(needs.getByText("Company rule proposal")).toBeVisible();
    await expect(needs.getByText("Tracker: Linear or Jira")).toBeVisible();await expect(needs.getByText("Test environment: payments")).toBeVisible();
    await expect(needs.getByRole("link", { name: "Open the waiting list" }).first()).toHaveAttribute("href", "/app/admin/waiting");
    await expect(needs.getByRole("link", { name: "Open How we work" })).toHaveAttribute("href", "/app/admin/how-we-work");

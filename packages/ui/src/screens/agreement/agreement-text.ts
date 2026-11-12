@@ -44,12 +44,12 @@ export const T = {
 } as const;
 /** Sources the page cannot read yet because the broker has no read for them. Each is listed as "Not available yet" (and as "needs broker" in the lane report). */
 export const NEEDS_BROKER = {
- merge: "Merge rules: who reviews, the self-approval exception and the merge method",
  approvals: "Approval settings: the recent sign-in window, chat merge and comment approvals",
  taskSnapshot: "The rules this task started with",
 } as const;
 export type MissingKey = keyof typeof NEEDS_BROKER;
 export const SOURCE_NAMES = {
+ merge: "Merge rules: who reviews, the self-approval exception and the merge method",
  layers: "Project and company How we work rules",
  "design-review": "Design review",
  models: "AI models by step",

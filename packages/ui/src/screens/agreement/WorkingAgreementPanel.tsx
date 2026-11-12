@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import { useQuery, type UseQueryResult } from "@tanstack/react-query";
 import { Link } from "react-router";
 import { designReviewKey, useDesignReviewApi } from "../../api/design-review.js";
-import { useCompanyRulesSummary } from "../../api/agreement.js";
+import { useCompanyRulesSummary, useMergeRules } from "../../api/agreement.js";
 import { ApiError } from "../../api/errors.js";
 import { useHowWeWork } from "../../api/how-we-work.js";
 import { useKnownFailingPolicy } from "../../api/known-failing.js";
@@ -16,7 +16,7 @@ import { Skeleton } from "../../design/Skeleton.js";
 import { VisibleText, visibleText } from "../../design/VisibleText.js";
 import { canOpenCompanySettings } from "../../shell/destinations.js";
 import { NEEDS_BROKER, ORIGIN_LABEL, SOURCE_NAMES, T, type MissingKey, type SourceId } from "./agreement-text.js";
-import { companyRulesRows, designReviewModeLock, designReviewRows, isLocked, knownFailingRows, layerRows, learningRows, lessonsRows, modelRows, taskRows, type AgreementRow, type StepRows, type TaskFacts } from "./agreement-rows.js";
+import { companyRulesRows, designReviewModeLock, designReviewRows, isLocked, knownFailingRows, layerRows, learningRows, lessonsRows, mergeRulesRows, modelRows, taskRows, type AgreementRow, type StepRows, type TaskFacts } from "./agreement-rows.js";
 
 /** One source's state. "missing": the broker has no such read for this person or install (404, 403). "failed": any other failure. */
 type Source = { id: SourceId; state: "loading" } | { id: SourceId; state: "missing" } | { id: SourceId; state: "failed"; retry: () => void } | { id: SourceId; state: "ready" };
@@ -54,17 +54,17 @@ export function WorkingAgreementPanel({ project, variant, task }: { project: str
  const full = variant === "project", nav = useNav(), admin = nav.data !== undefined && canOpenCompanySettings(nav.data);
  const design = useDesignReviewApi();
  const layers = useHowWeWork(project), playbook = useQuery({ queryKey: designReviewKey(project), queryFn: () => design.playbook(project) }), models = useStageModels(project, undefined, full);
- const lessons = useLessons(project), learning = useLearning(project), policy = useKnownFailingPolicy(), companyRulesOn = nav.data?.features.companyRules === true, rules = useCompanyRulesSummary(companyRulesOn, admin);
+ const merge = useMergeRules(project), lessons = useLessons(project), learning = useLearning(project), policy = useKnownFailingPolicy(), companyRulesOn = nav.data?.features.companyRules === true, rules = useCompanyRulesSummary(companyRulesOn, admin);
  const layer = layers.data === undefined ? undefined : layerRows(layers.data), designRows = playbook.data === undefined ? undefined : designReviewRows(playbook.data);
  // The broker answers 200 with no design review setting where the stage does not exist for this install: nothing to show, so it counts as not available.
  const designSource: Source = playbook.data !== undefined && designRows === undefined ? { id: "design-review", state: "missing" } : sourceOf("design-review", playbook);
  // Company rules are read only where the nav answer says they are on. Until the nav answer is in it is loading; without the flag (or without the nav answer) the source is not available.
  const companyRulesSource: Source = nav.isPending ? { id: "company-rules", state: "loading" } : companyRulesOn ? sourceOf("company-rules", rules) : { id: "company-rules", state: "missing" };
- const sources: Source[] = [sourceOf("layers", layers), designSource, ...(full ? [sourceOf("models", models)] : []), sourceOf("lessons", lessons), sourceOf("learning", learning), sourceOf("known-failing", policy), companyRulesSource];
- const whole: AgreementRow[] = [...(layer?.project ?? []), ...(designRows ?? []), ...(lessons.data === undefined ? [] : lessonsRows(lessons.data)), ...(learning.data === undefined ? [] : learningRows(learning.data)), ...(policy.data === undefined ? [] : knownFailingRows(policy.data)), ...(rules.data === undefined ? [] : companyRulesRows(rules.data))];
+ const sources: Source[] = [sourceOf("merge", merge), sourceOf("layers", layers), designSource, ...(full ? [sourceOf("models", models)] : []), sourceOf("lessons", lessons), sourceOf("learning", learning), sourceOf("known-failing", policy), companyRulesSource];
+ const whole: AgreementRow[] = [...(layer?.project ?? []), ...(merge.data === undefined ? [] : mergeRulesRows(merge.data)), ...(designRows ?? []), ...(lessons.data === undefined ? [] : lessonsRows(lessons.data)), ...(learning.data === undefined ? [] : learningRows(learning.data)), ...(policy.data === undefined ? [] : knownFailingRows(policy.data)), ...(rules.data === undefined ? [] : companyRulesRows(rules.data))];
  const mine = task === undefined ? [] : taskRows(task, playbook.data === undefined ? "unread" : designReviewModeLock(playbook.data)), modelList = models.data === undefined ? [] : modelRows(models.data), steps: StepRows[] = full ? layer?.steps ?? [] : [];
  const loading = sources.filter(source => source.state === "loading"), notShown = sources.filter(source => source.state === "missing" || source.state === "failed");
- const missing: MissingKey[] = full ? ["merge", "approvals"] : ["merge", "approvals", "taskSnapshot"];
+ const missing: MissingKey[] = full ? ["approvals"] : ["approvals", "taskSnapshot"];
  return <section className={"rv-agree rv-agree-" + variant} aria-labelledby={"agree-" + variant + "-title"} aria-busy={loading.length > 0}>
   <div className="rv-agree-block">{full ? <h2 id="agree-project-title">{T.TITLE}</h2> : <h3 id="agree-task-title">{T.TASK_TITLE}</h3>}<p className="rv-muted">{full ? T.INTRO : T.TASK_INTRO}</p></div>
   {mine.length > 0 && <Block title={T.SECTION_TASK}><List label={T.SECTION_TASK} rows={mine} admin={admin} /></Block>}
