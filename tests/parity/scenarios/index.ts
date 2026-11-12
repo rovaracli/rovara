@@ -51,6 +51,7 @@ import { FACETS_SCENARIOS } from "./index-facets.js";
 import { FEATURES_A_SCENARIOS } from "./index-features-a.js";
 import { FEATURES_B_SCENARIOS } from "./index-features-b.js";
 import { FEATURES_C_SCENARIOS } from "./index-features-c.js";
+import { FEATURES_D_SCENARIOS } from "./index-features-d.js";
 
 export const SCENARIOS: readonly Scenario[] = [
   quickToPlanReview,
@@ -103,4 +104,5 @@ export const SCENARIOS: readonly Scenario[] = [
   ...FEATURES_A_SCENARIOS,
   ...FEATURES_B_SCENARIOS,
   ...FEATURES_C_SCENARIOS,
+  ...FEATURES_D_SCENARIOS,
 ];

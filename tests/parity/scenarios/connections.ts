@@ -1,13 +1,14 @@
 import { defineScenario } from "../harness/types.js";
 
-// A feature scenario: its steps are the feature's own (`feature`), which an engine drives once its driver is written.
+// Features-C lane: a task is planned, then the feature's surface is asked on both engines (engines/features-c-support/probes.ts).
 export default defineScenario({
   id: "connections",
-  title: "A monitoring connection is read by a step",
+  title: "The company's connections are listed (both route paths asked on both sides)",
   areas: [33],
   kind: "happy",
   steps: [
     { do: "start", request: "Add a greet(name) function", path: "QUICK" },
+    { do: "plan.proposed", plan: { title: "Add greet(name)", claims: ["Add greet to greeting.ts.", "A test in greeting.test.ts proves greet(\"Maya\") returns Hello, Maya."] } },
     { do: "feature", name: "connections" },
   ],
 });

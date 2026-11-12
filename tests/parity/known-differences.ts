@@ -9,6 +9,7 @@ import { FACETS_DIFFERENCES } from "./known-differences/facets.js";
 import { FEATURES_A_DIFFERENCES } from "./known-differences/features-a.js";
 import { FEATURES_B_DIFFERENCES } from "./known-differences/features-b.js";
 import { FEATURES_C_DIFFERENCES } from "./known-differences/features-c.js";
+import { FEATURES_D_DIFFERENCES } from "./known-differences/features-d.js";
 
 export interface KnownDifference {
   /** A scenario id, or `*` for a difference every scenario that reaches it shows (the same cause). */
@@ -60,7 +61,7 @@ const CORE_LANE_DIFFERENCES: readonly KnownDifference[] = [
       "The decision writes PLAN/READY and a PLAN dispatch row, but core/task-flow/stage-machine.ts runDispatchRow only starts a PLAN after Understand (it requires workflow.intent.assessment ready)",
       "and resolves the row as STALE, so the task stays PLAN/READY for ever. Cloud's path re-plans (PLAN/RUNNING then PLAN_REVIEW/WAITING v2).",
     ].join(" "),
-    owner: "Code upstream fix (replan after request-changes without an Understand assessment), then a vendor pin bump",
+    owner: "Fixed upstream in public code/next #484 (2026-11-12); shows here until Cloud's vendor pin (0e340c0e) is bumped past it. The suite then fails on this entry as stale: remove it with the bump",
   },
   {
     scenario: "plan-changes-requested", facet: "rows",
@@ -79,4 +80,5 @@ export const KNOWN_DIFFERENCES: readonly KnownDifference[] = [
   ...FEATURES_A_DIFFERENCES,
   ...FEATURES_B_DIFFERENCES,
   ...FEATURES_C_DIFFERENCES,
+  ...FEATURES_D_DIFFERENCES,
 ];

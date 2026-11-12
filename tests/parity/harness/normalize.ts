@@ -54,7 +54,7 @@ export function normalize(observation: Observation): Observation {
     transitions: collapse(observation.transitions),
     decisions: [...observation.decisions],
     rows: sortedUnique(sharedRows(observation.rows)),
-    messages: [...observation.messages],
+    messages: kindCounts(observation.messages),
     codeHost: [...observation.codeHost],
     spend: [...observation.spend],
     audit: sortedUnique(observation.audit.map(auditName)),
@@ -71,3 +71,13 @@ function collapse(states: readonly string[]): string[] {
 }
 
 export const EMPTY_OBSERVATION: Observation = Object.fromEntries(FACETS.map((facet) => [facet, []])) as unknown as Observation;
+
+/**
+ * Messages compare as `kind=count`, sorted (engines/facets-support/messages.ts): what the person was told and how often, not in which order or batch, nor
+ * with which words. A difference in a count shows as two differing values (`needs_you=2` against `needs_you=1`), so a wildcard entry never hides it.
+ */
+export function kindCounts(kinds: readonly string[]): string[] {
+  const counts = new Map<string, number>();
+  for (const kind of kinds) counts.set(kind, (counts.get(kind) ?? 0) + 1);
+  return [...counts].map(([kind, count]) => `${kind}=${String(count)}`).sort();
+}

@@ -7,14 +7,12 @@ import { coreRoot, createCoreContext, stateWord, Stalled, type CoreContext } fro
 import { CORE_DRIVERS } from "./core-drivers/index.js";
 import { StartRefused } from "./core-drivers/task-flow.js";
 import { driverKey, driversOf, supportOf } from "./drivers.js";
+import { coreAuditWord } from "./facets-support/audit.js";
 
 export { planTextOf, stateWord } from "./core-context.js";
 
 /** The facets the core engine cannot see yet, with why (a driver that adds a facet's source removes its line). */
-export const CORE_UNOBSERVED: Partial<Record<Facet, string>> = {
-  messages: "no channel adapter is registered on the core yet (A8's Slack channel is registered only once slackSwitchReadiness passes)",
-  audit: "the core's audit events are not yet mapped to Cloud's audit types (A7's event map)",
-};
+export const CORE_UNOBSERVED: Partial<Record<Facet, string>> = {};
 
 export class CoreEngine implements ParityEngine {
   readonly name = "core";
@@ -48,11 +46,12 @@ export class CoreEngine implements ParityEngine {
     }
     if (process.env.PARITY_DEBUG === "1") {
       const task = await ctx.readTask();
-      console.log(JSON.stringify({ parity: "core.final", scenario: scenario.id, workflow: stateWord((task?.workflow ?? {}) as never), states: ctx.recorder.states }));
+      console.log(JSON.stringify({ parity: "core.final", scenario: scenario.id, workflow: stateWord((task?.workflow ?? {})), states: ctx.recorder.states, notices: ctx.recorder.notices, delivered: ctx.channel.delivered.map((event) => event.type), audit: ctx.world.audit.map((event) => event.action) }));
     }
     return {
       transitions: ctx.recorder.states, decisions: [...ctx.recorder.decisions], rows: [...ctx.recorder.keys],
-      messages: [...ctx.extra.messages], spend: [...ctx.world.spend, ...ctx.extra.spend], audit: [...ctx.world.audit.map((event) => event.action), ...ctx.extra.audit],
+      // Messages: the attention kinds the core queued for the person (facets-support/messages.ts). Audit: each core event as the Cloud audit action A7's sink records.
+      messages: [...ctx.recorder.notices, ...ctx.extra.messages], spend: [...ctx.world.spend, ...ctx.extra.spend], audit: [...ctx.world.audit.map(coreAuditWord), ...ctx.extra.audit],
       codeHost: [...ctx.world.hostModel.changeRequests.map((entry) => (entry.state === "merged" ? "merged_pr" : entry.draft ? "open_draft_pr" : "open_pr")), ...ctx.extra.codeHost],
     };
   }

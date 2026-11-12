@@ -1,6 +1,55 @@
 // Core drivers: Saved environments, test services, setup agent, devcontainers, playbook, diagnosis, connections, MCP tools (areas 27-34).
+// Each surface feature is a route probe (features-c-support/probes.ts) asked as the install's owner; MCP tools start a task the way Code's MCP tool does.
 import type { FakeWorldOptions } from "../../../support/cloud-core-fakes.js";
 import type { CoreContext } from "../core-context.js";
 import type { StepDriver } from "../drivers.js";
+import { FEATURE_PROBES, note, outcomeWord } from "../features-c-support/probes.js";
 
-export const FEATURES_C_DRIVERS: Record<string, StepDriver<CoreContext, FakeWorldOptions>> = {};
+type Driver = StepDriver<CoreContext, FakeWorldOptions>;
+
+const probe = (feature: string): Driver => ({
+  async run(ctx) {
+    for (const asked of FEATURE_PROBES[feature] ?? []) {
+      const answer = await ctx.api(asked.path, { method: asked.method, ...(asked.body === undefined ? {} : { body: asked.body }) });
+      note(ctx.extra, "core", outcomeWord(feature, asked, answer.status, answer.body));
+      if (process.env.PARITY_DEBUG === "1" && answer.status >= 400) console.log(JSON.stringify({ parity: "features-c.body", engine: "core", path: asked.path, body: JSON.stringify(answer.body).slice(0, 300) }));
+    }
+  },
+});
+
+/** The task Code's MCP tool `agentx_start_workflow` starts: it posts exactly this to the core's task route (vendored Code has no MCP package; ~Code packages/mcp/src/tools.ts). */
+const MCP_START = { requestId: "33333333-3333-4333-8333-333333333333", project: "payments", instructions: "Add a greet(name) function", workflow: true, workflowPath: "QUICK", client: "parity-mcp" };
+
+export const FEATURES_C_DRIVERS: Record<string, Driver> = {
+  "feature:saved-env": probe("saved-env"),
+  "feature:test-services": probe("test-services"),
+  "feature:setup-agent": probe("setup-agent"),
+  "feature:playbook": probe("playbook"),
+  "feature:diagnosis": probe("diagnosis"),
+  "feature:connections": probe("connections"),
+  "feature:devcontainer": {
+    supports: () => ({ unsupported: "devcontainers are found and built by the worker (env-detect); the broker sends no devcontainer field, the core engine's worker is scripted, and Code's local socket guard refuses devcontainers (L4B-NO-DEVCONTAINERS-LOCAL). Compare the worker packages instead (Cloud's worker vs the vendored Code worker)" }),
+    run: () => Promise.resolve(),
+  },
+  "feature:mcp-tools": {
+    async run(ctx) {
+      // The project is registered first, as the core's start driver does (an MCP tool starts work on a registered project).
+      await ctx.api("/v1/admin/projects", { method: "POST", body: ctx.project });
+      const started = await ctx.api("/v1/dev/tasks", { method: "POST", body: MCP_START });
+      note(ctx.extra, "core", `mcp-tools start -> ${started.status === 201 ? "started" : `refused ${String(started.status)}`}`);
+      if (started.status !== 201) throw new Error(`the core refused the MCP start: ${JSON.stringify(started.body).slice(0, 200)}`);
+      ctx.task.taskId = (started.body.task as { taskId: string }).taskId;
+      const record = await ctx.readTask();
+      ctx.task.workspaceId = typeof record?.workspaceId === "string" ? record.workspaceId : "";
+      const prepare = await ctx.take();
+      await ctx.callback(prepare, "result", { status: "SUCCEEDED", result: { preparedBase: [{ repositoryId: "demo", baseCommitSha: ctx.task.base }] } });
+    },
+    async prepare(ctx, scenario) {
+      // The same settings mapping the start driver applies (Quick: no Understand step, no plan check): the MCP start replaces `start` in its scenario.
+      if (scenario.coreUsesCodeDefaults !== true) {
+        ctx.runtime.app.flow.deps.understandFirst = false;
+        ctx.runtime.app.flow.deps.planCheck = false;
+      }
+    },
+  },
+};

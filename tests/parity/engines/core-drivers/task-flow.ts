@@ -6,7 +6,10 @@ import type { FakeWorldOptions } from "../../../support/cloud-core-fakes.js";
 import type { Step } from "../../harness/types.js";
 
 type Driver = StepDriver<CoreContext, FakeWorldOptions>;
-const as = <K extends Step["do"]>(step: Step, kind: K): Extract<Step, { do: K }> => step as Extract<Step, { do: K }>;
+const as = <K extends Step["do"]>(step: Step, kind: K): Extract<Step, { do: K }> => {
+  if (step.do !== kind) throw new Error(`a ${kind} driver was handed a ${step.do} step`);
+  return step as Extract<Step, { do: K }>;
+};
 
 export const TASK_FLOW_DRIVERS: Record<string, Driver> = {
   start: {
@@ -17,8 +20,8 @@ export const TASK_FLOW_DRIVERS: Record<string, Driver> = {
         ctx.runtime.app.flow.deps.understandFirst = false;
         ctx.runtime.app.flow.deps.planCheck = false;
       }
-      // Cloud's automatic fix switch (`af`) maps onto the core's autofix option, set as the Cloud engine sets it for a scenario with a failing check.
-      if (scenario.steps.some((step) => step.do === "checks" && step.outcome === "fail")) ctx.runtime.app.flow.deps.autofix = { enabled: true, capUsd: 5, roundEstimateUsd: 1 };
+      // Cloud's automatic fix switch (`af`) maps onto the core's autofix option, set as the Cloud engine sets it for a scenario with a failing check or review findings.
+      if (scenario.steps.some((step) => (step.do === "checks" && step.outcome === "fail") || (step.do === "reviews" && step.outcome === "findings"))) ctx.runtime.app.flow.deps.autofix = { enabled: true, capUsd: 5, roundEstimateUsd: 1 };
     },
     async run(ctx, step) {
       const start = as(step, "start");

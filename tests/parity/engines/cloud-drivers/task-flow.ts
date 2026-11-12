@@ -3,11 +3,15 @@
 import { randomUUID } from "node:crypto";
 import { bearerFor } from "../../../support/developer-task-broker.js";
 import { E2E_CHECK, SLACK_MAYA } from "../../../support/workflow-e2e.js";
-import type { CloudContext, CloudOptions } from "../cloud-context.js";
+import { baseOptions, type CloudContext, type CloudOptions } from "../cloud-context.js";
+import { reviewerReply } from "../../../support/faux-scripts.js";
+import { reviewerFindings } from "../../../support/model-fixtures.js";
 import type { StepDriver } from "../drivers.js";
 import type { Step } from "../../harness/types.js";
 
 type Driver = StepDriver<CloudContext, CloudOptions>;
+/** The finding `reviewerFindings(1)` writes; the send-back prompt carries it. */
+const FINDING_TEXT = "the greeting is not trimmed";
 const settle: Driver = { run: async (ctx) => { await ctx.e2e.settle(); } };
 
 /** Calls one of the broker's developer routes as Maya (Slack sign-in), as the journey suites do. */
@@ -57,7 +61,19 @@ export const TASK_FLOW_DRIVERS: Record<string, Driver> = {
     run: async (ctx) => { await ctx.e2e.settle(); },
   },
   reviews: {
-    supports: (step) => ((step as Extract<Step, { do: "reviews" }>).outcome === "findings" ? { unsupported: "the faux reviewers' findings script is not mapped yet" } : true),
+    // A `findings` round: the code reviewer finds one HIGH problem once, then passes (`reviewerFindings` + `reviewerReply.pass`), and Rovara's automatic fix
+    // (`af`, on as the core runs it) sends the work back. The coder writes the scenario's first `coding.done` files, and its second ones once it is told
+    // the finding (the send-back's prompt carries the finding's text).
+    options(scenario) {
+      if (!scenario.steps.some((step) => step.do === "reviews" && step.outcome === "findings")) return {};
+      const base = baseOptions(scenario).model!;
+      const rounds = scenario.steps.filter((step): step is Extract<Step, { do: "coding.done" }> => step.do === "coding.done").map((step) => Object.entries(step.files).map(([path, content]) => ({ path: `repo/demo/${path}`, content })));
+      const finding = reviewerFindings(1, { severity: "HIGH" });
+      return {
+        autofix: { enabled: true, capUsd: 5, roundEstimateUsd: 1 },
+        model: { ...base, reviews: { CODE: [...(finding.CODE ?? []), reviewerReply.pass()] }, edits: (latest: string) => (latest.includes(FINDING_TEXT) ? rounds[1] ?? rounds[0] ?? [] : rounds[0] ?? []) },
+      };
+    },
     run: async (ctx) => { await ctx.e2e.settle(); },
   },
   published: settle,

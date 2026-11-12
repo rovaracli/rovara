@@ -31,7 +31,8 @@ describe("the parity suite's own rules", () => {
   });
 
   it("drives each step key from one lane's file only, on each engine", () => {
-    for (const groups of [CORE_GROUPS, CLOUD_GROUPS]) {
+    const engines: ReadonlyArray<Readonly<Record<string, Readonly<Record<string, unknown>>>>> = [CORE_GROUPS, CLOUD_GROUPS];
+    for (const groups of engines) {
       const owners = new Map<string, string>();
       for (const [lane, drivers] of Object.entries(groups)) {
         for (const key of Object.keys(drivers)) {
@@ -61,7 +62,10 @@ describe("Cloud's path vs the core, scenario by scenario", () => {
         for (const facet of result.facets) {
           if (facet.outcome !== "different") continue;
           const differing = [...facet.cloud.filter((value) => !facet.core.includes(value)), ...facet.core.filter((value) => !facet.cloud.includes(value))];
-          const explained = known.find((entry) => entry.facet === facet.facet && (entry.only === undefined || differing.every((value) => entry.only!.includes(value))));
+          // Explained by one entry with no `only` list, or by the `only` lists of every matching entry together (each lane lists its own values).
+          const matching = known.filter((entry) => entry.facet === facet.facet);
+          const covered = new Set(matching.flatMap((entry) => entry.only ?? []));
+          const explained = matching.find((entry) => entry.only === undefined) ?? (matching.length > 0 && differing.every((value) => covered.has(value)) ? matching[0] : undefined);
           expect(explained, `${scenario.id} ${facet.facet} differs and is not in known-differences.ts:\ncloud ${JSON.stringify(facet.cloud)}\ncore  ${JSON.stringify(facet.core)}`).toBeDefined();
         }
         for (const entry of known.filter((candidate) => candidate.scenario !== "*")) {

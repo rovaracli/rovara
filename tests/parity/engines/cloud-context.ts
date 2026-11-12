@@ -4,7 +4,9 @@
 //
 // The faux model is scripted from the scenario before it starts (the plan, a revised plan, the coder's edits); each driver may add harness options
 // (`options`). Every write to the table is watched, so the transitions are every state the task passed through, whatever the granularity of the steps.
+import { capturingAuditDeps, type AuditCapture } from "../../support/audit-capture.js";
 import { createWorkflowE2E, type WorkflowE2E } from "../../support/workflow-e2e.js";
+import { spendWordOf } from "./facets-support/spend.js";
 import { keyFamily } from "../harness/normalize.js";
 import type { PlanSpec, Scenario, Step } from "../harness/types.js";
 import { planTextOf, stateWord } from "./core-context.js";
@@ -14,6 +16,12 @@ export type CloudOptions = NonNullable<Parameters<typeof createWorkflowE2E>[0]>;
 export interface CloudContext {
   scenario: Scenario;
   e2e: WorkflowE2E;
+  /** Cloud's audit outbox, as the broker writes it (the audit facet). */
+  audit: AuditCapture;
+  /** Audit events the harness's own set-up wrote before the scenario's first step (its project registration): not the scenario's, so not compared (rows are watched from the same point). */
+  auditSetup: number;
+  /** What Cloud's path did with money, in the core engine's words (the spend facet, facets-support/spend.ts). */
+  spend: string[];
   states: string[];
   keys: Set<string>;
   decisions: string[];
@@ -37,11 +45,15 @@ export function baseOptions(scenario: Scenario): CloudOptions {
 }
 
 export async function createCloudContext(scenario: Scenario, options: CloudOptions): Promise<CloudContext> {
-  const e2e = await createWorkflowE2E(options);
-  const ctx: CloudContext = { scenario, e2e, states: [], keys: new Set(), decisions: [], extra: { messages: [], spend: [], audit: [], codeHost: [] }, memo: {} };
+  // The Audit Ledger is on, as on a deployed install (the journey harness's default is a legacy install with no ledger). A driver may give its own capture.
+  const audit = options.audit ?? capturingAuditDeps();
+  const e2e = await createWorkflowE2E({ ...options, audit });
+  const ctx: CloudContext = { scenario, e2e, audit, auditSetup: audit.flushed().length + audit.pending().length, spend: [], states: [], keys: new Set(), decisions: [], extra: { messages: [], spend: [], audit: [], codeHost: [] }, memo: {} };
   e2e.db.onWrite((change) => {
     const item = change.after ?? change.before;
     if (item === undefined) return;
+    const spent = spendWordOf(change);
+    if (spent !== undefined) ctx.spend.push(spent);
     ctx.keys.add(keyFamily(String(item.pk), String(item.sk)));
     const workflow = change.after?.workflow as { stage?: string; state?: string; blockReason?: string; decisions?: Array<{ decision: string }> } | undefined;
     if (String(item.pk).startsWith("DEVTASK#") && item.sk === "META" && workflow?.stage !== undefined) {
@@ -50,4 +62,9 @@ export async function createCloudContext(scenario: Scenario, options: CloudOptio
     }
   });
   return ctx;
+}
+
+/** The audit actions the scenario's steps made Cloud's path record (the set-up's left out, see `auditSetup`). */
+export function scenarioAudit(ctx: CloudContext): string[] {
+  return [...ctx.audit.flushed(), ...ctx.audit.pending()].slice(ctx.auditSetup).map((event) => event.action);
 }

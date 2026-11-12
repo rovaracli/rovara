@@ -12,6 +12,7 @@ import { FakeHostModel } from "../../vendor/rovara-code/packages/broker/src/plug
 import { FakeCodeHost } from "../../vendor/rovara-code/packages/broker/src/plugins/fake/code-host.js";
 import { FakeCheckRunner } from "../../vendor/rovara-code/packages/broker/src/plugins/fake/check-runner.js";
 import { createCloudAdmission, createCloudMetering } from "../../packages/broker/src/cloud-adapters/money/index.js";
+import { createCloudAuditSink } from "../../packages/broker/src/cloud/adapters/audit-sink/index.js";
 import { CORE_ADMISSION_ACTIONS } from "../../packages/broker/src/cloud/app/cloud-modules.js";
 import { cloudAdapter, type CloudAdapterContext, type CloudAdapterModule } from "../../packages/broker/src/cloud/app/registry.js";
 
@@ -45,7 +46,19 @@ function recordingAdmission(inner: Admission, spend: string[]): Admission {
   } as Admission;
 }
 
-/** An audit sink that stages a Cloud-shaped audit outbox row in the caller's transaction (A7's shape, simplified) and records the event. */
+/**
+ * Lane A7's real Cloud audit sink, as the composition root registers it (`onInvalid: "skip"`), recording each event the core gives it (`world.audit`).
+ * The rows it stages are Cloud's audit outbox rows, in the caller's transaction, over the same store.
+ */
+function cloudAudit(events: AuditEvent[], store: DocumentStore, now: () => number): AuditSink {
+  const inner = createCloudAuditSink({ store: () => store, now, onInvalid: "skip", log: () => undefined });
+  return {
+    stage(event): readonly TransactItem[] { events.push(event); return inner.stage(event); },
+    async record(event) { events.push(event); await inner.record(event); },
+  };
+}
+
+/** The earlier stand-in: a simplified outbox row and the recorded event (kept for a test that wants no Cloud mapping). */
 function recordingAudit(events: AuditEvent[]): AuditSink {
   return {
     stage(event): TransactItem[] {
@@ -64,6 +77,8 @@ function folderObjects(): ObjectStorage {
 export interface FakeWorldOptions {
   machines?: FakeWorkerMachinesOptions;
   admission?: Admission;
+  /** `stand-in`: the simplified audit sink instead of A7's Cloud audit sink. Default: A7's. */
+  audit?: "cloud" | "stand-in";
   /** The company's monthly money limit (undefined: none). */
   companyLimitUsd?: number;
   /** Leave these points out (to test the registry's refusal). */
@@ -95,7 +110,7 @@ export function createFakeWorld(options: FakeWorldOptions = {}): FakeWorld {
     // Lane A5's real adapters, over the same store, with the actions the composition root admits (cloud-modules.ts) and a company limit the scenario sets.
     cloudAdapter({ point: "admission", name: "cloud", lane: "A5", create: () => options.admission ?? recordingAdmission(createCloudAdmission({ store, levels: async () => [{ scope: "ORG", kind: "org", limitUsd: options.companyLimitUsd }], actions: CORE_ADMISSION_ACTIONS, now: () => clock.now }), spend) }),
     cloudAdapter({ point: "metering", name: "cloud", lane: "A5", create: () => createCloudMetering({ store, prices: { currency: "USD", models: {} } }) }),
-    cloudAdapter({ point: "audit-sink", name: "cloud", lane: "A7", create: () => recordingAudit(audit) }),
+    cloudAdapter({ point: "audit-sink", name: "cloud", lane: "A7", create: () => (options.audit === "stand-in" ? recordingAudit(audit) : cloudAudit(audit, store, () => clock.now)) }),
     cloudAdapter({ point: "approvers", name: "cloud", lane: "A6", create: () => createLocalOwnerApprovers({ now }) }),
     cloudAdapter({ point: "identity", name: "cloud", lane: "A6", create: () => createLocalOwnerIdentity({ companyId: IMPLICIT_COMPANY_ID }) }),
     cloudAdapter({ point: "object-storage", name: "s3", lane: "A3", create: () => folderObjects() }),

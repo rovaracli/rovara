@@ -58,6 +58,7 @@ import { inspectWorkspaceForClose } from "../../packages/worker/src/close-worksp
 import { projectCheckKey } from "../../packages/worker/src/verification/check-history.js";
 import type { CheckRunners } from "../../packages/worker/src/verification/checks.js";
 import { createFixtureDirectory } from "../fixtures/index.js";
+import type { AuditCapture } from "./audit-capture.js";
 import { DEV_ISSUER, MAYA, bindChannel, createSingleAnswerPlanBroker, recordStream, type Developer } from "./developer-task-broker.js";
 import { signedInClient, type ToolAnswer } from "./mcp-broker-client.js";
 import { FAUX_MODEL, fauxModelRuntime } from "./faux-model.js";
@@ -334,6 +335,8 @@ export async function createWorkflowE2E(options: {
    * confirms in a browser (`e2e.confirm`), not a People commit; without this the take-over answers "isn't available right now".
    */
   agentSessions?: boolean;
+  /** The Audit Ledger's outbox (`capturingAuditDeps()`), given to the broker as `audit`. Absent: a legacy install, where every audit function does nothing (as before). */
+  audit?: AuditCapture;
   /** Decision 70(c): automatic fixing of blocked checks and reviews (the broker's `autofix` setting). Absent: off, as in the deployed broker's harnesses. */
   autofix?: { enabled: boolean; capUsd: number; roundEstimateUsd: number; baseMergedPerTenMinutes?: number };
   trackingGithub?: Partial<Pick<GitHubAppCredentialProvider, "getPullRequestStatus" | "getRepositoryPermission" | "getRepositoryStanding" | "markPullRequestReady" | "requestReviewers" | "getJobLogTail">>;
@@ -379,6 +382,7 @@ export async function createWorkflowE2E(options: {
       ...(options.taskPeople?.inviteTaskPerson === undefined ? {} : { inviteTaskPerson: options.taskPeople.inviteTaskPerson }),
     } }),
     ...(options.consistency === undefined ? {} : { consistency: options.consistency }),
+    ...(options.audit === undefined ? {} : { audit: options.audit }),
     brokerExtra: {
       ...(options.agentSessions === true ? { agents: {}, decide: {} } : {}),
       ...(options.environmentName === undefined ? {} : { environmentName: options.environmentName }),

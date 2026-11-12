@@ -13,7 +13,10 @@ import { mkdir, mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startLocalRuntime, type LocalRuntime } from "@rovara-code/broker/local";
-import { UNDERSTAND_ARTIFACT_NAME, type AdapterRegistry, type DocumentStore, type TransactItem, type WorkerInvocation } from "@rovara-code/contracts";
+import { FakeChannelAdapter, localOwnerPrincipal } from "@rovara-code/broker/ports";
+import { writeNotifyPrefs } from "@rovara-code/broker/core/notify";
+import { developerIdOf } from "@rovara-code/broker/core/sessions";
+import { IMPLICIT_COMPANY_ID, UNDERSTAND_ARTIFACT_NAME, type AdapterRegistry, type DocumentStore, type TransactItem, type WorkerInvocation } from "@rovara-code/contracts";
 import { cloudRetentionStore } from "../../../packages/broker/src/cloud/app/retention.js";
 import { createFakeWorld, type FakeWorld, type FakeWorldOptions } from "../../support/cloud-core-fakes.js";
 import { planAnswer, planDocument } from "../../support/plan-documents.js";
@@ -40,6 +43,8 @@ export interface Recorder {
   states: string[];
   decisions: string[];
   keys: Set<string>;
+  /** The attention kinds the core queued for a person, in order: one per NEW pending row (`NOTIFY_PENDING`; a rewrite of a row still waiting is the same notice). */
+  notices: string[];
 }
 
 /** `STAGE/STATE`, with the block reason when blocked (a blocked task is the most telling difference). */
@@ -70,7 +75,16 @@ function recordingStore(inner: DocumentStore, recorder: Recorder): DocumentStore
     getMany: (keys) => wrapped.getMany(keys),
     query: (request) => wrapped.query(request),
     queryIndex: (request) => wrapped.queryIndex(request),
-    async put(request) { const result = await wrapped.put(request); if (result.applied) await after([request.item]); return result; },
+    async put(request) {
+      // A notice queued for a person: counted once per new pending row (the messages facet, facets-support/messages.ts).
+      const notice = request.item.entityType === "NOTIFY_PENDING" && (await inner.get(request.item)) === undefined ? request.item.kind : undefined;
+      const result = await wrapped.put(request);
+      if (result.applied) {
+        await after([request.item]);
+        if (typeof notice === "string") recorder.notices.push(notice);
+      }
+      return result;
+    },
     async update(request) { const result = await wrapped.update(request); if (result.applied) await after([request.key]); return result; },
     async delete(request) { return await wrapped.delete(request); },
     async transact(items) { const result = await wrapped.transact(items); if (result.applied) await after(items.filter((item) => item.kind !== "check").map(keyOf)); return result; },
@@ -111,8 +125,14 @@ export function formOf(page: string, suffix: string): { action: string; fields: 
   throw new Error(`no form ending ${suffix}`);
 }
 
+/** The channel adapter's name on the core and the conversation the owner is told in. */
+export const PARITY_CHANNEL = "chat";
+export const PARITY_CONVERSATION = { channel: PARITY_CHANNEL, tenant: "T0PARITY", space: "C0PARITY", thread: "1700000000.000100" } as const;
+
 export interface CoreContext {
   scenario: Scenario;
+  /** The chat adapter: what the core delivered (`channel.delivered`). */
+  channel: FakeChannelAdapter;
   world: FakeWorld;
   runtime: LocalRuntime;
   store: DocumentStore;
@@ -146,7 +166,9 @@ export interface CoreContextOptions {
 
 export async function createCoreContext(scenario: Scenario, root: string, options: CoreContextOptions = {}): Promise<CoreContext> {
   const world = createFakeWorld(options.world);
-  const recorder: Recorder = { states: [], decisions: [], keys: new Set() };
+  const recorder: Recorder = { states: [], decisions: [], keys: new Set(), notices: [] };
+  // The chat the person is told in (the messages facet): Code's in-process fake channel adapter, which records what Rovara sends it.
+  const channel = new FakeChannelAdapter();
   const stateDirectory = join(root, "state");
   await mkdir(stateDirectory, { recursive: true, mode: 0o700 });
   const context = world.context();
@@ -160,6 +182,7 @@ export async function createCoreContext(scenario: Scenario, root: string, option
       if (module.point === "storage") adapter = recordingStore(adapter as DocumentStore, recorder);
       registry.register(module.point, module.name, adapter as never);
     }
+    registry.register("channel", PARITY_CHANNEL, channel);
   };
   const clock = { offsetMs: 0, now: () => new Date(Date.now() + clock.offsetMs), advance: (ms: number) => { clock.offsetMs += ms; } };
   const opened: string[] = [];
@@ -169,6 +192,8 @@ export async function createCoreContext(scenario: Scenario, root: string, option
     registerAdapters, openBrowser: async (url) => { opened.push(url); }, storage: "memory", now: () => clock.now(),
   });
   const token = (await readFile(runtime.sessionTokenPath, "utf8")).trim();
+  // The owner is told in that chat (their notice settings name its conversation), as a Cloud member is told in Slack.
+  await writeNotifyPrefs({ store: runtime.registry.require("storage"), now: () => clock.now() }, IMPLICIT_COMPANY_ID, developerIdOf(localOwnerPrincipal()), { targets: [{ channel: PARITY_CHANNEL, conversation: PARITY_CONVERSATION }], channel: "slack" });
   const store = runtime.registry.require("storage");
   const model = world.hostModel;
   const base = model.headOf("main");
@@ -186,7 +211,7 @@ export async function createCoreContext(scenario: Scenario, root: string, option
     outgoing.end(text);
   });
   const ctx: CoreContext = {
-    scenario, world, runtime, store, recorder, clock, opened,
+    scenario, world, runtime, store, recorder, clock, opened, channel,
     task: { taskId: "", workspaceId: "", base, commit: base, tree: model.revision(base).tree },
     extra: { messages: [], spend: [], audit: [], codeHost: [] },
     // The project's check is the same one Cloud's journey project has (node --version), so a plan needs to propose none.
@@ -220,7 +245,7 @@ export async function createCoreContext(scenario: Scenario, root: string, option
       if (job === undefined) {
         const task = await ctx.readTask();
         const rows = (await store.queryIndex({ index: "workflow-dispatch-due", partition: `ORG#${companyOf(task)}#WORKFLOW_DISPATCH` })).items.map((row) => ({ kind: row.kind, next: row.nextAttemptAt, attempts: row.attempts, lastError: row.lastError }));
-        throw new Stalled(`the core handed the worker no job (task ${stateWord((task?.workflow ?? {}) as never)}, dispatch rows ${JSON.stringify(rows)})`);
+        throw new Stalled(`the core handed the worker no job (task ${stateWord((task?.workflow ?? {}))}, dispatch rows ${JSON.stringify(rows)})`);
       }
       return job;
     },
