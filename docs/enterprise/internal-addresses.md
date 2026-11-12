@@ -21,7 +21,8 @@ port in the install's `rovaraPrivateAddressPorts` (`-c rovaraPrivateAddressPorts
 8 ports). Each port becomes one outbound rule per routed range on the workers' security group,
 never toward Rovara's own VPC. The list is fixed at install on purpose: an admin's approval can
 never widen a security group, and the broker has no permission to change one. The page shows the
-open ports, and an entry on any other port is refused.
+open ports, and an entry on any other port is refused. **A new port needs a redeploy:** ask the
+operator to add it to `rovaraPrivateAddressPorts` and redeploy the install, then list the entry.
 
 **One company per Enterprise install.** The routed ranges belong to the install, not to a company.
 An Enterprise install serves one company, so its ranges are that company's. An install that served
@@ -72,8 +73,9 @@ Only company owners and admins see the list.
 - **Adding** applies to workers that start after the approval.
 - **Removing closes access at once** (owner decision 128). Within a minute, every running worker of
   the company that started before the removal is recycled: an idle worker is stopped, and a busy one
-  is stopped under its task, which is interrupted and fails with the usual "compute was lost; retry"
-  error. The next worker starts with the new list.
+  is stopped under its task, which is interrupted and fails at once with the usual "compute was
+  lost; retry" error, so its retry starts within the minute. The next worker starts with the new
+  list.
 - Each time the worker container starts (a boot, a worker restart, a Docker restart), Rovara resolves
   each name once and checks every address it gets: each must be a private IPv4 address outside the
   never-listed ranges above (the install's own network is read from the worker's instance

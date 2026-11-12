@@ -3,6 +3,8 @@ import { describe, expect, it, vi } from "vitest";
 import type { Ec2RuntimeBinding } from "@rovara-code/contracts";
 import { SessionManager } from "../../packages/broker/src/aws/sessions.js";
 import { createReaperHandler, type ReaperDependencies, type StopProgress } from "../../packages/broker/src/aws/session-reaper.js";
+import { COMPUTE_LOST_ERROR } from "../../packages/broker/src/aws/compute-lost.js";
+import { failActiveOperation } from "../../packages/broker/src/aws/outbox-failure.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 
 const NOW = new Date("2026-09-27T12:00:00.000Z");
@@ -177,7 +179,9 @@ describe("recycling after an internal address removal", () => {
   const ORG_A = `org_${"a".repeat(20)}`, ORG_B = `org_${"b".repeat(20)}`;
   function withOrgs(marks: Map<string, number> | (() => Promise<Map<string, number>>), orgs: Map<string, string>, extra: Partial<ReaperDependencies> = {}) {
     const log = vi.fn<(entry: Record<string, unknown>) => void>();
-    const t = setup({ privateAddressRecycle: { marks: typeof marks === "function" ? marks : async () => marks, workspaceOrg: async (id) => orgs.get(id) }, log, ...extra });
+    const holder: { db?: FakeDynamoDb } = {};
+    const t = setup({ privateAddressRecycle: { marks: typeof marks === "function" ? marks : async () => marks, workspaceOrg: async (id) => orgs.get(id), failActiveOperation: (workspaceId, error) => failActiveOperation(holder.db!, "state", workspaceId, error) }, log, ...extra });
+    holder.db = t.db;
     return { ...t, log };
   }
   const removedMinutesAgo = (minutes: number) => NOW.getTime() - minutes * 60_000;
@@ -187,6 +191,8 @@ describe("recycling after an internal address removal", () => {
     const t = withOrgs(new Map([[ORG_A, removedMinutesAgo(1)]]), orgs);
     const idle = seedReady(t.db, { idleMinutes: 0, launchedMinutesAgo: 30 });
     const busy = seedReady(t.db, { idleMinutes: 0, launchedMinutesAgo: 30, activeOperationId: "op-1" });
+    t.db.set({ ...t.db.get(`WORKSPACE#${busy}`, "META"), fence: 4 });
+    t.db.set({ pk: `WORKSPACE#${busy}`, sk: "OPERATION#op-1", kind: "inspect", status: "RUNNING", fence: 4 });
     const other = seedReady(t.db, { idleMinutes: 0, launchedMinutesAgo: 30 });
     const newer = seedReady(t.db, { idleMinutes: 0, launchedMinutesAgo: -5 });
     for (const id of [idle, busy, newer]) orgs.set(id, ORG_A);
@@ -196,11 +202,13 @@ describe("recycling after an internal address removal", () => {
     expect(report.claimed).toEqual([idle]);
     expect(t.terminate).toHaveBeenCalledTimes(2);
     expect((await t.sessions.get(idle))?.state).toBe("STOPPING");
-    // The busy one stays READY with its instance gone: the reconciler marks the compute lost and fails the task's operation ("compute was lost; retry").
-    expect((await t.sessions.get(busy))?.state).toBe("READY");
+    // The busy one is marked lost in the same tick, through the reconciler's own path, and its operation failed with the compute-lost error its retry knows.
+    expect((await t.sessions.get(busy))?.state).toBe("STOPPED");
+    expect(t.db.get(`WORKSPACE#${busy}`, "OPERATION#op-1")).toMatchObject({ status: "FAILED", error: COMPUTE_LOST_ERROR });
+    expect(t.db.get(`WORKSPACE#${busy}`, "META")?.activeOperationId).toBeUndefined();
     expect((await t.sessions.get(other))?.state).toBe("READY");
     expect((await t.sessions.get(newer))?.state).toBe("READY");
-    expect(t.log).toHaveBeenCalledWith(expect.objectContaining({ event: "session.private_address_recycle_interrupted", workspaceId: busy }));
+    expect(t.log).toHaveBeenCalledWith(expect.objectContaining({ event: "session.private_address_recycle_interrupted", workspaceId: busy, markedLost: true, failedOperationId: "op-1" }));
     expect(t.emit).toHaveBeenCalledWith(expect.objectContaining({ SessionsPrivateAddressRecycled: 2 }));
   });
 
@@ -222,9 +230,18 @@ describe("recycling after an internal address removal", () => {
     expect(t.log).toHaveBeenCalledWith(expect.objectContaining({ event: "session.private_address_recycle_unreadable", level: "error" }));
   });
 
+  it("leaves a busy worker READY, to try again next tick, when its terminate fails (never marked lost while it may still run)", async () => {
+    const orgs = new Map<string, string>();
+    const t = withOrgs(new Map([[ORG_A, removedMinutesAgo(1)]]), orgs, { terminate: async () => { throw Object.assign(new Error("throttled"), { name: "RequestLimitExceeded" }); } });
+    const busy = seedReady(t.db, { idleMinutes: 0, launchedMinutesAgo: 30, activeOperationId: "op-1" });
+    orgs.set(busy, ORG_A);
+    await t.reap();
+    expect((await t.sessions.get(busy))?.state).toBe("READY");
+  });
+
   it("reads no workspace when no company has a mark", async () => {
     const workspaceOrg = vi.fn(async () => ORG_A);
-    const t = setup({ privateAddressRecycle: { marks: async () => new Map(), workspaceOrg } });
+    const t = setup({ privateAddressRecycle: { marks: async () => new Map(), workspaceOrg, failActiveOperation: async () => undefined } });
     seedReady(t.db, { idleMinutes: 0 });
     await t.reap();
     expect(workspaceOrg).not.toHaveBeenCalled();

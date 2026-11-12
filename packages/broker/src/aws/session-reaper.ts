@@ -6,6 +6,8 @@ import { SESSION_MAX_LIFETIME_MS, type Ec2RuntimeBinding, type WorkspaceSession 
 import { installOrgIdFromEnvironment } from "../org/resolve.js";
 import { requiredEnvironment } from "./lambda.js";
 import { PRIVATE_ADDRESS_RECYCLE_PK } from "@agentx/cloud-contracts";
+import { markComputeLost } from "./compute-lost.js";
+import { failActiveOperation } from "./outbox-failure.js";
 import { SessionManager, computeMeteringFromEnvironment, workspaceBinding } from "./sessions.js";
 
 /** Idle stop and maximum compute lifetime (design in #76). */
@@ -35,7 +37,7 @@ export interface ReaperReport {
 }
 
 export interface ReaperDependencies {
-  sessions: Pick<SessionManager, "listByState" | "claimStop" | "markStopped" | "ensureSession">;
+  sessions: Pick<SessionManager, "listByState" | "claimStop" | "markStopped" | "ensureSession" | "markLost">;
   /** Whether the workspace has an operation in progress. */
   activeOperation: (workspaceId: string) => Promise<boolean>;
   /** GET /ping; resolves to the reported status, rejects when unreachable. */
@@ -46,10 +48,16 @@ export interface ReaperDependencies {
   emit: (metrics: Record<string, number>) => void;
   /**
    * Owner decision 128: each company's latest internal address removal (org id to epoch milliseconds; org/private-addresses.ts PRIVATE_ADDRESS_RECYCLE_PK), and the company a workspace belongs to. A READY worker of that
-   * company launched before the removal still has the removed address open, so it is recycled at once: stopped like an idle one when it is idle, terminated under its task when it is busy (the reconciler then marks the
-   * compute lost and fails the operation with the usual "compute was lost; retry" error, and the next dispatch launches with the new list). Absent: nothing is recycled.
+   * company launched before the removal still has the removed address open, so it is recycled at once: stopped like an idle one when it is idle; when it is busy (or a dispatch just took it), its instance is
+   * terminated under its task and, in the same tick, the session is marked lost and the operation failed with the usual "compute was lost; retry" error, through the reconciler's own path (compute-lost.ts), so the
+   * task's retry starts at once on a worker launched with the new list. Absent: nothing is recycled.
    */
-  privateAddressRecycle?: { marks: () => Promise<Map<string, number>>; workspaceOrg: (workspaceId: string) => Promise<string | undefined> };
+  privateAddressRecycle?: {
+    marks: () => Promise<Map<string, number>>;
+    workspaceOrg: (workspaceId: string) => Promise<string | undefined>;
+    /** The reconciler's own operation failure (outbox-failure.ts failActiveOperation), used through compute-lost.ts exactly as the reconciler uses it. */
+    failActiveOperation: (workspaceId: string, error: string) => Promise<string | undefined>;
+  };
   now?: () => Date;
   log?: (entry: Record<string, unknown>) => void;
 }
@@ -142,11 +150,18 @@ async function recyclePrivateAddressWorkers(
     if (!busy && await dependencies.sessions.claimStop(session)) {
       report.claimed.push(session.workspaceId);
       log({ event: "session.stop_claimed", workspaceId: session.workspaceId, generation: session.generation, reason: "private_address_removed" });
-    } else {
-      // Busy (or a dispatch just took it): its task is interrupted. Access must stop now, not when the task ends.
-      log({ event: "session.private_address_recycle_interrupted", workspaceId: session.workspaceId, generation: session.generation, instanceId: session.instanceId });
+      await terminate(dependencies, session, log);
+      continue;
     }
-    await terminate(dependencies, session, log);
+    // Busy (or a dispatch just took it): its task is interrupted. Access must stop now, not when the task ends. A terminate that fails leaves the session READY and the mark in place: the next tick tries again.
+    try {
+      await dependencies.terminate(session.instanceId!);
+    } catch (error) {
+      log({ event: "session.terminate_failed", workspaceId: session.workspaceId, instanceId: session.instanceId, error: error instanceof Error ? error.name : "unknown" });
+      continue;
+    }
+    const lost = await markComputeLost({ sessions: dependencies.sessions, failActiveOperation: recycle.failActiveOperation }, session);
+    log({ event: "session.private_address_recycle_interrupted", workspaceId: session.workspaceId, generation: session.generation, instanceId: session.instanceId, markedLost: lost.lost, ...(lost.lost && lost.operationId !== undefined ? { failedOperationId: lost.operationId } : {}) });
   }
   return done;
 }
@@ -228,6 +243,7 @@ export const handler = createReaperHandler({
       } while (start !== undefined);
       return marks;
     },
+    failActiveOperation: (workspaceId, error) => failActiveOperation(documentClient, tableName, workspaceId, error),
     async workspaceOrg(workspaceId) {
       const item = (await documentClient.send(new GetCommand({ TableName: tableName, Key: { pk: `WORKSPACE#${workspaceId}`, sk: "META" }, ConsistentRead: true }))).Item;
       return typeof item?.orgId === "string" ? item.orgId : undefined;

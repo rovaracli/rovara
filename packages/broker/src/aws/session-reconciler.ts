@@ -16,6 +16,7 @@ import type { Ec2RuntimeBinding, WorkspaceSession, WorkspaceSessionState } from 
 import { installOrgIdFromEnvironment } from "../org/resolve.js";
 import { requiredEnvironment } from "./lambda.js";
 import { failActiveOperation } from "./outbox-failure.js";
+import { markComputeLost } from "./compute-lost.js";
 import { SessionManager, computeMeteringFromEnvironment, workspaceBinding } from "./sessions.js";
 import { expireIndexDays, indexSweepWanted } from "./index-expiry.js";
 import { expireLearningItems } from "../learning/sweep.js";
@@ -408,8 +409,9 @@ async function reconcileReady(
   if (instance === undefined || instance.state !== "running") {
     // Terminated (by EC2 or by the call just below), stopped, or confirmed absent by a lookup of its ID: its work cannot finish. A terminate call or EC2's own word is the evidence markLost needs.
     if (instance !== undefined && !GONE.has(instance.state)) await dependencies.terminate(instance.instanceId);
-    if (!(await dependencies.sessions.markLost(session))) return;
-    const operationId = await dependencies.failActiveOperation(session.workspaceId, "RUNTIME_UNAVAILABLE: workspace compute was lost; retry the request");
+    const lost = await markComputeLost(dependencies, session);
+    if (!lost.lost) return;
+    const operationId = lost.operationId;
     report.lostInstances.push(session.instanceId!);
     log({ event: "reconciler.instance_lost", workspaceId: session.workspaceId, instanceId: session.instanceId, failedOperationId: operationId });
     return undefined;
