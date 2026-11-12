@@ -11,7 +11,8 @@ import { sha, testSigner } from "../support/catalog-pinning.js";
 
 const shipped = JSON.parse(readFileSync("environments/service-catalog/catalog.json", "utf8")) as { entries: unknown[] };
 const runnerEntries = (JSON.parse(readFileSync("environments/service-catalog/function-runner-entries.json", "utf8")) as { entries: unknown[] }).entries;
-const nextCatalog = { ...shipped, revision: 4, entries: [...shipped.entries, ...runnerEntries] };
+const shippedRevision = (shipped as unknown as { revision: number }).revision;
+const nextCatalog = { ...shipped, entries: [...shipped.entries, ...runnerEntries] };
 const sourceDigest = (id: string) => sha(`source:${id}`);
 const sources: { schemaVersion: number; sources: Record<string, string> } = { schemaVersion: 1, sources: Object.fromEntries(FUNCTION_RUNNER_CATALOG_IDS.map((id) => [id, `registry.example.com/mirror/${id.slice(0, id.indexOf("@"))}@sha256:${sourceDigest(id)}`])) };
 const child = (id: string, platform: string) => sha(`child:${id}:${platform}`);
@@ -34,7 +35,7 @@ describe("catalog-build over the runner's entries", () => {
   it("pins them by the source digest (the shipped pins carried over untouched), keeps them OUT of the services pre-pull, and writes them to the runner's own list: arm64 only, digests only", async () => {
     const output = await buildRunner(ports());
     const pinned = ServiceCatalogSchema.parse(JSON.parse(output.catalogBytes.toString("utf8")));
-    expect(pinned.revision).toBe(5);
+    expect(pinned.revision).toBe(shippedRevision + 1);
     for (const id of FUNCTION_RUNNER_CATALOG_IDS) {
       const entry = pinned.entries.find((candidate) => candidate.id === id)!;
       expect(entry.image.digest, id).toBe(sourceDigest(id));
@@ -51,7 +52,7 @@ describe("catalog-build over the runner's entries", () => {
     expect(services.images.map((image) => image.id).sort()).toEqual(["local-aws@r1", "postgres@16"]);
     const runner = FunctionRunnerPrepullListSchema.parse(JSON.parse(output.functionRunnerPrepullBytes.toString("utf8")));
     expect(runner.images.map((image) => image.id)).toEqual([...FUNCTION_RUNNER_CATALOG_IDS]);
-    expect(runner.catalogRevision).toBe(5);
+    expect(runner.catalogRevision).toBe(shippedRevision + 1);
     for (const image of runner.images) { expect(image.digest).toBe(sourceDigest(image.id)); expect(image.platforms).toEqual(["linux/arm64"]); }
   });
 
@@ -90,6 +91,6 @@ describe("the shipped runner list", () => {
   it("is the empty list at the shipped catalog's revision (nothing is pinned yet), and the same file the worker image carries", () => {
     const list = FunctionRunnerPrepullListSchema.parse(JSON.parse(readFileSync("packages/worker/service-catalog/function-runner-prepull.json", "utf8")));
     expect(list.images).toEqual([]);
-    expect(list.catalogRevision).toBe((shipped as { revision?: number }).revision ?? 3);
+    expect(list.catalogRevision).toBe(shippedRevision);
   });
 });
