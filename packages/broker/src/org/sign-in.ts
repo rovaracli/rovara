@@ -153,9 +153,10 @@ async function resolveOrg(deps: ResolveOrgOnSignInDependencies, input: ResolveOr
       try {
         const tokenHash = input.inviteTokenHash;
         // The email is indexed only for the cloud methods, whose sign-in routes it links.
-        return await indexing((email) => orgs.acceptInvite({ tokenHash, developerId: input.developerId, ...(email === undefined ? {} : { email }) }), false);
+        return await indexing((email) => orgs.acceptInvite({ tokenHash, developerId: input.developerId, ...(email === undefined ? {} : { email }), ...(verifiedEmail === undefined ? {} : { verifiedEmail }) }), false);
       } catch (error) {
         if (codeOf(error) === "INVITE_INVALID") inviteError = "INVITE_INVALID";
+        else if (codeOf(error) === "INVITE_WRONG_EMAIL") inviteError = "INVITE_WRONG_EMAIL";
         else if (codeOf(error) === "ALREADY_IN_ORG") {
           const winner = await winnerOfRace();
           if (winner === undefined) throw error;

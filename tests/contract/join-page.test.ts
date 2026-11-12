@@ -453,7 +453,7 @@ describe("OrgStore.describeInvite", () => {
     const short = await inviteTo(h, orgId, { ttlSeconds: 10 });
     h.tick(11_000);
     expect(await h.orgs.describeInvite(short)).toMatchObject({ state: "expired" });
-    await h.orgs.acceptInvite({ tokenHash: inviteTokenHash(open), developerId: "c".repeat(64) });
+    await h.orgs.acceptInvite({ tokenHash: inviteTokenHash(open), developerId: "c".repeat(64), verifiedEmail: "priya@acme.dev" });
     expect(await h.orgs.describeInvite(open)).toMatchObject({ state: "used" });
     expect(await h.orgs.describeInvite("A".repeat(43))).toBeUndefined();
     expect(await h.orgs.describeInvite("not a token")).toBeUndefined();

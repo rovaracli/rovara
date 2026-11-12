@@ -1,13 +1,13 @@
 // srv/project-people: A-31 (invites that carry a project and a project role), A-32 (the web's People tab: add, change, remove under the roster revision, never the last
 // maintainer) and A-33 (which code settings the viewer may change; the writes are the existing code-settings route). Everything goes through the real route dispatcher
 // (`routeDeveloperRequest`) as a browser session, or as a token where the browser-only rule is the point; invites are accepted through the real `OrgStore`.
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { AgentXError, errorStatus, orgProjectCatalogKey, projectMemberKey, projectMetaKey, projectRevisionKey, type OrgId, type ProjectRole } from "@rovara-code/contracts";
-import { PROJECT_LAST_MAINTAINER_MESSAGE, PROJECT_PEOPLE_STALE_MESSAGE, ProjectPeopleViewSchema, developerOrgKey, orgBanKey, orgMemberKey, orgMetaKey, type OrgRole } from "@agentx/cloud-contracts";
+import { PROJECT_LAST_MAINTAINER_MESSAGE, PROJECT_PEOPLE_STALE_MESSAGE, type ProjectPeopleRole, ProjectPeopleViewReaderSchema, ProjectPeopleViewSchema, ProjectPersonChangeResponseReaderSchema, developerOrgKey, orgBanKey, orgMemberKey, orgMetaKey, type OrgRole } from "@agentx/cloud-contracts";
 import { routeDeveloperRequest, type DeveloperCaller, type DeveloperRouteDependencies } from "../../packages/broker/src/aws/developer-routes.js";
 import { StatusReply } from "../../packages/broker/src/aws/status-reply.js";
-import { routeProjectPeople } from "../../packages/broker/src/aws/developer-routes/project-people.js";
+import { peopleViewerOf, routeProjectPeople } from "../../packages/broker/src/aws/developer-routes/project-people.js";
 import { joinedQuery } from "../../packages/broker/src/developer/server.js";
 import { inviteTokenHash } from "../../packages/broker/src/org/invite-url.js";
 import { projectPeopleRevisionKey, removeProjectMember } from "../../packages/broker/src/org/project-members.js";
@@ -27,14 +27,16 @@ const PEOPLE = {
 } as const satisfies Record<string, { id: string; orgRole: OrgRole }>;
 type Who = keyof typeof PEOPLE;
 
+type SentEmail = { Destination: { ToAddresses: string[] }; Content: { Simple: { Body: { Text: { Data: string } } } } };
 const DEFINITION = (name: string) => ({
   name, revision: 1, repositories: [{ name: "web", url: `https://github.com/acme/${name}.git`, path: "repo/web", defaultBranch: "main", credentialRef: "github-app" }],
   setup: [], readiness: [], orchestratorInstructions: "Delegate work.",
 });
 const BINDING = { deploymentMode: "ec2-ebs", launchTemplateId: "lt-0123456789abcdef0", subnets: [{ availabilityZone: "us-west-2a", subnetId: "subnet-0123456789abcdef0" }], volumeSizeGiB: 20, volumeType: "gp3" };
 
-function fixture(options: { audit?: boolean } = {}) {
+function fixture(options: { audit?: boolean; email?: boolean } = {}) {
   const db = new FakeDynamoDb();
+  const emails: SentEmail[] = [];
   let nowMs = NOW;
   const now = () => nowMs;
   const capture = capturingAuditDeps({ db, now });
@@ -61,6 +63,8 @@ function fixture(options: { audit?: boolean } = {}) {
   const deps: DeveloperRouteDependencies = {
     documentClient: db, tableName: "state", now, orgs: store, cloud: true,
     ...(options.audit === false ? {} : { audit: capture.audit }),
+    // The install's email sender (review L2: a maintainer's invite reaches the person only by email). Each sent message is kept, to read its link.
+    ...(options.email === false ? {} : { ownerNotice: { ses: { send: async (command: { input: unknown }) => { emails.push(command.input as SentEmail); return {}; } }, from: "Rovara <notices@cell.example>", log: () => undefined } }),
     developer: { issuer: "https://cell.example/v1/auth", env: "test", signInTableName: "state", methods: { cloud: true, slack: false, oidc: true }, verifyAccessToken: async () => ({}), channelMembers: async () => ({ ok: true, memberOf: [] }) },
   };
   const callerOf = (who: Who | { id: string; orgRole: OrgRole; orgId?: OrgId }): DeveloperCaller => {
@@ -81,12 +85,12 @@ function fixture(options: { audit?: boolean } = {}) {
   }
   const roleIn = (developerId: string, name = "payments", orgId: OrgId = A) => db.get(projectMemberKey(orgId, developerId, name))?.projectRole as string | undefined;
   const revision = (name = "payments", orgId: OrgId = A) => (db.get(projectPeopleRevisionKey(orgId, name))?.revision as number | undefined) ?? 0;
-  return { db, capture, store, deps, call, grant, member, project, roleIn, revision, advance: (ms: number) => { nowMs += ms; } };
+  return { db, emails, capture, store, deps, call, grant, member, project, roleIn, revision, advance: (ms: number) => { nowMs += ms; } };
 }
 type Fixture = ReturnType<typeof fixture>;
 
 const PEOPLE_PATH = "/v1/app/projects/payments/people";
-const put = (f: Fixture, who: Who, target: string, role: ProjectRole, expectedRevision: number, requestId = randomUUID()) => f.call(who, "PUT", `${PEOPLE_PATH}/${target}`, { requestId, role, expectedRevision });
+const put = (f: Fixture, who: Who, target: string, role: ProjectPeopleRole, expectedRevision: number, requestId = randomUUID()) => f.call(who, "PUT", `${PEOPLE_PATH}/${target}`, { requestId, role, expectedRevision });
 const del = (f: Fixture, who: Who, target: string, expectedRevision: number, requestId = randomUUID()) => f.call(who, "DELETE", `${PEOPLE_PATH}/${target}`, { requestId, expectedRevision });
 
 // ---- A-32: the People tab ------------------------------------------------------------------------------------------------------------------------------------------------
@@ -120,9 +124,9 @@ describe("the People routes check the browser session themselves too", () => {
 
 describe("who sees the People tab, and with which powers", () => {
   const expected: Record<Who, { status: number; viewer?: Record<string, unknown> }> = {
-    owner: { status: 200, viewer: { role: "maintainer", canManageMembers: true, assignableRoles: ["maintainer", "contributor", "viewer"], canInvite: true, invitableRoles: ["maintainer", "contributor", "viewer"], canEditCodeSettings: true, canConfirmSelfApproval: true } },
+    owner: { status: 200, viewer: { role: "maintainer", projectRole: "maintainer", canManageMembers: true, assignableRoles: ["maintainer", "contributor", "collaborator", "viewer"], canInvite: true, invitableRoles: ["maintainer", "contributor", "viewer"], canEditCodeSettings: true, canConfirmSelfApproval: true } },
     admin: { status: 200, viewer: { role: "maintainer", canManageMembers: true, canInvite: true, invitableRoles: ["maintainer", "contributor", "viewer"], canEditCodeSettings: true, canConfirmSelfApproval: true } },
-    maintainer: { status: 200, viewer: { role: "maintainer", canManageMembers: true, assignableRoles: ["maintainer", "contributor", "viewer"], canInvite: true, invitableRoles: ["contributor", "viewer"], canEditCodeSettings: true, canConfirmSelfApproval: false } },
+    maintainer: { status: 200, viewer: { role: "maintainer", projectRole: "maintainer", canManageMembers: true, assignableRoles: ["maintainer", "contributor", "collaborator", "viewer"], canInvite: true, invitableRoles: ["contributor", "viewer"], canEditCodeSettings: true, canConfirmSelfApproval: false } },
     contributor: { status: 200, viewer: { role: "contributor", canManageMembers: false, assignableRoles: [], canInvite: false, invitableRoles: [], canEditCodeSettings: false, canConfirmSelfApproval: false } },
     viewer: { status: 200, viewer: { role: "viewer", canManageMembers: false, assignableRoles: [], canInvite: false, invitableRoles: [], canEditCodeSettings: false, canConfirmSelfApproval: false } },
     otherMaintainer: { status: 404 }, member: { status: 404 }, auditor: { status: 403 },
@@ -157,7 +161,7 @@ describe("adding, changing and removing a person: the CLI's rules", () => {
       const answer = await put(f, who, MEMBER, "viewer", 0);
       expect(answer.status, JSON.stringify(answer)).toBe(putExpected[who]);
       if (putExpected[who] === 200) {
-        expect(answer.body).toEqual({ member: { developerId: MEMBER, role: "viewer" }, revision: 1 });
+        expect(answer.body).toEqual({ member: { developerId: MEMBER, role: "viewer", projectRole: "viewer" }, revision: 1 });
         expect(f.roleIn(MEMBER)).toBe("viewer");
         expect(f.capture.recordedBy("project_member.changed")).toEqual([expect.objectContaining({ actor: { kind: "member", id: PEOPLE[who].id }, target: { kind: "project", name: "payments" }, facts: { toRole: "viewer" } })]);
       } else {
@@ -177,7 +181,7 @@ describe("adding, changing and removing a person: the CLI's rules", () => {
 
   it("changes a role, and answers removed:false for a person with nothing to take away (an owner by company role)", async () => {
     const f = fixture();
-    expect((await put(f, "maintainer", CONTRIB, "viewer", 0)).body).toEqual({ member: { developerId: CONTRIB, role: "viewer" }, revision: 1 });
+    expect((await put(f, "maintainer", CONTRIB, "viewer", 0)).body).toEqual({ member: { developerId: CONTRIB, role: "viewer", projectRole: "viewer" }, revision: 1 });
     expect(f.capture.recordedBy("project_member.changed")).toEqual([expect.objectContaining({ facts: { fromRole: "contributor", toRole: "viewer" } })]);
     expect((await del(f, "maintainer", MEMBER, 1)).body).toEqual({ developerId: MEMBER, removed: false, revision: 1 });
     expect((await del(f, "maintainer", OWNER, 1))).toMatchObject({ status: 400, code: "CONFIG_INVALID" });
@@ -276,7 +280,7 @@ describe("the roster revision", () => {
 
   it("a change to the role a person already has moves nothing and records nothing", async () => {
     const f = fixture();
-    expect((await put(f, "maintainer", CONTRIB, "contributor", 0)).body).toEqual({ member: { developerId: CONTRIB, role: "contributor" }, revision: 0 });
+    expect((await put(f, "maintainer", CONTRIB, "contributor", 0)).body).toEqual({ member: { developerId: CONTRIB, role: "contributor", projectRole: "contributor" }, revision: 0 });
     expect(f.revision()).toBe(0);
     expect(f.capture.recordedBy("project_member.changed")).toEqual([]);
   });
@@ -287,7 +291,7 @@ describe("request ids", () => {
     const f = fixture();
     const requestId = randomUUID();
     const first = await put(f, "maintainer", MEMBER, "viewer", 0, requestId);
-    expect(first.body).toEqual({ member: { developerId: MEMBER, role: "viewer" }, revision: 1 });
+    expect(first.body).toEqual({ member: { developerId: MEMBER, role: "viewer", projectRole: "viewer" }, revision: 1 });
     const writes = f.db.transactions().length;
     // The replay carries the revision it was first sent with, now stale: still the stored answer, not a refusal.
     expect((await put(f, "maintainer", MEMBER, "viewer", 0, requestId)).body).toEqual(first.body);
@@ -295,6 +299,79 @@ describe("request ids", () => {
     expect(await put(f, "maintainer", MEMBER, "contributor", 1, requestId)).toMatchObject({ status: 409, code: "IDEMPOTENCY_CONFLICT" });
     expect(await put(f, "owner", MEMBER, "viewer", 1, requestId)).toMatchObject({ status: 409, code: "IDEMPOTENCY_CONFLICT" });
     expect(f.capture.recordedBy("project_member.changed")).toHaveLength(1);
+  });
+});
+
+// ---- Collaborator role (W11) on the People tab ------------------------------------------------------------------------------------------------------------------------------
+
+describe("the collaborator role on the People tab", () => {
+  const expected: Record<Who, number> = { owner: 200, admin: 200, maintainer: 200, contributor: 403, viewer: 403, otherMaintainer: 404, member: 404, auditor: 403 };
+  for (const who of Object.keys(PEOPLE) as Who[]) {
+    it(`${who} making a member a collaborator: ${String(expected[who])}`, async () => {
+      const f = fixture();
+      const answer = await put(f, who, MEMBER, "collaborator", 0);
+      expect(answer.status, JSON.stringify(answer)).toBe(expected[who]);
+      if (expected[who] !== 200) { expect(f.db.get(projectMemberKey(A, MEMBER, "payments"))).toBeUndefined(); expect(f.revision()).toBe(0); return; }
+      // The floor for older clients, the exact role beside it; the reader keeps both.
+      expect(answer.body).toEqual({ member: { developerId: MEMBER, role: "viewer", projectRole: "collaborator" }, revision: 1 });
+      expect(ProjectPersonChangeResponseReaderSchema.parse(answer.body).member).toMatchObject({ role: "viewer", projectRole: "collaborator" });
+      expect(f.db.get(projectMemberKey(A, MEMBER, "payments"))).toMatchObject({ role: "viewer", projectRole: "collaborator" });
+      const view = ProjectPeopleViewReaderSchema.parse((await f.call(who, "GET", PEOPLE_PATH)).body);
+      expect(view.members.find((m) => m.developerId === MEMBER)).toMatchObject({ role: "viewer", projectRole: "collaborator", source: "grant" });
+      expect(view.revision).toBe(1);
+      // The reader knows the exact role (it is not just passed through): collaborator is one of its four, a role it doesn't know reads as "unknown", and the floor stays three-valued.
+      const raw = (await f.call(who, "GET", PEOPLE_PATH)).body as { members: Array<Record<string, unknown>> };
+      const read = (projectRole: unknown, role: unknown = "viewer") => ProjectPeopleViewReaderSchema.parse({ ...raw, members: raw.members.map((m) => (m.developerId === MEMBER ? { ...m, role, projectRole } : m)) }).members.find((m) => m.developerId === MEMBER);
+      expect(read("collaborator")).toMatchObject({ role: "viewer", projectRole: "collaborator" });
+      expect(read("owner")).toMatchObject({ projectRole: "unknown" });
+      expect(read("collaborator", "collaborator")).toMatchObject({ role: "unknown" });
+    });
+  }
+
+  it("a collaborator sees the tab as a viewer, with its exact role beside the floor, and may give no role", async () => {
+    const f = fixture();
+    // A collaborator's grant row, as the store writes one: the coarse role is viewer, the exact role collaborator.
+    f.db.set({ ...projectMemberKey(A, MEMBER, "payments"), entityType: "MEMBERSHIP", ownerKey: MEMBER, grantId: randomUUID(), projectName: "payments", role: "viewer", projectRole: "collaborator", grantedBy: { developerId: OWNER }, grantedAt: "2026-10-05T00:00:00.000Z" });
+    const view = ProjectPeopleViewReaderSchema.parse((await f.call("member", "GET", PEOPLE_PATH)).body);
+    expect(view.viewer).toMatchObject({ role: "viewer", projectRole: "collaborator", canManageMembers: false, assignableRoles: [], canInvite: false, canEditCodeSettings: false });
+    expect(await put(f, "member", NEWBIE, "collaborator", 0)).toMatchObject({ status: 403 });
+    // Contributors and viewers carry their exact role too.
+    expect(ProjectPeopleViewReaderSchema.parse((await f.call("viewer", "GET", PEOPLE_PATH)).body).viewer).toMatchObject({ role: "viewer", projectRole: "viewer" });
+  });
+
+  it("a collaborator change is fenced by the roster revision", async () => {
+    const f = fixture();
+    expect((await put(f, "maintainer", CONTRIB, "viewer", 0)).status).toBe(200);
+    expect(await put(f, "owner", MEMBER, "collaborator", 0)).toMatchObject({ status: 409, code: "CHANGE_STALE", message: PROJECT_PEOPLE_STALE_MESSAGE });
+    expect(f.db.get(projectMemberKey(A, MEMBER, "payments"))).toBeUndefined();
+    expect((await put(f, "owner", MEMBER, "collaborator", 1)).body).toMatchObject({ revision: 2 });
+  });
+
+  it("a collaborator is not a maintainer: with one present, the last maintainer still can't be removed or made a collaborator", async () => {
+    const f = fixture();
+    expect((await put(f, "maintainer", MEMBER, "collaborator", 0)).status).toBe(200);
+    expect(await del(f, "owner", MAINT, 1)).toMatchObject({ status: 400, message: PROJECT_LAST_MAINTAINER_MESSAGE });
+    expect(await put(f, "owner", MAINT, "collaborator", 1)).toMatchObject({ status: 400, message: PROJECT_LAST_MAINTAINER_MESSAGE });
+    expect(f.roleIn(MAINT)).toBe("maintainer");
+    // Once someone else maintains it, the maintainer may become a collaborator.
+    expect((await put(f, "owner", MEMBER, "maintainer", 1)).status).toBe(200);
+    expect((await put(f, "owner", MAINT, "collaborator", 2)).body).toEqual({ member: { developerId: MAINT, role: "viewer", projectRole: "collaborator" }, revision: 3 });
+  });
+
+  it("records a web change to and from collaborator with its from and to roles (review L2)", async () => {
+    const f = fixture();
+    expect((await put(f, "maintainer", CONTRIB, "collaborator", 0)).status).toBe(200);
+    expect((await put(f, "maintainer", CONTRIB, "contributor", 1)).status).toBe(200);
+    expect(f.capture.recordedBy("project_member.changed").map((event) => [event.actor.id, event.facts])).toEqual([
+      [MAINT, { fromRole: "contributor", toRole: "collaborator" }],
+      [MAINT, { fromRole: "collaborator", toRole: "contributor" }],
+    ]);
+  });
+
+  it("refuses a role outside Cloud's four, writing nothing", async () => {
+    const f = fixture();
+    for (const role of ["owner", "admin", "developer", "Collaborator"]) expect(await f.call("maintainer", "PUT", `${PEOPLE_PATH}/${MEMBER}`, { requestId: randomUUID(), role, expectedRevision: 0 }), role).toMatchObject({ status: 400, code: "CONFIG_INVALID" });
+    expect(f.db.transactions().length).toBe(0);
   });
 });
 
@@ -330,14 +407,26 @@ describe("code settings from the web (the existing route)", () => {
 
 const INVITE_PATH = "/v1/app/org/invites/reviewed";
 /** A project invite goes to a colleague's email (a maintainer's must: review M1); a company-only one is a link. */
-const inviteBody = (project?: { name: string; role: ProjectRole }, requestId = randomUUID(), email: string | null = "new.person@example.test") => ({ requestId, role: "member", ...(project === undefined ? {} : { project, ...(email === null ? {} : { email }) }) });
+/** A project invite's colleague address: one per request (an address is emailed at most once a day), the same for a replay of the same request. */
+const colleague = (requestId: string) => `new.${requestId.slice(0, 8)}@example.test`;
+const inviteBody = (project?: { name: string; role: ProjectRole }, requestId = randomUUID(), email: string | null = colleague(requestId)) => ({ requestId, role: "member", ...(project === undefined ? {} : { project, ...(email === null ? {} : { email }) }) });
 const tokenOf = (answer: { body: Record<string, unknown> }) => new URL(String(answer.body.inviteUrl)).hash.slice("#invite=".length);
+/** The invite link's token from the email sent to `to` (a maintainer's answer carries no link). */
+const tokenFromEmail = (f: Fixture, to: string) => {
+  const sent = f.emails.filter((email) => email.Destination.ToAddresses.includes(to));
+  expect(sent, to).toHaveLength(1);
+  return /#invite=([A-Za-z0-9_-]{43})/.exec(sent[0]!.Content.Simple.Body.Text.Data)![1]!;
+};
 async function invite(f: Fixture, who: Who, project: { name: string; role: ProjectRole } = { name: "payments", role: "contributor" }) {
-  const answer = await f.call(who, "POST", INVITE_PATH, inviteBody(project));
+  const requestId = randomUUID();
+  const answer = await f.call(who, "POST", INVITE_PATH, inviteBody(project, requestId));
   expect(answer.status, JSON.stringify(answer)).toBe(200);
-  return tokenOf(answer);
+  return answer.body.inviteUrl === undefined ? tokenFromEmail(f, colleague(requestId)) : tokenOf(answer);
 }
-const accept = (f: Fixture, token: string, developerId = NEWBIE) => f.store.acceptInvite({ tokenHash: inviteTokenHash(token), developerId });
+/** Accepts as the sign-in would: with the verified email the invite was written for (an email-targeted invite needs it, review a). */
+const inviteRowOf = (f: Fixture, token: string) => f.db.find((row) => row.entityType === "ORG_INVITE" && row.tokenHash === createHash("sha256").update(token).digest("hex"))[0];
+const accept = (f: Fixture, token: string, developerId = NEWBIE, verifiedEmail: string | null = (inviteRowOf(f, token)?.email as string | undefined) ?? null) =>
+  f.store.acceptInvite({ tokenHash: inviteTokenHash(token), developerId, ...(verifiedEmail === null ? {} : { verifiedEmail }) });
 const refusal = async (promise: Promise<unknown>) => promise.then(() => "accepted", (error: { code?: string }) => String(error.code));
 
 describe("who may invite someone straight into a project", () => {
@@ -472,6 +561,126 @@ describe("who may invite someone straight into a project", () => {
     expect(await f.call("contributor", "GET", `/v1/app/org/invites/requests/${requestId}`)).toMatchObject({ status: 404 });
     f.grant(A, MAINT, "payments", "contributor");
     expect(await f.call("maintainer", "GET", `/v1/app/org/invites/requests/${requestId}`)).toMatchObject({ status: 403 });
+  });
+});
+
+describe("a maintainer never holds a shareable link (review L2)", () => {
+  it("a maintainer's answer carries no link; the email goes out with it, once; the receipt, the replay and the list carry none either", async () => {
+    const f = fixture();
+    const requestId = randomUUID();
+    const body = inviteBody({ name: "payments", role: "viewer" }, requestId);
+    const answer = await f.call("maintainer", "POST", INVITE_PATH, body);
+    expect(answer.status).toBe(200);
+    expect(answer.body.inviteUrl).toBeUndefined();
+    expect(answer.body.email).toBe("sent");
+    expect(JSON.stringify(answer.body)).not.toContain("invite=");
+    const token = tokenFromEmail(f, colleague(requestId));
+    const replay = await f.call("maintainer", "POST", INVITE_PATH, body);
+    expect(replay.body).toEqual({ receipt: answer.body.receipt });
+    expect(f.emails).toHaveLength(1);
+    const read = await f.call("maintainer", "GET", `/v1/app/org/invites/requests/${requestId}`);
+    expect(JSON.stringify(read.body)).not.toContain("invite=");
+    expect(JSON.stringify((await f.call("owner", "GET", "/v1/app/org/invites")).body)).not.toContain(token);
+    // The emailed link works.
+    expect(await accept(f, token)).toMatchObject({ project: { name: "payments", role: "viewer" } });
+  });
+
+  it("an owner's or admin's answer is unchanged: the link is returned, and emailed only when asked", async () => {
+    const f = fixture();
+    for (const who of ["owner", "admin"] as const) {
+      const answer = await f.call(who, "POST", INVITE_PATH, inviteBody({ name: "payments", role: "viewer" }));
+      expect(answer.status).toBe(200);
+      expect(String(answer.body.inviteUrl)).toContain("#invite=");
+      expect(answer.body.email).toBeUndefined();
+    }
+    expect(f.emails).toEqual([]);
+  });
+
+  it("where this install can't send email, a maintainer's invite is not made at all; an owner's still is", async () => {
+    const f = fixture({ email: false });
+    expect(await f.call("maintainer", "POST", INVITE_PATH, inviteBody({ name: "payments", role: "viewer" }))).toMatchObject({ status: 503, code: "RUNTIME_UNAVAILABLE", message: expect.stringContaining("can't send email") as unknown });
+    expect(f.db.find((row) => row.entityType === "ORG_INVITE")).toEqual([]);
+    expect((await f.call("owner", "POST", INVITE_PATH, inviteBody({ name: "payments", role: "viewer" }))).status).toBe(200);
+  });
+});
+
+describe("Invite is offered exactly where the invite store allows it (review L5)", () => {
+  it("canInvite needs an owner or admin, or a company member who maintains the project by their own grant", () => {
+    expect(peopleViewerOf({ orgRole: "member" }, "maintainer", true, "maintainer", true)).toMatchObject({ canManageMembers: true, canInvite: true, invitableRoles: ["contributor", "viewer"] });
+    // A maintainer without their own grant (through a channel or an older row) manages people but can't invite.
+    expect(peopleViewerOf({ orgRole: "member" }, "maintainer", true, "maintainer", false)).toMatchObject({ canManageMembers: true, canInvite: false, invitableRoles: [] });
+    for (const orgRole of ["owner", "admin"] as const) expect(peopleViewerOf({ orgRole }, "maintainer", true, "maintainer", false), orgRole).toMatchObject({ canInvite: true, invitableRoles: ["maintainer", "contributor", "viewer"] });
+    expect(peopleViewerOf({ orgRole: "auditor" }, "maintainer", true, "maintainer", true)).toMatchObject({ canInvite: false });
+    expect(peopleViewerOf({ orgRole: "member" }, "maintainer", false, "maintainer", true)).toMatchObject({ canInvite: false });
+  });
+
+  for (const who of Object.keys(PEOPLE) as Who[]) {
+    it(`${who}: the People read's canInvite matches what the invite route answers`, async () => {
+      const f = fixture();
+      const view = await f.call(who, "GET", PEOPLE_PATH);
+      const offered = view.status === 200 && (view.body.viewer as { canInvite: boolean }).canInvite;
+      const made = await f.call(who, "POST", INVITE_PATH, inviteBody({ name: "payments", role: "viewer" }));
+      expect(made.status === 200, JSON.stringify(made)).toBe(offered);
+    });
+  }
+
+  it("asks the same question the store asks (the caller's own grant row), not the role the roster derived", async () => {
+    const f = fixture();
+    // The roster finds MAINT a maintainer through the grants index; make the direct read of the grant row (the store's own test) find nothing, as for a role not held by one's own grant.
+    const send = f.db.send.bind(f.db);
+    f.db.send = (async (command: unknown) => {
+      const input = (command as { constructor: { name: string }; input: { Key?: { pk?: string; sk?: string } } });
+      const key = projectMemberKey(A, MAINT, "payments");
+      if (input.constructor.name === "GetCommand" && input.input.Key?.pk === key.pk && input.input.Key.sk === key.sk) return {};
+      return send(command as never);
+    });
+    const view = ProjectPeopleViewSchema.parse((await f.call("maintainer", "GET", PEOPLE_PATH)).body);
+    expect(view.viewer).toMatchObject({ role: "maintainer", canManageMembers: true, canInvite: false, invitableRoles: [] });
+    expect((await f.call("maintainer", "POST", INVITE_PATH, inviteBody({ name: "payments", role: "viewer" }))).status).toBe(403);
+  });
+});
+
+describe("the store checks an invite's email itself (review a)", () => {
+  it("an email-targeted invite is refused without the sign-in's verified email, or with another address, writing nothing", async () => {
+    const f = fixture();
+    const token = await invite(f, "maintainer", { name: "payments", role: "viewer" });
+    const address = String(inviteRowOf(f, token)!.email);
+    expect(await refusal(accept(f, token, NEWBIE, null))).toBe("INVITE_WRONG_EMAIL");
+    expect(await refusal(accept(f, token, NEWBIE, "someone.else@example.test"))).toBe("INVITE_WRONG_EMAIL");
+    expect(f.db.get(orgMemberKey(A, NEWBIE))).toBeUndefined();
+    expect(inviteRowOf(f, token)!.acceptedAt).toBeUndefined();
+    expect(await accept(f, token, NEWBIE, address.toUpperCase())).toMatchObject({ orgId: A, project: { name: "payments", role: "viewer" } });
+  });
+
+  it("a link invite (no address) needs no email", async () => {
+    const f = fixture();
+    expect(await accept(f, tokenOf(await f.call("owner", "POST", INVITE_PATH, inviteBody())), NEWBIE, null)).toEqual({ orgId: A, role: "member" });
+  });
+});
+
+describe("one role read for the People page, and one id set for Invite (review L1, b)", () => {
+  /** A session still open for a developer id since merged into another: OLD's own grants are what the routes and the invite store read. */
+  function merged(f: Fixture, oldRole: ProjectRole | undefined, survivorRole: ProjectRole | undefined) {
+    f.member(A, MAINT2, "member");
+    f.db.set({ ...f.db.get({ pk: `DEVELOPER#${MEMBER}`, sk: "META" })!, mergedInto: MAINT2 });
+    if (oldRole !== undefined) f.grant(A, MEMBER, "payments", oldRole);
+    if (survivorRole !== undefined) f.grant(A, MAINT2, "payments", survivorRole);
+  }
+
+  it("a merged-away id's session sees its own role, exact and floor alike, never the survivor's maintainer grant; Invite agrees with the store", async () => {
+    const f = fixture();
+    merged(f, "contributor", "maintainer");
+    const view = ProjectPeopleViewSchema.parse((await f.call("member", "GET", PEOPLE_PATH)).body);
+    expect(view.viewer).toMatchObject({ role: "contributor", projectRole: "contributor", canManageMembers: false, canInvite: false });
+    expect((await f.call("member", "POST", INVITE_PATH, inviteBody({ name: "payments", role: "viewer" }))).status).toBe(403);
+  });
+
+  it("a maintainer grant on the session's own id counts on both sides", async () => {
+    const f = fixture();
+    merged(f, "maintainer", undefined);
+    const view = ProjectPeopleViewSchema.parse((await f.call("member", "GET", PEOPLE_PATH)).body);
+    expect(view.viewer).toMatchObject({ role: "maintainer", projectRole: "maintainer", canInvite: true });
+    expect((await f.call("member", "POST", INVITE_PATH, inviteBody({ name: "payments", role: "viewer" }))).status).toBe(200);
   });
 });
 

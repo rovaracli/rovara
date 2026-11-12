@@ -45,19 +45,30 @@ async function receipt(deps: DeveloperRouteDependencies, caller: DeveloperCaller
  if (parsed.data.by !== caller.developerId) throw missing();
  const { orgId, inviteId, role, createdAt, expiresAt, project } = parsed.data;return InviteCreateReceiptSchema.parse({ orgId, requestId, inviteId, role, createdAt, expiresAt, ...(project === undefined ? {} : { project }) });
 }
+const MAINTAINER_INVITE_NO_EMAIL_MESSAGE = "This install can't send email, so a maintainer's invite can't reach anyone. Ask a company owner or admin to invite them.";
+/** Emails an invite's link to its own address, once, within the company's daily cap and one email per address per day (UX1 review I2). Answers how it went. */
+async function emailInvite(deps: DeveloperRouteDependencies, caller: DeveloperCaller, to: string, committed: { role: "admin" | "member"; expiresAt: string }, link: string) {
+ if (inviteEmailAvailable(deps.ownerNotice) && !await takeInviteEmailAllowance(deps, caller.orgId, to)) return "limited" as const;
+ return sendInviteEmail(deps.ownerNotice, { to, orgName: (await deps.orgs?.getOrg(caller.orgId))?.name ?? "your team", inviterName: caller.name, role: committed.role, inviteUrl: link, expiresAt: committed.expiresAt });
+}
 export async function createReviewedOrganizationInvite(deps: DeveloperRouteDependencies, caller: DeveloperCaller, body: unknown) {
  try {
   const parsed = ReviewedInviteCreateBodySchema.safeParse(body);if (!parsed.success) throw agentXError("CONFIG_INVALID", "Review a valid invite role and destination before submitting.");
-  await authority(deps, caller, parsed.data.role, parsed.data.project);
+  const asked = await authority(deps, caller, parsed.data.role, parsed.data.project);
+  // A-31 review L2: a maintainer's invite reaches the person only by email, so it is not made where this install cannot send one.
+  if (asked === "maintainer" && !inviteEmailAvailable(deps.ownerNotice)) throw agentXError("RUNTIME_UNAVAILABLE", MAINTAINER_INVITE_NO_EMAIL_MESSAGE);
   if (deps.orgs === undefined || deps.audit === undefined || deps.audit.tableName !== deps.tableName) throw unavailable();
   const digest = inviteCreateBodyHash(parsed.data), prior = await receipt(deps, caller, parsed.data.requestId, digest);
   if (prior !== undefined) { if (!await takeRateAt(deps, { pk: orgScoped(caller.orgId, "INVITE_CREATE_RATE"), sk: caller.developerId }, 20, 60_000)) throw agentXError("TOO_MANY_REQUESTS", "Too many invite creation attempts. Try again in a minute.");return { receipt: prior }; }
   try {
    const result = await deps.orgs.createInvite({ requestId: parsed.data.requestId, role: parsed.data.role, ...(parsed.data.email === undefined ? {} : { email: parsed.data.email }), orgId: caller.orgId, createdBy: caller.developerId, reviewed: true, ...(parsed.data.project === undefined ? {} : { project: parsed.data.project }) });
    // Verify the actual atomic record before delivering even the first link.
-   await authority(deps, caller, parsed.data.role, parsed.data.project);const committed = await receipt(deps, caller, parsed.data.requestId, digest);if (committed === undefined) throw unavailable();
+   const kind = await authority(deps, caller, parsed.data.role, parsed.data.project);const committed = await receipt(deps, caller, parsed.data.requestId, digest);if (committed === undefined) throw unavailable();
    const link = deps.cloud === true ? inviteUrl(cloudJoinBase(deps.developer.issuer), result.token, "fragment") : inviteUrl(`${deps.developer.issuer}/join`, result.token, "query");
    // UX1: emailed only when asked for, only to the invite's own address, and only once (a replay above never reaches here). The link is returned either way, so nothing is lost if the email fails.
+   // A-31 review L2: a project maintainer never holds a shareable link. Their invite (always to one named address, the store insists) is emailed whether or not they asked, and the
+   // answer carries the email's outcome only, never the link. Owners and admins are as before.
+   if (kind === "maintainer") return { receipt: committed, email: parsed.data.email === undefined ? "failed" as const : await emailInvite(deps, caller, parsed.data.email, committed, link) };
    if (parsed.data.sendEmail !== true || parsed.data.email === undefined) return { receipt: committed, inviteUrl: link };
    // UX1 review I2: a daily cap per company and one email per address per day; past either, the link is still returned and nothing is sent.
    if (inviteEmailAvailable(deps.ownerNotice) && !await takeInviteEmailAllowance(deps, caller.orgId, parsed.data.email)) return { receipt: committed, inviteUrl: link, email: "limited" as const };

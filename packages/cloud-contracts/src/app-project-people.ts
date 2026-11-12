@@ -5,23 +5,46 @@
 // project's last maintainer. Code settings are changed through the existing `PUT .../code-settings` (revision-fenced; self-approval ON waits for an owner or admin).
 // Strict shapes for what the app sends, forward-compatible readers for what it reads. Browser-safe: nothing here imports a Node module.
 import { z } from "zod";
-import { ProjectMemberSchema, ProjectRoleSchema, forwardReader } from "@rovara-code/contracts";
+import { forwardReader } from "@rovara-code/contracts";
+
+/**
+ * Collaborator role (W11): Cloud's four project roles, and Code's three (the "floor": a collaborator's is viewer). Spelled out here, held equal to `project-roles.ts` and Code's
+ * `ProjectRoleSchema` / `ProjectMemberSourceSchema` by tests/contract/project-people-roles.test.ts, so the browser's People tab never pulls Code's app-projects module into its bundle.
+ */
+export const ProjectPeopleRoleSchema = z.enum(["maintainer", "contributor", "collaborator", "viewer"]);
+export type ProjectPeopleRole = z.infer<typeof ProjectPeopleRoleSchema>;
+export const ProjectPeopleFloorRoleSchema = z.enum(["maintainer", "contributor", "viewer"]);
+export type ProjectPeopleFloorRole = z.infer<typeof ProjectPeopleFloorRoleSchema>;
+
+/** One person on the People tab. `role` is the floor (what older pages read); `projectRole` the exact role, a collaborator included. */
+export const ProjectPeopleMemberSchema = z.object({
+  developerId: z.string(),
+  name: z.string(),
+  email: z.string().optional(),
+  role: ProjectPeopleFloorRoleSchema,
+  projectRole: ProjectPeopleRoleSchema.optional(),
+  source: z.enum(["grant", "org_role"]),
+  grantedBy: z.object({ developerId: z.string(), name: z.string() }).optional(),
+});
+export type ProjectPeopleMember = z.infer<typeof ProjectPeopleMemberSchema>;
 
 /** The roster's revision: moved by every change of a project role made through the people routes, the CLI's member routes and an invite's accept. */
 export const ProjectPeopleRevisionSchema = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 
 /** What the viewer may do on the project's People and Code settings tabs, decided on the server from the viewer's live roles. */
 export const ProjectPeopleViewerSchema = z.object({
-  /** The viewer's own project role (an owner or admin is a maintainer by their company role). */
-  role: ProjectRoleSchema,
+  /** The viewer's own project role, as its floor (an owner or admin is a maintainer by their company role; a collaborator reads as viewer here). */
+  role: ProjectPeopleFloorRoleSchema,
+  /** The viewer's exact project role, a collaborator included (additive). */
+  projectRole: ProjectPeopleRoleSchema.optional(),
   /** Add, change and remove people: a maintainer of the project, or a company owner or admin. */
   canManageMembers: z.boolean(),
-  /** The roles the viewer may give someone here (empty when they cannot manage people). */
-  assignableRoles: z.array(ProjectRoleSchema).max(3),
+  /** The roles the viewer may give someone here, a collaborator included (empty when they cannot manage people). */
+  assignableRoles: z.array(ProjectPeopleRoleSchema).max(4),
   /** Invite someone new straight into this project (A-31): owners and admins, and maintainers of this project. */
   canInvite: z.boolean(),
   /** The project roles such an invite may carry: any for an owner or admin; contributor or viewer for a maintainer. */
-  invitableRoles: z.array(ProjectRoleSchema).max(3),
+  invitableRoles: z.array(ProjectPeopleFloorRoleSchema).max(3),
   /** Change the merge method and the reviewers, and turn self-approval off, at once: a maintainer. */
   canEditCodeSettings: z.boolean(),
   /** Confirm turning self-approval ON (the confirmation page): a company owner or admin. A maintainer's request waits for one of them. */
@@ -31,21 +54,21 @@ export type ProjectPeopleViewer = z.infer<typeof ProjectPeopleViewerSchema>;
 
 export const ProjectPeopleViewSchema = z.object({
   project: z.string(),
-  members: z.array(ProjectMemberSchema),
+  members: z.array(ProjectPeopleMemberSchema),
   revision: ProjectPeopleRevisionSchema,
   viewer: ProjectPeopleViewerSchema,
 }).strict();
 export type ProjectPeopleView = z.infer<typeof ProjectPeopleViewSchema>;
 export const ProjectPeopleViewReaderSchema = forwardReader(ProjectPeopleViewSchema);
 
-/** `PUT /v1/app/projects/{p}/people/{developerId}`: give a company member this role in the project. */
-export const PutProjectPersonBodySchema = z.object({ requestId: z.string().uuid(), role: ProjectRoleSchema, expectedRevision: ProjectPeopleRevisionSchema }).strict();
+/** `PUT /v1/app/projects/{p}/people/{developerId}`: give a company member this role in the project, a collaborator included. */
+export const PutProjectPersonBodySchema = z.object({ requestId: z.string().uuid(), role: ProjectPeopleRoleSchema, expectedRevision: ProjectPeopleRevisionSchema }).strict();
 export type PutProjectPersonBody = z.infer<typeof PutProjectPersonBodySchema>;
 /** `DELETE /v1/app/projects/{p}/people/{developerId}`: take a person's project role away. */
 export const RemoveProjectPersonBodySchema = z.object({ requestId: z.string().uuid(), expectedRevision: ProjectPeopleRevisionSchema }).strict();
 export type RemoveProjectPersonBody = z.infer<typeof RemoveProjectPersonBodySchema>;
 
-export const ProjectPersonChangeResponseSchema = z.object({ member: z.object({ developerId: z.string(), role: ProjectRoleSchema }).strict(), revision: ProjectPeopleRevisionSchema }).strict();
+export const ProjectPersonChangeResponseSchema = z.object({ member: z.object({ developerId: z.string(), role: ProjectPeopleFloorRoleSchema, projectRole: ProjectPeopleRoleSchema.optional() }).strict(), revision: ProjectPeopleRevisionSchema }).strict();
 export type ProjectPersonChangeResponse = z.infer<typeof ProjectPersonChangeResponseSchema>;
 export const ProjectPersonChangeResponseReaderSchema = forwardReader(ProjectPersonChangeResponseSchema);
 /** `removed` is false when the person had no project role to take away (an owner or admin, a Slack channel member). */
