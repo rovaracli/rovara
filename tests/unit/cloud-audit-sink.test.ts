@@ -4,7 +4,6 @@
 //  3. the row never pushes a transaction past the document store's limits (100 steps, 4 MiB);
 //  4. facts carry no secret or email, and names appear only where Cloud's rules put them (a name-keyed target, the org's sealed details);
 //  5. the row is Cloud's own outbox row (same key, shape and 14-day expiry), so Cloud's drain, appender and erasure rules apply unchanged.
-import { createHash } from "node:crypto";
 import { TransactWriteCommand, type DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it } from "vitest";
 import {
@@ -17,7 +16,7 @@ import { drainAuditPending } from "../../packages/broker/src/audit/drain.js";
 import { AUDIT_DETAIL_STORES } from "../../packages/broker/src/audit/erase.js";
 import { auditPending, auditPendingItem, type AuditDeps } from "../../packages/broker/src/audit/outbox.js";
 import {
-  AUDIT_SINK_GAPS, CORE_AUDIT_EVENT_MAP, CloudAuditSinkError, auditRoomProblem, cloudActionOf, createCloudAuditSink, toCloudAuditEvent, unmappedCoreActions, type EventMapping,
+  AUDIT_SINK_GAPS, CORE_AUDIT_EVENT_MAP, CloudAuditSinkError, LAPTOP_ONLY_CORE_EVENTS, auditRoomProblem, cloudActionOf, createCloudAuditSink, toCloudAuditEvent, unmappedCoreActions, type EventMapping,
 } from "../../packages/broker/src/cloud/adapters/audit-sink/index.js";
 import { NOT_AUDIT_ACTIONS, lessonLibraryAuditActions, lessonLibraryEvents, scanCoreAuditActions } from "../support/core-audit-actions.js";
 import { FakeAuditSqs } from "../support/fake-audit-sqs.js";
@@ -74,7 +73,8 @@ describe("every audit event of Rovara Code's core maps to a Cloud ledger event",
   it("has a Cloud event for each, and every Cloud event is one the ledger knows", async () => {
     const { all } = await coreActions();
     expect(unmappedCoreActions(all)).toEqual([]);
-    for (const action of all) expect(AUDIT_ACTIONS as readonly string[], action).toContain(cloudActionOf(action));
+    // Every core event is either a Cloud ledger event or listed as laptop-only (which has none, on purpose).
+    for (const action of all.filter((name) => !Object.hasOwn(LAPTOP_ONLY_CORE_EVENTS, name))) expect(AUDIT_ACTIONS as readonly string[], action).toContain(cloudActionOf(action));
   });
 
   it("holds no entry for an event the core no longer records (a stale row would hide a rename)", async () => {
@@ -98,7 +98,7 @@ describe("every audit event of Rovara Code's core maps to a Cloud ledger event",
   it("MUTATION PROOF: dropping any one mapping makes the check fail, and it names the dropped action", async () => {
     const { all } = await coreActions();
     expect(all.length).toBeGreaterThan(80);
-    for (const dropped of all) {
+    for (const dropped of all.filter((name) => !Object.hasOwn(LAPTOP_ONLY_CORE_EVENTS, name))) {
       const { [dropped]: _gone, ...rest } = CORE_AUDIT_EVENT_MAP;
       void _gone;
       expect(unmappedCoreActions(all, rest), dropped).toEqual([dropped]);
@@ -501,23 +501,51 @@ describe("project-level lesson events, with the real vendored lessons sink", () 
   });
 });
 
-describe("the owner's test-service images and the two lessons settings", () => {
+describe("laptop-only core events, and the two lessons settings", () => {
   const REFERENCE = `docker.io/library/postgres@sha256:${"b".repeat(64)}`;
-  const imageEvent = (action: string, details: NonNullable<AuditEvent["details"]>): AuditEvent => ({ eventId: `test_services.${action}.x.1`, companyId: ORG, at: AT, actor: { type: "person", id: "owner" }, action: `test_services.${action}`, details });
+  const imageEvent = (action: string): AuditEvent => ({ eventId: `test_services.${action}.x.1`, companyId: ORG, at: AT, actor: { type: "person", id: "owner" }, action: `test_services.${action}`, details: { reference: REFERENCE, requested: "postgres:16" } });
 
-  it("image_approved and image_removed are company_image.approved and company_image.revoked, with Cloud's image id and digest and the name only in the org's details", () => {
-    const approved = toCloudAuditEvent(imageEvent("image_approved", { reference: REFERENCE, requested: "postgres:16" }));
-    const removed = toCloudAuditEvent(imageEvent("image_removed", { reference: REFERENCE, requested: "postgres:16" }));
-    const imageId = `img_${createHash("sha256").update(REFERENCE, "utf8").digest("hex").slice(0, 20)}`;
-    expect(approved.ok && approved.event).toMatchObject({ action: "company_image.approved", target: { kind: "org", id: ORG }, facts: { imageId, digest: "b".repeat(64) }, details: [{ subject: "org", fields: { image: "postgres:16" } }] });
-    expect(removed.ok && removed.event).toMatchObject({ action: "company_image.revoked", facts: { imageId, digest: "b".repeat(64) } });
-    expect(JSON.stringify([approved.ok && approved.event.facts, approved.ok && approved.event.target])).not.toContain("postgres");
+  it("the scan still lists the owner's test-service image events, and they are accounted for as laptop-only (the strict check stays)", async () => {
+    const { all } = await coreActions();
+    for (const action of ["test_services.image_approved", "test_services.image_removed"]) {
+      expect(all, action).toContain(action);
+      expect(Object.keys(LAPTOP_ONLY_CORE_EVENTS), action).toContain(action);
+      expect(LAPTOP_ONLY_CORE_EVENTS[action]!.length, action).toBeGreaterThan(20);
+    }
+    expect(unmappedCoreActions(all)).toEqual([]);
+    // Without the laptop-only list the same events would be unmapped: the list is what accounts for them.
+    expect(unmappedCoreActions(all, CORE_AUDIT_EVENT_MAP, {})).toEqual(["test_services.image_approved", "test_services.image_removed"]);
   });
 
-  it("an image reference that is not pinned to a digest is refused, not recorded with no id", () => {
-    for (const reference of ["docker.io/library/postgres:16", `postgres@sha256:${"c".repeat(63)}`, MARKER]) {
-      expect(toCloudAuditEvent(imageEvent("image_approved", { reference, requested: "postgres:16" })), reference).toEqual({ ok: false, refusal: "invalid_event" });
+  it("every laptop-only entry is still something the core records (a stale entry fails), and none is also mapped", async () => {
+    const { all } = await coreActions();
+    expect(Object.keys(LAPTOP_ONLY_CORE_EVENTS).filter((action) => !all.includes(action))).toEqual([]);
+    expect(Object.keys(LAPTOP_ONLY_CORE_EVENTS).filter((action) => Object.hasOwn(CORE_AUDIT_EVENT_MAP, action))).toEqual([]);
+    expect(Object.keys(LAPTOP_ONLY_CORE_EVENTS).map(cloudActionOf)).toEqual([undefined, undefined]);
+  });
+
+  it("MUTATION PROOF: mapping a laptop-only event again (to company_image.* or anything) fails the disjoint check, and the sink still refuses it", () => {
+    const remapped = { ...CORE_AUDIT_EVENT_MAP, "test_services.image_approved": { cloud: "company_image.approved", target: { org: true as const } } } as const;
+    expect(Object.keys(LAPTOP_ONLY_CORE_EVENTS).filter((action) => Object.hasOwn(remapped, action))).toEqual(["test_services.image_approved"]);
+    expect(toCloudAuditEvent(imageEvent("image_approved"), remapped)).toEqual({ ok: false, refusal: "laptop_only" });
+  });
+
+  it("a stray one arriving in Cloud is refused and logged as a wiring fault, and writes nothing: in refuse mode it throws, in skip mode it adds no step", async () => {
+    const store = new MemoryDocumentStore();
+    const logs: Array<Record<string, unknown>> = [];
+    for (const action of ["image_approved", "image_removed"]) {
+      const refusing = createCloudAuditSink({ store: () => store, now: () => NOW, log: (entry) => logs.push(entry) });
+      expect(() => refusing.stage(imageEvent(action))).toThrow(/laptop_only/u);
+      await expect(refusing.record(imageEvent(action))).rejects.toThrow(CloudAuditSinkError);
+      const skipping = createCloudAuditSink({ store: () => store, now: () => NOW, onInvalid: "skip", log: (entry) => logs.push(entry) });
+      expect(skipping.stage(imageEvent(action))).toEqual([]);
+      await skipping.record(imageEvent(action));
     }
+    expect(await store.query({ pk: "AUDIT_PENDING#0" })).toMatchObject({ items: [] });
+    for (let shard = 0; shard < 10; shard += 1) expect((await store.query({ pk: `AUDIT_PENDING#${String(shard)}` })).items).toEqual([]);
+    expect(logs.length).toBeGreaterThanOrEqual(8);
+    for (const entry of logs) expect(entry).toEqual({ event: "audit.record_invalid", level: "error", reason: "laptop_only", fault: "wiring", coreAction: expect.stringMatching(/^test_services\.image_(approved|removed)$/u) as string });
+    expect(JSON.stringify(logs)).not.toContain("postgres");
   });
 
   it("lesson.local_tools_switched and lesson.repo_file_retire_decided keep their Cloud names, with a project or company scope, a verdict word and a count", async () => {

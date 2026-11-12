@@ -26,7 +26,7 @@ export function withFailureSession(card: ReadHomeCard): ReadHomeCard {
  */
 export function HomeCardRow({ card: read }: { card: ReadHomeCard }) {
  const card = withFailureSession(read);
- const { actions, busy, error, run } = useHomeCardActions(card);
+ const { actions, busy, error, run, reload } = useHomeCardActions(card);
  const ordered = [...actions].sort((a, b) => RANK[a.kind] - RANK[b.kind]), leads = ordered[0] !== undefined && !isDismissal(ordered[0]);
  // A card with no page of its own to open (and no lead action) opens its session.
  const open = SessionIdSchema.safeParse(card.sessionId).success && !actions.some(action => action.kind === "internal" && action.href.split("#")[0] === "/app/sessions/" + card.sessionId) ? paths.session(card.sessionId!) : undefined;
@@ -39,6 +39,6 @@ export function HomeCardRow({ card: read }: { card: ReadHomeCard }) {
     : <Button key={index} variant={variant(index)} disabled={busy} aria-label={name(action)} onClick={() => { void run(action); }}><VisibleText text={action.label} /></Button>)}
    {open !== undefined && <Link className={"rv-button " + (leads ? "rv-button-quiet" : "rv-button-primary")} to={open} aria-label={"Open session: " + card.title}>Open session</Link>}
   </div>
-  {error && <p role="alert" className="rv-hv2-error"><VisibleText text={error} /></p>}
+  {error && <p role="alert" className="rv-hv2-error"><VisibleText text={error} />{reload !== undefined && <> <Button variant="quiet" onClick={reload}>Reload</Button></>}</p>}
  </li>;
 }

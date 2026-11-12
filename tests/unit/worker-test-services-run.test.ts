@@ -327,6 +327,29 @@ describe("starting the run", () => {
     }
   });
 
+  it("never starts one of the function runner's catalog images as a dependency (slice 4): the same pinned entry under a runner id is a mismatch, under any other id it is not refused, and nothing is created for the refused one", async () => {
+    const asEntry = (id: string): ServiceCatalog => {
+      const copy = structuredClone(catalog);
+      const source = copy.entries.find((entry) => entry.id === "postgres@16")!;
+      const name = id.slice(0, id.indexOf("@"));
+      copy.entries.push({ ...structuredClone(source), id, family: name, status: "available", image: { ...source.image, repository: `svc/${name}`, platforms: ["linux/arm64"] } });
+      return copy;
+    };
+    const plan = (id: string) => { const name = id.slice(0, id.indexOf("@")); return dependency({ id: "py", name: "Py", family: name, catalogId: id, repository: `svc/${name}` }); };
+    // Positive control: an entry with the same data under an ordinary name gets past the resolution (it is not a mismatch; what the fake daemon does with an invented family is beside the point).
+    const control = await harness();
+    control.config.catalog = () => Promise.resolve(asEntry("cachepy@3.12"));
+    const outcome = await control.start([plan("cachepy@3.12")]).then(() => "started", (error: { reason?: string }) => error.reason ?? "other");
+    expect(outcome).not.toBe("mismatch");
+    for (const id of ["lambda-python@3.12", "lambda-nodejs@22", "function-agent@r1"]) {
+      const h = await harness();
+      h.config.catalog = () => Promise.resolve(asEntry(id));
+      await expect(h.start([plan(id)]), id).rejects.toMatchObject({ reason: "mismatch" });
+      expect(h.fake.verbs("network").filter((call) => call[1] === "create"), id).toEqual([]);
+      await nothingLeft(h);
+    }
+  });
+
   it("refuses a user or database name that is not in the launcher's plain form, and starts nothing", async () => {
     const h = await harness();
     await expect(h.start([dependency({ config: { database: "App", user: "app" } })])).rejects.toMatchObject({ reason: "mismatch" });

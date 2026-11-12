@@ -10,13 +10,14 @@ import { INSTALLER_DESCRIPTION, InstallerStack } from "./installer.js";
 import { namingFromContext } from "./naming.js";
 import { applyPermissionsBoundaryParameter } from "./permissions-boundary.js";
 import { AGENTX_PRODUCTION_VPC_CIDR, ProductionFoundationStack } from "./production-foundation.js";
-import { ENTERPRISE_ALLOW_PUBLIC_RANGES_CONTEXT_KEY, ENTERPRISE_EGRESS_CIDRS_CONTEXT_KEY, ENTERPRISE_INTERNET_EGRESS_CONTEXT_KEY, parseEditionContext, parseEnterpriseEgressCidrs, parseInternetEgress } from "./vpc-endpoints.js";
+import { ENTERPRISE_ALLOW_PUBLIC_RANGES_CONTEXT_KEY, ENTERPRISE_EGRESS_CIDRS_CONTEXT_KEY, ENTERPRISE_INTERNET_EGRESS_CONTEXT_KEY, parseEditionContext, egressCidrsWithVpc, parseEnterpriseEgressCidrs, parseInternetEgress } from "./vpc-endpoints.js";
 import { EDITION_CONTEXT_KEY, NEW_INSTALL_CONTEXT_KEY, editionAtSynth } from "@agentx/cloud-contracts";
 import { EditionEnvironment } from "./edition-env.js";
 import { BUNDLE_EMBEDDER_IMAGE_NAME, BUNDLE_IMAGE_NAMES, bundleImageRepository } from "./bundle-images.js";
 import { parseOperatorAccessContext } from "./operator-access.js";
 import { mcpHostAllowDomains } from "./mcp-host.js";
 import { assertStdioHostStackBuilt, mcpHostPropsFromInstall, parsePrivateMcpContext, privateMcpBrokerEnvironment } from "./private-mcp.js";
+import { PRIVATE_ADDRESS_PORTS_CONTEXT_KEY, parsePrivateAddressPorts, privateAddressBrokerEnvironment } from "./private-addresses.js";
 import { modelEndpointBrokerEnvironment, parseModelEndpointContext } from "./model-endpoints.js";
 import { requireEnterpriseAuditTsa } from "./audit-settings.js";
 import { parseTeamRecordSwitch } from "./team-record-wiring.js";
@@ -27,6 +28,7 @@ import { RetainExceptOnCreate } from "./retention.js";
 import { EnvironmentRolePath } from "./role-path.js";
 import { SlackOrchestratorStack } from "./slack-orchestrator.js";
 import { SwebenchEvalStack, swebenchNames } from "./swebench-eval.js";
+import { TestAccessCallbackStack, parseTestAccessContext, testAccessStackName } from "./test-access-callback.js";
 import { WorkerSettingsStack } from "./worker-settings.js";
 
 export function buildAgentXApp(context: Record<string, unknown> = {}): App {
@@ -180,7 +182,9 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
   assertStdioHostStackBuilt(privateMcp);
   // The model endpoint settings (N8: rovaraCustomModelEndpoints, rovaraModelEndpointCidrs): Enterprise only, off by default, checked here so a wrong one stops the synth.
   const modelEndpoints = parseModelEndpointContext({ edition: explicitEdition, vpcCidrs: [AGENTX_PRODUCTION_VPC_CIDR], get: (key) => app.node.tryGetContext(key) as unknown });
-  const brokerEnvironment = { ...privateMcpBrokerEnvironment(privateMcp), ...modelEndpointBrokerEnvironment(modelEndpoints) };
+  // Owner decision 123 (review H1): the extra ports workers may open toward the routed private ranges, and what the broker is told so it offers internal addresses only where they can be reached.
+  const privateAddressPorts = parsePrivateAddressPorts(app.node.tryGetContext(PRIVATE_ADDRESS_PORTS_CONTEXT_KEY), { enterprise: explicitEdition === "enterprise", routedCidrs: enterpriseCidrs, vpcCidrs: [AGENTX_PRODUCTION_VPC_CIDR] });
+  const brokerEnvironment = { ...privateMcpBrokerEnvironment(privateMcp), ...modelEndpointBrokerEnvironment(modelEndpoints), ...privateAddressBrokerEnvironment({ enterprise: explicitEdition === "enterprise", routedCidrs: enterpriseCidrs, ports: privateAddressPorts }) };
   // Private package registries (N9): the CodeArtifact domains the broker may mint a read-only token for (`-c rovaraCodeArtifactDomains=domain:account:region:org:repo+repo,...`; Enterprise only). Off by default.
   const registryDomains = parseCodeArtifactDomains(app.node.tryGetContext(CODEARTIFACT_DOMAINS_CONTEXT_KEY), { edition: explicitEdition, cloud: agentxCloud, env: naming.env });
   // Saved environment images (SH22): Enterprise may bring its own KMS key (a key ARN in this account and region); Public always uses the key the stack makes. `agentxSavedEnvRegistryScan=on` turns on the registry-wide basic scan-on-push setting (off by default: it replaces an existing registry setting).
@@ -202,7 +206,7 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
     ...(modelEndpoints.enabled ? { customModelEndpoints: true, customModelEndpointEnvironment: modelEndpointBrokerEnvironment(modelEndpoints), modelEndpointCidrs: modelEndpoints.privateCidrs } : {}),
     ...(reservedConcurrency ? {} : { reservedConcurrency: false }),
     ...(agentxCloud ? { cloud: true } : {}),
-    ...(explicitEdition === "enterprise" ? { privateEgressCidrs: [AGENTX_PRODUCTION_VPC_CIDR, ...enterpriseCidrs], bundledImages: true } : {}),
+    ...(explicitEdition === "enterprise" ? { privateEgressCidrs: egressCidrsWithVpc(AGENTX_PRODUCTION_VPC_CIDR, enterpriseCidrs), bundledImages: true } : {}),
     ...(modelProxyTls === undefined ? {} : { modelProxyTls }),
     ...(deploymentRegion === undefined ? {} : { deploymentRegion }),
     ...(naming.env === undefined ? {} : { stackName: naming.stackName("control-plane") }),
@@ -219,6 +223,7 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
     ...(edition === undefined ? {} : { edition }),
     ...(parseInternetEgress(enterpriseInternetEgressContext) === undefined ? {} : { internetEgress: parseInternetEgress(enterpriseInternetEgressContext)! }),
     ...(enterpriseEgressCidrsContext === undefined ? {} : { enterpriseEgressCidrs: enterpriseCidrs }),
+    ...(privateAddressPorts.length === 0 ? {} : { privateAddressPorts }),
     ...(modelProxyTls === undefined ? {} : { modelProxyTlsName: modelProxyTls.name, modelProxyLegacyHttp: modelProxyTls.legacyHttp }),
     ...(mcpHostProps === undefined ? {} : { stdioMcpAllowDomains: mcpHostAllowDomains({ controllerDnsNamespace: mcpHostProps.controllerDnsNamespace, npmRegistry: mcpHostProps.npmRegistry, region: deploymentRegion ?? "us-east-1" }) }),
     ...(naming.env === undefined ? {} : { stackName: naming.stackName("foundation") }),
@@ -265,7 +270,7 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
     env: { region: deploymentRegion ?? "us-east-1" },
     naming,
     ...(naming.env === undefined ? {} : { stackName: naming.stackName("slack") }),
-    ...(explicitEdition === "enterprise" ? { privateEgressCidrs: [AGENTX_PRODUCTION_VPC_CIDR, ...enterpriseCidrs] } : {}),
+    ...(explicitEdition === "enterprise" ? { privateEgressCidrs: egressCidrsWithVpc(AGENTX_PRODUCTION_VPC_CIDR, enterpriseCidrs) } : {}),
     ...(modelProxyTls === undefined ? {} : { modelProxyTls }),
   });
   // The Launch in AWS installer, only when asked for (-c agentxInstaller=enabled); no release
@@ -284,6 +289,13 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
       naming,
       stackName: swebenchNames(naming).stackName,
     });
+  }
+  // Customer test account (lane TA1): one callback topic per Region, only when asked for (hosted cloud only); no release deploys it. See test-access-callback.ts.
+  const testAccess = parseTestAccessContext({ get: (key) => app.node.tryGetContext(key) as unknown, homeRegion: deploymentRegion ?? "us-east-1", cloud: agentxCloud });
+  if (testAccess !== undefined) {
+    for (const region of testAccess.regions) {
+      new TestAccessCallbackStack(app, `AgentXTestAccess-${region}`, { description: "Rovara customer test account: the SNS topic a customer's test-access stack reports to", naming, settings: testAccess, region, stackName: testAccessStackName(naming, region) });
+    }
   }
   if (naming.env !== undefined) {
     Tags.of(app).add("agentx:env", naming.env);

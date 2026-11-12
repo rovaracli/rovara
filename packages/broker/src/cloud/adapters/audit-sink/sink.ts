@@ -17,10 +17,10 @@ import { AuditEventInputSchema, auditEventId, AUDIT_FACT_KEYS, AUDIT_FACT_MAX_CH
 import { DOCUMENT_STORE_LIMITS } from "@rovara-code/contracts";
 import type { AuditEvent, AuditSink, DocumentStore, JsonObject, StoredDocument, TransactItem } from "@rovara-code/contracts";
 import { auditPendingItem } from "../../../audit/outbox.js";
-import { CORE_AUDIT_EVENT_MAP, RELATED_ID, checkedFact, mappingFor, valueOf, type EventMapping, type MappingContext, type TargetRule } from "./event-map.js";
+import { CORE_AUDIT_EVENT_MAP, LAPTOP_ONLY_CORE_EVENTS, RELATED_ID, checkedFact, mappingFor, valueOf, type EventMapping, type MappingContext, type TargetRule } from "./event-map.js";
 
 /** Why an event could not be made into a Cloud event. Fixed words: the only thing a log or an error says. */
-export type CloudAuditRefusal = "unmapped_action" | "bad_actor" | "bad_time" | "bad_target" | "invalid_event";
+export type CloudAuditRefusal = "unmapped_action" | "laptop_only" | "bad_actor" | "bad_time" | "bad_target" | "invalid_event";
 
 export class CloudAuditSinkError extends Error {
   constructor(readonly refusal: CloudAuditRefusal, readonly coreAction?: string) {
@@ -100,6 +100,8 @@ function orgDetailsOf(mapping: EventMapping, context: MappingContext): AuditDeta
 
 /** The ledger's event for a core event, or the fixed word saying why there is none. */
 export function toCloudAuditEvent(event: AuditEvent, map: Readonly<Record<string, EventMapping>> = CORE_AUDIT_EVENT_MAP): { ok: true; event: AuditEventInput } | { ok: false; refusal: CloudAuditRefusal } {
+  // An event only the laptop runtime records is a wiring fault in Cloud: it has no ledger event and is never mapped (event-map.ts, LAPTOP_ONLY_CORE_EVENTS).
+  if (Object.hasOwn(LAPTOP_ONLY_CORE_EVENTS, event.action)) return { ok: false, refusal: "laptop_only" };
   const entry = Object.hasOwn(map, event.action) ? map[event.action] : undefined;
   if (entry === undefined) return { ok: false, refusal: "unmapped_action" };
   const who = actorOf(event);
@@ -146,7 +148,7 @@ export function createCloudAuditSink(options: CloudAuditSinkOptions): CloudAudit
     const made = toCloudAuditEvent(event, options.map);
     if (!made.ok) {
       // A code and the core's action name (a fixed word of the core, never a value of this event): nothing else.
-      log({ event: "audit.record_invalid", level: "error", reason: made.refusal, coreAction: event.action.slice(0, 64) });
+      log({ event: "audit.record_invalid", level: "error", reason: made.refusal, ...(made.refusal === "laptop_only" ? { fault: "wiring" } : {}), coreAction: event.action.slice(0, 64) });
       if (onInvalid === "refuse") throw new CloudAuditSinkError(made.refusal, event.action.slice(0, 64));
       return undefined;
     }

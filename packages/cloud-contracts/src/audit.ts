@@ -393,6 +393,12 @@ export const AUDIT_ACTIONS = [
   "test_account.deleting",
   "test_account.rotation_failed",
   "test_account.used",
+  // Customer test AWS account connections (lane TA2, switch `ta`): the target is the connection (a `test_account` target). Ids, Regions, counts and fixed words only; an account id, a role ARN and an alias go in `details`, never in a fact.
+  "test_access.connection_started",
+  "test_access.connection_reported",
+  "test_access.connection_confirmed",
+  "test_access.connection_tested",
+  "test_access.connection_ended",
   // Script tokens (UX5b, switch `pt`): ids, counts and fixed words only. A token, its hash and its name never go in a fact.
   "script_token.created",
   "script_token.revoked",
@@ -427,6 +433,10 @@ export const AUDIT_ACTIONS = [
   "project_member.invited",
   "project_member.joined_by_invite",
   "project_member.invite_skipped",
+  // Internal addresses a company's tasks may reach (owner decision 123): counts, the list's digest, the revision and fixed words only. The hosts and ports go in `details` (subject `org`), never in a fact.
+  "company.private_addresses_proposed",
+  "company.private_addresses_changed",
+  "company.private_addresses_withdrawn",
   // Convergence lane A7 (cloud/audit-sink): events Rovara Code's core records that Cloud's own flows had no ledger event for. They are written only by the audit-sink adapter
   // (packages/broker/src/cloud/adapters/audit-sink), from the core's events; ids, fixed words, flags and counts only. A project's name goes in the org's `details`, never in a fact.
   "task.started",
@@ -815,6 +825,13 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "test_account.deleting": ["kind", "cause"],
   "test_account.rotation_failed": ["cause"],
   "test_account.used": ["day", "rounds", "connections", "bytes"],
+  // Connections. `region` is the Region the link was made for; `via` is how the account reported (`callback` or `account_id`); `templateVersion` the template the stack runs; `outcome` is `passed` or `needs_attention` with `failed` checks;
+  // `cause` is a fixed word (`deleted_stack`, `disconnected`, `suspended`, `expired`, `poll_timeout`).
+  "test_access.connection_started": ["region"],
+  "test_access.connection_reported": ["via", "templateVersion"],
+  "test_access.connection_confirmed": ["via"],
+  "test_access.connection_tested": ["outcome", "failed"],
+  "test_access.connection_ended": ["cause"],
   "script_token.created": ["days", "projects", "permissions"],
   "script_token.revoked": ["by"],
   "script_token.used": ["day", "permission"],
@@ -845,6 +862,9 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "project_member.joined_by_invite": ["role"],
   "project_member.invite_skipped": ["role", "cause"],
   "company_image.registries_changed": ["registryCount", "authority"],
+  "company.private_addresses_proposed": ["revision", "entryCount", "listDigest", "added", "removed"],
+  "company.private_addresses_changed": ["revision", "entryCount", "listDigest", "added", "removed", "mode"],
+  "company.private_addresses_withdrawn": ["entryCount", "listDigest", "by"],
   // A7: the core's own events. `workflow` says whether the task runs as a workflow and `path` is the workflow's fixed path word; `code` is the refusal's fixed code; `outcome` and `origin` are fixed words.
   "task.started": ["workflow", "path"],
   "task.start_refused": ["code"],

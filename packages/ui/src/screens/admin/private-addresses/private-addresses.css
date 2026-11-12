@@ -1,0 +1,10 @@
+/* Settings > Internal addresses (owner decision 123). Long host names wrap anywhere, so nothing scrolls sideways at 360 px. */
+.rv-pa{min-width:0}
+.rv-pa-card{display:grid;gap:var(--rv-space-3);align-content:start;min-width:0;margin:var(--rv-space-4) 0;padding:var(--rv-space-4);border:1px solid var(--rv-border);border-radius:var(--rv-radius-md);background:var(--rv-bg-raised)}
+.rv-pa-card h2{font-size:var(--rv-font-md);margin:0}.rv-pa-card h3{font-size:var(--rv-font-sm);margin:0}
+.rv-pa p,.rv-pa li,.rv-pa code,.rv-pa-dialog li,.rv-pa-dialog code{overflow-wrap:anywhere;word-break:break-word}
+.rv-pa-list{display:grid;gap:var(--rv-space-2);margin:0;padding-left:var(--rv-space-5);min-width:0}
+.rv-pa-actions{display:flex;flex-wrap:wrap;gap:var(--rv-space-3);margin:var(--rv-space-2) 0 0}
+.rv-pa-field{width:100%;max-width:100%;box-sizing:border-box;font-family:var(--rv-font-mono, monospace)}
+.rv-pa-result:focus{outline:none}
+.rv-pa-dialog{display:grid;gap:var(--rv-space-3);min-width:0}
