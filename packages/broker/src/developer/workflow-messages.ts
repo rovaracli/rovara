@@ -717,6 +717,9 @@ function waitingForMerge(workflow: WorkflowSnapshot): string | undefined {
   const review = (many: boolean): string => (tracked
     ? `Approve ${many ? "the PRs" : "the PR"} on GitHub, then press Merge in Rovara; I'll finish this task when ${many ? "they're all" : "it's"} merged.`
     : `${many ? "Review them and merge them" : "Review it and merge it"} on GitHub; I'll finish this task when ${many ? "they're all" : "it's"} merged.`);
+  if (merged === 0 && workflow.outsideRecheckStale !== undefined) {
+    return `The pull request changed again while Rovara was re-checking it, so that result doesn't count and the task is back on the code Rovara checked before. Press Recheck on the new code if you want it checked. ${review(required.length > 1)}`;
+  }
   if (merged === 0) {
     // Plan 6 Task 17: Rovara brought a pull request up to date with its base branch (a clean merge, not a fix).
     const synced = required.filter((pullRequest) => pullRequest.syncedFrom !== undefined);
@@ -1113,7 +1116,7 @@ export function workflowMessageKey(workflow: WorkflowSnapshot, options: { planAu
   if (workflow.stage === "WAIT_FOR_MERGE" && workflow.state === "WAITING" && freshFeedbackAnswer(workflow) === undefined) {
     return `merge:${(workflow.pullRequests ?? []).filter((pullRequest) => pullRequest.required)
       .map((pullRequest) => `${pullRequest.repositoryId}#${pullRequest.number}@${pullRequest.headSha ?? pullRequest.candidateDigest}=${pullRequest.state === "MERGED" ? "merged" : pullRequest.state === "CLOSED" ? "closed" : "open"}`)
-      .join(",")}`;
+      .join(",")}${workflow.outsideRecheckStale === undefined ? "" : `:stale@${workflow.outsideRecheckStale.at}`}`;
   }
   // Pushing a fix to the pull requests already open says the same as getting ready to: said once per checked code.
   if (workflow.stage === "PULL_REQUEST" && (workflow.state === "READY" || workflow.state === "RUNNING")) return `opening:${workflow.candidate?.digest ?? workflow.revision}`;

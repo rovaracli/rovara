@@ -1,6 +1,7 @@
 // Plan 4 Task 26: schedule triggers on EventBridge Scheduler. A schedule starts paid work with nobody watching, so each fire is checked again here (the trigger live, its owner, its
 // budget and caps), one slot starts at most one run however often it arrives, a backlog after an outage starts one run, and a trigger that is off, ownerless or gone is never started
 // and its schedule goes. Layer 1 drives the expression and the scheduler calls, Layer 2 the handler over the trigger world, Layer 3 the dead letters and the repair sweep.
+import "../support/automations-on.js";
 import { afterEach, describe, expect, it } from "vitest";
 import { agentXError, chainRunKey, orgAutonomousKey, pendingTriggerScheduleKey, triggerKey, triggerRateKey } from "@rovara-code/contracts";
 import { taskEndKey } from "../../packages/broker/src/agents/task-end.js";

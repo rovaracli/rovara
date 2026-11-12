@@ -1,3 +1,4 @@
+import "../support/automations-on.js";
 import { randomUUID } from "node:crypto";
 import { expect, it } from "vitest";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";

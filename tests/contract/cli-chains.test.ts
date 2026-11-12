@@ -1,5 +1,6 @@
 // Plan 4 Task 4: `agentx chains …` against a fake control plane: the requests each command sends, what it prints, that a broker's refusal is printed as the
 // broker wrote it, and that nothing here decides an approval (R66): a change that needs a person prints the confirmation page's link.
+import "../support/automations-on.js";
 import { afterEach, describe, expect, it } from "vitest";
 import { UUID, agentsCli, cleanHarnessDirs } from "../support/agents-cli-harness.js";
 import { INVESTIGATE_THEN_FIX } from "../support/chain-examples.js";

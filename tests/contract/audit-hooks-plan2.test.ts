@@ -1242,7 +1242,7 @@ describe("project_member.changed and project_member.removed", () => {
     const capture = hangingAuditDeps();
     const w = memberWorld(capture);
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    expect(await settle(w.set("viewer"))).toEqual({ developerId: SAM, role: "viewer" });
+    expect(await settle(w.set("viewer"))).toEqual({ developerId: SAM, role: "viewer", revision: 1 });
     expect(afterProjectBootstrap(capture.pending()).map((event) => event.action)).toEqual(["project_member.changed"]);
   });
 

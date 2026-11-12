@@ -13,6 +13,9 @@ export const BASE_MERGED_RETRIES_PER_DAY = 3;
 export const BASE_MERGED_RECHECKING_MILESTONE = "The base branch was merged into the pull request. Rovara is re-checking the merged code.";
 export const BASE_MERGED_NEEDS_YOU_MILESTONE = "The base branch was merged into the pull request. The merged code needs its checks again: open the task and choose Retry checks.";
 
+/** "Continue in your own tool": said once in the milestone feed when Rovara takes a head pushed outside Rovara as the task's code and starts its checks (a person asked). */
+export const OUTSIDE_RECHECK_MILESTONE = "Someone pushed to the pull request outside Rovara and a re-check was asked for. Rovara is checking that code now.";
+
 export const WORKFLOW_BLOCK_REASONS = {
   checksUnconfirmed: "AgentX couldn't confirm the selected checks ran on the final code. Choose checks and retry.",
   checkRetryStale: "This check run no longer matches the task's current step. Use the latest update in the thread.",
@@ -55,6 +58,10 @@ export const WORKFLOW_BLOCK_REASONS = {
   codeChangedAfterChecks: "The code changed after its checks ran. Run the checks again on the latest code.",
   /** The base branch was merged into the pull request's branch: the merged code is a new candidate, so its checks and reviews run again before the task waits for the merge (a merge is not trusted on its parents alone). */
   baseMergedRecheck: "The base branch was merged into this pull request, so the merged code needs its checks and reviews again before it is called ready.",
+  /** "Continue in your own tool" (owner Q13): a person asked Rovara to re-check a pull request head pushed outside Rovara; Rovara took that exact head as the task's code and starts its checks now. */
+  outsideRecheck: "Someone pushed to the pull request outside Rovara and a re-check was asked for, so Rovara took that code as the task's code and is starting its checks.",
+  /** The pull request's head moved again while Rovara re-checked the earlier one: that result is not the code on the pull request, so it is not recorded as passing. */
+  outsideRecheckStale: "The pull request changed again while Rovara was re-checking it, so that result doesn't count. Choose Retry checks to check the code Rovara took again, or send the task back.",
   /** The company's limit on how far Rovara may act on its own was lowered while the merged code's checks re-ran: the reviews (paid) did not start. */
   recheckAutonomyLowered: "Rovara is no longer set to act on its own here, so it stopped before the reviews of the merged code. Choose Retry reviews to run them.",
   /** A rerun of the checks of code a pull request already holds ran on other code than the code the pull request shows. */
@@ -203,6 +210,26 @@ export const WorkflowSnapshotShapeSchema = z.object({
    * runs it. It names the head the merge is for: a head that is no longer that one (a person pushed) stops it.
    */
   branchSync: WorkflowBranchSyncSchema.optional(),
+  /**
+   * Version 2 ("Continue in your own tool", owner Q13): a person's Recheck of a pull request head pushed outside Rovara. `adopting` (WAIT_FOR_MERGE/RUNNING): a read-only worker run checks the head out
+   * and pushes nothing. `checking` (VERIFY): the head is the task's candidate and its checks run as the person's own Retry checks. Removed when the re-check's checks are recorded (pass or fail; a
+   * result the pull request moved under puts back what the task had before the adoption), or when they could not start.
+   */
+  outsideRecheck: z.object({
+    repositoryId: z.string().trim().min(1).max(200),
+    number: z.number().int().positive(),
+    headSha: z.string().regex(/^[a-f0-9]{40}$/),
+    previousHeadSha: z.string().regex(/^[a-f0-9]{40}$/),
+    requestId: z.string().uuid(),
+    actorId: z.string().min(1).max(200),
+    phase: z.enum(["adopting", "checking"]),
+    at: z.string().datetime(),
+  }).strict().optional(),
+  /**
+   * Version 2 ("Continue in your own tool"): the last re-check's result went stale (the pull request moved while its checks ran), so the task went back to its earlier checked code. Said once in the
+   * thread; removed by the next change to the pull requests' heads (a push, a merge of the base, another re-check).
+   */
+  outsideRecheckStale: z.object({ headSha: z.string().regex(/^[a-f0-9]{40}$/), at: z.string().datetime() }).strict().optional(),
   /** S2: a queued step is waiting for Slack to answer the access check (an outage). `revision` is the workflow revision it waits at, so a later step never inherits the note. Set and cleared by the dispatcher; the page says "Waiting for Slack". */
   accessCheckWaitSince: z.object({ revision: z.number().int().positive(), since: z.string().datetime() }).strict().optional(),
   /**
@@ -248,6 +275,11 @@ export const WorkflowSnapshotShapeSchema = z.object({
   }
   if (workflow.branchSync !== undefined && !(workflow.stage === "WAIT_FOR_MERGE" && (workflow.state === "READY" || workflow.state === "RUNNING"))) {
     context.addIssue({ code: "custom", path: ["branchSync"], message: "a merge of the base branch is queued or running only while waiting for the merge" });
+  }
+  if (workflow.outsideRecheck !== undefined) {
+    // Only the adopting phase is pinned to a step: the later phases ride along whatever a person does next (Send back, Close), and are removed when checks are recorded.
+    const fits = workflow.outsideRecheck.phase !== "adopting" || (workflow.stage === "WAIT_FOR_MERGE" && workflow.state === "RUNNING" && workflow.branchSync === undefined);
+    if (!fits) context.addIssue({ code: "custom", path: ["outsideRecheck"], message: "a re-check of an outside head is at the step its phase names" });
   }
   if (workflow.program === undefined) {
     if (workflow.programStepId !== undefined || workflow.programRounds !== undefined) {

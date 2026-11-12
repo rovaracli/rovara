@@ -196,6 +196,8 @@ const ROWS: readonly Row[] = [
   ["aws/broker/workflow-items.ts", "completedWorkflowItems", "principal", ".ownerKey"],
   // Plan 6 Task 4: an Understand that chose the Full path is admitted as a Full start is, against the budget of whoever pays for the task (the recorded payer, else the creator; a test run's starter): money, read as `paymentOfTask` reads it
   ["aws/broker/workflow-items.ts", "completedWorkflowItems", "money", ".developerId*2", ".startedBy"],
+  // "Continue in your own tool": a person's Recheck is admitted against the budgets the task's work is charged to (its payer, else its creator), as the Full path's admission above.
+  ["aws/broker/outside-recheck.ts", "admitOutsideRecheckOf", "money", ".developerId*2", ".startedBy"],
   // SR-1: the second review is admitted against the same payer as the first review (whose budget pays), exactly as the understand-to-full admission above reads it.
   ["rovara-code/second-review-start.ts", "prepareSecondReview", "money", ".developerId*2", ".startedBy"],
   ["aws/broker/plan-answers.ts", "storePlanAnswer", "principal", ".ownerKey*3"],
@@ -287,6 +289,8 @@ const ROWS: readonly Row[] = [
   ["repository-access.ts", "inspect", "principal", ".ownerKey"],
   // Meta repo lane D: the broker's own meta-repository token is issued for the task's principal (`ownerKey`, with the workspace and an operation id it makes), as `repositoryGrants.issue` is for a worker; it never changes, and the broker uses it itself
   ["aws/broker/spec-wiring.ts", "metaClient", "principal", ".ownerKey"],
+  // Continue in your own tool: the push grant for the task's working branch is made for the task's principal (`ownerKey`) and workspace, as a worker's own grant would be
+  ["aws/broker/working-branch-port.ts", "clientOf", "principal", ".ownerKey"],
   // Proof and evidence P6: an evidence file is stored under the task's object prefix (`private/<ownerKey>/<workspace>/evidence/<task>/<sha256>`), the task's principal; who may download it is decided by `authorize()` before either read
   ["aws/evidence-artifacts.ts", "keyOf", "principal", ".ownerKey"],
   ["aws/evidence-artifacts.ts", "serveEvidenceArtifact", "principal", ".ownerKey"],

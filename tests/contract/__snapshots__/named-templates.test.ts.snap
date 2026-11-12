@@ -1473,8 +1473,7 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                 "iam:DetachRolePolicy",
                 "iam:UpdateAssumeRolePolicy",
                 "iam:PutRolePermissionsBoundary",
-                "iam:ListRolePolicies",
-                "iam:ListAttachedRolePolicies",
+                "iam:List*RolePolicies",
                 "iam:PassRole",
               ],
               "Effect": "Allow",
@@ -1517,8 +1516,7 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
               "Action": [
                 "iam:GetRole",
                 "iam:GetRolePolicy",
-                "iam:ListRolePolicies",
-                "iam:ListAttachedRolePolicies",
+                "iam:List*RolePolicies",
                 "iam:DeleteRolePolicy",
                 "iam:DetachRolePolicy",
                 "iam:DeleteRole",
@@ -1601,6 +1599,70 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                       {
                         "Ref": "AWS::AccountId",
                       },
+                      ":role/agentx-staging-img-push",
+                    ],
+                  ],
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition",
+                      },
+                      ":iam::",
+                      {
+                        "Ref": "AWS::AccountId",
+                      },
+                      ":role/agentx-staging-img-pull",
+                    ],
+                  ],
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition",
+                      },
+                      ":iam::",
+                      {
+                        "Ref": "AWS::AccountId",
+                      },
+                      ":role/agentx-staging-img-manage",
+                    ],
+                  ],
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition",
+                      },
+                      ":iam::",
+                      {
+                        "Ref": "AWS::AccountId",
+                      },
+                      ":role/agentx-staging-img-mirror",
+                    ],
+                  ],
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition",
+                      },
+                      ":iam::",
+                      {
+                        "Ref": "AWS::AccountId",
+                      },
                       ":role/agentx-staging-record-vectors-data",
                     ],
                   ],
@@ -1618,22 +1680,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                         "Ref": "AWS::AccountId",
                       },
                       ":role/agentx-staging-connector-secrets*",
-                    ],
-                  ],
-                },
-                {
-                  "Fn::Join": [
-                    "",
-                    [
-                      "arn:",
-                      {
-                        "Ref": "AWS::Partition",
-                      },
-                      ":iam::",
-                      {
-                        "Ref": "AWS::AccountId",
-                      },
-                      ":role/agentx-staging-img-*",
                     ],
                   ],
                 },
@@ -3870,10 +3916,6 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                   {
                     "Ref": "ChatGptConnectionKey03C49F9D",
                   },
-                  ",cm=",
-                  {
-                    "Ref": "CompanyImageMirrorFunctionA216CF6B",
-                  },
                   ",dl=",
                   {
                     "Fn::GetAtt": [
@@ -5675,6 +5717,7 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
             },
           },
         },
+        "FunctionName": "agentx-staging-company-image-mirror",
         "Handler": "index.handler",
         "LoggingConfig": {
           "LogGroup": {
@@ -7119,7 +7162,6 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                   "dynamodb:LeadingKeys": [
                     "ORG#org_????????????????????#MEMBER#*",
                     "ORG#org_????????????????????",
-                    "ORG#org_????????????????????#PROJECT_CATALOG",
                   ],
                 },
               },

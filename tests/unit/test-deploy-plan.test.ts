@@ -902,6 +902,8 @@ describe("the control-plane-code unit", () => {
     entries.delete("packages/broker/src/realtime/authorizer.ts");
     // The web app's page function serves a directory of assets a BucketDeployment uploads: a CDK deploy moves it (also named in CONTROL_PLANE_LAMBDAS_NOT_DEPLOYED).
     entries.delete("packages/web/src/server/handler.ts");
+    // The company image mirror (0.5.15) is not a TEST unit either (CONTROL_PLANE_LAMBDAS_NOT_DEPLOYED names it).
+    entries.delete("packages/broker/src/aws/company-image-mirror-handler.ts");
     // The automatic renewal's Lambda exists only where agentx:autoRequalify is on and is added by the requalify-infra unit; AR-5 registers its code unit here.
     entries.delete("packages/broker/src/aws/runtime-requalify-handler.ts");
     expect([...entries].sort()).toEqual(Object.values(CONTROL_PLANE_LAMBDAS).map((lambda) => lambda.entry).sort());

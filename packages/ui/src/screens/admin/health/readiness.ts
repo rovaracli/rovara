@@ -3,7 +3,7 @@
 // A configured thing that nothing has checked is Unknown, a read that was refused or failed is Unknown, and an observation with no recorded time, a time in the future, or a time older than
 // CHECK_STALE_DAYS (measured against the clock) is Unknown ("check it again"). Only the two rows the broker computes live at read time (service qualification, team record delete check) take the read time.
 import type { OrgServiceStatus } from "@agentx/cloud-contracts/web";
-import type { Read, ReadinessApproval, ReadinessConnection, ReadinessDesignReview, ReadinessFeatures, ReadinessProject, ReadinessReads, ReadinessSpendRequest } from "../../../api/readiness.js";
+import type { Read, ReadinessApprovals, ReadinessConnection, ReadinessDesignReview, ReadinessFeatures, ReadinessProject, ReadinessReads, ReadinessSpendRequest } from "../../../api/readiness.js";
 import type { LessonCompanyPreset } from "../../../api/lessons.js";
 import { githubSummary } from "../connections/connection-state.js";
 import { requestKindWords } from "../spending-format.js";
@@ -287,13 +287,18 @@ export function sortRows(rows: readonly ReadinessRow[]): ReadinessRow[] {
 // ---- "What needs an admin"
 
 export type AdminItemKind = "confirm" | "spend" | "rule" | "connection" | "check";
-export interface AdminItem { id: string; kind: AdminItemKind; title: string; why: string; when?: string; /** Waiting for someone else, not for this admin. */ others?: boolean; link: { label: string; to: string }; details: string[] }
-export interface NeedsAdmin { items: AdminItem[]; /** Reads that did not answer, so "nothing needs you" is never claimed over them. */ unread: string[] }
+export interface AdminItem { id: string; kind: AdminItemKind; title: string; why: string; when?: string; /** Waiting for someone else, not for this admin. */ others?: boolean; link: { label: string; to: string }; /** An approval's own confirmation page, as the server sent it: the screen opens it only if it is this app's own confirmation address, and otherwise offers `link`. */ confirmUrl?: string; details: string[] }
+export interface NeedsAdmin { items: AdminItem[]; /** The company's open approvals as the server counts them; `truncated`: its open index was longer than one answer reads, so the total and the list may be incomplete. Absent while that read has not answered. */ approvals?: { total: number; truncated: boolean }; /** Reads that did not answer, so "nothing needs you" is never claimed over them. */ unread: string[] }
 export const ADMIN_LIST_CAP = 8;
 
-const approvalWords = (kind: string): string => kind === "write" || kind.includes("write") ? "An agent's change waits for a second admin to confirm." : "A protected change waits for a second admin to confirm.";
-function approvalItems(list: readonly ReadinessApproval[]): AdminItem[] {
- return list.filter(approval => approval.status === "PENDING").map(approval => ({ id: `approval:${approval.approvalId}`, kind: "confirm" as const, title: "Protected change to confirm", why: approvalWords(approval.kind), ...(stamp(approval.createdAt) === undefined ? {} : { when: `Asked ${stamp(approval.createdAt)!}` }), link: { label: "Open the waiting list", to: WAITING_PATH }, details: [`Kind: ${approval.kind}`] }));
+/** What each kind of approval is, in words. The title is the confirmation page's own; this says what kind of thing waits, never who may decide it (the page checks that). */
+const APPROVAL_KIND_WORDS: Readonly<Record<string, string>> = { write: "An agent's change waits for a person to confirm.", step: "A step of a run waits for a person to confirm.", change: "A protected change waits for a person to confirm." };
+function approvalItems(summary: ReadinessApprovals): AdminItem[] {
+ return summary.approvals.map(approval => ({
+  id: `approval:${approval.approvalId}`, kind: "confirm" as const, title: approval.title, why: (APPROVAL_KIND_WORDS[approval.kind] ?? "An approval is waiting for a person to confirm.") + (approval.proposedBy === undefined ? "" : ` Asked by ${approval.proposedBy}.`),
+  ...(stamp(approval.createdAt) === undefined ? {} : { when: `Asked ${stamp(approval.createdAt)!}` }), link: { label: "Open the waiting list", to: WAITING_PATH }, confirmUrl: approval.confirmUrl,
+  details: [`Kind: ${approval.kind}`, ...(approval.subjectKind === undefined ? [] : [`Change: ${approval.subjectKind}`])],
+ }));
 }
 function spendItems(list: readonly ReadinessSpendRequest[]): AdminItem[] {
  return list.filter(request => request.status === "PENDING").map(request => ({ id: `spend:${request.spendRequestId}`, kind: "spend" as const, title: `Spending request: ${requestKindWords(request.kind)}`, why: request.amountUsd === undefined ? "A spending request is waiting for a decision." : `A spending request for $${request.amountUsd.toFixed(2)} is waiting for a decision.`, ...(stamp(request.createdAt) === undefined ? {} : { when: `Asked ${stamp(request.createdAt)!}` }), link: { label: "Open the waiting list", to: WAITING_PATH }, details: [`Kind: ${request.kind ?? "not given"}`, ...(request.approverRole === undefined ? [] : [`Approver role: ${request.approverRole}`])] }));
@@ -311,11 +316,12 @@ function ruleItems(design: ReadinessDesignReview | undefined, preset: LessonComp
  return items;
 }
 /** What each read is called when it did not answer. Every read the list or the health counts depend on is here. */
-const READ_WORDS = [["approvals", "confirmations waiting for you"], ["spend", "spending requests"], ["preset", "company lesson rules"], ["designReview", "company design review rules"], ["github", "the GitHub connection"], ["githubRequests", "GitHub installation requests"], ["connections", "saved connections"], ["slack", "the Slack connection"], ["sources", "AI model sources"], ["projects", "project environment checks"], ["serviceStatus", "Rovara's service status and team record check"], ["features", "the turned-on features"]] as const satisfies ReadonlyArray<readonly [keyof ReadinessReads, string]>;
+const READ_WORDS = [["approvals", "approvals waiting in the company"], ["spend", "spending requests"], ["preset", "company lesson rules"], ["designReview", "company design review rules"], ["github", "the GitHub connection"], ["githubRequests", "GitHub installation requests"], ["connections", "saved connections"], ["slack", "the Slack connection"], ["sources", "AI model sources"], ["projects", "project environment checks"], ["serviceStatus", "Rovara's service status and team record check"], ["features", "the turned-on features"]] as const satisfies ReadonlyArray<readonly [keyof ReadinessReads, string]>;
 
 export function buildNeedsAdmin(reads: ReadinessReads, readiness: Readiness): NeedsAdmin {
  const items: AdminItem[] = [];
  if (reads.approvals.state === "ok") items.push(...approvalItems(reads.approvals.data));
+ const approvals = reads.approvals.state === "ok" ? { total: reads.approvals.data.total, truncated: reads.approvals.data.truncated === true } : undefined;
  if (reads.spend.state === "ok") items.push(...spendItems(reads.spend.data));
  items.push(...ruleItems(reads.designReview.state === "ok" ? reads.designReview.data : undefined, reads.preset.state === "ok" ? reads.preset.data : undefined));
  for (const row of readiness.rows) {
@@ -327,5 +333,5 @@ export function buildNeedsAdmin(reads: ReadinessReads, readiness: Readiness): Ne
  // Any read that did not answer (refused, missing, failed or still going) is named: "nothing needs an admin" is never said over a read that gave no answer. Members never reach this list.
  const unanswered: string[] = READ_WORDS.filter(([key]) => (reads[key] as Read<unknown>).state !== "ok").map(([, words]) => words);
  if (reads.lessons.some(item => item.read.state !== "ok")) unanswered.push("team record sources");
- return { items: ordered, unread: unanswered };
+ return { items: ordered, unread: unanswered, ...(approvals === undefined ? {} : { approvals }) };
 }

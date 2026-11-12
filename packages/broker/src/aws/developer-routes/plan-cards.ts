@@ -189,6 +189,16 @@ export function planCardHandler(deps: DeveloperRouteDependencies, caller: Develo
         async () => ({ applied: true, result: await approvePlan(deps, caller, who, input, now, true) }));
     }),
     requestChanges: (who, input) => requestChanges(deps, who, input),
+    // Owner decision 99: a coding plan's Reject (the card's, and Slack's) is the workflow decision's REJECT, which ends the task. The place rule (`approvalPlaceDecision`) is applied inside it; a requirements or design card has no Reject.
+    reject: (who, input) => perform(async () => {
+      const now = await current(deps, who, input);
+      if (now === "stale") return { kind: "refused", reason: "stale" };
+      if (now.artifact.type !== "plan") return { kind: "refused", reason: "unsupported" };
+      await decideTaskWorkflow(developerTaskRouteDependencies(deps, who), who, now.task.taskId, {
+        requestId: input.requestId, expectedRevision: now.workflow.revision, decision: "REJECT", artifactDigest: now.artifact.sha256, reason: "Rejected on its card in Rovara.",
+      }, {});
+      return { kind: "done" };
+    }),
   };
 }
 

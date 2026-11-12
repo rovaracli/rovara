@@ -18,7 +18,7 @@ import { SESSION_MAX_AGE_SECONDS } from "../aws/web-session.js";
 import { INVITE_TOKEN_PATTERN, inviteTokenHash } from "../org/invite-url.js";
 import type { OrgStore } from "../org/store.js";
 import { MERGED_AWAY_MESSAGE } from "../org/store.js";
-import { INVITATION_ONLY_MESSAGE, NO_ORG_ON_INSTALL_MESSAGE, resolveOrgOnSignIn, sameEmail, type ResolveOrgOnSignInDependencies, type SignInNoOrg, type SignInOrg } from "../org/sign-in.js";
+import { ALREADY_SIGNED_UP_MESSAGE, INVITATION_ONLY_MESSAGE, NO_ORG_ON_INSTALL_MESSAGE, resolveOrgOnSignIn, sameEmail, type ResolveOrgOnSignInDependencies, type SignInNoOrg, type SignInOrg } from "../org/sign-in.js";
 import { resolveSignInDeveloper, type ResolveSignInDeveloperDependencies } from "./identities.js";
 import {
   expiredInvitePage, joinDonePage, joinExpiredPage, maskEmail, openInvitePage, otherBrowserPage, unknownInvitePage, usedInvitePage, type PageSpec,
@@ -74,10 +74,8 @@ export interface DeveloperIdentityDependencies {
   onGithubSignIn?: (input: { orgId: OrgId; githubUserId: string; developerId: string }) => Promise<void>;
   /** Plan 6 Task 14: told after a person unlinked their GitHub sign-in, with the org they belong to, so the org stops reading their approvals on GitHub as theirs. Best effort. */
   onGithubUnlinked?: (input: { orgId: OrgId; developerId: string }) => Promise<void>;
-  /** Merges a duplicate member of the same person into the member their verified email names, on the duplicate's next sign-in (see resolveSignInDeveloper, rule 1b). Without it duplicates are left alone. */
+  /** Merges a duplicate member of the same person into the member their verified email names, on the duplicate's next sign-in (see resolveSignInDeveloper, rule 1b), only within one company. Without it duplicates are left alone. */
   mergeDuplicate?: ResolveSignInDeveloperDependencies["mergeDuplicate"];
-  /** Says whether the duplicate's own org is a disposable leftover of the first-sign-in race, which a merge may close; bound with `mergeDuplicate`. */
-  raceOrgBlocker?: ResolveSignInDeveloperDependencies["raceOrgBlocker"];
   /**
    * Plan 2, Task 8: tells an account's address when a new sign-in method was linked to it. `from` is the SES sender (empty: no notice is
    * sent) and `cellUrl` the page where the person removes a method. Absent in tests that do not send.
@@ -205,6 +203,17 @@ function toClient(redirectUri: string, params: Record<string, string>): HttpResu
   for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
   return redirect(url.toString());
 }
+
+/**
+ * A-31: where a person who joined lands: the welcome page, told the project the invite also made them a member of (`project`), or why it did not (`projectNote`).
+ * The name is a project name (letters, digits and dashes), encoded all the same.
+ */
+export const joinedQuery = (result: { projectName?: string; projectNote?: string }): string => {
+  const query = new URLSearchParams({ joined: "1" });
+  if (result.projectName !== undefined) query.set("project", result.projectName);
+  if (result.projectNote !== undefined) query.set("projectNote", result.projectNote);
+  return query.toString();
+};
 
 const expired = () => page(400, "This sign-in link has expired", ["Run agentx login again."]);
 /** One answer for every code failure (unknown, used, expired, wrong verifier, wrong redirect URI). */
@@ -397,7 +406,7 @@ function createIssuerHandler(deps: DeveloperIdentityDependencies) {
   const decideFlow = deps.decide === undefined ? undefined : createDecideSignIn({
     deps: deps.decide, signIn: store, orgs: deps.orgs, endpoint, methods: () => enabledMethods(deps), methodLabel, provider,
     resolveDeveloper: (method, identity) => resolveSignInDeveloper({ store, orgs: deps.orgs, log: deps.log,
-      ...(deps.mergeDuplicate === undefined ? {} : { mergeDuplicate: deps.mergeDuplicate }), ...(deps.raceOrgBlocker === undefined ? {} : { raceOrgBlocker: deps.raceOrgBlocker }) }, { method, identity }),
+      ...(deps.mergeDuplicate === undefined ? {} : { mergeDuplicate: deps.mergeDuplicate }) }, { method, identity }),
     noticeDecideSignIn: async (to) => {
       try {
         await sendDecideSignInAddedNotice({ ses: deps.notice?.ses, from: deps.notice?.from, log: deps.log }, { to, cellUrl: deps.notice?.cellUrl ?? new URL(config.issuer).origin });
@@ -586,9 +595,10 @@ function createIssuerHandler(deps: DeveloperIdentityDependencies) {
       return await completeSignIn(method, request, code);
     } catch (error) {
       deps.log({ event: "signin.join_error", method, error: errorName(error) });
-      return error instanceof ProviderUnavailableError || error instanceof ProviderNotConfiguredError
-        ? joinUnavailable()
-        : page(500, "Sign-in failed", ["Something went wrong on the Rovara server. Open the invite link again."]);
+      if (error instanceof ProviderUnavailableError || error instanceof ProviderNotConfiguredError) return joinUnavailable();
+      // A-31 review L1: the invite's project (or the account) changed while the join ran; nothing was written and the invite is unused.
+      if (isCode(error, "CHANGE_STALE")) return page(409, "Open the invite link again", ["Something changed while you were joining, so nothing was changed. Open the invite link again to finish joining."]);
+      return page(500, "Sign-in failed", ["Something went wrong on the Rovara server. Open the invite link again."]);
     }
   }
 
@@ -606,6 +616,9 @@ function createIssuerHandler(deps: DeveloperIdentityDependencies) {
       ...(described?.email === undefined ? {} : { maskedEmail: maskEmail(described.email) }),
       inviterName: described === undefined ? "Someone" : await inviterNameOf(described.createdBy),
       codeChallenge: request.codeChallenge,
+      // A-31: only a join that happened carries its project (or why the project was left out).
+      ...(outcome === "joined" && org.orgId !== undefined && org.project !== undefined ? { projectName: org.project.name } : {}),
+      ...(outcome === "joined" && org.orgId !== undefined && org.projectNote !== undefined ? { projectNote: org.projectNote } : {}),
     });
     deps.log({ event: "signin.join_completed", method, outcome });
     return outcome;
@@ -620,7 +633,7 @@ function createIssuerHandler(deps: DeveloperIdentityDependencies) {
     if (result === undefined || verifier === undefined || !pkceChallengeMatches(verifier, result.codeChallenge)) return render(otherBrowserPage());
     // UX1: a person who joined lands in the app at once, on this same origin, where the join's sign-in cookie was set (the join cookie is spent).
     if (result.outcome === "joined") {
-      return { ...redirect(`${new URL(config.issuer).origin}/app/welcome?joined=1`), cookies: [`${JOIN_PKCE_COOKIE}=; Secure; HttpOnly; SameSite=Lax; Path=/; Max-Age=0`] };
+      return { ...redirect(`${new URL(config.issuer).origin}/app/welcome?${joinedQuery(result)}`), cookies: [`${JOIN_PKCE_COOKIE}=; Secure; HttpOnly; SameSite=Lax; Path=/; Max-Age=0`] };
     }
     return render(joinDonePage(result, new URL(config.issuer).origin));
   }
@@ -843,7 +856,7 @@ function createIssuerHandler(deps: DeveloperIdentityDependencies) {
       companySignIn = decided;
     }
     // One developer per person: a second sign-in route for the same verified email is linked to the first route's developer.
-    const resolved = await resolveSignInDeveloper({ store, orgs: deps.orgs, log: deps.log, ...(deps.mergeDuplicate === undefined ? {} : { mergeDuplicate: deps.mergeDuplicate }), ...(deps.raceOrgBlocker === undefined ? {} : { raceOrgBlocker: deps.raceOrgBlocker }) }, { method, identity });
+    const resolved = await resolveSignInDeveloper({ store, orgs: deps.orgs, log: deps.log, ...(deps.mergeDuplicate === undefined ? {} : { mergeDuplicate: deps.mergeDuplicate }) }, { method, identity });
     const { developerId, identityKey } = resolved;
     // The decision was made for a developer read before the link was written; a race that resolves to another developer gets no access from it.
     if (decidedFor !== undefined && developerId !== decidedFor) throw agentXError("CHANGE_STALE", "the sign-in changed while it was being decided; run it again");
@@ -915,6 +928,13 @@ function createIssuerHandler(deps: DeveloperIdentityDependencies) {
         deps.log({ event: "signin.refused", method, reason: "linked_elsewhere", developerId });
         if (request.browserReturnTo !== undefined) return browserReturn(request.browserReturnTo, false, undefined, "ended");
         return client({ error: "access_denied", error_description: `${MERGED_AWAY_MESSAGE}; run agentx login again` });
+      }
+      // IDENTITY-HEALING-CROSS-ORG: another sign-in route of this person holds the email and its company was made a moment ago (two first sign-ins at once).
+      // No second company is made; the person signs in the other way and adds this method in Settings. The browser shows the generic "refused" page for now.
+      if (isCode(error, "CHANGE_STALE") && refusalWords(error) === ALREADY_SIGNED_UP_MESSAGE) {
+        deps.log({ event: "signin.refused", method, reason: "already_signed_up", developerId });
+        if (request.browserReturnTo !== undefined) return browserReturn(request.browserReturnTo, false, undefined, "refused");
+        return client({ error: "access_denied", error_description: ALREADY_SIGNED_UP_MESSAGE });
       }
       // A removed member (single-org ban) is told so, not shown an internal error.
       if ((error as { code?: unknown } | null)?.code !== "REMOVED_FROM_ORG") throw error;

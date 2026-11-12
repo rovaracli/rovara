@@ -82,10 +82,13 @@ export function SpendingV2() {
  const defaultAllowance = memberDefault === undefined ? "Company default (not available)" : memberDefault.kind === "unlimited" ? "No limit set" : <Usd usd={dollars(memberDefault.microdollars)} />;
  const own = budgetData?.member;
  const ownAllowance = own === undefined ? "Unavailable" : own.limitUsd === undefined ? "No limit set" : <Usd usd={own.limitUsd} />;
+ // Each person's own allowance, as the settings read lists it (owners and admins only, and only when someone has one). With the list in the answer, every other person is labelled as on the company default; without it, nothing is added.
+ const overrideList = settingsOk?.memberOverrides, overrideOf = new Map((overrideList ?? []).map(entry => [entry.developerId, entry.microdollars] as const));
+ const allowanceOf = (id: string): ReactNode => { const own = overrideOf.get(id);return own !== undefined ? <><Usd usd={dollars(own)} /> <span className="rv-muted">(own allowance)</span></> : overrideList === undefined ? defaultAllowance : <>{defaultAllowance} <span className="rv-muted">(company default)</span></>; };
  const namesLoaded = membersData !== undefined;
  const people: PersonRow[] = (orgSpendData?.byMember ?? []).map(row => {
   const name = names.get(row.developerId), mine = row.developerId === developerId;
-  return { id: row.developerId, name: mine ? <>{name === undefined ? "You" : <VisibleText text={name} />} <span className="rv-muted">(you)</span></> : name !== undefined ? <VisibleText text={name} /> : namesLoaded ? "Former member" : members.isError ? "Name unavailable" : "Loading name", spentUsd: row.spentUsd, allowance: mine ? ownAllowance : defaultAllowance };
+  return { id: row.developerId, name: mine ? <>{name === undefined ? "You" : <VisibleText text={name} />} <span className="rv-muted">(you)</span></> : name !== undefined ? <VisibleText text={name} /> : namesLoaded ? "Former member" : members.isError ? "Name unavailable" : "Loading name", spentUsd: row.spentUsd, allowance: mine ? ownAllowance : allowanceOf(row.developerId) };
  });
  const overrides = settingsOk?.memberOverrideCount ?? 0;
  const openRequests = (rows: SpendRequestRow[]) => rows.filter(row => row.status === "PENDING");
@@ -108,7 +111,7 @@ export function SpendingV2() {
    <Part read={orgSpend} title="spending by person" restricted={<>Spending by person is shown to company owners and admins. You see your own spending{own === undefined ? "." : <>: <Usd usd={own.spentUsd} /> spent, <Usd usd={heldUsd(own)} /> held, allowance {own.limitUsd === undefined ? "not set" : <Usd usd={own.limitUsd} />}.</>}</>}>{() => people.length === 0 ? <p>No one has spent anything this month yet.</p> : <>
     {members.isError && <p role="note">Names are unavailable right now, so people are not named. Refresh to try again.</p>}
     <DataTable caption="Spending by person this month" columns={personColumns} rows={people} rowKey={row => row.id} />
-    <p className="rv-muted">The allowance shown for other people is the company default for a member{overrides > 0 ? `. ${String(overrides)} ${overrides === 1 ? "person has" : "people have"} their own allowance, which is not shown here` : ""}.</p>
+    <p className="rv-muted">{overrideList !== undefined ? "A person's own allowance is shown where one is set. Everyone else shows the company default for a member." : <>The allowance shown for other people is the company default for a member{overrides > 0 ? `. ${String(overrides)} ${overrides === 1 ? "person has" : "people have"} their own allowance, which is not shown here` : ""}.</>}</p>
    </>}</Part>
   </section>
 

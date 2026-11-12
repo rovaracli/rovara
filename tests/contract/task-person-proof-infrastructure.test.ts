@@ -421,18 +421,24 @@ describe("the named TEST proof-only installation gate", () => {
     // 2026-11-11, U3 work events (merged onto integ/0514 1593cf08e, whose own named and foreign pins are 113afeb8..., 5cec0a6d... and 5c52999d..., 54d2d4fb...): the named and foreign digests below are U3's, retaken from the values the test
     // reports after ONE intended change: the DeveloperTaskNotifier gains the variable AGENTX_WORK_EVENTS ("on") and one write grant, dynamodb:PutItem on ORG#org_*#WORK_EVENTS#* only. The named-templates snapshot shows exactly that variable
     // and that statement. Legacy did not move.
+    // 2026-11-11 (fix/0514-integ-red, on integ 70e9fa947): the named and foreign digests were retaken after two intended changes. The company image mirror Lambda has the fixed name agentx-<env>-company-image-mirror and
+    // the broker derives it (derived-names.ts), so the `cm` entry leaves AGENTX_NAMES (the broker's environment was 58 bytes short of its 400 headroom with the record on). The access stack's boundary names the image roles
+    // exactly again (no img-* ARN) and the mirror role too. The named-templates snapshot shows exactly those. Legacy did not move.
+    // 2026-11-11 (0.5.15, feat/0515-identity-healing-one-company): the named and foreign digests were retaken after ONE intended change: the DeveloperSignIn function's Query grant
+    // loses ORG#org_*#PROJECT_CATALOG (the old race-org check, gone with IDENTITY-HEALING-CROSS-ORG). Restoring that one key gives back the previous pins. The named-templates snapshot
+    // shows exactly that one line removed. Legacy did not move.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "6d81f236e95cd53adbb70d1355e93c8fe069583764bd80abc9e5d2a66a3fc2a8",
-        withoutRoute: "cd279afc7b16a8a74d9480c89250737557e074ca7df65c82a6fff9a4674fb722",
+        withRoute: "a72c23b9edeb1a7773561a5f15fa7046039480ef465fea8f4060258988f6f1ad",
+        withoutRoute: "49a25764882ab668ddcf58c39fa7112e30b512c46108fb4ddeb8e3c892868716",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "fd38c9efb50d2ec4bd996e1dda0f15cb20fd17766f6bd3171f131a72817efe34",
-        withoutRoute: "f939b52668d2a6befa175da466e9a8f4780e733bd1524dfe3f9e45100d5738d6",
+        withRoute: "288ec2a44cc82be83a069033207340ebc8d733f6af5113be99e2999ddfc72f57",
+        withoutRoute: "565f46a320976b4fcb93dc44ea18dfd94f44f86609b7e68f8680edb8c6200821",
       },
       {
         label: "legacy",

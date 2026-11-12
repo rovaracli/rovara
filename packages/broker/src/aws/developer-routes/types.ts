@@ -1,3 +1,4 @@
+import type { HealthRefreshProbes } from "../../org/health-observations.js";
 import type { RepoFileRuntime } from "../../lessons/repo-file-job.js";
 import type { ServiceCatalogSource } from "../../test-env/dependency-plan.js";
 import type { CompanyImageDigestResolver } from "../../test-env/company-image-resolver.js";
@@ -134,6 +135,8 @@ export interface DeveloperRouteDependencies {
   /** DG-1 S2: a file of one of an org's repositories at the head of its default branch, as GitHub holds it now. "Apply this change" checks a proposed dev container file with it. Absent: that change cannot be applied. */
   defaultBranchFileReader?: (orgId: OrgId, repositoryUrl: string, path: string, options: { timeoutMs: number }) => Promise<string | undefined>;
   serviceStatus?: Pick<ServiceStatusDependencies, "runtimeStatus" | "teamRecordFailures">;
+  /** 0.5.15: the probes the health-observations read runs to check a stale Slack or GitHub observation again; absent: it reads what is stored. */
+  healthObservations?: HealthRefreshProbes;
   documentClient: { send(command: unknown): Promise<unknown> };
   tableName: string;
   developer: DeveloperApiConfiguration;
@@ -153,6 +156,10 @@ export interface DeveloperRouteDependencies {
   readSpecPullRequest?: DeveloperTaskRouteDependencies["readSpecPullRequest"];
   publishSpecFiles?: DeveloperTaskRouteDependencies["publishSpecFiles"];
   currentBaseCommit?: DeveloperTaskRouteDependencies["currentBaseCommit"];
+  workingBranchPort?: DeveloperTaskRouteDependencies["workingBranchPort"];
+  startOutsideRecheck?: DeveloperTaskRouteDependencies["startOutsideRecheck"];
+  outsideRecheckFeatures?: DeveloperTaskRouteDependencies["outsideRecheckFeatures"];
+  admitOutsideRecheck?: DeveloperTaskRouteDependencies["admitOutsideRecheck"];
   taskAutonomyNow?: DeveloperTaskRouteDependencies["taskAutonomyNow"];
   /** Design review: the round's ports, so an immediate start after the owner's Retry can run (without them the dispatch row waits for the sweep). */
   designReview?: DeveloperTaskRouteDependencies["designReview"];

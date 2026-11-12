@@ -12,9 +12,9 @@ import { resolveStoredName } from "../developer/name-resolver.js";
 import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
 import { AgentPrincipalSchema, ENDED_SESSION_STATUSES, SessionIdSchema, SessionLevelSchema, agentSessionKey, agentXError, atLeast, cleanSessionName, projectMemberKey, sessionLevelRequiredMessage, sessionViewerOnlyMessage, type AgentPrincipal, type AgentSessionRecord, type OrgId, type ProjectRole, type SessionAction, type SessionLevel, type SessionStatus, TaskStatusSchema } from "@rovara-code/contracts";
-import { OrgRoleSchema, isWriterOrgRole, orgMemberKey, type OrgRole, type DeveloperTaskView } from "@agentx/cloud-contracts";
+import { OrgRoleSchema, isWriterOrgRole, orgMemberKey, projectAllows as memberAllows, type OrgRole, type DeveloperTaskView, type ProjectRole as MemberRole } from "@agentx/cloud-contracts";
 import type { ProjectMembers } from "../agents/access.js";
-import { grantRoleOf } from "../developer/project-roles.js";
+import { grantMemberRoleOf, grantRoleOf } from "../developer/project-roles.js";
 import { UNNAMED_MEMBER, effectiveTaskOwner, isTaskTakenOver, takenOverSince, taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
 import { AgentSessionStore } from "./store.js";
 
@@ -66,6 +66,13 @@ export interface SessionAccess {
   /** ERASED-REJOIN-NAME: when `effectiveOwner.name` was written (the session's start, or the take-over's time): a list of sessions reads the name of a person who was erased and came back by it. */
   effectiveOwnerWrittenAt: string;
   projectRole?: ProjectRole;
+  /**
+   * Decision 103 (collaborator role, W11): the caller's EXACT role on a task session's project when its floor is a viewer (`projectRole: viewer`): `viewer` or `collaborator`, from their own grant row; and
+   * (decision 104) `contributor` for a contributor, whose `ask` permission lets them use the live Ask with `view`. The
+   * `comment` and `ask` permissions of Cloud's table are asked of it (`memberMay`), so a collaborator comments and uses the live Ask and a viewer does neither. Absent otherwise, and on the many-sessions
+   * path (`prefetch`), which then treats them as the viewer they are there.
+   */
+  memberRole?: MemberRole;
   /** An org owner or admin, on a task or chain session: they may stop it (`view` plus Stop). */
   orgAdmin: boolean;
   /** The caller's role in the org, read from their member record with the rest of the access. */
@@ -76,7 +83,7 @@ export type { SessionAction };
 
 /** What one request already learned of the caller's roles, so a list of many sessions asks the project channel once per project, not once per row (review m-2). */
 export interface SessionRoleMemo {
-  roles: Map<string, Promise<{ grant: ProjectRole | undefined; effective: ProjectRole | undefined }>>;
+  roles: Map<string, Promise<{ grant: ProjectRole | undefined; effective: ProjectRole | undefined; exact?: MemberRole | undefined }>>;
   shareRoles: Map<string, Promise<ProjectRole | undefined>>;
 }
 export const newSessionRoleMemo = (): SessionRoleMemo => ({ roles: new Map(), shareRoles: new Map() });
@@ -233,23 +240,25 @@ export async function effectiveOwnerOf(deps: Pick<SessionAccessDependencies, "do
 
 // ---- the level
 
-interface Computed { /** The caller's role on the session's project for a share, when asked for (`wantShareRole`). */ shareRole: ProjectRole | undefined; level: "none" | SessionLevel; /** The read-only path left out a project's Slack channel that could have changed a `none` level. */ undecided: boolean; owner: boolean; effectiveOwner: { developerId: string; name: string }; effectiveOwnerWrittenAt: string; projectRole: ProjectRole | undefined; orgAdmin: boolean; orgRole: OrgRole }
+interface Computed { /** The caller's role on the session's project for a share, when asked for (`wantShareRole`). */ shareRole: ProjectRole | undefined; level: "none" | SessionLevel; /** The read-only path left out a project's Slack channel that could have changed a `none` level. */ undecided: boolean; owner: boolean; effectiveOwner: { developerId: string; name: string }; effectiveOwnerWrittenAt: string; projectRole: ProjectRole | undefined; memberRole: MemberRole | undefined; orgAdmin: boolean; orgRole: OrgRole }
 
 async function compute(deps: SessionAccessDependencies, caller: SessionCaller, orgRole: OrgRole, session: AgentSessionRecord, options: SessionAccessOptions): Promise<Computed> {
   const { orgId } = caller;
   const readOnly = options.readOnlyPath === true;
   const isAdmin = isAdminRole(orgRole);
-  const roles = options.memo?.roles ?? new Map<string, Promise<{ grant: ProjectRole | undefined; effective: ProjectRole | undefined }>>();
+  const roles = options.memo?.roles ?? new Map<string, Promise<{ grant: ProjectRole | undefined; effective: ProjectRole | undefined; exact?: MemberRole | undefined }>>();
   const shareRoles = options.memo?.shareRoles ?? new Map<string, Promise<ProjectRole | undefined>>();
   /** The caller's role on a project: their own grant row, an org owner's or admin's maintainership, or (off the read-only path) the project's channel. */
   const roleOn = (project: string) => {
     const known = roles.get(project);
     if (known !== undefined) return known;
     const read = (async () => {
-      const grant = options.prefetch !== undefined ? options.prefetch.grant(project) : grantRoleOf(await getItem(deps, projectMemberKey(orgId, caller.developerId, project)));
+      const row = options.prefetch !== undefined ? undefined : await getItem(deps, projectMemberKey(orgId, caller.developerId, project));
+      const grant = options.prefetch !== undefined ? options.prefetch.grant(project) : grantRoleOf(row);
       // An org owner or admin is a maintainer of every project whatever grant they hold; the grant only decides between `edit` and `view` (m-1).
       if (isAdmin) return { grant, effective: "maintainer" as ProjectRole };
-      if (grant !== undefined) return { grant, effective: grant };
+      // Decision 103: the exact role beside its floor, so the permission table (not the floor) decides comments and the live Ask.
+      if (grant !== undefined) return { grant, effective: grant, exact: grantMemberRoleOf(row) };
       if (readOnly) return { grant, effective: undefined };
       return { grant, effective: await deps.projectMembers.roleOf(orgId, project, { developerId: caller.developerId, orgRole }) };
     })();
@@ -290,6 +299,10 @@ async function compute(deps: SessionAccessDependencies, caller: SessionCaller, o
   const owner = caller.developerId === effectiveOwner.developerId;
 
   const projectRole = session.project === undefined ? undefined : (await roleOn(session.project)).effective;
+  // Decision 103: the exact role of a viewer-floor member (viewer or collaborator). Decision 104: also a contributor's (by grant or the project's channel), so its `ask` permission reaches the live Ask at
+  // `view`. Never a company owner's or admin's (their maintainership is not asked here) and never an Auditor's.
+  const memberRole = session.kind === "task" && session.project !== undefined && isWriterOrgRole(orgRole) && !isAdmin && projectRole !== undefined && projectRole !== "maintainer"
+    ? (projectRole === "viewer" ? (await roleOn(session.project)).exact : projectRole) : undefined;
   const grantRole = session.project === undefined ? undefined : (await roleOn(session.project)).grant;
   const orgAdmin = isAdmin && session.kind !== "local";
 
@@ -327,7 +340,7 @@ async function compute(deps: SessionAccessDependencies, caller: SessionCaller, o
   // answer itself read-only for every other surface (Slack, MCP, agent tools) that asks it.
   if (!isWriterOrgRole(orgRole) && RANK[level] > RANK.view) level = "view";
   const shareRole = options.wantShareRole === true && session.project !== undefined ? await shareRoleOn(session.project) : undefined;
-  return { shareRole, level, undecided: level === "none" && slackNotAsked && !denied, owner, effectiveOwner, effectiveOwnerWrittenAt: effectiveOwnerWrittenAt(session, taskItem), projectRole, orgAdmin, orgRole };
+  return { shareRole, level, undecided: level === "none" && slackNotAsked && !denied, owner, effectiveOwner, effectiveOwnerWrittenAt: effectiveOwnerWrittenAt(session, taskItem), projectRole, memberRole, orgAdmin, orgRole };
 }
 
 /**
@@ -365,9 +378,21 @@ export async function sessionLevelOf(deps: SessionAccessDependencies, caller: Se
   return (await compute(deps, caller, role.data, session, options)).level;
 }
 
+/**
+ * The level the live Ask reads for a person (the service's turn re-checks it, `ask-context.ts`): the session level, except that a collaborator who holds `view` reads as `use` FOR THE ASK ONLY (decision 103).
+ * Never used for anything else.
+ */
+export async function sessionAskLevelOf(deps: SessionAccessDependencies, caller: SessionCaller, session: AgentSessionRecord, options: SessionAccessOptions = {}): Promise<"none" | SessionLevel> {
+  const member = await getItem(deps, orgMemberKey(caller.orgId, caller.developerId));
+  const role = OrgRoleSchema.safeParse(member?.["role"]);
+  if (!role.success) return "none";
+  const computed = await compute(deps, caller, role.data, session, options);
+  return !computed.owner && computed.level === "view" && memberMay({ memberRole: computed.memberRole }, "use", { ask: true }) ? "use" : computed.level;
+}
+
 function finish(session: AgentSessionRecord, computed: Computed): SessionAccess {
   if (computed.level === "none") throw NOT_FOUND();
-  return { session, level: computed.level, owner: computed.owner, effectiveOwner: computed.effectiveOwner, effectiveOwnerWrittenAt: computed.effectiveOwnerWrittenAt, orgAdmin: computed.orgAdmin, orgRole: computed.orgRole, ...(computed.projectRole === undefined ? {} : { projectRole: computed.projectRole }) };
+  return { session, level: computed.level, owner: computed.owner, effectiveOwner: computed.effectiveOwner, effectiveOwnerWrittenAt: computed.effectiveOwnerWrittenAt, orgAdmin: computed.orgAdmin, orgRole: computed.orgRole, ...(computed.projectRole === undefined ? {} : { projectRole: computed.projectRole }), ...(computed.memberRole === undefined ? {} : { memberRole: computed.memberRole }) };
 }
 
 export interface RequireOptions extends SessionAccessOptions {
@@ -375,6 +400,18 @@ export interface RequireOptions extends SessionAccessOptions {
   comment?: true;
   /** An org owner or admin may do this (Stop) although their level is only `view`. */
   orgAdminMay?: true;
+  /** The action is the live Ask (`ask.ts`): it needs `use`, except that a collaborator may ask at `view` (decision 103). Its rates and caps are the Ask's own and are unchanged. */
+  ask?: true;
+}
+
+/**
+ * Decision 103: what a project member whose floor is a viewer may still do, by Cloud's permission table on their exact role: comment (the `comment` permission) and the live Ask (`ask`). Nothing else (no
+ * steering, stopping, sharing, retrying, taking over or anything that uses an agent or starts work). A viewer's row has neither, so a viewer gets neither; a collaborator's has both.
+ */
+export function memberMay(access: { memberRole?: MemberRole | undefined }, needed: SessionLevel, options: Pick<RequireOptions, "comment" | "ask">): boolean {
+  const role = access.memberRole;
+  if (role === undefined) return false;
+  return (options.comment === true && needed === "view" && memberAllows(role, "comment")) || (options.ask === true && needed === "use" && memberAllows(role, "ask"));
 }
 
 /**
@@ -388,6 +425,8 @@ export async function requireSessionLevel(deps: SessionAccessDependencies, calle
 
 /** `requireSessionLevel`'s judgement of an access already worked out (for a session that exists, or one judged before it is made). */
 export function requireLevelOf(access: SessionAccess, needed: SessionLevel, action: string, options: RequireOptions = {}): SessionAccess {
+  // Decision 103: comment and the live Ask are permissions of their own; a member whose role grants one may do it with what any viewer holds (`view`). Its level is never raised for anything else.
+  if (memberMay(access, needed, options) && atLeast(access.level, "view")) return access;
   if (!access.owner && access.projectRole === "viewer" && (needed !== "view" || options.comment === true)) {
     throw agentXError("SESSION_LEVEL_REQUIRED", sessionViewerOnlyMessage(access.session.project ?? "this project"));
   }
@@ -408,15 +447,17 @@ export const OFFER_HANDOFF = false as boolean;
  * What the person may do, for the session's header: `view` watches and comments, `use` also steers, `edit` also stops, takes over (not the owner: they already own it) and shares, and retries a session that failed or was
  * cancelled, or whose workflow is blocked (`state` is the session's summary now). Handing off is the owner's.
  */
-export function sessionActionsFor(access: Pick<SessionAccess, "level" | "owner" | "orgAdmin"> & { projectRole?: ProjectRole | undefined }, state: { status: SessionStatus; workflowBlocked?: true | undefined; closable?: true | undefined; /** The task was closed by its owner: nothing can be steered, stopped, retried, taken over, handed off or closed again (it can still be watched, commented on and, at edit level, shared). */ closed?: true | undefined;
+export function sessionActionsFor(access: Pick<SessionAccess, "level" | "owner" | "orgAdmin"> & { projectRole?: ProjectRole | undefined; memberRole?: MemberRole | undefined }, state: { status: SessionStatus; workflowBlocked?: true | undefined; closable?: true | undefined; /** The task was closed by its owner: nothing can be steered, stopped, retried, taken over, handed off or closed again (it can still be watched, commented on and, at edit level, shared). */ closed?: true | undefined;
   /** UX2 slice 2 item 6: the summary's status in the one status model. Merged or Closed reads as closed here too: Stop, Retry and steering are not offered where they don't apply. */ display?: unknown }): SessionAction[] {
   if (access.level === "none") return [];
   const shown = TaskStatusSchema.safeParse(state.display);
   // A run that ended by itself (cancelled) reads Closed but can still be retried (`retryable`); a merge or a task its owner closed cannot.
   if (shown.success && (shown.data.state === "merged" || (shown.data.state === "closed" && shown.data.retryable !== true))) state = { ...state, closed: true };
   // Share stays for an edit-level person: a closed task is still a record worth showing someone, and sharing it starts no work (the share route has its own checks).
-  if (state.closed === true) return !access.owner && access.projectRole === "viewer" ? ["watch"] : ["watch", "comment", ...(atLeast(access.level, "edit") ? ["share" as const] : [])];
-  if (!access.owner && access.projectRole === "viewer") return ["watch"];
+  // Decision 103: a viewer-floor member whose role has the `comment` permission (a collaborator) watches and comments; a viewer only watches.
+  const viewerActions: SessionAction[] = memberMay(access, "view", { comment: true }) ? ["watch", "comment"] : ["watch"];
+  if (state.closed === true) return !access.owner && access.projectRole === "viewer" ? viewerActions : ["watch", "comment", ...(atLeast(access.level, "edit") ? ["share" as const] : [])];
+  if (!access.owner && access.projectRole === "viewer") return viewerActions;
   const actions: SessionAction[] = ["watch", "comment"];
   if (atLeast(access.level, "use")) actions.push("steer");
   if (atLeast(access.level, "edit")) {

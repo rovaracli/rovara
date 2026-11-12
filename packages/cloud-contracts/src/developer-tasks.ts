@@ -2,6 +2,7 @@ import { z } from "zod";
 import { AgentIdSchema, CHANNEL_TURNS_MAX, ChannelTurnSchema, DesignActionsViewSchema, DEVELOPER_EVENTS_MAX, DEVELOPER_TASK_SUMMARY_MAX, DeveloperTaskEventSchema, DeveloperTaskFailureSchema, DeveloperTaskRunViewSchema, DeveloperTaskShareSchema, DeveloperTaskStatusSchema, E2ESharedViewSchema, EarlyRiskSignalReadSchema, ErrorRefSchema, EvidenceViewSchema, MergeViewSchema, ModelFallbacksSchema, PlanOneScreenSchema, ProofTableViewSchema, PullRequestSummarySchema, readsAsUnknown, RunEstimateSchema, SessionIdSchema, SpendRequestIdSchema, TaskStatusSchema, TestingViewSchema, VerificationReportSchema, WORKFLOW_PLAN_MAX_BYTES } from "@rovara-code/contracts";
 import { WorkflowSnapshotViewSchema, WorkflowSnapshotReaderShape, type WorkflowSnapshotReader } from "./task-workflow.js";
 import { MergeTrackingItemSchema } from "./rovara-code.js";
+import { ContinueLoopViewSchema } from "./continue-loop.js";
 
 export const DeveloperTaskViewSchema = z.object({
   /** Actual audited fallback history; absent only on older servers. Current broker emits [] when none. */
@@ -132,6 +133,11 @@ export const DeveloperTaskViewSchema = z.object({
    * pull request was published with risk low. Private: it is left out for every other viewer, and it is never on the shared card, in a Slack thread or on the pull request.
    */
   earlyRiskSignal: EarlyRiskSignalReadSchema.optional(),
+  /**
+   * "Continue in your own tool" (version 2, full reads only): the working branch name per repository once there is one (a pull request's branch, or one published on request), the pushes that did not come from
+   * Rovara with the pusher's GitHub login ("Changed outside Rovara · checks needed"), and whether THIS reader may publish the branch or ask for a re-check. The routes check again. Absent for a version 1 task.
+   */
+  continueLoop: ContinueLoopViewSchema.optional().catch(undefined),
 });
 
 /**

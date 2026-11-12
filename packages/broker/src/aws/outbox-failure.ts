@@ -1,5 +1,9 @@
 import { GetCommand, PutCommand, TransactWriteCommand, UpdateCommand, type DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
-import { WORKFLOW_BLOCK_REASONS, WorkflowSnapshotSchema, blockWorkflow, blockWorkflowPullRequestUpdate } from "@agentx/cloud-contracts";
+import { OUTSIDE_RECHECK_WORKER_MISSING } from "@agentx/cloud-contracts";
+import type { OrgId } from "@rovara-code/contracts";
+import { codeMilestoneItems } from "../rovara-code/milestones.js";
+import { OUTSIDE_RECHECK_NOT_ADOPTED, outsideRecheckOutcomeItem } from "./developer-tasks/continue-loop.js";
+import { WORKFLOW_BLOCK_REASONS, WorkflowSnapshotSchema, blockWorkflow, blockWorkflowPullRequestUpdate, endWorkflowOutsideRecheck } from "@agentx/cloud-contracts";
 import { WORKFLOW_PULL_REQUEST_UPDATE_WORKER_OUTDATED } from "@rovara-code/contracts";
 import { closeEndedCheck } from "../design-review/check-ends.js";
 import { releaseFailedPreparation } from "./failed-preparation.js";
@@ -174,14 +178,44 @@ async function blockFailedWorkflowRun(documentClient: Pick<DynamoDBDocumentClien
 async function blockFailedPullRequestUpdate(documentClient: Pick<DynamoDBDocumentClient, "send">, tableName: string, workspaceId: string, operationId: string, error: string): Promise<void> {
   try {
     const read = async (key: { pk: string; sk: string }) => (await documentClient.send(new GetCommand({ TableName: tableName, Key: key }))).Item;
-    const operation = await read({ pk: `WORKSPACE#${workspaceId}`, sk: `OPERATION#${operationId}` }) as { maintenance?: { repository?: string; pullRequestNumber?: number; workflowCandidate?: { candidateDigest?: string }; workflowSync?: { expectedHeadCommit?: string } } } | undefined;
+    const operation = await read({ pk: `WORKSPACE#${workspaceId}`, sk: `OPERATION#${operationId}` }) as { maintenance?: { repository?: string; pullRequestNumber?: number; workflowCandidate?: { candidateDigest?: string }; workflowSync?: { expectedHeadCommit?: string }; workflowAdopt?: { headCommit?: string } } } | undefined;
     const binding = operation?.maintenance?.workflowCandidate;
     const sync = operation?.maintenance?.workflowSync;
-    if (binding === undefined && sync === undefined) return;
+    const adopt = operation?.maintenance?.workflowAdopt;
+    if (binding === undefined && sync === undefined && adopt === undefined) return;
     const pointer = await read(taskPointerKey(workspaceId)) as { taskId?: string } | undefined;
     if (typeof pointer?.taskId !== "string") return;
     const task = await read(taskKey(pointer.taskId)) as { closedAt?: string; workflow?: unknown } | undefined;
     const workflow = WorkflowSnapshotSchema.safeParse(task?.workflow);
+    // "Continue in your own tool": an adoption of an outside head that never reached its result pushed nothing (its grant could not push), so nothing needs GitHub: the task waits for the merge
+    // exactly as it did, with its earlier checked code, and the person may press Recheck again.
+    if (adopt !== undefined) {
+      if (task === undefined || task.closedAt !== undefined || !workflow.success || workflow.data.stage !== "WAIT_FOR_MERGE" || workflow.data.state !== "RUNNING"
+        || workflow.data.outsideRecheck?.phase !== "adopting" || workflow.data.outsideRecheck.headSha !== adopt.headCommit) return;
+      const now = new Date().toISOString();
+      const marker = workflow.data.outsideRecheck;
+      if (marker === undefined) return;
+      // A worker that cannot adopt a head (an older image) refused it at delivery: the person is told so once, in plain words; any other end is "the run didn't finish".
+      const oldWorker = error.includes(OUTSIDE_RECHECK_WORKER_MISSING);
+      const reason = oldWorker ? OUTSIDE_RECHECK_WORKER_MISSING.replace(/\.$/u, "").replace(/^This/u, "this") : OUTSIDE_RECHECK_NOT_ADOPTED.unfinished;
+      const owner = task as { orgId?: OrgId; sessionId?: string };
+      const link = (workflow.data.pullRequests ?? []).find((entry) => entry.repositoryId === marker.repositoryId && entry.number === marker.number);
+      await documentClient.send(new TransactWriteCommand({ TransactItems: [
+        { Update: {
+          TableName: tableName, Key: taskKey(pointer.taskId),
+          UpdateExpression: "SET workflow = :workflow, updatedAt = :now",
+          ConditionExpression: "workflow.revision = :revision AND workflow.#stage = :stage AND workflow.#state = :running AND attribute_not_exists(closedAt)",
+          ExpressionAttributeNames: { "#stage": "stage", "#state": "state" },
+          ExpressionAttributeValues: { ":workflow": endWorkflowOutsideRecheck(workflow.data, now), ":now": now, ":revision": workflow.data.revision, ":stage": "WAIT_FOR_MERGE", ":running": "RUNNING" },
+        } },
+        outsideRecheckOutcomeItem(tableName, pointer.taskId, marker.requestId, "not_adopted", reason, now),
+        ...(oldWorker && owner.orgId !== undefined && link !== undefined ? codeMilestoneItems({ tableName }, {
+          kind: "stuck", orgId: owner.orgId, taskId: pointer.taskId, ...(owner.sessionId === undefined ? {} : { sessionId: owner.sessionId }), at: now,
+          text: `${OUTSIDE_RECHECK_WORKER_MISSING} Nothing was changed.`, pullRequests: [{ repository: link.repositoryId, number: link.number, url: link.url }],
+        }, workflow.data.revision + 1) : []),
+      ] }));
+      return;
+    }
     // Plan 6 Task 17: a merge of the base branch that never reached the worker's result may still have pushed. Nothing here can ask GitHub, so the task stays at its merge and a row brings the broker's
     // sweep back to it, which judges the merge from what GitHub shows (and ends it when it shows nothing); until then nothing else is decided about the pull request's head.
     if (sync !== undefined) {

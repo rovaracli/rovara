@@ -317,13 +317,25 @@ describe("task page API through the broker", () => {
     expect(empty.json).toEqual({ error: "invalid_request", message: "Include at least one comment or write a note." });
   });
 
+  it("state forwards the decide seat (approval place): \"maintainer\" or \"owner\" beside canDecide, never without canDecide, and never a name", async () => {
+    const base = await fakeDeps().taskState(caller, taskId);
+    for (const decideAs of ["maintainer", "owner"] as const) {
+      const answer = await call(fakeDeps({ taskState: async () => ({ ...base, decideAs, ownerName: "Maya Chen" } as never) }), get(api("state")));
+      expect(answer.json).toMatchObject({ canDecide: true, decideAs });
+      expect(answer.json).not.toHaveProperty("ownerName");
+    }
+    const refused = await call(fakeDeps({ taskState: async () => ({ ...base, canDecide: false, decideAs: "maintainer" }) }), get(api("state")));
+    expect(refused.json.canDecide).toBe(false);
+    expect(refused.json).not.toHaveProperty("decideAs");
+  });
+
   it("state answers the owner and a teammate with the CSRF token", async () => {
     const t = await sharedTask();
     for (const who of [MAYA, LEE]) {
       const answer = await t.send(who, "GET", `/review/${t.id}/task/api/state`);
       expect(answer.statusCode).toBe(200);
       expect(answer.json).toEqual({ revision: t.revision, waiting: true, stage: "Coding plan", documents: [{ anchor: "coding-plan", version: 1 }], commentSeq: 0,
-        canRead: true, canComment: true, canSuggest: who === LEE, canDecide: who === MAYA, canAsk: false,
+        canRead: true, canComment: true, canSuggest: who === LEE, canDecide: who === MAYA, ...(who === MAYA ? { decideAs: "owner" } : {}), canAsk: false,
         canManagePeople: false, canTakeOwnership: false, csrf: CSRF });
     }
   });

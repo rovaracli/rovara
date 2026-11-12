@@ -5,7 +5,7 @@
 import { DESIGN_REVIEW_DEFAULT_SETTING, designReviewSettingOf, type KnownFailingPolicyState, type ProjectPlaybookResponse, type StageModelsResponse } from "@agentx/cloud-contracts/web";
 import type { LearningView } from "../../api/learning.js";
 import type { LessonsView } from "../../api/lessons.js";
-import type { CompanyRulesSummary } from "../../api/agreement.js";
+import type { CompanyRulesSummary, MergeRules } from "../../api/agreement.js";
 import { modelKey, stageResult } from "../../api/stage-models.js";
 import { TIER_LABELS, approverWords, lockedSet, markOf, settingLines, type SettingField } from "../project/design-review-setting.js";
 import { STAGE_LABELS } from "../project/stage-model-text.js";
@@ -167,6 +167,22 @@ export function companyRulesRows(summary: CompanyRulesSummary): AgreementRow[] {
  const total = companyRulesCount(summary);
  const value = total === 0 ? "No company rules yet" : (total === 1 ? "1 company rule applies" : String(total) + " company rules apply") + " (" + String(summary.required) + " required, " + String(summary.preferred) + " preferred)";
  return [{ id: "company-rules", title: "Company rules", value, origin: "none", source: "company-rules", manage: "company-rules", ...(summary.version === undefined ? {} : { version: summary.version }), ...(summary.pending ? { pending: true } : {}) }];
+}
+
+// ---- merge rules ----
+const MERGE_METHOD_WORDS: Readonly<Record<string, string>> = { squash: "Squash and merge", merge: "Merge commit" };
+/**
+ * The project's merge rules (`GET .../code-settings`): who Rovara asks to review, the self-approval exception and the merge method. Read only: they are changed on the project page. Revision 0 is the settings
+ * nobody has saved (the contract's defaults), so those rows say "Rovara default"; once a maintainer has saved any, they are the project's choice. A method this version does not know has no row.
+ */
+export function mergeRulesRows(rules: MergeRules): AgreementRow[] {
+ const origin: Origin = rules.revision === 0 ? "rovara-default" : "project-choice", rows: AgreementRow[] = [];
+ const add = (key: string, title: string, value: string) => { rows.push({ id: "merge:" + key, title, value, origin, source: "merge" }); };
+ add("reviewers", "Reviewers Rovara asks", rules.codeReviewers.length === 0 ? "No one is asked by name" : rules.codeReviewers.join(", "));
+ add("self-approval", "Self-approval exception", rules.allowSelfApproval ? "On: a person may approve a pull request Rovara made for them" : "Off: a pull request Rovara made for someone needs a different person's approval");
+ const method = MERGE_METHOD_WORDS[rules.mergeMethod];
+ if (method !== undefined) add("method", "Merge method", method);
+ return rows;
 }
 
 // ---- what the task itself says ----

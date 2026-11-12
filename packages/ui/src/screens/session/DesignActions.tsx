@@ -5,6 +5,7 @@ import { useAppHost } from "../../host.js";
 import { createDesignReviewApi } from "../../api/design-review.js";
 import { ApiError } from "../../api/errors.js";
 import { TaskDecisions } from "../home/NeedsYou.js";
+import { useTaskSeat } from "./task-seat.js";
 import { StoppedTaskActions } from "./StoppedTaskActions.js";
 import { TaskPagePeopleAndComments } from "./TaskPagePeopleAndComments.js";
 import { PlanPanelHost, usePanelDocument } from "./plan-panel-host.js";
@@ -67,7 +68,7 @@ export function DesignActions({ task, sessionKey }: { task: ReadTask; sessionKey
 /** The task's decision cards, with the design review's line and buttons above them. A task view without `designActions` or a design review is exactly the cards, as before. */
 export function TaskDesignPanel({ session, taskId }: { session: ReadSession; taskId: string }) {
  const host = useAppHost(), query = useQueryClient(), api = useMemo(() => createDesignReviewApi(host), [host]), task = useMemo(() => workspaceTask(session), [session]);
- const panel = usePanelDocument();
+ const panel = usePanelDocument(), seat = useTaskSeat(session, taskId);
  // OWNER DECISION 18 (review M4): only for the task's owner, only while a PR feedback review waits for them (its own read, made only at that stage), and only with the cards on.
  const feedback = useQuery({ queryKey: ["task-feedback", taskId], queryFn: () => createPlanPanelApi(host).feedback(taskId), retry: false, enabled: panel.on && session.you.owner && task?.workflow?.stage === "WAIT_FOR_MERGE" });
  const feedbackWaiting = panel.on && session.you.owner && feedback.data?.status === "PENDING";
@@ -87,5 +88,5 @@ export function TaskDesignPanel({ session, taskId }: { session: ReadSession; tas
   submit: async (answers: ReadonlyArray<{ questionId: string; optionId?: string; text?: string }>) => { await api.answer(taskId, crypto.randomUUID(), answers);await reread(); },
   resume: async () => { await api.resume(taskId, crypto.randomUUID());await reread(); },
  };
- return <>{task !== undefined && <DesignActions task={task} sessionKey={key} />}{task !== undefined && <StoppedTaskActions task={task} sessionId={session.sessionId} />}<TaskPagePeopleAndComments taskId={taskId} />{feedbackWaiting && <p><Button onClick={panel.showFeedback}>Review PR feedback</Button></p>}<TaskDecisions taskId={taskId} design={design} questions={questions} /><PlanPanelHost taskId={taskId} /></>;
+ return <>{task !== undefined && <DesignActions task={task} sessionKey={key} />}{task !== undefined && <StoppedTaskActions task={task} sessionId={session.sessionId} />}<TaskPagePeopleAndComments taskId={taskId} />{feedbackWaiting && <p><Button onClick={panel.showFeedback}>Review PR feedback</Button></p>}<TaskDecisions taskId={taskId} design={design} questions={questions} seat={seat} /><PlanPanelHost taskId={taskId} /></>;
 }

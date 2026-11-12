@@ -1,6 +1,7 @@
 // Owner decision 91 (and experience decision 24): only an org owner or admin confirms a company-wide agent share, and only on the confirmation
 // page with a fresh sign-in. The agent's own author (a plain member) and a project's maintainer ask, they never decide; an admin who is the author
 // still goes through the page: a token or a stale sign-in can't confirm it. Sharing with a project or a person is unchanged (applies at once).
+import "../support/automations-on.js";
 import { createHash, randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";

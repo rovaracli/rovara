@@ -1,6 +1,7 @@
 // Plan 4 Task 5: chain budgets, payers and origins. A chain is paid for the way an agent is (a payer, a monthly budget, a place), its steps count once against the
 // chain and never against the agent, a run has a limit of its own that a step's raise is measured against, and a person's chain budgets and agent budgets are one
 // monthly total (R65) under one cap, held to the effective total (base plus this month's top-ups, as Plan 3's round 1 ruled).
+import "../support/automations-on.js";
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 import { DEFAULT_PERSON_CHAIN_RUN_LIMIT_USD, chainKey, agentGuardrailsKey, type Payer } from "@rovara-code/contracts";

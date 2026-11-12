@@ -1,4 +1,5 @@
-// Runs the detectors over a bounded reader and merges what they found. Bounded: a repository with more than 5,000 files is cut (and says so), a file over 256 KiB is not read, and a detection reads at most 4 MiB.
+// Runs the detectors over a bounded reader and merges what they found. Bounded: a repository with more than 5,000 files is cut (and says so), a file over 256 KiB is not read, and a detection reads at most 6 MiB, of which
+// 2 MiB are kept for the files that say how the repository is built and run (manifests, CI, Docker, compose, Makefile, README): source files and other settings can use the other 4 MiB, so they never starve those.
 import type { ProjectCommand } from "@rovara-code/contracts";
 import { detectBrazil } from "./brazil.js";
 import { detectIacResources } from "./iac-resources.js";
@@ -10,9 +11,11 @@ import { mergeCandidates } from "./dependency-candidates.js";
 import { detectGo } from "./go.js";
 import { detectIac } from "./iac.js";
 import { detectJava } from "./java.js";
+import { sameCommandLine } from "./command-alias.js";
 import { detectNode } from "./node.js";
 import { detectPython } from "./python.js";
 import { detectSdkCalls, detectServices } from "./services.js";
+import { isImportantPath } from "./read-priority.js";
 import { detectSeedFiles } from "./seed-files.js";
 import { emptyDetection, type DependencyCandidate, type Detection, type Detector, type RepositoryReader } from "./types.js";
 
@@ -38,7 +41,12 @@ export const DEPENDENCY_DETECTOR_NAMES: ReadonlySet<string> = new Set(["compose"
 
 export const ENV_DETECT_MAX_PATHS = 5_000;
 export const ENV_DETECT_MAX_FILE_BYTES = 256 * 1_024;
-export const ENV_DETECT_MAX_TOTAL_BYTES = 4 * 1_048_576;
+/** The most a detection reads in all (the hard cap: cost stays bounded). */
+export const ENV_DETECT_MAX_TOTAL_BYTES = 6 * 1_048_576;
+/** The part of the total only the build and run files (see `read-priority.ts`) may use: every other file is cut at the total less this. */
+export const ENV_DETECT_RESERVED_BYTES = 2 * 1_048_576;
+/** How many skipped important files a detection names. */
+export const ENV_DETECT_MAX_SKIPPED_NAMED = 8;
 
 /**
  * A reader over a directory's files given by the caller: paths are cut to the limit, a path outside the list reads as missing, and the byte budget is shared by every detector. `load` returns a file's text (or
@@ -49,20 +57,30 @@ export function boundedReader(paths: readonly string[], load: (path: string) => 
   const allowed = new Set(kept);
   let total = 0;
   let exhausted = false;
+  const skipped: string[] = [];
   const cache = new Map<string, string | undefined>();
   return {
     reader: {
       paths: kept,
       truncated: paths.length > ENV_DETECT_MAX_PATHS,
       budgetExhausted: () => exhausted,
+      skippedImportant: () => skipped,
       async read(path) {
         if (!allowed.has(path)) return undefined;
         if (cache.has(path)) return cache.get(path);
         let text: string | undefined;
         try { text = await load(path); } catch { text = undefined; }
-        if (text !== undefined && Buffer.byteLength(text) <= ENV_DETECT_MAX_FILE_BYTES && total + Buffer.byteLength(text) > ENV_DETECT_MAX_TOTAL_BYTES) exhausted = true;
-        if (text !== undefined && (Buffer.byteLength(text) > ENV_DETECT_MAX_FILE_BYTES || total + Buffer.byteLength(text) > ENV_DETECT_MAX_TOTAL_BYTES)) text = undefined;
-        if (text !== undefined) total += Buffer.byteLength(text);
+        if (text !== undefined) {
+          const size = Buffer.byteLength(text);
+          const important = isImportantPath(path);
+          // A build or run file may use the whole budget; any other file stops at the total less the reserve.
+          const cut = size > ENV_DETECT_MAX_FILE_BYTES ? "size" : total + size > (important ? ENV_DETECT_MAX_TOTAL_BYTES : ENV_DETECT_MAX_TOTAL_BYTES - ENV_DETECT_RESERVED_BYTES) ? "budget" : undefined;
+          if (cut === "budget") exhausted = true;
+          if (cut !== undefined) {
+            if (important && skipped.length < ENV_DETECT_MAX_SKIPPED_NAMED + 1) skipped.push(path);
+            text = undefined;
+          } else total += size;
+        }
         cache.set(path, text);
         return text;
       },
@@ -77,7 +95,8 @@ export const ENV_DETECT_MAX_CHECKS = 32;
 export const ENV_DETECT_MAX_SETUP_COMMANDS = 20;
 export const ENV_DETECT_MAX_FULL_SUITE_GLOBS = 90;
 
-const sameCommand = (left: ProjectCommand, right: ProjectCommand): boolean => left.cwd === right.cwd && left.executable === right.executable && JSON.stringify(left.args) === JSON.stringify(right.args);
+/** The same directory and the same program with the same arguments; `npm test` and `npm run test` (and the other spellings of one package.json script) are the same command. */
+const sameCommand = (left: ProjectCommand, right: ProjectCommand): boolean => left.cwd === right.cwd && sameCommandLine(left, right);
 
 /** `unit` taken by another detector becomes `unit-java`, then `unit-java-2`: always a valid, unused check id. */
 function freeId(id: string, detector: string, taken: ReadonlySet<string>): string {
@@ -132,6 +151,8 @@ export async function runDetectors(reader: RepositoryReader, cwd: string, option
   // Dependency candidates (test services D1-D7): present only when a detector found one, so a repository with none gives today's detection byte for byte.
   if (candidates.length > 0) merged.dependencies = mergeCandidates(candidates);
   if (reader.budgetExhausted?.() === true) merged.notes.push("Some files were not read: the read budget ran out.");
+  const skipped = reader.skippedImportant?.() ?? [];
+  if (skipped.length > 0) merged.notes.push(`These files, which say how the repository is built and run, were not read (too large or the read budget ran out): ${skipped.slice(0, ENV_DETECT_MAX_SKIPPED_NAMED).map((path) => path.slice(0, 120)).join(", ")}${skipped.length > ENV_DETECT_MAX_SKIPPED_NAMED ? ", and more" : ""}.`);
   if (cutChecks) merged.notes.push(`More than ${String(ENV_DETECT_MAX_CHECKS)} checks were found; the first ${String(ENV_DETECT_MAX_CHECKS)} are proposed.`);
   if (merged.setupCommands.length > ENV_DETECT_MAX_SETUP_COMMANDS) { merged.setupCommands = merged.setupCommands.slice(0, ENV_DETECT_MAX_SETUP_COMMANDS); merged.notes.push(`More than ${String(ENV_DETECT_MAX_SETUP_COMMANDS)} setup commands were found; the first ${String(ENV_DETECT_MAX_SETUP_COMMANDS)} are proposed.`); }
   if (merged.fullSuiteOn.length > ENV_DETECT_MAX_FULL_SUITE_GLOBS) { merged.fullSuiteOn = merged.fullSuiteOn.slice(0, ENV_DETECT_MAX_FULL_SUITE_GLOBS); merged.notes.push(`More than ${String(ENV_DETECT_MAX_FULL_SUITE_GLOBS)} full-suite paths were found; the first ${String(ENV_DETECT_MAX_FULL_SUITE_GLOBS)} are proposed.`); }

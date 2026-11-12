@@ -53,7 +53,11 @@ export interface PlanPanelView {
   unverified: boolean;
   /** This document waits for its owner's decision now. */
   waiting: boolean;
-  access: { canComment: boolean; canSuggest: boolean; canDecide: boolean; canAsk: boolean };
+  /**
+   * Approval place (U4): `decideAs` is the seat `canDecide` is from, "owner" or "maintainer" (a project maintainer, or a company owner or admin, deciding someone else's coding plan: the coding plan only); absent
+   * when `canDecide` is false. `ownerName`: for a maintainer, the task owner's name as readers see it ("A former member" for an erased person, never an id), when there is one. Read-only: the decide route decides.
+   */
+  access: { canComment: boolean; canSuggest: boolean; canDecide: boolean; canAsk: boolean; decideAs?: "owner" | "maintainer"; ownerName?: string };
 }
 
 const claimsOf = (claims: readonly PlanClaim[]): PanelClaim[] => claims.map((claim) => ({ id: claim.id, text: plain(claim.text, 2000), ...(claim.children === undefined ? {} : { children: claimsOf(claim.children) }) }));
@@ -69,6 +73,18 @@ function currentOf(entry: TaskDocumentEntry | undefined): PlanPanelView["current
       options: decision.options.map((option) => ({ id: option.id, label: plain(option.label, 300), consequence: plain(option.consequence, 500) })) })),
     risks: plan.risks.map((risk) => plain(risk, 500)), notChanging: plan.notChanging.map((line) => plain(line, 500)),
   };
+}
+
+/**
+ * Who may decide, from the read: the owner's rule (`access.canDecide`) gives the "owner" seat; otherwise a maintainer's seat (`decideSeat`, worked out by `decideSeatOf` with the switch, the company, the live
+ * project role and the People list) gives "maintainer", on the coding plan only, with the owner's name bounded as plain text. Anything else decides nothing.
+ */
+function decideAccess(view: TaskDocumentView, document: PlanPanelDocument): Pick<PlanPanelView["access"], "canDecide" | "decideAs" | "ownerName"> {
+  if (view.access?.canDecide === true) return { canDecide: true, decideAs: "owner" };
+  const seat = view.decideSeat;
+  if (document !== "plan" || seat?.as !== "maintainer") return { canDecide: false };
+  const ownerName = seat.ownerName === undefined ? "" : plain(seat.ownerName, 80);
+  return { canDecide: true, decideAs: "maintainer", ...(ownerName === "" ? {} : { ownerName }) };
 }
 
 export const PLAN_PANEL_VERSION_MISSING = "That version isn't available.";
@@ -93,7 +109,7 @@ export function planPanelView(view: TaskDocumentView, document: PlanPanelDocumen
     ...(shown === undefined ? {} : { current: shown }),
     checks: document !== "plan" ? [] : view.checks.flatMap((check) => (check.id === undefined ? [] : [{ id: check.id, label: plain(check.label, 200) }])),
     unverified, waiting: view.waiting?.kind === kind,
-    access: { canComment: access?.canComment === true, canSuggest: access?.canSuggest === true, canDecide: access?.canDecide === true, canAsk: access?.canAsk === true && view.askAvailable === true },
+    access: { canComment: access?.canComment === true, canSuggest: access?.canSuggest === true, canAsk: access?.canAsk === true && view.askAvailable === true, ...decideAccess(view, document) },
   };
 }
 
@@ -156,7 +172,11 @@ export async function routePlanPanel(deps: DeveloperRouteDependencies, caller: D
   if (deps.tasks === undefined) throw agentXError("NOT_FOUND", "developer tasks are not set up in this deployment");
   const tasks = developerTaskRouteDependencies(deps, caller);
   const taskId = match[1]!.toLowerCase();
-  if (endpoint.startsWith("documents/")) return new StatusReply(200, planPanelView(await getTaskDocumentView(tasks, caller, taskId), endpoint.slice("documents/".length) as PlanPanelDocument, versionOf(url)));
+  if (endpoint.startsWith("documents/")) {
+    const document = endpoint.slice("documents/".length) as PlanPanelDocument;
+    // Only the coding plan's summary names a decide seat, so only its read works one out (the design and requirements panels make no approver read).
+    return new StatusReply(200, planPanelView(await getTaskDocumentView(tasks, caller, taskId, { decideSeat: document === "plan" }), document, versionOf(url)));
+  }
   if (endpoint === "workflow/feedback") return new StatusReply(200, { review: await feedbackRefusal(() => getWorkflowFeedbackReview(tasks, caller, taskId)) });
   if (endpoint === "workflow/feedback-decision") {
     // The old feedback page's decision, through its own function (`submitWorkflowFeedbackDecision`: owner only, the GitHub refresh, the revision and digest fences), with the MCP tool's strict schema.

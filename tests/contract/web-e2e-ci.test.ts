@@ -28,8 +28,8 @@ it("builds once, in a job the browser legs and the final gate wait for, and arch
  const workflow = YAML.parse(await readFile(".github/workflows/ci.yml", "utf8")) as { jobs: Record<string, { needs?: string | string[]; if?: string; steps: Array<{ run?: string; uses?: string; with?: Record<string, unknown> }> }> };
  const build = workflow.jobs["web-e2e-build"];expect(build).toBeDefined();expect(build!.needs).toEqual(["scope", "checks"]);expect(build!.if).toBe("needs.scope.outputs.docs_only != 'true'");
  const commands = build!.steps.map(step => step.run ?? "");expect(commands).toEqual(expect.arrayContaining(["npm ci", "npx tsc -b", "npm run build:web", "node scripts/web-e2e-build-guard.ts"]));
- // packages/*/dist includes packages/web/dist (the app the mock cell serves).
- expect(commands.some(command => /^tar -czf "\$RUNNER_TEMP\/web-e2e-build\.tgz" packages\/\*\/dist$/.test(command))).toBe(true);
+ // packages/*/dist includes packages/web/dist (the app the mock cell serves); vendor/rovara-code/packages/*/dist holds the Code packages the Cloud ones import after the contracts split.
+ expect(commands.some(command => /^tar -czf "\$RUNNER_TEMP\/web-e2e-build\.tgz" packages\/\*\/dist vendor\/rovara-code\/packages\/\*\/dist$/.test(command))).toBe(true);
  const uploads = build!.steps.filter(step => step.uses?.startsWith("actions/upload-artifact@"));expect(uploads).toHaveLength(1);expect(uploads[0]!.uses).toMatch(/^actions\/upload-artifact@[0-9a-f]{40}( #.*)?$/);expect(uploads[0]!.with?.name).toBe("web-e2e-build");expect(uploads[0]!.with?.["if-no-files-found"]).toBe("error");
  expect(workflow.jobs.local?.needs).toContain("web-e2e-build");
  expect(needsVerdict(JSON.stringify({ scope: { result: "success", outputs: { docs_only: "false" } }, "web-e2e": { result: "success" } }), ["web-e2e-build", "web-e2e"]).ok).toBe(false);
@@ -41,8 +41,8 @@ it("the build guard names what is missing from an unpacked build", () => {
  const root = mkdtempSync(join(tmpdir(), "e2e-build-")), put = (path: string) => { mkdirSync(join(root, path, ".."), { recursive: true });writeFileSync(join(root, path), "x") };
  for (const name of ["cloud-contracts", "web"]) { put(`packages/${name}/package.json`);put(`packages/${name}/tsconfig.json`) }
  put("packages/notes/README.md");
- expect(missingBuildOutputs(root)).toEqual(["packages/cloud-contracts/dist", "packages/web/dist", "packages/web/dist/app/index.html", "packages/cloud-contracts/dist/index.js"]);
- put("packages/cloud-contracts/dist/index.js");put("packages/web/dist/app/index.html");expect(missingBuildOutputs(root)).toEqual([]);
+ expect(missingBuildOutputs(root)).toEqual(["packages/cloud-contracts/dist", "packages/web/dist", "packages/web/dist/app/index.html", "packages/cloud-contracts/dist/index.js", "vendor/rovara-code/packages/contracts/dist/index.js"]);
+ put("packages/cloud-contracts/dist/index.js");put("packages/web/dist/app/index.html");put("vendor/rovara-code/packages/contracts/dist/index.js");expect(missingBuildOutputs(root)).toEqual([]);
  const run = (target: string) => spawnSync("node", ["scripts/web-e2e-build-guard.ts", target], { encoding: "utf8" });
  expect(run(root)).toMatchObject({ status: 0 });const empty = mkdtempSync(join(tmpdir(), "e2e-build-"));mkdirSync(join(empty, "packages/web"), { recursive: true });writeFileSync(join(empty, "packages/web/tsconfig.json"), "{}");
  const failed = run(empty);expect(failed.status).toBe(1);expect(failed.stdout).toContain("::error::The web-e2e-build archive does not hold packages/web/dist.");

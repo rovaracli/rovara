@@ -3,6 +3,6 @@
 repo=https://github.com/PrepLabsAI/Rovara.git
 sha=d4a0a504e4ceaf7b18b0e72fe9a744b3d5c1c538
 branch=code/next
-include=LICENSE,LICENSE-APACHE,RELICENSED.md,docs/ports.md,packages/broker,packages/contracts,packages/gateway,packages/local-adapters,packages/model-runtime,packages/verifier,packages/worker,tsconfig.base.json
-files=1734
-manifest-sha256=407ad85b729aa0306e63ac22873cc7c055514ab66768604887435f1078f67d3d
+include=LICENSE,LICENSE-APACHE,RELICENSED.md,docs/ports.md,packages/broker,packages/contracts,packages/gateway,packages/local-adapters,packages/model-runtime,packages/verifier,packages/worker,tests/support/ports,tsconfig.base.json
+files=1755
+manifest-sha256=a6adc1f7914b7ae383d46d06948dfe2606ef1d766eebca1bf288963ff22df4c1

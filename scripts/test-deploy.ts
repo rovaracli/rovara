@@ -315,6 +315,8 @@ export const CONTROL_PLANE_LAMBDAS_NOT_DEPLOYED: Readonly<Record<string, string>
   AuditLedgerAuditExportED90D71C: "a Rovara Cloud function (audit ledger): not a TEST unit; it ships with a CDK deploy",
   ModelAccessFunction1B50ECC9: "a Rovara Cloud function (model access): not a TEST unit; it ships with a CDK deploy",
   RealtimeAuthorizer74F9F06D: "a Rovara Cloud function (realtime events): not a TEST unit; it ships with a CDK deploy",
+  // Company-approved test images (0.5.15, switch pj): the mirror function runs only when a company admin approves an image, and its role, the mirror role and the repository policy that names it are infra; it ships with a CDK deploy.
+  CompanyImageMirrorFunctionA216CF6B: "the company image mirror (0.5.15): not a TEST unit while company images are off on TEST; it ships with a CDK deploy",
   // The web app (Plan 7 Part A): the page function serves packages/web/dist/app, a directory with hashed assets that a BucketDeployment uploads to the asset bucket, so a code-only zip of the handler could not move the app; the handler of that upload is CDK's own.
   WebAppFunction611CC907: "the web app's page function: it bundles packages/web/dist/app and its assets are uploaded by a BucketDeployment, which a code-only change set cannot do; it ships with a CDK deploy",
   CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756C81C01536: "CDK's own BucketDeployment handler (the web app's asset upload), not repo code; it ships with a CDK deploy",

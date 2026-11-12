@@ -42,7 +42,7 @@ function fakeDocker(initial: Record<string, string>) {
   const execs: Array<{ args: string[]; request: SandboxFileRequest }> = [];
   const docker: DockerCli = {
     async run(args) {
-      if (args[0] === "network" && args[1] === "inspect") return { exitCode: 0, stdout: "bridge {} false", stderr: "" };
+      if (args[0] === "network" && args[1] === "inspect") return { exitCode: 0, stdout: 'bridge {"com.docker.network.bridge.enable_icc":"false","com.docker.network.bridge.name":"rvbtask"} false', stderr: "" };
       if (args[0] === "inspect") return { exitCode: 0, stdout: "[]", stderr: "" };
       return { exitCode: 0, stdout: "", stderr: "" };
     },

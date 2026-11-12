@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { developerOrgKey, orgEmailKey, orgMemberKey, orgMetaKey, orgSettingsKey, trialGithubKey, type OrgRole } from "@agentx/cloud-contracts";
 import { memberGrantsPk, orgPk, orgProjectCatalogKey, projectMemberKey, type OrgId } from "@rovara-code/contracts";
 import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
-import { resolveSignInDeveloper, type ResolveSignInDeveloperDependencies } from "../../packages/broker/src/developer/identities.js";
+import { CROSS_COMPANY_REASON, resolveSignInDeveloper, type ResolveSignInDeveloperDependencies } from "../../packages/broker/src/developer/identities.js";
 import type { ProviderIdentity } from "../../packages/broker/src/developer/providers.js";
 import { DeveloperSignInStore, endedByAdmin, endedByUnlink, signInIdentityKey } from "../../packages/broker/src/developer/store.js";
 import { duplicateMerger, mergeDuplicateMember } from "../../packages/broker/src/org/merge-members.js";
@@ -37,13 +37,13 @@ async function seed(db: FakeDynamoDb, orgs: OrgStore, options: { survivorRole?: 
 }
 
 /** One table plays both the State table and the sign-in table (their keys never collide), so the merge's one transaction is visible whole. */
-async function world(options: { survivorRole?: OrgRole; duplicateRole?: OrgRole; spentUsd?: () => Promise<number> } = {}) {
+async function world(options: { survivorRole?: OrgRole; duplicateRole?: OrgRole } = {}) {
   let clock = T0;
   const db = new FakeDynamoDb();
   const logs: Array<Record<string, unknown>> = [];
   const store = new DeveloperSignInStore({ documentClient: db, tableName: "signin", now: () => clock });
   const orgs = new OrgStore({ documentClient: db, tableName: "state", now: () => clock });
-  const mergeDeps = { documentClient: db, tableName: "state", signInStore: store, now: () => clock, ...(options.spentUsd === undefined ? {} : { orgSpentUsd: options.spentUsd }) };
+  const mergeDeps = { documentClient: db, tableName: "state", signInStore: store, now: () => clock };
   const merge = (orgId: OrgId, survivorId = D1, duplicateId = D2) => mergeDuplicateMember(mergeDeps, { orgId, survivorId, duplicateId, duplicateIdentityKey: duplicateId });
   const deps: ResolveSignInDeveloperDependencies = { store, orgs, log: (entry) => logs.push(entry), ...duplicateMerger(mergeDeps) };
   const orgId = await seed(db, orgs, options);
@@ -51,8 +51,8 @@ async function world(options: { survivorRole?: OrgRole; duplicateRole?: OrgRole;
 }
 
 /** The Task 2 first-sign-in race: D2 lost the email pointer and got an org of its own (trial, one member), where D1 holds the pointer in `orgId`. */
-async function raceWorld(options: { spentUsd?: () => Promise<number> } = {}) {
-  const w = await world(options);
+async function raceWorld() {
+  const w = await world();
   w.db.delete(orgMemberKey(w.orgId, D2));
   w.db.delete(developerOrgKey(D2));
   const raceOrg = await w.orgs.createOrgWithOwner({ name: "Priya R.'s team", developerId: D2 });
@@ -301,7 +301,9 @@ describe("rule 1b of resolveSignInDeveloper", () => {
     expect(await w.store.getDeveloper(D2)).not.toHaveProperty("mergedInto");
   });
 
-  it("merges a disposable race org into the email's member and closes it, with or without self-links (Task 2 race)", async () => {
+  // IDENTITY-HEALING-CROSS-ORG (0.5.15): healing only ever acts within one company. Even the old "disposable race org" is a company
+  // that may legitimately be the person's second one (programme T), so it is never merged into another company or closed.
+  it("never merges across companies, even a lone trial org with nothing in it: no merge, no org closed, a log line (with or without self-links)", async () => {
     for (const selfLinked of [false, true]) {
       const w = await raceWorld();
       if (selfLinked) {
@@ -309,72 +311,99 @@ describe("rule 1b of resolveSignInDeveloper", () => {
         await w.store.linkIdentity({ identityKey: D2, developerId: D2, provider: "github", issuer: GITHUB_ISSUER, subject: "4711", login: "priya-dev" });
       }
       const session = await w.store.createSession({ developerId: D2, amr: "github", identityKey: D2 });
+      const before = snapshot(w.db).filter(([key]) => !key.includes("IDENTITY#"));
       w.tick(1000);
 
-      expect(await resolveSignInDeveloper(w.deps, { method: "github", identity: githubIdentity })).toEqual({ developerId: D1, identityKey: D2, link: "new-linked" });
+      expect(await resolveSignInDeveloper(w.deps, { method: "github", identity: githubIdentity })).toMatchObject({ developerId: D2, identityKey: D2 });
 
-      expect(w.db.get(developerOrgKey(D2))).toBeUndefined();
-      expect(w.db.get(orgMemberKey(w.raceOrg, D2))).toBeUndefined();
-      expect(w.db.get(developerOrgKey(D1))).toMatchObject({ orgId: w.orgId, role: "member" });
+      expect(w.db.get(developerOrgKey(D2))).toMatchObject({ orgId: w.raceOrg });
+      expect(w.db.get(orgMemberKey(w.raceOrg, D2))).toBeDefined();
+      expect(w.db.get(orgMetaKey(w.raceOrg))).not.toHaveProperty("closedAt");
+      expect(w.db.get(orgMetaKey(w.raceOrg))).not.toHaveProperty("mergedIntoOrg");
       expect(memberItems(w.db, w.orgId).map((item) => item.developerId)).toEqual([D1]);
-      // Closed, not deleted, and pointing at where its member went.
-      expect(w.db.get(orgMetaKey(w.raceOrg))).toMatchObject({ closedAt: new Date(T0 + 1000).toISOString(), mergedIntoOrg: w.orgId });
-      expect(await w.store.getDeveloper(D2)).toMatchObject({ mergedInto: D1 });
-      expect(endedByAdmin(session.session.startedAt, (await w.store.getDeveloper(D2))?.sessionsEndedAt)).toBe(true);
-      expect(await w.store.getIdentityLink(D2)).toMatchObject({ developerId: D1 });
-      expect(w.logs).toContainEqual(expect.objectContaining({ event: "signin.duplicate_merged", closedOrg: w.raceOrg }));
-      expect(w.logs.filter((entry) => entry.event === "signin.duplicate_other_org")).toEqual([]);
-      expect(await resolveSignInDeveloper(w.deps, { method: "github", identity: githubIdentity })).toMatchObject({ developerId: D1, link: "existing" });
+      expect(await w.store.getDeveloper(D2)).not.toHaveProperty("mergedInto");
+      expect(endedByAdmin(session.session.startedAt, (await w.store.getDeveloper(D2))?.sessionsEndedAt)).toBe(false);
+      expect(w.db.find((item) => item.entityType === "MEMBER_MERGE")).toEqual([]);
+      // Nothing in either company changed: only the sign-in's own identity link may have been touched.
+      expect(snapshot(w.db).filter(([key]) => !key.includes("IDENTITY#"))).toEqual(before);
+      expect(w.logs).toEqual([{ event: "signin.duplicate_other_org", developerId: D2, orgId: w.raceOrg, otherDeveloperId: D1, otherOrgId: w.orgId, reason: CROSS_COMPANY_REASON }]);
     }
   });
 
-  it("carries a GitHub-unlocked trial from the race org to the survivor's org", async () => {
+  it("leaves a GitHub-unlocked trial where it is when the person is in two companies", async () => {
     const w = await raceWorld();
     w.db.set({ ...w.db.get(orgMetaKey(w.raceOrg))!, trialUnlockedAt: T0 - 5000, trialGithubUserId: "4711" });
     w.db.set({ ...trialGithubKey("4711"), entityType: "TRIAL_GITHUB", orgId: w.raceOrg, claimedAt: T0 - 5000 });
     await resolveSignInDeveloper(w.deps, { method: "github", identity: githubIdentity });
-    expect(w.db.get(trialGithubKey("4711"))).toMatchObject({ orgId: w.orgId });
-    expect(w.db.get(orgMetaKey(w.orgId))).toMatchObject({ trialUnlockedAt: T0 - 5000, trialGithubUserId: "4711" });
-    expect(w.db.get(orgMetaKey(w.raceOrg))).toHaveProperty("closedAt");
+    expect(w.db.get(trialGithubKey("4711"))).toMatchObject({ orgId: w.raceOrg });
+    expect(w.db.get(orgMetaKey(w.orgId))).not.toHaveProperty("trialUnlockedAt");
+    expect(w.db.get(orgMetaKey(w.raceOrg))).not.toHaveProperty("closedAt");
   });
 
-  it("leaves a race org that is not disposable alone and says why, each of: projects, grants, other members, invites, GitHub owner, budgets, spend, unknown spend", async () => {
-    const cases: Array<[string, (w: Awaited<ReturnType<typeof raceWorld>>) => void, (() => Promise<number>)?]> = [
+  it("never merges across companies whatever the other company holds: projects, grants, other members, budgets", async () => {
+    const cases: Array<[string, (w: Awaited<ReturnType<typeof raceWorld>>) => void]> = [
       ["projects", (w) => w.db.set({ ...orgProjectCatalogKey(w.raceOrg, "api"), entityType: "PROJECT_CATALOG" })],
       ["project grants", (w) => w.db.set(grant(w.raceOrg, D2, "api", "g"))],
       ["other members", (w) => w.db.set({ ...orgMemberKey(w.raceOrg, "d_other"), entityType: "ORG_MEMBER", orgId: w.raceOrg, developerId: "d_other", role: "member" })],
-      ["invites", (w) => w.db.set({ pk: orgPk(w.raceOrg), sk: "INVITE_REQUEST#r1", entityType: "ORG_INVITE_REQUEST" })],
-      ["invite reference without request marker", (w) => w.db.set({ pk: orgPk(w.raceOrg), sk: "INVITE_DIRECTORY#11111111-1111-4111-8111-111111111111", entityType: "ORG_INVITE_DIRECTORY" })],
-      ["GitHub owner", (w) => w.db.set({ ...w.db.get(orgMetaKey(w.raceOrg))!, githubOwner: "acme" })],
       ["budgets", (w) => w.db.set({ ...orgSettingsKey(w.raceOrg, "BUDGET"), entityType: "ORG_BUDGET", memberOverrides: {} })],
-      ["spend", () => undefined, async () => 0.5],
-      ["unknown spend", () => undefined, async () => { throw new Error("proxy down"); }],
     ];
-    for (const [label, change, spentUsd] of cases) {
-      const w = await raceWorld(spentUsd === undefined ? {} : { spentUsd });
+    for (const [label, change] of cases) {
+      const w = await raceWorld();
       change(w);
       expect(await resolveSignInDeveloper(w.deps, { method: "github", identity: githubIdentity }), label).toMatchObject({ developerId: D2, link: "new-self" });
-      expect(w.logs, label).toContainEqual({ event: "signin.duplicate_other_org", developerId: D2, orgId: w.raceOrg, otherDeveloperId: D1, otherOrgId: w.orgId, reason: expect.stringContaining("") as string });
+      expect(w.logs, label).toContainEqual(expect.objectContaining({ event: "signin.duplicate_other_org", reason: CROSS_COMPANY_REASON }));
       expect(w.db.get(developerOrgKey(D2)), label).toMatchObject({ orgId: w.raceOrg });
       expect(w.db.get(orgMetaKey(w.raceOrg)), label).not.toHaveProperty("closedAt");
       expect(await w.store.getDeveloper(D2), label).not.toHaveProperty("mergedInto");
     }
   });
 
-  it("does not close a race org that stopped being disposable between the checks and the transaction", async () => {
-    let changeOrg: () => void = () => undefined;
-    // The spend check is the last read, and the merge repeats the sign-in's checks: the org gains a GitHub owner right after the second pass.
-    let checks = 0;
-    const w = await raceWorld({ spentUsd: async () => { checks += 1; if (checks === 2) changeOrg(); return 0; } });
-    changeOrg = () => w.db.set({ ...w.db.get(orgMetaKey(w.raceOrg))!, githubOwner: "acme" });
-    await expect(resolveSignInDeveloper(w.deps, { method: "github", identity: githubIdentity })).rejects.toMatchObject({ name: "TransactionCanceledException" });
-    expect(w.db.get(developerOrgKey(D2))).toMatchObject({ orgId: w.raceOrg });
-    expect(w.db.get(orgMemberKey(w.raceOrg, D2))).toBeDefined();
-    expect(w.db.get(orgMetaKey(w.raceOrg))).not.toHaveProperty("closedAt");
-    expect(await w.store.getDeveloper(D2)).not.toHaveProperty("mergedInto");
-    // The next attempt sees the owner and declines.
+  it("mergeDuplicateMember refuses a duplicate whose membership is in another company, writing nothing (also when a stale caller names its org)", async () => {
+    const w = await raceWorld();
+    for (const extra of [{}, { duplicateOrgId: w.raceOrg }]) {
+      const commandsBefore = w.db.commandNames().length;
+      const before = snapshot(w.db);
+      await expect(mergeDuplicateMember(w.mergeDeps, { orgId: w.orgId, survivorId: D1, duplicateId: D2, duplicateIdentityKey: D2, ...extra })).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+      expect(w.db.commandNames().slice(commandsBefore).filter((name) => WRITES.has(name))).toEqual([]);
+      expect(snapshot(w.db)).toEqual(before);
+    }
+  });
+
+  it("healing the person's duplicate in company A leaves their membership and records in company B as they were", async () => {
+    const w = await world();
+    // The same person (same verified email) also holds company B through a third sign-in route, with a grant and a monthly limit there.
+    const D3 = ownerKeyForSubject(OIDC_ISSUER, "priya-cloud-b");
+    w.db.set(developerRecord(D3, "cloud", OIDC_ISSUER, "priya-cloud-b"));
+    const orgB = await w.orgs.createOrgWithOwner({ name: "Priya's other company", developerId: D3 });
+    w.db.set(grant(orgB, D3, "billing", "grant-b"));
+    w.db.set({ ...orgSettingsKey(orgB, "BUDGET"), entityType: "ORG_BUDGET", memberOverrides: { [D3]: 40 }, revision: 1 });
+    w.db.set(grant(w.orgId, D2, "api", "grant-api"));
+    const companyB = () => snapshot(w.db).filter(([, item]) => JSON.stringify(item).includes(orgB) || JSON.stringify(item).includes(D3));
+    const before = companyB();
+
+    // D2's sign-in heals within company A.
+    expect(await resolveSignInDeveloper(w.deps, { method: "github", identity: githubIdentity })).toMatchObject({ developerId: D1, link: "new-linked" });
+    expect(memberItems(w.db, w.orgId).map((item) => item.developerId)).toEqual([D1]);
+    expect(companyB()).toEqual(before);
+
+    // D3's own sign-in (its email names D1, in company A) is not healed into A, and company B stays open with D3 in it.
+    w.logs.length = 0;
+    expect(await resolveSignInDeveloper(w.deps, { method: "cloud", identity: { method: "cloud", issuer: OIDC_ISSUER, subject: "priya-cloud-b", displayName: "Priya", email: EMAIL, emailVerified: true } })).toMatchObject({ developerId: D3 });
+    expect(w.db.get(developerOrgKey(D3))).toMatchObject({ orgId: orgB });
+    expect(w.db.get(orgMetaKey(orgB))).not.toHaveProperty("closedAt");
+    expect(await w.store.getDeveloper(D3)).not.toHaveProperty("mergedInto");
+    expect(companyB().filter(([key]) => !key.includes("IDENTITY#"))).toEqual(before.filter(([key]) => !key.includes("IDENTITY#")));
+    expect(w.logs).toEqual([{ event: "signin.duplicate_other_org", developerId: D3, orgId: orgB, otherDeveloperId: D1, otherOrgId: w.orgId, reason: CROSS_COMPANY_REASON }]);
+  });
+
+  it("still refuses merge loops: a survivor merged back into the duplicate is never merged into", async () => {
+    const w = await world();
+    w.db.set({ ...w.db.get(`DEVELOPER#${D1}`, "META")!, mergedInto: D2 });
     expect(await resolveSignInDeveloper(w.deps, { method: "github", identity: githubIdentity })).toMatchObject({ developerId: D2 });
-    expect(w.logs).toContainEqual(expect.objectContaining({ event: "signin.duplicate_other_org", reason: "a GitHub organization is connected" }));
+    expect(memberItems(w.db, w.orgId)).toHaveLength(2);
+    expect(await w.store.getDeveloper(D2)).not.toHaveProperty("mergedInto");
+    await expect(w.merge(w.orgId)).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+    await expect(w.merge(w.orgId, D1, D1)).rejects.toMatchObject({ code: "CONFIG_INVALID" });
   });
 
   it("does not merge into a survivor an admin revoked or that was merged away; the sign-in goes on as itself", async () => {
@@ -437,20 +466,22 @@ describe("the duplicate's real GitHub sign-in", () => {
     expect(h.db.find((item) => item.entityType === "SESSION").map((session) => session.developerId)).toEqual([D1]);
   });
 
-  it("heals the race org: the GitHub sign-in lands in the email's org and the lone org is closed", async () => {
+  it("a person in two companies signs in with GitHub into the GitHub route's own company; neither company is closed", async () => {
     const h = identityHarness({ cloud: {}, oidcUsers: [priya], github: { users: [priyaGithub] }, sharedTable: true });
     const orgId = await seed(h.db, h.orgs);
     h.db.delete(orgMemberKey(orgId, D2));
     h.db.delete(developerOrgKey(D2));
-    const raceOrg = await h.orgs.createOrgWithOwner({ name: "Priya R.'s team", developerId: D2 });
+    const otherOrg = await h.orgs.createOrgWithOwner({ name: "Priya R.'s team", developerId: D2 });
 
     const location = await h.signIn("github", "4711");
     const exchanged = await h.exchange(location.searchParams.get("code")!);
     expect(exchanged.status).toBe(200);
-    expect(claimsOf(exchanged.body.access_token)).toMatchObject({ sub: D1, org: orgId, amr: "github" });
+    expect(claimsOf(exchanged.body.access_token)).toMatchObject({ sub: D2, org: otherOrg, amr: "github" });
     expect(memberItems(h.db, orgId).map((item) => item.developerId)).toEqual([D1]);
-    expect(h.db.get(orgMetaKey(raceOrg))).toHaveProperty("closedAt");
-    expect(h.db.get(developerOrgKey(D2))).toBeUndefined();
+    expect(h.db.get(orgMetaKey(otherOrg))).not.toHaveProperty("closedAt");
+    expect(h.db.get(orgMetaKey(orgId))).not.toHaveProperty("closedAt");
+    expect(h.db.get(developerOrgKey(D2))).toMatchObject({ orgId: otherOrg });
+    expect(h.db.get(`DEVELOPER#${D2}`, "META")).not.toHaveProperty("mergedInto");
   });
 });
 

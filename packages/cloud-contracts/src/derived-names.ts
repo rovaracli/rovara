@@ -45,6 +45,11 @@ export const teamRecordTableBucketName = (env: string): string => `${teamRecordN
 export const teamRecordWorkGroupName = (env: string): string => `${teamRecordNamePrefix(env)}-record`;
 /** The embedder Lambda (environments/embedder; a container image). CDK names the function with this, and the broker builds EMBEDDER_FUNCTION_NAME from it, so nothing is passed. */
 export const embedderFunctionName = (env: string): string => `agentx-${env}-embedder`;
+/**
+ * The company image mirror Lambda (0.5.15, switch `pj`). CDK names the function with this (infra/lib/company-image-mirror.ts) and the broker builds COMPANY_IMAGE_MIRROR_FUNCTION_NAME from it, so
+ * nothing is passed: the generated name that was passed in AGENTX_NAMES (code `cm`) cost 68 bytes of the broker's 4 KB environment and took the Team record's headroom under its 400.
+ */
+export const companyImageMirrorFunctionName = (env: string): string => `agentx-${env}-company-image-mirror`;
 
 /**
  * Test services, slice 3: the alias of the key the answer sets (fakes) are encrypted with (SSE-KMS accepts an alias). CDK names the key's alias with this; the broker builds the alias ARN from it, so no variable is passed
@@ -95,6 +100,7 @@ export const DERIVED_BROKER_VARIABLES: readonly DerivedBrokerVariable[] = [
   { variable: "TEAM_RECORD_TABLE_BUCKET", kind: "text", value: teamRecordTableBucketName },
   { variable: "TEAM_RECORD_ATHENA_WORKGROUP", kind: "text", value: teamRecordWorkGroupName },
   { variable: "EMBEDDER_FUNCTION_NAME", kind: "text", value: embedderFunctionName },
+  { variable: "COMPANY_IMAGE_MIRROR_FUNCTION_NAME", kind: "text", value: companyImageMirrorFunctionName },
   // Test services, slice 3: the answer sets' key, by its alias (named environments only: the legacy install has no AGENTX_ENV and no key). Nothing reads it while `tx` is off.
   { variable: "FIXTURE_KEY_ARN", kind: "kmsAliasArn", alias: fixtureKeyAlias },
 ];

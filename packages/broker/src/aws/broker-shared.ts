@@ -386,7 +386,7 @@ export interface WorkflowDispatchRecord {
    * has something to do for the task. `operation_end`: a task's operation ended in a Lambda that has no model proxy (the reaper, the dispatcher, the stuck-cancel
    * sweep), so the broker's recovery sweep blocks its keys and tells the task's end handlers.
    */
-  kind: "CHECKS" | "REVIEW" | "PUBLISH" | "UPDATE" | "IMPLEMENT" | "UNDERSTAND" | "PLAN" | "CRITIQUE" | "CRITIC_REPLAN" | "SYNC" | "REPLAN" | "AUTOFIX" | "GROUNDING" | "agent_run" | "operation_end";
+  kind: "CHECKS" | "REVIEW" | "PUBLISH" | "UPDATE" | "IMPLEMENT" | "UNDERSTAND" | "PLAN" | "CRITIQUE" | "CRITIC_REPLAN" | "SYNC" | "RECHECK" | "REPLAN" | "AUTOFIX" | "GROUNDING" | "agent_run" | "operation_end";
   /** IMPLEMENT (a custom sequence's next coding step) may be due before any candidate exists: then it is WORKFLOW_NO_CANDIDATE_DIGEST. For REPLAN, the digest of `planPrompt`: there is no candidate yet. */
   candidateDigest: string;
   /** REPLAN: what the planner is told on the automatic second run of a plan (the findings, or what was unreadable). */

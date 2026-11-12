@@ -40,12 +40,12 @@ export async function prepareTaskModelFallback(deps:FallbackRecordDependencies,i
  const revision=task.modelFallbackRevision??0;
  if(!history.success||!receipts.success||history.data.length!==receipts.data.length||!Number.isSafeInteger(revision)||revision!==history.data.length||new Set(receipts.data.map(row=>row.key)).size!==receipts.data.length) throw unavailable();
  const old=receipts.data.find(row=>row.key===key);
- if(old!==undefined){if(old.digest!==digest) throw agentXError("CONFIG_INVALID","The fallback occurrence was already used for a different decision.");return {replayed:true as const,items:[] as TransactItem[],event:undefined};}
+ if(old!==undefined){if(old.digest!==digest) throw agentXError("CONFIG_INVALID","The fallback occurrence was already used for a different decision.");return {replayed:true as const,items:[] as TransactItem[],event:undefined,reasonCode:undefined};}
  if(history.data.length>=64) throw unavailable();
 
  const items:TransactItem[]=[{Update:{TableName:deps.tableName,Key:taskKey(input.taskId),UpdateExpression:"SET #history = :history, #receipts = :receipts, #revision = :next",ConditionExpression:"attribute_exists(pk) AND orgId = :org AND taskId = :task AND #project = :project AND "+(task.modelFallbackRevision===undefined?"attribute_not_exists(#revision)":"#revision = :before"),ExpressionAttributeNames:{"#history":"modelFallbacks","#receipts":"modelFallbackReceipts","#revision":"modelFallbackRevision","#project":"project"},ExpressionAttributeValues:{":history":[...history.data,fallback],":receipts":[...receipts.data,{key,digest,eventId:event.eventId,at:input.occurredAt}],":next":history.data.length+1,":org":input.orgId,":task":input.taskId,":project":input.project,...(task.modelFallbackRevision===undefined?{}:{":before":revision})}}},...auditPending({audit:deps.audit},event)];
  if(items.length!==2) throw unavailable();
- return {replayed:false as const,items,event};
+ return {replayed:false as const,items,event,reasonCode:fallback.reasonCode};
 }
 
 /** Operation-scoped history for project turns without a developer-task record.
@@ -56,7 +56,7 @@ export function prepareTurnModelFallback(deps:FallbackRecordDependencies,input:T
  const history=ModelFallbacksSchema.safeParse(current.modelFallbacks??[]),receipts=Receipts.safeParse(current.modelFallbackReceipts??[]),revision=current.modelFallbackRevision??0;
  if(!history.success||!receipts.success||history.data.length!==receipts.data.length||revision!==history.data.length||history.data.length>=64||receipts.data.some(row=>row.key===key))throw unavailable();
  const items=auditPending({audit:deps.audit},event);if(items.length!==1)throw unavailable();
- return {fields:{modelFallbacks:[...history.data,fallback],modelFallbackReceipts:[...receipts.data,{key,digest,eventId:event.eventId,at:input.occurredAt}],modelFallbackRevision:history.data.length+1},items,event};
+ return {fields:{modelFallbacks:[...history.data,fallback],modelFallbackReceipts:[...receipts.data,{key,digest,eventId:event.eventId,at:input.occurredAt}],modelFallbackRevision:history.data.length+1},items,event,reasonCode:fallback.reasonCode};
 }
 
 /** Join this module's prepared fallback to dispatch's existing items, retaining their positions and fences.

@@ -7,9 +7,9 @@
 //     pattern never matches, so the function that parses untrusted internet bytes cannot push into or delete any saved environment, whatever its code does. It is NOT the saved environment push or manage role, which reach all of them. The function assumes it with a session policy that names one repository;
 //   - the broker may invoke the function (`grantInvoke`).
 // The repositories, the creation template, the key and the other roles are the saved environment images' own (saved-env-images.ts); the template's repository policy names this role too. The function reaches the public internet only for the registries the broker's allowlist names (a Lambda outside a VPC).
-import { Duration, aws_iam as iam, type aws_dynamodb as dynamodb, type aws_lambda_nodejs as lambdaNodejs } from "aws-cdk-lib";
+import { Duration, aws_iam as iam, type aws_dynamodb as dynamodb, type aws_lambda as lambda, type aws_lambda_nodejs as lambdaNodejs } from "aws-cdk-lib";
 import { Construct } from "constructs";
-import { COMPANY_IMAGE_MIRROR_ACTIONS, companyImageMirrorRoleName, companyImageRepositoriesArn } from "@agentx/cloud-contracts";
+import { COMPANY_IMAGE_MIRROR_ACTIONS, companyImageMirrorFunctionName, companyImageMirrorRoleName, companyImageRepositoriesArn } from "@agentx/cloud-contracts";
 import { packagedFunction } from "./control-plane.js";
 
 export interface CompanyImageMirrorProps {
@@ -32,6 +32,8 @@ export class CompanyImageMirror extends Construct {
       AGENTX_ENV: props.env,
       AGENTX_ACCOUNT_ID: props.account,
     }, Duration.seconds(900), [], 1024);
+    // A fixed name, so the broker derives it (companyImageMirrorFunctionName) instead of being given the generated one.
+    (this.function.node.defaultChild as lambda.CfnFunction).functionName = companyImageMirrorFunctionName(props.env);
     // The mirror's own partitions of the state table, and no other (the sort key cannot be narrowed here, so the partition is the boundary).
     this.function.addToRolePolicy(new iam.PolicyStatement({
       sid: "MirrorStateRows",

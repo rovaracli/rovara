@@ -85,6 +85,27 @@ it("delivers the M47 system policy seed through the transactional outbox without
     facts: { source: "bootstrap", mode: "rovara_estimate", revision: 1, ceilingMicrousd: 100_000_000 } });
 });
 
+it("delivers the A-31 project invite events (invited, joined by invite, skipped) through the transactional outbox without changing their facts", async () => {
+  const h = harness();
+  const base = { orgId: ORG, actor: { kind: "member" as const, id: "a".repeat(64) }, occurredAt: "2026-10-20T11:59:00.000Z", projectName: "payments" };
+  const events = [
+    builders.auditProjectMemberInvited({ ...base, occurrence: auditOccurrence("invite-project", ORG, "11111111-1111-4111-8111-111111111111"), inviteId: "11111111-1111-4111-8111-111111111111", role: "contributor", inviter: "maintainer" }),
+    builders.auditProjectMemberJoinedByInvite({ ...base, occurrence: "token-hash-1", memberId: "b".repeat(64), role: "contributor", related: ["a".repeat(64)] }),
+    builders.auditProjectMemberInviteSkipped({ ...base, occurrence: "token-hash-2", memberId: "c".repeat(64), role: "viewer", cause: "project_archived" }),
+  ];
+  for (const event of events) expect(AuditEventInputSchema.safeParse(event).success, event.action).toBe(true);
+  await h.documentClient.send(new TransactWriteCommand({ TransactItems: [{ Put: { TableName: "state", Item: { pk: "INVITE#1", sk: "META", done: true } } }, ...events.flatMap((event) => auditPending(h.deps, event))] }));
+  expect(pendingItems(h.db).map((item) => item.event).sort((left, right) => left.action.localeCompare(right.action))).toEqual([...events].sort((left, right) => left.action.localeCompare(right.action)));
+  expect(events.map((event) => [event.action, event.target, event.facts])).toEqual([
+    ["project_member.invited", { kind: "project", name: "payments" }, { role: "contributor", inviter: "maintainer" }],
+    ["project_member.joined_by_invite", { kind: "project", name: "payments" }, { role: "contributor" }],
+    ["project_member.invite_skipped", { kind: "project", name: "payments" }, { role: "viewer", cause: "project_archived" }],
+  ]);
+  await flushAuditEvents(h.deps, events);
+  expect(pendingItems(h.db)).toEqual([]);
+  expect(h.sqs.queue.map((message) => AuditEventInputSchema.parse(JSON.parse(message.body)).action).sort()).toEqual(["project_member.invite_skipped", "project_member.invited", "project_member.joined_by_invite"]);
+});
+
 describe("the pending item", () => {
   it("is one unconditional Put of the plan's shape, in the shard of the event id", () => {
     const h = harness();
@@ -699,6 +720,9 @@ describe("I4: the builders", () => {
     ["auditMemberRemovalCompleted", (occurrence) => builders.auditMemberRemovalCompleted({ ...base, occurrence, details, memberId: "dev_2", outcome: "done", wasRole: "member", counts: { approvalsMoved: 1, grantsRemoved: 2, signInEnded: true, countsComplete: true } })],
     ["auditProjectMemberChanged", (occurrence) => builders.auditProjectMemberChanged({ ...base, occurrence, details, projectName: "Secret Project", memberId: "dev_2", fromRole: "viewer", toRole: "editor" })],
     ["auditProjectMemberRemoved", (occurrence) => builders.auditProjectMemberRemoved({ ...base, occurrence, details, projectName: "Secret Project", memberId: "dev_2", role: "viewer" })],
+    ["auditProjectMemberInvited", (occurrence) => builders.auditProjectMemberInvited({ ...base, occurrence, details, projectName: "Secret Project", inviteId: "11111111-1111-4111-8111-111111111111", role: "contributor", inviter: "maintainer" })],
+    ["auditProjectMemberJoinedByInvite", (occurrence) => builders.auditProjectMemberJoinedByInvite({ ...base, occurrence, details, projectName: "Secret Project", memberId: "dev_2", role: "viewer" })],
+    ["auditProjectMemberInviteSkipped", (occurrence) => builders.auditProjectMemberInviteSkipped({ ...base, occurrence, details, projectName: "Secret Project", memberId: "dev_2", role: "viewer", cause: "project_gone" })],
     ["auditIdentityLinked", (occurrence) => builders.auditIdentityLinked({ ...base, occurrence, details, memberId: "dev_2", provider: "github" })],
     ["auditIdentityUnlinked", (occurrence) => builders.auditIdentityUnlinked({ ...base, occurrence, details, memberId: "dev_2", provider: "github" })],
     ["auditOrgClosed", (occurrence) => builders.auditOrgClosed({ ...base, occurrence, details, plan: "team" })],
@@ -781,6 +805,11 @@ describe("I4: the builders", () => {
     ["auditAutomaticRunStarted", (occurrence) => builders.auditAutomaticRunStarted({ ...base, details, actor: { kind: "system", id: "rovara" }, occurrence, projectName: "Secret Project", job: "nightly", setupApprovedBy: "dev_1", runsThisMonth: 3, cap: 30 })],
     ["auditAutomaticRunStarted (no approver)", (occurrence) => builders.auditAutomaticRunStarted({ ...base, details, actor: { kind: "system", id: "rovara" }, occurrence, projectName: "Secret Project", job: "nightly", setupApprovedBy: undefined, runsThisMonth: 3, cap: 30 })],
     ["auditProjectAutomaticRunsCapChanged", (occurrence) => builders.auditProjectAutomaticRunsCapChanged({ ...base, occurrence, details, projectName: "Secret Project", fromCap: 30, toCap: 60 })],
+    // Collaborator role (W11): the project's switch and product decisions. Never the question, an option's words or an answer's text.
+    ["auditProjectCollaboratorApprovalsChanged", (occurrence) => builders.auditProjectCollaboratorApprovalsChanged({ ...base, occurrence, details, projectName: "Secret Project", enabled: false, revision: 2 })],
+    ["auditProductDecisionRaised", (occurrence) => builders.auditProductDecisionRaised({ ...base, details, actor: { kind: "system", id: "rovara" }, occurrence, taskId: "11111111-1111-4111-8111-111111111111", decisionId: "pdq_abcdefghijklmnopqrstuvwx", risk: "low", options: 2 })],
+    ["auditProductDecisionAnswered", (occurrence) => builders.auditProductDecisionAnswered({ ...base, occurrence, details, taskId: "11111111-1111-4111-8111-111111111111", decisionId: "pdq_abcdefghijklmnopqrstuvwx", risk: "low", revision: 2 })],
+    ["auditProductDecisionApproved", (occurrence) => builders.auditProductDecisionApproved({ ...base, occurrence, details, taskId: "11111111-1111-4111-8111-111111111111", decisionId: "pdq_abcdefghijklmnopqrstuvwx", risk: "low", role: "collaborator", optionId: "a", revision: 3 })],
     ["auditAutomaticRunsPaused", (occurrence) => builders.auditAutomaticRunsPaused({ ...base, details, actor: { kind: "system", id: "rovara" }, occurrence, projectName: "Secret Project", month: "2026-11", cap: 30 })],
     ["auditAutomaticRunEnded", (occurrence) => builders.auditAutomaticRunEnded({ ...base, details, actor: { kind: "system", id: "rovara" }, occurrence, projectName: "Secret Project", job: "nightly", reason: "cap_reached" })],
     ["auditCompanyDesignReviewPolicyChanged", (occurrence) => builders.auditCompanyDesignReviewPolicyChanged({ ...base, occurrence, details, field: "allowed", from: "off", to: "on", mode: "second_person", revision: 2 })],
@@ -867,6 +896,9 @@ describe("I4: the builders", () => {
     ["auditProjectFixtureSetDecided", (occurrence) => builders.auditProjectFixtureSetDecided({ ...base, occurrence, details, projectName: "Secret Project", decision: "approved", digest: "a".repeat(64) })],
     // Send-back access gate (S2), 2026-11-04 integration: a refused person-pressed path
     ["auditTaskWorkRefused", (occurrence) => builders.auditTaskWorkRefused({ ...base, occurrence, details, taskId: "task_1", path: "retry", reason: "owner_no_access" })],
+    // Continue in your own tool: a working branch made before any pull request, and a re-check asked for after a push from outside (fixed words only; never a branch or repository name)
+    ["auditTaskWorkingBranchPublished", (occurrence) => builders.auditTaskWorkingBranchPublished({ ...base, occurrence, details, taskId: "task_1", created: true })],
+    ["auditTaskRecheckRequested", (occurrence) => builders.auditTaskRecheckRequested({ ...base, occurrence, details, taskId: "task_1", outcome: "started" })],
     ["auditProjectSetupRestored", (occurrence) => builders.auditProjectSetupRestored({ ...base, occurrence, details, projectName: "Secret Project", revision: 4, fromRevision: 3, provenRevision: 2 })],
     // Script tokens (UX5b, 7703452a2), 2026-11-07 integration: counts and fixed words only; the token, its hash and its name never go in
     ["auditScriptTokenCreated", (occurrence) => builders.auditScriptTokenCreated({ ...base, occurrence, details, tokenId: "stk_" + "1".repeat(20), days: 30, projects: 2, permissions: "read" })],
@@ -874,6 +906,9 @@ describe("I4: the builders", () => {
     ["auditScriptTokenUsed", (occurrence) => builders.auditScriptTokenUsed({ ...base, occurrence, details, tokenId: "stk_" + "1".repeat(20), day: "2026-11-07", permission: "read" })],
     // Agent publication (srv/agent-publish): the approval id, version and target kind only; the target project's name is never a fact
     ["auditAgentPublication", (occurrence) => builders.auditAgentPublication({ ...base, occurrence, details, action: "agent_publication.requested", agentId: "agt_1", facts: { approvalId: "apr_1", targetKind: "project", version: 2 } })],
+    // Review groups (srv/review-groups): counts, a group id and fixed words; the project is a name-keyed target and the holder is in details only
+    ["auditReviewGroupsChanged", (occurrence) => builders.auditReviewGroupsChanged({ ...base, occurrence, details, projectName: "Secret Project", revision: 2, groups: 1, members: 3, added: 1, removed: 0 })],
+    ["auditReviewClaimChanged", (occurrence) => builders.auditReviewClaimChanged({ ...base, occurrence, details, taskId: "11111111-1111-4111-8111-111111111111", change: "claimed", revision: 1, groupId: "rgp_0123456789abcdef", pullRequests: 1, hostSync: "pending", holder: "b".repeat(64) })],
   ];
 
   it("covers every builder the module exports (a new builder needs a case here)", () => {

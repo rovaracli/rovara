@@ -1,4 +1,5 @@
 // M42 controller: chain owner only, real HTTP and native atomic commit.
+import "../support/automations-on.js";
 import { randomUUID } from "node:crypto";
 import { expect, it } from "vitest";
 import { chainKey, agentRequestKey, OrgIdSchema } from "@rovara-code/contracts";

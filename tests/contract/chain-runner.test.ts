@@ -1,8 +1,10 @@
+import "../support/automations-on.js";
 import { fixtureActor } from "../support/money-authority.js";
 // Plan 4 Task 6: the chain runner's core. A person (or an event, or a schedule) starts a run of a published chain; each agent step is a run of its own pinned
 // agent through Plan 3's `startAgentRun`; a step's report goes to the next step as data in its context; every state change and its event commit together. The
 // binding hand-offs are tested here too: a budget pause is a pause (never a failure, never a second task, nothing released), each end is handled once whatever
 // replays, and report text is neutralised before anyone is shown it.
+import "../support/automations-on.js";
 import { randomUUID } from "node:crypto";
 import { QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";

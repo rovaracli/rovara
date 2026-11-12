@@ -162,7 +162,7 @@ export function agentRouteDependencies(dependencies: AwsBrokerDependencies, task
     ...(agents.orgSourceOrder === undefined ? (routing === undefined ? {} : { orgSourceOrder: async (orgId: OrgId) => (await modelSourceStoreOf(dependencies).read(orgId)).order }) : { orgSourceOrder: agents.orgSourceOrder }),
     // Company AI sources need the model proxy that registers their models; without it their routes say so (Task 24b).
     ...(dependencies.modelAccess === undefined ? {} : {
-      modelSources: { store: modelSourceStoreOf(dependencies), access: dependencies.modelAccess.access, egress: egressDepsOf(dependencies), ...modelEndpointRouteOptions(dependencies), ...agents.modelSources },
+      modelSources: { store: modelSourceStoreOf(dependencies), access: dependencies.modelAccess.access, egress: egressDepsOf(dependencies), healthTimes: { documentClient: dependencies.documentClient, tableName: dependencies.tableName }, ...modelEndpointRouteOptions(dependencies), ...agents.modelSources },
     }),
     // A run that names a pull request of a project repository reads its head through the GitHub App, with an agent token (pull requests and contents,
     // read only) for the run's org (Task 15, PF16; Task 14b). Where the provider has no such read, nothing is read and the run fails closed.
@@ -961,7 +961,7 @@ export function developerTaskActions(dependencies: AwsBrokerDependencies): Devel
       .map((item) => ({ repository: String(item.repository), number: Number(item.number), url: String(item.url), state: item.state as "open" | "closed" | "merged" })),
     acceptTask: (identity, workspaceId, request, extra, options) => acceptTask(dependencies, identity, workspaceId, request, extra, options),
     acceptPullRequest: (identity, workspaceId, request, extra, options) => acceptPullRequest(dependencies, identity, workspaceId, request, extra, options),
-    acceptPullRequestUpdate: (identity, workspaceId, request, extra, binding) => acceptPullRequestLifecycle(dependencies, identity, workspaceId, request, extra, "sync" in binding ? { workflowSync: binding.sync } : { workflowCandidate: binding }),
+    acceptPullRequestUpdate: (identity, workspaceId, request, extra, binding) => acceptPullRequestLifecycle(dependencies, identity, workspaceId, request, extra, "sync" in binding ? { workflowSync: binding.sync } : "adopt" in binding ? { workflowAdopt: binding.adopt } : { workflowCandidate: binding }),
     failedPublications: async (workspaceId, candidate) => (await query(`WORKSPACE#${workspaceId}`, "OPERATION#"))
       .filter((item) => {
         const publication = item.publication as OperationRecord["publication"];
@@ -1041,6 +1041,17 @@ export function developerTaskActions(dependencies: AwsBrokerDependencies): Devel
       });
     },
   };
+}
+
+/** 0.5.15: the health route's own Slack and GitHub probes, for the health-observations read to run when an observation is stale. Where neither is set up the read reports what is stored. */
+export function healthObservationRouteDependencies(dependencies: AwsBrokerDependencies): Pick<DeveloperRouteDependencies, "healthObservations"> {
+ const probes = dependencies.adminReads?.health;
+ if (probes?.slackAuthCheck === undefined && probes?.githubInstallations === undefined) return {};
+ return { healthObservations: {
+  ...(probes.slackAuthCheck === undefined ? {} : { slackAuthCheck: probes.slackAuthCheck }),
+  ...(dependencies.developer?.slackTeamId === undefined ? {} : { slackTeamId: dependencies.developer.slackTeamId }),
+  ...(probes.githubInstallations === undefined ? {} : { githubInstallations: probes.githubInstallations }),
+ } };
 }
 
 /** Stored qualification status only; no probe or qualification service is exposed. */

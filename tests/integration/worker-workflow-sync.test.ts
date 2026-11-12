@@ -334,6 +334,57 @@ interface Fixture {
 }
 
 /** The merge of `baseCommit`, as the broker would ask for it. */
+/** "Continue in your own tool": someone pushes a commit to the pull request's branch outside Rovara; its sha. */
+async function pushOutside(fixture: Fixture, file: string, content: string): Promise<string> {
+  await git(fixture.seed, ["fetch", "origin", fixture.headBranch]);
+  await git(fixture.seed, ["checkout", "-B", "someone-else", "FETCH_HEAD"]);
+  await writeFile(join(fixture.seed, file), content, "utf8");
+  await git(fixture.seed, ["add", file]);
+  await commit(fixture.seed, `outside ${file}`);
+  await git(fixture.seed, ["push", "origin", `someone-else:${fixture.headBranch}`]);
+  return (await git(fixture.seed, ["rev-parse", "HEAD"])).trim();
+}
+
+function adoptOf(fixture: Fixture, headCommit: string): Maintain {
+  return { ...fixture.invocation, payload: { ...fixture.invocation.payload, action: "sync", expectedHeadCommit: headCommit, workflowAdopt: { headCommit } } };
+}
+
+describe("the adoption of a head pushed outside Rovara (\"Continue in your own tool\")", () => {
+  it("checks out exactly that head in the workspace, returns its tree, runs no check and pushes nothing (no update callback)", async () => {
+    const fixture = await createFixture();
+    const outside = await pushOutside(fixture, "THEIRS.md", "their change\n");
+    const update = sink();
+    const result = await maintainPullRequest({ rootPath: fixture.root, invocation: adoptOf(fixture, outside), credentialProvider: async () => ({}), ...seams, pullRequestUpdateSink: update });
+    expect(result).toMatchObject({ action: "sync", commit: outside, previousCommit: outside, reconciled: true, checks: [] });
+    expect(result.treeSha).toBe((await git(fixture.checkout, ["rev-parse", `${outside}^{tree}`])).trim());
+    expect((await git(fixture.checkout, ["rev-parse", "HEAD"])).trim()).toBe(outside);
+    expect((await git(fixture.checkout, ["status", "--porcelain=v1"])).trim()).toBe("");
+    expect(await readFile(join(fixture.checkout, "THEIRS.md"), "utf8")).toBe("their change\n");
+    expect(update).not.toHaveBeenCalled();
+    expect(await remoteHead(fixture)).toBe(outside);
+  });
+
+  it("refuses a head the branch is no longer at (it moved again), and changes nothing on the remote", async () => {
+    const fixture = await createFixture();
+    const outside = await pushOutside(fixture, "THEIRS.md", "their change\n");
+    const again = await pushOutside(fixture, "THEIRS.md", "their second change\n");
+    const update = sink();
+    await expect(maintainPullRequest({ rootPath: fixture.root, invocation: adoptOf(fixture, outside), credentialProvider: async () => ({}), ...seams, pullRequestUpdateSink: update })).rejects.toThrow(/STALE_FENCE/);
+    expect(update).not.toHaveBeenCalled();
+    expect(await remoteHead(fixture)).toBe(again);
+  });
+
+  it("the contracts refuse an adoption that is not a read-only sync of exactly its head", () => {
+    const base = { kind: "maintain", protocolVersion: 1, operationId: crypto.randomUUID(), workspaceId: crypto.randomUUID(), fence: 1, projectRevision: 1, callbackCapability: "c".repeat(40) };
+    const payload = { action: "sync", project: { name: "p", repositories: [] }, repository: "demo", pullRequestNumber: 7, headBranch: "agentx/11111111-1111-4111-8111-111111111111", baseBranch: "main", repositoryGrant: "g" };
+    const head = "a".repeat(40);
+    const parse = (extra: Record<string, unknown>) => WorkerInvocationSchema.safeParse({ ...base, payload: { ...payload, expectedHeadCommit: head, workflowAdopt: { headCommit: head }, ...extra } }).success;
+    expect(parse({ expectedHeadCommit: "b".repeat(40) })).toBe(false);
+    expect(parse({ action: "append" })).toBe(false);
+    expect(parse({ workflowSync: { baseCommit: "c".repeat(40), expectedHeadCommit: head } })).toBe(false);
+  });
+});
+
 function syncOf(fixture: Fixture, baseCommit: string): Maintain {
   return { ...fixture.invocation, payload: { ...fixture.invocation.payload, action: "sync", workflowSync: { baseCommit, expectedHeadCommit: fixture.pullRequestHead } } };
 }

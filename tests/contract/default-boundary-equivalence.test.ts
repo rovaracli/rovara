@@ -59,8 +59,11 @@ describe("the default boundary after the 2026-11-03 tightening", () => {
       // Athena wildcards and the Glue read patterns (they hold wildcards, so they are not in the action grid anyway), lakeformation:GetDataAccess and glue:GetCatalog, and the Team record's vector data role (the sts and the path-less
       // lookup grants on its fixed name). Everything else must still permit and refuse exactly what v0.5.2's did.
       const newRecordGrants = (text: string) => text.includes("record-vectors-data");
+      // 0.5.15 (company images) added one fixed-name role, the mirror role, to the lookup list: named exactly (no wildcard), so only its exact ARN leaves the grid; the near misses of its name (`-other`, a
+      // prefix, an `x` before the ARN) stay in it, and the next test checks the seven actions it gets and that its neighbours get none.
+      const mirrorRoleArn = (text: string) => new RegExp(`^arn:aws:iam::[0-9]{12}:role/agentx-${scope.env}-img-mirror$`).test(text);
       const actions = [...new Set([...iamActions, ...SAMPLE_ACTIONS, ...[...before, ...after].flatMap((statement) => list(statement.Action)).filter((action) => !action.includes("*") && !action.startsWith("lakeformation:") && !action.startsWith("glue:"))])];
-      const resources = [...new Set([...resourcesOf(before), ...resourcesOf(after)])].filter((resource) => !newRecordGrants(resource));
+      const resources = [...new Set([...resourcesOf(before), ...resourcesOf(after)])].filter((resource) => !newRecordGrants(resource) && !mirrorRoleArn(resource));
       const differences: string[] = [];
       let permitted = 0;
       for (const action of actions) {
@@ -75,6 +78,16 @@ describe("the default boundary after the 2026-11-03 tightening", () => {
       expect(differences.slice(0, 20)).toEqual([]);
       // A positive control: the grid reaches plenty of permitted pairs, so "no difference" is not "nothing permitted".
       expect(permitted).toBeGreaterThan(500);
+    });
+
+    it(`${name}: lets the company image mirror role be looked up and cleaned up by its exact name, and nothing else of that prefix`, () => {
+      const arn = (role: string) => `arn:aws:iam::${scope.account}:role/${role}`;
+      const lookups = ["iam:GetRole", "iam:GetRolePolicy", "iam:ListRolePolicies", "iam:ListAttachedRolePolicies", "iam:DeleteRolePolicy", "iam:DetachRolePolicy", "iam:DeleteRole"];
+      const mirror = arn(`agentx-${scope.env}-img-mirror`);
+      for (const action of iamActions) expect(permits(after, action, mirror), `${action} on the mirror role`).toBe(lookups.includes(action));
+      for (const role of [`agentx-${scope.env}-img-mirror-other`, `agentx-${scope.env}-img-mirro`, `agentx-${scope.env}-img-x`, `agentx-${scope.env}-img-`]) {
+        for (const action of lookups) expect(permits(after, action, arn(role)), `${action} on ${role}`).toBe(false);
+      }
     });
 
     it(`${name}: still permits what the roles' own policies need, by name`, () => {

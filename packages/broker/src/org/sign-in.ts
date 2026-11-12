@@ -54,6 +54,10 @@ export interface SignInOrg {
    * (INVITE_WRONG_EMAIL), or it is unknown, expired, used or into a closed org (INVITE_INVALID).
    */
   inviteError?: "ALREADY_IN_ORG" | "INVITE_INVALID" | "INVITE_WRONG_EMAIL";
+  /** A-31: the invite also gave the person this project role (the app lands on the project). */
+  project?: { name: string; role: "maintainer" | "contributor" | "viewer" };
+  /** A-31: the invite named a project that was archived or removed since; the person joined the company only. */
+  projectNote?: "project_archived" | "project_gone";
 }
 
 /** What a join (`allowCreate: false`) answers when the invite did not put the person in an org: they have none, and nothing was created. */
@@ -68,6 +72,8 @@ export interface SignInNoOrg {
 export const NO_ORG_ON_INSTALL_MESSAGE = "Sign in with Rovara on this install: Slack and company sign-ins do not create or join an organization here";
 /** What rule 3 says on an install where new companies are by invitation only: no company is made, and the person is told how to get in. */
 export const INVITATION_ONLY_MESSAGE = "Rovara is invitation-only right now. Ask someone at your company to invite you, then open the invite link they send you";
+/** What rule 3 says when the verified email already belongs to another sign-in of this person: no second company is made (IDENTITY-HEALING-CROSS-ORG). */
+export const ALREADY_SIGNED_UP_MESSAGE = "You're already signed up with this email. Sign in that way, then add this sign-in method in Settings.";
 export const REMOVED_FROM_ORG_MESSAGE = "You were removed from this organization. Ask an admin to invite you again.";
 const codeOf = (error: unknown) => (error as { code?: unknown }).code;
 /** The same address on both sides, and only for ASCII ones: Unicode folding must not make two different addresses equal (U+212A is "k"). */
@@ -111,16 +117,19 @@ async function resolveOrg(deps: ResolveOrgOnSignInDependencies, input: ResolveOr
 
   /**
    * `attempt` with the email to index. Refused as ALREADY_IN_ORG while this developer has no membership, the email pointer names another
-   * developer (the same person's other sign-in route raced this one to it): once more without the pointer, so this sign-in still gets
-   * its org and the pointer stays with the first. Merging the two is left to the duplicate healing, not to a sign-in.
+   * developer (the same person's other sign-in route raced this one to it). An invite (`refuseConflict` false) is tried once more
+   * without the pointer: the person joins the company that invited them and the pointer stays with the first. Starting a company
+   * (`refuseConflict` true) is refused instead with CHANGE_STALE: a second company for the same email would be a separate company
+   * that nothing heals any more (IDENTITY-HEALING-CROSS-ORG). The loser is left with no company, so it can be linked to the first
+   * route later (SLACK-LINK-1 links only a developer with no company).
    */
-  const indexing = async <T>(attempt: (email: string | undefined) => Promise<T>): Promise<T> => {
+  const indexing = async <T>(attempt: (email: string | undefined) => Promise<T>, refuseConflict: boolean): Promise<T> => {
     try {
       return await attempt(cloud ? indexedEmail : undefined);
     } catch (error) {
       if (!cloud || indexedEmail === undefined || codeOf(error) !== "ALREADY_IN_ORG" || await winnerOfRace() !== undefined) throw error;
-      // This can leave one person with two orgs; the line lets the duplicate be found and healed.
-      (deps.log ?? (() => undefined))({ event: "signin.email_pointer_conflict", developerId: input.developerId });
+      (deps.log ?? (() => undefined))({ event: "signin.email_pointer_conflict", developerId: input.developerId, ...(refuseConflict ? { refused: true } : {}) });
+      if (refuseConflict) throw agentXError("CHANGE_STALE", ALREADY_SIGNED_UP_MESSAGE);
       return attempt(undefined);
     }
   };
@@ -144,7 +153,7 @@ async function resolveOrg(deps: ResolveOrgOnSignInDependencies, input: ResolveOr
       try {
         const tokenHash = input.inviteTokenHash;
         // The email is indexed only for the cloud methods, whose sign-in routes it links.
-        return await indexing((email) => orgs.acceptInvite({ tokenHash, developerId: input.developerId, ...(email === undefined ? {} : { email }) }));
+        return await indexing((email) => orgs.acceptInvite({ tokenHash, developerId: input.developerId, ...(email === undefined ? {} : { email }) }), false);
       } catch (error) {
         if (codeOf(error) === "INVITE_INVALID") inviteError = "INVITE_INVALID";
         else if (codeOf(error) === "ALREADY_IN_ORG") {
@@ -167,11 +176,11 @@ async function resolveOrg(deps: ResolveOrgOnSignInDependencies, input: ResolveOr
     try {
       const orgId = await indexing((email) => orgs.createOrgWithOwner({
         name: defaultTeamName(input.displayName, input.developerId), developerId: input.developerId, ...(email === undefined ? {} : { email }),
-      }));
+      }), true);
       return withInviteError({ orgId, role: "owner" }, inviteError);
     } catch (error) {
       if (codeOf(error) !== "ALREADY_IN_ORG") throw error;
-      // The same person signed in twice at once, or by two routes: the other sign-in's membership stands.
+      // The same identity signed in twice at once: the other sign-in's membership stands. (Two routes racing to one email are refused above.)
       const winner = await winnerOfRace();
       if (winner === undefined) throw error;
       return withInviteError(winner, inviteError);

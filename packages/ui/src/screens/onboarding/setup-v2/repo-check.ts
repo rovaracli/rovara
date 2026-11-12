@@ -16,12 +16,23 @@ export interface RepoRow {
 }
 /** One repository's commands from the test environment proposal (`runs`), as far as matching a failing command needs. */
 export interface EnvRun { repositoryId: string; setup: readonly string[]; checks: ReadonlyArray<{ command: string }> }
+/**
+ * The project's meta repository. The object is the project read's own `metaRepository`: authoritative and kept across a reload, and it is also listed in `repositories`, so it is not a code repository
+ * unless `alsoCode` says the project's one repository is its own meta repo. A bare name is what this setup session chose before the read says it: it is told apart only when `repositories` leaves it out.
+ */
+export type MetaRepositoryRef = string | { fullName: string; alsoCode?: boolean | undefined };
+export const metaNameOf = (meta: MetaRepositoryRef | undefined): string | undefined => typeof meta === "string" ? meta : meta?.fullName;
+/** The repositories Rovara builds from: the project's, without a meta repository the project read names as separate. */
+export function codeRepositoriesOf<T extends { fullName: string }>(repositories: readonly T[], meta: MetaRepositoryRef | undefined): T[] {
+ if (meta === undefined || typeof meta === "string" || meta.alsoCode === true) return [...repositories];
+ return repositories.filter(repository => repository.fullName.toLowerCase() !== meta.fullName.toLowerCase());
+}
 export interface RepoCheckInput {
  repositories: ReadonlyArray<{ fullName: string }>;
  setup: { status: ProjectSetupStatus; failedStep?: string | undefined };
  runs?: readonly EnvRun[] | undefined;
- /** The meta repository, when this setup session knows it (the project's own read does not carry it). */
- metaRepository?: string | undefined;
+ /** The meta repository: from the project's own read (an object), or the name this setup session chose. */
+ metaRepository?: MetaRepositoryRef | undefined;
 }
 export interface RepoCheckModel {
  rows: RepoRow[];
@@ -53,7 +64,7 @@ export function attributeFailure(failure: SetupFailure, repositories: ReadonlyAr
 const NO_REASON: SetupFailure = { step: "Setup check", cause: "No reason was recorded.", fix: "Run the check again. If it fails again, edit the setup commands or let the setup agent try." };
 
 export function repoCheckModel(input: RepoCheckInput): RepoCheckModel {
- const { repositories, setup } = input, rows: RepoRow[] = [];
+ const { setup } = input, repositories = codeRepositoriesOf(input.repositories, input.metaRepository), metaName = metaNameOf(input.metaRepository), rows: RepoRow[] = [];
  const failure = setup.status === "failed" ? setupFailureOf(setup.failedStep) ?? NO_REASON : undefined;
  const culprit = failure === undefined ? undefined : attributeFailure(failure, repositories, input.runs);
  for (const repository of repositories) {
@@ -64,8 +75,8 @@ export function repoCheckModel(input: RepoCheckInput): RepoCheckModel {
   else if (failure !== undefined) rows.push({ ...base, state: "not_checked", label: "Not checked on its own", detail: culprit === undefined ? "The check stopped before it said which repository." : "The check stopped at " + culprit + " first." });
   else rows.push({ ...base, state: "not_checked", label: setup.status === "outdated" ? "Settings changed" : "Not checked yet", detail: setup.status === "outdated" ? "The setup changed since the last check. Check it again." : "Run the check so the first task doesn't fail on setup." });
  }
- if (input.metaRepository !== undefined && !repositories.some(repository => repository.fullName.toLowerCase() === input.metaRepository!.toLowerCase())) {
-  rows.push({ fullName: input.metaRepository, role: "meta", state: "meta", label: "Meta repo", detail: "Holds your plans, rules and lessons. Nothing is built from it." });
+ if (metaName !== undefined && !repositories.some(repository => repository.fullName.toLowerCase() === metaName.toLowerCase())) {
+  rows.push({ fullName: metaName, role: "meta", state: "meta", label: "Meta repo", detail: "Holds your plans, rules and lessons. Nothing is built from it." });
  }
  const unattributed = failure !== undefined && culprit === undefined && repositories.length > 1 ? failure : undefined;
  return { rows, ...(unattributed === undefined ? {} : { unattributed }), allReady: repositories.length > 0 && setup.status === "ready" };

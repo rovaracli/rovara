@@ -5,7 +5,7 @@ import { getWorkflowFeedbackReview, submitWorkflowFeedbackDecision } from "../..
 import { authenticateDeveloperSessionId } from "../../packages/broker/src/aws/developer-routes.js";
 import { canonicalPlanJson, createCandidateManifest, taskGraphDigest, WorkflowFeedbackBundleCommentsSchema, WorkflowFeedbackBundleSchema, WorkflowFeedbackReviewReportSchema, type TaskPersonProofRequest, type TaskPersonProofResponse, type WorkflowCheckPolicyInput } from "@rovara-code/contracts";
 import { createWorkflowSnapshot, observeWorkflowPullRequest, requestWorkflowFeedbackReview, type WorkflowSnapshot } from "@agentx/cloud-contracts";
-import { createDeveloperTaskBroker, MAYA, OMAR } from "../support/developer-task-broker.js";
+import { createDeveloperTaskBroker, MAYA, OMAR, seedMembership } from "../support/developer-task-broker.js";
 import { githubWorkflowPullRequestKey, taskOwnerKey, type DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
 import { feedbackReviewNoticeId } from "../../packages/broker/src/developer/notifications.js";
 import type { AdaptedHttpRequest } from "../../packages/broker/src/aws/lambda.js";
@@ -453,6 +453,8 @@ describe("broker-backed feedback review data", () => {
         name: request.slackUserId === coOwner.slackUserId ? coOwner.name : request.slackUserId === backupOwner.slackUserId ? backupOwner.name : MAYA.name }, memberOf: [...request.channelIds] };
     });
     const fixture = await preparedReview(1, {}, undefined, {}, taskPersonProof);
+    // Task people are current company members (the one explicit-member rule, feat/0515-task-people-v3): a Slack account with no member record is not one.
+    for (const person of [coOwner, backupOwner]) seedMembership(fixture.harness.db, person.developerId);
     const createdAt = new Date().toISOString();
     const ownerPersonId = randomUUID();
     const coOwnerPersonId = randomUUID();

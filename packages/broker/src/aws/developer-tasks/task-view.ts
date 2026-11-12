@@ -319,6 +319,7 @@ export async function taskView(
   // Design review (DR11): the Design first and Skip buttons for this caller; absent while design review is not offered for the task.
   const designActions = rovaraCodeV2 && options.details && task.workflow !== undefined && deps.designActions !== undefined ? await deps.designActions(task).catch(() => undefined) : undefined;
   // OWNER DECISION 7: the checks retry, Revise the plan and a held spec's choices for this caller (what the old review page offered); a fault leaves them out.
+  const continueLoop = rovaraCodeV2 && options.details && task.workflow !== undefined && deps.continueLoop !== undefined ? await deps.continueLoop(task, tracked).catch(() => undefined) : undefined;
   const pageActions = rovaraCodeV2 && options.details && task.workflow !== undefined && deps.pageActions !== undefined ? await deps.pageActions(task).catch(() => undefined) : undefined;
   const proofTable = rovaraCodeV2 && options.details && task.workflow !== undefined ? await taskProofTable(deps, task, task.workflow, options.actor ?? "owner", operations) : undefined;
   // Proof and evidence (wire-proof): the evidence kept for the task's current code (full reads only, like the proof table), with each stored artifact as a link. Present only while the proof switch is on (`deps.evidence`); a fault leaves it out.
@@ -365,6 +366,7 @@ export async function taskView(
     ...(proofTable === undefined ? {} : { proofTable }),
     ...(designActions === undefined ? {} : { designActions }),
     ...(pageActions === undefined ? {} : { pageActions }),
+    ...(continueLoop === undefined ? {} : { continueLoop }),
     ...(evidence === undefined ? {} : { evidence }),
     ...(testing === undefined ? {} : { testing }),
     ...(modelLines.length === 0 ? {} : { reviewModelLines: modelLines }),
