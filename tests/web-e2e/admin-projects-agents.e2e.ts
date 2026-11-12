@@ -6,7 +6,7 @@ test("inspects real persisted projects and versions using only reads",async({pag
  await page.goto("/app/admin/projects");await expect(page.getByRole("table",{name:"Projects",exact:true})).toBeVisible();await expect(page.getByText("foreign-project")).toHaveCount(0);
  const project=page.getByRole("table").getByRole("link",{name:"payments",exact:true});await project.focus();await page.keyboard.press("Enter");await expect(page.getByRole("heading",{name:"payments",exact:true})).toBeFocused();await expect(page.getByText("Using GitHub default branch")).toBeVisible();await expect(page.getByRole("table",{name:"Project people"})).toBeVisible();
  await page.getByRole("link",{name:"Back to projects"}).click();await page.getByRole("combobox",{name:"Project status"}).selectOption("archived");await expect(page.getByRole("table").getByRole("link",{name:"old",exact:true})).toBeVisible();
- await expect(page.getByRole("link",{name:"Agents",exact:true})).toBeVisible();
+ await expect(page.getByRole("group",{name:"How work runs"}).getByRole("link",{name:"Agents",exact:true})).toBeVisible();
  for(const [shown,title] of [["agents","Agents"],["agents/rovara-code/versions","Agent versions"]] as const){await page.goto("/app/admin/"+shown);await expect(page.getByRole("heading",{name:title,exact:true})).toBeVisible();}
  const reads=await(await request.get("/__mock/requests")).json() as Array<{method:string;path:string}>;expect(reads.filter(r=>r.path.startsWith("/v1/web/")).every(r=>r.method==="GET")).toBe(true);
 });

@@ -3,7 +3,7 @@
 import { createHash } from "node:crypto";
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { INDEX_EXPIRY_ATTRIBUTE, teamRecordPk, type OrgId } from "@rovara-code/contracts";
-import { RecordEventSchema, RecordFactSchema, SourceConfigSchema, TEAM_RECORD_GSI1, TEAM_RECORD_GSI2, TEAM_RECORD_GSI3, TEAM_RECORD_GSI4, TEAM_RECORD_GSI5, RECORD_DELETE_QUEUE_SK_PREFIX, RECORD_EVENT_SK_PREFIX, RECORD_FACT_SK_PREFIX, RECORD_SOURCE_SK_PREFIX, recordActorIndexValue, recordActorSourceIndexValue, recordTextDueIndexValue, recordDeleteQueueKey, recordDerivationKey, recordEventKey, recordFactKey, recordPlaceIndexValue, recordScopeIndexValue, recordSourceConfigIndexValue, recordSourceIndexValue, recordSourceKey, teamRecordSourceHash, type RecordEvent, type RecordFact, type RecordSystem, type SourceConfig } from "@agentx/cloud-contracts";
+import { RecordEventSchema, RecordFactSchema, SourceConfigSchema, TEAM_RECORD_GSI1, TEAM_RECORD_GSI2, TEAM_RECORD_GSI3, TEAM_RECORD_GSI4, TEAM_RECORD_GSI5, RECORD_DELETE_QUEUE_SK_PREFIX, RECORD_EVENT_SK_PREFIX, RECORD_FACT_SK_PREFIX, RECORD_SOURCE_SK_PREFIX, recordActorIndexValue, recordActorSourceIndexValue, recordTextDueIndexValue, recordDeleteQueueKey, recordDerivationKey, recordEventKey, recordFactKey, recordPlaceIndexValue, recordScopeIndexValue, recordSourceConfigIndexValue, recordSourceIndexValue, recordSourceKey, teamRecordOrgDirectoryKey, teamRecordSourceHash, type RecordEvent, type RecordFact, type RecordSystem, type SourceConfig } from "@agentx/cloud-contracts";
 import { Aliases, NOT_EXISTS, errorName, withoutUndefined, type Item } from "../agents/table-writes.js";
 import { recordHeadIndexValue, reopenScope } from "./item-head.js";
 import { retentionRefusal } from "./retention.js";
@@ -354,13 +354,48 @@ export interface ScopeWork {
   queuedAtSeconds: number;
 }
 
-/** A queue item as it is stored: `putScopeWork` writes it, and a transaction that must queue work with its own change (`source-remove.ts`) puts exactly this. */
+/**
+ * The queue item itself, as it is stored. A producer that writes this alone (in a transaction of its own, `source-write.ts`) MUST list the workspace first (`listWorkspace`): queued work is only ever finished by the
+ * hourly job, and the job reaches a workspace only through the directory (`TEAM_RECORD_ORGS`, `eachOrg` in runtime.ts). That was the 0.5.15 staging find: a source removed in a workspace with no earlier record write
+ * queued its item and the delete sat unprocessed. `putScopeWork` does both and is what every other producer uses.
+ */
 export function scopeWorkItem(orgId: OrgId, work: ScopeWork): Item {
   return withoutUndefined({ ...recordDeleteQueueKey(orgId, work.at, work.requestId), entityType: "TEAM_RECORD_SCOPE_WORK", ...work });
 }
 
+/**
+ * Lists the workspace in the directory the hourly jobs walk: an UPDATE that only fills what is missing, so it is idempotent, never fails on an existing row and never rewrites its time. A plain write on purpose, never part
+ * of a transaction: the directory is ONE partition every workspace shares, and a transaction touching it would be cancelled by any concurrent write to it. The same row `listOrg` (runtime.ts) writes on a record write.
+ */
+export async function listWorkspace(table: TeamRecordTable, orgId: OrgId, at: string): Promise<void> {
+  const aliases = new Aliases();
+  await table.documentClient.send(new UpdateCommand({
+    TableName: table.tableName,
+    Key: teamRecordOrgDirectoryKey(orgId),
+    UpdateExpression: `SET ${aliases.name("entityType")} = if_not_exists(${aliases.name("entityType")}, ${aliases.value("TEAM_RECORD_ORG")}), ${aliases.name("orgId")} = if_not_exists(${aliases.name("orgId")}, ${aliases.value(orgId)}), ${aliases.name("at")} = if_not_exists(${aliases.name("at")}, ${aliases.value(at)})`,
+    ExpressionAttributeNames: aliases.names,
+    ExpressionAttributeValues: aliases.values,
+  }));
+}
+
+/** Queues work: the workspace is listed FIRST (a plain idempotent write), then the item is written, so a queued item always has a directory row. A listing left behind by a failed item write is harmless. */
 export async function putScopeWork(table: TeamRecordTable, orgId: OrgId, work: ScopeWork): Promise<void> {
+  await listWorkspace(table, orgId, work.at);
+  await rewriteScopeWork(table, orgId, work);
+}
+
+/** Rewrites an item that is already queued (progress of the delete worker or of the sink's own pass): it was listed when it was first queued, so nothing is listed again. A NEW item goes through `putScopeWork`. */
+export async function rewriteScopeWork(table: TeamRecordTable, orgId: OrgId, work: ScopeWork): Promise<void> {
   await table.documentClient.send(new PutCommand({ TableName: table.tableName, Item: scopeWorkItem(orgId, work) }));
+}
+
+/**
+ * The oldest key under `DELQ#`, whether or not its item parses (`listScopeWork` drops what does not). For a check that must not mistake a malformed item for an empty queue. `at` is read from the key itself.
+ */
+export async function oldestQueuedKey(table: TeamRecordTable, orgId: OrgId): Promise<{ sk: string; at: string } | undefined> {
+  const { items } = await queryPrefix(table, orgId, undefined, RECORD_DELETE_QUEUE_SK_PREFIX, 1);
+  const sk = items[0]?.sk;
+  return typeof sk === "string" ? { sk, at: sk.slice(RECORD_DELETE_QUEUE_SK_PREFIX.length).split("#")[0] ?? "" } : undefined;
 }
 
 export function scopeWorkFromItem(item: Item): (ScopeWork & { pk: string; sk: string }) | undefined {

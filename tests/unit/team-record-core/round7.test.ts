@@ -90,7 +90,7 @@ describe("N-12 an older change that is still queued", () => {
     const before = principalsOf(w);
     let updates = 0;
     const real = w.table.documentClient;
-    w.table.documentClient = { send: async (command: unknown) => { const sent = command as { constructor: { name: string }; input?: { Key?: { sk?: string } } }; if (sent.constructor.name === "UpdateCommand" && !String(sent.input?.Key?.sk).startsWith("ACCESS#")) updates += 1; return real.send(command); } };
+    w.table.documentClient = { send: async (command: unknown) => { const sent = command as { constructor: { name: string }; input?: { Key?: { pk?: string; sk?: string } } }; if (sent.constructor.name === "UpdateCommand" && sent.input?.Key?.pk !== "TEAM_RECORD_ORGS" && !String(sent.input?.Key?.sk).startsWith("ACCESS#")) updates += 1; return real.send(command); } };
     await sinkOf(w).changePrincipals({ workspaceId: ORG_A, scope: SC, add: ["U3"], at: T2 }); // even an add-only change waits behind it
     w.table.documentClient = real;
     expect(updates).toBe(0);

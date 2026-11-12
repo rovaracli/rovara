@@ -1,5 +1,5 @@
-// The self-hosted embedder (lane self-hosted-embeddings; DECISIONS 23 and 27): the Team record's embedding model (Qwen3-Embedding-0.6B, 1,024-d) and the lessons' (bge-small,
-// 384-d) in ONE container-image Lambda, on our own compute, in both editions. Part of the Team record switch (`agentxTeamRecord=enabled`): with the switch off, nothing here exists
+// The self-hosted embedder (lane self-hosted-embeddings; DECISIONS 23, 27 and 140): ONE small model (bge-small-en-v1.5, 384-d, 512 tokens) for both the Team record and the lessons, in ONE
+// container-image Lambda, on our own compute, in both editions. (Until 0.5.14 the Team record had its own model, Qwen3-Embedding-0.6B, 1,024-d and 2.4 GB; DECISIONS 140 replaced it, see below.) Part of the Team record switch (`agentxTeamRecord=enabled`): with the switch off, nothing here exists
 // and the synthesised templates are what they were (tests/contract/team-record-wiring-infrastructure.test.ts pins that).
 //
 // The image is built by environments/embedder (weights baked in at build time from pinned Hugging Face revisions, every file checked by sha256; every Python package installed by hash;
@@ -20,17 +20,16 @@
 // kms:Decrypt on the key; the image pull by CreateFunction was not tested against a customer-managed key (needs a staging run with an image in such a repository).
 import { ArnFormat, CfnParameter, CfnRule, Duration, Fn, RemovalPolicy, type Stack, aws_ec2 as ec2, aws_iam as iam, aws_lambda as lambda, aws_logs as logs } from "aws-cdk-lib";
 import { embedderFunctionName } from "@agentx/cloud-contracts";
-import { ASSUMED_LAMBDA_MEMORY_LIMIT_MB } from "./account-limits.js";
 import { defaultProductionAvailabilityZoneIds } from "./production-foundation.js";
 
 /**
- * 3,008 MB, the most this account's Lambda allows (about 1.7 vCPUs; the 0.5.12 switch-on asked for 10,240 MB and CloudFormation refused the function, see infra/lib/account-limits.ts). It fits
- * because of how the image loads the models (environments/embedder/app/embedder_core.py): the fp32 weights (2.4 GB for the record model) stay memory-mapped from the model file and are never
- * copied, and the arena is off, so a 2,048-token text needs about 0.8 GB of private memory at its peak (peak process memory about 2.5 to 2.8 GB counting the mapped weights) and the process is not killed even at a 2 GB limit. A long text is real compute at this size (about 17 s for 2,048 tokens under Docker at 1.7 CPUs; a search query, about 50 tokens, takes under a second). Nothing is billed while idle.
+ * 2,048 MB (about 1.2 vCPUs). DECISIONS 140: the model is 133 MB of fp32 weights and the process uses about 250 MB, so the memory is chosen for CPU, not capacity; 2,048 MB is also well under the 3,008 MB
+ * this account's Lambda allows (infra/lib/account-limits.ts). Measured locally under the Lambda runtime emulator at this size and CPU (environments/embedder/tools/lambda_like_bench.sh): start-up
+ * about 1.2 s, a query about 9 ms, 16 documents of about 300 tokens about 3 s, peak memory about 210 MB. Nothing is billed while idle.
  */
-export const EMBEDDER_MEMORY_MB = ASSUMED_LAMBDA_MEMORY_LIMIT_MB;
-/** A cold start loads the model (seconds); one text of 2,048 tokens takes seconds more; a batch is at most 16 texts. The broker waits for less (EMBEDDER_WAIT_MS), and the function carries on and warms. */
-export const EMBEDDER_TIMEOUT_SECONDS = 180;
+export const EMBEDDER_MEMORY_MB = 2048;
+/** A cold start loads the model (about a second); a call is at most 16 texts of 512 tokens (a few seconds). The broker waits for less (EMBEDDER_*_WAIT_MS), and the function carries on and warms. */
+export const EMBEDDER_TIMEOUT_SECONDS = 30;
 /** Modest on purpose: a burst of ingest cannot take the account's concurrency. The broker retries the rows it could not embed. */
 export const EMBEDDER_RESERVED_CONCURRENCY = 4;
 
@@ -127,7 +126,7 @@ export function attachEmbedder(stack: Stack, props: EmbedderProps): EmbedderReso
 
   const fn = new lambda.CfnFunction(stack, "Embedder", {
     functionName,
-    description: "Rovara self-hosted embedder: Qwen3-Embedding-0.6B for the Team record and bge-small for lessons, on CPU, no network",
+    description: "Rovara self-hosted embedder: bge-small for the Team record and lessons, on CPU, no network",
     packageType: "Image",
     code: { imageUri: imageUri.valueAsString },
     architectures: ["arm64"],

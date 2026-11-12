@@ -34,11 +34,12 @@ import type { RecordAuditSink } from "./audit.js";
 import { callRecordTool, recordToolsFor, type RecordToolContext } from "./agent-tools.js";
 import { runDeleteWorker, type DeleteBudget } from "./delete-worker.js";
 import { defaultRetention, readEdition, type TeamRecordEdition } from "./edition.js";
-import { listSourceConfigs, markSourceFailing } from "./store.js";
+import { listSourceConfigs, listWorkspace, markSourceFailing, oldestQueuedKey } from "./store.js";
 import { resolveTaskVisibility } from "../lessons/task-visibility.js";
 import { createEmbedder } from "./embed.js";
 import { lessonEmbedderFrom, recordEmbedderClientFrom, recordJobEmbedderClientFrom, recordSearchEmbedderClientFrom, EMBEDDER_JOB_WAIT_MS, type LessonEmbedder } from "../embedder/wiring.js";
 import { REEMBED_RUN_MS, dropReembedState, reembedRun, sweepReembedStateRun } from "./reembed.js";
+import { runWithEmbedDeadline, withEmbedDeadline } from "./embed-deadline.js";
 import { eraseProject, eraseWorkspace, erasePerson, type EraseBudget } from "./erase.js";
 import { tableHotArchiveSource, ensureWorkspaceVectorBucket, tableHotStatsSource } from "./hot-source.js";
 import { createLakeClient, type LakeClient } from "./lake.js";
@@ -294,6 +295,8 @@ const GITHUB_PASS_MIN_MS = 2_000;
 /** One company's share of the repository check (SRL-5a). */
 const REPO_CHECK_ORG_MS = 4_000;
 /** The sweep's one state item (watermark and gaps), in the directory partition, which no org erase empties. It holds delivery times only: no person, no text. */
+/** A delete that holds a company erase open longer than this is logged (`record.erase_held_by_delete`). */
+const ERASE_HELD_ALARM_SECONDS = 24 * 3_600;
 const GITHUB_REDELIVERY_STATE_KEY = { pk: TEAM_RECORD_ORG_DIRECTORY_PK, sk: "GHREDELIVERY#state" } as const;
 /**
  * TRW-5 S4 (fix round 1): a put that read the "open" answer just before an archive or a close can land up to the cache's minute afterwards. So an archive's or a close's erase is run a SECOND time once that
@@ -328,8 +331,9 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
   // The self-hosted embedder (environments/embedder): a direct invoke of the function the install names. Without one (a legacy install) rows are stored without a vector and found by keyword.
   // Three clients of the one function, differing only in how long they wait: ingest (the queue consumer and the taps), search (a person is waiting: short, no retry, a pause after a timeout, keyword search meanwhile) and the
   // re-embed job (the longest wait, only started when the run has the time).
-  const embedderClient = recordEmbedderClientFrom(env, sdkOptions);
-  const embedderDeps = embedderClient === undefined ? {} : { embedder: createEmbedder({ client: embedderClient }) };
+  const embedderClient = recordEmbedderClientFrom(env, sdkOptions, undefined, undefined, now);
+  // L2 (DECISIONS 140): inside the queue consumer's drain every ingest embedding call is capped by the end of that message's share of the broker's 30 s (embed-deadline.ts).
+  const embedderDeps = embedderClient === undefined ? {} : { embedder: withEmbedDeadline(createEmbedder({ client: embedderClient })) };
   const searchClient = recordSearchEmbedderClientFrom(env, sdkOptions, undefined, undefined, now);
   const searchEmbedderDeps = searchClient === undefined ? {} : { embedder: createEmbedder({ client: searchClient }) };
   const lessonEmbedder = lessonEmbedderFrom(env, sdkOptions);
@@ -454,7 +458,7 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
   /** The org joins the directory the scheduled jobs walk, before its first record write (so no row can exist for an org the jobs never reach). */
   async function listOrg(orgId: OrgId): Promise<void> {
     if (listed.has(orgId)) return;
-    await table.documentClient.send(new PutCommand({ TableName: table.tableName, Item: { ...teamRecordOrgDirectoryKey(orgId), entityType: "TEAM_RECORD_ORG", orgId, at: new Date(now()).toISOString() } }));
+    await listWorkspace(table, orgId, new Date(now()).toISOString());
     listed.add(orgId);
   }
   async function sinkFor(workspaceId: string): Promise<RecordSink> {
@@ -867,10 +871,24 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
         await runLakeDeletes({ queue: lakeQueue, lake: lakeNow, tableBucket }, { workspaceId: orgId, budget: { maxStatements: 5, maxMs: Math.max(1_000, lakeMs) } });
         if ((await lakeQueue.listPending(orgId, 1)).length > 0) return false;
       }
+      // The directory row is the only way the hourly job (and so the delete worker) reaches this company. A delete still queued for it (a removal that raced the erase) keeps the job, and with it the row, until the worker has
+      // finished it: the company leaves the directory only when nothing is pending. ANY key under DELQ# counts, one that does not parse included (the worker cannot finish that, so it must not look like an empty queue).
+      // The worker runs before this step in every hourly run, so the next run finds the queue empty. Never forced: a long hold is logged (and joins the delete-backlog alarm line), not cut short.
+      const held = await oldestQueuedKey(table, orgId);
+      if (held !== undefined) {
+        const ageSeconds = Math.max(0, Math.floor((now() - Date.parse(held.at)) / 1000));
+        if (Number.isFinite(ageSeconds) && ageSeconds > ERASE_HELD_ALARM_SECONDS) {
+          log("record.erase_held_by_delete", { orgId, ageSeconds });
+          log("record.delete_backlog", { requests: 0, oldestAgeSeconds: ageSeconds, erase: 1 });
+        }
+        return false;
+      }
       await dropJob(job.sk);
       await clearStamps(orgId);
       if ((await jobsOf(orgId)).length === 0) {
         await table.documentClient.send(new DeleteCommand({ TableName: table.tableName, Key: teamRecordOrgDirectoryKey(orgId) }));
+        // A delete queued between the check above and this delete would be left with no directory row: look again, and list the company again if something appeared (check-then-delete window).
+        if ((await oldestQueuedKey(table, orgId)) !== undefined) { await listWorkspace(table, orgId, new Date(now()).toISOString()); return true; }
         await dropReembedState(table, orgId);
         listed.delete(orgId);
         sinks.delete(orgId);
@@ -1180,7 +1198,7 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
         if (paused || jobEmbedder === undefined) return { orgs: 0, skippedOrgs: 0, details: { skipped: 1 } };
         // R2 and R3: one deadline for the whole run, measured from here; the least recently served workspace first, each with a share of what is left, each with a cursor (reembed.ts).
         const startedAt = now();
-        return reembedRun({ table, embedder: jobEmbedder, vectorsFor: (orgId) => indexFor(orgId), isClosing: companyIsClosing, now, log }, startedAt, { maxRows: 100, maxScanned: 1_000, callMs: EMBEDDER_JOB_WAIT_MS, warmCallMs: 8_000 }, REEMBED_RUN_MS);
+        return reembedRun({ table, embedder: jobEmbedder, vectorsFor: (orgId) => indexFor(orgId), isClosing: companyIsClosing, now, log }, startedAt, { maxRows: 100, maxScanned: 1_000, callMs: EMBEDDER_JOB_WAIT_MS, warmCallMs: 5_000 }, REEMBED_RUN_MS);
       }
       if (job === "hourly") {
         // TRW-5 S1: text that reached the dead-letter queue anyway is deleted from it, first, so an org's slow work cannot starve it.
@@ -1294,7 +1312,8 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
           if ((await readProjectMeta(state, orgId.data, message.project))?.status === "archived") await eraseProjectNow(orgId.data, message.project, message.cause, Math.min(INLINE_ERASE.maxMs ?? 8_000, Math.max(1_000, remaining() - DRAIN_RESERVE_MS)));
         } catch { log("record.op_failed", { op: "erase_project", receiveCount: record.receiveCount }); failures.push({ itemIdentifier: record.messageId }); }
       } else {
-        failures.push(...(await consumer.processBatch([record])).batchItemFailures);
+        // The message's embedding may not run past the end of the drain less the time kept back for the answer: a slow or cold embedder costs the row its vector (it keeps `embedPending`), never the batch.
+        failures.push(...(await runWithEmbedDeadline(now() + remaining() - DRAIN_RESERVE_MS, () => consumer.processBatch([record]))).batchItemFailures);
       }
     }
     return { batchItemFailures: failures };

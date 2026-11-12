@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-# The embedder Lambda image (lane self-hosted-embeddings). Build context: this directory (environments/embedder).
+# The embedder Lambda image (lane self-hosted-embeddings; one small model since DECISIONS 140, lane fix/0515-embedder-small-model). Build context: this directory (environments/embedder).
 #
 #   environments/embedder/tools/build-image.sh <tag>      (docker buildx build --platform linux/arm64 environments/embedder)
 # Both base images are pinned by digest (tests/contract/ci-images.test.ts holds every FROM to that and to .github/ci-images.json); both digests are multi-architecture indexes that
@@ -31,6 +31,6 @@ RUN pip install --no-cache-dir --require-hashes --no-deps --only-binary=:all: -r
 COPY app/ ${LAMBDA_TASK_ROOT}/
 COPY --from=export /models /opt/models
 ENV EMBEDDER_MODELS_DIR=/opt/models HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1
-# The image works with no network: every model file is the one the manifest names, and both models load and embed one text each.
+# The image works with no network: every model file is the one the manifest names, and both names (record and lesson: one model, one copy, one a link to the other) load and embed one text each.
 RUN --network=none python "${LAMBDA_TASK_ROOT}/smoke.py"
 CMD ["handler.handler"]

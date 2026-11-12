@@ -3,7 +3,7 @@
 // delete another workspace's vectors. The AWS adapter (STS AssumeRole with `Policy`) is pending; this file is the policy and the cache.
 import { createHash } from "node:crypto";
 import { AssumeRoleCommand, type STSClient } from "@aws-sdk/client-sts";
-import { retiredTeamRecordVectorIndexName, teamRecordVectorIndexName } from "@agentx/cloud-contracts";
+import { RETIRED_INDEX_TAG_KEYS, retiredTeamRecordVectorIndexNames, teamRecordVectorIndexName } from "@agentx/cloud-contracts";
 import { S3VectorsIndex, type S3VectorsPort } from "./s3-vectors-index.js";
 
 export interface SessionPolicyInput {
@@ -25,9 +25,9 @@ export function workspaceVectorSessionPolicy(input: SessionPolicyInput): { Versi
   const indexArn = `arn:${partition}:s3vectors:${input.region}:${input.account}:bucket/${input.bucket}/index/${index}`;
   const actions = ["s3vectors:PutVectors", "s3vectors:QueryVectors", "s3vectors:GetVectors", "s3vectors:DeleteVectors", "s3vectors:GetIndex"];
   const statement: Array<Record<string, unknown>> = [{ Effect: "Allow", Action: actions, Resource: indexArn }];
-  // The one extra right: delete the workspace's index of the embedding generation before the current one (the retire step, and what an erase starts with).
-  const retiredArn = `arn:${partition}:s3vectors:${input.region}:${input.account}:bucket/${input.bucket}/index/${retiredTeamRecordVectorIndexName(input.workspaceId)}`;
-  statement.push({ Effect: "Allow", Action: ["s3vectors:DeleteIndex"], Resource: retiredArn });
+  // The one extra right: delete the workspace's indexes of the embedding generations before the current one (Titan and Qwen3; the retire step, and what an erase starts with).
+  const retiredArns = retiredTeamRecordVectorIndexNames(input.workspaceId).map((name) => `arn:${partition}:s3vectors:${input.region}:${input.account}:bucket/${input.bucket}/index/${name}`);
+  statement.push({ Effect: "Allow", Action: ["s3vectors:DeleteIndex"], Resource: retiredArns });
   if (input.allowCreateIndex === true) statement.push({ Effect: "Allow", Action: ["s3vectors:CreateIndex"], Resource: indexArn });
   if (input.kmsKeyArn !== undefined) statement.push({ Effect: "Allow", Action: ["kms:Decrypt", "kms:GenerateDataKey", "kms:DescribeKey"], Resource: input.kmsKeyArn });
   return { Version: "2012-10-17", Statement: statement };
@@ -114,7 +114,7 @@ export function createAssume(options: {
   return async ({ workspaceId, sessionPolicy }) => {
     const sessionName = `team-record-${createHash("sha256").update(workspaceId).digest("hex").slice(0, 24)}`;
     // The session TAG names the one index the session may reach; the data role's own rights are written in terms of it (infra/lib/team-record-vectors.ts), so a session without it reaches nothing.
-    const session = await options.sts.assumeRole({ roleArn: options.roleArn, sessionName, policy: sessionPolicy, durationSeconds: options.durationSeconds ?? 3600, tags: [{ Key: "rovara-index", Value: teamRecordVectorIndexName(workspaceId) }, { Key: "rovara-retired-index", Value: retiredTeamRecordVectorIndexName(workspaceId) }] });
+    const session = await options.sts.assumeRole({ roleArn: options.roleArn, sessionName, policy: sessionPolicy, durationSeconds: options.durationSeconds ?? 3600, tags: [{ Key: "rovara-index", Value: teamRecordVectorIndexName(workspaceId) }, ...retiredTeamRecordVectorIndexNames(workspaceId).map((name, position) => ({ Key: RETIRED_INDEX_TAG_KEYS[position] as string, Value: name }))] });
     return { port: options.portFromCredentials(session.credentials), expiresAtMs: session.expiresAtMs };
   };
 }

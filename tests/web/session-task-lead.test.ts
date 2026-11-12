@@ -106,7 +106,8 @@ it("reads the raw worker word in the conversation as a plain state (always, sinc
  expect(screen.getByText("Run finished")).toBeTruthy();expect(on.container.textContent).not.toContain("SUCCEEDED");on.unmount();
 });
 
-const mergeSession = () => workspaceFixture({ display: { state: "ready_to_merge", next: "Press Merge." }, you: { level: "edit", owner: true, following: false, actions: ["watch", "comment"] } } as never, { merge: { ready: true } });
+// A Merge that is not ready is nothing to act on yet, so the disclosure stays closed until the reader presses the button (a Merge that is ready opens it by itself: session-phone-disclosure.test.ts).
+const mergeSession = () => workspaceFixture({ display: { state: "ready_to_merge", next: "Press Merge." }, you: { level: "edit", owner: true, following: false, actions: ["watch", "comment"] } } as never, { merge: { ready: false } });
 it("on a phone, Go to Merge opens the closed work disclosure and focuses the Merge section inside it", async () => {
 phone(true);
  const f = setup(mergeSession(), []);

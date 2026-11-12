@@ -320,6 +320,11 @@ export class DeveloperSignIn extends Construct {
       actions: ["dynamodb:GetItem"], resources: [props.state.tableArn],
       conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": [`ORG#${orgPattern}#BAN`] } },
     }));
+    // Slack link: the workspace the person signed in to must be the company's (OrgStore.orgForSlackTeam reads SLACK_TEAM#<teamId>/ORG). Read only, that key prefix only.
+    fn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ["dynamodb:GetItem"], resources: [props.state.tableArn],
+      conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["SLACK_TEAM#*"] }, Null: { "dynamodb:LeadingKeys": "false" } },
+    }));
     fn.addToRolePolicy(new iam.PolicyStatement({
       actions: ["dynamodb:Query"], resources: [props.state.tableArn],
       conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": [`ORG#${orgPattern}#MEMBER#*`, `ORG#${orgPattern}`] } },

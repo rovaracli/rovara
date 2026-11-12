@@ -1,5 +1,5 @@
-// The broker's side of the self-hosted embedder (environments/embedder; DECISIONS 23 and 27): one Lambda with two baked-in models, the Team record's
-// (Qwen3-Embedding-0.6B, 1,024 dimensions) and the lessons' (bge-small, 384). This file is the port: it checks the request against the same limits the
+// The broker's side of the self-hosted embedder (environments/embedder; DECISIONS 23, 27 and 140): one Lambda with one small model (bge-small-en-v1.5, 384 dimensions, texts cut at 512 tokens)
+// under two names, the Team record's (`record`) and the lessons' (`lesson`). This file is the port: it checks the request against the same limits the
 // function enforces, sends it through `invoke`, and checks the answer before any vector is used or stored. The AWS call itself is `lambdaEmbedderInvoke`
 // (team-record/aws-adapters.ts). Nothing here logs or keeps text from an error: every failure is one of the fixed codes below.
 import type { EmbedderModelSpec } from "@agentx/cloud-contracts";

@@ -31,12 +31,12 @@ describe("team record vector buckets", () => {
     template.hasResourceProperties("AWS::S3Vectors::VectorBucket", { EncryptionConfiguration: { SseType: "AES256" } });
   });
 
-  it("Enterprise pins its one workspace index: cosine, 1024 float32, ref the only non-filterable key", () => {
+  it("Enterprise pins its one workspace index: cosine, 384 float32, ref the only non-filterable key", () => {
     const template = stackWith((stack) => new TeamRecordVectors(stack, "V", { brokerPrincipal: new iam.AccountRootPrincipal(), bucketNames: ["rovara-record-vectors"], enterpriseWorkspaceId: "acme", kmsKeyArn: KMS }));
     template.hasResourceProperties("AWS::S3Vectors::Index", {
       IndexName: teamRecordVectorIndexName("acme"),
       DataType: "float32",
-      Dimension: 1024,
+      Dimension: 384,
       DistanceMetric: "cosine",
       MetadataConfiguration: { NonFilterableMetadataKeys: ["ref"] },
       EncryptionConfiguration: { SseType: "aws:kms", KmsKeyArn: KMS },

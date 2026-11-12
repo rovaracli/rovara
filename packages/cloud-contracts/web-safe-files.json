@@ -17,6 +17,7 @@
   "packages/cloud-contracts/src/app-review-groups.ts",
   "packages/cloud-contracts/src/approval-place.ts",
   "packages/cloud-contracts/src/audit-search.ts",
+  "packages/cloud-contracts/src/aws-service-display-names.ts",
   "packages/cloud-contracts/src/company-domains-web.ts",
   "packages/cloud-contracts/src/continue-loop.ts",
   "packages/cloud-contracts/src/decision-dismiss.ts",

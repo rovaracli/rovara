@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 import { LESSON_EMBEDDER, TEAM_RECORD_EMBEDDER } from "@agentx/cloud-contracts";
 import { EMBEDDER_BLANK_CODE_POINTS, EMBEDDER_ERROR_CODES, EMBEDDER_LIMITS, EmbedderError, checkEmbedderReply, createEmbedderClient, embedderBatches, trimEmbedderText, type EmbedderInvoke, type EmbedderRequest } from "../../../packages/broker/src/embedder/client.js";
-import { EMBEDDER_INGEST_WAIT_MS, EMBEDDER_JOB_WAIT_MS, EMBEDDER_SEARCH_COOLDOWN_MS, EMBEDDER_SEARCH_WAIT_MS, lessonEmbedderFrom, lessonEmbedderOver, recordEmbedderClientFrom, recordJobEmbedderClientFrom, recordSearchEmbedderClientFrom } from "../../../packages/broker/src/embedder/wiring.js";
+import { EMBEDDER_INGEST_COOLDOWN_MS, EMBEDDER_INGEST_WAIT_MS, EMBEDDER_JOB_WAIT_MS, EMBEDDER_SEARCH_COOLDOWN_MS, EMBEDDER_SEARCH_WAIT_MS, lessonEmbedderFrom, lessonEmbedderOver, recordEmbedderClientFrom, recordJobEmbedderClientFrom, recordSearchEmbedderClientFrom } from "../../../packages/broker/src/embedder/wiring.js";
 import { lambdaEmbedderInvoke } from "../../../packages/broker/src/team-record/aws-adapters.js";
 
 const unit = (dimension: number): number[] => Array.from({ length: dimension }, () => 1 / Math.sqrt(dimension));
@@ -31,7 +31,7 @@ describe("the embedder client", () => {
   it("sends the model, the kind and the cleaned text, and returns the vector", async () => {
     const seen: EmbedderRequest[] = [];
     const client = createEmbedderClient({ ...fast, spec: TEAM_RECORD_EMBEDDER, invoke: async (request) => { seen.push(request); return replyFor(TEAM_RECORD_EMBEDDER, request.texts.length); } });
-    expect(await client.embed("  hello  ", "query")).toHaveLength(1024);
+    expect(await client.embed("  hello  ", "query")).toHaveLength(384);
     expect(seen).toEqual([{ model: "record", kind: "query", texts: ["hello"] }]);
     const lesson = createEmbedderClient({ ...fast, spec: LESSON_EMBEDDER, invoke: async (request) => { seen.push(request); return replyFor(LESSON_EMBEDDER, request.texts.length); } });
     expect(await lesson.embed("x", "document")).toHaveLength(384);
@@ -106,7 +106,7 @@ describe("the embedder client", () => {
   it("recovers after one throttle, and does not retry a deterministic fault, a function error or a timeout", async () => {
     let calls = 0;
     const flaky = createEmbedderClient({ ...fast, spec: TEAM_RECORD_EMBEDDER, invoke: async () => { calls += 1; if (calls === 1) throw awsError("ServiceException"); return replyFor(); } });
-    expect(await flaky.embed("a", "document")).toHaveLength(1024);
+    expect(await flaky.embed("a", "document")).toHaveLength(384);
     expect(calls).toBe(2);
     for (const code of ["AccessDeniedException", "ResourceNotFoundException", "FunctionError", "AbortError", "BadReply"]) {
       calls = 0;
@@ -136,7 +136,7 @@ describe("the embedder client", () => {
     expect(calls).toBe(1);
     slow = false;
     clock += 20_000;
-    expect(await client.embed("a", "query")).toHaveLength(1024);
+    expect(await client.embed("a", "query")).toHaveLength(384);
     expect(calls).toBe(2);
     // an error that is not a timeout starts no pause
     let other = 0;
@@ -182,7 +182,7 @@ describe("the embedder client", () => {
   });
 
   it("refuses an answer from another model, revision or spec (a changed model must never put vectors beside the stored ones)", async () => {
-    for (const over of [{ modelId: "Qwen/Qwen3-Embedding-4B" }, { revision: "0".repeat(40) }, { spec: "0123456789abcdef" }]) {
+    for (const over of [{ modelId: "BAAI/bge-base-en-v1.5" }, { revision: "0".repeat(40) }, { spec: "0123456789abcdef" }]) {
       const client = createEmbedderClient({ ...fast, spec: TEAM_RECORD_EMBEDDER, invoke: async () => replyFor(TEAM_RECORD_EMBEDDER, 1, over) });
       expect(await codeOf(() => client.embed("a", "document")), JSON.stringify(over)).toBe("SPEC_MISMATCH");
     }
@@ -197,10 +197,10 @@ describe("the embedder client", () => {
     const bad: Array<[string, unknown]> = [
       ["wrong dimension field", replyFor(spec, 1, { dimension: 768 })],
       ["too few vectors", replyFor(spec, 1)],
-      ["short vector", replyFor(spec, 2, { vectors: [unit(1024), unit(1023)] })],
-      ["not unit length", replyFor(spec, 2, { vectors: [unit(1024), unit(1024).map((v) => v * 2)] })],
-      ["NaN", replyFor(spec, 2, { vectors: [unit(1024), [...unit(1023), Number.NaN]] })],
-      ["string", replyFor(spec, 2, { vectors: [unit(1024), [...unit(1023), "0.1"]] })],
+      ["short vector", replyFor(spec, 2, { vectors: [unit(384), unit(383)] })],
+      ["not unit length", replyFor(spec, 2, { vectors: [unit(384), unit(384).map((v) => v * 2)] })],
+      ["NaN", replyFor(spec, 2, { vectors: [unit(384), [...unit(383), Number.NaN]] })],
+      ["string", replyFor(spec, 2, { vectors: [unit(384), [...unit(383), "0.1"]] })],
       ["vectors not a list", replyFor(spec, 2, { vectors: "x" })],
       ["wrong model", replyFor(spec, 2, { model: "lesson" })],
       ["no truncation flags", replyFor(spec, 2, { truncated: undefined })],
@@ -231,10 +231,12 @@ describe("the lessons' embedder (for lane lessons-prod)", () => {
     expect(lessonEmbedderFrom({ EMBEDDER_FUNCTION_NAME: "agentx-staging-embedder" }, { region: "us-west-2" })?.dimension).toBe(384);
   });
 
-  it("has three clients of the one function that differ in how long they wait: search short (no retry, a pause after a timeout), ingest unchanged, the re-embed job longest", () => {
-    expect([EMBEDDER_SEARCH_WAIT_MS, EMBEDDER_INGEST_WAIT_MS, EMBEDDER_JOB_WAIT_MS]).toEqual([9_000, 15_000, 20_000]);
+  it("has three clients of the one function that differ in how long they wait: search short (no retry, a pause after a timeout), ingest short with a pause too, the re-embed job longest (DECISIONS 140)", () => {
+    expect([EMBEDDER_SEARCH_WAIT_MS, EMBEDDER_INGEST_WAIT_MS, EMBEDDER_JOB_WAIT_MS]).toEqual([3_000, 5_000, 8_000]);
     // the one search wait leaves most of the broker's 30 s for the vector query and the keyword fallback
-    expect(EMBEDDER_SEARCH_WAIT_MS).toBeLessThan(15_000);
+    expect(EMBEDDER_SEARCH_WAIT_MS).toBeLessThanOrEqual(3_000);
+    expect(EMBEDDER_INGEST_WAIT_MS).toBeLessThanOrEqual(5_000);
+    expect(EMBEDDER_INGEST_COOLDOWN_MS).toBeGreaterThan(EMBEDDER_INGEST_WAIT_MS);
     expect(EMBEDDER_SEARCH_COOLDOWN_MS).toBeGreaterThan(EMBEDDER_SEARCH_WAIT_MS);
     const env = { EMBEDDER_FUNCTION_NAME: "agentx-staging-embedder" };
     for (const client of [recordSearchEmbedderClientFrom(env, { region: "us-west-2" }), recordEmbedderClientFrom(env, { region: "us-west-2" }), recordJobEmbedderClientFrom(env, { region: "us-west-2" })]) expect(client?.spec).toBe(TEAM_RECORD_EMBEDDER);
@@ -306,5 +308,41 @@ describe("the Lambda invoke port", () => {
   it("fails with sdk_unavailable when the package cannot be loaded", async () => {
     const invoke = lambdaEmbedderInvoke({ region: "us-west-2", functionName: "f", timeoutMs: 100, load: async () => ({}) });
     await expect(invoke(request)).rejects.toMatchObject({ code: "sdk_unavailable" });
+  });
+});
+
+describe("the ingest client pauses after a timeout (DECISIONS 140: rows written meanwhile keep embedPending at once)", () => {
+  /** A Lambda that never answers: the send ends only when the invoke's own wait aborts it. */
+  function hangingSdk() {
+    const state = { sends: 0 };
+    const load = async (): Promise<Record<string, unknown>> => ({
+      LambdaClient: class { send(_command: unknown, options?: { abortSignal?: AbortSignal }) { state.sends += 1; return new Promise((_resolve, reject) => { options?.abortSignal?.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" }))); }); } },
+      InvokeCommand: class { constructor(readonly input: unknown) {} },
+    });
+    return { state, load };
+  }
+
+  it("after one ingest call timed out, this client sends the function nothing more until the pause is over", async () => {
+    const { state, load } = hangingSdk();
+    const clock = { ms: 1_000_000 };
+    const client = recordEmbedderClientFrom({ EMBEDDER_FUNCTION_NAME: "agentx-staging-embedder" }, { region: "us-west-2", load }, 300, undefined, () => clock.ms)!;
+    // a wait of 300 ms (real time); the clock the client keeps the pause by is the injected one
+    expect(await codeOf(() => client.embed("first", "document"))).toBe("UNREACHABLE");
+    expect(state.sends).toBe(1);
+    // the very next call (another row of the batch) is not sent at all
+    expect(await codeOf(() => client.embed("second", "document"))).toBe("UNREACHABLE");
+    expect(state.sends).toBe(1);
+    clock.ms += EMBEDDER_INGEST_COOLDOWN_MS - 1;
+    expect(await codeOf(() => client.embed("third", "document"))).toBe("UNREACHABLE");
+    expect(state.sends).toBe(1);
+    // the pause is over: the function is asked again
+    clock.ms += 1;
+    expect(await codeOf(() => client.embed("fourth", "document"))).toBe("UNREACHABLE");
+    expect(state.sends).toBe(2);
+  });
+
+  it("the pause is a real default of the ingest client, longer than its wait", () => {
+    expect(EMBEDDER_INGEST_COOLDOWN_MS).toBeGreaterThan(EMBEDDER_INGEST_WAIT_MS);
+    expect(EMBEDDER_INGEST_COOLDOWN_MS).toBeGreaterThan(0);
   });
 });

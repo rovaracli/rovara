@@ -13,6 +13,7 @@ import type { ReadSession } from "./SessionHeader.js";
 import type { ReadDecision } from "../../api/decisions.js";
 import { workspaceTask, type ReadTask } from "./workspace-types.js";
 import { MERGE_SECTION_ID } from "./task-plain-state.js";
+import { mayPressMerge } from "./must-act.js";
 
 const BRANCH_WORDS: Record<string, string> = { up_to_date: "Branch up to date", behind: "Branch behind its base", conflicted: "Branch conflicts with its base", unknown: "Branch not read yet" };
 type Item = NonNullable<ReadTask["mergeTracking"]>[number];
@@ -47,7 +48,7 @@ export function MergeSection({ session, task }: { session: ReadSession; task: Re
  const sending = useRef(false), requestId = useRef<string | undefined>(undefined), key = ["session", session.sessionId];
  // While a press waits for its confirmation the session is read again every few seconds, so the page notices the merge without a reload.
  useQuery({ queryKey: key, enabled: pending !== undefined, refetchInterval: 4000, queryFn: async () => acceptSessionRead(query.getQueryData<ReadSession>(key), await sessions.read(session.sessionId)) });
- const items = task.mergeTracking ?? [], merged = mergedEverywhere(task), mayPress = session.you.level !== "view" || session.you.mayMerge === true;
+ const items = task.mergeTracking ?? [], merged = mergedEverywhere(task), mayPress = mayPressMerge(session);
  const unmerged = items.filter(item => item.state !== "merged");
  // Decision journey slice 3: one merge control. While this task's merge card is waiting on the page (the decision cards are on), the merge is decided there; this section shows the state and points to it.
  const decisions = useSyncExternalStore(useCallback((changed: () => void) => query.getQueryCache().subscribe(changed), [query]), () => { const state = query.getQueryState<ReadDecision[]>(DECISIONS_KEY);return state?.status === "success" ? state.data : undefined; });

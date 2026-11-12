@@ -21,7 +21,7 @@ import { lengthPrefixedJsonCodec, MAX_FRAME_BYTES, MAX_PAYLOAD_BYTES, REQUEST_ID
 import type { SandboxLauncher } from "./launcher.js";
 import { SandboxSession } from "./session.js";
 import {
-  controlArgProblems, functionCpus, inspectIdArgs, inspectStateArgs, killArgs, removeArgs, sandboxContainerName, sandboxRunArgs, SandboxSpecError,
+  controlArgProblems, functionCpus, inspectIdArgs, inspectStateArgs, killArgs, removeArgs, sandboxContainerName, functionSandboxRunArgs, SandboxSpecError,
   DEFAULT_SANDBOX_ADDRESS_RANGE, RUNTIME_GID, RUNTIME_UID, ENV_MAX_TOTAL, ENV_MAX_VALUE, ENV_NAME, SANDBOX_TMPFS_MAX_MIB, environmentFileContent, networkInspectArgs, servicesNetworkProblems, type AddressRange, type RunLabel, type SandboxNetwork, type SandboxScratch, type SandboxSpec,
 } from "./sandbox-spec.js";
 
@@ -458,8 +458,8 @@ export function createSandboxController(options: SandboxControllerOptions): Sand
       codeHostPath: config.codeHostPath, ...(config.layersHostPath === undefined ? {} : { layersHostPath: config.layersHostPath }), ...(config.extraMounts === undefined ? {} : { extraMounts: config.extraMounts }),
       environment: environmentFor(env, memoryMb), memoryMb, cpus: functionCpus(memoryMb, minCpus, maxCpus), scratch, tmpExec: options.tmpExec ?? true, network: config.network, labels: options.labels,
     };
-    // Built from the typed spec and re-checked against the allow-list inside `sandboxRunArgs`: unsound arguments never reach the launcher.
-    const args = sandboxRunArgs(spec);
+    // Built from the typed spec and re-checked against the allow-list inside `functionSandboxRunArgs`: unsound arguments never reach the launcher.
+    const args = functionSandboxRunArgs(spec);
     env.envFile = envFile;
     await writeEnvFile(envFile, environmentFileContent(spec));
     const session = new SandboxSession(launcher.start(args), {

@@ -8,8 +8,8 @@ const reply = (spec: typeof TEAM_RECORD_EMBEDDER, count: number, over: Record<st
 const clientOver = (invoke: Parameters<typeof createEmbedderClient>[0]["invoke"]): EmbedderClient => createEmbedderClient({ spec: TEAM_RECORD_EMBEDDER, invoke, sleep: async () => undefined, baseDelayMs: 1 });
 
 describe("the Team record's embedding model", () => {
-  it("is Qwen3-Embedding-0.6B at the index dimension, pinned to a Hugging Face commit, and no Bedrock model", () => {
-    expect(TEAM_RECORD_EMBEDDER).toMatchObject({ model: "record", modelId: "Qwen/Qwen3-Embedding-0.6B", dimension: 1024 });
+  it("is bge-small-en-v1.5 (the lessons' model too) at the index dimension, pinned to a Hugging Face commit, and no Bedrock model", () => {
+    expect(TEAM_RECORD_EMBEDDER).toMatchObject({ model: "record", modelId: "BAAI/bge-small-en-v1.5", dimension: 384 });
     expect(TEAM_RECORD_EMBEDDER.dimension).toBe(VECTOR_DIMENSION_DEFAULT);
     expect(TEAM_RECORD_EMBEDDER.revision).toMatch(/^[0-9a-f]{40}$/);
     expect(JSON.stringify(TEAM_RECORD_EMBEDDER)).not.toMatch(/titan|cohere|bedrock/i);
@@ -40,10 +40,10 @@ describe("the Team record's embedder", () => {
   it("embeds a document or a query through the function and exposes the model, revision and spec", async () => {
     const seen: Array<{ kind: string; texts: string[] }> = [];
     const embedder = createEmbedder({ client: clientOver(async (request) => { seen.push({ kind: request.kind, texts: request.texts }); return reply(TEAM_RECORD_EMBEDDER, 1); }) });
-    expect(embedder.dimension).toBe(1024);
+    expect(embedder.dimension).toBe(384);
     expect([embedder.modelId, embedder.revision, embedder.spec]).toEqual([TEAM_RECORD_EMBEDDER.modelId, TEAM_RECORD_EMBEDDER.revision, TEAM_RECORD_EMBEDDER.spec]);
-    expect(await embedder.embed("  hello  ")).toHaveLength(1024);
-    expect(await embedder.embed("what did we decide?", "query")).toHaveLength(1024);
+    expect(await embedder.embed("  hello  ")).toHaveLength(384);
+    expect(await embedder.embed("what did we decide?", "query")).toHaveLength(384);
     expect(seen).toEqual([{ kind: "document", texts: ["hello"] }, { kind: "query", texts: ["what did we decide?"] }]);
   });
   it("cuts very long text before the call and refuses empty text without calling", async () => {

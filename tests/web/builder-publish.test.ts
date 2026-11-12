@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { useState } from "react";
 import { expect,it,vi } from "vitest";
-import { fireEvent,screen,act,waitFor,within } from "@testing-library/react";
+import { fireEvent,screen,act,waitFor,within,configure } from "@testing-library/react";
 import { taskFixture } from "./support/session-fixture.js";
 import { PublishDialog } from "../../packages/ui/src/screens/builder/PublishDialog.js";
 import { VersionsPanel } from "../../packages/ui/src/screens/builder/VersionsPanel.js";
@@ -11,6 +11,8 @@ import { renderPublish } from "./support/publish-render.js";
 import { h } from "./support/h.js";
 import { agentProfile,AGENT_FIXTURE_ID } from "./support/agent-fixture.js";
 import { expectNoAxeViolations } from "./support/axe.js";
+// Waits are 10 s, not the default 1 s: on a CI runner running a whole shard the "Check status" refetch and render took longer than 1 s once (0.5.14 CI run 43111295209).
+configure({ asyncUtilTimeout: 10_000 });vi.setConfig({ testTimeout: 30_000 });
 const profile=agentProfile(),key=["agent",AGENT_FIXTURE_ID],confirm={status:"NEEDS_CONFIRMATION",confirmUrl:"https://cell.example/v1/app/approve/apr_aaaaaaaaaaaaaaaaaaaa",changes:["Autonomy changes from Prepare to Run","Write access is added"]};
 function publish(){return h(PublishDialog,{agent:profile.agent,revision:7,disabled:false,onPublished:vi.fn(),onInvalid:vi.fn()});}
 it("shows actual safe publication at once and sends the live draft revision",async()=>{const f=await renderPublish(publish());fireEvent.click(screen.getByRole("button",{name:"Publish"}));await screen.findByText("Review now uses claude-sonnet-4-6 instead of gpt-5.4");fireEvent.change(screen.getByLabelText("Version note"),{target:{value:"Preserve payment checks"}});fireEvent.click(screen.getByRole("button",{name:"Publish this draft"}));await screen.findByText("Published version 4");expect(f.request.mock.calls.find(([request])=>request.method==="POST")?.[0].body).toMatchObject({expectedRevision:7,note:"Preserve payment checks"});f.close();});

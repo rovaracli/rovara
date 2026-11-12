@@ -14,7 +14,7 @@ import { tableLakeDeleteQueue } from "./lake-queue.js";
 import { emptyPurge, purgeItems, type PurgeDependencies, type PurgeResult } from "./purge.js";
 import { changeScopePrincipals, replaceScopeAudience, tombstoneRows, type WorkBudget } from "./scope-work.js";
 import { DeleteCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
-import { bySource, byScope, childScopes, deleteItem, listScopeWork, putScopeWork, scopePage, type PlaceCursor, type ScopeWork } from "./store.js";
+import { bySource, byScope, childScopes, deleteItem, listScopeWork, rewriteScopeWork, scopePage, type PlaceCursor, type ScopeWork } from "./store.js";
 import { Aliases, errorName, type Item } from "../agents/table-writes.js";
 import { recordOpsFailure } from "./ops-failures.js";
 
@@ -89,7 +89,7 @@ export async function runDeleteWorker(deps: DeleteWorkerDependencies, orgId: Org
         : await replaceScopeAudience(work0, orgId, { scope: entry.scope ?? "", audience: entry.audience as never, at: entry.changeAt ?? entry.at }, remaining, entry.walkCursor);
       if (done.complete) { await deleteItem(deps.table, key); summary.finished += 1; } else {
         // Go on from here next time, not from the start of the place.
-        await putScopeWork(deps.table, orgId, { ...entry, hidePending: true, ...(done.cursor === undefined ? {} : { walkCursor: done.cursor }) });
+        await rewriteScopeWork(deps.table, orgId, { ...entry, hidePending: true, ...(done.cursor === undefined ? {} : { walkCursor: done.cursor }) });
         summary.stillHidden += 1;
       }
       continue;
@@ -131,14 +131,14 @@ export async function runDeleteWorker(deps: DeleteWorkerDependencies, orgId: Org
     if (entry.hideDone !== true) {
       const hidden = await tombstoneRows(work0, orgId, { system: entry.system, ...(entry.scope === undefined ? {} : { scope: entry.scope }), ...(entry.sourceIds === undefined ? {} : { sourceIds: entry.sourceIds }), cause: entry.cause ?? "source_deleted", ...(entry.textOnly === true ? { textOnly: true } : {}) }, remaining, entry.hideCursor);
       if (!hidden.complete) {
-        await putScopeWork(deps.table, orgId, { ...entry, hidePending: true, ...(hidden.cursor === undefined ? {} : { hideCursor: hidden.cursor }) });
+        await rewriteScopeWork(deps.table, orgId, { ...entry, hidePending: true, ...(hidden.cursor === undefined ? {} : { hideCursor: hidden.cursor }) });
         summary.stillHidden += 1;
         continue;
       }
       const { hideCursor: _done, ...rest } = entry; // eslint-disable-line @typescript-eslint/no-unused-vars -- dropped on purpose
       // A text-only request has hidden every row it will delete: the rest of the place (its structured rows) is readable again.
       entry = { ...rest, hideDone: true, ...(entry.textOnly === true ? { hidePending: false } : {}) };
-      await putScopeWork(deps.table, orgId, entry);
+      await rewriteScopeWork(deps.table, orgId, entry);
     }
     if (entry.scope !== undefined && (entry.childPending === true || entry.childCursor !== undefined)) {
       // "Pending with no cursor" means no page was queued yet (the sink may have stopped before its first): start from the first page. The scan is done only when a page
@@ -160,7 +160,7 @@ export async function runDeleteWorker(deps: DeleteWorkerDependencies, orgId: Org
       }
       const { childCursor: _gone, ...rest } = entry; // eslint-disable-line @typescript-eslint/no-unused-vars -- dropped on purpose
       entry = finished ? { ...rest, childPending: false } : { ...entry, childPending: true, ...(cursor === undefined ? {} : { childCursor: cursor }) };
-      await putScopeWork(deps.table, orgId, entry);
+      await rewriteScopeWork(deps.table, orgId, entry);
       if (!finished) { summary.stillHidden += 1; continue; }
     }
     // Source ids that never had a row in the hot table may still have lake rows: their hashes are queued first, before any hot row goes.
@@ -190,7 +190,7 @@ export async function runDeleteWorker(deps: DeleteWorkerDependencies, orgId: Org
     const accessGone = scopeDeleted && purged.blocked === 0 && !found.truncated ? (await purgeAccessOfScope(deps.table, orgId, entry.scope as string, remaining.maxItems)) && unitsGone : unitsGone;
     if (nextWalk !== undefined && purged.blocked === 0) {
       // Not at the end of the place yet: go on from here next time.
-      await putScopeWork(deps.table, orgId, { ...entry, hidden: entry.hidden + purged.rows, walkCursor: nextWalk });
+      await rewriteScopeWork(deps.table, orgId, { ...entry, hidden: entry.hidden + purged.rows, walkCursor: nextWalk });
       summary.stillHidden += 1;
     } else if (purged.blocked === 0 && !found.truncated && accessGone && !headsLeft) {
       await deps.audit?.(auditRecordTombstoned({ orgId, requestId: entry.requestId, at: new Date(now()).toISOString(), scopeOrSource: entry.scope ?? entry.system, cause: entry.cause ?? "source_deleted", count: purged.rows + purged.facts })).catch(() => undefined);
@@ -198,7 +198,7 @@ export async function runDeleteWorker(deps: DeleteWorkerDependencies, orgId: Org
       summary.finished += 1;
     } else {
       // Not finished: keep the request, and the scope stays hidden until it is. The next run continues.
-      await putScopeWork(deps.table, orgId, { ...entry, hidePending: entry.scope !== undefined && entry.textOnly !== true ? true : entry.hidePending, hidden: entry.hidden + purged.rows });
+      await rewriteScopeWork(deps.table, orgId, { ...entry, hidePending: entry.scope !== undefined && entry.textOnly !== true ? true : entry.hidePending, hidden: entry.hidden + purged.rows });
       summary.stillHidden += 1;
     }
   }

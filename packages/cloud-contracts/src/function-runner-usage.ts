@@ -1,6 +1,6 @@
 // Slice 4, lane C1: what a run's worker reports about the Lambda functions the function runner (or the engine) ran, and the fixed evidence lines the broker derives from it (design section 7).
 //
-// It rides beside the services usage record as its own result key (`testServicesFunctions`), not inside it: `TestServicesUsageRecordSchema` is Rovara Code's strict contract, and a new field there is a Code change (owed
+// It rides beside the services usage record as its own result key (`testServicesFunctions`), not inside it: the services usage record's schema is Rovara Code's strict contract, and a new field there is a Code change (owed
 // upstream, see the lane report). The rules are the record's rules: bounded, fixed words, counts as coarse buckets (a test that picks how often it calls a function could otherwise carry a value in the count: TS-SEAL-1),
 // a function name shown only when it is a plain Lambda name that is not secret-shaped (the rest are counted in `otherFunctions` and named nowhere), and no path, payload, host, variable, log line or error text anywhere.
 // Never fed back to the agent or a model. Browser-safe: nothing here imports a Node module.

@@ -1,7 +1,9 @@
 // tests/contract/developer-signin-infrastructure.test.ts
 import { Stack, aws_iam as iam } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
+import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { beforeAll, describe, expect, it } from "vitest";
+import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { brokerNamesIn, brokerSettingsIn } from "../support/broker-names-template.js";
 import { evaluate } from "../support/cfn-evaluate.js";
@@ -963,4 +965,86 @@ it("browser sign-out adds no broker write on ordinary sign-in sessions", () => {
  expect(grants(named).some(({ role, statement }) => role.startsWith("BrokerServiceRole") && reaches(named, statement, table, SAMPLE_TABLE_ARN) && allows(statement, "dynamodb:GetItem"))).toBe(true);
  const brokerWrites = grants(named).filter(({ role, statement }) => role.startsWith("BrokerServiceRole") && reaches(named, statement, table, SAMPLE_TABLE_ARN) && ["dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem"].some(action => allows(statement, action)));
  for (const { statement } of brokerWrites) expect(leadingKeysOf(statement).every(key => key.startsWith("DECIDE_"))).toBe(true);
+});
+
+describe("every State-table key the sign-in function's code reads is covered by a synthesized statement (0.5.14 Slack link)", () => {
+  // The fakes in the store and handler tests never ask IAM anything, so a missing grant (SLACK_TEAM#, found on staging) passed them all.
+  // This runs the real OrgStore methods the Slack link callback calls against a recording client, then asks the SYNTHESIZED policy of the
+  // sign-in function's role whether each recorded call (action + partition key) is allowed. Hand-listed rows cover the rest of OrgStore's sign-in reads.
+  const ORG_ID = "org_abcdefghijklmnopqrst";
+  const SAMPLE_STATE_TABLE_ARN = "arn:aws:dynamodb:us-east-1:111122223333:table/agentx-staging-control-plane-StateTable-AbCdEf";
+  type Call = { name: string; action: string; pk: string };
+  let cloud: TemplateJson;
+  beforeAll(() => { cloud = controlPlane(buildAgentXApp({ agentxEnv: "staging", agentxCloud: true }), "agentx-staging-control-plane"); }, 300_000);
+
+  /** The calls the Slack link callback makes on the State table, recorded from the real OrgStore (server.ts slackLinkCallback). */
+  async function recordedSlackLinkCalls(): Promise<Call[]> {
+    const calls: Call[] = [];
+    const documentClient = {
+      async send(command: unknown): Promise<unknown> {
+        if (command instanceof GetCommand) calls.push({ name: "get", action: "dynamodb:GetItem", pk: String((command.input.Key as { pk: unknown }).pk) });
+        else if (command instanceof QueryCommand) calls.push({ name: "query", action: "dynamodb:Query", pk: String((command.input.ExpressionAttributeValues as Record<string, unknown>)[":pk"]) });
+        else throw new Error(`unexpected command ${(command as { constructor: { name: string } }).constructor.name}`);
+        return {};
+      },
+    };
+    const orgs = new OrgStore({ documentClient, tableName: "state", now: () => 0 });
+    await orgs.orgForDeveloper("developer-1");
+    await orgs.hasSlackTeam(ORG_ID);
+    await orgs.orgForSlackTeam("T0123456789");
+    return calls.map((call, index) => ({ ...call, name: ["orgForDeveloper", "hasSlackTeam", "orgForSlackTeam"][index]! }));
+  }
+
+  /** Other State-table reads and writes OrgStore does for a sign-in (hand-listed; each from OrgStore in packages/broker/src/org/store.ts). */
+  const handListed: Call[] = [
+    { name: "developerForVerifiedEmail", action: "dynamodb:GetItem", pk: "ORG_EMAIL#person@example.com" },
+    { name: "getOrg", action: "dynamodb:GetItem", pk: `ORG#${ORG_ID}` },
+    { name: "ban check", action: "dynamodb:GetItem", pk: `ORG#${ORG_ID}#BAN` },
+    { name: "invite read", action: "dynamodb:GetItem", pk: "ORG_INVITE#abc" },
+    { name: "member list", action: "dynamodb:Query", pk: `ORG#${ORG_ID}#MEMBER#developer-1` },
+  ];
+
+  /** Whether the role's synthesized statements allow `action` on a State-table item whose partition key is `pk`. */
+  function allowedOnState(template: TemplateJson, call: { action: string; pk: string }): boolean {
+    const stateTableId = ((template.Resources[functionId(template, "DeveloperSignInFunction")]!.Properties.Environment as { Variables: Record<string, Ref> }).Variables.STATE_TABLE_NAME!).Ref;
+    return statementsOfRole(template, "DeveloperSignInFunctionServiceRole").some((statement) => {
+      if (statement.Effect !== "Allow" || !allows(statement, call.action) || !reaches(template, statement, stateTableId, SAMPLE_STATE_TABLE_ARN)) return false;
+      if (statement.Condition === undefined) return true;
+      const conditionTypes = Object.keys(statement.Condition);
+      if (!conditionTypes.every((type) => type === "ForAllValues:StringLike" || type === "Null")) throw new Error(`unmodelled condition ${conditionTypes.join(",")}`);
+      const leading = statement.Condition["ForAllValues:StringLike"] === undefined ? undefined : leadingKeysOf(statement);
+      return leading === undefined || leading.some((glob) => globRegExp(glob).test(call.pk));
+    });
+  }
+
+  it("records the three OrgStore reads the Slack link callback makes, including SLACK_TEAM# GetItem (positive control)", async () => {
+    const calls = await recordedSlackLinkCalls();
+    expect(calls).toEqual([
+      { name: "orgForDeveloper", action: "dynamodb:GetItem", pk: "DEVELOPER_ORG#developer-1" },
+      { name: "hasSlackTeam", action: "dynamodb:Query", pk: `ORG#${ORG_ID}` },
+      { name: "orgForSlackTeam", action: "dynamodb:GetItem", pk: "SLACK_TEAM#T0123456789" },
+    ]);
+  });
+
+  for (const [label, pick] of [["a named environment", () => named], ["a cloud install", () => cloud]] as const) {
+    it(`covers every recorded and listed read with a statement (${label})`, async () => {
+      const template = pick();
+      for (const call of [...await recordedSlackLinkCalls(), ...handListed]) {
+        expect(allowedOnState(template, call), `${call.name}: ${call.action} on ${call.pk}`).toBe(true);
+      }
+    });
+
+    it(`gives SLACK_TEAM# GetItem only: no Query, Scan, write or condition check on it (${label})`, () => {
+      const template = pick();
+      const pk = "SLACK_TEAM#T0123456789";
+      expect(allowedOnState(template, { action: "dynamodb:GetItem", pk })).toBe(true);
+      for (const action of ["dynamodb:Query", "dynamodb:Scan", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem", "dynamodb:ConditionCheckItem", "dynamodb:BatchWriteItem", "dynamodb:BatchGetItem"]) {
+        expect(allowedOnState(template, { action, pk }), action).toBe(false);
+      }
+      // The grant is the one statement, key-limited: no statement of this role reaches a SLACK_TEAM# key without a leading-keys condition.
+      const slackStatements = statementsOfRole(template, "DeveloperSignInFunctionServiceRole").filter((statement) => JSON.stringify(statement.Condition ?? {}).includes("SLACK_TEAM#"));
+      expect(slackStatements).toHaveLength(1);
+      expect(slackStatements[0]).toMatchObject({ Effect: "Allow", Action: "dynamodb:GetItem", Condition: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["SLACK_TEAM#*"] }, Null: { "dynamodb:LeadingKeys": "false" } } });
+    });
+  }
 });

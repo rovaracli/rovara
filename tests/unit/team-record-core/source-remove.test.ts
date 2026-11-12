@@ -11,7 +11,7 @@ import { eraseProject } from "../../../packages/broker/src/team-record/erase.js"
 import { DEFAULT_DELETE_BUDGET, runDeleteWorker } from "../../../packages/broker/src/team-record/delete-worker.js";
 import { hiddenByPending } from "../../../packages/broker/src/team-record/acl.js";
 import { advanceItemHead, isScopeClosed } from "../../../packages/broker/src/team-record/item-head.js";
-import { listScopeWork, pendingHidesOf, putScopeWork, sourceRowItem } from "../../../packages/broker/src/team-record/store.js";
+import { listScopeWork, listWorkspace, pendingHidesOf, putScopeWork, sourceRowItem } from "../../../packages/broker/src/team-record/store.js";
 import type { CompanyLocks } from "../../../packages/broker/src/team-record/edition.js";
 import { capturingAuditDeps } from "../../support/audit-capture.js";
 import type { FakeDynamoDb } from "../../support/fake-dynamodb.js";
@@ -819,5 +819,94 @@ describe("T8 round 1: a full delete queue is not a removal", () => {
     expect(await post(h, WHO.owner, add())).toMatchObject({ status: 200 });
     await post(h, WHO.owner, remove(1));
     expect(await post(h, WHO.owner, add())).toMatchObject({ status: 409, body: { code: "SOURCE_REMOVAL_RUNNING" } });
+  });
+});
+
+// ---- the removal lists the workspace for the hourly job (0.5.15 staging find: a workspace with no earlier record write was never visited, so its delete request sat unprocessed and the place stayed hidden)
+describe("the removal lists the workspace in the directory the hourly job walks", () => {
+  const directory = (h: Harness) => h.w.db.find((item) => item.pk === "TEAM_RECORD_ORGS");
+  /** What the hourly job does: it reaches a workspace ONLY through the directory (`eachOrg`), then runs the delete worker for it. */
+  const hourly = async (h: Harness) => { for (const row of directory(h)) if (row.sk === ORG_A) await worker(h); };
+  const RS = "rovara:project/web";
+
+  it("a non-Rovara source (a place with children) removed in a workspace with no record write: the workspace is listed BEFORE the removal transaction (and never inside it); one hourly run clears the queue and the place is no longer hidden", async () => {
+    const h = harness();
+    expect(await post(h, WHO.owner, add())).toMatchObject({ status: 200 });
+    expect(directory(h)).toHaveLength(0); // no record write: the workspace is not listed (the staging case)
+    const order: string[] = [];
+    const send = h.w.db.send.bind(h.w.db);
+    h.w.db.send = async (command: Command) => {
+      const seen = command;
+      if (seen.constructor.name === "UpdateCommand" && JSON.stringify(seen.input.Key).includes("TEAM_RECORD_ORGS")) order.push("list");
+      if (seen.constructor.name === "TransactWriteCommand" && JSON.stringify(seen.input).includes("DELQ#")) order.push("removal");
+      return send(command);
+    };
+    expect(await post(h, WHO.owner, remove(1))).toEqual({ status: 200, body: { status: "removed" } });
+    h.w.db.send = send;
+    expect(order).toEqual(["list", "removal"]);
+    // the directory's one partition is shared by every workspace: no transaction may touch it (a conflict there would cancel the removal)
+    expect(h.w.db.transactions().filter((entries) => JSON.stringify(entries).includes("TEAM_RECORD_ORGS"))).toEqual([]);
+    expect(directory(h)).toEqual([expect.objectContaining({ sk: ORG_A, entityType: "TEAM_RECORD_ORG", orgId: ORG_A })]);
+    expect(queue(h)).toHaveLength(1);
+    expect((await pendingHidesOf(h.w.table, ORG_A)).scopes.has(GITHUB_SCOPE)).toBe(true); // hidden until the worker has run
+    await hourly(h);
+    expect(queue(h)).toHaveLength(0);
+    expect((await pendingHidesOf(h.w.table, ORG_A)).scopes.size).toBe(0);
+    expect(await isScopeClosed(h.w.table, ORG_A, GITHUB_SCOPE)).toBe(true);
+  });
+
+  it("when the listing cannot be written the removal is refused whole (nothing changes), and it works when repeated", async () => {
+    const h = harness();
+    expect(await post(h, WHO.owner, add())).toMatchObject({ status: 200 });
+    h.w.db.injectFault({ command: "UpdateCommand", match: (input) => JSON.stringify(input.Key).includes("TEAM_RECORD_ORGS"), error: { name: "ProvisionedThroughputExceededException" } });
+    expect(await post(h, WHO.owner, remove(1))).toMatchObject({ status: 503 });
+    expect(sourceRows(h)).toHaveLength(1);
+    expect(queue(h)).toHaveLength(0);
+    expect(await post(h, WHO.owner, remove(1))).toEqual({ status: 200, body: { status: "removed" } });
+    expect(queue(h)).toHaveLength(1);
+    expect(directory(h)).toHaveLength(1);
+  });
+
+  it("contention on the directory never fails a queue write or a removal: transactions that touch it are not used, and concurrent listings leave one row", async () => {
+    const h = harness();
+    expect(await post(h, WHO.owner, add())).toMatchObject({ status: 200 });
+    // Any TRANSACTION touching the directory would be cancelled (what a concurrent write to the shared partition does): none is sent, so nothing fails.
+    h.w.db.injectFault({ command: "TransactWriteCommand", match: (input) => JSON.stringify(input).includes("TEAM_RECORD_ORGS"), error: { name: "TransactionCanceledException", cancellationReasons: [{ Code: "TransactionConflict" }] }, times: 1000 });
+    const item = (index: number) => ({ type: "tombstone" as const, system: "github", cause: "excluded" as const, hidePending: true, hidden: 0, requestId: randomUUID(), scope: `github:repo/${String(7000 + index)}`, at: new Date(Date.parse(AT) + index).toISOString(), queuedAtSeconds: 1 + index });
+    await Promise.all([...Array.from({ length: 8 }, (_, index) => putScopeWork(h.w.table, ORG_A, item(index))), listWorkspace(h.w.table, ORG_A, AT), listWorkspace(h.w.table, ORG_A, AT)]);
+    expect(await post(h, WHO.owner, remove(1))).toEqual({ status: 200, body: { status: "removed" } });
+    expect(directory(h)).toHaveLength(1);
+    expect(queue(h)).toHaveLength(9);
+  });
+
+  it("the Rovara row (free text only) removed in a workspace with no record write is listed and finished by one hourly run too", async () => {
+    const h = harness({ edition: "enterprise" });
+    expect(await post(h, WHO.owner, add({ source: "rovara", scope: RS, retention: "C" }))).toMatchObject({ status: 200 });
+    expect(directory(h)).toHaveLength(0);
+    // The inline hide fails, so the item stays queued and only the worker can finish it.
+    const send = h.w.db.send.bind(h.w.db);
+    h.w.db.send = async (command: Command) => { if (isTombstoneWrite(command)) throw new Error("dynamodb unavailable"); return send(command); };
+    expect(await post(h, WHO.owner, remove(1, { source: "rovara", scope: RS }))).toEqual({ status: 200, body: { status: "removed" } });
+    h.w.db.send = send;
+    expect(directory(h)).toHaveLength(1);
+    expect(queue(h).length).toBeGreaterThan(0);
+    await hourly(h);
+    expect(queue(h)).toHaveLength(0);
+  });
+
+  it("listing is idempotent: a second removal leaves the existing directory row (and its time) as it was", async () => {
+    const h = harness();
+    expect(await post(h, WHO.owner, add())).toMatchObject({ status: 200 });
+    h.w.db.set({ pk: "TEAM_RECORD_ORGS", sk: ORG_A, entityType: "TEAM_RECORD_ORG", orgId: ORG_A, at: "2026-01-01T00:00:00.000Z" });
+    expect(await post(h, WHO.owner, remove(1))).toMatchObject({ status: 200 });
+    expect(directory(h)).toEqual([{ pk: "TEAM_RECORD_ORGS", sk: ORG_A, entityType: "TEAM_RECORD_ORG", orgId: ORG_A, at: "2026-01-01T00:00:00.000Z" }]);
+  });
+
+  it("every queue writer lists the workspace: putScopeWork alone (what the sink and the scope work use) adds the directory row too", async () => {
+    const h = harness();
+    expect(directory(h)).toHaveLength(0);
+    await putScopeWork(h.w.table, ORG_A, { type: "tombstone", system: "github", cause: "excluded", hidePending: true, hidden: 0, requestId: randomUUID(), scope: GITHUB_SCOPE, at: AT, queuedAtSeconds: 1 });
+    expect(directory(h)).toEqual([expect.objectContaining({ sk: ORG_A })]);
+    expect(await listScopeWork(h.w.table, ORG_A, 10)).toHaveLength(1);
   });
 });

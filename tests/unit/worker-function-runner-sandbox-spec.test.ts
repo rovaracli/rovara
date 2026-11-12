@@ -2,7 +2,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { CodecError, lengthPrefixedJsonCodec } from "../../packages/worker/src/function-runner/codec.js";
 import {
-  controlArgProblems, environmentFileContent, networkInspectArgs, servicesNetworkProblems, inspectIdArgs, killArgs, removeArgs, sandboxArgProblems, sandboxContainerName, sandboxRunArgs, SandboxSpecError, validImageReference, type SandboxSpec,
+  controlArgProblems, environmentFileContent, networkInspectArgs, servicesNetworkProblems, inspectIdArgs, killArgs, removeArgs, sandboxArgProblems, sandboxContainerName, functionSandboxRunArgs, SandboxSpecError, validImageReference, type SandboxSpec,
 } from "../../packages/worker/src/function-runner/sandbox-spec.js";
 
 const DIGEST = `sha256:${"a".repeat(64)}`;
@@ -22,9 +22,9 @@ const base = (): SandboxSpec => ({
 
 const valueOf = (args: string[], flag: string): string[] => args.flatMap((arg, index) => (arg === flag ? [args[index + 1]!] : []));
 
-describe("sandboxRunArgs", () => {
+describe("functionSandboxRunArgs", () => {
   it("builds the fixed gVisor profile", () => {
-    const args = sandboxRunArgs(base());
+    const args = functionSandboxRunArgs(base());
     expect(args.slice(0, 2)).toEqual(["run", "-i"]);
     expect(valueOf(args, "--runtime")).toEqual(["runsc"]);
     expect(valueOf(args, "--network")).toEqual(["none"]);
@@ -63,7 +63,7 @@ describe("sandboxRunArgs", () => {
       extraMounts: [{ hostPath: "/opt/rovara/qemu/qemu-x86_64-static", containerPath: "/rovara/qemu" }],
       agentArgs: ["--emulator=/rovara/qemu", "--", "/var/lang/bin/python3.12", "/var/runtime/bootstrap.py"],
     };
-    const args = sandboxRunArgs(spec);
+    const args = functionSandboxRunArgs(spec);
     expect(valueOf(args, "--network")).toEqual(["rovara-svc-0123456789ab"]);
     expect(valueOf(args, "--ip")).toEqual(["10.20.30.70"]);
     expect(valueOf(args, "--tmpfs")).toEqual([]);
@@ -71,12 +71,12 @@ describe("sandboxRunArgs", () => {
     expect(valueOf(args, "--volume")).toContain("/opt/rovara/qemu/qemu-x86_64-static:/rovara/qemu:ro");
     expect(args.slice(args.indexOf(spec.image) + 1)).toEqual(["-uid", "993", "-gid", "993", ...spec.agentArgs!]);
     expect(sandboxArgProblems(args, spec)).toEqual([]);
-    expect(sandboxRunArgs({ ...spec, scratch: { kind: "tmpfs", sizeMb: 64 }, tmpExec: false }).join(" ")).toContain("noexec");
+    expect(functionSandboxRunArgs({ ...spec, scratch: { kind: "tmpfs", sizeMb: 64 }, tmpExec: false }).join(" ")).toContain("noexec");
   });
 });
 
 describe("the allow-list re-check refuses every added or changed flag", () => {
-  const good = (): string[] => sandboxRunArgs(base());
+  const good = (): string[] => functionSandboxRunArgs(base());
   const inject = (flags: string[]): string[] => { const args = good(); args.splice(2, 0, ...flags); return args; };
   const cases: Array<[string, string[]]> = [
     ["extra env", inject(["-e", "TOKEN=x"])], ["env swapped for a flag", inject(["-e", "--privileged"])], ["--env long form", inject(["--env", "A=b"])], ["second env file", inject(["--env-file", "/etc/shadow"])],
@@ -134,7 +134,7 @@ describe("the allow-list re-check refuses every added or changed flag", () => {
 });
 
 describe("hostile inputs cannot become flags", () => {
-  const throwsSpec = (change: Partial<SandboxSpec>): void => { expect(() => sandboxRunArgs({ ...base(), ...change })).toThrow(SandboxSpecError); };
+  const throwsSpec = (change: Partial<SandboxSpec>): void => { expect(() => functionSandboxRunArgs({ ...base(), ...change })).toThrow(SandboxSpecError); };
 
   it("refuses odd image references", () => {
     for (const image of ["--privileged", "-v/:/host", "x --privileged", "img\n--cap-add=ALL", "img\0", "", " ", "a b", "../../etc", "img//x", "IMG:tag@@sha256:" + "a".repeat(64), "img@sha256:short", "img@md5:abc", "a".repeat(300), "img\u202e", "img;rm -rf /", "$(id)", "`id`", "img'x", "img\"x"]) {
@@ -164,13 +164,13 @@ describe("hostile inputs cannot become flags", () => {
     // The runtime's identity is the spec's, not the caller's: a later -uid would win in the agent's flag parser.
     for (const arg of ["-uid", "-uid=0", "--uid", "--uid=0", "-gid", "--gid=0"]) throwsSpec({ agentArgs: [arg] });
     for (const arg of ["a b", "a\nb", "$(id)", "a;b", "", "-", "--a b", "x".repeat(300), "a\0"]) throwsSpec({ agentArgs: [arg] });
-    expect(() => sandboxRunArgs({ ...base(), agentArgs: ["--", "/var/lang/bin/python3.12"] })).not.toThrow();
+    expect(() => functionSandboxRunArgs({ ...base(), agentArgs: ["--", "/var/lang/bin/python3.12"] })).not.toThrow();
   });
 
   it("renders the environment as one NAME=VALUE line each, and takes no part of it into the arguments", () => {
     const environment = { FLAG: "--privileged", SOCK: "/var/run/app.pid", BIG: "y".repeat(8_192), EMPTY: "", UNI: "\u202e\u{1F600}", EQ: "a=b=c", ARGS: "-v /:/host --cap-add=ALL" };
     const spec = { ...base(), environment };
-    const args = sandboxRunArgs(spec);
+    const args = functionSandboxRunArgs(spec);
     expect(environmentFileContent(spec)).toBe(`${Object.keys(environment).sort().map((name) => `${name}=${environment[name as keyof typeof environment]}`).join("\n")}\n`);
     expect(args.filter((arg) => arg.includes("privileged") || arg.includes("cap-add=ALL") || arg.includes("yyyy") || arg.includes("app.pid") || arg.includes("/:/host"))).toEqual([]);
     expect(sandboxArgProblems(args, spec)).toEqual([]);
@@ -198,7 +198,7 @@ describe("hostile inputs cannot become flags", () => {
 
   it("never echoes the offending text in the error", () => {
     try {
-      sandboxRunArgs({ ...base(), image: "--privileged-secret-marker" });
+      functionSandboxRunArgs({ ...base(), image: "--privileged-secret-marker" });
       throw new Error("should have thrown");
     } catch (error) {
       expect((error as Error).message).not.toContain("secret-marker");

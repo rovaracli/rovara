@@ -31,7 +31,7 @@ import { personRateKey, type RecordQueryDependencies } from "./query.js";
 import type { RecordRouteReply, RecordRouteRequest } from "./routes.js";
 import { rovaraScope } from "./sources/rovara.js";
 import { claimDrop, claimPut, readRevisionFloor, readScopeClaim, readSourceRequest, readSourceRow, requestPut, revisionFloorCheck, revisionFloorPut } from "./source-store.js";
-import { listScopeWork, listSourceConfigs, putScopeWork, scopeWorkItem, sourceRowItem, type ScopeWork } from "./store.js";
+import { listScopeWork, listSourceConfigs, listWorkspace, rewriteScopeWork, scopeWorkItem, sourceRowItem, type ScopeWork } from "./store.js";
 
 /** What the route needs from the install. */
 export interface SourceRouteDependencies {
@@ -623,17 +623,21 @@ async function saveRemove(run: Run, body: Extract<SourceWriteBody, { action: "re
     requestItem(run, body.requestId, hash, reply),
     ...auditItems(run, events, false),
   ];
+  // The workspace joins the directory the hourly job walks BEFORE the transaction that queues the delete, as its own plain idempotent write: queued work is finished only by that job, which reaches a workspace only through the
+  // directory. Not inside the transaction: the directory is one partition every workspace shares, and a conflict there would cancel the removal and read as "this source changed". If this write fails nothing has changed and the
+  // removal is refused (retry); a listing left behind by a removal that then loses its race is harmless.
+  try { await listWorkspace(table, run.orgId, at); } catch { throw unavailable(); }
   if ((await commit(run, items)) !== "ok") {
     const earlier = await replayed(run, body.requestId, hash);
     if (earlier !== undefined) return earlier;
     throw stale();
   }
   await flush(run, events);
-  // Best effort, and only an acceleration: the queued work above already hides the place from every read and makes the worker finish the job.
+  // Best effort, and only an acceleration: the queued work above already hides the place from every read, and (the workspace was listed in the directory the hourly job walks, just before the transaction) makes the worker finish the job.
   if (textOnly) {
     try {
       const result = await tombstoneRows({ table, now: run.now }, run.orgId, { system: body.source, scope: body.scope, cause: "excluded", textOnly: true }, DEFAULT_WORK_BUDGET);
-      await putScopeWork(table, run.orgId, { ...work, hidden: result.changed, hidePending: !result.complete, hideDone: result.complete, ...(result.cursor === undefined ? {} : { hideCursor: result.cursor }) });
+      await rewriteScopeWork(table, run.orgId, { ...work, hidden: result.changed, hidePending: !result.complete, hideDone: result.complete, ...(result.cursor === undefined ? {} : { hideCursor: result.cursor }) });
     } catch { /* the worker hides them */ }
   } else {
     try { await closeScope(table, run.orgId, body.scope, "excluded", at); } catch { /* the worker closes the place */ }

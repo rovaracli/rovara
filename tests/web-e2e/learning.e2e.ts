@@ -70,7 +70,8 @@ test("the overview shows how often the same correction was given twice", async (
 });
 test("Home's Review opens How we work at the Suggested rules section", async ({ page, context, request, baseURL }) => {
  await signIn(context, request, baseURL);await mockRealtime(page);await page.setViewportSize({ width: 1280, height: 500 });await page.goto("/app");
- await expect(page.getByRole("heading", { name: "Suggested rules for \u201cpayments\u201d", level: 2 })).toBeVisible();
+ // A card of the Home's Needs you list: the section's h2 is "Needs you", the card's title is an h3 (decision 125).
+ await expect(page.getByRole("heading", { name: "Suggested rules for \u201cpayments\u201d", level: 3 })).toBeVisible();
  await expect(page.getByText("2 suggested rules to review in \u201cpayments\u201d")).toBeVisible();
  await page.getByRole("link", { name: "Review" }).click();
  await expect(page).toHaveURL(/\/app\/projects\/payments\?tab=how-we-work$/u);

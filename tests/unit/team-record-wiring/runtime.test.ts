@@ -5,7 +5,7 @@
 //  3. PUBLIC SLACK: message text is never stored in the Public edition (processed, then dropped), whatever the source row says; the positive control shows Enterprise does store it.
 import { readFileSync, readdirSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { LESSON_EMBEDDER, retiredTeamRecordVectorIndexName, teamRecordVectorIndexName, TEAM_RECORD_EMBEDDER, TEAM_RECORD_OPS_MAX_RECEIVES, TEAM_RECORD_QUEUED_PUT_MAX_AGE_MS, recordActorSourceHash, recordDeveloperHash, developerOrgKey, githubInstallationKey, githubRepoProjectKey, orgMetaKey, orgSlackTeamKey, slackTeamOrgKey } from "@agentx/cloud-contracts";
+import { LESSON_EMBEDDER, retiredTeamRecordVectorIndexNames, teamRecordVectorIndexName, TEAM_RECORD_EMBEDDER, TEAM_RECORD_OPS_MAX_RECEIVES, TEAM_RECORD_QUEUED_PUT_MAX_AGE_MS, recordActorSourceHash, recordDeveloperHash, developerOrgKey, githubInstallationKey, githubRepoProjectKey, orgMetaKey, orgSlackTeamKey, slackTeamOrgKey } from "@agentx/cloud-contracts";
 import { teamRecordPk, githubMemberKey, memberGithubKey, orgProjectCatalogKey, projectMetaKey, projectRevisionKey, type OrgId } from "@rovara-code/contracts";
 import { announceHumanSendBack } from "../../../packages/broker/src/lessons/send-back-events.js";
 import { drainTeamRecordQueue, installTeamRecordEmitter, isTeamRecordJobEvent, isTeamRecordQueueEvent, isTeamRecordSlackEvent, recordSlackForward, runTeamRecordJob, uninstallTeamRecordEmitter } from "../../../packages/broker/src/aws/broker/team-record-wiring.js";
@@ -13,7 +13,7 @@ import { lessonSimilarityFor } from "../../../packages/broker/src/aws/broker/les
 import { createTeamRecordRuntime, teamRecordIsOn, type TeamRecordRuntime } from "../../../packages/broker/src/team-record/runtime.js";
 import { ERASE_SWEEP_DELAY_MS } from "../../../packages/broker/src/team-record/erase.js";
 import { identitySystem } from "../../../packages/broker/src/team-record/erased.js";
-import { putSourceConfig } from "../../../packages/broker/src/team-record/store.js";
+import { putScopeWork, putSourceConfig, rewriteScopeWork } from "../../../packages/broker/src/team-record/store.js";
 import { askAliasHashKey, readErasedAliases, scrubWithAliasHashes } from "../../../packages/broker/src/agent-sessions/ask-erased-aliases.js";
 import { SdkUnavailableError } from "../../../packages/broker/src/team-record/aws-adapters.js";
 import { FakeDynamoDb } from "../../support/fake-dynamodb.js";
@@ -27,19 +27,21 @@ const SETTLE_PASS_MS = 121_000;
 void 0;
 const MARKER = "SECRETMARKER-QZX-withRetry";
 const ON = { TEAM_RECORD_ENABLED: "1", TEAM_RECORD_TABLE_NAME: "TeamRecord", AWS_REGION: "us-west-2", EMBEDDER_FUNCTION_NAME: "agentx-staging-embedder" } as const;
-/** The embedder function's answer for the Team record's model: one unit vector of 1,024 dimensions per text. */
-const embedderReply = (texts: number) => ({ ok: true, model: "record", modelId: TEAM_RECORD_EMBEDDER.modelId, revision: TEAM_RECORD_EMBEDDER.revision, spec: TEAM_RECORD_EMBEDDER.spec, dimension: 1024, vectors: Array.from({ length: texts }, () => Array.from({ length: 1024 }, () => 1 / 32)), truncated: Array.from({ length: texts }, () => false) });
+/** The embedder function's answer for the Team record's model: one unit vector of 384 dimensions per text. */
+const embedderReply = (texts: number) => ({ ok: true, model: "record", modelId: TEAM_RECORD_EMBEDDER.modelId, revision: TEAM_RECORD_EMBEDDER.revision, spec: TEAM_RECORD_EMBEDDER.spec, dimension: 384, vectors: Array.from({ length: texts }, () => Array.from({ length: 384 }, () => 1 / Math.sqrt(384))), truncated: Array.from({ length: texts }, () => false) });
 const indexKeys = { gsi1: { partition: "gsi1pk" }, gsi2: { partition: "gsi2pk" }, gsi3: { partition: "gsi3pk", sort: "gsi3sk" }, gsi4: { partition: "gsi4pk" }, gsi5: { partition: "gsi5pk", sort: "textDueAt" } };
 const dbOf = () => new FakeDynamoDb({ indexKeys });
 const noSdk = async (): Promise<never> => { throw new SdkUnavailableError(); };
 
-/** A fake AWS: the embedder Lambda answers a 1,024-dimension embedding, S3 Vectors records every command with the credentials it was signed with, and STS records every session policy it was asked for. */
+/** A fake AWS: the embedder Lambda answers a 384-dimension embedding, S3 Vectors records every command with the credentials it was signed with, and STS records every session policy it was asked for. */
 function fakeAws() {
   const vectorCalls: Array<{ command: string; input: Record<string, unknown>; accessKeyId: string }> = [];
   const athenaCalls: Array<{ command: string; sql: string }> = [];
   const athena = { down: false };
   /** The retired-index delete: `fail` names the error the S3 Vectors API answers with (NotFoundException: nothing was there), `deleted` counts the real deletions. */
-  const retire = { fail: undefined as string | undefined, deleted: 0 };
+  const retire = { fail: undefined as string | undefined, failOn: undefined as string[] | undefined, deleted: 0 };
+  /** DECISIONS 140: when set, S3 Vectors keeps real state: the indexes that exist and the vector keys in each. Absent: every call succeeds, as before. */
+  const store = { indexes: undefined as Map<string, Set<string>> | undefined };
   const embedBodies: string[] = [];
   const sessions: Array<{ roleArn: string; policy: string; sessionName: string; tags?: ReadonlyArray<{ Key: string; Value: string }> | undefined }> = [];
   const command = (name: string) => ({ [name]: class { constructor(readonly input: Record<string, unknown>) {} get commandName() { return name; } } });
@@ -56,9 +58,19 @@ function fakeAws() {
           constructor(readonly config: { credentials: { accessKeyId: string } }) {}
           async send(c: { commandName: string; input: Record<string, unknown> }) {
             vectorCalls.push({ command: c.commandName, input: c.input, accessKeyId: this.config.credentials.accessKeyId });
+            const indexName = typeof c.input.indexName === "string" ? c.input.indexName : "";
+            const notFound = () => Object.assign(new Error("secret detail"), { name: "NotFoundException" });
             if (c.commandName === "DeleteIndexCommand") {
-              if (retire.fail !== undefined) throw Object.assign(new Error("secret detail"), { name: retire.fail });
+              if (retire.fail !== undefined && (retire.failOn === undefined || retire.failOn.includes(indexName))) throw Object.assign(new Error("secret detail"), { name: retire.fail });
+              if (store.indexes !== undefined && !store.indexes.delete(indexName)) throw notFound();
               retire.deleted += 1;
+            }
+            if (store.indexes !== undefined) {
+              const held = store.indexes.get(indexName);
+              if (c.commandName === "CreateIndexCommand" && held === undefined) store.indexes.set(indexName, new Set());
+              if (c.commandName === "GetIndexCommand" && held === undefined) throw notFound();
+              if (c.commandName === "PutVectorsCommand") { if (held === undefined) throw notFound(); for (const vector of c.input.vectors as Array<{ key: string }>) held.add(vector.key); }
+              if (c.commandName === "DeleteVectorsCommand") { if (held === undefined) throw notFound(); for (const key of c.input.keys as string[]) held.delete(key); }
             }
             return c.commandName === "QueryVectorsCommand" || c.commandName === "GetVectorsCommand" ? { vectors: [] } : {};
           }
@@ -88,7 +100,7 @@ function fakeAws() {
       return { credentials: { accessKeyId: `AKIA-${sessions.length}`, secretAccessKey: "s", sessionToken: "t" }, expiresAtMs: T0 + 3_600_000 };
     },
   };
-  return { sdk, sts, vectorCalls, embedBodies, sessions, athenaCalls, athena, retire };
+  return { sdk, sts, vectorCalls, embedBodies, sessions, athenaCalls, athena, retire, store };
 }
 const VECTORS_ENV = { TEAM_RECORD_VECTORS_ROLE_ARN: "arn:aws:iam::123456789012:role/agentx/ent/vr", TEAM_RECORD_VECTOR_BUCKETS: "agentx-ent-record-vectors", AGENTX_ACCOUNT_ID: "123456789012" } as const;
 const everything = (db: FakeDynamoDb): string => JSON.stringify(db.find(() => true));
@@ -110,7 +122,7 @@ function build(db: FakeDynamoDb, env: Record<string, string | undefined>, extra:
   return runtime;
 }
 
-async function addSource(db: FakeDynamoDb, edition: "enterprise" | "public", input: { orgId: typeof ORG_A; source: "slack" | "github"; scope: string; retention: "A" | "B" | "C" | "D"; notesOptIn?: true; project?: string }): Promise<void> {
+async function addSource(db: FakeDynamoDb, edition: "enterprise" | "public", input: { orgId: typeof ORG_A; source: "slack" | "github" | "rovara"; scope: string; retention: "A" | "B" | "C" | "D"; notesOptIn?: true; project?: string }): Promise<void> {
   const result = await putSourceConfig({ documentClient: db, tableName: "TeamRecord" }, {
     workspaceId: input.orgId, project: input.project ?? "web", source: input.source, scope: input.scope, enabled: true, retention: input.retention, exclude: [], audienceDefault: "project", health: "unknown",
     addedBy: "dev-1", updatedAt: "2026-10-30T10:00:00.000Z", ...(input.notesOptIn === true ? { notesOptIn: true as const } : {}),
@@ -214,16 +226,16 @@ describe("vectors are opened per workspace", () => {
     const [first, second] = aws.sessions;
     expect(first!.roleArn).toBe(VECTORS_ENV.TEAM_RECORD_VECTORS_ROLE_ARN);
     const indexArns = (policy: string): string[] => (JSON.parse(policy) as { Statement: Array<{ Resource: string | string[] }> }).Statement.flatMap((statement) => [statement.Resource].flat()).filter((resource) => resource.includes(":index/") || resource.includes("/index/"));
-    // two index names per policy: the workspace's current index, and its retired one (the only thing the session may delete)
+    // three index names per policy: the workspace's current index, and its two retired ones, Titan and Qwen3 (the only things the session may delete)
     for (const session of aws.sessions) {
-      expect(indexArns(session.policy)).toHaveLength(2);
+      expect(indexArns(session.policy)).toHaveLength(3);
       const statements = (JSON.parse(session.policy) as { Statement: Array<{ Action: string[]; Resource: string }> }).Statement;
       expect(statements.filter((statement) => statement.Action.includes("s3vectors:DeleteIndex")).map((statement) => statement.Action)).toStrictEqual([["s3vectors:DeleteIndex"]]);
     }
     expect(indexArns(first!.policy).some((arn) => indexArns(second!.policy).includes(arn))).toBe(false);
     // Fix round 1, S2: each session is TAGGED with its own workspace's index name (the data role's rights are written in terms of that tag), and the tag is the index the policy names.
     for (const session of aws.sessions) {
-      expect(session.tags!.map((tag) => tag.Key)).toStrictEqual(["rovara-index", "rovara-retired-index"]);
+      expect(session.tags!.map((tag) => tag.Key)).toStrictEqual(["rovara-index", "rovara-retired-index", "rovara-retired-index-2"]);
       for (const tag of session.tags!) {
         expect(tag.Value).toMatch(/^ws-[0-9a-f]{32}$/);
         expect(session.policy).toContain(tag.Value);
@@ -577,6 +589,37 @@ describe("a delete that arrives during a store failure is retried and lands", ()
     down.on = false;
     expect(await runtime.drain(asRecords(sent))).toStrictEqual({ batchItemFailures: [] });
     expect(everything(db)).toContain(MARKER);
+  });
+
+  // ---- L2 (DECISIONS 140): the embedding inside a drain has a hard end, so a 10-message batch cannot run past the broker's 30 s
+  it("a batch of queued puts against an embedder that never answers ends at the drain's own deadline: the row it reached is stored with embedPending, nothing waits for the 5 s ingest wait, and the rest are answered for retry", async () => {
+    const db = dbOf();
+    const { client, down } = flaky(db);
+    const { sent, queue } = queueOf();
+    const aws = fakeAws();
+    let lambdaCalls = 0;
+    // The embedder Lambda that never replies: the send ends only when the invoke's own wait aborts it.
+    const hanging = async (name: string): Promise<Record<string, unknown>> => name === "@aws-sdk/client-lambda"
+      ? { LambdaClient: class { send(_c: unknown, options?: { abortSignal?: AbortSignal }) { lambdaCalls += 1; return new Promise((_resolve, reject) => { options?.abortSignal?.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" }))); }); } }, InvokeCommand: class { constructor(readonly input: unknown) {} } }
+      : aws.sdk(name);
+    const runtime = build(db, { ...ON, ROVARA_EDITION: "enterprise" }, { documentClient: client, opsQueue: queue, sdk: hanging, sts: aws.sts });
+    await addSource(db, "enterprise", { orgId: ORG_A, source: "github", scope: "github:repo/9", retention: "C" });
+    down.on = true;
+    for (let index = 0; index < 10; index += 1) {
+      expect(await runtime.sink.put(githubDraft({ retention: "C", scope: "github:repo/9", sourceRef: { system: "github.com", id: `deadline-${index}`, version: "1" }, text: `queued ${index} ${MARKER}` }))).toMatchObject({ status: "queued" });
+    }
+    expect(sent).toHaveLength(10);
+    down.on = false;
+    // Lambda's clock for this drain: 5.6 s left at the start. The drain keeps 5 s back for its answer, so the embedding may use about 0.6 s.
+    const startedAt = Date.now();
+    const result = await runtime.drain(asRecords(sent), { remainingMs: () => 5_600 - (Date.now() - startedAt) });
+    const elapsed = Date.now() - startedAt;
+    expect(elapsed).toBeLessThan(2_500);
+    expect(lambdaCalls).toBe(1);
+    // the message that was reached is done: its row is stored and waits for the re-embed job; the others were not touched and go back to the queue
+    expect(eventRows(db)).toHaveLength(1);
+    expect(eventRows(db)[0]).toMatchObject({ embedPending: true });
+    expect(result.batchItemFailures.map((failure) => failure.itemIdentifier)).toStrictEqual(sent.slice(1).map((_op, index) => `m${index + 1}`));
   });
 
   it("a queued put that still cannot be applied two deliveries before the LAST is dropped (acknowledged), never dead-lettered with its text; a removal is still retried to the dead-letter queue", async () => {
@@ -1825,7 +1868,7 @@ describe("review fix 6: the learning mode of an archived project", () => {
 
 describe("the index of the embedding generation before the current one (review H1)", () => {
   const ENT = { ...ON, ROVARA_EDITION: "enterprise" } as const;
-  const retiredName = (workspace: string) => retiredTeamRecordVectorIndexName(workspace);
+  const retiredNames = (workspace: string) => retiredTeamRecordVectorIndexNames(workspace);
   const deletedIndexes = (aws: ReturnType<typeof fakeAws>) => aws.vectorCalls.filter((call) => call.command === "DeleteIndexCommand").map((call) => String(call.input.indexName));
 
   it("deletes a workspace's retired index the first time its current index is opened, once, and never another workspace's", async () => {
@@ -1835,14 +1878,14 @@ describe("the index of the embedding generation before the current one (review H
     for (const orgId of [ORG_A, ORG_B]) await addSource(db, "enterprise", { orgId, source: "github", scope: "github:repo/9", retention: "C" });
     await runtime.sink.put(githubDraft({ workspaceId: ORG_A, retention: "C", audience: { kind: "project" }, scope: "github:repo/9", text: "first" }));
     await runtime.sink.put(githubDraft({ workspaceId: ORG_A, retention: "C", audience: { kind: "project" }, scope: "github:repo/9", text: "second", sourceRef: { system: "github.com", id: "c-2", version: "1" } }));
-    expect(deletedIndexes(aws)).toStrictEqual([retiredName(ORG_A)]);
-    expect(aws.retire.deleted).toBe(1);
+    expect(deletedIndexes(aws)).toStrictEqual(retiredNames(ORG_A));
+    expect(aws.retire.deleted).toBe(2);
     // the current index was checked first (the retired one goes only once the current one exists)
     const order = aws.vectorCalls.map((call) => call.command).filter((name) => name === "GetIndexCommand" || name === "DeleteIndexCommand");
     expect(order.slice(0, 2)).toStrictEqual(["GetIndexCommand", "DeleteIndexCommand"]);
     await runtime.sink.put(githubDraft({ workspaceId: ORG_B, retention: "C", audience: { kind: "project" }, scope: "github:repo/9", text: "other workspace" }));
-    expect(deletedIndexes(aws)).toStrictEqual([retiredName(ORG_A), retiredName(ORG_B)]);
-    expect(retiredName(ORG_A)).not.toBe(teamRecordVectorIndexName(ORG_A));
+    expect(deletedIndexes(aws)).toStrictEqual([...retiredNames(ORG_A), ...retiredNames(ORG_B)]);
+    for (const name of retiredNames(ORG_A)) expect(name).not.toBe(teamRecordVectorIndexName(ORG_A));
   });
 
   it("an index that is already gone is fine, and a failure does not stop writes and searches (the old vectors are useless to them) but blocks an erase until the old index is gone", async () => {
@@ -1878,19 +1921,65 @@ describe("the index of the embedding generation before the current one (review H
     aws.retire.fail = "AccessDeniedException";
     const search = () => runtime.routes({ method: "GET", path: "/v1/app/projects/web/record/search", query: { query: "anything" }, caller: { orgId: ORG_A, developerId: "dev-1", projectRole: "maintainer" } });
     expect(await runtime.sink.put(githubDraft({ retention: "C", audience: { kind: "project" }, scope: "github:repo/9", text: "first write" }))).toMatchObject({ status: "stored" });
-    expect(deletedIndexes(aws)).toHaveLength(1);
+    expect(deletedIndexes(aws)).toHaveLength(2);
     for (let index = 0; index < 4; index += 1) { clock.ms += 1_000; expect((await search())?.status).toBe(200); }
-    // one attempt in all: the failure is remembered, and the searches went on
-    expect(deletedIndexes(aws)).toHaveLength(1);
+    // one attempt in all (both old names tried): the failure is remembered, and the searches went on
+    expect(deletedIndexes(aws)).toHaveLength(2);
     // the pause is over (15 minutes) and the permission is back: one more attempt, which works
     aws.retire.fail = undefined;
     clock.ms += 15 * 60_000;
     expect((await search())?.status).toBe(200);
-    expect(deletedIndexes(aws)).toHaveLength(2);
-    expect(aws.retire.deleted).toBe(1);
+    expect(deletedIndexes(aws)).toHaveLength(4);
+    expect(aws.retire.deleted).toBe(2);
     // done: never again
     await search();
-    expect(deletedIndexes(aws)).toHaveLength(2);
+    expect(deletedIndexes(aws)).toHaveLength(4);
+  });
+
+  // ---- DECISIONS 140: the Qwen3 (1,024-d) index of the embedding generation before bge-small is retired like the Titan one
+  const QWEN_SPEC = "0b0a5b868995d4ee";
+  const qwenName = (workspace: string) => teamRecordVectorIndexName(workspace, QWEN_SPEC);
+
+  it("a workspace with a leftover Qwen3 index has it retired the first time its current index is opened, and no index other than the current one remains", async () => {
+    const db = dbOf();
+    const aws = fakeAws();
+    // Enterprise: the stack made (and RETAINed) the old index; the new stack made the current one
+    aws.store.indexes = new Map([[teamRecordVectorIndexName(ORG_A), new Set()], [qwenName(ORG_A), new Set(["event:left-behind"])], [qwenName(ORG_B), new Set(["event:other-workspace"])]]);
+    const runtime = build(db, ENT, { sdk: aws.sdk, sts: aws.sts });
+    await addSource(db, "enterprise", { orgId: ORG_A, source: "github", scope: "github:repo/9", retention: "C" });
+    await runtime.sink.put(githubDraft({ retention: "C", audience: { kind: "project" }, scope: "github:repo/9", text: "first" }));
+    expect([...aws.store.indexes.keys()].filter((name) => name !== qwenName(ORG_B)).sort()).toStrictEqual([teamRecordVectorIndexName(ORG_A)]);
+    expect(deletedIndexes(aws)).toContain(qwenName(ORG_A));
+    // another workspace's old index is not touched until that workspace is opened
+    expect(aws.store.indexes.get(qwenName(ORG_B))).toEqual(new Set(["event:other-workspace"]));
+  });
+
+  it("an erase deletes the person's vectors from the old Qwen3 index too: it gets no index until every old index is gone, then the vectors are gone with their index", async () => {
+    const db = dbOf();
+    const aws = fakeAws();
+    const clock = { ms: T0 };
+    aws.store.indexes = new Map([[teamRecordVectorIndexName(ORG_A), new Set()]]);
+    const runtime = build(db, ENT, { sdk: aws.sdk, sts: aws.sts, now: () => clock.ms });
+    await addSource(db, "enterprise", { orgId: ORG_A, source: "github", scope: "github:repo/9", retention: "C" });
+    // the Qwen3 index appears with a vector of the person's row after the broker already holds a session (written by the old broker), and its delete is refused at first
+    aws.retire.fail = "AccessDeniedException";
+    aws.retire.failOn = [qwenName(ORG_A)];
+    expect(await runtime.sink.put(githubDraft({ retention: "C", audience: { kind: "project" }, scope: "github:repo/9", text: `qwen era ${MARKER}` }))).toMatchObject({ status: "stored" });
+    const [row] = db.find((item) => item.entityType === "TEAM_RECORD_EVENT");
+    aws.store.indexes.set(qwenName(ORG_A), new Set([`event:${String(row!.id)}`]));
+    await runtime.erase.person(ORG_A, "dev-1").catch(() => undefined);
+    // blocked: the old index still holds the person's vector, so nothing was purged
+    expect(aws.store.indexes.get(qwenName(ORG_A))).toEqual(new Set([`event:${String(row!.id)}`]));
+    expect(db.find((item) => item.entityType === "TEAM_RECORD_EVENT")).toHaveLength(1);
+    // the delete works again (after the 15 minute pause): the old index and the vector in it are gone, and the erase finishes
+    aws.retire.fail = undefined;
+    clock.ms += 15 * 60_000;
+    await runtime.erase.person(ORG_A, "dev-1").catch(() => undefined);
+    await runtime.jobs.run("hourly");
+    expect(aws.store.indexes.has(qwenName(ORG_A))).toBe(false);
+    expect([...aws.store.indexes.keys()]).toStrictEqual([teamRecordVectorIndexName(ORG_A)]);
+    expect([...aws.store.indexes.get(teamRecordVectorIndexName(ORG_A))!]).toStrictEqual([]);
+    expect(db.find((item) => item.entityType === "TEAM_RECORD_EVENT")).toHaveLength(0);
   });
 
   it("NotFoundException is the normal answer where nothing was ever there", async () => {
@@ -1902,7 +1991,7 @@ describe("the index of the embedding generation before the current one (review H
     await runtime.sink.put(githubDraft({ retention: "C", audience: { kind: "project" }, scope: "github:repo/9", text: "a" }));
     await runtime.erase.person(ORG_A, "dev-1");
     expect(aws.vectorCalls.filter((call) => call.command === "DeleteVectorsCommand").length).toBeGreaterThan(0);
-    expect(deletedIndexes(aws)).toHaveLength(1);
+    expect(deletedIndexes(aws)).toHaveLength(2);
   });
 });
 
@@ -1973,5 +2062,154 @@ describe("the re-embed job (review H1 and M3)", () => {
       expect(await runtime.jobs.run("reembed")).toMatchObject({ orgs: 0, details: { skipped: 1 } });
       expect(aws.embedBodies).toHaveLength(0);
     }
+  });
+});
+
+describe("a source removal in a workspace that never wrote to the record is finished by the hourly job (0.5.15 staging find)", () => {
+  const ENT = { ...ON, ROVARA_EDITION: "enterprise" } as const;
+  const caller = { orgId: ORG_A, developerId: "d".repeat(64), projectRole: "maintainer" as const };
+  const removeBody = (scope: string, source: string) => ({ action: "remove", requestId: "11111111-1111-4111-8111-111111111111", source, scope, expectedRevision: 0 });
+  const directory = (db: FakeDynamoDb) => db.find((item) => item.pk === "TEAM_RECORD_ORGS" && item.sk === ORG_A);
+  const queued = (db: FakeDynamoDb) => db.find((item) => item.entityType === "TEAM_RECORD_SCOPE_WORK");
+
+  it("a GitHub source (children, hidden while pending): the removal lists the workspace, one hourly run clears the queue, and the place is closed", async () => {
+    const db = dbOf();
+    const runtime = build(db, ENT);
+    expect((await runtime.jobs.run("hourly")).orgs).toBe(0);
+    await addSource(db, "enterprise", { orgId: ORG_A, source: "github", scope: "github:repo/9", retention: "C" });
+    expect(directory(db)).toStrictEqual([]);
+    // The best-effort inline close fails, so the queue item (which hides the place) stays until the hourly job has run for this workspace.
+    const send = db.send.bind(db);
+    db.send = async (command: Parameters<typeof send>[0]) => {
+      if ((command as { constructor: { name: string } }).constructor.name === "PutCommand" && ((command as { input: { Item?: { entityType?: string } } }).input.Item?.entityType === "TEAM_RECORD_SCOPE_CLOSED")) throw new Error("dynamodb unavailable");
+      return send(command);
+    };
+    const reply = await runtime.routes({ method: "POST", path: "/v1/app/projects/web/record/sources", query: {}, caller, write: { orgRole: "owner", browserSession: true, body: () => removeBody("github:repo/9", "github") } });
+    db.send = send;
+    expect(reply).toMatchObject({ status: 200, body: { status: "removed" } });
+    expect(directory(db)).toHaveLength(1);
+    expect(queued(db)).toHaveLength(1);
+    expect((await runtime.jobs.run("hourly")).orgs).toBe(1);
+    expect(queued(db)).toStrictEqual([]);
+    expect(db.find((item) => item.entityType === "TEAM_RECORD_SCOPE_CLOSED")).toHaveLength(1);
+  });
+
+  it("the Rovara row (free text only) is listed and finished by one hourly run too", async () => {
+    const db = dbOf();
+    const runtime = build(db, ENT);
+    await addSource(db, "enterprise", { orgId: ORG_A, source: "rovara", scope: "rovara:project/web", retention: "C" });
+    const send = db.send.bind(db);
+    db.send = async (command: Parameters<typeof send>[0]) => {
+      const names = Object.values((command as { input?: { ExpressionAttributeNames?: Record<string, string> } }).input?.ExpressionAttributeNames ?? {});
+      if ((command as { constructor: { name: string } }).constructor.name === "UpdateCommand" && names.includes("tombstone")) throw new Error("dynamodb unavailable");
+      return send(command);
+    };
+    const reply = await runtime.routes({ method: "POST", path: "/v1/app/projects/web/record/sources", query: {}, caller, write: { orgRole: "owner", browserSession: true, body: () => removeBody("rovara:project/web", "rovara") } });
+    db.send = send;
+    expect(reply).toMatchObject({ status: 200, body: { status: "removed" } });
+    expect(directory(db)).toHaveLength(1);
+    expect((await runtime.jobs.run("hourly")).orgs).toBe(1);
+    expect(queued(db)).toStrictEqual([]);
+  });
+});
+
+describe("a company's erase keeps the company in the directory while a delete is still queued for it", () => {
+  const directory = (db: FakeDynamoDb) => db.find((item) => item.pk === "TEAM_RECORD_ORGS" && item.sk === ORG_A);
+  const jobs = (db: FakeDynamoDb) => db.find((item) => item.entityType === "TEAM_RECORD_ERASE_JOB");
+  const queued = (db: FakeDynamoDb) => db.find((item) => item.entityType === "TEAM_RECORD_SCOPE_WORK");
+  const delq = (db: FakeDynamoDb) => db.find((item) => typeof item.sk === "string" && item.sk.startsWith("DELQ#"));
+  const raced = (requestId: string, at: number) => ({ type: "tombstone" as const, system: "github", scope: "github:repo/9", cause: "excluded" as const, hidePending: true, childPending: true, hidden: 0, requestId, at: new Date(at).toISOString(), queuedAtSeconds: Math.floor(at / 1000) });
+
+  /** A company that wrote once and is closing, with the erase started (no lake, so the job's last step is the guard). `when` runs once, right after a write for which `trigger` is true. */
+  async function closing(trigger: (command: { constructor: { name: string }; input?: Record<string, unknown> }) => boolean, when: (clock: { at: number }) => Promise<void> | void, logs: Array<Record<string, unknown>> = []) {
+    const db = dbOf();
+    const clock = { at: T0 };
+    const runtime = build(db, { ...ON, ROVARA_EDITION: "enterprise" }, { now: () => clock.at, log: (entry: Record<string, unknown>) => { logs.push(entry); } });
+    db.set({ ...orgProjectCatalogKey(ORG_A, "web"), entityType: "PROJECT_CATALOG", name: "web" });
+    await addSource(db, "enterprise", { orgId: ORG_A, source: "github", scope: "github:repo/9", retention: "C" });
+    await runtime.sink.put(githubDraft({ retention: "C", audience: { kind: "project" }, scope: "github:repo/9", text: `${MARKER} history` }));
+    db.set({ ...orgMetaKey(ORG_A), orgId: ORG_A, closingAt: "2026-10-30T11:00:00.000Z" });
+    await runtime.erase.workspace(ORG_A);
+    clock.at += SETTLE_PASS_MS;
+    const send = db.send.bind(db);
+    let fired = false;
+    db.send = async (command: Parameters<typeof send>[0]) => {
+      const result = await send(command);
+      if (!fired && trigger(command)) { fired = true; await when(clock); }
+      return result;
+    };
+    const restore = () => { db.send = send; return fired; };
+    return { db, clock, runtime, restore };
+  }
+  /** The moment the job has moved on to its last phase: the hot passes of the erase are over, so none of them clears what is queued after this. */
+  const atLakePhase = (command: { constructor: { name: string }; input?: Record<string, unknown> }) => {
+    const item = (command.input as { Item?: { entityType?: string; job?: { phase?: string } } } | undefined)?.Item;
+    return item?.entityType === "TEAM_RECORD_ERASE_JOB" && item.job?.phase === "lake";
+  };
+
+  it("a delete queued after the erase's hot pass (a removal that raced it) is finished by the worker first; only then does the job end and the company leave the directory", async () => {
+    const racing = { db: undefined as FakeDynamoDb | undefined };
+    const ctx = await closing(atLakePhase, async (clock) => { await putScopeWork({ documentClient: racing.db!, tableName: "TeamRecord" }, ORG_A, raced("22222222-2222-4222-8222-222222222222", clock.at)); });
+    racing.db = ctx.db;
+    await ctx.runtime.jobs.run("hourly");
+    expect(ctx.restore()).toBe(true);
+    // The queue holds a delete for this company, so the erase job (and the company's directory row, the worker's only way in) stays.
+    expect(queued(ctx.db)).toHaveLength(1);
+    expect(jobs(ctx.db)).toHaveLength(1);
+    expect(directory(ctx.db)).toHaveLength(1);
+    await ctx.runtime.jobs.run("hourly");
+    expect(queued(ctx.db)).toStrictEqual([]);
+    expect(jobs(ctx.db)).toStrictEqual([]);
+    expect(directory(ctx.db)).toStrictEqual([]);
+  });
+
+  it("check-then-delete window: a delete queued between the last look at the queue and the removal of the directory row lists the company again", async () => {
+    const racing = { db: undefined as FakeDynamoDb | undefined };
+    const ctx = await closing(
+      (command) => command.constructor.name === "DeleteCommand" && JSON.stringify(command.input?.Key ?? {}).includes("TEAM_RECORD_ORGS") && JSON.stringify(command.input?.Key ?? {}).includes(ORG_A) && !JSON.stringify(command.input?.Key).includes("ERASE"),
+      // A producer that listed the company BEFORE the row went (so its own listing is already in the past) and writes its queue item only now.
+      async (clock) => { await rewriteScopeWork({ documentClient: racing.db!, tableName: "TeamRecord" }, ORG_A, raced("33333333-3333-4333-8333-333333333333", clock.at)); },
+    );
+    racing.db = ctx.db;
+    await ctx.runtime.jobs.run("hourly");
+    expect(ctx.restore()).toBe(true);
+    expect(queued(ctx.db)).toHaveLength(1);
+    expect(directory(ctx.db)).toHaveLength(1); // listed again: the worker still reaches the item
+    await ctx.runtime.jobs.run("hourly");
+    expect(queued(ctx.db)).toStrictEqual([]);
+  });
+
+  it("a queued item that does not parse still holds the job and the directory row (it must not look like an empty queue); an hour-old one logs nothing", async () => {
+    const logs: Array<Record<string, unknown>> = [];
+    const racing = { db: undefined as FakeDynamoDb | undefined };
+    const ctx = await closing(atLakePhase, (clock) => { racing.db!.set({ pk: teamRecordPk(ORG_A), sk: `DELQ#${new Date(clock.at).toISOString()}#44444444-4444-4444-8444-444444444444`, junk: true }); }, logs);
+    racing.db = ctx.db;
+    await ctx.runtime.jobs.run("hourly");
+    expect(ctx.restore()).toBe(true);
+    expect(delq(ctx.db)).toHaveLength(1);
+    expect(jobs(ctx.db)).toHaveLength(1);
+    expect(directory(ctx.db)).toHaveLength(1);
+    expect(logs.some((entry) => entry.event === "record.erase_held_by_delete")).toBe(false);
+    await ctx.runtime.jobs.run("hourly");
+    expect(jobs(ctx.db)).toHaveLength(1);
+    expect(directory(ctx.db)).toHaveLength(1);
+  });
+
+  it("a delete holding the erase open for more than 24 hours is logged with the company and the age (and joins the delete-backlog line); the erase is never forced to finish", async () => {
+    const logs: Array<Record<string, unknown>> = [];
+    const racing = { db: undefined as FakeDynamoDb | undefined };
+    const ctx = await closing(atLakePhase, (clock) => { racing.db!.set({ pk: teamRecordPk(ORG_A), sk: `DELQ#${new Date(clock.at).toISOString()}#55555555-5555-4555-8555-555555555555`, junk: true }); }, logs);
+    racing.db = ctx.db;
+    await ctx.runtime.jobs.run("hourly");
+    expect(ctx.restore()).toBe(true);
+    ctx.clock.at += 25 * 3_600_000;
+    await ctx.runtime.jobs.run("hourly");
+    const held = logs.find((entry) => entry.event === "record.erase_held_by_delete");
+    expect(held).toMatchObject({ orgId: ORG_A });
+    expect(held!.ageSeconds as number).toBeGreaterThanOrEqual(25 * 3_600);
+    expect(logs.find((entry) => entry.event === "record.delete_backlog")).toMatchObject({ erase: 1 });
+    expect(JSON.stringify(logs)).not.toContain("junk");
+    expect(jobs(ctx.db)).toHaveLength(1);
+    expect(directory(ctx.db)).toHaveLength(1);
   });
 });

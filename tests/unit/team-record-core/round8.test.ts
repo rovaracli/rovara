@@ -31,7 +31,7 @@ const crashAtUpdate = (w: World, n: number) => {
   w.db.injectFault({ command: "UpdateCommand", match: () => { updates += 1; return updates === n; }, error: { name: "InternalServerError" } });
 };
 /** Every rewrite of a row fails (the access record's own writes are untouched): the rows can never be brought in line. */
-const noRowRewrites = (w: World) => w.db.injectFault({ command: "UpdateCommand", match: (input) => !String((input.Key as { sk?: string } | undefined)?.sk).startsWith("ACCESS#"), error: { name: "InternalServerError" }, times: 100_000 });
+const noRowRewrites = (w: World) => w.db.injectFault({ command: "UpdateCommand", match: (input) => (input.Key as { pk?: string } | undefined)?.pk !== "TEAM_RECORD_ORGS" && !String((input.Key as { sk?: string } | undefined)?.sk).startsWith("ACCESS#"), error: { name: "InternalServerError" }, times: 100_000 });
 const crashed = async (run: () => Promise<unknown>) => { try { await run(); } catch { return true; } return false; };
 const finish = async (w: World) => {
   for (let run = 0; run < 20; run += 1) {

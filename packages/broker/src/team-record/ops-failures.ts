@@ -5,11 +5,18 @@
 // fails the work that reported the failure.
 import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { teamRecordPk, type OrgId } from "@rovara-code/contracts";
-import { Aliases } from "../agents/table-writes.js";
+import { Aliases, type Item } from "../agents/table-writes.js";
 import { queryPrefix } from "./store.js";
 import type { TeamRecordTable } from "./types.js";
 
 export const OPS_FAILURE_SK_PREFIX = "OPSFAIL#";
+/**
+ * Levels (`recordOpsLevel`) have their own prefix: a level is usually 0 and is not a failure, and under `OPSFAIL#` a count-0 `lesson_rollback` row looked like one (0.5.15 staging find). Until 0.5.15 the level was
+ * written as `OPSFAIL#lesson_rollback#<hour>`; `LEGACY_LEVEL_SK_PREFIX` is still READ, newest of the two winning, so a rollout never loses a level. Those rows expire two days after their last write (`indexExpiresAt`), so the
+ * legacy read can be deleted once 0.5.15 has been live for two days; nothing is migrated.
+ */
+export const OPS_LEVEL_SK_PREFIX = "OPSLEVEL#";
+const LEGACY_LEVEL_SK_PREFIX = `${OPS_FAILURE_SK_PREFIX}lesson_rollback#`;
 export type OpsFailureKind = "erase_sweep" | "tombstone" | "repo_check";
 const KINDS: readonly OpsFailureKind[] = ["erase_sweep", "tombstone", "repo_check"];
 /** Kinds that hold a level (the latest hour's value), not a sum. */
@@ -67,8 +74,8 @@ export async function recordOpsLevel(table: TeamRecordTable, orgId: OrgId, kind:
   try {
     await table.documentClient.send(new UpdateCommand({
       TableName: table.tableName,
-      Key: { pk: teamRecordPk(orgId), sk: `${OPS_FAILURE_SK_PREFIX}${kind}#${String(hourOf(nowMs)).padStart(9, "0")}` },
-      UpdateExpression: `SET ${aliases.name("count")} = ${aliases.value(Math.max(0, Math.trunc(count)))}, ${aliases.name("entityType")} = ${aliases.value("TEAM_RECORD_OPS_FAILURE")}, ${aliases.name("lastAt")} = ${aliases.value(new Date(nowMs).toISOString())}, ${aliases.name("indexExpiresAt")} = ${aliases.value(Math.floor(nowMs / 1000) + EXPIRY_SECONDS)}`,
+      Key: { pk: teamRecordPk(orgId), sk: `${OPS_LEVEL_SK_PREFIX}${kind}#${String(hourOf(nowMs)).padStart(9, "0")}` },
+      UpdateExpression: `SET ${aliases.name("count")} = ${aliases.value(Math.max(0, Math.trunc(count)))}, ${aliases.name("entityType")} = ${aliases.value("TEAM_RECORD_OPS_LEVEL")}, ${aliases.name("lastAt")} = ${aliases.value(new Date(nowMs).toISOString())}, ${aliases.name("indexExpiresAt")} = ${aliases.value(Math.floor(nowMs / 1000) + EXPIRY_SECONDS)}`,
       ExpressionAttributeNames: aliases.names,
       ExpressionAttributeValues: aliases.values,
     }));
@@ -94,7 +101,11 @@ export async function readOpsFailures(table: TeamRecordTable, orgId: OrgId, nowM
   }
   // LP-13 C2: the latest hour's level (the items sort by hour), only while it is fresh.
   // Newest first, one item: the hour numbers are padded, so the newest sorts last; reading from the oldest end would miss it once more than a hundred hourly items are stored (the table removes them after two days, late).
-  const latest = (await queryPrefix(table, orgId, undefined, `${OPS_FAILURE_SK_PREFIX}lesson_rollback#`, 1, { newestFirst: true })).items[0];
+  // The new prefix and the legacy one (written until 0.5.15 was installed) are both read; the newer `lastAt` is the level.
+  const newest = async (prefix: string): Promise<Item | undefined> => (await queryPrefix(table, orgId, undefined, prefix, 1, { newestFirst: true })).items[0];
+  const stampOf = (item: Item | undefined): number => (typeof item?.lastAt === "string" ? Date.parse(item.lastAt) : Number.NaN);
+  const [current, legacy] = [await newest(`${OPS_LEVEL_SK_PREFIX}lesson_rollback#`), await newest(LEGACY_LEVEL_SK_PREFIX)];
+  const latest = !Number.isFinite(stampOf(legacy)) || stampOf(current) >= stampOf(legacy) ? current ?? legacy : legacy;
   const levelAt = typeof latest?.lastAt === "string" ? Date.parse(latest.lastAt) : Number.NaN;
   const lessonRollbacks = latest !== undefined && typeof latest.count === "number" && latest.count > 0 && Number.isFinite(levelAt) && levelAt > nowMs - OPS_LEVEL_FRESH_MS ? latest.count : 0;
   if (lessonRollbacks > 0 && (lastAt === undefined || (latest!.lastAt as string) > lastAt)) lastAt = latest!.lastAt as string;

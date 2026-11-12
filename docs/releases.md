@@ -123,7 +123,7 @@ place; this records what it is, so a change to any piece can be made deliberatel
   the one that first publishes the executor. Strictness is deliberate: an image key a CLI does not
   know must not be skipped silently.
 - **The self-hosted embedder repository (not yet created).** The Team record searches with the embedder image
-  (`environments/embedder`; Qwen3-Embedding-0.6B and bge-small baked into a linux/arm64 Lambda image, every Python package
+  (`environments/embedder`; bge-small-en-v1.5 (the record and the lessons; DECISIONS 140) baked into a linux/arm64 Lambda image, every Python package
   installed by hash, no network at run time). Releases push it as `agentx-embedder` and record its digest as
   `images.embedder` in release.json; the CLI passes it to the control plane (`EmbedderImageUri`), through the account's image
   cache in a Public install and from the install's own `rovara-bundle/<env>/embedder` repository in an Enterprise one
@@ -136,6 +136,7 @@ place; this records what it is, so a change to any piece can be made deliberatel
   embedder). A CLI older than the first release with `images.embedder` refuses that release (`images` is strict).
   **To check on the first run:** that Lambda accepts an image in a pull-through-cache repository (Public path), and that an
   image in a customer-key-encrypted ECR repository can be used by the function (Enterprise path); neither was tested.
+- **The embedder model change (DECISIONS 140) replaces the Enterprise vector index and orphans the old one.** The Team record's embedder is now bge-small-en-v1.5 (384-d) instead of Qwen3-Embedding-0.6B (1,024-d). The vector index name carries the embedding spec, so an Enterprise install's stack-made index (`EnterpriseIndex`) is replaced by one with a new name and 384 dimensions; the old index is RETAINed by the stack, so it stays in the vector bucket until the broker deletes it (the first time it opens the workspace's new index; Public installs do the same for the index the broker made). Before the first release with this model, run `environments/embedder/tools/check_record_release.py --env <env>` (read-only, through `staging-aws.sh` for staging): it fails if a record vector bucket holds an index that is not the current one, or if any table row still says it was embedded with the old model (spec `0b0a5b868995d4ee`). If it finds an old index, delete it by hand (see "Old vector indexes after the bge-small change" in `docs/day-two.md`) before the upgrade, or let the broker do it and run the check again afterwards.
 - **The executor image is smoke-tested under its production sandbox before it is published.** The `images` job
   builds the executor for linux/arm64 into the runner's Docker (`--load`), runs `npx tsx scripts/executor-smoke.ts <tag>`,
   and only then pushes that same loaded image (`docker push`), so the published bytes are the smoke-tested bytes; a

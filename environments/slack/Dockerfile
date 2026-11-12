@@ -29,11 +29,14 @@ RUN npm ci --ignore-scripts
 
 COPY packages/model-runtime packages/model-runtime
 COPY packages/audit-verifier packages/audit-verifier
+# slack-service imports @agentx/cloud-contracts, so its sources are built here (the committed catalog flavor line is "release", as the worker image requires) and shipped below. The build graph is audit-verifier -> cloud-contracts
+# -> slack-service, with Code's contracts under cloud-contracts (its tsconfig references ../audit-verifier and Code's contracts project).
+COPY packages/cloud-contracts packages/cloud-contracts
 COPY vendor/rovara-code/tsconfig.base.json vendor/rovara-code/tsconfig.base.json
 COPY vendor/rovara-code/packages/contracts vendor/rovara-code/packages/contracts
 COPY packages/orchestrator packages/orchestrator
 COPY packages/slack-service packages/slack-service
-RUN npx tsc -b packages/orchestrator packages/slack-service --pretty false
+RUN npx tsc -b packages/cloud-contracts packages/orchestrator packages/slack-service --pretty false
 RUN npm prune --omit=dev --workspaces
 
 FROM public.ecr.aws/docker/library/node:22.23.2-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5
@@ -45,6 +48,7 @@ WORKDIR /opt/agentx
 COPY --from=build /opt/agentx/node_modules ./node_modules
 COPY --from=build /opt/agentx/packages/model-runtime ./packages/model-runtime
 COPY --from=build /opt/agentx/packages/audit-verifier ./packages/audit-verifier
+COPY --from=build /opt/agentx/packages/cloud-contracts ./packages/cloud-contracts
 COPY --from=build /opt/agentx/vendor/rovara-code/packages/contracts ./vendor/rovara-code/packages/contracts
 COPY --from=build /opt/agentx/vendor/rovara-code-shims ./vendor/rovara-code-shims
 COPY --from=build /opt/agentx/packages/orchestrator ./packages/orchestrator
