@@ -316,6 +316,8 @@ export async function startOutsideRecheckRun(deps: DeveloperTaskRouteDependencie
   const { task } = access;
   const workflow = task.workflow;
   if (workflow === undefined || deps.outsideRecheckFeatures === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "Re-checking isn't available on this install yet.");
+  // Ruling R60, at the launch itself: the task's creator must still be a member who may start work (a removed creator's task ends `creator_removed`, and nothing runs).
+  await creatorGuard(deps, task);
   // A worker that is up and says what it can: one without the adoption is refused here, in plain words (one that is not up yet is checked again when the run is delivered).
   const features = await deps.outsideRecheckFeatures(task);
   if (features !== undefined && !features.includes(OUTSIDE_RECHECK_WORKER_FEATURE)) throw agentXError("RUNTIME_UNAVAILABLE", OUTSIDE_RECHECK_WORKER_MISSING);
