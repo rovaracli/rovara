@@ -97,8 +97,8 @@ rule no_allow_everything when %policies !empty {
 }
 
 rule the_boundary_requires_the_run_tag {
-    Resources.RovaraTestBoundary.Properties.PolicyDocument.Statement[ Sid == "DenyWithoutRunTag" ] !empty
-    Resources.RovaraTestBoundary.Properties.PolicyDocument.Statement[ Sid == "DenyWithoutRunTag" ] {
+    Resources.RovaraTestBoundary.Properties.PolicyDocument.Statement[ Sid == "NoTag" ] !empty
+    Resources.RovaraTestBoundary.Properties.PolicyDocument.Statement[ Sid == "NoTag" ] {
         Effect == "Deny"
         Condition.Null."aws:PrincipalTag/rovara-run" == "true"
     }
@@ -117,82 +117,114 @@ rule external_id_is_checked_by_pattern {
     Parameters.ConnectToken.NoEcho == true
 }
 
-# ---- the boundary (C1, H1, H2 of the TA1 review): a regression here makes a role a test run creates stronger than the run ----
+# ---- the boundary: a regression here makes a role a test run creates stronger than the run (TA1 review items C1, H1, H2, B1 to B5) ----
 
 let boundary_statements = Resources.RovaraTestBoundary.Properties.PolicyDocument.Statement
 
 rule boundary_allows_are_scoped {
-    %boundary_statements[ Effect == "Allow" Sid != "AllowReads" ] {
+    %boundary_statements[ Effect == "Allow" Sid != "Reads" ] {
         Condition exists or Resource !is_string
         Resource[ this == "*" ] empty
     }
 }
 
 rule boundary_reads_are_for_rovaras_roles_only {
-    %boundary_statements[ Sid == "AllowReads" ] !empty
-    %boundary_statements[ Sid == "AllowReads" ] {
+    %boundary_statements[ Sid == "Reads" ] !empty
+    %boundary_statements[ Sid == "Reads" ] {
         Effect == "Allow"
         Condition.ArnNotLike."aws:PrincipalArn" exists
     }
 }
 
-rule boundary_does_not_allow_a_whole_service_by_tag_for_iam_or_s3 {
-    %boundary_statements[ Sid == "AllowRunTagged" ] {
-        Action[*] != "iam:*"
-        Action[*] != "s3:*"
+# What is allowed by tag is the taking apart of an event source mapping, nothing that could change a resource's tag or reach one that is not the run's.
+rule boundary_tag_allow_is_only_event_source_mapping_cleanup {
+    %boundary_statements[ Sid == "Tagged" ] {
+        Action[*] == /^lambda:(Delete|Get)EventSourceMapping$/
         Condition.StringEquals."aws:ResourceTag/rovara-run" exists
     }
 }
 
-# Nothing may let a run set its tag on a resource that exists: the only allow keyed on the request tag is the creation of an event source mapping.
+# Nothing may let a run set its tag on a resource that exists: the only allow keyed on the request tag is the creation of an event source mapping, and only for a run's own function (B2).
 rule boundary_has_no_tagging_by_request_tag {
-    %boundary_statements[ Effect == "Allow" Sid != "AllowCreateWithRunTag" ] {
+    %boundary_statements[ Effect == "Allow" Sid != "CreateByTag" ] {
         Condition.StringEquals."aws:RequestTag/rovara-run" not exists
     }
-    %boundary_statements[ Sid == "AllowCreateWithRunTag" ] {
+    %boundary_statements[ Sid == "CreateByTag" ] {
         Action[*] == "lambda:CreateEventSourceMapping"
         Action !is_string
+        Condition.ArnLike."lambda:FunctionArn" exists
     }
 }
 
 rule boundary_s3_names_are_checked_against_the_account {
-    %boundary_statements[ Sid == "AllowRunNamedS3" ] !empty
-    %boundary_statements[ Sid == "AllowRunNamedS3" ] {
+    %boundary_statements[ Sid == "NamedS3" ] !empty
+    %boundary_statements[ Sid == "NamedS3" ] {
         Condition.StringEquals."s3:ResourceAccount" exists
     }
 }
 
 rule boundary_denies_secret_reads_outside_the_run {
-    %boundary_statements[ Sid == "DenySecretReadsOutsideRun" ] !empty
-    %boundary_statements[ Sid == "DenySecretReadsOutsideRun" ] {
+    %boundary_statements[ Sid == "Secrets" ] !empty
+    %boundary_statements[ Sid == "Secrets" ] {
         Effect == "Deny"
         NotResource !empty
-        some Action[*] == "secretsmanager:GetSecretValue"
+        some Action[*] == "secretsmanager:*GetSecretValue"
         some Action[*] == "ssm:GetParameter*"
-        some Action[*] == "lambda:GetFunctionConfiguration"
+        some Action[*] == "lambda:GetFunction*"
+        some Action[*] == "lambda:ListVersionsByFunction"
     }
 }
 
+# Exactly the services tests use to run code, and only that.
 rule boundary_limits_pass_role {
-    %boundary_statements[ Sid == "DenyPassRoleToOtherServices" ] !empty
-    %boundary_statements[ Sid == "DenyPassRoleToOtherServices" ] {
+    %boundary_statements[ Sid == "Pass" ] !empty
+    %boundary_statements[ Sid == "Pass" ] {
         Effect == "Deny"
         Action[*] == "iam:PassRole"
+        Condition.StringNotEquals."iam:PassedToService"[*] in ["events.amazonaws.com", "lambda.amazonaws.com", "states.amazonaws.com"]
         Condition.StringNotEquals."iam:PassedToService" !empty
     }
 }
 
+# A role a run creates can call no IAM and open no resource policy; its session tag must agree with its name; it has no path and carries this boundary.
 rule boundary_fences_the_roles_a_run_creates {
-    %boundary_statements[ Sid == "DenyRoleWithoutBoundary" ] !empty
-    %boundary_statements[ Sid == "DenyRoleWithoutRunTag" ] !empty
-    %boundary_statements[ Sid == "DenyBoundaryRemovalAndKeys" ] !empty
-    %boundary_statements[ Sid == "DenyRoleWithoutRunTag" ] {
+    %boundary_statements[ Sid == "RunRoles" ] !empty
+    %boundary_statements[ Sid == "RunRoles" ] {
         Effect == "Deny"
-        Condition.StringNotEquals."aws:RequestTag/rovara-run" exists
+        some Action[*] == "iam:*"
+        some Action[*] == "lambda:AddPermission"
+        Condition.ArnLike."aws:PrincipalArn" exists
+    }
+    %boundary_statements[ Sid == "Forged" ] !empty
+    %boundary_statements[ Sid == "Forged" ] {
+        Effect == "Deny"
+        Condition.ArnLike."aws:PrincipalArn" exists
+        Condition.ArnNotLike."aws:PrincipalArn" exists
+    }
+    %boundary_statements[ Sid == "NoPath" ] !empty
+    %boundary_statements[ Sid == "Boundary" ] !empty
+    %boundary_statements[ Sid == "KeepBoundary" ] !empty
+}
+
+rule boundary_refuses_what_spends_the_accounts_pool {
+    %boundary_statements[ Sid == "Pool" ] !empty
+    %boundary_statements[ Sid == "Pool" ] {
+        Effect == "Deny"
+        some Action[*] == "lambda:PutFunctionConcurrency"
+        some Action[*] == "s3:PutBucketObjectLockConfiguration"
+    }
+}
+
+rule boundary_keeps_a_rules_targets_the_runs_own {
+    %boundary_statements[ Sid == "Targets" ] !empty
+    %boundary_statements[ Sid == "Targets" ] {
+        Effect == "Deny"
+        Condition.ArnNotLike."events:TargetArn" exists
     }
 }
 
 rule boundary_keeps_the_run_tag_and_the_region {
-    %boundary_statements[ Sid == "DenyRunTagChange" ] !empty
-    %boundary_statements[ Sid == "DenyOtherRegions" ] !empty
+    %boundary_statements[ Sid == "TagKey" ] !empty
+    %boundary_statements[ Sid == "Region" ] !empty
+    %boundary_statements[ Sid == "NoTag" ] !empty
 }
