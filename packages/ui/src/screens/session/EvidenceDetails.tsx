@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { useLocation, useSearchParams } from "react-router";
 import { DECISION_FOCUS_PARAM } from "@agentx/cloud-contracts/web";
 import { useDecisions } from "../../api/decisions.js";
@@ -14,9 +14,11 @@ import { workspaceTask } from "./workspace-types.js";
  * Opening for an action scrolls the thing to act on into view and does not move focus, unless the reader came by a "needs you" link (the address carries the decision focus parameter).
  * The reader closing it by hand is respected: it stays closed until the address changes again or a new action (the next round of questions) appears.
  */
-export function EvidenceDetails({ children, mustAct }: { children: ReactNode; mustAct?: MustAct | undefined }) {
- const hash = useLocation().hash, [params] = useSearchParams(), key = mustAct?.key;
- const [open, setOpen] = useState(hash.length > 1 || key !== undefined), [seen, setSeen] = useState(hash), [acted, setActed] = useState(key);
+export function EvidenceDetails({ children, mustAct, memory }: { children: ReactNode; mustAct?: MustAct | undefined; memory?: RefObject<EvidenceMemory> | undefined }) {
+ const hash = useLocation().hash, [params] = useSearchParams(), key = mustAct?.key, saved = memory?.current.saved;
+ const [open, setOpenState] = useState(saved?.open ?? (hash.length > 1 || key !== undefined)), [seen, setSeenState] = useState(saved?.seen ?? hash), [acted, setActedState] = useState(saved !== undefined && "acted" in saved ? saved.acted : key);
+ // Each change is also written to `memory`, which outlives this component: the page draws the disclosure only in its phone layout, so a reader who widens the window and narrows it again finds it as they left it.
+ const setOpen = (next: boolean) => { memory?.current.remember({ open: next });setOpenState(next); }, setSeen = (next: string) => { memory?.current.remember({ seen: next });setSeenState(next); }, setActed = (next: string | undefined) => { memory?.current.remember({ acted: next });setActedState(next); };
  if (hash !== seen) { setSeen(hash);if (hash.length > 1 && !open) setOpen(true); }
  // A new action opens it; the same action seen again (a re-read, a closed disclosure) does not. With no action the next one counts as new.
  if (key !== acted) { setActed(key);if (key !== undefined && !open) setOpen(true); }
@@ -49,8 +51,14 @@ export function EvidenceDetails({ children, mustAct }: { children: ReactNode; mu
  return <details ref={root} className="rv-session-evidence" open={open} onToggle={event => setOpen(event.currentTarget.open)}><summary>Work details and evidence</summary>{children}</details>;
 }
 
+/** What the phone order's disclosure remembers while the page is in its wide layout (see `EvidenceDetails`). */
+export interface EvidenceMemory { readonly saved: { open?: boolean; seen?: string; acted?: string | undefined }; remember(change: { open?: boolean; seen?: string; acted?: string | undefined }): void }
+export function useEvidenceMemory(): RefObject<EvidenceMemory> {
+ return useRef<EvidenceMemory>({ saved: {}, remember(change) { Object.assign(this.saved, change); } });
+}
+
 /** The phone order's disclosure, opened by itself when the page's lead block sends the reader to something inside it (see `mustActInside`). */
-export function PhoneWorkDetails({ session, children }: { session: ReadSession; children: ReactNode }) {
+export function PhoneWorkDetails({ session, children, memory }: { session: ReadSession; children: ReactNode; memory?: RefObject<EvidenceMemory> | undefined }) {
  const lead = useLead(session), decisions = useDecisions();
- return <EvidenceDetails mustAct={mustActInside({ session, task: workspaceTask(session), lead, decisionsKnown: !decisions.isPending })}>{children}</EvidenceDetails>;
+ return <EvidenceDetails memory={memory} mustAct={mustActInside({ session, task: workspaceTask(session), lead, decisionsKnown: !decisions.isPending })}>{children}</EvidenceDetails>;
 }
