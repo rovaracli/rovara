@@ -3,7 +3,7 @@
 // Off, neither is rendered and no review route is called. On, a maintainer edits the groups under the revision read; everyone else reads them. The card shows the claim, how GitHub took it, the age,
 // and Claim, Release and Reassign only as the server's own flags allow, and always the sentence that a claim never grants approval.
 import { describe, expect, it } from "vitest";
-import { screen, fireEvent, waitFor, within } from "@testing-library/react";
+import { screen, fireEvent, waitFor, within, act } from "@testing-library/react";
 import { MemoryRouter, Routes, Route } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { REVIEW_CLAIM_APPROVAL_NOTE, REVIEW_GROUP_NAME_MAX } from "@agentx/cloud-contracts/web";
@@ -50,6 +50,8 @@ const cardRegion = () => screen.findByRole("region", { name: "Review" });
 const press = (name: string | RegExp) => fireEvent.click(screen.getByRole("button", { name }));
 const edit = async () => { fireEvent.click(await screen.findByRole("button", { name: /^(Edit groups|Add a group)$/u })); };
 const pick = (label: string | RegExp, value: string) => fireEvent.change(screen.getByLabelText(label), { target: { value } });
+/** Lets a lazy chunk and its first read arrive: an absence is only proved after the screen had its chance to appear. */
+const settle = () => act(async () => { await new Promise(resolve => { setTimeout(resolve, 800); }); });
 const bodyOf = (call: ApiRequest) => call.body as Record<string, unknown>;
 
 describe("the device switch", () => {
@@ -65,7 +67,7 @@ describe("the device switch", () => {
 describe("the project page: switch off", () => {
  it("shows no Review groups section and never calls a review route", async () => {
   const server = reviewServer({}), f = project(server, { on: false });
-  await screen.findByRole("heading", { name: "payments" });await screen.findByRole("heading", { name: "Running now" });
+  await screen.findByRole("heading", { name: "payments" });await screen.findByRole("heading", { name: "Running now" });await settle();
   expect(screen.queryByRole("region", { name: "Review groups" })).toBeNull();expect(screen.queryByText("Review groups")).toBeNull();
   expect(server.calls).toHaveLength(0);f.close();
  });
@@ -333,7 +335,7 @@ describe("the task page", () => {
  }
  it("switch off: no review card and no review call", async () => {
   const server = reviewServer({ review: reviewView({ claim: claimOf() }) }), f = page(server, false);
-  await screen.findByRole("heading", { name: "Fix duplicate refunds" });await screen.findByRole("tab", { name: "Pipeline" });
+  await screen.findByRole("heading", { name: "Fix duplicate refunds" });await screen.findByRole("tab", { name: "Pipeline" });await settle();
   expect(screen.queryByRole("region", { name: "Review" })).toBeNull();expect(server.calls).toHaveLength(0);f.close();
  });
  it("switch on: the card reads the task's own review", async () => {
