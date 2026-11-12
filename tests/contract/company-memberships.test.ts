@@ -1,19 +1,19 @@
 // Company memberships (srv/company-memberships; briefs/company-memberships-api.md; DEFERRED COMPANIES-HEADER-REQUIREMENT-FOLLOWS-FLAG): the caller's own companies, the browser session's switch, the session's
 // active company re-checked on every request, and the `x-rovara-company` header that only narrows. The real OrgStore, the real web boundary and the real dispatcher over FakeDynamoDb; one table plays the State
 // table and the sign-in table. A second membership is seeded as the per-membership pointer the brief's step 2 will write (nothing writes one yet).
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { COMPANY_STALE_MESSAGE, COMPANY_SWITCH_MACHINE_MESSAGE, CompaniesAnswerSchema, CompanySwitchAnswerSchema, editionPolicy, orgBanKey, orgMemberKey, orgMetaKey, orgRemovedKey, orgUiFlagsKey, type EditionPolicy, type OrgRole } from "@agentx/cloud-contracts";
 import type { OrgId } from "@rovara-code/contracts";
 import { routeDeveloperRequest, type DeveloperRouteDependencies } from "../../packages/broker/src/aws/developer-routes.js";
-import { COMPANY_SWITCHES_PER_HOUR, routeCompanies } from "../../packages/broker/src/aws/developer-routes/companies.js";
+import { COMPANY_SWITCHES_PER_HOUR, SWITCH_NOT_ON_MESSAGE, routeCompanies } from "../../packages/broker/src/aws/developer-routes/companies.js";
 import type { AdaptedHttpRequest } from "../../packages/broker/src/aws/lambda.js";
 import { authenticateWebRequest, webRouteAllowed } from "../../packages/broker/src/aws/web-auth.js";
 import { SESSION_COOKIE } from "../../packages/broker/src/aws/web-session.js";
 import { APP_CSRF_HEADER, appCsrfTokenFor } from "../../packages/broker/src/developer/app-csrf.js";
 import { AUDITOR_ALLOWED_ROUTES } from "../../packages/broker/src/org/auditor.js";
 import { withCompanyEcho } from "../../packages/broker/src/org/companies/echo.js";
-import { activeCompanyKey, developerMembershipKey } from "../../packages/broker/src/org/companies/memberships.js";
+import { activeCompanyKey, clearCompanyReload, developerMembershipKey } from "../../packages/broker/src/org/companies/memberships.js";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 
@@ -32,7 +32,7 @@ interface Me { developer: { id: string; orgRole: string }; org: { orgId: string;
 beforeEach(() => { vi.stubEnv("COMPANY_SWITCHER_ENABLED", "1"); vi.stubEnv("UI_FLAGS_FORCE_OFF", "none"); });
 afterEach(() => { vi.unstubAllEnvs(); });
 
-async function world(options: { policy?: EditionPolicy } = {}) {
+async function world(options: { policy?: EditionPolicy; /** The three companies' `companies` flag on (the default: a switch needs it on both sides). */ flags?: boolean } = {}) {
   const clock = { now: START };
   const db = new FakeDynamoDb();
   /** Runs once, just before the next transaction is sent (a removal or another tab landing in between). */
@@ -91,15 +91,26 @@ async function world(options: { policy?: EditionPolicy } = {}) {
     const request: AdaptedHttpRequest = { method, path, requestId: "r", headers: { authorization: header }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) };
     return await routeDeveloperRequest(deps, request, new URL(ORIGIN + path)) as R;
   };
-  const switchTo = (sid: string, companyId: string, options: { requestId?: string; company?: string } = {}) =>
-    web<Json>(sid, "POST", "/v1/web/companies", { body: { action: "switch", companyId, requestId: options.requestId ?? randomUUID() }, ...(options.company === undefined ? {} : { company: options.company }) });
+  /** The company the session is in now, read from the store (no request, so no reload marker is cleared). */
+  const current = (sid: string): string => {
+    const chosen = db.get(activeCompanyKey(sid)) as { orgId?: string } | undefined;
+    if (chosen?.orgId !== undefined) return chosen.orgId;
+    const developerId = (db.get({ pk: `SESSION#${sid}`, sk: "META" }) as { developerId: string }).developerId;
+    return (db.get({ pk: `DEVELOPER_ORG#${developerId}`, sk: "ORG" }) as { orgId: string }).orgId;
+  };
+  /** A switch as the web app sends it: naming the page's company (the session's, unless a test says otherwise; `null` sends none). */
+  const switchTo = (sid: string, companyId: string, options: { requestId?: string; company?: string | null } = {}) => {
+    const company = options.company === undefined ? current(sid) : options.company;
+    return web<Json>(sid, "POST", "/v1/web/companies", { body: { action: "switch", companyId, requestId: options.requestId ?? randomUUID() }, ...(company === null ? {} : { company }) });
+  };
   const me = (sid: string, company?: string) => web<Me>(sid, "GET", "/v1/web/me", company === undefined ? {} : { company });
   const companiesFlag = (orgId: OrgId, state: "on" | "preview" | "off") => db.set({ ...orgUiFlagsKey(orgId), entityType: "UI_FLAGS", flags: { companies: state === "on" }, previews: state === "preview", revision: 1, changedAt: new Date(clock.now).toISOString() });
   const binding = (sid: string) => db.get(activeCompanyKey(sid));
+  if (options.flags !== false) for (const orgId of [A, B, C]) companiesFlag(orgId, "on");
   /** The web boundary alone (no route): what a request is let through with. */
   const authenticate = (sid: string, method: string, path: string, company?: string) => authenticateWebRequest(deps, browserRequest(sid, method, path, company === undefined ? {} : { company }));
   const authenticateWrite = (sid: string, company?: string) => authenticate(sid, "PUT", "/v1/web/me/name", company);
-  return { authenticate, authenticateWrite, db, clock, deps, orgs, A, B, C, second, removeSecond, session, web, token, switchTo, me, companiesFlag, binding, before, browserRequest };
+  return { current, authenticate, authenticateWrite, db, clock, deps, orgs, A, B, C, second, removeSecond, session, web, token, switchTo, me, companiesFlag, binding, before, browserRequest };
 }
 
 const codeOf = async (promise: Promise<unknown>): Promise<string | undefined> => { try { await promise;return undefined; } catch (error) { return (error as { code?: string }).code; } };
@@ -282,7 +293,7 @@ describe("POST /v1/app/companies: switching the browser session's company", () =
     const w = await world();
     const sid = w.session(PAT);
     for (const body of [{ action: "join", inviteToken: "x", requestId: randomUUID() }, { action: "switch", companyId: w.B }, { action: "switch", companyId: "org_X", requestId: randomUUID() }, { action: "switch", companyId: w.B, requestId: randomUUID(), extra: 1 }]) {
-      expect(await codeOf(w.web(sid, "POST", "/v1/web/companies", { body })), JSON.stringify(body)).toBe("CONFIG_INVALID");
+      expect(await codeOf(w.web(sid, "POST", "/v1/web/companies", { body, company: w.A })), JSON.stringify(body)).toBe("CONFIG_INVALID");
     }
   });
 
@@ -364,21 +375,21 @@ describe("POST /v1/app/companies: switching the browser session's company", () =
   it("never carries a role across companies: an owner in one is a member in the other", async () => {
     const w = await world();
     const sid = w.session(PAT);
-    expect(await codeOf(w.web(sid, "GET", "/v1/web/org/ui-flags"))).toBeUndefined();
+    expect(await codeOf(w.web(sid, "GET", "/v1/web/org/ui-flags", { company: w.A }))).toBeUndefined();
     await w.switchTo(sid, w.B);
-    expect(await codeOf(w.web(sid, "GET", "/v1/web/org/ui-flags"))).toBe("FORBIDDEN");
+    expect(await codeOf(w.web(sid, "GET", "/v1/web/org/ui-flags", { company: w.B }))).toBe("FORBIDDEN");
   });
 });
 
 describe("the session's active company, re-checked on every request", () => {
-  it("drops a company the person was removed from at once: the next request is in the primary, the item is gone, and a re-invite does not move the session back", async () => {
+  it("drops a company the person was removed from at once: the next request is in the primary, the item names the primary, and a re-invite does not move the session back", async () => {
     const w = await world();
     const sid = w.session(PAT);
     await w.switchTo(sid, w.B);
     w.removeSecond(PAT, w.B);
     // A page that still names the lost company is told to reload; the reload lands in the primary.
     expect(await codeOf(w.me(sid, w.B))).toBe("CSRF_STALE");
-    expect(w.binding(sid)).toBeUndefined();
+    expect(w.binding(sid)).toMatchObject({ orgId: w.A, reloadNeeded: true });
     expect((await w.me(sid)).org.orgId).toBe(w.A);
     expect(CompaniesAnswerSchema.parse(await w.web(sid, "GET", "/v1/web/companies")).companies.map((company) => company.companyId)).toEqual([w.A]);
     w.second(PAT, w.B, "member");
@@ -500,7 +511,7 @@ describe("the header requirement follows the company's `companies` UI flag, neve
   const states = ["on", "preview", "off", "forced-off", "never-set"] as const;
   const cases = states.flatMap((flag) => (["match", "absent", "mismatch"] as const).flatMap((header) => (["on", "off"] as const).map((server) => ({ flag, header, server }))));
   it.each(cases)("server $server, flag $flag, header $header", async ({ flag, header, server }) => {
-    const w = await world();
+    const w = await world({ flags: false });
     const sid = w.session(PAT);
     if (flag === "on" || flag === "forced-off") w.companiesFlag(w.A, "on");
     else if (flag !== "never-set") w.companiesFlag(w.A, flag);
@@ -520,18 +531,19 @@ describe("the header requirement follows the company's `companies` UI flag, neve
     const sid = w.session(PAT);
     for (const path of ["/v1/web/nav", "/v1/web/me", "/v1/web/companies"]) expect(await codeOf(w.authenticate(sid, "GET", path)), path).toBeUndefined();
     expect(await codeOf(w.authenticate(sid, "GET", "/v1/web/home"))).toBe("CSRF_STALE");
-    expect(await codeOf(w.switchTo(sid, w.B))).toBe("CSRF_STALE");
+    expect(await codeOf(w.switchTo(sid, w.B, { company: null }))).toBe("CSRF_STALE");
     expect(await codeOf(w.switchTo(sid, w.B, { company: w.A }))).toBeUndefined();
   });
 
-  it("reads the flag of the company the request is IN: after a switch into a company whose flag is off, no header is needed there", async () => {
+  it("reads the flag of the company the request is IN: after a switch, the requirement follows that company's flag", async () => {
     const w = await world();
-    w.companiesFlag(w.A, "on");
     const sid = w.session(PAT);
+    await w.switchTo(sid, w.B);
     expect(await codeOf(w.authenticate(sid, "GET", "/v1/web/home"))).toBe("CSRF_STALE");
-    await w.switchTo(sid, w.B, { company: w.A });
+    w.companiesFlag(w.B, "off");
+    // A read needs no header in a company whose flag is off (the reload marker only holds writes).
     expect(await codeOf(w.authenticate(sid, "GET", "/v1/web/home"))).toBeUndefined();
-    w.companiesFlag(w.B, "on");
+    w.companiesFlag(w.A, "off");w.companiesFlag(w.B, "on");
     expect(await codeOf(w.authenticate(sid, "GET", "/v1/web/home"))).toBe("CSRF_STALE");
   });
 
@@ -548,5 +560,103 @@ describe("the echo", () => {
   it("names the company the request was answered in on the reply, keeping the reply's own headers", () => {
     const reply = withCompanyEcho({ statusCode: 200, headers: { "content-type": "application/json" }, body: "{}" }, "org_aaaaaaaaaaaaaaaaaaaa");
     expect(reply.headers).toEqual({ "content-type": "application/json", "x-rovara-company": "org_aaaaaaaaaaaaaaaaaaaa" });
+  });
+});
+
+describe("review M1: an old tab never acts in the company the session moved to", () => {
+  it.each([["the source", "A"], ["the target", "B"]] as const)("refuses the switch while %s company's companies flag is not on, and writes nothing", async (_side, which) => {
+    for (const state of ["off", "preview", "forced-off"] as const) {
+      const w = await world();
+      const orgId = which === "A" ? w.A : w.B;
+      if (state !== "forced-off") w.companiesFlag(orgId, state);
+      vi.stubEnv("UI_FLAGS_FORCE_OFF", state === "forced-off" ? "companies" : "none");
+      const sid = w.session(PAT);
+      const switching = w.switchTo(sid, w.B, { company: w.A });
+      expect(await codeOf(switching), state).toBe("FORBIDDEN");
+      expect(await messageOf(w.switchTo(sid, w.B, { company: w.A }))).toBe(SWITCH_NOT_ON_MESSAGE);
+      expect(w.binding(sid)).toBeUndefined();
+      expect(w.db.find((item) => String(item.pk).startsWith("COMPANY_SWITCH_REQUEST#"))).toEqual([]);
+    }
+  });
+
+  it("refuses an old tab's headerless write after a switch, even once the flags are off, until a page read clears the marker; reads are not held", async () => {
+    const w = await world();
+    const sid = w.session(PAT);
+    await w.switchTo(sid, w.B);
+    expect(w.binding(sid)).toMatchObject({ orgId: w.B, reloadNeeded: true });
+    w.companiesFlag(w.A, "off");w.companiesFlag(w.B, "off");
+    expect(await codeOf(w.authenticateWrite(sid))).toBe("CSRF_STALE");
+    expect(await codeOf(w.authenticate(sid, "GET", "/v1/web/home"))).toBeUndefined();
+    // A write that names the session's company knows where it is.
+    expect(await codeOf(w.authenticateWrite(sid, w.B))).toBeUndefined();
+    expect(w.binding(sid)).toMatchObject({ reloadNeeded: true });
+    // The page loads: its first read clears the marker.
+    expect(await codeOf(w.authenticate(sid, "GET", "/v1/web/nav"))).toBeUndefined();
+    expect(w.binding(sid)?.reloadNeeded).toBeUndefined();
+    expect(await codeOf(w.authenticateWrite(sid))).toBeUndefined();
+  });
+
+  it("clears the marker on each exempt read, with or without a matching header, and on no other read", async () => {
+    for (const [path, company, clears] of [["/v1/web/me", undefined, true], ["/v1/web/companies", "B", true], ["/v1/web/nav", "B", true], ["/v1/web/home", "B", false], ["/v1/web/projects", undefined, false]] as const) {
+      const w = await world();
+      const sid = w.session(PAT);
+      await w.switchTo(sid, w.B);
+      w.companiesFlag(w.B, "off");
+      await w.authenticate(sid, "GET", path, company === undefined ? undefined : w.B);
+      expect(w.binding(sid)?.reloadNeeded, path).toBe(clears ? undefined : true);
+    }
+  });
+
+  it("refuses an old tab's headerless write after the chosen company is lost, until a page read clears the marker", async () => {
+    const w = await world();
+    const sid = w.session(PAT);
+    await w.switchTo(sid, w.B);
+    await w.me(sid);
+    w.companiesFlag(w.A, "off");w.companiesFlag(w.B, "off");
+    expect(await codeOf(w.authenticateWrite(sid))).toBeUndefined();
+    w.removeSecond(PAT, w.B);
+    expect(await codeOf(w.authenticateWrite(sid))).toBe("CSRF_STALE");
+    expect(w.binding(sid)).toMatchObject({ orgId: w.A, reloadNeeded: true });
+    expect(await codeOf(w.authenticate(sid, "GET", "/v1/web/home"))).toBeUndefined();
+    expect(await codeOf(w.authenticateWrite(sid))).toBe("CSRF_STALE");
+    expect((await w.me(sid)).org.orgId).toBe(w.A);
+    expect(await codeOf(w.authenticateWrite(sid))).toBeUndefined();
+  });
+
+  it("never clears a newer marker: the clear is fenced on the revision the request saw", async () => {
+    const w = await world();
+    const sid = w.session(PAT);
+    await w.switchTo(sid, w.B);
+    await clearCompanyReload({ documentClient: w.db, tableName: T }, sid, { revision: 99 });
+    expect(w.binding(sid)).toMatchObject({ reloadNeeded: true });
+    await clearCompanyReload({ documentClient: w.db, tableName: T }, sid, { revision: 1 });
+    expect(w.binding(sid)?.reloadNeeded).toBeUndefined();
+  });
+});
+
+describe("review L3: the switch is recorded in the sign-in history", () => {
+  it("logs the company switched to and from and a hash of the session, never the session id itself", async () => {
+    const w = await world();
+    const sid = w.session(PAT);
+    const lines: string[] = [];
+    const spy = vi.spyOn(console, "log").mockImplementation((...values: unknown[]) => { lines.push(values.map(String).join(" ")); });
+    try { await w.switchTo(sid, w.B); } finally { spy.mockRestore(); }
+    const entries = lines.map((line) => { try { return JSON.parse(line) as Json; } catch { return {}; } }).filter((entry) => entry.event === "developer.company_switched");
+    expect(entries).toEqual([{ component: "broker", event: "developer.company_switched", companyId: w.B, fromCompanyId: w.A, session: createHash("sha256").update(sid, "utf8").digest("hex") }]);
+    for (const line of lines) {
+      expect(line).not.toContain(sid);
+      expect(line).not.toContain(sid.replace(/-/gu, ""));
+    }
+  });
+});
+
+describe("review L4: refused attempts count against the switch rate", () => {
+  it(`refuses the ${String(COMPANY_SWITCHES_PER_HOUR + 1)}th attempt even when the earlier ones were all refused`, async () => {
+    const w = await world();
+    const sid = w.session(PAT);
+    for (let index = 0; index < COMPANY_SWITCHES_PER_HOUR; index += 1) expect(await codeOf(w.switchTo(sid, w.C))).toBe("NOT_FOUND");
+    expect(await codeOf(w.switchTo(sid, w.B))).toBe("TOO_MANY_REQUESTS");
+    expect(await codeOf(w.switchTo(sid, GHOST))).toBe("TOO_MANY_REQUESTS");
+    expect(w.binding(sid)).toBeUndefined();
   });
 });

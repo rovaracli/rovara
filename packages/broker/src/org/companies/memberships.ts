@@ -13,11 +13,12 @@
 // `WEB_ACTIVE_COMPANY#<sha256(session)>` / `META`, holding the company, the developer it was chosen by, a revision that fences every switch, and an expiry with the session. It is the session's switch history too
 // (owner decision 91: a switch is recorded in the sign-in history only, never in a company's audit ledger): when, which request, how many switches.
 // No item, or an item naming the primary: the session is in the primary, exactly as before this lane. An item naming another company that is a live membership: the session is in that company, with that company's role.
-// An item naming a company that is no longer a live membership (removed, banned, closed): the session falls back to the primary at once and the item is deleted, so a later re-invite never moves an open tab
-// silently back into it; a page that names the lost company in `x-rovara-company` is refused CSRF_STALE and reloads into the primary (header.ts).
+// An item naming a company that is no longer a live membership (removed, banned, closed): the session falls back to the primary at once and the item is rewritten to name the primary with its reload marker set, so
+// a later re-invite never moves an open tab silently back into it, a page that names the lost company in `x-rovara-company` is refused CSRF_STALE and reloads into the primary, and a page that names none may not
+// write until it reloads (header.ts). A switch sets the same marker.
 // With the switch `cw` off none of this is read: everyone is in the primary.
 import { createHash } from "node:crypto";
-import { DeleteCommand, GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
+import { GetCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { OrgIdSchema, agentXError, type OrgId } from "@rovara-code/contracts";
 import { COMPANIES_MAX, OrgRoleSchema, developerOrgKey, orgBanKey, orgMemberKey, orgMetaKey, type EditionPolicy, type OrgRole } from "@agentx/cloud-contracts";
 import { auditorAllowedByEdition } from "../auditor.js";
@@ -114,7 +115,7 @@ export async function liveMembershipOf(deps: CompanyReadDeps, developerId: strin
 }
 
 /** What the session's item says, read consistently. A store fault refuses the request (503): the broker does not guess which company a request is in. */
-export interface ActiveCompanyItem { orgId: OrgId; developerId: string; revision: number; switches: number }
+export interface ActiveCompanyItem { orgId: OrgId; developerId: string; revision: number; switches: number; reloadNeeded: boolean }
 export async function readActiveCompany(deps: CompanyReadDeps, sessionId: string): Promise<ActiveCompanyItem | undefined> {
   let item: Item | undefined;
   try { item = await getItem(deps, activeCompanyKey(sessionId)); }
@@ -125,25 +126,46 @@ export async function readActiveCompany(deps: CompanyReadDeps, sessionId: string
     // An item that does not read is never a company: the session is signed out (fail closed) rather than put somewhere by a guess.
     throw agentXError("AUTH_REQUIRED", "Sign in to continue.");
   }
-  return { orgId: orgId.data, developerId: item.developerId, revision: item.revision, switches: typeof item.switches === "number" ? item.switches : 0 };
+  return { orgId: orgId.data, developerId: item.developerId, revision: item.revision, switches: typeof item.switches === "number" ? item.switches : 0, reloadNeeded: item.reloadNeeded === true };
 }
 
 /**
- * The company a browser session is in, given the caller its sign-in pointer gave (the primary). Called for cookie sessions only (`authenticateDeveloperSessionId`), and only while `cw` is on.
- * Returns the caller unchanged, or moved to the session's chosen company with THAT company's role. A chosen company that is no longer a live membership gives the primary and deletes the item (best effort).
+ * The session's RELOAD MARKER (Opus review M1). Set when the session's company changes under its open pages: a switch, or the chosen company lost (removed, banned, closed). While it is set, a browser WRITE
+ * without `x-rovara-company` is refused CSRF_STALE (header.ts), whatever the company's `companies` flag says, so an old tab that does not name its company never acts in the company the session moved to.
+ * One of the reads a page makes when it loads (navigation, `/me`, the companies list) clears it. `revision` is the item's, so a clear never removes a newer marker.
  */
-export async function sessionCompany<Caller extends { developerId: string; sessionId: string; orgId: OrgId; orgRole: OrgRole }>(deps: CompanyReadDeps, caller: Caller): Promise<Caller & { activeCompanyLost?: true }> {
+export interface CompanyReloadMarker { revision: number }
+
+/**
+ * The company a browser session is in, given the caller its sign-in pointer gave (the primary). Called for cookie sessions only (`authenticateDeveloperSessionId`), and only while `cw` is on.
+ * Returns the caller unchanged, or moved to the session's chosen company with THAT company's role, with `companyReload` while the reload marker is set. A chosen company that is no longer a live membership gives the
+ * primary: the item is rewritten to name the primary with the marker set (best effort), so a later re-invite never moves an open tab back and an old tab's headerless write is refused until it reloads.
+ */
+export async function sessionCompany<Caller extends { developerId: string; sessionId: string; orgId: OrgId; orgRole: OrgRole }>(deps: CompanyReadDeps, caller: Caller): Promise<Caller & { companyReload?: CompanyReloadMarker }> {
   const chosen = await readActiveCompany(deps, caller.sessionId);
   if (chosen === undefined) return caller;
   if (chosen.developerId !== caller.developerId) throw agentXError("AUTH_REQUIRED", "Sign in to continue.");
-  if (chosen.orgId === caller.orgId) return caller;
+  const marked = <T extends Caller>(who: T) => (chosen.reloadNeeded ? { ...who, companyReload: { revision: chosen.revision } } : who);
+  if (chosen.orgId === caller.orgId) return marked(caller);
   let membership: LiveMembership | undefined;
   try { membership = await liveMembershipOf(deps, caller.developerId, chosen.orgId); }
   catch { throw agentXError("RUNTIME_UNAVAILABLE", "Your company could not be read. Try again shortly."); }
-  if (membership !== undefined) return { ...caller, orgId: membership.orgId, orgRole: membership.role };
+  if (membership !== undefined) return marked({ ...caller, orgId: membership.orgId, orgRole: membership.role });
   logDeveloperEvent({ event: "developer.active_company_lost" });
+  let revision = chosen.revision;
   try {
-    await send(deps, new DeleteCommand({ TableName: deps.tableName, Key: activeCompanyKey(caller.sessionId), ConditionExpression: "revision = :revision", ExpressionAttributeValues: { ":revision": chosen.revision } }));
-  } catch { /* Best effort: the next request finds the same lost company and tries again. */ }
-  return { ...caller, activeCompanyLost: true };
+    await send(deps, new UpdateCommand({
+      TableName: deps.tableName, Key: activeCompanyKey(caller.sessionId), UpdateExpression: "SET orgId = :primary, reloadNeeded = :yes, revision = :next",
+      ConditionExpression: "revision = :revision", ExpressionAttributeValues: { ":primary": caller.orgId, ":yes": true, ":next": chosen.revision + 1, ":revision": chosen.revision },
+    }));
+    revision = chosen.revision + 1;
+  } catch { /* Best effort: the next request finds the same lost company and tries again; this request is refused a headerless write all the same. */ }
+  return { ...caller, companyReload: { revision } };
+}
+
+/** Clears the reload marker the request saw (a page loaded). Best effort and fenced on the revision read: a newer switch's marker stays. */
+export async function clearCompanyReload(deps: CompanyReadDeps, sessionId: string, marker: CompanyReloadMarker): Promise<void> {
+  try {
+    await send(deps, new UpdateCommand({ TableName: deps.tableName, Key: activeCompanyKey(sessionId), UpdateExpression: "REMOVE reloadNeeded", ConditionExpression: "revision = :revision", ExpressionAttributeValues: { ":revision": marker.revision } }));
+  } catch { /* The marker stays: the next page read clears it. */ }
 }

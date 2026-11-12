@@ -5,6 +5,7 @@ import type { AdaptedHttpRequest } from "./lambda.js";
 import { SESSION_COOKIE, parseCookie } from "./web-session.js";
 import { checkCompanyHeader } from "../org/companies/header.js";
 import { companySwitcherEnabled } from "../org/companies/switch.js";
+import { clearCompanyReload } from "../org/companies/memberships.js";
 export const WEB_ROUTE_FAMILIES = ["me", "nav", "home", "live", "changes", "realtime", "sessions", "projects", "agents", "models", "skills", "approvals", "spend-requests", "connections", "org", "github", "budget", "usage", "notices", "chains", "chain-runs", "tasks/{id}/continue-as-task", "trash", "devices"] as const;
 export const WEB_REQUEST_REFUSED = "This request didn't come from Rovara's app.";
 export function webRouteAllowed(method: string, pathname: string): boolean {
@@ -71,7 +72,10 @@ export async function authenticateWebRequest(deps: DeveloperRouteDependencies, r
   if (!appCsrfMatches(cookie, csrf)) throw agentXError("CSRF_STALE", CSRF_STALE_MESSAGE);
  }
  // Company memberships (switch `cw`): `x-rovara-company` only narrows; it must name the company this request is in, and is required only while that company's `companies` UI flag is on (org/companies/header.ts).
- if (companySwitcherEnabled()) await checkCompanyHeader({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, request, caller.orgId);
+ if (companySwitcherEnabled()) {
+  const reload = caller.companyReload;
+  await checkCompanyHeader({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, request, caller.orgId, { reload, clearReload: reload === undefined ? undefined : () => clearCompanyReload({ documentClient: deps.documentClient, tableName: deps.tableName }, caller.sessionId, reload) });
+ }
  // Only this function says a caller came through a browser session with its CSRF token: Merge merges at once for such a caller and never for a token.
  return { ...caller, browserSession: true };
 }

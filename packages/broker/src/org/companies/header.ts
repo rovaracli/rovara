@@ -9,6 +9,9 @@
 // switch: with the server switch on and the UI flag not `on`, a request without the header goes through exactly as before. Three reads that tell a page which company it is in are exempt, because the web app makes
 // them before it knows (the navigation answer, `/me` for the CSRF token, and the companies list).
 //
+// THE RELOAD MARKER (Opus review M1): after the session's company changed (a switch, or the chosen company lost), a write that names no company is refused until a page read clears the marker, even where the
+// flag is not on, so an old tab never writes into the company the session moved to.
+//
 // Browser requests only (`/v1/web/*`). A machine credential is bound to one company and needs no header. With the server switch `cw` off this module is not called.
 import { agentXError, type OrgId } from "@rovara-code/contracts";
 import { COMPANY_REQUEST_HEADER, COMPANY_STALE_MESSAGE } from "@agentx/cloud-contracts";
@@ -24,15 +27,21 @@ export async function companyHeaderRequired(deps: UiFlagsDeps, orgId: OrgId, env
 }
 
 /**
- * Checks one browser request. `orgId` is the company the request is in (the caller's, after the session's active company was resolved). Throws CSRF_STALE, or returns.
+ * Checks one browser request. `orgId` is the company the request is in (the caller's, after the session's active company was resolved). `reload` is the session's reload marker when it is set (memberships.ts):
+ * then a WRITE without the header is refused whatever the flag says (an old tab after a switch or a lost company), and one of the exempt reads (the page loading) clears it through `clearReload`. Throws CSRF_STALE, or returns.
  */
-export async function checkCompanyHeader(deps: UiFlagsDeps, request: { method: string; path: string; headers: Record<string, string | undefined> }, orgId: OrgId, environment: Record<string, string | undefined> = process.env): Promise<void> {
+export async function checkCompanyHeader(deps: UiFlagsDeps, request: { method: string; path: string; headers: Record<string, string | undefined> }, orgId: OrgId, session: { reload?: { revision: number } | undefined; clearReload?: (() => Promise<void>) | undefined } = {}, environment: Record<string, string | undefined> = process.env): Promise<void> {
   const named = request.headers[COMPANY_REQUEST_HEADER];
-  if (named !== undefined) {
-    if (!COMPANY_ID.test(named) || named !== orgId) throw agentXError("CSRF_STALE", COMPANY_STALE_MESSAGE);
+  if (named !== undefined && (!COMPANY_ID.test(named) || named !== orgId)) throw agentXError("CSRF_STALE", COMPANY_STALE_MESSAGE);
+  const read = request.method === "GET" || request.method === "HEAD";
+  const pathname = request.path.split("?", 1)[0]!;
+  // A page loading (an exempt read, with or without the header) clears the marker.
+  if (read && EXEMPT_READS.has(pathname)) {
+    if (session.reload !== undefined) await session.clearReload?.();
     return;
   }
-  const pathname = request.path.split("?", 1)[0]!;
-  if ((request.method === "GET" || request.method === "HEAD") && EXEMPT_READS.has(pathname)) return;
+  // A page that names this company knows where it is.
+  if (named !== undefined) return;
+  if (!read && session.reload !== undefined) throw agentXError("CSRF_STALE", COMPANY_STALE_MESSAGE);
   if (await companyHeaderRequired(deps, orgId, environment)) throw agentXError("CSRF_STALE", COMPANY_STALE_MESSAGE);
 }
