@@ -19,6 +19,7 @@ import { INVITE_TOKEN_PATTERN, inviteTokenHash } from "../org/invite-url.js";
 import type { OrgStore } from "../org/store.js";
 import { MERGED_AWAY_MESSAGE } from "../org/store.js";
 import { ALREADY_SIGNED_UP_MESSAGE, INVITATION_ONLY_MESSAGE, NO_ORG_ON_INSTALL_MESSAGE, resolveOrgOnSignIn, sameEmail, type ResolveOrgOnSignInDependencies, type SignInNoOrg, type SignInOrg } from "../org/sign-in.js";
+import { REMOVAL_CHECK_UNAVAILABLE_MESSAGE, UNTRACEABLE_IDENTITY_MESSAGE } from "../org/former-developers.js";
 import { resolveSignInDeveloper, type ResolveSignInDeveloperDependencies } from "./identities.js";
 import {
   expiredInvitePage, joinDonePage, joinExpiredPage, maskEmail, openInvitePage, otherBrowserPage, unknownInvitePage, usedInvitePage, type PageSpec,
@@ -781,19 +782,22 @@ function createIssuerHandler(deps: DeveloperIdentityDependencies) {
    * that accepting would take is not refused here: it is one that exists, is not revoked, used or expired, is for this org, and (when written for an address) for this verified
    * address, as resolveOrgOnSignIn judges it. Anything else, a forged or other-org invite included, leaves the person refused.
    */
-  async function bannedWithoutInvite(identity: ProviderIdentity, developerId: string, inviteTokenHash: string | undefined, formerDeveloperIds: readonly string[] = []): Promise<boolean> {
-    if (deps.singleOrgId === undefined) return false;
+  async function bannedWithoutInvite(identity: ProviderIdentity, developerId: string, inviteTokenHash: string | undefined, formerDevelopers?: () => Promise<readonly string[]>): Promise<boolean> {
+    const singleOrgId = deps.singleOrgId;
+    if (singleOrgId === undefined) return false;
     // The ban of the developer, or of any developer this identity was unlinked from: unlinking before a removal must not leave a way back in (resolveOrgOnSignIn judges the same set).
-    let banned = false;
-    for (const id of [developerId, ...formerDeveloperIds]) banned ||= await deps.orgs.isBanned(deps.singleOrgId, id);
+    // The developer's own ban is read first; the walk is made only for a person not banned themselves.
+    let banned = await deps.orgs.isBanned(singleOrgId, developerId);
+    if (!banned && formerDevelopers !== undefined) banned = (await Promise.all((await formerDevelopers()).map((id) => deps.orgs.isBanned(singleOrgId, id)))).some(Boolean);
     if (!banned) return false;
     if (inviteTokenHash === undefined) return true;
     const invite = await deps.orgs.describeInviteByHash(inviteTokenHash);
     const forThem = invite?.email === undefined || (identity.emailVerified === true && identity.email !== undefined && sameEmail(invite.email, identity.email));
-    return !(invite !== undefined && invite.state === "open" && invite.orgId === deps.singleOrgId && forThem);
+    // A project maintainer's invite never lifts a ban (A-31; the store refuses it too), so it is not a way back here.
+    return !(invite !== undefined && invite.state === "open" && invite.orgId === singleOrgId && forThem && invite.projectInviter !== "maintainer");
   }
 
-  async function decideCompanySignInFor(method: DeveloperSignInMethod, identity: ProviderIdentity, developerId: string, occurrence: string, inviteTokenHash?: string, formerDeveloperIds: readonly string[] = []): Promise<CompanySignIn> {
+  async function decideCompanySignInFor(method: DeveloperSignInMethod, identity: ProviderIdentity, developerId: string, occurrence: string, inviteTokenHash?: string, formerDevelopers?: () => Promise<readonly string[]>): Promise<CompanySignIn> {
     const current = await deps.orgs.orgForDeveloper(developerId);
     const audit = deps.audit === undefined ? {} : { audit: deps.audit };
     const outcome = await decideCompanySignIn({
@@ -801,7 +805,7 @@ function createIssuerHandler(deps: DeveloperIdentityDependencies) {
       auditAvailable: deps.audit !== undefined, nowMs: deps.now(),
       // A banned person is refused here, before an allowance or an "allowed" record is made for them; resolveOrgOnSignIn refuses the same person later for the other methods.
       // A person who already has an org is judged by their own ban only (rule 1 of resolveOrgOnSignIn keeps them); the developers an identity was unlinked from count for one with none.
-      banned: await bannedWithoutInvite(identity, developerId, inviteTokenHash, current === undefined ? formerDeveloperIds : []),
+      banned: await bannedWithoutInvite(identity, developerId, inviteTokenHash, current === undefined ? formerDevelopers : undefined),
     });
     if (outcome.allow && outcome.breakGlass) {
       await recordAuditEventDurably(audit, outcome.event);
@@ -838,8 +842,28 @@ function createIssuerHandler(deps: DeveloperIdentityDependencies) {
       return client({ error: "access_denied", error_description: `${result.reason}${hint}` });
     }
     const identity = result.identity;
-    // On a single-org install, the developers this identity was unlinked from (through any chain): a ban on one of them covers it (see resolveOrgOnSignIn `formerDeveloperIds`).
-    const formerDeveloperIds = deps.singleOrgId === undefined ? [] : await store.formerDevelopersOf(ownerKeyForSubject(identity.issuer, identity.subject));
+    // On a single-org install, the developers this identity was unlinked from (through any chain): a ban on one of them covers it (see resolveOrgOnSignIn `formerDevelopers`). Looked up
+    // only when a check needs it, so a person who already belongs (rule 1) is never held up by a chain that cannot be read. Fails closed, with its own words and log reason.
+    let traced: Promise<readonly string[]> | undefined;
+    const formerDevelopers = deps.singleOrgId === undefined ? undefined : (): Promise<readonly string[]> => (traced ??= (async () => {
+      try {
+        return await store.formerDevelopersOf(ownerKeyForSubject(identity.issuer, identity.subject));
+      } catch (error) {
+        if (isCode(error, "FORBIDDEN") && refusalWords(error) === UNTRACEABLE_IDENTITY_MESSAGE) throw error;
+        deps.log({ event: "signin.former_developers_unreadable", method, errorName: errorName(error) });
+        throw agentXError("FORBIDDEN", REMOVAL_CHECK_UNAVAILABLE_MESSAGE);
+      }
+    })());
+    /** A sign-in refused because the removal check could not be made: told why, with its own log reason (not "Something went wrong"). */
+    const traceRefusal = (error: unknown, developerId: string): HttpResult | undefined => {
+      const reason = !isCode(error, "FORBIDDEN") ? undefined : refusalWords(error) === UNTRACEABLE_IDENTITY_MESSAGE ? "untraceable_identity" : refusalWords(error) === REMOVAL_CHECK_UNAVAILABLE_MESSAGE ? "removal_check_unavailable" : undefined;
+      if (reason === undefined) return undefined;
+      deps.log({ event: "signin.refused", method, reason, developerId });
+      const words = refusalWords(error);
+      if (join) return page(403, "Sign-in was refused", [capitalized(words), "Ask your administrator."]);
+      if (request.browserReturnTo !== undefined) return browserReturn(request.browserReturnTo, false, undefined, "refused");
+      return client({ error: "access_denied", error_description: words });
+    };
     // Enterprise foundations I1: where the edition has company group sign-in, the person's groups decide whether they come in, as what, and for how long.
     // This is before anything else is written or looked up about them: the identity link and any merge, the Slack lookup, the developer record, the org, a session or a code.
     // The developer a company sign-in resolves to is read, not written: its identity's link if it has one, else its own key (a merge or a join of another route is for the cloud and GitHub methods).
@@ -851,7 +875,14 @@ function createIssuerHandler(deps: DeveloperIdentityDependencies) {
       const decisionId = link !== undefined && (link.unlinkedFrom === undefined || link.developerId === key) ? link.developerId : key;
       decidedFor = decisionId;
       const developerId = decisionId;
-      const decided = await decideCompanySignInFor(method, identity, decisionId, request.id, request.inviteTokenHash, formerDeveloperIds);
+      let decided: CompanySignIn;
+      try {
+        decided = await decideCompanySignInFor(method, identity, decisionId, request.id, request.inviteTokenHash, formerDevelopers);
+      } catch (error) {
+        const refused = traceRefusal(error, developerId);
+        if (refused === undefined) throw error;
+        return refused;
+      }
       if (!decided.allow) {
         deps.log({ event: "signin.refused", method, reason: decided.reason, developerId });
         // A person the mapping no longer lets in loses their Slack access too (Enterprise foundations I-6).
@@ -909,7 +940,7 @@ function createIssuerHandler(deps: DeveloperIdentityDependencies) {
       ...(deps.onOrgJoined === undefined ? {} : { onOrgJoined: deps.onOrgJoined }), ...(deps.newOrgsByInvitationOnly === true ? { newOrgsByInvitationOnly: true } : {}) };
     const orgInput = { method, developerId, displayName: identity.displayName, ...(identity.email === undefined ? {} : { email: identity.email }), emailVerified: identity.emailVerified === true,
       ...(request.inviteTokenHash === undefined ? {} : { inviteTokenHash: request.inviteTokenHash }), ...(resolved.separatedFrom === undefined ? {} : { separatedFrom: resolved.separatedFrom }),
-      ...(formerDeveloperIds.length === 0 ? {} : { formerDeveloperIds }) };
+      ...(formerDevelopers === undefined ? {} : { formerDevelopers }) };
     let org: SignInOrg | SignInNoOrg;
     // UX1 (OWNER DECISION 5): a browser sign-in creates a company only when the person chose "Create a company". For the cloud and GitHub methods
     // `allowCreate: false` skips only that (rule 3); a person who already has a company, or brings an invite, is unaffected.
@@ -917,6 +948,8 @@ function createIssuerHandler(deps: DeveloperIdentityDependencies) {
     try {
       org = join || !askedToCreate ? await resolveOrgOnSignIn(orgDependencies, { ...orgInput, allowCreate: false }) : await resolveOrgOnSignIn(orgDependencies, orgInput);
     } catch (error) {
+      const untraced = traceRefusal(error, developerId);
+      if (untraced !== undefined) return untraced;
       if (join) throw error;
       // Invitation only: no company is made for a person who has none and brings no usable invite. Nothing was written for the org; the person is told how to get in.
       if (isCode(error, "CONFIG_INVALID") && refusalWords(error) === INVITATION_ONLY_MESSAGE) {

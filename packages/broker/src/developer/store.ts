@@ -12,6 +12,7 @@ import { chosenNameStatesOf, chosenNameWrite, readChosenName, readNameItems, wit
 import { placeholderDisplayName, readableDeveloper, safeDisplayName } from "./person-name.js";
 import { ownerKeyForSubject } from "../aws/lambda.js";
 import { pkceChallengeMatches, randomToken, sha256Hex } from "./tokens.js";
+import { traceFormerDevelopers } from "../org/former-developers.js";
 
 export interface AuthRequestRecord { id: string; clientRedirectUri: string; clientState: string; codeChallenge: string; nonce: string; method?: DeveloperSignInMethod; consumedAt?: string; expiresAt: number; browserReturnTo?: string;
   /** SHA-256 of the invite token in base64url. The raw token is never stored. */
@@ -148,8 +149,6 @@ export const META = "META";
 const conditionFailedOrRefused = (error: unknown): boolean => (error as { code?: unknown } | null)?.code === "CONFIG_INVALID" || conditionFailed(error);
 /** How many sign-in records a list reads at once (`getDevelopers`). */
 const RECORD_READS_AT_ONCE = 16;
-/** The most developers `formerDevelopersOf` follows from one identity; a longer chain refuses the sign-in (a person this tangled is for an admin). */
-const FORMER_DEVELOPER_LIMIT = 16;
 
 /** E8: the email index's key, the SHA-256 of the normalized email (normalizeEmail, the same as the org email pointer), so no email is stored as a key. */
 export function emailIndexKey(email: string): { pk: string; sk: "META" } {
@@ -551,23 +550,10 @@ export class DeveloperSignInStore {
    * Every developer this identity answers to by history: the developer its link says it was unlinked from (`unlinkedFrom`, kept for good, even after the identity signs in as its
    * own developer), and from there each developer THAT one was unlinked from, merged into or linked into, through any chain. Empty for an identity that was never unlinked. A removal
    * with a ban marks the developer the person was; an identity the person unlinked beforehand carries no mark of its own, so a sign-in asks this and checks the ban of each (a ban on any
-   * of them covers the identity). Fails closed (FORBIDDEN) when the chain is longer than FORMER_DEVELOPER_LIMIT: a person who cannot be traced is not let in.
+   * of them covers the identity). The walk is org/former-developers.ts; it fails closed (FORBIDDEN) past FORMER_DEVELOPER_LIMIT.
    */
   async formerDevelopersOf(identityKey: string): Promise<string[]> {
-    const first = (await this.getIdentityLink(identityKey))?.unlinkedFrom;
-    const seen: string[] = [];
-    const queue = first === undefined ? [] : [first];
-    for (let next = queue.shift(); next !== undefined; next = queue.shift()) {
-      if (seen.includes(next)) continue;
-      if (seen.length >= FORMER_DEVELOPER_LIMIT) throw agentXError("FORBIDDEN", "this sign-in could not be traced to one person; ask an admin");
-      seen.push(next);
-      const [link, developer] = await Promise.all([this.getIdentityLink(next), this.getDeveloper(next)]);
-      // It was itself separated from another developer, or is linked into one now (a link that is not its tombstone), or was merged into one.
-      if (link?.unlinkedFrom !== undefined) queue.push(link.unlinkedFrom);
-      else if (link !== undefined && link.developerId !== next) queue.push(link.developerId);
-      if (developer?.mergedInto !== undefined && developer.mergedInto !== "") queue.push(developer.mergedInto);
-    }
-    return seen;
+    return traceFormerDevelopers((await this.getIdentityLink(identityKey))?.unlinkedFrom, async (key) => this.get<Record<string, unknown>>(key.pk));
   }
 
   /**

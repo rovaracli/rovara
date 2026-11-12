@@ -28,10 +28,15 @@ export async function personIds(deps: { documentClient: DocumentClient; signInTa
   return (await personWalk(deps, developerId)).ids;
 }
 
+/** One consistent read of the sign-in table (or the caller's own `readSignIn`). Only for a caller that has checked `signInTableName` or `readSignIn` is set. */
+export function signInReader(deps: { documentClient: DocumentClient; signInTableName?: string | undefined; readSignIn?: ((key: { pk: string; sk: string }) => Promise<Record<string, unknown> | undefined>) | undefined }): (key: { pk: string; sk: string }) => Promise<Record<string, unknown> | undefined> {
+  return deps.readSignIn ?? (async (key) => (await deps.documentClient.send(new GetCommand({ TableName: deps.signInTableName, Key: key, ConsistentRead: true })) as { Item?: Record<string, unknown> }).Item);
+}
+
 /** `personIds`, and the identity link's `unlinkedFrom` (the developer a Slack identity was unlinked from) from the same read of the link, so a caller needs one walk, not two. */
 export async function personWalk(deps: { documentClient: DocumentClient; signInTableName?: string | undefined; /** A caller that cannot read the sign-in table itself (the dispatcher) gives the one read it may make. */ readSignIn?: ((key: { pk: string; sk: string }) => Promise<Record<string, unknown> | undefined>) | undefined }, developerId: string): Promise<{ ids: string[]; unlinkedFrom: string | undefined }> {
   if (deps.signInTableName === undefined && deps.readSignIn === undefined) return { ids: [developerId], unlinkedFrom: undefined };
-  const read = deps.readSignIn ?? (async (key: { pk: string; sk: string }) => (await deps.documentClient.send(new GetCommand({ TableName: deps.signInTableName, Key: key, ConsistentRead: true })) as { Item?: Record<string, unknown> }).Item);
+  const read = signInReader(deps);
   const link = await read({ pk: `SIGNIN_IDENTITY#${developerId}`, sk: "META" });
   const unlinkedFrom = typeof link?.["unlinkedFrom"] === "string" ? link["unlinkedFrom"] : undefined;
   let pendingLink = link !== undefined && link["unlinkedFrom"] === undefined && typeof link["developerId"] === "string" && link["developerId"] !== developerId ? link["developerId"] : undefined;

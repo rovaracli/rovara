@@ -13,7 +13,8 @@ import { GetObjectCommand } from "@aws-sdk/client-s3";
 import { type DeveloperTaskView, type ProjectDefinition, type OrgRole, featureEnabled, orgBanKey, orgMemberKey, orgRemovedKey, type WriterOrgRole } from "@agentx/cloud-contracts";
 import { AgentXError, CHANNEL_TURN_REQUEST_MAX, type CodeIntentResult, CONNECTOR_SECRET_PREFIX, ChannelTurnSchema, approvedToolCount, agentXError, type OperationStatus, type ChannelTurn, type TriggerEvent, redactAndCap, projectRevisionKey, type OrgId, type ChannelMembersRequest, type Payer } from "@rovara-code/contracts";
 import { cloudToolBudget } from "./tool-budget.js";
-import { liveStoredRole, personWalk } from "../../org/live-role.js";
+import { liveStoredRole, personWalk, signInReader } from "../../org/live-role.js";
+import { traceFormerDevelopers } from "../../org/former-developers.js";
 import { requireWriterCaller, type WriterCaller } from "../../org/auditor.js";
 import { slackMemberRule, warnImplicitSlackMember } from "../../org/slack-explicit-members.js";
 import { explicitMemberStanding } from "../../org/explicit-member.js";
@@ -505,7 +506,8 @@ export async function slackRequesterStanding(dependencies: AwsBrokerDependencies
   const has = async (key: { pk: string; sk: string }) => await getItem(dependencies, key) !== undefined;
   // A Slack identity that was unlinked from a developer (the unlink also drops the merge) is judged by that developer's removal too: removal marks the survivor only, so a removed or banned
   // person must not become a clean unlinked requester by unlinking the Slack identity afterwards. This covers people already removed. Their record, if any, gives no role here.
-  const formerIds = former !== undefined && former !== developerId ? (await personWalk(live, former)).ids : [];
+  // The same walk as the sign-in's (org/former-developers.ts): through any chain of unlinks, and the merges and links of each developer on it, so a Slack account two unlinks away is refused too.
+  const formerIds = former !== undefined && former !== developerId ? await traceFormerDevelopers(former, signInReader(live)) : [];
   // What this check read and let the person through on (SY-7): the rows that were absent and the survivor's member record when it was there. A caller that goes on to mint money for the person
   // re-asserts these in its own write (`requesterStandingGuard`), so a removal or a ban written after this read cannot still get a key.
   const standing: RequesterStanding = { orgId, absent: [], present: [] };

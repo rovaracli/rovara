@@ -53,10 +53,11 @@ export interface ResolveOrgOnSignInInput {
   /**
    * On an install with a single org: every developer this sign-in's identity was ever unlinked from, through any chain (`DeveloperSignInStore.formerDevelopersOf`). A removal with a ban
    * marks only the developer the person was, so an identity the person unlinked BEFORE the removal would otherwise sign in as a new developer the ban does not name. A ban on the
-   * developer or on any of these refuses the sign-in (REMOVED_FROM_ORG), in rule 3 and rule 4. Not consulted when the install has no single org (a multi-company cloud install: a separated
-   * identity there starts its own company, as `separatedFrom` says), and never consulted for a person who already has an org (rule 1) or brings a usable invite (rule 2).
+   * developer or on any of these refuses the sign-in (REMOVED_FROM_ORG), in rule 3 and rule 4; a project maintainer's invite (rule 2) is refused for the same reason, since it never lifts
+   * a ban (A-31). Not given when the install has no single org (a multi-company cloud install: a separated identity there starts its own company, as `separatedFrom` says).
+   * A function, called only when the answer is needed: never for a person who already has an org (rule 1), so a chain that cannot be read never locks a member out.
    */
-  formerDeveloperIds?: readonly string[];
+  formerDevelopers?: () => Promise<readonly string[]>;
 }
 
 export interface SignInOrg {
@@ -168,7 +169,7 @@ async function resolveOrg(deps: ResolveOrgOnSignInDependencies, input: ResolveOr
       try {
         const tokenHash = input.inviteTokenHash;
         // The email is indexed only for the cloud methods, whose sign-in routes it links.
-        return await indexing((email) => orgs.acceptInvite({ tokenHash, developerId: input.developerId, ...(email === undefined ? {} : { email }), ...(verifiedEmail === undefined ? {} : { verifiedEmail }) }), false);
+        return await indexing((email) => orgs.acceptInvite({ tokenHash, developerId: input.developerId, ...(email === undefined ? {} : { email }), ...(verifiedEmail === undefined ? {} : { verifiedEmail }), ...(input.formerDevelopers === undefined ? {} : { formerDevelopers: input.formerDevelopers }) }), false);
       } catch (error) {
         if (codeOf(error) === "INVITE_INVALID") inviteError = "INVITE_INVALID";
         else if (codeOf(error) === "INVITE_WRONG_EMAIL") inviteError = "INVITE_WRONG_EMAIL";
@@ -188,9 +189,8 @@ async function resolveOrg(deps: ResolveOrgOnSignInDependencies, input: ResolveOr
 
   /** Removed from this install's org with a ban, as the developer or as any developer this sign-in's identity was unlinked from: not back by signing in again. An invite (rule 2) still works and clears the ban. */
   const refuseIfBanned = async (singleOrgId: OrgId): Promise<void> => {
-    for (const id of [input.developerId, ...(input.formerDeveloperIds ?? [])]) {
-      if (await orgs.isBanned(singleOrgId, id)) throw agentXError("REMOVED_FROM_ORG", REMOVED_FROM_ORG_MESSAGE);
-    }
+    const ids = [input.developerId, ...(input.formerDevelopers === undefined ? [] : await input.formerDevelopers())];
+    if ((await Promise.all(ids.map((id) => orgs.isBanned(singleOrgId, id)))).some(Boolean)) throw agentXError("REMOVED_FROM_ORG", REMOVED_FROM_ORG_MESSAGE);
   };
 
   // Rule 3: a cloud sign-in with nowhere to go starts an org of its own, unless new companies are by invitation only: then nothing is created (no org, no budget rows).
