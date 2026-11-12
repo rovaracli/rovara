@@ -5,7 +5,9 @@ import { AuditEventInputSchema, privateAddressListDigest, type AuditEventInput }
 import {
   approvePrivateAddresses, openPrivateAddressChange, proposePrivateAddresses, readPrivateAddresses, withdrawPrivateAddresses, type PrivateAddressDeps,
 } from "../../packages/broker/src/org/private-addresses.js";
-import { launchPrivateAddresses } from "../../packages/broker/src/aws/private-address-launch.js";
+import { NO_PRIVATE_ADDRESS_LIST, launchPrivateAddresses } from "../../packages/broker/src/aws/private-address-launch.js";
+import { readPrivateAddressLaunchRevision, recordPrivateAddressLaunch } from "../../packages/broker/src/aws/private-address-launch-record.js";
+import { PRIVATE_ADDRESS_NOTHING_OPEN } from "@agentx/cloud-contracts";
 import { onAllowedWebsites } from "../../packages/broker/src/aws/developer-routes/private-addresses.js";
 import type { Tier0Authority } from "../../packages/broker/src/lessons/sole-owner-switch.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
@@ -13,6 +15,8 @@ import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 const ORG_A = `org_${"a".repeat(20)}`, ORG_B = `org_${"b".repeat(20)}`;
 const A = "a".repeat(64), B = "b".repeat(64), C = "c".repeat(64), D = "d".repeat(64);
 const INSTALL = { vpcCidrs: ["10.42.0.0/16"], serviceHosts: [] };
+// A launch's install: the same checks as the route, with the routed ranges (an install without them sends no list).
+const LAUNCH_INSTALL = { ...INSTALL, routedCidrs: ["10.20.0.0/16", "10.30.0.0/16"], reservedCidrs: ["10.70.0.0/16"], openPorts: [443, 8081] };
 
 function bench(options: { eligible?: string[]; ledger?: boolean } = {}) {
   const db = new FakeDynamoDb();
@@ -181,16 +185,43 @@ describe("company isolation", () => {
     t.db.set({ pk: `WORKSPACE#${wsA}`, sk: "META", id: wsA, orgId: ORG_A });
     t.db.set({ pk: `WORKSPACE#${wsB}`, sk: "META", id: wsB, orgId: ORG_B });
     t.db.set({ pk: `WORKSPACE#${wsNone}`, sk: "META", id: wsNone });
-    expect(await launchPrivateAddresses(t.deps, wsA, INSTALL)).toEqual(["10.20.0.15:443"]);
-    expect(await launchPrivateAddresses(t.deps, wsB, INSTALL)).toEqual(["10.30.0.9:8081"]);
-    expect(await launchPrivateAddresses(t.deps, wsNone, INSTALL)).toEqual([]);
-    expect(await launchPrivateAddresses(t.deps, "44444444-4444-4444-8444-444444444444", INSTALL)).toEqual([]);
+    expect((await launchPrivateAddresses(t.deps, wsA, LAUNCH_INSTALL)).entries).toEqual(["10.20.0.15:443"]);
+    expect((await launchPrivateAddresses(t.deps, wsB, LAUNCH_INSTALL)).entries).toEqual(["10.30.0.9:8081"]);
+    expect((await launchPrivateAddresses(t.deps, wsNone, LAUNCH_INSTALL)).entries).toEqual([]);
+    expect((await launchPrivateAddresses(t.deps, "44444444-4444-4444-8444-444444444444", LAUNCH_INSTALL)).entries).toEqual([]);
     // A record whose own id is not the workspace asked for (a misfiled or copied item) gives no list.
     const wsCopy = "55555555-5555-4555-8555-555555555555";
     t.db.set({ pk: `WORKSPACE#${wsCopy}`, sk: "META", id: wsA, orgId: ORG_A });
-    expect(await launchPrivateAddresses(t.deps, wsCopy, INSTALL)).toEqual([]);
+    expect((await launchPrivateAddresses(t.deps, wsCopy, LAUNCH_INSTALL)).entries).toEqual([]);
     // An entry that a tightened install now refuses is left out at launch.
-    expect(await launchPrivateAddresses(t.deps, wsA, { vpcCidrs: ["10.20.0.0/16"], serviceHosts: [] })).toEqual([]);
+    expect((await launchPrivateAddresses(t.deps, wsA, { ...LAUNCH_INSTALL, vpcCidrs: ["10.20.0.0/16"] })).entries).toEqual([]);
+  });
+
+  // Review L3: the launch applies the reserved and routed ranges and the open ports like the route does, and an install with no routed range sends no list and reads none.
+  it("at launch leaves out an entry inside a reserved range, outside the routed ranges or on a port that is not open, and sends no list at all without routed ranges", async () => {
+    const t = bench();
+    const wsA = "11111111-1111-4111-8111-111111111111";
+    t.db.set({ pk: `WORKSPACE#${wsA}`, sk: "META", id: wsA, orgId: ORG_A });
+    const entries = ["10.20.0.15:443", "10.70.1.1:443", "10.99.0.1:443", "10.20.0.16:9999"];
+    // Stored as an older install allowed it (a list written before the reserved range, the route and the port were set).
+    t.db.set({ pk: `ORG#${ORG_A}`, sk: "PRIVATEADDR#LIST", entityType: "PRIVATE_ADDRESS_LIST", entries, revision: 4 });
+    const launch = await launchPrivateAddresses(t.deps, wsA, LAUNCH_INSTALL);
+    expect(launch).toEqual({ entries: ["10.20.0.15:443"], revision: 4, reservedCidrs: ["10.70.0.0/16"], routedCidrs: ["10.20.0.0/16", "10.30.0.0/16"] });
+    // A name that resolves into a reserved range is judged on the worker; here a reserved IP is refused by its own text.
+    const reads = vi.spyOn(t.db, "send");
+    expect(await launchPrivateAddresses(t.deps, wsA, undefined)).toEqual(NO_PRIVATE_ADDRESS_LIST);
+    expect(await launchPrivateAddresses(t.deps, wsA, INSTALL)).toEqual(NO_PRIVATE_ADDRESS_LIST);
+    expect(await launchPrivateAddresses(t.deps, wsA, { ...INSTALL, routedCidrs: [] })).toEqual(NO_PRIVATE_ADDRESS_LIST);
+    expect(reads).not.toHaveBeenCalled();
+    expect(NO_PRIVATE_ADDRESS_LIST).toMatchObject({ entries: [], revision: PRIVATE_ADDRESS_NOTHING_OPEN });
+  });
+
+  it("a launch that opens nothing (an empty list, or every entry now refused) records that nothing is open, not the revision it read", async () => {
+    const t = bench();
+    const wsA = "11111111-1111-4111-8111-111111111111";
+    t.db.set({ pk: `WORKSPACE#${wsA}`, sk: "META", id: wsA, orgId: ORG_A });
+    t.db.set({ pk: `ORG#${ORG_A}`, sk: "PRIVATEADDR#LIST", entityType: "PRIVATE_ADDRESS_LIST", entries: ["10.99.0.1:443"], revision: 7 });
+    expect((await launchPrivateAddresses(t.deps, wsA, LAUNCH_INSTALL)).revision).toBe(PRIVATE_ADDRESS_NOTHING_OPEN);
   });
 });
 
@@ -203,7 +234,8 @@ describe("closing access at once (owner decision 128)", () => {
     expect(mark(t, ORG_A)).toBeUndefined();
     t.clock.now += 60_000;
     await proposePrivateAddresses(t.deps, { orgId: ORG_A, actorId: A, expectedRevision: 1, entries: ["10.20.0.16:443"] });
-    expect(mark(t, ORG_A)).toMatchObject({ orgId: ORG_A, removedAt: t.clock.now, entityType: "PRIVATE_ADDRESS_RECYCLE" });
+    // The mark carries the revision the removal wrote (list revision 1 became 2), which the reaper compares with the revision a worker read at launch (review L2).
+    expect(mark(t, ORG_A)).toMatchObject({ orgId: ORG_A, removedAt: t.clock.now, revision: 2, entityType: "PRIVATE_ADDRESS_RECYCLE" });
     expect((mark(t, ORG_A) as { indexExpiresAt?: number }).indexExpiresAt).toBe(Math.floor(t.clock.now / 1000) + 15 * 86_400);
     expect(mark(t, ORG_B)).toBeUndefined();
     // A failed removal (stale revision) leaves no newer mark.
@@ -220,7 +252,51 @@ describe("closing access at once (owner decision 128)", () => {
     await proposePrivateAddresses(t.deps, { orgId: ORG_A, actorId: A, expectedRevision: 1, entries: ["10.20.0.16:443"] });
     expect(mark(t, ORG_A)).toBeUndefined();
     await approvePrivateAddresses(t.deps, { orgId: ORG_A, approverId: B, changeId: "change-2", expectedDigest: privateAddressListDigest(["10.20.0.16:443"]) });
-    expect(mark(t, ORG_A)).toMatchObject({ orgId: ORG_A });
+    expect(mark(t, ORG_A)).toMatchObject({ orgId: ORG_A, revision: 2 });
+  });
+
+  // Review L2: the launch records the list revision its worker read; the reaper reads it back for the session's own generation only.
+  describe("the launch record", () => {
+    const WS = "11111111-1111-4111-8111-111111111111", WS2 = "22222222-2222-4222-8222-222222222222";
+    const table = (t: ReturnType<typeof bench>) => ({ documentClient: t.db, tableName: "state" });
+    const launchRow = (t: ReturnType<typeof bench>, ws: string) => t.db.get("PRIVATEADDR#LAUNCH", ws);
+    it("keeps one row per workspace for its latest generation, with a TTL, and reads it back only for that generation", async () => {
+      const t = bench();
+      expect(await readPrivateAddressLaunchRevision(table(t), WS, 1)).toBeUndefined();
+      await recordPrivateAddressLaunch(table(t), { workspaceId: WS, generation: 1, revision: 5 }, () => t.clock.now);
+      expect(launchRow(t, WS)).toMatchObject({ pk: "PRIVATEADDR#LAUNCH", sk: WS, workspaceId: WS, generation: 1, revision: 5, readAt: t.clock.now, entityType: "PRIVATE_ADDRESS_LAUNCH" });
+      expect((launchRow(t, WS) as { indexExpiresAt?: number }).indexExpiresAt).toBe(Math.floor(t.clock.now / 1000) + 15 * 86_400);
+      expect(await readPrivateAddressLaunchRevision(table(t), WS, 1)).toBe(5);
+      expect(await readPrivateAddressLaunchRevision(table(t), WS, 2)).toBeUndefined();
+      expect(await readPrivateAddressLaunchRevision(table(t), WS2, 1)).toBeUndefined();
+      // A newer generation replaces it; a stale step of an older generation never does.
+      await recordPrivateAddressLaunch(table(t), { workspaceId: WS, generation: 2, revision: 9 });
+      expect(await readPrivateAddressLaunchRevision(table(t), WS, 2)).toBe(9);
+      await recordPrivateAddressLaunch(table(t), { workspaceId: WS, generation: 1, revision: 1 });
+      expect(await readPrivateAddressLaunchRevision(table(t), WS, 2)).toBe(9);
+    });
+
+    it("keeps the OLDEST revision read within one generation (a retried launch), never a newer one", async () => {
+      const t = bench();
+      await recordPrivateAddressLaunch(table(t), { workspaceId: WS, generation: 1, revision: 5 });
+      await recordPrivateAddressLaunch(table(t), { workspaceId: WS, generation: 1, revision: 8 });
+      expect(await readPrivateAddressLaunchRevision(table(t), WS, 1)).toBe(5);
+      await recordPrivateAddressLaunch(table(t), { workspaceId: WS, generation: 1, revision: 3 });
+      expect(await readPrivateAddressLaunchRevision(table(t), WS, 1)).toBe(3);
+    });
+
+    it("ignores a row whose fields do not read (never taken as proof that a worker read late)", async () => {
+      const t = bench();
+      t.db.set({ pk: "PRIVATEADDR#LAUNCH", sk: WS, workspaceId: WS, generation: 1, revision: "9" });
+      expect(await readPrivateAddressLaunchRevision(table(t), WS, 1)).toBeUndefined();
+      t.db.set({ pk: "PRIVATEADDR#LAUNCH", sk: WS, workspaceId: WS2, generation: 1, revision: 9 });
+      expect(await readPrivateAddressLaunchRevision(table(t), WS, 1)).toBeUndefined();
+    });
+
+    it("throws on any other write failure, so the launch that could not be recorded fails and is retried", async () => {
+      const failing = { documentClient: { send: async () => { throw Object.assign(new Error("down"), { name: "ProvisionedThroughputExceededException" }); } }, tableName: "state" };
+      await expect(recordPrivateAddressLaunch(failing, { workspaceId: WS, generation: 1, revision: 1 })).rejects.toThrow("down");
+    });
   });
 
   it("gives every proposal row a TTL 30 days after it expires", async () => {
@@ -241,13 +317,13 @@ describe("a stored list that does not parse (review L5)", () => {
     const logged: string[] = [];
     const spy = vi.spyOn(console, "error").mockImplementation((line: unknown) => { logged.push(String(line)); });
     try {
-      await expect(launchPrivateAddresses(t.deps, wsA, INSTALL)).rejects.toThrow("stored in a form Rovara can't read");
+      await expect(launchPrivateAddresses(t.deps, wsA, LAUNCH_INSTALL)).rejects.toThrow("stored in a form Rovara can't read");
       expect(logged.some((line) => line.includes("private_addresses.list_unreadable") && line.includes(ORG_A))).toBe(true);
     } finally { spy.mockRestore(); }
-    expect(await launchPrivateAddresses(t.deps, wsB, INSTALL)).toEqual([]);
+    expect((await launchPrivateAddresses(t.deps, wsB, LAUNCH_INSTALL)).entries).toEqual([]);
     // Saving the empty list replaces it at once (one admin), and recycles the company's workers.
     expect(await proposePrivateAddresses(t.deps, { orgId: ORG_A, actorId: A, expectedRevision: 3, entries: [] })).toMatchObject({ status: "applied", list: { revision: 4, entries: [] } });
-    expect(await launchPrivateAddresses(t.deps, wsA, INSTALL)).toEqual([]);
+    expect((await launchPrivateAddresses(t.deps, wsA, LAUNCH_INSTALL)).entries).toEqual([]);
     expect([...t.db.items.values()].some((item) => (item as { pk?: string; sk?: string }).pk === "PRIVATEADDR#RECYCLE" && (item as { sk?: string }).sk === ORG_A)).toBe(true);
   });
 

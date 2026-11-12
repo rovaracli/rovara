@@ -64,7 +64,7 @@ describe("an entry", () => {
     for (const text of ["10.42.0.2:53", "10.42.128.7:5432", "10.42.255.255:443"]) expect(refusal(text), text).toBe("install_network");
     for (const text of ["internal-rovara-proxy-123.us-east-1.elb.amazonaws.com:4000", "API.rovara.example:443", "ip-10-42-1-2.ec2.internal:22", "ip-10-1-2-3.us-west-2.compute.internal:80"]) expect(refusal(text), text).toBe("install_service");
     // Another install's network is just a private range.
-    expect(checkPrivateAddress("10.42.0.2:53", { vpcCidrs: ["10.50.0.0/16"], serviceHosts: [] }).ok).toBe(true);
+    expect(checkPrivateAddress("10.42.0.2:5432", { vpcCidrs: ["10.50.0.0/16"], serviceHosts: [] }).ok).toBe(true);
   });
 
   it("at the route, refuses ranges other settings own, addresses outside the routed ranges and ports the workers may not open (review H1, M2)", () => {
@@ -82,6 +82,20 @@ describe("an entry", () => {
     // The never-listed classes still come first.
     expect(at("169.254.169.254:443")).toBe("metadata");
     expect(at("10.42.0.2:443")).toBe("install_network");
+  });
+
+  it("refuses port 53 (DNS) on any address or name, even where the install opens it, and still gives a worse reason first", () => {
+    expect(refusal("10.20.0.15:53")).toBe("dns_port");
+    expect(refusal("nexus.corp.example:53")).toBe("dns_port");
+    const opened: PrivateAddressInstall = { ...INSTALL, routedCidrs: ["10.20.0.0/16"], openPorts: [443, 53] };
+    expect(checkPrivateAddress("10.20.0.15:53", opened)).toEqual({ ok: false, refusal: "dns_port" });
+    expect(checkPrivateAddress("10.20.0.15:443", opened).ok).toBe(true);
+    // An entry that is also something worse is refused as that (the existing reasons keep their order).
+    expect(refusal("169.254.169.254:53")).toBe("metadata");
+    expect(refusal("8.8.8.8:53")).toBe("not_private");
+    expect(refusal("10.42.0.2:53")).toBe("install_network");
+    expect(checkPrivateAddressList(["10.20.0.15:443", "10.20.0.15:53"], INSTALL)).toEqual({ ok: false, index: 1, refusal: "dns_port" });
+    expect(privateAddressRefusalText(0, "dns_port")).toContain("port 53");
   });
 
   it("refuses an empty or over-long entry", () => {

@@ -12,7 +12,7 @@
 // No certificate, name or range is written into the code: each comes from the install's own configuration. Every wrong value stops synth, naming its setting and never echoing a secret.
 import type { Edition } from "@rovara-code/contracts";
 import { AGENTX_PRODUCTION_VPC_CIDR } from "./production-foundation.js";
-import { ENTERPRISE_EGRESS_CIDRS_CONTEXT_KEY, parseEnterpriseEgressCidrs } from "./vpc-endpoints.js";
+import { ENTERPRISE_EGRESS_CIDRS_CONTEXT_KEY, ipv4RangesOverlap, parseEnterpriseEgressCidrs } from "./vpc-endpoints.js";
 
 export const PRIVATE_MCP_CONTEXT_KEYS = {
   cidrs: "rovaraPrivateMcpCidrs",
@@ -72,22 +72,8 @@ const SECRET_ARN = /^arn:aws(?:-[a-z]+)*:secretsmanager:[a-z]{2}(?:-[a-z]+)+-\d:
 
 const isSet = (value: unknown): boolean => value !== undefined;
 
-/** Whether two IPv4 ranges share an address (ranges nest, so: one contains the other's first address). A range that does not parse overlaps everything. */
-export function ipv4RangesOverlap(a: string, b: string): boolean {
-  const parse = (cidr: string): { first: number; mask: number } | undefined => {
-    const match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\/(\d{1,2})$/u.exec(cidr);
-    if (match === null) return undefined;
-    const octets = [match[1]!, match[2]!, match[3]!, match[4]!].map(Number);
-    const prefix = Number(match[5]);
-    if (octets.some((octet) => octet > 255) || prefix > 32) return undefined;
-    const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
-    return { first: (((octets[0]! << 24) >>> 0) + (octets[1]! << 16) + (octets[2]! << 8) + octets[3]!) >>> 0, mask };
-  };
-  const left = parse(a), right = parse(b);
-  if (left === undefined || right === undefined) return true;
-  const inside = (outer: { first: number; mask: number }, address: number) => ((address & outer.mask) >>> 0) === ((outer.first & outer.mask) >>> 0);
-  return inside(left, right.first) || inside(right, left.first);
-}
+// Moved to vpc-endpoints.ts (the internal address ports check needs it without importing this file); still exported from here.
+export { ipv4RangesOverlap };
 
 /** `10.60.0.0/16=tgw-0123456789abcdef0, 10.70.0.0/16=pcx-0123456789abcdef0`: a private range and the transit gateway or peering connection that reaches it. At most 8. Whether the range is private is checked where the route is made. */
 function parseRunnerRoutes(value: unknown): Array<{ cidr: string; transitGatewayId?: string; vpcPeeringConnectionId?: string }> {

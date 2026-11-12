@@ -228,10 +228,20 @@ export class SessionLifecycle extends Construct {
       schedule: scheduler.ScheduleExpression.rate(Duration.minutes(1)),
       target: new schedulerTargets.LambdaInvoke(this.reaper, {}),
     });
+    // Named environments: the same alarm also counts the reaper's own report (SessionsPrivateAddressRecycleErrors, review L4) of workers it could not check against a removed internal address (a company or launch record it could not
+    // read): a failure on every run for 15 minutes either way. The legacy deployment's alarm stays as it was.
+    const reaperErrors = this.reaper.metricErrors({ period: Duration.minutes(5), statistic: "Sum" });
+    const reaperAlarmMetric = naming.env === undefined ? reaperErrors : new cloudwatch.MathExpression({
+      expression: "FILL(errors, 0) + FILL(unchecked, 0)",
+      usingMetrics: { errors: reaperErrors, unchecked: new cloudwatch.Metric({ namespace: naming.metricsNamespace, metricName: "SessionsPrivateAddressRecycleErrors", statistic: "Sum", period: Duration.minutes(5) }) },
+      period: Duration.minutes(5),
+    });
     new cloudwatch.Alarm(this, "ReaperErrorsAlarm", {
       alarmName: naming.alarmName("SessionReaperErrors"),
-      alarmDescription: "The EC2 session idle reaper failed on every run for 15 minutes; idle workers are not being stopped. Check the reaper's logs.",
-      metric: this.reaper.metricErrors({ period: Duration.minutes(5), statistic: "Sum" }),
+      alarmDescription: naming.env === undefined
+        ? "The EC2 session idle reaper failed on every run for 15 minutes; idle workers are not being stopped. Check the reaper's logs."
+        : "The EC2 session idle reaper failed on every run for 15 minutes, or could not check workers against a removed internal address; idle workers are not being stopped, or a removed address may still be open. Check the reaper's logs.",
+      metric: reaperAlarmMetric,
       threshold: 1,
       evaluationPeriods: 3,
       comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,

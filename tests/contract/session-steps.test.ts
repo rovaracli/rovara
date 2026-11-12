@@ -6,12 +6,15 @@ import { gunzipSync } from "node:zlib";
 import { describe, expect, it, vi } from "vitest";
 import { createSessionStepsHandler, pingWorker, type SessionStepsDependencies } from "../../packages/broker/src/aws/session-steps.js";
 import { ec2WorkerBootScript } from "@rovara-code/contracts";
+import { PRIVATE_ADDRESS_NOTHING_OPEN } from "@agentx/cloud-contracts";
+import { NO_PRIVATE_ADDRESS_LIST, readPrivateAddressesOff, type PrivateAddressLaunch } from "../../packages/broker/src/aws/private-address-launch.js";
 
 const bootScript = readFileSync(new URL("../../packages/worker/ec2/boot.sh", import.meta.url), "utf8");
 // Task 10: the legacy deployment boots with today's single-file script; a named environment boots stage 1 and reads stage 2 from its worker image.
 const legacyBootScript = readFileSync(new URL("../../packages/worker/ec2/boot-legacy.sh", import.meta.url), "utf8");
 const stage2Sha256 = "5c".repeat(32);
 const workspaceId = randomUUID();
+const listed = (entries: string[], extra: Partial<PrivateAddressLaunch> = {}): PrivateAddressLaunch => ({ entries, revision: 3, reservedCidrs: [], routedCidrs: [], ...extra });
 
 function setup(ping: SessionStepsDependencies["ping"] = async () => ({ status: "Healthy" }), overrides: Partial<SessionStepsDependencies> = {}, settings: (base: Awaited<ReturnType<SessionStepsDependencies["workerSettings"]>>) => Awaited<ReturnType<SessionStepsDependencies["workerSettings"]>> = (base) => base) {
   const sessions = {
@@ -100,7 +103,7 @@ describe("session steps", () => {
     // Owner decision 123: the workspace's company's approved internal addresses ride in a named environment's user data; a legacy launch never reads or carries them; a failed read fails the launch.
     it("carries the workspace's internal address list only in a named environment, and a failed read fails the launch", async () => {
       const asked: string[] = [];
-      const privateAddresses = async (id: string) => { asked.push(id); return ["10.20.0.15:443", "nexus.corp.example:8081"]; };
+      const privateAddresses = async (id: string) => { asked.push(id); return listed(["10.20.0.15:443", "nexus.corp.example:8081"]); };
       const { handler } = setup(undefined, { modelProxyRequired: true, privateAddresses }, named(proxyUrl));
       expect(gunzipSync(Buffer.from((await launch(handler)).userData, "base64")).toString("utf8")).toContain("\nexport AGENTX_PRIVATE_ADDRESSES='10.20.0.15:443,nexus.corp.example:8081'\n");
       expect(asked).toEqual([workspaceId]);
@@ -113,12 +116,47 @@ describe("session steps", () => {
 
     // Review L4: the operator's kill switch makes every launch carry no list, and the list is not even read.
     it("carries no internal address list while the operator's kill switch is on", async () => {
-      const read = vi.fn(async () => ["10.20.0.15:443"]);
+      const read = vi.fn(async () => listed(["10.20.0.15:443"]));
       const off = setup(undefined, { modelProxyRequired: true, privateAddresses: read, privateAddressesOff: async () => true }, named(proxyUrl));
       expect(gunzipSync(Buffer.from((await launch(off.handler)).userData, "base64")).toString("utf8")).not.toContain("AGENTX_PRIVATE_ADDRESSES=");
       expect(read).not.toHaveBeenCalled();
       const on = setup(undefined, { modelProxyRequired: true, privateAddresses: read, privateAddressesOff: async () => false }, named(proxyUrl));
       expect(gunzipSync(Buffer.from((await launch(on.handler)).userData, "base64")).toString("utf8")).toContain("export AGENTX_PRIVATE_ADDRESSES='10.20.0.15:443'");
+    });
+
+    // Review L2: the launch records the revision its worker read, before it returns the user data; a launch with nothing open records that; a failed record fails the launch; the legacy launch records nothing.
+    it("records the list revision a named launch read (or that nothing is open) before returning its user data", async () => {
+      const calls: string[] = [];
+      const record = vi.fn(async (input: { workspaceId: string; generation: number; revision: number }) => { calls.push(`record ${String(input.revision)}`); });
+      const { handler } = setup(undefined, { modelProxyRequired: true, privateAddresses: async () => { calls.push("read"); return listed(["10.20.0.15:443"], { revision: 7 }); }, recordPrivateAddressLaunch: record }, named(proxyUrl));
+      const result = await launch(handler);
+      expect(record).toHaveBeenCalledWith({ workspaceId, generation: 1, revision: 7 });
+      expect(calls).toEqual(["read", "record 7"]);
+      expect(gunzipSync(Buffer.from(result.userData, "base64")).toString("utf8")).toContain("export AGENTX_PRIVATE_ADDRESSES='10.20.0.15:443'");
+      // Kill switch on: no list, and the record says nothing is open (so no removal ever recycles this worker).
+      const off = vi.fn(async () => undefined);
+      await launch(setup(undefined, { modelProxyRequired: true, privateAddresses: async () => listed(["10.20.0.15:443"]), privateAddressesOff: async () => true, recordPrivateAddressLaunch: off }, named(proxyUrl)).handler);
+      expect(off).toHaveBeenCalledWith({ workspaceId, generation: 1, revision: PRIVATE_ADDRESS_NOTHING_OPEN });
+      // A company with no list: nothing open as well.
+      const none = vi.fn(async () => undefined);
+      await launch(setup(undefined, { modelProxyRequired: true, privateAddresses: async () => NO_PRIVATE_ADDRESS_LIST, recordPrivateAddressLaunch: none }, named(proxyUrl)).handler);
+      expect(none).toHaveBeenCalledWith({ workspaceId, generation: 1, revision: PRIVATE_ADDRESS_NOTHING_OPEN });
+      // The legacy launch never reads, carries or records one.
+      const legacy = vi.fn(async () => undefined);
+      await launch(setup(undefined, { privateAddresses: async () => listed(["10.20.0.15:443"]), recordPrivateAddressLaunch: legacy }).handler);
+      expect(legacy).not.toHaveBeenCalled();
+      // A record that cannot be written fails the launch (it is retried): no worker boots with a list the reaper cannot account for.
+      const failing = setup(undefined, { modelProxyRequired: true, privateAddresses: async () => listed(["10.20.0.15:443"]), recordPrivateAddressLaunch: async () => { throw new Error("state table down"); } }, named(proxyUrl));
+      await expect(launch(failing.handler)).rejects.toThrow("state table down");
+    });
+
+    // Review L3: the install's reserved and routed ranges ride beside the list, for the worker's own checks; no list, no ranges.
+    it("hands the worker the reserved and routed ranges only with a list", async () => {
+      const text = async (launched: PrivateAddressLaunch) => gunzipSync(Buffer.from((await launch(setup(undefined, { modelProxyRequired: true, privateAddresses: async () => launched }, named(proxyUrl)).handler)).userData, "base64")).toString("utf8");
+      const withList = await text(listed(["10.20.0.15:443"], { reservedCidrs: ["10.70.0.0/16", "10.71.0.0/16"], routedCidrs: ["10.20.0.0/16"] }));
+      expect(withList).toContain("\nexport AGENTX_PRIVATE_ADDRESSES='10.20.0.15:443'\nexport AGENTX_PRIVATE_ADDRESS_RESERVED_CIDRS='10.70.0.0/16,10.71.0.0/16'\nexport AGENTX_PRIVATE_ADDRESS_ROUTED_CIDRS='10.20.0.0/16'\n");
+      const without = await text(listed([], { reservedCidrs: ["10.70.0.0/16"], routedCidrs: ["10.20.0.0/16"] }));
+      expect(without).not.toContain("AGENTX_PRIVATE_ADDRESS");
     });
 
     // Task 25 Part B fix: the launcher switches on this, not on whether a proxy URL happens to be present.
@@ -315,5 +353,54 @@ describe("session steps", () => {
     await expect(handler({ action: "probePing", privateIp: "example.com" })).rejects.toThrow();
     await expect(handler({ action: "markReady", workspaceId, generation: 1, extra: true })).rejects.toThrow();
     expect(ping).not.toHaveBeenCalled();
+  });
+});
+
+// Review L1: the operator's kill switch reader. Only "the parameter is not there" and the exact value `false` let lists apply; everything else, including a failed read, is off.
+describe("the internal address kill switch reader", () => {
+  const NAME = "/agentx/staging/worker/private-addresses-off";
+  const reader = (answer: () => Promise<{ Parameter?: { Value?: string } }>) => {
+    const sent: unknown[] = [];
+    const logged: string[] = [];
+    const ssm: Parameters<typeof readPrivateAddressesOff>[0] = { send: async (command) => { sent.push(command); return answer(); } };
+    return { read: () => readPrivateAddressesOff(ssm, NAME, (line) => { logged.push(line); }), sent, logged };
+  };
+  const notFound = () => { throw Object.assign(new Error("The parameter could not be found. Verify the name and try again."), { name: "ParameterNotFound" }); };
+
+  it("lets lists apply when the parameter is not there or says false, asking for that one parameter by name", async () => {
+    const missing = reader(async () => notFound());
+    expect(await missing.read()).toBe(false);
+    expect(missing.logged).toEqual([]);
+    const off = reader(async () => ({ Parameter: { Value: "false" } }));
+    expect(await off.read()).toBe(false);
+    expect((off.sent[0] as { input: { Name: string } }).input).toEqual({ Name: NAME });
+    expect(off.logged).toEqual([]);
+  });
+
+  it("is off for true, and for any other value (fail closed), logging the odd value's presence without the value", async () => {
+    const on = reader(async () => ({ Parameter: { Value: "true" } }));
+    expect(await on.read()).toBe(true);
+    expect(on.logged).toEqual([]);
+    for (const value of ["TRUE", "True", " false", "false ", "0", "no", "", "maybe"]) {
+      const junk = reader(async () => ({ Parameter: { Value: value } }));
+      expect(await junk.read(), JSON.stringify(value)).toBe(true);
+      expect(junk.logged, JSON.stringify(value)).toHaveLength(1);
+      expect(JSON.parse(junk.logged[0]!)).toEqual({ component: "session-steps", event: "private_addresses.kill_switch_unreadable", level: "error", reason: "value" });
+    }
+    // No value at all in the answer.
+    expect(await reader(async () => ({})).read()).toBe(true);
+  });
+
+  it("is off when the read fails for any other reason, logging the error's name only", async () => {
+    for (const name of ["AccessDeniedException", "ThrottlingException", "InternalServerError", "TimeoutError"]) {
+      const failing = reader(async () => { throw Object.assign(new Error(`secret detail ${name}`), { name }); });
+      expect(await failing.read(), name).toBe(true);
+      expect(failing.logged).toHaveLength(1);
+      expect(failing.logged[0]).toContain(name);
+      expect(failing.logged[0]).not.toContain("secret detail");
+    }
+    // A thrown value that is not an Error is off too.
+    // eslint-disable-next-line @typescript-eslint/only-throw-error -- the point: anything thrown, not only an Error
+    expect(await reader(async () => { throw "nope"; }).read()).toBe(true);
   });
 });

@@ -10,7 +10,7 @@ import { INSTALLER_DESCRIPTION, InstallerStack } from "./installer.js";
 import { namingFromContext } from "./naming.js";
 import { applyPermissionsBoundaryParameter } from "./permissions-boundary.js";
 import { AGENTX_PRODUCTION_VPC_CIDR, ProductionFoundationStack } from "./production-foundation.js";
-import { ENTERPRISE_ALLOW_PUBLIC_RANGES_CONTEXT_KEY, ENTERPRISE_EGRESS_CIDRS_CONTEXT_KEY, ENTERPRISE_INTERNET_EGRESS_CONTEXT_KEY, parseEditionContext, parseEnterpriseEgressCidrs, parseInternetEgress } from "./vpc-endpoints.js";
+import { ENTERPRISE_ALLOW_PUBLIC_RANGES_CONTEXT_KEY, ENTERPRISE_EGRESS_CIDRS_CONTEXT_KEY, ENTERPRISE_INTERNET_EGRESS_CONTEXT_KEY, parseEditionContext, egressCidrsWithVpc, parseEnterpriseEgressCidrs, parseInternetEgress } from "./vpc-endpoints.js";
 import { EDITION_CONTEXT_KEY, NEW_INSTALL_CONTEXT_KEY, editionAtSynth } from "@agentx/cloud-contracts";
 import { EditionEnvironment } from "./edition-env.js";
 import { BUNDLE_EMBEDDER_IMAGE_NAME, BUNDLE_IMAGE_NAMES, bundleImageRepository } from "./bundle-images.js";
@@ -182,7 +182,7 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
   // The model endpoint settings (N8: rovaraCustomModelEndpoints, rovaraModelEndpointCidrs): Enterprise only, off by default, checked here so a wrong one stops the synth.
   const modelEndpoints = parseModelEndpointContext({ edition: explicitEdition, vpcCidrs: [AGENTX_PRODUCTION_VPC_CIDR], get: (key) => app.node.tryGetContext(key) as unknown });
   // Owner decision 123 (review H1): the extra ports workers may open toward the routed private ranges, and what the broker is told so it offers internal addresses only where they can be reached.
-  const privateAddressPorts = parsePrivateAddressPorts(app.node.tryGetContext(PRIVATE_ADDRESS_PORTS_CONTEXT_KEY), { enterprise: explicitEdition === "enterprise", routedCidrs: enterpriseCidrs });
+  const privateAddressPorts = parsePrivateAddressPorts(app.node.tryGetContext(PRIVATE_ADDRESS_PORTS_CONTEXT_KEY), { enterprise: explicitEdition === "enterprise", routedCidrs: enterpriseCidrs, vpcCidrs: [AGENTX_PRODUCTION_VPC_CIDR] });
   const brokerEnvironment = { ...privateMcpBrokerEnvironment(privateMcp), ...modelEndpointBrokerEnvironment(modelEndpoints), ...privateAddressBrokerEnvironment({ enterprise: explicitEdition === "enterprise", routedCidrs: enterpriseCidrs, ports: privateAddressPorts }) };
   // Private package registries (N9): the CodeArtifact domains the broker may mint a read-only token for (`-c rovaraCodeArtifactDomains=domain:account:region:org:repo+repo,...`; Enterprise only). Off by default.
   const registryDomains = parseCodeArtifactDomains(app.node.tryGetContext(CODEARTIFACT_DOMAINS_CONTEXT_KEY), { edition: explicitEdition, cloud: agentxCloud, env: naming.env });
@@ -205,7 +205,7 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
     ...(modelEndpoints.enabled ? { customModelEndpoints: true, customModelEndpointEnvironment: modelEndpointBrokerEnvironment(modelEndpoints), modelEndpointCidrs: modelEndpoints.privateCidrs } : {}),
     ...(reservedConcurrency ? {} : { reservedConcurrency: false }),
     ...(agentxCloud ? { cloud: true } : {}),
-    ...(explicitEdition === "enterprise" ? { privateEgressCidrs: [AGENTX_PRODUCTION_VPC_CIDR, ...enterpriseCidrs], bundledImages: true } : {}),
+    ...(explicitEdition === "enterprise" ? { privateEgressCidrs: egressCidrsWithVpc(AGENTX_PRODUCTION_VPC_CIDR, enterpriseCidrs), bundledImages: true } : {}),
     ...(modelProxyTls === undefined ? {} : { modelProxyTls }),
     ...(deploymentRegion === undefined ? {} : { deploymentRegion }),
     ...(naming.env === undefined ? {} : { stackName: naming.stackName("control-plane") }),
@@ -269,7 +269,7 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
     env: { region: deploymentRegion ?? "us-east-1" },
     naming,
     ...(naming.env === undefined ? {} : { stackName: naming.stackName("slack") }),
-    ...(explicitEdition === "enterprise" ? { privateEgressCidrs: [AGENTX_PRODUCTION_VPC_CIDR, ...enterpriseCidrs] } : {}),
+    ...(explicitEdition === "enterprise" ? { privateEgressCidrs: egressCidrsWithVpc(AGENTX_PRODUCTION_VPC_CIDR, enterpriseCidrs) } : {}),
     ...(modelProxyTls === undefined ? {} : { modelProxyTls }),
   });
   // The Launch in AWS installer, only when asked for (-c agentxInstaller=enabled); no release

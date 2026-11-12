@@ -418,6 +418,9 @@ describe("the named TEST proof-only installation gate", () => {
     // the sign-in function's two ConditionCheckItem statements gain `Null: { dynamodb:LeadingKeys: false }`. Checked first: with only those two lines undone, all five tests pass on the lane's pins. Legacy did not move.
     // 2026-11-11 (0.5.14, lane U2, Slack explicit membership): the named and foreign digests were retaken from the values the test reports, after one intended change: the `sm` entry of the broker's packed
     // AGENTX_SETTINGS (the SlackExplicitMembers parameter itself is taken out of the remainder like the other switches). The named-templates snapshot shows exactly that parameter and that entry. Legacy did not move.
+    // 2026-11-12 (0.5.15, fix/0515-allowlist-review, review L4): the named and foreign digests were retaken from the values the test reports, after ONE intended change: the named control plane's SessionReaperErrors alarm
+    // reads a metric-math expression (the reaper's Lambda errors plus its own SessionsPrivateAddressRecycleErrors count) instead of the Lambda errors alone, and its description says so. Checked first: with infra/lib/session-lifecycle.ts as it was
+    // before (the alarm edit undone), this test, named-templates and legacy-templates all pass on the old pins, so that alarm is the only change. The legacy digests did not move (the legacy alarm is built as before).
     // 2026-11-11 (0.5.15, lane company-images-worker-v3, merged at 029dc304b): the named and foreign digests were retaken from the values the test reports, after the lane's reviewed additions: the CompanyImageMirror function (own role, mirror state rows only), its img-mirror role (ECR on rovara-env/<env>/o*/c* only), the `cm` entry of AGENTX_NAMES and the mirror role in the saved environment repository policy. Legacy did not move.
     // 2026-11-11, U3 work events (merged onto integ/0514 1593cf08e, whose own named and foreign pins are 113afeb8..., 5cec0a6d... and 5c52999d..., 54d2d4fb...): the named and foreign digests below are U3's, retaken from the values the test
     // reports after ONE intended change: the DeveloperTaskNotifier gains the variable AGENTX_WORK_EVENTS ("on") and one write grant, dynamodb:PutItem on ORG#org_*#WORK_EVENTS#* only. The named-templates snapshot shows exactly that variable
@@ -439,14 +442,14 @@ describe("the named TEST proof-only installation gate", () => {
       {
         label: "named",
         template: named,
-        withRoute: "7ea934f0e8bf4589aaba9b6a2122593b140d73aae5466e9f2c2af5d90c4df8d1",
-        withoutRoute: "d2a2bdc5056745a7fa862bae02aa83113e4b8e215faa796811f4efc82e9da2bd",
+        withRoute: "1b3da592d6a116a574a477c009d751d100a2c3471f590256b8180a19dddf2223",
+        withoutRoute: "e9be33cef029cebd155f58b169388ef157f4bf532d61c665981e17a8595773e5",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "2b1a0960bcfc0cc476e249e81547348cf3d625b7b21d3b90351d90d2b1c46eee",
-        withoutRoute: "b0c32a05ba12ee4aed84643d84fb8edc7d56494387a3f5b028d90cdde1c86103",
+        withRoute: "70e668fc90e4c4323cb7faddc4267c846991d5eb94d5a223777b58d6a4be668e",
+        withoutRoute: "e8974ae010ea8c4a9a775d5c0616280c07f8d28050ac8ff2cf0159816b8b5ef9",
       },
       {
         label: "legacy",

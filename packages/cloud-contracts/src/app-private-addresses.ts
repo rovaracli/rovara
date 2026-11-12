@@ -24,16 +24,27 @@ export const PRIVATE_ADDRESS_MAX_CHARS = 100;
 export const PRIVATE_ADDRESS_PROPOSAL_TTL_MS = 7 * 86_400_000;
 /** The launch setting the worker reads the approved list from (comma separated entries). */
 export const PRIVATE_ADDRESSES_BOOT_VARIABLE = "AGENTX_PRIVATE_ADDRESSES";
+/** The launch settings that carry the install's reserved ranges (private MCP servers, model endpoints) and routed private ranges beside the list, so the worker repeats the launch's range checks on what a name resolves to (review L3). */
+export const PRIVATE_ADDRESS_RESERVED_BOOT_VARIABLE = "AGENTX_PRIVATE_ADDRESS_RESERVED_CIDRS";
+export const PRIVATE_ADDRESS_ROUTED_BOOT_VARIABLE = "AGENTX_PRIVATE_ADDRESS_ROUTED_CIDRS";
+/** What a range-list setting may hold: IPv4 CIDRs, comma separated, nothing a shell would read. At most 40 (the infra allows 20 routed and a few reserved). */
+export const PRIVATE_ADDRESS_CIDRS_BOOT_PATTERN = /^[0-9]{1,3}(?:\.[0-9]{1,3}){3}\/[0-9]{1,2}(?:,[0-9]{1,3}(?:\.[0-9]{1,3}){3}\/[0-9]{1,2}){0,39}$/u;
+/** DNS: no entry may use it (infra/lib/private-addresses.ts refuses it in the port list too). */
+export const PRIVATE_ADDRESS_DNS_PORT = 53;
 /** What that setting may hold: entries as this file writes them, comma separated, nothing a shell would read. */
 export const PRIVATE_ADDRESSES_BOOT_PATTERN = /^[a-z0-9.-]{1,94}:[1-9][0-9]{0,4}(?:,[a-z0-9.-]{1,94}:[1-9][0-9]{0,4}){0,15}$/u;
 
 /** Owner decision 128: the partition where a list change that removed anything leaves its mark (sort key: the org id) for the session reaper, which recycles that company's workers launched before it. */
 export const PRIVATE_ADDRESS_RECYCLE_PK = "PRIVATEADDR#RECYCLE";
+/** Review L2: the partition where a launch records the list revision its worker read (sort key: the workspace id), which the reaper compares with a removal's revision. */
+export const PRIVATE_ADDRESS_LAUNCH_PK = "PRIVATEADDR#LAUNCH";
+/** The revision recorded for a launch that opened no internal address (no list, an empty one, the kill switch on): such a worker can never hold a removed address, so no removal recycles it. */
+export const PRIVATE_ADDRESS_NOTHING_OPEN = Number.MAX_SAFE_INTEGER;
 
 /** Why an entry is refused. Fixed codes: an answer names the code and the entry's position, never echoes the text. */
 export const PRIVATE_ADDRESS_REFUSALS = [
   "empty", "too_long", "scheme_or_path", "wildcard", "cidr", "missing_port", "bad_port", "ipv6", "ip_form", "trailing_dot", "bad_name",
-  "metadata", "loopback", "link_local", "not_private", "worker_network", "install_network", "install_service", "reserved_range", "not_routed", "port_not_open",
+  "metadata", "loopback", "link_local", "not_private", "worker_network", "install_network", "install_service", "reserved_range", "not_routed", "port_not_open", "dns_port",
 ] as const;
 export type PrivateAddressRefusal = (typeof PRIVATE_ADDRESS_REFUSALS)[number];
 
@@ -59,6 +70,7 @@ export const PRIVATE_ADDRESS_REFUSAL_WORDS: Record<PrivateAddressRefusal | "dupl
   reserved_range: "is inside a range this install already gives to private MCP servers or model endpoints. Those servers are reached through their own settings, never from a task.",
   not_routed: "is outside the private ranges this install routes to. The operator sets those ranges when installing Rovara.",
   port_not_open: "uses a port that workers may not open on this install. Ask the operator to add the port to rovaraPrivateAddressPorts, or use a port that is open.",
+  dns_port: "uses port 53, which is DNS. Tasks resolve names through the install's own resolver and its DNS firewall; no other DNS server can be opened.",
   duplicate: "is listed twice.",
   too_many: `is one too many: at most ${String(PRIVATE_ADDRESSES_MAX)} entries.`,
 };
@@ -196,6 +208,11 @@ function nameRefusal(host: string, install: PrivateAddressInstall): PrivateAddre
   return undefined;
 }
 
+/** DNS is never opened (a task could ask any internal resolver, around the install's DNS firewall), whatever ports the install opens. Judged last, so an entry that is also something worse (the metadata service, a public address) is refused as that. */
+function allowedPort(checked: Extract<PrivateAddressCheck, { ok: true }>): PrivateAddressCheck {
+  return checked.port === PRIVATE_ADDRESS_DNS_PORT ? { ok: false, refusal: "dns_port" } : checked;
+}
+
 /** One entry, checked. The entry is returned in its one written form (lower case). */
 export function checkPrivateAddress(text: string, install: PrivateAddressInstall): PrivateAddressCheck {
   const value = text.trim().toLowerCase();
@@ -228,10 +245,10 @@ export function checkPrivateAddress(text: string, install: PrivateAddressInstall
   const address = ipv4Number(host);
   if (address !== undefined) {
     const refusal = ipv4Refusal(address, install);
-    return refusal === undefined ? { ok: true, entry: `${host}:${String(port)}`, host, port, kind: "ip" } : { ok: false, refusal };
+    return refusal === undefined ? allowedPort({ ok: true, entry: `${host}:${String(port)}`, host, port, kind: "ip" }) : { ok: false, refusal };
   }
   const refusal = nameRefusal(host, install);
-  return refusal === undefined ? { ok: true, entry: `${host}:${String(port)}`, host, port, kind: "name" } : { ok: false, refusal };
+  return refusal === undefined ? allowedPort({ ok: true, entry: `${host}:${String(port)}`, host, port, kind: "name" }) : { ok: false, refusal };
 }
 
 export type PrivateAddressListCheck =

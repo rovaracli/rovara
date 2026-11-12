@@ -19,7 +19,11 @@ listed and the server refuses changes, because workers have no route to a privat
 Workers may open TCP 443 to those ranges. A server on another port (Nexus on 8081, say) needs the
 port in the install's `rovaraPrivateAddressPorts` (`-c rovaraPrivateAddressPorts=8081,8443`, at most
 8 ports). Each port becomes one outbound rule per routed range on the workers' security group,
-never toward Rovara's own VPC. The list is fixed at install on purpose: an admin's approval can
+never toward Rovara's own VPC. The synth refuses the ports (with a clear error) while any routed range
+equals, lies inside or contains Rovara's own VPC (10.42.0.0/16), such as `10.0.0.0/8`: a security group
+rule can't leave part of a range out, so the port would open inside the install too. List ranges that
+don't overlap the VPC, or drop the ports. Without extra ports such ranges stay valid. Port 53 (DNS) can't
+be listed, and an entry on it is refused. The list is fixed at install on purpose: an admin's approval can
 never widen a security group, and the broker has no permission to change one. The page shows the
 open ports, and an entry on any other port is refused. **A new port needs a redeploy:** ask the
 operator to add it to `rovaraPrivateAddressPorts` and redeploy the install, then list the entry.
@@ -72,7 +76,10 @@ Only company owners and admins see the list.
   workspace to one company; the worker is launched with that company's approved list and no other.
 - **Adding** applies to workers that start after the approval.
 - **Removing closes access at once** (owner decision 128). Within a minute, every running worker of
-  the company that started before the removal is recycled: an idle worker is stopped, and a busy one
+  the company that read the list before the removal is recycled. Each launch records the revision of the
+  list it read, and a removal records the revision it wrote, so this never depends on clocks: a worker
+  that launched late but read the list before the removal is recycled, and one that read it after is
+  left alone. A worker with no record (launched before the record existed) is recycled too: an idle worker is stopped, and a busy one
   is stopped under its task, which is interrupted and fails at once with the usual "compute was
   lost; retry" error, so its retry starts within the minute. The next worker starts with the new
   list.
@@ -89,6 +96,12 @@ Only company owners and admins see the list.
   (`private-addresses.boot_facts`).
 - A stored list that can't be read stops that company's workers from starting, with an error that
   says so, until an admin saves the list again. Other companies are not affected.
+- A launch (and the worker) also refuse an address inside the ranges that private MCP servers and
+  model endpoints own, and one outside the install's routed ranges. An install with no routed range
+  sends no list at launch.
+- If the reaper can't check a worker against a removal (it can't read the company or the launch
+  record), it logs the workspace and counts it in `SessionsPrivateAddressRecycleErrors`, which the
+  `SessionReaperErrors` alarm reads (named installs); it tries again at the next tick.
 - The legacy single-file worker deployment doesn't apply the list.
 
 ## Operator controls

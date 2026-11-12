@@ -166,9 +166,11 @@ function listPut(deps: PrivateAddressDeps, orgId: string, entries: readonly stri
 }
 
 /** The recycle mark of a list change that removed anything (owner decision 128), in the same transaction as the change: the reaper stops this company's workers launched before it. */
-function recycleMark(deps: PrivateAddressDeps, orgId: string): TransactItem {
+function recycleMark(deps: PrivateAddressDeps, orgId: string, revision: number): TransactItem {
   const at = deps.now();
-  return { Put: { TableName: deps.tableName, Item: { pk: PRIVATE_ADDRESS_RECYCLE_PK, sk: orgId, entityType: "PRIVATE_ADDRESS_RECYCLE", orgId, removedAt: at, [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(at / 1000) + RECYCLE_MARK_TTL_SECONDS } } };
+  // `revision`: the list revision this change writes (review L2). A worker whose launch read an older revision than this one has the removed address open; one that read this revision or a later one has not. Written in the
+  // same transaction as the list, so the two never differ. `removedAt` stays for the operator reading the row.
+  return { Put: { TableName: deps.tableName, Item: { pk: PRIVATE_ADDRESS_RECYCLE_PK, sk: orgId, entityType: "PRIVATE_ADDRESS_RECYCLE", orgId, removedAt: at, revision, [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(at / 1000) + RECYCLE_MARK_TTL_SECONDS } } };
 }
 
 async function commit(deps: PrivateAddressDeps, items: TransactItem[]): Promise<boolean> {
@@ -201,7 +203,7 @@ export async function proposePrivateAddresses(deps: PrivateAddressDeps, input: {
   if (added.length === 0) {
     // Stricter: one admin, at once. The event goes in the same transaction when a ledger exists; an outage never keeps a wall open.
     const changed = event(deps, { orgId: input.orgId, actorId: input.actorId, action: "company.private_addresses_changed", occurrence: `rev-${String(current.revision + 1)}`, entries, facts: { revision: current.revision + 1, added: 0, removed: removed.length, mode: "direct" } });
-    if (!(await commit(deps, [...conditions, listPut(deps, input.orgId, entries, current, input.actorId), recycleMark(deps, input.orgId), ...auditPending(deps, changed)]))) throw agentXError("CHANGE_STALE", PRIVATE_ADDRESS_WORDS.stale);
+    if (!(await commit(deps, [...conditions, listPut(deps, input.orgId, entries, current, input.actorId), recycleMark(deps, input.orgId, current.revision + 1), ...auditPending(deps, changed)]))) throw agentXError("CHANGE_STALE", PRIVATE_ADDRESS_WORDS.stale);
     await flushAuditEvents(deps, [changed]);
     return { status: "applied", list: await readPrivateAddresses(deps, input.orgId) };
   }
@@ -259,7 +261,7 @@ export async function approvePrivateAddresses(deps: PrivateAddressDeps, input: {
   };
   const fence = (group.fence ?? []) as TransactItem[];
   // An approved list that also removes something (or replaces a corrupt one) recycles the company's workers, as a removal does (owner decision 128).
-  const recycle = removed.length > 0 || current.corrupt === true ? [recycleMark(deps, input.orgId)] : [];
+  const recycle = removed.length > 0 || current.corrupt === true ? [recycleMark(deps, input.orgId, current.revision + 1)] : [];
   if (!(await commit(deps, [...fence, listPut(deps, input.orgId, entries, current, input.approverId), mark, ...recycle, ...pending]))) {
     // The list moved, the proposal was decided, or someone's authority changed (the fence). The proposal is unchanged in the last case, so the approver can look again.
     const again = await readPrivateAddressesForChange(deps, input.orgId).catch(() => undefined);

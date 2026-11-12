@@ -21,13 +21,17 @@ const hostOf = (url: string | undefined): string[] => {
 };
 const listOf = (value: string | undefined): string[] => (value ?? "").split(",").map((part) => part.trim()).filter((part) => part !== "");
 
-/** The install as a launch sees it (no route settings: the Steps function is not given them). */
+/** The install's network and its own services: the base both the route and a launch build on (a launch uses `privateAddressRouteInstallOf`, which adds the reserved and routed ranges and the open ports). */
 export function privateAddressInstallOf(env: NodeJS.ProcessEnv = process.env): PrivateAddressInstall {
   const listed = listOf(env.ROVARA_VPC_CIDRS);
   return { vpcCidrs: listed.length > 0 ? listed : [INSTALL_VPC_CIDR_DEFAULT], serviceHosts: [...hostOf(env.MODEL_PROXY_URL), ...hostOf(env.CONTROL_PLANE_URL)] };
 }
 
-/** The install as the route sees it, or undefined when it has no routed private ranges (the setting is then not offered). A port list that does not parse offers 443 only. */
+/**
+ * The install as the route AND a launch see it (the Steps function is given the same settings, infra/lib/control-plane.ts), or undefined when it has no routed private ranges: the setting is then not offered, and a launch
+ * sends no list (review L3). Reserved ranges and routed ranges apply to every entry at the route, at launch and (as the launch settings AGENTX_PRIVATE_ADDRESS_RESERVED_CIDRS and AGENTX_PRIVATE_ADDRESS_ROUTED_CIDRS) on
+ * the worker. A port list that does not parse offers 443 only.
+ */
 export function privateAddressRouteInstallOf(env: NodeJS.ProcessEnv = process.env): PrivateAddressInstall | undefined {
   const routed = listOf(env[PRIVATE_ADDRESS_CIDRS_ENV]);
   if (routed.length === 0) return undefined;

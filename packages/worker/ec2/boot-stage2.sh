@@ -570,6 +570,8 @@ start_e2e_qualification() {
 # launch hands this worker that company's list as AGENTX_PRIVATE_ADDRESSES (a worker belongs to one workspace, a workspace to one company). This step writes, root-only:
 #   /etc/agentx/private-addresses     the list, only when it is well formed (anything else: nothing is opened);
 #   /etc/agentx/vpc-cidrs             the install's own network, read from this instance's metadata: nothing inside it is ever opened (the model proxy, the database, the VPC resolver, the broker and other workers live there);
+#   /etc/agentx/private-reserved-cidrs   the ranges private MCP servers and model endpoints own (AGENTX_PRIVATE_ADDRESS_RESERVED_CIDRS, from the launch): nothing inside them is ever opened either (review L3);
+#   /etc/agentx/private-routed-cidrs  the private ranges this install routes to (AGENTX_PRIVATE_ADDRESS_ROUTED_CIDRS): an address outside them is never opened (the security group would drop it; the wall says so too);
 #   /usr/local/libexec/rovara-private-allow   the step the launcher runs at EVERY start of the worker container (a boot, a worker restart, a Docker restart), before the container starts (below).
 # DNS REBINDING: the firewall matches addresses, never names. At each run the step resolves each name once (the VPC resolver, the same one a sandbox asks), checks EVERY address it got (each must be a plain IPv4 private
 # address outside the worker's own Docker ranges, the metadata, loopback and link-local ranges and the install's network; one bad address refuses the whole entry), and opens exactly those address:port pairs (TCP). The
@@ -581,10 +583,22 @@ start_e2e_qualification() {
 # chain starts with RETURN guards for the never-opened ranges, so even a wrong ACCEPT below them could not reach those. Any failure empties the chain (fail closed: nothing opened) and the worker still starts.
 readonly PRIVATE_ADDRESSES_FILE=/etc/agentx/private-addresses
 readonly VPC_CIDRS_FILE=/etc/agentx/vpc-cidrs
+readonly RESERVED_CIDRS_FILE=/etc/agentx/private-reserved-cidrs
+readonly ROUTED_CIDRS_FILE=/etc/agentx/private-routed-cidrs
 write_private_addresses() {
-  local value=${AGENTX_PRIVATE_ADDRESSES:-} mac cidrs="" attempt
+  local value=${AGENTX_PRIVATE_ADDRESSES:-} mac cidrs="" attempt cidr_value
+  local cidr_pattern='^[0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2}(,[0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2}){0,39}$'
   install -d -m 0700 /etc/agentx
-  rm -f "$PRIVATE_ADDRESSES_FILE" "$VPC_CIDRS_FILE"
+  rm -f "$PRIVATE_ADDRESSES_FILE" "$VPC_CIDRS_FILE" "$RESERVED_CIDRS_FILE" "$ROUTED_CIDRS_FILE"
+  # The launch's reserved and routed ranges (review L3), one range per line. Fail closed: a value that is set but not well formed is written as a file with no usable range, which refuses every entry (routed) or drops the list (reserved).
+  cidr_value=${AGENTX_PRIVATE_ADDRESS_RESERVED_CIDRS:-}
+  if [[ -n "$cidr_value" ]]; then
+    if [[ "$cidr_value" =~ $cidr_pattern ]]; then install -m 0600 /dev/null "$RESERVED_CIDRS_FILE" && printf '%s\n' "${cidr_value//,/$'\n'}" >"$RESERVED_CIDRS_FILE"; else log "the reserved ranges are not well formed; no internal address is opened"; value=""; fi
+  fi
+  cidr_value=${AGENTX_PRIVATE_ADDRESS_ROUTED_CIDRS:-}
+  if [[ -n "$cidr_value" ]]; then
+    if [[ "$cidr_value" =~ $cidr_pattern ]]; then install -m 0600 /dev/null "$ROUTED_CIDRS_FILE" && printf '%s\n' "${cidr_value//,/$'\n'}" >"$ROUTED_CIDRS_FILE"; else log "the routed ranges are not well formed; no internal address is opened"; install -m 0600 /dev/null "$ROUTED_CIDRS_FILE"; fi
+  fi
   if [[ -n "$value" ]]; then
     if [[ "$value" =~ ^[a-z0-9.-]{1,94}:[1-9][0-9]{0,4}(,[a-z0-9.-]{1,94}:[1-9][0-9]{0,4}){0,15}$ ]]; then
       install -m 0600 /dev/null "$PRIVATE_ADDRESSES_FILE" && printf '%s\n' "$value" >"$PRIVATE_ADDRESSES_FILE"
@@ -602,6 +616,8 @@ write_private_addresses() {
 set -u
 readonly LIST_FILE=${ROVARA_PRIVATE_ADDRESSES_FILE:-/etc/agentx/private-addresses}
 readonly CIDR_FILE=${ROVARA_VPC_CIDRS_FILE:-/etc/agentx/vpc-cidrs}
+readonly RESERVED_FILE=${ROVARA_PRIVATE_RESERVED_CIDRS_FILE:-/etc/agentx/private-reserved-cidrs}
+readonly ROUTED_FILE=${ROVARA_PRIVATE_ROUTED_CIDRS_FILE:-/etc/agentx/private-routed-cidrs}
 readonly PINS_FILE=${ROVARA_PRIVATE_ADDRESS_PINS_FILE:-/etc/agentx/private-address-pins}
 readonly FACTS_FILE=${ROVARA_PRIVATE_ADDRESS_FACTS_FILE:-/etc/agentx/private-address-facts}
 readonly CHAIN=ROVARA-PRIVATE-ALLOW
@@ -645,6 +661,13 @@ refusal() {
   [[ -n "$VPC" ]] || { echo no_install_network; return; }
   # shellcheck disable=SC2086
   in_any "$address" $VPC && { echo install_network; return; }
+  # Ranges private MCP servers and model endpoints own (reached through their own settings, never from a task), then the ranges this install routes to. A routed file that is there but holds no usable range allows nothing.
+  # shellcheck disable=SC2086
+  in_any "$address" $RESERVED && { echo reserved_range; return; }
+  if [[ -n "$ROUTED_PRESENT" ]]; then
+    # shellcheck disable=SC2086
+    in_any "$address" $ROUTED || { echo not_routed; return; }
+  fi
   return 0
 }
 empty_chain() { iptables -F "$CHAIN" 2>/dev/null || true; rm -f "$PINS_FILE"; }
@@ -657,9 +680,17 @@ place_setup_jump() {
   ((last > 0)) || return 0
   iptables -I DOCKER-USER $((last + 1)) -i "$SETUP_BRIDGES" -j "$CHAIN"
 }
-VPC=""
+VPC="" RESERVED="" ROUTED="" ROUTED_PRESENT=""
 if [[ -r "$CIDR_FILE" ]]; then
   while read -r line; do [[ "$line" =~ ^[0-9.]+/[0-9]{1,2}$ ]] && VPC="$VPC $line"; done <"$CIDR_FILE"
+fi
+if [[ -r "$RESERVED_FILE" ]]; then
+  while read -r line; do [[ "$line" =~ ^[0-9.]+/[0-9]{1,2}$ ]] && RESERVED="$RESERVED $line"; done <"$RESERVED_FILE"
+fi
+if [[ -e "$ROUTED_FILE" ]]; then
+  ROUTED_PRESENT=1
+  # A routed range must parse: `in_range` treats a range that does not parse as containing everything (right for the guards, which then refuse), which would let every address through here.
+  [[ -r "$ROUTED_FILE" ]] && while read -r line; do [[ "$line" =~ ^[0-9.]+/[0-9]{1,2}$ ]] && ip_number "${line%/*}" >/dev/null && ((${line#*/} <= 32)) && ROUTED="$ROUTED $line"; done <"$ROUTED_FILE"
 fi
 rm -f "$PINS_FILE"
 write_facts 0 0 0
@@ -672,13 +703,15 @@ list=$(head -c 2048 "$LIST_FILE")
 [[ "$list" =~ ^[a-z0-9.-]{1,94}:[1-9][0-9]{0,4}(,[a-z0-9.-]{1,94}:[1-9][0-9]{0,4}){0,15}$ ]] || { log "the list is not well formed; nothing opened"; exit 1; }
 # Guards first: nothing below them can open these.
 # shellcheck disable=SC2086
-for range in $NEVER $WORKER $VPC; do iptables -A "$CHAIN" -d "$range" -j RETURN || { empty_chain; log "could not add a guard"; exit 1; }; done
+for range in $NEVER $WORKER $VPC $RESERVED; do iptables -A "$CHAIN" -d "$range" -j RETURN || { empty_chain; log "could not add a guard"; exit 1; }; done
 index=0 opened=0 skipped=0 pins=""
 IFS=, read -r -a entries <<<"$list"
 for entry in "${entries[@]}"; do
   index=$((index + 1))
   host=${entry%:*} port=${entry##*:}
   ((port >= 1 && port <= 65535)) || { log "entry $index: the port is not valid; skipped"; skipped=$((skipped + 1)); continue; }
+  # DNS is never opened (a task could ask any internal resolver, around the install's DNS firewall); the contract refuses it too.
+  ((port != 53)) || { log "entry $index: port 53 (DNS) is never opened; skipped"; skipped=$((skipped + 1)); continue; }
   name=""
   if ip_number "$host" >/dev/null; then
     addresses=$host

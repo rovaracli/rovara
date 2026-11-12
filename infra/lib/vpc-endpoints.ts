@@ -95,6 +95,28 @@ export function parseEnterpriseEgressCidrs(value: unknown, options: { allowPubli
   return [...seen];
 }
 
+/** Whether two IPv4 ranges share an address (ranges nest, so: one contains the other's first address). A range that does not parse overlaps everything. */
+export function ipv4RangesOverlap(a: string, b: string): boolean {
+  const parse = (cidr: string): { first: number; mask: number } | undefined => {
+    const match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\/(\d{1,2})$/u.exec(cidr);
+    if (match === null) return undefined;
+    const octets = [match[1]!, match[2]!, match[3]!, match[4]!].map(Number);
+    const prefix = Number(match[5]);
+    if (octets.some((octet) => octet > 255) || prefix > 32) return undefined;
+    const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
+    return { first: (((octets[0]! << 24) >>> 0) + (octets[1]! << 16) + (octets[2]! << 8) + octets[3]!) >>> 0, mask };
+  };
+  const left = parse(a), right = parse(b);
+  if (left === undefined || right === undefined) return true;
+  const inside = (outer: { first: number; mask: number }, address: number) => ((address & outer.mask) >>> 0) === ((outer.first & outer.mask) >>> 0);
+  return inside(left, right.first) || inside(right, left.first);
+}
+
+/** The ranges an Enterprise install's security groups allow HTTPS to: its own network first, then the routed ranges, each once (a routed range that equals the network's own is not listed twice: CloudFormation refuses a duplicate rule). */
+export function egressCidrsWithVpc(vpcCidr: string, routedCidrs: readonly string[]): string[] {
+  return [...new Set([vpcCidr, ...routedCidrs])];
+}
+
 export interface EnterpriseVpcEndpointsProps {
   vpcId: string;
   /** The VPC's own range: endpoints accept HTTPS from it and from nowhere else. */

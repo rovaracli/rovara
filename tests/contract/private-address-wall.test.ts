@@ -10,7 +10,7 @@ import { gunzipSync } from "node:zlib";
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { ec2WorkerUserData, type Ec2WorkerBootConfig } from "@rovara-code/contracts";
-import { PRIVATE_ADDRESS_RANGES, WORKER_NETWORK_RANGES, checkPrivateAddress } from "@agentx/cloud-contracts";
+import { PRIVATE_ADDRESS_CIDRS_BOOT_PATTERN, PRIVATE_ADDRESS_RANGES, PRIVATE_ADDRESS_RESERVED_BOOT_VARIABLE, PRIVATE_ADDRESS_ROUTED_BOOT_VARIABLE, WORKER_NETWORK_RANGES, checkPrivateAddress } from "@agentx/cloud-contracts";
 import { TASK_SANDBOX_BRIDGE } from "../../packages/worker/src/task-network.js";
 import { workerUserDataWithPrivateAddresses } from "../../packages/broker/src/aws/private-address-launch.js";
 
@@ -49,7 +49,7 @@ line=$(grep "^$3 " "$FAKE_DIR/dns") || exit 2
 for address in \${line#* }; do printf '%s STREAM %s\\n%s DGRAM\\n%s RAW\\n' "$address" "$3" "$address" "$address"; done
 `;
 
-function bench(options: { list?: string; vpc?: string | null; dns?: Record<string, string[]>; seed?: readonly string[] } = {}) {
+function bench(options: { list?: string; vpc?: string | null; dns?: Record<string, string[]>; seed?: readonly string[]; reserved?: string; routed?: string } = {}) {
   const directory = mkdtempSync(join(tmpdir(), "rovara-private-allow-"));
   const bin = join(directory, "bin");
   mkdirSync(bin);
@@ -61,12 +61,15 @@ function bench(options: { list?: string; vpc?: string | null; dns?: Record<strin
     if (vpc !== null) writeFileSync(join(directory, "vpc"), `${vpc ?? "10.42.0.0/16"}\n`);
   };
   write(options.dns ?? {}, options.list, options.vpc);
+  // Review L3: the launch's reserved and routed ranges, one per line; a file that is not written is a setting that was not given (an empty routed file is a setting with no usable range).
+  if (options.reserved !== undefined) writeFileSync(join(directory, "reserved"), options.reserved === "" ? "" : `${options.reserved}\n`);
+  if (options.routed !== undefined) writeFileSync(join(directory, "routed"), options.routed === "" ? "" : `${options.routed}\n`);
   // Rules already in place (block_imds's setup walls, the firewall unit's), in chain order.
   if (options.seed !== undefined) writeFileSync(join(directory, "rules"), options.seed.map((rule) => `${rule}\n`).join(""));
   const read = (name: string) => { try { return readFileSync(join(directory, name), "utf8").trim(); } catch { return undefined; } };
   const run = (env: Record<string, string> = {}) => {
     const result = spawnSync("/bin/bash", ["-c", step], {
-      env: { PATH: `${bin}:/usr/bin:/bin`, FAKE_DIR: directory, ROVARA_PRIVATE_ADDRESSES_FILE: join(directory, "list"), ROVARA_VPC_CIDRS_FILE: join(directory, "vpc"), ROVARA_PRIVATE_ADDRESS_PINS_FILE: join(directory, "pins"), ROVARA_PRIVATE_ADDRESS_FACTS_FILE: join(directory, "facts"), ...env }, encoding: "utf8",
+      env: { PATH: `${bin}:/usr/bin:/bin`, FAKE_DIR: directory, ROVARA_PRIVATE_ADDRESSES_FILE: join(directory, "list"), ROVARA_VPC_CIDRS_FILE: join(directory, "vpc"), ROVARA_PRIVATE_RESERVED_CIDRS_FILE: join(directory, "reserved"), ROVARA_PRIVATE_ROUTED_CIDRS_FILE: join(directory, "routed"), ROVARA_PRIVATE_ADDRESS_PINS_FILE: join(directory, "pins"), ROVARA_PRIVATE_ADDRESS_FACTS_FILE: join(directory, "facts"), ...env }, encoding: "utf8",
     });
     const rules = readFileSync(join(directory, "rules"), "utf8").split("\n").filter(Boolean);
     const chain = rules.filter((rule) => rule.startsWith(`${CHAIN} `)).map((rule) => rule.slice(CHAIN.length + 1));
@@ -112,6 +115,49 @@ describe("the internal address step on the worker", () => {
       expect(run.stderr).toContain(`entry 1: resolves to an address that is never opened (${why})`);
       expect(run.stderr).not.toContain("nexus");
     }
+  });
+
+  // Review L3: the launch's reserved ranges (private MCP servers, model endpoints) and routed ranges are applied to every address a name resolves to, as the contract applies them to an entry.
+  it("refuses an address inside a reserved range (a name that resolves into one, or an IP) and puts the reserved ranges among the guards", () => {
+    const run = bench({ list: "nexus.corp.example:8081,10.70.1.1:443,mcp.corp.example:443,10.20.0.15:443", reserved: "10.70.0.0/16\n10.71.4.0/24", dns: { "nexus.corp.example": ["10.60.0.7", "10.71.4.9"], "mcp.corp.example": ["10.70.9.9"] } }).run();
+    expect(run.status, run.stderr).toBe(0);
+    expect(run.accepts).toEqual([accept("10.20.0.15", 443)]);
+    expect(run.stderr).toContain("entry 1: resolves to an address that is never opened (reserved_range)");
+    expect(run.stderr).toContain("entry 2: resolves to an address that is never opened (reserved_range)");
+    expect(run.stderr).toContain("entry 3: resolves to an address that is never opened (reserved_range)");
+    const guards = run.chain.filter((rule) => rule.endsWith("-j RETURN")).map((rule) => rule.split(" ")[1]);
+    expect(guards).toEqual(["0.0.0.0/8", "127.0.0.0/8", "169.254.0.0/16", ...WORKER_NETWORK_RANGES, "10.42.0.0/16", "10.70.0.0/16", "10.71.4.0/24"]);
+    // The install's own network still comes first in the answer.
+    expect(bench({ list: "10.42.0.9:443", reserved: "10.42.0.0/16" }).run().stderr).toContain("(install_network)");
+    // No reserved file: nothing changes.
+    expect(bench({ list: "10.70.1.1:443" }).run().accepts).toEqual([accept("10.70.1.1", 443)]);
+  });
+
+  it("opens only addresses inside the routed ranges (every address of a name), and nothing at all when the routed setting holds no usable range", () => {
+    const routed = "10.20.0.0/16\n10.60.0.0/16";
+    const run = bench({ list: "nexus.corp.example:8081,10.20.0.15:443,10.30.0.1:443,split.corp.example:443", routed, dns: { "nexus.corp.example": ["10.60.0.7", "10.60.0.8"], "split.corp.example": ["10.20.0.9", "10.30.0.9"] } }).run();
+    expect(run.status, run.stderr).toBe(0);
+    expect(run.accepts.sort()).toEqual([accept("10.20.0.15", 443), accept("10.60.0.7", 8081), accept("10.60.0.8", 8081)].sort());
+    expect(run.stderr).toContain("entry 3: resolves to an address that is never opened (not_routed)");
+    expect(run.stderr).toContain("entry 4: resolves to an address that is never opened (not_routed)");
+    // Reserved is judged before routed, as the contract does.
+    expect(bench({ list: "10.20.5.5:443", routed, reserved: "10.20.5.0/24" }).run().stderr).toContain("(reserved_range)");
+    // A routed file that is there but empty (the launch's value did not parse) allows nothing; one that is not there is a launch with no routed setting, as before.
+    const empty = bench({ list: "10.20.0.15:443", routed: "" }).run();
+    expect(empty.accepts).toEqual([]);
+    expect(empty.stderr).toContain("(not_routed)");
+    expect(bench({ list: "10.20.0.15:443", routed: "junk\n300.1.1.1/8" }).run().accepts).toEqual([]);
+    expect(bench({ list: "10.30.0.1:443" }).run().accepts).toEqual([accept("10.30.0.1", 443)]);
+  });
+
+  it("never opens port 53 (DNS), whatever the entry, and says so without the name", () => {
+    const run = bench({ list: "10.20.0.15:53,nexus.corp.example:53,10.20.0.16:5353", dns: { "nexus.corp.example": ["10.60.0.7"] } }).run();
+    expect(run.status, run.stderr).toBe(0);
+    expect(run.accepts).toEqual([accept("10.20.0.16", 5353)]);
+    expect(run.stderr).toContain("entry 1: port 53 (DNS) is never opened; skipped");
+    expect(run.stderr).toContain("entry 2: port 53 (DNS) is never opened; skipped");
+    expect(run.stderr).not.toContain("nexus");
+    expect(run.facts).toBe("entries=3,opened=1,skipped=2");
   });
 
   it("pins what a name resolved to at this start: a later answer opens nothing new until the next start, which drops the old pins", () => {
@@ -170,6 +216,24 @@ describe("the internal address step on the worker", () => {
     expect(value("METADATA").length).toBeGreaterThanOrEqual(6);
     for (const address of value("METADATA")) expect(checkPrivateAddress(`${address}:80`, { vpcCidrs: [], serviceHosts: [] })).toEqual({ ok: false, refusal: "metadata" });
     expect(new RegExp(`^readonly BRIDGE=${TASK_SANDBOX_BRIDGE}$`, "mu").test(step)).toBe(true);
+  });
+
+  it("writes the launch's reserved and routed ranges only when they are well formed, with the contract's own pattern, and a routed value that is not well formed leaves a file with no usable range", () => {
+    const shellPattern = /local cidr_pattern='([^']+)'/u.exec(stage2)?.[1] ?? "";
+    expect(shellPattern).not.toBe("");
+    expect(stage2).toContain(`${PRIVATE_ADDRESS_RESERVED_BOOT_VARIABLE}:-`);
+    expect(stage2).toContain(`${PRIVATE_ADDRESS_ROUTED_BOOT_VARIABLE}:-`);
+    const inShell = (value: string) => spawnSync("bash", ["-c", `[[ "$1" =~ ${shellPattern} ]]`, "bash", value]).status === 0;
+    for (const value of ["10.70.0.0/16", "10.70.0.0/16,10.71.4.0/24", Array.from({ length: 40 }, (_, index) => `10.${String(index)}.0.0/16`).join(",")]) {
+      expect(inShell(value), value).toBe(true);
+      expect(PRIVATE_ADDRESS_CIDRS_BOOT_PATTERN.test(value), value).toBe(true);
+    }
+    for (const value of ["10.70.0.0", "10.70.0.0/16,", "10.70.0.0/16;reboot", "a.b.c.d/8", "10.70.0.0/16 10.71.0.0/16", "$(x)/8", Array.from({ length: 41 }, (_, index) => `10.${String(index)}.0.0/16`).join(",")]) {
+      expect(inShell(value), value).toBe(false);
+      expect(PRIVATE_ADDRESS_CIDRS_BOOT_PATTERN.test(value), value).toBe(false);
+    }
+    expect(stage2).toMatch(/routed ranges are not well formed; no internal address is opened"; install -m 0600 \/dev\/null "\$ROUTED_CIDRS_FILE"/u);
+    expect(stage2).toMatch(/reserved ranges are not well formed; no internal address is opened"; value=""/u);
   });
 
   it("is written by stage 2 for a named environment and run by the launcher before the worker starts, never fatally", () => {
@@ -284,6 +348,18 @@ describe("the launch's user data", () => {
     expect(lines[0]).toBe("#!/bin/bash");
     expect(lines[2]).toBe("export AGENTX_PRIVATE_ADDRESSES='10.20.0.15:443,nexus.corp.example:8081'");
     expect(lines.filter((line) => line.includes("AGENTX_PRIVATE_ADDRESSES"))).toHaveLength(1);
+  });
+
+  it("carries the reserved and routed ranges beside the list, in the same form, and never without a list", () => {
+    const lines = text(workerUserDataWithPrivateAddresses(config, boot, ["10.20.0.15:443"], { reservedCidrs: ["10.70.0.0/16"], routedCidrs: ["10.20.0.0/16", "10.60.0.0/16"] })).split("\n");
+    expect(lines.slice(2, 5)).toEqual(["export AGENTX_PRIVATE_ADDRESSES='10.20.0.15:443'", "export AGENTX_PRIVATE_ADDRESS_RESERVED_CIDRS='10.70.0.0/16'", "export AGENTX_PRIVATE_ADDRESS_ROUTED_CIDRS='10.20.0.0/16,10.60.0.0/16'"]);
+    // Only the ones the install has.
+    const routedOnly = text(workerUserDataWithPrivateAddresses(config, boot, ["10.20.0.15:443"], { routedCidrs: ["10.20.0.0/16"] }));
+    expect(routedOnly).toContain("export AGENTX_PRIVATE_ADDRESS_ROUTED_CIDRS='10.20.0.0/16'");
+    expect(routedOnly).not.toContain("RESERVED_CIDRS");
+    // No list: exactly the plain user data, whatever ranges the install has.
+    expect(workerUserDataWithPrivateAddresses(config, boot, [], { reservedCidrs: ["10.70.0.0/16"], routedCidrs: ["10.20.0.0/16"] })).toBe(ec2WorkerUserData(config, boot));
+    for (const bad of ["10.20.0.0/16'; reboot; '", "10.20.0.0", "10.20.0.0/16,"]) expect(() => workerUserDataWithPrivateAddresses(config, boot, ["10.20.0.15:443"], { routedCidrs: [bad] }), bad).toThrow("do not fit");
   });
 
   it("refuses a value a shell could read, and a legacy launch", () => {

@@ -6,6 +6,7 @@ import { SESSION_MAX_LIFETIME_MS, type Ec2RuntimeBinding, type WorkspaceSession 
 import { installOrgIdFromEnvironment } from "../org/resolve.js";
 import { requiredEnvironment } from "./lambda.js";
 import { PRIVATE_ADDRESS_RECYCLE_PK } from "@agentx/cloud-contracts";
+import { readPrivateAddressLaunchRevision } from "./private-address-launch-record.js";
 import { markComputeLost } from "./compute-lost.js";
 import { failActiveOperation } from "./outbox-failure.js";
 import { SessionManager, computeMeteringFromEnvironment, workspaceBinding } from "./sessions.js";
@@ -34,6 +35,8 @@ export interface ReaperReport {
   stillStopping: string[];
   /** Owner decision 128: workers recycled because their company removed an internal address after they launched; present only where the recycle is wired. */
   privateAddressRecycled?: string[];
+  /** Review L4: workspaces whose company (or launch revision) could not be read this tick, so they could not be checked against a removal. Counted into a metric the reaper error alarm reads. Present only where the recycle is wired. */
+  privateAddressRecycleErrors?: number;
 }
 
 export interface ReaperDependencies {
@@ -47,14 +50,17 @@ export interface ReaperDependencies {
   binding: (workspaceId: string) => Promise<Ec2RuntimeBinding | undefined>;
   emit: (metrics: Record<string, number>) => void;
   /**
-   * Owner decision 128: each company's latest internal address removal (org id to epoch milliseconds; org/private-addresses.ts PRIVATE_ADDRESS_RECYCLE_PK), and the company a workspace belongs to. A READY worker of that
-   * company launched before the removal still has the removed address open, so it is recycled at once: stopped like an idle one when it is idle; when it is busy (or a dispatch just took it), its instance is
+   * Owner decision 128: each company's latest internal address removal (org id to the list revision that removal wrote; org/private-addresses.ts PRIVATE_ADDRESS_RECYCLE_PK), the company a workspace belongs to, and the list
+   * revision a workspace's worker read when it launched (review L2, private-address-launch.ts: recorded at the launch, so no clock and no guessed margin is involved). A READY worker of that company that read the list at an
+   * older revision than the removal's (or has no record of one) still has the removed address open, so it is recycled at once; one that read the removal's revision or a later one is left alone: stopped like an idle one when it is idle; when it is busy (or a dispatch just took it), its instance is
    * terminated under its task and, in the same tick, the session is marked lost and the operation failed with the usual "compute was lost; retry" error, through the reconciler's own path (compute-lost.ts), so the
    * task's retry starts at once on a worker launched with the new list. Absent: nothing is recycled.
    */
   privateAddressRecycle?: {
     marks: () => Promise<Map<string, number>>;
     workspaceOrg: (workspaceId: string) => Promise<string | undefined>;
+    /** The list revision the worker of this session generation read at launch, or undefined when none is recorded (then it is recycled, never assumed to be safe). PRIVATE_ADDRESS_NOTHING_OPEN: it opened nothing. */
+    launchRevision: (workspaceId: string, generation: number) => Promise<number | undefined>;
     /** The reconciler's own operation failure (outbox-failure.ts failActiveOperation), used through compute-lost.ts exactly as the reconciler uses it. */
     failActiveOperation: (workspaceId: string, error: string) => Promise<string | undefined>;
   };
@@ -117,33 +123,53 @@ export function createReaperHandler(dependencies: ReaperDependencies) {
     }
 
     // The STOPPING query runs after this tick's claims, so it already counts them.
-    dependencies.emit({ SessionsStopped: report.stopped.length, SessionsStopping: report.stillStopping.length, ...(report.privateAddressRecycled === undefined ? {} : { SessionsPrivateAddressRecycled: report.privateAddressRecycled.length }) });
+    // SessionsPrivateAddressRecycleErrors (review L4) is read by the reaper error alarm (infra/lib/session-lifecycle.ts): a removal that could not be checked for some worker means an address may stay open on it.
+    dependencies.emit({
+      SessionsStopped: report.stopped.length, SessionsStopping: report.stillStopping.length,
+      ...(report.privateAddressRecycled === undefined ? {} : { SessionsPrivateAddressRecycled: report.privateAddressRecycled.length, SessionsPrivateAddressRecycleErrors: report.privateAddressRecycleErrors ?? 0 }),
+    });
     return report;
   };
 }
-
-/** A worker launched within this long after a removal may have read the list before it: it is recycled too (once more at most; a launch takes seconds). */
-export const RECYCLE_LAUNCH_MARGIN_MS = 2 * 60_000;
 
 async function recyclePrivateAddressWorkers(
   dependencies: ReaperDependencies, recycle: NonNullable<ReaperDependencies["privateAddressRecycle"]>, ready: readonly WorkspaceSession[], report: ReaperReport, log: (entry: Record<string, unknown>) => void,
 ): Promise<Set<string>> {
   const done = new Set<string>();
   report.privateAddressRecycled = [];
+  report.privateAddressRecycleErrors = 0;
   let marks: Map<string, number>;
   try {
     marks = await recycle.marks();
   } catch (error) {
-    // Unreadable: nothing is recycled this tick and the next tick asks again; logged loudly, never silently skipped.
+    // Unreadable: nothing is recycled this tick and the next tick asks again; logged loudly, never silently skipped, and counted (the reaper error alarm reads the count).
+    report.privateAddressRecycleErrors += 1;
     log({ event: "session.private_address_recycle_unreadable", level: "error", errorName: error instanceof Error ? error.name : "unknown" });
     return done;
   }
   if (marks.size === 0) return done;
   for (const session of ready) {
     let org: string | undefined;
-    try { org = await recycle.workspaceOrg(session.workspaceId); } catch { org = undefined; }
-    const removedAt = org === undefined ? undefined : marks.get(org);
-    if (removedAt === undefined || session.launchedAt === undefined || Date.parse(session.launchedAt) > removedAt + RECYCLE_LAUNCH_MARGIN_MS) continue;
+    try {
+      org = await recycle.workspaceOrg(session.workspaceId);
+    } catch (error) {
+      // Review L4: not silent. This worker cannot be checked against a removal this tick (the next tick asks again): logged with the workspace and the error's name only, and counted for the alarm.
+      report.privateAddressRecycleErrors += 1;
+      log({ event: "session.private_address_company_unreadable", level: "error", workspaceId: session.workspaceId, errorName: error instanceof Error ? error.name : "unknown" });
+      continue;
+    }
+    const removalRevision = org === undefined ? undefined : marks.get(org);
+    if (removalRevision === undefined) continue;
+    // The list revision this worker read when it launched, against the revision the removal wrote. Read at the removal's revision or later: its list had the address already gone. Older, or not recorded: it may still have it open.
+    let readRevision: number | undefined;
+    try {
+      readRevision = await recycle.launchRevision(session.workspaceId, session.generation);
+    } catch (error) {
+      report.privateAddressRecycleErrors += 1;
+      log({ event: "session.private_address_launch_unreadable", level: "error", workspaceId: session.workspaceId, errorName: error instanceof Error ? error.name : "unknown" });
+      readRevision = undefined;
+    }
+    if (readRevision !== undefined && readRevision >= removalRevision) continue;
     done.add(session.workspaceId);
     report.privateAddressRecycled.push(session.workspaceId);
     const busy = await dependencies.activeOperation(session.workspaceId) || await isBusy(dependencies, session);
@@ -183,6 +209,21 @@ async function terminate(dependencies: ReaperDependencies, session: WorkspaceSes
     // Left STOPPING; the next tick sends the terminate again.
     log({ event: "session.terminate_failed", workspaceId: session.workspaceId, instanceId: session.instanceId, error: error instanceof Error ? error.name : "unknown" });
   }
+}
+
+/**
+ * Each company's latest internal address removal: org id to the list revision the removal wrote (org/private-addresses.ts). A mark with no readable revision cannot be compared with what a worker read, so it counts as newer
+ * than every launch (Infinity): that company's workers are recycled, never assumed to be safe.
+ */
+export async function readRecycleMarks(client: Pick<DynamoDBDocumentClient, "send">, table: string): Promise<Map<string, number>> {
+  const marks = new Map<string, number>();
+  let start: Record<string, unknown> | undefined;
+  do {
+    const page = await client.send(new QueryCommand({ TableName: table, KeyConditionExpression: "pk = :pk", ExpressionAttributeValues: { ":pk": PRIVATE_ADDRESS_RECYCLE_PK }, ConsistentRead: true, ...(start === undefined ? {} : { ExclusiveStartKey: start }) }));
+    for (const item of page.Items ?? []) if (typeof item.orgId === "string" && typeof item.removedAt === "number") marks.set(item.orgId, typeof item.revision === "number" && Number.isSafeInteger(item.revision) ? item.revision : Number.POSITIVE_INFINITY);
+    start = page.LastEvaluatedKey;
+  } while (start !== undefined);
+  return marks;
 }
 
 const awsClientConfiguration = process.env.AWS_REGION === undefined ? {} : { region: process.env.AWS_REGION };
@@ -233,17 +274,9 @@ export const handler = createReaperHandler({
   },
   binding: (workspaceId) => workspaceBinding(documentClient, tableName, installOrgIdFromEnvironment(), workspaceId),
   privateAddressRecycle: {
-    async marks() {
-      const marks = new Map<string, number>();
-      let start: Record<string, unknown> | undefined;
-      do {
-        const page = await documentClient.send(new QueryCommand({ TableName: tableName, KeyConditionExpression: "pk = :pk", ExpressionAttributeValues: { ":pk": PRIVATE_ADDRESS_RECYCLE_PK }, ConsistentRead: true, ...(start === undefined ? {} : { ExclusiveStartKey: start }) }));
-        for (const item of page.Items ?? []) if (typeof item.orgId === "string" && typeof item.removedAt === "number") marks.set(item.orgId, item.removedAt);
-        start = page.LastEvaluatedKey;
-      } while (start !== undefined);
-      return marks;
-    },
+    marks: () => readRecycleMarks(documentClient, tableName),
     failActiveOperation: (workspaceId, error) => failActiveOperation(documentClient, tableName, workspaceId, error),
+    launchRevision: (workspaceId, generation) => readPrivateAddressLaunchRevision({ documentClient, tableName }, workspaceId, generation),
     async workspaceOrg(workspaceId) {
       const item = (await documentClient.send(new GetCommand({ TableName: tableName, Key: { pk: `WORKSPACE#${workspaceId}`, sk: "META" }, ConsistentRead: true }))).Item;
       return typeof item?.orgId === "string" ? item.orgId : undefined;

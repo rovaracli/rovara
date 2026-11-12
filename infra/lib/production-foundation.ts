@@ -17,7 +17,8 @@ import type { Edition } from "@rovara-code/contracts";
 import { AgentDnsFirewall, EGRESS_ALLOW_DOMAINS_CONTEXT_KEY, hostedAgentAllowDomains, parseExtraAllowDomains } from "./agent-dns-firewall.js";
 import { EgressAlarms, alertsTopicFromName } from "./egress-alarms.js";
 import { Ec2WorkerFoundation } from "./ec2-workers.js";
-import { EnterpriseVpcEndpoints, endpointPolicyDocument, enterpriseAllowDomains, workerDockerRangeOf, type InternetEgress } from "./vpc-endpoints.js";
+import { EnterpriseVpcEndpoints, egressCidrsWithVpc, endpointPolicyDocument, enterpriseAllowDomains, workerDockerRangeOf, type InternetEgress } from "./vpc-endpoints.js";
+import { assertExtraPortsAvoidInstallNetwork } from "./private-addresses.js";
 import { type AgentXNaming, legacyNaming } from "./naming.js";
 
 export const AGENTX_PRODUCTION_DEPLOYMENT_MODE = "ec2-ebs";
@@ -282,6 +283,9 @@ export class ProductionFoundationStack extends Stack {
       record.cfnOptions.updateReplacePolicy = CfnDeletionPolicy.RETAIN;
     }
 
+    // Review M1: an extra port is never opened toward the install's own network, even through a routed range that contains or equals it (a rule cannot leave part of a range out). Checked here too, for a stack built without the app's parse.
+    if (enterprise && (props.privateAddressPorts ?? []).length > 0) assertExtraPortsAvoidInstallNetwork(props.enterpriseEgressCidrs ?? [], [AGENTX_PRODUCTION_VPC_CIDR]);
+
     // EC2 worker launch template, role and security groups.
     new Ec2WorkerFoundation(this, "Ec2Workers", {
       naming,
@@ -289,7 +293,7 @@ export class ProductionFoundationStack extends Stack {
       privateSubnets,
       workspaceKey,
       instanceType: configuration.instanceType,
-      ...(enterprise ? { privateEgressCidrs: [AGENTX_PRODUCTION_VPC_CIDR, ...(props.enterpriseEgressCidrs ?? [])] } : {}),
+      ...(enterprise ? { privateEgressCidrs: egressCidrsWithVpc(AGENTX_PRODUCTION_VPC_CIDR, props.enterpriseEgressCidrs ?? []) } : {}),
       ...(enterprise && (props.privateAddressPorts ?? []).length > 0 ? { privateAddressEgress: { cidrs: props.enterpriseEgressCidrs ?? [], ports: props.privateAddressPorts! } } : {}),
     });
 

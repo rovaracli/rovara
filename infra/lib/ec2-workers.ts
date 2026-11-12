@@ -235,5 +235,6 @@ function httpsEgress(description: string): ec2.CfnSecurityGroup.EgressProperty {
 function egressRules(privateCidrs: readonly string[] | undefined, description: string): ec2.CfnSecurityGroup.EgressProperty[] {
   if (privateCidrs === undefined) return [httpsEgress(description)];
   if (privateCidrs.some((cidr) => cidr === "0.0.0.0/0" || cidr.endsWith("/0"))) throw new Error("an Enterprise install's security groups never allow the whole internet");
-  return privateCidrs.map((cidr) => ({ ipProtocol: "tcp", fromPort: 443, toPort: 443, cidrIp: cidr, description: `HTTPS to ${cidr} only` }));
+  // Each range once: a repeated one (a routed range equal to the install's own) would be a duplicate rule, which CloudFormation refuses.
+  return [...new Set(privateCidrs)].map((cidr) => ({ ipProtocol: "tcp", fromPort: 443, toPort: 443, cidrIp: cidr, description: `HTTPS to ${cidr} only` }));
 }
