@@ -3,7 +3,8 @@
 // The label is the broker's: it comes from the approved backing (`evidenceDependencyLabelFor`), never from the worker. The worker's usage record only says whether a dependency really ran
 // and for how long. A dependency the record does not show started and healthy is NOT shown as running ("not available", fell back: did not start): a missing or broken record never makes a result look better.
 // The names the sealed tests asked for that no dependency answers are counted as registrable domain + count in one "Blocked by environment" line, never with a path, a query or a value.
-import { TEST_SERVICES_AWS_USAGE_WORDS, TEST_SERVICES_FAKE_USAGE_WORDS, evidenceDependencyLabelFor, testServicesAwsUsageVerdict, testServicesFakeUsageVerdict, testServicesUnknownCallCount, type EvidenceDependency, type EvidenceNotTested, type EvidenceRaw } from "@rovara-code/contracts";
+import { TEST_SERVICES_AWS_USAGE_WORDS, TEST_SERVICES_FAKE_USAGE_WORDS, awsEmulatorEvidenceLines, evidenceDependencyLabelFor, testServicesAwsUsageVerdict, testServicesFakeUsageVerdict, testServicesUnknownCallCount, type EvidenceDependency, type EvidenceNotTested, type EvidenceRaw } from "@rovara-code/contracts";
+import { describeFrontMarker, frontMarkerOfWord, isFrontUncheckedService, type FrontMarker } from "@agentx/cloud-contracts";
 import { inertLine } from "./inert-text.js";
 
 /** A dependency as the broker pinned it for the run (from the approved environment's backing, not from the worker). */
@@ -28,9 +29,32 @@ export const AWS_USAGE_ITEM_ID = "aws-usage";
 /** Rovara local AWS does not enforce IAM (design 2.4 and 4.2). One fixed item for the Evidence tab; the pull request says it through `dependencyLines`, from the same label. */
 export const AWS_PERMISSIONS_ITEM_ID = "aws-permissions";
 export const AWS_PERMISSIONS_NOT_CHECKED = "AWS permissions (IAM) were not checked: Rovara local AWS does not enforce IAM";
+/** The not-tested item of one emulated service: what emulated it and how far that matches AWS (the table's score), or the operations of it the run called that the emulator does not support. */
+export const AWS_FIDELITY_ITEM_PREFIX = "aws-fidelity-";
 export const AWS_PERMISSIONS_NOT_CHECKED_SHORT = "AWS permissions not checked (no IAM)";
 export const NO_USAGE_RECORD_ITEM: EvidenceNotTested = { kind: "environment", id: "test-services", text: "What the test services did was not reported", reason: "no usage record" };
 const BLOCKED_LISTED = 5;
+/** The most front-marker items one pack lists (heavy functions, limits, unchecked templates and targets); the rest are counted in one more item. */
+const FRONT_MARKERS_LISTED = 6;
+export const FRONT_MARKERS_MORE_ITEM_ID = "aws-front-markers-more";
+
+/**
+ * What the front recorded without seeing a request, read from the usage record (`frontMarkerOfWord`), and the record without it: the markers are not operations Rovara local AWS lacks and their services are not
+ * services the code called, so the verdict is asked of the record without them, and the markers are worded on their own (`describeFrontMarker`: fixed words, one item each).
+ */
+function splitFrontMarkers(usage: RawUsage): { markers: FrontMarker[]; rest: RawUsage } {
+  const aws = usage?.aws;
+  if (usage === undefined || aws === undefined) return { markers: [], rest: usage };
+  const markers: FrontMarker[] = [];
+  const unsupportedOperations = aws.unsupportedOperations.filter((row) => {
+    const marker = frontMarkerOfWord(row.service, row.operation);
+    if (marker === undefined) return true;
+    markers.push(marker);
+    return false;
+  });
+  if (markers.length === 0) return { markers, rest: usage };
+  return { markers, rest: { ...usage, aws: { ...aws, services: aws.services.filter((entry) => !isFrontUncheckedService(entry.service)), unsupportedOperations } } };
+}
 
 export interface DependencyEvidence { dependencies: EvidenceDependency[]; notTested: EvidenceNotTested[] }
 
@@ -85,15 +109,29 @@ export function dependencyEvidenceOf(pinned: readonly PinnedDependency[], usage:
       notTested.push({ kind: "environment", id: BLOCKED_CALLS_ITEM_ID, text: text.slice(0, 300), reason: "blocked by environment" });
     }
   }
+  const { markers, rest } = splitFrontMarkers(usage);
   // Slice 2: with Rovara local AWS in the plan, a result is never shown as a clean run when its AWS usage could not be checked or was not clean. The words are fixed; a service named is a plain key, made inert.
   const emulated = pinned.filter((dependency) => dependency.backing === "emulated");
   if (emulated.length > 0 && usage !== undefined) {
-    const verdict = testServicesAwsUsageVerdict(usage, emulated.flatMap((dependency) => dependency.awsServices ?? []));
+    const verdict = testServicesAwsUsageVerdict(rest, emulated.flatMap((dependency) => dependency.awsServices ?? []));
     if (!verdict.ok) {
       const named = verdict.services.slice(0, BLOCKED_LISTED).map((service) => plain(service, 40)).filter((service) => service !== "");
       const text = `${TEST_SERVICES_AWS_USAGE_WORDS[verdict.problem]}${named.length === 0 ? "" : `: ${named.join(", ")}`}`;
       notTested.push({ kind: "environment", id: AWS_USAGE_ITEM_ID, text: text.slice(0, 300), reason: verdict.problem === "unsupported" ? "unsupported by Rovara local AWS" : "aws usage" });
     }
+  }
+  // Decisions 109 and 115: what the front could not run or check, in fixed words, before the per-service lines (the pull request lists the first ten items): heavy functions, engine limits, templates and targets it could not read.
+  if (emulated.length > 0 && markers.length > 0) {
+    const seen = new Map<string, ReturnType<typeof describeFrontMarker>>();
+    for (const marker of markers) { const words = describeFrontMarker(marker); if (!seen.has(words.id)) seen.set(words.id, words); }
+    const all = [...seen.values()];
+    for (const words of all.slice(0, FRONT_MARKERS_LISTED)) notTested.push({ kind: "environment", id: words.id, text: plain(words.text, 80), reason: plain(words.reason, 100) });
+    if (all.length > FRONT_MARKERS_LISTED) notTested.push({ kind: "environment", id: FRONT_MARKERS_MORE_ITEM_ID, text: `${String(all.length - FRONT_MARKERS_LISTED)} more kinds of AWS use were not run or checked locally`, reason: "not tested locally" });
+  }
+  // Per planned AWS service: what emulated it, how far that matches AWS, and the operations the run called that the emulator does not support (`awsEmulatorEvidenceLines`, table values and fixed words only).
+  if (emulated.length > 0 && dependencies.some((dependency) => dependency.label === "rovara_local_aws")) {
+    const lines = awsEmulatorEvidenceLines(emulated.flatMap((dependency) => dependency.awsServices ?? []), rest?.aws?.ledger === "read" ? rest.aws.unsupportedOperations : []);
+    lines.forEach((text, index) => notTested.push({ kind: "environment", id: `${AWS_FIDELITY_ITEM_PREFIX}${String(index + 1)}`, text: plain(text, 300), reason: "emulated" }));
   }
   // Slice 3: with a fake in the plan, a result is never shown as a clean run when its requests could not be checked or the tests asked it for something it had no recording for. The words are fixed; a dependency named is a name
   // made inert.

@@ -10457,6 +10457,35 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
       },
       "Type": "AWS::IAM::Policy",
     },
+    "OutboxRelayBackstopSchedule": {
+      "Properties": {
+        "FlexibleTimeWindow": {
+          "Mode": "OFF",
+        },
+        "ScheduleExpression": "rate(1 minute)",
+        "State": "DISABLED",
+        "Target": {
+          "Arn": {
+            "Fn::GetAtt": [
+              "BrokerE1355FD6",
+              "Arn",
+            ],
+          },
+          "Input": "{"source":"agentx.outbox-relay-backstop"}",
+          "RetryPolicy": {
+            "MaximumEventAgeInSeconds": 300,
+            "MaximumRetryAttempts": 2,
+          },
+          "RoleArn": {
+            "Fn::GetAtt": [
+              "WorkflowDispatchRecoveryRole3D444D9C",
+              "Arn",
+            ],
+          },
+        },
+      },
+      "Type": "AWS::Scheduler::Schedule",
+    },
     "OutboxStreamMappingBE739F11": {
       "Properties": {
         "BatchSize": 100,

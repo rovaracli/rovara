@@ -418,9 +418,6 @@ describe("the named TEST proof-only installation gate", () => {
     // the sign-in function's two ConditionCheckItem statements gain `Null: { dynamodb:LeadingKeys: false }`. Checked first: with only those two lines undone, all five tests pass on the lane's pins. Legacy did not move.
     // 2026-11-11 (0.5.14, lane U2, Slack explicit membership): the named and foreign digests were retaken from the values the test reports, after one intended change: the `sm` entry of the broker's packed
     // AGENTX_SETTINGS (the SlackExplicitMembers parameter itself is taken out of the remainder like the other switches). The named-templates snapshot shows exactly that parameter and that entry. Legacy did not move.
-    // 2026-11-12 (0.5.15, fix/0515-allowlist-review, review L4): the named and foreign digests were retaken from the values the test reports, after ONE intended change: the named control plane's SessionReaperErrors alarm
-    // reads a metric-math expression (the reaper's Lambda errors plus its own SessionsPrivateAddressRecycleErrors count) instead of the Lambda errors alone, and its description says so. Checked first: with infra/lib/session-lifecycle.ts as it was
-    // before (the alarm edit undone), this test, named-templates and legacy-templates all pass on the old pins, so that alarm is the only change. The legacy digests did not move (the legacy alarm is built as before).
     // 2026-11-11 (0.5.15, lane company-images-worker-v3, merged at 029dc304b): the named and foreign digests were retaken from the values the test reports, after the lane's reviewed additions: the CompanyImageMirror function (own role, mirror state rows only), its img-mirror role (ECR on rovara-env/<env>/o*/c* only), the `cm` entry of AGENTX_NAMES and the mirror role in the saved environment repository policy. Legacy did not move.
     // 2026-11-11, U3 work events (merged onto integ/0514 1593cf08e, whose own named and foreign pins are 113afeb8..., 5cec0a6d... and 5c52999d..., 54d2d4fb...): the named and foreign digests below are U3's, retaken from the values the test
     // reports after ONE intended change: the DeveloperTaskNotifier gains the variable AGENTX_WORK_EVENTS ("on") and one write grant, dynamodb:PutItem on ORG#org_*#WORK_EVENTS#* only. The named-templates snapshot shows exactly that variable
@@ -434,22 +431,24 @@ describe("the named TEST proof-only installation gate", () => {
     // 2026-11-12 (0.5.15, signing key to Secrets Manager 1706c80a7 + drop CallbackSigningKey 7d8721bb6): the named and foreign digests were retaken from the values the test reports, after
     // the two reviewed infra changes: CALLBACK_SIGNING_KEY leaves the broker, EvalBatchTick and reconciler env; GetSecretValue on the two signing secrets; the named CallbackSigningKey parameter removed.
     // Checked first: at dc211668e (before both) all six tests pass on the previous pins, and infra/ differs from dc211668e only by those two lanes. Legacy did not move.
-    // 2026-11-12 (0.5.15, feat/0515-private-address-allowlist, review L4): the named and foreign digests were retaken from the values the test reports, after ONE intended change: the session steps
-    // function gains ssm:GetParameter on the one parameter <worker settings prefix>private-addresses-off (the operator's kill switch for internal address lists; named environments only). The worker
-    // security group's extra ports appear only with -c rovaraPrivateAddressPorts, so the default templates have none. Checked first: with only that statement undone, this test, named-templates and
-    // legacy-templates pass on the previous pins and snapshots. Legacy did not move.
+    // 2026-11-12 (0.5.15 train/0515-adapters, lane A2 adapters/a2-sqs-cloud fcf6c3bb9): the named and foreign digests were retaken from the values the test reports, after ONE intended change: the
+    // DISABLED OutboxRelayBackstopSchedule (AWS::Scheduler::Schedule on the recovery schedules' role, named environments only). Checked first: with only that block switched off, all
+    // pins and the named and legacy snapshots pass unchanged, and infra/ differs from integ/0515 2f072966f only by that block. Legacy did not move.
+    // 2026-11-12 (0.5.15, fix/0515-allowlist-review, merged with integ/0515 0c8c0fbbc): the named and foreign digests were retaken from the values the test reports, after the internal address lane's intended infra changes
+    // (its worker settings reaper alarm reading a metric-math expression of Lambda errors plus the reaper's own SessionsPrivateAddressRecycleErrors count, and the internal address resources it adds to named environments).
+    // Checked first: with infra/lib's eight changed files (app, control-plane, ec2-workers, private-mcp, production-foundation, session-lifecycle, vpc-endpoints, private-addresses) put back to integ/0515's, all three tests (this one, named-templates, legacy-templates) pass on integ's own pins. Legacy did not move.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "1b3da592d6a116a574a477c009d751d100a2c3471f590256b8180a19dddf2223",
-        withoutRoute: "e9be33cef029cebd155f58b169388ef157f4bf532d61c665981e17a8595773e5",
+        withRoute: "15e3225a98f9f935ef2d527a1cff124f9a1e4569419c7d3731366eefab332a8e",
+        withoutRoute: "b405d8b681bcc5132d97771e1f616adc69b2dd0822262d1379c39c6d536a9884",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "70e668fc90e4c4323cb7faddc4267c846991d5eb94d5a223777b58d6a4be668e",
-        withoutRoute: "e8974ae010ea8c4a9a775d5c0616280c07f8d28050ac8ff2cf0159816b8b5ef9",
+        withRoute: "bf6f9daaf454e54f4f111b8c4a7b2948858a7d2b0933257c8bf6fa6c38ab46b5",
+        withoutRoute: "c65482248d33b3d562601ebc9645499d4cb9251f668b58deaf37428e47b13c74",
       },
       {
         label: "legacy",

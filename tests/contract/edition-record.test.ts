@@ -24,7 +24,8 @@ describe("the edition record in the foundation", () => {
     // CDK writes Retain as RetainExceptOnCreate for a resource whose first creation may roll back: either way the record survives a delete.
     expect((records[0] as { DeletionPolicy: string }).DeletionPolicy).toMatch(/^Retain/);
     expect(records[0]).toMatchObject({ UpdateReplacePolicy: "Retain", Properties: { Value: "enterprise" } });
-  });
+    // A whole-app synth with real Lambda bundling: it has timed out at 60 s on the 2 vCPU runner, so it takes the timeout of the other synth tests.
+  }, 240_000);
 });
 
 describe("the broker and the sign-in server can read the record in every synth", () => {

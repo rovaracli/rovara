@@ -8,8 +8,9 @@ import { CatalogEntrySchema, ServiceCatalogSchema, type CatalogEntry } from "@ro
 import { runNetworkAddresses, runNetworkBridge, runNetworkHelperIp, runNetworkLabelArgs, runNetworkName, type ServicesNetwork } from "../../packages/worker/src/run-network.js";
 import {
   HELPER_ALIAS_PATTERN, HelperStartError, helperContainerName, startHelpers, sweepServicesNetworksAtWorkerStart,
-  type HelperFiles, type HelperRequest, type StartHelpersInput,
+  MODEL_STAND_IN_CONFIG_NAME, MODEL_STAND_IN_CONFIG_TARGET, type HelperFiles, type HelperRequest, type StartHelpersInput,
 } from "../../packages/worker/src/service-helpers.js";
+import { MODEL_STAND_IN_ID, modelStandInEntry } from "../support/model-stand-in-entry.js";
 import { probeService } from "../../packages/worker/src/service-probe.js";
 import type { DockerCli } from "../../packages/worker/src/swebench/containers.js";
 
@@ -26,7 +27,7 @@ const catalogFile = JSON.parse(readFileSync(new URL("../../environments/service-
 const catalog = ServiceCatalogSchema.parse(catalogFile);
 /** A catalog entry as the pinned catalog will carry it (digest set). */
 function pinned(id: string, change: (entry: CatalogEntry) => void = () => undefined): CatalogEntry {
-  const found = catalog.entries.find((entry) => entry.id === id);
+  const found = catalog.entries.find((entry) => entry.id === id) ?? (id === MODEL_STAND_IN_ID ? modelStandInEntry() : undefined);
   if (found === undefined) throw new Error(`no entry ${id}`);
   const copy = structuredClone(found);
   copy.image.digest = DIGEST;
@@ -149,6 +150,9 @@ function setup(options: FakeOptions = {}, extra: Partial<StartHelpersInput> = {}
   return { ...daemon, files, clock, input, run: (helpers: HelperRequest[]) => startHelpers(daemon.docker, makeNet(), input(helpers)) };
 }
 
+const STAND_IN_CONFIG = { name: MODEL_STAND_IN_CONFIG_NAME, to: MODEL_STAND_IN_CONFIG_TARGET, content: JSON.stringify({ version: 1, endpoints: { "fraud-scorer": { model: { kind: "fixed", body: "ok" } } } }) };
+const AWS_CREDENTIALS = { user: "rovara", password: SECRET, controlToken: CONTROL, sqsReceiptSecret: RECEIPT };
+
 const LABELS = runNetworkLabelArgs({ runId: RUN, workspace: WS, createdAt: NOW, expiresAt: NOW + 1_500_000 });
 const flag = (args: readonly string[], name: string): string[] => args.flatMap((arg, index) => (args[index - 1] === name ? [arg] : []));
 
@@ -265,7 +269,7 @@ describe("the arguments of a helper (snapshot)", () => {
     t.files.helper.write = (name, content, mode) => { seen.push(content); return write(name, content, mode); };
     await t.run([request("aws", "local-aws@r1", { credentials: { user: "rovara", password: SECRET, controlToken: CONTROL, sqsReceiptSecret: RECEIPT }, region: "us-west-2" })]);
     expect(seen).toEqual([`QUARKUS_HTTP_HOST=172.30.153.16\nROVARA_AWS_BASE_URL=http://aws:4566\nROVARA_AWS_AUTH_PRESIGN_SECRET=${SECRET}\nROVARA_AWS_SERVICES_SQS_RECEIPT_HANDLE_SECRET=${RECEIPT}\nROVARA_AWS_CONTROL_TOKEN=${CONTROL}\nROVARA_AWS_DEFAULT_REGION=us-west-2\nROVARA_AWS_HOSTNAME=aws\n`]);
-    expect(flag(t.started()[0]!, "--memory")).toEqual(["384m"]);
+    expect(flag(t.started()[0]!, "--memory")).toEqual(["512m"]);
     expect(flag(t.started()[0]!, "--network-alias")).toEqual(["aws"]);
     expect(t.calls.map((call) => call.join(" ")).join("\n")).not.toContain(SECRET);
     expect(t.calls.map((call) => call.join(" ")).join("\n")).not.toContain(CONTROL);
@@ -275,11 +279,12 @@ describe("the arguments of a helper (snapshot)", () => {
 
 describe("every catalog entry is started under the profile (4.1.4)", () => {
   // The helpers (the DNS helper, the proxy) are started by their own code; the fake server runs from the worker's own image and has its own tests (worker-fake-helper-launch.test.ts).
-  const entries = catalog.entries.filter((entry) => entry.backing !== "helper" && entry.workerImage !== true);
+  // the model stand-in is staged outside the signed catalog until its signing: it runs under the same profile
+  const entries = [...catalog.entries, ...(catalog.entries.some((entry) => entry.id === MODEL_STAND_IN_ID) ? [] : [modelStandInEntry()])].filter((entry) => entry.backing !== "helper" && entry.workerImage !== true);
   for (const entry of entries) {
     it(`${entry.id}`, async () => {
       const t = setup();
-      await t.run([request("dep", entry.id, entry.backing === "emulated" ? { credentials: { user: "rovara", password: SECRET, controlToken: CONTROL, sqsReceiptSecret: RECEIPT }, region: "us-east-1" } : {})]);
+      await t.run([request("dep", entry.id, entry.backing === "emulated" ? { credentials: { user: "rovara", password: SECRET, controlToken: CONTROL, sqsReceiptSecret: RECEIPT }, region: "us-east-1" } : entry.family === "model-stand-in" ? { files: [STAND_IN_CONFIG] } : {})]);
       const call = t.started()[0]!;
       for (const forbidden of ["--privileged", "--cap-add", "--publish", "-p", "-P", "--publish-all", "--net", "--pid", "--ipc", "--uts", "--device", "--volumes-from", "--userns", "--add-host", "--entrypoint", "--env", "-e", "--dns", "--link", "--cgroupns", "--security-opt=seccomp=unconfined"]) {
         expect(call, forbidden).not.toContain(forbidden);
@@ -893,5 +898,85 @@ describe("the health probe (service-probe.ts)", () => {
     expect(await probeService({ host: "127.0.0.1", port: 0 })).toBe(false);
     expect(await probeService({ host: "127.0.0.1", port: 80, path: "/a b" })).toBe(false);
     expect(await probeService({ host: "127.0.0.1", port: 80, path: "http://evil/" })).toBe(false);
+  });
+});
+
+describe("the model stand-in (lane SM3, model-stand-in@r1) and its address in the emulator's env file", () => {
+  const standIn = (id = "ml", extra: Partial<HelperRequest> = {}): HelperRequest => request(id, "model-stand-in@r1", { files: [STAND_IN_CONFIG], ...extra });
+  const aws = (extra: Partial<HelperRequest> = {}): HelperRequest => request("aws", "local-aws@r1", { credentials: AWS_CREDENTIALS, region: "us-east-1", ...extra });
+
+  it("starts as a non-root, read-only helper of 128 MiB with its config file mounted read-only, no environment, no extra privilege for port 8080", async () => {
+    const t = setup();
+    await t.run([standIn()]);
+    const name = helperContainerName(makeNet(), "ml");
+    expect(t.started()).toEqual([[
+      "run", "--detach", "--name", name, "--pull=never", "--init",
+      ...LABELS,
+      "--network", runNetworkName(RUN), "--ip", "172.30.153.16", "--network-alias", "model-stand-in",
+      "--user", "65532:65532", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--read-only",
+      "--memory", "128m", "--memory-swap", "128m", "--cpus", "0.5", "--pids-limit", "64",
+      "--log-driver", "local", "--log-opt", "max-size=1m", "--log-opt", "max-file=1", "--log-opt", "compress=false",
+      "-v", `/run/rovara-test/${name}.${MODEL_STAND_IN_CONFIG_NAME}:${MODEL_STAND_IN_CONFIG_TARGET}:ro`,
+      `${REGISTRY}/svc/model-stand-in@sha256:${DIGEST}`,
+    ]]);
+    // the config is a file of the run's directory, never an argument; the image's own default command reads it
+    expect(t.calls.map((call) => call.join(" ")).join("\n")).not.toContain("fraud-scorer");
+    expect(t.files.files.get(`${name}.${MODEL_STAND_IN_CONFIG_NAME}`)?.content).toBe(STAND_IN_CONFIG.content);
+  });
+  it("is healthy when /ping answers on 8080 (an http probe from the services network)", () => {
+    const entry = pinned("model-stand-in@r1");
+    expect(entry.health).toEqual({ kind: "http", port: 8080, path: "/ping", startTimeoutS: 15 });
+    expect(entry.run.ports).toContain(8080);
+  });
+  it("refuses a stand-in with no config file, another file, an extra file or a config at another path", async () => {
+    for (const files of [[], [{ ...STAND_IN_CONFIG, to: "/etc/other.json" }], [{ ...STAND_IN_CONFIG, name: "other.json" }], [STAND_IN_CONFIG, { name: "extra.json", to: "/rovara/extra.json", content: "{}" }]]) {
+      const t = setup();
+      await expect(t.run([request("ml", "model-stand-in@r1", { files })]), JSON.stringify(files.map((file) => file.name))).rejects.toBeInstanceOf(HelperStartError);
+      expect(t.started()).toEqual([]);
+    }
+  });
+  it("the emulator's env file lists the stand-in's address (alias and port) in ROVARA_AWS_SAGEMAKER_HELPER, the first is the default", async () => {
+    const t = setup();
+    const seen: Record<string, string> = {};
+    const write = t.files.helper.write.bind(t.files.helper);
+    t.files.helper.write = (name, content, mode) => { seen[name] = content; return write(name, content, mode); };
+    await t.run([standIn("ml", { aliases: ["ml-a"] }), aws({ dependsOn: ["ml"], sagemakerHelpers: ["http://ml-a:8080", "http://ml-a:8081"] })]);
+    const env = seen[`${helperContainerName(makeNet(), "aws")}.env`]!;
+    expect(env.split("\n")).toContain("ROVARA_AWS_SAGEMAKER_HELPER=http://ml-a:8080,http://ml-a:8081");
+    expect(env.endsWith("\n")).toBe(true);
+    // the stand-in started first; its alias is the address the front resolves
+    expect(t.started().map((call) => flag(call, "--network-alias")[0])).toEqual(["ml-a", "aws"]);
+    expect(t.calls.map((call) => call.join(" ")).join("\n")).not.toContain("ROVARA_AWS_SAGEMAKER_HELPER");
+  });
+  it("without sagemakerHelpers the emulator's env file has no such line (the front then has no stand-in)", async () => {
+    const t = setup();
+    let env = "";
+    const write = t.files.helper.write.bind(t.files.helper);
+    t.files.helper.write = (name, content, mode) => { env = content; return write(name, content, mode); };
+    await t.run([aws()]);
+    expect(env).not.toContain("SAGEMAKER");
+  });
+  it("refuses an address that is not an alias and port of a stand-in this run starts", async () => {
+    const bad: string[][] = [
+      ["http://model-stand-in:8080"],                  // no stand-in in this run
+      ["http://evil.example.com:8080"],                // another host
+      ["http://127.0.0.1:8080"], ["http://169.254.169.254:80"], ["http://172.30.153.16:8080"], // an address, never a name
+      ["https://ml:8080"], ["http://ml:8080/path"], ["http://ml:8080?x=1"], ["http://user@ml:8080"], ["http://ml"], ["http://ml:0"], ["http://ml:99999"], ["http://ML:8080"], ["ml:8080"],
+      ["http://ml:8084"],                              // a port the entry does not list
+      ["http://ml:8080", "http://ml:8080"],            // twice
+      [],                                              // empty
+      Array.from({ length: 17 }, (_, index) => `http://ml:${String(8080 + (index % 4))}?${String(index)}`),
+    ];
+    for (const urls of bad) {
+      const t = setup();
+      const withStandIn = urls.length === 1 && urls[0] === "http://model-stand-in:8080" ? [] : [standIn("ml", { aliases: ["ml"] })];
+      await expect(t.run([...withStandIn, aws({ sagemakerHelpers: urls })]), JSON.stringify(urls)).rejects.toBeInstanceOf(HelperStartError);
+      expect(t.started(), JSON.stringify(urls)).toEqual([]);
+    }
+  });
+  it("refuses sagemakerHelpers on any request but the emulator's", async () => {
+    const t = setup();
+    await expect(t.run([standIn("ml", { aliases: ["ml"], sagemakerHelpers: ["http://ml:8080"] })])).rejects.toBeInstanceOf(HelperStartError);
+    await expect(setup().run([request("pg", "postgres@16", { sagemakerHelpers: ["http://ml:8080"] })])).rejects.toBeInstanceOf(HelperStartError);
   });
 });

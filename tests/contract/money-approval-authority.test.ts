@@ -2,6 +2,8 @@ import { afterProjectBootstrap } from "../support/transaction-audit.js";
 // The existing owner-cap approval boundary, across agent and chain money/ownership changes.
 import { fixtureActor } from "../support/money-authority.js";
 import { randomUUID } from "node:crypto";
+// The chain cases drive /v1/app/chains, which answers only while WEB_FEATURES names `chains` (chains/automations-gate.ts).
+import "../support/automations-on.js";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { expect, it } from "vitest";
 import { agentKey, chainKey } from "@rovara-code/contracts";

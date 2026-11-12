@@ -185,6 +185,9 @@ describe("the event catalog", () => {
       // A-31 (srv/project-people): an invite that names a project
       "project_member.invited", "project_member.joined_by_invite", "project_member.invite_skipped",
       "company.private_addresses_proposed", "company.private_addresses_changed", "company.private_addresses_withdrawn",
+      // A7 (cloud/audit-sink): events only the core's audit-sink adapter writes
+      "task.started", "task.start_refused", "task.closed", "session.closed", "session.message_sent", "agent.created", "agent.archived", "agent.unarchived",
+      "chain.created", "chain.archived", "chain.unarchived", "playbook.file_changed", "automation.run_ended", "company.approval_sign_in_changed", "lesson.retire_requested",
     ]);
     expect(new Set(AUDIT_ACTIONS).size).toBe(AUDIT_ACTIONS.length);
   });

@@ -1,0 +1,51 @@
+{
+  "id": "model-stand-in@r1",
+  "family": "model-stand-in",
+  "backing": "local",
+  "version": "r1",
+  "status": "available",
+  "image": {
+    "repository": "svc/model-stand-in",
+    "platforms": [
+      "linux/arm64",
+      "linux/amd64"
+    ]
+  },
+  "run": {
+    "user": "65532:65532",
+    "readOnlyRoot": true,
+    "tmpfs": [],
+    "ports": [
+      8080,
+      8081,
+      8082,
+      8083
+    ],
+    "extraArgs": []
+  },
+  "health": {
+    "kind": "http",
+    "port": 8080,
+    "path": "/ping",
+    "startTimeoutS": 15
+  },
+  "resources": {
+    "memMiB": 128,
+    "cpus": 0.5,
+    "pids": 64
+  },
+  "connect": {
+    "templates": {},
+    "defaultAliases": [
+      "model-stand-in"
+    ]
+  },
+  "reset": {
+    "kind": "restart"
+  },
+  "licence": "LicenseRef-Rovara AND BSD-3-Clause",
+  "editions": [
+    "public",
+    "enterprise"
+  ]
+}

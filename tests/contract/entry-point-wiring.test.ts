@@ -21,7 +21,11 @@ describe("broker.ts hands the broker its edition, stores, plug-ins and guard", (
   });
 
   it("builds the handler from that same input", () => {
-    expect(broker).toMatch(/export const handler = createAwsBrokerHandler\(brokerInput\);/);
+    // Since the signing-key move (d6a34c697) the input is built by `buildBrokerInput(keys)`, once the keys are read; both ways of building the handler use it.
+    expect(broker).toMatch(/return brokerInput;\n\}/);
+    expect(broker).toMatch(/export const handler = legacyKeys !== undefined\n {2}\? createAwsBrokerHandler\(buildBrokerInput\(legacyKeys\)\)/);
+    expect(broker).toMatch(/\(keys\) => createAwsBrokerHandler\(buildBrokerInput\(keys\)\)\);/);
+    expect(broker.match(/createAwsBrokerHandler\(/g)).toHaveLength(2);
   });
 
   it("reads the edition from the stamp only (never derived from the cloud flag) and builds the stores from it", () => {

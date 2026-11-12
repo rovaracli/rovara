@@ -3,7 +3,7 @@
 // places that start new work (a task start, Slack-started work, the setup check): work that exists keeps going.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { ProjectRoleSchema, agentXError, projectAllows, projectArchivedMessage, projectMetaKey, type OrgId, type ProjectRole } from "@rovara-code/contracts";
-import { projectRoleFloor, type OrgRole, type ProjectRole as MemberRole } from "@agentx/cloud-contracts";
+import { isWriterOrgRole, projectRoleFloor, type OrgRole, type ProjectRole as MemberRole } from "@agentx/cloud-contracts";
 import { ownerKeyForSubject } from "../aws/lambda.js";
 
 /**
@@ -81,8 +81,8 @@ export function effectiveProjectRole(caller: { orgRole: OrgRole; developerId: st
 /** The same rule with the EXACT role (a collaborator is a collaborator, not its viewer floor): the one place it is decided, so the floor and the exact role can never disagree. */
 export function effectiveMemberRole(caller: { orgRole: OrgRole; developerId: string }, grant: GrantItem | undefined, channelAccess: boolean): MemberRole | undefined {
   if (caller.orgRole === "owner" || caller.orgRole === "admin") return "maintainer";
-  // The Auditor has no project role, whatever grant or channel it may also hold: it reads the audit log and writes nothing.
-  if (caller.orgRole === "auditor") return undefined;
+  // The Auditor has no project role, whatever grant or channel it may also hold: it reads the audit log and writes nothing. A positive list (P3-OPEN-ROLES-CLOUD-ADOPTION): any role that is not a writer's has none.
+  if (!isWriterOrgRole(caller.orgRole)) return undefined;
   const granted = grantMemberRoleOf(grant);
   if (granted !== undefined) return granted;
   return channelAccess ? "contributor" : undefined;
