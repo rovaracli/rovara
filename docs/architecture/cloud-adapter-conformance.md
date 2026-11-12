@@ -45,3 +45,11 @@ skipped in the report. There is no way to skip a whole port.
 Ports covered today: document-store, queue, outbox, object-storage, secret-store, worker-machines, scheduler, image-registry, admission, audit-sink, approvers, identity, metering, model-key-store,
 code-host, check-runner, tracker. `github-client-conformance.ts` is exempt (it tests Code's own GitHub client, not a port a Cloud adapter implements). A suite for a new port (the plan's K1 lane) is
 added to `ports.ts` (suite, harness type, vendored file name), `code-fakes.ts` (its positive control) and `pending-lanes.ts`.
+
+## Slack on the channel point (lane A8, registered, no traffic)
+
+`packages/broker/src/plugins/channel/slack-cloud/` is Cloud's Slack as an ordinary `channel` adapter on Code's port (`CloudSlackChannel`, `createCloudSlackSink`, `registerCloudSlackChannel`). Nothing live calls it: the Slack ingress, the Slack service and the notifier are
+unchanged, and registering it posts nothing and reads no token. It sends with today's Web API calls and escaping; its sink takes the company from `SLACK_TEAM#<team>` and the person from the explicit-member rule (`slackRequesterStanding`, switch `sm`), passed in as `standingOf`.
+The keys are the ones Cloud writes today (`ORG#<company>#SLACK_BINDING#<team>`); the only addition is the `ORG#<company>#CHANNEL_TENANTS` row Code lists bindings by, with a backfill and its reverse in `tenants-backfill.ts` (not run; owner gate G-DATA).
+`tests/unit/cloud-slack-channel.test.ts` (characterization of today's behaviour, the adapter, the sink) and `tests/unit/cloud-slack-channel-keys.test.ts` (keys, isolation, backfill and reverse) are the checks.
+The email (SES) and realtime (cloud events) adapters wait for the pin to carry Code's K1 ports (`email`, `realtime`): the pin bump also moves `pi-ai` to 1.5.2 in the worker and model-runtime, which is the controller's call.
