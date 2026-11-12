@@ -109,7 +109,8 @@ describe("the worker's spec write run", () => {
   it("is a read-only planning session and returns the draft", async () => {
     const { result, seen } = await runSpec([block(FEATURE)]);
     expect(seen.created[0]!.workflowMode).toBe("PLAN");
-    expect(seen.created[0]!.extensionFactories ?? []).toEqual([]);
+    // Only the tool-loop guard (Pi 1.5.2 port of Code 00374ec28: every session refuses the call past the tool-call limit before it runs); no verification extension.
+    expect((seen.created[0]!.extensionFactories ?? []).map((extension) => (extension as { name?: unknown }).name)).toEqual(["rovara-tool-loop-guard"]);
     expect(result.workflowMode).toBe("SPEC_WRITE");
     expect(result.specDraft).toMatchObject({ kind: "feature", planDigest: PLAN_DIGEST, title: "Reset password" });
     expect(seen.prompts[0]).toContain("THE APPROVED PLAN");

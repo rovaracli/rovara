@@ -65,7 +65,8 @@ export { TaskStopEditablePolicySchema, type TaskStopEditablePolicy, TaskStopPend
 // Proof and evidence (W4/W5): browser-safe schemas for the evidence view, decision cards and the test environment.
 export * from "./evidence.js";
 export * from "./app-lessons-repo-file.js";
-export * from "./lessons-local-tools.js";
+// Lessons for local coding tools (decision 46b): Code's own file since the vendor pin 0e340c0e, re-exported for the pages that show the setting.
+export { LOCAL_LESSONS_STAGES, LocalLessonsStageSchema, LOCAL_LESSONS_TASK_MAX, LOCAL_LESSONS_FILES_MAX, LOCAL_LESSONS_REMOTE_MAX, LocalLessonsBodySchema, type LocalLessonsBody, LOCAL_LESSONS_OFF_REASONS, LocalLessonSchema, LocalLessonsResponseSchema, type LocalLessonsResponse, LocalLessonsResponseReaderSchema, type LocalLessonsRead, LOCAL_LESSONS_UNAVAILABLE_LINE, LOCAL_LESSONS_NOT_FOUND_LINE, LOCAL_LESSONS_NO_PROJECT_LINE, LOCAL_LESSONS_AMBIGUOUS_LINE, LOCAL_LESSONS_PROJECTS_MAX, LOCAL_LESSONS_REPO_FILE, LOCAL_LESSONS_TOOL_DESCRIPTION, LOCAL_LESSONS_NOTES_LINE, withNotesLine, withoutCredentials, LocalToolsProjectBodySchema, LocalToolsCompanyBodySchema, LocalToolsStateSchema, LocalToolsStateReaderSchema, type LocalToolsState, LocalToolsCompanyStateSchema, LocalToolsCompanyStateReaderSchema, type LocalLessonsAsk, type LocalLessonsAcross, lessonsAcrossProjects } from "@rovara-code/contracts";
 // Team record source rows (learning v2): the Sources tab editor's bodies and views.
 export * from "./team-record-sources.js";
 // UX-4b: the project's learning mode, read and set on the project page.

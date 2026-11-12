@@ -16,6 +16,7 @@ import {
   IacSeedRefSchema, TestEnvDependencyIdSchema, TestEnvDependencyKindSchema, TestEnvRegionSchema, catalogIdName, testEnvStartedCount,
 } from "./test-env-dependency.js";
 import { reservedDependencyEnvName } from "./test-services-shared.js";
+import { AWS_PLAN_SERVICES_MAX, AwsPlanServiceSchema, normaliseAwsServiceKey } from "./aws-emulator-service-keys.js";
 import { TEST_ENV_ROUND_BUDGET_MIN, TEST_ENV_SELECTION_METHODS, TEST_ENV_SELECT_PLACEHOLDER, TestEnvValueSourceSchema, TestEnvironmentBodySchema, type TestEnvironmentBody } from "./test-environment.js";
 
 export const TEST_ENV_DETECT_FEATURE = "task.testEnvDetect.v1";
@@ -39,14 +40,33 @@ export const TEST_SERVICES_AWS_PLAN_FEATURE = "task.testServices.aws.v1";
  */
 export const TEST_SERVICES_FAKE_PLAN_FEATURE = "task.testServices.fake.v1";
 /**
+ * Company-approved extra images (switch `pj`): a worker that lists this reads a plan dependency with `backing: "company"` and its `company` block (an image a company admin approved, by registry, repository and digest) and can
+ * start exactly that digest. No worker lists it yet, so the broker never sends such a plan to any worker (`ec2-delivery.ts`); a worker that does not know the backing refuses it by its strict parse, and one that knows it and
+ * cannot serve it refuses it by name. In `WORKER_INVOCATION_FEATURES`.
+ */
+export const TEST_SERVICES_COMPANY_IMAGE_PLAN_FEATURE = "task.testServices.companyImage.v1";
+/**
  * TS-UX-1 item 9: a worker that lists this loads a dependency's seed FILE (`seeds[].fixturePath`) into its test database. An older worker failed such a seed ("not available yet"); the broker never sends it a plan with a
  * file seed (`ec2-delivery.ts`). In `WORKER_INVOCATION_FEATURES`.
  */
 export const TEST_SERVICES_FILE_SEED_FEATURE = "task.testServices.fileSeed.v1";
 /** SEED-RISK-1: a worker that checks a seed command's `lock` (re-hashes the repository's seed script from its checkout, refuses on a difference). A plan with a locked seed goes only to such a worker. */
 export const TEST_SERVICES_SEED_LOCK_FEATURE = "task.testServices.seedLock.v1";
-/** The AWS services a plan may ask Rovara local AWS for in slice 2. The broker's rule and the worker's contract are this one list. */
-export const TEST_SERVICES_AWS_PLAN_SERVICES = ["s3", "sqs", "dynamodb"] as const;
+/**
+ * A worker that lists this reads a plan whose `aws.services` names any service of the generated table (`AWS_EMULATOR_SERVICES`). A worker without it only accepts the three services of `SEEDED_AWS_SERVICES`, so the
+ * broker adds this feature to a plan with any other service (`featuresForTestPlan`, which the delivery guard reads) and the run goes only to a worker that lists it. It is in `WORKER_INVOCATION_FEATURES`; a worker
+ * advertises it with the other test-services features (`testServicesAdvertisedFeatures`), when it can run an emulated plan at all.
+ */
+export const TEST_SERVICES_AWS_ALL_SERVICES_FEATURE = "task.testServices.aws.allServices.v1";
+/**
+ * The three AWS services a worker WITHOUT `TEST_SERVICES_AWS_ALL_SERVICES_FEATURE` accepts in a plan (what could be seeded before that feature). This is the old worker's list, kept for the feature check; the services Rovara
+ * now seeds are `AWS_SEEDED_KINDS`, and any other service of the table starts empty.
+ */
+export const SEEDED_AWS_SERVICES = ["s3", "sqs", "dynamodb"] as const;
+/** Whether a plan's services need `TEST_SERVICES_AWS_ALL_SERVICES_FEATURE`: any of them is not one a worker without the feature accepts. Legacy spellings are read as their keys. */
+export function awsPlanNeedsAllServices(services: readonly string[]): boolean {
+  return services.some((service) => !(SEEDED_AWS_SERVICES as readonly string[]).includes(normaliseAwsServiceKey(service) ?? service));
+}
 
 const NO_HIDDEN = /^[^\p{Cc}\p{Cf}]*$/u;
 const line = (max: number) => z.string().min(1).max(max).regex(NO_HIDDEN, "one plain line");
@@ -72,7 +92,7 @@ export const TEST_ENV_SEED_COMMANDS_MAX = 8;
 const CandidateKeyAttribute = z.object({ name: line(255), type: z.enum(["S", "N", "B"]) }).strict();
 const CandidateResource = z
   .object({
-    kind: z.enum(["table", "bucket", "queue", "topic"]),
+    kind: z.enum(["table", "bucket", "queue", "topic", "secret", "parameter", "key", "bus", "rule"]),
     name: line(300),
     keySchema: z.object({ partitionKey: CandidateKeyAttribute, sortKey: CandidateKeyAttribute.optional() }).strict().optional(),
   })
@@ -105,6 +125,8 @@ export const TestEnvDependencyCandidateSchema = z
         /** The settings that name it, parsed down to the scheme and the host FAMILY; never the host. */
         url: z.object({ scheme: line(32), hostFamily: z.enum(["local", "private", "cloud", "unknown"]) }).strict().optional(),
         resources: z.array(CandidateResource).max(TEST_ENV_DEPENDENCY_LIMITS.awsServices).optional(),
+        /** An AWS service no seed handler creates resources for: its emulator starts empty and the tests create their resources. */
+        startsEmpty: z.boolean().optional(),
         seenBy: z.array(line(40)).max(8).optional(),
       })
       .strict(),
@@ -171,7 +193,7 @@ export const TaskDependencyPlanSchema = z
      * `local`: real software from the catalog. `emulated` (slice 2): Rovara local AWS, with the `aws` block below; every emulated entry of one plan names the same image, and all of them share one helper.
      * `fake` (slice 3): the fake server, from the worker's own image, serving the approved fixture set the `fake` block names.
      */
-    backing: z.enum(["local", "emulated", "fake"]),
+    backing: z.enum(["local", "emulated", "fake", "company"]),
     catalogId: CatalogIdSchema,
     /** The repository under the install's registry (`svc/postgres`); the registry host is the install's. */
     repository: z.string().regex(/^svc\/[a-z0-9][a-z0-9._-]{0,62}$/u),
@@ -183,6 +205,12 @@ export const TaskDependencyPlanSchema = z
      * recording is answered with an error and counted (a made-up answer is not available yet).
      */
     fake: z.object({ fixtureSetRef: Sha256, unmatched: z.literal("fail") }).strict().optional(),
+    /**
+     * Only on a `company` entry (switch `pj`): the image a company admin approved, so a company image is never dressed as one of Rovara's catalog images. `imageId` is the approval's id (it names the digest), `registry` and
+     * `repository` say where the image comes from, and `digest` is the approved digest (equal to the plan's `digest`). `catalogId` is then only the catalog entry whose RUN PROFILE the image runs with (user, memory, ports,
+     * health check, reset), never the source of the image.
+     */
+    company: z.object({ imageId: z.string().regex(/^img_[a-f0-9]{20}$/u), registry: z.string().min(4).max(253), repository: z.string().min(1).max(250), digest: Sha256 }).strict().optional(),
     /** Names and files carried over from the project (database, user, extensions, init files); no password. */
     config: CatalogConfigSchema,
     aliases: z.array(DnsLabelSchema).max(TEST_ENV_DEPENDENCY_LIMITS.hostAliases),
@@ -195,13 +223,19 @@ export const TaskDependencyPlanSchema = z
     seeds: z.array(z.union([z.object({ command: ProjectCommandSchema, lock: SeedScriptLockSchema.optional() }).strict(), z.object({ fixturePath: RelativeWorkspacePathSchema, sha256: Sha256.optional() }).strict()])).max(TEST_ENV_DEPENDENCY_LIMITS.seeds),
     reset: z.enum(TEST_ENV_DEPENDENCY_RESETS),
     /** Only on an `emulated` entry: the AWS services this dependency needs from Rovara local AWS, the region the code is told, and where the project declares its resources (a file, never read by the broker). */
-    aws: z.object({ services: z.array(z.enum(TEST_SERVICES_AWS_PLAN_SERVICES)).min(1).max(TEST_SERVICES_AWS_PLAN_SERVICES.length), region: TestEnvRegionSchema, resources: IacSeedRefSchema.optional() }).strict().optional(),
+    aws: z.object({ services: z.array(AwsPlanServiceSchema).min(1).max(AWS_PLAN_SERVICES_MAX), region: TestEnvRegionSchema, resources: IacSeedRefSchema.optional() }).strict().optional(),
   })
   .strict()
   .superRefine((plan, context) => {
     const problem = (path: (string | number)[], message: string) => context.addIssue({ code: "custom", path, message });
     if (plan.backing === "local" && (TEST_ENV_HELPER_CATALOG_NAMES as readonly string[]).includes(catalogIdName(plan.catalogId))) problem(["catalogId"], "a local dependency is real software from the catalog, not one of Rovara's helpers");
     if (plan.backing === "local" && plan.aws !== undefined) problem(["aws"], "only an emulated dependency has AWS services");
+    if (plan.backing === "company") {
+      if ((TEST_ENV_HELPER_CATALOG_NAMES as readonly string[]).includes(catalogIdName(plan.catalogId))) problem(["catalogId"], "a company image runs with the profile of real software from the catalog, not of one of Rovara's helpers");
+      if (plan.company === undefined) problem(["company"], "a company image names the approval it runs");
+      else if (plan.company.digest !== plan.digest) problem(["company", "digest"], "a company image runs exactly the digest that was approved");
+      if (plan.aws !== undefined) problem(["aws"], "only an emulated dependency has AWS services");
+    } else if (plan.company !== undefined) problem(["company"], "only a company image names an approval");
     if (plan.backing === "fake") {
       if (catalogIdName(plan.catalogId) !== "fake-server") problem(["catalogId"], "a fake dependency runs the fake server");
       if (plan.fake === undefined) problem(["fake"], "a fake dependency names its fixture set");
@@ -217,7 +251,7 @@ export const TaskDependencyPlanSchema = z
       if (plan.aws === undefined) problem(["aws"], "an emulated dependency names its AWS services");
       else {
         if (new Set(plan.aws.services).size !== plan.aws.services.length) problem(["aws", "services"], "a service is listed once");
-        if (plan.family.startsWith("aws:") && !(plan.aws.services as readonly string[]).includes(plan.family.slice(4))) problem(["aws", "services"], "the services include the family's own service");
+        if (plan.family.startsWith("aws:") && !(plan.aws.services as readonly string[]).includes(normaliseAwsServiceKey(plan.family.slice(4)) ?? plan.family.slice(4))) problem(["aws", "services"], "the services include the family's own service");
       }
     }
     if (new Set(plan.aliases).size !== plan.aliases.length) problem(["aliases"], "an alias is listed once");

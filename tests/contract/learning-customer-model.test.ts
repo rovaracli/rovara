@@ -295,6 +295,8 @@ describe("H2: a model that reasons by default is ranked after the ones that do n
   });
 });
 
+// Pi 1.5.2 (vendor pin 0e340c0e) dropped gpt-5.2-chat-latest and deepseek/deepseek-r1 from its catalog and serves ~anthropic/claude-haiku-latest on anthropic-messages: the same cases use
+// gpt-5.2-pro (no minimal, low or off), deepseek-r1-0528 and aion-3.0-mini (map only {off: null}) and ~deepseek/deepseek-flash-latest (a completions hybrid whose off is "none").
 describe("R1: the reasoning level comes from the catalog's thinkingLevelMap, never from the model's name", () => {
   const effortOf = (provider: string, modelId: string) => learningReasoningEffort({ provider, modelId });
   const openaiOnly = async (...ids: string[]) => { const t = install({ source: openai(...ids) }); await t.ready(); return t; };
@@ -305,10 +307,10 @@ describe("R1: the reasoning level comes from the catalog's thinkingLevelMap, nev
     expect(effortOf("openai", "gpt-5.4-nano")).toEqual({ fit: true, effort: "none" });
     expect(effortOf("openai", "gpt-5.1")).toEqual({ fit: true, effort: "none" });
     expect(effortOf("openai", "o4-mini")).toEqual({ fit: true, effort: "low" });
-    expect(effortOf("openai", "gpt-5.2-chat-latest")).toEqual({ fit: false });
+    expect(effortOf("openai", "gpt-5.2-pro")).toEqual({ fit: false });
     expect(effortOf("openai", "gpt-5.4-pro")).toEqual({ fit: false });
     // An OpenRouter hybrid whose thinking is off by default: asking for "low" would turn it ON, so it is asked for none.
-    expect(effortOf("openrouter", "~anthropic/claude-haiku-latest")).toEqual({ fit: true, effort: "none" });
+    expect(effortOf("openrouter", "~deepseek/deepseek-flash-latest")).toEqual({ fit: true, effort: "none" });
     // A reasoning entry with no map at all: nothing is sent (a guessed level may be refused by the provider).
     expect(effortOf("openrouter", "deepseek/deepseek-v3.2")).toEqual({ fit: true });
     // Not a model that reasons by default: nothing to ask for.
@@ -334,15 +336,15 @@ describe("R1: the reasoning level comes from the catalog's thinkingLevelMap, nev
   });
 
   it("N2 / LP-11 map: the 24 real OpenRouter entries whose map is only {off: null} (deepseek-r1, aion) are now fit; entries with explicit nulls (gpt-5-pro) stay unfit", async () => {
-    for (const id of ["deepseek/deepseek-r1", "deepseek/deepseek-r1-0528", "aion-labs/aion-2.0", "aion-labs/aion-3.0"]) {
+    for (const id of ["deepseek/deepseek-r1-0528", "aion-labs/aion-3.0-mini", "aion-labs/aion-2.0", "aion-labs/aion-3.0"]) {
       expect(effortOf("openrouter", id)).toEqual({ fit: true, effort: "low" });
       expect(unfitForLearning({ provider: "openrouter", modelId: id })).toBe(false);
     }
     expect(effortOf("openrouter", "openai/gpt-5-pro")).toEqual({ fit: false });
-    const t = install({ source: openrouter("deepseek/deepseek-r1") });
+    const t = install({ source: openrouter("deepseek/deepseek-r1-0528") });
     await t.ready();
     await t.model.complete(t.request);
-    expect(t.calls[0]).toMatchObject({ model: orAlias("deepseek/deepseek-r1"), api: "openai-completions", reasoningEffort: "low" });
+    expect(t.calls[0]).toMatchObject({ model: orAlias("deepseek/deepseek-r1-0528"), api: "openai-completions", reasoningEffort: "low" });
   });
 
   it("L5: a level the map names is sent as the value the map gives it, when the protocol takes it; any other value leaves that level out", () => {
@@ -361,29 +363,29 @@ describe("R1: the reasoning level comes from the catalog's thinkingLevelMap, nev
     }
   });
 
-  it("an OpenRouter hybrid (`~anthropic/claude-haiku-latest`) is sent 'none' on the completions transport; a reasoning entry with no map is sent nothing", async () => {
-    const hybrid = install({ source: openrouter("~anthropic/claude-haiku-latest") });
+  it("an OpenRouter hybrid (`~deepseek/deepseek-flash-latest`) is sent 'none' on the completions transport; a reasoning entry with no map is sent nothing", async () => {
+    const hybrid = install({ source: openrouter("~deepseek/deepseek-flash-latest") });
     await hybrid.ready();
     await hybrid.model.complete(hybrid.request);
-    expect(hybrid.calls[0]).toMatchObject({ model: orAlias("~anthropic/claude-haiku-latest"), api: "openai-completions", reasoningEffort: "none" });
+    expect(hybrid.calls[0]).toMatchObject({ model: orAlias("~deepseek/deepseek-flash-latest"), api: "openai-completions", reasoningEffort: "none" });
     const bare = install({ source: openrouter("deepseek/deepseek-v3.2") });
     await bare.ready();
     await bare.model.complete(bare.request);
     expect(Object.keys(bare.calls[0]!)).not.toContain("reasoningEffort");
   });
 
-  it("gpt-5.2-chat-latest and gpt-5.4-pro (no minimal, low or off) are unfit for learning: never chosen, never quoted, no key made; the setting and stored value are ignored too", async () => {
-    expect([unfitForLearning({ provider: "openai", modelId: "gpt-5.2-chat-latest" }), unfitForLearning({ provider: "openai", modelId: "gpt-5.4-pro" }), unfitForLearning({ provider: "openai", modelId: "gpt-5.4-nano" })]).toEqual([true, true, false]);
-    for (const id of ["gpt-5.2-chat-latest", "gpt-5.4-pro"]) {
+  it("gpt-5.2-pro and gpt-5.4-pro (no minimal, low or off) are unfit for learning: never chosen, never quoted, no key made; the setting and stored value are ignored too", async () => {
+    expect([unfitForLearning({ provider: "openai", modelId: "gpt-5.2-pro" }), unfitForLearning({ provider: "openai", modelId: "gpt-5.4-pro" }), unfitForLearning({ provider: "openai", modelId: "gpt-5.4-nano" })]).toEqual([true, true, false]);
+    for (const id of ["gpt-5.2-pro", "gpt-5.4-pro"]) {
       const t = await openaiOnly(id);
       await expect(t.model.complete(t.request)).rejects.toMatchObject({ code: "no_suitable_model" });
       expect(await t.model.quote!(t.request)).toEqual({ ok: false, code: "no_suitable_model" });
       expect(t.proxy.mintKey).not.toHaveBeenCalled();
     }
-    const mixed = await openaiOnly("gpt-5.2-chat-latest", "gpt-5.4-pro", "gpt-5.4-nano");
+    const mixed = await openaiOnly("gpt-5.2-pro", "gpt-5.4-pro", "gpt-5.4-nano");
     await mixed.model.complete(mixed.request);
     expect(mixed.calls[0]).toMatchObject({ model: oaAlias("gpt-5.4-nano"), reasoningEffort: "none" });
-    const preferred = install({ source: openai("gpt-5.2-chat-latest", "gpt-5.4-nano"), lessonsModel: { provider: "openai", modelId: "gpt-5.2-chat-latest" } });
+    const preferred = install({ source: openai("gpt-5.2-pro", "gpt-5.4-nano"), lessonsModel: { provider: "openai", modelId: "gpt-5.2-pro" } });
     await preferred.ready();
     await preferred.model.complete(preferred.request);
     expect(preferred.calls[0]).toMatchObject({ model: oaAlias("gpt-5.4-nano") });

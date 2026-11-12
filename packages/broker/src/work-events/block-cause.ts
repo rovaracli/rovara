@@ -1,7 +1,8 @@
 // Work events (U3): why a workflow step was blocked, as a closed cause code. A blocked workflow carries a text reason (`blockReason`); that text is never stored in an event. It is matched here against the
 // broker's own fixed reasons (the constants and prefixes below, which are the only writers of a block), and anything not recognised is `other`, a failure. A stop on purpose (a cancel, a budget pause, a pause for
 // setup) is a STOP cause, so a failure rate counts real failures only.
-import { WORKFLOW_BLOCK_REASONS, type WorkEventBlockCause } from "@agentx/cloud-contracts";
+import { WORKFLOW_BLOCK_REASONS } from "@agentx/cloud-contracts";
+import { type WorkEventBlockCause } from "@rovara-code/contracts";
 import { BUDGET_EXHAUSTED_FAILURE_MESSAGE, FEEDBACK_STOPPED_REASON, RUN_LIMIT_BLOCK_PREFIX, UNDERSTAND_ANSWER_PENDING_MESSAGE, UNDERSTAND_TIMED_OUT_MESSAGE, UNDERSTAND_UNREADABLE_MESSAGE, WORKFLOW_APPLICATION_ACCOUNTS_CHANGED_PREFIX, WORKFLOW_APPLICATION_EVIDENCE_INCOMPLETE_PREFIX, WORKFLOW_APPLICATION_PLAN_NOT_APPROVABLE_PREFIX, WORKFLOW_APPLICATION_ROUND_REFUSED_PREFIX, WORKFLOW_APPLICATION_RUNTIME_RENEWED_PREFIX, WORKFLOW_APPLICATION_RUNTIME_UNUSABLE_PREFIX, WORKFLOW_APPLICATION_SELECTION_CHANGED_PREFIX, WORKFLOW_AUTO_IMPLEMENT_FAILED_MESSAGE, WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, WORKFLOW_AUTO_REVIEW_FAILED_MESSAGE, WORKFLOW_REVIEW_RESULT_INCOMPLETE_MESSAGE, isBranchSyncBlockReason, isCiFixBlockReason, isStepNotRunReason } from "@rovara-code/contracts";
 
 const R = WORKFLOW_BLOCK_REASONS;

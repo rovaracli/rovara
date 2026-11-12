@@ -7,7 +7,7 @@ import { esc, externalLink, layout, untrusted } from "./html.js";
 import type { FormBinding } from "./guard.js";
 import { PART_STATE_WORDS } from "../work-breakdown/view.js";
 import type {
-  ApprovalOffer, AutomationPageView, ChatPageView, CommentView, DesignReviewView, LessonReposView, LessonView, PendingItemView, PlanPageView, PlanVersionView, ProofReportView, ScriptTokensPageView, TestEnvironmentPageView,
+  ApprovalOffer, AutomationPageView, ChatPageView, CommentView, DesignReviewView, LessonLocalToolsView, LessonReposView, LessonView, PendingItemView, PlanPageView, PlanVersionView, ProofReportView, ScriptTokensPageView, TestEnvironmentPageView,
 } from "./views.js";
 import type { SecondReviewState } from "@agentx/contracts";
 
@@ -243,24 +243,44 @@ export function renderDesignReview(context: PageContext, view: DesignReviewView)
 
 // ---- lessons
 
-export function renderLessons(context: PageContext, lessons: readonly LessonView[], repos: readonly LessonReposView[] = []): string {
+const LOCAL_TOOLS_WHY: Readonly<Record<string, string>> = {
+  company_stays: "lessons stay in Rovara",
+  regulated: "the project is on the Regulated preset",
+  project_setting: "switched off for this project",
+};
+
+export function renderLessons(context: PageContext, lessons: readonly LessonView[], repos: readonly LessonReposView[] = [], localTools?: LessonLocalToolsView): string {
   const form = (lesson: LessonView, action: "approve" | "retire" | "wrong", label: string, cls = "") =>
     `<form method="post" action="${esc(context.base)}/lessons/act" class="row">${hidden("lessonId", lesson.id)}${hidden("action", action)}${hidden("ft", context.formToken({ action: "lesson.act", subject: `${lesson.id}:${action}:${lesson.status}`, ...(action === "approve" && lesson.offer !== undefined ? { requestId: lesson.offer.requestId, revision: lesson.offer.revision, artifactDigest: lesson.offer.artifactDigest } : {}) }))}<button type="submit" class="${cls}">${esc(label)}</button></form>`;
-  const repoForm = (project: string, repo: string, action: "on" | "off" | "resume" | "pointer_add" | "pointer_decline", label: string, cls = "") =>
-    `<form method="post" action="${esc(context.base)}/lessons/repo" class="row">${hidden("project", project)}${hidden("repo", repo)}${hidden("action", action)}${hidden("ft", context.formToken({ action: "lesson.repo", subject: `${project}:${repo}:${action}` }))}<button type="submit" class="${cls}">${esc(label)}</button></form>`;
+  const repoForm = (project: string, repo: string, action: "on" | "off" | "resume" | "pointer_add" | "pointer_decline" | "retire_confirm" | "retire_keep", label: string, cls = "", held?: string) =>
+    `<form method="post" action="${esc(context.base)}/lessons/repo" class="row">${hidden("project", project)}${hidden("repo", repo)}${hidden("action", action)}${held === undefined ? "" : hidden("held", held)}${hidden("ft", context.formToken({ action: "lesson.repo", subject: `${project}:${repo}:${action}${held === undefined ? "" : `:${held}`}` }))}<button type="submit" class="${cls}">${esc(label)}</button></form>`;
+  // Lessons that went missing from the file in one change are retired only when the owner says so: the card names how many, and both answers carry the digest of the set the owner saw.
+  const retireCard = (project: string, row: LessonReposView["repos"][number]) => row.retireConfirm === undefined ? ""
+    : `<br><strong>${esc(String(row.retireConfirm.missing))} ${row.retireConfirm.missing === 1 ? "lesson is" : "lessons are"} missing from this file. Retire ${row.retireConfirm.missing === 1 ? "it" : "them"}, or keep ${row.retireConfirm.missing === 1 ? "it" : "them"}?</strong>${repoForm(project, row.repo, "retire_confirm", "Retire", "", row.retireConfirm.digest)}${repoForm(project, row.repo, "retire_keep", "Keep", "primary", row.retireConfirm.digest)}`;
   const repoBlocks = repos.filter((view) => view.repos.length > 0 || view.available.length > 0).map((view) => {
-    const lines = view.repos.map((row) => `<tr><td>${untrusted(row.repo)}</td><td>${row.enabled ? "on" : "off"}</td><td>${row.notices.map((line) => untrusted(line)).join("<br>")}</td>`
+    const lines = view.repos.map((row) => `<tr><td>${untrusted(row.repo)}</td><td>${row.enabled ? "on" : "off"}</td><td>${row.notices.map((line) => untrusted(line)).join("<br>")}${retireCard(view.project, row)}</td>`
       + `<td>${row.enabled ? repoForm(view.project, row.repo, "off", "Switch off") : repoForm(view.project, row.repo, "on", "Switch on", "primary")}${row.fileDeleted ? repoForm(view.project, row.repo, "resume", "Resume") : ""}${row.pointer === "missing" ? repoForm(view.project, row.repo, "pointer_add", "Add the pointer") + repoForm(view.project, row.repo, "pointer_decline", "Do not ask again") : ""}</td></tr>`);
     const more = view.canEnable ? view.available.map((name) => `<tr><td>${untrusted(name)}</td><td>off</td><td></td><td>${repoForm(view.project, name, "on", "Switch on", "primary")}</td></tr>`) : [];
     return `<h3>${untrusted(view.project)}</h3><table><thead><tr><th>Repository</th><th>Lessons file</th><th></th><th></th></tr></thead><tbody>${[...lines, ...more].join("")}</tbody></table>`;
   });
   const repoSection = repoBlocks.length === 0 ? "" : `<h2>Lessons in the repository</h2><p class="muted">Rovara can keep a <code>.rovara/lessons.md</code> file in a repository and open one pull request a week to update it. Switching it on needs a page opened in the last few minutes: run <code>rovara open lessons</code> to open one.</p>${repoBlocks.join("")}`;
+  // Decision 46b: whether a local coding tool (with your API token, or a script token with the lessons permission) may fetch the lessons the whole project may read. Each switch is your form on this page.
+  const localForm = (subject: string, fields: string, label: string, cls = "") =>
+    `<form method="post" action="${esc(context.base)}/lessons/local-tools" class="row">${fields}${hidden("ft", context.formToken({ action: "lesson.local_tools", subject }))}<button type="submit" class="${cls}">${esc(label)}</button></form>`;
+  const localSection = localTools === undefined ? "" : (() => {
+    const company = localTools.companyStays
+      ? `<p><strong>Lessons stay in Rovara:</strong> local coding tools get no lessons for any project.</p>${localForm("company:open", hidden("scope", "company") + hidden("stays", "false"), "Let local coding tools fetch lessons", "primary")}`
+      : `<p>Local coding tools may fetch the lessons the whole project may read, stable or approved by you, never one on trial.</p>${localForm("company:stay", hidden("scope", "company") + hidden("stays", "true"), "Keep lessons in Rovara")}`;
+    const rowsOf = localTools.projects.map((row) => `<tr><td>${untrusted(row.project)}</td><td>${row.enabled ? "on" : `off <span class="muted">(${esc(LOCAL_TOOLS_WHY[row.reason ?? ""] ?? "off")})</span>`}</td><td>`
+      + `${row.own === false ? localForm(`project:${row.project}:on`, hidden("scope", "project") + hidden("project", row.project) + hidden("enabled", "true"), "Switch on", "primary") : localForm(`project:${row.project}:off`, hidden("scope", "project") + hidden("project", row.project) + hidden("enabled", "false"), "Switch off")}</td></tr>`);
+    return `<h2>Lessons for local coding tools</h2>${company}${rowsOf.length === 0 ? "" : `<table><thead><tr><th>Project</th><th>Local coding tools</th><th></th></tr></thead><tbody>${rowsOf.join("")}</tbody></table>`}`;
+  })();
   const rows = lessons.map((lesson) => `<tr><td>${untrusted(lesson.text)}<br><span class="muted">${untrusted(lesson.scope)}</span>${lesson.retireRequest === undefined ? "" : `<br><strong>${untrusted(lesson.retireRequest.by)} asked, in a comment on pull request ${String(lesson.retireRequest.pullRequest)}, for this lesson to be retired. Press Retire to confirm.</strong>`}</td><td>${esc(lesson.status)}</td>`
     + `<td>${lesson.usedIn.length === 0 ? "<span class=\"muted\">not used yet</span>" : lesson.usedIn.slice(0, 5).map((use) => `<a href="${esc(context.base)}/proof/${esc(use.taskId)}">${untrusted(use.title)}</a>`).join("<br>")}</td>`
     + `<td>${lesson.status === "proposed" ? form(lesson, "approve", "Approve", "primary") : ""}${lesson.status !== "retired" ? form(lesson, "wrong", "Wrong", "danger") + form(lesson, "retire", "Retire") : ""}</td></tr>`);
   return layout({
     title: "Lessons", nonce: context.nonce, base: context.base, ...(context.notice === undefined ? {} : { notice: context.notice }),
-    body: `<h1>Lessons</h1>${rows.length === 0 ? "<p class=\"muted\">Rovara has not learned a lesson here yet.</p>" : `<table><thead><tr><th>Lesson</th><th>Status</th><th>Used in</th><th></th></tr></thead><tbody>${rows.join("")}</tbody></table>`}${repoSection}`,
+    body: `<h1>Lessons</h1>${rows.length === 0 ? "<p class=\"muted\">Rovara has not learned a lesson here yet.</p>" : `<table><thead><tr><th>Lesson</th><th>Status</th><th>Used in</th><th></th></tr></thead><tbody>${rows.join("")}</tbody></table>`}${repoSection}${localSection}`,
   });
 }
 
@@ -280,7 +300,7 @@ export function renderProof(context: PageContext, view: ProofReportView): string
 // ---- script tokens
 
 const TOKEN_STATUS_CLASS = { active: "ok", expired: "warn", revoked: "bad" } as const;
-const PERMISSION_WORDS: Record<string, string> = { read: "read your tasks on these projects", start: "start tasks on these projects" };
+const PERMISSION_WORDS: Record<string, string> = { read: "read your tasks on these projects", start: "start tasks on these projects", lessons: "read the team lessons of these projects" };
 
 /**
  * The script tokens page: the tokens (names, hints and states, never a secret), a form to make one when this page session is fresh enough, and a Revoke button for each live token. A token reaches only
@@ -318,7 +338,30 @@ export function renderScriptTokens(context: PageContext, view: ScriptTokensPageV
 const RISK_WORDS = { low: "low", medium: "medium", high: "high: only a strong proof (this page) can approve it" } as const;
 
 /** One project's test environment: what is approved, and the proposal that waits (what changes, how risky, whether a Prove run passed) with an Approve button only when the proposal was proved. */
-export function renderTestEnvironment(context: PageContext, view: TestEnvironmentPageView): string {
+/** The panel of test service images (Code on a laptop). Every reference is shown whole, with its registry, because that is what the owner is approving; the repository's words never appear, only a family and version it asked for. */
+function renderServiceImages(context: PageContext, project: string, images: NonNullable<TestEnvironmentPageView["serviceImages"]>, fresh: boolean): string {
+  const action = (verb: "approve" | "remove"): string => `${esc(context.base)}/test-environment/${esc(encodeURIComponent(project))}/images/${verb}`;
+  const form = (verb: "approve" | "remove", field: string, value: string, label: string, cls: string): string =>
+    `<form class="decide" method="post" action="${action(verb)}">${hidden(field, value)}${hidden("ft", context.formToken({ action: `testenv.image-${verb}`, subject: `${project}:${value}` }))}<div class="row"><button class="${cls}" type="submit">${esc(label)}</button></div></form>`;
+  const registryOf = (reference: string): string => esc(reference.slice(0, reference.indexOf("/")));
+  const starter = `<ul>${images.starter.map((image) => `<li><code>${esc(image.reference)}</code> <span class="muted">(${esc(image.label)}; ${image.inEffect ? "in use" : "not on this computer yet"})</span></li>`).join("")}</ul>`;
+  const owned = images.owned.length === 0 ? "<p class=\"muted\">You have approved no other image.</p>" : `<ul>${images.owned.map((image) => `<li><code>${esc(image.reference)}</code> <span class="muted">(${esc(image.label)}, registry ${registryOf(image.reference)}; `
+    + `${image.origin === "env" ? `from ROVARA_TEST_SERVICE_IMAGES${image.stale ? ", no longer listed there" : ""}` : "approved here"} ${esc(image.approvedAt)}; ${image.inEffect ? "in use" : "used from the next rovara up"})</span> ${fresh ? form("remove", "reference", image.reference, "Remove", "danger") : ""}</li>`).join("")}</ul>`;
+  const proposed = images.proposed.length === 0 ? "<p class=\"muted\">This project's files name no service image Rovara can run (Postgres, MySQL, Redis, MongoDB).</p>"
+    : `<ul>${images.proposed.map((proposal) => {
+      const where = proposal.where.length === 0 ? "" : ` <span class="muted">seen at ${proposal.where.map((place) => `<code>${untrusted(place)}</code>`).join(", ")}</span>`;
+      const state = proposal.status === "builtin" ? "<span class=\"ok\">built in, no approval needed</span>"
+        : proposal.status === "approved" ? "<span class=\"ok\">approved</span>"
+        : fresh ? form("approve", "requested", proposal.requested, `Approve ${proposal.label}`, "primary")
+          : "<span class=\"warn\">needs your approval: open this page again with <code>rovara test-env open</code> (it needs a page opened in the last ten minutes)</span>";
+      return `<li><strong>${esc(proposal.label)}</strong>${where} ${state}</li>`;
+    }).join("")}</ul>`;
+  return `<section class="panel"><h2>Service images</h2><p>Test services start only the images below, each pinned to a digest. A project can ask for an image; it is not used until you approve it here. Approving pulls it through your Docker and pins the digest Docker resolves now; a later change of the tag needs a new approval. A change takes effect the next time you run <code>rovara up</code>.</p>`
+    + `<h3>Waiting for your approval</h3>${proposed}<h3>Built in</h3><p class="muted">Part of Rovara's release, pinned to a digest, so they need no approval.</p>${starter}<h3>Approved by you</h3>${owned}`
+    + (images.envList.length === 0 ? "" : `<p class="muted">ROVARA_TEST_SERVICE_IMAGES lists: ${images.envList.map((entry) => `<code>${esc(entry)}</code>`).join(", ")}.</p>`) + `</section>`;
+}
+
+export function renderTestEnvironment(context: PageContext, view: TestEnvironmentPageView, options: { fresh?: boolean } = {}): string {
   const approved = view.approved === undefined
     ? "<p class=\"muted\">No test environment is approved for this project: its tasks run the project's own checks.</p>"
     : `<p>Revision ${esc(view.approved.revision)}, approved ${esc(view.approved.approvedAt)}${view.approved.approvedBy === undefined ? "" : ` by ${untrusted(view.approved.approvedBy)}`}.</p><ul>${view.approved.lines.map((line) => `<li>${untrusted(line)}</li>`).join("")}</ul>`
@@ -335,10 +378,11 @@ export function renderTestEnvironment(context: PageContext, view: TestEnvironmen
       + `<h3>What changes</h3>${view.proposal.changes.length === 0 ? "<p class=\"muted\">Nothing differs from the approved revision.</p>" : `<ul>${view.proposal.changes.map((line) => `<li><code>${untrusted(line)}</code></li>`).join("")}</ul>`}${form}`;
   }
   const extra = view.extra === undefined || view.extra.length === 0 ? "" : `<section class="panel"><h2>More</h2><ul>${view.extra.map((line) => `<li>${untrusted(line)}</li>`).join("")}</ul></section>`;
+  const serviceImages = view.serviceImages === undefined ? "" : renderServiceImages(context, view.project, view.serviceImages, options.fresh === true);
   return layout({
     title: `Test environment: ${view.project}`, nonce: context.nonce, base: context.base, ...(context.notice === undefined ? {} : { notice: context.notice }),
     body: `<h1>Test environment: ${untrusted(view.project)}</h1><p>The environment tasks of this project run their checks in, and the nightly run uses. A change is approved here, by you, once it has been proved.</p>`
-      + `<section class="panel"><h2>Approved</h2>${approved}</section><section class="panel"><h2>Waiting for approval</h2>${proposal}</section>${extra}`,
+      + `<section class="panel"><h2>Approved</h2>${approved}</section><section class="panel"><h2>Waiting for approval</h2>${proposal}</section>${serviceImages}${extra}`,
   });
 }
 
@@ -445,6 +489,12 @@ export function renderChat(context: PageContext, view: ChatPageView, options: { 
     + "<label>Workspace or team id<br><input type=\"text\" name=\"tenant\" maxlength=\"128\" required autocomplete=\"off\"></label><label>Space id (a channel or a direct message)<br><input type=\"text\" name=\"space\" maxlength=\"128\" required autocomplete=\"off\"></label>"
     + "<label>Thread (leave empty for the top of the space)<br><input type=\"text\" name=\"thread\" maxlength=\"128\" autocomplete=\"off\"></label>"
     + `${hidden("ft", context.formToken({ action: "chat.notice-add", subject: "new" }))}<div class="row"><button class="primary" type="submit">Tell me here</button></div></form>`;
+  const timeInput = (name: string, label: string, value: string | undefined): string => `<label>${esc(label)}<br><input type="time" name="${esc(name)}" value="${esc(value ?? "")}"></label>`;
+  const schedule = `<form class="decide" method="post" action="${esc(context.base)}/chat/schedule">`
+    + `<p class="muted">In quiet hours Rovara holds what needs you and sends it in one message when they end. With a digest time it sends one list a day at that time instead of a message every few minutes. Leave a field empty to switch it off.</p>`
+    + timeInput("quietStart", "Quiet hours from", view.notify.quietHours?.start) + timeInput("quietEnd", "Quiet hours until", view.notify.quietHours?.end) + timeInput("digestAt", "Daily digest at", view.notify.digestAt)
+    + `<label>Time zone (empty: this computer's)<br><input type="text" name="timeZone" maxlength="64" autocomplete="off" value="${esc(view.notify.timeZone ?? "")}"></label>`
+    + `${hidden("ft", context.formToken({ action: "chat.schedule", subject: "schedule" }))}<div class="row"><button type="submit">Save when I am told</button></div></form>`;
   const mute = form("mute", view.notify.muted ? "off" : "on", hidden("muted", view.notify.muted ? "no" : "yes"), view.notify.muted ? "Turn notices back on" : "Mute notices");
   return layout({
     title: "Chat", nonce: context.nonce, base: context.base, ...(context.notice === undefined ? {} : { notice: context.notice }),
@@ -452,6 +502,7 @@ export function renderChat(context: PageContext, view: ChatPageView, options: { 
       + `<section class="panel"><h2>Chats on this install</h2>${adapters}</section>${preview}${linkForm}`
       + `<section class="panel"><h2>Accounts linked to you</h2>${links}</section>`
       + `<section class="panel"><h2>Spaces bound to a project</h2>${bindings}${bindForm}</section>`
-      + `<section class="panel"><h2>Where you are told</h2><p>One message at most every few minutes: what needs you, in one list. ${view.notify.muted ? "<strong>Notices are muted.</strong>" : ""}</p>${targets}${noticeForm}<div class="row">${mute}</div></section>`,
+      + `<section class="panel"><h2>Where you are told</h2><p>One message at most every few minutes: what needs you, in one list. ${view.notify.muted ? "<strong>Notices are muted.</strong>" : ""}</p>${targets}${noticeForm}<div class="row">${mute}</div></section>`
+      + `<section class="panel" id="when"><h2>When you are told</h2>${schedule}</section>`,
   });
 }

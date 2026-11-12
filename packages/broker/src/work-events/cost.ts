@@ -1,6 +1,6 @@
 // Work events (U3): the `cost_settled` event of one spend settlement. It rides in the settlement's own transaction (`spend/ledger.ts`), which is conditional on the amount already counted, so a spend counted once
 // makes one event, a raced or replayed settle makes none, and the event's id is the ledger line's own (`<key>.<sequence>`).
-import { WorkEventSchema, workEventId, type WorkEventInput } from "@agentx/cloud-contracts";
+import { WorkEventSchema, workEventId, type WorkEventInput } from "@rovara-code/contracts";
 import { type OrgId } from "@rovara-code/contracts";
 
 const CODE = /^[a-z][a-z0-9_.-]{0,59}$/u;

@@ -1,17 +1,9 @@
 import { z } from "zod";
 import { ActorIdSchema, CandidateManifestSchema, CI_FIX_PROBLEMS_MAX, E2EWorkflowProgressSchema, FEEDBACK_STOPPED_REASON, FeedbackCiFailuresSchema, FeedbackThreadObservationsSchema, FixSourceSchema, type ForwardReader, isStepNotRunReason, NO_CODE_CHANGED_REASON, NoChangeFindingsSchema, openSecondReviewFindings, PROGRAM_ROUNDS_MAX, readerOf, reviewCleared, RiskAssessmentSchema, StepIdSchema, SYNC_FAILURES_MAX, UNDERSTAND_ANSWER_PENDING_MESSAGE, UNDERSTAND_TIMED_OUT_MESSAGE, UNDERSTAND_UNREADABLE_MESSAGE, VerificationResultsSchema, WORKFLOW_ACCEPTED_FINDINGS_MAX, WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, WORKFLOW_REGRESSED_CHECK_MAX, WORKFLOW_REGRESSED_CHECKS_MAX, WorkflowAcceptedFindingSchema, WorkflowArtifactSchema, WorkflowCanvasCloseoutAttemptSchema, WorkflowCanvasCloseoutSchema, WorkflowCanvasLineageSchema, WorkflowCheckPolicySchema, WorkflowCritiqueSchema, WorkflowDecisionRecordSchema, WorkflowDependencyApprovalSchema, WorkflowDesignReviewSchema, WorkflowFeedbackApprovalBindingSchema, WorkflowFeedbackDecisionSchema, WorkflowFeedbackNoteSchema, WorkflowFeedbackReviewRefSchema, WorkflowFeedbackReviewSchema, WorkflowFeedbackShownSchema, WorkflowFixRoundsSchema, WorkflowIntentSchema, workflowIsReviewOnly, WorkflowPathSchema, WorkflowProgramSchema, WorkflowPullRequestSchema, WorkflowPullRequestUpdateFailureSchema, WorkflowReviewBaseSchema, WorkflowReviewPhaseSchema, WorkflowReviewReportSchema, WorkflowSecondReviewBlockSchema, WorkflowStageSchema, WorkflowStateSchema, WorkflowVerificationRetrySchema, WorkItemProgressV1Schema } from "@rovara-code/contracts";
 import { WorkflowBranchSyncSchema } from "./rovara-code.js";
+// Code's own since the vendor pin 0e340c0e (one name, one owner): re-exported, not defined here.
+export { BASE_MERGED_RETRY_REASON, BASE_MERGED_RETRIES_PER_DAY, BASE_MERGED_RECHECKING_MILESTONE, BASE_MERGED_NEEDS_YOU_MILESTONE } from "@rovara-code/contracts";
 
-/**
- * Decision 70(c): the reason an automatic re-run of the checks after a merge of the base records. A decision with exactly this reason is a "base-merged" retry: it counts for its candidate (one per
- * candidate) but not in the task's lifetime limit of automatic actions; it has its own allowance per task per day (`BASE_MERGED_RETRIES_PER_DAY`).
- */
-export const BASE_MERGED_RETRY_REASON = "Rovara re-ran the checks by itself after the base branch was merged into the pull request.";
-/** How many automatic re-runs after a merge of the base one task gets in 24 hours. */
-export const BASE_MERGED_RETRIES_PER_DAY = 3;
-/** The milestone lines: Rovara is re-checking by itself (information), or the task waits for the owner to re-check (needs you). */
-export const BASE_MERGED_RECHECKING_MILESTONE = "The base branch was merged into the pull request. Rovara is re-checking the merged code.";
-export const BASE_MERGED_NEEDS_YOU_MILESTONE = "The base branch was merged into the pull request. The merged code needs its checks again: open the task and choose Retry checks.";
 
 /** "Continue in your own tool": said once in the milestone feed when Rovara takes a head pushed outside Rovara as the task's code and starts its checks (a person asked). */
 export const OUTSIDE_RECHECK_MILESTONE = "Someone pushed to the pull request outside Rovara and a re-check was asked for. Rovara is checking that code now.";

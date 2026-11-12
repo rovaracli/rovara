@@ -84,6 +84,7 @@ import { createTaskFactsSource } from "./facts.js";
 import { createLocalPageData, createPageExtraActions } from "./page-data.js";
 import { createOwnerRoutes } from "./routes.js";
 import { createLocalTestEnvironment } from "./test-environment.js";
+import type { OwnerImageService } from "../test-services-owner-list.js";
 import type { ServiceCatalogSource } from "../../core/test-env/dependency-plan.js";
 import { nightlyHooks, subscribeNightly } from "../../core/test-env/nightly-wiring.js";
 import { readApprovedTestEnvironment } from "../../core/test-env/environment.js";
@@ -184,6 +185,8 @@ export interface LocalAppOptions {
   scriptTokensEnabled?: () => boolean;
   /** The signed service catalog a dependency is pinned from (absent: no dependency can be pinned). */
   serviceCatalog?: ServiceCatalogSource | undefined;
+  /** Code on a laptop: the owner's approved test service images, for the test environment page to approve on. Absent when a signed catalog is used or test services are off. */
+  testServiceImages?: OwnerImageService | undefined;
   /**
    * Whether automation (chains, triggers, automatic runs, custom agents) is on. OFF unless the owner switched it on when the install started: a boolean, or a switch the host reads on each use. It is never read from a
    * route, a token or a page. Off, nothing of it is mounted, shown or run.
@@ -346,7 +349,8 @@ export async function createLocalApp(options: LocalAppOptions): Promise<LocalApp
   const testEnvironment = createLocalTestEnvironment({
     store, companyId, now: () => clock().getTime(), audit: registry.require("audit-sink"), log,
     gate: () => gate,
-    openPage: async (path) => { if (pagesServer.current === undefined) throw new Error("the pages are not up yet"); await (options.openBrowser ?? openInSystemBrowser)(pagesServer.current.onceLink(path, { label: "browser" })); },
+    openPage: async (path) => { if (pagesServer.current === undefined) throw new Error("the pages are not up yet"); await (options.openBrowser ?? openInSystemBrowser)(pagesServer.current.onceLink(path, { label: "browser", ...(options.testServiceImages !== undefined && path.startsWith("/test-environment/") ? { fresh: true } : {}) })); },
+    // Where the owner approves service images, the page opens in a NEW page session: an approval needs one opened in the last ten minutes (the same rule as making a script token).
     // What this computer does not do yet, said on the page instead of left for the owner to find out.
     extraLines: async () => [
       ...(savedEnvEnabled(options.environment ?? process.env) ? ["Saved environments are on, but no image is built on this computer yet: the worker's Docker access does not allow it. Tasks set up fresh."] : []),
@@ -359,6 +363,7 @@ export async function createLocalApp(options: LocalAppOptions): Promise<LocalApp
     },
     ...(options.environment === undefined ? {} : { env: options.environment }),
     ...(options.serviceCatalog === undefined ? {} : { serviceCatalog: options.serviceCatalog }),
+    ...(options.testServiceImages === undefined ? {} : { serviceImages: options.testServiceImages }),
   });
   // How we work is the repository's `.rovara/playbook.yaml`, read through the code host at the default branch's head (a host nobody registered reads as no file). The company's rules come from the
   // `company-instructions` point. Both are put in front of every step that reads them, at the dispatch (core/instructions).
@@ -439,6 +444,8 @@ export async function createLocalApp(options: LocalAppOptions): Promise<LocalApp
     // Lane L10: the approved plan is read back for the coding step and the reviewers; Rovara's own fixing reads what the task has cost (nothing priced counts as nothing spent).
     artifacts: blobs,
     taskSpendUsd: async (taskId) => costUsdOf(await ledger.taskCost(companyId, taskId)),
+    // Decision 70(c): the owner's own machine acts on its own as far as `prepare`, the same default merge tracking reads for a task (there is no recipe or company limit to read here).
+    autonomy: async () => ({ autonomy: "prepare" as const }),
     ...(options.now === undefined ? {} : { now: options.now }),
     log,
   });
@@ -449,6 +456,7 @@ export async function createLocalApp(options: LocalAppOptions): Promise<LocalApp
   // The design review stage (a Full task's design is read by fresh reviewers before anyone approves it). It fills `flow.deps.designReview`; with the switch off no task enters it.
   const designReview = createLocalDesignReview({
     flow: flow.deps, blobs, registry, companyId, environment: options.environment ?? {}, chosen, routeOf, provider: (id) => providers.get(id), slotKeys: () => options.slotKeys?.(), timeline,
+    contextSources: connections.runtime,
   });
 
   // Lane L12: merge tracking by polling. The publish step enrols a task's tracking row; a timer reads the due rows and calls the core's pass for each (pull request status, CI fix, branch sync, ready for review).
@@ -505,14 +513,16 @@ export async function createLocalApp(options: LocalAppOptions): Promise<LocalApp
   }), oneShot);
 
   // Sessions: facts over the task records, the cost ledger over the metering seam.
+  const canNotify = (): boolean => registry.names("channel").length > 0 || registry.names("email").some((name) => registry.get("email", name)?.capabilities.available === true);
   const summaryDeps: SummaryDependencies = {
     store,
     facts: createTaskFactsSource(flow.deps),
     cost: { async costUsd(company, taskId) { return costUsdOf(await ledger.taskCost(company, taskId)) ?? 0; } },
     ...(options.now === undefined ? {} : { now: options.now }),
     log,
-    // A person is told what needs them through the chat adapters the registry holds (`core/notify`); with none, nothing is queued. The row is only a queue entry: it is checked again before anything is sent.
-    onChange: [async (change) => { if (registry.names("channel").length > 0) await queueAttention({ store, now: clock, log }, change); }, (change) => intake.onSessionChange(change)],
+    // A person is told what needs them through the chat adapters the registry holds, or an email plug-in that can send (`core/notify`; Code's default sends no email); with neither, nothing is queued. The row is only a
+    // queue entry: it is checked again before anything is sent. The install's own pages hear that it changed (ids only).
+    onChange: [async (change) => { if (canNotify()) await queueAttention({ store, now: clock, log, realtime: registry.get("realtime", registry.names("realtime")[0] ?? "") }, change); }, (change) => intake.onSessionChange(change)],
     // A step that read a message's note settles the message `delivered`; a session that ended closes the ones no step took.
     afterRefresh: (orgId, sessionId) => settleSteerDeliveriesFor({ store, ...(options.now === undefined ? {} : { now: options.now }), log }, orgId, sessionId),
   };
@@ -613,6 +623,7 @@ export async function createLocalApp(options: LocalAppOptions): Promise<LocalApp
       ...chat.actions,
       ...automation.pageActions,
       decidePlan: decisionActions.decidePlan, decideDesign: decisionActions.decideDesign, designChoice: designPageActions.designChoice, designResume: designPageActions.designResume, connectionAction: (input, context) => connections.action(input, context), decideTestEnvironment: (input) => testEnvironment.decideTestEnvironment(input),
+      approveServiceImage: (input) => testEnvironment.approveServiceImage(input), removeServiceImage: (input) => testEnvironment.removeServiceImage(input),
       ...createPageExtraActions({ flow: flow.deps, companyId, owner, comments, secondReview, modelSelection, diagnosis, lessons, designAnswers: (input) => designPageActions.answerQuestions(input) }),
       ...(setupAgent.enabled ? {
         setupStart: setupAgent.page.start, setupStop: setupAgent.page.stop, setupCommand: setupAgent.page.command, setupConfirm: setupAgent.page.confirm, setupDiscard: setupAgent.page.discard, setupForgetHost: setupAgent.page.forgetHost,
@@ -680,7 +691,7 @@ export async function createLocalApp(options: LocalAppOptions): Promise<LocalApp
     await automation.tick().catch(logFailure("local_app.automation_failed"));
     await sweepOpenSessions(summaryDeps, { budgetMs: 5_000 }).catch(logFailure("local_app.session_sweep_failed"));
     // What needs the owner reaches them in their chat, batched (one message at most every few minutes). The sweep of the sessions above is what queues it.
-    if (registry.names("channel").length > 0) {
+    if (canNotify()) {
       await deliverAttention({ store, registry, now: () => clock().getTime(), thread: (org, sessionId) => readTaskThread(store, org, sessionId), footer: ATTENTION_FOOTER, log }, { deadlineMs: clock().getTime() + 4_000 }).catch(logFailure("local_app.attention_failed"));
     }
   };
