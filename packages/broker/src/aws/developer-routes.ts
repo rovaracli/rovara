@@ -258,6 +258,7 @@ import {
   putProjectSlackChannel,
 } from "./developer-routes/project-members.js";
 import { listGithubRepositories, projectMetaConfigRoute } from "./developer-routes/project-settings.js";
+import { routeBranchCheck } from "./developer-routes/branch-check.js";
 import { getAppProjectWithProof, putProjectSettingsChecked, undoToProvenSetup } from "./developer-routes/settings-proof.js";
 import { listWorkspaces } from "./developer-routes/project-access.js";
 import {
@@ -546,6 +547,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (request.method === "GET" && url.pathname === "/v1/app/connection-usage") return getConnectionUsage(deps, caller);
   const appProject = /^\/v1\/app\/projects\/([^/]+)$/.exec(url.pathname);
   if (request.method === "GET" && appProject !== null) return getAppProjectWithProof(deps, caller, appProject[1]!);
+  const branchAnswer = await routeBranchCheck(deps, caller, request, url);
+  if (branchAnswer !== undefined) return branchAnswer;
   const projectSettingsRoute = /^\/v1\/app\/projects\/([^/]+)\/settings$/.exec(url.pathname);
   if (request.method === "PUT" && projectSettingsRoute !== null) return putProjectSettingsChecked(deps, caller, projectSettingsRoute[1]!, jsonBody(request));
   // TE-4: a maintainer in a browser, signed in within ten minutes, goes back to the last proved setup.

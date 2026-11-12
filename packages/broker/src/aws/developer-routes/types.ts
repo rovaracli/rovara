@@ -1,3 +1,4 @@
+import type { RepositoryBranchProbe } from "../../github-app.js";
 import type { HealthRefreshProbes } from "../../org/health-observations.js";
 import type { RepoFileRuntime } from "../../lessons/repo-file-job.js";
 import type { ServiceCatalogSource } from "../../test-env/dependency-plan.js";
@@ -137,6 +138,8 @@ export interface DeveloperRouteDependencies {
   setupCitationReader?: (orgId: OrgId, repositoryUrl: string, path: string, commit: string, options: { untilLine?: number; timeoutMs: number }) => Promise<string | undefined>;
   /** DG-1 S2: a file of one of an org's repositories at the head of its default branch, as GitHub holds it now. "Apply this change" checks a proposed dev container file with it. Absent: that change cannot be applied. */
   defaultBranchFileReader?: (orgId: OrgId, repositoryUrl: string, path: string, options: { timeoutMs: number }) => Promise<string | undefined>;
+  /** 0.5.16: what GitHub holds for one repository's branch (empty or not, and the other branches that have files), read through the org's own installation. Absent: the default-branch check answers `unchecked`. */
+  branchProbe?: (orgId: OrgId, repositoryUrl: string, branch: string) => Promise<RepositoryBranchProbe>;
   serviceStatus?: Pick<ServiceStatusDependencies, "runtimeStatus" | "teamRecordFailures">;
   /** 0.5.15: the probes the health-observations read runs to check a stale Slack or GitHub observation again; absent: it reads what is stored. */
   healthObservations?: HealthRefreshProbes;

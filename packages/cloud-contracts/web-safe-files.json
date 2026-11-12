@@ -5,6 +5,7 @@
   "packages/cloud-contracts/src/app-approval-window.ts",
   "packages/cloud-contracts/src/app-automations.ts",
   "packages/cloud-contracts/src/app-billing.ts",
+  "packages/cloud-contracts/src/app-branch-check.ts",
   "packages/cloud-contracts/src/app-companies.ts",
   "packages/cloud-contracts/src/app-company-rules.ts",
   "packages/cloud-contracts/src/app-insights.ts",

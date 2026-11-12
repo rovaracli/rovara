@@ -121,6 +121,8 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
  if (await homeV2Mock({ url, method, json, scenario: current, record: () => undefined, body: async () => { let text = "";for await (const chunk of request) text += String(chunk);return JSON.parse(text) as unknown; } })) return;
  const evidence: { method: string; path: string; body?: unknown } = { method, path: url.pathname };requests.push(evidence);
  if (current.name === "onboarding" && await projectSetupMock({ url, method, json, scenario: current, record: value => { evidence.body = value; }, body: async () => { let text = "";for await (const chunk of request) text += String(chunk);return text === "" ? {} : JSON.parse(text) as unknown; } }, { get: () => onboardingProject, set: value => { onboardingProject = value; } })) return;
+ // 0.5.16: the default-branch check answers "nothing to ask" (no code repository to name) for every journey that does not play it, so the setup step opens as it always did. default-branch-check.e2e.ts plays it in the onboarding scenario.
+ if (method === "GET" && /^\/v1\/web\/projects\/[^/]+\/branch-check$/u.test(url.pathname)) { json(200, { revision: 1, blocked: false, repositories: [] });return; }
  if(url.pathname.startsWith("/review/"+TASK_PAGE_FIXTURE_ID+"/task")){
  let body:string|undefined;if(method==="POST"){body="";for await(const chunk of request)body+=String(chunk);evidence.body=JSON.parse(body) as unknown;}
  const result=await taskPage.web({method,path:url.pathname,headers,requestId:"mock-task-page",...(body===undefined?{}:{body})},url);response.writeHead(result.statusCode,result.headers);response.end(result.body);return;
