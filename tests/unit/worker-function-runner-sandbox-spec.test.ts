@@ -28,8 +28,11 @@ describe("sandboxRunArgs", () => {
     expect(args.slice(0, 2)).toEqual(["run", "-i"]);
     expect(valueOf(args, "--runtime")).toEqual(["runsc"]);
     expect(valueOf(args, "--network")).toEqual(["none"]);
-    expect(valueOf(args, "--user")).toEqual(["993:993"]);
+    // The agent is root with ONLY CAP_SETUID and CAP_SETGID and starts the runtime as 993 with none (runsc delivers SIGSTOP from a same-uid process to PID 1).
+    expect(valueOf(args, "--user")).toEqual(["0:0"]);
     expect(valueOf(args, "--cap-drop")).toEqual(["ALL"]);
+    expect(valueOf(args, "--cap-add").sort()).toEqual(["SETGID", "SETUID"]);
+    expect(args.slice(args.indexOf(base().image) + 1)).toEqual(["-uid", "993", "-gid", "993"]);
     expect(valueOf(args, "--security-opt")).toEqual(["no-new-privileges"]);
     expect(valueOf(args, "--memory")).toEqual(["512m"]);
     expect(valueOf(args, "--memory-swap")).toEqual(["512m"]);
@@ -44,7 +47,7 @@ describe("sandboxRunArgs", () => {
     expect(args).toContain("--read-only");
     expect(args).toContain("--pull=never");
     for (const forbidden of ["--detach", "-d", "--rm", "--env", "--privileged", "--init", "-v", "--publish", "-p"]) expect(args).not.toContain(forbidden);
-    expect(args.at(-1)).toBe(base().image);
+    expect(args.at(-5)).toBe(base().image);
     expect(sandboxArgProblems(args, base())).toEqual([]);
     expect(valueOf(args, "--name")).toEqual([sandboxContainerName(base().environmentId)]);
   });
@@ -66,7 +69,7 @@ describe("sandboxRunArgs", () => {
     expect(valueOf(args, "--tmpfs")).toEqual([]);
     expect(valueOf(args, "--volume")).toContain("/run/rovara/scratch/e1:/tmp:rw");
     expect(valueOf(args, "--volume")).toContain("/opt/rovara/qemu/qemu-x86_64-static:/rovara/qemu:ro");
-    expect(args.slice(args.indexOf(spec.image) + 1)).toEqual(spec.agentArgs);
+    expect(args.slice(args.indexOf(spec.image) + 1)).toEqual(["-uid", "993", "-gid", "993", ...spec.agentArgs!]);
     expect(sandboxArgProblems(args, spec)).toEqual([]);
     expect(sandboxRunArgs({ ...spec, scratch: { kind: "tmpfs", sizeMb: 64 }, tmpExec: false }).join(" ")).toContain("noexec");
   });
@@ -90,7 +93,8 @@ describe("the allow-list re-check refuses every added or changed flag", () => {
   it("refuses a changed value, a missing flag, another image, a different tail", () => {
     const swap = (flag: string, value: string): string[] => { const args = good(); args[args.indexOf(flag) + 1] = value; return args; };
     expect(sandboxArgProblems(swap("--memory", "99999m"), base())).not.toEqual([]);
-    expect(sandboxArgProblems(swap("--user", "0:0"), base())).not.toEqual([]);
+    expect(sandboxArgProblems(swap("--user", "993:993"), base())).not.toEqual([]);
+    expect(sandboxArgProblems(swap("--user", "0"), base())).not.toEqual([]);
     expect(sandboxArgProblems(swap("--network", "host"), base())).not.toEqual([]);
     expect(sandboxArgProblems(swap("--entrypoint", "/bin/sh"), base())).not.toEqual([]);
     expect(sandboxArgProblems(swap("--runtime", "runc"), base())).not.toEqual([]);
@@ -103,6 +107,19 @@ describe("the allow-list re-check refuses every added or changed flag", () => {
     const swallow = good();
     swallow[swallow.indexOf("--name") + 1] = "--privileged";
     expect(sandboxArgProblems(swallow, base())).not.toEqual([]);
+  });
+
+  it("holds exactly CAP_SETUID and CAP_SETGID: no other capability, none missing, none twice", () => {
+    const args = good();
+    const without = (cap: string): string[] => { const copy = [...args]; const at = copy.findIndex((arg, index) => arg === cap && copy[index - 1] === "--cap-add"); copy.splice(at - 1, 2); return copy; };
+    expect(sandboxArgProblems(without("SETUID"), base())).not.toEqual([]);
+    expect(sandboxArgProblems(without("SETGID"), base())).not.toEqual([]);
+    for (const extra of ["SYS_ADMIN", "NET_RAW", "ALL", "CAP_SETUID", "DAC_OVERRIDE", "SETUID", "CHOWN"]) expect(sandboxArgProblems(inject(["--cap-add", extra]), base()), extra).not.toEqual([]);
+    expect(sandboxArgProblems(inject(["--cap-add=SYS_PTRACE"]), base())).not.toEqual([]);
+    expect(sandboxArgProblems(args.filter((arg) => arg !== "ALL"), base())).not.toEqual([]);
+    const noNnp = [...args];
+    noNnp.splice(noNnp.indexOf("no-new-privileges"), 1, "seccomp=unconfined");
+    expect(sandboxArgProblems(noNnp, base())).not.toEqual([]);
   });
 
   it("checks control commands: four fixed shapes on a sandbox name", () => {
@@ -144,6 +161,8 @@ describe("hostile inputs cannot become flags", () => {
   });
 
   it("refuses agent arguments that are not plain", () => {
+    // The runtime's identity is the spec's, not the caller's: a later -uid would win in the agent's flag parser.
+    for (const arg of ["-uid", "-uid=0", "--uid", "--uid=0", "-gid", "--gid=0"]) throwsSpec({ agentArgs: [arg] });
     for (const arg of ["a b", "a\nb", "$(id)", "a;b", "", "-", "--a b", "x".repeat(300), "a\0"]) throwsSpec({ agentArgs: [arg] });
     expect(() => sandboxRunArgs({ ...base(), agentArgs: ["--", "/var/lang/bin/python3.12"] })).not.toThrow();
   });
@@ -153,7 +172,7 @@ describe("hostile inputs cannot become flags", () => {
     const spec = { ...base(), environment };
     const args = sandboxRunArgs(spec);
     expect(environmentFileContent(spec)).toBe(`${Object.keys(environment).sort().map((name) => `${name}=${environment[name as keyof typeof environment]}`).join("\n")}\n`);
-    expect(args.filter((arg) => arg.includes("privileged") || arg.includes("cap-add") || arg.includes("yyyy") || arg.includes("app.pid") || arg.includes("/:/host"))).toEqual([]);
+    expect(args.filter((arg) => arg.includes("privileged") || arg.includes("cap-add=ALL") || arg.includes("yyyy") || arg.includes("app.pid") || arg.includes("/:/host"))).toEqual([]);
     expect(sandboxArgProblems(args, spec)).toEqual([]);
     // Another env file path is not this spec's.
     expect(sandboxArgProblems(args, { ...spec, envFile: "/run/rovara/scratch/env/other.env" })).not.toEqual([]);
@@ -268,6 +287,28 @@ describe("the agent codec (agent/1, runner/agent/PROTOCOL.md)", () => {
       expect(decoder().push(many)).toHaveLength(500);
       expect(spy.mock.calls.length).toBe(0);
     } finally { spy.mockRestore(); }
+  });
+
+  it("keeps memory proportional to the bytes held when a header is followed by a one-byte trickle", () => {
+    const d = decoder();
+    const header = Buffer.alloc(4);
+    header.writeUInt32BE(16 * 1024 * 1024);
+    d.push(header);
+    let most = 0;
+    for (let i = 0; i < 300_000; i += 1) { d.push(Buffer.from([65])); most = Math.max(most, d.pending().chunks); }
+    expect(d.pending().bytes).toBe(300_004);
+    // 300 KB in 4 KiB-and-larger pieces plus a short tail, not 300,000 buffers.
+    expect(most).toBeLessThan(300_004 / 4_096 + 80);
+    // And the trickle still decodes once complete (a small frame after a trickle of its own).
+    const e = decoder();
+    const body = Buffer.from(JSON.stringify({ type: "runtime_exit", exitCode: 3 }));
+    const h = Buffer.alloc(4);
+    h.writeUInt32BE(body.length);
+    const all = Buffer.concat([h, body, h, body]);
+    const seen = [];
+    for (const byte of all) seen.push(...e.push(Buffer.from([byte])));
+    expect(seen).toEqual([{ type: "runtime_exit", exitCode: 3 }, { type: "runtime_exit", exitCode: 3 }]);
+    expect(e.pending()).toEqual({ bytes: 0, chunks: 0 });
   });
 
   it("caps and cleans the text of a result, and refuses a payload that is not base64 or is over Lambda's limit (L1)", () => {

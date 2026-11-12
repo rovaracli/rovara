@@ -76,7 +76,14 @@ try {
     check("no capabilities and no-new-privileges", capEff !== undefined && /^0+$/.test(capEff.split(/\s+/)[1]) && probe.caps.some((c) => /NoNewPrivs:\s+1/.test(c)), probe.caps);
     const id = docker("ps", "-q", "--filter", "label=rovara.function").trim().split("\n")[0];
     const host = JSON.parse(docker("inspect", "--format", "{{json .HostConfig}}", id));
+    check("the agent is root with ONLY CAP_SETUID and CAP_SETGID, no-new-privileges, and the runtime is told uid 993", JSON.stringify([...(host.CapAdd ?? [])].map((cap) => cap.replace(/^CAP_/, "")).sort()) === JSON.stringify(["SETGID", "SETUID"]) && JSON.stringify(host.CapDrop) === JSON.stringify(["ALL"]) && (host.SecurityOpt ?? []).includes("no-new-privileges") && JSON.parse(docker("inspect", "--format", "{{json .Config.User}}", id)) === "0:0" && JSON.parse(docker("inspect", "--format", "{{json .Config.Cmd}}", id)).join(" ") === "-uid 993 -gid 993", { capAdd: host.CapAdd, capDrop: host.CapDrop, secOpt: host.SecurityOpt });
     check("docker holds runtime runsc, memory=swap=256m, pids 256, read-only, log none", host.Runtime === "runsc" && host.Memory === 256 * 1048576 && host.MemorySwap === 256 * 1048576 && host.PidsLimit === 256 && host.ReadonlyRootfs === true && host.LogConfig.Type === "none", { runtime: host.Runtime, memory: host.Memory, pids: host.PidsLimit, nanoCpus: host.NanoCpus });
+    const hostile = body(await invoke(runner, { op: "hostile" }));
+    info("hostile handler against PID 1", hostile);
+    check("every stopping or killing signal to PID 1 (SIGSTOP, SIGKILL, SIGTERM, SIGTSTP, SIGUSR1) fails with EPERM (SIGCONT is allowed by the kernel and harmless)", hostile !== undefined && Object.entries(hostile.signals).filter(([name]) => name !== "SIGCONT").every(([, value]) => value === "EPERM"), hostile?.signals);
+    check("/proc/1 fds, environ and mem stay closed to the runtime", hostile !== undefined && Object.values(hostile.proc).every((value) => value === "EACCES" || value === "EPERM"), hostile?.proc);
+    const stillThere = await invoke(runner, { op: "echo" });
+    check("the agent is not frozen after those signals: the next call answers warm", stillThere.kind === "response" && stillThere.cold === false, stillThere.kind);
     const forged = await invoke(runner, { op: "forge" });
     info("a function writing a frame onto the agent's stdout (/proc/1/fd/1)", forged.kind === "response" ? body(forged) : { kind: forged.kind, reason: forged.reason });
     check("a forged frame ends the sandbox as a protocol error, or the write is refused", (forged.kind === "unavailable" && forged.reason === "protocol_error") || (forged.kind === "response" && body(forged).forged !== true), forged.kind);

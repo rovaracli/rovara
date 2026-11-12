@@ -71,6 +71,8 @@ export class CodecError extends Error {
 export interface FrameDecoder {
   /** Feeds bytes; returns the frames now complete. Throws CodecError on a bad length, an oversized or malformed frame, or a type this version does not know: the stream is then unusable and the sandbox must be ended. */
   push(chunk: Buffer): AgentFrame[];
+  /** What is held for a frame that is not complete yet: bytes, and how many buffers they sit in. */
+  pending(): { bytes: number; chunks: number };
 }
 
 export interface AgentCodec {
@@ -163,6 +165,9 @@ export function parseAgentFrame(value: unknown): AgentFrame {
   }
 }
 
+const COMPACT_AT = 64;
+const SMALL_CHUNK = 4_096;
+
 export const lengthPrefixedJsonCodec: AgentCodec = {
   encode(frame) {
     const body = Buffer.from(JSON.stringify(frame), "utf8");
@@ -174,9 +179,20 @@ export const lengthPrefixedJsonCodec: AgentCodec = {
   createDecoder(options = {}) {
     const maxFrameBytes = Math.min(MAX_FRAME_BYTES, options.maxFrameBytes ?? MAX_FRAME_BYTES);
     // Chunks are kept in a list with a running length and joined ONCE per complete frame: re-joining the whole buffer on every chunk is quadratic (a 16 MiB frame in 64 KiB chunks cost 600 ms of event-loop time).
+    // A trickle of tiny chunks would instead leave millions of small Buffers (hundreds of bytes of overhead each), so the run of small chunks at the tail is merged whenever the list passes COMPACT_AT entries: memory stays
+    // proportional to the bytes held, and the copying is bounded by the size of the run being merged.
     let chunks: Buffer[] = [];
     let total = 0;
+    let need: number | undefined;
+    const compact = (): void => {
+      if (chunks.length <= COMPACT_AT) return;
+      let from = chunks.length;
+      while (from > 0 && chunks[from - 1]!.length < SMALL_CHUNK) from -= 1;
+      if (chunks.length - from < 2) return;
+      chunks = [...chunks.slice(0, from), Buffer.concat(chunks.slice(from))];
+    };
     const header = (): number | undefined => {
+      if (need !== undefined) return need;
       if (total < 4) return undefined;
       const bytes = Buffer.alloc(4);
       let filled = 0;
@@ -184,11 +200,13 @@ export const lengthPrefixedJsonCodec: AgentCodec = {
         filled += chunk.copy(bytes, filled, 0, Math.min(chunk.length, 4 - filled));
         if (filled === 4) break;
       }
-      return bytes.readUInt32BE(0);
+      need = bytes.readUInt32BE(0);
+      return need;
     };
     return {
+      pending: () => ({ bytes: total, chunks: chunks.length }),
       push(chunk) {
-        if (chunk.length > 0) { chunks.push(chunk); total += chunk.length; }
+        if (chunk.length > 0) { chunks.push(chunk); total += chunk.length; compact(); }
         const frames: AgentFrame[] = [];
         for (;;) {
           const length = header();
@@ -207,6 +225,7 @@ export const lengthPrefixedJsonCodec: AgentCodec = {
           const rest = joined.subarray(4 + length);
           chunks = rest.length === 0 ? [] : [rest];
           total = rest.length;
+          need = undefined;
           frames.push(parseAgentFrame(parsed));
         }
         return frames;

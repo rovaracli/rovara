@@ -6,7 +6,9 @@
 //   -i                                  the agent's frames travel over this client's stdin and stdout; NOT --detach, NOT --rm (the container is inspected after a crash, then removed by name)
 //   --runtime runsc                     gVisor under the root Docker daemon (design section 3)
 //   --read-only                         the rootfs is the AWS Lambda base image, unpacked and never written
-//   --user 993:993 --cap-drop ALL --security-opt no-new-privileges
+//   --user 0:0 --cap-drop ALL --cap-add SETUID --cap-add SETGID --security-opt no-new-privileges, and the agent is told `-uid 993 -gid 993`: the agent (PID 1) is root with ONLY those two capabilities and runs the function's
+//                                       runtime as uid 993 with none. gVisor delivers SIGSTOP from a same-uid process to PID 1, so a runtime on the agent's own uid could freeze its agent; on another uid every signal to PID 1 is EPERM and /proc/1 stays closed
+//                                       (lane A1, PROTOCOL.md "Signals").
 //   --memory = --memory-swap = MemorySize, --cpus pro rata, --pids-limit 256, --ulimit nofile=4096:4096, --log-driver none
 //   --network none                      (or, when the caller says so, ONE named network at a fixed address with the run's /etc/hosts and an empty resolv.conf: see `SandboxNetwork`)
 //   /tmp                                a size-capped tmpfs or a host directory the caller made (`SandboxScratch`)
@@ -20,7 +22,13 @@
 import { createHash } from "node:crypto";
 import { isIP } from "node:net";
 
-export const SANDBOX_USER = "993:993";
+/** The agent runs as root with only CAP_SETUID and CAP_SETGID (below); it starts the function's runtime as RUNTIME_UID with no capabilities. */
+export const AGENT_USER = "0:0";
+export const AGENT_CAPABILITIES: readonly string[] = ["SETGID", "SETUID"];
+export const RUNTIME_UID = 993;
+export const RUNTIME_GID = 993;
+/** The first arguments the agent always gets; a spec's own agent arguments follow them and may not name `-uid` or `-gid`. */
+export const AGENT_IDENTITY_ARGS: readonly string[] = ["-uid", String(RUNTIME_UID), "-gid", String(RUNTIME_GID)];
 export const SANDBOX_RUNTIME = "runsc";
 export const SANDBOX_PIDS = "256";
 export const SANDBOX_NOFILE = "4096:4096";
@@ -111,7 +119,7 @@ export function functionCpus(memoryMb: number, min: number, max: number): number
   return Math.round(Math.min(max, Math.max(min, memoryMb / 1_769)) * 100) / 100;
 }
 
-const tmpfsOptions = (spec: SandboxSpec, sizeMb: number): string => `rw,${spec.tmpExec ? "exec" : "noexec"},nosuid,nodev,mode=1777,size=${String(sizeMb)}m,uid=993,gid=993`;
+const tmpfsOptions = (spec: SandboxSpec, sizeMb: number): string => `rw,${spec.tmpExec ? "exec" : "noexec"},nosuid,nodev,mode=1777,size=${String(sizeMb)}m,uid=${String(RUNTIME_UID)},gid=${String(RUNTIME_GID)}`;
 
 /** Throws SandboxSpecError (with a fixed reason, never the offending text) when the spec is not one the profile may run. */
 export function validateSandboxSpec(spec: SandboxSpec): void {
@@ -119,7 +127,7 @@ export function validateSandboxSpec(spec: SandboxSpec): void {
   if (!ENV_ID.test(spec.environmentId)) fail("environment id");
   if (!validImageReference(spec.image)) fail("image reference");
   for (const [what, path] of [["env file path", spec.envFile], ["agent path", spec.agentHostPath], ["code path", spec.codeHostPath], ...(spec.layersHostPath === undefined ? [] : [["layers path", spec.layersHostPath]])] as Array<[string, string]>) if (!validPath(path)) fail(what);
-  for (const arg of spec.agentArgs ?? []) if (!AGENT_ARG.test(arg)) fail("agent argument");
+  for (const arg of spec.agentArgs ?? []) if (!AGENT_ARG.test(arg) || /^--?(?:uid|gid)(?:=|$)/u.test(arg)) fail("agent argument");
   if ((spec.agentArgs ?? []).length > 32) fail("agent argument count");
   const extras = spec.extraMounts ?? [];
   if (extras.length > 8) fail("extra mount count");
@@ -186,24 +194,24 @@ export function sandboxRunArgs(spec: SandboxSpec): string[] {
     "run", "-i", "--name", sandboxContainerName(spec.environmentId), "--hostname", "function", "--pull=never", "--runtime", SANDBOX_RUNTIME,
     ...spec.labels.flatMap((label) => ["--label", `${label.key}=${label.value}`]), "--label", `${FUNCTION_LABEL}=${spec.environmentId}`,
     ...(spec.network.mode === "none" ? ["--network", "none"] : ["--network", spec.network.name, "--ip", spec.network.ip]),
-    "--user", SANDBOX_USER, "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--read-only",
+    "--user", AGENT_USER, "--cap-drop", "ALL", ...AGENT_CAPABILITIES.flatMap((capability) => ["--cap-add", capability]), "--security-opt", "no-new-privileges", "--read-only",
     "--memory", memory, "--memory-swap", memory, "--cpus", cpuText(spec.cpus), "--pids-limit", SANDBOX_PIDS, "--ulimit", `nofile=${SANDBOX_NOFILE}`,
     "--log-driver", "none",
     "--env-file", spec.envFile,
     ...(spec.scratch.kind === "tmpfs" ? ["--tmpfs", `/tmp:${tmpfsOptions(spec, spec.scratch.sizeMb)}`] : []),
     ...expectedVolumes(spec).flatMap((volume) => ["--volume", volume]),
-    "--workdir", "/var/task", "--entrypoint", AGENT_CONTAINER_PATH, spec.image, ...(spec.agentArgs ?? []),
+    "--workdir", "/var/task", "--entrypoint", AGENT_CONTAINER_PATH, spec.image, ...AGENT_IDENTITY_ARGS, ...(spec.agentArgs ?? []),
   ];
   const problems = sandboxArgProblems(args, spec);
   if (problems.length > 0) throw new SandboxSpecError(`arguments are unsound: ${problems.join("; ")}`);
   return args;
 }
 
-const VALUE_FLAGS: ReadonlySet<string> = new Set(["--env-file", "--name", "--hostname", "--runtime", "--label", "--network", "--ip", "--user", "--cap-drop", "--security-opt", "--memory", "--memory-swap", "--cpus", "--pids-limit", "--ulimit", "--log-driver", "--tmpfs", "--volume", "--workdir", "--entrypoint"]);
+const VALUE_FLAGS: ReadonlySet<string> = new Set(["--env-file", "--name", "--hostname", "--runtime", "--label", "--network", "--ip", "--user", "--cap-drop", "--cap-add", "--security-opt", "--memory", "--memory-swap", "--cpus", "--pids-limit", "--ulimit", "--log-driver", "--tmpfs", "--volume", "--workdir", "--entrypoint"]);
 const BOOLEAN_FLAGS: ReadonlySet<string> = new Set(["-i", "--read-only"]);
 const FORBIDDEN: ReadonlyMap<string, string> = new Map([
   ["--publish", "publishes a port"], ["-p", "publishes a port"], ["--publish-all", "publishes ports"], ["-P", "publishes ports"], ["--expose", "exposes a port"], ["--net", "names a network"], ["--link", "links a container"],
-  ["--dns", "names a DNS server"], ["--dns-search", "names a search domain"], ["--dns-option", "sets a resolver option"], ["--add-host", "adds a host entry"], ["--privileged", "is privileged"], ["--cap-add", "adds a capability"],
+  ["--dns", "names a DNS server"], ["--dns-search", "names a search domain"], ["--dns-option", "sets a resolver option"], ["--add-host", "adds a host entry"], ["--privileged", "is privileged"],
   ["--device", "adds a device"], ["--pid", "shares a process namespace"], ["--ipc", "shares an IPC namespace"], ["--uts", "shares a UTS namespace"], ["--userns", "changes the user namespace"], ["--network-alias", "gives the sandbox an alias"],
   ["--mac-address", "sets a MAC address"], ["--ip6", "sets an IPv6 address"], ["--sysctl", "sets a kernel parameter"], ["--cgroupns", "changes the cgroup namespace"], ["-v", "adds a mount"], ["--mount", "adds a mount"],
   ["--volumes-from", "takes another container's mounts"], ["--group-add", "adds a group"], ["--cgroup-parent", "changes the cgroup"], ["--gpus", "adds a GPU"], ["--env", "sets an environment variable another way"],
@@ -261,7 +269,7 @@ export function sandboxArgProblems(args: readonly string[], expected: SandboxSpe
   else {
     if (args[imageAt] !== expected.image) problems.push("runs another image");
     const tail = args.slice(imageAt + 1);
-    const wantedTail = expected.agentArgs ?? [];
+    const wantedTail = [...AGENT_IDENTITY_ARGS, ...(expected.agentArgs ?? [])];
     if (tail.length !== wantedTail.length || tail.some((arg, index) => arg !== wantedTail[index])) problems.push("has something after the image other than the agent's arguments");
   }
   const of = (flag: string): string[] => values.get(flag) ?? [];
@@ -274,7 +282,8 @@ export function sandboxArgProblems(args: readonly string[], expected: SandboxSpe
   if (!of("--name").every((name) => CONTAINER_NAME.test(name))) problems.push("has a name that is not a sandbox name");
   exactly("--hostname", "function", "does not have the function host name");
   exactly("--runtime", SANDBOX_RUNTIME, "does not run under gVisor");
-  exactly("--user", SANDBOX_USER, `does not run as exactly one --user ${SANDBOX_USER}`);
+  exactly("--user", AGENT_USER, `does not run the agent as exactly one --user ${AGENT_USER}`);
+  if (JSON.stringify([...of("--cap-add")].sort()) !== JSON.stringify([...AGENT_CAPABILITIES])) problems.push("does not add exactly CAP_SETUID and CAP_SETGID, nothing else");
   exactly("--cap-drop", "ALL", "does not drop every capability");
   exactly("--security-opt", "no-new-privileges", "does not hold exactly no-new-privileges as its security option");
   exactly("--memory", memory, "does not hold the function's memory");

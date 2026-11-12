@@ -22,7 +22,7 @@ import type { SandboxLauncher } from "./launcher.js";
 import { SandboxSession } from "./session.js";
 import {
   controlArgProblems, functionCpus, inspectIdArgs, inspectStateArgs, killArgs, removeArgs, sandboxContainerName, sandboxRunArgs, SandboxSpecError,
-  DEFAULT_SANDBOX_ADDRESS_RANGE, ENV_MAX_TOTAL, ENV_MAX_VALUE, ENV_NAME, SANDBOX_TMPFS_MAX_MIB, environmentFileContent, networkInspectArgs, servicesNetworkProblems, type AddressRange, type RunLabel, type SandboxNetwork, type SandboxScratch, type SandboxSpec,
+  DEFAULT_SANDBOX_ADDRESS_RANGE, RUNTIME_GID, RUNTIME_UID, ENV_MAX_TOTAL, ENV_MAX_VALUE, ENV_NAME, SANDBOX_TMPFS_MAX_MIB, environmentFileContent, networkInspectArgs, servicesNetworkProblems, type AddressRange, type RunLabel, type SandboxNetwork, type SandboxScratch, type SandboxSpec,
 } from "./sandbox-spec.js";
 
 /** The one docker call this module needs: structurally the worker's `DockerCli.run`. */
@@ -85,6 +85,8 @@ export interface SandboxControllerOptions {
   initTimeoutMs?: number;
   /** The part of a services network's subnet function sandboxes may take (host octet). Default .64 to .127. */
   addressRange?: AddressRange;
+  /** How long an idle sandbox may leave a frame half-sent before it is ended (default 2 s). */
+  partialFrameMs?: number;
   /** Size of the log the agent returns per invoke. */
   logBytes?: number;
   writeEnvFile?: (path: string, content: string) => Promise<void>;
@@ -291,13 +293,12 @@ export function createSandboxController(options: SandboxControllerOptions): Sand
   const initTimeoutMs = options.initTimeoutMs ?? 15_000;
   const addressRange = options.addressRange ?? DEFAULT_SANDBOX_ADDRESS_RANGE;
   const newId = options.newEnvironmentId ?? ((): string => randomUUID());
-  const SANDBOX_UID = 993;
   // Parents are 0700 (nobody but the worker walks into them). The leaf is the sandbox's own: owned by its uid and 0700; where the worker may not chown, it is 0777 inside the 0700 parents instead.
   const makeScratchDir = options.makeScratchDir ?? (async (path: string): Promise<void> => {
     await mkdir(path.slice(0, path.lastIndexOf("/")), { recursive: true, mode: 0o700 });
     await mkdir(path, { mode: 0o700 });
     try {
-      await chown(path, SANDBOX_UID, SANDBOX_UID);
+      await chown(path, RUNTIME_UID, RUNTIME_GID);
       await chmod(path, 0o700);
     } catch {
       await chmod(path, 0o777);
@@ -462,7 +463,7 @@ export function createSandboxController(options: SandboxControllerOptions): Sand
     env.envFile = envFile;
     await writeEnvFile(envFile, environmentFileContent(spec));
     const session = new SandboxSession(launcher.start(args), {
-      codec, maxFrameBytes: options.maxFrameBytes ?? MAX_FRAME_BYTES, now,
+      codec, maxFrameBytes: options.maxFrameBytes ?? MAX_FRAME_BYTES, now, ...(options.partialFrameMs === undefined ? {} : { partialFrameMs: options.partialFrameMs }),
       // A runtime that died while idle makes the environment useless (the agent would restart it, with this sandbox's /tmp kept): remove it.
       onRuntimeExit: () => { if (env.phase === "idle") void ensureGone(env); },
     });

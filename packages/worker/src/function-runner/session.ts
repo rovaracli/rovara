@@ -34,8 +34,10 @@ export interface SessionOptions {
   maxIdleBytes?: number;
   /** Most stdout bytes accepted for one invoke (one result, and a few small frames around it). */
   maxInvokeBytes?: number;
-  /** Most frames besides the result in one invoke. */
+  /** Most frames besides the result in one invoke (and most `fatal` frames while starting). */
   maxExtraFramesPerInvoke?: number;
+  /** How long an idle sandbox may leave a frame half-sent before it is ended. */
+  partialFrameMs?: number;
   /** Called when the agent reports that the runtime died while no invoke was open. */
   onRuntimeExit?: () => void;
 }
@@ -92,6 +94,7 @@ export class SandboxSession {
   private phaseBytes = 0;
   private extraFrames = 0;
   private helloSeen = false;
+  private partialTimer: ReturnType<typeof setTimeout> | undefined;
   private stderr = "";
   private cancelled = false;
 
@@ -102,6 +105,7 @@ export class SandboxSession {
     process.onStderr((chunk) => { this.stderr = `${this.stderr}${chunk.toString("utf8")}`.slice(-STDERR_TAIL); });
     this.exited = process.exited.then((exit) => {
       this.exit = exit;
+      this.clearPartialTimer();
       if (this.cancelled) { this.finish({ kind: "stopped" }); this.finishStartup({ kind: "stopped" }); }
       else { this.finish(this.exitResult(exit)); this.finishStartup(this.exitResult(exit)); }
       return exit;
@@ -178,7 +182,25 @@ export class SandboxSession {
     return { kind: "exit", exit, sawFrames: this.framesSeen > 0, ...(this.fatalMessage === undefined ? {} : { fatal: this.fatalMessage }) };
   }
 
+  private clearPartialTimer(): void {
+    if (this.partialTimer !== undefined) clearTimeout(this.partialTimer);
+    this.partialTimer = undefined;
+  }
+
+  /** An idle sandbox has no business sending anything, least of all half a frame: a trickle of bytes that never completes would hold buffers for as long as the environment lives. */
+  private watchPartialFrame(): void {
+    if (this.phase !== "idle") { this.clearPartialTimer(); return; }
+    if (this.decoder.pending().bytes === 0) { this.clearPartialTimer(); return; }
+    if (this.partialTimer !== undefined) return;
+    this.partialTimer = setTimeout(() => {
+      this.partialTimer = undefined;
+      if (this.phase === "idle" && this.decoder.pending().bytes > 0) this.fail("partial_frame");
+    }, this.options.partialFrameMs ?? 2_000);
+    this.partialTimer.unref();
+  }
+
   private enter(phase: Phase): void {
+    this.clearPartialTimer();
     this.phase = phase;
     this.phaseBytes = 0;
     this.extraFrames = 0;
@@ -186,6 +208,7 @@ export class SandboxSession {
 
   private fail(reason: string): void {
     if (this.protocolError !== undefined) return;
+    this.clearPartialTimer();
     this.protocolError = reason;
     this.process.kill();
     this.finish({ kind: "protocol_error", reason });
@@ -216,6 +239,7 @@ export class SandboxSession {
       this.framesSeen += 1;
       this.onFrame(frame);
     }
+    if (this.protocolError === undefined) this.watchPartialFrame();
   }
 
   /** The frames each phase accepts. Everything else is a protocol violation. */
@@ -250,7 +274,7 @@ export class SandboxSession {
         return;
       case "fatal":
         // Recorded for diagnosis only. It never changes how a crash is classified: a function can forge it.
-        if (phase === "idle") { this.fail("unexpected_frame"); return; }
+        if (phase === "idle" || ++this.extraFrames > (this.options.maxExtraFramesPerInvoke ?? 8)) { this.fail(phase === "idle" ? "unexpected_frame" : "too_many_frames"); return; }
         this.fatalMessage = frame.message;
         return;
       case "result":

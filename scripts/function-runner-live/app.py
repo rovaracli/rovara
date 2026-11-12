@@ -71,6 +71,28 @@ def handler(event, context):
             return {"ok": False, "errno": e.errno}
     if op == "exit":
         os._exit(event.get("code", 3))
+    if op == "hostile":
+        # What a hostile handler may do to PID 1 (the agent): signal it, open its fds, environ and memory. Only opens are tried.
+        import errno
+        import signal as sg
+        out = {"signals": {}, "proc": {}}
+        for name in ("SIGSTOP", "SIGKILL", "SIGTERM", "SIGTSTP", "SIGCONT", "SIGUSR1"):
+            try:
+                os.kill(1, getattr(sg, name))
+                out["signals"][name] = "SENT"
+            except OSError as e:
+                out["signals"][name] = errno.errorcode.get(e.errno, str(e.errno))
+        for name, path, flags in (("fd0_read", "/proc/1/fd/0", os.O_RDONLY), ("fd1_write", "/proc/1/fd/1", os.O_WRONLY), ("fd1_read", "/proc/1/fd/1", os.O_RDONLY), ("fd2", "/proc/1/fd/2", os.O_WRONLY), ("environ", "/proc/1/environ", os.O_RDONLY), ("mem", "/proc/1/mem", os.O_RDONLY)):
+            try:
+                os.close(os.open(path, flags))
+                out["proc"][name] = "OPENED"
+            except OSError as e:
+                out["proc"][name] = errno.errorcode.get(e.errno, str(e.errno))
+        try:
+            out["agent_status"] = [line.strip() for line in open("/proc/1/status") if line.startswith(("Uid", "CapEff"))]
+        except OSError as e:
+            out["agent_status"] = errno.errorcode.get(e.errno, str(e.errno))
+        return out
     if op == "forge":
         import json
         import struct

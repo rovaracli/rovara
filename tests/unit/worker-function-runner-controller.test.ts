@@ -457,7 +457,7 @@ describe("hostile function data stays out of the docker arguments", () => {
     await runner.register(key, config({ environment }));
     expect((await call(runner, "r1", "{}", { key })).kind).toBe("response");
     const args = runArgs[0]!;
-    expect(args.filter((arg) => arg.includes("privileged") || arg.includes("--cap-add") || arg.includes("yyyy") || arg.includes("/var/run/app.pid") || arg.includes("/:/host"))).toEqual([]);
+    expect(args.filter((arg) => arg.includes("privileged") || arg.includes("--cap-add=ALL") || arg.includes("yyyy") || arg.includes("/var/run/app.pid") || arg.includes("/:/host"))).toEqual([]);
     expect(args).not.toContain("-e");
     expect(args.some((arg, index) => args[index - 1] === "-v")).toBe(false);
     const content = fs.written[0]!.content;
@@ -701,6 +701,53 @@ describe("what the agent's stdout may carry (H2: a function can write frames ont
     expect(await call(runner)).toEqual({ kind: "unavailable", reason: "protocol_error" });
     await wait(5);
     expect(containers.size).toBe(0);
+  });
+
+  it("counts fatal frames among the extra frames: a flood of them ends the sandbox, while starting and during an invoke", async () => {
+    await goesAway("fatal flood in an invoke", (frame, container) => { if (frame.type === "invoke") for (let i = 0; i < 20; i += 1) container.emit({ type: "fatal", message: "x" }); });
+    const { runner, containers } = setup({ startup: (container) => { container.emit({ type: "hello", proto: "agent/1" }); for (let i = 0; i < 20; i += 1) container.emit({ type: "fatal", message: "x" }); } });
+    await runner.register(KEY, config());
+    expect(await call(runner)).toEqual({ kind: "unavailable", reason: "protocol_error" });
+    await wait(5);
+    expect(containers.size).toBe(0);
+    // A few are fine: the agent may say fatal once before it exits.
+    const few = setup({ agent: (frame, container) => { if (frame.type === "invoke") { container.emit({ type: "fatal", message: "x" }); container.emit(resultFor(frame)); } } });
+    await few.runner.register(KEY, config());
+    expect((await call(few.runner)).kind).toBe("response");
+  });
+
+  it("ends an idle sandbox that leaves a frame half-sent, and leaves a quiet one alone", async () => {
+    const quiet = setup({}, { partialFrameMs: 40 });
+    await quiet.runner.register(KEY, config());
+    await call(quiet.runner, "r1");
+    await wait(120);
+    expect(quiet.containers.size).toBe(1);
+    const partial = setup({}, { partialFrameMs: 40 });
+    await partial.runner.register(KEY, config());
+    await call(partial.runner, "r1");
+    const header = Buffer.alloc(4);
+    header.writeUInt32BE(100);
+    partial.everStarted[0]!.emitRaw(Buffer.concat([header, Buffer.from("{\"type\":")]));
+    await wait(15);
+    expect(partial.containers.size).toBe(1);
+    await wait(120);
+    expect(partial.containers.size).toBe(0);
+    expect(partial.runner.stats().reservedMiB).toBe(0);
+  });
+
+  it("a partial frame that is not completed within the window while a call is in flight is the invoke's business, not the idle timer's", async () => {
+    const slow: AgentBehavior = (frame, container) => {
+      if (frame.type !== "invoke") return;
+      const body = Buffer.from(JSON.stringify(resultFor(frame)));
+      const header = Buffer.alloc(4);
+      header.writeUInt32BE(body.length);
+      const all = Buffer.concat([header, body]);
+      container.emitRaw(all.subarray(0, 10));
+      setTimeout(() => container.emitRaw(all.subarray(10)), 80);
+    };
+    const { runner } = setup({ agent: slow }, { partialFrameMs: 30 });
+    await runner.register(KEY, config());
+    expect((await call(runner, "r1", "{}", { timeoutMs: 1_000 })).kind).toBe("response");
   });
 
   it("a forged fatal frame does not change how a crash is classified (L6): docker's record decides", async () => {
