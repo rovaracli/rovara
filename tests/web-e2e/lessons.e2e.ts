@@ -300,6 +300,9 @@ test("approve by exception: the task page lists the lessons a task loaded with t
  await expect(section).toContainText("On trial");
  await expect(section).toContainText("Stable");
  await evidenceShot(page, { path: ".test-build/web-e2e/lessons-thumbs-down.png", fullPage: true });
+ // A full-page picture resizes the window through a width under 480px, which draws the task page afresh in its phone order and back (the one header since decision 125), so the closed section is opened again.
+ const loaded = page.locator("details.rv-loaded-knowledge");if (!(await loaded.evaluate(node => (node as HTMLDetailsElement).open))) await loaded.locator(":scope > summary").click();
+ await expect(section.getByRole("button", { name: "Not helpful (thumbs down): Retries use withRetry" })).toBeVisible();
  await checkA11y(page, { theme: "light" });await checkA11y(page, { theme: "dark" });
  await page.getByRole("button", { name: "Not helpful (thumbs down): Retries use withRetry" }).click();
  await expect(section.getByRole("status")).toContainText("Rovara stopped using this lesson");
