@@ -33,7 +33,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { constants as fsConstants, readFileSync } from "node:fs";
 import { open, readFile, realpath, stat } from "node:fs/promises";
 import { resolve, sep } from "node:path";
-import { TEST_SERVICES_COMPANY_IMAGE_PLAN_FEATURE, isFunctionRunnerCatalogId, placeholderDigestProblem, type TaskDependencyPlan, type TestEnvTaskPlan } from "@agentx/cloud-contracts";
+import { TEST_SERVICES_COMPANY_IMAGE_PLAN_FEATURE, isFunctionRunnerEntry, placeholderDigestProblem, type TaskDependencyPlan, type TestEnvTaskPlan } from "@agentx/cloud-contracts";
 import { CATALOG_REGISTRY_ROOT, PrepullListSchema, ServiceCatalogSchema, TEST_SERVICES_AWS_ALL_SERVICES_FEATURE, TEST_SERVICES_AWS_PLAN_FEATURE, TEST_SERVICES_FAKE_PLAN_FEATURE, TEST_SERVICES_FILE_SEED_FEATURE, TEST_SERVICES_PLAN_FEATURE, TEST_SERVICES_SEED_LOCK_FEATURE, TEST_SERVICES_USAGE_LIMITS, TEST_SERVICES_USAGE_RESULT_KEY, TestServicesUsageRecordSchema, AWS_EMULATOR_ENGINE_VERSION, agentXError, awsPlanNeedsAllServices, catalogEntryById, catalogRepositoryName, checkEmulatorEngine, normaliseAwsServiceKey, type CatalogEdition, type CatalogEntry, type ServiceCatalog, type TaskAwsResource, type TestServicesStartFailure, type TestServicesUsageRecord } from "@rovara-code/contracts";
 import { TASK_SANDBOX_IMAGE_ENVIRONMENT, type TaskSandbox } from "./task-sandbox.js";
 import { SANDBOX_TARGET, executionFor } from "./execution-target.js";
@@ -504,7 +504,7 @@ function resolveCompany(catalog: ServiceCatalog, plan: TaskDependencyPlan, confi
   if (entry === undefined) throw new TestServicesError("pull_failed", new Map([[plan.id, "pull_failed" as const]]));
   const company = plan.company;
   if (company === undefined || plan.digest === undefined || company.digest !== plan.digest || company.mirror.digest !== plan.digest) throw new TestServicesError("mismatch");
-  if (isFunctionRunnerCatalogId(entry.id)) throw new TestServicesError("mismatch");
+  if (isFunctionRunnerEntry(entry)) throw new TestServicesError("mismatch");
   if (entry.backing !== "local" || entry.status === "retired" || entry.family !== plan.family || !entry.editions.includes(config.edition) || entry.image.repository !== plan.repository || entry.image.digest === undefined) throw new TestServicesError("mismatch");
   const reference = companyImageReference({ registry: config.registry, catalogEnv: config.catalogEnv, repository: company.mirror.repository, digest: company.mirror.digest });
   if (reference === undefined) throw new TestServicesError("mismatch");
@@ -523,7 +523,7 @@ function resolveLocal(catalog: ServiceCatalog, plan: TaskDependencyPlan, config:
   // A catalog id this worker image does not carry at all (the broker approved a newer catalog than the image): the same "not available on this worker" sentence as a digest it does not pin.
   if (entry === undefined) throw new TestServicesError("pull_failed", new Map([[plan.id, "pull_failed" as const]]));
   // Slice 4: the function runner's images (a Lambda base image, the agent) are in the catalog as local entries but are never a service a plan starts: the broker refuses such a plan and so does the worker.
-  if (isFunctionRunnerCatalogId(entry.id)) throw new TestServicesError("mismatch");
+  if (isFunctionRunnerEntry(entry)) throw new TestServicesError("mismatch");
   if (entry.backing !== "local" || entry.status === "retired" || entry.family !== plan.family || !entry.editions.includes(config.edition)
     || entry.image.repository !== plan.repository) throw new TestServicesError("mismatch");
   // The digest must be one PINNED IN THIS WORKER IMAGE (the broker may have approved a newer catalog than the image the worker was built from): the fixed "not available on this worker" sentence, never a generic error.

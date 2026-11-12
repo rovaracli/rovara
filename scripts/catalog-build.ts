@@ -36,9 +36,9 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { z } from "zod";
-import { CATALOG_FILE, CATALOG_MAX_BYTES, CATALOG_SIGNATURE_ALGORITHM, CATALOG_SIGNATURE_FILE, CatalogIdSchema, CATALOG_PLATFORMS, CatalogRegistryHostSchema, PrepullListSchema, ServiceCatalogSchema, catalogPrepullList, catalogRepositoryName, catalogSigningMessage, combinedSbomRef, imageStatementMessage, parseBundlePublicKey, sha256HexOf, verifyCatalogSignature, verifyImageStatement, type CatalogEntry, type CatalogSignature, type ImageChildStatement, type ServiceCatalog, type SignedImageStatement } from "@rovara-code/contracts";
+import { CATALOG_FILE, CATALOG_MAX_BYTES, CATALOG_SIGNATURE_ALGORITHM, CATALOG_SIGNATURE_FILE, CatalogIdSchema, CATALOG_PLATFORMS, CatalogRegistryHostSchema, PrepullListSchema, ServiceCatalogSchema, catalogRepositoryName, catalogSigningMessage, combinedSbomRef, imageStatementMessage, parseBundlePublicKey, sha256HexOf, verifyCatalogSignature, verifyImageStatement, type CatalogEntry, type CatalogSignature, type ImageChildStatement, type ServiceCatalog, type SignedImageStatement } from "@rovara-code/contracts";
 import { kmsBundleSigner, type BundleSigner } from "./release/bundle.js";
-import { FUNCTION_RUNNER_PREPULL_FILE, functionRunnerPrepullList, withoutFunctionRunner } from "@agentx/cloud-contracts";
+import { FUNCTION_RUNNER_PREPULL_FILE, functionRunnerPrepullList, servicesPrepullList } from "@agentx/cloud-contracts";
 
 const execFileAsync = promisify(execFile);
 
@@ -400,7 +400,7 @@ export async function buildPinnedCatalog(input: { catalog: unknown; sources: unk
   const own = verifyCatalogSignature({ catalogBytes, signature, trustedKeys: [ports.signer.publicKeyPem] });
   if (!own.ok) throw new CatalogBuildError([{ id: "*", code: "unsigned", message: `the signer's signature does not verify against its own public key: ${own.reason}` }]);
   // The vendored `catalogPrepullList` holds EVERY pinned local entry, which would put four Lambda base images in the services pre-pull: they go in their own list (function-runner-catalog.ts).
-  const prepull = withoutFunctionRunner(PrepullListSchema.parse(catalogPrepullList(pinned)));
+  const prepull = PrepullListSchema.parse(servicesPrepullList(pinned));
   const runnerPrepull = functionRunnerPrepullList(pinned);
   return { catalog: pinned, catalogBytes, signatureBytes: jsonBytes(signature), prepullBytes: jsonBytes(prepull), functionRunnerPrepullBytes: jsonBytes(runnerPrepull), evidence };
 }

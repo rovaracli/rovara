@@ -18,6 +18,7 @@ export { TEST_SERVICES_COMPANY_IMAGE_PLAN_FEATURE } from "@rovara-code/contracts
  */
 export const TEST_SERVICES_FUNCTIONS_PLAN_FEATURE = "task.testServices.functions.v2";
 /** `functions.runner`: `auto` runs a function in the runner when it needs it (native code, an image, a runtime the engine cannot run); `all` runs every function in the runner (pure code that hits the engine's Python gaps). */
+// W1: a worker that takes a plan with `aws.functions` must itself refuse it (a fixed sentence, nothing started) when its runner is not ready (function-runner-ready.ts); the delivery gate alone is not enough.
 export const TASK_FUNCTIONS_RUNNER_MODES = ["auto", "all"] as const;
 export const TaskAwsFunctionsSchema = z.object({ runner: z.enum(TASK_FUNCTIONS_RUNNER_MODES) }).strict();
 export type TaskAwsFunctions = z.infer<typeof TaskAwsFunctionsSchema>;

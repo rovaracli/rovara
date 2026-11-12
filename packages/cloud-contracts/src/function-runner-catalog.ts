@@ -9,10 +9,10 @@
 //
 // WHY THE ENTRIES NEED GUARDS HERE. The vendored catalog schema has no "image only" kind of entry: any new name must be `backing: local`, and `catalogPrepullList` (vendored, Rovara Code's) puts EVERY pinned local entry in
 // the pre-pull list and the broker's `isPrepulledEntry` then lets a dependency plan name it. That is wrong for these images (they are never started as a service, and four Lambda images are about 2 GB the boot must not
-// pull with the services). So, in Cloud's own code: `functionRunnerPrepullList` and `withoutFunctionRunner` split the list in two, the broker refuses a plan that names one of these ids (dependency-plan.ts,
+// pull with the services). So, in Cloud's own code: `functionRunnerPrepullList` and `servicesPrepullList` (made WITHOUT the runner's entries, so the 16-image bound counts services only) split the list in two, the broker refuses a plan that names one of these ids (dependency-plan.ts,
 // company-images.ts) and so does the worker (test-services-run.ts). The clean fix is a marker on the entry in Code's contract (owed upstream, see the lane report); until then these guards are the rule.
 import { z } from "zod";
-import { CatalogIdSchema, PrepullListSchema, catalogImageReference, catalogRepositoryName, type PrepullList, type ServiceCatalog } from "@rovara-code/contracts";
+import { CatalogIdSchema, PrepullListSchema, catalogImageReference, catalogPrepullList, catalogRepositoryName, type PrepullList, type ServiceCatalog } from "@rovara-code/contracts";
 
 /** The agent's catalog id and repository. */
 export const FUNCTION_RUNNER_AGENT_ID = "function-agent@r1";
@@ -24,20 +24,41 @@ export const FUNCTION_RUNNER_RUNTIME_IMAGES = {
   "nodejs24.x": "lambda-nodejs@24",
 } as const;
 export type FunctionRunnerRuntime = keyof typeof FUNCTION_RUNNER_RUNTIME_IMAGES;
-export const FUNCTION_RUNNER_RUNTIMES = Object.keys(FUNCTION_RUNNER_RUNTIME_IMAGES) as FunctionRunnerRuntime[];
+export const FUNCTION_RUNNER_RUNTIMES = Object.keys(FUNCTION_RUNNER_RUNTIME_IMAGES) as [FunctionRunnerRuntime, ...FunctionRunnerRuntime[]];
 export const FUNCTION_RUNNER_CATALOG_IDS: readonly string[] = [...Object.values(FUNCTION_RUNNER_RUNTIME_IMAGES), FUNCTION_RUNNER_AGENT_ID].sort();
 /** The catalog repositories of those ids (lambda-python 3.12 and 3.13 share one, as postgres 15, 16 and 17 do): the registry repositories the control plane must have before a catalog build can push them. */
 export const FUNCTION_RUNNER_REPOSITORIES: readonly string[] = ["svc/function-agent", "svc/lambda-nodejs", "svc/lambda-python"];
 /** The only platform these images are pinned for: workers are arm64 (design section 3, x86 addendum). */
 export const FUNCTION_RUNNER_PLATFORM = "linux/arm64";
-/** At most this many runner images are pulled at boot (4 runtimes and the agent, with room for provided.al2023 and java21 later). */
-export const FUNCTION_RUNNER_PREPULL_MAX_IMAGES = 8;
+/** At most this many runner images are pulled at boot (4 runtimes and the agent now, with room for provided.al2023, java21, dotnet8 and ruby later). The services' list has its own bound (16): the two never share it. */
+export const FUNCTION_RUNNER_PREPULL_MAX_IMAGES = 12;
 /** The file in the worker image beside `prepull.json`, made by `catalog-build`. Empty until the entries are pinned. */
 export const FUNCTION_RUNNER_PREPULL_FILE = "packages/worker/service-catalog/function-runner-prepull.json";
 
-/** Whether a catalog id is one of the runner's images. Such an id is never a dependency a plan may start and never in the services pre-pull list. */
+/**
+ * The runner's families (the name part of the catalog id, and the entry's `family`). The rule is the family, not a list of ids: `lambda-` is RESERVED for the runner (a later `lambda-python@3.14` or `lambda-provided@al2023` is a runner
+ * image the day it is added, with no change here), and `function-agent` is the agent. A service family can never start with `lambda-`.
+ */
+export const FUNCTION_RUNNER_FAMILIES = ["function-agent", "lambda-nodejs", "lambda-python"] as const;
+export const FUNCTION_RUNNER_FAMILY_PREFIX = "lambda-";
+const nameOfId = (catalogId: string): string => (catalogId.includes("@") ? catalogId.slice(0, catalogId.indexOf("@")) : catalogId);
+/** Whether a family (or the name part of a catalog id) is the runner's. */
+export function isFunctionRunnerFamily(family: string): boolean {
+  return (FUNCTION_RUNNER_FAMILIES as readonly string[]).includes(family) || family.startsWith(FUNCTION_RUNNER_FAMILY_PREFIX);
+}
+/** Whether a repository (`svc/lambda-python`) is the runner's: one of its three, or any `svc/lambda-*`. */
+export function isFunctionRunnerRepository(repository: string): boolean {
+  return FUNCTION_RUNNER_REPOSITORIES.includes(repository) || repository.startsWith(`svc/${FUNCTION_RUNNER_FAMILY_PREFIX}`);
+}
+
+/** Whether a catalog id is one of the runner's images (by its family, so an id added later is covered). Such an id is never a dependency a plan may start and never in the services pre-pull list. */
 export function isFunctionRunnerCatalogId(catalogId: string): boolean {
-  return FUNCTION_RUNNER_CATALOG_IDS.includes(catalogId);
+  return isFunctionRunnerFamily(nameOfId(catalogId));
+}
+
+/** Whether a catalog ENTRY is the runner's: by its id, its family or its repository, any one of the three. Every guard asks this of the entry when it has one. */
+export function isFunctionRunnerEntry(entry: { id: string; family: string; image: { repository: string } }): boolean {
+  return isFunctionRunnerCatalogId(entry.id) || isFunctionRunnerFamily(entry.family) || isFunctionRunnerRepository(entry.image.repository);
 }
 
 /** The runner pre-pull list: the same shape as the services one (a repository and a digest per image, never a tag), arm64 only, only runner ids, and a smaller bound. */
@@ -53,9 +74,9 @@ export const FunctionRunnerPrepullListSchema = z
     const ids = list.images.map((image) => image.id);
     if (new Set(ids).size !== ids.length) problem(["images"], "an id is listed once");
     list.images.forEach((image, index) => {
-      if (!isFunctionRunnerCatalogId(image.id)) problem(["images", index, "id"], "only the function runner's images are listed here");
       if (image.platforms.length !== 1 || image.platforms[0] !== FUNCTION_RUNNER_PLATFORM) problem(["images", index, "platforms"], "the runner's images are linux/arm64 only");
-      if (image.repository !== runnerRepositoryOf(image.id)) problem(["images", index, "repository"], "the repository is the one this id has");
+      // A runner id (by family) lives in `svc/<its family>`; any other id is listed only when it is in one of the runner's repositories (an entry the guards took for a runner's by its repository).
+      if (isFunctionRunnerCatalogId(image.id) ? image.repository !== runnerRepositoryOf(image.id) : !isFunctionRunnerRepository(image.repository)) problem(["images", index, "repository"], "only the function runner's images, in the repository their id has, are listed here");
     });
   });
 export type FunctionRunnerPrepullList = z.infer<typeof FunctionRunnerPrepullListSchema>;
@@ -68,15 +89,18 @@ function runnerRepositoryOf(catalogId: string): string {
 /** The pinned runner images of a catalog, sorted by id. An unpinned catalog, or one that does not hold them yet, gives the empty list. Retired entries and entries with no digest are left out. */
 export function functionRunnerPrepullList(catalog: ServiceCatalog): FunctionRunnerPrepullList {
   const images = catalog.entries
-    .filter((entry) => catalog.pinned && entry.status !== "retired" && entry.image.digest !== undefined && isFunctionRunnerCatalogId(entry.id))
+    .filter((entry) => catalog.pinned && entry.status !== "retired" && entry.image.digest !== undefined && isFunctionRunnerEntry(entry))
     .map((entry) => ({ id: entry.id, repository: entry.image.repository, digest: entry.image.digest as string, platforms: [...entry.image.platforms] }))
     .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   return FunctionRunnerPrepullListSchema.parse({ schemaVersion: 1, catalogRevision: catalog.revision, images });
 }
 
-/** The services pre-pull list with the runner's images taken out (`catalogPrepullList` includes every pinned local entry): what `prepull.json` holds, so the services boot step never pulls a Lambda image. */
-export function withoutFunctionRunner(list: PrepullList): PrepullList {
-  return PrepullListSchema.parse({ ...list, images: list.images.filter((image) => !isFunctionRunnerCatalogId(image.id)) });
+/**
+ * The services pre-pull list of a catalog, made WITHOUT the runner's entries. The vendored `catalogPrepullList` holds every pinned local entry and refuses a list of more than 16 images, so taking the runner's images out of its
+ * RESULT would be too late (10 services and 7 runner images already throw, and the broker's try/catch would then turn every service off). The entries are taken out first, so the 16 bound counts services only.
+ */
+export function servicesPrepullList(catalog: ServiceCatalog): PrepullList {
+  return catalogPrepullList({ ...catalog, entries: catalog.entries.filter((entry) => !isFunctionRunnerEntry(entry)) });
 }
 
 /**

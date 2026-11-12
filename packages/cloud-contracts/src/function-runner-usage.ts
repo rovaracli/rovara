@@ -6,6 +6,7 @@
 // Never fed back to the agent or a model. Browser-safe: nothing here imports a Node module.
 import { z } from "zod";
 import { looksLikeSecretValue } from "@rovara-code/contracts";
+import { FUNCTION_RUNNER_RUNTIMES } from "./function-runner-catalog.js";
 
 export const FUNCTION_RUNNER_USAGE_SCHEMA_VERSION = 1;
 /** The key under which the functions record rides in a run's result, next to `testServicesUsage`. */
@@ -21,18 +22,26 @@ export type FunctionUnsupportedReason = (typeof FUNCTION_UNSUPPORTED_REASONS)[nu
 export const FUNCTION_COUNT_BUCKETS = [0, 1, 2, 6, 21] as const;
 const Bucket = z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(6), z.literal(21)]);
 
-/** A Lambda function name that may be shown: AWS's own character set, 1 to 64, and nothing secret-shaped in it or in its upper-case form. */
+/**
+ * Whether a function name looks like it carries a secret, beyond the services record's `looksLikeSecretValue` (a run of 32 or more of letters, digits, `-` and `_`, AWS key ids, `sk_live_`, GitHub and Slack tokens, PEM headers):
+ * Anthropic keys (`sk-ant-`, `sk-`), a JWT (`eyJ`), the words password, passwd, secret, token and credential (any case), and a long run of letters and digits with no separator (24 or more: base64 text has no `-` or `_` left in it
+ * once a name's own character set is applied). A name that trips any of these is not shown: it is counted in `otherFunctions`.
+ */
+const SENSITIVE_NAME = [/sk-ant-/iu, /(?:^|[^A-Za-z0-9])sk-[A-Za-z0-9]{8,}/u, /eyJ/u, /pass(?:word|wd)|secret|token|credential|api[-_]?key|private[-_]?key/iu, /[A-Za-z0-9]{24,}/u];
+export const functionNameLooksSensitive = (name: string): boolean => SENSITIVE_NAME.some((pattern) => pattern.test(name)) || looksLikeSecretValue(name) || looksLikeSecretValue(name.toUpperCase());
+
+/** A Lambda function name that may be shown: AWS's own character set, 1 to 64, and nothing secret-shaped in it or in its upper-case form (see `functionNameLooksSensitive`). */
 export const FunctionNameSchema = z
   .string()
   .regex(/^[A-Za-z0-9_-]{1,64}$/u)
-  .refine((name) => !looksLikeSecretValue(name) && !looksLikeSecretValue(name.toUpperCase()), { message: "a function name, not a secret" });
+  .refine((name) => !functionNameLooksSensitive(name), { message: "a function name, not a secret" });
 
 export const FunctionRunnerUsageRowSchema = z
   .object({
     name: FunctionNameSchema,
     where: z.enum(FUNCTION_RUN_PLACES),
     /** The runtime it ran as (`python3.12`), on a runner row only. */
-    runtime: z.string().regex(/^[a-z][a-z0-9.]{1,20}$/u).optional(),
+    runtime: z.enum(FUNCTION_RUNNER_RUNTIMES).optional(),
     invocations: Bucket,
     /** Environment starts (a cold start is the first call into a new sandbox). Runner rows only. */
     cold: Bucket,

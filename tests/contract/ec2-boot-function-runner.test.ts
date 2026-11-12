@@ -58,10 +58,12 @@ function setup(): Setup {
   const s: Setup = { dir, bin, calls: join(dir, "calls"), log: join(dir, "log"), env: join(dir, "worker.env"), daemon: join(dir, "daemon.json"), gvisor: join(dir, "gv"), agentDir: join(dir, "agent") };
   writeFileSync(join(dir, "firewall.sh"), "exit 0\n");
   writeFileSync(s.calls, "");
+  writeFileSync(join(dir, "timeouts"), "");
   writeFileSync(s.log, "");
   writeFileSync(s.env, "AWS_REGION=us-west-2\n");
   const tool = (name: string, body: string) => { writeFileSync(join(bin, name), `#!/bin/bash\n${body}\n`); chmodSync(join(bin, name), 0o755); };
-  tool("timeout", 'while [[ "$1" == --* ]]; do shift; done; shift; exec "$@"');
+  tool("timeout", 'while [[ "$1" == --* ]]; do shift; done; printf "%s %s\\n" "$1" "$2" >>"$TIMEOUT_FILE"; shift; exec "$@"');
+  tool("aws", 'printf "token\\n"');
   tool("sha512sum", 'exec shasum -a 512 "$@"');
   tool("sleep", "exit 0");
   tool("chown", "exit 0");
@@ -83,8 +85,11 @@ function setup(): Setup {
     'printf "docker %s\\n" "$*" >>"$CALLS_FILE"',
     'case "$1" in',
     '  info) if [[ -n "${DOCKER_RUNTIMES+x}" ]]; then printf "%s\\n" "$DOCKER_RUNTIMES"; else printf "%s\\n" "{\\"runc\\":{},\\"runsc\\":{}}"; fi ;;',
-    '  run) case "$*" in *"--entrypoint cat"*) cat "$LIST_FILE" ;; *"--runtime runsc"*) exit "${SMOKE_EXIT:-0}" ;; *) exit 0 ;; esac ;;',
-    '  image) [[ "$2" == inspect && "$3" == --format ]] && { printf "%s\\n" "${IMAGE_ARCH-arm64}"; exit 0; }; exit 0 ;;',
+    '  login) cat >/dev/null ;;',
+    '  logout) exit 0 ;;',
+    '  pull) [[ -n "${PULL_FAIL:-}" && "$*" == *"$PULL_FAIL"* ]] && exit 1; exit 0 ;;',
+    '  run) case "$*" in *function-runner-prepull.json*) cat "$LIST_FILE" ;; *"--entrypoint cat"*) cat "${SERVICES_LIST_FILE:-$LIST_FILE}" ;; *"--runtime runsc"*) exit "${SMOKE_EXIT:-0}" ;; *) exit 0 ;; esac ;;',
+    '  image) [[ "$2" == inspect && "$3" == --format ]] && { printf "%s\\n" "${IMAGE_ARCH-arm64}"; exit 0; }; exit "${INSPECT_EXIT:-0}" ;;',
     '  create) printf "cid1\\n" ;;',
     '  cp) [[ -n "${AGENT_FIXTURE:-}" ]] && cp "$AGENT_FIXTURE" "${3}" ;;',
     '  *) exit 0 ;;',
@@ -115,7 +120,7 @@ function run(s: Setup, body: string, env: Record<string, string> = {}, options: 
   const script = `set -u\nlog() { printf '%s\\n' "$*" >>"$LOG_FILE"; }\nsource "${file}"\n${body}\n`;
   return spawnSync("bash", ["-c", script], {
     encoding: "utf8",
-    env: { PATH: `${s.bin}:/usr/bin:/bin:/usr/sbin:/sbin`, LOG_FILE: s.log, CALLS_FILE: s.calls, CURL_COUNT: join(s.dir, "curl-count"), FUNCTION_RUNNER_RETRY_SLEEP: "0", DOCKER_DATA_ROOT: s.dir, HOME: s.dir, ...env },
+    env: { PATH: `${s.bin}:/usr/bin:/bin:/usr/sbin:/sbin`, LOG_FILE: s.log, CALLS_FILE: s.calls, TIMEOUT_FILE: join(s.dir, "timeouts"), CURL_COUNT: join(s.dir, "curl-count"), FUNCTION_RUNNER_RETRY_SLEEP: "0", DOCKER_DATA_ROOT: s.dir, HOME: s.dir, ...env },
   });
 }
 
@@ -153,8 +158,10 @@ describe("boot-stage2.sh: the function runner's constants", () => {
     const main = /^stage2_main\(\) \{\n([\s\S]*?)^\}$/mu.exec(stage2)?.[1] ?? "";
     const at = (text: string) => main.indexOf(text);
     expect(at("pull_catalog_images")).toBeGreaterThan(-1);
-    expect(at("install_function_runner_runsc")).toBeGreaterThan(at("pull_catalog_images"));
-    expect(at("install_function_runner_runsc")).toBeLessThan(at("set_docker_address_pools"));
+    // gVisor is downloaded BEFORE the 2.5 GB of image pulls (it had the last second of the boot deadline when it came after them) and before the daemon.json is written.
+    expect(at("install_function_runner_runsc")).toBeGreaterThan(-1);
+    expect(at("install_function_runner_runsc")).toBeLessThan(at("pull_catalog_images"));
+    expect(at("pull_catalog_images")).toBeLessThan(at("set_docker_address_pools"));
     expect(at("finish_function_runner")).toBeGreaterThan(at("install_run_walls_unit"));
     expect(at("finish_function_runner")).toBeLessThan(at("write_test_services_boot_facts"));
     expect(/^set_docker_address_pools\(\) \{[\s\S]*?^\}$/mu.exec(stage2)?.[0]).toContain("function_runner_daemon_runtimes");
@@ -339,7 +346,7 @@ describe("function_runner_collect_pairs (the runner's images ride the services p
 });
 
 describe("finish_function_runner", () => {
-  const pairs = `FUNCTION_RUNNER_PAIRS=("svc/function-agent@sha256:${DIGESTS.agent}" "svc/lambda-nodejs@sha256:${DIGESTS.nodejs}" "svc/lambda-python@sha256:${DIGESTS.python}"); FUNCTION_RUNNER_RUNSC=/x/runsc; PREPULL_FAILED_REPOS=""`;
+  const pairs = `FUNCTION_RUNNER_PAIRS=("svc/function-agent@sha256:${DIGESTS.agent}" "svc/lambda-nodejs@sha256:${DIGESTS.nodejs}" "svc/lambda-python@sha256:${DIGESTS.python}"); FUNCTION_RUNNER_RUNSC=/x/runsc; FUNCTION_RUNNER_FAILED_REPOS=""; PREPULL_FAILED_REPOS=""`;
   const finish = (s: Setup, env: Record<string, string>, prefix = pairs) => run(s, `${prefix}\nfinish_function_runner; echo "rc=$? state=$FUNCTION_RUNNER_STATE reason=$FUNCTION_RUNNER_REASON"`, { ...ON, ...env });
   const agentFile = (s: Setup, machine = 0xb7) => { const file = join(s.dir, "agent-fixture"); writeFileSync(file, elf(machine)); return file; };
 
@@ -347,7 +354,7 @@ describe("finish_function_runner", () => {
     const s = setup();
     const result = finish(s, { AGENT_FIXTURE: agentFile(s) });
     expect(result.stdout).toContain("rc=0 state=ready reason=");
-    expect(envOf(s)).toContain(`AGENTX_FUNCTION_RUNNER=ready\nAGENTX_FUNCTION_RUNNER_RUNTIME=runsc\nAGENTX_FUNCTION_RUNNER_AGENT=${s.agentDir}/agent\n`);
+    expect(envOf(s)).toContain(`AGENTX_FUNCTION_RUNNER=ready\nAGENTX_FUNCTION_RUNNER_RUNTIME=runsc\nAGENTX_FUNCTION_RUNNER_AGENT=${s.agentDir}/agent\nAGENTX_FUNCTION_RUNNER_PULLED=0\n`);
     expect(envOf(s)).not.toContain("REASON");
     expect(statSync(join(s.agentDir, "agent")).mode & 0o777).toBe(0o755);
     expect(readFileSync(join(s.agentDir, "agent"))).toEqual(elf(0xb7));
@@ -371,7 +378,7 @@ describe("finish_function_runner", () => {
     const s = setup();
     const result = finish(s, { DOCKER_RUNTIMES: '{"runc":{}}', AGENT_FIXTURE: agentFile(s) });
     expect(result.stdout).toContain("rc=0 state=unavailable reason=runtime-not-registered");
-    expect(envOf(s)).toBe("AWS_REGION=us-west-2\nAGENTX_FUNCTION_RUNNER=unavailable\nAGENTX_FUNCTION_RUNNER_REASON=runtime-not-registered\n");
+    expect(envOf(s)).toBe("AWS_REGION=us-west-2\nAGENTX_FUNCTION_RUNNER=unavailable\nAGENTX_FUNCTION_RUNNER_REASON=runtime-not-registered\nAGENTX_FUNCTION_RUNNER_PULLED=0\n");
     expect(existsSync(join(s.agentDir, "agent"))).toBe(false);
     // And no runtime installed at all (the install failed earlier) is not ready either.
     const t = setup();
@@ -416,7 +423,7 @@ describe("finish_function_runner", () => {
 
   it("is not ready when the services pre-pull reported a runner repository as not pulled, or the list has no agent", () => {
     const s = setup();
-    expect(finish(s, { AGENT_FIXTURE: agentFile(s) }, `${pairs.replace('PREPULL_FAILED_REPOS=""', 'PREPULL_FAILED_REPOS="svc/postgres,svc/lambda-python"')}`).stdout).toContain("reason=images-not-pulled");
+    expect(finish(s, { AGENT_FIXTURE: agentFile(s) }, `${pairs.replace('FUNCTION_RUNNER_FAILED_REPOS=""', 'FUNCTION_RUNNER_FAILED_REPOS="svc/lambda-python"')}`).stdout).toContain("reason=images-not-pulled");
     const t = setup();
     expect(finish(t, { AGENT_FIXTURE: agentFile(t) }, "FUNCTION_RUNNER_PAIRS=(); FUNCTION_RUNNER_RUNSC=/x/runsc").stdout).toContain("reason=images-not-pulled");
     // Another repository failing is none of the runner's business.
@@ -429,5 +436,75 @@ describe("finish_function_runner", () => {
     writeFileSync(s.env, "AWS_REGION=us-west-2\nAGENTX_TEST_SERVICES_NOT_PULLED=all\n");
     finish(s, { AGENT_FIXTURE: agentFile(s) });
     expect(envOf(s).startsWith("AWS_REGION=us-west-2\nAGENTX_TEST_SERVICES_NOT_PULLED=all\n")).toBe(true);
+  });
+});
+
+describe("the gVisor download has its own share of the boot's time (it comes first)", () => {
+  it("is bounded at 100 s a try whatever the deadline is, and never past the boot deadline", () => {
+    const s = setup();
+    run(s, "install_function_runner_runsc", { ...ON, CURL_PLAN: "bad:22" });
+    const curl = readFileSync(join(s.dir, "timeouts"), "utf8").split("\n").filter((line) => line.endsWith("curl") || line.includes(" curl"));
+    expect(curl.length).toBeGreaterThan(0);
+    for (const line of curl) expect(line.startsWith("100s "), line).toBe(true);
+    // A boot deadline 40 s away leaves 30 s (the grace the kill adds is taken off): no try is given more than that.
+    const t = setup();
+    run(t, "install_function_runner_runsc", { ...ON, CURL_PLAN: "bad:22", BOOT_DEADLINE: "40" });
+    for (const line of readFileSync(join(t.dir, "timeouts"), "utf8").split("\n").filter((entry) => entry.includes(" curl"))) expect(Number.parseInt(line, 10), line).toBeLessThanOrEqual(30);
+  });
+});
+
+describe("pull_catalog_images counts the runner's images apart from the services'", () => {
+  const services = (s: Setup, repositories: string[]) => { const file = join(s.dir, "services.json"); writeFileSync(file, `{\n  "schemaVersion": 1,\n  "images": [\n${repositories.map((repository, index) => image(repository, String(index + 1).repeat(64), index === repositories.length - 1)).join("\n")}\n  ]\n}\n`); return file; };
+  const pull = (s: Setup, env: Record<string, string>) => run(s, 'pull_catalog_images us-west-2; echo "rc=$? result=$PREPULL_RESULT count=$PREPULL_COUNT failed=[$PREPULL_FAILED_REPOS] rpulled=$FUNCTION_RUNNER_PULLED rfailed=[$FUNCTION_RUNNER_FAILED_REPOS] state=$FUNCTION_RUNNER_STATE reason=$FUNCTION_RUNNER_REASON"', { ...ON, INSPECT_EXIT: "1", ...env });
+
+  it("`ok` and the count are the service images only; the runner's pulls are reported separately and the services are not touched by them", () => {
+    const s = setup();
+    const result = pull(s, { LIST_FILE: fullList(s), SERVICES_LIST_FILE: services(s, ["svc/postgres", "svc/local-aws"]) });
+    expect(result.stdout).toContain("rc=0 result=ok count=2 failed=[] rpulled=3 rfailed=[] state=off reason=");
+    // Every image, services and runner, is pulled by digest through the one login.
+    expect(callsOf(s).match(/^docker pull /gmu)).toHaveLength(5);
+    for (const line of callsOf(s).split("\n").filter((entry) => entry.startsWith("docker pull "))) expect(line, line).toMatch(/@sha256:[a-f0-9]{64}$/u);
+  });
+
+  it("a runner repository that does not arrive makes only the runner unavailable: PREPULL_FAILED_REPOS (the services' not-pulled list) and `ok` do not move", () => {
+    const s = setup();
+    const result = pull(s, { LIST_FILE: fullList(s), SERVICES_LIST_FILE: services(s, ["svc/postgres"]), PULL_FAIL: "svc/lambda-python" });
+    expect(result.stdout).toContain("rc=0 result=ok count=1 failed=[] rpulled=2 rfailed=[svc/lambda-python] state=unavailable reason=images-not-pulled");
+  });
+
+  it("a service that does not arrive is the services' business only: `partial`, named in the not-pulled list, and the runner's three still count as pulled", () => {
+    const s = setup();
+    const result = pull(s, { LIST_FILE: fullList(s), SERVICES_LIST_FILE: services(s, ["svc/postgres", "svc/mysql"]), PULL_FAIL: "svc/mysql" });
+    expect(result.stdout).toContain("rc=0 result=partial count=1 failed=[svc/mysql] rpulled=3 rfailed=[] state=off");
+  });
+
+  it("with no service image at all the services facts stay `none` (as before the runner), and the runner is still pulled", () => {
+    const s = setup();
+    const result = pull(s, { LIST_FILE: fullList(s), SERVICES_LIST_FILE: services(s, []) });
+    expect(result.stdout).toContain("rc=0 result=none count=0 failed=[] rpulled=3");
+  });
+
+  it("the runner off changes nothing: no runner pull, the services as they were", () => {
+    const s = setup();
+    const result = pull(s, { LIST_FILE: fullList(s), SERVICES_LIST_FILE: services(s, ["svc/postgres"]), AGENTX_FUNCTION_RUNNER: "" });
+    expect(result.stdout).toContain("rc=0 result=ok count=1 failed=[] rpulled=0");
+    expect(callsOf(s).match(/^docker pull /gmu)).toHaveLength(1);
+  });
+});
+
+describe("verify_function_runner_runtime", () => {
+  it("marks the runner unavailable (runtime-not-registered) when no runtime was installed at all, so the `|| true` after it cannot let the runner become ready", () => {
+    const s = setup();
+    const result = run(s, `FUNCTION_RUNNER_PAIRS=("svc/function-agent@sha256:${DIGESTS.agent}"); FUNCTION_RUNNER_RUNSC=""\nfinish_function_runner; echo "state=$FUNCTION_RUNNER_STATE reason=$FUNCTION_RUNNER_REASON"`, { ...ON, AGENT_FIXTURE: (() => { const file = join(s.dir, "agent-fixture"); writeFileSync(file, elf(0xb7)); return file; })() });
+    expect(result.stdout).toContain("state=unavailable reason=runtime-not-registered");
+    expect(envOf(s)).not.toContain("=ready");
+    expect(existsSync(join(s.agentDir, "agent"))).toBe(false);
+  });
+
+  it("writes how many runner images arrived, beside the readiness (a count, nothing else)", () => {
+    const s = setup();
+    const file = join(s.dir, "agent-fixture"); writeFileSync(file, elf(0xb7));
+    run(s, `FUNCTION_RUNNER_PAIRS=("svc/function-agent@sha256:${DIGESTS.agent}" "svc/lambda-nodejs@sha256:${DIGESTS.nodejs}" "svc/lambda-python@sha256:${DIGESTS.python}"); FUNCTION_RUNNER_RUNSC=/x/runsc; FUNCTION_RUNNER_PULLED=3\nfinish_function_runner`, { ...ON, AGENT_FIXTURE: file });
+    expect(envOf(s)).toContain("AGENTX_FUNCTION_RUNNER_PULLED=3\n");
   });
 });

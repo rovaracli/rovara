@@ -3,10 +3,11 @@ import { describe, expect, it } from "vitest";
 import { CatalogEntrySchema, ServiceCatalogSchema, catalogPins, catalogPrepullList, catalogRepositories, sha256HexOf, type ServiceCatalog } from "@rovara-code/contracts";
 import {
   checkMirrorServesDigest, resolveCatalogImage, FUNCTION_RUNNER_AGENT_ID, FUNCTION_RUNNER_CATALOG_IDS, FUNCTION_RUNNER_PLATFORM, FUNCTION_RUNNER_PREPULL_MAX_IMAGES, FUNCTION_RUNNER_REPOSITORIES, FUNCTION_RUNNER_RUNTIME_IMAGES, FunctionRunnerPrepullListSchema,
-  functionRunnerImageReference, functionRunnerPrepullList, isFunctionRunnerCatalogId, withoutFunctionRunner, TaskDependencyPlanSchema, TEST_SERVICES_FUNCTIONS_PLAN_FEATURE, WORKER_INVOCATION_FEATURES,
+  functionRunnerImageReference, functionRunnerPrepullList, isFunctionRunnerCatalogId, isFunctionRunnerEntry, isFunctionRunnerFamily, isFunctionRunnerRepository, servicesPrepullList, TaskDependencyPlanSchema, TEST_SERVICES_FUNCTIONS_PLAN_FEATURE, WORKER_INVOCATION_FEATURES,
 } from "@agentx/cloud-contracts";
 import { isPrepulledEntry } from "../../packages/broker/src/test-env/dependency-plan.js";
-import { digestOfId, sha, shippedCatalog, verifiedCatalog } from "../support/catalog-pinning.js";
+import { profileEntryOf, serviceImageServed } from "../../packages/broker/src/test-env/company-images.js";
+import { digestOfId, pinnedCatalogWithRunner, sha, shippedCatalog, verifiedCatalog } from "../support/catalog-pinning.js";
 
 // Slice 4, lane C1: the function runner's catalog entries (UNPINNED, to join the signed catalog at its next revision) and the rules that keep them out of the services pre-pull and out of dependency plans.
 const ENTRIES_FILE = "environments/service-catalog/function-runner-entries.json";
@@ -84,8 +85,8 @@ describe("keeping the runner's images out of the services pre-pull and out of pl
     for (const id of FUNCTION_RUNNER_CATALOG_IDS) expect(vendored).toContain(id);
   });
 
-  it("withoutFunctionRunner takes them out of the services list and leaves everything else as it was; functionRunnerPrepullList holds only them", () => {
-    const services = withoutFunctionRunner(catalogPrepullList(pinned));
+  it("servicesPrepullList leaves them out and everything else as it was; functionRunnerPrepullList holds only them", () => {
+    const services = servicesPrepullList(pinned);
     expect(services.images.map((image) => image.id).sort()).toEqual(catalogPrepullList(shippedCatalog()).images.map((image) => image.id).sort());
     expect(services.images.some((image) => isFunctionRunnerCatalogId(image.id))).toBe(false);
     const runner = functionRunnerPrepullList(pinned);
@@ -111,6 +112,61 @@ describe("keeping the runner's images out of the services pre-pull and out of pl
     for (const id of FUNCTION_RUNNER_CATALOG_IDS) expect(isPrepulledEntry(verified, id), id).toBe(false);
     expect(isPrepulledEntry(verified, "postgres@16")).toBe(true);
     expect(isPrepulledEntry(verified, "local-aws@r1")).toBe(true);
+  });
+
+  it("is keyed on the FAMILY and the repository, not a list of ids: a runtime added later (lambda-python@3.14, lambda-provided@al2023, an entry in a runner repository under another name) is a runner entry the day it is pinned", () => {
+    const later = [
+      { id: "lambda-python@3.14", family: "lambda-python", repository: "svc/lambda-python" },
+      { id: "lambda-provided@al2023", family: "lambda-provided", repository: "svc/lambda-provided" },
+      { id: "function-agent@r2", family: "function-agent", repository: "svc/function-agent" },
+      { id: "pyrt@1", family: "pyrt", repository: "svc/lambda-python" },
+    ];
+    const catalog = pinnedCatalogWithRunner(later);
+    const verified = verifiedCatalog(catalog);
+    for (const entry of catalog.entries.filter((candidate) => isFunctionRunnerEntry(candidate))) {
+      expect(isPrepulledEntry(verified, entry.id), entry.id).toBe(false);
+      expect(servicesPrepullList(catalog).images.map((image) => image.id), entry.id).not.toContain(entry.id);
+      expect(functionRunnerPrepullList(catalog).images.map((image) => image.id), entry.id).toContain(entry.id);
+    }
+    for (const entry of later) expect(isFunctionRunnerEntry({ id: entry.id, family: entry.family, image: { repository: entry.repository } }), entry.id).toBe(true);
+    // Every entry of the catalog that lives in one of the runner's repositories is a runner entry, whatever its id or family says.
+    for (const entry of catalog.entries) {
+      if (FUNCTION_RUNNER_REPOSITORIES.includes(entry.image.repository)) expect(isFunctionRunnerEntry(entry), entry.id).toBe(true);
+      else if (!entry.family.startsWith("lambda-") && entry.family !== "function-agent") expect(isFunctionRunnerEntry(entry), entry.id).toBe(false);
+    }
+    // The services stay as they were.
+    expect(servicesPrepullList(catalog).images.map((image) => image.id).sort()).toEqual(servicesPrepullList(pinnedCatalogWithRunner()).images.map((image) => image.id).sort());
+    expect(isPrepulledEntry(verified, "postgres@16")).toBe(true);
+    // The predicates by name.
+    for (const family of ["lambda-python", "lambda-anything", "function-agent"]) expect(isFunctionRunnerFamily(family), family).toBe(true);
+    for (const family of ["postgres", "local-aws", "lambda", "my-lambda-x", "function-agentx"]) expect(isFunctionRunnerFamily(family), family).toBe(false);
+    expect(isFunctionRunnerRepository("svc/lambda-ruby")).toBe(true);
+    expect(isFunctionRunnerRepository("svc/postgres")).toBe(false);
+  });
+
+  it("the 16-image bound counts services only: more runtimes can never throw the services' list away (and so never turn every service 'not available yet')", () => {
+    const more = Array.from({ length: 8 }, (_, index) => ({ id: `lambda-extra${String(index)}@1`, family: `lambda-extra${String(index)}`, repository: `svc/lambda-extra${String(index)}` }));
+    const catalog = pinnedCatalogWithRunner(more);
+    // The hazard: the vendored list over this catalog has more than 16 images and throws (a list taken out of its RESULT would be too late).
+    expect(() => catalogPrepullList(catalog)).toThrow();
+    // The services' list is made without the runner's entries, so it is unchanged, and the broker answers from it, with a handler that fails the test if a list could not be made.
+    expect(() => servicesPrepullList(catalog)).not.toThrow();
+    const verified = verifiedCatalog(catalog);
+    const loud = (error: unknown): never => { throw new Error(`a services pre-pull list could not be made: ${String(error)}`); };
+    expect(isPrepulledEntry(verified, "postgres@16", loud)).toBe(true);
+    expect(isPrepulledEntry(verified, "local-aws@r1", loud)).toBe(true);
+    expect(isPrepulledEntry(verified, "lambda-extra3@1", loud)).toBe(false);
+    // And a runner list over its own bound (12) is refused: the 13 runner images here are refused as a list, never half-written.
+    expect(() => functionRunnerPrepullList(catalog)).toThrow();
+  });
+
+  it("the company-image paths treat them as not in the catalog: no profile entry, not servable (also for a runtime added later)", () => {
+    const catalog = verifiedCatalog(pinnedCatalogWithRunner([{ id: "lambda-provided@al2023", family: "lambda-provided", repository: "svc/lambda-provided" }]));
+    for (const family of ["lambda-python", "lambda-nodejs", "function-agent", "lambda-provided"]) expect(profileEntryOf(catalog, family, "3", "public"), family).toBeUndefined();
+    for (const catalogId of ["lambda-python@3.12", "function-agent@r1", "lambda-provided@al2023"]) {
+      expect(serviceImageServed({ catalog, edition: "public", approved: [], request: { catalogId } }), catalogId).toEqual({ ok: false, reason: "not_in_catalog" });
+    }
+    expect(serviceImageServed({ catalog, edition: "public", approved: [], request: { catalogId: "postgres@16" } })).toMatchObject({ ok: true });
   });
 
   it("an UNPINNED runner entry cannot resolve to an image to start, even when a real registry check passed for some digest (a tag or no pin is never served), and a pinned one resolves only to its own digest", async () => {
@@ -150,7 +206,7 @@ describe("the runner's pre-pull list", () => {
     const list = good();
     (list["images"] as unknown[]).push((list["images"] as unknown[])[0]);
     expect(ok(list)).toBe(false);
-    expect(FUNCTION_RUNNER_PREPULL_MAX_IMAGES).toBeLessThanOrEqual(8);
+    expect(FUNCTION_RUNNER_PREPULL_MAX_IMAGES).toBe(12);
     const many = good();
     many["images"] = Array.from({ length: FUNCTION_RUNNER_PREPULL_MAX_IMAGES + 1 }, (_, index) => ({ id: `lambda-python@${String(index)}`, repository: "svc/lambda-python", digest: "b".repeat(64), platforms: ["linux/arm64"] }));
     expect(ok(many)).toBe(false);

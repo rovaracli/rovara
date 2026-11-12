@@ -6,6 +6,9 @@
 //   3. test services are configured and the emulator is offered (the runner serves the emulator's Lambda; without it there is nothing to serve);
 //   4. no runner repository is named as not pulled (`AGENTX_TEST_SERVICES_NOT_PULLED`), and the image's `function-runner-prepull.json` is valid, holds the agent and at least one runtime image, and every image in it is
 //      linux/arm64 and pinned by digest.
+// FOR W1 (the runner controller's wiring): the broker's delivery gate (`ec2-delivery.ts`) is NOT the only guard. A worker that takes an `aws.functions` plan (a dependency whose `aws.functions.runner` is set) must refuse it ITSELF, with a
+// fixed sentence and before it starts anything, when `functionRunnerReadiness().ready` is false: a plan can reach a worker whose boot note changed after it advertised (a withheld restart, a stale /ping), and a worker that
+// parsed the field must never run the plan with the stubs and no runner. Nothing consumes `aws.functions` in the worker yet; the check belongs in the same change that first does.
 // The image for a runtime is then `<registry>/rovara-catalog/<env>/<repository>@sha256:<digest>`: no tag can be built.
 import { readFileSync } from "node:fs";
 import { TEST_SERVICES_AWS_PLAN_FEATURE } from "@rovara-code/contracts";

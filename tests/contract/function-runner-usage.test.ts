@@ -34,6 +34,11 @@ describe("FunctionRunnerUsageSchema", () => {
     expect(ok(record({ functions: [row({ reason: "runtime" })] }))).toBe(false);
   });
 
+  it("a runtime is one of the runner's runtimes and nothing else (free text cannot ride in it)", () => {
+    for (const runtime of ["python3.12", "python3.13", "nodejs22.x", "nodejs24.x"]) expect(ok(record({ functions: [row({ runtime })] })), runtime).toBe(true);
+    for (const runtime of ["hunter2secretval.x", "java21", "python3.12 ", "python3", "", "AKIA".concat("A".repeat(16))]) expect(ok(record({ functions: [row({ runtime })] })), JSON.stringify(runtime)).toBe(false);
+  });
+
   it("is strict (no extra key: no path, payload or message field can ride along), lists a function once and at most the bound", () => {
     expect(ok(record({ extra: 1 }))).toBe(false);
     expect(ok(record({ functions: [row({ path: "/var/task/app.py" })] }))).toBe(false);
@@ -55,11 +60,20 @@ describe("FunctionRunnerUsageSchema", () => {
 
 describe("function names (evidence lines show them; nothing else of the function's is ever shown)", () => {
   it("are plain Lambda names", () => {
-    for (const name of ["resize", "Resize_Image-2", "a", "x".repeat(31), "billing-prod-processOrderEvents"]) expect(FunctionNameSchema.safeParse(name).success, name).toBe(true);
+    for (const name of ["resize", "Resize_Image-2", "a", "billing-prod-processOrderEvents", "orders_v2-handler"]) expect(FunctionNameSchema.safeParse(name).success, name).toBe(true);
   });
-  it("do not show a name of 32 or more plain characters (the record's secret-shape rule reads such a run as a token): that function is counted in otherFunctions instead", () => {
+  it("do not show a name of 32 or more plain characters, nor a run of 24 or more letters and digits (a token or base64 text): that function is counted in otherFunctions instead", () => {
     expect(FunctionNameSchema.safeParse("x".repeat(32)).success).toBe(false);
+    expect(FunctionNameSchema.safeParse("x".repeat(24)).success).toBe(false);
+    expect(FunctionNameSchema.safeParse("x".repeat(23)).success).toBe(true);
     expect(FunctionNameSchema.safeParse("a-very-long-function-name-in-prod-v2").success).toBe(false);
+    for (const base64 of ["dGhpc2lzYWJhc2U2NHN0cmluZw", "QWxhZGRpbjpvcGVuIHNlc2FtZQ", "Zm9vYmFyYmF6cXV4MTIzNDU2"]) expect(FunctionNameSchema.safeParse(base64).success, base64).toBe(false);
+  });
+  it("do not show a name that carries an Anthropic key, a JWT or the words password, passwd, secret, token, credential or api key (any case)", () => {
+    const sensitive = ["sk-ant-api03-abc", "sk-ant-x", "prefix-sk-abcdefgh12", "eyJhbGciOiJI", "x-eyJ0eXAi", "my-password-fn", "Passwd_reset", "Secret_Handler", "get-SECRET", "api-token-writer", "TokenRefresh", "credential-sync", "apikey-rotate", "api_key_check", "private-key-loader"];
+    for (const name of sensitive) expect(FunctionNameSchema.safeParse(name).success, name).toBe(false);
+    // Plain names with none of those stay (the check is on patterns, not on length alone).
+    for (const name of ["resize", "send-email", "orderEvents", "sk", "task-runner", "ey", "skip-ant-colony"]) expect(FunctionNameSchema.safeParse(name).success, name).toBe(true);
   });
   it("refuse a path, a URL, spaces, control or bidi characters, an ARN, an empty or over-long name, and anything secret-shaped", () => {
     const hostile = ["", "x".repeat(65), "/var/task/app", "../etc", "a b", "a\nb", "a‮b", "a\u0000b", "arn:aws:lambda:us-east-1:123456789012:function:x", "http://x.example", "résumé",

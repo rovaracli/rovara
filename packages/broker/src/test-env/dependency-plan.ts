@@ -6,9 +6,9 @@
 //
 // Slice 1 starts real software from the catalog only (backing `local`, no substitute image). Slice 2 adds Rovara local AWS (backing `emulated`, entry `local-aws`) for any service of the generated table. Slice 3 adds a fake (backing `fake`,
 // entry `fake-server`, which runs from the worker's own image) for an APPROVED, digest-pinned fixture set of this organisation, answering requests with no recording with an error (`fail`). Every other backing is "not available yet", at approval (`dependenciesStartableNow`) and again here.
-import { checkEmulatorEngine, emulatorServiceTier, normaliseAwsServiceKey, type CatalogEntry, type CatalogTrustContext, type TestEnvDependency, type TestEnvironmentBody, type VerifiedCatalog, TASK_DEPENDENCY_PLAN_MAX, catalogEntryById, catalogIdName, catalogPrepullList } from "@rovara-code/contracts";
+import { checkEmulatorEngine, emulatorServiceTier, normaliseAwsServiceKey, type CatalogEntry, type CatalogTrustContext, type TestEnvDependency, type TestEnvironmentBody, type VerifiedCatalog, TASK_DEPENDENCY_PLAN_MAX, catalogEntryById, catalogIdName } from "@rovara-code/contracts";
 import { type TaskDependencyPlan, TaskDependencyPlanSchema } from "@agentx/cloud-contracts";
-import { loadSignedCatalog, isFunctionRunnerCatalogId } from "@agentx/cloud-contracts";
+import { loadSignedCatalog, isFunctionRunnerCatalogId, isFunctionRunnerEntry, servicesPrepullList } from "@agentx/cloud-contracts";
 import { STATEFUL_KINDS, chooseBacking, effectiveAllowedBackings, type BackingPlace, type SkipReason } from "./backing-choice.js";
 import { COMPANY_IMAGE_REFUSAL_WORDS, serviceImageServed, type CompanyImage } from "./company-images.js";
 import type { CompanyImageMirrorRef } from "@agentx/cloud-contracts";
@@ -112,13 +112,15 @@ const REFUSAL_OF_EMULATED_SKIP: Partial<Record<SkipReason, DependencyPlanRefusal
  * (`catalogPrepullList`), so a pinned non-default entry (postgres@15, postgres@17) is startable once the catalog pins it. An entry that is NOT in the list (not pinned, retired, or a kind the list leaves out) would pass
  * approval and then always fail on the worker, so it stays "not available yet" at approval and at plan time.
  */
-export function isPrepulledEntry(catalog: VerifiedCatalog, catalogId: string): boolean {
+export function isPrepulledEntry(catalog: VerifiedCatalog, catalogId: string, onError?: (error: unknown) => void): boolean {
+  // Slice 4: the function runner's images (Lambda base images, the agent) are never a dependency, by family (a runtime added later is covered). `servicesPrepullList` is made without the runner's entries, so the 16-image bound counts
+  // services only: more runtimes can never turn the services off. `onError` is how a test sees a list that could not be made (production passes none).
+  if (isFunctionRunnerCatalogId(catalogId) || catalog.entries.some((entry) => entry.id === catalogId && isFunctionRunnerEntry(entry))) return false;
   // A list that cannot be made (more images than a worker pre-pulls) is "not pre-pulled", never a thrown error at approval: the worker would not have pulled it either.
-  // Slice 4: the function runner's images (Lambda base images, the agent) are never a dependency: `catalogPrepullList` includes every pinned local entry, so they are taken out here and never reach the worker as a plan.
-  if (isFunctionRunnerCatalogId(catalogId)) return false;
   try {
-    return catalogPrepullList(catalog).images.some((image) => image.id === catalogId);
-  } catch {
+    return servicesPrepullList(catalog).images.some((image) => image.id === catalogId);
+  } catch (error) {
+    onError?.(error);
     return false;
   }
 }

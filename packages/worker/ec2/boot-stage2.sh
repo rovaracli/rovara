@@ -149,7 +149,7 @@ catalog_seconds() {
 }
 pull_catalog_images() {
   local region=$1 registry=${AGENTX_WORKER_IMAGE%%/*} environment list line repository digest="" count=0 failed="" pairs=() pair reference results file index=0
-  local timeout_s=180 parallel=4
+  local timeout_s=180 parallel=4 all=() kind runner_count=0 runner_failed=""
   # Off: nothing is read, logged in or pulled, and nothing is logged. The facts say `off`. (The broker sends no dependency plan while `tx` is off; a worker launched with it off that is later asked for one refuses at run time with the fixed "not available on this worker" words, as for any image that did not arrive.)
   if [[ "${AGENTX_TEST_SERVICES:-}" != 1 ]]; then PREPULL_RESULT=off; return 0; fi
   # Overrides count only as plain positive whole numbers; anything else (0, empty, text) is the default.
@@ -166,11 +166,14 @@ pull_catalog_images() {
     elif [[ "$line" =~ \"digest\":\ *\"(sha256:)?([a-f0-9]{64})\" && -n "${repository:-}" ]]; then pairs+=("$repository@sha256:${BASH_REMATCH[2]}"); repository=""; fi
   done < <(tr -d '\r' <"$list" | sed -E 's/^[[:space:]]+//; s/,$//' | grep -E '^"(repository|digest)"')
   rm -f "$list"
-  # Slice 4: the function runner's images ride in the same pulls (one login, the same bounds), when it is on and the disk has room (function_runner_collect_pairs); otherwise nothing changes.
-  if function_runner_collect_pairs; then pairs+=("${FUNCTION_RUNNER_PAIRS[@]}"); fi
-  ((${#pairs[@]} > 0)) || return 0
+  # Slice 4: the function runner's images ride in the same pulls (one login, the same bounds), when it is on and the disk has room (function_runner_collect_pairs); otherwise nothing changes. They are COUNTED APART: `pairs`, the
+  # count, PREPULL_RESULT and PREPULL_FAILED_REPOS (so the boot facts and AGENTX_TEST_SERVICES_NOT_PULLED) are the SERVICE images' only; the runner's outcome is FUNCTION_RUNNER_PULLED and FUNCTION_RUNNER_FAILED_REPOS.
+  function_runner_collect_pairs || true
+  ((${#pairs[@]} + ${#FUNCTION_RUNNER_PAIRS[@]} > 0)) || return 0
   # Too little of the boot deadline left to log in and pull (under 30 s): pull nothing, name every repository as not pulled (AGENTX_TEST_SERVICES_NOT_PULLED) and keep the worker starting.
   if [[ -n "${BOOT_DEADLINE:-}" ]] && ((BOOT_DEADLINE - SECONDS < 30)); then
+    ((${#FUNCTION_RUNNER_PAIRS[@]} == 0)) || { FUNCTION_RUNNER_FAILED_REPOS="$FUNCTION_RUNNER_REPOSITORIES"; function_runner_unavailable images-not-pulled; }
+    ((${#pairs[@]} > 0)) || return 0
     for pair in "${pairs[@]}"; do failed="$failed ${pair%%@*}"; done
     PREPULL_FAILED_REPOS=$(printf '%s\n' $failed | sort -u | paste -sd, -)
     PREPULL_RESULT=failed; log "CATALOG PRE-PULL SKIPPED: the boot deadline is too close: $PREPULL_FAILED_REPOS"; return 1
@@ -184,23 +187,32 @@ pull_catalog_images() {
   # (a background pull cannot set this shell's variables).
   PREPULL_FAILED_REPOS=""
   results=$(mktemp -d) || { docker logout "$registry" >/dev/null 2>&1 && PREPULL_LOGGED_OUT=true; PREPULL_RESULT=failed; log "CATALOG PRE-PULL FAILED: no scratch directory"; return 1; }
-  for pair in "${pairs[@]}"; do
+  ((${#pairs[@]} == 0)) || all+=("${pairs[@]}")
+  ((${#FUNCTION_RUNNER_PAIRS[@]} == 0)) || all+=("${FUNCTION_RUNNER_PAIRS[@]}")
+  for pair in "${all[@]}"; do
     index=$((index + 1))
-    if [[ -n "${BOOT_DEADLINE:-}" ]] && ((BOOT_DEADLINE - SECONDS < 20)); then printf '%s' "${pair%%@*}" >"$results/$index.fail"; continue; fi
+    kind=""; [[ " $FUNCTION_RUNNER_REPOSITORIES " == *" ${pair%%@*} "* ]] && kind=r
+    if [[ -n "${BOOT_DEADLINE:-}" ]] && ((BOOT_DEADLINE - SECONDS < 20)); then printf '%s' "${pair%%@*}" >"$results/$index.${kind}fail"; continue; fi
     reference="$registry/rovara-catalog/$environment/$pair"
     while (($(jobs -rp | wc -l) >= parallel)); do sleep 1; done
     (
-      docker image inspect "$reference" >/dev/null 2>&1 && : >"$results/$index.ok" && exit 0
-      timeout --foreground --kill-after=10s "$(catalog_seconds "$timeout_s")s" docker pull "$reference" >/dev/null 2>&1 && : >"$results/$index.ok" && exit 0
-      printf '%s' "${pair%%@*}" >"$results/$index.fail"
+      docker image inspect "$reference" >/dev/null 2>&1 && : >"$results/$index.${kind}ok" && exit 0
+      timeout --foreground --kill-after=10s "$(catalog_seconds "$timeout_s")s" docker pull "$reference" >/dev/null 2>&1 && : >"$results/$index.${kind}ok" && exit 0
+      printf '%s' "${pair%%@*}" >"$results/$index.${kind}fail"
     ) &
   done
   wait
   for file in "$results"/*.ok; do [[ ! -e "$file" ]] || count=$((count + 1)); done
   for file in "$results"/*.fail; do [[ ! -e "$file" ]] || failed="$failed $(cat "$file")"; done
+  for file in "$results"/*.rok; do [[ ! -e "$file" ]] || runner_count=$((runner_count + 1)); done
+  for file in "$results"/*.rfail; do [[ ! -e "$file" ]] || runner_failed="$runner_failed $(cat "$file")"; done
   rm -rf "$results"
   # No ECR token stays on disk after the pulls (the worker has no login of its own and needs none).
   docker logout "$registry" >/dev/null 2>&1 && PREPULL_LOGGED_OUT=true
+  # The runner's own outcome: any of its repositories not pulled is a reason it is not offered (never a reason a SERVICE is withheld).
+  FUNCTION_RUNNER_PULLED=$runner_count
+  if [[ -n "$runner_failed" ]]; then FUNCTION_RUNNER_FAILED_REPOS=$(printf '%s\n' $runner_failed | sort -u | paste -sd, -); function_runner_unavailable images-not-pulled; fi
+  ((${#pairs[@]} > 0)) || return 0
   PREPULL_COUNT=$count
   if [[ -n "$failed" ]]; then
     PREPULL_FAILED_REPOS=$(printf '%s\n' $failed | sort -u | paste -sd, -)
@@ -228,7 +240,7 @@ write_test_services_boot_facts() {
 }
 # Slice 4 (the function runner), named environments only, and only when the launch turns it on (AGENTX_FUNCTION_RUNNER=1 with test services on; nothing in the control plane sets it yet: it waits for the live proof, F7).
 # A function runs in a gVisor sandbox (`docker run --runtime runsc`) from AWS's Lambda base image, with Rovara's static agent mounted read-only. This stage's part, in order:
-#   1. install_function_runner_runsc  (before Docker's daemon.json is written) downloads the PINNED, DATED gVisor release for this machine's architecture, checks its sha512 against the value written in this file (never one that came
+#   1. install_function_runner_runsc  (FIRST in the named block: before the image pulls, with its own time budget, and before Docker's daemon.json is written) downloads the PINNED, DATED gVisor release for this machine's architecture, checks its sha512 against the value written in this file (never one that came
 #      with the download), unpacks only the files the archive is allowed to hold, and keeps it under a root-owned versioned directory. EVERY attempt is checked: a file is used only after the check passes, on a first try or a retry,
 #      and nothing already on disk is reused. set_docker_address_pools then registers it as the `runsc` runtime in the same daemon.json it writes (it writes that file from scratch, so a runtime written anywhere else would be lost).
 #   2. pull_catalog_images adds the runner's three repositories (function-agent, lambda-python, lambda-nodejs: `function-runner-prepull.json`, digests only) to its pulls, when the disk has room.
@@ -246,12 +258,13 @@ readonly FUNCTION_RUNNER_AGENT_PATH=/opt/rovara/function-runner/agent
 readonly FUNCTION_RUNNER_REPOSITORIES="svc/function-agent svc/lambda-nodejs svc/lambda-python"
 # Free space (MB) the Docker data directory must have BEFORE the runner's images are pulled: they are about 2.5 GB, and the services and runs need the rest.
 readonly FUNCTION_RUNNER_MIN_FREE_MB=8192
-FUNCTION_RUNNER_RUNSC=""; FUNCTION_RUNNER_STATE=off; FUNCTION_RUNNER_REASON=""; FUNCTION_RUNNER_PAIRS=()
+readonly FUNCTION_RUNNER_INSTALL_BUDGET_S=150
+FUNCTION_RUNNER_RUNSC=""; FUNCTION_RUNNER_STATE=off; FUNCTION_RUNNER_REASON=""; FUNCTION_RUNNER_PAIRS=(); FUNCTION_RUNNER_PULLED=0; FUNCTION_RUNNER_FAILED_REPOS=""
 function_runner_enabled() { [[ "${AGENTX_FUNCTION_RUNNER:-}" == 1 && "${AGENTX_TEST_SERVICES:-}" == 1 ]]; }
 # One of the fixed reasons (function-runner-catalog.ts FUNCTION_RUNNER_UNAVAILABLE_REASONS), never a command's own text.
 function_runner_unavailable() { FUNCTION_RUNNER_STATE=unavailable; FUNCTION_RUNNER_REASON=$1; log "FUNCTION RUNNER NOT OFFERED on this worker: $1 (not fatal)"; return 0; }
 install_function_runner_runsc() {
-  local arch want stage archive attempt verified=false dir
+  local arch want stage archive attempt verified=false dir budget_end left
   FUNCTION_RUNNER_RUNSC=""
   function_runner_enabled || return 0
   [[ "$FUNCTION_RUNNER_STATE" != unavailable ]] || return 1
@@ -263,9 +276,12 @@ install_function_runner_runsc() {
   stage=$(mktemp -d /var/tmp/rovara-gvisor.XXXXXX) || { function_runner_unavailable runtime-install-failed; return 1; }
   chmod 0700 "$stage"
   archive="$stage/gvisor.tar.bz2"
+  # Its OWN share of the boot's time, taken BEFORE the image pulls: at most 100 s a try and 150 s in all (and never past the boot deadline), so neither a slow pull starves it nor a hung download starves the pulls.
+  budget_end=$((SECONDS + FUNCTION_RUNNER_INSTALL_BUDGET_S))
   for attempt in 1 2 3; do
     rm -f "$archive"
-    if timeout --foreground --kill-after=10s "$(catalog_seconds 300)s" curl --fail --silent --show-error --proto '=https' --tlsv1.2 --max-filesize 134217728 --output "$archive" "$GVISOR_BASE_URL/$arch/gvisor.tar.bz2" 2>/dev/null \
+    left=$((budget_end - SECONDS)); ((left >= 5)) || break
+    if timeout --foreground --kill-after=10s "$(catalog_seconds $((left < 100 ? left : 100)))s" curl --fail --silent --show-error --proto '=https' --tlsv1.2 --max-filesize 134217728 --output "$archive" "$GVISOR_BASE_URL/$arch/gvisor.tar.bz2" 2>/dev/null \
       && [[ "$(sha512sum "$archive" 2>/dev/null | cut -d' ' -f1)" == "$want" ]]; then verified=true; break; fi
     sleep "${FUNCTION_RUNNER_RETRY_SLEEP:-2}"
   done
@@ -347,7 +363,7 @@ function_runner_collect_pairs() {
 # After Docker restarted: the runtime is registered AND really runs a container (its kernel is gVisor's, not the host's: the worker image's own node prints it), the runner's images are of this machine's architecture, and the agent is
 # extracted from its image to a root-owned file that is an ELF for this machine. Returns 1 with the state `unavailable` and one fixed reason on any failure.
 verify_function_runner_runtime() {
-  [[ -n "$FUNCTION_RUNNER_RUNSC" ]] || return 1
+  [[ -n "$FUNCTION_RUNNER_RUNSC" ]] || { function_runner_unavailable runtime-not-registered; return 1; }
   docker info --format '{{json .Runtimes}}' 2>/dev/null | grep -q '"runsc"' || { function_runner_unavailable runtime-not-registered; return 1; }
   timeout --foreground --kill-after=10s "$(catalog_seconds 60)s" docker run --rm --pull never --runtime runsc --network none --read-only --cap-drop ALL --security-opt no-new-privileges --entrypoint /usr/local/bin/node "$AGENTX_WORKER_IMAGE" \
     -e 'process.exit(require("os").release() === process.argv[1] ? 3 : 0)' "$(uname -r)" >/dev/null 2>&1 || { function_runner_unavailable runtime-smoke-failed; return 1; }
@@ -379,7 +395,7 @@ finish_function_runner() {
     else
       for pair in "${FUNCTION_RUNNER_PAIRS[@]}"; do
         # Pulled (a repository the services pre-pull reported as failed is not here) and of this machine's architecture: an image of another one is removed, never used.
-        if [[ ",${PREPULL_FAILED_REPOS:-}," == *",${pair%%@*},"* ]]; then function_runner_unavailable images-not-pulled; break; fi
+        if [[ ",${FUNCTION_RUNNER_FAILED_REPOS:-}," == *",${pair%%@*},"* ]]; then function_runner_unavailable images-not-pulled; break; fi
         reference=$(function_runner_reference "$pair") || { function_runner_unavailable images-not-pulled; break; }
         arch=$(docker image inspect --format '{{.Architecture}}' "$reference" 2>/dev/null || true)
         if [[ -z "$arch" || "$arch" != "$(function_runner_docker_arch)" ]]; then
@@ -397,9 +413,9 @@ finish_function_runner() {
 write_function_runner_environment() {
   function_runner_enabled || return 0
   if [[ "$FUNCTION_RUNNER_STATE" == ready ]]; then
-    printf 'AGENTX_FUNCTION_RUNNER=ready\nAGENTX_FUNCTION_RUNNER_RUNTIME=runsc\nAGENTX_FUNCTION_RUNNER_AGENT=%s\n' "$FUNCTION_RUNNER_AGENT_PATH" >>"$WORKER_ENV_FILE"
+    printf 'AGENTX_FUNCTION_RUNNER=ready\nAGENTX_FUNCTION_RUNNER_RUNTIME=runsc\nAGENTX_FUNCTION_RUNNER_AGENT=%s\nAGENTX_FUNCTION_RUNNER_PULLED=%s\n' "$FUNCTION_RUNNER_AGENT_PATH" "$FUNCTION_RUNNER_PULLED" >>"$WORKER_ENV_FILE"
   else
-    printf 'AGENTX_FUNCTION_RUNNER=unavailable\nAGENTX_FUNCTION_RUNNER_REASON=%s\n' "${FUNCTION_RUNNER_REASON:-runtime-install-failed}" >>"$WORKER_ENV_FILE"
+    printf 'AGENTX_FUNCTION_RUNNER=unavailable\nAGENTX_FUNCTION_RUNNER_REASON=%s\nAGENTX_FUNCTION_RUNNER_PULLED=%s\n' "${FUNCTION_RUNNER_REASON:-runtime-install-failed}" "$FUNCTION_RUNNER_PULLED" >>"$WORKER_ENV_FILE"
   fi
 }
 # This optional preload is bounded; failure leaves the worker available.
@@ -748,12 +764,12 @@ stage2_main() {
   BOOT_STEP="start the worker"
   write_worker_environment "$region"
   if [[ ${AGENTX_ENVIRONMENT_KIND:-} == named ]]; then
+    install_function_runner_runsc || true
     if pull_catalog_images "$region"; then
       write_test_services_environment || log "the test services settings could not be written (not fatal; runs with dependencies are refused)"
     else
       log "test services are not offered on this worker (the catalog images could not be pulled; not fatal)"
     fi
-    install_function_runner_runsc || true
     set_docker_address_pools || fail "could not set Docker's address pools"
     metadata_blocked || fail "the metadata block is missing after the Docker restart"
     wall_between_run_networks || fail "could not wall run networks off from each other"
