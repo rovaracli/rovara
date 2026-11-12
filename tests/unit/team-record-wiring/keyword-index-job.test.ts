@@ -125,7 +125,7 @@ describe("the schedules run the keyword index's maintenance", () => {
       db.set({ pk: MANIFEST.pk, sk: "KWLATE#2026-10-01T00:00:00.000Z#x", entityType: "TEAM_RECORD_KWLATE" });
       const rowsBefore = [...db.items.values()].filter((item) => item.entityType === "TEAM_RECORD_EVENT").length;
       expect([...db.items.values()].filter((item) => String(item.sk).startsWith("KWIDX#") || String(item.sk).startsWith("KWLATE#")).length).toBeGreaterThan(2);
-      const event = { source: "agentx.team-record", job: "keyword-index-clear", orgId: ORG_A };
+      const event = { source: "agentx.team-record", job: "keyword-index-clear" as const, orgId: ORG_A };
       expect(isTeamRecordJobEvent(event)).toBe(true);
       const answer = await runTeamRecordJob({ teamRecord: runtime }, event);
       expect(answer).toMatchObject({ job: "keyword-index-clear", summary: { details: { more: 0 } } });
