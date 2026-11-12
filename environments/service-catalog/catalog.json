@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "revision": 4,
+  "revision": 5,
   "pinned": true,
   "entries": [
     {
@@ -478,7 +478,7 @@
       "status": "default",
       "image": {
         "repository": "svc/local-aws",
-        "digest": "0000000000000000000000000000000000000000000000000000000000000000",
+        "digest": "13a8be5e7a4841bdfb3da04ec47cc24e876d963307bc6ccc0dfb169086c2065e",
         "platforms": [
           "linux/arm64"
         ]
@@ -521,11 +521,11 @@
         "kind": "http_reset"
       },
       "licence": "LicenseRef-Rovara AND CC0-1.0 AND Apache-2.0",
-      "sbomRef": "0000000000000000000000000000000000000000000000000000000000000000",
+      "sbomRef": "6f4f80395d24bc839f746e42ef3d79da37352060f074446c46def1d7f0e90bf3",
       "scan": {
-        "scannedAt": "2000-01-01T00:00:00.000Z",
+        "scannedAt": "2026-11-12T06:44:48.000Z",
         "criticalOpen": 0,
-        "highOpen": 0
+        "highOpen": 3
       },
       "editions": [
         "public",
