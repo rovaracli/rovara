@@ -57,9 +57,9 @@ const ORIGIN_SYSTEMS: Readonly<Record<string, readonly string[]>> = {
 
 /**
  * Task origins that no ticket started, so there is no request thread in any tracker to keep out: a person typed the request (app, CLI, MCP, Slack: a Slack thread is refused by the allowlist on its own), or a test run,
- * an offer, a schedule, a chain or the nightly run started it. Every other origin, an absent one included, is treated as possibly ticket-started and fails closed (`originOf`).
+ * an offer, a schedule, a chain, the nightly run or one of the project's own automatic jobs (diagnosis, nightly_run, setup_agent, setup_draft) started it. Every other origin, an absent one included, is treated as possibly ticket-started and fails closed (`originOf`).
  */
-const NON_TICKET_ORIGINS: readonly string[] = ["app", "cli", "mcp", "slack", "offer", "test_run", "schedule", "chain", "nightly"];
+const NON_TICKET_ORIGINS: readonly string[] = ["app", "cli", "mcp", "slack", "offer", "test_run", "schedule", "chain", "nightly", "automatic"];
 
 /**
  * The kinds of source that clearly cannot hold or mirror a ticket thread: error and metrics monitors, whose items are events and graphs, not people's threads. Only these are read for a task whose ticket came from a
@@ -85,11 +85,28 @@ function withheldForTracker(tracker: string, sources: readonly Pick<ContextSourc
   return sources.filter((source) => withheld(source.system)).map((source) => ({ sourceId: source.sourceId, itemRef: "" }));
 }
 
+/** The event sources that are a ticket tracker, with the tracker's origin key in `ORIGIN_SYSTEMS` (an event from one of these is that tracker's own ticket: its rule applies). */
+const EVENT_TRACKER_KEYS: Readonly<Record<string, string>> = { github: "github_issue", linear: "linear", jira: "jira" };
+
+/** The event sources that are monitors: an event from one carries that monitor's alert, which is not a ticket thread kept anywhere else, so only that same system is withheld. */
+const EVENT_MONITOR_SOURCES: readonly string[] = ["sentry", "datadog", "grafana", "cloudwatch"];
+
 /**
  * The request threads to keep out of the packets: for a task that came from a tracker, every configured source of that tracker. Fail closed: a task whose origin is absent, not known to be ticket-free, or a tracker
- * Rovara has no rule for (`tracker`, `event`, `automatic`, anything new) withholds every source that is not a known non-tracker kind.
+ * Rovara has no rule for (`tracker`, `event` without a readable source, anything new) withholds every source that is not a known non-tracker kind.
+ *
+ * `eventSource` is the source an `event` task was started by (`startedBy.source` of the event, one of the trigger contracts' event sources); it is only read for the `event` origin. A github, linear or jira event gets that
+ * tracker's rule; a sentry, datadog, grafana or cloudwatch event withholds only that same system and the sources that name no kind; any other source (pagerduty, vercel, a new one), or none, fails closed as above.
  */
-export function originOf(taskOrigin: string | undefined, sources: readonly Pick<ContextSource, "sourceId" | "system">[]): PacketOriginItem[] {
+export function originOf(taskOrigin: string | undefined, sources: readonly Pick<ContextSource, "sourceId" | "system">[], eventSource?: string): PacketOriginItem[] {
   if (taskOrigin !== undefined && NON_TICKET_ORIGINS.includes(taskOrigin)) return [];
+  if (taskOrigin === "event" && eventSource !== undefined) {
+    const source = eventSource.toLowerCase();
+    const tracker = EVENT_TRACKER_KEYS[source];
+    if (tracker !== undefined) return withheldForTracker(tracker, sources);
+    if (EVENT_MONITOR_SOURCES.includes(source)) {
+      return sources.filter((entry) => entry.system === undefined || entry.system.toLowerCase() === source).map((entry) => ({ sourceId: entry.sourceId, itemRef: "" }));
+    }
+  }
   return withheldForTracker(taskOrigin ?? "", sources);
 }

@@ -20,6 +20,7 @@ import { taskRunRoomUsd } from "../spend/admission.js";
 import { readDesignReviewLock } from "./lock.js";
 import { mcpItemReaderOf, type PacketReaders } from "./packet.js";
 import { designReviewProxyCheck } from "./proxy-check.js";
+import { eventSourceOfTask } from "./event-source.js";
 import { originOf } from "./round-inputs.js";
 import type { DesignReviewRoundPorts, RoundSourceReaders } from "./round-ports.js";
 import type { RoundRecordPorts } from "./round-record.js";
@@ -39,7 +40,7 @@ async function sourceReadersOf(dependencies: AwsBrokerDependencies, task: Develo
     record === undefined ? undefined : hostOfRepository(dependencies, record).fileAtRevision({ url: record.url }, path, commit, scope, { maxBytes });
   const context = contextToolsDependencies(dependencies);
   const configured = context === undefined ? [] : (await context.sources(orgId, task.project)).sources.filter((source) => source.stages.includes("PLAN_CRITIQUE"));
-  const origin = originOf(task.origin, configured);
+  const origin = originOf(task.origin, configured, await eventSourceOfTask(dependencies, task, orgId));
   const fetchMcpItem: PacketReaders["fetchMcpItem"] = context === undefined ? async () => ({ ok: false }) : mcpItemReaderOf(
     (request) => callContextTool(context, { orgId, task, operation: { id: operationId, workflowMode: "PLAN_CRITIQUE" } }, request),
     { sources: configured, now: Date.now, newRequestId: randomUUID, origin },
