@@ -43,7 +43,7 @@ it("requires a nonblank problem and enforces the 4000-character limit", async ()
  const f = setup();fireEvent.click(await screen.findByRole("button", { name: "New session" }));fireEvent.click(screen.getByRole("button", { name: "Payments expert" }));const input = await screen.findByRole("textbox", { name: "What should Payments expert do?" }), start = screen.getByRole<HTMLButtonElement>("button", { name: "Start session" });expect(start.disabled).toBe(true);fireEvent.change(input, { target: { value: " ".repeat(4) } });expect(start.disabled).toBe(true);fireEvent.change(input, { target: { value: "x".repeat(4001) } });expect(start.disabled).toBe(true);expect(f.request.mock.calls.every(([request]) => request.method === "GET" || request.path.endsWith("/start-preview"))).toBe(true);f.close();
 });
 it("does not make up a session id or allow a duplicate start when a legacy answer lacks its link", async () => {
- const f = setup(undefined, { send: async () => ({ status: 202, body: { task: taskFixture() } }) });fireEvent.click(await screen.findByRole("button", { name: "New session" }));fireEvent.click(screen.getByRole("button", { name: "Payments expert" }));fireEvent.change(await screen.findByRole("textbox", { name: "What should Payments expert do?" }), { target: { value: "Investigate refunds" } });fireEvent.click(screen.getByRole("button", { name: "Start session" }));expect(await screen.findByRole("link", { name: "Open Live" })).toBeTruthy();expect(screen.getByRole<HTMLButtonElement>("button", { name: "Start session" }).disabled).toBe(true);f.close();
+ const f = setup(undefined, { send: async () => ({ status: 202, body: { task: taskFixture() } }) });fireEvent.click(await screen.findByRole("button", { name: "New session" }));fireEvent.click(screen.getByRole("button", { name: "Payments expert" }));fireEvent.change(await screen.findByRole("textbox", { name: "What should Payments expert do?" }), { target: { value: "Investigate refunds" } });fireEvent.click(screen.getByRole("button", { name: "Start session" }));expect(await screen.findByRole("link", { name: "Open Work" })).toBeTruthy();expect(screen.getByRole<HTMLButtonElement>("button", { name: "Start session" }).disabled).toBe(true);f.close();
 });
 it("does not display cached project details or controls after access is refused", async () => {
  const f = setup();await screen.findByRole("heading", { name: "payments" });f.answer({ error: { code: "PROJECT_NOT_FOUND", message: "Not found." } }, 404);await f.query.invalidateQueries({ queryKey: ["project", "payments", "overview"] });await screen.findByRole("heading", { name: "Not found" });expect(screen.queryByRole("button", { name: "New session" })).toBeNull();expect(screen.queryByText("Keep customer payments dependable.")).toBeNull();f.close();
@@ -91,13 +91,13 @@ it("holds website editing when an older overview has no company pin", async () =
  const f = setup();await screen.findByRole("heading", { name: "payments" });expect(screen.queryByRole("button", { name: "Edit allowed websites" })).toBeNull();f.close();
 });
 
-it("with the new navigation on, the start confirmation says Open Work and links to Work; off it stays Open Live", async () => {
+it("the start confirmation says Open Work and links to Work (decision 125: Live is gone), whatever a leftover device key says", async () => {
  const send = async () => ({ status: 202, body: { task: taskFixture() } });
- for (const nav of [true, false]) {
-  const f = setup(undefined, { send });if (nav) f.storage.set("rovara.nav", "v2");
+ for (const key of [undefined, "v2", "off"]) {
+  const f = setup(undefined, { send });if (key !== undefined) f.storage.set("rovara.nav", key);
   fireEvent.click(await screen.findByRole("button", { name: "New session" }));fireEvent.click(screen.getByRole("button", { name: "Payments expert" }));fireEvent.change(await screen.findByRole("textbox", { name: "What should Payments expert do?" }), { target: { value: "Investigate refunds" } });fireEvent.click(screen.getByRole("button", { name: "Start session" }));
-  const link = await screen.findByRole("link", { name: nav ? "Open Work" : "Open Live" });
-  expect(link.getAttribute("href")).toBe(nav ? "/app/work" : "/app/live");expect(screen.queryByRole("link", { name: nav ? "Open Live" : "Open Work" })).toBeNull();
+  const link = await screen.findByRole("link", { name: "Open Work" });
+  expect(link.getAttribute("href")).toBe("/app/work");expect(screen.queryByRole("link", { name: "Open Live" })).toBeNull();
   f.close();
  }
 });

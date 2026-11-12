@@ -9,7 +9,6 @@ import { Conversation } from "../../packages/ui/src/screens/session/Conversation
 import { AppHostProvider } from "../../packages/ui/src/host.js";
 import { Announcer } from "../../packages/ui/src/design/Announcer.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
-import { forceTaskPageFlags } from "../../packages/ui/src/screens/session/task-page-flags.js";
 import { renderUi } from "./support/render.js";
 import { h } from "./support/h.js";
 import { fakeHost } from "./support/fake-host.js";
@@ -17,7 +16,7 @@ import { expectNoAxeViolations } from "./support/axe.js";
 import { workspaceFixture } from "./support/workspace-fixture.js";
 import { SESSION_FIXTURE_ID } from "./support/session-fixture.js";
 
-afterEach(() => { forceTaskPageFlags(undefined);vi.unstubAllGlobals(); });
+afterEach(() => { vi.unstubAllGlobals(); });
 const TASK = "11111111-1111-4111-8111-111111111111";
 const planCard = (risk: "low" | "medium" | "high" = "medium") => ({ id: "approve_plan:" + TASK, kind: "approve_plan", taskId: TASK, project: "payments", title: "Approve the plan", question: "Approve this plan?", recommended: { action: risk === "high" ? "open" : "approve", why: "the plan matches the request" }, next: { text: "Builds it" }, evidence: [], risk, riskReasons: [], friction: { expandEvidenceFirst: risk !== "low", freshSignIn: risk === "high", secondPerson: false }, actions: risk === "high" ? [{ kind: "open", label: "Open", href: "/app/sessions/" + SESSION_FIXTURE_ID, method: "GET" }] : [{ kind: "approve", label: "Approve", href: "/v1/app/decisions/approve_plan/" + TASK + "/approve", method: "POST" }, { kind: "open", label: "Open", href: "/app/sessions/" + SESSION_FIXTURE_ID, method: "GET" }], rejectReasons: [], status: "pending", createdAt: "2026-10-23T12:00:00.000Z" });
 const digest = "a".repeat(64);
@@ -36,15 +35,15 @@ function setup(session = workspaceFixture({ display: { state: "needs_you", reaso
 }
 const phone = (matches: boolean) => vi.stubGlobal("matchMedia", (query: string) => ({ matches, media: query, addEventListener: () => undefined, removeEventListener: () => undefined }));
 
-it("is off by default: the old page renders, with no lead block", async () => {
+it("is always there (decision 125), whatever a leftover ?lead=0 address says: the lead block, and no old Next line", async () => {
  const f = setup();
  await screen.findByRole("heading", { name: "Fix duplicate refunds" });
- expect(screen.queryByRole("region", { name: "Where this task stands" })).toBeNull();
- expect(screen.getByLabelText("Next step").textContent).toBe("Next: Approve the plan in Rovara.");
+ expect(await screen.findByRole("region", { name: "Where this task stands" })).toBeTruthy();
+ expect(screen.queryByLabelText("Next step")).toBeNull();
  f.close();
 });
 it("leads with the plain state, next step, who and why, and replaces the old Next line and status dot", async () => {
- forceTaskPageFlags({ leadingHeader: true });
+
  const f = setup();
  const lead = await screen.findByRole("region", { name: "Where this task stands" });
  await waitFor(() => expect(lead.textContent).toContain("Decide: Approve the plan"));
@@ -59,7 +58,7 @@ it("leads with the plain state, next step, who and why, and replaces the old Nex
  f.close();
 });
 it("its one action goes to the decision card that is already on the page and focuses it", async () => {
- forceTaskPageFlags({ leadingHeader: true });
+
  const f = setup();
  const go = await screen.findByRole("button", { name: "Go to the decision" });
  const card = await waitFor(() => { const el = document.getElementById("decision-approve_plan-" + TASK);if (el === null) throw new Error("no card");return el; });
@@ -68,7 +67,7 @@ it("its one action goes to the decision card that is already on the page and foc
  f.close();
 });
 it("with no decision of mine and a state that waits on someone, says so plainly and names nobody", async () => {
- forceTaskPageFlags({ leadingHeader: true });
+
  const base = workspaceFixture({ display: { state: "needs_you", reason: "the plan is waiting for approval", next: "Approve the plan in Rovara.", nextOthers: "The task owner approves the plan." }, you: { level: "view", owner: false, following: false, actions: ["watch"] } } as never, {});
  const f = setup(base, []);
  const lead = await screen.findByRole("region", { name: "Where this task stands" });
@@ -79,7 +78,7 @@ it("with no decision of mine and a state that waits on someone, says so plainly 
  f.close();
 });
 it("on a phone the DOM order is the lead, the decision card, the facts and controls, then the work behind a collapsed disclosure", async () => {
- forceTaskPageFlags({ leadingHeader: true });phone(true);
+phone(true);
  const f = setup();
  const lead = await screen.findByRole("region", { name: "Where this task stands" });
  const card = await waitFor(() => { const el = document.getElementById("decision-approve_plan-" + TASK);if (el === null) throw new Error("no card");return el; });
@@ -94,25 +93,22 @@ it("on a phone the DOM order is the lead, the decision card, the facts and contr
  f.close();
 });
 it("on a wide screen the facts stay in the header and nothing is collapsed", async () => {
- forceTaskPageFlags({ leadingHeader: true });phone(false);
+phone(false);
  const f = setup();
  await screen.findByRole("region", { name: "Where this task stands" });
  expect(f.container.querySelector("header .rv-session-facts")).not.toBeNull();
  expect(f.container.querySelector("details.rv-session-evidence")).toBeNull();
  f.close();
 });
-it("reads the raw worker word in the conversation as a plain state, and the old text when plain notices are off", () => {
+it("reads the raw worker word in the conversation as a plain state (always, since decision 125)", () => {
  const event = { eventId: "evt_aaaaaaaaaaaaaaaaaaaa", sessionId: SESSION_FIXTURE_ID, type: "status", source: "worker", text: "Worker status: SUCCEEDED", at: "2026-10-23T12:00:00.000Z" } as never;
  const on = renderUi(h(Conversation, { agent: "Payments expert", messages: [], events: [event] }));
  expect(screen.getByText("Run finished")).toBeTruthy();expect(on.container.textContent).not.toContain("SUCCEEDED");on.unmount();
- forceTaskPageFlags({ plainNotices: false });
- const off = renderUi(h(Conversation, { agent: "Payments expert", messages: [], events: [event] }));
- expect(off.container.textContent).toContain("Worker status: SUCCEEDED");off.unmount();
 });
 
 const mergeSession = () => workspaceFixture({ display: { state: "ready_to_merge", next: "Press Merge." }, you: { level: "edit", owner: true, following: false, actions: ["watch", "comment"] } } as never, { merge: { ready: true } });
 it("on a phone, Go to Merge opens the closed work disclosure and focuses the Merge section inside it", async () => {
- forceTaskPageFlags({ leadingHeader: true });phone(true);
+phone(true);
  const f = setup(mergeSession(), []);
  const go = await screen.findByRole("button", { name: "Go to Merge" });
  const details = f.container.querySelector<HTMLDetailsElement>("details.rv-session-evidence")!;
@@ -125,7 +121,7 @@ it("on a phone, Go to Merge opens the closed work disclosure and focuses the Mer
  f.close();
 });
 it("on a phone, a later change of the address hash (an in-page link to a tab) opens the closed disclosure", async () => {
- forceTaskPageFlags({ leadingHeader: true });phone(true);
+phone(true);
  const f = setup();
  await screen.findByRole("region", { name: "Where this task stands" });
  const details = f.container.querySelector<HTMLDetailsElement>("details.rv-session-evidence")!;

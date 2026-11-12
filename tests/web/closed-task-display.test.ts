@@ -7,7 +7,7 @@ import { createMemoryRouter, RouterProvider } from "react-router";
 import { SessionViewReaderSchema } from "@agentx/cloud-contracts/web";
 import { workspaceFixture as fixture } from "./support/workspace-fixture.js";
 import { Workspace } from "../../packages/ui/src/screens/session/Workspace.js";
-import { SessionHeader } from "../../packages/ui/src/screens/session/SessionHeader.js";
+import { SessionHeader, sessionDisplay } from "../../packages/ui/src/screens/session/SessionHeader.js";
 import { AppHostProvider } from "../../packages/ui/src/host.js";
 import { renderUi } from "./support/render.js";
 import { fakeHost } from "./support/fake-host.js";
@@ -37,16 +37,14 @@ it("a closed task says Closed in the pipeline and marks no stage as current", as
  f.close();
 });
 
-it("a closed task says Closed in the header, not Cancelled, Failed or Finished", () => {
+it("a closed task reads Closed in the status model the task page's lead block shows, not Cancelled, Failed or Finished; the header itself shows no status word (decision 125)", () => {
  for (const status of ["cancelled", "failed", "succeeded"] as const) {
   const session = SessionViewReaderSchema.parse(fixture({ status }, { status: "CLOSED" }));
-  const f = renderUi(h(SessionHeader, { session, onAction: () => undefined }));
-  expect(screen.getByText("Closed")).toBeTruthy();
+  expect(sessionDisplay(session).text, status).toBe("Closed");
+  const f = renderUi(h(SessionHeader, { session, onAction: () => undefined, lead: null }));
   expect(screen.queryByText(/^Failed/)).toBeNull();
   expect(screen.queryByText(/^Finished/)).toBeNull();
   f.unmount();
  }
- const open = renderUi(h(SessionHeader, { session: SessionViewReaderSchema.parse(fixture({ status: "failed" })), onAction: () => undefined }));
- expect(screen.getByText(/^Failed: /)).toBeTruthy();
- open.unmount();
+ expect(sessionDisplay(SessionViewReaderSchema.parse(fixture({ status: "failed" }))).text).toMatch(/^Failed: /u);
 });

@@ -8,6 +8,7 @@ import type { AgentXNaming } from "./naming.js";
 import { OperatorAccess, type OperatorAccessSettings } from "./operator-access.js";
 import { CUSTOM_DOMAIN_NAME_PATTERN, CUSTOM_DOMAIN_ZONE_PATTERN } from "./custom-domain-patterns.js";
 import { applyPermissionsBoundaryParameter } from "./permissions-boundary.js";
+import { modelProxyTlsCleanupStatements, modelProxyTlsDeployStatements, type ModelProxyTls, type ModelProxyTlsPrevious } from "./model-proxy-tls.js";
 
 export interface AccessStackProps extends StackProps {
   naming: AgentXNaming;
@@ -37,6 +38,13 @@ export interface AccessStackProps extends StackProps {
    * role is granted Certificate Manager and Route 53 access for that name and that zone only while they are set. Without the context the stack is unchanged.
    */
   cloud?: boolean;
+  /**
+   * MODEL-PROXY-TLS (decision 110): the model proxy's HTTPS name and certificate source. The deploy role then gets, in a managed policy of its own, exactly what building the
+   * certificate and the alias record need (infra/lib/model-proxy-tls.ts). Absent: no such policy.
+   */
+  modelProxyTls?: ModelProxyTls;
+  /** M-1: the name the proxy served before this deploy, when it changes: the deploy role keeps DELETE-only grants for its record, validation record and certificate for this deploy. */
+  modelProxyTlsPrevious?: ModelProxyTlsPrevious;
 }
 
 /**
@@ -207,6 +215,20 @@ export class AccessStack extends Stack {
       maxSessionDuration: 3600,
       policies: [{ policyName: "operate", policyDocument: { Version: "2012-10-17", Statement: operatorRoleStatements(policyScope) } }],
     });
+
+    if (props.modelProxyTls !== undefined || props.modelProxyTlsPrevious !== undefined) {
+      // Its own managed policy (6,144 characters of room), attached to the deploy role only: the role's inline policies stay as they were. It also carries, for one deploy, the
+      // DELETE-only grants for the previous name's pieces (M-1), because this stack is deployed before the control plane removes them.
+      const tlsScope = { env, partition: Aws.PARTITION, region: Aws.REGION, account: this.account };
+      new iam.CfnManagedPolicy(this, "ModelProxyTlsDeployPolicy", {
+        description: `Lets the ${env} deploy role build the model proxy HTTPS certificate and alias record`,
+        roles: [serviceRole.ref],
+        policyDocument: { Version: "2012-10-17", Statement: [
+          ...(props.modelProxyTls === undefined ? [] : modelProxyTlsDeployStatements(tlsScope, props.modelProxyTls)),
+          ...(props.modelProxyTlsPrevious === undefined ? [] : modelProxyTlsCleanupStatements(tlsScope, props.modelProxyTlsPrevious)),
+        ] },
+      });
+    }
 
     new CfnOutput(this, "ArtifactBucketName", { value: bucket.bucketName });
     new CfnOutput(this, "CloudFormationRoleArn", { value: serviceRole.attrArn });

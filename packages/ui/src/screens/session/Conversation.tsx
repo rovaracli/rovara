@@ -6,7 +6,6 @@ import { TextArea } from "../../design/TextArea.js";
 import { RelativeTime } from "../../design/RelativeTime.js";
 import { VisibleText } from "../../design/VisibleText.js";
 import { plainEventText } from "./task-plain-state.js";
-import { taskPageFlags } from "./task-page-flags.js";
 type ReadMessage = ReturnType<typeof SessionMessageReaderSchema.parse>;
 type ReadEvent = ReturnType<typeof SessionEventReaderSchema.parse>;
 export interface CommentDraft { text: string; rev: number }
@@ -64,5 +63,5 @@ function Message({ message, agent, meId, onEdit, onDelete, onReload, editDrafts,
 }
 export function Conversation({ agent, messages, events, ...actions }: MessageActions & { agent: string; messages: readonly ReadMessage[]; events: readonly ReadEvent[] }) {
  const timeline = [...messages.map(message => ({ at: message.createdAt, id: message.messageId, message })), ...events.map(event => ({ at: event.at, id: event.eventId, event }))].sort((a, b) => a.at.localeCompare(b.at) || a.id.localeCompare(b.id));
- return <ol className="rv-conversation" aria-label="Conversation">{timeline.map(item => <li key={item.id}>{"message" in item ? <Message message={item.message} agent={agent} {...actions} /> : <p className="rv-event-line">{item.event.actor?.kind === "member" && <><VisibleText text={item.event.actor.name} />: </>}<VisibleText text={taskPageFlags().plainNotices ? plainEventText(item.event.text) : item.event.text} /> <RelativeTime at={item.at} /></p>}</li>)}</ol>;
+ return <ol className="rv-conversation" aria-label="Conversation">{timeline.map(item => <li key={item.id}>{"message" in item ? <Message message={item.message} agent={agent} {...actions} /> : <p className="rv-event-line">{item.event.actor?.kind === "member" && <><VisibleText text={item.event.actor.name} />: </>}<VisibleText text={plainEventText(item.event.text)} /> <RelativeTime at={item.at} /></p>}</li>)}</ol>;
 }

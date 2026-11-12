@@ -40,10 +40,8 @@ export function TaskLeadView({ lead }: { lead: Lead }) {
 }
 
 /** The task page's header block, from data the page already has: the session's status, the task view and the viewer's pending decision cards (the same read the cards below use). */
-export function TaskLead({ session, continueOn }: { session: ReadSession; /** The continue switch as the task page read it when it mounted (continue-flags.ts), the same value that decides the panel. */ continueOn: boolean }) {
- const decisions = useDecisions(), read: ReadTask | undefined = workspaceTask(session);
- // The changed-outside state belongs to the continue loop (switch `rovara.continue`): with the switch off the lead is built as if the task view had no `continueLoop`, exactly as before.
- const task: ReadTask | undefined = continueOn || read === undefined || read.continueLoop === undefined ? read : { ...read, continueLoop: undefined };
+export function TaskLead({ session }: { session: ReadSession }) {
+ const decisions = useDecisions(), task: ReadTask | undefined = workspaceTask(session);
  const cards = cardsFor(decisions.data, task?.taskId), seat = useTaskSeat(session, task?.taskId);
  // "Last pushed by ... 5m ago" ages while the page stays open (a timer runs only while a head changed outside Rovara is shown).
  const now = useNow(outsideRowsOf(task?.continueLoop).length > 0);

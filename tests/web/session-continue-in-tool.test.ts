@@ -8,7 +8,6 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { DEFAULT_CLI_PACKAGE_NAME } from "@rovara-code/contracts";
 import type { SessionView } from "@agentx/cloud-contracts/web";
 import { SessionScreen } from "../../packages/ui/src/screens/session/SessionScreen.js";
-import { CONTINUE_STORAGE_KEY, isContinueInToolOn } from "../../packages/ui/src/screens/session/continue-flags.js";
 import { CLI_PACKAGE, continueOffer, installCommand, lessonsLine, loadPrompt, NO_BRANCH_YET, PUSH_EXPLAINER } from "../../packages/ui/src/screens/session/continue-in-tool.js";
 import { AppHostProvider } from "../../packages/ui/src/host.js";
 import { Announcer } from "../../packages/ui/src/design/Announcer.js";
@@ -33,8 +32,8 @@ function setup(session: SessionView, options: { on?: boolean; server?: "on" | "p
   if (path.endsWith("/presence")) return { status: 200, body: { viewingNow: session.viewingNow } };
   return { status: 200, body: { session } };
  });
- if (options.on !== false) f.storage.set(CONTINUE_STORAGE_KEY, "v2");
- // The company's runtime flag, as the navigation answer carries it (decision 98).
+ if (options.on === true) f.storage.set("rovara.continue", "v2");
+ // An older broker's answer that still names the removed `continue` flag (decision 125: ignored).
  if (options.server !== undefined) applyNavUiFlags(f.host, { uiFlags: { continue: options.server } });
  if (options.copyText !== undefined) f.host.copyText = options.copyText;
  const query = createQueryClient(), router = createMemoryRouter([{ path: "/app/sessions/:id", element: h(SessionScreen, {}) }], { initialEntries: ["/app/sessions/" + SESSION_FIXTURE_ID] });
@@ -50,50 +49,17 @@ it("keeps the command in step with the published CLI package name", () => {
  expect(installCommand("codex")).toBe("npx @preplabsai/rovara-code mcp install --client codex");
  expect(installCommand("cursor")).toBe("npx @preplabsai/rovara-code mcp install --client cursor");
 });
-it("with no server answer, reads the device key: off unless it says v2", () => {
- const store = new Map<string, string>(), host = { storage: { get: (key: string) => store.get(key), set: (key: string, value: string) => { store.set(key, value); } } };
- expect(isContinueInToolOn(host)).toBe(false);
- for (const value of ["", "v1", "true", "V2", "1"]) { store.set(CONTINUE_STORAGE_KEY, value);expect(isContinueInToolOn(host)).toBe(false); }
- store.set(CONTINUE_STORAGE_KEY, "v2");expect(isContinueInToolOn(host)).toBe(true);
- expect(isContinueInToolOn({ storage: { get: () => { throw new Error("blocked"); }, set: () => undefined } })).toBe(false);
-});
-
-/** Proves an absence: every lazy import has landed and a few macrotask turns have passed, so the button and its chunk had their chance to appear. */
-const turn = () => new Promise<void>(resolve => { setTimeout(resolve, 0); });
-const settle = () => act(async () => { for (let round = 0; round < 10; round += 1) { await vi.dynamicImportSettled();await turn(); } });
-for (const [server, device, shown] of [["on", true, true], ["on", false, true], ["preview", true, true], ["preview", false, false], ["off", true, false], ["off", false, false]] as const) {
- it(`the company's continue flag: server ${server}, device key ${device ? "v2" : "unset"}: ${shown ? "the button and the panel" : "no button, no panel, no lessons read"}`, async () => {
-  const f = setup(base(), { server, on: device, lessons: { enabled: true, preset: "standard", companyStays: false } });
+it("is always offered (decision 125): a leftover device key or an older broker's answer for `continue` changes nothing", async () => {
+ for (const [server, device] of [["off", false], ["off", true], ["preview", false], [undefined, false]] as const) {
+  const f = setup(base(), { ...(server === undefined ? {} : { server }), on: device, lessons: { enabled: true, preset: "standard", companyStays: false } });
   try {
-   await screen.findByRole("heading", { name: "Fix duplicate refunds" });await screen.findByRole("button", { name: "Conversation" });
-   if (shown) {
-    const dialog = await open();
-    expect(within(dialog).getByLabelText("Install command for Claude Code").textContent).toBe("npx @preplabsai/rovara-code mcp install --client claude-code");
-   } else {
-    await settle();
-    expect(screen.queryByRole("button", { name: /Continue in your own tool/u })).toBeNull();
-    expect(f.container.querySelector(".rv-session-work-actions")).toBeNull();
-    expect(f.request.mock.calls.some(([request]) => request.path.includes("local-tools"))).toBe(false);
-   }
+   await screen.findByRole("heading", { name: "Fix duplicate refunds" });
+   const dialog = await open();
+   expect(within(dialog).getByLabelText("Install command for Claude Code").textContent).toBe("npx @preplabsai/rovara-code mcp install --client claude-code");
   } finally { f.close(); }
- });
-}
-it("an answer that does not name the flag (an older broker's uiFlags) is off, even with the device key", () => {
- const store = new Map<string, string>([[CONTINUE_STORAGE_KEY, "v2"]]), host = { storage: { get: (key: string) => store.get(key), set: (key: string, value: string) => { store.set(key, value); } } };
- expect(isContinueInToolOn(host)).toBe(true);
- applyNavUiFlags(host, { uiFlags: { look: "on", insights: "on" } });expect(isContinueInToolOn(host)).toBe(false);
- applyNavUiFlags(host, { uiFlags: { continue: "on" } });store.clear();expect(isContinueInToolOn(host)).toBe(true);
+ }
 });
-
-it("switch off: no button, no panel, and no read of the lessons setting", async () => {
- const f = setup(base(), { on: false, lessons: { enabled: true, preset: "standard", companyStays: false } });
- await screen.findByRole("heading", { name: "Fix duplicate refunds" });await screen.findByRole("button", { name: "Conversation" });
- expect(screen.queryByRole("button", { name: /Continue in your own tool/u })).toBeNull();
- expect(f.container.querySelector(".rv-session-work-actions")).toBeNull();
- expect(f.request.mock.calls.some(([request]) => request.path.includes("local-tools"))).toBe(false);
- f.close();
-});
-it("switch on: the button sits beside Conversation, and nothing is read until it is opened", async () => {
+it("the button sits beside Conversation, and nothing is read until it is opened", async () => {
  const f = setup(base(), { lessons: { enabled: true, preset: "standard", companyStays: false } });
  const button = await screen.findByRole("button", { name: "Continue in your own tool" });
  expect(button.parentElement?.className).toBe("rv-session-work-actions");

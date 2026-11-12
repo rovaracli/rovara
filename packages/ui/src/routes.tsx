@@ -9,14 +9,19 @@ import { paths } from "./paths.js";
 /** UX2 slice 2 item 4: ONE task address. `/s/<id>` (older links) goes to `/app/sessions/<id>`, keeping the query and the tab. */
 function OldSessionAddress() { const { id = "" } = useParams(), location = useLocation();return <Navigate replace to={{ pathname: "/app/sessions/" + encodeURIComponent(id), search: location.search, hash: location.hash }} />; }
 function Page({ title }: { title: string }) { return <section><h1 tabIndex={-1}>{title}</h1></section>; }
-/** New navigation only: `/app/live` is now Work. The query (filters) and the hash are kept, so an old bookmark or Slack link lands on the same view. */
+/** `/app/live` is now Work (decision 125: the old Live page was deleted). The query (filters) and the hash are kept, so an old bookmark or Slack link lands on the same view. */
 function LiveToWork() { const location = useLocation();return <Navigate replace to={{ pathname: paths.work, search: location.search, hash: location.hash }} />; }
-const liveScreen = async () => ({ Component: (await import("./screens/live/LiveScreen.js")).LiveScreen });
-/** `newNav` is the new-navigation switch (nav-flags.ts). Off, this is exactly the route table as it was: no Work, no Projects list, Live stays Live. */
-export function appRoutes(features: AppNav["features"], options: { newNav?: boolean; insights?: boolean; billing?: boolean; publish?: boolean } = {}): RouteObject[] {
- const newNav = options.newNav === true, billing = options.billing === true, publish = options.publish === true;
+/** A screen's route with the page error as its error element (unless it names its own): with no old screen to fall back to, a crash must never blank the page or take the navigation with it. */
+function withScreenError(route: RouteObject): RouteObject { return route.errorElement === undefined ? { ...route, errorElement: <RouteError /> } : route; }
+/**
+ * The app's routes. Decision 125: the new navigation, Work, Insights and the other finished screens are always there; the options are the switches of screens still being finished (billing, publish).
+ * Every screen under `/app` has its own error element (`withScreenError`), so a screen that crashes keeps the shell (navigation) on screen: the person sees "Something went wrong on this page" with Reload, and can
+ * navigate away. The shell's own error element is the backstop for a crash in the shell itself, and App's ErrorBoundary for anything above the router.
+ */
+export function appRoutes(features: AppNav["features"], options: { billing?: boolean; publish?: boolean } = {}): RouteObject[] {
+ const billing = options.billing === true, publish = options.publish === true;
  const children: RouteObject[] = [
- { index: true, element: <HomeScreen /> }, ...(newNav ? [{ path: "live", element: <LiveToWork /> }, { path: "work", lazy: liveScreen }, { path: "projects", lazy: async () => ({ Component: (await import("./screens/project/ProjectsListScreen.js")).ProjectsListScreen }) }] : [{ path: "live", lazy: liveScreen }]),
+ { index: true, element: <HomeScreen /> }, { path: "live", element: <LiveToWork /> }, { path: "work", lazy: async () => ({ Component: (await import("./screens/live/WorkListScreen.js")).WorkListScreen }) }, { path: "projects", lazy: async () => ({ Component: (await import("./screens/project/ProjectsListScreen.js")).ProjectsListScreen }) },
  { path: "projects/:name", lazy: async () => ({ Component: (await import("./screens/project/ProjectScreen.js")).ProjectScreen }) }, { path: "sessions/:id", lazy: async () => ({ Component: (await import("./screens/session/SessionScreen.js")).SessionScreen }) },
  // Publish requests (switch `rovara.publish`, publish-flags.ts): registered only while the switch is on, so off the address is like any other: it falls to the agent directory, as it did before.
  ...(publish ? [{ path: "agents/requests", lazy: async () => ({ Component: (await import("./screens/agents/PublishRequestsScreen.js")).default }) }] : []),
@@ -28,8 +33,8 @@ export function appRoutes(features: AppNav["features"], options: { newNav?: bool
  // UX2 slice 2 item 5: your account page (how you're notified; the task emails' "change" and "stop" links open it).
  { path: "account", lazy: async () => ({ Component: (await import("./screens/account/AccountScreen.js")).AccountScreen }) },
  ];
- // Insights (switch rovara.insights = v2): absent while the switch is off, direct URLs included. The screen itself asks the server who may see it.
- if (options.insights === true) children.push({ path: "insights", lazy: async () => ({ Component: (await import("./screens/insights/InsightsScreen.js")).InsightsScreen }) });
+ // Insights: always routed (decision 125). The screen itself asks the server who may see it, and says so calmly when the install's Insights switch (`in`) is off.
+ children.push({ path: "insights", lazy: async () => ({ Component: (await import("./screens/insights/InsightsScreen.js")).InsightsScreen }) });
  // Trial page (switch `rovara.billing`, billing-flags.ts): absent while the switch is off, a direct address included. Any member may open it; the server decides what it shows.
  if (billing) children.push({ path: "trial", lazy: async () => ({ Component: (await import("./screens/billing/TrialScreen.js")).TrialScreen }) });
  // Lane C: waiting is caller-scoped, independent of the company-admin navigation flag.
@@ -47,7 +52,6 @@ export function appRoutes(features: AppNav["features"], options: { newNav?: bool
   { path: "models/steps", element: <Navigate to="/app/admin/how-we-work" replace /> },
   { path: "health", lazy: async () => ({ Component: (await import("./screens/admin/health/ServiceStatusScreen.js")).ServiceStatusScreen }) },
   { path: "health/runtime/:kind", lazy: async () => ({ Component: (await import("./screens/admin/health/ServiceStatusScreen.js")).ServiceStatusScreen }) },
-  { path: "new-screens", lazy: async () => ({ Component: (await import("./screens/admin/new-screens/NewScreensScreen.js")).NewScreensScreen }) },
   { path: "domains", lazy: async () => ({ Component: (await import("./screens/admin/domains/CompanyDomainsScreen.js")).CompanyDomainsScreen }) },
   { path: "projects", lazy: async () => ({ Component: (await import("./screens/admin/projects/ProjectsScreen.js")).ProjectsScreen }) },
   { path: "projects/:name", lazy: async () => ({ Component: (await import("./screens/admin/projects/ProjectDetailScreen.js")).ProjectDetailScreen }) },
@@ -67,5 +71,5 @@ export function appRoutes(features: AppNav["features"], options: { newNav?: bool
  else children.push({ path: "chains/*", element: <Unavailable /> }, { path: "triggers/*", element: <Unavailable /> });
  if (features.describe) children.push({ path: "describe", element: <Page title="Describe an agent" /> });
  children.push({ path: "*", element: <NotFound /> });
- return [{ path: "/s/:id", element: <OldSessionAddress />, errorElement: <RouteError /> }, { path: "/app/signup", lazy: async () => ({ Component: (await import("./screens/onboarding/SignupScreen.js")).SignupScreen }), errorElement: <RouteError /> }, { path: "/app/welcome", lazy: async () => ({ Component: (await import("./screens/onboarding/WelcomeScreen.js")).WelcomeScreen }), errorElement: <RouteError /> }, { path: "/app/signed-out", lazy: async () => ({ Component: (await import("./screens/signed-out/SignedOutScreen.js")).SignedOutRoute }), errorElement: <RouteError /> }, { path: "/app", element: <AppShell />, errorElement: <RouteError />, children }, { path: "*", element: <NotFound /> }];
+ return [{ path: "/s/:id", element: <OldSessionAddress />, errorElement: <RouteError /> }, { path: "/app/signup", lazy: async () => ({ Component: (await import("./screens/onboarding/SignupScreen.js")).SignupScreen }), errorElement: <RouteError /> }, { path: "/app/welcome", lazy: async () => ({ Component: (await import("./screens/onboarding/WelcomeScreen.js")).WelcomeScreen }), errorElement: <RouteError /> }, { path: "/app/signed-out", lazy: async () => ({ Component: (await import("./screens/signed-out/SignedOutScreen.js")).SignedOutRoute }), errorElement: <RouteError /> }, { path: "/app", element: <AppShell />, errorElement: <RouteError />, children: children.map(withScreenError) }, { path: "*", element: <NotFound /> }];
 }

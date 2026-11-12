@@ -86,6 +86,7 @@ export * from "./app-approval-window.js";
 export * from "./app-private-addresses.js";
 export * from "./decision-dismiss.js";
 export * from "./app-billing.js";
+export * from "./app-companies.js";
 export * from "./app-insights.js";
 export * from "./app-agent-publish.js";
 export { JiraOrgAdminMutationBodySchema, JiraOrgAdminResultReaderSchema, type JiraOrgAdminMutationBody } from "./jira-org-admin-web.js";

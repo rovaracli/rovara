@@ -8,11 +8,9 @@ import { createMemoryRouter, RouterProvider } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { CHANGED_OUTSIDE_LABEL, OUTSIDE_RECHECK_WORKER_MISSING, PUBLISHED_BRANCH_NOTE, RECHECK_NEEDS_PULL_REQUEST_NOTE, type SessionView } from "@agentx/cloud-contracts/web";
 import { SessionScreen } from "../../packages/ui/src/screens/session/SessionScreen.js";
-import { CONTINUE_STORAGE_KEY } from "../../packages/ui/src/screens/session/continue-flags.js";
 import { NO_BRANCH_PUBLISH, NO_BRANCH_YET, PUSH_EXPLAINER, PUSH_EXPLAINER_RECHECK, RECHECK_UNAVAILABLE, continueOffer, loadPrompt, pushExplainer } from "../../packages/ui/src/screens/session/continue-in-tool.js";
 import { agoShort, pushedByWords } from "../../packages/ui/src/screens/session/continue-outside.js";
 import { leadStatus, plainState, taskLead } from "../../packages/ui/src/screens/session/task-plain-state.js";
-import { forceTaskPageFlags } from "../../packages/ui/src/screens/session/task-page-flags.js";
 import { AppHostProvider } from "../../packages/ui/src/host.js";
 import type { ApiRequest, ApiResponse } from "../../packages/ui/src/host.js";
 import { Announcer } from "../../packages/ui/src/design/Announcer.js";
@@ -25,7 +23,7 @@ import { expectNoAxeViolations } from "./support/axe.js";
 import { workspaceFixture, workspaceWorkflow } from "./support/workspace-fixture.js";
 import { SESSION_FIXTURE_ID } from "./support/session-fixture.js";
 
-afterEach(() => { vi.unstubAllGlobals();vi.useRealTimers();forceTaskPageFlags(undefined); });
+afterEach(() => { vi.unstubAllGlobals();vi.useRealTimers(); });
 const TASK = "11111111-1111-4111-8111-111111111111", BRANCH = "agentx/" + TASK, HEAD = "b".repeat(40), BASE = "a".repeat(40);
 const UUID: unknown = expect.stringMatching(/^[0-9a-f-]{36}$/u);
 const PUBLISH_PATH = "/v1/app/tasks/" + TASK + "/continue/publish-branch", RECHECK_PATH = "/v1/app/tasks/" + TASK + "/continue/recheck";
@@ -56,9 +54,9 @@ function setup(source: SessionView | (() => SessionView), options: Options = {})
   reads += 1;
   return { status: 200, body: { session: current() } };
  });
- if (options.on !== false) f.storage.set(CONTINUE_STORAGE_KEY, "v2");
+ if (options.on === true) f.storage.set("rovara.continue", "v2");
+ // An older broker's answer that still names the removed `continue` flag: ignored.
  if (options.server !== undefined) applyNavUiFlags(f.host, { uiFlags: { continue: options.server } });
- if (options.lead === true) forceTaskPageFlags({ leadingHeader: true });
  const query = createQueryClient(), router = createMemoryRouter([{ path: "/app/sessions/:id", element: h(SessionScreen, {}) }], { initialEntries: ["/app/sessions/" + SESSION_FIXTURE_ID] });
  const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(Announcer, { children: h(RouterProvider, { router }) }) }) }));
  return { ...f, ...ui, query, reads: () => reads, calls: (path: string) => f.request.mock.calls.map(([request]) => request).filter(request => request.path === path), close() { ui.unmount();router.dispose();query.clear(); } };
@@ -182,51 +180,15 @@ it("the task page's plain state reads Changed outside Rovara · checks needed (t
  expect(lead.textContent).toContain("Check the new code yourself before it merges");
  f.close();
 });
-it("switch off: the task page's lead is exactly as before, with no chip, no Last pushed by and the ordinary state, whatever the task view says", async () => {
- const f = setup(session(loopOf({ label: CHANGED_OUTSIDE_LABEL, outside: [outsideRow()] }), { display: { state: "ready_to_merge" } }), { lead: true, on: false });
- const lead = await screen.findByRole("region", { name: "Where this task stands" });
- expect(within(lead).getAllByText("Ready to merge").length).toBeGreaterThan(0);
- expect(lead.textContent).not.toContain(CHANGED_OUTSIDE_LABEL);expect(lead.textContent).not.toContain("Last pushed by");
- expect(lead.querySelector(".rv-chip")).toBeNull();expect(lead.getAttribute("data-tone")).toBe("success");
- f.close();
-});
-for (const [server, device, shown] of [["on", true, true], ["on", false, true], ["preview", true, true], ["preview", false, false], ["off", true, false], ["off", false, false]] as const) {
- it(`the company's continue flag on the lead: server ${server}, device key ${device ? "v2" : "unset"}: ${shown ? "Changed outside Rovara" : "the ordinary state"}`, async () => {
-  const f = setup(session(loopOf({ label: CHANGED_OUTSIDE_LABEL, outside: [outsideRow()] }), { display: { state: "ready_to_merge" } }), { lead: true, on: device, server });
+it("a leftover device key or an older broker's answer for `continue` changes nothing: the chip and Last pushed by are always there (decision 125)", async () => {
+ for (const [server, device] of [["off", false], ["off", true], ["preview", false], [undefined, false]] as const) {
+  const f = setup(session(loopOf({ label: CHANGED_OUTSIDE_LABEL, outside: [outsideRow()] }), { display: { state: "ready_to_merge" } }), { lead: true, on: device, ...(server === undefined ? {} : { server }) });
   try {
    const lead = await screen.findByRole("region", { name: "Where this task stands" });
-   if (shown) { expect(within(lead).getByText(CHANGED_OUTSIDE_LABEL)).toBeTruthy();expect(within(lead).getByText("Last pushed by octocat 5m ago")).toBeTruthy(); }
-   else { expect(within(lead).getAllByText("Ready to merge").length).toBeGreaterThan(0);expect(lead.textContent).not.toContain(CHANGED_OUTSIDE_LABEL);expect(lead.querySelector(".rv-chip")).toBeNull(); }
+   expect(within(lead).getByText(CHANGED_OUTSIDE_LABEL)).toBeTruthy();expect(within(lead).getByText("Last pushed by octocat 5m ago")).toBeTruthy();
   } finally { f.close(); }
- });
-}
-for (const [first, later] of [["off", "on"], ["on", "off"]] as const) {
- it(`the panel and the chip read the continue flag once, when the page mounts: server ${first} then ${later} keeps both ${first === "on" ? "shown" : "hidden"} until the page mounts again`, async () => {
-  const view = () => session(loopOf({ label: CHANGED_OUTSIDE_LABEL, outside: [outsideRow()] }), { display: { state: "ready_to_merge" } });
-  const both = async (shown: boolean) => {
-   const lead = await screen.findByRole("region", { name: "Where this task stands" });
-   expect(screen.queryByRole("button", { name: "Continue in your own tool" }) !== null, "panel").toBe(shown);
-   expect(lead.textContent?.includes(CHANGED_OUTSIDE_LABEL), "chip").toBe(shown);
-  };
-  const f = setup(view, { lead: true, on: false, server: first });
-  await screen.findByRole("region", { name: "Where this task stands" });
-  if (first === "on") await screen.findByRole("button", { name: "Continue in your own tool" });
-  await both(first === "on");
-  // A later navigation answer flips the company's flag; the task page re-renders (the session is read again) but keeps what it read at mount.
-  const before = f.reads();
-  await act(async () => { applyNavUiFlags(f.host, { uiFlags: { continue: later } });await f.query.invalidateQueries({ queryKey: ["session"] }); });
-  await waitFor(() => { expect(f.reads()).toBeGreaterThan(before); });
-  await act(async () => { await vi.dynamicImportSettled(); });
-  await both(first === "on");
-  f.close();
-  // Mounted again with the new answer: both follow it, together.
-  const g = setup(view, { lead: true, on: false, server: later });
-  await screen.findByRole("region", { name: "Where this task stands" });
-  if (later === "on") await screen.findByRole("button", { name: "Continue in your own tool" });
-  await both(later === "on");
-  g.close();
- });
-}
+ }
+});
 it("the lead's Last pushed by ages while the page stays open", async () => {
  vi.useFakeTimers({ shouldAdvanceTime: true });
  const f = setup(session(loopOf({ label: CHANGED_OUTSIDE_LABEL, outside: [outsideRow({ lastPushedBy: { login: "octocat", at: new Date(Date.now() - 20_000).toISOString() } })] }), { display: { state: "ready_to_merge" } }), { lead: true });
@@ -399,15 +361,8 @@ it("the push wording keeps the honest sentence while canRecheck is false, and sa
  on.close();
 });
 
-// ---- 6. off state and access
+// ---- 6. access
 
-it("switch off: no button, no panel, no continue request, whatever the task view says", async () => {
- const f = setup(session(loopOf({ canPublishBranch: true, canRecheck: true, branches: [prBranch], outside: [outsideRow({ canRecheck: true })] })), { on: false });
- await screen.findByRole("button", { name: "Conversation" });
- expect(screen.queryByRole("button", { name: /Continue in your own tool/u })).toBeNull();
- expect(f.request.mock.calls.some(([request]) => request.path.includes("/continue/"))).toBe(false);
- f.close();
-});
 it("a reader who may only steer sees the panel, the chip and the line, but neither button (the server sends both flags false)", async () => {
  const f = setup(session(loopOf({ outside: [outsideRow()], branches: [] }), { you: { owner: false, actions: ["watch", "comment", "steer"] } }));
  const dialog = await open();

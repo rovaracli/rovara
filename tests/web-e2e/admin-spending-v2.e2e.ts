@@ -24,19 +24,8 @@ async function focusVisible(page: Page) {
 const PATH = "/app/admin/money/budgets";
 const ready = (page: Page) => expect(page.getByRole("table", { name: "Spending requests waiting" })).toBeVisible();
 
-for (const width of [1280, 390] as const) {
- test(`switch off at ${String(width)}: today's budgets page, no spending views, picture for the base comparison`, async ({ page, context, request, baseURL }) => {
-  await enter(page, context, request, baseURL, width, {});await page.goto(PATH);
-  await expect(page.getByRole("table", { name: "Monthly base budgets" })).toBeVisible();await expect(page.getByText(/Monthly base budgets are read only/)).toBeVisible();
-  await expect(page.getByRole("heading", { name: /This month/ })).toHaveCount(0);await page.waitForLoadState("networkidle");
-  const calls = await (await request.get("/__mock/requests")).json() as Array<{ path: string }>;
-  expect(calls.filter(call => /\/v1\/web\/(budget|org\/spend|spend-requests)$/u.test(call.path))).toEqual([]);
-  expect(await noSidewaysScroll(page)).toBe(true);
-  await evidenceShot(page, { path: `${shots}/off-${String(width)}.png`, fullPage: true });
- });
-}
 
-for (const look of [{ name: "look-off", store: {} }, { name: "look-v2", store: { "rovara.look": "v2" } }] as const) {
+for (const look of [{ name: "look-v2", store: {} }] as const) {
  for (const width of [360, 390, 1280] as const) {
   const phone = width < 768;
   test(`switch on, ${look.name} at ${String(width)}: all five parts, ${phone ? "one column, 44px targets, " : ""}no sideways scroll, axe clean, visible focus`, async ({ page, context, request, baseURL }) => {

@@ -5,6 +5,8 @@ import { methodAllowedByEdition, sessionWithinEditionCap } from "../../developer
 import { safeDisplayName } from "../../developer/person-name.js";
 import { requireAuditorEdition } from "../../org/auditor.js";
 import { readChosenName } from "../../developer/chosen-name.js";
+import { sessionCompany } from "../../org/companies/memberships.js";
+import { companySwitcherEnabled } from "../../org/companies/switch.js";
 import {
   META,
   endedByAdmin,
@@ -130,5 +132,7 @@ export async function authenticateDeveloperSessionId(deps: DeveloperRouteDepende
     || session.reviewExpiresAt === undefined || session.reviewExpiresAt <= Math.floor(deps.now() / 1000)) {
     throw agentXError("AUTH_REQUIRED", SIGN_IN_AGAIN);
   }
-  return authenticateSession(deps, { developerId: session.developerId, sessionId, amr: session.amr });
+  const caller = await authenticateSession(deps, { developerId: session.developerId, sessionId, amr: session.amr });
+  // Company memberships (switch `cw`): a browser session may have chosen another of the person's companies. Re-checked as a live membership on every request; a token never gets here.
+  return companySwitcherEnabled() ? await sessionCompany({ documentClient: deps.documentClient, tableName: deps.tableName, editionPolicy: deps.editionPolicy }, caller) : caller;
 }

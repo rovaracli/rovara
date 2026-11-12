@@ -3,6 +3,7 @@
 // which leaves earlier stacks upgraded and is safe to re-run), then run doctor.
 import { teamRecordRecordedOrUnknown, teamRecordRefusalHint } from "../deploy/team-record-switch.js";
 import { enforceTeamRecordPreflight, type TeamRecordProbe } from "../deploy/team-record-preflight.js";
+import { assertModelProxyTlsDeploy, clearModelProxyTlsPrevious, readModelProxyTlsSetting, type DnsLookups, type ModelProxyTlsState } from "../deploy/model-proxy-tls.js";
 import { GetTemplateCommand } from "@aws-sdk/client-cloudformation";
 import { agentXError, environmentStackName } from "@rovara-code/contracts";
 import { isRovaraOperatorArn } from "@agentx/cloud-contracts";
@@ -38,7 +39,7 @@ function withEmbedderImage(forced: ReturnType<typeof forcedOperatorValues>, imag
   return { ...forced, "control-plane": { ...forced["control-plane"], EmbedderImageUri: image } };
 }
 
-export interface UpgradeOptions { env: string; /** With `--bundle` on a cdk install: the build made at approval is approved without asking. `--yes` never does this. */ approveBuild?: boolean; /** N3: a signed release bundle directory; verified (signature, approved id, every hash) before anything is read or changed. */ bundleDir?: string; /** N3: the bundle id (SHA-256 of bundle.json) the customer approved; any other bundle is refused. */ approvedBundleSha256?: string; to?: string; releaseDir?: string; source?: string; yes: boolean; allowReplace: string[]; exportDir?: string; /** --no-reserved-concurrency: the cdk app leaves Lambda reserved concurrency off (cdk engine only). */ reservedConcurrency?: false; images?: { worker?: string; slack?: string; bootStage2Sha256?: string; /** --embedder-image: the embedder image for a release that names none (a source or override upgrade). */ embedder?: string } }
+export interface UpgradeOptions { env: string; /** With `--bundle` on a cdk install: the build made at approval is approved without asking. `--yes` never does this. */ approveBuild?: boolean; /** N3: a signed release bundle directory; verified (signature, approved id, every hash) before anything is read or changed. */ bundleDir?: string; /** N3: the bundle id (SHA-256 of bundle.json) the customer approved; any other bundle is refused. */ approvedBundleSha256?: string; to?: string; releaseDir?: string; source?: string; yes: boolean; allowReplace: string[]; exportDir?: string; /** --no-reserved-concurrency: the cdk app leaves Lambda reserved concurrency off (cdk engine only). */ reservedConcurrency?: false; /** --allow-tls-removal (model-proxy-tls.ts M1). */ allowTlsRemoval?: boolean; /** --allow-legacy-http-removal (model-proxy-tls.ts L1). */ allowLegacyHttpRemoval?: boolean; images?: { worker?: string; slack?: string; bootStage2Sha256?: string; /** --embedder-image: the embedder image for a release that names none (a source or override upgrade). */ embedder?: string } }
 
 export interface UpgradeDependencies {
   store: ParameterStore;
@@ -75,6 +76,10 @@ export interface UpgradeDependencies {
   cliVersion: string | undefined;
   /** Read-only check for a table left over by a rolled-back Team record build, run before the first build (team-record-preflight.ts). Absent: not checked. */
   teamRecordProbe?: TeamRecordProbe;
+  /** MODEL-PROXY-TLS: the worker URL parameter and the running workers (model-proxy-tls-aws.ts). Absent: only the deployed output is known, and a check that needs the workers refuses. */
+  modelProxyTlsState?: (env: string, options: { workers: boolean }) => Promise<ModelProxyTlsState>;
+  /** The public DNS lookups of the certificate check. Absent: that check refuses. */
+  dns?: DnsLookups;
 }
 
 export interface UpgradeResult { env: string; from: string; to: string; parts: DeployPart[]; exported?: string; doctor?: { failed: number; warned: number } }
@@ -334,6 +339,18 @@ async function runVerifiedUpgrade(options: UpgradeOptions, deps: UpgradeDependen
     const runningEmbedder = runningControlPlane?.parameters.EmbedderImageUri;
     // The first build of the Team record (recorded as on, not yet in the stack): what an earlier, rolled-back try left behind would fail it (team-record-preflight.ts). Before anything is prepared or changed.
     await enforceTeamRecordPreflight({ env, store: deps.store, controlPlaneParameters: runningControlPlane?.parameters, probe: deps.teamRecordProbe, write: deps.write, stoppedMessage: "upgrade stopped before anything changed" });
+    // MODEL-PROXY-TLS: no silent removal of TLS (M1), no removal of the legacy listeners under workers that still hold the plain-http address (L1), a domain ACM can validate (L3).
+    await assertModelProxyTlsDeploy({
+      env, setting: settings.engine === "cdk" ? await readModelProxyTlsSetting(deps.store, env) : undefined,
+      readState: async (wanted) => {
+        const deployedUrl = runningControlPlane?.outputs.ModelProxyUrl;
+        if (deps.modelProxyTlsState !== undefined) return { ...await deps.modelProxyTlsState(env, wanted), deployedUrl };
+        if (wanted.workers) throw agentXError("CONFIG_INVALID", "this agentx cannot read the install's worker instances, so the removal of the model proxy's legacy listeners could not be checked; nothing changed");
+        return { deployedUrl, urlParameter: undefined, workers: [] };
+      },
+      dns: deps.dns ?? { resolveNs: () => Promise.reject(new Error("no DNS")), resolveCaa: () => Promise.reject(new Error("no DNS")) },
+      ...(options.allowTlsRemoval === true ? { allowTlsRemoval: true } : {}), ...(options.allowLegacyHttpRemoval === true ? { allowLegacyHttpRemoval: true } : {}),
+    });
     const prepared = await deps.prepare({
       settings, release, ...(options.source === undefined ? {} : { source: options.source }), ...(options.reservedConcurrency === false ? { reservedConcurrency: false as const } : {}),
       ...(options.images?.embedder === undefined ? {} : { embedderImage: options.images.embedder }),
@@ -393,6 +410,8 @@ async function runVerifiedUpgrade(options: UpgradeOptions, deps: UpgradeDependen
     }
     // The bundle is recorded as installed only after every stack deployed.
     if (bundle !== undefined) await recordInstalledBundle({ store: deps.store, env, now: deps.now(), version: target, bundleId: bundle.bundleId });
+    // M-1: every stack deployed, so the control plane removed the previous name's pieces under the grants this upgrade kept for them; the next upgrade drops those grants.
+    if (settings.engine === "cdk" && await clearModelProxyTlsPrevious(deps.store, env)) deps.write("Model proxy TLS: the previous name's record, validation record and certificate were removed; the next upgrade drops the deploy grants that removed them");
     return { settings, parts };
   });
 

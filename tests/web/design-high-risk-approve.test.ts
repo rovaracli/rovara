@@ -7,7 +7,7 @@ import { MemoryRouter, createMemoryRouter, RouterProvider } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { DecisionCardsViewSchema } from "@agentx/cloud-contracts/web";
 import { SessionScreen } from "../../packages/ui/src/screens/session/SessionScreen.js";
-import { HomeScreen } from "../../packages/ui/src/screens/home/HomeScreen.js";
+import { PendingDecisionCards } from "./support/pending-decisions.js";
 import { AppHostProvider } from "../../packages/ui/src/host.js";
 import { Announcer } from "../../packages/ui/src/design/Announcer.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
@@ -164,7 +164,7 @@ it("a medium design card on the task page is unchanged: Approve after the eviden
 it("Home's high-risk design card links to the card on the task page, and the task page marks that card", async () => {
  const home = fakeHost(async request => request.path === "/v1/app/decisions" ? { status: 200, body: viewOf([high]) } : { status: 200, body: { cards: [], total: 0 } });
  const query = createQueryClient();
- const ui = renderUi(h(AppHostProvider, { host: home.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { children: h(Announcer, { children: h(HomeScreen, {}) }) }) }) }));
+ const ui = renderUi(h(AppHostProvider, { host: home.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { children: h(Announcer, { children: h(PendingDecisionCards, {}) }) }) }) }));
  const link = await screen.findByRole("link", { name: "Open" });
  const href = link.getAttribute("href")!;
  expect(href).toBe(SESSION_PATH + "?decision=approve_design%3Adesign1");
@@ -231,7 +231,7 @@ it("security review: on the task page a HIGH design cost card shows its choices 
 it("security review: on Home a HIGH design cost card is Open only, with no choice to press", async () => {
  const home = fakeHost(async request => request.path === "/v1/app/decisions" ? { status: 200, body: viewOf([highSpend]) } : { status: 200, body: { cards: [], total: 0 } });
  const query = createQueryClient();
- const ui = renderUi(h(AppHostProvider, { host: home.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { children: h(Announcer, { children: h(HomeScreen, {}) }) }) }) }));
+ const ui = renderUi(h(AppHostProvider, { host: home.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { children: h(Announcer, { children: h(PendingDecisionCards, {}) }) }) }) }));
  expect((await screen.findByRole("link", { name: "Open" })).getAttribute("href")).toBe(SESSION_PATH + "?decision=approve_spend%3A" + TASK);
  expect(screen.queryByRole("button", { name: "Skip design review" })).toBeNull();
  expect(screen.queryByRole("button", { name: "Raise the limit to $250" })).toBeNull();

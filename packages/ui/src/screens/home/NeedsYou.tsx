@@ -67,15 +67,6 @@ export function DecisionList({ decisions, label, extras, focus, seat }: { decisi
  return <ol className="rv-decision-list" aria-label={label}>{decisions.map(decision => <li key={decision.card.id}><DecisionCard decision={decision} focused={focus === decision.card.id} seat={seat} actions={{ ...actionsFor(decision), ...extras?.(decision) }} /></li>)}</ol>;
 }
 
-/** Home's "Needs you": the pending decisions as cards. Nothing shows while the server has none (or the cards are not switched on); a failed read is shown as an error. The older Home cards below still show. */
-export function NeedsYou() {
- const decisions = useDecisions();
- if (decisions.isError) return <section className="rv-needs-you" aria-label="Needs you"><h2 className="rv-needs-you-title">Needs you</h2><DecisionsError error={decisions.error} retry={() => { void decisions.refetch(); }} /></section>;
- const pending = (decisions.data ?? []).filter(decision => decision.card.status === "pending");
- if (pending.length === 0) return null;
- return <section className="rv-needs-you" aria-label="Needs you"><h2 className="rv-needs-you-title">Needs you</h2><DecisionList decisions={pending} label="Decisions waiting for you" /></section>;
-}
-
 /** Slice 3b: one decision on its own page (`/app/decisions/<kind>/<subject>`): the card and its evidence, nothing else, for someone who may decide it but is not on the task. */
 export function SingleDecision({ cardId }: { cardId: string }) {
  const decisions = useDecisions(cardId.startsWith("approve_request:") ? cardId.slice("approve_request:".length) : undefined), inlineApprove = useInlineApprove();

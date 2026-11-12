@@ -8,7 +8,6 @@ import { appRoutes } from "../../packages/ui/src/routes.js";
 import { AppHostProvider, type ApiRequest, type ApiResponse } from "../../packages/ui/src/host.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { ThemeProvider } from "../../packages/ui/src/theme.js";
-import { isSpendingV2On, SPENDING_STORAGE_KEY } from "../../packages/ui/src/screens/admin/spending-flags.js";
 import { approverWords, availableUsd, barShares, heldUsd, isOverAllowance, monthLabel, percentOf, requestKindWords, sourceWords } from "../../packages/ui/src/screens/admin/spending-format.js";
 import { fakeHost } from "./support/fake-host.js";
 import { renderUi } from "./support/render.js";
@@ -30,7 +29,7 @@ function mount(options: { on?: boolean; role?: string; answers?: Answers; width?
  const answers = { ...base, ...options.answers };
  const f = fakeHost(async (r: ApiRequest) => { const path = r.path.split("?")[0]!;if (path === "/v1/app/me") return { status: 200, body: identity };if (path === "/v1/app/nav") return { status: 200, body: nav };const answer = answers[path];if (answer === undefined) return { status: 404, body: { error: { code: "NOT_FOUND" } } };return typeof answer === "function" ? answer() : answer; });
  if (options.width !== undefined) f.host.viewport = { width: () => options.width ?? 1280, subscribe: () => () => undefined };
- f.storage.set("rovara.theme", options.theme ?? "light");if (options.on !== false) f.storage.set(SPENDING_STORAGE_KEY, "v2");
+ f.storage.set("rovara.theme", options.theme ?? "light");if (options.on === false) f.storage.set("rovara.spending", "off");
  const query = createQueryClient();query.setQueryData(["nav"], nav);
  const router = createMemoryRouter(appRoutes(nav.features), { initialEntries: ["/app/admin/money/budgets"] });
  const view = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(ThemeProvider, { host: f.host, children: h(RouterProvider, { router }) }) }) }));
@@ -38,21 +37,16 @@ function mount(options: { on?: boolean; role?: string; answers?: Answers; width?
 }
 const calls = (f: ReturnType<typeof mount>, path: string) => f.request.mock.calls.filter(([r]) => r.path.split("?")[0] === path).length;
 
-describe("the switch", () => {
- it("is off unless the device key is exactly v2, and never throws", () => {
-  expect(isSpendingV2On({ storage: { get: () => undefined } })).toBe(false);
-  expect(isSpendingV2On({ storage: { get: key => key === "rovara.spending" ? "v2" : undefined } })).toBe(true);
-  expect(isSpendingV2On({ storage: { get: () => "v3" } })).toBe(false);
-  expect(isSpendingV2On({ storage: { get: () => { throw new Error("blocked"); } } })).toBe(false);
- });
- it("off: today's budgets page, and none of the spending reads are made", async () => {
-  const f = mount({ on: false });
-  try {
-   await screen.findByRole("table", { name: "Monthly base budgets" });
-   expect(screen.getByText(/Monthly base budgets are read only/)).toBeTruthy();
-   expect(screen.queryByRole("heading", { name: /This month/ })).toBeNull();
-   for (const path of ["/v1/app/budget", "/v1/app/org/spend", "/v1/app/spend-requests"]) expect(calls(f, path)).toBe(0);
-  } finally { f.close(); }
+describe("the only spending page (decision 125)", () => {
+ it("is shown with no device key and with a leftover one; the old monthly-base table is gone", async () => {
+  for (const on of [true, false]) {
+   const f = mount({ on });
+   try {
+    await screen.findByRole("heading", { name: /This month/ });
+    expect(screen.queryByRole("table", { name: "Monthly base budgets" })).toBeNull();
+    expect(calls(f, "/v1/app/org/spend")).toBeGreaterThan(0);
+   } finally { f.close(); }
+  }
  });
 });
 
