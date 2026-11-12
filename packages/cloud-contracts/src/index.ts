@@ -142,6 +142,7 @@ export * from "./continue-loop.js";
 
 export * from "./app-automations.js";
 export * from "./app-review-groups.js";
+export * from "./smart-intake.js";
 
 export * from "./test-access-connect.js";
 export * from "./test-access-policy.js";

@@ -109,7 +109,7 @@ import { metaConfigQueueFor, metaRepoRouteDependencies } from "./meta-repo-wirin
 import { createCloudProject, prepareWorkspace, registerProject, registerProjectFor, retryProjectSetupAsAdministrator } from "./project-registration.js";
 import { getProjectModels, putProjectModel } from "./records.js";
 import { decideEgress, decideRequestContext, egressDepsOf, githubScope, listEgressPending, orgConnectionStoreOf, orgResolverOf, putInstallBudget, routingOf, webhookRepositoryUrl } from "./scope-helpers.js";
-import { authorizeSlackTaskAction, captureSlackWorkflowFeedbackNote, closeSlackWorkflowTask, confirmSlackTaskPeople, decideSlackWorkflow, decideSlackWorkflowFeedbackFindings, handleSlackTaskPeople, isSlackStopTaskEvent, isSlackTaskAuthorizationEvent, isSlackTaskPeopleChangeEvent, isSlackTaskPeopleConfirmEvent, isSlackTaskPeopleReadEvent, isSlackTaskPeopleTakeOwnershipEvent, isSlackThreadNoteEvent, isSlackWorkflowCloseEvent, isSlackWorkflowDecisionEvent, isSlackWorkflowFeedbackFindingsDecisionEvent, isSlackWorkflowFeedbackNoteEvent, isSlackWorkflowFeedbackReviewRetryEvent, isSlackWorkflowKeepPullRequestsEvent, isSlackWorkflowPublishRetryEvent, isSlackWorkflowResolveFindingsEvent, isSlackWorkflowRetryEvent, isSlackWorkflowReviewRetryEvent, isSlackWorkflowSendBackEvent, isSlackWorkflowStartEvent, reviseSlackWorkflowPlan, keepSlackWorkflowPullRequests, recordSlackThreadNote, resolveSlackWorkflowFindings, retrySlackWorkflowChecks, retrySlackWorkflowFeedbackReview, retrySlackWorkflowPublication, retrySlackWorkflowReviews, sendSlackWorkflowBack, startSlackWorkflow, stopSlackThreadTask, workflowApplicationRouteDependencies, type SlackStopTaskEvent, type SlackTaskAuthorizationEvent, type SlackTaskPeopleChangeEvent, type SlackTaskPeopleConfirmEvent, type SlackTaskPeopleReadEvent, type SlackTaskPeopleTakeOwnershipEvent, type SlackWorkflowCloseEvent, type SlackWorkflowDecisionEvent, type SlackWorkflowResolveFindingsEvent, type SlackWorkflowRetryEvent, type SlackWorkflowReviewRetryEvent, type SlackWorkflowSendBackEvent, type SlackWorkflowStartEvent } from "./slack-workflow-events.js";
+import { authorizeSlackTaskAction, captureSlackWorkflowFeedbackNote, closeSlackWorkflowTask, confirmSlackTaskPeople, decideSlackWorkflow, decideSlackWorkflowFeedbackFindings, handleSlackTaskPeople, isSlackStopTaskEvent, isSlackTaskAuthorizationEvent, isSlackTaskPeopleChangeEvent, isSlackTaskPeopleConfirmEvent, isSlackTaskPeopleReadEvent, isSlackTaskPeopleTakeOwnershipEvent, isSlackThreadNoteEvent, isSlackWorkflowCloseEvent, isSlackWorkflowDecisionEvent, isSlackWorkflowFeedbackFindingsDecisionEvent, isSlackWorkflowFeedbackNoteEvent, isSlackWorkflowFeedbackReviewRetryEvent, isSlackWorkflowKeepPullRequestsEvent, isSlackWorkflowPublishRetryEvent, isSlackWorkflowResolveFindingsEvent, isSlackWorkflowRetryEvent, isSlackWorkflowReviewRetryEvent, isSlackWorkflowSendBackEvent, isSlackWorkflowStartEvent, reviseSlackWorkflowPlan, keepSlackWorkflowPullRequests, recordSlackThreadNote, resolveSlackWorkflowFindings, retrySlackWorkflowChecks, retrySlackWorkflowFeedbackReview, retrySlackWorkflowPublication, retrySlackWorkflowReviews, sendSlackWorkflowBack, isSlackIntakeRecordEvent, recordSlackIntake, startQuickFromIntake, startSlackWorkflow, stopSlackThreadTask, workflowApplicationRouteDependencies, type SlackStopTaskEvent, type SlackTaskAuthorizationEvent, type SlackTaskPeopleChangeEvent, type SlackTaskPeopleConfirmEvent, type SlackTaskPeopleReadEvent, type SlackTaskPeopleTakeOwnershipEvent, type SlackWorkflowCloseEvent, type SlackWorkflowDecisionEvent, type SlackWorkflowResolveFindingsEvent, type SlackWorkflowRetryEvent, type SlackWorkflowReviewRetryEvent, type SlackWorkflowSendBackEvent, type SlackWorkflowStartEvent } from "./slack-workflow-events.js";
 import { fireTestEnvNightly, isTestEnvNightlyEvent } from "../../test-env/nightly-wiring.js";
 import { nightlyRunsOf, sweepAutomaticRunsOf } from "./nightly-run-wiring.js";
 import { SESSION_EVENT_BUDGET_MS, auditModelKeys, isAuditDrainEvent, isChainScheduleEvent, isChainSweepEvent, isEgressDomainsSyncEvent, isIntakePollEvent, isGithubInstallRequestReminderEvent, isGithubWebhookRecoveryEvent, isSessionSweepEvent, isSpendSettlementEvent, isWorkflowMergeRecoveryEvent, ledgerOf, modelSourceSweepOf } from "./sweeps-and-readiness.js";
@@ -612,6 +612,14 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
     if (isSlackWorkflowFeedbackReviewRetryEvent(event)) {
       return answerSlackWorkflowEvent(dependencies, event, "feedback_review_retry", () => retrySlackWorkflowFeedbackReview(dependencies, tasks, event), button);
     }
+    // Decision 134: the broker's own record of a routed request, from the ingress (never the Slack service).
+    if (isSlackIntakeRecordEvent(event)) {
+      try { return json(await recordSlackIntake(dependencies, event), "slack-ingress"); }
+      catch (error) {
+        if (error instanceof AgentXError) return json({ error: { code: error.code, message: stripCode(error.message, error.code) } }, "slack-ingress", error.statusCode);
+        return unexpectedErrorAnswer(error, "slack-ingress");
+      }
+    }
     if (isSlackThreadNoteEvent(event)) {
       try {
         const result = await recordSlackThreadNote(dependencies, tasks, event);
@@ -894,6 +902,10 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
         }
         if (request.method === "POST" && serviceUrl.pathname === "/v1/tasks/thread-notes/answered") {
           return json(await markThreadNoteAnswered(dependencies, identity, parseBody(request.body)), request.requestId);
+        }
+        // Decision 134: a clear small change starts Quick on its own, after the broker's own check of the text.
+        if (request.method === "POST" && serviceUrl.pathname === "/v1/workflows/quick-start") {
+          return json(await startQuickFromIntake(dependencies, tasks, identity, parseBody(request.body)), request.requestId);
         }
         if (request.method === "POST" && serviceUrl.pathname === "/v1/tasks/comments/answered") {
           return json(await markCommentAnswered(dependencies, identity, parseBody(request.body)), request.requestId);

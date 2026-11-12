@@ -2,7 +2,9 @@
 // action gate's own classifier model, runtime and deadline. It only suggests: nothing that changes code starts from it.
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { createModelRuntimeWithFallback, type ModelProxyOptions } from "@agentx/model-runtime";
-import { REQUEST_ROUTER_SYSTEM_PROMPT, parseRequestRoute, requestRouterPrompt, type RequestRouteKind, type RequestRouteOutcome } from "@rovara-code/contracts";
+import { parseRequestRoute, requestRouterPrompt, type RequestRouteKind, type RequestRouteOutcome } from "@rovara-code/contracts";
+// Smart intake (a bridge in cloud-contracts until the vendored Code pin carries it): the router's new instruction.
+import { SMART_INTAKE_ROUTER_SYSTEM_PROMPT } from "@agentx/cloud-contracts";
 import { ClassifierError, ClassifierTimeoutError, completeBeforeDeadline, usableClassifierTimeout } from "./action-classifier.js";
 
 /** The router's sorting and how it went. Anything but a usable answer is `unclear`; never the model's reason. */
@@ -39,7 +41,7 @@ export async function createModelRequestRouter(options: {
     if (!model) return { kind: "unclear", outcome: "unavailable" };
     try {
       const answer = await completeBeforeDeadline(runtime, model, {
-        systemPrompt: REQUEST_ROUTER_SYSTEM_PROMPT,
+        systemPrompt: SMART_INTAKE_ROUTER_SYSTEM_PROMPT,
         messages: [{ role: "user", content: requestRouterPrompt(message), timestamp: 0 }],
       }, { timeoutMs, signal, maxTokens: 120 });
       if (answer.stopReason === "error" || answer.stopReason === "aborted") return { kind: "unclear", outcome: "invalid" };
