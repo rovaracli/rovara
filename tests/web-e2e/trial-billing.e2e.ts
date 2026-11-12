@@ -66,7 +66,7 @@ for (const width of [1280, 390] as const) {
  });
 }
 
-for (const look of [{ name: "look-off", store: {} }, { name: "look-v2", store: { "rovara.look": "v2" } }] as const) {
+for (const look of [{ name: "look-v2", store: {} }] as const) {
  test(`trial ended, an owner (${look.name} at 390): three choices with buttons`, async ({ page, context, request, baseURL }) => {
   await enter(page, context, request, baseURL, 390, { ...look.store, "rovara.billing": "v2" }, { trial: fx.ended(true), billing: fx.billing({ phase: "ended" }) });await page.goto("/app/admin");
   await expect(bannerOf(page)).toContainText("Your trial allowance is used up");await expect(bannerOf(page).getByRole("link", { name: "Choose what happens next" })).toBeVisible();
@@ -107,7 +107,7 @@ test("trial ended, a member (390, dark): the same facts, no buttons, Ask an admi
  await evidenceShot(page, { path: `${shots}/ended-member-v2-dark-390.png`, fullPage: true });await checkA11y(page, { theme: "dark" });await checkA11y(page, { theme: "light" });
 });
 
-for (const look of [{ name: "look-off", store: {} }, { name: "look-v2", store: { "rovara.look": "v2" } }] as const) {
+for (const look of [{ name: "look-v2", store: {} }] as const) {
  for (const width of [360, 390, 1280] as const) {
   const phone = width < 768;
   test(`Billing page, ${look.name} at ${String(width)}: plan, masked card, limit, invoices; ${phone ? "one column, 44px targets, " : ""}no sideways scroll, axe clean, visible focus`, async ({ page, context, request, baseURL }) => {

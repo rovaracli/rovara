@@ -8,7 +8,7 @@ test.beforeEach(async ({ context, request, baseURL }) => {
  await context.addCookies([{ name: "__Host-agentx_review_session", value: FIXTURE_SESSION, url: baseURL!, secure: true, httpOnly: true, sameSite: "Strict" }]);
 });
 test("reviews and applies an exact task stop through real cookie and transactional routes", async ({ page, request }, testInfo) => {
- await page.goto("/app/admin/money/budgets");await expect(page.getByRole("table", { name: "Monthly base budgets" })).toBeVisible();
+ await page.goto("/app/admin/money/budgets");await expect(page.getByRole("heading", { name: "Spending", level: 1 })).toBeVisible();
  await activate(page.getByRole("button", { name: "Load company task stop" }));await expect(page.getByLabel("Task stop amount (USD)")).toHaveValue("2");
  await page.getByLabel("Task stop amount (USD)").fill("1.234567");await activate(page.getByRole("button", { name: "Review task stop change" }));
  await expect(page.getByText("New task stop: $1.234567.", { exact: true })).toBeVisible();

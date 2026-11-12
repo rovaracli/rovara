@@ -20,7 +20,7 @@ function DestinationLink({ destination, current, onNavigate }: { destination: De
 }
 /** The new navigation's sidebar (also the phone's Menu): the destinations once, the person's projects as plain links (no agents under them), shared work, and the older tools that have no destination yet. */
 export function SidebarV2({ nav, onNavigate }: { nav: ReadAppNav; onNavigate?: () => void }) {
- const projectsHeading = useId(), sharedHeading = useId(), host = useAppHost(), current = currentDestination(useLocation().pathname), insights = useInsightsNavVisible(nav.me.developerId);
+ const projectsHeading = useId(), sharedHeading = useId(), host = useAppHost(), current = currentDestination(useLocation().pathname), insights = useInsightsNavVisible(nav.me.developerId, nav.insights);
  const shown = nav.projects.slice(0, SIDEBAR_PROJECT_LIMIT), hidden = nav.projects.length - shown.length;
  return <nav aria-label="Workspace" className="rv-sidebar-nav rv-sidebar-nav-v2"><div className="rv-sidebar-primary">{destinationsFor(nav, { insights }).map(destination => <DestinationLink key={destination.id} destination={destination} current={current === destination.id} onNavigate={onNavigate} />)}</div>
  <section aria-labelledby={projectsHeading}><h2 id={projectsHeading}>My projects</h2>{shown.map(project => <NavLink key={project.name} to={paths.project(project.name)} onClick={onNavigate}><VisibleText text={project.name} /></NavLink>)}{hidden > 0 && <Link to={paths.projects} onClick={onNavigate}>{`See all ${String(nav.projects.length)} projects`}</Link>}{nav.projects.length === 0 && <p className="rv-nav-hint">Your projects appear here.</p>}</section>

@@ -1,12 +1,11 @@
 // @vitest-environment jsdom
-// The Home agents row with both switches (exp/agent-publish on top of exp/home): favourites then suggested agents with their reasons, only where `rovara.home` AND `rovara.publish` are both "v2".
-// Either switch off keeps what it was: today's Home, or the new Home's recently-used-then-directory row.
+// The Home agents row (exp/agent-publish on Home, the only Home since decision 125): favourites then suggested agents with their reasons, only where `rovara.publish` is "v2".
+// With the publishing switch off, Home's recently-used-then-directory row is unchanged.
 import { expect, it } from "vitest";
 import { screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { HomeScreen } from "../../packages/ui/src/screens/home/HomeScreen.js";
-import { HOME_STORAGE_KEY } from "../../packages/ui/src/screens/home/home-flags.js";
 import { AGENT_PUBLISH_STORAGE_KEY } from "../../packages/ui/src/screens/agents/publish-flags.js";
 import { AppHostProvider } from "../../packages/ui/src/host.js";
 import { Announcer } from "../../packages/ui/src/design/Announcer.js";
@@ -18,7 +17,7 @@ import { navFixture } from "./support/fixtures.js";
 import { directoryOf, agentId } from "./support/home-fixture.js";
 import { agentCard, errorBody, myAgents, ok } from "./support/publish-fixture.js";
 
-interface Setup { home?: boolean; publish?: boolean; mine?: unknown }
+interface Setup { publish?: boolean; mine?: unknown }
 function render(options: Setup) {
  const f = fakeHost(async request => {
   if (request.path === "/v1/app/home") return ok({ cards: [], total: 0, needsYou: 0 });
@@ -30,7 +29,6 @@ function render(options: Setup) {
   if (/^\/v1\/app\/projects\/[^/]+\/overview$/u.test(request.path)) return ok(errorBody("NOT_FOUND", "Not found."), 404);
   return ok({ notices: [], next: "settled" });
  });
- if (options.home !== false) f.storage.set(HOME_STORAGE_KEY, "v2");
  if (options.publish === true) f.storage.set(AGENT_PUBLISH_STORAGE_KEY, "v2");
  const query = createQueryClient();query.setQueryData(["nav"], navFixture());
  const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { children: h(Announcer, { children: h(HomeScreen, {}) }) }) }) }));
@@ -39,7 +37,7 @@ function render(options: Setup) {
 const A = (n: number) => agentId(n);
 const mine = myAgents([agentCard(A(11), "Favourite one", "favourite"), agentCard(A(12), "Favourite two", "favourite")], [agentCard(A(11), "Favourite one", "used_by_you"), agentCard(A(13), "Used agent", "used_by_you"), agentCard(A(14), "Roster agent", "project_roster"), agentCard("ticket-triage", "Ticket triage", "starter"), agentCard(A(15), "Fifth suggestion", "starter"), agentCard(A(16), "Sixth", "starter")]);
 
-it("with both switches on, the row is favourites then suggested agents with their reasons, not the directory", async () => {
+it("with the publishing switch on, the row is favourites then suggested agents with their reasons, not the directory", async () => {
  const f = render({ publish: true, mine });
  const favourites = await screen.findByRole("list", { name: "Favourite agents" }), suggested = await screen.findByRole("list", { name: "Suggested agents" });
  expect(within(favourites).getAllByRole("link").map(link => link.textContent)).toEqual(["Favourite oneYour favourite".replace("Your favourite", "Favourite one does its work."), "Favourite twoFavourite two does its work."].map(text => text));
@@ -65,13 +63,6 @@ it("with the publishing switch off, the new Home's row is unchanged and nothing 
  const f = render({ mine });
  expect(await screen.findByText("Directory agent one")).toBeTruthy();expect(screen.getByRole("list", { name: "Agents" })).toBeTruthy();expect(screen.queryByRole("list", { name: "Favourite agents" })).toBeNull();
  await waitFor(() => expect(f.request).toHaveBeenCalled());
- expect(f.request.mock.calls.filter(([request]) => request.path.startsWith("/v1/app/me/agents"))).toEqual([]);
- f.close();
-});
-it("with the new Home off, the publishing switch changes nothing: today's Home, no row, no favourites read", async () => {
- const f = render({ home: false, publish: true, mine });
- expect(await screen.findByText("Nothing needs you right now")).toBeTruthy();
- expect(screen.queryByRole("list", { name: "Favourite agents" })).toBeNull();expect(f.container.querySelector(".rv-home-v2")).toBeNull();
  expect(f.request.mock.calls.filter(([request]) => request.path.startsWith("/v1/app/me/agents"))).toEqual([]);
  f.close();
 });

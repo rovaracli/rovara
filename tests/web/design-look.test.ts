@@ -14,7 +14,7 @@ import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { AccountMenu } from "../../packages/ui/src/shell/AccountMenu.js";
 import { fakeHost } from "./support/fake-host.js";
 import { Chip } from "../../packages/ui/src/design/Chip.js";
-import { DENSITY_STORAGE_KEY, LOOK_STORAGE_KEY, isNewLookOn, readDensity } from "../../packages/ui/src/look.js";
+import { DENSITY_STORAGE_KEY, readDensity } from "../../packages/ui/src/look.js";
 import { h } from "./support/h.js";
 function host(initial: Record<string, string> = {}) { const values = new Map(Object.entries(initial));return { storage: { get: (key: string) => values.get(key), set: (key: string, value: string) => { values.set(key, value); } }, values }; }
 afterEach(() => { cleanup(); for (const attribute of ["data-look", "data-density", "data-theme"]) document.documentElement.removeAttribute(attribute); });
@@ -69,23 +69,16 @@ describe("v2 focus halo and component shadows", () => {
   }
  });
 });
-describe("v2 look switch", () => {
- it("is off unless the stored value is exactly v2, and density defaults to comfortable", () => {
-  expect(isNewLookOn(host())).toBe(false);
-  expect(isNewLookOn(host({ [LOOK_STORAGE_KEY]: "V2" }))).toBe(false);
-  expect(isNewLookOn(host({ [LOOK_STORAGE_KEY]: "v2" }))).toBe(true);
-  expect(isNewLookOn({ storage: { get() { throw new Error("blocked"); }, set() { /* none */ } } })).toBe(false);
+describe("the v2 look, the only look (decision 125)", () => {
+ it("reads density, Comfortable by default", () => {
   expect(readDensity(host())).toBe("comfortable");
   expect(readDensity(host({ [DENSITY_STORAGE_KEY]: "toString" }))).toBe("comfortable");
   expect(readDensity(host({ [DENSITY_STORAGE_KEY]: "compact" }))).toBe("compact");
+  expect(readDensity({ storage: { get() { throw new Error("blocked"); }, set() { /* none */ } } })).toBe("comfortable");
  });
- it("puts no look or density attribute on the page while off", () => {
-  render(h(ThemeProvider, { host: host({ [DENSITY_STORAGE_KEY]: "compact" }), children: h("p", null, "x") }));
-  expect(document.documentElement.hasAttribute("data-look")).toBe(false);
-  expect(document.documentElement.hasAttribute("data-density")).toBe(false);
- });
- it("turns the attributes on, and stores density separately from the theme, when switched on", async () => {
-  const f = host({ [LOOK_STORAGE_KEY]: "v2", "rovara.theme": "dark" });
+ it("puts the look and density attributes on the page with no device key, and stores density separately from the theme", async () => {
+  document.documentElement.removeAttribute("data-look");document.documentElement.removeAttribute("data-density");
+  const f = host({ "rovara.theme": "dark" });
   function Probe() { const theme = useTheme();return h("button", { type: "button", onClick: () => theme.setDensity("compact") }, `${theme.preference}/${theme.density}`); }
   render(h(ThemeProvider, { host: f, children: h(Probe) }));
   expect(document.documentElement.getAttribute("data-look")).toBe("v2");
@@ -96,6 +89,14 @@ describe("v2 look switch", () => {
   expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
   expect(f.values.get(DENSITY_STORAGE_KEY)).toBe("compact");
   expect(f.values.get("rovara.theme")).toBe("dark");
+ });
+ it("ignores a leftover device key from before (rovara.look), whatever its value", () => {
+  for (const value of ["v2", "off", ""]) {
+   document.documentElement.removeAttribute("data-look");
+   const ui = render(h(ThemeProvider, { host: host({ "rovara.look": value }), children: h("p", null, "x") }));
+   expect(document.documentElement.getAttribute("data-look"), value).toBe("v2");
+   ui.unmount();
+  }
  });
 });
 describe("Chip", () => {
@@ -116,17 +117,10 @@ describe("Density choice in the account dialog", () => {
   const ui = render(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(ThemeProvider, { host: f.host, children: h(MemoryRouter, null, h(AccountMenu, { nav })) }) }) }));
   return { ...f, close() { ui.unmount();query.clear(); } };
  }
- it("is not shown while the new look is off (the Appearance choice still is)", async () => {
+ it("is always shown beside Appearance (decision 125), and choosing Compact stores it and sets the page attribute", async () => {
   const f = openAccount({});
   await userEvent.click(screen.getByRole("button", { name: "Open account menu" }));
   expect(await screen.findByRole("group", { name: "Appearance" })).toBeTruthy();
-  expect(screen.queryByRole("group", { name: "Density" })).toBeNull();
-  expect(screen.queryByRole("radio", { name: "Compact" })).toBeNull();
-  f.close();
- });
- it("is shown while the new look is on, and choosing Compact stores it and sets the page attribute", async () => {
-  const f = openAccount({ [LOOK_STORAGE_KEY]: "v2" });
-  await userEvent.click(screen.getByRole("button", { name: "Open account menu" }));
   const group = await screen.findByRole("group", { name: "Density" });
   expect(group.querySelectorAll("input[type=radio]").length).toBe(2);
   expect(screen.getByRole<HTMLInputElement>("radio", { name: "Comfortable" }).checked).toBe(true);

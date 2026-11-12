@@ -6,15 +6,13 @@ import { evidenceShot } from "./support/screenshot.js";
 import { FIXTURE_SESSION } from "../web/support/fixtures.js";
 // Same checks, a longer wait: under parallel or long runs a first paint or a menu open can take more than the default 5 s. No assertion changed.
 const expect = baseExpect.configure({ timeout: 15_000 });
-// The new navigation (switch: localStorage `rovara.nav` = "v2"). Off, the shell is exactly as it was: the "off" journeys take the base pictures
-// (set ROVARA_NAV_SHOTS to a folder to compare a run on this branch with a run on the base commit, byte for byte).
-// On: the sidebar on a desktop, the bottom tab bar on a phone, no sideways scroll at 360 and 390, 44px targets, visible focus, no accessibility violations, with the v1 look and the v2 look.
+// The navigation (the only one since decision 125, no device key): the sidebar on a desktop, the bottom tab bar on a phone, no sideways scroll at 360 and 390, 44px targets, visible focus, no accessibility violations, in the one look.
 const shots = process.env.ROVARA_NAV_SHOTS ?? ".test-build/web-e2e/nav";
 const PAGES = [
  { name: "home", scenario: "home", path: "/app", ready: (page: Page) => page.getByText("2 things need you") },
  { name: "agents", scenario: "agents", path: "/app/agents", ready: (page: Page) => page.getByRole("heading", { name: "Agent directory", exact: true }) },
 ] as const;
-const LOOKS = [{ name: "look-off", store: {} as Record<string, string> }, { name: "look-v2", store: { "rovara.look": "v2" } as Record<string, string> }] as const;
+const LOOKS = [{ name: "look-v2", store: {} as Record<string, string> }] as const;
 async function enter(page: Page, context: Parameters<Parameters<typeof test>[2]>[0]["context"], request: Parameters<Parameters<typeof test>[2]>[0]["request"], baseURL: string | undefined, scenario: string, store: Record<string, string>, width: number) {
  await request.post("/__mock/scenario", { data: { name: scenario } });
  await context.addCookies([{ name: "__Host-agentx_review_session", value: FIXTURE_SESSION, url: baseURL!, secure: true, httpOnly: true, sameSite: "Strict" }]);
@@ -25,31 +23,10 @@ async function enter(page: Page, context: Parameters<Parameters<typeof test>[2]>
 const noSidewaysScroll = (page: Page) => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth && document.body.scrollWidth <= innerWidth);
 for (const screen of PAGES) {
  for (const look of LOOKS) {
-  for (const width of [1280, 390] as const) {
-   test(`switch off, ${screen.name} ${look.name} at ${String(width)}: today's shell, picture`, async ({ page, context, request, baseURL }) => {
-    await enter(page, context, request, baseURL, screen.scenario, look.store, width);await page.goto(screen.path);await expect(screen.ready(page)).toBeVisible();
-    await expect(page.locator(".rv-tabbar")).toHaveCount(0);await expect(page.locator(".rv-nav-v2")).toHaveCount(0);
-    const links = await page.locator("aside .rv-sidebar-nav").evaluate(node => [...node.querySelectorAll("a")].map(link => link.textContent));
-    expect(links).toContain("Live");expect(links).toContain("Agent directory");
-    expect(await noSidewaysScroll(page)).toBe(true);
-    // The Home start box loads after the first paint; wait for it so two runs take the same picture.
-    await page.waitForLoadState("networkidle");
-    await evidenceShot(page, { path: `${shots}/off-${screen.name}-${look.name}-${String(width)}.png`, fullPage: false });
-   });
-  }
- }
-}
-test("switch off: /app/live stays Live and /app/work is not a page", async ({ page, context, request, baseURL }) => {
- await enter(page, context, request, baseURL, "live", {}, 1280);
- await page.goto("/app/live");await expect(page.getByRole("heading", { name: "Live", exact: true, level: 1 })).toBeVisible();expect(new URL(page.url()).pathname).toBe("/app/live");
- await page.goto("/app/work");await expect(page.getByText("We couldn't find that.")).toBeVisible();
-});
-for (const screen of PAGES) {
- for (const look of LOOKS) {
   for (const width of [1280, 390, 360] as const) {
    const phone = width < 768;
-   test(`switch on, ${screen.name} ${look.name} at ${String(width)}: ${phone ? "bottom tab bar, 44px targets" : "sidebar"}, no sideways scroll, visible focus, axe clean`, async ({ page, context, request, baseURL }) => {
-    await enter(page, context, request, baseURL, screen.scenario, { ...look.store, "rovara.nav": "v2" }, width);await page.goto(screen.path);await expect(screen.ready(page)).toBeVisible();
+   test(`${screen.name} ${look.name} at ${String(width)}: ${phone ? "bottom tab bar, 44px targets" : "sidebar"}, no sideways scroll, visible focus, axe clean`, async ({ page, context, request, baseURL }) => {
+    await enter(page, context, request, baseURL, screen.scenario, { ...look.store }, width);await page.goto(screen.path);await expect(screen.ready(page)).toBeVisible();
     await expect(page.locator(".rv-nav-v2")).toHaveCount(1);
     expect(await noSidewaysScroll(page)).toBe(true);
     const sidebar = page.locator("aside").getByRole("navigation", { name: "Workspace" }), tabs = page.getByRole("navigation", { name: "Main destinations" });
@@ -97,8 +74,8 @@ for (const screen of PAGES) {
  }
 }
 for (const width of [1280, 390] as const) {
- test(`switch on at ${String(width)}: /app/live goes to Work, old links keep working, Projects lists projects once`, async ({ page, context, request, baseURL }) => {
-  await enter(page, context, request, baseURL, "live", { "rovara.nav": "v2" }, width);
+ test(`at ${String(width)}: /app/live goes to Work, old links keep working, Projects lists projects once`, async ({ page, context, request, baseURL }) => {
+  await enter(page, context, request, baseURL, "live", {}, width);
   // The navigation answer's own per-project `needsYou` (the Projects page uses it, not the sum of the agents' counts): the mock answer is given one for every project.
   await page.route("**/v1/web/nav", async route => { const answer = await route.fetch(), body = await answer.json() as { projects: Array<Record<string, unknown>> };await route.fulfill({ response: answer, json: { ...body, projects: body.projects.map(project => ({ ...project, needsYou: 2 })) } }); });
   await page.goto("/app/live?filter=needs_me");await expect(page).toHaveURL(/\/app\/work\?filter=needs_me$/u);await expect(page.getByRole("heading", { name: "Work", exact: true, level: 1 })).toBeVisible();await expect(page.getByRole("heading", { name: "Live", exact: true, level: 1 })).toHaveCount(0);

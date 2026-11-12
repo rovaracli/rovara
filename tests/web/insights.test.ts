@@ -9,7 +9,6 @@ import { AppHostProvider, type ApiRequest, type ApiResponse } from "../../packag
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { ThemeProvider } from "../../packages/ui/src/theme.js";
 import { applyNavUiFlags } from "../../packages/ui/src/ui-flags.js";
-import { isInsightsOn, INSIGHTS_STORAGE_KEY } from "../../packages/ui/src/screens/insights/insights-flags.js";
 import { ageWords, barPercent, durationWords, nextActorWords, notCoveredWords, notReadyWords, rateWords, recentMonths } from "../../packages/ui/src/screens/insights/insights-format.js";
 import { InsightsOverviewReaderSchema, InsightsSpendReaderSchema, InsightsStuckReaderSchema } from "@agentx/cloud-contracts/web";
 import { currentDestination, destinationsFor } from "../../packages/ui/src/shell/destinations.js";
@@ -53,8 +52,8 @@ function defaults(role: string, o: Parameters<typeof overview>[0]): Answers {
  return { "/v1/app/insights": { status: 200, body: overview({ role, ...o }) }, "/v1/app/insights/stuck": { status: 200, body: stuck() }, "/v1/app/insights/shipped": { status: 200, body: shippedAnswer }, "/v1/app/insights/spend": { status: 200, body: spendAnswer() }, "/v1/app/insights/flow": { status: 200, body: flowAnswer },
   "/v1/app/org/insights-access": { status: 200, body: accessList([{ id: MAYA, name: "Maya Chen" }]) }, "/v1/app/org/members": { status: 200, body: members } };
 }
-function mount(options: { server?: "on" | "preview" | "off"; on?: boolean; role?: string; path?: string; newNav?: boolean; answers?: Answers; overview?: Parameters<typeof overview>[0]; theme?: "light" | "dark" } = {}) {
- const role = options.role ?? "owner", value = nav(role), answers = { ...defaults(role, options.overview ?? {}), ...options.answers };
+function mount(options: { install?: boolean; role?: string; path?: string; answers?: Answers; overview?: Parameters<typeof overview>[0]; theme?: "light" | "dark" } = {}) {
+  const role = options.role ?? "owner", value: AppNav = { ...nav(role), ...(options.install === undefined ? {} : { insights: options.install }) }, answers = { ...defaults(role, options.overview ?? {}), ...options.answers };
  const f = fakeHost(async (r: ApiRequest) => {
   const path = r.path.split("?")[0]!;
   if (path === "/v1/app/nav") return { status: 200, body: value };
@@ -62,9 +61,9 @@ function mount(options: { server?: "on" | "preview" | "off"; on?: boolean; role?
   if (answer === undefined) return { status: 404, body: { error: { code: "NOT_FOUND", message: "Not found." } } };
   return typeof answer === "function" ? answer(r) : answer;
  });
- f.storage.set("rovara.theme", options.theme ?? "light");if (options.on !== false) f.storage.set(INSIGHTS_STORAGE_KEY, "v2");if (options.server !== undefined) applyNavUiFlags(f.host, { uiFlags: { nav: options.newNav === true ? "on" : "off", insights: options.server } });if (options.newNav === true) f.storage.set("rovara.nav", "v2");
+ f.storage.set("rovara.theme", options.theme ?? "light");
  const query = createQueryClient();query.setQueryData(["nav"], value);
- const router = createMemoryRouter(appRoutes(value.features, { newNav: options.newNav === true, insights: isInsightsOn(f.host) }), { initialEntries: [options.path ?? "/app/insights"] });
+ const router = createMemoryRouter(appRoutes(value.features), { initialEntries: [options.path ?? "/app/insights"] });
  const view = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(ThemeProvider, { host: f.host, children: h(RouterProvider, { router }) }) }) }));
  return { ...f, ...view, query, router, close() { view.unmount();router.dispose();query.clear(); } };
 }
@@ -76,68 +75,52 @@ const settle = (query: { isFetching(): number }) => act(async () => { for (let r
 const sidebarLink = () => within(screen.getByRole("navigation", { name: "Workspace" })).queryByRole("link", { name: "Insights" });
 const panel = async (name: string) => within(await screen.findByRole("region", { name }));
 
-describe("the switch", () => {
- it("is off unless the device key is exactly v2, and never throws", () => {
-  expect(INSIGHTS_STORAGE_KEY).toBe("rovara.insights");
-  expect(isInsightsOn({ storage: { get: () => undefined } })).toBe(false);
-  for (const value of ["", "v1", "V2", "true", "1", "v2 "]) expect(isInsightsOn({ storage: { get: () => value } })).toBe(false);
-  expect(isInsightsOn({ storage: { get: () => "v2" } })).toBe(true);
-  expect(isInsightsOn({ storage: { get: () => { throw new Error("blocked"); } } })).toBe(false);
- });
- it("off: no route (a direct address is 'not found'), no Insights request at all", async () => {
-  const children = (opts: { insights?: boolean }) => appRoutes(features, opts).flatMap(route => route.children ?? []);
-  expect(children({}).some(route => route.path === "insights")).toBe(false);
-  expect(children({ insights: true }).some(route => route.path === "insights")).toBe(true);
-  const f = mount({ on: false });
+describe("the screen is always there (decision 125); its data has the install's switch (`in`)", () => {
+ it("is a route with no device key, and a leftover key or an older broker's `insights: off` changes nothing", async () => {
+  expect(appRoutes(features).flatMap(route => route.children ?? []).some(route => route.path === "insights")).toBe(true);
+  const f = mount({});
   try {
-   await screen.findByText(/We couldn't find that\./);
-   expect(screen.queryByRole("heading", { name: "Insights" })).toBeNull();
-   expect(insightsCalls(f)).toEqual([]);
+   f.storage.set("rovara.insights", "off");
+   applyNavUiFlags(f.host, { uiFlags: { insights: "off", nav: "off" } });
+   await screen.findByRole("heading", { name: "Stuck work" });
+   await waitFor(() => { expect(sidebarLink()).toBeTruthy(); });
   } finally { f.close(); }
  });
-});
-
-describe("the company's insights flag (server on / preview / off, with and without the device key)", () => {
- for (const [server, device, shown] of [["on", true, true], ["on", false, true], ["preview", true, true], ["preview", false, false], ["off", true, false], ["off", false, false]] as const) {
-  it(`server ${server}, device key ${device ? "v2" : "unset"}: ${shown ? "the screen opens and the entry shows" : "no route, no entry, no Insights request"}`, async () => {
-   const f = mount({ server, on: device, newNav: true, path: "/app/insights" });
-   try {
-    if (shown) {
-     await screen.findByRole("heading", { name: "Stuck work" });
-     await waitFor(() => { expect(sidebarLink()).toBeTruthy(); });
-    } else {
-     await screen.findByText(/We couldn't find that\./);
-     await settle(f.query);
-     expect(screen.queryByRole("heading", { name: "Insights" })).toBeNull();
-     expect(sidebarLink()).toBeNull();
-     expect(insightsCalls(f)).toEqual([]);
-    }
-   } finally { f.close(); }
-  });
- }
- it("server on: the switch function says yes whatever the device key holds, and server off says no even with the key", () => {
-  const host = (value: string | undefined) => ({ storage: { get: () => value } });
-  const on = host(undefined), off = host("v2");
-  applyNavUiFlags(on, { uiFlags: { insights: "on" } });applyNavUiFlags(off, { uiFlags: { insights: "off" } });
-  expect(isInsightsOn(on)).toBe(true);expect(isInsightsOn(off)).toBe(false);
- });
- it("server on but the broker's own Insights switch off (404): a calm notice, no nav entry, no error and no panel read", async () => {
+ it("the broker's own Insights switch off (404): a calm notice, no nav entry, no error and no panel read", async () => {
   const gone: ApiResponse = { status: 404, body: { error: { code: "NOT_FOUND", message: "Not found." } } };
-  const f = mount({ server: "on", on: false, answers: { "/v1/app/insights": gone } });
+  const f = mount({ answers: { "/v1/app/insights": gone } });
   try {
    const notice = await screen.findByText(/Insights isn't turned on for your company yet/);
    expect(notice.getAttribute("role")).toBe("status");
    expect(screen.queryByRole("alert")).toBeNull();
    await settle(f.query);
-   expect(insightsCalls(f)).toEqual(["/v1/app/insights"]);
-  } finally { f.close(); }
-  const g = mount({ server: "on", on: false, newNav: true, path: "/app/work", answers: { "/v1/app/insights": gone } });
-  try {
-   await waitFor(() => { expect(calls(g, "/v1/app/insights").length).toBe(1); });
-   await settle(g.query);
    expect(sidebarLink()).toBeNull();
-   expect(insightsCalls(g)).toEqual(["/v1/app/insights"]);
+   expect(insightsCalls(f).every(path => path === "/v1/app/insights")).toBe(true);
+  } finally { f.close(); }
+ });
+ it("F6: the navigation answer says the install's switch is off (insights: false): the shell makes no Insights request at all and shows no entry; the page itself still says so calmly", async () => {
+  const gone: ApiResponse = { status: 404, body: { error: { code: "NOT_FOUND", message: "Not found." } } };
+  const f = mount({ install: false, path: "/app/work", answers: { "/v1/app/insights": gone } });
+  try {
+   await waitFor(() => { expect(screen.getByRole("navigation", { name: "Workspace" })).toBeTruthy(); });
+   await settle(f.query);
+   expect(sidebarLink()).toBeNull();
+   expect(insightsCalls(f)).toEqual([]);
+  } finally { f.close(); }
+  const g = mount({ install: false, answers: { "/v1/app/insights": gone } });
+  try {
+   expect(await screen.findByText(/Insights isn't turned on for your company yet/)).toBeTruthy();
+   expect(screen.queryByRole("alert")).toBeNull();
   } finally { g.close(); }
+ });
+ it("F6: the switch on (insights: true) or not said (an older broker): the shell asks who may see Insights, once", async () => {
+  for (const install of [true, undefined]) {
+   const f = mount({ ...(install === undefined ? {} : { install }), path: "/app/work" });
+   try {
+    await waitFor(() => { expect(sidebarLink(), String(install)).toBeTruthy(); });
+    expect(calls(f, "/v1/app/insights")).toHaveLength(1);
+   } finally { f.close(); }
+  }
  });
 });
 
@@ -147,34 +130,26 @@ describe("the navigation entry", () => {
   expect(destinationsFor(nav(), { insights: true }).map(d => d.id)).toEqual(["home", "work", "projects", "agents", "insights", "settings"]);
   expect(currentDestination("/app/insights")).toBe("insights");
  });
- it("switch on and the server says yes: the link is in the new navigation's sidebar, not in the phone tab bar", async () => {
-  const f = mount({ on: true, newNav: true, path: "/app/work" });
+ it("the server says yes: the link is in the sidebar, not in the phone tab bar", async () => {
+  const f = mount({ path: "/app/work" });
   try {
    await waitFor(() => { expect(within(screen.getByRole("navigation", { name: "Workspace" })).getByRole("link", { name: "Insights" })).toBeTruthy(); });
    expect(within(screen.getByRole("navigation", { name: "Main destinations" })).queryByRole("link", { name: "Insights" })).toBeNull();
   } finally { f.close(); }
  });
- it("switch on but the server refuses (403): no entry", async () => {
-  const f = mount({ on: true, newNav: true, path: "/app/work", answers: { "/v1/app/insights": forbidden } });
+ it("the server refuses (403): no entry", async () => {
+  const f = mount({ path: "/app/work", answers: { "/v1/app/insights": forbidden } });
   try {
    await waitFor(() => { expect(calls(f, "/v1/app/insights").length).toBe(1); });
    await waitFor(() => { expect(f.request.mock.calls.length).toBeGreaterThan(0); });
    expect(within(screen.getByRole("navigation", { name: "Workspace" })).queryByRole("link", { name: "Insights" })).toBeNull();
   } finally { f.close(); }
  });
- it("switch on but the server says it is not enabled: no entry", async () => {
-  const f = mount({ on: true, newNav: true, path: "/app/work", overview: { enabled: false } });
+ it("the server says it is not enabled: no entry", async () => {
+  const f = mount({ path: "/app/work", overview: { enabled: false } });
   try {
    await waitFor(() => { expect(calls(f, "/v1/app/insights").length).toBe(1); });
    expect(within(screen.getByRole("navigation", { name: "Workspace" })).queryByRole("link", { name: "Insights" })).toBeNull();
-  } finally { f.close(); }
- });
- it("switch off: no entry and no request, in the new navigation", async () => {
-  const f = mount({ on: false, newNav: true, path: "/app/work" });
-  try {
-   await waitFor(() => { expect(screen.getByRole("navigation", { name: "Workspace" })).toBeTruthy(); });
-   expect(within(screen.getByRole("navigation", { name: "Workspace" })).queryByRole("link", { name: "Insights" })).toBeNull();
-   expect(insightsCalls(f)).toEqual([]);
   } finally { f.close(); }
  });
 });
@@ -219,14 +194,14 @@ describe("who sees what (role scopes)", () => {
  });
  it("a maintainer of no project sees a plain sentence and no panels", async () => {
   const f = mount({ role: "member", overview: { role: "member", via: ["maintainer"], projects: [], perPerson: false } });
-  try { await screen.findByText(/You don't maintain any projects yet/); expect(screen.queryByRole("region", { name: "Stuck work" })).toBeNull(); expect(insightsCalls(f)).toEqual(["/v1/app/insights"]); } finally { f.close(); }
+  try { await screen.findByText(/You don't maintain any projects yet/); expect(screen.queryByRole("region", { name: "Stuck work" })).toBeNull(); expect(new Set(insightsCalls(f)), "only the overview (the page and the navigation entry both ask it)").toEqual(new Set(["/v1/app/insights"])); } finally { f.close(); }
  });
  it("a member with no access (403): a plain refusal, no panels, no other read", async () => {
   const f = mount({ role: "member", answers: { "/v1/app/insights": forbidden } });
   try {
    await screen.findByText(/Insights isn't open to you/);
    expect(screen.queryByRole("region", { name: "Stuck work" })).toBeNull();
-   expect(insightsCalls(f)).toEqual(["/v1/app/insights"]);
+   expect(new Set(insightsCalls(f)), "only the overview (the page and the navigation entry both ask it)").toEqual(new Set(["/v1/app/insights"]));
   } finally { f.close(); }
  });
  it("the server's own switch off (404) says it isn't turned on", async () => {
@@ -639,7 +614,7 @@ describe("words and numbers", () => {
  });
  it("an unknown scope shows nothing", async () => {
   const f = mount({ answers: { "/v1/app/insights": { status: 200, body: { ...overview(), viewer: { ...overview().viewer, scope: { kind: "galaxy" } } } } } });
-  try { await screen.findByText(/couldn't tell which work you can see/); expect(insightsCalls(f)).toEqual(["/v1/app/insights"]); } finally { f.close(); }
+  try { await screen.findByText(/couldn't tell which work you can see/); expect(new Set(insightsCalls(f)), "only the overview (the page and the navigation entry both ask it)").toEqual(new Set(["/v1/app/insights"])); } finally { f.close(); }
  });
 });
 

@@ -48,7 +48,7 @@ async function settled(page: Page, heading: string) {
  await expect(page.getByRole("heading", { name: heading, level: 1 }).first()).toBeVisible();
  await expect(page.getByRole("progressbar")).toHaveCount(0);await page.waitForLoadState("networkidle");
 }
-for (const look of [{ name: "look-off", store: {} }, { name: "look-v2", store: { "rovara.look": "v2" } }] as const) for (const [id, path, heading] of PAGES) {
+for (const look of [{ name: "look-v2", store: {} }] as const) for (const [id, path, heading] of PAGES) {
  test(`${id} fits a phone in ${look.name}`, async ({ page, context, request, baseURL }) => {
   const issues: string[] = [];
   for (const width of [360, 390]) {
@@ -57,7 +57,7 @@ for (const look of [{ name: "look-off", store: {} }, { name: "look-v2", store: {
    for (const item of await wide(page)) issues.push(`${String(width)}: wider than the screen ${item}`);
    for (const item of await smallTargets(page)) issues.push(`${String(width)}: small target ${item}`);
    if (width === 390) await evidenceShot(page, { path: `${shots}/${id}-${look.name}-390.png`, fullPage: true });
-   if (width === 360 && look.name === "look-off") await evidenceShot(page, { path: `${shots}/${id}-${look.name}-360.png`, fullPage: true });
+   if (width === 360) await evidenceShot(page, { path: `${shots}/${id}-${look.name}-360.png`, fullPage: true });
   }
   expect(issues).toEqual([]);
   await checkA11y(page, { theme: "light" });await checkA11y(page, { theme: "dark" });

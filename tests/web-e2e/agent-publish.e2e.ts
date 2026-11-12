@@ -77,7 +77,7 @@ for (const width of [1280, 390] as const) {
   expect(world.seen, "no new route is asked while the switch is off").toEqual([]);
  });
 }
-for (const look of [{ name: "look-off", store: {} }, { name: "look-v2", store: { "rovara.look": "v2" } }] as const) {
+for (const look of [{ name: "look-v2", store: {} }] as const) {
  for (const width of [360, 390, 1280] as const) {
   const phone = width < 768;
   test(`switch on, ${look.name} at ${String(width)}: favourites and suggestions with reasons, a star that toggles, ${phone ? "44px targets, " : ""}no sideways scroll, axe, focus`, async ({ page, context, request, baseURL }) => {

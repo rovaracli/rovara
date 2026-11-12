@@ -2,7 +2,7 @@ import type { ReadAppNav } from "@agentx/cloud-contracts/web";
 import { paths } from "../paths.js";
 /**
  * The new navigation's destinations, in order: Home, Work, Projects, Agents, Settings. One pure function so the sidebar, the phone tab bar and the tests agree.
- * Insights (managers, maintainers, admins) is added only when the caller passes `insights: true` (the device switch is on AND the server says this person may see it: `useInsightsNavVisible`). The phone tab bar keeps its five tabs; Insights is in the Menu.
+ * Insights (managers, maintainers, admins) is added only when the caller passes `insights: true` (the install's Insights switch is on AND the server says this person may see it: `useInsightsNavVisible`). The phone tab bar keeps its five tabs; Insights is in the Menu.
  */
 export type DestinationId = "home" | "work" | "projects" | "agents" | "insights" | "settings";
 export interface Destination { id: DestinationId; label: string; to: string; /** True when only the exact path counts as current (Home). */ end: boolean; /** What needs this person, shown beside Home. */ count?: number }

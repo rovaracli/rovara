@@ -3,7 +3,7 @@ import type { QueryCache } from "@tanstack/react-query";
 import { UI_FLAG_NAMES, type UiFlagName, type UiFlagState } from "./api/ui-flags.js";
 import { useOptionalAppHost } from "./host.js";
 /**
- * Runtime per-company UI flags (lane U5): the ONE place that decides whether a new screen is on. Every `isXOn(host)` (look.ts, nav-flags.ts, home-flags.ts, ...) calls `uiFlagOn` and nothing else.
+ * Runtime per-company UI flags (lane U5): the ONE place that decides whether a new screen is on. Every `isXOn(host)` (billing-flags.ts, health-flags.ts, ...) calls `uiFlagOn` and nothing else. The finished screens (decision 125) have no flag any more.
  *
  * The server's answer (`uiFlags` in the navigation answer: `on`, `preview` or `off` per flag) is kept in a small store per host, filled whenever the app's `["nav"]` query succeeds (`syncUiFlags`, called once by `App`)
  * and once more, synchronously, before the route table is built (`applyNavUiFlags`, called by `Startup`).
@@ -13,8 +13,15 @@ import { useOptionalAppHost } from "./host.js";
  *   server `off`       off. The device switch does nothing (no previews allowed, or the operator forced it off). A flag the answer does not name is off too.
  *   no answer          (an older broker, a page with no navigation, a test with a bare host) the device switch decides, as it did before runtime flags existed.
  *   waiting            the app has asked for the navigation answer and it has not come yet, or the read failed (`holdUiFlagsUntilNav`, called by `App`): everything is off, the same as the server's rule for a failed read (fail closed).
- *                      The device switch does not decide until an answer arrives. A person whose device key is on may therefore see the default look for a moment on a cold load, then the new look.
- * Layout flags are read when a screen mounts (or once when the route table is built), so a change reaches a person on their next page load; the look follows the answer at once.
+ *                      The device switch does not decide until an answer arrives. Only the loading placeholder renders meanwhile, so nothing switches under a person.
+ * Layout flags are read when a screen mounts (or once when the route table is built), so a change reaches a person on their next page load.
+ *
+ * Decision 116 (new screens on by default) lives in the SERVER's answer, not here: a broker that knows it sends `on` for every finished screen a company has not sent back to the old one, and `off` for one the operator
+ * forced off. This file deliberately keeps its three fallbacks off (or on the device switch), because each is a case where the operator's override cannot be known:
+ *   waiting        only the loading placeholder renders meanwhile (the route table and screens are built after the answer), so holding off never shows an old screen and then a new one; showing the default
+ *                  instead would flash a screen at an install whose operator forced it off.
+ *   no answer      a broker from before runtime flags (an upgrade or rollback window): it cannot apply the override and may lack a new screen's server half, so the device switch decides, as with that broker's own app.
+ *   a name absent  a broker from before that screen's flag existed: off, for the same reasons.
  */
 export interface UiFlagsStorageHost { storage: { get(key: string): string | undefined } }
 /** The value every per-device switch holds when it is on. */

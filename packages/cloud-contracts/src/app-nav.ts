@@ -15,6 +15,8 @@ export const AppNavSchema = z.object({
  features: z.object({ localAgents: z.boolean(), usage: z.boolean(), admin: z.boolean(), chains: z.boolean(), notices: z.boolean(), describe: z.boolean(), /** UX5b: present (true) only where the install's script tokens switch `pt` is on. */ scriptTokens: z.literal(true).optional(), /** OWNER DECISION 18: present (true) only where the decision cards switch `dk` is on: the task page's plan panel and feedback view are there only then. */ decisionCards: z.literal(true).optional(), /** G-04: present (true) only where the standing instructions switch `si` is on: Settings > Company rules is there only then. */ companyRules: z.literal(true).optional() }).strict(),
  /** U5: the state (`on`, `preview` or `off`) of each runtime UI flag for this company (ui-flags.ts). Always sent by this broker; absent from an older one, which the app reads as "use today's per-device switches". */
  uiFlags: UiFlagsMapSchema.optional(),
+ /** Whether the install's Insights switch (`in`) is on. Sent by every broker from 0.5.15 on (true or false); absent from an older one. The app asks the Insights overview who may see it (its navigation entry) only when this is true, or absent (an older broker, which it asks as before). */
+ insights: z.boolean().optional(),
  /** QA6-10: the release this deployment runs ("0.5.8"), from the deploy. Absent where the deploy does not say. */
  release: z.string().regex(/^\d{1,4}\.\d{1,4}\.\d{1,4}$/u).optional(),
 }).strict();
