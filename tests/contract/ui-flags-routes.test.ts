@@ -345,3 +345,101 @@ describe("a stored row whose revision does not read", () => {
     expect(await w.call(owner, "PUT", { expectedRevision: 0, flags: { home: true } })).toMatchObject({ revision: 1 });
   });
 });
+
+describe("the company switcher and Continue in your own tool (decision 98: `companies` and `continue`)", () => {
+  const NEW = ["companies", "continue"] as const;
+  const table = (db: FakeDynamoDb) => ({ documentClient: db, tableName: "state", now: () => START }) as never;
+
+  it("are off by default, in the admin answer (wired, with plain words) and in the navigation answer", async () => {
+    const w = world();
+    const answer = await w.call(w.caller(ORG_A), "GET");
+    expect(stateOf(answer, "companies")).toMatchObject({ label: "Companies", wired: true, enabled: false, forcedOff: false, state: "off" });
+    expect(stateOf(answer, "continue")).toMatchObject({ label: "Continue in your own tool", wired: true, enabled: false, forcedOff: false, state: "off" });
+    const nav = await navUiFlags(table(w.db), ORG_A, {});
+    expect(nav.companies).toBe("off");expect(nav.continue).toBe("off");
+  });
+
+  for (const name of NEW) {
+    it(`stores, answers and audits \`${name}\` like every other flag, for an owner and an admin`, async () => {
+      const w = world();
+      const owner = w.caller(ORG_A), admin = w.caller(ORG_A, "admin");
+      w.signIn(owner, 0); w.signIn(admin, 0);
+      const on = await w.call(owner, "PUT", { expectedRevision: 0, flags: { [name]: true } });
+      expect(stateOf(on, name)).toMatchObject({ enabled: true, state: "on" });
+      expect(w.stored(ORG_A)).toMatchObject({ revision: 1, flags: { [name]: true }, changedBy: owner.developerId });
+      expect((await navUiFlags(table(w.db), ORG_A, {}))[name]).toBe("on");
+      const off = await w.call(admin, "PUT", { expectedRevision: 1, flags: { [name]: false }, previews: true });
+      expect(stateOf(off, name)).toMatchObject({ enabled: false, state: "preview" });
+      expect((await navUiFlags(table(w.db), ORG_A, {}))[name]).toBe("preview");
+      const events = w.capture.recordedBy("company.ui_flags_changed");
+      expect(events.map((event) => event.facts)).toMatchObject([{ revision: 1, turnedOn: name, turnedOff: "none", previews: "same" }, { revision: 2, turnedOn: "none", turnedOff: name, previews: "on" }]);
+      expect(events.map((event) => event.actor.id)).toEqual([owner.developerId, admin.developerId]);
+      for (const event of events) expect(AuditEventInputSchema.safeParse(event).success).toBe(true);
+    });
+
+    it(`refuses \`${name}\` to a member and to a caller that is not a live browser session, and needs a fresh sign-in`, async () => {
+      const w = world();
+      const member = w.caller(ORG_A, "member"), token = w.caller(ORG_A, "owner", { browser: false }), owner = w.caller(ORG_A);
+      w.signIn(member, 0); w.signIn(token, 0); w.signIn(owner, 30);
+      await expect(w.call(member, "PUT", { expectedRevision: 0, flags: { [name]: true } })).rejects.toMatchObject({ code: "FORBIDDEN" });
+      await expect(w.call(token, "PUT", { expectedRevision: 0, flags: { [name]: true } })).rejects.toMatchObject({ code: "FORBIDDEN" });
+      await expect(w.call(owner, "PUT", { expectedRevision: 0, flags: { [name]: true } })).rejects.toMatchObject({ code: "REAUTH_REQUIRED" });
+      expect(w.stored(ORG_A)).toBeUndefined();
+      expect(w.capture.recordedBy("company.ui_flags_changed")).toEqual([]);
+    });
+
+    it(`fences \`${name}\` by the revision and keeps it to its own company`, async () => {
+      const w = world();
+      const a = w.caller(ORG_A), b = w.caller(ORG_B);
+      w.signIn(a, 0); w.signIn(b, 0);
+      await w.call(a, "PUT", { expectedRevision: 0, flags: { [name]: true } });
+      await expect(w.call(a, "PUT", { expectedRevision: 0, flags: { [name]: false } })).rejects.toMatchObject({ code: "CHANGE_STALE" });
+      expect(w.stored(ORG_A)).toMatchObject({ revision: 1, flags: { [name]: true } });
+      expect(stateOf(await w.call(b, "GET"), name)).toMatchObject({ enabled: false, state: "off" });
+      expect((await navUiFlags(table(w.db), ORG_B, {}))[name]).toBe("off");
+      expect(w.stored(ORG_B)).toBeUndefined();
+    });
+
+    it(`lets the operator hold \`${name}\` off over the company's choice and over previews`, async () => {
+      const w = world();
+      const owner = w.caller(ORG_A);
+      w.signIn(owner, 0);
+      await w.call(owner, "PUT", { expectedRevision: 0, flags: { companies: true, continue: true }, previews: true });
+      const forced: Env = { UI_FLAGS_FORCE_OFF: name };
+      const other = name === "companies" ? "continue" : "companies";
+      const answer = await w.call(owner, "GET", undefined, forced);
+      expect(stateOf(answer, name)).toMatchObject({ enabled: true, forcedOff: true, state: "off" });
+      expect(stateOf(answer, other)).toMatchObject({ enabled: true, forcedOff: false, state: "on" });
+      expect(await navUiFlags(table(w.db), ORG_A, forced)).toMatchObject({ [name]: "off", [other]: "on", look: "preview" });
+      expect(operatorForcedOff({ UI_FLAGS_FORCE_OFF: `look-${name}` })).toEqual(new Set(["look", name]));
+    });
+  }
+
+  it("audits every flag turned on at once within the fact length limit", async () => {
+    const w = world();
+    const owner = w.caller(ORG_A);
+    w.signIn(owner, 0);
+    await w.call(owner, "PUT", { expectedRevision: 0, flags: Object.fromEntries(UI_FLAG_NAMES.map((name) => [name, true])) });
+    const [event] = w.capture.recordedBy("company.ui_flags_changed");
+    expect(event?.facts?.turnedOn).toBe(UI_FLAG_NAMES.join("+"));
+    expect(AuditEventInputSchema.safeParse(event).success).toBe(true);
+  });
+
+  it("reads a row an older broker wrote (no `companies` or `continue`) as both off, and keeps the row's other flags", async () => {
+    const w = world();
+    w.db.set({ ...orgUiFlagsKey(ORG_A), entityType: "UI_FLAGS", orgId: ORG_A, flags: { look: true, insights: true }, previews: false, revision: 4, changedAt: "2026-11-11T09:00:00.000Z" });
+    const nav = await navUiFlags(table(w.db), ORG_A, {});
+    expect(nav).toMatchObject({ look: "on", insights: "on", companies: "off", continue: "off" });
+    const owner = w.caller(ORG_A);
+    w.signIn(owner, 0);
+    await w.call(owner, "PUT", { expectedRevision: 4, flags: { continue: true } });
+    expect(w.stored(ORG_A)).toMatchObject({ revision: 5, flags: { look: true, insights: true, continue: true } });
+    expect(w.stored(ORG_A)?.flags.companies).toBeUndefined();
+  });
+
+  it("ignores a stored name a newer broker may add later, as an older broker ignores these two", () => {
+    const settings = settingsFromItem({ flags: { companies: true, continue: false, laterScreen: true }, previews: false, revision: 2 });
+    expect(settings.flags).toEqual({ companies: true, continue: false });
+    expect(uiFlagsMapOf(settings, new Set())).toMatchObject({ companies: "on", continue: "off" });
+  });
+});

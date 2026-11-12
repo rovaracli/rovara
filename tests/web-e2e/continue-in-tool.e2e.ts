@@ -32,6 +32,17 @@ for (const width of [1280, 390] as const) {
   await evidenceShot(page, { path: `${shots}/off-${String(width)}.png`, fullPage: true });
  });
 }
+// Decision 98: the company's runtime flag `continue` rides the navigation answer. On shows the button with no device key; off hides it even with the key (and the chunk is never fetched).
+for (const [flag, store, shown] of [["on", {}, true], ["off", { "rovara.continue": "v2" }, false]] as const) {
+ test(`the company's continue flag ${flag}${shown ? " with no device key" : " with the device key"}: ${shown ? "the button" : "no button, no chunk"}`, async ({ page, context, request, baseURL }) => {
+  const asked: string[] = [];page.on("request", item => { if (/ContinueInTool-|local-tools/u.test(item.url())) asked.push(item.url()); });
+  await enter(page, context, request, baseURL, 1280, store);
+  await page.route("**/v1/web/nav*", async route => { const response = await route.fetch();const body = await response.json() as Record<string, unknown>;await route.fulfill({ response, json: { ...body, uiFlags: { continue: flag } } }); });
+  await page.goto(PAGE);await expect(page.getByRole("button", { name: "Conversation" })).toBeVisible();
+  if (shown) { await expect(page.getByRole("button", { name: "Continue in your own tool" })).toBeVisible(); }
+  else { await page.waitForLoadState("networkidle");await expect(page.getByRole("button", { name: /Continue in your own tool/u })).toHaveCount(0);expect(asked).toEqual([]); }
+ });
+}
 for (const width of [360, 390, 1280] as const) {
  const phone = width < 768;
  test(`switch on at ${String(width)}: the sheet, copy, focus, Escape, ${phone ? "44px targets, " : ""}no sideways scroll, axe`, async ({ page, context, request, baseURL }) => {

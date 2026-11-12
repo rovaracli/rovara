@@ -7,7 +7,7 @@ import { FIXTURE_SESSION } from "../web/support/fixtures.js";
 // Runtime per-company UI flags (lane U5): the company's value from the nav answer turns a new screen on with no device key, and Settings > New screens changes it.
 // Pictures go to .superpowers/sdd/exp-ui-flags/shots/ (set ROVARA_UIFLAGS_SHOTS to change the folder).
 const shots = process.env.ROVARA_UIFLAGS_SHOTS ?? ".superpowers/sdd/exp-ui-flags/shots";
-const NAMES = ["look", "nav", "home", "work", "spending", "leadingHeader", "health", "setup", "insights", "publish", "billing", "agreement"];
+const NAMES = ["look", "nav", "home", "work", "spending", "leadingHeader", "health", "setup", "insights", "publish", "billing", "agreement", "companies", "continue"];
 const states = (over: Record<string, string>) => Object.fromEntries(NAMES.map(name => [name, over[name] ?? "off"]));
 async function enter(page: Page, context: BrowserContext, request: APIRequestContext, baseURL: string | undefined, width: number, options: { uiFlags?: Record<string, string>; store?: Record<string, string>; colorScheme?: "light" | "dark" } = {}) {
  await request.post("/__mock/scenario", { data: { name: "admin" } });

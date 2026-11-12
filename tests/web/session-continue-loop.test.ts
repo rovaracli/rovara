@@ -17,6 +17,7 @@ import { AppHostProvider } from "../../packages/ui/src/host.js";
 import type { ApiRequest, ApiResponse } from "../../packages/ui/src/host.js";
 import { Announcer } from "../../packages/ui/src/design/Announcer.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
+import { applyNavUiFlags } from "../../packages/ui/src/ui-flags.js";
 import { renderUi } from "./support/render.js";
 import { h } from "./support/h.js";
 import { fakeHost } from "./support/fake-host.js";
@@ -41,7 +42,7 @@ const session = (loop: Loop | undefined, over: { pullRequests?: unknown; display
  });
  return over.you === undefined ? base : { ...base, you: { ...base.you, ...over.you } } as typeof base;
 };
-interface Options { on?: boolean; api?: (request: ApiRequest) => ApiResponse | undefined; lead?: boolean }
+interface Options { on?: boolean; server?: "on" | "preview" | "off"; api?: (request: ApiRequest) => ApiResponse | undefined; lead?: boolean }
 function setup(source: SessionView | (() => SessionView), options: Options = {}) {
  let reads = 0;
  const current = () => typeof source === "function" ? source() : source, view = current();
@@ -56,6 +57,7 @@ function setup(source: SessionView | (() => SessionView), options: Options = {})
   return { status: 200, body: { session: current() } };
  });
  if (options.on !== false) f.storage.set(CONTINUE_STORAGE_KEY, "v2");
+ if (options.server !== undefined) applyNavUiFlags(f.host, { uiFlags: { continue: options.server } });
  if (options.lead === true) forceTaskPageFlags({ leadingHeader: true });
  const query = createQueryClient(), router = createMemoryRouter([{ path: "/app/sessions/:id", element: h(SessionScreen, {}) }], { initialEntries: ["/app/sessions/" + SESSION_FIXTURE_ID] });
  const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(Announcer, { children: h(RouterProvider, { router }) }) }) }));
@@ -188,6 +190,16 @@ it("switch off: the task page's lead is exactly as before, with no chip, no Last
  expect(lead.querySelector(".rv-chip")).toBeNull();expect(lead.getAttribute("data-tone")).toBe("success");
  f.close();
 });
+for (const [server, device, shown] of [["on", true, true], ["on", false, true], ["preview", true, true], ["preview", false, false], ["off", true, false], ["off", false, false]] as const) {
+ it(`the company's continue flag on the lead: server ${server}, device key ${device ? "v2" : "unset"}: ${shown ? "Changed outside Rovara" : "the ordinary state"}`, async () => {
+  const f = setup(session(loopOf({ label: CHANGED_OUTSIDE_LABEL, outside: [outsideRow()] }), { display: { state: "ready_to_merge" } }), { lead: true, on: device, server });
+  try {
+   const lead = await screen.findByRole("region", { name: "Where this task stands" });
+   if (shown) { expect(within(lead).getByText(CHANGED_OUTSIDE_LABEL)).toBeTruthy();expect(within(lead).getByText("Last pushed by octocat 5m ago")).toBeTruthy(); }
+   else { expect(within(lead).getAllByText("Ready to merge").length).toBeGreaterThan(0);expect(lead.textContent).not.toContain(CHANGED_OUTSIDE_LABEL);expect(lead.querySelector(".rv-chip")).toBeNull(); }
+  } finally { f.close(); }
+ });
+}
 it("the lead's Last pushed by ages while the page stays open", async () => {
  vi.useFakeTimers({ shouldAdvanceTime: true });
  const f = setup(session(loopOf({ label: CHANGED_OUTSIDE_LABEL, outside: [outsideRow({ lastPushedBy: { login: "octocat", at: new Date(Date.now() - 20_000).toISOString() } })] }), { display: { state: "ready_to_merge" } }), { lead: true });

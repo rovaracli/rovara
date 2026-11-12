@@ -16,6 +16,7 @@ import { isAgentPublishOn, AGENT_PUBLISH_STORAGE_KEY } from "../../packages/ui/s
 import { isBillingV2On, BILLING_STORAGE_KEY } from "../../packages/ui/src/billing-flags.js";
 import { isWorkingAgreementOn, AGREEMENT_STORAGE_KEY } from "../../packages/ui/src/screens/agreement/agreement-flags.js";
 import { isCompanySwitcherOn, COMPANIES_STORAGE_KEY } from "../../packages/ui/src/company-flags.js";
+import { isContinueInToolOn, CONTINUE_STORAGE_KEY } from "../../packages/ui/src/screens/session/continue-flags.js";
 import { taskPageFlags } from "../../packages/ui/src/screens/session/task-page-flags.js";
 
 // A fresh host per test: the server's answer is kept per host object.
@@ -87,12 +88,12 @@ const SWITCHES: Array<[string, (host: { storage: { get(key: string): string | un
  ["isNewLookOn", isNewLookOn, "look", LOOK_STORAGE_KEY], ["isNewNavOn", isNewNavOn, "nav", NAV_STORAGE_KEY], ["isNewHomeOn", isNewHomeOn, "home", HOME_STORAGE_KEY], ["isWorkListOn", isWorkListOn, "work", WORK_STORAGE_KEY],
  ["isSpendingV2On", isSpendingV2On, "spending", SPENDING_STORAGE_KEY], ["isHealthV2On", isHealthV2On, "health", HEALTH_STORAGE_KEY], ["isProjectSetupV2On", isProjectSetupV2On, "setup", PROJECT_SETUP_STORAGE_KEY],
  ["isInsightsOn", isInsightsOn, "insights", INSIGHTS_STORAGE_KEY], ["isAgentPublishOn", isAgentPublishOn, "publish", AGENT_PUBLISH_STORAGE_KEY], ["isBillingV2On", isBillingV2On, "billing", BILLING_STORAGE_KEY], ["isWorkingAgreementOn", isWorkingAgreementOn, "agreement", AGREEMENT_STORAGE_KEY],
- // The company switcher has no name among the closed list of flags: it stays on its device key, whatever the answer says.
- ["isCompanySwitcherOn", isCompanySwitcherOn, undefined, COMPANIES_STORAGE_KEY],
+ // Decision 98: the company switcher and Continue in your own tool are company flags too.
+ ["isCompanySwitcherOn", isCompanySwitcherOn, "companies", COMPANIES_STORAGE_KEY], ["isContinueInToolOn", isContinueInToolOn, "continue", CONTINUE_STORAGE_KEY],
 ];
 describe("each switch function", () => {
  it("keeps its device key", () => {
-  expect(SWITCHES.map(([, , , key]) => key)).toEqual(["rovara.look", "rovara.nav", "rovara.home", "rovara.work", "rovara.spending", "rovara.health", "rovara.setup", "rovara.insights", "rovara.publish", "rovara.billing", "rovara.agreement", "rovara.companies"]);
+  expect(SWITCHES.map(([, , , key]) => key)).toEqual(["rovara.look", "rovara.nav", "rovara.home", "rovara.work", "rovara.spending", "rovara.health", "rovara.setup", "rovara.insights", "rovara.publish", "rovara.billing", "rovara.agreement", "rovara.companies", "rovara.continue"]);
  });
  for (const [fn, isOn, name, key] of SWITCHES) {
   describe(fn, () => {

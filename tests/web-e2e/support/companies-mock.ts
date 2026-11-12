@@ -7,7 +7,7 @@ export interface MockCompany { id: string; name: string; role: "owner" | "admin"
 export const COMPANIES: MockCompany[] = [{ id: ORG_A, name: "Acme", role: "owner", project: "acme-payments" }, { id: ORG_B, name: "Beta Ltd", role: "member", project: "beta-search" }, { id: ORG_C, name: "Gamma", role: "auditor", project: "gamma-docs" }];
 export const MACHINE_REFUSAL = "This sign-in is bound to one company. Sign in again to use another.";
 const company = (item: MockCompany, active: boolean) => ({ companyId: item.id, name: item.name, role: item.role, joinedAt: "2026-11-01T10:00:00.000Z", active, status: "open" });
-export async function mockCompanies(page: Page, options: { companies?: MockCompany[]; start?: string; refuse?: { status: number; code: string; message: string } } = {}) {
+export async function mockCompanies(page: Page, options: { companies?: MockCompany[]; start?: string; refuse?: { status: number; code: string; message: string }; uiFlags?: Record<string, string> } = {}) {
  const companies = options.companies ?? COMPANIES, requests: Request[] = [], posts: unknown[] = [];
  let active = options.start ?? companies[0]!.id;
  const current = () => companies.find(item => item.id === active)!;
@@ -20,8 +20,10 @@ export async function mockCompanies(page: Page, options: { companies?: MockCompa
   active = body.companyId;await route.fulfill({ status: 200, contentType: "application/json", json: { status: "done", activeCompanyId: active, companies: list().companies, me: {} } });
  });
  await page.route("**/v1/web/nav", async route => {
-  const response = await route.fetch(), json = await response.json() as { org: { name: string }; projects: unknown[] };
+  const response = await route.fetch(), json = await response.json() as { org: { name: string }; projects: unknown[]; uiFlags?: Record<string, string> };
   json.org.name = current().name;json.projects = [{ name: current().project, agents: [] }];
+  // The company's runtime flags (decision 98), when a test gives them; the mock cell sends none (an older server).
+  if (options.uiFlags !== undefined) json.uiFlags = options.uiFlags;
   await route.fulfill({ response, json, headers: { ...response.headers(), "x-rovara-company": active } });
  });
  await page.route("**/v1/web/home**", async route => {
