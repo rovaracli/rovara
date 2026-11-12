@@ -154,12 +154,14 @@ export class ControlPlaneStack extends Stack {
 
     const oidcIssuer = new CfnParameter(this, "OidcIssuer", { type: "String" });
     const oidcAudience = new CfnParameter(this, "OidcAudience", { type: "String" });
-    const callbackSigningKey = new CfnParameter(this, "CallbackSigningKey", {
+    // 0.5.15: only the legacy install's frozen template declares this parameter. A named environment's functions read the key from Secrets Manager (signing-key-secrets.ts) and the CLI no longer
+    // passes it, so its template does not declare it (CloudFormation refuses a parameter its template lacks).
+    const callbackSigningKey = naming.env === undefined ? new CfnParameter(this, "CallbackSigningKey", {
       type: "String",
       noEcho: true,
       minLength: 32,
       description: "Random secret used to scope and authenticate worker callbacks",
-    });
+    }) : undefined;
     const adminClaim = new CfnParameter(this, "AdminClaim", {
       type: "String",
       default: "cognito:groups",
@@ -258,7 +260,7 @@ export class ControlPlaneStack extends Stack {
       ADMIN_CLAIM: adminClaim.valueAsString,
       ADMIN_VALUES: adminValues.valueAsString,
       // 0.5.15: a named environment's broker reads its keys from Secrets Manager (signing-key-secrets.ts); only the legacy install (frozen template) keeps the variable.
-      ...(naming.env === undefined ? { CALLBACK_SIGNING_KEY: callbackSigningKey.valueAsString } : {}),
+      ...(callbackSigningKey === undefined ? {} : { CALLBACK_SIGNING_KEY: callbackSigningKey.valueAsString }),
       ...(naming.env === undefined ? { GITHUB_APP_CREDENTIAL_REF: githubAppCredentialRef.valueAsString, GITHUB_APP_ID: githubAppId.valueAsString } : {}),
       GITHUB_APP_PRIVATE_KEY_SECRET_ARN: githubAppPrivateKeySecretArn.valueAsString,
     });
@@ -1721,7 +1723,8 @@ export class ControlPlaneStack extends Stack {
       STATE_TABLE_NAME: state.tableName,
       ARTIFACT_BUCKET_NAME: artifacts.bucketName,
       // 0.5.15: a named environment's tick reads the callback signing key from its secret (it builds the name from AGENTX_ENV); the legacy install keeps the variable.
-      ...(naming.env === undefined ? { CALLBACK_SIGNING_KEY: callbackSigningKey.valueAsString } : { AGENTX_ENV: naming.env }),
+      ...(naming.env === undefined ? {} : { AGENTX_ENV: naming.env }),
+      ...(callbackSigningKey === undefined ? {} : { CALLBACK_SIGNING_KEY: callbackSigningKey.valueAsString }),
       SWEBENCH_SETTINGS_PREFIX: naming.ec2.workerSettingsPrefix,
     }, Duration.seconds(90));
     // It signs eval capabilities (kind a) and hashes nothing, so it reads the callback signing key alone.

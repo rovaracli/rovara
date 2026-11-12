@@ -19,7 +19,6 @@ import type { DeployAnswers } from "./deploy-environment.js";
 import { sha256Hex } from "./hash.js";
 import { embedderRepository, installOrder, stackParameters, type DeployPart, type InstallAnswers, type StackOutputs } from "./parameters.js";
 import { assertReleaseCoversRegion, type LoadedRelease } from "./release.js";
-import { callbackSigningKeySecretName } from "./signing-key.js";
 import { PROTECTED_PARTS } from "./deployer.js";
 
 export interface ExportBundleInput {
@@ -118,9 +117,8 @@ function markerOutputs(): Partial<Record<DeployPart, StackOutputs>> {
 
 /**
  * `answers` widened to a full `InstallAnswers` for `stackParameters`, with every value the export
- * bundle cannot know yet replaced by its marker: the callback signing key (a secret,
- * `signing-key.ts`'s `callbackSigningKey` is never called here) and the GitHub App (not set up
- * until the operator configures it, phase 15d). Everything else — region, account, models,
+ * bundle cannot know yet replaced by its marker: the GitHub App (not set up
+ * until the operator configures it, phase 15d). (No callback signing key: since 0.5.15 the template does not declare it.) Everything else — region, account, models,
  * identity, the release manifest, the operator's own boundary/principal choices — is already known
  * and is carried through as given.
  */
@@ -128,7 +126,6 @@ function markerAnswers(answers: DeployAnswers, release: LoadedRelease): InstallA
   return {
     ...answers,
     release: release.manifest,
-    callbackSigningKey: `{{secret:${callbackSigningKeySecretName(answers.env)}}}`,
     github: {
       appId: githubMarker("appId"),
       privateKeySecretArn: githubMarker("privateKeySecretArn"),
@@ -704,9 +701,9 @@ whose deletion protection keeps it; its name is not unique, so it never blocks a
   already rendered for \`${env}\`.
 - \`parameters/<part>.json\`: that stack's parameters, as CloudFormation's
   \`[{ "ParameterKey", "ParameterValue" }]\` array. A value only known once install begins (an
-  earlier stack's output, the control-plane's callback signing key, or the GitHub App) is written
-  as a \`{{output:<part>.<Name>}}\`, \`{{secret:...}}\` or \`{{github:<field>}}\` marker instead of a
-  real value.
+  earlier stack's output, or the GitHub App) is written
+  as a \`{{output:<part>.<Name>}}\` or \`{{github:<field>}}\` marker instead of a
+  real value. No file here has a callback signing key: it lives in Secrets Manager (\`agentx/${env}/callback-signing-key\`), not in any stack parameter.
 - \`packages/\`: the release's code packages, plus \`packages/SHA256SUMS\` to check them
   (\`sha256sum -c SHA256SUMS\` from inside that directory).
 - \`policies/service-role.json\`, \`policies/operator-role.json\`, \`policies/default-boundary.json\`:

@@ -30,10 +30,13 @@ describe("the key secrets in a named environment's templates", () => {
     }
   });
 
-  it("keeps the parameter NoEcho and unused (one release), and references it nowhere", () => {
+  it("declares no CallbackSigningKey parameter (dropped in 0.5.15 with the CLI's pass-through), and references it nowhere", () => {
     const controlPlane = templates.find(({ name }) => name === "agentx-staging-control-plane")!.template;
-    expect(controlPlane.Parameters?.CallbackSigningKey).toMatchObject({ NoEcho: true, MinLength: 32 });
-    expect(JSON.stringify(controlPlane.Resources)).not.toContain("\"CallbackSigningKey\"");
+    // Positive control: the control plane does declare parameters, and it is the legacy install's frozen template (legacy-templates.test.ts) that keeps this one.
+    expect(Object.keys(controlPlane.Parameters ?? {})).toContain("GitHubAppId");
+    expect(controlPlane.Parameters).not.toHaveProperty("CallbackSigningKey");
+    expect(JSON.stringify(controlPlane)).not.toContain("\"CallbackSigningKey\"");
+    for (const { name, template } of templates) expect(Object.entries(template.Parameters ?? {}).filter(([, parameter]) => parameter.NoEcho === true), name).toEqual([]);
   });
 
   it("creates neither key secret in any stack", () => {

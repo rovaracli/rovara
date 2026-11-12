@@ -564,11 +564,11 @@ the bundle's permission boundary), records the `access` step as done, and goes o
 (the operator role is denied change sets on it, and init refuses the `access` step under that role).
 
 **The callback signing key** lives only in Secrets Manager, at `agentx/<env>/callback-signing-key`, never in
-settings. The templates engine passes it to CloudFormation as a `NoEcho` parameter, never printed. The cdk
-engine can only pass it as a `cdk deploy --parameters` argument, so for that command's length it is visible
-in the operator's own machine's process list (the engines' one difference in secret handling); it stays
-redacted everywhere `agentx` itself prints anything, including the displayed command, any error, and the
-streamed output.
+settings, and in no stack parameter: since 0.5.15 the named control-plane template declares no `CallbackSigningKey`
+parameter and `agentx` never passes one (the functions read the secret at run time; see
+[the rotation runbook](runbooks/rotate-callback-signing-key.md)). An upgrade of a stack deployed before 0.5.15
+drops the old parameter, because the new template no longer declares it. Only the legacy install's frozen template
+keeps it. `agentx` still redacts the name if it ever meets it in a command or an error.
 
 ### Tearing down an environment
 
