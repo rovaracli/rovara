@@ -11,6 +11,8 @@ import { GetCommand, PutCommand, TransactWriteCommand, UpdateCommand } from "@aw
 import { QuickAutoStartRequestSchema, SLACK_INTAKE_RECORD_SECONDS, type QuickAutoStartResult } from "@agentx/cloud-contracts";
 import type { AuthenticatedIdentity } from "../../auth.js";
 import { quickAutoStartRefusal } from "../../decisions/quick-auto-start.js";
+import { readEffectiveWhenAllowed } from "../../design-review/setting.js";
+import { designReviewEnabled } from "../../design-review/switch.js";
 import { REQUEST_ROUTE_MESSAGE_MAX } from "@rovara-code/contracts";
 import { STOP_WHILE_PUBLISHING_REFUSAL } from "../../developer/workflow-actions.js";
 import { requireOperation } from "../cancellation.js";
@@ -1068,6 +1070,22 @@ export async function recordSlackIntake(dependencies: AwsBrokerDependencies, eve
   return { recorded: true };
 }
 
+/** Whether a start of `text` in `thread` would be turned Full by the design review (its project's mode "always", or `design first:`). True when that cannot be read. */
+async function designReviewWouldRunFull(dependencies: AwsBrokerDependencies, thread: SlackThread, text: string): Promise<boolean> {
+  try {
+    const teamOrg = await slackTeamOrg(dependencies, thread.teamId);
+    if ((await designFirstRequestOf(dependencies, teamOrg, text)).designFirst) return true;
+    if (!designReviewEnabled()) return false;
+    const binding = await getSlackBinding(dependencies, teamOrg, thread.teamId, thread.channelId);
+    if (binding === undefined) return false;
+    const effective = await readEffectiveWhenAllowed(dependencies, teamOrg, binding.projectName);
+    return effective?.setting.mode === "always";
+  } catch (error) {
+    console.log(JSON.stringify({ component: "broker", event: "quick_start.design_review_unread", errorName: error instanceof Error ? error.name : "unknown" }));
+    return true;
+  }
+}
+
 /**
  * Decision 134: the Slack service's ask to start Quick on a routed request its classifier read as a clear small change.
  * The text and the requester come from the broker's own intake record of that message (written by the Slack ingress
@@ -1092,6 +1110,10 @@ export async function startQuickFromIntake(dependencies: AwsBrokerDependencies, 
   if (identity.sharedTask !== undefined) return { started: false, reason: "thread_busy" };
   const refusal = quickAutoStartRefusal(record.text);
   if (refusal !== undefined) return { started: false, reason: refusal };
+  // Only a change that will run Quick starts on its own. A project that reviews the design of every change (design review
+  // "always") runs it Full after Understand (understand-mode.ts), and `design first:` asks for the design: the card is posted
+  // instead, so the person chooses. A setting that cannot be read starts nothing on its own either.
+  if (await designReviewWouldRunFull(dependencies, slack.thread, record.text)) return { started: false, reason: "design_review" };
   // Used once: a second ask for the same message (or a replay of this one) starts nothing.
   try {
     await dependencies.documentClient.send(new UpdateCommand({ TableName: dependencies.tableName, Key: slackIntakeKey(choiceId), UpdateExpression: "SET usedAt = :now",
