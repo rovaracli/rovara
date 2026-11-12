@@ -273,9 +273,18 @@ describe("allowed domains", () => {
   });
 
   it("keeps mandatory defaults separate and refuses adding an unapproved project website through bearer settings", async () => {
-    const h = await install();expect(DEFAULT_AGENT_ALLOW_DOMAINS).toContain("registry.npmjs.org");expect(DEFAULT_AGENT_ALLOW_DOMAINS).toContain("*.amazonaws.com");
-    const saved = await h.put(OMAR, { allowedDomains: ["registry.npmjs.org", "*.amazonaws.com", "artifacts.acme.dev"] });
+    const h = await install();expect(DEFAULT_AGENT_ALLOW_DOMAINS).toContain("registry.npmjs.org");
+    const saved = await h.put(OMAR, { allowedDomains: ["registry.npmjs.org", "artifacts.acme.dev"] });
     expect(saved.status).toBe(403);expect(h.revision(2)).toBeUndefined();expect(h.db.get(egressDomainsKey(TEST_ORG, { kind: "project", project: "web" }))).toBeUndefined();
+  });
+
+  it("refuses a wildcard over AWS or GitHub names outright (one approval is cell-wide), and stores nothing", async () => {
+    const h = await install();
+    for (const domain of ["*.amazonaws.com", "*.github.com"]) {
+      const saved = await h.put(OMAR, { allowedDomains: ["artifacts.acme.dev", domain] });
+      expect(saved.status, domain).toBe(400);expect(JSON.stringify(saved.body ?? saved)).toMatch(/wildcard over AWS or GitHub/);
+      expect(h.revision(2)).toBeUndefined();expect(h.db.get(egressDomainsKey(TEST_ORG, { kind: "project", project: "web" }))).toBeUndefined();
+    }
   });
 
   it("preserves a configured list when omitted and atomically clears it when explicitly empty", async () => {
@@ -839,7 +848,7 @@ it("B33 refuses an atomic registration above 100 actions before sending any tran
 it("B33 new Cloud project websites commit with one initial audit and pending staff decisions", async () => {
  const audit = capturingAuditDeps(), h = await install({ audit }), before = h.revision(1)!;
  const { registerProjectFor } = await import("../../packages/broker/src/aws/broker.js");
- const definition = ProjectDefinitionSchema.parse({ ...before.definition, name: "initial-websites", network: { allowedDomains: ["xn--bcher-kva.de", DEFAULT_AGENT_ALLOW_DOMAINS[0]!] } });
+ const definition = ProjectDefinitionSchema.parse({ ...before.definition, name: "initial-websites", network: { allowedDomains: ["xn--bcher-kva.de", "registry.npmjs.org"] } });
  await registerProjectFor(h.brokerInput as never, { orgId: TEST_ORG, ownerKey: OMAR.developerId }, { definition, runtimeBinding: before.runtimeBinding }, { creatorMembership: "none", requireNewName: true });
  expect(h.revision(1, "initial-websites")?.definition.network).toEqual(definition.network);
  const domainAudit = audit.recordedBy("project.allowed_domains_changed");

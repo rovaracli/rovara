@@ -125,8 +125,16 @@ describe("refuseSetupHost: hosts that get no card", () => {
 
 describe("hostAlreadyAllowed", () => {
   it("reads the default list and the project's list with the firewall's wildcard rule (subdomains only)", () => {
-    expect(hostAlreadyAllowed("registry.npmjs.org", [])).toBe(true);
-    expect(hostAlreadyAllowed("s3.us-west-2.amazonaws.com", [])).toBe(true);
+    const region = process.env.AWS_REGION;
+    process.env.AWS_REGION = "us-west-2";
+    try {
+      expect(hostAlreadyAllowed("registry.npmjs.org", [])).toBe(true);
+      // The install's own regional AWS hosts (the firewall's list, shared): its region's S3, not another's, and nothing GitHub's beyond the named hosts.
+      expect(hostAlreadyAllowed("s3.us-west-2.amazonaws.com", [])).toBe(true);
+      expect(hostAlreadyAllowed("s3.eu-west-1.amazonaws.com", [])).toBe(false);
+      expect(hostAlreadyAllowed("codeload.github.com", [])).toBe(true);
+      expect(hostAlreadyAllowed("api.github.com", [])).toBe(false);
+    } finally { if (region === undefined) delete process.env.AWS_REGION; else process.env.AWS_REGION = region; }
     expect(hostAlreadyAllowed("amazonaws.com", [])).toBe(false);
     expect(hostAlreadyAllowed(HOST, [])).toBe(false);
     expect(hostAlreadyAllowed(HOST, [HOST])).toBe(true);
