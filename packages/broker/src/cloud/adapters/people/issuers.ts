@@ -35,6 +35,8 @@ export interface CloudIssuerSources {
   routes: CloudPeopleDependencies;
   /** The Slack person lookups (`aws/broker/decision-press.ts` `slackPersonLookups`); absent: no `chat-slack` method. They record each signed-in person's row in the map they are given. */
   slackLookups?: (signedIn: Map<string, DeveloperRecord>) => SlackPersonLookups;
+  /** The decision card a request is about, for the step-up's binding; default `planCardOf` (coding plans). */
+  cardOf?: (request: ApprovalRequest) => CloudDecisionCard | undefined;
 }
 
 /** A browser session, as the web boundary would see it, or undefined. */
@@ -43,8 +45,21 @@ async function browserCaller(routes: CloudPeopleDependencies, sessionId: string)
   return "ok" in answer ? undefined : answer;
 }
 
+/** The decision card a request is about: the task, the card id and the version shown (the card's `contentVersion`). */
+export interface CloudDecisionCard { taskId: string; cardId: string; contentVersion: string }
+
+/**
+ * The card of a coding plan's request, as the plan card names it (developer-routes/plan-cards.ts: id `approve_plan:<task>`, version the plan artifact's sha256, which is the request's digest). Any other request has no card
+ * here, so a step-up for it is refused until its card is mapped.
+ */
+export function planCardOf(request: ApprovalRequest): CloudDecisionCard | undefined {
+  if (request.kind !== "plan" || request.subject.type !== "task" || !/^[0-9a-f-]{36}$/iu.test(request.subject.id) || !/^[0-9a-f]{64}$/u.test(request.artifactDigest)) return undefined;
+  return { taskId: request.subject.id, cardId: `approve_plan:${request.subject.id}`, contentVersion: request.artifactDigest };
+}
+
 export function cloudApprovalIssuers(sources: CloudIssuerSources): CloudApprovalIssuers {
   const { routes } = sources;
+  const cardOf = sources.cardOf ?? planCardOf;
   const issuers: CloudApprovalIssuers = {
     async [BROWSER_SESSION_METHOD](token) {
       const caller = await browserCaller(routes, token);
@@ -62,8 +77,12 @@ export function cloudApprovalIssuers(sources: CloudIssuerSources): CloudApproval
       const session = await new DecideStore({ documentClient: routes.documentClient, tableName: routes.developer.signInTableName, now: () => routes.now() }).getSession(cookie);
       if (!isDecideGradeSession(session, caller, Math.floor(routes.now() / 1000)) || !/^apr_[0-9a-z]{20}$/u.test(session.approvalId)) return undefined;
       const record = await getAnyApproval(agents, caller.orgId, session.approvalId);
+      // The card the press decides, as the live press names it (`withCardDecideGrade`): this person's pending card_decision record for exactly this card and the version of it shown. A request whose card cannot be
+      // named is refused, never matched loosely.
+      const card = cardOf(request);
+      if (card === undefined) return undefined;
       const bound = record?.kind === "change" && record.status === "PENDING" && Date.parse(record.expiresAt) > routes.now() && record.requestedBy === caller.developerId
-        && record.subject.kind === "card_decision" && record.subject.taskId === request.subject.id;
+        && record.subject.kind === "card_decision" && record.subject.taskId === card.taskId && record.subject.cardId === card.cardId && record.subject.contentVersion === card.contentVersion;
       return bound ? deciderOf(caller) : undefined;
     },
 

@@ -7,7 +7,8 @@
 // The token of every method is checked by its issuer (`issuers.ts`), the functions the routes use; a person or account the proof only CLAIMS is never believed.
 // Not expressed here (owed upstream, `gaps.ts`): the company's sign-in window applies to MEDIUM approvals from outside places, which the port's `signIn` rule (high-risk and rejections) cannot say, so `signIn` is left
 // unset and the window is enforced inside `verify`; and the sole-owner exception, which the port's `selfApprovalAllowed` cannot say.
-import { approvalProofKey, type ApprovalProof, type ApprovalRequest, type ApprovalRequirement, type ApprovalVerdict, type Approvers, type Principal } from "@rovara-code/contracts";
+import { GetCommand } from "@aws-sdk/lib-dynamodb";
+import { approvalProofKey, companyScoped, type ApprovalProof, type ApprovalRequest, type ApprovalRequirement, type ApprovalVerdict, type Approvers, type Principal } from "@rovara-code/contracts";
 import { APPROVAL_DECISION_KINDS, isWriterOrgRole, type ApprovalDeciderRole, type ApprovalDecisionKind, type OrgRole } from "@agentx/cloud-contracts";
 import { evaluateApprovalPlace, type PlaceDependencies } from "../../../approval-place/evaluate.js";
 import { approversRequired, secondPersonOutcome, type ApprovalEligibility, type ApprovalLevels } from "../../../org/approval-by-risk.js";
@@ -48,6 +49,16 @@ export interface CloudApproversDependencies {
   /** What the place rule reads: the sign-in table (who is linked, when they last signed in) and the State table (the company's window). */
   place: PlaceDependencies;
   secondPerson?: (request: ApprovalRequest) => Promise<SecondPersonFacts | undefined>;
+  /** Whether a proof was already used, by its `approvalProofKey`, in the store the caller's commit writes its marker to (`coreProofMarkerReader`). Absent: only this instance's own memory (gaps.ts G3). */
+  proofUsed?: (companyId: string, proofKey: string) => Promise<boolean>;
+}
+
+/** Reads the marker Code's decision gate writes for a used proof (core/decisions/approval-gate.ts `approvalProofMarkerKey`: the company's APPROVAL_PROOF partition, keyed by the proof key), so a proof spent by any instance is refused. */
+export function coreProofMarkerReader(input: { documentClient: { send(command: unknown): Promise<unknown> }; tableName: string }): (companyId: string, proofKey: string) => Promise<boolean> {
+  return async (companyId, proofKey) => {
+    const answer = await input.documentClient.send(new GetCommand({ TableName: input.tableName, Key: { pk: companyScoped(companyId, "APPROVAL_PROOF"), sk: proofKey }, ConsistentRead: true })) as { Item?: unknown };
+    return answer.Item !== undefined;
+  };
 }
 
 const refuse = (reason: string): ApprovalVerdict => ({ approved: false, reason });
@@ -86,6 +97,11 @@ export function createCloudApprovers(deps: CloudApproversDependencies): Approver
       if (issuer === undefined) return refuse("this method is not offered here");
       const proofKey = approvalProofKey(proof);
       if (used.has(proofKey)) return refuse("this proof was already used");
+      try {
+        if (deps.proofUsed !== undefined && await deps.proofUsed(request.companyId, proofKey)) return refuse("this proof was already used");
+      } catch {
+        return refuse("whether this proof was used could not be checked just now");
+      }
       const risk = request.risk;
       if (risk === undefined) return refuse("the request's risk is not known");
 

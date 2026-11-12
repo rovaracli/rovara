@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import type { OrgRole } from "@agentx/cloud-contracts";
 import { effectiveProjectRole } from "../../packages/broker/src/developer/project-roles.js";
 import { createScriptToken } from "../../packages/broker/src/script-tokens/store.js";
+import { mergedRole } from "../../packages/broker/src/org/merge-members.js";
 
 const ID = "a".repeat(64);
 const GRANT = { role: "developer", projectRole: "maintainer" };
@@ -11,7 +12,10 @@ const roleCall = async (role: string): Promise<string> => {
   try {
     await createScriptToken({} as never, { orgId: "org", developerId: ID, orgRole: role as OrgRole } as never, {}, async () => undefined);
     return "made";
-  } catch (error) { return (error as { code?: string }).code === "FORBIDDEN" ? "refused" : "past the role check"; }
+  } catch (error) {
+    const e = error as { code?: string; message?: string };
+    return e.code === "FORBIDDEN" ? `refused: ${String(e.message)}` : "past the role check";
+  }
 };
 
 describe("positive role lists (P3 adoption)", () => {
@@ -26,8 +30,23 @@ describe("positive role lists (P3 adoption)", () => {
   });
 
   it("lets only a writer make a script token: the Auditor and an unknown role are refused at the role check", async () => {
-    expect(await roleCall("auditor")).toBe("refused");
-    expect(await roleCall("superuser")).toBe("refused");
+    expect(await roleCall("auditor")).toContain("An Auditor can't make script tokens.");
+    // An unknown role is not told it is an Auditor.
+    expect(await roleCall("superuser")).toContain("Your company role can't make script tokens.");
+    expect(await roleCall("superuser")).not.toContain("Auditor");
     for (const writer of ["owner", "admin", "member"]) expect(await roleCall(writer), writer).toBe("past the role check");
+  });
+
+  it("keeps the higher-ranked role on a merge exactly as before, and never lets a role name the table does not list win", () => {
+    expect(mergedRole(true, "owner", "member")).toBe("owner");
+    expect(mergedRole(true, "member", "admin")).toBe("admin");
+    expect(mergedRole(true, "admin", "auditor")).toBe("admin");
+    expect(mergedRole(true, "auditor", "member")).toBe("member");
+    expect(mergedRole(false, "owner", "member")).toBe("member");
+    for (const unknown of ["superuser", "constructor", "__proto__", "toString"]) {
+      expect(mergedRole(true, unknown, "auditor"), unknown).toBe("auditor");
+      expect(mergedRole(true, unknown, "member"), unknown).toBe("member");
+      expect(mergedRole(true, "member", unknown), unknown).toBe("member");
+    }
   });
 });

@@ -19,6 +19,8 @@ export const PEOPLE_ORG = TEST_ORG;
 export const OTHER_ORG: OrgId = singleOrgIdForEnv("people-other");
 export const ISSUER = "https://people.example.test/v1/auth";
 export const SLACK_TEAM = "T0PEOPLE1";
+/** The plan digest the step-up's card record shows by default (a test's request carries the same digest). */
+export const STEP_UP_DIGEST = "b".repeat(64);
 const HOUR = 3_600_000;
 
 export interface Person { key: string; developerId: string; orgId: OrgId; role: OrgRole; name: string; sessionId: string; amr: "oidc" | "slack" | "cloud"; slackUserId?: string; revoked?: boolean }
@@ -39,7 +41,7 @@ export interface PeopleWorld {
   linkSlack(person: Person): void;
   setWindow(seconds: number): void;
   /** A decide-grade session for a person (and its pending card_decision record), returning the step-up token "<session>:<cookie>". */
-  stepUp(person: Person, taskId: string, options?: { ageSeconds?: number; used?: boolean; method?: string; orgId?: OrgId; /** The decide session names someone else while the card record is this person's. */ sessionDeveloperId?: string }): Promise<string>;
+  stepUp(person: Person, taskId: string, options?: { ageSeconds?: number; used?: boolean; method?: string; orgId?: OrgId; /** The decide session names someone else while the card record is this person's. */ sessionDeveloperId?: string; /** The card record's card id (default the plan card `approve_plan:<task>`) and version shown (default `STEP_UP_DIGEST`). */ cardId?: string; contentVersion?: string }): Promise<string>;
   slackPress(person: Person, overrides?: Record<string, string>): string;
   slackLookups: (signedIn: Map<string, DeveloperRecord>) => SlackPersonLookups;
 }
@@ -109,7 +111,7 @@ export function createPeopleWorld(options: { edition?: EditionPolicy | "public" 
       const cookie = `${randomUUID()}${randomUUID()}`.replaceAll("-", "");
       const record = await createPendingChange(routes.agents as ApprovalDependencies, {
         orgId: who.orgId, requestId: randomUUID(), requestedBy: who.developerId,
-        subject: { kind: "card_decision", taskId, cardId: `approve_plan:${taskId}`, contentVersion: "v1", returnPath: `/app/tasks/${taskId}` },
+        subject: { kind: "card_decision", taskId, cardId: stepOptions.cardId ?? `approve_plan:${taskId}`, contentVersion: stepOptions.contentVersion ?? STEP_UP_DIGEST, returnPath: `/app/tasks/${taskId}` },
         changes: ["Confirm the high-risk decision you pressed on its card."], approvers: { kind: "rule", rule: "card_decision", candidates: [] }, expiresAt: iso(nowMs + 20 * 60_000),
       } as never);
       const signedInAt = Math.floor(nowMs / 1000) - (stepOptions.ageSeconds ?? 60);

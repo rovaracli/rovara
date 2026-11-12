@@ -5,17 +5,17 @@
 // with the sole-owner exception, and the identity adapter against the routes' own authentication.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import type { ApprovalRequest } from "@rovara-code/contracts";
+import { approvalProofKey, companyScoped, type ApprovalRequest } from "@rovara-code/contracts";
 import { developerOrgKey, editionPolicy, type ApprovalDeciderRole, type ApprovalDecisionKind, type ApprovalPlace, type ApprovalPlaceAnswer, type ApprovalPlaceRisk } from "@agentx/cloud-contracts";
 import {
   API_TOKEN_METHOD, BEARER_SCHEME, BROWSER_SESSION_METHOD, BROWSER_SESSION_SCHEME, BROWSER_STEP_UP_METHOD, CHAT_SLACK_METHOD, CLOUD_APPROVAL_METHODS, PLACE_OF_METHOD,
-  cloudApprovalIssuers, createCloudApprovers, createCloudIdentityProvider, type CloudApprovalMethod, type SecondPersonFacts,
+  cloudApprovalIssuers, coreProofMarkerReader, createCloudApprovers, createCloudIdentityProvider, type CloudApprovalMethod, type SecondPersonFacts,
 } from "../../packages/broker/src/cloud/adapters/people/index.js";
 import { SLACK_DECISION_SESSION_ID, evaluateApprovalPlace } from "../../packages/broker/src/approval-place/evaluate.js";
 import { secondPersonOutcome } from "../../packages/broker/src/org/approval-by-risk.js";
 import { AUDITOR_REFUSED } from "../../packages/broker/src/org/auditor.js";
 import { authenticateDeveloper, authenticateDeveloperSessionId } from "../../packages/broker/src/aws/developer-routes/authentication.js";
-import { PEOPLE_ORG, createPeopleWorld, type PeopleWorld, type Person } from "../support/cloud-people-world.js";
+import { PEOPLE_ORG, STEP_UP_DIGEST, createPeopleWorld, type PeopleWorld, type Person } from "../support/cloud-people-world.js";
 
 const HOUR = 3_600_000;
 const ROLES: readonly ApprovalDeciderRole[] = ["owner", "co-owner", "maintainer", "contributor", "collaborator", "viewer", "none"];
@@ -39,9 +39,12 @@ function ownerRule(c: { role: ApprovalDeciderRole; kind: ApprovalDecisionKind; p
 
 const placeDeps = (world: PeopleWorld) => ({ documentClient: world.db, tableName: "state", signInTableName: "signin", now: world.now });
 
-function approversFor(world: PeopleWorld, role: ApprovalDeciderRole | (() => ApprovalDeciderRole), secondPerson?: SecondPersonFacts) {
+/** For the matrix: every request's card is named the plan card's way, so the matrix tests the place rule for each kind; which cards the adapter can name is tested on its own below. */
+const anyKindCard = (request: ApprovalRequest) => ({ taskId: request.subject.id, cardId: `approve_plan:${request.subject.id}`, contentVersion: request.artifactDigest });
+
+function approversFor(world: PeopleWorld, role: ApprovalDeciderRole | (() => ApprovalDeciderRole), secondPerson?: SecondPersonFacts, cardOf?: typeof anyKindCard) {
   return createCloudApprovers({
-    issuers: cloudApprovalIssuers({ routes: world.routes, slackLookups: world.slackLookups }),
+    issuers: cloudApprovalIssuers({ routes: world.routes, slackLookups: world.slackLookups, ...(cardOf === undefined ? {} : { cardOf }) }),
     deciderRole: async () => (typeof role === "function" ? role() : role),
     place: placeDeps(world),
     ...(secondPerson === undefined ? {} : { secondPerson: async () => secondPerson }),
@@ -49,7 +52,7 @@ function approversFor(world: PeopleWorld, role: ApprovalDeciderRole | (() => App
 }
 
 const requestOf = (over: Partial<ApprovalRequest> = {}): ApprovalRequest => ({
-  companyId: PEOPLE_ORG, requestId: randomUUID(), kind: "plan", subject: { type: "task", id: randomUUID() }, revision: 2, artifactDigest: "b".repeat(64), risk: "low", ...over,
+  companyId: PEOPLE_ORG, requestId: randomUUID(), kind: "plan", subject: { type: "task", id: randomUUID() }, revision: 2, artifactDigest: STEP_UP_DIGEST, risk: "low", ...over,
 });
 
 async function tokenFor(world: PeopleWorld, method: CloudApprovalMethod, who: Person, request: ApprovalRequest): Promise<string> {
@@ -79,7 +82,7 @@ describe("the Approvers adapter answers as today's approval-place rule, for ever
       let allowed = 0;
       for (const role of ROLES) for (const method of CLOUD_APPROVAL_METHODS) for (const risk of RISKS) for (const answer of ANSWERS) for (const kind of KINDS) {
         const request = requestOf({ kind, risk, outcome: answer });
-        const adapter = await approversFor(world, role).verify(request, proofOf(request, method, await tokenFor(world, method, who, request)));
+        const adapter = await approversFor(world, role, undefined, anyKindCard).verify(request, proofOf(request, method, await tokenFor(world, method, who, request)));
         const baseline = await today(world, method, who, { role, kind, risk, answer });
         const rule = ownerRule({ role, kind, place: PLACE_OF_METHOD[method], risk, answer, fresh: method === BROWSER_STEP_UP_METHOD, recent: signIn === "recent" });
         if (adapter.approved !== baseline || baseline !== rule) mismatches.push(`${role} ${method} ${risk} ${answer} ${kind}: adapter ${String(adapter.approved)}, today ${String(baseline)}, rule ${String(rule)}`);
@@ -158,9 +161,32 @@ describe("each Cloud guard holds through the adapter", () => {
     // A decide session of another company.
     request = high();
     expect(await verify(request, await world.stepUp(who, request.subject.id, { orgId: world.people.stranger.orgId }))).toBe(false);
+    // The card record of another card on the same task, or of an older version of this plan.
+    request = high();
+    expect(await verify(request, await world.stepUp(who, request.subject.id, { cardId: `approve_requirements:${request.subject.id}` }))).toBe(false);
+    request = high();
+    expect(await verify(request, await world.stepUp(who, request.subject.id, { contentVersion: "c".repeat(64) }))).toBe(false);
+    // A request whose card cannot be named (not a coding plan, or a subject that is not a task) is refused, not matched loosely.
+    request = requestOf({ risk: "high", kind: "design" });
+    expect(await verify(request, await world.stepUp(who, request.subject.id))).toBe(false);
+    request = requestOf({ risk: "high", subject: { type: "lesson", id: randomUUID() } });
+    expect(await verify(request, await world.stepUp(who, request.subject.id))).toBe(false);
     // The same high request from a plain browser session.
     request = high();
     expect((await approversFor(world, "owner").verify(request, proofOf(request, BROWSER_SESSION_METHOD, who.sessionId))).approved).toBe(false);
+  });
+
+  it("refuses a proof whose marker the decision gate already wrote, from any instance", async () => {
+    const world = createPeopleWorld();
+    const approvers = createCloudApprovers({
+      issuers: cloudApprovalIssuers({ routes: world.routes }), deciderRole: async () => "owner", place: placeDeps(world), proofUsed: coreProofMarkerReader({ documentClient: world.db, tableName: "state" }),
+    });
+    const request = requestOf();
+    const proof = proofOf(request, BROWSER_SESSION_METHOD, world.people.member.sessionId);
+    world.db.set({ pk: companyScoped(PEOPLE_ORG, "APPROVAL_PROOF"), sk: approvalProofKey(proof), entityType: "APPROVAL_PROOF" });
+    expect(await approvers.verify(request, proof)).toEqual({ approved: false, reason: "this proof was already used" });
+    const fresh = requestOf();
+    expect((await approvers.verify(fresh, proofOf(fresh, BROWSER_SESSION_METHOD, world.people.member.sessionId))).approved).toBe(true);
   });
 
   it("refuses a Slack press from a user who never linked a Slack sign-in, or from another workspace", async () => {

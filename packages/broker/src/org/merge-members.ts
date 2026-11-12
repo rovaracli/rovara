@@ -68,6 +68,13 @@ export interface MergeDuplicateMemberResult {
 type Item = Record<string, unknown>;
 type Deps = MergeDuplicateMemberDependencies;
 const ROLE_RANK: Record<OrgRole, number> = { owner: 3, admin: 2, member: 1, auditor: 0 };
+/**
+ * The role the survivor keeps after a merge in the same company: the duplicate's when it ranks higher, else the survivor's. P3-OPEN-ROLES-CLOUD-ADOPTION: the table is read by its own keys only (`ownRoleEntry`), so a name it
+ * does not list (or `constructor`) ranks below every listed role and never wins.
+ */
+export function mergedRole<R extends string>(sameOrg: boolean, duplicateRole: R, survivorRole: R): R {
+  return sameOrg && (ownRoleEntry(ROLE_RANK, duplicateRole) ?? -1) > (ownRoleEntry(ROLE_RANK, survivorRole) ?? -1) ? duplicateRole : survivorRole;
+}
 const invalid = (message: string) => agentXError("CONFIG_INVALID", message);
 const errorName = (error: unknown) => (error instanceof Error ? error.name : undefined);
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -116,8 +123,7 @@ export async function mergeDuplicateMember(deps: Deps, input: MergeDuplicateMemb
   const sameOrg = race === undefined;
   const grantsMoved = sameOrg ? await moveGrants(deps, orgId, survivorId, duplicateId) : 0;
   const overrideMoved = sameOrg ? await moveBudgetOverride(deps, orgId, survivorId, duplicateId) : false;
-  // P3-OPEN-ROLES-CLOUD-ADOPTION: the table is read by its own keys only (`ownRoleEntry`): a name it does not list ranks below every listed role and never wins.
-  const role = sameOrg && (ownRoleEntry(ROLE_RANK, duplicate.role) ?? -1) > (ownRoleEntry(ROLE_RANK, survivor.role) ?? -1) ? duplicate.role : survivor.role;
+  const role = mergedRole(sameOrg, duplicate.role, survivor.role);
   const at = new Date(deps.now()).toISOString();
   try {
     await retire(deps, input, { duplicateOrgId, duplicateRole: duplicate.role, survivorRole: survivor.role, role, at, record, ...(link === undefined ? {} : { link }), ...(race === undefined ? {} : { race }) });

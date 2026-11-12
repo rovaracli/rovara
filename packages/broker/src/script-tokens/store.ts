@@ -155,7 +155,7 @@ const liveCount = (records: ScriptTokenRecord[], nowMs: number) => records.filte
  */
 export async function createScriptToken(deps: ScriptTokenDependencies, caller: ScriptTokenCaller, body: unknown, checkProject: (project: string) => Promise<void>, options: { lifetimeCapSeconds?: number } = {}): Promise<CreatedScriptToken> {
   // P3-OPEN-ROLES-CLOUD-ADOPTION: a positive list; only a writer makes a token.
-  if (!isWriterOrgRole(caller.orgRole)) throw agentXError("FORBIDDEN", "An Auditor can't make script tokens.");
+  if (!isWriterOrgRole(caller.orgRole)) throw agentXError("FORBIDDEN", caller.orgRole === "auditor" ? "An Auditor can't make script tokens." : "Your company role can't make script tokens.");
   const parsed = CreateScriptTokenBodySchema.safeParse(body);
   if (!parsed.success) throw invalidBody(parsed.error.issues[0]);
   const input = parsed.data;
