@@ -98,8 +98,12 @@ describe("the broker's grant to assume a customer's CloudWatch role", () => {
   });
 
   it("a fresh cloud install and an existing one with no explicit value both have automations on (owner decision 149)", () => {
-    const featuresOf = (template: Template) => brokerSettingsIn(Object.entries(template.findResources("AWS::Lambda::Function") as Record<string, { Properties: { Environment?: { Variables?: Record<string, unknown> } } }>)
+    const featuresOf = (template: Template): string | undefined => {
+      const value = brokerSettingsIn(Object.entries(template.findResources("AWS::Lambda::Function") as Record<string, { Properties: { Environment?: { Variables?: Record<string, unknown> } } }>)
       .find(([id]) => /^Broker[0-9A-F]{8}$/.test(id))![1].Properties.Environment?.Variables).webFeatures;
+      expect(value === undefined || typeof value === "string").toBe(true);
+      return value as string | undefined;
+    };
     // The list is a constant of the stack: a new install and an upgrade synthesize the same value, and the engine's own reader (the one the routes and the sweep use) reads it as on.
     const fresh = featuresOf(stack({ cloud: true }));
     const upgraded = featuresOf(stack({ cloud: true }));
