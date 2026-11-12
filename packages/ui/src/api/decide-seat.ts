@@ -1,7 +1,7 @@
 /**
  * Which seat a person decides a coding plan from (approval place, owner decision Q7): the task owner, or a project maintainer (a company owner or admin counts) deciding someone else's plan.
- * The server says it as `decideAs` beside `canDecide` in the task page's access summary. A maintainer is never offered Reject, a run-limit raise or a run-limit acknowledgement (the server refuses
- * all three), and is told the owner will hear about the decision. Absent (an older server) or `"owner"`: nothing changes. A seat word this build does not know is read as the maintainer's, the narrower one.
+ * The server says it as `decideAs` beside `canDecide` in the task page's access summary. A maintainer may approve, ask for changes or reject (owner decision 99: a rejection is judged like a medium approval), but is never offered a run-limit raise or a run-limit
+ * acknowledgement (the server refuses both), and is told the owner will hear about the decision. Absent (an older server) or `"owner"`: nothing changes. A seat word this build does not know is read as the maintainer's, the narrower one.
  */
 export interface DecideSeat { as: "owner" | "maintainer"; /** The task owner's name, when the page has it. */ ownerName?: string | undefined }
 

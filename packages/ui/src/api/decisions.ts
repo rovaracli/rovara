@@ -102,7 +102,8 @@ export function createDecisionsApi(host: AppHost) {
    return resultOf(done(await api.send("POST", path, { requestId: crypto.randomUUID(), shownDigest: decision.digest, reason, ...(includedCommentIds === undefined ? {} : { includedCommentIds }) }, DecisionOutcomeReaderSchema, { retry: "never" })));
   },
   async reject(decision: ReadDecision, reason: DecisionRejectReason): Promise<DecisionResult> {
-   const path = decision.card.risk === "high" ? undefined : decisionActionPath(decision.card, "reject");
+   // A HIGH card has no reject here, except a coding plan's (owner decision 99: a rejection needs no fresh sign-in, so it is offered at every risk).
+   const path = decision.card.risk === "high" && decision.card.kind !== "approve_plan" ? undefined : decisionActionPath(decision.card, "reject");
    if (path === undefined) throw new ApiError(403, "FORBIDDEN", "This action is unavailable.");
    return resultOf(done(await api.send("POST", path, { requestId: crypto.randomUUID(), reason }, DecisionOutcomeReaderSchema, { retry: "never" })));
   },

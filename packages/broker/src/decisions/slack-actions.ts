@@ -3,7 +3,7 @@
 // (ephemeral), in fixed words; nothing from the refusal's own text is shown.
 import { createHash } from "node:crypto";
 import { DecisionCardIdSchema, DecisionDigestSchema } from "@rovara-code/contracts";
-import { DECISION_SLACK_ACTION_IDS, DECISION_SLACK_APPROVE_ACTION, DECISION_SLACK_OPEN_ACTION, DECISION_SLACK_REJECT_ACTION } from "./slack-card.js";
+import { DECISION_SLACK_ACTION_IDS, DECISION_SLACK_APPROVE_ACTION, DECISION_SLACK_OPEN_ACTION, DECISION_SLACK_REJECT_ACTION, DECISION_SLACK_REJECT_PLAN_ACTION } from "./slack-card.js";
 import { decisionCardPath } from "./project.js";
 import type { StatusReply } from "../aws/status-reply.js";
 import { slackApprovalPlaceRefusal, slackRiskPlaceRefusal, slackRunLimitRefusal } from "../aws/slack-refusals.js";
@@ -26,12 +26,15 @@ export function pressToRequest(press: { actionId: string; value: string; actionT
   if (press.actionId === DECISION_SLACK_APPROVE_ACTION) return { surface: "chat", method: "POST", pathname: `${decisionCardPath(id.data)}/approve`, searchParams: new URLSearchParams(), body: { requestId: pressRequestId(id.data, press.actionTs), shownDigest: digest.data, ...(acknowledged === undefined ? {} : { acknowledgedRunLimitUsd: acknowledged }) } };
   // "Not now" in a chat is a dismissal, never a rejection (approval place, A-49): it goes to the dismiss route, which decides nothing. (The button keeps its old action id so messages already posted still work.)
   if (press.actionId === DECISION_SLACK_REJECT_ACTION) return { surface: "chat", method: "POST", pathname: `${decisionCardPath(id.data)}/dismiss`, searchParams: new URLSearchParams(), body: { requestId: pressRequestId(id.data, press.actionTs), shownDigest: digest.data } };
+  // Owner decision 99: Reject on a coding plan's message is a real rejection (judged on the server like a medium approval); its body carries the digest of the message, and the route refuses it for any kind but a coding plan.
+  if (press.actionId === DECISION_SLACK_REJECT_PLAN_ACTION) return { surface: "chat", method: "POST", pathname: `${decisionCardPath(id.data)}/reject`, searchParams: new URLSearchParams(), body: { requestId: pressRequestId(id.data, press.actionTs), reason: "other", shownDigest: digest.data } };
   return undefined;
 }
 
 export const DECISION_SLACK_TEXT = Object.freeze({
   approved: "Approved.",
   rejected: "Noted. Not now.",
+  planRejected: "Rejected. The task stops here.",
   dismissed: "Noted. It stays waiting for you.",
   openFirst: "Open the evidence on the web first, then approve it there.",
   changed: "This changed since the message was posted. Open it on the web to see the current version.",
@@ -78,7 +81,7 @@ export function pressAnswerText(press: SlackPress, reply: StatusReply | undefine
   const body = reply.body as { outcome?: unknown; confirmUrl?: unknown };
   if (reply.statusCode === 202 && body.outcome === "needs_confirmation" && typeof body.confirmUrl === "string") return `${DECISION_SLACK_TEXT.notDecided} ${body.confirmUrl}`;
   if (reply.statusCode === 200 && body.outcome === "approved") return DECISION_SLACK_TEXT.approved;
-  if (reply.statusCode === 200 && body.outcome === "rejected") return DECISION_SLACK_TEXT.rejected;
+  if (reply.statusCode === 200 && body.outcome === "rejected") return press.actionId === DECISION_SLACK_REJECT_PLAN_ACTION ? DECISION_SLACK_TEXT.planRejected : DECISION_SLACK_TEXT.rejected;
   if (reply.statusCode === 200 && body.outcome === "dismissed") return DECISION_SLACK_TEXT.dismissed;
   return DECISION_SLACK_TEXT.failed;
 }

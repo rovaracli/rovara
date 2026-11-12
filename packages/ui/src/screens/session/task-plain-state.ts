@@ -96,9 +96,9 @@ export function approveLine(cards: readonly ReadDecision[], seat?: DecideSeat): 
  const card = cards[0]?.card;
  if (card === undefined) return undefined;
  const extra = cards.length > 1 ? " (" + String(cards.length) + " decisions)" : "";
- // A maintainer (approval place): approve and ask for changes, never reject, and the run limit stays the owner's: a plan that would raise it cannot be approved here.
- if (isMaintainerSeat(seat)) return runLimitRaise(card)?.raises === true ? "You can ask for changes as a maintainer · " + riskWords(card.risk) + " · the task owner decides the run limit" + extra
-  : (mayApproveHere(card) ? "✓ You can approve or ask for changes as a maintainer · " : "You can decide this on its card as a maintainer · ") + riskWords(card.risk) + extra;
+ // A maintainer (approval place): approve, ask for changes or reject (owner decision 99), and the run limit stays the owner's: a plan that would raise it cannot be approved here.
+ if (isMaintainerSeat(seat)) return runLimitRaise(card)?.raises === true ? "You can ask for changes or reject as a maintainer · " + riskWords(card.risk) + " · the task owner decides the run limit" + extra
+  : (mayApproveHere(card) ? "✓ You can approve, ask for changes or reject as a maintainer · " : "You can decide this on its card as a maintainer · ") + riskWords(card.risk) + extra;
  if (card.risk === "high") return "You can decide this on its card · " + riskWords("high") + ", needs a recent sign-in" + extra;
  if (mayApproveHere(card)) return "✓ You can approve · " + riskWords(card.risk) + extra;
  return "You can decide this on its card · " + riskWords(card.risk) + extra;
