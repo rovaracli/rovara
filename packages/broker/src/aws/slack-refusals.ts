@@ -2,7 +2,7 @@ import { isApprovalPlaceWords } from "../approval-place/words.js";
 import { FEEDBACK_REVIEW_RETRY_BUSY, FEEDBACK_REVIEW_RETRY_CHANGED } from "./developer-tasks/feedback-capture.js";
 import { FEEDBACK_CHANGED_SINCE_CARD } from "./developer-tasks/feedback-review.js";
 import { PROJECT_RECORD_NEEDS_ADMIN } from "./broker-shared.js";
-import { WORKFLOW_ACTIONABLE_REFUSALS } from "../developer/workflow-actions.js";
+import { STOP_WHILE_PUBLISHING_REFUSAL, STOP_WHILE_PUBLISHING_TEXT, WORKFLOW_ACTIONABLE_REFUSALS } from "../developer/workflow-actions.js";
 import { SLACK_ACCOUNT_NOT_LINKED_NOTICE } from "./slack-workflow-choice.js";
 
 /**
@@ -16,6 +16,7 @@ const SLACK_PLAIN_REFUSALS: ReadonlyMap<string, string> = new Map([
   [FEEDBACK_REVIEW_RETRY_CHANGED, FEEDBACK_REVIEW_RETRY_CHANGED],
   [FEEDBACK_CHANGED_SINCE_CARD, FEEDBACK_CHANGED_SINCE_CARD],
   [PROJECT_RECORD_NEEDS_ADMIN, PROJECT_RECORD_NEEDS_ADMIN],
+  [STOP_WHILE_PUBLISHING_REFUSAL, STOP_WHILE_PUBLISHING_TEXT],
 ]);
 /** The refusals of an approval or a retry that name what to do next (Ruling AU), said as sentences, never as "out of date". */
 const SLACK_ACTIONABLE_REASONS: ReadonlySet<string> = new Set(Object.values(WORKFLOW_ACTIONABLE_REFUSALS));
