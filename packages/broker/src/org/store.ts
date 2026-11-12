@@ -5,6 +5,7 @@ import { approvalGrantChange, approvalCompanyChange } from "./approval-membershi
 import { clearWorkingBranchSaveReceipts } from "./project-working-branch-receipt-cleanup.js";
 import { budgetDocumentFence } from "./budget-snapshot.js";
 import { inviteCreateBodyHash } from "./invite-creation.js";
+import { sameEmail } from "./sign-in.js";
 import { grantWrite, peopleRevisionBump, projectNotArchivedCheck, projectOpenState, readPeopleRevision } from "./project-members.js";
 import { grantRoleOf } from "../developer/project-roles.js";
 import { takeRateAt } from "../developer/page-comments.js";
@@ -36,6 +37,7 @@ const INVITE_PROJECT_CLOSED_MESSAGE = "That project isn't taking new people. Cho
 /** A-31: a company member (not an owner or admin, and not the Auditor, who holds no project access). */
 const isPlainMember = (role: unknown): boolean => role === "member";
 const ACCEPT_ATTEMPTS = 3;
+const INVITE_WRONG_EMAIL_MESSAGE = "this invite was sent to a different email address; sign in with that address";
 const ACCEPT_STALE_MESSAGE = "The invite's project changed while you joined. Open the invite link again.";
 const NOT_EXISTS = "attribute_not_exists(pk)";
 
@@ -414,13 +416,15 @@ export class OrgStore {
    * archived or removed since joins the company only and says why (`projectNote`). A project invite a maintainer made counts only while that person still maintains the
    * project (or has become an owner or admin): otherwise it is INVITE_INVALID, as a revoked one is.
    */
-  async acceptInvite(input: { tokenHash: string; developerId: string; email?: string }): Promise<{ orgId: OrgId; role: OrgRole; project?: InviteProject; projectNote?: InviteProjectNote }> {
+  async acceptInvite(input: { tokenHash: string; developerId: string; email?: string; /** The sign-in's verified email: an email-targeted invite joins only that address (ruling R7, checked here as well as by the sign-in). */ verifiedEmail?: string }): Promise<{ orgId: OrgId; role: OrgRole; project?: InviteProject; projectNote?: InviteProjectNote }> {
     const inviteKey = this.inviteKeyOf(input.tokenHash);
     if (inviteKey === undefined) throw inviteInvalid();
     for (let attempt = 0; attempt < ACCEPT_ATTEMPTS; attempt += 1) {
       const invite = await this.get(inviteKey) as (Item & OrgInviteRecord) | undefined;
       const nowIso = this.iso();
       if (invite === undefined || invite.revokedAt !== undefined || invite.acceptedAt !== undefined || invite.expiresAt <= nowIso) throw inviteInvalid();
+      // Defence in depth (review a): an invite written for one address is never used by a sign-in that can't vouch for that same address, whoever calls the store.
+      if (typeof invite.email === "string" && (input.verifiedEmail === undefined || !sameEmail(invite.email, input.verifiedEmail))) throw coded("INVITE_WRONG_EMAIL", INVITE_WRONG_EMAIL_MESSAGE);
       const { orgId, role } = invite;
       const plan = await this.inviteProjectPlan(invite, input.developerId, input.tokenHash, nowIso);
       const event = await tryAuditEvent(this.deps(), () => auditMemberJoined({

@@ -109,6 +109,14 @@ export function projectNotArchivedCheck(deps: { tableName: string }, orgId: OrgI
   } };
 }
 
+/**
+ * A-31 review L5: whether this person maintains the project by their own grant: the one authority a company member's project invite rests on (the invite store's
+ * own test). A maintainer through a Slack channel, or an owner or admin by company role, does not count here.
+ */
+export async function maintainsByGrant(deps: { documentClient: Send; tableName: string }, orgId: OrgId, developerId: string, project: string): Promise<boolean> {
+  return grantRoleOf(await readGrant(deps, orgId, developerId, project)) === "maintainer";
+}
+
 /** An org's members and their org roles. */
 async function orgMembers(deps: { documentClient: Send; tableName: string }, orgId: OrgId): Promise<Array<{ developerId: string; role: OrgRole }>> {
   const members: Array<{ developerId: string; role: OrgRole }> = [];

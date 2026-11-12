@@ -6,11 +6,11 @@
 import { agentXError, projectAllows, type ProjectRole } from "@rovara-code/contracts";
 import { PROJECT_PEOPLE_BROWSER_MESSAGE, PutProjectPersonBodySchema, projectRoleFloor, RemoveProjectPersonBodySchema, type ProjectPeopleRole, type ProjectPeopleView, type ProjectPeopleViewer, type ProjectPersonChangeResponse, type ProjectPersonRemoveResponse } from "@agentx/cloud-contracts";
 import { logDeveloperEvent } from "../../developer/log.js";
-import { projectMemberRoleOf, projectOpenState, readPeopleRevision, removeProjectMember, setProjectMember, type ProjectMemberChangeDependencies } from "../../org/project-members.js";
+import { maintainsByGrant, projectOpenState, readPeopleRevision, removeProjectMember, setProjectMember, type ProjectMemberChangeDependencies } from "../../org/project-members.js";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "./types.js";
 import { bodyError } from "./common.js";
 import { projectMembersDepsOf } from "./project-list.js";
-import { notifyProjectMemberChanged, projectRoleForRoute, readProjectMembers } from "./project-members.js";
+import { notifyProjectMemberChanged, projectMemberRoleForRoute, projectRoleForRoute, readProjectMembers } from "./project-members.js";
 
 const PEOPLE_PATH = /^\/v1\/app\/projects\/([^/]+)\/people(?:\/([a-f0-9]{64}))?$/;
 export const isProjectPeoplePath = (pathname: string): boolean => PEOPLE_PATH.test(pathname);
@@ -24,10 +24,11 @@ const MANAGE_MESSAGE = "only a project maintainer can change who is in a project
 const isCompanyAdmin = (caller: Pick<DeveloperCaller, "orgRole">): boolean => caller.orgRole === "owner" || caller.orgRole === "admin";
 
 /** What the viewer may do here, from their live project role (read on this request) and their company role. */
-export function peopleViewerOf(caller: Pick<DeveloperCaller, "orgRole">, role: ProjectRole, open: boolean, exact?: ProjectPeopleRole): ProjectPeopleViewer {
+export function peopleViewerOf(caller: Pick<DeveloperCaller, "orgRole">, role: ProjectRole, open: boolean, exact?: ProjectPeopleRole, maintainerByGrant = false): ProjectPeopleViewer {
   const manage = projectAllows(role, "manage_members");
   const admin = isCompanyAdmin(caller);
-  const canInvite = open && (admin || manage);
+  // Review L5: exactly the invite store's rule: an owner or admin, or a company member who maintains the project by their own grant (not through a Slack channel).
+  const canInvite = open && (admin || (caller.orgRole === "member" && maintainerByGrant));
   // Display only: every power above and below is judged on the floor `role`, never on the exact role.
   const projectRole: ProjectPeopleRole = exact ?? role;
   return {
@@ -45,12 +46,14 @@ function changeDepsOf(deps: DeveloperRouteDependencies): ProjectMemberChangeDepe
 
 /** `GET .../people`: the roster with the revision read FIRST, so a change in between makes the web's next write stale rather than silently based on an older roster. */
 async function getProjectPeople(deps: DeveloperRouteDependencies, caller: DeveloperCaller, rawName: string): Promise<ProjectPeopleView> {
-  const { name, role } = await projectRoleForRoute(deps, caller, rawName);
+  // Review L1: one read of the caller's role (the exact role and its floor together), so the page never shows a floor and an exact role that disagree.
+  const { name, role, memberRole } = await projectMemberRoleForRoute(deps, caller, rawName);
   const revision = await readPeopleRevision(deps, caller.orgId, name);
   const { members } = await readProjectMembers(deps, caller, name);
   const open = await projectOpenState(deps, caller.orgId, name) === "open";
-  const exact = await projectMemberRoleOf(projectMembersDepsOf(deps), caller.orgId, name, caller);
-  return { project: name, members, revision, viewer: peopleViewerOf(caller, role, open, exact) };
+  // Review (b): the caller's OWN id only, the id set the invite store (`createInvite`) and the invite route's authority read; a grant on a merged-away id counts on neither side.
+  const byGrant = await maintainsByGrant(deps, caller.orgId, caller.developerId, name);
+  return { project: name, members, revision, viewer: peopleViewerOf(caller, role, open, memberRole, byGrant) };
 }
 
 async function putProjectPerson(deps: DeveloperRouteDependencies, caller: DeveloperCaller, rawName: string, developerId: string, body: unknown): Promise<ProjectPersonChangeResponse> {

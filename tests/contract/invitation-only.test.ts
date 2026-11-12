@@ -319,7 +319,7 @@ describe("an invite works when the cloud pool is admin-create-only", () => {
     const h = harness();
     const orgId = await acme(h);
     const token = await inviteTo(h, orgId, "bea@example.com");
-    await h.orgs.acceptInvite({ tokenHash: inviteTokenHash(token), developerId: dev("c") });
+    await h.orgs.acceptInvite({ tokenHash: inviteTokenHash(token), developerId: dev("c"), verifiedEmail: "bea@example.com" });
     expect((await get(h, `/v1/auth/join/start?invite=${token}`)).statusCode).toBe(410);
     expect((await post(h, { invite: "A".repeat(43), email: "carl@x.dev" })).statusCode).toBe(404);
     expect(h.cognito.calls).toHaveLength(0);

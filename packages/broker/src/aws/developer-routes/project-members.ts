@@ -1,12 +1,12 @@
 import { logDeveloperEvent } from "../../developer/log.js";
 import { nameResolverOf, replacementNamesFrom } from "../../developer/name-resolver.js";
 import { AgentXNameSchema, agentXError, projectAllows, type ProjectMemberRemoveResponse, type ProjectSlackChannelRemoveResponse, type ProjectSlackChannelResponse, type ProjectRole, type OrgId, RemoveProjectSlackChannelBodySchema, RemoveProjectMemberBodySchema } from "@rovara-code/contracts";
-import { PROJECT_ROLE_ORDER, PutProjectMemberBodySchema, projectRoleFloor, type ProjectMember, type ProjectMemberChangeResponse, type ProjectMembersResponse } from "@agentx/cloud-contracts";
+import { PROJECT_ROLE_ORDER, PutProjectMemberBodySchema, projectRoleFloor, type ProjectRole as CloudProjectRole, type ProjectMember, type ProjectMemberChangeResponse, type ProjectMembersResponse } from "@agentx/cloud-contracts";
 import { unbindProjectChannel, type ProjectSlackChannelDependencies } from "../../org/slack-binding.js";
 import { listProjectMembers, removeProjectMember, setProjectMember, survivorOf } from "../../org/project-members.js";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "./types.js";
 import { PROJECT_NOT_FOUND_IN_APP, bodyError, signInStoreOf } from "./common.js";
-import { REVISION_READS_AT_ONCE, latestDefinition, mapLimit, projectMembersDepsOf, visibleProjectRoles } from "./project-list.js";
+import { REVISION_READS_AT_ONCE, latestDefinition, mapLimit, projectMembersDepsOf, visibleMemberRoles, visibleProjectRoles } from "./project-list.js";
 
 /** The caller's role in a project named in a route's path, or the same 404 PROJECT_NOT_FOUND as no access and no such project (never 403). */
 export async function projectRoleForRoute(deps: DeveloperRouteDependencies, caller: DeveloperCaller, rawName: string): Promise<{ name: string; role: ProjectRole }> {
@@ -19,6 +19,20 @@ export async function projectRoleForRoute(deps: DeveloperRouteDependencies, call
   return { name, role };
 }
 
+
+/**
+ * Review L1: the caller's EXACT role in a project named in the path (one read, `visibleMemberRoles`), with its floor; the same 404 rules as `projectRoleForRoute`, which reads the
+ * same grants and channels, so the floor here is always the role every power is judged by.
+ */
+export async function projectMemberRoleForRoute(deps: DeveloperRouteDependencies, caller: DeveloperCaller, rawName: string): Promise<{ name: string; role: ProjectRole; memberRole: CloudProjectRole }> {
+  const notFound = () => agentXError("PROJECT_NOT_FOUND", PROJECT_NOT_FOUND_IN_APP);
+  let name: string;
+  try { name = decodeURIComponent(rawName); } catch { throw notFound(); }
+  if (!AgentXNameSchema.safeParse(name).success) throw notFound();
+  const memberRole = (await visibleMemberRoles(deps, caller, name)).get(name);
+  if (memberRole === undefined || await latestDefinition(deps, caller.orgId, name) === undefined) throw notFound();
+  return { name, role: projectRoleFloor(memberRole), memberRole };
+}
 
 /**
  * `GET /v1/app/projects/{name}/members`: everyone with a role in the project and where it comes from, for anyone who can see the project.
