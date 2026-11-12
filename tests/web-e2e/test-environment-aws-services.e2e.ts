@@ -17,6 +17,11 @@ async function toTheProposal(page: Page, context: BrowserContext, request: APIRe
 for (const [width, height] of [[390, 844], [1280, 800]] as const) test(`a maintainer picks AWS services for an emulated dependency at ${String(width)}px`, async ({ page, context, request, baseURL }) => {
  await page.setViewportSize({ width, height });
  const section = await toTheProposal(page, context, request, baseURL);
+
+ // The WHOLE dependency row fits the screen (name, variables, picker summary, seed field), not only the picker.
+ const rowFits = async () => section.getByRole("list", { name: "Services the tests use" }).evaluate((list, limit) => [...list.querySelectorAll<HTMLElement>("*")].filter(node => node.getBoundingClientRect().right > limit + 1).map(node => node.tagName + "." + node.className), width);
+ expect(await rowFits()).toEqual([]);
+ expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
  await section.getByText(/^AWS services \(1\)/).click();
  const picker = section.getByRole("group", { name: "AWS services for this dependency" });
  await expect(picker.getByText(/serves \d+ AWS services/)).toBeVisible();
@@ -25,12 +30,14 @@ for (const [width, height] of [[390, 844], [1280, 800]] as const) test(`a mainta
  await picker.getByLabel("Search AWS services").fill("kinesis");
  await picker.getByRole("checkbox", { name: /kinesis/ }).first().check();
  await expect(picker.getByRole("status").first()).toHaveText(/2 picked/);
- // Nothing of the picker sits past the screen's edge (the seed field of the same dependency is a separate, older control).
+ // Nothing of the picker sits past the screen's edge.
  const wide = await picker.evaluate((group, limit) => [...group.querySelectorAll<HTMLElement>("*"), group].filter(node => node.getBoundingClientRect().right > limit + 1).map(node => node.tagName), width);
  expect(wide).toEqual([]);
  const box = await picker.getByRole("checkbox", { name: /kinesis/ }).first().evaluate(node => { const label = (node as HTMLInputElement).labels![0]!.getBoundingClientRect(); return { height: label.height, right: label.right }; });
  expect(box.height).toBeGreaterThanOrEqual(44);
  expect(box.right).toBeLessThanOrEqual(width);
+ expect(await rowFits()).toEqual([]);
+ expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
  await evidenceShot(page, { path: test.info().outputPath(`aws-services-${String(width)}.png`), fullPage: true });
  for (const theme of ["light", "dark"] as const) await checkA11y(page, { theme });
  await picker.getByRole("button", { name: "Save the AWS services" }).click();

@@ -212,7 +212,8 @@ function DependencyRows({ dependencies, seeds, busy, canEdit, onSeed, proposal, 
   return <><h4>Services the tests use</h4><ul aria-label="Services the tests use">{dependencies.map((dependency) => {
     const files = dependency.seeds.flatMap((seed) => ("fixturePath" in seed ? [seed.fixturePath] : []));
     const field = seeds.find((entry) => entry.id === dependency.id);
-    return <li key={dependency.id}>
+    // A block, not the list item's flex row of the page style: the row's paragraphs, picker and seed field stack, and long names and paths wrap inside the screen (a phone at 390 px has no sideways scroll).
+    return <li key={dependency.id} style={{ display: "block", minWidth: 0, overflowWrap: "anywhere" }}>
       <p><strong><VisibleText text={dependency.name} /></strong> ({dependency.kind}), <VisibleText text={backingWords(dependency)} /></p>
       {dependency.connect.env.length > 0 && <p className="rv-proposal-meta">Connection variables the tests get: {dependency.connect.env.map((entry, at) => <span key={entry.name}>{at > 0 ? ", " : ""}<code><VisibleText text={entry.name} /></code></span>)}</p>}
       {dependency.connect.hostAliases.length > 0 && <p className="rv-proposal-meta">Reached at: {dependency.connect.hostAliases.map((alias, at) => <span key={alias}>{at > 0 ? ", " : ""}<code><VisibleText text={alias} /></code></span>)}</p>}
@@ -360,7 +361,7 @@ const seedLinesOf = (text: string): string[] => text.split("\n").map((line) => l
 function SeedField({ dependency, busy, onSave }: { dependency: Proposal["dependencySeeds"][number]; busy: boolean; onSave: (dependencyId: string, commands: string[]) => Promise<void> }) {
   const [text, setText] = useState(dependency.commands.join("\n"));
   const changed = seedLinesOf(text).join("\n") !== dependency.commands.join("\n");
-  return <div className="rv-proposal-card">
+  return <div className="rv-proposal-card" style={{ maxWidth: "100%", boxSizing: "border-box" }}>
     <TextArea label={`Fill ${dependency.name} with test data`} hint="The commands that fill the test database, one per line, in the order they run, for example npm run seed. They run against the test database inside the test environment, never in setup. Leave it empty if the tests need no data." value={text} rows={Math.min(8, Math.max(2, dependency.commands.length + 1))} onChange={(event) => setText(event.target.value)} />
     <Button busy={busy} disabled={!changed} onClick={() => { void onSave(dependency.id, seedLinesOf(text)); }}>Save the test data commands</Button>
   </div>;
