@@ -59,7 +59,8 @@ function roleAllowsKey(statements: readonly Statement[], action: string | undefi
     if (action !== undefined && !actions.some((candidate) => globToRegExp(candidate.toLowerCase()).test(`dynamodb:${action}`.toLowerCase()))) return false;
     const condition = statement.Condition;
     if (condition === undefined) return true;
-    const conditionKeys = Object.keys(condition);
+    // `Null` on the leading key only refuses an absent key (the style of the newer grants); it widens nothing.
+    const conditionKeys = Object.keys(condition).filter((kind) => kind !== "Null");
     // Only the LeadingKeys form this repository writes is understood; any other condition is not read as an allowance (fails closed).
     if (conditionKeys.length !== 1 || conditionKeys[0] !== "ForAllValues:StringLike") return false;
     const patterns = list(condition["ForAllValues:StringLike"]?.["dynamodb:LeadingKeys"]);

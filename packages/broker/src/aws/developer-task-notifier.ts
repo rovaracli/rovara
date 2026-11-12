@@ -109,10 +109,11 @@ async function deliverSettingsProof(deps: NotifierDependencies, notice: Notice):
   if (proofCheckId === undefined || project === undefined || slackUserId === undefined || !SLACK_USER_ID.test(slackUserId)) return "invalid";
   const marker = settingsProofMarker(notice.id);
   if ((await getItem<NoticeMarker>(deps, marker))?.deliveredAt !== undefined) return "delivered";
-  const reason = proofReason?.slice(0, 400);
+  // The reason is a check's own output (a command's last lines): escaped for Slack, so a `<http://x|click>` in it is shown as text and never becomes a link or a mention.
+  const reason = proofReason === undefined ? undefined : slackText(proofReason.slice(0, 400));
   const text = notice.proofPart === "held"
-    ? `The setup change you sent for \`${project}\` was not saved${reason === undefined ? "" : `: ${reason}`}. The project keeps the commands it had.`
-    : `The setup commands you saved for \`${project}\` did not pass the check on a fresh machine${reason === undefined ? "" : `: ${reason}`}. Open the project's setup in Rovara to go back to the last proven setup.`;
+    ? `The setup change you sent for \`${slackText(project)}\` was not saved${reason === undefined ? "" : `: ${reason}`}. The project keeps the commands it had.`
+    : `The setup commands you saved for \`${slackText(project)}\` did not pass the check on a fresh machine${reason === undefined ? "" : `: ${reason}`}. Open the project's setup in Rovara to go back to the last proven setup.`;
   await deps.post({ channel: slackUserId, text });
   // The message was sent; if this write fails a repeat of the delivery may send it once more, which only repeats the words.
   await putMarker(deps, marker);

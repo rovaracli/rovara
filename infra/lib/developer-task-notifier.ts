@@ -183,14 +183,31 @@ export class DeveloperTaskNotifier extends Construct {
     this.function.addToRolePolicy(new iam.PolicyStatement({
       actions: ["dynamodb:GetItem", "dynamodb:UpdateItem"],
       resources: [props.state.tableArn],
-      conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["NOTIFY_DM"] } },
+      conditions: {
+        "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["NOTIFY_DM"] },
+        Null: { "dynamodb:LeadingKeys": "false" },
+      },
     }));
     // TE-4: a project's settings-proof DM ("your saved setup commands failed their check") is told once. The words come from the stream record, so the notifier never touches the project's partition
     // (ORG#<org>#PROJECT#<name>, which also holds the project's revisions and setup records). Its own once-marker is read and put under NOTIFY_SETTINGS_PROOF#<digest>: Get and Put, nothing else.
     this.function.addToRolePolicy(new iam.PolicyStatement({
       actions: ["dynamodb:GetItem", "dynamodb:PutItem"],
       resources: [props.state.tableArn],
-      conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["NOTIFY_SETTINGS_PROOF#*"] } },
+      conditions: {
+        "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["NOTIFY_SETTINGS_PROOF#*"] },
+        Null: { "dynamodb:LeadingKeys": "false" },
+      },
+    }));
+    // S2 owner-stopped DM: before it tells a co-owner "you can take it over" the notifier asks canTakeOverNow (developer/take-over-eligible.ts) whether they still can: their company membership row (partition
+    // ORG#<org>, sk MEMBER#<dev>) and their project grant (partition ORG#<org>#MEMBER#<dev>), each one GetItem by key. Read only, org keys only. IAM limits by partition key, so this reads the org's own
+    // partition and each member's grant partition and nothing written; without it the DM was refused (AccessDenied) and never sent.
+    this.function.addToRolePolicy(new iam.PolicyStatement({
+      actions: ["dynamodb:GetItem"],
+      resources: [props.state.tableArn],
+      conditions: {
+        "ForAllValues:StringLike": { "dynamodb:LeadingKeys": [`ORG#${orgPattern}`, `ORG#${orgPattern}#MEMBER#*`] },
+        Null: { "dynamodb:LeadingKeys": "false" },
+      },
     }));
     // C7: the State table's stream has two readers, the outbox publisher (control-plane.ts,
     // OutboxStreamMapping) and this notifier: the per-shard maximum AWS recommends. Later phases

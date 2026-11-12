@@ -442,18 +442,22 @@ describe("the named TEST proof-only installation gate", () => {
     // GetItem + PutItem for the leading key NOTIFY_SETTINGS_PROOF#* only (the settings-proof DM's own once-marker; the project's partition is not granted). Checked first: with infra/lib/developer-task-notifier.ts
     // put back to integ/0515's and the named snapshot at integ's, all three tests (this one, named-templates, legacy-templates) pass on integ's own pins. The named snapshot shows exactly those two statements
     // added. Legacy did not move.
+    // 2026-11-12 (0.5.15, fix/0515-notifier-iam-2, on integ/0515 387e4dc96): the named and foreign digests were retaken from the values the test reports, after THREE intended changes to the developer task
+    // notifier's role: a GetItem-only statement for the leading keys ORG#org_* and ORG#org_*#MEMBER#* (the owner-stopped DM reads a person's membership and project grant, and was refused), and the Null
+    // guard on the two statements added at 387e4dc96 (NOTIFY_DM, NOTIFY_SETTINGS_PROOF#*). Checked first: with infra/lib/developer-task-notifier.ts put back to integ/0515's, all three tests (this one,
+    // named-templates, legacy-templates) pass on integ's own pins. The named snapshot shows exactly the one statement added and the two Null guards. Legacy did not move.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "488be04a1e6f6aa411ea70910f81facab33c8a37172e87738e22f6ebebe03038",
-        withoutRoute: "8e4c7612bcf482c53de692df54fccaf996e579119433e03e858f33d8fb2ea84c",
+        withRoute: "9cefca6c3892a014ef4de2d3922c7eb8415bda987a5dc257f68a5175de03e3f3",
+        withoutRoute: "36dcbf77fde7fa76392fa5edd38f70278ad13a077148713fb8eccfeec96c68f1",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "c3a99a4db5b6095330466948360a71d7e9e6324e24e2fe3a2f34a9cd451eade8",
-        withoutRoute: "e2c9a3c54784f15f2a881efe0db040057d6b791f9ef7549eb92903b28b323f5b",
+        withRoute: "20f20fb6bcef9031d0dbb589766837ef76f76596d1d63f533634d8e8b7ddb995",
+        withoutRoute: "dfff40ed4e8053f65a7249c251567c28ac246bca82f0028bbb9b7499f8cfdf2a",
       },
       {
         label: "legacy",
