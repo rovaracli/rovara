@@ -22,7 +22,8 @@ describe("the permission table", () => {
     const table = Object.fromEntries(ProjectRoleSchema.options.map((role) => [role, ALL.filter((action) => projectAllows(role, action))]));
     expect(table).toEqual({
       maintainer: [...CODE_PERMISSIONS, "answer_questions", "approve_product_decisions", "comment", "ask"],
-      contributor: ["view", "start_tasks", "answer_questions", "comment"],
+      // Decision 104: a contributor also uses the live Ask.
+      contributor: ["view", "start_tasks", "answer_questions", "comment", "ask"],
       // Decision 103: a collaborator comments and uses the live Ask; a viewer does neither.
       collaborator: ["view", "answer_questions", "approve_product_decisions", "comment", "ask"],
       viewer: ["view"],

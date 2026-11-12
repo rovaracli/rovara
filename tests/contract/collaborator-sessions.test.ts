@@ -3,14 +3,14 @@
 // stopping, sharing, starting work or agents.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { ASK_RATE, projectMemberKey, type AgentSessionRecord } from "@rovara-code/contracts";
+import { ASK_RATE, projectMemberKey, sessionRateKey, type AgentSessionRecord } from "@rovara-code/contracts";
 import { sendSessionMessage, type SessionMessageDependencies } from "../../packages/broker/src/agent-sessions/messages.js";
 import { memberMay, requireSessionLevel, resolveSessionAccess, sessionActionsFor, sessionAskLevelOf } from "../../packages/broker/src/agent-sessions/access.js";
 import { submitAsk, type AskDependencies } from "../../packages/broker/src/agent-sessions/ask.js";
 import { mayComment, pageAccess } from "../../packages/broker/src/developer/task-access.js";
 import type { DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
-import { MIA, ORG_A, PRIYA, ZED, sessionWorld } from "../support/agent-session-world.js";
+import { ARJUN, MIA, ORG_A, PRIYA, ZED, sessionWorld } from "../support/agent-session-world.js";
 
 // Zed is a member of org A with no project role in sessionWorld; here he is made a collaborator on `web` (the grant row a collaborator has: role viewer, projectRole collaborator).
 function world() {
@@ -111,5 +111,25 @@ describe("comments on a task page (decision 103)", () => {
     // A collaborator is offered commenting and nothing else (no suggesting, deciding or asking AgentX).
     expect(pageAccess({ task, role: "viewer", memberRole: "collaborator", ownerActorIds: [] })).toMatchObject({ canComment: true, canSuggest: false, canDecide: false, canAsk: false });
     expect(pageAccess({ task, role: "viewer", ownerActorIds: [] })).toMatchObject({ canComment: false });
+  });
+});
+
+describe("the live Ask for a contributor who can only view the session (decision 104)", () => {
+  it("lets a view-only contributor ask, spending their own rate like anyone's Ask; a viewer still cannot", async () => {
+    const t = world();
+    const access = await resolveSessionAccess(t.access, t.w.caller(ARJUN), t.made.sessionId);
+    expect(access).toMatchObject({ level: "view", projectRole: "contributor", memberRole: "contributor" });
+    expect((await t.ask(ARJUN)).state).toBe("queued");
+    expect(t.w.db.get(sessionRateKey(ORG_A, t.made.sessionId, ARJUN, "ask"))?.["count"]).toBe(1);
+    expect(await sessionAskLevelOf(t.access, t.w.caller(ARJUN), t.made.record as unknown as AgentSessionRecord)).toBe("use");
+    await expect(t.ask(MIA)).rejects.toMatchObject({ code: "SESSION_LEVEL_REQUIRED" });
+  });
+
+  it("gives a view-only contributor no other use-level action: no steering, no stopping", async () => {
+    const t = world();
+    await expect(sendSessionMessage({ documentClient: t.w.db, tableName: "state", now: () => t.w.clock.now, projectMembers: t.w.members, log: () => undefined }, t.w.caller(ARJUN), t.made.sessionId, { requestId: randomUUID(), kind: "steer", text: "Do it differently" } as never))
+      .rejects.toMatchObject({ code: "SESSION_LEVEL_REQUIRED" });
+    await expect(requireSessionLevel(t.access, t.w.caller(ARJUN), t.made.sessionId, "edit", "stop it")).rejects.toMatchObject({ code: "SESSION_LEVEL_REQUIRED" });
+    expect(sessionActionsFor(await resolveSessionAccess(t.access, t.w.caller(ARJUN), t.made.sessionId), { status: "running" })).toEqual(["watch", "comment"]);
   });
 });

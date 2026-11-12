@@ -67,7 +67,8 @@ export interface SessionAccess {
   effectiveOwnerWrittenAt: string;
   projectRole?: ProjectRole;
   /**
-   * Decision 103 (collaborator role, W11): the caller's EXACT role on a task session's project when its floor is a viewer (`projectRole: viewer`): `viewer` or `collaborator`, from their own grant row. The
+   * Decision 103 (collaborator role, W11): the caller's EXACT role on a task session's project when its floor is a viewer (`projectRole: viewer`): `viewer` or `collaborator`, from their own grant row; and
+   * (decision 104) `contributor` for a contributor, whose `ask` permission lets them use the live Ask with `view`. The
    * `comment` and `ask` permissions of Cloud's table are asked of it (`memberMay`), so a collaborator comments and uses the live Ask and a viewer does neither. Absent otherwise, and on the many-sessions
    * path (`prefetch`), which then treats them as the viewer they are there.
    */
@@ -298,7 +299,10 @@ async function compute(deps: SessionAccessDependencies, caller: SessionCaller, o
   const owner = caller.developerId === effectiveOwner.developerId;
 
   const projectRole = session.project === undefined ? undefined : (await roleOn(session.project)).effective;
-  const memberRole = session.kind === "task" && session.project !== undefined && projectRole === "viewer" && isWriterOrgRole(orgRole) ? (await roleOn(session.project)).exact : undefined;
+  // Decision 103: the exact role of a viewer-floor member (viewer or collaborator). Decision 104: also a contributor's (by grant or the project's channel), so its `ask` permission reaches the live Ask at
+  // `view`. Never a company owner's or admin's (their maintainership is not asked here) and never an Auditor's.
+  const memberRole = session.kind === "task" && session.project !== undefined && isWriterOrgRole(orgRole) && !isAdmin && projectRole !== undefined && projectRole !== "maintainer"
+    ? (projectRole === "viewer" ? (await roleOn(session.project)).exact : projectRole) : undefined;
   const grantRole = session.project === undefined ? undefined : (await roleOn(session.project)).grant;
   const orgAdmin = isAdmin && session.kind !== "local";
 
