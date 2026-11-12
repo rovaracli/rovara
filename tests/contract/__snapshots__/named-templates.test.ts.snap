@@ -3308,6 +3308,15 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
       "Description": "Complete Secrets Manager ARN containing the GitHub App private key PEM",
       "Type": "String",
     },
+    "InsightsEnabled": {
+      "AllowedValues": [
+        "0",
+        "1",
+      ],
+      "Default": "0",
+      "Description": "1: Insights is on (the Insights reads and the viewer grant; the screen also needs its own app switch); 0: every Insights path but the overview answers as an unknown path (agentx config set insights.enabled 1)",
+      "Type": "String",
+    },
     "LearnedLessonsEnabled": {
       "AllowedValues": [
         "0",
@@ -4068,6 +4077,10 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                   ",gr=",
                   {
                     "Ref": "GitHubAppCredentialRef",
+                  },
+                  ",in=",
+                  {
+                    "Ref": "InsightsEnabled",
                   },
                   ",lg=",
                   {
