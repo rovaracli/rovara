@@ -108,17 +108,8 @@ const BUILDERS = {
   designWaitArmOf: [prefixOfPk(designWaitRowKey("t1").pk)],
 };
 
-// The settings-proof item the stream hands the notifier is a project's own partition: ORG#<org>#PROJECT#<name> (settingsProofKey in org/settings-proof.ts).
-const SETTINGS_PROOF_PREFIX = "ORG#";
 // Two variables hold NOTICE rows read back by a Query on `DEVTASK#<task>` (begins_with sk NOTICE#), so their updates are on DEVTASK# items.
-const MEMBERS = { "notice.proofItem": [SETTINGS_PROOF_PREFIX], "updateWorkflowApprovalCard:marker": ["DEVTASK#"], "retireButtonCards:marker": ["DEVTASK#"] };
-
-/**
- * KNOWN GAP, reported at the NOTIFY-DM-IAM fix and not closed by it: deliverSettingsProof reads and updates the project's SETTINGS_PROOF item (partition ORG#<org>#PROJECT#<name>), and no statement of
- * the notifier role allows that partition, so a TE-4 "your saved commands failed their check" DM is refused the same way. Closing it grants the notifier Get and Update on every project partition
- * (IAM limits by partition key only), which is a design call for the owner. The test below expects the gap to be exactly this and fails when it is closed, so the entry gets removed then.
- */
-const KNOWN_GAPS: Record<string, readonly ItemAction[]> = { [SETTINGS_PROOF_PREFIX]: ["GetItem", "UpdateItem"] };
+const MEMBERS = { "updateWorkflowApprovalCard:marker": ["DEVTASK#"], "retireButtonCards:marker": ["DEVTASK#"] };
 
 /**
  * Item actions the role holds on a prefix beyond what the entry file uses. Both come from the notifier's first read statement, which gives Get and Query to four prefixes together. They
@@ -150,26 +141,23 @@ describe("the notifier role's State-table grants match the keys and actions its 
     expect(used.get("DEVTASK#")).toEqual(expect.arrayContaining(["GetItem", "PutItem", "UpdateItem", "Query"]));
     expect(used.get("SHARED_TASK#")).toEqual(["PutItem"]);
     expect(used.get("ADMIN_CHANGE#")).toEqual(["GetItem", "UpdateItem"]);
+    // The settings-proof DM reads and writes only its own marker, never the project's partition (ORG#<org>#PROJECT#<name>).
+    expect(used.get("NOTIFY_SETTINGS_PROOF#")).toEqual(["GetItem", "PutItem"]);
+    expect([...used.keys()].filter((prefix) => prefix.startsWith("ORG#"))).toEqual([]);
+    expect(grantedActions(statements, "ORG#org_aaaaaaaaaaaaaaaaaaaa#PROJECT#web")).toEqual([]);
   });
 
   it("each partition prefix the code touches is granted every item action the code uses on it, and no other (bar the listed extras)", () => {
     const wrong: string[] = [];
     for (const [prefix, actions] of [...used].sort()) {
       const granted = grantedActions(statements, sampleOfPrefix(prefix));
-      const wanted = KNOWN_GAPS[prefix] === undefined ? actions : [];
+      const wanted = actions;
       const missing = wanted.filter((action) => !granted.includes(action));
       const extra = granted.filter((action) => !wanted.includes(action));
       if (missing.length > 0) wrong.push(`${prefix}: the code uses ${missing.join("+")} and the role does not grant it`);
       if (JSON.stringify(extra) !== JSON.stringify(EXTRA_ALLOWED[prefix] ?? [])) wrong.push(`${prefix}: the role grants ${extra.join("+") || "nothing"} beyond the code's use (expected ${(EXTRA_ALLOWED[prefix] ?? []).join("+") || "nothing"})`);
     }
     expect(wrong).toEqual([]);
-  });
-
-  it("the known gap is exactly the settings-proof item and nothing else", () => {
-    for (const [prefix, actions] of Object.entries(KNOWN_GAPS)) {
-      expect(used.get(prefix), prefix).toEqual(actions);
-      expect(grantedActions(statements, sampleOfPrefix(prefix)), prefix).toEqual([]);
-    }
   });
 
   it("every key pattern in the role's item grants belongs to a prefix the code uses, or to a listed imported module", () => {

@@ -36,9 +36,14 @@ export interface Notice {
   attentionKey?: string;
   /** S2, an `owner_stopped_dm` notice: the sort key of the pending row (one per stop and per person) the notifier reads; the notice holds no text. */
   ownerStopKey?: string;
-  /** TE-4: the project's settings-proof item whose saved commands failed their check, and the check it is about. The notifier reads the item; the notice holds no text. */
-  proofItem?: { pk: string; sk: string };
+  /**
+   * TE-4: a project's settings-proof notice carries everything the message says, taken from the stream's new image, so the notifier never reads or writes the project's partition: the check it is
+   * about, the project's name, the person to tell (a Slack user id) and the check's reason (already a redacted one-liner, at most 400 characters). The notifier's own once-marker is under NOTIFY_SETTINGS_PROOF#.
+   */
   proofCheckId?: string;
+  proofProject?: string;
+  proofSlackUserId?: string;
+  proofReason?: string;
   /** Which part of the item the notice is about: a browser save that failed, or a change an API key sent that was not saved. */
   proofPart?: "saved" | "held";
   /** A workflow notice's revision: delivered only while the task is still at it, so a stale step is never said. */
@@ -214,7 +219,10 @@ export function noticesOf(previous: Record<string, unknown> | undefined, next: R
         const ended = part === "saved" ? now?.status === "failed" : now?.status === "failed" || now?.status === "stale" || now?.status === "refused" || now?.status === "not_started";
         if (!ended || checkId === "" || typeof now?.noticeAt !== "string" || typeof now.slackUserId !== "string") continue;
         if (earlier?.checkRequestId === checkId && typeof earlier.noticeAt === "string") continue;
-        notices.push({ id: `${text(next.pk)}:settings_proof:${part}:${checkId}`, kind: "settings_proof", proofItem: { pk: text(next.pk), sk: text(next.sk) }, proofCheckId: checkId, proofPart: part, at });
+        const project = text(next.project);
+        if (next.entityType !== "PROJECT_SETTINGS_PROOF" || project === "") continue;
+        const reason = typeof now.reason === "string" ? now.reason.slice(0, 400) : undefined;
+        notices.push({ id: `${text(next.pk)}:settings_proof:${part}:${checkId}`, kind: "settings_proof", proofCheckId: checkId, proofProject: project, proofSlackUserId: now.slackUserId, ...(reason === undefined ? {} : { proofReason: reason }), proofPart: part, at });
       }
       return notices;
     }
