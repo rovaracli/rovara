@@ -266,8 +266,10 @@ function withoutTaskPeopleControls(template: unknown): unknown {
 // (action, resource) pairs are permitted and refused as v0.5.2's boundary did. The service role's policy and every other stack's snapshot are unchanged.
 // 2026-11-11 (feat/0515-signing-key-secret): the agentx-staging-control-plane snapshot was re-recorded for the signing-key move only: CALLBACK_SIGNING_KEY left the broker's and the
 // eval batch tick's variables (the tick gained AGENTX_ENV, to build the secret's name), and three GetSecretValue grants were added on the two key secrets by name (the broker: both;
-// the tick and the reconciler: ReadCallbackSigningKey, the callback signing key alone). The CallbackSigningKey parameter stays declared (NoEcho, unused) for one release, so a
-// deploy that still passes it does not fail. No other snapshot moved.
+// the tick and the reconciler: ReadCallbackSigningKey, the callback signing key alone). The CallbackSigningKey parameter stayed declared (NoEcho, unused) for that one release.
+// 2026-11-12 (chore/0515-drop-callback-key-param, decision 123 folds the next release into 0.5.15): the CallbackSigningKey parameter is dropped from the named control-plane snapshot (nothing else
+// moved), and the CLI stops passing it (tests/contract/callback-key-param-upgrade.test.ts). The legacy install's snapshot is not touched: its frozen template keeps the parameter and its variable.
+// No other snapshot moved.
 describe("named environment templates", () => {
   const stacks = buildAgentXApp({ agentxEnv: "staging" }).node.children.filter((child): child is Stack => Stack.isStack(child));
   for (const stack of stacks) {

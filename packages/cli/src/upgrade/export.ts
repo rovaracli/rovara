@@ -12,9 +12,6 @@ import { MissingStackOutputError, SECRET_PARAMETERS, stackParameters, type Deplo
 import { assertReleaseCoversRegion, type LoadedRelease } from "../deploy/release.js";
 import type { EnvironmentSettings } from "../environments/settings.js";
 
-/** Never written: stackParameters checks the key's length, and SECRET_PARAMETERS are removed below. */
-const PLACEHOLDER_KEY = "upgrade-bundle-placeholder-never-written-0000";
-
 type Parameter = { ParameterKey: string; ParameterValue: string } | { ParameterKey: string; UsePreviousValue: true };
 
 /** One stack's parameter file: what this upgrade sets, then what it keeps. A kept parameter the
@@ -65,7 +62,7 @@ export async function writeUpgradeBundle(input: {
       await writeFile(target, content);
       files.push(relativePath);
     };
-    const full = { ...input.answers, release: release.manifest, callbackSigningKey: PLACEHOLDER_KEY };
+    const full = { ...input.answers, release: release.manifest };
     const bucket = settings.access?.artifactBucket ?? "<the access stack's ArtifactBucketName>";
     const role = settings.access?.cloudFormationRoleArn ?? "<the access stack's CloudFormationRoleArn>";
     const uploads: string[] = [];

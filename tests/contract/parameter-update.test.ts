@@ -26,6 +26,13 @@ describe("parameter-only stack updates (R6)", () => {
     expect(cf.calls.map((call) => call.name)).toContain("ExecuteChangeSetCommand");
   });
 
+  it("after the 0.5.15 upgrade the stack has no CallbackSigningKey, and the change set sends none (UsePreviousValue for an undeclared parameter would fail)", async () => {
+    const cf = fakeCloudFormation({ parameters: { SlackTeamId: "", DeveloperSignInSlack: "disabled" } });
+    expect(await run(cf, { SlackTeamId: "T0TEAM1" })).toEqual({ changed: true });
+    const create = cf.calls.find((call) => call.name === "CreateChangeSetCommand")!.input;
+    expect((create.Parameters as Array<{ ParameterKey: string }>).map((entry) => entry.ParameterKey)).toEqual(["SlackTeamId", "DeveloperSignInSlack"]);
+  });
+
   it("does nothing when the values are already set", async () => {
     const cf = fakeCloudFormation({ parameters: { SlackTeamId: "T0TEAM1" } });
     expect(await run(cf, { SlackTeamId: "T0TEAM1" })).toEqual({ changed: false });
