@@ -24,25 +24,6 @@ export const FEATURES_D_DIFFERENCES: readonly KnownDifference[] = [
     owner: "Accepted design difference; spend and audit readers count a refusal, not a start, once the flow is on the core",
   },
   {
-    scenario: "features-d-chain-switch-off", facet: "transitions",
-    cause: [
-      "Where the automation switch sits (decision 45.10). Cloud's switch is WEB_FEATURES `chains` and gates only the routes",
-      "(packages/broker/src/chains/automations-gate.ts:3-8, :33). It says on purpose that the trigger engine is not behind it, so a trigger that is on keeps",
-      "starting runs, and a run already started can be read and stopped. Code's switch is read at the unattended door on every start",
-      "(vendor core/automation/run-seam.ts:110), so with it off every chain step is refused: the run fails NOT_AVAILABLE_HERE.",
-      "Once chains run on the core, turning Cloud's switch off would also stop triggers that are on, which Cloud's path does not do.",
-      "Proposed fix: the composition root binds the core's AutomationSwitch to Cloud's switch AND decides (owner) whether the off state stops runs the",
-      "trigger engine starts. Cloud's comment says it must not, so the root should report the switch as on for the trigger and schedule paths while the",
-      "routes stay hidden. That is a deliberate mapping, not Code's default.",
-    ].join(" "),
-    owner: "Owner decision 143(c): turning automations off also stops runs a trigger already started, cancelled at a safe point, nothing half-done merged. The core's refusal at the door matches it for new starts; ROOT TO-DO (S0-143c): bind the core's automation switch to Cloud's `chains` feature and cancel running runs at a safe point when it turns off (Cloud's chains/automations-gate.ts changes to match)",
-  },
-  {
-    scenario: "features-d-chain-switch-off", facet: "spend",
-    cause: "The same switch placement as its transitions: Cloud's runner starts the first step (start:root-cause-analyst); the core's door refuses before any start.",
-    owner: "S0-143c (as its transitions)",
-  },
-  {
     // The chain and agent families are in the rows facet (harness/normalize.ts SHARED_FAMILIES), masked to <chn>/<agt>/<crn>; every chain
     // scenario compares rows, and these are exactly the rows one runner writes and the other does not.
     scenario: "*", facet: "rows", only: CHAIN_ROW_FAMILIES,

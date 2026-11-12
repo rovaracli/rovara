@@ -16,3 +16,4 @@ export * from "./realtime.js";
 export * from "./merge-people.js";
 export * from "./task-end.js";
 export * from "./slack-work.js";
+export * from "./automation.js";

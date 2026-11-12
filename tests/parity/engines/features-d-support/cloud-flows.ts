@@ -3,7 +3,7 @@
 import { randomUUID } from "node:crypto";
 import { agentXError, type ChainDefinitionInput } from "@rovara-code/contracts";
 import { onStepTaskEnded, readChainRun, readStepAttempts, startChainRun } from "../../../../packages/broker/src/chains/runner.js";
-import { automationsEnabled } from "../../../../packages/broker/src/chains/automations-gate.js";
+import { automationsEnabled, automationsSwitchOf } from "../../../../packages/broker/src/chains/automations-gate.js";
 import { DANA, ORG_A, PRIYA, callerOf, setupWorld, type ChainWorld } from "../../../support/chain-run-world.js";
 import { setupTriggerWorld } from "../../../support/trigger-world.js";
 import { dispatchTriggerEvent, type TriggerDispatchDependencies } from "../../../../packages/broker/src/triggers/dispatch.js";
@@ -87,8 +87,9 @@ export async function runCloudFlow(flow: FlowName): Promise<FlowObservation> {
       break;
     }
     case "chains-switch-off": {
-      // Cloud's switch sits at the routes (WEB_FEATURES `chains`, chains/automations-gate.ts): with it off the routes answer 404, but the runner itself
-      // does not read it. Off here, the runner is called directly.
+      // Cloud's switch (WEB_FEATURES `chains`, chains/automations-gate.ts) is the engine's too since owner decision 143(c): the runner reads it through the
+      // `automations` dependency the broker's wiring fills, so with it off a step does not start (as at the core's door).
+      Object.assign(world.deps, { automations: automationsSwitchOf({}) });
       seen.spend.push(`switch:${automationsEnabled({}) ? "on" : "off"}`);
       const chain = await world.publish(TWO_BUILTIN_STEPS as ChainDefinitionInput);
       const run = await start(chain.chainId).catch((error: unknown) => { seen.spend.push(`refused:${String((error as { code?: string }).code)}`); return undefined; });

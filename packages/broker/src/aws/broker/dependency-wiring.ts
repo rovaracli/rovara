@@ -1,5 +1,6 @@
 // Part of the broker (split out of ../broker.ts): builds the dependency objects handed to the agent, chain, admin, plan and developer-task routes.
 
+import { automationsSwitchOf } from "../../chains/automations-gate.js";
 import { machineOrigin } from "../../developer/legacy-host-redirect.js";
 import { releaseServiceCatalogSource } from "../../test-env/shipped-catalog.js";
 import { askDependenciesFor } from "./ask-service.js";
@@ -810,7 +811,8 @@ export function chainRunnerDependenciesOf(dependencies: AwsBrokerDependencies, t
   if (agents?.chains === undefined || starter === undefined) return undefined;
   const admission = dependencies.modelAccess === undefined ? undefined
     : { documentClient: dependencies.documentClient, tableName: dependencies.tableName, access: dependencies.modelAccess.access, now: Date.now, cloud: dependencies.cloud === true };
-  return { ...agents, chains: agents.chains, chainRuns: agents.chainRuns ?? chainRunPortsFor(starter, admission) };
+  // Owner decision 143(c): the engine reads the same switch the routes do (WEB_FEATURES `chains`): off, nothing starts on its own and the sweep stops what is running.
+  return { ...agents, chains: agents.chains, chainRuns: agents.chainRuns ?? chainRunPortsFor(starter, admission), automations: automationsSwitchOf(process.env) };
 }
 
 /** Spec 025 phase 25d: what the admin read routes need, from the broker's own dependencies. */

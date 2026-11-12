@@ -36,6 +36,8 @@ export const CORE_JOBS: readonly CoreJob[] = [
   { name: "notify-deliver", area: "flow", trigger: { kind: "schedule", rate: "rate(5 minutes)" }, run: service("notify-deliver") },
   // A5 open question 3: a hold whose caller died is charged in full by CloudAdmission.sweepExpiredHolds, on a schedule.
   { name: "admission-hold-sweep", area: "flow", trigger: { kind: "schedule", rate: "rate(15 minutes)" }, run: service("admission-hold-sweep") },
+  // Owner decision 143(c): with automations off, the runs already started are stopped at a safe point (automation.ts). Does nothing while they are on.
+  { name: "automation-stop", area: "flow", trigger: { kind: "schedule", rate: "rate(1 minute)" }, run: service("automation-stop") },
 ];
 
 export const CORE_SCHEDULE_SOURCE = "agentx.core-job";

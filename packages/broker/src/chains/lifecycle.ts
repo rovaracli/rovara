@@ -27,8 +27,9 @@ import { auditApprovalExpired } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, tryAuditEvents } from "../audit/outbox.js";
 import { auditActorOf } from "../audit/plan3-hooks.js";
-import { taskAgentRunKey } from "../developer/task-records.js";
+import { taskAgentRunKey, taskKey } from "../developer/task-records.js";
 import { chainAccess } from "./access.js";
+import { automationStopSafe } from "./automations-gate.js";
 import { neutralText } from "./run-events.js";
 import type { ChainSessionActor } from "./view.js";
 import {
@@ -368,6 +369,17 @@ async function sweepOne(deps: Deps, now: number, orgId: OrgId, runId: ChainRunId
   }
 }
 
+/** Cancels a run because automations were turned off, when its step's task is at a safe point. True when the run was ended (or was already over); false: not yet safe, looked at again at the next sweep. */
+async function stopWhileOff(deps: Deps, run: ChainRunRecord): Promise<boolean> {
+  const latest = run.currentSeq === 0 ? undefined : await readStepAttempt(deps, run.orgId, run.runId, run.currentSeq);
+  if (latest?.kind === "agent" && latest.taskId !== undefined && (latest.status === "running" || latest.status === "starting")) {
+    const task = await getItem(deps, taskKey(latest.taskId));
+    if (!automationStopSafe(task?.workflow as { stage?: unknown; state?: unknown } | undefined)) return false;
+  }
+  await endAndFinish(deps, run, { status: "cancelled", text: `${run.chainName} was stopped because automations were turned off.`, fields: { cancelledBy: "system:automations_off" } });
+  return true;
+}
+
 const maxRunMs = (definition: PinnedChainDefinition): number => (definition.limits?.maxRunHours ?? CHAIN_RUN_MAX_HOURS) * HOUR;
 const stepMinutes = (definition: PinnedChainDefinition, stepId: string): number => {
   const step = stepOf(definition, stepId);
@@ -385,6 +397,9 @@ async function lookAt(deps: Deps, first: ChainRunRecord, now: number): Promise<v
     if (moved === undefined || isTerminalStatus(moved.status)) return;
     run = moved;
   }
+  // 0.5 Owner decision 143(c): automations are off, so the run stops, at a safe point. A run that waits at a gate, or between steps, stops now; one whose step's task
+  // is at a moment that leaves work half done (a pull request being opened) is left until the next sweep, and never starts a further step meanwhile (the start refuses).
+  if (deps.automations?.enabled() === false && await stopWhileOff(deps, run)) return;
   const definition = await designOf(deps, run);
   // 1. The run's own time.
   if (now - Date.parse(run.createdAt) >= maxRunMs(definition)) {
