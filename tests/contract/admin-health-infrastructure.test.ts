@@ -337,6 +337,12 @@ describe("the health route's grants (A13)", () => {
       "packages/broker/src/work-events/store.ts",
       // Approval place (U4): the owner's "your plan was decided" Slack direct message row (2 days, the same TASK_ATTENTION_DM row the notifier posts); a working row, not a durable record, and only owner-notice.ts writes it.
       "packages/broker/src/approval-place/owner-notice.ts",
+      // Internal addresses (private-addresses.ts): the removal's recycle mark (kept 15 days, past the 14 day worker lifetime it exists to outlast) and each proposal row (kept 30 days after it expires). Working rows, not the list itself: the list row never carries it, and the audit record of a change is its own pending item.
+      "packages/broker/src/org/private-addresses.ts",
+      // Internal addresses, review L2 (private-address-launch-record.ts): the list revision a worker launched with, one row per workspace, kept 15 days (past the 14 day worker lifetime) and then deleted by the TTL. A working row the reaper reads, not a durable record.
+      "packages/broker/src/aws/private-address-launch-record.ts",
+      // Customer test accounts (TA2, test-access/dynamo-store.ts): the one-use connection token item (its expiry plus a day) and the polling-fallback item (while `polling`, its deadline plus an hour). Neither is a record of the connection, which carries no expiry here.
+      "packages/broker/src/test-access/dynamo-store.ts",
     ]);
     const found = execFileSync("grep", ["-rl", "indexExpiresAt\\|INDEX_EXPIRY_ATTRIBUTE", "packages", "infra/lib", "--include=*.ts", "--exclude-dir=dist", "--exclude-dir=node_modules"], { encoding: "utf8" }).trim().split("\n").filter((file) => file !== "");
     expect(found.filter((file) => !allowed.has(file))).toEqual([]);

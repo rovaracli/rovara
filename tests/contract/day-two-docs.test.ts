@@ -14,7 +14,8 @@ describe("the guides (FR-054)", () => {
       expect(row, entry.key).toBeDefined();
       const place = entry.target.kind === "stack-parameter" ? entry.target.parameter : entry.target.kind === "settings"
         // UX-4b added a second settings key (teamRecord.options), kept in its own SSM parameter: each field names its own place, as `whereText` prints it.
-        ? (entry.target.field === "teamRecordOptions" ? "SSM /agentx/<env>/team-record (options)" : `SSM /agentx/<env>/settings (${entry.target.field})`)
+        // 0.5.15 added a third: modelProxy.tls (decisions 110 and 127) is recorded in its own SSM parameter, `/agentx/<env>/model-proxy-tls`.
+        ? (entry.target.field === "teamRecordOptions" ? "SSM /agentx/<env>/team-record (options)" : entry.target.field === "modelProxyTls" ? "SSM /agentx/<env>/model-proxy-tls" : `SSM /agentx/<env>/settings (${entry.target.field})`)
         : entry.target.kind === "chatgpt-setting" ? `CHATGPT.${entry.target.field}` : `WORKSPACE_LIMITS.${entry.target.field}`;
       expect(row, entry.key).toContain(place);
     }
