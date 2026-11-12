@@ -173,6 +173,10 @@ Convergence plan wave 0, lane W0-5. Code's ports (`vendor/rovara-code/packages/c
 `tests/conformance/adapters/index.ts#CLOUD_ADAPTERS`. A wave 1 adapter lane registers its adapter with `tests/conformance/registry.ts#defineCloudAdapter` and gets its port's suite with no other wiring.
 The port-to-suite table is `tests/conformance/ports.ts`; the guards are `tests/conformance/guards.test.ts`. How to register: [cloud-adapter-conformance.md](cloud-adapter-conformance.md).
 
+Lane A5 (money): `packages/broker/src/cloud-adapters/money/admission.ts#CloudAdmission` (holds on the key ledger's own `SPEND#<month>` counters, one `ADMISSION_HOLD#` row per key)
+and `packages/broker/src/cloud-adapters/money/metering.ts#CloudMetering` (one `METER_ENTRY#` row per entry, `METER#<month>` totals in millionths). Inert until S0; what S0 must do
+first is in [cloud-adapter-conformance.md](cloud-adapter-conformance.md), "The money adapters".
+
 ## How to add common things
 
 Each recipe lists the files to touch in order and the tests that fail if you forget one. When in doubt, read the

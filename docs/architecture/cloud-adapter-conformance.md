@@ -53,3 +53,26 @@ added to `ports.ts` (suite, harness type, vendored file name), `code-fakes.ts` (
 ## Queue and outbox (lane A2): owed after the pin carries `packages/aws-adapters`
 
 Cloud's queue is Code's public SQS adapter (`@rovara/aws-adapters/sqs`), not a second copy, so the `queue` and `outbox` rows of `pending-lanes.ts` stay `todo` until the vendor `INCLUDE` list carries `packages/aws-adapters` and the pin is at a sha that has it. Then, register the two adapters as above: `queue` over the in-memory SQS double (`vendor/rovara-code/tests/support/ports/sqs-harness.ts`, both modes) and `outbox` over Cloud's DynamoDB store and that queue. Until then only Cloud's side is here: `packages/broker/src/cloud-adapters/queue/outbox-relay-wiring.ts` (the off switch and the install's one org) and the DISABLED `OutboxRelayBackstopSchedule` in `infra/lib/control-plane.ts`. Nothing installs the relay, so no message takes the new path (wave 1 is "no traffic").
+
+## The money adapters (lane A5) and what S0 must do before they run
+
+`packages/broker/src/cloud-adapters/money/` holds `CloudAdmission` (holds on the key ledger's own `ORG#<org>#SPEND#<month>` counters, `committedUsd`, with `ledger.ts#reserve`'s
+room condition; one `ADMISSION_HOLD#` row per key; `enforcesCost: true`, decision 79) and `CloudMetering` (one `METER_ENTRY#` row per entry, `METER#<month>` totals in whole
+millionths; an unpriced model, a $0 price or a provider-reported $0 is unknown, never $0). Both are inert: registered under Code's conformance suites, called by nothing.
+The composition root (S0) must settle these before either is wired:
+
+1. **One writer per model spend.** A model call that runs on a LiteLLM key is already counted by the key ledger's settlement (`spend/ledger.ts`, the proxy's figure, R22). Its
+   admission must then be *released*, never settled, or the spend is counted twice on the same `SPEND#` counters. Decide per action which path counts it.
+2. **Settle only from Metering's cost.** Where an admission is settled, the `cost` passed to `settle` is the `MeterResult.cost` of the same call (`CloudMetering.record`), never a
+   caller's own figure; an unknown result settles with no cost, which charges the whole hold.
+3. **The breakdown counters.** The key ledger's settle also adds to the agent, source, model and origin counters, `TASK_SPENT` and `AGENT_RUN` (`ledger.ts#extraCounters`,
+   `settleOnce`). A spend counted by `CloudAdmission.settle` adds to the scope counters only: S0 must add the same breakdown in the settle's transaction, or the admin pages
+   undercount.
+4. **A single-call SPEND test.** One real model call end to end (admit, call, meter, settle or release) must move each `SPEND#` counter exactly once, by the call's cost, with the
+   ledger and the adapter both live, before any switch goes on.
+5. **Levels that repeat Cloud's rules.** `CloudAdmissionOptions.levels` must answer exactly the scopes `spend/payer.ts#budgetScopesFor` gives for the request's payer (org,
+   project, member, agent, chain, testing) and the limits `spend/settings.ts#effectiveLimits` gives (base plus the month's top-up, no limit stays no limit), and `gate` must
+   repeat the trial lock and machine-time admission (`org/trial.ts`). A test should compare the adapter's refusals with `admitWork`'s on the same rows.
+
+Also owed: a schedule for `CloudAdmission.sweepExpiredHolds` (an expired hold is charged in full), and the `capacity` money cases of Code's admission conformance suite once
+the vendor pin includes them (public `adapters/a5-money`).
