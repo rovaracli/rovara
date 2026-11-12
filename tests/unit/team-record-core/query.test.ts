@@ -307,6 +307,43 @@ describe("recordSearch always blends keyword and meaning (DECISIONS 142, recipro
     expect(ids.indexOf(byRef(w, "meaning").id)).toBeLessThan(ids.indexOf(byRef(w, "keyword").id));
   });
 
+  it("K1: a fact about 4,000 characters into a long row finds the row by keyword alone, and the same row is found again when the vector side also names it", async () => {
+    const w = await corpus();
+    const filler = "The team discussed the roadmap and the hiring plan for the quarter. ".repeat(60);
+    await put(w, "long", `${filler} Finally the decision: the zanzibar cutover freeze starts on friday.`);
+    await put(w, "one1", "zanzibar budget review");
+    await put(w, "one2", "cutover checklist done");
+    const long = byRef(w, "long");
+    expect(long.text!.indexOf("zanzibar")).toBeGreaterThanOrEqual(4_000);
+    const keywordOnly = await recordSearch(deps(w), person(), "web", { query: "zanzibar cutover freeze", limit: 3 });
+    expect(keywordOnly.hits[0]!.id).toBe(long.id);
+    const blended = await recordSearch(deps(w, { embedder: w.embedder, vectorSearch: vectorOf(w, ["noise", "long"]) }), person(), "web", { query: "zanzibar cutover freeze", limit: 3 });
+    expect(blended.hits[0]!.id).toBe(long.id);
+  });
+
+  it("K1: the permission filter still applies on both sides to a long row found by passage: a stranger gets nothing of it from the keyword side or the vector side", async () => {
+    const w = await corpus();
+    await addSource(w, { source: "github", scope: "github:repo/77" });
+    const filler = "The private team discussed the roadmap and the hiring plan for the quarter. ".repeat(60);
+    await w.sink.put(githubDraft({ sourceRef: { system: "github.com", id: "privatelong", version: "1" }, scope: "github:repo/77", audience: { kind: "restricted", acl: { source: "github", scope: "github:repo/77", principals: ["999"], capturedAt: "2026-10-30T10:00:00.000Z", liveCheck: "none" } }, text: `${filler} The quokka acquisition code name is confidential.`, links: [] }));
+    const hidden = byRef(w, "privatelong");
+    expect(hidden.text!.indexOf("quokka")).toBeGreaterThanOrEqual(4_000);
+    const asStranger = await recordSearch(deps(w), person(), "web", { query: "quokka acquisition code name" });
+    expect(JSON.stringify(asStranger)).not.toContain("confidential");
+    expect(asStranger.hits).toEqual([]);
+    expect(asStranger.someHidden).toBe(true);
+    // the vector side names the same row too (a vector hit is only a coarse cut): still nothing
+    const viaBoth = await recordSearch(deps(w, { embedder: w.embedder, vectorSearch: vectorOf(w, ["privatelong"]) }), person(), "web", { query: "quokka acquisition code name" });
+    expect(viaBoth.hits).toEqual([]);
+    expect(JSON.stringify(viaBoth)).not.toContain("confidential");
+    const asTask = await recordSearch(deps(w, { embedder: w.embedder, vectorSearch: vectorOf(w, ["privatelong"]) }), shared, "web", { query: "quokka acquisition code name" });
+    expect(asTask.hits).toEqual([]);
+    expect(asTask.someHidden).toBe(false);
+    // the person on the place's list finds it (positive control)
+    const owner = await recordSearch(deps(w), person({ identities: { ids: { github: ["999"] }, groups: {} } }), "web", { query: "quokka acquisition code name" });
+    expect(owner.hits.map((hit) => hit.id)).toEqual([hidden.id]);
+  });
+
   it("reads the newest KEYWORD_SCAN_ROWS rows on the keyword side (the v1 limit), on every search", async () => {
     expect(KEYWORD_SCAN_ROWS).toBe(400);
     const w = await corpus();
