@@ -2,6 +2,7 @@ import { previewTaskStartStop } from "../org/task-stop-start-preview.js";
 import { routeNotificationPrefs } from "../notifications/prefs-routes.js";
 import { routeTaskFindings } from "./developer-routes/task-findings.js";
 import { routeTaskPageActions } from "./developer-routes/task-page-actions.js";
+import { routeContinueLoop, CONTINUE_LOOP_ROUTE, CONTINUE_LOOP_BROWSER_MESSAGE } from "./developer-routes/continue-loop.js";
 import { routePlanPanel } from "./developer-routes/plan-panel.js";
 import { DECIDE_COOKIE, cookieOf } from "../developer/decide-session.js";
 import { getTaskStopEnrollment, reviewTaskStopEnrollment, writeTaskStopEnrollment } from "../org/task-stop-enrollment.js";
@@ -362,6 +363,7 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (url.pathname === SECOND_REVIEW_PATH && request.method === "POST" && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", SECOND_REVIEW_BROWSER_MESSAGE);
   // Insights: who may see it is changed from a live browser session only (the reads are open to a token by the same role rule).
   if (url.pathname === INSIGHTS_ACCESS_PATH && request.method === "POST" && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", INSIGHTS_ACCESS_BROWSER_MESSAGE);
+  if (CONTINUE_LOOP_ROUTE.test(url.pathname) && request.method === "POST" && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", CONTINUE_LOOP_BROWSER_MESSAGE);
   if (/\/tasks\/[^/]+\/second-review-acknowledge$/u.test(url.pathname) && request.method === "POST" && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", SECOND_REVIEW_ACK_BROWSER_MESSAGE);
   // The project's known-failing marks (list and Undo) are browser-only for both methods, while vx is on (off: the path is not found, as any unknown path).
   if (KNOWN_FAILING_MARKS_PATH.test(url.pathname) && verifyResultsEnabled() && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", KNOWN_FAILING_MARKS_BROWSER_MESSAGE);
@@ -631,7 +633,7 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (secondReviewAck !== null && request.method === "POST") return new StatusReply(200, await acknowledgeSecondReview(developerTaskRouteDependencies(deps, caller), caller, secondReviewAck[1]!, jsonBody(request)));
   const notifyReply = await routeNotificationPrefs(deps, caller, request, url);
   if (notifyReply !== undefined) return notifyReply;
-  const findingsReply = await routeTaskFindings(deps, caller, request, url) ?? await routeTaskPageActions(deps, caller, request, url) ?? await routePlanPanel(deps, caller, request, url);
+  const findingsReply = await routeTaskFindings(deps, caller, request, url) ?? await routeTaskPageActions(deps, caller, request, url) ?? await routeContinueLoop(deps, caller, request, url) ?? await routePlanPanel(deps, caller, request, url);
   if (findingsReply !== undefined) return findingsReply;
   const secondReviewReply = await routeSecondReview(deps, caller, request, url);
   if (secondReviewReply !== undefined) return secondReviewReply;

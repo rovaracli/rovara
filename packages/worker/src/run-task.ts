@@ -666,7 +666,15 @@ async function runTask(
 
   // Plan 6 Task 17: a CI or feedback fix begins on the head the pull request has, not on what an abandoned conflict round left.
   const fixStart = invocation.payload.workflowFix?.startFrom;
-  if (fixStart !== undefined && manifest.repositories.length === 1) {
+  const fixStarts = invocation.payload.workflowFix?.startFromRepositories;
+  if (fixStarts !== undefined) {
+    // A task with several repositories: each named repository goes back to its own pull request's head (a re-check that did not keep the code it took left another head checked out).
+    for (const start of fixStarts) {
+      const repository = manifest.repositories.find((entry) => entry.name === start.repositoryId);
+      if (repository === undefined) continue;
+      if (await restoreFixStart(resolve(canonicalRoot, repository.path), start.commit)) onDiagnostic(`AgentX put ${start.repositoryId} back on its pull request's head, which an earlier round had left.`);
+    }
+  } else if (fixStart !== undefined && manifest.repositories.length === 1) {
     const directory = resolve(canonicalRoot, manifest.repositories[0]!.path);
     if (await restoreFixStart(directory, fixStart)) onDiagnostic("AgentX put the workspace back on the pull request's head, which an earlier round had left.");
   }

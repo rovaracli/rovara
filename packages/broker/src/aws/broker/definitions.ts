@@ -2,6 +2,7 @@
 
 import type { CompanyImageDigestResolver } from "../../test-env/company-image-resolver.js";
 import type { CompanyRulesRepositories } from "../../company-rules/sync.js";
+import type { StartOutsideRecheck, WorkingBranchPort } from "../developer-tasks/continue-loop.js";
 import type { CompanyImageMirrorJob } from "@agentx/cloud-contracts";
 import type { SavedEnvSessionConfig, SavedEnvSessionPorts } from "../../test-env/saved-env-session.js";
 import type { CompanyInstructionsSource } from "../../instructions/company-source.js";
@@ -215,6 +216,10 @@ export interface CodeBuildRecord {
 }
 
 export interface AwsBrokerDependencies {
+  /** Continue in your own tool: the host side of "publish working branch". Absent: the broker's own (a push grant it mints for itself, `working-branch-port.ts`). A seam for tests. */
+  workingBranchPort?: WorkingBranchPort | undefined;
+  /** Continue in your own tool: starts the re-check of a head that changed outside Rovara. Absent on this build: the action answers RUNTIME_UNAVAILABLE and the task view offers no Recheck. */
+  outsideRecheck?: StartOutsideRecheck | undefined;
   /**
    * Standing instructions (lane I2): where the company's rules come from, read at every step. Absent: the empty Code default (no company rules). The Cloud store (lane I3) installs its adapter here.
    * A source that fails refuses the step; rules over the size limits refuse it with a clear error.

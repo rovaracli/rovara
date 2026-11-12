@@ -867,6 +867,9 @@ describe("I4: the builders", () => {
     ["auditProjectFixtureSetDecided", (occurrence) => builders.auditProjectFixtureSetDecided({ ...base, occurrence, details, projectName: "Secret Project", decision: "approved", digest: "a".repeat(64) })],
     // Send-back access gate (S2), 2026-11-04 integration: a refused person-pressed path
     ["auditTaskWorkRefused", (occurrence) => builders.auditTaskWorkRefused({ ...base, occurrence, details, taskId: "task_1", path: "retry", reason: "owner_no_access" })],
+    // Continue in your own tool: a working branch made before any pull request, and a re-check asked for after a push from outside (fixed words only; never a branch or repository name)
+    ["auditTaskWorkingBranchPublished", (occurrence) => builders.auditTaskWorkingBranchPublished({ ...base, occurrence, details, taskId: "task_1", created: true })],
+    ["auditTaskRecheckRequested", (occurrence) => builders.auditTaskRecheckRequested({ ...base, occurrence, details, taskId: "task_1", outcome: "started" })],
     ["auditProjectSetupRestored", (occurrence) => builders.auditProjectSetupRestored({ ...base, occurrence, details, projectName: "Secret Project", revision: 4, fromRevision: 3, provenRevision: 2 })],
     // Script tokens (UX5b, 7703452a2), 2026-11-07 integration: counts and fixed words only; the token, its hash and its name never go in
     ["auditScriptTokenCreated", (occurrence) => builders.auditScriptTokenCreated({ ...base, occurrence, details, tokenId: "stk_" + "1".repeat(20), days: 30, projects: 2, permissions: "read" })],

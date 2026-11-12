@@ -13,6 +13,7 @@
   "packages/cloud-contracts/src/approval-place.ts",
   "packages/cloud-contracts/src/audit-search.ts",
   "packages/cloud-contracts/src/company-domains-web.ts",
+  "packages/cloud-contracts/src/continue-loop.ts",
   "packages/cloud-contracts/src/decision-dismiss.ts",
   "packages/cloud-contracts/src/developer-tasks.ts",
   "packages/cloud-contracts/src/developer-web.ts",

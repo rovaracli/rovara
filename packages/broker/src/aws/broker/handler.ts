@@ -1,5 +1,6 @@
 // Part of the broker (split out of ../broker.ts): createAwsBrokerHandler: the request router.
 
+import { outsidePushTarget } from "../../rovara-code/outside-push.js";
 import { attentionDeliveryOf } from "./attention-wiring.js";
 import { deliverAttention } from "../../notifications/attention.js";
 import { fixtureStoreForRoutes } from "../../test-env/fixture-store-aws.js";
@@ -113,7 +114,7 @@ import { SESSION_EVENT_BUDGET_MS, auditModelKeys, isAuditDrainEvent, isChainSche
 import { handleAgentSkills, handleAgentTools } from "./task-operations.js";
 import { handleContextTools } from "./context-tools.js";
 import { handleDesignReviewPacket } from "./design-review-packet-route.js";
-import { SWEEP_EVENT_BUDGET_MS, headEventDependencies, processGithubWorkflowEvent, reconcileWorkflowMergeRecoveryTask, retryDueGithubWebhookEvents, retryGithubWebhookAsAdministrator } from "./terminal-and-github-events.js";
+import { SWEEP_EVENT_BUDGET_MS, headEventDependencies, outsidePushDependencies, processGithubWorkflowEvent, reconcileWorkflowMergeRecoveryTask, retryDueGithubWebhookEvents, retryGithubWebhookAsAdministrator } from "./terminal-and-github-events.js";
 import { completeThreadWorkspaceClose, ensureThreadWorkspace, markCommentAnswered, markThreadNoteAnswered, prepareThreadWorkspace, startThreadWorkspaceClose } from "./thread-workspaces.js";
 import { routeEditionDependencies } from "../../wiring/enterprise-identity.js";
 import { isWorkflowDispatchRecoveryEvent, retryDueWorkflowDispatches, startDuePlanEvidenceJobs } from "./workflow-items.js";
@@ -725,6 +726,8 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
               verifyRepository: (repositoryUrl, webhookScope) => dependencies.githubPullRequests.verifyWebhookRepository(repositoryUrl, webhookScope),
             }),
             process: (workflowEvent, deliveryId) => processGithubWorkflowEvent(dependencies, workflowEvent, deliveryId),
+            // "Continue in your own tool": a push to an agentx/<uuid> branch is stored only when it is a task's own published branch, through that task's company's installation.
+            authorizeBranchPush: async (push) => await outsidePushTarget(outsidePushDependencies(dependencies), push) !== undefined,
             // Team record: every verified delivery is offered to the record (none while the switch is off).
             ...optional("recordTap", dependencies.teamRecord?.taps.github),
             // Plan 4 Task 21: pull request, issue, deployment and workflow events start triggers' work, through the signature check above and Task 20's dispatch.

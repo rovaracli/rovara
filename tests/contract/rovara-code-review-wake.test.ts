@@ -198,7 +198,7 @@ describe("approve, then the webhook, then the wake, then a pass: ready within on
           documentClient: w.db, tableName: "state", scope, loadTask: async (id) => w.db.get(taskKey(id)) as never, repositoryUrl: (...args) => w.host.repositoryUrl(...(args as Parameters<typeof w.host.repositoryUrl>)), verifyRepository: async () => true,
         }),
         process: async (event) => {
-          if (event.kind === "HEAD_STATUS") throw new Error("a review is not a head event");
+          if (event.kind === "HEAD_STATUS" || event.kind === "BRANCH_PUSH") throw new Error("a review is not a head event");
           processed.push(event);
           await wakeFromPullRequestEvent(wakeDeps, event);
         },

@@ -1,5 +1,7 @@
 // Part of the broker (split out of ../broker.ts): Slack workflow, people and note events.
 
+import { admitOutsideRecheckOf } from "./outside-recheck.js";
+import { workspaceWorkerFeatures } from "./redirect-runtime.js";
 import { nightlyHeadDependencies } from "./nightly-head.js";
 import { evidenceRouteDependencies } from "./evidence-wiring.js";
 import { liveWriterRole } from "../../org/live-role.js";
@@ -38,6 +40,7 @@ import { refreshTaskFeedbackForOwnerDecision } from "./terminal-and-github-event
 import { loadWorkflowE2EArtifact, loadWorkflowE2EScenarioResults, workflowE2EPresentation, workflowE2EPublicationChecks } from "./workflow-e2e-verification.js";
 import { getSlackBinding, sharedStopFences, sharedThread, sharedThreadOpen, verifiedSharedStopBinding } from "./workspace-preparation.js";
 import { specSeamsOf } from "./spec-wiring.js";
+import { workingBranchPortOf } from "./working-branch-port.js";
 import { recordSlackWorkflowRefusal } from "./workspace-routes.js";
 
 /**
@@ -395,6 +398,11 @@ export function workflowApplicationRouteDependencies(dependencies: AwsBrokerDepe
     refreshTaskFeedback: (taskId: string) => refreshTaskFeedbackForOwnerDecision(dependencies, taskId),
     // Wire lane D (MD-1): the spec seams, so a publication or a review that needs the spec works on this path too.
     ...specSeamsOf(dependencies),
+    // Continue in your own tool: the host side of "publish working branch".
+    workingBranchPort: dependencies.workingBranchPort ?? workingBranchPortOf(dependencies),
+    // ... and the re-check of a head pushed outside Rovara (a test stand-in when one is given; otherwise this install's own start, asking the workspace's worker for its features).
+    ...(dependencies.outsideRecheck === undefined ? { outsideRecheckFeatures: (task: DeveloperTaskRecord) => workspaceWorkerFeatures(dependencies, task) } : { startOutsideRecheck: dependencies.outsideRecheck }),
+    admitOutsideRecheck: (task: DeveloperTaskRecord) => admitOutsideRecheckOf(dependencies, task),
     // Proof and evidence (wire-proof): the evidence port, only while the proof switch is on (nothing is added otherwise).
     ...evidenceRouteDependencies(dependencies),
     ...nightlyHeadDependencies(dependencies),

@@ -47,6 +47,8 @@ export interface JourneyLedgerEntry {
   ownerRetry?: boolean;
   /** A merge of the base branch (Plan 6 Task 17): a sync, not a fix, so it needs no owner's click and no fix round (its count is the day's, kept on the tracking item). */
   sync?: boolean;
+  /** A read-only adoption of a head pushed outside Rovara: no push, no code change, at a person's Recheck. */
+  adopt?: boolean;
 }
 
 /** A push AgentX made, with the task's workflow at the moment of the push. */
@@ -192,7 +194,7 @@ function checkClick(journey: JourneyView): string[] {
       }
       previous = entry;
     }
-    if (entry.kind === "maintain" && entry.sync !== true) {
+    if (entry.kind === "maintain" && entry.sync !== true && entry.adopt !== true) {
       if (feedbackApprovals(entry.decided) <= (previousMaintain === undefined ? 0 : feedbackApprovals(previousMaintain.decided))) {
         violations.push(`INV-CLICK: fix push ${entry.operationId} started with no owner approval of a fix since the previous push`);
       }

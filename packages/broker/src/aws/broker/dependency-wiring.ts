@@ -961,7 +961,7 @@ export function developerTaskActions(dependencies: AwsBrokerDependencies): Devel
       .map((item) => ({ repository: String(item.repository), number: Number(item.number), url: String(item.url), state: item.state as "open" | "closed" | "merged" })),
     acceptTask: (identity, workspaceId, request, extra, options) => acceptTask(dependencies, identity, workspaceId, request, extra, options),
     acceptPullRequest: (identity, workspaceId, request, extra, options) => acceptPullRequest(dependencies, identity, workspaceId, request, extra, options),
-    acceptPullRequestUpdate: (identity, workspaceId, request, extra, binding) => acceptPullRequestLifecycle(dependencies, identity, workspaceId, request, extra, "sync" in binding ? { workflowSync: binding.sync } : { workflowCandidate: binding }),
+    acceptPullRequestUpdate: (identity, workspaceId, request, extra, binding) => acceptPullRequestLifecycle(dependencies, identity, workspaceId, request, extra, "sync" in binding ? { workflowSync: binding.sync } : "adopt" in binding ? { workflowAdopt: binding.adopt } : { workflowCandidate: binding }),
     failedPublications: async (workspaceId, candidate) => (await query(`WORKSPACE#${workspaceId}`, "OPERATION#"))
       .filter((item) => {
         const publication = item.publication as OperationRecord["publication"];

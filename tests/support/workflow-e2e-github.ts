@@ -140,6 +140,11 @@ export class FakeGitHub {
     this.moveBranch(headBranch, commit, tree, parents, token, changedPaths);
   }
 
+  /** Someone else pushes to the branch with their own access (not a token this fake issued to Rovara): the pull request from it moves, as for any push. */
+  pushAsPerson(headBranch: string, commit: string, tree: string, parents: readonly string[]): void {
+    this.moveBranch(headBranch, commit, tree, parents, "person");
+  }
+
   private moveBranch(headBranch: string, commit: string, tree: string, parents: readonly string[], token: string, changedPaths: readonly string[] = []): void {
     for (const pullRequest of this.pullRequests) {
       if (pullRequest.headBranch !== headBranch) continue;

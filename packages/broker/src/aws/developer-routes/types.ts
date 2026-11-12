@@ -156,6 +156,10 @@ export interface DeveloperRouteDependencies {
   readSpecPullRequest?: DeveloperTaskRouteDependencies["readSpecPullRequest"];
   publishSpecFiles?: DeveloperTaskRouteDependencies["publishSpecFiles"];
   currentBaseCommit?: DeveloperTaskRouteDependencies["currentBaseCommit"];
+  workingBranchPort?: DeveloperTaskRouteDependencies["workingBranchPort"];
+  startOutsideRecheck?: DeveloperTaskRouteDependencies["startOutsideRecheck"];
+  outsideRecheckFeatures?: DeveloperTaskRouteDependencies["outsideRecheckFeatures"];
+  admitOutsideRecheck?: DeveloperTaskRouteDependencies["admitOutsideRecheck"];
   taskAutonomyNow?: DeveloperTaskRouteDependencies["taskAutonomyNow"];
   /** Design review: the round's ports, so an immediate start after the owner's Retry can run (without them the dispatch row waits for the sweep). */
   designReview?: DeveloperTaskRouteDependencies["designReview"];

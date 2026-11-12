@@ -16,6 +16,11 @@ export const WorkflowFixPayloadSchema = z.object({
   source: FixSourceSchema,
   /** A run that starts a CI or feedback fix: the head the pull request has. The worker starts from it, so what an abandoned conflict round left (markers, a local merge commit) is not what the fix begins on. */
   startFrom: GitShaSchema.optional(),
+  /**
+   * The same for a task with several repositories (several open pull requests): each repository starts from its pull request's head, so code a re-check took and did not keep ("Continue in your own
+   * tool") is not what a fix begins on. Sent only to a worker whose /ping lists "task.workflowFixStartRepositories.v1" (dropped for an older one, which then restores a single repository as before).
+   */
+  startFromRepositories: z.array(z.object({ repositoryId: z.string().trim().min(1).max(200), commit: GitShaSchema }).strict()).min(1).max(32).optional(),
 }).strict();
 export type WorkflowFixPayload = z.infer<typeof WorkflowFixPayloadSchema>;
 /** A merge of the base into one pull request's branch that is queued or running: the head it is for, and why (`approved`: a person's go-ahead started it, for an agent set to suggest). */
