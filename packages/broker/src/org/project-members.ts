@@ -12,7 +12,7 @@
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { randomUUID } from "node:crypto";
 import { INDEX_EXPIRY_ATTRIBUTE, MEMBER_GRANT_SK_PREFIX, PROJECT_REVISION_SK_PREFIX, agentXError, memberGrantsPk, orgPk, orgProjectCatalogPk, projectMemberKey, projectMetaKey, projectPk, type OrgId, type OrgKey, type ProjectRole } from "@rovara-code/contracts";
-import { OrgRoleSchema, orgMemberKey, type AuditEventInput, type OrgRole } from "@agentx/cloud-contracts";
+import { OrgRoleSchema, isWriterOrgRole, orgMemberKey, type AuditEventInput, type OrgRole } from "@agentx/cloud-contracts";
 import { auditOccurrence, auditProjectMemberChanged, auditProjectMemberRemoved } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, tryAuditEvent, type AuditRuntime } from "../audit/outbox.js";
@@ -173,7 +173,8 @@ export function createProjectMembers(deps: ProjectMembersDependencies): ProjectM
 
     async projectsOf(orgId, caller) {
       const roles = new Map<string, ProjectRole>();
-      if (caller.orgRole === "auditor") return [];
+      // P3-OPEN-ROLES-CLOUD-ADOPTION: a positive list; the Auditor (and any role that is not a writer's) holds no project.
+      if (!isWriterOrgRole(caller.orgRole)) return [];
       if (caller.orgRole === "owner" || caller.orgRole === "admin") {
         for (const entry of await queryAll(deps, orgProjectCatalogPk(orgId), "PROJECT#")) {
           if (typeof entry.name === "string") roles.set(entry.name, "maintainer");

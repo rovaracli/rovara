@@ -15,7 +15,7 @@ import { budgetDocumentFence } from "./budget-snapshot.js";
 // task still running for the duplicate fails closed at its next dispatch (the grant it is checked against has moved). There are no
 // customers yet, and only staging holds such records.
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { MEMBER_GRANT_SK_PREFIX, agentXError, memberGrantsPk, orgPk, orgProjectCatalogPk, projectMemberKey, type OrgId } from "@rovara-code/contracts";
+import { MEMBER_GRANT_SK_PREFIX, agentXError, ownRoleEntry, memberGrantsPk, orgPk, orgProjectCatalogPk, projectMemberKey, type OrgId } from "@rovara-code/contracts";
 import { developerOrgKey, memberMergeQueueKey, orgMemberKey, orgMetaKey, orgSettingsKey, trialGithubKey, type OrgRole } from "@agentx/cloud-contracts";
 import { ownerKeyForSubject } from "../aws/lambda.js";
 import { auditOccurrence } from "../audit/events.js";
@@ -116,7 +116,8 @@ export async function mergeDuplicateMember(deps: Deps, input: MergeDuplicateMemb
   const sameOrg = race === undefined;
   const grantsMoved = sameOrg ? await moveGrants(deps, orgId, survivorId, duplicateId) : 0;
   const overrideMoved = sameOrg ? await moveBudgetOverride(deps, orgId, survivorId, duplicateId) : false;
-  const role = sameOrg && ROLE_RANK[duplicate.role] > ROLE_RANK[survivor.role] ? duplicate.role : survivor.role;
+  // P3-OPEN-ROLES-CLOUD-ADOPTION: the table is read by its own keys only (`ownRoleEntry`): a name it does not list ranks below every listed role and never wins.
+  const role = sameOrg && (ownRoleEntry(ROLE_RANK, duplicate.role) ?? -1) > (ownRoleEntry(ROLE_RANK, survivor.role) ?? -1) ? duplicate.role : survivor.role;
   const at = new Date(deps.now()).toISOString();
   try {
     await retire(deps, input, { duplicateOrgId, duplicateRole: duplicate.role, survivorRole: survivor.role, role, at, record, ...(link === undefined ? {} : { link }), ...(race === undefined ? {} : { race }) });

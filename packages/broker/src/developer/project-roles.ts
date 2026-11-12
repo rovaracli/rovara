@@ -3,7 +3,7 @@
 // places that start new work (a task start, Slack-started work, the setup check): work that exists keeps going.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { ProjectRoleSchema, agentXError, projectAllows, projectArchivedMessage, projectMetaKey, type OrgId, type ProjectRole } from "@rovara-code/contracts";
-import { type OrgRole } from "@agentx/cloud-contracts";
+import { isWriterOrgRole, type OrgRole } from "@agentx/cloud-contracts";
 import { ownerKeyForSubject } from "../aws/lambda.js";
 
 /**
@@ -64,8 +64,8 @@ export interface ProjectMetaItem {
  */
 export function effectiveProjectRole(caller: { orgRole: OrgRole; developerId: string }, grant: GrantItem | undefined, channelAccess: boolean): ProjectRole | undefined {
   if (caller.orgRole === "owner" || caller.orgRole === "admin") return "maintainer";
-  // The Auditor has no project role, whatever grant or channel it may also hold: it reads the audit log and writes nothing.
-  if (caller.orgRole === "auditor") return undefined;
+  // The Auditor has no project role, whatever grant or channel it may also hold: it reads the audit log and writes nothing. A positive list (P3-OPEN-ROLES-CLOUD-ADOPTION): any role that is not a writer's has none.
+  if (!isWriterOrgRole(caller.orgRole)) return undefined;
   const granted = grantRoleOf(grant);
   if (granted !== undefined) return granted;
   return channelAccess ? "contributor" : undefined;

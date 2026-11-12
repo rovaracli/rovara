@@ -45,3 +45,9 @@ skipped in the report. There is no way to skip a whole port.
 Ports covered today: document-store, queue, outbox, object-storage, secret-store, worker-machines, scheduler, image-registry, admission, audit-sink, approvers, identity, metering, model-key-store,
 code-host, check-runner, tracker. `github-client-conformance.ts` is exempt (it tests Code's own GitHub client, not a port a Cloud adapter implements). A suite for a new port (the plan's K1 lane) is
 added to `ports.ts` (suite, harness type, vendored file name), `code-fakes.ts` (its positive control) and `pending-lanes.ts`.
+
+## Registered adapters
+
+- `approvers` and `identity` (lane A6 `cloud/people`): `packages/broker/src/cloud/adapters/people/`, harnesses in `tests/conformance/adapters/approvers-cloud.ts` and `identity-cloud.ts` over the in-memory DynamoDB fake
+  (`tests/support/cloud-people-world.ts`). They wrap Cloud's approval-place rule, decide-grade step-up, Slack press resolution, second-person rule and the routes' authentication with no rule of their own;
+  `tests/unit/cloud-people-equivalence.test.ts` checks them against today's code case by case. What the ports cannot say yet is in `gaps.ts` (owed upstream, dated).
