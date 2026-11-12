@@ -7,6 +7,7 @@
 //    `slackRefusalReply` maps the core's refusal to the reply Cloud sends today, and never lets a link code through.
 import { SLACK_NOT_A_MEMBER_NOTICE } from "@agentx/cloud-contracts";
 import { REMOVED_FROM_ORG_MESSAGE } from "../../org/sign-in.js";
+import { runDataMove, type DataMove, type MoveContext } from "../migrations/framework.js";
 
 /** Why the core's channel sink would not act for a Slack person. `unlinked`: no developer for the Slack account. */
 export type SlackRefusal = "unlinked" | "not_a_member" | "banned" | "removed";
@@ -48,4 +49,13 @@ export function slackSwitchReadiness(facts: SlackSwitchFacts): { ready: boolean;
   if (!facts.bindWritesTenants) blockers.push("Cloud's Slack bind does not write the CHANNEL_TENANTS row yet");
   if (!facts.inboundWired) blockers.push("inboundFromQueuedSlackRequest is not wired into the channel sink");
   return { ready: blockers.length === 0, blockers };
+}
+
+/**
+ * `SlackSwitchFacts.tenantsBackfillPending` from a dry run of the CHANNEL_TENANTS backfill (migrations/plugins/channel-tenants.ts): the rows an apply would still write, and a
+ * binding the move cannot decide on counts as pending too, so a half-done backfill never reads as ready. The dry run writes nothing.
+ */
+export async function tenantsBackfillPending(move: DataMove, context: MoveContext): Promise<number> {
+  const report = await runDataMove(move, context, { direction: "forward" });
+  return report.writes + report.conflicts + (report.done ? 0 : 1);
 }

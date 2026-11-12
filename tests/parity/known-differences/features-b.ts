@@ -16,11 +16,12 @@ export const FEATURES_B_DIFFERENCES: readonly KnownDifference[] = [
   {
     scenario: "realtime", facet: "features",
     cause: [
-      "Both paths now tell an open page (each has the task's session: sessions:1). What they publish differs in vocabulary: Cloud's agent-session projector and notice sink publish `home.changed` and `session.updated`;",
-      "the core's realtime port publishes `attention.changed` when the task needs the person. The core's adapter here is the local composition's in-process publisher; lane A8's AppSync publisher is the Cloud adapter of the",
-      "point and is not registered by the root yet (cloud-modules.ts, WIRING), and it must carry the core's notice to the pages that listen for Cloud's two.",
+      "Both paths now tell an open page (each has the task's session: sessions:1). What they publish differs in vocabulary, on purpose: Cloud's agent-session projector and notice sink publish `home.changed` and",
+      "`session.updated` from the session summaries (the core keeps them under the same keys); the core's realtime port publishes `attention.changed`, a hint for pages Code serves itself. The root registers lane A8's",
+      "AppSync publisher behind `cloudPageNotices` (cloud/app/realtime.ts), which sends the notices Cloud's pages know and does not send `attention.changed` (a page ignores it, and a made-up revision on `home.changed`",
+      "would hide Cloud's real ones, ui/src/realtime/client.ts). The suite's core runs Code's in-process publisher, so it still shows the core's own word.",
     ].join(" "),
-    owner: "S0 follow-up (WIRING): register A8's realtime publisher and map the core's notice onto the page's two notices",
+    owner: "Intended (WIRING done in the root: the page-notice mapping is tested in tests/unit/cloud-app-wiring.test.ts); nothing to change on either side",
   },
   {
     scenario: "audit-ledger", facet: "features",
@@ -41,8 +42,7 @@ export const FEATURES_B_DIFFERENCES: readonly KnownDifference[] = [
       "inside the sign-in window). On the core, no approval card is ever posted to a chat: core/channel/cards.ts postApprovalCard (:64) has no caller in the vendored core",
       "(the plan's approval_request never reaches the channel); and even when one is, lane A8's CloudSlackChannel lists `plan_approval` in `stepUp`",
       "(packages/broker/src/plugins/channel/slack-cloud/adapter.ts, `stepUp`), so the card would carry no buttons and the sink refuses a press (`step_up`). The start",
-      "through the channel compares the same (`slack:start:task_started`) once the test wires what the root owes (inboundFromQueuedSlackRequest into the sink, a Cloud",
-      "ChannelWork, the CHANNEL_TENANTS row via A8's backfill). Proposed: Code posts the approval card to the task's thread when the plan waits (a caller of",
+      "through the channel compares the same (`slack:start:task_started`) with what the root now builds (the intake into the sink, Cloud's ChannelWork, the CHANNEL_TENANTS row via A8's backfill: cloud/app/slack-work.ts). Proposed: Code posts the approval card to the task's thread when the plan waits (a caller of",
       "postApprovalCard in the stage machine's plan-review step); the owner decides whether `plan_approval` stays a step-up kind for Slack on the core, since decision 99",
       "lets Cloud's Slack approve inside the window today.",
     ].join(" "),

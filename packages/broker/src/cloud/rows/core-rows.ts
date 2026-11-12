@@ -105,20 +105,20 @@ export interface CoreTaskEndedDeps {
   /** The task's record, as it is stored (the core's and Cloud's task records share `DEVTASK#<id>/META`). */
   readTask(taskId: string): Promise<Row | undefined>;
   /** Cloud's `onTaskEnded`, over the same table and handlers. */
-  onTaskEnded(task: Row & { orgId: string }, outcome: "closed"): Promise<unknown>;
+  onTaskEnded(task: Row & { orgId: string }, outcome: "closed" | "merged"): Promise<unknown>;
 }
 
 /**
  * The root's `taskEnded` handler for a core task: reads the task's record, gives Cloud's end bookkeeping a record in the shape it reads (`orgId`; the core names the company
  * `companyId` on some of its records, D7) and records the end as `closed` (the core calls the seam from a close). A task with no record, or of another company, tells nobody.
  */
-export function coreTaskEndedHandler(deps: CoreTaskEndedDeps): (event: CoreTaskEndedEvent) => Promise<void> {
+export function coreTaskEndedHandler(deps: CoreTaskEndedDeps, outcome: "closed" | "merged" = "closed"): (event: CoreTaskEndedEvent) => Promise<void> {
   return async (event) => {
     const task = await deps.readTask(event.taskId);
     if (task === undefined) return;
     const owner = typeof task["orgId"] === "string" ? task["orgId"] : typeof task["companyId"] === "string" ? task["companyId"] : undefined;
     if (owner !== event.orgId) return;
-    await deps.onTaskEnded({ ...task, orgId: owner }, "closed");
+    await deps.onTaskEnded({ ...task, orgId: owner }, outcome);
   };
 }
 

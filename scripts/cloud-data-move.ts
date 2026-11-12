@@ -74,6 +74,7 @@ async function main(argv: readonly string[]): Promise<number> {
   const moves = cloudDataMoves({
     companies: () => (args.company === undefined ? [] : [args.company]),
     scanPrefix: (prefix) => scanSource(client, table, { expression: "begins_with(#pk, :prefix)", names: { "#pk": "pk" }, values: { ":prefix": { S: prefix } } }),
+    scanBindings: scanSource(client, table, { expression: "begins_with(#pk, :prefix) AND contains(#pk, :binding) AND begins_with(#sk, :channel)", names: { "#pk": "pk", "#sk": "sk" }, values: { ":prefix": { S: "ORG#" }, ":binding": { S: "#SLACK_BINDING#" }, ":channel": { S: "CHANNEL#" } } }),
     scanHolding: (attribute) => scanSource(client, table, { expression: "attribute_exists(#a)", names: { "#a": attribute } }),
   });
   if (args.list) {

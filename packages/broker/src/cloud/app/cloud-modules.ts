@@ -7,7 +7,7 @@
 //   - `worker-machines`: lane A4 (EC2 machines, dispatcher hosting `runDispatchOnce`) is not merged.
 //   - `audit-sink`: lane A7's adapter (adapters/a7-audit-sink 166d4cfea) is not in train/0515-adapters. When it is: `createCloudAuditSink({ ..., onInvalid: "skip" })`
 //     (A7 note: a malformed event is dropped with a log line, never thrown into a task's transaction).
-// The A8 Slack channel adapter is registered only once `slackSwitchReadiness` says ready (slack-switch.ts).
+// The A8 Slack channel adapter is registered only once `slackSwitchReadiness` says ready (slack-switch.ts); the A8 realtime publisher whenever the events service is given.
 import { createDynamoStoreFromSettings } from "@rovara-code/aws-adapters/dynamodb";
 import { S3ObjectStorage, type S3ObjectStorageOptions } from "@rovara-code/aws-adapters/s3";
 import { createSecretsManagerSecretStore, type SecretsManagerSecretStoreOptions } from "@rovara-code/aws-adapters/secrets-manager";
@@ -19,6 +19,10 @@ import { createCloudApprovers, createCloudIdentityProvider, type CloudApproversD
 import { githubCodeHost } from "../../plugins/code-host/github/index.js";
 import { cloudAdmissionLevels, type LevelSources } from "./money.js";
 import { cloudRefusalWords } from "./refusal-words.js";
+import { cloudPageNotices } from "./realtime.js";
+import { slackSwitchReadiness, type SlackSwitchFacts } from "./slack-switch.js";
+import { AppSyncEventsPublisher, type AppSyncEventsPublisherOptions } from "../../cloud-adapters/realtime-appsync/publisher.js";
+import { CloudSlackChannel, type CloudSlackOptions } from "../../plugins/channel/slack-cloud/index.js";
 import { cloudAdapter, type CloudAdapterModule } from "./registry.js";
 
 /** A held room check before a spending action, in dollars (the A5 conformance value; Cloud's own `admitWork` minimum is the open question A5-S0-Q4). */
@@ -56,6 +60,13 @@ export interface CloudModuleDeps {
   people: CloudPeopleDependencies;
   approvers: CloudApproversDependencies;
   codeHost: { provider: Parameters<typeof githubCodeHost>[0]; options: Parameters<typeof githubCodeHost>[1] };
+  /** The cloud events service (lane A8's publisher). Absent: no `realtime` adapter, and the core's pages are told by Cloud's own sink only. */
+  realtime?: AppSyncEventsPublisherOptions;
+  /**
+   * Cloud's Slack on the core's channel point (lane A8). Registered only once `slackSwitchReadiness` says ready (the CHANNEL_TENANTS backfill has run to zero, Cloud's bind
+   * writes the row, the inbound queue is wired into the sink): until then a Slack message and a Slack card keep going through Cloud's own path, whatever else is on.
+   */
+  slack?: { options: CloudSlackOptions; facts: SlackSwitchFacts };
 }
 
 export function cloudAdapterModules(deps: CloudModuleDeps): CloudAdapterModule[] {
@@ -75,6 +86,9 @@ export function cloudAdapterModules(deps: CloudModuleDeps): CloudAdapterModule[]
     cloudAdapter({ point: "secrets", name: "secrets-manager", lane: "A3 (public)", create: () => createSecretsManagerSecretStore(deps.secrets) }),
     cloudAdapter({ point: "object-storage", name: "s3", lane: "A3 (public)", create: (context) => new S3ObjectStorage({ ...deps.objects, now: () => context.now().getTime() }) }),
     cloudAdapter({ point: "code-host", name: "github", lane: "A9", create: () => githubCodeHost(deps.codeHost.provider, deps.codeHost.options) }),
+    // The page notices Cloud's pages understand (realtime.ts maps away the core's own `attention.changed`).
+    ...(deps.realtime === undefined ? [] : [cloudAdapter({ point: "realtime", name: "appsync", lane: "A8", create: () => cloudPageNotices(new AppSyncEventsPublisher(deps.realtime!)) })]),
+    ...(deps.slack === undefined || !slackSwitchReadiness(deps.slack.facts).ready ? [] : [cloudAdapter({ point: "channel", name: "slack", lane: "A8", create: () => new CloudSlackChannel(deps.slack!.options) })]),
   ];
 }
 

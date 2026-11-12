@@ -26,7 +26,7 @@ const ROWS_CAUSE = [
   "(3) Core-only DEVTASK#<task>/CODE_MILESTONE#approved#<n>: the core's tracking pass announces the person's approval (\"Approved by maint. Ready to merge\", vendor core/merge/merge-tracking.ts:604-620);",
   "Cloud's same rule (packages/broker/src/rovara-code/merge-tracking.ts:716-734) did not announce it for the same review. The rule is identical; the inputs differ: Cloud counts an approval only",
   "from a reviewer its member directory knows (`linkedAmong`/`nonWritersAmong` over Cloud's members), the core's local people seam (`soleOwnerPeople`) counts any write-access reviewer.",
-  "Owner: the A6 people adapter must back the core's MergePeople seam in the root (S0-Q1), then this row should match; needs a check that Cloud's directory would count `maint`.",
+  "The root's side is built: cloud/app/merge-people.ts answers MergePeople from Cloud's member directory (tested in tests/unit/cloud-app-wiring.test.ts). The suite's core is Code's local composition, which hard-wires `soleOwnerPeople`, so the difference shows until the root composes merge tracking itself (S0-Q1: Code does not export its service layer).",
   "Not listed here any more (decided, ROWS): the core's WORKSPACE#<w>/VERIFIED_FILES#<digest> cache is core-private (D19, no Cloud reader asks for it), the artifact key, the operation events and the limit family are read",
   "in both shapes by Cloud's readers (D17, D18, D3: cloud/rows/core-rows.ts) and compare as one family in the suite's normalization.",
 ].join(" ");
