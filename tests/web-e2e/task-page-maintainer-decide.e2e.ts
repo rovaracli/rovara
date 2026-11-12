@@ -1,6 +1,6 @@
-// Approval place (U4): a project maintainer who decides someone else's coding plan on the task page is never shown Reject or Not now, is told the owner will hear of it, and keeps Approve and Request changes;
-// the owner sees the card as before. The mock cell answers the ordinary views; each test adds what the broker would send: the viewer's seat in the plan document's access summary (`decideAs`), a plan
-// card that carries a Reject (today's plan cards carry none, so this proves the page would still hide it), and the session read as someone who is not the task's owner.
+// Approval place (U4): a project maintainer who decides someone else's coding plan on the task page is shown Reject like the owner (owner decision 99), is told the owner will hear of it, and keeps Approve and Request changes;
+// the owner sees the card as before. The mock cell answers the ordinary views; each test adds what the broker would send: the viewer's seat in the plan document's access summary (`decideAs`), the plan
+// card (which carries a Reject since decision 99), and the session read as someone who is not the task's owner.
 import { mkdirSync } from "node:fs";
 import type { APIRequestContext, BrowserContext, Page } from "@playwright/test";
 import { DecisionCardsViewSchema } from "@agentx/cloud-contracts/web";
@@ -22,8 +22,7 @@ const plan: DecisionItem = {
 };
 const view = () => {
  const p = projectDecisionCards([plan]);
- const cards = p.cards.map(card => ({ ...card, actions: [...card.actions, { kind: "reject" as const, label: "Not now", href: "/v1/app/decisions/" + card.id.replace(":", "/") + "/reject", method: "POST" as const }], rejectReasons: ["not_now" as const, "wrong_approach" as const] }));
- return DecisionCardsViewSchema.parse({ cards, total: cards.length, tabs: p.tabs, details: p.details, digests: p.digests, dropped: p.dropped, choices: p.choices });
+ return DecisionCardsViewSchema.parse({ cards: p.cards, total: p.cards.length, tabs: p.tabs, details: p.details, digests: p.digests, dropped: p.dropped, choices: p.choices });
 };
 const documentView = (access: Record<string, unknown>) => ({
  document: "plan", versions: [{ version: 1, current: true, approved: false }], checks: [], unverified: false, waiting: true,
@@ -47,7 +46,7 @@ const withBroker = async (page: Page, options: { owner: boolean; access: Record<
  });
 };
 
-for (const [width, theme] of [[1280, "light"], [390, "dark"]] as const) test("a maintainer deciding someone else's plan has no Reject, is told the owner will hear of it, and keeps Approve and Request changes at " + String(width) + "px", async ({ page, context, request, baseURL }) => {
+for (const [width, theme] of [[1280, "light"], [390, "dark"]] as const) test("a maintainer deciding someone else's plan has Reject, is told the owner will hear of it, and keeps Approve and Request changes at " + String(width) + "px", async ({ page, context, request, baseURL }) => {
  await signIn(page, context, request, baseURL);
  await withBroker(page, { owner: false, access: { decideAs: "maintainer" } });
  await page.emulateMedia({ colorScheme: theme });await page.setViewportSize({ width, height: 900 });await page.goto("/app/sessions/" + id);
@@ -55,20 +54,20 @@ for (const [width, theme] of [[1280, "light"], [390, "dark"]] as const) test("a 
  await expect(card.getByText("You are deciding as a maintainer; Maya Chen will be told.")).toBeVisible();
  await expect(card.getByRole("button", { name: "Approve", exact: true })).toBeVisible();
  await expect(card.locator("summary", { hasText: "Request changes" })).toBeVisible();
- await expect(card.locator("summary", { hasText: "Not now" })).toHaveCount(0);
- await expect(card.getByRole("button", { name: /^(Reject|Not now|Wrong approach)/u })).toHaveCount(0);
+ await expect(card.locator("summary", { hasText: "Reject" })).toBeVisible();
+ await expect(card.getByRole("button", { name: "Not now" })).toHaveCount(0);
  await checkA11y(page, { theme });
  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
  await evidenceShot(page, { path: shot("task-page-maintainer-" + String(width)), fullPage: true });
 });
 
-test("the owner's card is as before: Not now with its reasons, and no maintainer note", async ({ page, context, request, baseURL }) => {
+test("the owner's card is as before: Reject with its reasons, and no maintainer note", async ({ page, context, request, baseURL }) => {
  await signIn(page, context, request, baseURL);
  await withBroker(page, { owner: true, access: { decideAs: "owner" } });
  await page.setViewportSize({ width: 1280, height: 900 });await page.goto("/app/sessions/" + id);
  const card = page.getByRole("article", { name: "Retry failed payments" });
  await expect(card.getByRole("button", { name: "Approve", exact: true })).toBeVisible();
- await expect(card.locator("summary", { hasText: "Not now" })).toBeVisible();
+ await expect(card.locator("summary", { hasText: "Reject" })).toBeVisible();
  await expect(card.getByText(/You are deciding as a maintainer/u)).toHaveCount(0);
  await checkA11y(page, { theme: "light" });
 });
@@ -78,6 +77,6 @@ test("a server that sends no decideAs leaves the card as before", async ({ page,
  await withBroker(page, { owner: false, access: {} });
  await page.setViewportSize({ width: 1280, height: 900 });await page.goto("/app/sessions/" + id);
  const card = page.getByRole("article", { name: "Retry failed payments" });
- await expect(card.locator("summary", { hasText: "Not now" })).toBeVisible();
+ await expect(card.locator("summary", { hasText: "Reject" })).toBeVisible();
  await expect(card.getByText(/You are deciding as a maintainer/u)).toHaveCount(0);
 });

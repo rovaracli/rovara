@@ -2,7 +2,9 @@
 //   low    Approve (one tap) and Not now, and "Open", a link to the card;
 //   medium a CODING PLAN has Approve too (approval place, U4: the message shows its evidence, and the server lets a linked person who signed in to Rovara within the company's window approve it, else it says to open the card); any other medium card has no
 //          approve button: "Show the evidence" is a link to the card on the web, where the evidence is opened and Approve is allowed. Not now is one tap on every card, and in a chat it is a dismissal, never a rejection;
-//   high   one link, "Open": the card (or the confirmation page and its fresh sign-in). No approve and no reject here.
+//   high   one link, "Open": the card (or the confirmation page and its fresh sign-in). No approve here.
+//   A coding plan also has Reject at every risk (owner decision 99: a reject only stops work, so it is judged like a medium approval, never needs the app; the server checks the person is linked and recently signed in). Reject asks "Are you sure?" first, and a
+//   Not now (a dismissal) is never put beside it.
 // The button words are the shared table (`DECISION_LABELS`), the same as the web card's.
 // A pressed button carries only the card's id; the server re-checks everything (routes.ts), so a forged or stale press is refused there. Every word that came from a person, a plan or a repository
 // was already flattened by the projector; here it is also escaped for Slack (a mention, a link, a broadcast).
@@ -11,7 +13,9 @@ import { DECISION_LABELS, formatRunLimitUsd, hideEmailAddresses, runLimitRaiseTe
 export const DECISION_SLACK_APPROVE_ACTION = "rovara_decision_approve";
 export const DECISION_SLACK_REJECT_ACTION = "rovara_decision_reject";
 export const DECISION_SLACK_OPEN_ACTION = "rovara_decision_open";
-export const DECISION_SLACK_ACTION_IDS: ReadonlySet<string> = new Set([DECISION_SLACK_APPROVE_ACTION, DECISION_SLACK_REJECT_ACTION, DECISION_SLACK_OPEN_ACTION]);
+/** Owner decision 99: Reject on a coding plan's message. A rejection ends the task; it is not `DECISION_SLACK_REJECT_ACTION`, which is "Not now", a dismissal. */
+export const DECISION_SLACK_REJECT_PLAN_ACTION = "rovara_decision_reject_plan";
+export const DECISION_SLACK_ACTION_IDS: ReadonlySet<string> = new Set([DECISION_SLACK_APPROVE_ACTION, DECISION_SLACK_REJECT_ACTION, DECISION_SLACK_REJECT_PLAN_ACTION, DECISION_SLACK_OPEN_ACTION]);
 
 export interface SlackCardMessage { text: string; blocks: Array<Record<string, unknown>> }
 
@@ -27,6 +31,8 @@ const opensConfirmationPage = (card: DecisionCard): boolean => (card.actions.fin
 const riskWords = (card: DecisionCard): string => (card.risk === "high" && opensConfirmationPage(card) ? `${RISK_WORDS.high}, after you sign in again` : RISK_WORDS[card.risk]);
 
 const button = (actionId: string, text: string, extra: Record<string, unknown>): Record<string, unknown> => ({ type: "button", action_id: actionId, text: { type: "plain_text", text }, ...extra });
+/** Slack's own "Are you sure?" for the one tap that ends a task. Fixed words. */
+const REJECT_CONFIRM = { title: { type: "plain_text", text: "Reject this plan?" }, text: { type: "mrkdwn", text: "This stops the task. Nothing is coded." }, confirm: { type: "plain_text", text: "Reject" }, deny: { type: "plain_text", text: "Cancel" } };
 
 /**
  * The message for a card. `cardUrl` is the card's page on the web (an https address of this deployment, built by the caller from the card's own open action); it is the only link on the message.
@@ -48,23 +54,27 @@ export function slackCardMessage(card: DecisionCard, input: { cardUrl: string; /
     { type: "context", elements: [{ type: "mrkdwn", text: clip([escapeSlack(riskWords(card)), ...reasons, `Project: ${escapeSlack(card.project)}`].join("  |  ")) }] },
   ];
   if (card.status !== "pending") {
-    const done = card.status === "answered_by_rule" ? "Answered by a standing rule." : card.status === "approved" ? "Approved." : card.status === "rejected" ? "Not now." : card.status === "expired" ? "Expired." : "Cancelled.";
+    const done = card.status === "answered_by_rule" ? "Answered by a standing rule." : card.status === "approved" ? "Approved." : card.status === "rejected" ? (card.kind === "approve_plan" ? "Rejected." : "Not now.") : card.status === "expired" ? "Expired." : "Cancelled.";
     blocks.push({ type: "context", elements: [{ type: "mrkdwn", text: done }] });
     return { text, blocks };
   }
   const elements: Array<Record<string, unknown>> = [];
   const canApprove = card.actions.some((action) => action.kind === "approve");
-  const canReject = card.actions.some((action) => action.kind === "reject");
+  // "Not now" is a dismissal and never a rejection; a coding plan's reject action is the real Reject, offered as its own button.
+  const canReject = card.actions.some((action) => action.kind === "reject") && card.kind !== "approve_plan";
+  const rejectPlan = card.kind === "approve_plan" && card.actions.some((action) => action.kind === "reject")
+    ? [button(DECISION_SLACK_REJECT_PLAN_ACTION, "Reject", { style: "danger", value: `${card.id}|${input.digest}`, confirm: REJECT_CONFIRM })] : [];
   if (card.risk === "high") {
-    elements.push(button(DECISION_SLACK_OPEN_ACTION, DECISION_LABELS.open, { url: input.cardUrl, style: "primary", value: `${card.id}|${input.digest}` }));
+    elements.push(button(DECISION_SLACK_OPEN_ACTION, DECISION_LABELS.open, { url: input.cardUrl, style: "primary", value: `${card.id}|${input.digest}` }), ...rejectPlan);
   } else if ((card.risk === "low" || (card.risk === "medium" && card.kind === "approve_plan")) && canApprove) {
     elements.push(button(DECISION_SLACK_APPROVE_ACTION, card.kind === "merge" ? DECISION_LABELS.merge : DECISION_LABELS.approve, { style: "primary", value: `${card.id}|${input.digest}${raise === undefined ? "" : `|${String(raise.proposedUsd)}`}` }));
     if (canReject) elements.push(button(DECISION_SLACK_REJECT_ACTION, DECISION_LABELS.notNow, { value: `${card.id}|${input.digest}` }));
-    elements.push(button(DECISION_SLACK_OPEN_ACTION, DECISION_LABELS.open, { url: input.cardUrl, value: `${card.id}|${input.digest}` }));
+    elements.push(...rejectPlan, button(DECISION_SLACK_OPEN_ACTION, DECISION_LABELS.open, { url: input.cardUrl, value: `${card.id}|${input.digest}` }));
   } else {
     // Medium, or a low card that is answered on its own page (a question, a choice).
     elements.push(button(DECISION_SLACK_OPEN_ACTION, card.risk === "medium" ? DECISION_LABELS.showEvidence : DECISION_LABELS.open, { url: input.cardUrl, style: "primary", value: `${card.id}|${input.digest}` }));
     if (canReject) elements.push(button(DECISION_SLACK_REJECT_ACTION, DECISION_LABELS.notNow, { value: `${card.id}|${input.digest}` }));
+    elements.push(...rejectPlan);
   }
   blocks.push({ type: "actions", elements });
   return { text, blocks };
