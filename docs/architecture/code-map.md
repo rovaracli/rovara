@@ -456,7 +456,8 @@ No single test lists every broker read.
 | `project-access.ts` | (No header comment.) Exports `checkProjectAccess`, `listWorkspaces`. |
 | `project-archive-setup.ts` | (No header comment.) Exports `archiveDepsOf`, `egressDepsOf`, `getAppProject`. |
 | `project-list.ts` | (No header comment.) Exports `queryAll`, `REVISION_READS_AT_ONCE`, `mapLimit`. |
-| `project-members.ts` | (No header comment.) Exports `projectRoleForRoute`, `getProjectMembers`, `putProjectMember`. |
+| `project-members.ts` | (No header comment.) Exports `projectRoleForRoute`, `getProjectMembers`, `readProjectMembers`. |
+| `project-people.ts` | A-32 and A-33 (srv/project-people): the web's People tab of a project. |
 | `project-settings.ts` | (No header comment.) Exports `listGithubRepositories`, `putProjectSettings`, `projectMetaConfigRoute`. |
 | `saved-env-image.ts` | Saved project images (SV wiring, switch `sv`): the project's Environment panel as routes. |
 | `second-review.ts` | Second review by another AI company (SR-1, switch `cr`): `/v1/app/org/second-review`, the picker's preview and the company's choice. |
