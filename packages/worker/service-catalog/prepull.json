@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
-  "catalogRevision": 3,
+  "catalogRevision": 5,
   "images": [
     {
       "id": "local-aws@r1",
       "repository": "svc/local-aws",
-      "digest": "e1e95b4f89d16b8ebd29ed088afabc4c22cf5e7bb62a1508f61ea4bfa9a4a672",
+      "digest": "13a8be5e7a4841bdfb3da04ec47cc24e876d963307bc6ccc0dfb169086c2065e",
       "platforms": [
         "linux/arm64"
       ]

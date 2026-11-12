@@ -1,11 +1,11 @@
 // Test services, slice 2 (broker side): Rovara local AWS (`emulated`) for exactly S3, SQS and DynamoDB. The approval, the plan (checks and coding), the proposal from detector candidates, the approve card, the evidence rows and the
 // pull request lines. Everything else AWS offers, and any emulated dependency without a pinned local-aws, is "not available yet"; with tx off or with no emulated dependency everything reads as it did in slice 1.
 import { describe, expect, it } from "vitest";
-import { TestEnvRegionSchema, TestEnvironmentBodySchema, TEST_SERVICES_AWS_PLAN_FEATURE, projectMetaKey, projectRevisionKey, testEnvDigest, type OrgId, type ProjectCommand, type TestEnvironment, type TestEnvironmentBody, type VerifiedCatalog } from "@rovara-code/contracts";
+import { AWS_EMULATOR_ENGINE_VERSION, awsEmulatorEvidenceLine, TestEnvRegionSchema, TestEnvironmentBodySchema, TEST_SERVICES_AWS_PLAN_FEATURE, projectMetaKey, projectRevisionKey, testEnvDigest, type OrgId, type ProjectCommand, type TestEnvironment, type TestEnvironmentBody, type VerifiedCatalog } from "@rovara-code/contracts";
 import { TestEnvTaskPlanSchema, TaskDependencyPlanSchema, WORKER_INVOCATION_FEATURES } from "@agentx/cloud-contracts";
 import { sanitizeTestEnvDraft } from "../../packages/broker/src/test-env/draft.js";
 import { approveTestEnvironment, proposeTestEnvironment, recordTestEnvProveReport, type TestEnvDeps } from "../../packages/broker/src/org/test-environment.js";
-import { DEPENDENCY_PLAN_REFUSAL_WORDS, EMULATED_TASK_SERVICES, TEST_SERVICES_MIN_CATALOG_REVISION, dependenciesStartableNow, taskDependencyPlansOf } from "../../packages/broker/src/test-env/dependency-plan.js";
+import { DEPENDENCY_PLAN_REFUSAL_WORDS, TEST_SERVICES_MIN_CATALOG_REVISION, isEmulatedTaskService, dependenciesStartableNow, taskDependencyPlansOf } from "../../packages/broker/src/test-env/dependency-plan.js";
 import { EMULATED_DEFAULT_REGION, proposeDependencies } from "../../packages/broker/src/test-env/dependency-proposal.js";
 import { dependencyCardLines } from "../../packages/broker/src/test-env/dependency-card-lines.js";
 import { evidenceEnvironmentOf } from "../../packages/broker/src/test-env/evidence-line.js";
@@ -53,13 +53,17 @@ const plansOf = (dependencies: unknown[], from: VerifiedCatalog | null = catalog
 const reason = (result: ReturnType<typeof plansOf>) => (result.ok ? "ok" : result.reason);
 
 describe("which dependencies are startable now", () => {
-  it("is exactly S3, SQS and DynamoDB on Rovara local AWS, beside real software", () => {
-    expect([...EMULATED_TASK_SERVICES]).toEqual(["s3", "sqs", "dynamodb"]);
+  it("is any service of the table on Rovara local AWS, beside real software, and a legacy spelling is its key", () => {
+    expect(isEmulatedTaskService("s3") && isEmulatedTaskService("secretsmanager") && isEmulatedTaskService("secrets-manager")).toBe(true);
+    expect(isEmulatedTaskService("nosuchservice") || isEmulatedTaskService("constructor")).toBe(false);
     expect(dependenciesStartableNow([postgres(), ...threeAws()] as never)).toBe(true);
-    for (const other of ["sns", "lambda", "kinesis", "ssm"]) expect(dependenciesStartableNow([aws(other)] as never)).toBe(false);
+    for (const other of ["sns", "lambda", "kinesis", "ssm", "secrets-manager"]) expect(dependenciesStartableNow([aws(other)] as never)).toBe(true);
+    for (const other of ["nosuchservice", "constructor"]) expect(dependenciesStartableNow([aws(other)] as never)).toBe(false);
   });
-  it("refuses a dependency that also asks for a service outside the three", () => {
-    expect(dependenciesStartableNow([aws("s3", { backing: { kind: "emulated", catalogId: "local-aws@r1", awsServices: ["s3", "sns"], region: "us-east-1" } })] as never)).toBe(false);
+  it("refuses a dependency that also asks for a service the table does not know, and one whose backing leaves out its own family", () => {
+    expect(dependenciesStartableNow([aws("s3", { backing: { kind: "emulated", catalogId: "local-aws@r1", awsServices: ["s3", "sns"], region: "us-east-1" } })] as never)).toBe(true);
+    expect(dependenciesStartableNow([aws("s3", { backing: { kind: "emulated", catalogId: "local-aws@r1", awsServices: ["s3", "nosuchservice"], region: "us-east-1" } })] as never)).toBe(false);
+    expect(dependenciesStartableNow([aws("sns", { backing: { kind: "emulated", catalogId: "local-aws@r1", awsServices: ["s3"], region: "us-east-1" } })] as never)).toBe(false);
   });
   it("refuses emulated dependencies that cannot share one helper (another region or another image), and a different working backing or a fake fallback", () => {
     const eu = aws("sqs", { backing: { kind: "emulated", catalogId: "local-aws@r1", awsServices: ["sqs"], region: "eu-west-1" } });
@@ -80,8 +84,9 @@ describe("when a task may use an environment with Rovara local AWS", () => {
   it("is not used with tx off (today's reason for any dependency)", () => {
     expect(environmentUnusedReason(asEnvironment(body()), { TEST_ENVIRONMENT_ENABLED: "1" })).toBe("dependencies_not_connected");
   });
-  it("is not used for any other AWS service, in the fixed words", () => {
-    expect(environmentUnusedReason(asEnvironment(body([aws("sns")])), ON)).toBe("dependencies_not_available_yet");
+  it("is used for any service of the table, and not for one it does not know, in the fixed words", () => {
+    expect(environmentUnusedReason(asEnvironment(body([aws("sns")])), ON)).toBeUndefined();
+    expect(environmentUnusedReason(asEnvironment(body([aws("nosuchservice")])), ON)).toBe("dependencies_not_available_yet");
     expect(UNUSED_WORDS.dependencies_not_available_yet).toMatch(/not .*yet/iu);
   });
 });
@@ -112,25 +117,39 @@ describe("the plan of Rovara local AWS", () => {
     expect(result.ok && result.dependencies[0]!.aws).toEqual({ services: ["dynamodb"], region: "us-east-1", resources: { provider: "cloudformation", path: "template.yaml" } });
   });
 
-  it("is 'not available yet' for any other AWS service", () => {
-    expect(reason(plansOf([aws("sns", { connect: AWS_CONNECT })]))).toBe("not_available_yet");
-    expect(reason(plansOf([aws("s3", { connect: AWS_CONNECT, backing: { kind: "emulated", catalogId: "local-aws@r1", awsServices: ["s3", "lambda"], region: "us-east-1" } })]))).toBe("not_available_yet");
+  it("pins a service the emulator only has as `available` (a wide plan), with the service named by its key, and is 'not available yet' for one the table does not know", () => {
+    const wide = plansOf([aws("kinesis", { connect: AWS_CONNECT }), aws("sns")]);
+    if (!wide.ok) throw new Error(wide.reason);
+    expect(wide.dependencies.map((plan) => plan.aws!.services)).toEqual([["kinesis"], ["sns"]]);
+    expect(reason(plansOf([aws("nosuchservice", { connect: AWS_CONNECT })]))).toBe("not_available_yet");
+    expect(reason(plansOf([aws("s3", { connect: AWS_CONNECT, backing: { kind: "emulated", catalogId: "local-aws@r1", awsServices: ["s3", "nosuchservice"], region: "us-east-1" } })]))).toBe("not_available_yet");
     expect(DEPENDENCY_PLAN_REFUSAL_WORDS.not_available_yet).toMatch(/not available yet/iu);
   });
 
   it("is 'not available yet' for emulated without a pinned local-aws (not in the catalog, an unpinned catalog, or an entry that does not cover the service)", () => {
     expect(reason(plansOf(threeAws(), catalog(withoutLocalAws)))).toBe("not_available_yet");
     expect(reason(plansOf([aws("s3", { connect: AWS_CONNECT, backing: { kind: "emulated", catalogId: "local-aws@r9", awsServices: ["s3"], region: "us-east-1" } })]))).toBe("not_available_yet");
-    // An emulator that does not list the service as supported (moved to `available`) does not back it.
-    const unsupported = catalog((entries) => {
+    // An emulator that says it runs another engine release than the table's is refused; one that says nothing (a catalog made before the field) and one that names the table's release are not.
+    const withEngine = (engineVersion: string | undefined) => catalog((entries) => {
+      for (const entry of entries) {
+        if (entry["id"] !== "local-aws@r1") continue;
+        const emulator = entry["emulator"] as { engineVersion?: string };
+        if (engineVersion === undefined) delete emulator.engineVersion;
+        else emulator.engineVersion = engineVersion;
+      }
+    });
+    expect(reason(plansOf(threeAws(), withEngine("1.0.321")))).toBe("not_available_yet");
+    expect(reason(plansOf(threeAws(), withEngine(AWS_EMULATOR_ENGINE_VERSION)))).toBe("ok");
+    expect(reason(plansOf(threeAws(), withEngine(undefined)))).toBe("ok");
+    // Moved to `available` is still the table's service: a person's explicit choice is backed.
+    const available = catalog((entries) => {
       for (const entry of entries) if (entry["id"] === "local-aws@r1") {
         const services = (entry["emulator"] as { services: { supported: string[]; available: string[] } }).services;
         services.supported = services.supported.filter((service) => service !== "sqs");
         services.available.push("sqs");
       }
     });
-    expect(reason(plansOf(threeAws(), unsupported))).toBe("not_available_yet");
-    expect(reason(plansOf([aws("s3", { connect: AWS_CONNECT })], unsupported))).toBe("ok");
+    expect(reason(plansOf(threeAws(), available))).toBe("ok");
   });
 
   it("keeps the catalog rules of slice 1: no catalog, an unpinned catalog, a retired entry, an edition", () => {
@@ -164,13 +183,14 @@ describe("the plan of Rovara local AWS", () => {
     expect(TaskDependencyPlanSchema.safeParse({ ...local, catalogId: "local-aws@r1" }).success).toBe(false);
   });
 
-  it("wire: aws.services is exactly S3, SQS and DynamoDB (at most 3), and a region is a short region name", () => {
+  it("wire: aws.services is any service Rovara local AWS serves (at most 64, each once), and a region is a short region name", () => {
     const [, s3] = (plansOf([postgres(), aws("s3", { connect: AWS_CONNECT })]) as { ok: true; dependencies: Array<Record<string, unknown>> }).dependencies;
     const withAws = (value: unknown) => TaskDependencyPlanSchema.safeParse({ ...s3, aws: value }).success;
     expect(withAws({ services: ["s3", "sqs", "dynamodb"], region: "us-east-1" })).toBe(true);
-    expect(withAws({ services: ["s3", "sns"], region: "us-east-1" })).toBe(false);
+    expect(withAws({ services: ["s3", "sns"], region: "us-east-1" })).toBe(true);
     expect(withAws({ services: ["s3", "s3", "sqs", "dynamodb"], region: "us-east-1" })).toBe(false);
-    expect(withAws({ services: ["s3", "lambda"], region: "us-east-1" })).toBe(false);
+    expect(withAws({ services: ["s3", "lambda"], region: "us-east-1" })).toBe(true);
+    expect(withAws({ services: ["s3", "not-an-aws-service"], region: "us-east-1" })).toBe(false);
     expect(withAws({ services: [], region: "us-east-1" })).toBe(false);
     expect(TestEnvRegionSchema.safeParse("us-east-1").success).toBe(true);
     expect(TestEnvRegionSchema.safeParse(`us-${"a".repeat(40)}-1`).success).toBe(false);
@@ -214,21 +234,18 @@ describe("approval", () => {
     await expect(approved(body(), catalog())).resolves.toBeDefined();
     await expect(approved(body())).resolves.toBeDefined();
   });
-  it("refuses, in the fixed words, any other AWS service", async () => {
-    await expect(approved(body([aws("sns", { connect: AWS_CONNECT })]), catalog())).rejects.toThrow(/not available yet/iu);
-    await expect(approved(body([aws("sns", { connect: AWS_CONNECT })]))).rejects.toThrow(/not available yet/iu);
+  it("approves any service of the table, and refuses one it does not know, in the fixed words", async () => {
+    await expect(approved(body([aws("sns", { connect: AWS_CONNECT })]), catalog())).resolves.toBeDefined();
+    await expect(approved(body([aws("nosuchservice", { connect: AWS_CONNECT })]), catalog())).rejects.toThrow(/not available yet/iu);
+    await expect(approved(body([aws("nosuchservice", { connect: AWS_CONNECT })]))).rejects.toThrow(/not available yet/iu);
   });
-  it("refuses emulated without a pinned local-aws, and one the emulator does not list as supported", async () => {
+  it("refuses emulated without a pinned local-aws, and one whose emulator runs another engine release than the table's", async () => {
     await expect(approved(body(), catalog(withoutLocalAws))).rejects.toThrow(/not available yet/iu);
     await expect(approved(body(), verifiedCatalog(unpinnedCatalog(TEST_SERVICES_MIN_CATALOG_REVISION)))).rejects.toThrow(/not available yet/iu);
-    const unsupported = catalog((entries) => {
-      for (const entry of entries) if (entry["id"] === "local-aws@r1") {
-        const services = (entry["emulator"] as { services: { supported: string[]; available: string[] } }).services;
-        services.supported = services.supported.filter((service) => service !== "dynamodb");
-        services.available.push("dynamodb");
-      }
+    const otherEngine = catalog((entries) => {
+      for (const entry of entries) if (entry["id"] === "local-aws@r1") (entry["emulator"] as { engineVersion?: string }).engineVersion = "1.0.321";
     });
-    await expect(approved(body(), unsupported)).rejects.toThrow(/not available yet/iu);
+    await expect(approved(body(), otherEngine)).rejects.toThrow(/not available yet/iu);
   });
   it("is not approvable with tx off", async () => {
     const h = harness();
@@ -313,11 +330,11 @@ describe("the proposal from detector candidates", () => {
     expect(proposal.dependencies.map((entry) => [entry.id, entry.connect.hostAliases.length])).toEqual([["aws-sqs", 1], ["postgres", 1], ["aws-s3", 0]]);
   });
 
-  it("leaves out, with one fixed note, every other AWS service (never described)", () => {
-    const proposal = proposeDependencies([candidate("aws:s3"), candidate("aws:sns"), candidate("aws:kinesis"), candidate("aws:lambda")], context());
-    expect(proposal.dependencies.map((entry) => entry.id)).toEqual(["aws-s3"]);
+  it("leaves out, with one fixed note, a service the entry only has as `available` and one the table does not know (never described)", () => {
+    const proposal = proposeDependencies([candidate("aws:s3"), candidate("aws:sns"), candidate("aws:kinesis"), candidate("aws:lambda"), candidate("aws:nosuchservice")], context());
+    expect(proposal.dependencies.map((entry) => entry.id)).toEqual(["aws-s3", "aws-sns", "aws-lambda"]);
     expect(proposal.notes).toHaveLength(1);
-    expect(proposal.notes.join(" ")).not.toMatch(/sns|kinesis|lambda/iu);
+    expect(proposal.notes.join(" ")).not.toMatch(/sns|kinesis|lambda|nosuchservice/iu);
   });
 
   it("proposes no emulated dependency without a pinned local-aws, and not one the tests fake themselves", () => {
@@ -396,8 +413,11 @@ describe("evidence and the pull request", () => {
   it("labels them Rovara local AWS from the pinned backing, and says so in one PR line", () => {
     const { dependencies, notTested } = dependencyEvidenceOf(pinnedRows, usageOf(["postgres", "aws-s3", "aws-sqs", "aws-dynamodb"]));
     expect(dependencies.map((row) => [row.name, row.backing, row.label])).toEqual([["Postgres", "local", "real"], ["S3", "emulated", "rovara_local_aws"], ["SQS", "emulated", "rovara_local_aws"], ["DynamoDB", "emulated", "rovara_local_aws"]]);
-    expect(notTested.map((item) => item.id)).toEqual([AWS_PERMISSIONS_ITEM_ID]);
+    // The permissions item, then one line per planned service: what emulated it and how far that matches AWS (the table's own score).
+    expect(notTested.map((item) => item.id)).toEqual([AWS_PERMISSIONS_ITEM_ID, "aws-fidelity-1", "aws-fidelity-2", "aws-fidelity-3"]);
     expect(notTested[0]!.text).toBe(AWS_PERMISSIONS_NOT_CHECKED);
+    expect(notTested.slice(1).map((item) => item.text)).toEqual(["s3", "sqs", "dynamodb"].map((service) => awsEmulatorEvidenceLine(service)));
+    expect(notTested[1]!.text).toMatch(/^s3: Emulated by AWS Emulator 1\.0\.\d+, AWS fidelity score \d{1,3}%$/u);
     const lines = packDependencyLines(packOf(dependencies), 0);
     expect(lines.lines).toEqual(["Integration tests ran against: Postgres (real), S3, SQS and DynamoDB (Rovara local AWS)."]);
     expect(lines.notTested).toContain(`- ${AWS_PERMISSIONS_NOT_CHECKED}`);
@@ -417,7 +437,7 @@ describe("evidence and the pull request", () => {
   it("does not repeat the permissions item among the pack's other not-tested bullets", () => {
     const { dependencies, notTested } = dependencyEvidenceOf(pinnedRows, usageOf(["aws-s3"]));
     const pack = { notTested, environment: { dependencies } } as never;
-    expect(evidenceNotTestedLines(pack, 0)).toEqual([]);
+    expect(evidenceNotTestedLines(pack, 0).filter((line) => /permissions/iu.test(line))).toEqual([]);
   });
 
   it("shows an emulated dependency that did not start as not available, never as Rovara local AWS", () => {

@@ -2,7 +2,7 @@
 // Setup wizard (E4): the Setup step's test-environment section. Each state it can be in: the feature off (nothing shown), loading, a failed read, no draft, a stale draft, a draft to propose, a proposal (what will
 // run with each value's source, the proof, the commands to add to the settings), the approvals (one press; a second person's confirmation; sign in again), an edit, and the approved environment.
 import { expect, it } from "vitest";
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router";
 import { TestEnvironmentBodySchema, TestEnvironmentStateSchema } from "@agentx/cloud-contracts/web";
@@ -58,7 +58,7 @@ function setup(options: Options = {}) {
   });
   const query = createQueryClient();
   const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { initialEntries: ["/app/onboard?project=web&step=setup"], children: h(OnboardScreen) }) }) }), { theme: "light" });
-  return { ...f, close() { ui.unmount(); query.clear(); } };
+  return { ...f, setRead(next: { status: number; body: unknown }) { current = next; }, close() { ui.unmount(); query.clear(); } };
 }
 const posts = (f: ReturnType<typeof setup>, suffix: string) => f.request.mock.calls.map(([r]) => r).filter((r) => r.method === "POST" && r.path.endsWith(suffix));
 const section = async () => {
@@ -413,5 +413,84 @@ it("says before Approve why a seed makes it high tier, who must approve, and off
   expect(within(alert).getByRole("button", { name: "Sign in again" })).toBeTruthy();
   // The sign-in is on the approval, once: not a second alert at the bottom of the section.
   expect(within(region).getAllByRole("button", { name: "Sign in again" })).toHaveLength(1);
+  f.close();
+});
+
+// ---- the AWS service picker of an emulated dependency (decision 109)
+
+const AWS_ROW = { id: "aws-s3", name: "S3", kind: "cloud_api", family: "aws:s3", found: [{ path: "template.yaml", line: 4 }], usedBy: ["unit"], backing: { kind: "emulated", catalogId: "local-aws@r1", awsServices: ["s3"], region: "us-east-1" },
+  connect: { env: [], hostAliases: ["aws"] }, seeds: [], reset: "fresh_per_round" };
+const withAws = (digest = DIGEST, services = ["s3"]) => ({ ...PROPOSAL, digest, environment: { ...ENVIRONMENT, dependencies: [DB_ROW, { ...AWS_ROW, backing: { ...AWS_ROW.backing, awsServices: services } }] }, dependencySeeds: [{ id: "postgres", name: "Postgres", commands: [] }, { id: "aws-s3", name: "S3", commands: [] }] });
+const edits = (f: ReturnType<typeof setup>) => posts(f, "/test-environment/edit");
+
+it("offers the AWS service picker to a maintainer on an emulated dependency only, and saves a change to that dependency alone", async () => {
+  const saved = state({ proposal: withAws(DIGEST, ["s3", "kinesis"]) });
+  const f = setup({ read: { status: 200, body: state({ proposal: withAws() }) }, answers: { "/edit": { status: 200, body: saved } } });
+  const region = await section();
+  const pickers = within(region).getAllByRole("group", { name: "AWS services for this dependency" });
+  expect(pickers).toHaveLength(1);
+  expect(within(region).getByText(/^AWS services \(1\)/)).toBeTruthy();
+  const picker = within(pickers[0]!);
+  fireEvent.change(picker.getByLabelText("Search AWS services"), { target: { value: "kinesis" } });
+  fireEvent.click(picker.getAllByRole("checkbox").find((candidate) => (candidate as HTMLInputElement).id === "aws-service-kinesis")!);
+  fireEvent.click(picker.getByRole("button", { name: "Save the AWS services" }));
+  await waitFor(() => expect(edits(f)).toHaveLength(1));
+  const sent = (edits(f)[0]!.body as { environment: { dependencies: Array<{ id: string; backing: { awsServices?: string[] } }> } }).environment;
+  expect(sent.dependencies.map((dependency) => [dependency.id, dependency.backing.awsServices])).toEqual([["postgres", undefined], ["aws-s3", ["s3", "kinesis"]]]);
+  // Only that dependency changed: the rest of the environment is the proposal's own.
+  expect({ ...sent, dependencies: undefined }).toEqual({ ...ENVIRONMENT, dependencies: undefined });
+  expect(sent.dependencies[0]).toEqual(DB_ROW);
+  // The saved list is what the next read says, and the picker starts again from it.
+  await waitFor(() => expect(within(region).getByText(/^AWS services \(2\)/)).toBeTruthy());
+  f.close();
+});
+
+it("does not offer the picker to a contributor, or on a dependency that is not emulated AWS", async () => {
+  const contributor = setup({ role: "contributor", read: { status: 200, body: state({ proposal: withAws() }) } });
+  const region = await section();
+  expect(within(region).getByText("S3")).toBeTruthy();
+  expect(within(region).queryByText(/^AWS services/)).toBeNull();
+  contributor.close();
+  cleanup();
+  const real = setup({ read: { status: 200, body: state({ proposal: { ...PROPOSAL, environment: { ...ENVIRONMENT, dependencies: [DB_ROW] }, dependencySeeds: [{ id: "postgres", name: "Postgres", commands: [] }] } }) } });
+  const regionReal = await section();
+  expect(within(regionReal).getByText("Postgres")).toBeTruthy();
+  expect(within(regionReal).queryByText(/^AWS services/)).toBeNull();
+  real.close();
+});
+
+it("refuses a save built on a proposal that has moved on, keeps the picks, and starts again on 'Discard my changes and reload' (the edit route takes no digest, so the fence is a re-read)", async () => {
+  const OLD = DIGEST;
+  const NEWER = "c".repeat(64);
+  const f = setup({ read: { status: 200, body: state({ proposal: withAws(OLD) }) } });
+  const region = await section();
+  const picker = within(within(region).getByRole("group", { name: "AWS services for this dependency" }));
+  fireEvent.change(picker.getByLabelText("Search AWS services"), { target: { value: "kinesis" } });
+  fireEvent.click(picker.getAllByRole("checkbox").find((candidate) => (candidate as HTMLInputElement).id === "aws-service-kinesis")!);
+  // Another maintainer edited the proposal meanwhile: the server's answer to the next read is newer.
+  f.setRead({ status: 200, body: state({ proposal: withAws(NEWER, ["s3", "sqs"]) }) });
+  fireEvent.click(picker.getByRole("button", { name: "Save the AWS services" }));
+  const alert = await within(region).findByText(/changed since you opened the AWS services/);
+  expect(alert).toBeTruthy();
+  expect(edits(f)).toEqual([]);
+  expect((picker.getAllByRole("checkbox").find((candidate) => (candidate as HTMLInputElement).id === "aws-service-kinesis") as HTMLInputElement).checked).toBe(true);
+  fireEvent.click(picker.getByRole("button", { name: "Discard my changes and reload" }));
+  await waitFor(() => expect(within(region).getByText(/^AWS services \(2\)/)).toBeTruthy());
+  const fresh = within(within(region).getByRole("group", { name: "AWS services for this dependency" }));
+  expect(fresh.queryByRole("alert")).toBeNull();
+  expect((fresh.getAllByRole("checkbox").find((candidate) => (candidate as HTMLInputElement).id === "aws-service-sqs") as HTMLInputElement).checked).toBe(true);
+  expect(edits(f)).toEqual([]);
+  f.close();
+});
+
+it("shows the server's sentence and keeps the picks when the edit is refused", async () => {
+  const f = setup({ read: { status: 200, body: state({ proposal: withAws() }) }, answers: { "/edit": { status: 409, body: { error: { code: "CONFLICT", message: "Someone else is editing this test environment." } } } } });
+  const region = await section();
+  const picker = within(within(region).getByRole("group", { name: "AWS services for this dependency" }));
+  fireEvent.change(picker.getByLabelText("Search AWS services"), { target: { value: "kinesis" } });
+  fireEvent.click(picker.getAllByRole("checkbox").find((candidate) => (candidate as HTMLInputElement).id === "aws-service-kinesis")!);
+  fireEvent.click(picker.getByRole("button", { name: "Save the AWS services" }));
+  expect(await within(region).findByText("Someone else is editing this test environment.")).toBeTruthy();
+  expect(picker.getByRole("button", { name: "Discard my changes and reload" })).toBeTruthy();
   f.close();
 });

@@ -265,7 +265,7 @@ describe("the arguments of a helper (snapshot)", () => {
     t.files.helper.write = (name, content, mode) => { seen.push(content); return write(name, content, mode); };
     await t.run([request("aws", "local-aws@r1", { credentials: { user: "rovara", password: SECRET, controlToken: CONTROL, sqsReceiptSecret: RECEIPT }, region: "us-west-2" })]);
     expect(seen).toEqual([`QUARKUS_HTTP_HOST=172.30.153.16\nROVARA_AWS_BASE_URL=http://aws:4566\nROVARA_AWS_AUTH_PRESIGN_SECRET=${SECRET}\nROVARA_AWS_SERVICES_SQS_RECEIPT_HANDLE_SECRET=${RECEIPT}\nROVARA_AWS_CONTROL_TOKEN=${CONTROL}\nROVARA_AWS_DEFAULT_REGION=us-west-2\nROVARA_AWS_HOSTNAME=aws\n`]);
-    expect(flag(t.started()[0]!, "--memory")).toEqual(["384m"]);
+    expect(flag(t.started()[0]!, "--memory")).toEqual(["512m"]);
     expect(flag(t.started()[0]!, "--network-alias")).toEqual(["aws"]);
     expect(t.calls.map((call) => call.join(" ")).join("\n")).not.toContain(SECRET);
     expect(t.calls.map((call) => call.join(" ")).join("\n")).not.toContain(CONTROL);
