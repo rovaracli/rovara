@@ -11,7 +11,12 @@ describe("the test runner's configuration", () => {
   });
 
   it("removes the CDK assemblies each test file leaves when it ends, so a shard never fills the disk", () => {
-    expect(config.test?.setupFiles).toEqual(["tests/support/test-file-temp-dir.ts"]);
+    expect(config.test?.setupFiles).toEqual(["tests/support/test-file-temp-dir.ts", "tests/support/no-real-aws.ts"]);
+  });
+
+  it("blocks a real AWS SDK call in every test of every profile unless the test opts in (SUBAGENT-AWS-DEFAULT-CLIENT-SLIP)", () => {
+    expect(config.test?.setupFiles).toContain("tests/support/no-real-aws.ts");
+    expect(nativeP0Config.test?.setupFiles).toContain("tests/support/no-real-aws.ts");
   });
 
   it("keeps the three required contained P0 journeys in an explicit no-empty native profile", () => {

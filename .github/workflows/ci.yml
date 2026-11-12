@@ -500,6 +500,53 @@ jobs:
           docker ps -aq --filter label=rovara.mcp-ci | xargs -r docker rm -f
           docker volume ls -q --filter label=rovara.mcp-ci | xargs -r docker volume rm -f
 
+  # SLACK-IMAGE-NOT-IN-CI: the Slack orchestrator image (environments/slack/Dockerfile) was built by no CI job, so the 0.5.14 build break (slack-service imported @agentx/cloud-contracts, which the image never copied) passed CI.
+  # This job only builds it (`tsc -b` inside the Dockerfile is the check); the image is never pushed or run. A pull request that changes none of the files the Dockerfile copies passes in under a minute without building
+  # anything; a manual run, or a push, always builds. Every package the Dockerfile COPYs (the build's inputs) is in the path list below; tests/contract/slack-image-ci.test.ts keeps the list in step with the Dockerfile.
+  slack-image-linux:
+    needs: [scope, checks]
+    if: needs.scope.outputs.docs_only != 'true'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 2
+      - name: Did anything the Slack image is made of change?
+        id: paths
+        run: |
+          if [ "$GITHUB_EVENT_NAME" != "pull_request" ]; then echo "run=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          git diff --name-only HEAD^1 HEAD > "$RUNNER_TEMP/changed.txt"
+          if grep -Eq '^(environments/slack/|packages/(slack-service|orchestrator|cloud-contracts|model-runtime|audit-verifier)/|packages/[^/]+/package\.json|package(-lock)?\.json|tsconfig(\.base)?\.json|upstream/|infra/package\.json|vendor/rovara-code/(tsconfig\.base\.json|packages/contracts/)|vendor/rovara-code-shims/|scripts/ci-images\.ts|\.github/ci-images\.json|\.github/workflows/ci\.yml)' "$RUNNER_TEMP/changed.txt"; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "No file of the Slack image changed; the Slack image build is skipped."
+          fi
+      - uses: actions/setup-node@v5
+        if: steps.paths.outputs.run == 'true'
+        with:
+          node-version-file: .node-version
+      # A failed login only means the mirror is skipped. Only the node image is pulled (exported to the steps below as ROVARA_CI_IMAGE_NODE_BUILD).
+      - name: Log in to the GHCR image mirror (read-only)
+        if: steps.paths.outputs.run == 'true'
+        env:
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "$REGISTRY_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin || echo "::warning::GHCR login failed; images will come from their upstream registries"
+      - name: Pull the pinned node image (GHCR mirror first)
+        if: steps.paths.outputs.run == 'true'
+        run: node scripts/ci-images.ts pull --github-env node-build
+      # The Dockerfile's FROM lines name the pinned upstream image; the build uses a copy whose FROM lines name the local alias of the very same digest, so it pulls nothing. The image is built, not pushed.
+      - name: Build the Slack image
+        if: steps.paths.outputs.run == 'true'
+        run: |
+          node scripts/ci-images.ts verify node-build
+          node scripts/ci-images.ts dockerfile environments/slack/Dockerfile "$RUNNER_TEMP/slack.Dockerfile"
+          docker build -f "$RUNNER_TEMP/slack.Dockerfile" -t rovara-slack:ci .
+
   # The browser tests build nothing themselves: this job builds the packages (`tsc -b`, which the mock cell's imports read through each package's dist) and the web app (`build:web`) once, and the three
   # web-e2e legs unpack its archive. Before this, each leg spent about 3 minutes on the same two commands (CI-E2E-2). The archive holds every packages/*/dist, which includes packages/web/dist (the
   # app the mock cell serves, precompressed). It is a tarball so that file modes survive and the artifact is one file, not thousands.
@@ -610,7 +657,7 @@ jobs:
 
   # The one check a pull request needs. It runs even when a job before it failed or was cancelled.
   local:
-    needs: [scope, checks, lint, test, release, linux-runtime, mcp-runner-linux, web-e2e-build, web-e2e]
+    needs: [scope, checks, lint, test, release, linux-runtime, mcp-runner-linux, slack-image-linux, web-e2e-build, web-e2e]
     if: >-
       always() && github.event.pull_request.draft != true && (
       (github.repository != 'PrepLabsAI/Rovara-cloud' && github.event_name != 'push')
@@ -641,4 +688,7 @@ jobs:
           node-version-file: .node-version
           cache: npm
       - run: npm ci
+      # The one job whose tests may call real AWS: it opts out of the setup guard that blocks real SDK calls (tests/support/no-real-aws.ts).
       - run: npm run test:e2e
+        env:
+          ROVARA_ALLOW_REAL_AWS: "1"

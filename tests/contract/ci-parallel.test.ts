@@ -32,7 +32,7 @@ describe("CI runs its checks side by side (a Markdown-only change skips them all
   it("keeps checks, lint, tests, the release check and the Linux runtime check in jobs of their own", async () => {
     const { jobs } = await workflow();
     expect(jobs.checks!.needs).toBe("scope");
-    for (const name of ["lint", "test", "release", "linux-runtime", "mcp-runner-linux", "web-e2e"]) expect(jobs[name], name).toBeDefined();
+    for (const name of ["lint", "test", "release", "linux-runtime", "mcp-runner-linux", "slack-image-linux", "web-e2e"]) expect(jobs[name], name).toBeDefined();
   });
 
   it("downloads the browsers in the browser job only, from a cache keyed on the Playwright version, and pins the cache action by commit", async () => {
@@ -50,7 +50,7 @@ describe("CI runs its checks side by side (a Markdown-only change skips them all
   // by the 16-minute lint; the lint waits for `checks` too and then runs beside the shards.
   it("starts the lint, the test shards, the release check, the Linux runtime check, the MCP runner check and the browser tests only after the type checks pass", async () => {
     const { jobs } = await workflow();
-    for (const name of ["lint", "test", "release", "linux-runtime", "mcp-runner-linux", "web-e2e-build"]) expect(jobs[name]!.needs, name).toEqual(["scope", "checks"]);
+    for (const name of ["lint", "test", "release", "linux-runtime", "mcp-runner-linux", "slack-image-linux", "web-e2e-build"]) expect(jobs[name]!.needs, name).toEqual(["scope", "checks"]);
     // The browser legs also wait for the one build they unpack.
     expect(jobs["web-e2e"]!.needs).toEqual(["scope", "checks", "web-e2e-build"]);
   });

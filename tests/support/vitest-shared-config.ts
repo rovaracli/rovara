@@ -12,7 +12,8 @@ export const sharedVitestSettings = {
   coverage: { enabled: false },
   globalSetup: ["tests/support/test-temp-dir.ts"] as string[],
   // Each test file removes the CDK assemblies it made when it ends (tests/support/test-file-temp-dir.ts).
-  setupFiles: ["tests/support/test-file-temp-dir.ts"] as string[],
+  // The second file blocks a real AWS SDK call from any test unless it opts in (tests/support/no-real-aws.ts).
+  setupFiles: ["tests/support/test-file-temp-dir.ts", "tests/support/no-real-aws.ts"] as string[],
   passWithNoTests: false,
   testTimeout: 60_000,
   // v1.2 learning: the install default of the company's master suggestions switch is OFF in production; the existing learning tests exercise suggestions, so the test environment has it on.
