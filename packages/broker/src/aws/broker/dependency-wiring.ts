@@ -948,7 +948,7 @@ export function developerTaskActions(dependencies: AwsBrokerDependencies): Devel
       .map((item) => publicOperation(item as unknown as OperationRecord)),
     workflowBinding: async (workspaceId, operationId) => (await requireOperation(dependencies, workspaceId, operationId)).workflowDependencies,
     workflowCandidateSourceExportDigest: async (workspaceId, operationId) => (await requireOperation(dependencies, workspaceId, operationId)).candidateSourceRef?.candidateDigest,
-    eventsNewestFirst: (operationId, limit) => operationEventsNewestFirst(dependencies, operationId, limit),
+    eventsNewestFirst: (operationId, limit, workspaceId) => operationEventsNewestFirst(dependencies, operationId, limit, workspaceId),
     artifacts: async (workspaceId, operationId) => (await query(`WORKSPACE#${workspaceId}`, "ARTIFACT#"))
       .filter((item) => item.operationId === operationId)
       .map((item) => ({

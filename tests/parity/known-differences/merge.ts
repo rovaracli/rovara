@@ -13,34 +13,27 @@ import type { KnownDifference } from "../known-differences.js";
 
 const MERGE_SCENARIOS = ["pr-merged", "base-branch-drift", "merge-conflict", "merge-base-drift-autofix"] as const;
 
-/** The rows every scenario shows (copied from known-differences.ts LIMIT_AND_ARTIFACT_ROWS, so a merge entry can explain the whole rows facet). */
-const LIMIT_AND_ARTIFACT_ROWS = [
-  "ORG#<org>#SLACK_LIMIT#T0BSHLLUGBD | MEMBER#U0MAYA001", "ORG#<org>#SLACK_LIMIT#T0BSHLLUGBD | ORGANIZATION",
-  "DEVELOPER_LIMIT#<person> | MEMBER", "DEVELOPER_LIMIT#<person> | TASK#<id>", "ORG#<org>#DEVELOPER_LIMIT#ORGANIZATION | ORGANIZATION",
-  "WORKSPACE#<id> | ARTIFACT#<id>", "WORKSPACE#<id> | ARTIFACT#<id>#plan.md",
-];
-
 const MERGE_ROWS = [
-  "DEVTASK#<id> | OUTCOME_KEYS#<hash>", "DEVTASK#<id> | TASK_END", "DEVTASK#<id> | CODE_MILESTONE#approved#<n>", "WORKSPACE#<id> | VERIFIED_FILES#<hash>",
+  "DEVTASK#<id> | OUTCOME_KEYS#<hash>", "DEVTASK#<id> | TASK_END", "DEVTASK#<id> | CODE_MILESTONE#approved#<n>",
 ];
 
 const ROWS_CAUSE = [
   "(1) Cloud-only DEVTASK#<task>/OUTCOME_KEYS#<hash>: Cloud's track-record outcome hooks (packages/broker/src/rovara-code/outcome-hooks.ts) key a task's outcome when its pull request opens;",
   "the core has no track record (area 14/15, Cloud-only team record). Not a bug; the root wires the hook as an outbound-events or learning adapter when lessons move (X2).",
   "(2) Cloud-only DEVTASK#<task>/TASK_END (pr-merged): Cloud's task-end record (packages/broker/src/agents/task-end.ts:118, its end handlers: triggers, chains, agents) is written when the task ends;",
-  "the core calls its `taskEnded` seam only from close (vendor core/task-flow/close.ts:69), not when a merge completes the task, and the root does not wire Cloud's end handlers into it.",
-  "Gap on both sides of the seam: the root should pass taskEnded = Cloud's recordTaskEnd, and the core should call it on MERGED/COMPLETE too (Code upstream).",
+  "the core calls its `taskEnded` seam only from close (vendor core/task-flow/close.ts:69), not when a merge completes the task. The root's side is built (cloud/rows/core-rows.ts coreTaskEndedHandler maps the seam",
+  "onto Cloud's onTaskEnded, tested in tests/unit/cloud-core-rows.test.ts); what stays open is Code's: the core must call the seam on MERGED/COMPLETE too (upstream), and the suite's core runs Code's local composition, which has no Cloud handler.",
   "(3) Core-only DEVTASK#<task>/CODE_MILESTONE#approved#<n>: the core's tracking pass announces the person's approval (\"Approved by maint. Ready to merge\", vendor core/merge/merge-tracking.ts:604-620);",
   "Cloud's same rule (packages/broker/src/rovara-code/merge-tracking.ts:716-734) did not announce it for the same review. The rule is identical; the inputs differ: Cloud counts an approval only",
   "from a reviewer its member directory knows (`linkedAmong`/`nonWritersAmong` over Cloud's members), the core's local people seam (`soleOwnerPeople`) counts any write-access reviewer.",
   "Owner: the A6 people adapter must back the core's MergePeople seam in the root (S0-Q1), then this row should match; needs a check that Cloud's directory would count `maint`.",
-  "(4) Core-only WORKSPACE#<w>/VERIFIED_FILES#<digest>: the core's tracking sweep reads the published changed files from the host and keeps them (vendor core/build-step/changed-files.ts:149, called by",
-  "local/app/tracking.ts before each pass); Cloud's tracking does not keep this row. New row family for Cloud readers (none read it today); retention: the root strips no expiry from it (none set).",
+  "Not listed here any more (decided, ROWS): the core's WORKSPACE#<w>/VERIFIED_FILES#<digest> cache is core-private (D19, no Cloud reader asks for it), the artifact key, the operation events and the limit family are read",
+  "in both shapes by Cloud's readers (D17, D18, D3: cloud/rows/core-rows.ts) and compare as one family in the suite's normalization.",
 ].join(" ");
 
 const rowsEntries: KnownDifference[] = MERGE_SCENARIOS.map((scenario) => ({
-  scenario, facet: "rows", only: [...LIMIT_AND_ARTIFACT_ROWS, ...MERGE_ROWS], cause: ROWS_CAUSE,
-  owner: "S0 root wiring (taskEnded, MergePeople from A6) and Code upstream (taskEnded on merge); OUTCOME_KEYS stays Cloud-only until X2",
+  scenario, facet: "rows", only: MERGE_ROWS, cause: ROWS_CAUSE,
+  owner: "Code upstream (taskEnded on merge), S0 root wiring (MergePeople from A6); OUTCOME_KEYS stays Cloud-only until X2",
 }));
 
 export const MERGE_DIFFERENCES: readonly KnownDifference[] = [

@@ -26,25 +26,7 @@ export interface KnownDifference {
   only?: readonly string[];
 }
 
-/** Rows each side writes that the other does not, all from the two causes below (limits D3, the artifact key). */
-const LIMIT_AND_ARTIFACT_ROWS = [
-  "ORG#<org>#SLACK_LIMIT#T0BSHLLUGBD | MEMBER#U0MAYA001", "ORG#<org>#SLACK_LIMIT#T0BSHLLUGBD | ORGANIZATION",
-  "DEVELOPER_LIMIT#<person> | MEMBER", "DEVELOPER_LIMIT#<person> | TASK#<id>", "ORG#<org>#DEVELOPER_LIMIT#ORGANIZATION | ORGANIZATION",
-  "WORKSPACE#<id> | ARTIFACT#<id>", "WORKSPACE#<id> | ARTIFACT#<id>#plan.md",
-];
-
 const CORE_LANE_DIFFERENCES: readonly KnownDifference[] = [
-  {
-    scenario: "*", facet: "rows", only: LIMIT_AND_ARTIFACT_ROWS,
-    cause: [
-      "(1) Workspace limits (plan D3, A5 S2 held): a Slack-started Cloud task is counted on the Slack workspace counters ORG#<org>#SLACK_LIMIT#<team> (MEMBER#<slack user>, ORGANIZATION, a string set of tasks),",
-      "the core on DEVELOPER_LIMIT#<person>/MEMBER with a TASK#<id> marker and ORG#<org>#DEVELOPER_LIMIT#ORGANIZATION. A core task never touches Cloud's Slack counters, so with the switch on, Slack-started core tasks",
-      "and Cloud tasks of the same person are counted against two different limits. Needs the S2 move plus a decision on which counter family the core charges for a Slack-started task (A5-S0-OPEN-QUESTIONS 5).",
-      "(2) NEW, not in the plan's D table: a worker artifact's record is WORKSPACE#<w>/ARTIFACT#<id> on Cloud's path and WORKSPACE#<w>/ARTIFACT#<id>#<name> on the core. Cloud readers of a core task's",
-      "artifacts (task page, plan panel, evidence download) must read the core's key before the switch (readers before writers, plan 3.2).",
-    ].join(" "),
-    owner: "S0 follow-up lane (D3 run + limit family decision; artifact readers) before the combined switch",
-  },
   {
     scenario: "plan-changes-requested", facet: "transitions",
     cause: [
@@ -56,7 +38,7 @@ const CORE_LANE_DIFFERENCES: readonly KnownDifference[] = [
   },
   {
     scenario: "plan-changes-requested", facet: "rows",
-    cause: "Same bug as its transitions (the core leaves its PLAN dispatch row and writes its PLAN_FEEDBACK#<n> note row, Cloud keeps the note on the revised plan's run), plus the limit and artifact rows of every scenario.",
+    cause: "Same bug as its transitions (the core leaves its PLAN dispatch row and writes its PLAN_FEEDBACK#<n> note row, Cloud keeps the note on the revised plan's run).",
     owner: "Code upstream fix (see transitions); recheck the feedback row's family after it",
   },
 ];

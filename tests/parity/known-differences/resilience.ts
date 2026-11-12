@@ -33,7 +33,7 @@ export const RESILIENCE_DIFFERENCES: readonly KnownDifference[] = [
   { scenario: "worker-lost", facet: "transitions", cause: LOST_RUN_CAUSE, owner: "Code upstream: lost-run watchdog in the core's recovery sweep (then a vendor pin bump); S0 schedules it" },
   {
     scenario: "worker-lost", facet: "rows",
-    cause: "Same gap: Cloud's reconciler writes its `operation_end` dispatch row (WORKFLOW_DISPATCH/<task>#end) and resolves the step's row; the core leaves the IMPLEMENT row it never resolves. Plus the limit and artifact rows of every scenario.",
+    cause: "Same gap: Cloud's reconciler writes its `operation_end` dispatch row (WORKFLOW_DISPATCH/<task>#end) and resolves the step's row; the core leaves the IMPLEMENT row it never resolves. ",
     owner: "As its transitions",
   },
 ];

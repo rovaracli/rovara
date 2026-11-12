@@ -31,7 +31,7 @@ export const FEATURES_A_DIFFERENCES: readonly KnownDifference[] = [
   },
   {
     scenario: "parallel-parts", facet: "rows",
-    cause: "The stall (no pull request row on the core) plus the rows every scenario shows (limits D3, the artifact key), plus Cloud's DEVTASK#<id>/OUTCOME_KEYS#<hash> track-record row (Cloud-only, decision 41: written when a pull request opens).",
+    cause: "The stall (no pull request row on the core), plus Cloud's DEVTASK#<id>/OUTCOME_KEYS#<hash> track-record row (Cloud-only, decision 41: written when a pull request opens).",
     owner: "Code upstream (stall); the rest as the core lane's rows entry",
   },
   {
@@ -56,12 +56,8 @@ export const FEATURES_A_DIFFERENCES: readonly KnownDifference[] = [
   },
   {
     scenario: "features-a-parallel-parts-understand", facet: "rows",
-    cause: [
-      "NEW (not in the plan's D table): the parts' checkpoints are worker events, kept as OPERATION#<op>/EVENT#<n> on Cloud's path and as WORKSPACE#<w>/EVENT#<op>#<n> on the core.",
-      "Cloud readers of a core task's events (the timeline, the progress lines, Ask) must read the core's key before the switch (readers before writers).",
-      "Also: the core's Understand artifact (ARTIFACT#<id>#intent.json, the settings difference), Cloud's OUTCOME_KEYS track-record row (Cloud-only), and the limits and artifact-key rows every scenario shows.",
-    ].join(" "),
-    owner: "S0 follow-up lane (event readers) with the artifact-key item; S0-Q2 for intent.json",
+    cause: "Cloud's DEVTASK#<id>/OUTCOME_KEYS#<hash> track-record row (Cloud-only, decision 41: written when a pull request opens). The parts' checkpoint events (D18), the artifact keys (D17) and the limit family (D3) compare as one family each: Cloud's readers read both shapes (cloud/rows/core-rows.ts).",
+    owner: "Stays Cloud-only until the lessons adoption (X2)",
   },
   {
     scenario: "features-a-parallel-parts-understand", facet: "messages",

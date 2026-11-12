@@ -26,7 +26,17 @@ export function keyFamily(pk: string, sk: string): string {
   if (p.startsWith("ORG#<org>#OUTBOX#")) p = p.slice("ORG#<org>#".length);
   // D4: approval records live under different keys on purpose (no clash); compared as one family.
   if (/^ORG#<org>#APPROVAL_(DECISION|PROOF)/.test(p) || p.startsWith("APPROVAL#")) p = "APPROVAL*";
-  return `${p} | ${id(sk)}`;
+  let k = id(sk);
+  // D3 limits (cloud/rows/core-rows.ts CORE_LIMIT_FAMILY): a person has one limit family after the switch, the core's person family (`DEVELOPER_LIMIT#<person>`,
+  // `ORG#<c>#DEVELOPER_LIMIT#ORGANIZATION`); Cloud's Slack workspace counters (`ORG#<c>#SLACK_LIMIT#<team>`: MEMBER#<slack user>, ORGANIZATION) count the same slots on Cloud's
+  // path, so a counter is one family on both. The core's per-task marker (`TASK#<id>` beside the person's counter) is the shape Cloud keeps as a string set inside the counter.
+  if (/^ORG#<org>#SLACK_LIMIT#[A-Z0-9]+$/.test(p)) { p = "LIMIT_COUNTER"; k = k.startsWith("MEMBER#") ? "MEMBER" : k; }
+  else if (p === "DEVELOPER_LIMIT#<person>" && k === "MEMBER") p = "LIMIT_COUNTER";
+  else if (p === "ORG#<org>#DEVELOPER_LIMIT#ORGANIZATION" && k === "ORGANIZATION") p = "LIMIT_COUNTER";
+  else if (p === "DEVELOPER_LIMIT#<person>" && k.startsWith("TASK#")) p = "LIMIT_MARKER";
+  // D17 artifacts: Cloud `ARTIFACT#<artifactId>`, core `ARTIFACT#<operationId>#<name>`; Cloud's readers read both (core-rows.ts findArtifactRow), so one family.
+  if (/^ARTIFACT#<id>#.+/.test(k)) k = "ARTIFACT#<id>";
+  return `${p} | ${k}`;
 }
 
 /** Audit event names to one vocabulary (Cloud's audit types and Code's actions differ by name; A7's event map is the authority once merged). */
@@ -46,7 +56,7 @@ export function auditName(name: string): string {
  * compared: comparing them would only say the two products are different products.
  */
 const SHARED_FAMILIES = new RegExp([
-  "^(DEVTASK#|WORKSPACE#|WORKFLOW_DISPATCH |IDEMPOTENCY#|DEVELOPER#|DEVELOPER_LIMIT#|ORG#<org>#DEVELOPER_LIMIT#|ORG#<org>#SLACK_LIMIT#|OUTBOX#",
+  "^(DEVTASK#|WORKSPACE#|WORKFLOW_DISPATCH |IDEMPOTENCY#|DEVELOPER#|LIMIT_COUNTER |OUTBOX#",
   // Chains, triggers, automatic runs and custom agents (areas 16, 17): the key layout both runners are meant to share (CHAIN, CHAINS, CHAIN_NAME,
   // CHAIN_RUN, CHAIN_RUNS, CHAIN_RUNS_P, CHAIN_STEP_TASK, OPEN_CHAIN_RUNS, AGENT, AGENT_DIRECTORY, AGENT_NAME), plus each runner's own rows next to
   // them (Cloud's BUILTIN_AGENTS, the core's UNATTENDED_RUN_OPEN), so a row only one writes shows. A chain run's agent session (Cloud's
@@ -57,7 +67,11 @@ const SHARED_FAMILIES = new RegExp([
 
 export function sharedRows(rows: readonly string[]): string[] {
   // Cloud's notifier keeps its sent-notice marks on the task's partition (`DEVTASK#<id> | NOTICE#...`): Cloud's own notices, compared on the messages facet.
-  return rows.filter((row) => SHARED_FAMILIES.test(row) && !row.startsWith("DEVTASK#<id> | NOTICE#"));
+  // Rows one product keeps under a name of its own, each with its D-table row (core-rows.ts): the operation's events (D18: `OPERATION#<op>/EVENT#<n>` on Cloud, not compared, and
+  // `WORKSPACE#<w>/EVENT#<op>#<n>` on the core: both are read by Cloud's readers, and how many there are depends on how often a worker flushes), the core's cache of the changed files
+  // it read from the code host (D19: no Cloud reader asks for it), and the core's limit markers (D3: Cloud keeps the same fact as a set inside the counter).
+  const ownRows = /^(WORKSPACE#<id> \| (EVENT#|VERIFIED_FILES#)|LIMIT_MARKER \|)/;
+  return rows.filter((row) => SHARED_FAMILIES.test(row) && !row.startsWith("DEVTASK#<id> | NOTICE#") && !ownRows.test(row));
 }
 
 export function normalize(observation: Observation): Observation {
