@@ -65,6 +65,12 @@ const PASSWORD = /^[A-Za-z0-9]{8,64}$/u;
 const EMULATOR_SECRET = /^[A-Za-z0-9]{16,64}$/u;
 /** The plain forms a per-run user, database and password must have, so none can break out of an env file, a URL or an option. The env channel (service-env.ts) uses the same. */
 export const HELPER_CREDENTIAL_PATTERNS = { user: USER, database: DATABASE, password: PASSWORD, controlToken: PASSWORD, emulatorSecret: EMULATOR_SECRET } as const;
+/** The model stand-in (lane SM3, catalog `model-stand-in@r1`, design beyond-emulator-sagemaker-shim.md mode (b)): its one config file, written by the worker and mounted read-only where the image's default command reads it. */
+export const MODEL_STAND_IN_CONFIG_NAME = "model-stand-in.json";
+export const MODEL_STAND_IN_CONFIG_TARGET = "/rovara/model-stand-in.json";
+/** One address the front may forward SageMaker invokes to: `http://<a stand-in's alias>:<one of its ports>`, nothing else (the front dials only the addresses it is given, and refuses loopback and link-local ones). */
+const SAGEMAKER_HELPER_URL = /^http:\/\/([a-z][a-z0-9-]{0,30}[a-z0-9]):([1-9][0-9]{0,4})$/u;
+const MAX_SAGEMAKER_HELPERS = 16;
 const FILE_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/u;
 const RESERVED_FILE_NAMES = ["env", "conf"];
 const MOUNT_TARGET = /^\/[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+){0,8}$/u;
@@ -151,6 +157,12 @@ export interface HelperRequest {
    * worker fetched and checked against the plan's digest (fixture-delivery.ts); the launcher puts it in a read-only file of the run's directory, and the fake checks the digest again before it serves.
    */
   fake?: FakeHelperRequest;
+  /**
+   * Rovara local AWS only: the model stand-ins the front forwards SageMaker Runtime invokes to (`ROVARA_AWS_SAGEMAKER_HELPER`, a comma separated list in the emulator's env file; the first is the default). Each is
+   * `http://<alias>:<port>` of a `model-stand-in` request of the SAME run and one of that entry's ports; anything else refuses the request. Start the stand-ins first (`dependsOn`): the front also resolves a name that is not
+   * in DNS yet at its first call. Absent: the front has no stand-in, and an endpoint backed by one is answered "no model stand-in is configured".
+   */
+  sagemakerHelpers?: readonly string[];
 }
 
 export interface FakeHelperRequest {
@@ -272,6 +284,8 @@ const FAMILY_RULES: Record<string, FamilyRule> = {
   // Three secrets, three jobs, all different: a control token that equalled a signing secret would let anyone holding a presigned URL or a receipt handle drive the control API. All three go only into the 0600 env file.
   "local-aws": { prepare: (input) => ({ env: localAwsEnvLines(input) }) },
   "fake-server": { prepare: () => ({ env: [] }) },
+  // The model stand-in reads no environment: everything it does comes from its config file (checked in planHelpers: exactly one file, at the fixed name and target).
+  "model-stand-in": { prepare: () => ({ env: [] }) },
 };
 
 /** The fixed commands of the `command` health checks, by catalog check id. A cache's client is named after the entry (Valkey's own, or Redis's). */
@@ -369,11 +383,22 @@ function planHelpers(net: ServicesNetwork, input: StartHelpersInput): Plan[] {
         const segments = file.to.split("/");
         if (!MOUNT_TARGET.test(file.to) || segments.includes("..") || FORBIDDEN_MOUNT_ROOTS.some((root) => file.to === `/${root}` || file.to.startsWith(`/${root}/`)) || file.to.endsWith(".sock")) throw new RangeError("file");
       }
+      if (entry.family === "model-stand-in" && !(files.length === 1 && files[0]!.name === MODEL_STAND_IN_CONFIG_NAME && files[0]!.to === MODEL_STAND_IN_CONFIG_TARGET)) throw new RangeError("stand-in config");
+      if (request.sagemakerHelpers !== undefined && entry.family !== "local-aws") throw new RangeError("sagemaker helpers");
       plans.push({ request, index, entry, name: plainName(request.name), address, aliases, prepared, files, image: fake !== undefined ? input.probeImage : request.image !== undefined ? companyImageOf(request.image, input.registry) : `${input.registry}/${entry.image.repository}@sha256:${entry.image.digest}`, ...(fake === undefined ? {} : { program: fake.program }) });
     } catch (error) {
       if (error instanceof HelperStartError) throw error;
       throw refused(request);
     }
+  }
+  // The emulator's list of model stand-ins: each address must be an alias and port of a stand-in this run starts, so the front is never pointed anywhere else.
+  const standInTargets = new Set(plans.filter((plan) => plan.entry.family === "model-stand-in").flatMap((plan) => plan.aliases.flatMap((alias) => plan.entry.run.ports.map((port) => `${alias}:${String(port)}`))));
+  for (const plan of plans) {
+    const urls = plan.request.sagemakerHelpers;
+    if (urls === undefined) continue;
+    const targets = urls.map((url) => SAGEMAKER_HELPER_URL.exec(url));
+    if (urls.length < 1 || urls.length > MAX_SAGEMAKER_HELPERS || new Set(urls).size !== urls.length || targets.some((match) => match === null || Number(match[2]) > 65_535 || !standInTargets.has(`${match[1]!}:${match[2]!}`))) throw refused(plan.request);
+    plan.prepared.env.push(`ROVARA_AWS_SAGEMAKER_HELPER=${urls.join(",")}`);
   }
   for (const plan of plans) {
     for (const dependency of plan.request.dependsOn ?? []) if (!ids.has(dependency) || dependency === plan.request.id) throw refused(plan.request);
