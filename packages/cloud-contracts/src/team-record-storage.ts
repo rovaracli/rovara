@@ -3,8 +3,8 @@
 // Kept apart from team-record.ts (task R1, record lane) so the two lanes do not edit one file.
 import { createHash } from "node:crypto";
 
-/** The dimension of the Team record's vector index, fixed when an index is created. The self-hosted record embedder (Qwen3-Embedding-0.6B) produces exactly this many. */
-export const VECTOR_DIMENSION_DEFAULT = 1024;
+/** The dimension of the Team record's vector index, fixed when an index is created. The self-hosted record embedder (bge-small-en-v1.5, since DECISIONS 140; Qwen3-Embedding-0.6B before it, 1,024) produces exactly this many. */
+export const VECTOR_DIMENSION_DEFAULT = 384;
 
 /** The only non-filterable metadata key of a Team-record vector: the id of the record it stands for. */
 export const NON_FILTERABLE_VECTOR_KEYS = ["ref"] as const;
@@ -24,8 +24,12 @@ export interface EmbedderModelSpec {
   readonly dimension: number;
 }
 
-/** The Team record's embedder. Replaces Amazon Titan Text Embeddings V2 (Bedrock) in both editions. */
-export const TEAM_RECORD_EMBEDDER: EmbedderModelSpec = { model: "record", modelId: "Qwen/Qwen3-Embedding-0.6B", revision: "97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3", spec: "0b0a5b868995d4ee", dimension: VECTOR_DIMENSION_DEFAULT };
+/**
+ * The Team record's embedder: bge-small-en-v1.5 (384 dimensions, texts cut at 512 tokens), the same model as the lessons' (DECISIONS 140, 2026-11-12). Replaces Qwen3-Embedding-0.6B (1,024
+ * dimensions, spec 0b0a5b868995d4ee), which took more than 190 s to read its 2.4 GB of weights on a cold Lambda start, and before that Amazon Titan Text Embeddings V2 (Bedrock). The same
+ * model means the same spec as `LESSON_EMBEDDER`; the two never meet, because the Team record's vectors are in S3 Vectors (an index per workspace and spec) and the lessons' in DynamoDB.
+ */
+export const TEAM_RECORD_EMBEDDER: EmbedderModelSpec = { model: "record", modelId: "BAAI/bge-small-en-v1.5", revision: "5c38ec7c405ec4b44b94cc5a9bb96e735b38267a", spec: "9ae98ff9968d4905", dimension: VECTOR_DIMENSION_DEFAULT };
 /** The lessons' embedder (lane lessons-prod; bge-small, 384 dimensions). Its vectors are kept with the lessons and never go into the Team record's index. */
 export const LESSON_EMBEDDER: EmbedderModelSpec = { model: "lesson", modelId: "BAAI/bge-small-en-v1.5", revision: "5c38ec7c405ec4b44b94cc5a9bb96e735b38267a", spec: "9ae98ff9968d4905", dimension: 384 };
 
@@ -47,6 +51,8 @@ export function teamRecordVectorIndexName(workspaceId: string, spec: string = TE
  * Amazon Titan. Its vectors are in another model's space and can never be searched with a Qwen query. It is deleted for every workspace as soon as the current index exists (the broker does it
  * the first time it opens a workspace's index, team-record/runtime.ts), and a person, project or workspace erase deletes it first: erasure must not leave a person's vectors behind in an
  * index nobody addresses. When the spec changes again, point this at the then-current spec's name (`teamRecordVectorIndexName(workspaceId, <that spec>)`) and the same retire step applies.
+ * (DECISIONS 140, the Qwen3 to bge-small change, did NOT repoint it: no install ever stored a Qwen3 vector or created its 1,024-d index, because the embedder never answered on staging, and the release step
+ * before the next switch-on shows the vector bucket and the table are empty. If an install is found with a 1,024-d index, delete it by hand before switching on; the code would not find it for an erase.)
  */
 export function retiredTeamRecordVectorIndexName(workspaceId: string): string {
   if (!SAFE_WORKSPACE_ID.test(workspaceId)) throw new Error("team-record: workspace id is not a safe id");

@@ -193,6 +193,134 @@ describe("the re-embed job", () => {
   });
 });
 
+// ---- DECISIONS 140: the job sends up to 16 short rows in ONE call to the embedder
+
+/** An embedder that takes a batch: every call (one or many texts) is recorded as one entry of `batches`. */
+function batchEmbedder(over: { failBatches?: (texts: string[]) => "timeout" | "other" | undefined; truncate?: (text: string) => boolean; during?: (texts: string[]) => void } = {}) {
+  const batches: string[][] = [];
+  const deadlines: Array<number | undefined> = [];
+  const embedder = {
+    spec: SPEC, batches, deadlines,
+    async embed(text: string) { return (await embedder.embedWithInfo(text)).vector; },
+    async embedWithInfo(text: string, _purpose?: "document" | "query", call?: { deadline?: number }) { return (await embedder.embedManyWithInfo([text], "document", call))[0]!; },
+    async embedManyWithInfo(texts: readonly string[], _purpose?: "document" | "query", call?: { deadline?: number }) {
+      batches.push([...texts]);
+      deadlines.push(call?.deadline);
+      over.during?.([...texts]);
+      const failure = over.failBatches?.([...texts]);
+      if (failure === "other") throw new EmbedUnavailableError("UNREACHABLE");
+      if (failure === "timeout") throw new EmbedUnavailableError("UNREACHABLE", "timeout");
+      return texts.map((text) => ({ vector: [0.4, 0.5, 0.6], truncated: over.truncate?.(text) ?? false }));
+    },
+  };
+  return embedder;
+}
+
+describe("the re-embed job batches short rows (DECISIONS 140)", () => {
+  const pendingRows = async (w: World, count: number, text = (index: number) => `short text ${String(index).padStart(3, "0")}`): Promise<void> => {
+    w.deps.embedder = jobEmbedder({ fail: true });
+    for (let index = 0; index < count; index += 1) await put(w, `row${String(index).padStart(3, "0")}`, { text: text(index), occurredAt: new Date(w.clock.ms - 25 * DAY + index * 1000).toISOString() });
+  };
+
+  it("sends 40 pending rows as calls of 16, 16 and 8, gives each its vector and its mark, and does nothing the second time (idempotent)", async () => {
+    const w = await setup();
+    await pendingRows(w, 40);
+    const job = batchEmbedder();
+    expect(await run(w, job)).toMatchObject({ embedded: 40, failed: 0, skipped: 0, more: false });
+    expect(job.batches.map((batch) => batch.length)).toEqual([16, 16, 8]);
+    expect(w.vectorItems.map((item) => item.key).sort()).toEqual(rows(w, "TEAM_RECORD_EVENT").map((item) => `event:${item.id as string}`).sort());
+    for (const item of rows(w, "TEAM_RECORD_EVENT")) expect(item).toMatchObject({ embeddingSpec: SPEC, embeddingRef: `event:${item.id as string}` });
+    expect(pendingCount(w, ORG_A)).toBe(0);
+    // idempotent: a second run finds nothing to do, asks the embedder for nothing and writes no vector
+    const written = w.vectorItems.length;
+    expect(await run(w, job)).toMatchObject({ embedded: 0, failed: 0 });
+    expect(job.batches).toHaveLength(3);
+    expect(w.vectorItems).toHaveLength(written);
+  });
+
+  it("re-running the SAME rows (their mark lost after the vector was put) puts the same keys again: a put overwrites, so the index holds one vector per row", async () => {
+    const w = await setup();
+    await pendingRows(w, 5);
+    const job = batchEmbedder();
+    await run(w, job);
+    for (const item of rows(w, "TEAM_RECORD_EVENT")) { delete item.embeddingSpec; delete item.embeddingRef; item.embedPending = true; w.db.set(item); }
+    await run(w, job);
+    const keys = w.vectorItems.map((item) => item.key);
+    expect(keys).toHaveLength(10);
+    expect(new Set(keys).size).toBe(5);
+  });
+
+  it("hands every call the run's end as its deadline, and never takes more rows into a call than the turn has room for", async () => {
+    const w = await setup();
+    await pendingRows(w, 20);
+    const job = batchEmbedder();
+    const shared = { deadline: w.clock.ms + 86_400_000, warm: false, failuresInARow: 0 };
+    expect(await run(w, job, { ...BUDGET, maxRows: 20 - 7 }, shared)).toMatchObject({ embedded: 13, more: true });
+    expect(job.batches.map((batch) => batch.length)).toEqual([13]);
+    expect(job.deadlines).toEqual([shared.deadline]);
+    expect(await run(w, job, BUDGET, shared)).toMatchObject({ embedded: 7, more: false });
+  });
+
+  it("a failed call fails all its rows at once (counted per row), leaves them pending, and two failed calls in a row stop the run", async () => {
+    const w = await setup();
+    await pendingRows(w, 40);
+    const job = batchEmbedder({ failBatches: () => "other" });
+    expect(await run(w, job)).toMatchObject({ embedded: 0, failed: 32, more: true });
+    expect(job.batches).toHaveLength(2);
+    expect(pendingCount(w, ORG_A)).toBe(40);
+    expect(JSON.stringify(w.logs)).not.toContain("short text");
+  });
+
+  it("a timed-out call for several rows is the embedder's: nothing is counted on the rows, no row is skipped, and the run goes on", async () => {
+    const w = await setup();
+    await pendingRows(w, 20);
+    let first = true;
+    const job = batchEmbedder({ failBatches: () => { const bad = first; first = false; return bad ? "timeout" : undefined; } });
+    expect(await run(w, job)).toMatchObject({ embedded: 4, failed: 16 });
+    for (const item of rows(w, "TEAM_RECORD_EVENT")) { expect(item).not.toHaveProperty("embedTimeouts"); expect(item).not.toHaveProperty("embedSkip"); }
+    expect(pendingCount(w, ORG_A)).toBe(16);
+    expect(await run(w, job)).toMatchObject({ embedded: 16 });
+  });
+
+  it("the rows the index took are marked and only the refused ones fail (a vector put that refuses part of a batch)", async () => {
+    const w = await setup();
+    await pendingRows(w, 4);
+    const refused = new Set<string>();
+    const real = w.vectors.put.bind(w.vectors);
+    w.vectors.put = async (items) => { const taken = items.filter((item) => !refused.has(item.key)); const result = await real(taken); return { done: result.done, failed: items.filter((item) => refused.has(item.key)).map((item) => item.key) }; };
+    refused.add(`event:${idOf(w, "row001")}`);
+    const job = batchEmbedder();
+    expect(await run(w, job)).toMatchObject({ embedded: 3, failed: 1 });
+    expect(stored(w, "row001")).toMatchObject({ embedPending: true });
+    expect(stored(w, "row000")).toMatchObject({ embeddingSpec: SPEC });
+    refused.clear();
+    expect(await run(w, job)).toMatchObject({ embedded: 1 });
+  });
+
+  it("a row erased while its batch was being embedded gets no mark and loses its vector again; the others in the batch are marked", async () => {
+    const w = await setup();
+    await pendingRows(w, 3);
+    const job = batchEmbedder({ during: () => { const item = stored(w, "row001"); delete item.text; delete item.textExpiresAt; w.db.set(item); } });
+    expect(await run(w, job)).toMatchObject({ embedded: 2, skipped: 1, failed: 0 });
+    expect(w.vectorDeletes.flat()).toEqual([`event:${idOf(w, "row001")}`]);
+    expect(stored(w, "row001")).not.toHaveProperty("embeddingSpec");
+    expect(stored(w, "row000")).toMatchObject({ embeddingSpec: SPEC });
+  });
+
+  it("a long row goes in a call of its own, between batches of the short rows; and an embedder with no batch call gets one row per call, as before", async () => {
+    const w = await setup();
+    await pendingRows(w, 6, (index) => (index === 3 ? `long ${"x".repeat(LONG_TEXT_CHARS)}` : `short ${index}`));
+    const job = batchEmbedder();
+    expect(await run(w, job)).toMatchObject({ embedded: 6 });
+    expect(job.batches.map((batch) => batch.length)).toEqual([3, 1, 2]);
+    const plain = await setup();
+    await pendingRows(plain, 3);
+    const single = jobEmbedder();
+    expect(await run(plain, single)).toMatchObject({ embedded: 3 });
+    expect(single.calls).toHaveLength(3);
+  });
+});
+
 // ---- review R2 and R3: every row is reached, workspaces take turns, and a run ends inside its deadline
 
 /** Stores `count` rows in a workspace, each with its own, later expiry than the one before (the index is read soonest-expiry first). */

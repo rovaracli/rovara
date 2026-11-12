@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync, existsSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { LESSON_EMBEDDER, TEAM_RECORD_EMBEDDER } from "@agentx/cloud-contracts";
+import { LESSON_EMBEDDER, TEAM_RECORD_EMBEDDER, VECTOR_DIMENSION_DEFAULT, teamRecordVectorIndexName } from "@agentx/cloud-contracts";
 import { EMBEDDER_BLANK_CODE_POINTS, EMBEDDER_LIMITS } from "../../../packages/broker/src/embedder/client.js";
 
 interface Model { repo: string; revision: string; dimension: number; spec: string; pooling: string; maxTokens: number; prefix: string[]; suffix: string[]; license: string; outputs: Record<string, string>; files: Record<string, string>; referenceFiles: Record<string, string> }
@@ -36,8 +36,8 @@ describe("the embedder's identity", () => {
     expect(specOf({ ...model, outputs: { ...model.outputs, "model.onnx": "0".repeat(64) } }, lock.toolchain)).not.toBe(model.spec);
     expect(specOf(model, { ...lock.toolchain, onnx: "0.0.0" })).not.toBe(model.spec);
   });
-  it("uses open models with licences we may ship (Apache-2.0 and MIT), pinned to commits, in fp32", () => {
-    expect(lock.models.record.license).toBe("Apache-2.0");
+  it("uses open models with licences we may ship (MIT), pinned to commits, in fp32", () => {
+    expect(lock.models.record.license).toBe("MIT");
     expect(lock.models.lesson.license).toBe("MIT");
     for (const model of Object.values(lock.models)) {
       expect(model.revision).toMatch(/^[0-9a-f]{40}$/);
@@ -45,9 +45,19 @@ describe("the embedder's identity", () => {
     }
     expect(read("tools/export_models.py")).not.toMatch(/quantize/i);
   });
-  it("cuts the record model's texts at 2,048 tokens and the lessons' at 512 (part of the spec)", () => {
-    expect(lock.models.record.maxTokens).toBe(2048);
+  it("cuts the record model's texts and the lessons' at 512 tokens (part of the spec)", () => {
+    expect(lock.models.record.maxTokens).toBe(512);
     expect(lock.models.lesson.maxTokens).toBe(512);
+  });
+  it("DECISIONS 140: the Team record and the lessons are ONE model (bge-small-en-v1.5, 384-d): the same entry in the lock, the same spec, so the image holds one copy and a vector of one is a vector of the other", () => {
+    expect(lock.models.record).toEqual(lock.models.lesson);
+    expect(TEAM_RECORD_EMBEDDER.modelId).toBe("BAAI/bge-small-en-v1.5");
+    expect(TEAM_RECORD_EMBEDDER.dimension).toBe(384);
+    expect(VECTOR_DIMENSION_DEFAULT).toBe(384);
+    expect(TEAM_RECORD_EMBEDDER).toEqual({ ...LESSON_EMBEDDER, model: "record" });
+    // the old model's spec is gone from the code: a vector index named with it is never opened again
+    expect(TEAM_RECORD_EMBEDDER.spec).not.toBe("0b0a5b868995d4ee");
+    expect(teamRecordVectorIndexName("ws-a")).not.toBe(teamRecordVectorIndexName("ws-a", "0b0a5b868995d4ee"));
   });
   it("the function and the port enforce the same limits", () => {
     const number = (name: string): number => Number(new RegExp(`^${name} = ([0-9_]+)`, "m").exec(core)![1]!.replaceAll("_", ""));

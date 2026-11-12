@@ -123,7 +123,7 @@ place; this records what it is, so a change to any piece can be made deliberatel
   the one that first publishes the executor. Strictness is deliberate: an image key a CLI does not
   know must not be skipped silently.
 - **The self-hosted embedder repository (not yet created).** The Team record searches with the embedder image
-  (`environments/embedder`; Qwen3-Embedding-0.6B and bge-small baked into a linux/arm64 Lambda image, every Python package
+  (`environments/embedder`; bge-small-en-v1.5 (the record and the lessons; DECISIONS 140) baked into a linux/arm64 Lambda image, every Python package
   installed by hash, no network at run time). Releases push it as `agentx-embedder` and record its digest as
   `images.embedder` in release.json; the CLI passes it to the control plane (`EmbedderImageUri`), through the account's image
   cache in a Public install and from the install's own `rovara-bundle/<env>/embedder` repository in an Enterprise one

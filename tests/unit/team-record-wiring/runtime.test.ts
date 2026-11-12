@@ -27,13 +27,13 @@ const SETTLE_PASS_MS = 121_000;
 void 0;
 const MARKER = "SECRETMARKER-QZX-withRetry";
 const ON = { TEAM_RECORD_ENABLED: "1", TEAM_RECORD_TABLE_NAME: "TeamRecord", AWS_REGION: "us-west-2", EMBEDDER_FUNCTION_NAME: "agentx-staging-embedder" } as const;
-/** The embedder function's answer for the Team record's model: one unit vector of 1,024 dimensions per text. */
-const embedderReply = (texts: number) => ({ ok: true, model: "record", modelId: TEAM_RECORD_EMBEDDER.modelId, revision: TEAM_RECORD_EMBEDDER.revision, spec: TEAM_RECORD_EMBEDDER.spec, dimension: 1024, vectors: Array.from({ length: texts }, () => Array.from({ length: 1024 }, () => 1 / 32)), truncated: Array.from({ length: texts }, () => false) });
+/** The embedder function's answer for the Team record's model: one unit vector of 384 dimensions per text. */
+const embedderReply = (texts: number) => ({ ok: true, model: "record", modelId: TEAM_RECORD_EMBEDDER.modelId, revision: TEAM_RECORD_EMBEDDER.revision, spec: TEAM_RECORD_EMBEDDER.spec, dimension: 384, vectors: Array.from({ length: texts }, () => Array.from({ length: 384 }, () => 1 / Math.sqrt(384))), truncated: Array.from({ length: texts }, () => false) });
 const indexKeys = { gsi1: { partition: "gsi1pk" }, gsi2: { partition: "gsi2pk" }, gsi3: { partition: "gsi3pk", sort: "gsi3sk" }, gsi4: { partition: "gsi4pk" }, gsi5: { partition: "gsi5pk", sort: "textDueAt" } };
 const dbOf = () => new FakeDynamoDb({ indexKeys });
 const noSdk = async (): Promise<never> => { throw new SdkUnavailableError(); };
 
-/** A fake AWS: the embedder Lambda answers a 1,024-dimension embedding, S3 Vectors records every command with the credentials it was signed with, and STS records every session policy it was asked for. */
+/** A fake AWS: the embedder Lambda answers a 384-dimension embedding, S3 Vectors records every command with the credentials it was signed with, and STS records every session policy it was asked for. */
 function fakeAws() {
   const vectorCalls: Array<{ command: string; input: Record<string, unknown>; accessKeyId: string }> = [];
   const athenaCalls: Array<{ command: string; sql: string }> = [];
@@ -577,6 +577,37 @@ describe("a delete that arrives during a store failure is retried and lands", ()
     down.on = false;
     expect(await runtime.drain(asRecords(sent))).toStrictEqual({ batchItemFailures: [] });
     expect(everything(db)).toContain(MARKER);
+  });
+
+  // ---- L2 (DECISIONS 140): the embedding inside a drain has a hard end, so a 10-message batch cannot run past the broker's 30 s
+  it("a batch of queued puts against an embedder that never answers ends at the drain's own deadline: the row it reached is stored with embedPending, nothing waits for the 5 s ingest wait, and the rest are answered for retry", async () => {
+    const db = dbOf();
+    const { client, down } = flaky(db);
+    const { sent, queue } = queueOf();
+    const aws = fakeAws();
+    let lambdaCalls = 0;
+    // The embedder Lambda that never replies: the send ends only when the invoke's own wait aborts it.
+    const hanging = async (name: string): Promise<Record<string, unknown>> => name === "@aws-sdk/client-lambda"
+      ? { LambdaClient: class { send(_c: unknown, options?: { abortSignal?: AbortSignal }) { lambdaCalls += 1; return new Promise((_resolve, reject) => { options?.abortSignal?.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" }))); }); } }, InvokeCommand: class { constructor(readonly input: unknown) {} } }
+      : aws.sdk(name);
+    const runtime = build(db, { ...ON, ROVARA_EDITION: "enterprise" }, { documentClient: client, opsQueue: queue, sdk: hanging, sts: aws.sts });
+    await addSource(db, "enterprise", { orgId: ORG_A, source: "github", scope: "github:repo/9", retention: "C" });
+    down.on = true;
+    for (let index = 0; index < 10; index += 1) {
+      expect(await runtime.sink.put(githubDraft({ retention: "C", scope: "github:repo/9", sourceRef: { system: "github.com", id: `deadline-${index}`, version: "1" }, text: `queued ${index} ${MARKER}` }))).toMatchObject({ status: "queued" });
+    }
+    expect(sent).toHaveLength(10);
+    down.on = false;
+    // Lambda's clock for this drain: 5.6 s left at the start. The drain keeps 5 s back for its answer, so the embedding may use about 0.6 s.
+    const startedAt = Date.now();
+    const result = await runtime.drain(asRecords(sent), { remainingMs: () => 5_600 - (Date.now() - startedAt) });
+    const elapsed = Date.now() - startedAt;
+    expect(elapsed).toBeLessThan(2_500);
+    expect(lambdaCalls).toBe(1);
+    // the message that was reached is done: its row is stored and waits for the re-embed job; the others were not touched and go back to the queue
+    expect(eventRows(db)).toHaveLength(1);
+    expect(eventRows(db)[0]).toMatchObject({ embedPending: true });
+    expect(result.batchItemFailures.map((failure) => failure.itemIdentifier)).toStrictEqual(sent.slice(1).map((_op, index) => `m${index + 1}`));
   });
 
   it("a queued put that still cannot be applied two deliveries before the LAST is dropped (acknowledged), never dead-lettered with its text; a removal is still retried to the dead-letter queue", async () => {

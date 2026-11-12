@@ -26,7 +26,12 @@
 // NOT FOR A WORKSPACE THAT IS CLOSING (N5). `reembedRun` skips a workspace with a whole-workspace erase job or a close in progress (it must not write vectors or state that the erase would then leave behind);
 // the hourly job deletes leftover `REEMBED#` rows (`sweepReembedState`, bounded in time and in workspaces per run: EMB-7 M1).
 //
-// A TEXT TOO LONG FOR THE FUNCTION (0.5.13 lane fix/0513-embedder-3gb). The embedder runs at 3,008 MB (about 1.7 vCPUs); a text near the model's 2,048-token limit takes about 17 s there under Docker, and the
+// BATCHES (DECISIONS 140, lane fix/0515-embedder-small-model). The embedder is now one small model (bge-small-en-v1.5, 384-d, texts cut at 512 tokens, 133 MB): a call for 16 documents takes about 3 s warm,
+// so the job sends up to `REEMBED_BATCH_ROWS` consecutive short rows in ONE call (`embedManyWithInfo`), puts their vectors in one request and marks each row; a failed call fails every row of it and counts as
+// ONE failure toward the "two in a row" stop; a timed-out call for several rows counts nothing against any row. A long row (below) goes alone, and so does every row for an embedder that cannot take a batch.
+//
+// A TEXT TOO LONG FOR THE FUNCTION (0.5.13 lane fix/0513-embedder-3gb; written for the Qwen3 model, kept as a safety net after DECISIONS 140: no text takes long any more, since every text is cut at 512 tokens).
+// The embedder then ran at 3,008 MB (about 1.7 vCPUs); a text near the model's 2,048-token limit took about 17 s there under Docker, and the
 // run has 25 s. So (1) a LONG row (`LONG_TEXT_CHARS`) is started only when a whole cold-start wait (`callMs`) is left, so the try is a fair one, and at most one fits in a run; (2) a long row whose call
 // TIMED OUT (any row, not only a long one) is counted on the row (`embedTimeouts`), and does NOT count toward the "two failures in a row" stop, so two long rows side by side cannot stop a workspace's backlog; (3) at the second timeout the
 // row is marked `embedSkip` = "<spec>:<TOO_LONG_RETRY_EPOCH>" and logged once as `record.embed_too_long`: the job leaves it alone (it stays keyword-searchable, its text expires as always), until the
@@ -84,6 +89,8 @@ export const DEFAULT_REEMBED_BUDGET: ReembedBudget = { maxRows: 100, maxScanned:
  * cursor) and for the answer. The first call of a run must start within `REEMBED_RUN_MS - callMs` of the job's start, which is more than the listing, the session and the index checks take.
  */
 export const REEMBED_RUN_MS = 25_000;
+/** The most short rows the job sends the embedder in one call (the function takes 16 texts at most: embedder_core.MAX_TEXTS). */
+export const REEMBED_BATCH_ROWS = 16;
 /** The least a workspace gets of the run to start calls in. */
 export const MIN_SHARE_MS = 3_000;
 /** A workspace whose whole pass found nothing to do is not read again for this long. */
@@ -265,46 +272,74 @@ export async function reembedRows(deps: ReembedDependencies, orgId: OrgId, budge
       continue;
     }
     result.scanned += page.ScannedCount ?? (page.Items ?? []).length;
+    // The page's rows that can be embedded (a row without its text cannot).
+    const rowsOfPage: Array<{ item: Item; event: RecordEvent & { text: string }; long: boolean }> = [];
     for (const item of page.Items ?? []) {
       const event = eventFromItem(item, Math.floor(now() / 1000));
       if (event === undefined || event.text === undefined) continue;
-      const long = event.text.length >= LONG_TEXT_CHARS;
+      rowsOfPage.push({ item, event: event as RecordEvent & { text: string }, long: event.text.length >= LONG_TEXT_CHARS });
+    }
+    for (let at = 0; at < rowsOfPage.length;) {
+      const first = rowsOfPage[at] as (typeof rowsOfPage)[number];
+      // Up to REEMBED_BATCH_ROWS short rows go to the embedder in ONE call (DECISIONS 140: one small model, a call for 16 documents takes about 3 s); a long row goes alone, as it always did, and so does every row
+      // when the embedder cannot take a batch.
+      const group = [first];
+      if (!first.long && deps.embedder.embedManyWithInfo !== undefined) {
+        const room = Math.max(1, Math.min(REEMBED_BATCH_ROWS, budget.maxRows - result.embedded));
+        while (group.length < room && at + group.length < rowsOfPage.length && !(rowsOfPage[at + group.length] as (typeof rowsOfPage)[number]).long) group.push(rowsOfPage[at + group.length] as (typeof rowsOfPage)[number]);
+      }
       // A long row needs a whole cold wait left (a fair try, and so at most one per run); any other waits for what its call needs.
-      const needed = long || !run.warm ? budget.callMs : budget.warmCallMs;
+      const needed = first.long || !run.warm ? budget.callMs : budget.warmCallMs;
       // A call starts only if its whole wait fits in the run (and in this workspace's share of it); the rest of the page stays for the next turn.
       if (result.embedded >= budget.maxRows || now() >= turnEnd || now() + needed > run.deadline) { result.more = true; return finish(); }
+      at += group.length;
       try {
         calledEmbedder = true;
-        const { vector, truncated } = await embedWithFlag(deps.embedder, event.text, { deadline: run.deadline });
+        let made: Array<{ vector: number[]; truncated: boolean }>;
+        if (group.length === 1) made = [await embedWithFlag(deps.embedder, first.event.text, { deadline: run.deadline })];
+        else made = await deps.embedder.embedManyWithInfo!(group.map((row) => row.event.text), "document", { deadline: run.deadline });
+        if (made.length !== group.length) throw new Error("embedder answered the wrong number of vectors");
         run.warm = true;
-        const put = await deps.vectors.put([eventVectorItem(event, vector)]);
-        if (put.failed.length > 0) throw new Error("vector not put");
-        try {
-          await markRowEmbedded(deps.table, event, { spec, truncated, onlyWithText: true });
-        } catch (error) {
-          if (errorName(error) !== "ConditionalCheckFailedException") throw error;
-          // The row is gone, hidden or without text: the vector must not outlive it.
-          const key = eventVectorKey(event.id);
-          const removed = await deps.vectors.delete([key]).then((response) => response.failed.length === 0, () => false);
-          if (!removed) deps.log?.("record.reembed_vector_left", {});
-          result.skipped += 1;
-          continue;
+        const put = await deps.vectors.put(group.map((row, index) => eventVectorItem(row.event, (made[index] as { vector: number[] }).vector)));
+        const notPut = new Set(put.failed);
+        // A single row whose vector was refused is a failed call, as it always was (counted below). In a batch the rows the index took are marked, and only the refused ones fail.
+        if (notPut.size > 0 && group.length === 1) throw new Error("vector not put");
+        if (notPut.size > 0) {
+          result.failed += group.filter((row) => notPut.has(eventVectorKey(row.event.id))).length;
+          run.failuresInARow += 1;
         }
-        if (truncated) deps.log?.("record.embed_truncated", { kind: event.kind });
-        result.embedded += 1;
-        run.failuresInARow = 0;
+        let anyMarked = false;
+        for (const [index, row] of group.entries()) {
+          if (notPut.has(eventVectorKey(row.event.id))) continue;
+          const { truncated } = made[index] as { truncated: boolean };
+          try {
+            await markRowEmbedded(deps.table, row.event, { spec, truncated, onlyWithText: true });
+          } catch (error) {
+            if (errorName(error) !== "ConditionalCheckFailedException") throw error;
+            // The row is gone, hidden or without text: the vector must not outlive it.
+            const removed = await deps.vectors.delete([eventVectorKey(row.event.id)]).then((response) => response.failed.length === 0, () => false);
+            if (!removed) deps.log?.("record.reembed_vector_left", {});
+            result.skipped += 1;
+            continue;
+          }
+          if (truncated) deps.log?.("record.embed_truncated", { kind: row.event.kind });
+          result.embedded += 1;
+          anyMarked = true;
+        }
+        if (anyMarked && notPut.size === 0) run.failuresInARow = 0;
+        if (run.failuresInARow >= 2) { result.more = true; deps.log?.("record.reembed_stopped", { failed: result.failed }); return finish(); }
       } catch (error) {
         // No message: an embedding error can echo the text. Two failures in a row (over all workspaces) mean the embedder (or the index) is not answering: stop and let the next run try.
-        result.failed += 1;
+        result.failed += group.length;
         const timing = error instanceof EmbedUnavailableError ? error.timing : undefined;
         // The run's end cut the call: nobody's failure (the loop ends at its next row).
         if (timing === "deadline") continue;
-        // A call the function did not finish in its whole wait is counted on the ROW, whatever its length (the cost is tokens, not characters: a 3,000-character CJK, code or log row can hit the
-        // 2,048-token cap too), and it does not stop the run: a timed-out call has used its whole wait, which ends the run anyway, so an embedder that is down (refused, 5xx) is still told apart by
-        // the failures below and nothing is lost. A cold start can make the first timeout unfair to the row; the broker cannot tell a cold container from a warm one (the function's init report
-        // does not reach it), so the second timeout, made on a later run, is what marks the row. Staging check 5 (cold against warm long-text times) says whether that is enough.
+        // A call the function did not finish in its whole wait is counted on the ROW when the call was for one row, whatever its length (the cost is tokens, not characters: a 3,000-character CJK, code or log row can hit the
+        // token cap too), and it does not stop the run: a timed-out call has used its whole wait, which ends the run anyway, so an embedder that is down (refused, 5xx) is still told apart by
+        // the failures below and nothing is lost. A timeout of a call for several rows is the embedder's, not any row's (a batch is short rows only, and one small model answers 16 of them in seconds): nothing is counted on the rows. A cold start
+        // can make the first timeout unfair to a row; the broker cannot tell a cold container from a warm one (the function's init report does not reach it), so the second timeout, made on a later run, is what marks the row.
         if (timing === "timeout") {
-          await recordLongTimeout(deps, event, numberOr0(item.embedTimeouts), spec);
+          if (group.length === 1) await recordLongTimeout(deps, first.event, numberOr0(first.item.embedTimeouts), spec);
           continue;
         }
         run.failuresInARow += 1;

@@ -10,9 +10,9 @@ const KMS = "arn:aws:kms:us-west-2:111122223333:key/11111111-2222-3333-4444-5555
 const ROLE = "arn:aws:iam::111122223333:role/analyst";
 
 describe("team record install parameters", () => {
-  it("defaults to a Public cell: 1024 dimensions, lake on, no key, no analysts, and no embedding model to choose", () => {
+  it("defaults to a Public cell: 384 dimensions, lake on, no key, no analysts, and no embedding model to choose", () => {
     expect(teamRecordParameters({})).toEqual({
-      edition: "public", dimension: 1024, kmsKeyArn: undefined, lakeEnabled: true, athenaUsers: [], enterpriseWorkspaceId: undefined,
+      edition: "public", dimension: 384, kmsKeyArn: undefined, lakeEnabled: true, athenaUsers: [], enterpriseWorkspaceId: undefined,
     });
   });
   it("Enterprise needs their key and their workspace; Public must not name a workspace or analysts", () => {
@@ -24,7 +24,7 @@ describe("team record install parameters", () => {
   });
   it("refuses the retired embedding model option (Bedrock Titan and Cohere are gone), a key alias, a non-role principal, and analysts without a lake", () => {
     for (const retired of ["anthropic.claude", "cohere.embed-english-v3", "amazon.titan-embed-text-v2:0", "global.cohere.embed-v4:0"]) expect(() => teamRecordParameters({ embeddingModelId: retired })).toThrow(/embeddingModelId .*is retired/);
-    expect(teamRecordParameters({ embeddingModelId: "" }).dimension).toBe(1024);
+    expect(teamRecordParameters({ embeddingModelId: "" }).dimension).toBe(384);
     expect(() => teamRecordParameters({ kmsKeyArn: "arn:aws:kms:us-west-2:111122223333:alias/x" })).toThrow(/KMS key ARN/);
     const enterprise = { edition: "enterprise", kmsKeyArn: KMS, enterpriseWorkspaceId: "acme" };
     expect(() => teamRecordParameters({ ...enterprise, athenaUsers: ["arn:aws:iam::111122223333:user/bob"] })).toThrow(/role ARNs/);
@@ -112,7 +112,7 @@ describe("team record storage per edition", () => {
       expect(actions(b).filter((a) => a.startsWith("bedrock:"))).toEqual([]);
       expect(JSON.stringify(b.template.toJSON())).not.toMatch(/bedrock|foundation-model|titan/i);
       expect(b.storage.environment).not.toHaveProperty("TEAM_RECORD_EMBEDDING_MODEL_ID");
-      expect(b.storage.environment.TEAM_RECORD_EMBEDDING_DIMENSION).toBe("1024");
+      expect(b.storage.environment.TEAM_RECORD_EMBEDDING_DIMENSION).toBe("384");
     }
   });
 

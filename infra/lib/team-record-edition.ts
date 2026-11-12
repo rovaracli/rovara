@@ -40,7 +40,7 @@ export function kmsKeyPolicyStatements(account: string): Array<Record<string, un
 
 export interface TeamRecordParameters {
   readonly edition: TeamRecordEditionName;
-  /** The index dimension. The embedder (environments/embedder, Qwen3-Embedding-0.6B) is fixed; there is no embedding model to choose. */
+  /** The index dimension. The embedder (environments/embedder, bge-small-en-v1.5, 384-d) is fixed; there is no embedding model to choose. */
   readonly dimension: number;
   /** Enterprise: required. Public: the cell's key, optional. */
   readonly kmsKeyArn: string | undefined;

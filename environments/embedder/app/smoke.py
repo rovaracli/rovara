@@ -1,4 +1,4 @@
-"""Run at image build with no network: both models load from the image, every file is the one the manifest names, and the vectors have the right size and unit length."""
+"""Run at image build with no network: both names (the Team record's and the lessons', one model since DECISIONS 140) load from the image, every file is the one the manifest names, and the vectors have the right size and unit length."""
 from __future__ import annotations
 
 import hashlib
@@ -11,7 +11,7 @@ from embedder_core import Embedder, spec_id
 
 root = Path(os.environ.get("EMBEDDER_MODELS_DIR", "/opt/models"))
 embedder = Embedder(root)
-for model, dimension in (("record", 1024), ("lesson", 384)):
+for model, dimension in (("record", 384), ("lesson", 384)):
     folder = root / model
     manifest = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
     for name, expected in manifest["outputs"].items():

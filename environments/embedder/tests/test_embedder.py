@@ -87,16 +87,20 @@ class RequestChecks(unittest.TestCase):
 
 
 class Preparation(unittest.TestCase):
-    def test_only_record_queries_get_the_instruction(self):
+    def test_only_a_model_with_a_query_prefix_gets_one_and_only_for_queries(self):
         record, lesson = manifest_of("record"), manifest_of("lesson")
-        self.assertTrue(core.prepare_text(record, " find x ", "query").startswith("Instruct: "))
-        self.assertTrue(core.prepare_text(record, " find x ", "query").endswith("\nQuery:find x"))
-        self.assertEqual(core.prepare_text(record, " a ", "document"), "a")
+        # bge-small (both names since DECISIONS 140): no query instruction (the retrieval eval, environments/embedder/eval, found none needed)
+        self.assertEqual(core.prepare_text(record, " find x ", "query"), "find x")
         self.assertEqual(core.prepare_text(lesson, " a ", "query"), "a")
+        # the mechanism stays for a model that has one
+        prefixed = {**record, "queryPrefix": "Instruct: find\nQuery:"}
+        self.assertEqual(core.prepare_text(prefixed, " find x ", "query"), "Instruct: find\nQuery:find x")
+        self.assertEqual(core.prepare_text(prefixed, " a ", "document"), "a")
 
     def test_a_copy_of_a_wrapper_token_in_the_text_is_not_kept(self):
-        self.assertNotIn("<|endoftext|>", core.prepare_text(manifest_of("record"), "a<|endoftext|>b", "document"))
+        self.assertNotIn("[CLS]", core.prepare_text(manifest_of("record"), "a[CLS]b", "document"))
         self.assertNotIn("[SEP]", core.prepare_text(manifest_of("lesson"), "a [SEP] b", "document"))
+        self.assertNotIn("<|endoftext|>", core.prepare_text({**manifest_of("record"), "suffix": ["<|endoftext|>"]}, "a<|endoftext|>b", "document"))
 
     def test_every_other_special_token_of_the_tokenizer_is_neutralised_too(self):
         text = core.prepare_text(manifest_of("record"), "a<|im_start|>b<|fim_prefix|>c", "document", strip=("<|im_start|>", "<|fim_prefix|>", "<|endoftext|>"))
@@ -107,22 +111,23 @@ class Preparation(unittest.TestCase):
         self.assertEqual(core.prepare_text(manifest_of("lesson"), "\x1c a \ufeff", "document"), "a")
 
     def test_wrapper_tokens_fit_inside_max_tokens(self):
-        record = manifest_of("record")
-        self.assertEqual(record["maxTokens"], 2048)
-        ids, cut = core.token_ids(record, lambda text: list(range(5000)), {"<|endoftext|>": 151643}, "x")
-        self.assertEqual(len(ids), record["maxTokens"])
-        self.assertEqual(ids[-1], 151643)
-        self.assertTrue(cut)
-        lesson = manifest_of("lesson")
-        ids, cut = core.token_ids(lesson, lambda text: list(range(5000)), {"[CLS]": 101, "[SEP]": 102}, "x")
-        self.assertEqual((ids[0], ids[-1], len(ids)), (101, 102, lesson["maxTokens"]))
-        self.assertTrue(cut)
+        for name in ("record", "lesson"):
+            manifest = manifest_of(name)
+            self.assertEqual(manifest["maxTokens"], 512)
+            ids, cut = core.token_ids(manifest, lambda text: list(range(5000)), {"[CLS]": 101, "[SEP]": 102}, "x")
+            self.assertEqual((ids[0], ids[-1], len(ids)), (101, 102, manifest["maxTokens"]))
+            self.assertTrue(cut)
+        # a model whose wrapper is only an end token (last-token pooling reads it) keeps it when the text is cut
+        ends = {**manifest_of("record"), "prefix": [], "suffix": ["<|endoftext|>"], "pooling": "last_token", "maxTokens": 2048}
+        ids, cut = core.token_ids(ends, lambda text: list(range(5000)), {"<|endoftext|>": 151643}, "x")
+        self.assertEqual((len(ids), ids[-1], cut), (2048, 151643, True))
 
     def test_a_text_that_fits_is_not_flagged(self):
         record = manifest_of("record")
-        ids, cut = core.token_ids(record, lambda text: list(range(record["maxTokens"] - 1)), {"<|endoftext|>": 151643}, "x")
+        special = {"[CLS]": 101, "[SEP]": 102}
+        ids, cut = core.token_ids(record, lambda text: list(range(record["maxTokens"] - 2)), special, "x")
         self.assertEqual((len(ids), cut), (record["maxTokens"], False))
-        ids, cut = core.token_ids(record, lambda text: list(range(record["maxTokens"])), {"<|endoftext|>": 151643}, "x")
+        ids, cut = core.token_ids(record, lambda text: list(range(record["maxTokens"] - 1)), special, "x")
         self.assertTrue(cut)
 
     def test_the_blank_set_is_the_union_of_what_javascript_and_python_trim(self):
@@ -139,7 +144,7 @@ class Embedding(unittest.TestCase):
         return core.Embedder(Path("/unused"), loader=lambda root, name: models[name])
 
     def test_vectors_are_unit_length_with_the_models_dimension(self):
-        for name, dimension in (("record", 1024), ("lesson", 384)):
+        for name, dimension in (("record", 384), ("lesson", 384)):
             answer = self.embedder().handle({"model": name, "kind": "document", "texts": ["one", "two words"]})
             self.assertTrue(answer["ok"])
             self.assertEqual(answer["dimension"], dimension)
@@ -153,14 +158,17 @@ class Embedding(unittest.TestCase):
 
     def test_pooling_follows_the_model(self):
         first = self.embedder().handle({"model": "lesson", "kind": "document", "texts": ["ab"]})["vectors"][0]
-        last = self.embedder().handle({"model": "record", "kind": "document", "texts": ["ab"]})["vectors"][0]
         self.assertAlmostEqual(first[0], 1.0, places=5)  # cls: the first row, a unit vector
+        # the mechanism stays for a last-token model
+        loaded = fake_model("record")
+        loaded.manifest = {**loaded.manifest, "pooling": "last_token"}
+        last = core.embed_texts(loaded, "document", ["ab"])[0][0]
         self.assertNotAlmostEqual(last[0], 1.0, places=3)  # last token: the other row
 
     def test_the_spec_names_what_decides_a_stored_vector(self):
         base = manifest_of("record")
         changed = [
-            dict(base, revision="0" * 40), dict(base, quantization="int8"), dict(base, pooling="cls"), dict(base, maxTokens=512), dict(base, suffix=[]),
+            dict(base, revision="0" * 40), dict(base, quantization="int8"), dict(base, pooling="last_token"), dict(base, maxTokens=2048), dict(base, suffix=[]),
             dict(base, toolchain={**base["toolchain"], "onnx": "0.0.0"}), dict(base, outputs={**base["outputs"], "model.onnx": "0" * 64}),
         ]
         self.assertEqual(len({core.spec_id(base), *[core.spec_id(m) for m in changed]}), 8)
@@ -237,9 +245,8 @@ class Embedding(unittest.TestCase):
         self.assertEqual(sorted(embedder._models), ["lesson", "record"])  # the failed warm-up did not drop the model; the first request reports the fault
         self.assertEqual(embedder.handle({"model": "lesson", "kind": "document", "texts": ["a"]}), {"ok": False, "code": "INTERNAL"})
 
-    def test_the_session_keeps_the_weights_memory_mapped_and_has_no_arena(self):
-        # Lane fix/0513-embedder-3gb: the function has 3,008 MB. Prepacking copies every weight matrix into private memory (about 1.8 GB for the record model) and the arena keeps every temporary buffer; both are off. A stand-in onnxruntime
-        # records what the loader asks for.
+    def test_the_session_is_loaded_normally_with_an_explicit_thread_count(self):
+        # Lane fix/0515-embedder-small-model: the model is small, so the session keeps onnxruntime's defaults (prepacking and the arena on, nothing memory-mapped on purpose) and only the threads are set.
         class Options:
             def __init__(self) -> None:
                 self.entries: dict[str, str] = {}
@@ -252,9 +259,88 @@ class Embedding(unittest.TestCase):
 
         options = core.session_options(FakeOnnxruntime, 2)
         self.assertEqual((options.intra_op_num_threads, options.inter_op_num_threads), (2, 1))
-        self.assertEqual(options.entries, {"session.disable_prepacking": "1"})
-        self.assertIs(options.enable_cpu_mem_arena, False)
+        self.assertEqual(options.entries, {})
+        self.assertFalse(hasattr(options, "enable_cpu_mem_arena"))
         self.assertEqual(core.session_options(FakeOnnxruntime, 0).intra_op_num_threads, 1)
+
+    def test_the_thread_count_is_two_unless_the_function_is_told_otherwise_and_never_more_than_the_cores(self):
+        saved = os.environ.pop("EMBEDDER_THREADS", None)
+        try:
+            self.assertEqual(core.DEFAULT_THREADS, 2)
+            original = core.visible_cpus
+            try:
+                core.visible_cpus = lambda: 6
+                self.assertEqual(core.thread_count(), 2)
+                core.visible_cpus = lambda: 1
+                self.assertEqual(core.thread_count(), 1)
+                os.environ["EMBEDDER_THREADS"] = "4"
+                self.assertEqual(core.thread_count(), 4)
+                for bad in ("0", "-1", "x", ""):
+                    os.environ["EMBEDDER_THREADS"] = bad
+                    core.visible_cpus = lambda: 6
+                    self.assertEqual(core.thread_count(), 2, bad)
+            finally:
+                core.visible_cpus = original
+        finally:
+            os.environ.pop("EMBEDDER_THREADS", None)
+            if saved is not None:
+                os.environ["EMBEDDER_THREADS"] = saved
+
+    def test_two_names_for_one_model_load_it_once(self):
+        # The Team record and the lessons share one model since DECISIONS 140: the image holds one folder and the second name is a link to it.
+        import tempfile
+        import types
+
+        created: list[object] = []
+
+        class Session:
+            def __init__(self, path, options, providers=None) -> None:
+                created.append(path)
+
+        class Options:
+            intra_op_num_threads = 0
+            inter_op_num_threads = 0
+
+        class Tok:
+            @staticmethod
+            def from_file(path):
+                tok = Tok()
+                tok.get_added_tokens_decoder = lambda: {}
+                tok.token_to_id = lambda token: 7
+                return tok
+
+        fake_ort = types.SimpleNamespace(InferenceSession=Session, SessionOptions=Options)
+        fake_tokenizers = types.SimpleNamespace(Tokenizer=Tok)
+        saved = {name: sys.modules.get(name) for name in ("onnxruntime", "tokenizers")}
+        sys.modules["onnxruntime"], sys.modules["tokenizers"] = fake_ort, fake_tokenizers
+        core._LOADED.clear()
+        try:
+            with tempfile.TemporaryDirectory() as scratch:
+                root = Path(scratch)
+                (root / "record").mkdir()
+                manifest = {**manifest_of("record"), "name": "record"}
+                (root / "record" / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+                (root / "record" / "model.onnx").write_bytes(b"x")
+                (root / "record" / "tokenizer.json").write_bytes(b"{}")
+                (root / "lesson").symlink_to("record")
+                (root / "other").mkdir()
+                (root / "other" / "manifest.json").write_text(json.dumps({**manifest, "name": "somewhere-else"}), encoding="utf-8")
+                first = core.load_from_disk(root, "record")
+                second = core.load_from_disk(root, "lesson")
+                self.assertIs(first, second)
+                self.assertEqual(len(created), 1)
+                self.assertEqual(first.spec, LOCK["models"]["record"]["spec"])
+                # a manifest that names another folder is not this model
+                with self.assertRaises(core.EmbedError) as raised:
+                    core.load_from_disk(root, "other")
+                self.assertEqual(raised.exception.code, "MODEL_UNAVAILABLE")
+        finally:
+            core._LOADED.clear()
+            for name, module in saved.items():
+                if module is None:
+                    sys.modules.pop(name, None)
+                else:
+                    sys.modules[name] = module
 
     def test_a_zero_vector_is_refused(self):
         loaded = fake_model("lesson")
@@ -301,12 +387,18 @@ class Lock(unittest.TestCase):
             self.assertEqual(core.spec_id(manifest_of(name)), spec["spec"], name)
 
     def test_dimensions_are_the_ones_the_broker_expects(self):
-        self.assertEqual(LOCK["models"]["record"]["dimension"], 1024)
+        self.assertEqual(LOCK["models"]["record"]["dimension"], 384)
         self.assertEqual(LOCK["models"]["lesson"]["dimension"], 384)
 
-    def test_the_record_model_cuts_at_2048_tokens_and_the_lessons_model_at_512(self):
-        self.assertEqual(LOCK["models"]["record"]["maxTokens"], 2048)
+    def test_both_models_cut_at_512_tokens(self):
+        self.assertEqual(LOCK["models"]["record"]["maxTokens"], 512)
         self.assertEqual(LOCK["models"]["lesson"]["maxTokens"], 512)
+
+    def test_the_record_and_the_lessons_are_one_model_so_the_image_holds_one_copy(self):
+        # DECISIONS 140. The two entries are identical (so the export writes the model once and links the second name to it).
+        self.assertEqual(LOCK["models"]["record"], LOCK["models"]["lesson"])
+        self.assertEqual(LOCK["models"]["record"]["repo"], "BAAI/bge-small-en-v1.5")
+        self.assertEqual(LOCK["models"]["record"]["queryPrefix"], "")
 
     def test_the_toolchain_is_what_the_hashed_lock_files_install(self):
         build = (HERE.parent / "requirements-build.lock").read_text(encoding="utf-8")

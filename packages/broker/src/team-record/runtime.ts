@@ -39,6 +39,7 @@ import { resolveTaskVisibility } from "../lessons/task-visibility.js";
 import { createEmbedder } from "./embed.js";
 import { lessonEmbedderFrom, recordEmbedderClientFrom, recordJobEmbedderClientFrom, recordSearchEmbedderClientFrom, EMBEDDER_JOB_WAIT_MS, type LessonEmbedder } from "../embedder/wiring.js";
 import { REEMBED_RUN_MS, dropReembedState, reembedRun, sweepReembedStateRun } from "./reembed.js";
+import { runWithEmbedDeadline, withEmbedDeadline } from "./embed-deadline.js";
 import { eraseProject, eraseWorkspace, erasePerson, type EraseBudget } from "./erase.js";
 import { tableHotArchiveSource, ensureWorkspaceVectorBucket, tableHotStatsSource } from "./hot-source.js";
 import { createLakeClient, type LakeClient } from "./lake.js";
@@ -328,8 +329,9 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
   // The self-hosted embedder (environments/embedder): a direct invoke of the function the install names. Without one (a legacy install) rows are stored without a vector and found by keyword.
   // Three clients of the one function, differing only in how long they wait: ingest (the queue consumer and the taps), search (a person is waiting: short, no retry, a pause after a timeout, keyword search meanwhile) and the
   // re-embed job (the longest wait, only started when the run has the time).
-  const embedderClient = recordEmbedderClientFrom(env, sdkOptions);
-  const embedderDeps = embedderClient === undefined ? {} : { embedder: createEmbedder({ client: embedderClient }) };
+  const embedderClient = recordEmbedderClientFrom(env, sdkOptions, undefined, undefined, now);
+  // L2 (DECISIONS 140): inside the queue consumer's drain every ingest embedding call is capped by the end of that message's share of the broker's 30 s (embed-deadline.ts).
+  const embedderDeps = embedderClient === undefined ? {} : { embedder: withEmbedDeadline(createEmbedder({ client: embedderClient })) };
   const searchClient = recordSearchEmbedderClientFrom(env, sdkOptions, undefined, undefined, now);
   const searchEmbedderDeps = searchClient === undefined ? {} : { embedder: createEmbedder({ client: searchClient }) };
   const lessonEmbedder = lessonEmbedderFrom(env, sdkOptions);
@@ -1180,7 +1182,7 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
         if (paused || jobEmbedder === undefined) return { orgs: 0, skippedOrgs: 0, details: { skipped: 1 } };
         // R2 and R3: one deadline for the whole run, measured from here; the least recently served workspace first, each with a share of what is left, each with a cursor (reembed.ts).
         const startedAt = now();
-        return reembedRun({ table, embedder: jobEmbedder, vectorsFor: (orgId) => indexFor(orgId), isClosing: companyIsClosing, now, log }, startedAt, { maxRows: 100, maxScanned: 1_000, callMs: EMBEDDER_JOB_WAIT_MS, warmCallMs: 8_000 }, REEMBED_RUN_MS);
+        return reembedRun({ table, embedder: jobEmbedder, vectorsFor: (orgId) => indexFor(orgId), isClosing: companyIsClosing, now, log }, startedAt, { maxRows: 100, maxScanned: 1_000, callMs: EMBEDDER_JOB_WAIT_MS, warmCallMs: 5_000 }, REEMBED_RUN_MS);
       }
       if (job === "hourly") {
         // TRW-5 S1: text that reached the dead-letter queue anyway is deleted from it, first, so an org's slow work cannot starve it.
@@ -1294,7 +1296,8 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
           if ((await readProjectMeta(state, orgId.data, message.project))?.status === "archived") await eraseProjectNow(orgId.data, message.project, message.cause, Math.min(INLINE_ERASE.maxMs ?? 8_000, Math.max(1_000, remaining() - DRAIN_RESERVE_MS)));
         } catch { log("record.op_failed", { op: "erase_project", receiveCount: record.receiveCount }); failures.push({ itemIdentifier: record.messageId }); }
       } else {
-        failures.push(...(await consumer.processBatch([record])).batchItemFailures);
+        // The message's embedding may not run past the end of the drain less the time kept back for the answer: a slow or cold embedder costs the row its vector (it keeps `embedPending`), never the batch.
+        failures.push(...(await runWithEmbedDeadline(now() + remaining() - DRAIN_RESERVE_MS, () => consumer.processBatch([record]))).batchItemFailures);
       }
     }
     return { batchItemFailures: failures };

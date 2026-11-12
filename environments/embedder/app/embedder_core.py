@@ -1,7 +1,7 @@
 """The embedder's request checking and inference. No AWS and no network: the Lambda handler (handler.py) calls this.
 
 Request  {"model": "record" | "lesson", "kind": "query" | "document", "texts": ["..."]}
-Success  {"ok": true, "model": "record", "modelId": "Qwen/...", "revision": "<commit>", "spec": "<spec id>", "dimension": 1024, "vectors": [[...]], "truncated": [false]}
+Success  {"ok": true, "model": "record", "modelId": "BAAI/bge-small-en-v1.5", "revision": "<commit>", "spec": "<spec id>", "dimension": 384, "vectors": [[...]], "truncated": [false]}
          ("truncated" has one flag per vector: true when that text was longer than the model's token budget and was cut. Never a silent cut.)
 Failure  {"ok": false, "code": "<one of ERROR_CODES>"}
 
@@ -179,27 +179,31 @@ def visible_cpus() -> int:
     return len(getter(0)) if getter is not None else (os.cpu_count() or 1)
 
 
-# Memory (lane fix/0513-embedder-3gb): the function runs at 3,008 MB, the most this account's Lambda allows. The Qwen weights are 2.4 GB of fp32, so how onnxruntime holds them decides
-# whether a 2,048-token text fits. Measured on linux/arm64 under Docker with 3,008 MB, 2 threads and 1.7 CPUs, one 2,048-token text after shorter ones, then the lesson model:
-#   defaults                    peak process memory 2.94 GB, of which 2.9 GB private (2% under the limit; killed at a 2.5 GB limit)
-#   prepacking off              2.95 GB, of which about 1.2 GB private at the peak (the weights stay memory-mapped: clean pages the kernel can drop and read again)
-#   prepacking off + no arena   2.5 to 2.8 GB, of which about 0.8 GB private at the peak and 0.15 to 0.3 GB after the run; about 10 to 25% slower on long texts, about 7% on a short one
-# Both of the last two survive a 2 GB limit. The arena is turned off too: it keeps the temporary buffers of a 2,048-token text (about 0.9 GB) for the life of the container, and the
-# slower long text is the lesser cost (the re-embed job already gives a text that cannot finish in time up, see reembed.ts). None of this changes a weight or a graph node: the model files,
-# the vectors and the spec are what they were. (`arena_extend_strategy` as a provider option is ignored by the CPU execution provider, so it is not used.)
-DISABLE_PREPACKING = "session.disable_prepacking"
-# A text this short touches every layer's weights, so a warm-up at init pages the memory-mapped weights in before the first request instead of during it.
+# Threads (lane fix/0515-embedder-small-model, DECISIONS 140). The function runs at 2,048 MB, which Lambda serves with about 1.2 vCPUs on 2 visible cores. The model is small (133 MB of fp32 weights,
+# about 250 MB of memory in use), so it is loaded normally: prepacking and the memory arena stay on (their defaults), and nothing is memory-mapped on purpose. The thread count is set explicitly
+# (never left to onnxruntime's guess from the cores it can see): 2 intra-op threads, or EMBEDDER_THREADS when set, and one op at a time.
+DEFAULT_THREADS = 2
+# A text this short touches every layer's weights, so a warm-up at init makes the first request after a cold start as fast as a later one.
 WARM_UP_TEXT = "warm up"
 
 
+def thread_count() -> int:
+    configured = os.environ.get("EMBEDDER_THREADS", "")
+    if configured.isdigit() and int(configured) > 0:
+        return int(configured)
+    return max(1, min(DEFAULT_THREADS, visible_cpus()))
+
+
 def session_options(onnxruntime: Any, threads: int) -> Any:
-    """The session options of both models: threads as given, one op at a time, and the memory settings above."""
+    """The session options: threads as given, one op at a time, onnxruntime's default memory settings."""
     options = onnxruntime.SessionOptions()
     options.intra_op_num_threads = max(1, threads)
     options.inter_op_num_threads = 1
-    options.add_session_config_entry(DISABLE_PREPACKING, "1")
-    options.enable_cpu_mem_arena = False
     return options
+
+
+# Two names can be one model (the Team record's and the lessons' since DECISIONS 140: the image holds one copy and the second name is a link to it). One folder is loaded once per process.
+_LOADED: dict[str, "LoadedModel"] = {}
 
 
 def load_from_disk(root: Path, name: str) -> LoadedModel:
@@ -209,11 +213,14 @@ def load_from_disk(root: Path, name: str) -> LoadedModel:
         from tokenizers import Tokenizer
 
         folder = root / name
+        real = str(folder.resolve())
+        if real in _LOADED:
+            return _LOADED[real]
         manifest = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
-        if manifest.get("name") != name:
+        # The manifest names the folder it was written to; a name that is a link to another folder (the shared model) reads that folder's manifest.
+        if manifest.get("name") != folder.resolve().name:
             raise EmbedError("MODEL_UNAVAILABLE")
-        threads = int(os.environ.get("EMBEDDER_THREADS", "0")) or visible_cpus()
-        options = session_options(onnxruntime, threads)
+        options = session_options(onnxruntime, thread_count())
         session = onnxruntime.InferenceSession(str(folder / "model.onnx"), options, providers=["CPUExecutionProvider"])
         tokenizer = Tokenizer.from_file(str(folder / "tokenizer.json"))
         special: dict[str, int] = {}
@@ -238,7 +245,9 @@ def load_from_disk(root: Path, name: str) -> LoadedModel:
             input_ids = np.asarray([ids], dtype=np.int64)
             return session.run(["last_hidden_state"], {"input_ids": input_ids, "attention_mask": np.ones_like(input_ids)})[0]
 
-        return LoadedModel(manifest=manifest, encode=encode, run=run, spec=spec_id(manifest), strip=strip)
+        loaded = LoadedModel(manifest=manifest, encode=encode, run=run, spec=spec_id(manifest), strip=strip)
+        _LOADED[real] = loaded
+        return loaded
     except EmbedError:
         raise
     except Exception as error:  # a missing or unreadable file: one fixed code, never the error's text
@@ -254,7 +263,7 @@ class Embedder:
         self._models: dict[str, LoadedModel] = {}
 
     def preload(self, names: Sequence[str]) -> None:
-        """Loads models ahead of the first request (the init phase of a cold start) and runs one short text through each, so the memory-mapped weights are read in now. A model that cannot be
+        """Loads models ahead of the first request (the init phase of a cold start) and runs one short text through each, so the first request after a cold start is as fast as a later one. A model that cannot be
         loaded is left for the first request, which then answers MODEL_UNAVAILABLE; a warm-up that fails is logged as one fixed line and otherwise ignored (the model is kept, the first request reports any real fault)."""
         for name in names:
             if name in self._models:

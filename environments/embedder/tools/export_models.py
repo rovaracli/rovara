@@ -10,6 +10,9 @@ run-time image has none of them except onnxruntime. The Lambda never reaches the
 --source-dir holds <name>/<file> copies of the pinned files (a local cache); a file that is not there is downloaded from the
 pinned revision. Either way every file is checked against models.lock.json before it is used.
 
+Two entries of the lock that are identical (the Team record's and the lessons', one model since DECISIONS 140) are exported ONCE: the first is built, and the later name is a relative link to its
+folder, so the image holds one copy of the weights. embedder_core reads a linked folder's manifest and loads it once.
+
 The tool versions in the lock's `toolchain` must be the ones installed (they are pinned by hash in requirements-build.lock), and the sha256 of every output file must be the one the
 lock pins: a different tool, or a different output, stops the build instead of producing vectors under the old spec. Both are part of the spec. A deliberate change (new tool versions,
 a new model revision) is recorded with --update-lock, which rewrites `outputs` and `spec` in the lock; then put the new spec in packages/contracts/src/team-record-storage.ts (the
@@ -69,7 +72,7 @@ def export_onnx(model_dir: Path, onnx_path: Path) -> None:
     import torch
     from transformers import AutoModel
 
-    # Eager attention: the TorchScript exporter cannot convert grouped-query scaled_dot_product_attention (Qwen3).
+    # Eager attention: the TorchScript exporter cannot convert grouped-query scaled_dot_product_attention (a decoder model such as Qwen3 needs this; bge-small does not, and it does no harm).
     model = AutoModel.from_pretrained(str(model_dir), torch_dtype=torch.float32, attn_implementation="eager").eval()
 
     class Encoder(torch.nn.Module):
@@ -95,6 +98,18 @@ def export_onnx(model_dir: Path, onnx_path: Path) -> None:
         )
         loaded = onnx.load(str(scratch_model), load_external_data=True)
         onnx.save_model(loaded, str(onnx_path), save_as_external_data=True, all_tensors_to_one_file=True, location=f"{onnx_path.name}.data")
+
+
+def link_model(out: Path, name: str, target: str) -> None:
+    """`out/<name>` becomes a relative link to `out/<target>` (the same model under a second name). The Lambda image copies the link as it is."""
+    destination = out / name
+    if destination.is_symlink() or destination.exists():
+        if destination.is_dir() and not destination.is_symlink():
+            shutil.rmtree(destination)
+        else:
+            destination.unlink()
+    destination.symlink_to(target)
+    print(f"{name}: the same model as {target}; linked, not exported again")
 
 
 def installed_toolchain(expected: dict) -> None:
@@ -170,13 +185,26 @@ def main() -> None:
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     source_dir = None if args.source_dir is None else Path(args.source_dir)
+    built: dict[str, str] = {}  # identical lock entries -> the name that was exported for them
+    linked: dict[str, str] = {}  # a name that is a link -> the name it links to
+    identities = {name: json.dumps(spec, sort_keys=True) for name, spec in lock["models"].items()}  # before --update-lock changes any entry
     for name, spec in lock["models"].items():
         if args.model is not None and name != args.model:
             continue
+        identity = identities[name]
+        if identity in built:
+            link_model(out, name, built[identity])
+            linked[name] = built[identity]
+            continue
+        built[identity] = name
         outputs = build_model(name, spec, toolchain, source_dir, out, args.update_lock)
         if args.update_lock:
             spec["outputs"] = outputs
             spec["spec"] = spec_id({**json.loads((out / name / "manifest.json").read_text(encoding="utf-8"))})
+    if args.update_lock:
+        for name, target in linked.items():  # entries that were identical stay identical
+            lock["models"][name]["outputs"] = lock["models"][target]["outputs"]
+            lock["models"][name]["spec"] = lock["models"][target]["spec"]
     if args.update_lock:
         lock_path.write_text(json.dumps(lock, indent=2) + "\n", encoding="utf-8")
         print("models.lock.json updated; set the same spec values in packages/contracts/src/team-record-storage.ts")

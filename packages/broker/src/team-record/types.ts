@@ -83,6 +83,8 @@ export interface RecordEmbedder {
   readonly spec?: string;
   /** Like `embed`, saying whether the text was cut to fit the model. Optional so a test double need not have it; a row embedded without it is recorded as not cut. */
   embedWithInfo?(text: string, purpose?: "document" | "query", call?: { deadline?: number }): Promise<{ vector: number[]; truncated: boolean }>;
+  /** Several texts in one call to the embedder (the re-embed job batches up to 16). Optional so a test double need not have it; without it the job embeds one row per call. */
+  embedManyWithInfo?(texts: readonly string[], purpose?: "document" | "query", call?: { deadline?: number }): Promise<Array<{ vector: number[]; truncated: boolean }>>;
 }
 
 /** The identities a person has at each source: source-native ids and the groups they belong to, per source kind. An unmapped person has none, and matches nothing. */
