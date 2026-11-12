@@ -13,7 +13,7 @@ import { ApiError } from "../../../api/errors.js";
 import { codeSettingsKey, useCodeSettings, useProjectPeopleApi } from "../../../api/project-people.js";
 import { StaleNotice } from "./StaleNotice.js";
 import { OTHERS_SAVED, WAITING_FOR_ADMIN, WAITING_FOR_ADMIN_BODY, parseReviewers } from "./people-text.js";
-import { failureText, useRequestId } from "./people-write.js";
+import { failureText, useRequestId, useRestoreFocus } from "./people-write.js";
 
 const METHOD_WORDS: Readonly<Record<string, string>> = { squash: "Squash and merge", merge: "Merge commit" };
 type Settings = NonNullable<ReturnType<typeof useCodeSettings>["data"]>;
@@ -24,10 +24,10 @@ export const STALE_SETTINGS_MESSAGE = "Someone changed these settings. Reload an
  * project reads them; the server's `viewer.canEditCodeSettings` decides who may change them. Turning self-approval ON answers 202: it waits for a company owner or admin ("Waiting for an admin"), and nothing changes until one confirms.
  */
 export function MergeRulesSection({ project, canEdit, canConfirm }: { project: string; canEdit: boolean; canConfirm: boolean }) {
- const read = useCodeSettings(project, true), [opened, setOpened] = useState<Settings>(), [waiting, setWaiting] = useState<{ confirmUrl: string | undefined; others: boolean } | false>(false);
+ const read = useCodeSettings(project, true), focus = useRestoreFocus(() => document.getElementById("rv-people-merge-title")), [opened, setOpened] = useState<Settings>(), [waiting, setWaiting] = useState<{ confirmUrl: string | undefined; others: boolean } | false>(false);
  const host = useAppHost();
  return <section className="rv-project-section rv-people-merge" aria-labelledby="rv-people-merge-title">
-  <h2 id="rv-people-merge-title">Merge rules</h2>
+  <h2 id="rv-people-merge-title" tabIndex={-1}>Merge rules</h2>
   {read.isPending ? <Skeleton label="Loading the merge rules" /> : read.isError ? <><p role="alert">Couldn't load the merge rules.</p><Button onClick={() => { void read.refetch(); }}>Try again</Button></>
    : <>
     <dl className="rv-people-facts">
@@ -36,14 +36,14 @@ export function MergeRulesSection({ project, canEdit, canConfirm }: { project: s
      <div><dt>Merge method</dt><dd>{METHOD_WORDS[read.data.mergeMethod] ?? read.data.mergeMethod}</dd></div>
     </dl>
     {waiting !== false && <div role="status" className="rv-people-waiting"><p><strong>{WAITING_FOR_ADMIN}</strong></p><p>{WAITING_FOR_ADMIN_BODY}{waiting.others ? " " + OTHERS_SAVED : ""}</p>{canConfirm && waiting.confirmUrl !== undefined && <Button onClick={() => { host.openExternal(waiting.confirmUrl!); }}>Open the confirmation</Button>}</div>}
-    {canEdit ? <div className="rv-people-actions"><Button onClick={() => { setOpened(read.data); }}>Change merge rules</Button></div> : <p className="rv-muted">Only a project maintainer can change these.</p>}
-    {opened !== undefined && <MergeRulesDialog project={project} settings={opened} canConfirm={canConfirm} onClose={() => { setOpened(undefined); }} onWaiting={(url, others) => { setWaiting({ confirmUrl: url ?? undefined, others }); }} />}
+    {canEdit ? <div className="rv-people-actions"><Button onClick={event => { focus.remember(event.currentTarget);setOpened(read.data); }}>Change merge rules</Button></div> : <p className="rv-muted">Only a project maintainer can change these.</p>}
+    {opened !== undefined && <MergeRulesDialog project={project} settings={opened} canConfirm={canConfirm} onCloseAutoFocus={focus.onCloseAutoFocus} onClose={() => { setOpened(undefined); }} onWaiting={(url, others) => { setWaiting({ confirmUrl: url ?? undefined, others }); }} />}
    </>}
  </section>;
 }
 
 /** `settings` is what the page read WHEN THE DIALOG OPENED (the section captures it then): the draft starts from it and every save is fenced by its revision, whatever a refetch brings meanwhile. */
-function MergeRulesDialog({ project, settings, canConfirm, onClose, onWaiting }: { project: string; settings: Settings; canConfirm: boolean; onClose: () => void; onWaiting: (confirmUrl: string | null, others: boolean) => void }) {
+function MergeRulesDialog({ project, settings, canConfirm, onClose, onWaiting, onCloseAutoFocus }: { onCloseAutoFocus: (event: Event) => void; project: string; settings: Settings; canConfirm: boolean; onClose: () => void; onWaiting: (confirmUrl: string | null, others: boolean) => void }) {
  const api = useProjectPeopleApi(), query = useQueryClient(), host = useAppHost(), id = useRequestId();
  const [method, setMethod] = useState<string>(settings.mergeMethod === "unknown" ? "" : settings.mergeMethod), [self, setSelf] = useState(settings.allowSelfApproval), [reviewers, setReviewers] = useState(settings.codeReviewers.join("\n"));
  const [busy, setBusy] = useState(false), [error, setError] = useState<string>(), [pending, setPending] = useState<{ confirmUrl?: string; others: boolean }>(), [stale, setStale] = useState(false);
@@ -69,7 +69,7 @@ function MergeRulesDialog({ project, settings, canConfirm, onClose, onWaiting }:
    if (isStaleSave) { setStale(true);setError(STALE_SETTINGS_MESSAGE);await query.invalidateQueries({ queryKey: codeSettingsKey(project) }); } else setError(failureText(failure));
   } finally { setBusy(false); }
  }
- return <Dialog title="Change merge rules" open onOpenChange={next => { if (!busy && !next) onClose(); }}>
+ return <Dialog title="Change merge rules" open onCloseAutoFocus={onCloseAutoFocus} onOpenChange={next => { if (!busy && !next) onClose(); }}>
   {pending === undefined ? <form className="rv-people-form" onSubmit={event => { event.preventDefault();void save(); }}>
    <Select label="Merge method" value={method} onValueChange={edit(setMethod)} placeholder="Not set" options={[{ value: "squash", label: METHOD_WORDS["squash"]! }, { value: "merge", label: METHOD_WORDS["merge"]! }]} />
    <TextArea label="Reviewers Rovara asks" hint="A person's login, or organization/team. One per line." rows={3} value={reviewers} onChange={event => { id.reset();setReviewers(event.target.value); }} />

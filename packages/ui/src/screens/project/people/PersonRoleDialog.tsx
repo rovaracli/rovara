@@ -12,12 +12,12 @@ import { ADD_UNAVAILABLE, PROJECT_PEOPLE_STALE_MESSAGE, ROLE_HELP } from "./peop
 import { failureText, useRequestId } from "./people-write.js";
 
 /** `revision`, `roles` and `people` are what the page read WHEN THE DIALOG OPENED (the tab captures them then): a refetch while it is open never changes what a save is fenced by. */
-interface Common { project: string; revision: number; roles: readonly CloudProjectRole[]; open: boolean; onOpenChange: (open: boolean) => void; onDone: (message: string) => void }
+interface Common { onCloseAutoFocus?: ((event: Event) => void) | undefined; project: string; revision: number; roles: readonly CloudProjectRole[]; open: boolean; onOpenChange: (open: boolean) => void; onDone: (message: string) => void }
 type Props = Common & ({ mode: "change"; member: PeopleMember } | { mode: "add"; people: readonly PeopleMember[] });
 
 /** Change one person's role, or add a company member with a role. Both are the same write (`PUT .../people/{id}`) under the revision captured at open; the server's refusal (last maintainer, stale) is shown as it came, and a stale answer keeps the draft. */
 export function PersonRoleDialog(props: Props) {
- const { project, revision, roles, open, onOpenChange, onDone } = props, api = useProjectPeopleApi(), query = useQueryClient(), id = useRequestId();
+ const { project, revision, roles, open, onOpenChange, onDone, onCloseAutoFocus } = props, api = useProjectPeopleApi(), query = useQueryClient(), id = useRequestId();
  const current = props.mode === "change" ? props.member.projectRole ?? props.member.role : undefined;
  const [role, setRole] = useState<string>(current ?? roles[roles.length - 1] ?? "viewer"), [who, setWho] = useState<string>(""), [busy, setBusy] = useState(false), [error, setError] = useState<string>(), [stale, setStale] = useState(false);
  const companyMembers = useCompanyMembers(open && props.mode === "add");
@@ -41,7 +41,7 @@ export function PersonRoleDialog(props: Props) {
  }
  const discard = () => { onOpenChange(false); };
  const title = props.mode === "change" ? "Change role" : "Add a person";
- return <Dialog title={title} open={open} onOpenChange={next => { if (!busy) onOpenChange(next); }} {...(props.mode === "change" ? {} : { description: "Add someone who is already in your company. To bring in someone new, invite them." })}>
+ return <Dialog title={title} open={open} onCloseAutoFocus={onCloseAutoFocus} onOpenChange={next => { if (!busy) onOpenChange(next); }} {...(props.mode === "change" ? {} : { description: "Add someone who is already in your company. To bring in someone new, invite them." })}>
   <form className="rv-people-form" onSubmit={event => { event.preventDefault();void save(); }}>
    {props.mode === "change" ? <p>Person: <strong><VisibleText text={props.member.name} /></strong></p>
     : companyMembers.isPending ? <p role="status">Loading your company's people</p>

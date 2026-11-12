@@ -41,19 +41,22 @@ for (const width of [1280, 390] as const) {
   await checkA11y(page, { theme: "dark" });await evidenceShot(page, { path: `${shots}/people-change-dark-${String(width)}.png` });
   await page.getByRole("button", { name: "Save role" }).click();
   await expect(page.getByText("Sam Ortiz is now collaborator.")).toBeVisible();await expect(page.getByRole("row", { name: /Sam Ortiz/u })).toContainText("Collaborator");
+  // Focus is back on the button that opened the dialog (WCAG 2.4.3); Escape does the same.
+  await expect(page.getByRole("button", { name: "Change role for Sam Ortiz" })).toBeFocused();
+  await page.getByRole("button", { name: "Change role for Sam Ortiz" }).click();await expect(page.getByRole("dialog")).toBeVisible();await page.keyboard.press("Escape");await expect(page.getByRole("button", { name: "Change role for Sam Ortiz" })).toBeFocused();
   const put = mock.sent.filter(item => item.method === "PUT" && item.path.endsWith("/people/" + PEOPLE.sam));expect(put).toHaveLength(1);expect(put[0]!.body).toMatchObject({ role: "collaborator", expectedRevision: 7 });
   // Add Ana as a viewer; the picker offers her and not Sam (already on the project).
   await page.getByRole("button", { name: "Add a person" }).click();
   const who = page.getByLabel("Person", { exact: true });await expect(who.locator("option", { hasText: "Ana Silva" })).toHaveCount(1);await expect(who.locator("option", { hasText: "Sam Ortiz" })).toHaveCount(0);
   await who.selectOption(PEOPLE.ana);await page.getByLabel("Role", { exact: true }).selectOption("viewer");await page.getByRole("button", { name: "Add to project" }).click();
-  await expect(page.getByText("Ana Silva was added as viewer.")).toBeVisible();await expect(page.getByRole("row", { name: /Ana Silva/u })).toContainText("Viewer");
+  await expect(page.getByText("Ana Silva was added as viewer.")).toBeVisible();await expect(page.getByRole("row", { name: /Ana Silva/u })).toContainText("Viewer");await expect(page.getByRole("button", { name: "Add a person" })).toBeFocused();
   // Invite a colleague into the project.
   await page.getByRole("button", { name: "Invite into this project" }).click();
   await page.getByLabel("Colleague's email").fill("new.person@acme.com");await page.getByLabel("Project role").selectOption("contributor");
   await checkA11y(page, { theme: "light" });await evidenceShot(page, { path: `${shots}/people-invite-light-${String(width)}.png` });
   await page.getByRole("button", { name: "Send invite" }).click();await expect(page.getByText("Invite created and emailed.")).toBeVisible();
   const invites = mock.sent.filter(item => item.path === "org/invites/reviewed");expect(invites).toHaveLength(1);expect(invites[0]!.body).toMatchObject({ role: "member", email: "new.person@acme.com", project: { name: "payments", role: "contributor" } });
-  await page.getByRole("button", { name: "Done" }).click();
+  await page.getByRole("button", { name: "Done" }).click();await expect(page.getByRole("button", { name: "Invite into this project" })).toBeFocused();
   expect(await noSidewaysScroll(page)).toBe(true);await checkA11y(page, { theme: "dark" });await evidenceShot(page, { path: `${shots}/people-dark-${String(width)}.png`, fullPage: true });
  });
 }

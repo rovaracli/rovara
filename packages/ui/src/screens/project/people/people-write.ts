@@ -17,3 +17,15 @@ export function useRequestId() {
 export const failureText = (error: unknown): string => error instanceof ApiError ? error.message : "Couldn't complete this. Try again.";
 /** "Not there for this person": a 404, or a 403 `TASK_ACCESS_DENIED` (the same answer in another coat). Wherever a screen hides on a 404 it hides on this too. */
 export const isGone = (error: unknown): boolean => error instanceof ApiError && (error.status === 404 || (error.status === 403 && error.code === "TASK_ACCESS_DENIED"));
+
+/**
+ * Where focus goes when a dialog closes (WCAG 2.4.3): back to the control that opened it, on cancel and after a save alike. `remember` takes that control when the dialog is opened; `onCloseAutoFocus` is the Dialog's
+ * hook for closing. If the opener is gone by then (a removed person's row, an approved decision's button) focus goes to `fallback`, a heading near where it was, so it never drops to the page.
+ */
+export function useRestoreFocus(fallback: () => HTMLElement | null) {
+ const opener = useRef<HTMLElement | null>(null);
+ return {
+  remember: (element: Element | null) => { opener.current = element instanceof HTMLElement ? element : null; },
+  onCloseAutoFocus: (event: Event) => { event.preventDefault();const element = opener.current, target = element !== null && element.isConnected ? element : fallback();target?.focus(); },
+ };
+}

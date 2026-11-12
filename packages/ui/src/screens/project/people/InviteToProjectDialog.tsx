@@ -23,7 +23,7 @@ const safeLink = (value: string): boolean => { try { const url = new URL(value);
  * Invite someone new straight into this project (`POST /v1/app/org/invites/reviewed` with `project`). The roles are the ones the server's powers name (`invitableRoles`). A maintainer's invite must name an email
  * (the server refuses a link for them); only a company owner or admin may make a shareable link. The server's refusal is shown as it came.
  */
-export function InviteToProjectDialog({ project, roles, open, onOpenChange }: { project: string; roles: readonly CloudProjectRole[]; open: boolean; onOpenChange: (open: boolean) => void }) {
+export function InviteToProjectDialog({ project, roles, open, onOpenChange, onCloseAutoFocus }: { onCloseAutoFocus?: ((event: Event) => void) | undefined; project: string; roles: readonly CloudProjectRole[]; open: boolean; onOpenChange: (open: boolean) => void }) {
  const host = useAppHost(), api = useProjectPeopleApi(), query = useQueryClient(), id = useRequestId(), nav = useNav();
  const admin = nav.data?.me.orgRole === "owner" || nav.data?.me.orgRole === "admin";
  const offered: readonly InviteRole[] = INVITE_ROLES.filter(role => roles.includes(role));
@@ -47,7 +47,7 @@ export function InviteToProjectDialog({ project, roles, open, onOpenChange }: { 
   finally { setBusy(false); }
  }
  async function copy() { if (created?.link === undefined || host.copyText === undefined) return;try { await host.copyText(created.link);setCopied(true); } catch { setError("The link could not be copied. Try again."); } }
- return <Dialog title="Invite into this project" open={open} onOpenChange={reset} description="They join the company and this project together.">
+ return <Dialog title="Invite into this project" open={open} onCloseAutoFocus={onCloseAutoFocus} onOpenChange={reset} description="They join the company and this project together.">
   {created === undefined ? <form className="rv-people-form" onSubmit={event => { event.preventDefault();void send(); }}>
    {admin && <Select label="Send it" value={destination} onValueChange={value => { id.reset();setDestination(value); }} options={[{ value: "email", label: "By email to a colleague" }, { value: "link", label: "As a link anyone can use" }]} />}
    {emailRequired && <TextField label="Colleague's email" type="email" autoComplete="off" value={email} maxLength={254} onChange={event => { id.reset();setEmail(event.target.value); }} {...(admin ? {} : { hint: MAINTAINER_EMAIL_NOTE })} />}
