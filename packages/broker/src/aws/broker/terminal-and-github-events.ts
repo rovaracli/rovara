@@ -395,7 +395,7 @@ function mergeObservationFacts(observation: MergeObservation): GitHubPullRequest
   };
 }
 
-function outsidePushDependencies(dependencies: AwsBrokerDependencies): OutsidePushDependencies {
+export function outsidePushDependencies(dependencies: AwsBrokerDependencies): OutsidePushDependencies {
   return {
     documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: () => new Date().toISOString(),
     loadTask: (taskId) => getItem<DeveloperTaskRecord>(dependencies, taskKey(taskId)),

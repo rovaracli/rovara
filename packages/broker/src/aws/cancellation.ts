@@ -177,6 +177,8 @@ export interface OperationRecord extends Operation {
     workflowCandidate?: { candidateDigest: string; treeSha: string; baseCommitSha: string; /** A conflict round's fix is pushed as a merge commit with this commit of the base as its second parent. */ mergeBaseCommit?: string };
     /** Plan 6 Task 17: a workflow task's merge of the base branch into its pull request's branch: the base commit merged and the head it is for. */
     workflowSync?: { baseCommit: string; expectedHeadCommit: string };
+    /** "Continue in your own tool" (owner Q13): a read-only adoption of a head pushed outside Rovara: the head the person saw and the head Rovara had recorded before it. Nothing is pushed. */
+    workflowAdopt?: { headCommit: string; previousHeadCommit: string };
   };
   candidateCommit?: string;
   closePreviousStatus?: "READY" | "STOPPED";

@@ -68,7 +68,7 @@ export async function maintainPullRequest(options: {
   // A workflow task's fix runs no readiness checks, so nothing but leftover programs from the fix's own run could
   // reach the push token. As in publication, none is left before the credential is fetched. (A merge of the base branch runs the checks, but the
   // coder's leftovers are just as unwelcome.)
-  if (invocation.payload.workflowCandidateTreeSha !== undefined || invocation.payload.workflowSync !== undefined) {
+  if (invocation.payload.workflowCandidateTreeSha !== undefined || invocation.payload.workflowSync !== undefined || invocation.payload.workflowAdopt !== undefined) {
     await containWorkspace(rootPath, {
       sweep: options.sweepWorkspaceContainers ?? ((root: string) => sweepWorkspaceContainers({ rootPath: root })),
       stop: options.stopWorkspaceProcesses ?? ((root: string) => stopWorkspaceProcesses({ rootPath: root })),
@@ -87,6 +87,9 @@ export async function maintainPullRequest(options: {
   if (remoteHead !== invocation.payload.expectedHeadCommit) {
     throw agentXError("STALE_FENCE", "pull request head changed since AgentX last observed it");
   }
+  // "Continue in your own tool" (owner Q13): a person's Recheck of a head pushed outside Rovara. The branch is at exactly the head the person saw (checked just above), and that commit is checked out
+  // in the workspace for the checks that follow as the person's own Retry checks. Nothing is committed, merged or pushed (the credential is a clone credential), and no project command runs here.
+  if (invocation.payload.workflowAdopt !== undefined) return adoptOutsideHead(repositoryPath, repository, invocation, remoteHead, credential);
   // A conflict round's fix is pushed from the workspace the conflicting merge left (its tree is the reviewed one, whatever the index says), so only that push may start with unmerged paths.
   const conflicts = await git(repositoryPath, ["diff", "--name-only", "--diff-filter=U", "--ignore-submodules=dirty"]);
   const mergeBase = invocation.payload.workflowMergeBase;
@@ -310,6 +313,36 @@ export async function maintainPullRequest(options: {
     // The merged tree, for the broker to check against what GitHub shows.
     ...(workflowSync === undefined || reconciled ? {} : { treeSha: (await git(repositoryPath, ["rev-parse", `${commit}^{tree}`])).trim() }),
     checks, codeBuildChecks, reconciled: reconciled || callback.reconciled,
+  });
+}
+
+/**
+ * The adoption of an outside head (`workflowAdopt`): whatever an earlier run left in the workspace goes (the task is waiting for the merge, so nothing of Rovara's is in flight), the head is checked out on
+ * the pull request's branch name, and GitHub is asked once more that the branch is still at it. The tree is returned for the broker, which records the head only when GitHub shows the same.
+ */
+async function adoptOutsideHead(
+  repositoryPath: string,
+  repository: { name: string; url: string },
+  invocation: MaintainInvocation,
+  remoteHead: string,
+  credential: Awaited<ReturnType<RepositoryCredentialProvider>>,
+): Promise<PullRequestLifecycleResult> {
+  const head = invocation.payload.workflowAdopt!.headCommit;
+  if (remoteHead !== head) throw agentXError("STALE_FENCE", "pull request head changed since the re-check was asked for");
+  const status = await git(repositoryPath, ["status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=dirty"]);
+  if (status.trim()) await git(repositoryPath, ["clean", "--force", "-d", "--quiet"]);
+  await git(repositoryPath, ["checkout", "--force", "-B", invocation.payload.headBranch, head]);
+  const checkedOut = (await git(repositoryPath, ["rev-parse", "HEAD"])).trim();
+  if (checkedOut !== head) throw agentXError("CONFIG_INVALID", "the workspace could not check out the pull request's head");
+  const treeSha = (await git(repositoryPath, ["rev-parse", `${head}^{tree}`])).trim();
+  if (await remoteBranchHead(repositoryPath, repository.url, invocation.payload.headBranch, credential) !== head) {
+    throw agentXError("STALE_FENCE", "pull request head changed since the re-check was asked for");
+  }
+  // The pull request's page, for the result's shape only (the broker records the workflow's own link). An adoption is GitHub-only, so the address is https; a test's local remote gets a placeholder.
+  const address = repository.url.startsWith("https://") ? repository.url.replace(/\.git\/?$/u, "").replace(/\/$/u, "") : "https://pull-request.invalid";
+  return PullRequestLifecycleResultSchema.parse({
+    action: "sync", repository: repository.name, number: invocation.payload.pullRequestNumber, url: `${address}/pull/${String(invocation.payload.pullRequestNumber)}`, state: "open",
+    headBranch: invocation.payload.headBranch, baseBranch: invocation.payload.baseBranch, previousCommit: head, commit: head, treeSha, checks: [], codeBuildChecks: [], reconciled: true,
   });
 }
 

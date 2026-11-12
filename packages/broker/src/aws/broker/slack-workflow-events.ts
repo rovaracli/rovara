@@ -1,5 +1,7 @@
 // Part of the broker (split out of ../broker.ts): Slack workflow, people and note events.
 
+import { admitOutsideRecheckOf } from "./outside-recheck.js";
+import { workspaceWorkerFeatures } from "./redirect-runtime.js";
 import { nightlyHeadDependencies } from "./nightly-head.js";
 import { evidenceRouteDependencies } from "./evidence-wiring.js";
 import { liveWriterRole } from "../../org/live-role.js";
@@ -398,7 +400,9 @@ export function workflowApplicationRouteDependencies(dependencies: AwsBrokerDepe
     ...specSeamsOf(dependencies),
     // Continue in your own tool: the host side of "publish working branch".
     workingBranchPort: dependencies.workingBranchPort ?? workingBranchPortOf(dependencies),
-    ...(dependencies.outsideRecheck === undefined ? {} : { startOutsideRecheck: dependencies.outsideRecheck }),
+    // ... and the re-check of a head pushed outside Rovara (a test stand-in when one is given; otherwise this install's own start, asking the workspace's worker for its features).
+    ...(dependencies.outsideRecheck === undefined ? { outsideRecheckFeatures: (task: DeveloperTaskRecord) => workspaceWorkerFeatures(dependencies, task) } : { startOutsideRecheck: dependencies.outsideRecheck }),
+    admitOutsideRecheck: (task: DeveloperTaskRecord) => admitOutsideRecheckOf(dependencies, task),
     // Proof and evidence (wire-proof): the evidence port, only while the proof switch is on (nothing is added otherwise).
     ...evidenceRouteDependencies(dependencies),
     ...nightlyHeadDependencies(dependencies),

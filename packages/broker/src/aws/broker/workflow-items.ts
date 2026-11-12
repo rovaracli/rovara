@@ -1,10 +1,11 @@
 // Part of the broker (split out of ../broker.ts): retries, evidence jobs and the items each completed workflow step writes.
 
+import { OUTSIDE_RECHECK_NOT_ADOPTED, outsideRecheckOutcomeItem } from "../developer-tasks/continue-loop.js";
 import { createHash } from "node:crypto";
 import { QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
 import { AgentXError, CheckReportSchema, canonicalJson, type PlanEvidenceBundle, workflowIsReviewOnly, workflowSelectedChecks, WorkflowDependencyResultSchema, taskGraphOrder, workflowDependencyAttemptTerminalProgress, createCandidateManifest, WORKFLOW_HISTORY_REWRITTEN_MESSAGE, FEEDBACK_NOT_RUN_REASON, WORKFLOW_NO_CODE_CHANGE_MESSAGE, noChangeFindingsFrom, WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE, WORKFLOW_LEFTOVER_PROCESSES_MESSAGE, WORKFLOW_SETUP_CHANGED_FILES_MESSAGE, WORKFLOW_LIVE_STEER_REAPPROVAL_MESSAGE, blockingFindings, secondReviewBlockFinding, BUDGET_EXHAUSTED_FAILURE_MESSAGE, type IntentAssessment, UNDERSTAND_UNREADABLE_MESSAGE, WORKFLOW_MISSING_COMMITTED_SOURCE_EXPORT_REASON, WORKFLOW_DISPATCH_DUE_INDEX, WORKFLOW_REVIEW_RESULT_INCOMPLETE_MESSAGE, WorkflowReviewBaseSchema as PreparedBaseSchema, nextProgramStep, workflowReviewRoles, CONFLICT_ROUNDS_MAX, WORKFLOW_PULL_REQUEST_UPDATE_WORKER_OUTDATED, WORKFLOW_FIX_DROPS_BASE_CHANGES, type WorkflowPullRequestUpdateCause, PullRequestLifecycleResultSchema, PullRequestResultSchema, agentXError, type OperationStatus, type CandidateRepository, WorkflowFeedbackBundleRefSchema, WorkflowFeedbackReviewReportSchema, WorkflowFeedbackReviewRefSchema, INDEX_EXPIRY_ATTRIBUTE, WORKFLOW_APPLICATION_RUNTIME_UNUSABLE_PREFIX, WORKFLOW_APPLICATION_SELECTION_CHANGED_PREFIX, WORKFLOW_APPLICATION_ACCOUNTS_CHANGED_PREFIX, ROVARA_CODE_AGENT_ID, type RunEstimate, codeRepositoriesOf } from "@rovara-code/contracts";
-import { skipPlanRevision, workflowPullRequestTrees, blockWorkflow, endWorkflowCiFixUnrelated, WorkflowSnapshotSchema, completeWorkflowFeedbackReview, WORKFLOW_BLOCK_REASONS, BASE_MERGED_RECHECKING_MILESTONE, BASE_MERGED_NEEDS_YOU_MILESTONE, answerWorkflowIntent, recordIntentAssessment, recordWorkflowVerification, completeWorkflowBuild, submitWorkflowReview, registerWorkflowPullRequest, blockWorkflowPullRequestUpdate, recordWorkflowPullRequestUpdate, recordWorkflowBranchSync, observeWorkflowPullRequestMergedWithFix, workflowPullRequestUpdateDue, type WorkflowSnapshot } from "@agentx/cloud-contracts";
+import { skipPlanRevision, workflowPullRequestTrees, blockWorkflow, endWorkflowCiFixUnrelated, WorkflowSnapshotSchema, completeWorkflowFeedbackReview, WORKFLOW_BLOCK_REASONS, BASE_MERGED_RECHECKING_MILESTONE, BASE_MERGED_NEEDS_YOU_MILESTONE, answerWorkflowIntent, recordIntentAssessment, recordWorkflowVerification, completeWorkflowBuild, submitWorkflowReview, registerWorkflowPullRequest, blockWorkflowPullRequestUpdate, recordWorkflowPullRequestUpdate, recordWorkflowBranchSync, adoptWorkflowOutsideHead, endWorkflowOutsideRecheck, OUTSIDE_RECHECK_MILESTONE, observeWorkflowPullRequestMergedWithFix, workflowPullRequestUpdateDue, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { resultsWithStoredArtifacts, storeWorkflowE2EArtifacts } from "../workflow-e2e-artifacts.js";
 import { queryAllItems } from "../admin-reads.js";
 import type { z } from "zod";
@@ -487,6 +488,170 @@ export async function completedBranchSyncItems(
   ];
 }
 
+/**
+ * "Continue in your own tool" (owner Q13): the end of the read-only run that adopts a pull request head pushed outside Rovara. Only the adoption the task is waiting on counts (WAIT_FOR_MERGE/RUNNING with
+ * this exact head marked). The head is recorded only when GitHub shows it now, on the open pull request, with the tree the worker checked out (never from the worker's word alone). Then, in one transaction,
+ * as for a merge of the base (decision 67b): that head is the NEW CANDIDATE, the earlier checks, reviews and accepted findings go, the pull request's record and link follow it, and the person's own
+ * checks run next (the RECHECK row starts them as their Retry checks, through every money and access rule). Anything else (a failed or lost run, a head that moved, GitHub unreadable) records nothing:
+ * the task waits for the merge as it did, with its earlier checked code, and the person may press Recheck again.
+ */
+export async function completedOutsideAdoptItems(
+  dependencies: AwsBrokerDependencies,
+  operation: OperationRecord,
+  task: DeveloperTaskRecord & { workflow: WorkflowSnapshot },
+  terminalStatus: OperationStatus,
+  now: string,
+  result: unknown,
+): Promise<TransactItems> {
+  const adopt = operation.maintenance?.workflowAdopt;
+  const maintenance = operation.maintenance;
+  const workflow = task.workflow;
+  const marker = workflow.outsideRecheck;
+  if (adopt === undefined || maintenance === undefined || task.closedAt !== undefined || workflow.stage !== "WAIT_FOR_MERGE" || workflow.state !== "RUNNING" || marker?.phase !== "adopting"
+    || marker.repositoryId !== maintenance.repository || marker.number !== maintenance.pullRequestNumber || marker.headSha !== adopt.headCommit || marker.previousHeadSha !== adopt.previousHeadCommit) return [];
+  const taskUpdate = (next: WorkflowSnapshot): TransactItems[number] => ({ Update: {
+    TableName: dependencies.tableName, Key: taskKey(task.taskId),
+    UpdateExpression: "SET workflow = :workflow, updatedAt = :now",
+    ConditionExpression: "workflow.revision = :revision AND workflow.#stage = :stage AND workflow.#state = :running AND attribute_not_exists(closedAt)",
+    ExpressionAttributeNames: { "#stage": "stage", "#state": "state" },
+    ExpressionAttributeValues: { ":workflow": next, ":now": now, ":revision": workflow.revision, ":stage": "WAIT_FOR_MERGE", ":running": "RUNNING" },
+  } });
+  const notAdopted = (reason: string = OUTSIDE_RECHECK_NOT_ADOPTED.moved): TransactItems => [taskUpdate(endWorkflowOutsideRecheck(workflow, now)),
+    outsideRecheckOutcomeItem(dependencies.tableName, task.taskId, marker.requestId, "not_adopted", reason, now)];
+  const parsed = terminalStatus === "SUCCEEDED" ? PullRequestLifecycleResultSchema.safeParse(result) : undefined;
+  const reported = parsed?.success === true && parsed.data.repository === maintenance.repository && parsed.data.action === "sync" && parsed.data.number === maintenance.pullRequestNumber
+    && parsed.data.commit === adopt.headCommit && parsed.data.treeSha !== undefined ? parsed.data : undefined;
+  if (reported === undefined) return notAdopted(terminalStatus === "SUCCEEDED" ? OUTSIDE_RECHECK_NOT_ADOPTED.moved : OUTSIDE_RECHECK_NOT_ADOPTED.unfinished);
+  // What GitHub shows now: the fence when the result is recorded. A head that moved, a closed pull request, another branch or another tree records nothing.
+  let shown: { headCommit: string; headTreeSha: string; state: string; headBranch: string } | undefined;
+  const project = await requireRecordProject(dependencies, task, task.project, task.startingRevision);
+  const repository = codeRepositoriesOf(project.definition).find((entry) => entry.name === maintenance.repository);
+  if (repository === undefined) return notAdopted();
+  try {
+    const host = hostOfRepository(dependencies, repository);
+    if (!canReadFeedback(dependencies, host)) return notAdopted();
+    requireGithubHost(host);
+    const scope = await githubScopeOf(dependencies, task);
+    const current = pullRequestFactsOf(await host.feedback(changeRequestRef(repository.url, maintenance.pullRequestNumber), scope));
+    // GitHub moves a pull request's head a moment after a push to its branch: the branch itself (read from Git) must be at the head too, so a push that just landed is never missed.
+    const branchHead = canReadBranchAndTree(dependencies, host) ? await host.branchHead(repositoryRefOf(repository.url), maintenance.headBranch, scope) : current.pullRequest.headCommit;
+    shown = { headCommit: branchHead === current.pullRequest.headCommit ? branchHead : "moved", headTreeSha: current.pullRequest.headTreeSha, state: current.pullRequest.state, headBranch: current.pullRequest.headBranch };
+  } catch {
+    return notAdopted();
+  }
+  if (shown.state !== "open" || shown.headBranch !== maintenance.headBranch || shown.headCommit !== adopt.headCommit || shown.headTreeSha !== reported.treeSha) return notAdopted();
+  let adopted: WorkflowSnapshot;
+  try {
+    adopted = adoptWorkflowOutsideHead(workflow, { headTreeSha: reported.treeSha, now });
+  } catch (error) {
+    if (error instanceof AgentXError || (error as { name?: string }).name === "WorkflowTransitionError") return notAdopted();
+    throw error;
+  }
+  const record = await getItem<PullRequestRecord>(dependencies, pullRequestKey(task.workspaceId, maintenance.repository, maintenance.pullRequestNumber));
+  const link = { repository: marker.repositoryId, number: marker.number, url: (workflow.pullRequests ?? []).find((entry) => entry.repositoryId === marker.repositoryId && entry.number === marker.number)?.url ?? reported.url };
+  return [
+    taskUpdate(adopted),
+    outsideRecheckRestoreItem(dependencies.tableName, task, workflow, marker, now),
+    // The person's checks start next, as their own Retry checks (dispatch.ts runOutsideRecheckDispatch): the row commits with the adoption.
+    workflowDispatchItem(dependencies.tableName, task.taskId, adopted.revision, "RECHECK", adopted.candidate?.digest ?? WORKFLOW_NO_CANDIDATE_DIGEST, now),
+    ...(task.orgId === undefined ? [] : codeMilestoneItems({ tableName: dependencies.tableName }, {
+      kind: "fixing", orgId: task.orgId, taskId: task.taskId, ...(task.sessionId === undefined ? {} : { sessionId: task.sessionId }), at: now,
+      text: OUTSIDE_RECHECK_MILESTONE, pullRequests: [link],
+    }, adopted.revision)),
+    ...await candidateRekeyItems(dependencies, task, project, workflow, adopted, now),
+    // The record learns the head as the task's own now (merge tracking reads it), only from the head Rovara had recorded: Rovara's later pushes build on this head.
+    ...(record !== undefined && record.expectedHeadCommit !== adopt.headCommit ? [{ Update: {
+      TableName: dependencies.tableName,
+      Key: pullRequestKey(task.workspaceId, maintenance.repository, maintenance.pullRequestNumber),
+      UpdateExpression: "SET expectedHeadCommit = :head, updatedAt = :now",
+      ConditionExpression: "expectedHeadCommit = :previous",
+      ExpressionAttributeValues: { ":head": adopt.headCommit, ":now": now, ":previous": adopt.previousHeadCommit },
+    } }] : []),
+    ...(task.orgId === undefined || workflow.definitionVersion !== "1.1.0" ? [] : prHeadItems(dependencies.tableName, { orgId: task.orgId, repositoryFullName: githubRepositoryFullName(repository.url), headSha: adopt.headCommit, taskId: task.taskId, repositoryId: marker.repositoryId, number: marker.number }, Date.parse(now))),
+  ];
+}
+
+/** The head GitHub shows for one of the task's pull requests now; a host that cannot be read is a fault the terminal callback is retried for (a result is never recorded unfenced). */
+async function outsidePullRequestHead(dependencies: AwsBrokerDependencies, task: DeveloperTaskRecord, repositoryId: string, number: number): Promise<string | undefined> {
+  const project = await requireRecordProject(dependencies, task, task.project, task.startingRevision);
+  const repository = codeRepositoriesOf(project.definition).find((entry) => entry.name === repositoryId);
+  if (repository === undefined) return undefined;
+  const host = hostOfRepository(dependencies, repository);
+  if (!canReadFeedback(dependencies, host)) throw agentXError("RUNTIME_UNAVAILABLE", "cannot read the pull request to fence the re-check's result");
+  const scope = await githubScopeOf(dependencies, task);
+  const current = pullRequestFactsOf(await host.feedback(changeRequestRef(repository.url, number), scope));
+  if (current.pullRequest.state !== "open") return undefined;
+  // The branch (read from Git) too: a push that just landed shows there before the pull request's own head moves.
+  if (canReadBranchAndTree(dependencies, host) && await host.branchHead(repositoryRefOf(repository.url), current.pullRequest.headBranch, scope) !== current.pullRequest.headCommit) return undefined;
+  return current.pullRequest.headCommit;
+}
+
+/** The workflow with a finished re-check's marker removed (nothing else changes). */
+function withoutOutsideRecheck(workflow: WorkflowSnapshot): WorkflowSnapshot {
+  if (workflow.outsideRecheck === undefined) return workflow;
+  const { outsideRecheck: _marker, ...rest } = workflow;
+  void _marker;
+  return WorkflowSnapshotSchema.parse(rest);
+}
+
+/** Where the task's state before a re-check's adoption is kept, so a stale result can put it back (one per task: the latest adoption's). */
+export const outsideRecheckRestoreKey = (taskId: string) => ({ pk: `DEVTASK#${taskId}`, sk: "OUTSIDE_RECHECK_RESTORE" });
+/** The workflow fields an adoption replaces, kept beside the task (never inside the workflow, which has a size budget). */
+const RESTORED_FIELDS = ["candidate", "verification", "reviews", "acceptedFindings", "risk", "pullRequests", "programStepId", "syncFailures", "pullRequestUpdatedAt"] as const;
+
+/** The row that keeps what the adoption replaces, written with the adoption. */
+function outsideRecheckRestoreItem(tableName: string, task: DeveloperTaskRecord, workflow: WorkflowSnapshot, marker: NonNullable<WorkflowSnapshot["outsideRecheck"]>, now: string): TransactItems[number] {
+  const previous: Record<string, unknown> = {};
+  for (const field of RESTORED_FIELDS) if (workflow[field] !== undefined) previous[field] = workflow[field];
+  return { Put: { TableName: tableName, Item: { ...outsideRecheckRestoreKey(task.taskId), entityType: "OUTSIDE_RECHECK_RESTORE", taskId: task.taskId, requestId: marker.requestId, headSha: marker.headSha,
+    previousHeadSha: marker.previousHeadSha, previous, at: now } } };
+}
+
+/**
+ * A re-check whose pull request moved while its checks ran: its result is not the code on the pull request, so nothing of it is recorded. The task goes back to exactly what it had before the adoption
+ * (waiting for the merge on its earlier checked and reviewed code, the pull request's record at Rovara's earlier head), so the new head reads as changed outside and may be re-checked in its turn. Without
+ * the kept row (it could not be read), the task stops at VERIFY with the stale reason instead, and its checks are not counted.
+ */
+async function outsideRecheckRestored(dependencies: AwsBrokerDependencies, task: DeveloperTaskRecord & { workflow: WorkflowSnapshot }, recheck: NonNullable<WorkflowSnapshot["outsideRecheck"]>, now: string): Promise<{ workflow: WorkflowSnapshot; items: TransactItems }> {
+  const workflow = task.workflow;
+  const { outsideRecheck: _marker, blockReason: _reason, ...base } = workflow;
+  void _marker; void _reason;
+  const outcome = outsideRecheckOutcomeItem(dependencies.tableName, task.taskId, recheck.requestId, "stale", "the pull request changed again while its checks ran", now);
+  const stale = (): { workflow: WorkflowSnapshot; items: TransactItems } => {
+    const { verification: _verification, ...rest } = base;
+    void _verification;
+    return { workflow: WorkflowSnapshotSchema.parse({ ...rest, revision: workflow.revision + 1, stage: "VERIFY", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.outsideRecheckStale, updatedAt: now }), items: [outcome] };
+  };
+  const kept = await getItem<{ requestId?: unknown; headSha?: unknown; previousHeadSha?: unknown; previous?: Record<string, unknown> }>(dependencies, outsideRecheckRestoreKey(task.taskId));
+  if (kept?.previous === undefined || kept.requestId !== recheck.requestId || kept.headSha !== recheck.headSha || kept.previousHeadSha !== recheck.previousHeadSha) return stale();
+  const cleared: Record<string, unknown> = { ...base };
+  for (const field of RESTORED_FIELDS) delete cleared[field];
+  // The pull requests come back at the heads and candidate Rovara had, but what GitHub said of them since (open, merged, closed, and when it was seen) is today's, never the old copy's.
+  const previousPullRequests = Array.isArray(kept.previous["pullRequests"]) ? kept.previous["pullRequests"] as Array<Record<string, unknown>> : undefined;
+  const pullRequests = previousPullRequests?.map((entry) => {
+    const now_ = (workflow.pullRequests ?? []).find((current) => current.repositoryId === entry["repositoryId"] && current.number === entry["number"]);
+    if (now_ === undefined) return entry;
+    const { state: _state, observedAt: _observedAt, ...rest } = entry;
+    void _state; void _observedAt;
+    return { ...rest, state: now_.state, ...(now_.observedAt === undefined ? {} : { observedAt: now_.observedAt }) };
+  });
+  const parsed = WorkflowSnapshotSchema.safeParse({ ...cleared, ...kept.previous, ...(pullRequests === undefined ? {} : { pullRequests }), revision: workflow.revision + 1, stage: "WAIT_FOR_MERGE", state: "WAITING",
+    outsideRecheckStale: { headSha: recheck.headSha, at: now }, updatedAt: now });
+  if (!parsed.success) return stale();
+  const restored = parsed.data;
+  const project = await requireRecordProject(dependencies, task, task.project, task.startingRevision);
+  return { workflow: restored, items: [
+    ...await candidateRekeyItems(dependencies, task, project, workflow, restored, now),
+    { Update: {
+      TableName: dependencies.tableName, Key: pullRequestKey(task.workspaceId, recheck.repositoryId, recheck.number),
+      UpdateExpression: "SET expectedHeadCommit = :head, updatedAt = :now", ConditionExpression: "expectedHeadCommit = :adopted",
+      ExpressionAttributeValues: { ":head": recheck.previousHeadSha, ":now": now, ":adopted": recheck.headSha },
+    } },
+    { Delete: { TableName: dependencies.tableName, Key: outsideRecheckRestoreKey(task.taskId) } },
+    outcome,
+  ] };
+}
+
 export async function readStoredCandidateSourceExport(
   dependencies: AwsBrokerDependencies,
   reference: NonNullable<OperationRecord["candidateSourceRef"]>,
@@ -679,6 +844,8 @@ export async function completedWorkflowItems(
     ...((task.workflow.pullRequests ?? []).length === 0
       ? [(task.workflow.definitionVersion === "1.1.0" ? trackingRecoveryItem : mergeRecoveryItem)(dependencies.tableName, task.taskId, now)] : [])];
   }
+  // "Continue in your own tool": the read-only adoption of an outside head is told apart from a merge of the base by what the operation was asked.
+  if (operation.kind === "maintain" && operation.maintenance?.workflowAdopt !== undefined) return completedOutsideAdoptItems(dependencies, operation, task as DeveloperTaskRecord & { workflow: WorkflowSnapshot }, terminalStatus, now, result);
   // Plan 6 Task 17: a merge of the base branch is told apart from the push of a reviewed fix by what the operation was asked.
   if (operation.kind === "maintain" && operation.maintenance?.workflowSync !== undefined) return completedBranchSyncItems(dependencies, operation, task as DeveloperTaskRecord & { workflow: WorkflowSnapshot }, terminalStatus, now, result, terminalError);
   if (operation.kind === "maintain") return completedPullRequestUpdateItems(dependencies, operation, task as DeveloperTaskRecord & { workflow: WorkflowSnapshot }, terminalStatus, now, result, terminalError);
@@ -717,6 +884,8 @@ export async function completedWorkflowItems(
   let answeredItems: TransactItems = [];
   /** Plan 6 Task 15: a CI fix round that changed nothing tells a person (the milestone), in the commit that stops it. */
   let fixExitItems: TransactItems = [];
+  /** "Continue in your own tool": a re-check whose result went stale puts back what the task had before it (the pull request's record and links), in the commit that says so. */
+  let outsideRestoreItems: TransactItems = [];
   let e2eAuthorityChecks: Array<Record<string, unknown>> = [];
   if (operation.workflowMode === "IMPLEMENT" || operation.workflowMode === "CHECKS") {
     const reported = result !== null && typeof result === "object" ? result as Record<string, unknown> : {};
@@ -1026,6 +1195,22 @@ export async function completedWorkflowItems(
             : blockWorkflow(verifying, verificationFailure, now, { ...(regressedChecks === undefined ? {} : { regressedChecks }),
               ...(failedE2ERound === undefined ? {} : { failedE2ERound }) });
         }
+      }
+    }
+    // "Continue in your own tool": a re-check of an outside head ends with these checks (pass or fail). Its result counts only for the code the pull request still shows (the fence when results are
+    // recorded): a head that moved while it ran makes the result stale, not passing. The task then goes back to what it had before the adoption, and the new head reads as changed outside.
+    const recheck = task.workflow.outsideRecheck;
+    if (recheck !== undefined && recheck.phase !== "adopting") {
+      // A failed or stopped run on a head that moved is fenced the same as a finished one: nothing of it is recorded.
+      const fenced = operation.workflowMode === "CHECKS" && recheck.phase === "checking" && await outsidePullRequestHead(dependencies, task, recheck.repositoryId, recheck.number) !== recheck.headSha;
+      if (fenced) {
+        const restored = await outsideRecheckRestored(dependencies, task as DeveloperTaskRecord & { workflow: WorkflowSnapshot }, recheck, now);
+        next = restored.workflow;
+        outsideRestoreItems = restored.items;
+      } else {
+        next = withoutOutsideRecheck(next);
+        // The re-check is over: what it kept to put back is not needed any more.
+        outsideRestoreItems = [{ Delete: { TableName: dependencies.tableName, Key: outsideRecheckRestoreKey(task.taskId) } }];
       }
     }
   } else if (operation.workflowMode === "REVIEW") {
@@ -1376,7 +1561,7 @@ export async function completedWorkflowItems(
       }),
       ...(e2eCancelAdmission === undefined ? {} : { ":e2eRequired": true, ":e2eRoundId": e2eCancelAdmission.roundId,
         ":e2eCandidateDigest": e2eCancelAdmission.candidateDigest }) },
-  } }, ...dispatch, ...(designRelease as typeof dispatch), ...understandWatchdog, ...questionsMilestone, ...answeredItems, ...fixExitItems, ...liveSteerChangeItems(dependencies.tableName, task.taskId, next, terminalError, now),
+  } }, ...dispatch, ...(designRelease as typeof dispatch), ...understandWatchdog, ...questionsMilestone, ...answeredItems, ...fixExitItems, ...outsideRestoreItems, ...liveSteerChangeItems(dependencies.tableName, task.taskId, next, terminalError, now),
   ...(evidenceJob === undefined ? [] : [{ Put: { TableName: dependencies.tableName, Item: planEvidenceJobItem({ taskId: task.taskId, ...evidenceJob, now: Date.parse(now) }), ConditionExpression: "attribute_not_exists(pk)" } }]),
   ...(recordedReplies === undefined ? [] : [{ Put: recordedReplies }])];
 }

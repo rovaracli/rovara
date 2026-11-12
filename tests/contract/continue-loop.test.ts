@@ -2,16 +2,17 @@
 // the publish-working-branch action and the manual Recheck. Rovara's own pushes are never flagged; an outside push is; a force-push is handled; the actions meet every guard of a person's paid work.
 import { createHmac, randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it, vi } from "vitest";
-import { agentXError, builtinSettingsKey, mergeTrackingKey, projectMetaKey } from "@rovara-code/contracts";
+import { agentXError, builtinSettingsKey, mergeTrackingKey, projectMetaKey, workspaceSessionKey } from "@rovara-code/contracts";
 import type { DeveloperCaller } from "../../packages/broker/src/aws/developer-routes.js";
 import type { DeveloperTaskRouteDependencies } from "../../packages/broker/src/aws/developer-tasks.js";
 import { publishWorkingBranchAction, recheckAction } from "../../packages/broker/src/aws/developer-tasks/continue-loop.js";
-import { CHANGED_OUTSIDE_LABEL, ContinueLoopViewSchema, DeveloperTaskViewSchema, workingBranchName, type MergeTrackingItem } from "@agentx/cloud-contracts";
+import { CHANGED_OUTSIDE_LABEL, ContinueLoopViewSchema, DeveloperTaskViewSchema, OUTSIDE_RECHECK_WORKER_MISSING, PUBLISHED_BRANCH_NOTE, RECHECK_NEEDS_PULL_REQUEST_NOTE, workingBranchName, type MergeTrackingItem } from "@agentx/cloud-contracts";
 import { mergeTrackingDecisionDigest } from "../../packages/cloud-contracts/src/rovara-code-node.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
 import { handleGithubWebhook, type BranchPushWebhookEvent, type PullRequestWebhookEvent } from "../../packages/broker/src/aws/github-webhooks.js";
 import { continueLoopViewOf, outsideOfPublishedBranch, outsideOfPullRequest, outsidePushKey, publishWorkingBranch, readWorkingBranches, recheckPossible, recordOutsidePush, workingBranchKey, type WorkingBranchPort } from "../../packages/broker/src/aws/developer-tasks/continue-loop.js";
-import { recordOutsidePushEvent, type OutsidePushDependencies } from "../../packages/broker/src/rovara-code/outside-push.js";
+import { outsidePushTarget, recordOutsidePushEvent, type OutsidePushDependencies } from "../../packages/broker/src/rovara-code/outside-push.js";
+import { taskOwnerKey } from "../../packages/broker/src/developer/task-records.js";
 import { trackPullRequest } from "../../packages/broker/src/rovara-code/merge-tracking.js";
 import { githubInstallationKey } from "../../packages/cloud-contracts/src/org-node.js";
 import { APP_CSRF_HEADER, appCsrfTokenFor } from "../../packages/broker/src/developer/app-csrf.js";
@@ -56,7 +57,7 @@ describe("what counts as changed outside Rovara", () => {
     const branch = { repository: "payments", baseSha: BASE };
     expect(outsideOfPublishedBranch({ branch, hint: undefined })).toBeUndefined();
     expect(outsideOfPublishedBranch({ branch, hint: hint(BASE) })).toBeUndefined();
-    expect(outsideOfPublishedBranch({ branch, hint: hint(HEAD_B) })).toEqual({ repository: "payments", headSha: HEAD_B, lastPushedBy: { login: "maya-codes", at: NOW }, canRecheck: false });
+    expect(outsideOfPublishedBranch({ branch, hint: hint(HEAD_B) })).toEqual({ repository: "payments", headSha: HEAD_B, lastPushedBy: { login: "maya-codes", at: NOW }, canRecheck: false, recheckNote: RECHECK_NEEDS_PULL_REQUEST_NOTE });
   });
 
   it("a re-check is possible only while the task waits for the merge with nothing of Rovara's running on the open pull request", () => {
@@ -179,6 +180,36 @@ describe("the host's push events", () => {
     expect(hintOf(w, "branch")).toMatchObject({ headSha: HEAD_B, login: "maya-codes" });
   });
 
+  it("pushes are ordered by GitHub's own push time: a late delivery of an older push never overwrites a newer one; a deleted branch forgets its hint (but not a newer push's)", async () => {
+    const w = world();
+    withWorkingBranch(w);
+    const LATER = "2026-11-11T12:05:00.000Z";
+    expect(await recordOutsidePushEvent(deps(w), branchPush({ headSha: HEAD_C, pushedAt: LATER }))).toBe(true);
+    expect(await recordOutsidePushEvent(deps(w), branchPush({ headSha: HEAD_B, pushedAt: NOW }))).toBe(false);
+    expect(hintOf(w, "branch")).toMatchObject({ headSha: HEAD_C, at: LATER });
+    expect(await recordOutsidePushEvent(deps(w), branchPush({ headSha: HEAD_B, pushedAt: NOW, deleted: true }))).toBe(false);
+    expect(hintOf(w, "branch")).toMatchObject({ headSha: HEAD_C });
+    expect(await recordOutsidePushEvent(deps(w), branchPush({ headSha: HEAD_C, pushedAt: "2026-11-11T12:06:00.000Z", deleted: true }))).toBe(true);
+    expect(hintOf(w, "branch")).toBeUndefined();
+    // A pull request push is timed by GitHub's own time too.
+    expect(await recordOutsidePushEvent(deps(w), pullRequestPush({ pushedAt: LATER }))).toBe(true);
+    expect(hintOf(w, 7)).toMatchObject({ at: LATER });
+  });
+
+  it("a push to an agentx branch that is not a task's own published branch, or came through another company's installation, is not even stored as a delivery", async () => {
+    const w = world();
+    const body = JSON.stringify(pushEvent());
+    w.db.set({ ...githubInstallationKey(INSTALLATION), entityType: "GITHUB_INSTALLATION", orgId: TEST_ORG, status: "active" });
+    const before = w.db.find(() => true).length;
+    await expect(handleGithubWebhook({
+      documentClient: w.db, tableName: TABLE, rawBody: body,
+      headers: { "x-hub-signature-256": sign(body), "x-github-delivery": randomUUID(), "x-github-event": "push" }, secret: SECRET,
+      authorizeRepository: async () => true, authorizeBranchPush: async (push) => (await outsidePushTarget(deps(w), push)) !== undefined,
+      process: async () => undefined, now: () => NOW,
+    })).rejects.toThrow(/unsupported/);
+    expect(w.db.find(() => true).length).toBe(before);
+  });
+
   it("a branch the task never published has no row to attach to", async () => {
     const w = world();
     expect(await recordOutsidePushEvent(deps(w), branchPush())).toBe(false);
@@ -217,11 +248,17 @@ describe("the host's push events", () => {
     expect(JSON.stringify(processed)).not.toContain("Maya Chen");
   });
 
-  it("a push to any other branch, a deleted branch, or a body that is not a push is the unsupported event it was", async () => {
+  it("a push to any other branch, a deletion that names no head, or a body that is not a push is the unsupported event it was", async () => {
     const w = world();
-    for (const payload of [pushEvent({ ref: "refs/heads/main" }), pushEvent({ ref: "refs/heads/agentx/not-a-uuid" }), pushEvent({ ref: "refs/tags/agentx/00000000-0000-4000-8000-0000000000a1" }), pushEvent({ deleted: true }), pushEvent({ after: "0".repeat(40) }), { nonsense: true }]) {
+    for (const payload of [pushEvent({ ref: "refs/heads/main" }), pushEvent({ ref: "refs/heads/agentx/not-a-uuid" }), pushEvent({ ref: "refs/tags/agentx/00000000-0000-4000-8000-0000000000a1" }), pushEvent({ deleted: true, before: undefined }), pushEvent({ after: "0".repeat(40) }), { nonsense: true }]) {
       await expect(deliver(w, "push", payload)).rejects.toThrow(/unsupported/);
     }
+  });
+
+  it("a deleted working branch becomes a BRANCH_PUSH that names the head it had, timed by GitHub's own push time", async () => {
+    const w = world();
+    const processed = (await deliver(w, "push", pushEvent({ deleted: true, after: "0".repeat(40), repository: { ...repository, pushed_at: 1_794_000_000 } }))).processed;
+    expect(processed).toEqual([expect.objectContaining({ kind: "BRANCH_PUSH", headSha: HEAD_A, deleted: true, pushedAt: new Date(1_794_000_000_000).toISOString() })]);
   });
 
   it("a forged delivery is refused before any of this", async () => {
@@ -293,7 +330,9 @@ describe("the continue-loop part of the task view", () => {
     expect((await view(w))?.branches.find((entry) => entry.source === "published")).toEqual({ repository: "web", branch: workingBranchName(TASK_ID), source: "published", headSha: BASE });
     expect((await view(w))?.outside).toEqual([]);
     await recordOutsidePush(w.deps, { taskId: TASK_ID, repository: "web", subject: "branch", headSha: HEAD_C, login: "omar-d", at: NOW });
-    expect((await view(w))?.outside).toEqual([{ repository: "web", headSha: HEAD_C, lastPushedBy: { login: "omar-d", at: NOW }, canRecheck: false }]);
+    expect((await view(w))?.outside).toEqual([{ repository: "web", headSha: HEAD_C, lastPushedBy: { login: "omar-d", at: NOW }, canRecheck: false, recheckNote: RECHECK_NEEDS_PULL_REQUEST_NOTE }]);
+    // The view says, word for word, that Rovara's pull request comes from its own branch; "payments" can still get a branch, at its base.
+    expect(await view(w)).toMatchObject({ publishedBranchNote: PUBLISHED_BRANCH_NOTE });
     const v1 = world({ definitionVersion: "1.0.0" });
     expect(await view(v1)).toBeUndefined();
   });
@@ -330,15 +369,30 @@ describe("publishing the working branch", () => {
     expect((await readWorkingBranches({ documentClient: w.db, tableName: TABLE }, TASK_ID)).map((row) => row.baseSha)).toEqual([BASE]);
   });
 
-  it("an existing row is answered from the record, with no host call; a branch the host already has at the base is recorded, not recreated", async () => {
+  it("a branch the host already has at the base is recorded, not recreated; a recorded branch the person moved is theirs (created: false); one the host lost is made again at the same base", async () => {
     const w = world(); prepared(w);
     const p = port();
     p.heads.set(workingBranchName(TASK_ID), BASE);
     expect(await publishWorkingBranch(deps(w, p.value), w.task() as never, { repository: "payments", actorId: "a" })).toMatchObject({ created: false, commit: BASE });
     expect(p.created).toEqual([]);
-    const spy = vi.fn(async () => undefined);
-    expect(await publishWorkingBranch(deps(w, { ...p.value, branchHead: spy }), w.task() as never, { repository: "payments", actorId: "a" })).toMatchObject({ created: false });
-    expect(spy).not.toHaveBeenCalled();
+    p.heads.set(workingBranchName(TASK_ID), HEAD_C);
+    expect(await publishWorkingBranch(deps(w, p.value), w.task() as never, { repository: "payments", actorId: "a" })).toMatchObject({ created: false, commit: BASE });
+    expect(p.created).toEqual([]);
+    p.heads.delete(workingBranchName(TASK_ID));
+    expect(await publishWorkingBranch(deps(w, p.value), w.task() as never, { repository: "payments", actorId: "a" })).toMatchObject({ created: true, commit: BASE });
+    expect(p.created).toEqual([{ branch: workingBranchName(TASK_ID), commit: BASE }]);
+  });
+
+  it("a concurrent press that made the branch first (the host answers 'already exists') is the same branch: created false, and nothing is moved", async () => {
+    const w = world(); prepared(w);
+    const p = port();
+    const raced = port({ createBranch: async (_t, _r, branch) => { p.heads.set(branch, BASE); throw Object.assign(new Error("Reference already exists"), { status: 422 }); }, branchHead: async (_t, _r, branch) => p.heads.get(branch) });
+    expect(await publishWorkingBranch(deps(w, raced.value), w.task() as never, { repository: "payments", actorId: "a" })).toMatchObject({ created: false, commit: BASE });
+    // Another commit there is not ours: the failure stands.
+    const w2 = world(); prepared(w2);
+    const q = port();
+    const other = port({ createBranch: async (_t, _r, branch) => { q.heads.set(branch, HEAD_C); throw new Error("Reference already exists"); }, branchHead: async (_t, _r, branch) => q.heads.get(branch) });
+    await expect(publishWorkingBranch(deps(w2, other.value), w2.task() as never, { repository: "payments", actorId: "a" })).rejects.toThrow(/already exists/);
   });
 
   it("never moves or claims a branch that exists elsewhere than at the base (no force-push), and says so", async () => {
@@ -387,9 +441,10 @@ describe("the two actions, through the broker", () => {
   async function setup(options: { recheck?: boolean; port?: WorkingBranchPort | undefined; audit?: boolean; sameOrg?: boolean } = {}) {
     const calls: string[] = [];
     const created: Array<{ branch: string; commit: string }> = [];
+    const heads = new Map<string, string>();
     const fakePort: WorkingBranchPort = options.port ?? {
-      branchHead: async () => undefined,
-      createBranch: async (_t, _r, branch, commit) => { calls.push("create"); created.push({ branch, commit }); },
+      branchHead: async (_t, _r, branch) => heads.get(branch),
+      createBranch: async (_t, _r, branch, commit) => { calls.push("create"); created.push({ branch, commit }); heads.set(branch, commit); },
     };
     const recheck = vi.fn(async () => "STARTED" as const);
     const audit = capturingAuditDeps();
@@ -432,7 +487,9 @@ describe("the two actions, through the broker", () => {
       documentClient: harness.db, tableName: "state", actions: harness.actions, orgId: TEST_ORG, checkAccess, projectChannelIds: async () => [], now: () => Date.now(), log: () => undefined,
       learningAudit: audit.audit, workingBranchPort: fakePort, startOutsideRecheck: recheck,
     });
-    return { harness, taskId, record, toWaiting, web, view, calls, created, recheck, audit, routeDeps };
+    /** The workspace's worker is up and lists these features (the re-check's start asks it). */
+    const workerUp = (features: string[]) => harness.db.set({ ...workspaceSessionKey(record().workspaceId), entityType: "WORKSPACE_SESSION", state: "READY", workerFeatures: features });
+    return { harness, taskId, record, toWaiting, web, view, calls, created, recheck, audit, routeDeps, workerUp };
   }
   const publishBody = () => ({ requestId: randomUUID(), repository: "demo" });
   const recheckBody = (extra: Record<string, unknown> = {}) => ({ requestId: randomUUID(), repository: "demo", number: 7, headSha: HEAD_B, ...extra });
@@ -502,10 +559,13 @@ describe("the two actions, through the broker", () => {
     expect((await t.web(MAYA, "POST", route, recheckBody())).status).toBe(400);
     expect((await t.web(MAYA, "POST", route, recheckBody({ number: 9 }))).status).toBe(400);
     expect(t.recheck).not.toHaveBeenCalled();
+    // An install whose worker is up without the adoption feature: refused in plain words, and nothing starts.
     const bare = await setup({ recheck: false });
     bare.toWaiting();
+    bare.workerUp(["task.workflowMode"]);
     const unavailable = await bare.web(MAYA, "POST", `/v1/app/tasks/${bare.taskId}/continue/recheck`, recheckBody());
     expect(unavailable.status).toBe(503);
+    expect(JSON.stringify(unavailable.body)).toContain(OUTSIDE_RECHECK_WORKER_MISSING);
     expect(bare.audit.recorded().filter((event) => event.action === "task.recheck_requested")).toEqual([]);
   });
 
@@ -537,7 +597,8 @@ describe("the two actions, through the broker", () => {
     expect(owner.status, JSON.stringify(owner.body)).toBe(200);
     const task = (owner.body.task ?? owner.body) as Record<string, unknown>;
     const loop = task.continueLoop as Record<string, unknown>;
-    expect(loop, JSON.stringify(Object.keys(task))).toMatchObject({ canPublishBranch: true, label: CHANGED_OUTSIDE_LABEL, canRecheck: true,
+    // "demo" already has its pull request's branch, so no repository is left to publish one in.
+    expect(loop, JSON.stringify(Object.keys(task))).toMatchObject({ canPublishBranch: false, label: CHANGED_OUTSIDE_LABEL, canRecheck: true,
       branches: [{ repository: "demo", branch: "agentx/11111111-1111-4111-8111-111111111111", source: "pull_request" }], outside: [{ repository: "demo", number: 7, headSha: HEAD_B, canRecheck: true }] });
     expect(ContinueLoopViewSchema.safeParse(loop).success).toBe(true);
     // The task view schema carries the field (a minimal view, so the fixture workflow here is not judged).
@@ -546,6 +607,7 @@ describe("the two actions, through the broker", () => {
     expect((await t.view(OMAR)).status).not.toBe(200);
     const bare = await setup({ recheck: false, port: undefined });
     bare.toWaiting();
+    bare.workerUp([]);
     const noRecheck = ((await bare.view(MAYA)).body.task ?? {}) as { continueLoop?: { canRecheck: boolean; outside: Array<{ canRecheck: boolean }> } };
     expect(noRecheck.continueLoop).toMatchObject({ canRecheck: false, outside: [{ canRecheck: false }] });
   });
@@ -603,6 +665,52 @@ describe("the two actions, through the broker", () => {
         await expect(recheckAction(t.routeDeps(grantedAs(role)), OWNER_CALLER, t.taskId, recheckBody())).rejects.toMatchObject({ code: "WORKSPACE_BUSY" });
       }
       expect(t.recheck).not.toHaveBeenCalled();
+    });
+
+    it("recheck meets the company's Admission: a refusal (trial, machine time, budget) is answered in its own words and nothing starts", async () => {
+      const t = await setup({ sameOrg: true });
+      t.toWaiting();
+      const refusing = { ...t.routeDeps(grantedAs("contributor")), admitOutsideRecheck: async () => { throw agentXError("BUDGET_EXCEEDED", "The project's monthly budget is used up."); } };
+      await expect(recheckAction(refusing, OWNER_CALLER, t.taskId, recheckBody())).rejects.toMatchObject({ code: "BUDGET_EXCEEDED" });
+      expect(t.recheck).not.toHaveBeenCalled();
+      const admitted = vi.fn(async () => undefined);
+      expect(await recheckAction({ ...t.routeDeps(grantedAs("contributor")), admitOutsideRecheck: admitted }, OWNER_CALLER, t.taskId, recheckBody())).toEqual({ status: "started" });
+      expect(admitted).toHaveBeenCalledTimes(1);
+      expect(t.recheck).toHaveBeenCalledTimes(1);
+    });
+
+    it("owner-only: someone who can read the task through its channel (a contributor in the project, a channel member) can neither publish nor re-check, and nothing is made or started", async () => {
+      const t = await setup({ sameOrg: true });
+      t.toWaiting();
+      t.harness.db.set({ ...t.record(), share: { mode: "continue", channelId: "C0SHARED01", sharedReason: "requested" } });
+      const omar: DeveloperCaller = { orgId: TEST_ORG, orgRole: "member", developerId: OMAR.developerId, sessionId: OMAR.sessionId, amr: "oidc", name: OMAR.name, slackUserId: "U0OMAR0001" };
+      const deps = { ...t.routeDeps(grantedAs("contributor")), channelMember: async () => true };
+      await expect(publishWorkingBranchAction(deps, omar, t.taskId, publishBody())).rejects.toMatchObject({ code: "TASK_NOT_FOUND" });
+      await expect(recheckAction(deps, omar, t.taskId, recheckBody())).rejects.toMatchObject({ code: "TASK_NOT_FOUND" });
+      expect(t.created).toEqual([]);
+      expect(t.recheck).not.toHaveBeenCalled();
+    });
+
+    it("recheck is idempotent per request: a repeat of the same request starts nothing more; the same request ID for another head is refused", async () => {
+      const t = await setup({ sameOrg: true });
+      t.toWaiting();
+      const body = recheckBody();
+      t.harness.db.set({ pk: `DEVTASK#${t.taskId}`, sk: `OUTSIDE_RECHECK#${String(body.requestId)}`, entityType: "OUTSIDE_RECHECK_REQUEST", taskId: t.taskId, repository: "demo", number: 7, headSha: HEAD_B,
+        actorId: taskOwnerKey(MAYA.developerId, t.taskId), at: NOW });
+      expect(await recheckAction(t.routeDeps(grantedAs("contributor")), OWNER_CALLER, t.taskId, body)).toEqual({ status: "started" });
+      expect(t.recheck).not.toHaveBeenCalled();
+      await expect(recheckAction(t.routeDeps(grantedAs("contributor")), OWNER_CALLER, t.taskId, { ...body, headSha: HEAD_C })).rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
+      expect(t.recheck).not.toHaveBeenCalled();
+      // The same request after its adoption failed answers the failure, in plain words.
+      t.harness.db.set({ ...(t.harness.db.get(`DEVTASK#${t.taskId}`, `OUTSIDE_RECHECK#${String(body.requestId)}`) as Record<string, unknown>), outcome: "not_adopted", outcomeReason: "the run that takes the code didn't finish" });
+      await expect(recheckAction(t.routeDeps(grantedAs("contributor")), OWNER_CALLER, t.taskId, body)).rejects.toMatchObject({ code: "STALE_FENCE", message: expect.stringContaining("the run that takes the code didn't finish") as string });
+      expect(t.recheck).not.toHaveBeenCalled();
+    });
+
+    it("no Recheck while the owner's feedback card waits", () => {
+      const pullRequests = [{ repositoryId: "payments", number: 7, state: "OPEN", headSha: HEAD_A }];
+      expect(recheckPossible({ stage: "WAIT_FOR_MERGE", state: "WAITING", pullRequests, feedbackReview: { status: "PENDING" } } as never, { repositoryId: "payments", number: 7 })).toBe(false);
+      expect(recheckPossible({ stage: "WAIT_FOR_MERGE", state: "WAITING", pullRequests, feedbackReview: { status: "COLLECTING" } } as never, { repositoryId: "payments", number: 7 })).toBe(false);
     });
   });
 });

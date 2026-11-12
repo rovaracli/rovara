@@ -2,7 +2,7 @@
 //
 //   - `ContinueLoopViewSchema`: what the task view says about the task's working branch, a push that did not come from Rovara ("Changed outside Rovara · checks needed", with the pusher's GitHub login) and
 //     whether THIS reader may publish the branch or ask for a re-check. Browser-safe: the web app reads it.
-//   - the two requests of the owner/steer actions: publish the working branch, and Recheck.
+//   - the two requests of the owner/co-owner actions: publish the working branch, and Recheck.
 //
 // A login is the host's own pusher name (never an email, never the commit author, which anyone can forge).
 import { z } from "zod";
@@ -14,6 +14,16 @@ export const GithubLoginSchema = z.string().max(45).regex(GITHUB_LOGIN_PATTERN);
 
 /** The words of the state, for every surface (the task page and the tools say the same thing). */
 export const CHANGED_OUTSIDE_LABEL = "Changed outside Rovara · checks needed";
+
+/** The worker feature that adopts a head pushed outside Rovara (a read-only maintain run). */
+export const OUTSIDE_RECHECK_WORKER_FEATURE = "maintain.workflowAdopt.v1" as const;
+/** Said, word for word, where this install's workers cannot adopt an outside head yet. */
+export const OUTSIDE_RECHECK_WORKER_MISSING = "This install's workers can't re-check outside changes yet.";
+
+/** Said on a published branch's outside row: a re-check runs on a pull request's head only (owner decision for 0.5.15; see the API note). */
+export const RECHECK_NEEDS_PULL_REQUEST_NOTE = "Rovara re-checks once a pull request exists.";
+/** Said beside a published branch: Rovara's own pull request is opened from its own run branch, so pushes to the published branch do not reach it. */
+export const PUBLISHED_BRANCH_NOTE = "Rovara's pull request will come from its own branch. To have Rovara re-check your changes, push them to the pull request's branch.";
 
 /** Rovara's own working branch for a task is `agentx/<taskId>`: one branch per task and repository, the shape Rovara's host reads accept (`agentx/<uuid>`). */
 export const workingBranchName = (taskId: string): string => `agentx/${taskId.toLowerCase()}`;
@@ -40,6 +50,10 @@ export const ContinueLoopOutsideSchema = z.object({
   lastPushedBy: z.object({ login: GithubLoginSchema, at: z.string().datetime() }).strict().optional(),
   /** Whether Rovara can re-check this head now (a pull request exists and the task is waiting for the merge). */
   canRecheck: z.boolean(),
+  /** Rovara is re-checking this head now (it took it as the task's code and its checks are starting or running): show "Re-checking", no button. */
+  rechecking: z.literal(true).optional(),
+  /** Why there is no Recheck for this row when the reason is the row's own (not the reader's role): word for word. */
+  recheckNote: z.literal(RECHECK_NEEDS_PULL_REQUEST_NOTE).optional(),
 }).strict();
 export type ContinueLoopOutside = z.infer<typeof ContinueLoopOutsideSchema>;
 
@@ -49,9 +63,13 @@ export const ContinueLoopViewSchema = z.object({
   outside: z.array(ContinueLoopOutsideSchema).max(32),
   /** The words of the state, so no surface invents its own. Present with `outside`. */
   label: z.literal(CHANGED_OUTSIDE_LABEL).optional(),
-  /** Whether THIS reader may publish the working branch of a repository that has none yet (owner or steer, and only on a task that is open and prepared). The route checks again. */
+  /** Whether THIS reader may publish the working branch of a repository that has none yet (owner or co-owner, and only on a task that is open and prepared). The route checks again. */
   canPublishBranch: z.boolean(),
-  /** Whether THIS reader may ask for a re-check (owner or steer). The route checks again. */
+  /** With `canPublishBranch`: the repositories that have no branch yet and can get one, each at the commit the branch would be made at. */
+  publishable: z.array(z.object({ repository: z.string().min(1).max(200), baseSha: GitShaSchema }).strict()).max(32).optional(),
+  /** Present when a published branch is listed: word for word (Rovara's pull request comes from its own branch). */
+  publishedBranchNote: z.literal(PUBLISHED_BRANCH_NOTE).optional(),
+  /** Whether THIS reader may ask for a re-check (owner or co-owner). The route checks again. */
   canRecheck: z.boolean(),
 }).strict();
 export type ContinueLoopView = z.infer<typeof ContinueLoopViewSchema>;

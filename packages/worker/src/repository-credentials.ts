@@ -42,7 +42,8 @@ export function createRepositoryCredentialProvider(input: {
       body: JSON.stringify({
         credentialRef: repository.credentialRef,
         repositoryUrl: repository.url,
-        access: input.invocation.kind === "prepare" ? "clone" : "push",
+        // A preparation clones; the adoption of an outside head (a maintain run that pushes nothing) asks for no more than a clone either.
+        access: input.invocation.kind === "prepare" || (input.invocation.kind === "maintain" && input.invocation.payload.workflowAdopt !== undefined) ? "clone" : "push",
       }),
     });
     if (!response.ok) {

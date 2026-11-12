@@ -62,7 +62,7 @@ async function redirectCaller(dependencies: AwsBrokerDependencies, record: Pick<
  * The task module's dependencies for the person's restart: the broker's own, with the person as the session actor (see `isSessionActor`: the redirect checked that they own the task). Given the redirect, every
  * transaction that starts a run carries a condition that the redirect is still `restarting`, so a Stop that ended it between the claim and the commit stops the restart (LR-3, B1 residual).
  */
-async function restartDependencies(dependencies: AwsBrokerDependencies, record: Pick<RedirectRecord, "orgId" | "actorId"> & Partial<Pick<RedirectRecord, "taskId" | "requestId">>): Promise<{ deps: DeveloperTaskRouteDependencies; caller: DeveloperCaller }> {
+export async function restartDependencies(dependencies: AwsBrokerDependencies, record: Pick<RedirectRecord, "orgId" | "actorId"> & Partial<Pick<RedirectRecord, "taskId" | "requestId">>): Promise<{ deps: DeveloperTaskRouteDependencies; caller: DeveloperCaller }> {
   if (dependencies.developer === undefined) throw new Error("developer sign-in is not set up in this deployment");
   const caller = await redirectCaller(dependencies, record);
   const tasks = developerTaskActions(dependencies);

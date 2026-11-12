@@ -94,9 +94,19 @@ export interface DeveloperTaskRouteDependencies {
   currentBaseCommit?(task: DeveloperTaskRecord, pullRequest: { repositoryId: string; number: number }): Promise<string>;
   /** Continue in your own tool: the host operations on a task repository's working branch (`agentx/<taskId>`), for the publish action. Absent: the action answers RUNTIME_UNAVAILABLE. */
   workingBranchPort?: WorkingBranchPort;
-  /** Continue in your own tool: the working branch, the pushes that did not come from Rovara and what the caller may press, for the caller these dependencies were built for. Absent: the view carries none. */
-  /** Continue in your own tool: starts the re-check of a head that changed outside Rovara (continue-loop.ts#StartOutsideRecheck). Absent: the action answers RUNTIME_UNAVAILABLE and the view offers none. */
+  /** Continue in your own tool: a stand-in for the start of a re-check of a head that changed outside Rovara (continue-loop.ts#StartOutsideRecheck), for tests. Production uses `outsideRecheckFeatures`. */
   startOutsideRecheck?: StartOutsideRecheck;
+  /**
+   * Continue in your own tool: the worker features of the task's workspace session (undefined when no session is ready to say). Present: this install starts re-checks itself (a read-only adoption
+   * run, then the person's checks); a ready worker without the adoption feature is refused with a plain sentence. Absent (and no stand-in): the action answers RUNTIME_UNAVAILABLE and the view offers none.
+   */
+  outsideRecheckFeatures?: (task: DeveloperTaskRecord) => Promise<readonly string[] | undefined>;
+  /**
+   * Continue in your own tool: the company's Admission for a person's Recheck, which starts a machine and (when its checks pass) paid reviews: a locked trial or a month of machine time used up (on
+   * a cloud install), and a budget without the minimum left, each refuse with their own words before anything starts. Absent: nothing more is admitted here (the checks' own acceptance still is).
+   */
+  admitOutsideRecheck?: (task: DeveloperTaskRecord) => Promise<void>;
+  /** Continue in your own tool: the working branch, the pushes that did not come from Rovara and what the caller may press, for the caller these dependencies were built for. Absent: the view carries none. */
   continueLoop?: (task: DeveloperTaskRecord, tracked: readonly MergeTrackingItem[]) => Promise<DeveloperTaskView["continueLoop"]>;
   /** How far Rovara may go on its own with the task now: the stricter of its frozen recipe and the company's limit, read each time (`suggest` when it cannot be read). Checked before each paid step of a round Rovara decided itself (Plan 6 Task 16). */
   taskAutonomyNow?(task: DeveloperTaskRecord): Promise<"suggest" | "prepare" | "run">;

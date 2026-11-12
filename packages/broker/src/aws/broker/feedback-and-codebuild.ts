@@ -541,6 +541,8 @@ export async function reconcilePullRequestUpdate(
   if (operation.kind !== "maintain" || !operation.maintenance) {
     throw agentXError("CALLBACK_FORBIDDEN", "operation cannot update a pull request");
   }
+  // "Continue in your own tool": the adoption of an outside head pushes nothing, so it has no update to report and never moves the record (its result does, once GitHub is read).
+  if (operation.maintenance.workflowAdopt !== undefined) throw agentXError("CALLBACK_FORBIDDEN", "an adoption of an outside head pushes nothing");
   const input = object(value, "pull request update callback");
   const expected = operation.maintenance;
   const allowed = new Set([

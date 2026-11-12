@@ -530,6 +530,8 @@ export function developerTaskRouteDependencies(
     ...(deps.currentBaseCommit === undefined ? {} : { currentBaseCommit: deps.currentBaseCommit }),
     ...(deps.workingBranchPort === undefined ? {} : { workingBranchPort: deps.workingBranchPort }),
     ...(deps.startOutsideRecheck === undefined ? {} : { startOutsideRecheck: deps.startOutsideRecheck }),
+    ...(deps.outsideRecheckFeatures === undefined ? {} : { outsideRecheckFeatures: deps.outsideRecheckFeatures }),
+    ...(deps.admitOutsideRecheck === undefined ? {} : { admitOutsideRecheck: deps.admitOutsideRecheck }),
     ...(deps.taskAutonomyNow === undefined ? {} : { taskAutonomyNow: deps.taskAutonomyNow }),
     ...(deps.designReview === undefined ? {} : { designReview: deps.designReview }),
     designActions: designActionsFor(deps, caller),

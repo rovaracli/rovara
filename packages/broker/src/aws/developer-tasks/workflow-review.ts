@@ -381,7 +381,8 @@ export async function startTaskWorkflowImplementationFromSystem(
   ], { sharedTask: task.shared === true, workflowMode: "IMPLEMENT", ...selectedCheckCommands(next), ...taskBaseOption(task, next), programStepId: workflow.programStepId,
     ...(workflowDependencies === undefined ? {} : { workflowDependencies }),
     // A CI or feedback fix starts from the head the pull request has (Plan 6 Task 17), so an abandoned conflict round's files are not what it begins on.
-    ...(workflow.fixSource === undefined ? {} : { workflowFix: { source: workflow.fixSource, ...(fixStartHead(workflow) === undefined ? {} : { startFrom: fixStartHead(workflow)! }) } }) });
+    ...(workflow.fixSource === undefined ? {} : { workflowFix: { source: workflow.fixSource, ...(fixStartHead(workflow) === undefined ? {} : { startFrom: fixStartHead(workflow)! }),
+      ...(fixStartHeads(workflow) === undefined ? {} : { startFromRepositories: fixStartHeads(workflow)! }) } }) });
   return accepted.duplicate ? "DUPLICATE" : "STARTED";
 }
 
@@ -389,6 +390,16 @@ export async function startTaskWorkflowImplementationFromSystem(
 export function laterProgramBuild(workflow: WorkflowSnapshot): boolean {
   const first = workflow.program?.steps.find((step) => step.kind === "build");
   return first !== undefined && workflow.programStepId !== undefined && workflow.programStepId !== first.id;
+}
+
+/** With several open pull requests, the head each repository's fix starts from (none for a conflict round, or for one pull request: `startFrom` says that). */
+function fixStartHeads(workflow: WorkflowSnapshot): Array<{ repositoryId: string; commit: string }> | undefined {
+  if (workflow.fixSource === undefined || workflow.fixSource === "conflict") return undefined;
+  const open = (workflow.pullRequests ?? []).filter((entry) => (entry.state === "OPEN" || entry.state === "UNKNOWN") && entry.headSha !== undefined && /^[a-f0-9]{40}$/u.test(entry.headSha));
+  if (open.length < 2) return undefined;
+  const byRepository = new Map<string, string>();
+  for (const entry of open) if (!byRepository.has(entry.repositoryId)) byRepository.set(entry.repositoryId, entry.headSha!);
+  return [...byRepository].slice(0, 32).map(([repositoryId, commit]) => ({ repositoryId, commit }));
 }
 
 /** The head a CI or feedback fix starts from: the one open pull request's recorded head (none for a conflict round, which works on the merge's files, or for several pull requests). */
