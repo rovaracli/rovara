@@ -17,7 +17,7 @@ import { AuditEventInputSchema, auditEventId, AUDIT_FACT_KEYS, AUDIT_FACT_MAX_CH
 import { DOCUMENT_STORE_LIMITS } from "@rovara-code/contracts";
 import type { AuditEvent, AuditSink, DocumentStore, JsonObject, StoredDocument, TransactItem } from "@rovara-code/contracts";
 import { auditPendingItem } from "../../../audit/outbox.js";
-import { CORE_AUDIT_EVENT_MAP, RELATED_ID, checkedFact, valueOf, type EventMapping, type MappingContext, type TargetRule } from "./event-map.js";
+import { CORE_AUDIT_EVENT_MAP, RELATED_ID, checkedFact, mappingFor, valueOf, type EventMapping, type MappingContext, type TargetRule } from "./event-map.js";
 
 /** Why an event could not be made into a Cloud event. Fixed words: the only thing a log or an error says. */
 export type CloudAuditRefusal = "unmapped_action" | "bad_actor" | "bad_time" | "bad_target" | "invalid_event";
@@ -100,14 +100,15 @@ function orgDetailsOf(mapping: EventMapping, context: MappingContext): AuditDeta
 
 /** The ledger's event for a core event, or the fixed word saying why there is none. */
 export function toCloudAuditEvent(event: AuditEvent, map: Readonly<Record<string, EventMapping>> = CORE_AUDIT_EVENT_MAP): { ok: true; event: AuditEventInput } | { ok: false; refusal: CloudAuditRefusal } {
-  const mapping = Object.hasOwn(map, event.action) ? map[event.action] : undefined;
-  if (mapping === undefined) return { ok: false, refusal: "unmapped_action" };
+  const entry = Object.hasOwn(map, event.action) ? map[event.action] : undefined;
+  if (entry === undefined) return { ok: false, refusal: "unmapped_action" };
   const who = actorOf(event);
   if (who === undefined) return { ok: false, refusal: "bad_actor" };
   const when = Date.parse(event.at);
   if (Number.isNaN(when)) return { ok: false, refusal: "bad_time" };
   const details: JsonObject = event.details ?? {};
   const context: MappingContext = { event, details };
+  const mapping = mappingFor(entry, context);
   const target = targetOf(mapping.target, context);
   if (target === undefined) return { ok: false, refusal: "bad_target" };
   const facts = factsOf(mapping, context);

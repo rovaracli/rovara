@@ -57,6 +57,13 @@ export interface EventMapping {
   readonly org?: Readonly<Record<string, ValueSource>>;
   /** Ids of related records (at most 8, server-made ids only: never a name). Each must look like an id (no space, no `@`, no `/`). */
   readonly related?: (context: MappingContext) => readonly (string | undefined)[];
+  /** When `when` holds for an event, this mapping is replaced by `mapping` (another Cloud action, with its own facts): one core action that Cloud records as two kinds of event. */
+  readonly alternate?: { readonly when: (context: MappingContext) => boolean; readonly mapping: EventMapping };
+}
+
+/** The mapping that applies to an event: the alternate when its condition holds, else the mapping itself. */
+export function mappingFor(mapping: EventMapping, context: MappingContext): EventMapping {
+  return mapping.alternate?.when(context) === true ? mapping.alternate.mapping : mapping;
 }
 
 const get = (details: JsonValue | undefined, path: string): JsonValue | undefined => {
@@ -211,8 +218,8 @@ export const CORE_AUDIT_EVENT_MAP: Readonly<Record<string, EventMapping>> = {
   "decision.rejected": decision("decision.rejected"),
   // Cloud's model policy facts are a strict schema: the revision and the two digests. The core's `reviewDefault` and `lessSafe` have no fact here, and `stage` / `mode` belong to Cloud's own flow.
   "model.policy.changed": same("model_policy.changed", { org: true }, { facts: { revision: count("revision"), policyDigest: fact("policyDigest", HEX64), previousDigest: fact("previousDigest", HEX64) }, required: ["revision", "policyDigest"] }),
-  // The same company setting as Cloud's `company.approval_window_changed` (the recent sign-in window for approvals, in whole seconds): reuse that action. The core's other value, "trust any active company sign-in"
-  // (decision 62), has no seconds and no Cloud counterpart; an event that has it on either side is REFUSED (required facts), not recorded as a window it is not.
+  // The company's recent sign-in setting (decision 62). Between two windows it is Cloud's `company.approval_window_changed` (whole seconds before and after, a direct change). A change to or from "trust any active
+  // company sign-in" has no seconds, so it is Cloud's `company.approval_sign_in_changed` (owner decision 118): the two mode words, the seconds where a side has them, and the revision. Anything else is refused.
   "setting.approval_sign_in_changed": same("company.approval_window_changed", { org: true }, {
     facts: {
       from: count(({ details }) => (get(details, "previous.mode") === "window" ? get(details, "previous.seconds") : undefined)),
@@ -221,6 +228,19 @@ export const CORE_AUDIT_EVENT_MAP: Readonly<Record<string, EventMapping>> = {
       revision: count("revision"),
     },
     required: ["from", "to", "revision"],
+    alternate: {
+      when: ({ details }) => get(details, "mode") === "any-active" || get(details, "previous.mode") === "any-active",
+      mapping: same("company.approval_sign_in_changed", { org: true }, {
+        facts: {
+          mode: oneOf("mode", "window", "any-active"),
+          fromMode: oneOf("previous.mode", "window", "any-active"),
+          seconds: count(({ details }) => (get(details, "mode") === "window" ? get(details, "seconds") : undefined)),
+          fromSeconds: count(({ details }) => (get(details, "previous.mode") === "window" ? get(details, "previous.seconds") : undefined)),
+          revision: count("revision"),
+        },
+        required: ["mode", "fromMode", "revision"],
+      }),
+    },
   }),
 
   // Second review.

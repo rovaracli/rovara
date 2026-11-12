@@ -405,7 +405,7 @@ const MARKER_WORDS = ["Pat Smith", "fix-login", "jane"];
 
 /** Details with the marker under EVERY key a Cloud action may carry as a fact (and under the nested names the core uses), and under the names of the mapped sources. */
 function markedDetails(mapping: EventMapping): NonNullable<AuditEvent["details"]> {
-  const keys = [...AUDIT_FACT_KEYS[mapping.cloud], ...Object.keys(mapping.facts ?? {}), "branch", "target", "source", "type", "scope", "model", "operator", "cause", "kind", "mode", "name", "reason", "label", "project", "repository", "title", "message"];
+  const keys = [...AUDIT_FACT_KEYS[mapping.cloud], ...Object.keys(mapping.facts ?? {}), ...(mapping.alternate === undefined ? [] : [...AUDIT_FACT_KEYS[mapping.alternate.mapping.cloud], ...Object.keys(mapping.alternate.mapping.facts ?? {})]), "branch", "target", "source", "type", "scope", "model", "operator", "cause", "kind", "mode", "name", "reason", "label", "project", "repository", "title", "message"];
   const flat = Object.fromEntries(keys.map((key) => [key, MARKER]));
   return { ...flat, previous: { ...flat }, pin: { ...flat } };
 }
@@ -422,6 +422,14 @@ describe("a core detail never reaches a fact under an allowed key's name (no imp
     }
   });
 
+  it("the alternate mapping of the sign-in setting also keeps free text out of its facts", () => {
+    const base = sampleOf("setting.approval_sign_in_changed", CORE_AUDIT_EVENT_MAP["setting.approval_sign_in_changed"]!);
+    const made = toCloudAuditEvent({ ...base, details: { ...markedDetails(CORE_AUDIT_EVENT_MAP["setting.approval_sign_in_changed"]!), mode: "any-active", revision: 2, seconds: MARKER, previous: { mode: "window", seconds: MARKER, note: MARKER } } });
+    if (!made.ok) throw new Error(made.refusal);
+    expect(made.event).toMatchObject({ action: "company.approval_sign_in_changed", facts: { mode: "any-active", fromMode: "window", revision: 2 } });
+    expect(JSON.stringify(made.event.facts)).not.toContain("Pat Smith");
+  });
+
   it("MUTATION M3: session.retried keeps no 'branch' from a core detail (the core sends none; a free-text branch name would otherwise land in the fact)", () => {
     const made = toCloudAuditEvent({ ...sampleOf("session.retried", CORE_AUDIT_EVENT_MAP["session.retried"]!), details: { branch: "pat-smith/fix-login-for-jane", sessionKind: "task", label: "pat-smith/fix-login-for-jane" } });
     if (!made.ok) throw new Error(made.refusal);
@@ -431,8 +439,10 @@ describe("a core detail never reaches a fact under an allowed key's name (no imp
 
   it("a mapping names only keys its Cloud action allows, and checks every fact it names", () => {
     for (const [action, mapping] of Object.entries(CORE_AUDIT_EVENT_MAP)) {
-      for (const key of Object.keys(mapping.facts ?? {})) expect(AUDIT_FACT_KEYS[mapping.cloud], `${action}.${key}`).toContain(key);
-      for (const key of mapping.required ?? []) expect(Object.keys(mapping.facts ?? {}), `${action} requires ${key}`).toContain(key);
+      for (const variant of [mapping, ...(mapping.alternate === undefined ? [] : [mapping.alternate.mapping])]) {
+        for (const key of Object.keys(variant.facts ?? {})) expect(AUDIT_FACT_KEYS[variant.cloud], `${action}.${key}`).toContain(key);
+        for (const key of variant.required ?? []) expect(Object.keys(variant.facts ?? {}), `${action} requires ${key}`).toContain(key);
+      }
     }
   });
 
@@ -520,13 +530,35 @@ describe("one pull request, one id; one approval window setting, one action", ()
     const made = toCloudAuditEvent({ ...sampleOf("setting.approval_sign_in_changed", CORE_AUDIT_EVENT_MAP["setting.approval_sign_in_changed"]!), details: { mode: "window", seconds: 7_200, revision: 4, previous: { mode: "window", seconds: 3_600, isDefault: false } } });
     if (!made.ok) throw new Error(made.refusal);
     expect(made.event).toMatchObject({ action: "company.approval_window_changed", target: { kind: "org", id: ORG }, facts: { from: 3_600, to: 7_200, mode: "direct", revision: 4 } });
-    expect(AUDIT_ACTIONS as readonly string[]).not.toContain("company.approval_sign_in_changed");
   });
 
-  it("a change to or from 'trust any active company sign-in' is refused: Cloud's ledger has no seconds for it", () => {
+  it("a change between two windows is company.approval_window_changed, whichever way the seconds move", () => {
     const base = sampleOf("setting.approval_sign_in_changed", CORE_AUDIT_EVENT_MAP["setting.approval_sign_in_changed"]!);
-    expect(toCloudAuditEvent({ ...base, details: { mode: "any-active", revision: 5, previous: { mode: "window", seconds: 3_600 } } })).toEqual({ ok: false, refusal: "invalid_event" });
-    expect(toCloudAuditEvent({ ...base, details: { mode: "window", seconds: 600, revision: 5, previous: { mode: "any-active" } } })).toEqual({ ok: false, refusal: "invalid_event" });
+    for (const [from, to] of [[3_600, 600], [600, 3_600]] as const) {
+      const made = toCloudAuditEvent({ ...base, details: { mode: "window", seconds: to, revision: 6, previous: { mode: "window", seconds: from } } });
+      expect(made.ok && made.event.action).toBe("company.approval_window_changed");
+      expect(made.ok && made.event.facts).toEqual({ from, to, mode: "direct", revision: 6 });
+    }
+  });
+
+  it("anything to or from 'trust any active company sign-in' is company.approval_sign_in_changed: mode words, the seconds a side has, the revision", () => {
+    const base = sampleOf("setting.approval_sign_in_changed", CORE_AUDIT_EVENT_MAP["setting.approval_sign_in_changed"]!);
+    const toAny = toCloudAuditEvent({ ...base, details: { mode: "any-active", revision: 5, previous: { mode: "window", seconds: 3_600, isDefault: false } } });
+    expect(toAny.ok && toAny.event).toMatchObject({ action: "company.approval_sign_in_changed", target: { kind: "org", id: ORG }, facts: { mode: "any-active", fromMode: "window", fromSeconds: 3_600, revision: 5 } });
+    expect(toAny.ok && toAny.event.facts).not.toHaveProperty("seconds");
+    const fromAny = toCloudAuditEvent({ ...base, details: { mode: "window", seconds: 600, revision: 6, previous: { mode: "any-active" } } });
+    expect(fromAny.ok && fromAny.event).toMatchObject({ action: "company.approval_sign_in_changed", facts: { mode: "window", fromMode: "any-active", seconds: 600, revision: 6 } });
+    expect(fromAny.ok && fromAny.event.facts).not.toHaveProperty("fromSeconds");
+    // Seconds count only on a side that is a window: a stray value on an any-active side is not a fact.
+    const both = toCloudAuditEvent({ ...base, details: { mode: "any-active", seconds: 30, revision: 7, previous: { mode: "any-active", seconds: 99 } } });
+    expect(both.ok && both.event.facts).toEqual({ mode: "any-active", fromMode: "any-active", revision: 7 });
+  });
+
+  it("a change with neither side readable, or a mode word that is not one of the two, is refused", () => {
+    const base = sampleOf("setting.approval_sign_in_changed", CORE_AUDIT_EVENT_MAP["setting.approval_sign_in_changed"]!);
+    expect(toCloudAuditEvent({ ...base, details: { revision: 5 } })).toEqual({ ok: false, refusal: "invalid_event" });
+    expect(toCloudAuditEvent({ ...base, details: { mode: "window", revision: 5, previous: { mode: "window", seconds: 60 } } })).toEqual({ ok: false, refusal: "invalid_event" });
+    expect(toCloudAuditEvent({ ...base, details: { mode: "any-active", revision: 5, previous: { mode: "pat-smith/fix login" } } })).toEqual({ ok: false, refusal: "invalid_event" });
   });
 
   it("script tokens carry their related record (the owner on a revoke, the task on a use), as Cloud's own writers do", () => {
