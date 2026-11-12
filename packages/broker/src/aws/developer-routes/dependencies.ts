@@ -1,4 +1,5 @@
 import { logDeveloperEvent } from "../../developer/log.js";
+import { branchGateOf } from "./branch-check.js";
 import { decisionRouteDepsOf } from "./decisions.js";
 import { pendingDecisionRefs } from "../../decisions/routes.js";
 import { designActionsFor } from "./design-review.js";
@@ -126,6 +127,7 @@ export function setupDraftDepsOf(deps: DeveloperRouteDependencies): SetupDraftDe
     }),
     // Meta repo lane B: a risky item of the setup agent's proposal gets its own approval card, and its citations are re-read from GitHub.
     ...(deps.agents === undefined ? {} : { approvals: deps.agents }),
+    branchGate: branchGateOf(deps),
     ...(deps.setupCitationReader === undefined ? {} : { readFile: deps.setupCitationReader }),
     // TS-UX-1: a seed or migration leaves the setup proposal only when the test environment's draft gave it to a database dependency.
     routedSeeds: (orgId, project, taskId) => routedSeedsOf(deps, orgId, project, taskId),

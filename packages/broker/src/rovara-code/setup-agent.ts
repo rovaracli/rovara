@@ -449,6 +449,8 @@ export interface SetupAgentDependencies {
   projectFor(caller: DeveloperCaller, rawName: string): Promise<{ name: string; role: ProjectRole }>;
   /** An archived project takes no new work (`requireNewWorkAllowed`). */
   requireNewWork(caller: DeveloperCaller, project: string, role: ProjectRole): Promise<void>;
+  /** 0.5.16: refuses (WORKSPACE_NOT_READY) while the project's default branch has no files and the person has not chosen to go on (`org/branch-check.ts#requireBranchesReady`). Absent: no gate. Run before any new run starts, never on a repeat of a request already made. */
+  branchGate?: ((caller: DeveloperCaller, project: string) => Promise<void>) | undefined;
   latest(orgId: OrgId, project: string): Promise<{ revision: number; definition: StoredProjectDefinition } | undefined>;
   /** The project's own setup-run limits and the company's lock, as stored (any shape: `effectiveSetupAgentLimits` reads them and never throws). */
   limitSettings(orgId: OrgId, project: string): Promise<{ project?: unknown; companyLock?: unknown; setupOff?: boolean; locksUnreadable?: boolean }>;
@@ -518,6 +520,7 @@ export async function startSetupAgent(deps: SetupAgentDependencies, caller: Deve
     await run(undefined);
     return new StatusReply(200, await verifiedView(deps, caller, latest.definition, await setupAgentState(deps, caller.orgId, name, latest.revision)));
   }
+  await deps.branchGate?.(caller, name);
   await deps.requireNewWork(caller, name, role);
   const before = await readState(deps, caller.orgId, name, latest.revision);
   if (before.view.status === "running") throw agentXError("WORKSPACE_BUSY", SETUP_AGENT_BUSY);

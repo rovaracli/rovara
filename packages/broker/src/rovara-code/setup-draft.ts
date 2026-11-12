@@ -254,6 +254,8 @@ export interface SetupDraftDependencies {
   projectFor(caller: DeveloperCaller, rawName: string): Promise<{ name: string; role: ProjectRole }>;
   /** An archived project takes no new work (`requireNewWorkAllowed`). */
   requireNewWork(caller: DeveloperCaller, project: string, role: ProjectRole): Promise<void>;
+  /** 0.5.16: refuses (WORKSPACE_NOT_READY) while the project's default branch has no files and the person has not chosen to go on (`org/branch-check.ts#requireBranchesReady`). Absent: no gate. Run before any new run starts, never on a repeat of a request already made. */
+  branchGate?: ((caller: DeveloperCaller, project: string) => Promise<void>) | undefined;
   /** The project's newest revision, with the domains it allows now and its definition. */
   latest(orgId: OrgId, project: string): Promise<{ revision: number; allowedDomains: readonly string[]; definition: StoredProjectDefinition } | undefined>;
   /** Plan 2's settings save, as the caller. */
@@ -340,6 +342,7 @@ export async function startSetupDraft(deps: SetupDraftDependencies, caller: Deve
     await run(undefined);
     return new StatusReply(200, setupDraftView(await withSeedsRouted(deps, caller.orgId, name, await setupDraftState(deps, caller.orgId, name, latest.revision))));
   }
+  await deps.branchGate?.(caller, name);
   await deps.requireNewWork(caller, name, role);
   const before = await setupDraftState(deps, caller.orgId, name, latest.revision);
   if (before.status === "drafting") throw agentXError("WORKSPACE_BUSY", SETUP_DRAFT_BUSY);
