@@ -433,6 +433,8 @@ describe("developer sign-in infrastructure (named environments)", () => {
       ["dynamodb:GetItem", [`${ORG}#BAN`]],
       // 0.5.11 (the notifier's, not DeveloperIdentity's): a coding plan with no stored estimate has its run limit worked out as the decision does, which reads the org's spend policy by key.
       ["dynamodb:GetItem", [`${ORG}#SETTINGS`]],
+      // 0.5.15 (the notifier's): the owner-stopped DM checks the person can still take the task over: their company membership row (the bare org partition) and their project grant (the member's grants partition), read by key only.
+      ["dynamodb:GetItem", [ORG, `${ORG}#MEMBER#*`]],
       // The org's budget settings, read and written back.
       ["dynamodb:GetItem,dynamodb:PutItem", [`${ORG}#SETTINGS`]],
       // What every sign-in uses: the bare org partition (20 characters, an org ID's), the developer's org pointer, and the email and invite rows.

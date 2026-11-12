@@ -8026,6 +8026,9 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                     "NOTIFY_DM",
                   ],
                 },
+                "Null": {
+                  "dynamodb:LeadingKeys": "false",
+                },
               },
               "Effect": "Allow",
               "Resource": {
@@ -8045,6 +8048,30 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                   "dynamodb:LeadingKeys": [
                     "NOTIFY_SETTINGS_PROOF#*",
                   ],
+                },
+                "Null": {
+                  "dynamodb:LeadingKeys": "false",
+                },
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "State1C20CC9A",
+                  "Arn",
+                ],
+              },
+            },
+            {
+              "Action": "dynamodb:GetItem",
+              "Condition": {
+                "ForAllValues:StringLike": {
+                  "dynamodb:LeadingKeys": [
+                    "ORG#org_????????????????????",
+                    "ORG#org_????????????????????#MEMBER#*",
+                  ],
+                },
+                "Null": {
+                  "dynamodb:LeadingKeys": "false",
                 },
               },
               "Effect": "Allow",
