@@ -1,5 +1,7 @@
 // Fixtures for the project People tab, the collaborator approvals switch and the product decisions panel (lane exp/project-people): the project page mounted with the server's answers for
 // `GET .../people`, `.../code-settings`, `.../collaborator-approvals`, `.../product-decisions` and the company's people, and a hook for whatever a write answers.
+import { vi } from "vitest";
+import { act } from "@testing-library/react";
 import { MemoryRouter, Routes, Route } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { ProjectScreen } from "../../../packages/ui/src/screens/project/ProjectScreen.js";
@@ -23,6 +25,15 @@ export const settings = (over: Record<string, unknown> = {}) => ({ settings: { a
 export const approvals = (over: Record<string, unknown> = {}) => ({ collaboratorApprovals: { enabled: true, revision: 2, isDefault: false, canChange: true, ...over } });
 export const DECISION_ID = "pdq_" + "A".repeat(20);
 export const decision = (over: Record<string, unknown> = {}) => ({ decisionId: DECISION_ID, taskId: "11111111-1111-4111-8111-111111111111", project: "payments", question: "Which wording should the refund button use?", options: [{ id: "o1", label: "Refund now" }, { id: "o2", label: "Request a refund" }], risk: "low", status: "open", revision: 4, raisedAt: "2026-11-10T10:00:00.000Z", answers: [], you: { canAnswer: true, canApprove: true }, ...over });
+
+/**
+ * Waits until every lazy chunk the page asked for has loaded and rendered: the dynamic imports have settled, a few macrotask turns have passed, and (only as a backstop) a short wait. A test that says a screen is NOT there
+ * must call this first, or it can pass because the chunk was merely late.
+ */
+export async function settleLazy(backstopMs = 20): Promise<void> {
+  for (let turn = 0; turn < 6; turn += 1) await act(async () => { await vi.dynamicImportSettled();await new Promise(resolve => setTimeout(resolve, 0)); });
+  if (backstopMs > 0) await act(async () => { await new Promise(resolve => setTimeout(resolve, backstopMs)); });
+}
 
 export interface Options {
   on?: boolean; path?: string; people?: Answer; settings?: Answer; approvals?: Answer; decisions?: Answer; members?: Answer; orgRole?: "owner" | "admin" | "member";
@@ -50,5 +61,5 @@ export function mountProject(options: Options = {}) {
   query.setQueryData(["nav"], { me: { developerId: ID.maya, name: "Maya Chen", orgRole: options.orgRole ?? "member" }, org: { name: "Acme" }, homeCount: 0, projects: [], shared: { agents: [], sessions: [] }, features: {} });
   const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { initialEntries: [options.path ?? "/app/projects/payments?tab=people"], children: h(Announcer, { children: h(Routes, { children: h(Route, { path: "/app/projects/:name", element: h(ProjectScreen, {}) }) }) }) }) }) }));
   const calls = (match: (request: ApiRequest) => boolean) => f.request.mock.calls.map(([request]) => request).filter(match);
-  return { ...f, ...ui, calls, close() { ui.unmount();query.clear(); } };
+  return { ...f, ...ui, query, calls, close() { ui.unmount();query.clear(); } };
 }

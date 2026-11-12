@@ -15,3 +15,5 @@ export function useRequestId() {
 }
 /** What a refusal says, as the server said it (the API client keeps its text); a lost connection says so. */
 export const failureText = (error: unknown): string => error instanceof ApiError ? error.message : "Couldn't complete this. Try again.";
+/** "Not there for this person": a 404, or a 403 `TASK_ACCESS_DENIED` (the same answer in another coat). Wherever a screen hides on a 404 it hides on this too. */
+export const isGone = (error: unknown): boolean => error instanceof ApiError && (error.status === 404 || (error.status === 403 && error.code === "TASK_ACCESS_DENIED"));

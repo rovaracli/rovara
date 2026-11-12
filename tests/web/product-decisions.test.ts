@@ -5,7 +5,7 @@ import { expect, it } from "vitest";
 import { screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { PROJECT_PEOPLE_STALE_MESSAGE } from "@agentx/cloud-contracts/web";
 import { expectNoAxeViolations } from "./support/axe.js";
-import { DECISION_ID, decision, mountProject, type Answer } from "./support/people-fixture.js";
+import { DECISION_ID, decision, mountProject, settleLazy, type Answer } from "./support/people-fixture.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
 /** Any v4 request id. */
@@ -23,7 +23,7 @@ it("switch off: no panel and no request for decisions (and the same page with th
   control.close();
   const f = mountProject({ on: false, path: OVERVIEW });
   await screen.findByRole("heading", { name: "payments" });
-  await new Promise(resolve => setTimeout(resolve, 80));
+  await settleLazy();
   expect(screen.queryByRole("heading", { name: "Product decisions" })).toBeNull();
   expect(f.calls(request => request.path.includes("product-decisions"))).toEqual([]);
   f.close();
@@ -50,6 +50,7 @@ it("approving sends the option id and the revision read, with a request id, then
   let body: Record<string, unknown> | undefined, path = "";
   const f = mountProject({ path: OVERVIEW, decisions: list(decision()), write: request => { if (request.method === "POST") { body = request.body as Record<string, unknown>;path = request.path;return ok({ decision: decision({ status: "approved", revision: 5 }) }); } return undefined; } });
   fireEvent.click(await screen.findByRole("button", { name: "Approve: Request a refund" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Approve" }));
   await screen.findByText("Approved.");
   expect(path).toBe("/v1/app/projects/payments/product-decisions/" + DECISION_ID);
   expect(body).toEqual({ action: "approve", requestId: anyId(), expectedRevision: 4, optionId: "o2" });
@@ -87,13 +88,15 @@ it("each refusal reason has its own plain words, and a reader who can do neither
 it("a stale answer says so and reloads the list; any other refusal is the server's own words", async () => {
   const f = mountProject({ path: OVERVIEW, decisions: list(decision()), write: () => ({ status: 409, body: { error: { code: "CHANGE_STALE", message: "x" } } }) });
   fireEvent.click(await screen.findByRole("button", { name: "Approve: Refund now" }));
-  expect((await within(await panel()).findByRole("alert")).textContent).toBe(PROJECT_PEOPLE_STALE_MESSAGE);
+  fireEvent.click(await screen.findByRole("button", { name: "Approve" }));
+  expect((await screen.findByRole("alert")).textContent).toBe(PROJECT_PEOPLE_STALE_MESSAGE);
   await waitFor(() => { expect(reads(f)).toBeGreaterThan(1); });
   f.close();
   const words = "Collaborators can approve only low-risk product decisions.";
   const g = mountProject({ path: OVERVIEW, decisions: list(decision()), write: () => ({ status: 403, body: { error: { code: "FORBIDDEN", message: words } } }) });
   fireEvent.click(await screen.findByRole("button", { name: "Approve: Refund now" }));
-  expect((await within(await panel()).findByRole("alert")).textContent).toBe(words);
+  fireEvent.click(await screen.findByRole("button", { name: "Approve" }));
+  expect((await screen.findByRole("alert")).textContent).toBe(words);
   g.close();
 });
 

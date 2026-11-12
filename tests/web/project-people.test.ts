@@ -6,7 +6,7 @@ import { expect, it } from "vitest";
 import { screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { PROJECT_LAST_MAINTAINER_MESSAGE, PROJECT_PEOPLE_STALE_MESSAGE } from "@agentx/cloud-contracts/web";
 import { expectNoAxeViolations } from "./support/axe.js";
-import { ID, approvals, member, mountProject, peopleView, settings, type Answer } from "./support/people-fixture.js";
+import { ID, approvals, member, mountProject, peopleView, settings, settleLazy, type Answer } from "./support/people-fixture.js";
 
 // jsdom has no ResizeObserver, which the switch inside a form measures with.
 globalThis.ResizeObserver ??= class { observe(): void { /* none */ } unobserve(): void { /* none */ } disconnect(): void { /* none */ } };
@@ -24,7 +24,7 @@ it("switch off: no People tab, none of its requests, and ?tab=people is the over
   control.close();
   const f = mountProject({ on: false });
   await screen.findByRole("heading", { name: "payments" });
-  await new Promise(resolve => setTimeout(resolve, 80));
+  await settleLazy();
   expect(screen.queryByRole("tab", { name: "People" })).toBeNull();
   expect(screen.getByRole("tab", { name: "Overview", selected: true })).toBeTruthy();
   expect(f.calls(request => /people|code-settings|collaborator-approvals|product-decisions/u.test(request.path))).toEqual([]);
@@ -264,6 +264,7 @@ it("collaborator approvals: the maintainer's switch sends the new state under th
   const toggle = await screen.findByRole("switch", { name: "Let collaborators approve low-risk product decisions" });
   expect(toggle.getAttribute("aria-checked")).toBe("true");
   fireEvent.click(toggle);
+  fireEvent.click(await screen.findByRole("button", { name: "Turn off" }));
   expect(await screen.findByText(PROJECT_PEOPLE_STALE_MESSAGE)).toBeTruthy();
   expect(body).toEqual({ requestId: anyId(), enabled: false, expectedRevision: 2 });
   await waitFor(() => { expect(reads).toBeGreaterThan(1); });

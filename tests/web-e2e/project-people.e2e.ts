@@ -16,17 +16,22 @@ async function enter(page: Page, context: BrowserContext, request: APIRequestCon
 }
 const noSidewaysScroll = (page: Page) => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth && document.body.scrollWidth <= innerWidth);
 const wait = (page: Page) => page.waitForLoadState("networkidle");
+// The routes the switch keeps shut, and the two lazy chunks that hold the screens (their file names start with the component's name).
+const PEOPLE_ROUTES = /\/v1\/web\/projects\/payments\/(?:people|product-decisions|collaborator-approvals|code-settings)/u, PEOPLE_CHUNKS = /ProjectPeopleTab|ProductDecisionsPanel/u;
+const watch = (page: Page) => { const routes: string[] = [], chunks: string[] = [];page.on("request", asked => { const url = asked.url();if (PEOPLE_ROUTES.test(url)) routes.push(url);if (PEOPLE_CHUNKS.test(url)) chunks.push(url); });return { routes, chunks }; };
 
 for (const width of [1280, 390] as const) {
  test(`switch off at ${String(width)}: the project page has no People tab and reads nothing of it`, async ({ page, context, request, baseURL }) => {
-  const reads: string[] = [];page.on("request", asked => { if (/\/projects\/payments\/(?:people|code-settings|collaborator-approvals|product-decisions)/u.test(asked.url())) reads.push(asked.url()); });
+  const seen = watch(page);
   await enter(page, context, request, baseURL, width, {});await installPeopleMock(page);await page.goto("/app/projects/payments?tab=people");
   await expect(page.getByRole("heading", { name: "payments", level: 1 })).toBeVisible();await expect(page.getByRole("tab", { name: "Overview", selected: true })).toBeVisible();
-  await expect(page.getByRole("tab", { name: "People" })).toHaveCount(0);await wait(page);expect(reads).toEqual([]);
+  await expect(page.getByRole("tab", { name: "People" })).toHaveCount(0);await wait(page);expect(seen.routes).toEqual([]);expect(seen.chunks).toEqual([]);
  });
  test(`People at ${String(width)}: change a role, add a person and invite one; axe clean in both themes`, async ({ page, context, request, baseURL }) => {
-  await enter(page, context, request, baseURL, width, { "rovara.people": "v2" });const mock = await installPeopleMock(page);await page.goto("/app/projects/payments?tab=people");
+  const seen = watch(page);await enter(page, context, request, baseURL, width, { "rovara.people": "v2" });const mock = await installPeopleMock(page);await page.goto("/app/projects/payments?tab=people");
   await expect(page.getByRole("tab", { name: "People", selected: true })).toBeVisible();
+  // The positive control of the off test: with the switch on the same watcher does see the routes and the chunk.
+  expect(seen.chunks.some(url => /ProjectPeopleTab/u.test(url))).toBe(true);expect(seen.routes.some(url => /\/people/u.test(url))).toBe(true);
   const priya = page.getByRole("row", { name: /Priya Rao/u });await expect(priya).toContainText("Collaborator");
   await expect(page.getByRole("heading", { name: "Collaborator approvals" })).toBeVisible();await expect(page.getByRole("heading", { name: "Merge rules" })).toBeVisible();
   expect(await noSidewaysScroll(page)).toBe(true);await checkA11y(page, { theme: "light" });await evidenceShot(page, { path: `${shots}/people-light-${String(width)}.png`, fullPage: true });

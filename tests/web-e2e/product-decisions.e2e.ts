@@ -23,7 +23,7 @@ for (const width of [1280, 390] as const) {
   await expect(panel.getByRole("heading", { name: "Which wording should the refund button use?" })).toBeVisible();await expect(panel.getByText("Low risk")).toBeVisible();
   expect(await noSidewaysScroll(page)).toBe(true);await checkA11y(page, { theme: "light" });await evidenceShot(page, { path: `${shots}/decision-light-${String(width)}.png`, fullPage: true });
   await checkA11y(page, { theme: "dark" });await evidenceShot(page, { path: `${shots}/decision-dark-${String(width)}.png`, fullPage: true });
-  await panel.getByRole("button", { name: "Approve: Request a refund" }).click();
+  await panel.getByRole("button", { name: "Approve: Request a refund" }).click();await page.getByRole("dialog").getByRole("button", { name: "Approve", exact: true }).click();
   await expect(panel.getByText("Approved:")).toBeVisible();await expect(panel.getByRole("button", { name: /^Approve:/u })).toHaveCount(0);
   const approvals = mock.sent.filter(item => item.method === "POST" && item.path.endsWith("/product-decisions/" + DECISION_ID));expect(approvals).toHaveLength(1);
   expect(approvals[0]!.body).toMatchObject({ action: "approve", optionId: "o2", expectedRevision: 4 });
@@ -33,7 +33,7 @@ for (const width of [1280, 390] as const) {
   await enter(page, context, request, baseURL, width);const mock = await installPeopleMock(page, { decisions: false });await page.goto("/app/projects/payments");
   await expect(page.getByText("No product decisions waiting")).toBeVisible();await checkA11y(page, { theme: "light" });
   await page.goto("/app/projects/payments?tab=people");
-  const toggle = page.getByRole("switch", { name: "Let collaborators approve low-risk product decisions" });await expect(toggle).toBeChecked();await toggle.click();await expect(toggle).not.toBeChecked();
+  const toggle = page.getByRole("switch", { name: "Let collaborators approve low-risk product decisions" });await expect(toggle).toBeChecked();await toggle.click();await page.getByRole("dialog").getByRole("button", { name: "Turn off", exact: true }).click();await expect(toggle).not.toBeChecked();
   const writes = mock.sent.filter(item => item.method === "PUT" && item.path.endsWith("/collaborator-approvals"));expect(writes).toHaveLength(1);expect(writes[0]!.body).toMatchObject({ enabled: false, expectedRevision: 2 });
   await checkA11y(page, { theme: "dark" });await evidenceShot(page, { path: `${shots}/approvals-dark-${String(width)}.png`, fullPage: true });
  });

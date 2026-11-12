@@ -11,6 +11,7 @@ import { VisibleText } from "../../../design/VisibleText.js";
 import { isConfirmUrl } from "../../../text/links.js";
 import { ApiError } from "../../../api/errors.js";
 import { codeSettingsKey, useCodeSettings, useProjectPeopleApi } from "../../../api/project-people.js";
+import { StaleNotice } from "./StaleNotice.js";
 import { OTHERS_SAVED, WAITING_FOR_ADMIN, WAITING_FOR_ADMIN_BODY, parseReviewers } from "./people-text.js";
 import { failureText, useRequestId } from "./people-write.js";
 
@@ -23,7 +24,7 @@ export const STALE_SETTINGS_MESSAGE = "Someone changed these settings. Reload an
  * project reads them; the server's `viewer.canEditCodeSettings` decides who may change them. Turning self-approval ON answers 202: it waits for a company owner or admin ("Waiting for an admin"), and nothing changes until one confirms.
  */
 export function MergeRulesSection({ project, canEdit, canConfirm }: { project: string; canEdit: boolean; canConfirm: boolean }) {
- const read = useCodeSettings(project, true), [open, setOpen] = useState(false), [waiting, setWaiting] = useState<{ confirmUrl: string | undefined; others: boolean } | false>(false);
+ const read = useCodeSettings(project, true), [opened, setOpened] = useState<Settings>(), [waiting, setWaiting] = useState<{ confirmUrl: string | undefined; others: boolean } | false>(false);
  const host = useAppHost();
  return <section className="rv-project-section rv-people-merge" aria-labelledby="rv-people-merge-title">
   <h2 id="rv-people-merge-title">Merge rules</h2>
@@ -35,19 +36,20 @@ export function MergeRulesSection({ project, canEdit, canConfirm }: { project: s
      <div><dt>Merge method</dt><dd>{METHOD_WORDS[read.data.mergeMethod] ?? read.data.mergeMethod}</dd></div>
     </dl>
     {waiting !== false && <div role="status" className="rv-people-waiting"><p><strong>{WAITING_FOR_ADMIN}</strong></p><p>{WAITING_FOR_ADMIN_BODY}{waiting.others ? " " + OTHERS_SAVED : ""}</p>{canConfirm && waiting.confirmUrl !== undefined && <Button onClick={() => { host.openExternal(waiting.confirmUrl!); }}>Open the confirmation</Button>}</div>}
-    {canEdit ? <div className="rv-people-actions"><Button onClick={() => { setOpen(true); }}>Change merge rules</Button></div> : <p className="rv-muted">Only a project maintainer can change these.</p>}
-    {open && <MergeRulesDialog project={project} settings={read.data} canConfirm={canConfirm} onOpenChange={setOpen} onWaiting={(url, others) => { setWaiting({ confirmUrl: url ?? undefined, others }); }} />}
+    {canEdit ? <div className="rv-people-actions"><Button onClick={() => { setOpened(read.data); }}>Change merge rules</Button></div> : <p className="rv-muted">Only a project maintainer can change these.</p>}
+    {opened !== undefined && <MergeRulesDialog project={project} settings={opened} canConfirm={canConfirm} onClose={() => { setOpened(undefined); }} onWaiting={(url, others) => { setWaiting({ confirmUrl: url ?? undefined, others }); }} />}
    </>}
  </section>;
 }
 
-function MergeRulesDialog({ project, settings, canConfirm, onOpenChange, onWaiting }: { project: string; settings: Settings; canConfirm: boolean; onOpenChange: (open: boolean) => void; onWaiting: (confirmUrl: string | null, others: boolean) => void }) {
+/** `settings` is what the page read WHEN THE DIALOG OPENED (the section captures it then): the draft starts from it and every save is fenced by its revision, whatever a refetch brings meanwhile. */
+function MergeRulesDialog({ project, settings, canConfirm, onClose, onWaiting }: { project: string; settings: Settings; canConfirm: boolean; onClose: () => void; onWaiting: (confirmUrl: string | null, others: boolean) => void }) {
  const api = useProjectPeopleApi(), query = useQueryClient(), host = useAppHost(), id = useRequestId();
  const [method, setMethod] = useState<string>(settings.mergeMethod === "unknown" ? "" : settings.mergeMethod), [self, setSelf] = useState(settings.allowSelfApproval), [reviewers, setReviewers] = useState(settings.codeReviewers.join("\n"));
- const [busy, setBusy] = useState(false), [error, setError] = useState<string>(), [pending, setPending] = useState<{ confirmUrl?: string; others: boolean }>();
+ const [busy, setBusy] = useState(false), [error, setError] = useState<string>(), [pending, setPending] = useState<{ confirmUrl?: string; others: boolean }>(), [stale, setStale] = useState(false);
  const edit = <T,>(set: (value: T) => void) => (value: T) => { id.reset();set(value); };
  async function save() {
-  if (busy) return;
+  if (busy || stale) return;
   const parsed = parseReviewers(reviewers);
   if (!parsed.ok) { setError(parsed.message);return; }
   const mergeMethod: "squash" | "merge" | undefined = method === "merge" ? "merge" : method === "squash" ? "squash" : undefined;
@@ -58,27 +60,27 @@ function MergeRulesDialog({ project, settings, canConfirm, onOpenChange, onWaiti
   try {
    const result = await api.putCodeSettings(project, body);id.reset();
    await query.invalidateQueries({ queryKey: codeSettingsKey(project) });
-   if (result.kind === "done") { onOpenChange(false);return; }
+   if (result.kind === "done") { onClose();return; }
    const url = result.kind === "needs_confirmation" && result.confirmUrl !== undefined && isConfirmUrl(result.confirmUrl, host.origin) ? result.confirmUrl : undefined;
    const others = body.mergeMethod !== undefined || body.codeReviewers !== undefined;setPending(url === undefined ? { others } : { confirmUrl: url, others });onWaiting(url ?? null, others);
   } catch (failure) {
    id.settle(failure);
-   const stale = failure instanceof ApiError && (failure.message === STALE_SETTINGS_MESSAGE || failure.status === 409);
-   if (stale) { setError(STALE_SETTINGS_MESSAGE);await query.invalidateQueries({ queryKey: codeSettingsKey(project) }); } else setError(failureText(failure));
+   const isStaleSave = failure instanceof ApiError && (failure.message === STALE_SETTINGS_MESSAGE || failure.status === 409);
+   if (isStaleSave) { setStale(true);setError(STALE_SETTINGS_MESSAGE);await query.invalidateQueries({ queryKey: codeSettingsKey(project) }); } else setError(failureText(failure));
   } finally { setBusy(false); }
  }
- return <Dialog title="Change merge rules" open onOpenChange={next => { if (!busy) onOpenChange(next); }}>
+ return <Dialog title="Change merge rules" open onOpenChange={next => { if (!busy && !next) onClose(); }}>
   {pending === undefined ? <form className="rv-people-form" onSubmit={event => { event.preventDefault();void save(); }}>
    <Select label="Merge method" value={method} onValueChange={edit(setMethod)} placeholder="Not set" options={[{ value: "squash", label: METHOD_WORDS["squash"]! }, { value: "merge", label: METHOD_WORDS["merge"]! }]} />
    <TextArea label="Reviewers Rovara asks" hint="A person's login, or organization/team. One per line." rows={3} value={reviewers} onChange={event => { id.reset();setReviewers(event.target.value); }} />
    <Switch label="Let a person approve a pull request Rovara made for them" checked={self} onCheckedChange={edit(setSelf)} />
    {self && !settings.allowSelfApproval && <p className="rv-muted">Turning this on needs a company owner or admin to confirm it.</p>}
-   {error !== undefined && <p role="alert"><VisibleText text={error} /></p>}
-   <div className="rv-people-actions"><Button type="submit" variant="primary" busy={busy}>Save</Button><Button disabled={busy} onClick={() => { onOpenChange(false); }}>Cancel</Button></div>
+   {stale && error !== undefined ? <StaleNotice message={error} onDiscard={onClose} /> : error !== undefined && <p role="alert"><VisibleText text={error} /></p>}
+   <div className="rv-people-actions"><Button type="submit" variant="primary" busy={busy} disabled={stale}>Save</Button><Button disabled={busy} onClick={onClose}>Cancel</Button></div>
   </form> : <div className="rv-people-form" role="status">
    <p><strong>{WAITING_FOR_ADMIN}</strong></p><p>{WAITING_FOR_ADMIN_BODY}{pending.others ? " " + OTHERS_SAVED : ""}</p>
    {canConfirm && pending.confirmUrl !== undefined && <Button variant="primary" onClick={() => { host.openExternal(pending.confirmUrl!); }}>Open the confirmation</Button>}
-   <div className="rv-people-actions"><Button onClick={() => { onOpenChange(false); }}>Close</Button></div>
+   <div className="rv-people-actions"><Button onClick={onClose}>Close</Button></div>
   </div>}
  </Dialog>;
 }
