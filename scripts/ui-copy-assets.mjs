@@ -38,6 +38,8 @@ for (const path of ["design/design.css", "look-v2.css", "shell/shell.css", "scre
  "screens/admin/approval-window/approval-window.css",
  // Continue in your own tool: the task page's sheet (switch rovara.continue = v2; its own lazy chunk).
  "screens/session/continue-in-tool.css",
+ // Automations (chains and triggers; the `chains` feature; their own lazy chunks).
+ "screens/automations/automations.css",
  // Project People tab, product decisions and the join landing (lane exp/project-people; their own lazy chunks).
  "screens/project/people/people.css"]) {
  const source = new URL(`../packages/ui/src/${path}`, import.meta.url);
