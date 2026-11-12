@@ -25,7 +25,9 @@ import { SETUP_PIN_MOVED } from "../broker/setup-pins.js";
 import { StatusReply } from "../status-reply.js";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "./types.js";
 import { PROJECT_NOT_FOUND_IN_APP, bodyError, signInStoreOf } from "./common.js";
-import { appProjectSummary, latestProjectRecord, repositoryFullName, setupCheckDepsOf, visibleProjectRoles } from "./project-list.js";
+import { appProjectSummary, latestProjectRecord, repositoryFullName, setupCheckDepsOf, visibleMemberRoles, visibleProjectRoles } from "./project-list.js";
+import { readCollaboratorApprovals } from "../../collaborators/approvals-setting.js";
+import { projectRoleFloor } from "@agentx/cloud-contracts";
 import { projectRoleForRoute } from "./project-members.js";
 import { type OrgId, type ProjectCommand } from "@rovara-code/contracts";
 import { clearArchivedProjectLearning as clearArchivedProject } from "../../learning/cleanup.js";
@@ -49,16 +51,18 @@ export async function getAppProject(deps: DeveloperRouteDependencies, caller: De
   let name: string;
   try { name = decodeURIComponent(rawName); } catch { throw notFound(); }
   if (!AgentXNameSchema.safeParse(name).success) throw notFound();
-  const role = (await visibleProjectRoles(deps, caller, name)).get(name);
-  if (role === undefined) throw notFound();
-  const [record, meta] = await Promise.all([latestProjectRecord(deps, caller.orgId, name), readProjectMeta(deps, caller.orgId, name)]);
+  const memberRole = (await visibleMemberRoles(deps, caller, name)).get(name);
+  if (memberRole === undefined) throw notFound();
+  const role = projectRoleFloor(memberRole);
+  const [record, meta, collaboratorApprovals] = await Promise.all([latestProjectRecord(deps, caller.orgId, name), readProjectMeta(deps, caller.orgId, name), readCollaboratorApprovals(deps, caller.orgId, name, memberRole)]);
   if (record === undefined) throw notFound();
   const { definition } = record;
   const createdBy = meta?.createdBy ?? "unknown";
   const creator = createdBy === "unknown" ? undefined : await signInStoreOf(deps).getDeveloper(createdBy);
   const egress = await readEgressDomains(deps, caller.orgId, { kind: "project", project: name });
   return {
-    ...await appProjectSummary(deps, name, role, record, meta),
+    ...await appProjectSummary(deps, name, role, record, meta, memberRole),
+    collaboratorApprovals,
     ...(record.workingBranchSelections===undefined?{}:{savedWorkingBranches: (()=>{
       const selections=z.record(AgentXNameSchema,z.object({branch:WorkingBranchNameSchema,commit:z.string().regex(/^[a-f0-9]{40}$/),installationId:z.number().int().positive(),repositoryId:z.number().int().positive()}).strict()).safeParse(record.workingBranchSelections);
       if(!selections.success)throw agentXError("RUNTIME_UNAVAILABLE","Saved working branch settings could not be read.");

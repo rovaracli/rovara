@@ -305,7 +305,10 @@ export async function routeDecisionCards<C extends DecisionCaller>(deps: Decisio
   }
 
   // reject
-  const body = DecisionRejectBodySchema.safeParse(request.body);
+  // Owner decision 99: a Slack press may REJECT a coding plan (and nothing else). Its body carries the digest of the message it was pressed on, so a message that is out of date cannot reject a newer plan; the strict body schema has no such field, so it is taken off first.
+  const sentBody = request.body !== null && typeof request.body === "object" ? request.body as Record<string, unknown> : {};
+  const { shownDigest: shownInChat, ...withoutDigest } = sentBody;
+  const body = DecisionRejectBodySchema.safeParse(request.surface === "chat" ? withoutDigest : request.body);
   if (!body.success) return ISSUE(body.error);
   const earlier = await deps.store.findDecision(who, body.data.requestId);
   if (earlier !== undefined) {
@@ -315,6 +318,10 @@ export async function routeDecisionCards<C extends DecisionCaller>(deps: Decisio
   const pending = pendingCard(await project(deps, caller), cardId);
   const { card, tabs } = pending;
   if (!card.actions.some((action2) => action2.kind === "reject") || !card.rejectReasons.includes(body.data.reason)) throw agentXError("NOT_FOUND", DECISION_FULL_PAGE_MESSAGE);
+  if (request.surface === "chat") {
+    if (card.kind !== "approve_plan") throw agentXError("NOT_FOUND", DECISION_FULL_PAGE_MESSAGE);
+    if (shownInChat !== pending.digest) throw agentXError("CHANGE_STALE", DECISION_CHANGED_MESSAGE);
+  }
   // A card with tabs is rejected at the first document still waiting.
   const tab = tabs === undefined ? undefined : tabsPending(tabs)[0];
   const acting = actingSubject(pending, tab);

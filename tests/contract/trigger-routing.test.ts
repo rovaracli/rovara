@@ -1,4 +1,5 @@
 // Plan 4 Task 18: the trigger routes are reachable through the real broker, on the paths the plan names, and answer what the route functions answer.
+import "../support/automations-on.js";
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 import { DEFAULT_AGENT_GUARDRAILS } from "@rovara-code/contracts";

@@ -72,7 +72,7 @@ function attempt(reader: RepositoryReader, cwd: string, legacyOnly: boolean, tim
       if (message.type === "read" && typeof message.path === "string") {
         const { id, path } = message;
         reader.read(path).then(
-          (text) => { if (!settled) worker.postMessage({ type: "text", id, text, exhausted: reader.budgetExhausted?.() === true }); },
+          (text) => { if (!settled) worker.postMessage({ type: "text", id, text, exhausted: reader.budgetExhausted?.() === true, skipped: [...(reader.skippedImportant?.() ?? [])] }); },
           () => { if (!settled) worker.postMessage({ type: "text", id, text: undefined, exhausted: false }); },
         );
       } else if (message.type === "done" && message.detection !== undefined) finish({ kind: "done", detection: message.detection });

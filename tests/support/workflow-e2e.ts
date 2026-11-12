@@ -2,6 +2,7 @@
 // broker's start-workflow event, the notifier posts to a strict Slack double, buttons and modals go through the
 // real interactivity handler, and a worker stub runs the real run-task on the scripted faux model against a real
 // git repository. GitHub is a fake that only accepts a push made with a push-scoped token.
+import { APP_CSRF_HEADER, appCsrfTokenFor } from "../../packages/broker/src/developer/app-csrf.js";
 import { createHash, createHmac, generateKeyPairSync, randomUUID, sign as cryptoSign } from "node:crypto";
 import { DECIDE_COOKIE, DecideStore, csrfTokenFor } from "../../packages/broker/src/developer/decide-session.js";
 import { execFile as execFileCallback, execFileSync } from "node:child_process";
@@ -282,6 +283,8 @@ export async function createWorkflowE2E(options: {
   checkBudgetMs?: () => number;
   /** Runs in the worker just before it publishes, with the repository's directory (to change the workspace, say). */
   beforePublish?: (repositoryDirectory: string) => Promise<void>;
+  /** Runs while an adoption run ("Continue in your own tool") has checked the head out, before it answers: a test moves the pull request here. */
+  duringAdopt?: () => Promise<void>;
   /**
    * Task 21: the scripted classifier model that routes a plain top-level mention in the Slack service. Absent: the
    * classifier is unavailable, so every plain mention gets the Just answer / Quick / Full card.
@@ -717,6 +720,25 @@ export async function createWorkflowE2E(options: {
       baseBranch: payload.baseBranch, previousCommit: remoteHead, commit, treeSha: tree, checks: [], reconciled: updated.reconciled };
   };
 
+  /** Clone credentials asked for by adoption runs ("Continue in your own tool"): the run asks for no more than a clone. */
+  const adoptCredentials: Array<"clone" | "push"> = [];
+  /**
+   * The worker's adoption of a head pushed outside Rovara ("Continue in your own tool"), simulated as maintain-pull-request.ts adoptOutsideHead does it: a CLONE credential, GitHub's branch must be at
+   * exactly the head the broker named, the workspace checks that commit out, and nothing is pushed or called back.
+   */
+  const adoptOutsideHead = async (invocation: Extract<WorkerInvocation, { kind: "maintain" }>, repository: { name: string }): Promise<unknown> => {
+    const { payload } = invocation;
+    const head = payload.workflowAdopt!.headCommit;
+    const credential = await createRepositoryCredentialProvider({ controlPlaneUrl: CONTROL_PLANE_URL, invocation, fetchImplementation: workerFetch(handler) })(repository as never);
+    adoptCredentials.push(github.tokens.get(credential.token ?? "") ?? "push");
+    if (github.pushes.get(payload.headBranch)?.commit !== head || payload.expectedHeadCommit !== head) throw new Error("STALE_FENCE: pull request head changed since the re-check was asked for");
+    await git(["checkout", "--force", "-B", payload.headBranch, head]);
+    await options.duringAdopt?.();
+    const tree = await git(["rev-parse", `${head}^{tree}`]);
+    return { action: "sync", repository: payload.repository, number: payload.pullRequestNumber, url: `${REPOSITORY_URL.replace(/\.git$/u, "")}/pull/${String(payload.pullRequestNumber)}`, state: "open",
+      headBranch: payload.headBranch, baseBranch: payload.baseBranch, previousCommit: head, commit: head, treeSha: tree, checks: [], codeBuildChecks: [], reconciled: true };
+  };
+
   /**
    * The worker's push of a reviewed fix to an existing pull request, simulated as the worker does it: the workspace must
    * still hold the reviewed tree, GitHub's branch head must be the one the broker expects (and the workspace must descend
@@ -726,6 +748,7 @@ export async function createWorkflowE2E(options: {
     const { payload } = invocation;
     const repository = payload.project.repositories.find((entry) => entry.name === payload.repository);
     if (repository === undefined) throw new Error(`the project has no repository ${payload.repository}`);
+    if (payload.workflowAdopt !== undefined) return adoptOutsideHead(invocation, repository);
     if (payload.action === "sync") return mergeBase(invocation, callbacks, repository);
     if (payload.action !== "append" || payload.workflowCandidateTreeSha === undefined) throw new Error("the E2E worker pushes only a reviewed fix");
     // The task's base is the one it started from, or one a merge of the base branch moved it to (Plan 6 Task 17).
@@ -878,6 +901,8 @@ export async function createWorkflowE2E(options: {
       && (item.developer as { slackUserId?: unknown } | undefined)?.slackUserId === owner).length > 0;
     ledger.push({ operationId: invocation.operationId, kind: invocation.kind, ...(invocation.kind === "task" && invocation.payload.workflowMode !== undefined ? { mode: invocation.payload.workflowMode } : {}),
       ...(invocation.kind === "maintain" && invocation.payload.workflowSync !== undefined ? { sync: true } : {}),
+      // An adoption of an outside head ("Continue in your own tool") pushes nothing and changes no code: it is not a fix push.
+      ...(invocation.kind === "maintain" && invocation.payload.workflowAdopt !== undefined ? { adopt: true } : {}),
       decided: structuredClone({ decisions: owning?.decisions ?? [], feedbackDecisions: owning?.feedbackDecisions ?? [], artifacts: owning?.artifacts ?? [],
         // The fix rounds Rovara began on its own so far (Plan 6 Tasks 15 to 17): one `fixing` milestone is written in the commit that begins each, and none is ever taken back.
         automaticFixRounds: db.find((item) => item.entityType === "CODE_MILESTONE" && item.kind === "fixing" && item.taskId === owningTask?.taskId).length }),
@@ -1701,6 +1726,52 @@ export async function createWorkflowE2E(options: {
         await rm(index, { force: true });
         await rm(file, { force: true });
       }
+    },
+
+    /**
+     * Someone pushes to the pull request's branch outside Rovara ("Continue in your own tool"): one more commit on top of the branch's head with `path` holding `content`, made in the repository (so a
+     * worker can fetch it) without touching the workspace's checkout, and GitHub's branch and pull request move to it. Answers the commit.
+     */
+    async pushOutside(headBranch: string, path: string, content: string): Promise<string> {
+      const prepared = await this.prepareOutsidePush(headBranch, path, content);
+      prepared.push();
+      return prepared.commit;
+    },
+
+    /** The commit of a push `pushOutside` would make, made now in the repository; `push()` lands it on GitHub later, at once (for a test that pushes in the middle of a run). */
+    async prepareOutsidePush(headBranch: string, path: string, content: string): Promise<{ commit: string; push: () => void }> {
+      const parent = github.pushes.get(headBranch)?.commit;
+      if (parent === undefined) throw new Error(`nothing was pushed to ${headBranch} yet`);
+      const index = join(root, `.agentx-e2e-outside-${randomUUID()}`);
+      const file = join(root, `.agentx-e2e-outside-file-${randomUUID()}`);
+      try {
+        await writeFile(file, content);
+        await git(["read-tree", parent], { GIT_INDEX_FILE: index });
+        const blob = await git(["hash-object", "-w", file]);
+        await git(["update-index", "--add", "--cacheinfo", `100644,${blob},${path}`], { GIT_INDEX_FILE: index });
+        const tree = await git(["write-tree"], { GIT_INDEX_FILE: index });
+        const commit = await git(["-c", "user.name=Maya", "-c", "user.email=maya@example.invalid", "commit-tree", tree, "-p", parent, "-m", `outside ${path}`]);
+        return { commit, push: () => github.pushAsPerson(headBranch, commit, tree, [parent]) };
+      } finally {
+        await rm(index, { force: true });
+        await rm(file, { force: true });
+      }
+    },
+
+    /** The access each adoption run's repository credential had (it must only ever clone). */
+    adoptCredentials,
+
+    /** A POST to an app route (`/v1/app/...`) from a live browser session of `who`, through the web route family; answers the status and parsed reply. */
+    async webPost(path: string, body: unknown, who: Developer = SLACK_MAYA): Promise<{ status: number; body: Record<string, unknown> }> {
+      const sessionId = browserSession(who);
+      const stored = db.get(`SESSION#${sessionId}`, "META") as Record<string, unknown>;
+      db.set({ ...stored, authTime: new Date().toISOString() });
+      const response = await harness.handler({
+        version: "2.0", rawPath: path.replace("/v1/app/", "/v1/web/"), rawQueryString: "", routeKey: "ANY /v1/web/{proxy+}", body: JSON.stringify(body),
+        headers: { cookie: `__Host-agentx_review_session=${sessionId}`, "sec-fetch-site": "same-origin", origin: reviewOrigin, [APP_CSRF_HEADER]: appCsrfTokenFor(sessionId), "content-type": "application/json" },
+        requestContext: { requestId: randomUUID(), http: { method: "POST" } },
+      });
+      return { status: response.statusCode, body: JSON.parse(response.body) as Record<string, unknown> };
     },
 
     /** Sends the broker a Slack ingress event directly, as the AWS wiring's invoke does, and answers its status and parsed reply. */

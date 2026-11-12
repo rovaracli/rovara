@@ -1,5 +1,6 @@
 // Part of the broker (split out of ../broker.ts): createAwsBrokerHandler: the request router.
 
+import { outsidePushTarget } from "../../rovara-code/outside-push.js";
 import { attentionDeliveryOf } from "./attention-wiring.js";
 import { deliverAttention } from "../../notifications/attention.js";
 import { fixtureStoreForRoutes } from "../../test-env/fixture-store-aws.js";
@@ -58,6 +59,7 @@ import { hookProviders } from "../../triggers/providers/index.js";
 import type { settlementBudgets } from "../../spend/settlement-job.js";
 import { redriveUntil, runSettlementJobs, runSpendSweep, timedSettlementJob, type SettlementJob } from "../../spend/settlement-job.js";
 import { runApprovalSweep } from "../../agents/approvals.js";
+import { backfillOrgOpenApprovals } from "../../agents/org-open-approvals-backfill.js";
 import { memberRemovalHook, onProjectArchived, onProjectMemberChanged, runMemberMergeDrain } from "../../agents/lifecycle.js";
 import { escalateOwnerRequests } from "../../spend/requests.js";
 import { fireChainSchedule, sweepSchedules } from "../../triggers/schedules.js";
@@ -112,7 +114,7 @@ import { SESSION_EVENT_BUDGET_MS, auditModelKeys, isAuditDrainEvent, isChainSche
 import { handleAgentSkills, handleAgentTools } from "./task-operations.js";
 import { handleContextTools } from "./context-tools.js";
 import { handleDesignReviewPacket } from "./design-review-packet-route.js";
-import { SWEEP_EVENT_BUDGET_MS, headEventDependencies, processGithubWorkflowEvent, reconcileWorkflowMergeRecoveryTask, retryDueGithubWebhookEvents, retryGithubWebhookAsAdministrator } from "./terminal-and-github-events.js";
+import { SWEEP_EVENT_BUDGET_MS, headEventDependencies, outsidePushDependencies, processGithubWorkflowEvent, reconcileWorkflowMergeRecoveryTask, retryDueGithubWebhookEvents, retryGithubWebhookAsAdministrator } from "./terminal-and-github-events.js";
 import { completeThreadWorkspaceClose, ensureThreadWorkspace, markCommentAnswered, markThreadNoteAnswered, prepareThreadWorkspace, startThreadWorkspaceClose } from "./thread-workspaces.js";
 import { routeEditionDependencies } from "../../wiring/enterprise-identity.js";
 import { isWorkflowDispatchRecoveryEvent, retryDueWorkflowDispatches, startDuePlanEvidenceJobs } from "./workflow-items.js";
@@ -332,7 +334,20 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
         ...(agents === undefined ? [] : [timed("drain-member-merges", "drain", (budgetMs) => runMemberMergeDrain(removalDepsOf(agents, dependencies), { budgetMs }))]),
         // Task 21: approvals that expired, writes stuck after a claim, and handlers that never heard the outcome. A stuck write is driven again only while the
         // function has more than the connector's timeout and a margin left.
-        ...(agents === undefined ? [] : [timed("expire-approvals", "approvals", (budgetMs) => runApprovalSweep(agents, { budgetMs, redriveUntil: redriveUntil(startedAt) }))]),
+        ...(agents === undefined ? [] : [timed("expire-approvals", "approvals", async (budgetMs) => {
+          const jobStartedAt = Date.now();
+          const swept = await runApprovalSweep(agents, { budgetMs, redriveUntil: redriveUntil(startedAt) });
+          // 0.5.15: the one-off backfill of the companies' open indexes takes what the sweep left of this job's budget, and is one read of its marker once it is done.
+          const left = budgetMs - (Date.now() - jobStartedAt);
+          if (left < 1000) return swept;
+          try {
+            const orgIndex = await backfillOrgOpenApprovals(agents, { deadline: Date.now() + left });
+            return orgIndex.ran ? { ...swept, orgIndex } : swept;
+          } catch (error) {
+            console.log(JSON.stringify({ component: "broker", event: "approval.org_index_backfill_failed", error: error instanceof Error ? error.name : "unknown" }));
+            return swept;
+          }
+        })]),
         // Task 32 (PF13): owners' spend requests nobody answered get the org's admins, and requests whose time ran out end; a small cap, before the sweeps.
         ...(agents === undefined ? [] : [timed("escalate-owner-requests", "escalate", (budgetMs) => escalateOwnerRequests(agents, { budgetMs }))]),
         // Task 24b: with a small budget of its own, before the spend sweep.
@@ -711,6 +726,8 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
               verifyRepository: (repositoryUrl, webhookScope) => dependencies.githubPullRequests.verifyWebhookRepository(repositoryUrl, webhookScope),
             }),
             process: (workflowEvent, deliveryId) => processGithubWorkflowEvent(dependencies, workflowEvent, deliveryId),
+            // "Continue in your own tool": a push to an agentx/<uuid> branch is stored only when it is a task's own published branch, through that task's company's installation.
+            authorizeBranchPush: async (push) => await outsidePushTarget(outsidePushDependencies(dependencies), push) !== undefined,
             // Team record: every verified delivery is offered to the record (none while the switch is off).
             ...optional("recordTap", dependencies.teamRecord?.taps.github),
             // Plan 4 Task 21: pull request, issue, deployment and workflow events start triggers' work, through the signature check above and Task 20's dispatch.

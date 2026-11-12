@@ -1,17 +1,20 @@
 // Service-call detector: the outside services the code calls, from the code itself. A SageMaker Runtime client and its endpoint name (boto3 or the JS SDK), and HTTP hosts named in configuration files.
-// Hosts that are always local, reserved or just a namespace (localhost, example.*, w3.org) are not services.
+// A host is kept only when it could be a service the tests reach (see `service-hosts.ts`): not a local or reserved name, a private, link-local or cloud-metadata address, documentation, a badge, a registry or a code forge.
 import { mergeCandidates, urlLiteralCandidates } from "./dependency-candidates.js";
 import { codeEnvReferences, codeReferenceFindings, ormConfigCandidates } from "./env-config.js";
 import { goCodeCandidates } from "./go.js";
 import { javaCodeCandidates } from "./java.js";
 import { nodeCodeCandidates, nodeManifestCandidates } from "./node.js";
 import { pythonCodeCandidates, pythonManifestCandidates } from "./python.js";
+import { importantFirst } from "./read-priority.js";
+import { followsLinkKey, isDependencyHost } from "./service-hosts.js";
 import { type DependencyCandidate, type Detection, type Detector, findLine, lineOf } from "./types.js";
 
 const SOURCE_FILE = /\.(?:py|ts|tsx|js|mjs|cjs)$/u;
 const CONFIG_FILE = /(?:^|\/)(?:\.env\.example|[^/]+\.(?:ya?ml|toml|ini|cfg|json|properties))$/u;
 const SKIP_DIRS = /(?:^|\/)(?:node_modules|dist|build|\.git|venv|\.venv|vendor|tests?|__tests__|fixtures?)\//u;
-const IGNORED_HOSTS = /^(?:localhost|127\.|0\.0\.0\.0|.*\.example\.(?:com|org|net)|example\.(?:com|org|net)|.*\.test|.*\.invalid|.*\.local|www\.w3\.org|json-schema\.org|schemas\.[a-z.]+|xmlns\.com|purl\.org|opensource\.org|github\.com|raw\.githubusercontent\.com|pypi\.org|files\.pythonhosted\.org|registry\.npmjs\.org|npmjs\.org)$/u;
+/** Settings files that are not about the project's own services: lockfiles (every package's download address) and folders of documentation, examples and sample code. */
+const NOT_PROJECT_SETTINGS = /(?:^|\/)(?:package-lock\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml)$|(?:^|\/)(?:docs?|documentation|examples?|samples?|website|\.github\/(?:ISSUE|PULL_REQUEST)_TEMPLATE)\//u;
 const MAX_FILES = 150;
 const MAX_HTTP = 20;
 const ENDPOINT = /EndpointName\s{0,40}[=:]\s{0,40}["']([A-Za-z0-9](?:[A-Za-z0-9-]{0,62}))["']/u;
@@ -35,12 +38,13 @@ export const detectServices: Detector = async ({ repo }) => {
     if (endpoint?.[1] !== undefined) add("sagemaker_runtime", endpoint[1], { path, line: lineOf(text, endpoint.index) });
     else questions.push(`Which SageMaker endpoint does ${path} call? Its name is not written in the code, so it cannot be mocked until a maintainer names it (call at line ${String(callLine)}).`);
   }
-  for (const path of files.filter((candidate) => CONFIG_FILE.test(candidate)).slice(0, MAX_FILES)) {
+  // The files that say how the project is built and run come first, so the file cap never cuts them for the rest.
+  for (const path of importantFirst(files.filter((candidate) => CONFIG_FILE.test(candidate) && !NOT_PROJECT_SETTINGS.test(candidate))).slice(0, MAX_FILES)) {
     const text = await repo.read(path);
     if (text === undefined) continue;
-    for (const match of text.matchAll(/https?:\/\/([A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?)(?::\d{1,5})?(?=[/"'\s,;)]|$)/gu)) {
+    for (const match of text.matchAll(/https?:\/\/([A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?)(?::\d{1,5})?(?=[/"'\s,;)]|$)(\/[^\s"'<>),;]{0,200})?/gu)) {
       const host = match[1]!.toLowerCase();
-      if (!host.includes(".") || IGNORED_HOSTS.test(host)) continue;
+      if (!isDependencyHost(host, match[2]) || followsLinkKey(text.slice(Math.max(text.lastIndexOf("\n", match.index - 1) + 1, match.index - 200), match.index))) continue;
       add("http", host, { path, line: lineOf(text, match.index) });
     }
   }

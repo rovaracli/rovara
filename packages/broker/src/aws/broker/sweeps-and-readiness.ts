@@ -1,5 +1,6 @@
 // Part of the broker (split out of ../broker.ts): scheduled event predicates, dispatch failure records, E2E readiness.
 
+import { refuseOutsideRecheck } from "./outside-recheck.js";
 import { DeleteCommand, GetCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { AgentXError, AGENTX_PROTOCOL_VERSION, WORKFLOW_AUTO_IMPLEMENT_FAILED_MESSAGE, WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, WORKFLOW_AUTO_REVIEW_FAILED_MESSAGE, BRANCH_SYNC_UNSURE_MESSAGE, WorkspaceInstanceSchema, agentXError, workspaceRecordFields, workflowRequestId, workspaceSessionKey, projectAllows, projectMemberKey, type OrgId } from "@rovara-code/contracts";
 import { blockWorkflow, WorkflowSnapshotSchema, WORKFLOW_BLOCK_REASONS, blockWorkflowPullRequestUpdate, nextWorkflowPullRequestUpdate, endWorkflowBranchSync, blockWorkflowBranchSync, type WorkerInvocation, type WorkflowSnapshot, orgMemberKey } from "@agentx/cloud-contracts";
@@ -164,6 +165,13 @@ export async function recordWorkflowDispatchFailure(dependencies: AwsBrokerDepen
     // Plan 6 Task 17: a merge of the base that could not be started is not a reason to stop the task: it ends, and the task waits for the merge as it did (the day's count keeps a retry bounded).
     if (item.kind === "SYNC") {
       await endUnstartedBranchSync(dependencies, item, { gaveUp: true });
+      console.log(JSON.stringify({ component: "broker", event: "workflow.dispatch_gave_up", taskId: item.taskId, kind: item.kind, attempts }));
+      return;
+    }
+    // "Continue in your own tool": the person's checks of an adopted head could not be started however often it was tried: the task says so (blocked at VERIFY, with Retry checks).
+    if (item.kind === "RECHECK") {
+      await refuseOutsideRecheck(dependencies, item.taskId, item.workflowRevision, finalReason ?? "Rovara couldn't start them just now.");
+      await dependencies.documentClient.send(new DeleteCommand({ TableName: dependencies.tableName, Key: key }));
       console.log(JSON.stringify({ component: "broker", event: "workflow.dispatch_gave_up", taskId: item.taskId, kind: item.kind, attempts }));
       return;
     }

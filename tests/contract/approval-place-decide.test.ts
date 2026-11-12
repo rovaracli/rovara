@@ -3,6 +3,7 @@
 //   medium: a signed-in browser, or Slack / a tracker comment / a pull request comment by a linked person whose last INTERACTIVE Rovara sign-in (email code or company sign-in; a Slack or GitHub sign-in does not count) is inside the
 //           company's window; a tool gets the card's link;
 //   high: the card in a signed-in browser under the decide-grade sign-in, nothing else;
+//   rejecting (owner decision 99), at every risk: judged like a medium approval and no fresh sign-in (the app; Slack by a linked person inside the window; a tool gets the card's link);
 //   the owner decides; a project maintainer may decide a plan that is not theirs (owner notified, recorded as theirs).
 // Each rule has a test that it does not widen anything. The window edge is exact (just inside, just outside).
 import { randomUUID } from "node:crypto";
@@ -395,13 +396,165 @@ describe("who may decide", () => {
     expect(await t.decide(high.taskId, high, omar({ browser: true }), { decideGrade: true }, {}, "maintainer")).toEqual({ ok: true });
   });
 
-  it("a maintainer may also ask for changes (recorded as theirs); a maintainer's reject needs the fresh sign-in the app cannot give yet, so it is refused", async () => {
+  it("a maintainer may also ask for changes, recorded as theirs", async () => {
     const { t, plan, omar } = await maintainerWorld();
-    const rejected = await t.decide(plan.taskId, plan, omar({ browser: true }), {}, { decision: "REJECT" }, "maintainer");
-    expect(rejected).toMatchObject({ ok: false, code: "FORBIDDEN" });
-    expect(t.meta(plan.taskId).workflow.decisions).toEqual([]);
     expect(await t.decide(plan.taskId, plan, omar({ browser: true }), {}, { decision: "REQUEST_CHANGES", reason: "Keep the old export too." }, "maintainer")).toEqual({ ok: true });
     expect(t.decidedAs(plan.taskId)).toMatchObject({ decision: "REQUEST_CHANGES", actorId: OMAR.developerId, actorRole: "PROJECT_ADMIN" });
+  });
+
+  // Owner decision 99: a rejection is judged like a medium approval (the app; Slack by a linked person inside the window; a tool gets the card), at every risk, with no fresh sign-in.
+  describe("rejecting (owner decision 99)", () => {
+    const REJECT = { decision: "REJECT", reason: "Wrong approach." };
+    const SIGN_IN_AGAIN_TO_REJECT = "You can reject this plan here after you sign in to Rovara again";
+
+    it("a maintainer rejects from the app with no fresh sign-in: recorded as theirs, the task ends, the owner is told, the audit says reject", async () => {
+      const { t, plan, omar } = await maintainerWorld();
+      t.linkSlack(MAYA);
+      expect(await t.decide(plan.taskId, plan, omar({ browser: true }), {}, REJECT, "maintainer")).toEqual({ ok: true });
+      expect(t.decidedAs(plan.taskId)).toMatchObject({ decision: "REJECT", actorId: OMAR.developerId, actorRole: "PROJECT_ADMIN" });
+      expect(t.meta(plan.taskId).workflow).toMatchObject({ stage: "CLOSED", state: "COMPLETE" });
+      expect(t.dms()).toHaveLength(1);
+      expect(t.dms()[0]).toMatchObject({ status: "PENDING", slackUserId: MAYA.slackUserId });
+      expect(String(t.dms()[0]!.text)).toContain(`${OMAR.name} rejected the plan for your task "${String(t.meta(plan.taskId).title)}".`);
+      expect(t.placeEvents()).toHaveLength(1);
+      expect(t.placeEvents()[0]).toMatchObject({ actor: { id: OMAR.developerId }, facts: { place: "browser", answer: "reject", role: "maintainer" } });
+    });
+
+    it("a maintainer rejects from Slack inside the window; outside it, or with no recent sign-in, they are told to sign in again and nothing is decided", async () => {
+      const { t, plan, omar } = await maintainerWorld();
+      const chat = omar({ session: SLACK_DECISION_SESSION_ID, slackUserId: "U0OMAR001" });
+      t.linkSlack({ developerId: OMAR.developerId, slackUserId: "U0OMAR001" });
+      expect(await t.decide(plan.taskId, plan, chat, {}, REJECT, "maintainer")).toMatchObject({ ok: false, code: "FORBIDDEN", message: expect.stringContaining(SIGN_IN_AGAIN_TO_REJECT) as unknown });
+      t.signedIn(OMAR, "oidc", 25 * HOUR);
+      expect(await t.decide(plan.taskId, plan, chat, {}, REJECT, "maintainer")).toMatchObject({ ok: false, code: "FORBIDDEN", message: expect.stringContaining(SIGN_IN_AGAIN_TO_REJECT) as unknown });
+      expect(t.meta(plan.taskId).workflow.decisions).toEqual([]);
+      expect(t.dms()).toEqual([]);
+      t.signedIn(OMAR, "oidc", 2 * HOUR);
+      expect(await t.decide(plan.taskId, plan, chat, {}, REJECT, "maintainer")).toEqual({ ok: true });
+      expect(t.decidedAs(plan.taskId)).toMatchObject({ decision: "REJECT", actorId: OMAR.developerId, actorRole: "PROJECT_ADMIN" });
+      expect(t.placeEvents()[0]).toMatchObject({ facts: { place: "chat", answer: "reject", role: "maintainer", windowSeconds: 86_400 } });
+    });
+
+    it("the company's own window decides, to the edge, for a maintainer's Slack reject", async () => {
+      const { t, plan, omar } = await maintainerWorld();
+      const chat = omar({ session: SLACK_DECISION_SESSION_ID, slackUserId: "U0OMAR001" });
+      t.linkSlack({ developerId: OMAR.developerId, slackUserId: "U0OMAR001" });
+      t.setWindow(2 * 3600);
+      t.signedIn(OMAR, "oidc", 3 * HOUR);
+      expect(await t.decide(plan.taskId, plan, chat, {}, REJECT, "maintainer")).toMatchObject({ ok: false, message: expect.stringContaining(SIGN_IN_AGAIN_TO_REJECT) as unknown });
+      t.signedIn(OMAR, "oidc", HOUR);
+      expect(await t.decide(plan.taskId, plan, chat, {}, REJECT, "maintainer")).toEqual({ ok: true });
+    });
+
+    it("a Slack account that is not linked is told to link; a Slack sign-in does not count as a Rovara sign-in", async () => {
+      const { t, plan, omar } = await maintainerWorld();
+      const chat = omar({ session: SLACK_DECISION_SESSION_ID, slackUserId: "U0OMAR001" });
+      expect(await t.decide(plan.taskId, plan, chat, {}, REJECT, "maintainer")).toMatchObject({ ok: false, message: expect.stringContaining("Link your account to Rovara first") as unknown });
+      t.linkSlack({ developerId: OMAR.developerId, slackUserId: "U0OMAR001" });
+      t.signedIn(OMAR, "slack", 60_000);
+      expect(await t.decide(plan.taskId, plan, chat, {}, REJECT, "maintainer")).toMatchObject({ ok: false, message: expect.stringContaining(SIGN_IN_AGAIN_TO_REJECT) as unknown });
+      expect(t.meta(plan.taskId).workflow.decisions).toEqual([]);
+    });
+
+    it("a tool or token, even a maintainer's, never rejects: it gets the card's link", async () => {
+      const { t, plan, omar } = await maintainerWorld();
+      t.signedIn(OMAR, "oidc", 60_000);
+      expect(await t.decide(plan.taskId, plan, omar(), {}, REJECT, "maintainer")).toMatchObject({ ok: false, code: "FORBIDDEN", message: expect.stringContaining("Rejecting a plan is done in Rovara, signed in") as unknown });
+      expect(t.meta(plan.taskId).workflow.decisions).toEqual([]);
+    });
+
+    it("high risk: a maintainer rejects from Slack inside the window (no fresh sign-in), but still cannot APPROVE it from Slack, and the app approval still needs the fresh sign-in", async () => {
+      const { t, plan, omar } = await maintainerWorld("high");
+      const chat = omar({ session: SLACK_DECISION_SESSION_ID, slackUserId: "U0OMAR001" });
+      t.linkSlack({ developerId: OMAR.developerId, slackUserId: "U0OMAR001" });
+      t.signedIn(OMAR, "oidc", 60_000);
+      expect(await t.decide(plan.taskId, plan, chat, {}, {}, "maintainer")).toMatchObject({ ok: false, message: expect.stringContaining("This plan is high risk") as unknown });
+      expect(await t.decide(plan.taskId, plan, omar({ browser: true }), {}, {}, "maintainer")).toMatchObject({ ok: false, pageReason: "refused" });
+      expect(t.meta(plan.taskId).workflow.decisions).toEqual([]);
+      expect(await t.decide(plan.taskId, plan, chat, {}, REJECT, "maintainer")).toEqual({ ok: true });
+      expect(t.decidedAs(plan.taskId)).toMatchObject({ decision: "REJECT", actorRole: "PROJECT_ADMIN" });
+      expect(t.placeEvents()[0]).toMatchObject({ facts: { answer: "reject", risk: "high", place: "chat" } });
+    });
+
+    it("a maintainer still cannot carry or raise the owner's run limit, whatever they answer", async () => {
+      const { t, plan, omar } = await maintainerWorld();
+      expect(await t.decide(plan.taskId, plan, omar({ browser: true }), {}, { ...REJECT, acknowledgedRunLimitUsd: 50 }, "maintainer")).toMatchObject({ ok: false, code: "FORBIDDEN", message: expect.stringContaining(RUN_LIMIT_OWNER_DECIDES_WORDS) as unknown });
+      expect(t.meta(plan.taskId).workflow.decisions).toEqual([]);
+    });
+
+    it("the owner rejects from Slack inside the window and is not told of their own decision; outside it they are told to sign in again", async () => {
+      const t = await world();
+      const plan = await t.planned("medium");
+      t.linkSlack(MAYA);
+      t.signedIn(MAYA, "oidc", 30 * HOUR);
+      expect(await t.decide(plan.taskId, plan, mayaChat(t), {}, REJECT)).toMatchObject({ ok: false, code: "FORBIDDEN", message: expect.stringContaining(SIGN_IN_AGAIN_TO_REJECT) as unknown });
+      expect(t.meta(plan.taskId).workflow.decisions).toEqual([]);
+      t.signedIn(MAYA, "oidc", 2 * HOUR);
+      expect(await t.decide(plan.taskId, plan, mayaChat(t), {}, REJECT)).toEqual({ ok: true });
+      expect(t.decidedAs(plan.taskId)).toMatchObject({ decision: "REJECT", actorRole: "TASK_OWNER" });
+      expect(t.dms()).toEqual([]);
+      expect(t.placeEvents()[0]).toMatchObject({ facts: { place: "chat", answer: "reject", role: "owner" } });
+    });
+
+    it("the owner's reject from the app needs no sign-in age and no fresh sign-in, at any risk", async () => {
+      for (const risk of ["medium", "high"] as const) {
+        const t = await world();
+        const plan = await t.planned(risk);
+        expect(await t.decide(plan.taskId, plan, mayaBrowser(t), {}, REJECT)).toEqual({ ok: true });
+        expect(t.decidedAs(plan.taskId)).toMatchObject({ decision: "REJECT", actorRole: "TASK_OWNER" });
+        expect(t.placeEvents(), "an owner's own app decision writes no place record").toEqual([]);
+      }
+    });
+
+    it("the owner's reject from a tool, MCP, the CLI or an API token is refused at every risk with the card's link, and nothing is decided", async () => {
+      for (const risk of ["low", "medium", "high"] as const) {
+        const t = await world();
+        const plan = await t.planned(risk);
+        t.signedIn(MAYA, "oidc", 60_000);
+        expect(await t.decide(plan.taskId, plan, mayaTool(t), {}, REJECT), risk).toMatchObject({ ok: false, code: "FORBIDDEN", message: expect.stringContaining("Rejecting a plan is done in Rovara, signed in") as unknown });
+        expect(t.meta(plan.taskId).workflow.decisions, risk).toEqual([]);
+      }
+    });
+
+    it("request changes is judged like a reject: the owner from Slack inside the window is allowed, outside it is told to sign in again; from the app, allowed", async () => {
+      const t = await world();
+      const plan = await t.planned("medium");
+      t.linkSlack(MAYA);
+      const ask = { decision: "REQUEST_CHANGES", reason: "Add a test." };
+      expect(await t.decide(plan.taskId, plan, mayaChat(t), {}, ask)).toMatchObject({ ok: false, code: "FORBIDDEN", message: expect.stringContaining("You can ask for changes here after you sign in to Rovara again") as unknown });
+      t.signedIn(MAYA, "oidc", 30 * HOUR);
+      expect(await t.decide(plan.taskId, plan, mayaChat(t), {}, ask)).toMatchObject({ ok: false, message: expect.stringContaining("You can ask for changes here after you sign in") as unknown });
+      expect(t.meta(plan.taskId).workflow.decisions).toEqual([]);
+      t.signedIn(MAYA, "oidc", 2 * HOUR);
+      expect(await t.decide(plan.taskId, plan, mayaChat(t), {}, ask)).toEqual({ ok: true });
+      expect(t.decidedAs(plan.taskId)).toMatchObject({ decision: "REQUEST_CHANGES", actorRole: "TASK_OWNER" });
+      expect(t.placeEvents()[0]).toMatchObject({ facts: { place: "chat", answer: "request_changes", role: "owner", windowSeconds: 86_400 } });
+      const other = await world();
+      const plan2 = await other.planned("high");
+      expect(await other.decide(plan2.taskId, plan2, mayaBrowser(other), {}, ask)).toEqual({ ok: true });
+    });
+
+    it("a maintainer's request changes from Slack needs the window; a tool gets the link; the app is allowed and the owner is told", async () => {
+      const { t, plan, omar } = await maintainerWorld();
+      const ask = { decision: "REQUEST_CHANGES", reason: "Keep the old export too." };
+      const chat = omar({ session: SLACK_DECISION_SESSION_ID, slackUserId: "U0OMAR001" });
+      t.linkSlack({ developerId: OMAR.developerId, slackUserId: "U0OMAR001" });
+      t.linkSlack(MAYA);
+      expect(await t.decide(plan.taskId, plan, chat, {}, ask, "maintainer")).toMatchObject({ ok: false, message: expect.stringContaining("You can ask for changes here after you sign in") as unknown });
+      expect(await t.decide(plan.taskId, plan, omar(), {}, ask, "maintainer")).toMatchObject({ ok: false, message: expect.stringContaining("Asking for changes to a plan is done in Rovara, signed in") as unknown });
+      expect(t.meta(plan.taskId).workflow.decisions).toEqual([]);
+      t.signedIn(OMAR, "oidc", HOUR);
+      expect(await t.decide(plan.taskId, plan, chat, {}, ask, "maintainer")).toEqual({ ok: true });
+      expect(t.decidedAs(plan.taskId)).toMatchObject({ decision: "REQUEST_CHANGES", actorRole: "PROJECT_ADMIN" });
+      expect(t.dms()).toHaveLength(1);
+      expect(t.placeEvents()[0]).toMatchObject({ facts: { place: "chat", answer: "request_changes", role: "maintainer" } });
+    });
+
+    it("the owner's request changes from a tool or the CLI is unchanged (not an outside place)", async () => {
+      const t = await world();
+      const plan = await t.planned("medium");
+      expect(await t.decide(plan.taskId, plan, mayaTool(t), {}, { decision: "REQUEST_CHANGES", reason: "Add a test." })).toEqual({ ok: true });
+    });
   });
 
   it("a contributor, a viewer and a member with no project role read the task as missing, as before", async () => {

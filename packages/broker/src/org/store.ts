@@ -5,6 +5,8 @@ import { approvalGrantChange, approvalCompanyChange } from "./approval-membershi
 import { clearWorkingBranchSaveReceipts } from "./project-working-branch-receipt-cleanup.js";
 import { budgetDocumentFence } from "./budget-snapshot.js";
 import { inviteCreateBodyHash } from "./invite-creation.js";
+import { grantWrite, peopleRevisionBump, projectNotArchivedCheck, projectOpenState, readPeopleRevision } from "./project-members.js";
+import { grantRoleOf } from "../developer/project-roles.js";
 import { takeRateAt } from "../developer/page-comments.js";
 // packages/broker/src/org/store.ts
 // Multi-tenancy: orgs, membership, invites and the Slack team binding. A developer belongs to at
@@ -13,11 +15,11 @@ import { takeRateAt } from "../developer/page-comments.js";
 // burns the invite. Invite tokens are stored only as SHA-256 hashes.
 import { randomBytes, randomUUID } from "node:crypto";
 import { DeleteCommand, GetCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { MEMBER_GRANT_SK_PREFIX, AgentXError, agentXError, LAST_OWNER_MESSAGE, currentBuiltinVersion, ROVARA_CODE_V2_FOR_NEW_ORGS, memberGrantsPk, normalizeEmail, orgPk, orgScoped, type AgentXErrorCode, type OrgId, type OrgKey } from "@rovara-code/contracts";
+import { MEMBER_GRANT_SK_PREFIX, projectMemberKey, AgentXError, agentXError, LAST_OWNER_MESSAGE, currentBuiltinVersion, ROVARA_CODE_V2_FOR_NEW_ORGS, memberGrantsPk, normalizeEmail, orgPk, orgScoped, type AgentXErrorCode, type OrgId, type OrgKey } from "@rovara-code/contracts";
 import { type AuditActor } from "@agentx/cloud-contracts";
-import { AuditEventInputSchema, InviteCreateReceiptSchema, developerOrgKey, githubInstallationKey, memberRemovalQueueKey, newOrgId as generateOrgId, orgBanKey, orgEmailKey, orgInviteKey, orgInviteDirectoryKey, orgInviteRequestKey, orgRenameRequestKey, orgMemberKey, orgMetaKey, orgRemovedKey, orgSettingsKey, orgSlackTeamKey, budgetSyncedKey, slackTeamOrgKey, type AuditEventInput, type OrgInviteRecord, type OrgMembershipRecord, type OrgRecord, type OrgRole } from "@agentx/cloud-contracts";
+import { AuditEventInputSchema, INVITE_PROJECT_ROLES_FOR_MAINTAINERS, InviteCreateReceiptSchema, InviteProjectSchema, type InviteProject, type InviteProjectNote, developerOrgKey, githubInstallationKey, memberRemovalQueueKey, newOrgId as generateOrgId, orgBanKey, orgEmailKey, orgInviteKey, orgInviteDirectoryKey, orgInviteRequestKey, orgRenameRequestKey, orgMemberKey, orgMetaKey, orgRemovedKey, orgSettingsKey, orgSlackTeamKey, budgetSyncedKey, slackTeamOrgKey, type AuditEventInput, type OrgInviteRecord, type OrgMembershipRecord, type OrgRecord, type OrgRole } from "@agentx/cloud-contracts";
 import { scheduleAuditShred } from "../audit/erase.js";
-import { auditMemberJoined, auditMemberRoleChanged, auditOccurrence, auditOrgRenamed, auditOrgClosed, auditOrgInviteCreated } from "../audit/events.js";
+import { auditMemberJoined, auditMemberRoleChanged, auditOccurrence, auditOrgRenamed, auditOrgClosed, auditOrgInviteCreated, auditProjectMemberInvited, auditProjectMemberInviteSkipped, auditProjectMemberJoinedByInvite } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, auditPendingItem, auditTransact, tryAuditEvent, tryAuditEvents, type AuditRuntime } from "../audit/outbox.js";
 import { memberLimitChangedEvent } from "../audit/plan3-hooks.js";
@@ -27,6 +29,14 @@ import { safeOrgName } from "../developer/person-name.js";
 import { startMemberRemoval, type StartedRemoval, type StartRemovalInput } from "./member-removal/start.js";
 
 const DEFAULT_INVITE_TTL_SECONDS = 604_800;
+const INVITE_PROJECT_ADMIN_MESSAGE = "An admin already maintains every project, so an admin invite names no project.";
+const INVITE_PROJECT_MAINTAINER_ROLE_MESSAGE = "A maintainer can invite people into their project as a contributor or a viewer.";
+const INVITE_PROJECT_MAINTAINER_EMAIL_MESSAGE = "A maintainer's invite goes to one colleague's email address. Add their email; only an owner or admin can make a shareable link.";
+const INVITE_PROJECT_CLOSED_MESSAGE = "That project isn't taking new people. Choose an active project.";
+/** A-31: a company member (not an owner or admin, and not the Auditor, who holds no project access). */
+const isPlainMember = (role: unknown): boolean => role === "member";
+const ACCEPT_ATTEMPTS = 3;
+const ACCEPT_STALE_MESSAGE = "The invite's project changed while you joined. Open the invite link again.";
 const NOT_EXISTS = "attribute_not_exists(pk)";
 
 type Item = Record<string, unknown>;
@@ -290,12 +300,22 @@ export class OrgStore {
    * replay of the same request is refused with IDEMPOTENCY_CONFLICT: only the token's hash is stored, so the
    * first answer cannot be given again.
    */
-  async createInvite(input: { orgId: OrgId; createdBy: string; role: Exclude<OrgRole, "owner" | "auditor">; email?: string; requestId?: string; ttlSeconds?: number; reviewed?: boolean }): Promise<{ token: string }> {
+  async createInvite(input: { orgId: OrgId; createdBy: string; role: Exclude<OrgRole, "owner" | "auditor">; email?: string; requestId?: string; ttlSeconds?: number; reviewed?: boolean; project?: InviteProject }): Promise<{ token: string }> {
     try {
       const forbidden = () => coded("FORBIDDEN", "Only a current company owner or admin can create this invite.");
       if (input.role !== "admin" && input.role !== "member") throw coded("CONFIG_INVALID", "Choose a valid invite role.");
+      const project = input.project;
+      if (project !== undefined && input.role !== "member") throw coded("CONFIG_INVALID", INVITE_PROJECT_ADMIN_MESSAGE);
       const [actor, pointer, org] = await Promise.all([this.get(orgMemberKey(input.orgId, input.createdBy)), this.get(developerOrgKey(input.createdBy)), this.get(orgMetaKey(input.orgId))]);
-      if (actor?.orgId !== input.orgId || actor.developerId !== input.createdBy || (actor.role !== "owner" && actor.role !== "admin") || (input.role === "admin" && actor.role !== "owner") || pointer?.orgId !== input.orgId || pointer.role !== actor.role || org?.orgId !== input.orgId || (org.closingAt !== undefined || org.closedAt !== undefined)) throw forbidden();
+      if (actor?.orgId !== input.orgId || actor.developerId !== input.createdBy || pointer?.orgId !== input.orgId || pointer.role !== actor.role || org?.orgId !== input.orgId || (org.closingAt !== undefined || org.closedAt !== undefined)) throw forbidden();
+      // A-31: an owner or admin invites as before; a company member may invite only into a project they maintain by a grant (read live here, and checked again in the write).
+      const asAdmin = (actor.role === "owner" || actor.role === "admin") && (input.role !== "admin" || actor.role === "owner");
+      const asMaintainer = !asAdmin && project !== undefined && isPlainMember(actor.role) && grantRoleOf(await this.get(projectMemberKey(input.orgId, input.createdBy, project.name))) === "maintainer";
+      if (!asAdmin && !asMaintainer) throw forbidden();
+      if (asMaintainer && !(INVITE_PROJECT_ROLES_FOR_MAINTAINERS as readonly string[]).includes(project.role)) throw coded("FORBIDDEN", INVITE_PROJECT_MAINTAINER_ROLE_MESSAGE);
+      // A maintainer's invite is for one named colleague (controller decision on review M1): no shareable link, which anyone it reached could use to join the company.
+      if (asMaintainer && input.email === undefined) throw coded("CONFIG_INVALID", INVITE_PROJECT_MAINTAINER_EMAIL_MESSAGE);
+      if (project !== undefined && await projectOpenState(this.input, input.orgId, project.name) !== "open") throw coded("CONFIG_INVALID", INVITE_PROJECT_CLOSED_MESSAGE);
       if (input.reviewed && (input.requestId === undefined || !InviteCreateReceiptSchema.shape.requestId.safeParse(input.requestId).success)) throw coded("CONFIG_INVALID", "Review a valid invite request.");
       const token = randomBytes(32).toString("base64url");
       const tokenHash = sha256Hex(token), inviteId = randomUUID();
@@ -310,6 +330,7 @@ export class OrgStore {
         ...(input.requestId === undefined ? {} : { requestId: input.requestId }),
         createdAt: this.iso(),
         expiresAt: new Date(this.input.now() + ttlMs).toISOString(),
+        ...(project === undefined ? {} : { project: { name: project.name, role: project.role }, projectInviter: asMaintainer ? "maintainer" as const : "admin" as const }),
       };
       const items: TransactItem[] = [
         this.put(orgInviteKey(tokenHash), "ORG_INVITE", invite as unknown as Item),
@@ -321,19 +342,28 @@ export class OrgStore {
         { ConditionCheck: { TableName: this.input.tableName, Key: orgMemberKey(input.orgId, input.createdBy), ConditionExpression: "orgId = :org AND developerId = :person AND #role = :role", ExpressionAttributeNames: { "#role": "role" }, ExpressionAttributeValues: { ":org": input.orgId, ":person": input.createdBy, ":role": actor.role } } },
         { ConditionCheck: { TableName: this.input.tableName, Key: developerOrgKey(input.createdBy), ConditionExpression: "orgId = :org AND #role = :role", ExpressionAttributeNames: { "#role": "role" }, ExpressionAttributeValues: { ":org": input.orgId, ":role": actor.role } } },
         { ConditionCheck: { TableName: this.input.tableName, Key: orgMetaKey(input.orgId), ConditionExpression: "orgId = :org AND attribute_not_exists(closingAt) AND attribute_not_exists(closedAt)", ExpressionAttributeValues: { ":org": input.orgId } } },
+        // A-31: the maintainer still maintains the project when the invite commits.
+        ...(asMaintainer ? [{ ConditionCheck: { TableName: this.input.tableName, Key: projectMemberKey(input.orgId, input.createdBy, project.name), ConditionExpression: "#role = :developer AND projectRole = :maintainer", ExpressionAttributeNames: { "#role": "role" }, ExpressionAttributeValues: { ":developer": "developer", ":maintainer": "maintainer" } } }] : []),
       );
       const authorityEnd = items.length;
+      // A-31: the project was not archived since it was read.
+      if (project !== undefined) items.push(projectNotArchivedCheck(this.input, input.orgId, project.name));
+      const projectAt = project === undefined ? -1 : authorityEnd;
       if (this.input.audit !== undefined && this.input.audit.tableName !== this.input.tableName) throw coded("AUDIT_UNAVAILABLE", "Invite audit is unavailable. Try again.");
       const parsedEvent = AuditEventInputSchema.safeParse(auditOrgInviteCreated({ orgId: input.orgId, actor: { kind: "member", id: input.createdBy }, occurredAt: invite.createdAt, occurrence: auditOccurrence("invite-created", input.orgId, inviteId), inviteId, role: input.role, targeted: input.email !== undefined }));
       if (!parsedEvent.success) throw coded("AUDIT_UNAVAILABLE", "Invite audit is unavailable. Try again.");
       const event = parsedEvent.data;
+      const parsedProjectEvent = project === undefined ? undefined : AuditEventInputSchema.safeParse(auditProjectMemberInvited({ orgId: input.orgId, actor: { kind: "member", id: input.createdBy }, occurredAt: invite.createdAt, occurrence: auditOccurrence("invite-project", input.orgId, inviteId), projectName: project.name, inviteId, role: project.role, inviter: asMaintainer ? "maintainer" : "admin" }));
+      if (parsedProjectEvent !== undefined && !parsedProjectEvent.success) throw coded("AUDIT_UNAVAILABLE", "Invite audit is unavailable. Try again.");
+      const projectEvent = parsedProjectEvent?.data;
       if (!await takeRateAt(this.input, { pk: orgScoped(input.orgId, "INVITE_CREATE_RATE"), sk: input.createdBy }, 20, 60_000)) throw coded("TOO_MANY_REQUESTS", "Too many invite creation attempts. Try again in a minute.");
       // Durability does not depend on queue configuration: legacy installs retain the same pending envelope.
       items.push({ Put: { TableName: this.input.tableName, Item: auditPendingItem(event, this.input.now()), ConditionExpression: NOT_EXISTS } });
+      if (projectEvent !== undefined) items.push({ Put: { TableName: this.input.tableName, Item: auditPendingItem(projectEvent, this.input.now()), ConditionExpression: NOT_EXISTS } });
       // Lane A: durable safe outcome; the existing permanent request marker prevents re-creation.
-      if (input.reviewed && input.requestId !== undefined) items.push(this.put({ pk: orgScoped(input.orgId, "INVITE_CREATE_REVIEWED"), sk: input.requestId }, "ORG_INVITE_CREATE_RECEIPT", { orgId: input.orgId, requestId: input.requestId, inviteId, role: input.role, createdAt: invite.createdAt, expiresAt: invite.expiresAt, by: input.createdBy, action: "org.invite_created", bodyHash: inviteCreateBodyHash(input) }));
-      await this.transact(items, failed => [...failed].some(index => index >= authorityAt && index < authorityEnd) ? forbidden() : input.requestId !== undefined && failed.has(1) ? coded("IDEMPOTENCY_CONFLICT", "invite already created for this request") : undefined);
-      await this.flush(event);
+      if (input.reviewed && input.requestId !== undefined) items.push(this.put({ pk: orgScoped(input.orgId, "INVITE_CREATE_REVIEWED"), sk: input.requestId }, "ORG_INVITE_CREATE_RECEIPT", { orgId: input.orgId, requestId: input.requestId, inviteId, role: input.role, createdAt: invite.createdAt, expiresAt: invite.expiresAt, ...(project === undefined ? {} : { project: { name: project.name, role: project.role } }), by: input.createdBy, action: "org.invite_created", bodyHash: inviteCreateBodyHash(input) }));
+      await this.transact(items, failed => [...failed].some(index => index >= authorityAt && index < authorityEnd) ? forbidden() : failed.has(projectAt) ? coded("CONFIG_INVALID", INVITE_PROJECT_CLOSED_MESSAGE) : input.requestId !== undefined && failed.has(1) ? coded("IDEMPOTENCY_CONFLICT", "invite already created for this request") : undefined);
+      await this.flush(event, projectEvent);
       return { token };
     } catch (error) { if (error instanceof AgentXError) throw error;throw coded("RUNTIME_UNAVAILABLE", "Invite creation could not be confirmed. Reload before trying again."); }
   }
@@ -378,50 +408,116 @@ export class OrgStore {
     };
   }
 
-  /** `tokenHash` is the invite token's SHA-256 in base64url (inviteTokenHash): the raw token never reaches a store call past the page that read it. */
-  async acceptInvite(input: { tokenHash: string; developerId: string; email?: string }): Promise<{ orgId: OrgId; role: OrgRole }> {
+  /**
+   * `tokenHash` is the invite token's SHA-256 in base64url (inviteTokenHash): the raw token never reaches a store call past the page that read it.
+   * A-31: an invite that names a project also gives the person that project role, in the same transaction as the join, and says so (`project`). An invite whose project was
+   * archived or removed since joins the company only and says why (`projectNote`). A project invite a maintainer made counts only while that person still maintains the
+   * project (or has become an owner or admin): otherwise it is INVITE_INVALID, as a revoked one is.
+   */
+  async acceptInvite(input: { tokenHash: string; developerId: string; email?: string }): Promise<{ orgId: OrgId; role: OrgRole; project?: InviteProject; projectNote?: InviteProjectNote }> {
     const inviteKey = this.inviteKeyOf(input.tokenHash);
     if (inviteKey === undefined) throw inviteInvalid();
-    const invite = await this.get(inviteKey) as (Item & OrgInviteRecord) | undefined;
-    const nowIso = this.iso();
-    if (invite === undefined || invite.revokedAt !== undefined || invite.acceptedAt !== undefined || invite.expiresAt <= nowIso) throw inviteInvalid();
-    const { orgId, role } = invite;
-    const event = await tryAuditEvent(this.deps(), () => auditMemberJoined({
-      orgId, actor: { kind: "member", id: input.developerId }, occurredAt: nowIso, occurrence: input.tokenHash,
-      memberId: input.developerId, role, via: "invite", related: [invite.createdBy],
-    }));
-    // One transaction: the invite is marked accepted only if the developer joins, and joins only if
-    // the invite is still live, so a refusal on either side leaves the other untouched.
-    const items: TransactItem[] = [
-      {
-        Update: {
-          TableName: this.input.tableName,
-          Key: inviteKey,
-          UpdateExpression: "SET acceptedBy = :by, acceptedAt = :at",
-          ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(acceptedAt) AND attribute_not_exists(revokedAt) AND expiresAt > :now",
-          ExpressionAttributeValues: { ":by": input.developerId, ":at": nowIso, ":now": nowIso },
+    for (let attempt = 0; attempt < ACCEPT_ATTEMPTS; attempt += 1) {
+      const invite = await this.get(inviteKey) as (Item & OrgInviteRecord) | undefined;
+      const nowIso = this.iso();
+      if (invite === undefined || invite.revokedAt !== undefined || invite.acceptedAt !== undefined || invite.expiresAt <= nowIso) throw inviteInvalid();
+      const { orgId, role } = invite;
+      const plan = await this.inviteProjectPlan(invite, input.developerId, input.tokenHash, nowIso);
+      const event = await tryAuditEvent(this.deps(), () => auditMemberJoined({
+        orgId, actor: { kind: "member", id: input.developerId }, occurredAt: nowIso, occurrence: input.tokenHash,
+        memberId: input.developerId, role, via: "invite", related: [invite.createdBy],
+      }));
+      // One transaction: the invite is marked accepted only if the developer joins, and joins only if
+      // the invite is still live, so a refusal on either side leaves the other untouched.
+      const head: TransactItem[] = [
+        {
+          Update: {
+            TableName: this.input.tableName,
+            Key: inviteKey,
+            UpdateExpression: "SET acceptedBy = :by, acceptedAt = :at",
+            ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(acceptedAt) AND attribute_not_exists(revokedAt) AND expiresAt > :now",
+            ExpressionAttributeValues: { ":by": input.developerId, ":at": nowIso, ":now": nowIso },
+          },
         },
-      },
-      ...this.membershipItems({ orgId, developerId: input.developerId, role, email: input.email }),
-      // An invite is the way back after a removal with a ban: it clears the ban in the same transaction.
-      { Delete: { TableName: this.input.tableName, Key: orgBanKey(orgId, input.developerId) } },
-      // The audit item sits before the closed-org check, which stays last: a refusal reads that check by its position.
-      ...this.pendingFor(event),
-      // A closed org (or one whose last owner is closing it) takes no new members. closeOrg writes `closingAt` before it checks that its
-      // sole owner is alone, and both writes touch this item, so the two transactions are serialized.
-      { Update: { TableName: this.input.tableName, Key: orgMetaKey(orgId),
-        UpdateExpression: "SET approvalMembershipVersion = if_not_exists(approvalMembershipVersion, :zero) + :one, approvalTrackingSince = if_not_exists(approvalTrackingSince, :at)",
-        ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(closedAt) AND attribute_not_exists(closingAt)",
-        ExpressionAttributeValues: { ":zero": 0, ":one": 1, ":at": nowIso },
-      } },
-    ];
-    await this.transact(items, (failed) => {
-      if (failed.has(0)) return inviteInvalid();
-      if (failed.has(items.length - 1)) return coded("INVITE_INVALID", "that organization has closed");
-      return failed.has(1) || failed.has(2) || failed.has(3) ? alreadyInOrg() : undefined;
-    });
-    await this.flush(event);
-    return { orgId, role };
+        ...this.membershipItems({ orgId, developerId: input.developerId, role, email: input.email }),
+        // An owner's or admin's invite is the way back after a removal with a ban: it clears the ban in the same transaction. A project maintainer's invite
+        // (A-31) never lifts a ban someone above them set: the person must not be banned, checked in the same transaction.
+        invite.projectInviter === "maintainer"
+          ? { ConditionCheck: { TableName: this.input.tableName, Key: orgBanKey(orgId, input.developerId), ConditionExpression: "attribute_not_exists(pk)" } }
+          : { Delete: { TableName: this.input.tableName, Key: orgBanKey(orgId, input.developerId) } },
+      ];
+      const banAt = head.length - 1;
+      // A-31: the project's items sit after the membership's, so the positions `refuse` reads for the invite and the membership do not move.
+      const projectFrom = head.length, projectTo = projectFrom + plan.items.length;
+      const items: TransactItem[] = [
+        ...head,
+        ...plan.items,
+        // The audit items sit before the closed-org check, which stays last: a refusal reads that check by its position.
+        ...this.pendingFor(event, plan.event),
+        // A closed org (or one whose last owner is closing it) takes no new members. closeOrg writes `closingAt` before it checks that its
+        // sole owner is alone, and both writes touch this item, so the two transactions are serialized.
+        { Update: { TableName: this.input.tableName, Key: orgMetaKey(orgId),
+          UpdateExpression: "SET approvalMembershipVersion = if_not_exists(approvalMembershipVersion, :zero) + :one, approvalTrackingSince = if_not_exists(approvalTrackingSince, :at)",
+          ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(closedAt) AND attribute_not_exists(closingAt)",
+          ExpressionAttributeValues: { ":zero": 0, ":one": 1, ":at": nowIso },
+        } },
+      ];
+      let projectMoved = false;
+      try {
+        await this.transact(items, (failed) => {
+          if (failed.has(0)) return inviteInvalid();
+          if (failed.has(items.length - 1)) return coded("INVITE_INVALID", "that organization has closed");
+          if (failed.has(banAt)) return inviteInvalid();
+          if (failed.has(1) || failed.has(2) || failed.has(3)) return alreadyInOrg();
+          // The project, its roster or the inviter's standing changed under the join: read it all again.
+          if ([...failed].some((index) => index >= projectFrom && index < projectTo)) { projectMoved = true; return coded("CHANGE_STALE", ACCEPT_STALE_MESSAGE); }
+          return undefined;
+        });
+      } catch (error) {
+        if (projectMoved) continue;
+        throw error;
+      }
+      await this.flush(event, plan.event);
+      return { orgId, role, ...(plan.project === undefined ? {} : { project: plan.project }), ...(plan.note === undefined ? {} : { projectNote: plan.note }) };
+    }
+    throw coded("CHANGE_STALE", ACCEPT_STALE_MESSAGE);
+  }
+
+  /**
+   * A-31: what an invite's project adds to its join: the inviter's standing (a maintainer's invite), the grant, the check that the project is still not archived, and the roster's
+   * revision. Nothing for a company-only invite. A project archived or removed since gives no grant, a note and its audit event.
+   */
+  private async inviteProjectPlan(invite: Item & OrgInviteRecord, developerId: string, tokenHash: string, at: string): Promise<{ items: TransactItem[]; event?: AuditEventInput | undefined; project?: InviteProject; note?: InviteProjectNote }> {
+    if (invite.project === undefined) return { items: [] };
+    const parsed = InviteProjectSchema.safeParse(invite.project);
+    // A project part this release cannot read is refused, never read as a company-only invite (the person would land without the access they were promised, or with more).
+    if (!parsed.success || (invite.projectInviter !== "admin" && invite.projectInviter !== "maintainer")) throw inviteInvalid();
+    const project = parsed.data, { orgId } = invite;
+    const items: TransactItem[] = [];
+    if (invite.projectInviter === "maintainer") {
+      const [inviter, grant] = await Promise.all([this.get(orgMemberKey(orgId, invite.createdBy)), this.get(projectMemberKey(orgId, invite.createdBy, project.name))]);
+      const nowAdmin = inviter?.role === "owner" || inviter?.role === "admin";
+      if (!nowAdmin && !(isPlainMember(inviter?.role) && grantRoleOf(grant) === "maintainer")) throw inviteInvalid();
+      items.push({ ConditionCheck: { TableName: this.input.tableName, Key: orgMemberKey(orgId, invite.createdBy), ConditionExpression: "#role = :role", ExpressionAttributeNames: { "#role": "role" }, ExpressionAttributeValues: { ":role": inviter!.role } } });
+      if (!nowAdmin) items.push({ ConditionCheck: { TableName: this.input.tableName, Key: projectMemberKey(orgId, invite.createdBy, project.name), ConditionExpression: "#role = :developer AND projectRole = :maintainer", ExpressionAttributeNames: { "#role": "role" }, ExpressionAttributeValues: { ":developer": "developer", ":maintainer": "maintainer" } } });
+    }
+    const base = { orgId, actor: { kind: "member" as const, id: developerId }, occurredAt: at, occurrence: tokenHash, projectName: project.name, memberId: developerId, role: project.role, related: [invite.createdBy] };
+    const state = await projectOpenState(this.input, orgId, project.name);
+    if (state !== "open") {
+      const note: InviteProjectNote = state === "archived" ? "project_archived" : "project_gone";
+      return { items, note, event: await tryAuditEvent(this.deps(), () => auditProjectMemberInviteSkipped({ ...base, cause: note })) };
+    }
+    const revision = await readPeopleRevision(this.input, orgId, project.name);
+    let write: Item;
+    try {
+      ({ write } = await grantWrite(this.input, { orgId, project: project.name, developerId, role: project.role, grantedBy: { developerId: invite.createdBy }, now: () => new Date(this.input.now()) }));
+    } catch (error) {
+      // An operator's row on this person and project (grantWrite will not overwrite it) makes the project part unusable: the invite is refused as invalid, never a raw config error.
+      if (error instanceof AgentXError && error.code === "CONFIG_INVALID") throw inviteInvalid();
+      throw error;
+    }
+    items.push(write, projectNotArchivedCheck(this.input, orgId, project.name), peopleRevisionBump(this.input, orgId, project.name, revision, at));
+    return { items, project, event: await tryAuditEvent(this.deps(), () => auditProjectMemberJoinedByInvite(base)) };
   }
 
   /**

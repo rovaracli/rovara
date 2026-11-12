@@ -63,11 +63,52 @@ export function memberRemovalQueueKey(at: string, orgId: OrgId, developerId: str
   return { pk: MEMBER_REMOVAL_QUEUE_PK, sk: `${canonicalInstant(at)}#${orgId}#${developerId}` };
 }
 
+/** The partition of ONE company's open approvals (0.5.15): ids and times only, so the company's pending-approvals summary reads its own partition and never the install-wide `OPEN_APPROVALS` index. */
+export function orgOpenApprovalsPk(orgId: OrgId): string {
+  return orgScoped(orgId, "OPEN_APPROVALS");
+}
+
+/**
+ * One PENDING approval in its company's open index, sorted by the time it was asked (`createdAt`, an instant) so a newest-first read is one cheap query. It holds the record's
+ * ids and `expiresAt` (a person's id is never stored here). Put in the transaction that makes the approval and deleted in the one that ends PENDING (decide, expire, withdraw, cancel);
+ * the global `OPEN_APPROVALS` index stays what the expiry sweep walks.
+ */
+export function orgOpenApprovalKey(orgId: OrgId, createdAt: string, approvalId: ApprovalId): OrgKey {
+  return { pk: orgOpenApprovalsPk(orgId), sk: `${canonicalInstant(createdAt)}#${approvalId}` };
+}
+
+/** The sort key of `orgOpenApprovalKey`, read back: `<instant>#<approval id>`. */
+export const ORG_OPEN_APPROVAL_SK = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z)#(apr_[0-9a-z]{20})$/;
+
+/**
+ * The one-off backfill of `orgOpenApprovalKey` items for approvals that were open before 0.5.15 (sort key does not start `ORG#`). It holds the backfill's `cursor` (a sort key of the global
+ * `OPEN_APPROVALS` index) while it runs and `completedAt` once it has read the whole index. Until `completedAt` is there, a company's partition may be missing items, so the summary reads the global index.
+ */
+export const ORG_OPEN_APPROVALS_BACKFILL_KEY: OrgKey = { pk: "OPEN_APPROVALS_ORG_BACKFILL", sk: "META" };
+
 // ---- spend (Plan 3 Task 28): settings, top-ups, counters and the records the budget tasks keep
 
 /** A project's AI settings: its monthly budget, who pays, its source order and planning limits. */
 export function projectAiKey(orgId: OrgId, project: string): OrgKey {
   return { pk: orgScoped(orgId, `PROJECT_AI#${project}`), sk: "SETTINGS" };
+}
+
+/** Review groups (owner decision 9): a project's named groups of reviewers, one document per project (`review-groups/groups.ts`). */
+export function reviewGroupsKey(orgId: OrgId, project: string): OrgKey {
+  if (project === "" || project.includes("#") || /[\p{Cc}\p{Cf}]/u.test(project)) throw new RangeError("a project name can't be part of a key");
+  return { pk: orgScoped(orgId, `REVIEW_GROUPS#${project}`), sk: "META" };
+}
+
+/** The partition of a project's review claims: one item per task, so a person's erase finds every claim they hold project by project (`review-groups/erase.ts`). */
+export function reviewClaimsPk(orgId: OrgId, project: string): string {
+  if (project === "" || project.includes("#") || /[\p{Cc}\p{Cf}]/u.test(project)) throw new RangeError("a project name can't be part of a key");
+  return orgScoped(orgId, `REVIEW_CLAIMS#${project}`);
+}
+
+/** Who claimed a task's waiting review (`review-groups/claims.ts`), under its project's partition, kept with its revision so a stale claim, release or reassign is refused. */
+export function reviewClaimKey(orgId: OrgId, project: string, taskId: string): OrgKey {
+  if (!/^[0-9a-f-]{36}$/u.test(taskId)) throw new RangeError("a task id can't be part of a key");
+  return { pk: reviewClaimsPk(orgId, project), sk: `TASK#${taskId}` };
 }
 
 /** What an admin added to one scope's limit for one UTC month (`month` is `YYYY-MM`): an item holding `amountUsd`, changed with ADD. */

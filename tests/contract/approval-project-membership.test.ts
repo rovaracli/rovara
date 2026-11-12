@@ -14,6 +14,9 @@ function setup() {
   db.set({ ...orgMetaKey(orgId), entityType: "ORG", approvalMembershipVersion: 4 });
   db.set({ ...orgMemberKey(orgId, "member"), entityType: "ORG_MEMBER", developerId: "member", role: "member" });
   db.set({ ...projectMetaKey(orgId, "payments"), entityType: "PROJECT_META", status: "active" });
+  // srv/project-people: a second own maintainer, so taking "member"'s maintainer role away is not refused as the project's last one.
+  db.set({ ...orgMemberKey(orgId, "keeper"), entityType: "ORG_MEMBER", developerId: "keeper", role: "member" });
+  db.set({ ...projectMemberKey(orgId, "keeper", "payments"), entityType: "MEMBERSHIP", ownerKey: "keeper", grantId: randomUUID(), projectName: "payments", role: "developer", projectRole: "maintainer" });
   const deps = { documentClient: db, tableName: "T", now: () => new Date(at) };
   const input = () => ({ requestId: randomUUID(), developerId: "member", actor: { developerId: "owner" } });
   return { db, deps, input };

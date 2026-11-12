@@ -28,7 +28,8 @@ export const CODE_SCOPE = "@agentx";
 /**
  * Code's paths that are copied, as git paths in the public repository. Packages the plan has Cloud consume (contracts, the broker with
  * its core and ports, gateway, local-adapters, model-runtime, verifier, worker) plus the files the copy needs to build and to be read.
- * Code's tests live outside packages/ and are not copied (wave 0 lane W0-5 adds tests/support/ports here when it needs the conformance suites).
+ * Code's tests live outside packages/ and are not copied, except `tests/support/ports` (wave 0 lane W0-5): the port conformance suites Cloud's adapters must pass
+ * (tests/conformance/, docs/architecture/cloud-adapter-conformance.md). Their relative imports (`../../../packages/...`) reach the vendored packages unchanged.
  */
 export const INCLUDE: readonly string[] = [
   "LICENSE",
@@ -42,6 +43,7 @@ export const INCLUDE: readonly string[] = [
   "packages/model-runtime",
   "packages/verifier",
   "packages/worker",
+  "tests/support/ports",
   "tsconfig.base.json",
 ];
 

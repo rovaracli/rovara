@@ -1,8 +1,14 @@
 // Who can do what with a chain (Plan 4 Task 3): Plan 3's agent rules, applied to a chain's owner, accountable maintainer and shares. The rules
 // themselves are `evaluateOwned`, `checkShares`, `saveSharesOf` and `requireOwnerAllowed` in agents/access.ts, one implementation for both; this
 // file reads a chain's record and its shares from the chain store and words the refusals for a chain.
+//
+// srv/automations: on top of the agent rules, experience review decision 16 (final-experience-proposal.md, 2026-11-10) (`automationRules`), judged on every read with the live project role: a project's chain is
+// visible (`view`) to everyone with a role on that project, viewers included; changing it (`edit`, `manage`) is for maintainers of THAT project
+// (`manage_agents`) and org owners and admins, so a share never lifts anyone else above `use`. Org owners and admins are untouched (they hold `manage` on every chain of their org). A member's own chain keeps the agent rules (it has no project).
+// Owner decision 92 (a company-shared chain) is not an access level: it is held where a change is decided (routes.ts `requireOwnerOrAdminToMoveSharedChain`,
+// the `chain_publish` and `chain_company_share` rules, and the trigger turn-on rule in triggers/routes.ts), as for an agent.
 import { TRIAL_LIMITS_R49 } from "@agentx/cloud-contracts";
-import { agentXError, atLeast, projectAllows, type AgentAccessLevel, type AgentOwner, type ChainId, type OrgId } from "@rovara-code/contracts";
+import { AGENT_ACCESS_LEVELS, agentXError, atLeast, projectAllows, type AgentAccessLevel, type AgentOwner, type ChainId, type OrgId } from "@rovara-code/contracts";
 import {
   Lookups,
   evaluateOwned,
@@ -28,17 +34,38 @@ export type ChainScope = "all" | "mine" | "shared" | { project: string };
 
 const notFound = () => agentXError("NOT_FOUND", "no chain has that ID");
 
+const levelRank = (level: AgentAccessLevel) => AGENT_ACCESS_LEVELS.indexOf(level);
+const atMost = (level: AgentAccessLevel, cap: AgentAccessLevel): AgentAccessLevel => (levelRank(level) > levelRank(cap) ? cap : level);
+const atLeastLevel = (level: AgentAccessLevel, floor: AgentAccessLevel): AgentAccessLevel => (levelRank(level) < levelRank(floor) ? floor : level);
+
 /** What the caller holds on a chain, and whether they own it and by which shares (see `evaluateOwned`). A chain of another org gives nothing, to an org admin too. */
 async function evaluateChain(lookups: Lookups<ChainAccessDeps>, chain: ChainRecord, withShares = false): Promise<Evaluation> {
   if (chain.orgId !== lookups.caller.orgId) return { access: "none", owns: false, viaShares: "none", sharedProjects: [] };
   const { deps } = lookups;
-  return evaluateOwned(lookups, chain, () => validSharesOf(deps, { orgId: chain.orgId, chainId: chain.chainId }, () => deps.store.listShares(chain.orgId, chain.chainId), "chain_share_skipped"), withShares);
+  const found = await evaluateOwned(lookups, chain, () => validSharesOf(deps, { orgId: chain.orgId, chainId: chain.chainId }, () => deps.store.listShares(chain.orgId, chain.chainId), "chain_share_skipped"), withShares);
+  const admin = lookups.caller.orgRole === "owner" || lookups.caller.orgRole === "admin";
+  return admin ? found : { ...found, access: await automationRules(lookups, chain, found.access) };
+}
+
+/**
+ * Experience review decision 16 for a caller who is not an org owner or admin (see the top of this file), applied to what the agent rules gave (`access`): on a project's
+ * chain, any role on that project raises it to `view`, and anyone without `manage_agents` there is capped at `use` (a share never lets them change it).
+ * The role is read live on every call (the request's `Lookups`), never cached across requests.
+ */
+async function automationRules(lookups: Lookups<ChainAccessDeps>, chain: ChainRecord, access: AgentAccessLevel): Promise<AgentAccessLevel> {
+  if (chain.owner.kind !== "project") return access;
+  const role = await lookups.role(chain.owner.project);
+  let level = access;
+  if (role !== undefined) level = atLeastLevel(level, "view");
+  if (role === undefined || !projectAllows(role, "manage_agents")) level = atMost(level, "use");
+  return level;
 }
 
 /**
  * The access `caller` holds on `chain`: an org owner or admin `manage`; its member owner `manage`; for a project's chain a `manage_agents` holder
  * `manage` and a contributor `use`; the shares that name the caller (a project's capped by their role there); otherwise `none`. An archived chain
- * is capped at `view` for everyone without `manage`.
+ * is capped at `view` for everyone without `manage`. Then experience review decision 16: any role on the owning project gives `view`, and only its maintainers (and
+ * org owners and admins) hold more than `use`.
  */
 export async function chainAccess(deps: ChainAccessDeps, caller: AgentCaller, chain: ChainRecord): Promise<AgentAccessLevel> {
   return (await evaluateChain(new Lookups(deps, caller), chain)).access;

@@ -1,5 +1,6 @@
 // Part of the broker (split out of ../broker.ts): agent run, workflow and autofix dispatch.
 
+import { runOutsideRecheckDispatch } from "./outside-recheck.js";
 import { nightlyHeadDependencies } from "./nightly-head.js";
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { AgentXError, WorkflowTransitionError, isSystemOwnerId, BUDGET_EXHAUSTED_FAILURE_MESSAGE, type IntentAssessment, UNDERSTAND_ARTIFACT_MAX_BYTES, UNDERSTAND_ARTIFACT_NAME, readIntentArtifact, agentXError, E2E_MODEL_ROUTE_DEFAULT_BUDGETS, TERMINAL_OPERATION_STATUSES, INDEX_EXPIRY_ATTRIBUTE } from "@rovara-code/contracts";
@@ -332,6 +333,8 @@ export async function runWorkflowDispatch(dependencies: AwsBrokerDependencies, i
     }
   };
   if (item.kind === "AUTOFIX") return runAutofixDispatch(dependencies, item, remove);
+  // "Continue in your own tool": the person's checks of a head Rovara adopted on their Recheck, started as their own Retry checks.
+  if (item.kind === "RECHECK") return runOutsideRecheckDispatch(dependencies, item, remove);
   try {
     // Access pauses are lifted only by an explicit, freshly authorized owner retry. Recovery sweeps,
     // ownership restoration and takeover may still encounter the row but never restart its work.

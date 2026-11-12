@@ -424,18 +424,21 @@ describe("the named TEST proof-only installation gate", () => {
     // 2026-11-11 (fix/0514-integ-red, on integ 70e9fa947): the named and foreign digests were retaken after two intended changes. The company image mirror Lambda has the fixed name agentx-<env>-company-image-mirror and
     // the broker derives it (derived-names.ts), so the `cm` entry leaves AGENTX_NAMES (the broker's environment was 58 bytes short of its 400 headroom with the record on). The access stack's boundary names the image roles
     // exactly again (no img-* ARN) and the mirror role too. The named-templates snapshot shows exactly those. Legacy did not move.
+    // 2026-11-11 (0.5.15, feat/0515-identity-healing-one-company): the named and foreign digests were retaken after ONE intended change: the DeveloperSignIn function's Query grant
+    // loses ORG#org_*#PROJECT_CATALOG (the old race-org check, gone with IDENTITY-HEALING-CROSS-ORG). Restoring that one key gives back the previous pins. The named-templates snapshot
+    // shows exactly that one line removed. Legacy did not move.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "4d4d2c31b9c8496eb6fc9fb23dcf14e02e85af240821806e9a8756bca6f72c57",
-        withoutRoute: "985c1b1de0468de4e6447e0bfb2552ad6d297f4e35ef92d34d065cb0f448a9e7",
+        withRoute: "a72c23b9edeb1a7773561a5f15fa7046039480ef465fea8f4060258988f6f1ad",
+        withoutRoute: "49a25764882ab668ddcf58c39fa7112e30b512c46108fb4ddeb8e3c892868716",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "effa1eb4c805883c39f06e8b182d51ede6aaa522b4209723d0d6ed9faf17de8e",
-        withoutRoute: "6ab12772c0b32f4d0bd91505841a0d766984913d6e0cb2eceb334d0dfedc21ca",
+        withRoute: "288ec2a44cc82be83a069033207340ebc8d733f6af5113be99e2999ddfc72f57",
+        withoutRoute: "565f46a320976b4fcb93dc44ea18dfd94f44f86609b7e68f8680edb8c6200821",
       },
       {
         label: "legacy",

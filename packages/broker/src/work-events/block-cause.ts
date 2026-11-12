@@ -21,7 +21,7 @@ export const BLOCK_CAUSE_BY_KEY: Record<Reason, WorkEventBlockCause> = {
   pullRequestClosed: "pr_closed",
   budgetPaused: "budget_paused", understandFullNotAdmitted: "budget_paused",
   understandAnswerPending: "needs_owner", liveSteerReapproval: "needs_owner", liveSteerReapprovalCoding: "needs_owner", liveSteerReapprovalRevise: "needs_owner",
-  baseMergedRecheck: "needs_owner", recheckAutonomyLowered: "not_started",
+  baseMergedRecheck: "needs_owner", recheckAutonomyLowered: "not_started", outsideRecheck: "not_started", outsideRecheckStale: "needs_owner",
 };
 
 const EXACT = new Map<string, WorkEventBlockCause>();

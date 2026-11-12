@@ -7,7 +7,9 @@
 // the union, and clears the marker only if `dirtySeq` is still what it read, so a change made meanwhile keeps it dirty and is sent next time.
 import { GetCommand, PutCommand, QueryCommand, ScanCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { GetFirewallDomainListCommand, UpdateFirewallDomainsCommand, type Route53ResolverClient } from "@aws-sdk/client-route53resolver";
-import { DEFAULT_AGENT_ALLOW_DOMAINS, EGRESS_DOMAINS_PK, EGRESS_SYNC_KEY, EgressSyncMarkerSchema, PROJECT_REVISION_SK_PREFIX, isAllowedDomain, orgOfProjectPk, projectPk, type OrgId, type OrgKey } from "@rovara-code/contracts";
+import { EGRESS_DOMAINS_PK, EGRESS_SYNC_KEY, EgressSyncMarkerSchema, PROJECT_REVISION_SK_PREFIX, orgOfProjectPk, projectPk, type OrgId, type OrgKey } from "@rovara-code/contracts";
+import { isServableAllowedDomain } from "@agentx/cloud-contracts";
+import { installDefaultDomains } from "../org/install-default-allow-domains.js";
 import { reconcileProjectEgress } from "../org/project-archive.js";
 import { RECONCILE_READ_CONCURRENCY, settleBounded } from "../org/settle-bounded.js";
 import { approvedUnion, listEgressItems, putEgressDomains, readEgressDomains, type EgressDomainsDependencies } from "../org/egress-domains.js";
@@ -99,8 +101,9 @@ export async function syncCellAllowList(deps: SyncCellAllowListDependencies): Pr
     if (marker === undefined || !isDirty(marker, deps.listId)) return { ok: true, domains: 0 };
     // The last line of defence: a domain the firewall must never serve (`*` would open the cell) is dropped here whatever stored it.
     const approved = await approvedUnion(deps);
-    const union = approved.filter(isAllowedDomain);
-    if (union.length !== approved.length) log("domains_dropped", { dropped: approved.length - union.length, examples: approved.filter((domain) => !isAllowedDomain(domain)).slice(0, 5) });
+    // Broad names too (`*.amazonaws.com`, `*.github.com`, ...): one project's approval is cell-wide, so a stored one never reaches the firewall.
+    const union = approved.filter(isServableAllowedDomain);
+    if (union.length !== approved.length) log("domains_dropped", { dropped: approved.length - union.length, examples: approved.filter((domain) => !isServableAllowedDomain(domain)).slice(0, 5) });
     const domains = union.length === 0 ? [EMPTY_UNION_SENTINEL] : union;
     for (let start = 0; start < domains.length; start += FIREWALL_DOMAINS_PER_CALL) {
       await deps.resolver.send(new UpdateFirewallDomainsCommand({
@@ -195,9 +198,10 @@ export async function backfillLegacyEgress(deps: EgressDomainsDependencies, opti
     if (await readEgressDomains(deps, orgId, owner) !== undefined) return false;
     // Stored domains are read lower case, as the project reads them; any the firewall must never serve is left out and logged, not asked about.
     const stored = [...new Set(domains.map((domain) => domain.toLowerCase()))];
-    const valid = stored.filter(isAllowedDomain);
+    const valid = stored.filter(isServableAllowedDomain);
     if (valid.length !== stored.length) log("backfill_domains_dropped", { orgId, project, dropped: stored.length - valid.length });
-    const asked = valid.filter((domain) => !DEFAULT_AGENT_ALLOW_DOMAINS.includes(domain));
+    const defaults = installDefaultDomains();
+    const asked = valid.filter((domain) => !defaults.includes(domain));
     if (asked.length === 0) return false;
     await putEgressDomains(deps, orgId, owner, asked);
     return true;
@@ -292,7 +296,8 @@ async function currentRevisionDomains(deps: Pick<EgressDomainsDependencies, "doc
   if (newest === undefined) return undefined;
   const listed = newest.definition?.network?.allowedDomains;
   const stored = Array.isArray(listed) ? listed.filter((entry): entry is string => typeof entry === "string").map((domain) => domain.toLowerCase()) : [];
-  return [...new Set(stored.filter((domain) => isAllowedDomain(domain) && !DEFAULT_AGENT_ALLOW_DOMAINS.includes(domain)))];
+  const defaults = installDefaultDomains();
+  return [...new Set(stored.filter((domain) => isServableAllowedDomain(domain) && !defaults.includes(domain)))];
 }
 
 /**

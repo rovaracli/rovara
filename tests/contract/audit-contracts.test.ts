@@ -139,7 +139,7 @@ describe("the event catalog", () => {
       // Approval place (U4)
       "company.approval_window_proposed", "company.approval_window_changed", "approval.place_decided",
       // Proof and evidence
-      "project.test_env_changed", "project.fixture_set_approved", "project.fixture_set_rejected", "project.fixture_set_withdrawn", "project.test_health_setting_changed", "evidence.downloaded", "project.known_failing_marked", "project.known_failing_removed", "company.known_failing_policy_proposed", "company.known_failing_policy_changed", "company.known_failing_policy_refused", "company.second_review_choice_changed", "project.second_review_narrowed", "company.second_review_context_changed", "task.second_review_acknowledged", "task.design_sole_owner_exception", "company.second_review_mode_proposed", "company.second_review_mode_changed", "company.second_review_mode_refused", "company.second_review_mode_cancelled", "company.second_review_replay_recorded", "company.second_review_verdict_recorded", "company.second_review_verdict_withdrawn",
+      "project.test_env_changed", "project.fixture_set_approved", "project.fixture_set_rejected", "project.fixture_set_withdrawn", "project.test_health_setting_changed", "evidence.downloaded", "project.known_failing_marked", "project.known_failing_removed", "company.known_failing_policy_proposed", "company.known_failing_policy_changed", "company.known_failing_policy_refused", "company.second_review_choice_changed", "project.second_review_narrowed", "company.second_review_context_changed", "task.second_review_acknowledged", "task.working_branch_published", "task.recheck_requested", "task.design_sole_owner_exception", "company.second_review_mode_proposed", "company.second_review_mode_changed", "company.second_review_mode_refused", "company.second_review_mode_cancelled", "company.second_review_replay_recorded", "company.second_review_verdict_recorded", "company.second_review_verdict_withdrawn",
       // Runtime UI flags (lane U5)
       "company.ui_flags_changed",
       // Team record and lessons (learning v2, R1)
@@ -168,6 +168,7 @@ describe("the event catalog", () => {
       "setup_recipe.proposed", "setup_recipe.created", "setup_recipe.approved", "setup_recipe.revoked", "setup_recipe.scope_changed",
       // TE-4: going back to the last proved setup
       "project.setup_restored", "automatic_run.started", "project.automatic_runs_cap_changed", "automatic_runs.paused", "automatic_run.ended",
+      "project.collaborator_approvals_changed", "product_decision.raised", "product_decision.answered", "product_decision.approved",
       // saved project images
       "saved_env.changed", "saved_env.setting_changed",
       // customer test accounts (TS26)
@@ -179,6 +180,10 @@ describe("the event catalog", () => {
       // company rules (G-04)
       "company_rules.proposed", "company_rules.adopted", "company_rules.approved", "company_rules.rejected", "company_rules.cancelled", "company_rules.expired", "company_rules.repo_proposed", "company_rules.written_back", "company_rules.sync_connected", "company_rules.sync_disconnected",
       "agent_publication.requested", "agent_publication.approved", "agent_publication.declined", "agent_publication.withdrawn",
+      // review groups (owner decision 9)
+      "review_groups.changed", "review.claim_changed",
+      // A-31 (srv/project-people): an invite that names a project
+      "project_member.invited", "project_member.joined_by_invite", "project_member.invite_skipped",
     ]);
     expect(new Set(AUDIT_ACTIONS).size).toBe(AUDIT_ACTIONS.length);
   });
@@ -240,6 +245,8 @@ describe("the event catalog", () => {
     "company.ui_flags_changed": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["revision", "turnedOn", "turnedOff", "previews"], sample: { revision: 3, turnedOn: "look+nav", turnedOff: "none", previews: "same" } },
     "company.second_review_verdict_withdrawn": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["model"], sample: { model: "openrouter:openai/gpt-5.5" } },
     "task.work_refused": { target: { kind: "task", id: "00000000-0000-4000-8000-000000000001" }, keys: ["path", "cause"], sample: { path: "ci_fix_round", cause: "no_project_access" } },
+    "task.working_branch_published": { target: { kind: "task", id: "00000000-0000-4000-8000-000000000001" }, keys: ["created"], sample: { created: true } },
+    "task.recheck_requested": { target: { kind: "task", id: "00000000-0000-4000-8000-000000000001" }, keys: ["outcome"], sample: { outcome: "started" } },
     "task.second_review_acknowledged": { target: { kind: "task", id: "00000000-0000-4000-8000-000000000001" }, keys: ["cause"], sample: { cause: "no-answer" } },
     "task.design_sole_owner_exception": { target: { kind: "task", id: "00000000-0000-4000-8000-000000000001" }, keys: ["tier", "openBlockers"], sample: { tier: "high", openBlockers: 0 } },
     // Insights viewer grant (decision 32): the member is the target; no facts.
@@ -260,6 +267,10 @@ describe("the event catalog", () => {
     "automatic_run.started": { target: { kind: "project", name: "web" }, keys: ["job", "setupApprovedBy", "runsThisMonth", "cap"], sample: { job: "nightly", setupApprovedBy: "none", runsThisMonth: 3, cap: 100 } },
     "project.automatic_runs_cap_changed": { target: { kind: "project", name: "web" }, keys: ["fromCap", "toCap"], sample: { fromCap: 100, toCap: 200 } },
     "automatic_run.ended": { target: { kind: "project", name: "web" }, keys: ["job", "cause"], sample: { job: "nightly", cause: "too_old" } },
+    "project.collaborator_approvals_changed": { target: { kind: "project", name: "web" }, keys: ["enabled", "revision"], sample: { enabled: false, revision: 2 } },
+    "product_decision.raised": { target: { kind: "task", id: "11111111-1111-4111-8111-111111111111" }, keys: ["decisionId", "risk", "options"], sample: { decisionId: "pdq_abcdefghijklmnopqrstuvwx", risk: "low", options: 2 } },
+    "product_decision.answered": { target: { kind: "task", id: "11111111-1111-4111-8111-111111111111" }, keys: ["decisionId", "risk", "revision"], sample: { decisionId: "pdq_abcdefghijklmnopqrstuvwx", risk: "low", revision: 2 } },
+    "product_decision.approved": { target: { kind: "task", id: "11111111-1111-4111-8111-111111111111" }, keys: ["decisionId", "risk", "role", "optionId", "revision", "class"], sample: { decisionId: "pdq_abcdefghijklmnopqrstuvwx", risk: "low", role: "collaborator", optionId: "a", revision: 3, class: "product" } },
     "automatic_runs.paused": { target: { kind: "project", name: "web" }, keys: ["month", "cap"], sample: { month: "2026-11", cap: 100 } },
     "project.setup_restored": { target: { kind: "project", name: "web" }, keys: ["revision", "fromRevision", "provenRevision"], sample: { revision: 3, fromRevision: 2, provenRevision: 1 } },
     "saved_env.changed": { target: { kind: "project", name: "web" }, keys: ["change", "cause", "digest", "count"], sample: { change: "images_deleted", cause: "walk", count: 2 } },
@@ -270,6 +281,9 @@ describe("the event catalog", () => {
     "company_domain.verified": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["wasState", "tookOver"], sample: { wasState: "pending", tookOver: false } },
     "company_domain.lost": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["missingDays"], sample: { missingDays: 3 } },
     "company_domain.removed": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["wasState"], sample: { wasState: "verified" } },
+    // Review groups (owner decision 9): counts, a group id and fixed words; never who is in a group or holds a review.
+    "review_groups.changed": { target: { kind: "project", name: "web" }, keys: ["revision", "groups", "members", "added", "removed"], sample: { revision: 2, groups: 1, members: 3, added: 1, removed: 0 } },
+    "review.claim_changed": { target: { kind: "task", id: "11111111-1111-4111-8111-111111111111" }, keys: ["change", "revision", "groupId", "pullRequests", "hostSync"], sample: { change: "claimed", revision: 1, groupId: "rgp_0123456789abcdef", pullRequests: 1, hostSync: "pending" } },
   } as const;
 
   // I10: the learning events hold no text.
@@ -317,6 +331,14 @@ describe("the event catalog", () => {
     expect(AUDIT_FACT_KEYS["spend_policy.changed"]).toEqual(["field", "from", "to"]);
     expect(AUDIT_FACT_KEYS["trigger.disabled"]).toEqual(["cause", "source", "type", "targetKind"]);
     expect(AUDIT_FACT_KEYS["audit.read"]).toEqual(["fromSeq", "toSeq", "count", "via"]);
+    // A-31: fixed words only; the project is the name-keyed target.
+    expect(AUDIT_FACT_KEYS["project_member.invited"]).toEqual(["role", "inviter"]);
+    expect(AUDIT_FACT_KEYS["project_member.joined_by_invite"]).toEqual(["role"]);
+    expect(AUDIT_FACT_KEYS["project_member.invite_skipped"]).toEqual(["role", "cause"]);
+    for (const [action, facts] of [["project_member.invited", { role: "contributor", inviter: "maintainer" }], ["project_member.joined_by_invite", { role: "viewer" }], ["project_member.invite_skipped", { role: "viewer", cause: "project_archived" }]] as const) {
+      expect(AuditEventInputSchema.safeParse(event({ eventId: auditEventId(action, "occ"), action, target: { kind: "project", name: "payments" }, related: ["a".repeat(64)], facts })).success, action).toBe(true);
+    }
+    expect(AuditEventInputSchema.safeParse(event({ eventId: auditEventId("project_member.invited", "occ"), action: "project_member.invited", target: { kind: "project", name: "payments" }, facts: { role: "viewer", projectName: "payments" } })).success).toBe(false);
   });
 });
 

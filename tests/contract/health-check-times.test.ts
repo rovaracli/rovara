@@ -497,7 +497,7 @@ describe("the read checks stale Slack and GitHub observations again", () => {
     await readAt(t, p.probes);
     expect(p.calls).toEqual({ slack: 0, github: 0 });
     const bare = table();
-    expect((await readAt(bare, {})).slack).toEqual(NEVER);
+    expect((await readAt(bare, {} as ReturnType<typeof probes>["probes"])).slack).toEqual(NEVER);
   });
 
   it("runs one probe per company and feature for a burst of reads", async () => {

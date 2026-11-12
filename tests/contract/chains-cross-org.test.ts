@@ -2,6 +2,7 @@
 // three triggers (GitHub pull request opened, a Sentry hook H, a weekly schedule S), a run R waiting at its gate (approval G), a Sentry connection N and a connector `sentry` on `web`.
 // Org B has a project `web` of its own and its own people. Every call a member of B makes for A's objects answers 404 NOT_FOUND exactly as an id nobody has does, and writes nothing
 // (no write command reaches the table and no item of it changes). A control of the same call by A's own people shows the object is there, so no refusal is only a bad fixture.
+import "../support/automations-on.js";
 import { randomUUID } from "node:crypto";
 import { decideApproval, type ApprovalDependencies } from "../../packages/broker/src/agents/approvals.js";
 import { beforeAll, describe, expect, it } from "vitest";

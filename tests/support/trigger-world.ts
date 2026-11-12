@@ -94,7 +94,9 @@ const refusal = (error: unknown): Called => {
 };
 
 export function setupTriggerWorld(options: WorldOptions = {}): TriggerWorld {
-  const w = setupGateWorld(options);
+  // srv/automations (E-52): a trigger starts a chain only where the spend engine's admission holds it to the chain's budget, as the broker wires it; a test of
+  // the refusal without one passes `admission: false`.
+  const w = setupGateWorld({ admission: true, ...options });
   const triggers = new TriggerStore({ documentClient: w.db, tableName: "T", now: () => w.clock.now });
   const hookReader = new FakeHooks();
   const scheduler = new FakeScheduler();

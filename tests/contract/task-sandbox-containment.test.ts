@@ -25,7 +25,7 @@ function fakeDocker() {
   const docker: DockerCli = {
     run: async (args) => {
       calls.push([...args]);
-      if (args[0] === "network" && args[1] === "inspect") return { exitCode: 0, stdout: "bridge {} false", stderr: "" };
+      if (args[0] === "network" && args[1] === "inspect") return { exitCode: 0, stdout: 'bridge {"com.docker.network.bridge.enable_icc":"false","com.docker.network.bridge.name":"rvbtask"} false', stderr: "" };
       return { exitCode: 0, stdout: "", stderr: "" };
     },
   };

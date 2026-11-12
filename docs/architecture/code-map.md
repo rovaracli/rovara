@@ -107,14 +107,15 @@ instead: give it a one-line header comment when you next edit it.
 | Why a task ran (user, test run, nightly) | `vendor/rovara-code/packages/contracts/src/agent-run-node.ts#WORK_ORIGINS` |
 | Proof and evidence (`pe`) | `packages/broker/src/proof/`, wired in `packages/broker/src/aws/broker/evidence-wiring.ts` |
 | Decision cards (`dk`) | `packages/broker/src/decisions/` |
-| Chains and triggers (hidden since 2026-11-07: out of the CLI help; the web app shows "This isn't available" for `/app/chains/*`, `/app/triggers/*` and chain-run session links unless the `chains` web feature is on, which no install sets; code and data stay) | `packages/broker/src/chains/`, `packages/broker/src/triggers/`; the web notice is `packages/ui/src/shell/Unavailable.tsx#Unavailable` |
+| Collaborator project role and product decisions (W11, decisions 14 and 36) | The role and permission table: `packages/cloud-contracts/src/project-roles.ts` (shadows Code's project role, owed upstream; everything else gets the collaborator's viewer floor, `projectRoleFloor`). Product decisions: `packages/broker/src/product-decisions/store.ts` (raise, list, answer, approve through `approvalPlaceDecision`). The project switch `collaboratorApprovals`: `packages/broker/src/collaborators/approvals-setting.ts`. Routes: `packages/broker/src/collaborators/routes.ts#routeCollaboratorRequest` (writes browser-only). |
+| Chains and triggers, "automations" (hidden since 2026-11-07: out of the CLI help; the web app shows "This isn't available" for `/app/chains/*`, `/app/triggers/*` and chain-run session links unless the `chains` web feature is on, which no install sets; code and data stay) | `packages/broker/src/chains/`, `packages/broker/src/triggers/`; the web notice is `packages/ui/src/shell/Unavailable.tsx#Unavailable`. The broker's switch for the `/v1/app/chains*`, `/v1/app/chain-runs*` and project automations routes: `packages/broker/src/chains/automations-gate.ts#automationsEnabled` (WEB_FEATURES names `chains`). Who may read and change one (experience review decision 16 (final-experience-proposal.md, 2026-11-10); owner decision 92): `packages/broker/src/chains/access.ts#chainAccess`, `packages/broker/src/chains/routes.ts#requireOwnerOrAdminToMoveSharedChain`, the `trigger_enable` rule in `packages/broker/src/triggers/routes.ts`. A project's list: `packages/broker/src/chains/project-automations.ts#listProjectAutomations`. Contracts and browser readers: `packages/cloud-contracts/src/app-automations.ts`. |
 | Intake: tickets that start tasks (Jira, Linear, GitHub issues) | `packages/broker/src/intake/` (engine `packages/broker/src/intake/engine.ts#ingestIntake`; who a Jira or Linear account is, only through the company's tracker links: `packages/broker/src/intake/identity.ts#trackerAccountResolvers`; routes, including "Not this one" and the ticket updates settings: `packages/broker/src/intake/routes.ts#routeIntakeRequest`; Home cards for waiting tickets and failing watched sources: `packages/broker/src/intake/home-source.ts`; watched Jira and Linear sources read through the company's connection: `packages/broker/src/triggers/intake-searches.ts#intakeSearchesOf`; the project screen's section: `packages/ui/src/screens/project/TicketsSection.tsx`, calls in `packages/ui/src/api/intake.ts`) |
 | Ticket updates: write-back to the ticket that started a task (owner decision 6) | `packages/broker/src/ticket-updates/` (the milestone handler `packages/broker/src/ticket-updates/handler.ts#sendTicketUpdate`; the Linear, Jira and GitHub writers `packages/broker/src/ticket-updates/trackers.ts#ticketTrackersOf`; the started, plan-ready and closed moments `packages/broker/src/ticket-updates/moments.ts`; settings and write access `packages/broker/src/ticket-updates/settings.ts`; wiring `packages/broker/src/aws/broker/ticket-updates-wiring.ts#installTicketUpdates`; contracts `vendor/rovara-code/packages/contracts/src/ticket-updates.ts`) |
 | Agent sessions (live, stop, redirect, ask) | `packages/broker/src/agent-sessions/`. Sessions on a Mac (devices, local sessions, the Mac move) are unfinished and kept: `packages/broker/src/devices/`, `packages/broker/src/agent-sessions/handoff.ts`. Nothing offers them: no client pairs a Mac, and `packages/broker/src/agent-sessions/access.ts#OFFER_HANDOFF` (off) keeps "handoff" out of a session's actions. Existing local sessions still read. |
 | Agent publish requests, favourite and suggested agents (experience decisions 23 and 24, owner decision 91) | One approval subject, `agent_publication`, on the existing approvals: `packages/broker/src/agents/publication.ts` (approver rules, the handler that moves the agent to a project or shares it with the company, the views and indexes), routes `packages/broker/src/agents/publication-routes.ts` (ask, lists, withdraw; deciding is `/v1/app/approvals/{id}/decide`), `packages/broker/src/agents/favourites.ts` (`/v1/app/me/agents`). The `PUT owner` cap check both share: `packages/broker/src/agents/owner-cap-check.ts#ownerCapCheck`. Contracts `packages/cloud-contracts/src/app-agent-publish.ts` (API: `briefs/agent-publish-api.md`). |
 | The one status model (state, words, next step) | Contract `vendor/rovara-code/packages/contracts/src/task-status.ts`; worked out from a task in `packages/broker/src/agent-sessions/task-status.ts#taskStatusOf` (session summary `display`, task view `statusView`). |
 | The Finished list for Team and Company, and how a session ended | `GET /v1/app/sessions?scope=team\|company&status=ended`: `packages/broker/src/agent-sessions/finished-scope.ts#listFinishedScope` (over the existing project and my-sessions indexes; the one session access rule judges every row); `finishedAs` on an ended session's tile: `packages/broker/src/agent-sessions/finished-as.ts#finishedAsOf` (from the summary's stored status model only). |
-| The company's pending approvals at a glance (owner or admin) | `GET /v1/app/org/approvals/pending-summary`: `packages/broker/src/agents/org-pending-summary.ts#orgPendingApprovals` (the open index filtered to the caller's company; titles from `packages/broker/src/agents/approval-decide-kind.ts#confirmTitleOf`); contract `packages/cloud-contracts/src/org-pending-approvals.ts`. |
+| The company's pending approvals at a glance (owner or admin) | `GET /v1/app/org/approvals/pending-summary`: `packages/broker/src/agents/org-pending-summary.ts#orgPendingApprovals` (the caller's own company partition `ORG#<org>#OPEN_APPROVALS`, `cloud-contracts/src/org-scoped-keys.ts#orgOpenApprovalKey`, written and dropped in each approval's transactions in `approvals-store.ts`; the old global-index read until the one-off backfill `packages/broker/src/agents/org-open-approvals-backfill.ts#backfillOrgOpenApprovals` has run, from the settlement job; titles from `packages/broker/src/agents/approval-decide-kind.ts#confirmTitleOf`); contract `packages/cloud-contracts/src/org-pending-approvals.ts`. |
 | Task notifications (Slack DM / email, batched) | `packages/broker/src/notifications/` (queue on summary change, delivery in the session sweep via `packages/broker/src/aws/broker/attention-wiring.ts`); the person's setting is `/v1/app/me/notifications` (`notifications/prefs-routes.ts`). |
 | Plug-ins: code hosts and check runners | `packages/broker/src/plugins/`, registered in `packages/broker/src/aws/broker/plugin-wiring.ts#createBrokerPlugins` |
 | Audit | `packages/broker/src/audit/` |
@@ -162,6 +163,13 @@ instead: give it a one-line header comment when you next edit it.
 
 - The CDK app is `infra/bin/agentx.ts`. It calls `infra/lib/app.ts#buildAgentXApp`, which creates every stack. The main
   one is `infra/lib/control-plane.ts#ControlPlaneStack`.
+
+## Port conformance (Cloud adapters on Code's ports)
+
+Convergence plan wave 0, lane W0-5. Code's ports (`vendor/rovara-code/packages/contracts/src/ports/`) each have a conformance suite in Code (`vendor/rovara-code/tests/support/ports/`, carried by the pinned copy, byte for byte).
+`tests/conformance/conformance.test.ts` runs every suite against Code's fakes (the positive control, `tests/conformance/code-fakes.ts`) and against every Cloud adapter registered in
+`tests/conformance/adapters/index.ts#CLOUD_ADAPTERS`. A wave 1 adapter lane registers its adapter with `tests/conformance/registry.ts#defineCloudAdapter` and gets its port's suite with no other wiring.
+The port-to-suite table is `tests/conformance/ports.ts`; the guards are `tests/conformance/guards.test.ts`. How to register: [cloud-adapter-conformance.md](cloud-adapter-conformance.md).
 
 ## How to add common things
 
@@ -313,6 +321,7 @@ No single test lists every broker read.
 | `model-access.ts` | write gate, model access (web and Slack), turn routing and budgets. |
 | `nightly-head.ts` | Setup and test health SH17 (quiet repository): the reader of a project's default-branch head that lets a nightly baseline older than 7 days still count when the branch has not moved since it ran (`test-env/nightly-usa... |
 | `nightly-run-wiring.ts` | The nightly run's joints to the broker's own dependencies (NH-1). |
+| `outside-recheck.ts` | "Continue in your own tool" (owner Q13), the broker's half of a person's Recheck of a pull request head pushed outside Rovara. |
 | `plan-answers.ts` | plan critique, plan answers, CI checks and planner replies. |
 | `plugin-wiring.ts` | Enterprise foundations P4: the plug-ins the broker registers. |
 | `project-registration.ts` | project registration, cloud project creation, the project catalog and setup admission. |
@@ -349,6 +358,7 @@ No single test lists every broker read.
 | `ticket-updates-wiring.ts` | Slice 5 "Outside tools" (owner decision 6): the broker's wiring of ticket updates. |
 | `workflow-e2e-verification.ts` | verifying workflow E2E evidence, authority checks and presentations. |
 | `workflow-items.ts` | retries, evidence jobs and the items each completed workflow step writes. |
+| `working-branch-port.ts` | "Continue in your own tool", the host side of "publish working branch" (E-28): reads and creates `agentx/<taskId>` in one of the task's repositories with a push token the broker mints for itself, the same grant and ex... |
 | `workspace-preparation.ts` | workspace preparation, Slack identities, shared threads and Slack bindings. |
 | `workspace-routes.ts` | Slack refusal answers, workspace routing, connector and GitHub context. |
 <!-- /codemap:files -->
@@ -363,6 +373,7 @@ No single test lists every broker read.
 | `cancel.ts` | (No header comment.) Exports `TaskActor`, `cancelTaskFor`, `BLOCKED_NOT_RUNNING`. |
 | `close.ts` | (No header comment.) Exports `openPullRequest`, `finishTaskClose`, `workflowTaskFinished`. |
 | `common.ts` | (No header comment.) Exports `creatorGuard`, `TASK_ID`, `iso`. |
+| `continue-loop.ts` | "Continue in your own tool", the server side (decision 4; E-28..E-31, owner Q13): what the task view says about the working branch and about pushes that did not come from Rovara, and the one write that makes a working... |
 | `continue.ts` | (No header comment.) Exports `continueTask`, `heldPreparationOptions`, `heldSavedEnvPin`. |
 | `decide.ts` | (No header comment.) Exports `recordPublishedCandidateOutcomes`, `DESIGN_CARD_ONLY_MESSAGE`, `decideTaskWorkflow`. |
 | `design-decision.ts` | Design review stage, DR7 slice C (money W2): the COMMIT PORT of `designApproveHandler`. |
@@ -392,7 +403,7 @@ No single test lists every broker read.
 | `start.ts` | (No header comment.) Exports `limitError`, `chargeFailure`, `shareFor`. |
 | `task-answer-context.ts` | (No header comment.) Exports `workflowTaskAnswerContext`, `taskCommentSection`, `taskOwnsThread`. |
 | `task-index.ts` | (No header comment.) Exports `runResultOf`, `ownerIndexRowOf`, `syncIndex`. |
-| `task-page.ts` | (No header comment.) Exports `designCardOnlyApplies`, `taskPageStage`, `publicationAttempts`. |
+| `task-page.ts` | (No header comment.) Exports `DecideSeat`, `decideSeatOf`, `designCardOnlyApplies`. |
 | `task-people.ts` | (No header comment.) Exports `taskPeopleEffectsDependencies`, `getTaskPeople`, `getTaskPeopleCapabilities`. |
 | `task-reads.ts` | (No header comment.) Exports `readTask`, `getTaskPlan`, `listTasks`. |
 | `task-view.ts` | (No header comment.) Exports `candidateChangedFiles`, `candidateDiffText`, `unpublishedOf`. |
@@ -422,6 +433,7 @@ No single test lists every broker read.
 | `company-rules.ts` | Company rules (G-04, owner decisions 57 and 85; switch `si`, StandingInstructionsEnabled): the admin's routes. |
 | `company-test-images.ts` | Company-approved extra test-service images (switches `tx` and `pj`): the admin's routes. |
 | `connection-usage.ts` | `GET /v1/app/connection-usage`: which projects use each company connection, for the "used by" line of the Connections page. |
+| `continue-loop.ts` | "Continue in your own tool" (decision 4, owner Q13): the two actions of the task page's Continue panel, both for the task's owner (or a co-owner) in a live browser session: POST /v1/app/tasks/{id}/continue/publish-bra... |
 | `decisions.ts` | Decision cards (wire-proof, setup wizard E4): what the card routes (`decisions/routes.ts`) need for one caller, built from the developer route dependencies. |
 | `dependencies.ts` | (No header comment.) Exports `setupDraftDepsOf`, `diagnosisRouteDepsOf`, `agentRunStarterOf`. |
 | `design-review-company.ts` | Design review (DR-FU4): `/v1/app/org/design-review`, the company's How we work card for design review, for company owners and admins only. |
@@ -444,7 +456,8 @@ No single test lists every broker read.
 | `project-access.ts` | (No header comment.) Exports `checkProjectAccess`, `listWorkspaces`. |
 | `project-archive-setup.ts` | (No header comment.) Exports `archiveDepsOf`, `egressDepsOf`, `getAppProject`. |
 | `project-list.ts` | (No header comment.) Exports `queryAll`, `REVISION_READS_AT_ONCE`, `mapLimit`. |
-| `project-members.ts` | (No header comment.) Exports `projectRoleForRoute`, `getProjectMembers`, `putProjectMember`. |
+| `project-members.ts` | (No header comment.) Exports `projectRoleForRoute`, `getProjectMembers`, `readProjectMembers`. |
+| `project-people.ts` | A-32 and A-33 (srv/project-people): the web's People tab of a project. |
 | `project-settings.ts` | (No header comment.) Exports `listGithubRepositories`, `putProjectSettings`, `projectMetaConfigRoute`. |
 | `saved-env-image.ts` | Saved project images (SV wiring, switch `sv`): the project's Environment panel as routes. |
 | `second-review.ts` | Second review by another AI company (SR-1, switch `cr`): `/v1/app/org/second-review`, the picker's preview and the company's choice. |

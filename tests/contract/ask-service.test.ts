@@ -3,7 +3,7 @@
 import { randomUUID } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it, vi } from "vitest";
-import { ASK_RATE, askLinearScrubKey, askCountKey, askRequestKey, askErasedAliasPk, projectArchivedMessage, projectMetaKey, sessionRateKey, sessionAskKey } from "@rovara-code/contracts";
+import { ASK_RATE, askLinearScrubKey, askCountKey, askRequestKey, askErasedAliasPk, projectArchivedMessage, projectMemberKey, projectMetaKey, sessionRateKey, sessionAskKey } from "@rovara-code/contracts";
 import { orgBanKey, orgMemberKey } from "@agentx/cloud-contracts";
 
 const mint = vi.hoisted(() => vi.fn((...args: unknown[]) => { void args; return Promise.resolve({ baseUrl: "https://proxy.example.invalid", apiKey: "fake-key-not-a-secret", expiresAt: 1 }); }));
@@ -202,6 +202,9 @@ describe("model access for an Ask", () => {
     // Arjun's 'use' share ends after he asked.
     const share = t.w.db.find((item) => String(item.sk) === `SHARE#MEMBER#${ARJUN}`)[0]!;
     t.w.db.delete(String(share.pk), String(share.sk));
+    // Decision 104: a contributor on the project keeps the live Ask with only `view`, so he leaves the project too.
+    t.w.db.delete(projectMemberKey(ORG_A, ARJUN, "web").pk, projectMemberKey(ORG_A, ARJUN, "web").sk);
+    t.w.members.revoke(ORG_A, "web", ARJUN);
     await expect(handleAskServiceRoute(t.dependencies, t.ask, t.request("/asks/model-access", { ...ref, turnId: "Ev1" }), "/v1/asks/model-access")).rejects.toMatchObject({ code: "FORBIDDEN" });
     const closing = world();
     const owned = await queuedAsk(closing, PRIYA);

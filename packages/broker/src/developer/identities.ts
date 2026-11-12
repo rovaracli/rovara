@@ -1,7 +1,7 @@
 // packages/broker/src/developer/identities.ts
 // Plan 2, Task 2: one developer per person, however they sign in. A sign-in identity (a provider's issuer and subject) is linked to a
 // developer; a second route to the same verified email is linked to the first route's developer instead of becoming a second member.
-import { normalizeEmail, type OrgId } from "@rovara-code/contracts";
+import { normalizeEmail } from "@rovara-code/contracts";
 import { type DeveloperSignInMethod } from "@agentx/cloud-contracts";
 import { ownerKeyForSubject } from "../aws/lambda.js";
 import type { MergeDuplicateMemberInput, MergeDuplicateMemberResult } from "../org/merge-members.js";
@@ -14,10 +14,11 @@ export interface ResolveSignInDeveloperDependencies {
   orgs: Pick<OrgStore, "developerForVerifiedEmail" | "orgForDeveloper">;
   /** Rule 1b: merges a duplicate member into the member its email names (mergeDuplicateMember, bound to its tables). Without it a duplicate is not healed. */
   mergeDuplicate?: (input: MergeDuplicateMemberInput) => Promise<MergeDuplicateMemberResult>;
-  /** Why an org that is not the survivor's cannot be closed by a merge, or undefined when it is a disposable race org (see raceOrgBlocker). Without it such a duplicate is never merged. */
-  raceOrgBlocker?: (orgId: OrgId, duplicateId: string) => Promise<string | undefined>;
   log?: (entry: Record<string, unknown>) => void;
 }
+
+/** Why rule 1b left a duplicate in another company alone: healing only ever acts within one company. */
+export const CROSS_COMPANY_REASON = "the other member is in a different company; sign-ins are never merged across companies";
 
 /** `existing`: the identity was already linked. `new-self`: it starts its own developer. `new-linked`: it joined another developer by verified email. */
 export type SignInLink = "existing" | "new-self" | "new-linked";
@@ -35,10 +36,10 @@ export interface ResolvedSignInDeveloper {
  * 1b. Before rule 1 answers for an identity that is its own developer (no link item, or a link to itself that was never unlinked),
  *    and that developer belongs to org O: when this is a cloud or GitHub sign-in with a verified ASCII email whose pointer names another
  *    developer who is not revoked or merged, the two are one person who became two members. If the other developer is in O too, the
- *    duplicate is merged into them. If the other is in a different org and the duplicate's org is disposable (the leftover of the
- *    first-sign-in race: see raceOrgBlocker), the duplicate is merged in and that org is closed. Either way the sign-in resolves to the
- *    other developer. Otherwise nothing is merged (two orgs with data are never merged by a sign-in) and `signin.duplicate_other_org`
- *    says why.
+ *    duplicate is merged into them and the sign-in resolves to the other developer. Healing never crosses companies (IDENTITY-HEALING-
+ *    CROSS-ORG, 0.5.15): when the other developer is in a different org, nothing is merged and no org is closed, whatever either org
+ *    holds; `signin.duplicate_other_org` records it and the sign-in goes on as itself. One person may hold two companies on purpose
+ *    (programme T), so a shared email is never proof that a second company is a leftover; routes are joined only by the link flow.
  * 2. A cloud or GitHub sign-in with a verified ASCII email, whose own key has no org and was never unlinked, and whose email names
  *    another developer who has an org: link to that developer.
  * 3. Otherwise link the identity to its own key.
@@ -107,19 +108,14 @@ async function healDuplicate(deps: ResolveSignInDeveloperDependencies, method: D
   const survivorRecord = await deps.store.getDeveloper(survivorId);
   if (survivorRecord === undefined || survivorRecord.revoked || survivorRecord.mergedInto !== undefined) return undefined;
   if (other.orgId !== own.orgId) {
-    // The same person in two orgs (the first-sign-in race leaves this). Only an org with nothing in it is closed; one with data is left
-    // for support, and rule 2 does not join it either (I1).
-    const blocker = await deps.raceOrgBlocker?.(own.orgId, identityKey);
-    if (blocker !== undefined) {
-      deps.log?.({ event: "signin.duplicate_other_org", developerId: identityKey, orgId: own.orgId, otherDeveloperId: survivorId, otherOrgId: other.orgId, reason: blocker });
-      return undefined;
-    }
+    // Two companies: never merged and never closed by a sign-in (IDENTITY-HEALING-CROSS-ORG). The survivor's company is not touched either.
+    deps.log?.({ event: "signin.duplicate_other_org", developerId: identityKey, orgId: own.orgId, otherDeveloperId: survivorId, otherOrgId: other.orgId, reason: CROSS_COMPANY_REASON });
+    return undefined;
   }
   const merged = await deps.mergeDuplicate({
-    orgId: other.orgId, ...(other.orgId === own.orgId ? {} : { duplicateOrgId: own.orgId }),
-    survivorId, duplicateId: identityKey, duplicateIdentityKey: identityKey,
+    orgId: own.orgId, survivorId, duplicateId: identityKey, duplicateIdentityKey: identityKey,
     identity: { email: identity.email, ...(identity.login === undefined ? {} : { login: identity.login }) },
   });
-  deps.log?.({ event: "signin.duplicate_merged", developerId: identityKey, survivorId, orgId: other.orgId, grantsMoved: merged.grantsMoved, overrideMoved: merged.overrideMoved, ...(merged.closedOrg === undefined ? {} : { closedOrg: merged.closedOrg }) });
+  deps.log?.({ event: "signin.duplicate_merged", developerId: identityKey, survivorId, orgId: own.orgId, grantsMoved: merged.grantsMoved, overrideMoved: merged.overrideMoved });
   return survivorId;
 }

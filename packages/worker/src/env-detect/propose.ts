@@ -8,6 +8,7 @@
 //   - the environment must pass the contract's own schema, or the proposal is not produced (and the reason is a fixed word).
 import { isDatabaseSeedCommand, TestEnvironmentBodySchema, TestEnvironmentProposalSchema, parseCommandLine, type ProjectCommand, type SetupDraft, type TestEnvValueSource, type TestEnvironmentBody, type TestEnvironmentProposal } from "@rovara-code/contracts";
 import { coverageSpecsOf } from "../verification/cobertura-lcov-coverage.js";
+import { sameCommandLine } from "./command-alias.js";
 import type { Detection, DetectedSource, Located } from "./types.js";
 
 export interface PendingService { kind: "sagemaker_runtime" | "http"; target: string; source: TestEnvValueSource }
@@ -31,7 +32,8 @@ export interface EnvironmentDraft {
 
 const sourceOf = (source: DetectedSource): TestEnvValueSource => source;
 const COMMON_FULL_SUITE = [".github/**", ".gitlab-ci.yml", "Makefile"];
-const sameProgram = (left: ProjectCommand, right: ProjectCommand): boolean => left.executable === right.executable && JSON.stringify(left.args) === JSON.stringify(right.args);
+/** The same program with the same arguments, the directory aside; `npm test` and `npm run test` (and the other spellings of one package.json script) are the same. */
+const sameProgram = (left: ProjectCommand, right: ProjectCommand): boolean => sameCommandLine(left, right);
 
 /** Whether a command runs one of the named package.json scripts: `npm run <name>`, `npm run-script <name>`, `pnpm|yarn|bun run <name>`, or `pnpm|yarn <name>`. */
 export function runsScriptOf(command: Pick<ProjectCommand, "executable" | "args">, names: ReadonlySet<string>): boolean {

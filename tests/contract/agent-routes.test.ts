@@ -49,7 +49,7 @@ const codingSequence = (maxRounds = 3): NonNullable<RecipeOverlay["sequence"]> =
   { id: "pr", name: "Pull request", kind: "pull_request" },
 ];
 
-beforeAll(async () => { await loadSlackBroker(); });
+beforeAll(async () => { await loadSlackBroker(); }, 60_000); // loading the whole Slack broker takes over 10 s on a busy CI runner
 
 type Reply = { status: number; body: Record<string, unknown> };
 

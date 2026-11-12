@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { verifyGithubWebhookSignature } from "../plugins/code-host/github/signature.js";
 import { GetCommand, PutCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import { WORKFLOW_BLOCK_REASONS, WorkflowSnapshotSchema, collectWorkflowFeedbackBundles, observeWorkflowPullRequest, observeWorkflowPullRequestMergedWithFix, recordWorkflowPullRequestHeadTrees, recordWorkflowPullRequestUpdate, workflowFollowsOnlyMerge, type WorkflowSnapshot, type AuditEventInput, auditPullRequestId } from "@agentx/cloud-contracts";
+import { WORKFLOW_BLOCK_REASONS, WorkflowSnapshotSchema, collectWorkflowFeedbackBundles, observeWorkflowPullRequest, observeWorkflowPullRequestMergedWithFix, recordWorkflowPullRequestHeadTrees, recordWorkflowPullRequestUpdate, workflowFollowsOnlyMerge, type WorkflowSnapshot, type AuditEventInput, auditPullRequestId, GITHUB_LOGIN_PATTERN } from "@agentx/cloud-contracts";
 import { WorkflowFeedbackBundleSchema, WorkflowFeedbackBundleCommentsSchema, WorkflowFeedbackBundleRefSchema, type OrgId, type PluginKind, type WorkflowFeedbackBundle, type WorkflowFeedbackBundleRef, type WorkflowFeedbackThreadObservation, projectMonthStatsKey } from "@rovara-code/contracts";
 import { auditOccurrence, auditPullRequestMerged } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
@@ -27,9 +27,29 @@ const GitHubWebhookPayloadSchema = z.object({
   issue: z.object({ number: z.number().int().positive(), state: z.enum(["open", "closed"]).optional(), pull_request: z.object({ url: z.string().url() }).passthrough().optional() }).passthrough().optional(),
   pull_request: z.object({ number: z.number().int().positive(), state: z.enum(["open", "closed"]).optional(), merged: z.boolean().optional(),
     head: z.object({ sha: z.string() }).passthrough().optional() }).passthrough().optional(),
+  /** Whoever caused the event: for a push to a pull request (synchronize), the pusher. Only the login is read, and only where it is spelled as GitHub spells one. */
+  sender: z.object({ login: z.string().max(100) }).passthrough().optional(),
   review: z.object({ id: z.number().int().positive(), body: z.string().max(65_536).nullable().optional(), html_url: z.string().url(), updated_at: z.string().datetime().optional(), user: z.object({ login: z.string().min(1).max(100) }).passthrough() }).passthrough().optional(),
   comment: z.object({ id: z.number().int().positive(), body: z.string().max(65_536).nullable().optional(), html_url: z.string().url(), updated_at: z.string().datetime().optional(), path: z.string().max(500).optional(), line: z.number().int().positive().optional(), diff_hunk: z.string().max(8_000).optional(), user: z.object({ login: z.string().min(1).max(100) }).passthrough() }).passthrough().optional(),
 }).passthrough();
+
+/** A `push` delivery, read for one purpose: a push to a task's working branch (`agentx/<uuid>`) says who pushed which head. Nothing else in it is read. */
+const PushPayloadSchema = z.object({
+  ref: z.string().max(300),
+  after: z.string().max(64),
+  before: z.string().max(64).optional(),
+  deleted: z.boolean().optional(),
+  installation: z.object({ id: z.number().int().positive() }).passthrough(),
+  /** `pushed_at`: when GitHub took the push (seconds since 1970 in a push delivery), set by GitHub itself, not by the pusher. */
+  repository: z.object({ id: z.number().int().positive(), full_name: z.string().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/).max(300), pushed_at: z.union([z.number(), z.string()]).optional() }).passthrough(),
+  sender: z.object({ login: z.string().max(100) }).passthrough().optional(),
+}).passthrough();
+/** A time GitHub sent (an ISO string, or seconds since 1970), as ISO; undefined for anything else. */
+function isoTime(value: unknown): string | undefined {
+  const ms = typeof value === "number" && Number.isFinite(value) ? value * 1000 : typeof value === "string" ? Date.parse(value) : Number.NaN;
+  return Number.isFinite(ms) && ms > 0 && ms < 8.64e15 ? new Date(ms).toISOString() : undefined;
+}
+const WORKING_BRANCH_REF = /^refs\/heads\/(agentx\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/u;
 
 /** A `check_suite`, `check_run` or `status` delivery: it names a commit, not a pull request. Everything is read from GitHub again after it; the body only says which commit. */
 const HeadEventPayloadSchema = z.object({
@@ -98,6 +118,8 @@ export interface ReceiveGithubWebhookInput {
    */
   authorizeRepository(scope: { installationId: number; repositoryId: number; fullName: string; pullRequestNumber: number } | { installationId: number; repositoryId: number; fullName: string; headSha: string; branch?: string }): Promise<boolean>;
   reserveDelivery(delivery: { deliveryId: string; installationId: number; repositoryId: number; eventHash: string; event: ReceivedGithubWebhook["event"] }): Promise<"reserved" | "retry" | "duplicate" | "conflict">;
+  /** Whether a push to an `agentx/<uuid>` branch is to a task's own published working branch through that task's company's installation; asked before the delivery is stored. */
+  authorizeBranchPush?(event: BranchPushWebhookEvent): Promise<boolean>;
   /**
    * Called once the signature, the delivery id and the JSON have been checked, before the event is looked at: the one place a delivery's verified body is handed on. It is how
    * trigger events share this function's verification instead of repeating it. When it is given, an event type this function does not follow is not refused until it has run.
@@ -117,10 +139,26 @@ export interface HeadWebhookEvent {
   branch?: string;
 }
 
+/** A push to a task's working branch (`agentx/<taskId>`): only a nudge that says who pushed which head. The task is found by the branch's own name and checked against its recorded working-branch rows. */
+export interface BranchPushWebhookEvent {
+  kind: "BRANCH_PUSH";
+  installationId: number;
+  repositoryId: number;
+  fullName: string;
+  branch: string;
+  headSha: string;
+  /** The pusher's GitHub login, when the host named one in a spelling GitHub allows. */
+  pushedBy?: string;
+  /** When GitHub took the push (its own `pushed_at`), so a late delivery of an older push never overwrites a newer one. */
+  pushedAt?: string;
+  /** The branch was deleted: `headSha` is the head it had. What was kept about its pushes goes. */
+  deleted?: true;
+}
+
 export interface ReceivedGithubWebhook {
   delivery: "ACCEPTED" | "DUPLICATE";
   deliveryId: string;
-  event: PullRequestWebhookEvent | HeadWebhookEvent;
+  event: PullRequestWebhookEvent | HeadWebhookEvent | BranchPushWebhookEvent;
 }
 
 export interface PullRequestWebhookEvent {
@@ -132,6 +170,10 @@ export interface PullRequestWebhookEvent {
     number: number;
     /** A push to the pull request (synchronize): the head GitHub says it now has. A hint, checked against GitHub's own read. */
     headSha?: string;
+    /** A push to the pull request (synchronize): the login of whoever pushed, as the host's own event names it. Only said about `headSha`; never decides whose push it was. */
+    pushedBy?: string;
+    /** A push to the pull request (synchronize): when GitHub says the pull request changed (its own `updated_at`), for ordering late deliveries. */
+    pushedAt?: string;
     comment?: { id: number; body: string; truncated: boolean; url: string; author: string; updatedAt?: string; path?: string; line?: number; diffHunk?: string; source: "review" | "review_comment" | "pr_discussion" };
 }
 
@@ -1135,6 +1177,7 @@ async function handleVerifiedGithubWebhook(input: {
   headers: Record<string, string | undefined>;
   secret: string;
   authorizeRepository: ReceiveGithubWebhookInput["authorizeRepository"];
+  authorizeBranchPush?: ReceiveGithubWebhookInput["authorizeBranchPush"];
   process(event: ReceivedGithubWebhook["event"], deliveryId: string): Promise<void>;
   /** Plan 2, Task 14: where an `installation.created` delivery goes, before anything else. Absent, the event is unsupported as before. */
   installationCreated?: (deliveryId: string, payload: InstallationCreatedPayload) => Promise<unknown>;
@@ -1169,6 +1212,7 @@ async function handleVerifiedGithubWebhook(input: {
       headers: input.headers,
       secret: input.secret,
       authorizeRepository: input.authorizeRepository,
+      ...(input.authorizeBranchPush === undefined ? {} : { authorizeBranchPush: input.authorizeBranchPush }),
       reserveDelivery: (delivery) => reserveGithubWebhookDelivery({
         documentClient: input.documentClient,
         tableName: input.tableName,
@@ -1224,7 +1268,7 @@ export async function receiveGithubWebhook(input: ReceiveGithubWebhookInput): Pr
   const deliveryId = headers["x-github-delivery"];
   if (deliveryId === undefined || !DELIVERY_ID.test(deliveryId)) throw new GithubWebhookRefusal("GitHub webhook delivery ID is invalid");
   const eventName = headers["x-github-event"];
-  const followed = eventName === "pull_request" || eventName === "pull_request_review" || eventName === "pull_request_review_comment" || eventName === "issue_comment"
+  const followed = eventName === "pull_request" || eventName === "push" || eventName === "pull_request_review" || eventName === "pull_request_review_comment" || eventName === "issue_comment"
     || (eventName !== undefined && HEAD_EVENT_NAMES.has(eventName));
   if (!followed && input.onVerified === undefined) throw new GithubWebhookRefusal("GitHub webhook event type is unsupported");
   let raw: unknown;
@@ -1235,6 +1279,7 @@ export async function receiveGithubWebhook(input: ReceiveGithubWebhookInput): Pr
   }
   await input.onVerified?.({ eventName, deliveryId, payload: raw });
   if (!followed) throw new GithubWebhookIgnorable("GitHub webhook event type is unsupported");
+  if (eventName === "push") return receiveBranchPush(input, { deliveryId, rawBody: input.rawBody, raw });
   if (eventName !== undefined && HEAD_EVENT_NAMES.has(eventName)) return receiveHeadEvent(input, { eventName, deliveryId, rawBody: input.rawBody, raw });
   const parsed = GitHubWebhookPayloadSchema.safeParse(raw);
   const object = parsed.success ? parsed.data : undefined;
@@ -1270,6 +1315,8 @@ export async function receiveGithubWebhook(input: ReceiveGithubWebhookInput): Pr
     fullName: scope.fullName,
     number,
     ...(eventName === "pull_request" && object.action === "synchronize" && /^[a-f0-9]{40}$/.test(object.pull_request?.head?.sha ?? "") ? { headSha: object.pull_request!.head!.sha } : {}),
+    ...(eventName === "pull_request" && object.action === "synchronize" && GITHUB_LOGIN_PATTERN.test(object.sender?.login ?? "") ? { pushedBy: object.sender!.login } : {}),
+    ...(eventName === "pull_request" && object.action === "synchronize" && isoTime((object.pull_request as { updated_at?: unknown } | undefined)?.updated_at) !== undefined ? { pushedAt: isoTime((object.pull_request as { updated_at?: unknown }).updated_at)! } : {}),
     ...(comment === undefined ? {} : { comment }),
   };
   const reserved = await input.reserveDelivery({
@@ -1286,6 +1333,40 @@ export async function receiveGithubWebhook(input: ReceiveGithubWebhookInput): Pr
     deliveryId,
     event,
   };
+}
+
+/**
+ * A push delivery. Only a push to `refs/heads/agentx/<uuid>` is read (one nobody deleted): it is reserved like any delivery and says who pushed which head. Anything else is the event type it always was, unsupported.
+ * Whether a task has that working branch is decided when the delivery is processed, against the task's own rows, never here.
+ */
+async function receiveBranchPush(
+  input: ReceiveGithubWebhookInput,
+  delivery: { deliveryId: string; rawBody: string; raw: unknown },
+): Promise<ReceivedGithubWebhook> {
+  const unsupported = (): never => { throw new GithubWebhookIgnorable("GitHub webhook event type is unsupported"); };
+  const parsed = PushPayloadSchema.safeParse(delivery.raw);
+  if (!parsed.success) return unsupported();
+  const push = parsed.data;
+  const ref = WORKING_BRANCH_REF.exec(push.ref);
+  if (ref === null) return unsupported();
+  // A deleted branch names the head it had (`before`); any other push the head it has now (`after`).
+  const deleted = push.deleted === true;
+  const head = deleted ? push.before ?? "" : push.after;
+  if (!/^[a-f0-9]{40}$/.test(head) || /^0{40}$/.test(head)) return unsupported();
+  const pushedAt = isoTime(push.repository.pushed_at);
+  const event: BranchPushWebhookEvent = {
+    kind: "BRANCH_PUSH", installationId: push.installation.id, repositoryId: push.repository.id, fullName: push.repository.full_name.toLowerCase(), branch: ref[1]!, headSha: head,
+    ...(GITHUB_LOGIN_PATTERN.test(push.sender?.login ?? "") ? { pushedBy: push.sender!.login } : {}),
+    ...(pushedAt === undefined ? {} : { pushedAt }), ...(deleted ? { deleted: true as const } : {}),
+  };
+  // Only a push to a task's own published branch, through that task's company's installation, is kept at all: anything else is not stored, not even as a delivery.
+  if (input.authorizeBranchPush !== undefined && !await input.authorizeBranchPush(event)) return unsupported();
+  const reserved = await input.reserveDelivery({
+    deliveryId: delivery.deliveryId, installationId: event.installationId, repositoryId: event.repositoryId,
+    eventHash: createHash("sha256").update("push", "utf8").update("\0").update(delivery.rawBody, "utf8").digest("hex"), event,
+  });
+  if (reserved === "conflict") throw new GithubWebhookRefusal("GitHub delivery ID was reused with different content");
+  return { delivery: reserved === "duplicate" ? "DUPLICATE" : "ACCEPTED", deliveryId: delivery.deliveryId, event };
 }
 
 /**
