@@ -13,7 +13,7 @@ import { lessonSimilarityFor } from "../../../packages/broker/src/aws/broker/les
 import { createTeamRecordRuntime, teamRecordIsOn, type TeamRecordRuntime } from "../../../packages/broker/src/team-record/runtime.js";
 import { ERASE_SWEEP_DELAY_MS } from "../../../packages/broker/src/team-record/erase.js";
 import { identitySystem } from "../../../packages/broker/src/team-record/erased.js";
-import { putScopeWork, putSourceConfig } from "../../../packages/broker/src/team-record/store.js";
+import { putScopeWork, putSourceConfig, rewriteScopeWork } from "../../../packages/broker/src/team-record/store.js";
 import { askAliasHashKey, readErasedAliases, scrubWithAliasHashes } from "../../../packages/broker/src/agent-sessions/ask-erased-aliases.js";
 import { SdkUnavailableError } from "../../../packages/broker/src/team-record/aws-adapters.js";
 import { FakeDynamoDb } from "../../support/fake-dynamodb.js";
@@ -2117,41 +2117,99 @@ describe("a company's erase keeps the company in the directory while a delete is
   const directory = (db: FakeDynamoDb) => db.find((item) => item.pk === "TEAM_RECORD_ORGS" && item.sk === ORG_A);
   const jobs = (db: FakeDynamoDb) => db.find((item) => item.entityType === "TEAM_RECORD_ERASE_JOB");
   const queued = (db: FakeDynamoDb) => db.find((item) => item.entityType === "TEAM_RECORD_SCOPE_WORK");
+  const delq = (db: FakeDynamoDb) => db.find((item) => typeof item.sk === "string" && item.sk.startsWith("DELQ#"));
+  const raced = (requestId: string, at: number) => ({ type: "tombstone" as const, system: "github", scope: "github:repo/9", cause: "excluded" as const, hidePending: true, childPending: true, hidden: 0, requestId, at: new Date(at).toISOString(), queuedAtSeconds: Math.floor(at / 1000) });
 
-  it("a delete queued after the erase's hot pass (a removal that raced it) is finished by the worker first; only then does the job end and the company leave the directory", async () => {
+  /** A company that wrote once and is closing, with the erase started (no lake, so the job's last step is the guard). `when` runs once, right after a write for which `trigger` is true. */
+  async function closing(trigger: (command: { constructor: { name: string }; input?: Record<string, unknown> }) => boolean, when: (clock: { at: number }) => Promise<void> | void, logs: Array<Record<string, unknown>> = []) {
     const db = dbOf();
     const clock = { at: T0 };
-    const aws = fakeAws();
-    const runtime = build(db, { ...ON, ROVARA_EDITION: "enterprise" }, { sdk: aws.sdk, sts: aws.sts, now: () => clock.at });
+    const runtime = build(db, { ...ON, ROVARA_EDITION: "enterprise" }, { now: () => clock.at, log: (entry: Record<string, unknown>) => { logs.push(entry); } });
     db.set({ ...orgProjectCatalogKey(ORG_A, "web"), entityType: "PROJECT_CATALOG", name: "web" });
     await addSource(db, "enterprise", { orgId: ORG_A, source: "github", scope: "github:repo/9", retention: "C" });
     await runtime.sink.put(githubDraft({ retention: "C", audience: { kind: "project" }, scope: "github:repo/9", text: `${MARKER} history` }));
     db.set({ ...orgMetaKey(ORG_A), orgId: ORG_A, closingAt: "2026-10-30T11:00:00.000Z" });
     await runtime.erase.workspace(ORG_A);
     clock.at += SETTLE_PASS_MS;
-    // A removal that raced the erase: its queue item lands right after the erase's hot pass has finished (the moment the job moves on to its lake phase), where no pass of the erase clears it any more.
     const send = db.send.bind(db);
-    let raced = false;
+    let fired = false;
     db.send = async (command: Parameters<typeof send>[0]) => {
       const result = await send(command);
-      const item = (command as { input?: { Item?: { entityType?: string; job?: { phase?: string } } } }).input?.Item;
-      if (!raced && item?.entityType === "TEAM_RECORD_ERASE_JOB" && item.job?.phase === "lake") {
-        raced = true;
-        await putScopeWork({ documentClient: db, tableName: "TeamRecord" }, ORG_A, { type: "tombstone", system: "github", scope: "github:repo/9", cause: "excluded", hidePending: true, childPending: true, hidden: 0, requestId: "22222222-2222-4222-8222-222222222222", at: new Date(clock.at).toISOString(), queuedAtSeconds: Math.floor(clock.at / 1000) });
-      }
+      if (!fired && trigger(command)) { fired = true; await when(clock); }
       return result;
     };
-    await runtime.jobs.run("hourly");
-    db.send = send;
-    expect(raced).toBe(true);
+    const restore = () => { db.send = send; return fired; };
+    return { db, clock, runtime, restore };
+  }
+  /** The moment the job has moved on to its last phase: the hot passes of the erase are over, so none of them clears what is queued after this. */
+  const atLakePhase = (command: { constructor: { name: string }; input?: Record<string, unknown> }) => {
+    const item = (command.input as { Item?: { entityType?: string; job?: { phase?: string } } } | undefined)?.Item;
+    return item?.entityType === "TEAM_RECORD_ERASE_JOB" && item.job?.phase === "lake";
+  };
+
+  it("a delete queued after the erase's hot pass (a removal that raced it) is finished by the worker first; only then does the job end and the company leave the directory", async () => {
+    const racing = { db: undefined as FakeDynamoDb | undefined };
+    const ctx = await closing(atLakePhase, async (clock) => { await putScopeWork({ documentClient: racing.db!, tableName: "TeamRecord" }, ORG_A, raced("22222222-2222-4222-8222-222222222222", clock.at)); });
+    racing.db = ctx.db;
+    await ctx.runtime.jobs.run("hourly");
+    expect(ctx.restore()).toBe(true);
     // The queue holds a delete for this company, so the erase job (and the company's directory row, the worker's only way in) stays.
-    expect(queued(db)).toHaveLength(1);
-    expect(jobs(db)).toHaveLength(1);
-    expect(directory(db)).toHaveLength(1);
-    // The next run: the worker finishes the item and then the job ends and the company leaves the directory.
-    await runtime.jobs.run("hourly");
-    expect(queued(db)).toStrictEqual([]);
-    expect(jobs(db)).toStrictEqual([]);
-    expect(directory(db)).toStrictEqual([]);
+    expect(queued(ctx.db)).toHaveLength(1);
+    expect(jobs(ctx.db)).toHaveLength(1);
+    expect(directory(ctx.db)).toHaveLength(1);
+    await ctx.runtime.jobs.run("hourly");
+    expect(queued(ctx.db)).toStrictEqual([]);
+    expect(jobs(ctx.db)).toStrictEqual([]);
+    expect(directory(ctx.db)).toStrictEqual([]);
+  });
+
+  it("check-then-delete window: a delete queued between the last look at the queue and the removal of the directory row lists the company again", async () => {
+    const racing = { db: undefined as FakeDynamoDb | undefined };
+    const ctx = await closing(
+      (command) => command.constructor.name === "DeleteCommand" && JSON.stringify(command.input?.Key ?? {}).includes("TEAM_RECORD_ORGS") && JSON.stringify(command.input?.Key ?? {}).includes(ORG_A) && !JSON.stringify(command.input?.Key).includes("ERASE"),
+      // A producer that listed the company BEFORE the row went (so its own listing is already in the past) and writes its queue item only now.
+      async (clock) => { await rewriteScopeWork({ documentClient: racing.db!, tableName: "TeamRecord" }, ORG_A, raced("33333333-3333-4333-8333-333333333333", clock.at)); },
+    );
+    racing.db = ctx.db;
+    await ctx.runtime.jobs.run("hourly");
+    expect(ctx.restore()).toBe(true);
+    expect(queued(ctx.db)).toHaveLength(1);
+    expect(directory(ctx.db)).toHaveLength(1); // listed again: the worker still reaches the item
+    await ctx.runtime.jobs.run("hourly");
+    expect(queued(ctx.db)).toStrictEqual([]);
+  });
+
+  it("a queued item that does not parse still holds the job and the directory row (it must not look like an empty queue); an hour-old one logs nothing", async () => {
+    const logs: Array<Record<string, unknown>> = [];
+    const racing = { db: undefined as FakeDynamoDb | undefined };
+    const ctx = await closing(atLakePhase, (clock) => { racing.db!.set({ pk: teamRecordPk(ORG_A), sk: `DELQ#${new Date(clock.at).toISOString()}#44444444-4444-4444-8444-444444444444`, junk: true }); }, logs);
+    racing.db = ctx.db;
+    await ctx.runtime.jobs.run("hourly");
+    expect(ctx.restore()).toBe(true);
+    expect(delq(ctx.db)).toHaveLength(1);
+    expect(jobs(ctx.db)).toHaveLength(1);
+    expect(directory(ctx.db)).toHaveLength(1);
+    expect(logs.some((entry) => entry.event === "record.erase_held_by_delete")).toBe(false);
+    await ctx.runtime.jobs.run("hourly");
+    expect(jobs(ctx.db)).toHaveLength(1);
+    expect(directory(ctx.db)).toHaveLength(1);
+  });
+
+  it("a delete holding the erase open for more than 24 hours is logged with the company and the age (and joins the delete-backlog line); the erase is never forced to finish", async () => {
+    const logs: Array<Record<string, unknown>> = [];
+    const racing = { db: undefined as FakeDynamoDb | undefined };
+    const ctx = await closing(atLakePhase, (clock) => { racing.db!.set({ pk: teamRecordPk(ORG_A), sk: `DELQ#${new Date(clock.at).toISOString()}#55555555-5555-4555-8555-555555555555`, junk: true }); }, logs);
+    racing.db = ctx.db;
+    await ctx.runtime.jobs.run("hourly");
+    expect(ctx.restore()).toBe(true);
+    ctx.clock.at += 25 * 3_600_000;
+    await ctx.runtime.jobs.run("hourly");
+    const held = logs.find((entry) => entry.event === "record.erase_held_by_delete");
+    expect(held).toMatchObject({ orgId: ORG_A });
+    expect(held!.ageSeconds as number).toBeGreaterThanOrEqual(25 * 3_600);
+    expect(logs.find((entry) => entry.event === "record.delete_backlog")).toMatchObject({ erase: 1 });
+    expect(JSON.stringify(logs)).not.toContain("junk");
+    expect(jobs(ctx.db)).toHaveLength(1);
+    expect(directory(ctx.db)).toHaveLength(1);
   });
 });

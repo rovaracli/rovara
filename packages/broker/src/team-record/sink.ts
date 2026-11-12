@@ -10,7 +10,7 @@ import { ingestRecord, type IngestDependencies } from "./ingest.js";
 import { captureIsOn } from "./mode.js";
 import { DEFAULT_WORK_BUDGET, changeScopePrincipals, queueScopeWork, replaceScopeAudience, tombstoneRows, type WorkBudget } from "./scope-work.js";
 import { closeScope, getItemHead } from "./item-head.js";
-import { childScopes, deleteItem, getSourceConfigByScope, listScopeWork, putScopeWork, type PlaceCursor, type ScopeCursor, type ScopeWork } from "./store.js";
+import { childScopes, deleteItem, getSourceConfigByScope, listScopeWork, rewriteScopeWork, type PlaceCursor, type ScopeCursor, type ScopeWork } from "./store.js";
 import type { IngestOutcome, RecordDraft, TeamRecordTable, TombstoneCause } from "./types.js";
 
 export interface RecordSink {
@@ -72,7 +72,7 @@ export function createRecordSink(deps: IngestDependencies, options: SinkOptions 
         }
         const result = await tombstoneRows(work, orgId, { system: input.system, ...(scope === undefined ? {} : { scope }), ...(chunk === undefined ? {} : { sourceIds: chunk }), cause: input.cause }, budget);
         hidden += result.changed;
-        await putScopeWork(deps.table, orgId, {
+        await rewriteScopeWork(deps.table, orgId, {
           ...queued, hidden: result.changed, hidePending: !result.complete, hideDone: result.complete, ...(scope === undefined ? {} : { childPending: childCursor !== undefined }),
           ...(result.cursor === undefined ? {} : { hideCursor: result.cursor }), ...(childCursor === undefined ? {} : { childCursor }),
         });
@@ -163,7 +163,7 @@ async function olderChange(table: TeamRecordTable, orgId: OrgId, scope: string):
 async function settle(table: TeamRecordTable, orgId: OrgId, queued: ScopeWork | undefined, result: { complete: boolean; cursor?: ScopeCursor | undefined }, item: Omit<ScopeWork, "requestId" | "at" | "queuedAtSeconds" | "hidden">): Promise<void> {
   if (queued !== undefined) {
     if (result.complete) await deleteItem(table, recordDeleteQueueKey(orgId, queued.at, queued.requestId));
-    else await putScopeWork(table, orgId, { ...queued, ...(result.cursor === undefined ? {} : { walkCursor: result.cursor }) });
+    else await rewriteScopeWork(table, orgId, { ...queued, ...(result.cursor === undefined ? {} : { walkCursor: result.cursor }) });
     return;
   }
   if (!result.complete) await queueScopeWork({ table }, orgId, { ...item, ...(result.cursor === undefined ? {} : { walkCursor: result.cursor }) });

@@ -34,7 +34,7 @@ import type { RecordAuditSink } from "./audit.js";
 import { callRecordTool, recordToolsFor, type RecordToolContext } from "./agent-tools.js";
 import { runDeleteWorker, type DeleteBudget } from "./delete-worker.js";
 import { defaultRetention, readEdition, type TeamRecordEdition } from "./edition.js";
-import { listScopeWork, listSourceConfigs, markSourceFailing } from "./store.js";
+import { listSourceConfigs, listWorkspace, markSourceFailing, oldestQueuedKey } from "./store.js";
 import { resolveTaskVisibility } from "../lessons/task-visibility.js";
 import { createEmbedder } from "./embed.js";
 import { lessonEmbedderFrom, recordEmbedderClientFrom, recordJobEmbedderClientFrom, recordSearchEmbedderClientFrom, EMBEDDER_JOB_WAIT_MS, type LessonEmbedder } from "../embedder/wiring.js";
@@ -295,6 +295,8 @@ const GITHUB_PASS_MIN_MS = 2_000;
 /** One company's share of the repository check (SRL-5a). */
 const REPO_CHECK_ORG_MS = 4_000;
 /** The sweep's one state item (watermark and gaps), in the directory partition, which no org erase empties. It holds delivery times only: no person, no text. */
+/** A delete that holds a company erase open longer than this is logged (`record.erase_held_by_delete`). */
+const ERASE_HELD_ALARM_SECONDS = 24 * 3_600;
 const GITHUB_REDELIVERY_STATE_KEY = { pk: TEAM_RECORD_ORG_DIRECTORY_PK, sk: "GHREDELIVERY#state" } as const;
 /**
  * TRW-5 S4 (fix round 1): a put that read the "open" answer just before an archive or a close can land up to the cache's minute afterwards. So an archive's or a close's erase is run a SECOND time once that
@@ -456,7 +458,7 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
   /** The org joins the directory the scheduled jobs walk, before its first record write (so no row can exist for an org the jobs never reach). */
   async function listOrg(orgId: OrgId): Promise<void> {
     if (listed.has(orgId)) return;
-    await table.documentClient.send(new PutCommand({ TableName: table.tableName, Item: { ...teamRecordOrgDirectoryKey(orgId), entityType: "TEAM_RECORD_ORG", orgId, at: new Date(now()).toISOString() } }));
+    await listWorkspace(table, orgId, new Date(now()).toISOString());
     listed.add(orgId);
   }
   async function sinkFor(workspaceId: string): Promise<RecordSink> {
@@ -870,12 +872,23 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
         if ((await lakeQueue.listPending(orgId, 1)).length > 0) return false;
       }
       // The directory row is the only way the hourly job (and so the delete worker) reaches this company. A delete still queued for it (a removal that raced the erase) keeps the job, and with it the row, until the worker has
-      // finished it: the company leaves the directory only when nothing is pending. The worker runs before this step in every hourly run, so the next run finds the queue empty.
-      if ((await listScopeWork(table, orgId, 1)).length > 0) return false;
+      // finished it: the company leaves the directory only when nothing is pending. ANY key under DELQ# counts, one that does not parse included (the worker cannot finish that, so it must not look like an empty queue).
+      // The worker runs before this step in every hourly run, so the next run finds the queue empty. Never forced: a long hold is logged (and joins the delete-backlog alarm line), not cut short.
+      const held = await oldestQueuedKey(table, orgId);
+      if (held !== undefined) {
+        const ageSeconds = Math.max(0, Math.floor((now() - Date.parse(held.at)) / 1000));
+        if (Number.isFinite(ageSeconds) && ageSeconds > ERASE_HELD_ALARM_SECONDS) {
+          log("record.erase_held_by_delete", { orgId, ageSeconds });
+          log("record.delete_backlog", { requests: 0, oldestAgeSeconds: ageSeconds, erase: 1 });
+        }
+        return false;
+      }
       await dropJob(job.sk);
       await clearStamps(orgId);
       if ((await jobsOf(orgId)).length === 0) {
         await table.documentClient.send(new DeleteCommand({ TableName: table.tableName, Key: teamRecordOrgDirectoryKey(orgId) }));
+        // A delete queued between the check above and this delete would be left with no directory row: look again, and list the company again if something appeared (check-then-delete window).
+        if ((await oldestQueuedKey(table, orgId)) !== undefined) { await listWorkspace(table, orgId, new Date(now()).toISOString()); return true; }
         await dropReembedState(table, orgId);
         listed.delete(orgId);
         sinks.delete(orgId);
