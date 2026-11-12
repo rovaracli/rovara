@@ -122,7 +122,7 @@ function build(db: FakeDynamoDb, env: Record<string, string | undefined>, extra:
   return runtime;
 }
 
-async function addSource(db: FakeDynamoDb, edition: "enterprise" | "public", input: { orgId: typeof ORG_A; source: "slack" | "github"; scope: string; retention: "A" | "B" | "C" | "D"; notesOptIn?: true; project?: string }): Promise<void> {
+async function addSource(db: FakeDynamoDb, edition: "enterprise" | "public", input: { orgId: typeof ORG_A; source: "slack" | "github" | "rovara"; scope: string; retention: "A" | "B" | "C" | "D"; notesOptIn?: true; project?: string }): Promise<void> {
   const result = await putSourceConfig({ documentClient: db, tableName: "TeamRecord" }, {
     workspaceId: input.orgId, project: input.project ?? "web", source: input.source, scope: input.scope, enabled: true, retention: input.retention, exclude: [], audienceDefault: "project", health: "unknown",
     addedBy: "dev-1", updatedAt: "2026-10-30T10:00:00.000Z", ...(input.notesOptIn === true ? { notesOptIn: true as const } : {}),
