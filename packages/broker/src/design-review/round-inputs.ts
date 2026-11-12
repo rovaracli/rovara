@@ -52,12 +52,44 @@ export function pinsOf(preparedBase: ReadonlyArray<{ repositoryId: string; baseC
 
 /** The tracker systems a task's `origin` came from. The task does not record WHICH item it came from, so the whole source of that system is withheld (an `itemRef` of "" names the source itself in `isOriginItem`). */
 const ORIGIN_SYSTEMS: Readonly<Record<string, readonly string[]>> = {
-  linear: ["linear"], jira: ["jira"], github_issue: ["github", "github_issues"], tracker: ["linear", "jira", "github", "github_issues"],
+  linear: ["linear"], jira: ["jira"], github_issue: ["github", "github_issues"],
 };
 
-/** The request threads to keep out of the packets: for a task that came from a tracker, every configured source of that tracker. Fail closed: a task from a tracker whose sources cannot be told apart withholds all of the tracker kinds. */
+/**
+ * Task origins that no ticket started, so there is no request thread in any tracker to keep out: a person typed the request (app, CLI, MCP, Slack: a Slack thread is refused by the allowlist on its own), or a test run,
+ * an offer, a schedule, a chain or the nightly run started it. Every other origin, an absent one included, is treated as possibly ticket-started and fails closed (`originOf`).
+ */
+const NON_TICKET_ORIGINS: readonly string[] = ["app", "cli", "mcp", "slack", "offer", "test_run", "schedule", "chain", "nightly"];
+
+/**
+ * The kinds of source that clearly cannot hold or mirror a ticket thread: error and metrics monitors, whose items are events and graphs, not people's threads. Only these are read for a task whose ticket came from a
+ * tracker Rovara has no rule for. Anything a person can write a thread in, or copy one into (documents, wikis, drives, incident tools with their own comments), may be that tracker or carry its thread, so it is withheld,
+ * and so is a source that names no kind (fail closed). A kind joins this list only when it cannot carry a person's words at all. Chat systems are refused by the allowlist on their own.
+ */
+export const NON_TRACKER_SOURCE_SYSTEMS: readonly string[] = ["sentry", "datadog", "grafana", "newrelic", "honeycomb"];
+
+/**
+ * The request threads to keep out of the packets for a task that came from a tracker (`tracker` is the origin's name: `linear`, `jira`, or a name Rovara has no rule for). Always withheld: every source of that same
+ * system, and every source that names no kind. A tracker with a rule also withholds its other names (`github` and `github_issues`); a tracker Rovara has no rule for withholds every source that is not a known
+ * non-tracker kind (the same rule as Rovara Code's `originOfTicket`).
+ */
+function withheldForTracker(tracker: string, sources: readonly Pick<ContextSource, "sourceId" | "system">[]): PacketOriginItem[] {
+  const system = tracker.toLowerCase();
+  const known = ORIGIN_SYSTEMS[system];
+  const withheld = (kind: string | undefined): boolean => {
+    if (kind === undefined) return true;
+    const lower = kind.toLowerCase();
+    if (lower === system) return true;
+    return known === undefined ? !NON_TRACKER_SOURCE_SYSTEMS.includes(lower) : known.includes(lower);
+  };
+  return sources.filter((source) => withheld(source.system)).map((source) => ({ sourceId: source.sourceId, itemRef: "" }));
+}
+
+/**
+ * The request threads to keep out of the packets: for a task that came from a tracker, every configured source of that tracker. Fail closed: a task whose origin is absent, not known to be ticket-free, or a tracker
+ * Rovara has no rule for (`tracker`, `event`, `automatic`, anything new) withholds every source that is not a known non-tracker kind.
+ */
 export function originOf(taskOrigin: string | undefined, sources: readonly Pick<ContextSource, "sourceId" | "system">[]): PacketOriginItem[] {
-  const systems = taskOrigin === undefined ? undefined : ORIGIN_SYSTEMS[taskOrigin];
-  if (systems === undefined) return [];
-  return sources.filter((source) => source.system === undefined || systems.includes(source.system.toLowerCase())).map((source) => ({ sourceId: source.sourceId, itemRef: "" }));
+  if (taskOrigin !== undefined && NON_TICKET_ORIGINS.includes(taskOrigin)) return [];
+  return withheldForTracker(taskOrigin ?? "", sources);
 }
