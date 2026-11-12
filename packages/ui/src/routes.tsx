@@ -4,15 +4,21 @@ import { type AppNav } from "@agentx/cloud-contracts/web";
 import { AppShell } from "./shell/AppShell.js";
 import { NotFound } from "./shell/NotFound.js";
 import { Unavailable } from "./shell/Unavailable.js";
-import { RouteError } from "./shell/ErrorBoundary.js";
+import { RouteError, guardLazy } from "./shell/ErrorBoundary.js";
 import { paths } from "./paths.js";
 /** UX2 slice 2 item 4: ONE task address. `/s/<id>` (older links) goes to `/app/sessions/<id>`, keeping the query and the tab. */
 function OldSessionAddress() { const { id = "" } = useParams(), location = useLocation();return <Navigate replace to={{ pathname: "/app/sessions/" + encodeURIComponent(id), search: location.search, hash: location.hash }} />; }
 function Page({ title }: { title: string }) { return <section><h1 tabIndex={-1}>{title}</h1></section>; }
 /** `/app/live` is now Work (decision 125: the old Live page was deleted). The query (filters) and the hash are kept, so an old bookmark or Slack link lands on the same view. */
 function LiveToWork() { const location = useLocation();return <Navigate replace to={{ pathname: paths.work, search: location.search, hash: location.hash }} />; }
-/** A screen's route with the page error as its error element (unless it names its own): with no old screen to fall back to, a crash must never blank the page or take the navigation with it. */
-function withScreenError(route: RouteObject): RouteObject { return route.errorElement === undefined ? { ...route, errorElement: <RouteError /> } : route; }
+/**
+ * A screen's route (and each route under it, the admin pages under the admin layout included) with the page error as its error element, unless it names its own, and its lazy code guarded (`guardLazy`):
+ * with no old screen to fall back to, a crash or a chunk that cannot load must never blank the page or take the navigation (or the admin layout) with it.
+ */
+function withScreenError(route: RouteObject): RouteObject {
+ const guarded = guardLazy(route.errorElement === undefined ? { ...route, errorElement: <RouteError /> } : route);
+ return guarded.children === undefined ? guarded : { ...guarded, children: guarded.children.map(withScreenError) };
+}
 /**
  * The app's routes. Decision 125: the new navigation, Work, Insights and the other finished screens are always there; the options are the switches of screens still being finished (billing, publish).
  * Every screen under `/app` has its own error element (`withScreenError`), so a screen that crashes keeps the shell (navigation) on screen: the person sees "Something went wrong on this page" with Reload, and can

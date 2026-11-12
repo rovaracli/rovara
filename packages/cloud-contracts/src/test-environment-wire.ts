@@ -11,6 +11,18 @@ import { CatalogConfigSchema, catalogIdName, CatalogIdSchema, CheckKindSchema, C
 // Code's own since the vendor pin 0e340c0e (one name, one owner): re-exported, not defined here. A worker that lists it reads a plan dependency with `backing: "company"` (switch `pj`).
 export { TEST_SERVICES_COMPANY_IMAGE_PLAN_FEATURE } from "@rovara-code/contracts";
 
+/**
+ * Slice 4 (the function runner): a worker that lists this can run an emulated dependency's heavy Lambda functions (native wheels, images, other runtimes) in a gVisor sandbox. A plan whose `aws.functions` is set goes only to such
+ * a worker (`ec2-delivery.ts`), and a worker lists it only when its boot installed gVisor, registered the Docker runtime, extracted the agent and pulled the runner's images (boot-stage2.sh,
+ * `functionRunnerAdvertisedFeatures`). In `WORKER_INVOCATION_FEATURES`. Not offered anywhere until the live proof (F7) passes and a launch setting turns the boot step on.
+ */
+export const TEST_SERVICES_FUNCTIONS_PLAN_FEATURE = "task.testServices.functions.v2";
+/** `functions.runner`: `auto` runs a function in the runner when it needs it (native code, an image, a runtime the engine cannot run); `all` runs every function in the runner (pure code that hits the engine's Python gaps). */
+// W1: a worker that takes a plan with `aws.functions` must itself refuse it (a fixed sentence, nothing started) when its runner is not ready (function-runner-ready.ts); the delivery gate alone is not enough.
+export const TASK_FUNCTIONS_RUNNER_MODES = ["auto", "all"] as const;
+export const TaskAwsFunctionsSchema = z.object({ runner: z.enum(TASK_FUNCTIONS_RUNNER_MODES) }).strict();
+export type TaskAwsFunctions = z.infer<typeof TaskAwsFunctionsSchema>;
+
 const NO_HIDDEN = /^[^\p{Cc}\p{Cf}]*$/u;
 const line = (max: number) => z.string().min(1).max(max).regex(NO_HIDDEN, "one plain line");
 const Sha256 = z.string().regex(/^[a-f0-9]{64}$/u);
@@ -64,7 +76,7 @@ export const TaskDependencyPlanSchema = z
     seeds: z.array(z.union([z.object({ command: ProjectCommandSchema, lock: SeedScriptLockSchema.optional() }).strict(), z.object({ fixturePath: RelativeWorkspacePathSchema, sha256: Sha256.optional() }).strict()])).max(TEST_ENV_DEPENDENCY_LIMITS.seeds),
     reset: z.enum(TEST_ENV_DEPENDENCY_RESETS),
     /** Only on an `emulated` entry: the AWS services this dependency needs from Rovara local AWS, the region the code is told, and where the project declares its resources (a file, never read by the broker). */
-    aws: z.object({ services: z.array(AwsPlanServiceSchema).min(1).max(AWS_PLAN_SERVICES_MAX), region: TestEnvRegionSchema, resources: IacSeedRefSchema.optional() }).strict().optional(),
+    aws: z.object({ services: z.array(AwsPlanServiceSchema).min(1).max(AWS_PLAN_SERVICES_MAX), region: TestEnvRegionSchema, resources: IacSeedRefSchema.optional(), functions: TaskAwsFunctionsSchema.optional() }).strict().optional(),
   })
   .strict()
   .superRefine((plan, context) => {

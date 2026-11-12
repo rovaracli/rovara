@@ -5,6 +5,7 @@
 // files and lines the detector cited; no text from the repository is copied (a name is a fixed word for a known family, a variable name comes from the catalog's own templates). What cannot be backed yet is counted in one
 // fixed note, never described. A person still approves the proposal on a card; nothing here approves anything.
 import { RelativeWorkspacePathSchema, TestEnvDependenciesSchema, TestEnvDependencySchema, type TestEnvDependency, type TestEnvDependencyCandidate, type VerifiedCatalog } from "@rovara-code/contracts";
+import { awsFamilyDisplayName } from "@agentx/cloud-contracts";
 import { chooseBacking, effectiveAllowedBackings } from "./backing-choice.js";
 import { isEmulatedTaskService } from "./dependency-plan.js";
 
@@ -12,7 +13,7 @@ export const DEPENDENCIES_NOT_PROPOSED_NOTE = "Some dependencies were found that
 export const DEPENDENCIES_NO_CATALOG_NOTE = "Dependencies were found, but Rovara's image list could not be read, so none are proposed.";
 export const DEPENDENCIES_LEFT_OUT_NOTE = "The dependencies found could not be proposed together, so none are proposed.";
 
-/** What people see for the families Rovara knows; any other family shows its id (which passed the family pattern). */
+/** What people see for the families Rovara knows (the AWS ones through the table of service names, `awsFamilyDisplayName`; the three below keep their names); any other family shows its id (which passed the family pattern). */
 const FAMILY_NAMES: Readonly<Record<string, string>> = {
   "aws:s3": "S3", "aws:sqs": "SQS", "aws:dynamodb": "DynamoDB", postgres: "Postgres", mysql: "MySQL", mariadb: "MariaDB", mongodb: "MongoDB", redis: "Redis", memcached: "Memcached", rabbitmq: "RabbitMQ", kafka: "Kafka", elasticsearch: "Elasticsearch", opensearch: "OpenSearch", smtp: "Mail catcher",
 };
@@ -87,7 +88,7 @@ function proposeOne(candidate: TestEnvDependencyCandidate, catalog: VerifiedCata
   const entry = catalog.entries.find((item) => item.id === catalogId);
   if (entry === undefined || catalogId === undefined) return undefined;
   const found = candidate.evidence.slice(0, 8).map((item) => ({ path: item.path, line: item.line }));
-  const base = { id, name: FAMILY_NAMES[candidate.family] ?? candidate.family, kind: candidate.kind, family: candidate.family, found, usedBy: ["integration"], seeds: [], reset: "fresh_per_round" };
+  const base = { id, name: FAMILY_NAMES[candidate.family] ?? awsFamilyDisplayName(candidate.family) ?? candidate.family, kind: candidate.kind, family: candidate.family, found, usedBy: ["integration"], seeds: [], reset: "fresh_per_round" };
   // Rovara local AWS: the region variables are Rovara's to set (the contract reserves `AWS_REGION`), so only the helper's name is carried here, by the first emulated dependency (see `proposeDependencies`).
   const connect = { env: backingKind === "emulated" ? [] : Object.entries(entry.connect.templates).map(([name, template]) => ({ name, template })), hostAliases: [...entry.connect.defaultAliases] };
   if (backingKind === "emulated") {

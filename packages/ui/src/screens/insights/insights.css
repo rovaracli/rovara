@@ -1,4 +1,4 @@
-/* Insights (switch rovara.insights = v2). New file: nothing here is read while the switch is off. One column on a phone, wrapping text, 44px targets. */
+/* Insights (its own lazy chunk). One column on a phone, wrapping text, 44px targets. */
 .rv-insights{max-width:90ch;display:grid;gap:var(--rv-density-gap,var(--rv-space-6))}
 .rv-insights>*{min-width:0}
 .rv-ins-panel{display:grid;gap:var(--rv-space-4);padding:var(--rv-space-4);min-width:0}

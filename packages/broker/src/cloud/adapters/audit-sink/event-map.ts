@@ -12,7 +12,6 @@
 //  - Cloud's own fact rules still apply on top (safe integers, printable ASCII, at most 128 characters, nothing email-shaped; `AuditEventInputSchema`).
 //  - Names (a project, a repository, a server's label, a source id) go only in the org's details, or in a name-keyed target. Never in a fact, a related id or an id target.
 //  - An action with no entry here is refused by the sink (see `sink.ts`); tests/unit/cloud-audit-sink.test.ts fails when the pinned core emits an action this table lacks.
-import { createHash } from "node:crypto";
 import { auditPullRequestId, type AuditAction, type AuditTarget, type AuditTargetKind } from "@agentx/cloud-contracts";
 import type { AuditEvent, JsonObject, JsonValue } from "@rovara-code/contracts";
 
@@ -173,22 +172,6 @@ const pullRequestTarget = ({ details }: MappingContext): AuditTarget | undefined
 };
 const pullRequestOrg = { repository: ({ details }: MappingContext): string | undefined => repositoryOf(details) } as const;
 
-/**
- * The owner's test-service image list (the core's `test_services.image_approved` / `image_removed`) is the company image list of Cloud's ledger (`company_image.approved` / `company_image.revoked`): an
- * approval of one exact digest. The core's `reference` is the pinned reference `registry/repository@sha256:<64 hex>`; Cloud's image id is `img_` and the first 20 hex of the sha256 of that same text
- * (test-env/company-images.ts), and its digest fact is the 64 hex. The image's own name (`requested`) goes in the org's sealed details, never a fact. The core has no authority word to give, so none is recorded.
- */
-const PINNED_IMAGE = /^([^@\s]{1,200})@sha256:([0-9a-f]{64})$/u;
-const imageIdOf = ({ details }: MappingContext): string | undefined => {
-  const reference = text(details["reference"]);
-  return reference !== undefined && PINNED_IMAGE.test(reference) ? `img_${createHash("sha256").update(reference, "utf8").digest("hex").slice(0, 20)}` : undefined;
-};
-const imageDigestOf = ({ details }: MappingContext): string | undefined => PINNED_IMAGE.exec(text(details["reference"]) ?? "")?.[2];
-const COMPANY_IMAGE = (cloud: AuditAction): EventMapping => same(cloud, { org: true }, {
-  facts: { imageId: fact(imageIdOf, { pattern: /^img_[0-9a-f]{20}$/u }), digest: fact(imageDigestOf, HEX64) },
-  required: ["imageId", "digest"], org: { image: "requested" },
-});
-
 // ---- the rows ------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 const MCP_ORG = { label: "label" } as const;
@@ -329,10 +312,6 @@ export const CORE_AUDIT_EVENT_MAP: Readonly<Record<string, EventMapping>> = {
   })])),
   "saved_env.setting_changed": same("saved_env.setting_changed", { name: "project" }, { facts: { enabled: flag("enabled") } }),
 
-  // Test-service images (the owner's list): Cloud's company image approval and revocation.
-  "test_services.image_approved": COMPANY_IMAGE("company_image.approved"),
-  "test_services.image_removed": COMPANY_IMAGE("company_image.revoked"),
-
   // Script tokens. The token's owner (on a revoke) and the task a token started (on a use) are related records, as Cloud's own writers record them.
   "script_token.created": same("script_token.created", { id: "script_token" }, { facts: { days: count("days"), projects: count("projects"), permissions: fact("permissions", { pattern: /^[a-z_]{1,24}(,[a-z_]{1,24}){0,4}$/u }) } }),
   "script_token.revoked": same("script_token.revoked", { id: "script_token" }, { facts: { by: oneOf("by", ...SCRIPT_TOKEN_REVOKERS) }, related: ({ details }) => [text(get(details, "related"))] }),
@@ -381,12 +360,22 @@ export const CORE_AUDIT_EVENT_MAP: Readonly<Record<string, EventMapping>> = {
   "lesson.withdrawn": lesson("lesson.withdrawn", { cause: word("cause") }),
 };
 
+/**
+ * Core events that only Rovara Code's own local runtime (`rovara up`, the laptop) records, and that Cloud never runs: they have NO Cloud ledger event, on purpose (owner decision: the laptop and Cloud are
+ * separate use cases). The scan still lists them (the strict "every core event is accounted for" check stays); in Cloud the sink REFUSES one and logs a wiring fault (`audit.record_invalid`, reason `laptop_only`,
+ * already alarmed), and writes no ledger row. An event listed here must not also be in `CORE_AUDIT_EVENT_MAP` (a test fails if it is: mapping it again is a decision, not an edit).
+ */
+export const LAPTOP_ONLY_CORE_EVENTS: Readonly<Record<string, string>> = {
+  "test_services.image_approved": "the owner's test-service image list (local/test-services-owner-list.ts), a `rovara up` page; Cloud's company images are a separate, admin-approved list",
+  "test_services.image_removed": "the owner's test-service image list (local/test-services-owner-list.ts), a `rovara up` page; Cloud's company images are a separate, admin-approved list",
+};
+
 /** The Cloud action a core action becomes, or undefined when the map has none. */
 export function cloudActionOf(coreAction: string): AuditAction | undefined {
   return Object.hasOwn(CORE_AUDIT_EVENT_MAP, coreAction) ? CORE_AUDIT_EVENT_MAP[coreAction]!.cloud : undefined;
 }
 
-/** The core actions with no entry in `map` (the map defaults to the real one; a test passes one with an entry dropped). */
-export function unmappedCoreActions(coreActions: Iterable<string>, map: Readonly<Record<string, EventMapping>> = CORE_AUDIT_EVENT_MAP): string[] {
-  return [...new Set(coreActions)].filter((action) => !Object.hasOwn(map, action)).sort();
+/** The core actions with no entry in `map` and not listed as laptop-only (both default to the real tables; a test passes a map with an entry dropped). */
+export function unmappedCoreActions(coreActions: Iterable<string>, map: Readonly<Record<string, EventMapping>> = CORE_AUDIT_EVENT_MAP, laptopOnly: Readonly<Record<string, string>> = LAPTOP_ONLY_CORE_EVENTS): string[] {
+  return [...new Set(coreActions)].filter((action) => !Object.hasOwn(map, action) && !Object.hasOwn(laptopOnly, action)).sort();
 }
