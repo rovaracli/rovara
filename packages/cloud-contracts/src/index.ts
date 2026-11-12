@@ -87,6 +87,8 @@ export * from "./catalog-build-flavor.js";
 export * from "./service-catalog-verify.js";
 export * from "./team-record-storage.js";
 export * from "./test-environment-wire.js";
+// The names people read for each AWS service Rovara local AWS serves (cards, evidence, the pull request line).
+export { AWS_SERVICE_DISPLAY_NAMES, awsServiceDisplayName, awsFamilyDisplayName } from "./aws-service-display-names.js";
 export * from "./test-services-front-markers.js";
 
 // Learning v2: the Team record and lessons (R1).
