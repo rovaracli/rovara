@@ -2,11 +2,12 @@
 // the legacy template has none; and the broker answers its event with "not wired" until a composition root installs the relay.
 import { App, Stack } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { ControlPlaneStack } from "../../infra/lib/control-plane.js";
 import "../support/skip-bundling.js";
 import { createDeveloperTaskBroker } from "../support/developer-task-broker.js";
+import { installOutboxRelayBackstop } from "../../packages/broker/src/cloud-adapters/queue/outbox-relay-wiring.js";
 
 type Schedule = { Properties: { State: string; ScheduleExpression: string; FlexibleTimeWindow: unknown; Target: { Input: string; RoleArn: unknown; Arn: unknown; RetryPolicy: unknown } } };
 const schedules = (stack: Stack): Schedule[] => Object.values(Template.fromStack(stack).findResources("AWS::Scheduler::Schedule") as Record<string, Schedule>);
@@ -44,4 +45,21 @@ describe("the broker's answer to the backstop event", () => {
     stop();
     expect(writes).toBe(0);
   });
+
+  it("is 200 with the report when an installed relay succeeds, and 500 when it fails, so the scheduler's retry and the Lambda's error metrics see it", async () => {
+    const harness = await createDeveloperTaskBroker();
+    const report = { delivered: 1, failed: 0, dead: 0, companies: 1, deferred: 0, errors: 0 };
+    installOutboxRelayBackstop(async () => report);
+    const ok = await harness.handler({ source: "agentx.outbox-relay-backstop" });
+    expect(ok.statusCode).toBe(200);
+    expect(JSON.parse(ok.body)).toMatchObject(report);
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    installOutboxRelayBackstop(async () => { throw new Error("store unavailable"); });
+    const failed = await harness.handler({ source: "agentx.outbox-relay-backstop" });
+    log.mockRestore();
+    expect(failed.statusCode).toBe(500);
+    expect(JSON.parse(failed.body)).toMatchObject({ error: "relay_failed" });
+  });
 });
+
+afterEach(() => installOutboxRelayBackstop(undefined));

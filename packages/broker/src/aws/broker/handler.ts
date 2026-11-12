@@ -497,9 +497,13 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
         return json({ error: "recovery_failed" }, "workflow-merge-recovery", 500);
       }
     }
-    // Gap 6: the scheduled sweep that re-runs any workflow dispatch left behind after its result committed.
     // Convergence A2 (no traffic): the outbox relay's backstop schedule. Answered only when the composition root supplies the relay; nothing does yet.
-    if (isOutboxRelayBackstopEvent(event)) return json(await runOutboxRelayBackstop(), "outbox-relay-backstop");
+    // A failed run is a 500, as in the sibling schedules, so the scheduler's retry and the Lambda's error metrics see it.
+    if (isOutboxRelayBackstopEvent(event)) {
+      const result = await runOutboxRelayBackstop();
+      return json(result, "outbox-relay-backstop", "error" in result ? 500 : 200);
+    }
+    // Gap 6: the scheduled sweep that re-runs any workflow dispatch left behind after its result committed.
     if (isWorkflowDispatchRecoveryEvent(event)) {
       try {
         const dispatches = await retryDueWorkflowDispatches(dependencies);

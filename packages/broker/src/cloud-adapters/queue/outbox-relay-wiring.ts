@@ -3,7 +3,7 @@
 // ports only. This file is the Cloud side and holds no copy of them:
 //  - the companies the backstop serves (an install has one org, ruling R3);
 //  - the off switch: nothing relays until a composition root installs a backstop, and the schedule that calls it is DISABLED in the stack;
-//  - the answer for the schedule's event, and the refusal of a stream record Cloud's current publisher already handles.
+//  - the answer for the schedule's event (the broker handler turns a failed run into a 500).
 // The composition root (S0) builds the adapter, the generic triggers and the outbox over Cloud's DynamoDB store and calls `installOutboxRelayBackstop`.
 import { installOrgIdFromEnvironment } from "../../org/resolve.js";
 
