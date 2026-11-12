@@ -328,7 +328,11 @@ export function createWebApiProbePlan(options: { probe: WebApiProbeName; appRoot
   const compiled = compileE2EApplicationScenarios({ context, groupId: group.groupId });
   const roundId = randomUUID();
   // As the control plane admits a round: a route-pinned policy's round with no agent step runs under the model-free limits, and its deadline fits them (Task 4.3a).
-  const roundLimits = options.modelRoute === undefined ? policy.limits : e2eEffectiveRoundLimitsBeforeRun1(policy.limits, e2eApplicationGroupUsesModel(compiled));
+  // An audit replay runs its agent steps with no model, but it still runs them: the broker sizes its round for agent steps (`application-admission.ts` asks with the bundle and the cases only,
+  // so a replay counts as a group with agent steps), and so does the compiled shard's own timeout. Asked with the compiled suite, the replay exclusion of `e2eApplicationGroupUsesModel` gave a
+  // replay the model-free case limit (10 s) instead, which a stale replay's target search alone can use up (FLK-1).
+  const roundLimits = options.modelRoute === undefined ? policy.limits
+    : e2eEffectiveRoundLimitsBeforeRun1(policy.limits, e2eApplicationGroupUsesModel({ bundle: compiled.bundle, expectedCases: compiled.expectedCases }));
   const deadlineSpanMs = options.deadlineMs ?? Math.min(300_000, roundLimits.runTimeoutMs);
   const binding = E2ERunBindingSchema.parse({ schemaVersion: 1, runId: options.runId ?? randomUUID(), roundId, taskId: options.taskId ?? "task-orders", operationId: randomUUID(), operationFence: 1,
     workflowRevision: 1, groupId: group.groupId, executionPlanDigest: executionPlan.digest, executionMode: group.mode, mockManifestDigest: group.mockManifestDigest,
