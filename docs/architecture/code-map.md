@@ -246,6 +246,8 @@ inventory test. If the Auditor role must reach the route, add it to
    `packages/broker/src/audit/outbox.ts#auditPending` and `packages/broker/src/audit/flush.ts#flushAuditEvents`.
    `packages/broker/src/aws/developer-routes/second-review.ts` is a worked example.
 4. If the event carries personal details, read `docs/audit-ledger/personal-data.md`.
+5. An event Rovara Code's core records goes through the audit-sink adapter instead (`packages/broker/src/cloud/adapters/audit-sink/event-map.ts`, lane A7): add the core action to `CORE_AUDIT_EVENT_MAP`;
+   `tests/unit/cloud-audit-sink.test.ts` fails on a core action with no entry.
 
 ### A contracts file (examples: 3193de208 browser-safe, d01147df4 Node-only)
 

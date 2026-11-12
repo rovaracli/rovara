@@ -11,6 +11,7 @@
 import type { CloudAdapterRegistration } from "../registry.js";
 import { cloudAdmission } from "./admission-cloud.js";
 import { cloudApprovers } from "./approvers-cloud.js";
+import { cloudAuditSink } from "./audit-sink-cloud.js";
 import { codeBuildCheckRunnerAdapter } from "./check-runner-codebuild.js";
 import { githubActionsCheckRunnerAdapter } from "./check-runner-github-actions.js";
 import { githubAppCodeHost } from "./code-host-github-app.js";
@@ -26,6 +27,8 @@ export const CLOUD_ADAPTERS: readonly CloudAdapterRegistration[] = [
   cloudAdmission,
   cloudMetering,
   cloudApprovers,
+  // Lane A7 cloud/audit-sink
+  cloudAuditSink,
   cloudIdentity,
   // Lane A9 cloud/hosts-trackers
   githubAppCodeHost, githubActionsCheckRunnerAdapter, codeBuildCheckRunnerAdapter, linearTrackerAdapter, jiraTrackerAdapter,
