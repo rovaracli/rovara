@@ -117,7 +117,9 @@ describe("the Enterprise edition's network", () => {
     for (const forbidden of ["*.amazonaws.com", "github.com", "registry.npmjs.org", "pypi.org", "api.anthropic.com", "api.openai.com", "openrouter.ai", "slack.com", "*.atlassian.net", "nodejs.org"]) {
       expect(allow.Domains, forbidden).not.toContain(forbidden);
     }
-    expect(allow.Domains).toEqual(expect.arrayContaining(["bedrock-runtime.us-east-1.amazonaws.com", "api.ecr.us-east-1.amazonaws.com", "*.dkr.ecr.us-east-1.amazonaws.com", "s3.us-east-1.amazonaws.com", "*.elb.us-east-1.amazonaws.com"]));
+    expect(allow.Domains).toEqual(expect.arrayContaining(["bedrock-runtime.us-east-1.amazonaws.com", "api.ecr.us-east-1.amazonaws.com", "*.dkr.ecr.us-east-1.amazonaws.com", "s3.us-east-1.amazonaws.com", "*.us-east-1.elb.amazonaws.com", "*.us-east-1.rds.amazonaws.com"]));
+    // ENTERPRISE-ELB-RDS-ALLOW-BUG: the NLB-only pattern is gone (the model proxy is an internal ALB).
+    expect(allow.Domains).not.toContain("*.elb.us-east-1.amazonaws.com");
     // The positive control: a hosted install still gets the public defaults.
     const cloud = foundation({ env: "staging", cloud: true });
     const cloudAllow = resourcesOf(cloud, "AWS::Route53Resolver::FirewallDomainList").map(([, list]) => list.Properties as { Name: string; Domains?: string[] }).find((list) => list.Name.endsWith("-allow"))!;

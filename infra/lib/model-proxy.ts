@@ -12,6 +12,9 @@ import {
   aws_iam as iam,
   aws_logs as logs,
   aws_rds as rds,
+  aws_route53 as route53,
+  aws_certificatemanager as acm,
+  type CfnResource,
   aws_secretsmanager as secretsmanager,
   aws_ssm as ssm,
   Stack,
@@ -20,6 +23,7 @@ import { Construct } from "constructs";
 import { LITELLM_SOURCE_IMAGE, MODEL_PROXY_IMAGE_NAMES, bundleImageRepositoryArn, bundleImageUri, imageDigestOf } from "./bundle-images.js";
 import type { AgentXNaming } from "./naming.js";
 import { enterpriseHttpsEgress } from "./vpc-endpoints.js";
+import { MODEL_PROXY_TLS_MANAGEMENT_PORT, MODEL_PROXY_TLS_POLICY, MODEL_PROXY_TLS_PORT, modelProxyTlsManagementUrl, modelProxyTlsUrl, type ModelProxyTls } from "./model-proxy-tls.js";
 
 /** LiteLLM, pinned by digest (spike: docs/learnings/model-proxy-spike.md). ghcr.io is public; a Public install's tasks pull it through the NAT. An Enterprise install pulls the same digest from its own ECR (`bundledImages`). */
 export const LITELLM_IMAGE = LITELLM_SOURCE_IMAGE;
@@ -84,6 +88,11 @@ export interface ModelProxyProps {
    * the execution role pull it from there. Absent: the public image, as before.
    */
   bundledImages?: boolean;
+  /**
+   * MODEL-PROXY-TLS (decision 110): serve HTTPS under the install's own DNS name (infra/lib/model-proxy-tls.ts). Absent: the plain-http listeners, as before.
+   * Present: HTTPS listeners on 443 (inference) and 8443 (management), a private hosted zone for the name, and every URL `https://`. The plain-http listeners stay only with `legacyHttp`.
+   */
+  tls?: ModelProxyTls;
 }
 
 /**
@@ -97,6 +106,14 @@ export class ModelProxy extends Construct {
   readonly url: string;
   /** The load balancer's name, the first label of its DNS name; the URL is `http://<name>.<region>.elb.amazonaws.com:<MODEL_PROXY_PORT>` (the broker builds it from this). */
   readonly loadBalancerName: string;
+  /** What the broker is given in AGENTX_NAMES to build MODEL_PROXY_URL from: the load balancer's name (`mp`, plain http), or with TLS the proxy's DNS name (`mh`, https). */
+  readonly brokerName: { key: "modelProxy" | "modelProxyHost"; value: string };
+  /** The ports inference clients (workers, the orchestrator) must reach on the load balancer: 4000, or 443 with TLS (and 4000 too while the legacy listeners are kept). */
+  readonly inferencePorts: readonly number[];
+  /** The ports the model access function must reach: 4001, or 8443 with TLS (and 4001 too while the legacy listeners are kept). */
+  readonly managementPorts: readonly number[];
+  /** With TLS: what must exist before anything is handed the https URL (the listeners and the name's record). Empty without TLS. */
+  readonly tlsReady: readonly CfnResource[];
   /** The management listener (port 4001): every path, reachable only from the ModelAccessFunction. */
   readonly managementUrl: string;
   readonly masterKeySecret: secretsmanager.Secret;
@@ -132,21 +149,30 @@ export class ModelProxy extends Construct {
       securityGroupEgress: [{ ipProtocol: "-1", cidrIp: "127.0.0.1/32", description: "No outbound traffic" }],
       tags,
     });
+    const tls = props.tls;
+    // Without TLS, or with TLS while the legacy listeners are kept for one release: the plain-http listeners (4000, 4001) and their rules, under their old logical ids.
+    const legacy = tls === undefined || tls.legacyHttp;
+    this.inferencePorts = [...(tls === undefined ? [] : [MODEL_PROXY_TLS_PORT]), ...(legacy ? [port] : [])];
+    this.managementPorts = [...(tls === undefined ? [] : [MODEL_PROXY_TLS_MANAGEMENT_PORT]), ...(legacy ? [MODEL_PROXY_MANAGEMENT_PORT] : [])];
     props.clientSecurityGroupIds.forEach((clientGroup, index) => {
-      new ec2.CfnSecurityGroupIngress(this, `ClientIngress${index}`, {
-        groupId: this.loadBalancerSecurityGroup.attrGroupId,
-        ipProtocol: "tcp", fromPort: port, toPort: port,
-        sourceSecurityGroupId: clientGroup,
-        description: `Model proxy port ${port} from a registered client`,
-      });
-      // The client's own group must also allow the port out (the worker group allows HTTPS only). A separate rule in
-      // this stack rather than an inline one in the client's stack, so the client's stack needs no reference to this one.
-      new ec2.CfnSecurityGroupEgress(this, `ClientEgress${index}`, {
-        groupId: clientGroup,
-        ipProtocol: "tcp", fromPort: port, toPort: port,
-        destinationSecurityGroupId: this.loadBalancerSecurityGroup.attrGroupId,
-        description: `Model proxy port ${port} on the proxy load balancer`,
-      });
+      for (const clientPort of this.inferencePorts) {
+        // The plain-http port keeps its old ids (ClientIngress0), so keeping it for a release changes nothing; the HTTPS port's rules are new.
+        const suffix = clientPort === port ? `${index}` : `Tls${index}`;
+        new ec2.CfnSecurityGroupIngress(this, `ClientIngress${suffix}`, {
+          groupId: this.loadBalancerSecurityGroup.attrGroupId,
+          ipProtocol: "tcp", fromPort: clientPort, toPort: clientPort,
+          sourceSecurityGroupId: clientGroup,
+          description: `Model proxy port ${clientPort} from a registered client`,
+        });
+        // The client's own group must also allow the port out (the worker group allows HTTPS only). A separate rule in
+        // this stack rather than an inline one in the client's stack, so the client's stack needs no reference to this one.
+        new ec2.CfnSecurityGroupEgress(this, `ClientEgress${suffix}`, {
+          groupId: clientGroup,
+          ipProtocol: "tcp", fromPort: clientPort, toPort: clientPort,
+          destinationSecurityGroupId: this.loadBalancerSecurityGroup.attrGroupId,
+          description: `Model proxy port ${clientPort} on the proxy load balancer`,
+        });
+      }
     });
     new ec2.CfnSecurityGroupEgress(this, "LoadBalancerToService", {
       groupId: this.loadBalancerSecurityGroup.attrGroupId,
@@ -364,18 +390,14 @@ export class ModelProxy extends Construct {
       tags,
     });
     // Ruling R48: the inference listener forwards inference paths only; everything else (LiteLLM's management routes among
-    // them, which a task key must never reach) gets a fixed 403 from the load balancer itself.
-    const listener = new elbv2.CfnListener(this, "Listener", {
-      loadBalancerArn: loadBalancer.ref,
-      protocol: "HTTP",
-      port,
-      defaultActions: [{
-        type: "fixed-response",
-        fixedResponseConfig: { statusCode: "403", contentType: "application/json", messageBody: JSON.stringify({ error: { message: "this route is not available here", type: "forbidden" } }) },
-      }],
-    });
-    new elbv2.CfnListenerRule(this, "InferenceRoutes", {
-      listenerArn: listener.ref,
+    // them, which a task key must never reach) gets a fixed 403 from the load balancer itself. With TLS the same rules sit on the
+    // HTTPS listeners; the plain-http ones exist only without TLS or while `legacyHttp` keeps them for one release.
+    const forbidden: elbv2.CfnListener.ActionProperty = {
+      type: "fixed-response",
+      fixedResponseConfig: { statusCode: "403", contentType: "application/json", messageBody: JSON.stringify({ error: { message: "this route is not available here", type: "forbidden" } }) },
+    };
+    const inferenceRule = (id: string, listenerArn: string) => new elbv2.CfnListenerRule(this, id, {
+      listenerArn,
       priority: 10,
       conditions: [
         { field: "path-pattern", pathPatternConfig: { values: [...INFERENCE_PATH_PATTERNS] } },
@@ -383,13 +405,59 @@ export class ModelProxy extends Construct {
       ],
       actions: [{ type: "forward", targetGroupArn: targetGroup.ref }],
     });
-    // Every path, on a port only the model access function's group may reach.
-    const managementListener = new elbv2.CfnListener(this, "ManagementListener", {
-      loadBalancerArn: loadBalancer.ref,
-      protocol: "HTTP",
-      port: MODEL_PROXY_MANAGEMENT_PORT,
-      defaultActions: [{ type: "forward", targetGroupArn: targetGroup.ref }],
-    });
+    const listeners: elbv2.CfnListener[] = [];
+    if (legacy) {
+      const listener = new elbv2.CfnListener(this, "Listener", { loadBalancerArn: loadBalancer.ref, protocol: "HTTP", port, defaultActions: [forbidden] });
+      inferenceRule("InferenceRoutes", listener.ref);
+      // Every path, on a port only the model access function's group may reach.
+      listeners.push(listener, new elbv2.CfnListener(this, "ManagementListener", {
+        loadBalancerArn: loadBalancer.ref,
+        protocol: "HTTP",
+        port: MODEL_PROXY_MANAGEMENT_PORT,
+        defaultActions: [{ type: "forward", targetGroupArn: targetGroup.ref }],
+      }));
+    }
+    const tlsReady: CfnResource[] = [];
+    if (tls !== undefined) {
+      // The certificate: one the company brought, or a public ACM certificate for the name, validated by DNS in the public zone (CloudFormation writes the validation
+      // record and waits until it is issued; ACM renews it by itself while the record stays). Tagged with the environment: the deploy role's grants require it.
+      let certificateArn = tls.certificateArn;
+      if (tls.zoneId !== undefined) {
+        const certificate = new acm.CfnCertificate(this, "TlsCertificate", {
+          domainName: tls.name,
+          validationMethod: "DNS",
+          domainValidationOptions: [{ domainName: tls.name, hostedZoneId: tls.zoneId }],
+          tags: [{ key: "agentx:env", value: naming.env ?? "" }],
+        });
+        certificateArn = certificate.ref;
+      }
+      const sslPolicy = MODEL_PROXY_TLS_POLICY;
+      const tlsListener = new elbv2.CfnListener(this, "TlsListener", {
+        loadBalancerArn: loadBalancer.ref, protocol: "HTTPS", port: MODEL_PROXY_TLS_PORT, sslPolicy, certificates: [{ certificateArn: certificateArn! }], defaultActions: [forbidden],
+      });
+      const tlsRule = inferenceRule("TlsInferenceRoutes", tlsListener.ref);
+      const tlsManagementListener = new elbv2.CfnListener(this, "TlsManagementListener", {
+        loadBalancerArn: loadBalancer.ref, protocol: "HTTPS", port: MODEL_PROXY_TLS_MANAGEMENT_PORT, sslPolicy, certificates: [{ certificateArn: certificateArn! }],
+        defaultActions: [{ type: "forward", targetGroupArn: targetGroup.ref }],
+      });
+      listeners.push(tlsListener, tlsManagementListener);
+      // Split horizon: a PRIVATE zone of exactly the proxy's name, in this VPC only, so the name resolves to the internal load balancer inside the VPC and nothing else
+      // of the company's domain is shadowed. Outside the VPC the name does not resolve at all.
+      const zone = new route53.CfnHostedZone(this, "TlsPrivateZone", {
+        name: tls.name,
+        vpcs: [{ vpcId: props.vpcId, vpcRegion: stack.region }],
+        hostedZoneConfig: { comment: "AgentX model proxy name inside the install VPC" },
+        hostedZoneTags: tags.map(({ key, value }) => ({ key, value })),
+      });
+      const record = new route53.CfnRecordSet(this, "TlsAliasRecord", {
+        hostedZoneId: zone.attrId,
+        name: tls.name,
+        type: "A",
+        aliasTarget: { dnsName: loadBalancer.attrDnsName, hostedZoneId: loadBalancer.attrCanonicalHostedZoneId, evaluateTargetHealth: false },
+      });
+      tlsReady.push(tlsListener, tlsRule, tlsManagementListener, record);
+    }
+    this.tlsReady = tlsReady;
     const service = new ecs.CfnService(this, "Service", {
       cluster: ecsCluster.ref,
       taskDefinition: taskDefinition.ref,
@@ -413,17 +481,20 @@ export class ModelProxy extends Construct {
       },
       tags,
     });
-    service.addResourceDependency(listener);
-    service.addResourceDependency(managementListener);
+    for (const each of listeners) service.addResourceDependency(each);
     service.addResourceDependency(databaseInstance);
 
     this.loadBalancerName = Fn.select(0, Fn.split(".", loadBalancer.attrDnsName));
-    this.url = `http://${loadBalancer.attrDnsName}:${port}`;
-    this.managementUrl = `http://${loadBalancer.attrDnsName}:${MODEL_PROXY_MANAGEMENT_PORT}`;
-    new ssm.StringParameter(this, "UrlParameter", {
+    // With TLS no caller is given a plain-http address, even while the legacy listeners are kept (they only serve tasks that already had the old one).
+    this.url = tls === undefined ? `http://${loadBalancer.attrDnsName}:${port}` : modelProxyTlsUrl(tls);
+    this.managementUrl = tls === undefined ? `http://${loadBalancer.attrDnsName}:${MODEL_PROXY_MANAGEMENT_PORT}` : modelProxyTlsManagementUrl(tls);
+    this.brokerName = tls === undefined ? { key: "modelProxy", value: this.loadBalancerName } : { key: "modelProxyHost", value: tls.name };
+    const urlParameter = new ssm.StringParameter(this, "UrlParameter", {
       parameterName: `${naming.ec2.workerSettingsPrefix}${MODEL_PROXY_URL_PARAMETER}`,
       description: "Internal URL of the AgentX model proxy",
       stringValue: this.url,
     });
+    // New workers read this at launch: never before the HTTPS listeners and the name exist.
+    for (const each of tlsReady) (urlParameter.node.defaultChild as CfnResource).addDependency(each);
   }
 }

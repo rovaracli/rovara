@@ -24,6 +24,7 @@ import {
 } from "aws-cdk-lib";
 import type { Construct } from "constructs";
 import { MODEL_PROXY_PORT } from "./model-proxy.js";
+import { MODEL_PROXY_TLS_PORT, type ModelProxyTls } from "./model-proxy-tls.js";
 import { type AgentXNaming, legacyNaming } from "./naming.js";
 
 export const AGENTX_SLACK_ORCHESTRATOR_REPOSITORY = "agentx-slack-orchestrator";
@@ -32,6 +33,8 @@ export interface SlackOrchestratorStackProps extends StackProps {
   naming?: AgentXNaming;
   /** Enterprise installs: the ranges the orchestrator may reach over HTTPS. Absent: HTTPS to the whole internet, as before. */
   privateEgressCidrs?: readonly string[];
+  /** MODEL-PROXY-TLS (decision 110): the proxy serves HTTPS on 443, so the orchestrator's rules open 443 to it (and 4000 only while the legacy listeners are kept). */
+  modelProxyTls?: Pick<ModelProxyTls, "legacyHttp">;
 }
 
 // The task role and every queue, table, bucket, and secret it uses belong to AgentXControlPlane,
@@ -116,19 +119,25 @@ export class SlackOrchestratorStack extends Stack {
       tags: [{ key: "Application", value: "AgentX" }],
     });
     if (modelProxySecurityGroupId !== undefined) {
-      // Orchestrator -> proxy load balancer on the proxy port, and only that: a separate pair of rules, as in ModelProxy.
-      new ec2.CfnSecurityGroupEgress(this, "ModelProxyEgress", {
-        groupId: securityGroup.attrGroupId,
-        ipProtocol: "tcp", fromPort: MODEL_PROXY_PORT, toPort: MODEL_PROXY_PORT,
-        destinationSecurityGroupId: modelProxySecurityGroupId.valueAsString,
-        description: `Model proxy port ${MODEL_PROXY_PORT} on the proxy load balancer`,
-      });
-      new ec2.CfnSecurityGroupIngress(this, "ModelProxyIngress", {
-        groupId: modelProxySecurityGroupId.valueAsString,
-        ipProtocol: "tcp", fromPort: MODEL_PROXY_PORT, toPort: MODEL_PROXY_PORT,
-        sourceSecurityGroupId: securityGroup.attrGroupId,
-        description: `Model proxy port ${MODEL_PROXY_PORT} from the Slack orchestrator`,
-      });
+      // Orchestrator -> proxy load balancer on the proxy port, and only that: a separate pair of rules, as in ModelProxy. With TLS the port is 443 (new ids); the
+      // plain-http port keeps its old ids and stays only without TLS or while the legacy listeners are kept.
+      const tls = props?.modelProxyTls;
+      const ports = [...(tls === undefined ? [] : [MODEL_PROXY_TLS_PORT]), ...(tls === undefined || tls.legacyHttp ? [MODEL_PROXY_PORT] : [])];
+      for (const port of ports) {
+        const suffix = port === MODEL_PROXY_PORT ? "" : "Tls";
+        new ec2.CfnSecurityGroupEgress(this, `ModelProxyEgress${suffix}`, {
+          groupId: securityGroup.attrGroupId,
+          ipProtocol: "tcp", fromPort: port, toPort: port,
+          destinationSecurityGroupId: modelProxySecurityGroupId.valueAsString,
+          description: `Model proxy port ${port} on the proxy load balancer`,
+        });
+        new ec2.CfnSecurityGroupIngress(this, `ModelProxyIngress${suffix}`, {
+          groupId: modelProxySecurityGroupId.valueAsString,
+          ipProtocol: "tcp", fromPort: port, toPort: port,
+          sourceSecurityGroupId: securityGroup.attrGroupId,
+          description: `Model proxy port ${port} from the Slack orchestrator`,
+        });
+      }
     }
     const cluster = new ecs.CfnCluster(this, "Cluster", {
       clusterSettings: [{ name: "containerInsights", value: "disabled" }],

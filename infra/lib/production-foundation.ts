@@ -67,6 +67,8 @@ export interface ProductionFoundationStackProps extends StackProps {
    * host and the ECS API). Plain host names only. Absent: the plain Enterprise list, which has none of them.
    */
   stdioMcpAllowDomains?: readonly string[];
+  /** MODEL-PROXY-TLS (decision 110): the model proxy's own DNS name, which every caller in the VPC now resolves, so it is on the DNS firewall's allow list. Absent: not listed. */
+  modelProxyTlsName?: string;
 }
 
 export function defaultProductionAvailabilityZoneIds(
@@ -294,6 +296,8 @@ export class ProductionFoundationStack extends Stack {
         // A Public install starts from the default list without its broad entries plus its own regional AWS hosts (DEFAULT-ALLOW-LIST-EXFIL, 0.5.15).
         baseAllowDomains: enterprise ? enterpriseAllowDomains(props.deploymentRegion, { stdioMcp: props.stdioMcpAllowDomains !== undefined }) : hostedAgentAllowDomains(props.deploymentRegion, Aws.ACCOUNT_ID),
         extraAllowDomains: [
+          // The model proxy's https name (decision 110): workers, the orchestrator and the model access function resolve it (to the private zone's alias record).
+          ...(props.modelProxyTlsName === undefined ? [] : [props.modelProxyTlsName]),
           // The names an install with package-run servers needs (the ECS name is already in its base list).
           ...(enterprise ? (props.stdioMcpAllowDomains ?? []).filter((name) => !enterpriseAllowDomains(props.deploymentRegion, { stdioMcp: true }).includes(name)) : []),
           ...parseExtraAllowDomains(this.node.tryGetContext(EGRESS_ALLOW_DOMAINS_CONTEXT_KEY), enterprise ? enterpriseAllowDomains(props.deploymentRegion, { stdioMcp: props.stdioMcpAllowDomains !== undefined }) : hostedAgentAllowDomains(props.deploymentRegion, Aws.ACCOUNT_ID)),

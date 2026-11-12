@@ -65,6 +65,8 @@ export type BrokerNameKind =
   | "eventApiEndpoint"
   /** An internal load balancer's name (the first label of its DNS name); the variable gets `http://<name>.<region>.elb.amazonaws.com:<inference port>`. */
   | "modelProxyUrl"
+  /** A DNS name the install owns (the model proxy's with TLS, decision 110); the variable gets `https://<name>`. */
+  | "httpsHost"
   /** A dead-letter queue's name, which the health route lists under `label`; the variable gets the JSON of every such queue, `{ label: URL }`. */
   | "deadLetterQueue";
 
@@ -86,6 +88,8 @@ export const BROKER_NAMES = {
   launchTemplate: { code: "lt", variable: "EC2_WORKER_LAUNCH_TEMPLATE_ID", kind: "name" },
   projectAllowList: { code: "pl", variable: "AGENT_PROJECT_ALLOW_LIST_ID", kind: "name" },
   modelProxy: { code: "mp", variable: "MODEL_PROXY_URL", kind: "modelProxyUrl" },
+  // MODEL-PROXY-TLS (decision 110): with TLS the control plane passes the proxy's own DNS name here INSTEAD of `mp`, and the broker builds `https://<name>`. Never both.
+  modelProxyHost: { code: "mh", variable: "MODEL_PROXY_URL", kind: "httpsHost" },
   auditLedgerTable: { code: "al", variable: "AUDIT_LEDGER_TABLE_NAME", kind: "name" },
   auditSealsTable: { code: "as", variable: "AUDIT_SEALS_TABLE_NAME", kind: "name" },
   auditKeysTable: { code: "ak", variable: "AUDIT_KEYS_TABLE_NAME", kind: "name" },

@@ -8,6 +8,7 @@ import type { AgentXNaming } from "./naming.js";
 import { OperatorAccess, type OperatorAccessSettings } from "./operator-access.js";
 import { CUSTOM_DOMAIN_NAME_PATTERN, CUSTOM_DOMAIN_ZONE_PATTERN } from "./custom-domain-patterns.js";
 import { applyPermissionsBoundaryParameter } from "./permissions-boundary.js";
+import { modelProxyTlsDeployStatements, type ModelProxyTls } from "./model-proxy-tls.js";
 
 export interface AccessStackProps extends StackProps {
   naming: AgentXNaming;
@@ -37,6 +38,11 @@ export interface AccessStackProps extends StackProps {
    * role is granted Certificate Manager and Route 53 access for that name and that zone only while they are set. Without the context the stack is unchanged.
    */
   cloud?: boolean;
+  /**
+   * MODEL-PROXY-TLS (decision 110): the model proxy's HTTPS name and certificate source. The deploy role then gets, in a managed policy of its own, exactly what building the
+   * certificate, the private zone and the alias record needs (infra/lib/model-proxy-tls.ts). Absent: no such policy.
+   */
+  modelProxyTls?: ModelProxyTls;
 }
 
 /**
@@ -207,6 +213,15 @@ export class AccessStack extends Stack {
       maxSessionDuration: 3600,
       policies: [{ policyName: "operate", policyDocument: { Version: "2012-10-17", Statement: operatorRoleStatements(policyScope) } }],
     });
+
+    if (props.modelProxyTls !== undefined) {
+      // Its own managed policy (6,144 characters of room), attached to the deploy role only: the role's inline policies stay as they were.
+      new iam.CfnManagedPolicy(this, "ModelProxyTlsDeployPolicy", {
+        description: `Lets the ${env} deploy role build the model proxy HTTPS certificate, private zone and alias record`,
+        roles: [serviceRole.ref],
+        policyDocument: { Version: "2012-10-17", Statement: modelProxyTlsDeployStatements({ env, partition: Aws.PARTITION, region: Aws.REGION, account: this.account }, props.modelProxyTls) },
+      });
+    }
 
     new CfnOutput(this, "ArtifactBucketName", { value: bucket.bucketName });
     new CfnOutput(this, "CloudFormationRoleArn", { value: serviceRole.attrArn });
