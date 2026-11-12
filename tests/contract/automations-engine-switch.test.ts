@@ -6,6 +6,8 @@ import { AUTOMATIONS_OFF_MESSAGE, type AutomationsSwitch } from "../../packages/
 import { sweepChainRuns } from "../../packages/broker/src/chains/lifecycle.js";
 import { onStepTaskEnded } from "../../packages/broker/src/chains/runner.js";
 import { startChainRun } from "../../packages/broker/src/chains/runner.js";
+import { stopRequestIdOf, stopTriggerTasksWhenOff } from "../../packages/broker/src/chains/automations-stop.js";
+import { createTaskSessionItems } from "../../packages/broker/src/agent-sessions/create.js";
 import { dispatchTriggerEvent, type TriggerDispatchDependencies } from "../../packages/broker/src/triggers/dispatch.js";
 import { DANA, ORG_A, PRIYA, disposeGateWorlds, setupGateWorld, type GateWorld } from "../support/chain-gate-world.js";
 import { setupTriggerWorld } from "../support/trigger-world.js";
@@ -22,7 +24,7 @@ const twoSteps: ChainDefinitionInput = {
 };
 
 /** A switch the test flips; set on the world's dependencies the way the broker's wiring does (`chainRunnerDependenciesOf`). */
-function withSwitch(w: GateWorld, on = true): { flip(value: boolean): void } {
+function withSwitch(w: GateWorld, on = true): { flip: (value: boolean) => void } {
   const state = { on };
   const automations: AutomationsSwitch = { enabled: () => state.on };
   Object.assign(w.deps, { automations });
@@ -129,5 +131,75 @@ describe("off cancels running runs at a safe point", () => {
     expect(w.run(stopped.runId)).toMatchObject({ status: "cancelled" });
     expect(w.run(live.runId)).toMatchObject({ status: "running" });
     expect(w.starts).toHaveLength(2);
+  });
+});
+
+describe("off also stops the tasks a trigger started on its own (an agent trigger's run, not a chain step)", () => {
+  const TASK = "11111111-1111-4111-8111-111111111111";
+  const CHAIN_TASK = "22222222-2222-4222-8222-222222222222";
+  const MEMBER_TASK = "33333333-3333-4333-8333-333333333333";
+
+  /** A world with the chain runner's dependencies and three open task sessions: one an event started, one a person started, one an event started that is a chain's. */
+  function world() {
+    const w = setupGateWorld();
+    const switchState = withSwitch(w);
+    const table = { documentClient: w.db, tableName: "T" } as never;
+    const open = (sessionId: string, taskId: string, startedBy: { kind: "event"; triggerId: string } | { kind: "member"; developerId: string }) => {
+      for (const item of createTaskSessionItems(table, {
+        orgId: ORG_A, sessionId, taskId, project: "web", agent: { agentId: "code-reviewer", name: "Code reviewer", version: 1 }, title: "Review a pull request", owner: { developerId: PRIYA, name: "Priya" },
+        startedBy, origin: startedBy.kind === "member" ? "app" : "event", payer: { kind: "agent", agentId: "code-reviewer" } as never, now: "2026-11-12T10:00:00.000Z",
+      })) { const put = (item as { Put?: { Item: Record<string, unknown> } }).Put; if (put !== undefined) w.db.set(put.Item); }
+    };
+    open("ses_aaaaaaaaaaaaaaaaaaaa", TASK, { kind: "event", triggerId: "ctr_aaaaaaaaaaaaaaaaaaaa" });
+    open("ses_bbbbbbbbbbbbbbbbbbbb", MEMBER_TASK, { kind: "member", developerId: PRIYA });
+    return { w, ...switchState };
+  }
+  const workflowOf = (w: GateWorld, taskId: string, stage: string, state: string) => w.db.set({ pk: `DEVTASK#${taskId}`, sk: "META", workflow: { stage, state } });
+  void CHAIN_TASK;
+
+  it("stops the trigger's task through the cancel path as the session's owner, and leaves a person's task alone", async () => {
+    const { w, flip } = world();
+    workflowOf(w, TASK, "IMPLEMENT", "RUNNING");
+    workflowOf(w, MEMBER_TASK, "IMPLEMENT", "RUNNING");
+    flip(false);
+    const report = await stopTriggerTasksWhenOff(w.deps);
+    expect(report).toEqual({ examined: 2, stopped: 1, deferred: 0, failed: 0 });
+    expect(w.cancels).toEqual([{ orgId: ORG_A, taskId: TASK, owner: { developerId: PRIYA }, requestId: stopRequestIdOf(TASK) }]);
+  });
+
+  it("leaves a task that is opening its pull request, and stops it at the next sweep once it is done", async () => {
+    const { w, flip } = world();
+    workflowOf(w, TASK, "PULL_REQUEST", "RUNNING");
+    flip(false);
+    expect(await stopTriggerTasksWhenOff(w.deps)).toMatchObject({ stopped: 0, deferred: 1 });
+    expect(w.cancels).toEqual([]);
+    workflowOf(w, TASK, "WAIT_FOR_MERGE", "WAITING");
+    expect(await stopTriggerTasksWhenOff(w.deps)).toMatchObject({ stopped: 1, deferred: 0 });
+  });
+
+  it("reads nothing while automations are on, or where the engine has no switch", async () => {
+    const { w } = world();
+    const before = w.db.commandNames().length;
+    expect(await stopTriggerTasksWhenOff(w.deps)).toEqual({ examined: 0, stopped: 0, deferred: 0, failed: 0 });
+    expect(w.db.commandNames().length).toBe(before);
+    delete (w.deps as { automations?: unknown }).automations;
+    expect(await stopTriggerTasksWhenOff(w.deps)).toEqual({ examined: 0, stopped: 0, deferred: 0, failed: 0 });
+  });
+
+  it("an ended session is not touched, and a task that cannot be asked to stop is counted as failed, not lost", async () => {
+    const { w, flip } = world();
+    workflowOf(w, TASK, "IMPLEMENT", "RUNNING");
+    flip(false);
+    w.hooks.cancelFails.push(new Error("worker unreachable"));
+    expect(await stopTriggerTasksWhenOff(w.deps)).toMatchObject({ stopped: 0, failed: 1 });
+    const meta = w.db.get({ pk: `ORG#${ORG_A}#AGENT_SESSION#ses_aaaaaaaaaaaaaaaaaaaa`, sk: "META" })!;
+    w.db.set({ ...meta, endedAt: "2026-11-12T11:00:00.000Z" });
+    expect(await stopTriggerTasksWhenOff(w.deps)).toMatchObject({ stopped: 0, failed: 0 });
+  });
+
+  it("the stop request id is stable and a version 4 id", () => {
+    expect(stopRequestIdOf(TASK)).toBe(stopRequestIdOf(TASK));
+    expect(stopRequestIdOf(TASK)).not.toBe(stopRequestIdOf(MEMBER_TASK));
+    expect(stopRequestIdOf(TASK)).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u);
   });
 });
