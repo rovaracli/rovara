@@ -1246,17 +1246,20 @@ describe("chainAccess", () => {
     for (const who of [BOB, CAROL, ERIN, FRANK]) expect(await level(ctx, who, chain)).toBe("none");
   });
 
-  it("matches the agent rules for a project's chain: maintainers manage, contributors use, viewers and outsiders nothing", async () => {
+  it("for a project's chain: maintainers manage, contributors use, viewers view (experience review decision 16), outsiders nothing", async () => {
     const ctx = setup();
     const chain = await webs(ctx);
     expect(await level(ctx, BOB, chain)).toBe("manage");
     expect(await level(ctx, CAROL, chain)).toBe("use");
-    expect(await level(ctx, ERIN, chain)).toBe("none");
-    expect(await level(ctx, ALICE, chain)).toBe("none");
-    expect(await level(ctx, FRANK, chain)).toBe("none");
-    // The same caller holds the same level on an agent owned in the same way.
+    // Experience review decision 16 (final-experience-proposal.md, 2026-11-10): an automation is visible to everyone in its project, so web's viewer sees it.
+    expect(await level(ctx, ERIN, chain), "ERIN").toBe("view");
+    // No role on web (Alice has none anywhere, Frank contributes to api only): nothing, as before.
+    expect(await level(ctx, ALICE, chain), "ALICE").toBe("none");
+    expect(await level(ctx, FRANK, chain), "FRANK").toBe("none");
+    // Everyone else holds the same level on an agent owned in the same way; only the project viewer differs (an agent keeps Plan 3's rule: a viewer gets nothing).
     const agent = await ctx.agents.create({ orgId: ORG_A, name: "Web agent", owner: WEB_OWNS, accountable: { developerId: BOB }, overlay: SCRATCH, createdBy: BOB });
-    for (const who of [BOB, CAROL, ERIN, ALICE, FRANK, DAN]) expect(await level(ctx, who, chain), who).toBe(await agentAccess(ctx.agentDeps, caller(who), agent));
+    for (const who of [BOB, CAROL, ALICE, FRANK, DAN]) expect(await level(ctx, who, chain), who).toBe(await agentAccess(ctx.agentDeps, caller(who), agent));
+    expect(await agentAccess(ctx.agentDeps, caller(ERIN), agent)).toBe("none");
   });
 
   it("applies a share's level to the member it names, and an org-wide share to everyone", async () => {

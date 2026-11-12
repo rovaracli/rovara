@@ -6,6 +6,7 @@
 //   GET /v1/app/org/model-sources                                 the company's AI providers
 //   GET /v1/app/projects                                          each project's environment check
 //   GET /v1/app/org/service-status                                stored runtime qualification and the team record's delete check
+//   GET /v1/app/org/health-observations                           when each health check last ran and what it found (GitHub, Slack, AI source check, backup model use; owner or admin; the contract's reader)
 //   GET /v1/app/projects/{p}/lessons/sources                      the team record's sources, per project (the first 20 projects)
 //   GET /v1/app/org/approvals/pending-summary                     the company's open approvals: the total and the newest (owner or admin; the contract's reader)
 //   GET /v1/app/spend-requests                                    spending requests that wait for a second admin
@@ -14,7 +15,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQueries, useQuery, useQueryClient, type UseQueryResult } from "@tanstack/react-query";
 import { z } from "zod";
-import { AppProjectsResponseSchema, GithubInstallationsResponseReaderSchema, ORG_PENDING_APPROVALS_PATH, OrgPendingApprovalsSummaryReaderSchema, OrgSlackWorkspaceEvidenceResponseReaderSchema, type OrgServiceStatus } from "@agentx/cloud-contracts/web";
+import { AppProjectsResponseSchema, GithubInstallationsResponseReaderSchema, ORG_HEALTH_OBSERVATIONS_PATH, ORG_PENDING_APPROVALS_PATH, OrgHealthObservationsReaderSchema, OrgPendingApprovalsSummaryReaderSchema, OrgSlackWorkspaceEvidenceResponseReaderSchema, type OrgHealthObservationsResponse, type OrgServiceStatus } from "@agentx/cloud-contracts/web";
 import { useAppHost } from "../host.js";
 import { ApiError } from "./errors.js";
 import { createApiClient } from "./client.js";
@@ -64,15 +65,15 @@ export type LessonsRead = { project: string; read: Read<LessonSources> };
 export const LESSONS_PROJECT_CAP = 20;
 export const READINESS_PATHS = {
  github: "/v1/app/github/installations", githubRequests: "/v1/app/github/requests", connections: "/v1/app/connections", slack: "/v1/app/org/slack-workspace-evidence", sources: "/v1/app/org/model-sources",
- projects: "/v1/app/projects", approvals: ORG_PENDING_APPROVALS_PATH, spend: "/v1/app/spend-requests",
+ projects: "/v1/app/projects", approvals: ORG_PENDING_APPROVALS_PATH, spend: "/v1/app/spend-requests", observations: ORG_HEALTH_OBSERVATIONS_PATH,
 } as const;
 
 export interface ReadinessScope { orgId: string; developerId: string; role: string; enabled: boolean }
 export interface ReadinessReads {
  github: Read<ReadinessGithub>; githubRequests: Read<ReadinessRequests>; connections: Read<ReadinessConnection[]>; slack: Read<ReadinessSlack>; sources: Read<ReadinessSources>; projects: Read<ReadinessProject[]>;
- serviceStatus: Read<OrgServiceStatus>; features: Read<ReadinessFeatures>; lessons: LessonsRead[]; lessonsSkipped: number;
+ serviceStatus: Read<OrgServiceStatus>; /** When each health check last ran, from the broker (ages are the broker's, at its own read time). Refused for anyone but an owner or admin. */ observations: Read<OrgHealthObservationsResponse>; features: Read<ReadinessFeatures>; lessons: LessonsRead[]; lessonsSkipped: number;
  approvals: Read<ReadinessApprovals>; spend: Read<ReadinessSpendRequest[]>; preset: Read<LessonCompanyPreset>; designReview: Read<ReadinessDesignReview>;
- /** The clock (milliseconds), kept in state so render stays pure: set when the page opens, on every "Check again" and once a minute, so a tab left open ages its observations. */ now: number; /** True while any read is still going. */ busy: boolean; refetch(): void;
+ /** The clock (milliseconds), kept in state so render stays pure: set when the page opens, on every "Check again" and once a minute, so a tab left open ages its observations. */ now: number; /** True while any read except the observations is still going: the page and the overview wait for these only. */ busy: boolean; /** True while the observations read is going. It can take a few seconds when the broker refreshes Slack and GitHub, so nothing waits for it: the three rows it backs show "Checking" until it answers. */ observing: boolean; refetch(): void;
 }
 
 /**
@@ -95,6 +96,8 @@ export function useReadinessReads({ orgId, developerId, role, enabled }: Readine
  const serviceApi = useMemo(() => createServiceStatusApi(host, orgId), [host, orgId]);
  useEffect(() => { serviceApi.setScopeActive(enabled);return () => { serviceApi.setScopeActive(false); }; }, [serviceApi, enabled]);
  const serviceStatus = useQuery({ ...options("service-status", () => serviceApi.read()) }) as UseQueryResult<OrgServiceStatus>;
+ const observationsReader = useMemo(() => OrgHealthObservationsReaderSchema.refine(value => value.orgId === orgId), [orgId]);
+ const observations = useQuery({ ...options("observations", () => api.get(`${READINESS_PATHS.observations}?expectedOrgId=${encodeURIComponent(orgId)}`, observationsReader, undefined, { retry: "never" })) }) as UseQueryResult<OrgHealthObservationsResponse>;
  const nav = useNav();
  const approvals = useQuery({ ...options("approvals", () => api.get(READINESS_PATHS.approvals, OrgPendingApprovalsSummaryReaderSchema)) }) as UseQueryResult<ReadinessApprovals>;
  const spend = useQuery({ ...options("spend", () => api.get(READINESS_PATHS.spend, SpendRequestsReaderSchema)) }) as UseQueryResult<{ spendRequests: ReadinessSpendRequest[] }>;
@@ -107,11 +110,11 @@ export function useReadinessReads({ orgId, developerId, role, enabled }: Readine
  const all = [github, githubRequests, connections, slack, sources, projects, serviceStatus, approvals, spend, preset, designReview, ...lessonQueries];
  return {
   github: toRead(github), githubRequests: toReadOf(githubRequests, value => value.requests), connections: toReadOf(connections, value => value.connections),
-  slack: toRead(slack), sources: toRead(sources), projects: toRead(projects), serviceStatus: toRead(serviceStatus),
+  slack: toRead(slack), sources: toRead(sources), projects: toRead(projects), serviceStatus: toRead(serviceStatus), observations: toRead(observations),
   features: toReadOf(nav, value => ({ localAgents: value.features.localAgents, usage: value.features.usage, chains: value.features.chains, notices: value.features.notices, describe: value.features.describe, scriptTokens: value.features.scriptTokens === true, decisionCards: value.features.decisionCards === true })),
   lessons: shown.map((project, index) => ({ project, read: toRead(lessonQueries[index]! as UseQueryResult<LessonSources>) })), lessonsSkipped: Math.max(0, names.length - shown.length),
   approvals: toRead(approvals), spend: toReadOf(spend, value => value.spendRequests),
   preset: toRead(preset), designReview: toRead(designReview),
-  now, busy: all.some(query => query.isFetching), refetch() { setNow(Date.now());for (const query of all) void query.refetch({ cancelRefetch: false }); },
+  now, busy: all.some(query => query.isFetching), observing: observations.isFetching, refetch() { setNow(Date.now());for (const query of [...all, observations]) void query.refetch({ cancelRefetch: false }); },
  };
 }

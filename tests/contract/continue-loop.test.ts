@@ -5,8 +5,9 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 import { agentXError, builtinSettingsKey, mergeTrackingKey, projectMetaKey, workspaceSessionKey } from "@rovara-code/contracts";
 import type { DeveloperCaller } from "../../packages/broker/src/aws/developer-routes.js";
 import type { DeveloperTaskRouteDependencies } from "../../packages/broker/src/aws/developer-tasks.js";
-import { publishWorkingBranchAction, recheckAction } from "../../packages/broker/src/aws/developer-tasks/continue-loop.js";
-import { CHANGED_OUTSIDE_LABEL, ContinueLoopViewSchema, DeveloperTaskViewSchema, OUTSIDE_RECHECK_WORKER_MISSING, PUBLISHED_BRANCH_NOTE, RECHECK_NEEDS_PULL_REQUEST_NOTE, workingBranchName, type MergeTrackingItem } from "@agentx/cloud-contracts";
+import { publishWorkingBranchAction, recheckAction, startOutsideRecheckRun } from "../../packages/broker/src/aws/developer-tasks/continue-loop.js";
+import { authorizeTaskAction } from "../../packages/broker/src/aws/developer-tasks/access.js";
+import { orgMemberKey, orgRemovedKey, CHANGED_OUTSIDE_LABEL, ContinueLoopViewSchema, DeveloperTaskViewSchema, OUTSIDE_RECHECK_WORKER_MISSING, PUBLISHED_BRANCH_NOTE, RECHECK_NEEDS_PULL_REQUEST_NOTE, workingBranchName, type MergeTrackingItem } from "@agentx/cloud-contracts";
 import { mergeTrackingDecisionDigest } from "../../packages/cloud-contracts/src/rovara-code-node.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
 import { handleGithubWebhook, type BranchPushWebhookEvent, type PullRequestWebhookEvent } from "../../packages/broker/src/aws/github-webhooks.js";
@@ -689,6 +690,20 @@ describe("the two actions, through the broker", () => {
       await expect(recheckAction(deps, omar, t.taskId, recheckBody())).rejects.toMatchObject({ code: "TASK_NOT_FOUND" });
       expect(t.created).toEqual([]);
       expect(t.recheck).not.toHaveBeenCalled();
+    });
+
+    it("ruling R60 at the launch: the re-check's own start refuses a task whose creator has left the company, and starts nothing", async () => {
+      const t = await setup({ sameOrg: true });
+      t.toWaiting();
+      const deps = { ...t.routeDeps(grantedAs("contributor")), outsideRecheckFeatures: async () => undefined };
+      const access = await authorizeTaskAction(deps, OWNER_CALLER, t.taskId, "work");
+      // The creator leaves after the press was authorized, before the run is accepted.
+      // A removal deletes the member record and leaves its tombstone, in one write (OrgStore).
+      t.harness.db.delete(orgMemberKey(TEST_ORG, MAYA.developerId).pk, orgMemberKey(TEST_ORG, MAYA.developerId).sk);
+      t.harness.db.set({ ...orgRemovedKey(TEST_ORG, MAYA.developerId), entityType: "ORG_REMOVED", orgId: TEST_ORG, developerId: MAYA.developerId, removedAt: new Date().toISOString() });
+      await expect(startOutsideRecheckRun(deps, access, { requestId: randomUUID(), repository: "demo", number: 7, headSha: HEAD_B }, OWNER_CALLER)).rejects.toMatchObject({ code: "TASK_ACCESS_DENIED" });
+      expect(t.harness.db.find((item) => item.entityType === "OPERATION" && (item.maintenance as { workflowAdopt?: unknown } | undefined)?.workflowAdopt !== undefined)).toEqual([]);
+      expect(t.harness.db.find((item) => String(item.sk).startsWith("OUTSIDE_RECHECK#"))).toEqual([]);
     });
 
     it("recheck is idempotent per request: a repeat of the same request starts nothing more; the same request ID for another head is refused", async () => {

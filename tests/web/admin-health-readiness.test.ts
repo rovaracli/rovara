@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { screen, within, waitFor, fireEvent } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
@@ -11,7 +11,7 @@ import { ThemeProvider } from "../../packages/ui/src/theme.js";
 import type { Read, ReadinessReads } from "../../packages/ui/src/api/readiness.js";
 import { HEALTH_STORAGE_KEY, isHealthV2On } from "../../packages/ui/src/screens/admin/health/health-flags.js";
 import {
- buildNeedsAdmin, buildReadiness, chatRow, codeHostRow, connectionVerdict, featuresRow, freshness, lessonsRow, modelRow, projectRow, serviceRow, sortRows, stamp, teamRecordRow, trackerRow,
+ ago, buildNeedsAdmin, buildReadiness, chatRow, codeHostRow, connectionVerdict, fallbackLine, featuresRow, freshness, lessonsRow, modelRow, observe, projectRow, serviceRow, sortRows, stamp, teamRecordRow, trackerRow,
 } from "../../packages/ui/src/screens/admin/health/readiness.js";
 import { fakeHost } from "./support/fake-host.js";
 import { renderUi } from "./support/render.js";
@@ -26,13 +26,16 @@ const install = (status: "active" | "suspended" | "removed", accountLogin = "acm
 const connection = (over: Record<string, unknown> = {}) => ({ connectionId: "c1", type: "linear", label: "Linear (team)", hasCredential: true, updatedAt: "2026-11-01T00:00:00Z", lastCheck: { ok: true, at: "2026-11-10T12:00:00Z" }, ...over }) as never;
 const service = { orgId, source: "stored_runtime_qualification" as const, checkedAt: "2026-11-11T11:00:00.000Z", configured: true, checks: [{ kind: "web" as const, state: "ready" as const, observation: "qualified" as const, reason: "qualified" as const, expiresAt: "2026-11-14T00:00:00.000Z" }, { kind: "api" as const, state: "ready" as const, observation: "qualified" as const, reason: "qualified" as const, expiresAt: "2026-11-14T00:00:00.000Z" }], teamRecord: { status: "ok" as const, detail: "No delete is waiting." } };
 const project = (name: string, status: string, extra: Record<string, unknown> = {}) => ({ name, status: "active" as const, setup: { status, checkedAt: undefined, failedStep: undefined, ...extra } }) as never;
+// The broker's health observations (a company that has never run a check reads `{ checked: false }` for each); `observed({...})` overrides single features. Ages are the broker's, at its read time (NOW).
+const observed = (over: Record<string, unknown> = {}) => ({ orgId, readAt: new Date(NOW).toISOString(), github: { checked: false }, slack: { checked: false }, modelSource: { checked: false }, modelUse: { checked: false }, ...over }) as never;
+const passed = (secondsAgo: number, result: "ok" | "failed" | "unknown" = "ok", ageSeconds = secondsAgo) => ({ checked: true, checkedAt: new Date(NOW - secondsAgo * 1000).toISOString(), ageSeconds, result });
 function reads(over: Partial<ReadinessReads> = {}): ReadinessReads {
  return {
   github: ok([install("active")]), githubRequests: ok([]), connections: ok([connection()]), slack: ok({ checkedAt: "2026-11-11T11:30:00.000Z", associationCount: 1, unavailableCount: 0 }),
   sources: ok({ sources: [{ sourceId: "src_a", kind: "anthropic", label: "Company Anthropic key", hasCredential: true, models: [{ catalog: { provider: "anthropic", modelId: "claude-secret-model-1" } }] }] }),
-  projects: ok([project("payments", "ready", { checkedAt: "2026-11-10T09:00:00.000Z" })]), serviceStatus: ok(service as never), features: ok({ localAgents: false, usage: true, chains: false, notices: false, describe: true, scriptTokens: false, decisionCards: false }),
+  projects: ok([project("payments", "ready", { checkedAt: "2026-11-10T09:00:00.000Z" })]), serviceStatus: ok(service as never), observations: ok(observed()), features: ok({ localAgents: false, usage: true, chains: false, notices: false, describe: true, scriptTokens: false, decisionCards: false }),
   lessons: [{ project: "payments", read: ok({ sources: [{ kind: "slack", scope: "#dev", enabled: true, retention: "30d", health: "ok", audience: "project", updatedAt: "2026-11-10T00:00:00Z", paused: false }], otherPaused: 0 } as never) }], lessonsSkipped: 0,
-  approvals: ok({ total: 0, approvals: [] }), spend: ok([]), preset: ok({ preset: "standard" } as never), designReview: ok({ allowed: false, unreadable: false }), busy: false, now: NOW, refetch() {}, ...over,
+  approvals: ok({ total: 0, approvals: [] }), spend: ok([]), preset: ok({ preset: "standard" } as never), designReview: ok({ allowed: false, unreadable: false }), busy: false, observing: false, now: NOW, refetch() {}, ...over,
  };
 }
 
@@ -49,7 +52,7 @@ describe("the switch", () => {
 describe("status mapping: green needs an observation", () => {
  it("code host: an active app is Unknown (no check time), a suspended or missing one needs action, an unread one is Unknown", () => {
   // The stored install status has no observation time, so an active app is Unknown, never Healthy.
-  const active = codeHostRow(reads());
+  const active = codeHostRow(reads({ observations: missing }));
   expect(active.status).toBe("unknown");expect(active.checked).toBe("Check time not recorded");expect(active.source).toMatch(/GitHub/);expect(active.line).toMatch(/records no time/);expect(active.fix?.to).toBe("/app/admin/connections?open=github");
   const suspended = codeHostRow(reads({ github: ok([install("suspended")]) }));
   expect(suspended.status).toBe("action");expect(suspended.fix?.to).toBe("/app/admin/connections?open=github");expect(suspended.fix?.text).toMatch(/unsuspend/);
@@ -59,7 +62,7 @@ describe("status mapping: green needs an observation", () => {
   expect(codeHostRow(reads({ github: loading })).status).toBe("checking");
  });
  it("chat: stored Slack links are configuration, so they are Unknown, never Healthy; a broken link needs action; the time is the stored read", () => {
-  const row = chatRow(reads());
+  const row = chatRow(reads({ observations: missing }));
   expect(row.status).toBe("unknown");expect(row.line).toMatch(/nothing shows it still works/);expect(row.checked).toBe("Stored associations read Nov 11, 2026, 11:30 AM UTC");expect(row.checkedAt).toBe("2026-11-11T11:30:00.000Z");
   expect(chatRow(reads({ slack: ok({ checkedAt: "2026-11-11T11:30:00.000Z", associationCount: 2, unavailableCount: 1 }) })).status).toBe("action");
   const none = chatRow(reads({ slack: ok({ checkedAt: "2026-11-11T11:30:00.000Z", associationCount: 0, unavailableCount: 0 }) }));
@@ -89,7 +92,7 @@ describe("status mapping: green needs an observation", () => {
   expect(trackerRow(reads({ connections: failed }), NOW).status).toBe("unknown");
  });
  it("models: Unknown while no read shows the main model or a fallback, action for a source with no key; model ids only under details", () => {
-  const row = modelRow(reads());
+  const row = modelRow(reads({ observations: missing }));
   expect(row.status).toBe("unknown");expect(row.line).toMatch(/fallback/);expect(row.line).not.toMatch(/claude-secret-model-1/);expect(row.details.join(" ")).toMatch(/claude-secret-model-1/);
   expect(modelRow(reads({ sources: ok({ sources: [] } as never) })).line).toMatch(/Rovara's own models/);
   const broken = modelRow(reads({ sources: ok({ sources: [{ sourceId: "src_a", kind: "openai", label: "Team OpenAI", hasCredential: false, models: [] }] } as never) }));
@@ -147,6 +150,105 @@ describe("status mapping: green needs an observation", () => {
   for (const row of readiness.rows) { expect(row.source).not.toBe("");expect(row.checked).not.toBe("");expect(row.line).not.toMatch(/undefined|NaN|\[object/); }
   expect([freshness(undefined, NOW), freshness("x", NOW), freshness("2026-11-11T11:00:00Z", NOW), freshness("2026-11-04T11:00:00Z", NOW), freshness("2026-11-11T12:04:00Z", NOW), freshness("2026-11-11T12:06:00Z", NOW)]).toEqual(["none", "none", "fresh", "stale", "fresh", "future"]);
   expect(stamp("garbage")).toBeUndefined();expect(stamp(undefined)).toBeUndefined();expect(stamp("2026-11-11T12:00:00Z")).toBe("Nov 11, 2026, 12:00 PM UTC");
+ });
+});
+
+describe("health observations: when each check last ran", () => {
+ const seen = (feature: "github" | "slack" | "modelSource", value: unknown, at = NOW) => ok(observed({ [feature]: value }), at);
+ it("words for how long ago, and the age is the broker's plus the time since the page read it", () => {
+  expect([0, 59_000, 60_000, 5 * 60_000, 3_600_000, 23 * 3_600_000, 24 * 3_600_000, 3 * 86_400_000].map(ago)).toEqual(["less than a minute ago", "less than a minute ago", "1 minute ago", "5 minutes ago", "1 hour ago", "23 hours ago", "1 day ago", "3 days ago"]);
+  expect(observe(seen("github", passed(300)), "github", NOW)).toMatchObject({ kind: "ok", checked: "Checked 5 minutes ago", age: "5 minutes ago" });
+  // The page read the answer two minutes before now: five minutes at the broker plus two since.
+  expect(observe(seen("github", passed(300), NOW - 120_000), "github", NOW).checked).toBe("Checked 7 minutes ago");
+  expect(observe(loading, "github", NOW).kind).toBe("loading");
+  for (const read of [refused, missing, failed]) expect(observe(read, "github", NOW)).toEqual({ kind: "unread", checked: "Check time not recorded" });
+  expect(observe(ok(observed()), "github", NOW)).toEqual({ kind: "never", checked: "Never checked" });
+  expect(observe(ok({ orgId, readAt: "2026-11-11T12:00:00.000Z" } as never), "slack", NOW).kind).toBe("never");
+ });
+ it("GitHub: Healthy only with a fresh passing check; a failing one needs action; none, stale, future or 'could not tell' is Unknown", () => {
+  const row = (value: unknown, over: Partial<ReadinessReads> = {}) => codeHostRow(reads({ observations: seen("github", value), ...over }));
+  const fresh = row(passed(300));
+  expect(fresh).toMatchObject({ status: "healthy", checked: "Checked 5 minutes ago", checkedAt: new Date(NOW - 300_000).toISOString() });expect(fresh.fix).toBeUndefined();expect(fresh.source).toMatch(/GitHub App installed check/);
+  expect(fresh.details.join(" ")).toMatch(/Last GitHub App check: 5 minutes ago \(Nov 11, 2026, 11:55 AM UTC\)/);
+  const bad = row(passed(300, "failed"));
+  expect(bad).toMatchObject({ status: "action", line: "The last check that the GitHub App is installed failed.", checked: "Checked 5 minutes ago", fix: { to: "/app/admin/connections?open=github", label: "Fix GitHub" } });
+  expect(row(passed(300, "unknown"))).toMatchObject({ status: "unknown", line: expect.stringContaining("couldn't tell") as unknown });
+  expect(row({ checked: false })).toMatchObject({ status: "unknown", checked: "Never checked", line: expect.stringContaining("never been run") as unknown });
+  const old = row(passed(8 * 86_400));
+  expect(old).toMatchObject({ status: "unknown", checked: "Checked 8 days ago", line: expect.stringContaining("more than 7 days ago") as unknown });
+  // The broker's own age counts too: a time that looks fresh against the clock but a server age over seven days is still stale.
+  expect(row({ ...passed(300), ageSeconds: 8 * 86_400 }).status).toBe("unknown");
+  const future = row({ checked: true, checkedAt: new Date(NOW + 10 * 60_000).toISOString(), ageSeconds: 0, result: "ok" });
+  expect(future).toMatchObject({ status: "unknown", checked: "Check time not believed: it is dated in the future" });expect(future.checkedAt).toBeUndefined();
+  expect(row({ checked: true, checkedAt: new Date(NOW + 4 * 60_000).toISOString(), ageSeconds: 0, result: "ok" }).status).toBe("healthy");
+  // The stored install status still decides first: a suspended or missing app needs action whatever the last check said.
+  expect(row(passed(300), { github: ok([install("suspended")]) }).status).toBe("action");
+  expect(row(passed(300), { github: ok([]) }).status).toBe("action");
+  expect(row(passed(300), { github: failed }).status).toBe("unknown");
+  expect(codeHostRow(reads({ observations: loading })).status).toBe("checking");
+  // A refused, missing or failed observations read: today's row.
+  for (const read of [refused, missing, failed]) expect(codeHostRow(reads({ observations: read }))).toMatchObject({ status: "unknown", checked: "Check time not recorded", line: expect.stringContaining("records no time") as unknown });
+ });
+ it("Slack: Healthy only with a fresh passing live check; stored links alone are never green; a broken stored link still needs action", () => {
+  const row = (value: unknown, over: Partial<ReadinessReads> = {}) => chatRow(reads({ observations: seen("slack", value), ...over }));
+  expect(row(passed(120))).toMatchObject({ status: "healthy", checked: "Checked 2 minutes ago", line: "Slack is connected and its last live check passed." });
+  expect(row(passed(120)).details.join(" ")).toMatch(/Stored workspace links read: Nov 11, 2026, 11:30 AM UTC/);
+  expect(row(passed(120, "failed"))).toMatchObject({ status: "action", fix: { to: "/app/admin/connections?open=slack" }, line: "The last live check of the Slack connection failed." });
+  expect(row(passed(120, "unknown")).status).toBe("unknown");expect(row({ checked: false })).toMatchObject({ status: "unknown", checked: "Never checked" });
+  expect(row(passed(9 * 86_400)).status).toBe("unknown");
+  expect(row(passed(120), { slack: ok({ checkedAt: "2026-11-11T11:30:00.000Z", associationCount: 2, unavailableCount: 1 }) }).status).toBe("action");
+  expect(row(passed(120), { slack: ok({ checkedAt: "2026-11-11T11:30:00.000Z", associationCount: 0, unavailableCount: 0 }) }).status).toBe("unknown");
+  expect(chatRow(reads({ observations: loading })).status).toBe("checking");
+  for (const read of [refused, missing, failed]) expect(chatRow(reads({ observations: read })).status).toBe("unknown");
+ });
+ it("AI models: Healthy only with a fresh passing source check; a failing one needs action; a source with no key still does; the backup model line is one plain sentence", () => {
+  const row = (value: unknown, use: unknown = { checked: false }, over: Partial<ReadinessReads> = {}) => modelRow(reads({ observations: ok(observed({ modelSource: value, modelUse: use })), ...over }));
+  const healthy = row(passed(600));
+  expect(healthy).toMatchObject({ status: "healthy", checked: "Checked 10 minutes ago" });expect(healthy.note).toBeUndefined();expect(healthy.line).toMatch(/last check of an AI provider passed/);
+  expect(row(passed(600, "failed"))).toMatchObject({ status: "action", fix: { to: "/app/admin/models/sources" } });
+  expect(row({ checked: false }).status).toBe("unknown");expect(row(passed(8 * 86_400)).status).toBe("unknown");expect(row(passed(600, "unknown")).status).toBe("unknown");
+  const broken = modelRow(reads({ sources: ok({ sources: [{ sourceId: "src_a", kind: "openai", label: "Team OpenAI", hasCredential: false, models: [] }] } as never), observations: ok(observed({ modelSource: passed(60) })) }));
+  expect(broken.status).toBe("action");expect(broken.fix?.to).toBe("/app/admin/connections?open=ai-provider");
+  const use = { checked: true, windowHours: 24, usedMain: true, usedFallback: true, lastMainAt: "2026-11-11T11:59:00.000Z", lastMainAgeSeconds: 60, lastFallbackAt: "2026-11-11T11:05:00.000Z", lastFallbackAgeSeconds: 3300, lastFallbackReason: "DEFAULT_MODEL_UNAVAILABLE" };
+  const backup = row(passed(600), use);
+  expect(backup.note).toBe("Rovara used a backup model in the last 24 hours (the main model was unavailable); last at 11:05 UTC.");
+  expect(backup.status).toBe("healthy");expect(`${backup.line} ${backup.note ?? ""}`).not.toMatch(/claude-secret-model-1|DEFAULT_MODEL_UNAVAILABLE/);expect(backup.details.join(" ")).toMatch(/claude-secret-model-1/);
+  expect(backup.details.join(" ")).toMatch(/Backup model last used: Nov 11, 2026, 11:05 AM UTC/);
+  expect(row({ checked: false }, use).note).toBeDefined();
+  expect(modelRow(reads({ observations: missing })).note).toBeUndefined();
+  expect(modelRow(reads({ observations: loading })).status).toBe("checking");
+  for (const read of [refused, failed]) expect(modelRow(reads({ observations: read }))).toMatchObject({ status: "unknown", checked: "Check time not recorded" });
+ });
+ it("the backup model line: used, not needed, never run, an older last time, a reason it does not know", () => {
+  const use = (over: Record<string, unknown>) => ({ checked: true, windowHours: 24, usedMain: true, usedFallback: false, ...over }) as never;
+  expect(fallbackLine(undefined, NOW)).toBeUndefined();expect(fallbackLine({ checked: false }, NOW)).toBeUndefined();
+  expect(fallbackLine(use({ usedFallback: true, lastFallbackAt: "2026-11-11T14:05:00.000Z", lastFallbackReason: "MODEL_CALL_REFUSED" }), NOW)).toBe("Rovara used a backup model in the last 24 hours (the main model refused the call); last at 14:05 UTC.");
+  expect(fallbackLine(use({ usedFallback: true, lastFallbackAt: "2026-11-10T20:30:00.000Z" }), NOW)).toBe("Rovara used a backup model in the last 24 hours; last at Nov 10, 20:30 UTC.");
+  expect(fallbackLine(use({ usedFallback: true, lastFallbackAt: "2026-11-11T09:00:00.000Z", lastFallbackReason: "SOME_NEW_CODE" }), NOW)).toBe("Rovara used a backup model in the last 24 hours (the main model could not be used); last at 09:00 UTC.");
+  expect(fallbackLine(use({}), NOW)).toBe("Rovara did not need a backup model in the last 24 hours.");
+  // The broker's count covers a fixed window with no start time, so the headline never states it (it could undercount a rolling 24 hours); Details carries it.
+  const base = { usedFallback: true, lastFallbackAt: "2026-11-11T14:05:00.000Z", lastFallbackReason: "DEFAULT_MODEL_UNAVAILABLE" };
+  const headline = "Rovara used a backup model in the last 24 hours (the main model was unavailable); last at 14:05 UTC.";
+  for (const fallbackCount of [undefined, 0, 1, 3, 12]) expect(fallbackLine(use({ ...base, ...(fallbackCount === undefined ? {} : { fallbackCount }) }), NOW), String(fallbackCount)).toBe(headline);
+  expect(fallbackLine(use({ fallbackCount: 0 }), NOW)).toBe("Rovara did not need a backup model in the last 24 hours.");
+  const counted = modelRow(reads({ observations: ok(observed({ modelSource: passed(600), modelUse: use({ ...base, fallbackCount: 3 }) })) }));
+  expect(counted.status).toBe("healthy");expect(counted.details.join(" ")).toMatch(/uses since the 24-hour window opened: 3/);
+  expect(fallbackLine(use({ lastFallbackAt: "2026-11-03T09:10:00.000Z" }), NOW)).toBe("Rovara did not need a backup model in the last 24 hours; the last time was Nov 3, 09:10 UTC.");
+ });
+ it("What needs an admin picks up a failing observation with its fix link and 'Checked N ago'; the counts are the same list's", () => {
+  const r = reads({ observations: ok(observed({ github: passed(300, "failed"), slack: passed(60, "failed"), modelSource: passed(600, "failed") })) });
+  const readiness = buildReadiness(r, NOW), need = buildNeedsAdmin(r, readiness);
+  expect(need.items.map(item => [item.id, item.link.to, item.when])).toEqual([["row:code-host", "/app/admin/connections?open=github", "Checked 5 minutes ago"], ["row:chat", "/app/admin/connections?open=slack", "Checked 1 minute ago"], ["row:models", "/app/admin/models/sources", "Checked 10 minutes ago"]]);
+  expect(readiness.counts.action).toBe(need.items.length);
+  const calm = buildReadiness(reads({ observations: ok(observed({ github: passed(300), slack: passed(60), modelSource: passed(600) })) }), NOW);
+  expect(calm.counts).toEqual({ healthy: 7, action: 0, unknown: 2 });
+ });
+ it("a refused, missing or failed observations read is named as unread, and the rows stay as they were", () => {
+  for (const read of [refused, missing, failed]) {
+   const r = reads({ observations: read }), need = buildNeedsAdmin(r, buildReadiness(r, NOW));
+   expect(need.unread).toEqual(["when each check last ran"]);expect(need.items).toEqual([]);
+   expect(buildReadiness(r, NOW).counts).toEqual({ healthy: 4, action: 0, unknown: 5 });
+  }
  });
 });
 
@@ -212,7 +314,7 @@ describe("What needs an admin", () => {
 
 const nav = (role: string) => AppNavSchema.parse({ me: { developerId: me, name: "Priya", orgRole: role }, org: { name: "Acme" }, homeCount: 0, projects: [], shared: { agents: [], sessions: [] }, features: { admin: true, localAgents: false, usage: true, chains: false, describe: true, notices: false } });
 const connectionsBody = { connections: [{ connectionId: "c1", type: "linear", label: "Linear (team)", hasCredential: true, updatedAt: "2026-11-01T00:00:00Z", lastCheck: { ok: false, at: "2026-11-10T12:00:00Z" } }] };
-type Answers = Record<string, ApiResponse>;
+type Answers = Record<string, ApiResponse | Promise<ApiResponse>>;
 const answers = (): Answers => ({
  "/v1/app/github/installations": { status: 200, body: { installations: [{ installationId: 1, accountLogin: "acme", accountType: "Organization", repositorySelection: "all", status: "active" }] } },
  "/v1/app/github/requests": { status: 200, body: { requests: [] } }, "/v1/app/connections": { status: 200, body: connectionsBody },
@@ -220,6 +322,7 @@ const answers = (): Answers => ({
  "/v1/app/org/model-sources": { status: 200, body: { sources: [], order: ["rovara"] } },
  "/v1/app/projects": { status: 200, body: { projects: [{ name: "payments", status: "active", latestRevision: 1, repositories: [], myRole: "maintainer", setup: { status: "failed", checkedAt: "2026-11-10T09:00:00.000Z" } }] } },
  "/v1/app/org/service-status": { status: 200, body: service },
+ "/v1/app/org/health-observations": { status: 200, body: { orgId, readAt: "2026-11-11T12:00:00.000Z", github: { checked: false }, slack: { checked: false }, modelSource: { checked: false }, modelUse: { checked: false } } },
  "/v1/app/projects/payments/lessons/sources": { status: 200, body: { sources: [{ kind: "slack", scope: "#dev", enabled: true, retention: "30d", health: "ok", audience: "project", updatedAt: "2026-11-10T00:00:00Z", paused: false }], otherPaused: 0 } },
  "/v1/app/org/approvals/pending-summary": { status: 200, body: { total: 2, approvals: [{ approvalId: "apr_aaaaaaaaaaaaaaaaaaaa", kind: "change", subjectKind: "org_guardrail", title: "Loosen the company's design review rules", proposedBy: "Maya", createdAt: "2026-11-10T10:00:00.000Z", confirmUrl: "https://cell.example/v1/app/approve/apr_aaaaaaaaaaaaaaaaaaaa" }], truncated: true } },
  "/v1/app/spend-requests": { status: 200, body: { spendRequests: [{ spendRequestId: "spr_aaaaaaaaaaaaaaaaaaaa", status: "PENDING", createdAt: "2026-11-10T11:00:00.000Z", kind: "month", amountUsd: 25 }] } },
@@ -230,7 +333,7 @@ function mount(options: { on?: boolean; role?: string; path?: string; override?:
  const role = options.role ?? "owner", data = nav(role);
  const identity = { developer: { id: me, name: "Priya", orgRole: role }, org: { orgId, name: "Acme", plan: "team" }, identities: [] };
  const all = { ...answers(), ...options.override };
- const f = fakeHost(async (r: ApiRequest) => { const path = r.path.split("?")[0]!;if (path === "/v1/app/me") return { status: 200, body: identity };if (path === "/v1/app/nav") return { status: 200, body: data };return all[path] ?? { status: 404, body: { error: { code: "NOT_FOUND" } } }; });
+ const f = fakeHost(async (r: ApiRequest) => { const path = r.path.split("?")[0]!;if (path === "/v1/app/me") return { status: 200, body: identity };if (path === "/v1/app/nav") return { status: 200, body: data };return (await all[path]) ?? { status: 404, body: { error: { code: "NOT_FOUND" } } }; });
  f.storage.set("rovara.theme", "light");if (options.on !== false) f.storage.set(HEALTH_STORAGE_KEY, "v2");
  const query = createQueryClient();query.setQueryData(["nav"], data);
  const router = createMemoryRouter(appRoutes(data.features), { initialEntries: [options.path ?? "/app/admin/health"] });
@@ -238,7 +341,7 @@ function mount(options: { on?: boolean; role?: string; path?: string; override?:
  return { ...f, ...view, query, router, close() { view.unmount();router.dispose();query.clear(); } };
 }
 const called = (f: ReturnType<typeof mount>, path: string) => f.request.mock.calls.filter(([r]) => r.path.split("?")[0] === path).length;
-const READ_PATHS = ["/v1/app/github/installations", "/v1/app/connections", "/v1/app/org/model-sources", "/v1/app/org/approvals/pending-summary", "/v1/app/spend-requests", "/v1/app/org/lessons/preset", "/v1/app/org/design-review", "/v1/app/projects/payments/lessons/sources"];
+const READ_PATHS = ["/v1/app/org/health-observations", "/v1/app/github/installations", "/v1/app/connections", "/v1/app/org/model-sources", "/v1/app/org/approvals/pending-summary", "/v1/app/spend-requests", "/v1/app/org/lessons/preset", "/v1/app/org/design-review", "/v1/app/projects/payments/lessons/sources"];
 
 describe("the Health page", () => {
  it("off: today's page, and none of the readiness reads are made", async () => {
@@ -285,6 +388,119 @@ describe("the Health page", () => {
  it("the runtime pages under Health are today's pages, switch on or off", async () => {
   const f = mount({ path: "/app/admin/health/runtime/web" });
   try { await screen.findByRole("heading", { name: "Rovara service status: browser runtime" });expect(screen.queryByRole("list", { name: "Readiness checks" })).toBeNull(); } finally { f.close(); }
+ });
+});
+
+describe("the Health page and overview with observations", () => {
+ afterEach(() => { vi.useRealTimers(); });
+ const pendingObservations = () => { let release!: (value: ApiResponse) => void;const answer = new Promise<ApiResponse>(resolve => { release = resolve; });return { answer, release }; };
+ // Times are relative to the real clock here: the screens read it themselves.
+ const live = (over: Record<string, unknown>): Answers => ({ "/v1/app/org/health-observations": { status: 200, body: { orgId, readAt: new Date().toISOString(), ...over } } });
+ const check = (secondsAgo: number, result = "ok") => ({ checked: true, checkedAt: new Date(Date.now() - secondsAgo * 1000).toISOString(), ageSeconds: secondsAgo, result });
+ const rowOf = (list: HTMLElement, title: string) => within(list).getByText(title).closest("li")!;
+ // The page reads the real clock, so only `Date` is held at a fixed instant (timers stay real for waitFor); one instant just after UTC midnight, one in the afternoon, so the test never depends on when it runs.
+ it.each([["00:20", "2026-11-11T00:20:00.000Z", "00:10"], ["15:40", "2026-11-11T15:40:00.000Z", "15:30"]] as const)("Health at %s UTC: a fresh passing check turns its row Healthy with 'Checked N minutes ago' and the absolute time in a tooltip; the backup model line sits under the model row; model ids stay under Details", async (_label, clock, lastAt) => {
+  vi.useFakeTimers({ toFake: ["Date"] });vi.setSystemTime(Date.parse(clock));
+  const use = { checked: true, windowHours: 24, usedMain: true, usedFallback: true, lastFallbackAt: new Date(Date.now() - 600_000).toISOString(), lastFallbackAgeSeconds: 600, lastFallbackReason: "DEFAULT_MODEL_UNAVAILABLE" };
+  const f = mount({ override: { ...live({ github: check(300), slack: check(120), modelSource: check(900), modelUse: use }), "/v1/app/org/model-sources": { status: 200, body: { sources: [{ sourceId: "src_a", kind: "anthropic", label: "Company Anthropic key", hasCredential: true, models: [{ catalog: { provider: "anthropic", modelId: "claude-secret-model-1" } }] }], order: ["rovara"] } } } });
+  try {
+   const list = await screen.findByRole("list", { name: "Readiness checks" });
+   await waitFor(() => expect(screen.getByRole("status").textContent).toMatch(/checks shown/));
+   for (const [title, words] of [["Code host: GitHub", "Checked 5 minutes ago"], ["Chat: Slack", "Checked 2 minutes ago"], ["AI models", "Checked 15 minutes ago"]] as const) {
+    const row = rowOf(list, title);
+    expect(row.getAttribute("data-status"), title).toBe("healthy");expect(within(row).getByText("Healthy")).toBeTruthy();expect(row.textContent).toMatch(words);
+    expect(within(row).getByText(words).closest("time")!.getAttribute("title")).toMatch(/UTC$/);
+   }
+   const models = rowOf(list, "AI models");
+   expect(models.textContent).toContain(`Rovara used a backup model in the last 24 hours (the main model was unavailable); last at ${lastAt} UTC.`);
+   expect(models.textContent).not.toMatch(/DEFAULT_MODEL_UNAVAILABLE/);
+   expect(models.querySelector("details")!.hasAttribute("open")).toBe(false);expect(models.querySelector("summary")!.textContent).toBe("Details");expect(models.querySelector("details")!.textContent).toMatch(/claude-secret-model-1/);
+   expect(screen.queryByText(/when each check last ran/)).toBeNull();
+   expect(f.request.mock.calls.every(([r]) => r.method === "GET")).toBe(true);
+   expect(f.request.mock.calls.some(([r]) => r.path === "/v1/app/org/health-observations?expectedOrgId=" + orgId)).toBe(true);
+   await expectNoAxeViolations(document.body);
+  } finally { f.close(); }
+ });
+ it("Health and overview agree: a failing check is Action needed on the page and an item with its fix link in What needs an admin, with the same count", async () => {
+  const override = live({ github: check(300), slack: check(60, "failed"), modelSource: { checked: false }, modelUse: { checked: false } });
+  const f = mount({ override });
+  try {
+   const list = await screen.findByRole("list", { name: "Readiness checks" });
+   await waitFor(() => expect(screen.getByRole("status").textContent).toMatch(/checks shown/));
+   const chat = rowOf(list, "Chat: Slack");expect(chat.getAttribute("data-status")).toBe("action");
+   expect(within(chat).getByRole("link", { name: "Open Slack connection" }).getAttribute("href")).toBe("/app/admin/connections?open=slack");
+   expect(screen.getByRole("group", { name: "Summary" }).textContent).toBe("Healthy3Action needed3Unknown3");
+  } finally { f.close(); }
+  const g = mount({ path: "/app/admin", override });
+  try {
+   const section = (await screen.findByRole("heading", { name: "What needs an admin" })).closest("section")!;
+   await waitFor(() => expect(within(section).getByText("Chat: Slack")).toBeTruthy());
+   const item = within(section).getByText("Chat: Slack").closest("li")!;
+   expect(item.textContent).toMatch(/Checked 1 minute ago/);expect(within(item).getByRole("link", { name: "Open Slack connection" }).getAttribute("href")).toBe("/app/admin/connections?open=slack");
+   const glance = (await screen.findByRole("heading", { name: "Health at a glance" })).closest("section")!;
+   await waitFor(() => expect(glance.textContent).toMatch(/3 action needed/));
+   expect(glance.textContent).toMatch(/3 healthy · 3 action needed · 3 unknown/);
+  } finally { g.close(); }
+ });
+ it("Health: with no observations for a feature, its row is Unknown and says never checked, not Healthy", async () => {
+  const f = mount();
+  try {
+   const list = await screen.findByRole("list", { name: "Readiness checks" });
+   await waitFor(() => expect(screen.getByRole("status").textContent).toMatch(/checks shown/));
+   for (const title of ["Code host: GitHub", "Chat: Slack", "AI models"]) { const row = rowOf(list, title);expect(row.getAttribute("data-status")).toBe("unknown");expect(row.textContent).toMatch(/Never checked/);expect(within(row).queryByText("Healthy")).toBeNull(); }
+  } finally { f.close(); }
+ });
+ it("Health: a 404, 403 or failed observations read keeps today's rows and says so for an owner; the overview names it as unread", async () => {
+  for (const status of [404, 403, 500]) {
+   const override: Answers = { "/v1/app/org/health-observations": { status, body: status === 404 ? { error: { code: "NOT_FOUND", message: "x" } } : {} } };
+   const f = mount({ override });
+   try {
+    const list = await screen.findByRole("list", { name: "Readiness checks" });
+    await waitFor(() => expect(screen.getByRole("status").textContent).toMatch(/checks shown/), { timeout: 10000 });
+    expect(screen.getByRole("note").textContent).toMatch(status === 404 ? /This install doesn't say when checks last ran/ : /Couldn't read when each check last ran/);
+    const code = rowOf(list, "Code host: GitHub");expect(code.getAttribute("data-status")).toBe("unknown");expect(code.textContent).toMatch(/Check time not recorded/);expect(within(code).queryByText("Healthy")).toBeNull();
+   } finally { f.close(); }
+   const g = mount({ path: "/app/admin", override });
+   try { await screen.findByText(/Couldn't read: .*when each check last ran/, undefined, { timeout: 10000 }); } finally { g.close(); }
+  }
+ });
+ it("Health: with the observations read still pending, every other row shows, the three rows it backs say Checking and the page notes them; then it fills in", async () => {
+  const { answer, release } = pendingObservations();
+  const f = mount({ override: { "/v1/app/org/health-observations": answer } });
+  try {
+   const list = await screen.findByRole("list", { name: "Readiness checks" });
+   await waitFor(() => expect(screen.getByRole("status").textContent).toMatch(/checks shown\..*3 still checking\./));
+   for (const title of ["Code host: GitHub", "Chat: Slack", "AI models"]) { const row = rowOf(list, title);expect(row.getAttribute("data-status"), title).toBe("checking");expect(within(row).getByText("Checking")).toBeTruthy(); }
+   expect(rowOf(list, "Tracker: Linear or Jira").getAttribute("data-status")).toBe("action");expect(rowOf(list, "Rovara service").getAttribute("data-status")).toBe("healthy");
+   expect(screen.getByText("3 still checking.")).toBeTruthy();
+   expect(screen.getByRole("group", { name: "Summary" }).textContent).toBe("Healthy2Action needed2Unknown23 still checking.");
+   // The pending read does not hold Check again's other rows: nothing says "Couldn't read" for it.
+   expect(screen.queryByRole("note")).toBeNull();
+   release(live({ github: check(300), slack: check(60), modelSource: { checked: false }, modelUse: { checked: false } })["/v1/app/org/health-observations"] as ApiResponse);
+   await waitFor(() => expect(rowOf(list, "Code host: GitHub").getAttribute("data-status")).toBe("healthy"));
+   expect(rowOf(list, "Chat: Slack").getAttribute("data-status")).toBe("healthy");expect(rowOf(list, "AI models").getAttribute("data-status")).toBe("unknown");
+   await waitFor(() => expect(screen.queryByText(/still checking/)).toBeNull());
+   expect(screen.getByRole("status").textContent).toMatch(/checks shown\. 4 healthy, 2 need action, 3 unknown\.$/);
+  } finally { f.close(); }
+ });
+ it("overview: the list and counts show while the observations read is pending, with 'N still checking' and no claim of 'nothing'; then they fill in", async () => {
+  const { answer, release } = pendingObservations();
+  const f = mount({ path: "/app/admin", override: { "/v1/app/org/health-observations": answer } });
+  try {
+   const section = (await screen.findByRole("heading", { name: "What needs an admin" })).closest("section")!;
+   await waitFor(() => expect(within(section).getByText("Tracker: Linear or Jira")).toBeTruthy());
+   expect(within(section).getByText(/3 still checking: more may be listed/)).toBeTruthy();expect(within(section).queryByText(/Nothing needs an admin right now/)).toBeNull();expect(section.textContent).not.toMatch(/Couldn't read/);
+   const glance = (await screen.findByRole("heading", { name: "Health at a glance" })).closest("section")!;
+   await waitFor(() => expect(glance.textContent).toMatch(/2 healthy · 2 action needed · 2 unknown · 3 still checking\./));
+   release(live({ github: check(300), slack: check(60, "failed"), modelSource: { checked: false } })["/v1/app/org/health-observations"] as ApiResponse);
+   await waitFor(() => expect(within(section).getByText("Chat: Slack")).toBeTruthy());
+   await waitFor(() => expect(glance.textContent).toMatch(/3 healthy · 3 action needed · 3 unknown\./));
+   expect(glance.textContent).not.toMatch(/still checking/);expect(section.textContent).not.toMatch(/still checking/);
+  } finally { f.close(); }
+ });
+ it("off: the observations read is never made", async () => {
+  const f = mount({ on: false, path: "/app/admin" });
+  try { await screen.findByRole("heading", { name: "Company settings" });expect(called(f, "/v1/app/org/health-observations")).toBe(0); } finally { f.close(); }
  });
 });
 

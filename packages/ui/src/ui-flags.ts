@@ -12,6 +12,8 @@ import { useOptionalAppHost } from "./host.js";
  *   server `preview`   off for the company, but the company allows previews: this device's own switch (the per-device storage key, value "v2") turns it on for THIS DEVICE ONLY.
  *   server `off`       off. The device switch does nothing (no previews allowed, or the operator forced it off). A flag the answer does not name is off too.
  *   no answer          (an older broker, a page with no navigation, a test with a bare host) the device switch decides, as it did before runtime flags existed.
+ *   waiting            the app has asked for the navigation answer and it has not come yet, or the read failed (`holdUiFlagsUntilNav`, called by `App`): everything is off, the same as the server's rule for a failed read (fail closed).
+ *                      The device switch does not decide until an answer arrives. A person whose device key is on may therefore see the default look for a moment on a cold load, then the new look.
  * Layout flags are read when a screen mounts (or once when the route table is built), so a change reaches a person on their next page load; the look follows the answer at once.
  */
 export interface UiFlagsStorageHost { storage: { get(key: string): string | undefined } }
@@ -23,6 +25,12 @@ export interface UiFlagsStore {
   /** The server's answer, or undefined while there is none. */
   get: () => Answer | undefined;
   set: (next: unknown) => void;
+  /** True from `holdUiFlagsUntilNav` until the first navigation answer is applied (even one with no `uiFlags`). */
+  waiting: () => boolean;
+  hold: () => void;
+  /** True once `App` has told the store how this page starts (`startUiFlags`); nothing renders before that. */
+  started: () => boolean;
+  start: (wait: boolean) => void;
   subscribe: (listener: () => void) => () => void;
 }
 
@@ -38,16 +46,22 @@ function answerOf(raw: unknown): Answer | undefined {
 }
 
 function createStore(): UiFlagsStore {
-  let answer: Answer | undefined;
+  let answer: Answer | undefined, waiting = false, started = false;
   const listeners = new Set<() => void>();
+  const tell = () => { for (const listener of [...listeners]) listener(); };
   return {
     get: () => answer,
+    waiting: () => waiting,
+    hold() { if (waiting || answer !== undefined) return;waiting = true;tell(); },
+    started: () => started,
+    start(wait) { if (started) return;started = true;if (wait && answer === undefined) waiting = true;tell(); },
     set(next) {
-      const parsed = answerOf(next);
-      if (parsed === undefined && answer === undefined) return;
-      if (parsed !== undefined && answer !== undefined && UI_FLAG_NAMES.every(name => parsed[name] === answer![name])) return;
+      const parsed = answerOf(next), wasWaiting = waiting;
+      waiting = false;
+      if (parsed === undefined && answer === undefined) { if (wasWaiting) tell();return; }
+      if (parsed !== undefined && answer !== undefined && UI_FLAG_NAMES.every(name => parsed[name] === answer![name])) { if (wasWaiting) tell();return; }
       answer = parsed;
-      for (const listener of [...listeners]) listener();
+      tell();
     },
     subscribe(listener) { listeners.add(listener);return () => { listeners.delete(listener); }; },
   };
@@ -67,6 +81,11 @@ export function uiFlagServerState(host: object, name: UiFlagName): UiFlagState |
   return answer === undefined ? undefined : answer[name] ?? "off";
 }
 
+/** Whether the app is still waiting for its first navigation answer (or that read failed): every flag is off meanwhile. False for a host that never called `holdUiFlagsUntilNav`. */
+export function uiFlagsWaiting(host: object): boolean {
+  return stores.get(host)?.waiting() ?? false;
+}
+
 /** The rule above, given the server's state and whether this device's switch is on. */
 export function uiFlagResolve(server: UiFlagState | undefined, deviceOn: boolean): boolean {
   if (server === "on") return true;
@@ -79,6 +98,7 @@ export function uiFlagOn(host: UiFlagsStorageHost, name: UiFlagName, localKey: s
   const server = uiFlagServerState(host, name);
   if (server === "on") return true;
   if (server === "off") return false;
+  if (server === undefined && uiFlagsWaiting(host)) return false;
   try { return host.storage.get(localKey) === UI_FLAG_DEVICE_VALUE; } catch { return false; }
 }
 
@@ -92,6 +112,22 @@ export function useUiFlagServerState(name: UiFlagName): UiFlagState | undefined 
   );
 }
 const noSubscribe = (): (() => void) => () => undefined;
+
+/** `App` calls it from an effect, before it renders anything below it: `wait` is true on a page that reads the navigation answer, and then every flag is off (as `holdUiFlagsUntilNav`) until the answer comes; false on a page with no navigation read, which keeps the device keys. */
+export function startUiFlags(host: object, wait: boolean): void {
+  uiFlagsStoreOf(host).start(wait);
+}
+
+/** Whether `startUiFlags` has run for this host. `App` renders nothing until it has, so no screen reads a flag before the hold is in place. */
+export function useUiFlagsStarted(host: object): boolean {
+  const store = uiFlagsStoreOf(host);
+  return useSyncExternalStore(store.subscribe, store.started, () => false);
+}
+
+/** The hold on its own: until `applyNavUiFlags` runs (or for good, if the navigation read fails) every flag is off, the look included. `App` uses `startUiFlags`, which also decides whether to hold. */
+export function holdUiFlagsUntilNav(host: object): void {
+  uiFlagsStoreOf(host).hold();
+}
 
 /** Puts a navigation answer's `uiFlags` into the host's store at once. `Startup` calls it before it reads the layout flags that build the route table. */
 export function applyNavUiFlags(host: object, nav: unknown): void {
