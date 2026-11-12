@@ -1,4 +1,5 @@
 import {taskFallbackAuthorizer} from "./model-fallback-authority.js";
+import { privateAddressFacts, privateAddressHostArgs } from "./private-address-hosts.js";
 import type { WorkerInvocation } from "@agentx/cloud-contracts";
 import { CONTAINED_RUNTIME_PROFILE, inspectContainedRuntimeReadiness, type ContainedRuntimeReadiness } from "@agentx/verifier";
 import { OperationJournal } from "./journal.js";
@@ -69,6 +70,9 @@ if (taskShellSelection().kind === "sandbox") {
   );
   // Test services (TS-RN-3 rule 3): a killed worker's run networks and helpers (labelled, this workspace's only) go before any task starts, and the catalog images are pulled ahead. Does nothing on a worker with no test services configuration.
   await testServicesAtWorkerBoot({ rootPath });
+  // Owner decision 123: what the host's internal-address step opened at this start (counts only), for the operator.
+  const privateAddresses = privateAddressFacts();
+  if (privateAddresses !== undefined) console.log(JSON.stringify({ component: "worker", event: "private-addresses.boot_facts", ...privateAddresses, pinnedHosts: privateAddressHostArgs().length / 2 }));
   // The empty volumes a dev container's start mounted over the worker's folders go with their container; any no container uses are removed.
   await removeLeftoverMaskVolumes().then(
     (removed) => { if (removed > 0) console.log(JSON.stringify({ component: "worker", event: "mask-volumes.leftovers.removed", removed })); },

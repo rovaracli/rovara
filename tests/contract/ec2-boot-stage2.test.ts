@@ -53,6 +53,7 @@ const TEST_SERVICES_RUN_DIR_VOLUME = /^if \[\[ "\$test_services_run_dir" == true
 const SETUP_ISOLATION_ARGUMENT_WITH_COMMENT = /^# Setup runs need[^\n]*\nif named_environment; then args\+=\(--env "AGENTX_SETUP_ISOLATION=[^\n]*\n/mu;
 // Owner decision 123 (named environments only): the launcher opens the company's approved internal addresses before the worker starts (tests/contract/private-address-wall.test.ts).
 const PRIVATE_ALLOW_WITH_COMMENT = /^# Owner decision 123: open the company's approved internal addresses[^\n]*\nif named_environment && \[\[ -f \/usr\/local\/libexec\/rovara-private-allow \]\]; then[^\n]*\n/mu;
+const PRIVATE_ALLOW_ENVIRONMENT_WITH_COMMENT = /^# Owner decision 123: the pinned name=address pairs[^\n]*\nif named_environment; then for pair in "AGENTX_PRIVATE_ADDRESS_HOSTS:[^\n]*\n/mu;
 
 describe("boot-legacy.sh", () => {
   it("is boot.sh as it was at the branch base, byte for byte", () => {
@@ -112,7 +113,7 @@ describe("boot.sh (stage 1) and boot-stage2.sh", () => {
     const moved = legacy.slice(legacy.indexOf(firstMoved), mainStart + 1).trimEnd();
     // Named exceptions: `block_imds` (the launcher's firewall step, run only for a named environment, never by a legacy worker) may differ, because a setup run's network rules sit in it; and, since 2026-11-03, the reader of the
     // setup-isolation state file and the one line that hands its content to the worker (both named-environment only). Everything else is verbatim.
-    const withoutSetupIsolation = (text: string) => text.replace(BLOCK_IMDS_WITH_COMMENT, "").replace(SETUP_ISOLATION_STATE_WITH_COMMENT, "").replace(SETUP_ISOLATION_ARGUMENT_WITH_COMMENT, "").replace(TEST_SERVICES_RUN_DIR_BLOCK, "").replace(TEST_SERVICES_RUN_DIR_VOLUME, "").replace(PRIVATE_ALLOW_WITH_COMMENT, "");
+    const withoutSetupIsolation = (text: string) => text.replace(BLOCK_IMDS_WITH_COMMENT, "").replace(SETUP_ISOLATION_STATE_WITH_COMMENT, "").replace(SETUP_ISOLATION_ARGUMENT_WITH_COMMENT, "").replace(TEST_SERVICES_RUN_DIR_BLOCK, "").replace(TEST_SERVICES_RUN_DIR_VOLUME, "").replace(PRIVATE_ALLOW_WITH_COMMENT, "").replace(PRIVATE_ALLOW_ENVIRONMENT_WITH_COMMENT, "");
     expect(withoutSetupIsolation(stage2)).toContain(`\n${withoutSetupIsolation(moved)}\n`);
     for (const name of MOVED_FUNCTIONS) {
       expect(stage1, `${name} left boot.sh`).not.toContain(`\n${name}() {`);

@@ -171,3 +171,62 @@ describe("idle reaper", () => {
     expect(sessionOf(db, workspaceId)).toMatchObject({ state: "STOPPING" });
   });
 });
+
+// Owner decision 128: a company that removed an internal address has its workers launched before the removal recycled at once, busy or not; other companies' and newer workers are left alone.
+describe("recycling after an internal address removal", () => {
+  const ORG_A = `org_${"a".repeat(20)}`, ORG_B = `org_${"b".repeat(20)}`;
+  function withOrgs(marks: Map<string, number> | (() => Promise<Map<string, number>>), orgs: Map<string, string>, extra: Partial<ReaperDependencies> = {}) {
+    const log = vi.fn<(entry: Record<string, unknown>) => void>();
+    const t = setup({ privateAddressRecycle: { marks: typeof marks === "function" ? marks : async () => marks, workspaceOrg: async (id) => orgs.get(id) }, log, ...extra });
+    return { ...t, log };
+  }
+  const removedMinutesAgo = (minutes: number) => NOW.getTime() - minutes * 60_000;
+
+  it("stops an idle worker and terminates a busy one under its task, both launched before the removal; leaves the other company and a newer worker", async () => {
+    const orgs = new Map<string, string>();
+    const t = withOrgs(new Map([[ORG_A, removedMinutesAgo(1)]]), orgs);
+    const idle = seedReady(t.db, { idleMinutes: 0, launchedMinutesAgo: 30 });
+    const busy = seedReady(t.db, { idleMinutes: 0, launchedMinutesAgo: 30, activeOperationId: "op-1" });
+    const other = seedReady(t.db, { idleMinutes: 0, launchedMinutesAgo: 30 });
+    const newer = seedReady(t.db, { idleMinutes: 0, launchedMinutesAgo: -5 });
+    for (const id of [idle, busy, newer]) orgs.set(id, ORG_A);
+    orgs.set(other, ORG_B);
+    const report = await t.reap();
+    expect(new Set(report.privateAddressRecycled)).toEqual(new Set([idle, busy]));
+    expect(report.claimed).toEqual([idle]);
+    expect(t.terminate).toHaveBeenCalledTimes(2);
+    expect((await t.sessions.get(idle))?.state).toBe("STOPPING");
+    // The busy one stays READY with its instance gone: the reconciler marks the compute lost and fails the task's operation ("compute was lost; retry").
+    expect((await t.sessions.get(busy))?.state).toBe("READY");
+    expect((await t.sessions.get(other))?.state).toBe("READY");
+    expect((await t.sessions.get(newer))?.state).toBe("READY");
+    expect(t.log).toHaveBeenCalledWith(expect.objectContaining({ event: "session.private_address_recycle_interrupted", workspaceId: busy }));
+    expect(t.emit).toHaveBeenCalledWith(expect.objectContaining({ SessionsPrivateAddressRecycled: 2 }));
+  });
+
+  it("recycles a worker launched just after the removal too (it may have read the list before it), but not one well after", async () => {
+    const orgs = new Map<string, string>();
+    const t = withOrgs(new Map([[ORG_A, removedMinutesAgo(10)]]), orgs);
+    const racing = seedReady(t.db, { idleMinutes: 0, launchedMinutesAgo: 9 });
+    const later = seedReady(t.db, { idleMinutes: 0, launchedMinutesAgo: 5 });
+    orgs.set(racing, ORG_A); orgs.set(later, ORG_A);
+    expect((await t.reap()).privateAddressRecycled).toEqual([racing]);
+  });
+
+  it("recycles nothing, loudly, when the marks cannot be read, and the idle reaping goes on", async () => {
+    const t = withOrgs(async () => { throw Object.assign(new Error("down"), { name: "ProvisionedThroughputExceededException" }); }, new Map());
+    const idle = seedReady(t.db, { idleMinutes: 30 });
+    const report = await t.reap();
+    expect(report.privateAddressRecycled).toEqual([]);
+    expect(report.claimed).toEqual([idle]);
+    expect(t.log).toHaveBeenCalledWith(expect.objectContaining({ event: "session.private_address_recycle_unreadable", level: "error" }));
+  });
+
+  it("reads no workspace when no company has a mark", async () => {
+    const workspaceOrg = vi.fn(async () => ORG_A);
+    const t = setup({ privateAddressRecycle: { marks: async () => new Map(), workspaceOrg } });
+    seedReady(t.db, { idleMinutes: 0 });
+    await t.reap();
+    expect(workspaceOrg).not.toHaveBeenCalled();
+  });
+});

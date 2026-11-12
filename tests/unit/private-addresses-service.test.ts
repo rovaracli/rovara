@@ -1,11 +1,12 @@
 // Owner decision 123: the company's internal address list. Adding needs a DIFFERENT owner or admin (no sole-owner exception); removing applies at once; every change is audited with safe facts only (counts, the
 // revision, a digest), the hosts in the sealed details; one company's list and proposals are never another's.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { AuditEventInputSchema, privateAddressListDigest, type AuditEventInput } from "@agentx/cloud-contracts";
 import {
   approvePrivateAddresses, openPrivateAddressChange, proposePrivateAddresses, readPrivateAddresses, withdrawPrivateAddresses, type PrivateAddressDeps,
 } from "../../packages/broker/src/org/private-addresses.js";
 import { launchPrivateAddresses } from "../../packages/broker/src/aws/private-address-launch.js";
+import { onAllowedWebsites } from "../../packages/broker/src/aws/developer-routes/private-addresses.js";
 import type { Tier0Authority } from "../../packages/broker/src/lessons/sole-owner-switch.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 
@@ -190,5 +191,80 @@ describe("company isolation", () => {
     expect(await launchPrivateAddresses(t.deps, wsCopy, INSTALL)).toEqual([]);
     // An entry that a tightened install now refuses is left out at launch.
     expect(await launchPrivateAddresses(t.deps, wsA, { vpcCidrs: ["10.20.0.0/16"], serviceHosts: [] })).toEqual([]);
+  });
+});
+
+describe("closing access at once (owner decision 128)", () => {
+  const mark = (t: ReturnType<typeof bench>, org: string) => [...t.db.items.values()].find((item) => (item as { pk?: string; sk?: string }).pk === "PRIVATEADDR#RECYCLE" && (item as { sk?: string }).sk === org);
+  it("leaves a recycle mark for the company with a removal, in the same transaction, and none for an addition", async () => {
+    const t = bench();
+    await proposePrivateAddresses(t.deps, { orgId: ORG_A, actorId: A, expectedRevision: 0, entries: ["10.20.0.15:443", "10.20.0.16:443"] });
+    await approvePrivateAddresses(t.deps, { orgId: ORG_A, approverId: B, changeId: "change-1", expectedDigest: privateAddressListDigest(["10.20.0.15:443", "10.20.0.16:443"]) });
+    expect(mark(t, ORG_A)).toBeUndefined();
+    t.clock.now += 60_000;
+    await proposePrivateAddresses(t.deps, { orgId: ORG_A, actorId: A, expectedRevision: 1, entries: ["10.20.0.16:443"] });
+    expect(mark(t, ORG_A)).toMatchObject({ orgId: ORG_A, removedAt: t.clock.now, entityType: "PRIVATE_ADDRESS_RECYCLE" });
+    expect((mark(t, ORG_A) as { indexExpiresAt?: number }).indexExpiresAt).toBe(Math.floor(t.clock.now / 1000) + 15 * 86_400);
+    expect(mark(t, ORG_B)).toBeUndefined();
+    // A failed removal (stale revision) leaves no newer mark.
+    const before = (mark(t, ORG_A) as { removedAt: number }).removedAt;
+    t.clock.now += 60_000;
+    expect(await code(proposePrivateAddresses(t.deps, { orgId: ORG_A, actorId: A, expectedRevision: 1, entries: [] }))).toBe("CHANGE_STALE");
+    expect((mark(t, ORG_A) as { removedAt: number }).removedAt).toBe(before);
+  });
+
+  it("an approved list that also removes something recycles too", async () => {
+    const t = bench();
+    await proposePrivateAddresses(t.deps, { orgId: ORG_A, actorId: A, expectedRevision: 0, entries: ["10.20.0.15:443"] });
+    await approvePrivateAddresses(t.deps, { orgId: ORG_A, approverId: B, changeId: "change-1", expectedDigest: privateAddressListDigest(["10.20.0.15:443"]) });
+    await proposePrivateAddresses(t.deps, { orgId: ORG_A, actorId: A, expectedRevision: 1, entries: ["10.20.0.16:443"] });
+    expect(mark(t, ORG_A)).toBeUndefined();
+    await approvePrivateAddresses(t.deps, { orgId: ORG_A, approverId: B, changeId: "change-2", expectedDigest: privateAddressListDigest(["10.20.0.16:443"]) });
+    expect(mark(t, ORG_A)).toMatchObject({ orgId: ORG_A });
+  });
+
+  it("gives every proposal row a TTL 30 days after it expires", async () => {
+    const t = bench();
+    await proposePrivateAddresses(t.deps, { orgId: ORG_A, actorId: A, expectedRevision: 0, entries: ["10.20.0.15:443"] });
+    const row = [...t.db.items.values()].find((item) => (item as { entityType?: string }).entityType === "PRIVATE_ADDRESS_CHANGE") as { expiresAt: number; indexExpiresAt: number };
+    expect(row.indexExpiresAt).toBe(Math.floor(row.expiresAt / 1000) + 30 * 86_400);
+  });
+});
+
+describe("a stored list that does not parse (review L5)", () => {
+  it("fails that company's launch with clear words, logged loudly, while another company's launch goes on; any save replaces it and recycles", async () => {
+    const t = bench({ eligible: [A, B, C, D] });
+    t.db.set({ pk: `ORG#${ORG_A}`, sk: "PRIVATEADDR#LIST", entityType: "PRIVATE_ADDRESS_LIST", entries: "10.20.0.15:443", revision: 3 });
+    const wsA = "11111111-1111-4111-8111-111111111111", wsB = "22222222-2222-4222-8222-222222222222";
+    t.db.set({ pk: `WORKSPACE#${wsA}`, sk: "META", id: wsA, orgId: ORG_A });
+    t.db.set({ pk: `WORKSPACE#${wsB}`, sk: "META", id: wsB, orgId: ORG_B });
+    const logged: string[] = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((line: unknown) => { logged.push(String(line)); });
+    try {
+      await expect(launchPrivateAddresses(t.deps, wsA, INSTALL)).rejects.toThrow("stored in a form Rovara can't read");
+      expect(logged.some((line) => line.includes("private_addresses.list_unreadable") && line.includes(ORG_A))).toBe(true);
+    } finally { spy.mockRestore(); }
+    expect(await launchPrivateAddresses(t.deps, wsB, INSTALL)).toEqual([]);
+    // Saving the empty list replaces it at once (one admin), and recycles the company's workers.
+    expect(await proposePrivateAddresses(t.deps, { orgId: ORG_A, actorId: A, expectedRevision: 3, entries: [] })).toMatchObject({ status: "applied", list: { revision: 4, entries: [] } });
+    expect(await launchPrivateAddresses(t.deps, wsA, INSTALL)).toEqual([]);
+    expect([...t.db.items.values()].some((item) => (item as { pk?: string; sk?: string }).pk === "PRIVATEADDR#RECYCLE" && (item as { sk?: string }).sk === ORG_A)).toBe(true);
+  });
+
+  it("a corrupt row with no readable revision is replaced by a proposal a second admin approves", async () => {
+    const t = bench();
+    t.db.set({ pk: `ORG#${ORG_A}`, sk: "PRIVATEADDR#LIST", entityType: "PRIVATE_ADDRESS_LIST", entries: ["10.20.0.15:443"], revision: "x" });
+    expect(await proposePrivateAddresses(t.deps, { orgId: ORG_A, actorId: A, expectedRevision: 0, entries: ["10.20.0.16:443"] })).toEqual({ status: "needs_approval", changeId: "change-1" });
+    expect(await approvePrivateAddresses(t.deps, { orgId: ORG_A, approverId: B, changeId: "change-1", expectedDigest: privateAddressListDigest(["10.20.0.16:443"]) })).toMatchObject({ revision: 1, entries: ["10.20.0.16:443"] });
+  });
+});
+
+describe("the allowed-websites warning's match", () => {
+  it("matches an exact entry or a wildcard it falls under, and nothing else", () => {
+    expect(onAllowedWebsites("nexus.corp.example", ["nexus.corp.example"])).toBe(true);
+    expect(onAllowedWebsites("nexus.corp.example", ["*.corp.example"])).toBe(true);
+    expect(onAllowedWebsites("corp.example", ["*.corp.example"])).toBe(false);
+    expect(onAllowedWebsites("evilcorp.example", ["*.corp.example"])).toBe(false);
+    expect(onAllowedWebsites("nexus.corp.example", ["corp.example"])).toBe(false);
   });
 });

@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { GetPublicKeyCommand, KMSClient } from "@aws-sdk/client-kms";
-import { GetParametersCommand, SSMClient } from "@aws-sdk/client-ssm";
+import { GetParameterCommand, GetParametersCommand, SSMClient } from "@aws-sdk/client-ssm";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
 import { MODEL_PROXY_URL_PARAMETER, WORKER_FEATURES_MAX, WORKER_FEATURE_MAX_CHARS, WORKER_PING_FEATURES_FIELD, agentXError, getParametersInBatches } from "@rovara-code/contracts";
@@ -71,7 +71,12 @@ export interface SessionStepsDependencies {
    * worker never boots with a list it was not meant to have, nor silently without the one it was.
    */
   privateAddresses?: (workspaceId: string) => Promise<string[]>;
+  /** Review L4: the operator's install-wide kill switch. True: every launch carries no list (and the list is not read). Absent or false: lists apply. */
+  privateAddressesOff?: () => Promise<boolean>;
 }
+
+/** The SSM parameter (under the worker settings prefix) that turns every company's internal address list off at launch. */
+export const PRIVATE_ADDRESSES_OFF_PARAMETER = "private-addresses-off";
 
 /** The body of the worker's /ping, or of a failed boot's report in its place. */
 export interface WorkerPing {
@@ -127,6 +132,12 @@ export async function pingWorker(url: string, timeoutMs = PING_TIMEOUT_MS): Prom
   };
 }
 
+/** The list a launch carries: none while the operator's kill switch is on. */
+async function launchListOf(dependencies: SessionStepsDependencies, workspaceId: string): Promise<string[]> {
+  if (await dependencies.privateAddressesOff?.()) return [];
+  return dependencies.privateAddresses!(workspaceId);
+}
+
 export function createSessionStepsHandler(dependencies: SessionStepsDependencies) {
   return async (event: unknown): Promise<unknown> => {
     const step = SessionStepSchema.parse(event);
@@ -135,7 +146,7 @@ export function createSessionStepsHandler(dependencies: SessionStepsDependencies
         const [settings, invokePublicKey, privateAddresses] = await Promise.all([
           dependencies.workerSettings(), dependencies.invokePublicKey(),
           // Only a named environment's stage 2 applies the list; the legacy boot never reads it, so its launch never reads or carries one.
-          dependencies.modelProxyRequired && dependencies.privateAddresses !== undefined ? dependencies.privateAddresses(step.workspaceId) : Promise.resolve([]),
+          dependencies.modelProxyRequired && dependencies.privateAddresses !== undefined ? launchListOf(dependencies, step.workspaceId) : Promise.resolve([]),
         ]);
         if (dependencies.modelProxyRequired && !settings.modelProxyUrl) {
           throw new Error(`The model proxy URL is missing: this environment's workers have no provider keys or Bedrock access, and the SSM parameter ${MODEL_PROXY_URL_PARAMETER} is not set. Deploy the control plane's model proxy first.`);
@@ -248,4 +259,17 @@ export const handler = createSessionStepsHandler({
   logGroupName: process.env.WORKER_LOG_GROUP_NAME ?? "",
   ping: (url) => pingWorker(url),
   privateAddresses: (workspaceId) => launchPrivateAddresses({ documentClient: stateClient, tableName: stateTableName }, workspaceId, privateAddressInstallOf()),
+  async privateAddressesOff() {
+    // Unset (ParameterNotFound): lists apply. `true`: off. Any other answer, or a read that fails, is treated as off (fail closed: a worker boots with nothing opened rather than with a list the operator may have turned off).
+    try {
+      const value = (await ssm.send(new GetParameterCommand({ Name: `${requiredEnvironment("WORKER_SETTINGS_PREFIX")}${PRIVATE_ADDRESSES_OFF_PARAMETER}` }))).Parameter?.Value;
+      if (value === "false") return false;
+      if (value !== "true") console.error(JSON.stringify({ component: "session-steps", event: "private_addresses.kill_switch_unreadable", level: "error", reason: "value" }));
+      return true;
+    } catch (error) {
+      if (error instanceof Error && error.name === "ParameterNotFound") return false;
+      console.error(JSON.stringify({ component: "session-steps", event: "private_addresses.kill_switch_unreadable", level: "error", errorName: error instanceof Error ? error.name : "unknown" }));
+      return true;
+    }
+  },
 });

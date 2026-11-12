@@ -5,7 +5,7 @@ import {
   type PrivateAddressInstall,
 } from "@agentx/cloud-contracts";
 import { AGENTX_PRODUCTION_VPC_CIDR } from "../../infra/lib/production-foundation.js";
-import { INSTALL_VPC_CIDR_DEFAULT, privateAddressInstallOf } from "../../packages/broker/src/org/private-address-install.js";
+import { INSTALL_VPC_CIDR_DEFAULT, privateAddressInstallOf, privateAddressRouteInstallOf } from "../../packages/broker/src/org/private-address-install.js";
 
 const INSTALL: PrivateAddressInstall = { vpcCidrs: ["10.42.0.0/16"], serviceHosts: ["internal-rovara-proxy-123.us-east-1.elb.amazonaws.com", "api.rovara.example"] };
 const refusal = (text: string) => { const checked = checkPrivateAddress(text, INSTALL); return checked.ok ? "ok" : checked.refusal; };
@@ -14,7 +14,7 @@ describe("an entry", () => {
   it("is one host and one port, a name or a plain IPv4 private address, kept in one lower-case form", () => {
     expect(checkPrivateAddress("Nexus.Corp.Example:8081", INSTALL)).toEqual({ ok: true, entry: "nexus.corp.example:8081", host: "nexus.corp.example", port: 8081, kind: "name" });
     expect(checkPrivateAddress(" 10.20.0.15:443 ", INSTALL)).toEqual({ ok: true, entry: "10.20.0.15:443", host: "10.20.0.15", port: 443, kind: "ip" });
-    for (const ok of ["172.16.4.5:8081", "100.64.1.2:80", "artifactory.internal.example:443", "vpce-0abc-1234.codeartifact.us-east-1.vpce.amazonaws.com:443", "a-b.c:1", "x.y:65535"]) expect(refusal(ok), ok).toBe("ok");
+    for (const ok of ["172.16.4.5:8081", "172.31.0.9:443", "100.64.1.2:80", "artifactory.internal.example:443", "vpce-0abc-1234.codeartifact.us-east-1.vpce.amazonaws.com:443", "a-b.c:1", "x.y:65535"]) expect(refusal(ok), ok).toBe("ok");
   });
 
   it("refuses wildcards anywhere", () => {
@@ -57,7 +57,7 @@ describe("an entry", () => {
 
   it("refuses public addresses (they need no entry) and the worker's own container ranges", () => {
     for (const text of ["8.8.8.8:53", "52.1.2.3:443", "224.0.0.1:80", "255.255.255.255:80"]) expect(refusal(text), text).toBe("not_private");
-    for (const text of ["172.17.0.1:80", "172.18.0.5:80", "172.22.1.1:80", "172.29.0.2:53", "172.30.0.1:80", "172.31.0.9:443", "192.168.1.10:443"]) expect(refusal(text), text).toBe("worker_network");
+    for (const text of ["172.17.0.1:80", "172.18.0.5:80", "172.22.1.1:80", "172.29.0.2:53", "172.30.0.1:80", "192.168.1.10:443"]) expect(refusal(text), text).toBe("worker_network");
   });
 
   it("refuses the install's own network and the names of its own services", () => {
@@ -65,6 +65,23 @@ describe("an entry", () => {
     for (const text of ["internal-rovara-proxy-123.us-east-1.elb.amazonaws.com:4000", "API.rovara.example:443", "ip-10-42-1-2.ec2.internal:22", "ip-10-1-2-3.us-west-2.compute.internal:80"]) expect(refusal(text), text).toBe("install_service");
     // Another install's network is just a private range.
     expect(checkPrivateAddress("10.42.0.2:53", { vpcCidrs: ["10.50.0.0/16"], serviceHosts: [] }).ok).toBe(true);
+  });
+
+  it("at the route, refuses ranges other settings own, addresses outside the routed ranges and ports the workers may not open (review H1, M2)", () => {
+    const route: PrivateAddressInstall = { ...INSTALL, reservedCidrs: ["10.70.0.0/16", "10.71.4.0/24"], routedCidrs: ["10.20.0.0/16", "10.70.0.0/15", "172.31.0.0/16"], openPorts: [443, 8081] };
+    const at = (text: string) => { const checked = checkPrivateAddress(text, route); return checked.ok ? "ok" : checked.refusal; };
+    expect(at("10.20.0.15:443")).toBe("ok");
+    expect(at("10.20.0.15:8081")).toBe("ok");
+    expect(at("172.31.4.4:8081")).toBe("ok");
+    expect(at("nexus.corp.example:8081")).toBe("ok");
+    expect(at("10.70.1.1:443")).toBe("reserved_range");
+    expect(at("10.71.4.9:443")).toBe("reserved_range");
+    expect(at("10.30.0.1:443")).toBe("not_routed");
+    expect(at("10.20.0.15:8082")).toBe("port_not_open");
+    expect(at("nexus.corp.example:22")).toBe("port_not_open");
+    // The never-listed classes still come first.
+    expect(at("169.254.169.254:443")).toBe("metadata");
+    expect(at("10.42.0.2:443")).toBe("install_network");
   });
 
   it("refuses an empty or over-long entry", () => {
@@ -117,5 +134,14 @@ describe("the install the broker knows", () => {
     expect(privateAddressInstallOf({ ROVARA_VPC_CIDRS: "10.1.0.0/16, 10.2.0.0/16", MODEL_PROXY_URL: "http://Internal-X.us-east-1.elb.amazonaws.com:4000", CONTROL_PLANE_URL: "https://api.example.com/v1" }))
       .toEqual({ vpcCidrs: ["10.1.0.0/16", "10.2.0.0/16"], serviceHosts: ["internal-x.us-east-1.elb.amazonaws.com", "api.example.com"] });
     expect(ipv4Number("10.42.0.2")).toBe(0x0a2a0002);
+  });
+
+  it("offers the setting only with routed private ranges, with 443 always open and the reserved ranges of private MCP and model endpoints", () => {
+    expect(privateAddressRouteInstallOf({})).toBeUndefined();
+    expect(privateAddressRouteInstallOf({ ROVARA_PRIVATE_ADDRESS_PORTS: "443,8081" })).toBeUndefined();
+    expect(privateAddressRouteInstallOf({ ROVARA_PRIVATE_ADDRESS_CIDRS: "10.20.0.0/16", ROVARA_PRIVATE_ADDRESS_PORTS: "8081,443", ROVARA_PRIVATE_MCP_CIDRS: "10.70.0.0/16", ROVARA_MODEL_ENDPOINT_CIDRS: "10.71.0.0/16" }))
+      .toEqual({ vpcCidrs: [AGENTX_PRODUCTION_VPC_CIDR], serviceHosts: [], reservedCidrs: ["10.70.0.0/16", "10.71.0.0/16"], routedCidrs: ["10.20.0.0/16"], openPorts: [443, 8081] });
+    // A port list that does not parse opens 443 only.
+    expect(privateAddressRouteInstallOf({ ROVARA_PRIVATE_ADDRESS_CIDRS: "10.20.0.0/16", ROVARA_PRIVATE_ADDRESS_PORTS: "8081,x" })?.openPorts).toEqual([443]);
   });
 });

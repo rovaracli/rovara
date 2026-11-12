@@ -111,6 +111,16 @@ describe("session steps", () => {
       await expect(launch(failing.handler)).rejects.toThrow("state table down");
     });
 
+    // Review L4: the operator's kill switch makes every launch carry no list, and the list is not even read.
+    it("carries no internal address list while the operator's kill switch is on", async () => {
+      const read = vi.fn(async () => ["10.20.0.15:443"]);
+      const off = setup(undefined, { modelProxyRequired: true, privateAddresses: read, privateAddressesOff: async () => true }, named(proxyUrl));
+      expect(gunzipSync(Buffer.from((await launch(off.handler)).userData, "base64")).toString("utf8")).not.toContain("AGENTX_PRIVATE_ADDRESSES=");
+      expect(read).not.toHaveBeenCalled();
+      const on = setup(undefined, { modelProxyRequired: true, privateAddresses: read, privateAddressesOff: async () => false }, named(proxyUrl));
+      expect(gunzipSync(Buffer.from((await launch(on.handler)).userData, "base64")).toString("utf8")).toContain("export AGENTX_PRIVATE_ADDRESSES='10.20.0.15:443'");
+    });
+
     // Task 25 Part B fix: the launcher switches on this, not on whether a proxy URL happens to be present.
     it("says explicitly that this is a named environment, and the legacy launch says nothing", async () => {
       const { handler } = setup(undefined, { modelProxyRequired: true }, named(proxyUrl));

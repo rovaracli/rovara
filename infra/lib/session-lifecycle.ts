@@ -113,6 +113,14 @@ export class SessionLifecycle extends Construct {
     inVpc(this.steps);
     props.state.grantReadWriteData(this.steps);
     this.steps.addToRolePolicy(new iam.PolicyStatement({ actions: ["ssm:GetParameters"], resources: settingParameterArns }));
+    // Owner decision 123, review L4: the operator's kill switch for every company's internal address list (session-steps.ts PRIVATE_ADDRESSES_OFF_PARAMETER). Read only, one exact parameter; the operator creates it when needed.
+    // Named environments only: the legacy deployment never carries a list, and its template stays as it was.
+    if (naming.env !== undefined) {
+      this.steps.addToRolePolicy(new iam.PolicyStatement({
+        actions: ["ssm:GetParameter"],
+        resources: [`arn:${Aws.PARTITION}:ssm:${Aws.REGION}:${Aws.ACCOUNT_ID}:parameter${naming.ec2.workerSettingsPrefix}private-addresses-off`],
+      }));
+    }
     this.steps.addToRolePolicy(new iam.PolicyStatement({ actions: ["kms:GetPublicKey"], resources: [props.invokeSigningKey.keyArn] }));
 
     const definitionProps = {

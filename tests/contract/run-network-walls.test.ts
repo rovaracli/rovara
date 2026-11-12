@@ -76,7 +76,13 @@ describe("the run network adds no firewall rule", () => {
     it(`${name}: no rule lets an rvi bridge through, and none names the run network's address range, labels or names`, () => {
       const rules = scripts[name].split("\n").filter((line) => /\b(?:iptables|ip6tables|nft)\b/u.test(line) && !line.trim().startsWith("#"));
       for (const line of rules.filter(mentionsRvi)) expect(line, line).not.toMatch(/-j (?:RETURN|ACCEPT)/u);
-      expect(scripts[name]).not.toContain(`${RUN_NETWORK_FIRST_OCTETS}.`);
+      // Owner decision 123: the internal-address step names the run networks' range once, in the list of ranges it NEVER opens (its RETURN guards); nowhere else may it appear.
+      const step = /cat >\/usr\/local\/libexec\/rovara-private-allow <<'PRIVATEALLOW'\n[\s\S]*?\nPRIVATEALLOW\n/u.exec(scripts[name])?.[0] ?? "";
+      if (name === "boot-stage2.sh") {
+        expect(step.length).toBeGreaterThan(1000);
+        expect(step.split("\n").filter((line) => line.includes(`${RUN_NETWORK_FIRST_OCTETS}.`))).toEqual([expect.stringMatching(/^readonly WORKER="[0-9./ ]+"$/u)]);
+      }
+      expect(scripts[name].replace(step, "")).not.toContain(`${RUN_NETWORK_FIRST_OCTETS}.`);
       expect(scripts[name]).not.toMatch(/rovara-svc|rovara\.run-network|run-network/u);
     });
   }

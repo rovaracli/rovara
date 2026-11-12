@@ -1,10 +1,11 @@
 import { DescribeInstancesCommand, DescribeVolumesCommand, EC2Client, TerminateInstancesCommand } from "@aws-sdk/client-ec2";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { SFNClient, StartExecutionCommand } from "@aws-sdk/client-sfn";
-import { DynamoDBDocumentClient, GetCommand } from "@aws-sdk/lib-dynamodb";
+import { DynamoDBDocumentClient, GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { SESSION_MAX_LIFETIME_MS, type Ec2RuntimeBinding, type WorkspaceSession } from "@rovara-code/contracts";
 import { installOrgIdFromEnvironment } from "../org/resolve.js";
 import { requiredEnvironment } from "./lambda.js";
+import { PRIVATE_ADDRESS_RECYCLE_PK } from "@agentx/cloud-contracts";
 import { SessionManager, computeMeteringFromEnvironment, workspaceBinding } from "./sessions.js";
 
 /** Idle stop and maximum compute lifetime (design in #76). */
@@ -29,6 +30,8 @@ export interface ReaperReport {
   stopped: string[];
   restarted: string[];
   stillStopping: string[];
+  /** Owner decision 128: workers recycled because their company removed an internal address after they launched; present only where the recycle is wired. */
+  privateAddressRecycled?: string[];
 }
 
 export interface ReaperDependencies {
@@ -41,6 +44,12 @@ export interface ReaperDependencies {
   progress: (instanceId: string, volumeId: string) => Promise<StopProgress>;
   binding: (workspaceId: string) => Promise<Ec2RuntimeBinding | undefined>;
   emit: (metrics: Record<string, number>) => void;
+  /**
+   * Owner decision 128: each company's latest internal address removal (org id to epoch milliseconds; org/private-addresses.ts PRIVATE_ADDRESS_RECYCLE_PK), and the company a workspace belongs to. A READY worker of that
+   * company launched before the removal still has the removed address open, so it is recycled at once: stopped like an idle one when it is idle, terminated under its task when it is busy (the reconciler then marks the
+   * compute lost and fails the operation with the usual "compute was lost; retry" error, and the next dispatch launches with the new list). Absent: nothing is recycled.
+   */
+  privateAddressRecycle?: { marks: () => Promise<Map<string, number>>; workspaceOrg: (workspaceId: string) => Promise<string | undefined> };
   now?: () => Date;
   log?: (entry: Record<string, unknown>) => void;
 }
@@ -56,7 +65,10 @@ export function createReaperHandler(dependencies: ReaperDependencies) {
     const now = (dependencies.now?.() ?? new Date()).getTime();
     const report: ReaperReport = { claimed: [], skippedBusy: [], lostRace: [], stopped: [], restarted: [], stillStopping: [] };
 
-    for (const session of await dependencies.sessions.listByState("READY")) {
+    const ready = await dependencies.sessions.listByState("READY");
+    const recycled = dependencies.privateAddressRecycle === undefined ? undefined : await recyclePrivateAddressWorkers(dependencies, dependencies.privateAddressRecycle, ready, report, log);
+    for (const session of ready) {
+      if (recycled?.has(session.workspaceId) === true) continue;
       const idle = now - Date.parse(session.lastActivityAt!) > IDLE_STOP_MS;
       const expired = now - Date.parse(session.launchedAt!) > MAX_LIFETIME_MS;
       if (!idle && !expired) continue;
@@ -97,9 +109,46 @@ export function createReaperHandler(dependencies: ReaperDependencies) {
     }
 
     // The STOPPING query runs after this tick's claims, so it already counts them.
-    dependencies.emit({ SessionsStopped: report.stopped.length, SessionsStopping: report.stillStopping.length });
+    dependencies.emit({ SessionsStopped: report.stopped.length, SessionsStopping: report.stillStopping.length, ...(report.privateAddressRecycled === undefined ? {} : { SessionsPrivateAddressRecycled: report.privateAddressRecycled.length }) });
     return report;
   };
+}
+
+/** A worker launched within this long after a removal may have read the list before it: it is recycled too (once more at most; a launch takes seconds). */
+export const RECYCLE_LAUNCH_MARGIN_MS = 2 * 60_000;
+
+async function recyclePrivateAddressWorkers(
+  dependencies: ReaperDependencies, recycle: NonNullable<ReaperDependencies["privateAddressRecycle"]>, ready: readonly WorkspaceSession[], report: ReaperReport, log: (entry: Record<string, unknown>) => void,
+): Promise<Set<string>> {
+  const done = new Set<string>();
+  report.privateAddressRecycled = [];
+  let marks: Map<string, number>;
+  try {
+    marks = await recycle.marks();
+  } catch (error) {
+    // Unreadable: nothing is recycled this tick and the next tick asks again; logged loudly, never silently skipped.
+    log({ event: "session.private_address_recycle_unreadable", level: "error", errorName: error instanceof Error ? error.name : "unknown" });
+    return done;
+  }
+  if (marks.size === 0) return done;
+  for (const session of ready) {
+    let org: string | undefined;
+    try { org = await recycle.workspaceOrg(session.workspaceId); } catch { org = undefined; }
+    const removedAt = org === undefined ? undefined : marks.get(org);
+    if (removedAt === undefined || session.launchedAt === undefined || Date.parse(session.launchedAt) > removedAt + RECYCLE_LAUNCH_MARGIN_MS) continue;
+    done.add(session.workspaceId);
+    report.privateAddressRecycled.push(session.workspaceId);
+    const busy = await dependencies.activeOperation(session.workspaceId) || await isBusy(dependencies, session);
+    if (!busy && await dependencies.sessions.claimStop(session)) {
+      report.claimed.push(session.workspaceId);
+      log({ event: "session.stop_claimed", workspaceId: session.workspaceId, generation: session.generation, reason: "private_address_removed" });
+    } else {
+      // Busy (or a dispatch just took it): its task is interrupted. Access must stop now, not when the task ends.
+      log({ event: "session.private_address_recycle_interrupted", workspaceId: session.workspaceId, generation: session.generation, instanceId: session.instanceId });
+    }
+    await terminate(dependencies, session, log);
+  }
+  return done;
 }
 
 async function isBusy(dependencies: ReaperDependencies, session: WorkspaceSession): Promise<boolean> {
@@ -168,6 +217,22 @@ export const handler = createReaperHandler({
     };
   },
   binding: (workspaceId) => workspaceBinding(documentClient, tableName, installOrgIdFromEnvironment(), workspaceId),
+  privateAddressRecycle: {
+    async marks() {
+      const marks = new Map<string, number>();
+      let start: Record<string, unknown> | undefined;
+      do {
+        const page = await documentClient.send(new QueryCommand({ TableName: tableName, KeyConditionExpression: "pk = :pk", ExpressionAttributeValues: { ":pk": PRIVATE_ADDRESS_RECYCLE_PK }, ConsistentRead: true, ...(start === undefined ? {} : { ExclusiveStartKey: start }) }));
+        for (const item of page.Items ?? []) if (typeof item.orgId === "string" && typeof item.removedAt === "number") marks.set(item.orgId, item.removedAt);
+        start = page.LastEvaluatedKey;
+      } while (start !== undefined);
+      return marks;
+    },
+    async workspaceOrg(workspaceId) {
+      const item = (await documentClient.send(new GetCommand({ TableName: tableName, Key: { pk: `WORKSPACE#${workspaceId}`, sk: "META" }, ConsistentRead: true }))).Item;
+      return typeof item?.orgId === "string" ? item.orgId : undefined;
+    },
+  },
   emit(metrics) {
     // CloudWatch embedded metric format: Lambda turns this stdout line into metrics.
     console.log(JSON.stringify({

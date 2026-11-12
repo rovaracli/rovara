@@ -32,6 +32,11 @@ export interface Ec2WorkerFoundationProps {
    * endpoints) and the ranges the customer approved. Absent: the HTTPS egress to the whole internet every other install has, unchanged.
    */
   privateEgressCidrs?: readonly string[];
+  /**
+   * Owner decision 123 (review H1): extra TCP ports workers may open toward the install's routed private ranges (never its own VPC), for a company's approved internal addresses. Enterprise only, from
+   * `rovaraPrivateAddressPorts` (private-addresses.ts). Absent: the group is exactly as before.
+   */
+  privateAddressEgress?: { cidrs: readonly string[]; ports: readonly number[] };
 }
 
 /**
@@ -63,7 +68,10 @@ export class Ec2WorkerFoundation extends Construct {
     this.workerSecurityGroup = new ec2.CfnSecurityGroup(this, "WorkerSecurityGroup", {
       groupDescription: `AgentX EC2 workers: port ${EC2_WORKER_PORT} from the dispatcher and session manager only, HTTPS egress`,
       groupName: names.workerSecurityGroupName,
-      securityGroupEgress: egressRules(props.privateEgressCidrs, "HTTPS to ECR, Bedrock, CloudWatch, the control plane, package repositories and Git providers"),
+      securityGroupEgress: [
+        ...egressRules(props.privateEgressCidrs, "HTTPS to ECR, Bedrock, CloudWatch, the control plane, package repositories and Git providers"),
+        ...(props.privateAddressEgress?.ports ?? []).flatMap((port) => (props.privateAddressEgress?.cidrs ?? []).map((cidr): ec2.CfnSecurityGroup.EgressProperty => ({ ipProtocol: "tcp", fromPort: port, toPort: port, cidrIp: cidr, description: `Approved internal addresses: port ${String(port)} to ${cidr}` }))),
+      ],
       tags: tags(names.workerSecurityGroupName),
       vpcId: props.vpcId,
     });

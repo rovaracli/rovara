@@ -1,12 +1,16 @@
 // Owner decision 123: `/v1/app/org/private-addresses` through the whole broker, with the real second-person records. Owners and admins only; writes from a live browser only; adding is a proposal a DIFFERENT admin
 // approves after a fresh sign-in (no sole-owner path); removing applies at once; every change is audited without hosts in its facts.
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { privateAddressListDigest } from "@agentx/cloud-contracts";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { MAYA, OMAR } from "../support/developer-task-broker.js";
 import { setupWizardBench, type Bench } from "../support/setup-wizard-testenv.js";
 
 const PATH = "/v1/app/org/private-addresses";
+// An Enterprise install that routes to the company's network (review H1): its ranges and the ports workers may open there.
+const ROUTED = { ROVARA_PRIVATE_ADDRESS_CIDRS: "10.20.0.0/16,10.60.0.0/16", ROVARA_PRIVATE_ADDRESS_PORTS: "443,8081", ROVARA_PRIVATE_MCP_CIDRS: "10.60.8.0/24" };
+beforeEach(() => { Object.assign(process.env, ROUTED); });
+afterEach(() => { for (const name of Object.keys(ROUTED)) delete process.env[name]; });
 async function bench(options: { maya?: "admin" | "member" } = {}) {
   const audit = capturingAuditDeps();
   const t = await setupWizardBench({ audit });
@@ -21,7 +25,7 @@ const DIGEST = privateAddressListDigest(ENTRIES);
 describe("reading and writing", () => {
   it("is for owners and admins only, writes from a live browser only, and starts empty", async () => {
     const { t, audit } = await bench({ maya: "member" });
-    expect(await get(t)).toMatchObject({ status: 200, body: { revision: 0, entries: [], max: 16, canChange: true } });
+    expect(await get(t)).toMatchObject({ status: 200, body: { revision: 0, entries: [], max: 16, openPorts: [443, 8081], canChange: true } });
     expect((await get(t, MAYA)).status).toBe(403);
     expect((await t.web(MAYA, "POST", PATH, { action: "propose", expectedRevision: 0, entries: ENTRIES })).status).toBe(403);
     const token = await t.dev(OMAR, "POST", PATH, { action: "propose", expectedRevision: 0, entries: ENTRIES });
@@ -39,6 +43,38 @@ describe("reading and writing", () => {
     expect((await t.web(OMAR, "POST", PATH, { action: "propose", expectedRevision: 0, entries: ["169.254.169.254:80"] })).status).toBe(400);
     expect((await t.web(OMAR, "POST", PATH, { action: "approve", changeId: "x" })).status).toBe(400);
     expect((await t.web(OMAR, "POST", PATH, { action: "propose", expectedRevision: 0, entries: ENTRIES, extra: true })).status).toBe(400);
+  });
+});
+
+describe("where it is offered (review H1)", () => {
+  it("is not found on an install with no routed private network, and a write says why", async () => {
+    const { t, audit } = await bench();
+    delete process.env.ROVARA_PRIVATE_ADDRESS_CIDRS;
+    expect((await get(t)).status).toBe(404);
+    const refused = await t.web(OMAR, "POST", PATH, { action: "propose", expectedRevision: 0, entries: ENTRIES });
+    expect(refused.status).toBe(403);
+    expect(JSON.stringify(refused.body)).toContain("This install has no route to a private network");
+    expect(events(audit)).toEqual([]);
+  });
+
+  it("refuses a port the workers may not open, an address outside the routed ranges and a range private MCP servers own", async () => {
+    const { t } = await bench();
+    for (const [entry, words] of [["10.20.0.15:9000", "uses a port that workers may not open"], ["10.30.0.1:443", "outside the private ranges"], ["10.60.8.4:443", "private MCP servers or model endpoints"]] as const) {
+      const reply = await t.web(OMAR, "POST", PATH, { action: "propose", expectedRevision: 0, entries: [entry] });
+      expect(reply.status, entry).toBe(400);
+      expect(JSON.stringify(reply.body), entry).toContain(words);
+    }
+  });
+
+  it("warns, without refusing, when an added name is not on the install's allowed websites", async () => {
+    const { t } = await bench();
+    const asked = await t.web(OMAR, "POST", PATH, { action: "propose", expectedRevision: 0, entries: ["10.20.0.15:443", "Nexus.corp.example:8081"] });
+    expect(asked.status).toBe(202);
+    expect((asked.body as { warnings?: string[] }).warnings).toEqual([expect.stringMatching(/^Entry 2 is a name that is not on this install's allowed websites/u)]);
+    const byIp = await t.web(OMAR, "POST", PATH, { action: "withdraw", changeId: (asked.body as { changeId: string }).changeId });
+    expect(byIp.status).toBe(200);
+    const plain = await t.web(OMAR, "POST", PATH, { action: "propose", expectedRevision: 0, entries: ["10.20.0.15:443"] });
+    expect(plain.body).not.toHaveProperty("warnings");
   });
 });
 

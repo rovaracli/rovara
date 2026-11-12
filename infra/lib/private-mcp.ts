@@ -266,7 +266,7 @@ export function assertStdioHostStackBuilt(install: PrivateMcpInstall, built: boo
 }
 
 /** The only variables an install's settings may add to the broker's environment. Anything else (a reserved variable such as the callback signing key) is refused, never overwritten. */
-export const BROKER_ENVIRONMENT_KEYS = ["ROVARA_PRIVATE_MCP_CIDRS", "ROVARA_VPC_CIDRS", "ROVARA_CUSTOM_MODEL_ENDPOINTS", "ROVARA_MODEL_ENDPOINT_CIDRS"] as const;
+export const BROKER_ENVIRONMENT_KEYS = ["ROVARA_PRIVATE_MCP_CIDRS", "ROVARA_VPC_CIDRS", "ROVARA_CUSTOM_MODEL_ENDPOINTS", "ROVARA_MODEL_ENDPOINT_CIDRS", "ROVARA_PRIVATE_ADDRESS_CIDRS", "ROVARA_PRIVATE_ADDRESS_PORTS"] as const;
 /** The two more a package-run install adds, allowed only past the release flag. */
 export const STDIO_BROKER_ENVIRONMENT_KEYS = ["ROVARA_STDIO_MCP_SERVERS", "MCP_HOST_URL"] as const;
 

@@ -15165,6 +15165,30 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
               ],
             },
             {
+              "Action": "ssm:GetParameter",
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:",
+                    {
+                      "Ref": "AWS::Partition",
+                    },
+                    ":ssm:",
+                    {
+                      "Ref": "AWS::Region",
+                    },
+                    ":",
+                    {
+                      "Ref": "AWS::AccountId",
+                    },
+                    ":parameter/agentx/staging/private-addresses-off",
+                  ],
+                ],
+              },
+            },
+            {
               "Action": "kms:GetPublicKey",
               "Effect": "Allow",
               "Resource": {

@@ -20,29 +20,36 @@ const launcher = /cat >\/usr\/local\/libexec\/agentx-worker-start <<'LAUNCHER'\n
 const CHAIN = "ROVARA-PRIVATE-ALLOW";
 const JUMP = `DOCKER-USER -i ${TASK_SANDBOX_BRIDGE} -j ${CHAIN}`;
 
-// A fake netfilter tool: one line per rule ("CHAIN rest"), chains in a list; -I puts the rule first in its chain, -A last. FAKE_FAIL_APPEND makes -A of a rule containing that text fail.
+// A fake netfilter tool: one line per rule ("CHAIN rest", in chain order), chains in a list. -I puts the rule first in its chain (or at position N with `-I CHAIN N`), -A last, -D removes the first exact match, -S lists one
+// chain as iptables does (`-N CHAIN` then `-A CHAIN ...`). FAKE_FAIL_APPEND makes -A of a rule containing that text fail.
 const FAKE_IPTABLES = `#!/bin/bash
 rules="$FAKE_DIR/rules"; chains="$FAKE_DIR/chains"; touch "$rules" "$chains"
 grep -qx DOCKER-USER "$chains" || echo DOCKER-USER >>"$chains"
-op=$1; shift; chain=$1; shift; rule="$chain $*"
+op=$1; shift; chain=$1; shift
+position=0
+if [[ $op == -I && "\${1:-}" =~ ^[0-9]+$ ]]; then position=$1; shift; fi
+rule="$chain $*"
 case $op in
   -N) grep -qx "$chain" "$chains" && exit 1; echo "$chain" >>"$chains" ;;
-  -S) grep -qx "$chain" "$chains" ;;
+  -S) grep -qx "$chain" "$chains" || exit 1; echo "-N $chain"; grep "^$chain " "$rules" | sed 's/^/-A /' ;;
   -F) grep -qx "$chain" "$chains" || exit 1; grep -v "^$chain " "$rules" >"$rules.new"; mv "$rules.new" "$rules" ;;
   -C) grep -qxF -- "$rule" "$rules" ;;
-  -I) grep -qx "$chain" "$chains" || exit 1; { printf '%s\\n' "$rule"; cat "$rules"; } >"$rules.new"; mv "$rules.new" "$rules" ;;
+  -D) grep -qxF -- "$rule" "$rules" || exit 1; awk -v r="$rule" 'done || $0 != r { print; next } { done = 1 }' "$rules" >"$rules.new"; mv "$rules.new" "$rules" ;;
+  -I) grep -qx "$chain" "$chains" || exit 1
+      awk -v c="$chain " -v p="$position" -v r="$rule" 'BEGIN { if (p < 1) p = 1 } index($0, c) == 1 { n += 1; if (n == p && !done) { print r; done = 1 } } { print } END { if (!done) print r }' "$rules" >"$rules.new"
+      mv "$rules.new" "$rules" ;;
   -A) grep -qx "$chain" "$chains" || exit 1; if [[ -n "\${FAKE_FAIL_APPEND:-}" && "$rule" == *"$FAKE_FAIL_APPEND"* ]]; then exit 1; fi; printf '%s\\n' "$rule" >>"$rules" ;;
   *) exit 2 ;;
 esac
 `;
-// getent ahostsv4 NAME: the lines glibc prints (three per address), from FAKE_DIR/dns ("name address address ...").
+// getent ahostsv4 -- NAME: the lines glibc prints (three per address), from FAKE_DIR/dns ("name address address ..."). It insists on the `--` (review L5: a name can never be read as an option).
 const FAKE_GETENT = `#!/bin/bash
-[[ "$1" == ahostsv4 ]] || exit 2
-line=$(grep "^$2 " "$FAKE_DIR/dns") || exit 2
-for address in \${line#* }; do printf '%s STREAM %s\\n%s DGRAM\\n%s RAW\\n' "$address" "$2" "$address" "$address"; done
+[[ "$1" == ahostsv4 && "$2" == -- ]] || exit 2
+line=$(grep "^$3 " "$FAKE_DIR/dns") || exit 2
+for address in \${line#* }; do printf '%s STREAM %s\\n%s DGRAM\\n%s RAW\\n' "$address" "$3" "$address" "$address"; done
 `;
 
-function bench(options: { list?: string; vpc?: string | null; dns?: Record<string, string[]> } = {}) {
+function bench(options: { list?: string; vpc?: string | null; dns?: Record<string, string[]>; seed?: readonly string[] } = {}) {
   const directory = mkdtempSync(join(tmpdir(), "rovara-private-allow-"));
   const bin = join(directory, "bin");
   mkdirSync(bin);
@@ -54,13 +61,16 @@ function bench(options: { list?: string; vpc?: string | null; dns?: Record<strin
     if (vpc !== null) writeFileSync(join(directory, "vpc"), `${vpc ?? "10.42.0.0/16"}\n`);
   };
   write(options.dns ?? {}, options.list, options.vpc);
+  // Rules already in place (block_imds's setup walls, the firewall unit's), in chain order.
+  if (options.seed !== undefined) writeFileSync(join(directory, "rules"), options.seed.map((rule) => `${rule}\n`).join(""));
+  const read = (name: string) => { try { return readFileSync(join(directory, name), "utf8").trim(); } catch { return undefined; } };
   const run = (env: Record<string, string> = {}) => {
     const result = spawnSync("/bin/bash", ["-c", step], {
-      env: { PATH: `${bin}:/usr/bin:/bin`, FAKE_DIR: directory, ROVARA_PRIVATE_ADDRESSES_FILE: join(directory, "list"), ROVARA_VPC_CIDRS_FILE: join(directory, "vpc"), ...env }, encoding: "utf8",
+      env: { PATH: `${bin}:/usr/bin:/bin`, FAKE_DIR: directory, ROVARA_PRIVATE_ADDRESSES_FILE: join(directory, "list"), ROVARA_VPC_CIDRS_FILE: join(directory, "vpc"), ROVARA_PRIVATE_ADDRESS_PINS_FILE: join(directory, "pins"), ROVARA_PRIVATE_ADDRESS_FACTS_FILE: join(directory, "facts"), ...env }, encoding: "utf8",
     });
     const rules = readFileSync(join(directory, "rules"), "utf8").split("\n").filter(Boolean);
     const chain = rules.filter((rule) => rule.startsWith(`${CHAIN} `)).map((rule) => rule.slice(CHAIN.length + 1));
-    return { status: result.status, stderr: result.stderr, rules, chain, accepts: chain.filter((rule) => rule.endsWith("-j ACCEPT")) };
+    return { status: result.status, stderr: result.stderr, rules, chain, accepts: chain.filter((rule) => rule.endsWith("-j ACCEPT")), pins: read("pins"), facts: read("facts") };
   };
   return { run, redo: (dns: Record<string, string[]>) => write(dns, undefined, undefined) };
 }
@@ -172,6 +182,90 @@ describe("the internal address step on the worker", () => {
     expect(startLine).toBeGreaterThan(stepLine);
     // The list file is written only when well formed, with the same pattern the launch uses.
     expect(stage2).toContain('[[ "$value" =~ ^[a-z0-9.-]{1,94}:[1-9][0-9]{0,4}(,[a-z0-9.-]{1,94}:[1-9][0-9]{0,4}){0,15}$ ]]');
+  });
+});
+
+const SETUP_RULES = (/local -a setup_rules=\((.*)\)\n/u.exec(stage2)?.[1] ?? "").match(/"[^"]+"/gu)?.map((rule) => rule.slice(1, -1)) ?? [];
+const FIREWALL_TAIL = ["DOCKER-USER -d 169.254.169.254/32 -j DROP", ...["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "169.254.0.0/16", "127.0.0.0/8"].map((range) => `DOCKER-USER -i rvb+ -d ${range} -j DROP`)];
+const SETUP_JUMP = `DOCKER-USER -i rvbs+ -j ${CHAIN}`;
+
+describe("setup runs (review M3)", () => {
+  // As the launcher leaves DOCKER-USER before this step: block_imds's metadata REJECT and setup walls on top, then the firewall unit's rules.
+  const seeded = ["DOCKER-USER -d 169.254.169.254/32 -j REJECT", ...[...SETUP_RULES].reverse(), ...FIREWALL_TAIL];
+  const order = (rules: readonly string[]) => rules.filter((rule) => rule.startsWith("DOCKER-USER "));
+
+  it("reads block_imds's five setup walls", () => {
+    expect(SETUP_RULES).toHaveLength(5);
+    for (const rule of SETUP_RULES) expect(rule).toMatch(/^DOCKER-USER -i rvbs\+ /u);
+  });
+
+  it("reaches the chain from the setup bridges right BELOW every setup wall and above every range drop, and keeps it there on every run", () => {
+    const t = bench({ list: "10.20.0.15:443", seed: seeded });
+    for (let run = 0; run < 3; run += 1) {
+      const result = t.run();
+      expect(result.status, result.stderr).toBe(0);
+      const rules = order(result.rules);
+      expect(rules.filter((rule) => rule === SETUP_JUMP)).toHaveLength(1);
+      const jump = rules.indexOf(SETUP_JUMP);
+      for (const wall of SETUP_RULES) expect(rules.indexOf(wall), wall).toBeLessThan(jump);
+      for (const drop of FIREWALL_TAIL) expect(rules.indexOf(drop), drop).toBeGreaterThan(jump);
+      expect(rules.indexOf(JUMP)).toBe(0);
+      expect(result.accepts).toEqual([accept("10.20.0.15", 443)]);
+    }
+  });
+
+  it("moves a setup jump that sits above a setup wall back below them, and adds none when the setup walls are missing", () => {
+    const misplaced = bench({ list: "10.20.0.15:443", seed: [SETUP_JUMP, ...seeded] }).run();
+    const rules = order(misplaced.rules);
+    expect(rules.filter((rule) => rule === SETUP_JUMP)).toHaveLength(1);
+    for (const wall of SETUP_RULES) expect(rules.indexOf(wall)).toBeLessThan(rules.indexOf(SETUP_JUMP));
+    const withoutWalls = bench({ list: "10.20.0.15:443", seed: ["DOCKER-USER -d 169.254.169.254/32 -j REJECT", SETUP_JUMP, ...FIREWALL_TAIL] }).run();
+    expect(order(withoutWalls.rules)).not.toContain(SETUP_JUMP);
+    expect(order(withoutWalls.rules)).toContain(JUMP);
+  });
+});
+
+describe("what the step hands the worker (review L1)", () => {
+  it("writes the pinned name=address pairs (names only) and the counts", () => {
+    const run = bench({ list: "nexus.corp.example:8081,10.20.0.15:443,gone.corp.example:443", dns: { "nexus.corp.example": ["10.60.0.7", "10.60.0.8"] } }).run();
+    expect(run.pins).toBe("nexus.corp.example=10.60.0.7,nexus.corp.example=10.60.0.8");
+    expect(run.facts).toBe("entries=3,opened=2,skipped=1");
+    const none = bench().run();
+    expect(none.pins).toBeUndefined();
+    expect(none.facts).toBe("entries=0,opened=0,skipped=0");
+    const failed = bench({ list: "nexus.corp.example:8081", dns: { "nexus.corp.example": ["10.60.0.7"] } }).run({ FAKE_FAIL_APPEND: "10.60.0.7" });
+    expect(failed.pins).toBeUndefined();
+    expect(failed.facts).toBe("entries=1,opened=0,skipped=1");
+  });
+
+  it("is passed to the worker container by the launcher only in its one written form", () => {
+    const line = launcher.split("\n").find((text) => text.includes("AGENTX_PRIVATE_ADDRESS_HOSTS:")) ?? "";
+    expect(line).toContain("if named_environment;");
+    const patterns = [...line.matchAll(/"AGENTX_PRIVATE_ADDRESS_(?:HOSTS|FACTS):[^:]+:([^"]+)"/gu)].map((match) => new RegExp(match[1]!, "u"));
+    expect(patterns).toHaveLength(2);
+    const [hosts, facts] = patterns as [RegExp, RegExp];
+    expect(hosts.test("nexus.corp.example=10.60.0.7,nexus.corp.example=10.60.0.8")).toBe(true);
+    for (const bad of ["nexus=10.60.0.7;reboot", "nexus=10.60.0.7 --privileged", "NEXUS=10.0.0.1", ""]) expect(hosts.test(bad), bad).toBe(false);
+    expect(facts.test("entries=3,opened=2,skipped=1")).toBe(true);
+    expect(facts.test("entries=3,opened=2")).toBe(false);
+    // Added after the setup isolation line and before the worker container starts.
+    expect(launcher.indexOf("AGENTX_PRIVATE_ADDRESS_HOSTS:")).toBeGreaterThan(launcher.indexOf("AGENTX_SETUP_ISOLATION="));
+    expect(launcher.indexOf("AGENTX_PRIVATE_ADDRESS_HOSTS:")).toBeLessThan(launcher.indexOf('exec "$docker" "${args[@]}"'));
+  });
+
+  it("docker-walled.sh gives every run, create and build the pinned --add-host entries, and none for a value out of form", () => {
+    const directory = mkdtempSync(join(tmpdir(), "rovara-walled-hosts-"));
+    writeFileSync(join(directory, "docker"), "#!/bin/sh\nprintf '%s\\n' \"$*\"\n");
+    chmodSync(join(directory, "docker"), 0o755);
+    const walled = new URL("../../packages/worker/ec2/docker-walled.sh", import.meta.url).pathname;
+    const call = (hosts: string | undefined, ...args: string[]) => spawnSync("/bin/sh", [walled, ...args], { env: { PATH: `${directory}:/usr/bin:/bin`, ...(hosts === undefined ? {} : { AGENTX_PRIVATE_ADDRESS_HOSTS: hosts }) }, encoding: "utf8" }).stdout.trim();
+    const pins = "nexus.corp.example=10.60.0.7,nexus.corp.example=10.60.0.8";
+    const added = "--add-host nexus.corp.example:10.60.0.7 --add-host nexus.corp.example:10.60.0.8";
+    expect(call(pins, "run", "image")).toBe(`run --network agentx-task --cap-drop NET_RAW ${added} image`);
+    expect(call(pins, "container", "create", "image")).toBe(`container create --network agentx-task --cap-drop NET_RAW ${added} image`);
+    expect(call(pins, "build", ".")).toContain(`build --network agentx-task ${added} .`);
+    expect(call(undefined, "run", "image")).toBe("run --network agentx-task --cap-drop NET_RAW image");
+    for (const bad of ["nexus=10.0.0.1 --privileged", "nexus=10.0.0.1;x", "nexus=abc", "=10.0.0.1", "nexus=", "*=1.2.3.4"]) expect(call(bad, "run", "image"), bad).toBe("run --network agentx-task --cap-drop NET_RAW image");
   });
 });
 

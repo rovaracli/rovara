@@ -17,6 +17,7 @@ import { BUNDLE_EMBEDDER_IMAGE_NAME, BUNDLE_IMAGE_NAMES, bundleImageRepository }
 import { parseOperatorAccessContext } from "./operator-access.js";
 import { mcpHostAllowDomains } from "./mcp-host.js";
 import { assertStdioHostStackBuilt, mcpHostPropsFromInstall, parsePrivateMcpContext, privateMcpBrokerEnvironment } from "./private-mcp.js";
+import { PRIVATE_ADDRESS_PORTS_CONTEXT_KEY, parsePrivateAddressPorts, privateAddressBrokerEnvironment } from "./private-addresses.js";
 import { modelEndpointBrokerEnvironment, parseModelEndpointContext } from "./model-endpoints.js";
 import { requireEnterpriseAuditTsa } from "./audit-settings.js";
 import { parseTeamRecordSwitch } from "./team-record-wiring.js";
@@ -173,7 +174,9 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
   assertStdioHostStackBuilt(privateMcp);
   // The model endpoint settings (N8: rovaraCustomModelEndpoints, rovaraModelEndpointCidrs): Enterprise only, off by default, checked here so a wrong one stops the synth.
   const modelEndpoints = parseModelEndpointContext({ edition: explicitEdition, vpcCidrs: [AGENTX_PRODUCTION_VPC_CIDR], get: (key) => app.node.tryGetContext(key) as unknown });
-  const brokerEnvironment = { ...privateMcpBrokerEnvironment(privateMcp), ...modelEndpointBrokerEnvironment(modelEndpoints) };
+  // Owner decision 123 (review H1): the extra ports workers may open toward the routed private ranges, and what the broker is told so it offers internal addresses only where they can be reached.
+  const privateAddressPorts = parsePrivateAddressPorts(app.node.tryGetContext(PRIVATE_ADDRESS_PORTS_CONTEXT_KEY), { enterprise: explicitEdition === "enterprise", routedCidrs: enterpriseCidrs });
+  const brokerEnvironment = { ...privateMcpBrokerEnvironment(privateMcp), ...modelEndpointBrokerEnvironment(modelEndpoints), ...privateAddressBrokerEnvironment({ enterprise: explicitEdition === "enterprise", routedCidrs: enterpriseCidrs, ports: privateAddressPorts }) };
   // Private package registries (N9): the CodeArtifact domains the broker may mint a read-only token for (`-c rovaraCodeArtifactDomains=domain:account:region:org:repo+repo,...`; Enterprise only). Off by default.
   const registryDomains = parseCodeArtifactDomains(app.node.tryGetContext(CODEARTIFACT_DOMAINS_CONTEXT_KEY), { edition: explicitEdition, cloud: agentxCloud, env: naming.env });
   // Saved environment images (SH22): Enterprise may bring its own KMS key (a key ARN in this account and region); Public always uses the key the stack makes. `agentxSavedEnvRegistryScan=on` turns on the registry-wide basic scan-on-push setting (off by default: it replaces an existing registry setting).
@@ -211,6 +214,7 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
     ...(edition === undefined ? {} : { edition }),
     ...(parseInternetEgress(enterpriseInternetEgressContext) === undefined ? {} : { internetEgress: parseInternetEgress(enterpriseInternetEgressContext)! }),
     ...(enterpriseEgressCidrsContext === undefined ? {} : { enterpriseEgressCidrs: enterpriseCidrs }),
+    ...(privateAddressPorts.length === 0 ? {} : { privateAddressPorts }),
     ...(mcpHostProps === undefined ? {} : { stdioMcpAllowDomains: mcpHostAllowDomains({ controllerDnsNamespace: mcpHostProps.controllerDnsNamespace, npmRegistry: mcpHostProps.npmRegistry, region: deploymentRegion ?? "us-east-1" }) }),
     ...(naming.env === undefined ? {} : { stackName: naming.stackName("foundation") }),
   });

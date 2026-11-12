@@ -11,9 +11,9 @@
 // Every entry is checked again at approval against the install as it is then. Answers carry fixed words, counts and the entries an admin already reads; refusals name an entry's position, never its text.
 import { randomUUID } from "node:crypto";
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { agentXError, type OrgId } from "@rovara-code/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, agentXError, type OrgId } from "@rovara-code/contracts";
 import {
-  AUDIT_DETAIL_FIELD_MAX_CHARS, PRIVATE_ADDRESSES_MAX, PRIVATE_ADDRESS_PROPOSAL_TTL_MS, checkPrivateAddressList, orgMetaKey, privateAddressListDigest, privateAddressRefusalText,
+  AUDIT_DETAIL_FIELD_MAX_CHARS, PRIVATE_ADDRESSES_MAX, PRIVATE_ADDRESS_RECYCLE_PK, PRIVATE_ADDRESS_PROPOSAL_TTL_MS, checkPrivateAddressList, orgMetaKey, privateAddressListDigest, privateAddressRefusalText,
   type AuditDetailPart, type AuditEventInput, type PrivateAddressInstall,
 } from "@agentx/cloud-contracts";
 import { auditOccurrence, auditPrivateAddresses, type PrivateAddressesAuditAction } from "../audit/events.js";
@@ -45,9 +45,17 @@ export const PRIVATE_ADDRESS_WORDS = {
   membership: "Someone joined or left the company's admins meanwhile, or the proposer is no longer an admin. Reload and approve again, or propose the list again.",
   unavailable: "Rovara could not check who may change this. Try again.",
   nothing: "That is the list already in place.",
+  corrupt: "This company's internal address list is stored in a form Rovara can't read, so no worker starts until it is replaced. A company owner or admin saves the list again to replace it.",
 } as const;
 
 export interface PrivateAddressList { revision: number; entries: string[]; digest: string; updatedAt?: number }
+/** A list as a change reads it: a stored row that does not parse is `corrupt` (its entries count as none, and saving any list replaces it). */
+export interface PrivateAddressCurrent extends PrivateAddressList { corrupt?: true }
+
+/** A mark outlives every worker that could have started before it (the 14 day maximum lifetime), then the table's TTL removes it. */
+const RECYCLE_MARK_TTL_SECONDS = 15 * 86_400;
+/** A proposal row (pending, applied, withdrawn or expired) is removed by the table's TTL this long after it expires. */
+const CHANGE_ROW_KEEP_SECONDS = 30 * 86_400;
 export interface PrivateAddressChange {
   id: string; orgId: string; entries: string[]; digest: string; baseRevision: number; baseEntries: string[]; proposedBy: string; at: number; expiresAt: number; state: "pending" | "applied" | "withdrawn";
 }
@@ -73,13 +81,25 @@ async function get(table: PrivateAddressTable, key: { pk: string; sk: string }):
   return (await table.documentClient.send(new GetCommand({ TableName: table.tableName, Key: key, ConsistentRead: true })) as { Item?: Item }).Item;
 }
 
-/** The company's approved list. Never written: revision 0 and no entries. A stored row that does not parse throws (the caller fails closed: nothing is let through). */
-export async function readPrivateAddresses(table: PrivateAddressTable, orgId: string): Promise<PrivateAddressList> {
+const validRevision = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 1;
+
+/** The stored row, read for a change: a row that does not parse is `corrupt`, with its revision when that much reads (else 0, and a save replaces whatever row is there). */
+export async function readPrivateAddressesForChange(table: PrivateAddressTable, orgId: string): Promise<PrivateAddressCurrent> {
   const item = await get(table, listKey(orgId));
   if (item === undefined) return { revision: 0, entries: [], digest: privateAddressListDigest([]) };
   const entries = stringList(item.entries);
-  if (item.entityType !== "PRIVATE_ADDRESS_LIST" || entries === undefined || typeof item.revision !== "number" || !Number.isSafeInteger(item.revision) || item.revision < 1) throw new Error("the stored internal address list is not valid");
+  if (item.entityType !== "PRIVATE_ADDRESS_LIST" || entries === undefined || !validRevision(item.revision)) return { revision: validRevision(item.revision) ? item.revision : 0, entries: [], digest: privateAddressListDigest([]), corrupt: true };
   return { revision: item.revision, entries, digest: privateAddressListDigest(entries), ...(typeof item.updatedAt === "number" ? { updatedAt: item.updatedAt } : {}) };
+}
+
+/**
+ * The company's approved list. Never written: revision 0 and no entries. A stored row that does not parse is refused with a clear error (fail closed: a launch then carries nothing and fails for this company alone, loudly,
+ * until an admin saves the list again; other companies' launches are untouched).
+ */
+export async function readPrivateAddresses(table: PrivateAddressTable, orgId: string): Promise<PrivateAddressList> {
+  const current = await readPrivateAddressesForChange(table, orgId);
+  if (current.corrupt === true) throw agentXError("RUNTIME_UNAVAILABLE", PRIVATE_ADDRESS_WORDS.corrupt);
+  return current;
 }
 
 function parseChange(item: Item | undefined): PrivateAddressChange | undefined {
@@ -99,7 +119,7 @@ export async function readPrivateAddressChange(table: PrivateAddressTable, orgId
 }
 
 /** The proposal that still waits: pending, not expired, and made against the list as it is now (one made against an older list can no longer be approved, so it does not block a new one). */
-export async function openPrivateAddressChange(table: PrivateAddressTable, orgId: string, now: number, current: PrivateAddressList): Promise<PrivateAddressChange | undefined> {
+export async function openPrivateAddressChange(table: PrivateAddressTable, orgId: string, now: number, current: Pick<PrivateAddressList, "revision">): Promise<PrivateAddressChange | undefined> {
   const response = await table.documentClient.send(new QueryCommand({
     TableName: table.tableName, KeyConditionExpression: "pk = :pk AND begins_with(sk, :p)", ConsistentRead: true, ExpressionAttributeValues: { ":pk": orgPk(orgId), ":p": CHANGE_PREFIX },
   })) as { Items?: Item[] };
@@ -137,16 +157,18 @@ async function adminConditions(deps: PrivateAddressDeps, orgId: OrgId, actorId: 
   }
 }
 
-function listPut(deps: PrivateAddressDeps, orgId: string, entries: readonly string[], fromRevision: number, by: string): TransactItem {
-  return {
-    Put: {
-      TableName: deps.tableName,
-      Item: { ...listKey(orgId), entityType: "PRIVATE_ADDRESS_LIST", orgId, entries: [...entries], revision: fromRevision + 1, updatedAt: deps.now(), updatedBy: by },
-      // Written only against the revision read: a lost race is a clear conflict, never an overwrite.
-      ConditionExpression: fromRevision === 0 ? "attribute_not_exists(pk)" : "#r = :r",
-      ...(fromRevision === 0 ? {} : { ExpressionAttributeNames: { "#r": "revision" }, ExpressionAttributeValues: { ":r": fromRevision } }),
-    },
-  };
+function listPut(deps: PrivateAddressDeps, orgId: string, entries: readonly string[], from: PrivateAddressCurrent, by: string): TransactItem {
+  // Written only against the revision read: a lost race is a clear conflict, never an overwrite. A corrupt row whose revision does not read is replaced as it is (it must exist still).
+  const condition = from.revision === 0
+    ? { ConditionExpression: from.corrupt === true ? "attribute_exists(pk)" : "attribute_not_exists(pk)" }
+    : { ConditionExpression: "#r = :r", ExpressionAttributeNames: { "#r": "revision" }, ExpressionAttributeValues: { ":r": from.revision } };
+  return { Put: { TableName: deps.tableName, Item: { ...listKey(orgId), entityType: "PRIVATE_ADDRESS_LIST", orgId, entries: [...entries], revision: from.revision + 1, updatedAt: deps.now(), updatedBy: by }, ...condition } };
+}
+
+/** The recycle mark of a list change that removed anything (owner decision 128), in the same transaction as the change: the reaper stops this company's workers launched before it. */
+function recycleMark(deps: PrivateAddressDeps, orgId: string): TransactItem {
+  const at = deps.now();
+  return { Put: { TableName: deps.tableName, Item: { pk: PRIVATE_ADDRESS_RECYCLE_PK, sk: orgId, entityType: "PRIVATE_ADDRESS_RECYCLE", orgId, removedAt: at, [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(at / 1000) + RECYCLE_MARK_TTL_SECONDS } } };
 }
 
 async function commit(deps: PrivateAddressDeps, items: TransactItem[]): Promise<boolean> {
@@ -171,14 +193,15 @@ export type ProposeResult = { status: "applied"; list: PrivateAddressList } | { 
 export async function proposePrivateAddresses(deps: PrivateAddressDeps, input: { orgId: OrgId; actorId: string; expectedRevision: number; entries: readonly string[] }): Promise<ProposeResult> {
   const entries = checkedList(deps, input.entries);
   const conditions = await adminConditions(deps, input.orgId, input.actorId);
-  const current = await readPrivateAddresses(deps, input.orgId);
+  const current = await readPrivateAddressesForChange(deps, input.orgId);
   if (current.revision !== input.expectedRevision) throw agentXError("CHANGE_STALE", PRIVATE_ADDRESS_WORDS.stale);
   const { added, removed } = listDifference(current.entries, entries);
-  if (added.length === 0 && removed.length === 0) throw agentXError("CONFIG_INVALID", PRIVATE_ADDRESS_WORDS.nothing);
+  // A corrupt stored list counts as one that holds something unknown: saving the empty list (or any list) replaces it, and its workers are recycled.
+  if (added.length === 0 && removed.length === 0 && current.corrupt !== true) throw agentXError("CONFIG_INVALID", PRIVATE_ADDRESS_WORDS.nothing);
   if (added.length === 0) {
     // Stricter: one admin, at once. The event goes in the same transaction when a ledger exists; an outage never keeps a wall open.
     const changed = event(deps, { orgId: input.orgId, actorId: input.actorId, action: "company.private_addresses_changed", occurrence: `rev-${String(current.revision + 1)}`, entries, facts: { revision: current.revision + 1, added: 0, removed: removed.length, mode: "direct" } });
-    if (!(await commit(deps, [...conditions, listPut(deps, input.orgId, entries, current.revision, input.actorId), ...auditPending(deps, changed)]))) throw agentXError("CHANGE_STALE", PRIVATE_ADDRESS_WORDS.stale);
+    if (!(await commit(deps, [...conditions, listPut(deps, input.orgId, entries, current, input.actorId), recycleMark(deps, input.orgId), ...auditPending(deps, changed)]))) throw agentXError("CHANGE_STALE", PRIVATE_ADDRESS_WORDS.stale);
     await flushAuditEvents(deps, [changed]);
     return { status: "applied", list: await readPrivateAddresses(deps, input.orgId) };
   }
@@ -190,7 +213,9 @@ export async function proposePrivateAddresses(deps: PrivateAddressDeps, input: {
   const pending = auditPending(deps, proposed);
   if (pending.length === 0) throw agentXError("AUDIT_UNAVAILABLE", PRIVATE_ADDRESS_WORDS.audit);
   const change: PrivateAddressChange = { id, orgId: input.orgId, entries, digest: privateAddressListDigest(entries), baseRevision: current.revision, baseEntries: current.entries, proposedBy: input.actorId, at, expiresAt: at + PRIVATE_ADDRESS_PROPOSAL_TTL_MS, state: "pending" };
-  const put: TransactItem = { Put: { TableName: deps.tableName, Item: { ...changeKey(input.orgId, id), entityType: "PRIVATE_ADDRESS_CHANGE", ...change }, ConditionExpression: "attribute_not_exists(pk)" } };
+  const put: TransactItem = {
+    Put: { TableName: deps.tableName, Item: { ...changeKey(input.orgId, id), entityType: "PRIVATE_ADDRESS_CHANGE", ...change, ...(current.corrupt === true ? { baseCorrupt: true } : {}), [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(change.expiresAt / 1000) + CHANGE_ROW_KEEP_SECONDS }, ConditionExpression: "attribute_not_exists(pk)" },
+  };
   if (!(await commit(deps, [...conditions, put, ...pending]))) throw agentXError("CHANGE_STALE", PRIVATE_ADDRESS_WORDS.stale);
   await flushAuditEvents(deps, [proposed]);
   return { status: "needs_approval", changeId: id };
@@ -220,7 +245,7 @@ export async function approvePrivateAddresses(deps: PrivateAddressDeps, input: {
   if (!decision.ok || decision.mode !== "second_person") throw agentXError("FORBIDDEN", PRIVATE_ADDRESS_WORDS.secondPerson);
   // The install may have changed since the proposal (its network, its services): every entry is checked again.
   const entries = checkedList(deps, change.entries);
-  const current = await readPrivateAddresses(deps, input.orgId);
+  const current = await readPrivateAddressesForChange(deps, input.orgId);
   if (current.revision !== change.baseRevision) throw agentXError("CHANGE_STALE", PRIVATE_ADDRESS_WORDS.stale);
   const { added, removed } = listDifference(current.entries, entries);
   const changed = event(deps, { orgId: input.orgId, actorId: input.approverId, action: "company.private_addresses_changed", occurrence: change.id, entries, facts: { revision: current.revision + 1, added: added.length, removed: removed.length, mode: "second_person" } });
@@ -233,9 +258,11 @@ export async function approvePrivateAddresses(deps: PrivateAddressDeps, input: {
     },
   };
   const fence = (group.fence ?? []) as TransactItem[];
-  if (!(await commit(deps, [...fence, listPut(deps, input.orgId, entries, current.revision, input.approverId), mark, ...pending]))) {
+  // An approved list that also removes something (or replaces a corrupt one) recycles the company's workers, as a removal does (owner decision 128).
+  const recycle = removed.length > 0 || current.corrupt === true ? [recycleMark(deps, input.orgId)] : [];
+  if (!(await commit(deps, [...fence, listPut(deps, input.orgId, entries, current, input.approverId), mark, ...recycle, ...pending]))) {
     // The list moved, the proposal was decided, or someone's authority changed (the fence). The proposal is unchanged in the last case, so the approver can look again.
-    const again = await readPrivateAddresses(deps, input.orgId).catch(() => undefined);
+    const again = await readPrivateAddressesForChange(deps, input.orgId).catch(() => undefined);
     throw agentXError("CHANGE_STALE", again?.revision === current.revision ? PRIVATE_ADDRESS_WORDS.membership : PRIVATE_ADDRESS_WORDS.stale);
   }
   await flushAuditEvents(deps, [changed]);

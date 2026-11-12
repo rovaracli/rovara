@@ -27,10 +27,13 @@ export const PRIVATE_ADDRESSES_BOOT_VARIABLE = "AGENTX_PRIVATE_ADDRESSES";
 /** What that setting may hold: entries as this file writes them, comma separated, nothing a shell would read. */
 export const PRIVATE_ADDRESSES_BOOT_PATTERN = /^[a-z0-9.-]{1,94}:[1-9][0-9]{0,4}(?:,[a-z0-9.-]{1,94}:[1-9][0-9]{0,4}){0,15}$/u;
 
+/** Owner decision 128: the partition where a list change that removed anything leaves its mark (sort key: the org id) for the session reaper, which recycles that company's workers launched before it. */
+export const PRIVATE_ADDRESS_RECYCLE_PK = "PRIVATEADDR#RECYCLE";
+
 /** Why an entry is refused. Fixed codes: an answer names the code and the entry's position, never echoes the text. */
 export const PRIVATE_ADDRESS_REFUSALS = [
   "empty", "too_long", "scheme_or_path", "wildcard", "cidr", "missing_port", "bad_port", "ipv6", "ip_form", "trailing_dot", "bad_name",
-  "metadata", "loopback", "link_local", "not_private", "worker_network", "install_network", "install_service",
+  "metadata", "loopback", "link_local", "not_private", "worker_network", "install_network", "install_service", "reserved_range", "not_routed", "port_not_open",
 ] as const;
 export type PrivateAddressRefusal = (typeof PRIVATE_ADDRESS_REFUSALS)[number];
 
@@ -50,17 +53,26 @@ export const PRIVATE_ADDRESS_REFUSAL_WORDS: Record<PrivateAddressRefusal | "dupl
   loopback: "is a loopback address, which tasks can never reach.",
   link_local: "is a link-local address, which tasks can never reach.",
   not_private: "is not a private address. Public addresses need no entry here.",
-  worker_network: "is inside a range the worker's own containers use (172.17.0.0 to 172.31.255.255, and 192.168.0.0/16).",
+  worker_network: "is inside a range the worker's own containers use (172.17.0.0 to 172.30.255.255, and 192.168.0.0/16).",
   install_network: "is inside the network Rovara itself runs in.",
   install_service: "names one of Rovara's own services.",
+  reserved_range: "is inside a range this install already gives to private MCP servers or model endpoints. Those servers are reached through their own settings, never from a task.",
+  not_routed: "is outside the private ranges this install routes to. The operator sets those ranges when installing Rovara.",
+  port_not_open: "uses a port that workers may not open on this install. Ask the operator to add the port to rovaraPrivateAddressPorts, or use a port that is open.",
   duplicate: "is listed twice.",
   too_many: `is one too many: at most ${String(PRIVATE_ADDRESSES_MAX)} entries.`,
 };
 
-/** What an install knows about itself: its own network (CIDR ranges) and the host names of its own services. */
+/**
+ * What an install knows about itself: its own network (CIDR ranges) and the host names of its own services, and, at the route (the broker reads them from its settings; a launch does not know them and leaves them out):
+ * the ranges other settings own (private MCP servers, model endpoints), the private ranges the install routes to, and the ports its workers may open there. Absent: not checked.
+ */
 export interface PrivateAddressInstall {
   vpcCidrs: readonly string[];
   serviceHosts: readonly string[];
+  reservedCidrs?: readonly string[];
+  routedCidrs?: readonly string[];
+  openPorts?: readonly number[];
 }
 
 export type PrivateAddressCheck =
@@ -106,13 +118,13 @@ const LINK_LOCAL_IPV4 = ["169.254.0.0/16"];
 export const PRIVATE_ADDRESS_RANGES = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10"] as const;
 /**
  * The ranges a worker's own Docker networks use, inside the private ranges: docker0 (172.17/16), the address pools of run, setup and dev networks (172.18-172.28 and 192.168/16), setup runs (172.29/16) and run
- * networks (172.30/16) (packages/worker/ec2/boot-stage2.sh `set_docker_address_pools`), and 172.31/16 with them (Docker's own default pools reach it on an older worker). Traffic to them stays on the worker, so an entry there
- * would reach another task's containers, never the company's server.
+ * networks (172.30/16) (packages/worker/ec2/boot-stage2.sh `set_docker_address_pools`). 172.31/16 is not one of them (no pool reaches it) and may be listed. 192.168/16 stays refused while Docker's pool holds it (follow-up:
+ * move that pool). Traffic to these ranges stays on the worker, so an entry there would reach another task's containers, never the company's server.
  */
-export const WORKER_NETWORK_RANGES = ["172.17.0.0/16", "172.18.0.0/15", "172.20.0.0/14", "172.24.0.0/13", "192.168.0.0/16"] as const;
+export const WORKER_NETWORK_RANGES = ["172.17.0.0/16", "172.18.0.0/15", "172.20.0.0/14", "172.24.0.0/14", "172.28.0.0/15", "172.30.0.0/16", "192.168.0.0/16"] as const;
 
 /** The refusal for an IPv4 address (`undefined`: it may be listed). Shared with the worker's own check of what a name resolves to, which repeats it in shell. */
-export function ipv4Refusal(address: number, install: Pick<PrivateAddressInstall, "vpcCidrs">): PrivateAddressRefusal | undefined {
+export function ipv4Refusal(address: number, install: Pick<PrivateAddressInstall, "vpcCidrs" | "reservedCidrs" | "routedCidrs">): PrivateAddressRefusal | undefined {
   if (METADATA_IPV4.some((item) => ipv4Number(item) === address)) return "metadata";
   if (LOOPBACK_IPV4.some((range) => ipv4InRange(address, range))) return "loopback";
   if (LINK_LOCAL_IPV4.some((range) => ipv4InRange(address, range))) return "link_local";
@@ -120,6 +132,8 @@ export function ipv4Refusal(address: number, install: Pick<PrivateAddressInstall
   if (WORKER_NETWORK_RANGES.some((range) => ipv4InRange(address, range))) return "worker_network";
   // No install network known is no network to compare with: the route refuses to work without one (see `privateAddressInstallOf` in the broker), and the worker reads its own.
   if (install.vpcCidrs.some((range) => ipv4InRange(address, range))) return "install_network";
+  if ((install.reservedCidrs ?? []).some((range) => ipv4InRange(address, range))) return "reserved_range";
+  if (install.routedCidrs !== undefined && !install.routedCidrs.some((range) => ipv4InRange(address, range))) return "not_routed";
   return undefined;
 }
 
@@ -209,6 +223,7 @@ export function checkPrivateAddress(text: string, install: PrivateAddressInstall
   if (!/^[1-9][0-9]{0,4}$/u.test(portText) || Number(portText) > 65_535) return { ok: false, refusal: "bad_port" };
   const port = Number(portText);
   if (host.endsWith(".")) return { ok: false, refusal: "trailing_dot" };
+  if (install.openPorts !== undefined && !install.openPorts.includes(port)) return { ok: false, refusal: "port_not_open" };
   if (/[^a-z0-9.-]/u.test(host)) return { ok: false, refusal: "bad_name" };
   const address = ipv4Number(host);
   if (address !== undefined) {
@@ -254,8 +269,12 @@ export const PrivateAddressesStateSchema = z.object({
   entries: z.array(Entry).max(PRIVATE_ADDRESSES_MAX),
   digest: Digest,
   max: z.literal(PRIVATE_ADDRESSES_MAX),
+  /** The ports workers may open toward the install's private ranges (443 and the operator's rovaraPrivateAddressPorts). */
+  openPorts: z.array(z.number().int().min(1).max(65_535)).max(16),
   /** True for a company owner or admin (only they read this page). */
   canChange: z.boolean(),
+  /** The stored list could not be read: no worker of the company starts until it is saved again (any save replaces it). */
+  unreadable: z.literal(true).optional(),
   /** A proposal waits for a different admin. At most one at a time. */
   pending: z.object({
     changeId: ChangeId, entries: z.array(Entry).max(PRIVATE_ADDRESSES_MAX), digest: Digest, added: z.array(Entry).max(PRIVATE_ADDRESSES_MAX), removed: z.array(Entry).max(PRIVATE_ADDRESSES_MAX),
@@ -275,9 +294,11 @@ export const PrivateAddressesBodySchema = z.discriminatedUnion("action", [
 ]);
 export type PrivateAddressesBody = z.infer<typeof PrivateAddressesBodySchema>;
 
+/** Things to check that do not refuse the list, in fixed words naming an entry's position (a name not on the install's allowed websites, so tasks may not be able to look it up). */
+const Warnings = z.array(z.string().min(1).max(300)).max(PRIVATE_ADDRESSES_MAX).optional();
 export const PrivateAddressesAnswerSchema = z.discriminatedUnion("status", [
-  PrivateAddressesStateSchema.extend({ status: z.literal("applied") }).strict(),
-  PrivateAddressesStateSchema.extend({ status: z.literal("needs_approval"), changeId: ChangeId }).strict(),
+  PrivateAddressesStateSchema.extend({ status: z.literal("applied"), warnings: Warnings }).strict(),
+  PrivateAddressesStateSchema.extend({ status: z.literal("needs_approval"), changeId: ChangeId, warnings: Warnings }).strict(),
   PrivateAddressesStateSchema.extend({ status: z.literal("withdrawn") }).strict(),
 ]);
 export type PrivateAddressesAnswer = z.infer<typeof PrivateAddressesAnswerSchema>;

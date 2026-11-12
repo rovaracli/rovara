@@ -21,8 +21,8 @@ set_docker_address_pools() {
   printf '{"data-root": "%s", "default-address-pools": %s}\n' "$DOCKER_DATA_ROOT" "$pools" >/etc/docker/daemon.json
   systemctl restart docker.service && bash /usr/local/libexec/rovara-container-firewall
 }
-# 2. Two different rvi bridges never talk (a run network and an end-to-end network, or two runs): routed between bridges is "not bridged", traffic inside one bridge is bridged and flows. Inserted at the top of DOCKER-USER, so no earlier
-#    RETURN or ACCEPT can skip it. IPv6 only where Docker has that chain.
+# 2. Two different rvi bridges never talk (a run network and an end-to-end network, or two runs): routed between bridges is "not bridged", traffic inside one bridge is bridged and flows. Inserted at the top of DOCKER-USER, so no
+#    earlier RETURN or ACCEPT for an rvi bridge can skip it (the launcher later puts the internal-address jumps above it, but those match rvbtask and rvbs+ only, never rvi+). IPv6 only where Docker has that chain.
 # 3. The metadata address must still be blocked after the Docker restart (a restart rebuilds Docker's chains; the container firewall script that was just run again puts its DROP back). block_imds, with the metadata REJECT, is
 #    in the worker launcher and runs when the worker unit starts, which is after this; this checks what stands now, so a lost block stops the boot before any container can start.
 metadata_blocked() {
@@ -380,7 +380,7 @@ worker_image=$(cat /etc/agentx/worker-image 2>/dev/null || true)
 docker_gid=$(stat -c %g "$DOCKER_SOCKET") || { log 'Docker socket unavailable'; exit 1; }
 require_model_proxy || { log 'no model proxy'; exit 1; }
 if named_environment; then block_imds || { log 'iptables failed'; exit 1; }; fi
-# Owner decision 123: open the company's approved internal addresses on the task bridge, resolved and pinned now for this worker start (stage 2 `write_private_addresses`). Not fatal: a failure opens nothing.
+# Owner decision 123: open the company's approved internal addresses on the task and setup bridges, resolved and pinned now, until the next start of the worker container (stage 2 `write_private_addresses`). Not fatal: a failure opens nothing.
 if named_environment && [[ -f /usr/local/libexec/rovara-private-allow ]]; then /bin/bash /usr/local/libexec/rovara-private-allow || log 'internal addresses not opened (not fatal: tasks reach none of them)'; fi
 # Test services (slice 1): the run directory for the services' env files and seeds, a small tmpfs at the SAME path on the host and in the worker (the Docker daemon resolves the bind mounts the worker asks for against the host).
 # Made at every start, so it is there after a reboot too. Not fatal: without it the worker refuses runs that have dependencies, and everything else runs.
@@ -429,6 +429,8 @@ else
 fi
 # Setup runs need the rvbs+ rules that the firewall step above may have had to withdraw: the worker is told "ready" or "unavailable" (any other value, or none, it treats as unavailable). Only a named environment has setup runs.
 if named_environment; then args+=(--env "AGENTX_SETUP_ISOLATION=$(setup_isolation_state)"); fi
+# Owner decision 123: the pinned name=address pairs (for the sandboxes' --add-host) and the step's counts, each only in its one written form.
+if named_environment; then for pair in "AGENTX_PRIVATE_ADDRESS_HOSTS:/etc/agentx/private-address-pins:^[a-z0-9.-]{1,94}=[0-9.]{7,15}(,[a-z0-9.-]{1,94}=[0-9.]{7,15}){0,127}$" "AGENTX_PRIVATE_ADDRESS_FACTS:/etc/agentx/private-address-facts:^entries=[0-9]{1,2},opened=[0-9]{1,2},skipped=[0-9]{1,2}$"; do IFS=: read -r name file pattern <<<"$pair"; value=$(head -c 16384 "$file" 2>/dev/null || true); if [[ -n "$value" && "$value" =~ $pattern ]]; then args+=(--env "$name=$value"); fi; done; fi
 if [[ "$test_services_run_dir" == true ]]; then args+=(--volume "$TEST_SERVICES_RUN_DIR:$TEST_SERVICES_RUN_DIR" --env "AGENTX_TEST_SERVICES_RUN_DIR=$TEST_SERVICES_RUN_DIR"); fi
 args+=(--volume "$DOCKER_SOCKET:$DOCKER_SOCKET" --group-add "$docker_gid" --log-driver awslogs --log-opt awslogs-region="$(sed -n 's/^AWS_REGION=//p' "$WORKER_ENV_FILE")" --log-opt awslogs-group="$(cat /etc/agentx/log-group)" --log-opt awslogs-stream="$(sed -n 's/^AGENTX_WORKSPACE_ID=//p' "$WORKER_ENV_FILE")/$(sed -n 's/^AGENTX_SESSION_GENERATION=//p' "$WORKER_ENV_FILE")/$(cat /etc/agentx/instance-id)" "$worker_image")
 exec "$docker" "${args[@]}"
@@ -563,18 +565,20 @@ start_e2e_qualification() {
     >/dev/null 2>&1 || log "could not start the E2E qualification"
 }
 
-# Internal addresses a company's tasks may reach (owner decision 123). The rvbtask bridge (task sandboxes and dev containers, their builds included) is walled off from every private address by the container firewall
-# (boot.sh's container firewall unit). A company admin may list EXACT internal host:port pairs (a package mirror on a private address), approved by a second admin; the control plane's launch hands this worker that company's
-# list as AGENTX_PRIVATE_ADDRESSES (a worker belongs to one workspace, a workspace to one company). This step writes, root-only:
+# Internal addresses a company's tasks may reach (owner decision 123). The rvbtask bridge (task sandboxes and dev containers, their builds included) and the setup-run bridges (rvbs*) are walled off from every private
+# address by the container firewall (boot.sh's container firewall unit). A company admin may list EXACT internal host:port pairs (a package mirror on a private address), approved by a second admin; the control plane's
+# launch hands this worker that company's list as AGENTX_PRIVATE_ADDRESSES (a worker belongs to one workspace, a workspace to one company). This step writes, root-only:
 #   /etc/agentx/private-addresses     the list, only when it is well formed (anything else: nothing is opened);
 #   /etc/agentx/vpc-cidrs             the install's own network, read from this instance's metadata: nothing inside it is ever opened (the model proxy, the database, the VPC resolver, the broker and other workers live there);
-#   /usr/local/libexec/rovara-private-allow   the step the launcher runs at every worker start, BEFORE the worker container starts (below).
-# DNS REBINDING: the firewall matches addresses, never names. At each worker start the step resolves each name once (the VPC resolver, the same one a sandbox asks), checks EVERY address it got (each must be a plain IPv4
-# private address outside the worker's own Docker ranges, the metadata, loopback and link-local ranges and the install's network; one bad address refuses the whole entry), and opens exactly those address:port pairs (TCP).
-# The addresses are pinned for the worker's session: a name that later answers with another address (a rebinding to the install's own services, say) reaches nothing new, because nothing new is open. A list change, or a
-# server that moved, takes effect at the next worker start. The rules live in a chain of their own (ROVARA-PRIVATE-ALLOW), flushed and filled again at each start, reached from DOCKER-USER for the rvbtask bridge only: setup
-# runs (rvbs*), run networks (rvi*) and every other bridge get nothing. The chain starts with RETURN guards for the never-opened ranges, so even a wrong ACCEPT below them could not reach those. Any failure empties the chain
-# (fail closed: nothing opened) and the worker still starts; its tasks then reach no internal address, as before this setting existed.
+#   /usr/local/libexec/rovara-private-allow   the step the launcher runs at EVERY start of the worker container (a boot, a worker restart, a Docker restart), before the container starts (below).
+# DNS REBINDING: the firewall matches addresses, never names. At each run the step resolves each name once (the VPC resolver, the same one a sandbox asks), checks EVERY address it got (each must be a plain IPv4 private
+# address outside the worker's own Docker ranges, the metadata, loopback and link-local ranges and the install's network; one bad address refuses the whole entry), and opens exactly those address:port pairs (TCP). The
+# addresses stay pinned until the next run: a name that later answers with another address (a rebinding to the install's own services, say) reaches nothing new, because nothing new is open. The next run resolves
+# again and drops the old pins. The pinned name=address pairs are handed to the worker (AGENTX_PRIVATE_ADDRESS_HOSTS), which gives task sandboxes and dev containers `--add-host` entries for them, so their lookups agree
+# with the wall; and the counts (entries, opened, skipped) as AGENTX_PRIVATE_ADDRESS_FACTS, which the worker logs at its start.
+# The rules live in a chain of their own (ROVARA-PRIVATE-ALLOW), emptied and filled again at each run, reached from DOCKER-USER for rvbtask (at the top) and for the setup bridges rvbs+ (placed right BELOW the setup
+# walls block_imds puts in, so a setup sandbox's own port-53 drop still comes first; none when those walls are missing, as setup runs are then refused). Run networks (rvi*) and every other bridge get nothing. The
+# chain starts with RETURN guards for the never-opened ranges, so even a wrong ACCEPT below them could not reach those. Any failure empties the chain (fail closed: nothing opened) and the worker still starts.
 readonly PRIVATE_ADDRESSES_FILE=/etc/agentx/private-addresses
 readonly VPC_CIDRS_FILE=/etc/agentx/vpc-cidrs
 write_private_addresses() {
@@ -598,14 +602,17 @@ write_private_addresses() {
 set -u
 readonly LIST_FILE=${ROVARA_PRIVATE_ADDRESSES_FILE:-/etc/agentx/private-addresses}
 readonly CIDR_FILE=${ROVARA_VPC_CIDRS_FILE:-/etc/agentx/vpc-cidrs}
+readonly PINS_FILE=${ROVARA_PRIVATE_ADDRESS_PINS_FILE:-/etc/agentx/private-address-pins}
+readonly FACTS_FILE=${ROVARA_PRIVATE_ADDRESS_FACTS_FILE:-/etc/agentx/private-address-facts}
 readonly CHAIN=ROVARA-PRIVATE-ALLOW
 readonly BRIDGE=rvbtask
+readonly SETUP_BRIDGES=rvbs+
 readonly MAX_ADDRESSES=8
 # Never opened, whatever an entry says. Keep equal to the contract (packages/cloud-contracts/src/app-private-addresses.ts); tests/contract/private-address-wall.test.ts compares the two.
 readonly METADATA="169.254.169.254 169.254.169.253 169.254.169.123 169.254.170.2 169.254.170.23 100.100.100.200"
 readonly NEVER="0.0.0.0/8 127.0.0.0/8 169.254.0.0/16"
 readonly PRIVATE="10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10"
-readonly WORKER="172.17.0.0/16 172.18.0.0/15 172.20.0.0/14 172.24.0.0/13 192.168.0.0/16"
+readonly WORKER="172.17.0.0/16 172.18.0.0/15 172.20.0.0/14 172.24.0.0/14 172.28.0.0/15 172.30.0.0/16 192.168.0.0/16"
 log() { printf 'rovara-private-allow: %s\n' "$*" >&2; }
 # The 32-bit value of four plain decimal numbers (no leading zero, each at most 255); fails for any other form.
 ip_number() {
@@ -640,37 +647,51 @@ refusal() {
   in_any "$address" $VPC && { echo install_network; return; }
   return 0
 }
-empty_chain() { iptables -F "$CHAIN" 2>/dev/null || true; }
+empty_chain() { iptables -F "$CHAIN" 2>/dev/null || true; rm -f "$PINS_FILE"; }
+write_facts() { printf 'entries=%s,opened=%s,skipped=%s\n' "$1" "$2" "$3" >"$FACTS_FILE.tmp" && mv -f "$FACTS_FILE.tmp" "$FACTS_FILE" || rm -f "$FACTS_FILE.tmp"; }
+# The setup bridges' jump goes right below the last setup wall (block_imds's rvbs+ rules), never above one: it is taken out and put back there at each run. No setup walls: no jump (setup runs are refused then).
+place_setup_jump() {
+  local last
+  while iptables -C DOCKER-USER -i "$SETUP_BRIDGES" -j "$CHAIN" 2>/dev/null; do iptables -D DOCKER-USER -i "$SETUP_BRIDGES" -j "$CHAIN" || return 1; done
+  last=$(iptables -S DOCKER-USER 2>/dev/null | awk '/^-A DOCKER-USER / { n += 1; if (index($0, " -i rvbs+ ") > 0) last = n } END { print last + 0 }')
+  ((last > 0)) || return 0
+  iptables -I DOCKER-USER $((last + 1)) -i "$SETUP_BRIDGES" -j "$CHAIN"
+}
 VPC=""
 if [[ -r "$CIDR_FILE" ]]; then
   while read -r line; do [[ "$line" =~ ^[0-9.]+/[0-9]{1,2}$ ]] && VPC="$VPC $line"; done <"$CIDR_FILE"
 fi
+rm -f "$PINS_FILE"
+write_facts 0 0 0
 iptables -N "$CHAIN" 2>/dev/null || iptables -S "$CHAIN" >/dev/null 2>&1 || { log "could not make the chain"; exit 1; }
 iptables -F "$CHAIN" || { log "could not empty the chain"; exit 1; }
 iptables -C DOCKER-USER -i "$BRIDGE" -j "$CHAIN" 2>/dev/null || iptables -I DOCKER-USER -i "$BRIDGE" -j "$CHAIN" || { log "could not reach the chain from DOCKER-USER"; exit 1; }
+place_setup_jump || { empty_chain; log "could not reach the chain from the setup bridges; nothing opened"; exit 1; }
 [[ -r "$LIST_FILE" ]] || exit 0
 list=$(head -c 2048 "$LIST_FILE")
 [[ "$list" =~ ^[a-z0-9.-]{1,94}:[1-9][0-9]{0,4}(,[a-z0-9.-]{1,94}:[1-9][0-9]{0,4}){0,15}$ ]] || { log "the list is not well formed; nothing opened"; exit 1; }
 # Guards first: nothing below them can open these.
 # shellcheck disable=SC2086
 for range in $NEVER $WORKER $VPC; do iptables -A "$CHAIN" -d "$range" -j RETURN || { empty_chain; log "could not add a guard"; exit 1; }; done
-index=0 opened=0
+index=0 opened=0 skipped=0 pins=""
 IFS=, read -r -a entries <<<"$list"
 for entry in "${entries[@]}"; do
   index=$((index + 1))
   host=${entry%:*} port=${entry##*:}
-  ((port >= 1 && port <= 65535)) || { log "entry $index: the port is not valid; skipped"; continue; }
+  ((port >= 1 && port <= 65535)) || { log "entry $index: the port is not valid; skipped"; skipped=$((skipped + 1)); continue; }
+  name=""
   if ip_number "$host" >/dev/null; then
     addresses=$host
   elif [[ "${host##*.}" =~ ^(0x[0-9a-f]*|[0-9]+)$ ]]; then
     # A name whose last label is a number reads as an address to some resolvers (`167772161`, `012.0.0.1`, `0x0a.0.0.1`, `nexus.1`); only the plain four-number form is an address here.
-    log "entry $index: not a plain IPv4 address; skipped"; continue
+    log "entry $index: not a plain IPv4 address; skipped"; skipped=$((skipped + 1)); continue
   else
-    addresses=$(getent ahostsv4 "$host" 2>/dev/null | awk '{ print $1 }' | sort -u | head -n $((MAX_ADDRESSES + 1)))
+    name=$host
+    addresses=$(getent ahostsv4 -- "$host" 2>/dev/null | awk '{ print $1 }' | sort -u | head -n $((MAX_ADDRESSES + 1)))
   fi
-  [[ -n "$addresses" ]] || { log "entry $index: did not resolve; skipped"; continue; }
+  [[ -n "$addresses" ]] || { log "entry $index: did not resolve; skipped"; skipped=$((skipped + 1)); continue; }
   count=$(printf '%s\n' "$addresses" | wc -l | tr -d ' ')
-  ((count <= MAX_ADDRESSES)) || { log "entry $index: resolves to more than $MAX_ADDRESSES addresses; skipped"; continue; }
+  ((count <= MAX_ADDRESSES)) || { log "entry $index: resolves to more than $MAX_ADDRESSES addresses; skipped"; skipped=$((skipped + 1)); continue; }
   # Every address the name gave must pass, or the entry opens nothing.
   bad=""
   for address in $addresses; do
@@ -678,13 +699,16 @@ for entry in "${entries[@]}"; do
     why=$(refusal "$value")
     [[ -z "$why" ]] || { bad=$why; break; }
   done
-  [[ -z "$bad" ]] || { log "entry $index: resolves to an address that is never opened ($bad); skipped"; continue; }
+  [[ -z "$bad" ]] || { log "entry $index: resolves to an address that is never opened ($bad); skipped"; skipped=$((skipped + 1)); continue; }
   for address in $addresses; do
-    iptables -A "$CHAIN" -d "$address/32" -p tcp --dport "$port" -j ACCEPT || { empty_chain; log "could not open entry $index; nothing opened"; exit 1; }
-    opened=$((opened + 1))
+    iptables -A "$CHAIN" -d "$address/32" -p tcp --dport "$port" -j ACCEPT || { empty_chain; write_facts "${#entries[@]}" 0 "${#entries[@]}"; log "could not open entry $index; nothing opened"; exit 1; }
+    [[ -z "$name" ]] || pins="${pins:+$pins,}$name=$address"
   done
+  opened=$((opened + 1))
 done
-log "opened $opened address and port pairs for ${#entries[@]} entries"
+if [[ -n "$pins" ]]; then (umask 077 && printf '%s\n' "$pins" >"$PINS_FILE.tmp" && mv -f "$PINS_FILE.tmp" "$PINS_FILE") || rm -f "$PINS_FILE.tmp" "$PINS_FILE"; fi
+write_facts "${#entries[@]}" "$opened" "$skipped"
+log "opened $opened of ${#entries[@]} entries ($skipped skipped)"
 exit 0
 PRIVATEALLOW
   chmod 0755 /usr/local/libexec/rovara-private-allow

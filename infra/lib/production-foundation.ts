@@ -62,6 +62,8 @@ export interface ProductionFoundationStackProps extends StackProps {
    * network team (for example the broker's address, an internal code host). Refused on any other edition.
    */
   enterpriseEgressCidrs?: readonly string[];
+  /** Enterprise only (owner decision 123, review H1): the extra ports workers may open toward `enterpriseEgressCidrs` for a company's approved internal addresses (`rovaraPrivateAddressPorts`; private-addresses.ts). */
+  privateAddressPorts?: readonly number[];
   /**
    * Enterprise only (review M6): the names an install with package-run MCP servers must let through its DNS firewall, from `mcpHostAllowDomains` (the controller's private name, the package registry's
    * host and the ECS API). Plain host names only. Absent: the plain Enterprise list, which has none of them.
@@ -107,6 +109,7 @@ export class ProductionFoundationStack extends Stack {
       if (!enterprise) throw new Error("stdioMcpAllowDomains is an Enterprise edition setting");
       for (const name of props.stdioMcpAllowDomains) if (!/^(?=.{1,253}$)[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/u.test(name)) throw new Error("a package-run MCP DNS name must be a plain host name");
     }
+    if (!enterprise && (props.privateAddressPorts ?? []).length > 0) throw new Error("privateAddressPorts is an Enterprise edition setting");
     if (!enterprise && (props.internetEgress !== undefined || props.enterpriseEgressCidrs !== undefined)) {
       throw new Error("internetEgress and enterpriseEgressCidrs are Enterprise edition settings");
     }
@@ -283,6 +286,7 @@ export class ProductionFoundationStack extends Stack {
       workspaceKey,
       instanceType: configuration.instanceType,
       ...(enterprise ? { privateEgressCidrs: [AGENTX_PRODUCTION_VPC_CIDR, ...(props.enterpriseEgressCidrs ?? [])] } : {}),
+      ...(enterprise && (props.privateAddressPorts ?? []).length > 0 ? { privateAddressEgress: { cidrs: props.enterpriseEgressCidrs ?? [], ports: props.privateAddressPorts! } } : {}),
     });
 
     // Cloud and Enterprise installs: agent machines (and the proxy, orchestrator and other tasks in this VPC) resolve only an allowlist.

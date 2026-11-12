@@ -21,13 +21,13 @@ const PATH = "/v1/app/org/private-addresses";
 const features = { localAgents: false, admin: true, usage: false, chains: false, describe: false, notices: false };
 const D1 = "1".repeat(64), D2 = "2".repeat(64);
 type State = Record<string, unknown>;
-const base = (over: State = {}): State => ({ revision: 2, entries: ["10.20.0.15:443"], digest: D1, max: 16, canChange: true, ...over });
+const base = (over: State = {}): State => ({ revision: 2, entries: ["10.20.0.15:443"], digest: D1, max: 16, openPorts: [443, 8081], canChange: true, ...over });
 const pending = (mine: boolean): State => ({ changeId: "chg_1", entries: ["10.20.0.15:443", "nexus.corp.example:8081"], digest: D2, added: ["nexus.corp.example:8081"], removed: [], proposedByYou: mine, expiresAt: "2026-11-19T09:00:00.000Z" });
 const refusal = (status: number, code: string, message: string): ApiResponse => ({ status, body: { error: { code, message } } });
 let close: (() => void) | undefined;
 afterEach(() => { close?.();close = undefined; });
 
-function mount(options: { state?: State; respond?: (request: ApiRequest) => Promise<ApiResponse | undefined> } = {}) {
+function mount(options: { state?: State; respond?: (request: ApiRequest) => Promise<ApiResponse | undefined>; path?: string } = {}) {
   const nav = AppNavSchema.parse({ me: { developerId: "a".repeat(64), name: "Omar", orgRole: "admin" }, org: { name: "Acme" }, homeCount: 0, projects: [], shared: { agents: [], sessions: [] }, features });
   const me = AppMeResponseSchema.parse({ developer: { id: "a".repeat(64), name: "Omar", orgRole: "admin" }, org: { orgId: "org_aaaaaaaaaaaaaaaaaaaa", name: "Acme", plan: "team" }, identities: [] });
   const f = fakeHost(async request => {
@@ -42,7 +42,7 @@ function mount(options: { state?: State; respond?: (request: ApiRequest) => Prom
   f.host.viewport = { width: () => 1280, subscribe: () => () => undefined };
   const query = createQueryClient();
   query.setQueryData(["nav"], nav);
-  const router = createMemoryRouter(appRoutes(nav.features), { initialEntries: ["/app/admin/private-addresses"] });
+  const router = createMemoryRouter(appRoutes(nav.features), { initialEntries: [options.path ?? "/app/admin/private-addresses"] });
   const view = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(ThemeProvider, { host: f.host, children: h(RouterProvider, { router }) }) }) }));
   close = () => { view.unmount();router.dispose();query.clear(); };
   return f;
@@ -54,6 +54,8 @@ it("the fixtures are shapes the readers accept, and the page is listed under Sec
   expect(PrivateAddressesAnswerReaderSchema.safeParse({ status: "needs_approval", changeId: "chg_1", ...base({ pending: pending(true) }) }).success).toBe(true);
   const security = visibleSections("admin", false).find(section => section.id === "security");
   expect(security?.items.map(item => item.to)).toContain("/app/admin/private-addresses");
+  // Review H1: not offered on an install with no route to a private network (the read answers 404 there).
+  expect(visibleSections("admin", false, false, false, false, true).flatMap(section => section.items.map(item => item.to))).not.toContain("/app/admin/private-addresses");
 });
 
 it("shows the approved list and sends the whole edited list, one entry per line", async () => {
@@ -94,4 +96,26 @@ it("shows the server's refusal as it is, and a sign-in button when a fresh sign-
 it("tells a viewer the server refuses that only owners and admins change it", async () => {
   mount({ respond: async request => request.path === PATH ? refusal(403, "FORBIDDEN", "Only a company owner or admin can change the internal addresses tasks may reach.") : undefined });
   expect(await screen.findByText(T.READ_ONLY)).toBeTruthy();
+});
+
+it("hides the link where the server answers 404 (no routed private network), and shows it where it answers", async () => {
+  mount({ path: "/app/admin", respond: async request => request.path === PATH ? refusal(404, "NOT_FOUND", "none") : undefined });
+  const nav = await screen.findByRole("navigation", { name: "Administration" });
+  await waitFor(() => { expect(within(nav).queryByRole("link", { name: "Internal addresses" })).toBeNull(); });
+  expect(within(nav).getByRole("link", { name: "Audit" })).toBeTruthy();
+  close?.();
+  mount({ path: "/app/admin" });
+  const shown = await screen.findByRole("navigation", { name: "Administration" });
+  expect(await within(shown).findByRole("link", { name: "Internal addresses" })).toBeTruthy();
+});
+
+it("shows the open ports, a list that can't be read, and the warnings an answer carries", async () => {
+  mount({ state: { unreadable: true }, respond: async request => request.method === "POST" ? { status: 202, body: { status: "needs_approval", changeId: "chg_1", ...base({ pending: pending(true) }), warnings: ["Entry 2 is a name that is not on this install's allowed websites, so tasks may not be able to look it up."] } } : undefined });
+  await screen.findByRole("heading", { name: T.TITLE, level: 1 });
+  expect(screen.getByText(`${T.PORTS} 443, 8081.`)).toBeTruthy();
+  expect(screen.getByRole("alert").textContent).toContain(T.UNREADABLE);
+  fireEvent.change(screen.getByLabelText(T.FIELD), { target: { value: "10.20.0.15:443\nnexus.corp.example:8081" } });
+  fireEvent.click(screen.getByRole("button", { name: T.SAVE }));
+  const warnings = await screen.findByRole("region", { name: T.WARNINGS });
+  expect(warnings.textContent).toContain("Entry 2 is a name that is not on this install's allowed websites");
 });

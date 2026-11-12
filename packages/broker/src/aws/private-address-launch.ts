@@ -2,7 +2,9 @@
 // again (a rule may have tightened since it was approved), and adds the list to the worker's user data as AGENTX_PRIVATE_ADDRESSES. Nothing else carries it, so:
 //   - company isolation: a worker belongs to one workspace, a workspace to one company (its stored `orgId`); the list read is that company's and no other. A workspace that names no company gets no list.
 //   - named environments only: the wall that reads the list is stage 2's (boot-stage2.sh). The legacy single-file boot has no such step, and its launch never carries a list.
-//   - a launch reads the list once: a change applies to worker sessions started after it (the worker pins what it resolved for its whole session; see boot-stage2.sh `rovara-private-allow`).
+//   - a launch reads the list once. An addition applies to workers started after it; a removal also recycles the company's running workers (owner decision 128, session-reaper.ts). The worker resolves names again at
+//     every start of its worker container (boot-stage2.sh `rovara-private-allow`), and pins what it got until the next one.
+//   - the operator's kill switch (review L4): the SSM parameter `<worker settings prefix>private-addresses-off` set to `true` makes every launch carry no list (session-steps.ts). Unset: lists apply.
 // The vendored Code boot configuration (`Ec2WorkerBootConfigSchema`) is strict and read-only here, so the setting is added to the rendered script, after its header, in the same `export NAME='value'` form; the value
 // is held to PRIVATE_ADDRESSES_BOOT_PATTERN (no quote, space or shell character can be in it).
 import { gzipSync } from "node:zlib";
@@ -16,7 +18,15 @@ export async function launchPrivateAddresses(table: PrivateAddressTable, workspa
   const workspace = (await table.documentClient.send(new GetCommand({ TableName: table.tableName, Key: { pk: `WORKSPACE#${workspaceId}`, sk: "META" }, ConsistentRead: true })) as { Item?: Record<string, unknown> }).Item;
   const org = OrgIdSchema.safeParse(workspace?.orgId);
   if (workspace === undefined || workspace.id !== workspaceId || !org.success) return [];
-  const list = await readPrivateAddresses(table, org.data);
+  let list: Awaited<ReturnType<typeof readPrivateAddresses>>;
+  try {
+    list = await readPrivateAddresses(table, org.data);
+  } catch (error) {
+    // Fail closed, loudly, for this company alone: its launch fails with words an operator can act on (an admin saves the list again), and no worker boots with a list it was not meant to have. Other companies' launches
+    // read their own rows and are untouched. Ids and the error's name only.
+    console.error(JSON.stringify({ component: "session-steps", event: "private_addresses.list_unreadable", level: "error", orgId: org.data, workspaceId, errorName: error instanceof Error ? error.name : "unknown" }));
+    throw error;
+  }
   return list.entries.flatMap((entry) => {
     const checked = checkPrivateAddress(entry, install);
     return checked.ok && checked.entry === entry ? [entry] : [];

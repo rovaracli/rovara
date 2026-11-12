@@ -431,18 +431,22 @@ describe("the named TEST proof-only installation gate", () => {
     // 2026-11-12 (0.5.15, signing key to Secrets Manager 1706c80a7 + drop CallbackSigningKey 7d8721bb6): the named and foreign digests were retaken from the values the test reports, after
     // the two reviewed infra changes: CALLBACK_SIGNING_KEY leaves the broker, EvalBatchTick and reconciler env; GetSecretValue on the two signing secrets; the named CallbackSigningKey parameter removed.
     // Checked first: at dc211668e (before both) all six tests pass on the previous pins, and infra/ differs from dc211668e only by those two lanes. Legacy did not move.
+    // 2026-11-12 (0.5.15, feat/0515-private-address-allowlist, review L4): the named and foreign digests were retaken from the values the test reports, after ONE intended change: the session steps
+    // function gains ssm:GetParameter on the one parameter <worker settings prefix>private-addresses-off (the operator's kill switch for internal address lists; named environments only). The worker
+    // security group's extra ports appear only with -c rovaraPrivateAddressPorts, so the default templates have none. Checked first: with only that statement undone, this test, named-templates and
+    // legacy-templates pass on the previous pins and snapshots. Legacy did not move.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "e8e2e0109099966040619fe0d0e1d34c45dc3a6d28b76fed41f23ec199116712",
-        withoutRoute: "b526f2c942ca457017489039ad28bba751891c8b7f89674924adccd5b4f4d524",
+        withRoute: "7ea934f0e8bf4589aaba9b6a2122593b140d73aae5466e9f2c2af5d90c4df8d1",
+        withoutRoute: "d2a2bdc5056745a7fa862bae02aa83113e4b8e215faa796811f4efc82e9da2bd",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "52d11262f602c886e935975a0e6222c659547395b6780a7a03320a4972ef75f7",
-        withoutRoute: "47b1304ca8e743f57e5c7f7ddc22fc7f92d5ad810ef518826c2655ee18432aa5",
+        withRoute: "2b1a0960bcfc0cc476e249e81547348cf3d625b7b21d3b90351d90d2b1c46eee",
+        withoutRoute: "b0c32a05ba12ee4aed84643d84fb8edc7d56494387a3f5b028d90cdde1c86103",
       },
       {
         label: "legacy",

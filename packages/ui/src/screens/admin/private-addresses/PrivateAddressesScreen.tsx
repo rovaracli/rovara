@@ -16,6 +16,9 @@ import "../how-we-work/how-we-work.css";
 export const PRIVATE_ADDRESSES_TEXT = {
  TITLE: "Internal addresses",
  INTRO: "Tasks can't reach private addresses. List the exact internal servers they need, such as a private package mirror, as host:port. Adding needs a second owner or admin; removing applies at once.",
+ UNREADABLE: "The saved list can't be read, so the company's tasks can't start. Save the list again to replace it.",
+ PORTS: "Ports workers may open on this install:",
+ WARNINGS: "Check before relying on it",
  CURRENT: "Allowed now",
  NONE: "None. Tasks reach no internal address.",
  PENDING: "Waiting for a second owner or admin",
@@ -28,18 +31,18 @@ export const PRIVATE_ADDRESSES_TEXT = {
  HINT: "For example nexus.corp.example:8081 or 10.20.0.15:443. No wildcards, ranges or IPv6.",
  SAVE: "Save",
  READ_ONLY: "Only company owners and admins change this list.",
- APPLIED: "Saved. Workers started from now on use the new list.",
+ APPLIED: "Saved. Removed addresses are closed now: the company's running workers restart, and a task that was running is interrupted and retried.",
  ASKED: "Proposed. A different owner or admin has to approve it.",
- APPROVED: "Approved. Workers started from now on use the new list.",
+ APPROVED: "Approved. Workers that start from now on use the new list; any address it removes is closed now, as running workers restart.",
  WITHDRAWN: "The proposal was withdrawn.",
  FAILED: "That didn't work. Try again.",
  SIGN_IN_AGAIN: "Sign in again",
  LOAD_FAILED: "The list could not be read.", RETRY: "Try again",
- APPLIES: "A change applies to workers that start after it. Names are looked up once when a worker starts, and only the addresses found then are reachable.",
+ APPLIES: "An added address applies to workers that start after it is approved. A removed address is closed at once: the company's running workers restart, and a task that was running is interrupted and retried. Names are looked up each time a worker starts, and only the addresses found then are reachable.",
  AUDIT_LINK: "See changes in the audit",
 } as const;
 const T = PRIVATE_ADDRESSES_TEXT;
-type Message = { kind: "status"; text: string } | { kind: "alert"; text: string; signIn?: boolean };
+type Message = { kind: "status"; text: string; warnings?: readonly string[] } | { kind: "alert"; text: string; signIn?: boolean };
 
 function useWrite(orgId: string, developerId: string) {
  const query = useQueryClient(), host = useAppHost(), sending = useRef(false), key = privateAddressesKey(orgId, developerId);
@@ -49,7 +52,8 @@ function useWrite(orgId: string, developerId: string) {
   sending.current = true;setBusy(true);setMessage(undefined);
   try {
    const answer = await write();
-   setMessage({ kind: "status", text: done(answer) });
+   const warnings = "warnings" in answer && Array.isArray(answer.warnings) ? answer.warnings.filter((item): item is string => typeof item === "string") : [];
+   setMessage({ kind: "status", text: done(answer), ...(warnings.length === 0 ? {} : { warnings }) });
    await query.invalidateQueries({ queryKey: key });
    return true;
   } catch (error) {
@@ -61,6 +65,7 @@ function useWrite(orgId: string, developerId: string) {
  }
  const view = <>
   <p role="status">{message?.kind === "status" ? message.text : ""}</p>
+  {message?.kind === "status" && message.warnings !== undefined && <section aria-label={T.WARNINGS}><h3>{T.WARNINGS}</h3><ul>{message.warnings.map(text => <li key={text}><VisibleText text={text} /></li>)}</ul></section>}
   {message?.kind === "alert" && <p role="alert"><VisibleText text={message.text} />{message.signIn === true && <> <Button onClick={() => { host.signIn(host.currentPath()); }}>{T.SIGN_IN_AGAIN}</Button></>}</p>}
  </>;
  return { run, busy, view };
@@ -107,8 +112,10 @@ export function PrivateAddressesScreen() {
  if (read.data === undefined) return <section><PageHeader focusOnMount title={T.TITLE} />{read.error instanceof ApiError && read.error.code === "FORBIDDEN" ? <p>{T.READ_ONLY}</p> : <><p role="alert">{T.LOAD_FAILED}</p><div><Button onClick={() => { void read.refetch(); }}>{T.RETRY}</Button></div></>}</section>;
  const state = read.data;
  return <section aria-label={T.TITLE}><PageHeader focusOnMount title={T.TITLE} description={T.INTRO} /><SettingsNote area="private-addresses" />
+  {state.unreadable === true && <p role="alert">{T.UNREADABLE}</p>}
   <section aria-label={T.CURRENT} className="rv-hww-company-card"><h2>{T.CURRENT}</h2>
    {state.entries.length === 0 ? <p>{T.NONE}</p> : <List label={T.CURRENT} entries={state.entries} />}
+   <p className="rv-muted">{T.PORTS} {state.openPorts.join(", ")}.</p>
    <p className="rv-muted">{T.APPLIES} {state.revision > 0 && <Link to="/app/admin/audit">{T.AUDIT_LINK}</Link>}</p>
   </section>
   <PendingSection state={state} write={write} />
