@@ -34,3 +34,5 @@ export function draftBody(draft: readonly DraftGroup[], requestId: string, expec
 export function draftChanged(draft: readonly DraftGroup[], view: ReviewGroupsView): boolean {
  return JSON.stringify(draft.map(group => [group.groupId ?? null, group.name.trim(), group.members.map(member => member.developerId)])) !== JSON.stringify(view.groups.map(group => [group.groupId, group.name, group.members.map(member => member.developerId)]));
 }
+/** The different people named across all groups of the draft (the server allows at most REVIEW_GROUPS_PEOPLE_MAX). */
+export const distinctPeople = (draft: readonly DraftGroup[]): Set<string> => new Set(draft.flatMap(group => group.members.map(member => member.developerId)));

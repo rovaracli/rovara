@@ -19,12 +19,12 @@ export const reviewView = (overrides: Record<string, unknown> = {}) => TaskRevie
  claimableGroups: [{ groupId: GROUP_BACKEND, name: "Backend" }], canClaim: false, canRelease: false, canReassign: false, approvalNote: REVIEW_CLAIM_APPROVAL_NOTE, ...overrides });
 export const claimOf = (overrides: Record<string, unknown> = {}) => ({ developerId: PRIYA, name: "Priya", groupId: GROUP_BACKEND, groupName: "Backend", claimedAt: "2026-11-11T09:00:00.000Z", hostSync: "requested", ...overrides });
 /** A stand-in for the review routes. `calls` holds every request; each answer can be replaced. */
-export function reviewServer(options: { groups?: unknown; review?: unknown; put?: (request: ApiRequest) => ApiResponse; post?: (request: ApiRequest) => ApiResponse; reviewStatus?: ApiResponse } = {}) {
+export function reviewServer(options: { groups?: unknown; review?: unknown; put?: (request: ApiRequest) => ApiResponse; post?: (request: ApiRequest) => ApiResponse; reviewStatus?: ApiResponse; members?: unknown } = {}) {
  const calls: ApiRequest[] = [], state = { groups: options.groups ?? groupsView(), review: options.review ?? reviewView() };
  const handler = async (request: ApiRequest): Promise<ApiResponse> => {
   calls.push(request);
   if (request.path === "/v1/app/projects/payments/review-groups") return request.method === "PUT" ? (options.put?.(request) ?? { status: 200, body: state.groups }) : { status: 200, body: state.groups };
-  if (request.path === "/v1/app/projects/payments/members") return { status: 200, body: members };
+  if (request.path === "/v1/app/projects/payments/members") return { status: 200, body: options.members ?? members };
   if (request.path === "/v1/app/tasks/" + TASK_ID + "/review") return options.reviewStatus ?? { status: 200, body: state.review };
   if (request.path.startsWith("/v1/app/tasks/" + TASK_ID + "/review/")) return request.method === "POST" ? (options.post?.(request) ?? { status: 200, body: state.review }) : error(404, "NOT_FOUND", "Not found.");
   return { status: 404, body: { error: { code: "NOT_FOUND", message: "Not found." } } };

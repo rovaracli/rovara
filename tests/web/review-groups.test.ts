@@ -2,16 +2,16 @@
 // Review groups (lane exp/review-groups, switch `rovara.reviews` = "v2"): the project page's Review groups section and the task page's review card.
 // Off, neither is rendered and no review route is called. On, a maintainer edits the groups under the revision read; everyone else reads them. The card shows the claim, how GitHub took it, the age,
 // and Claim, Release and Reassign only as the server's own flags allow, and always the sentence that a claim never grants approval.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { screen, fireEvent, waitFor, within, act } from "@testing-library/react";
 import { MemoryRouter, Routes, Route } from "react-router";
-import { QueryClientProvider } from "@tanstack/react-query";
-import { REVIEW_CLAIM_APPROVAL_NOTE, REVIEW_GROUP_NAME_MAX } from "@agentx/cloud-contracts/web";
+import { QueryClientProvider, type QueryClient } from "@tanstack/react-query";
+import { REVIEW_CLAIM_APPROVAL_NOTE, REVIEW_GROUPS_PEOPLE_MAX, REVIEW_GROUP_NAME_MAX } from "@agentx/cloud-contracts/web";
 import { ProjectScreen } from "../../packages/ui/src/screens/project/ProjectScreen.js";
 import { SessionScreen } from "../../packages/ui/src/screens/session/SessionScreen.js";
 import { TaskReviewCard } from "../../packages/ui/src/screens/reviews/TaskReviewCard.js";
 import { REVIEWS_STORAGE_KEY, isReviewGroupsOn } from "../../packages/ui/src/review-flags.js";
-import { agedWords, hostSyncWords } from "../../packages/ui/src/screens/reviews/review-text.js";
+import { GROUPS_MOVED, agedWords, hostSyncWords } from "../../packages/ui/src/screens/reviews/review-text.js";
 import { AppHostProvider, type ApiRequest, type ApiResponse } from "../../packages/ui/src/host.js";
 import { Announcer } from "../../packages/ui/src/design/Announcer.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
@@ -38,7 +38,7 @@ function project(server: Server, options: { on?: boolean; canManage?: boolean } 
  if (options.canManage !== undefined) server.state.groups = groupsView({ canManage: options.canManage });
  const query = createQueryClient();
  const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { initialEntries: ["/app/projects/payments"], children: h(Announcer, { children: h(Routes, { children: h(Route, { path: "/app/projects/:name", element: h(ProjectScreen, {}) }) }) }) }) }) }));
- return { ...f, ...ui, close() { ui.unmount();query.clear(); } };
+ return { ...f, ...ui, query, close() { ui.unmount();query.clear(); } };
 }
 function card(server: Server, options: { theme?: "light" | "dark" } = {}) {
  const f = fakeHost(server.handler), query = createQueryClient();
@@ -46,12 +46,18 @@ function card(server: Server, options: { theme?: "light" | "dark" } = {}) {
  return { ...f, ...ui, query, close() { ui.unmount();query.clear(); } };
 }
 const section = () => screen.findByRole("region", { name: "Review groups" });
-const cardRegion = () => screen.findByRole("region", { name: "Review" });
+const cardRegion = () => screen.findByRole("region", { name: "Pull request review" });
 const press = (name: string | RegExp) => fireEvent.click(screen.getByRole("button", { name }));
 const edit = async () => { fireEvent.click(await screen.findByRole("button", { name: /^(Edit groups|Add a group)$/u })); };
 const pick = (label: string | RegExp, value: string) => fireEvent.change(screen.getByLabelText(label), { target: { value } });
 /** Lets a lazy chunk and its first read arrive: an absence is only proved after the screen had its chance to appear. */
-const settle = () => act(async () => { await new Promise(resolve => { setTimeout(resolve, 800); }); });
+const turn = () => new Promise<void>(resolve => { setTimeout(resolve, 0); });
+const settle = (query: QueryClient) => act(async () => {
+ // Proves an absence: every lazy import has landed, a few macrotask turns have passed (a card reads one tick after it mounts), and no query is in flight. The last short wait is only a backstop.
+ for (let round = 0; round < 10; round += 1) { await vi.dynamicImportSettled();await turn(); }
+ while (query.isFetching() > 0) await turn();
+ await new Promise<void>(resolve => { setTimeout(resolve, 50); });
+});
 const bodyOf = (call: ApiRequest) => call.body as Record<string, unknown>;
 
 describe("the device switch", () => {
@@ -67,7 +73,7 @@ describe("the device switch", () => {
 describe("the project page: switch off", () => {
  it("shows no Review groups section and never calls a review route", async () => {
   const server = reviewServer({}), f = project(server, { on: false });
-  await screen.findByRole("heading", { name: "payments" });await screen.findByRole("heading", { name: "Running now" });await settle();
+  await screen.findByRole("heading", { name: "payments" });await screen.findByRole("heading", { name: "Running now" });await settle(f.query);
   expect(screen.queryByRole("region", { name: "Review groups" })).toBeNull();expect(screen.queryByText("Review groups")).toBeNull();
   expect(server.calls).toHaveLength(0);f.close();
  });
@@ -116,13 +122,34 @@ describe("the project page: switch on", () => {
   await section();await edit();fireEvent.change(await screen.findByDisplayValue("Backend"), { target: { value: "Backend team" } });press("Save groups");
   expect(await screen.findByRole("heading", { name: "Backend team" })).toBeTruthy();expect(screen.queryByRole("heading", { name: "Payments" })).toBeNull();expect(screen.getByRole("button", { name: "Edit groups" })).toBeTruthy();f.close();
  });
- it("reloads the groups and says why when the list changed under the draft (CHANGE_STALE)", async () => {
+ it("sends the revision the draft was started from, not the one a later refetch read: another person's change is never written over", async () => {
+    const first = groupsView().groups[0]!;
+  const server: Server = reviewServer({ put: request => (bodyOf(request)["expectedRevision"] === (server.state.groups as { revision: number }).revision ? { status: 200, body: server.state.groups } : error(409, "CHANGE_STALE", STALE)) });
+  const f = project(server, { canManage: true });
+  await section();await edit();fireEvent.change(await screen.findByDisplayValue("Backend"), { target: { value: "Backend team" } });
+  // Someone else saves revision 4 and removes the Payments group; this page reads it (a focus refetch or a realtime reset).
+  server.state.groups = groupsView({ revision: 4, canManage: true, groups: [first] });
+  const reads = () => server.calls.filter(call => call.method === "GET" && call.path.endsWith("/review-groups")).length, before = reads();
+  await act(async () => { await f.query.invalidateQueries({ queryKey: ["project", "payments", "review-groups"] }); });
+  await waitFor(() => expect(reads()).toBe(before + 1));
+  expect((await within(await section()).findByText(GROUPS_MOVED))).toBeTruthy();
+  press("Save groups");
+  expect((await within(await section()).findByRole("alert")).textContent).toBe(STALE);
+  expect(server.writes()).toHaveLength(1);expect(bodyOf(server.writes()[0]!)["expectedRevision"]).toBe(3);
+  expect(server.state.groups).toMatchObject({ revision: 4 });f.close();
+ });
+ it("keeps the draft when the list changed under it (CHANGE_STALE), says why, and discards it only when asked", async () => {
   const server = reviewServer({ put: () => error(409, "CHANGE_STALE", STALE) }), f = project(server, { canManage: true });
   await section();await edit();fireEvent.change(await screen.findByDisplayValue("Backend"), { target: { value: "Backend team" } });
   const reads = () => server.calls.filter(call => call.method === "GET" && call.path.endsWith("/review-groups")).length, before = reads();
   press("Save groups");
   expect((await within(await section()).findByRole("alert")).textContent).toBe(STALE);
-  await waitFor(() => expect(reads()).toBe(before + 1));expect(screen.queryByDisplayValue("Backend team")).toBeNull();expect(screen.getByRole("button", { name: "Edit groups" })).toBeTruthy();f.close();
+  await waitFor(() => expect(reads()).toBe(before + 1));
+  expect(screen.getByDisplayValue("Backend team")).toBeTruthy();expect(screen.getByText(GROUPS_MOVED)).toBeTruthy();
+  server.state.groups = groupsView({ revision: 4, canManage: true, groups: [{ groupId: GROUP_PAYMENTS, name: "Payments", members: [] }] });
+  fireEvent.click(screen.getByRole("button", { name: "Discard my changes and reload" }));
+  expect(await screen.findByRole("heading", { name: "Payments" })).toBeTruthy();expect(screen.queryByDisplayValue("Backend team")).toBeNull();expect(screen.queryByRole("heading", { name: "Backend team" })).toBeNull();
+  expect(screen.getByRole("button", { name: "Edit groups" })).toBeTruthy();expect(within(await section()).queryByRole("alert")).toBeNull();f.close();
  });
  it("shows a refusal as the server worded it and keeps the draft", async () => {
   const words = "groups.0.name: another group has this name", server = reviewServer({ put: () => error(400, "CONFIG_INVALID", words) }), f = project(server, { canManage: true });
@@ -152,6 +179,24 @@ describe("the project page: switch on", () => {
   expect((await within(await section()).findByRole("alert")).textContent).toBe("Review groups are unavailable right now.");
   fail = false;fireEvent.click(within(await section()).getByRole("button", { name: "Try again" }));expect(await screen.findByRole("heading", { name: "Backend" })).toBeTruthy();f.close();
  });
+ it("offers nobody new once the groups name 200 different people, but still lets a named person join another group", async () => {
+  const id = (n: number) => n.toString(16).padStart(64, "0"), person = (n: number) => ({ developerId: id(n), name: "Person " + String(n), role: "contributor", source: "grant" });
+  const groups = Array.from({ length: 4 }, (_, g) => ({ groupId: "rgp_" + String(g + 1).repeat(16), name: "Full " + String(g + 1), members: Array.from({ length: 50 }, (_, n) => ({ developerId: id(g * 50 + n), name: "Person " + String(g * 50 + n), eligible: true })) }));
+  groups.push({ groupId: "rgp_" + "5".repeat(16), name: "Open", members: [] });
+  const server = reviewServer({ groups: groupsView({ canManage: true, groups }), members: { members: [...Array.from({ length: REVIEW_GROUPS_PEOPLE_MAX }, (_, n) => person(n)), { ...person(900), name: "Extra person" }] } }), f = project(server);
+  await section();await edit();
+  const picker = await screen.findByLabelText<HTMLSelectElement>("Add a person to Open");await waitFor(() => expect(picker.disabled).toBe(false));
+  const labels = [...picker.options].map(option => option.textContent);
+  expect(labels).toHaveLength(1 + REVIEW_GROUPS_PEOPLE_MAX);expect(labels).toContain("Person 0");expect(labels).not.toContain("Extra person");
+  expect(screen.getByText(/200 different people in all/u)).toBeTruthy();f.close();
+ });
+ it("offers the extra person while the groups name fewer than 200", async () => {
+  const id = (n: number) => n.toString(16).padStart(64, "0"), person = (n: number) => ({ developerId: id(n), name: "Person " + String(n), role: "contributor", source: "grant" });
+  const groups = [{ groupId: GROUP_BACKEND, name: "Few", members: [{ developerId: id(0), name: "Person 0", eligible: true }] }];
+  const server = reviewServer({ groups: groupsView({ canManage: true, groups }), members: { members: [person(0), { ...person(900), name: "Extra person" }] } }), f = project(server);
+  await section();await edit();const picker = await screen.findByLabelText<HTMLSelectElement>("Add a person to Few");await waitFor(() => expect(picker.disabled).toBe(false));
+  expect([...picker.options].map(option => option.textContent)).toEqual(["Choose a person", "Extra person"]);f.close();
+ });
  it("has no axe violations, read-only and editing, in both themes", async () => {
   for (const theme of ["light", "dark"] as const) {
    const ui = project(reviewServer({}), { canManage: true });document.documentElement.setAttribute("data-theme", theme);
@@ -164,11 +209,15 @@ describe("the project page: switch on", () => {
 describe("the review card: what is shown", () => {
  it("shows nothing when nothing waits and nobody holds the review", async () => {
   const server = reviewServer({ review: reviewView({ waiting: false, reviewKey: undefined, pullRequests: [], waitingSince: undefined, ageHours: undefined }) }), f = card(server);
-  await waitFor(() => expect(server.reviewCalls()).toHaveLength(1));expect(screen.queryByRole("region", { name: "Review" })).toBeNull();f.close();
+  await waitFor(() => expect(server.reviewCalls()).toHaveLength(1));expect(screen.queryByRole("region", { name: "Pull request review" })).toBeNull();f.close();
  });
  it("shows nothing when the server has no review route (404)", async () => {
   const server = reviewServer({ reviewStatus: error(404, "NOT_FOUND", "Not found.") }), f = card(server);
-  await waitFor(() => expect(server.reviewCalls()).toHaveLength(1));expect(screen.queryByRole("region", { name: "Review" })).toBeNull();f.close();
+  await waitFor(() => expect(server.reviewCalls()).toHaveLength(1));expect(screen.queryByRole("region", { name: "Pull request review" })).toBeNull();f.close();
+ });
+ it("shows nothing for a task this person may not open (403 TASK_ACCESS_DENIED), like a missing one", async () => {
+  const server = reviewServer({ reviewStatus: error(403, "TASK_ACCESS_DENIED", "You can't open this task.") }), f = card(server);
+  await waitFor(() => expect(server.reviewCalls()).toHaveLength(1));await settle(f.query);expect(screen.queryByRole("region", { name: "Pull request review" })).toBeNull();expect(screen.queryByRole("alert")).toBeNull();f.close();
  });
  it("says why when the review can't be read", async () => {
   const server = reviewServer({ reviewStatus: error(400, "RUNTIME_UNAVAILABLE", "Rovara couldn't check who owns this task. Try again in a minute.") }), f = card(server);
@@ -295,6 +344,33 @@ describe("the review card: claim, release and reassign", () => {
   press("Claim review");fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Claim" }));await waitFor(() => expect(server.writes()).toHaveLength(2));
   expect(bodyOf(server.writes()[1]!)["requestId"]).not.toBe(bodyOf(server.writes()[0]!)["requestId"]);f.close();
  });
+ it("claims with the revision and review key the dialog was opened with, not what a refetch read behind it", async () => {
+    const server: Server = reviewServer({ review: reviewView({ canClaim: true }), post: request => { const now = server.state.review as { revision: number; reviewKey: string }; return bodyOf(request)["expectedRevision"] === now.revision && bodyOf(request)["reviewKey"] === now.reviewKey ? { status: 200, body: server.state.review } : error(409, "CHANGE_STALE", STALE); } });
+  const f = card(server);await cardRegion();press("Claim review");const dialog = within(await screen.findByRole("dialog"));
+  server.state.review = reviewView({ canClaim: true, revision: 5, reviewKey: "9".repeat(64) });
+  const reads = () => server.reviewCalls().filter(call => call.method === "GET").length, before = reads();
+  await act(async () => { await f.query.invalidateQueries({ queryKey: ["task", TASK_ID, "review"] }); });await waitFor(() => expect(reads()).toBe(before + 1));
+  fireEvent.click(dialog.getByRole("button", { name: "Claim" }));
+  await waitFor(() => expect(server.writes()).toHaveLength(1));expect(bodyOf(server.writes()[0]!)).toMatchObject({ expectedRevision: 4, reviewKey: REVIEW_KEY });
+  expect((await screen.findByRole("alert")).textContent).toContain(STALE);f.close();
+ });
+ it("reassigns with the revision and review key the dialog was opened with, not what a refetch read behind it", async () => {
+    const groups = groupsView({ canManage: true, groups: [{ groupId: GROUP_BACKEND, name: "Backend", members: [{ developerId: PRIYA, name: "Priya", eligible: true }, { developerId: LENA, name: "Lena", eligible: true }] }] });
+  const server: Server = reviewServer({ groups, review: reviewView({ claim: claimOf(), canReassign: true }), post: request => { const now = server.state.review as { revision: number; reviewKey: string }; return bodyOf(request)["expectedRevision"] === now.revision && bodyOf(request)["reviewKey"] === now.reviewKey ? { status: 200, body: server.state.review } : error(409, "CHANGE_STALE", STALE); } });
+  const f = card(server);await within(await cardRegion()).findByText(/Claimed by/u);press("Reassign");const dialog = within(await screen.findByRole("dialog"));
+  const target = await dialog.findByLabelText<HTMLSelectElement>("Reassign to");await waitFor(() => expect(target.disabled).toBe(false));fireEvent.change(target, { target: { value: LENA } });
+  server.state.review = reviewView({ claim: claimOf(), canReassign: true, revision: 5, reviewKey: "9".repeat(64) });
+  const reads = () => server.reviewCalls().filter(call => call.method === "GET").length, before = reads();
+  await act(async () => { await f.query.invalidateQueries({ queryKey: ["task", TASK_ID, "review"] }); });await waitFor(() => expect(reads()).toBe(before + 1));
+  fireEvent.click(dialog.getByRole("button", { name: "Reassign" }));
+  await waitFor(() => expect(server.writes()).toHaveLength(1));expect(bodyOf(server.writes()[0]!)).toMatchObject({ expectedRevision: 4, reviewKey: REVIEW_KEY, to: LENA });
+  expect((await screen.findByRole("alert")).textContent).toContain(STALE);f.close();
+ });
+ it("shows the approval note once while a dialog is open, and again on the card after", async () => {
+  const f = card(reviewServer({ review: reviewView({ canClaim: true }) }));await cardRegion();expect(screen.getAllByText(REVIEW_CLAIM_APPROVAL_NOTE)).toHaveLength(1);
+  press("Claim review");await screen.findByRole("dialog");expect(screen.getAllByText(REVIEW_CLAIM_APPROVAL_NOTE)).toHaveLength(1);
+  fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Not now" }));await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());expect(screen.getAllByText(REVIEW_CLAIM_APPROVAL_NOTE)).toHaveLength(1);f.close();
+ });
  it.each([
   ["You asked for this task, so someone else reviews it."], ["Someone else has claimed this review. A maintainer can reassign it."], ["Link your GitHub account to claim reviews: the claim makes you the requested reviewer on GitHub."],
   ["Rovara couldn't check who owns this task. Try again in a minute."],
@@ -331,12 +407,12 @@ describe("the task page", () => {
   if (on) f.storage.set(REVIEWS_STORAGE_KEY, "v2");
   const query = createQueryClient();
   const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { initialEntries: ["/app/sessions/" + session.sessionId], children: h(Announcer, { children: h(Routes, { children: h(Route, { path: "/app/sessions/:id", element: h(SessionScreen, {}) }) }) }) }) }) }));
-  return { ...f, ...ui, close() { ui.unmount();query.clear(); } };
+  return { ...f, ...ui, query, close() { ui.unmount();query.clear(); } };
  }
  it("switch off: no review card and no review call", async () => {
   const server = reviewServer({ review: reviewView({ claim: claimOf() }) }), f = page(server, false);
-  await screen.findByRole("heading", { name: "Fix duplicate refunds" });await screen.findByRole("tab", { name: "Pipeline" });await settle();
-  expect(screen.queryByRole("region", { name: "Review" })).toBeNull();expect(server.calls).toHaveLength(0);f.close();
+  await screen.findByRole("heading", { name: "Fix duplicate refunds" });await screen.findByRole("tab", { name: "Pipeline" });await settle(f.query);
+  expect(screen.queryByRole("region", { name: "Pull request review" })).toBeNull();expect(server.calls).toHaveLength(0);f.close();
  });
  it("switch on: the card reads the task's own review", async () => {
   const server = reviewServer({ review: reviewView({ claim: claimOf() }) }), f = page(server, true);

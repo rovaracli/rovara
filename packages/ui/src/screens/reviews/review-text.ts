@@ -1,5 +1,5 @@
 // The words of the review screens (lane exp/review-groups), in one place so the project section, the task card and the tests say the same thing.
-import { REVIEW_GROUPS_MAX, REVIEW_GROUP_MEMBERS_MAX, REVIEW_GROUP_NAME_MAX } from "@agentx/cloud-contracts/web";
+import { REVIEW_GROUPS_MAX, REVIEW_GROUPS_PEOPLE_MAX, REVIEW_GROUP_MEMBERS_MAX, REVIEW_GROUP_NAME_MAX } from "@agentx/cloud-contracts/web";
 
 /** What the code host answered when Rovara asked it to list the holder as a requested reviewer. */
 const HOST_SYNC_WORD_TABLE: Readonly<Record<string, string>> = { requested: "Asked on GitHub", refused: "GitHub refused", pending: "Waiting to ask GitHub", unavailable: "GitHub unavailable" };
@@ -13,7 +13,7 @@ const HOST_SYNC_HINT_TABLE: Readonly<Record<string, string>> = {
 export const hostSyncWords = (sync: string): string => HOST_SYNC_WORD_TABLE[sync] ?? "GitHub status unknown";
 export const hostSyncHint = (sync: string): string => HOST_SYNC_HINT_TABLE[sync] ?? "Rovara can't tell whether GitHub was asked.";
 export const NO_LONGER_CONTRIBUTOR = "no longer a contributor";
-export const GROUPS_LIMITS = `Up to ${String(REVIEW_GROUPS_MAX)} groups, ${String(REVIEW_GROUP_MEMBERS_MAX)} people in each, and names up to ${String(REVIEW_GROUP_NAME_MAX)} characters.`;
+export const GROUPS_LIMITS = `Up to ${String(REVIEW_GROUPS_MAX)} groups, ${String(REVIEW_GROUP_MEMBERS_MAX)} people in each, ${String(REVIEW_GROUPS_PEOPLE_MAX)} different people in all, and names up to ${String(REVIEW_GROUP_NAME_MAX)} characters.`;
 export const GROUPS_INTRO = "A review group shares the work of reviewing a project's pull requests. Anyone in a group can claim a review that is waiting.";
 export const GROUPS_EMPTY = "This project has no review groups yet.";
 export const GROUPS_EMPTY_CAN_MANAGE = "Add a group so people can claim reviews that are waiting.";
@@ -24,3 +24,4 @@ export function agedWords(ageHours: number | undefined): string {
  if (ageHours === undefined) return "Aged: waiting more than a day";
  return "Aged: waiting " + String(ageHours) + (ageHours === 1 ? " hour" : " hours");
 }
+export const GROUPS_MOVED = "These groups changed while you were editing. Your changes are kept here, but saving is refused until you reload.";
