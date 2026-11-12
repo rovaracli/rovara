@@ -3,7 +3,7 @@
 import type { Page, Route } from "@playwright/test";
 export interface Sent { method: string; path: string; body: unknown }
 const hex = (letter: string) => letter.repeat(64);
-export const PEOPLE = { maya: hex("a"), priya: hex("b"), sam: hex("c"), lee: hex("d"), ana: hex("e"), dana: hex("f") };
+export const PEOPLE = { noor: hex("9"), maya: hex("a"), priya: hex("b"), sam: hex("c"), lee: hex("d"), ana: hex("e"), dana: hex("f") };
 type Person = { developerId: string; name: string; role: string; projectRole: string; source: string };
 const person = (developerId: string, name: string, projectRole: string, source = "grant"): Person => ({ developerId, name, role: projectRole === "collaborator" ? "viewer" : projectRole, projectRole, source });
 export const DECISION_ID = "pdq_" + "B".repeat(20);
@@ -12,7 +12,7 @@ export async function installPeopleMock(page: Page, options: { decisions?: boole
  const sent: Sent[] = [];
  let revision = 7, approvalsRevision = 2, approvalsOn = true;
  const settingsRevision = 3;
- const members: Person[] = [person(PEOPLE.maya, "Maya Chen", "maintainer"), person(PEOPLE.priya, "Priya Rao", "collaborator"), person(PEOPLE.sam, "Sam Ortiz", "contributor"), person(PEOPLE.lee, "Lee Park", "viewer"), person(PEOPLE.dana, "Dana Admin", "maintainer", "org_role")];
+ const members: Person[] = [person(PEOPLE.maya, "Maya Chen", "maintainer"), person(PEOPLE.noor, "Noor Haddad", "maintainer"), person(PEOPLE.priya, "Priya Rao", "collaborator"), person(PEOPLE.sam, "Sam Ortiz", "contributor"), person(PEOPLE.lee, "Lee Park", "viewer"), person(PEOPLE.dana, "Dana Admin", "maintainer", "org_role")];
  let decision: Record<string, unknown> = { decisionId: DECISION_ID, taskId: "11111111-1111-4111-8111-111111111111", project: "payments", question: "Which wording should the refund button use?", options: [{ id: "o1", label: "Refund now" }, { id: "o2", label: "Request a refund" }], risk: "low", status: "open", revision: 4, raisedAt: "2026-11-10T10:00:00.000Z", answers: [], you: { canAnswer: true, canApprove: true } };
  const json = (route: Route, body: unknown, status = 200) => route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
  await page.route(/\/v1\/web\/(?:projects\/payments\/(?:people|code-settings|collaborator-approvals|product-decisions)|org\/members$|org\/invites\/reviewed$)/u, async route => {

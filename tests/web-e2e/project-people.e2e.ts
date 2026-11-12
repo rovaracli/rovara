@@ -31,7 +31,8 @@ for (const width of [1280, 390] as const) {
   const seen = watch(page);await enter(page, context, request, baseURL, width, { "rovara.people": "v2" });const mock = await installPeopleMock(page);await page.goto("/app/projects/payments?tab=people");
   await expect(page.getByRole("tab", { name: "People", selected: true })).toBeVisible();
   // The positive control of the off test: with the switch on the same watcher does see the routes and the chunk.
-  expect(seen.chunks.some(url => /ProjectPeopleTab/u.test(url))).toBe(true);expect(seen.routes.some(url => /\/people/u.test(url))).toBe(true);
+  // Polled, not read once: the request can still be in flight the moment the tab shows, on a cold run.
+  await expect.poll(() => seen.chunks.some(url => /ProjectPeopleTab/u.test(url))).toBe(true);await expect.poll(() => seen.routes.some(url => /\/people/u.test(url))).toBe(true);
   const priya = page.getByRole("row", { name: /Priya Rao/u });await expect(priya).toContainText("Collaborator");
   await expect(page.getByRole("heading", { name: "Collaborator approvals" })).toBeVisible();await expect(page.getByRole("heading", { name: "Merge rules" })).toBeVisible();
   expect(await noSidewaysScroll(page)).toBe(true);await checkA11y(page, { theme: "light" });await evidenceShot(page, { path: `${shots}/people-light-${String(width)}.png`, fullPage: true });

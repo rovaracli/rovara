@@ -9,7 +9,7 @@ import { isStale, peopleKey, useCompanyMembers, useProjectPeopleApi, type People
 import { projectRoleLabel } from "../../admin/projects/labels.js";
 import { StaleNotice } from "./StaleNotice.js";
 import { ADD_UNAVAILABLE, PROJECT_PEOPLE_STALE_MESSAGE, ROLE_HELP } from "./people-text.js";
-import { failureText, useRequestId } from "./people-write.js";
+import { failureText, staleText, useRequestId } from "./people-write.js";
 
 /** `revision`, `roles` and `people` are what the page read WHEN THE DIALOG OPENED (the tab captures them then): a refetch while it is open never changes what a save is fenced by. */
 interface Common { onCloseAutoFocus?: ((event: Event) => void) | undefined; project: string; revision: number; roles: readonly CloudProjectRole[]; open: boolean; onOpenChange: (open: boolean) => void; onDone: (message: string) => void }
@@ -24,8 +24,10 @@ export function PersonRoleDialog(props: Props) {
  const onProject = new Set(props.mode === "add" ? props.people.map(person => person.developerId) : []);
  const choices = (companyMembers.data?.members ?? []).filter(member => member.role === "member" && !onProject.has(member.developerId));
  const target = props.mode === "change" ? props.member.developerId : who;
- const options = roles.map(value => ({ value, label: projectRoleLabel[value] }));
- const chosen = roles.find(value => value === role);
+ // The person's current role is always an option, even where the server's `assignableRoles` omits it, so the select never opens on a value it cannot show.
+ const offered = current !== undefined && !roles.includes(current) ? [current, ...roles] : roles;
+ const options = offered.map(value => ({ value, label: projectRoleLabel[value] }));
+ const chosen = offered.find(value => value === role);
  async function save() {
   if (busy || stale || target === "" || chosen === undefined) return;
   setBusy(true);setError(undefined);
@@ -36,7 +38,7 @@ export function PersonRoleDialog(props: Props) {
    onDone(props.mode === "change" ? name + " is now " + projectRoleLabel[chosen].toLowerCase() + "." : name + " was added as " + projectRoleLabel[chosen].toLowerCase() + ".");onOpenChange(false);
   } catch (failure) {
    id.settle(failure);
-   if (isStale(failure)) { setStale(true);setError(PROJECT_PEOPLE_STALE_MESSAGE);await query.invalidateQueries({ queryKey: peopleKey(project) }); } else setError(failureText(failure));
+   if (isStale(failure)) { setStale(true);setError(staleText(failure, PROJECT_PEOPLE_STALE_MESSAGE));await query.invalidateQueries({ queryKey: peopleKey(project) }); } else setError(failureText(failure));
   } finally { setBusy(false); }
  }
  const discard = () => { onOpenChange(false); };

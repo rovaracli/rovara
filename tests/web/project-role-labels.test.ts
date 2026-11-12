@@ -17,6 +17,7 @@ import { SessionControls } from "../../packages/ui/src/screens/session/SessionCo
 import { PEOPLE_STORAGE_KEY } from "../../packages/ui/src/people-flags.js";
 import { AppHostProvider, type ApiRequest, type ApiResponse } from "../../packages/ui/src/host.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
+import { projectFixture } from "./support/project-fixture.js";
 import { fakeHost } from "./support/fake-host.js";
 import { renderUi } from "./support/render.js";
 import { h } from "./support/h.js";
@@ -76,25 +77,34 @@ it("with the People switch OFF a project's roster still says Collaborator (proje
 
 // ---- the join landing ----
 const ME = { developer: { id: "a".repeat(64), name: "Sam", orgRole: "member" }, org: { orgId: "org_aaaaaaaaaaaaaaaaaaaa", name: "Acme", plan: "cloud", nameIsDefault: false }, identities: [] };
-function mountWelcome(search: string, on: boolean) {
-  const f = fakeHost(async request => request.path === "/v1/app/me" ? { status: 200, body: ME } : { status: 200, body: {} }), query = createQueryClient();
+function mountWelcome(search: string, on: boolean, readable = false) {
+  const f = fakeHost(async request => request.path === "/v1/app/me" ? { status: 200, body: ME } : request.path === "/v1/app/projects/payments/overview" ? (readable ? { status: 200, body: projectFixture() } : { status: 404, body: { error: { code: "NOT_FOUND", message: "Not found." } } }) : { status: 200, body: {} }), query = createQueryClient();
   if (on) f.storage.set(PEOPLE_STORAGE_KEY, "v2");
   const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { initialEntries: ["/app/welcome" + search], children: h(Routes, { children: h(Route, { path: "/app/welcome", element: h(WelcomeScreen, {}) }) }) }) }) }));
   return { ...f, ...ui, close() { ui.unmount();query.clear(); } };
 }
 
-it("joined through an invite that named a project: a landing with a link into the project (switch on)", async () => {
-  const f = mountWelcome("?joined=1&project=payments", true), navigate = vi.spyOn(f.host, "navigate");
+it("joined through an invite that named a project: once the project can be read, a landing with a link into it (switch on)", async () => {
+  const f = mountWelcome("?joined=1&project=payments", true, true), navigate = vi.spyOn(f.host, "navigate");
   expect(await screen.findByRole("heading", { name: "You joined Acme" })).toBeTruthy();
-  expect(screen.getByText(/You are also on the project payments/u)).toBeTruthy();
+  expect(await screen.findByText(/You are also on the project payments/u)).toBeTruthy();
   expect(screen.getByRole("link", { name: "Open payments" }).getAttribute("href")).toBe("/app/projects/payments");
   expect(navigate).not.toHaveBeenCalled();
   await expectNoAxeViolations(f.container);
   f.close();
 });
 
-it("joined but the project was archived or removed: says they joined the company but not the project, and links only into the app", async () => {
-  for (const [note, words] of [["project_archived", /joined the company but not the project payments: it was archived/u], ["project_gone", /joined the company but not the project payments: it is no longer there/u]] as const) {
+it("the URL alone proves nothing: with a project that cannot be read the words are neutral and there is no link into it", async () => {
+  const f = mountWelcome("?joined=1&project=payments", true, false);
+  expect(await screen.findByText("If you were added to payments, it will appear in your projects.")).toBeTruthy();
+  await new Promise(resolve => setTimeout(resolve, 40));
+  expect(screen.queryByText(/You are also on the project/u)).toBeNull();
+  expect(screen.queryByRole("link", { name: "Open payments" })).toBeNull();
+  f.close();
+});
+
+it("a project note is worded neutrally, and links only into the app", async () => {
+  for (const [note, words] of [["project_archived", /If you were meant to be added to payments, it may not have happened: it may have been archived or removed/u], ["project_gone", /If you were meant to be added to payments, it may not have happened/u]] as const) {
     const f = mountWelcome("?joined=1&project=payments&projectNote=" + note, true);
     expect(await screen.findByText(words)).toBeTruthy();
     expect(screen.queryByRole("link", { name: "Open payments" })).toBeNull();

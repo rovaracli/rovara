@@ -8,7 +8,7 @@ import { VisibleText } from "../../../design/VisibleText.js";
 import { approvalsKey, isStaleDecision, useCollaboratorApprovals, useProductDecisionsApi } from "../../../api/product-decisions.js";
 import { StaleNotice } from "./StaleNotice.js";
 import { PROJECT_PEOPLE_STALE_MESSAGE } from "./people-text.js";
-import { failureText, isGone, useRequestId, useRestoreFocus } from "./people-write.js";
+import { failureText, isGone, staleText, useRequestId, useRestoreFocus } from "./people-write.js";
 
 /**
  * The project's collaborator-approvals switch (`PUT .../collaborator-approvals`, browser-only): whether a collaborator may approve LOW-risk product decisions here. On by default. The server says who may change it
@@ -36,7 +36,7 @@ function ApprovalsQuestion({ project, asking, onClose, onCloseAutoFocus }: { onC
   if (busy || stale) return;
   setBusy(true);setError(undefined);
   try { await api.setApprovals(project, { requestId: id.get(), enabled: asking.enabled, expectedRevision: asking.revision });id.reset();await query.invalidateQueries({ queryKey: approvalsKey(project) });onClose(); }
-  catch (failure) { id.settle(failure);if (isStaleDecision(failure)) { setStale(true);setError(PROJECT_PEOPLE_STALE_MESSAGE);await query.invalidateQueries({ queryKey: approvalsKey(project) }); } else setError(failureText(failure)); }
+  catch (failure) { id.settle(failure);if (isStaleDecision(failure)) { setStale(true);setError(staleText(failure, PROJECT_PEOPLE_STALE_MESSAGE));await query.invalidateQueries({ queryKey: approvalsKey(project) }); } else setError(failureText(failure)); }
   finally { setBusy(false); }
  }
  return <Dialog title={asking.enabled ? "Let collaborators approve?" : "Stop collaborators approving?"} open onCloseAutoFocus={onCloseAutoFocus} onOpenChange={next => { if (!busy && !next) onClose(); }}>

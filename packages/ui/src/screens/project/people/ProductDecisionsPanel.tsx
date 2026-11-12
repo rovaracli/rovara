@@ -9,7 +9,7 @@ import { VisibleText } from "../../../design/VisibleText.js";
 import { decisionsKey, isStaleDecision, useProductDecisions, useProductDecisionsApi, type DecisionView } from "../../../api/product-decisions.js";
 import { StaleNotice } from "./StaleNotice.js";
 import { EMPTY_DECISIONS, PROJECT_PEOPLE_STALE_MESSAGE, RISK_WORDS, approveRefusalWords } from "./people-text.js";
-import { failureText, isGone, useRequestId, useRestoreFocus } from "./people-write.js";
+import { failureText, isGone, staleText, useRequestId, useRestoreFocus } from "./people-write.js";
 import "./people.css";
 
 /**
@@ -41,7 +41,7 @@ function DecisionItem({ project, decision }: { project: string; decision: Decisi
   if (busy || stale) return;
   setBusy(true);setError(undefined);setSaved(undefined);
   try { await work();id.reset();setSaved(done);await query.invalidateQueries({ queryKey: decisionsKey(project) });after?.(); }
-  catch (failure) { id.settle(failure);if (isStaleDecision(failure)) { setStale(true);setError(PROJECT_PEOPLE_STALE_MESSAGE);await query.invalidateQueries({ queryKey: decisionsKey(project) }); } else setError(failureText(failure)); }
+  catch (failure) { id.settle(failure);if (isStaleDecision(failure)) { setStale(true);setError(staleText(failure, PROJECT_PEOPLE_STALE_MESSAGE));await query.invalidateQueries({ queryKey: decisionsKey(project) }); } else setError(failureText(failure)); }
   finally { setBusy(false); }
  }
  const discard = () => { setNote("");draftRevision.current = undefined;setAsking(undefined);setStale(false);setError(undefined);id.reset();void query.invalidateQueries({ queryKey: decisionsKey(project) }); };

@@ -3,13 +3,14 @@
 // server's `approveRefusal`, a stale answer reloading the list, and the server's own refusal text shown as it came.
 import { expect, it } from "vitest";
 import { screen, fireEvent, waitFor, within } from "@testing-library/react";
-import { PROJECT_PEOPLE_STALE_MESSAGE } from "@agentx/cloud-contracts/web";
 import { expectNoAxeViolations } from "./support/axe.js";
 import { DECISION_ID, decision, mountProject, settleLazy, type Answer } from "./support/people-fixture.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
 /** Any v4 request id. */
 const anyId = (): unknown => expect.stringMatching(UUID);
+/** What the server says when a decision moved on (store.ts PRODUCT_DECISION_STALE), shown as it came. */
+const DECISION_STALE = "this decision changed since you loaded it; reload and try again";
 const ok = (body: unknown): Answer => ({ status: 200, body });
 const list = (...decisions: unknown[]): Answer => ok({ decisions });
 const OVERVIEW = "/app/projects/payments";
@@ -86,10 +87,10 @@ it("each refusal reason has its own plain words, and a reader who can do neither
 });
 
 it("a stale answer says so and reloads the list; any other refusal is the server's own words", async () => {
-  const f = mountProject({ path: OVERVIEW, decisions: list(decision()), write: () => ({ status: 409, body: { error: { code: "CHANGE_STALE", message: "x" } } }) });
+  const f = mountProject({ path: OVERVIEW, decisions: list(decision()), write: () => ({ status: 409, body: { error: { code: "CHANGE_STALE", message: DECISION_STALE } } }) });
   fireEvent.click(await screen.findByRole("button", { name: "Approve: Refund now" }));
   fireEvent.click(await screen.findByRole("button", { name: "Approve" }));
-  expect((await screen.findByRole("alert")).textContent).toBe(PROJECT_PEOPLE_STALE_MESSAGE);
+  expect((await screen.findByRole("alert")).textContent).toBe(DECISION_STALE);
   await waitFor(() => { expect(reads(f)).toBeGreaterThan(1); });
   f.close();
   const words = "Collaborators can approve only low-risk product decisions.";

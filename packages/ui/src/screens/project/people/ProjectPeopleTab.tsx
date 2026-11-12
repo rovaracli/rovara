@@ -14,7 +14,7 @@ import { MergeRulesSection } from "./MergeRulesSection.js";
 import { PersonRoleDialog } from "./PersonRoleDialog.js";
 import { RemovePersonDialog } from "./RemovePersonDialog.js";
 import { isGone, useRestoreFocus } from "./people-write.js";
-import { NO_EDIT_NOTE, ROLE_HELP, sourceWords } from "./people-text.js";
+import { LAST_MAINTAINER_HINT, NO_EDIT_NOTE, fixedRowWords, ROLE_HELP, sourceWords } from "./people-text.js";
 import "./people.css";
 
 /**
@@ -34,7 +34,9 @@ export function ProjectPeopleTab({ project }: { project: string }) {
  if (read.isError) return <section className="rv-project-section"><p role="alert">{isGone(read.error) ? "People isn't available for this project." : <VisibleText text={read.error instanceof ApiError ? read.error.message : "Couldn't load this project's people."} />}</p><Button onClick={() => { void read.refetch(); }}>Try again</Button></section>;
  const view = read.data, v = view.viewer, stale = read.isFetching && !read.isPending;
  // The powers carry the three-role floor (a collaborator reads there as a viewer); the roster row of this person has the exact role.
- const mine = view.members.find(person => person.developerId === nav.data?.me.developerId), myRole = mine?.projectRole ?? v.role;
+ const mine = view.members.find(person => person.developerId === nav.data?.me.developerId), myRole = v.projectRole ?? mine?.projectRole ?? v.role;
+ // The server will not take a project's last maintainer away (a role change that leaves none, or a removal), so those two controls are off up front for the one grant-maintainer, with the reason beside them.
+ const grantMaintainers = view.members.filter(person => person.source === "grant" && (person.projectRole ?? person.role) === "maintainer");
  const open = (opener: Element | null, next: ({ kind: "change" | "remove"; member: PeopleMember } | { kind: "add" } | { kind: "invite" }) | undefined) => { if (next !== undefined) focus.remember(opener);setDialog(next === undefined ? undefined : { ...next, revision: view.revision, assignable: v.assignableRoles, invitable: v.invitableRoles, people: view.members }); };
  return <div className="rv-people">
   <section className="rv-project-section" aria-labelledby="rv-people-title">
@@ -51,8 +53,9 @@ export function ProjectPeopleTab({ project }: { project: string }) {
     { key: "role", title: "Role", render: member => projectRoleLabel[member.projectRole ?? member.role] },
     { key: "source", title: "How they're on it", render: member => sourceWords(member.source) },
     ...(v.canManageMembers ? [{ key: "actions", title: "Actions", render: (member: PeopleMember) => member.source === "grant"
-     ? <span className="rv-people-row-actions"><Button disabled={stale} aria-label={"Change role for " + member.name} onClick={event => { open(event.currentTarget, { kind: "change", member }); }}>Change role</Button><Button variant="quiet" disabled={stale} aria-label={"Remove " + member.name + " from the project"} onClick={event => { open(event.currentTarget, { kind: "remove", member }); }}>Remove</Button></span>
-     : <span className="rv-muted">Set by their company role</span> }] : []),
+     ? (() => { const lastOne = grantMaintainers.length === 1 && grantMaintainers[0]!.developerId === member.developerId, hint = "rv-people-last-" + member.developerId.slice(0, 8);
+      return <span className="rv-people-row-actions"><Button disabled={stale || lastOne} aria-label={"Change role for " + member.name} {...(lastOne ? { "aria-describedby": hint } : {})} onClick={event => { open(event.currentTarget, { kind: "change", member }); }}>Change role</Button><Button variant="quiet" disabled={stale || lastOne} aria-label={"Remove " + member.name + " from the project"} {...(lastOne ? { "aria-describedby": hint } : {})} onClick={event => { open(event.currentTarget, { kind: "remove", member }); }}>Remove</Button>{lastOne && <span id={hint} className="rv-muted">{LAST_MAINTAINER_HINT}</span>}</span>; })()
+     : <span className="rv-muted">{fixedRowWords(member.source)}</span> }] : []),
    ]} />}
    <details className="rv-people-roles"><summary>What each role can do</summary><dl>{(["maintainer", "contributor", "collaborator", "viewer"] as const).map(role => <div key={role}><dt>{projectRoleLabel[role]}</dt><dd>{ROLE_HELP[role]}</dd></div>)}</dl></details>
   </section>

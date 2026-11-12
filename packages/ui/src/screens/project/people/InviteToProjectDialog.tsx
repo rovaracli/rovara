@@ -40,8 +40,9 @@ export function InviteToProjectDialog({ project, roles, open, onOpenChange, onCl
    const result = await api.invite({ requestId: id.get(), project, role: chosen, ...(emailRequired ? { email: body.data.email! } : {}) });
    if (result.receipt.requestId !== id.get() || result.receipt.project?.name !== project || result.receipt.project.role !== chosen) throw new Error("unverified");
    id.reset();
-   const link = result.inviteUrl !== undefined && safeLink(result.inviteUrl) ? result.inviteUrl : undefined;
-   setCreated({ text: link === undefined && result.inviteUrl === undefined && result.email === undefined && !emailRequired ? "Invite created, but its link can't be shown again. Revoke it in Invites and make a new one." : emailOutcomeWords(result.email), email: emailRequired ? body.data.email : undefined, link });
+   // Only a company owner or admin is ever shown a link to copy (a maintainer's invite is for one colleague's email); the server's answer is not relied on to leave it out.
+   const link = admin && result.inviteUrl !== undefined && safeLink(result.inviteUrl) ? result.inviteUrl : undefined;
+   setCreated({ text: link === undefined && result.inviteUrl === undefined && result.email === undefined && !emailRequired ? "Invite created, but its link can't be shown again. Revoke it in Invites and make a new one." : emailOutcomeWords(result.email, admin), email: emailRequired ? body.data.email : undefined, link });
    await query.invalidateQueries({ queryKey: peopleKey(project) });
   } catch (failure) { id.settle(failure);setError(failure instanceof Error && failure.message === "unverified" ? "The invite answer couldn't be verified. Check Invites before trying again." : failureText(failure)); }
   finally { setBusy(false); }

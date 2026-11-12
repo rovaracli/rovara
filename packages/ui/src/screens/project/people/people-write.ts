@@ -29,3 +29,5 @@ export function useRestoreFocus(fallback: () => HTMLElement | null) {
   onCloseAutoFocus: (event: Event) => { event.preventDefault();const element = opener.current, target = element !== null && element.isConnected ? element : fallback();target?.focus(); },
  };
 }
+/** The server's own words for a stale answer (each route has its own: the approvals switch, a decision, the roster), shown as they came; the roster's sentence only if none came. */
+export const staleText = (error: unknown, fallback: string): string => error instanceof ApiError && error.message !== "" ? error.message : fallback;

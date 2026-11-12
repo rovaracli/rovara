@@ -15,12 +15,12 @@ import { h } from "../support/h.js";
 import { projectFixture } from "../support/project-fixture.js";
 
 export type Answer = { status: number; body: unknown };
-export const ID = { maya: "a".repeat(64), priya: "b".repeat(64), sam: "c".repeat(64), lee: "d".repeat(64), ana: "e".repeat(64), admin: "f".repeat(64) };
+export const ID = { noor: "9".repeat(64), maya: "a".repeat(64), priya: "b".repeat(64), sam: "c".repeat(64), lee: "d".repeat(64), ana: "e".repeat(64), admin: "f".repeat(64) };
 export const member = (developerId: string, name: string, role: string, extra: Record<string, unknown> = {}) => ({ developerId, name, role: role === "collaborator" ? "viewer" : role, projectRole: role, source: "grant", ...extra });
 export const viewerPowers = (over: Record<string, unknown> = {}) => ({ role: "maintainer", canManageMembers: true, assignableRoles: ["maintainer", "contributor", "collaborator", "viewer"], canInvite: true, invitableRoles: ["maintainer", "contributor", "viewer"], canEditCodeSettings: true, canConfirmSelfApproval: false, ...over });
 export const peopleView = (over: Record<string, unknown> = {}, power: Record<string, unknown> = {}) => ({
   project: "payments", revision: 7, viewer: viewerPowers(power),
-  members: [member(ID.maya, "Maya Chen", "maintainer"), member(ID.priya, "Priya Rao", "collaborator"), member(ID.sam, "Sam Ortiz", "contributor"), member(ID.lee, "Lee Park", "viewer"), member(ID.admin, "Dana Admin", "maintainer", { source: "org_role" })], ...over });
+  members: [member(ID.maya, "Maya Chen", "maintainer"), member(ID.noor, "Noor Haddad", "maintainer"), member(ID.priya, "Priya Rao", "collaborator"), member(ID.sam, "Sam Ortiz", "contributor"), member(ID.lee, "Lee Park", "viewer"), member(ID.admin, "Dana Admin", "maintainer", { source: "org_role" })], ...over });
 export const settings = (over: Record<string, unknown> = {}) => ({ settings: { allowSelfApproval: false, mergeMethod: "squash", codeReviewers: ["acme/payments-team"], revision: 3, ...over } });
 export const approvals = (over: Record<string, unknown> = {}) => ({ collaboratorApprovals: { enabled: true, revision: 2, isDefault: false, canChange: true, ...over } });
 export const DECISION_ID = "pdq_" + "A".repeat(20);

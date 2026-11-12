@@ -15,7 +15,7 @@ import { ApiError } from "./errors.js";
 
 const NEVER = { retry: "never" } as const;
 export const peopleViewerReader = z.looseObject({
-  role: CloudProjectRoleSchema, canManageMembers: z.boolean(), assignableRoles: z.array(CloudProjectRoleSchema), canInvite: z.boolean(), invitableRoles: z.array(CloudProjectRoleSchema), canEditCodeSettings: z.boolean(), canConfirmSelfApproval: z.boolean(),
+  role: CloudProjectRoleSchema, /** The exact role, when the server says it (`role` is the three-role floor). */ projectRole: CloudProjectRoleSchema.optional(), canManageMembers: z.boolean(), assignableRoles: z.array(CloudProjectRoleSchema), canInvite: z.boolean(), invitableRoles: z.array(CloudProjectRoleSchema), canEditCodeSettings: z.boolean(), canConfirmSelfApproval: z.boolean(),
 });
 export const peopleViewReader = z.looseObject({ project: z.string(), members: z.array(CloudProjectMemberSchema), revision: z.number().int().nonnegative(), viewer: peopleViewerReader });
 export type PeopleView = z.output<typeof peopleViewReader>;
