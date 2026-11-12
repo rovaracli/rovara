@@ -1,5 +1,6 @@
 // Meta repo lane B, task B2: the worker's half of the setup agent. Plain code finds what a person would find by listing folders (rules, skills, specs, runbooks, MCP configs,
 // hooks, another tool's project file); the model reads the rest; every item is cited; the commit on a citation is the one the worker cloned.
+import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -11,7 +12,8 @@ import { WorkerInvocationSchema } from "@agentx/cloud-contracts";
 import { WORKER_IMPLEMENTED_FEATURES } from "../../packages/worker/src/implemented-features.js";
 import type { PiSessionAdapter } from "../../packages/worker/src/pi-session.js";
 import { runTaskInvocation } from "../../packages/worker/src/run-task.js";
-import { readSetupProposalAnswer, setupProposalInstructions } from "../../packages/worker/src/setup-draft.js";
+import { READER_EMPTY_ANSWER_ERROR, SETUP_DRAFT_EMPTY_REPO_MARKER as WORKER_EMPTY_MARKER, SETUP_DRAFT_NOTHING_MARKER as WORKER_NOTHING_MARKER, emptyRepositoriesOf, readSetupProposalAnswer, setupProposalInstructions } from "../../packages/worker/src/setup-draft.js";
+import { SETUP_DRAFT_EMPTY_REPO_MARKER, SETUP_DRAFT_NOTHING_MARKER } from "../../packages/broker/src/rovara-code/setup-draft.js";
 import { importProjectFile, scanRepositories } from "../../packages/worker/src/setup-scan.js";
 
 const COMMITS = { meta: "c".repeat(40), web: "a".repeat(40), api: "b".repeat(40) } as const;
@@ -337,13 +339,14 @@ function modelAnswering(answers: readonly string[]) {
   return { adapter, seen };
 }
 
-async function run(answers: readonly string[], files: Files, setupMetaRepo?: string) {
+async function run(answers: readonly string[], files: Files, setupMetaRepo?: string, options: { rootPath?: string; seen?: (seen: ReturnType<typeof modelAnswering>["seen"]) => void } = {}) {
   const { adapter, seen } = modelAnswering(answers);
+  options.seen?.(seen);
   const result = await runTaskInvocation({
     protocolVersion: 1, kind: "task", operationId: randomUUID(), workspaceId: randomUUID(), fence: 1, projectRevision: 4, callbackCapability: "c".repeat(64),
     payload: { conversationId: randomUUID(), prompt: "Draft the dev setup for the project svc.", workflowMode: "SETUP_DRAFT", ...(setupMetaRepo === undefined ? {} : { setupMetaRepo }) },
   }, {
-    rootPath: await workspace(files), model: { provider: "fixture", modelId: "fixture" }, piAdapter: adapter,
+    rootPath: options.rootPath ?? await workspace(files), model: { provider: "fixture", modelId: "fixture" }, piAdapter: adapter,
     eventSink: async () => undefined, artifactSink: async () => undefined, log: () => undefined,
   });
   return { result, seen };
@@ -375,6 +378,99 @@ describe("the worker's run", () => {
     expect(result.setupProposal!.setup).toEqual([]);
     expect(result.setupProposal!.notes).toContain("did not give an answer that could be read");
     await expect(run(["nothing", "still nothing"], { web: { "README.md": "x" } })).rejects.toThrow(/^OPERATION_INTERRUPTED: the setup draft run produced no readable proposal$/);
+  });
+});
+
+// ---- a project with nothing to read (0.5.16)
+
+const git = (directory: string, ...args: string[]) => execFileSync("git", ["-c", "user.name=Rovara Test", "-c", "user.email=test@example.com", "-c", "commit.gpgsign=false", ...args], { cwd: directory, encoding: "utf8" }).trim();
+
+/**
+ * A workspace whose repositories are real git repositories: `web`'s default branch `main` is an "Initial commit" with no files, and (when `otherBranch`) the clone also holds `refs/remotes/origin/dev` with a file,
+ * as a clone of a repository whose code is on another branch would. The manifest names the real commit, as the worker's preparation does.
+ */
+async function gitWorkspace(options: { otherBranch?: boolean; filesOnMain?: boolean } = {}): Promise<string> {
+  const rootPath = await mkdtemp(join(tmpdir(), "setup-empty-"));
+  roots.push(rootPath);
+  await mkdir(join(rootPath, ".agentx"));
+  const directory = join(rootPath, "repo", "web");
+  await mkdir(directory, { recursive: true });
+  git(directory, "init", "-q", "-b", "main");
+  if (options.filesOnMain === true) await writeFile(join(directory, "README.md"), "hello\n");
+  git(directory, "add", "-A");
+  git(directory, "commit", "-q", "--allow-empty", "-m", "Initial commit");
+  const main = git(directory, "rev-parse", "HEAD");
+  if (options.otherBranch === true) {
+    git(directory, "checkout", "-q", "-b", "dev");
+    await writeFile(join(directory, "package.json"), "{}\n");
+    git(directory, "add", "-A");
+    git(directory, "commit", "-q", "-m", "Add code");
+    git(directory, "update-ref", "refs/remotes/origin/dev", git(directory, "rev-parse", "HEAD"));
+    git(directory, "update-ref", "refs/remotes/origin/main", main);
+    git(directory, "checkout", "-q", "main");
+  }
+  const now = new Date().toISOString();
+  await writeFile(join(rootPath, ".agentx/preparation-manifest.json"), JSON.stringify({
+    schemaVersion: 2, projectName: "svc", projectRevision: 4,
+    repositories: [{ name: "web", path: "repo/web", defaultBranch: "main", resolvedCommit: main, resolvedAt: now, completedAt: now }],
+    completedSetupSteps: [], readinessResults: [], creationIdentity: "fixture", complete: true, updatedAt: now,
+  }));
+  return rootPath;
+}
+
+describe("a setup draft of a project that holds nothing to read (0.5.16)", () => {
+  it("fails before the model is asked anything, naming the empty default branch and a branch that has code", async () => {
+    let seen: ReturnType<typeof modelAnswering>["seen"] | undefined;
+    const rootPath = await gitWorkspace({ otherBranch: true });
+    const failure = await run(["never asked"], {}, undefined, { rootPath, seen: (value) => { seen = value; } }).then(() => undefined, (error: Error) => error);
+    expect(failure?.message).toBe(`OPERATION_INTERRUPTED: ${WORKER_EMPTY_MARKER} {"branch":"main","other":"dev"}`);
+    // No prompt reached the model, so nothing was spent.
+    expect(seen!.prompts).toEqual([]);
+    expect(failure!.message.length).toBeLessThan(300);
+  });
+
+  it("names no other branch when the clone shows none with files, and still asks the model nothing", async () => {
+    let seen: ReturnType<typeof modelAnswering>["seen"] | undefined;
+    const rootPath = await gitWorkspace();
+    const failure = await run(["never asked"], {}, undefined, { rootPath, seen: (value) => { seen = value; } }).then(() => undefined, (error: Error) => error);
+    expect(failure?.message).toBe(`OPERATION_INTERRUPTED: ${WORKER_EMPTY_MARKER} {"branch":"main"}`);
+    expect(seen!.prompts).toEqual([]);
+  });
+
+  it("runs the draft as before when the default branch holds a file (positive control), and when the repository cannot be listed as a git repository", async () => {
+    const answer = `\`\`\`agentx-setup-proposal\n${JSON.stringify({ setup: [{ repo: "web", commands: ["npm ci"], from: [{ kind: "file", repo: "web", path: "README.md" }] }] })}\n\`\`\``;
+    let seen: ReturnType<typeof modelAnswering>["seen"] | undefined;
+    const rootPath = await gitWorkspace({ filesOnMain: true });
+    await run([answer], {}, undefined, { rootPath, seen: (value) => { seen = value; } });
+    expect(seen!.prompts).toHaveLength(1);
+    // A folder that is no git repository (the other tests here) is not called empty.
+    expect(await emptyRepositoriesOf(await workspace({ web: { "README.md": "x" } }), [{ name: "web", path: "repo/web", defaultBranch: "main", resolvedCommit: "a".repeat(40) }])).toBeUndefined();
+  });
+
+  it("is not empty when the meta repository was given files, and is empty only when every repository is", async () => {
+    const rootPath = await gitWorkspace();
+    const repositories = [{ name: "web", path: "repo/web", defaultBranch: "main", resolvedCommit: git(join(rootPath, "repo", "web"), "rev-parse", "HEAD") }];
+    expect(await emptyRepositoriesOf(rootPath, repositories)).toEqual({ branch: "main" });
+    expect(await emptyRepositoriesOf(rootPath, repositories, { files: 3 })).toBeUndefined();
+    expect(await emptyRepositoriesOf(rootPath, [])).toBeUndefined();
+  });
+
+  it("carries the model's notes into the failure when it says there is nothing to set up, redacted and on one line, and keeps the older words for an answer with no notes", async () => {
+    const nothing = (notes: string) => `\`\`\`agentx-setup-proposal\n${JSON.stringify({ notes })}\n\`\`\``;
+    const failure = await run([nothing("The default branch only has an initial commit.\nThe code is on the dev branch."), nothing("The default branch only has an initial commit.\nThe code is on the dev branch.")], { web: { "README.md": "x" } }).then(() => undefined, (error: Error) => error);
+    expect(failure?.message).toBe(`OPERATION_INTERRUPTED: ${WORKER_NOTHING_MARKER} The default branch only has an initial commit. The code is on the dev branch.`);
+    const long = await run([nothing("n".repeat(900)), nothing("n".repeat(900))], { web: { "README.md": "x" } }).then(() => undefined, (error: Error) => error);
+    expect(long!.message.length).toBeLessThan(300);
+    // No notes: the old failure, unchanged.
+    await expect(run(["nothing", "still nothing"], { web: { "README.md": "x" } })).rejects.toThrow(/^OPERATION_INTERRUPTED: the setup draft run produced no readable proposal$/);
+    await expect(run([nothing(""), nothing("")], { web: { "README.md": "x" } })).rejects.toThrow(/^OPERATION_INTERRUPTED: the setup draft run produced no readable proposal$/);
+  });
+
+  it("keeps the worker's and the broker's markers equal, and the reader's words for an empty answer where the worker looks for them", async () => {
+    expect(WORKER_EMPTY_MARKER).toBe(SETUP_DRAFT_EMPTY_REPO_MARKER);
+    expect(WORKER_NOTHING_MARKER).toBe(SETUP_DRAFT_NOTHING_MARKER);
+    const read = await readSetupProposalAnswer(`\`\`\`agentx-setup-proposal\n${JSON.stringify({ notes: "nothing here" })}\n\`\`\``, { basedOnRevision: 1, rootPath: await workspace({ web: { "README.md": "x" } }), repositories: repositoriesOf(["web"]) });
+    expect(read).toEqual({ ok: false, errors: [READER_EMPTY_ANSWER_ERROR] });
   });
 });
 

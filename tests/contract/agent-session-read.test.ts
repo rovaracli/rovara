@@ -88,12 +88,43 @@ describe("reading a task session", () => {
 
   it("offers retry only once the session has failed or been cancelled (13 review)", async () => {
     const r = readWorld();
-    const { sessionId, record } = r.w.seedSession();
+    const { sessionId, taskId, record } = r.w.seedSession();
+    // The task is an agent run, so a retry of it starts a new run (an ended session with nothing to start again is offered no Retry: see the next test).
+    r.w.db.set({ ...(r.w.db.get(taskKey(taskId)) as Record<string, unknown>), agent: { agentId: "agt_0123456789abcdefghij", name: "Ticket triage", version: 1 } });
     const meta = r.w.db.get(agentSessionKey(ORG_A, sessionId, "META")) as Record<string, unknown>;
     for (const [status, offered] of [["running", false], ["succeeded", false], ["failed", true], ["cancelled", true]] as const) {
       r.w.db.set({ ...meta, summaryRevision: 2, summary: { ...record.summary, status } });
       expect((await view(r, PRIYA, sessionId)).you.actions.includes("retry"), status).toBe(offered);
     }
+  });
+
+  it("offers an ended session no Stop, Steer or Take over, and Retry only when a retry starts a run (0.5.16)", async () => {
+    const r = readWorld();
+    const { sessionId, record } = r.w.seedSession();
+    const meta = r.w.db.get(agentSessionKey(ORG_A, sessionId, "META")) as Record<string, unknown>;
+    // Failed with no run to start again (a setup draft, a workflow whose setup failed, a plain task).
+    r.w.db.set({ ...meta, summaryRevision: 2, endedAt: "2026-10-22T08:30:00.000Z", summary: { ...record.summary, status: "failed" } });
+    const ended = (await view(r, PRIYA, sessionId)).you.actions;
+    expect(ended).toEqual(["watch", "comment", "share"]);
+    for (const gone of ["stop", "steer", "retry", "take_over"]) expect(ended).not.toContain(gone);
+    // Positive control: the same session before its end offers them.
+    r.w.db.set({ ...meta, summaryRevision: 3, summary: { ...record.summary, status: "running" } });
+    expect((await view(r, PRIYA, sessionId)).you.actions).toEqual(expect.arrayContaining(["steer", "stop"]));
+  });
+
+  it("says a failed setup draft's next step is a new draft from the project's page, and says nothing of the kind for another failed task (0.5.16)", async () => {
+    const r = readWorld();
+    const draft = r.w.seedSession();
+    const other = r.w.seedSession();
+    r.w.db.set({ ...(r.w.db.get(taskKey(draft.taskId)) as Record<string, unknown>), purpose: "setup_draft" });
+    for (const seeded of [draft, other]) {
+      const meta = r.w.db.get(agentSessionKey(ORG_A, seeded.sessionId, "META")) as Record<string, unknown>;
+      r.w.db.set({ ...meta, summaryRevision: 2, endedAt: "2026-10-22T08:30:00.000Z", summary: { ...seeded.record.summary, status: "failed" } });
+    }
+    const shown = await view(r, PRIYA, draft.sessionId);
+    expect(shown.display).toMatchObject({ state: "failed", next: "Draft the setup again from the project's page." });
+    expect(shown.you.actions).not.toContain("retry");
+    expect((await view(r, PRIYA, other.sessionId)).display?.next).not.toBe("Draft the setup again from the project's page.");
   });
 
   it("offers retry on a blocked workflow, which shows as needing a person, to the owner and not to a sharee (Task 14 ruling)", async () => {

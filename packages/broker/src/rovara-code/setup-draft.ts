@@ -22,7 +22,7 @@ import { z } from "zod";
 import { testServicesEnabled } from "../test-env/test-services-switch.js";
 import { GetCommand, PutCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { createHash } from "node:crypto";
-import { AgentXError, INDEX_EXPIRY_ATTRIBUTE, ROVARA_CODE_AGENT_ID, BUDGET_EXHAUSTED_FAILURE_MESSAGE, SETUP_DRAFT_STALE_MINUTES, SetupDraftApplyBodySchema, SetupDraftStartBodySchema, agentXError, metaRepositoryOf, projectAllows, runRequestKey, sanitizeSetupProposal, setupDraftKey, setupItemHandling, setupItemsOf, type OrgId, type ProjectRole, type ProjectSettingsBody, type SetupApplyResultItem, type SetupDraftResponse, type SetupItem, type SetupProposal, type SetupReviewEntry, type SetupVerification, type TestEnvironmentBody } from "@rovara-code/contracts";
+import { AgentXError, INDEX_EXPIRY_ATTRIBUTE, ROVARA_CODE_AGENT_ID, BUDGET_EXHAUSTED_FAILURE_MESSAGE, SETUP_DRAFT_STALE_MINUTES, SetupDraftApplyBodySchema, SetupDraftStartBodySchema, agentXError, metaRepositoryOf, projectAllows, redactText, runRequestKey, sanitizeSetupProposal, setupDraftKey, setupItemHandling, setupItemsOf, type OrgId, type ProjectRole, type ProjectSettingsBody, type SetupApplyResultItem, type SetupDraftResponse, type SetupItem, type SetupProposal, type SetupReviewEntry, type SetupVerification, type TestEnvironmentBody } from "@rovara-code/contracts";
 import { type AppProjectDetail, type SetupApplyResponse } from "@agentx/cloud-contracts";
 import { repositoryHostOf, type StoredProjectDefinition } from "@agentx/cloud-contracts";
 import { environmentFromProposal, type SetupConfirmEnvironment } from "./setup-confirm.js";
@@ -60,7 +60,48 @@ export const SETUP_DRAFT_FAILURES = {
   stale: "The draft didn't finish. Try again.",
   cancelled: "The draft was stopped before it started.",
   outdated: "Rovara wrote this draft before it could name where each suggestion came from. Ask it to draft the setup again.",
+  /** The repositories hold no files at their default branch (the worker looked before the model ran: nothing was spent). `emptyRepoWords` adds the branch names when the worker gave them. */
+  empty_repo: "The repository's default branch has no files. Push code to it, or set the project's default branch to one with code.",
 } as const;
+/** The markers the worker's run error starts its detail with (packages/worker/src/setup-draft.ts keeps the same two; a contract test pins them together). */
+export const SETUP_DRAFT_EMPTY_REPO_MARKER = "SETUP_DRAFT_EMPTY_REPO";
+export const SETUP_DRAFT_NOTHING_MARKER = "SETUP_DRAFT_NOTHING";
+const DRAFT_BRANCH_WORDS_MAX = 60;
+const DRAFT_NOTES_WORDS_MAX = 200;
+/** A worker's text as one short plain line: format and control characters become spaces, runs of spaces one, cut at `max` characters. The worker's copy is never trusted. */
+const plainWords = (text: unknown, max: number): string => (typeof text === "string" ? [...text.replace(/[\p{Cc}\p{Cf}]+/gu, " ").replace(/\s+/gu, " ").trim()].slice(0, max).join("").trimEnd() : "");
+
+/**
+ * The words for a draft whose repositories hold no files: the default branch named, and a branch with code when the worker saw one. The worker's JSON is read again here (names only, length-capped, plain
+ * text); unreadable detail gives the words without names.
+ */
+export function emptyRepoWords(detail: string): string {
+  let branch = "";
+  let other = "";
+  try {
+    const found = JSON.parse(detail) as { branch?: unknown; other?: unknown };
+    branch = plainWords(found.branch, DRAFT_BRANCH_WORDS_MAX);
+    other = plainWords(found.other, DRAFT_BRANCH_WORDS_MAX);
+  } catch { /* the words without names */ }
+  if (branch === "") return SETUP_DRAFT_FAILURES.empty_repo;
+  return `The repository's default branch (${branch}) has no files. Push code to it, or set the project's default branch to one with code${other === "" ? "" : ` (for example ${other})`}.`;
+}
+
+/** The words for a draft the model answered with "nothing to set up" and notes saying why: the notes, cleaned and cut, after fixed words. Without usable notes, the generic "stopped" words. */
+export function nothingToSetUpWords(notes: string): string {
+  const clean = plainWords(redactText(notes), DRAFT_NOTES_WORDS_MAX);
+  return clean === "" ? SETUP_DRAFT_FAILURES.stopped : `Rovara found nothing to set up: ${clean}`;
+}
+
+/** What a run's own error says about why a draft failed, when it says one of the two things that have words of their own; undefined otherwise (the budget, a cancel and the rest keep the fixed sentences). */
+export function specificDraftFailure(error: string | undefined): string | undefined {
+  if (error === undefined) return undefined;
+  const empty = error.indexOf(SETUP_DRAFT_EMPTY_REPO_MARKER);
+  if (empty >= 0) return emptyRepoWords(error.slice(empty + SETUP_DRAFT_EMPTY_REPO_MARKER.length).trim());
+  const nothing = error.indexOf(SETUP_DRAFT_NOTHING_MARKER);
+  if (nothing >= 0) return nothingToSetUpWords(error.slice(nothing + SETUP_DRAFT_NOTHING_MARKER.length).trim());
+  return undefined;
+}
 export const SETUP_DRAFT_NONE_TO_APPLY = "There is no setup proposal to apply. Ask Rovara to draft the setup first.";
 export const SETUP_DRAFT_OLD = "Rovara wrote this proposal for an earlier version of the project's settings. Ask it to draft the setup again.";
 export const SETUP_DRAFT_PULL_REQUEST_ONCE = "A pull request for this dev container was already started.";
@@ -219,7 +260,7 @@ export function setupDraftEndItems(
     });
     result = read.ok ? { status: "ready", proposal: read.proposal } : { status: "failed", failure: SETUP_DRAFT_FAILURES.unreadable };
   } else {
-    result = { status: "failed", failure: outcome.error === BUDGET_EXHAUSTED_FAILURE_MESSAGE ? SETUP_DRAFT_FAILURES.budget : outcome.status === "CANCELLED" ? SETUP_DRAFT_FAILURES.cancelled : SETUP_DRAFT_FAILURES.stopped };
+    result = { status: "failed", failure: outcome.error === BUDGET_EXHAUSTED_FAILURE_MESSAGE ? SETUP_DRAFT_FAILURES.budget : outcome.status === "CANCELLED" ? SETUP_DRAFT_FAILURES.cancelled : specificDraftFailure(outcome.error) ?? SETUP_DRAFT_FAILURES.stopped };
   }
   const state = result.status === "ready" ? "COMPLETE" : outcome.status === "CANCELLED" ? "CANCELLED" : "FAILED";
   return [{ Update: {

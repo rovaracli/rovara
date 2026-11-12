@@ -15,7 +15,8 @@ import { getSpendRequest, mayDecideSpendRequest } from "../spend/requests.js";
 import { taskKey } from "../developer/task-records.js";
 import { githubUserOfMember } from "../rovara-code/github-members.js";
 import { reviewWaitsOf, trackingItemFor } from "../rovara-code/nudges.js";
-import { newSessionRoleMemo, sessionAccessFor, sessionActionsFor, type SessionAccess, type SessionRoleMemo } from "./access.js";
+import { endedRetryStartsRun, newSessionRoleMemo, sessionAccessFor, sessionActionsFor, sessionHasEnded, type SessionAccess, type SessionRoleMemo } from "./access.js";
+import { HOME_DISMISSED_READ_MAX, OCCURRENCE_PATTERN, failureCardIdOf, failureOccurrenceOf, homeDismissalsOf } from "./failure-dismissals.js";
 import { batchGetItems, keyText } from "./live.js";
 import { approveLink, type SessionReadCaller, type SessionReadDependencies } from "./read.js";
 import { sessionFromItem } from "./store.js";
@@ -77,8 +78,7 @@ export const HOME_OWN_JUDGED_MAX = 50;
 /** The most approvals checked for the caller, and the most open budget requests. */
 export const HOME_APPROVALS_MAX = 100;
 export const HOME_SPEND_SCAN_MAX = 100;
-/** The most of a person's dismissals read. */
-export const HOME_DISMISSED_READ_MAX = 300;
+export { HOME_DISMISSED_READ_MAX };
 const PAGE = 100;
 const DAY_MS = 86_400_000;
 const FAILURE_WORDS_MAX = 120;
@@ -86,8 +86,6 @@ const SESSION_WORDS_MAX = 80;
 const PROBE_AT = "2000-01-01T00:00:00.000Z";
 const PROBE_ID = "ses_00000000000000000000";
 
-/** The form of an occurrence as a dismissal link carries it and a dismissal row keeps it. */
-const OCCURRENCE_PATTERN = /^[A-Za-z0-9:.+_-]{1,64}$/u;
 const occurrenceOf = (card: HomeSourceCard): string => card.occurrence ?? card.at;
 
 const isAgentXError = (error: unknown): boolean => error instanceof Error && error.name === "AgentXError";
@@ -434,10 +432,15 @@ const reviewerSource: HomeCardSource = {
   },
 };
 
-/** Whether a retry of this session would do something: a failed agent run, a chain run, or a blocked workflow, by someone who may start work in its project. */
+/**
+ * Whether a retry of this session would do something: a failed agent run, a chain run, or a blocked workflow, by someone who may start work in its project. An ENDED session is retried only where a retry starts a
+ * run (`endedRetryStartsRun`): a task that ended failed with no run to start again (a setup draft, a workflow whose setup failed) offers no Retry that could only say "nothing to retry".
+ */
 function mayRetry(own: OwnSession): boolean {
   const { session, access, task } = own;
-  if (!sessionActionsFor(access, session.summary).includes("retry")) return false;
+  const ended = sessionHasEnded(session);
+  const actions = sessionActionsFor(access, { ...session.summary, ...(ended ? { ended: true as const, retryStartsRun: endedRetryStartsRun(session, task) } : {}) });
+  if (!actions.includes("retry")) return false;
   if (session.kind === "local" || session.where.kind !== "cloud") return false;
   const retryable = session.subject.kind === "chain" || task?.["agent"] !== undefined || (session.endedAt === undefined && (task?.["workflow"] as { state?: unknown } | undefined)?.state === "BLOCKED");
   if (!retryable) return false;
@@ -457,8 +460,8 @@ const failureSource: HomeCardSource = {
       const display = stored.success ? stored.data : undefined;
       if (!failed || display?.state === "closed" || display?.state === "merged" || own.task?.["closedAt"] !== undefined) return [];
       const said = display?.state === "failed" && display.reason !== undefined ? cut(display.reason, FAILURE_WORDS_MAX) : cut(shownText((session.summary.step ?? "").replace(/^Failed:\s*/u, ""), 300), FAILURE_WORDS_MAX) || "it did not finish";
-      const cardId = `failure:${session.sessionId}`;
-      const occurrence = session.endedAt !== undefined ? `ended:${session.endedAt}` : `rev:${String(session.summaryRevision)}`;
+      const cardId = failureCardIdOf(session.sessionId);
+      const occurrence = failureOccurrenceOf(session);
       return [{
         ...projectOf(session), cardId, kind: "failure", occurrence, title: session.title, reason: fit(`${quoted(session.title)} failed: `, said), sessionId: session.sessionId, at: session.endedAt ?? session.updatedAt,
         buttons: [
@@ -579,35 +582,7 @@ async function collect(deps: HomeDependencies, caller: HomeCaller): Promise<Coll
       cards.push({ ...checked.data, ...(blocksRunningSession === true ? { blocksRunningSession } : {}), ...(kept === undefined ? {} : { occurrence: kept }), ...(typeof taskId === "string" ? { taskId } : {}), ...(typeof project === "string" ? { project } : {}) });
     }
   }
-  return { cards, dismissed: await dismissedBy(deps, caller) };
-}
-
-/**
- * The cards the caller dismissed, each with the occurrence they dismissed, whose dismissal has not run out (the table deletes late). One query, a fixed number of rows at most. A row that names no
- * occurrence is left out: it hides nothing.
- */
-async function dismissedBy(deps: HomeDependencies, caller: HomeCaller): Promise<Map<string, string>> {
-  const pk = homeDismissedKey(caller.orgId, caller.developerId, "x:x").pk;
-  const found = new Map<string, string>();
-  const nowSeconds = Math.floor(deps.now() / 1000);
-  let start: Record<string, unknown> | undefined;
-  let read = 0;
-  do {
-    const page = await deps.documentClient.send(new QueryCommand({
-      TableName: deps.tableName, KeyConditionExpression: "pk = :pk", ExpressionAttributeValues: { ":pk": pk }, ConsistentRead: true, Limit: PAGE, ...(start === undefined ? {} : { ExclusiveStartKey: start }),
-    })) as { Items?: Item[]; LastEvaluatedKey?: Record<string, unknown> };
-    for (const item of page.Items ?? []) {
-      read += 1;
-      const expires = item[INDEX_EXPIRY_ATTRIBUTE];
-      if (item["orgId"] !== caller.orgId || (typeof expires === "number" && expires <= nowSeconds)) continue;
-      const cardId = HomeCardIdSchema.safeParse(item["cardId"]);
-      const occurrence = item["occurrence"];
-      if (cardId.success && typeof occurrence === "string" && OCCURRENCE_PATTERN.test(occurrence)) found.set(cardId.data, occurrence);
-    }
-    start = page.LastEvaluatedKey;
-  } while (start !== undefined && read < HOME_DISMISSED_READ_MAX);
-  if (start !== undefined) logOf(deps)({ event: "home.dismissals_truncated" });
-  return found;
+  return { cards, dismissed: await homeDismissalsOf(deps, caller) };
 }
 
 const isDismissible = (kind: string): boolean => (HOME_DISMISSIBLE_KINDS as readonly string[]).includes(kind);

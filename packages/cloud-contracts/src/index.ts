@@ -136,7 +136,7 @@ export * from "./ui-flags.js";
 export { SIGNED_OUT_REASONS, isSignedOutReason, type SignedOutReason } from "./sign-in-reasons.js";
 
 // Names defined here that the old barrel reached through a re-export file the contracts now take from Rovara Code (convergence W0-3).
-export { DeveloperTaskViewReaderSchema, SessionCloseResponseReaderSchema, SessionCloseResponseSchema, SessionListReaderSchema, SessionListSchema, SessionResponseReaderSchema, SessionResponseSchema, SessionStepTaskResponseReaderSchema, SessionStepTaskResponseSchema, SessionTileReaderSchema, SessionTileSchema, type SessionList, type SessionTile, type SessionView, SessionViewReaderSchema, SessionViewSchema } from "./session-views.js";
+export { DeveloperTaskViewReaderSchema, SessionCloseResponseReaderSchema, SessionCloseResponseSchema, LiveResponseReaderSchema, LiveResponseSchema, LiveTileReaderSchema, LiveTileSchema, type LiveResponse, type LiveTile, SessionListReaderSchema, SessionListSchema, SessionResponseReaderSchema, SessionResponseSchema, SessionStepTaskResponseReaderSchema, SessionStepTaskResponseSchema, SessionTileReaderSchema, SessionTileSchema, type SessionList, type SessionTile, type SessionView, SessionViewReaderSchema, SessionViewSchema } from "./session-views.js";
 export * from "./finished-as.js";
 export * from "./org-pending-approvals.js";
 export * from "./continue-loop.js";

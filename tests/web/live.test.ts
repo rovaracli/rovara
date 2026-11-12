@@ -75,6 +75,15 @@ it("does not run a queued Live invalidation after its screen closes", async () =
 it("shows a refused Stop without claiming it stopped or closing the confirmation", async () => {
  const f = setup({ tile: liveFixture({ actions: ["stop"] }), send: async () => ({ status: 403, body: { error: { code: "FORBIDDEN", message: "You can no longer stop this session." } } }) });fireEvent.click(screen.getByRole("button", { name: "Stop" }));fireEvent.click(await screen.findByRole("button", { name: "Stop session" }));await screen.findByText("You can no longer stop this session.");expect(screen.getByRole("dialog", { name: "Stop this session?" })).toBeTruthy();expect(screen.queryByText("Stop requested.")).toBeNull();expect(f.changed).not.toHaveBeenCalled();f.close();
 });
+it("clears a refused Stop's message when the confirmation closes or opens again, so no stale \"This session has ended.\" lingers", async () => {
+ const f = setup({ tile: liveFixture({ actions: ["stop"] }), send: async () => ({ status: 409, body: { error: { code: "SESSION_ENDED", message: "This session has ended." } } }) });
+ fireEvent.click(screen.getByRole("button", { name: "Stop" }));fireEvent.click(await screen.findByRole("button", { name: "Stop session" }));
+ expect((await screen.findByRole("alert")).textContent).toBe("This session has ended.");
+ // Closing the confirmation drops the message; it is not left under the controls.
+ fireEvent.click(screen.getByRole("button", { name: "Keep running" }));await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());expect(screen.queryByText("This session has ended.")).toBeNull();
+ // Opening it again starts clean (the failed attempt does not come back with the dialog).
+ fireEvent.click(screen.getByRole("button", { name: "Stop" }));expect(await screen.findByRole("dialog", { name: "Stop this session?" })).toBeTruthy();expect(screen.queryByText("This session has ended.")).toBeNull();expect(screen.queryByRole("alert")).toBeNull();f.close();
+});
 it("retries once and opens the actual returned session rather than assuming the old id", async () => {
  const returned = "ses_bbbbbbbbbbbbbbbbbbbb", send = vi.fn(async () => ({ status: 200, body: { session: sessionFixture({ sessionId: returned }) } }));
  const f = setup({ tile: liveFixture({ actions: ["retry"] }), send }), navigate = vi.spyOn(f.host, "navigate"), button = screen.getByRole("button", { name: "Retry" });fireEvent.click(button);fireEvent.click(button);await waitFor(() => expect(navigate).toHaveBeenCalledWith("/app/sessions/" + returned));expect(send).toHaveBeenCalledTimes(1);expect(f.changed).toHaveBeenCalledTimes(1);f.close();

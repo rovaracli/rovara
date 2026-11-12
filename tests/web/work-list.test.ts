@@ -62,21 +62,36 @@ describe("a live row", () => {
   // An unknown state.
   expect(nextActor({ needsYou: false, kind: "task", actions: ["retry"] }, "something_new")).toBeUndefined();
  });
- it("names You for a failed or stopped run only when Retry or Close is offered", () => {
+ it("names You for a failed or stopped run only when the broker says it is mine (needsYou) or Close is offered: Retry alone says nothing about who must act", () => {
   const failed = { statusWords: "Failed: the run stopped with an error", status: "failed" as const };
-  expect(rowFromLive(liveFixture({ kind: "task", ...failed, actions: ["watch", "retry"] }), NOW)).toMatchObject({ next: "You", attention: true, state: { label: "Failed", tone: "danger" } });
+  expect(rowFromLive(liveFixture({ kind: "task", ...failed, needsYou: true, actions: ["watch", "retry"] }), NOW)).toMatchObject({ next: "You", attention: true, state: { label: "Failed", tone: "danger" } });
+  expect(rowFromLive(liveFixture({ kind: "task", ...failed, actions: ["watch", "close"] }), NOW).next).toBe("You");
+  expect(rowFromLive(liveFixture({ kind: "task", ...failed, actions: ["watch", "retry"] }), NOW).next).toBeUndefined();
   expect(rowFromLive(liveFixture({ kind: "task", ...failed, actions: ["watch"] }), NOW).next).toBeUndefined();
+  expect(nextActor({ needsYou: false, kind: "task", actions: ["watch", "retry"] }, "failed")).toBeUndefined();
  });
  it("never says waiting: the broker has no waiting-since time, so every live row counts from its last update", () => {
   for (const tile of [liveFixture({ kind: "task", status: "needs_person", statusWords: "Needs you: decide", needsYou: true }), liveFixture({ kind: "task", status: "failed", statusWords: "Failed: it stopped", actions: ["retry"] }), liveFixture({})]) expect(rowFromLive({ ...tile, updatedAt: ago(7 * HOUR) }, NOW).age).toBe("updated 7 h ago");
  });
- it("marks a row as needing attention only where the viewer can act: a teammate's failed task they cannot touch is not marked", () => {
+ it("marks a row as needing attention only where the broker says the viewer is the one to act (needsYou), may dismiss it (canDismiss) or may approve it: Retry or Close alone do not", () => {
   const failed = { kind: "task" as const, status: "failed" as const, statusWords: "Failed: it stopped" };
   expect(rowFromLive(liveFixture({ ...failed, actions: ["watch"] }), NOW).attention).toBe(false);
-  expect(rowFromLive(liveFixture({ ...failed, actions: ["watch", "retry"] }), NOW).attention).toBe(true);
-  expect(rowFromLive(liveFixture({ kind: "task", status: "needs_person", statusWords: "Ready to merge", actions: ["watch", "close"] }), NOW).attention).toBe(true);
+  expect(rowFromLive(liveFixture({ ...failed, actions: ["watch", "retry"] }), NOW).attention).toBe(false);
+  expect(rowFromLive(liveFixture({ ...failed, needsYou: true, actions: ["watch", "retry"] }), NOW).attention).toBe(true);
+  expect(rowFromLive(liveFixture({ kind: "task", status: "needs_person", statusWords: "Ready to merge", actions: ["watch", "close"] }), NOW).attention).toBe(false);
   expect(rowFromLive(liveFixture({ kind: "task", status: "needs_person", statusWords: "Needs you: waiting on a reviewer", needsYou: false, actions: ["watch"] }), NOW).attention).toBe(false);
   expect(rowFromLive(liveFixture({ kind: "task", status: "needs_person", statusWords: "Needs you: decide", needsYou: true, actions: ["watch"] }), NOW).attention).toBe(true);
+  expect(rowFromLive(liveFixture({ kind: "task", status: "needs_person", statusWords: "Needs you: decide", approvalUrl: "https://cell.example/v1/app/approve/apr_aaaaaaaaaaaaaaaaaaaa" }), NOW).attention).toBe(true);
+ });
+ it("says an ended failed session is Failed (ended), with Open and Dismiss to offer, and names nobody who acts next", () => {
+  const ended = { kind: "task" as const, status: "failed" as const, statusWords: "Failed: it stopped", endedAt: ago(2 * HOUR), actions: ["watch", "comment", "share"] as never };
+  expect(rowFromLive(liveFixture({ ...ended, canDismiss: true }), NOW)).toMatchObject({ state: { label: "Failed (ended)", tone: "danger" }, attention: true, next: undefined, ended: { endedAt: ago(2 * HOUR), canDismiss: true } });
+  // A teammate's ended failure: it is listed, but it is not theirs to dismiss or to act on.
+  expect(rowFromLive(liveFixture(ended), NOW)).toMatchObject({ state: { label: "Failed (ended)" }, attention: false, next: undefined, ended: { canDismiss: false } });
+  // Even a tile that still said needsYou or offered Close names nobody for an ended session.
+  expect(nextActor({ needsYou: true, kind: "task", actions: ["close"], endedAt: ago(HOUR) }, "failed")).toBeUndefined();
+  // An open failed row has no `ended` and keeps "Failed".
+  expect(rowFromLive(liveFixture({ kind: "task", status: "failed", statusWords: "Failed: it stopped" }), NOW)).toMatchObject({ state: { label: "Failed" }, ended: undefined });
  });
  it("says where it runs: Cloud or a person's machine, and whether that machine is offline", () => {
   expect(rowFromLive(liveFixture({ where: { kind: "cloud" } }), NOW).place).toEqual({ text: "Cloud", offline: false });
@@ -131,9 +146,16 @@ describe("the order", () => {
 });
 
 type Tile = ReturnType<typeof liveFixture>;
-function setup(options: { path?: string; byFilter?: Record<string, Tile[]>; failFilter?: string; ended?: ReturnType<typeof finishedFixture>[]; cut?: boolean; theme?: "light" | "dark" } = {}) {
+function setup(options: { path?: string; byFilter?: Record<string, Tile[]>; failFilter?: string; dismiss?: ApiResponse; ended?: ReturnType<typeof finishedFixture>[]; cut?: boolean; theme?: "light" | "dark" } = {}) {
  const f = fakeHost(async (request: ApiRequest): Promise<ApiResponse> => {
   if (request.path.startsWith("/v1/app/live")) { const filter = new URL(request.path, "https://x.example").searchParams.get("filter") ?? "all";if (filter === options.failFilter) return { status: 403, body: { error: { code: "FORBIDDEN", message: "Your access ended." } } };return { status: 200, body: { tiles: options.byFilter?.[filter] ?? [] } }; }
+  if (request.method === "POST" && request.path.startsWith("/v1/app/home/cards/")) {
+   if (options.dismiss !== undefined) return options.dismiss;
+   // As the broker does: the dismissed failure leaves Needs attention's Failed list.
+   const cardId = decodeURIComponent(request.path.slice("/v1/app/home/cards/".length).split("/")[0]!);
+   for (const [filter, tiles] of Object.entries(options.byFilter ?? {})) (options.byFilter as Record<string, Tile[]>)[filter] = tiles.filter(entry => "failure:" + entry.sessionId !== cardId);
+   return { status: 200, body: { cardId, dismissed: true } };
+  }
   if (request.path.startsWith("/v1/app/sessions?")) return { status: 200, body: { sessions: options.ended ?? [], ...(options.cut === true ? { projectsCut: true } : {}) } };
   if (request.path === "/v1/app/nav") return { status: 200, body: navFixture() };
   return { status: 200, body: { notices: [], next: "settled" } };
@@ -167,6 +189,36 @@ describe("the screen", () => {
   const f = setup({ path: "/app/live?view=attention", byFilter: { needs_me: [waiting, failed], failed: [failed] } });await screen.findByRole("heading", { name: "Review the plan" });
   expect(f.calls()).toEqual(expect.arrayContaining(["/v1/app/live?filter=needs_me", "/v1/app/live?filter=failed"]));
   expect(screen.getAllByRole("heading", { level: 2 }).map(item => item.textContent)).toEqual(["Review the plan", "Retry the build"]);f.close();
+ });
+ describe("an ended failed session in Needs attention", () => {
+  const endedAt = new Date(Date.now() - 2 * HOUR).toISOString();
+  const ended = () => tile({ sessionId: SESSION_C, title: "Draft the setup", kind: "task", status: "failed", statusWords: "Failed: it stopped", endedAt, canDismiss: true, actions: ["watch", "comment", "share"] });
+  it("reads Failed (ended) with Open and Dismiss, and none of Stop, Retry, Follow or Take over", async () => {
+   const f = setup({ path: "/app/live?view=attention", byFilter: { failed: [ended()] } });
+   const row = (await screen.findByRole("heading", { name: "Draft the setup" })).closest("li")!;
+   expect(within(row).getByText("Failed (ended)")).toBeTruthy();expect(row.getAttribute("data-attention")).toBe("true");expect(row.textContent).not.toContain("Next:");
+   expect(within(row).getAllByRole("button").map(button => button.textContent)).toEqual(["Open", "Dismiss"]);
+   for (const name of ["Stop", "Retry", "Follow", "Take over"]) expect(within(row).queryByRole("button", { name })).toBeNull();
+   const navigate = vi.spyOn(f.host, "navigate");fireEvent.click(within(row).getByRole("button", { name: "Open" }));expect(navigate).toHaveBeenCalledWith("/app/sessions/" + SESSION_C);f.close();
+  });
+  it("offers a teammate's ended failure only Open", async () => {
+   const f = setup({ path: "/app/live?view=attention", byFilter: { failed: [{ ...ended(), canDismiss: undefined }] } });
+   const row = (await screen.findByRole("heading", { name: "Draft the setup" })).closest("li")!;
+   expect(within(row).getAllByRole("button").map(button => button.textContent)).toEqual(["Open"]);expect(row.getAttribute("data-attention")).toBeNull();f.close();
+  });
+  it("dismisses with Home's own dismissal (the failure's card id and the happening that ended) and the row leaves the list", async () => {
+   const f = setup({ path: "/app/live?view=attention", byFilter: { failed: [ended()] } });
+   const row = (await screen.findByRole("heading", { name: "Draft the setup" })).closest("li")!;
+   fireEvent.click(within(row).getByRole("button", { name: "Dismiss" }));
+   await waitFor(() => expect(f.request.mock.calls.map(([request]) => request.method + " " + request.path)).toContain("POST /v1/app/home/cards/failure%3A" + SESSION_C + "/dismiss?occurrence=" + encodeURIComponent("ended:" + endedAt)));
+   await screen.findByText("Nothing needs attention");expect(screen.queryByRole("heading", { name: "Draft the setup" })).toBeNull();f.close();
+  });
+  it("says so when the dismissal fails and keeps the row, with no stale message once it works", async () => {
+   const f = setup({ path: "/app/live?view=attention", byFilter: { failed: [ended()] }, dismiss: { status: 500, body: { error: { code: "INTERNAL", message: "Couldn't dismiss right now." } } } });
+   const row = (await screen.findByRole("heading", { name: "Draft the setup" })).closest("li")!;
+   fireEvent.click(within(row).getByRole("button", { name: "Dismiss" }));
+   expect((await within(row).findByRole("alert")).textContent).toContain("dismiss");expect(screen.getByRole("heading", { name: "Draft the setup" })).toBeTruthy();f.close();
+  });
  });
  it("reads Finished from the ended-sessions list: everything the reader may open (company scope) with no project, the project's with one", async () => {
   const f = setup({ path: "/app/live?view=finished", ended: [finishedFixture({ endedAt: new Date(Date.now() - 2 * 24 * HOUR).toISOString() })] });
