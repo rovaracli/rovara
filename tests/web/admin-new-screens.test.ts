@@ -20,7 +20,7 @@ import { navFixture } from "./support/fixtures.js";
 const row = (name: string, label: string, over: Record<string, unknown> = {}) => ({ name, label, summary: `What ${label} turns on.`, wired: true, enabled: false, forcedOff: false, state: "off", ...over });
 const answer = (over: Record<string, unknown> = {}) => ({ revision: 3, previews: false, changedAt: "2026-11-11T12:00:00.000Z", flags: [row("look", "New look", { enabled: true, state: "on" }), row("nav", "New navigation", { state: "preview" }), row("home", "New Home"), row("spending", "Spending page", { enabled: true, forcedOff: true }), row("health", "Health page", { wired: false })], ...over });
 const PATH = "/v1/app/org/ui-flags";
-function mount(options: { role?: "owner" | "admin"; read?: unknown; put?: (request: ApiRequest) => ApiResponse | Promise<ApiResponse> } = {}) {
+function mount(options: { role?: "owner" | "admin" | "member"; read?: unknown; put?: (request: ApiRequest) => ApiResponse | Promise<ApiResponse> } = {}) {
  const role = options.role ?? "owner";
  const nav = navFixture({ me: { developerId: "a".repeat(64), name: "Omar", orgRole: role }, features: { localAgents: false, admin: true, usage: false, chains: false, notices: false, describe: false } });
  const me = AppMeResponseSchema.parse({ developer: { id: "a".repeat(64), name: "Omar", orgRole: role }, org: { orgId: "org_aaaaaaaaaaaaaaaaaaaa", name: "Acme", plan: "team" }, identities: [] });
@@ -66,15 +66,15 @@ it("lists the wired switches with what each turns on, the company value and when
 it("turning one on sends only that flag with the revision read, then shows the saved value and refreshes the navigation", async () => {
  const next = answer({ revision: 4, flags: [row("look", "New look", { enabled: true, state: "on" }), row("nav", "New navigation", { state: "preview" }), row("home", "New Home", { enabled: true, state: "on" })] });
  const f = mount({ put: () => ({ status: 200, body: next }) });
- fireEvent.click(await screen.findByRole("button", { name: "Turn on New Home for the company" }));
+ fireEvent.click(await screen.findByRole("button", { name: "Turn on New Home for everyone" }));
  await waitFor(() => { expect(puts(f)).toHaveLength(1); });
  expect(puts(f)[0]).toMatchObject({ method: "PUT", path: PATH, body: { expectedRevision: 3, flags: { home: true } }, retry: "never" });
  expect(Object.keys((puts(f)[0]!.body as { flags: object }).flags)).toEqual(["home"]);
  await screen.findByText(/Saved\. Takes effect when people next open or reload the app\./);
- expect(await screen.findByRole("button", { name: "Turn off New Home for the company" })).toBeTruthy();
+ expect(await screen.findByRole("button", { name: "Turn off New Home for everyone" })).toBeTruthy();
  await waitFor(() => { expect(f.query.getQueryState(["nav"])?.isInvalidated || f.request.mock.calls.filter(([r]) => r.path === "/v1/app/nav").length > 0).toBe(true); });
  // the next change carries the new revision
- fireEvent.click(screen.getByRole("button", { name: "Turn off New look for the company" }));
+ fireEvent.click(screen.getByRole("button", { name: "Turn off New look for everyone" }));
  await waitFor(() => { expect(puts(f)).toHaveLength(2); });
  expect(puts(f)[1]!.body).toEqual({ expectedRevision: 4, flags: { look: false } });
  f.close();
@@ -91,19 +91,19 @@ it("the previews switch sends previews with the revision", async () => {
 
 it("a revision conflict says someone else changed this, and Reload reads the fresh state", async () => {
  const f = mount({ put: () => ({ status: 409, body: { error: { code: "CHANGE_STALE", message: "Someone else changed this. Reload and try again." } } }) });
- fireEvent.click(await screen.findByRole("button", { name: "Turn on New Home for the company" }));
+ fireEvent.click(await screen.findByRole("button", { name: "Turn on New Home for everyone" }));
  await screen.findByText("Someone else changed this; reload.");
  expect(screen.queryByText(/Saved\./)).toBeNull();
  f.request.mockImplementation(async request => ({ status: 200, body: request.path === PATH ? answer({ revision: 9, flags: [row("home", "New Home", { enabled: true, state: "on" })] }) : {} }));
  fireEvent.click(screen.getByRole("button", { name: "Reload" }));
- expect(await screen.findByRole("button", { name: "Turn off New Home for the company" })).toBeTruthy();
+ expect(await screen.findByRole("button", { name: "Turn off New Home for everyone" })).toBeTruthy();
  expect(screen.queryByText("Someone else changed this; reload.")).toBeNull();
  f.close();
 });
 
 it("REAUTH_REQUIRED shows the server's words and a Sign in again button", async () => {
  const f = mount({ put: () => ({ status: 403, body: { error: { code: "REAUTH_REQUIRED", message: "Sign in again to change company screens." } } }) });
- fireEvent.click(await screen.findByRole("button", { name: "Turn on New Home for the company" }));
+ fireEvent.click(await screen.findByRole("button", { name: "Turn on New Home for everyone" }));
  await screen.findByText("Sign in again to change company screens.");
  fireEvent.click(screen.getByRole("button", { name: "Sign in again" }));
  expect(f.host.signIn).toHaveBeenCalled();
@@ -114,7 +114,7 @@ it("REAUTH_REQUIRED shows the server's words and a Sign in again button", async 
 
 it("any other refusal is shown verbatim, as text", async () => {
  const f = mount({ put: () => ({ status: 503, body: { error: { code: "AUDIT_UNAVAILABLE", message: "No audit ledger <b>here</b>; the change was refused." } } }) });
- fireEvent.click(await screen.findByRole("button", { name: "Turn on New Home for the company" }));
+ fireEvent.click(await screen.findByRole("button", { name: "Turn on New Home for everyone" }));
  const alert = await screen.findByRole("alert");
  expect(alert.textContent).toContain("No audit ledger <b>here</b>; the change was refused.");
  expect(alert.querySelector("b")).toBeNull();
@@ -132,4 +132,99 @@ it("an unreadable list says so and offers to try again", async () => {
 it("the fixtures are shapes the server's contract accepts (forcedOff included), and the reader tolerates a flag or state a newer server adds", () => {
  expect(UiFlagsAdminAnswerSchema.safeParse(answer()).success).toBe(true);
  expect(UiFlagsAdminAnswerReaderSchema.safeParse(answer({ flags: [row("look", "New look"), row("brand-new", "Brand new", { state: "sparkly" })] })).success).toBe(true);
+});
+
+const savedRegions = () => [...document.querySelectorAll("[role=status], [aria-live]")].filter(node => (node.textContent ?? "").includes("Saved."));
+
+it("each switch's accessible name is its visible text (WCAG 2.5.3): no aria-label overrides it, and it names the screen", async () => {
+ const f = mount();
+ const list = await screen.findByRole("list", { name: "New screens" });
+ const buttons = within(list).getAllByRole("button");
+ expect(buttons.map(button => button.textContent)).toEqual(["Turn off New look for everyone", "Turn on New navigation for everyone", "Turn on New Home for everyone"]);
+ for (const button of buttons) {
+  expect(button.hasAttribute("aria-label")).toBe(false);
+  expect(screen.getByRole("button", { name: button.textContent })).toBe(button);
+ }
+ await expectNoAxeViolations(document.body);
+ f.close();
+});
+
+it("the previews button keeps one name and says its state with aria-pressed only", async () => {
+ const next = answer({ revision: 4, previews: true });
+ const f = mount({ put: () => ({ status: 200, body: next }) });
+ const before = await screen.findByRole("button", { name: "Allow previews" });
+ expect(before.getAttribute("aria-pressed")).toBe("false");
+ fireEvent.click(before);
+ await waitFor(() => { expect(screen.getByRole("button", { name: "Allow previews" }).getAttribute("aria-pressed")).toBe("true"); });
+ expect(screen.queryByRole("button", { name: "Stop allowing previews" })).toBeNull();
+ expect(screen.getByRole("button", { name: "Allow previews" })).toBe(before);
+ f.close();
+});
+
+it("Saved. is announced by one live region, not two", async () => {
+ const f = mount();
+ fireEvent.click(await screen.findByRole("button", { name: "Turn on New Home for everyone" }));
+ await screen.findByText(/Saved\. Takes effect/);
+ // The shared announcer waits a second before it speaks: give it the time, then count the regions that carry the text.
+ await new Promise(resolve => setTimeout(resolve, 1300));
+ expect(savedRegions()).toHaveLength(1);
+ expect(screen.getByRole("status").textContent).toContain("Saved.");
+ f.close();
+});
+
+it("while a change is saving the control keeps focus, says it is disabled, and a second click sends nothing", async () => {
+ let release: (response: ApiResponse) => void = () => undefined;
+ const f = mount({ put: () => new Promise<ApiResponse>(resolve => { release = resolve; }) });
+ const button = await screen.findByRole("button", { name: "Turn on New Home for everyone" });
+ button.focus();
+ fireEvent.click(button);
+ await waitFor(() => { expect(puts(f)).toHaveLength(1); });
+ await waitFor(() => { expect(button.getAttribute("aria-disabled")).toBe("true"); });
+ expect((button as HTMLButtonElement).disabled).toBe(false);
+ expect(document.activeElement).toBe(button);
+ const previews = screen.getByRole("button", { name: "Allow previews" });
+ expect(previews.getAttribute("aria-disabled")).toBe("true");expect((previews as HTMLButtonElement).disabled).toBe(false);
+ fireEvent.click(button);fireEvent.click(previews);fireEvent.click(screen.getByRole("button", { name: "Turn off New look for everyone" }));
+ expect(puts(f)).toHaveLength(1);
+ release({ status: 200, body: answer({ revision: 4, flags: [row("look", "New look", { enabled: true, state: "on" }), row("nav", "New navigation", { state: "preview" }), row("home", "New Home", { enabled: true, state: "on" })] }) });
+ await screen.findByText(/Saved\. Takes effect/);
+ const after = await screen.findByRole("button", { name: "Turn off New Home for everyone" });
+ expect(after).toBe(button);expect(document.activeElement).toBe(button);
+ expect(after.hasAttribute("aria-disabled")).toBe(false);
+ f.close();
+});
+
+it("while a change is saving the page shows Saving…: the clicked control is aria-busy, the page is busy, and all of it clears when the answer comes", async () => {
+ let release: (response: ApiResponse) => void = () => undefined;
+ const f = mount({ put: () => new Promise<ApiResponse>(resolve => { release = resolve; }) });
+ const button = await screen.findByRole("button", { name: "Turn on New Home for everyone" });
+ const previews = screen.getByRole("button", { name: "Allow previews" });
+ const page = button.closest("section")!;
+ expect(page.getAttribute("aria-busy")).toBe("false");expect(button.hasAttribute("aria-busy")).toBe(false);expect(screen.getByRole("status").textContent).toBe("");
+ fireEvent.click(button);
+ await waitFor(() => { expect(screen.getByRole("status").textContent).toBe("Saving…"); });
+ expect(button.getAttribute("aria-busy")).toBe("true");expect(previews.hasAttribute("aria-busy")).toBe(false);expect(page.getAttribute("aria-busy")).toBe("true");
+ expect((button as HTMLButtonElement).disabled).toBe(false);
+ release({ status: 200, body: answer({ revision: 4 }) });
+ await screen.findByText(/Saved\. Takes effect/);
+ expect(screen.getByRole("status").textContent).not.toContain("Saving");expect(button.hasAttribute("aria-busy")).toBe(false);expect(page.getAttribute("aria-busy")).toBe("false");
+ // The previews switch shows the same state on its own button.
+ fireEvent.click(previews);
+ await waitFor(() => { expect(previews.getAttribute("aria-busy")).toBe("true"); });
+ expect(button.hasAttribute("aria-busy")).toBe(false);
+ release({ status: 200, body: answer({ revision: 5, previews: true }) });
+ await waitFor(() => { expect(previews.hasAttribute("aria-busy")).toBe(false); });
+ f.close();
+});
+
+it("a member is refused the page: the admin layout's refusal shows, the list is never read and no PUT is possible", async () => {
+ const f = mount({ role: "member" });
+ await screen.findByRole("heading", { name: "Administration unavailable" });
+ expect(screen.queryByRole("heading", { name: "New screens", level: 1 })).toBeNull();
+ expect(screen.queryByRole("list", { name: "New screens" })).toBeNull();
+ expect(screen.queryByRole("button", { name: /Turn (on|off)|Allow previews/ })).toBeNull();
+ await new Promise(resolve => setTimeout(resolve, 50));
+ expect(f.request.mock.calls.filter(([request]) => request.path === PATH)).toEqual([]);
+ expect(puts(f)).toEqual([]);
+ f.close();
 });

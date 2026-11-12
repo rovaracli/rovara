@@ -4,6 +4,7 @@ import { uiFlagOn } from "./ui-flags.js";
  * The v2 look switch and the density preference. This file is the ONLY place that decides whether the new look is on.
  * Today the switch is a per-device storage key (`rovara.look` = "v2"), the cheapest existing switch: no contract change, no broker change.
  * Runtime per-company flag (lane U5): this function calls `uiFlagOn` (ui-flags.ts): the company's value from the navigation answer wins when it is on or off, and this device's key only decides when the company allows previews or the server sends no answer:
+ * While the app waits for the navigation answer, or the read failed, the look is off (ui-flags.ts: fail closed).
  * ThemeProvider only calls this function, and nothing under `design/` or the screens knows which look is on.
  */
 export interface LookStorageHost { storage: { get(key: string): string | undefined; set(key: string, value: string): void } }

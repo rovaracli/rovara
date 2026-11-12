@@ -3,6 +3,7 @@ import { mayApproveHere, runLimitRaise, type ReadDecision } from "../../api/deci
 import { isMaintainerSeat, type DecideSeat } from "../../api/decide-seat.js";
 import type { ReadSession } from "./SessionHeader.js";
 import type { ReadTask } from "./workspace-types.js";
+import { CHANGED_OUTSIDE, OUTSIDE_WHY, outsideRowsOf, pushedByLines } from "./continue-outside.js";
 
 /**
  * Experience lane, task page: the plain-state vocabulary (experience spec 3) and the "next step, who, why" summary, from data the page already has: the session's status
@@ -46,6 +47,8 @@ const items = (task: ReadTask | undefined): readonly MergeItem[] => (task?.merge
 
 /** The plain state for a status and, where the task view can tell more, the more exact one (changes requested, ready for review, finished with no code). */
 export function plainState(status: LeadStatus, task: ReadTask | undefined): PlainState {
+ // Continue loop: a head Rovara did not make is "Changed outside Rovara · checks needed" (info colour, the laptop chip), whatever the code's other states say, until the work is merged, closed or failed.
+ if (outsideRowsOf(task?.continueLoop).length > 0 && status.state !== "merged" && status.state !== "closed" && status.state !== "failed") return { label: CHANGED_OUTSIDE, tone: "info" };
  const base = BASE[status.state] ?? PLAIN_STATE_UNKNOWN;
  if (status.state === "closed") {
   if (task?.workflow?.outcome === "ANSWERED") return { label: "Finished (no code)", tone: "success" };
@@ -72,6 +75,8 @@ export const MERGE_SECTION_ID = "task-merge";
 export interface LeadAction { label: string; targetId: string }
 export interface Lead {
  state: PlainState;
+ /** Continue loop: the task has a head Rovara did not make. The words of the state and one "Last pushed by" line per head. Absent otherwise. */
+ outside: { label: string; lines: readonly string[] } | undefined;
  /** What happens next, or what to do. Always present: a state without words from the server reads from the state itself. */
  next: string;
  /** Who acts: "You", "Rovara", a role named by the server's own budget words, or nothing when the page cannot tell. */
@@ -104,9 +109,9 @@ export function approveLine(cards: readonly ReadDecision[], seat?: DecideSeat): 
  return "You can decide this on its card · " + riskWords(card.risk) + extra;
 }
 
-export interface LeadInput { session: ReadSession; task: ReadTask | undefined; status: LeadStatus; cards: readonly ReadDecision[]; /** Approval place: the seat the viewer decides from, when the page read it. */ seat?: DecideSeat | undefined }
+export interface LeadInput { session: ReadSession; task: ReadTask | undefined; status: LeadStatus; cards: readonly ReadDecision[]; /** Approval place: the seat the viewer decides from, when the page read it. */ seat?: DecideSeat | undefined; /** The time "Last pushed by" is told against; the current time unless a test says otherwise. */ now?: number | undefined }
 
-export function taskLead({ session, task, status, cards, seat }: LeadInput): Lead {
+export function taskLead({ session, task, status, cards, seat, now }: LeadInput): Lead {
  const state = plainState(status, task), owner = session.you.owner, card = cards[0]?.card;
  const mayAct = session.you.actions;
  let next = (owner ? status.next : status.nextOthers ?? status.next) ?? WORKING[status.state] ?? "";
@@ -129,8 +134,15 @@ export function taskLead({ session, task, status, cards, seat }: LeadInput): Lea
  if (state.label === "Not ready to merge" && why === undefined && task?.merge?.message !== undefined && task.merge.message !== "") why = sentence(task.merge.message);
  if (state.label === "Changes requested" && why === undefined) why = "A reviewer asked for changes.";
  if (state.label === "Checks failed" && why === undefined) why = "Checks on the pull request failed.";
+ // Continue loop: the code on the pull request changed outside Rovara. Say so in place of the server's merge words; today nothing re-checks it for the person (Recheck lights up where the server offers it).
+ const outsideRows = status.state === "merged" || status.state === "closed" ? [] : outsideRowsOf(task?.continueLoop);
+ const outside = outsideRows.length === 0 ? undefined : { label: CHANGED_OUTSIDE, lines: pushedByLines(outsideRows, now ?? Date.now()) };
+ if (state.label === CHANGED_OUTSIDE) {
+  why = OUTSIDE_WHY;
+  next = outsideRows.some(row => row.rechecking === true) ? "Rovara is re-checking the new code" : task?.continueLoop?.canRecheck === true ? "Look at the new code, then press Recheck" : "Check the new code yourself before it merges";
+ }
  if (next === "") next = state.label;
- return { state, next: sentence(next), who, why, action, approve: approveLine(cards, seat) };
+ return { state, outside, next: sentence(next), who, why, action, approve: approveLine(cards, seat) };
 }
 
 /** A raw worker word read as a plain state (the broker writes "Worker status: SUCCEEDED" into the task's events). Any other line, and a word this build does not know, is returned unchanged. */

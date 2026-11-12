@@ -1,0 +1,33 @@
+/* "Continue in your own tool" (switch rovara.continue). New file: nothing here is read while the switch is off. */
+.rv-continue{width:min(640px,calc(100vw - 32px))}
+.rv-continue-body{display:grid;gap:var(--rv-space-5);min-width:0}
+.rv-continue-body h3,.rv-continue-body p{margin:0}
+.rv-continue-body section>*+*{margin-top:var(--rv-space-3)}
+.rv-continue-tools{display:flex;flex-wrap:wrap;gap:var(--rv-space-2) var(--rv-space-5);margin:0;padding:0;border:0;min-width:0}
+.rv-continue-tools legend{padding:0;margin-bottom:var(--rv-space-2);font-weight:600}
+.rv-continue-code{margin:0;padding:var(--rv-space-3) var(--rv-space-4);border:1px solid var(--rv-border);border-radius:var(--rv-radius-sm);background:var(--rv-bg-sunken);white-space:pre-wrap;overflow-wrap:anywhere;font:var(--rv-font-sm)/1.6 var(--rv-font-mono)}
+.rv-continue-code code{overflow-wrap:anywhere}
+.rv-continue-copy{display:flex;align-items:center;flex-wrap:wrap;gap:var(--rv-space-3)}
+.rv-continue-copy-button{min-height:44px;min-width:44px}
+.rv-continue-facts{margin:0;display:grid;gap:var(--rv-space-2)}
+.rv-continue-facts>div{display:grid;grid-template-columns:8rem minmax(0,1fr);gap:var(--rv-space-3)}
+.rv-continue-facts dt{color:var(--rv-text-muted)}
+.rv-continue-facts dd{margin:0;overflow-wrap:anywhere;min-width:0}
+.rv-continue-facts a{display:inline-block;min-height:24px}
+@media(max-width:480px){
+ .rv-continue{left:0;right:0;top:auto;bottom:0;transform:none;width:100vw;max-height:92dvh;border-radius:var(--rv-radius-md) var(--rv-radius-md) 0 0}
+ .rv-continue-facts>div{grid-template-columns:minmax(0,1fr);gap:0}
+ .rv-continue-copy-button{width:100%}
+}
+/* Continue loop (exp/continue-loop): the branch per repository, Publish working branch, the changed-outside state and Recheck. */
+.rv-continue-branches,.rv-continue-outside ul{margin:0;padding:0;list-style:none;display:grid;gap:var(--rv-space-3)}
+.rv-continue-branches li,.rv-continue-outside li{display:flex;flex-wrap:wrap;align-items:center;gap:var(--rv-space-2) var(--rv-space-3);min-width:0}
+.rv-continue-publish{display:inline-flex;flex-wrap:wrap;align-items:center;gap:var(--rv-space-2) var(--rv-space-3)}
+.rv-continue-action{min-height:44px;min-width:44px}
+.rv-continue-error{color:var(--rv-status-failed);overflow-wrap:anywhere}
+.rv-continue-note{color:var(--rv-text-muted)}
+.rv-continue-outside{display:grid;gap:var(--rv-space-3)}
+.rv-continue-outside .rv-chip{white-space:normal;overflow-wrap:anywhere}
+@media(max-width:480px){.rv-continue-action{width:100%}}
+.rv-continue-block{display:block;flex-basis:100%}
+.rv-continue-action[aria-disabled=true]{opacity:.6;cursor:not-allowed}

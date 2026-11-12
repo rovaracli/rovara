@@ -52,7 +52,7 @@ export { AppOrgInvitesResponseSchema, AppOrgInvitesResponseReaderSchema } from "
 export { OrgInvitePublicIdSchema, AppOrgInviteStatusSchema } from "./developer-web.js";
 
 // Lane A: safe reviewed invite creation receipts.
-export { ReviewedInviteCreateBodySchema, InviteCreateReceiptSchema, ReviewedInviteCreateResponseSchema, InviteEmailOutcomeSchema, InviteProjectSchema, InviteProjectNoteSchema, INVITE_PROJECT_ROLES_FOR_MAINTAINERS, type InviteProject, type InviteProjectNote } from "./invite-creation.js";
+export { ReviewedInviteCreateBodySchema, InviteCreateReceiptSchema, ReviewedInviteCreateResponseSchema, InviteEmailOutcomeSchema, InviteProjectSchema, InviteProjectRoleSchema, InviteProjectNoteSchema, INVITE_PROJECT_ROLES_FOR_MAINTAINERS, type InviteProject, type InviteProjectNote } from "./invite-creation.js";
 
 // Lane A: strict read-only monthly base budget settings.
 export { AdminBudgetMicrodollarsSchema, AdminMonthlyBaseLimitSchema, AdminBudgetSettingsSchema, type AdminBudgetSettings } from "./admin-budget.js";
