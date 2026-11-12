@@ -25,6 +25,14 @@
       "types": "./plugins/channel-slack.d.ts",
       "default": "./plugins/channel-slack.js"
     },
+    "./plugins/object-storage-s3": {
+      "types": "./plugins/object-storage-s3.d.ts",
+      "default": "./plugins/object-storage-s3.js"
+    },
+    "./plugins/secrets-aws": {
+      "types": "./plugins/secrets-aws.d.ts",
+      "default": "./plugins/secrets-aws.js"
+    },
     "./core/agents": {
       "types": "./core/agents.d.ts",
       "default": "./core/agents.js"
@@ -124,6 +132,10 @@
     "./core/work-breakdown": {
       "types": "./core/work-breakdown.d.ts",
       "default": "./core/work-breakdown.js"
+    },
+    "./core/work-events": {
+      "types": "./core/work-events.d.ts",
+      "default": "./core/work-events.js"
     },
     "./ports": {
       "types": "./ports.d.ts",

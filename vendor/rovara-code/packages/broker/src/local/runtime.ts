@@ -35,7 +35,7 @@ import { catalogPriceOf } from "../core/cost/price-table.js";
 import { listPricesPerMillion } from "@agentx/model-runtime/catalog";
 import { createDocumentObjectStorage } from "../core/proof/evidence-blob-store.js";
 import { MemoryQueueService } from "../ports/memory-queue.js";
-import { createLocalLearningAdapter } from "../lessons/local-embedder.js";
+import { learningAdapterFromEnvironment } from "../lessons/local-embedder.js";
 import { localLessonsEnabled } from "../lessons/switch.js";
 import { DocumentAuditSink, FileCompanyInstructions, createIntervalScheduler, SqliteAuditLog, SqliteDocumentStore, SqliteQueueService, startAuditCopy, startAuditCopyFromPrimary } from "@agentx/local-adapters";
 import type { WorkerMachines } from "@agentx/contracts";
@@ -59,7 +59,7 @@ import { listProjects } from "./app/projects.js";
 import { createStoreProjectSource } from "../core/task-flow/project-source.js";
 import { codeHostForRepositoryAddress } from "../plugins/routing.js";
 import { createDockerRunner, type DockerRunner } from "./docker-runner.js";
-import { DockerWorkerMachines } from "./docker-worker-machines.js";
+import { DockerWorkerMachines, ownerWantsPiMcp } from "./docker-worker-machines.js";
 import { assertGithubRepositoryAddress, type GhRunner } from "./github-access.js";
 import { startLocalHttpServer, type LocalHttpServer } from "./http-server.js";
 import { loadInvokeSigner } from "./invoke-signer.js";
@@ -83,9 +83,9 @@ import {
 } from "./state-directory.js";
 import { THIS_MACHINE_ADAPTER_NAME, ThisMachineWorkerMachines } from "./this-machine-worker-machines.js";
 import { prepareLocalTestServices } from "./test-services-install.js";
+import { createOwnerImageService, createOwnerImageStore } from "./test-services-owner-list.js";
 import { createDockerImageRegistry } from "./docker-image-registry.js";
 import { savedEnvEnabled } from "../core/test-env/saved-env-switch.js";
-import { releaseServiceCatalogSource } from "../core/test-env/shipped-catalog.js";
 
 /** The model providers whose keys `rovara up` looks for (the environment variable is `<PROVIDER>_API_KEY`). */
 export const LOCAL_MODEL_PROVIDERS = ["anthropic", "openai", "openrouter"] as const;
@@ -413,8 +413,9 @@ async function startLocked(options: LocalRuntimeOptions, stateDirectory: string)
     priceTable: { currency: "USD", models: {} },
     prices: modelPrices,
   });
-  // The learning point: how lessons are compared. Code's own compares on keywords and cited paths; `ROVARA_LESSONS_EMBEDDER=local` adds the small embedder that runs in this process. A configured `learning` plug-in is used instead.
-  registry.register("learning", "local", createLocalLearningAdapter({ embedder: options.environment["ROVARA_LESSONS_EMBEDDER"] === "local" }), { isDefault: true });
+  // The learning point: how lessons are compared. Code's own compares on keywords and cited paths; `ROVARA_LESSONS_EMBEDDER=local` adds the small embedder that runs in this process, and a loopback address
+  // (`http://127.0.0.1:<port>/v1` with `ROVARA_LESSONS_EMBEDDER_MODEL`) a small open model served on this machine (decision 23). A configured `learning` plug-in is used instead.
+  registry.register("learning", "local", learningAdapterFromEnvironment(options.environment), { isDefault: true });
   // Item K2: the model providers. The three Code has always known are rows; a configured `model-provider` plug-in of the same name replaces one.
   registerBuiltinModelProviders(registry);
 
@@ -446,7 +447,16 @@ async function startLocked(options: LocalRuntimeOptions, stateDirectory: string)
     registry.register("image-registry", "docker", images, { isDefault: true });
   }
   // Test services (off unless `ROVARA_TEST_SERVICES=1`): the catalog's images are pulled on the host and the worker is told what it may start. Anything missing leaves the worker offering none.
-  const testServices = await prepareLocalTestServices({ environment: options.environment, stateDirectory, docker: runner, log: (entry) => console.log(JSON.stringify(entry)) });
+  // Code has no catalog signing key, so the owner's own approved image list stands where the signed catalog would: the built-in starter images, what the owner approved on the test environment page, and `ROVARA_TEST_SERVICE_IMAGES`.
+  // The store and the audit sink are read late (a storage or audit plug-in registers after this); a store that is not there yet counts as holding no approvals.
+  const ownerCompany = OrgIdSchema.parse(config.companyId ?? IMPLICIT_COMPANY_ID);
+  const ownerImageStore = createOwnerImageStore({ store: () => registry.require("storage"), companyId: ownerCompany });
+  const ownerImages = createOwnerImageService({
+    store: ownerImageStore, docker: runner, now: () => Date.now(), companyId: ownerCompany,
+    audit: { stage: (event) => registry.require("audit-sink").stage(event), record: (event) => registry.require("audit-sink").record(event) },
+    log: (entry) => console.log(JSON.stringify(entry)),
+  });
+  const testServices = await prepareLocalTestServices({ environment: options.environment, stateDirectory, docker: runner, ownerImages, log: (entry) => console.log(JSON.stringify(entry)) });
   // Worker machines. The callback listener's port is not known until the handler exists, so it is read when a machine starts.
   const callbackServer: { current?: CallbackServer } = {};
   // The hosts the owner approved for a setup run: read at each machine start (the app is made after the machines, so it is read late).
@@ -463,6 +473,8 @@ async function startLocked(options: LocalRuntimeOptions, stateDirectory: string)
     // The registries a project's dev container may pull from: the owner's `ROVARA_DEVCONTAINER_REGISTRIES` (`0` turns dev containers off); with none said, the default list on a Docker that runs in a virtual machine and none on a host where root in a container is root.
     devcontainerRegistries: await devcontainerRegistriesForInstall(options.environment, options.docker ?? createDockerRunner(options.environment)),
     modelProxy: true,
+    // The stage's sources through Pi's own MCP client (the gateway's one server); any owner ROVARA_PI_MCP but unset or "1" flips back to the worker's own tools for one release.
+    piMcp: ownerWantsPiMcp(options.environment),
     // Port lane P6 (item B1): what the registered build-system adapters supply (extra detectors, setup programs) goes to the worker's start-up environment; read late, because the config's adapters load after this.
     buildSystems: () => collectBuildSystemProfiles(registry),
     signer: await loadInvokeSigner(stateDirectory),
@@ -570,7 +582,8 @@ async function startLocked(options: LocalRuntimeOptions, stateDirectory: string)
     operationEnded: (operationId) => modelProxyHolder.current?.operationEnded(operationId),
     operationSpend: (operationId) => modelProxyHolder.current?.tokens.spentBy(operationId),
     scriptTokensEnabled: () => scriptTokensEnabled(options.environment),
-    ...(testServices.catalog === undefined ? {} : { serviceCatalog: releaseServiceCatalogSource(options.environment) }),
+    ...(testServices.catalogSource === undefined ? {} : { serviceCatalog: testServices.catalogSource }),
+    ...(testServices.mode === "owner" && testServices.ownerImages !== undefined ? { testServiceImages: testServices.ownerImages } : {}),
     modelCalls: (operationId) => modelProxyHolder.current?.tokens.calledAliases(operationId),
     slotKeys: () => modelProxyHolder.current?.slotKeys,
     // A diagnosis calls its model through the proxy over the listener's loopback port (both are made after the app).

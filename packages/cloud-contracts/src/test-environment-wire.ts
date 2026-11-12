@@ -7,13 +7,14 @@
 //
 // The feature strings are what a worker advertises on /ping: an older worker is refused the run at dispatch (a strict parse would refuse the field), never mis-run.
 import { z } from "zod";
-import { CatalogConfigSchema, catalogIdName, CatalogIdSchema, CheckKindSchema, ConnectTemplateSchema, CoverageMapSchema, DnsLabelSchema, EnvNameSchema, FamilyIdSchema, IacSeedRefSchema, ProjectCommandSchema, RelativeWorkspacePathSchema, reservedDependencyEnvName, SeedScriptLockSchema, TASK_DEPENDENCY_PLAN_MAX, TEST_ENV_DEPENDENCY_LIMITS, TEST_ENV_DEPENDENCY_RESETS, TEST_ENV_HELPER_CATALOG_NAMES, TEST_ENV_PLAN_FAILURES_MAX, TEST_ENV_PLAN_MAP_MAX_BYTES, TEST_ENV_RESERVED_ALIASES, TEST_ENV_ROUND_BUDGET_MIN, TEST_ENV_SELECT_PLACEHOLDER, TEST_ENV_SELECTION_METHODS, TEST_SERVICES_AWS_PLAN_SERVICES, TestEnvDependencyIdSchema, TestEnvDependencyKindSchema, TestEnvRegionSchema } from "@rovara-code/contracts";
+import { CatalogConfigSchema, catalogIdName, CatalogIdSchema, CheckKindSchema, ConnectTemplateSchema, CoverageMapSchema, DnsLabelSchema, EnvNameSchema, FamilyIdSchema, IacSeedRefSchema, ProjectCommandSchema, RelativeWorkspacePathSchema, reservedDependencyEnvName, SeedScriptLockSchema, TASK_DEPENDENCY_PLAN_MAX, TEST_ENV_DEPENDENCY_LIMITS, TEST_ENV_DEPENDENCY_RESETS, TEST_ENV_HELPER_CATALOG_NAMES, TEST_ENV_PLAN_FAILURES_MAX, TEST_ENV_PLAN_MAP_MAX_BYTES, TEST_ENV_RESERVED_ALIASES, TEST_ENV_ROUND_BUDGET_MIN, TEST_ENV_SELECT_PLACEHOLDER, TEST_ENV_SELECTION_METHODS, SEEDED_AWS_SERVICES, TestEnvDependencyIdSchema, TestEnvDependencyKindSchema, TestEnvRegionSchema } from "@rovara-code/contracts";
+// Code's own since the vendor pin 0e340c0e (one name, one owner): re-exported, not defined here.
+export { TEST_SERVICES_COMPANY_IMAGE_PLAN_FEATURE } from "@rovara-code/contracts";
 /**
  * Company-approved extra images (switch `pj`): a worker that lists this reads a plan dependency with `backing: "company"` and its `company` block (an image a company admin approved, by registry, repository and digest) and can
  * start exactly that digest. No worker lists it yet, so the broker never sends such a plan to any worker (`ec2-delivery.ts`); a worker that does not know the backing refuses it by its strict parse, and one that knows it and
  * cannot serve it refuses it by name. In `WORKER_INVOCATION_FEATURES`.
  */
-export const TEST_SERVICES_COMPANY_IMAGE_PLAN_FEATURE = "task.testServices.companyImage.v1";
 
 const NO_HIDDEN = /^[^\p{Cc}\p{Cf}]*$/u;
 const line = (max: number) => z.string().min(1).max(max).regex(NO_HIDDEN, "one plain line");
@@ -68,7 +69,7 @@ export const TaskDependencyPlanSchema = z
     seeds: z.array(z.union([z.object({ command: ProjectCommandSchema, lock: SeedScriptLockSchema.optional() }).strict(), z.object({ fixturePath: RelativeWorkspacePathSchema, sha256: Sha256.optional() }).strict()])).max(TEST_ENV_DEPENDENCY_LIMITS.seeds),
     reset: z.enum(TEST_ENV_DEPENDENCY_RESETS),
     /** Only on an `emulated` entry: the AWS services this dependency needs from Rovara local AWS, the region the code is told, and where the project declares its resources (a file, never read by the broker). */
-    aws: z.object({ services: z.array(z.enum(TEST_SERVICES_AWS_PLAN_SERVICES)).min(1).max(TEST_SERVICES_AWS_PLAN_SERVICES.length), region: TestEnvRegionSchema, resources: IacSeedRefSchema.optional() }).strict().optional(),
+    aws: z.object({ services: z.array(z.enum(SEEDED_AWS_SERVICES)).min(1).max(SEEDED_AWS_SERVICES.length), region: TestEnvRegionSchema, resources: IacSeedRefSchema.optional() }).strict().optional(),
   })
   .strict()
   .superRefine((plan, context) => {

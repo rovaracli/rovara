@@ -29,6 +29,10 @@
       "types": "./model-discovery.d.ts",
       "default": "./model-discovery.js"
     },
+    "./pi-settings": {
+      "types": "./pi-settings.d.ts",
+      "default": "./pi-settings.js"
+    },
     "./provider-failure": {
       "types": "./provider-failure.d.ts",
       "default": "./provider-failure.js"

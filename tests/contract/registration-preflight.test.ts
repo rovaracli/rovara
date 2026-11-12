@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { IN_HOUSE_TOOL_COUNT, TOOL_LIMIT, TOOL_WARNING_THRESHOLD } from "@rovara-code/contracts";
+import { IN_HOUSE_TOOL_COUNT } from "@rovara-code/contracts";
+import { CLOUD_TOOL_LIMIT as TOOL_LIMIT, CLOUD_TOOL_WARNING_THRESHOLD as TOOL_WARNING_THRESHOLD } from "../../packages/broker/src/aws/broker/tool-budget.js";
 import { ProjectDefinitionSchema } from "@agentx/cloud-contracts";
 import { TARGET_CONFLICT_REASON } from "@agentx/gateway";
 import { describe, expect, it, vi } from "vitest";

@@ -3,8 +3,8 @@
 // Where files live that are too big or too plain for the document store: proof evidence, plan documents, a worker's results. In
 // Cloud this is an S3 bucket (objects tagged with a retention class and expired by a lifecycle rule). The shape is the one lane L7b
 // wrote for evidence (`EvidenceBlobStore`), promoted to a registry point so every lane that stores a file asks the same port.
-// Code's adapters: a folder on this computer (`@agentx/local-adapters/object-storage`) and, as the default, the document store. An S3
-// adapter is Cloud's and is NOT here (a decision 51 item).
+// Code's adapters: a folder on this computer (`@agentx/local-adapters/object-storage`), as the default the document store, and an opt-in S3
+// bucket (`@agentx/broker/plugins/object-storage-s3`, convergence lane A3, owner decision 72 O2).
 //
 // Keys are the caller's, are case-sensitive and look like paths (`private/<owner>/<workspace>/evidence/<task>/<digest>`). A key is
 // checked by `isValidObjectKey` before any adapter uses it, so no adapter ever turns a key into a place outside its own store.
@@ -112,12 +112,15 @@ export function assertObjectPrefix(prefix: string): void {
   if (prefix === "" || !isValidObjectKey(body === "" ? "x" : body)) throw new ObjectKeyError("an object key prefix is the start of a key and is never empty");
 }
 
-/** The most small text facts an object can carry, and their size, so every adapter can keep them with the object. */
-export const OBJECT_METADATA_LIMITS = { entries: 32, bytes: 4_096 } as const;
+/**
+ * The most small text facts an object can carry, and their size (names and values, as UTF-8), so every adapter can keep them with the object. 2 KB is S3's own limit on user metadata
+ * (convergence lane A3), so what one adapter keeps every adapter keeps.
+ */
+export const OBJECT_METADATA_LIMITS = { entries: 32, bytes: 2_048 } as const;
 
 export function assertObjectMeta(meta: ObjectMeta): void {
   const entries = Object.entries(meta.metadata);
   const size = entries.reduce((sum, [name, value]) => sum + Buffer.byteLength(name) + Buffer.byteLength(value), 0);
-  if (entries.length > OBJECT_METADATA_LIMITS.entries || size > OBJECT_METADATA_LIMITS.bytes) throw new ObjectMetaError("an object's metadata is at most 32 small text facts");
+  if (entries.length > OBJECT_METADATA_LIMITS.entries || size > OBJECT_METADATA_LIMITS.bytes) throw new ObjectMetaError("an object's metadata is at most 32 small text facts of 2 KB in all");
   if (meta.contentType === "" || meta.contentType.length > 200) throw new ObjectMetaError("an object has a content type of 1 to 200 characters");
 }

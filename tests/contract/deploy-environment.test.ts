@@ -244,11 +244,26 @@ describe("deploy environment", () => {
     // The callback signing key, then (0.5.15) the erasure hash key seeded with the same value; neither is created again by the upgrade.
     expect(secrets.creates.map((entry) => entry.name)).toEqual([`agentx/${ENV}/callback-signing-key`, `agentx/${ENV}/erasure-hash-key`]);
     expect(secrets.creates[1]!.value).toBe(secrets.creates[0]!.value);
-    const firstKey = install.requests.find((request) => request.part === "control-plane")!.parameters.CallbackSigningKey;
-    const secondKey = upgrade.requests.find((request) => request.part === "control-plane")!.parameters.CallbackSigningKey;
-    expect(firstKey).toBeDefined();
-    expect(firstKey!.length).toBeGreaterThanOrEqual(32);
-    expect(secondKey).toBe(firstKey);
+    // 0.5.15 (chore/0515-drop-callback-key-param): the key is never a stack parameter any more; it lives in the secret alone.
+    for (const request of [...install.requests, ...upgrade.requests]) expect(request.parameters, `${request.part}`).not.toHaveProperty("CallbackSigningKey");
+    expect(secrets.creates[0]!.value.length).toBeGreaterThanOrEqual(32);
+  });
+
+  it("still refuses a callback signing key shorter than 32 characters before any stack deploys, without echoing it (stackParameters no longer checks it: ensureErasureHashKey does, first)", async () => {
+    const shortKey = "short-signing-key-value";
+    const { deployer, requests } = fakeDeployer(scriptedOutputs());
+    let message = "";
+    try {
+      await deployEnvironment({
+        mode: "install", engine: "templates", answers: baseAnswers(), release: fakeRelease(), deployer, store: new MemoryParameterStore(),
+        secrets: memorySecrets({ [`agentx/${ENV}/callback-signing-key`]: shortKey, [`agentx/${ENV}/erasure-hash-key`]: "e".repeat(48) }), holder: HOLDER,
+      });
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    expect(message).toMatch(/the callback signing key is too short/u);
+    expect(message).not.toContain(shortKey);
+    expect(requests).toEqual([]);
   });
 
   it("refuses before any stack when both keys are gone from an environment that exists: it never re-seeds the erasure key from a new callback key (0.5.15 L3)", async () => {

@@ -34,7 +34,6 @@ const answers = (): InstallAnswers => ({
   models: { orchestrator: "us.anthropic.claude-sonnet-4-6", classifier: "us.anthropic.claude-haiku-4-5-20251001-v1:0", worker: "us.anthropic.claude-sonnet-4-6" },
   identity: { mode: "cognito" },
   github: { account: "acme", appId: "123", installationId: "456", privateKeySecretArn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/staging/github-app-AbCdEf" },
-  callbackSigningKey: "k".repeat(40),
 });
 const outputs = {
   access: { ArtifactBucketName: "agentx-staging-access-artifactbucket-abc", CloudFormationRoleArn: "arn:aws:iam::123456789012:role/agentx-staging-cloudformation", OperatorRoleArn: "arn:aws:iam::123456789012:role/agentx-staging-operator", PullThroughPrefix: "agentx-staging" },
@@ -222,10 +221,10 @@ describe("deploy parameters", () => {
     expect(() => stackParameters("access", { ...answers(), release: badRelease }, outputs, { packages: true })).toThrow(/access stack carries no zip assets/);
   });
 
-  it("marks every NoEcho template parameter as secret, and nothing else", () => {
-    const noEcho = new Set([...templates.values()].flatMap((t) => Object.entries(t.Parameters ?? {}).filter(([, p]) => p.NoEcho === true).map(([name]) => name)));
-    expect(noEcho.size).toBeGreaterThan(0);
-    expect([...SECRET_PARAMETERS].sort()).toEqual([...noEcho].sort());
+  it("marks every NoEcho template parameter as secret (since 0.5.15 no named template has one; CallbackSigningKey stays listed only to be redacted if a pre-0.5.15 template is handled)", () => {
+    const noEcho = [...new Set([...templates.values()].flatMap((t) => Object.entries(t.Parameters ?? {}).filter(([, p]) => p.NoEcho === true).map(([name]) => name)))];
+    for (const name of noEcho) expect(SECRET_PARAMETERS.has(name), name).toBe(true);
+    expect([...SECRET_PARAMETERS]).toEqual(["CallbackSigningKey"]);
   });
 
   it("lists no secret as an operator parameter an upgrade carries (none is in SECRET_PARAMETERS or NoEcho in any template)", () => {
@@ -263,17 +262,16 @@ describe("deploy parameters", () => {
     expect(read.filter(([part, name]) => !(name in (templates.get(part)!.Outputs ?? {}))).map(([part, name]) => `${part}.${name}`)).toEqual([]);
   });
 
-  it("refuses a callback signing key shorter than 32 characters without echoing it", () => {
-    const shortKey = "short-signing-key-value";
-    let message = "";
-    try {
-      stackParameters("control-plane", { ...answers(), callbackSigningKey: shortKey }, outputs, { packages: true });
-    } catch (error) {
-      message = (error as Error).message;
+  // 0.5.15 (chore/0515-drop-callback-key-param): the key lives in Secrets Manager and the named template declares no CallbackSigningKey, so none is ever sent (CloudFormation refuses an undeclared parameter).
+  it("never sends CallbackSigningKey, and the named control-plane template does not declare it", () => {
+    expect(templates.get("control-plane")!.Parameters).not.toHaveProperty("CallbackSigningKey");
+    for (const part of ["access", "foundation", "identity", "control-plane", "runtime", "slack"] as DeployPart[]) {
+      for (const choice of [answers(), oidcAnswers(), { ...answers(), cloud: true as const }]) {
+        let params: Record<string, string>;
+        try { params = stackParameters(part, choice, { ...outputs, foundation: { ...outputs.foundation, ProjectAllowListId: "rslvr-fdl-0123456789abcdef" } }, { packages: true }); } catch { continue; }
+        for (const name of SECRET_PARAMETERS) expect(params, `${part} ${name}`).not.toHaveProperty(name);
+      }
     }
-    expect(message).toBe("the callback signing key must be at least 32 characters");
-    expect(message).not.toContain(shortKey);
-    expect(() => stackParameters("control-plane", { ...answers(), callbackSigningKey: "k".repeat(32) }, outputs, { packages: true })).not.toThrow();
   });
 
   it("passes the release's browser executor image to the runtime stack through the image cache, and omits the parameter for a release without one", () => {

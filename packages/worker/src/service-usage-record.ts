@@ -243,6 +243,7 @@ async function readAwsUsage(port: EmulatorLedgerPort, redactor: ServiceRedactor,
  * operations that worked are in the service's call count and named nowhere), only with the operation-name shape and `isShowable`. Everything not shown is counted in `otherCalls` / `otherUnsupported`.
  */
 export function reduceAwsUsage(ledger: EmulatorLedger, redactor: ServiceRedactor): TestServicesAwsUsage {
+  // Capped at `narrowServices` (24), the record every broker reads: Code's wide record (64 services, pin 0e340c0e) goes only with its all-services worker feature, which this worker does not have.
   const max = USAGE_LIMITS.count;
   let otherCalls = 0;
   let otherUnsupported = 0;
@@ -260,8 +261,8 @@ export function reduceAwsUsage(ledger: EmulatorLedger, redactor: ServiceRedactor
   }
   for (const service of merged.values()) candidates.push({ bucket: bucketCount(clamp(service.calls, max)), name: service.service, ledger: service });
   candidates.sort(byBucketThenName);
-  const shown = candidates.slice(0, TEST_SERVICES_AWS_USAGE_LIMITS.services);
-  for (const { ledger: service } of candidates.slice(TEST_SERVICES_AWS_USAGE_LIMITS.services)) {
+  const shown = candidates.slice(0, TEST_SERVICES_AWS_USAGE_LIMITS.narrowServices);
+  for (const { ledger: service } of candidates.slice(TEST_SERVICES_AWS_USAGE_LIMITS.narrowServices)) {
     otherCalls += clamp(service.calls, max);
     otherUnsupported += clamp(service.unsupported, max);
   }
@@ -310,11 +311,11 @@ export function mergeAwsUsage(earlier: TestServicesAwsUsage | undefined, later: 
   }
   const rankedServices = [...services].sort((a, b) => b[1].calls - a[1].calls || (a[0] < b[0] ? -1 : 1));
   const rankedOps = [...operations.values()].sort((a, b) => b.count - a.count || (a.service + a.operation < b.service + b.operation ? -1 : 1));
-  const overflowCalls = rankedServices.slice(TEST_SERVICES_AWS_USAGE_LIMITS.services).reduce((sum, [, row]) => sum + row.calls, 0);
-  const overflowUnsupported = rankedServices.slice(TEST_SERVICES_AWS_USAGE_LIMITS.services).reduce((sum, [, row]) => sum + row.unsupported, 0) + rankedOps.slice(TEST_SERVICES_AWS_USAGE_LIMITS.unsupportedOperations).reduce((sum, row) => sum + row.count, 0);
+  const overflowCalls = rankedServices.slice(TEST_SERVICES_AWS_USAGE_LIMITS.narrowServices).reduce((sum, [, row]) => sum + row.calls, 0);
+  const overflowUnsupported = rankedServices.slice(TEST_SERVICES_AWS_USAGE_LIMITS.narrowServices).reduce((sum, [, row]) => sum + row.unsupported, 0) + rankedOps.slice(TEST_SERVICES_AWS_USAGE_LIMITS.unsupportedOperations).reduce((sum, row) => sum + row.count, 0);
   return {
     ledger: "read",
-    services: rankedServices.slice(0, TEST_SERVICES_AWS_USAGE_LIMITS.services).map(([service, row]) => ({ service, calls: row.calls, unsupported: row.unsupported })),
+    services: rankedServices.slice(0, TEST_SERVICES_AWS_USAGE_LIMITS.narrowServices).map(([service, row]) => ({ service, calls: row.calls, unsupported: row.unsupported })),
     unsupportedOperations: rankedOps.slice(0, TEST_SERVICES_AWS_USAGE_LIMITS.unsupportedOperations),
     otherCalls: Math.min(max, earlier.otherCalls + later.otherCalls + overflowCalls),
     otherUnsupported: Math.min(max, earlier.otherUnsupported + later.otherUnsupported + overflowUnsupported),

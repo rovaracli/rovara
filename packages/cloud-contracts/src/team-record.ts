@@ -3,7 +3,9 @@
 // facts, source settings, the learning mode and the consumer contracts (record queries, the proposal candidate). `workspaceId` is the org id.
 // Keys live in org-scoped-keys.ts; the lesson shapes live in lessons.ts. Every object is strict: an unknown field is a refusal, never ignored.
 import { z } from "zod";
-import { ACL_PRINCIPALS_MAX, OrgIdSchema, RecordProjectSchema, TRUST_RANK, TrustClassSchema } from "@rovara-code/contracts";
+import { RECORD_TEXT_MAX_BYTES, ACL_PRINCIPALS_MAX, OrgIdSchema, RecordProjectSchema, TRUST_RANK, TrustClassSchema } from "@rovara-code/contracts";
+// Code's own since the vendor pin 0e340c0e (one name, one owner): re-exported, not defined here.
+export { RECORD_TEXT_MAX_BYTES } from "@rovara-code/contracts";
 
 export const RECORD_SOURCES = ["slack", "github", "linear", "jira", "mcp", "rovara"] as const;
 /**
@@ -47,7 +49,6 @@ export const RETENTION_MODES = ["A", "B", "C", "D"] as const;
 export const RetentionModeSchema = z.enum(RETENTION_MODES);
 export type RetentionMode = z.infer<typeof RetentionModeSchema>;
 
-export const RECORD_TEXT_MAX_BYTES = 8_192;
 export const RECORD_RAW_TEXT_DAYS_C = 30;
 export const RECORD_HOT_DAYS = 90;
 export const RECORD_FACT_TEXT_MAX = 400;

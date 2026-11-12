@@ -1,7 +1,7 @@
-// Lessons for local coding tools (decision 46b, lane B1/B2): `POST /v1/dev/projects/{project}/lessons`, what the `agentx lessons` command and the `rovara_lessons` MCP tool send and read. The request is a POST so that the
-// task text and file names ride in the body, never in an address a proxy or an access log keeps. Not browser-safe on purpose: the web app does not use it (it is not in `web.ts`).
+// Lessons for local coding tools (decision 46b): `POST /v1/dev/projects/{project}/lessons`, what a local coding tool (a command or an MCP tool) sends and reads. The request is a POST so that the
+// task text and file names ride in the body, never in an address a proxy or an access log keeps. Not browser-safe on purpose: no page uses it. The same names and shapes as a hosted install.
 import { z } from "zod";
-import { forwardReader } from "@rovara-code/contracts";
+import { forwardReader } from "./forward-reader.js";
 
 export const LOCAL_LESSONS_STAGES = ["plan", "code", "review"] as const;
 export const LocalLessonsStageSchema = z.enum(LOCAL_LESSONS_STAGES);

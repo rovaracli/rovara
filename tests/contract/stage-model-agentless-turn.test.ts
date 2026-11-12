@@ -52,7 +52,7 @@ it("pins an available company Build lock on an agentless turn instead of the pro
 it("records an agentless default fallback visibly with the operation and digest audit in one admission",async()=>{
  const {bedrockClaudeModelIds}=await import("@agentx/model-runtime/catalog");
  const primary={provider:"openai",modelId:"gpt-6.1-sol",label:"Primary"};
- const {handler,db,audit}=await createTurnHarness();await registerSlackProject(handler,{models:{default:primary,approved:[primary,...bedrockClaudeModelIds("us").map((modelId,index)=>({provider:"amazon-bedrock",modelId,label:`Fallback ${index}`}))]}});
+ const {handler,db,audit}=await createTurnHarness();await registerSlackProject(handler,{models:{default:primary,approved:[primary,...bedrockClaudeModelIds("us").slice(0,15).map((modelId,index)=>({provider:"amazon-bedrock",modelId,label:`Fallback ${index}`}))]}});
  const thread=`${SLACK_TEAM}/${SLACK_CHANNEL}/1695500000.000003`,user="U0123456789";
  const workspace=await ensureWorkspace(handler,thread,user),workspaceId=String(workspace.body.workspaceId);markReady(db,workspaceId);
  const conversation=await serviceCall(handler,thread,user,"POST",`/v1/service/workspaces/${workspaceId}/conversations`,{}),conversationId=(conversation.body.conversation as {id:string}).id;

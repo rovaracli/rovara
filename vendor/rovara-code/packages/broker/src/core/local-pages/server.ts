@@ -71,9 +71,16 @@ const NOTICES: Record<string, string> = {
   resumed: "Picked up again.",
   lesson: "Lesson updated.",
   lessonrepo: "Saved. A switched-on repository gets its first pull request within a day.",
-  lessonfresh: "Switching a repository's lessons file on needs a page you opened in the last few minutes. Run `rovara open lessons` to open one.",
+  lessonretire: "Saved. Lessons you confirmed are retired by the next nightly pass; lessons you kept are proposed back in the next pull request.",
+  lessonlocal: "Saved. Local coding tools follow the new setting on their next call.",
+  lessonlocalfresh: "Letting lessons leave Rovara needs a page you opened in the last few minutes. Run `rovara open lessons` to open one.",
+  lessonfresh: "Switching a repository's lessons file on, or retiring lessons that went missing from it, needs a page you opened in the last few minutes. Run `rovara open lessons` to open one.",
   revoked: "That script token is revoked.",
   envapproved: "Approved. Tasks that start from now on use it.",
+  imageapproved: "Approved and pinned. Test services use it from the next `rovara up`.",
+  imageremoved: "Removed. It stops being offered from the next `rovara up`.",
+  imagefresh: "Approving or removing a service image needs a page you opened in the last few minutes. Run `rovara test-env open <project>` to open one.",
+  imagerefused: "That image was not approved: Rovara could not pull and pin it, it is built in already, or it is not a kind Rovara can run.",
   linked: "That chat account is linked to you.",
   unlinked: "That chat account is no longer linked.",
   bound: "That space is bound to the project.",
@@ -82,6 +89,7 @@ const NOTICES: Record<string, string> = {
   unnoticed: "You will not be told there any more.",
   muted: "Notices are muted.",
   unmuted: "Notices are on again.",
+  scheduled: "Saved: when you are told.",
   badcode: "That code is not valid: it may have expired or been used. Message Rovara in the chat again for a new one.",
   chatfresh: "Changing chat settings needs a page you opened in the last few minutes. Run `rovara chat` to open one.",
   setupdone: "Done.",
@@ -416,19 +424,38 @@ export async function createLocalPagesServer(options: LocalPagesOptions): Promis
       const result = await options.actions.decideDesign({ taskId, decision, ...(note === "" ? {} : { note }), approval: offer, proof: proofFor(request, offer) });
       return redirect(`${request.base}/design/${taskId}?n=${outcomeCode(result, decision === "approve" ? "approved" : "rejected")}`);
     } },
-    { method: "GET", pattern: /^\/lessons$/, handle: async (request) => page(request, async (context) => renderLessons(context, await options.data.listLessons(), await (options.data.listLessonRepos?.() ?? Promise.resolve([])).catch(() => []))) },
+    { method: "GET", pattern: /^\/lessons$/, handle: async (request) => page(request, async (context) => renderLessons(context, await options.data.listLessons(), await (options.data.listLessonRepos?.() ?? Promise.resolve([])).catch(() => []), await (options.data.listLessonLocalTools?.() ?? Promise.resolve(undefined)).catch(() => undefined))) },
+    { method: "POST", pattern: /^\/lessons\/local-tools$/, handle: async (request) => {
+      const scope = request.form?.get("scope");
+      const project = request.form?.get("project") ?? "";
+      const value = scope === "company" ? request.form?.get("stays") : request.form?.get("enabled");
+      if (options.actions.lessonLocalToolsAction === undefined || (scope !== "company" && scope !== "project") || (value !== "true" && value !== "false") || (scope === "project" ? project === "" || project.length > 200 : (request.form?.get("project") ?? null) !== null)) return redirect(`${request.base}/lessons?n=invalid`);
+      const on = value === "true";
+      const subject = scope === "company" ? `company:${on ? "stay" : "open"}` : `project:${project}:${on ? "on" : "off"}`;
+      if (!verified(request, { action: "lesson.local_tools", subject })) return redirect(`${request.base}/lessons?n=form`);
+      // Letting lessons leave Rovara for every project is the larger change: like switching a repository's lessons file on, it asks for a page opened a few minutes ago.
+      if (scope === "company" && !on && !tokenPageIsFresh(request)) return redirect(`${request.base}/lessons?n=lessonlocalfresh`);
+      const result = await options.actions.lessonLocalToolsAction(scope === "company" ? { scope, stays: on } : { scope, project, enabled: on });
+      return redirect(`${request.base}/lessons?n=${outcomeCode(result, "lessonlocal")}`);
+    } },
     { method: "POST", pattern: /^\/lessons\/repo$/, handle: async (request) => {
       const project = request.form?.get("project") ?? "";
       const repo = request.form?.get("repo") ?? "";
       const action = request.form?.get("action");
-      const actions = ["on", "off", "resume", "pointer_add", "pointer_decline"] as const;
+      const actions = ["on", "off", "resume", "pointer_add", "pointer_decline", "retire_confirm", "retire_keep"] as const;
       const chosen = actions.find((candidate) => candidate === action);
-      if (options.actions.lessonRepoAction === undefined || chosen === undefined || project === "" || project.length > 200 || repo === "" || repo.length > 200) return redirect(`${request.base}/lessons?n=invalid`);
-      if (!verified(request, { action: "lesson.repo", subject: `${project}:${repo}:${chosen}` })) return redirect(`${request.base}/lessons?n=form`);
+      // Only the two answers about lessons missing from the file carry the digest of the set the person saw (16 hex); no other action takes one.
+      const heldRaw = request.form?.get("held") ?? undefined;
+      const retiring = chosen === "retire_confirm" || chosen === "retire_keep";
+      const held = heldRaw !== undefined && /^[0-9a-f]{16}$/u.test(heldRaw) ? heldRaw : undefined;
+      if (options.actions.lessonRepoAction === undefined || chosen === undefined || project === "" || project.length > 200 || repo === "" || repo.length > 200 || (retiring ? held === undefined : heldRaw !== undefined)) return redirect(`${request.base}/lessons?n=invalid`);
+      if (!verified(request, { action: "lesson.repo", subject: `${project}:${repo}:${chosen}${held === undefined ? "" : `:${held}`}` })) return redirect(`${request.base}/lessons?n=form`);
+      // Retiring lessons takes them out of use for good: like switching on, it asks for a page opened a few minutes ago.
+      if (chosen === "retire_confirm" && !tokenPageIsFresh(request)) return redirect(`${request.base}/lessons?n=lessonfresh`);
       // Switching on makes Rovara open pull requests in a repository: it asks for a page opened a few minutes ago, as a long-lived credential does.
       if (chosen === "on" && !tokenPageIsFresh(request)) return redirect(`${request.base}/lessons?n=lessonfresh`);
-      const result = await options.actions.lessonRepoAction({ project, repo, action: chosen, fresh: tokenPageIsFresh(request) });
-      return redirect(`${request.base}/lessons?n=${outcomeCode(result, "lessonrepo")}`);
+      const result = await options.actions.lessonRepoAction({ project, repo, action: chosen, ...(held === undefined ? {} : { held }), fresh: tokenPageIsFresh(request) });
+      return redirect(`${request.base}/lessons?n=${outcomeCode(result, retiring ? "lessonretire" : "lessonrepo")}`);
     } },
     { method: "POST", pattern: /^\/lessons\/act$/, handle: async (request) => {
       const lessonId = request.form?.get("lessonId") ?? "";
@@ -445,7 +472,7 @@ export async function createLocalPagesServer(options: LocalPagesOptions): Promis
     } },
     { method: "GET", pattern: /^\/test-environment\/([A-Za-z0-9._-]{1,100})$/, handle: async (request, match) => {
       const view = await options.data.getTestEnvironmentPage?.(match[1] ?? "");
-      return view === undefined ? notFound() : page(request, (context) => renderTestEnvironment(context, view));
+      return view === undefined ? notFound() : page(request, (context) => renderTestEnvironment(context, view, { fresh: tokenPageIsFresh(request) && options.actions.approveServiceImage !== undefined }));
     } },
     { method: "POST", pattern: /^\/test-environment\/([A-Za-z0-9._-]{1,100})\/decide$/, handle: async (request, match) => {
       const project = match[1] ?? "";
@@ -455,6 +482,22 @@ export async function createLocalPagesServer(options: LocalPagesOptions): Promis
       if (!verified(request, { action: "testenv.decide", taskId: project, requestId: offer.requestId, revision: offer.revision, artifactDigest: offer.artifactDigest })) return redirect(`${back}?n=form`);
       const result = await options.actions.decideTestEnvironment({ project, approval: offer, proof: proofFor(request, offer) });
       return redirect(`${back}?n=${outcomeCode(result, "envapproved")}`);
+    } },
+    // A service image is approved by the owner alone: a page session opened in the last ten minutes and a form that answers once, bound to this project and this exact image.
+    { method: "POST", pattern: new RegExp(`^/test-environment/(${PROJECT_SEGMENT})/images/(approve|remove)$`), handle: async (request, match) => {
+      const project = match[1] ?? "";
+      const verb = match[2] ?? "";
+      const back = `${request.base}/test-environment/${encodeURIComponent(project)}`;
+      const approve = options.actions.approveServiceImage?.bind(options.actions);
+      const remove = options.actions.removeServiceImage?.bind(options.actions);
+      if (approve === undefined || remove === undefined) return notFound();
+      const subject = verb === "approve" ? (request.form?.get("requested") ?? "") : (request.form?.get("reference") ?? "");
+      if (subject === "" || subject.length > 300) return redirect(`${back}?n=invalid`);
+      // Checked before the form is used up: a page that is too old keeps its form, and says why.
+      if (!tokenPageIsFresh(request)) return redirect(`${back}?n=imagefresh`);
+      if (!verified(request, { action: `testenv.image-${verb}`, subject: `${project}:${subject}` })) return redirect(`${back}?n=form`);
+      const result = verb === "approve" ? await approve({ project, requested: subject }) : await remove({ project, reference: subject });
+      return redirect(`${back}?n=${result.ok ? (verb === "approve" ? "imageapproved" : "imageremoved") : result.reason === "refused" ? "imagerefused" : outcomeCode(result, "imageapproved")}`);
     } },
     { method: "GET", pattern: /^\/tokens$/, handle: async (request) => {
       const view = await options.data.listScriptTokens?.();
@@ -618,7 +661,7 @@ export async function createLocalPagesServer(options: LocalPagesOptions): Promis
       const notice = code !== "" && found === undefined ? "badcode" : undefined;
       return page({ ...request, url: notice === undefined ? request.url : withNotice(request.url, notice) }, (context) => renderChat(context, view, found === undefined ? {} : { preview: { code, ...found } }));
     } },
-    { method: "POST", pattern: /^\/chat\/(link|unlink|bind|unbind|notice-add|notice-remove|mute)$/, handle: async (request, match) => {
+    { method: "POST", pattern: /^\/chat\/(link|unlink|bind|unbind|notice-add|notice-remove|mute|schedule)$/, handle: async (request, match) => {
       const action = match[1] ?? "";
       const back = `${request.base}/chat`;
       const data = options.actions;
@@ -628,6 +671,7 @@ export async function createLocalPagesServer(options: LocalPagesOptions): Promis
       const subjectOf: Record<string, string> = {
         link: field("code", 64), unlink: `${field("channel")}/${field("tenant")}/${field("userId")}`, bind: "new", unbind: `${field("channel")}/${field("tenant")}/${field("space")}`,
         "notice-add": "new", "notice-remove": `${field("channel")}/${field("tenant")}/${field("space")}/${field("thread")}`, mute: field("muted") === "yes" ? "on" : "off",
+        schedule: "schedule",
       };
       if (!verified(request, { action: `chat.${action}`, subject: subjectOf[action] ?? "" })) return redirect(`${back}?n=form`);
       // Linking an account, binding a space and choosing where task titles go change who can act as the owner: only from a page session opened a few minutes ago, checked here and not only when the page was drawn.
@@ -641,6 +685,10 @@ export async function createLocalPagesServer(options: LocalPagesOptions): Promis
         if (data.muteNotices === undefined) return redirect(`${back}?n=invalid`);
         const muted = field("muted") === "yes";
         return redirect(`${back}?n=${outcomeCode(await data.muteNotices({ muted }), muted ? "muted" : "unmuted")}`);
+      }
+      if (action === "schedule") {
+        if (data.setNoticeSchedule === undefined) return redirect(`${back}?n=invalid`);
+        return redirect(`${back}?n=${outcomeCode(await data.setNoticeSchedule({ quietStart: field("quietStart", 5), quietEnd: field("quietEnd", 5), timeZone: field("timeZone", 64), digestAt: field("digestAt", 5) }), "scheduled")}`);
       }
       if (!CHANNEL.test(channel) || !OPAQUE.test(tenant)) return redirect(`${back}?n=invalid`);
       if (action === "unlink") {

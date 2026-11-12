@@ -1,7 +1,7 @@
 // Work events (U3) through the real broker and the real notifier handler: the broker moves a task, the table's stream carries the before and after images, and the notifier writes the events from them.
 // Nothing is added to the broker's own transactions.
 import { describe, expect, it } from "vitest";
-import { WorkEventSchema, workEventExpiresAt, type WorkEvent } from "@agentx/cloud-contracts";
+import { WorkEventSchema, workEventExpiresAt, type WorkEvent } from "@rovara-code/contracts";
 import { INDEX_EXPIRY_ATTRIBUTE } from "@rovara-code/contracts";
 import { createNotifierHandler } from "../../packages/broker/src/aws/developer-task-notifier.js";
 import { recordStream } from "../support/developer-task-broker.js";

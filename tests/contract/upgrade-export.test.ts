@@ -73,6 +73,19 @@ describe("agentx upgrade --export (FR-026)", () => {
     expect(readme).not.toContain("agentx-staging-access --change-set-name");
   });
 
+  it("an upgrade to a release whose template no longer declares CallbackSigningKey (0.5.15) leaves it out of the parameter file, though the deployed stack still holds it", async () => {
+    const out = await freshDir();
+    await writeUpgradeBundle({
+      dir: out, settings, answers, release: await releaseWithPackage({ BudgetMonthlyUsd: {}, GitHubAppId: {} }), parts: ["control-plane"], outputs,
+      deployed: { "control-plane": { CallbackSigningKey: "****", BudgetMonthlyUsd: "250", GitHubAppId: "123" } },
+    });
+    const parameters = JSON.parse(await readFile(join(out, "parameters", "control-plane.json"), "utf8")) as Array<Record<string, unknown>>;
+    expect(parameters.find((entry) => entry.ParameterKey === "CallbackSigningKey")).toBeUndefined();
+    // Positive control: the file still keeps what the new template declares.
+    expect(parameters).toContainEqual({ ParameterKey: "BudgetMonthlyUsd", UsePreviousValue: true });
+    expect(parameters).toContainEqual({ ParameterKey: "GitHubAppId", ParameterValue: "123" });
+  });
+
   it("never writes a secret value: the signing key is kept with UsePreviousValue, and the placeholder never reaches a file", async () => {
     const out = await freshDir();
     await writeUpgradeBundle({

@@ -164,11 +164,19 @@ export interface LessonView {
   retireRequest?: { by: string; pullRequest: number };
 }
 
+/** Whether local coding tools may fetch lessons (decision 46b): the company's "lessons stay in Rovara" switch and each project's own, as the lessons page shows them. */
+export interface LessonLocalToolsView {
+  companyStays: boolean;
+  projects: Array<{ project: string; enabled: boolean; own?: boolean; reason?: "company_stays" | "regulated" | "project_setting" }>;
+}
+
 /** One project's `.rovara/lessons.md` switches, as the lessons page shows them. Fixed sentences only. */
 export interface LessonReposView {
   project: string;
   canEnable: boolean;
-  repos: Array<{ repo: string; enabled: boolean; fileDeleted: boolean; pointer: "not_yet" | "added" | "missing" | "declined"; notices: string[] }>;
+  repos: Array<{ repo: string; enabled: boolean; fileDeleted: boolean; pointer: "not_yet" | "added" | "missing" | "declined"; notices: string[];
+    /** Present while a person is asked to retire or keep the lessons that went missing from the file in one change: how many, and the digest the answer must carry back. */
+    retireConfirm?: { missing: number; digest: string } }>;
   /** The project's repositories not switched on yet. */
   available: string[];
 }
@@ -211,7 +219,11 @@ export interface ChatPageView {
   bindings: Array<{ channel: string; tenant: string; space: string; project: string }>;
   /** The names a space may be bound to. */
   projects: string[];
-  notify: { muted: boolean; targets: Array<{ channel: string; tenant: string; space: string; thread: string }> };
+  notify: {
+    muted: boolean; targets: Array<{ channel: string; tenant: string; space: string; thread: string }>;
+    /** When the owner is told (lane P4): quiet hours and a daily digest time, local to `timeZone` (an IANA name). */
+    quietHours?: { start: string; end: string } | undefined; timeZone?: string | undefined; digestAt?: string | undefined;
+  };
 }
 
 /** A token the page just made: the secret is shown on the answer to the form, once, and kept nowhere. */
@@ -226,6 +238,22 @@ export interface TestEnvironmentPageView {
   approval?: ApprovalOffer;
   /** More facts a feature adds (the nightly run's last night, the saved image), one plain line each. */
   extra?: string[];
+  /** Test services on a laptop (Code): the images that may run, and the ones this project asks for. Absent when the install uses a signed catalog or test services are off. */
+  serviceImages?: ServiceImagesPageView;
+}
+
+/**
+ * The images test services may start on this computer, as the page shows them. Every `reference` is the exact pinned `registry/repository@sha256:...`. `proposed` is what the project's repository ASKS for: nothing in it is approved
+ * by being listed, and the repository's own words never reach it (only a family, a version and where it was seen).
+ */
+export interface ServiceImagesPageView {
+  /** Built into Rovara's release and pinned there: no approval needed. */
+  starter: Array<{ label: string; reference: string; inEffect: boolean }>;
+  /** The owner's own: approved on a page, or pinned from `ROVARA_TEST_SERVICE_IMAGES`. */
+  owned: Array<{ label: string; reference: string; origin: "page" | "env"; approvedAt: string; inEffect: boolean; stale: boolean }>;
+  /** `ROVARA_TEST_SERVICE_IMAGES` as it was when `rovara up` started. */
+  envList: string[];
+  proposed: Array<{ requested: string; label: string; where: string[]; status: "builtin" | "approved" | "needs_approval" }>;
 }
 
 /** How we work, as the page reads it: the effective view and where it came from (the file in the repository), for each registered project. */
@@ -377,6 +405,8 @@ export interface LocalPageData {
   listLessons(): Promise<LessonView[]>;
   /** The repository lessons file switches of each project. Absent: the page shows none. */
   listLessonRepos?(): Promise<LessonReposView[]>;
+  /** The local coding tools switches (decision 46b). Absent: the page shows none. */
+  listLessonLocalTools?(): Promise<LessonLocalToolsView | undefined>;
   getProofReport(taskId: string): Promise<ProofReportView | undefined>;
   /** the owner's script tokens. Absent, or undefined: script tokens are off here and the page is not found. */
   listScriptTokens?(): Promise<ScriptTokensPageView | undefined>;
@@ -467,7 +497,9 @@ export interface LocalPageActions {
   /** `wrong`: the lesson did not apply or was harmful; it is retired and the reason kept. */
   lessonAction(input: { lessonId: string; action: "approve" | "retire" | "wrong"; /** For an approval: what the form was bound to, and the proof the page signed over it. */ offer?: NonNullable<LessonView["offer"]>; proof?: ApprovalProof }): Promise<LocalActionResult>;
   /** One switch of a project's repository lessons file. `fresh`: the page session was opened in the last few minutes (switching on needs it). Absent: the switches are not on this page. */
-  lessonRepoAction?(input: { project: string; repo: string; action: "on" | "off" | "resume" | "pointer_add" | "pointer_decline"; fresh: boolean }): Promise<LocalActionResult>;
+  /** One local coding tools switch from the lessons page: a project's own (`enabled`), or the company's "lessons stay in Rovara" (`stays`). */
+  lessonLocalToolsAction?(input: { scope: "project"; project: string; enabled: boolean } | { scope: "company"; stays: boolean }): Promise<LocalActionResult>;
+  lessonRepoAction?(input: { project: string; repo: string; action: "on" | "off" | "resume" | "pointer_add" | "pointer_decline" | "retire_confirm" | "retire_keep"; /** The digest of the missing set the person saw: required for `retire_confirm` and `retire_keep`, absent for the rest. */ held?: string; fresh: boolean }): Promise<LocalActionResult>;
   /** Lane L12: runs a blocked step again. `revision` is the revision the owner was looking at; a task that moved on refuses it. */
   retry?(input: { taskId: string; revision: number }): Promise<LocalActionResult>;
   /** Lane L12: the owner says a task's plan is posted on an issue or pull request, so a writer's comment there can decide it. */
@@ -487,6 +519,10 @@ export interface LocalPageActions {
   revokeScriptToken?(input: { tokenId: string }): Promise<LocalActionResult>;
   /** Approves a proved test environment proposal as the project's next revision. Like a plan decision it is the owner's own act on a page: it carries a proof for exactly this request, revision and digest. */
   decideTestEnvironment?(input: { project: string; approval: ApprovalOffer; proof: ApprovalProof }): Promise<LocalActionResult>;
+  /** Approves one service image the project asks for: pulls it through the owner's Docker and pins the digest. The page has checked the session is fresh and the form is single-use. */
+  approveServiceImage?(input: { project: string; requested: string }): Promise<LocalActionResult>;
+  /** Forgets an approved service image. */
+  removeServiceImage?(input: { project: string; reference: string }): Promise<LocalActionResult>;
   /** The owner's acts on the automation page: turn a trigger on (with their proof), off, decide a chain's gate (with their proof), stop a run. */
   automation?(input: AutomationPageAction): Promise<LocalActionResult>;
   /** A change of the per-step model setting. Refused (with its fixed words) when the owner may not, the page was not opened lately, or the setting moved. */
@@ -510,6 +546,8 @@ export interface LocalPageActions {
   addNoticeTarget?(input: { channel: string; tenant: string; space: string; thread?: string }): Promise<LocalActionResult>;
   removeNoticeTarget?(input: { channel: string; tenant: string; space: string; thread: string }): Promise<LocalActionResult>;
   muteNotices?(input: { muted: boolean }): Promise<LocalActionResult>;
+  /** Quiet hours (`HH:MM` to `HH:MM`, both empty for none), the time zone they are in (empty: this computer's) and a daily digest time (empty: none). */
+  setNoticeSchedule?(input: { quietStart: string; quietEnd: string; timeZone: string; digestAt: string }): Promise<LocalActionResult>;
   /** The setup agent (the owner's own acts on the setup page). A command, a website and the use of a setup are never decided by a route or a token. */
   setupStart?(input: { project: string; requestId: string }): Promise<LocalActionResult>;
   setupStop?(input: { project: string; requestId: string }): Promise<LocalActionResult>;

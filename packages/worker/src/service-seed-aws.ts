@@ -70,6 +70,8 @@ export interface AwsSeedDocument {
 export function buildAwsSeedDocument(region: string, resources: readonly TaskAwsResource[]): AwsSeedDocument {
   const parsed = TaskAwsResourcesSchema.safeParse(resources);
   if (!REGION.test(region) || !parsed.success) throw new EmulatorSeedError("refused");
+  // Code's contract (pin 0e340c0e) also names topics, secrets, parameters, keys, buses and rules; this worker seeds only buckets, tables and queues, so any other kind is refused, as the old contract did.
+  if (parsed.data.some((resource) => !Object.hasOwn(STEP_OF_KIND, resource.kind))) throw new EmulatorSeedError("refused");
   const document: AwsSeedDocument = { region };
   const buckets = parsed.data.flatMap((resource) => (resource.kind === "bucket" ? [{ name: resource.name }] : []));
   const tables = parsed.data.flatMap((resource) => {
@@ -103,7 +105,12 @@ export function seedReportCovers(report: unknown, resources: readonly TaskAwsRes
     if (stepOk !== true || typeof service !== "string" || typeof action !== "string" || typeof name !== "string") return false;
     reported.add(`${service}\0${action}\0${name}`);
   }
-  return resources.every((resource) => reported.has(`${STEP_OF_KIND[resource.kind][0]}\0${STEP_OF_KIND[resource.kind][1]}\0${resource.name}`));
+  return resources.every((resource) => {
+    // A kind this worker does not seed is never covered (buildAwsSeedDocument refuses it before anything is sent).
+    if (!Object.hasOwn(STEP_OF_KIND, resource.kind)) return false;
+    const [service, action] = STEP_OF_KIND[resource.kind as keyof typeof STEP_OF_KIND];
+    return reported.has(`${service}\0${action}\0${resource.name}`);
+  });
 }
 
 export interface SeedEmulatorInput {

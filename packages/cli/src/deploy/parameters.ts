@@ -41,8 +41,6 @@ export interface InstallAnswers {
       };
   // account and installationId are what `agentx init` set up; the control plane no longer takes them (#123).
   github: { account?: string; appId: string; installationId?: string; privateKeySecretArn: string; credentialRef?: string };
-  /** The value; the caller reads it from Secrets Manager, never logs it. */
-  callbackSigningKey: string;
   permissionsBoundaryArn?: string;
   operatorPrincipalArn?: string;
   /** Testing only, until the first published release exists: a private-ECR image digest used as-is
@@ -69,10 +67,11 @@ export interface InstallAnswers {
   auditLock?: AuditLockProfileAnswer;
 }
 
-/** The shortest callback signing key the control plane accepts. */
-const MIN_CALLBACK_SIGNING_KEY_LENGTH = 32;
-
-/** The parameter names whose values must never be printed: every NoEcho template parameter. */
+/**
+ * The parameter names whose values must never be printed: every NoEcho template parameter any template this CLI may meet declares.
+ * Since 0.5.15 no named environment's template declares CallbackSigningKey (the functions read the key from Secrets Manager) and stackParameters never sends it,
+ * so it stays here only to redact it and to keep an upgrade or export from carrying it, should a pre-0.5.15 release's template be handled.
+ */
 export const SECRET_PARAMETERS: ReadonlySet<string> = new Set(["CallbackSigningKey"]);
 
 /**
@@ -382,10 +381,6 @@ export function stackParameters(part: DeployPart, answers: InstallAnswers, outpu
       return answers.setupPageUrl === undefined ? base : { ...base, SetupPageUrl: answers.setupPageUrl };
 
     case "control-plane": {
-      if (answers.callbackSigningKey.length < MIN_CALLBACK_SIGNING_KEY_LENGTH) {
-        // Never include the value: it is a secret.
-        throw new Error(`the callback signing key must be at least ${MIN_CALLBACK_SIGNING_KEY_LENGTH} characters`);
-      }
       const oidc =
         answers.identity.mode === "cognito"
           ? { issuer: required(outputs, "identity", "Issuer", answers.env), audience: required(outputs, "identity", "Audience", answers.env) }
@@ -396,7 +391,7 @@ export function stackParameters(part: DeployPart, answers: InstallAnswers, outpu
         OidcIssuer: oidc.issuer,
         OidcAudience: oidc.audience,
         ...adminParameters(answers.identity),
-        CallbackSigningKey: answers.callbackSigningKey,
+        // 0.5.15: no CallbackSigningKey. The named template no longer declares it, and CloudFormation refuses a parameter its template lacks.
         GitHubAppId: answers.github.appId,
         GitHubAppPrivateKeySecretArn: answers.github.privateKeySecretArn,
         ...(answers.github.credentialRef === undefined ? {} : { GitHubAppCredentialRef: answers.github.credentialRef }),

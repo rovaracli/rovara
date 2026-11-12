@@ -3,6 +3,7 @@ import { mkdir, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
+  compact,
   createAgentSession,
   createBashToolDefinition,
   createEditToolDefinition,
@@ -13,19 +14,23 @@ import {
   createWriteToolDefinition,
   DefaultResourceLoader,
   type BashOperations,
+  type AgentSession,
   type BashSpawnContext,
   type InlineExtension,
   type ModelRuntime,
   type ToolDefinition,
   SessionManager,
-  SettingsManager,
+  type SettingsManager,
   type SessionEntry,
   type SessionStats,
   type Skill,
 } from "@earendil-works/pi-coding-agent";
+import { streamSimple } from "@earendil-works/pi-ai/compat";
 import { amazonBedrockProvider } from "@earendil-works/pi-ai/providers/amazon-bedrock";
-import { ROUTE_PROVIDER, createModelRuntimeWithFallback, routeUsageIdentity, type ChatGptFallback, type ChatGptFallbackReason, type ModelFallbackNotice, type ModelProxyOptions } from "@agentx/model-runtime";
-import { AGENTX_PREAMBLE, AGENTX_WORKER_PROMPT, agentXError, isPipedTestCommand, redactText, ThinkingLevelSchema, type InvocationModelRoute, type ThinkingLevel } from "@agentx/contracts";
+import { ROUTE_PROVIDER, TOOL_SEARCH_TOOL_NAME, createModelRuntimeWithFallback, excludeUnselectedBuiltIns, planToolExposure, routeUsageIdentity, type ChatGptFallback, type ChatGptFallbackReason, type ModelFallbackNotice, type ModelProxyOptions } from "@agentx/model-runtime";
+import { createPiSettingsManager } from "@agentx/model-runtime/pi-settings";
+import { AGENTX_PREAMBLE, AGENTX_WORKER_PROMPT, SEARCH_TEAM_KNOWLEDGE_TOOL, agentXError, isPipedTestCommand, redactText, ThinkingLevelSchema, type InvocationModelRoute, type ThinkingLevel } from "@agentx/contracts";
+import { compactionExtension, type CompactionSummariser, type SessionCompactionOptions } from "./compaction.js";
 import { devcontainerContextFile, hostPath, type DevcontainerPaths } from "./devcontainer.js";
 import { AGENTX_GIT_IDENTITY_ENVIRONMENT } from "./git.js";
 import type { FileOpsTarget } from "./file-ops-exec.js";
@@ -52,6 +57,8 @@ import type { KnowledgeStage } from "./knowledge/model.js";
 import type { ResolvedKnowledge } from "./knowledge/resolve.js";
 import type { PiCacheRetention } from "./usage.js";
 import { stubPersistedContextResults } from "./context-sources/transcript.js";
+import { ROVARA_MCP_TOOL_PATTERN, rovaraMcpExtensions, type ContextMcpSession, type RovaraMcpWatch } from "./context-sources/pi-mcp.js";
+import { ANSWER_REFUSALS_MAX, ANSWER_TEXT_FALLBACK_NOTE } from "./structured-answer.js";
 
 export type PiThinkingLevel = ThinkingLevel;
 export type PiWorkflowMode = "PLAN" | "IMPLEMENT" | "REVIEW" | "UNDERSTAND" | "SETUP";
@@ -82,7 +89,8 @@ export interface PiSessionHandle {
   getModel(): { provider: string; modelId: string; thinkingLevel?: PiThinkingLevel };
   /** Pi's own resolved level, even one outside AgentX's six (Pi's "max"); for artifacts only, never telemetry. */
   piThinkingLevel?(): string | undefined;
-  getSessionStats(): SessionStats;
+  /** `costFromProvider` is set only when some usage was priced: true when every priced usage carries the provider's own billed total (Pi 1.5 `cost.totalFromProvider`), as OpenRouter's does. */
+  getSessionStats(): SessionStats & { costFromProvider?: boolean };
   /** The system prompt pi is using for its next model call, complete with whatever sections the harness adds (cwd, date, project context). Design review records it as what was actually sent. */
   systemPromptText?(): string;
   /** What this session loaded and left out so far, as references only (K1 C5a). Absent for sessions that load no knowledge. */
@@ -148,6 +156,21 @@ export interface PiSessionInput {
    * only. They run in the worker and call the broker; a session in Build (IMPLEMENT) or an agent run is refused them (assertContextToolsAllowed).
    */
   contextTools?: readonly ToolDefinition[];
+  /**
+   * The same sources through Pi's own MCP client: one server, "rovara", served by the egress gateway (context-sources/pi-mcp.ts). The same stages only; a
+   * session is given this or `contextTools`, never both.
+   */
+  contextMcp?: ContextMcpSession;
+  /**
+   * Structured answers: the one tool (or a few) through which a judging step delivers its answer, with a parameter schema Pi validates (structured-answer.ts). Offered only to a session that reads and
+   * judges (Understand, Plan, the plan check, a review); never to Build or a setup run. After `ANSWER_REFUSALS_MAX` refused answers in a row the session is told to answer in plain text instead.
+   */
+  answerTools?: readonly ToolDefinition[];
+  /**
+   * What the conversation-compaction hook knows (compaction.ts): the stage's source-text guard, the approved plan's facts and where to report a compaction. The hook is on in every
+   * session; without these it still stubs any source result in what it summarises.
+   */
+  compaction?: SessionCompactionOptions;
   /** Tool calls of one assistant message run one after another, never side by side (the setup agent's limits are counted per command). Default: pi's own (parallel). */
   sequentialTools?: boolean;
   /** The most output tokens one model turn may produce: the model's own limit is lowered to this when it is higher. Default: the model's. */
@@ -163,18 +186,30 @@ export interface AgentRunSession {
 }
 
 /** The names no worker tool of an agent step may take: Pi's own, the shell and `read_skill`. */
-const RESERVED_TOOL_NAMES: ReadonlySet<string> = new Set(["bash", "edit", "write", "read", "grep", "find", "ls", "read_skill", "read_knowledge"]);
+const RESERVED_TOOL_NAMES: ReadonlySet<string> = new Set(["bash", "edit", "write", "read", "grep", "find", "ls", "powershell", "read_skill", "read_knowledge", TOOL_SEARCH_TOOL_NAME]);
+
+/** The worker's own tools that are always declared, however many connector or source tools there are: they are few and the model needs them every time. */
+const ALWAYS_DIRECT_TOOL_NAMES: ReadonlySet<string> = new Set(["choose_branch", SEARCH_TEAM_KNOWLEDGE_TOOL]);
 
 /**
  * Context sources are for the stages that read and judge, never for Build, where the shell is: untrusted live text must not reach the stage that can run
  * commands (design 3.6, Q7). A session that is given source tools in any other mode, or as an agent run, does not start.
  */
-export function assertContextToolsAllowed(input: { workflowMode?: PiWorkflowMode | undefined; agentRun?: unknown; contextTools?: readonly ToolDefinition[] | undefined }): void {
-  if (input.contextTools === undefined || input.contextTools.length === 0) return;
+export function assertContextToolsAllowed(input: { workflowMode?: PiWorkflowMode | undefined; agentRun?: unknown; contextTools?: readonly ToolDefinition[] | undefined; contextMcp?: ContextMcpSession | undefined }): void {
+  if (input.contextTools !== undefined && input.contextTools.length > 0 && input.contextMcp !== undefined) throw agentXError("CONFIG_INVALID", "a session reaches its sources one way: its own tools or the rovara MCP server");
+  if ((input.contextTools === undefined || input.contextTools.length === 0) && input.contextMcp === undefined) return;
   const mode = input.workflowMode ?? "IMPLEMENT";
   if (mode === "IMPLEMENT" || mode === "SETUP" || input.agentRun !== undefined) {
     throw agentXError("FORBIDDEN", "context sources are not available to a session that can run commands or change files");
   }
+}
+
+/** The answer tools are for the stages that read and judge: a session that can run commands or change files gets none, so Build's tool list never changes with this setting. */
+export function assertAnswerToolsAllowed(input: { workflowMode?: PiWorkflowMode | undefined; agentRun?: unknown; answerTools?: readonly ToolDefinition[] | undefined }): void {
+  if (input.answerTools === undefined || input.answerTools.length === 0) return;
+  // An agent run is a planning session whatever its mode says.
+  const mode = input.agentRun === undefined ? input.workflowMode ?? "IMPLEMENT" : "PLAN";
+  if (mode === "IMPLEMENT" || mode === "SETUP") throw agentXError("FORBIDDEN", "answer tools are not available to a session that can run commands or change files");
 }
 
 export interface PiSessionAdapter {
@@ -232,6 +267,12 @@ export async function createWorkspacePiSession(
     /** Lane E: the context-source tools and the note that tells the model about them (see PiSessionInput.contextTools). */
     contextTools?: readonly ToolDefinition[];
     contextNote?: string;
+    /** The same sources through Pi's own MCP client (see PiSessionInput.contextMcp). */
+    contextMcp?: ContextMcpSession;
+    /** Structured answers: the tool(s) the step delivers its answer through (see PiSessionInput.answerTools). */
+    answerTools?: readonly ToolDefinition[];
+    /** The compaction hook's inputs (see PiSessionInput.compaction). */
+    compaction?: SessionCompactionOptions;
     /** Where the agent works, when that is not the workspace root: a folder inside it (a parallel part's working copy). Its saved transcript and settings stay in the root's. */
     workingDirectory?: string;
     /**
@@ -258,6 +299,7 @@ export async function createWorkspacePiSession(
 ): Promise<PiSessionHandle> {
   assertFileToolsContained(input);
   assertContextToolsAllowed(input);
+  assertAnswerToolsAllowed(input);
   const rootPath = await realpath(resolve(input.rootPath));
   const workingDirectory = input.workingDirectory === undefined ? rootPath : await realpath(resolve(input.workingDirectory));
   if (workingDirectory !== rootPath && !workingDirectory.startsWith(`${rootPath}/`)) {
@@ -273,7 +315,7 @@ export async function createWorkspacePiSession(
   const knowledgeLoad = input.agentRun === undefined && input.workflowMode !== "SETUP" ? await loadWorkspaceContextFiles(rootPath, input.onDiagnostic, input.devcontainerPaths, input.contextFilesAt, input.baseCommits, { workflowMode: input.workflowMode, knowledge: input.knowledge, onLoaded: input.onKnowledgeLoaded }) : undefined;
   const contextFiles = knowledgeLoad?.files ?? [];
   const knowledgeSession = knowledgeLoad?.session;
-  if (input.contextNote !== undefined && input.contextTools !== undefined && input.contextTools.length > 0) contextFiles.push({ path: "AGENTX-SOURCES.md", content: input.contextNote });
+  if (input.contextNote !== undefined && ((input.contextTools !== undefined && input.contextTools.length > 0) || input.contextMcp !== undefined)) contextFiles.push({ path: "AGENTX-SOURCES.md", content: input.contextNote });
   const handle = await adapter.create({
     ...(knowledgeSession === undefined ? {} : { knowledgeSession }),
     cwd: workingDirectory,
@@ -296,6 +338,9 @@ export async function createWorkspacePiSession(
     ...(input.agentRun === undefined ? {} : { agentRun: input.agentRun }),
     ...(input.standingInstructions === undefined ? {} : { standingInstructions: input.standingInstructions }),
     ...(input.contextTools === undefined ? {} : { contextTools: input.contextTools }),
+    ...(input.contextMcp === undefined ? {} : { contextMcp: input.contextMcp }),
+    ...(input.answerTools === undefined ? {} : { answerTools: input.answerTools }),
+    ...(input.compaction === undefined ? {} : { compaction: input.compaction }),
   });
   assertContained(sessionDirectory, handle.sessionFile);
   return withLoadedKnowledge(handle, knowledgeLoad?.manifest);
@@ -328,6 +373,10 @@ export async function openRegisteredWorkspacePiSession(
     /** Lane E, as for `createWorkspacePiSession`. */
     contextTools?: readonly ToolDefinition[];
     contextNote?: string;
+    contextMcp?: ContextMcpSession;
+    /** As for `createWorkspacePiSession`. */
+    answerTools?: readonly ToolDefinition[];
+    compaction?: SessionCompactionOptions;
     /** As for `createWorkspacePiSession`. */
     contextFilesAt?: "working-tree" | "base-commit";
     baseCommits?: readonly { repositoryId: string; baseCommitSha?: string | undefined }[];
@@ -338,6 +387,7 @@ export async function openRegisteredWorkspacePiSession(
 ): Promise<PiSessionHandle> {
   assertFileToolsContained(input);
   assertContextToolsAllowed(input);
+  assertAnswerToolsAllowed(input);
   const rootPath = await realpath(resolve(input.rootPath));
   const sessionDirectory = resolve(rootPath, "agent-sessions");
   const agentDirectory = workerPiDirectory(rootPath);
@@ -354,7 +404,7 @@ export async function openRegisteredWorkspacePiSession(
   // A setup run reads no repository context file when it is reopened either: the repository's rule files are data, never loaded into the session that has a shell.
   const knowledgeLoad = input.workflowMode === "SETUP" ? undefined : await loadWorkspaceContextFiles(rootPath, input.onDiagnostic, input.devcontainerPaths, input.contextFilesAt, input.baseCommits, { workflowMode: input.workflowMode, knowledge: input.knowledge, onLoaded: input.onKnowledgeLoaded });
   const contextFiles = knowledgeLoad?.files ?? [];
-  if (input.contextNote !== undefined && input.contextTools !== undefined && input.contextTools.length > 0) contextFiles.push({ path: "AGENTX-SOURCES.md", content: input.contextNote });
+  if (input.contextNote !== undefined && ((input.contextTools !== undefined && input.contextTools.length > 0) || input.contextMcp !== undefined)) contextFiles.push({ path: "AGENTX-SOURCES.md", content: input.contextNote });
   const handle = await adapter.open({
     ...(knowledgeLoad?.session === undefined ? {} : { knowledgeSession: knowledgeLoad.session }),
     cwd: rootPath,
@@ -376,6 +426,9 @@ export async function openRegisteredWorkspacePiSession(
     ...(mergeSkills(input.skills, knowledgeLoad?.skills ?? []) === undefined ? {} : { skills: mergeSkills(input.skills, knowledgeLoad?.skills ?? [])! }),
     ...(input.standingInstructions === undefined ? {} : { standingInstructions: input.standingInstructions }),
     ...(input.contextTools === undefined ? {} : { contextTools: input.contextTools }),
+    ...(input.contextMcp === undefined ? {} : { contextMcp: input.contextMcp }),
+    ...(input.answerTools === undefined ? {} : { answerTools: input.answerTools }),
+    ...(input.compaction === undefined ? {} : { compaction: input.compaction }),
   });
   assertContained(sessionDirectory, handle.sessionFile);
   return withLoadedKnowledge(handle, knowledgeLoad?.manifest);
@@ -510,14 +563,39 @@ async function createDefaultSession(
     const skillFiles = input.skills ?? [];
     const skills = skillFiles.length === 0 ? [] : await materializeSkills(input.agentDirectory, skillFiles);
     assertContextToolsAllowed(input);
+    assertAnswerToolsAllowed(input);
     const sourceTools = input.contextTools ?? [];
-    const runTools = [...(input.agentRun?.tools ?? []), ...sourceTools];
+    const answerTools = input.answerTools ?? [];
+    const runTools = [...(input.agentRun?.tools ?? []), ...sourceTools, ...answerTools];
     const clash = runTools.find((tool, index) => RESERVED_TOOL_NAMES.has(tool.name) || runTools.findIndex(({ name }) => name === tool.name) !== index);
     if (clash !== undefined) throw agentXError("CONFIG_INVALID", `an agent step cannot have two tools named ${clash.name}, or one named like a file tool, the shell or read_skill`);
     const knowledge = input.agentRun === undefined ? input.knowledgeSession : undefined;
     const knowledgeTool = knowledge?.offersTool === true ? [readKnowledgeTool(knowledge)] : [];
     const midRun = knowledge?.allowsMidRun === true ? [knowledgeExtension(knowledge, input.onDiagnostic)] : [];
-    const { resourceLoader, settingsManager } = await createWorkerResources({ ...input, extensionFactories: [...(input.extensionFactories ?? []), ...midRun], loadedSkills: skills, ...(input.agentRun !== undefined ? { systemPrompt: input.agentRun.systemPrompt } : input.workflowMode === "SETUP" ? { systemPrompt: SETUP_SYSTEM_PROMPT } : {}) });
+    // The rovara MCP server, and no other: Pi's MCP extension is loaded only for a session with sources, held to that one server (context-sources/pi-mcp.ts).
+    const sourceMcp = input.contextMcp === undefined ? undefined : rovaraMcpExtensions(input.contextMcp);
+    const hasSources = sourceTools.length > 0 || input.contextMcp !== undefined;
+    // Connector tools (an agent step's grants) and source tools above DEFERRED_TOOLS_ABOVE are found with tool_search instead of being declared up front. They are
+    // the same tools: the broker bridge runs them, every tool_call handler sees them, and a stage that was not given a tool does not register it, so it cannot be found.
+    // The structured-answer tools (submit_review ...) and the rovara MCP server's tools (registered by Pi's MCP extension, not here) always stay direct.
+    const answerToolNames = new Set(answerTools.map(({ name }) => name));
+    const exposure = planToolExposure(runTools, { deferrable: ({ name }) => !ALWAYS_DIRECT_TOOL_NAMES.has(name) && !answerToolNames.has(name), namespaceOf: ({ label }) => label.split(" / ")[0], protectNames: ["mcp__"] });
+    // The conversation-compaction hook (compaction.ts): the summary is made with this session's own model, key and stream, from messages with every source result stubbed.
+    const live: { session?: AgentSession } = {};
+    const summarise: CompactionSummariser = async (preparation, instructions, signal) => {
+      const model = live.session?.model ?? sessionModel;
+      // As Pi does: with the default stream, a key that cannot be resolved is an error to see; with a custom stream (the worker's own runtimes carry their key) it is left to the stream.
+      const streamFunction = live.session?.agent.streamFunction;
+      let auth: Awaited<ReturnType<ModelRuntime["getAuth"]>>;
+      try { auth = await modelRuntime.getAuth(model, { signal }); } catch (error) { if (signal.aborted || streamFunction === streamSimple) throw error; auth = undefined; }
+      const requestModel = auth?.auth.baseUrl ? { ...model, baseUrl: auth.auth.baseUrl } : model;
+      const headers = auth?.auth.headers === undefined ? undefined : (Object.fromEntries(Object.entries(auth.auth.headers).filter((entry) => entry[1] !== null)) as Record<string, string>);
+      // A retry of the summary is reported as a fixed sentence (the provider's own words are not).
+      const retries = { onRetryScheduled: (attempt: number, maxAttempts: number) => { try { input.onDiagnostic?.(`conversation compaction: the summary will be tried again (${String(attempt)} of ${String(maxAttempts)})`); } catch { /* reporting must not break a turn */ } } };
+      return compact(preparation, requestModel, auth?.auth.apiKey, headers, instructions, signal, live.session?.thinkingLevel, streamFunction, auth?.env, settingsManager.getRetrySettings(), retries);
+    };
+    const compaction = compactionExtension(input.compaction ?? {}, summarise, input.onDiagnostic === undefined ? undefined : (message) => { try { input.onDiagnostic?.(redactText(message)); } catch { /* reporting must not break a turn */ } });
+    const { resourceLoader, settingsManager } = await createWorkerResources({ ...input, extensionFactories: [...(input.extensionFactories ?? []), ...midRun, ...(sourceMcp?.extensions ?? []), ...exposure.extensions, compaction], ...(exposure.note === undefined ? {} : { toolSearchNote: exposure.note }), loadedSkills: skills, ...(input.agentRun !== undefined ? { systemPrompt: input.agentRun.systemPrompt } : input.workflowMode === "SETUP" ? { systemPrompt: SETUP_SYSTEM_PROMPT } : {}) });
     // An AgentX extension that failed to load would leave its work silently undone, so the session does not start.
     // It is a deterministic AgentX bug, so not RUNTIME_UNAVAILABLE, which the broker reads as "retry" (M-10).
     const loadErrors = resourceLoader.getExtensions().errors;
@@ -540,7 +618,10 @@ async function createDefaultSession(
       model: sessionModel,
       thinkingLevel: requestedLevel ?? (model.reasoning ? "medium" : "off"),
       // read_skill is the worker's own tool, never a file tool: it is there only when the operation has skills.
-      tools: [...stepTools.tools, ...(skillFiles.length === 0 ? [] : ["read_skill"]), ...knowledgeTool.map(({ name }) => name), ...runTools.map(({ name }) => name)],
+      // With the rovara server, its tools are named by pattern; naming any MCP tool makes the list filter MCP tools, so no other server's could be active.
+      tools: [...stepTools.tools, ...(skillFiles.length === 0 ? [] : ["read_skill"]), ...knowledgeTool.map(({ name }) => name), ...exposure.names, ...(input.contextMcp === undefined ? [] : [ROVARA_MCP_TOOL_PATTERN])],
+      // Only the host tools this stage chose can be active: a deferred tool's `name*` entry (a tool called `wr`) must not switch on Pi's own `write`.
+      excludeTools: excludeUnselectedBuiltIns(stepTools.tools),
       // A custom tool with a built-in's name replaces it.
       customTools: [
         ...(stepTools.shell ? [agentShellTool(input.cwd, input.bashOperations, input.sequentialTools === true)] : []),
@@ -551,14 +632,28 @@ async function createDefaultSession(
             : devcontainerFileTools(input.cwd, input.devcontainerPaths).filter((tool) => stepTools.tools.includes(tool.name))),
         ...(skillFiles.length === 0 ? [] : [readSkillTool(skillFiles)]),
         ...knowledgeTool,
-        ...runTools,
+        ...exposure.tools,
       ],
       resourceLoader,
       settingsManager,
       sessionManager: manager,
     });
+    live.session = session;
     // Both the shell tool (executionMode) and the agent's own setting: a message with several tool calls runs them one at a time.
     if (input.sequentialTools === true) session.agent.toolExecution = "sequential";
+    // Structured answers: a refused answer (Pi's schema check, or the step's own reader) is retried by the model in the same run. After ANSWER_REFUSALS_MAX in a row the model is told once to answer in plain text,
+    // so the step's text parse takes over, instead of looping until the step's clock runs out.
+    let answerRefusals = 0;
+    if (answerTools.length > 0) {
+      const answerNames = new Set(answerTools.map((tool) => tool.name));
+      session.subscribe((event) => {
+        const record = event as { type?: unknown; toolName?: unknown; isError?: unknown };
+        if (record.type !== "tool_execution_end" || typeof record.toolName !== "string" || !answerNames.has(record.toolName)) return;
+        if (record.isError !== true) { answerRefusals = 0; return; }
+        answerRefusals += 1;
+        if (answerRefusals === ANSWER_REFUSALS_MAX) void session.steer(ANSWER_TEXT_FALLBACK_NOTE).catch(() => undefined);
+      });
+    }
     const reportedModel = (): { provider: string; modelId: string } => {
       const provider = session.model?.provider ?? resolved.model.provider;
       if (resolved.route !== undefined && provider === ROUTE_PROVIDER) {
@@ -584,18 +679,31 @@ async function createDefaultSession(
       throw error;
     }
     const savedFile: string = sessionFile;
+    // A refusal of the operation's capability on any request to the rovara server stops the session at once; the prompt then ends the stage with it.
+    sourceMcp?.watch.onRefused(() => { void session.abort().catch(() => undefined); });
+    let mcpReady = false;
+    // Set when the caller stops the session (its step limit, a cancel): a wait for the rovara server's tools ends with it, and no prompt starts after it.
+    let stopped = false;
     return {
       conversationId: conversationId ?? session.sessionId,
       sessionFile,
       prompt: async (text) => {
-        try { await session.prompt(text, { expandPromptTemplates: false }); }
+        answerRefusals = 0;
+        try {
+          const run = () => session.prompt(text, { expandPromptTemplates: false });
+          if (sourceMcp === undefined) await run();
+          else {
+            await promptWithSources(sourceMcp.watch, run, () => stopped, mcpReady);
+            mcpReady = true;
+          }
+        }
         // A session with source tools keeps stubs, not the sources' text, in its saved transcript (stubPersistedContextResults). The live session still holds what the model read.
-        finally { if (sourceTools.length > 0) await stubPersistedContextResults(savedFile).catch(() => undefined); }
+        finally { if (hasSources) await stubPersistedContextResults(savedFile).catch(() => undefined); }
       },
       // Pi 0.99 returns a disposition ("handled" | "queued"); the adapter's contract stays Promise<void>.
       steer: async (text) => { await session.steer(text); },
       isStreaming: () => session.isStreaming,
-      abort: async () => session.abort(),
+      abort: async () => { stopped = true; await session.abort(); },
       // A routed session runs on rovara-route under the company's alias; it is reported as the catalog model the route names (Task 27).
       getModel: () => ({
         ...reportedModel(),
@@ -607,8 +715,25 @@ async function createDefaultSession(
       getSessionStats: () => conversationStats(session.getSessionStats(), session.sessionManager.getEntries()),
       systemPromptText: () => session.systemPrompt,
       subscribe: (listener) => session.subscribe((event) => { if (!isSystemMessageEvent(event)) listener(withoutStructuredContent(withoutSystemMessages(event))); }),
-      dispose: () => { session.dispose(); if (sourceTools.length > 0) void stubPersistedContextResults(savedFile).catch(() => undefined); },
+      dispose: () => { session.dispose(); if (hasSources) void stubPersistedContextResults(savedFile).catch(() => undefined); },
     };
+}
+
+/**
+ * One prompt of a session whose sources come from the rovara MCP server. Never without the team's sources, silently: before the first prompt the server's tools
+ * are there, or the stage stops and says why; a session stopped while it waits (its step's limit) asks the model nothing; and a refusal of the operation's
+ * capability seen on any request ends the stage with that reason, also when the prompt itself failed because the session was stopped for it.
+ */
+export async function promptWithSources(watch: Pick<RovaraMcpWatch, "ready" | "failure">, run: () => Promise<void>, stopped: () => boolean, ready: boolean): Promise<void> {
+  if (!ready) await watch.ready(undefined, stopped);
+  if (stopped()) return;
+  try {
+    await run();
+  } catch (error) {
+    throw watch.failure() ?? error;
+  }
+  const refused = watch.failure();
+  if (refused !== undefined) throw refused;
 }
 
 /**
@@ -642,10 +767,23 @@ function withoutStructuredContent<T>(event: T): T {
   return { ...event, result: kept };
 }
 
-function conversationStats(stats: SessionStats, entries: readonly SessionEntry[]): SessionStats {
+function conversationStats(stats: SessionStats, entries: readonly SessionEntry[]): SessionStats & { costFromProvider?: boolean } {
   // Pi counts every message entry, as getSessionStats does, so the system ones are counted the same way.
   const system = entries.filter((entry) => entry.type === "message" && entry.message.role === "system").length;
-  return { ...stats, totalMessages: stats.totalMessages - system };
+  const priced = pricedUsages(entries);
+  // Pi's own rule for a sum: provider-reported only when every part is. Left out when nothing was priced, so an unpriced session's stats keep their keys.
+  return { ...stats, totalMessages: stats.totalMessages - system, ...(priced.length === 0 ? {} : { costFromProvider: priced.every((usage) => usage.cost.totalFromProvider === true) }) };
+}
+
+/** Every usage Pi adds to a session's cost that has a price: model messages, tool-result usage, summaries and usage entries. */
+function pricedUsages(entries: readonly SessionEntry[]): Array<{ cost: { total: number; totalFromProvider?: boolean } }> {
+  const found: Array<{ cost: { total: number; totalFromProvider?: boolean } }> = [];
+  for (const entry of entries) {
+    const usage: unknown = entry.type === "message" ? (entry.message as { usage?: unknown }).usage : (entry as { usage?: unknown }).usage;
+    const cost = usage !== null && typeof usage === "object" ? (usage as { cost?: { total?: unknown } }).cost : undefined;
+    if (cost !== undefined && typeof cost.total === "number" && cost.total > 0) found.push(usage as { cost: { total: number; totalFromProvider?: boolean } });
+  }
+  return found;
 }
 
 /**
@@ -670,27 +808,20 @@ export async function createWorkerResources(
     systemPrompt?: string;
     /** The standing-instructions block (see PiSessionInput.standingInstructions); ignored when `systemPrompt` is given: an agent step carries the block inside its own system prompt. */
     standingInstructions?: string;
+    /** Added to the system prompt when some tools are deferred: says that tool_search loads them. */
+    toolSearchNote?: string;
   },
 ): Promise<{ resourceLoader: DefaultResourceLoader; settingsManager: SettingsManager }> {
   const skills = input.loadedSkills ?? [];
   // Pi never installs a package for the worker: the reload below would otherwise fetch every `packages` entry of the
   // settings it reads, running `npmCommand`, in the worker (R56). AgentX loads no package.
   process.env.PI_OFFLINE = "1";
-  const settingsManager = SettingsManager.create(input.cwd, input.agentDirectory, { projectTrusted: false });
-  // Pi 0.86+ warms prompt caches with extra paid requests during long tool runs by default ("streaming"); 0.85.1 made
-  // none. The mode is a global-only setting, so it is written to AgentX's own agent directory.
-  settingsManager.setCacheWarmingMode("off");
-  // Defence in depth for a settings file the worker did not write: PI_OFFLINE stops installs, but Pi still runs `npmCommand`
-  // to find its global package root. AgentX loads no package, extension path, skill, prompt or theme from settings, and
-  // runs no configured shell or npm command, whatever the file says.
-  settingsManager.setNpmCommand(undefined);
-  settingsManager.setPackages([]);
-  settingsManager.setExtensionPaths([]);
-  settingsManager.setSkillPaths([]);
-  settingsManager.setPromptTemplatePaths([]);
-  settingsManager.setThemePaths([]);
-  settingsManager.setShellPath(undefined);
-  settingsManager.setShellCommandPrefix(undefined);
+  // Pi 1.3+ reports install telemetry and puts its attribution on provider requests unless this says no; the settings below say no too.
+  process.env.PI_TELEMETRY = "0";
+  // The worker's Pi settings are written, never read: an in-memory manager with no project settings, no telemetry, no cache warming, the worker's retry budget and nothing
+  // loaded or run from settings (see createPiSettingsManager). A settings file in the agent directory or the repository cannot change any of it, and a default a later
+  // Pi release switches on stays off. Pi 1.5.1 made cache warming "idle" by default: the worker keeps it "off".
+  const settingsManager = createPiSettingsManager();
   const standing = input.systemPrompt === undefined && input.standingInstructions !== undefined && input.standingInstructions !== "" ? input.standingInstructions : undefined;
   const resourceLoader = new DefaultResourceLoader({
     cwd: input.cwd,
@@ -710,7 +841,7 @@ export async function createWorkerResources(
     // tool rules and documentation pointers; its addendum, project context and cwd sections are unchanged.
     // A step's skills are listed after it, naming read_skill: Pi's own list would point at the file and the read tool.
     systemPromptOverride: () => {
-      const base = input.systemPrompt ?? AGENTX_WORKER_PROMPT;
+      const base = `${input.systemPrompt ?? AGENTX_WORKER_PROMPT}${input.toolSearchNote === undefined ? "" : `\n\n${input.toolSearchNote}`}`;
       // With a standing-instructions block the skills list moves after it (below the company's rules, as the layer order says); without one the prompt is what it always was.
       return skills.length === 0 || standing !== undefined ? base : `${base}\n\n${skillsPromptSection(skills)}`;
     },
@@ -719,22 +850,7 @@ export async function createWorkerResources(
     appendSystemPrompt: input.systemPrompt === undefined ? [AGENTX_PREAMBLE, ...(standing === undefined ? [] : [standing, ...(skills.length === 0 ? [] : [skillsPromptSection(skills)])])] : [],
   });
   await resourceLoader.reload({ resolveProjectTrust: async () => false });
-  // Last, after every write and reload: each of them merges the stored settings files again, which drops an in-memory override.
-  applyWorkerRetryBudget(settingsManager);
   return { resourceLoader, settingsManager };
-}
-
-/**
- * The retry budget for a model call that fails with a transient error (PLANINC-3b). Pi retries such a call on its own: its default is 3 retries
- * (4 calls) with 2, 4 and 8 s waits. AgentX sets its own, smaller budget so a failing model call ends in a bounded time: `maxRetries` retries after the
- * first call (so `maxRetries + 1` calls at most), each after `baseDelayMs` doubled per retry, and never a wait longer than `maxAgentDelayMs`.
- * Change the numbers here; the planning deadline and the stall limit (model-call-monitor.ts) bound the calls themselves.
- */
-export const WORKER_MODEL_RETRY = { enabled: true, maxRetries: 2, baseDelayMs: 2_000, maxAgentDelayMs: 10_000 } as const;
-
-/** Applies WORKER_MODEL_RETRY on top of Pi's settings. It runs after the settings are loaded, so a settings file in the agent directory cannot widen the budget or turn retries off. */
-export function applyWorkerRetryBudget(settingsManager: SettingsManager): void {
-  settingsManager.applyOverrides({ retry: { ...WORKER_MODEL_RETRY } });
 }
 
 export function agentShellTool(cwd: string, operations?: BashOperations, sequential = false): ToolDefinition {

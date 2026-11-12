@@ -1,6 +1,7 @@
 // Work events (U3): which events each change of a task's workflow makes. Real snapshots from the workflow's own transitions; one test per emit point.
 import { describe, expect, it } from "vitest";
-import { WORKFLOW_BLOCK_REASONS, WorkEventSchema, blockWorkflow, createWorkflowSnapshot, decideWorkflow, submitWorkflowArtifact, workEventId, type WorkEvent, type WorkflowSnapshot } from "@agentx/cloud-contracts";
+import { WORKFLOW_BLOCK_REASONS, blockWorkflow, createWorkflowSnapshot, decideWorkflow, submitWorkflowArtifact, type WorkflowSnapshot } from "@agentx/cloud-contracts";
+import { WorkEventSchema, workEventId, type WorkEvent } from "@rovara-code/contracts";
 import { BUDGET_EXHAUSTED_FAILURE_MESSAGE } from "@rovara-code/contracts";
 import { stoppedStepReason } from "../../packages/broker/src/aws/workflow-cancel-reconcile.js";
 import { waitingOf, workEventsOfTransition } from "../../packages/broker/src/work-events/transition.js";

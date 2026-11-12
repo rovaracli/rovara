@@ -114,7 +114,7 @@ describe("what the deploy sends", () => {
     env: "staging", region: "us-west-2", account: ACCOUNT, release: {} as ReleaseManifest,
     models: { orchestrator: "a", classifier: "b", worker: "c" }, identity: { mode: "cognito" },
     github: { account: "acme", appId: "123", installationId: "456", privateKeySecretArn: `arn:aws:secretsmanager:us-west-2:${ACCOUNT}:secret:agentx/staging/github-app-AbCdEf` },
-    callbackSigningKey: "k".repeat(40), ...extra,
+    ...extra,
   });
   const outputs = { access: { ArtifactBucketName: "b" } } as never;
 

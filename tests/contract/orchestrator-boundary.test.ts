@@ -200,11 +200,13 @@ describe("pi orchestration boundary", () => {
   });
 
   it("keeps the shared registration budget in step with the orchestrator", async () => {
-    const { IN_HOUSE_TOOL_COUNT, TOOL_LIMIT } = await import("@rovara-code/contracts");
+    const { IN_HOUSE_TOOL_COUNT } = await import("@rovara-code/contracts");
+    // Cloud's own limit (Code's TOOL_LIMIT is 200 since its tools load on demand; Cloud's sessions still declare every tool).
+    const { CLOUD_TOOL_LIMIT } = await import("../../packages/broker/src/aws/broker/tool-budget.js");
     const { ORCHESTRATION_TOOL_NAMES } = await import("../../packages/orchestrator/src/orchestration-tools.js");
     const { MAX_VISIBLE_TOOLS } = await import("../../packages/orchestrator/src/orchestrator.js");
     expect(ORCHESTRATION_TOOL_NAMES).toHaveLength(IN_HOUSE_TOOL_COUNT);
-    expect(MAX_VISIBLE_TOOLS).toBe(TOOL_LIMIT);
+    expect(MAX_VISIBLE_TOOLS).toBe(CLOUD_TOOL_LIMIT);
   });
 });
 

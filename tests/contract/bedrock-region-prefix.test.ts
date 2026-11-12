@@ -344,9 +344,10 @@ describe("one name for a model across Bedrock, OpenRouter and its maker's own AP
     return id.replace(/-v\d+:\d+$/, "").replace(/-\d{8}$/, "").toLowerCase().replaceAll(".", "-");
   };
   /** Every name this change newly merges, each one model sold under two spellings (maker named or not, revision suffix, the maker's directory spelling). A new merge not on this list fails the test. */
+  // Pi 1.5.2 catalog (vendor pin 0e340c0e): adds gpt-6-1-terra on two spellings; minimax-m2 and minimax-m2-1 are no longer sold under two.
   const EXPECTED_NEW_MERGES = [
-    "glm-4-7", "glm-4-7-flash", "glm-5", "glm-5-3", "gpt-5-4", "gpt-5-5", "gpt-5-6-luna", "gpt-5-6-sol", "gpt-5-6-terra", "gpt-6-1-sol", "gpt-6-astra", "gpt-6-luna", "gpt-6-sol",
-    "gpt-oss-120b", "gpt-oss-20b", "gpt-oss-safeguard-20b", "grok-4-3", "grok-4-6", "grok-4-7", "kimi-k2-5", "kimi-k2-thinking", "kimi-k3", "minimax-m2", "minimax-m2-1", "minimax-m2-5",
+    "glm-4-7", "glm-4-7-flash", "glm-5", "glm-5-3", "gpt-5-4", "gpt-5-5", "gpt-5-6-luna", "gpt-5-6-sol", "gpt-5-6-terra", "gpt-6-1-sol", "gpt-6-1-terra", "gpt-6-astra", "gpt-6-luna", "gpt-6-sol",
+    "gpt-oss-120b", "gpt-oss-20b", "gpt-oss-safeguard-20b", "grok-4-3", "grok-4-6", "grok-4-7", "kimi-k2-5", "kimi-k2-thinking", "kimi-k3", "minimax-m2-5",
     "nova-2-lite", "nova-lite", "nova-micro", "nova-premier", "nova-pro", "qwen3-235b-a22b-2507", "qwen3-32b", "qwen3-coder-next", "voxtral-small-24b-2507",
   ];
 
