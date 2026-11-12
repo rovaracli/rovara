@@ -11154,6 +11154,26 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
               },
             },
             {
+              "Action": "dynamodb:BatchGetItem",
+              "Condition": {
+                "ForAllValues:StringLike": {
+                  "dynamodb:LeadingKeys": [
+                    "DEVELOPER_NAME#*",
+                  ],
+                },
+                "Null": {
+                  "dynamodb:LeadingKeys": "false",
+                },
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "State1C20CC9A",
+                  "Arn",
+                ],
+              },
+            },
+            {
               "Action": "kms:GetPublicKey",
               "Effect": "Allow",
               "Resource": {
@@ -15988,6 +16008,7 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                     "slackUserId",
                     "share",
                     "workflow",
+                    "currentOwner",
                   ],
                 },
                 "ForAllValues:StringLike": {
