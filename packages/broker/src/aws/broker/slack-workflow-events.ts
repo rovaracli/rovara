@@ -7,7 +7,7 @@ import { evidenceRouteDependencies } from "./evidence-wiring.js";
 import { liveWriterRole } from "../../org/live-role.js";
 import type { SlackWorkflowRevisePlanEvent } from "../../agent-sessions/live-steer-revise.js";
 import { createHash } from "node:crypto";
-import { GetCommand } from "@aws-sdk/lib-dynamodb";
+import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { QuickAutoStartRequestSchema, type QuickAutoStartResult } from "@agentx/cloud-contracts";
 import type { AuthenticatedIdentity } from "../../auth.js";
 import { quickAutoStartRefusal } from "../../decisions/quick-auto-start.js";
@@ -15,9 +15,10 @@ import { AgentXError, RUN_INPUT_TEXT_MAX_BYTES, sharedTaskKey, SLACK_THREAD_OWNE
 import { projectE2EBaselineWanted, requestWorkflowE2EBaselineRound } from "../workflow-e2e-baseline.js";
 import { DeveloperSignInStore, type DeveloperRecord } from "../../developer/store.js";
 import { getItem } from "../cancellation.js";
+import { isConditional } from "../broker-shared.js";
 import { requireCreatorStillMember } from "../../developer/creator-member.js";
 import { grantRoleOf } from "../../developer/project-roles.js";
-import { ownerActorIdOf, taskKey, tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../../developer/task-records.js";
+import { ownerActorIdOf, taskKey, taskPointerKey, tryEffectiveTaskOwner, type DeveloperTaskPointerRecord, type DeveloperTaskRecord } from "../../developer/task-records.js";
 import { peopleOfItem, requireSessionLevel } from "../../agent-sessions/access.js";
 import { slackReplyAuthor } from "../../agent-sessions/events.js";
 import { codeIntentDependenciesOf, developerTaskRouteDependencies, type DeveloperCaller, type DeveloperRouteDependencies } from "../developer-routes.js";
@@ -528,27 +529,11 @@ export async function sendSlackWorkflowBack(dependencies: AwsBrokerDependencies,
  * otherwise an approved fix that was never pushed refused the close, and the thread, told "I'll post here when it's
  * closed", heard nothing more.
  */
-/** How long Stop waits for a cancelled step to free the workspace before it closes the task, and how often it looks. */
-const STOP_CANCEL_WAIT_MS = 12_000;
-const STOP_CANCEL_POLL_MS = 400;
-
 export async function closeSlackWorkflowTask(dependencies: AwsBrokerDependencies, tasks: DeveloperTaskActions, event: SlackWorkflowCloseEvent) {
   const { taskId, requestId, caller, developer } = await ownedSlackWorkflowTask(dependencies, event, "close this task");
   if (event.stop === true) {
-    // Decision 134: Stop. A workspace still setting up has changed nothing yet and cannot be closed: the press is
-    // refused as busy and can be repeated. A running step (planning, say) is cancelled first, then the task closes.
-    const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(taskId));
-    if (task === undefined) throw agentXError("TASK_NOT_FOUND", "no task here that you can see");
-    let workspace = await requireWorkspace(dependencies, task.workspaceId);
-    if (workspace.status === "PREPARING") throw agentXError("TASK_BUSY", "the task is still setting up; press Stop again in a moment");
-    if (workspace.activeOperationId !== undefined) {
-      const requester = SlackRequesterSchema.parse({ teamId: event.thread.teamId, userId: event.userId });
-      await cancelRunningTask(dependencies, workspace, { requestedBy: requester });
-      for (let waited = 0; waited < STOP_CANCEL_WAIT_MS && workspace.activeOperationId !== undefined; waited += STOP_CANCEL_POLL_MS) {
-        await new Promise((resolve) => setTimeout(resolve, STOP_CANCEL_POLL_MS));
-        workspace = await requireWorkspace(dependencies, task.workspaceId);
-      }
-    }
+    const remembered = await rememberSlackStop(dependencies, taskId, event.userId, requestId);
+    if (remembered !== "close_now") return { stopped: remembered };
   }
   const routeDeps = slackWorkflowRouteDependencies(dependencies, tasks, developer, caller);
   const body = JSON.stringify({ requestId, discard_unpublished: true });
@@ -965,6 +950,67 @@ export async function stopSlackThreadTask(dependencies: AwsBrokerDependencies, e
   const workspace = await requireWorkspace(dependencies, record.workspaceId);
   if (workspace.ownerKey !== ownerKey || (workspace.orgId ?? installOrgId(dependencies)) !== orgId) throw agentXError("FORBIDDEN", "workspace does not belong to this thread");
   return cancelRunningTask(dependencies, workspace, { requestedBy: requester });
+}
+
+/**
+ * Decision 134: Stop on a request that started Quick on its own (its owner's press, checked by the caller). One press is
+ * enough, and a second one changes nothing. The press is remembered on the task (`stopRequest`), then:
+ * - setup still running: its first instructions are taken back (as a cancel before they run does), so the finished setup
+ *   queues no planning step; the task closes when setup finishes (`closeStoppedTask`);
+ * - a step running: it is cancelled, and the task closes when the step has stopped;
+ * - nothing running: `close_now`, and the caller closes it at once.
+ */
+export async function rememberSlackStop(dependencies: AwsBrokerDependencies, taskId: string, userId: string, requestId: string): Promise<"remembered" | "cancelling" | "close_now"> {
+  const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(taskId));
+  if (task === undefined) throw agentXError("TASK_NOT_FOUND", "no task here that you can see");
+  if (task.stopRequest !== undefined) return "remembered";
+  const now = new Date().toISOString();
+  const mark = { Update: { TableName: dependencies.tableName, Key: taskKey(taskId), UpdateExpression: "SET stopRequest = :stop",
+    ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(closedAt) AND attribute_not_exists(stopRequest)",
+    ExpressionAttributeValues: { ":stop": { userId, requestId, at: now } } } };
+  const pointer = await getItem<DeveloperTaskPointerRecord>(dependencies, taskPointerKey(task.workspaceId));
+  const takeBack = pointer?.pendingPrompt === undefined ? [] : [{ Update: { TableName: dependencies.tableName, Key: taskPointerKey(task.workspaceId),
+    UpdateExpression: "SET cancelledAt = :now REMOVE pendingPrompt, pendingWorkflowMode", ConditionExpression: "attribute_exists(pendingPrompt)",
+    ExpressionAttributeValues: { ":now": now } } }];
+  try {
+    await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: [mark, ...takeBack] }));
+  } catch (error) {
+    if (!isConditional(error)) throw error;
+    // The same press committed first, or setup finished and queued the first step meanwhile: decided again from fresh reads.
+    const again = await getItem<DeveloperTaskRecord>(dependencies, taskKey(taskId));
+    if (again?.stopRequest !== undefined) return "remembered";
+    if (again === undefined || again.closedAt !== undefined) throw agentXError("CONFIG_INVALID", "this task is closed");
+    return rememberSlackStop(dependencies, taskId, userId, requestId);
+  }
+  const workspace = await requireWorkspace(dependencies, task.workspaceId);
+  if (workspace.status === "PREPARING") return "remembered";
+  if (workspace.activeOperationId) {
+    const requester = SlackRequesterSchema.parse({ teamId: task.share?.teamId, userId });
+    const cancelled = await cancelRunningTask(dependencies, workspace, { requestedBy: requester });
+    if (cancelled.outcome === "CANCEL_REQUESTED") return "cancelling";
+  }
+  return "close_now";
+}
+
+/**
+ * Decision 134: after any result of a task's operation, a remembered Stop closes the task once nothing runs and setup is
+ * done: as its owner's close, with the Stop press's request ID (so a repeat is the same close). Best effort: a close that
+ * could not start is logged, and a second Stop press closes it.
+ */
+export async function closeStoppedTask(dependencies: AwsBrokerDependencies, taskId: string): Promise<void> {
+  try {
+    const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(taskId));
+    if (task?.stopRequest === undefined || task.closedAt !== undefined || task.share?.threadTs === undefined) return;
+    const workspace = await requireWorkspace(dependencies, task.workspaceId);
+    if (workspace.status !== "READY" || workspace.activeOperationId) return;
+    await closeSlackWorkflowTask(dependencies, developerTaskActions(dependencies), {
+      source: "agentx.slack-ingress", action: "workflow-close", taskId, userId: task.stopRequest.userId, requestId: task.stopRequest.requestId,
+      thread: { teamId: task.share.teamId, channelId: task.share.channelId, threadTs: task.share.threadTs },
+    });
+    console.log(JSON.stringify({ component: "broker", event: "workflow.stopped_task_closing", taskId }));
+  } catch (error) {
+    console.log(JSON.stringify({ component: "broker", event: "workflow.stopped_task_close_failed", taskId, ...(error instanceof AgentXError ? { errorCode: error.code } : { errorName: error instanceof Error ? error.name : "unknown" }) }));
+  }
 }
 
 /**
