@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { canonicalJson } from "@rovara-code/contracts";
 import { evaluateE2EApplicationRawAssertion } from "../../packages/verifier/src/application-services.js";
-import { createWebApplicationCliHost, executeWebSteps, type E2EWebRuntimePorts } from "../../packages/verifier/src/web-runtime.js";
+import { AGENT_STEP_CLOSE_MARGIN_MS, createWebApplicationCliHost, executeWebSteps, type E2EWebRuntimePorts } from "../../packages/verifier/src/web-runtime.js";
 import { readE2EApplicationInstalledFileFixture } from "../../packages/verifier/src/application-runtime-assets.js";
 import type { E2EApplicationCliLaunchContext } from "../../packages/verifier/src/application-runtime-bootstrap.js";
 
@@ -256,6 +256,39 @@ describe("web application runtime", () => {
     await expect(executeWebSteps({ caseId: "case-1", scenario: { steps: [{ kind: "agent", goal: "Check the orders page", maxActions: 2 }], assertions: [] } as never,
       fixtures, ports: casePorts, signal: controller.signal, page: { on: () => {}, off: () => {}, context: () => ({ on: () => {}, off: () => {} }) } } as never)).rejects.toThrow("cancelled mid-step");
   });
+
+  // FLK-1 (2026-11-12): an agent step was given every millisecond up to the case deadline. A step that ran out its time (a stale replay searching for a renamed button) then ended exactly when
+  // the case's signal aborted: its window could not be finished and the capture could not be written, so the evidence it had recorded was bytes no capture reaches. The step now leaves the case
+  // its closing margin. The ports here refuse, as the executor's ledger does, any write once the case signal has aborted.
+  it("ends an agent step that runs out its time early enough for the case to record it and close", async () => {
+    const deadlineMs = AGENT_STEP_CLOSE_MARGIN_MS + 400;
+    const deadlineAt = Date.now() + deadlineMs;
+    const signal = AbortSignal.timeout(deadlineMs);
+    const granted: number[] = [];
+    const agent = { runStep: async ({ timeoutMs }: { timeoutMs: number }) => {
+      granted.push(timeoutMs);
+      // The step uses all the time it is given, as a replay that never finds its target does, and then reports how it ended.
+      await new Promise((resolve) => setTimeout(resolve, timeoutMs));
+      return { verdict: "failed" as const, stopCode: "replay-needs-model", receiptIds: [] };
+    } };
+    const evidence = { recordCaseEvidence: async ({ bytes, mediaType }: { bytes: Uint8Array; mediaType: string }, writeSignal: AbortSignal) => {
+      if (writeSignal.aborted) throw new Error("case evidence write was cancelled");
+      return { artifactId: "artifact-step", sha256: (await import("node:crypto")).createHash("sha256").update(bytes).digest("hex"), byteLength: bytes.byteLength, mediaType };
+    } };
+    const actionWindows = { begin: async () => ({ actionId: "action-window" }),
+      finish: async (_action: unknown, finishSignal: AbortSignal) => { if (finishSignal.aborted) throw new Error("action window finish was cancelled"); return { confirmed: true as const }; } };
+    const fixtures = { app: { open: async () => {} }, screen: { getByTestId: () => ({}) }, agent: { act: async () => {} },
+      browser: { goto: async () => {}, reload: async () => {}, waitForDownload: async (operation: () => Promise<void>) => { await operation(); return { suggestedFilename: "x", path: "x" }; } } } as never;
+    const casePorts = { ...ports(), evidence, actionWindows, agent } as unknown as E2EWebRuntimePorts;
+    const result = await executeWebSteps({ caseId: "case-1", scenario: { steps: [{ kind: "agent", goal: "Check the orders page", maxActions: 2 }],
+      assertions: [{ kind: "csv", downloadName: "orders.csv", columns: ["id"], rows: [["a1"]] }] } as never, fixtures, ports: casePorts, signal, deadlineAt,
+      page: { on: () => {}, off: () => {}, context: () => ({ on: () => {}, off: () => {} }) } } as never);
+    expect(granted[0]).toBeLessThanOrEqual(deadlineMs - AGENT_STEP_CLOSE_MARGIN_MS);
+    expect(result.agentStopped).toMatchObject({ stopCode: "replay-needs-model" });
+    expect(result.steps.map((step) => [step.kind, step.outcome])).toEqual([["agent", "unavailable"]]);
+    // The case still has its closing time when the step is over.
+    expect(signal.aborted).toBe(false);
+  }, 20_000);
 
   it("requires an installed canonical JSON schema and validates the observed body against it", () => {
     const assertion = { kind: "json", responseId: "orders-state", schemaRef: "orders-state-v1", equals: { version: 1, ids: ["a1", "a2"] } };

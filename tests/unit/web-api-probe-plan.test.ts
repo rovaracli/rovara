@@ -10,6 +10,7 @@ import { webApiApplicationLaunchTarget } from "../../packages/verifier/src/web-a
 import { createWebApiProbePlan, webApiAgentIsolationGuardArgs, webApiAgentProbeScript, webApiAppStartGuardArgs, webApiBuildProbeCommand, webApiProbeDriver } from "../../packages/verifier/src/host/web-api-probe-plan.js";
 import { installedWebApiQualificationAppRoot } from "../../packages/verifier/src/host/web-api-qualification-app.js";
 import { webApiChallenge } from "../support/web-api-qualification.js";
+import { FIXED_RUNTIME_AT, createOrdersM14AgentPlan } from "../support/orders-m14-agent.js";
 
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 const appRoot = installedWebApiQualificationAppRoot();
@@ -103,6 +104,24 @@ describe("the plan of the agent qualification probes (Task 4.5)", () => {
     expect(plan.admission.round.groupBindings[0]!.modelRouteRevision).toBe(WEB_API_AGENT_PROBE_ROUTE.routeRevision);
     expect(plan.admission.runtimeBindings[0]!.value.capabilities.supportedSteps).toContain("agent");
     expect(plan.admission.runtimeBindings[0]!.value.capabilities).toMatchObject({ modelChannel: "rovara-e2e-model-channel/v1" });
+  });
+
+  // FLK-1: an audit replay runs its agent steps with no model, and the broker sizes its round for agent steps all the same (it asks `e2eApplicationGroupUsesModel` with the bundle and the cases).
+  // The plan used to ask with the compiled suite, whose replay context made the replay model-free: a 10 s case and a 60 s run, which a stale replay's target search could use up, so the case
+  // ended at its deadline before it wrote its capture.
+  it("gives an audit replay the agent-sized round limits its source round had, as the broker does", () => {
+    const runtimeAt = FIXED_RUNTIME_AT;
+    const source = createOrdersM14AgentPlan({ mock: true, runtimeAt });
+    const [step] = e2eApplicationGroupAgentSteps(source.compiled);
+    const binding = { schemaVersion: "rovara-agent-trace/v1" as const, runId: source.plan.admission.groups[0]!.outerBinding.runId, caseId: step!.caseId, stepIndex: step!.stepIndex,
+      traceSha256: "a".repeat(64), ledgerSha256: "b".repeat(64), actionCount: 1 };
+    const replay = createOrdersM14AgentPlan({ mock: true, runtimeAt,
+      replay: { traces: [{ caseId: step!.caseId, stepIndex: step!.stepIndex, keyHash: "c".repeat(64), traceBase64: Buffer.from("{}").toString("base64"), binding }] } });
+    expect(replay.plan.admission.replay).toBeDefined();
+    expect(replay.plan.admission.modelRoute).toBeNull();
+    expect(e2eApplicationGroupUsesModel({ bundle: replay.compiled.bundle, expectedCases: replay.compiled.expectedCases })).toBe(true);
+    expect(replay.plan.admission.round.limits).toEqual(source.plan.admission.round.limits);
+    expect(replay.plan.admission.round.limits.caseTimeoutMs).toBeGreaterThan(60_000);
   });
 
   it("is refused without the route: a plan with an AI-navigated step and no route cannot be made", () => {

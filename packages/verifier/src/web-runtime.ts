@@ -264,6 +264,12 @@ export type WebAgentDownloadStatus = "captured" | "agent-no-download" | "ambiguo
 /** How long an agent step that concluded is given for a download it caused to start, after its last action returned. */
 const AGENT_DOWNLOAD_GRACE_MS = 2_000;
 const AGENT_STEP_MAX_MS = 90_000;
+/**
+ * What an agent step leaves of the case's time for closing the case (FLK-1): recording how the step ended, finishing its action window, its strip frame (at most SCREENSHOT_TIMEOUT_MS) and the
+ * case capture. A step given every millisecond up to the case deadline ends exactly when the case's signal aborts, and the case then leaves without its capture: every piece of evidence it had
+ * already recorded is bytes no capture reaches, and the collector can only call the run "extra or unreferenced bytes" instead of naming the step's own stop code.
+ */
+export const AGENT_STEP_CLOSE_MARGIN_MS = SCREENSHOT_TIMEOUT_MS + 2_000;
 /** The stop code of an agent step that threw: the code the model driver's own ledger gives a step that ended in a fault. */
 const AGENT_FAULT_STOP_CODE = "ACTION_FAILED";
 /** What a fault is called in the executor log: its name and a short, single-line, bounded message (the log is redacted of credentials when it is written). */
@@ -375,7 +381,7 @@ export async function executeWebSteps(input: { caseId: string; scenario: E2EScen
       const agent = input.ports.agent;
       if (!agent) throw new Error("governed web agent execution is unavailable until the installed model-operation channel is present");
       if (pendingChooser !== null) throw new Error("an agent step cannot start while a file chooser is unresolved on this page");
-      const timeoutMs = Math.max(1, Math.min(AGENT_STEP_MAX_MS, (input.deadlineAt ?? Date.now() + AGENT_STEP_MAX_MS) - Date.now()));
+      const timeoutMs = Math.max(1, Math.min(AGENT_STEP_MAX_MS, (input.deadlineAt ?? Date.now() + AGENT_STEP_MAX_MS + AGENT_STEP_CLOSE_MARGIN_MS) - AGENT_STEP_CLOSE_MARGIN_MS - Date.now()));
       const act = (goal: string, options: { maxSteps: number; maxModelCalls: number; timeout: number }) => input.fixtures.agent.act(goal, options);
       const runAgent = () => agent.runStep({ caseId: input.caseId, stepIndex, goal: step.goal, maxActions: step.maxActions, timeoutMs, signal, act });
       let outcome: E2EWebAgentStepOutcome | undefined;
