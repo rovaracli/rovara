@@ -44,6 +44,12 @@ export interface ResolveOrgOnSignInInput {
    * install's single org are both skipped, and the result is `{ noOrg: true }`. Absent or true: rules 1 to 4 as always.
    */
   allowCreate?: boolean;
+  /**
+   * The sign-in method was removed from the account that holds the email's pointer, on purpose, and now signs in on its own (Plan 2, Task 8b): it becomes
+   * its own developer and starts its own company without the pointer, as before. Not a race between two first sign-ins, so rule 3 does not refuse it:
+   * refused, it would be stuck, since the account it left may not add it back once it is its own developer (RELINK_OWN_ACCOUNT).
+   */
+  separatedFrom?: string;
 }
 
 export interface SignInOrg {
@@ -121,7 +127,8 @@ async function resolveOrg(deps: ResolveOrgOnSignInDependencies, input: ResolveOr
    * without the pointer: the person joins the company that invited them and the pointer stays with the first. Starting a company
    * (`refuseConflict` true) is refused instead with CHANGE_STALE: a second company for the same email would be a separate company
    * that nothing heals any more (IDENTITY-HEALING-CROSS-ORG). The loser is left with no company, so it can be linked to the first
-   * route later (SLACK-LINK-1 links only a developer with no company).
+   * route later (SLACK-LINK-1 links only a developer with no company). A method removed from the pointer's account on purpose (`separatedFrom`)
+   * is not a race and is not refused: it starts its own company without the pointer.
    */
   const indexing = async <T>(attempt: (email: string | undefined) => Promise<T>, refuseConflict: boolean): Promise<T> => {
     try {
@@ -129,7 +136,7 @@ async function resolveOrg(deps: ResolveOrgOnSignInDependencies, input: ResolveOr
     } catch (error) {
       if (!cloud || indexedEmail === undefined || codeOf(error) !== "ALREADY_IN_ORG" || await winnerOfRace() !== undefined) throw error;
       (deps.log ?? (() => undefined))({ event: "signin.email_pointer_conflict", developerId: input.developerId, ...(refuseConflict ? { refused: true } : {}) });
-      if (refuseConflict) throw agentXError("CHANGE_STALE", ALREADY_SIGNED_UP_MESSAGE);
+      if (refuseConflict && input.separatedFrom === undefined) throw agentXError("CHANGE_STALE", ALREADY_SIGNED_UP_MESSAGE);
       return attempt(undefined);
     }
   };

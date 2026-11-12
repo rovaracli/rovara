@@ -1,4 +1,4 @@
-import { useId } from "react";
+import { useEffect, useId, useRef } from "react";
 import { Link, NavLink, useLocation } from "react-router";
 import type { ReadAppNav } from "@agentx/cloud-contracts/web";
 import { useAppHost } from "../host.js";
@@ -27,8 +27,28 @@ export function SidebarV2({ nav, onNavigate }: { nav: ReadAppNav; onNavigate?: (
  <section aria-labelledby={sharedHeading}><h2 id={sharedHeading}>Shared with me</h2>{nav.shared.agents.map(agent => <NavLink key={agent.agentId} to={paths.agent(agent.agentId)} onClick={onNavigate}><VisibleText text={agent.name} /></NavLink>)}{nav.shared.sessions.map(session => <NavLink key={session.sessionId} to={paths.session(session.sessionId)} onClick={onNavigate}><VisibleText text={session.title} /></NavLink>)}{nav.shared.agents.length + nav.shared.sessions.length === 0 && <p className="rv-nav-hint">Shared work appears here.</p>}</section>
  <div className="rv-sidebar-secondary">{host.kind === "web" && canOpenCompanySettings(nav) && <NavLink to="/app/admin/waiting" onClick={onNavigate}>Waiting for people</NavLink>}<NavLink to={paths.onboard} onClick={onNavigate}>Onboard a project</NavLink>{host.kind === "web" && nav.features.scriptTokens === true && <NavLink to="/app/settings/script-tokens" onClick={onNavigate}>Script tokens</NavLink>}{nav.features.usage && <NavLink to={paths.usage} onClick={onNavigate}>Usage</NavLink>}</div></nav>;
 }
+/** The room kept between a focused control and the tab bar (shell.css keeps the same 16px as scroll padding). */
+const TABBAR_FOCUS_GAP = 16;
+/**
+ * WCAG 2.4.11: a control that takes focus is never left under the tab bar. shell.css's scroll padding does this where the browser applies scroll padding to a
+ * focus scroll (Chromium); WebKit, and Firefox for some controls, do not, and stop scrolling once the control is in the viewport, under the bar. So, as focus
+ * arrives (focusin runs before the browser's own scroll), the page is scrolled just enough for the control to end above the bar; the browser's scroll then
+ * has nothing to do. A control taller than the room keeps its top in view. Nothing happens while the bar is hidden (above the phone line).
+ */
+export function keepFocusAboveTabBar(bar: HTMLElement, target: EventTarget | null, view: Pick<Window, "scrollBy"> = window): void {
+ if (!(target instanceof HTMLElement) || bar.contains(target) || bar.getClientRects().length === 0) return;
+ const limit = bar.getBoundingClientRect().top - TABBAR_FOCUS_GAP, box = target.getBoundingClientRect();
+ if (box.height === 0 || box.bottom <= limit) return;
+ const by = Math.min(box.bottom - limit, box.top);
+ if (by > 0) view.scrollBy({ top: by, behavior: "instant" });
+}
 /** The phone's bottom tab bar: the same destinations, icon plus label, 44px targets (shell.css). Hidden above the phone line. */
 export function TabBar({ nav }: { nav: ReadAppNav }) {
- const current = currentDestination(useLocation().pathname);
- return <nav aria-label="Main destinations" className="rv-tabbar">{destinationsFor(nav).map(destination => <DestinationLink key={destination.id} destination={destination} current={current === destination.id} />)}</nav>;
+ const current = currentDestination(useLocation().pathname), bar = useRef<HTMLElement>(null);
+ useEffect(() => {
+  const onFocus = (event: FocusEvent) => { if (bar.current !== null) keepFocusAboveTabBar(bar.current, event.target); };
+  document.addEventListener("focusin", onFocus);
+  return () => { document.removeEventListener("focusin", onFocus); };
+ }, []);
+ return <nav ref={bar} aria-label="Main destinations" className="rv-tabbar">{destinationsFor(nav).map(destination => <DestinationLink key={destination.id} destination={destination} current={current === destination.id} />)}</nav>;
 }

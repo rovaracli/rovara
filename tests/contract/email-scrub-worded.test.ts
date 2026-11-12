@@ -169,7 +169,8 @@ describe("hideEmailAddresses: what follows the domain", () => {
 
 describe("hideEmailAddresses: time", () => {
   const at = String.fromCharCode(64);
-  const LIMIT_MS = 200;
+  // 1 s, not 200 ms: a shared CI runner has taken over 200 ms on these linear scans (about 1 microsecond a character here). A scan that grows with the square of a 30K-50K run would take tens of seconds, so 1 s still catches it.
+  const LIMIT_MS = 1_000;
   // Input is not capped on every path (Slack, a pull request body), so the scan must not grow with the square of a run of name characters, labels or blanks.
   const inputs: Array<[string, string, number?]> = [
     ["30K letters then an at sign", `${"a".repeat(30_000)}${at}`],
