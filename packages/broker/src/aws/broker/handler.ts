@@ -3,6 +3,7 @@
 import { outsidePushTarget } from "../../rovara-code/outside-push.js";
 import { attentionDeliveryOf } from "./attention-wiring.js";
 import { deliverAttention } from "../../notifications/attention.js";
+import { sweepAttentionDms } from "../../notifications/attention-dm-sweep.js";
 import { fixtureStoreForRoutes } from "../../test-env/fixture-store-aws.js";
 import { noteInvokedFunctionArn } from "../../test-env/lambda-identity.js";
 import { EVIDENCE_RESUME_BUDGET_MS, evidenceEraseOf, resumeEvidence } from "./evidence-wiring.js";
@@ -313,6 +314,9 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
         try { outcome.notifications = await deliverAttention(attention, { deadlineMs: Date.now() + Math.min(8000, Math.floor(left / 2)) }); }
         catch (error) { console.log(JSON.stringify({ component: "broker", event: "attention.sweep_failed", error: error instanceof Error ? error.name : "unknown" })); outcome.notifications = "failed"; }
       }
+      // Attention messages the notifier gave up on are put in front of it again (under a day old) or marked missed (older); on this schedule, with what is left of the budget.
+      try { outcome.attentionDms = await sweepAttentionDms({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }, { deadlineMs: Date.now() + Math.min(4000, Math.max(0, SESSION_EVENT_BUDGET_MS - (Date.now() - startedAt)) / 2) }); }
+      catch (error) { console.log(JSON.stringify({ component: "broker", event: "attention_dm.sweep_failed", error: error instanceof Error ? error.name : "unknown" })); outcome.attentionDms = "failed"; }
       // Saved project images: the periodic poll (a few due projects a pass; off, nothing is read).
       // With the switch off the answer is today's, byte for byte: neither key is there.
       const polled = await runSavedEnvPoll(dependencies);

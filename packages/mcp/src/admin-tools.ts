@@ -63,6 +63,7 @@ export const ADMIN_READ_TOOLS: readonly ToolDefinition[] = [
           alarms: health.alarms, alarms_check: health.alarmsCheck, dead_letter_queues: health.deadLetterQueues,
           ...(health.deadLetterQueuesCheck === undefined ? {} : { dead_letter_queues_check: health.deadLetterQueuesCheck }),
           ...(health.teamRecordCheck === undefined ? {} : { team_record_check: health.teamRecordCheck }),
+          ...(health.attentionDmCheck === undefined ? {} : { attention_dm_check: health.attentionDmCheck }),
           slack: health.slack, github: health.github,
           worker_modes: health.workerModes.map((mode) => given({ mode: mode.mode, configured: mode.configured, latest_dispatch_failure: mode.latestDispatchFailure === undefined ? undefined : { at: mode.latestDispatchFailure.at, operation_id: mode.latestDispatchFailure.operationId, error: mode.latestDispatchFailure.error } })),
           workspaces: health.workspaces, workspaces_truncated: health.workspacesTruncated,

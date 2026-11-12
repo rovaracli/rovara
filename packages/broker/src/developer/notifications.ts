@@ -184,8 +184,12 @@ export function noticesOf(previous: Record<string, unknown> | undefined, next: R
     // UX2 slice 2 item 5: a batch of task notifications for one person, worded by the broker's sweep, waits to be sent as a Slack direct message. Once, when it is written.
     case "TASK_ATTENTION_DM": {
       const sk = text(next.sk);
-      if (previous !== undefined || next.pk !== "NOTIFY_DM" || sk === "" || sk.length > 300 || next.status !== "PENDING") return [];
-      return [{ id: `attention_dm:${sk}`, kind: "attention_dm", at, attentionKey: sk }];
+      if (next.pk !== "NOTIFY_DM" || sk === "" || sk.length > 300 || next.status !== "PENDING") return [];
+      if (previous === undefined) return [{ id: `attention_dm:${sk}`, kind: "attention_dm", at, attentionKey: sk }];
+      // The broker's sweep put a row the notifier had given up on in front of it again (`attention-dm-sweep.ts` raises `resweepCount`): one fresh notice per requeue. Any other change to the row says nothing.
+      const requeues = next.resweepCount;
+      if (typeof requeues !== "number" || !Number.isSafeInteger(requeues) || requeues <= (typeof previous.resweepCount === "number" ? previous.resweepCount : 0)) return [];
+      return [{ id: `attention_dm:${sk}:requeue${String(requeues)}`, kind: "attention_dm", at, attentionKey: sk }];
     }
     case "TASK_PEOPLE_NOTIFICATION": {
       const taskId = text(next.taskId);
