@@ -28,7 +28,7 @@ const PAGE = "/app/projects/payments?tab=how-we-work";
 for (const width of [1280, 390] as const) {
  test(`switch off at ${String(width)}: today's How we work tab, none of the panel`, async ({ page, context, request, baseURL }) => {
   const chunks: string[] = [];page.on("request", asked => { if (/WorkingAgreement|agreement\.css/u.test(asked.url())) chunks.push(asked.url()); });
-  const asks: string[] = [];page.on("request", asked => { if (/company-rules|known-failing-policy/u.test(asked.url())) asks.push(asked.url()); });
+  const asks: string[] = [];page.on("request", asked => { if (/^\/v1\/.*(?:company-rules|known-failing-policy)/u.test(new URL(asked.url()).pathname)) asks.push(asked.url()); }); // API paths only: a JS chunk is also named company-rules-<hash>.js (shared module the project page loads), and that is not a read
   await enter(page, context, request, baseURL, width, {});await page.goto(PAGE);
   await expect(page.getByRole("heading", { name: "Build", exact: true })).toBeVisible();await page.waitForLoadState("networkidle");
   await expect(page.locator(".rv-agree")).toHaveCount(0);await expect(page.getByRole("heading", { name: "Working agreement" })).toHaveCount(0);

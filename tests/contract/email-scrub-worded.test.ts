@@ -187,8 +187,10 @@ describe("hideEmailAddresses: time", () => {
     ["a letter, an at sign and 50K zero-width characters", `a${at}${"\u200B".repeat(50_000)}`, 50],
     ["50K zero-width characters, then at", `${"\u200B".repeat(50_000)}at example.test`, 50],
     ["50K brackets and zero-width characters", "[\u200B".repeat(25_000), 50],
-    ["a blank, a zero-width character and at, repeated", " \u200B at ".repeat(8_000)],
-    ["a name, then blank-zero-width-at repeated, then a domain", `x${" \u200Bat\u200B ".repeat(8_000)}a.b.com`],
+    // These two scan about 1 microsecond per character (45 ms here for 48K characters, linear in the length), the slowest per character of any case, and plain prose skips the scan, so the
+    // baseline below is about 0 and does not widen their bound. A CI runner ran them at 270 ms (best of three), over 200. They get 1 s: a quadratic scan of 48K characters takes tens of seconds.
+    ["a blank, a zero-width character and at, repeated", " \u200B at ".repeat(8_000), 1_000],
+    ["a name, then blank-zero-width-at repeated, then a domain", `x${" \u200Bat\u200B ".repeat(8_000)}a.b.com`, 1_000],
     ["many name-and-at pairs", "maya.chen at ".repeat(2_500)],
     ["many brackets", "[at]".repeat(10_000)],
     ["ordinary prose with at", "we looked at the results at the end of the week. ".repeat(600)],

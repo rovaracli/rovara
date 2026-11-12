@@ -18,6 +18,9 @@ async function enter(page: Page, { context, request, baseURL }: Pick<Fixtures, "
  await page.addInitScript(values => { if (sessionStorage.getItem("__seeded") === null) { for (const [key, value] of Object.entries(values)) localStorage.setItem(key, value);sessionStorage.setItem("__seeded", "1"); } }, { "rovara.theme": "light", ...store });
  await mockRealtime(page);await page.setViewportSize({ width, height: 900 });
 }
+// The "same picture" check. Playwright's WebKit screenshot adds a <style> element, which the app's nonce-only style-src refuses and the CSP guard (not relaxed) reports (see support/screenshot.ts),
+// so on WebKit the header's markup stands in for the picture; the other browsers compare real pixels.
+const picture = async (page: Page): Promise<Buffer | string> => page.context().browser()?.browserType().name() === "webkit" ? page.locator("header").first().evaluate(node => node.outerHTML) : page.screenshot({ fullPage: false });
 const noSidewaysScroll = (page: Page) => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth && document.body.scrollWidth <= innerWidth);
 const homeReady = (page: Page, name: string) => expect(page.getByRole("heading", { name: name + ": Review the duplicate-refund fix" })).toBeVisible();
 const noneOf = async (page: Page, words: string[]) => { const text = await page.evaluate(() => document.body.innerText + " " + document.documentElement.innerHTML); for (const word of words) expect(text.includes(word), word).toBe(false); };
@@ -30,13 +33,13 @@ for (const width of [1280, 390] as const) {
   await expect(page.locator("header .rv-company-button, .rv-company-list, .rv-company-gate")).toHaveCount(0);
   if (width > 767) expect(await page.locator(".rv-shell-org").evaluate(node => node.outerHTML)).toBe('<span class="rv-shell-org">Acme</span>');
   expect(await noSidewaysScroll(page)).toBe(true);
-  const off = await page.screenshot({ fullPage: false });await evidenceShot(page, { path: `${shots}/off-${String(width)}.png`, fullPage: false });
+  const off = await picture(page);await evidenceShot(page, { path: `${shots}/off-${String(width)}.png`, fullPage: false });
   // The same page with the switch on and one company: byte for byte the same picture, no button, no chevron, no extra request but the companies read.
   await page.evaluate(() => { localStorage.setItem("rovara.companies", "v2"); });await page.reload();await homeReady(page, "Acme");await page.waitForLoadState("networkidle");
   expect(mock.companyReads().length).toBeGreaterThan(0);
   await expect(page.locator("header .rv-company-button, .rv-company-chevron")).toHaveCount(0);
   if (width > 767) expect(await page.locator(".rv-shell-org").evaluate(node => node.outerHTML)).toBe('<span class="rv-shell-org">Acme</span>');
-  expect(Buffer.compare(await page.screenshot({ fullPage: false }), off)).toBe(0);
+  expect(await picture(page)).toEqual(off);
   await evidenceShot(page, { path: `${shots}/on-one-company-${String(width)}.png`, fullPage: false });
  });
 }
