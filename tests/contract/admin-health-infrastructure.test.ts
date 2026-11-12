@@ -321,6 +321,8 @@ describe("the health route's grants (A13)", () => {
       "packages/broker/src/test-env/seed-lock.ts",
       // UX2 slice 2: a task notification waiting for the sweep (3 days), the per-person batching marker (1 day) and a Slack direct message row the notifier posts (2 days); each is a working row, none a durable record.
       "packages/broker/src/notifications/attention.ts",
+      // 0.5.16 (attention DM sweep): a message the sweep marks MISSED keeps its row two days from then (not the day it was written), so Health can count it; the same TASK_ATTENTION_DM working row, not a durable record, and only attention-dm-sweep.ts moves its expiry.
+      "packages/broker/src/notifications/attention-dm-sweep.ts",
       // SRL-3 (owner decision 24b): the merge-commit index row (GITHUB_WORKFLOW_MERGE, pk ORG#<org>#GITHUB_MERGE) maps a pull request's merge commit to its Rovara task so a revert can be matched; it is an index row that holds no person and expires after 400 days, and only merge-commit-index.ts builds it.
       "packages/broker/src/rovara-code/merge-commit-index.ts",
       // 2026-11-08, lessons in production (lane 2): the once-claim of a reflection (`LEARN#<task>#<outcome>`, 30 days) is a marker so a redelivered queue message never reflects or charges twice; none is a durable record, and only reflect-claims.ts writes it.
