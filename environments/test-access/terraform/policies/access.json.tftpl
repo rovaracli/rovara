@@ -23,6 +23,56 @@
         "tag:GetTagValues"
       ],
       "Resource": "*"
+    },
+    {
+      "Sid": "Boundary",
+      "Effect": "Deny",
+      "Action": [
+        "iam:CreateRole",
+        "iam:PutRolePermissionsBoundary"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringNotEquals": {
+          "iam:PermissionsBoundary": "arn:${partition}:iam::${account_id}:policy/rovara-test-boundary-${external_id}"
+        }
+      }
+    },
+    {
+      "Sid": "NoPath",
+      "Effect": "Deny",
+      "Action": [
+        "iam:CreateRole"
+      ],
+      "Resource": [
+        "arn:*:iam::*:role/*/*"
+      ]
+    },
+    {
+      "Sid": "Pass",
+      "Effect": "Deny",
+      "Action": [
+        "iam:PassRole"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringNotEquals": {
+          "iam:PassedToService": [
+            "events.amazonaws.com",
+            "lambda.amazonaws.com",
+            "states.amazonaws.com"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "KeepBoundary",
+      "Effect": "Deny",
+      "Action": [
+        "iam:DeleteRolePermissionsBoundary",
+        "iam:UpdateAssumeRolePolicy"
+      ],
+      "Resource": "*"
     }
   ]
 }

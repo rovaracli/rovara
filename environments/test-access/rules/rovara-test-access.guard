@@ -171,14 +171,17 @@ rule boundary_denies_secret_reads_outside_the_run {
         some Action[*] == "secretsmanager:*GetSecretValue"
         some Action[*] == "ssm:GetParameter*"
         some Action[*] == "lambda:GetFunction*"
+        some Action[*] == "lambda:GetLayerVersion*"
         some Action[*] == "lambda:ListVersionsByFunction"
     }
 }
 
-# Exactly the services tests use to run code, and only that.
-rule boundary_limits_pass_role {
-    %boundary_statements[ Sid == "Pass" ] !empty
-    %boundary_statements[ Sid == "Pass" ] {
+let access_statements = Resources.RovaraTestPolicy.Properties.PolicyDocument.Statement
+
+# Exactly the services tests use to run code, and only that. In the test role's own policy: only it can call IAM.
+rule test_role_limits_pass_role {
+    %access_statements[ Sid == "Pass" ] !empty
+    %access_statements[ Sid == "Pass" ] {
         Effect == "Deny"
         Action[*] == "iam:PassRole"
         Condition.StringNotEquals."iam:PassedToService"[*] in ["events.amazonaws.com", "lambda.amazonaws.com", "states.amazonaws.com"]
@@ -186,13 +189,31 @@ rule boundary_limits_pass_role {
     }
 }
 
-# A role a run creates can call no IAM and open no resource policy; its session tag must agree with its name; it has no path and carries this boundary.
+# The test role makes roles only with this boundary and no path, and cannot take the boundary off or rewrite a trust policy.
+rule test_role_fences_the_roles_it_creates {
+    %access_statements[ Sid == "Boundary" ] !empty
+    %access_statements[ Sid == "Boundary" ] {
+        Effect == "Deny"
+        Condition.StringNotEquals."iam:PermissionsBoundary" exists
+    }
+    %access_statements[ Sid == "NoPath" ] !empty
+    %access_statements[ Sid == "KeepBoundary" ] !empty
+}
+
+# A role a run creates can call no IAM, build nothing, and open no resource to a principal (N1, N4); its session tag must agree with its name.
 rule boundary_fences_the_roles_a_run_creates {
     %boundary_statements[ Sid == "RunRoles" ] !empty
     %boundary_statements[ Sid == "RunRoles" ] {
         Effect == "Deny"
         some Action[*] == "iam:*"
-        some Action[*] == "lambda:AddPermission"
+        some Action[*] == "lambda:*Permission"
+        some Action[*] == "dynamodb:Create*"
+        some Action[*] == "dynamodb:PutResourcePolicy"
+        some Action[*] == "kinesis:PutResourcePolicy"
+        some Action[*] == "secretsmanager:PutResourcePolicy"
+        some Action[*] == "ssm:PutResourcePolicy"
+        some Action[*] == "sqs:Create*"
+        some Action[*] == "sns:Create*"
         Condition.ArnLike."aws:PrincipalArn" exists
     }
     %boundary_statements[ Sid == "Forged" ] !empty
@@ -201,25 +222,51 @@ rule boundary_fences_the_roles_a_run_creates {
         Condition.ArnLike."aws:PrincipalArn" exists
         Condition.ArnNotLike."aws:PrincipalArn" exists
     }
-    %boundary_statements[ Sid == "NoPath" ] !empty
-    %boundary_statements[ Sid == "Boundary" ] !empty
-    %boundary_statements[ Sid == "KeepBoundary" ] !empty
 }
 
+# Replication the Region deny cannot see, the account's pool, and commands on instances.
 rule boundary_refuses_what_spends_the_accounts_pool {
     %boundary_statements[ Sid == "Pool" ] !empty
     %boundary_statements[ Sid == "Pool" ] {
         Effect == "Deny"
         some Action[*] == "lambda:PutFunctionConcurrency"
         some Action[*] == "s3:PutBucketObjectLockConfiguration"
+        some Action[*] == "dynamodb:CreateTableReplica"
+        some Action[*] == "secretsmanager:ReplicateSecretToRegions"
+        some Action[*] == "ssm:SendCommand"
+        some Action[*] == "ssm:CreateAssociation"
     }
 }
 
+# TargetArn is multivalued: one target that is not the run's refuses the call (ForAnyValue), and a call with none is refused.
 rule boundary_keeps_a_rules_targets_the_runs_own {
     %boundary_statements[ Sid == "Targets" ] !empty
     %boundary_statements[ Sid == "Targets" ] {
         Effect == "Deny"
-        Condition.ArnNotLike."events:TargetArn" exists
+        Condition."ForAnyValue:ArnNotLike"."events:TargetArn" exists
+    }
+    %boundary_statements[ Sid == "NoTarget" ] !empty
+    %boundary_statements[ Sid == "NoTarget" ] {
+        Effect == "Deny"
+        Condition.Null."events:TargetArn" == "true"
+    }
+}
+
+# No SMS, email or HTTP subscription: only to an endpoint ARN of the run's.
+rule boundary_limits_sns_subscriptions {
+    %boundary_statements[ Sid == "Subscribe" ] !empty
+    %boundary_statements[ Sid == "Subscribe" ] {
+        Effect == "Deny"
+        Action[*] == "sns:Subscribe"
+        Condition.ArnNotLike."sns:Endpoint" !empty
+    }
+}
+
+# A resource named for the run in another account is not the run's.
+rule boundary_names_are_checked_against_the_resource_account {
+    %boundary_statements[ Sid == "Named" ] !empty
+    %boundary_statements[ Sid == "Named" ] {
+        Condition.StringEquals."aws:ResourceAccount" exists
     }
 }
 

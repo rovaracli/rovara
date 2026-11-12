@@ -104,8 +104,7 @@ Resources:
             "Condition": {
               "ArnNotLike": {
                 "aws:PrincipalArn": [
-                  "arn:*:iam::*:role/rv-*",
-                  "arn:*:sts::*:assumed-role/rv-*/*"
+                  "arn:*:iam::*:role/rv-*"
                 ]
               }
             }
@@ -131,18 +130,22 @@ Resources:
               "arn:*:events:*:*:rule/rv-${aws:PrincipalTag/rovara-run}-*/*",
               "arn:*:kinesis:*:*:stream/rv-${aws:PrincipalTag/rovara-run}-*",
               "arn:*:lambda:*:*:function:rv-${aws:PrincipalTag/rovara-run}-*",
-              "arn:*:lambda:*:*:layer:rv-${aws:PrincipalTag/rovara-run}-*",
               "arn:*:logs:*:*:log-group:/aws/lambda/rv-${aws:PrincipalTag/rovara-run}-*",
               "arn:*:logs:*:*:log-group:rv-${aws:PrincipalTag/rovara-run}-*",
               "arn:*:secretsmanager:*:*:secret:rv-${aws:PrincipalTag/rovara-run}-*",
               "arn:*:sns:*:*:rv-${aws:PrincipalTag/rovara-run}-*",
               "arn:*:sqs:*:*:rv-${aws:PrincipalTag/rovara-run}-*",
-              "arn:*:ssm:*:*:document/rv-${aws:PrincipalTag/rovara-run}-*",
               "arn:*:ssm:*:*:parameter/rv-${aws:PrincipalTag/rovara-run}-*",
-              "arn:*:states:*:*:activity:rv-${aws:PrincipalTag/rovara-run}-*",
               "arn:*:states:*:*:execution:rv-${aws:PrincipalTag/rovara-run}-*",
               "arn:*:states:*:*:stateMachine:rv-${aws:PrincipalTag/rovara-run}-*"
-            ]
+            ],
+            "Condition": {
+              "StringEquals": {
+                "aws:ResourceAccount": {
+                  "Fn::Sub": "${AWS::AccountId}"
+                }
+              }
+            }
           },
           {
             "Sid": "NamedS3",
@@ -226,14 +229,12 @@ Resources:
             "Condition": {
               "ArnLike": {
                 "aws:PrincipalArn": [
-                  "arn:*:iam::*:role/rv-*",
-                  "arn:*:sts::*:assumed-role/rv-*/*"
+                  "arn:*:iam::*:role/rv-*"
                 ]
               },
               "ArnNotLike": {
                 "aws:PrincipalArn": [
-                  "arn:*:iam::*:role/rv-${aws:PrincipalTag/rovara-run}-*",
-                  "arn:*:sts::*:assumed-role/rv-${aws:PrincipalTag/rovara-run}-*/*"
+                  "arn:*:iam::*:role/rv-${aws:PrincipalTag/rovara-run}-*"
                 ]
               }
             }
@@ -276,11 +277,16 @@ Resources:
             "Sid": "Pool",
             "Effect": "Deny",
             "Action": [
+              "dynamodb:CreateTableReplica",
+              "dynamodb:UpdateGlobalTable*",
               "lambda:PutFunctionConcurrency",
               "lambda:PutProvisionedConcurrencyConfig",
               "s3:PutBucketObjectLockConfiguration",
               "s3:PutObjectLegalHold",
-              "s3:PutObjectRetention"
+              "s3:PutObjectRetention",
+              "secretsmanager:ReplicateSecretToRegions",
+              "ssm:CreateAssociation",
+              "ssm:SendCommand"
             ],
             "Resource": "*"
           },
@@ -288,22 +294,38 @@ Resources:
             "Sid": "RunRoles",
             "Effect": "Deny",
             "Action": [
-              "iam:*",
+              "dynamodb:Create*",
+              "dynamodb:PutResourcePolicy",
+              "dynamodb:UpdateTable",
+              "events:Create*",
               "events:PutPermission",
-              "lambda:AddPermission",
+              "iam:*",
+              "kinesis:Create*",
+              "kinesis:PutResourcePolicy",
+              "kinesis:Update*",
+              "lambda:*Permission",
+              "lambda:Create*",
               "lambda:*FunctionUrlConfig",
+              "s3:CreateBucket",
               "s3:PutBucket*",
+              "secretsmanager:Create*",
+              "secretsmanager:PutResourcePolicy",
               "sns:AddPermission",
+              "sns:Create*",
               "sns:SetTopicAttributes",
               "sqs:AddPermission",
-              "sqs:SetQueueAttributes"
+              "sqs:Create*",
+              "sqs:SetQueueAttributes",
+              "ssm:Create*",
+              "ssm:*Permission",
+              "ssm:PutResourcePolicy",
+              "states:Create*"
             ],
             "Resource": "*",
             "Condition": {
               "ArnLike": {
                 "aws:PrincipalArn": [
-                  "arn:*:iam::*:role/rv-*",
-                  "arn:*:sts::*:assumed-role/rv-*/*"
+                  "arn:*:iam::*:role/rv-*"
                 ]
               }
             }
@@ -313,6 +335,7 @@ Resources:
             "Effect": "Deny",
             "Action": [
               "lambda:GetFunction*",
+              "lambda:GetLayerVersion*",
               "lambda:ListFunctions",
               "lambda:ListVersionsByFunction",
               "secretsmanager:*GetSecretValue",
@@ -335,12 +358,86 @@ Resources:
             ],
             "Resource": "*",
             "Condition": {
-              "ArnNotLike": {
-                "events:TargetArn": {
-                  "Fn::Sub": "arn:*:*:*:${AWS::AccountId}:*rv-${!aws:PrincipalTag/rovara-run}-*"
-                }
+              "ForAnyValue:ArnNotLike": {
+                "events:TargetArn": [
+                  {
+                    "Fn::Sub": "arn:*:*:${AWS::Region}:${AWS::AccountId}:rv-${!aws:PrincipalTag/rovara-run}-*"
+                  },
+                  {
+                    "Fn::Sub": "arn:*:lambda:${AWS::Region}:${AWS::AccountId}:function:rv-${!aws:PrincipalTag/rovara-run}-*"
+                  },
+                  {
+                    "Fn::Sub": "arn:*:states:${AWS::Region}:${AWS::AccountId}:stateMachine:rv-${!aws:PrincipalTag/rovara-run}-*"
+                  }
+                ]
               }
             }
+          },
+          {
+            "Sid": "NoTarget",
+            "Effect": "Deny",
+            "Action": [
+              "events:PutTargets"
+            ],
+            "Resource": "*",
+            "Condition": {
+              "Null": {
+                "events:TargetArn": "true"
+              }
+            }
+          },
+          {
+            "Sid": "Subscribe",
+            "Effect": "Deny",
+            "Action": [
+              "sns:Subscribe"
+            ],
+            "Resource": "*",
+            "Condition": {
+              "ArnNotLike": {
+                "sns:Endpoint": [
+                  {
+                    "Fn::Sub": "arn:*:*:${AWS::Region}:${AWS::AccountId}:rv-${!aws:PrincipalTag/rovara-run}-*"
+                  },
+                  {
+                    "Fn::Sub": "arn:*:lambda:${AWS::Region}:${AWS::AccountId}:function:rv-${!aws:PrincipalTag/rovara-run}-*"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      }
+
+  RovaraTestPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: What Rovara's test role may do, inside the boundary. Rovara test access.
+      PolicyDocument: {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "AllowTestServices",
+            "Effect": "Allow",
+            "Action": [
+              "dynamodb:*",
+              "events:*",
+              "iam:*",
+              "kinesis:*",
+              "lambda:*",
+              "logs:*",
+              "s3:*",
+              "secretsmanager:*",
+              "sns:*",
+              "sqs:*",
+              "ssm:*",
+              "states:*",
+              "sts:GetCallerIdentity",
+              "tag:GetResources",
+              "tag:GetTagKeys",
+              "tag:GetTagValues"
+            ],
+            "Resource": "*"
           },
           {
             "Sid": "Boundary",
@@ -391,39 +488,6 @@ Resources:
             "Action": [
               "iam:DeleteRolePermissionsBoundary",
               "iam:UpdateAssumeRolePolicy"
-            ],
-            "Resource": "*"
-          }
-        ]
-      }
-
-  RovaraTestPolicy:
-    Type: AWS::IAM::ManagedPolicy
-    Properties:
-      Description: What Rovara's test role may do, inside the boundary. Rovara test access.
-      PolicyDocument: {
-        "Version": "2012-10-17",
-        "Statement": [
-          {
-            "Sid": "AllowTestServices",
-            "Effect": "Allow",
-            "Action": [
-              "dynamodb:*",
-              "events:*",
-              "iam:*",
-              "kinesis:*",
-              "lambda:*",
-              "logs:*",
-              "s3:*",
-              "secretsmanager:*",
-              "sns:*",
-              "sqs:*",
-              "ssm:*",
-              "states:*",
-              "sts:GetCallerIdentity",
-              "tag:GetResources",
-              "tag:GetTagKeys",
-              "tag:GetTagValues"
             ],
             "Resource": "*"
           }

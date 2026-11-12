@@ -86,10 +86,11 @@ const EXTRA_READS: readonly string[] = ["dynamodb:BatchGetItem", "dynamodb:Query
 
 /**
  * Reads that hand out secrets or configuration with secrets in it, and the one read that takes something (a Step Functions worker's GetActivityTask takes a task; `states:Get*` is that and GetExecutionHistory). Allowed only on what the run owns: a run's own secret, parameter,
- * function and execution. A Lambda function's configuration carries its environment variables, in GetFunction, GetFunctionConfiguration, ListVersionsByFunction and, for every function, ListFunctions (no resource to fence, so refused outright).
+ * function and execution. A Lambda function's configuration carries its environment variables, in GetFunction, GetFunctionConfiguration, ListVersionsByFunction and, for every function, ListFunctions (no resource to fence, so refused outright); a layer version's GetLayerVersion hands out other teams' code, and layers are not fenced to a run, so it is refused for every run.
  */
 const SECRET_READS: readonly string[] = [
   "lambda:GetFunction*",
+  "lambda:GetLayerVersion*",
   "lambda:ListFunctions",
   "lambda:ListVersionsByFunction",
   "secretsmanager:*GetSecretValue",
@@ -99,28 +100,54 @@ const SECRET_READS: readonly string[] = [
 ];
 
 /**
- * Actions a role the run creates never gets, because they change what others can do to a resource and its code runs where the signer never sees it: all of IAM, and the actions that open a resource to a principal (queue, topic, bucket,
- * event bus and function policies; a function URL). Rovara's test role keeps them, and the signer reads the policy it sets (never `*`, never public, never an auth type of NONE).
+ * Actions a role the run creates never gets. It runs code the signer never sees, so it may use what the run built but not build or open anything: all of IAM; every creation of a queue, topic, table, stream, bus, function, secret,
+ * state machine or bucket (the signer counts creates and caps sizes, and a created resource could carry a policy that opens it); capacity changes; and every action that opens a resource to a principal (queue, topic, bucket, event bus,
+ * function, layer, document, table, stream and secret policies; a function URL). Rovara's test role keeps them and the signer reads what it sets. (CreateMultipartUpload is an upload, not a creation, so S3 is by name.)
  */
 const RUN_ROLE_DENIED: readonly string[] = [
-  "iam:*",
+  "dynamodb:Create*",
+  "dynamodb:PutResourcePolicy",
+  "dynamodb:UpdateTable",
+  "events:Create*",
   "events:PutPermission",
-  "lambda:AddPermission",
+  "iam:*",
+  "kinesis:Create*",
+  "kinesis:PutResourcePolicy",
+  "kinesis:Update*",
+  "lambda:*Permission",
+  "lambda:Create*",
   "lambda:*FunctionUrlConfig",
+  "s3:CreateBucket",
   "s3:PutBucket*",
+  "secretsmanager:Create*",
+  "secretsmanager:PutResourcePolicy",
   "sns:AddPermission",
+  "sns:Create*",
   "sns:SetTopicAttributes",
   "sqs:AddPermission",
+  "sqs:Create*",
   "sqs:SetQueueAttributes",
+  "ssm:Create*",
+  "ssm:*Permission",
+  "ssm:PutResourcePolicy",
+  "states:Create*",
 ];
 
-/** Actions that spend something that is the account's and not the run's, or that a resource cannot be deleted after: refused for every run principal (the signer guards what IAM cannot see: S3 Object Lock at CreateBucket, DynamoDB deletion protection). */
+/**
+ * Actions refused for every principal: the account's concurrency pool and Object Lock (nothing can be undone), replication to another Region that the Region deny cannot see (a DynamoDB replica, a global table, a secret replica),
+ * and running commands on or attaching a document to instances, which are not the run's (SSM is for parameters). The signer guards what IAM cannot see: S3 Object Lock at CreateBucket, DynamoDB deletion protection.
+ */
 const ACCOUNT_POOL_ACTIONS: readonly string[] = [
+  "dynamodb:CreateTableReplica",
+  "dynamodb:UpdateGlobalTable*",
   "lambda:PutFunctionConcurrency",
   "lambda:PutProvisionedConcurrencyConfig",
   "s3:PutBucketObjectLockConfiguration",
   "s3:PutObjectLegalHold",
   "s3:PutObjectRetention",
+  "secretsmanager:ReplicateSecretToRegions",
+  "ssm:CreateAssociation",
+  "ssm:SendCommand",
 ];
 
 /** What the cleanup role may do beyond the delete actions: take a role apart before deleting it, and clear a table's deletion protection (UpdateTable) so it can be deleted. Inside the boundary, so only the run's own. */
@@ -147,14 +174,14 @@ export const RUN_RESOURCES: Readonly<Record<string, readonly string[]>> = {
   events: ["event-bus/{{Name}}", "rule/{{Name}}/*"],
   iam: ["instance-profile/{{Name}}", "policy/{{Name}}", "role/{{Name}}"],
   kinesis: ["stream/{{Name}}"],
-  lambda: ["function:{{Name}}", "layer:{{Name}}"],
+  lambda: ["function:{{Name}}"],
   logs: ["log-group:/aws/lambda/{{Name}}", "log-group:{{Name}}"],
   s3: ["{{Name}}"],
   secretsmanager: ["secret:{{Name}}"],
   sns: ["{{Name}}"],
   sqs: ["{{Name}}"],
-  ssm: ["document/{{Name}}", "parameter/{{Name}}"],
-  states: ["activity:{{Name}}", "execution:{{Name}}", "stateMachine:{{Name}}"],
+  ssm: ["parameter/{{Name}}"],
+  states: ["execution:{{Name}}", "stateMachine:{{Name}}"],
 };
 
 export interface PolicyStatement {
@@ -208,10 +235,20 @@ export interface TestAccessPolicies {
   readonly cleanup: PolicyDocument;
 }
 
-/** The ARNs of the roles a run creates, as `aws:PrincipalArn` shows them (the assumed-role form of a session, and the role itself). Rovara's own roles are named otherwise, and a role a run creates cannot have a path (CreateRole is refused one). */
-// A principal of the policy is always of this account and partition, so both are `*` here (the policy is at its size limit).
-const RUN_ROLES: readonly string[] = ["arn:*:iam::*:role/rv-*", "arn:*:sts::*:assumed-role/rv-*/*"];
-const OWN_RUN_ROLES: readonly string[] = ["arn:*:iam::*:role/rv-${aws:PrincipalTag/rovara-run}-*", "arn:*:sts::*:assumed-role/rv-${aws:PrincipalTag/rovara-run}-*/*"];
+/** The resources a rule or a subscription may point at, one pattern per type: this account and Region (a token each), the run's name, anchored on the type. */
+const TARGET_RESOURCES: Readonly<Record<string, string>> = { lambda: "function:{{Name}}", sqs: "{{Name}}", sns: "{{Name}}", states: "stateMachine:{{Name}}" };
+function targetPatterns(services: readonly string[]): string[] {
+  // A queue and a topic have the same shape (the name follows the account), so one pattern covers both.
+  const shapes = new Set(services.filter((service) => TARGET_RESOURCES[service] !== undefined).map((service) => (service === "sqs" || service === "sns" ? "*" : service)));
+  return [...shapes].sort().map((service) => (service === "*" ? `arn:*:*:{{Region}}:{{AccountId}}:${RUN_NAME_PATTERN}` : `arn:*:${service}:{{Region}}:{{AccountId}}:${(TARGET_RESOURCES[service] as string).replace("{{Name}}", RUN_NAME_PATTERN)}`));
+}
+
+/**
+ * The roles a run creates, as `aws:PrincipalArn` shows a role's session: the ROLE's ARN (path included), not the assumed-role session ARN (AWS's documentation of the key; TA11 checks it). A principal of the policy is always of this
+ * account and partition, so both are `*` (the policy is at its size limit). Rovara's own roles are named otherwise, and a role a run creates cannot have a path (CreateRole is refused one).
+ */
+const RUN_ROLES: readonly string[] = ["arn:*:iam::*:role/rv-*"];
+const OWN_RUN_ROLES: readonly string[] = ["arn:*:iam::*:role/rv-${aws:PrincipalTag/rovara-run}-*"];
 
 export function buildTestAccessPolicies(services: readonly string[] = DEFAULT_TEST_ACCESS_SERVICES): TestAccessPolicies {
   const sorted = [...new Set(services)].sort();
@@ -230,7 +267,8 @@ export function buildTestAccessPolicies(services: readonly string[] = DEFAULT_TE
   const statements: PolicyStatement[] = [
     // Reads are Rovara's own roles' only: a role the run creates reads nothing outside its run, so an outside principal that gets to assume it reaches no more than the run's own resources.
     { Sid: "Reads", Effect: "Allow", Action: reads, Resource: "*", Condition: { ArnNotLike: { "aws:PrincipalArn": RUN_ROLES } } },
-    { Sid: "Named", Effect: "Allow", Action: withoutSpecial.map((service) => `${service}:*`), Resource: patternsOf(withoutSpecial) },
+    // The account is checked too: a resource named for the run in another account is not the run's.
+    { Sid: "Named", Effect: "Allow", Action: withoutSpecial.map((service) => `${service}:*`), Resource: patternsOf(withoutSpecial), Condition: { StringEquals: { "aws:ResourceAccount": "{{AccountId}}" } } },
   ];
   // S3 bucket names are global: a bucket named like the run's but in another account is not the run's, so the account is checked too.
   if (has("s3")) statements.push({ Sid: "NamedS3", Effect: "Allow", Action: ["s3:*"], Resource: patternsOf(["s3"]), Condition: { StringEquals: { "s3:ResourceAccount": "{{AccountId}}" } } });
@@ -261,19 +299,28 @@ export function buildTestAccessPolicies(services: readonly string[] = DEFAULT_TE
   );
   if (secretNames.length > 0) statements.push({ Sid: "Secrets", Effect: "Deny", Action: onlyHeld(SECRET_READS), NotResource: secretNames });
   if (has("events")) {
-    // A rule's targets are the run's own (a function, queue or topic named for it): never another account's, never a shared one.
-    statements.push({ Sid: "Targets", Effect: "Deny", Action: ["events:PutTargets"], Resource: "*", Condition: { ArnNotLike: { "events:TargetArn": "arn:*:*:*:{{AccountId}}:*rv-${aws:PrincipalTag/rovara-run}-*" } } });
-  }
-  if (has("iam")) {
+    // A rule's targets are the run's own, in this account and Region: a function, queue, topic or state machine named for it. TargetArn can hold several values, so one that is not the run's refuses the call, and a call with none is refused.
     statements.push(
+      { Sid: "Targets", Effect: "Deny", Action: ["events:PutTargets"], Resource: "*", Condition: { "ForAnyValue:ArnNotLike": { "events:TargetArn": targetPatterns(sorted) } } },
+      { Sid: "NoTarget", Effect: "Deny", Action: ["events:PutTargets"], Resource: "*", Condition: { Null: { "events:TargetArn": "true" } } },
+    );
+  }
+  if (has("sns")) {
+    // A subscription goes to a queue or function of the run only: no SMS, email or HTTP(S) endpoint, and nothing outside the run.
+    statements.push({ Sid: "Subscribe", Effect: "Deny", Action: ["sns:Subscribe"], Resource: "*", Condition: { ArnNotLike: { "sns:Endpoint": targetPatterns(sorted.filter((service) => service === "sqs" || service === "lambda")) } } });
+  }
+  // The test role's own denies. Only it can call IAM (a role a run creates is denied all of it), so the rules about making roles are here and not in the boundary, which is full.
+  const accessStatements: PolicyStatement[] = [{ Sid: "AllowTestServices", Effect: "Allow", Action: [...sorted.map((service) => `${service}:*`), ...baseline], Resource: "*" }];
+  if (has("iam")) {
+    accessStatements.push(
       { Sid: "Boundary", Effect: "Deny", Action: ["iam:CreateRole", "iam:PutRolePermissionsBoundary"], Resource: "*", Condition: { StringNotEquals: { "iam:PermissionsBoundary": "{{BoundaryArn}}" } } },
-      // A role a run creates has no path: the name in a session's ARN would not show the run's name.
+      // A role a run creates has no path, so the role ARN in a session is the run's name.
       { Sid: "NoPath", Effect: "Deny", Action: ["iam:CreateRole"], Resource: ["arn:*:iam::*:role/*/*"] },
       { Sid: "Pass", Effect: "Deny", Action: ["iam:PassRole"], Resource: "*", Condition: { StringNotEquals: { "iam:PassedToService": [...PASSABLE_SERVICES] } } },
       { Sid: "KeepBoundary", Effect: "Deny", Action: [...FORBIDDEN_IAM_ACTIONS], Resource: "*" },
     );
   }
-  const access: PolicyDocument = { Version: "2012-10-17", Statement: [{ Sid: "AllowTestServices", Effect: "Allow", Action: [...sorted.map((service) => `${service}:*`), ...baseline], Resource: "*" }] };
+  const access: PolicyDocument = { Version: "2012-10-17", Statement: accessStatements };
   const deletes = [...sorted.flatMap((service) => scopedDeleteActions(service)), ...onlyHeld(CLEANUP_EXTRAS)];
   const cleanup: PolicyDocument = { Version: "2012-10-17", Statement: [{ Sid: "AllowReadAndDelete", Effect: "Allow", Action: [...reads, ...deletes], Resource: "*" }] };
   return { boundary: { Version: "2012-10-17", Statement: statements }, access, cleanup };

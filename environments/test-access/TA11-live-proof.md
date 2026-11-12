@@ -18,10 +18,21 @@ From the second review (each one is a thing the boundary assumes):
 10. `UntagResource` of `rovara-run` is refused on every service of the default list, and removing another tag key is not. Create-time tagging works: `sqs:CreateQueue` with Tags on `rv-<run>-q`, and `sqs:TagQueue` on it; tagging an untagged shared queue is refused.
 11. A role created under a path (`/rv-<run>-x/admin`) is refused at `CreateRole` (`NoPath`), and cleanup finds and removes roles by the run's name prefix.
 
+From the third review (the list of eight was not in the request; these are the eight things that review's fixes assume):
+
+17. `events:TargetArn` is multivalued: `PutTargets` with a run target and a shared or outside target together is refused (`ForAnyValue:ArnNotLike`), one with none is refused (`NoTarget`), and a target in another Region or a name that merely contains the run id is refused (anchored, Region pinned).
+18. `aws:PrincipalArn` for a role session is the role's ARN, not the assumed-role session ARN. The policy now lists only the role form (`Reads`, `Forged`, `RunRoles`); if real IAM gives the session form, every run-role rule fails open and this item is a release blocker.
+19. `sns:Endpoint` is in the context of `sns:Subscribe`, and an `ArnNotLike` on it refuses SMS, email, HTTP(S), another account's queue and a call with no endpoint, while a subscription of a run's topic to a run's queue or function works.
+20. `aws:ResourceAccount` is in the context of the create calls of every default service (`sqs:CreateQueue`, `sns:CreateTopic`, `dynamodb:CreateTable`, `lambda:CreateFunction`, ...), so the `Named` allow does not refuse the run's own creates, and it refuses a write to `rv-<run>-*` in another account.
+21. Resource-policy and creation actions of a role a run creates (`RunRoles`): a Lambda function that deploys with an execution role can do its work (S3, DynamoDB, SQS data calls, logs) with every action of that list refused. `sqs:CreateQueue` and `sns:CreateTopic` carrying a Policy have no condition key, so they are refused outright for run roles and gated by the signer for the test role.
+22. Replication: `dynamodb:CreateTableReplica`, `dynamodb:UpdateGlobalTable*` and `secretsmanager:ReplicateSecretToRegions` are refused for both roles even though the Region deny cannot see their target Region; `dynamodb:CreateTable` with a ResourcePolicy and a DynamoDB global table create are refused or gated by the signer.
+23. `lambda:GetLayerVersion` and `GetLayerVersionByArn` on another team's layer are refused for both roles, and the run's own functions can still run (layers are not fenced to a run).
+24. `ssm:SendCommand` and `ssm:CreateAssociation` are refused for both roles (explicit deny), and `ssm:PutParameter` and `GetParameter` on `rv-<run>-*` still work.
+
 Carried from the first review:
 
 12. The policy variable `${aws:PrincipalTag/rovara-run}` is accepted in `Resource`, `NotResource` and condition values.
-13. `aws:PrincipalArn` for an assumed-role session: the `assumed-role` form or the `role` form (the policy lists both).
+13. `aws:PrincipalArn` for a role session is the role ARN (see item 18): confirm it.
 14. `sts:TagSession` is granted by the trust statement that has no external id condition.
 15. Whose credentials CloudFormation publishes to the SNS topic with, and what the response URL host looks like in each Region (`cloudFormationResponseHosts`).
 16. Quick-create accepts a template with named IAM resources (CAPABILITY_NAMED_IAM) in one acknowledgement.
@@ -33,6 +44,8 @@ IAM cannot see these, so the signer must:
 - Read the trust policy of every `iam:CreateRole` (and refuse `iam:UpdateAssumeRolePolicy`, which the boundary already denies): only AWS service principals for Lambda, Step Functions and EventBridge. Never an AWS account, never `*`, never a federated principal. A run-created role has no path and a name `rv-<run8>-...`.
 - Read every resource policy the test role sets (`lambda:AddPermission`, queue, topic, bucket and event bus policies): never `*`, never an AWS account that is not the connected one. Refuse a function URL with `AuthType: NONE`.
 - Refuse `CreateBucket` with Object Lock enabled, and `dynamodb:CreateTable` or `UpdateTable` with deletion protection on. (The boundary cannot see either; the cleanup role can clear deletion protection with `dynamodb:UpdateTable`.)
+- Read every resource policy and creation the test role makes that IAM cannot see (a Policy attribute on `sqs:CreateQueue` and `sns:CreateTopic`, `CreateTable` with a ResourcePolicy), and the policy actions the boundary denies only to run-created roles: `dynamodb:PutResourcePolicy`, `kinesis:PutResourcePolicy`, `secretsmanager:PutResourcePolicy`, `ssm:PutResourcePolicy`, `ssm:ModifyDocumentPermission`, `lambda:AddLayerVersionPermission`, `lambda:AddPermission`, queue, topic, bucket and event bus policies. Never public, never another account.
+- Count and cap what the test role creates, per run: number of creates, provisioned DynamoDB read and write capacity, Kinesis shard counts, Lambda code size and memory, Lambda concurrency (the boundary refuses the account-wide pool actions), Step Functions state machines. A role a run creates builds nothing (boundary `RunRoles`), so every create is the test role's and passes the signer.
 - Hold the read allow-list. Rovara's roles can read any resource of the connection's Region except secrets and Lambda configuration outside the run (boundary `Secrets`); an admin-allowed read of an existing secret or parameter needs a stack parameter that does not exist yet.
 
 ## For cleanup (TA6)

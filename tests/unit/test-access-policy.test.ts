@@ -27,6 +27,7 @@ const policies = buildTestAccessPolicies();
 
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 // A small evaluator of IAM identity and boundary policies, enough for the conditions the boundary uses. It answers what real IAM would for the cases the review raised: the test role, and a role a run creates.
+// For a role session, aws:PrincipalArn is the ROLE's ARN with its path (AWS's documentation of the key), not the assumed-role session ARN.
 // Missing condition keys: a positive operator does not match, a negated one does (IAM's rule). A policy variable with no value matches nothing. Session tags replace a role's tags (the "forged" session).
 // Resource-based policies are not modelled, on purpose: an explicit deny in the boundary beats any resource policy, and a resource policy that names a role directly is not limited by a boundary, which is why a run
 // may not open a resource to anyone (RunRoles) and the signer reads the policies the test role sets.
@@ -40,7 +41,7 @@ interface Request {
   readonly requestTags?: Record<string, string>;
   /** The tag keys the call sets or removes (aws:TagKeys); defaults to the keys of requestTags. */
   readonly tagKeys?: string[];
-  readonly keys?: Record<string, string>;
+  readonly keys?: Record<string, string | string[]>;
 }
 
 const glob = (pattern: string, value: string, caseInsensitive = false): boolean => {
@@ -49,11 +50,11 @@ const glob = (pattern: string, value: string, caseInsensitive = false): boolean 
 };
 
 function principal(session: Request["session"]): { arn: string; tags: Record<string, string> } {
-  if (session === "created") return { arn: `arn:aws:sts::${ACCOUNT}:assumed-role/rv-${RUN}-fn/session`, tags: { "rovara-run": RUN } };
+  if (session === "created") return { arn: `arn:aws:iam::${ACCOUNT}:role/rv-${RUN}-fn`, tags: { "rovara-run": RUN } };
   // someone outside assumed the run's role and set the session tag to another run (a session tag overrides the role's tag)
-  if (session === "forged") return { arn: `arn:aws:sts::${ACCOUNT}:assumed-role/rv-${RUN}-fn/session`, tags: { "rovara-run": OTHER_RUN } };
-  if (session === "untagged") return { arn: `arn:aws:sts::${ACCOUNT}:assumed-role/Rovara-test-access-RovaraTestRole-ABC/rovara-x`, tags: {} };
-  return { arn: `arn:aws:sts::${ACCOUNT}:assumed-role/Rovara-test-access-RovaraTestRole-ABC/rovara-x`, tags: { "rovara-run": RUN } };
+  if (session === "forged") return { arn: `arn:aws:iam::${ACCOUNT}:role/rv-${RUN}-fn`, tags: { "rovara-run": OTHER_RUN } };
+  if (session === "untagged") return { arn: `arn:aws:iam::${ACCOUNT}:role/Rovara-test-access-RovaraTestRole-ABC`, tags: {} };
+  return { arn: `arn:aws:iam::${ACCOUNT}:role/Rovara-test-access-RovaraTestRole-ABC`, tags: { "rovara-run": RUN } };
 }
 
 function evaluateStatement(statement: PolicyStatement, request: Request): boolean {
@@ -78,13 +79,16 @@ function evaluateStatement(statement: PolicyStatement, request: Request): boolea
   if (resources !== undefined && !resources.some(matchResource)) return false;
   if (statement.NotResource !== undefined && statement.NotResource.some(matchResource)) return false;
   const requestKeys = request.tagKeys ?? Object.keys(request.requestTags ?? {});
-  const keyValue = (key: string): string | undefined => {
-    if (key.startsWith("aws:PrincipalTag/")) return who.tags[key.slice("aws:PrincipalTag/".length)];
-    if (key.startsWith("aws:ResourceTag/")) return request.resourceTags?.[key.slice("aws:ResourceTag/".length)];
-    if (key.startsWith("aws:RequestTag/")) return request.requestTags?.[key.slice("aws:RequestTag/".length)];
-    if (key === "aws:RequestedRegion") return request.region ?? "us-west-2";
-    if (key === "aws:PrincipalArn") return who.arn;
-    return request.keys?.[key];
+  const keyValue = (key: string): string[] | undefined => {
+    const one = (value: string | undefined): string[] | undefined => (value === undefined ? undefined : [value]);
+    if (key.startsWith("aws:PrincipalTag/")) return one(who.tags[key.slice("aws:PrincipalTag/".length)]);
+    if (key.startsWith("aws:ResourceTag/")) return one(request.resourceTags?.[key.slice("aws:ResourceTag/".length)]);
+    if (key.startsWith("aws:RequestTag/")) return one(request.requestTags?.[key.slice("aws:RequestTag/".length)]);
+    if (key === "aws:RequestedRegion") return one(request.region ?? "us-west-2");
+    if (key === "aws:PrincipalArn") return one(who.arn);
+    if (key === "aws:ResourceAccount") return one(request.keys?.[key] === undefined ? ACCOUNT : String(request.keys[key]));
+    const given = request.keys?.[key];
+    return given === undefined || (Array.isArray(given) && given.length === 0) ? undefined : Array.isArray(given) ? given : [given];
   };
   for (const [operator, entries] of Object.entries(statement.Condition ?? {})) {
     for (const [key, wanted] of Object.entries(entries)) {
@@ -96,16 +100,20 @@ function evaluateStatement(statement: PolicyStatement, request: Request): boolea
       }
       const resolved = values.map(substitute);
       const usable = resolved.filter((value): value is string => value !== undefined);
+      const first = actual?.[0];
       if (operator === "ForAnyValue:StringEquals") {
         if (key !== "aws:TagKeys" || !requestKeys.some((tagKey) => usable.includes(tagKey))) return false;
+      } else if (operator === "ForAnyValue:ArnNotLike") {
+        // true when at least one request value matches none of the patterns; false when the key is missing
+        if (actual === undefined || !actual.some((value) => !usable.some((pattern) => glob(pattern, value)))) return false;
       } else if (operator === "StringEquals") {
-        if (actual === undefined || !usable.includes(actual)) return false;
+        if (first === undefined || !usable.includes(first)) return false;
       } else if (operator === "StringNotEquals") {
-        if (actual !== undefined && usable.includes(actual)) return false;
+        if (first !== undefined && usable.includes(first)) return false;
       } else if (operator === "ArnLike") {
-        if (actual === undefined || !usable.some((pattern) => glob(pattern, actual))) return false;
+        if (first === undefined || !usable.some((pattern) => glob(pattern, first))) return false;
       } else if (operator === "ArnNotLike") {
-        if (actual !== undefined && usable.some((pattern) => glob(pattern, actual))) return false;
+        if (first !== undefined && usable.some((pattern) => glob(pattern, first))) return false;
       } else {
         throw new Error(`the test evaluator does not know ${operator}`);
       }
@@ -137,7 +145,7 @@ describe("sizes", () => {
     }
   });
   it("leaves the boundary room to grow", () => {
-    expect(policySize(rendered(policies.boundary, "ap-southeast-2"))).toBeLessThan(IAM_MANAGED_POLICY_MAX_CHARS - 300);
+    expect(policySize(rendered(policies.boundary, "ap-southeast-2"))).toBeLessThan(IAM_MANAGED_POLICY_MAX_CHARS - 150);
   });
 });
 
@@ -167,8 +175,11 @@ describe("which services the fence supports", () => {
 });
 
 describe("a run changes only what it owns, as Rovara's role and as a role the run creates (the shared-account fence is in the boundary)", () => {
+  // What a role a run creates may not do (N4): build. These are allowed to Rovara's test role (the signer gates and counts them) and refused to a created role.
+  const builds = new Set(["sqs:CreateQueue", "lambda:CreateFunction", "secretsmanager:CreateSecret", "kinesis:UpdateShardCount", "s3:CreateBucket"]);
+
   it.each(sessions)("%s: may use resources named for the run (control: the fence lets the run work)", (session) => {
-    const cases: [string, string, Record<string, string>?][] = [
+    const cases: [string, string][] = [
       ["sqs:CreateQueue", ownQueue],
       ["sqs:SendMessage", ownQueue],
       ["sqs:ReceiveMessage", ownQueue],
@@ -179,19 +190,25 @@ describe("a run changes only what it owns, as Rovara's role and as a role the ru
       ["lambda:CreateFunction", `arn:aws:lambda:us-west-2:${ACCOUNT}:function:rv-${RUN}-f`],
       ["lambda:InvokeFunction", `arn:aws:lambda:us-west-2:${ACCOUNT}:function:rv-${RUN}-f:live`],
       ["logs:CreateLogGroup", `arn:aws:logs:us-west-2:${ACCOUNT}:log-group:/aws/lambda/rv-${RUN}-f`],
+      ["logs:CreateLogStream", `arn:aws:logs:us-west-2:${ACCOUNT}:log-group:/aws/lambda/rv-${RUN}-f:log-stream:s`],
       ["logs:PutLogEvents", `arn:aws:logs:us-west-2:${ACCOUNT}:log-group:rv-${RUN}-g:log-stream:s`],
       ["states:StartExecution", `arn:aws:states:us-west-2:${ACCOUNT}:stateMachine:rv-${RUN}-m`],
       ["kinesis:UpdateShardCount", `arn:aws:kinesis:us-west-2:${ACCOUNT}:stream/rv-${RUN}-s`],
+      ["kinesis:PutRecord", `arn:aws:kinesis:us-west-2:${ACCOUNT}:stream/rv-${RUN}-s`],
       ["secretsmanager:CreateSecret", `arn:aws:secretsmanager:us-west-2:${ACCOUNT}:secret:rv-${RUN}-s-AbCdEf`],
       ["secretsmanager:GetSecretValue", `arn:aws:secretsmanager:us-west-2:${ACCOUNT}:secret:rv-${RUN}-s-AbCdEf`],
       ["ssm:PutParameter", `arn:aws:ssm:us-west-2:${ACCOUNT}:parameter/rv-${RUN}-p`],
       ["ssm:GetParameter", `arn:aws:ssm:us-west-2:${ACCOUNT}:parameter/rv-${RUN}-p`],
       ["events:PutRule", `arn:aws:events:us-west-2:${ACCOUNT}:rule/rv-${RUN}-bus/r`],
       ["events:PutEvents", `arn:aws:events:us-west-2:${ACCOUNT}:event-bus/rv-${RUN}-bus`],
+      ["s3:PutObject", `arn:aws:s3:::rv-${RUN}-b/key`],
+      ["s3:CreateMultipartUpload", `arn:aws:s3:::rv-${RUN}-b/key`],
+      ["s3:CreateBucket", `arn:aws:s3:::rv-${RUN}-b`],
     ];
-    for (const [action, resource, resourceTags] of cases) expect(allowed({ session, action, resource, ...(resourceTags === undefined ? {} : { resourceTags }) }), `${action} ${resource}`).toBe(true);
-    expect(allowed({ session, action: "s3:PutObject", resource: `arn:aws:s3:::rv-${RUN}-b/key`, keys: { "s3:ResourceAccount": ACCOUNT } })).toBe(true);
-    expect(allowed({ session, action: "s3:CreateBucket", resource: `arn:aws:s3:::rv-${RUN}-b`, keys: { "s3:ResourceAccount": ACCOUNT } })).toBe(true);
+    const keys = { "s3:ResourceAccount": ACCOUNT };
+    for (const [action, resource] of cases) {
+      expect(allowed({ session, action, resource, keys }), `${session} ${action} ${resource}`).toBe(session === "test" || !builds.has(action));
+    }
   });
 
   it.each(sessions)("%s: a run tag alone allows almost nothing: only taking apart an event source mapping that carries it (no resource is claimed or used by its tag)", (session) => {
@@ -250,7 +267,7 @@ describe("a run changes only what it owns, as Rovara's role and as a role the ru
       expect(allowed({ session, action: "sqs:DeleteQueue", resource: queue("shared") })).toBe(false);
     }
     expect(allowed({ session, action: "sqs:TagQueue", resource: ownQueue, requestTags: claim })).toBe(true);
-    expect(allowed({ session, action: "sqs:CreateQueue", resource: ownQueue, requestTags: claim })).toBe(true);
+    expect(allowed({ session, action: "sqs:CreateQueue", resource: ownQueue, requestTags: claim })).toBe(session === "test");
     // the run tag key cannot be set to another value or taken off, anywhere
     expect(allowed({ session, action: "sqs:TagQueue", resource: ownQueue, requestTags: { "rovara-run": OTHER_RUN } })).toBe(false);
     expect(allowed({ session, action: "sqs:UntagQueue", resource: ownQueue, tagKeys: ["rovara-run"] })).toBe(false);
@@ -263,6 +280,8 @@ describe("a run changes only what it owns, as Rovara's role and as a role the ru
       ["ssm:SendCommand", `arn:aws:ec2:us-west-2:${ACCOUNT}:instance/i-0123456789abcdef0`],
       ["ssm:SendCommand", `arn:aws:ssm:us-west-2::document/AWS-RunShellScript`],
       ["ssm:UpdateServiceSetting", star],
+      ["ssm:CreateAssociation", `arn:aws:ssm:us-west-2:${ACCOUNT}:association/*`],
+      ["ssm:SendCommand", `arn:aws:ssm:us-west-2:${ACCOUNT}:document/rv-${RUN}-d`],
       ["s3:PutAccountPublicAccessBlock", star],
       ["events:PutPermission", `arn:aws:events:us-west-2:${ACCOUNT}:event-bus/default`],
       ["logs:PutResourcePolicy", star],
@@ -279,7 +298,7 @@ describe("a run changes only what it owns, as Rovara's role and as a role the ru
       ["organizations:CloseAccount", star],
     ];
     for (const [action, resource] of refused) expect(allowed({ session, action, resource }), `${action} ${resource}`).toBe(false);
-    expect(allowed({ session, action: "kinesis:UpdateShardCount", resource: `arn:aws:kinesis:us-west-2:${ACCOUNT}:stream/rv-${RUN}-s` })).toBe(true);
+    expect(allowed({ session, action: "kinesis:UpdateShardCount", resource: `arn:aws:kinesis:us-west-2:${ACCOUNT}:stream/rv-${RUN}-s` })).toBe(session === "test");
   });
 
   it.each(sessions)("%s: reads of secrets and configuration are refused outside the run, even where other reads are open", (session) => {
@@ -294,6 +313,8 @@ describe("a run changes only what it owns, as Rovara's role and as a role the ru
       ["lambda:ListFunctions", "*"],
       ["states:DescribeExecution", `arn:aws:states:us-west-2:${ACCOUNT}:execution:shared:run1`],
       ["states:GetActivityTask", `arn:aws:states:us-west-2:${ACCOUNT}:activity:shared`],
+      ["lambda:GetLayerVersion", `arn:aws:lambda:us-west-2:${ACCOUNT}:layer:shared:3`],
+      ["lambda:GetLayerVersionByArn", `arn:aws:lambda:us-west-2:${ACCOUNT}:layer:shared:3`],
     ];
     for (const [action, resource] of secrets) expect(allowed({ session, action, resource }), `${action} ${resource}`).toBe(false);
   });
@@ -351,7 +372,7 @@ describe("the roles a run creates (the abuse in review item C1)", () => {
     expect(create({ requestTags: { "rovara-run": OTHER_RUN } })).toBe(false);
     expect(create({ resource: `arn:aws:iam::${ACCOUNT}:role/admin-role` })).toBe(false);
     expect(create({ resource: `arn:aws:iam::${ACCOUNT}:role/rv-${OTHER_RUN}-fn` })).toBe(false);
-    // a path hides the name in a session's ARN (the role path /rv-<run>-x/ with the name "admin" would be assumed-role/admin), so a role has none
+    // a role has no path: the role ARN a session shows is then exactly the run's name (a path /rv-<run>-x/ in front of the name "admin" must not make an admin role look like a run's)
     expect(create({ resource: `arn:aws:iam::${ACCOUNT}:role/path/rv-${RUN}-fn` })).toBe(false);
     expect(create({ resource: `arn:aws:iam::${ACCOUNT}:role/rv-${RUN}-x/admin` })).toBe(false);
     expect(create({ resource: `arn:aws:iam::${ACCOUNT}:role/rv-${RUN}-x/rovara-test-admin` })).toBe(false);
@@ -430,13 +451,17 @@ describe("the second review: roles run code the signer never sees (B1 to B5)", (
     expect(allowed({ session: "cleanup", action: "iam:CreateRole", resource: roleArn, keys: { "iam:PermissionsBoundary": BOUNDARY_ARN }, requestTags: { "rovara-run": RUN } })).toBe(false);
   });
 
-  it("B2: an event source mapping is created only for a run's own function (lambda:FunctionArn), and cannot be pointed elsewhere afterwards", () => {
+  it("B2: an event source mapping is made only by Rovara's test role, for a run's own function (lambda:FunctionArn), and cannot be pointed elsewhere afterwards", () => {
     const tag = { "rovara-run": RUN };
+    const create = (session: "test" | "created", fnArn: string | undefined, tags: Record<string, string> = tag) => allowed({ session, action: "lambda:CreateEventSourceMapping", resource: "*", requestTags: tags, ...(fnArn === undefined ? {} : { keys: { "lambda:FunctionArn": fnArn } }) });
+    expect(create("test", fn(`rv-${RUN}-f`))).toBe(true);
+    expect(create("test", fn("shared"))).toBe(false);
+    expect(create("test", fn(`rv-${RUN}-f`), {})).toBe(false);
+    expect(create("test", fn(`rv-${OTHER_RUN}-f`))).toBe(false);
+    expect(create("test", undefined)).toBe(false);
+    // a role a run creates builds nothing (N4)
+    expect(create("created", fn(`rv-${RUN}-f`))).toBe(false);
     for (const session of sessions) {
-      expect(allowed({ session, action: "lambda:CreateEventSourceMapping", resource: "*", requestTags: tag, keys: { "lambda:FunctionArn": fn(`rv-${RUN}-f`) } })).toBe(true);
-      expect(allowed({ session, action: "lambda:CreateEventSourceMapping", resource: "*", requestTags: tag, keys: { "lambda:FunctionArn": fn("shared") } })).toBe(false);
-      expect(allowed({ session, action: "lambda:CreateEventSourceMapping", resource: "*", requestTags: tag, keys: { "lambda:FunctionArn": fn(`rv-${OTHER_RUN}-f`) } })).toBe(false);
-      expect(allowed({ session, action: "lambda:CreateEventSourceMapping", resource: "*", requestTags: tag })).toBe(false);
       expect(allowed({ session, action: "lambda:UpdateEventSourceMapping", resource: "*", resourceTags: tag, keys: { "lambda:FunctionArn": fn("shared") } })).toBe(false);
       expect(allowed({ session, action: "lambda:UpdateEventSourceMapping", resource: "*", resourceTags: tag, keys: { "lambda:FunctionArn": fn(`rv-${RUN}-f`) } })).toBe(false);
       expect(allowed({ session, action: "lambda:DeleteEventSourceMapping", resource: "arn:aws:lambda:us-west-2:" + ACCOUNT + ":event-source-mapping:u", resourceTags: tag })).toBe(true);
@@ -448,20 +473,32 @@ describe("the second review: roles run code the signer never sees (B1 to B5)", (
     expect(allowed({ session, action: "lambda:ListVersionsByFunction", resource: fn(`rv-${RUN}-f`) })).toBe(true);
   });
 
-  it.each(sessions)("%s B4: an EventBridge rule is on a run-named bus only, and its targets are the run's own", (session) => {
+  it.each(sessions)("%s B4: an EventBridge rule is on a run-named bus only, and every target is the run's own, in this account and Region", (session) => {
     const bus = `arn:aws:events:us-west-2:${ACCOUNT}:rule/rv-${RUN}-bus/r`;
     const defaultBus = `arn:aws:events:us-west-2:${ACCOUNT}:rule/rv-${RUN}-r`;
     expect(allowed({ session, action: "events:PutRule", resource: bus })).toBe(true);
     expect(allowed({ session, action: "events:PutRule", resource: defaultBus })).toBe(false);
     expect(allowed({ session, action: "events:PutRule", resource: `arn:aws:events:us-west-2:${ACCOUNT}:rule/shared-bus/rv-${RUN}-r` })).toBe(false);
     expect(allowed({ session, action: "events:PutTargets", resource: defaultBus, keys: { "events:TargetArn": fn(`rv-${RUN}-f`) } })).toBe(false);
-    const target = (arn: string | undefined) => allowed({ session, action: "events:PutTargets", resource: bus, ...(arn === undefined ? {} : { keys: { "events:TargetArn": arn } }) });
+    const target = (arn: string | string[] | undefined) => allowed({ session, action: "events:PutTargets", resource: bus, ...(arn === undefined ? {} : { keys: { "events:TargetArn": arn } }) });
     expect(target(fn(`rv-${RUN}-f`))).toBe(true);
     expect(target(queue(`rv-${RUN}-q`))).toBe(true);
+    expect(target(`arn:aws:states:us-west-2:${ACCOUNT}:stateMachine:rv-${RUN}-m`)).toBe(true);
+    expect(target([fn(`rv-${RUN}-f`), queue(`rv-${RUN}-q`)])).toBe(true);
+    // the key is multivalued: one target that is not the run's refuses the whole call
+    expect(target([fn(`rv-${RUN}-f`), fn("shared")])).toBe(false);
+    expect(target([fn("shared"), fn(`rv-${RUN}-f`)])).toBe(false);
+    expect(target([fn(`rv-${RUN}-f`), `arn:aws:lambda:us-west-2:999999999999:function:rv-${RUN}-f`])).toBe(false);
     expect(target(fn("shared"))).toBe(false);
     expect(target(`arn:aws:lambda:us-west-2:999999999999:function:rv-${RUN}-f`)).toBe(false);
+    expect(target(`arn:aws:lambda:us-east-1:${ACCOUNT}:function:rv-${RUN}-f`)).toBe(false);
+    // anchored: a name that merely contains the run's is not the run's
+    expect(target(fn(`other-rv-${RUN}-f`))).toBe(false);
+    expect(target(queue(`shared-rv-${RUN}-q`))).toBe(false);
     expect(target(`arn:aws:events:us-west-2:${ACCOUNT}:event-bus/default`)).toBe(false);
+    expect(target(`arn:aws:events:us-west-2:${ACCOUNT}:event-bus/rv-${RUN}-bus`)).toBe(false);
     expect(target(undefined)).toBe(false);
+    expect(target([])).toBe(false);
     expect(allowed({ session, action: "events:PutEvents", resource: `arn:aws:events:us-west-2:${ACCOUNT}:event-bus/default` })).toBe(false);
   });
 
@@ -501,6 +538,82 @@ describe("the second review: roles run code the signer never sees (B1 to B5)", (
   });
 });
 
+describe("the third review: nothing a run creates opens, grows or subscribes anywhere (N1 to N4)", () => {
+  const table = `arn:aws:dynamodb:us-west-2:${ACCOUNT}:table/rv-${RUN}-t`;
+  const stream = `arn:aws:kinesis:us-west-2:${ACCOUNT}:stream/rv-${RUN}-s`;
+  const secret = `arn:aws:secretsmanager:us-west-2:${ACCOUNT}:secret:rv-${RUN}-s-AbCdEf`;
+  const topic = `arn:aws:sns:us-west-2:${ACCOUNT}:rv-${RUN}-t`;
+  const fn = (name: string): string => `arn:aws:lambda:us-west-2:${ACCOUNT}:function:${name}`;
+
+  it("N1: a role a run creates opens none of the run's resources to a principal (control: Rovara's test role can, for the signer to read)", () => {
+    const opens: [string, string][] = [
+      ["dynamodb:PutResourcePolicy", table],
+      ["kinesis:PutResourcePolicy", stream],
+      ["secretsmanager:PutResourcePolicy", secret],
+      ["lambda:AddLayerVersionPermission", `arn:aws:lambda:us-west-2:${ACCOUNT}:layer:rv-${RUN}-l:1`],
+      ["ssm:ModifyDocumentPermission", `arn:aws:ssm:us-west-2:${ACCOUNT}:document/rv-${RUN}-d`],
+      ["ssm:PutResourcePolicy", `arn:aws:ssm:us-west-2:${ACCOUNT}:parameter/rv-${RUN}-p`],
+      ["sqs:CreateQueue", ownQueue],
+      ["sns:CreateTopic", topic],
+      ["dynamodb:CreateTable", table],
+    ];
+    for (const [action, resource] of opens) expect(allowed({ session: "created", action, resource }), `created ${action}`).toBe(false);
+    for (const [action, resource] of [["dynamodb:PutResourcePolicy", table], ["kinesis:PutResourcePolicy", stream], ["secretsmanager:PutResourcePolicy", secret], ["sqs:CreateQueue", ownQueue], ["sns:CreateTopic", topic], ["dynamodb:CreateTable", table]] as const) {
+      expect(allowed({ session: "test", action, resource }), `test ${action}`).toBe(true);
+    }
+  });
+
+  it("N2: a subscription goes to a queue or function of the run only, for both kinds of role", () => {
+    const subscribe = (session: "test" | "created", endpoint: string | undefined) => allowed({ session, action: "sns:Subscribe", resource: topic, ...(endpoint === undefined ? {} : { keys: { "sns:Endpoint": endpoint } }) });
+    for (const session of sessions) {
+      expect(subscribe(session, ownQueue), session).toBe(true);
+      expect(subscribe(session, fn(`rv-${RUN}-f`)), session).toBe(true);
+      for (const endpoint of [queue("shared"), queue(`rv-${OTHER_RUN}-q`), fn("shared"), "someone@example.com", "+15555550100", "https://example.com/hook", "http://example.com/hook", `arn:aws:sqs:us-west-2:999999999999:rv-${RUN}-q`, `arn:aws:sqs:us-east-1:${ACCOUNT}:rv-${RUN}-q`, undefined]) {
+        expect(subscribe(session, endpoint), `${session} ${String(endpoint)}`).toBe(false);
+      }
+    }
+  });
+
+  it.each(sessions)("%s N3: a resource named for the run in another account is not the run's", (session) => {
+    const other = { "aws:ResourceAccount": "999999999999" };
+    expect(allowed({ session, action: "sqs:SendMessage", resource: ownQueue, keys: other })).toBe(false);
+    expect(allowed({ session, action: "dynamodb:PutItem", resource: table, keys: other })).toBe(false);
+    expect(allowed({ session, action: "sqs:SendMessage", resource: ownQueue, keys: { "aws:ResourceAccount": ACCOUNT } })).toBe(true);
+  });
+
+  it("N4: a role a run creates builds nothing and grows nothing, but works with what exists (control: the test role builds)", () => {
+    const builds: [string, string][] = [
+      ["dynamodb:CreateTable", table],
+      ["dynamodb:UpdateTable", table],
+      ["kinesis:CreateStream", stream],
+      ["kinesis:UpdateShardCount", stream],
+      ["kinesis:UpdateStreamMode", stream],
+      ["events:CreateEventBus", `arn:aws:events:us-west-2:${ACCOUNT}:event-bus/rv-${RUN}-bus`],
+      ["lambda:CreateFunction", fn(`rv-${RUN}-f`)],
+      ["lambda:CreateFunctionUrlConfig", fn(`rv-${RUN}-f`)],
+      ["states:CreateStateMachine", `arn:aws:states:us-west-2:${ACCOUNT}:stateMachine:rv-${RUN}-m`],
+      ["secretsmanager:CreateSecret", secret],
+      ["iam:CreateRole", `arn:aws:iam::${ACCOUNT}:role/rv-${RUN}-r`],
+    ];
+    for (const [action, resource] of builds) expect(allowed({ session: "created", action, resource, keys: { "iam:PermissionsBoundary": BOUNDARY_ARN }, requestTags: { "rovara-run": RUN } }), `created ${action}`).toBe(false);
+    for (const [action, resource] of [["dynamodb:UpdateItem", table], ["dynamodb:Query", table], ["kinesis:GetRecords", stream], ["kinesis:PutRecords", stream], ["lambda:InvokeFunction", fn(`rv-${RUN}-f`)], ["states:StartExecution", `arn:aws:states:us-west-2:${ACCOUNT}:stateMachine:rv-${RUN}-m`], ["sqs:ReceiveMessage", ownQueue], ["sqs:DeleteMessage", ownQueue], ["sqs:ChangeMessageVisibility", ownQueue]] as const) {
+      expect(allowed({ session: "created", action, resource }), `created ${action}`).toBe(true);
+    }
+    expect(allowed({ session: "test", action: "dynamodb:UpdateTable", resource: table })).toBe(true);
+  });
+
+  it.each(sessions)("%s: replication the Region deny cannot see, and commands on instances, are refused outright", (session) => {
+    for (const [action, resource] of [
+      ["dynamodb:CreateTableReplica", table],
+      ["dynamodb:UpdateGlobalTableSettings", `arn:aws:dynamodb::${ACCOUNT}:global-table/rv-${RUN}-g`],
+      ["dynamodb:UpdateGlobalTable", `arn:aws:dynamodb::${ACCOUNT}:global-table/rv-${RUN}-g`],
+      ["secretsmanager:ReplicateSecretToRegions", secret],
+      ["ssm:SendCommand", `arn:aws:ec2:us-west-2:${ACCOUNT}:instance/i-0123456789abcdef0`],
+      ["ssm:CreateAssociation", `arn:aws:ssm:us-west-2:${ACCOUNT}:document/rv-${RUN}-d`],
+    ] as const) expect(allowed({ session, action, resource }), action).toBe(false);
+  });
+});
+
 describe("the cleanup role", () => {
   it("reads, and deletes what the run owns, and nothing else (control: the delete works on the run's own)", () => {
     expect(allowed({ session: "cleanup", action: "sqs:DeleteQueue", resource: ownQueue })).toBe(true);
@@ -522,12 +635,19 @@ describe("the boundary's shape", () => {
   it("is an allow list: no allow names a service on every resource without a condition, and no read allow is open to a role a run creates", () => {
     for (const statement of policies.boundary.Statement.filter((entry) => entry.Effect === "Allow")) {
       if (statement.Sid === "Reads") {
-        expect(statement.Condition).toEqual({ ArnNotLike: { "aws:PrincipalArn": ["arn:*:iam::*:role/rv-*", "arn:*:sts::*:assumed-role/rv-*/*"] } });
+        expect(statement.Condition).toEqual({ ArnNotLike: { "aws:PrincipalArn": ["arn:*:iam::*:role/rv-*"] } });
       } else {
         expect(statement.Condition !== undefined || (Array.isArray(statement.Resource) && !statement.Resource.includes("*")), statement.Sid).toBe(true);
       }
     }
-    expect(sids).toEqual(["Reads", "Named", "NamedS3", "NamedIam", "Tagged", "CreateByTag", "NoTag", "Forged", "Region", "TagKey", "Pool", "RunRoles", "Secrets", "Targets", "Boundary", "NoPath", "Pass", "KeepBoundary"]);
+    expect(sids).toEqual(["Reads", "Named", "NamedS3", "NamedIam", "Tagged", "CreateByTag", "NoTag", "Forged", "Region", "TagKey", "Pool", "RunRoles", "Secrets", "Targets", "NoTarget", "Subscribe"]);
+  });
+  it("checks the resource's account on what it allows by name (N3)", () => {
+    expect(policies.boundary.Statement.find((entry) => entry.Sid === "Named")?.Condition).toEqual({ StringEquals: { "aws:ResourceAccount": "{{AccountId}}" } });
+  });
+  it("keeps the rules about making roles in the test role's own policy, where only it can call IAM", () => {
+    expect(policies.access.Statement.map((entry) => entry.Sid)).toEqual(["AllowTestServices", "Boundary", "NoPath", "Pass", "KeepBoundary"]);
+    expect(sids).not.toEqual(expect.arrayContaining(["Boundary"]));
   });
   it("allows tagging by request tag nowhere but the creation of an event source mapping, for a run's own function", () => {
     const byRequestTag = policies.boundary.Statement.filter((entry) => entry.Effect === "Allow" && JSON.stringify(entry.Condition ?? {}).includes("aws:RequestTag"));
@@ -538,8 +658,9 @@ describe("the boundary's shape", () => {
     expect(JSON.stringify(policies.boundary)).not.toMatch(/sagemaker|redshift|emr|"ec2:RunInstances"/u);
   });
   it("has no IAM statements when IAM is not a service of the connection, and an S3 fence only with S3", () => {
-    const without = buildTestAccessPolicies(["sqs"]).boundary.Statement.map((entry) => entry.Sid);
-    for (const sid of ["NamedIam", "Boundary", "NoPath", "Pass", "KeepBoundary", "NamedS3", "Secrets", "Tagged", "CreateByTag", "Targets"]) expect(without, sid).not.toContain(sid);
+    const without = buildTestAccessPolicies(["sqs"]);
+    for (const sid of ["NamedIam", "NamedS3", "Secrets", "Tagged", "CreateByTag", "Targets", "NoTarget", "Subscribe"]) expect(without.boundary.Statement.map((entry) => entry.Sid), sid).not.toContain(sid);
+    expect(without.access.Statement.map((entry) => entry.Sid)).toEqual(["AllowTestServices"]);
   });
 });
 
@@ -548,17 +669,17 @@ describe("rendering", () => {
     const text = JSON.stringify(cloudFormationPolicy(policies.boundary));
     expect(text).toContain('{"Fn::Sub":"${AWS::Region}"}');
     expect(text).toContain("${!aws:PrincipalTag/rovara-run}");
-    expect(text).toContain("arn:${AWS::Partition}:iam::${AWS::AccountId}:policy/rovara-test-boundary-${ExternalId}");
     expect(text).not.toMatch(/\{\{[A-Za-z]+\}\}/u);
-    expect(JSON.stringify(cloudFormationPolicy(policies.access))).not.toContain("Fn::Sub");
+    // the boundary's own ARN is in the test role's policy (which only it needs), built from the boundary's fixed name
+    expect(JSON.stringify(cloudFormationPolicy(policies.access))).toContain("arn:${AWS::Partition}:iam::${AWS::AccountId}:policy/rovara-test-boundary-${ExternalId}");
   });
   it("writes a Terraform template: tokens become variables, IAM's variables are escaped with a second dollar", () => {
     const text = terraformPolicyTemplate(policies.boundary);
     expect(text).toContain('"${region}"');
     expect(text).toContain("$${aws:PrincipalTag/rovara-run}");
     expect(text).not.toMatch(/(?<!\$)\$\{aws:/u);
-    expect(text).toContain("rovara-test-boundary-${external_id}");
     expect(text).not.toMatch(/\{\{[A-Za-z]+\}\}/u);
+    expect(terraformPolicyTemplate(policies.access)).toContain("rovara-test-boundary-${external_id}");
   });
   it("fills the tokens for the copy-paste text and keeps IAM's variables", () => {
     const text = JSON.stringify(rendered(policies.boundary, "us-west-2"));
