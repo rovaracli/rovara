@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { type ProjectRole } from "@agentx/cloud-contracts/web";
+import { type CloudProjectRole } from "@agentx/cloud-contracts/web";
 import { Button } from "../../../design/Button.js";
 import { Dialog } from "../../../design/Dialog.js";
 import { Select } from "../../../design/Select.js";
@@ -10,7 +10,7 @@ import { projectRoleLabel } from "../../admin/projects/labels.js";
 import { ADD_UNAVAILABLE, PROJECT_PEOPLE_STALE_MESSAGE, ROLE_HELP } from "./people-text.js";
 import { failureText, useRequestId } from "./people-write.js";
 
-interface Common { project: string; revision: number; roles: readonly ProjectRole[]; open: boolean; onOpenChange: (open: boolean) => void; onDone: (message: string) => void }
+interface Common { project: string; revision: number; roles: readonly CloudProjectRole[]; open: boolean; onOpenChange: (open: boolean) => void; onDone: (message: string) => void }
 type Props = Common & ({ mode: "change"; member: PeopleMember } | { mode: "add"; people: readonly PeopleMember[] });
 
 /** Change one person's role, or add a company member with a role. Both are the same write (`PUT .../people/{id}`) under the revision the page read; the server's refusal (last maintainer, stale) is shown as it came. */

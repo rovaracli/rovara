@@ -8,13 +8,13 @@ import { ArchiveProject } from "./ArchiveProject.js";
 import { useAdminContext } from "../AdminLayout.js";
 import { projectRoleLabel, projectSetupLabel } from "./labels.js";
 import { Link, useParams, useSearchParams } from "react-router";
-import { AppProjectDetailSchema, ProjectMembersResponseSchema, type AppProjectDetail } from "@agentx/cloud-contracts/web";
+import { AppProjectDetailSchema, CloudProjectMembersResponseSchema, type AppProjectDetail } from "@agentx/cloud-contracts/web";
 import { DataTable } from "../../../design/DataTable.js";
 import { PageHeader } from "../../../design/PageHeader.js";
 import { VisibleText } from "../../../design/VisibleText.js";
 import { ReadState, useAdminRead } from "./read.js";
 const detailReader = { parse(value: unknown) { const p = AppProjectDetailSchema.parse(value);return { name: p.name, description: p.description, status: p.status, latestRevision: p.latestRevision, repositories: p.repositories, savedWorkingBranches:p.savedWorkingBranches, myRole: p.myRole, setup: { status: p.setup.status, checkedRevision: p.setup.checkedRevision, checkedAt: p.setup.checkedAt }, settings: { setupCommandCount: p.settings.setupCommands.length, testCommandCount: p.settings.testCommands.length, devcontainer: p.settings.devcontainer, allowedDomains: p.settings.allowedDomains.map(d => ({ domain: d.domain, status: d.status })) } }; } };
-const peopleReader = { parse(value: unknown) { return { members: ProjectMembersResponseSchema.parse(value).members.map(p => ({ developerId:p.developerId,name:p.name,role:p.projectRole ?? p.role,source:p.source })) }; } };
+const peopleReader = { parse(value: unknown) { return { members: CloudProjectMembersResponseSchema.parse(value).members.map(p => ({ developerId:p.developerId,name:p.name,role:p.projectRole ?? p.role,source:p.source })) }; } };
 function ProjectPeople({ name }: { name: string }) {
  const read = useAdminRead("project-members", name, `/v1/app/projects/${encodeURIComponent(name)}/members`, peopleReader);
  return <section><h2>Project people</h2><p>Company owners and admins maintain every project. This roster shows project grants and company roles; channel-derived access is not a complete roster here.</p><ReadState read={read} label="project people">{data => data.members.length === 0 ? <p>No project people were returned.</p> : <DataTable caption="Project people" rows={data.members} rowKey={p=>p.developerId} columns={[{key:"name",title:"Person",render:p=><VisibleText text={p.name} />},{key:"role",title:"Project role",render:p=>projectRoleLabel[p.role]},{key:"source",title:"Access source",render:p=>p.source === "grant" ? "Project grant" : "Company role"}]} />}</ReadState></section>;

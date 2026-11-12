@@ -1,10 +1,10 @@
 // The words of the project People tab, the collaborator approvals switch and the product decisions panel (lane exp/project-people). Plain sentences; no jargon; a refusal from the server is always shown as it came.
-import type { ProjectRole } from "@agentx/cloud-contracts/web";
+import type { CloudProjectRole } from "@agentx/cloud-contracts/web";
 import { PROJECT_PEOPLE_STALE_MESSAGE } from "@agentx/cloud-contracts/web";
 
 export { PROJECT_PEOPLE_STALE_MESSAGE };
 /** One line per role: what a person in it can do in this project. */
-export const ROLE_HELP: Readonly<Record<ProjectRole, string>> = {
+export const ROLE_HELP: Readonly<Record<CloudProjectRole, string>> = {
  maintainer: "Runs the project: starts work, approves plans and merges, changes settings and people.",
  contributor: "Starts work and approves their own tasks. Cannot change settings or people.",
  collaborator: "Reads the project's work, comments, asks Rovara, answers questions and can approve low-risk product decisions. Never starts coding work, merges or sees spending.",

@@ -6,8 +6,8 @@ import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { z } from "zod";
 import {
-  AppOrgMembersResponseReaderSchema, CodeSettingsResponseReaderSchema, ProjectMemberSchema, ProjectOverviewProjectSchema, ProjectRoleSchema, ReviewedInviteCreateBodySchema, ReviewedInviteCreateResponseSchema,
-  type ProjectRole,
+  AppOrgMembersResponseReaderSchema, CloudProjectMemberSchema, CloudProjectRoleSchema, CodeSettingsResponseReaderSchema, ProjectOverviewProjectSchema, ReviewedInviteCreateBodySchema, ReviewedInviteCreateResponseSchema,
+  type CloudProjectRole,
 } from "@agentx/cloud-contracts/web";
 import { useAppHost, type AppHost } from "../host.js";
 import { createApiClient, type SendResult } from "./client.js";
@@ -15,12 +15,12 @@ import { ApiError } from "./errors.js";
 
 const NEVER = { retry: "never" } as const;
 export const peopleViewerReader = z.looseObject({
-  role: ProjectRoleSchema, canManageMembers: z.boolean(), assignableRoles: z.array(ProjectRoleSchema), canInvite: z.boolean(), invitableRoles: z.array(ProjectRoleSchema), canEditCodeSettings: z.boolean(), canConfirmSelfApproval: z.boolean(),
+  role: CloudProjectRoleSchema, canManageMembers: z.boolean(), assignableRoles: z.array(CloudProjectRoleSchema), canInvite: z.boolean(), invitableRoles: z.array(CloudProjectRoleSchema), canEditCodeSettings: z.boolean(), canConfirmSelfApproval: z.boolean(),
 });
-export const peopleViewReader = z.looseObject({ project: z.string(), members: z.array(ProjectMemberSchema), revision: z.number().int().nonnegative(), viewer: peopleViewerReader });
+export const peopleViewReader = z.looseObject({ project: z.string(), members: z.array(CloudProjectMemberSchema), revision: z.number().int().nonnegative(), viewer: peopleViewerReader });
 export type PeopleView = z.output<typeof peopleViewReader>;
 export type PeopleMember = PeopleView["members"][number];
-const changeReader = z.looseObject({ member: z.looseObject({ developerId: z.string(), role: ProjectRoleSchema }), revision: z.number().int().nonnegative() });
+const changeReader = z.looseObject({ member: z.looseObject({ developerId: z.string(), role: CloudProjectRoleSchema }), revision: z.number().int().nonnegative() });
 const removeReader = z.looseObject({ developerId: z.string(), removed: z.boolean(), revision: z.number().int().nonnegative() });
 
 export const peoplePath = (project: string): string => "/v1/app/projects/" + encodeURIComponent(ProjectOverviewProjectSchema.shape.name.parse(project)) + "/people";
@@ -30,7 +30,7 @@ export const codeSettingsKey = (project: string) => ["project", project, "code-s
 export const orgMembersKey = ["org-members-for-project-people"] as const;
 
 /** The roles a person's own row may hold, in the order the project lists them. */
-export const ROLE_CHOICES: readonly ProjectRole[] = ["maintainer", "contributor", "collaborator", "viewer"];
+export const ROLE_CHOICES: readonly CloudProjectRole[] = ["maintainer", "contributor", "collaborator", "viewer"];
 
 /** What a write that lost a race (the roster moved since the page read it) is: the server's 409 `CHANGE_STALE`. */
 export const isStale = (error: unknown): boolean => error instanceof ApiError && (error.status === 409 || error.code === "CHANGE_STALE");
@@ -42,7 +42,7 @@ export function createProjectPeopleApi(host: AppHost) {
   return {
     people: (project: string) => api.get(peoplePath(project), peopleViewReader),
     /** Give a company member a role in the project (adds them, or changes their role). */
-    setRole: (project: string, developerId: string, input: { requestId: string; role: ProjectRole; expectedRevision: number }) =>
+    setRole: (project: string, developerId: string, input: { requestId: string; role: CloudProjectRole; expectedRevision: number }) =>
       one(api.send("PUT", personPath(project, developerId), { requestId: input.requestId, role: input.role, expectedRevision: input.expectedRevision }, changeReader, NEVER)),
     remove: (project: string, developerId: string, input: { requestId: string; expectedRevision: number }) =>
       one(api.send("DELETE", personPath(project, developerId), { requestId: input.requestId, expectedRevision: input.expectedRevision }, removeReader, NEVER)),

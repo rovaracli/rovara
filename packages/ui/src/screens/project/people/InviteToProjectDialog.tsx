@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { ReviewedInviteCreateBodySchema, type ProjectRole } from "@agentx/cloud-contracts/web";
+import { ReviewedInviteCreateBodySchema, type CloudProjectRole } from "@agentx/cloud-contracts/web";
 import { useAppHost } from "../../../host.js";
 import { useNav } from "../../../api/nav.js";
 import { Button } from "../../../design/Button.js";
@@ -23,7 +23,7 @@ const safeLink = (value: string): boolean => { try { const url = new URL(value);
  * Invite someone new straight into this project (`POST /v1/app/org/invites/reviewed` with `project`). The roles are the ones the server's powers name (`invitableRoles`). A maintainer's invite must name an email
  * (the server refuses a link for them); only a company owner or admin may make a shareable link. The server's refusal is shown as it came.
  */
-export function InviteToProjectDialog({ project, roles, open, onOpenChange }: { project: string; roles: readonly ProjectRole[]; open: boolean; onOpenChange: (open: boolean) => void }) {
+export function InviteToProjectDialog({ project, roles, open, onOpenChange }: { project: string; roles: readonly CloudProjectRole[]; open: boolean; onOpenChange: (open: boolean) => void }) {
  const host = useAppHost(), api = useProjectPeopleApi(), query = useQueryClient(), id = useRequestId(), nav = useNav();
  const admin = nav.data?.me.orgRole === "owner" || nav.data?.me.orgRole === "admin";
  const offered: readonly InviteRole[] = INVITE_ROLES.filter(role => roles.includes(role));
