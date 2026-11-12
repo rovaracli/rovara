@@ -293,3 +293,72 @@ test.describe("Insights", () => {
   await expect(page.getByRole("region", { name: "Stuck work" })).toBeVisible();
  });
 });
+
+// ---- Decision 125 follow-up: code that cannot load, Reload on any address, a phone, a failing panel.
+/** The page is styled: the tokens are applied (the root has the one look and a background token), and the page error's heading is not the browser's default size. */
+async function styled(page: Page) {
+ await expect(page.locator("html")).toHaveAttribute("data-look", "v2");
+ expect(await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--rv-bg").trim())).not.toBe("");
+ expect(await page.evaluate(() => getComputedStyle(document.body).backgroundColor)).not.toBe("rgba(0, 0, 0, 0)");
+}
+for (const [label, scenario, path, chunk, extra] of [
+ ["Home", "home", "/app", /\/app\/assets\/HomeV2-[^/]*\.js$/u, "home"],
+ ["Insights", "home", "/app/insights", /\/app\/assets\/InsightsScreen-[^/]*\.js$/u, "insights"],
+ ["Spending", "admin", "/app/admin/money/budgets", /\/app\/assets\/BudgetsScreen-[^/]*\.js$/u, "spending"],
+ ["the task page", "workspace", TASK, /\/app\/assets\/SessionScreen-[^/]*\.js$/u, "task"],
+] as const) {
+ test(`${label}'s code cannot load: a styled page error with Reload in place of the screen, the navigation${extra === "spending" ? " and the settings menu" : ""} still there; Reload recovers`, async ({ page, context, request, baseURL }) => {
+  await enter(page, context, request, baseURL, scenario);
+  if (extra === "home") await request.post("/__mock/home-v2", { data: { mode: "full" } });
+  if (extra === "insights") await mockInsights(page, "owner");
+  if (extra === "spending") await request.post("/__mock/spending?variant=owner");
+  await page.route(chunk, route => route.abort());
+  await page.goto(path);
+  await expect(page.locator("main").getByRole("heading", { level: 1, name: "Rovara was updated. Reload to continue." })).toBeVisible();
+  await shellIntact(page);await styled(page);await notBlank(page);
+  if (extra === "spending") await expect(page.getByRole("navigation", { name: "Administration" })).toBeVisible();
+  await evidenceShot(page, { path: `${shots}/chunk-${extra}-1280.png`, fullPage: true });
+  await page.unroute(chunk);await page.getByRole("button", { name: "Reload" }).click();
+  await expect(page.locator("main").getByRole("heading", { level: 1, name: "Rovara was updated. Reload to continue." })).toHaveCount(0);await shellIntact(page);
+ });
+}
+test("Reload works on an address the app would not link to (a query with + : and ,): the page reloads to the same address", async ({ page, context, request, baseURL }) => {
+  await enter(page, context, request, baseURL, "work");
+  const chunk = /\/app\/assets\/WorkListScreen-[^/]*\.js$/u, address = "/app/work?filter=mine&q=a+b:c,d";
+  await page.route(chunk, route => route.abort());
+  await page.goto(address);
+  await expect(page.getByRole("heading", { level: 1, name: "Rovara was updated. Reload to continue." })).toBeVisible();
+  await page.unroute(chunk);
+  const reloaded = page.waitForEvent("load");await page.getByRole("button", { name: "Reload" }).click();await reloaded;
+  expect(new URL(page.url()).pathname + new URL(page.url()).search).toBe(address);
+  await expect(page.getByRole("heading", { name: "Work", level: 1 })).toBeVisible();
+});
+test("Continue in your own tool's code cannot load: the task page stays, the part says so with Reload", async ({ page, context, request, baseURL }) => {
+  await taskPage(page, context, request, baseURL);
+  await page.route(/\/app\/assets\/ContinueInTool-[^/]*\.js$/u, route => route.abort());
+  await page.goto(TASK);
+  await expect(page.getByRole("region", { name: "Where this task stands" })).toBeVisible();
+  const part = page.getByRole("alert").filter({ hasText: "Couldn't load this part." });await expect(part).toBeVisible();
+  await expect(part.getByRole("button", { name: "Reload" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Conversation" })).toBeVisible();await shellIntact(page);
+  await evidenceShot(page, { path: `${shots}/continue-chunk-1280.png`, fullPage: true });
+});
+test("on a phone (390): Work fails, says so with Try again in the one look, the tab bar stays, nothing scrolls sideways", async ({ page, context, request, baseURL }) => {
+  await enter(page, context, request, baseURL, "work", 390);
+  await page.route(/\/v1\/web\/live(\?|$)/u, fail());
+  await page.goto("/app/work");await notBlank(page);
+  await expect(page.getByRole("alert").filter({ hasText: /Try again|Something failed/u }).first()).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "Main destinations" })).toBeVisible();await styled(page);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await evidenceShot(page, { path: `${shots}/work-failed-390.png`, fullPage: true });
+});
+test("Insights: one panel fails while the overview answers: that panel says so, the others show", async ({ page, context, request, baseURL }) => {
+  await mockInsights(page, "owner");
+  await page.route(/\/v1\/web\/insights\/stuck(\?|$)/u, fail());
+  await enter(page, context, request, baseURL, "home");
+  await page.goto("/app/insights");await notBlank(page);await shellIntact(page);
+  const stuck = page.getByRole("region", { name: "Stuck work" });
+  await expect(stuck.getByRole("alert").or(stuck.getByText(/Couldn.t load|Try again/u)).first()).toBeVisible();
+  await expect(page.getByRole("region", { name: "Shipped outcomes" })).toBeVisible();
+  await evidenceShot(page, { path: `${shots}/insights-panel-failed-1280.png`, fullPage: true });
+});

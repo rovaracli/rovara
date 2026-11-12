@@ -9,6 +9,7 @@ import { createMemoryRouter, RouterProvider, type RouteObject } from "react-rout
 import { QueryClientProvider } from "@tanstack/react-query";
 import { App } from "../../packages/ui/src/App.js";
 import { appRoutes } from "../../packages/ui/src/routes.js";
+import { guardLazy } from "../../packages/ui/src/shell/ErrorBoundary.js";
 import { AppHostProvider } from "../../packages/ui/src/host.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { ThemeProvider } from "../../packages/ui/src/theme.js";
@@ -57,9 +58,37 @@ for (const [label, path, at] of [["Home", undefined, "/app"], ["Work", "work", "
  });
 }
 
+for (const [label, path, at] of [["Work", "work", "/app/work"], ["Home", undefined, "/app"], ["Insights", "insights", "/app/insights"], ["the task page", "sessions/:id", "/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa"]] as const) {
+ it(`${label}'s code cannot load (a release changed under the page): 'Rovara was updated' with Reload inside the shell`, async () => {
+  quiet();
+  const routes = appRoutes(navFixture().features), app = routes.find(route => route.path === "/app")!;
+  // The chunk fails as a browser reports it; the route table's guard turns it into the page error in the screen's place.
+  app.children = app.children!.map(child => (path === undefined ? child.index === true : child.path === path) ? guardLazy({ ...child, element: undefined, lazy: () => Promise.reject(new TypeError("Failed to fetch dynamically imported module: /app/assets/x.js")) } as RouteObject) : child);
+  const f = mount(routes, at);
+  try {
+   expect((await screen.findByRole("heading", { level: 1, name: "Rovara was updated. Reload to continue." })).textContent).toBe("Rovara was updated. Reload to continue.");
+   expect(screen.getByRole("button", { name: "Reload" })).toBeTruthy();
+   expect(f.container.querySelector(".rv-app-shell")).not.toBeNull();
+   expect(screen.getAllByRole("navigation", { name: "Workspace" }).length).toBeGreaterThan(0);
+  } finally { f.close(); }
+ });
+}
+
+it("the route table guards every lazy screen under /app, the admin pages under the admin layout included", async () => {
+ const app = appRoutes({ ...navFixture().features, admin: true }).find(route => route.path === "/app")!;
+ const admin = app.children!.find(route => route.path === "admin/*")!;
+ const spending = admin.children!.find(route => route.path === "money/budgets")!;
+ expect(spending.errorElement).toBeTruthy();
+ // A guarded lazy never rejects: a failed import resolves to a component that shows the page error.
+ const original = spending.lazy;expect(typeof original).toBe("function");
+ const failing = guardLazy({ path: "x", lazy: () => Promise.reject(new TypeError("Importing a module script failed.")) } as RouteObject);
+ const resolved = await (failing.lazy as () => Promise<{ Component?: unknown }>)();
+ expect(typeof resolved.Component).toBe("function");
+});
+
 it("every screen route under /app has an error element of its own", () => {
  const app = appRoutes({ ...navFixture().features, admin: true, chains: true, usage: true, describe: true }, { billing: true, publish: true }).find(route => route.path === "/app")!;
- for (const child of app.children!) expect(child.errorElement, child.path ?? "(index)").toBeTruthy();
+ const check = (routes: RouteObject[]) => { for (const child of routes) { expect(child.errorElement, child.path ?? "(index)").toBeTruthy();if (child.children) check(child.children); } };check(app.children!);
 });
 
 it("a crash above the router (building the route table) is caught by App's ErrorBoundary: a page error with Reload, never a white page", async () => {
