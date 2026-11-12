@@ -25,7 +25,8 @@
 // cannot see answer the same way); who may decide is the lesson library's own check (`ApproverDirectory`, the second-person rule, the access records); a write needs a live browser
 // session and a writer role (the Auditor is refused); a refusal is a fixed sentence, never text from a lesson, a row or an error.
 import { LessonApproveBodySchema, LessonFeedbackBodySchema, LessonMergeBodySchema, LessonPresetBodySchema, LessonPresetChangeBodySchema, LessonResumeSourceBodySchema, LessonRejectBodySchema, LessonRetireBodySchema, LessonRollbackBodySchema, agentXError, type AgentXErrorCode, type ProjectRole } from "@rovara-code/contracts";
-import { LessonsRepoFileBodySchema, LocalToolsCompanyBodySchema, LocalToolsProjectBodySchema } from "@agentx/cloud-contracts";
+import { LessonsRepoFileBodySchema } from "@agentx/cloud-contracts";
+import { LocalToolsCompanyBodySchema, LocalToolsProjectBodySchema } from "@rovara-code/contracts";
 import type { ZodType } from "zod";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 import { requireWriterCaller } from "../org/auditor.js";

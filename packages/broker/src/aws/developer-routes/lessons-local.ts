@@ -9,7 +9,7 @@
 // The request is a POST so the task text and file names ride in the body, not in an address a proxy keeps.
 import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { INDEX_EXPIRY_ATTRIBUTE, OrgIdSchema, agentXError, indexExpiresAt, orgScoped } from "@rovara-code/contracts";
-import { LocalLessonsBodySchema } from "@agentx/cloud-contracts";
+import { LocalLessonsBodySchema } from "@rovara-code/contracts";
 import { takeRateAt } from "../../developer/page-comments.js";
 import { LOCAL_OFF_MESSAGES, LocalLessonsUnavailable, lessonsForLocalTool, renderLocalLessons, type LocalLessonsAnswer, type LocalLessonsDeps, type LocalToolsCounter } from "../../lessons/local-tools.js";
 import { normalizeRemote } from "../../lessons/repo-remote.js";

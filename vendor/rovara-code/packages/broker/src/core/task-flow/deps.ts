@@ -4,6 +4,7 @@ import type { TaskTestEnvironment } from "../test-env/seam.js";
 import type {
   Admission,
   AgentXErrorCode,
+  Autonomy,
   AuditSink,
   CheckEntry,
   DocumentStore,
@@ -51,7 +52,7 @@ export interface TaskCaller {
    * Set only by the script token check: the request is a script token's, scoped to these projects and permissions. The start gives such a task the fixed client "Script token", whatever
    * the body says. It is never an approval proof: nothing that decides anything reads it as one, and no route a token may reach decides anything.
    */
-  scriptToken?: { tokenId: string; name: string; permissions: readonly ("read" | "start")[]; projects: readonly string[] } | undefined;
+  scriptToken?: { tokenId: string; name: string; permissions: readonly ("read" | "start" | "lessons")[]; projects: readonly string[] } | undefined;
 }
 
 /** A registered project revision, as the flow needs it. */
@@ -247,6 +248,12 @@ export interface TaskFlowDeps {
    */
   autofix?: { enabled?: boolean; capUsd?: number; roundEstimateUsd?: number };
   taskSpendUsd?: (taskId: string) => Promise<number | undefined>;
+  /**
+   * Decision 70(c): how far Rovara may act on its own for this task NOW (the stricter of the task's frozen recipe and the company's limit), read again where a merged base's checks would be re-run by themselves and
+   * before the reviews that follow. `suggest` asks the owner instead; `unreadable` and `noCompany` say why a `suggest` is not the owner's setting, so the ask is true. Absent: `suggest` (nothing is re-run by
+   * itself) and the reviews are never stopped; an install that lets its owner's machine act on its own says so here (`rovara up` answers `prepare`, as merge tracking does).
+   */
+  autonomy?: (task: TaskRecord) => Promise<{ autonomy: Autonomy; unreadable?: true; noCompany?: true }>;
   /** Lane L10: records a milestone ("fixing", "stuck") in the transaction of the change that caused it. Absent: none is recorded (the workflow change still is). */
   milestones?: CodeMilestones;
   /**

@@ -3,7 +3,7 @@
 // next call (no cache); the install switch, the company's "lessons stay in Rovara" switch, a project in Off, Regulated and the project's own switch each return nothing with a plain reason; an unknown repository is refused; no model or
 // embedder is touched; nothing a lesson or a task says is logged.
 import { afterEach, describe, expect, it } from "vitest";
-import { LOCAL_LESSONS_NOTES_LINE } from "@agentx/cloud-contracts";
+import { LOCAL_LESSONS_NOTES_LINE } from "@rovara-code/contracts";
 import { OrgIdSchema } from "@rovara-code/contracts";
 import { LOCAL_OFF_MESSAGES, LocalLessonsUnavailable, lessonsForLocalTool, oneLine, renderLocalLessons, stableOrPersonApproved, type LocalLessonsDeps, type LocalLessonsInput, type LocalToolsSettings } from "../../../packages/broker/src/lessons/local-tools.js";
 import { normalizeRemote } from "../../../packages/broker/src/lessons/repo-remote.js";

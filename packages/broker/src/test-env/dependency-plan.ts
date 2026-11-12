@@ -7,7 +7,7 @@
 // Slice 1 starts real software from the catalog only (backing `local`, no substitute image). Slice 2 adds Rovara local AWS (backing `emulated`, entry `local-aws`) for exactly S3, SQS and DynamoDB. Slice 3 adds a fake (backing `fake`,
 // entry `fake-server`, which runs from the worker's own image) for an APPROVED, digest-pinned fixture set of this organisation, answering requests with no recording with an error (`fail`). Every other backing, and every
 // other AWS service, is "not available yet", at approval (`dependenciesStartableNow`) and again here.
-import { TEST_SERVICES_AWS_PLAN_SERVICES, emulatorServiceTier, type CatalogEntry, type CatalogTrustContext, type TestEnvDependency, type TestEnvironmentBody, type VerifiedCatalog, TASK_DEPENDENCY_PLAN_MAX, catalogEntryById, catalogIdName, catalogPrepullList } from "@rovara-code/contracts";
+import { SEEDED_AWS_SERVICES, emulatorServiceTier, type CatalogEntry, type CatalogTrustContext, type TestEnvDependency, type TestEnvironmentBody, type VerifiedCatalog, TASK_DEPENDENCY_PLAN_MAX, catalogEntryById, catalogIdName, catalogPrepullList } from "@rovara-code/contracts";
 import { type TaskDependencyPlan, TaskDependencyPlanSchema } from "@agentx/cloud-contracts";
 import { loadSignedCatalog } from "@agentx/cloud-contracts";
 import { STATEFUL_KINDS, chooseBacking, effectiveAllowedBackings, type BackingPlace, type SkipReason } from "./backing-choice.js";
@@ -51,7 +51,7 @@ export type DependencyPlanResult = { ok: true; dependencies: TaskDependencyPlan[
  * The AWS services Rovara local AWS backs on a task (slice 2). The emulator has more, and the contract allows more; every other service is "not available yet" until its own slice (design 5.2 tiers, the compatibility suite).
  * The names are AWS service ids (`aws:s3` is the family of `s3`).
  */
-export const EMULATED_TASK_SERVICES: readonly string[] = TEST_SERVICES_AWS_PLAN_SERVICES;
+export const EMULATED_TASK_SERVICES: readonly string[] = SEEDED_AWS_SERVICES;
 
 type DependencyBacking = TestEnvDependency["backing"];
 type EmulatedBacking = Extract<DependencyBacking, { kind: "emulated" }>;

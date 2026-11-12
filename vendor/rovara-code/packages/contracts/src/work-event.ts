@@ -14,7 +14,8 @@
 // The set of kinds is CLOSED and versioned (`WORK_EVENT_VERSION`). A new kind, or a new field, is an interface change for both owners and bumps the version; a reader refuses a version it does not know.
 // Where events are kept is an adapter's business (a document store row under the company's key scope, see `workEventPartition`); this file holds the shape, the keys and the retention rule.
 import { z } from "zod";
-import { AgentXNameSchema, OrgIdSchema, type OrgId } from "@rovara-code/contracts";
+import { OrgIdSchema, type OrgId } from "./browser-ids.js";
+import { AgentXNameSchema } from "./names.js";
 
 export const WORK_EVENT_VERSION = 1;
 

@@ -428,18 +428,21 @@ describe("the named TEST proof-only installation gate", () => {
     // 2026-11-11 (0.5.15, feat/0515-identity-healing-one-company): the named and foreign digests were retaken after ONE intended change: the DeveloperSignIn function's Query grant
     // loses ORG#org_*#PROJECT_CATALOG (the old race-org check, gone with IDENTITY-HEALING-CROSS-ORG). Restoring that one key gives back the previous pins. The named-templates snapshot
     // shows exactly that one line removed. Legacy did not move.
+    // 2026-11-12 (0.5.15, signing key to Secrets Manager 1706c80a7 + drop CallbackSigningKey 7d8721bb6): the named and foreign digests were retaken from the values the test reports, after
+    // the two reviewed infra changes: CALLBACK_SIGNING_KEY leaves the broker, EvalBatchTick and reconciler env; GetSecretValue on the two signing secrets; the named CallbackSigningKey parameter removed.
+    // Checked first: at dc211668e (before both) all six tests pass on the previous pins, and infra/ differs from dc211668e only by those two lanes. Legacy did not move.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "a72c23b9edeb1a7773561a5f15fa7046039480ef465fea8f4060258988f6f1ad",
-        withoutRoute: "49a25764882ab668ddcf58c39fa7112e30b512c46108fb4ddeb8e3c892868716",
+        withRoute: "e8e2e0109099966040619fe0d0e1d34c45dc3a6d28b76fed41f23ec199116712",
+        withoutRoute: "b526f2c942ca457017489039ad28bba751891c8b7f89674924adccd5b4f4d524",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "288ec2a44cc82be83a069033207340ebc8d733f6af5113be99e2999ddfc72f57",
-        withoutRoute: "565f46a320976b4fcb93dc44ea18dfd94f44f86609b7e68f8680edb8c6200821",
+        withRoute: "52d11262f602c886e935975a0e6222c659547395b6780a7a03320a4972ef75f7",
+        withoutRoute: "47b1304ca8e743f57e5c7f7ddc22fc7f92d5ad810ef518826c2655ee18432aa5",
       },
       {
         label: "legacy",

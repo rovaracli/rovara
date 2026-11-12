@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { CredentialRegistrationSchema, OAuthClientCredentialsSecretSchema, StaticSecretSchema } from "@rovara-code/contracts";
-import { IN_HOUSE_TOOL_COUNT, approvedToolCount, presentedNameProblems, toolBudget } from "@rovara-code/contracts";
+import { IN_HOUSE_TOOL_COUNT, approvedToolCount, presentedNameProblems } from "@rovara-code/contracts";
+import { cloudToolBudget as toolBudget } from "../../packages/broker/src/aws/broker/tool-budget.js";
 
 describe("credential registration input", () => {
   it("accepts the two registrable types with a connector secret name", () => {

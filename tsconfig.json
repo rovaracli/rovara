@@ -5,6 +5,9 @@
       "path": "vendor/rovara-code/packages/contracts"
     },
     {
+      "path": "vendor/rovara-code/packages/aws-adapters"
+    },
+    {
       "path": "vendor/rovara-code/packages/gateway"
     },
     {

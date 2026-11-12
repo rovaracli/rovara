@@ -93,7 +93,6 @@ export * from "./team-record.js";
 export * from "./team-record-sources.js";
 export * from "./lessons.js";
 export * from "./app-lessons-repo-file.js";
-export * from "./lessons-local-tools.js";
 export * from "./saved-env-key-files.js";
 
 // Company domain verification (owner decision 2026-11-02).
@@ -123,10 +122,7 @@ export * from "./task-stop-enrollment.js";
 export * from "./task-stop-start-preview.js";
 export * from "./ui-flags.js";
 
-// Work events (U3): copied from Code (fix/code-work-events, Code PR #449), with the two imports of Code's own files (browser-ids, names) taken from @rovara-code/contracts. UPSTREAM OWED: the vendor pin
-// (vendor/rovara-code/PIN) does not include it yet; when it does, delete work-event.ts and work-event-node.ts here and import the names from @rovara-code/contracts. See briefs/work-events.md.
-export * from "./work-event.js";
-export * from "./work-event-node.js";
+// Work events (U3) and lessons for local coding tools (decision 46b) are Code's since the vendor pin 0e340c0e: import them from @rovara-code/contracts.
 export { SIGNED_OUT_REASONS, isSignedOutReason, type SignedOutReason } from "./sign-in-reasons.js";
 
 // Names defined here that the old barrel reached through a re-export file the contracts now take from Rovara Code (convergence W0-3).

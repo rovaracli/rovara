@@ -43,6 +43,8 @@ export const VERIFY_SCRIPT = "scripts/vendor/verify-rovara-code.ts";
 /** W0-1's generated layer: shims that re-export Code's packages, and the links Code's own imports resolve through. */
 export const SHIMS_DIR = "vendor/rovara-code-shims";
 export const LINKS_DIR = "vendor/node_modules";
+/** The scope folders W0-1 links vendored packages under: `@agentx/<pkg>`, and `@rovara/<pkg>` for the packages Code names that way (aws-adapters). */
+export const LINK_SCOPES: readonly string[] = ["@agentx", "@rovara"];
 /**
  * The only links W0-1 puts under vendor/node_modules besides the `@agentx/<pkg>` ones (its THIRD_PARTY_LINKS): name -> the exact link text. Any other link, or
  * a real file or folder there, is refused. If W0-1 adds one, this list changes with it (the check fails closed until it does).
@@ -237,8 +239,8 @@ export function checkVendorClean(root: string): CheckResult {
 }
 
 /**
- * vendor/node_modules is W0-1's layer, not Code: it holds the scope folder `@agentx` with one relative link per vendored package, and the links in
- * ALLOWED_THIRD_PARTY_LINKS; nothing else. Each `@agentx/<pkg>` link must resolve (realpath, through any chain) to exactly vendor/rovara-code/packages/<pkg>;
+ * vendor/node_modules is W0-1's layer, not Code: it holds the scope folders in LINK_SCOPES with one relative link per vendored package, and the links in
+ * ALLOWED_THIRD_PARTY_LINKS; nothing else. Each `@agentx/<pkg>` (or `@rovara/<pkg>`) link must resolve (realpath, through any chain) to exactly vendor/rovara-code/packages/<pkg>;
  * a link anywhere else (Cloud's node_modules/@agentx/*, a Cloud package, another link), a real file or folder, or a third-party link with other text, is refused.
  */
 export function vendorLinkProblems(root: string): Problem[] {
@@ -250,12 +252,12 @@ export function vendorLinkProblems(root: string): Problem[] {
   const relativeToRoot = (path: string): string => (path.startsWith(`${rootReal}${sep}`) ? path.slice(rootReal.length + 1).split(sep).join("/") : path);
   for (const entry of readdirSync(base, { withFileTypes: true })) {
     const where = `${LINKS_DIR}/${entry.name}`;
-    if (entry.name === "@agentx" && entry.isDirectory()) {
+    if (LINK_SCOPES.includes(entry.name) && entry.isDirectory()) {
       for (const inner of readdirSync(join(base, entry.name), { withFileTypes: true })) {
         const innerWhere = `${where}/${inner.name}`;
         const full = join(base, entry.name, inner.name);
         if (!inner.isSymbolicLink()) {
-          problems.push({ where: innerWhere, message: "not a link: only links to vendored packages belong under vendor/node_modules/@agentx (a real folder could hold code that is not Code)" });
+          problems.push({ where: innerWhere, message: `not a link: only links to vendored packages belong under vendor/node_modules/${entry.name} (a real folder could hold code that is not Code)` });
           continue;
         }
         let real: string;
@@ -285,7 +287,7 @@ export function vendorLinkProblems(root: string): Problem[] {
         }
       }
     } else {
-      problems.push({ where, message: entry.isSymbolicLink() ? "a link that is not one W0-1 creates (only the vendored @agentx packages and its recorded third-party links)" : "a real file or folder under vendor/node_modules (only W0-1's links belong there)" });
+      problems.push({ where, message: entry.isSymbolicLink() ? "a link that is not one W0-1 creates (only the vendored @agentx and @rovara packages and its recorded third-party links)" : "a real file or folder under vendor/node_modules (only W0-1's links belong there)" });
     }
   }
   return problems;

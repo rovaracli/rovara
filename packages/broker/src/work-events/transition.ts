@@ -8,7 +8,8 @@
 //   step_started / step_ended / waiting_changed / task_failed / task_closed: the workflow revision the change produced;
 //   decision_asked: the revision the task began to wait at; decision_answered / plan_approved: the decision's own request id (so a reader joins the pair on `decisionId` `r<revision>`);
 //   pr_*: `<repository>#<number>` and the revision (a pull request closed, reopened and closed again is two events).
-import { WorkEventSchema, workEventCauseIsFailure, workEventId, type WorkEventInput, type WorkflowSnapshot } from "@agentx/cloud-contracts";
+import { type WorkflowSnapshot } from "@agentx/cloud-contracts";
+import { WorkEventSchema, workEventCauseIsFailure, workEventId, type WorkEventInput } from "@rovara-code/contracts";
 import { type OrgId } from "@rovara-code/contracts";
 import { blockCauseOf } from "./block-cause.js";
 

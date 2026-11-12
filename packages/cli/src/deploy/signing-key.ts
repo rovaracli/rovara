@@ -1,6 +1,5 @@
 // The control plane's callback signing key: a per-environment secret the deploy orchestrator reads
-// (creating it on first use) and passes to the control-plane stack as the CallbackSigningKey
-// parameter. Never logged, never returned in an error message: callers of `callbackSigningKey` get
+// (creating it on first use) and keeps in Secrets Manager. Since 0.5.15 it is not passed to any stack (the CallbackSigningKey parameter is gone): the functions read it from there. Never logged, never returned in an error message: callers of `callbackSigningKey` get
 // only the value itself, to hold in memory for the length of one deploy.
 import { randomBytes } from "node:crypto";
 import { CreateSecretCommand, DescribeSecretCommand, GetSecretValueCommand, type SecretsManagerClient } from "@aws-sdk/client-secrets-manager";

@@ -4,7 +4,7 @@
 // It never fails an agent: offline, signed out, a refusal or any failed read prints one fixed line and exits 0 ("Continue without them"). Only a mistake in the command line (an unknown stage) is an error.
 // Every line printed is the broker's block or a fixed sentence from `@agentx/contracts`; the project's and the lessons' words pass through the same terminal-safe cleaning as everything else this CLI shows.
 import { CLI_PACKAGE_NAME, agentXError } from "@rovara-code/contracts";
-import { LOCAL_LESSONS_AMBIGUOUS_LINE, LOCAL_LESSONS_NOT_FOUND_LINE, LOCAL_LESSONS_NO_PROJECT_LINE, LOCAL_LESSONS_STAGES, LOCAL_LESSONS_UNAVAILABLE_LINE, LocalLessonsResponseReaderSchema, lessonsAcrossProjects, withNotesLine, LocalToolsStateReaderSchema, type LocalLessonsAsk, type LocalLessonsBody, type LocalLessonsRead } from "@agentx/cloud-contracts";
+import { LOCAL_LESSONS_AMBIGUOUS_LINE, LOCAL_LESSONS_NOT_FOUND_LINE, LOCAL_LESSONS_NO_PROJECT_LINE, LOCAL_LESSONS_STAGES, LOCAL_LESSONS_UNAVAILABLE_LINE, LocalLessonsResponseReaderSchema, lessonsAcrossProjects, withNotesLine, LocalToolsStateReaderSchema, type LocalLessonsAsk, type LocalLessonsBody, type LocalLessonsRead } from "@rovara-code/contracts";
 import { z } from "zod";
 import { appRequest, clean, result as appResult, seg, type AppResult } from "./agents.js";
 import { jsonSafe } from "./audit.js";

@@ -3200,12 +3200,6 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
       "Description": "tag: costs tagged agentx:env for this environment (the tag must be activated in Billing); account: the whole account",
       "Type": "String",
     },
-    "CallbackSigningKey": {
-      "Description": "Random secret used to scope and authenticate worker callbacks",
-      "MinLength": 32,
-      "NoEcho": true,
-      "Type": "String",
-    },
     "DecisionCardsEnabled": {
       "AllowedValues": [
         "0",
