@@ -63,6 +63,7 @@ import { REQUALIFY_CONTEXT_KEY, REQUALIFY_DEFAULT_HOUR_UTC, RuntimeRequalify } f
 import { swebenchNames } from "./swebench-eval.js";
 import { SWEBENCH_DEPLOYMENT_MODE } from "./swebench-eval-definition.js";
 import { markCodeContractsPureCommand } from "./code-contracts-bundling.js";
+import { grantSigningKeySecrets } from "./signing-key-secrets.js";
 
 const MAX_DISPATCH_ATTEMPTS = 5;
 // Matches MAX_RECEIVE_COUNT in packages/slack-service, which reports the final attempt in the thread.
@@ -153,12 +154,14 @@ export class ControlPlaneStack extends Stack {
 
     const oidcIssuer = new CfnParameter(this, "OidcIssuer", { type: "String" });
     const oidcAudience = new CfnParameter(this, "OidcAudience", { type: "String" });
-    const callbackSigningKey = new CfnParameter(this, "CallbackSigningKey", {
+    // 0.5.15: only the legacy install's frozen template declares this parameter. A named environment's functions read the key from Secrets Manager (signing-key-secrets.ts) and the CLI no longer
+    // passes it, so its template does not declare it (CloudFormation refuses a parameter its template lacks).
+    const callbackSigningKey = naming.env === undefined ? new CfnParameter(this, "CallbackSigningKey", {
       type: "String",
       noEcho: true,
       minLength: 32,
       description: "Random secret used to scope and authenticate worker callbacks",
-    });
+    }) : undefined;
     const adminClaim = new CfnParameter(this, "AdminClaim", {
       type: "String",
       default: "cognito:groups",
@@ -256,7 +259,8 @@ export class ControlPlaneStack extends Stack {
       OIDC_ISSUER: oidcIssuer.valueAsString,
       ADMIN_CLAIM: adminClaim.valueAsString,
       ADMIN_VALUES: adminValues.valueAsString,
-      CALLBACK_SIGNING_KEY: callbackSigningKey.valueAsString,
+      // 0.5.15: a named environment's broker reads its keys from Secrets Manager (signing-key-secrets.ts); only the legacy install (frozen template) keeps the variable.
+      ...(callbackSigningKey === undefined ? {} : { CALLBACK_SIGNING_KEY: callbackSigningKey.valueAsString }),
       ...(naming.env === undefined ? { GITHUB_APP_CREDENTIAL_REF: githubAppCredentialRef.valueAsString, GITHUB_APP_ID: githubAppId.valueAsString } : {}),
       GITHUB_APP_PRIVATE_KEY_SECRET_ARN: githubAppPrivateKeySecretArn.valueAsString,
     });
@@ -300,6 +304,8 @@ export class ControlPlaneStack extends Stack {
       actions: ["secretsmanager:GetSecretValue"],
       resources: [githubAppPrivateKeySecretArn.valueAsString],
     }));
+    // 0.5.15: the broker issues and verifies tokens (callback signing key) and hashes stored values (erasure hash key), so it reads both secrets.
+    if (naming.env !== undefined) grantSigningKeySecrets(broker, this, naming.env, ["callback", "erasure"]);
     broker.addToRolePolicy(new iam.PolicyStatement({
       actions: ["secretsmanager:GetSecretValue"],
       resources: [this.formatArn({ service: "secretsmanager", resource: "secret", resourceName: `${naming.connectorSecretPrefix}*`, arnFormat: ArnFormat.COLON_RESOURCE_NAME })],
@@ -1559,7 +1565,7 @@ export class ControlPlaneStack extends Stack {
     if (naming.env !== undefined) sessions.connectStuckCancelAlarm();
     // Issue 173: the backstop for idle Slack tasks nobody waits on. Named environments only: the
     // legacy template is unchanged.
-    if (naming.env !== undefined) sessions.connectUnwaitedTaskBackstop(slackThreads, slackSecret, callbackSigningKey.valueAsString);
+    if (naming.env !== undefined) sessions.connectUnwaitedTaskBackstop(slackThreads, slackSecret, naming.env);
     // Own both attachments in this releasable stack. Secret changes must never mutate the
     // protected foundation template or require a separate foundation change set.
     // Named environments: the model proxy alone holds provider keys and Bedrock access for members
@@ -1716,9 +1722,13 @@ export class ControlPlaneStack extends Stack {
     const evalBatchTick = packagedFunction(this, "EvalBatchTick", "packages/broker/src/aws/eval-batch-tick.ts", {
       STATE_TABLE_NAME: state.tableName,
       ARTIFACT_BUCKET_NAME: artifacts.bucketName,
-      CALLBACK_SIGNING_KEY: callbackSigningKey.valueAsString,
+      // 0.5.15: a named environment's tick reads the callback signing key from its secret (it builds the name from AGENTX_ENV); the legacy install keeps the variable.
+      ...(naming.env === undefined ? {} : { AGENTX_ENV: naming.env }),
+      ...(callbackSigningKey === undefined ? {} : { CALLBACK_SIGNING_KEY: callbackSigningKey.valueAsString }),
       SWEBENCH_SETTINGS_PREFIX: naming.ec2.workerSettingsPrefix,
     }, Duration.seconds(90));
+    // It signs eval capabilities (kind a) and hashes nothing, so it reads the callback signing key alone.
+    if (naming.env !== undefined) grantSigningKeySecrets(evalBatchTick, this, naming.env, ["callback"], "ReadCallbackSigningKey");
     state.grantReadWriteData(evalBatchTick);
     // A run's launch.json (evals/<runId>/) and a batch's results (evals/batches/<id>/); it reads nothing there.
     evalBatchTick.addToRolePolicy(new iam.PolicyStatement({ sid: "WriteEvalObjects", actions: ["s3:PutObject"], resources: [artifacts.arnForObjects("evals/*")] }));

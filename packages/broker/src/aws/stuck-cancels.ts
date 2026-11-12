@@ -1,4 +1,5 @@
 import { installOrgIdFromEnvironment } from "../org/resolve.js";
+import { callbackSigningKeyConfigured, resolveKey, type KeyOrSource } from "./signing-key-secrets.js";
 import { OrgIdSchema } from "@rovara-code/contracts";
 import { resolveSlackThreadKey } from "./slack-thread-key.js";
 // Issue 195: a cancel that never reaches the worker never holds a workspace for good. Stopping a
@@ -404,7 +405,7 @@ async function end(
  * (so it never loops), and it is not an AI tool's developer task. The cancel's worker callbacks are
  * signed with the callback signing key, as the broker signs them.
  */
-export function createCancelRetrier(dependencies: { client: Client; tableName: string; callbackSigningKey: string }): NonNullable<StuckCancelDependencies["retryCancel"]> {
+export function createCancelRetrier(dependencies: { client: Client; tableName: string; callbackSigningKey: KeyOrSource }): NonNullable<StuckCancelDependencies["retryCancel"]> {
   const state = { documentClient: dependencies.client as CancellationDependencies["documentClient"], tableName: dependencies.tableName };
   return async (workspaceId, operationId) => {
     const skipped = (reason: string): StuckCancelRetry => ({ outcome: "SKIPPED", reason });
@@ -416,7 +417,7 @@ export function createCancelRetrier(dependencies: { client: Client; tableName: s
     if (target.fence !== record.fence) return skipped("fence-changed");
     if (await getItem(state, taskPointerKey(workspaceId)) !== undefined) return skipped("developer-task");
     const workspace = WorkspaceInstanceSchema.parse(workspaceRecordFields(record));
-    const result = await requestCancellation({ ...state, callbackSigningKey: dependencies.callbackSigningKey }, workspace, operationId, {});
+    const result = await requestCancellation({ ...state, callbackSigningKey: await resolveKey(dependencies.callbackSigningKey) }, workspace, operationId, {});
     // A duplicate means the task finished before the cancel was recorded.
     if (result.duplicate) return skipped("finished");
     return { outcome: "REQUEUED", cancelOperationId: result.operation.id };
@@ -432,7 +433,10 @@ export function createCancelRetrier(dependencies: { client: Client; tableName: s
 export function stuckCancelRetrier(
   environment: Record<string, string | undefined>,
   state: { client: Client; tableName: string },
+  /** 0.5.15: the callback signing key, read when a cancel is retried (the legacy variable, or the named environment's secret; signing-key-secrets.ts). */
+  callbackKey?: () => Promise<string>,
 ): StuckCancelDependencies["retryCancel"] {
+  if (!callbackSigningKeyConfigured(environment)) return undefined;
   const key = environment.CALLBACK_SIGNING_KEY;
-  return key === undefined || key.length === 0 ? undefined : createCancelRetrier({ ...state, callbackSigningKey: key });
+  return createCancelRetrier({ ...state, callbackSigningKey: key !== undefined && key.length > 0 ? key : (callbackKey ?? (() => Promise.reject(new Error("no callback signing key source")))) });
 }

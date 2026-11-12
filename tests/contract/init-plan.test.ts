@@ -60,7 +60,7 @@ describe("install plan", () => {
       "agentx-staging-access, agentx-staging-foundation, agentx-staging-identity, agentx-staging-control-plane, agentx-staging-runtime, agentx-staging-slack",
       "IAM roles agentx-staging-cloudformation (CloudFormation deploys through it) and agentx-staging-operator (day-2 commands)",
       "the permission boundary agentx-staging-boundary, which every AgentX role carries; the stacks' own roles live under the IAM path /agentx/staging/",
-      "Secrets agentx/staging/callback-signing-key, agentx/staging/github-app, agentx/staging/slack",
+      "Secrets agentx/staging/callback-signing-key, agentx/staging/erasure-hash-key, agentx/staging/github-app, agentx/staging/slack",
       "Settings under /agentx/staging/",
       "In GitHub: an app named \"AgentX acme (staging)\" owned by acme, with read and write access to contents, pull requests and issues, and read access to metadata, and a webhook that sends pull request and comment events to the control plane.",
       "In Slack: an app named \"AgentX acme (staging)\".",
@@ -92,7 +92,7 @@ describe("install plan", () => {
     const openRouterModels = { orchestrator: "a/b", classifier: "a/b", worker: "a/b", providers: { orchestrator: "openrouter", classifier: "openrouter", worker: "openrouter" } } as const;
     const answers = sampleAnswers({ models: openRouterModels });
     const text = installPlanText(answers, estimateMonthlyCost(answers.models), [], { storesOpenRouterKey: true, openRouterProviders: ["deepinfra/turbo"] });
-    expect(text).toContain("Secrets agentx/staging/callback-signing-key, agentx/staging/github-app, agentx/staging/slack, agentx/staging/openrouter");
+    expect(text).toContain("Secrets agentx/staging/callback-signing-key, agentx/staging/erasure-hash-key, agentx/staging/github-app, agentx/staging/slack, agentx/staging/openrouter");
     expect(text).toContain("- OpenRouter: your API key is stored in the new secret agentx/staging/openrouter; provider allowlist deepinfra/turbo; fallbacks disabled, data_collection=deny");
 
     const own = sampleAnswers({ models: { ...openRouterModels, openRouter: { secretArn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:mine-AbCdEf" } } });

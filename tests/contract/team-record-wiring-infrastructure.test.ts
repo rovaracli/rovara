@@ -491,8 +491,8 @@ describe("the lessons worker (switch on)", () => {
   it("M6: the worker has an explicit, small environment: no callback signing key, no OIDC or admin settings, nothing the broker holds that learning does not read; its names and settings are only those the entry reads", () => {
     const variables = worker().Environment?.Variables ?? {};
     const broker = functionVariables(on, /^Broker[0-9A-F]{8}$/);
-    // The broker has the signing key (a secret passed in plain text); the worker is never given it, or any variable the broker has that the worker's entry does not read.
-    expect(broker).toHaveProperty("CALLBACK_SIGNING_KEY");
+    // 0.5.15: not even the broker is given the signing key (it reads its secret); the worker is never given it, or any variable the broker has that the worker's entry does not read.
+    expect(broker).not.toHaveProperty("CALLBACK_SIGNING_KEY");
     for (const forbidden of ["CALLBACK_SIGNING_KEY", "OIDC_ISSUER", "ADMIN_CLAIM", "ADMIN_VALUES", "CHATGPT_CONNECTION_KEY_ARN", "AUDIT_INTAKE_QUEUE_URL", "SLACK_REQUEST_QUEUE_URL"]) expect(variables, forbidden).not.toHaveProperty(forbidden);
     expect(JSON.stringify(variables)).not.toMatch(/CallbackSigningKey/u);
     expect(Object.keys(variables).sort()).toEqual(["AGENTX_ACCOUNT_ID", "AGENTX_ENV", "AGENTX_NAMES", "AGENTX_SETTINGS", "GITHUB_APP_PRIVATE_KEY_SECRET_ARN", "ROVARA_EDITION"]);

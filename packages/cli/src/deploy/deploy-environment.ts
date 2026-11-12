@@ -12,14 +12,13 @@ import { assertAuditLockNotLowered, CLOUD_NEEDS_CDK_MESSAGE } from "./answer-sch
 import { assertModelsServedByProxy } from "./proxy-models.js";
 import { installOrder, isRetiredParameter, OPERATOR_PARAMETERS, SECRET_PARAMETERS, stackParameters, upgradeOrder, type DeployPart, type InstallAnswers, type StackOutputs } from "./parameters.js";
 import type { LoadedRelease } from "./release.js";
-import { callbackSigningKey, type SecretValueStore } from "./signing-key.js";
+import { callbackSigningKeyWithOrigin, ensureErasureHashKey, refuseLostErasureKey, type SecretValueStore } from "./signing-key.js";
 import { readStoredDeveloperSignIn, SIGN_IN_PARAMETER_NAMES } from "../signin/settings.js";
 
 export type { SecretValueStore } from "./signing-key.js";
 
-/** Everything `stackParameters` needs except the release manifest and the callback signing key,
- * which `deployEnvironment` supplies itself. */
-export type DeployAnswers = Omit<InstallAnswers, "release" | "callbackSigningKey">;
+/** Everything `stackParameters` needs except the release manifest, which `deployEnvironment` supplies itself. */
+export type DeployAnswers = Omit<InstallAnswers, "release">;
 
 export interface DeployEnvironmentInput {
   mode: "install" | "upgrade";
@@ -282,7 +281,13 @@ export async function deployEnvironment(input: DeployEnvironmentInput): Promise<
       assertAuditLockNotLowered(deployedAuditLock, answers.auditLock);
     }
 
-    const key = await callbackSigningKey(secrets, env);
+    // 0.5.15: an existing environment that lost both keys is refused before a new callback key is made (signing-key.ts).
+    await refuseLostErasureKey(secrets, env, existing !== undefined);
+    const { value: key, created: callbackCreatedNow } = await callbackSigningKeyWithOrigin(secrets, env);
+    // 0.5.15: the erasure hash key, split from the callback signing key with the same value the first time (never overwritten), before any stack deploys.
+    // It refuses (never re-seeds) when the erasure key is missing but the callback key has changed since: that would orphan every stored hash.
+    await ensureErasureHashKey(secrets, env, key, { environmentExisted: existing !== undefined, callbackCreatedNow });
+    // A key under 32 characters is refused by ensureErasureHashKey above, before any stack deploys (stackParameters used to refuse it mid-deploy, once the parameter existed).
 
     // Extra defense-in-depth, not itself the F24 "only the keys the template declares" fix (that is
     // `withDeclaredSignIn`/`templateParameterNames` below): assertDeployAllowed above already
@@ -293,7 +298,7 @@ export async function deployEnvironment(input: DeployEnvironmentInput): Promise<
     const environmentNamed = existing === undefined || existing.naming === "environment";
     // R7: a control-plane deploy always carries the stored developer sign-in, so no deploy resets it.
     const developerSignIn = answers.developerSignIn ?? (deploySet.has("control-plane") && environmentNamed ? await readStoredDeveloperSignIn(store, env) : undefined);
-    const fullAnswers: InstallAnswers = { ...answers, ...(customDomain === undefined ? {} : { customDomain }), ...(developerSignIn === undefined ? {} : { developerSignIn }), release: release.manifest, callbackSigningKey: key };
+    const fullAnswers: InstallAnswers = { ...answers, ...(customDomain === undefined ? {} : { customDomain }), ...(developerSignIn === undefined ? {} : { developerSignIn }), release: release.manifest };
 
     const outputs: Partial<Record<DeployPart, StackOutputs>> = {};
     const droppedParameters: DeployEnvironmentResult["droppedParameters"] = [];

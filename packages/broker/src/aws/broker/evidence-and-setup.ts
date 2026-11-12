@@ -1,5 +1,6 @@
 // Part of the broker (split out of ../broker.ts): workflow E2E evidence upload and project setup evidence and callbacks.
 
+import { callbackVerificationKeys } from "../signing-key-secrets.js";
 import { createHash, randomUUID } from "node:crypto";
 import { GetCommand, PutCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { DeleteObjectCommand, GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
@@ -444,7 +445,7 @@ async function requireProjectSetupCapability(
 ): Promise<{ execution: ReturnType<typeof ProjectSetupExecutionSchema.parse>; claims: NonNullable<ReturnType<typeof verifyProjectSetupCapability>>;
   runtime: ReturnType<typeof ProjectSetupRuntimeRecordSchema.parse>; session: ReturnType<typeof ProjectSetupSessionSchema.parse> }> {
   const token = request.headers["x-agentx-callback-capability"];
-  const claims = token ? verifyProjectSetupCapability(dependencies.callbackSigningKey, token) : undefined;
+  const claims = token ? verifyProjectSetupCapability(callbackVerificationKeys(dependencies), token) : undefined;
   if (!claims || claims.setupExecutionId !== setupExecutionId || !claims.actions.includes(action)) throw agentXError("CALLBACK_FORBIDDEN", "setup capability does not authorize this artifact action");
   const [executionItem, operationItem, sessionItem] = await Promise.all([
     getItem<Record<string, unknown>>(dependencies, projectSetupExecutionKey(setupExecutionId)),
@@ -516,7 +517,7 @@ export async function handleProjectSetupCallback(
   operationId: string,
 ): Promise<{ accepted: true; parked?: true; qualification?: "UNKNOWN" }> {
   const token = request.headers["x-agentx-callback-capability"];
-  const claims = token ? verifyProjectSetupCapability(dependencies.callbackSigningKey, token) : undefined;
+  const claims = token ? verifyProjectSetupCapability(callbackVerificationKeys(dependencies), token) : undefined;
   if (!claims || claims.setupExecutionId !== setupExecutionId || claims.operationId !== operationId) {
     throw agentXError("CALLBACK_FORBIDDEN", "callback capability is outside the project setup result scope");
   }

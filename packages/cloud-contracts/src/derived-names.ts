@@ -57,6 +57,16 @@ export const companyImageMirrorFunctionName = (env: string): string => `agentx-$
  */
 export const fixtureKeyAlias = (env: string): string => `alias/agentx/${env}/fixtures`;
 
+/**
+ * 0.5.15 signing-key lane: the two secrets a named environment's functions read their keys from (packages/broker/src/aws/signing-key-secrets.ts), so no key is a Lambda variable.
+ *  - the callback signing key signs short-lived tokens (worker callbacks, repository grants, cancel and setup tokens); it can be rotated (docs/runbooks/rotate-callback-signing-key.md);
+ *  - the erasure hash key hashes stored values (erased people's names and aliases, Ask question hashes); it is never rotated without a re-hash plan, because the stored hashes would no longer match.
+ * The deploy (packages/cli/src/deploy/signing-key.ts) creates both, never CloudFormation, so a stack update or deletion never changes or deletes either value. CDK grants each function the one it needs.
+ * The named control-plane template no longer declares the NoEcho CallbackSigningKey parameter and the CLI no longer passes it (both dropped in 0.5.15); only the legacy install's frozen template keeps it.
+ */
+export const callbackSigningKeySecretName = (env: string): string => `agentx/${env}/callback-signing-key`;
+export const erasureHashKeySecretName = (env: string): string => `agentx/${env}/erasure-hash-key`;
+
 /** The port the model proxy's inference listener serves on; the broker builds the proxy's URL from the load balancer's name and this. */
 export const MODEL_PROXY_INFERENCE_PORT = 4000;
 
