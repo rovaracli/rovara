@@ -1,12 +1,17 @@
 // Lane A: reviewed creation's historical outcome. Bearer delivery is deliberately separate.
 import { z } from "zod";
-import { AgentXNameSchema, OrgIdSchema, ProjectRoleSchema } from "@rovara-code/contracts";
+import { AgentXNameSchema, OrgIdSchema } from "@rovara-code/contracts";
+/**
+ * The project roles an invite may carry: the same three as Code's `ProjectRoleSchema` (held equal by tests/contract/invite-project-roles.test.ts). Spelled out here so the
+ * browser's invite and member screens, which load at start-up through `developer-web.ts`, do not pull Code's whole app-projects module into the initial bundle.
+ */
+export const InviteProjectRoleSchema = z.enum(["maintainer", "contributor", "viewer"]);
 /**
  * A-31 (srv/project-people): the project an invite also adds the person to, and their role in it. An owner or admin may name any active project of the company and any project role;
  * a maintainer of the project (a company member) may name only that project, only `contributor` or `viewer`, and only on a `member` invite. An admin invite names no project (an admin
  * already maintains every project). On accept the person joins the company and the project together; an invite whose project was archived or removed since joins the company only.
  */
-export const InviteProjectSchema = z.object({ name: AgentXNameSchema, role: ProjectRoleSchema }).strict();
+export const InviteProjectSchema = z.object({ name: AgentXNameSchema, role: InviteProjectRoleSchema }).strict();
 export type InviteProject = z.infer<typeof InviteProjectSchema>;
 /** Why an accepted invite added no project membership (the person still joined the company): the project was archived, or is no longer there. */
 export const InviteProjectNoteSchema = z.enum(["project_archived", "project_gone"]);
